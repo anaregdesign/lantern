@@ -287,6 +287,7 @@ extension LanternCrud on LanternClient {
     LanternCallOptions? options,
   }) async {
     _ensureOpen();
+    var undisclosed = false;
     final input = List<EdgeInput>.unmodifiable(edges);
     _validateBatch(input.length, batchSize);
     final expirations = _resolveExpirations(input, _clock());
@@ -328,6 +329,13 @@ extension LanternCrud on LanternClient {
             onTrailer: onTrailer,
           ),
         );
+        if (_mutationAcceptedUndisclosed(
+          response,
+          response.hasAcceptance() ? response.acceptance : null,
+        )) {
+          undisclosed = true;
+          continue;
+        }
         if (response.effectiveWeights.length != end - offset) {
           throw _internalSdkException(
             'server returned misaligned additive edge results',
@@ -336,11 +344,77 @@ extension LanternCrud on LanternClient {
         written += response.written;
         weights.addAll(response.effectiveWeights);
       } on Exception catch (error) {
-        _throwBatchOrCause(written, error);
+        _throwBatchOrCause(undisclosed ? offset : written, error);
       }
     }
+    if (undisclosed) throw const MutationAcceptance();
     return AddEdgesResult(written: written, effectiveWeights: weights);
   }
+
+  /// Creates connections in bounded chunks, without automatically replaying a failed chunk.
+  Future<List<CreateEdgeOutcome>> createEdges(
+    Iterable<EdgeInput> edges, {
+    int batchSize = defaultBatchSize,
+    LanternCallOptions? options,
+  }) async {
+    _ensureOpen();
+    var undisclosed = false;
+    final input = List<EdgeInput>.unmodifiable(edges);
+    _validateBatch(input.length, batchSize);
+    _validateCreateInputs(input);
+    final expirations = _resolveExpirations(input, _clock().toUtc());
+    final callOptions = _freezeCallOptions(options);
+    final outcomes = <CreateEdgeOutcome>[];
+    for (var offset = 0; offset < input.length; offset += batchSize) {
+      try {
+        _throwIfCanceled(callOptions?.cancellation);
+        final end = _chunkEnd(offset, batchSize, input.length);
+        final request = $graph.CreateEdgesRequest(
+          edges: [
+            for (var i = offset; i < end; i++)
+              _edgeInputToProto(input[i], expirations[i]),
+          ],
+        );
+        final response = await _invoke(
+          'CreateEdges',
+          callOptions,
+          (raw, headers, signal, onHeader, onTrailer) => raw.createEdges(
+            request,
+            headers: headers,
+            signal: signal,
+            onHeader: onHeader,
+            onTrailer: onTrailer,
+          ),
+        );
+        if (_mutationAcceptedUndisclosed(
+          response,
+          response.hasAcceptance() ? response.acceptance : null,
+        )) {
+          undisclosed = true;
+          continue;
+        }
+        if (response.outcomes.length != end - offset) {
+          throw _internalSdkException(
+            'server returned misaligned Create outcomes',
+          );
+        }
+        final decoded = response.outcomes
+            .map(_createOutcomeFromProto)
+            .toList(growable: false);
+        outcomes.addAll(decoded);
+      } on Exception catch (error) {
+        throw BatchException(committed: offset, cause: error);
+      }
+    }
+    if (undisclosed) throw const MutationAcceptance();
+    return List<CreateEdgeOutcome>.unmodifiable(outcomes);
+  }
+
+  /// One-item facade over [createEdges].
+  Future<CreateEdgeOutcome> createEdge(
+    EdgeInput edge, {
+    LanternCallOptions? options,
+  }) async => (await createEdges([edge], options: options)).single;
 
   /// Idempotently overwrites one edge and returns its authoritative outcome.
   Future<PutOutcome> putEdge(
@@ -357,6 +431,7 @@ extension LanternCrud on LanternClient {
     LanternCallOptions? options,
   }) async {
     _ensureOpen();
+    var undisclosed = false;
     final input = List<EdgeInput>.unmodifiable(edges);
     _validateBatch(input.length, batchSize);
     final sampledAt = _clock().toUtc();
@@ -384,6 +459,13 @@ extension LanternCrud on LanternClient {
             onTrailer: onTrailer,
           ),
         );
+        if (_mutationAcceptedUndisclosed(
+          response,
+          response.hasAcceptance() ? response.acceptance : null,
+        )) {
+          undisclosed = true;
+          continue;
+        }
         if (response.outcomes.length != end - offset) {
           throw _internalSdkException(
             'server returned misaligned edge Put outcomes',
@@ -403,9 +485,10 @@ extension LanternCrud on LanternClient {
         }
         results.addAll(chunkResults);
       } on Exception catch (error) {
-        _throwBatchOrCause(results.length, error);
+        _throwBatchOrCause(undisclosed ? offset : results.length, error);
       }
     }
+    if (undisclosed) throw const MutationAcceptance();
     if (results.isEmpty) return List.unmodifiable(results);
     final observedAt = _clock().toUtc();
     return List.unmodifiable([
@@ -434,6 +517,7 @@ extension LanternCrud on LanternClient {
     LanternCallOptions? options,
   }) async {
     _ensureOpen();
+    var undisclosed = false;
     final input = List<EdgeRef>.unmodifiable(edges);
     _validateBatch(input.length, batchSize);
     final callOptions = _freezeCallOptions(options);
@@ -458,11 +542,19 @@ extension LanternCrud on LanternClient {
             onTrailer: onTrailer,
           ),
         );
+        if (_mutationAcceptedUndisclosed(
+          response,
+          response.hasAcceptance() ? response.acceptance : null,
+        )) {
+          undisclosed = true;
+          continue;
+        }
         deleted += response.deleted;
       } on Exception catch (error) {
-        _throwBatchOrCause(deleted, error);
+        _throwBatchOrCause(undisclosed ? offset : deleted, error);
       }
     }
+    if (undisclosed) throw const MutationAcceptance();
     return deleted;
   }
 
@@ -487,6 +579,7 @@ extension LanternCrud on LanternClient {
     LanternCallOptions? options,
   }) async {
     _ensureOpen();
+    var undisclosed = false;
     final input = List<EdgeContributionRef>.unmodifiable(contributions);
     _validateBatch(input.length, batchSize);
     final keys = _edgeContributionKeys(input);
@@ -511,12 +604,20 @@ extension LanternCrud on LanternClient {
                 onTrailer: onTrailer,
               ),
         );
+        if (_mutationAcceptedUndisclosed(
+          response,
+          response.hasAcceptance() ? response.acceptance : null,
+        )) {
+          undisclosed = true;
+          continue;
+        }
         _validateContributionDeleteResponse(end - offset, response);
         existed.addAll(response.existed);
       } on Exception catch (error) {
-        _throwBatchOrCause(existed.length, error);
+        _throwBatchOrCause(undisclosed ? offset : existed.length, error);
       }
     }
+    if (undisclosed) throw const MutationAcceptance();
     return DeleteEdgeContributionsResult._(existed);
   }
 

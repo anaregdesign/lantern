@@ -329,6 +329,41 @@ extension type LanternServiceClient (connect.Transport _transport) {
     );
   }
 
+  /// CreateEdge is the one-item facade over the conditional CreateEdges family.
+  Future<graphv1graph.CreateEdgeResponse> createEdge(
+    graphv1graph.CreateEdgeRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternService.createEdge,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
+  Future<graphv1graph.CreateEdgesResponse> createEdges(
+    graphv1graph.CreateEdgesRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternService.createEdges,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
   /// PutEdge is idempotent (replaces weight). Thin facade over PutEdges.
   Future<graphv1graph.PutEdgeResponse> putEdge(
     graphv1graph.PutEdgeRequest input, {

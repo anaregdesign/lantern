@@ -1,0 +1,425 @@
+?   	github.com/anaregdesign/lantern/server	[no test files]
+ok  	github.com/anaregdesign/lantern/server/backup	33.253s
+ok  	github.com/anaregdesign/lantern/server/cmd	1.477s
+ok  	github.com/anaregdesign/lantern/server/internal/edgeweight	(cached)
+ok  	github.com/anaregdesign/lantern/server/internal/envconfig	(cached)
+ok  	github.com/anaregdesign/lantern/server/internal/envdoc	0.433s
+?   	github.com/anaregdesign/lantern/server/internal/envdoc/cmd	[no test files]
+ok  	github.com/anaregdesign/lantern/server/internal/keyspace	(cached)
+ok  	github.com/anaregdesign/lantern/server/internal/oidc	2.159s
+?   	github.com/anaregdesign/lantern/server/internal/protoschema	[no test files]
+ok  	github.com/anaregdesign/lantern/server/internal/prototime	(cached)
+ok  	github.com/anaregdesign/lantern/server/internal/replicationstatus	(cached)
+ok  	github.com/anaregdesign/lantern/server/internal/security	31.183s
+ok  	github.com/anaregdesign/lantern/server/llmauth	(cached)
+ok  	github.com/anaregdesign/lantern/server/metrics	1.316s
+ok  	github.com/anaregdesign/lantern/server/provider	8.326s
+ok  	github.com/anaregdesign/lantern/server/readiness	(cached)
+ok  	github.com/anaregdesign/lantern/server/replication	2.645s
+SIGQUIT: quit
+PC=0x187dbb50c m=0 sigcode=0
+
+goroutine 0 gp=0x10431a0a0 m=0 mp=0x10431acc0 [idle]:
+runtime.pthread_cond_wait(0x10431b228, 0x10431b1e8)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/sys_darwin.go:470 +0x20 fp=0x16ce65eb0 sp=0x16ce65e80 pc=0x103000950
+runtime.semasleep(0xffffffffffffffff)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/os_darwin.go:72 +0x9c fp=0x16ce65f10 sp=0x16ce65eb0 pc=0x102fdcf5c
+runtime.notesleep(0x10431ae18)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/lock_sema.go:62 +0xac fp=0x16ce65f40 sp=0x16ce65f10 pc=0x102faff4c
+runtime.mPark(...)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:1985
+runtime.stopm()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:3023 +0x84 fp=0x16ce65f70 sp=0x16ce65f40 pc=0x102fe6f34
+runtime.findRunnable()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:3811 +0xff0 fp=0x16ce66140 sp=0x16ce65f70 pc=0x102fe8ca0
+runtime.schedule()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:4179 +0x90 fp=0x16ce66180 sp=0x16ce66140 pc=0x102fea000
+runtime.park_m(0x54f66cb845a0)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:4319 +0x23c fp=0x16ce661e0 sp=0x16ce66180 pc=0x102fea47c
+runtime.mcall()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:319 +0x54 fp=0x16ce661f0 sp=0x16ce661e0 pc=0x10301ffa4
+
+goroutine 1 gp=0x54f66ca6e1e0 m=nil [chan receive, 4 minutes]:
+runtime.gopark(0x103022aa0?, 0x54f66d019908?, 0x3b?, 0x8d?, 0x54f66cf80008?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66d0198c0 sp=0x54f66d0198a0 pc=0x10301a798
+runtime.chanrecv(0x54f66cf78700, 0x54f66d0199c7, 0x1)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/chan.go:667 +0x470 fp=0x54f66d019940 sp=0x54f66d0198c0 pc=0x102faaf90
+runtime.chanrecv1(0x18?, 0x1041bc170?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/chan.go:509 +0x14 fp=0x54f66d019970 sp=0x54f66d019940 pc=0x102faaae4
+testing.(*T).Run(0x54f66cc09688, {0x103832839?, 0x54f66ccd5a88?}, 0x104287568)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/testing/testing.go:2266 +0x3cc fp=0x54f66d019a50 sp=0x54f66d019970 pc=0x1030ad28c
+testing.runTests.func1(0x54f66cc09688)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/testing/testing.go:2742 +0x38 fp=0x54f66d019a90 sp=0x54f66d019a50 pc=0x1030b2ff8
+testing.tRunner(0x54f66cc09688, 0x54f66ccd5bb8)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/testing/testing.go:2193 +0xc4 fp=0x54f66d019ae0 sp=0x54f66d019a90 pc=0x1030ace54
+testing.runTests({0x103808855, 0x26}, {0x103817d8e, 0x2e}, 0x54f66ca7a798, {0x104312990, 0x1f2, 0x1f2}, {0x54f66ccd5c58?, 0x54f66cb2cb60?, ...})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/testing/testing.go:2740 +0x400 fp=0x54f66d019be0 sp=0x54f66d019ae0 pc=0x1030aedb0
+testing.(*M).Run(0x54f66cb1eaa0)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/testing/testing.go:2600 +0x578 fp=0x54f66d019e20 sp=0x54f66d019be0 pc=0x1030addf8
+main.main()
+	_testmain.go:1080 +0x80 fp=0x54f66d019ea0 sp=0x54f66d019e20 pc=0x10378b7c0
+runtime.main()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:302 +0x380 fp=0x54f66d019fd0 sp=0x54f66d019ea0 pc=0x102fe2500
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66d019fd0 sp=0x54f66d019fd0 pc=0x103021f74
+
+goroutine 2 gp=0x54f66ca6e780 m=nil [force gc (idle), 2 minutes]:
+runtime.gopark(0xe8e40529b26a?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66cafcf90 sp=0x54f66cafcf70 pc=0x10301a798
+runtime.goparkunlock(...)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:480
+runtime.forcegchelper()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:387 +0xb4 fp=0x54f66cafcfd0 sp=0x54f66cafcf90 pc=0x102fe27e4
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66cafcfd0 sp=0x54f66cafcfd0 pc=0x103021f74
+created by runtime.init.7 in goroutine 1
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:375 +0x24
+
+goroutine 17 gp=0x54f66cb843c0 m=nil [GC sweep wait]:
+runtime.gopark(0x104318401?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66caf8770 sp=0x54f66caf8750 pc=0x10301a798
+runtime.goparkunlock(...)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:480
+runtime.bgsweep(0x54f66cb90000)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgcsweep.go:324 +0x178 fp=0x54f66caf87b0 sp=0x54f66caf8770 pc=0x102fcc588
+runtime.gcenable.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:214 +0x20 fp=0x54f66caf87d0 sp=0x54f66caf87b0 pc=0x103010670
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66caf87d0 sp=0x54f66caf87d0 pc=0x103021f74
+created by runtime.gcenable in goroutine 1
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:214 +0x6c
+
+goroutine 18 gp=0x54f66cb845a0 m=nil [GC scavenge wait, 2 minutes]:
+runtime.gopark(0x656463c6?, 0x6553f100?, 0x0?, 0x0?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66cebd760 sp=0x54f66cebd740 pc=0x10301a798
+runtime.goparkunlock(...)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:480
+runtime.(*scavengerState).park(0x104319a40)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgcscavenge.go:425 +0x5c fp=0x54f66cebd790 sp=0x54f66cebd760 pc=0x102fca0fc
+runtime.bgscavenge(0x54f66cb90000)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgcscavenge.go:658 +0xac fp=0x54f66cebd7b0 sp=0x54f66cebd790 pc=0x102fca68c
+runtime.gcenable.gowrap2()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:215 +0x20 fp=0x54f66cebd7d0 sp=0x54f66cebd7b0 pc=0x103010630
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66cebd7d0 sp=0x54f66cebd7d0 pc=0x103021f74
+created by runtime.gcenable in goroutine 1
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:215 +0xac
+
+goroutine 3 gp=0x54f66ca6f0e0 m=nil [GOMAXPROCS updater (idle), 4 minutes]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66cafd770 sp=0x54f66cafd750 pc=0x10301a798
+runtime.goparkunlock(...)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:480
+runtime.updateMaxProcsGoroutine()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:7146 +0xf4 fp=0x54f66cafd7d0 sp=0x54f66cafd770 pc=0x102ff0114
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66cafd7d0 sp=0x54f66cafd7d0 pc=0x103021f74
+created by runtime.defaultGOMAXPROCSUpdateEnable in goroutine 1
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:7134 +0x48
+
+goroutine 4 gp=0x54f66ca6f2c0 m=nil [finalizer wait, 4 minutes]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66cafdd80 sp=0x54f66cafdd60 pc=0x10301a798
+runtime.runFinalizers()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mfinal.go:210 +0x100 fp=0x54f66cafdfd0 sp=0x54f66cafdd80 pc=0x102fbd690
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66cafdfd0 sp=0x54f66cafdfd0 pc=0x103021f74
+created by runtime.createfing in goroutine 1
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mfinal.go:172 +0x78
+
+goroutine 5 gp=0x54f66cca81e0 m=nil [cleanup wait, 4 minutes]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66cafe750 sp=0x54f66cafe730 pc=0x10301a798
+runtime.goparkunlock(...)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:480
+runtime.(*cleanupQueue).dequeue(0x104319ee0)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mcleanup.go:522 +0x160 fp=0x54f66cafe790 sp=0x54f66cafe750 pc=0x102fba670
+runtime.runCleanups()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mcleanup.go:718 +0x40 fp=0x54f66cafe7d0 sp=0x54f66cafe790 pc=0x102fbadc0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66cafe7d0 sp=0x54f66cafe7d0 pc=0x103021f74
+created by runtime.(*cleanupQueue).createGs in goroutine 1
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mcleanup.go:672 +0x108
+
+goroutine 1824 gp=0x54f66cca83c0 m=nil [chan receive, 4 minutes]:
+runtime.gopark(0x103022aa0?, 0x54f66d79ed88?, 0x25?, 0x8f?, 0x54f66cf80008?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66d79ed40 sp=0x54f66d79ed20 pc=0x10301a798
+runtime.chanrecv(0x54f66cf78780, 0x54f66d79ee47, 0x1)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/chan.go:667 +0x470 fp=0x54f66d79edc0 sp=0x54f66d79ed40 pc=0x102faaf90
+runtime.chanrecv1(0x18?, 0x1041bc170?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/chan.go:509 +0x14 fp=0x54f66d79edf0 sp=0x54f66d79edc0 pc=0x102faaae4
+testing.(*T).Run(0x54f66cd3bb08, {0x1037edd91?, 0x61?}, 0x54f66cdd4b80)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/testing/testing.go:2266 +0x3cc fp=0x54f66d79eed0 sp=0x54f66d79edf0 pc=0x1030ad28c
+github.com/anaregdesign/lantern/server/service.TestConnectAdapter_PrefixCountRetriesWithoutBlockingPublication(0x54f66cd3bb08)
+	/Users/hiroki/.codex/worktrees/oidc-rbac/lantern/server/service/connect_test.go:499 +0x74 fp=0x54f66d79ef60 sp=0x54f66d79eed0 pc=0x1036029f4
+testing.tRunner(0x54f66cd3bb08, 0x104287568)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/testing/testing.go:2193 +0xc4 fp=0x54f66d79efb0 sp=0x54f66d79ef60 pc=0x1030ace54
+testing.(*T).Run.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/testing/testing.go:2258 +0x20 fp=0x54f66d79efd0 sp=0x54f66d79efb0 pc=0x1030b2db0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66d79efd0 sp=0x54f66d79efd0 pc=0x103021f74
+created by testing.(*T).Run in goroutine 1
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/testing/testing.go:2258 +0x3b8
+
+goroutine 94 gp=0x54f66cca8780 m=nil [GC worker (idle), 4 minutes]:
+runtime.gopark(0x1031b6e50?, 0x54f66cdfff10?, 0x0?, 0x0?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66caff720 sp=0x54f66caff700 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66caff7b0 sp=0x54f66caff720 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66caff7d0 sp=0x54f66caff7b0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66caff7d0 sp=0x54f66caff7d0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 95 gp=0x54f66cca8d20 m=nil [GC worker (idle), 4 minutes]:
+runtime.gopark(0x14ef9e8030acdc0?, 0x6ac0d121?, 0x58?, 0x67?, 0x1030ace44?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66ce56720 sp=0x54f66ce56700 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66ce567b0 sp=0x54f66ce56720 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66ce567d0 sp=0x54f66ce567b0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66ce567d0 sp=0x54f66ce567d0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 96 gp=0x54f66cca8f00 m=nil [GC worker (idle), 4 minutes]:
+runtime.gopark(0x345dde58030acdc0?, 0x6ac0d120?, 0x58?, 0xff?, 0x1030ace44?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66cafff20 sp=0x54f66cafff00 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66cafffb0 sp=0x54f66cafff20 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66cafffd0 sp=0x54f66cafffb0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66cafffd0 sp=0x54f66cafffd0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 97 gp=0x54f66cca90e0 m=nil [GC worker (idle), 4 minutes]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66ce56f20 sp=0x54f66ce56f00 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66ce56fb0 sp=0x54f66ce56f20 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66ce56fd0 sp=0x54f66ce56fb0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66ce56fd0 sp=0x54f66ce56fd0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 98 gp=0x54f66cca92c0 m=nil [GC worker (idle), 4 minutes]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66ce57720 sp=0x54f66ce57700 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66ce577b0 sp=0x54f66ce57720 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66ce577d0 sp=0x54f66ce577b0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66ce577d0 sp=0x54f66ce577d0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 99 gp=0x54f66cca94a0 m=nil [GC worker (idle), 4 minutes]:
+runtime.gopark(0xe8a94c20b1e6?, 0x1?, 0x66?, 0x66?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66ce57f20 sp=0x54f66ce57f00 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66ce57fb0 sp=0x54f66ce57f20 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66ce57fd0 sp=0x54f66ce57fb0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66ce57fd0 sp=0x54f66ce57fd0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 100 gp=0x54f66cca9680 m=nil [GC worker (idle), 4 minutes]:
+runtime.gopark(0xe8a94a716cf4?, 0x1?, 0xdf?, 0x51?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66ce58720 sp=0x54f66ce58700 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66ce587b0 sp=0x54f66ce58720 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66ce587d0 sp=0x54f66ce587b0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66ce587d0 sp=0x54f66ce587d0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 101 gp=0x54f66cca9860 m=nil [GC worker (idle), 4 minutes]:
+runtime.gopark(0xe8a9577e052c?, 0x3?, 0x37?, 0xdc?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66d00cf20 sp=0x54f66d00cf00 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66d00cfb0 sp=0x54f66d00cf20 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66d00cfd0 sp=0x54f66d00cfb0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66d00cfd0 sp=0x54f66d00cfd0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 102 gp=0x54f66cca9a40 m=nil [GC worker (idle), 4 minutes]:
+runtime.gopark(0xe8a9577c0e68?, 0x1?, 0x32?, 0x46?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66d00ff20 sp=0x54f66d00ff00 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66d00ffb0 sp=0x54f66d00ff20 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66d00ffd0 sp=0x54f66d00ffb0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66d00ffd0 sp=0x54f66d00ffd0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 103 gp=0x54f66cca9c20 m=nil [GC worker (idle), 4 minutes]:
+runtime.gopark(0xe8a94b1fc1dc?, 0x1?, 0x84?, 0xcb?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66ca7ff20 sp=0x54f66ca7ff00 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66ca7ffb0 sp=0x54f66ca7ff20 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66ca7ffd0 sp=0x54f66ca7ffb0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66ca7ffd0 sp=0x54f66ca7ffd0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 104 gp=0x54f66cefc000 m=nil [GC worker (idle), 2 minutes]:
+runtime.gopark(0xe8e40532aa50?, 0x1?, 0x4f?, 0x4d?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66d00ef20 sp=0x54f66d00ef00 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66d00efb0 sp=0x54f66d00ef20 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66d00efd0 sp=0x54f66d00efb0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66d00efd0 sp=0x54f66d00efd0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 105 gp=0x54f66cefc1e0 m=nil [GC worker (idle), 4 minutes]:
+runtime.gopark(0xe8a9577c0fb5?, 0x3?, 0x2e?, 0x29?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66d00bf20 sp=0x54f66d00bf00 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66d00bfb0 sp=0x54f66d00bf20 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66d00bfd0 sp=0x54f66d00bfb0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66d00bfd0 sp=0x54f66d00bfd0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 106 gp=0x54f66cefc3c0 m=nil [GC worker (idle), 4 minutes]:
+runtime.gopark(0xe8a9577c1e31?, 0x1?, 0xdd?, 0x3d?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66ce53720 sp=0x54f66ce53700 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66ce537b0 sp=0x54f66ce53720 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66ce537d0 sp=0x54f66ce537b0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66ce537d0 sp=0x54f66ce537d0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 107 gp=0x54f66cefc5a0 m=nil [GC worker (idle), 2 minutes]:
+runtime.gopark(0xe8e4052eab86?, 0x1?, 0xa2?, 0x62?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66ce53f20 sp=0x54f66ce53f00 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66ce53fb0 sp=0x54f66ce53f20 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66ce53fd0 sp=0x54f66ce53fb0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66ce53fd0 sp=0x54f66ce53fd0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 108 gp=0x54f66cefc780 m=nil [GC worker (idle)]:
+runtime.gopark(0xe8e40532b491?, 0x1?, 0xdd?, 0x48?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66ce54720 sp=0x54f66ce54700 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66ce547b0 sp=0x54f66ce54720 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66ce547d0 sp=0x54f66ce547b0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66ce547d0 sp=0x54f66ce547d0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 109 gp=0x54f66cefc960 m=nil [GC worker (idle)]:
+runtime.gopark(0xe8e405304531?, 0x1?, 0x2c?, 0x88?, 0x0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66ce54f20 sp=0x54f66ce54f00 pc=0x10301a798
+runtime.gcBgMarkWorker(0x54f66cef8150)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1807 +0xe0 fp=0x54f66ce54fb0 sp=0x54f66ce54f20 pc=0x102fc0970
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x20 fp=0x54f66ce54fd0 sp=0x54f66ce54fb0 pc=0x103010ba0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66ce54fd0 sp=0x54f66ce54fd0 pc=0x103021f74
+created by runtime.gcBgMarkStartWorkers in goroutine 93
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/mgc.go:1711 +0x130
+
+goroutine 1922 gp=0x54f66cefd2c0 m=nil [chan receive, 4 minutes]:
+runtime.gopark(0x10428c8a0?, 0x103f1e120?, 0x0?, 0x0?, 0x200?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66ce59d90 sp=0x54f66ce59d70 pc=0x10301a798
+runtime.chanrecv(0x54f66cf29030, 0x54f66ce59ef0, 0x1)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/chan.go:667 +0x470 fp=0x54f66ce59e10 sp=0x54f66ce59d90 pc=0x102faaf90
+runtime.chanrecv2(0x1030acd90?, 0x103d5aa48?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/chan.go:514 +0x14 fp=0x54f66ce59e40 sp=0x54f66ce59e10 pc=0x102faab04
+github.com/anaregdesign/lantern/core/mutationlog.(*Log).dispatcher(0x54f66cb492c0)
+	/Users/hiroki/.codex/worktrees/oidc-rbac/lantern/core/mutationlog/mutationlog.go:381 +0xc8 fp=0x54f66ce59fb0 sp=0x54f66ce59e40 pc=0x1031b3fc8
+github.com/anaregdesign/lantern/core/mutationlog.New.gowrap1()
+	/Users/hiroki/.codex/worktrees/oidc-rbac/lantern/core/mutationlog/mutationlog.go:220 +0x20 fp=0x54f66ce59fd0 sp=0x54f66ce59fb0 pc=0x1031b6b00
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66ce59fd0 sp=0x54f66ce59fd0 pc=0x103021f74
+created by github.com/anaregdesign/lantern/core/mutationlog.New in goroutine 1921
+	/Users/hiroki/.codex/worktrees/oidc-rbac/lantern/core/mutationlog/mutationlog.go:220 +0x1a4
+
+goroutine 1921 gp=0x54f66cf852c0 m=nil [chan receive, 4 minutes]:
+runtime.gopark(0x54f66d01fd88?, 0x102fb2adc?, 0x70?, 0x0?, 0x1064263d0?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/proc.go:474 +0xb8 fp=0x54f66d00dd50 sp=0x54f66d00dd30 pc=0x10301a798
+runtime.chanrecv(0x54f66d088bd0, 0x0, 0x1)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/chan.go:667 +0x470 fp=0x54f66d00ddd0 sp=0x54f66d00dd50 pc=0x102faaf90
+runtime.chanrecv1(0x38?, 0x1041e2518?)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/chan.go:509 +0x14 fp=0x54f66d00de00 sp=0x54f66d00ddd0 pc=0x102faaae4
+github.com/anaregdesign/lantern/server/service.TestConnectAdapter_PrefixCountRetriesWithoutBlockingPublication.func3(0x54f66cd3bd48)
+	/Users/hiroki/.codex/worktrees/oidc-rbac/lantern/server/service/connect_test.go:516 +0x340 fp=0x54f66d00df60 sp=0x54f66d00de00 pc=0x1036ed780
+testing.tRunner(0x54f66cd3bd48, 0x54f66cdd4b80)
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/testing/testing.go:2193 +0xc4 fp=0x54f66d00dfb0 sp=0x54f66d00df60 pc=0x1030ace54
+testing.(*T).Run.gowrap1()
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/testing/testing.go:2258 +0x20 fp=0x54f66d00dfd0 sp=0x54f66d00dfb0 pc=0x1030b2db0
+runtime.goexit({})
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/runtime/asm_arm64.s:1039 +0x4 fp=0x54f66d00dfd0 sp=0x54f66d00dfd0 pc=0x103021f74
+created by testing.(*T).Run in goroutine 1824
+	/Users/hiroki/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.darwin-arm64/src/testing/testing.go:2258 +0x3b8
+
+r0      0x104
+r1      0x0
+r2      0x40100
+r3      0x0
+r4      0x0
+r5      0xa0
+r6      0x0
+r7      0x0
+r8      0x16ce65d98
+r9      0x0
+r10     0xb00
+r11     0xb0000000b02
+r12     0xb0000000b02
+r13     0xb00
+r14     0x0
+r15     0xb0000000b00
+r16     0x131
+r17     0x1f5e87318
+r18     0x0
+r19     0x10431b1e8
+r20     0x10431b228
+r21     0x1f48462a0
+r22     0x0
+r23     0x0
+r24     0x40100
+r25     0x40101
+r26     0x40200
+r27     0x1042f3000
+r28     0x10431a0a0
+r29     0x16ce65e10
+lr      0x187dfc128
+sp      0x16ce65d80
+pc      0x187dbb50c
+fault   0x187dbb50c
+FAIL	github.com/anaregdesign/lantern/server/service	260.613s
+FAIL

@@ -11,6 +11,7 @@ import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 
 import 'support/receipt_attestation.dart';
+import 'support/head_edge_fixture.dart';
 import 'support/receipt_physical_fixture.dart';
 
 const contributionTarget =
@@ -58,7 +59,7 @@ void main() {
       EdgeContributionRef ref(int id, {String? head}) => EdgeContributionRef(
         tail: edge.tail,
         head: head ?? edge.head,
-        contribId: Uint8List(24)..[23] = id,
+        contribId: physicalContributionId(run.runId, id),
       );
       void cleanups(ReceiptAttestation attestation, {required bool restarted}) {
         attestation.registerCleanup(() async {
@@ -78,10 +79,10 @@ void main() {
           await proxy.close();
           await direct.close();
         }, restartObligation: restarted ? 'clients' : null);
-        attestation.registerCleanup(
-          () => direct.deleteEdge(edge),
-          restartObligation: restarted ? 'graph' : null,
-        );
+        attestation.registerCleanup(() async {
+          await direct.deleteEdge(edge);
+          await direct.deleteVertices(edgeEndpointKeys([edge]));
+        }, restartObligation: restarted ? 'graph' : null);
       }
 
       if (await directory.exists()) {
@@ -201,6 +202,7 @@ void main() {
             }
           },
         );
+        await seedLiveEdgeEndpoints(direct, [edge]);
         await direct.putEdge(
           EdgeInput(tail: edge.tail, head: edge.head, weight: 1),
         );

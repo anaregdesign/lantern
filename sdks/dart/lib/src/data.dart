@@ -742,3 +742,44 @@ double _receiptResultFloat32FromProto(double value, String field) {
   }
   return normalized;
 }
+
+/// Conditional creation between existing live endpoints.
+enum CreateEdgeOutcome {
+  /// A new live Edge was created without changing its endpoints.
+  createdAndLive,
+
+  /// An unexpired contribution already existed; its value is not disclosed.
+  edgeExists,
+
+  /// At least one endpoint was not live at the application cut.
+  endpointNotLive,
+
+  /// The input was born expired and caused no change.
+  expired,
+}
+
+CreateEdgeOutcome _createOutcomeFromProto($graph.CreateEdgeOutcome value) =>
+    switch (value) {
+      $graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_CREATED_AND_LIVE =>
+        CreateEdgeOutcome.createdAndLive,
+      $graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_EDGE_EXISTS =>
+        CreateEdgeOutcome.edgeExists,
+      $graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_ENDPOINT_NOT_LIVE =>
+        CreateEdgeOutcome.endpointNotLive,
+      $graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_EXPIRED =>
+        CreateEdgeOutcome.expired,
+      _ => throw _internalSdkException(
+        'server returned invalid Edge Create outcome',
+      ),
+    };
+void _validateCreateInputs(List<EdgeInput> input) {
+  for (final edge in input) {
+    if (!edge.weight.isFinite ||
+        _normalizeFloat32(edge.weight) == 0 ||
+        edge.contribId != null) {
+      throw _invalidArgumentException(
+        'Create requires a finite nonzero weight and no contribId',
+      );
+    }
+  }
+}

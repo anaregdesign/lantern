@@ -3,6 +3,7 @@ use crate::{
     generated::graph::v1::{
         CountVerticesByPrefixRequest, DeleteEdgesByPrefixRequest, DeleteVerticesByPrefixRequest,
     },
+    mutation::accepted_undisclosed,
     transport::RetryClass,
 };
 
@@ -116,6 +117,9 @@ impl LanternClient {
                 |service, request| Box::pin(service.delete_edges_by_prefix(request)),
             )
             .await?;
+        if accepted_undisclosed(response.acceptance.as_ref(), response.deleted != 0)? {
+            return Err(LanternError::MutationAcceptedUndisclosed);
+        }
         checked_deleted(response.deleted, limit)
     }
 }

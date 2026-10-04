@@ -304,7 +304,12 @@ void main() {
       );
       await _pumpUntil(tester, () => source.sessions.length == 1);
       expect(source.sessions.single.listening, isTrue);
-      source.sessions.single.add(OfflineIdentityCheckpoint(const {}));
+      source.sessions.single.add(
+        OfflineScopedChangeFrame(
+          bootstrap: true,
+          cursor: OfflineScopedChangeCursor([1]),
+        ),
+      );
       await _pumpUntilAsync(
         tester,
         () async => await repository.store.transaction((t) async {
@@ -327,7 +332,12 @@ void main() {
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await _pumpUntil(tester, () => source.sessions.length == 2);
       expect(source.sessions.last.listening, isTrue);
-      source.sessions.last.add(OfflineIdentityCheckpoint(const {}));
+      source.sessions.last.add(
+        OfflineScopedChangeFrame(
+          bootstrap: source.sessions.last.bootstrap,
+          cursor: OfflineScopedChangeCursor([1]),
+        ),
+      );
       await _pumpUntilAsync(
         tester,
         () async => await repository.store.transaction((t) async {
@@ -359,7 +369,7 @@ Future<void> _pumpOfflineDemo(
   required String vertexKey,
   required String edgeTail,
   required String edgeHead,
-  OfflineIdentitySource? identitySource,
+  OfflineScopedChangeSource? identitySource,
   bool Function()? identityAllowed,
 }) async {
   await tester.pumpWidget(
@@ -484,42 +494,43 @@ final class _FakeRemote implements OfflineRemote {
   }
 }
 
-final class _TrackingIdentitySource implements OfflineIdentitySource {
+final class _TrackingIdentitySource implements OfflineScopedChangeSource {
   final List<_TrackingIdentitySession> sessions = [];
   final List<LanternCancellationToken> tokens = [];
 
   @override
-  Future<OfflineIdentitySession> open({
+  Future<OfflineScopedChangeSession> open({
     required bool bootstrap,
-    required Map<String, BigInt> nextExpected,
+    required OfflineScopedChangeCursor? cursor,
     required LanternCancellationToken cancellation,
   }) async {
-    final session = _TrackingIdentitySession();
+    final session = _TrackingIdentitySession(bootstrap);
     sessions.add(session);
     tokens.add(cancellation);
     return session;
   }
 }
 
-final class _TrackingIdentitySession implements OfflineIdentitySession {
-  _TrackingIdentitySession() {
-    _frames = StreamController<OfflineIdentityEvent>(
+final class _TrackingIdentitySession implements OfflineScopedChangeSession {
+  _TrackingIdentitySession(this.bootstrap) {
+    _frames = StreamController<OfflineScopedChangeFrame>(
       sync: true,
       onListen: () => listening = true,
     );
   }
 
-  late final StreamController<OfflineIdentityEvent> _frames;
+  final bool bootstrap;
+  late final StreamController<OfflineScopedChangeFrame> _frames;
   bool listening = false;
   bool closed = false;
 
-  void add(OfflineIdentityEvent frame) => _frames.add(frame);
+  void add(OfflineScopedChangeFrame frame) => _frames.add(frame);
 
   @override
   String get responderId => 'test-responder';
 
   @override
-  Stream<OfflineIdentityEvent> get events => _frames.stream;
+  Stream<OfflineScopedChangeFrame> get frames => _frames.stream;
 
   @override
   Future<List<OfflineRemoteRead<Vertex>>> getVertices(

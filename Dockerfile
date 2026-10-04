@@ -42,7 +42,7 @@ ARG VERSION=
 ARG COMMIT=
 ENV LANTERN_DEFAULT_TTL_SECONDS=3600 \
     LANTERN_PORT=6380 \
-    LANTERN_METRICS_ADDR=:9090 \
+    LANTERN_METRICS_ADDR=127.0.0.1:9090 \
     LANTERN_LOG_FORMAT=json \
     LANTERN_LOG_LEVEL=info \
     LANTERN_VERSION=${VERSION} \
@@ -59,11 +59,12 @@ COPY --from=builder /out/lantern /app/lantern
 # is declared — this only prepares the conventional /data target as the right
 # owner (bind mounts on Linux still follow host ownership; Mac/Windows Docker
 # Desktop file sharing makes them writable regardless).
-RUN mkdir -p /data && chown lantern:lantern /data
+RUN mkdir -p /data /state /var/lib/lantern/runtime \
+    && chown -R lantern:lantern /data /state /var/lib/lantern/runtime
 
 USER lantern
-# 6380 = gRPC, 9090 = Prometheus /metrics + /healthz + /readyz
-EXPOSE 6380 9090
+# Public wire port; diagnostics stay on loopback unless explicitly configured.
+EXPOSE 6380
 
 # Be explicit: the server installs SIGTERM/SIGINT handlers; make sure the
 # container runtime forwards SIGTERM (not the alpine default SIGQUIT) to PID 1.

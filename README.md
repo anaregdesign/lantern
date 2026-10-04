@@ -131,7 +131,7 @@ Before choosing it, account for these boundaries:
 | **Full replicas, no sharding** | Every HA replica holds the entire graph. The working set must fit in one process's RAM. |
 | **Eventual consistency** | Leaderless replication provides HA, with asynchronous propagation between replicas. It is not linearizable; WAN replication is outside the supported scope. See the [replication contract](docs/replication.md). |
 | **Local graph queries** | Seed-local traversal and ranking are supported; whole-graph offline analytics are outside the intended workload. |
-| **Deployment-wide auth** | Static bearer tokens and TLS/mTLS are available. Per-user or per-namespace ACLs are not. |
+| **Authentication and authorization** | Authentication defaults to OFF. OIDC enables Role-only prefix Allow/Deny and named machine credentials; HA uses a separate signed-membership mTLS workload plane. See [ADR 0012](docs/decisions/0012-oidc-prefix-rbac.md) for the qualification boundary. |
 | **Pre-v1 API** | Wire schemas, SDK APIs, CLI grammar, env vars, and metrics may break between releases. Pin versions and review upgrades. |
 
 ## Use it from your language
@@ -409,8 +409,9 @@ cd deploy/compose
 docker compose up -d --pull always
 ```
 
-Open **<http://localhost:8080>**. The stack includes three replicas on host
-ports `6380`–`6382`, Admin, MCP, and Prometheus on `:9091`. See the
+Open **<http://localhost:8080>**. The default starts one OFF Server on loopback
+`6380` and Admin. HA requires the explicit signed-membership overlay; MCP and
+Prometheus are opt-in local profiles. See the
 [Compose guide](deploy/compose/README.md) for configuration and cleanup.
 
 ### Kubernetes (HA)
@@ -419,7 +420,8 @@ ports `6380`–`6382`, Admin, MCP, and Prometheus on `:9091`. See the
 helm install lantern deploy/helm/lantern
 ```
 
-The chart uses a StatefulSet, DNS peer discovery, anti-entropy reconciliation,
+The chart defaults to one OFF Server. Explicit HA uses a StatefulSet, signed
+private workload membership, anti-entropy reconciliation,
 and a PodDisruptionBudget. See [chart values](deploy/helm/lantern/README.md)
 and the [HA runbook](docs/ha-runbook.md) for topology, readiness, partitions,
 rolling upgrades, and recovery.
@@ -441,7 +443,7 @@ defines defaults, validation, limits, and recovery requirements. Common entries:
 | `LANTERN_PORT` | `6380` | RPC listener |
 | `LANTERN_GC_INTERVAL_SECONDS` | `60` | Background cleanup interval |
 | `LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES` | `0` (unlimited) | Graph-admission soft caps; size causal retention budgets and `GOMEMLIMIT` too |
-| `LANTERN_AUTH_TOKENS` | unset | Comma-separated bearer tokens |
+| `LANTERN_AUTH_MODE` | `off` | `oidc` requires complete native security/Issuer configuration; retired static-token settings are rejected |
 | `LANTERN_TLS_CERT_FILE` / `LANTERN_TLS_KEY_FILE` | unset | TLS; `LANTERN_TLS_CLIENT_CA_FILE` enables mTLS |
 | `LANTERN_CORS_ALLOWED_ORIGINS` | empty | Browser origin allow-list |
 | `LANTERN_RECEIPT_WAL_MODE` | `graph-only` | Default volatile runtime, or configured `fresh` / `restart` durable receipt runtime |

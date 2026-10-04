@@ -134,6 +134,7 @@ enum MutationOp_Op {
   deleteEdgeContribution,
   deleteEdgeContributions,
   replicatedReceiptEdgeContributionDelete,
+  edgeCreateEffect,
   notSet
 }
 
@@ -169,6 +170,8 @@ class MutationOp extends $pb.GeneratedMessage {
     $1.DeleteEdgeContributionsRequest? deleteEdgeContributions,
     ReplicatedReceiptEdgeContributionDelete?
         replicatedReceiptEdgeContributionDelete,
+    EdgeCreateEffect? edgeCreateEffect,
+    $core.bool? noEndpointCreation,
   }) {
     final result = create();
     if (putVertex != null) result.putVertex = putVertex;
@@ -204,6 +207,9 @@ class MutationOp extends $pb.GeneratedMessage {
     if (replicatedReceiptEdgeContributionDelete != null)
       result.replicatedReceiptEdgeContributionDelete =
           replicatedReceiptEdgeContributionDelete;
+    if (edgeCreateEffect != null) result.edgeCreateEffect = edgeCreateEffect;
+    if (noEndpointCreation != null)
+      result.noEndpointCreation = noEndpointCreation;
     return result;
   }
 
@@ -238,6 +244,7 @@ class MutationOp extends $pb.GeneratedMessage {
     19: MutationOp_Op.deleteEdgeContribution,
     20: MutationOp_Op.deleteEdgeContributions,
     21: MutationOp_Op.replicatedReceiptEdgeContributionDelete,
+    22: MutationOp_Op.edgeCreateEffect,
     0: MutationOp_Op.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
@@ -265,7 +272,8 @@ class MutationOp extends $pb.GeneratedMessage {
       18,
       19,
       20,
-      21
+      21,
+      22
     ])
     ..aOM<$1.PutVertexRequest>(1, _omitFieldNames ? '' : 'putVertex',
         subBuilder: $1.PutVertexRequest.create)
@@ -319,6 +327,9 @@ class MutationOp extends $pb.GeneratedMessage {
     ..aOM<ReplicatedReceiptEdgeContributionDelete>(
         21, _omitFieldNames ? '' : 'replicatedReceiptEdgeContributionDelete',
         subBuilder: ReplicatedReceiptEdgeContributionDelete.create)
+    ..aOM<EdgeCreateEffect>(22, _omitFieldNames ? '' : 'edgeCreateEffect',
+        subBuilder: EdgeCreateEffect.create)
+    ..aOB(23, _omitFieldNames ? '' : 'noEndpointCreation')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -360,6 +371,7 @@ class MutationOp extends $pb.GeneratedMessage {
   @$pb.TagNumber(19)
   @$pb.TagNumber(20)
   @$pb.TagNumber(21)
+  @$pb.TagNumber(22)
   MutationOp_Op whichOp() => _MutationOp_OpByTag[$_whichOneof(0)]!;
   @$pb.TagNumber(1)
   @$pb.TagNumber(2)
@@ -382,6 +394,7 @@ class MutationOp extends $pb.GeneratedMessage {
   @$pb.TagNumber(19)
   @$pb.TagNumber(20)
   @$pb.TagNumber(21)
+  @$pb.TagNumber(22)
   void clearOp() => $_clearField($_whichOneof(0));
 
   @$pb.TagNumber(1)
@@ -646,6 +659,195 @@ class MutationOp extends $pb.GeneratedMessage {
   @$pb.TagNumber(21)
   ReplicatedReceiptEdgeContributionDelete
       ensureReplicatedReceiptEdgeContributionDelete() => $_ensure(20);
+
+  /// Local WAL/CDC accepted-effect evidence. Peer apply rejects this arm:
+  /// local absence is not a cluster-wide absence proof.
+  @$pb.TagNumber(22)
+  EdgeCreateEffect get edgeCreateEffect => $_getN(21);
+  @$pb.TagNumber(22)
+  set edgeCreateEffect(EdgeCreateEffect value) => $_setField(22, value);
+  @$pb.TagNumber(22)
+  $core.bool hasEdgeCreateEffect() => $_has(21);
+  @$pb.TagNumber(22)
+  void clearEdgeCreateEffect() => $_clearField(22);
+  @$pb.TagNumber(22)
+  EdgeCreateEffect ensureEdgeCreateEffect() => $_ensure(21);
+
+  /// Immutable origin effect for Edge Add/Put: replay may update Edge sources
+  /// but must never insert, revive, or extend either endpoint Vertex. Origin
+  /// liveness is checked separately; peers never re-evaluate that condition.
+  /// Only Edge Add/Put and receipt Edge Add arms may carry this flag.
+  @$pb.TagNumber(23)
+  $core.bool get noEndpointCreation => $_getBF(22);
+  @$pb.TagNumber(23)
+  set noEndpointCreation($core.bool value) => $_setBool(22, value);
+  @$pb.TagNumber(23)
+  $core.bool hasNoEndpointCreation() => $_has(22);
+  @$pb.TagNumber(23)
+  void clearNoEndpointCreation() => $_clearField(23);
+}
+
+/// Retains the origin decision; restore never re-evaluates rejected positions.
+class EdgeCreateEffectItem extends $pb.GeneratedMessage {
+  factory EdgeCreateEffectItem({
+    $1.Edge? original,
+    $1.CreateEdgeOutcome? outcome,
+    $1.MutationReceipt? receipt,
+  }) {
+    final result = create();
+    if (original != null) result.original = original;
+    if (outcome != null) result.outcome = outcome;
+    if (receipt != null) result.receipt = receipt;
+    return result;
+  }
+
+  EdgeCreateEffectItem._();
+
+  factory EdgeCreateEffectItem.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory EdgeCreateEffectItem.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'EdgeCreateEffectItem',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<$1.Edge>(1, _omitFieldNames ? '' : 'original',
+        subBuilder: $1.Edge.create)
+    ..aE<$1.CreateEdgeOutcome>(2, _omitFieldNames ? '' : 'outcome',
+        enumValues: $1.CreateEdgeOutcome.values)
+    ..aOM<$1.MutationReceipt>(3, _omitFieldNames ? '' : 'receipt',
+        subBuilder: $1.MutationReceipt.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  EdgeCreateEffectItem clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  EdgeCreateEffectItem copyWith(void Function(EdgeCreateEffectItem) updates) =>
+      super.copyWith((message) => updates(message as EdgeCreateEffectItem))
+          as EdgeCreateEffectItem;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static EdgeCreateEffectItem create() => EdgeCreateEffectItem._();
+  @$core.override
+  EdgeCreateEffectItem createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static EdgeCreateEffectItem getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<EdgeCreateEffectItem>(create);
+  static EdgeCreateEffectItem? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $1.Edge get original => $_getN(0);
+  @$pb.TagNumber(1)
+  set original($1.Edge value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasOriginal() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearOriginal() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $1.Edge ensureOriginal() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $1.CreateEdgeOutcome get outcome => $_getN(1);
+  @$pb.TagNumber(2)
+  set outcome($1.CreateEdgeOutcome value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasOutcome() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearOutcome() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $1.MutationReceipt get receipt => $_getN(2);
+  @$pb.TagNumber(3)
+  set receipt($1.MutationReceipt value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasReceipt() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearReceipt() => $_clearField(3);
+  @$pb.TagNumber(3)
+  $1.MutationReceipt ensureReceipt() => $_ensure(2);
+}
+
+/// Receipt fields are all present or all absent. No receiver may treat this as
+/// an unconditional Put/Add, fabricate endpoints, or overwrite a live Edge.
+class EdgeCreateEffect extends $pb.GeneratedMessage {
+  factory EdgeCreateEffect({
+    $core.Iterable<EdgeCreateEffectItem>? items,
+    $core.List<$core.int>? deploymentEpoch,
+    $core.List<$core.int>? policyFingerprint,
+  }) {
+    final result = create();
+    if (items != null) result.items.addAll(items);
+    if (deploymentEpoch != null) result.deploymentEpoch = deploymentEpoch;
+    if (policyFingerprint != null) result.policyFingerprint = policyFingerprint;
+    return result;
+  }
+
+  EdgeCreateEffect._();
+
+  factory EdgeCreateEffect.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory EdgeCreateEffect.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'EdgeCreateEffect',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..pPM<EdgeCreateEffectItem>(1, _omitFieldNames ? '' : 'items',
+        subBuilder: EdgeCreateEffectItem.create)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'deploymentEpoch', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'policyFingerprint', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  EdgeCreateEffect clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  EdgeCreateEffect copyWith(void Function(EdgeCreateEffect) updates) =>
+      super.copyWith((message) => updates(message as EdgeCreateEffect))
+          as EdgeCreateEffect;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static EdgeCreateEffect create() => EdgeCreateEffect._();
+  @$core.override
+  EdgeCreateEffect createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static EdgeCreateEffect getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<EdgeCreateEffect>(create);
+  static EdgeCreateEffect? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<EdgeCreateEffectItem> get items => $_getList(0);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get deploymentEpoch => $_getN(1);
+  @$pb.TagNumber(2)
+  set deploymentEpoch($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasDeploymentEpoch() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearDeploymentEpoch() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get policyFingerprint => $_getN(2);
+  @$pb.TagNumber(3)
+  set policyFingerprint($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasPolicyFingerprint() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearPolicyFingerprint() => $_clearField(3);
 }
 
 /// One request-index-aligned item in a receipt-bearing Edge Delete. The
@@ -1035,11 +1237,13 @@ class ReplicatedReceiptVertexPutItem extends $pb.GeneratedMessage {
     $1.Vertex? original,
     $1.MutationReceipt? receipt,
     ReplicatedPutVertex? accepted,
+    $core.bool? lifecycleReduced,
   }) {
     final result = create();
     if (original != null) result.original = original;
     if (receipt != null) result.receipt = receipt;
     if (accepted != null) result.accepted = accepted;
+    if (lifecycleReduced != null) result.lifecycleReduced = lifecycleReduced;
     return result;
   }
 
@@ -1062,6 +1266,7 @@ class ReplicatedReceiptVertexPutItem extends $pb.GeneratedMessage {
         subBuilder: $1.MutationReceipt.create)
     ..aOM<ReplicatedPutVertex>(3, _omitFieldNames ? '' : 'accepted',
         subBuilder: ReplicatedPutVertex.create)
+    ..aOB(4, _omitFieldNames ? '' : 'lifecycleReduced')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1118,6 +1323,16 @@ class ReplicatedReceiptVertexPutItem extends $pb.GeneratedMessage {
   void clearAccepted() => $_clearField(3);
   @$pb.TagNumber(3)
   ReplicatedPutVertex ensureAccepted() => $_ensure(2);
+
+  /// Immutable origin application-time effect, preserved on replay/status.
+  @$pb.TagNumber(4)
+  $core.bool get lifecycleReduced => $_getBF(3);
+  @$pb.TagNumber(4)
+  set lifecycleReduced($core.bool value) => $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasLifecycleReduced() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearLifecycleReduced() => $_clearField(4);
 }
 
 /// A complete ordered conditional Vertex Put call. A call with no accepted
@@ -1989,6 +2204,7 @@ class Mutation extends $pb.GeneratedMessage {
     $core.List<$core.int>? origin,
     MutationOp? op,
     $2.Timestamp? tombstoneExpiration,
+    $core.String? namespaceFormat,
   }) {
     final result = create();
     if (seq != null) result.seq = seq;
@@ -1997,6 +2213,7 @@ class Mutation extends $pb.GeneratedMessage {
     if (op != null) result.op = op;
     if (tombstoneExpiration != null)
       result.tombstoneExpiration = tombstoneExpiration;
+    if (namespaceFormat != null) result.namespaceFormat = namespaceFormat;
     return result;
   }
 
@@ -2023,6 +2240,7 @@ class Mutation extends $pb.GeneratedMessage {
         subBuilder: MutationOp.create)
     ..aOM<$2.Timestamp>(5, _omitFieldNames ? '' : 'tombstoneExpiration',
         subBuilder: $2.Timestamp.create)
+    ..aOS(6, _omitFieldNames ? '' : 'namespaceFormat')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2099,6 +2317,18 @@ class Mutation extends $pb.GeneratedMessage {
   void clearTombstoneExpiration() => $_clearField(5);
   @$pb.TagNumber(5)
   $2.Timestamp ensureTombstoneExpiration() => $_ensure(4);
+
+  /// Physical storage domain of every graph identity. Public logical keys are
+  /// encoded only at ingress; peer apply and WAL never encode them again.
+  /// Unknown/missing formats are refused by namespaced production runtimes.
+  @$pb.TagNumber(6)
+  $core.String get namespaceFormat => $_getSZ(5);
+  @$pb.TagNumber(6)
+  set namespaceFormat($core.String value) => $_setString(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasNamespaceFormat() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearNamespaceFormat() => $_clearField(6);
 }
 
 /// SubscribeRequest opens a stream of replicated mutations starting at
@@ -2139,6 +2369,7 @@ class SubscribeRequest extends $pb.GeneratedMessage {
     SubscribeProjection? projection,
     $core.bool? bootstrap,
     $core.bool? acceptReceiptEnvelopes,
+    $core.String? namespaceFormat,
   }) {
     final result = create();
     if (fromSeqPerOrigin != null)
@@ -2148,6 +2379,7 @@ class SubscribeRequest extends $pb.GeneratedMessage {
     if (bootstrap != null) result.bootstrap = bootstrap;
     if (acceptReceiptEnvelopes != null)
       result.acceptReceiptEnvelopes = acceptReceiptEnvelopes;
+    if (namespaceFormat != null) result.namespaceFormat = namespaceFormat;
     return result;
   }
 
@@ -2177,6 +2409,7 @@ class SubscribeRequest extends $pb.GeneratedMessage {
         enumValues: SubscribeProjection.values)
     ..aOB(4, _omitFieldNames ? '' : 'bootstrap')
     ..aOB(5, _omitFieldNames ? '' : 'acceptReceiptEnvelopes')
+    ..aOS(6, _omitFieldNames ? '' : 'namespaceFormat')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2251,6 +2484,16 @@ class SubscribeRequest extends $pb.GeneratedMessage {
   $core.bool hasAcceptReceiptEnvelopes() => $_has(4);
   @$pb.TagNumber(5)
   void clearAcceptReceiptEnvelopes() => $_clearField(5);
+
+  /// Explicit physical-key format; peer sessions must match before transfer.
+  @$pb.TagNumber(6)
+  $core.String get namespaceFormat => $_getSZ(5);
+  @$pb.TagNumber(6)
+  set namespaceFormat($core.String value) => $_setString(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasNamespaceFormat() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearNamespaceFormat() => $_clearField(6);
 }
 
 /// A bootstrap checkpoint is the responder's contiguous publication cut,
@@ -2575,9 +2818,11 @@ class SubscribeResponse extends $pb.GeneratedMessage {
 class SnapshotRequest extends $pb.GeneratedMessage {
   factory SnapshotRequest({
     SnapshotFormat? requiredFormat,
+    $core.String? namespaceFormat,
   }) {
     final result = create();
     if (requiredFormat != null) result.requiredFormat = requiredFormat;
+    if (namespaceFormat != null) result.namespaceFormat = namespaceFormat;
     return result;
   }
 
@@ -2596,6 +2841,7 @@ class SnapshotRequest extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..aE<SnapshotFormat>(1, _omitFieldNames ? '' : 'requiredFormat',
         enumValues: SnapshotFormat.values)
+    ..aOS(2, _omitFieldNames ? '' : 'namespaceFormat')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2625,6 +2871,15 @@ class SnapshotRequest extends $pb.GeneratedMessage {
   $core.bool hasRequiredFormat() => $_has(0);
   @$pb.TagNumber(1)
   void clearRequiredFormat() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get namespaceFormat => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set namespaceFormat($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasNamespaceFormat() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearNamespaceFormat() => $_clearField(2);
 }
 
 /// Receipt metadata for one RECEIPT publication cut. This message is
@@ -2757,6 +3012,7 @@ class SnapshotHeader extends $pb.GeneratedMessage {
     $fixnum.Int64? cutoffLocalSeq,
     SnapshotFormat? format,
     SnapshotReceiptMetadata? receiptMetadata,
+    $core.String? namespaceFormat,
   }) {
     final result = create();
     if (cutoffSeqPerOrigin != null)
@@ -2765,6 +3021,7 @@ class SnapshotHeader extends $pb.GeneratedMessage {
     if (cutoffLocalSeq != null) result.cutoffLocalSeq = cutoffLocalSeq;
     if (format != null) result.format = format;
     if (receiptMetadata != null) result.receiptMetadata = receiptMetadata;
+    if (namespaceFormat != null) result.namespaceFormat = namespaceFormat;
     return result;
   }
 
@@ -2796,6 +3053,7 @@ class SnapshotHeader extends $pb.GeneratedMessage {
         enumValues: SnapshotFormat.values)
     ..aOM<SnapshotReceiptMetadata>(5, _omitFieldNames ? '' : 'receiptMetadata',
         subBuilder: SnapshotReceiptMetadata.create)
+    ..aOS(20, _omitFieldNames ? '' : 'namespaceFormat')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2867,6 +3125,15 @@ class SnapshotHeader extends $pb.GeneratedMessage {
   void clearReceiptMetadata() => $_clearField(5);
   @$pb.TagNumber(5)
   SnapshotReceiptMetadata ensureReceiptMetadata() => $_ensure(4);
+
+  @$pb.TagNumber(20)
+  $core.String get namespaceFormat => $_getSZ(5);
+  @$pb.TagNumber(20)
+  set namespaceFormat($core.String value) => $_setString(5, value);
+  @$pb.TagNumber(20)
+  $core.bool hasNamespaceFormat() => $_has(5);
+  @$pb.TagNumber(20)
+  void clearNamespaceFormat() => $_clearField(20);
 }
 
 /// SnapshotFooter is always the LAST SnapshotResponse on the wire. It carries
@@ -3147,6 +3414,75 @@ class SnapshotReceiptContribution extends $pb.GeneratedMessage {
 /// operation_id bytes, which is canonical epoch+ID order for version-1 IDs.
 /// original_result is the exact opaque result bytes retained by the Store; it
 /// is not recomputed from the graph at snapshot time.
+class SnapshotReceiptResource extends $pb.GeneratedMessage {
+  factory SnapshotReceiptResource({
+    $core.String? logicalKey,
+    $core.String? logicalHead,
+  }) {
+    final result = create();
+    if (logicalKey != null) result.logicalKey = logicalKey;
+    if (logicalHead != null) result.logicalHead = logicalHead;
+    return result;
+  }
+
+  SnapshotReceiptResource._();
+
+  factory SnapshotReceiptResource.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SnapshotReceiptResource.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SnapshotReceiptResource',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'logicalKey')
+    ..aOS(2, _omitFieldNames ? '' : 'logicalHead')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotReceiptResource clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SnapshotReceiptResource copyWith(
+          void Function(SnapshotReceiptResource) updates) =>
+      super.copyWith((message) => updates(message as SnapshotReceiptResource))
+          as SnapshotReceiptResource;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SnapshotReceiptResource create() => SnapshotReceiptResource._();
+  @$core.override
+  SnapshotReceiptResource createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static SnapshotReceiptResource getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SnapshotReceiptResource>(create);
+  static SnapshotReceiptResource? _defaultInstance;
+
+  /// Authoritative original logical identities. A missing message denotes
+  /// unproven legacy evidence, never permission to read arbitrary resources.
+  @$pb.TagNumber(1)
+  $core.String get logicalKey => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set logicalKey($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasLogicalKey() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearLogicalKey() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get logicalHead => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set logicalHead($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasLogicalHead() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearLogicalHead() => $_clearField(2);
+}
+
 class SnapshotReceipt extends $pb.GeneratedMessage {
   factory SnapshotReceipt({
     $core.List<$core.int>? operationId,
@@ -3158,6 +3494,8 @@ class SnapshotReceipt extends $pb.GeneratedMessage {
     $fixnum.Int64? deadlineUnixMs,
     $core.List<$core.int>? originalResult,
     SnapshotReceiptContribution? contribution,
+    SnapshotReceiptResource? resource,
+    $core.bool? lifecycleReduced,
   }) {
     final result = create();
     if (operationId != null) result.operationId = operationId;
@@ -3169,6 +3507,8 @@ class SnapshotReceipt extends $pb.GeneratedMessage {
     if (deadlineUnixMs != null) result.deadlineUnixMs = deadlineUnixMs;
     if (originalResult != null) result.originalResult = originalResult;
     if (contribution != null) result.contribution = contribution;
+    if (resource != null) result.resource = resource;
+    if (lifecycleReduced != null) result.lifecycleReduced = lifecycleReduced;
     return result;
   }
 
@@ -3202,6 +3542,9 @@ class SnapshotReceipt extends $pb.GeneratedMessage {
         8, _omitFieldNames ? '' : 'originalResult', $pb.PbFieldType.OY)
     ..aOM<SnapshotReceiptContribution>(9, _omitFieldNames ? '' : 'contribution',
         subBuilder: SnapshotReceiptContribution.create)
+    ..aOM<SnapshotReceiptResource>(10, _omitFieldNames ? '' : 'resource',
+        subBuilder: SnapshotReceiptResource.create)
+    ..aOB(11, _omitFieldNames ? '' : 'lifecycleReduced')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3305,6 +3648,26 @@ class SnapshotReceipt extends $pb.GeneratedMessage {
   void clearContribution() => $_clearField(9);
   @$pb.TagNumber(9)
   SnapshotReceiptContribution ensureContribution() => $_ensure(8);
+
+  @$pb.TagNumber(10)
+  SnapshotReceiptResource get resource => $_getN(9);
+  @$pb.TagNumber(10)
+  set resource(SnapshotReceiptResource value) => $_setField(10, value);
+  @$pb.TagNumber(10)
+  $core.bool hasResource() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearResource() => $_clearField(10);
+  @$pb.TagNumber(10)
+  SnapshotReceiptResource ensureResource() => $_ensure(9);
+
+  @$pb.TagNumber(11)
+  $core.bool get lifecycleReduced => $_getBF(10);
+  @$pb.TagNumber(11)
+  set lifecycleReduced($core.bool value) => $_setBool(10, value);
+  @$pb.TagNumber(11)
+  $core.bool hasLifecycleReduced() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearLifecycleReduced() => $_clearField(11);
 }
 
 /// SnapshotVertex is the snapshot-time representation of a single live
@@ -3669,6 +4032,7 @@ class SnapshotEdge extends $pb.GeneratedMessage {
     HLCTimestamp? hlc,
     $core.Iterable<SnapshotEdgeContribution>? contributions,
     SnapshotEdgeDerivedAggregate? derivedAggregate,
+    $core.bool? noEndpointCreation,
   }) {
     final result = create();
     if (tail != null) result.tail = tail;
@@ -3676,6 +4040,8 @@ class SnapshotEdge extends $pb.GeneratedMessage {
     if (hlc != null) result.hlc = hlc;
     if (contributions != null) result.contributions.addAll(contributions);
     if (derivedAggregate != null) result.derivedAggregate = derivedAggregate;
+    if (noEndpointCreation != null)
+      result.noEndpointCreation = noEndpointCreation;
     return result;
   }
 
@@ -3701,6 +4067,7 @@ class SnapshotEdge extends $pb.GeneratedMessage {
     ..aOM<SnapshotEdgeDerivedAggregate>(
         5, _omitFieldNames ? '' : 'derivedAggregate',
         subBuilder: SnapshotEdgeDerivedAggregate.create)
+    ..aOB(6, _omitFieldNames ? '' : 'noEndpointCreation')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3768,6 +4135,18 @@ class SnapshotEdge extends $pb.GeneratedMessage {
   void clearDerivedAggregate() => $_clearField(5);
   @$pb.TagNumber(5)
   SnapshotEdgeDerivedAggregate ensureDerivedAggregate() => $_ensure(4);
+
+  /// Private retained history may precede either explicit endpoint. Installing
+  /// these sources must never create or extend a Vertex. Public graph exports
+  /// remain referentially closed.
+  @$pb.TagNumber(6)
+  $core.bool get noEndpointCreation => $_getBF(5);
+  @$pb.TagNumber(6)
+  set noEndpointCreation($core.bool value) => $_setBool(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasNoEndpointCreation() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearNoEndpointCreation() => $_clearField(6);
 }
 
 /// SnapshotEdgeCausalBarrier is the edge sibling of
@@ -4423,7 +4802,13 @@ class SnapshotResponse extends $pb.GeneratedMessage {
 /// returns its full per-origin map. Future revisions may add an
 /// optional origin filter without breaking the wire contract.
 class PeerStatusRequest extends $pb.GeneratedMessage {
-  factory PeerStatusRequest() => create();
+  factory PeerStatusRequest({
+    $core.String? namespaceFormat,
+  }) {
+    final result = create();
+    if (namespaceFormat != null) result.namespaceFormat = namespaceFormat;
+    return result;
+  }
 
   PeerStatusRequest._();
 
@@ -4438,6 +4823,7 @@ class PeerStatusRequest extends $pb.GeneratedMessage {
       _omitMessageNames ? '' : 'PeerStatusRequest',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'namespaceFormat')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4458,6 +4844,15 @@ class PeerStatusRequest extends $pb.GeneratedMessage {
   static PeerStatusRequest getDefault() => _defaultInstance ??=
       $pb.GeneratedMessage.$_defaultFor<PeerStatusRequest>(create);
   static PeerStatusRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get namespaceFormat => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set namespaceFormat($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasNamespaceFormat() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearNamespaceFormat() => $_clearField(1);
 }
 
 /// OriginState is the responder's last-applied position for a single
@@ -4560,6 +4955,7 @@ class PeerStatusResponse extends $pb.GeneratedMessage {
     $core.Iterable<OriginState>? origins,
     $core.String? searchConfigFingerprint,
     SnapshotFormat? requiredSnapshotFormat,
+    $core.String? namespaceFormat,
   }) {
     final result = create();
     if (selfOrigin != null) result.selfOrigin = selfOrigin;
@@ -4568,6 +4964,7 @@ class PeerStatusResponse extends $pb.GeneratedMessage {
       result.searchConfigFingerprint = searchConfigFingerprint;
     if (requiredSnapshotFormat != null)
       result.requiredSnapshotFormat = requiredSnapshotFormat;
+    if (namespaceFormat != null) result.namespaceFormat = namespaceFormat;
     return result;
   }
 
@@ -4591,6 +4988,7 @@ class PeerStatusResponse extends $pb.GeneratedMessage {
     ..aOS(3, _omitFieldNames ? '' : 'searchConfigFingerprint')
     ..aE<SnapshotFormat>(4, _omitFieldNames ? '' : 'requiredSnapshotFormat',
         enumValues: SnapshotFormat.values)
+    ..aOS(20, _omitFieldNames ? '' : 'namespaceFormat')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4647,6 +5045,15 @@ class PeerStatusResponse extends $pb.GeneratedMessage {
   $core.bool hasRequiredSnapshotFormat() => $_has(3);
   @$pb.TagNumber(4)
   void clearRequiredSnapshotFormat() => $_clearField(4);
+
+  @$pb.TagNumber(20)
+  $core.String get namespaceFormat => $_getSZ(4);
+  @$pb.TagNumber(20)
+  set namespaceFormat($core.String value) => $_setString(4, value);
+  @$pb.TagNumber(20)
+  $core.bool hasNamespaceFormat() => $_has(4);
+  @$pb.TagNumber(20)
+  void clearNamespaceFormat() => $_clearField(20);
 }
 
 const $core.bool _omitFieldNames =

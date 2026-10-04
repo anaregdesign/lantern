@@ -684,10 +684,17 @@ pub struct DeleteEdgeRequest {
     pub receipt_context: ::core::option::Option<MutationReceiptContext>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MutationAcceptance {
+    #[prost(enumeration = "MutationAcceptanceKind", tag = "1")]
+    pub kind: i32,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteEdgeResponse {
     /// existed is true if the edge was present and removed by this call.
     #[prost(bool, tag = "1")]
     pub existed: bool,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// An additive contribution is identified by its directed edge and its
 /// nonzero 24-byte ContribID. The ID is not a receipt operation ID.
@@ -716,6 +723,8 @@ pub struct DeleteEdgeContributionResponse {
     /// True only when a live contribution with this identity was removed.
     #[prost(bool, tag = "1")]
     pub existed: bool,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DeleteEdgeContributionsRequest {
@@ -733,6 +742,8 @@ pub struct DeleteEdgeContributionsResponse {
     /// One observation per input position, including duplicates and misses.
     #[prost(bool, repeated, tag = "2")]
     pub existed: ::prost::alloc::vec::Vec<bool>,
+    #[prost(message, optional, tag = "3")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// EdgeKey identifies an edge by its (tail, head) pair without weight.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -804,6 +815,8 @@ pub struct DeleteEdgesResponse {
     /// an accepted Delete while existed still reports the pre-item bucket.
     #[prost(bool, repeated, tag = "2")]
     pub existed: ::prost::alloc::vec::Vec<bool>,
+    #[prost(message, optional, tag = "3")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// DeleteEdgesByPrefixRequest deletes up to `limit` live edges whose tail key
 /// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
@@ -834,6 +847,8 @@ pub struct DeleteEdgesByPrefixRequest {
 pub struct DeleteEdgesByPrefixResponse {
     #[prost(uint64, tag = "1")]
     pub deleted: u64,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// AddEdgeRequest accumulates weight onto a single (tail, head) pair: repeated
 /// calls with the same endpoints sum their weights. This is the singular
@@ -875,6 +890,8 @@ pub struct AddEdgeResponse {
     /// at apply time — the same async-replica caveat as a Redis INCR read.
     #[prost(float, tag = "1")]
     pub effective_weight: f32,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
 /// calls with the same endpoints sum their weights. An index-aligned
@@ -926,6 +943,41 @@ pub struct AddEdgesResponse {
     /// AddEdgeResponse.effective_weight for the counter and replication caveats.
     #[prost(float, repeated, tag = "2")]
     pub effective_weights: ::prost::alloc::vec::Vec<f32>,
+    #[prost(message, optional, tag = "3")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CreateEdgeRequest {
+    #[prost(message, optional, tag = "1")]
+    pub edge: ::core::option::Option<Edge>,
+    #[prost(message, optional, tag = "2")]
+    pub receipt_context: ::core::option::Option<MutationReceiptContext>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CreateEdgeResponse {
+    #[prost(enumeration = "CreateEdgeOutcome", tag = "1")]
+    pub outcome: i32,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
+}
+/// Creates connections only between existing live endpoints, with a finite
+/// nonzero source weight. Input expiration, endpoint liveness and absence of
+/// any live Edge contribution are checked at one atomic application cut.
+/// Duplicate positions are ordered: a success is followed by EDGE_EXISTS.
+/// HA endpoints fail closed until cluster-wide create arbitration is supported.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CreateEdgesRequest {
+    #[prost(message, repeated, tag = "1")]
+    pub edges: ::prost::alloc::vec::Vec<Edge>,
+    #[prost(message, optional, tag = "2")]
+    pub receipt_context: ::core::option::Option<MutationReceiptContext>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CreateEdgesResponse {
+    #[prost(enumeration = "CreateEdgeOutcome", repeated, tag = "1")]
+    pub outcomes: ::prost::alloc::vec::Vec<i32>,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// PutEdgeRequest overwrites a single (tail, head) pair, replacing any
 /// existing weight and expiration. This is the singular convenience wrapper
@@ -940,6 +992,8 @@ pub struct PutEdgeResponse {
     /// Server-authoritative result for edge in the request.
     #[prost(enumeration = "PutOutcome", tag = "1")]
     pub outcome: i32,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// PutEdgesRequest overwrites each (tail, head) pair, replacing any existing
 /// weight and expiration. This operation is idempotent.
@@ -954,6 +1008,8 @@ pub struct PutEdgesResponse {
     /// request returns an empty list.
     #[prost(enumeration = "PutOutcome", repeated, tag = "1")]
     pub outcomes: ::prost::alloc::vec::Vec<i32>,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// GetServerStatusRequest carries no parameters — the response is a
 /// snapshot of the server's identity, build, configuration ceilings, and
@@ -1370,7 +1426,7 @@ pub struct GetReceiptCapabilityResponse {
 /// mutation-family results are added only with their atomic write slices.
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct ReceiptResult {
-    #[prost(oneof = "receipt_result::Result", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "receipt_result::Result", tags = "1, 2, 3, 4, 5, 6")]
     pub result: ::core::option::Option<receipt_result::Result>,
 }
 /// Nested message and enum types in `ReceiptResult`.
@@ -1387,6 +1443,8 @@ pub mod receipt_result {
         AddEdgeEffectiveWeight(f32),
         #[prost(bool, tag = "5")]
         DeleteEdgeContributionExisted(bool),
+        #[prost(enumeration = "super::CreateEdgeOutcome", tag = "6")]
+        CreateEdgeOutcome(i32),
     }
 }
 /// MutationReceipt is one request-index-aligned item from an atomic logical
@@ -1788,6 +1846,78 @@ impl SearchHitProjectionStatus {
         }
     }
 }
+/// Acceptance is a handling acknowledgement, never proof of any mutation
+/// effect, liveness, creation, deletion, collision or original result.
+/// A response with acceptance MUST omit every detailed effect field. A batch
+/// uses this response for the whole call if any result is undisclosed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MutationAcceptanceKind {
+    Unspecified = 0,
+    HandledEffectUndisclosed = 1,
+}
+impl MutationAcceptanceKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "MUTATION_ACCEPTANCE_KIND_UNSPECIFIED",
+            Self::HandledEffectUndisclosed => {
+                "MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "MUTATION_ACCEPTANCE_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED" => {
+                Some(Self::HandledEffectUndisclosed)
+            }
+            _ => None,
+        }
+    }
+}
+/// CreateEdgeOutcome is a disclosure-limited, request-index-aligned result.
+/// Successful creation never changes either endpoint. Existing Edge values,
+/// expirations and contribution identities are never returned by this family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CreateEdgeOutcome {
+    Unspecified = 0,
+    CreatedAndLive = 1,
+    EdgeExists = 2,
+    EndpointNotLive = 3,
+    Expired = 4,
+}
+impl CreateEdgeOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CREATE_EDGE_OUTCOME_UNSPECIFIED",
+            Self::CreatedAndLive => "CREATE_EDGE_OUTCOME_CREATED_AND_LIVE",
+            Self::EdgeExists => "CREATE_EDGE_OUTCOME_EDGE_EXISTS",
+            Self::EndpointNotLive => "CREATE_EDGE_OUTCOME_ENDPOINT_NOT_LIVE",
+            Self::Expired => "CREATE_EDGE_OUTCOME_EXPIRED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CREATE_EDGE_OUTCOME_UNSPECIFIED" => Some(Self::Unspecified),
+            "CREATE_EDGE_OUTCOME_CREATED_AND_LIVE" => Some(Self::CreatedAndLive),
+            "CREATE_EDGE_OUTCOME_EDGE_EXISTS" => Some(Self::EdgeExists),
+            "CREATE_EDGE_OUTCOME_ENDPOINT_NOT_LIVE" => Some(Self::EndpointNotLive),
+            "CREATE_EDGE_OUTCOME_EXPIRED" => Some(Self::Expired),
+            _ => None,
+        }
+    }
+}
 /// SearchErrorReason is the bounded, machine-readable reason attached to
 /// SearchVertices failures and search-index write rejections. Clients must
 /// branch on this enum, never on the human-readable status message.
@@ -1895,6 +2025,7 @@ pub enum ReceiptMutationKind {
     DeleteEdge = 3,
     AddEdge = 4,
     DeleteEdgeContribution = 5,
+    CreateEdge = 6,
 }
 impl ReceiptMutationKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1911,6 +2042,7 @@ impl ReceiptMutationKind {
             Self::DeleteEdgeContribution => {
                 "RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION"
             }
+            Self::CreateEdge => "RECEIPT_MUTATION_KIND_CREATE_EDGE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1924,6 +2056,7 @@ impl ReceiptMutationKind {
             "RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION" => {
                 Some(Self::DeleteEdgeContribution)
             }
+            "RECEIPT_MUTATION_KIND_CREATE_EDGE" => Some(Self::CreateEdge),
             _ => None,
         }
     }
@@ -1937,6 +2070,9 @@ pub enum MutationReceiptState {
     Confirmed = 1,
     NotYetObserved = 2,
     NoLongerProvable = 3,
+    /// Lookup handled under current original-resource mutation authority, with
+    /// no disclosure of the effect or stored receipt metadata. Never CONFIRMED.
+    EffectUndisclosed = 4,
 }
 impl MutationReceiptState {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1949,6 +2085,7 @@ impl MutationReceiptState {
             Self::Confirmed => "MUTATION_RECEIPT_STATE_CONFIRMED",
             Self::NotYetObserved => "MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED",
             Self::NoLongerProvable => "MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE",
+            Self::EffectUndisclosed => "MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1958,6 +2095,7 @@ impl MutationReceiptState {
             "MUTATION_RECEIPT_STATE_CONFIRMED" => Some(Self::Confirmed),
             "MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED" => Some(Self::NotYetObserved),
             "MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE" => Some(Self::NoLongerProvable),
+            "MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED" => Some(Self::EffectUndisclosed),
             _ => None,
         }
     }
@@ -2500,6 +2638,55 @@ pub mod lantern_service_client {
                 .insert(GrpcMethod::new("graph.v1.LanternService", "AddEdges"));
             self.inner.unary(req, path, codec).await
         }
+        /// CreateEdge is the one-item facade over the conditional CreateEdges family.
+        pub async fn create_edge(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CreateEdgeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreateEdgeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternService/CreateEdge",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("graph.v1.LanternService", "CreateEdge"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn create_edges(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CreateEdgesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::CreateEdgesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternService/CreateEdges",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("graph.v1.LanternService", "CreateEdges"));
+            self.inner.unary(req, path, codec).await
+        }
         /// PutEdge is idempotent (replaces weight). Thin facade over PutEdges.
         pub async fn put_edge(
             &mut self,
@@ -2887,6 +3074,214 @@ pub mod lantern_service_client {
         }
     }
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WatchChangesRequest {
+    /// Literal logical prefix, applied to both Edge endpoints.
+    #[prost(string, tag = "1")]
+    pub prefix: ::prost::alloc::string::String,
+    #[prost(enumeration = "ChangeProjection", tag = "2")]
+    pub projection: i32,
+    /// Bootstrap opens a tail at an atomic publication cut. Keep it open while
+    /// rebuilding the authorized resident cache with ordinary read RPCs.
+    #[prost(bool, tag = "3")]
+    pub bootstrap: bool,
+    /// Opaque, encrypted and bound to this Principal/policy/scope.
+    #[prost(bytes = "vec", tag = "4")]
+    pub cursor: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ChangeInvalidation {
+    #[prost(oneof = "change_invalidation::Identity", tags = "1, 2")]
+    pub identity: ::core::option::Option<change_invalidation::Identity>,
+    /// Only VALUE projection may include this current local live image. Omitted
+    /// image means invalidate/refetch, including deletes, TTL and concurrent writes.
+    #[prost(oneof = "change_invalidation::CurrentImage", tags = "3, 4")]
+    pub current_image: ::core::option::Option<change_invalidation::CurrentImage>,
+}
+/// Nested message and enum types in `ChangeInvalidation`.
+pub mod change_invalidation {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Identity {
+        #[prost(string, tag = "1")]
+        VertexKey(::prost::alloc::string::String),
+        #[prost(message, tag = "2")]
+        EdgeKey(super::EdgeKey),
+    }
+    /// Only VALUE projection may include this current local live image. Omitted
+    /// image means invalidate/refetch, including deletes, TTL and concurrent writes.
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum CurrentImage {
+        #[prost(message, tag = "3")]
+        Vertex(super::Vertex),
+        #[prost(message, tag = "4")]
+        Edge(super::Edge),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WatchChangesResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub invalidations: ::prost::alloc::vec::Vec<ChangeInvalidation>,
+    /// Persist cursor only after applying every invalidation in this frame. A
+    /// mutation may span frames; only its final visible frame carries a cursor.
+    #[prost(bytes = "vec", tag = "2")]
+    pub cursor: ::prost::alloc::vec::Vec<u8>,
+    /// Bootstrap/periodic progress frames have no invalidations and fixed-sized
+    /// encrypted cursors. Hidden-only commits never cause an extra frame.
+    #[prost(bool, tag = "3")]
+    pub bootstrap: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ChangeProjection {
+    Unspecified = 0,
+    Identity = 1,
+    Value = 2,
+}
+impl ChangeProjection {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CHANGE_PROJECTION_UNSPECIFIED",
+            Self::Identity => "CHANGE_PROJECTION_IDENTITY",
+            Self::Value => "CHANGE_PROJECTION_VALUE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CHANGE_PROJECTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "CHANGE_PROJECTION_IDENTITY" => Some(Self::Identity),
+            "CHANGE_PROJECTION_VALUE" => Some(Self::Value),
+            _ => None,
+        }
+    }
+}
+/// Generated client implementations.
+pub mod lantern_change_service_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// Public CDC never exposes the private replication protocol. Every event is an
+    /// invalidation of an exact committed identity. Value mode requires explicit
+    /// identity/value CDC and data-read grants and additionally samples
+    /// the current local live value; it is not a causally ordered event-sourcing log.
+    #[derive(Debug, Clone)]
+    pub struct LanternChangeServiceClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl LanternChangeServiceClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> LanternChangeServiceClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> LanternChangeServiceClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            LanternChangeServiceClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        pub async fn watch_changes(
+            &mut self,
+            request: impl tonic::IntoRequest<super::WatchChangesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::WatchChangesResponse>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternChangeService/WatchChanges",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("graph.v1.LanternChangeService", "WatchChanges"),
+                );
+            self.inner.server_streaming(req, path, codec).await
+        }
+    }
+}
 /// HLCTimestamp is the wire form of core/hlc.Timestamp. All replicated
 /// mutations carry one of these as their causal coordinate.
 ///
@@ -2915,9 +3310,15 @@ pub struct HlcTimestamp {
 /// them faithfully simplifies CDC consumers that mirror RPC semantics.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MutationOp {
+    /// Immutable origin effect for Edge Add/Put: replay may update Edge sources
+    /// but must never insert, revive, or extend either endpoint Vertex. Origin
+    /// liveness is checked separately; peers never re-evaluate that condition.
+    /// Only Edge Add/Put and receipt Edge Add arms may carry this flag.
+    #[prost(bool, tag = "23")]
+    pub no_endpoint_creation: bool,
     #[prost(
         oneof = "mutation_op::Op",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22"
     )]
     pub op: ::core::option::Option<mutation_op::Op>,
 }
@@ -2983,7 +3384,32 @@ pub mod mutation_op {
         ReplicatedReceiptEdgeContributionDelete(
             super::ReplicatedReceiptEdgeContributionDelete,
         ),
+        /// Local WAL/CDC accepted-effect evidence. Peer apply rejects this arm:
+        /// local absence is not a cluster-wide absence proof.
+        #[prost(message, tag = "22")]
+        EdgeCreateEffect(super::EdgeCreateEffect),
     }
+}
+/// Retains the origin decision; restore never re-evaluates rejected positions.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EdgeCreateEffectItem {
+    #[prost(message, optional, tag = "1")]
+    pub original: ::core::option::Option<Edge>,
+    #[prost(enumeration = "CreateEdgeOutcome", tag = "2")]
+    pub outcome: i32,
+    #[prost(message, optional, tag = "3")]
+    pub receipt: ::core::option::Option<MutationReceipt>,
+}
+/// Receipt fields are all present or all absent. No receiver may treat this as
+/// an unconditional Put/Add, fabricate endpoints, or overwrite a live Edge.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EdgeCreateEffect {
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<EdgeCreateEffectItem>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub deployment_epoch: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub policy_fingerprint: ::prost::alloc::vec::Vec<u8>,
 }
 /// One request-index-aligned item in a receipt-bearing Edge Delete. The
 /// receipt retains the original result even when a later mutation changes the
@@ -3045,6 +3471,9 @@ pub struct ReplicatedReceiptVertexPutItem {
     pub receipt: ::core::option::Option<MutationReceipt>,
     #[prost(message, optional, tag = "3")]
     pub accepted: ::core::option::Option<ReplicatedPutVertex>,
+    /// Immutable origin application-time effect, preserved on replay/status.
+    #[prost(bool, tag = "4")]
+    pub lifecycle_reduced: bool,
 }
 /// A complete ordered conditional Vertex Put call. A call with no accepted
 /// graph effects still consumes Mutation.seq and persists every exact result.
@@ -3188,6 +3617,11 @@ pub struct Mutation {
     /// than extend the deadline from its own wall clock. Other operations omit it.
     #[prost(message, optional, tag = "5")]
     pub tombstone_expiration: ::core::option::Option<::prost_types::Timestamp>,
+    /// Physical storage domain of every graph identity. Public logical keys are
+    /// encoded only at ingress; peer apply and WAL never encode them again.
+    /// Unknown/missing formats are refused by namespaced production runtimes.
+    #[prost(string, tag = "6")]
+    pub namespace_format: ::prost::alloc::string::String,
 }
 /// SubscribeRequest opens a stream of replicated mutations starting at
 /// the per-origin cursor in `from_seq_per_origin`.
@@ -3249,6 +3683,9 @@ pub struct SubscribeRequest {
     /// omit this field and fail closed instead of losing receipt metadata.
     #[prost(bool, tag = "5")]
     pub accept_receipt_envelopes: bool,
+    /// Explicit physical-key format; peer sessions must match before transfer.
+    #[prost(string, tag = "6")]
+    pub namespace_format: ::prost::alloc::string::String,
 }
 /// A bootstrap checkpoint is the responder's contiguous publication cut,
 /// not a cluster-wide consensus or freshness barrier.
@@ -3307,10 +3744,12 @@ pub mod subscribe_response {
 /// Zero means graph-only while receipt writes are disabled. A durable receiver
 /// MUST request RECEIPT and check the first header's format before applying
 /// any body frame. The header check remains mandatory.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SnapshotRequest {
     #[prost(enumeration = "SnapshotFormat", tag = "1")]
     pub required_format: i32,
+    #[prost(string, tag = "2")]
+    pub namespace_format: ::prost::alloc::string::String,
 }
 /// Receipt metadata for one RECEIPT publication cut. This message is
 /// required exactly when an RPC Snapshot header's format is RECEIPT and is
@@ -3359,6 +3798,8 @@ pub struct SnapshotReceiptMetadata {
 /// row; a graph HLC whose origin is absent from that vector is invalid.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SnapshotHeader {
+    #[prost(string, tag = "20")]
+    pub namespace_format: ::prost::alloc::string::String,
     #[prost(map = "string, uint64", tag = "1")]
     pub cutoff_seq_per_origin: ::std::collections::HashMap<
         ::prost::alloc::string::String,
@@ -3427,6 +3868,18 @@ pub struct SnapshotReceiptContribution {
 /// original_result is the exact opaque result bytes retained by the Store; it
 /// is not recomputed from the graph at snapshot time.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SnapshotReceiptResource {
+    /// Authoritative original logical identities. A missing message denotes
+    /// unproven legacy evidence, never permission to read arbitrary resources.
+    ///
+    /// Vertex key or Edge tail.
+    #[prost(string, tag = "1")]
+    pub logical_key: ::prost::alloc::string::String,
+    /// Present only for Edge mutation families.
+    #[prost(string, tag = "2")]
+    pub logical_head: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SnapshotReceipt {
     /// Exactly 49 bytes.
     #[prost(bytes = "vec", tag = "1")]
@@ -3449,6 +3902,10 @@ pub struct SnapshotReceipt {
     pub original_result: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, optional, tag = "9")]
     pub contribution: ::core::option::Option<SnapshotReceiptContribution>,
+    #[prost(message, optional, tag = "10")]
+    pub resource: ::core::option::Option<SnapshotReceiptResource>,
+    #[prost(bool, tag = "11")]
+    pub lifecycle_reduced: bool,
 }
 /// SnapshotVertex is the snapshot-time representation of a single live
 /// vertex. The HLC field carries the last LWW timestamp the source node
@@ -3533,6 +3990,11 @@ pub struct SnapshotEdge {
     /// present; only derived_aggregate.adds can accompany this base.
     #[prost(message, optional, tag = "5")]
     pub derived_aggregate: ::core::option::Option<SnapshotEdgeDerivedAggregate>,
+    /// Private retained history may precede either explicit endpoint. Installing
+    /// these sources must never create or extend a Vertex. Public graph exports
+    /// remain referentially closed.
+    #[prost(bool, tag = "6")]
+    pub no_endpoint_creation: bool,
 }
 /// SnapshotEdgeCausalBarrier is the edge sibling of
 /// SnapshotVertexCausalBarrier. It carries no contribution and must not create
@@ -3627,8 +4089,11 @@ pub mod snapshot_response {
 /// PeerStatusRequest is intentionally empty — the responder always
 /// returns its full per-origin map. Future revisions may add an
 /// optional origin filter without breaking the wire contract.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct PeerStatusRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PeerStatusRequest {
+    #[prost(string, tag = "1")]
+    pub namespace_format: ::prost::alloc::string::String,
+}
 /// OriginState is the responder's last-applied position for a single
 /// origin. origin is the 16-byte HLC NodeID; last_seq is the highest
 /// per-origin seq ever passed through ApplyMutation (or appended to the
@@ -3651,6 +4116,8 @@ pub struct OriginState {
 /// peer's own writes without having to pre-configure peer NodeIDs.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PeerStatusResponse {
+    #[prost(string, tag = "20")]
+    pub namespace_format: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "1")]
     pub self_origin: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, repeated, tag = "2")]
@@ -4053,6 +4520,1378 @@ pub mod lantern_replication_service_client {
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new("graph.v1.LanternReplicationService", "PeerStatus"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetAuthCapabilitiesRequest {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LoginIssuer {
+    #[prost(string, tag = "1")]
+    pub issuer: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub label: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetAuthCapabilitiesResponse {
+    #[prost(enumeration = "AuthMode", tag = "1")]
+    pub mode: i32,
+    #[prost(message, repeated, tag = "2")]
+    pub login_issuers: ::prost::alloc::vec::Vec<LoginIssuer>,
+    #[prost(string, tag = "3")]
+    pub login_path: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "4")]
+    pub protocol_version: u32,
+    /// Explicit OFF is ready; OIDC readiness requires current serving authority.
+    /// False never implies OFF, and clients must reject unknown protocol versions.
+    #[prost(bool, tag = "5")]
+    pub ready: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityIdentity {
+    #[prost(enumeration = "SecurityPrincipalKind", tag = "1")]
+    pub kind: i32,
+    #[prost(string, tag = "2")]
+    pub issuer: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub subject: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub machine_name: ::prost::alloc::string::String,
+}
+/// Selectors use literal logical-key prefixes. Empty prefix explicitly means
+/// all data. Pair is a retired diagnostic shape: Server rejects every pair
+/// selector and independent Edge action in a Role. Edge permissions are derived
+/// from Vertex grants; pair must never be interpreted as permission authority.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityPrefixPair {
+    #[prost(string, tag = "1")]
+    pub tail_prefix: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub head_prefix: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityRule {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(enumeration = "SecurityEffect", tag = "2")]
+    pub effect: i32,
+    #[prost(enumeration = "SecurityAction", tag = "3")]
+    pub action: i32,
+    #[prost(oneof = "security_rule::Resource", tags = "4, 5, 6")]
+    pub resource: ::core::option::Option<security_rule::Resource>,
+}
+/// Nested message and enum types in `SecurityRule`.
+pub mod security_rule {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Resource {
+        #[prost(string, tag = "4")]
+        Prefix(::prost::alloc::string::String),
+        #[prost(bool, tag = "5")]
+        Global(bool),
+        #[prost(message, tag = "6")]
+        Pair(super::SecurityPrefixPair),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SecurityRole {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "3")]
+    pub rules: ::prost::alloc::vec::Vec<SecurityRule>,
+    /// Read-only: an environment-owned membership protects this Role policy.
+    #[prost(bool, tag = "4")]
+    pub env_owned: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityRoleAssignment {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<SecurityIdentity>,
+    #[prost(string, tag = "2")]
+    pub role_id: ::prost::alloc::string::String,
+    #[prost(bool, tag = "3")]
+    pub env_owned: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SecurityUser {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<SecurityIdentity>,
+    #[prost(enumeration = "SecurityPrincipalState", tag = "2")]
+    pub state: i32,
+    #[prost(message, repeated, tag = "3")]
+    pub assignments: ::prost::alloc::vec::Vec<SecurityRoleAssignment>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityIssuer {
+    #[prost(string, tag = "1")]
+    pub issuer: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub enabled: bool,
+    #[prost(string, tag = "3")]
+    pub client_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub api_audience: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub redirect_uri: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "6")]
+    pub algorithms: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Write-only handle to an operator binding; reads never return the handle.
+    #[prost(string, optional, tag = "7")]
+    pub secret_ref: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, tag = "8")]
+    pub config_revision: u64,
+    #[prost(bool, tag = "9")]
+    pub env_owned: bool,
+    #[prost(bool, tag = "10")]
+    pub deleted: bool,
+    #[prost(bool, tag = "11")]
+    pub has_secret_binding: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityVersion {
+    #[prost(uint64, tag = "1")]
+    pub revision: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub generation: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetCurrentPrincipalRequest {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetCurrentPrincipalResponse {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<SecurityIdentity>,
+    #[prost(message, repeated, tag = "2")]
+    pub roles: ::prost::alloc::vec::Vec<SecurityRole>,
+    #[prost(message, optional, tag = "3")]
+    pub version: ::core::option::Option<SecurityVersion>,
+    #[prost(message, optional, tag = "4")]
+    pub expires_at: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(bool, tag = "5")]
+    pub recent_authentication: bool,
+    /// Opaque browser CSRF proof, returned only on the browser session surface.
+    #[prost(string, tag = "6")]
+    pub csrf_token: ::prost::alloc::string::String,
+}
+/// Same-origin /auth/session and /auth/logout HTTP responses. OIDC tokens never
+/// cross this boundary; principal is absent only when mode is explicitly OFF.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BrowserSession {
+    #[prost(enumeration = "AuthMode", tag = "1")]
+    pub mode: i32,
+    #[prost(message, optional, tag = "2")]
+    pub principal: ::core::option::Option<GetCurrentPrincipalResponse>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SessionRevocation {
+    #[prost(message, optional, tag = "1")]
+    pub version: ::core::option::Option<SecurityVersion>,
+    #[prost(enumeration = "SecurityEnforcementState", tag = "2")]
+    pub enforcement: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListIssuersRequest {
+    #[prost(uint32, tag = "1")]
+    pub limit: u32,
+    #[prost(string, tag = "2")]
+    pub cursor: ::prost::alloc::string::String,
+    /// Optional exact URL, Role ID or subject selector within the selected list.
+    #[prost(string, tag = "3")]
+    pub exact: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListRolesRequest {
+    #[prost(uint32, tag = "1")]
+    pub limit: u32,
+    #[prost(string, tag = "2")]
+    pub cursor: ::prost::alloc::string::String,
+    /// Optional exact URL, Role ID or subject selector within the selected list.
+    #[prost(string, tag = "3")]
+    pub exact: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListUsersRequest {
+    #[prost(uint32, tag = "1")]
+    pub limit: u32,
+    #[prost(string, tag = "2")]
+    pub cursor: ::prost::alloc::string::String,
+    /// Optional exact URL, Role ID or subject selector within the selected list.
+    #[prost(string, tag = "3")]
+    pub exact: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListSecurityAuditRequest {
+    #[prost(uint32, tag = "1")]
+    pub limit: u32,
+    #[prost(string, tag = "2")]
+    pub cursor: ::prost::alloc::string::String,
+    /// Optional exact URL, Role ID or subject selector within the selected list.
+    #[prost(string, tag = "3")]
+    pub exact: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetIssuerRequest {
+    #[prost(string, tag = "1")]
+    pub issuer: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetIssuerResponse {
+    #[prost(message, optional, tag = "1")]
+    pub issuer: ::core::option::Option<SecurityIssuer>,
+    #[prost(message, optional, tag = "2")]
+    pub version: ::core::option::Option<SecurityVersion>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetRoleRequest {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetRoleResponse {
+    #[prost(message, optional, tag = "1")]
+    pub role: ::core::option::Option<SecurityRole>,
+    #[prost(message, optional, tag = "2")]
+    pub version: ::core::option::Option<SecurityVersion>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetUserRequest {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<SecurityIdentity>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetUserResponse {
+    #[prost(message, optional, tag = "1")]
+    pub user: ::core::option::Option<SecurityUser>,
+    #[prost(message, optional, tag = "2")]
+    pub version: ::core::option::Option<SecurityVersion>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListIssuersResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub issuers: ::prost::alloc::vec::Vec<SecurityIssuer>,
+    #[prost(message, optional, tag = "2")]
+    pub version: ::core::option::Option<SecurityVersion>,
+    #[prost(string, tag = "3")]
+    pub next_cursor: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListRolesResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub roles: ::prost::alloc::vec::Vec<SecurityRole>,
+    #[prost(message, optional, tag = "2")]
+    pub version: ::core::option::Option<SecurityVersion>,
+    #[prost(string, tag = "3")]
+    pub next_cursor: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListUsersResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub users: ::prost::alloc::vec::Vec<SecurityUser>,
+    #[prost(message, optional, tag = "2")]
+    pub version: ::core::option::Option<SecurityVersion>,
+    #[prost(string, tag = "3")]
+    pub next_cursor: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListRoleAssignmentsRequest {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<SecurityIdentity>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListRoleAssignmentsResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub assignments: ::prost::alloc::vec::Vec<SecurityRoleAssignment>,
+    #[prost(message, optional, tag = "2")]
+    pub version: ::core::option::Option<SecurityVersion>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityAuditRecord {
+    #[prost(uint64, tag = "1")]
+    pub revision: u64,
+    #[prost(string, tag = "2")]
+    pub change_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub intent_digest: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub actor_digest: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "5")]
+    pub occurred_at: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(string, tag = "6")]
+    pub operation: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "7")]
+    pub target_digests: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(uint32, tag = "8")]
+    pub additional_targets: u32,
+    #[prost(string, tag = "9")]
+    pub outcome: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ListSecurityAuditResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub records: ::prost::alloc::vec::Vec<SecurityAuditRecord>,
+    #[prost(message, optional, tag = "2")]
+    pub version: ::core::option::Option<SecurityVersion>,
+    #[prost(string, tag = "3")]
+    pub next_cursor: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetRoleTemplatesRequest {
+    #[prost(string, tag = "1")]
+    pub prefix: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetRoleTemplatesResponse {
+    #[prost(message, repeated, tag = "1")]
+    pub roles: ::prost::alloc::vec::Vec<SecurityRole>,
+    #[prost(message, optional, tag = "2")]
+    pub version: ::core::option::Option<SecurityVersion>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityEdgeIdentity {
+    #[prost(string, tag = "1")]
+    pub tail: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub head: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExplainAccessRequest {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<SecurityIdentity>,
+    #[prost(enumeration = "SecurityAction", tag = "2")]
+    pub action: i32,
+    /// Omit both selectors for a global capability. Supplying both is invalid.
+    #[prost(string, optional, tag = "3")]
+    pub logical_key: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "4")]
+    pub edge: ::core::option::Option<SecurityEdgeIdentity>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityRuleMatch {
+    #[prost(string, tag = "1")]
+    pub role_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub rule_id: ::prost::alloc::string::String,
+    #[prost(enumeration = "SecurityEffect", tag = "3")]
+    pub effect: i32,
+    /// Actual grantable capability required by this part of the operation.
+    #[prost(enumeration = "SecurityAction", tag = "4")]
+    pub action: i32,
+    /// "tail" or "head" for a derived Edge check; empty for ordinary grants.
+    #[prost(string, tag = "5")]
+    pub endpoint: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ExplainAccessResponse {
+    #[prost(bool, tag = "1")]
+    pub allowed: bool,
+    #[prost(message, repeated, tag = "2")]
+    pub matches: ::prost::alloc::vec::Vec<SecurityRuleMatch>,
+    #[prost(message, optional, tag = "3")]
+    pub version: ::core::option::Option<SecurityVersion>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ValidateIssuerRequest {
+    #[prost(message, optional, tag = "1")]
+    pub issuer: ::core::option::Option<SecurityIssuer>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ValidateIssuerResponse {
+    #[prost(bool, tag = "1")]
+    pub valid: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityUserStateChange {
+    #[prost(message, optional, tag = "1")]
+    pub identity: ::core::option::Option<SecurityIdentity>,
+    #[prost(enumeration = "SecurityPrincipalState", tag = "2")]
+    pub state: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SecurityChange {
+    #[prost(
+        oneof = "security_change::Operation",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10"
+    )]
+    pub operation: ::core::option::Option<security_change::Operation>,
+}
+/// Nested message and enum types in `SecurityChange`.
+pub mod security_change {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Operation {
+        #[prost(message, tag = "1")]
+        PutIssuer(super::SecurityIssuer),
+        #[prost(string, tag = "2")]
+        DisableIssuer(::prost::alloc::string::String),
+        #[prost(string, tag = "3")]
+        DeleteIssuer(::prost::alloc::string::String),
+        #[prost(message, tag = "4")]
+        PutRole(super::SecurityRole),
+        #[prost(string, tag = "5")]
+        DeleteRole(::prost::alloc::string::String),
+        #[prost(message, tag = "6")]
+        PutUser(super::SecurityUserStateChange),
+        #[prost(message, tag = "7")]
+        DeleteUser(super::SecurityIdentity),
+        #[prost(message, tag = "8")]
+        PutAssignment(super::SecurityRoleAssignment),
+        #[prost(message, tag = "9")]
+        DeleteAssignment(super::SecurityRoleAssignment),
+        #[prost(message, tag = "10")]
+        RevokeUserSessions(super::SecurityIdentity),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApplySecurityChangesRequest {
+    #[prost(uint64, tag = "1")]
+    pub expected_revision: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub change_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "3")]
+    pub changes: ::prost::alloc::vec::Vec<SecurityChange>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplySecurityChangesResponse {
+    #[prost(message, optional, tag = "1")]
+    pub version: ::core::option::Option<SecurityVersion>,
+    #[prost(bool, repeated, tag = "2")]
+    pub applied: ::prost::alloc::vec::Vec<bool>,
+    #[prost(bool, tag = "3")]
+    pub replayed: bool,
+    #[prost(enumeration = "SecurityEnforcementState", tag = "4")]
+    pub enforcement: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApplySecurityChangeRequest {
+    #[prost(uint64, tag = "1")]
+    pub expected_revision: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub change_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "3")]
+    pub change: ::core::option::Option<SecurityChange>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplySecurityChangeResponse {
+    #[prost(message, optional, tag = "1")]
+    pub version: ::core::option::Option<SecurityVersion>,
+    #[prost(bool, tag = "2")]
+    pub applied: bool,
+    #[prost(bool, tag = "3")]
+    pub replayed: bool,
+    #[prost(enumeration = "SecurityEnforcementState", tag = "4")]
+    pub enforcement: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSecurityChangeStatusRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub change_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSecurityChangeStatusResponse {
+    #[prost(message, optional, tag = "1")]
+    pub version: ::core::option::Option<SecurityVersion>,
+    #[prost(bool, repeated, tag = "2")]
+    pub applied: ::prost::alloc::vec::Vec<bool>,
+    #[prost(bool, tag = "3")]
+    pub replayed: bool,
+    #[prost(enumeration = "SecurityEnforcementState", tag = "4")]
+    pub enforcement: i32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AuthMode {
+    Unspecified = 0,
+    Off = 1,
+    Oidc = 2,
+}
+impl AuthMode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "AUTH_MODE_UNSPECIFIED",
+            Self::Off => "AUTH_MODE_OFF",
+            Self::Oidc => "AUTH_MODE_OIDC",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "AUTH_MODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "AUTH_MODE_OFF" => Some(Self::Off),
+            "AUTH_MODE_OIDC" => Some(Self::Oidc),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SecurityPrincipalKind {
+    Unspecified = 0,
+    Oidc = 1,
+    Machine = 2,
+}
+impl SecurityPrincipalKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SECURITY_PRINCIPAL_KIND_UNSPECIFIED",
+            Self::Oidc => "SECURITY_PRINCIPAL_KIND_OIDC",
+            Self::Machine => "SECURITY_PRINCIPAL_KIND_MACHINE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SECURITY_PRINCIPAL_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "SECURITY_PRINCIPAL_KIND_OIDC" => Some(Self::Oidc),
+            "SECURITY_PRINCIPAL_KIND_MACHINE" => Some(Self::Machine),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SecurityPrincipalState {
+    Unspecified = 0,
+    Active = 1,
+    Suspended = 2,
+    Deleted = 3,
+}
+impl SecurityPrincipalState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SECURITY_PRINCIPAL_STATE_UNSPECIFIED",
+            Self::Active => "SECURITY_PRINCIPAL_STATE_ACTIVE",
+            Self::Suspended => "SECURITY_PRINCIPAL_STATE_SUSPENDED",
+            Self::Deleted => "SECURITY_PRINCIPAL_STATE_DELETED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SECURITY_PRINCIPAL_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "SECURITY_PRINCIPAL_STATE_ACTIVE" => Some(Self::Active),
+            "SECURITY_PRINCIPAL_STATE_SUSPENDED" => Some(Self::Suspended),
+            "SECURITY_PRINCIPAL_STATE_DELETED" => Some(Self::Deleted),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SecurityAction {
+    Unspecified = 0,
+    VertexRead = 1,
+    VertexWrite = 2,
+    VertexDelete = 3,
+    EdgeRead = 4,
+    EdgeAdd = 5,
+    EdgeWrite = 6,
+    EdgeDelete = 7,
+    Query = 8,
+    CdcIdentity = 9,
+    CdcValue = 10,
+    Export = 11,
+    ReceiptRead = 12,
+    OperationsRead = 13,
+    SchemaRead = 14,
+    Manage = 15,
+    EdgeCreate = 16,
+}
+impl SecurityAction {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SECURITY_ACTION_UNSPECIFIED",
+            Self::VertexRead => "SECURITY_ACTION_VERTEX_READ",
+            Self::VertexWrite => "SECURITY_ACTION_VERTEX_WRITE",
+            Self::VertexDelete => "SECURITY_ACTION_VERTEX_DELETE",
+            Self::EdgeRead => "SECURITY_ACTION_EDGE_READ",
+            Self::EdgeAdd => "SECURITY_ACTION_EDGE_ADD",
+            Self::EdgeWrite => "SECURITY_ACTION_EDGE_WRITE",
+            Self::EdgeDelete => "SECURITY_ACTION_EDGE_DELETE",
+            Self::Query => "SECURITY_ACTION_QUERY",
+            Self::CdcIdentity => "SECURITY_ACTION_CDC_IDENTITY",
+            Self::CdcValue => "SECURITY_ACTION_CDC_VALUE",
+            Self::Export => "SECURITY_ACTION_EXPORT",
+            Self::ReceiptRead => "SECURITY_ACTION_RECEIPT_READ",
+            Self::OperationsRead => "SECURITY_ACTION_OPERATIONS_READ",
+            Self::SchemaRead => "SECURITY_ACTION_SCHEMA_READ",
+            Self::Manage => "SECURITY_ACTION_MANAGE",
+            Self::EdgeCreate => "SECURITY_ACTION_EDGE_CREATE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SECURITY_ACTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "SECURITY_ACTION_VERTEX_READ" => Some(Self::VertexRead),
+            "SECURITY_ACTION_VERTEX_WRITE" => Some(Self::VertexWrite),
+            "SECURITY_ACTION_VERTEX_DELETE" => Some(Self::VertexDelete),
+            "SECURITY_ACTION_EDGE_READ" => Some(Self::EdgeRead),
+            "SECURITY_ACTION_EDGE_ADD" => Some(Self::EdgeAdd),
+            "SECURITY_ACTION_EDGE_WRITE" => Some(Self::EdgeWrite),
+            "SECURITY_ACTION_EDGE_DELETE" => Some(Self::EdgeDelete),
+            "SECURITY_ACTION_QUERY" => Some(Self::Query),
+            "SECURITY_ACTION_CDC_IDENTITY" => Some(Self::CdcIdentity),
+            "SECURITY_ACTION_CDC_VALUE" => Some(Self::CdcValue),
+            "SECURITY_ACTION_EXPORT" => Some(Self::Export),
+            "SECURITY_ACTION_RECEIPT_READ" => Some(Self::ReceiptRead),
+            "SECURITY_ACTION_OPERATIONS_READ" => Some(Self::OperationsRead),
+            "SECURITY_ACTION_SCHEMA_READ" => Some(Self::SchemaRead),
+            "SECURITY_ACTION_MANAGE" => Some(Self::Manage),
+            "SECURITY_ACTION_EDGE_CREATE" => Some(Self::EdgeCreate),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SecurityEffect {
+    Unspecified = 0,
+    Allow = 1,
+    Deny = 2,
+}
+impl SecurityEffect {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SECURITY_EFFECT_UNSPECIFIED",
+            Self::Allow => "SECURITY_EFFECT_ALLOW",
+            Self::Deny => "SECURITY_EFFECT_DENY",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SECURITY_EFFECT_UNSPECIFIED" => Some(Self::Unspecified),
+            "SECURITY_EFFECT_ALLOW" => Some(Self::Allow),
+            "SECURITY_EFFECT_DENY" => Some(Self::Deny),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SecurityEnforcementState {
+    Unspecified = 0,
+    CommittedPending = 1,
+    Enforced = 2,
+}
+impl SecurityEnforcementState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SECURITY_ENFORCEMENT_STATE_UNSPECIFIED",
+            Self::CommittedPending => "SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING",
+            Self::Enforced => "SECURITY_ENFORCEMENT_STATE_ENFORCED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SECURITY_ENFORCEMENT_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING" => {
+                Some(Self::CommittedPending)
+            }
+            "SECURITY_ENFORCEMENT_STATE_ENFORCED" => Some(Self::Enforced),
+            _ => None,
+        }
+    }
+}
+/// Generated client implementations.
+pub mod lantern_security_service_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// Security is a separate control plane. Logical data RPCs cannot write sys:.
+    /// User resources contain identity and Role membership, never direct grants.
+    #[derive(Debug, Clone)]
+    pub struct LanternSecurityServiceClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl LanternSecurityServiceClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> LanternSecurityServiceClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> LanternSecurityServiceClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            LanternSecurityServiceClient::new(
+                InterceptedService::new(inner, interceptor),
+            )
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        pub async fn get_auth_capabilities(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetAuthCapabilitiesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetAuthCapabilitiesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/GetAuthCapabilities",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "GetAuthCapabilities",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_current_principal(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetCurrentPrincipalRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetCurrentPrincipalResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/GetCurrentPrincipal",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "GetCurrentPrincipal",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_issuers(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListIssuersRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListIssuersResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/ListIssuers",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("graph.v1.LanternSecurityService", "ListIssuers"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_issuer(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetIssuerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetIssuerResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/GetIssuer",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("graph.v1.LanternSecurityService", "GetIssuer"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_roles(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListRolesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListRolesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/ListRoles",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("graph.v1.LanternSecurityService", "ListRoles"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_role(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetRoleRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetRoleResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/GetRole",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("graph.v1.LanternSecurityService", "GetRole"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_users(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListUsersRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListUsersResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/ListUsers",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("graph.v1.LanternSecurityService", "ListUsers"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_user(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetUserRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetUserResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/GetUser",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("graph.v1.LanternSecurityService", "GetUser"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_role_assignments(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListRoleAssignmentsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListRoleAssignmentsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/ListRoleAssignments",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "ListRoleAssignments",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn list_security_audit(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ListSecurityAuditRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ListSecurityAuditResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/ListSecurityAudit",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "ListSecurityAudit",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_role_templates(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetRoleTemplatesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetRoleTemplatesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/GetRoleTemplates",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "GetRoleTemplates",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn explain_access(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ExplainAccessRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ExplainAccessResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/ExplainAccess",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("graph.v1.LanternSecurityService", "ExplainAccess"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn validate_issuer(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ValidateIssuerRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ValidateIssuerResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/ValidateIssuer",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("graph.v1.LanternSecurityService", "ValidateIssuer"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Plural is canonical and atomic, with request-index-aligned outcomes.
+        pub async fn apply_security_changes(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ApplySecurityChangesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ApplySecurityChangesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/ApplySecurityChanges",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "ApplySecurityChanges",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn apply_security_change(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ApplySecurityChangeRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ApplySecurityChangeResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/ApplySecurityChange",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "ApplySecurityChange",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_security_change_status(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetSecurityChangeStatusRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSecurityChangeStatusResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/GetSecurityChangeStatus",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "GetSecurityChangeStatus",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RenewPolicyLeaseRequest {
+    /// Must equal the authenticated workload's operator-approved stable ID.
+    #[prost(bytes = "vec", tag = "1")]
+    pub receiver: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub boot_nonce: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub challenge: ::prost::alloc::vec::Vec<u8>,
+    /// Optional exact current signed revision digest; not an authorization proof.
+    #[prost(bytes = "vec", tag = "4")]
+    pub known_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RenewPolicyLeaseResponse {
+    /// Original writer signature, bound to receiver/boot/challenge and policy cut.
+    #[prost(bytes = "vec", tag = "1")]
+    pub signed_lease: ::prost::alloc::vec::Vec<u8>,
+    /// Complete original signed cut; omitted only for an identical known digest.
+    #[prost(bytes = "vec", tag = "2")]
+    pub signed_checkpoint: ::prost::alloc::vec::Vec<u8>,
+}
+/// Generated client implementations.
+pub mod lantern_security_peer_service_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// Private mTLS workload plane only. This service is never mounted on the
+    /// public data/browser listener, including in OFF mode.
+    #[derive(Debug, Clone)]
+    pub struct LanternSecurityPeerServiceClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl LanternSecurityPeerServiceClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> LanternSecurityPeerServiceClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> LanternSecurityPeerServiceClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            LanternSecurityPeerServiceClient::new(
+                InterceptedService::new(inner, interceptor),
+            )
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        pub async fn renew_policy_lease(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RenewPolicyLeaseRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::RenewPolicyLeaseResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityPeerService/RenewPolicyLease",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityPeerService",
+                        "RenewPolicyLease",
+                    ),
                 );
             self.inner.unary(req, path, codec).await
         }

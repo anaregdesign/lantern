@@ -55,8 +55,25 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	if m == nil || (m.GetSeq() == 0 && len(m.GetOrigin()) == 0 && m.GetHlc() == nil && m.GetOp() == nil) {
 		return nil
 	}
+	if m.GetOp().GetEdgeCreateEffect() != nil {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("replication: Edge Create has no cluster-wide absence proof"))
+	}
 	if m.GetOp() == nil || m.GetOp().GetOp() == nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: sequenced mutation has no op"))
+	}
+	if err := validateEdgeEndpointEffect(m.GetOp()); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if s.dataAuthorization && edgeEffectMayCreateEndpoints(m.GetOp()) && !m.GetOp().GetNoEndpointCreation() {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("protected replication requires an immutable Edge-only effect"))
+	}
+	if m.GetNamespaceFormat() != s.namespaceFormat {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("replication namespace format mismatch"))
+	}
+	if s.namespaceFormat != "" {
+		if err := validatePhysicalDataIdentities(m.ProtoReflect()); err != nil {
+			return connect.NewError(connect.CodeInvalidArgument, errors.New("replication contains a non-data identity"))
+		}
 	}
 	if err := validateGenericGraphReceiptContext(m); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: %w", err))
@@ -126,6 +143,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 }
 
 func validateMutationEdgeSourceWeights(op *pb.MutationOp) error {
+	if err := validateEdgeEndpointEffect(op); err != nil {
+		return err
+	}
 	var edges []*pb.Edge
 	switch entry := op.GetOp().(type) {
 	case *pb.MutationOp_PutEdge:
@@ -347,7 +367,8 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (graphApplyResult, e
 			cID = contribIDFor(origin, seq, 0)
 		}
 		_, accepted, noWeight := s.cache.AddEdgesWithExpirationContribHLCResults([]graphcache.EdgeItem[string]{{
-			Tail: e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight(),
+			NoEndpointCreation: m.GetOp().GetNoEndpointCreation(),
+			Tail:               e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight(),
 			Expiration: prototime.Expiration(e.GetExpiration()), ContribID: cID,
 		}}, ts)
 		if noWeight != 0 && useTomb && s.onTombstoneClampReject != nil {
@@ -383,11 +404,12 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (graphApplyResult, e
 				cID = contribIDFor(origin, seq, uint16(i))
 			}
 			items = append(items, graphcache.EdgeItem[string]{
-				Tail:       e.GetTail(),
-				Head:       e.GetHead(),
-				Weight:     e.GetWeight(),
-				Expiration: prototime.Expiration(e.GetExpiration()),
-				ContribID:  cID,
+				NoEndpointCreation: m.GetOp().GetNoEndpointCreation(),
+				Tail:               e.GetTail(),
+				Head:               e.GetHead(),
+				Weight:             e.GetWeight(),
+				Expiration:         prototime.Expiration(e.GetExpiration()),
+				ContribID:          cID,
 			})
 		}
 		// The HLC path is required even when tombstone retention is disabled:
@@ -414,7 +436,8 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (graphApplyResult, e
 			return graphApplyResult{}, nil
 		}
 		outcomes := s.cache.PutEdgesWithExpirationHLCOutcomes([]graphcache.EdgeItem[string]{{
-			Tail: e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight(),
+			NoEndpointCreation: m.GetOp().GetNoEndpointCreation(),
+			Tail:               e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight(),
 			Expiration: prototime.Expiration(e.GetExpiration()),
 		}}, ts)
 		if outcomes[0] == graphcache.PutOutcomeSuperseded && useTomb && s.onTombstoneClampReject != nil {
@@ -437,10 +460,11 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (graphApplyResult, e
 				continue
 			}
 			items = append(items, graphcache.EdgeItem[string]{
-				Tail:       e.GetTail(),
-				Head:       e.GetHead(),
-				Weight:     e.GetWeight(),
-				Expiration: prototime.Expiration(e.GetExpiration()),
+				NoEndpointCreation: m.GetOp().GetNoEndpointCreation(),
+				Tail:               e.GetTail(),
+				Head:               e.GetHead(),
+				Weight:             e.GetWeight(),
+				Expiration:         prototime.Expiration(e.GetExpiration()),
 			})
 		}
 		outcomes := s.cache.PutEdgesWithExpirationHLCOutcomes(items, ts)
@@ -471,13 +495,14 @@ func (s *LanternService) applyMutationGraph(m *pb.Mutation) (graphApplyResult, e
 				if e == nil {
 					return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge live payload"))
 				}
-				items = append(items, graphcache.EdgeItem[string]{Tail: e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight(), Expiration: prototime.Expiration(e.GetExpiration())})
+				items = append(items, graphcache.EdgeItem[string]{NoEndpointCreation: m.GetOp().GetNoEndpointCreation(),
+					Tail: e.GetTail(), Head: e.GetHead(), Weight: e.GetWeight(), Expiration: prototime.Expiration(e.GetExpiration())})
 			case *pb.ReplicatedPutEdge_CausalBarrier:
 				barrier := outcome.CausalBarrier
 				if barrier == nil {
 					return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication: nil ReplicatedPutEdge causal barrier"))
 				}
-				items = append(items, graphcache.EdgeItem[string]{Tail: barrier.GetTail(), Head: barrier.GetHead(), CausalBarrier: true})
+				items = append(items, graphcache.EdgeItem[string]{NoEndpointCreation: m.GetOp().GetNoEndpointCreation(), Tail: barrier.GetTail(), Head: barrier.GetHead(), CausalBarrier: true})
 			default:
 				return graphApplyResult{}, connect.NewError(connect.CodeInternal, fmt.Errorf("replication: ReplicatedPutEdge entry has no outcome"))
 			}

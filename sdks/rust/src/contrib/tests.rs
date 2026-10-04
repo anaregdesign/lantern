@@ -62,3 +62,30 @@ fn reject_bad_ids_and_exhaustion_without_wrap_or_reuse() {
         Err(LanternError::InvalidInput(_))
     ));
 }
+
+#[test]
+fn concurrent_generators_claim_distinct_sequences_through_exhaustion() {
+    let source = Arc::new(generator([7; 16], MAX_SEQUENCE - 100));
+    let workers: Vec<_> = (0..8)
+        .map(|_| {
+            let source = Arc::clone(&source);
+            std::thread::spawn(move || {
+                let mut ids = Vec::new();
+                while let Ok(batch) = source.next_ids(&[0]) {
+                    ids.push(*batch[0].as_bytes());
+                }
+                ids
+            })
+        })
+        .collect();
+    let mut ids: Vec<_> = workers
+        .into_iter()
+        .flat_map(|worker| worker.join().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 100);
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 100);
+    assert_eq!(source.sequence.load(Ordering::Relaxed), MAX_SEQUENCE);
+    assert!(source.next_ids(&[0]).is_err());
+}

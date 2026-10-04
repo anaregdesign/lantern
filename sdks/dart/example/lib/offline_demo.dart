@@ -21,7 +21,7 @@ class OfflineDemoScreen extends StatefulWidget {
   final String partitionId;
 
   /// Optional, explicitly responder-pinned foreground CDC source.
-  final OfflineIdentitySource? identitySource;
+  final OfflineScopedChangeSource? identitySource;
 
   /// Application-owned logout gate checked before every CDC start.
   final bool Function()? identityAllowed;
@@ -148,7 +148,7 @@ final class _OfflineDemoScreenState extends State<OfflineDemoScreen> {
             !(widget.identityAllowed?.call() ?? true)) {
           return;
         }
-        await widget.repository.consumeIdentityChanges(
+        await widget.repository.consumeScopedChanges(
           widget.partitionId,
           source: source,
           cancellation: cancellation,

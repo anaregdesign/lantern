@@ -8,10 +8,10 @@ import {
   InvalidArgumentError,
   Lantern,
   LanternError,
-  connect,
-  type IdentityChunkFrame,
   type IdentityFrame,
+  type ChangeFrame,
 } from "../src/index.js";
+import { connectWeb } from "../src/web.js";
 import { decodeIdentityFrame } from "../src/changes.js";
 import {
   HLCTimestampSchema,
@@ -116,18 +116,6 @@ async function nextWithin<T>(
   } finally {
     clearTimeout(timer);
   }
-}
-
-async function chunkForKey(
-  iterator: AsyncIterator<IdentityFrame>,
-  key: string,
-): Promise<IdentityChunkFrame> {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const next = await nextWithin(iterator);
-    if (next.done) throw new Error("identity stream closed before expected key");
-    if (next.value.kind === "chunk" && next.value.vertexKeys.includes(key)) return next.value;
-  }
-  throw new Error("identity stream did not yield expected key within 100 frames");
 }
 
 describe("identity-only CDC facade", () => {
@@ -403,41 +391,40 @@ describe("identity-only CDC facade", () => {
 
 const wireEndpoint = process.env.LANTERN_NODE_REAL_WIRE_ENDPOINT;
 const gapEndpoint = process.env.LANTERN_NODE_IDENTITY_GAP_ENDPOINT;
-
+async function nextVisible(
+  iterator: AsyncIterator<ChangeFrame>,
+  key: string,
+): Promise<ChangeFrame> {
+  for (let count = 0; count < 100; count++) {
+    const next = await nextWithin(iterator);
+    if (next.done) throw new Error("public CDC ended before expected invalidation");
+    if (next.value.invalidations.some((item) => item.kind === "vertex" && item.key === key))
+      return next.value;
+  }
+  throw new Error("public CDC omitted expected invalidation");
+}
 if (wireEndpoint) {
-  test("identity CDC bootstraps and resumes over real Connect/h2c", async () => {
-    const client = connect(wireEndpoint);
+  test("public CDC bootstraps and resumes with opaque checkpoints", async () => {
+    const client = connectWeb(wireEndpoint);
     const prefix = `node-cdc-${crypto.randomUUID()}`;
     const firstKey = `${prefix}-first`;
     const secondKey = `${prefix}-second`;
-    const bootstrap = client.subscribeIdentity({ bootstrap: true })[Symbol.asyncIterator]();
+    const frames = client.watchChanges({ prefix, bootstrap: true });
+    const bootstrap = frames[Symbol.asyncIterator]();
     try {
       const first = await nextWithin(bootstrap);
-      expect(first.done).toBe(false);
-      expect(first.value?.kind).toBe("checkpoint");
-      if (!first.value || first.value.kind !== "checkpoint") throw new Error();
+      expect(first.value?.bootstrap).toBe(true);
       await client.putVertex({ key: firstKey, value: "identity-stream-must-not-carry-this" });
-      const change = await chunkForKey(bootstrap, firstKey);
-      expect(change.operation).toBe("putVertex");
-      expect(change.edgeKeys).toEqual([]);
-      expect(change.isLast).toBe(true);
-      expect(
-        JSON.stringify(change, (_key, value) =>
-          typeof value === "bigint" ? value.toString() : value,
-        ),
-      ).not.toContain("identity-stream-must-not-carry-this");
-
-      const last = { ...first.value.lastSequences, [change.origin]: change.sequence };
-      const resumeStream = client.subscribeIdentity({
-        cursor: IdentityNextCursor.fromLastApplied(last),
-      });
-      const resumed = resumeStream[Symbol.asyncIterator]();
+      const change = await nextVisible(bootstrap, firstKey);
+      expect(change.cursor).toBeDefined();
+      expect(change.invalidations.every((item) => item.current === undefined)).toBe(true);
+      expect(JSON.stringify(change)).not.toContain("identity-stream-must-not-carry-this");
+      const frames = client.watchChanges({ prefix, cursor: change.cursor! });
+      const resumed = frames[Symbol.asyncIterator]();
       try {
-        const waiting = chunkForKey(resumed, secondKey);
+        const waiting = nextVisible(resumed, secondKey);
         await client.putVertex({ key: secondKey, value: "second" });
-        const second = await waiting;
-        expect(second.origin).toBe(change.origin);
-        expect(second.sequence).toBeGreaterThan(change.sequence);
+        expect((await waiting).cursor).toBeDefined();
       } finally {
         await resumed.return?.();
       }
@@ -447,31 +434,23 @@ if (wireEndpoint) {
     }
   });
 }
-
 if (gapEndpoint) {
-  test("identity CDC rejects evicted resume over real Connect/h2c", async () => {
-    const bootstrapClient = connect(gapEndpoint);
-    const prefix = `node-cdc-gap-${crypto.randomUUID()}`;
-    const bootstrapStream = bootstrapClient.subscribeIdentity({ bootstrap: true });
-    const bootstrap = bootstrapStream[Symbol.asyncIterator]();
-    const first = await nextWithin(bootstrap);
-    if (!first.value || first.value.kind !== "checkpoint") throw new Error();
-    await bootstrap.return?.();
-    bootstrapClient.close();
-    const client = connect(gapEndpoint);
-    for (let index = 0; index < 3; index++) {
-      await client.putVertex({ key: `${prefix}-${index}`, value: "value" });
-    }
-    const resumeStream = client.subscribeIdentity({
-      cursor: IdentityNextCursor.fromLastApplied(first.value.lastSequences),
-    });
-    const resumed = resumeStream[Symbol.asyncIterator]();
+  test("public CDC rejects an evicted opaque checkpoint", async () => {
+    const client = connectWeb(gapEndpoint);
+    const frames = client.watchChanges({ bootstrap: true });
+    const stream = frames[Symbol.asyncIterator]();
+    const first = await nextWithin(stream);
+    expect(first.value?.cursor).toBeDefined();
+    await stream.return?.();
     try {
-      await resumed.next();
-      throw new Error("expected gap");
-    } catch (error) {
-      expect(error).toBeInstanceOf(FailedPreconditionError);
+      for (let index = 0; index < 3; index++)
+        await client.putVertex({ key: `node-gap-${crypto.randomUUID()}`, value: "value" });
+      const resumed = client.watchChanges({ cursor: first.value!.cursor! });
+      await expect(resumed[Symbol.asyncIterator]().next()).rejects.toBeInstanceOf(
+        FailedPreconditionError,
+      );
+    } finally {
+      client.close();
     }
-    client.close();
   });
 }

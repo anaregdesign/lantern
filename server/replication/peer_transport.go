@@ -18,10 +18,21 @@ import (
 // discovery dials IPs but verifies every peer against the configured DNS name.
 // Neither redirects nor a plaintext fallback are permitted.
 type PeerTransport struct {
-	client      *http.Client
-	staticPeers map[string]struct{}
-	dnsName     string
-	dnsPort     string
+	client         *http.Client
+	staticPeers    map[string]struct{}
+	approvedOrigin func(string) bool
+	dnsName        string
+	dnsPort        string
+}
+
+// NewVerifiedPeerTransport binds an already-certified workload HTTP client to
+// current operator membership. It never attaches a public credential or turns
+// an arbitrary resolved address into an eligible peer.
+func NewVerifiedPeerTransport(client *http.Client, approvedOrigin func(string) bool) (*PeerTransport, error) {
+	if client == nil || client.Transport == nil || approvedOrigin == nil {
+		return nil, errors.New("verified peer transport requires owned client and current membership")
+	}
+	return &PeerTransport{client: client, approvedOrigin: approvedOrigin}, nil
 }
 
 // NewAuthenticatedPeerTransport pins the peer CA, TLS identity and allowed
@@ -146,6 +157,12 @@ func parseStaticPeer(peer string) (*url.URL, error) {
 // the configured discovery port. The DNS case still requires the peer's TLS
 // certificate to match dnsName, never the untrusted resolved IP as a name.
 func (t *PeerTransport) BaseURL(addr string) (string, error) {
+	if t.approvedOrigin != nil {
+		if _, err := parseStaticPeer(addr); err != nil || !t.approvedOrigin(addr) {
+			return "", errors.New("unapproved workload peer origin")
+		}
+		return addr, nil
+	}
 	if t.dnsName == "" {
 		if _, ok := t.staticPeers[addr]; !ok {
 			return "", errors.New("unapproved static peer origin")

@@ -361,6 +361,43 @@ void main() {
       );
     });
 
+    test(
+      'v3 retains terminal undisclosed status and older schemas reject it',
+      () {
+        final record = OfflineOperationRecord(
+          partitionId: 'partition',
+          generation: 0,
+          operationId: 'operation',
+          items: [
+            OfflineWriteStatus(
+              recordId: 'record',
+              operationId: 'operation',
+              itemIndex: 0,
+              state: OfflineWriteState.acceptedUndisclosed,
+              attemptCount: 1,
+            ),
+          ],
+          updatedAt: time,
+          terminalAt: time,
+        );
+        final encoded = OfflineCodec.encodeOperationRecord(record);
+        expect(encoded, contains('"schema":3'));
+        final decoded = OfflineCodec.decodeOperationRecord(encoded);
+        expect(decoded.status.isTerminal, isTrue);
+        expect(decoded.status.acceptedUndisclosedCount, 1);
+        expect(decoded.status.confirmedCount, 0);
+        expect(decoded.items.single.receiptResult, isNull);
+        for (final version in [1, 2]) {
+          expect(
+            () => OfflineCodec.decodeOperationRecord(
+              encoded.replaceFirst('"schema":3', '"schema":$version'),
+            ),
+            throwsA(isA<OfflineCodecException>()),
+          );
+        }
+      },
+    );
+
     test('round trips content-free durable operation aggregates', () {
       final record = OfflineOperationRecord(
         partitionId: 'partition',
@@ -849,7 +886,7 @@ void main() {
       expect(decoded.items.single.receiptResult, isNull);
       expect(
         OfflineCodec.encodeOperationRecord(decoded),
-        contains('"schema":2'),
+        contains('"schema":3'),
       );
     });
   });

@@ -1,3 +1,4 @@
+import { mutationReply, type MutationReply } from "lantern-sdk/web";
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
 
@@ -11,14 +12,18 @@ export async function deleteEdge(
   tail: string,
   head: string,
   init?: { signal?: AbortSignal },
-): Promise<{ existed: boolean }> {
+): Promise<MutationReply<{ existed: boolean }>> {
   try {
-    const existed = await client.deleteEdge(tail, head, init?.signal);
-    return { existed };
+    return await mutationReply(async () => {
+      try {
+        const existed = await client.deleteEdge(tail, head, init?.signal);
+        return { existed };
+      } catch (err) {
+        if (LanternApiError.isNotFound(err)) return { existed: false };
+        throw err;
+      }
+    });
   } catch (err) {
-    if (LanternApiError.isNotFound(err)) {
-      return { existed: false };
-    }
     throw LanternApiError.fromUnknown("DeleteEdge", err);
   }
 }

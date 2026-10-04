@@ -1,0 +1,9 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 32px 16px;
+  max-width: 640px;
+  margin: auto;
+  overflow-wrap: anywhere;
+}

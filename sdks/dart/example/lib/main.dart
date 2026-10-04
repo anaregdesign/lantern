@@ -4,10 +4,10 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:lantern_client/lantern_client.dart';
-import 'package:lantern_client_offline/lantern_client_offline.dart';
 
 import 'offline_demo.dart';
 import 'offline_session.dart';
+import 'scoped_change_source.dart';
 
 /// Lossless, type-labelled text used by the example's value list.
 String formatVertexValue(VertexValue value) => switch (value) {
@@ -667,7 +667,10 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
                       repository: widget.offlineSession.repository,
                       partitionId: widget.offlineSession.partitionId,
                       identitySource: widget.offlineCdcPinnedResponder
-                          ? LanternClientIdentitySource(widget.client)
+                          ? LanternScopedChangeSource(
+                              client: widget.client,
+                              responderId: widget.client.endpoint.toString(),
+                            )
                           : null,
                       identityAllowed: () => !widget.offlineSession.isLoggedOut,
                     ),

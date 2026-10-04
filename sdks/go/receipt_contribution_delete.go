@@ -48,6 +48,9 @@ func (l *Lantern) DeleteEdgeContributionsWithReceipt(
 	if err != nil {
 		return nil, err
 	}
+	if err := mutationAcceptanceFromProto(response); err != nil {
+		return nil, err
+	}
 	if err := validateContributionDeleteResponse(len(stableRefs), response); err != nil {
 		return nil, receiptProtocolError("%v", err)
 	}

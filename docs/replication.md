@@ -10,6 +10,39 @@ from the invariants below requires amending this file in the same PR.
 
 ---
 
+## OIDC/RBAC extension boundary
+
+[ADR 0012](decisions/0012-oidc-prefix-rbac.md), tracked by
+[#1599](https://github.com/anaregdesign/lantern/issues/1599), defines the
+security extension. Native source is in flight; final exact-source/provider/device
+qualification remains in #1610. Public clients use OIDC/machine Role admission;
+workload peers use an independent private listener and signed membership.
+The leaderless invariants below apply to application data. Physical `data:`
+keys preserve public logical keys; physical `sys:` contains native metadata.
+System security changes use signed atomic revisions from one operator-pinned
+internal writer and bounded serving leases, not independent HLC/LWW merges.
+The existing log/Snapshot transport is reused with typed system envelopes.
+Replicas must validate public mode, storage version and peer trust before
+bootstrap. Public scoped CDC is a separate authorized protocol; raw peer
+Subscribe/Snapshot remains complete internal synchronization.
+
+Control commit, cluster-wide enforcement and graph availability are distinct.
+Writer loss prevents control changes/login and eventually protected serving
+when leases expire. Manual replacement requires fencing and certified state;
+there is no automatic security election. See ADR 0012 for the lease,
+anti-rollback, durable system lane, recovery and response-publication contracts.
+
+The #1658 browser-session interpretation uses security image v2, `LNSEC03`
+signed revisions and native journal binding v2. Replication/checkpoint/restart
+preserve missing authentication time as unknown and retain old signed evidence;
+neither can make a session eligible for recent-auth management. Image v1,
+`LNSEC02` and native binding v1 are incompatible, with no implicit migration or
+mixed-cohort rolling acceptance. Reject incompatible state before admission or
+advancing any durable security floor. Operators must fence an old cohort before
+an explicit certified generation/bootstrap or separately reviewed migration.
+This security boundary does not change the graph namespace, receipt-WAL V9 or
+receipt archive V4. See [the operations runbook](oidc-operations.md#security-state-version-boundary).
+
 ## 1. Goal
 
 Lantern must run as a **leaderless, full-replica cluster** with the operational
@@ -26,9 +59,10 @@ Client (sdks/go: Connect over h2c or HTTPS to a ClusterIP / reverse proxy)
  full replica / any pod accepts any R/W / no leader / no consensus
 ```
 
-Every replica holds the **full graph**. Writes accepted on any node are
+Every replica holds the **full graph**. Application writes accepted on any node are
 replicated asynchronously to all peers. No single node is special; no quorum
-is required for either reads or writes.
+is required for application data reads or writes. Protected serving additionally
+requires the independent security authority described above.
 
 ## 2. Invariants
 
@@ -53,9 +87,9 @@ is required for either reads or writes.
    whenever replication lag exceeds `LANTERN_MAX_REPLICATION_LAG` or an
    observed peer reports a different search config fingerprint, so the load
    balancer drains the instance. Graph replication continues across a search
-   mismatch for repair and diagnosis. **Single-instance mode** (static
-   discovery with empty `LANTERN_PEERS`) bypasses this gate; DNS discovery
-   selects peer mode even before the first peer resolves.
+   mismatch for repair and diagnosis. **Single-instance mode** (no private peer plane) has no data-lag gate.
+   Current public-mode/security authority still gates OIDC readiness; configured
+   workload membership gates HA readiness in OFF as well as OIDC.
 5. **No leader, no Raft, no external storage.** Default graph-only mode is
    ephemeral; opt-in receipt-WAL mode uses local durable storage. Single-pod
    loss recovers from peers; total-cluster loss loses any unbacked writes.
@@ -72,30 +106,26 @@ is required for either reads or writes.
    `NOT_SERVING` immediately, then keeps its listener serving for
    `LANTERN_DRAIN_DELAY_SECONDS` so kube-proxy / load balancers deregister
    it before it stops accepting. See the runbook §7.
-7. **Authenticated peer traffic has verified transport.** When bearer
-   authentication and HA peers are both enabled, the server requires an
-   inbound TLS certificate/key and a separate pinned outbound
-   `LANTERN_PEER_CA_FILE` before serving. Pump and anti-entropy use one
-   validated HTTPS policy for `PeerStatus`, `Subscribe`, and `Snapshot`:
-   static peers must be explicit, approved `https://host:port` origins
-   verified against their hostname or IP SAN; DNS-discovered IPs are dialed
-   on the configured port but their certificates are verified against
-   `LANTERN_PEER_DNS_NAME`. All redirects, plaintext destinations, and
-   proxy forwarding are refused; there is no TLS downgrade or insecure
-   verification flag. Bearer-free graph-only h2c and single-instance
-   deployments retain their existing behavior. A TLS-terminating edge
-   proxy cannot make plaintext bearer-bearing **peer** hops safe.
+7. **Every HA peer has independent workload identity.** OFF and OIDC use a
+   separate TLS 1.3/mTLS listener, operator-signed bounded membership and exact
+   approved HTTPS origins. Membership binds deployment, public mode, namespace,
+   security generation, writer key, URI SAN and certificate SPKI. Public Bearer,
+   cookies and client Role headers never authorize a peer. DNS resolves approved
+   origins only. No plaintext, redirect, arbitrary proxy, certificate-verification
+   bypass or public/private-handler co-mount is permitted. An idle accepted
+   Subscribe flushes response headers without a synthetic event or cursor advance.
+
 
 ## 3. Binding decisions (D1–D7)
 
 | # | Decision | Default | Rationale |
 |---|---|---|---|
 | D1 | Crash persistence | **Graph-only by default:** no WAL; opt-in certified receipt-WAL mode persists the graph and receipts locally. | Bootstrap from peers covers graph-only single-node loss. Durable `restart` proves the current WAL before serving; `fresh` rotates the active epoch on total-cluster restore and uses only a strict receipt backup set. |
-| D2 | External CDC | **Same `Subscribe` RPC**, authenticated within one deployment-wide security domain; tenant ACLs are not defined. Under the leaderless Subscribe contract (#415, Reading B), an external CDC consumer attaches to any **one** replica and observes every committed cluster mutation — failover to a different replica is supported by passing the per-origin watermark in `SubscribeRequest.from_seq_per_origin`. | Internal replication and external CDC are isomorphic; splitting RPCs would duplicate machinery. The per-origin cursor lets consumers spread load across replicas without reimplementing the internal pump's dedup. The offline storage contract is specified in [ADR 0002](decisions/0002-dart-offline-repository-contract.md#sqlite-and-asynchronous-store-implementation): atomically persist invalidation and chunk progress, advance the last-applied origin sequence only on the final chunk, then resume at that sequence plus one. The #1116 projection, typed SDK facades, and storage-neutral offline consumer are implemented. The production Dart bridge and physical release qualification remain in #1314. |
+| D2 | External CDC | **Separate public `WatchChanges` service**, using scope/policy/request/corpus-bound opaque cursors and Role-authorized identity/value projection. Private `Subscribe` remains full workload synchronization. | Reuse the committed log/projector without exposing origin vectors, mutation/receipt envelopes, HLCs or sys: state. Apply every frame invalidation before saving its cursor; gap/policy rejection requires rebootstrap and authorized revalidation. Offline public adapters migrate under #1613; old per-origin consumer infrastructure cannot infer public checkpoints. |
 | D3 | WAN replication | **Out of scope for v1**, single DC only. HLC max skew bound = **500 ms**. | Geo replication requires looser skew + read repair; defer until single-DC HA is proven. |
 | D4 | Tombstone TTL | **Cluster-wide config, default 1 year (8760h).** Any `Add*` / `Put*` whose TTL would exceed tombstone TTL is **rejected** with `InvalidArgument`. | Resurrection-proof deletes require tombstones to outlive every live contribution. This is a real backwards-incompatible constraint. |
 | D5 | Workload kind (k8s reference impl) | **StatefulSet** (not Deployment). | Stable pod identity simplifies peer discovery and supports operator-managed volume ownership for optional receipt FileWAL storage. The *user experience* is Deployment-like; the *resource kind* is `StatefulSet`. |
-| D6 | Cluster membership v1 | **Static `LANTERN_PEERS` env var.** v2 adds DNS-based discovery (#190). | Smallest surface that ships. Any DNS-routable platform (k8s headless Service, Compose service name, Nomad, plain DNS A-records) can populate it trivially. |
+| D6 | Cluster membership | **Independent signed workload manifest**, exact HTTPS private origins, distinct per-node mTLS identity and durable anti-rollback enrollment. Signed lifetime is at most ten minutes. | DNS locates only approved peers and never grants membership. OFF and OIDC enforce the same private boundary; domain/public-mode/generation/namespace mismatch fails closed. Renewal and fencing are operator-owned, with no external coordinator. |
 | D7 | Supported deployment topologies | **Full HA:** k8s StatefulSet, Nomad, plain VMs, Docker Compose with stable peer hostnames. **Single-instance (no HA):** any platform without stable per-instance addressing — Docker Compose single service, or any container runtime that hides/recycles instance addresses. **Not supported:** running multiple address-hidden instances as a replicated cluster. | Leaderless P2P needs **stable inter-instance addressing** and **long-lived inbound gRPC streams between peers**. Platforms that intentionally hide instance addresses and recycle instances fit single-instance deploys (still useful as a fast in-memory KVS) but not the replicated topology. |
 
 The bounded mutation-receipt extension is specified in
@@ -111,6 +141,25 @@ detached collector, and durable baseline primitive are wired into Pump and
 anti-entropy through one shared exact-`RECEIPT` installer. The graph-only
 default remains unchanged; final #1399 HA, performance, security, physical,
 and SDK/archive release gates remain pending.
+
+### Staged OIDC/RBAC boundary (#1599/#1613)
+
+ADR 0012 replaces D2's deployment-wide public Subscribe contract when the
+namespaced OIDC runtime is enabled. Raw Subscribe, Snapshot and PeerStatus are
+private peer operations. Public consumers use a separate scoped change service;
+it shares the committed mutation log without exposing peer envelopes, receipts,
+origin sequences, HLCs or system metadata. Legacy SDK Subscribe
+is not a scoped consumer and must never bypass this boundary.
+
+Receipt provenance is part of the staged durable format: exact logical Vertex
+identity or both Edge endpoint identities, plus the original Put lifecycle
+reduction bit. It survives WAL, replication, active/retired Snapshot and backup.
+Current Roles authorize both status and replay against this original evidence;
+unknown scoped IDs fail closed. The private WAL union is V7, whole-state and
+combined baseline archives are v3, and the retired archive is v2. These formats
+reject earlier framing rather than infer resource authority from legacy bytes.
+This changes neither original result bytes nor causal admission. Source staging
+does not certify production activation, failover or final release acceptance.
 
 ## 4. CRDT semantics per RPC
 
@@ -681,10 +730,16 @@ Handler implementation notes (issue #180):
   `lantern_subscribe_dropped_total{reason}` (counter; `reason ∈ {gapped,
   send_failed}`) are pre-rendered in `server/metrics/metrics.go`.
 
-#### Identity-only CDC contract (#1116; server and core consumer implemented)
+#### Private identity projection (#1116; former external CDC contract)
 
-External cache invalidation uses this same `Subscribe` RPC and mutation
-log. Its explicit `IDENTITY_ONLY` projection does not change the zero/default
+This origin-vector projection is now private workload infrastructure. Public
+clients use `WatchChanges`; no user Role authorizes raw Subscribe. The retained
+format/consumer details below describe private synchronization and historical
+offline primitives, not the public checkpoint or access-control contract.
+
+
+The former external cache invalidation contract used this `Subscribe` RPC
+and mutation log. Its retained private `IDENTITY_ONLY` projection does not change the zero/default
 full-`Mutation` stream used by peer replication. The request distinguishes
 ordinary vector-cursor resume from bootstrap. The response carries exactly one
 of a bootstrap checkpoint, a full mutation, or an identity chunk. This is the
@@ -1043,6 +1098,21 @@ Framing contract:
   closed. This invariant is load-bearing for gap recovery because edge-only
   working sets contain implicit endpoints even when no `PutVertex*` call has
   occurred.
+- Protected public Edge Add/Put records the immutable
+  `MutationOp.no_endpoint_creation` effect after checking both live endpoints
+  at origin. Peer apply, relay and WAL restart update only Edge sources and
+  never create, revive or extend either Vertex. Receiver liveness is not an
+  origin admission proof. Auth OFF public writes retain legacy endpoint creation.
+- Private Snapshot may retain accepted Edge sources whose explicit endpoints
+  have not arrived or have been deleted/expired. These frames set
+  `SnapshotEdge.no_endpoint_creation`; a receiver without the effect seam fails
+  closed instead of applying legacy creation. GC retains sources until their own
+  expiry/causal removal, including indefinitely for nil TTL. Pending buckets
+  participate in physical Edge accounting and local admission limits; replica
+  union preserves already accepted effects and can exceed a local admission cap. Public graph export,
+  reads and exploration remain referentially closed. Private archive V4 and
+  WAL union V9 freeze this contract; older persisted formats require explicit
+  offline migration. HA Create remains disabled.
 - Retained Put causal barriers are streamed **before live entries**.
   They use explicit `SnapshotVertexCausalBarrier` and
   `SnapshotEdgeCausalBarrier` oneof arms, never overloaded live
@@ -1229,109 +1299,55 @@ Retention and memory:
 
 ## 9. Bootstrap flow
 
-```
-new pod boots
-  │
-  ├── load LANTERN_PEERS (D6) or resolve LANTERN_PEER_DNS_NAME (#190)
-  │
-  ├── for each peer P (in parallel; first to respond wins):
-  │     stream = P.Snapshot(SnapshotRequest{})
-  │     header  = stream.Recv()      // per-origin + responder-local cutoffs
-  │     mark local search index INCOMPLETE
-  │     apply  body frames → local cache
-  │     footer = last frame          // assert counts match
-  │     rebuild exact local search index; only then mark HEALTHY
-  │
-  ├── for each peer P:
-  │     compare PeerStatus.search_config_fingerprint
-  │     go pump(P)                  // Subscribe resumes at
-  │                                  // origin cutoffs + 1 and this
-  │                                  // responder's local cutoff + 1
-  │
-  └── /healthz/ready flips SERVING when:
-        - lag(P) < LANTERN_MAX_REPLICATION_LAG and observed peer search
-          fingerprints match, OR
-        - single-instance mode (static discovery and LANTERN_PEERS empty)
-```
+1. Load and durably verify independent signed workload membership. Validate
+   exact self/peer certificate identities, domain/mode/namespace/generation and
+   current expiry before private listeners or replication workers serve.
+2. For each approved private origin, obtain its verified Snapshot, origin and
+   responder-local cutoffs, apply the complete accepted cut and rebuild exact
+   local indexes before marking them healthy. Receipt and typed sys: envelopes
+   retain their separate certification and continuity requirements.
+3. Open private Subscribe for each approved origin with the later of snapshot
+   origin cutoff + 1 and locally committed next sequence, and that responder's
+   local cutoff + 1. Reject a genuinely evicted tail and repair by certified
+   Snapshot. Header-only flushing of an accepted idle stream consumes no event.
+4. Compare peer search configuration and data lag. OIDC independently installs
+   current signed security revisions and obtains a bounded serving lease from
+   the fixed writer. No data availability check substitutes for this lease.
+5. `/readyz` becomes serving only when applicable data and workload/security
+   gates are all satisfied. The public Health Check remains auth-exempt but
+   reports current readiness; raw replication/diagnostics are not public probes.
 
-Target steady-state flush latency: **< 100 ms** intra-DC at 1k mut/s.
+Target steady-state flush latency remains **< 100 ms** intra-DC at 1k mut/s;
+this target requires final qualification, not a cached component benchmark.
 
-### 9.1 Peer discovery (#190)
+### 9.1 Signed peer membership
 
-The pump resolves its peer set via `LANTERN_PEER_DISCOVERY`:
+Configure the complete `LANTERN_PEER_LISTEN_ADDR`, deployment, membership
+mode/file/state file, operator public key, workload ID, cert/key and trust CA
+contract in [env.md](env.md). Omission disables the peer plane; partial or
+retired static/DNS configuration fails closed. `fresh` is first enrollment;
+`resume` preserves rollback protection. Never copy one node's private identity
+or writable enrollment state to another node.
 
-| Mode | Env vars consumed | Behaviour |
-|---|---|---|
-| `static` (default) | `LANTERN_PEERS` (CSV `host:port,host:port` without auth; `https://host:port` with auth) | Resolved once at startup. Empty list → single-instance mode. Bearer-enabled peers must have explicit, path-free HTTPS origins. |
-| `dns` | `LANTERN_PEER_DNS_NAME`, `LANTERN_PEER_DEFAULT_PORT` (default `50051`), `LANTERN_PEER_DISCOVERY_INTERVAL_MS` (default `10000`) | Periodic `net.Resolver.LookupHost` against `LANTERN_PEER_DNS_NAME`. Every A/AAAA record except the local node's interface IPs is treated as a peer. Re-poll on every interval; reconcile via add/cancel against the active per-peer goroutine set. |
+The operator distributes an atomically replaced signed manifest, with a
+maximum ten-minute lifetime. A worker reloads it every second; existing
+admissions also check current membership/expiry. Revocation, expiry or rejected
+renewal cannot leave an indefinitely authorized idle stream. Account for
+projection/distribution delay in the renewal budget. The signing private key
+is never mounted in the database. Trust rotation/domain migration requires
+explicit fenced operator action; no unsigned DNS answer can change trust.
 
-DNS mode is the canonical multi-instance path: it works against k8s
-headless Services (`lantern-headless.<ns>.svc.cluster.local`), Docker
-Compose service names (Compose's embedded DNS returns one A per
-replica), and Nomad+Consul DNS. Self-filter uses
-`net.InterfaceAddrs()` for non-loopback IPs; the pump's existing
-HLC-NodeID self-echo guard (§5) remains as defence-in-depth.
-
-A transient resolution error logs at `WARN` and preserves the
-previously-active peer set — established subscriptions are NOT torn
-down on a flapping DNS resolver.
-
-For authenticated DNS discovery, every resolved address must be an IP
-literal and each peer certificate must contain the **discovery DNS name**
-in its DNS SAN. This lets a peer dial the current IP while verifying a
-stable TLS identity; an arbitrary DNS answer cannot receive a bearer
-without a certificate trusted by `LANTERN_PEER_CA_FILE` for that name.
-Malformed answers and untrusted/mismatched certificates fail closed.
-The CA is outbound trust material; inbound `LANTERN_TLS_CLIENT_CA_FILE`
-does not substitute for it. If the listener requires client certificates,
-also configure `LANTERN_PEER_CLIENT_CERT_FILE` and
-`LANTERN_PEER_CLIENT_KEY_FILE` on every replica.
-
-**Manual verification recipe (k8s headless Service).**
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: lantern-headless
-spec:
-  clusterIP: None                      # headless: A records = pod IPs
-  selector: { app: lantern }
-  ports: [{ name: grpc, port: 50051, targetPort: 50051 }]
----
-# StatefulSet pods set env:
-#   LANTERN_PEER_DISCOVERY=dns
-#   LANTERN_PEER_DNS_NAME=lantern-headless.default.svc.cluster.local
-#   LANTERN_PEER_DEFAULT_PORT=50051
-```
-
-Scale the StatefulSet up/down and observe
-`lantern_peer_connected{peer=...}` add/remove series within one
-discovery interval.
-
-**Manual verification recipe (Docker Compose).**
-
-```yaml
-services:
-  lantern:
-    image: lantern:dev
-    deploy: { replicas: 3 }
-    environment:
-      LANTERN_PEER_DISCOVERY: dns
-      LANTERN_PEER_DNS_NAME: lantern             # Compose service name
-      LANTERN_PEER_DEFAULT_PORT: "50051"
-```
-
-Since [#435](https://github.com/anaregdesign/lantern/issues/435) the
-canonical compose declares three explicit `lantern-{0,1,2}` services
-sharing the `lantern` network alias, so Compose's embedded DNS resolves
-that alias to all three replica IPs and the pump picks up new entries
-on the next tick. To run with more than three replicas, switch to the
-Helm chart.
+Kubernetes uses stable per-pod private origins under a headless Service with
+`publishNotReadyAddresses: true`; the public Service remains readiness gated.
+Compose/VM/Nomad use the same exact origin and per-node identity contract.
+The [Helm](../deploy/helm/lantern/README.md) and
+[Compose](../deploy/compose/README.md) examples default to one OFF Server and
+require explicit peer configuration for HA.
 
 ## 10. Partition & split-brain analysis
 
-Lantern is **AP** in CAP terms. During a partition:
+Application data is **AP** in CAP terms. Protected public serving is bounded
+by workload/security leases and may stop during a partition. During a data partition:
 
 - Each side accepts both reads and writes (no quorum).
 - `SearchVertices` remains available but is local/eventual. Corpus membership,
@@ -1388,15 +1404,15 @@ carries the full per-platform instructions; this is the summary.
 | Platform | HA mode | Single-instance | Notes |
 |---|---|---|---|
 | Kubernetes (StatefulSet + headless Service) | ✅ canonical | ✅ | Helm chart in `deploy/helm/lantern/` (#191). |
-| Docker Compose (explicit `lantern-N` services + shared DNS alias) | ✅ | ✅ | Example in `deploy/compose/` (#191, #435). Best for local dev / single-host. |
-| Nomad + Consul DNS | ✅ | ✅ | User-configured; same `LANTERN_PEER_DISCOVERY=dns` works. |
-| Plain VMs / bare metal | ✅ | ✅ | Static `LANTERN_PEERS` CSV or DNS round-robin. |
-| Platforms that hide per-instance addresses (autoscaled, request-scoped runtimes) | ❌ HA not supported | ✅ | Instance-level addressing hidden; long-lived peer streams incompatible with the request-scoped lifecycle. Use as a fast in-memory KVS with CDC via `Subscribe`. |
+| Docker Compose (explicit signed `lantern-N` origins) | ✅ | ✅ | Example in `deploy/compose/` (#191, #435). Best for local dev / single-host. |
+| Nomad + Consul DNS | ✅ | ✅ | Operator-signed per-instance private origins; DNS grants no admission. |
+| Plain VMs / bare metal | ✅ | ✅ | Stable signed HTTPS origins and per-node mTLS identity. |
+| Platforms that hide per-instance addresses (autoscaled, request-scoped runtimes) | ❌ HA not supported | ✅ | Instance-level addressing hidden; long-lived peer streams incompatible with the request-scoped lifecycle. Use as a fast in-memory KVS with public `WatchChanges`. |
 
 For every "not supported" platform, the **single-instance** deploy is fully
-supported: leave `LANTERN_PEERS` empty, the server runs without a pump, the
-readiness gate is bypassed, and `Subscribe` still works as a CDC stream for
-downstream consumers. In graph-only mode, cold-start data loss is expected
+supported: omit private peer settings; no pump runs and no data-lag gate
+is needed. OIDC readiness still requires current authority. Public
+`WatchChanges` remains available under the declared public mode and Roles. In graph-only mode, cold-start data loss is expected
 unless snapshot backups (`LANTERN_BACKUP_*`, [backup.md](backup.md)) or an
 external WAL consumer are in place. A durable `restart` always proves its
 current WAL first and uses receipt backup only for narrowly classified
@@ -1427,3 +1443,15 @@ and grouped in dependency order:
 | 3 — Replication | #184, #185, #186, #187 | Snapshot, pump, anti-entropy, metrics |
 | 4 — Operability | #188, #189, #190 | Readiness, SDK LB, DNS discovery |
 | 5 — Delivery | #191, #192 | Helm + Compose, runbook |
+
+
+### Accepted idle private subscriptions (#1630)
+
+A validated full-mutation subscription flushes its transport response headers
+once it has registered under the publication cut. This is a transport handshake,
+not a `SubscribeResponse`, synthetic mutation, checkpoint or origin advance.
+The private workload transport keeps its bounded response-header timeout;
+accepted empty logs stay connected while waiting for real mutations. Admission
+expiry/removal, publication faults, cursor gaps and cancellation retain their
+existing checks. Public applications use the separate authorized `WatchChanges`
+service and never receive the peer protocol.

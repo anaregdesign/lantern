@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:connectrpc/connect.dart' as connect;
@@ -23,6 +24,9 @@ void main() {
         endpoint,
         allowInsecure: endpoint.scheme == 'http',
         token: token,
+        httpClientFactory: endpoint.scheme == 'https'
+            ? _receiptHttpClient
+            : null,
       );
       addTearDown(client.close);
       final edge = EdgeRef('$prefix-direct-t', '$prefix-direct-h');
@@ -80,6 +84,9 @@ void main() {
         endpoint,
         allowInsecure: endpoint.scheme == 'http',
         token: token,
+        httpClientFactory: endpoint.scheme == 'https'
+            ? _receiptHttpClient
+            : null,
         clock: () => DateTime.now().toUtc().add(const Duration(minutes: 5)),
       );
       addTearDown(client.close);
@@ -122,14 +129,18 @@ void main() {
         endpoint,
         allowInsecure: endpoint.scheme == 'http',
         token: token,
+        httpClientFactory: endpoint.scheme == 'https'
+            ? _receiptHttpClient
+            : null,
       );
       addTearDown(direct.close);
       final edge = EdgeRef('$prefix-receipt-t', '$prefix-receipt-h');
       final ref = EdgeContributionRef(
         tail: edge.tail,
         head: edge.head,
-        contribId: Uint8List(24)..[23] = 1,
+        contribId: _randomContribId(),
       );
+      await _seedEdgeEndpoints(direct, edge);
       await direct.putEdge(
         EdgeInput(tail: edge.tail, head: edge.head, weight: 1),
       );
@@ -190,6 +201,9 @@ void main() {
         endpoint,
         allowInsecure: endpoint.scheme == 'http',
         token: token,
+        httpClientFactory: endpoint.scheme == 'https'
+            ? _receiptHttpClient
+            : null,
       );
       addTearDown(restarted.close);
       final statuses = await restarted.getReceiptStatuses(
@@ -215,7 +229,7 @@ void main() {
       final changed = EdgeContributionRef(
         tail: edge.tail,
         head: edge.head,
-        contribId: Uint8List(24)..[23] = 2,
+        contribId: _randomContribId(),
       );
       await expectLater(
         restarted.deleteEdgeContributionsWithReceipt([
@@ -250,14 +264,18 @@ void main() {
         endpoint,
         allowInsecure: endpoint.scheme == 'http',
         token: token,
+        httpClientFactory: endpoint.scheme == 'https'
+            ? _receiptHttpClient
+            : null,
       );
       addTearDown(client.close);
       final edge = EdgeRef('$prefix-cdc-t', '$prefix-cdc-h');
       final ref = EdgeContributionRef(
         tail: edge.tail,
         head: edge.head,
-        contribId: Uint8List(24)..[23] = 1,
+        contribId: _randomContribId(),
       );
+      await _seedEdgeEndpoints(client, edge);
       await client.putEdge(
         EdgeInput(tail: edge.tail, head: edge.head, weight: 1),
       );
@@ -270,16 +288,15 @@ void main() {
         ),
       );
       final ready = Completer<void>();
-      final invalidation = Completer<IdentityChunkFrame>();
+      final invalidation = Completer<ChangeFrame>();
       final subscription = client
-          .subscribeIdentity(bootstrap: true)
+          .watchChanges(prefix: prefix, bootstrap: true)
           .listen(
             (frame) {
-              if (frame is IdentityCheckpointFrame && !ready.isCompleted)
-                ready.complete();
-              if (frame is IdentityChunkFrame &&
-                  frame.operation == IdentityOperation.deleteEdgeContribution &&
-                  frame.edgeKeys.contains(edge)) {
+              if (frame.bootstrap && !ready.isCompleted) ready.complete();
+              if (frame.invalidations.whereType<EdgeInvalidation>().any(
+                (item) => item.edge == edge,
+              )) {
                 if (!invalidation.isCompleted) invalidation.complete(frame);
               }
             },
@@ -297,8 +314,14 @@ void main() {
       final frame = await invalidation.future.timeout(
         const Duration(seconds: 10),
       );
-      expect(frame.vertexKeys, isEmpty);
-      expect(frame.edgeKeys, [edge, edge]);
+      expect(frame.invalidations.whereType<VertexInvalidation>(), isEmpty);
+      expect(
+        frame.invalidations.whereType<EdgeInvalidation>().map(
+          (item) => item.edge,
+        ),
+        [edge, edge],
+      );
+      expect(frame.cursor, isNotNull);
       expect((await client.getEdge(edge)).weight, 1);
       await subscription.cancel();
       expect(await client.deleteEdge(edge), isTrue);
@@ -310,7 +333,8 @@ void main() {
 }
 
 final class _CommittedContributionLoss implements connect.Transport {
-  _CommittedContributionLoss(Uri endpoint) : _http = HttpClient() {
+  _CommittedContributionLoss(Uri endpoint)
+    : _http = endpoint.scheme == 'https' ? _receiptHttpClient() : HttpClient() {
     _inner = connect_protocol.Transport(
       baseUrl: endpoint.toString(),
       codec: const ProtoCodec(),
@@ -345,4 +369,29 @@ final class _CommittedContributionLoss implements connect.Transport {
     Stream<I> input, [
     connect.CallOptions? options,
   ]) => _inner.stream(spec, input, options);
+}
+
+HttpClient _receiptHttpClient() {
+  final ca = Platform.environment['LANTERN_DART_RECEIPT_CA_FILE'];
+  if (ca == null || ca.isEmpty) {
+    throw StateError('native receipt CA is required');
+  }
+  return HttpClient(
+    context: SecurityContext(withTrustedRoots: false)
+      ..setTrustedCertificates(ca),
+  );
+}
+
+Future<void> _seedEdgeEndpoints(LanternClient client, EdgeRef edge) async {
+  await client.putVertices([
+    for (final key in {edge.tail, edge.head})
+      VertexInput(key: key, value: VertexValue.string('endpoint')),
+  ]);
+}
+
+Uint8List _randomContribId() {
+  final random = Random.secure();
+  final id = Uint8List.fromList(List.generate(24, (_) => random.nextInt(256)));
+  if (id.every((value) => value == 0)) id[0] = 1;
+  return id;
 }

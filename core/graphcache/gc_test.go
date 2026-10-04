@@ -696,3 +696,91 @@ func gcStressEnvInt(t *testing.T, key string, def int) int {
 	}
 	return n
 }
+
+func TestRetainedDanglingEdgeHistory(t *testing.T) {
+	for _, budget := range []int{0, 1} {
+		t.Run(fmt.Sprintf("budget %d", budget), func(t *testing.T) {
+			c := NewGraphCache[string, string](time.Hour)
+			c.RetainDanglingEdgeHistory()
+			c.SetGCEdgeBudget(budget)
+			now := time.Now()
+			expiration := now.Add(time.Hour)
+			stamp := hlc.Timestamp{WallNs: now.UnixNano(), NodeID: hlc.NodeID{1}}
+			item := EdgeItem[string]{Tail: "tail", Head: "head", Weight: 3, Expiration: expiration, NoEndpointCreation: true}
+			if outcomes := c.PutEdgesWithExpirationHLCOutcomes([]EdgeItem[string]{item}, stamp); len(outcomes) != 1 || outcomes[0] != PutOutcomeAppliedAndLive {
+				t.Fatalf("accepted Put: %v", outcomes)
+			}
+			item.Weight, item.ContribID = 2, ContribID{1}
+			if _, _, _, err := c.AddEdgesWithExpirationContribHLCResultsChecked([]EdgeItem[string]{item}, hlc.Timestamp{WallNs: stamp.WallNs + 1, NodeID: stamp.NodeID}); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 3; i++ {
+				if zero, dangling := c.flush(); zero != 0 || dangling != 0 {
+					t.Fatalf("GC lost accepted sources: %d/%d", zero, dangling)
+				}
+			}
+			snapshot := c.SnapshotReplication()
+			if len(snapshot.Graph.Vertices) != 0 || len(snapshot.Graph.Edges) != 1 || len(snapshot.Graph.Edges[0].Contributions) != 2 {
+				t.Fatalf("private accepted history: %+v", snapshot)
+			}
+			if len(c.SnapshotGraph().Edges) != 0 || len(c.SnapshotEdges()) != 0 {
+				t.Fatal("public snapshot exposed a dangling Edge")
+			}
+			restored := NewGraphCache[string, string](time.Hour)
+			restored.RetainDanglingEdgeHistory()
+			for _, edge := range snapshot.Graph.Edges {
+				for _, contribution := range edge.Contributions {
+					source := EdgeItem[string]{Tail: edge.Tail, Head: edge.Head, Weight: contribution.Weight, Expiration: contribution.Expiration, ContribID: contribution.ContribID, NoEndpointCreation: true}
+					if source.ContribID.IsZero() {
+						restored.PutEdgesWithExpirationHLC([]EdgeItem[string]{source}, edge.HLC)
+					} else {
+						restored.AddEdgesWithExpirationContribHLC([]EdgeItem[string]{source}, contribution.HLC)
+					}
+				}
+			}
+			restored.flush()
+			if _, ok := restored.GetWeight("tail", "head"); ok {
+				t.Fatal("restore fabricated endpoint visibility")
+			}
+			for _, key := range []string{"tail", "head"} {
+				if err := restored.PutVertexWithExpiration(key, key+" explicit", expiration); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got, ok := restored.GetWeight("tail", "head"); !ok || got != 5 {
+				t.Fatalf("explicit endpoint delivery lost accepted sources: %v/%v", got, ok)
+			}
+			for _, vertex := range restored.SnapshotVertices() {
+				if vertex.Value != vertex.Key+" explicit" {
+					t.Fatalf("endpoint result: %+v", vertex)
+				}
+			}
+			newer := hlc.Timestamp{WallNs: stamp.WallNs + 2, NodeID: stamp.NodeID}
+			restored.DeleteVertexHLC("head", newer, expiration)
+			restored.flush()
+			if _, ok := restored.GetVertex("head"); ok {
+				t.Fatal("GC revived deleted endpoint")
+			}
+			if len(restored.SnapshotReplication().Graph.Edges) != 1 {
+				t.Fatal("deleted endpoint erased private accepted Edge sources")
+			}
+			item.ContribID = ContribID{}
+			item.Expiration = now.Add(-time.Second)
+			later := hlc.Timestamp{WallNs: stamp.WallNs + 3, NodeID: stamp.NodeID}
+			if outcomes := restored.PutEdgesWithExpirationHLCOutcomes([]EdgeItem[string]{item}, later); len(outcomes) != 1 || outcomes[0] != PutOutcomeExpired {
+				t.Fatalf("accepted expired Put: %v", outcomes)
+			}
+			expired := restored.SnapshotReplication()
+			if len(expired.Graph.Edges) != 0 || len(expired.Barriers.Edges) != 1 {
+				t.Fatalf("expiry failed to replace retained sources with causal evidence: %+v", expired)
+			}
+			item.Expiration = expiration
+			if outcomes := restored.PutEdgesWithExpirationHLCOutcomes([]EdgeItem[string]{item}, stamp); len(outcomes) != 1 || outcomes[0] != PutOutcomeSuperseded {
+				t.Fatalf("older delayed replay crossed expiry floor: %v", outcomes)
+			}
+			if _, ok := restored.GetVertex("head"); ok {
+				t.Fatal("expired or superseded Edge effect resurrected its endpoint")
+			}
+		})
+	}
+}

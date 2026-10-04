@@ -1,8 +1,8 @@
-# replication_soak — writes on r0, Subscribe consumers on r1/r2.
+# replication_soak — writes on r0, public value CDC consumers on r1/r2.
 # Goal: long-running fan-out across replicas; surfaces pubsub queue depth
 #       (#240) and replication pump backlog.
 # NOTE: run.sh detects `subscribe.consumers` and launches them as separate
-#       long-lived ghz invocations against the listed endpoints; the
+#       bounded-stream application consumers against the listed endpoints; the
 #       `target` block below describes only the producer.
 name: replication_soak
 phases:
@@ -16,15 +16,13 @@ target:
     {"vertex":{"key":"soak-{{.RequestNumber}}","int64":"{{.RequestNumber}}"}}
 subscribe:
   consumers:
-    # Empty from_seq_per_origin = cold-start: deliver every retained entry
-    # from every origin (#415 leaderless Subscribe — the flat `from_seq`
-    # cursor this scenario predates no longer exists).
+    # Public value CDC consumers bootstrap independently on each replica.
     - endpoint: localhost:6381
-      call: graph.v1.LanternReplicationService/Subscribe
-      data_template: '{}'
+      call: graph.v1.LanternChangeService/WatchChanges
+      data_template: '{"projection":"CHANGE_PROJECTION_VALUE","bootstrap":true}'
     - endpoint: localhost:6382
-      call: graph.v1.LanternReplicationService/Subscribe
-      data_template: '{}'
+      call: graph.v1.LanternChangeService/WatchChanges
+      data_template: '{"projection":"CHANGE_PROJECTION_VALUE","bootstrap":true}'
 leak_gate:
   goroutine_max_delta: 30
   heap_alloc_max_delta_mb: 64

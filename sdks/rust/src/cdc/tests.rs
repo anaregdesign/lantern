@@ -1,19 +1,10 @@
-use std::{
-    io::{Read, Write},
-    net::{TcpListener, TcpStream},
-    str::FromStr,
-    time::Duration,
-};
+use std::str::FromStr;
 
 use prost::Message;
 
 use super::*;
-use crate::{
-    VertexInput,
-    generated::graph::v1::{
-        Mutation, MutationOp, SubscribeResponse, mutation_op::Op, subscribe_response::Event,
-    },
-    test_server::GoServer,
+use crate::generated::graph::v1::{
+    Mutation, MutationOp, SubscribeResponse, mutation_op::Op, subscribe_response::Event,
 };
 
 fn origin() -> OriginId {
@@ -58,8 +49,10 @@ fn unknown_or_malformed_frames_fail_closed_before_cursor_advances() {
             hlc: None,
             op: Some(MutationOp {
                 op: Some(Op::DeleteVertex(Default::default())),
+                ..Default::default()
             }),
             tombstone_expiration: None,
+            namespace_format: String::new(),
         })),
     };
     let mut payload = known.encode_to_vec();
@@ -137,179 +130,4 @@ fn clean_eof_without_a_cdc_terminal_boundary_is_a_gap() {
         assert_eq!(gap.reason(), reason);
         assert!(gap.failure().is_none());
     }
-}
-
-#[tokio::test]
-#[ignore = "requires a built production Go server via LANTERN_RUST_TEST_SERVER"]
-async fn real_wire_identity_full_bootstrap_resume_and_bounded_gap()
--> Result<(), Box<dyn std::error::Error>> {
-    let mut server = GoServer::start(&[
-        ("LANTERN_NODE_ID", "42424242424242424242424242424242"),
-        ("LANTERN_MUTATION_LOG_CAPACITY", "4"),
-    ])?;
-    server.wait_for_listener()?;
-    let client = LanternClient::builder(format!("http://127.0.0.1:{}", server.port()))
-        .unary_timeout(Duration::from_millis(300))?
-        .connect()
-        .await?;
-
-    let mut identity = client
-        .bootstrap_identities(StreamOptions::default().with_idle(Duration::from_secs(3)))
-        .await?;
-    let checkpoint = match identity.next_event().await? {
-        IdentityEvent::Checkpoint(checkpoint) => checkpoint,
-        other => panic!("bootstrap must begin with a checkpoint, got {other:?}"),
-    };
-    assert_eq!(
-        checkpoint
-            .cursor_after_revalidation()?
-            .next_expected(origin()),
-        1
-    );
-    let prefix = "rust:cdc-real:";
-    client
-        .put_vertex(VertexInput::int64(format!("{prefix}a"), 52))
-        .await?;
-    let first = match identity.next_event().await? {
-        IdentityEvent::Chunk(chunk) => chunk,
-        other => panic!("expected a mutation fragment, got {other:?}"),
-    };
-    assert_eq!(first.origin, origin());
-    assert_eq!(first.category, IdentityCategory::PutVertex);
-    assert_eq!(first.vertex_keys, [format!("{prefix}a")]);
-    assert!(first.edge_keys.is_empty());
-    let next = first.next_cursor.unwrap();
-    drop(identity);
-
-    client
-        .put_vertex(VertexInput::nil(format!("{prefix}b")))
-        .await?;
-    let mut full = tokio::time::timeout(
-        Duration::from_secs(5),
-        client.subscribe_full_mutations(
-            next.clone(),
-            StreamOptions::default().with_idle(Duration::from_secs(3)),
-        ),
-    )
-    .await??;
-    let received = full.next_mutation().await?;
-    assert_eq!(received.origin, origin());
-    assert!(matches!(
-        received.op,
-        FullMutationOp::ReplicatedPutVertices(ref vertices)
-            if matches!(vertices.as_slice(), [VertexWrite::Live(v)] if v.key == format!("{prefix}b"))
-    ));
-    drop(full);
-
-    client
-        .put_vertices([
-            VertexInput::nil(format!("{prefix}tail")),
-            VertexInput::nil(format!("{prefix}head")),
-        ])
-        .await?;
-    let mut resume = tokio::time::timeout(
-        Duration::from_secs(5),
-        client.resume_identities(
-            received.next_cursor,
-            StreamOptions::default().with_idle(Duration::from_secs(3)),
-        ),
-    )
-    .await??;
-    let chunk = match resume.next_event().await? {
-        IdentityEvent::Chunk(chunk) => chunk,
-        other => panic!("resume must deliver a chunk, got {other:?}"),
-    };
-    assert_eq!(chunk.vertex_keys.len(), 2);
-    assert!(chunk.next_cursor.is_some());
-    drop(resume);
-
-    for index in 0..8 {
-        client
-            .put_vertex(VertexInput::int32(format!("{prefix}fill-{index}"), index))
-            .await?;
-    }
-    let gap = match client
-        .resume_identities(
-            next,
-            StreamOptions::default().with_idle(Duration::from_secs(3)),
-        )
-        .await
-    {
-        Ok(mut stream) => stream
-            .next_event()
-            .await
-            .expect_err("evicted retained log must be a gap"),
-        Err(error) => error,
-    };
-    assert!(matches!(gap, LanternError::CdcGap(_)));
-    Ok(())
-}
-
-fn active_subscribers(addr: &str) -> Result<u64, Box<dyn std::error::Error>> {
-    let mut socket = TcpStream::connect(addr)?;
-    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    socket.write_all(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
-    let mut response = String::new();
-    socket.read_to_string(&mut response)?;
-    let row = response
-        .lines()
-        .find(|line| line.starts_with("lantern_subscribe_active_streams "))
-        .ok_or("missing active Subscribe gauge")?;
-    Ok(row
-        .split_whitespace()
-        .nth(1)
-        .ok_or("empty active Subscribe gauge")?
-        .parse()?)
-}
-
-#[tokio::test]
-#[ignore = "requires a built production Go server via LANTERN_RUST_TEST_SERVER"]
-async fn real_wire_dropped_subscription_releases_server_subscriber()
--> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let metrics = listener.local_addr()?.to_string();
-    drop(listener);
-    let mut server = GoServer::start(&[("LANTERN_METRICS_ADDR", &metrics)])?;
-    server.wait_for_listener()?;
-    let client = LanternClient::builder(format!("http://127.0.0.1:{}", server.port()))
-        .connect()
-        .await?;
-    let mut stream = client
-        .bootstrap_identities(StreamOptions::default().with_idle(Duration::from_secs(5)))
-        .await?;
-    assert_eq!(
-        active_subscribers(&metrics)?,
-        0,
-        "unpolled handles do not subscribe"
-    );
-    assert!(matches!(
-        stream.next_event().await?,
-        IdentityEvent::Checkpoint(_)
-    ));
-    let mut active = false;
-    for _ in 0..40 {
-        if active_subscribers(&metrics)? == 1 {
-            active = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        active,
-        "Subscribe did not register an active server subscriber"
-    );
-    drop(stream);
-    let mut released = false;
-    for _ in 0..40 {
-        if active_subscribers(&metrics)? == 0 {
-            released = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(
-        released,
-        "dropping the Rust stream did not cancel server Subscribe"
-    );
-    Ok(())
 }

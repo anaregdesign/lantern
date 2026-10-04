@@ -89,6 +89,7 @@ const (
 	ReceiptMutationDeleteEdge
 	ReceiptMutationAddEdge
 	ReceiptMutationDeleteEdgeContribution
+	ReceiptMutationCreateEdge
 )
 
 // String returns the canonical mutation-family name.
@@ -104,6 +105,8 @@ func (k ReceiptMutationKind) String() string {
 		return "DELETE_EDGE"
 	case ReceiptMutationAddEdge:
 		return "ADD_EDGE"
+	case ReceiptMutationCreateEdge:
+		return "CREATE_EDGE"
 	case ReceiptMutationDeleteEdgeContribution:
 		return "DELETE_EDGE_CONTRIBUTION"
 	default:
@@ -118,7 +121,7 @@ func (k ReceiptMutationKind) Validate() error {
 		ReceiptMutationDeleteVertex,
 		ReceiptMutationDeleteEdge,
 		ReceiptMutationAddEdge,
-		ReceiptMutationDeleteEdgeContribution:
+		ReceiptMutationDeleteEdgeContribution, ReceiptMutationCreateEdge:
 		return nil
 	default:
 		return invalidReceiptError("unknown receipt mutation kind %d", k)

@@ -10,6 +10,29 @@ import 'package:test/test.dart';
 import 'helpers.dart';
 
 void main() {
+  test('restore rejects mixed opaque and private-origin progress', () async {
+    final store = InMemoryOfflineStore();
+    await store.transaction(
+      (tx) =>
+          tx.resetScopedChangeCursor('p', OfflineScopedChangeCursor([1, 2, 3])),
+    );
+    final snapshot =
+        jsonDecode(await store.exportSnapshot()) as Map<String, Object?>;
+    final partition =
+        (snapshot['partitions'] as List<Object?>).single
+            as Map<String, Object?>;
+    partition['changeProgress'] = {
+      '01010101010101010101010101010101': OfflineChangeProgress(
+        completedSequence: BigInt.one,
+      ).toJson(),
+    };
+    expect(
+      () => InMemoryOfflineStore.fromSnapshot(jsonEncode(snapshot)),
+      throwsA(isA<OfflineCodecException>()),
+    );
+    final cursor = await store.transaction((tx) => tx.scopedChangeCursor('p'));
+    expect(cursor!.toBytes(), [1, 2, 3]);
+  });
   final now = DateTime.utc(2026, 7, 22);
 
   OfflineOutboxRecord record(String id, String key) => OfflineOutboxRecord(
@@ -1829,6 +1852,7 @@ void main() {
         ..remove('operations')
         ..remove('replayPausedForAuth')
         ..remove('changeProgress')
+        ..remove('scopedCursor')
         ..remove('changeEpoch')
         ..remove('unknownResidents');
       final outbox = partition['outbox']! as List<Object?>;
@@ -2181,6 +2205,7 @@ void main() {
         ..remove('operations')
         ..remove('replayPausedForAuth')
         ..remove('changeProgress')
+        ..remove('scopedCursor')
         ..remove('changeEpoch')
         ..remove('unknownResidents');
     }
@@ -2257,6 +2282,7 @@ void main() {
           ..remove('operations')
           ..remove('replayPausedForAuth')
           ..remove('changeProgress')
+          ..remove('scopedCursor')
           ..remove('changeEpoch')
           ..remove('unknownResidents');
       }
@@ -2342,6 +2368,7 @@ void main() {
             (legacy['partitions']! as List<Object?>).single!
                 as Map<String, Object?>;
         partition.remove('changeProgress');
+        partition.remove('scopedCursor');
         partition.remove('changeEpoch');
         partition.remove('unknownResidents');
         if (schema < 5) partition.remove('replayPausedForAuth');
@@ -3170,6 +3197,23 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
   @override
   Future<void> updateOutbox(OfflineOutboxRecord record) async =>
       await inner.updateOutbox(record);
+
+  @override
+  Future<OfflineScopedChangeCursor?> scopedChangeCursor(
+    String partitionId,
+  ) async => await inner.scopedChangeCursor(partitionId);
+
+  @override
+  Future<void> applyScopedChangeFrame(
+    String partitionId,
+    OfflineScopedChangeFrame frame,
+  ) async => await inner.applyScopedChangeFrame(partitionId, frame);
+
+  @override
+  Future<void> resetScopedChangeCursor(
+    String partitionId,
+    OfflineScopedChangeCursor? checkpoint,
+  ) async => await inner.resetScopedChangeCursor(partitionId, checkpoint);
 
   @override
   Future<OfflineChangeCursor> changeCursor(String partitionId) async =>

@@ -229,3 +229,30 @@ func TestAuthenticatedPeerTransportRejectsConfiguration(t *testing.T) {
 		t.Fatalf("outbound mTLS certificate option: %v", err)
 	}
 }
+
+func TestVerifiedPeerTransportUsesCurrentMembershipWithoutPublicCredentials(t *testing.T) {
+	eligible := true
+	client := &http.Client{Transport: http.DefaultTransport}
+	transport, err := NewVerifiedPeerTransport(client, func(origin string) bool { return eligible && origin == "https://localhost:6391" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if url, err := transport.BaseURL("https://localhost:6391"); err != nil || url != "https://localhost:6391" {
+		t.Fatal(err)
+	}
+	for _, origin := range []string{"http://localhost:6391", "https://localhost:6380", "https://localhost:6391/path"} {
+		if _, err := transport.BaseURL(origin); err == nil {
+			t.Fatal("unapproved origin eligible", origin)
+		}
+	}
+	eligible = false
+	if _, err := transport.BaseURL("https://localhost:6391"); err == nil {
+		t.Fatal("removed member still eligible")
+	}
+	if transport.client != client {
+		t.Fatal("certified client replaced")
+	}
+	if _, err := NewVerifiedPeerTransport(&http.Client{}, func(string) bool { return true }); err == nil {
+		t.Fatal("default ambient client accepted")
+	}
+}

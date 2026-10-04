@@ -1,7 +1,7 @@
 # chaos_kill_replica — mid-load `docker kill` of one replica.
 # Goal: observe Snapshot resync + readiness gate recovery.
 # run.sh interprets the `chaos` block: at +30s into steady, it kills the
-# named replica; at +90s, it restarts it. Leak gate is measured AFTER the
+# named replica; after another 90s, it resumes it. Leak gate is measured AFTER the
 # replica is back and the cluster is healthy again, so the comparison
 # baseline is the original post-warmup snapshot.
 name: chaos_kill_replica
@@ -15,12 +15,9 @@ target:
   data_template: |
     {"vertex":{"key":"chaos-{{.RequestNumber}}","int64":"{{.RequestNumber}}"}}
 chaos:
-  # Replica container name as known to docker compose. With the explicit
-  # lantern-{0,1,2} services introduced in #435, Compose names the
-  # container `${PROJECT}-${SERVICE}-${REPLICA_INDEX}`. run.sh forces
-  # COMPOSE_PROJECT_NAME=lantern-bench and there's only one replica per
-  # service, so the middle replica is `lantern-bench-lantern-1-1`.
-  kill_target: "lantern-bench-lantern-1-1"
+  # Owned Compose service ID; the harness resolves its current container and
+  # prepares native membership resume before explicitly recreating it.
+  kill_target: "lantern-1"
   kill_at: 30s
   restart_at: 90s
 leak_gate:

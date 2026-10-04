@@ -252,11 +252,17 @@ pub enum LanternError {
     BackupIntegrity(&'static str),
     UnsupportedBackup(&'static str),
     RestoreOutcome(PutOutcome),
-    MessageTooLarge { actual: usize, limit: usize },
+    MessageTooLarge {
+        actual: usize,
+        limit: usize,
+    },
     HealthNotServing(i32),
     Entropy(getrandom::Error),
     Batch(BatchError),
     SearchContinuationLimited,
+    /// Complete logical mutation handled without disclosing its effects.
+    /// This is not an RPC failure or permission to retry.
+    MutationAcceptedUndisclosed,
 }
 
 impl LanternError {
@@ -274,7 +280,8 @@ impl LanternError {
 }
 
 /// A failed chunk of a logical mutation. `completed_items` counts only
-/// validated responses from earlier chunks, not committed or live items.
+/// validated responses or acknowledgements from earlier chunks, not committed
+/// or live items.
 /// The failed chunk may have applied despite its missing/invalid response.
 pub struct BatchError {
     pub completed_items: usize,
@@ -345,6 +352,7 @@ impl fmt::Debug for LanternError {
             }
             Self::Entropy(error) => f.debug_tuple("Entropy").field(error).finish(),
             Self::Batch(error) => f.debug_tuple("Batch").field(error).finish(),
+            Self::MutationAcceptedUndisclosed => f.write_str("MutationAcceptedUndisclosed"),
             Self::SearchContinuationLimited => f.write_str("SearchContinuationLimited"),
         }
     }
@@ -392,6 +400,9 @@ impl fmt::Display for LanternError {
                 write!(f, "Lantern contribution nonce generation failed: {error}")
             }
             Self::Batch(error) => error.fmt(f),
+            Self::MutationAcceptedUndisclosed => {
+                f.write_str("mutation handled; effect undisclosed")
+            }
             Self::SearchContinuationLimited => f.write_str(
                 "Lantern search retained a bounded prefix of hits; its continuation is incomplete",
             ),

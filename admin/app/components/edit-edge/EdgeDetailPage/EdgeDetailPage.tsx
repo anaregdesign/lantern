@@ -127,6 +127,14 @@ export function EdgeDetailPage(props: EdgeDetailPageProps) {
         onConfirm={editor.confirmDelete}
       />
 
+      {editor.state.deleteStatus === "acceptedUndisclosed" ? (
+        <MessageBar intent="info" layout="multiline" className={styles.alert}>
+          <MessageBarBody>
+            Delete request handled. Existence and deletion results are not
+            disclosed by your access policy.
+          </MessageBarBody>
+        </MessageBar>
+      ) : null}
       {editor.state.deleteStatus === "error" ? (
         <MessageBar intent="error" className={styles.alert}>
           <MessageBarBody>

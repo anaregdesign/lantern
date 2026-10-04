@@ -50,12 +50,13 @@ type Gate struct {
 	hasPeers bool
 	health   HealthSetter
 
-	mu           sync.Mutex
-	bootstrapped bool
-	draining     bool
-	lags         map[string]uint64 // key = peer + "\x00" + origin
-	searchConfig map[string]bool   // peer -> fingerprint match
-	current      grpchealth.Status
+	mu                sync.Mutex
+	bootstrapped      bool
+	draining          bool
+	servingPermission bool
+	lags              map[string]uint64 // key = peer + "\x00" + origin
+	searchConfig      map[string]bool   // peer -> fingerprint match
+	current           grpchealth.Status
 
 	// ready is a lock-free mirror of the current status so HTTP probes
 	// can answer without contending with metric updates.
@@ -68,12 +69,13 @@ type Gate struct {
 // transitions and may be nil in tests.
 func NewGate(maxLag uint64, hasPeers bool, hs HealthSetter) *Gate {
 	g := &Gate{
-		maxLag:       maxLag,
-		hasPeers:     hasPeers,
-		health:       hs,
-		lags:         make(map[string]uint64),
-		searchConfig: make(map[string]bool),
-		current:      grpchealth.StatusNotServing,
+		maxLag:            maxLag,
+		hasPeers:          hasPeers,
+		health:            hs,
+		lags:              make(map[string]uint64),
+		searchConfig:      make(map[string]bool),
+		current:           grpchealth.StatusNotServing,
+		servingPermission: true,
 	}
 	if !hasPeers {
 		// Single-instance: ready immediately. Surface SERVING via the
@@ -167,7 +169,19 @@ func (g *Gate) SetSearchConfig(peer string, matched bool) {
 // Safe to call from HTTP probe handlers on every request.
 func (g *Gate) Ready() bool { return g.ready.Load() }
 
+// SetServingPermission is an additional generic runtime condition. It can
+// withdraw serving in single-instance mode without changing replication state.
+func (g *Gate) SetServingPermission(allowed bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.servingPermission = allowed
+	g.evaluateLocked()
+}
+
 func (g *Gate) readyLocked() bool {
+	if !g.servingPermission {
+		return false
+	}
 	// Draining wins over every other consideration, including
 	// single-instance mode's always-ready shortcut.
 	if g.draining {

@@ -101,6 +101,8 @@ type DomainMetrics struct {
 	mutationLogCapacity prometheus.Gauge
 	subscribeActive     prometheus.Gauge
 	subscribeDropped    *prometheus.CounterVec
+	changesActive       prometheus.Gauge
+	changesDropped      *prometheus.CounterVec
 
 	// In-process pubsub subscription telemetry (#240). Wired by the
 	// server-side pubsub.Observer adapter so the leaf core/concurrent/
@@ -482,6 +484,8 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 			Name: "lantern_mutation_log_capacity",
 			Help: "Configured capacity (ring buffer slots) of the in-memory mutation log.",
 		}),
+		changesActive:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "lantern_changes_active_streams", Help: "Number of accepted public WatchChanges streams currently registered."}),
+		changesDropped: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "lantern_changes_dropped_total", Help: "Public WatchChanges streams ended abnormally, by bounded reason (gapped, send_failed)."}, []string{"reason"}),
 		subscribeActive: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "lantern_subscribe_active_streams",
 			Help: "Number of currently active LanternReplicationService.Subscribe streams.",
@@ -796,7 +800,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 	}
 
 	reg.MustRegister(m.vertices, m.edges, m.expirations, m.gcDuration, m.gcEdgeBacklog, m.buildInfo,
-		m.mutationLogEntries, m.mutationLogCapacity, m.subscribeActive, m.subscribeDropped,
+		m.mutationLogEntries, m.mutationLogCapacity, m.subscribeActive, m.subscribeDropped, m.changesActive, m.changesDropped,
 		m.pubsubQueueDepth, m.pubsubDropped, m.pubsubDispatchDuration,
 		m.replicationApplied, m.replicationDropped, m.replicationLag,
 		m.antiEntropyCycles, m.antiEntropyGapsFound,
@@ -1669,4 +1673,11 @@ func readBuildInfo() (version, commit string) {
 		}
 	}
 	return
+}
+
+// OnChangeStarted/Ended track only registered public streams, separate from peers.
+func (m *DomainMetrics) OnChangeStarted() { m.changesActive.Inc() }
+func (m *DomainMetrics) OnChangeEnded()   { m.changesActive.Dec() }
+func (m *DomainMetrics) OnChangeDropped(reason string) {
+	m.changesDropped.WithLabelValues(reason).Inc()
 }

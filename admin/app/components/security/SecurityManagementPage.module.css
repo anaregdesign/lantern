@@ -1,0 +1,15 @@
+.page {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+.nav a {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+}

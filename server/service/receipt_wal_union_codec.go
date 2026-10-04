@@ -21,13 +21,14 @@ import (
 // This private, unwired codec covers graph-only Mutations, accepted-effect
 // sidecars, and receipt-bearing exact mutation envelopes. The
 // FileWAL frame owns its checksum, replica-local sequence and HLC. The union
-// header is versioned independently of the inner receipt formats. V4 rows
-// remain readable because their existing arm numbers and inner layouts are
-// unchanged; only V5 may introduce contribution Delete graph or receipt arms.
+// header is versioned independently of the inner receipt formats. V9 freezes
+// physical namespaces, immutable Edge-only endpoint effects, original lifecycle
+// effects and conditional Edge Create. Earlier histories are
+// refused; operators must perform an explicit offline migration.
 const (
-	receiptWALUnionMagic                  = "LRWU\x05\x00\x00\x00"
-	receiptWALUnionLegacyMagicV4          = "LRWU\x04\x00\x00\x00"
+	receiptWALUnionMagic                  = "LRWU\x09\x00\x00\x00"
 	receiptWALUnionHeaderSize             = 16 // magic, kind, reserved[3], body length
+	receiptWALUnionEdgeCreate             = byte(10)
 	receiptWALUnionGraph                  = byte(1)
 	receiptWALUnionEdgeDelete             = byte(2)
 	receiptWALUnionGraphDeleteEffect      = byte(3)
@@ -42,17 +43,17 @@ const (
 	// Each receipt-envelope body has a stricter independent 8 MiB cap.
 	receiptWALUnionMaxBytes = (32 << 20) - 36
 	// Every reachable Mutation field is reviewed before advancing this pin.
-	// The V5 descriptor adds contribution Delete graph and receipt arms;
+	// The V9 descriptor includes immutable endpoint and origin lifecycle effects;
 	// graph-only codec paths still reject populated receipt contexts.
-	receiptWALGraphSchemaFingerprintV5 = "c0edee85c6b3e7bffc729691829ac8c24d86f9be8761c432e3e2126127ebf92d"
+	receiptWALGraphSchemaFingerprintV9 = "92a299d04670341c8a9d73113dc712e7dabd0a56b7ba840b0d769fc10e3d384a"
 )
 
 var errReceiptWALUnion = errors.New("service: invalid receipt WAL union payload")
 
 var receiptWALGraphSchemaError = sync.OnceValue(func() error {
 	digest := protoschema.Fingerprint((&pb.Mutation{}).ProtoReflect().Descriptor())
-	if digest != receiptWALGraphSchemaFingerprintV5 {
-		return receiptWALUnionError("WAL union v5 graph schema changed: %s", digest)
+	if digest != receiptWALGraphSchemaFingerprintV9 {
+		return receiptWALUnionError("WAL union v9 graph schema changed: %s", digest)
 	}
 	return nil
 })
@@ -74,11 +75,14 @@ func encodeReceiptWALUnion(op mutationlog.MutationOp) ([]byte, error) {
 			return nil, receiptWALUnionError("graph Delete requires accepted-effect envelope")
 		}
 		if value.GetOp().GetReplicatedReceiptEdgeAdd() != nil ||
-			value.GetOp().GetReplicatedReceiptEdgeContributionDelete() != nil {
+			value.GetOp().GetReplicatedReceiptEdgeContributionDelete() != nil || value.GetOp().GetEdgeCreateEffect() != nil {
 			return nil, receiptWALUnionError("receipt mutation requires accepted-effect envelope")
 		}
 		kind = receiptWALUnionGraph
 		body, err = encodeReceiptWALGraph(value)
+	case *edgeCreateEnvelope:
+		kind = receiptWALUnionEdgeCreate
+		body, err = encodeEdgeCreateWAL(value)
 	case *edgeDeleteReceiptEnvelope:
 		kind = receiptWALUnionEdgeDelete
 		body, err = encodeReceiptEdgeDeleteWAL(value)
@@ -133,7 +137,7 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 	if len(raw) < receiptWALUnionHeaderSize || len(raw) > receiptWALUnionMaxBytes {
 		return nil, receiptWALUnionError("invalid payload size %d", len(raw))
 	}
-	if (string(raw[:8]) != receiptWALUnionMagic && string(raw[:8]) != receiptWALUnionLegacyMagicV4) ||
+	if string(raw[:8]) != receiptWALUnionMagic ||
 		raw[9] != 0 || raw[10] != 0 || raw[11] != 0 {
 		return nil, receiptWALUnionError("unknown version or nonzero reserved header")
 	}
@@ -171,15 +175,11 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 		if err != nil {
 			return nil, err
 		}
-		if string(raw[:8]) == receiptWALUnionLegacyMagicV4 {
-			switch value.Mutation.GetOp().GetOp().(type) {
-			case *pb.MutationOp_DeleteEdgeContribution, *pb.MutationOp_DeleteEdgeContributions:
-				return nil, receiptWALUnionError("contribution Delete requires union v5")
-			}
-		}
 		return value, nil
 	case receiptWALUnionGraphPutEffect:
 		return decodeGraphPutEffectWAL(body)
+	case receiptWALUnionEdgeCreate:
+		return decodeEdgeCreateWAL(body)
 	case receiptWALUnionGraphAddEffect:
 		return decodeGraphAddEffectWAL(body)
 	case receiptWALUnionBaseline:
@@ -219,7 +219,7 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 			return receiptWALUnionError("graph Delete lacks accepted-effect envelope")
 		}
 		if value.GetOp().GetReplicatedReceiptEdgeAdd() != nil ||
-			value.GetOp().GetReplicatedReceiptEdgeContributionDelete() != nil {
+			value.GetOp().GetReplicatedReceiptEdgeContributionDelete() != nil || value.GetOp().GetEdgeCreateEffect() != nil {
 			return receiptWALUnionError("receipt mutation lacks accepted-effect envelope")
 		}
 		if err := validateReceiptWALGraph(value); err != nil {
@@ -266,6 +266,15 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		payloadHLC := hlc.Timestamp{WallNs: m.GetHlc().GetWallNs(), Logical: m.GetHlc().GetLogical(), NodeID: node}
 		if !entry.HLC.Equal(payloadHLC) {
 			return receiptWALUnionError("FileWAL HLC differs from graph Add effect HLC")
+		}
+		return nil
+	case *edgeCreateEnvelope:
+		verified, err := decodeEdgeCreateMutation(value.GraphMutation())
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(value.Receipts, verified.Receipts) || !entry.HLC.Equal(hlcFromProto(value.Mutation.GetHlc())) {
+			return receiptWALUnionError("Create WAL receipt evidence or HLC differs")
 		}
 		return nil
 	case *edgeDeleteReceiptEnvelope:
@@ -420,6 +429,7 @@ func scanReceiptWALGraphWireMode(
 	var oneofs map[protoreflect.FullName]struct{}
 	var opCount int
 	var armCount int
+	var endpointEffectCount int
 	for len(raw) != 0 {
 		number, wireType, tagBytes := protowire.ConsumeTag(raw)
 		if tagBytes < 0 {
@@ -436,9 +446,15 @@ func scanReceiptWALGraphWireMode(
 				return receiptWALUnionError("duplicate outer Mutation.op field")
 			}
 		}
-		if descriptor.FullName() == "graph.v1.MutationOp" {
+		if descriptor.FullName() == "graph.v1.MutationOp" && number == 23 {
+			endpointEffectCount++
+			if endpointEffectCount != 1 {
+				return receiptWALUnionError("duplicate endpoint effect field")
+			}
+		}
+		if descriptor.FullName() == "graph.v1.MutationOp" && number != 23 {
 			if number < 1 || (number > 14 && number != 19 && number != 20 &&
-				(!allowReceiptAdd || number != 18)) {
+				(!allowReceiptAdd || number != 18 && number != 22)) {
 				return receiptWALUnionError("graph kind cannot contain receipt or unknown operation arm %d", number)
 			}
 			armCount++
@@ -665,6 +681,17 @@ func receiptWALGraphArm(m *pb.Mutation) (receiptWALRepeatedArm, error) {
 		for i, item := range items {
 			if item == nil || item.GetOutcome() == nil {
 				return receiptWALRepeatedArm{}, receiptWALUnionError("replicated Edge Put entry %d has no outcome", i)
+			}
+		}
+		return receiptWALRepeatedArm{len(items), func(i int) proto.Message { return items[i] }, func(i int) { items[i] = nil }}, nil
+	case *pb.MutationOp_EdgeCreateEffect:
+		if value == nil || value.EdgeCreateEffect == nil {
+			break
+		}
+		items := value.EdgeCreateEffect.Items
+		for i, item := range items {
+			if item == nil || item.GetOriginal() == nil {
+				return receiptWALRepeatedArm{}, receiptWALUnionError("Create effect item %d is incomplete", i)
 			}
 		}
 		return receiptWALRepeatedArm{len(items), func(i int) proto.Message { return items[i] }, func(i int) { items[i] = nil }}, nil

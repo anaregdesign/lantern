@@ -33,8 +33,9 @@ type receiptEdgeAddItem struct {
 }
 
 type receiptEdgeAddCall struct {
-	Group mutationreceipt.GroupID
-	Items []receiptEdgeAddItem
+	NoEndpointCreation bool
+	Group              mutationreceipt.GroupID
+	Items              []receiptEdgeAddItem
 }
 
 func (s *LanternService) commitPublicReceiptEdgeAdd(
@@ -96,8 +97,9 @@ func (s *LanternService) commitPublicReceiptEdgeAdd(
 		items[i] = receiptEdgeAddItem{ID: id, Edge: edge, ContribID: contribID}
 	}
 	return s.receiptEdgeAddCoordinator.Commit(ctx, receiptEdgeAddCall{
-		Group: group,
-		Items: items,
+		Group:              group,
+		Items:              items,
+		NoEndpointCreation: s.dataAuthorization,
 	})
 }
 
@@ -147,7 +149,7 @@ func prepareEdgeAddReceiptCall(
 	items := make([]graphcache.EdgeItem[string], len(call.Items))
 	intents := make([]mutationreceipt.Intent, len(call.Items))
 	for i, item := range call.Items {
-		digest, err := receiptEdgeAddDigest(item.Edge, item.ContribID)
+		digest, err := receiptEdgeAddEffectDigest(item.Edge, item.ContribID, call.NoEndpointCreation, s.namespaceFormat)
 		if err != nil {
 			return nil, nil, nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
@@ -161,6 +163,7 @@ func prepareEdgeAddReceiptCall(
 		items[i] = graphcache.EdgeItem[string]{
 			Tail: item.Edge.GetTail(), Head: item.Edge.GetHead(), Weight: item.Edge.GetWeight(),
 			Expiration: expiration, ContribID: item.ContribID,
+			RequireLiveEndpoints: call.NoEndpointCreation, NoEndpointCreation: call.NoEndpointCreation,
 		}
 		var receiptContrib mutationreceipt.ContribID
 		copy(receiptContrib[:], item.ContribID[:])
@@ -168,6 +171,10 @@ func prepareEdgeAddReceiptCall(
 			ID: item.ID, Group: call.Group, Index: uint32(i), Count: uint32(len(call.Items)),
 			Kind: mutationreceipt.AddEdge, Digest: digest,
 			HasContrib: true, ContribID: receiptContrib,
+		}
+		intents[i].Resource, err = receiptResourceIdentity(s.namespaceFormat, item.Edge.GetTail(), item.Edge.GetHead())
+		if err != nil {
+			return nil, nil, nil, invalidReceiptRequest(err)
 		}
 	}
 	for i, edge := range original {
@@ -251,6 +258,9 @@ func (c *edgeAddReceiptCoordinator) Commit(
 		return nil, receiptStoreError(err)
 	}
 	if classification == mutationreceipt.Duplicate {
+		if err := c.service.authorizeReceiptRows(ctx, prior); err != nil {
+			return nil, err
+		}
 		return receiptEdgeAddResponse(prior)
 	}
 	placeholders := make([][]byte, len(items))
@@ -263,7 +273,7 @@ func (c *edgeAddReceiptCoordinator) Commit(
 	if err := s.prepareLocalMutationLocked(); err != nil {
 		return nil, err
 	}
-	if err := s.checkVertexCapacity(2 * len(items)); err != nil {
+	if err := s.checkEdgeEndpointCapacity(len(items), call.NoEndpointCreation); err != nil {
 		return nil, err
 	}
 	if err := s.checkEdgeCapacity(len(items)); err != nil {
@@ -282,7 +292,7 @@ func (c *edgeAddReceiptCoordinator) Commit(
 	ts := s.clock.Now()
 	graphTx, err := c.cache.BeginEdgeAdd(items, ts)
 	if err != nil {
-		return nil, searchIndexWriteError(err)
+		return nil, writeError(err)
 	}
 	defer graphTx.Abort()
 	result := graphTx.Result()
@@ -307,7 +317,9 @@ func (c *edgeAddReceiptCoordinator) Commit(
 		contribIDs[i] = items[i].ContribID
 	}
 	envelope := &graphAddEffectEnvelope{
-		Origin: origin, OriginSeq: seq, HLC: ts,
+		NamespaceFormat:    s.namespaceFormat,
+		NoEndpointCreation: call.NoEndpointCreation,
+		Origin:             origin, OriginSeq: seq, HLC: ts,
 		Epoch: c.store.Epoch(), PolicyFingerprint: c.store.PolicyFingerprint(),
 		Original: cloneReceiptEdges(original), ContribIDs: contribIDs,
 		AcceptedIndexes: acceptedIndexes, Receipts: receipts,
@@ -384,8 +396,9 @@ func receiptEdgeAddGraphItems(e *graphAddEffectEnvelope) []graphcache.EdgeItem[s
 	for i, edge := range e.Original {
 		items[i] = graphcache.EdgeItem[string]{
 			Tail: edge.GetTail(), Head: edge.GetHead(), Weight: edge.GetWeight(),
-			Expiration: prototime.Expiration(edge.GetExpiration()),
-			ContribID:  e.ContribIDs[i],
+			Expiration:         prototime.Expiration(edge.GetExpiration()),
+			ContribID:          e.ContribIDs[i],
+			NoEndpointCreation: e.NoEndpointCreation,
 		}
 	}
 	return items
@@ -461,7 +474,9 @@ func (c *edgeAddReceiptCoordinator) commitReplicated(
 		return connect.NewError(connect.CodeInternal, err)
 	}
 	localEnvelope := &graphAddEffectEnvelope{
-		Origin: origin, OriginSeq: seq, HLC: ts, Epoch: e.Epoch,
+		NamespaceFormat:    e.NamespaceFormat,
+		NoEndpointCreation: e.NoEndpointCreation,
+		Origin:             origin, OriginSeq: seq, HLC: ts, Epoch: e.Epoch,
 		PolicyFingerprint: e.PolicyFingerprint,
 		Original:          cloneReceiptEdges(e.Original),
 		ContribIDs:        append([]graphcache.ContribID(nil), e.ContribIDs...),

@@ -10,6 +10,7 @@ import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart
 import 'package:sqflite/sqflite.dart' as sqflite;
 
 import 'support/direct_launch_binding.dart';
+import 'support/head_edge_fixture.dart';
 import 'support/physical_result_marker.dart';
 
 void main() {
@@ -85,6 +86,12 @@ void main() {
     await client.ping();
 
     final prefix = 'mobile-smoke:${DateTime.now().microsecondsSinceEpoch}:';
+    final remoteVertices = <String>{'${prefix}offline-vertex'};
+    final remoteEdges = <EdgeRef>[];
+    result.addTrackedTearDown(() async {
+      await client.deleteEdges(remoteEdges);
+      await client.deleteVertices(remoteVertices);
+    });
     final inputs = <VertexInput>[
       VertexInput(key: '${prefix}f64', value: VertexValue.float64(1.25)),
       VertexInput(key: '${prefix}f32', value: VertexValue.float32(2.5)),
@@ -115,6 +122,7 @@ void main() {
       VertexInput(key: '${prefix}nil', value: VertexValue.nil()),
       VertexInput(key: '${prefix}unset', value: VertexValue.unset()),
     ];
+    remoteVertices.addAll(inputs.map((input) => input.key));
     expect(
       (await client.putVertices(inputs)).map((result) => result.outcome),
       everyElement(PutOutcome.appliedAndLive),
@@ -130,6 +138,9 @@ void main() {
       weight: 1,
       expiresIn: const Duration(minutes: 1),
     );
+    remoteEdges.add(EdgeRef(edge.tail, edge.head));
+    remoteVertices.addAll(edgeEndpointKeys(remoteEdges));
+    await seedLiveEdgeEndpoints(client, [remoteEdges.last]);
     expect(await client.addEdge(edge), 1);
     expect(
       await client.scanVertexKeys(prefix: prefix, limit: 3),
@@ -177,6 +188,9 @@ void main() {
       weight: 0.5,
       expiresIn: const Duration(minutes: 2),
     );
+    remoteEdges.add(EdgeRef(offlineEdge.tail, offlineEdge.head));
+    remoteVertices.addAll(edgeEndpointKeys([remoteEdges.last]));
+    await seedLiveEdgeEndpoints(client, [remoteEdges.last]);
     final edgePut = await offline.putEdge(
       partitionId: partition,
       input: offlineEdge,
@@ -306,6 +320,9 @@ void main() {
       '${prefix}server-expired-tail',
       '${prefix}server-expired-head',
     );
+    remoteEdges.add(expiredEdge);
+    remoteVertices.addAll(edgeEndpointKeys([expiredEdge]));
+    await seedLiveEdgeEndpoints(client, [expiredEdge]);
     final expiredVertex = await skewed.putVertex(
       partitionId: partition,
       input: VertexInput(

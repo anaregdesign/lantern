@@ -294,7 +294,8 @@ type receiptLeakReplica struct {
 }
 
 type receiptLeakReport struct {
-	Thresholds struct {
+	SnapshotProtocol string `json:"snapshot_protocol,omitempty"`
+	Thresholds       struct {
 		GoroutineMaxDelta         int `json:"goroutine_max_delta"`
 		HeapAllocMaxDeltaMB       int `json:"heap_alloc_max_delta_mb"`
 		SteadyHeapAllocMaxDeltaMB int `json:"steady_heap_alloc_max_delta_mb"`
@@ -318,6 +319,7 @@ func runReceiptLeakEvaluation(args []string) int {
 	maxHeapMB := fs.Int("max-heap-mb", 0, "maximum per-replica post-GC heap_alloc delta in MiB")
 	maxSteadyHeapMB := fs.Int("max-steady-heap-mb", 0, "maximum per-replica unforced steady heap_alloc peak delta in MiB")
 	out := fs.String("out", "", "leak gate JSON output path")
+	protocol := fs.String("snapshot-protocol", "forced_gc_minimum", "forced_gc_minimum | natural_gc_single")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -325,7 +327,11 @@ func runReceiptLeakEvaluation(args []string) int {
 		fs.Usage()
 		return 2
 	}
+	if *protocol != "forced_gc_minimum" && *protocol != "natural_gc_single" {
+		return 2
+	}
 	report := evaluateReceiptLeak(*pre, *post, *steady, *duration, *interval, *maxGoroutines, *maxHeapMB, *maxSteadyHeapMB)
+	report.SnapshotProtocol = *protocol
 	if err := writeReceiptArtifact(*out, report); err != nil {
 		fmt.Fprintf(os.Stderr, "receipt leak gate: write report: %v\n", err)
 		return 1

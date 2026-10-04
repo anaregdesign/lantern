@@ -457,7 +457,7 @@ func (c *GraphCache[S, T]) deleteByPrefixHLC(ctx context.Context, prefix string,
 		return nil, nil
 	}
 	var victims []S
-	c.prefixIndex.walkPrefix(prefix, func(projected string) bool {
+	walkVisiblePrefix(ctx, c.prefixIndex, prefix, "", true, false, false, func(projected string) bool {
 		if err := ctx.Err(); err != nil {
 			return false
 		}

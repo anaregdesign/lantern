@@ -441,3 +441,35 @@ func TestReceiptWholeStateArchiveStageReapsNaturallyExpiredTombstones(t *testing
 		t.Fatalf("expired tombstones were resurrected: %+v", tombstones)
 	}
 }
+
+func TestReceiptArchiveRetainsEdgeOnlyHistoryWithMissingHead(t *testing.T) {
+	archive := wholeStateArchiveFixture(t)
+	archive.Graph[3].GetEdge().NoEndpointCreation = true
+	archive.Graph = append(archive.Graph[:2], archive.Graph[3:]...)
+	archive.Graph[len(archive.Graph)-1].GetFooter().VertexCount = 1
+	raw := encodedWholeStateArchive(t, archive)
+	stage, err := stageReceiptWholeStateArchive(t.Context(), bytes.NewReader(raw), archive.Policy, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := stage.graph.GetVertex("head"); ok {
+		t.Fatal("archive fabricated missing head")
+	}
+	if len(stage.graph.SnapshotEdges()) != 0 {
+		t.Fatal("archive exposed dangling Edge")
+	}
+	if rows := stage.graph.SnapshotReplication().Graph.Edges; len(rows) != 1 || len(rows[0].Contributions) != 1 {
+		t.Fatal("archive erased accepted Add", rows)
+	}
+	if err := stage.graph.PutVertex("head", &pb.Vertex{Key: "head"}); err != nil {
+		t.Fatal(err)
+	}
+	if weight, ok := stage.graph.GetWeight("tail", "head"); !ok || weight != 1.5 {
+		t.Fatal("archive history changed", weight, ok)
+	}
+	archive.Graph[2].GetEdge().NoEndpointCreation = false
+	var invalid bytes.Buffer
+	if err := encodeWholeStateArchive(&invalid, archive); err == nil {
+		t.Fatal("unflagged dangling history accepted")
+	}
+}

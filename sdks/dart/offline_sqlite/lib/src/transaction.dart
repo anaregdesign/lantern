@@ -807,6 +807,7 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       'outbox',
       'operations',
       'cdc_origins',
+      'cdc_scoped',
     ]) {
       await sql.delete(
         table,
@@ -943,6 +944,87 @@ final class _SqlTransaction implements OfflineStoreTransaction {
   }
 
   @override
+  Future<OfflineScopedChangeCursor?> scopedChangeCursor(String partitionId) =>
+      _run(() async {
+        _ensureOpen();
+        _validatePartition(partitionId);
+        final rows = await sql.query(
+          'cdc_scoped',
+          columns: ['cursor'],
+          where: 'partition_id=?',
+          whereArgs: [partitionId],
+          limit: 1,
+        );
+        if (rows.isEmpty) return null;
+        final bytes = rows.single['cursor'];
+        if (bytes is! List<int>) throw const OfflineCodecException();
+        return OfflineScopedChangeCursor(bytes);
+      });
+
+  @override
+  Future<void> applyScopedChangeFrame(
+    String partitionId,
+    OfflineScopedChangeFrame frame,
+  ) => _atomic(() async {
+    final metadata = await _partition(partitionId);
+    if (frame.bootstrap || await scopedChangeCursor(partitionId) == null) {
+      throw const OfflineChangeGapException();
+    }
+    for (final key in frame.keys) {
+      await sql.delete(
+        'cache',
+        where: 'partition_id=? AND entity_key=?',
+        whereArgs: [partitionId, key.canonical],
+      );
+    }
+    if (frame.cursor != null) {
+      await sql.update(
+        'cdc_scoped',
+        {'cursor': frame.cursor!.toBytes()},
+        where: 'partition_id=?',
+        whereArgs: [partitionId],
+      );
+    }
+    await sql.update(
+      'partitions',
+      {'change_epoch': _checkedIncrement(metadata['change_epoch']! as int)},
+      where: 'partition_id=?',
+      whereArgs: [partitionId],
+    );
+    changed.add(partitionId);
+  });
+
+  @override
+  Future<void> resetScopedChangeCursor(
+    String partitionId,
+    OfflineScopedChangeCursor? checkpoint,
+  ) => _atomic(() async {
+    await _partition(partitionId);
+    if (checkpoint != null && await scopedChangeCursor(partitionId) == null) {
+      final count =
+          (await sql.rawQuery(
+                'SELECT COUNT(*) AS n FROM cdc_scoped',
+              )).single['n']!
+              as int;
+      if (count >= offlineMaxScopedCursorsPerStore) {
+        throw const OfflineCapacityException();
+      }
+    }
+    await resetChangeCursor(partitionId, OfflineChangeCursor(const {}));
+    await sql.delete(
+      'cdc_scoped',
+      where: 'partition_id=?',
+      whereArgs: [partitionId],
+    );
+    if (checkpoint != null) {
+      await sql.insert('cdc_scoped', {
+        'partition_id': partitionId,
+        'cursor': checkpoint.toBytes(),
+      });
+    }
+  });
+
+  @override
   Future<OfflineChangeCursor> changeCursor(String partitionId) =>
       _run(() async {
         _ensureOpen();
@@ -1027,6 +1109,9 @@ final class _SqlTransaction implements OfflineStoreTransaction {
     OfflineChangeChunk chunk,
   ) => _atomic(() async {
     await _partition(partitionId);
+    if (await scopedChangeCursor(partitionId) != null) {
+      throw const OfflineChangeGapException();
+    }
     final rows = await sql.query(
       'cdc_origins',
       where: 'partition_id=? AND origin=?',
@@ -1123,6 +1208,11 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       where: 'partition_id=?',
       whereArgs: [partitionId],
     );
+    await sql.delete(
+      'cdc_scoped',
+      where: 'partition_id=?',
+      whereArgs: [partitionId],
+    );
     for (final entry in checkpoint.sequences.entries) {
       await sql.insert(
         'cdc_origins',
@@ -1212,6 +1302,15 @@ final class _SqlTransaction implements OfflineStoreTransaction {
   }
 
   Future<void> _validateCapacities() async {
+    final scoped =
+        (await sql.rawQuery(
+              'SELECT COUNT(*) AS n FROM cdc_scoped',
+            )).single['n']!
+            as int;
+    if (scoped > offlineMaxScopedCursorsPerStore) {
+      throw const OfflineCapacityException();
+    }
+
     final origins =
         (await sql.rawQuery(
               'SELECT COUNT(*) AS n FROM cdc_origins',
@@ -1377,11 +1476,26 @@ final class _SqlTransaction implements OfflineStoreTransaction {
         )).isNotEmpty) {
       throw const OfflineCodecException();
     }
+    final scopedRows = await sql.query(
+      'cdc_scoped',
+      columns: ['cursor'],
+      where: 'partition_id=?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (scopedRows.isNotEmpty) {
+      final bytes = scopedRows.single['cursor'];
+      if (bytes is! List<int>) throw const OfflineCodecException();
+      OfflineScopedChangeCursor(bytes);
+    }
     final progress = await sql.query(
       'cdc_origins',
       where: 'partition_id=?',
       whereArgs: [id],
     );
+    if (scopedRows.isNotEmpty && progress.isNotEmpty) {
+      throw const OfflineCodecException();
+    }
     if (progress.length > offlineMaxChangeOrigins) {
       throw const OfflineCapacityException();
     }

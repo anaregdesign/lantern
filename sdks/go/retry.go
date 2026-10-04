@@ -199,6 +199,10 @@ const (
 // (and therefore every Failover wrapper). Adding an RPC method without a
 // row here fails TestRetryEligibilityMatrix_CoversEveryRPC.
 var methodRetryClasses = map[string]methodRetryClass{
+	"CreateEdge":                         retryNever,
+	"CreateEdges":                        retryNever,
+	"CreateEdgesWithReceipt":             retryAlways,
+	"CreateEdgeWithReceipt":              retryAlways,
 	"GetVertex":                          retryAlways,
 	"GetVertices":                        retryAlways,
 	"GetEdge":                            retryAlways,
@@ -262,6 +266,7 @@ var methodRetryClasses = map[string]methodRetryClass{
 	"Backup":               retryNever, // whole-graph stream dump — excluded in v1
 	"Restore":              retryNever, // stream restore — excluded in v1
 	"Subscribe":            retryNever, // server-streaming replication feed
+	"WatchChanges":         retryNever, // application owns the opaque cursor and recovery
 	"BootstrapIdentity":    retryNever, // recovery stream must not retry invisibly
 	"SubscribeIdentity":    retryNever, // caller owns its durable vector cursor
 	"NewIncrementalSearch": retryNever, // session constructor; per-query retries ride unary

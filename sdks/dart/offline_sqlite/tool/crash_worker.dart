@@ -1,12 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+import 'probe_protocol.dart';
+
+var _stage = ProbeStage.arguments;
 
 const _partition = 'crash-probe';
 const _receiptPartition = 'receipt-crash-probe';
@@ -28,6 +33,9 @@ Future<void> main(List<String> arguments) async {
           'cursor-chunk',
           'cursor-final',
           'checkpoint-reset',
+          'scoped-partial',
+          'scoped-final',
+          'scoped-reset',
           'wipe',
           'receipt',
         ].contains(scenario) ||
@@ -35,6 +43,7 @@ Future<void> main(List<String> arguments) async {
         (scenario == 'receipt' && boundary != 'after')) {
       throw StateError('arguments');
     }
+    _stage = ProbeStage.open;
     sqfliteFfiInit();
     if (scenario == 'receipt' && mode == 'crash') {
       await _crashReceipt(path);
@@ -50,7 +59,8 @@ Future<void> main(List<String> arguments) async {
       await stdout.flush();
     }
   } catch (error) {
-    stderr.writeln('crash_worker_failed:${error.runtimeType}');
+    stdout.writeln(jsonEncode(probeFailureMarker(_stage, error)));
+    await stdout.flush();
     exitCode = 1;
   }
 }
@@ -104,7 +114,7 @@ Future<void> _verify(String path, String scenario, String boundary) async {
       _require(
         boundary == 'before'
             ? tables.isEmpty && version == 0
-            : tables.isNotEmpty && version == 4,
+            : tables.isNotEmpty && version == 5,
       );
     } finally {
       await raw.close();
@@ -163,6 +173,7 @@ Future<void> _crashReceipt(String path) async {
     ),
   );
   try {
+    _stage = ProbeStage.capability;
     final capability = await direct.getReceiptCapability();
     if (capability is! ReceiptCapabilityEnabled) {
       throw StateError('receipt_capability_disabled');
@@ -189,6 +200,7 @@ Future<void> _crashReceipt(String path) async {
       head: '${prefix}contribution-head',
       contribId: Uint8List(24)..[23] = 2,
     );
+    _stage = ProbeStage.seedVertices;
     _require(
       await direct.putVertex(
             VertexInput(key: putKey, value: VertexValue.string('original')),
@@ -201,6 +213,24 @@ Future<void> _crashReceipt(String path) async {
           ) ==
           PutOutcome.appliedAndLive,
     );
+    // Receipt Edge effects never create endpoints implicitly in protected mode.
+    final endpointResults = await direct.putVertices([
+      for (final key in [
+        deleteEdge.tail,
+        deleteEdge.head,
+        addEdge.tail,
+        addEdge.head,
+        contribution.tail,
+        contribution.head,
+      ])
+        VertexInput(key: key, value: VertexValue.string('endpoint')),
+    ]);
+    _require(
+      endpointResults.every(
+        (item) => item.outcome == PutOutcome.appliedAndLive,
+      ),
+    );
+    _stage = ProbeStage.seedEdges;
     _require(
       await direct.putEdge(
             EdgeInput(tail: deleteEdge.tail, head: deleteEdge.head, weight: 2),
@@ -236,6 +266,7 @@ Future<void> _crashReceipt(String path) async {
         contribId: Uint8List(24)..[23] = 3,
       ),
     );
+    _stage = ProbeStage.enqueue;
     await repository.putVertexIfAbsent(
       partitionId: _receiptPartition,
       operationId: '${prefix}put',
@@ -258,7 +289,7 @@ Future<void> _crashReceipt(String path) async {
         tail: addEdge.tail,
         head: addEdge.head,
         weight: 4,
-        contribId: Uint8List(24)..[23] = 1,
+        contribId: _newContribId(),
       ),
     );
     await repository.deleteEdgeContribution(
@@ -266,6 +297,7 @@ Future<void> _crashReceipt(String path) async {
       operationId: '${prefix}contribution-delete',
       contribution: contribution,
     );
+    _stage = ProbeStage.prepared;
     final prepared = await store.transaction(
       (transaction) => transaction.outbox(_receiptPartition),
     );
@@ -296,9 +328,11 @@ Future<void> _crashReceipt(String path) async {
     // A foreground drain now stops after its claimed batch schedules a
     // retry. This fixture claims one item at a time, so start a fresh drain
     // for each of the five independent committed-response losses.
+    _stage = ProbeStage.drain;
     for (var index = 0; index < prepared.length; index++) {
       _require(await repository.drain(_receiptPartition) == 0);
     }
+    _stage = ProbeStage.unresolved;
     final unresolved = await store.transaction(
       (transaction) => transaction.outbox(_receiptPartition),
     );
@@ -313,6 +347,7 @@ Future<void> _crashReceipt(String path) async {
                 record.diagnosticCode == 'receipt_response_unknown',
           ),
     );
+    _stage = ProbeStage.applied;
     _require((await direct.getEdge(addEdge)).weight == 4);
     _require(await direct.deleteEdge(addEdge));
     await _requireEdgeMissing(direct, addEdge);
@@ -326,6 +361,7 @@ Future<void> _crashReceipt(String path) async {
 }
 
 Future<void> _verifyReceipt(String path) async {
+  _stage = ProbeStage.reopen;
   final token = _receiptToken();
   final direct = _receiptClient(
     _receiptEndpoint('LANTERN_DART_RECEIPT_ENDPOINT'),
@@ -376,6 +412,7 @@ Future<void> _verifyReceipt(String path) async {
       );
     }
 
+    _stage = ProbeStage.reconcile;
     _require(await repository.drain(_receiptPartition) == 5);
     for (final record in pending) {
       final status = await repository.getWriteStatus(
@@ -423,6 +460,7 @@ Future<void> _verifyReceipt(String path) async {
         (transaction) => transaction.outbox(_receiptPartition),
       )).isEmpty,
     );
+    _stage = ProbeStage.originals;
     final put = pending
         .map((record) => record.intent)
         .whereType<OfflinePutVertexIfAbsentIntent>()
@@ -466,7 +504,8 @@ Uri _receiptEndpoint(String name) {
   final value = Platform.environment[name];
   final endpoint = value == null ? null : Uri.tryParse(value);
   if (endpoint == null ||
-      endpoint.scheme != 'http' ||
+      endpoint.scheme !=
+          (name == 'LANTERN_DART_RECEIPT_ENDPOINT' ? 'https' : 'http') ||
       !['127.0.0.1', 'localhost', '::1'].contains(endpoint.host) ||
       endpoint.userInfo.isNotEmpty) {
     throw StateError('receipt_endpoint');
@@ -485,6 +524,15 @@ LanternClient _receiptClient(Uri endpoint, String token) =>
       endpoint,
       allowInsecure: endpoint.scheme == 'http',
       token: token,
+      httpClientFactory: endpoint.scheme == 'https'
+          ? () => HttpClient(
+              context: SecurityContext(withTrustedRoots: false)
+                ..setTrustedCertificates(
+                  Platform.environment['LANTERN_DART_RECEIPT_CA_FILE'] ??
+                      (throw StateError('receipt_ca_required')),
+                ),
+            )
+          : null,
     );
 
 Future<void> _requireVertexMissing(LanternClient client, String key) async {
@@ -510,10 +558,17 @@ Future<void> _seed(OfflineStore store, String scenario) async {
     // A second partition detects accidental cross-partition cleanup.
     await transaction.putCache('other', _cache('other', 'untouched'));
     if (scenario == 'enqueue') return;
-    await transaction.resetChangeCursor(
-      _partition,
-      OfflineChangeCursor({_origin: BigInt.from(7)}),
-    );
+    if (scenario.startsWith('scoped-')) {
+      await transaction.resetScopedChangeCursor(
+        _partition,
+        OfflineScopedChangeCursor([7, 0, 255]),
+      );
+    } else {
+      await transaction.resetChangeCursor(
+        _partition,
+        OfflineChangeCursor({_origin: BigInt.from(7)}),
+      );
+    }
     for (final key in ['first', 'last', 'untouched']) {
       await transaction.putCache(_partition, _cache(_partition, key));
     }
@@ -521,6 +576,9 @@ Future<void> _seed(OfflineStore store, String scenario) async {
     if (scenario == 'confirmation') await _claim(transaction);
     if (scenario == 'cursor-final') {
       await transaction.applyChangeChunk(_partition, _chunk(0));
+    }
+    if (scenario == 'scoped-final') {
+      await transaction.applyScopedChangeFrame(_partition, _scopedFrame(false));
     }
   });
 }
@@ -560,6 +618,15 @@ Future<void> _mutate(
       await transaction.resetChangeCursor(
         _partition,
         OfflineChangeCursor({_origin: BigInt.from(9)}),
+      );
+    case 'scoped-partial':
+      await transaction.applyScopedChangeFrame(_partition, _scopedFrame(false));
+    case 'scoped-final':
+      await transaction.applyScopedChangeFrame(_partition, _scopedFrame(true));
+    case 'scoped-reset':
+      await transaction.resetScopedChangeCursor(
+        _partition,
+        OfflineScopedChangeCursor([9, 255, 0]),
       );
     case 'wipe':
       await transaction.wipePartition(_partition);
@@ -655,6 +722,12 @@ OfflineChangeChunk _chunk(int index) => OfflineChangeChunk(
   keys: [OfflineEntityKey.vertex(index == 0 ? 'first' : 'last')],
 );
 
+OfflineScopedChangeFrame _scopedFrame(bool finalFrame) =>
+    OfflineScopedChangeFrame(
+      keys: [OfflineEntityKey.vertex(finalFrame ? 'last' : 'first')],
+      cursor: finalFrame ? OfflineScopedChangeCursor([8, 0, 255]) : null,
+    );
+
 Future<void> _finishChunk(OfflineStore store, {required bool committed}) async {
   try {
     await store.transaction(
@@ -690,6 +763,9 @@ Future<String> _snapshot(OfflineStore store) => store.transaction((
         partition,
       )).map(OfflineCodec.encodeOperationRecord).toList(),
       'cursor': (await transaction.changeCursor(partition)).toJson(),
+      'scopedCursor': (await transaction.scopedChangeCursor(
+        partition,
+      ))?.toJson(),
       'changeEpoch': await transaction.changeEpoch(partition),
       'unknownResidents': [
         for (final key in await transaction.unknownResidents(
@@ -747,4 +823,15 @@ final class _SchemaBarrierFactory implements DatabaseFactory {
   @override
   Future<Uint8List> readDatabaseBytes(String path) =>
       inner.readDatabaseBytes(path);
+}
+
+// A receipt ContribID is deployment-wide. Each new probe intent must mint a
+// fresh ID; the persisted outbox keeps it immutable across SIGKILL/reopen.
+Uint8List _newContribId() {
+  final random = Random.secure();
+  final id = Uint8List.fromList(
+    List<int>.generate(24, (_) => random.nextInt(256)),
+  );
+  if (id.every((value) => value == 0)) return _newContribId();
+  return id;
 }

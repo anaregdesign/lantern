@@ -43,6 +43,17 @@ type receiptWALEnvelopeMetadata struct {
 
 func receiptWALEnvelopeInfo(op mutationlog.MutationOp) (receiptWALEnvelopeMetadata, bool) {
 	switch value := op.(type) {
+	case *edgeCreateEnvelope:
+		if len(value.Receipts) == 0 {
+			return receiptWALEnvelopeMetadata{}, false
+		}
+		m := value.Mutation
+		call := m.GetOp().GetEdgeCreateEffect()
+		metadata := receiptWALEnvelopeMetadata{originSeq: m.GetSeq(), receipts: value.Receipts}
+		copy(metadata.origin[:], m.GetOrigin())
+		copy(metadata.epoch[:], call.GetDeploymentEpoch())
+		copy(metadata.policy[:], call.GetPolicyFingerprint())
+		return metadata, true
 	case *graphAddEffectEnvelope:
 		if !value.receiptBearing() {
 			return receiptWALEnvelopeMetadata{}, false
@@ -135,6 +146,9 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 				}
 				copy(origin[:], value.GetOrigin())
 				seq = value.GetSeq()
+			case *edgeCreateEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
 			case *graphPutEffectEnvelope:
 				copy(origin[:], value.Mutation.GetOrigin())
 				seq = value.Mutation.GetSeq()
@@ -238,12 +252,17 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 }
 
 func receiptWALDecisionCost(receipt mutationreceipt.Receipt) uint64 {
-	return uint64(len(receipt.ID) + len(receipt.Digest) + len(receipt.Group) +
-		4 + 4 + 8 + 1 + len(receipt.Result))
+	resourceBytes := 0
+	if receipt.Resource != (mutationreceipt.ResourceIdentity{}) {
+		resourceBytes = 8 + len(receipt.Resource.Key) + len(receipt.Resource.Head)
+	}
+	return uint64(len(receipt.ID) + len(receipt.Digest) + len(receipt.Group) + resourceBytes +
+		4 + 4 + 8 + 1 + 1 + len(receipt.Result))
 }
 
 func sameReceiptWALDecision(a, b mutationreceipt.Receipt) bool {
 	return a.Intent == b.Intent &&
+		a.LifecycleReduction == b.LifecycleReduction &&
 		a.DeadlineMillis == b.DeadlineMillis &&
 		bytes.Equal(a.Result, b.Result)
 }
@@ -253,6 +272,8 @@ func replayReceiptEnvelopeGraph(
 	op mutationlog.MutationOp,
 ) error {
 	switch value := op.(type) {
+	case *edgeCreateEnvelope:
+		return replayEdgeCreateEffect(graph, value)
 	case *graphAddEffectEnvelope:
 		if !value.receiptBearing() {
 			return fmt.Errorf("%w: graph-only Add reached receipt replay", errReceiptWALUnion)
@@ -493,6 +514,12 @@ func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationrecei
 				if err := replayGraphPutEffect(graph, value); err != nil {
 					return fmt.Errorf("receipt WAL local seq %d: graph Put effect replay: %w", entry.Seq, err)
 				}
+			case *edgeCreateEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				if err := replayEdgeCreateEffect(graph, value); err != nil {
+					return fmt.Errorf("receipt WAL local seq %d: Create replay: %w", entry.Seq, err)
+				}
 			case *graphAddEffectEnvelope:
 				copy(origin[:], value.Mutation.GetOrigin())
 				seq = value.Mutation.GetSeq()
@@ -656,7 +683,7 @@ func graphPutReplayEdgeItem(op *pb.MutationOp, accepted graphPutAcceptedEffect) 
 		entry := source.ReplicatedPutEdges.Entries[index]
 		value, barrier = entry.GetLive(), entry.GetCausalBarrier()
 	}
-	item := graphcache.EdgeItem[string]{CausalBarrier: accepted.Kind == graphPutEffectBarrier}
+	item := graphcache.EdgeItem[string]{NoEndpointCreation: op.GetNoEndpointCreation(), CausalBarrier: accepted.Kind == graphPutEffectBarrier}
 	if value != nil {
 		item.Tail, item.Head, item.Weight = value.GetTail(), value.GetHead(), value.GetWeight()
 		item.Expiration = prototime.Expiration(value.GetExpiration())
@@ -722,7 +749,8 @@ func replayGraphAddEffect(graph *graphcache.GraphCache[string, *pb.Vertex], effe
 			id = contribIDFor(m.GetOrigin(), m.GetSeq(), uint16(index))
 		}
 		items[i] = graphcache.EdgeItem[string]{
-			Tail: edge.GetTail(), Head: edge.GetHead(), Weight: edge.GetWeight(),
+			NoEndpointCreation: m.GetOp().GetNoEndpointCreation(),
+			Tail:               edge.GetTail(), Head: edge.GetHead(), Weight: edge.GetWeight(),
 			Expiration: prototime.Expiration(edge.GetExpiration()), ContribID: id,
 		}
 	}

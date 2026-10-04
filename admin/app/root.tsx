@@ -15,6 +15,10 @@ import {
 import type { Route } from "./+types/root";
 import { AppShell } from "~/components/shared/AppShell/AppShell";
 import { ConnectionProvider } from "~/lib/client/usecase/connection/connection-context";
+import { AuthProvider } from "~/lib/client/usecase/auth/AuthProvider";
+import { createAdminAuthGateway } from "~/lib/client/infrastructure/api/security-client";
+import { browserAuthLifecycle } from "~/lib/client/infrastructure/browser/auth-events";
+import { AuthBoundary } from "~/components/auth/AuthBoundary";
 import { usePreferredTheme } from "~/lib/client/usecase/theme/use-preferred-theme";
 import errorStyles from "./styles/error-boundary.module.css";
 import "./styles/global.css";
@@ -42,9 +46,16 @@ export default function App() {
   return (
     <FluentProvider theme={theme === "dark" ? webDarkTheme : webLightTheme}>
       <ConnectionProvider>
-        <AppShell>
-          <Outlet />
-        </AppShell>
+        <AuthProvider
+          gatewayFactory={createAdminAuthGateway}
+          lifecycle={browserAuthLifecycle}
+        >
+          <AppShell>
+            <AuthBoundary>
+              <Outlet />
+            </AuthBoundary>
+          </AppShell>
+        </AuthProvider>
       </ConnectionProvider>
     </FluentProvider>
   );

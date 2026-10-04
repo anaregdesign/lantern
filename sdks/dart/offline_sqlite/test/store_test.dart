@@ -70,9 +70,75 @@ void main() {
   );
 
   test(
+    'undisclosed acknowledgement survives SQLite reopen without resend',
+    () async {
+      final now = DateTime.utc(2026, 10, 4);
+      final remote = _UndisclosedRemote();
+      final store = await open();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: OfflineConfig(clock: () => now),
+      );
+      await store.transaction((tx) async {
+        await tx.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: 0,
+            key: const OfflineEntityKey.edge('tail', 'head'),
+            entity: Edge(
+              tail: 'tail',
+              head: 'head',
+              weight: 3,
+              expiration: null,
+            ),
+            validatedAt: now,
+            lastAccessAt: now,
+          ),
+        );
+      });
+      final write = await repository.putEdge(
+        partitionId: 'p',
+        input: EdgeInput(tail: 'tail', head: 'head', weight: 9),
+      );
+      expect(await repository.drain('p'), 0);
+      expect(remote.calls, 1);
+      final status = await repository.getWriteStatus('p', write.operationId);
+      expect(status!.isTerminal, isTrue);
+      expect(status.confirmedCount, 0);
+      expect(status.acceptedUndisclosedCount, 1);
+      expect(status.items.single.receiptResult, isNull);
+      await repository.dispose();
+      final reopened = await reopen(store);
+      final restored = OfflineLanternRepository(
+        store: reopened,
+        remote: remote,
+        config: OfflineConfig(clock: () => now),
+      );
+      addTearDown(restored.dispose);
+      final persisted = await restored.getWriteStatus('p', write.operationId);
+      expect(persisted!.acceptedUndisclosedCount, 1);
+      expect(persisted.items.single.receiptResult, isNull);
+      expect(await restored.listPending('p'), isEmpty);
+      expect(await restored.drain('p'), 0);
+      expect(remote.calls, 1);
+      final read = await restored.readEdge(
+        'p',
+        const EdgeRef('tail', 'head'),
+        policy: OfflineReadPolicy.cacheOnly,
+      );
+      expect(read.state, OfflineReadState.unknown);
+      expect(read.hasPendingWrites, isFalse);
+      expect(read.value, isNull);
+    },
+  );
+
+  test(
     'CDC conformance persists partial chunks and unsigned cursors',
     () async {
       await runChangeStoreConformanceSuite(open, reopen: reopen);
+      await runScopedChangeStoreConformanceSuite(open, reopen: reopen);
     },
   );
 
@@ -928,78 +994,92 @@ void main() {
     await check.close();
   });
 
-  test('schema 1 migrates cache and CDC metadata without losing data', () async {
-    final store = await open();
-    await _cache(store, 'retained', 'value');
-    const origin = '00000000000000000000000000000001';
-    await store.transaction(
-      (transaction) => transaction.applyChangeChunk(
-        'p',
-        OfflineChangeChunk(
-          origin: origin,
-          sequence: BigInt.one,
-          chunkIndex: 0,
-          isLast: true,
+  test(
+    'schema 1 migration hides legacy cache before scoped rebootstrap',
+    () async {
+      final store = await open();
+      await _cache(store, 'retained', 'value');
+      const origin = '00000000000000000000000000000001';
+      await store.transaction(
+        (transaction) => transaction.applyChangeChunk(
+          'p',
+          OfflineChangeChunk(
+            origin: origin,
+            sequence: BigInt.one,
+            chunkIndex: 0,
+            isLast: true,
+          ),
         ),
-      ),
-    );
-    final path = store.path;
-    await store.close();
-    final old = await factory.openDatabase(path);
-    await old.execute('DROP TABLE recovery');
-    await old.execute('ALTER TABLE partitions DROP COLUMN change_epoch');
-    await old.update(
-      'store_metadata',
-      {'value': 'lantern-offline-1'},
-      where: 'key=?',
-      whereArgs: ['format'],
-    );
-    await old.setVersion(1);
-    await old.execute('DROP INDEX cache_lru');
-    await old.close();
+      );
+      final path = store.path;
+      await store.close();
+      final old = await factory.openDatabase(path);
+      await old.execute('DROP TABLE recovery');
+      await old.execute('ALTER TABLE partitions DROP COLUMN change_epoch');
+      await old.update(
+        'store_metadata',
+        {'value': 'lantern-offline-1'},
+        where: 'key=?',
+        whereArgs: ['format'],
+      );
+      await old.execute('DROP TABLE cdc_scoped');
+      await old.setVersion(1);
+      await old.execute('DROP INDEX cache_lru');
+      await old.close();
 
-    await expectLater(open(path: path), throwsA(isA<OfflineSchemaException>()));
-    final rejected = await factory.openDatabase(path);
-    expect(await rejected.getVersion(), 1);
-    expect(
-      (await rejected.rawQuery(
-        'PRAGMA table_info(partitions)',
-      )).any((row) => row['name'] == 'change_epoch'),
-      isFalse,
-    );
-    await rejected.execute(
-      'CREATE INDEX cache_lru ON cache(accessed_at, partition_id, entity_key)',
-    );
-    await rejected.close();
+      await expectLater(
+        open(path: path),
+        throwsA(isA<OfflineSchemaException>()),
+      );
+      final rejected = await factory.openDatabase(path);
+      expect(await rejected.getVersion(), 1);
+      expect(
+        (await rejected.rawQuery(
+          'PRAGMA table_info(partitions)',
+        )).any((row) => row['name'] == 'change_epoch'),
+        isFalse,
+      );
+      await rejected.execute(
+        'CREATE INDEX cache_lru ON cache(accessed_at, partition_id, entity_key)',
+      );
+      await rejected.close();
 
-    final migrated = await open(path: path);
-    expect(await migrated.transaction((t) => t.changeEpoch('p')), 0);
-    expect(
-      (await migrated.transaction(
-        (t) => t.changeCursor('p'),
-      )).sequences[origin],
-      BigInt.one,
-    );
-    expect(
+      final migrated = await open(path: path);
+      expect(await migrated.transaction((t) => t.changeEpoch('p')), 1);
+      expect(
+        (await migrated.transaction((t) => t.changeCursor('p'))).sequences,
+        isEmpty,
+      );
+      expect(
+        await migrated.transaction(
+          (t) => t.getCache('p', const OfflineEntityKey.vertex('retained')),
+        ),
+        isNull,
+      );
+      expect(
+        await migrated.transaction(
+          (t) => t.hasUnknownResident(
+            'p',
+            const OfflineEntityKey.vertex('retained'),
+          ),
+        ),
+        isTrue,
+      );
       await migrated.transaction(
-        (t) => t.getCache('p', const OfflineEntityKey.vertex('retained')),
-      ),
-      isNotNull,
-    );
-    await migrated.transaction(
-      (t) =>
-          t.resetChangeCursor('p', OfflineChangeCursor({origin: BigInt.one})),
-    );
-    expect(
-      await migrated.transaction((t) => t.unknownResidents('p', limit: 1)),
-      [const OfflineEntityKey.vertex('retained')],
-    );
-    final reopened = await reopen(migrated);
-    expect(
-      await reopened.transaction((t) => t.unknownResidents('p', limit: 1)),
-      [const OfflineEntityKey.vertex('retained')],
-    );
-  });
+        (t) =>
+            t.resetChangeCursor('p', OfflineChangeCursor({origin: BigInt.one})),
+      );
+      expect(
+        await migrated.transaction((t) => t.unknownResidents('p', limit: 1)),
+        [const OfflineEntityKey.vertex('retained')],
+      );
+      final reopened = await reopen(migrated);
+      expect(
+        await reopened.transaction((t) => t.unknownResidents('p', limit: 1)),
+        [const OfflineEntityKey.vertex('retained')],
+      );
+    },
+  );
 
   test('schema 2 rewrites legacy outbox and operation payloads', () async {
     final store = await open();
@@ -1043,6 +1123,7 @@ void main() {
       where: 'key=?',
       whereArgs: ['format'],
     );
+    await old.execute('DROP TABLE cdc_scoped');
     await old.setVersion(2);
     await old.close();
 
@@ -1079,10 +1160,10 @@ void main() {
       'legacy-payload',
     );
     final check = await factory.openDatabase(path);
-    expect(await check.getVersion(), 4);
+    expect(await check.getVersion(), 5);
     expect(
       (await check.query('store_metadata')).single['value'],
-      'lantern-offline-4',
+      'lantern-offline-5',
     );
     expect(
       utf8.decode(
@@ -1094,7 +1175,7 @@ void main() {
       utf8.decode(
         (await check.query('operations')).single['payload']! as List<int>,
       ),
-      contains('"schema":2'),
+      contains('"schema":3'),
     );
     await check.close();
   });
@@ -1163,6 +1244,7 @@ void main() {
       where: 'key=?',
       whereArgs: ['format'],
     );
+    await old.execute('DROP TABLE cdc_scoped');
     await old.setVersion(3);
     await old.close();
 
@@ -1174,10 +1256,10 @@ void main() {
     expect(restored.receipt!.operationId, receipt.operationId);
     expect(restored.attemptCount, 0);
     final check = await factory.openDatabase(path);
-    expect(await check.getVersion(), 4);
+    expect(await check.getVersion(), 5);
     expect(
       (await check.query('store_metadata')).single['value'],
-      'lantern-offline-4',
+      'lantern-offline-5',
     );
     expect(
       utf8.decode(
@@ -1196,6 +1278,121 @@ void main() {
       ),
       throwsA(isA<OfflineArgumentException>()),
     );
+  });
+
+  test(
+    'schema 4 migration preserves dispatched receipt and hides residents',
+    () async {
+      final store = await open();
+      final now = DateTime.utc(2026, 9, 24);
+      final policy = OfflineReceiptPolicy(
+        deploymentEpoch: ReceiptEpoch(_bytes(16, 1)),
+        retention: const Duration(hours: 24),
+        maxEntries: BigInt.from(1024),
+        maxBytes: BigInt.from(1024 * 1024),
+        fingerprint: _bytes(32, 4),
+      );
+      final evidence = OfflineReceiptEvidence(
+        operationId: _receiptOperationId(policy.deploymentEpoch),
+        groupId: ReceiptGroupId(_bytes(16, 5)),
+        endpoint: ReceiptEndpoint(
+          nodeId: _bytes(16, 2),
+          generation: _bytes(16, 3),
+        ),
+        mutation: ReceiptMutationKind.edgeDelete,
+        policy: policy,
+        itemIndex: 0,
+        itemCount: 1,
+        state: OfflineReceiptReconciliationState.statusRequired,
+        mayHaveDispatched: true,
+      );
+      late String retained;
+      await store.transaction((tx) async {
+        final pending = await tx.enqueue(
+          OfflineOutboxRecord(
+            recordId: 'dispatched',
+            operationId: 'pending',
+            itemIndex: 0,
+            partitionId: 'p',
+            intent: OfflineDeleteEdgeIntent(const EdgeRef('t', 'h')),
+            enqueuedAt: now,
+            ordinal: 0,
+            state: OfflineOutboxState.enqueued,
+            attemptCount: 1,
+            generation: 0,
+            receipt: evidence,
+          ),
+        );
+        await tx.putOperation(_operation(pending, now: now));
+        retained = OfflineCodec.encodeOutboxRecord(pending);
+        await tx.resetChangeCursor(
+          'p',
+          OfflineChangeCursor({'01' * 16: BigInt.one}),
+        );
+      });
+      await _cache(store, 'retained', 'old');
+      final path = store.path;
+      await store.close();
+      final old = await factory.openDatabase(path);
+      await old.execute('DROP TABLE cdc_scoped');
+      await old.update(
+        'store_metadata',
+        {'value': 'lantern-offline-4'},
+        where: 'key=?',
+        whereArgs: ['format'],
+      );
+      await old.setVersion(4);
+      await old.close();
+      final migrated = await open(path: path);
+      await migrated.transaction((tx) async {
+        expect(await tx.scopedChangeCursor('p'), isNull);
+        expect((await tx.changeCursor('p')).sequences, isEmpty);
+        expect(
+          await tx.getCache('p', const OfflineEntityKey.vertex('retained')),
+          isNull,
+        );
+        expect(
+          await tx.hasUnknownResident(
+            'p',
+            const OfflineEntityKey.vertex('retained'),
+          ),
+          isTrue,
+        );
+        expect(
+          OfflineCodec.encodeOutboxRecord(
+            (await tx.getOutbox('p', 'dispatched'))!,
+          ),
+          retained,
+        );
+        expect(
+          (await tx.getOutbox('p', 'dispatched'))!.receipt!.mayHaveDispatched,
+          isTrue,
+        );
+      });
+    },
+  );
+
+  test('reopen rejects mixed opaque and private-origin progress', () async {
+    final store = await open();
+    await store.transaction(
+      (tx) =>
+          tx.resetScopedChangeCursor('p', OfflineScopedChangeCursor([1, 2, 3])),
+    );
+    final path = store.path;
+    await store.close();
+    final database = await factory.openDatabase(path);
+    await database.insert('cdc_origins', {
+      'partition_id': 'p',
+      'origin': '01010101010101010101010101010101',
+      'completed': '1',
+      'pending': null,
+      'next_chunk': 0,
+    });
+    await database.close();
+    await expectLater(open(path: path), throwsA(isA<OfflineException>()));
+    final inspect = await factory.openDatabase(path);
+    expect((await inspect.query('cdc_scoped')).single['cursor'], [1, 2, 3]);
+    await inspect.close();
   });
 
   test('corrupt record is rejected before it can reach replay', () async {
@@ -1414,4 +1611,21 @@ ReceiptOperationId _receiptOperationId(ReceiptEpoch epoch) {
   }
   bytes.fillRange(25, 49, 6);
   return ReceiptOperationId(bytes);
+}
+
+final class _UndisclosedRemote implements OfflineRemote {
+  int calls = 0;
+
+  @override
+  Future<PutOutcome> putEdge(
+    Edge edge, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    calls++;
+    throw const OfflineMutationAcceptedUndisclosed();
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw StateError('unexpected remote call');
 }

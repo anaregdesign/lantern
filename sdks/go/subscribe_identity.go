@@ -277,7 +277,8 @@ func identityStreamError(ctx context.Context, err error) error {
 	return wrapped
 }
 
-// BootstrapIdentity opens an identity-only stream with an atomic responder
+// BootstrapIdentity is private workload-only replication tooling. Public clients
+// must use WatchChanges. It opens an identity-only stream with an atomic responder
 // checkpoint as its first event. After marking resident keys Unknown, callers
 // can revalidate them in bounded reads while applying subsequent chunks.
 // A checkpoint alone does not prove cluster-wide freshness. Stop iteration
@@ -286,7 +287,8 @@ func (l *Lantern) BootstrapIdentity(ctx context.Context) iter.Seq2[IdentityChang
 	return l.streamIdentity(ctx, nil, true)
 }
 
-// SubscribeIdentity resumes the identity-only stream with a nonempty vector
+// SubscribeIdentity is private workload-only replication tooling. Public clients
+// must use WatchChanges. It resumes the identity-only stream with a nonempty vector
 // of next per-origin sequences. Origins absent from the vector start at seq 1.
 // Keep the vector durable and use the same one across endpoint failover;
 // duplicates are possible. A gap requires BootstrapIdentity and resident-key

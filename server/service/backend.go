@@ -41,7 +41,9 @@ type Backend interface {
 	// each edge (#897) plus the count of items suppressed by a matching live
 	// ContribID. Items with a zero ContribID keep legacy additive semantics.
 	AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) (effective []float32, deduped int)
+	AddEdgesWithExpirationContribChecked(items []graphcache.EdgeItem[string]) (effective []float32, deduped int, err error)
 	PutEdgesWithExpirationOutcomes(items []graphcache.EdgeItem[string]) []graphcache.PutOutcome
+	PutEdgesWithExpirationOutcomesChecked(items []graphcache.EdgeItem[string]) ([]graphcache.PutOutcome, error)
 	DeleteEdges(keys []graphcache.EdgeKey[string]) int
 	DeleteEdgesOutcomes(keys []graphcache.EdgeKey[string]) []bool
 
@@ -91,6 +93,7 @@ type Backend interface {
 	PutEdgesWithExpirationHLCOutcomesChecked(items []graphcache.EdgeItem[string], ts hlc.Timestamp) ([]graphcache.PutOutcome, error)
 	AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, deduped int)
 	AddEdgesWithExpirationContribHLCResults(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, accepted []bool, deduped int)
+	AddEdgesWithExpirationContribHLCResultsChecked(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, accepted []bool, deduped int, err error)
 	ApplyVertexCausalBarrierHLC(key string, ts hlc.Timestamp) bool
 	ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.Timestamp) bool
 
@@ -201,6 +204,7 @@ type Backend interface {
 	// means unlimited) and returns how many were deleted.
 	ScanByPrefixPage(ctx context.Context, prefix, after string, limit int, desc bool, fn func(projected string, key string, value *pb.Vertex) bool) (more, ok bool)
 	CountByPrefix(prefix string) int
+	CountByPrefixContext(ctx context.Context, prefix string) int
 	DeleteByPrefix(ctx context.Context, prefix string, limit int) int
 	DeleteByPrefixKeys(ctx context.Context, prefix string, limit int) []string
 	// The replicated local path must preflight the exact accepted identities
@@ -216,6 +220,7 @@ type Backend interface {
 	// The handler enforces the non-empty-prefix guard and the k clamp; this
 	// method imposes neither.
 	TopVerticesByDegree(prefix string, k int, dir graphcache.DegreeDirection, weighted bool) []graphcache.DegreeEntry[string]
+	TopVerticesByDegreeContext(ctx context.Context, prefix string, k int, dir graphcache.DegreeDirection, weighted bool) []graphcache.DegreeEntry[string]
 
 	// SearchVertices returns vertices ranked by full-text relevance over
 	// their indexed content, optionally scoped to keyPrefix, capped at
@@ -261,6 +266,7 @@ type Backend interface {
 	// GraphCache lock (#689), so a whole-graph backup observes one
 	// point-in-time. Used by BackupSnapshot.
 	SnapshotGraph() graphcache.GraphSnapshot[string, *pb.Vertex]
+	SnapshotGraphContext(ctx context.Context) (graphcache.GraphSnapshot[string, *pb.Vertex], error)
 
 	// VertexCount and EdgeCount return the current number of live entries
 	// in the underlying graph cache. Backed by index sizes — O(1) and

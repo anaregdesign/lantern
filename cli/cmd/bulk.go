@@ -213,17 +213,23 @@ Recall the semantic difference: ` + "`add`" + ` SUMS weight onto existing edges
 
 			batch := make([]client.EdgeInput, 0, flagChunkSize)
 			total := 0
+			undisclosed := false
 			flush := func() error {
 				if len(batch) == 0 {
 					return nil
 				}
 				var err error
 				if verb == "add" {
-					_, err = cli.AddEdges(cmd.Context(), batch)
+					reply, failure := client.MutationReplyFrom(cli.AddEdges(cmd.Context(), batch))
+					err = failure
+					undisclosed = undisclosed || reply.AcceptedUndisclosed()
 				} else {
 					var results []client.EdgePutResult
-					results, err = cli.PutEdges(cmd.Context(), batch)
-					if err == nil {
+					reply, failure := client.MutationReplyFrom(cli.PutEdges(cmd.Context(), batch))
+					err = failure
+					undisclosed = undisclosed || reply.AcceptedUndisclosed()
+					if effect, known := reply.Effect(); known {
+						results = effect
 						err = requireLiveEdgeResults(results)
 					}
 				}
@@ -231,7 +237,7 @@ Recall the semantic difference: ` + "`add`" + ` SUMS weight onto existing edges
 					return err
 				}
 				total += len(batch)
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "... %d\n", total)
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "... batch handled")
 				batch = batch[:0]
 				return nil
 			}
@@ -266,7 +272,11 @@ Recall the semantic difference: ` + "`add`" + ` SUMS weight onto existing edges
 			if err := flush(); err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", total)
+			if undisclosed {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), `{"acceptance":"acceptedUndisclosed"}`)
+			} else {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", total)
+			}
 			return nil
 		},
 	}

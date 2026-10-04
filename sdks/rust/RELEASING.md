@@ -177,3 +177,10 @@ yanked version blocks the GitHub Release. Only then may the separate
 non-draft, non-prerelease GitHub Release whose title and tag are **exactly**
 `sdks/rust/vX.Y.Z`. Do not override a failed gate, force-move a tag, or
 manually create a Release to bypass archive verification.
+
+Native conformance inputs are created through the maintained Go authfixture's
+bounded stdin-only private-input route. That fixture installs owner-only Unix
+modes or a protected Windows owner DACL before writing any bytes. Production
+readers do not bypass file security for tests. Startup diagnostics forward only
+fixed categories from private logs; native Windows permission/restart and all
+authenticated wire cases remain required, independently of cross-compilation.

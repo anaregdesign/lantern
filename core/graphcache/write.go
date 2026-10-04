@@ -30,13 +30,19 @@ func (c *GraphCache[S, T]) addEdgeContribLocked(tail, head S, w float32, expirat
 }
 
 func (c *GraphCache[S, T]) addEdgeContribHLCLocked(tail, head S, w float32, expiration time.Time, contribID ContribID, ts hlc.Timestamp, now time.Time) (applied bool, effective float32) {
+	return c.addEdgeContribHLCModeLocked(tail, head, w, expiration, contribID, ts, now, false)
+}
+
+func (c *GraphCache[S, T]) addEdgeContribHLCModeLocked(tail, head S, w float32, expiration time.Time, contribID ContribID, ts hlc.Timestamp, now time.Time, noEndpointCreation bool) (applied bool, effective float32) {
 	if !contribID.IsZero() && c.edgeContributionTombstoneLockedAt(EdgeContributionKey[S]{Tail: tail, Head: head, ContribID: contribID}, now) {
 		return false, c.edges.liveSumAt(tail, head, now)
 	}
 	created, tailID, headID, applied, effective := c.edges.addWithExpirationContribHLCAt(tail, head, w, expiration, contribID, ts, now)
 	if applied || created {
-		c.ensureVertexLocked(tail, expiration)
-		c.ensureVertexLocked(head, expiration)
+		if !noEndpointCreation {
+			c.ensureVertexLocked(tail, expiration)
+			c.ensureVertexLocked(head, expiration)
+		}
 		c.onEdgeAddedLocked(created, tailID, headID, head)
 	}
 	return applied, effective
@@ -115,12 +121,18 @@ func (c *GraphCache[S, T]) putEdgeLocked(tail, head S, w float32, expiration tim
 // therefore a later wall-clock rollback cannot make it visible again. Caller
 // must hold c.mu.
 func (c *GraphCache[S, T]) putEdgeLockedAt(tail, head S, w float32, expiration, now time.Time) (stored bool) {
+	return c.putEdgeModeLockedAt(tail, head, w, expiration, now, false)
+}
+
+func (c *GraphCache[S, T]) putEdgeModeLockedAt(tail, head S, w float32, expiration, now time.Time, noEndpointCreation bool) (stored bool) {
 	if !cache.IsLiveAt(expiration, now) {
 		c.deleteEdgeLocked(tail, head)
 		return false
 	}
-	c.ensureVertexLocked(tail, expiration)
-	c.ensureVertexLocked(head, expiration)
+	if !noEndpointCreation {
+		c.ensureVertexLocked(tail, expiration)
+		c.ensureVertexLocked(head, expiration)
+	}
 	created, tailID, headID := c.edges.putWithExpiration(tail, head, w, expiration)
 	c.onEdgeAddedLocked(created, tailID, headID, head)
 	c.reconcileEdgeCausalUsageLocked(EdgeKey[S]{Tail: tail, Head: head})
@@ -132,8 +144,14 @@ func (c *GraphCache[S, T]) putEdgeLockedAt(tail, head S, w float32, expiration, 
 // this helper creates endpoint vertices; the weight-level HLC check remains a
 // defensive guard. Caller must hold c.mu.
 func (c *GraphCache[S, T]) putEdgeHLCLocked(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp, derivedAggregate bool) bool {
-	c.ensureVertexLocked(tail, expiration)
-	c.ensureVertexLocked(head, expiration)
+	return c.putEdgeHLCModeLocked(tail, head, w, expiration, ts, derivedAggregate, false)
+}
+
+func (c *GraphCache[S, T]) putEdgeHLCModeLocked(tail, head S, w float32, expiration time.Time, ts hlc.Timestamp, derivedAggregate, noEndpointCreation bool) bool {
+	if !noEndpointCreation {
+		c.ensureVertexLocked(tail, expiration)
+		c.ensureVertexLocked(head, expiration)
+	}
 	created, tailID, headID, applied := c.edges.putWithExpirationHLCMode(tail, head, w, expiration, ts, derivedAggregate)
 	if created {
 		c.onEdgeAddedLocked(created, tailID, headID, head)

@@ -155,7 +155,7 @@ func NewServingRuntime(
 	case ReceiptWALModeGraphOnly:
 		graph := NewGraphCache(cacheConfig, searchConfig)
 		log := mutationlog.New(options)
-		runtime, err = service.NewGraphOnlyServingRuntime(graph, log, NewHLCClock(replicationConfig))
+		runtime, err = service.NewGraphOnlyServingRuntime(graph, log, NewHLCClock(replicationConfig), cacheConfig.namespaceFormat)
 		if err != nil {
 			_ = log.Close()
 			return nil, nil, err
@@ -163,14 +163,15 @@ func NewServingRuntime(
 	case ReceiptWALModeFresh, ReceiptWALModeRestart:
 		now := time.Now()
 		runtimeConfig := service.DurableReceiptWALRuntimeConfig{
-			Path:           config.Path,
-			Receipt:        config.receiptConfig(now),
-			Log:            options,
-			DefaultTTL:     cacheConfig.TTL,
-			ConfigureGraph: receiptWALGraphConfigurator(cacheConfig, searchConfig),
-			NodeID:         replicationConfig.NodeID,
-			Now:            now,
-			BaselineCodec:  backup.ReceiptBaselineCodec{},
+			Path:            config.Path,
+			NamespaceFormat: cacheConfig.namespaceFormat,
+			Receipt:         config.receiptConfig(now),
+			Log:             options,
+			DefaultTTL:      cacheConfig.TTL,
+			ConfigureGraph:  receiptWALGraphConfigurator(cacheConfig, searchConfig),
+			NodeID:          replicationConfig.NodeID,
+			Now:             now,
+			BaselineCodec:   backup.ReceiptBaselineCodec{},
 		}
 		if config.Mode == ReceiptWALModeFresh {
 			restore, restoreErr := prepareFreshReceiptStartupRestore(
@@ -344,6 +345,19 @@ func NewPublicReceiptsCertified(
 	_ *backup.Backupper,
 	certified runtimeCertified,
 ) (publicReceiptsCertified, error) {
+	return certifyPublicReceipts(config, auth.Enabled(), runtime, primary, certified)
+}
+
+// NewOIDCPublicReceiptsCertified activates receipts only after the exact data
+// service has its native Principal/Role boundary installed.
+func NewOIDCPublicReceiptsCertified(config ReceiptWALConfig, security *SecurityRuntime, runtime *service.ServingRuntime, primary *service.LanternService, _ *backup.Backupper, certified runtimeCertified, public publicSecurityCertified) (publicReceiptsCertified, error) {
+	if security == nil || public.runtime != security || security.data != runtime {
+		return publicReceiptsCertified{}, errors.New("receipt activation requires the exact public security runtime")
+	}
+	return certifyPublicReceipts(config, security.mode == "oidc", runtime, primary, certified)
+}
+
+func certifyPublicReceipts(config ReceiptWALConfig, authenticated bool, runtime *service.ServingRuntime, primary *service.LanternService, certified runtimeCertified) (publicReceiptsCertified, error) {
 	if !certified.valid || runtime == nil || primary == nil ||
 		certified.runtime != runtime || certified.primary != primary ||
 		certified.replication == nil {
@@ -358,7 +372,7 @@ func NewPublicReceiptsCertified(
 		if !runtime.DurableReceiptWAL() {
 			return publicReceiptsCertified{}, errors.New("public receipt activation mode differs from the serving runtime")
 		}
-		if auth.Enabled() {
+		if authenticated {
 			if err := runtime.ActivatePublicReceipts(primary, certified.replication); err != nil {
 				return publicReceiptsCertified{}, fmt.Errorf("activate public receipts: %w", err)
 			}

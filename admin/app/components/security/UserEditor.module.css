@@ -1,0 +1,27 @@
+.form,
+.panel {
+  display: grid;
+  gap: 16px;
+  padding-block: 16px;
+}
+.fields {
+  display: grid;
+  gap: 16px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.assignments {
+  display: grid;
+  gap: 8px;
+  padding-inline-start: 20px;
+}
+.assignments li {
+  overflow-wrap: anywhere;
+}

@@ -1,0 +1,23 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/anaregdesign/lantern/core/graphcache
+cpu: Apple M3 Max
+BenchmarkGraphCacheStagingCosts/staging_false/get_vertex-16         	 5316360	        44.62 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/get_vertex-16         	 5400595	        44.30 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/get_vertex-16         	 5338760	        44.87 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/put_vertex-16         	 1664792	       144.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/put_vertex-16         	 1664228	       144.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/put_vertex-16         	 1675792	       143.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/get_weight-16         	 1331062	       179.8 ns/op	      56 B/op	       2 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/get_weight-16         	 1336968	       180.0 ns/op	      56 B/op	       2 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/get_weight-16         	 1330428	       180.7 ns/op	      56 B/op	       2 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/get_vertex-16          	 5047340	        47.93 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/get_vertex-16          	 5018085	        48.03 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/get_vertex-16          	 5077269	        47.33 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/put_vertex-16          	 1674494	       143.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/put_vertex-16          	 1666894	       143.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/put_vertex-16          	 1675938	       143.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/get_weight-16          	 1315312	       181.4 ns/op	      56 B/op	       2 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/get_weight-16          	 1328419	       180.9 ns/op	      56 B/op	       2 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/get_weight-16          	 1327556	       180.7 ns/op	      56 B/op	       2 allocs/op
+PASS

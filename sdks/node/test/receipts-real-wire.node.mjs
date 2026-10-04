@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import process from "node:process";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -27,7 +28,21 @@ function requiredEnvironment(name) {
 const endpoint = requiredEnvironment("LANTERN_NODE_RECEIPT_ENDPOINT");
 const otherEndpoint = requiredEnvironment("LANTERN_NODE_RECEIPT_OTHER_ENDPOINT");
 const nanFixtureEndpoint = requiredEnvironment("LANTERN_NODE_NAN_FIXTURE_ENDPOINT");
-const token = requiredEnvironment("LANTERN_NODE_RECEIPT_TOKEN");
+const token = readFileSync(requiredEnvironment("LANTERN_NODE_RECEIPT_TOKEN_FILE"), "utf8").trim();
+const ca = readFileSync(requiredEnvironment("LANTERN_NODE_RECEIPT_CA_FILE"));
+function authenticated(baseUrl, args = {}) {
+  return connect(baseUrl, { token, ...args, transportOptions: { nodeOptions: { ca } } });
+}
+
+async function seedEdgeEndpoints(client, edge) {
+  await client.putVertices(
+    [...new Set([edge.tail, edge.head])].map((key) => ({
+      key,
+      value: "endpoint",
+      ttlSeconds: 3600,
+    })),
+  );
+}
 
 function randomContribId() {
   const contribId = new Uint8Array(randomBytes(CONTRIB_ID_BYTES));
@@ -59,10 +74,10 @@ function dropNextAddEdgesResponse() {
   };
 }
 
-test("plain Node Delete is single-attempt over h2c, with an ambiguous lost result", async () => {
+test("plain Node Delete is single-attempt over verified TLS, with an ambiguous lost result", async () => {
   let attempts = 0;
-  const ordinary = connect(endpoint, { token });
-  const lossy = connect(endpoint, {
+  const ordinary = authenticated(endpoint);
+  const lossy = authenticated(endpoint, {
     token,
     interceptors: [
       (next) => async (request) => {
@@ -103,9 +118,9 @@ test("plain Node Delete is single-attempt over h2c, with an ambiguous lost resul
 });
 
 test("plain contribution Delete retains the Put base and never retries response loss", async () => {
-  const client = connect(endpoint, { token });
+  const client = authenticated(endpoint);
   let attempts = 0;
-  const lossy = connect(endpoint, {
+  const lossy = authenticated(endpoint, {
     token,
     interceptors: [
       (next) => async (request) => {
@@ -121,6 +136,7 @@ test("plain contribution Delete retains the Put base and never retries response 
   const idA = randomContribId();
   const idB = randomContribId();
   try {
+    await seedEdgeEndpoints(client, { tail, head });
     await client.putEdge({ tail, head, weight: 2 });
     await client.addEdges([
       { tail, head, weight: 1, contribId: idA },
@@ -166,8 +182,8 @@ test("plain contribution Delete retains the Put base and never retries response 
   }
 });
 
-test("all receipt mutation families reconcile exact results over real Connect/h2c", async () => {
-  const client = connect(endpoint, { token });
+test("all receipt mutation families reconcile exact results over real Connect/TLS", async () => {
+  const client = authenticated(endpoint);
   const prefix = `node-receipt-${randomUUID()}`;
   try {
     const capability = await client.getReceiptCapability();
@@ -255,6 +271,7 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
       tail: `${prefix}:edge:tail`,
       head: `${prefix}:edge:missing`,
     };
+    await seedEdgeEndpoints(client, presentEdge);
     await client.putEdge({ ...presentEdge, weight: 1 });
     const edgeDeleteContext = mintReceiptOperationContext(capability, 2);
     const edgeDeleted = await client.deleteEdgesWithReceipt(
@@ -292,6 +309,7 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
       tail: `${prefix}:edge:tail`,
       head: `${prefix}:edge:singular`,
     };
+    await seedEdgeEndpoints(client, singularEdge);
     await client.putEdge({ ...singularEdge, weight: 2 });
     const singularEdgeContext = mintReceiptOperationContext(capability, 1);
     const singularEdgeDeleted = await client.deleteEdgeWithReceipt(
@@ -316,6 +334,7 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
       tail: `${prefix}:edge:tail`,
       head: `${prefix}:edge:protected`,
     };
+    await seedEdgeEndpoints(client, protectedEdge);
     await client.putEdge({ ...protectedEdge, weight: 3 });
     await assert.rejects(
       client.deleteEdgesWithReceipt([protectedEdge, missingEdge], edgeDeleteContext),
@@ -327,6 +346,7 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
       tail: `${prefix}:add:tail`,
       head: `${prefix}:add:head`,
     };
+    await seedEdgeEndpoints(client, addEdge);
     const addContribIds = [randomContribId(), randomContribId()];
     const addContext = mintReceiptOperationContext(capability, 2);
     const added = await client.addEdgesWithReceipt(
@@ -372,6 +392,7 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
       head: `${prefix}:selective:head`,
     };
     const selectiveIds = [randomContribId(), randomContribId()];
+    await seedEdgeEndpoints(client, selectiveEdge);
     await client.putEdge({ ...selectiveEdge, weight: 2 });
     await client.addEdgesWithReceipt(
       [
@@ -453,6 +474,7 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
       "notYetObserved",
     );
 
+    await seedEdgeEndpoints(client, { tail: `${prefix}:add:expired`, head: "edge" });
     const zeroContext = mintReceiptOperationContext(capability, 1);
     const zero = await client.addEdgeWithReceipt(
       {
@@ -476,6 +498,7 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
       tail: `${prefix}:add:overflow`,
       head: "edge",
     };
+    await seedEdgeEndpoints(client, overflowEdge);
     await client.putEdge({ ...overflowEdge, weight: maxFloat32 });
     const overflowContext = mintReceiptOperationContext(capability, 1);
     const overflow = await client.addEdgeWithReceipt(
@@ -499,6 +522,7 @@ test("all receipt mutation families reconcile exact results over real Connect/h2
       tail: `${prefix}:add:negative-overflow`,
       head: "edge",
     };
+    await seedEdgeEndpoints(client, negativeOverflowEdge);
     await client.putEdge({ ...negativeOverflowEdge, weight: -maxFloat32 });
     const negativeOverflowContext = mintReceiptOperationContext(capability, 1);
     const negativeOverflow = await client.addEdgeWithReceipt(
@@ -603,8 +627,8 @@ test("test-only NaN receipt fixture decodes original results over authenticated 
   }
 });
 
-test("real h2c response loss replays the exact original conditional Put result", async () => {
-  const lossy = connect(endpoint, {
+test("real TLS response loss replays the exact original conditional Put result", async () => {
+  const lossy = authenticated(endpoint, {
     token,
     interceptors: [dropNextPutVerticesResponse()],
   });
@@ -630,7 +654,7 @@ test("real h2c response loss replays the exact original conditional Put result",
   assert.equal(uncertain.mutation.kind, "putVertex");
   assert.equal(uncertain.mutation.ifAbsent, true);
 
-  const replay = connect(endpoint, { token });
+  const replay = authenticated(endpoint);
   try {
     const restored = parseReceiptOperationContext(JSON.parse(persistedContext));
     const result = await replay.putVertexIfAbsentWithReceipt(input, restored);
@@ -646,8 +670,8 @@ test("real h2c response loss replays the exact original conditional Put result",
   }
 });
 
-test("real h2c response loss replays Add proof without reapplying after Delete", async () => {
-  const lossy = connect(endpoint, {
+test("real TLS response loss replays Add proof without reapplying after Delete", async () => {
+  const lossy = authenticated(endpoint, {
     token,
     interceptors: [dropNextAddEdgesResponse()],
   });
@@ -666,6 +690,7 @@ test("real h2c response loss replays Add proof without reapplying after Delete",
   try {
     const capability = await lossy.getReceiptCapability();
     assert.equal(capability.enabled, true, "receipt test endpoint is disabled");
+    await seedEdgeEndpoints(lossy, edge);
     const context = mintReceiptOperationContext(capability, 1);
     persistedContext = JSON.stringify(context);
     try {
@@ -681,7 +706,7 @@ test("real h2c response loss replays Add proof without reapplying after Delete",
   assert.equal(uncertain.mutation.kind, "addEdge");
   assert.deepEqual(uncertain.mutation.inputs[0].contribId, input.contribId);
 
-  const replay = connect(endpoint, { token });
+  const replay = authenticated(endpoint);
   try {
     assert.equal((await replay.getEdge(edge.tail, edge.head)).weight, 4);
     assert.equal(await replay.deleteEdge(edge.tail, edge.head), true);
@@ -701,8 +726,8 @@ test("real h2c response loss replays Add proof without reapplying after Delete",
 });
 
 test("receipt retry rejects a different real endpoint before mutation", async () => {
-  const first = connect(endpoint, { token });
-  const second = connect(otherEndpoint, { token });
+  const first = authenticated(endpoint);
+  const second = authenticated(otherEndpoint);
   const edge = {
     tail: `node-receipt-endpoint-${randomUUID()}`,
     head: "edge",

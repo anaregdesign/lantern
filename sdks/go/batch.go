@@ -7,8 +7,8 @@ import (
 // runBatchWrite splits items into chunks of l.opts.batchChunkSize, invokes
 // fn for each chunk with the per-call timeout applied, sums the returned
 // per-chunk counts, and wraps any failure as a *BatchError whose Written
-// field records the input-prefix length whose responses were fully observed
-// and validated before the failing chunk.
+// field records the input-prefix length whose responses were fully handled
+// before the failing chunk. A blind acceptance does not confirm an effect.
 //
 // Used by PutVertices / DeleteVertices / AddEdges / PutEdges / DeleteEdges.
 // Put callbacks return len(chunk), so a successfully validated outcome vector
@@ -18,6 +18,8 @@ import (
 // validating the current response leaves that entire chunk outside Written:
 // its original outcomes are ambiguous, so conditional Put, plain Add, and
 // exact Delete must not be blindly replayed to reconstruct them.
+// A dedicated acceptance advances the input prefix and continues with each
+// new chunk once; a later failure remains a BatchError, never full acceptance.
 func runBatchWrite[T any](
 	ctx context.Context,
 	l *Lantern,
@@ -28,15 +30,29 @@ func runBatchWrite[T any](
 		return 0, nil
 	}
 	written, total := 0, 0
+	undisclosed := false
 	for _, chunk := range chunkSlice(items, l.opts.batchChunkSize) {
 		cctx, cancel := l.applyTimeout(ctx)
 		n, err := fn(cctx, chunk)
 		cancel()
+		if _, accepted := err.(*MutationAcceptance); accepted {
+			// Advance only the public input prefix. No effect count was
+			// observed, and this chunk must never be resent automatically.
+			undisclosed = true
+			err = nil
+			n = 0
+		}
 		if err != nil {
+			if undisclosed {
+				total = 0
+			}
 			return total, &BatchError{Written: written, Err: err}
 		}
 		written += len(chunk)
 		total += int(n)
+	}
+	if undisclosed {
+		return 0, &MutationAcceptance{}
 	}
 	return total, nil
 }

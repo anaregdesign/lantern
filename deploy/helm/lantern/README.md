@@ -1,317 +1,106 @@
-# lantern (Helm chart)
+# Lantern Helm chart
 
-Minimal deployment of
-[lantern](https://github.com/anaregdesign/lantern) on Kubernetes: a
-`StatefulSet` of 2 pods behind a headless `Service` for
-DNS-based peer discovery (see [docs/replication.md §9.1](../../../docs/replication.md))
-plus a `ClusterIP` `Service` for in-cluster clients, guarded by a
-`PodDisruptionBudget`. Lantern is a full-replica store, so 2 replicas give
-rolling-update / single-node-drain survival at the lowest footprint. The
-Service is ClusterIP-only — Lantern is never exposed outside the cluster;
-reach it from other pods via its Service FQDN, or from a laptop with
-`kubectl port-forward` for verification. Admin, MCP and Prometheus are
-expected to run locally and are **not** deployed by this profile.
+The default is one OFF Server with graph backups, an internal public Service,
+and loopback diagnostics. Authentication has no zero-config dependency on an
+IdP or security Store. Multiple replicas require explicit private peer material.
 
-The chart is available for operator-managed installations. Repository release
-workflows publish artifacts only; the project-managed GKE deployment target has
-been retired. Installing or upgrading this chart is a separate operator action.
-
-## Quick install
-
-```shell
-helm install lantern deploy/helm/lantern
-```
-
-For a one-off render:
-
-```shell
-helm template lantern deploy/helm/lantern | less
-```
-
-To lint:
-
-```shell
+```sh
 helm lint deploy/helm/lantern
+helm template local deploy/helm/lantern
+helm install lantern deploy/helm/lantern --namespace lantern --create-namespace
 ```
 
-## What gets deployed
+Publication of an image/chart does not deploy it. Provision and validate the
+operator material before installation. Generated examples contain no secrets.
 
-| Object                                | Purpose                                                |
-| ------------------------------------- | ------------------------------------------------------ |
-| `StatefulSet/<release>-lantern`       | 2 lantern pods (default), `RollingUpdate` strategy.    |
-| `Service/<release>-lantern`           | `ClusterIP` — client gRPC + scrapeable `/metrics`.     |
-| `Service/<release>-lantern-headless`  | `clusterIP: None` — peer discovery DNS.                |
-| `PodDisruptionBudget/<release>-lantern` | `minAvailable: 1` keeps one replica up during a drain. |
-| `ServiceAccount/<release>-lantern`    | Workload identity (token-only by default).             |
-| `ServiceMonitor/<release>-lantern`    | Optional, when `metrics.serviceMonitor.enabled=true` (Prometheus Operator). |
-| `PodMonitoring/<release>-lantern`     | Optional, when `metrics.podMonitoring.enabled=true` (GKE Managed Prometheus). |
+## Private peer plane
 
-The pump reads `LANTERN_PEER_DISCOVERY=dns` and resolves the headless
-`Service` FQDN to obtain peer IPs. `LocalIPSet()` in the server filters
-the pod's own IP so the supervisor never dials itself. The headless Service
-publishes not-ready addresses so peers can discover one another during a cold
-start; the separate client Service continues to exclude unready pods.
-By default, this is a bearer-free h2c topology, not an authenticated
-receipt-enabled HA installation.
+Set `peerPlane.enabled=true` and supply the signed membership ConfigMap,
+operator public-key Secret, deployment ID, workload URI prefix and identity
+Secret. The latter has `<pod-name>.crt`, `<pod-name>.key` and `ca.pem`; every
+pod owns a distinct private key. A trusted non-root initContainer copies only
+its Pod's key/certificate and public trust material into a memory-backed
+EmptyDir. Raw cohort Secret projections are never mounted into the Server. The ConfigMap has `manifest.json`, renewed
+atomically before its expiry (at most ten minutes). DNS/headless Services locate
+only signed private origins; they do not authorize membership.
 
-## Authenticated HA
+The peer Service uses its own port (6381), includes bootstrapping pods and
+never exposes the public APIs. The client Service remains readiness gated.
+Choose `peerPlane.mode=fresh` only for first enrollment and `resume` afterward.
+Per-pod `runtime-state` PVCs retain anti-rollback enrollment and sys: state.
+Never use an emptyDir or copied state file as proof of continuity.
 
-For bearer-enabled HA, provision a Kubernetes Secret outside the chart with
-`server.pem`, `server.key`, and `ca.pem`. The server certificate must be signed
-by that CA and have the headless discovery FQDN (by default
-`<release>-lantern-headless.<namespace>.svc.cluster.local`) in its DNS SAN.
-Add the client Service FQDN to its SAN too if SDKs connect there directly over
-HTTPS. Configure the chart without putting credentials in the values file:
+## OIDC/RBAC
 
-```yaml
-peerTLS:
-  existingSecret: lantern-peer-tls
-extraEnv:
-  - name: LANTERN_AUTH_TOKENS
-    valueFrom:
-      secretKeyRef:
-        name: lantern-cluster-auth
-        key: token
-```
+Set `auth.mode=oidc`, `auth.configMap`, `auth.existingSecret` and
+`publicTLS.existingSecret`. The ConfigMap supplies the complete
+[Server contract](../../../docs/env.md). Provision a separate minimal source
+Secret for each writer/replica release. `auth.files` explicitly selects common
+files (default `writer.pub`, `cdc-keys.json`); `auth.writerFiles` selects files
+copied only for a writer (default `writer.key`; add `machines.json` when machine
+bootstrap is configured). Map ConfigMap file settings and Issuer secret handles
+to those selected basenames under `/run/lantern-security`. A replica's source
+Secret must exclude writer signing keys and machine bootstrap credentials.
 
-The chart mounts the existing Secret read-only at `/run/lantern-tls` on the
-server pods and sets the inbound certificate/key and independent outbound
-peer CA paths. Missing files or invalid peer trust fail startup; the bearer
-never falls back to a plaintext peer. This mount uses **one shared
-certificate/key across the replica set** for the shared discovery DNS
-identity. Operators requiring per-pod keys must instead project separate
-per-pod material using a workload-specific injector or post-renderer and
-configure the same `LANTERN_TLS_CERT_FILE`, `LANTERN_TLS_KEY_FILE`, and
-`LANTERN_PEER_CA_FILE` paths. If inbound mTLS is enabled, also supply an
-inbound client CA and outbound client certificate/key (`LANTERN_TLS_CLIENT_CA_FILE`,
-`LANTERN_PEER_CLIENT_CERT_FILE`, and `LANTERN_PEER_CLIENT_KEY_FILE`) through
-`extraEnv` with files available to every pod.
+The initContainer dereferences Kubernetes projections into regular mode-0600
+files owned by the Server UID. It uses the same Server image and securityContext;
+a non-root UID and fsGroup are required. Public TLS files are
+`<pod-name>.crt`/`<pod-name>.key` under `/run/lantern-public`, independently of
+private peer identity under `/run/lantern-peers`. Missing selected files fail
+before Server startup. Never place the operator private signing key in a Pod.
 
-The client Service is HTTPS once the server listener uses TLS; client SDKs,
-admin gateways, and MCP targets need HTTPS URLs with a trusted CA and a
-matching client-facing certificate SAN. The chart's default h2c client URLs
-are only valid in bearer-free deployments. See the
-[HA runbook](../../../docs/ha-runbook.md)
-for static peers, DNS identity, certificate rotation, and migration.
+Copied key/secret rotation requires an explicit Pod restart after provisioning
+and validating replacement material. Signed membership stays on its live
+ConfigMap projection and must be renewed independently before expiry; it is
+never frozen by the init copy. Keep restart/fencing and security continuity
+requirements intact. Kubernetes documents [initContainer volume sharing](https://kubernetes.io/docs/concepts/workloads/pods/init-containers/)
+and [memory-backed EmptyDir and Secret volumes](https://kubernetes.io/docs/concepts/storage/volumes/).
 
-## Single-instance fallback
+Use `auth.nodeRole=writer` with exactly one pod for the fixed security writer.
+Deploy a separate replica release with `auth.nodeRole=replica` and private peer
+membership in the same domain. The chart does not infer the writer from pod
+ordinal or elect one. `auth.storeMode=fresh` initializes new state;
+`restart` validates existing sys: continuity. Required bootstrap administrator
+Issuer and subjects are environment-owned; Admin can manage additional Issuers,
+users and Role assignments through Server APIs.
 
-For dev / single-instance topologies set `replicaCount=1`,
-`replication.discovery.mode=static`, and `replication.peers=[]`. DNS discovery
-selects HA readiness mode and therefore intentionally waits for a peer. PDB can
-be disabled via `podDisruptionBudget.enabled=false`.
+Public OFF/OIDC mode, generation, namespace version and trust must be homogeneous
+throughout approved membership. Changing them requires a fenced migration, not
+a mixed anonymous/protected rolling update. Replication of sys: data alone does
+not prove current policy: readiness also requires workload and security leases.
 
-## Tuning
+## Admin and diagnostics
 
-| Value                                       | Default                | Notes                                              |
-| ------------------------------------------- | ---------------------- | -------------------------------------------------- |
-| `replicaCount`                              | `2`                    | Minimal HA default (full-replica store).           |
-| `image.repository`                          | `ghcr.io/anaregdesign/lantern` | Override for private mirrors.              |
-| `image.tag`                                 | `.Chart.AppVersion`    | Pin to a specific release tag in production.       |
-| `enableServiceLinks`                        | `false`                | Disable unused Kubernetes ServiceLink env injection; enable only for legacy ServiceLink discovery. |
-| `service.port`                              | `6380`                 | gRPC.                                              |
-| `metrics.port`                              | `9090`                 | `/metrics`, `/healthz`, `/readyz`.                 |
-| `replication.discovery.mode`                | `dns`                  | `static` falls back to `LANTERN_PEERS`.            |
-| `replication.discovery.dnsName`             | headless FQDN          | Auto-templated. Override only for cross-ns peers.  |
-| `replication.discovery.defaultPort`         | `"6380"`               | Appended to each resolved IP.                      |
-| `replication.discovery.intervalMs`          | `10000`                | `0` = resolve once at startup.                     |
-| `peerTLS.existingSecret`                     | `""`                   | Optional existing Secret containing server.pem, server.key, and ca.pem for authenticated HA; mounts read-only and sets server TLS and outbound peer-CA paths. |
-| `replication.maxLag`                        | `10000`                | Per-(peer,origin) lag cap before readiness flips.  |
-| `antiEntropy.intervalMs`                    | `30000`                | Background reconciliation cadence.                 |
-| `podDisruptionBudget.minAvailable`          | `1`                    | Keep one replica up while the other drains (correct for 2 replicas). |
-| `backup.enabled`                            | `true`                 | Snapshot durability (#770/#779): per-pod dump PVC + restore-on-start baseline (peers overlay it via HLC). Needs a default StorageClass or `backup.persistence.storageClass`. |
-| `backup.interval`                           | `5m`                   | Dump cadence; keep `cache.defaultTtlSeconds` above it.             |
-| `backup.persistence.size`                   | `1Gi`                  | Per-pod PVC size for dumps.                        |
-| `backup.persistence.existingClaim`          | `""`                   | Set to a pre-provisioned RWX claim for a shared dump volume. |
-| `resources.requests` / `.limits`            | `250m` CPU / `512Mi`   | Equal requests and limits provide Guaranteed QoS. Size both for the graph and workload. |
-| `runtime.goMemoryLimit`                     | `384MiB`                | Sets `GOMEMLIMIT` below the 512Mi container limit; override it together with `resources.limits.memory`. |
-| `probes.startup`                            | 60s initial delay, 5s period, 36 failures | Gives restore-on-start about four minutes before restart; liveness/readiness stay disabled until it succeeds. |
-| `metrics.serviceMonitor.enabled`            | `false`                | Requires the prometheus-operator CRD.              |
-| `metrics.podMonitoring.enabled`             | `false`                | GKE Managed Service for Prometheus (GMP). Requires the `monitoring.googleapis.com/v1` PodMonitoring CRD (default on GKE). |
-| `metrics.podMonitoring.interval`            | `60s`                  | GMP scrape interval.                               |
-| `admin.enabled`                             | `false`                | Render the `lantern-admin` SPA Deployment + Service. |
-| `admin.image.repository`                    | `ghcr.io/anaregdesign/lantern-admin` | Admin SPA image (Caddy serving the built bundle).     |
-| `admin.image.tag`                           | `.Chart.AppVersion`    | Pin to an `admin/vX.Y.Z` tag in production.        |
-| `admin.service.port`                        | `8080`                 | Service ClusterIP port for the SPA.                |
-| `admin.ingress.enabled`                     | `false`                | Render an Ingress for the admin Service.           |
-| `admin.ingress.host`                        | `""` (required when enabled) | Host name the Ingress rule matches.        |
+`admin.enabled=true` mounts a writable Caddy configuration directory. OFF derives
+a fixed public upstream; OIDC requires `admin.server.upstream` to name the pinned
+HTTPS writer. Set `admin.server.caSecret` (`ca.pem`) for a private CA. Browser
+sessions use same-origin routes, HttpOnly cookies and CSRF; no tokens go in Vite
+configuration. An enabled OIDC Ingress requires TLS.
 
-See [`values.yaml`](values.yaml) for the full set including probes,
-resources, security context, anti-affinity, and `extraEnv`.
+`admin.prometheus.upstream` is optional. Each request first calls the fixed
+Server `/auth/operations` route; OFF permits it explicitly, OIDC requires a
+current `operations.read` Role. API/proxy errors never become the SPA shell.
+Only GET diagnostics are proxied, and cookies/Bearer headers are stripped before
+reaching Prometheus.
 
-`runtime.goMemoryLimit` is a Go runtime soft limit, not a Kubernetes resource
-request. Keeping it below `resources.limits.memory` makes GC react to transient
-backup-restore and replication-catch-up allocations before the kernel OOM
-killer acts, while preserving headroom for thread stacks and non-Go memory.
-The default leaves the Kubernetes memory request at 512Mi. When sizing a
-larger graph, change both values deliberately; set `runtime.goMemoryLimit: ""`
-only when another runtime memory controller is in place.
+Protected diagnostics bind to loopback. Probes execute local health/readiness
+checks so they do not require a public diagnostics port. For OFF-only collection,
+explicitly set `metrics.expose=true` and a reachable `metrics.address` before
+enabling ServiceMonitor/PodMonitoring. OIDC collection requires an authenticated
+operator sidecar, outside the chart's default public Service. Keep its readiness
+and scrape permissions scoped separately.
 
-## Optional GMP cost guard
+## Runtime and recovery
 
-`PodMonitoring` remains an opt-in integration for operators using Google Cloud
-Managed Service for Prometheus. It is disabled in the default chart profile.
+The chart retains cache/capacity/backup settings, drain delay, startup budget,
+resource limits and `runtime.goMemoryLimit`. Graph backups and sys:/membership
+PVCs are separate. Receipt-WAL configuration is an additional certified runtime
+choice; graph snapshots never certify receipt or security continuity.
 
-[Managed Service for Prometheus bills primarily by ingested
-samples](https://cloud.google.com/stackdriver/docs/managed-prometheus/cost-controls).
-The default `PodMonitoring.metricRelabeling` therefore keeps the production
-signals used for HA, readiness, backups, capacity/resource health,
-search-index health, validation, subscriptions, and gRPC RED monitoring. It
-drops the high-cardinality Illuminate and detailed search/scan/batch families
-from GMP only; Lantern's local `/metrics` endpoint remains complete for
-short-lived diagnosis or a self-managed Prometheus.
+The optional MCP deployment is a separate application. Protected deployments
+must supply an approved machine Role, credential and verified public transport;
+an OFF machine example does not authorize private replication.
 
-The historical July 2026 two-pod sample exposed 14,604 total series. At a
-60-second interval that is an upper bound of 630,892,800 samples per 30-day
-month. That sample's default allowlist retained 425 series on the busier pod;
-the current profile adds the 16 pre-warmed, bounded causal-metadata budget
-series, for approximately 441 series and a two-pod upper bound of 38.1 million
-samples per month (about 94% fewer). Histogram billing can be lower because
-GMP counts only populated buckets, so treat these figures as conservative
-planning bounds. Re-measure after adding labels or metric families.
-
-To ingest the full surface deliberately, override the list:
-
-```shell
-helm upgrade --install lantern deploy/helm/lantern \
-  --set metrics.podMonitoring.enabled=true \
-  --set-json 'metrics.podMonitoring.metricRelabeling=[]'
-```
-
-Increasing `metrics.podMonitoring.interval` reduces sample cost linearly but
-also delays short HA signals. The optional GMP profile defaults to `60s`
-and controls cost by cardinality instead.
-
-## Admin UI (`admin.enabled=true`)
-
-The browser-facing admin SPA (`lantern-admin`) ships as part of this
-chart but is **disabled by default** to preserve the existing install
-footprint.
-
-```shell
-helm upgrade --install lantern deploy/helm/lantern \
-  --set admin.enabled=true \
-  --set extraEnv[0].name=LANTERN_CORS_ALLOWED_ORIGINS \
-  --set extraEnv[0].value=http://localhost:8080
-kubectl port-forward svc/lantern-admin 8080:8080
-# Open http://localhost:8080/ — the Gateway button (top-right) points
-# at the lantern service; default is http://localhost:6380, override
-# at runtime.
-```
-
-The admin container is a **pure Caddy SPA host** — the browser calls
-the lantern listener (Connect-Web) directly, so the lantern server
-**must** allow the admin origin via `LANTERN_CORS_ALLOWED_ORIGINS`.
-Set it on the server StatefulSet via `extraEnv` (above) to include
-every origin the SPA may be served from (`http://localhost:8080`
-during port-forward dev, `https://<ingress-host>` once an Ingress is
-configured, …). Multiple origins are comma-separated.
-
-### Ingress
-
-```shell
-helm upgrade --install lantern deploy/helm/lantern \
-  --set admin.enabled=true \
-  --set admin.ingress.enabled=true \
-  --set admin.ingress.host=admin.example.com \
-  --set admin.ingress.className=nginx \
-  --set extraEnv[0].name=LANTERN_CORS_ALLOWED_ORIGINS \
-  --set extraEnv[0].value=https://admin.example.com
-```
-
-`admin.ingress.host` is required when `admin.ingress.enabled=true`;
-the template fails fast (`helm: …admin.ingress.host to be set`) if it
-is omitted. For TLS, set `admin.ingress.tls` to the standard
-networking.k8s.io/v1 Ingress TLS slice. For multi-host setups, fork
-`templates/admin-ingress.yaml` — v1 of the chart deliberately only
-covers the single-host happy path.
-
-### No auth
-
-v1 ships **no** auth in front of the admin (same posture as the
-container image's `admin/README.md`). Run it only on trusted networks
-(`admin.ingress.enabled=false` + `kubectl port-forward`) or front it
-with your own ingress-level auth proxy.
-
-## MCP server
-
-`lantern-mcp` serves the Model Context Protocol over **Streamable HTTP**,
-so the chart renders a standard **Deployment + ClusterIP Service** for it
-(mirroring the admin pattern), gated on `mcp.enabled` (default `false`):
-
-```shell
-helm upgrade --install lantern deploy/helm/lantern \
-  --set mcp.enabled=true \
-  --set mcp.image.tag=v0.4.0
-```
-
-Agent pods in the same cluster reach it at:
-
-```
-http://<release>-mcp.<namespace>.svc:6390/mcp
-```
-
-The container listens on `0.0.0.0:6390` (set automatically via
-`LANTERN_MCP_HTTP_ADDR`) and dials the in-cluster lantern Service by
-default. A `GET /healthz` backs the liveness / readiness probes.
-
-The MCP config lives under `.Values.mcp`:
-
-| Value | Default | Purpose |
-| --- | --- | --- |
-| `mcp.enabled` | `false` | Render the Deployment + Service. |
-| `mcp.replicaCount` | `1` | MCP server replicas. |
-| `mcp.image.repository` | `ghcr.io/anaregdesign/lantern-mcp` | Override for private mirrors. |
-| `mcp.image.tag` | `.Chart.AppVersion` | Pin to a specific `mcp/vX.Y.Z`. |
-| `mcp.service.type` | `ClusterIP` | Keep cluster-internal — the endpoint is unauthenticated. |
-| `mcp.service.port` | `6390` | Service + container port (endpoint `/mcp`). |
-| `mcp.lanternAddr` | _(empty → in-cluster Service FQDN)_ | Override only for cross-namespace / cross-cluster setups. |
-| `mcp.pingTimeout` | `5s` | Startup health-check timeout. |
-| `mcp.ttl.<bucket>` | _(unset)_ | Per-bucket TTL override; rendered as `LANTERN_MCP_TTL_<UPPER>` env. |
-| `mcp.resources` | small | requests/limits for the container. |
-| `mcp.extraEnv` | `[]` | Raw env list appended to the templated ones. |
-
-The endpoint is **unauthenticated** — keep `mcp.service.type=ClusterIP`
-and reach it from agent pods in the same cluster, or front it with your
-own ingress-level auth proxy. For local probing use
-`kubectl port-forward svc/<release>-mcp 6390:6390` and connect to
-`http://localhost:6390/mcp`. The agent-runtime client configs in
-[`mcp/examples/`](../../../mcp/examples/) show the host-side wiring.
-
-
-## Smoke test
-
-```shell
-kubectl -n default get pods -l app.kubernetes.io/name=lantern
-kubectl -n default get endpoints <release>-lantern-headless
-kubectl -n default port-forward svc/<release>-lantern 6380:6380
-# In another terminal:
-lantern-cli --address localhost:6380 put vertex key1 value1
-lantern-cli --address localhost:6380 get vertex key1
-```
-
-Then scale and observe convergence:
-
-```shell
-kubectl -n default scale statefulset <release>-lantern --replicas=5
-# Within one discovery tick (default 10s) each pod resolves all 5,
-# filters self, and opens replication streams to the other 4.
-```
-
-## Verifying peer discovery
-
-```shell
-# Each pod logs a "replication pump: peer transition" line (transition=connect,
-# peer=<addr>) for each of the other N-1 peers as streams open.
-kubectl -n default logs <release>-lantern-0 | grep "peer transition"
-
-# Prometheus: lantern_peer_connected{peer="..."} gauge series
-# should show one per resolved peer, transitioning 0→1 on stream open.
-```
-
-## Cross-references
-
-- RFC: [docs/replication.md](../../../docs/replication.md)
-- Discovery spec: [docs/replication.md §9.1](../../../docs/replication.md#91-peer-discovery-190)
-- Docker Compose alternative: [`deploy/compose/`](../../compose/)
-- HA runbook: [docs/ha-runbook.md](../../../docs/ha-runbook.md)
+See [OIDC operations](../../../docs/oidc-operations.md),
+[HA runbook](../../../docs/ha-runbook.md) and
+[replication RFC](../../../docs/replication.md).

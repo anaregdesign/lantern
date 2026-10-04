@@ -198,7 +198,7 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateCut(
 		return ReceiptWholeStateBackupCapture{}, fmt.Errorf("receipt whole-state capture: Store policy mismatch: %w", mutationreceipt.ErrInvalidSnapshot)
 	}
 
-	var image replicationSnapshotCut
+	image := replicationSnapshotCut{namespaceFormat: s.namespaceFormat}
 	var receipts mutationreceipt.Snapshot
 	var retired mutationreceipt.RetiredCatalogSnapshot
 	var origins []OriginState

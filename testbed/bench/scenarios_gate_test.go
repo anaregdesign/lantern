@@ -66,6 +66,43 @@ type scenarioDoc struct {
 	} `yaml:"subscribe"`
 }
 
+func TestNativeChaosServiceAndRecoverySchedule(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("scenarios", "chaos_kill_replica.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Chaos struct {
+			Target  string `yaml:"kill_target"`
+			Kill    string `yaml:"kill_at"`
+			Restart string `yaml:"restart_at"`
+		} `yaml:"chaos"`
+		Phases struct {
+			Steady struct {
+				Duration string `yaml:"duration"`
+			} `yaml:"steady"`
+		} `yaml:"phases"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains([]string{"lantern-0", "lantern-1", "lantern-2"}, doc.Chaos.Target) {
+		t.Fatalf("chaos must address an owned service, not a container name: %q", doc.Chaos.Target)
+	}
+	kill, err := time.ParseDuration(doc.Chaos.Kill)
+	if err != nil || kill <= 0 {
+		t.Fatal("invalid kill delay", err)
+	}
+	restart, err := time.ParseDuration(doc.Chaos.Restart)
+	if err != nil || restart <= 0 {
+		t.Fatal("invalid recovery delay", err)
+	}
+	steady, err := time.ParseDuration(doc.Phases.Steady.Duration)
+	if err != nil || kill+restart >= steady {
+		t.Fatal("recovery must finish during the declared steady phase", err)
+	}
+}
+
 func TestContributionDeleteReleaseScenarioContract(t *testing.T) {
 	const name = "edge_contrib_idempotent"
 	raw, err := os.ReadFile(filepath.Join("scenarios", name+".yaml"))
@@ -457,10 +494,12 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	for _, contract := range []string{
 		`target_driver="$(yq -r '.target.driver // "ghz"'`,
 		`go run ./testbed/bench/receiptprobe`,
-		`go run ./testbed/bench/receipttls generate -dir "$PEER_TLS_DIR"`,
+		`go -C "$REPO_ROOT/server" build -o "$AUTHFIXTURE" ./cmd/authfixture`,
+		`-compose -directory "$PEER_TLS_DIR" -public-ports "$native_public_ports" -mode oidc -receipt`,
+		`-renew-every 2m`,
 		`COMPOSE_FILES+=( -f "$HERE/compose.receipt-tls.yml" )`,
 		`receipt driver requires a fresh Compose lifecycle`,
-		`docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans`,
+		`down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}"`,
 		`-family "$target_driver"`,
 		`endpoint_urls+="https://${ep}"`,
 		`-ca-file "$PEER_TLS_DIR/ca.pem"`,
@@ -489,7 +528,7 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		}
 	}
 	projectScope := strings.Index(string(runScript), `export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-lantern-bench}"`)
-	volumeReset := strings.Index(string(runScript), `docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans`)
+	volumeReset := strings.Index(string(runScript), `down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}"`)
 	if projectScope < 0 || volumeReset < 0 || projectScope >= volumeReset {
 		t.Error("receipt volume reset must use the named bench Compose project")
 	}
@@ -511,60 +550,31 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		steadySampling >= optionalCapture || receiptEvaluation <= optionalCapture {
 		t.Error("receipt steady sampling and its leak verdict must stay active with LEAK_GATE_ONLY=1")
 	}
-	composeOverride, err := os.ReadFile("compose.override.yml")
+
+	protected, err := os.ReadFile("compose.receipt-tls.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, variable := range []string{
-		"LANTERN_BENCH_AUTH_TOKEN",
-		"LANTERN_BENCH_BACKUP_RESTORE_ON_START",
-		"LANTERN_BENCH_RECEIPT_EPOCH",
-		"LANTERN_BENCH_RECEIPT_WAL_MODE",
-		"LANTERN_BENCH_RECEIPT_WAL_PATH",
-		"LANTERN_BENCH_RECEIPT_MAX_ENTRIES",
-		"LANTERN_BENCH_RECEIPT_MAX_BYTES",
-		"LANTERN_BENCH_RECEIPT_RETENTION",
-		"LANTERN_BENCH_NODE_ID_0",
-		"LANTERN_BENCH_NODE_ID_1",
-		"LANTERN_BENCH_NODE_ID_2",
-	} {
-		if !strings.Contains(string(composeOverride), variable) {
-			t.Errorf("compose override missing %s", variable)
+	var overlay struct {
+		Services map[string]struct {
+			Environment map[string]string `yaml:"environment"`
+			Ports       struct{}          `yaml:"-"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(protected, &overlay); err != nil {
+		t.Fatal(err)
+	}
+	if len(overlay.Services) != 3 {
+		t.Fatal("protected overlay must own only three explicit replicas")
+	}
+	for _, service := range []string{"lantern-0", "lantern-1", "lantern-2"} {
+		got := overlay.Services[service].Environment
+		if got["LANTERN_METRICS_ADDR"] != "127.0.0.1:9090" || got["LANTERN_PPROF_ENABLED"] != "false" {
+			t.Fatal("protected diagnostics guard weakened", service)
 		}
-		receiptOverlay, err := os.ReadFile("compose.receipt-tls.yml")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var overlay struct {
-			Services map[string]struct {
-				Environment map[string]string `yaml:"environment"`
-				Volumes     []string          `yaml:"volumes"`
-			} `yaml:"services"`
-		}
-		if err := yaml.Unmarshal(receiptOverlay, &overlay); err != nil {
-			t.Fatal(err)
-		}
-		if len(overlay.Services) != 3 {
-			t.Fatalf("receipt TLS overlay has %d services, want three replicas only", len(overlay.Services))
-		}
-		for _, service := range []string{"lantern-0", "lantern-1", "lantern-2"} {
-			got, ok := overlay.Services[service]
-			if !ok {
-				t.Errorf("receipt TLS overlay is missing %s", service)
-				continue
-			}
-			if len(got.Volumes) != 1 || got.Volumes[0] !=
-				"${LANTERN_BENCH_PEER_TLS_DIR:?receipt TLS certificates required}/"+service+":/run/lantern-tls:ro" {
-				t.Errorf("%s must mount only its own TLS material read-only: %v", service, got.Volumes)
-			}
-			for name, path := range map[string]string{
-				"LANTERN_TLS_CERT_FILE": "/run/lantern-tls/server.pem",
-				"LANTERN_TLS_KEY_FILE":  "/run/lantern-tls/server.key",
-				"LANTERN_PEER_CA_FILE":  "/run/lantern-tls/ca.pem",
-			} {
-				if got.Environment[name] != path {
-					t.Errorf("%s %s = %q, want %q", service, name, got.Environment[name], path)
-				}
+		for _, key := range []string{"LANTERN_AUTH_TOKENS", "LANTERN_PEER_CA_FILE", "LANTERN_PEER_DISCOVERY"} {
+			if _, ok := got[key]; ok {
+				t.Fatal("retired peer admission", key)
 			}
 		}
 	}
@@ -623,7 +633,7 @@ func receiptImageShellFunctions(t *testing.T) string {
 	if !found {
 		t.Fatal("run.sh has no receipt image pin")
 	}
-	body, _, found := strings.Cut(rest, "\nif [[ \"$receipt_driver\" == \"1\" ]]; then\n  pin_receipt_image")
+	body, _, found := strings.Cut(rest, "\npin_receipt_image\n")
 	if !found {
 		t.Fatal("run.sh has no receipt image provenance verifier")
 	}
@@ -783,13 +793,13 @@ func receiptTLSShellFunction(t *testing.T) string {
 	}
 	_, rest, found := strings.Cut(string(script), "verify_receipt_peer_tls() {\n")
 	if !found {
-		t.Fatal("run.sh has no receipt peer TLS preflight")
+		t.Fatal("missing native TLS verifier")
 	}
-	body, _, found := strings.Cut(rest, "\n}\n\n# ----- compose up")
+	body, _, found := strings.Cut(rest, "\n# ----- compose up")
 	if !found {
-		t.Fatal("run.sh has no complete receipt peer TLS preflight")
+		t.Fatal("incomplete native TLS verifier")
 	}
-	return "verify_receipt_peer_tls() {\n" + body + "\n}\n"
+	return "verify_receipt_peer_tls() {\n" + body + "\n"
 }
 
 func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
@@ -803,104 +813,84 @@ func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
 		{name: "verified before and after load"},
 		{name: "missing own mount", wantErr: "no pinned, read-only"},
 		{name: "writable mount", wantErr: "no pinned, read-only"},
-		{name: "wrong discovery identity", wantErr: "missing or mismatched"},
-		{name: "wrong bearer config", wantErr: "missing or mismatched"},
+		{name: "wrong workload identity", wantErr: "missing or mismatched"},
+		{name: "retired bearer config", wantErr: "missing or mismatched"},
 		{name: "invalid live TLS identity", wantErr: "TLS identity/provenance verification failed"},
 		{name: "changed live TLS identity", wantErr: "TLS identity/provenance verification failed", postFailure: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outDir := t.TempDir()
+			private := filepath.Join(outDir, "private")
+			if err := os.Mkdir(private, 0700); err != nil {
+				t.Fatal(err)
+			}
+			expected := map[string]any{"nodes": []any{
+				map[string]any{"name": "node-0", "environment": map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_PEER_WORKLOAD_ID": "spiffe://fixture/node-0"}},
+				map[string]any{"name": "node-1", "environment": map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_PEER_WORKLOAD_ID": "spiffe://fixture/node-1"}},
+				map[string]any{"name": "node-2", "environment": map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_PEER_WORKLOAD_ID": "spiffe://fixture/node-2"}},
+			}}
+			raw, err := json.Marshal(expected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(private, "fixture.json"), raw, 0600); err != nil {
+				t.Fatal(err)
+			}
 			fixture := `set -euo pipefail
 COMPOSE_FILES=(-f fixture.yml)
 PEER_TLS_DIR="$OUTDIR/private"
 REPO_ROOT="$OUTDIR"
 REPLICA_GRPC_PORTS=(6380 6381 6382)
-LANTERN_BENCH_AUTH_TOKEN=fixture-only
+MEMBERSHIP_PID=$$
+DIAGNOSTICS_PID=$$
+receipt_driver=1
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 docker() {
-  if [[ "$1" == compose && "$2" == -f && "$3" == fixture.yml &&
-        "$4" == ps && "$5" == -q ]]; then
-    printf 'container-%s\n' "$6"
-    return
-  fi
-  [[ "$1" == inspect && "$2" == --format ]] || return 88
-  local service="${4#container-}"
-  case "$3" in
-    '{{json .Mounts}}')
-      local source="$PEER_TLS_DIR/$service" rw=false
-      if [[ "$CASE" == "missing own mount" && "$service" == lantern-1 ]]; then
-        source="$PEER_TLS_DIR/lantern-0"
-      fi
-      if [[ "$CASE" == "writable mount" && "$service" == lantern-1 ]]; then rw=true; fi
-      jq -nc --arg source "$source" --argjson rw "$rw" \
-        '[{Type:"bind",Destination:"/run/lantern-tls",RW:$rw,Source:$source}]'
-      ;;
-    '{{json .Config.Env}}')
-      local dns=lantern token="$LANTERN_BENCH_AUTH_TOKEN"
-      if [[ "$CASE" == "wrong discovery identity" && "$service" == lantern-1 ]]; then
-        dns=unrelated.invalid
-      fi
-      if [[ "$CASE" == "wrong bearer config" && "$service" == lantern-1 ]]; then
-        token=unrelated
-      fi
-      jq -nc --arg dns "$dns" --arg token "$token" '[
-        "LANTERN_TLS_CERT_FILE=/run/lantern-tls/server.pem",
-        "LANTERN_TLS_KEY_FILE=/run/lantern-tls/server.key",
-        "LANTERN_PEER_CA_FILE=/run/lantern-tls/ca.pem",
-        "LANTERN_PEER_DISCOVERY=dns",
-        "LANTERN_PEER_DNS_NAME=" + $dns,
-        "LANTERN_PEER_DEFAULT_PORT=6380",
-        "LANTERN_AUTH_TOKENS=" + $token
-      ]'
-      ;;
-    *) return 89 ;;
-  esac
+ if [[ "$1" == compose ]]; then printf 'container-%s\n' "$6"; return; fi
+ [[ "$1" == inspect && "$2" == --format ]] || return 88
+ local service="${4#container-}" index="${4##*-}"
+ case "$3" in
+ '{{json .Mounts}}')
+  local source="$PEER_TLS_DIR/$service" rw=false
+  if [[ "$CASE" == "missing own mount" && "$index" == 1 ]]; then source="$PEER_TLS_DIR/lantern-0"; fi
+  if [[ "$CASE" == "writable mount" && "$index" == 1 ]]; then rw=true; fi
+  jq -nc --arg source "$source" --argjson rw "$rw" '[{Type:"bind",Destination:"/run/lantern-config",RW:$rw,Source:$source}]'
+  ;;
+ '{{json .Config.Env}}')
+  local identity="spiffe://fixture/node-$index" legacy=""
+  if [[ "$CASE" == "wrong workload identity" && "$index" == 1 ]]; then identity="spiffe://unrelated/node-1"; fi
+  if [[ "$CASE" == "retired bearer config" && "$index" == 1 ]]; then legacy="LANTERN_AUTH_TOKENS=fixture-only"; fi
+  jq -nc --arg identity "$identity" --arg legacy "$legacy" '["LANTERN_AUTH_MODE=oidc","LANTERN_PEER_WORKLOAD_ID="+$identity] + (if $legacy=="" then [] else [$legacy] end)'
+  ;;
+ *) return 89;;
+ esac
 }
 go() {
-  [[ "$1" == run && "$2" == ./testbed/bench/receipttls && "$3" == verify ]] ||
-    return 88
-  [[ "$*" == *"-dir $PEER_TLS_DIR"* && "$*" == *"-ports 6380,6381,6382"* ]] ||
-    return 88
-  if [[ "$CASE" == "invalid live TLS identity" ||
-        ( "$CASE" == "changed live TLS identity" && "$*" == *"-baseline"* ) ]]; then
-    return 86
-  fi
-  local out="" prev="" arg
-  for arg in "$@"; do
-    if [[ "$prev" == -out ]]; then out="$arg"; fi
-    prev="$arg"
-  done
-  [[ -n "$out" ]] || return 88
-  printf '{"ca_sha256":"fixture"}\n' > "$out"
+ [[ "$1" == run && "$2" == ./testbed/bench/receipttls && "$3" == verify ]] || return 88
+ if [[ "$CASE" == "invalid live TLS identity" || ( "$CASE" == "changed live TLS identity" && "$*" == *"-baseline"* ) ]]; then return 86; fi
+ local out="" prev="" arg
+ for arg in "$@"; do if [[ "$prev" == -out ]]; then out="$arg"; fi; prev="$arg"; done
+ printf '{"ca_sha256":"fixture"}\n' > "$out"
 }
 ` + receiptTLSShellFunction(t) + `
 verify_receipt_peer_tls "$OUTDIR/tls_pre.json"
 verify_receipt_peer_tls "$OUTDIR/tls_post.json" "$OUTDIR/tls_pre.json"
 `
-			cmd := exec.Command("bash", "-c", fixture)
-			cmd.Env = append(os.Environ(), "OUTDIR="+outDir, "CASE="+tc.name)
-			output, err := cmd.CombinedOutput()
+			command := exec.Command("bash", "-c", fixture)
+			command.Env = append(os.Environ(), "OUTDIR="+outDir, "CASE="+tc.name)
+			output, err := command.CombinedOutput()
 			if tc.wantErr != "" {
-				if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 37 ||
-					!strings.Contains(string(output), tc.wantErr) {
-					t.Fatalf("preflight exit = %v, err = %v, output = %s; want %s",
-						cmd.ProcessState, err, output, tc.wantErr)
+				if command.ProcessState == nil || command.ProcessState.ExitCode() != 37 || !strings.Contains(string(output), tc.wantErr) {
+					t.Fatalf("native preflight: %v %s; want %s", err, output, tc.wantErr)
 				}
 				if _, err := os.Stat(filepath.Join(outDir, "tls_post.json")); !os.IsNotExist(err) {
-					t.Fatalf("invalid TLS postflight was recorded: %v", err)
+					t.Fatal("invalid postflight was recorded")
 				}
 				if _, err := os.Stat(filepath.Join(outDir, "tls_pre.json")); tc.postFailure != (err == nil) {
-					t.Fatalf("TLS preflight present = %t, want %t: %v", err == nil, tc.postFailure, err)
+					t.Fatal("wrong preflight result")
 				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("valid receipt TLS pre/postflight = %v, output = %s", err, output)
-			}
-			for _, name := range []string{"tls_pre.json", "tls_post.json"} {
-				if _, err := os.Stat(filepath.Join(outDir, name)); err != nil {
-					t.Fatalf("missing %s: %v", name, err)
-				}
+			} else if err != nil {
+				t.Fatalf("valid native TLS proof: %v %s", err, output)
 			}
 		})
 	}
@@ -944,14 +934,21 @@ func TestReceiptBenchCleanupPreservesFailureAndProjectScope(t *testing.T) {
 export COMPOSE_PROJECT_NAME=lantern-bench-cleanup-fixture
 COMPOSE_STARTED=1
 COMPOSE_FILES=(-f fixture-compose.yml)
+source owned_compose.sh
+stop_owned_processes() { :; }
 KEEP_UP=%d
 log() { :; }
 docker() {
   [[ "$COMPOSE_PROJECT_NAME" == "lantern-bench-cleanup-fixture" ]] || return 88
-  [[ "$*" == "compose -f fixture-compose.yml down -v --remove-orphans" ]] || return 89
-  echo "docker down invoked" >&2
-  return %d
+  case "$*" in
+    "compose -f fixture-compose.yml --profile off-diagnostics down -v --remove-orphans")
+      echo "docker down invoked" >&2
+      return %d;;
+    "ps -aq --filter label=com.docker.compose.project=lantern-bench-cleanup-fixture" | "volume ls -q --filter label=com.docker.compose.project=lantern-bench-cleanup-fixture" | "network ls -q --filter label=com.docker.compose.project=lantern-bench-cleanup-fixture") return 0;;
+    *) return 89;;
+  esac
 }
+
 %s
 trap cleanup EXIT
 exit %d
@@ -973,7 +970,7 @@ exit %d
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got, want := strings.Contains(string(report), "unqualified"), tc.dockerStatus != 0 && tc.wantDown; got != want {
+			if got, want := strings.Contains(string(report), "unqualified"), (tc.dockerStatus != 0 && tc.wantDown) || tc.runStatus != 0; got != want {
 				t.Errorf("report marked unqualified = %v, want %v: %s", got, want, report)
 			}
 		})
@@ -997,29 +994,28 @@ func receiptSnapshotShellFunctions(t *testing.T) string {
 	return "receipt_runtime_scalar() {\n" + body + "\n}\n"
 }
 
-func TestReceiptBenchSnapshotRejectsFailedGC(t *testing.T) {
+func TestProtectedReceiptBenchSnapshotNeverRequestsPprof(t *testing.T) {
 	outDir := t.TempDir()
 	fixture := `set -euo pipefail
 receipt_driver=1
 REPLICA_METRICS_PORTS=(9390 9391 9392)
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
+prom_scalar() { awk -v name="$1" '$1==name {print $2;exit}' <<<"$2"; }
 curl() {
-  [[ "$*" == *"/debug/pprof/heap?gc=1"* ]] && return 22
-  echo "metrics must not be sampled without GC" >&2
-  return 98
+ [[ "$*" == *"/debug/pprof"* ]] && { echo "protected pprof attempted" >&2; return 22; }
+ printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 50000' 'go_memstats_heap_objects 10' 'lantern_vertex_hlc_entries 0' 'lantern_vertex_hlc_entries_high_water 0'
 }
 ` + receiptSnapshotShellFunctions(t) + `
 snapshot_runtime "$OUTDIR/runtime.json"
 `
-	cmd := exec.Command("bash", "-c", fixture)
-	cmd.Env = append(os.Environ(), "OUTDIR="+outDir)
-	output, err := cmd.CombinedOutput()
-	if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 37 ||
-		!strings.Contains(string(output), "forced GC failed for localhost:9390 (round 1)") {
-		t.Fatalf("snapshot exit = %v, err = %v, output = %s; want forced-GC failure", cmd.ProcessState, err, output)
+	command := exec.Command("bash", "-c", fixture)
+	command.Env = append(os.Environ(), "OUTDIR="+outDir)
+	output, err := command.CombinedOutput()
+	if err != nil || strings.Contains(string(output), "protected pprof attempted") {
+		t.Fatalf("protected snapshot: %v %s", err, output)
 	}
-	if _, err := os.Stat(filepath.Join(outDir, "runtime.json")); !os.IsNotExist(err) {
-		t.Fatalf("failed-GC snapshot artifact exists or stat failed: %v", err)
+	if _, err := os.Stat(filepath.Join(outDir, "runtime.json")); err != nil {
+		t.Fatal("missing natural-GC snapshot", err)
 	}
 }
 
@@ -1406,7 +1402,7 @@ func TestSearchChurnScenarioGateContract(t *testing.T) {
 		`if wait "${prod_pids[$i]}"; then`,
 		`producer_failed=1`,
 		`perf_args+=( -producer-failed )`,
-		`"$producer_failed" == "0"`,
+		`"$workload_verdict" == "pass"`,
 	} {
 		if !strings.Contains(run, fragment) {
 			t.Errorf("steady producer failure path missing %q", fragment)
@@ -1562,7 +1558,7 @@ func TestReleaseSweepIsolatesScenarioClusters(t *testing.T) {
 	run := string(runScript)
 	clusterOverride := strings.Index(run, `cluster_ttl="$(yq -r '.cluster.default_ttl_seconds`)
 	composeUp := strings.Index(run, `docker compose "${COMPOSE_FILES[@]}" up -d --wait`)
-	composeDown := strings.Index(run, `docker compose "${COMPOSE_FILES[@]}" down -v`)
+	composeDown := strings.Index(run, `down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}"`)
 	if clusterOverride < 0 || composeUp < 0 || clusterOverride > composeUp {
 		t.Error("run.sh must apply scenario cluster overrides before compose up")
 	}
@@ -1961,7 +1957,7 @@ func TestScenarioTemplates_MatchWireSchema(t *testing.T) {
 			if err := yaml.Unmarshal(raw, &doc); err != nil {
 				t.Fatalf("parse yaml: %v", err)
 			}
-			if doc.Target.Driver != "" && doc.Target.Driver != "ghz" &&
+			if doc.Target.Driver != "" && doc.Target.Driver != "ghz" && doc.Target.Driver != "standalone_create" &&
 				!isReceiptScenarioDriver(doc.Target.Driver) {
 				t.Fatalf("unknown target.driver %q", doc.Target.Driver)
 			}
@@ -2003,6 +1999,65 @@ func TestScenarioTemplates_MatchWireSchema(t *testing.T) {
 							site, c.Call, desc.FullName(), strings.TrimSpace(sb.String()), err)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestStandaloneCreateRunnerContract(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("scenarios", "edge_create.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document scenarioDoc
+	if err := yaml.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.Name != "edge_create" || document.Target.Driver != "standalone_create" || document.Target.Call != "graph.v1.LanternService/CreateEdges" {
+		t.Fatal("standalone Create scenario drift")
+	}
+	command := exec.CommandContext(t.Context(), "python3", "-m", "unittest", "discover", "-s", "createprobe", "-p", "run_test.py")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("standalone Create runner: %v\n%s", err, output)
+	}
+}
+
+func TestBenchConsumerAndChaosFailureCannotMasqueradeAsProducerFailure(t *testing.T) {
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, ok := strings.Cut(string(script), "# Reap background helpers (subscribers run for steady_duration;")
+	if !ok {
+		t.Fatal("missing workload reap block")
+	}
+	_, rest, ok = strings.Cut(rest, "\nfor consumer_index")
+	if !ok {
+		t.Fatal("missing consumer reap")
+	}
+	body, _, ok := strings.Cut("for consumer_index"+rest, "\nsteady_end_epoch=")
+	if !ok {
+		t.Fatal("missing workload reap end")
+	}
+	for _, tc := range []struct {
+		name            string
+		consumer, chaos int
+	}{{"healthy", 0, 0}, {"consumer fails", 1, 0}, {"chaos fails", 0, 1}, {"both fail", 1, 1}} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := fmt.Sprintf(`set -euo pipefail
+sub_pids=(101 102)
+chaos_pid=103
+producer_failed=0
+consumer_failed=0
+chaos_failed=0
+log(){ :; }
+wait(){ if [[ "$1" == 102 ]]; then return %d; elif [[ "$1" == 103 ]]; then return %d; else return 0; fi; }
+%s
+[[ "$producer_failed" == 0 && "$consumer_failed" == %d && "$chaos_failed" == %d && "$chaos_pid" == "" ]]
+[[ "${#sub_pids[@]}" == 0 ]]
+`, tc.consumer, tc.chaos, body, tc.consumer, tc.chaos)
+			if output, err := exec.Command("bash", "-c", fixture).CombinedOutput(); err != nil {
+				t.Fatalf("workload failure classification: %v %s", err, output)
 			}
 		})
 	}

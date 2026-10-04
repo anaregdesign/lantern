@@ -32,6 +32,10 @@ on:
       - "tests/integration/dart_identity_offline_sqlite_test.dart"
       - "tests/integration/dart_contribution_delete_test.dart"
       - "testbed/scripts/dart_identity_fixture.sh"
+      - "testbed/scripts/native_receipt_fixture.sh"
+      - "testbed/scripts/native_head_fixture.sh"
+      - "testbed/scripts/dart_receipt_fixture.sh"
+      - "tests/integration/auth_test.go"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
       - "AGENTS.md"
@@ -75,6 +79,10 @@ on:
       - "tests/integration/dart_identity_offline_sqlite_test.dart"
       - "tests/integration/dart_contribution_delete_test.dart"
       - "testbed/scripts/dart_identity_fixture.sh"
+      - "testbed/scripts/native_receipt_fixture.sh"
+      - "testbed/scripts/native_head_fixture.sh"
+      - "testbed/scripts/dart_receipt_fixture.sh"
+      - "tests/integration/auth_test.go"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
       - "AGENTS.md"
@@ -188,6 +196,7 @@ jobs:
         working-directory: .
         run: |
           go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
           env LANTERN_PORT=6380 LANTERN_METRICS_ADDR=:9090 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-enabled.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
@@ -201,26 +210,11 @@ jobs:
             LANTERN_SEARCH_MAX_QUERY_TERMS=4 LANTERN_MUTATION_LOG_CAPACITY=2 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-budget.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
-          receipt_dir="$RUNNER_TEMP/lantern-dart-receipt"
-          receipt_token="$(openssl rand -hex 32)"
-          umask 077
-          mkdir -p "$receipt_dir"
-          printf '%s' "$receipt_token" > "$receipt_dir/token"
-          echo "::add-mask::$receipt_token"
-          env LANTERN_PORT=6384 LANTERN_METRICS_ADDR=:9094 \
-            LANTERN_AUTH_TOKENS="$receipt_token" \
-            LANTERN_NODE_ID=31313131313131313131313131313131 \
-            LANTERN_RECEIPT_WAL_MODE=fresh \
-            LANTERN_RECEIPT_WAL_PATH="$receipt_dir/receipts.wal" \
-            LANTERN_RECEIPT_EPOCH=42424242424242424242424242424242 \
-            LANTERN_RECEIPT_RETENTION=1h LANTERN_RECEIPT_MAX_ENTRIES=128 \
-            LANTERN_RECEIPT_MAX_BYTES=1048576 LANTERN_BACKUP_ENABLED=false \
-            LANTERN_BACKUP_RESTORE_ON_START=false \
-            "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-receipt.log" 2>&1 &
-          echo $! >> "$RUNNER_TEMP/lantern-dart.pids"
+          bash testbed/scripts/dart_receipt_fixture.sh start "$RUNNER_TEMP/lantern" \
+            "$RUNNER_TEMP/lantern-dart-receipt" 6384 9094
           for attempt in $(seq 1 60); do
             ready=true
-            for port in 6380 6381 6382 6383 6384; do
+            for port in 6380 6381 6382 6383; do
               curl --fail --silent --show-error --max-time 2 \
                 -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
                 --data '{}' "http://127.0.0.1:$port/grpc.health.v1.Health/Check" >/dev/null || ready=false
@@ -279,8 +273,9 @@ jobs:
           test -s "$token_file"
           receipt_token="$(cat "$token_file")"
           echo "::add-mask::$receipt_token"
-          env LANTERN_DART_REAL_WIRE_ENDPOINT=http://127.0.0.1:6384 \
-            LANTERN_DART_RECEIPT_ENDPOINT=http://127.0.0.1:6384 \
+          env LANTERN_DART_REAL_WIRE_ENDPOINT=http://127.0.0.1:6380 \
+            LANTERN_DART_RECEIPT_ENDPOINT=https://localhost:6384 \
+            LANTERN_DART_RECEIPT_CA_FILE="$RUNNER_TEMP/lantern-dart-receipt/trust/ca.pem" \
             LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
             dart test \
               --name '^(receipt Vertex and Edge mutations reconcile over real h2c|contribution .*)$' \
@@ -372,6 +367,7 @@ jobs:
         if: always()
         working-directory: .
         run: |
+          bash testbed/scripts/dart_receipt_fixture.sh stop "$RUNNER_TEMP/lantern-dart-receipt"
           if [ -f "$RUNNER_TEMP/lantern-dart.pids" ]; then
             while read -r pid; do
               kill "$pid" 2>/dev/null || true
@@ -446,6 +442,7 @@ jobs:
         working-directory: .
         run: |
           go build -o "$RUNNER_TEMP/lantern-offline" ./server/cmd
+          go build -o "$RUNNER_TEMP/lantern-offline-authfixture" ./server/cmd/authfixture
           env LANTERN_PORT=6398 LANTERN_METRICS_ADDR=:9098 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern-offline" > "$RUNNER_TEMP/lantern-offline.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/lantern-offline.pid"
@@ -466,8 +463,8 @@ jobs:
           "$RUNNER_TEMP/lantern-offline" "$RUNNER_TEMP/lantern-offline-receipt"
           6395 9095
 
-      - name: Resolve exact offline lockfile
-        run: dart pub get --enforce-lockfile
+      - name: Resolve locked paired offline and parent source
+        run: python3 tool/paired_source_gate.py --prepare
 
       - name: Check format
         run: dart format --output=none --set-exit-if-changed lib test tool
@@ -478,21 +475,14 @@ jobs:
       - name: Test with real committed-response loss
         env:
           LANTERN_DART_REAL_WIRE_ENDPOINT: http://127.0.0.1:6398
-          LANTERN_DART_RECEIPT_ENDPOINT: http://127.0.0.1:6395
+          LANTERN_DART_RECEIPT_ENDPOINT: https://localhost:6395
+          LANTERN_DART_RECEIPT_CA_FILE: ${{ runner.temp }}/lantern-offline-receipt/trust/ca.pem
         run: |
           token_file="$RUNNER_TEMP/lantern-offline-receipt/token"
           test -s "$token_file"
           receipt_token="$(cat "$token_file")"
           echo "::add-mask::$receipt_token"
           LANTERN_DART_RECEIPT_TOKEN="$receipt_token" dart test
-
-      - name: Generate ephemeral authenticated HA certificates
-        working-directory: .
-        run: |
-          umask 077
-          tls_dir="$RUNNER_TEMP/lantern-offline-receipt-ha-tls"
-          mkdir -m 700 "$tls_dir"
-          go run ./testbed/bench/receipttls generate -dir "$tls_dir"
 
       - name: Test authenticated three-replica receipt ambiguity
         timeout-minutes: 5
@@ -504,7 +494,7 @@ jobs:
           echo "::add-mask::$receipt_token"
           LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
             LANTERN_DART_RECEIPT_HA_BINARY="$RUNNER_TEMP/lantern-offline" \
-            LANTERN_DART_RECEIPT_HA_TLS_DIR="$RUNNER_TEMP/lantern-offline-receipt-ha-tls" \
+            LANTERN_DART_RECEIPT_HA_FIXTURE="$RUNNER_TEMP/lantern-offline-authfixture" \
             dart test \
               --name '^receipt ambiguity stays status-first across three authenticated replicas$' \
               test/real_wire_test.dart
@@ -537,7 +527,10 @@ jobs:
         working-directory: .
         run: python3 -B -m unittest discover -s sdks/dart/offline/tool -p release_contract_test.py
 
+      # Hosted archive qualification is independent of paired-source CI.
+      # The publication preflight also resolves an isolated hosted parent.
       - name: Build and verify isolated offline publish archive
+        if: startsWith(github.ref, 'refs/tags/sdks/dart/') || github.event_name == 'workflow_dispatch'
         working-directory: .
         shell: bash
         run: |
@@ -553,10 +546,14 @@ jobs:
           dart pub publish -C "$source_dir" --to-archive="$archive"
           version=$(awk '$1 == "version:" { print $2; exit }' "$source_dir/pubspec.yaml")
           python3 sdks/dart/offline/tool/release_contract.py \
-            --archive "$archive" --version "$version" --parent-version 0.4.1
+            --archive "$archive" --version "$version" --parent-version 0.5.0
           tar -xzf "$archive" -C "$package_dir"
           (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --no-example && \
             PUB_CACHE="$isolated_pub_cache" dart analyze lib)
+
+      - name: Restore paired source resolver state
+        if: always()
+        run: python3 tool/paired_source_gate.py --cleanup
 
       - name: Stop Lantern real-wire servers
         if: always()
@@ -587,7 +584,8 @@ jobs:
 
       - name: Resolve, analyze, and test at the minimum floor
         run: |
-          dart pub get --enforce-lockfile
+          python3 tool/paired_source_gate.py --prepare
+          trap 'python3 tool/paired_source_gate.py --cleanup' EXIT
           dart analyze lib test tool
           dart test
 
@@ -619,6 +617,7 @@ jobs:
         working-directory: .
         run: |
           go build -o "$RUNNER_TEMP/lantern-sqlite" ./server/cmd
+          go build -o "$RUNNER_TEMP/lantern-sqlite-authfixture" ./server/cmd/authfixture
           env LANTERN_PORT=6397 LANTERN_METRICS_ADDR=:9097 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern-sqlite" > "$RUNNER_TEMP/lantern-sqlite.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/lantern-sqlite.pid"
@@ -658,7 +657,8 @@ jobs:
           test -s "$token_file"
           receipt_token="$(cat "$token_file")"
           echo "::add-mask::$receipt_token"
-          LANTERN_DART_RECEIPT_ENDPOINT=http://127.0.0.1:6396 \
+          LANTERN_DART_RECEIPT_ENDPOINT=https://localhost:6396 \
+            LANTERN_DART_RECEIPT_CA_FILE="$RUNNER_TEMP/lantern-sqlite-receipt/trust/ca.pem" \
             LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
             dart run tool/crash_probe.dart --receipt
 
@@ -681,22 +681,49 @@ jobs:
           flutter test --no-pub
           ../../../tests/integration/dart_offline_sqlite_test.dart
 
+      - name: Resolve maintained offline application composition
+        working-directory: sdks/dart/example
+        run: flutter pub get --enforce-lockfile
+
+      - name: Verify maintained Head write-only assertions over native TLS
+        working-directory: .
+        run: |
+          state="$RUNNER_TEMP/lantern-head-wire"
+          fixture_script="$GITHUB_WORKSPACE/testbed/scripts/native_head_fixture.sh"
+          trap 'bash "$fixture_script" stop "$state"' EXIT
+          bash "$fixture_script" start \
+            "$RUNNER_TEMP/lantern-sqlite" "$RUNNER_TEMP/lantern-sqlite-authfixture" "$state" 6403
+          cd sdks/dart/example
+          LANTERN_HEAD_WIRE_ENDPOINT=https://localhost:6403 \
+            LANTERN_HEAD_WIRE_CA_FILE="$state/trust/ca.pem" \
+            LANTERN_HEAD_WIRE_OBSERVER_TOKEN_FILE="$state/observer-token" \
+            LANTERN_HEAD_WIRE_WRITER_TOKEN_FILE="$state/trust/head-writer-token" \
+            flutter test --no-pub test/head_edge_fixture_test.dart --reporter expanded
+          cd ../../..
+
+      - name: Test offline scoped CDC over authenticated Connect
+        working-directory: .
+        run: go test ./tests/integration -run '^TestAuth_DartOfflineScopedChangesRealConnect$' -count=1
+
       - name: Start identity CDC fixtures
         working-directory: .
         run: >-
           testbed/scripts/dart_identity_fixture.sh start
           "$RUNNER_TEMP/lantern-sqlite" "$RUNNER_TEMP/lantern-identity"
 
-      - name: Test SQLite identity CDC over real h2c replicas
+      - name: Test SQLite scoped identity CDC over native TLS replicas
         env:
           LANTERN_DART_REAL_WIRE_ENDPOINT: http://127.0.0.1:6397
-          LANTERN_DART_IDENTITY_GAP_ENDPOINT: http://127.0.0.1:6399
-          LANTERN_DART_IDENTITY_CLUSTER_ENDPOINTS: http://127.0.0.1:6400,http://127.0.0.1:6401,http://127.0.0.1:6402
+          LANTERN_DART_IDENTITY_GAP_ENDPOINT: https://localhost:6399
+          LANTERN_DART_IDENTITY_CLUSTER_ENDPOINTS: https://localhost:6400,https://localhost:6401,https://localhost:6402
         run: |
           receipt_token="$(cat "$RUNNER_TEMP/lantern-sqlite-receipt/token")"
           echo "::add-mask::$receipt_token"
-          LANTERN_DART_RECEIPT_ENDPOINT=http://127.0.0.1:6396 \
+          LANTERN_DART_RECEIPT_ENDPOINT=https://localhost:6396 \
+            LANTERN_DART_RECEIPT_CA_FILE="$RUNNER_TEMP/lantern-sqlite-receipt/trust/ca.pem" \
             LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
+            LANTERN_DART_IDENTITY_CA_FILE="$RUNNER_TEMP/lantern-identity/cluster/ca.pem" \
+            LANTERN_DART_IDENTITY_GAP_CA_FILE="$RUNNER_TEMP/lantern-identity/gap/ca.pem" \
             flutter test --no-pub ../../../tests/integration/dart_identity_offline_sqlite_test.dart
 
       - name: Stop Lantern real-wire servers
@@ -705,9 +732,6 @@ jobs:
         run: |
           bash testbed/scripts/dart_receipt_fixture.sh stop "$RUNNER_TEMP/lantern-sqlite-receipt"
           testbed/scripts/dart_identity_fixture.sh stop "$RUNNER_TEMP/lantern-identity"
-          for name in gap a b c; do
-            cat "$RUNNER_TEMP/lantern-identity/lantern-identity-$name.log" 2>/dev/null || true
-          done
           cat "$RUNNER_TEMP/lantern-sqlite.log" 2>/dev/null || true
           if [[ -f "$RUNNER_TEMP/lantern-sqlite.pid" ]]; then
             kill "$(cat "$RUNNER_TEMP/lantern-sqlite.pid")" 2>/dev/null || true
@@ -737,6 +761,7 @@ jobs:
       - name: Start Lantern
         run: |
           go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
           env LANTERN_METRICS_ADDR=:9092 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/android-server.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/android-server.pid"
@@ -911,6 +936,7 @@ jobs:
       - name: Start Lantern
         run: |
           go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
           env LANTERN_METRICS_ADDR=:9093 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/ios-server.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/ios-server.pid"
@@ -1527,7 +1553,7 @@ jobs:
           (cd "$source_dir" && dart pub get --enforce-lockfile)
           dart pub publish -C "$source_dir" --to-archive="$archive"
           python3 sdks/dart/offline/tool/release_contract.py \
-            --archive "$archive" --version "$version" --parent-version 0.4.1
+            --archive "$archive" --version "$version" --parent-version 0.5.0
           tar -xzf "$archive" -C "$package_dir"
           (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --no-example && \
             PUB_CACHE="$isolated_pub_cache" dart analyze lib)

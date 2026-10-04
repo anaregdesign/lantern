@@ -7,6 +7,8 @@ import (
 	"hash"
 	"io"
 	"os"
+
+	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
 // ErrFileWALCutUnavailable means the requested cut has no complete frame in
@@ -73,7 +75,7 @@ func InspectFileWALCuts(path string, seqs []uint64, decode func([]byte) (Mutatio
 	if err != nil {
 		return nil, err
 	}
-	if !initial.Mode().IsRegular() {
+	if !initial.Mode().IsRegular() || privatefile.Check(f) != nil {
 		return nil, fmt.Errorf("%w: not a regular file", ErrFileWALCorrupt)
 	}
 	initialPath, err := os.Stat(path)

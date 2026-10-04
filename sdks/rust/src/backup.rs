@@ -15,8 +15,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    Edge, EdgeInput, Expiration, LanternClient, LanternError, PutOutcome, StreamOptions, Vertex,
-    VertexInput,
+    Edge, EdgeInput, Expiration, LanternClient, LanternError, MutationReply, PutOutcome,
+    StreamOptions, Vertex, VertexInput,
     generated::graph::v1::{
         BackupSnapshotRequest, BackupSnapshotResponse, backup_snapshot_response::Record,
     },
@@ -301,6 +301,29 @@ pub struct RestoreReport {
     pub completed_edges: u64,
 }
 
+#[derive(Default)]
+struct RestoreState {
+    report: RestoreReport,
+    undisclosed: bool,
+}
+
+impl MutationReply<RestoreReport> {
+    /// Adapt Restore's complete-call acknowledgement. A real/partial failure
+    /// keeps the original RestoreFailure and never becomes an acknowledgement.
+    pub fn from_restore_result(
+        result: Result<RestoreReport, RestoreFailure>,
+    ) -> Result<Self, RestoreFailure> {
+        match result {
+            Ok(report) => Ok(Self::KnownEffect(report)),
+            Err(RestoreFailure {
+                source: LanternError::MutationAcceptedUndisclosed,
+                ..
+            }) => Ok(Self::AcceptedUndisclosed),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 /// The failed batch may have been applied or may have expired since capture.
 /// Counts exclude that uncertain batch; the original failure is retained.
 #[derive(Debug)]
@@ -409,15 +432,21 @@ impl LanternClient {
         manifest: &BackupManifest,
         options: RestoreOptions,
     ) -> Result<RestoreReport, RestoreFailure> {
-        let mut progress = RestoreReport::default();
+        let mut progress = RestoreState::default();
         let start = source.stream_position().map_err(|error| RestoreFailure {
-            progress,
+            progress: progress.report,
             source: LanternError::Io(error),
         })?;
         let result = self
             .restore_inner(source, start, manifest, options, &mut progress)
             .await;
-        result.map_err(|source| RestoreFailure { progress, source })
+        if progress.undisclosed {
+            progress.report = RestoreReport::default();
+        }
+        result.map_err(|source| RestoreFailure {
+            progress: progress.report,
+            source,
+        })
     }
 
     async fn restore_inner<R: Read + Seek>(
@@ -426,7 +455,7 @@ impl LanternClient {
         start: u64,
         manifest: &BackupManifest,
         options: RestoreOptions,
-        progress: &mut RestoreReport,
+        progress: &mut RestoreState,
     ) -> Result<RestoreReport, LanternError> {
         if manifest.bytes > options.max_archive_bytes {
             return Err(LanternError::BackupFormat(
@@ -448,7 +477,10 @@ impl LanternClient {
             .await?;
         self.apply_pass(source, start, manifest, options, false, progress)
             .await?;
-        Ok(*progress)
+        if progress.undisclosed {
+            return Err(LanternError::MutationAcceptedUndisclosed);
+        }
+        Ok(progress.report)
     }
 
     fn visit_archive<R: Read + Seek>(
@@ -499,7 +531,7 @@ impl LanternClient {
         manifest: &BackupManifest,
         options: RestoreOptions,
         vertices_first: bool,
-        progress: &mut RestoreReport,
+        progress: &mut RestoreState,
     ) -> Result<(), LanternError> {
         source
             .seek(SeekFrom::Start(start))
@@ -591,7 +623,7 @@ impl LanternClient {
         &self,
         vertex_batch: &mut Vec<VertexInput>,
         edge_batch: &mut Vec<EdgeInput>,
-        progress: &mut RestoreReport,
+        progress: &mut RestoreState,
     ) -> Result<(), LanternError> {
         let vertices = vertex_batch.len();
         if vertices != 0 {
@@ -604,11 +636,14 @@ impl LanternClient {
                     {
                         return Err(LanternError::RestoreOutcome(outcome));
                     }
-                    progress.completed_vertices += vertices as u64;
+                    progress.report.completed_vertices += vertices as u64;
+                }
+                Err(LanternError::MutationAcceptedUndisclosed) => {
+                    progress.undisclosed = true;
                 }
                 Err(error) => {
                     if let LanternError::Batch(batch) = &error {
-                        progress.completed_vertices += batch.completed_items as u64;
+                        progress.report.completed_vertices += batch.completed_items as u64;
                     }
                     return Err(error);
                 }
@@ -625,11 +660,14 @@ impl LanternClient {
                     {
                         return Err(LanternError::RestoreOutcome(outcome));
                     }
-                    progress.completed_edges += edges as u64;
+                    progress.report.completed_edges += edges as u64;
+                }
+                Err(LanternError::MutationAcceptedUndisclosed) => {
+                    progress.undisclosed = true;
                 }
                 Err(error) => {
                     if let LanternError::Batch(batch) = &error {
-                        progress.completed_edges += batch.completed_items as u64;
+                        progress.report.completed_edges += batch.completed_items as u64;
                     }
                     return Err(error);
                 }

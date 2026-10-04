@@ -31,6 +31,8 @@ may stay because they are harmless, but they are **not** required going forward.
 
 ## Issue triage — the `Lantern roadmap` project
 
+Write every GitHub Issue title, body, comment and update in English.
+
 Cross-track triage lives in a single GitHub Project named `Lantern roadmap`. Issues
 remain the source of truth — the Project is only a view layer + lightweight kanban on
 top of them.
@@ -113,6 +115,17 @@ window, or weaken load or thresholds.
 
 ## Before every `git push` — local quality gate
 
+Complete frozen Bun dependency installation in Node and Admin before Go walks
+the root workspace. Installation can mutate dependency directories containing
+Go files; those operations must not run concurrently (#1646). Independent tests
+may run in parallel after installation completes.
+
+When copying changed sources into a reused validation worktree, update their
+modification times or use a fresh build target. Preserving older times can let
+incremental tools reuse binaries from the previous source (#1648). Bind results
+to the candidate tree, check generation/content drift, and verify that explicitly
+selected wire tests actually ran; an empty selection is not acceptance.
+
 Run from the repo root; this matches the required CI checks (Build & Test, Lint,
 Proto (buf), govulncheck):
 
@@ -145,6 +158,17 @@ go test ./...                    # root module
   && cargo test --locked --all-features \
   && RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features)
 ```
+
+For a coordinated unpublished online/offline candidate, run the offline source
+commands through `python3 -B tool/paired_source_gate.py -- <command>` (or prepare
+once and clean up in a `trap`). It checks the parent version against the future
+hosted dependency floor and resolves the independently generated
+`tool/paired_source.pubspec.lock` with enforcement. Temporary overrides and the
+hosted lockfile are restored after the command. This is an explicit paired-source
+check, not an isolated hosted-archive pass. Keep hosted archive resolution strict
+in tag/publication preflight and record that separate exit as pending until the
+parent has been published and the hosted lockfile regenerated. Do not publish a
+parent early merely to unblock source development.
 
 During edits, run the narrowest targeted checks for changed behavior rather than
 repeating the whole gate after each intermediate change. Plan one complete
@@ -425,6 +449,15 @@ new sub-config, update the **Providers** note in `AGENTS.md`.
 
 ## After adding a dependency
 
+- Minimize external dependencies. Lantern is the database; do not add
+  PostgreSQL or another external runtime store for Server authentication.
+  Prefer native storage, replication and persistence primitives. The planned
+  OIDC boundary uses internal `sys:` metadata and physical `data:` keys behind
+  unchanged public logical keys (ADR 0012, #1599, #1615); namespace isolation
+  alone does not prove asynchronous authorization freshness.
+- The Dart SDK SQLite route, including `sdks/dart/offline_sqlite`, is explicitly
+  approved. This Server-auth policy does not revoke that exception.
+
 - Add the require to the module that **actually imports** it (server-only middleware →
   `server/go.mod`; client transport → `sdks/go/go.mod`; cli or integration tests only →
   root `go.mod`).
@@ -603,9 +636,12 @@ manual `dart pub publish`. Immediately before tagging, check
 already exist. Never force-move a published Dart tag/version—bump patch.
 
 **Offline receipt release preparation (#1586).** Published offline 0.4.0
-uses hosted `lantern_client ^0.3.3` and completed #1399. The 0.5.0 candidate
-adds targeted contribution Delete and requires hosted `lantern_client ^0.4.1`;
-its final-source, physical-device, and publication gates remain independent. The maintained Flutter example and
+uses hosted `lantern_client ^0.3.3` and completed #1399. Published 0.5.0 adds
+targeted contribution Delete with hosted `lantern_client ^0.4.1`; #1586 completed
+its frozen-source, physical and publication gates. The new 0.6.0 candidate binds
+typed undisclosed acceptance to parent 0.5.0 source and future hosted `^0.5.0`.
+Its source, hosted archive, final-source, physical and publication exits are
+independent; previous release evidence does not qualify this candidate. The maintained Flutter example and
 unpublished SQLite adapter use local path overrides; resolve the offline
 candidate archive against the hosted parent outside the checkout without
 a path override. Before tagging, confirm the target version and tag are
@@ -627,7 +663,7 @@ Merge all required source and release-contract docs before freezing one clean
 tested source commit. The
 [physical release runbook](sdks/dart/example/offline-release-resume.md)
 owns the receipt-specific Android/iOS evidence and exact-commit procedure;
-prior release, CDC, or simulator records do not qualify 0.5.0. After both
+prior release, CDC, or simulator records do not qualify the 0.6.0 candidate. After both
 physical platforms and all pre-tag gates pass, tag only the immediate
 evidence-only child of that frozen commit. Do not change code or release docs
 between the tested source commit and its tagged evidence child. The original

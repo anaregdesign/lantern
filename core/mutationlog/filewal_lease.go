@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
 // ErrFileWALLeaseBusy means another process owns the path's advisory lock.
@@ -61,7 +63,10 @@ func AcquireFileWALLease(path string) (*FileWALLease, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("mutationlog: inspect FileWAL lease: %w", err)
 	}
-	file, err := os.OpenFile(leasePath, os.O_CREATE|os.O_RDWR, 0o600)
+	file, err := privatefile.Create(leasePath, os.O_RDWR)
+	if errors.Is(err, os.ErrExist) {
+		file, err = os.OpenFile(leasePath, os.O_RDWR, 0)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("mutationlog: open FileWAL lease: %w", err)
 	}
@@ -75,7 +80,7 @@ func AcquireFileWALLease(path string) (*FileWALLease, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mutationlog: stat FileWAL lease: %w", err)
 	}
-	if !info.Mode().IsRegular() {
+	if !info.Mode().IsRegular() || privatefile.Check(file) != nil {
 		return nil, errors.New("mutationlog: FileWAL lease is not a regular file")
 	}
 	if err := lockFileWALLease(file); err != nil {

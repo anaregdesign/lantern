@@ -42,9 +42,9 @@ function memoryStorage(): BrowserStorage {
 export const connectionStorageKey = STORAGE_KEY;
 
 /**
- * localStorage key for the optional bearer token sent as
- * `Authorization: Bearer` when the server runs with LANTERN_AUTH_TOKENS
- * (#850). Empty/absent = no auth header (the default open behaviour).
+ * Retired credential key, used only to remove legacy browser storage on mount.
+ * Browser credentials now remain in Server-owned HttpOnly cookies; this key
+ * must never be read for authentication or written with a new credential.
  */
 export const connectionTokenStorageKey = TOKEN_STORAGE_KEY;
 

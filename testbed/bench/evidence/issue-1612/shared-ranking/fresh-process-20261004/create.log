@@ -1,0 +1,8 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/anaregdesign/lantern/core/graphcache
+cpu: Apple M3 Max
+BenchmarkEdgeCreateTransaction-16    	  171194	      1310 ns/op	    2881 B/op	      29 allocs/op
+BenchmarkEdgeCreateTransaction-16    	  190910	      1309 ns/op	    2881 B/op	      29 allocs/op
+BenchmarkEdgeCreateTransaction-16    	  182132	      1313 ns/op	    2881 B/op	      29 allocs/op
+PASS

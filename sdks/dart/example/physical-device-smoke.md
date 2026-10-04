@@ -275,6 +275,55 @@ physical run is required; host-side process-crash tests and simulator runs
 remain separate evidence.
 
 
+## Head write-only physical conformance
+
+`integration_test/physical_head_edge_test.dart` uses two runtime token BFF routes
+and one production Server with native receipt WAL. The observer fixture Role
+has VertexRead/Write/Delete and ReceiptRead on `physical-head:`. The writer
+Role has only VertexRead on `physical-head:tails:`, VertexWrite on
+`physical-head:heads:`, Deny VertexWrite on `physical-head:heads:denied:`, and
+ReceiptRead on `physical-head:`. It has no head read, VertexDelete or direct
+Principal grants. Both endpoint value and TTL are independently seeded.
+
+Pass `LANTERN_ENDPOINT`, `LANTERN_TOKEN_ENDPOINT` (observer) and
+`LANTERN_HEAD_WRITER_TOKEN_ENDPOINT` (writer) as platform-trusted HTTPS URLs.
+Each BFF returns a bounded JSON object containing `access_token` at runtime;
+never compile the credentials into the binary. Build from a clean exact SHA,
+use `LANTERN_PHYSICAL_QUALIFICATION=true`, install the signed profile binary,
+and run on each actual Android/iOS phone. Require a fresh
+`tmp/lantern-head-edge-result.json` with `status: passed`, `phase: complete`
+and the matching installed binary hash after every tracked cleanup finishes.
+Apply the same exact-binary/content-free evidence rules as the mobile smoke.
+
+The target covers explicit Role/Deny failures, whole-request typed blind
+acknowledgements, missing endpoints without resurrection or partial batch
+effects, preserved endpoint value/TTL, undisclosed original receipt status and
+replay, and native SQLite terminal `acceptedUndisclosed` after reopen. The
+offline remote counts mutation calls so repeated drain/reopen cannot silently
+resend; cache-only reads remain Unknown without synthesized confirmation.
+Receipt status and data effects are checked through the independently
+authorized observer, never inferred from blind acknowledgement.
+
+The shared Server/SDK assertions also execute on host CI with the owned
+`authfixture -receipt -head-edge` and `test/head_edge_fixture_test.dart`:
+
+```bash
+bash testbed/scripts/native_head_fixture.sh start \
+  <production-server-binary> <authfixture-binary> <new-private-state> <port>
+# Run from sdks/dart/example with file paths, never credential arguments:
+LANTERN_HEAD_WIRE_ENDPOINT=https://localhost:<port> \
+  LANTERN_HEAD_WIRE_CA_FILE=<state>/trust/ca.pem \
+  LANTERN_HEAD_WIRE_OBSERVER_TOKEN_FILE=<state>/observer-token \
+  LANTERN_HEAD_WIRE_WRITER_TOKEN_FILE=<state>/trust/head-writer-token \
+  flutter test --no-pub test/head_edge_fixture_test.dart
+bash testbed/scripts/native_head_fixture.sh stop <state>
+```
+
+Use an EXIT cleanup trap when running the host commands. Host trust explicitly
+verifies the private fixture CA and does not qualify device trust or a real
+OIDC provider. The phone target may use explicit insecure transport only for
+separately labeled development conformance, never HTTPS release qualification.
+
 ## Native SQLite process restart probe
 
 `integration_test/sqlite_restart_probe.dart` is an opt-in application entrypoint
@@ -313,6 +362,14 @@ isolation. The evidence records its transport and local build limitations and
 does not replace the complete first-publication matrix in #1162.
 
 ## Identity CDC physical qualification
+
+Authenticated Head-managed Edge fixtures explicitly seed live Vertex endpoints
+before Add/Put; those endpoints have independent lifetimes and are cleaned up
+after Edge/CDC assertions. Receipt/contribution fixtures derive a fresh
+contribution ID from the attested run ID and intent number, preserving the
+same original bytes across response loss and SIGKILL/relaunch. Never refresh
+an already dispatched intent to repair a fixture failure. OFF-mode implicit
+endpoint creation remains covered separately by maintained SDK wire tests.
 
 `integration_test/physical_identity_cdc_test.dart` is an opt-in native Android/iOS
 test of the production `LanternClientIdentitySource` and platform SQLite. Run it

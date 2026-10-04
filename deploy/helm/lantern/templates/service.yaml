@@ -8,20 +8,23 @@ metadata:
     lantern.anaregdesign.io/role: peer-discovery
 spec:
   clusterIP: None
-  # Peer DNS must include bootstrapping pods; the separate client Service
-  # remains readiness-gated and never routes application traffic to them.
+  # Stable names locate signed private origins, including bootstrapping pods.
+  # Discovery never grants admission; the public Service remains readiness gated.
   publishNotReadyAddresses: true
   selector:
     {{- include "lantern.selectorLabels" . | nindent 4 }}
   ports:
+    {{- if .Values.peerPlane.enabled }}
+    - name: peer
+      port: {{ .Values.peerPlane.port }}
+      targetPort: peer
+      protocol: TCP
+    {{- else }}
     - name: grpc
       port: {{ .Values.service.port }}
       targetPort: grpc
       protocol: TCP
-    - name: metrics
-      port: {{ .Values.metrics.port }}
-      targetPort: metrics
-      protocol: TCP
+    {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -43,7 +46,9 @@ spec:
       port: {{ .Values.service.port }}
       targetPort: grpc
       protocol: TCP
+    {{- if .Values.metrics.expose }}
     - name: metrics
       port: {{ .Values.metrics.port }}
       targetPort: metrics
       protocol: TCP
+    {{- end }}

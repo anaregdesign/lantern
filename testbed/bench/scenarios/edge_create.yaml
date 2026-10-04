@@ -1,0 +1,27 @@
+# Standalone conditional creation (#1626). Diagnostic; not a release floor.
+# Each cycle verifies four aligned outcomes, removes the accepted Edge and,
+# for receipt mode, checks all original receipt results. Rate is cycles/s,
+# not aggregate RPC/s. This family is deliberately unavailable in HA.
+name: edge_create
+cluster:
+  topology: standalone
+  auth_mode: oidc
+  receipt_wal:
+    enabled: true
+    max_entries: 32768
+    max_bytes: 16777216
+phases:
+  warmup: {duration: 10s, rps: 100, concurrency: 1}
+  steady: {duration: 60s, rps: 100, concurrency: 1}
+  cooldown: 5s
+target:
+  driver: standalone_create
+  families: [plain, receipt]
+  call: graph.v1.LanternService/CreateEdges
+  data_template: |
+    {"edges":[
+      {"tail":"bench:source:a","head":"bench:target:b","weight":2},
+      {"tail":"bench:source:a","head":"bench:target:b","weight":9},
+      {"tail":"bench:source:a","head":"bench:target:missing","weight":1},
+      {"tail":"bench:source:a","head":"bench:target:b","weight":1,"expiration":"1970-01-01T00:00:00.000000001Z"}
+    ]}

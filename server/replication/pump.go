@@ -542,6 +542,36 @@ func applySnapshotEdge(snap SnapshotApplier, tail, head string, weight float32, 
 	snap.AddEdgeWithExpirationContribHLC(tail, head, weight, exp, cid, ts)
 }
 
+// A flag-bearing private frame requires the generic batch effect seams. It is
+// never downgraded to legacy endpoint creation by a narrow adapter.
+type snapshotEdgeEffectApplier interface {
+	PutEdgesWithExpirationHLCOutcomes([]graphcache.EdgeItem[string], hlc.Timestamp) []graphcache.PutOutcome
+	AddEdgesWithExpirationContribHLCResults([]graphcache.EdgeItem[string], hlc.Timestamp) ([]float32, []bool, int)
+}
+
+func applySnapshotEdgeEffect(snap SnapshotApplier, edge *pb.SnapshotEdge, row snapshotEdgeRow) error {
+	if !edge.GetNoEndpointCreation() {
+		if row.derivedAggregate {
+			snap.PutEdgeDerivedAggregateWithExpirationHLC(edge.GetTail(), edge.GetHead(), row.weight, row.expiration, row.hlc)
+		} else {
+			applySnapshotEdge(snap, edge.GetTail(), edge.GetHead(), row.weight, row.expiration, row.contribID, row.hlc)
+		}
+		return nil
+	}
+	effects, ok := snap.(snapshotEdgeEffectApplier)
+	if !ok {
+		return snapshotProtocolError("snapshot installer does not support Edge-only effects")
+	}
+	items := []graphcache.EdgeItem[string]{{Tail: edge.GetTail(), Head: edge.GetHead(), Weight: row.weight,
+		Expiration: row.expiration, ContribID: row.contribID, DerivedAggregate: row.derivedAggregate, NoEndpointCreation: true}}
+	if row.contribID.IsZero() {
+		effects.PutEdgesWithExpirationHLCOutcomes(items, row.hlc)
+	} else {
+		effects.AddEdgesWithExpirationContribHLCResults(items, row.hlc)
+	}
+	return nil
+}
+
 type snapshotEdgeRow struct {
 	weight           float32
 	expiration       time.Time
@@ -790,6 +820,9 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 				return SnapshotInstallResult{}, err
 			}
 			se := e.Edge
+			if replay.header.GetNamespaceFormat() != "" && !se.GetNoEndpointCreation() {
+				return SnapshotInstallResult{}, snapshotProtocolError("namespaced Snapshot requires an Edge-only effect")
+			}
 			rows, err := snapshotEdgeRows(se)
 			if err != nil {
 				return SnapshotInstallResult{}, err
@@ -814,13 +847,8 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 				}
 			}
 			for _, row := range rows {
-				if row.derivedAggregate {
-					i.snap.PutEdgeDerivedAggregateWithExpirationHLC(
-						se.GetTail(), se.GetHead(), row.weight, row.expiration, row.hlc,
-					)
-				} else {
-					applySnapshotEdge(i.snap, se.GetTail(), se.GetHead(), row.weight,
-						row.expiration, row.contribID, row.hlc)
+				if err := applySnapshotEdgeEffect(i.snap, se, row); err != nil {
+					return SnapshotInstallResult{}, err
 				}
 			}
 			replay.counts.edges++
@@ -929,6 +957,9 @@ type Config struct {
 	// Subscribe. A mismatch does not block graph replication, but readiness
 	// and metrics remain degraded until every observed peer matches.
 	SearchConfigFingerprint string
+
+	// NamespaceFormat is the exact classified physical-key representation.
+	NamespaceFormat string
 
 	// HTTPClient is the http.Client used to open Connect-Go streams
 	// against each bearer-free peer. When nil, defaultH2CClient() is
@@ -1139,9 +1170,12 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 	cli := graphv1connect.NewLanternReplicationServiceClient(
 		p.cfg.HTTPClient, baseURL,
 	)
-	status, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
+	status, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{NamespaceFormat: p.cfg.NamespaceFormat}))
 	if err != nil {
 		return fmt.Errorf("peer capability status: %w", err)
+	}
+	if err := compatibleDataNamespace(p.cfg.NamespaceFormat, status.Msg.GetNamespaceFormat()); err != nil {
+		return err
 	}
 	if !snapshotInstallerCompatible(p.installer, status.Msg.GetRequiredSnapshotFormat()) {
 		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
@@ -1362,6 +1396,7 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 		cursor[hex.EncodeToString(p.cfg.NodeID[:])] = math.MaxUint64
 	}
 	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		NamespaceFormat:        p.cfg.NamespaceFormat,
 		FromSeqPerOrigin:       cursor,
 		FromLocalSeq:           fromLocalSeq,
 		AcceptReceiptEnvelopes: snapshotAcceptsReceiptEnvelopes(p.installer),
@@ -1375,6 +1410,9 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 		mu := resp.GetMutation()
 		if mu == nil {
 			continue
+		}
+		if err := validateDataMutation(mu, p.cfg.NamespaceFormat); err != nil {
+			return err
 		}
 		if p.isSelfEcho(mu) {
 			local, hasLocalSeq := p.apply.(interface{ LocalSeq(hlc.NodeID) uint64 })
@@ -1419,14 +1457,15 @@ func (p *Pump) snapshot(ctx context.Context, addr string) (*pb.SnapshotHeader, e
 		return nil, err
 	}
 	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: p.installer.RequiredFormat(),
+		RequiredFormat:  p.installer.RequiredFormat(),
+		NamespaceFormat: p.cfg.NamespaceFormat,
 	}))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = stream.Close() }()
 	start := time.Now()
-	result, err := installSnapshot(ctx, p.installer, stream)
+	result, err := installSnapshot(ctx, p.installer, &namespaceSnapshotStream{stream: stream, format: p.cfg.NamespaceFormat})
 	if err != nil {
 		return nil, err
 	}

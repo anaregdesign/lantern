@@ -1,7 +1,11 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -64,5 +68,33 @@ func TestOpenOutput_File(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("dump file not created: %v", err)
+	}
+}
+
+func TestRestoreBlindAcknowledgementAndLaterFailure(t *testing.T) {
+	for _, failAt := range []int{0, 2} {
+		t.Run(string(rune('0'+failAt)), func(t *testing.T) {
+			wire := commandMutationFixture(t, failAt)
+			oldFormat := restoreFormat
+			restoreFormat = "ndjson"
+			t.Cleanup(func() { restoreFormat = oldFormat })
+			path := filepath.Join(t.TempDir(), "backup.ndjson")
+			raw := strings.Repeat(`{"kind":"edge","tail":"a","head":"b","weight":1}`+"\n", 3)
+			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			restoreCmd.SetOut(&output)
+			restoreCmd.SetContext(t.Context())
+			t.Cleanup(func() { restoreCmd.SetOut(nil); restoreCmd.SetContext(context.Background()) })
+			err := restoreCmd.RunE(restoreCmd, []string{path})
+			if failAt == 0 {
+				if err != nil || wire.calls != 3 || output.String() != "{\"acceptance\":\"acceptedUndisclosed\"}\n" {
+					t.Fatal("restore blind acknowledgement", err, wire.calls, output.String())
+				}
+			} else if err == nil || wire.calls != 2 || output.Len() != 0 {
+				t.Fatal("partial failure became complete acceptance", err, wire.calls, output.String())
+			}
+		})
 	}
 }

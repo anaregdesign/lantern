@@ -1,0 +1,473 @@
+{
+  "qualification": "local_dirty_branch_diagnostic",
+  "core_source_sha256": "08e1f01946f5200fef3f9a3a28b11c341ea665bb06394c1adf83933cdb90d44a",
+  "binary_sha256": "8ce7a9f9ba20b88b94de60d32b1c844c03eb80c3e203ce6a1edfa47ab9b51dce",
+  "head": "afcf4a57e231957a038df4cc694281016f9034f5",
+  "host": "Darwin Hirokis-MacBook-Pro.local 25.6.0 Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031 arm64",
+  "forced_gc_in_timed_loop": false,
+  "samples": [
+    {
+      "name": "first-search-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^first_scope$/^constrained_false$",
+      "duration": "1x",
+      "count": 1,
+      "exit_code": 0
+    },
+    {
+      "name": "first-bfs-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^first_scope$/^constrained_false$",
+      "duration": "1x",
+      "count": 1,
+      "exit_code": 0
+    },
+    {
+      "name": "first-ppr-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^first_scope$/^constrained_false$",
+      "duration": "1x",
+      "count": 1,
+      "exit_code": 0
+    },
+    {
+      "name": "first-community-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^first_scope$/^constrained_false$",
+      "duration": "1x",
+      "count": 1,
+      "exit_code": 0
+    },
+    {
+      "name": "first-search-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^first_scope$/^constrained_true$",
+      "duration": "1x",
+      "count": 1,
+      "exit_code": 0
+    },
+    {
+      "name": "first-bfs-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^first_scope$/^constrained_true$",
+      "duration": "1x",
+      "count": 1,
+      "exit_code": 0
+    },
+    {
+      "name": "first-ppr-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^first_scope$/^constrained_true$",
+      "duration": "1x",
+      "count": 1,
+      "exit_code": 0
+    },
+    {
+      "name": "first-community-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^first_scope$/^constrained_true$",
+      "duration": "1x",
+      "count": 1,
+      "exit_code": 0
+    },
+    {
+      "name": "search-first_scope-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^first_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-reused_scope-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^reused_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-visible_update_100-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_update_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-hidden_update_100-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_update_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-visible_update_1-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_update_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-hidden_update_1-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_update_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-visible_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-hidden_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-visible_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-hidden_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "bfs-first_scope-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^first_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "bfs-reused_scope-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^reused_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "bfs-visible_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^visible_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "bfs-hidden_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^hidden_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "bfs-visible_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^visible_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "bfs-hidden_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^hidden_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "ppr-first_scope-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^first_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "ppr-reused_scope-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^reused_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "ppr-visible_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^visible_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "ppr-hidden_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^hidden_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "ppr-visible_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^visible_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "ppr-hidden_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^hidden_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "community-first_scope-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^first_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "community-reused_scope-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^reused_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "community-visible_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^visible_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "community-hidden_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^hidden_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "community-visible_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^visible_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "community-hidden_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^hidden_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-first_scope-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^first_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-reused_scope-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^reused_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-visible_update_100-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_update_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-hidden_update_100-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_update_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-visible_update_1-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_update_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-hidden_update_1-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_update_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-visible_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-hidden_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-visible_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "search-hidden_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "bfs-first_scope-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^first_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "bfs-reused_scope-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^reused_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "bfs-visible_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^visible_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "bfs-hidden_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^hidden_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "bfs-visible_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^visible_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "bfs-hidden_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^hidden_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "ppr-first_scope-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^first_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "ppr-reused_scope-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^reused_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "ppr-visible_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^visible_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "ppr-hidden_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^hidden_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "ppr-visible_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^visible_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "ppr-hidden_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^hidden_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "community-first_scope-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^first_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "community-reused_scope-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^reused_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "community-visible_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^visible_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "community-hidden_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^hidden_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "community-visible_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^visible_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "community-hidden_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^hidden_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "staging",
+      "pattern": "^BenchmarkGraphCacheStagingCosts$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    },
+    {
+      "name": "create",
+      "pattern": "^BenchmarkEdgeCreateTransaction$",
+      "duration": "200ms",
+      "count": 3,
+      "exit_code": 0
+    }
+  ],
+  "verdict": "pass"
+}

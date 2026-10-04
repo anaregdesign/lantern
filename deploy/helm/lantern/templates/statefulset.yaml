@@ -1,3 +1,4 @@
+{{- include "lantern.validateSecurity" . -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -57,6 +58,50 @@ spec:
                   matchLabels:
                     {{- include "lantern.selectorLabels" . | nindent 20 }}
         {{- end }}
+      {{- if or .Values.publicTLS.existingSecret .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
+      # Raw Secret projections are visible only to this trusted setup step.
+      # The Server receives regular, owner-only files for its own workload.
+      initContainers:
+        - name: provision-workload-files
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: EXPECTED_UID
+              value: {{ include "lantern.workloadUID" . | quote }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              {{- include "lantern.provisionWorkloadFiles" . | nindent 14 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: workload-files
+              mountPath: /run/lantern-private
+            {{- if .Values.publicTLS.existingSecret }}
+            - name: public-tls
+              mountPath: /run/lantern-source/public
+              readOnly: true
+            {{- end }}
+            {{- if eq .Values.auth.mode "oidc" }}
+            - name: security-files
+              mountPath: /run/lantern-source/security
+              readOnly: true
+            {{- end }}
+            {{- if .Values.peerPlane.enabled }}
+            - name: peer-identity
+              mountPath: /run/lantern-source/peers
+              readOnly: true
+            - name: peer-operator
+              mountPath: /run/lantern-source/operator
+              readOnly: true
+            {{- end }}
+      {{- end }}
       containers:
         - name: lantern
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -78,14 +123,21 @@ spec:
             - name: grpc
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+            {{- if .Values.metrics.expose }}
             - name: metrics
               containerPort: {{ .Values.metrics.port }}
               protocol: TCP
+            {{- end }}
+            {{- if .Values.peerPlane.enabled }}
+            - name: peer
+              containerPort: {{ .Values.peerPlane.port }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: LANTERN_PORT
               value: {{ .Values.service.port | quote }}
             - name: LANTERN_METRICS_ADDR
-              value: {{ printf ":%v" .Values.metrics.port | quote }}
+              value: {{ .Values.metrics.address | quote }}
             - name: LANTERN_LOG_LEVEL
               value: {{ .Values.log.level | quote }}
             - name: LANTERN_LOG_FORMAT
@@ -96,20 +148,6 @@ spec:
             {{- end }}
             - name: LANTERN_DEFAULT_TTL_SECONDS
               value: {{ .Values.cache.defaultTtlSeconds | quote }}
-            - name: LANTERN_PEER_DISCOVERY
-              value: {{ .Values.replication.discovery.mode | quote }}
-            {{- if eq .Values.replication.discovery.mode "dns" }}
-            - name: LANTERN_PEER_DNS_NAME
-              value: {{ include "lantern.discoveryDNSName" . | quote }}
-            - name: LANTERN_PEER_DEFAULT_PORT
-              value: {{ .Values.replication.discovery.defaultPort | quote }}
-            - name: LANTERN_PEER_DISCOVERY_INTERVAL_MS
-              value: {{ .Values.replication.discovery.intervalMs | quote }}
-            {{- end }}
-            {{- if and (eq .Values.replication.discovery.mode "static") .Values.replication.peers }}
-            - name: LANTERN_PEERS
-              value: {{ join "," .Values.replication.peers | quote }}
-            {{- end }}
             - name: LANTERN_MAX_REPLICATION_LAG
               value: {{ .Values.replication.maxLag | quote }}
             - name: LANTERN_ANTI_ENTROPY_INTERVAL_MS
@@ -118,14 +156,6 @@ spec:
               value: {{ .Values.antiEntropy.subscribeTimeoutMs | quote }}
             - name: LANTERN_DRAIN_DELAY_SECONDS
               value: {{ .Values.drain.delaySeconds | quote }}
-            {{- if .Values.peerTLS.existingSecret }}
-            - name: LANTERN_TLS_CERT_FILE
-              value: /run/lantern-tls/server.pem
-            - name: LANTERN_TLS_KEY_FILE
-              value: /run/lantern-tls/server.key
-            - name: LANTERN_PEER_CA_FILE
-              value: /run/lantern-tls/ca.pem
-            {{- end }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -134,6 +164,44 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            {{- if .Values.publicTLS.existingSecret }}
+            - name: LANTERN_TLS_CERT_FILE
+              value: /run/lantern-public/$(POD_NAME).crt
+            - name: LANTERN_TLS_KEY_FILE
+              value: /run/lantern-public/$(POD_NAME).key
+            {{- end }}
+            {{- if eq .Values.auth.mode "oidc" }}
+            - name: LANTERN_AUTH_MODE
+              value: oidc
+            - name: LANTERN_SECURITY_NODE_ROLE
+              value: {{ .Values.auth.nodeRole | quote }}
+            - name: LANTERN_SECURITY_STORE_MODE
+              value: {{ .Values.auth.storeMode | quote }}
+            - name: LANTERN_SECURITY_STORE_PATH
+              value: {{ printf "%s/sys.wal" .Values.runtimeState.dir | quote }}
+            {{- end }}
+            {{- if .Values.peerPlane.enabled }}
+            - name: LANTERN_PEER_LISTEN_ADDR
+              value: {{ printf ":%v" .Values.peerPlane.port | quote }}
+            - name: LANTERN_PEER_DEPLOYMENT
+              value: {{ .Values.peerPlane.deployment | quote }}
+            - name: LANTERN_PEER_MEMBERSHIP_MODE
+              value: {{ .Values.peerPlane.mode | quote }}
+            - name: LANTERN_PEER_MEMBERSHIP_FILE
+              value: /run/lantern-membership/manifest.json
+            - name: LANTERN_PEER_MEMBERSHIP_STATE_FILE
+              value: {{ printf "%s/membership.state" .Values.runtimeState.dir | quote }}
+            - name: LANTERN_PEER_OPERATOR_PUBLIC_KEY_FILE
+              value: /run/lantern-operator/operator.pub
+            - name: LANTERN_PEER_WORKLOAD_ID
+              value: {{ printf "%s/$(POD_NAME)" .Values.peerPlane.workloadIDPrefix | quote }}
+            - name: LANTERN_PEER_CERT_FILE
+              value: /run/lantern-peers/$(POD_NAME).crt
+            - name: LANTERN_PEER_KEY_FILE
+              value: /run/lantern-peers/$(POD_NAME).key
+            - name: LANTERN_PEER_TRUST_CA_FILE
+              value: /run/lantern-peers/ca.pem
+            {{- end }}
             {{- if .Values.backup.enabled }}
             - name: LANTERN_BACKUP_ENABLED
               value: "true"
@@ -157,26 +225,28 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- if eq .Values.auth.mode "oidc" }}
+          envFrom:
+            - configMapRef:
+                name: {{ .Values.auth.configMap | quote }}
+          {{- end }}
           startupProbe:
-            httpGet:
-              path: /healthz
-              port: metrics
+            exec:
+              command: ["/usr/bin/wget", "-qO-", {{ printf "http://127.0.0.1:%v/healthz" .Values.metrics.port | quote }}]
             initialDelaySeconds: {{ .Values.probes.startup.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.startup.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.startup.failureThreshold }}
           livenessProbe:
-            httpGet:
-              path: /healthz
-              port: metrics
+            exec:
+              command: ["/usr/bin/wget", "-qO-", {{ printf "http://127.0.0.1:%v/healthz" .Values.metrics.port | quote }}]
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
           readinessProbe:
-            httpGet:
-              path: /readyz
-              port: metrics
+            exec:
+              command: ["/usr/bin/wget", "-qO-", {{ printf "http://127.0.0.1:%v/readyz" .Values.metrics.port | quote }}]
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
@@ -184,33 +254,83 @@ spec:
             successThreshold: {{ .Values.probes.readiness.successThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if or .Values.backup.enabled .Values.peerTLS.existingSecret }}
+          {{- if or .Values.backup.enabled .Values.publicTLS.existingSecret .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
           volumeMounts:
             {{- if .Values.backup.enabled }}
             - name: backup
               mountPath: {{ .Values.backup.dir }}
             {{- end }}
-            {{- if .Values.peerTLS.existingSecret }}
-            - name: peer-tls
-              mountPath: /run/lantern-tls
+            {{- if .Values.publicTLS.existingSecret }}
+            - name: workload-files
+              mountPath: /run/lantern-public
+              subPath: public
+              readOnly: true
+            {{- end }}
+            {{- if or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
+            - name: runtime-state
+              mountPath: {{ .Values.runtimeState.dir }}
+            {{- end }}
+            {{- if eq .Values.auth.mode "oidc" }}
+            - name: workload-files
+              mountPath: /run/lantern-security
+              subPath: security
+              readOnly: true
+            {{- end }}
+            {{- if .Values.peerPlane.enabled }}
+            - name: workload-files
+              mountPath: /run/lantern-peers
+              subPath: peers
+              readOnly: true
+            - name: peer-membership
+              mountPath: /run/lantern-membership
+              readOnly: true
+            - name: workload-files
+              mountPath: /run/lantern-operator
+              subPath: operator
               readOnly: true
             {{- end }}
           {{- end }}
-      {{- if or (and .Values.backup.enabled .Values.backup.persistence.existingClaim) .Values.peerTLS.existingSecret }}
       volumes:
+        {{- if or .Values.publicTLS.existingSecret .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
+        - name: workload-files
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        {{- end }}
         {{- if and .Values.backup.enabled .Values.backup.persistence.existingClaim }}
         - name: backup
           persistentVolumeClaim:
             claimName: {{ .Values.backup.persistence.existingClaim }}
         {{- end }}
-        {{- if .Values.peerTLS.existingSecret }}
-        - name: peer-tls
+        {{- if .Values.publicTLS.existingSecret }}
+        - name: public-tls
           secret:
-            secretName: {{ .Values.peerTLS.existingSecret | quote }}
+            secretName: {{ .Values.publicTLS.existingSecret | quote }}
         {{- end }}
-      {{- end }}
-  {{- if and .Values.backup.enabled .Values.backup.persistence.enabled (not .Values.backup.persistence.existingClaim) }}
+        {{- if eq .Values.auth.mode "oidc" }}
+        - name: security-files
+          secret:
+            secretName: {{ .Values.auth.existingSecret | quote }}
+        {{- end }}
+        {{- if .Values.peerPlane.enabled }}
+        - name: peer-identity
+          secret:
+            secretName: {{ .Values.peerPlane.identitySecret | quote }}
+        - name: peer-membership
+          configMap:
+            name: {{ .Values.peerPlane.membershipConfigMap | quote }}
+        - name: peer-operator
+          secret:
+            secretName: {{ .Values.peerPlane.operatorKeySecret | quote }}
+        {{- end }}
+        {{- if and (or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc")) .Values.runtimeState.persistence.existingClaim }}
+        - name: runtime-state
+          persistentVolumeClaim:
+            claimName: {{ .Values.runtimeState.persistence.existingClaim | quote }}
+        {{- end }}
+  {{- if or (and .Values.backup.enabled .Values.backup.persistence.enabled (not .Values.backup.persistence.existingClaim)) (and (or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc")) (not .Values.runtimeState.persistence.existingClaim)) }}
   volumeClaimTemplates:
+    {{- if and .Values.backup.enabled .Values.backup.persistence.enabled (not .Values.backup.persistence.existingClaim) }}
     - metadata:
         name: backup
       spec:
@@ -222,4 +342,18 @@ spec:
         resources:
           requests:
             storage: {{ .Values.backup.persistence.size | quote }}
+  {{- end }}
+    {{- if and (or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc")) (not .Values.runtimeState.persistence.existingClaim) }}
+    - metadata:
+        name: runtime-state
+      spec:
+        accessModes:
+          {{- toYaml .Values.runtimeState.persistence.accessModes | nindent 10 }}
+        {{- with .Values.runtimeState.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.runtimeState.persistence.size | quote }}
+    {{- end }}
   {{- end }}

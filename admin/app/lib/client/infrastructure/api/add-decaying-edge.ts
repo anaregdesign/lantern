@@ -1,3 +1,4 @@
+import { mutationReply, type MutationReply } from "lantern-sdk/web";
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
 import type { AddDecayingEdgeBody, AddDecayingEdgeResponse } from "./types";
@@ -25,20 +26,22 @@ export async function addDecayingEdge(
   head: string,
   body: AddDecayingEdgeBody,
   init?: { signal?: AbortSignal },
-): Promise<AddDecayingEdgeResponse> {
+): Promise<MutationReply<AddDecayingEdgeResponse>> {
   try {
-    const effectiveWeight = await client.addDecayingEdge(
-      tail,
-      head,
-      {
-        initialWeight: body.initialWeight,
-        ratio: body.ratio,
-        steps: body.steps,
-        intervalSeconds: body.intervalSeconds,
-      },
-      init?.signal,
-    );
-    return { effectiveWeight };
+    return await mutationReply(async () => {
+      const effectiveWeight = await client.addDecayingEdge(
+        tail,
+        head,
+        {
+          initialWeight: body.initialWeight,
+          ratio: body.ratio,
+          steps: body.steps,
+          intervalSeconds: body.intervalSeconds,
+        },
+        init?.signal,
+      );
+      return { effectiveWeight };
+    });
   } catch (err) {
     throw LanternApiError.fromUnknown("AddDecayingEdge", err);
   }

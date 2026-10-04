@@ -63,10 +63,12 @@ async fn real_wire_prefix_count_dry_run_and_bounded_vertex_delete() -> TestResul
     assert_eq!(client.delete_vertices_by_prefix(prefix, 2, false).await?, 2);
     assert_eq!(client.count_vertices_by_prefix(prefix).await?, 0);
     assert_eq!(client.count_vertices_by_prefix("rust:prefix:").await?, 1);
-    assert_eq!(
-        client.delete_vertices_by_prefix("", 1, true).await?,
-        1,
-        "the Go server permits an explicitly empty vertex-delete prefix"
+    let guarded = client
+        .delete_vertices_by_prefix("", 1, true)
+        .await
+        .expect_err("whole-domain delete must reject an empty logical prefix");
+    assert!(
+        matches!(guarded, LanternError::Rpc(ref error) if error.kind() == crate::RpcErrorKind::InvalidArgument)
     );
     assert_eq!(client.count_vertices_by_prefix("").await?, 1);
 

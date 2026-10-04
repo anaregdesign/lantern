@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router";
 import { ConnectionSwitcher } from "~/components/shared/ConnectionSwitcher/ConnectionSwitcher";
+import { SessionControls } from "~/components/auth/SessionControls";
 import styles from "./AppShell.module.css";
 
 export interface AppShellProps {
@@ -37,6 +38,11 @@ const NAV: readonly NavEntry[] = [
   // operator-facing Ops page (#439, #431).
   { to: "/cli", label: "CLI" },
   { to: "/ops", label: "Ops" },
+  {
+    to: "/security/issuers",
+    label: "Security",
+    match: (p) => p.startsWith("/security/"),
+  },
 ];
 
 /**
@@ -90,6 +96,7 @@ export function AppShell({ children }: AppShellProps) {
           })}
         </nav>
         <div className={styles.connection}>
+          <SessionControls />
           <ConnectionSwitcher />
         </div>
       </header>

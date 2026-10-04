@@ -48,12 +48,16 @@ describe("Put adapters", () => {
     await expect(
       putEdge(client, "a", "b", { edge: { weight: 1 } }),
     ).resolves.toEqual({
-      outcome: "appliedAndLive",
+      kind: "knownEffect",
+      effect: { outcome: "appliedAndLive" },
     });
     await expect(
       putEdges(client, { edges: [{ tail: "a", head: "b", weight: 1 }] }),
     ).resolves.toEqual({
-      results: [{ tail: "a", head: "b", outcome: "appliedAndLive" }],
+      kind: "knownEffect",
+      effect: {
+        results: [{ tail: "a", head: "b", outcome: "appliedAndLive" }],
+      },
     });
   });
 

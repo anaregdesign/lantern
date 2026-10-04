@@ -1,7 +1,11 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1084,5 +1088,315 @@ func parseSearchDocumentationCommand(t *testing.T, command string) {
 	}
 	if err := parser.EOF(source); err != nil {
 		t.Fatalf("trailing token in %q: %v", command, err)
+	}
+}
+
+func TestHelmNativeSecurityModeMatrix(t *testing.T) {
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		t.Skip("Helm is required for the deployment render gate")
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := []string{"peerPlane.enabled=true", "peerPlane.deployment=01000000000000000000000000000000", "peerPlane.workloadIDPrefix=spiffe://lantern.test/nodes", "peerPlane.membershipConfigMap=membership", "peerPlane.operatorKeySecret=operator-public", "peerPlane.identitySecret=workload-identities"}
+	oidc := []string{"auth.mode=oidc", "auth.configMap=oidc-config", "auth.existingSecret=security-files", "publicTLS.existingSecret=public-certificates"}
+	combine := func(groups ...[]string) []string {
+		var result []string
+		for _, group := range groups {
+			result = append(result, group...)
+		}
+		return result
+	}
+	for _, test := range []struct {
+		name         string
+		values       []string
+		valid        bool
+		want, reject []string
+	}{
+		{"OFF default", nil, true, []string{"replicas: 1", "127.0.0.1:9090", "exec:"}, []string{"name: LANTERN_AUTH_MODE", "name: LANTERN_PEER_LISTEN_ADDR", "name: metrics"}},
+		{"OFF HA", combine(peer, []string{"replicaCount=3"}), true, []string{"replicas: 3", "name: LANTERN_PEER_LISTEN_ADDR", "membership.state", "/run/lantern-peers/$(POD_NAME).crt"}, []string{"name: LANTERN_AUTH_MODE", "name: LANTERN_PEERS"}},
+		{"OIDC writer", oidc, true, []string{"name: LANTERN_AUTH_MODE", "value: oidc", "sys.wal", "name: runtime-state"}, []string{"LANTERN_AUTH_TOKENS"}},
+		{"OIDC replicas", combine(peer, oidc, []string{"replicaCount=3", "auth.nodeRole=replica"}), true, []string{"replicas: 3", "value: \"replica\"", "manifest.json", "name: LANTERN_PEER_KEY_FILE"}, []string{"LANTERN_PEER_CA_FILE"}},
+		{"OFF Admin", []string{"admin.enabled=true"}, true, []string{"name: LANTERN_ADMIN_SERVER_UPSTREAM", "h2c://matrix-lantern:6380", "name: caddy-conf-d"}, nil},
+		{"OIDC Admin", combine(oidc, []string{"admin.enabled=true", "admin.server.upstream=https://writer.example:6380", "admin.server.caSecret=writer-ca", "admin.prometheus.upstream=http://prometheus:9090"}), true, []string{"/run/lantern-admin-trust/ca.pem", "name: LANTERN_ADMIN_PROMETHEUS_UPSTREAM"}, nil},
+		{"unsafe workload UID", combine(oidc, []string{"securityContext.runAsUser=0"}), false, nil, nil},
+		{"unsafe auth basename", combine(oidc, []string{"auth.files[0]=../writer.key"}), false, nil, nil},
+		{"writer key in common files", combine(oidc, []string{"auth.files[0]=writer.key"}), false, nil, nil},
+		{"operator key in Pod", combine(oidc, []string{"auth.writerFiles[0]=operator.key"}), false, nil, nil},
+		{"unsigned replicas", []string{"replicaCount=2"}, false, nil, nil},
+		{"partial peer material", []string{"peerPlane.enabled=true"}, false, nil, nil},
+		{"ignored peer material", []string{"peerPlane.identitySecret=unexpected"}, false, nil, nil},
+		{"ignored OIDC material", []string{"auth.configMap=unexpected"}, false, nil, nil},
+		{"partial OIDC", []string{"auth.mode=oidc"}, false, nil, nil},
+		{"multiple writers", combine(peer, oidc, []string{"replicaCount=2"}), false, nil, nil},
+		{"legacy discovery", []string{"replication.discovery.mode=dns"}, false, nil, nil},
+		{"public protected diagnostics", combine(oidc, []string{"metrics.expose=true"}), false, nil, nil},
+		{"unsafe protected Admin", combine(oidc, []string{"admin.enabled=true", "admin.server.upstream=http://writer:6380"}), false, nil, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := []string{"template", "matrix", filepath.Join(root, "deploy/helm/lantern")}
+			for _, value := range test.values {
+				args = append(args, "--set-string", value)
+			}
+			// Helm --set-string keeps enum words (notably off) as strings;
+			// boolean/int fields still use their native chart value types.
+			for i, value := range args {
+				if value == "--set-string" && i+1 < len(args) && (strings.HasSuffix(args[i+1], "=true") || strings.HasPrefix(args[i+1], "replicaCount=")) {
+					args[i] = "--set"
+				}
+			}
+			cmd := exec.CommandContext(t.Context(), helm, args...)
+			output, err := cmd.CombinedOutput()
+			if (err == nil) != test.valid {
+				t.Fatalf("valid=%v: %v\n%s", test.valid, err, output)
+			}
+			if !test.valid {
+				return
+			}
+			for _, want := range test.want {
+				if !strings.Contains(string(output), want) {
+					t.Errorf("render missing %q", want)
+				}
+			}
+			for _, reject := range test.reject {
+				if strings.Contains(string(output), reject) {
+					t.Errorf("render contains retired/exposed setting %q", reject)
+				}
+			}
+		})
+	}
+}
+
+// Render real Compose input with fresh native material. This checks the
+// operator-facing merge semantics, not merely YAML strings or defaults.
+func TestComposeNativeSecurityModeMatrix(t *testing.T) {
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		t.Skip("Docker Compose is required for the deployment config gate")
+	}
+	if exec.CommandContext(t.Context(), docker, "compose", "version", "--short").Run() != nil {
+		t.Skip("Docker Compose unavailable")
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"off", "oidc"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "native")
+			generated := exec.CommandContext(t.Context(), "go", "-C", filepath.Join(root, "server"), "run", "./cmd/authfixture", "-compose", "-directory", dir, "-public-ports", "6380,6381,6382", "-mode", mode)
+			if output, err := generated.CombinedOutput(); err != nil {
+				t.Fatalf("native config generation: %v: %s", err, output)
+			}
+			for _, bench := range []bool{false, true} {
+				t.Run(map[bool]string{false: "operator HA", true: "native benchmark"}[bench], func(t *testing.T) {
+					args := []string{"compose"}
+					if bench {
+						args = append(args, "-f", filepath.Join(root, "testbed/bench/compose.native.yml"), "-f", filepath.Join(root, "testbed/bench/compose.override.yml"))
+						if mode == "oidc" {
+							dir = filepath.Join(t.TempDir(), "protected")
+							generated := exec.CommandContext(t.Context(), "go", "-C", filepath.Join(root, "server"), "run", "./cmd/authfixture", "-compose", "-directory", dir, "-public-ports", "6380,6381,6382", "-mode", mode, "-receipt")
+							if output, err := generated.CombinedOutput(); err != nil {
+								t.Fatalf("protected fixture generation: %v %s", err, output)
+							}
+							args = append(args, "-f", filepath.Join(root, "testbed/bench/compose.receipt-tls.yml"))
+						}
+					} else {
+						args = append(args, "-f", filepath.Join(root, "deploy/compose/docker-compose.yml"), "-f", filepath.Join(root, "deploy/compose/docker-compose.ha.yml"))
+					}
+					args = append(args, "config", "--format", "json")
+					command := exec.CommandContext(t.Context(), docker, args...)
+					for _, entry := range os.Environ() {
+						if !strings.HasPrefix(entry, "LANTERN_") && !strings.HasPrefix(entry, "COMPOSE_") {
+							command.Env = append(command.Env, entry)
+						}
+					}
+					command.Env = append(command.Env, "LANTERN_HA_CONFIG_DIR="+dir, "LANTERN_BENCH_PEER_TLS_DIR="+dir, "LANTERN_HA_ADMIN_UPSTREAM=https://lantern-0:6380", "LANTERN_BENCH_RECEIPT_MAX_BYTES=4194304", "LANTERN_BENCH_RECEIPT_MAX_ENTRIES=512", "LANTERN_BENCH_RECEIPT_RETENTION=1h")
+					output, err := command.CombinedOutput()
+					if err != nil {
+						t.Fatalf("Compose native config: %v: %s", err, output)
+					}
+					var rendered struct {
+						Services map[string]struct {
+							Environment map[string]string `json:"environment"`
+							Ports       []struct {
+								Target int    `json:"target"`
+								HostIP string `json:"host_ip"`
+							} `json:"ports"`
+							Volumes []struct {
+								Source, Target string
+								ReadOnly       bool `json:"read_only"`
+							} `json:"volumes"`
+						} `json:"services"`
+					}
+					if err := json.Unmarshal(output, &rendered); err != nil {
+						t.Fatal(err)
+					}
+					for _, name := range []string{"lantern-0", "lantern-1", "lantern-2"} {
+						node, ok := rendered.Services[name]
+						if !ok || node.Environment["LANTERN_PEER_LISTEN_ADDR"] != ":6381" || node.Environment["LANTERN_PEER_MEMBERSHIP_FILE"] != "/run/lantern-config/membership.json" {
+							t.Fatal("missing native private plane", name)
+						}
+						if (node.Environment["LANTERN_AUTH_MODE"] == "oidc") != (mode == "oidc") {
+							t.Fatal("public mode changed", name)
+						}
+						for _, key := range []string{"LANTERN_AUTH_TOKENS", "LANTERN_PEERS", "LANTERN_PEER_DISCOVERY", "LANTERN_PEER_CA_FILE"} {
+							if _, ok := node.Environment[key]; ok {
+								t.Fatal("retired admission setting", key)
+							}
+						}
+						ownMount := false
+						for _, mount := range node.Volumes {
+							if mount.Target == "/run/lantern-config" {
+								ownMount = mount.ReadOnly && mount.Source == filepath.Join(dir, name)
+							}
+							if strings.Contains(mount.Source, "operator.key") || mount.Source == dir {
+								t.Fatal("operator key/root directory mounted")
+							}
+						}
+						if !ownMount {
+							t.Fatal("workload material not isolated", name)
+						}
+						if mode == "oidc" && (node.Environment["LANTERN_METRICS_ADDR"] != "127.0.0.1:9090" || node.Environment["LANTERN_PPROF_ENABLED"] == "true") {
+							t.Fatal("protected diagnostics exposed", name)
+						}
+						for _, port := range node.Ports {
+							if port.Target == 6381 || port.HostIP != "127.0.0.1" || mode == "oidc" && port.Target == 9090 {
+								t.Fatal("private/non-loopback port published", name)
+							}
+						}
+					}
+					if !bench && len(rendered.Services["admin"].Ports) != 0 {
+						t.Fatal("protected Admin HTTP unexpectedly exposed")
+					}
+				})
+			}
+		})
+	}
+}
+
+// Exercise the actual rendered init command with projected Secret symlinks and
+// an unprivileged production-image process. No Kubernetes deployment is made.
+func TestHelmWorkloadSecretProjectionCopy(t *testing.T) {
+	image := os.Getenv("LANTERN_HELM_TEST_IMAGE")
+	if image == "" {
+		t.Skip("set LANTERN_HELM_TEST_IMAGE to one immutable native image ID")
+	}
+	if !regexp.MustCompile(`^sha256:[a-f0-9]{64}$`).MatchString(image) {
+		t.Fatal("an immutable image ID is required")
+	}
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"writer", "replica"} {
+		t.Run(role, func(t *testing.T) {
+			args := []string{"template", "matrix", filepath.Join(root, "deploy/helm/lantern"), "--set", "peerPlane.enabled=true", "--set-string", "peerPlane.deployment=01000000000000000000000000000000", "--set-string", "peerPlane.workloadIDPrefix=spiffe://lantern.test/nodes", "--set-string", "peerPlane.membershipConfigMap=membership", "--set-string", "peerPlane.operatorKeySecret=operator-public", "--set-string", "peerPlane.identitySecret=identities", "--set-string", "publicTLS.existingSecret=public", "--set-string", "auth.mode=oidc", "--set-string", "auth.configMap=config", "--set-string", "auth.existingSecret=security", "--set-string", "auth.nodeRole=" + role}
+			raw, err := exec.CommandContext(t.Context(), helm, args...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("render: %v: %s", err, raw)
+			}
+			type mount struct {
+				Name      string `yaml:"name"`
+				MountPath string `yaml:"mountPath"`
+				ReadOnly  bool   `yaml:"readOnly"`
+			}
+			type container struct {
+				Name         string   `yaml:"name"`
+				Args         []string `yaml:"args"`
+				VolumeMounts []mount  `yaml:"volumeMounts"`
+			}
+			var set struct {
+				Kind string `yaml:"kind"`
+				Spec struct {
+					Template struct {
+						Spec struct {
+							InitContainers []container `yaml:"initContainers"`
+							Containers     []container `yaml:"containers"`
+						} `yaml:"spec"`
+					} `yaml:"template"`
+				} `yaml:"spec"`
+			}
+			dec := yaml.NewDecoder(bytes.NewReader(raw))
+			for {
+				if err := dec.Decode(&set); err != nil {
+					if err == io.EOF {
+						t.Fatal("no StatefulSet")
+					}
+					t.Fatal(err)
+				}
+				if set.Kind == "StatefulSet" {
+					break
+				}
+			}
+			if len(set.Spec.Template.Spec.InitContainers) != 1 || len(set.Spec.Template.Spec.InitContainers[0].Args) != 1 {
+				t.Fatal("missing owned init copy")
+			}
+			for _, c := range set.Spec.Template.Spec.Containers {
+				for _, m := range c.VolumeMounts {
+					if strings.HasPrefix(m.MountPath, "/run/lantern-source") || m.Name == "security-files" || m.Name == "public-tls" || m.Name == "peer-identity" || m.Name == "peer-operator" {
+						t.Fatal("raw Secret exposed to Server", m)
+					}
+					if m.Name == "workload-files" && !m.ReadOnly {
+						t.Fatal("Server can alter provisioned secrets")
+					}
+				}
+			}
+			dir := t.TempDir()
+			projected := func(name string, files []string) string {
+				path := filepath.Join(dir, name)
+				if err := os.MkdirAll(filepath.Join(path, "..version"), 0755); err != nil {
+					t.Fatal(err)
+				}
+				for _, file := range files {
+					if err := os.WriteFile(filepath.Join(path, "..version", file), []byte("fixture-"+file), 0644); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(filepath.Join("..version", file), filepath.Join(path, file)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return path
+			}
+			sources := map[string]string{"public": projected("public", []string{"matrix-lantern-0.crt", "matrix-lantern-0.key", "other-pod.key"}), "peers": projected("peers", []string{"matrix-lantern-0.crt", "matrix-lantern-0.key", "other-pod.key", "ca.pem"}), "security": projected("security", []string{"writer.pub", "writer.key", "cdc-keys.json", "machines.json", "operator.key"}), "operator": projected("operator", []string{"operator.pub", "operator.key"})}
+			script := set.Spec.Template.Spec.InitContainers[0].Args[0]
+			check := `test "$(id -u)" = 65532
+find /run/lantern-private -type l | test "$(cat | wc -l)" = 0
+for f in $(find /run/lantern-private -type f); do test "$(stat -c '%a:%u' "$f")" = 600:65532; done
+test -f /run/lantern-private/peers/matrix-lantern-0.key
+test ! -e /run/lantern-private/peers/other-pod.key
+test ! -e /run/lantern-private/security/operator.key
+test ! -e /run/lantern-private/operator/operator.key
+test ! -e /run/lantern-private/security/machines.json
+`
+			if role == "writer" {
+				check += "test -f /run/lantern-private/security/writer.key\n"
+			} else {
+				check += "test ! -e /run/lantern-private/security/writer.key\n"
+			}
+			run := func(expectSuccess bool) {
+				t.Helper()
+				cmdArgs := []string{"run", "--rm", "--user", "65532:65532", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--tmpfs", "/run/lantern-private:rw,uid=65532,gid=65532,mode=0770,size=16m", "--env", "POD_NAME=matrix-lantern-0", "--env", "EXPECTED_UID=65532", "--entrypoint", "/bin/sh"}
+				for name, path := range sources {
+					cmdArgs = append(cmdArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=/run/lantern-source/%s,readonly", path, name))
+				}
+				cmdArgs = append(cmdArgs, image, "-ec", script+"\n"+check)
+				output, err := exec.CommandContext(t.Context(), "docker", cmdArgs...).CombinedOutput()
+				if (err == nil) != expectSuccess {
+					t.Fatalf("copy success=%v: %v: %s", expectSuccess, err, output)
+				}
+			}
+			run(true)
+			if err := os.Remove(filepath.Join(sources["peers"], "..version", "matrix-lantern-0.key")); err != nil {
+				t.Fatal(err)
+			}
+			run(false)
+		})
 	}
 }

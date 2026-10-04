@@ -39,7 +39,8 @@ import (
 // sustained churn, heap_inuse drifts upward as the allocator opens new
 // spans even when live memory is flat, producing false-positive verdicts.
 type LeakGate struct {
-	Thresholds struct {
+	SnapshotProtocol string `json:"snapshot_protocol"`
+	Thresholds       struct {
 		GoroutineMaxDelta         int `json:"goroutine_max_delta"`
 		HeapAllocMaxDeltaMB       int `json:"heap_alloc_max_delta_mb"`
 		SteadyHeapAllocMaxDeltaMB int `json:"steady_heap_alloc_max_delta_mb"`
@@ -372,10 +373,17 @@ func RenderReport(w io.Writer, in Input) error {
 		bw.printf("Thresholds: goroutine_max_delta=%d, heap_alloc_max_delta_mb=%d\n\n",
 			in.LeakGate.Thresholds.GoroutineMaxDelta, hMB)
 		if in.LeakGate.Thresholds.SteadyHeapAllocMaxDeltaMB > 0 {
-			bw.printf("Receipt unforced steady heap_alloc peak threshold: +%d MiB; post-GC live-set threshold: +%d MiB.\n\n",
-				in.LeakGate.Thresholds.SteadyHeapAllocMaxDeltaMB, hMB)
+			if in.LeakGate.SnapshotProtocol == "natural_gc_single" {
+				bw.printf("Receipt natural-GC steady heap_alloc peak threshold: +%d MiB; post-cooldown delta threshold: +%d MiB.\n\n", in.LeakGate.Thresholds.SteadyHeapAllocMaxDeltaMB, hMB)
+			} else {
+				bw.printf("Receipt unforced steady heap_alloc peak threshold: +%d MiB; post-GC live-set threshold: +%d MiB.\n\n", in.LeakGate.Thresholds.SteadyHeapAllocMaxDeltaMB, hMB)
+			}
 		}
-		bw.printf("Post-cooldown gate evaluates `heap_alloc` after forced GC; `heap_inuse` and `heap_objects` are shown for context only.\n\n")
+		if in.LeakGate.SnapshotProtocol == "natural_gc_single" {
+			bw.printf("Pre/post snapshots each use one fixed natural-GC sample; profiling/forced GC and minimum-of-samples selection are disabled. Historic post-forced-GC live-set results are a different protocol. `heap_inuse` and `heap_objects` are context only.\n\n")
+		} else {
+			bw.printf("Post-cooldown gate evaluates `heap_alloc` after forced GC; `heap_inuse` and `heap_objects` are shown for context only.\n\n")
+		}
 		bw.printf("| replica | goroutines (Δ) | heap_alloc MiB (pre → post = Δ) | heap_inuse MiB (pre → post = Δ) | heap_objects (Δ) | vertex_hlc post (entries / high-water) |\n")
 		bw.printf("| --- | --- | --- | --- | --- | --- |\n")
 		for _, r := range in.LeakGate.Replicas {

@@ -818,3 +818,16 @@ single URL; see [docs/ha-runbook.md](../../docs/ha-runbook.md).
 ## License
 
 Apache-2.0 — see [LICENSE](./LICENSE).
+
+### Conditional connections
+
+`createEdges` / `createEdge` require live, readable endpoint Vertices and an
+explicit directed `edge.create` Role pair. Results preserve request order as
+`createdAndLive`, `edgeExists`, `endpointNotLive`, or `expired`. Creation never
+changes an existing Edge or grants Add/Put/Delete; normal calls are not retried.
+
+`createEdgesWithReceipt` / `createEdgeWithReceipt` send one atomic persisted
+context, at most 10,000 inputs, with relative TTL anchored to original operation
+issuance. Preserve the context/input after uncertainty and reconcile original
+receipt status before another dispatch. HA rejects this family until its
+cluster-wide conditional guarantee is implemented.

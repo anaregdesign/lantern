@@ -1056,6 +1056,11 @@ enum OfflineWriteState {
   /// conditional Put no-ops and explicit `false` Delete results.
   confirmed,
 
+  /// The server handled the request without disclosing its effect.
+  ///
+  /// Terminal: no replay or confirmed cache/result follows this acknowledgement.
+  acceptedUndisclosed,
+
   /// A retryable transport failure scheduled a retry.
   retryScheduled,
 
@@ -1154,6 +1159,11 @@ final class OfflineOperationStatus {
   int get confirmedCount =>
       items.where((item) => item.state == OfflineWriteState.confirmed).length;
 
+  /// Number of terminal acknowledgements with unavailable effect details.
+  int get acceptedUndisclosedCount => items
+      .where((item) => item.state == OfflineWriteState.acceptedUndisclosed)
+      .length;
+
   /// Number of items requiring explicit dead-letter action.
   int get deadLetterCount =>
       items.where((item) => item.state == OfflineWriteState.deadLetter).length;
@@ -1221,6 +1231,7 @@ extension on OfflineWriteState {
   /// Whether this status no longer owns replayable outbox work.
   bool get isTerminal =>
       this == OfflineWriteState.confirmed ||
+      this == OfflineWriteState.acceptedUndisclosed ||
       this == OfflineWriteState.deadLetter ||
       this == OfflineWriteState.expired ||
       this == OfflineWriteState.outcomeUnknown;

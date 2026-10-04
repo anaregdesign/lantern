@@ -517,9 +517,10 @@ and `resetChangeCursor`:
   a chunk admits at most 1024 identities
   and prefixes and 1 MiB of encoded identity text. Overflow requires the
   consumer to stop and recover; it must not silently discard cursor origins.
-- The reference snapshot is now schema v7 with `changeProgress`, change epoch,
-  and key-only Unknown residents. Schema v6 restores with an empty resident
-  queue and epoch zero; v1–v5 migrate with empty CDC state.
+- The reference snapshot is now schema v8 with an independent opaque cursor,
+  change epoch, and key-only Unknown residents. Legacy private progress from
+  earlier snapshots is cleared and its confirmed cache hidden before public
+  rebootstrap. Private sequence metadata is never converted into a public cursor.
 
 The storage contract, identity-only Subscribe projection, and storage-neutral
 consumer are implemented. The production Dart package bridge and physical
@@ -527,68 +528,66 @@ release qualification remain in #1314. Storage invalidation does not by itself
 establish freshness or implement server-enforced tenant filtering. TTL remains
 absolute and local.
 
-### Identity-only CDC consumer contract (#1116; storage-neutral core implemented)
+### Public scoped identity CDC consumer contract (#1637)
 
-The consumer uses the same authenticated `Subscribe` stream as peer
-replication, explicitly requesting identity-only events. Its durable cursor
-is the last **fully applied contiguous** sequence per origin; HLC is event
-metadata, not the resume coordinate. The consumer verifies continuity before
-passing a chunk into `applyChangeChunk`, because that storage operation
-intentionally accepts sequence jumps for other possible projections. Every
-mutation, including one with no identity to invalidate, has a final chunk to
-advance the cursor without a hidden hole. A new origin starts at sequence 1.
+Public clients use `WatchChanges` with the identity projection. Raw origins,
+sequences, HLCs, operation IDs, private `Subscribe`, replication status and
+whole-graph snapshots belong to the private peer plane. The historical
+`consumeIdentityChanges` port and `applyChangeChunk` storage conformance remain
+private protocol fixtures; they do not qualify the public offline route.
 
-The server bootstrap handshake registers a bounded live tail atomically with
-its checkpoint. The client installs the checkpoint and enters recovery before
-serving any confirmed cache read. Whole-graph replication `Snapshot` is
-forbidden for this path: it sends values and scales with the server graph,
-not with the mobile cache's resident set. A gap or slow-subscriber overflow
-takes this fail-closed recovery path. A local publication fault pauses recovery
-until the server is healthy; an identity too large for one bounded frame is a
-terminal configuration error, because bootstrap cannot make it smaller. A
-disconnected client retains finite-age cache semantics; the
-absence of an identity event is never proof of freshness.
+The storage-neutral `OfflineScopedChangeSource` port takes one explicit
+bootstrap or immutable opaque cursor. A typed application bridge composes the
+new online API with the offline package without a dynamic API probe or a
+runtime path dependency. The offline archive retains its hosted parent floor;
+new online SDK publication precedes application adoption of that bridge.
 
-`resetChangeCursor` now removes confirmed values and retains bounded,
-**key-only** resident identities as Unknown in the same transaction. The
-reference store's canonical snapshot and the migrated SQLite adapter both
-preserve this work across reopen; SQLite scans its indexed recovery table in
-bounded pages without loading the full resident set into Dart memory. Only
-epoch-checked plural revalidation completes a resident marker. Ordinary
-singular Get calls, including `serverOnly`, leave it Unknown while pending Put
-overlays remain visible. Capacity eviction may discard a marker because that
-identity is then no longer resident. The #1116 network Subscribe consumer and
-gap/bootstrap orchestration are implemented in the storage-neutral core. The
-official online-to-offline Dart adapter and end-to-end mobile release remain
-#1314.
+`consumeScopedChanges` owns one foreground session per partition. The application
+certifies a direct, pinned responder for both tail and bounded plural reads;
+a URL alone does not establish affinity. Server policy/Principal interpretation
+stays on the Server. Server cursor validation binds continuity to current authorization, the
+requested scope/projection, key-ring version, lifetime and retained contiguous
+history. Compatible replicas sharing that key ring can resume the opaque
+cursor after proving history coverage; failed coverage or incompatible policy
+requires rebootstrap. Each opened tail and its recovery reads remain pinned to
+one actual responder; changing that responder during a session fails closed.
 
-Every applied identity chunk, including a partial chunk, also advances a
-partition change epoch atomically with invalidation. A remote Get captures
-this epoch before transport; its cache-store transaction accepts the result
-only if the partition generation **and** change epoch still match. A rejected
-late result returns Unknown to the caller, not merely a discarded cache write.
-A partition-wide epoch may cause extra revalidation when an unrelated key
-changes, but it is bounded, simple, and safe for literal vertex-prefix and
-exact Edge invalidations. The final cursor can advance only after the last
-chunk commits. A CDC-specific remote port exposes bounded plural Get calls so
-resident recovery does not issue one network request per key. All returned
-values still obey their absolute Lantern expiration and the configured finite
-freshness age. Each plural response's observation time anchors its validation
-and negative-cache deadline, and commit rechecks expiration and negative TTL;
-CDC synthesizes no TTL-expiration events.
+Bootstrap registers a bounded live tail with its checkpoint. Installing that
+checkpoint atomically hides confirmed cache and retains bounded key-only
+residents as Unknown. Indexed plural revalidation completes a marker only when
+partition generation, change epoch and responder remain valid. Ordinary singular
+reads do not complete these markers. Pending overlays remain visible.
 
-This capability is deployment-scoped. The current bearer token authenticates
-access to one graph; application `partitionId` does not grant server-side
-tenant isolation. Applications needing multiple security domains must use
-separate deployments or an authorized gateway. The #1116 stream and consumer
-remain independent of the first Put-only `lantern_client_offline` release.
+Each bounded frame atomically invalidates exact identities and increments the
+read epoch. Intermediate frames preserve the previous completion cursor; a final
+or progress-only frame installs the opaque completion cursor. A late remote read
+returns Unknown if its epoch changed. No value, weight, raw origin or sequence
+is stored as identity CDC progress. Private chunks cannot apply while an opaque
+checkpoint is installed; changing protocols requires an explicit reset.
+
+EOF, malformed frames, retention/policy gaps and remote cancellation hide
+confirmed rows and clear the checkpoint before at most one fresh bootstrap per
+invocation. Authorization and availability failures stop after hiding cache and
+never retry automatically. Caller cancellation leaves the last committed frame
+and cursor intact. Wipe/logout cancel and await owned transport before clearing
+all partition state. Stream pause/resume provides backpressure without an eager
+subscription, unbounded queue or background reconnect.
+
+The memory snapshot is schema v8 and SQLite is schema v5 with an indexed opaque
+BLOB. Migration clears legacy private progress, hides confirmed residents, and
+preserves pending outbox/operations, immutable receipt IDs and dispatch evidence.
+The same rollback/partial/final/reopen conformance runs on both stores. Store
+transactions and Server reads retain the existing absolute TTL and finite-age
+rules; CDC does not synthesize TTL-expiration events. Missing events alone never
+prove freshness. Application `partitionId` is local storage and grants no Server
+permission. A changed Principal requires wipe before credential reuse.
 
 The adapter owns SQL transactions, indexes, canonical records, admission bounds,
-leases, and commit validation. The application owns account-to-path binding,
-OS file protection, backup policy, and any additional encrypted database
-factory. The default platform SQLite factory makes no application-level
-encryption claim. Never persist credentials or encryption keys with an outbox.
-Physical-device qualification and package publication remain explicit gates.
+leases and commit validation. The application owns account-to-path binding,
+OS file protection, backup policy and any encrypted database factory. Never
+persist credentials or encryption keys with an outbox. Local path-override,
+host/simulator checks, archive acceptance, publication and physical-device
+qualification remain separate exits in #1613/#1610/#1586/#1637.
 
 ## Follow-up scopes
 

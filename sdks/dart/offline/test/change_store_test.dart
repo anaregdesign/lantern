@@ -85,6 +85,7 @@ void main() {
     for (final partition in decoded['partitions'] as List<dynamic>) {
       (partition as Map<String, dynamic>)
         ..remove('changeProgress')
+        ..remove('scopedCursor')
         ..remove('changeEpoch')
         ..remove('unknownResidents');
     }
@@ -100,7 +101,7 @@ void main() {
   });
 
   test(
-    'v6 snapshots retain CDC progress and gain empty recovery state',
+    'v6 snapshots require opaque rebootstrap and clear private progress',
     () async {
       const origin = '00000000000000000000000000000001';
       final original = InMemoryOfflineStore();
@@ -120,17 +121,16 @@ void main() {
       decoded['schema'] = 6;
       for (final partition in decoded['partitions'] as List<dynamic>) {
         (partition as Map<String, dynamic>)
+          ..remove('scopedCursor')
           ..remove('changeEpoch')
           ..remove('unknownResidents');
       }
       final restored = InMemoryOfflineStore.fromSnapshot(jsonEncode(decoded));
       expect(
-        (await restored.transaction(
-          (t) => t.changeCursor('p'),
-        )).sequences[origin],
-        BigInt.one,
+        (await restored.transaction((t) => t.changeCursor('p'))).sequences,
+        isEmpty,
       );
-      expect(await restored.transaction((t) => t.changeEpoch('p')), 0);
+      expect(await restored.transaction((t) => t.changeEpoch('p')), 1);
       expect(
         await restored.transaction((t) => t.unknownResidents('p', limit: 1)),
         isEmpty,

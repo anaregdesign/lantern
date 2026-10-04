@@ -1,7 +1,11 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	client "github.com/anaregdesign/lantern/sdks/go"
@@ -81,4 +85,32 @@ func FuzzBulkEdgeLine(f *testing.F) {
 		}
 		_ = expirationFromTTL(ttl)
 	})
+}
+
+func TestBulkEdgeBlindAcknowledgementAndLaterFailure(t *testing.T) {
+	for _, verb := range []string{"add", "put"} {
+		for _, failAt := range []int{0, 2} {
+			t.Run(verb+string(rune('0'+failAt)), func(t *testing.T) {
+				wire := commandMutationFixture(t, failAt)
+				path := filepath.Join(t.TempDir(), "edges.ndjson")
+				raw := strings.Repeat(`{"tail":"a","head":"b","weight":1}`+"\n", 3)
+				if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+					t.Fatal(err)
+				}
+				var output, progress bytes.Buffer
+				cmd := newBulkEdgesCmd(verb)
+				cmd.SetContext(t.Context())
+				cmd.SetOut(&output)
+				cmd.SetErr(&progress)
+				err := cmd.RunE(cmd, []string{path})
+				if failAt == 0 {
+					if err != nil || wire.calls != 3 || output.String() != "{\"acceptance\":\"acceptedUndisclosed\"}\n" {
+						t.Fatal("bulk blind acknowledgement", err, wire.calls, output.String())
+					}
+				} else if err == nil || wire.calls != 2 || output.Len() != 0 {
+					t.Fatal("partial failure became complete acceptance", err, wire.calls, output.String())
+				}
+			})
+		}
+	}
 }

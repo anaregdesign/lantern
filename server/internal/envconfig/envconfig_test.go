@@ -329,3 +329,17 @@ func unset(t *testing.T, key string) {
 		}
 	})
 }
+
+func TestRegisterStringDoesNotReadOrMarkConfiguredValue(t *testing.T) {
+	ResetForTesting()
+	defer ResetForTesting()
+	t.Setenv("LANTERN_CONDITIONAL_TEST", "operator-secret")
+	RegisterString("LANTERN_CONDITIONAL_TEST", "disabled-default")
+	specs := Known()
+	if len(specs) != 1 || specs[0].Default != "disabled-default" || specs[0].Kind != "string" || len(Findings()) != 0 {
+		t.Fatal("conditional declaration drift", specs)
+	}
+	if String("LANTERN_CONDITIONAL_TEST", "disabled-default") != "operator-secret" {
+		t.Fatal("declaration changed actual loading")
+	}
+}

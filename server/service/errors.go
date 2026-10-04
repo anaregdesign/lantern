@@ -40,8 +40,13 @@ func ctxToConnect(err error) error {
 // traversalToConnect adds stable resource-safety errors on top of the shared
 // context mapping. A PPR/community work budget exhaustion is deliberately a
 // RESOURCE_EXHAUSTED failure, never a successful-but-truncated graph.
-func traversalToConnect(err error) error {
+func traversalToConnect(err error, redactWork bool) error {
 	if errors.Is(err, graphcache.ErrPPRWorkBudgetExceeded) {
+		if redactWork {
+			// Physical scan work includes rejected edges. Public authorized
+			// requests receive the reason without counters from hidden data.
+			err = graphcache.ErrPPRWorkBudgetExceeded
+		}
 		return connect.NewError(connect.CodeResourceExhausted, err)
 	}
 	return ctxToConnect(err)

@@ -323,3 +323,53 @@ func BenchmarkProjectMutationIdentities(b *testing.B) {
 		})
 	}
 }
+
+func TestCreateIdentityProjectionIncludesAcceptedEdgesOnly(t *testing.T) {
+	f := newReceiptEdgeDeleteFixture(t, nil)
+	runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
+	for _, key := range []string{"a", "b"} {
+		f.cache.PutVertex(key, &pb.Vertex{Key: key})
+	}
+	request := &pb.CreateEdgesRequest{Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: 1}, {Tail: "a", Head: "b", Weight: 9}, {Tail: "a", Head: "private-missing", Weight: 1}}, ReceiptContext: publicReceiptContext(t, runtime, 0x41, 3)}
+	if _, err := f.service.CreateEdges(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	entries := f.log.RetainedEntries()
+	if len(entries) != 1 {
+		t.Fatal(entries)
+	}
+	effect := entries[0].Op.(*edgeCreateEnvelope)
+	var frames []*pb.SubscribeResponse
+	if err := projectMutationIdentities(effect.Mutation, func(frame *pb.SubscribeResponse) error { frames = append(frames, frame); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 1 {
+		t.Fatal(frames)
+	}
+	chunk := frames[0].GetIdentityChunk()
+	if chunk.GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_PUT_EDGE || len(chunk.GetEdgeKeys()) != 1 || len(chunk.GetVertexKeys()) != 0 || chunk.GetEdgeKeys()[0].GetTail() != "a" || chunk.GetEdgeKeys()[0].GetHead() != "b" {
+		t.Fatal(chunk)
+	}
+	wire, err := protojson.Marshal(frames[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(wire), "private-missing") || strings.Contains(string(wire), "operationId") || strings.Contains(string(wire), "weight") {
+		t.Fatal("Create identity projection leaked rejected intent or receipt/value")
+	}
+	// A collision-only call advances only the private receipt sequence, never
+	// fabricates an Edge invalidation or endpoint invalidation.
+	request = &pb.CreateEdgesRequest{Edges: []*pb.Edge{{Tail: "a", Head: "b", Weight: 1}}, ReceiptContext: publicReceiptContext(t, runtime, 0x51, 1)}
+	if _, err := f.service.CreateEdges(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	entries = f.log.RetainedEntries()
+	effect = entries[len(entries)-1].Op.(*edgeCreateEnvelope)
+	frames = nil
+	if err := projectMutationIdentities(effect.Mutation, func(frame *pb.SubscribeResponse) error { frames = append(frames, frame); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 1 || frames[0].GetIdentityChunk().GetOperation() != pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY || len(frames[0].GetIdentityChunk().GetEdgeKeys()) != 0 {
+		t.Fatal(frames)
+	}
+}

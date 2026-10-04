@@ -85,11 +85,13 @@ func TestGetEdgeDetailsConcurrentBatchAndFastAdd(t *testing.T) {
 		{Tail: "tail", Head: "b"},
 	}
 	stop := make(chan struct{})
+	started := make(chan struct{}, 2)
 	var wg sync.WaitGroup
 	var writes atomic.Int64
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		first := true
 		for {
 			select {
 			case <-stop:
@@ -105,11 +107,16 @@ func TestGetEdgeDetailsConcurrentBatchAndFastAdd(t *testing.T) {
 				{Tail: "tail", Head: "b", Weight: 1, Expiration: time.Time{}},
 			})
 			writes.Add(1)
+			if first {
+				started <- struct{}{}
+				first = false
+			}
 			runtime.Gosched()
 		}
 	}()
 	go func() {
 		defer wg.Done()
+		first := true
 		// The fast path has no aggregate graph lock. Its one-edge Add can
 		// legitimately change a relative to b, but the duplicate a entries
 		// within a single read still must agree.
@@ -121,19 +128,34 @@ func TestGetEdgeDetailsConcurrentBatchAndFastAdd(t *testing.T) {
 			}
 			c.AddEdgeWithExpiration("tail", "a", 1, time.Time{})
 			writes.Add(1)
+			if first {
+				started <- struct{}{}
+				first = false
+			}
 			runtime.Gosched()
 		}
 	}()
+	defer func() {
+		close(stop)
+		wg.Wait()
+	}()
+	// Fast reads can finish before either goroutine is scheduled. Require a
+	// completed mutation from BOTH writers before testing their live loops.
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-deadline.C:
+			t.Fatal("concurrent writer did not start")
+		}
+	}
 	for i := 0; i < 200; i++ {
 		got := c.GetEdgeDetails(keys)
 		if !got[0].Found || !got[1].Found || got[0] != got[2] || got[1] != got[3] {
-			close(stop)
-			wg.Wait()
 			t.Fatalf("mixed read at iteration %d: %+v", i, got)
 		}
 	}
-	close(stop)
-	wg.Wait()
 	if writes.Load() == 0 {
 		t.Fatal("concurrent writers made no progress")
 	}

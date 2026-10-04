@@ -14,7 +14,7 @@ impl TokenProvider for DelayedToken {
     fn token(&self) -> Pin<Box<dyn Future<Output = Result<String, TokenError>> + Send + '_>> {
         Box::pin(async move {
             tokio::time::sleep(self.0).await;
-            Ok("development".into())
+            Ok(crate::test_server::TEST_TOKEN.into())
         })
     }
 }
@@ -161,6 +161,7 @@ fn outcome_vectors_and_counts_fail_closed_without_erasing_server_results() {
             validate_add(
                 1,
                 AddEdgesResponse {
+                    acceptance: None,
                     written,
                     effective_weights: weights,
                 },
@@ -171,6 +172,7 @@ fn outcome_vectors_and_counts_fail_closed_without_erasing_server_results() {
     let result = validate_add(
         2,
         AddEdgesResponse {
+            acceptance: None,
             written: 1,
             effective_weights: vec![f32::NAN, f32::INFINITY],
         },
@@ -213,6 +215,7 @@ fn contribution_delete_validates_ids_keys_and_indexed_results() {
         validate_delete_contributions(
             3,
             DeleteEdgeContributionsResponse {
+                acceptance: None,
                 deleted: 1,
                 existed: vec![true, false, false],
             }
@@ -230,7 +233,14 @@ fn contribution_delete_validates_ids_keys_and_indexed_results() {
         (-1, vec![true, false, false]),
     ] {
         assert!(matches!(
-            validate_delete_contributions(3, DeleteEdgeContributionsResponse { deleted, existed }),
+            validate_delete_contributions(
+                3,
+                DeleteEdgeContributionsResponse {
+                    acceptance: None,
+                    deleted,
+                    existed
+                }
+            ),
             Err(LanternError::Protocol(_))
         ));
     }
@@ -873,18 +883,18 @@ async fn real_wire_prepared_add_replays_only_inside_live_dedup_horizon() -> Test
 #[tokio::test]
 #[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
 async fn real_wire_one_deadline_covers_all_authenticated_chunks() -> TestResult {
-    let mut server = GoServer::start(&[("LANTERN_AUTH_TOKENS", "development")])?;
+    let mut server = GoServer::start_authenticated(&[], false, false)?;
     server.wait_for_listener()?;
-    let endpoint = format!("http://127.0.0.1:{}", server.port());
-    let delayed = LanternClient::builder(&endpoint)
+    let endpoint = server.endpoint(0)?;
+    let delayed = LanternClient::builder(endpoint)
         .token_provider(Arc::new(DelayedToken(Duration::from_millis(200))))
-        .allow_credentialed_h2c_for_single_instance_development(true)
+        .tls_private_ca_pem(server.ca_pem()?)?
         .batch_chunk_size(1)?
         .connect()
         .await?;
-    let observer = LanternClient::builder(&endpoint)
+    let observer = LanternClient::builder(endpoint)
         .token_provider(Arc::new(DelayedToken(Duration::ZERO)))
-        .allow_credentialed_h2c_for_single_instance_development(true)
+        .tls_private_ca_pem(server.ca_pem()?)?
         .connect()
         .await?;
     let result = delayed
@@ -905,6 +915,68 @@ async fn real_wire_one_deadline_covers_all_authenticated_chunks() -> TestResult 
     assert!(observer.get_vertex("rust:deadline:first").await?.is_nil());
     assert!(matches!(
         observer.get_vertex("rust:deadline:second").await,
+        Err(LanternError::NotFound)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
+async fn real_wire_create_existing_endpoints_and_preserve_collisions() -> TestResult {
+    let mut server = GoServer::start(&[])?;
+    server.wait_for_listener()?;
+    let endpoint = format!("http://127.0.0.1:{}", server.port());
+    let client = LanternClient::builder(&endpoint)
+        .batch_chunk_size(4)?
+        .retry(crate::RetryPolicy::Unavailable { max_attempts: 3 })?
+        .connect()
+        .await?;
+    let tail = "rust:create:tail";
+    let head = "rust:create:head";
+    client
+        .put_vertices([VertexInput::nil(tail), VertexInput::nil(head)])
+        .await?;
+    let inputs = [
+        EdgeInput::new(tail, head, 2.0),
+        EdgeInput::new(tail, head, 9.0),
+        EdgeInput::new(tail, "rust:create:missing", 1.0),
+        EdgeInput::new(tail, head, 1.0).with_expiration(Expiration::At(Timestamp {
+            seconds: 0,
+            nanos: 0,
+        })),
+    ];
+    assert_eq!(
+        client.create_edges(inputs).await?,
+        [
+            CreateEdgeOutcome::CreatedAndLive,
+            CreateEdgeOutcome::EdgeExists,
+            CreateEdgeOutcome::EndpointNotLive,
+            CreateEdgeOutcome::Expired
+        ]
+    );
+    assert_eq!(client.get_edge(tail, head).await?.weight, 2.0);
+    assert!(matches!(
+        client.get_vertex("rust:create:missing").await,
+        Err(LanternError::NotFound)
+    ));
+    client.delete_edge(tail, head).await?;
+    assert_eq!(
+        client
+            .create_edge_with_options(EdgeInput::new(tail, head, 3.0), CallOptions::Default)
+            .await?,
+        CreateEdgeOutcome::CreatedAndLive
+    );
+    assert!(matches!(
+        client
+            .create_edges([
+                EdgeInput::new(head, tail, 1.0),
+                EdgeInput::new(head, tail, 0.0)
+            ])
+            .await,
+        Err(LanternError::InvalidInput(_))
+    ));
+    assert!(matches!(
+        client.get_edge(head, tail).await,
         Err(LanternError::NotFound)
     ));
     Ok(())

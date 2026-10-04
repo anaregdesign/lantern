@@ -1,0 +1,6 @@
+.panel {
+  display: grid;
+  gap: 12px;
+  padding-block: 16px;
+  overflow-wrap: anywhere;
+}

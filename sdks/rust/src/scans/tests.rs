@@ -876,7 +876,7 @@ struct CountingToken {
 impl TokenProvider for CountingToken {
     fn token(&self) -> Pin<Box<dyn Future<Output = Result<String, TokenError>> + Send + '_>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Ok("development".into()) })
+        Box::pin(async { Ok(crate::test_server::TEST_TOKEN.into()) })
     }
 }
 
@@ -904,13 +904,13 @@ impl TokenProvider for PendingToken {
 #[tokio::test]
 #[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
 async fn real_wire_stream_is_lazy_page_bounded_and_cancels_on_drop() -> TestResult {
-    let mut server = GoServer::start(&[("LANTERN_AUTH_TOKENS", "development")])?;
+    let mut server = GoServer::start_authenticated(&[], false, false)?;
     server.wait_for_listener()?;
-    let endpoint = format!("http://127.0.0.1:{}", server.port());
+    let endpoint = server.endpoint(0)?;
     let token = Arc::new(CountingToken::default());
-    let client = LanternClient::builder(&endpoint)
+    let client = LanternClient::builder(endpoint)
         .token_provider(token.clone())
-        .allow_credentialed_h2c_for_single_instance_development(true)
+        .tls_private_ca_pem(server.ca_pem()?)?
         .connect()
         .await?;
     client
@@ -1006,9 +1006,9 @@ async fn real_wire_stream_is_lazy_page_bounded_and_cancels_on_drop() -> TestResu
         entered: tokio::sync::Notify::new(),
         canceled: Arc::new(AtomicBool::new(false)),
     });
-    let stalled = LanternClient::builder(&endpoint)
+    let stalled = LanternClient::builder(endpoint)
         .token_provider(pending.clone())
-        .allow_credentialed_h2c_for_single_instance_development(true)
+        .tls_private_ca_pem(server.ca_pem()?)?
         .connect()
         .await?;
     let task = tokio::spawn(async move {

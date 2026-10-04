@@ -1786,3 +1786,41 @@ func TestReceiptWALDecisionAuditExpiredAndTornTail(t *testing.T) {
 		t.Fatalf("torn WAL = %+v, %v", report, err)
 	}
 }
+
+func TestReceiptWALReplayEdgeOnlySourcesWithoutEndpoints(t *testing.T) {
+	config, _ := receiptWALAuditFixture(t)
+	put := receiptWALUnionGraphFixture(&pb.MutationOp{NoEndpointCreation: true, Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 2}}}})
+	put.Seq = 1
+	putEffect, err := newGraphPutEffectEnvelope(put, []graphcache.PutOutcome{graphcache.PutOutcomeAppliedAndLive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := receiptWALUnionGraphFixture(&pb.MutationOp{NoEndpointCreation: true, Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 3}}}})
+	add.Seq = 2
+	add.Hlc.Logical++
+	addEffect, err := newGraphAddEffectEnvelope(add, []bool{true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeReceiptWALAuditEntries(t, mutationlog.Entry{HLC: receiptWALUnionGraphHLC(put), Op: putEffect}, mutationlog.Entry{HLC: receiptWALUnionGraphHLC(add), Op: addEffect})
+	candidate, err := resumeReceiptWALCandidateWithEffectPolicy(path, config, time.Now(), mutationlog.Options{Capacity: 16}, time.Hour, true,
+		func(c *graphcache.GraphCache[string, *pb.Vertex]) error { c.RetainDanglingEdgeHistory(); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = candidate.log.Close() })
+	if len(candidate.graph.SnapshotVertices()) != 0 || len(candidate.graph.SnapshotEdges()) != 0 {
+		t.Fatal("WAL replay fabricated endpoints")
+	}
+	if rows := candidate.graph.SnapshotReplication().Graph.Edges; len(rows) != 1 || len(rows[0].Contributions) != 2 {
+		t.Fatal("WAL replay lost accepted sources", rows)
+	}
+	for _, key := range []string{"tail", "head"} {
+		if err := candidate.graph.PutVertex(key, &pb.Vertex{Key: key}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if weight, ok := candidate.graph.GetWeight("tail", "head"); !ok || weight != 5 {
+		t.Fatal("WAL replay weight", weight, ok)
+	}
+}

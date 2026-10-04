@@ -26,10 +26,10 @@ pub use identity::{
     IdentityCategory, IdentityCheckpoint, IdentityChunk, IdentityEvent, IdentityStream,
 };
 pub use receipt::{
-    Receipt, ReceiptEdgeAdd, ReceiptEdgeAddItem, ReceiptEdgeContributionDelete,
-    ReceiptEdgeContributionDeleteItem, ReceiptEdgeDelete, ReceiptEdgeDeleteItem, ReceiptMetadata,
-    ReceiptOriginalResult, ReceiptVertexDelete, ReceiptVertexDeleteItem, ReceiptVertexPut,
-    ReceiptVertexPutItem,
+    EdgeCreateEffect, EdgeCreateEffectItem, Receipt, ReceiptEdgeAdd, ReceiptEdgeAddItem,
+    ReceiptEdgeContributionDelete, ReceiptEdgeContributionDeleteItem, ReceiptEdgeDelete,
+    ReceiptEdgeDeleteItem, ReceiptMetadata, ReceiptOriginalResult, ReceiptVertexDelete,
+    ReceiptVertexDeleteItem, ReceiptVertexPut, ReceiptVertexPutItem,
 };
 
 const SUBSCRIBE_PATH: &str = "/graph.v1.LanternReplicationService/Subscribe";
@@ -208,6 +208,7 @@ impl LanternClient {
                 projection: SubscribeProjection::IdentityOnly as i32,
                 bootstrap: true,
                 accept_receipt_envelopes: false,
+                namespace_format: String::new(),
             },
             options,
         )?;
@@ -233,6 +234,7 @@ impl LanternClient {
                 projection: SubscribeProjection::IdentityOnly as i32,
                 bootstrap: false,
                 accept_receipt_envelopes: false,
+                namespace_format: String::new(),
             },
             options,
         )?;
@@ -255,6 +257,7 @@ impl LanternClient {
                 projection: SubscribeProjection::FullMutation as i32,
                 bootstrap: false,
                 accept_receipt_envelopes: true,
+                namespace_format: String::new(),
             },
             options,
         )?;
@@ -312,7 +315,7 @@ impl SubscriptionSource {
     }
 }
 
-fn cdc_rpc_error(error: LanternError) -> LanternError {
+pub(crate) fn cdc_rpc_error(error: LanternError) -> LanternError {
     match error {
         LanternError::Rpc(failure) if failure.status().code() == Code::FailedPrecondition => {
             LanternError::CdcGap(CdcGap::rpc(failure))
