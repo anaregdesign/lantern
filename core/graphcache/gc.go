@@ -62,6 +62,9 @@ func (c *GraphCache[S, T]) flush() (zero, dangling int) {
 		return live
 	}
 	keep := func(tailID, headID vertexID) bool {
+		if c.retainDanglingEdgeHistory {
+			return true
+		}
 		return liveID(tailID) && liveID(headID)
 	}
 	indexDelete := c.headIndexOnFlushDeleteLocked()
@@ -119,7 +122,7 @@ func (c *GraphCache[S, T]) migrateExpiredEdgeHLCToBarriersLocked(now time.Time) 
 	var hiddenBuckets []hidden
 	c.edges.rangeBuckets(func(tail, head S, w *weight) bool {
 		contribs, ts, nonEmpty := w.snapshotEntry(now)
-		visible := nonEmpty && c.vertices.HasAt(tail, now) && c.vertices.HasAt(head, now)
+		visible := nonEmpty && (c.retainDanglingEdgeHistory || (c.vertices.HasAt(tail, now) && c.vertices.HasAt(head, now)))
 		if visible {
 			var sum float32
 			causalContribution := false

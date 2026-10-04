@@ -1,5 +1,6 @@
 use crate::{
-    ContribId, Edge, EdgeContributionRef, EdgeRef, LanternError, PutOutcome, Timestamp, Vertex,
+    ContribId, CreateEdgeOutcome, Edge, EdgeContributionRef, EdgeRef, LanternError, PutOutcome,
+    Timestamp, Vertex,
     cdc::{
         OriginId, VertexWrite,
         full::{
@@ -64,10 +65,12 @@ pub enum ReceiptOriginalResult {
     DeleteVertexExisted(bool),
     AddEdgeEffectiveWeight(f32),
     DeleteEdgeContributionExisted(bool),
+    CreateEdgeOutcome(CreateEdgeOutcome),
 }
 
 #[derive(Clone, Copy)]
 enum ReceiptFamily {
+    EdgeCreate,
     EdgeDelete,
     VertexPut,
     VertexDelete,
@@ -143,6 +146,9 @@ impl Receipt {
             .and_then(|result| result.result)
             .ok_or_else(|| gap("receipt has no original result"))?;
         let original_result = match (family, result) {
+            (ReceiptFamily::EdgeCreate, receipt_result::Result::CreateEdgeOutcome(value)) => {
+                ReceiptOriginalResult::CreateEdgeOutcome(checked_create_outcome(value)?)
+            }
             (ReceiptFamily::EdgeDelete, receipt_result::Result::DeleteEdgeExisted(value)) => {
                 ReceiptOriginalResult::DeleteEdgeExisted(value)
             }
@@ -451,6 +457,97 @@ impl ReceiptEdgeContributionDelete {
                 })
             })
             .collect::<Result<_, LanternError>>()?;
+        Ok(Self { metadata, items })
+    }
+}
+
+/// An origin-authoritative conditional creation result; peer apply is unsupported.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeCreateEffectItem {
+    pub original: Edge,
+    pub outcome: CreateEdgeOutcome,
+    pub receipt: Option<Receipt>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeCreateEffect {
+    pub metadata: Option<ReceiptMetadata>,
+    pub items: Vec<EdgeCreateEffectItem>,
+}
+fn checked_create_outcome(value: i32) -> Result<CreateEdgeOutcome, LanternError> {
+    CreateEdgeOutcome::try_from(value)
+        .ok()
+        .filter(|outcome| *outcome != CreateEdgeOutcome::Unspecified)
+        .ok_or_else(|| gap("invalid conditional Create outcome"))
+}
+impl EdgeCreateEffect {
+    pub(super) fn from_wire(
+        wire: crate::generated::graph::v1::EdgeCreateEffect,
+    ) -> Result<Self, LanternError> {
+        let metadata = if wire.deployment_epoch.is_empty() && wire.policy_fingerprint.is_empty() {
+            None
+        } else {
+            Some(ReceiptMetadata::from_wire(
+                wire.deployment_epoch,
+                wire.policy_fingerprint,
+                None,
+                false,
+            )?)
+        };
+        let count = wire.items.len();
+        if count == 0 || count > 10000 {
+            return Err(gap("invalid Create effect count"));
+        }
+        let mut group = None;
+        let mut seen = std::collections::HashSet::new();
+        let items = wire
+            .items
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let original = item
+                    .original
+                    .ok_or_else(|| gap("Create effect has no original"))?;
+                validate_edge(&original)?;
+                if original.weight == 0.0 {
+                    return Err(gap("Create source weight must be nonzero"));
+                }
+                let outcome = checked_create_outcome(item.outcome)?;
+                if outcome == CreateEdgeOutcome::CreatedAndLive
+                    && !seen.insert((original.tail.clone(), original.head.clone()))
+                {
+                    return Err(gap("duplicate accepted Create identity"));
+                }
+                let receipt = match &metadata {
+                    None => {
+                        if item.receipt.is_some() {
+                            return Err(gap("partial Create receipt evidence"));
+                        }
+                        None
+                    }
+                    Some(metadata) => {
+                        let receipt = Receipt::from_wire(
+                            item.receipt,
+                            metadata,
+                            ReceiptFamily::EdgeCreate,
+                            index,
+                            count,
+                            &mut group,
+                        )?;
+                        if receipt.original_result
+                            != ReceiptOriginalResult::CreateEdgeOutcome(outcome)
+                        {
+                            return Err(gap("Create result differs from receipt"));
+                        }
+                        Some(receipt)
+                    }
+                };
+                Ok(EdgeCreateEffectItem {
+                    original,
+                    outcome,
+                    receipt,
+                })
+            })
+            .collect::<Result<Vec<_>, LanternError>>()?;
         Ok(Self { metadata, items })
     }
 }

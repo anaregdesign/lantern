@@ -4,3 +4,4 @@ doc/api/
 test/
 tool/
 pubspec.lock
+pubspec_overrides.yaml

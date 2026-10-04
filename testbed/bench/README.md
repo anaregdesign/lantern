@@ -1,7 +1,7 @@
 # lantern bench harness (`testbed/bench/`)
 
 Reusable performance + memory-leak harness for the HA `docker compose`
-cluster (see `deploy/compose/`). Drives the cluster with [`ghz`][ghz] or a
+cluster provisioned by `compose.native.yml`; operator deployment examples remain in `deploy/compose/`. Drives the cluster with [`ghz`][ghz] or a
 narrow scenario-owned verified Connect/HTTPS receipt driver, captures Prometheus range queries +
 Go pprof snapshots, applies per-scenario leak / lifecycle-metric / semantic /
 producer-performance gates, and renders a Markdown report.
@@ -96,7 +96,7 @@ focused on deterministic tests. Supplying a diagnostic override without
   discovery. ghz keeps working unchanged. See [#383][i383] for the
   verification log. The receipt scenarios use their dedicated Go driver instead.
 - [`yq`][yq] v4 (Go reimplementation)
-- `jq`, `curl`, `bash` ≥ 4
+- `jq`, `curl`, Python 3 (standard library only), `bash` ≥ 4
 - Go (matching `go.mod` toolchain) — used to build the report renderer
   and generate the receipt scenario's ephemeral TLS material (no external
   certificate tool or committed key is needed)
@@ -107,14 +107,17 @@ focused on deterministic tests. Supplying a diagnostic override without
 ## Quick start
 
 ```bash
+# Build one immutable local image with its exact source commit before any run:
+docker build --build-arg COMMIT="$(git rev-parse HEAD)" -t lantern:local .
+export LANTERN_IMAGE=lantern:local
 # Run any scenario:
 ./testbed/bench/run.sh write_heavy
 
 # Keep the cluster up after the run (useful for ad-hoc poking):
 KEEP_UP=1 ./testbed/bench/run.sh read_heavy
 
-# Reuse an already-running cluster (skip compose up / down):
-SKIP_UP=1 KEEP_UP=1 ./testbed/bench/run.sh mixed_rw
+# Each run owns a new signed cohort/state; SKIP_UP is rejected.
+# KEEP_UP stops the owned renewal helper: retained peers expire within 10m.
 
 # Also capture a 30s CPU profile per replica after the steady phase:
 PPROF_CPU=1 ./testbed/bench/run.sh addedge_contention
@@ -128,7 +131,7 @@ export EXPECTED_LANTERN_COMMIT="$(git rev-parse HEAD)"
 for scenario in receipt_vertex_put_admission_lookup \
   receipt_vertex_delete_admission_lookup receipt_admission_lookup \
   receipt_edge_add_admission_lookup; do
-  ./testbed/bench/run.sh "$scenario"
+  LEAK_GATE_ONLY=1 ./testbed/bench/run.sh "$scenario"
 done
 ```
 
@@ -403,7 +406,7 @@ ghz cannot safely generate one canonical binary operation ID and reuse it in
 another producer, so each scenario selects one of the four allow-listed
 receipt family drivers. Each emits the ghz summary shape consumed by the
 existing perf evaluator and report renderer. The harness provisions a fresh
-authenticated durable-WAL cluster with fixed per-replica node IDs and rejects
+authenticated durable-WAL cluster with fresh per-replica origin IDs and rejects
 `SKIP_UP=1`. Before startup it removes only the named bench Compose project's
 containers and volumes, so a preceding `KEEP_UP=1` run cannot leak retained
 receipts into the next family; unrelated volumes are untouched. Before warmup
@@ -415,49 +418,63 @@ saved in each distinct scenario output directory. Nightly pins one image ID
 and source SHA across all four runs. Existing scenarios retain graph-only
 defaults.
 
-For receipt runs only, `run.sh` overlays
-[`compose.receipt-tls.yml`](compose.receipt-tls.yml) and starts the three
-replicas plus Prometheus, not the default plaintext-configured admin/MCP
-clients. The Go `receipttls` helper creates a fresh random bearer, an
-ephemeral in-memory CA signing key, and **distinct per-replica** TLS
-certificate/key pairs in a private ignored directory under
-`testbed/bench/out/.peer-tls.*`. Each server certificate carries `lantern`
-(the DNS discovery TLS identity), `localhost`, and its replica name as
-DNS SANs; each replica sees only its own key via a read-only mount. The
-driver calls `https://localhost:<port>` with the pinned CA and refuses
-redirects, missing trust roots, hostname mismatch, plaintext, or a
-non-HTTP/2 handshake. The metrics port stays HTTP and bearer-free.
-Before warmup and after the verdict, `peer_tls_pre.json` and
-`peer_tls_post.json` attest the mounted TLS paths, auth/DNS settings,
-trusted CA, and the live certificate fingerprint on each published
-port. A changed identity or image disqualifies the run. The named
-Compose teardown removes the private material; `KEEP_UP=1` leaves it
-available only while the cluster remains up, and operators must tear
-down that named project and remove the printed private path afterward.
-Never archive `.peer-tls.*` alongside the public scenario reports.
-These changes do not alter the four scenario YAML files, phase
-durations, offered RPS, steady metrics, or resource/performance limits.
+All fresh cohorts use [`compose.native.yml`](compose.native.yml), with three
+explicit workloads and a distinct, unpublished private mTLS plane. The
+`authfixture -compose` helper generates a host-private CA, separate public and
+private leaf keys, operator-signed membership and per-node configuration. OFF
+keeps its public h2c baseline; protected receipt runs use trusted HTTPS and a
+canonical `lnt_m1_` machine credential bound through the native `fixture_data`
+Role. Only that workload's files are mounted read-only. The operator private
+key and client token file remain outside all Server containers. DNS names
+locate only the signed fixed origins; they never approve membership.
 
-The receipt leak gate samples `go_goroutines` and
-`go_memstats_heap_alloc_bytes` on **all three replicas** every 5s while the
-steady producer runs, without forcing GC during load. It requires complete,
-finite, integral readings throughout the measured window (at least nine rounds
-over 45s, with no interval gap above 7.5s); a failed or incomplete scrape fails
-the run. Each replica's observed peak must remain within +15 goroutines and
-+40 MiB `heap_alloc` of its post-warmup GC baseline. The
-post-cooldown/post-warmup GC live-set delta must stay within +15 goroutines
-and +32 MiB `heap_alloc`. These separate limits allow ordinary allocation
-between unforced GC cycles without relaxing the retained live-set gate.
-The +40 MiB steady limit leaves headroom over the observed +32.7 MiB peak
-in the September 2026 qualification run; its post-GC growth was +16.5 MiB.
-The report shows both independently; `LEAK_GATE_ONLY=1` skips optional
-profiles and Prometheus range queries, not steady resource sampling.
-For receipt runs, a failed forced-GC request on any replica or round
-disqualifies the pre/post live-set snapshots even when `/metrics` responds.
-Each pre/post `/metrics` scrape must also succeed and report finite,
-nonnegative integral goroutine, heap-alloc, heap-inuse, and heap-object gauges
-on every replica and round; a fractional or malformed reading cannot round to
-zero.
+An owned operator helper renews the same membership every two minutes. Each
+successor preserves the domain/member identities and increments its version;
+expiry, drift, helper death or unknown restarts disqualify the run. The
+1h certificate/credential lifetime still bounds a diagnostic invocation.
+Explicit chaos restart changes fresh→resume/restart and gives an ephemeral
+graph a new transport origin. Its exact old/new container IDs are recorded;
+undeclared recreation or a changed image is rejected. `KEEP_UP=1` retains
+private files for operator teardown, but stops the helper, so membership
+expires within ten minutes. Never archive `.peer-tls.*` with public reports.
+
+[`compose.receipt-tls.yml`](compose.receipt-tls.yml) disables pprof and removes
+metrics port publication. An owned `diagnostics_bridge.py` binds only host
+loopback and reads `/metrics` and `/readyz` through `docker exec` into the
+exact immutable container IDs. It cannot forward profiling, writes or arbitrary
+paths. Protected runs require `LEAK_GATE_ONLY=1`; they skip Prometheus/pprof
+extras, while retaining all producer, semantic, steady resource and perf gates.
+OFF profiling remains explicit and its diagnostic ports bind host loopback.
+
+Before warmup and after the verdict, every cohort proves its native
+configuration, separate per-workload mount, immutable image/source commit,
+project/service identity and expected lifecycle. Protected runs additionally
+verify the public CA, live leaf fingerprint and HTTP/2 without redirects.
+`image_provenance_*.json`, `peer_tls_*.json` and `membership_renewal.json` contain
+content-free evidence; machine tokens and native bootstrap files stay private.
+
+Public CDC scenarios now use `WatchChanges` and the compiled `changeprobe`
+application consumer, not the private replication RPC. It processes a complete
+frame before committing its opaque cursor, resumes on a bounded stream deadline
+and records gap/rebootstrap separately. Permission, availability or malformed
+progress failure disqualifies the scenario. Producer load/durations/floors are
+unchanged; the new public projection is not a byte-for-byte comparison with
+historical complete mutation delivery. Native pumps continue full private
+replication independently.
+
+The protected receipt leak gate samples `go_goroutines` and
+`go_memstats_heap_alloc_bytes` on all three replicas every 5s during steady
+load, without forced GC. Complete finite integral samples remain mandatory
+(at least nine rounds over 45s, with no interval gap above 7.5s). Its existing
++15 goroutine, +40 MiB steady and +32 MiB cooldown delta budgets remain in force.
+Protected pre/post snapshots use **one fixed natural-GC sample**; pprof/forced
+GC and minimum-of-samples selection are unavailable by design. Therefore new
+results are not post-GC live-set evidence and cannot be compared as such with
+historical #1399 measurements. #1635/#1610 track this predeclared measurement
+change; a failed natural sample stays failed rather than changing load, GC or
+thresholds. OFF leak snapshots preserve their existing outside-steady GC
+protocol. Peak process/container RSS and CPU comparisons remain separate
+required #1610 evidence.
 
 Five preliminary **Edge Delete-only** Compose runs on the synthetic-parent stack (Apple M3 Max,
 `darwin/arm64`), recorded in
@@ -519,6 +536,7 @@ exact-image measurements are required for #1399.
 | `receipt_admission_lookup.yaml` | on-demand absent Edge Delete receipt admission plus same-operation typed lookup (#1442) |
 | `receipt_edge_add_admission_lookup.yaml` | on-demand finite-source, contribution-keyed Edge Add receipt admission plus bit-exact typed lookup |
 | `backup_under_load.yaml`  | BackupSnapshot concurrent with sustained writes — on-demand only, not in release sweep (#707) |
+| `shared_ranking.yaml` | Diagnostic shared-corpus Put/Delete/Search plus BM25 BFS/PPR/community; outside the release sweep; [component evidence](evidence/issue-1612/shared-ranking/README.md) does not qualify production OIDC |
 | `broad_illuminate.yaml` | Six named traversal producers over a verified 64-way/3-hop walk and planted dense communities; preflight rejects a collapsed topology (#994) |
 
 Each YAML declares the phases (`warmup`, `steady`, `cooldown`), the load
@@ -763,3 +781,28 @@ locally on the same exact image.
 [ghz]: https://ghz.sh/
 [yq]: https://github.com/mikefarah/yq
 [#237]: https://github.com/anaregdesign/lantern/issues/237
+
+### Standalone conditional Create diagnostics (#1626)
+
+`./testbed/bench/run.sh edge_create` uses an owned native standalone OIDC fixture,
+with a narrow `bench:source:` -> `bench:target:` Create pair and the real
+production Server. It bypasses the HA Compose route because Create is disabled
+in HA pending cluster-wide absence/arbitration. No production security guard is
+weakened. The fixture also grants ordinary data operations for setup/cleanup;
+least-privilege Creator behavior is covered separately over the real Connect wire.
+
+One compiled Server/fixture/probe set is reused for fresh plain and receipt
+families. The frozen scenario has 10s warmup, 60s steady, 100 sequential cycles/s
+and 5s cooldown. Each cycle verifies created/collision/missing/expired outcomes
+and deletes the accepted Edge; receipt mode additionally verifies all original
+status results. Cycle RPS is distinct from aggregate RPC RPS. First Create after
+endpoint/capability setup is separate from steady latency; it is not a cold
+Principal/JWT measure. Receipt Create latency includes SDK capability preflight.
+
+Reports retain binary/source/scenario hashes, first/steady latency, sampled
+Server peak RSS after readiness and natural pre/post runtime metrics. No forced
+GC or release floors are introduced. Teardown/source drift fails the diagnostic;
+failed private state/logs remain outside public artifacts. These local results
+cannot qualify final merged source, a production clock/provider, HA Create or
+physical devices. Existing broad search/traversal and CDC/receipt HA families
+remain separate qualification requirements.

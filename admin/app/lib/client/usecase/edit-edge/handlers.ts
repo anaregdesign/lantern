@@ -50,9 +50,19 @@ export async function addEdgeHandler(
 ): Promise<void> {
   dispatch({ type: "WRITE_REQUESTED", mode: "add" });
   try {
-    await addEdge(input.client, input.tail, input.head, input.body, {
-      signal: input.signal,
-    });
+    const reply = await addEdge(
+      input.client,
+      input.tail,
+      input.head,
+      input.body,
+      {
+        signal: input.signal,
+      },
+    );
+    if (reply.kind === "acceptedUndisclosed") {
+      dispatch({ type: "WRITE_ACCEPTED_UNDISCLOSED", mode: "add" });
+      return;
+    }
     const fresh = await getEdge(input.client, input.tail, input.head, {
       signal: input.signal,
     });
@@ -77,9 +87,19 @@ export async function putEdgeHandler(
 ): Promise<void> {
   dispatch({ type: "WRITE_REQUESTED", mode: "put" });
   try {
-    await putEdge(input.client, input.tail, input.head, input.body, {
-      signal: input.signal,
-    });
+    const reply = await putEdge(
+      input.client,
+      input.tail,
+      input.head,
+      input.body,
+      {
+        signal: input.signal,
+      },
+    );
+    if (reply.kind === "acceptedUndisclosed") {
+      dispatch({ type: "WRITE_ACCEPTED_UNDISCLOSED", mode: "put" });
+      return;
+    }
     const fresh = await getEdge(input.client, input.tail, input.head, {
       signal: input.signal,
     });
@@ -103,10 +123,15 @@ export async function deleteEdgeHandler(
 ): Promise<void> {
   dispatch({ type: "DELETE_REQUESTED" });
   try {
-    await deleteEdge(input.client, input.tail, input.head, {
+    const reply = await deleteEdge(input.client, input.tail, input.head, {
       signal: input.signal,
     });
-    dispatch({ type: "DELETE_SUCCEEDED" });
+    dispatch({
+      type:
+        reply.kind === "acceptedUndisclosed"
+          ? "DELETE_ACCEPTED_UNDISCLOSED"
+          : "DELETE_SUCCEEDED",
+    });
   } catch (err) {
     if (isAbortError(err)) return;
     dispatch({ type: "DELETE_FAILED", error: messageOf(err) });

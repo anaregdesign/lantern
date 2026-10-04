@@ -38,6 +38,8 @@ const _appFacingRpcs = <String>{
   'AddEdges',
   'BackupSnapshot',
   'CountVerticesByPrefix',
+  'CreateEdge',
+  'CreateEdges',
   'DeleteEdge',
   'DeleteEdges',
   'DeleteEdgeContribution',

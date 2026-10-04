@@ -7,6 +7,9 @@ on:
       - ".github/workflows/dart-transport-probe.yml"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "proto/**"
+      - "server/**"
+      - "core/privatefile/**"
+      - "testbed/scripts/dart_transport_fixture.sh"
       - "testbed/dart-transport-probe/**"
       - "!testbed/dart-transport-probe/*.md"
       - "docs/decisions/0001-dart-mobile-transport.md"
@@ -88,33 +91,16 @@ jobs:
           flutter-version: 3.44.6
           cache: true
 
-      - name: Build probe server and certificate
+      - name: Build production probe server and native fixture
         shell: bash
         run: |
           set -euo pipefail
           probe_app="$RUNNER_TEMP/lantern"
-          probe_ca="$RUNNER_TEMP/lantern-probe-ca.pem"
-          probe_ca_key="$RUNNER_TEMP/lantern-probe-ca-key.pem"
-          probe_cert="$RUNNER_TEMP/lantern-probe-cert.pem"
-          probe_key="$RUNNER_TEMP/lantern-probe-key.pem"
+          probe_fixture="$RUNNER_TEMP/lantern-authfixture"
           go build -o "$probe_app" ./server/cmd
-          openssl req -x509 -newkey rsa:2048 -nodes \
-            -keyout "$probe_ca_key" -out "$probe_ca" -days 1 \
-            -subj '/CN=Lantern probe CA' \
-            -addext basicConstraints=critical,CA:TRUE \
-            -addext keyUsage=critical,keyCertSign,cRLSign
-          openssl req -newkey rsa:2048 -nodes \
-            -keyout "$probe_key" -out "$RUNNER_TEMP/lantern-probe.csr" \
-            -subj /CN=127.0.0.1
-          openssl x509 -req -days 1 \
-            -in "$RUNNER_TEMP/lantern-probe.csr" \
-            -CA "$probe_ca" -CAkey "$probe_ca_key" -CAcreateserial \
-            -extfile testbed/dart-transport-probe/templates/openssl-server.cnf \
-            -extensions server_cert -out "$probe_cert"
+          go build -o "$probe_fixture" ./server/cmd/authfixture
           echo "PROBE_APP=$probe_app" >> "$GITHUB_ENV"
-          echo "PROBE_CA=$probe_ca" >> "$GITHUB_ENV"
-          echo "PROBE_CERT=$probe_cert" >> "$GITHUB_ENV"
-          echo "PROBE_KEY=$probe_key" >> "$GITHUB_ENV"
+          echo "PROBE_FIXTURE=$probe_fixture" >> "$GITHUB_ENV"
           echo "LANTERN_PROBE_WORKDIR=$RUNNER_TEMP/dart-mobile" >> "$GITHUB_ENV"
 
       - name: Start plaintext and TLS probe servers
@@ -125,16 +111,19 @@ jobs:
             LANTERN_LOG_LEVEL=warn nohup "$PROBE_APP" \
             >"$RUNNER_TEMP/plain.log" 2>&1 &
           plain_pid=$!
-          env LANTERN_PORT=6434 LANTERN_METRICS_ADDR=:9144 \
-            LANTERN_LOG_LEVEL=warn LANTERN_AUTH_TOKENS=probe-token \
-            LANTERN_TLS_CERT_FILE="$PROBE_CERT" \
-            LANTERN_TLS_KEY_FILE="$PROBE_KEY" nohup "$PROBE_APP" \
-            >"$RUNNER_TEMP/tls.log" 2>&1 &
-          tls_pid=$!
           echo "PLAIN_PID=$plain_pid" >> "$GITHUB_ENV"
-          echo "TLS_PID=$tls_pid" >> "$GITHUB_ENV"
+          bash testbed/scripts/dart_transport_fixture.sh start \
+            "$PROBE_APP" "$PROBE_FIXTURE" "$RUNNER_TEMP/transport-native" 6434
+          python3 - "$RUNNER_TEMP/transport-native/metadata.json" "$GITHUB_ENV" <<'PY'
+          import json,pathlib,sys
+          m=json.loads(pathlib.Path(sys.argv[1]).read_text())
+          node=m['nodes'][0]
+          with open(sys.argv[2], 'a') as out:
+              out.write('PROBE_CA='+m['ca_file']+'\n')
+              out.write('PROBE_CERT='+node['environment']['LANTERN_TLS_CERT_FILE']+'\n')
+          PY
 
-          for port in 9143 9144; do
+          for port in 9143; do
             ready=0
             for _ in {1..60}; do
               if curl --fail --silent "http://127.0.0.1:$port/healthz" >/dev/null; then
@@ -144,7 +133,7 @@ jobs:
               sleep 1
             done
             if [[ $ready -ne 1 ]]; then
-              cat "$RUNNER_TEMP/plain.log" "$RUNNER_TEMP/tls.log"
+              cat "$RUNNER_TEMP/plain.log"
               exit 1
             fi
           done
@@ -170,14 +159,15 @@ jobs:
         run: |
           testbed/dart-transport-probe/scripts/mobile.sh \
             "${{ matrix.transport }}" "$DEVICE_ID" http://127.0.0.1:6433 \
-            https://localhost:6434 probe-token "$PROBE_CA"
+            https://localhost:6434 "$RUNNER_TEMP/transport-native/token" "$PROBE_CA"
 
       - name: Show server logs and clean up
         if: always()
         shell: bash
         run: |
-          cat "$RUNNER_TEMP/plain.log" "$RUNNER_TEMP/tls.log" 2>/dev/null || true
-          kill "${PLAIN_PID:-}" "${TLS_PID:-}" 2>/dev/null || true
+          cat "$RUNNER_TEMP/plain.log" 2>/dev/null || true
+          kill "${PLAIN_PID:-}" 2>/dev/null || true
+          bash testbed/scripts/dart_transport_fixture.sh stop "$RUNNER_TEMP/transport-native"
           if [[ -n ${DEVICE_ID:-} ]]; then
             xcrun simctl shutdown "$DEVICE_ID" || true
           fi

@@ -1,0 +1,8 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/anaregdesign/lantern/core/graphcache
+cpu: Apple M3 Max
+BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_1/constrained_true-16         	   69792	      3299 ns/op	      3416 retained_delta_B	    4772 B/op	      40 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_1/constrained_true-16         	   66954	      3348 ns/op	     -2208 retained_delta_B	    4772 B/op	      40 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_1/constrained_true-16         	   67999	      3358 ns/op	     -3272 retained_delta_B	    4771 B/op	      40 allocs/op
+PASS

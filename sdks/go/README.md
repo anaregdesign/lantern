@@ -433,3 +433,19 @@ section. Per-RPC authentication (bearer tokens, OAuth) is supplied by
 wrapping the `http.Client`'s `Transport` with a custom `http.RoundTripper`
 that injects the header. See [`cli/cmd/root.go`](../../cli/cmd/root.go) for
 the canonical TLS-aware `*http.Client` construction.
+
+
+### Conditional connections
+
+`CreateEdges` / `CreateEdge` create connections only when both endpoint Vertices
+are already live and readable. Directed Role pairs select `edge.create`; creation
+never grants Add, Put or Delete. Outcomes preserve request order:
+`CreateEdgeCreatedAndLive`, `CreateEdgeExists`, `CreateEdgeEndpointNotLive`,
+`CreateEdgeExpired`. Existing weights/TTL/contributions remain unchanged.
+
+Normal Create is never automatically retried. `CreateEdgesWithReceipt` /
+`CreateEdgeWithReceipt` use one atomic context from `NewReceiptContext` with
+`ReceiptMutationCreateEdge`; persist that context and absolute inputs before
+dispatch. Reconcile an uncertain response through original-ID receipt status.
+The family is available only on standalone servers; HA rejects it pending the
+cluster-wide conditional-creation guarantee.

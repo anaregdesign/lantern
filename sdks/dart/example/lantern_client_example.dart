@@ -92,6 +92,8 @@ Future<void> main() async {
             stdout.writeln('receipt not observed; outcome remains uncertain');
           case ReceiptStatusState.noLongerProvable:
             stdout.writeln('receipt outcome is no longer provable');
+          case ReceiptStatusState.effectUndisclosed:
+            stdout.writeln('request handled; original effect undisclosed');
         }
       }
     }

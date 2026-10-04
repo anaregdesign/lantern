@@ -1,0 +1,30 @@
+.view {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.actions,
+.records {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.records button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  min-height: 40px;
+}
+.status,
+.templates,
+.audit {
+  display: grid;
+  gap: 12px;
+  padding-block: 12px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .records {
+    display: grid;
+  }
+}

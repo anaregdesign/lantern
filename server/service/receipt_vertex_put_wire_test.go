@@ -552,15 +552,17 @@ func TestReceiptVertexPutWALRequestCapacityExactLimit(t *testing.T) {
 		PolicyFingerprint: make([]byte, 32),
 		IfAbsent:          true,
 		Items: []*pb.ReplicatedReceiptVertexPutItem{{
-			Original: large,
-			Receipt:  receipt,
+			Original:         large,
+			Receipt:          receipt,
+			LifecycleReduced: true,
 			Accepted: &pb.ReplicatedPutVertex{
 				Outcome: &pb.ReplicatedPutVertex_Live{Live: large},
 			},
 		}},
 	}
 	frame := &pb.Mutation{
-		Seq: math.MaxUint64,
+		NamespaceFormat: "namespaced-v1",
+		Seq:             math.MaxUint64,
 		Hlc: &pb.HLCTimestamp{
 			WallNs: math.MaxInt64, Logical: math.MaxUint32,
 			NodeId: make([]byte, len(hlc.NodeID{})),
@@ -582,8 +584,9 @@ func TestReceiptVertexPutWALRequestCapacityExactLimit(t *testing.T) {
 			extra := &pb.Vertex{Key: extraKey}
 			vertices = append(vertices, extra)
 			call.Items = append(call.Items, &pb.ReplicatedReceiptVertexPutItem{
-				Original: extra,
-				Receipt:  receipt,
+				Original:         extra,
+				Receipt:          receipt,
+				LifecycleReduced: true,
 				Accepted: &pb.ReplicatedPutVertex{
 					Outcome: &pb.ReplicatedPutVertex_Live{Live: extra},
 				},

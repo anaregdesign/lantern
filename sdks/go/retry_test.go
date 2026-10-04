@@ -597,6 +597,14 @@ func TestUnaryRetry_ResultBearingWritesStopAfterAmbiguousUnavailable(t *testing.
 		name string
 		call func(*Lantern) error
 	}{
+		{"CreateEdge", func(l *Lantern) error {
+			_, err := l.CreateEdge(context.Background(), EdgeInput{Tail: "a", Head: "b", Weight: 1})
+			return err
+		}},
+		{"CreateEdges", func(l *Lantern) error {
+			_, err := l.CreateEdges(context.Background(), []EdgeInput{{Tail: "a", Head: "b", Weight: 1}})
+			return err
+		}},
 		{"DeleteVertex", func(l *Lantern) error { _, err := l.DeleteVertex(context.Background(), "k"); return err }},
 		{"DeleteVertices", func(l *Lantern) error { _, err := l.DeleteVertices(context.Background(), []string{"k"}); return err }},
 		{"DeleteEdge", func(l *Lantern) error { _, err := l.DeleteEdge(context.Background(), "a", "b"); return err }},

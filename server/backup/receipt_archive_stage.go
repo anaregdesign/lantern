@@ -82,6 +82,12 @@ func stageReceiptWholeStateArchive(
 		return nil, fmt.Errorf("backup: stage receipt Store: %w", err)
 	}
 	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](defaultTTL)
+	for _, frame := range archive.Graph {
+		if frame.GetEdge().GetNoEndpointCreation() {
+			graph.RetainDanglingEdgeHistory()
+			break
+		}
+	}
 	graph.EnablePrefixIndex(func(key string) string { return key })
 	if configureGraph != nil {
 		if err := configureGraph(graph); err != nil {
@@ -232,7 +238,11 @@ func replayReceiptArchiveGraph(
 			for _, contribution := range item.GetContributions() {
 				expiration := prototime.Expiration(contribution.GetExpiration())
 				if len(contribution.GetContribId()) == 0 {
-					if !graph.PutEdgeWithExpirationHLC(item.GetTail(), item.GetHead(), contribution.GetWeight(), expiration, putHLC) {
+					outcomes := graph.PutEdgesWithExpirationHLCOutcomes([]graphcache.EdgeItem[string]{{
+						Tail: item.GetTail(), Head: item.GetHead(), Weight: contribution.GetWeight(), Expiration: expiration,
+						NoEndpointCreation: item.GetNoEndpointCreation(),
+					}}, putHLC)
+					if len(outcomes) != 1 || outcomes[0] != graphcache.PutOutcomeAppliedAndLive {
 						return wholeStateArchiveError("staged edge Put was causally rejected")
 					}
 					continue
@@ -240,7 +250,11 @@ func replayReceiptArchiveGraph(
 				var id graphcache.ContribID
 				copy(id[:], contribution.GetContribId())
 				ts, _ := archiveHLC(contribution.GetHlc())
-				if !graph.AddEdgeWithExpirationContribHLC(item.GetTail(), item.GetHead(), contribution.GetWeight(), expiration, id, ts) {
+				_, accepted, _ := graph.AddEdgesWithExpirationContribHLCResults([]graphcache.EdgeItem[string]{{
+					Tail: item.GetTail(), Head: item.GetHead(), Weight: contribution.GetWeight(), Expiration: expiration,
+					ContribID: id, NoEndpointCreation: item.GetNoEndpointCreation(),
+				}}, ts)
+				if len(accepted) != 1 || !accepted[0] {
 					return wholeStateArchiveError("staged edge Add was causally rejected")
 				}
 			}

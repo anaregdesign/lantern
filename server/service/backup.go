@@ -34,7 +34,11 @@ func (s *LanternService) BackupSnapshot(ctx context.Context, request *pb.BackupS
 	}
 	var snap graphcache.GraphSnapshot[string, *pb.Vertex]
 	if err := s.withPublicGraphReadRetry(ctx, func() error {
-		snap = s.cache.SnapshotGraph()
+		var err error
+		snap, err = s.cache.SnapshotGraphContext(ctx)
+		if err != nil {
+			return ctxToConnect(err)
+		}
 		detachSnapshotVertices(snap.Vertices)
 		return nil
 	}); err != nil {

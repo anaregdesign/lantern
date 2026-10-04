@@ -108,17 +108,7 @@ func (c *GraphCache[S, T]) ScanByPrefixPage(ctx context.Context, prefix, after s
 			// same walk; the sentinel row is never replayed to fn.
 			return limit <= 0 || len(snapshot) <= limit
 		}
-		if after == "" {
-			if desc {
-				c.prefixIndex.walkPrefixDesc(prefix, collect)
-			} else {
-				c.prefixIndex.walkPrefix(prefix, collect)
-			}
-		} else if desc {
-			c.prefixIndex.walkPrefixBoundDesc(prefix, after, false, collect)
-		} else {
-			c.prefixIndex.walkPrefixBound(prefix, after, false, collect)
-		}
+		walkVisiblePrefix(ctx, c.prefixIndex, prefix, after, false, desc, false, collect)
 		return true
 	}()
 	if !enabled {
@@ -151,13 +141,21 @@ func (c *GraphCache[S, T]) ScanByPrefixPage(ctx context.Context, prefix, after s
 // number of live primary vertices matching prefix, independent of GC timing
 // (#752). Returns 0 when the index has not been enabled.
 func (c *GraphCache[S, T]) CountByPrefix(prefix string) int {
+	return c.CountByPrefixContext(context.Background(), prefix)
+}
+
+// CountByPrefixContext counts only live keys in the request's QueryView.
+func (c *GraphCache[S, T]) CountByPrefixContext(ctx context.Context, prefix string) int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if c.prefixIndex == nil {
 		return 0
 	}
 	count := 0
-	c.prefixIndex.walkPrefix(prefix, func(projected string) bool {
+	walkVisiblePrefix(ctx, c.prefixIndex, prefix, "", true, false, false, func(projected string) bool {
+		if ctx.Err() != nil {
+			return false
+		}
 		// resolveProjected confirms the key against the live vertex cache
 		// (vertices.Has for the string instantiation), so a stale radix
 		// posting for an expired-but-not-flushed or already-deleted vertex is
@@ -218,7 +216,7 @@ func (c *GraphCache[S, T]) deleteByPrefixKeys(ctx context.Context, prefix string
 	// write lock), and even if we could, the vertex-cache eviction
 	// callback already calls radix.deleteMany — which would deadlock.
 	var victims []S
-	c.prefixIndex.walkPrefix(prefix, func(projected string) bool {
+	walkVisiblePrefix(ctx, c.prefixIndex, prefix, "", true, false, false, func(projected string) bool {
 		if err := ctx.Err(); err != nil {
 			return false
 		}

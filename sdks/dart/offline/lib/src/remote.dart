@@ -74,6 +74,9 @@ final class OfflineRemoteMissing<T> extends OfflineRemoteRead<T> {
 ///
 /// Implementations must acquire credentials at send time and honor cancellation.
 /// They must return exact values and expirations.
+/// A complete mutation with undisclosed effects throws
+/// [OfflineMutationAcceptedUndisclosed]; it must never invent a result or report
+/// that acknowledgement as a retryable failure.
 abstract interface class OfflineRemote {
   /// Probes the real Lantern health surface without implying mutation delivery.
   Future<void> probe({LanternCancellationToken? cancellation});
@@ -752,6 +755,12 @@ final class LanternClientOfflineRemote
 /// response validation maps to [OfflineRemoteProtocolException], while a
 /// genuine server or transport `INTERNAL` remains retryable uncertainty.
 Exception mapLanternClientFailure(Object error) {
+  // Consume only the direct complete-call signal. Wrappers and partial batches
+  // retain their original failure/uncertainty contract.
+  if (error is MutationAcceptance) {
+    return const OfflineMutationAcceptedUndisclosed();
+  }
+  if (error is OfflineMutationAcceptedUndisclosed) return error;
   if (error is OfflineRemoteFailure) return error;
   if (error is OfflineCanceledException) return error;
   final classified = error is LanternRetryExhaustedException

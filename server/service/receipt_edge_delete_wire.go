@@ -53,7 +53,8 @@ func (e *edgeDeleteReceiptEnvelope) ReplicationMutation() (*pb.Mutation, error) 
 		}
 	}
 	wired := &pb.Mutation{
-		Seq: e.OriginSeq, Origin: append([]byte(nil), e.Origin[:]...), Hlc: hlcToProto(e.HLC),
+		NamespaceFormat: e.NamespaceFormat,
+		Seq:             e.OriginSeq, Origin: append([]byte(nil), e.Origin[:]...), Hlc: hlcToProto(e.HLC),
 		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptEdgeDelete{
 			ReplicatedReceiptEdgeDelete: &pb.ReplicatedReceiptEdgeDelete{
 				DeploymentEpoch:     append([]byte(nil), e.Epoch[:]...),
@@ -107,7 +108,8 @@ func decodeReceiptEdgeDeleteMutation(m *pb.Mutation) (*edgeDeleteReceiptEnvelope
 		return nil, errors.New("invalid receipt Edge Delete wire envelope header")
 	}
 	e := &edgeDeleteReceiptEnvelope{
-		OriginSeq: m.GetSeq(), HLC: hlcFromProto(m.GetHlc()),
+		NamespaceFormat: m.GetNamespaceFormat(),
+		OriginSeq:       m.GetSeq(), HLC: hlcFromProto(m.GetHlc()),
 		TombstoneExpiration: call.GetTombstoneExpiration().AsTime(),
 		OriginalKeys:        make([]graphcache.EdgeKey[string], len(call.GetItems())),
 		Receipts:            make([]mutationreceipt.Receipt, len(call.GetItems())),
@@ -131,6 +133,11 @@ func decodeReceiptEdgeDeleteMutation(m *pb.Mutation) (*edgeDeleteReceiptEnvelope
 		key := graphcache.EdgeKey[string]{Tail: item.GetKey().GetTail(), Head: item.GetKey().GetHead()}
 		e.OriginalKeys[i] = key
 		receipt := &e.Receipts[i]
+		resource, resourceErr := receiptResourceIdentity(e.NamespaceFormat, key.Tail, key.Head)
+		if resourceErr != nil {
+			return nil, resourceErr
+		}
+		receipt.Resource = resource
 		copy(receipt.ID[:], wireReceipt.GetOperationId())
 		copy(receipt.Group[:], wireReceipt.GetLogicalCallId())
 		receipt.Index, receipt.Count, receipt.Kind = wireReceipt.GetItemIndex(), wireReceipt.GetItemCount(), mutationreceipt.DeleteEdge

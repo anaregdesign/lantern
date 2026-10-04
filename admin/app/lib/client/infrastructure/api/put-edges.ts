@@ -1,3 +1,4 @@
+import { mutationReply, type MutationReply } from "lantern-sdk/web";
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
 import { requireAppliedPutOutcome } from "./put-outcome";
@@ -14,18 +15,20 @@ export async function putEdges(
   client: LanternClient,
   request: PutEdgesRequest,
   init?: { signal?: AbortSignal },
-): Promise<PutEdgesResponse> {
+): Promise<MutationReply<PutEdgesResponse>> {
   const inputs = (request.edges ?? []).map(flatEdgeToSdkInput);
   try {
-    const results = await client.putEdges(inputs, init?.signal);
-    for (const [index, result] of results.entries()) {
-      requireAppliedPutOutcome(
-        "PutEdges",
-        `edge ${index} (${JSON.stringify(result.tail)} -> ${JSON.stringify(result.head)})`,
-        result.outcome,
-      );
-    }
-    return { results };
+    return await mutationReply(async () => {
+      const results = await client.putEdges(inputs, init?.signal);
+      for (const [index, result] of results.entries()) {
+        requireAppliedPutOutcome(
+          "PutEdges",
+          `edge ${index} (${JSON.stringify(result.tail)} -> ${JSON.stringify(result.head)})`,
+          result.outcome,
+        );
+      }
+      return { results };
+    });
   } catch (err) {
     throw LanternApiError.fromUnknown("PutEdges", err);
   }

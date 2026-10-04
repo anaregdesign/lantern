@@ -1,0 +1,2 @@
+ok  	github.com/anaregdesign/lantern/core/search	1.410s
+ok  	github.com/anaregdesign/lantern/core/graphcache	1.435s

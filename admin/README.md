@@ -87,13 +87,14 @@ path to your Prometheus when `LANTERN_ADMIN_PROMETHEUS_UPSTREAM` is set:
 
 ```sh
 docker run --rm -p 8080:8080 \
+  -e LANTERN_ADMIN_SERVER_UPSTREAM=h2c://lantern:6380 \
   -e LANTERN_ADMIN_PROMETHEUS_UPSTREAM=http://prometheus:9090 \
   ghcr.io/anaregdesign/lantern-admin:latest
 # Ops Metrics → /api/prom/api/v1/query_range → Prometheus /api/v1/query_range
 ```
 
 - **Opt-in.** With `LANTERN_ADMIN_PROMETHEUS_UPSTREAM` unset, the proxy is
-  a no-op and the Metrics section degrades gracefully (it shows an
+  rejected with an API error and the Metrics section degrades gracefully (it shows an
   "unreachable" banner instead of charts). Everything else on the Ops page
   keeps working.
 - **Runtime override.** Change the Prometheus URL at runtime via the
@@ -157,3 +158,38 @@ The admin module's only cross-module build-time dependency is
 `pb/vX.Y.Z` bump that requires re-tagging admin must therefore flow
 through an `sdks/node/v*` release first; the admin image is then
 rebuilt against the new SDK.
+
+## OIDC and security management
+
+Authentication defaults to OFF. Admin discovers the Server mode explicitly; a
+failed discovery or session request never becomes OFF. With OIDC, serve Admin
+and the public Server/browser routes behind one HTTPS origin. The Server owns
+Authorization Code/PKCE, opaque Secure/HttpOnly/SameSite cookies, state/nonce
+and CSRF. Admin holds no OIDC token, browser client secret or bearer credential
+in localStorage. Legacy stored bearer material is removed on mount.
+
+The Security pages manage exact Issuer/subject identities and Role memberships.
+Permissions belong only to Roles. Prefixes are literal logical keys; all-key
+selection is explicit, and matching Deny wins. ExplainAccess is Server-derived.
+Environment-owned Issuers, memberships and Role policies are locked. Mutations
+require a reviewed revision and recent authentication; response loss retains
+the original change ID for status-only recovery. Committed/pending and globally
+enforced revisions are shown separately. OFF exposes setup guidance without
+an anonymous authentication toggle. IdP account/password/MFA management remains
+with the provider. See [ADR 0012](../docs/decisions/0012-oidc-prefix-rbac.md).
+
+## Fixed Server and diagnostics proxy
+
+The image entrypoint supports `LANTERN_ADMIN_SERVER_UPSTREAM` (fixed
+`http`, `h2c` or `https` origin with explicit port) and optional
+`LANTERN_ADMIN_SERVER_CA_FILE` for verified private-CA HTTPS. Serve OIDC Admin
+over HTTPS and pin this upstream to the security writer. `/auth/*`,
+`/browser/*` and `/graph.v1.*/*` API errors never fall through to SPA routing.
+No credentials or client-supplied upstreams enter this configuration.
+
+`LANTERN_ADMIN_PROMETHEUS_UPSTREAM` requires the Server upstream. Every GET
+first passes `/auth/operations` admission, including current `operations.read`
+in OIDC. Query parameters stay on the metrics query, and cookies/Authorization
+never reach Prometheus. Missing, invalid or unavailable configuration fails
+closed. The [operations guide](../docs/oidc-operations.md) describes the HTTPS,
+private peer, renewal and recovery boundaries.

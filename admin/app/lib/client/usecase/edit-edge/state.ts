@@ -6,11 +6,22 @@ export type EditEdgeLoadStatus =
   | "loading"
   | "ready"
   | "not-found"
+  | "undisclosed"
   | "error";
 
-export type EditEdgeWriteStatus = "idle" | "saving" | "saved" | "error";
+export type EditEdgeWriteStatus =
+  | "idle"
+  | "saving"
+  | "saved"
+  | "acceptedUndisclosed"
+  | "error";
 
-export type EditEdgeDeleteStatus = "idle" | "deleting" | "deleted" | "error";
+export type EditEdgeDeleteStatus =
+  | "idle"
+  | "deleting"
+  | "deleted"
+  | "acceptedUndisclosed"
+  | "error";
 
 /**
  * State for the single-edge CRUD screen. Holds two independent forms —

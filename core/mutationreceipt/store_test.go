@@ -1202,3 +1202,43 @@ func BenchmarkStoreStageAbortAcrossResidentSet(b *testing.B) {
 		})
 	}
 }
+
+func TestCreateResultReserveReplaceAndImportFailClosed(t *testing.T) {
+	for _, bad := range [][]byte{nil, {}, {0}, {5}, {1, 1}} {
+		s := testStore(t, 8, 4096)
+		item := testIntent(t, 1, testStart, GroupID{1}, 0, 1)
+		item.Kind = CreateEdge
+		tx, err := s.Begin(testStart)
+		if err != nil {
+			t.Fatal(err)
+		}
+		class, _, err := tx.Classify([]Intent{item})
+		if err != nil || class != Fresh {
+			t.Fatal(class, err)
+		}
+		if err := tx.Reserve([][]byte{bad}); err == nil {
+			t.Fatal("invalid Create reserved", bad)
+		}
+		if err := tx.Reserve([][]byte{{1}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.ReplaceReservedResults([][]byte{bad}); err == nil {
+			t.Fatal("invalid Create replacement", bad)
+		}
+		rows, err := tx.ReservedReceipts()
+		if err != nil || !bytes.Equal(rows[0].Result, []byte{1}) {
+			t.Fatal(rows, err)
+		}
+		tx.Abort()
+		receipts := committedTestReceipts([]Intent{item}, [][]byte{bad}, time.Hour)
+		tx, err = s.Begin(testStart)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = tx.PrepareCommitted(receipts, testStart.UnixMilli())
+		tx.Abort()
+		if err == nil {
+			t.Fatal("invalid committed Create imported", bad)
+		}
+	}
+}

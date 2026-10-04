@@ -37,19 +37,29 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 SCENARIO_DIR="$HERE/scenarios"
 CAPTURE_DIR="$HERE/capture"
 COMPOSE_FILES=(
-  -f "$REPO_ROOT/deploy/compose/docker-compose.yml"
+  -f "$HERE/compose.native.yml"
   -f "$HERE/compose.override.yml"
 )
 if [[ -n "${LANTERN_BENCH_CPUSET:-}" ]]; then
   COMPOSE_FILES+=(-f "$HERE/compose.cpuset.yml")
 fi
 export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-lantern-bench}"
-PROM_URL="${PROM_URL:-http://localhost:9091}"
+PROM_URL="${PROM_URL:-http://localhost:${LANTERN_BENCH_PROM_PORT:-9091}}"
 COMPOSE_STARTED=0
 PEER_TLS_DIR=""
+NATIVE_WORK_DIR=""
+MEMBERSHIP_PID=""
+DIAGNOSTICS_PID=""
+AUTHFIXTURE=""
+CHANGEPROBE=""
+sub_pids=()
+prod_pids=()
+chaos_pid=""
+source "$HERE/owned_processes.sh"
+source "$HERE/owned_compose.sh"
 
-REPLICA_METRICS_PORTS=(9390 9391 9392)
-REPLICA_GRPC_PORTS=(6380 6381 6382)
+REPLICA_METRICS_PORTS=("${LANTERN_BENCH_METRICS_PORT_0:-9390}" "${LANTERN_BENCH_METRICS_PORT_1:-9391}" "${LANTERN_BENCH_METRICS_PORT_2:-9392}")
+REPLICA_GRPC_PORTS=("${LANTERN_BENCH_PUBLIC_PORT_0:-6380}" "${LANTERN_BENCH_PUBLIC_PORT_1:-6381}" "${LANTERN_BENCH_PUBLIC_PORT_2:-6382}")
 
 # Always include the search derived-index lifecycle in the lightweight runtime
 # snapshots, including LEAK_GATE_ONLY runs. These are unlabeled gauges, so this
@@ -82,9 +92,25 @@ cleanup() {
   local status=$?
   local tls_in_use=0
   trap - EXIT
+  # Cancel owned workload/chaos producers before deleting their Server state.
+  # Collected children are unregistered immediately so PID reuse is harmless.
+  if ! stop_owned_processes "${chaos_pid:-}" "${prod_pids[@]}" "${sub_pids[@]}" "${MEMBERSHIP_PID:-}" "${DIAGNOSTICS_PID:-}"; then
+    echo "run.sh: owned child teardown failed; run is unqualified" >&2
+    if (( status == 0 )); then status=1; fi
+  fi
+  if (( status != 0 )) && [[ "${COMPOSE_STARTED:-0}" == "1" ]]; then
+    # Raw diagnostics stay outside public artifact globs and trust directories.
+    # They may contain sensitive runtime context; publish hashes/verdicts only.
+    local private_failure
+    private_failure="$(mktemp -d "${TMPDIR:-/tmp}/lantern-native-failure.XXXXXXXX")"
+    chmod 700 "$private_failure"
+    docker compose "${COMPOSE_FILES[@]}" logs --no-color --no-log-prefix > "$private_failure/server.log" 2>&1 || true
+    chmod 600 "$private_failure/server.log"
+    echo "run.sh: private startup/runtime evidence retained at $private_failure" >&2
+  fi
   if [[ "$COMPOSE_STARTED" == "1" && "${KEEP_UP:-0}" != "1" ]]; then
     log "compose down -v (project=$COMPOSE_PROJECT_NAME)"
-    if ! docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans >/dev/null; then
+    if ! down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}"; then
       echo "run.sh: compose teardown failed (project=$COMPOSE_PROJECT_NAME); run is unqualified" >&2
       if [[ -n "${OUTDIR:-}" && -f "$OUTDIR/report.md" ]] &&
         ! printf '\n**Bench run:** unqualified (named Compose teardown failed).\n' >> "$OUTDIR/report.md"; then
@@ -94,13 +120,16 @@ cleanup() {
       tls_in_use=1
     fi
   fi
+  if (( status != 0 )) && [[ -n "${OUTDIR:-}" && -f "$OUTDIR/report.md" ]]; then
+    printf '\n**Bench run:** unqualified (workload or teardown failed).\n' >> "$OUTDIR/report.md" || true
+  fi
   if [[ -n "${PEER_TLS_DIR:-}" && -d "$PEER_TLS_DIR" ]]; then
     if [[ "$PEER_TLS_DIR" != "$HERE"/out/.peer-tls.* ]]; then
       echo "run.sh: refusing to clean unexpected TLS material path" >&2
       if (( status == 0 )); then status=1; fi
     elif [[ "${KEEP_UP:-0}" == "1" && "$COMPOSE_STARTED" == "1" ]] || (( tls_in_use != 0 )); then
       log "receipt TLS material retained at $PEER_TLS_DIR while the named Compose project may be running"
-    elif ! rm -r -- "$PEER_TLS_DIR"; then
+    elif ! rm -r -- "${NATIVE_WORK_DIR:-$PEER_TLS_DIR}"; then
       echo "run.sh: failed to remove ephemeral receipt TLS material" >&2
       if (( status == 0 )); then status=1; fi
     fi
@@ -110,11 +139,17 @@ cleanup() {
 trap cleanup EXIT
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
+# The conditional family has its own owned native standalone topology. It
+# must not enter the three-replica Compose route while HA Create is disabled.
+if [[ $# -eq 1 && "$1" == "edge_create" ]]; then
+  exec python3 "$HERE/createprobe/run.py" "$SCENARIO_DIR/edge_create.yaml"
+fi
 need docker
 need yq
 need jq
 need curl
 need go
+need python3
 
 [[ $# -eq 1 ]] || { echo "usage: $0 <scenario>" >&2; exit 2; }
 SCENARIO_NAME="$1"
@@ -219,27 +254,36 @@ if [[ "$receipt_wal_enabled" == "true" ]]; then
   [[ "$receipt_max_bytes" =~ ^[1-9][0-9]*$ ]] ||
     die "cluster.receipt_wal.max_bytes must be a positive integer"
 
-  PEER_TLS_DIR="$(mktemp -d "$HERE/out/.peer-tls.XXXXXXXX")" ||
-    die "cannot create private receipt TLS directory"
-  export LANTERN_BENCH_PEER_TLS_DIR="$PEER_TLS_DIR"
-  (cd "$REPO_ROOT" && go run ./testbed/bench/receipttls generate -dir "$PEER_TLS_DIR") ||
-    die "cannot generate ephemeral receipt peer certificates"
-  export LANTERN_BENCH_AUTH_TOKEN="$(< "$PEER_TLS_DIR/token")"
-  [[ "$LANTERN_BENCH_AUTH_TOKEN" =~ ^[0-9a-f]{64}$ ]] ||
-    die "ephemeral receipt token is invalid"
+  [[ "${LEAK_GATE_ONLY:-0}" == "1" && "${PPROF_CPU:-0}" != "1" ]] ||
+    die "protected receipt benchmarks require LEAK_GATE_ONLY=1 and prohibit pprof"
   COMPOSE_FILES+=( -f "$HERE/compose.receipt-tls.yml" )
   export LANTERN_BENCH_BACKUP_RESTORE_ON_START="false"
-  export LANTERN_BENCH_NODE_ID_0="11111111111111111111111111111111"
-  export LANTERN_BENCH_NODE_ID_1="22222222222222222222222222222222"
-  export LANTERN_BENCH_NODE_ID_2="33333333333333333333333333333333"
-  export LANTERN_BENCH_RECEIPT_EPOCH="42424242424242424242424242424242"
   export LANTERN_BENCH_RECEIPT_MAX_BYTES="$receipt_max_bytes"
   export LANTERN_BENCH_RECEIPT_MAX_ENTRIES="$receipt_max_entries"
   export LANTERN_BENCH_RECEIPT_RETENTION="$receipt_retention"
-  export LANTERN_BENCH_RECEIPT_WAL_MODE="fresh"
-  export LANTERN_BENCH_RECEIPT_WAL_PATH="/data/receipt-bench.wal"
   log "cluster override: fresh durable receipt WAL with bounded capacity"
 fi
+
+# Every fresh bench cohort uses native private workload admission, including OFF.
+[[ "${SKIP_UP:-0}" != "1" ]] ||
+  die "native benchmark trust/state requires a fresh lifecycle; unset SKIP_UP"
+NATIVE_WORK_DIR="$(mktemp -d "$HERE/out/.peer-tls.XXXXXXXX")" || die "cannot create private native fixture workspace"
+PEER_TLS_DIR="$NATIVE_WORK_DIR/trust"
+AUTHFIXTURE="$NATIVE_WORK_DIR/authfixture"
+export LANTERN_BENCH_PEER_TLS_DIR="$PEER_TLS_DIR"
+go -C "$REPO_ROOT/server" build -o "$AUTHFIXTURE" ./cmd/authfixture || die "cannot build native fixture helper"
+native_public_ports="${REPLICA_GRPC_PORTS[0]},${REPLICA_GRPC_PORTS[1]},${REPLICA_GRPC_PORTS[2]}"
+fixture_args=(-compose -directory "$PEER_TLS_DIR" -public-ports "$native_public_ports" -mode off)
+if [[ "$receipt_driver" == "1" ]]; then fixture_args=(-compose -directory "$PEER_TLS_DIR" -public-ports "$native_public_ports" -mode oidc -receipt); fi
+CHANGEPROBE="$NATIVE_WORK_DIR/changeprobe"
+go -C "$REPO_ROOT" build -o "$CHANGEPROBE" ./testbed/bench/changeprobe || die "cannot build public CDC consumer"
+"$AUTHFIXTURE" "${fixture_args[@]}" > "$NATIVE_WORK_DIR/generated.json" || die "cannot generate native benchmark workload trust"
+if [[ "$receipt_driver" == "1" ]]; then
+  export LANTERN_BENCH_AUTH_TOKEN="$(jq -er '.[0]' "$PEER_TLS_DIR/tokens.json")"
+  [[ "$LANTERN_BENCH_AUTH_TOKEN" =~ ^lnt_m1_[A-Za-z0-9_-]{43}$ ]] || die "invalid native machine Role credential"
+fi
+"$AUTHFIXTURE" -compose -renew -renew-every 2m -directory "$PEER_TLS_DIR" > "$NATIVE_WORK_DIR/renewal.log" 2>&1 &
+MEMBERSHIP_PID=$!
 
 # A receipt run pins one content-addressed image before Compose starts, then
 # proves all three running project services used exactly that image and source
@@ -270,7 +314,7 @@ pin_receipt_image() {
 
 verify_receipt_image_provenance() {
   local out="$1" actual_image_id service container identity
-  local actual_container_id actual_container_image actual_ref running project actual_service restarts replica index=0
+  local actual_container_id actual_container_image actual_ref running project actual_service restarts replica index=0 approved_recreation=""
   local -a replicas=()
   actual_image_id="$(docker image inspect --format '{{.Id}}' "$receipt_image_ref")" ||
     die "receipt image $receipt_image_ref disappeared"
@@ -292,7 +336,13 @@ verify_receipt_image_provenance() {
       die "receipt service $service is not a running, restart-free $receipt_image_id from $receipt_image_ref in $COMPOSE_PROJECT_NAME"
     if [[ -n "${receipt_container_ids[$index]:-}" &&
           "${receipt_container_ids[$index]}" != "$actual_container_id" ]]; then
-      die "receipt service $service was recreated during the run"
+      approved_recreation=""
+      if [[ "${receipt_driver:-1}" == "0" && -f "$OUTDIR/native_chaos.json" ]]; then
+        approved_recreation="$(jq -er --arg service "$service" --arg old "${receipt_container_ids[$index]}" '
+          select(.service==$service and .previous_container==$old) | .restarted_container
+        ' "$OUTDIR/native_chaos.json")" || die "undeclared native workload recreation"
+      fi
+      [[ "$actual_container_id" == "$approved_recreation" ]] || die "receipt service $service was recreated during the run"
     fi
     receipt_container_ids[$index]="$actual_container_id"
     index=$((index + 1))
@@ -310,60 +360,71 @@ verify_receipt_image_provenance() {
   log "verified receipt image $receipt_image_id from $receipt_image_commit on all three replicas"
 }
 
-if [[ "$receipt_driver" == "1" ]]; then
-  pin_receipt_image
-fi
+pin_receipt_image
+# Preserve private-file permissions and provision only each workload's own
+# secret files to the actual non-root image user. No production guard is relaxed.
+runtime_owner="$(docker run --rm --entrypoint /bin/sh "$receipt_image_id" -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')" || die "cannot determine native workload file owner"
+[[ "$runtime_owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || die "native workload image must use a non-root user"
+for service in lantern-0 lantern-1 lantern-2; do
+  docker run --rm --user 0:0 --entrypoint /bin/sh \
+    --mount "type=bind,source=$PEER_TLS_DIR/$service,target=/owned" "$receipt_image_id" \
+    -c 'owner="$1"; for file in /owned/*.key /owned/machines.json /owned/cdc-keys.json; do if [ -f "$file" ]; then chown "$owner" "$file" && chmod 600 "$file" || exit 1; fi; done' \
+    fixture "$runtime_owner" || die "cannot provision private workload file ownership"
+done
 
 verify_receipt_peer_tls() {
   local out="$1" baseline="${2:-}" service container mounts env
+  kill -0 "$MEMBERSHIP_PID" 2>/dev/null || die "owned membership renewal exited"
+  kill -0 "$DIAGNOSTICS_PID" 2>/dev/null || die "owned diagnostics collector exited"
   local ports="${REPLICA_GRPC_PORTS[0]},${REPLICA_GRPC_PORTS[1]},${REPLICA_GRPC_PORTS[2]}"
   local -a args=(verify -dir "$PEER_TLS_DIR" -ports "$ports" -out "$out")
   [[ -z "$baseline" ]] || args+=(-baseline "$baseline")
-  for service in lantern-0 lantern-1 lantern-2; do
-    container="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")" ||
-      die "cannot inspect TLS mounts for $service"
-    mounts="$(docker inspect --format '{{json .Mounts}}' "$container")" ||
-      die "cannot inspect $service read-only TLS mount"
-    jq -e --arg source "$PEER_TLS_DIR/$service" '
-      [.[] | select(.Type == "bind" and .Destination == "/run/lantern-tls" and
-        (.RW == false) and (.Source | endswith($source)))] | length == 1
-    ' <<<"$mounts" >/dev/null ||
-      die "$service has no pinned, read-only per-replica TLS mount"
-    env="$(docker inspect --format '{{json .Config.Env}}' "$container")" ||
-      die "cannot inspect $service TLS configuration"
-    jq -e --arg token "$LANTERN_BENCH_AUTH_TOKEN" '
-      (index("LANTERN_TLS_CERT_FILE=/run/lantern-tls/server.pem") != null) and
-      (index("LANTERN_TLS_KEY_FILE=/run/lantern-tls/server.key") != null) and
-      (index("LANTERN_PEER_CA_FILE=/run/lantern-tls/ca.pem") != null) and
-      (index("LANTERN_PEER_DISCOVERY=dns") != null) and
-      (index("LANTERN_PEER_DNS_NAME=lantern") != null) and
-      (index("LANTERN_PEER_DEFAULT_PORT=6380") != null) and
-      (index("LANTERN_AUTH_TOKENS=" + $token) != null)
-    ' <<<"$env" >/dev/null ||
-      die "$service has missing or mismatched authenticated peer TLS settings"
-  done
+  verify_native_workload_settings
   (cd "$REPO_ROOT" && go run ./testbed/bench/receipttls "${args[@]}") ||
     die "receipt peer TLS identity/provenance verification failed"
 }
 
+# Native provenance applies to OFF cohorts as well; public mode never disables
+# private peer authentication. Compare generated material without publishing it.
+verify_native_workload_settings() {
+  local service container mounts env
+  kill -0 "$MEMBERSHIP_PID" 2>/dev/null || die "owned membership renewal exited"
+  for service in lantern-0 lantern-1 lantern-2; do
+    container="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")" || die "missing native workload"
+    mounts="$(docker inspect --format '{{json .Mounts}}' "$container")" || die "missing native mounts"
+    jq -e --arg source "$PEER_TLS_DIR/$service" '
+      [.[] | select(.Type == "bind" and .Destination == "/run/lantern-config" and
+        (.RW == false) and (.Source | endswith($source)))] | length == 1
+    ' <<<"$mounts" >/dev/null || die "$service has no pinned, read-only native mount"
+    env="$(docker inspect --format '{{json .Config.Env}}' "$container")" || die "missing native environment"
+    jq -e --arg service "$service" --argjson actual "$env" --arg driver "$receipt_driver" '
+      (.nodes[] | select(.name == ("node-" + ($service | split("-")[1]))) | .environment |
+        if $driver == "0" then .LANTERN_METRICS_ADDR = ":9090" else . end) as $expected |
+      all($expected | to_entries[] |
+        select(.key != "LANTERN_RECEIPT_MAX_BYTES" and .key != "LANTERN_RECEIPT_MAX_ENTRIES" and
+          .key != "LANTERN_RECEIPT_RETENTION" and .key != "LANTERN_LOG_LEVEL");
+        . as $entry | [$actual[] | select(. == ($entry.key + "=" + $entry.value))] | length == 1) and
+      all($actual[]; startswith("LANTERN_AUTH_TOKENS=") or startswith("LANTERN_PEER_DISCOVERY=") or
+        startswith("LANTERN_PEERS=") | not)
+    ' "$PEER_TLS_DIR/fixture.json" >/dev/null || die "$service has missing or mismatched native settings"
+  done
+}
+
 # ----- compose up ------------------------------------------------------------
 if [[ "${SKIP_UP:-0}" != "1" ]]; then
-  if [[ "$receipt_wal_enabled" == "true" ]]; then
-    log "compose reset (fresh receipt WAL volumes)"
-    docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans >/dev/null
-  fi
+  log "compose reset (fresh native trust/state/WAL volumes)"
+  down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}" || die "named project reset or residue verification failed"
   log "compose up (project=$COMPOSE_PROJECT_NAME)"
   # Since #435 the canonical compose declares three explicit lantern-{0,1,2}
   # services with pinned host ports, so `--scale lantern=3` is no longer
   # needed (and would in fact fail — there is no `lantern` service).
   COMPOSE_STARTED=1
   if [[ "$receipt_driver" == "1" ]]; then
-    # The admin SPA and MCP example use the canonical plaintext listener;
-    # receipt qualification starts only HTTPS-capable replicas and metrics.
+    # Start only the protected replicas; metrics stay on their loopback plane.
     docker compose "${COMPOSE_FILES[@]}" up -d --wait \
-      lantern-0 lantern-1 lantern-2 prometheus
+      lantern-0 lantern-1 lantern-2
   else
-    docker compose "${COMPOSE_FILES[@]}" up -d --wait
+    docker compose "${COMPOSE_FILES[@]}" --profile off-diagnostics up -d --wait
   fi
 fi
 
@@ -377,16 +438,37 @@ discover_ports() {
   local ps_json grpc metrics
   ps_json="$(docker compose "${COMPOSE_FILES[@]}" ps --format json 2>/dev/null)"
   # Sort by service name so lantern-0/1/2 map to deterministic slots.
-  grpc=( $(jq -rs 'sort_by(.Service) | .[] | select(.Service | test("^lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==6380 and .URL=="0.0.0.0") | .PublishedPort' <<<"$ps_json") )
-  metrics=( $(jq -rs 'sort_by(.Service) | .[] | select(.Service | test("^lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==9090 and .URL=="0.0.0.0") | .PublishedPort' <<<"$ps_json") )
+  grpc=( $(jq -rs 'sort_by(.Service) | .[] | select(.Service | test("^lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==6380 and .URL=="127.0.0.1") | .PublishedPort' <<<"$ps_json") )
+  metrics=( $(jq -rs 'sort_by(.Service) | .[] | select(.Service | test("^lantern-[0-9]+$")) | .Publishers[] | select(.TargetPort==9090 and .URL=="127.0.0.1") | .PublishedPort' <<<"$ps_json") )
+  if [[ "$receipt_driver" == "1" ]]; then
+    [[ ${#metrics[@]} -eq 0 ]] || die "protected metrics must not be container-published"
+    metrics=("${REPLICA_METRICS_PORTS[@]}")
+  fi
   [[ ${#grpc[@]} -eq 3 && ${#metrics[@]} -eq 3 ]] || die "could not discover 3 grpc+metrics ports (grpc=${grpc[*]} metrics=${metrics[*]})"
   REPLICA_GRPC_PORTS=( "${grpc[@]}" )
   REPLICA_METRICS_PORTS=( "${metrics[@]}" )
   log "discovered grpc=${REPLICA_GRPC_PORTS[*]} metrics=${REPLICA_METRICS_PORTS[*]}"
 }
 discover_ports
+verify_native_workload_settings
+verify_receipt_image_provenance "$OUTDIR/image_provenance_pre.json"
 if [[ "$receipt_driver" == "1" ]]; then
-  verify_receipt_image_provenance "$OUTDIR/image_provenance_pre.json"
+  diagnostic_containers=()
+  for service in lantern-0 lantern-1 lantern-2; do
+    diagnostic_containers+=("$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")")
+  done
+  python3 "$CAPTURE_DIR/diagnostics_bridge.py" \
+    --containers "${diagnostic_containers[0]},${diagnostic_containers[1]},${diagnostic_containers[2]}" \
+    --ports "${REPLICA_METRICS_PORTS[0]},${REPLICA_METRICS_PORTS[1]},${REPLICA_METRICS_PORTS[2]}" \
+    --ready-file "$NATIVE_WORK_DIR/diagnostics-ready.json" > "$NATIVE_WORK_DIR/diagnostics.log" 2>&1 &
+  DIAGNOSTICS_PID=$!
+  for _ in $(seq 1 50); do
+    kill -0 "$DIAGNOSTICS_PID" 2>/dev/null || die "owned diagnostics collector exited"
+    [[ ! -f "$NATIVE_WORK_DIR/diagnostics-ready.json" ]] || break
+    sleep 0.1
+  done
+  [[ -f "$NATIVE_WORK_DIR/diagnostics-ready.json" ]] || die "diagnostics collector did not start"
+
   verify_receipt_peer_tls "$OUTDIR/peer_tls_pre.json"
 fi
 
@@ -422,14 +504,17 @@ while IFS= read -r metric_name; do
 done < <(yq -r '.metric_gate.metrics // {} | keys | .[]' "$SCENARIO_FILE")
 
 wait_ready() {
-  local p
+  local p ready
   for p in "${REPLICA_METRICS_PORTS[@]}"; do
+    ready=0
     for _ in $(seq 1 60); do
       if curl -fsS --max-time 2 "http://localhost:${p}/readyz" >/dev/null 2>&1; then
+        ready=1
         break
       fi
       sleep 1
     done
+    [[ "$ready" == 1 ]] || die "owned replica readiness did not succeed before warmup on port $p"
   done
 }
 wait_ready
@@ -544,16 +629,17 @@ snapshot_runtime() {
   # round and is still caught. K defaults to 3; override via SNAPSHOT_ROUNDS.
   local out="$1" port round
   local rounds="${SNAPSHOT_ROUNDS:-3}"
+  # Protected admission rejects pprof. Use one fixed natural-GC sample;
+  # neither an inaccessible profiling route nor a minimum-of-samples fallback.
+  if [[ "$receipt_driver" == "1" ]]; then rounds=1; fi
   [[ "$rounds" -ge 1 ]] 2>/dev/null || rounds=1
   local -a samples=()
   for port in "${REPLICA_METRICS_PORTS[@]}"; do
     local g="" h_inuse="" h_alloc="" h_objs="" vhe="" vhw=""
     for (( round = 1; round <= rounds; round++ )); do
-      if ! curl -fsS --max-time 10 "http://localhost:${port}/debug/pprof/heap?gc=1" \
-        -o /dev/null; then
-        if [[ "$receipt_driver" == "1" ]]; then
-          die "receipt runtime snapshot: forced GC failed for localhost:${port} (round ${round})"
-        fi
+      if [[ "$receipt_driver" != "1" ]]; then
+        curl -fsS --max-time 10 "http://localhost:${port}/debug/pprof/heap?gc=1" -o /dev/null ||
+          die "OFF runtime snapshot: forced GC failed for localhost:${port} (round ${round})"
       fi
       local text
       if [[ "$receipt_driver" == "1" ]]; then
@@ -757,10 +843,9 @@ if [[ "$sub_count" != "0" && "$sub_count" != "null" ]]; then
   sub_eps=( $(yq -r '.subscribe.endpoints[]' "$SCENARIO_FILE") )
   for i in $(seq 1 "$sub_count"); do
     ep="${sub_eps[$(( (i-1) % ${#sub_eps[@]} ))]}"
-    ghz --insecure \
-      --call "$sub_call" -c 1 --rps 0 -z "$steady_duration" \
-      -d "$sub_data" --format json \
-      -o "$OUTDIR/ghz_sub_${i}.json" "$ep" >/dev/null 2>&1 &
+    [[ "$sub_call" == "graph.v1.LanternChangeService/WatchChanges" ]] || die "external consumer requires public WatchChanges"
+    "$CHANGEPROBE" -endpoint "http://$ep" -request "$sub_data" -duration "$steady_duration" \
+      -out "$OUTDIR/changes_sub_${i}.json" > "$OUTDIR/changes_sub_${i}.log" 2>&1 &
     sub_pids+=( "$!" )
   done
   log "launched $sub_count subscribe streams"
@@ -771,10 +856,9 @@ if [[ "$sub_consumers_len" != "0" && "$sub_consumers_len" != "null" ]]; then
     ep="$(yq -r ".subscribe.consumers[$i].endpoint" "$SCENARIO_FILE")"
     call="$(yq -r ".subscribe.consumers[$i].call" "$SCENARIO_FILE")"
     data="$(yq -r ".subscribe.consumers[$i].data_template" "$SCENARIO_FILE")"
-    ghz --insecure \
-      --call "$call" -c 1 --rps 0 -z "$steady_duration" \
-      -d "$data" --format json \
-      -o "$OUTDIR/ghz_sub_consumer_${i}.json" "$ep" >/dev/null 2>&1 &
+    [[ "$call" == "graph.v1.LanternChangeService/WatchChanges" ]] || die "external consumer requires public WatchChanges"
+    "$CHANGEPROBE" -endpoint "http://$ep" -request "$data" -duration "$steady_duration" \
+      -out "$OUTDIR/changes_sub_consumer_${i}.json" > "$OUTDIR/changes_sub_consumer_${i}.log" 2>&1 &
     sub_pids+=( "$!" )
   done
   log "launched $sub_consumers_len explicit subscribe consumers"
@@ -787,13 +871,30 @@ if [[ -n "$chaos_target" ]]; then
   kill_at="$(yq -r '.chaos.kill_at' "$SCENARIO_FILE")"
   restart_at="$(yq -r '.chaos.restart_at' "$SCENARIO_FILE")"
   (
-    sleep_secs() { local v="$1"; sleep "${v%s}"; }
+    chaos_child=""
+    trap 'stop_owned_processes "${chaos_child:-}"; exit 143' TERM INT
+    chaos_command() {
+      "$@" &
+      chaos_child="$!"
+      local command_status=0
+      wait "$chaos_child" || command_status=$?
+      chaos_child=""
+      return "$command_status"
+    }
+    sleep_secs() { local v="$1"; chaos_command sleep "${v%s}"; }
     sleep_secs "$kill_at"
     log "chaos: docker kill $chaos_target"
-    docker kill "$chaos_target" >/dev/null || true
+    [[ "$chaos_target" =~ ^lantern-[012]$ ]] || die "unknown native chaos workload"
+    previous_container="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$chaos_target")"
+    docker exec "$previous_container" test -s /state/membership.state || die "native restart floor missing"
+    chaos_command docker compose "${COMPOSE_FILES[@]}" kill "$chaos_target" >/dev/null
     sleep_secs "$restart_at"
-    log "chaos: docker start $chaos_target"
-    docker start "$chaos_target" >/dev/null || true
+    log "chaos: explicit native resume for $chaos_target"
+    chaos_command "$AUTHFIXTURE" -compose -restart-node "$chaos_target" -directory "$PEER_TLS_DIR" || die "native restart preparation failed"
+    chaos_command docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate --wait "$chaos_target" >/dev/null
+    restarted_container="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$chaos_target")"
+    jq -nc --arg service "$chaos_target" --arg old "$previous_container" --arg new "$restarted_container" \
+      '{service:$service,previous_container:$old,restarted_container:$new}' > "$OUTDIR/native_chaos.json"
   ) &
   chaos_pid="$!"
 fi
@@ -804,6 +905,8 @@ fi
 calls_len="$(yq -r '.target.calls | length // 0' "$SCENARIO_FILE")"
 prod_pids=()
 producer_failed=0
+consumer_failed=0
+chaos_failed=0
 if [[ "$receipt_driver" == "1" ]]; then
   if ! run_receipt_probe \
     steady \
@@ -838,9 +941,11 @@ elif [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
   # sticky failure bit through the normal post-steady evidence path.
   for i in "${!prod_pids[@]}"; do
     if wait "${prod_pids[$i]}"; then
+      unset 'prod_pids[i]'
       continue
     else
       producer_status=$?
+      unset 'prod_pids[i]'
       producer_failed=1
       log "steady producer[$i] exited non-zero (status=$producer_status)"
     fi
@@ -865,8 +970,18 @@ fi
 
 # Reap background helpers (subscribers run for steady_duration; they exit on
 # their own). Chaos restart also self-completes.
-if [[ ${#sub_pids[@]} -gt 0 ]]; then wait "${sub_pids[@]}" 2>/dev/null || true; fi
-if [[ -n "$chaos_pid" ]]; then wait "$chaos_pid" 2>/dev/null || true; fi
+for consumer_index in "${!sub_pids[@]}"; do
+  consumer_pid="${sub_pids[$consumer_index]}"
+  if ! wait "$consumer_pid"; then
+    consumer_failed=$(( consumer_failed + 1 ))
+    log "public CDC consumer failed; scenario is unqualified"
+  fi
+  unset 'sub_pids[consumer_index]'
+done
+if [[ -n "$chaos_pid" ]]; then
+  if ! wait "$chaos_pid"; then chaos_failed=1; log "declared native chaos recovery failed"; fi
+  chaos_pid=""
+fi
 
 steady_end_epoch="$(date -u +%s)"
 
@@ -929,7 +1044,7 @@ if [[ "$receipt_driver" == "1" ]]; then
   steady_h_thresh_mb="$(yq -r '.leak_gate.steady_heap_alloc_max_delta_mb' "$SCENARIO_FILE")"
   # Receipt sampling runs inside the steady driver, including with
   # LEAK_GATE_ONLY=1. Require all three unforced /metrics series in addition
-  # to the existing post-warmup/post-cooldown GC live-set snapshots.
+  # to the fixed post-warmup/post-cooldown natural-GC snapshots.
   if ! (
     cd "$REPO_ROOT"
     go run ./testbed/bench/receiptprobe evaluate-leak \
@@ -941,6 +1056,7 @@ if [[ "$receipt_driver" == "1" ]]; then
       -max-goroutines "$g_thresh" \
       -max-heap-mb "$h_thresh_mb" \
       -max-steady-heap-mb "$steady_h_thresh_mb" \
+      -snapshot-protocol natural_gc_single \
       -out "$OUTDIR/leak_gate.json"
   ); then
     log "receipt leak gate reported failure"
@@ -1058,10 +1174,19 @@ fi
 log "perf gate verdict: $perf_verdict"
 
 # ----- Render report ---------------------------------------------------------
+verify_native_workload_settings
+verify_receipt_image_provenance "$OUTDIR/image_provenance_post.json"
 if [[ "$receipt_driver" == "1" ]]; then
-  verify_receipt_image_provenance "$OUTDIR/image_provenance_post.json"
   verify_receipt_peer_tls "$OUTDIR/peer_tls_post.json" "$OUTDIR/peer_tls_pre.json"
+  cp "$PEER_TLS_DIR/renewal.json" "$OUTDIR/membership_renewal.json"
 fi
+workload_verdict="pass"
+if (( producer_failed != 0 || consumer_failed != 0 || chaos_failed != 0 )); then workload_verdict="fail"; fi
+jq -n --arg verdict "$workload_verdict" --argjson producer_failed "$producer_failed" \
+  --argjson consumer_failed "$consumer_failed" --argjson chaos_failed "$chaos_failed" \
+  '{verdict:$verdict,producer_failed:$producer_failed,failed_consumers:$consumer_failed,chaos_failed:$chaos_failed}' > "$OUTDIR/workload_gate.json"
 render_report
+printf '\n**Workload gate verdict:** `%s` (producer failure: %s; failed consumers: %s; chaos failure: %s).\n' \
+  "$workload_verdict" "$producer_failed" "$consumer_failed" "$chaos_failed" >> "$OUTDIR/report.md"
 
-if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$producer_failed" == "0" ]]; then exit 0; else exit 1; fi
+if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$workload_verdict" == "pass" ]]; then exit 0; else exit 1; fi

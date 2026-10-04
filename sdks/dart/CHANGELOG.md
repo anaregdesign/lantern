@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 0.5.0 candidate
+
+- Derive Head-managed Edge access on the Server and decode typed complete-call
+  mutation acceptance without exposing private effects. Primitive facades use
+  `MutationAcceptance`; `captureMutationReply` returns an explicit known-effect
+  or accepted-undisclosed reply. Partial batches retain their failure contract.
+- Decode known receipt `effectUndisclosed` status without original result bytes.
+  These source changes have not been published or qualified on physical devices.
+
 ## 0.4.1
 
 - Keep release preflight and protected publication reachable after deliberately

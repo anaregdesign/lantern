@@ -8,6 +8,9 @@ on:
       - 'sdks/node/**'
       - 'proto/**'
       - '.github/workflows/admin.yml'
+      - 'server/provider/**'
+      - 'deploy/helm/**'
+      - 'deploy/compose/**'
       - "!admin/*.md"
       - "!sdks/node/*.md"
   pull_request:
@@ -16,6 +19,9 @@ on:
       - 'sdks/node/**'
       - 'proto/**'
       - '.github/workflows/admin.yml'
+      - 'server/provider/**'
+      - 'deploy/helm/**'
+      - 'deploy/compose/**'
       - "!admin/*.md"
       - "!sdks/node/*.md"
 
@@ -35,6 +41,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify fixed API and protected diagnostics routes
+        working-directory: .
+        run: |
+          docker pull caddy:2.10-alpine
+          python3 -B -m unittest discover -s admin/tests/container -p '*_test.py'
 
       - name: Setup Bun
         # Pin to commit SHA (v2.2.0) instead of the floating v2 tag so a

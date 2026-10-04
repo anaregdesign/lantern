@@ -17,16 +17,18 @@ import (
 // actually applied. Mutation stays the original relay/Subscribe projection.
 // Every serving graph Add publication selects this envelope.
 type graphAddEffectEnvelope struct {
-	Mutation          *pb.Mutation
-	AcceptedIndexes   []uint32
-	Origin            hlc.NodeID
-	OriginSeq         uint64
-	HLC               hlc.Timestamp
-	Epoch             mutationreceipt.Epoch
-	PolicyFingerprint [32]byte
-	Original          []*pb.Edge
-	ContribIDs        []graphcache.ContribID
-	Receipts          []mutationreceipt.Receipt
+	NamespaceFormat    string
+	NoEndpointCreation bool
+	Mutation           *pb.Mutation
+	AcceptedIndexes    []uint32
+	Origin             hlc.NodeID
+	OriginSeq          uint64
+	HLC                hlc.Timestamp
+	Epoch              mutationreceipt.Epoch
+	PolicyFingerprint  [32]byte
+	Original           []*pb.Edge
+	ContribIDs         []graphcache.ContribID
+	Receipts           []mutationreceipt.Receipt
 }
 
 func (e *graphAddEffectEnvelope) GraphMutation() *pb.Mutation {
@@ -69,7 +71,7 @@ func newGraphAddEffectEnvelope(m *pb.Mutation, accepted []bool) (*graphAddEffect
 	if len(accepted) != nonNil {
 		return nil, receiptWALUnionError("graph Add result count differs from non-nil wire slots")
 	}
-	e := &graphAddEffectEnvelope{Mutation: cloneQueuedMutation(m)}
+	e := &graphAddEffectEnvelope{NamespaceFormat: m.GetNamespaceFormat(), Mutation: cloneQueuedMutation(m)}
 	compact := 0
 	for i, present := range slots {
 		if !present {
@@ -221,7 +223,7 @@ func decodeGraphAddEffectWAL(body []byte) (*graphAddEffectEnvelope, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &graphAddEffectEnvelope{Mutation: m}
+	e := &graphAddEffectEnvelope{NamespaceFormat: m.GetNamespaceFormat(), Mutation: m}
 	if count != 0 {
 		e.AcceptedIndexes = make([]uint32, int(count))
 	}

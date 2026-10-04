@@ -10,19 +10,25 @@ import 'package:connectrpc/io.dart' as connect_io;
 import 'package:connectrpc/protobuf.dart';
 import 'package:connectrpc/protocol/connect.dart' as protocol;
 import 'package:fixnum/fixnum.dart';
+import 'package:protobuf/protobuf.dart' as $protobuf;
 
 import 'gen/google/protobuf/duration.pb.dart' as $duration;
 import 'gen/google/protobuf/timestamp.pb.dart' as $timestamp;
+import 'gen/graph/v1/changes.connect.client.dart' as $changes_client;
+import 'gen/graph/v1/changes.pb.dart' as $changes;
 import 'gen/graph/v1/graph.connect.client.dart' as $client;
 import 'gen/graph/v1/graph.pb.dart' as $graph;
 import 'gen/graph/v1/replication.connect.client.dart' as $replication_client;
 import 'gen/graph/v1/replication.pb.dart' as $replication;
 
 part 'changes.dart';
+part 'scoped_changes.dart';
 part 'crud.dart';
 part 'data.dart';
 part 'decay.dart';
 part 'receipt.dart';
+part 'mutation_acceptance.dart';
+part 'mutation_reply.dart';
 part 'retry.dart';
 part 'scan.dart';
 part 'search.dart';

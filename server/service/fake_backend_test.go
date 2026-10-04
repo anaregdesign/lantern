@@ -284,6 +284,11 @@ func (f *fakeBackend) PutEdgesWithExpiration(items []graphcache.EdgeItem[string]
 	f.PutEdgesWithExpirationOutcomes(items)
 }
 
+func (f *fakeBackend) PutEdgesWithExpirationOutcomesChecked(items []graphcache.EdgeItem[string]) ([]graphcache.PutOutcome, error) {
+	// Real application-time lifecycle tests use GraphCache, whose planner owns
+	// that contract. This general service fake models aligned outcomes only.
+	return f.PutEdgesWithExpirationOutcomes(items), nil
+}
 func (f *fakeBackend) PutEdgesWithExpirationOutcomes(items []graphcache.EdgeItem[string]) []graphcache.PutOutcome {
 	f.putEdgesCalls++
 	now := time.Now()
@@ -1055,4 +1060,27 @@ func (f *fakeBackend) CapacityFootprint() (vertices, edges int) {
 
 func (f *fakeBackend) CausalMetadataStats() graphcache.CausalMetadataStats {
 	return graphcache.CausalMetadataStats{}
+}
+
+func (f *fakeBackend) CountByPrefixContext(ctx context.Context, prefix string) int {
+	return f.CountByPrefix(prefix)
+}
+
+func (f *fakeBackend) TopVerticesByDegreeContext(ctx context.Context, prefix string, k int, dir graphcache.DegreeDirection, weighted bool) []graphcache.DegreeEntry[string] {
+	return f.TopVerticesByDegree(prefix, k, dir, weighted)
+}
+
+func (f *fakeBackend) SnapshotGraphContext(ctx context.Context) (graphcache.GraphSnapshot[string, *pb.Vertex], error) {
+	return f.SnapshotGraph(), ctx.Err()
+}
+
+// Checked seams preserve the fake's existing recording behavior. Constraint
+// semantics are exercised against GraphCache in service and wire fixtures.
+func (f *fakeBackend) AddEdgesWithExpirationContribChecked(items []graphcache.EdgeItem[string]) ([]float32, int, error) {
+	effective, deduped := f.AddEdgesWithExpirationContrib(items)
+	return effective, deduped, nil
+}
+func (f *fakeBackend) AddEdgesWithExpirationContribHLCResultsChecked(items []graphcache.EdgeItem[string], ts hlc.Timestamp) ([]float32, []bool, int, error) {
+	effective, accepted, deduped := f.AddEdgesWithExpirationContribHLCResults(items, ts)
+	return effective, accepted, deduped, nil
 }

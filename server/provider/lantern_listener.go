@@ -68,6 +68,14 @@ func connectHandlerOptions(
 	slow *SlowRPCInterceptor,
 	logger *slog.Logger,
 ) []connect.HandlerOption {
+	var authentication connect.Interceptor
+	if auth != nil && auth.Enabled() {
+		authentication = auth
+	}
+	return authenticatedHandlerOptions(netCfg, val, rl, authentication, log, met, slow, logger)
+}
+
+func authenticatedHandlerOptions(netCfg NetConfig, val *ValidationInterceptor, rl *RateLimitInterceptor, authentication connect.Interceptor, log *LoggingInterceptor, met *PrometheusInterceptor, slow *SlowRPCInterceptor, logger *slog.Logger) []connect.HandlerOption {
 	var ints []connect.Interceptor
 	if log != nil {
 		ints = append(ints, log.ConnectInterceptor())
@@ -78,8 +86,8 @@ func connectHandlerOptions(
 	if rl != nil && rl.lim != nil {
 		ints = append(ints, rl.ConnectInterceptor())
 	}
-	if auth != nil && auth.Enabled() {
-		ints = append(ints, auth)
+	if authentication != nil {
+		ints = append(ints, authentication)
 	}
 	if val != nil {
 		ints = append(ints, val.ConnectInterceptor())

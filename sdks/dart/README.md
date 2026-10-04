@@ -480,3 +480,18 @@ cache or background-delivery promise. The accepted
 defines the official opt-in `lantern_client_offline` direction: a
 storage-adapter-driven cache/outbox engine that remains separate from this
 online package and excludes ambiguous mutations from generic replay.
+
+
+### Conditional connections
+
+`createEdges` / `createEdge` require live, readable endpoints and an explicit
+directed `edge.create` Role pair. The aligned `CreateEdgeOutcome` is
+`createdAndLive`, `edgeExists`, `endpointNotLive`, or `expired`; no existing
+weight/TTL is returned or overwritten. Add, Put and Delete remain independent.
+Normal Create never automatically retries an uncertain response.
+
+`createEdgesWithReceipt` / `createEdgeWithReceipt` use one atomic persisted
+`ReceiptContext` with `ReceiptMutationKind.edgeCreate`. Relative TTL uses each
+original operation ID's issuance time; status preserves `EdgeCreateReceipt`.
+Keep original IDs/inputs for reconciliation. HA rejects this new family pending
+a cluster-wide conditional-creation guarantee.

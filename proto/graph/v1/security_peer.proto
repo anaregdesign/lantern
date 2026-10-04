@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package graph.v1;
+
+// Private mTLS workload plane only. This service is never mounted on the
+// public data/browser listener, including in OFF mode.
+service LanternSecurityPeerService {
+  rpc RenewPolicyLease(RenewPolicyLeaseRequest) returns (RenewPolicyLeaseResponse);
+}
+
+message RenewPolicyLeaseRequest {
+  // Must equal the authenticated workload's operator-approved stable ID.
+  bytes receiver = 1;
+  bytes boot_nonce = 2;
+  bytes challenge = 3;
+  // Optional exact current signed revision digest; not an authorization proof.
+  bytes known_digest = 4;
+}
+
+message RenewPolicyLeaseResponse {
+  // Original writer signature, bound to receiver/boot/challenge and policy cut.
+  bytes signed_lease = 1;
+  // Complete original signed cut; omitted only for an identical known digest.
+  bytes signed_checkpoint = 2;
+}

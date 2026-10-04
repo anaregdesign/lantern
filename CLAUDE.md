@@ -39,6 +39,14 @@ Rust SDK (`sdks/rust/`, Cargo-managed, outside `go.work`): from `sdks/rust/` run
 
 ## Architecture
 
+Minimize external dependencies: Lantern is the database, so Server auth uses
+native storage/replication/persistence, never PostgreSQL. ADR 0012 plans
+internal `sys:` metadata and physical `data:` keys behind public logical keys;
+the boundary is not yet qualified. Namespace isolation does not prove policy
+freshness. The Dart SDK SQLite route, including `offline_sqlite`, is approved.
+
+Write GitHub Issue titles, bodies, comments and updates in English.
+
 Multi-module Go workspace ([go.work](go.work)); dependency direction is a DAG with no back edges:
 
 | Module | Role | May import |

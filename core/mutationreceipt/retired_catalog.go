@@ -463,6 +463,6 @@ func sortEpochs(epochs []Epoch) {
 
 func sameRetiredReceipt(left, right Receipt) bool {
 	return left.Intent == right.Intent &&
-		left.DeadlineMillis == right.DeadlineMillis &&
+		left.DeadlineMillis == right.DeadlineMillis && left.LifecycleReduction == right.LifecycleReduction &&
 		bytes.Equal(left.Result, right.Result)
 }

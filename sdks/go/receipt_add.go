@@ -137,6 +137,9 @@ func (l *Lantern) AddEdgesWithReceipt(
 	if response == nil {
 		return nil, receiptProtocolError("Edge Add response is nil")
 	}
+	if err := mutationAcceptanceFromProto(response); err != nil {
+		return nil, err
+	}
 	if response.GetWritten() != int32(len(stableInputs)) {
 		return nil, receiptProtocolError(
 			"Edge Add written count %d does not match request count %d",

@@ -71,8 +71,13 @@ spec:
             successThreshold: 1
           resources:
             {{- toYaml .Values.admin.resources | nindent 12 }}
-          {{- if or .Values.admin.prometheus.upstream .Values.admin.extraEnv }}
           env:
+            - name: LANTERN_ADMIN_SERVER_UPSTREAM
+              value: {{ include "lantern.adminServerUpstream" . | quote }}
+            {{- if .Values.admin.server.caSecret }}
+            - name: LANTERN_ADMIN_SERVER_CA_FILE
+              value: /run/lantern-admin-trust/ca.pem
+            {{- end }}
             {{- if .Values.admin.prometheus.upstream }}
             # Enables the same-origin Prometheus reverse proxy. The
             # container entrypoint turns this into a Caddy
@@ -83,18 +88,23 @@ spec:
             {{- with .Values.admin.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- end }}
-          {{- if .Values.admin.prometheus.upstream }}
           # Writable conf.d so the non-root container can drop the
           # generated Prometheus proxy snippet even when the root
           # filesystem is read-only.
           volumeMounts:
             - name: caddy-conf-d
               mountPath: /etc/caddy/conf.d
-          {{- end }}
-      {{- if .Values.admin.prometheus.upstream }}
+            {{- if .Values.admin.server.caSecret }}
+            - name: server-ca
+              mountPath: /run/lantern-admin-trust
+              readOnly: true
+            {{- end }}
       volumes:
         - name: caddy-conf-d
           emptyDir: {}
-      {{- end }}
+        {{- if .Values.admin.server.caSecret }}
+        - name: server-ca
+          secret:
+            secretName: {{ .Values.admin.server.caSecret | quote }}
+        {{- end }}
 {{- end }}

@@ -101,7 +101,7 @@ func (c *GraphCache[S, T]) stagedEdgeAddEndpointItemsLocked(
 	initialized := make(map[S]bool, len(endpoints))
 	touched := make(map[int]struct{}, len(endpoints))
 	for i, item := range items {
-		if !accepted[i] {
+		if !accepted[i] || item.NoEndpointCreation {
 			continue
 		}
 		for _, endpoint := range [...]S{item.Tail, item.Head} {

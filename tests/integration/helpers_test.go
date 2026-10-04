@@ -3,9 +3,12 @@ package integration_test
 import (
 	"context"
 	"encoding/pem"
+	"errors"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/privatefile"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
@@ -348,4 +352,16 @@ func newRawConnectClient(t *testing.T, enablePrefixIndex bool) (graphv1connect.L
 func newReplicationRawClient(t *testing.T, baseURL string) graphv1connect.LanternReplicationServiceClient {
 	t.Helper()
 	return graphv1connect.NewLanternReplicationServiceClient(h2cClient(), baseURL)
+}
+
+func createPrivateTestFile(path string, raw []byte) error {
+	file, err := privatefile.Create(path, os.O_WRONLY)
+	if err != nil {
+		return err
+	}
+	n, err := file.Write(raw)
+	if err == nil && n != len(raw) {
+		err = io.ErrShortWrite
+	}
+	return errors.Join(err, file.Close())
 }

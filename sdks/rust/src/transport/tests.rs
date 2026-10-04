@@ -11,16 +11,16 @@ use std::{
 
 use super::*;
 use crate::{
-    AddInput, BackupFormat, CdcCursor, ContribId, EdgeContributionRef, EdgeInput, FullMutationOp,
-    IdentityCategory, IdentityEvent, PutOutcome, ReceiptOriginalResult, RestoreOptions,
-    RpcErrorKind, SearchDetails, SearchErrorReason, Vertex, VertexInput, VertexValue,
+    AddInput, BackupFormat, CdcCursor, ContribId, EdgeContributionRef, EdgeInput, PutOutcome,
+    RestoreOptions, RpcErrorKind, SearchDetails, SearchErrorReason, Vertex, VertexInput,
+    VertexValue,
     generated::graph::v1::{
         AddEdgeRequest, AddEdgesRequest, DeleteEdgeContributionsRequest, DeleteEdgesRequest,
         DeleteVertexRequest, DeleteVerticesRequest, EdgeContributionKey, EdgeKey,
-        GetReceiptCapabilityRequest, GetReceiptCapabilityResponse, GetServerStatusRequest,
-        GetServerStatusResponse, GetVertexRequest, GetVertexResponse, MutationReceiptContext,
-        PutVertexRequest, PutVertexResponse, PutVerticesRequest, SearchVerticesRequest,
-        SearchVerticesResponse,
+        GetReceiptCapabilityRequest, GetReceiptCapabilityResponse, GetReceiptStatusesRequest,
+        GetServerStatusRequest, GetServerStatusResponse, GetVertexRequest, GetVertexResponse,
+        MutationReceiptContext, MutationReceiptState, PutVertexRequest, PutVertexResponse,
+        PutVerticesRequest, SearchVerticesRequest, SearchVerticesResponse, receipt_result,
     },
     test_server::GoServer,
 };
@@ -1042,21 +1042,27 @@ async fn real_wire_h2c_limits_search_and_stream() -> TestResult {
     ));
     assert!(!disabled.status().details().is_empty());
 
+    // The public readiness checker supports the auth-exempt unary probe.
+    // Health Watch is deliberately unimplemented by Connect grpchealth.
     let mut health = HealthClient::new(client.state.channel.clone());
-    let mut stream = health
+    let unsupported = health
         .watch(HealthCheckRequest {
             service: HEALTH_SERVICE.into(),
         })
-        .await?
-        .into_inner();
+        .await;
+    let unsupported = match unsupported {
+        Err(status) => status,
+        Ok(response) => response
+            .into_inner()
+            .message()
+            .await
+            .expect_err("unexpected Health Watch message"),
+    };
+    assert_eq!(unsupported.code(), Code::Unimplemented);
     drop(health);
     drop(limited);
     drop(client);
-    let observed = tokio::time::timeout(Duration::from_secs(2), stream.message())
-        .await??
-        .ok_or("Health Watch ended before first status")?;
-    assert_eq!(observed.status, ServingStatus::Serving as i32);
-    drop(stream);
+
     Ok(())
 }
 
@@ -1109,19 +1115,14 @@ async fn real_wire_https_roots_and_invalid_certificates() -> TestResult {
 #[tokio::test]
 #[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
 async fn real_wire_mtls_and_bearer_rotation() -> TestResult {
-    let certs = TestCertificates::generate()?;
-    let env = certs.tls_env(true)?;
-    let borrowed: Vec<(&str, &str)> = env
-        .iter()
-        .map(|(name, value)| (*name, value.as_str()))
-        .chain([("LANTERN_AUTH_TOKENS", "first,second")])
-        .collect();
-    let mut server = GoServer::start(&borrowed)?;
+    let mut server = GoServer::start_authenticated(&[], true, false)?;
     server.wait_for_listener()?;
-    let endpoint = format!("https://localhost:{}", server.port());
+    let endpoint = server.endpoint(0)?;
+    let ca = server.ca_pem()?;
+    let (client_cert, client_key) = server.client_identity()?;
 
-    let no_identity = LanternClient::builder(&endpoint)
-        .tls_private_ca_pem(&certs.ca_pem)?
+    let no_identity = LanternClient::builder(endpoint)
+        .tls_private_ca_pem(&ca)?
         .connect()
         .await;
     match no_identity {
@@ -1133,26 +1134,26 @@ async fn real_wire_mtls_and_bearer_rotation() -> TestResult {
         Err(other) => return Err(format!("unexpected mTLS failure: {other}").into()),
     }
 
-    let token = Arc::new(RotatingToken::new("first"));
-    let client = LanternClient::builder(&endpoint)
-        .tls_private_ca_pem(&certs.ca_pem)?
-        .tls_client_identity(&certs.client_cert_pem, &certs.client_key_pem)?
+    let token = Arc::new(RotatingToken::new(crate::test_server::TEST_TOKEN));
+    let client = LanternClient::builder(endpoint)
+        .tls_private_ca_pem(&ca)?
+        .tls_client_identity(&client_cert, &client_key)?
         .token_provider(token.clone())
         .connect()
         .await?;
     client.ping().await?;
     assert_eq!(token.calls(), 0, "Health must not read or attach a token");
     assert!(!get_status(&client).await?.go_version.is_empty());
-    token.rotate("second");
+    token.rotate(crate::test_server::SECOND_TEST_TOKEN);
     assert!(!get_status(&client).await?.go_version.is_empty());
     token.rotate("wrong");
     let denied = rpc_failure(get_status(&client).await.expect_err("invalid token"));
     assert_eq!(denied.kind(), RpcErrorKind::Unauthenticated);
     assert_eq!(token.calls(), 3);
 
-    let auth_free = LanternClient::builder(&endpoint)
-        .tls_private_ca_pem(&certs.ca_pem)?
-        .tls_client_identity(&certs.client_cert_pem, &certs.client_key_pem)?
+    let auth_free = LanternClient::builder(endpoint)
+        .tls_private_ca_pem(&ca)?
+        .tls_client_identity(&client_cert, &client_key)?
         .connect()
         .await?;
     auth_free.ping().await?;
@@ -1166,199 +1167,144 @@ async fn real_wire_mtls_and_bearer_rotation() -> TestResult {
 #[tokio::test]
 #[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
 async fn real_wire_authenticated_streams_have_independent_budgets_and_no_retry() -> TestResult {
-    let certs = TestCertificates::generate()?;
-    let env = certs.tls_env(true)?;
-    let borrowed: Vec<(&str, &str)> = env
-        .iter()
-        .map(|(name, value)| (*name, value.as_str()))
-        .chain([("LANTERN_AUTH_TOKENS", "first,second")])
-        .collect();
-    let mut server = GoServer::start(&borrowed)?;
+    use crate::{ChangeProjection, WatchChangesOptions};
+    let mut server = GoServer::start_authenticated(&[], true, false)?;
     server.wait_for_listener()?;
-
-    let token = Arc::new(RotatingToken::new("first"));
-    let client = LanternClient::builder(format!("https://localhost:{}", server.port()))
-        .tls_private_ca_pem(&certs.ca_pem)?
-        .tls_client_identity(&certs.client_cert_pem, &certs.client_key_pem)?
+    let (certificate, key) = server.client_identity()?;
+    let token = Arc::new(RotatingToken::new(crate::test_server::TEST_TOKEN));
+    let client = LanternClient::builder(server.endpoint(0)?)
+        .tls_private_ca_pem(server.ca_pem()?)?
+        .tls_client_identity(certificate, key)?
         .token_provider(token.clone())
         .retry(RetryPolicy::Unavailable { max_attempts: 3 })?
         .unary_timeout(Duration::from_millis(100))?
         .connect()
         .await?;
+    let options = || WatchChangesOptions {
+        prefix: "rust:authenticated-stream:".into(),
+        bootstrap: true,
+        ..Default::default()
+    };
     let mut bootstrap = client
-        .bootstrap_identities(StreamOptions::default().with_idle(Duration::from_secs(3)))
+        .watch_changes(options(), StreamOptions::default())
         .await?;
-    assert_eq!(token.calls(), 0, "subscription handles do not open eagerly");
-    assert!(matches!(
-        bootstrap.next_event().await?,
-        IdentityEvent::Checkpoint(_)
-    ));
-    assert_eq!(token.calls(), 1, "one bearer lookup for one stream open");
+    assert_eq!(
+        token.calls(),
+        1,
+        "one fresh credential for the single stream open"
+    );
+    assert!(bootstrap.next_frame().await?.bootstrap);
     drop(bootstrap);
-
-    let prefix = "rust:authenticated-stream:";
     client
-        .put_vertex(VertexInput::nil(format!("{prefix}v")))
+        .put_vertex(VertexInput::nil("rust:authenticated-stream:v"))
         .await?;
     let mut archive = Vec::new();
     let manifest = client
         .write_backup(
             &mut archive,
-            prefix,
+            "rust:authenticated-stream:",
             BackupFormat::LengthDelimitedProtobuf,
             StreamOptions::default(),
         )
         .await?;
     assert_eq!((manifest.vertex_count(), manifest.edge_count()), (1, 0));
-    assert!(!archive.is_empty());
-    assert_eq!(token.calls(), 3, "each stream opens with fresh credentials");
-
-    let mut now = client
-        .bootstrap_identities(StreamOptions::default().with_idle(Duration::from_secs(3)))
-        .await?;
-    let IdentityEvent::Checkpoint(checkpoint) = now.next_event().await? else {
-        return Err("expected identity checkpoint".into());
-    };
-    drop(now);
-    let cursor = checkpoint.cursor_after_revalidation()?;
-    let mut idle = client
-        .resume_identities(
-            cursor.clone(),
-            StreamOptions::default().with_idle(Duration::from_millis(300)),
-        )
-        .await?;
-    assert!(matches!(
-        idle.next_event().await,
-        Err(LanternError::StreamIdleTimeout)
-    ));
+    assert_eq!(token.calls(), 3);
     let mut lifetime = client
-        .resume_identities(
-            cursor,
+        .watch_changes(
+            options(),
             StreamOptions::default().with_lifetime(Duration::from_millis(300)),
         )
         .await?;
+    assert!(lifetime.next_frame().await?.bootstrap);
     let began = Instant::now();
-    let expired = lifetime.next_event().await;
+    let expired = lifetime.next_frame().await;
     assert!(
-        match &expired {
-            Err(LanternError::DeadlineExceeded) => true,
-            Err(LanternError::Rpc(failure)) => failure.status().code() == Code::DeadlineExceeded,
-            _ => false,
-        },
-        "unexpected lifetime result: {expired:?}"
+        matches!(expired, Err(LanternError::DeadlineExceeded))
+            || matches!(expired, Err(LanternError::Rpc(ref failure)) if failure.kind() == RpcErrorKind::DeadlineExceeded
+            ),
+        "unexpected stream lifetime result"
     );
     assert!(
         began.elapsed() >= Duration::from_millis(200),
-        "a stream must not inherit the 100 ms unary deadline"
+        "stream inherited the 100 ms unary deadline"
     );
-
     token.rotate("wrong");
     let before = token.calls();
-    let mut denied = client
-        .bootstrap_identities(StreamOptions::default())
-        .await?;
-    let error = denied
-        .next_event()
-        .await
-        .expect_err("invalid token cannot open a stream");
+    let denied = client
+        .watch_changes(options(), StreamOptions::default())
+        .await;
+    let error = match denied {
+        Err(error) => error,
+        Ok(mut stream) => stream
+            .next_frame()
+            .await
+            .expect_err("invalid credential opened stream"),
+    };
     assert_eq!(rpc_failure(error).kind(), RpcErrorKind::Unauthenticated);
     assert_eq!(
         token.calls(),
         before + 1,
-        "streams never retry an auth failure"
+        "stream must not retry an auth failure"
     );
-    token.rotate("second");
+    token.rotate(crate::test_server::SECOND_TEST_TOKEN);
     let mut restored = client
-        .bootstrap_identities(StreamOptions::default())
+        .watch_changes(
+            WatchChangesOptions {
+                projection: ChangeProjection::Identity,
+                ..options()
+            },
+            StreamOptions::default(),
+        )
         .await?;
-    assert!(matches!(
-        restored.next_event().await?,
-        IdentityEvent::Checkpoint(_)
-    ));
+    assert!(restored.next_frame().await?.bootstrap);
     Ok(())
 }
 
 #[tokio::test]
 #[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
 async fn real_wire_authenticated_ha_resumes_on_another_responder_and_backs_up() -> TestResult {
-    let certs = TestCertificates::generate()?;
-    let mut common = certs.tls_env(true)?;
-    common.push(("LANTERN_AUTH_TOKENS", "replication-token".into()));
-    let first_env: Vec<(&str, &str)> = common
-        .iter()
-        .map(|(name, value)| (*name, value.as_str()))
-        .chain([("LANTERN_NODE_ID", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")])
-        .collect();
-    let mut first_server = GoServer::start(&first_env)?;
-    first_server.wait_for_listener()?;
-    let client = |port| {
-        let certs = &certs;
-        async move {
-            LanternClient::builder(format!("https://localhost:{port}"))
-                .tls_private_ca_pem(&certs.ca_pem)
-                .expect("test CA")
-                .tls_client_identity(&certs.client_cert_pem, &certs.client_key_pem)
-                .expect("test client certificate")
-                .token_provider(Arc::new(RotatingToken::new("replication-token")))
-                .connect()
-                .await
-        }
-    };
-    let first = client(first_server.port()).await?;
+    use crate::{ChangeInvalidation, ChangeProjection, WatchChangesOptions};
+    let mut cohort = GoServer::start_authenticated_cohort(2, &[], false, false)?;
+    cohort.wait_for_listener()?;
+    let first = LanternClient::builder(cohort.endpoint(0)?)
+        .tls_private_ca_pem(cohort.ca_pem()?)?
+        .token_provider(Arc::new(RotatingToken::new(crate::test_server::TEST_TOKEN)))
+        .connect()
+        .await?;
+    let second = LanternClient::builder(cohort.endpoint(1)?)
+        .tls_private_ca_pem(cohort.ca_pem()?)?
+        .token_provider(Arc::new(RotatingToken::new(crate::test_server::TEST_TOKEN)))
+        .connect()
+        .await?;
+    assert!(second.replication_status().await?.enabled);
     let prefix = "rust:ha-stream:";
     let first_key = format!("{prefix}tail");
     let second_key = format!("{prefix}head");
     let mut first_stream = first
-        .bootstrap_identities(StreamOptions::default().with_idle(Duration::from_secs(3)))
+        .watch_changes(
+            WatchChangesOptions {
+                prefix: prefix.into(),
+                projection: ChangeProjection::Identity,
+                bootstrap: true,
+                cursor: None,
+            },
+            StreamOptions::default().with_idle(Duration::from_secs(5)),
+        )
         .await?;
-    assert!(matches!(
-        first_stream.next_event().await?,
-        IdentityEvent::Checkpoint(_)
-    ));
+    assert!(first_stream.next_frame().await?.bootstrap);
     first.put_vertex(VertexInput::int64(&first_key, 31)).await?;
-    let IdentityEvent::Chunk(first_event) = first_stream.next_event().await? else {
-        return Err("expected first-origin mutation on the first responder".into());
-    };
-    assert_eq!(first_event.seq, 1);
-    let cursor = first_event
-        .next_cursor
-        .ok_or("first mutation had no final cursor")?;
+    let event = first_stream.next_frame().await?;
+    assert_eq!(
+        event.invalidations,
+        [ChangeInvalidation::Vertex {
+            key: first_key.clone(),
+            current: None
+        }]
+    );
+    let cursor = event
+        .cursor
+        .ok_or("visible mutation has no final opaque cursor")?;
     drop(first_stream);
-
-    let peer = format!("https://localhost:{}", first_server.port());
-    let ca = certs
-        .files
-        .path()
-        .join("ca.pem")
-        .to_string_lossy()
-        .into_owned();
-    let client_cert = certs
-        .files
-        .path()
-        .join("client.pem")
-        .to_string_lossy()
-        .into_owned();
-    let client_key = certs
-        .files
-        .path()
-        .join("client.key")
-        .to_string_lossy()
-        .into_owned();
-    let second_env: Vec<(&str, &str)> = common
-        .iter()
-        .map(|(name, value)| (*name, value.as_str()))
-        .chain([
-            ("LANTERN_NODE_ID", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            ("LANTERN_PEERS", peer.as_str()),
-            ("LANTERN_PEER_CA_FILE", ca.as_str()),
-            ("LANTERN_PEER_CLIENT_CERT_FILE", client_cert.as_str()),
-            ("LANTERN_PEER_CLIENT_KEY_FILE", client_key.as_str()),
-        ])
-        .collect();
-    let mut second_server = GoServer::start(&second_env)?;
-    second_server.wait_for_listener()?;
-    let second = client(second_server.port()).await?;
-    assert!(second.replication_status().await?.enabled);
     let mut synchronized = false;
     for _ in 0..150 {
         if let Ok(value) = second.get_vertex(&first_key).await {
@@ -1371,26 +1317,39 @@ async fn real_wire_authenticated_ha_resumes_on_another_responder_and_backs_up() 
     }
     assert!(
         synchronized,
-        "authenticated HA peer did not apply the source snapshot"
+        "native HA peer did not apply the source mutation"
     );
-
     let mut resumed = second
-        .resume_identities(
-            cursor,
-            StreamOptions::default().with_idle(Duration::from_secs(5)),
+        .watch_changes(
+            WatchChangesOptions {
+                prefix: prefix.into(),
+                projection: ChangeProjection::Identity,
+                bootstrap: false,
+                cursor: Some(cursor),
+            },
+            StreamOptions::default().with_idle(Duration::from_secs(10)),
         )
         .await?;
     first.put_vertex(VertexInput::nil(&second_key)).await?;
-    let IdentityEvent::Chunk(next) =
-        tokio::time::timeout(Duration::from_secs(10), resumed.next_event()).await??
-    else {
-        return Err("expected mutation from the source origin on the other responder".into());
-    };
-    assert_eq!(next.origin.to_hex(), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-    assert_eq!(next.seq, 2);
-    assert_eq!(next.category, IdentityCategory::PutVertex);
-    assert_eq!(next.vertex_keys, [second_key.as_str()]);
-    assert!(next.next_cursor.is_some());
+    // Fixed empty progress frames do not represent hidden mutations. Wait for
+    // the visible invalidation without inspecting private origin/sequence data.
+    let next = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let frame = resumed.next_frame().await?;
+            if !frame.invalidations.is_empty() {
+                return Ok::<_, LanternError>(frame);
+            }
+        }
+    })
+    .await??;
+    assert_eq!(
+        next.invalidations,
+        [ChangeInvalidation::Vertex {
+            key: second_key.clone(),
+            current: None
+        }]
+    );
+    assert!(next.cursor.is_some());
     drop(resumed);
 
     first
@@ -1450,39 +1409,16 @@ async fn real_wire_authenticated_ha_resumes_on_another_responder_and_backs_up() 
 }
 
 #[tokio::test]
-#[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
-async fn real_wire_full_stream_decodes_all_receipt_families_and_selective_deletes() -> TestResult {
-    let certs = TestCertificates::generate()?;
-    let mut env = certs.tls_env(true)?;
-    let wal = certs
-        .files
-        .path()
-        .join("rust-receipts.wal")
-        .to_string_lossy()
-        .into_owned();
-    env.extend([
-        ("LANTERN_AUTH_TOKENS", "rust-receipts".into()),
-        ("LANTERN_NODE_ID", "42424242424242424242424242424242".into()),
-        ("LANTERN_RECEIPT_WAL_MODE", "fresh".into()),
-        ("LANTERN_RECEIPT_WAL_PATH", wal),
-        (
-            "LANTERN_RECEIPT_EPOCH",
-            "cccccccccccccccccccccccccccccccc".into(),
-        ),
-        ("LANTERN_RECEIPT_RETENTION", "1h".into()),
-        ("LANTERN_RECEIPT_MAX_ENTRIES", "512".into()),
-        ("LANTERN_RECEIPT_MAX_BYTES", "1048576".into()),
-    ]);
-    let borrowed: Vec<(&str, &str)> = env
-        .iter()
-        .map(|(name, value)| (*name, value.as_str()))
-        .collect();
-    let mut server = GoServer::start(&borrowed)?;
+#[ignore = "set native production Server and authfixture binaries"]
+async fn real_wire_public_cdc_and_receipt_status_cover_all_mutation_families() -> TestResult {
+    use crate::{ChangeInvalidation, ChangeProjection, ChangeStream, WatchChangesOptions};
+    let mut server = GoServer::start_authenticated(&[], true, true)?;
     server.wait_for_listener()?;
-    let client = LanternClient::builder(format!("https://localhost:{}", server.port()))
-        .tls_private_ca_pem(&certs.ca_pem)?
-        .tls_client_identity(&certs.client_cert_pem, &certs.client_key_pem)?
-        .token_provider(Arc::new(RotatingToken::new("rust-receipts")))
+    let (cert, key_pem) = server.client_identity()?;
+    let client = LanternClient::builder(server.endpoint(0)?)
+        .tls_private_ca_pem(server.ca_pem()?)?
+        .tls_client_identity(cert, key_pem)?
+        .token_provider(Arc::new(RotatingToken::new(crate::test_server::TEST_TOKEN)))
         .connect()
         .await?;
     let capability: GetReceiptCapabilityResponse = client
@@ -1497,26 +1433,33 @@ async fn real_wire_full_stream_decodes_all_receipt_families_and_selective_delete
         capability.enabled,
         "production receipt WAL must be certified"
     );
-    let mut full = client
-        .subscribe_full_mutations(
-            CdcCursor::new(),
-            StreamOptions::default().with_idle(Duration::from_secs(5)),
+    let mut changes = client
+        .watch_changes(
+            WatchChangesOptions {
+                prefix: "rust:receipt-stream:".into(),
+                projection: ChangeProjection::Identity,
+                bootstrap: true,
+                cursor: None,
+            },
+            StreamOptions::default().with_idle(Duration::from_secs(10)),
         )
         .await?;
-    let mut identity = client
-        .bootstrap_identities(StreamOptions::default().with_idle(Duration::from_secs(5)))
-        .await?;
-    assert!(matches!(
-        identity.next_event().await?,
-        IdentityEvent::Checkpoint(_)
-    ));
+    assert!(changes.next_frame().await?.bootstrap);
+    async fn visible(stream: &mut ChangeStream) -> Result<Vec<ChangeInvalidation>, LanternError> {
+        loop {
+            let frame = stream.next_frame().await?;
+            if !frame.invalidations.is_empty() {
+                assert!(frame.cursor.is_some());
+                return Ok(frame.invalidations);
+            }
+        }
+    }
     let tail = "rust:receipt-stream:tail";
     let head = "rust:receipt-stream:head";
     let key = EdgeKey {
         tail: tail.into(),
         head: head.into(),
     };
-
     let deleted = client
         .data_unary(
             DeleteEdgesRequest {
@@ -1529,29 +1472,13 @@ async fn real_wire_full_stream_decodes_all_receipt_families_and_selective_delete
         )
         .await?;
     assert_eq!(deleted.existed, [false]);
-    let missed = full.next_mutation().await?;
-    let FullMutationOp::ReceiptEdgeDelete(envelope) = missed.op else {
-        return Err("missing receipt-bearing exact Edge Delete envelope".into());
-    };
     assert_eq!(
-        envelope.items[0].receipt.original_result,
-        ReceiptOriginalResult::DeleteEdgeExisted(false)
+        visible(&mut changes).await?,
+        [ChangeInvalidation::Edge {
+            identity: crate::EdgeRef::new(tail, head),
+            current: None,
+        }]
     );
-    assert_eq!(
-        envelope.metadata.policy_fingerprint.as_slice(),
-        capability
-            .policy
-            .as_ref()
-            .expect("receipt policy")
-            .fingerprint
-    );
-    let IdentityEvent::Chunk(missing_edge) = identity.next_event().await? else {
-        return Err("missing exact Edge Delete invalidation".into());
-    };
-    assert_eq!(missing_edge.category, IdentityCategory::DeleteEdge);
-    assert_eq!(missing_edge.edge_keys.len(), 1);
-    assert!(missing_edge.is_last && missing_edge.next_cursor.is_some());
-
     let put = client
         .data_unary(
             PutVerticesRequest {
@@ -1576,22 +1503,19 @@ async fn real_wire_full_stream_decodes_all_receipt_families_and_selective_delete
         )
         .await?;
     assert_eq!(put.outcomes, [PutOutcome::AppliedAndLive as i32; 2]);
-    let wrote = full.next_mutation().await?;
-    let FullMutationOp::ReceiptVertexPut(envelope) = wrote.op else {
-        return Err("missing receipt-bearing Vertex Put envelope".into());
-    };
-    assert_eq!(envelope.items.len(), 2);
-    assert!(
-        envelope
-            .items
-            .iter()
-            .all(|item| item.receipt.item_count == 2)
+    assert_eq!(
+        visible(&mut changes).await?,
+        [
+            ChangeInvalidation::Vertex {
+                key: tail.into(),
+                current: None
+            },
+            ChangeInvalidation::Vertex {
+                key: head.into(),
+                current: None
+            },
+        ]
     );
-    let IdentityEvent::Chunk(put_identity) = identity.next_event().await? else {
-        return Err("missing Vertex Put identity frame".into());
-    };
-    assert_eq!(put_identity.category, IdentityCategory::PutVertex);
-
     let refused = client
         .data_unary(
             PutVerticesRequest {
@@ -1609,22 +1533,6 @@ async fn real_wire_full_stream_decodes_all_receipt_families_and_selective_delete
         )
         .await?;
     assert_eq!(refused.outcomes, [PutOutcome::ConditionNotMet as i32]);
-    let no_effect = full.next_mutation().await?;
-    let FullMutationOp::ReceiptVertexPut(envelope) = no_effect.op else {
-        return Err("missing no-graph-effect Vertex Put receipt".into());
-    };
-    assert!(envelope.items[0].accepted.is_none());
-    assert_eq!(
-        envelope.items[0].receipt.original_result,
-        ReceiptOriginalResult::PutVertexOutcome(PutOutcome::ConditionNotMet)
-    );
-    let IdentityEvent::Chunk(no_graph) = identity.next_event().await? else {
-        return Err("missing zero-key receipt-only identity frame".into());
-    };
-    assert_eq!(no_graph.category, IdentityCategory::ReceiptOnly);
-    assert!(no_graph.vertex_keys.is_empty() && no_graph.edge_keys.is_empty());
-    assert!(no_graph.is_last && no_graph.next_cursor.is_some());
-
     let first_id = ContribId::new([1; 24])?;
     let second_id = ContribId::new([2; 24])?;
     let add = client
@@ -1653,39 +1561,20 @@ async fn real_wire_full_stream_decodes_all_receipt_families_and_selective_delete
         )
         .await?;
     assert_eq!(add.effective_weights, [2.0, 5.0]);
-    let added = full.next_mutation().await?;
-    let FullMutationOp::ReceiptEdgeAdd(envelope) = added.op else {
-        return Err("missing receipt-bearing Edge Add envelope".into());
-    };
-    assert_eq!(envelope.items.len(), 2);
-    assert_eq!(
-        envelope.items[1].receipt.original_result,
-        ReceiptOriginalResult::AddEdgeEffectiveWeight(5.0)
-    );
-    assert_eq!(envelope.items[1].contrib_id, second_id);
-
+    let added = visible(&mut changes).await?;
+    assert!(added.iter().all(|item| matches!(item, ChangeInvalidation::Edge {identity, current: None} if identity.tail == tail && identity.head == head)));
+    assert_eq!(client.get_vertex(tail).await?.int32_value(), Some(1));
     assert!(
         client
             .delete_edge_contribution(EdgeContributionRef::new(tail, head, first_id))
             .await?
     );
-    let single = full.next_mutation().await?;
-    assert!(matches!(
-        single.op,
-        FullMutationOp::DeleteEdgeContributions(ref items)
-            if items.len() == 1 && items[0].contrib_id == first_id
-    ));
+    let _ = visible(&mut changes).await?;
     let removed = client
         .delete_edge_contributions([EdgeContributionRef::new(tail, head, second_id)])
         .await?;
     assert_eq!(removed.existed, [true]);
-    let plural = full.next_mutation().await?;
-    assert!(matches!(
-        plural.op,
-        FullMutationOp::DeleteEdgeContributions(ref items)
-            if items.len() == 1 && items[0].contrib_id == second_id
-    ));
-
+    let _ = visible(&mut changes).await?;
     let false_delete = client
         .data_unary(
             DeleteEdgeContributionsRequest {
@@ -1702,16 +1591,6 @@ async fn real_wire_full_stream_decodes_all_receipt_families_and_selective_delete
         )
         .await?;
     assert_eq!(false_delete.existed, [false]);
-    let receipt = full.next_mutation().await?;
-    let FullMutationOp::ReceiptEdgeContributionDelete(envelope) = receipt.op else {
-        return Err("missing receipt-bearing contribution Delete envelope".into());
-    };
-    assert_eq!(envelope.items[0].key.contrib_id, second_id);
-    assert_eq!(
-        envelope.items[0].receipt.original_result,
-        ReceiptOriginalResult::DeleteEdgeContributionExisted(false)
-    );
-
     let deleted = client
         .data_unary(
             DeleteVerticesRequest {
@@ -1724,45 +1603,85 @@ async fn real_wire_full_stream_decodes_all_receipt_families_and_selective_delete
         )
         .await?;
     assert_eq!(deleted.existed, [true]);
-    let removed_vertex = full.next_mutation().await?;
-    let FullMutationOp::ReceiptVertexDelete(envelope) = removed_vertex.op else {
-        return Err("missing receipt-bearing Vertex Delete envelope".into());
-    };
-    assert_eq!(
-        envelope.items[0].receipt.original_result,
-        ReceiptOriginalResult::DeleteVertexExisted(true)
-    );
-    for category in [
-        IdentityCategory::AddEdge,
-        IdentityCategory::DeleteEdgeContribution,
-        IdentityCategory::DeleteEdgeContribution,
-    ] {
-        let IdentityEvent::Chunk(event) = identity.next_event().await? else {
-            return Err("expected one identity mutation fragment".into());
-        };
-        assert_eq!(event.category, category);
-        assert!(event.next_cursor.is_some());
+    // Public CDC contains invalidation identities only. Original receipt
+    // outcomes are retrieved separately, authorized by their original resource.
+    let expected = [
+        (1, vec![receipt_result::Result::DeleteEdgeExisted(false)]),
+        (
+            2,
+            vec![receipt_result::Result::PutVertexOutcome(PutOutcome::AppliedAndLive as i32); 2],
+        ),
+        (
+            3,
+            vec![
+                receipt_result::Result::AddEdgeEffectiveWeight(2.0),
+                receipt_result::Result::AddEdgeEffectiveWeight(5.0),
+            ],
+        ),
+        (
+            4,
+            vec![receipt_result::Result::DeleteEdgeContributionExisted(false)],
+        ),
+        (5, vec![receipt_result::Result::DeleteVertexExisted(true)]),
+        (
+            6,
+            vec![receipt_result::Result::PutVertexOutcome(
+                PutOutcome::ConditionNotMet as i32,
+            )],
+        ),
+    ];
+    for (seed, results) in expected {
+        let context = test_receipt_context(&capability, seed, results.len());
+        let response = client
+            .data_unary(
+                GetReceiptStatusesRequest {
+                    operation_ids: context.operation_ids.clone(),
+                },
+                CallOptions::Default,
+                RetryClass::ReadOnly,
+                |service, request| Box::pin(service.get_receipt_statuses(request)),
+            )
+            .await?;
+        assert_eq!(response.statuses.len(), results.len());
+        for (index, (status, expected)) in response.statuses.iter().zip(results).enumerate() {
+            assert_eq!(status.operation_id, context.operation_ids[index]);
+            assert_eq!(status.state, MutationReceiptState::Confirmed as i32);
+            let receipt = status
+                .receipt
+                .as_ref()
+                .ok_or("confirmed status lacks receipt")?;
+            assert_eq!(receipt.item_index as usize, index);
+            assert_eq!(receipt.item_count as usize, context.operation_ids.len());
+            assert_eq!(
+                receipt
+                    .original_result
+                    .as_ref()
+                    .and_then(|value| value.result),
+                Some(expected)
+            );
+        }
     }
+    drop(changes);
     Ok(())
 }
 
 #[tokio::test]
 #[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
-async fn real_wire_authenticated_development_and_search_details() -> TestResult {
-    let mut server = GoServer::start(&[("LANTERN_AUTH_TOKENS", "development")])?;
+async fn real_wire_authenticated_https_and_search_details() -> TestResult {
+    let mut server = GoServer::start_authenticated(&[], false, false)?;
     server.wait_for_listener()?;
-    let endpoint = format!("http://127.0.0.1:{}", server.port());
-    let token = Arc::new(RotatingToken::new("development"));
+    let endpoint = server.endpoint(0)?;
+    let token = Arc::new(RotatingToken::new(crate::test_server::TEST_TOKEN));
     assert!(matches!(
-        LanternClient::builder(&endpoint)
+        LanternClient::builder("http://127.0.0.1:6380")
             .token_provider(token.clone())
             .connect()
             .await,
         Err(LanternError::InvalidConfig(_))
     ));
-    let client = LanternClient::builder(&endpoint)
+    let client = LanternClient::builder(endpoint)
         .token_provider(token.clone())
-        .allow_credentialed_h2c_for_single_instance_development(true)
+        .tls_private_ca_pem(server.ca_pem()?)?
         .connect()
         .await?;
     client.ping().await?;
@@ -1770,7 +1689,10 @@ async fn real_wire_authenticated_development_and_search_details() -> TestResult 
     assert!(!get_status(&client).await?.go_version.is_empty());
     client.put_vertex(VertexInput::nil("rust:authed")).await?;
     assert!(client.get_vertex("rust:authed").await?.is_nil());
-    let unauthenticated = LanternClient::builder(&endpoint).connect().await?;
+    let unauthenticated = LanternClient::builder(endpoint)
+        .tls_private_ca_pem(server.ca_pem()?)?
+        .connect()
+        .await?;
     assert!(matches!(
         unauthenticated.get_vertex("rust:authed").await,
         Err(LanternError::Rpc(ref failure))
@@ -1818,7 +1740,7 @@ async fn real_wire_cloned_concurrency_and_disconnect() -> TestResult {
     let mut server = GoServer::start(&[])?;
     server.wait_for_listener()?;
     let endpoint = format!("http://127.0.0.1:{}", server.port());
-    let client = LanternClient::builder(&endpoint).connect().await?;
+    let client = LanternClient::builder(endpoint).connect().await?;
     let mut calls = Vec::new();
     for _ in 0..16 {
         let shared = client.clone();

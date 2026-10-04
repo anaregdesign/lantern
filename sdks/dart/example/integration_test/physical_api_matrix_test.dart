@@ -9,6 +9,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:lantern_client/lantern_client.dart';
 
+import 'support/head_edge_fixture.dart';
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -20,6 +22,8 @@ void main() {
   final prefix = 'physical-api:${DateTime.now().microsecondsSinceEpoch}:';
   late LanternClient client;
   var clientInitialized = false;
+  final remoteVertices = <String>{};
+  final remoteEdges = <EdgeRef>[];
 
   setUpAll(() async {
     expect(endpointValue, isNotEmpty, reason: 'pass LANTERN_ENDPOINT');
@@ -36,8 +40,14 @@ void main() {
     await client.ping();
   });
 
-  tearDownAll(() {
-    if (clientInitialized) client.close();
+  tearDownAll(() async {
+    if (!clientInitialized) return;
+    try {
+      await client.deleteEdges(remoteEdges);
+      await client.deleteVertices(remoteVertices);
+    } finally {
+      await client.close();
+    }
   });
 
   test('missing and rotated runtime tokens', () async {
@@ -93,6 +103,7 @@ void main() {
       VertexInput(key: '${prefix}unset', value: VertexValue.unset()),
     ];
 
+    remoteVertices.addAll(inputs.map((input) => input.key));
     expect(
       (await _withTransportDiagnostics(
         client.putVertices(inputs, batchSize: 4),
@@ -128,6 +139,10 @@ void main() {
   test('cursor pages stay bounded and partial failure is explicit', () async {
     final pagePrefix = '${prefix}page:';
     const count = 75;
+    remoteVertices.addAll([
+      for (var index = 0; index < count; index++)
+        '$pagePrefix${index.toString().padLeft(3, '0')}',
+    ]);
     await _withTransportDiagnostics(
       client.putVertices(
         List.generate(
@@ -156,6 +171,7 @@ void main() {
     expect(seen, count);
 
     final committedKey = '${prefix}partial-ok';
+    remoteVertices.add(committedKey);
     final invalidKey = List.filled(2048, 'x').join();
     await expectLater(
       client.putVertices([
@@ -177,6 +193,9 @@ void main() {
 
   test('committed Add response loss after Delete is not replayed', () async {
     final ref = EdgeRef('${prefix}retry-tail', '${prefix}retry-head');
+    remoteEdges.add(ref);
+    remoteVertices.addAll(edgeEndpointKeys([ref]));
+    await seedLiveEdgeEndpoints(client, [ref]);
     final fault = _CommittedResponseLossTransport(
       endpoint,
       '/graph.v1.LanternService/AddEdges',

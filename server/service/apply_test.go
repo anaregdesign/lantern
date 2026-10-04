@@ -2408,3 +2408,58 @@ func TestApplyMutationAcceptsExplicitContribIDAtLargeWireIndex(t *testing.T) {
 		t.Fatalf("explicit high-index Add = %g, %v, log=%d, origin=%d", got, ok, log.Len(), svc.LocalSeq(remote))
 	}
 }
+
+func TestApplyMutationEdgeOnlyHistoryBeforeEndpoints(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	cache.RetainDanglingEdgeHistory()
+	log := mutationlog.New(mutationlog.Options{Capacity: 16})
+	t.Cleanup(func() { _ = log.Close() })
+	svc := NewLanternService(cache).WithReplication(log, hlc.New(hlc.NodeID{2}, hlc.Options{}), nil)
+	origin := hlc.NodeID{1}
+	ts := hlc.Timestamp{WallNs: time.Now().UnixNano(), NodeID: origin}
+	send := func(seq uint64, op *pb.MutationOp) {
+		t.Helper()
+		m := &pb.Mutation{Seq: seq, Origin: origin[:], Hlc: hlcToProto(ts), Op: op}
+		if err := svc.ApplyMutation(t.Context(), m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(1, &pb.MutationOp{NoEndpointCreation: true, Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 2}}}})
+	ts.Logical++
+	send(2, &pb.MutationOp{NoEndpointCreation: true, Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 3}}}})
+	if len(cache.SnapshotVertices()) != 0 || len(cache.SnapshotEdges()) != 0 {
+		t.Fatal("peer fabricated endpoints or exposed dangling Edge")
+	}
+	cut := cache.SnapshotReplication()
+	if len(cut.Graph.Edges) != 1 || len(cut.Graph.Edges[0].Contributions) != 2 {
+		t.Fatal("pending Put/Add history lost", cut.Graph.Edges)
+	}
+	// GC and snapshot migration must preserve pending accepted sources.
+	gcCtx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	cache.SetGCHooks(nil, func(time.Duration) { cancel() })
+	go func() { defer close(done); cache.Watch(gcCtx, time.Millisecond) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("GC did not complete")
+	}
+	if len(cache.SnapshotReplication().Graph.Edges) != 1 {
+		t.Fatal("GC erased accepted history")
+	}
+	for _, key := range []string{"tail", "head"} {
+		ts.Logical++
+		send(svc.LocalSeq(origin)+1, &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: key}}}}})
+	}
+	if weight, ok := cache.GetWeight("tail", "head"); !ok || weight != 5 {
+		t.Fatal("out-of-order history did not become visible", weight, ok)
+	}
+	entries := log.RetainedEntries()
+	for _, entry := range entries[:2] {
+		effect, ok := entry.Op.(interface{ GraphMutation() *pb.Mutation })
+		if !ok || !effect.GraphMutation().GetOp().GetNoEndpointCreation() {
+			t.Fatal("relay lost immutable endpoint effect")
+		}
+	}
+}

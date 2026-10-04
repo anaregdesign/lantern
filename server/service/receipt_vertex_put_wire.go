@@ -18,6 +18,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 )
 
@@ -71,7 +72,8 @@ func worstCaseReceiptVertexWALMutationSize(
 	arm protoreflect.FieldNumber,
 ) int {
 	base := proto.Size(&pb.Mutation{
-		Seq: math.MaxUint64,
+		NamespaceFormat: keyspace.Version,
+		Seq:             math.MaxUint64,
 		Hlc: &pb.HLCTimestamp{
 			WallNs:  math.MaxInt64,
 			Logical: math.MaxUint32,
@@ -103,8 +105,9 @@ func validateReceiptVertexPutWALRequestCapacity(vertices []*pb.Vertex) error {
 	})
 	for _, vertex := range vertices {
 		itemSize := proto.Size(&pb.ReplicatedReceiptVertexPutItem{
-			Original: vertex,
-			Receipt:  receipt,
+			Original:         vertex,
+			Receipt:          receipt,
+			LifecycleReduced: true,
 			Accepted: &pb.ReplicatedPutVertex{
 				Outcome: &pb.ReplicatedPutVertex_Live{Live: vertex},
 			},
@@ -160,7 +163,8 @@ func receiptVertexPutReplicationMutation(e *vertexPutReceiptEnvelope) *pb.Mutati
 	group := e.Receipts[0].Group
 	for i, receipt := range e.Receipts {
 		items[i] = &pb.ReplicatedReceiptVertexPutItem{
-			Original: proto.Clone(e.Original[i]).(*pb.Vertex),
+			Original:         proto.Clone(e.Original[i]).(*pb.Vertex),
+			LifecycleReduced: receipt.LifecycleReduction,
 			Receipt: &pb.MutationReceipt{
 				OperationId:   append([]byte(nil), receipt.ID[:]...),
 				LogicalCallId: append([]byte(nil), group[:]...),
@@ -177,7 +181,8 @@ func receiptVertexPutReplicationMutation(e *vertexPutReceiptEnvelope) *pb.Mutati
 		}
 	}
 	return &pb.Mutation{
-		Seq: e.OriginSeq, Origin: append([]byte(nil), e.Origin[:]...), Hlc: hlcToProto(e.HLC),
+		NamespaceFormat: e.NamespaceFormat,
+		Seq:             e.OriginSeq, Origin: append([]byte(nil), e.Origin[:]...), Hlc: hlcToProto(e.HLC),
 		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptVertexPut{
 			ReplicatedReceiptVertexPut: &pb.ReplicatedReceiptVertexPut{
 				DeploymentEpoch:   append([]byte(nil), e.Epoch[:]...),
@@ -200,7 +205,8 @@ func receiptVertexPutReplicationMutationSize(e *vertexPutReceiptEnvelope) (int, 
 	for i := range e.Receipts {
 		receipt := &e.Receipts[i]
 		item := &pb.ReplicatedReceiptVertexPutItem{
-			Original: e.Original[i],
+			Original:         e.Original[i],
+			LifecycleReduced: receipt.LifecycleReduction,
 			Receipt: &pb.MutationReceipt{
 				OperationId: receipt.ID[:], LogicalCallId: receipt.Group[:],
 				ItemIndex: receipt.Index, ItemCount: receipt.Count,
@@ -236,7 +242,8 @@ func receiptVertexPutReplicationMutationSize(e *vertexPutReceiptEnvelope) (int, 
 	opSize := protowire.SizeTag(protowire.Number(receiptVertexPutMutationArm)) +
 		protowire.SizeBytes(callSize)
 	headerSize := proto.Size(&pb.Mutation{
-		Seq: e.OriginSeq, Origin: e.Origin[:], Hlc: hlcToProto(e.HLC),
+		NamespaceFormat: e.NamespaceFormat,
+		Seq:             e.OriginSeq, Origin: e.Origin[:], Hlc: hlcToProto(e.HLC),
 	})
 	return headerSize + protowire.SizeTag(4) + protowire.SizeBytes(opSize), nil
 }
@@ -258,7 +265,8 @@ func receiptVertexPutGraphMutation(e *vertexPutReceiptEnvelope) *pb.Mutation {
 		}
 	}
 	return &pb.Mutation{
-		Origin: append([]byte(nil), e.Origin[:]...), Seq: e.OriginSeq, Hlc: hlcToProto(e.HLC),
+		NamespaceFormat: e.NamespaceFormat,
+		Origin:          append([]byte(nil), e.Origin[:]...), Seq: e.OriginSeq, Hlc: hlcToProto(e.HLC),
 		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{
 			ReplicatedPutVertices: &pb.ReplicatedPutVertices{Entries: entries},
 		}},
@@ -297,7 +305,8 @@ func decodeReceiptVertexPutMutation(m *pb.Mutation) (*vertexPutReceiptEnvelope, 
 		return nil, receiptVertexPutWALError("invalid wire envelope header")
 	}
 	e := &vertexPutReceiptEnvelope{
-		OriginSeq: m.GetSeq(), HLC: hlcFromProto(m.GetHlc()), IfAbsent: call.GetIfAbsent(),
+		NamespaceFormat: m.GetNamespaceFormat(),
+		OriginSeq:       m.GetSeq(), HLC: hlcFromProto(m.GetHlc()), IfAbsent: call.GetIfAbsent(),
 		Original: make([]*pb.Vertex, len(call.GetItems())),
 		Receipts: make([]mutationreceipt.Receipt, len(call.GetItems())),
 	}
@@ -323,6 +332,12 @@ func decodeReceiptVertexPutMutation(m *pb.Mutation) (*vertexPutReceiptEnvelope, 
 		original := proto.Clone(item.GetOriginal()).(*pb.Vertex)
 		e.Original[i] = original
 		receipt := &e.Receipts[i]
+		resource, resourceErr := receiptResourceIdentity(e.NamespaceFormat, original.GetKey(), "")
+		if resourceErr != nil {
+			return nil, resourceErr
+		}
+		receipt.Resource = resource
+		receipt.LifecycleReduction = item.GetLifecycleReduced()
 		copy(receipt.ID[:], wireReceipt.GetOperationId())
 		copy(receipt.Group[:], wireReceipt.GetLogicalCallId())
 		receipt.Index, receipt.Count, receipt.Kind = wireReceipt.GetItemIndex(),
@@ -436,7 +451,7 @@ func validateReceiptVertexPutWALEntry(entry mutationlog.Entry) error {
 }
 
 func validateReceiptVertexPutWALEnvelope(e *vertexPutReceiptEnvelope) (int, error) {
-	if e == nil || e.Origin == (hlc.NodeID{}) || e.OriginSeq == 0 ||
+	if e == nil || validateDataFormat(e.NamespaceFormat) != nil || e.Origin == (hlc.NodeID{}) || e.OriginSeq == 0 ||
 		e.HLC.WallNs <= 0 || e.HLC.NodeID != e.Origin ||
 		e.Epoch == (mutationreceipt.Epoch{}) || e.PolicyFingerprint == ([32]byte{}) {
 		return 0, receiptVertexPutWALError("invalid origin, HLC, epoch, or policy metadata")
@@ -453,9 +468,18 @@ func validateReceiptVertexPutWALEnvelope(e *vertexPutReceiptEnvelope) (int, erro
 	seen := make(map[mutationreceipt.ID]struct{}, count)
 	var retentionMS int64
 	for i, receipt := range e.Receipts {
-		digest, err := vertexPutDigest(e.Original[i], e.IfAbsent)
+		digest, err := vertexPutDigest(e.Original[i], e.IfAbsent, e.NamespaceFormat)
 		if err != nil {
 			return 0, receiptVertexPutWALError("invalid original item %d: %v", i, err)
+		}
+		if !receiptResourceMatches(receipt, e.NamespaceFormat, e.Original[i].GetKey(), "") {
+			return 0, receiptVertexPutWALError("original resource provenance drift")
+		}
+		if receipt.LifecycleReduction && (e.NamespaceFormat == "" || (len(receipt.Result) == 1 && pb.PutOutcome(receipt.Result[0]) != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE && pb.PutOutcome(receipt.Result[0]) != pb.PutOutcome_PUT_OUTCOME_EXPIRED)) {
+			return 0, receiptVertexPutWALError("invalid original lifecycle effect")
+		}
+		if e.NamespaceFormat != "" && len(receipt.Result) == 1 && pb.PutOutcome(receipt.Result[0]) == pb.PutOutcome_PUT_OUTCOME_EXPIRED && !receipt.LifecycleReduction {
+			return 0, receiptVertexPutWALError("missing original expired lifecycle effect")
 		}
 		if receipt.Group != group {
 			return 0, receiptVertexPutWALError("logical-call ID drift at item %d", i)
@@ -493,7 +517,7 @@ func validateReceiptVertexPutWALEnvelope(e *vertexPutReceiptEnvelope) (int, erro
 		originalOutcome := pb.PutOutcome(e.Receipts[accepted.Index].Result[0])
 		switch accepted.Outcome {
 		case graphcache.PutOutcomeAppliedAndLive:
-			acceptedDigest, err := vertexPutDigest(accepted.Item.Value, e.IfAbsent)
+			acceptedDigest, err := vertexPutDigest(accepted.Item.Value, e.IfAbsent, e.NamespaceFormat)
 			if err != nil || originalOutcome != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE ||
 				accepted.Item.CausalBarrier ||
 				acceptedDigest != e.Receipts[accepted.Index].Digest ||
@@ -692,7 +716,7 @@ func validateReceiptVertexRow(
 	if receipt.Group == (mutationreceipt.GroupID{}) ||
 		receipt.Index != uint32(index) || receipt.Count != uint32(count) ||
 		receipt.Kind != kind || receipt.HasContrib ||
-		receipt.ContribID != (mutationreceipt.ContribID{}) || receipt.Digest != digest {
+		receipt.ContribID != (mutationreceipt.ContribID{}) || receipt.Digest != digest || (kind != mutationreceipt.PutVertex && receipt.LifecycleReduction) {
 		return 0, fmt.Errorf("intent or index drift at item %d", index)
 	}
 	return horizon, nil

@@ -87,7 +87,11 @@ func encodeReceiptEdgeDeleteWAL(op mutationlog.MutationOp) ([]byte, error) {
 		return nil, err
 	}
 	b := make([]byte, 0, size)
-	b = append(b, receiptEdgeDeleteWALMagic...)
+	magic := receiptEdgeDeleteWALMagic
+	if envelope.NamespaceFormat != "" {
+		magic = "LRED\x02\x00\x00\x00"
+	}
+	b = append(b, magic...)
 	b = append(b, envelope.Origin[:]...)
 	b = appendReceiptEdgeDeleteU64(b, envelope.OriginSeq)
 	b = appendReceiptEdgeDeleteU64(b, uint64(envelope.HLC.WallNs))
@@ -130,10 +134,13 @@ func decodeReceiptEdgeDeleteWAL(raw []byte) (mutationlog.MutationOp, error) {
 	}
 	r := receiptEdgeDeleteWALReader{raw: raw}
 	magic, _ := r.take(len(receiptEdgeDeleteWALMagic))
-	if !bytes.Equal(magic, []byte(receiptEdgeDeleteWALMagic)) {
+	if !bytes.Equal(magic, []byte(receiptEdgeDeleteWALMagic)) && !bytes.Equal(magic, []byte("LRED\x02\x00\x00\x00")) {
 		return nil, receiptEdgeDeleteWALError("unknown version or nonzero reserved header")
 	}
 	envelope := &edgeDeleteReceiptEnvelope{}
+	if magic[4] == 2 {
+		envelope.NamespaceFormat = "namespaced-v1"
+	}
 	copy(envelope.Origin[:], r.mustTake(16))
 	envelope.OriginSeq = r.u64()
 	envelope.HLC.WallNs = int64(r.u64())
@@ -166,6 +173,10 @@ func decodeReceiptEdgeDeleteWAL(raw []byte) (mutationlog.MutationOp, error) {
 		key, err := r.key()
 		if err != nil {
 			return nil, err
+		}
+		receipt.Resource, err = receiptResourceIdentity(envelope.NamespaceFormat, key.Tail, key.Head)
+		if err != nil {
+			return nil, receiptEdgeDeleteWALError("invalid original resource identity")
 		}
 		envelope.Receipts[i], envelope.OriginalKeys[i] = receipt, key
 	}
@@ -211,7 +222,7 @@ func validateReceiptEdgeDeleteWALEntry(entry mutationlog.Entry) error {
 }
 
 func validateReceiptEdgeDeleteWALEnvelope(e *edgeDeleteReceiptEnvelope) (int, error) {
-	if e == nil || e.Origin == (hlc.NodeID{}) || e.OriginSeq == 0 ||
+	if e == nil || validateDataFormat(e.NamespaceFormat) != nil || e.Origin == (hlc.NodeID{}) || e.OriginSeq == 0 ||
 		e.HLC.WallNs <= 0 || e.HLC.NodeID != e.Origin ||
 		e.Epoch == (mutationreceipt.Epoch{}) || e.PolicyFingerprint == ([32]byte{}) {
 		return 0, receiptEdgeDeleteWALError("invalid origin, HLC, epoch, or policy metadata")
@@ -238,6 +249,12 @@ func validateReceiptEdgeDeleteWALEnvelope(e *edgeDeleteReceiptEnvelope) (int, er
 	var retentionMS int64
 	for i, receipt := range e.Receipts {
 		key := e.OriginalKeys[i]
+		if err := validateReceiptDataIdentity(e.NamespaceFormat, key.Tail, key.Head); err != nil {
+			return 0, receiptEdgeDeleteWALError("invalid physical identity")
+		}
+		if !receiptResourceMatches(receipt, e.NamespaceFormat, key.Tail, key.Head) {
+			return 0, receiptEdgeDeleteWALError("original resource provenance drift")
+		}
 		if err := validateReceiptEdgeDeleteWALKey(key); err != nil {
 			return 0, err
 		}
@@ -264,8 +281,8 @@ func validateReceiptEdgeDeleteWALEnvelope(e *edgeDeleteReceiptEnvelope) (int, er
 		}
 		retentionMS = horizon
 		if receipt.Group != group || receipt.Index != uint32(i) || receipt.Count != uint32(count) ||
-			receipt.Kind != mutationreceipt.DeleteEdge || receipt.HasContrib || receipt.ContribID != (mutationreceipt.ContribID{}) ||
-			receipt.Digest != edgeDeleteDigest(key.Tail, key.Head) || len(receipt.Result) != 1 || receipt.Result[0] > 1 {
+			receipt.Kind != mutationreceipt.DeleteEdge || receipt.HasContrib || receipt.ContribID != (mutationreceipt.ContribID{}) || receipt.LifecycleReduction ||
+			receipt.Digest != edgeDeleteDigest(key.Tail, key.Head, e.NamespaceFormat) || len(receipt.Result) != 1 || receipt.Result[0] > 1 {
 			return 0, receiptEdgeDeleteWALError("intent, index, or result drift at item %d", i)
 		}
 	}
@@ -305,7 +322,8 @@ func receiptEdgeDeleteWALMutation(e *edgeDeleteReceiptEnvelope) *pb.Mutation {
 		accepted[i] = &pb.EdgeKey{Tail: item.Key.Tail, Head: item.Key.Head}
 	}
 	return &pb.Mutation{
-		Origin: append([]byte(nil), e.Origin[:]...), Seq: e.OriginSeq, Hlc: hlcToProto(e.HLC),
+		NamespaceFormat: e.NamespaceFormat,
+		Origin:          append([]byte(nil), e.Origin[:]...), Seq: e.OriginSeq, Hlc: hlcToProto(e.HLC),
 		Op:                  &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{Edges: accepted}}},
 		TombstoneExpiration: timestamppb.New(e.TombstoneExpiration),
 	}

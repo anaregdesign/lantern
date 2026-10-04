@@ -447,3 +447,47 @@ func TestBackupperReceiptMetricsPreserveExistingSeriesAndAddSetStats(t *testing.
 		}
 	}
 }
+
+func TestBackupperClassifiedPhysicalData(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.NamespaceFormat = "namespaced-v1"
+	source := &fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("data:sys:client"), vFrame("data:data:client"), eFrame("data:sys:client", "data:data:client", 1)}}
+	producer := New(source, cfg, nil, nil)
+	if _, err := producer.backupOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := producer.listBackups()
+	if err != nil || len(paths) != 1 {
+		t.Fatal(paths, err)
+	}
+	if _, _, err := decodeFile(paths[0]); err == nil {
+		t.Fatal("physical recovery archive accepted as logical export")
+	}
+	destination := &fakeService{}
+	stats, err := New(destination, cfg, nil, nil).RestoreOnStartup(t.Context())
+	if err != nil || stats.Vertices != 2 || stats.Edges != 1 {
+		t.Fatal(stats, err)
+	}
+	if destination.putV[0].GetKey() != "data:sys:client" {
+		t.Fatal("physical identity was double encoded")
+	}
+	// An old logical archive must fail before any restore or index effects.
+	legacyDir := t.TempDir()
+	legacy := testConfig(legacyDir)
+	if _, err := New(&fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("data:ambiguous")}}, legacy, nil, nil).backupOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	legacy.NamespaceFormat = cfg.NamespaceFormat
+	untouched := &fakeService{}
+	if _, err := New(untouched, legacy, nil, nil).RestoreOnStartup(t.Context()); err == nil {
+		t.Fatal("unclassified archive silently migrated")
+	}
+	if len(untouched.putV) != 0 || untouched.beginRecovery != 0 {
+		t.Fatal("format failure changed restored state")
+	}
+	// A sys: row is rejected by the producer rather than persisted as graph data.
+	if _, err := New(&fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("sys:security:roles")}}, cfg, nil, nil).backupOnce(t.Context()); err == nil {
+		t.Fatal("system row accepted by graph backup")
+	}
+}

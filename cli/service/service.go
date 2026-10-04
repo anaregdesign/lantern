@@ -108,6 +108,9 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 			} else {
 				effective, err = c.client.AddEdgeWithID(ctx, p.Tail, p.Head, p.Weight, p.TTL, p.ContribID)
 			}
+			if handled, failure := c.handleMutationAcceptance(err); handled {
+				return failure
+			}
 			if err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
@@ -131,6 +134,9 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				Interval:      p.Interval,
 			}
 			effective, err := c.client.AddDecayingEdge(ctx, p.Tail, p.Head, opts)
+			if handled, failure := c.handleMutationAcceptance(err); handled {
+				return failure
+			}
 			if err != nil {
 				fmt.Printf("Error: %s\n", err)
 				// A rejected DecayOpts (ratio/steps/interval out of range,
@@ -186,6 +192,9 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				return ErrPutEdge
 			}
 			outcome, err := c.client.PutEdge(ctx, p.Tail, p.Head, p.Weight, p.TTL)
+			if handled, failure := c.handleMutationAcceptance(err); handled {
+				return failure
+			}
 			if err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
@@ -234,6 +243,9 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 			}
 			if len(p.Pairs) == 1 {
 				if _, err := c.client.DeleteEdge(ctx, p.Pairs[0].Tail, p.Pairs[0].Head); err != nil {
+					if handled, failure := c.handleMutationAcceptance(err); handled {
+						return failure
+					}
 					fmt.Printf("Error: %s\n", err)
 					return ErrConnection
 				}
@@ -244,6 +256,9 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				refs[i] = client.EdgeRef{Tail: pr.Tail, Head: pr.Head}
 			}
 			n, err := c.client.DeleteEdges(ctx, refs)
+			if handled, failure := c.handleMutationAcceptance(err); handled {
+				return failure
+			}
 			if err != nil {
 				fmt.Printf("Error: %s\n", err)
 				return ErrConnection
@@ -259,6 +274,9 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 			var deleted int
 			if len(p.Refs) == 1 {
 				found, err := c.client.DeleteEdgeContribution(ctx, p.Refs[0].Tail, p.Refs[0].Head, p.Refs[0].ContribID)
+				if handled, failure := c.handleMutationAcceptance(err); handled {
+					return failure
+				}
 				if err != nil {
 					return fmt.Errorf("%w: %w", ErrConnection, err)
 				}
@@ -268,6 +286,9 @@ func (c *CLIService) runSource(ctx context.Context, s *parser.Source) error {
 				}
 			} else {
 				existed, deleted, err = c.client.DeleteEdgeContributions(ctx, p.Refs)
+				if handled, failure := c.handleMutationAcceptance(err); handled {
+					return failure
+				}
 				if err != nil {
 					return fmt.Errorf("%w: %w", ErrConnection, err)
 				}
@@ -622,4 +643,17 @@ func requireAppliedPut(subject string, outcome client.PutOutcome) error {
 		return fmt.Errorf("put %s was not live after server application: %s", subject, outcome)
 	}
 	return nil
+}
+
+// handleMutationAcceptance consumes only a complete SDK acknowledgement. Wrapped
+// or partial batch failures keep their error path and require reconciliation.
+func (c *CLIService) handleMutationAcceptance(err error) (bool, error) {
+	reply, failure := client.MutationReplyFrom(struct{}{}, err)
+	if failure != nil || !reply.AcceptedUndisclosed() {
+		return false, nil
+	}
+	if _, err := fmt.Fprintln(c.out, `{"acceptance":"acceptedUndisclosed"}`); err != nil {
+		return true, fmt.Errorf("mutation acknowledgement output: %w", err)
+	}
+	return true, nil
 }

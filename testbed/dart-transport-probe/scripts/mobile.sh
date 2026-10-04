@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 6 ]]; then
-  echo "usage: $0 <connect|grpc> <device-id> <plaintext-url> <tls-url> <bearer-token> <ca-cert>" >&2
+  echo "usage: $0 <connect|grpc> <device-id> <plaintext-url> <tls-url> <private-token-file> <ca-cert>" >&2
   exit 64
 fi
 
@@ -10,7 +10,16 @@ transport=$1
 device=$2
 plaintext_url=$3
 tls_url=$4
-token=$5
+token_file=$5
+if [[ ! -f "$token_file" || -L "$token_file" ]]; then
+  echo 'regular private token file required' >&2
+  exit 64
+fi
+token=$(cat "$token_file")
+if [[ -z "$token" ]]; then
+  echo 'empty token file' >&2
+  exit 64
+fi
 ca_cert=$6
 probe_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
@@ -102,10 +111,8 @@ if [[ ${LANTERN_PROBE_DRIVER:-flutter-test} == simctl ]]; then
   count_url="${tls_url%/}/graph.v1.LanternService/CountVerticesByPrefix"
   success_prefix="probe/$transport/ios-success/"
   for _ in {1..120}; do
-    # This localhost readback only observes the marker written by the app.
-    # TLS behavior is asserted inside the app; avoid coupling the observer to
-    # the hosted macOS curl trust backend.
-    response=$(curl --silent --show-error --insecure \
+    # The observer and the app both verify the selected fixture CA/hostname.
+    response=$(curl --silent --show-error --cacert "$ca_cert" \
       --header "Authorization: Bearer $token" \
       --header 'Connect-Protocol-Version: 1' \
       --header 'Content-Type: application/json' \

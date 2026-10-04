@@ -121,13 +121,16 @@ jobs:
             # Slug for coverage filename: '.' -> root, 'sdks/go' -> sdks-go.
             slug=$(echo "$mod" | sed 's|/|-|g; s|^\.$|root|')
             echo "::group::go test ($mod)"
-            (cd "$mod" && go test -race -shuffle=on -covermode=atomic -coverprofile="$GITHUB_WORKSPACE/coverage/${slug}.out" ./...)
+            (cd "$mod" && go test -race -shuffle=on -coverpkg=./... -covermode=atomic -coverprofile="$GITHUB_WORKSPACE/coverage/${slug}.out" ./...)
             echo "::endgroup::"
           done
           # Keep the legacy artifact path so downstream tooling that expects
           # coverage.out at the repo root keeps working.
           cp coverage/root.out coverage.out
 
+      # coverpkg=./... instruments only this module, including calls crossing
+      # its package boundaries (e.g. generated Connect -> protobuf messages).
+      # It does not instrument another workspace module or exclude generated code.
       # Merge the six per-module coverage profiles into a single workspace-wide
       # profile. `go test -coverprofile` only sees one module's packages, so
       # merging is the only way to get a unified view across the workspace.
@@ -251,6 +254,8 @@ jobs:
           check-latest: true
       - uses: bufbuild/buf-setup-action@v1
         with:
+          # Match generate.go and Makefile; formatter output varies by version.
+          version: '1.70.0'
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: buf format
         run: buf format -d --exit-code
@@ -345,3 +350,33 @@ jobs:
                done
              done)
           done
+
+  native-deployment:
+    name: Native deployment and private Secret files
+    needs: scope
+    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.0'
+          check-latest: true
+      - name: Install pinned Helm with archive digest verification
+        run: |
+          set -euo pipefail
+          archive=helm-v4.2.3-linux-amd64.tar.gz
+          curl -fsSLO "https://get.helm.sh/$archive"
+          curl -fsSLO "https://get.helm.sh/$archive.sha256sum"
+          sha256sum -c "$archive.sha256sum"
+          tar -xzf "$archive"
+          sudo install linux-amd64/helm /usr/local/bin/helm
+      - name: Build one native production image
+        run: docker build --build-arg "COMMIT=$GITHUB_SHA" -t lantern:native-ci .
+      - name: Validate native deployment matrix and projected Secret isolation
+        run: |
+          set -euo pipefail
+          export LANTERN_HELM_TEST_IMAGE="$(docker image inspect --format '{{.Id}}' lantern:native-ci)"
+          go test ./tests/integration -run 'Test(Helm|ComposeNativeSecurityModeMatrix|NativeAuthDeployment)' -count=1
+          go test ./testbed/bench ./testbed/bench/receipttls ./testbed/bench/changeprobe -count=1
+          python3 -B -m unittest discover -s testbed/bench/capture -p '*_test.py'

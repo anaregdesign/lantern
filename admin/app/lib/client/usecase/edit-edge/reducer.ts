@@ -17,11 +17,13 @@ export type EditEdgeAction =
   | { type: "TTL_CHANGED"; mode: EdgeWriteMode; ttl: TtlInput }
   | { type: "WRITE_REQUESTED"; mode: EdgeWriteMode }
   | { type: "WRITE_SUCCEEDED"; mode: EdgeWriteMode; edge: Edge | null }
+  | { type: "WRITE_ACCEPTED_UNDISCLOSED"; mode: EdgeWriteMode }
   | { type: "WRITE_FAILED"; mode: EdgeWriteMode; error: string }
   | { type: "DELETE_OPENED" }
   | { type: "DELETE_CANCELED" }
   | { type: "DELETE_REQUESTED" }
   | { type: "DELETE_SUCCEEDED" }
+  | { type: "DELETE_ACCEPTED_UNDISCLOSED" }
   | { type: "DELETE_FAILED"; error: string }
   | { type: "RESET" };
 
@@ -31,9 +33,19 @@ function applyInputUpdate(
   update: (prev: EdgeWriteInputs) => EdgeWriteInputs,
 ): EditEdgeState {
   if (mode === "add") {
-    return { ...state, addInputs: update(state.addInputs) };
+    return {
+      ...state,
+      addInputs: update(state.addInputs),
+      addStatus:
+        state.addStatus === "acceptedUndisclosed" ? "idle" : state.addStatus,
+    };
   }
-  return { ...state, putInputs: update(state.putInputs) };
+  return {
+    ...state,
+    putInputs: update(state.putInputs),
+    putStatus:
+      state.putStatus === "acceptedUndisclosed" ? "idle" : state.putStatus,
+  };
 }
 
 export function editEdgeReducer(
@@ -117,6 +129,25 @@ export function editEdgeReducer(
       }
       return next;
     }
+    case "WRITE_ACCEPTED_UNDISCLOSED": {
+      return {
+        ...state,
+        edge: null,
+        loadStatus: "undisclosed",
+        loadError: null,
+        ...(action.mode === "add"
+          ? {
+              addStatus: "acceptedUndisclosed",
+              addInputs: INITIAL_EDGE_WRITE_INPUTS,
+              addError: null,
+            }
+          : {
+              putStatus: "acceptedUndisclosed",
+              putInputs: INITIAL_EDGE_WRITE_INPUTS,
+              putError: null,
+            }),
+      };
+    }
     case "WRITE_FAILED": {
       if (action.mode === "add") {
         return { ...state, addStatus: "error", addError: action.error };
@@ -139,6 +170,17 @@ export function editEdgeReducer(
         deleteRequested: false,
         edge: null,
         loadStatus: "not-found",
+      };
+    }
+    case "DELETE_ACCEPTED_UNDISCLOSED": {
+      return {
+        ...state,
+        deleteStatus: "acceptedUndisclosed",
+        deleteRequested: false,
+        edge: null,
+        loadStatus: "undisclosed",
+        loadError: null,
+        deleteError: null,
       };
     }
     case "DELETE_FAILED": {

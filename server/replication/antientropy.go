@@ -130,6 +130,9 @@ type AntiEntropyConfig struct {
 	// always supplies the LanternService fingerprint.
 	SearchConfigFingerprint string
 
+	// NamespaceFormat is the exact classified physical-key representation.
+	NamespaceFormat string
+
 	// HTTPClient is the http.Client used to open Connect-Go streams
 	// against each bearer-free peer. Defaults to defaultH2CClient().
 	HTTPClient *http.Client
@@ -275,13 +278,18 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 		a.cfg.HTTPClient, baseURL,
 	)
 
-	resp, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{}))
+	resp, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{NamespaceFormat: a.cfg.NamespaceFormat}))
 	if err != nil {
 		log.Warn("anti-entropy: PeerStatus failed", slog.Any("err", err))
 		a.cfg.Metrics.OnAntiEntropyError(addr, "peerstatus_failed")
 		return
 	}
 	msg := resp.Msg
+	if err := compatibleDataNamespace(a.cfg.NamespaceFormat, msg.GetNamespaceFormat()); err != nil {
+		log.Error("anti-entropy: peer namespace format is incompatible")
+		a.cfg.Metrics.OnAntiEntropyError(addr, "namespace_format_mismatch")
+		return
+	}
 	if !snapshotInstallerCompatible(a.installer, msg.GetRequiredSnapshotFormat()) {
 		log.Error("anti-entropy: peer Snapshot format is incompatible with installer",
 			slog.String("peer_format", msg.GetRequiredSnapshotFormat().String()),
@@ -429,6 +437,7 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 		}
 	}
 	stream, err := cli.Subscribe(tctx, connect.NewRequest(&pb.SubscribeRequest{
+		NamespaceFormat:        a.cfg.NamespaceFormat,
 		FromSeqPerOrigin:       cursor,
 		FromLocalSeq:           a.snapshotResumeLocal(addr),
 		AcceptReceiptEnvelopes: snapshotAcceptsReceiptEnvelopes(a.installer),
@@ -453,6 +462,9 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 		mu := resp.GetMutation()
 		if mu == nil {
 			continue
+		}
+		if err := validateDataMutation(mu, a.cfg.NamespaceFormat); err != nil {
+			return applied, err
 		}
 		if err := a.apply.ApplyMutation(ctx, mu); err != nil {
 			return applied, err
@@ -512,13 +524,14 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string) error {
 		return err
 	}
 	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: a.installer.RequiredFormat(),
+		RequiredFormat:  a.installer.RequiredFormat(),
+		NamespaceFormat: a.cfg.NamespaceFormat,
 	}))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = stream.Close() }()
-	result, err := installSnapshot(ctx, a.installer, stream)
+	result, err := installSnapshot(ctx, a.installer, &namespaceSnapshotStream{stream: stream, format: a.cfg.NamespaceFormat})
 	if err != nil {
 		return err
 	}

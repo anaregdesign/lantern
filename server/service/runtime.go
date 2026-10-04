@@ -33,6 +33,7 @@ type ServingRuntime struct {
 	origins                   *originStateTracker
 	receipt                   *receiptServingRuntime
 	owner                     io.Closer
+	namespaceFormat           string
 	replicationSendMaxBytes   int
 	replicationFrameCertified bool
 	closed                    atomic.Bool
@@ -75,15 +76,16 @@ type receiptRuntimeGenerationRecord struct {
 // same-epoch restart. The caller supplies the production graph policy before
 // replay; all durable ownership remains inside the returned ServingRuntime.
 type DurableReceiptWALRuntimeConfig struct {
-	Path           string
-	Receipt        mutationreceipt.Config
-	Log            mutationlog.Options
-	DefaultTTL     time.Duration
-	ConfigureGraph func(*graphcache.GraphCache[string, *pb.Vertex]) error
-	NodeID         hlc.NodeID
-	Now            time.Time
-	BaselineCodec  ReceiptBaselineArchiveCodec
-	StartupRestore *ReceiptStartupRestore
+	Path            string
+	NamespaceFormat string
+	Receipt         mutationreceipt.Config
+	Log             mutationlog.Options
+	DefaultTTL      time.Duration
+	ConfigureGraph  func(*graphcache.GraphCache[string, *pb.Vertex]) error
+	NodeID          hlc.NodeID
+	Now             time.Time
+	BaselineCodec   ReceiptBaselineArchiveCodec
+	StartupRestore  *ReceiptStartupRestore
 }
 
 // ReceiptStartupRestore is immutable backup-set evidence prepared for one
@@ -107,12 +109,27 @@ func NewGraphOnlyServingRuntime(
 	graph *graphcache.GraphCache[string, *pb.Vertex],
 	log *mutationlog.Log,
 	clock *hlc.Clock,
+	namespaceFormat ...string,
 ) (*ServingRuntime, error) {
 	if graph == nil || log == nil || clock == nil {
 		return nil, errors.New("service: graph-only runtime requires graph, log, and clock")
 	}
+	format := ""
+	if len(namespaceFormat) > 1 {
+		return nil, errors.New("service: multiple namespace formats")
+	}
+	if len(namespaceFormat) == 1 {
+		format = namespaceFormat[0]
+	}
+	if err := validateDataFormat(format); err != nil {
+		return nil, err
+	}
+	if err := ensureRuntimeEdgeHistory(graph, format); err != nil {
+		return nil, err
+	}
 	return &ServingRuntime{
 		graph: graph, log: log, clock: clock, origins: newOriginStateTracker(), owner: log,
+		namespaceFormat: format,
 	}, nil
 }
 
@@ -132,7 +149,7 @@ func CreateDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig
 		config.Receipt,
 		config.Log,
 		config.DefaultTTL,
-		config.ConfigureGraph,
+		durableRuntimeGraphPolicy(config),
 	)
 	if err != nil {
 		return nil, err
@@ -190,14 +207,17 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 				"service: durable receipt WAL startup restore requires the combined baseline codec",
 			)
 		}
-		return readErr
+		if readErr != nil {
+			return readErr
+		}
+		return preflightDataNamespaceWAL(canonicalPath, config, true)
 	}
 	var candidate *receiptWALOwnedCandidate
 	var err error
 	if config.BaselineCodec == nil {
 		candidate, err = openLeasedReceiptWALCandidate(
 			config.Path, config.Receipt, now, config.Log, config.DefaultTTL,
-			config.ConfigureGraph, preflight,
+			durableRuntimeGraphPolicy(config), preflight,
 		)
 	} else {
 		validateBaseline := func(scan receiptBaselineWALScan) error {
@@ -211,7 +231,7 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 		}
 		candidate, err = openLeasedReceiptWALCandidateWithBaseline(
 			config.Path, config.Receipt, now, config.Log, config.DefaultTTL,
-			config.ConfigureGraph, config.NodeID, config.BaselineCodec, validateBaseline, preflight,
+			durableRuntimeGraphPolicy(config), config.NodeID, config.BaselineCodec, validateBaseline, preflight,
 		)
 	}
 	if err != nil {
@@ -233,6 +253,9 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 }
 
 func validateDurableReceiptWALRuntimeConfig(config DurableReceiptWALRuntimeConfig) error {
+	if err := validateDataFormat(config.NamespaceFormat); err != nil {
+		return err
+	}
 	if config.Path == "" || !filepath.IsAbs(config.Path) ||
 		config.ConfigureGraph == nil || config.Log.WAL != nil {
 		return errors.New("service: durable receipt WAL runtime requires an absolute path, graph policy, and no preconfigured WAL")
@@ -245,6 +268,26 @@ func validateDurableReceiptWALRuntimeConfig(config DurableReceiptWALRuntimeConfi
 		return fmt.Errorf("service: durable receipt WAL policy: %w", err)
 	}
 	return nil
+}
+
+func ensureRuntimeEdgeHistory(graph *graphcache.GraphCache[string, *pb.Vertex], namespace string) error {
+	if namespace == "" || graph.RetainsDanglingEdgeHistory() {
+		return nil
+	}
+	if graph.VertexCount() != 0 || graph.EdgeCount() != 0 {
+		return errors.New("service: namespaced graph must select retained Edge history before writes")
+	}
+	graph.RetainDanglingEdgeHistory()
+	return nil
+}
+
+func durableRuntimeGraphPolicy(config DurableReceiptWALRuntimeConfig) func(*graphcache.GraphCache[string, *pb.Vertex]) error {
+	return func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
+		if err := ensureRuntimeEdgeHistory(graph, config.NamespaceFormat); err != nil {
+			return err
+		}
+		return config.ConfigureGraph(graph)
+	}
 }
 
 func clearReceiptClockHighWater(config mutationreceipt.Config) mutationreceipt.Config {
@@ -477,10 +520,11 @@ func certifyReceiptWALServingRuntime(
 		return nil, fmt.Errorf("service: restore durable receipt WAL HLC frontier: %w", err)
 	}
 	return &ServingRuntime{
-		graph:   candidate.state.graph,
-		log:     candidate.state.log,
-		clock:   clock,
-		origins: candidate.state.origins,
+		namespaceFormat: config.NamespaceFormat,
+		graph:           candidate.state.graph,
+		log:             candidate.state.log,
+		clock:           clock,
+		origins:         candidate.state.origins,
 		receipt: &receiptServingRuntime{
 			store:              candidate.state.receipts,
 			retired:            retired,
@@ -491,7 +535,7 @@ func certifyReceiptWALServingRuntime(
 			operationAdmission: newReceiptOperationAdmission(),
 			baselineCodec:      config.BaselineCodec,
 			defaultTTL:         config.DefaultTTL,
-			configureGraph:     config.ConfigureGraph,
+			configureGraph:     durableRuntimeGraphPolicy(config),
 			owner:              candidate,
 		},
 		owner: candidate,
@@ -501,6 +545,19 @@ func certifyReceiptWALServingRuntime(
 // GraphCache returns the exact cache installed into every runtime consumer.
 func (r *ServingRuntime) GraphCache() *graphcache.GraphCache[string, *pb.Vertex] {
 	return r.graph
+}
+
+func (r *ServingRuntime) DataNamespaceFormat() string {
+	if r == nil {
+		return ""
+	}
+	return r.namespaceFormat
+}
+
+// SharesServingRuntime is a trusted composition check, never a public grant.
+func (s *LanternService) SharesServingRuntime(runtime *ServingRuntime) bool {
+	graph, ok := s.cache.(*graphcache.GraphCache[string, *pb.Vertex])
+	return runtime != nil && s.runtime == runtime && ok && graph == runtime.graph
 }
 
 // DurableReceiptWAL reports whether this runtime owns a certified receipt WAL.
@@ -571,6 +628,9 @@ func (r *ServingRuntime) NewLanternService(onAppend func()) *LanternService {
 	svc := NewLanternService(r.graph)
 	svc.origins = r.origins
 	svc.runtime = r
+	if r.namespaceFormat != "" {
+		svc.WithDataNamespace()
+	}
 	if r.receipt != nil {
 		svc.receiptStore = r.receipt.store
 		svc.receiptRetiredCatalog = r.receipt.retired
@@ -615,8 +675,12 @@ func (r *ServingRuntime) CertifyInstallationWithReplicationSendLimit(
 		return errors.New("service: replication send limit must be zero (unlimited) or positive")
 	}
 	if primary.runtime != r || primary.cache != r.graph || primary.log != r.log ||
-		primary.clock != r.clock || primary.origins != r.origins {
+		primary.clock != r.clock || primary.origins != r.origins ||
+		primary.namespaceFormat != r.namespaceFormat || replication.namespaceFormat != r.namespaceFormat {
 		return errors.New("service: primary service is not installed from the serving runtime")
+	}
+	if r.namespaceFormat != "" && !r.graph.RetainsDanglingEdgeHistory() {
+		return errors.New("service: private runtime lacks retained Edge history policy")
 	}
 	if r.receipt == nil {
 		if primary.receiptStore != nil || primary.receiptRetiredCatalog != nil ||

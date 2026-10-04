@@ -31,6 +31,8 @@ may stay because they are harmless, but they are **not** required going forward.
 
 ## Issue triage — the `Lantern roadmap` project
 
+Write every GitHub Issue title, body, comment and update in English.
+
 Cross-track triage lives in a single GitHub Project named `Lantern roadmap`. Issues
 remain the source of truth — the Project is only a view layer + lightweight kanban on
 top of them.
@@ -113,6 +115,17 @@ window, or weaken load or thresholds.
 
 ## Before every `git push` — local quality gate
 
+Complete frozen Bun dependency installation in Node and Admin before Go walks
+the root workspace. Installation can mutate dependency directories containing
+Go files; those operations must not run concurrently (#1646). Independent tests
+may run in parallel after installation completes.
+
+When copying changed sources into a reused validation worktree, update their
+modification times or use a fresh build target. Preserving older times can let
+incremental tools reuse binaries from the previous source (#1648). Bind results
+to the candidate tree, check generation/content drift, and verify that explicitly
+selected wire tests actually ran; an empty selection is not acceptance.
+
 Run from the repo root; this matches the required CI checks (Build & Test, Lint,
 Proto (buf), govulncheck):
 
@@ -146,6 +159,17 @@ go test ./...                    # root module
   && RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features)
 ```
 
+For a coordinated unpublished online/offline candidate, run the offline source
+commands through `python3 -B tool/paired_source_gate.py -- <command>` (or prepare
+once and clean up in a `trap`). It checks the parent version against the future
+hosted dependency floor and resolves the independently generated
+`tool/paired_source.pubspec.lock` with enforcement. Temporary overrides and the
+hosted lockfile are restored after the command. This is an explicit paired-source
+check, not an isolated hosted-archive pass. Keep hosted archive resolution strict
+in tag/publication preflight and record that separate exit as pending until the
+parent has been published and the hosted lockfile regenerated. Do not publish a
+parent early merely to unblock source development.
+
 During edits, run the narrowest targeted checks for changed behavior rather than
 repeating the whole gate after each intermediate change. Plan one complete
 mandatory gate for the reviewed, cohesive PR head before pushing; every later
@@ -156,7 +180,12 @@ validates the exact synthetic merge, not a preliminary local branch image.
 
 Per-module test runs are mandatory: the root `go test ./...` does **not** span
 submodules. `make lint` runs the same linter as the `Lint` job. The `Proto (buf)` check
-fails on any uncommitted codegen diff — regenerate locally first (below).
+uses the Buf version pinned in `generate.go`, `Makefile` and `.github/workflows/go.yml`.
+Run `go run github.com/bufbuild/buf/cmd/buf@v1.70.0 format -d --exit-code` and
+`go run github.com/bufbuild/buf/cmd/buf@v1.70.0 lint`, then require zero uncommitted
+codegen drift. Use that same pinned command with `format -w` for source formatting
+and regenerate locally first (below). A different Buf version on `PATH` does not
+reproduce the required formatter gate.
 
 The Dart SDK is outside `go.work`; its format/analyze/test gate is therefore
 separate too. When `proto/` changes, run `sdks/dart/scripts/codegen.sh` and commit
@@ -297,13 +326,19 @@ The `Build & Test` job measures per-module coverage (`-covermode=atomic`), merge
 six profiles with `gocovmerge`, and then enforces a **per-module floor** in the
 `Enforce coverage floors` step. A PR that drops any module below its floor fails CI.
 
-The floors are a **ratchet, not an aspiration**: each sits just below that module's
-current measured baseline, so coverage can only hold or climb. They are per-module
+The floors are a **ratchet, not an aspiration**: adopted floors are never lowered.
+Raise them against a durable baseline under the same measurement scope. They are per-module
 (not one workspace number) because module totals vary widely — generated `pb` and the
 CLI sit far below `core`/`mcp`, and a single merged floor would let a regression in a
 well-tested module hide behind the large low-coverage denominator.
 
-Current floors (baseline measured on `main`; **raise these in the same PR** whenever a
+Each module uses `-coverpkg=./...` so calls between its packages count, including
+the generated Connect/protobuf boundary. The pattern stays within the selected
+module; it neither attributes another workspace module's code nor excludes
+generated code. Transport mocks qualify wire fidelity only; real Server policy
+and provider/device evidence remain separate.
+
+Current floors (**raise these in the same PR** whenever a
 module's coverage rises durably):
 
 | Module (profile slug) | Floor |
@@ -315,12 +350,19 @@ module's coverage rises durably):
 | `sdks-go` | 37% |
 | `server` | 52% |
 
+The #1660 integration candidate measured 63.8 / 87.9 / 87.6 / 23.8 / 70.4 /
+80.5% respectively with race, shuffle and module-wide instrumentation. Existing
+floors remain unchanged during this measurement-scope correction. The earlier
+package-only figures and these figures are not a same-condition improvement
+comparison. Ratchet updates need a durable baseline under the corrected scope,
+including main-directed CI; generated statements remain in the denominator.
+
 The authoritative values live in the `floors=` line of the `Enforce coverage floors`
 step in [`.github/workflows/go.yml`](.github/workflows/go.yml); this table must be kept
 in sync with it. To reproduce a module's number locally:
 
 ```bash
-(cd <module> && go test -covermode=atomic -coverprofile=/tmp/cov.out ./...)
+(cd <module> && go test -coverpkg=./... -covermode=atomic -coverprofile=/tmp/cov.out ./...)
 go tool cover -func=/tmp/cov.out | tail -1   # the `total:` line
 ```
 
@@ -425,6 +467,15 @@ new sub-config, update the **Providers** note in `AGENTS.md`.
 
 ## After adding a dependency
 
+- Minimize external dependencies. Lantern is the database; do not add
+  PostgreSQL or another external runtime store for Server authentication.
+  Prefer native storage, replication and persistence primitives. The planned
+  OIDC boundary uses internal `sys:` metadata and physical `data:` keys behind
+  unchanged public logical keys (ADR 0012, #1599, #1615); namespace isolation
+  alone does not prove asynchronous authorization freshness.
+- The Dart SDK SQLite route, including `sdks/dart/offline_sqlite`, is explicitly
+  approved. This Server-auth policy does not revoke that exception.
+
 - Add the require to the module that **actually imports** it (server-only middleware →
   `server/go.mod`; client transport → `sdks/go/go.mod`; cli or integration tests only →
   root `go.mod`).
@@ -449,8 +500,9 @@ Update **all** of these in one PR, then re-run the local quality gate:
 
 ## Bumping the `buf` pin
 
-Update **both** the `@vX.Y.Z` suffix in [generate.go](generate.go) and `BUF_VERSION` in
-the [Makefile](Makefile) — keep them identical.
+Update the `@vX.Y.Z` suffix in [generate.go](generate.go), `BUF_VERSION` in the
+[Makefile](Makefile), the Proto setup version in [.github/workflows/go.yml](.github/workflows/go.yml)
+and the pinned local commands above together. Keep those versions identical.
 
 ## Cutting a release (`vX.Y.Z`)
 
@@ -603,9 +655,12 @@ manual `dart pub publish`. Immediately before tagging, check
 already exist. Never force-move a published Dart tag/version—bump patch.
 
 **Offline receipt release preparation (#1586).** Published offline 0.4.0
-uses hosted `lantern_client ^0.3.3` and completed #1399. The 0.5.0 candidate
-adds targeted contribution Delete and requires hosted `lantern_client ^0.4.1`;
-its final-source, physical-device, and publication gates remain independent. The maintained Flutter example and
+uses hosted `lantern_client ^0.3.3` and completed #1399. Published 0.5.0 adds
+targeted contribution Delete with hosted `lantern_client ^0.4.1`; #1586 completed
+its frozen-source, physical and publication gates. The new 0.6.0 candidate binds
+typed undisclosed acceptance to parent 0.5.0 source and future hosted `^0.5.0`.
+Its source, hosted archive, final-source, physical and publication exits are
+independent; previous release evidence does not qualify this candidate. The maintained Flutter example and
 unpublished SQLite adapter use local path overrides; resolve the offline
 candidate archive against the hosted parent outside the checkout without
 a path override. Before tagging, confirm the target version and tag are
@@ -627,7 +682,7 @@ Merge all required source and release-contract docs before freezing one clean
 tested source commit. The
 [physical release runbook](sdks/dart/example/offline-release-resume.md)
 owns the receipt-specific Android/iOS evidence and exact-commit procedure;
-prior release, CDC, or simulator records do not qualify 0.5.0. After both
+prior release, CDC, or simulator records do not qualify the 0.6.0 candidate. After both
 physical platforms and all pre-tag gates pass, tag only the immediate
 evidence-only child of that frozen commit. Do not change code or release docs
 between the tested source commit and its tagged evidence child. The original

@@ -61,11 +61,12 @@ impl EdgeWrite {
     }
 }
 
-/// Every currently defined (21-arm) MutationOp payload, with no generated
+/// Every currently defined (22-arm) MutationOp payload, with no generated
 /// service-client/request-envelope type exposed to the application. Original
 /// Add ID vectors retain their wire length and their empty versus zero IDs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FullMutationOp {
+    EdgeCreateEffect(super::receipt::EdgeCreateEffect),
     PutVertex {
         vertex: Vertex,
         if_absent: bool,
@@ -113,6 +114,9 @@ pub enum FullMutationOp {
 impl FullMutationOp {
     fn from_wire(value: Op) -> Result<Self, LanternError> {
         Ok(match value {
+            Op::EdgeCreateEffect(effect) => {
+                Self::EdgeCreateEffect(super::receipt::EdgeCreateEffect::from_wire(effect)?)
+            }
             Op::PutVertex(request) => {
                 no_receipt(&request.receipt_context)?;
                 Self::PutVertex {
@@ -578,6 +582,7 @@ mod tests {
                         PutOutcome::ConditionNotMet as i32,
                     ))),
                     accepted: None,
+                    lifecycle_reduced: false,
                 }],
             }),
             Op::ReplicatedReceiptVertexDelete(WireReceiptVertexDelete {
@@ -632,6 +637,15 @@ mod tests {
                     causally_accepted: true,
                 }],
             }),
+            Op::EdgeCreateEffect(crate::generated::graph::v1::EdgeCreateEffect {
+                items: vec![crate::generated::graph::v1::EdgeCreateEffectItem {
+                    original: Some(edge()),
+                    outcome: crate::CreateEdgeOutcome::CreatedAndLive as i32,
+                    receipt: None,
+                }],
+                deployment_epoch: vec![],
+                policy_fingerprint: vec![],
+            }),
         ]
     }
 
@@ -644,8 +658,12 @@ mod tests {
                 node_id: origin().as_bytes().to_vec(),
             }),
             origin: origin().as_bytes().to_vec(),
-            op: Some(MutationOp { op: Some(op) }),
+            op: Some(MutationOp {
+                op: Some(op),
+                ..Default::default()
+            }),
             tombstone_expiration: None,
+            namespace_format: String::new(),
         }
     }
 
@@ -657,9 +675,9 @@ mod tests {
     }
 
     #[test]
-    fn all_twenty_one_arms_preserve_distinctions_and_advance_once() {
+    fn all_twenty_two_arms_preserve_distinctions_and_advance_once() {
         let arms = valid_arms();
-        assert_eq!(arms.len(), 21);
+        assert_eq!(arms.len(), 22);
         for (index, arm) in arms.into_iter().enumerate() {
             let event = stream().decode_mutation(mutation(arm)).unwrap();
             assert_eq!(event.origin, origin(), "oneof arm {index}");
@@ -702,7 +720,75 @@ mod tests {
             FullMutationOp::DeleteEdgeContribution(_) => 19,
             FullMutationOp::DeleteEdgeContributions(_) => 20,
             FullMutationOp::ReceiptEdgeContributionDelete(_) => 21,
+            FullMutationOp::EdgeCreateEffect(_) => 22,
         }
+    }
+
+    #[test]
+    fn malformed_create_evidence_never_advances_the_cursor() {
+        let valid = valid_arms().pop().unwrap();
+        let Op::EdgeCreateEffect(valid) = valid else {
+            panic!("Create arm missing")
+        };
+        let mut variants = Vec::new();
+        let mut bad = valid.clone();
+        bad.items[0].outcome = 0;
+        variants.push(bad);
+        let mut bad = valid.clone();
+        bad.items[0].outcome = 999;
+        variants.push(bad);
+        let mut bad = valid.clone();
+        bad.items[0].original = None;
+        variants.push(bad);
+        let mut bad = valid.clone();
+        bad.items[0].original.as_mut().unwrap().weight = 0.0;
+        variants.push(bad);
+        let mut bad = valid.clone();
+        bad.items[0].original.as_mut().unwrap().weight = f32::NAN;
+        variants.push(bad);
+        let mut bad = valid.clone();
+        bad.items.push(bad.items[0].clone());
+        variants.push(bad);
+        let mut bad = valid.clone();
+        bad.deployment_epoch = origin().as_bytes().to_vec();
+        variants.push(bad);
+        let mut bad = valid.clone();
+        bad.items[0].receipt = Some(receipt(receipt_result::Result::CreateEdgeOutcome(1)));
+        variants.push(bad);
+        let mut bad = valid.clone();
+        bad.deployment_epoch = origin().as_bytes().to_vec();
+        bad.policy_fingerprint = vec![9; 32];
+        variants.push(bad);
+        for bad in variants {
+            let mut stream = stream();
+            assert!(matches!(
+                stream.decode_mutation(mutation(Op::EdgeCreateEffect(bad))),
+                Err(LanternError::CdcGap(_))
+            ));
+            assert_eq!(stream.cursor.next_expected(origin()), 1);
+        }
+        let mut accepted = valid;
+        accepted.deployment_epoch = origin().as_bytes().to_vec();
+        accepted.policy_fingerprint = vec![9; 32];
+        accepted.items[0].receipt = Some(receipt(receipt_result::Result::CreateEdgeOutcome(1)));
+        assert!(
+            stream()
+                .decode_mutation(mutation(Op::EdgeCreateEffect(accepted.clone())))
+                .is_ok()
+        );
+        accepted.items[0]
+            .receipt
+            .as_mut()
+            .unwrap()
+            .original_result
+            .as_mut()
+            .unwrap()
+            .result = Some(receipt_result::Result::CreateEdgeOutcome(2));
+        assert!(
+            stream()
+                .decode_mutation(mutation(Op::EdgeCreateEffect(accepted)))
+                .is_err()
+        );
     }
 
     #[test]
@@ -712,6 +798,7 @@ mod tests {
         let mut invalid = original.clone();
         if let Some(MutationOp {
             op: Some(Op::ReplicatedReceiptEdgeDelete(envelope)),
+            ..
         }) = &mut invalid.op
         {
             envelope.items[0].receipt = None;
@@ -731,7 +818,7 @@ mod tests {
         assert_eq!(stream.cursor.next_expected(origin()), 1);
 
         let mut invalid = mutation(valid_arms()[18].clone());
-        invalid.op = Some(MutationOp { op: None });
+        invalid.op = Some(MutationOp::default());
         assert!(matches!(
             stream.decode_mutation(invalid),
             Err(LanternError::CdcGap(_))
@@ -739,6 +826,7 @@ mod tests {
         let mut invalid = mutation(valid_arms()[19].clone());
         if let Some(MutationOp {
             op: Some(Op::DeleteEdgeContributions(request)),
+            ..
         }) = &mut invalid.op
         {
             request.contributions[0].contrib_id = vec![0; 24];

@@ -194,6 +194,127 @@ type appliedPutClient struct {
 	graphv1connect.LanternServiceClient
 }
 
+type blindEdgeClient struct {
+	graphv1connect.LanternServiceClient
+	calls       int
+	failLast    bool
+	addRequests []*pb.AddEdgesRequest
+}
+
+func (c *blindEdgeClient) AddEdges(_ context.Context, req *connect.Request[pb.AddEdgesRequest]) (*connect.Response[pb.AddEdgesResponse], error) {
+	c.calls++
+	c.addRequests = append(c.addRequests, req.Msg)
+	if c.calls == 3 && c.failLast {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("response lost"))
+	}
+	if c.calls == 2 {
+		return connect.NewResponse(&pb.AddEdgesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}), nil
+	}
+	return connect.NewResponse(&pb.AddEdgesResponse{Written: int32(len(req.Msg.Edges)), EffectiveWeights: []float32{7}}), nil
+}
+
+func (c *blindEdgeClient) PutEdges(_ context.Context, req *connect.Request[pb.PutEdgesRequest]) (*connect.Response[pb.PutEdgesResponse], error) {
+	c.calls++
+	if c.calls == 3 && c.failLast {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("response lost"))
+	}
+	if c.calls == 2 {
+		return connect.NewResponse(&pb.PutEdgesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}), nil
+	}
+	return connect.NewResponse(&pb.PutEdgesResponse{Outcomes: []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}}), nil
+}
+
+func (c *blindEdgeClient) DeleteEdge(context.Context, *connect.Request[pb.DeleteEdgeRequest]) (*connect.Response[pb.DeleteEdgeResponse], error) {
+	c.calls++
+	return connect.NewResponse(&pb.DeleteEdgeResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}), nil
+}
+
+func (c *blindEdgeClient) DeleteEdges(_ context.Context, req *connect.Request[pb.DeleteEdgesRequest]) (*connect.Response[pb.DeleteEdgesResponse], error) {
+	c.calls++
+	if c.calls == 3 && c.failLast {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("response lost"))
+	}
+	if c.calls == 2 {
+		return connect.NewResponse(&pb.DeleteEdgesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}), nil
+	}
+	return connect.NewResponse(&pb.DeleteEdgesResponse{Deleted: 1, Existed: []bool{true}}), nil
+}
+
+func TestEdgeMutationBlindChunksHideAllEffectsAndPreserveContributionIDs(t *testing.T) {
+	inputs := []EdgeInput{{Tail: "a", Head: "b", Weight: 1}, {Tail: "a", Head: "c", Weight: 1}, {Tail: "a", Head: "d", Weight: 1}}
+	ids := [][]byte{bytes.Repeat([]byte{1}, 24), bytes.Repeat([]byte{2}, 24), bytes.Repeat([]byte{3}, 24)}
+	refs := []EdgeRef{{Tail: "a", Head: "b"}, {Tail: "a", Head: "c"}, {Tail: "a", Head: "d"}}
+	for _, failLast := range []bool{false, true} {
+		for _, kind := range []string{"add", "put", "delete"} {
+			fake := &blindEdgeClient{failLast: failLast}
+			l := &Lantern{client: fake, opts: options{batchChunkSize: 1, retry: testRetryPolicy(3)}}
+			if failLast && kind == "put" {
+				// Exercise the later-chunk failure without changing Put's
+				// existing opt-in idempotent transport retry contract.
+				l.opts.retry = nil
+			}
+			var err error
+			switch kind {
+			case "add":
+				var effects []float32
+				effects, err = l.addEdgesWithIDs(context.Background(), inputs, ids)
+				if effects != nil {
+					t.Fatal("blind Add exposed weights")
+				}
+				for i, req := range fake.addRequests {
+					if len(req.ContribIds) != 1 || !bytes.Equal(req.ContribIds[0], ids[i]) {
+						t.Fatal("accepted chunk reused another contribution ID", i)
+					}
+				}
+			case "put":
+				var effects []EdgePutResult
+				effects, err = l.PutEdges(context.Background(), inputs)
+				if effects != nil {
+					t.Fatal("blind Put exposed outcomes")
+				}
+			case "delete":
+				var count int
+				count, err = l.DeleteEdges(context.Background(), refs)
+				if count != 0 {
+					t.Fatal("blind Delete exposed actual count", count)
+				}
+			}
+			if fake.calls != 3 {
+				t.Fatal("a new chunk was skipped or resent", kind, fake.calls)
+			}
+			if failLast {
+				var batch *BatchError
+				if !errors.As(err, &batch) || batch.Written != 2 || !errors.Is(err, ErrUnavailable) {
+					t.Fatal("later failure became complete acceptance", kind, err)
+				}
+			} else if _, accepted := err.(*MutationAcceptance); !accepted {
+				t.Fatal("missing complete-call acknowledgement", kind, err)
+			}
+		}
+	}
+}
+
+func TestEdgeSingularBlindFacadesReturnTypedAcknowledgement(t *testing.T) {
+	fake := &blindEdgeClient{calls: 1}
+	l := &Lantern{client: fake}
+	if value, err := l.AddEdge(context.Background(), "a", "b", 1, 0); value != 0 {
+		t.Fatal("weight fabricated")
+	} else if _, accepted := err.(*MutationAcceptance); !accepted {
+		t.Fatal(err)
+	}
+	fake.calls = 1
+	if value, err := l.PutEdge(context.Background(), "a", "b", 1, 0); value != 0 {
+		t.Fatal("outcome fabricated")
+	} else if _, accepted := err.(*MutationAcceptance); !accepted {
+		t.Fatal(err)
+	}
+	if value, err := l.DeleteEdge(context.Background(), "a", "b"); value {
+		t.Fatal("existence fabricated")
+	} else if _, accepted := err.(*MutationAcceptance); !accepted {
+		t.Fatal(err)
+	}
+}
+
 func (appliedPutClient) PutVertices(_ context.Context, req *connect.Request[pb.PutVerticesRequest]) (*connect.Response[pb.PutVerticesResponse], error) {
 	outcomes := make([]pb.PutOutcome, len(req.Msg.GetVertices()))
 	for i := range outcomes {

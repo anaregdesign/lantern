@@ -30,6 +30,7 @@
  */
 
 import { Lantern, normaliseBaseUrl, withTokenInterceptors, type LanternArgs } from "./client.js";
+import { SecurityClient } from "./security.js";
 import { makeNodeTransport } from "./transport-node.js";
 
 /**
@@ -64,6 +65,7 @@ export function connect(baseUrl: string, args: LanternArgs = {}): Lantern {
 export { Lantern } from "./client.js";
 export type {
   EdgeContributionDeleteBatchResult,
+  CreateEdgeOutcome,
   EdgePutResult,
   LanternArgs,
   PutOutcome,
@@ -113,6 +115,8 @@ export {
   FailedPreconditionError,
   InvalidArgumentError,
   LanternError,
+  MutationAcceptance,
+  MutationProtocolError,
   NotFoundError,
   OverflowError,
   ReceiptMutationUncertainError,
@@ -121,6 +125,8 @@ export {
   SearchContinuationLimitedError,
   SearchCursorStaleError,
 } from "./errors.js";
+export { mutationReply } from "./mutation-reply.js";
+export type { MutationReply } from "./mutation-reply.js";
 export {
   RECEIPT_EPOCH_BYTES,
   RECEIPT_GENERATION_BYTES,
@@ -206,3 +212,17 @@ export type {
   VertexKind,
   VertexValue,
 } from "./values.js";
+
+export { SecurityClient } from "./security.js";
+export * from "./security-types.js";
+
+/** Open a control-plane client without authentication-policy interpretation. */
+export function connectSecurity(baseUrl: string, args: LanternArgs = {}): SecurityClient {
+  const normalised = normaliseBaseUrl("connectSecurity", baseUrl);
+  return SecurityClient.withTransport(
+    makeNodeTransport(normalised, withTokenInterceptors(args), args.transportOptions),
+  );
+}
+
+export { ChangeCursor } from "./scoped-changes.js";
+export type { ChangeFrame, ChangeInvalidation, WatchChangesOptions } from "./scoped-changes.js";

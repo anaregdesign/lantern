@@ -85,7 +85,11 @@ func encodeReceiptEdgeContributionDeleteWAL(op mutationlog.MutationOp) ([]byte, 
 		return nil, err
 	}
 	b := make([]byte, 0, size)
-	b = append(b, receiptEdgeContributionDeleteWALMagic...)
+	magic := receiptEdgeContributionDeleteWALMagic
+	if e.NamespaceFormat != "" {
+		magic = "LRCD\x02\x00\x00\x00"
+	}
+	b = append(b, magic...)
 	b = append(b, e.Origin[:]...)
 	b = binary.BigEndian.AppendUint64(b, e.OriginSeq)
 	b = binary.BigEndian.AppendUint64(b, uint64(e.HLC.WallNs))
@@ -124,10 +128,14 @@ func decodeReceiptEdgeContributionDeleteWAL(raw []byte) (mutationlog.MutationOp,
 		return nil, receiptEdgeContributionDeleteWALError("invalid payload size %d", len(raw))
 	}
 	r := receiptEdgeContributionDeleteWALReader{receiptEdgeDeleteWALReader: receiptEdgeDeleteWALReader{raw: raw}}
-	if !bytes.Equal(r.mustTake(8), []byte(receiptEdgeContributionDeleteWALMagic)) {
+	magic := r.mustTake(8)
+	if !bytes.Equal(magic, []byte(receiptEdgeContributionDeleteWALMagic)) && !bytes.Equal(magic, []byte("LRCD\x02\x00\x00\x00")) {
 		return nil, receiptEdgeContributionDeleteWALError("unknown version or nonzero reserved header")
 	}
 	e := &edgeContributionDeleteReceiptEnvelope{}
+	if magic[4] == 2 {
+		e.NamespaceFormat = "namespaced-v1"
+	}
 	copy(e.Origin[:], r.mustTake(16))
 	e.OriginSeq = r.u64()
 	e.HLC.WallNs = int64(r.u64())
@@ -159,6 +167,10 @@ func decodeReceiptEdgeContributionDeleteWAL(raw []byte) (mutationlog.MutationOp,
 		key, err := r.key()
 		if err != nil {
 			return nil, err
+		}
+		receipt.Resource, err = receiptResourceIdentity(e.NamespaceFormat, key.Tail, key.Head)
+		if err != nil {
+			return nil, receiptEdgeContributionDeleteWALError("invalid original resource identity")
 		}
 		e.Receipts[i], e.OriginalKeys[i] = receipt, key
 	}
@@ -203,7 +215,7 @@ func validateReceiptEdgeContributionDeleteWALEntry(entry mutationlog.Entry) erro
 func validateReceiptEdgeContributionDeleteWALEnvelope(
 	e *edgeContributionDeleteReceiptEnvelope,
 ) (int, error) {
-	if e == nil || e.Origin == (hlc.NodeID{}) || e.OriginSeq == 0 ||
+	if e == nil || validateDataFormat(e.NamespaceFormat) != nil || e.Origin == (hlc.NodeID{}) || e.OriginSeq == 0 ||
 		e.HLC.WallNs <= 0 || e.HLC.NodeID != e.Origin ||
 		e.Epoch == (mutationreceipt.Epoch{}) || e.PolicyFingerprint == ([32]byte{}) {
 		return 0, receiptEdgeContributionDeleteWALError("invalid origin, HLC, epoch, or policy metadata")
@@ -231,6 +243,12 @@ func validateReceiptEdgeContributionDeleteWALEnvelope(
 	var retentionMS int64
 	for i, receipt := range e.Receipts {
 		key := e.OriginalKeys[i]
+		if err := validateReceiptDataIdentity(e.NamespaceFormat, key.Tail, key.Head); err != nil {
+			return 0, receiptEdgeContributionDeleteWALError("invalid physical identity")
+		}
+		if !receiptResourceMatches(receipt, e.NamespaceFormat, key.Tail, key.Head) {
+			return 0, receiptEdgeContributionDeleteWALError("original resource provenance drift")
+		}
 		if err := validateReceiptEdgeContributionDeleteWALKey(key); err != nil {
 			return 0, err
 		}
@@ -258,9 +276,9 @@ func validateReceiptEdgeContributionDeleteWALEnvelope(
 		}
 		retentionMS = horizon
 		if receipt.Group != group || receipt.Index != uint32(i) || receipt.Count != uint32(count) ||
-			receipt.Kind != mutationreceipt.DeleteEdgeContribution || receipt.HasContrib ||
+			receipt.Kind != mutationreceipt.DeleteEdgeContribution || receipt.HasContrib || receipt.LifecycleReduction ||
 			receipt.ContribID != (mutationreceipt.ContribID{}) ||
-			receipt.Digest != edgeContributionDeleteDigest(key) ||
+			receipt.Digest != edgeContributionDeleteDigest(key, e.NamespaceFormat) ||
 			len(receipt.Result) != 1 || receipt.Result[0] > 1 {
 			return 0, receiptEdgeContributionDeleteWALError("intent, index, or result drift at item %d", i)
 		}
@@ -295,7 +313,8 @@ func receiptEdgeContributionDeleteWALMutation(
 		accepted[i] = receiptEdgeContributionDeleteWireKey(item.Key)
 	}
 	return &pb.Mutation{
-		Origin: append([]byte(nil), e.Origin[:]...), Seq: e.OriginSeq, Hlc: hlcToProto(e.HLC),
+		NamespaceFormat: e.NamespaceFormat,
+		Origin:          append([]byte(nil), e.Origin[:]...), Seq: e.OriginSeq, Hlc: hlcToProto(e.HLC),
 		Op: &pb.MutationOp{Op: &pb.MutationOp_DeleteEdgeContributions{
 			DeleteEdgeContributions: &pb.DeleteEdgeContributionsRequest{Contributions: accepted},
 		}},

@@ -1,0 +1,20 @@
+?   	github.com/anaregdesign/lantern	[no test files]
+?   	github.com/anaregdesign/lantern/cli	[no test files]
+ok  	github.com/anaregdesign/lantern/cli/cmd	1.484s
+ok  	github.com/anaregdesign/lantern/cli/parser	0.364s
+ok  	github.com/anaregdesign/lantern/cli/service	2.918s
+ok  	github.com/anaregdesign/lantern/testbed/bench	5.481s
+ok  	github.com/anaregdesign/lantern/testbed/bench/metricgate	(cached)
+ok  	github.com/anaregdesign/lantern/testbed/bench/perfgate	1.477s
+ok  	github.com/anaregdesign/lantern/testbed/bench/preflight	3.780s
+ok  	github.com/anaregdesign/lantern/testbed/bench/receiptprobe	2.241s
+ok  	github.com/anaregdesign/lantern/testbed/bench/receipttls	(cached)
+ok  	github.com/anaregdesign/lantern/testbed/bench/release	(cached)
+ok  	github.com/anaregdesign/lantern/testbed/bench/report	(cached)
+ok  	github.com/anaregdesign/lantern/testbed/bench/searchprobe	1.239s
+ok  	github.com/anaregdesign/lantern/testbed/bench/topology	1.817s
+ok  	github.com/anaregdesign/lantern/testbed/custody	(cached)
+?   	github.com/anaregdesign/lantern/testbed/ha-recovery	[no test files]
+?   	github.com/anaregdesign/lantern/testbed/ha-smoke	[no test files]
+?   	github.com/anaregdesign/lantern/testbed/scripts	[no test files]
+ok  	github.com/anaregdesign/lantern/tests/integration	47.777s

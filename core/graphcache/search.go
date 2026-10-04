@@ -333,7 +333,12 @@ func (c *GraphCache[S, T]) searchVerticesContext(ctx context.Context, query stri
 			out, stats, err = index.SearchMatchTopKCandidatesContextAt(ctx, query, limit, accept, opts, budget, queryNow, candidates)
 		}
 	}
-	if keyPrefix != "" && prefixIndex != nil {
+	if view := queryViewFromContext(ctx); view != nil {
+		// Restrict matching posting IDs before score/top-k selection. This
+		// does not enumerate the complete visible corpus or derive new DF/N.
+		ctx = search.WithCandidateFilter(ctx, func(id S) bool { return view.Vertex(c.queryProjection(id)) })
+		execute(nil)
+	} else if keyPrefix != "" && prefixIndex != nil {
 		// Establish radix -> inverted-index lock order and retain the radix read
 		// lock only for the synchronous query. Writers already mutate the prefix
 		// radix before search postings under GraphCache.mu, so this cannot cycle.

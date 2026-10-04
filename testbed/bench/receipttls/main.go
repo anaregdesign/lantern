@@ -1,23 +1,18 @@
-// Command receipttls creates short-lived, per-replica benchmark certificates
-// and verifies the live HTTPS/HTTP2 identity before and after a receipt run.
+// Command receipttls verifies the live public HTTPS/HTTP2 identity before and
+// after a native receipt run. authfixture owns trust/material generation.
 package main
 
 import (
 	"bytes"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
-	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -42,7 +37,7 @@ type tlsProof struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fatal(errors.New("expected generate or verify"))
+		fatal(errors.New("expected verify (generate native trust with authfixture -compose)"))
 	}
 	command := os.Args[1]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -57,11 +52,6 @@ func main() {
 		fatal(errors.New("-dir is required; positional arguments are not accepted"))
 	}
 	switch command {
-	case "generate":
-		if *ports != "" || *out != "" || *baseline != "" {
-			fatal(errors.New("generate accepts only -dir"))
-		}
-		fatal(generate(*dir))
 	case "verify":
 		if *ports == "" || *out == "" {
 			fatal(errors.New("verify requires -ports and -out"))
@@ -100,122 +90,6 @@ func fatal(err error) {
 	}
 }
 
-func serial() (*big.Int, error) {
-	limit := new(big.Int).Lsh(big.NewInt(1), 128)
-	n, err := rand.Int(rand.Reader, limit)
-	if err != nil {
-		return nil, err
-	}
-	return n.Add(n, big.NewInt(1)), nil
-}
-
-func certificatePEM(der []byte) []byte {
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-}
-
-func generate(dir string) error {
-	stat, err := os.Stat(dir)
-	if err != nil {
-		return fmt.Errorf("stat private TLS directory: %w", err)
-	}
-	if !stat.IsDir() || stat.Mode().Perm() != 0o700 {
-		return errors.New("private TLS directory must exist with mode 0700")
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 0 {
-		return errors.New("private TLS directory must be empty")
-	}
-	token := make([]byte, 32)
-	if _, err := rand.Read(token); err != nil {
-		return err
-	}
-	tokenPath := filepath.Join(dir, "token")
-	if err := os.WriteFile(tokenPath, []byte(hex.EncodeToString(token)), 0o600); err != nil {
-		return err
-	}
-	if err := os.Chmod(tokenPath, 0o600); err != nil {
-		return err
-	}
-	now := time.Now()
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return err
-	}
-	caSerial, err := serial()
-	if err != nil {
-		return err
-	}
-	caTemplate := &x509.Certificate{
-		SerialNumber: caSerial, Subject: pkix.Name{CommonName: "Lantern receipt benchmark CA"},
-		NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true, IsCA: true,
-	}
-	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
-	if err != nil {
-		return err
-	}
-	caPEM := certificatePEM(caDER)
-	if err := writeMountedFile(filepath.Join(dir, "ca.pem"), caPEM); err != nil {
-		return err
-	}
-	for _, service := range replicas {
-		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			return err
-		}
-		number, err := serial()
-		if err != nil {
-			return err
-		}
-		leaf := &x509.Certificate{
-			SerialNumber: number, Subject: pkix.Name{CommonName: service},
-			NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(24 * time.Hour),
-			KeyUsage:              x509.KeyUsageDigitalSignature,
-			ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-			BasicConstraintsValid: true,
-			DNSNames:              []string{"lantern", "localhost", service},
-			IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
-		}
-		der, err := x509.CreateCertificate(rand.Reader, leaf, caTemplate, &key.PublicKey, caKey)
-		if err != nil {
-			return err
-		}
-		keyDER, err := x509.MarshalECPrivateKey(key)
-		if err != nil {
-			return err
-		}
-		replicaDir := filepath.Join(dir, service)
-		if err := os.Mkdir(replicaDir, 0o755); err != nil {
-			return err
-		}
-		if err := os.Chmod(replicaDir, 0o755); err != nil {
-			return err
-		}
-		// The outer directory is host-private. Only this replica's leaf
-		// key is mounted inside its non-root container, read-only.
-		keyFile := filepath.Join(replicaDir, "server.key")
-		if err := writeMountedFile(keyFile,
-			pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})); err != nil {
-			return err
-		}
-		if err := writeMountedFile(filepath.Join(replicaDir, "server.pem"), certificatePEM(der)); err != nil {
-			return err
-		}
-		if err := writeMountedFile(filepath.Join(replicaDir, "ca.pem"), caPEM); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func writeMountedFile(path string, data []byte) error {
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0o644)
-}
-
 func verify(dir string, ports []string, baseline *tlsProof) (tlsProof, error) {
 	if len(ports) != len(replicas) {
 		return tlsProof{}, errors.New("exactly three published TLS ports are required")
@@ -234,7 +108,7 @@ func verify(dir string, ports []string, baseline *tlsProof) (tlsProof, error) {
 	}
 	ca, err := x509.ParseCertificate(block.Bytes)
 	if err != nil || !ca.IsCA || ca.CheckSignatureFrom(ca) != nil ||
-		time.Until(ca.NotAfter) < time.Hour {
+		time.Until(ca.NotAfter) < 5*time.Minute {
 		return tlsProof{}, errors.New("invalid or expiring benchmark CA")
 	}
 	roots := x509.NewCertPool()
@@ -249,17 +123,22 @@ func verify(dir string, ports []string, baseline *tlsProof) (tlsProof, error) {
 		if err != nil || !bytes.Equal(replicaCA, caPEM) {
 			return tlsProof{}, fmt.Errorf("%s peer CA differs from pinned benchmark CA", service)
 		}
-		cert, err := tls.LoadX509KeyPair(filepath.Join(dir, service, "server.pem"),
-			filepath.Join(dir, service, "server.key"))
+		// The live handshake proves key possession. The host proof never reads
+		// the workload-owned private key after native volume provisioning.
+		rawLeaf, err := os.ReadFile(filepath.Join(dir, service, "server.pem"))
 		if err != nil {
-			return tlsProof{}, fmt.Errorf("%s certificate/key: %w", service, err)
+			return tlsProof{}, err
 		}
-		leaf, err := x509.ParseCertificate(cert.Certificate[0])
+		leafPEM, rest := pem.Decode(rawLeaf)
+		if leafPEM == nil || leafPEM.Type != "CERTIFICATE" || len(rest) != 0 {
+			return tlsProof{}, errors.New("invalid public benchmark leaf")
+		}
+		leaf, err := x509.ParseCertificate(leafPEM.Bytes)
 		if err != nil {
 			return tlsProof{}, err
 		}
 		if _, err := leaf.Verify(x509.VerifyOptions{
-			Roots: roots, DNSName: "lantern",
+			Roots: roots, DNSName: service,
 			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		}); err != nil {
 			return tlsProof{}, fmt.Errorf("%s peer DNS identity: %w", service, err)

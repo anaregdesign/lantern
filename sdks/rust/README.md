@@ -449,3 +449,14 @@ Published versions and current release availability are listed on
 alone does not publish a new version.
 
 This crate is licensed under Apache-2.0; see [LICENSE](LICENSE).
+
+
+### Conditional connections
+
+`create_edges` / `create_edge` and their `_with_options` variants require both
+endpoint Vertices already live/readable and a directed `edge.create` Role pair.
+`CreateEdgeOutcome` preserves created/collision/missing-endpoint/expired decisions
+in input order; existing Edge values and endpoint TTLs are unchanged. Normal
+Create is never automatically retried. The Rust SDK decodes typed Create accepted
+effects in full CDC but does not expose receipt-bearing mutation dispatch. HA
+rejects Create pending the cluster-wide conditional-creation guarantee.

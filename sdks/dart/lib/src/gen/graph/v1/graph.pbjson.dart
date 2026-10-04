@@ -148,6 +148,40 @@ final $typed_data.Uint8List searchHitProjectionStatusDescriptor = $convert.base6
     'FSQ0hfSElUX1BST0pFQ1RJT05fU1RBVFVTX01JU1NJTkcQAxIpCiVTRUFSQ0hfSElUX1BST0pF'
     'Q1RJT05fU1RBVFVTX1JFUExBQ0VEEAQ=');
 
+@$core.Deprecated('Use mutationAcceptanceKindDescriptor instead')
+const MutationAcceptanceKind$json = {
+  '1': 'MutationAcceptanceKind',
+  '2': [
+    {'1': 'MUTATION_ACCEPTANCE_KIND_UNSPECIFIED', '2': 0},
+    {'1': 'MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED', '2': 1},
+  ],
+};
+
+/// Descriptor for `MutationAcceptanceKind`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List mutationAcceptanceKindDescriptor = $convert.base64Decode(
+    'ChZNdXRhdGlvbkFjY2VwdGFuY2VLaW5kEigKJE1VVEFUSU9OX0FDQ0VQVEFOQ0VfS0lORF9VTl'
+    'NQRUNJRklFRBAAEjcKM01VVEFUSU9OX0FDQ0VQVEFOQ0VfS0lORF9IQU5ETEVEX0VGRkVDVF9V'
+    'TkRJU0NMT1NFRBAB');
+
+@$core.Deprecated('Use createEdgeOutcomeDescriptor instead')
+const CreateEdgeOutcome$json = {
+  '1': 'CreateEdgeOutcome',
+  '2': [
+    {'1': 'CREATE_EDGE_OUTCOME_UNSPECIFIED', '2': 0},
+    {'1': 'CREATE_EDGE_OUTCOME_CREATED_AND_LIVE', '2': 1},
+    {'1': 'CREATE_EDGE_OUTCOME_EDGE_EXISTS', '2': 2},
+    {'1': 'CREATE_EDGE_OUTCOME_ENDPOINT_NOT_LIVE', '2': 3},
+    {'1': 'CREATE_EDGE_OUTCOME_EXPIRED', '2': 4},
+  ],
+};
+
+/// Descriptor for `CreateEdgeOutcome`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List createEdgeOutcomeDescriptor = $convert.base64Decode(
+    'ChFDcmVhdGVFZGdlT3V0Y29tZRIjCh9DUkVBVEVfRURHRV9PVVRDT01FX1VOU1BFQ0lGSUVEEA'
+    'ASKAokQ1JFQVRFX0VER0VfT1VUQ09NRV9DUkVBVEVEX0FORF9MSVZFEAESIwofQ1JFQVRFX0VE'
+    'R0VfT1VUQ09NRV9FREdFX0VYSVNUUxACEikKJUNSRUFURV9FREdFX09VVENPTUVfRU5EUE9JTl'
+    'RfTk9UX0xJVkUQAxIfChtDUkVBVEVfRURHRV9PVVRDT01FX0VYUElSRUQQBA==');
+
 @$core.Deprecated('Use searchErrorReasonDescriptor instead')
 const SearchErrorReason$json = {
   '1': 'SearchErrorReason',
@@ -201,6 +235,7 @@ const ReceiptMutationKind$json = {
     {'1': 'RECEIPT_MUTATION_KIND_DELETE_EDGE', '2': 3},
     {'1': 'RECEIPT_MUTATION_KIND_ADD_EDGE', '2': 4},
     {'1': 'RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION', '2': 5},
+    {'1': 'RECEIPT_MUTATION_KIND_CREATE_EDGE', '2': 6},
   ],
 };
 
@@ -210,7 +245,8 @@ final $typed_data.Uint8List receiptMutationKindDescriptor = $convert.base64Decod
     'lFRBAAEiQKIFJFQ0VJUFRfTVVUQVRJT05fS0lORF9QVVRfVkVSVEVYEAESJwojUkVDRUlQVF9N'
     'VVRBVElPTl9LSU5EX0RFTEVURV9WRVJURVgQAhIlCiFSRUNFSVBUX01VVEFUSU9OX0tJTkRfRE'
     'VMRVRFX0VER0UQAxIiCh5SRUNFSVBUX01VVEFUSU9OX0tJTkRfQUREX0VER0UQBBIyCi5SRUNF'
-    'SVBUX01VVEFUSU9OX0tJTkRfREVMRVRFX0VER0VfQ09OVFJJQlVUSU9OEAU=');
+    'SVBUX01VVEFUSU9OX0tJTkRfREVMRVRFX0VER0VfQ09OVFJJQlVUSU9OEAUSJQohUkVDRUlQVF'
+    '9NVVRBVElPTl9LSU5EX0NSRUFURV9FREdFEAY=');
 
 @$core.Deprecated('Use mutationReceiptStateDescriptor instead')
 const MutationReceiptState$json = {
@@ -220,6 +256,7 @@ const MutationReceiptState$json = {
     {'1': 'MUTATION_RECEIPT_STATE_CONFIRMED', '2': 1},
     {'1': 'MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED', '2': 2},
     {'1': 'MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE', '2': 3},
+    {'1': 'MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED', '2': 4},
   ],
 };
 
@@ -228,7 +265,8 @@ final $typed_data.Uint8List mutationReceiptStateDescriptor = $convert.base64Deco
     'ChRNdXRhdGlvblJlY2VpcHRTdGF0ZRImCiJNVVRBVElPTl9SRUNFSVBUX1NUQVRFX1VOU1BFQ0'
     'lGSUVEEAASJAogTVVUQVRJT05fUkVDRUlQVF9TVEFURV9DT05GSVJNRUQQARIrCidNVVRBVElP'
     'Tl9SRUNFSVBUX1NUQVRFX05PVF9ZRVRfT0JTRVJWRUQQAhItCilNVVRBVElPTl9SRUNFSVBUX1'
-    'NUQVRFX05PX0xPTkdFUl9QUk9WQUJMRRAD');
+    'NUQVRFX05PX0xPTkdFUl9QUk9WQUJMRRADEi0KKU1VVEFUSU9OX1JFQ0VJUFRfU1RBVEVfRUZG'
+    'RUNUX1VORElTQ0xPU0VEEAQ=');
 
 @$core.Deprecated('Use vertexDescriptor instead')
 const Vertex$json = {
@@ -1189,18 +1227,46 @@ final $typed_data.Uint8List deleteEdgeRequestDescriptor = $convert.base64Decode(
     'hlYWQSSQoPcmVjZWlwdF9jb250ZXh0GAMgASgLMiAuZ3JhcGgudjEuTXV0YXRpb25SZWNlaXB0'
     'Q29udGV4dFIOcmVjZWlwdENvbnRleHQ=');
 
+@$core.Deprecated('Use mutationAcceptanceDescriptor instead')
+const MutationAcceptance$json = {
+  '1': 'MutationAcceptance',
+  '2': [
+    {
+      '1': 'kind',
+      '3': 1,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.MutationAcceptanceKind',
+      '10': 'kind'
+    },
+  ],
+};
+
+/// Descriptor for `MutationAcceptance`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List mutationAcceptanceDescriptor = $convert.base64Decode(
+    'ChJNdXRhdGlvbkFjY2VwdGFuY2USNAoEa2luZBgBIAEoDjIgLmdyYXBoLnYxLk11dGF0aW9uQW'
+    'NjZXB0YW5jZUtpbmRSBGtpbmQ=');
+
 @$core.Deprecated('Use deleteEdgeResponseDescriptor instead')
 const DeleteEdgeResponse$json = {
   '1': 'DeleteEdgeResponse',
   '2': [
     {'1': 'existed', '3': 1, '4': 1, '5': 8, '10': 'existed'},
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `DeleteEdgeResponse`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List deleteEdgeResponseDescriptor =
-    $convert.base64Decode(
-        'ChJEZWxldGVFZGdlUmVzcG9uc2USGAoHZXhpc3RlZBgBIAEoCFIHZXhpc3RlZA==');
+final $typed_data.Uint8List deleteEdgeResponseDescriptor = $convert.base64Decode(
+    'ChJEZWxldGVFZGdlUmVzcG9uc2USGAoHZXhpc3RlZBgBIAEoCFIHZXhpc3RlZBI8CgphY2NlcH'
+    'RhbmNlGAIgASgLMhwuZ3JhcGgudjEuTXV0YXRpb25BY2NlcHRhbmNlUgphY2NlcHRhbmNl');
 
 @$core.Deprecated('Use edgeContributionKeyDescriptor instead')
 const EdgeContributionKey$json = {
@@ -1247,6 +1313,14 @@ const DeleteEdgeContributionResponse$json = {
   '1': 'DeleteEdgeContributionResponse',
   '2': [
     {'1': 'existed', '3': 1, '4': 1, '5': 8, '10': 'existed'},
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
@@ -1254,7 +1328,8 @@ const DeleteEdgeContributionResponse$json = {
 final $typed_data.Uint8List deleteEdgeContributionResponseDescriptor =
     $convert.base64Decode(
         'Ch5EZWxldGVFZGdlQ29udHJpYnV0aW9uUmVzcG9uc2USGAoHZXhpc3RlZBgBIAEoCFIHZXhpc3'
-        'RlZA==');
+        'RlZBI8CgphY2NlcHRhbmNlGAIgASgLMhwuZ3JhcGgudjEuTXV0YXRpb25BY2NlcHRhbmNlUgph'
+        'Y2NlcHRhbmNl');
 
 @$core.Deprecated('Use deleteEdgeContributionsRequestDescriptor instead')
 const DeleteEdgeContributionsRequest$json = {
@@ -1293,6 +1368,14 @@ const DeleteEdgeContributionsResponse$json = {
   '2': [
     {'1': 'deleted', '3': 1, '4': 1, '5': 5, '10': 'deleted'},
     {'1': 'existed', '3': 2, '4': 3, '5': 8, '10': 'existed'},
+    {
+      '1': 'acceptance',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
@@ -1300,7 +1383,8 @@ const DeleteEdgeContributionsResponse$json = {
 final $typed_data.Uint8List deleteEdgeContributionsResponseDescriptor =
     $convert.base64Decode(
         'Ch9EZWxldGVFZGdlQ29udHJpYnV0aW9uc1Jlc3BvbnNlEhgKB2RlbGV0ZWQYASABKAVSB2RlbG'
-        'V0ZWQSGAoHZXhpc3RlZBgCIAMoCFIHZXhpc3RlZA==');
+        'V0ZWQSGAoHZXhpc3RlZBgCIAMoCFIHZXhpc3RlZBI8CgphY2NlcHRhbmNlGAMgASgLMhwuZ3Jh'
+        'cGgudjEuTXV0YXRpb25BY2NlcHRhbmNlUgphY2NlcHRhbmNl');
 
 @$core.Deprecated('Use edgeKeyDescriptor instead')
 const EdgeKey$json = {
@@ -1388,13 +1472,22 @@ const DeleteEdgesResponse$json = {
   '2': [
     {'1': 'deleted', '3': 1, '4': 1, '5': 5, '10': 'deleted'},
     {'1': 'existed', '3': 2, '4': 3, '5': 8, '10': 'existed'},
+    {
+      '1': 'acceptance',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `DeleteEdgesResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List deleteEdgesResponseDescriptor = $convert.base64Decode(
     'ChNEZWxldGVFZGdlc1Jlc3BvbnNlEhgKB2RlbGV0ZWQYASABKAVSB2RlbGV0ZWQSGAoHZXhpc3'
-    'RlZBgCIAMoCFIHZXhpc3RlZA==');
+    'RlZBgCIAMoCFIHZXhpc3RlZBI8CgphY2NlcHRhbmNlGAMgASgLMhwuZ3JhcGgudjEuTXV0YXRp'
+    'b25BY2NlcHRhbmNlUgphY2NlcHRhbmNl');
 
 @$core.Deprecated('Use deleteEdgesByPrefixRequestDescriptor instead')
 const DeleteEdgesByPrefixRequest$json = {
@@ -1419,14 +1512,23 @@ const DeleteEdgesByPrefixResponse$json = {
   '1': 'DeleteEdgesByPrefixResponse',
   '2': [
     {'1': 'deleted', '3': 1, '4': 1, '5': 4, '10': 'deleted'},
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `DeleteEdgesByPrefixResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List deleteEdgesByPrefixResponseDescriptor =
     $convert.base64Decode(
-        'ChtEZWxldGVFZGdlc0J5UHJlZml4UmVzcG9uc2USGAoHZGVsZXRlZBgBIAEoBFIHZGVsZXRlZA'
-        '==');
+        'ChtEZWxldGVFZGdlc0J5UHJlZml4UmVzcG9uc2USGAoHZGVsZXRlZBgBIAEoBFIHZGVsZXRlZB'
+        'I8CgphY2NlcHRhbmNlGAIgASgLMhwuZ3JhcGgudjEuTXV0YXRpb25BY2NlcHRhbmNlUgphY2Nl'
+        'cHRhbmNl');
 
 @$core.Deprecated('Use addEdgeRequestDescriptor instead')
 const AddEdgeRequest$json = {
@@ -1456,13 +1558,22 @@ const AddEdgeResponse$json = {
   '1': 'AddEdgeResponse',
   '2': [
     {'1': 'effective_weight', '3': 1, '4': 1, '5': 2, '10': 'effectiveWeight'},
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `AddEdgeResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List addEdgeResponseDescriptor = $convert.base64Decode(
     'Cg9BZGRFZGdlUmVzcG9uc2USKQoQZWZmZWN0aXZlX3dlaWdodBgBIAEoAlIPZWZmZWN0aXZlV2'
-    'VpZ2h0');
+    'VpZ2h0EjwKCmFjY2VwdGFuY2UYAiABKAsyHC5ncmFwaC52MS5NdXRhdGlvbkFjY2VwdGFuY2VS'
+    'CmFjY2VwdGFuY2U=');
 
 @$core.Deprecated('Use addEdgesRequestDescriptor instead')
 const AddEdgesRequest$json = {
@@ -1506,13 +1617,131 @@ const AddEdgesResponse$json = {
       '5': 2,
       '10': 'effectiveWeights'
     },
+    {
+      '1': 'acceptance',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `AddEdgesResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List addEdgesResponseDescriptor = $convert.base64Decode(
     'ChBBZGRFZGdlc1Jlc3BvbnNlEhgKB3dyaXR0ZW4YASABKAVSB3dyaXR0ZW4SKwoRZWZmZWN0aX'
-    'ZlX3dlaWdodHMYAiADKAJSEGVmZmVjdGl2ZVdlaWdodHM=');
+    'ZlX3dlaWdodHMYAiADKAJSEGVmZmVjdGl2ZVdlaWdodHMSPAoKYWNjZXB0YW5jZRgDIAEoCzIc'
+    'LmdyYXBoLnYxLk11dGF0aW9uQWNjZXB0YW5jZVIKYWNjZXB0YW5jZQ==');
+
+@$core.Deprecated('Use createEdgeRequestDescriptor instead')
+const CreateEdgeRequest$json = {
+  '1': 'CreateEdgeRequest',
+  '2': [
+    {'1': 'edge', '3': 1, '4': 1, '5': 11, '6': '.graph.v1.Edge', '10': 'edge'},
+    {
+      '1': 'receipt_context',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
+  ],
+};
+
+/// Descriptor for `CreateEdgeRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List createEdgeRequestDescriptor = $convert.base64Decode(
+    'ChFDcmVhdGVFZGdlUmVxdWVzdBIiCgRlZGdlGAEgASgLMg4uZ3JhcGgudjEuRWRnZVIEZWRnZR'
+    'JJCg9yZWNlaXB0X2NvbnRleHQYAiABKAsyIC5ncmFwaC52MS5NdXRhdGlvblJlY2VpcHRDb250'
+    'ZXh0Ug5yZWNlaXB0Q29udGV4dA==');
+
+@$core.Deprecated('Use createEdgeResponseDescriptor instead')
+const CreateEdgeResponse$json = {
+  '1': 'CreateEdgeResponse',
+  '2': [
+    {
+      '1': 'outcome',
+      '3': 1,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.CreateEdgeOutcome',
+      '10': 'outcome'
+    },
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
+  ],
+};
+
+/// Descriptor for `CreateEdgeResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List createEdgeResponseDescriptor = $convert.base64Decode(
+    'ChJDcmVhdGVFZGdlUmVzcG9uc2USNQoHb3V0Y29tZRgBIAEoDjIbLmdyYXBoLnYxLkNyZWF0ZU'
+    'VkZ2VPdXRjb21lUgdvdXRjb21lEjwKCmFjY2VwdGFuY2UYAiABKAsyHC5ncmFwaC52MS5NdXRh'
+    'dGlvbkFjY2VwdGFuY2VSCmFjY2VwdGFuY2U=');
+
+@$core.Deprecated('Use createEdgesRequestDescriptor instead')
+const CreateEdgesRequest$json = {
+  '1': 'CreateEdgesRequest',
+  '2': [
+    {
+      '1': 'edges',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.Edge',
+      '10': 'edges'
+    },
+    {
+      '1': 'receipt_context',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
+  ],
+};
+
+/// Descriptor for `CreateEdgesRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List createEdgesRequestDescriptor = $convert.base64Decode(
+    'ChJDcmVhdGVFZGdlc1JlcXVlc3QSJAoFZWRnZXMYASADKAsyDi5ncmFwaC52MS5FZGdlUgVlZG'
+    'dlcxJJCg9yZWNlaXB0X2NvbnRleHQYAiABKAsyIC5ncmFwaC52MS5NdXRhdGlvblJlY2VpcHRD'
+    'b250ZXh0Ug5yZWNlaXB0Q29udGV4dA==');
+
+@$core.Deprecated('Use createEdgesResponseDescriptor instead')
+const CreateEdgesResponse$json = {
+  '1': 'CreateEdgesResponse',
+  '2': [
+    {
+      '1': 'outcomes',
+      '3': 1,
+      '4': 3,
+      '5': 14,
+      '6': '.graph.v1.CreateEdgeOutcome',
+      '10': 'outcomes'
+    },
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
+  ],
+};
+
+/// Descriptor for `CreateEdgesResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List createEdgesResponseDescriptor = $convert.base64Decode(
+    'ChNDcmVhdGVFZGdlc1Jlc3BvbnNlEjcKCG91dGNvbWVzGAEgAygOMhsuZ3JhcGgudjEuQ3JlYX'
+    'RlRWRnZU91dGNvbWVSCG91dGNvbWVzEjwKCmFjY2VwdGFuY2UYAiABKAsyHC5ncmFwaC52MS5N'
+    'dXRhdGlvbkFjY2VwdGFuY2VSCmFjY2VwdGFuY2U=');
 
 @$core.Deprecated('Use putEdgeRequestDescriptor instead')
 const PutEdgeRequest$json = {
@@ -1538,13 +1767,22 @@ const PutEdgeResponse$json = {
       '6': '.graph.v1.PutOutcome',
       '10': 'outcome'
     },
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `PutEdgeResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List putEdgeResponseDescriptor = $convert.base64Decode(
     'Cg9QdXRFZGdlUmVzcG9uc2USLgoHb3V0Y29tZRgBIAEoDjIULmdyYXBoLnYxLlB1dE91dGNvbW'
-    'VSB291dGNvbWU=');
+    'VSB291dGNvbWUSPAoKYWNjZXB0YW5jZRgCIAEoCzIcLmdyYXBoLnYxLk11dGF0aW9uQWNjZXB0'
+    'YW5jZVIKYWNjZXB0YW5jZQ==');
 
 @$core.Deprecated('Use putEdgesRequestDescriptor instead')
 const PutEdgesRequest$json = {
@@ -1578,13 +1816,22 @@ const PutEdgesResponse$json = {
       '6': '.graph.v1.PutOutcome',
       '10': 'outcomes'
     },
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `PutEdgesResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List putEdgesResponseDescriptor = $convert.base64Decode(
     'ChBQdXRFZGdlc1Jlc3BvbnNlEjAKCG91dGNvbWVzGAEgAygOMhQuZ3JhcGgudjEuUHV0T3V0Y2'
-    '9tZVIIb3V0Y29tZXM=');
+    '9tZVIIb3V0Y29tZXMSPAoKYWNjZXB0YW5jZRgCIAEoCzIcLmdyYXBoLnYxLk11dGF0aW9uQWNj'
+    'ZXB0YW5jZVIKYWNjZXB0YW5jZQ==');
 
 @$core.Deprecated('Use getServerStatusRequestDescriptor instead')
 const GetServerStatusRequest$json = {
@@ -2310,6 +2557,15 @@ const ReceiptResult$json = {
       '9': 0,
       '10': 'deleteEdgeContributionExisted'
     },
+    {
+      '1': 'create_edge_outcome',
+      '3': 6,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.CreateEdgeOutcome',
+      '9': 0,
+      '10': 'createEdgeOutcome'
+    },
   ],
   '8': [
     {'1': 'result'},
@@ -2323,8 +2579,9 @@ final $typed_data.Uint8List receiptResultDescriptor = $convert.base64Decode(
     'Y29tZUgAUhBwdXRWZXJ0ZXhPdXRjb21lEjQKFWRlbGV0ZV92ZXJ0ZXhfZXhpc3RlZBgDIAEoCE'
     'gAUhNkZWxldGVWZXJ0ZXhFeGlzdGVkEjsKGWFkZF9lZGdlX2VmZmVjdGl2ZV93ZWlnaHQYBCAB'
     'KAJIAFIWYWRkRWRnZUVmZmVjdGl2ZVdlaWdodBJJCiBkZWxldGVfZWRnZV9jb250cmlidXRpb2'
-    '5fZXhpc3RlZBgFIAEoCEgAUh1kZWxldGVFZGdlQ29udHJpYnV0aW9uRXhpc3RlZEIICgZyZXN1'
-    'bHQ=');
+    '5fZXhpc3RlZBgFIAEoCEgAUh1kZWxldGVFZGdlQ29udHJpYnV0aW9uRXhpc3RlZBJNChNjcmVh'
+    'dGVfZWRnZV9vdXRjb21lGAYgASgOMhsuZ3JhcGgudjEuQ3JlYXRlRWRnZU91dGNvbWVIAFIRY3'
+    'JlYXRlRWRnZU91dGNvbWVCCAoGcmVzdWx0');
 
 @$core.Deprecated('Use mutationReceiptDescriptor instead')
 const MutationReceipt$json = {
@@ -2592,6 +2849,16 @@ const $core.Map<$core.String, $core.dynamic> LanternServiceBase$json = {
       '3': '.graph.v1.AddEdgesResponse'
     },
     {
+      '1': 'CreateEdge',
+      '2': '.graph.v1.CreateEdgeRequest',
+      '3': '.graph.v1.CreateEdgeResponse'
+    },
+    {
+      '1': 'CreateEdges',
+      '2': '.graph.v1.CreateEdgesRequest',
+      '3': '.graph.v1.CreateEdgesResponse'
+    },
+    {
       '1': 'PutEdge',
       '2': '.graph.v1.PutEdgeRequest',
       '3': '.graph.v1.PutEdgeResponse'
@@ -2716,8 +2983,13 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.GetEdgesResponse': GetEdgesResponse$json,
   '.graph.v1.AddEdgeRequest': AddEdgeRequest$json,
   '.graph.v1.AddEdgeResponse': AddEdgeResponse$json,
+  '.graph.v1.MutationAcceptance': MutationAcceptance$json,
   '.graph.v1.AddEdgesRequest': AddEdgesRequest$json,
   '.graph.v1.AddEdgesResponse': AddEdgesResponse$json,
+  '.graph.v1.CreateEdgeRequest': CreateEdgeRequest$json,
+  '.graph.v1.CreateEdgeResponse': CreateEdgeResponse$json,
+  '.graph.v1.CreateEdgesRequest': CreateEdgesRequest$json,
+  '.graph.v1.CreateEdgesResponse': CreateEdgesResponse$json,
   '.graph.v1.PutEdgeRequest': PutEdgeRequest$json,
   '.graph.v1.PutEdgeResponse': PutEdgeResponse$json,
   '.graph.v1.PutEdgesRequest': PutEdgesRequest$json,
@@ -2787,27 +3059,29 @@ final $typed_data.Uint8List lanternServiceDescriptor = $convert.base64Decode(
     'Jlc3BvbnNlEkEKCEdldEVkZ2VzEhkuZ3JhcGgudjEuR2V0RWRnZXNSZXF1ZXN0GhouZ3JhcGgu'
     'djEuR2V0RWRnZXNSZXNwb25zZRI+CgdBZGRFZGdlEhguZ3JhcGgudjEuQWRkRWRnZVJlcXVlc3'
     'QaGS5ncmFwaC52MS5BZGRFZGdlUmVzcG9uc2USQQoIQWRkRWRnZXMSGS5ncmFwaC52MS5BZGRF'
-    'ZGdlc1JlcXVlc3QaGi5ncmFwaC52MS5BZGRFZGdlc1Jlc3BvbnNlEj4KB1B1dEVkZ2USGC5ncm'
-    'FwaC52MS5QdXRFZGdlUmVxdWVzdBoZLmdyYXBoLnYxLlB1dEVkZ2VSZXNwb25zZRJBCghQdXRF'
-    'ZGdlcxIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdBoaLmdyYXBoLnYxLlB1dEVkZ2VzUmVzcG'
-    '9uc2USRwoKRGVsZXRlRWRnZRIbLmdyYXBoLnYxLkRlbGV0ZUVkZ2VSZXF1ZXN0GhwuZ3JhcGgu'
-    'djEuRGVsZXRlRWRnZVJlc3BvbnNlEkoKC0RlbGV0ZUVkZ2VzEhwuZ3JhcGgudjEuRGVsZXRlRW'
-    'RnZXNSZXF1ZXN0Gh0uZ3JhcGgudjEuRGVsZXRlRWRnZXNSZXNwb25zZRJrChZEZWxldGVFZGdl'
-    'Q29udHJpYnV0aW9uEicuZ3JhcGgudjEuRGVsZXRlRWRnZUNvbnRyaWJ1dGlvblJlcXVlc3QaKC'
-    '5ncmFwaC52MS5EZWxldGVFZGdlQ29udHJpYnV0aW9uUmVzcG9uc2USbgoXRGVsZXRlRWRnZUNv'
-    'bnRyaWJ1dGlvbnMSKC5ncmFwaC52MS5EZWxldGVFZGdlQ29udHJpYnV0aW9uc1JlcXVlc3QaKS'
-    '5ncmFwaC52MS5EZWxldGVFZGdlQ29udHJpYnV0aW9uc1Jlc3BvbnNlEmIKE0RlbGV0ZUVkZ2Vz'
-    'QnlQcmVmaXgSJC5ncmFwaC52MS5EZWxldGVFZGdlc0J5UHJlZml4UmVxdWVzdBolLmdyYXBoLn'
-    'YxLkRlbGV0ZUVkZ2VzQnlQcmVmaXhSZXNwb25zZRJECglTY2FuRWRnZXMSGi5ncmFwaC52MS5T'
-    'Y2FuRWRnZXNSZXF1ZXN0GhsuZ3JhcGgudjEuU2NhbkVkZ2VzUmVzcG9uc2USVgoPR2V0U2Vydm'
-    'VyU3RhdHVzEiAuZ3JhcGgudjEuR2V0U2VydmVyU3RhdHVzUmVxdWVzdBohLmdyYXBoLnYxLkdl'
-    'dFNlcnZlclN0YXR1c1Jlc3BvbnNlEmUKFEdldFJlcGxpY2F0aW9uU3RhdHVzEiUuZ3JhcGgudj'
-    'EuR2V0UmVwbGljYXRpb25TdGF0dXNSZXF1ZXN0GiYuZ3JhcGgudjEuR2V0UmVwbGljYXRpb25T'
-    'dGF0dXNSZXNwb25zZRJlChRHZXRSZWNlaXB0Q2FwYWJpbGl0eRIlLmdyYXBoLnYxLkdldFJlY2'
-    'VpcHRDYXBhYmlsaXR5UmVxdWVzdBomLmdyYXBoLnYxLkdldFJlY2VpcHRDYXBhYmlsaXR5UmVz'
-    'cG9uc2USWQoQR2V0UmVjZWlwdFN0YXR1cxIhLmdyYXBoLnYxLkdldFJlY2VpcHRTdGF0dXNSZX'
-    'F1ZXN0GiIuZ3JhcGgudjEuR2V0UmVjZWlwdFN0YXR1c1Jlc3BvbnNlEl8KEkdldFJlY2VpcHRT'
-    'dGF0dXNlcxIjLmdyYXBoLnYxLkdldFJlY2VpcHRTdGF0dXNlc1JlcXVlc3QaJC5ncmFwaC52MS'
-    '5HZXRSZWNlaXB0U3RhdHVzZXNSZXNwb25zZRJVCg5CYWNrdXBTbmFwc2hvdBIfLmdyYXBoLnYx'
-    'LkJhY2t1cFNuYXBzaG90UmVxdWVzdBogLmdyYXBoLnYxLkJhY2t1cFNuYXBzaG90UmVzcG9uc2'
-    'UwAQ==');
+    'ZGdlc1JlcXVlc3QaGi5ncmFwaC52MS5BZGRFZGdlc1Jlc3BvbnNlEkcKCkNyZWF0ZUVkZ2USGy'
+    '5ncmFwaC52MS5DcmVhdGVFZGdlUmVxdWVzdBocLmdyYXBoLnYxLkNyZWF0ZUVkZ2VSZXNwb25z'
+    'ZRJKCgtDcmVhdGVFZGdlcxIcLmdyYXBoLnYxLkNyZWF0ZUVkZ2VzUmVxdWVzdBodLmdyYXBoLn'
+    'YxLkNyZWF0ZUVkZ2VzUmVzcG9uc2USPgoHUHV0RWRnZRIYLmdyYXBoLnYxLlB1dEVkZ2VSZXF1'
+    'ZXN0GhkuZ3JhcGgudjEuUHV0RWRnZVJlc3BvbnNlEkEKCFB1dEVkZ2VzEhkuZ3JhcGgudjEuUH'
+    'V0RWRnZXNSZXF1ZXN0GhouZ3JhcGgudjEuUHV0RWRnZXNSZXNwb25zZRJHCgpEZWxldGVFZGdl'
+    'EhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3QaHC5ncmFwaC52MS5EZWxldGVFZGdlUmVzcG'
+    '9uc2USSgoLRGVsZXRlRWRnZXMSHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3QaHS5ncmFw'
+    'aC52MS5EZWxldGVFZGdlc1Jlc3BvbnNlEmsKFkRlbGV0ZUVkZ2VDb250cmlidXRpb24SJy5ncm'
+    'FwaC52MS5EZWxldGVFZGdlQ29udHJpYnV0aW9uUmVxdWVzdBooLmdyYXBoLnYxLkRlbGV0ZUVk'
+    'Z2VDb250cmlidXRpb25SZXNwb25zZRJuChdEZWxldGVFZGdlQ29udHJpYnV0aW9ucxIoLmdyYX'
+    'BoLnYxLkRlbGV0ZUVkZ2VDb250cmlidXRpb25zUmVxdWVzdBopLmdyYXBoLnYxLkRlbGV0ZUVk'
+    'Z2VDb250cmlidXRpb25zUmVzcG9uc2USYgoTRGVsZXRlRWRnZXNCeVByZWZpeBIkLmdyYXBoLn'
+    'YxLkRlbGV0ZUVkZ2VzQnlQcmVmaXhSZXF1ZXN0GiUuZ3JhcGgudjEuRGVsZXRlRWRnZXNCeVBy'
+    'ZWZpeFJlc3BvbnNlEkQKCVNjYW5FZGdlcxIaLmdyYXBoLnYxLlNjYW5FZGdlc1JlcXVlc3QaGy'
+    '5ncmFwaC52MS5TY2FuRWRnZXNSZXNwb25zZRJWCg9HZXRTZXJ2ZXJTdGF0dXMSIC5ncmFwaC52'
+    'MS5HZXRTZXJ2ZXJTdGF0dXNSZXF1ZXN0GiEuZ3JhcGgudjEuR2V0U2VydmVyU3RhdHVzUmVzcG'
+    '9uc2USZQoUR2V0UmVwbGljYXRpb25TdGF0dXMSJS5ncmFwaC52MS5HZXRSZXBsaWNhdGlvblN0'
+    'YXR1c1JlcXVlc3QaJi5ncmFwaC52MS5HZXRSZXBsaWNhdGlvblN0YXR1c1Jlc3BvbnNlEmUKFE'
+    'dldFJlY2VpcHRDYXBhYmlsaXR5EiUuZ3JhcGgudjEuR2V0UmVjZWlwdENhcGFiaWxpdHlSZXF1'
+    'ZXN0GiYuZ3JhcGgudjEuR2V0UmVjZWlwdENhcGFiaWxpdHlSZXNwb25zZRJZChBHZXRSZWNlaX'
+    'B0U3RhdHVzEiEuZ3JhcGgudjEuR2V0UmVjZWlwdFN0YXR1c1JlcXVlc3QaIi5ncmFwaC52MS5H'
+    'ZXRSZWNlaXB0U3RhdHVzUmVzcG9uc2USXwoSR2V0UmVjZWlwdFN0YXR1c2VzEiMuZ3JhcGgudj'
+    'EuR2V0UmVjZWlwdFN0YXR1c2VzUmVxdWVzdBokLmdyYXBoLnYxLkdldFJlY2VpcHRTdGF0dXNl'
+    'c1Jlc3BvbnNlElUKDkJhY2t1cFNuYXBzaG90Eh8uZ3JhcGgudjEuQmFja3VwU25hcHNob3RSZX'
+    'F1ZXN0GiAuZ3JhcGgudjEuQmFja3VwU25hcHNob3RSZXNwb25zZTAB');

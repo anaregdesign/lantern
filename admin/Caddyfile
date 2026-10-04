@@ -1,69 +1,23 @@
-# SPA host config for lantern-admin.
-#
-# Caddy serves the React Router (SPA mode) build from /srv with:
-#   - SPA fallback to /index.html so client-side routes (e.g. /browse,
-#     /cli, /ops) work on direct navigation or refresh.
-#   - Aggressive cache headers on hashed asset paths (Vite emits
-#     `/assets/<name>-<hash>.js|css`), no-cache on index.html so a new
-#     deploy is picked up on next page load.
-#   - Listens on :8080 unprivileged (image runs as `caddy` non-root user)
-#     to match the README "Container image" docs.
-#
-# This file serves the SPA and, optionally, reverse-proxies Prometheus.
-# The admin SPA talks to the Lantern gateway directly from the user's
-# browser (CORS enforced on the gateway via LANTERN_CORS_ALLOWED_ORIGINS;
-# see server/README.md). Prometheus, however, is proxied SAME-ORIGIN
-# through this host so the browser never makes a cross-origin call to it:
-# the `import` below pulls in /etc/caddy/conf.d/*.caddy, which
-# docker-entrypoint.sh populates with a `handle_path /api/prom/*` reverse
-# proxy ONLY when LANTERN_ADMIN_PROMETHEUS_UPSTREAM is set (otherwise the
-# snippet is empty and the import is a no-op).
+# SPA routes (/cli, /ops) follow the fixed Server/BFF and diagnostics routes.
+# API failures are never rewritten to index.html. OIDC operators expose this
+# host over HTTPS; reverse proxies preserve its original public Host/scheme.
 {
-	# Disable Caddy's admin endpoint inside the container. We never need
-	# to reload config at runtime; image tag swap is the deploy unit.
 	admin off
-	# Suppress the persistent-config write attempt that would fail on a
-	# read-only rootfs.
 	persist_config off
 }
 
-:8080 {
+{$LANTERN_ADMIN_LISTEN::8080} {
 	encode zstd gzip
-
-	# Health endpoint for container orchestrators. Declared FIRST and as
-	# an exclusive `handle` block so it wins over the SPA `try_files`
-	# fallback below (which would otherwise rewrite /healthz → index.html
-	# because no such file exists on disk). No upstream dependency, so it
-	# stays green even when the Lantern gateway is unreachable.
 	handle /healthz {
 		respond "ok" 200
 	}
-
-	# Optional same-origin Prometheus reverse proxy. No-op unless
-	# LANTERN_ADMIN_PROMETHEUS_UPSTREAM is set at container start. Declared
-	# BEFORE the catch-all SPA `handle` so /api/prom/* is proxied rather
-	# than rewritten to index.html. handle_path strips the /api/prom
-	# prefix, so /api/prom/api/v1/query_range hits Prometheus at
-	# /api/v1/query_range. The GLOB import is deliberate: a directory with
-	# no *.caddy file is a no-op (the SPA still serves), so the container
-	# stays up even if the entrypoint could not write the snippet.
 	import /etc/caddy/conf.d/*.caddy
-
-	# Everything else is the SPA: cache-headers + try_files + file_server.
 	handle {
 		root * /srv
-
-		# Long-lived immutable cache for hashed assets.
 		@hashed path /assets/* /favicon.ico
 		header @hashed Cache-Control "public, max-age=31536000, immutable"
-
-		# Never cache the SPA shell — index.html is the entry point and
-		# changes every deploy.
 		@html path / /index.html
 		header @html Cache-Control "no-cache, no-store, must-revalidate"
-
-		# SPA fallback: any path that doesn't match a file on disk serves
-		# index.html so React Router can handle the route client-side.
 		try_files {path} /index.html
 		file_server
 	}

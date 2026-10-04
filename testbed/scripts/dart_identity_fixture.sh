@@ -1,78 +1,56 @@
 #!/usr/bin/env bash
-# Start/stop the host-only h2c identity CDC fixtures from one built server.
+# Host-only public CDC fixtures with an independent native private peer plane.
 set -euo pipefail
-
-action="${1:-}"
-directory="${3:-${2:-}}"
-case "$action" in
-  start)
-    binary="${2:?server binary required}"
-    directory="${3:?state directory required}"
-    mkdir -p "$directory"
-    ;;
+umask 077
+case "${1:-}" in
   stop)
     directory="${2:?state directory required}"
-    for name in gap a b c; do
-      pid_file="$directory/lantern-identity-$name.pid"
-      if [[ -f "$pid_file" ]]; then
-        kill "$(cat "$pid_file")" 2>/dev/null || true
-        rm -f "$pid_file"
+    for name in gap cluster; do
+      file="$directory/$name.pid"
+      if [[ -f "$file" ]]; then
+        pid="$(cat "$file")"
+        kill "$pid" 2>/dev/null || true
+        for _ in $(seq 1 300); do
+          kill -0 "$pid" 2>/dev/null || break
+          sleep 0.1
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "owned identity supervisor failed to stop; private diagnostics: $directory" >&2
+          exit 1
+        fi
+        rm -f "$file"
       fi
     done
-    exit 0
+    exit 0 ;;
+  start)
+    binary="${2:?Server binary required}"
+    directory="${3:?new private state directory required}"
+    helper="${4:-${binary}-authfixture}"
+    [[ -x "$binary" && -x "$helper" && ! -e "$directory" ]] || exit 2
+    mkdir -m 700 "$directory"
     ;;
-  *)
-    echo "usage: $0 start <server-binary> <state-dir> | stop <state-dir>" >&2
-    exit 2
-    ;;
+  *) echo 'usage: dart_identity_fixture.sh start <Server> <new-state> [authfixture] | stop <state>' >&2; exit 2 ;;
 esac
-
 base="${IDENTITY_FIXTURE_BASE_PORT:-6400}"
-gap=$((base - 1))
-port_a=$base
-port_b=$((base + 1))
-port_c=$((base + 2))
-
-start() {
-  local name="$1" port="$2" metrics="$3" node="$4" peers="$5" capacity="$6"
-  env \
-    LANTERN_PORT="$port" \
-    LANTERN_METRICS_ADDR=":$metrics" \
-    LANTERN_LOG_LEVEL=warn \
-    LANTERN_NODE_ID="$node" \
-    LANTERN_PEERS="$peers" \
-    LANTERN_MUTATION_LOG_CAPACITY="$capacity" \
-    LANTERN_PUMP_BACKOFF_MIN_MS=50 \
-    LANTERN_PUMP_BACKOFF_MAX_MS=500 \
-    "$binary" > "$directory/lantern-identity-$name.log" 2>&1 &
-  echo $! > "$directory/lantern-identity-$name.pid"
-}
-
-start gap "$gap" $((base + 100)) 000000000000000000000000000000d0 '' 2
-start a "$port_a" $((base + 101)) 000000000000000000000000000000a1 "127.0.0.1:$port_b,127.0.0.1:$port_c" 10000
-start b "$port_b" $((base + 102)) 000000000000000000000000000000b2 "127.0.0.1:$port_a,127.0.0.1:$port_c" 10000
-start c "$port_c" $((base + 103)) 000000000000000000000000000000c3 "127.0.0.1:$port_a,127.0.0.1:$port_b" 10000
-
-for port in "$gap" "$port_a" "$port_b" "$port_c"; do
+peer="${IDENTITY_FIXTURE_PEER_BASE_PORT:-$((base + 200))}"
+printf '%s\n' '[{"LANTERN_MUTATION_LOG_CAPACITY":"2"}]' > "$directory/gap-overrides.json"
+printf '%s\n' '[{"LANTERN_MUTATION_LOG_CAPACITY":"10000"},{"LANTERN_MUTATION_LOG_CAPACITY":"10000"},{"LANTERN_MUTATION_LOG_CAPACITY":"10000"}]' > "$directory/cluster-overrides.json"
+trap 'bash "$0" stop "$directory"' ERR
+"$helper" -directory "$directory/gap" -mode off -public-ports "$((base - 1))"   -serve "$binary" -overrides-file "$directory/gap-overrides.json"   </dev/null > "$directory/gap.json" 2> "$directory/gap-supervisor.log" &
+printf '%s\n' "$!" > "$directory/gap.pid"
+"$helper" -directory "$directory/cluster" -mode off   -public-ports "$base,$((base + 1)),$((base + 2))"   -peer-ports "$peer,$((peer + 1)),$((peer + 2))"   -serve "$binary" -overrides-file "$directory/cluster-overrides.json"   </dev/null > "$directory/cluster.json" 2> "$directory/cluster-supervisor.log" &
+printf '%s\n' "$!" > "$directory/cluster.pid"
+for name in gap cluster; do
   ready=false
-  for _ in $(seq 1 30); do
-    if curl --fail --silent --show-error --max-time 2 \
-      -H 'Content-Type: application/json' \
-      -H 'Connect-Protocol-Version: 1' \
-      --data '{}' \
-      "http://127.0.0.1:$port/grpc.health.v1.Health/Check" \
-      2>/dev/null | grep -q 'SERVING'; then
-      ready=true
-      break
-    fi
-    sleep 1
+  for _ in $(seq 1 120); do
+    kill -0 "$(cat "$directory/$name.pid")" 2>/dev/null || break
+    if [[ -s "$directory/$name.json" ]]; then ready=true; break; fi
+    sleep 0.5
   done
   if [[ "$ready" != true ]]; then
-    for name in gap a b c; do
-      cat "$directory/lantern-identity-$name.log" >&2 || true
-    done
-    "$0" stop "$directory"
-    echo "identity fixture on port $port failed health check" >&2
+    echo "identity fixture failed certified readiness; private diagnostics: $directory" >&2
+    bash "$0" stop "$directory"
     exit 1
   fi
 done
+trap - ERR

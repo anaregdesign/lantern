@@ -174,6 +174,9 @@ enum ReceiptMutationKind {
 
   /// Exact-result Delete of one caller-known Add contribution.
   edgeContributionDelete,
+
+  /// Conditional connection creation between existing endpoints.
+  edgeCreate,
 }
 
 /// Capability information returned by [LanternReceipts.getReceiptCapability].
@@ -286,7 +289,7 @@ final class ReceiptContext {
   ReceiptEpoch get epoch => operationIds.first.epoch;
 }
 
-/// The three possible read-only receipt lookup states.
+/// Read-only receipt states, including an explicit non-disclosure state.
 enum ReceiptStatusState {
   /// The server retains an exact receipt and original operation result.
   confirmed,
@@ -296,6 +299,9 @@ enum ReceiptStatusState {
 
   /// The retention boundary means execution can no longer be proven.
   noLongerProvable,
+
+  /// No original result, confirmation, absence proof or resend permission.
+  effectUndisclosed,
 }
 
 /// An exact retained receipt and its original operation result.
@@ -364,6 +370,22 @@ final class VertexDeleteReceipt extends MutationReceipt {
 
   /// Whether the requested vertex existed when it was deleted.
   final bool existed;
+}
+
+/// An original disclosure-limited conditional Edge Create receipt.
+final class EdgeCreateReceipt extends MutationReceipt {
+  EdgeCreateReceipt._({
+    required super.operationId,
+    required super.groupId,
+    required super.itemIndex,
+    required super.itemCount,
+    required super.intentSha256,
+    required super.deadline,
+    required this.outcome,
+  }) : super._(mutation: ReceiptMutationKind.edgeCreate);
+
+  /// The original creation outcome, even after later deletion.
+  final CreateEdgeOutcome outcome;
 }
 
 /// An exact retained Edge Delete receipt.
@@ -929,6 +951,12 @@ extension LanternReceipts on LanternClient {
         onTrailer: onTrailer,
       ),
     );
+    if (_mutationAcceptedUndisclosed(
+      response,
+      response.hasAcceptance() ? response.acceptance : null,
+    )) {
+      throw const MutationAcceptance();
+    }
     if (response.effectiveWeights.length != input.length ||
         response.written != input.length) {
       throw _malformedReceiptResponse(
@@ -961,6 +989,79 @@ extension LanternReceipts on LanternClient {
     }
     return List<ReceiptEdgeAddResult>.unmodifiable(results);
   }
+
+  /// One atomic Create call. Relative TTLs use the original operation issuance time.
+  Future<List<CreateEdgeOutcome>> createEdgesWithReceipt(
+    Iterable<EdgeInput> edges, {
+    required ReceiptContext context,
+    LanternCallOptions? options,
+  }) async {
+    _ensureOpen();
+    final input = List<EdgeInput>.unmodifiable(edges);
+    _validateCreateInputs(input);
+    _validateReceiptMutationCall(
+      context: context,
+      expectedMutation: ReceiptMutationKind.edgeCreate,
+      itemCount: input.length,
+      label: 'Edge Create',
+    );
+    final request = $graph.CreateEdgesRequest(
+      edges: [
+        for (var i = 0; i < input.length; i++)
+          _edgeInputToProto(
+            input[i],
+            _resolveExpirations([
+              input[i],
+            ], context.operationIds[i].issuedAt).single,
+          ),
+      ],
+      receiptContext: _receiptContextToProto(context),
+    );
+    final response = await _invokeReceiptMutation(
+      method: 'CreateEdgesWithReceipt',
+      context: context,
+      options: _freezeCallOptions(options),
+      call: (raw, headers, signal, onHeader, onTrailer) => raw.createEdges(
+        request,
+        headers: headers,
+        signal: signal,
+        onHeader: onHeader,
+        onTrailer: onTrailer,
+      ),
+    );
+    if (_mutationAcceptedUndisclosed(
+      response,
+      response.hasAcceptance() ? response.acceptance : null,
+    )) {
+      throw const MutationAcceptance();
+    }
+    try {
+      if (response.outcomes.length != input.length) {
+        throw _internalSdkException('misaligned receipt Create outcomes');
+      }
+      return List<CreateEdgeOutcome>.unmodifiable(
+        response.outcomes.map(_createOutcomeFromProto),
+      );
+    } on LanternException catch (error) {
+      throw _malformedReceiptResponse(
+        context,
+        mutation: 'Edge Create',
+        detail: 'invalid outcomes',
+        cause: error,
+      );
+    }
+  }
+
+  /// One-item facade over [createEdgesWithReceipt].
+  Future<CreateEdgeOutcome> createEdgeWithReceipt(
+    EdgeInput edge, {
+    required ReceiptContext context,
+    LanternCallOptions? options,
+  }) async => (await createEdgesWithReceipt(
+    [edge],
+    context: context,
+    options: options,
+  )).single;
 
   /// Adds one edge by forwarding to plural [addEdgesWithReceipt].
   Future<ReceiptEdgeAddResult> addEdgeWithReceipt(
@@ -1104,6 +1205,12 @@ extension LanternReceipts on LanternClient {
         onTrailer: onTrailer,
       ),
     );
+    if (_mutationAcceptedUndisclosed(
+      response,
+      response.hasAcceptance() ? response.acceptance : null,
+    )) {
+      throw const MutationAcceptance();
+    }
     if (response.existed.length != input.length) {
       throw _malformedReceiptResponse(
         context,
@@ -1171,6 +1278,12 @@ extension LanternReceipts on LanternClient {
             onTrailer: onTrailer,
           ),
     );
+    if (_mutationAcceptedUndisclosed(
+      response,
+      response.hasAcceptance() ? response.acceptance : null,
+    )) {
+      throw const MutationAcceptance();
+    }
     try {
       _validateContributionDeleteResponse(input.length, response);
     } on LanternException catch (error) {
@@ -1404,7 +1517,8 @@ int _receiptMutationItemLimit(ReceiptMutationKind mutation) =>
     switch (mutation) {
       ReceiptMutationKind.vertexPut ||
       ReceiptMutationKind.vertexDelete ||
-      ReceiptMutationKind.edgeAdd => _receiptMutationBatchSize,
+      ReceiptMutationKind.edgeAdd ||
+      ReceiptMutationKind.edgeCreate => _receiptMutationBatchSize,
       ReceiptMutationKind.edgeDelete ||
       ReceiptMutationKind.edgeContributionDelete => LanternCrud.maxBatchSize,
     };
@@ -1428,6 +1542,8 @@ Set<ReceiptMutationKind> _receiptMutationKindsFromProto(
         ReceiptMutationKind.vertexDelete,
       $graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_DELETE_EDGE =>
         ReceiptMutationKind.edgeDelete,
+      $graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_CREATE_EDGE =>
+        ReceiptMutationKind.edgeCreate,
       $graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_ADD_EDGE =>
         ReceiptMutationKind.edgeAdd,
       $graph
@@ -1554,6 +1670,16 @@ ReceiptStatus _receiptStatusFromProto(
         operationId: operationId,
         state: ReceiptStatusState.noLongerProvable,
       );
+    case $graph.MutationReceiptState.MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED:
+      if (value.hasReceipt()) {
+        throw _internalSdkException(
+          'undisclosed status carried an original receipt',
+        );
+      }
+      return ReceiptStatus._(
+        operationId: operationId,
+        state: ReceiptStatusState.effectUndisclosed,
+      );
     case $graph.MutationReceiptState.MUTATION_RECEIPT_STATE_UNSPECIFIED:
     default:
       throw _internalSdkException('receipt status has an unknown state');
@@ -1660,6 +1786,20 @@ MutationReceipt _mutationReceiptFromProto(
         intentSha256: intentSha256,
         deadline: deadline,
         existed: result.deleteEdgeExisted,
+      );
+    case $graph.ReceiptResult_Result.createEdgeOutcome:
+      _validateReceiptItemLimit(
+        value.itemCount,
+        ReceiptMutationKind.edgeCreate,
+      );
+      return EdgeCreateReceipt._(
+        operationId: operationId,
+        groupId: groupId,
+        itemIndex: value.itemIndex,
+        itemCount: value.itemCount,
+        intentSha256: intentSha256,
+        deadline: deadline,
+        outcome: _createOutcomeFromProto(result.createEdgeOutcome),
       );
     case $graph.ReceiptResult_Result.addEdgeEffectiveWeight:
       _validateReceiptItemLimit(value.itemCount, ReceiptMutationKind.edgeAdd);

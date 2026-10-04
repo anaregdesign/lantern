@@ -18,6 +18,10 @@ const neighborParallelThreshold = 8
 
 type GraphCache[S comparable, T any] struct {
 	mu sync.RWMutex
+	// systemMetadata is an opt-in reserved, nonexpiring image owned by this
+	// cache. It has independent admission and locking; ordinary graph paths,
+	// indexes, snapshots and GC never visit it.
+	systemMetadata *SystemMetadata
 	// publicationGate is opt-in for staged mutations. The aggregate lock
 	// already covers scans, GC, snapshots, and ordinary writes; point reads
 	// and the existing-edge Add fast path bypass it and use this gate instead.
@@ -201,6 +205,8 @@ type GraphCache[S comparable, T any] struct {
 	gcEdgeBudget int
 	gcSweepPlan  []vertexID
 	gcSweepPos   int
+	// Generic retained-source mode for asynchronous endpoint delivery.
+	retainDanglingEdgeHistory bool
 }
 
 func (c *GraphCache[S, T]) applicationTime() time.Time {

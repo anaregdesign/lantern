@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { createLanternClient, type LanternClient } from "./lantern-client";
 import { useConnection } from "~/lib/client/usecase/connection/connection-context";
+import { useAuth } from "~/lib/client/usecase/auth/use-auth";
 
 /**
  * React-facing factory that returns a memoised Lantern client bound to the
@@ -9,12 +10,19 @@ import { useConnection } from "~/lib/client/usecase/connection/connection-contex
  */
 export function useLanternClient(): LanternClient {
   const { connection } = useConnection();
-  return useMemo(
-    () =>
-      createLanternClient({
-        baseUrl: connection.baseUrl,
-        token: connection.token,
-      }),
-    [connection.baseUrl, connection.token],
-  );
+  const { state } = useAuth();
+  const csrf = state.kind === "ready" ? state.principal.csrfToken : undefined;
+  const signal =
+    state.kind === "ready" || state.kind === "off" ? state.signal : undefined;
+  return useMemo(() => {
+    if (!signal)
+      throw new Error(
+        "Data client requires current authentication capabilities",
+      );
+    return createLanternClient({
+      baseUrl: connection.baseUrl + (csrf ? "/browser" : ""),
+      csrf,
+      signal,
+    });
+  }, [connection.baseUrl, csrf, signal]);
 }

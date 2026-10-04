@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import {
   CONTRIB_ID_BYTES,
@@ -10,7 +11,15 @@ import {
 
 const endpoint = process.env.LANTERN_NODE_RECEIPT_ENDPOINT;
 const nanFixtureEndpoint = process.env.LANTERN_NODE_NAN_FIXTURE_ENDPOINT;
-const token = process.env.LANTERN_NODE_RECEIPT_TOKEN;
+const tokenFile = process.env.LANTERN_NODE_RECEIPT_TOKEN_FILE;
+const token = tokenFile ? readFileSync(tokenFile, "utf8").trim() : undefined;
+const caFile = process.env.LANTERN_NODE_RECEIPT_CA_FILE;
+const transportOptions = caFile
+  ? {
+      fetch: (input: RequestInfo | URL, init?: RequestInit) =>
+        fetch(input, { ...init, tls: { ca: readFileSync(caFile, "utf8") } }),
+    }
+  : undefined;
 
 function randomContribId(): Uint8Array {
   const contribId = crypto.getRandomValues(new Uint8Array(CONTRIB_ID_BYTES));
@@ -40,16 +49,24 @@ async function nextWithin<T>(
 
 if (endpoint && token) {
   test("browser JSON supports receipt unary calls and identity-only CDC", async () => {
-    const client = connectWeb(endpoint, { token });
+    const client = connectWeb(endpoint, { token, transportOptions });
     const key = `node-receipt-web-${crypto.randomUUID()}`;
     try {
       const capability = await client.getReceiptCapability();
       if (!capability.enabled) throw new Error("receipt test endpoint is disabled");
-      const stream = client.subscribeIdentity({ bootstrap: true })[Symbol.asyncIterator]();
+      await client.putVertices(
+        ["head", "selective", "overflow", "negative-overflow"].map((suffix) => ({
+          key: `${key}:${suffix}`,
+          value: "endpoint",
+          ttlSeconds: 3600,
+        })),
+      );
+      const frames = client.watchChanges({ bootstrap: true, prefix: key });
+      const stream = frames[Symbol.asyncIterator]();
       try {
         const first = await nextWithin(stream);
         expect(first.done).toBe(false);
-        expect(first.value?.kind).toBe("checkpoint");
+        expect(first.value?.bootstrap).toBe(true);
 
         const context = mintReceiptOperationContext(capability, 1);
         const put = await client.putVertexWithReceipt(
@@ -191,32 +208,25 @@ if (endpoint && token) {
             : negativeOverflowStatus.state,
         ).toEqual({ kind: "addEdge", effectiveWeight: Number.NEGATIVE_INFINITY });
 
-        let receiptOnly = false;
         let selectiveInvalidation = false;
         for (let count = 0; count < 10_000; count++) {
           const next = await nextWithin(stream);
-          if (next.done) throw new Error("identity stream ended before selective Delete frame");
-          if (next.value?.kind === "chunk" && next.value.operation === "receiptOnly") {
-            expect(next.value.vertexKeys).toEqual([]);
-            expect(next.value.edgeKeys).toEqual([]);
-            expect(next.value.isLast).toBe(true);
-            receiptOnly = true;
-          }
-          if (next.value?.kind === "chunk" && next.value.operation === "deleteEdgeContribution") {
-            expect(next.value.vertexKeys).toEqual([]);
-            if (
-              next.value.edgeKeys.some(
-                (edge) => edge.tail === selectedEdge.tail && edge.head === selectedEdge.head,
-              )
-            ) {
-              selectiveInvalidation = true;
-            }
-          }
-          if (receiptOnly && selectiveInvalidation) {
+          if (next.done) throw new Error("public CDC ended before the selected Edge invalidation");
+          expect(next.value?.bootstrap).toBe(false);
+          expect(next.value?.invalidations.every((item) => item.current === undefined)).toBe(true);
+          if (
+            next.value?.invalidations.some(
+              (item) =>
+                item.kind === "edge" &&
+                item.tail === selectedEdge.tail &&
+                item.head === selectedEdge.head,
+            )
+          ) {
+            expect(next.value.cursor).toBeDefined();
+            selectiveInvalidation = true;
             break;
           }
         }
-        expect(receiptOnly).toBe(true);
         expect(selectiveInvalidation).toBe(true);
       } finally {
         await stream.return?.();

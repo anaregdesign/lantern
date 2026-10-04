@@ -120,3 +120,18 @@ func TestWholeStateInstallCommitAbortAndSearchRebuild(t *testing.T) {
 		}
 	})
 }
+
+func TestWholeStateInstallRequiresMatchingRetainedEdgePolicy(t *testing.T) {
+	live, candidate := wholeStateTestCache(), wholeStateTestCache()
+	candidate.RetainDanglingEdgeHistory()
+	if stage, err := live.BeginWholeStateInstall(candidate); err == nil {
+		stage.Abort()
+		t.Fatal("different retained-history policy installed")
+	}
+	live.RetainDanglingEdgeHistory()
+	stage, err := live.BeginWholeStateInstall(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage.Commit()
+}

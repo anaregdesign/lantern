@@ -161,6 +161,21 @@ abstract final class LanternService {
     graphv1graph.AddEdgesResponse.new,
   );
 
+  /// CreateEdge is the one-item facade over the conditional CreateEdges family.
+  static const createEdge = connect.Spec(
+    '/$name/CreateEdge',
+    connect.StreamType.unary,
+    graphv1graph.CreateEdgeRequest.new,
+    graphv1graph.CreateEdgeResponse.new,
+  );
+
+  static const createEdges = connect.Spec(
+    '/$name/CreateEdges',
+    connect.StreamType.unary,
+    graphv1graph.CreateEdgesRequest.new,
+    graphv1graph.CreateEdgesResponse.new,
+  );
+
   /// PutEdge is idempotent (replaces weight). Thin facade over PutEdges.
   static const putEdge = connect.Spec(
     '/$name/PutEdge',

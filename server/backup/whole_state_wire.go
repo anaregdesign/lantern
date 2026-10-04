@@ -26,16 +26,16 @@ func validateArchiveGraphFrameWire(raw []byte) error {
 
 const archiveWireMaxDepth = 32
 
-// Archive v1 must not start accepting a newly generated protobuf field merely
+// Archive v4 must not start accepting a newly generated protobuf field merely
 // because the application was rebuilt with a newer proto. Review any reachable
 // SnapshotResponse schema change against archive semantics before updating this
 // fingerprint or assigning a new archive version.
-const archiveGraphSchemaFingerprintV1 = "079065858d79925bed4c557076cc0e0353e359af7a72878ca51db26337a5ac1f"
+const archiveGraphSchemaFingerprintV4 = "a8c8af1e98800f47365f1b25711019315f07bef319490243401e9b1e4ed6d662"
 
 var archiveGraphSchemaError = sync.OnceValue(func() error {
 	digest := protoschema.Fingerprint((&pb.SnapshotResponse{}).ProtoReflect().Descriptor())
-	if digest != archiveGraphSchemaFingerprintV1 {
-		return wholeStateArchiveError("archive v1 graph schema changed: %s", digest)
+	if digest != archiveGraphSchemaFingerprintV4 {
+		return wholeStateArchiveError("archive v4 graph schema changed: %s", digest)
 	}
 	return nil
 })

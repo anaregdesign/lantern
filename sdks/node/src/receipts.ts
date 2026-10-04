@@ -6,6 +6,7 @@ import {
 } from "./gen/graph/v1/graph_pb.js";
 import { InvalidArgumentError, LanternError } from "./errors.js";
 import type { EdgeContributionRef } from "./contrib.js";
+import { createEdgeOutcomeFromWire, type CreateEdgeOutcome } from "./create-outcome.js";
 import { putOutcomeFromWire, type PutOutcome } from "./put-outcome.js";
 import type { EdgeInput, VertexInput } from "./values.js";
 
@@ -59,7 +60,8 @@ export type ReceiptMutationKind =
   | "deleteVertex"
   | "deleteEdge"
   | "addEdge"
-  | "deleteEdgeContribution";
+  | "deleteEdgeContribution"
+  | "createEdge";
 
 export interface ReceiptEndpointContinuity {
   readonly deploymentEpoch: ReceiptDeploymentEpoch;
@@ -175,6 +177,7 @@ export interface VertexDeleteReceiptBatchResult {
 }
 
 export type ReceiptOriginalResult =
+  | { readonly kind: "createEdge"; readonly outcome: CreateEdgeOutcome }
   | {
       readonly kind: "putVertex";
       readonly outcome: PutOutcome;
@@ -219,6 +222,11 @@ export type ReceiptStatus =
   | {
       readonly state: "noLongerProvable";
       readonly operationId: OperationID;
+    }
+  | {
+      /** No original result, confirmation, absence proof or resend permission. */
+      readonly state: "effectUndisclosed";
+      readonly operationId: OperationID;
     };
 
 export type ReceiptReconciliationReason =
@@ -239,6 +247,7 @@ type ReceiptContinuityMismatchReason =
   | "generationChanged";
 
 export type ReceiptMutationIntent =
+  | { readonly kind: "createEdge"; readonly inputs: readonly Readonly<EdgeInput>[] }
   | {
       readonly kind: "putVertex";
       readonly inputs: readonly Readonly<VertexInput>[];
@@ -441,6 +450,7 @@ const RECEIPT_MUTATION_ORDER: Readonly<Record<ReceiptMutationKind, number>> = Ob
   deleteEdge: 3,
   addEdge: 4,
   deleteEdgeContribution: 5,
+  createEdge: 6,
 });
 
 function normalizeReceiptMutationKinds(value: unknown): readonly ReceiptMutationKind[] {
@@ -456,7 +466,8 @@ function normalizeReceiptMutationKinds(value: unknown): readonly ReceiptMutation
       kind !== "deleteVertex" &&
       kind !== "deleteEdge" &&
       kind !== "addEdge" &&
-      kind !== "deleteEdgeContribution"
+      kind !== "deleteEdgeContribution" &&
+      kind !== "createEdge"
     ) {
       throw new InvalidArgumentError(
         `receipt supportedMutations[${index}] is not a supported mutation kind`,
@@ -604,6 +615,8 @@ function receiptMutationKindFromWire(
       return "deleteEdge";
     case PbReceiptMutationKind.ADD_EDGE:
       return "addEdge";
+    case PbReceiptMutationKind.CREATE_EDGE:
+      return "createEdge";
     case PbReceiptMutationKind.DELETE_EDGE_CONTRIBUTION:
       return "deleteEdgeContribution";
     case PbReceiptMutationKind.UNSPECIFIED:
@@ -793,6 +806,12 @@ function receiptStatusFromWire(raw: PbReceiptStatus, expected: OperationID): Rec
             existed: result.value,
           });
           break;
+        case "createEdgeOutcome":
+          originalResult = Object.freeze({
+            kind: "createEdge",
+            outcome: createEdgeOutcomeFromWire(result.value),
+          });
+          break;
         case "addEdgeEffectiveWeight":
           if (typeof result.value !== "number") {
             throw new LanternError(
@@ -829,6 +848,11 @@ function receiptStatusFromWire(raw: PbReceiptStatus, expected: OperationID): Rec
         throw new LanternError("no-longer-provable receipt status unexpectedly carried a receipt");
       }
       return Object.freeze({ state: "noLongerProvable", operationId });
+    case PbMutationReceiptState.EFFECT_UNDISCLOSED:
+      if (raw.receipt !== undefined) {
+        throw new LanternError("undisclosed receipt status carried an original receipt");
+      }
+      return Object.freeze({ state: "effectUndisclosed", operationId });
     default:
       throw new LanternError(`server returned unknown receipt status ${raw.state}`);
   }

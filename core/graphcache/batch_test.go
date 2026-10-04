@@ -3,6 +3,7 @@ package graphcache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -640,4 +641,109 @@ func TestReplicatedOrderedVertexBarriersKeepSearchConsistent(t *testing.T) {
 			t.Fatalf("final barrier left Search document: %v", got)
 		}
 	})
+}
+
+func TestConstrainedEdgeBatches(t *testing.T) {
+	for _, method := range []string{"put", "put HLC", "add", "add HLC"} {
+		t.Run(method, func(t *testing.T) {
+			now := time.Now()
+			c := NewGraphCache[string, string](time.Hour)
+			c.applicationClock = func() time.Time { return now }
+			vertexExpiration := now.Add(time.Minute)
+			for _, key := range []string{"tail", "head"} {
+				if err := c.PutVertexWithExpiration(key, key+" payload", vertexExpiration); err != nil {
+					t.Fatal(err)
+				}
+			}
+			apply := func(items []EdgeItem[string]) error {
+				ts := hlc.Timestamp{WallNs: now.UnixNano(), NodeID: hlc.NodeID{1}}
+				switch method {
+				case "put":
+					_, err := c.PutEdgesWithExpirationOutcomesChecked(items)
+					return err
+				case "put HLC":
+					_, err := c.PutEdgesWithExpirationHLCOutcomesChecked(items, ts)
+					return err
+				case "add":
+					_, _, err := c.AddEdgesWithExpirationContribChecked(items)
+					return err
+				default:
+					_, _, _, err := c.AddEdgesWithExpirationContribHLCResultsChecked(items, ts)
+					return err
+				}
+			}
+			item := EdgeItem[string]{Tail: "tail", Head: "head", Weight: 2, Expiration: now.Add(time.Hour), RequireLiveEndpoints: true, NoEndpointCreation: true}
+			missing := item
+			missing.Head = "missing"
+			if err := apply([]EdgeItem[string]{item, missing}); !errors.Is(err, ErrEdgeEndpointNotLive) {
+				t.Fatalf("mixed batch: %v", err)
+			}
+			if _, found := c.GetWeight("tail", "head"); found {
+				t.Fatal("rejected batch partially changed an Edge")
+			}
+			if _, found := c.GetVertex("missing"); found {
+				t.Fatal("rejected batch fabricated an endpoint")
+			}
+			if err := apply([]EdgeItem[string]{item}); err != nil {
+				t.Fatal(err)
+			}
+			for _, vertex := range c.SnapshotVertices() {
+				if vertex.Value != vertex.Key+" payload" || !vertex.Expiration.Equal(vertexExpiration) {
+					t.Fatalf("endpoint changed: %+v", vertex)
+				}
+			}
+			c.applicationClock = func() time.Time { return vertexExpiration }
+			item.Weight = 9
+			if err := apply([]EdgeItem[string]{item}); !errors.Is(err, ErrEdgeEndpointNotLive) {
+				t.Fatalf("expired final sample: %v", err)
+			}
+			c.applicationClock = func() time.Time { return now }
+			if got, ok := c.GetWeight("tail", "head"); !ok || got != 2 {
+				t.Fatalf("expiry rejection changed Edge: %v/%v", got, ok)
+			}
+		})
+	}
+}
+
+func BenchmarkEdgeEndpointConstraints(b *testing.B) {
+	for _, size := range []int{1, 100, 1000} {
+		for _, constrained := range []bool{false, true} {
+			name := fmt.Sprintf("size=%d/constrained=%t", size, constrained)
+			for _, cold := range []bool{false, true} {
+				b.Run(fmt.Sprintf("%s/cold=%t", name, cold), func(b *testing.B) {
+					expiration := time.Now().Add(time.Hour)
+					vertices := make([]VertexItem[string, string], 0, 2*size)
+					edges := make([]EdgeItem[string], size)
+					for i := range edges {
+						tail, head := fmt.Sprintf("tail:%d", i), fmt.Sprintf("head:%d", i)
+						vertices = append(vertices, VertexItem[string, string]{Key: tail, Value: tail, Expiration: expiration}, VertexItem[string, string]{Key: head, Value: head, Expiration: expiration})
+						edges[i] = EdgeItem[string]{Tail: tail, Head: head, Weight: 1, Expiration: expiration, RequireLiveEndpoints: constrained, NoEndpointCreation: constrained}
+					}
+					newFixture := func() *GraphCache[string, string] {
+						c := NewGraphCache[string, string](time.Hour)
+						if err := c.PutVerticesWithExpiration(vertices); err != nil {
+							b.Fatal(err)
+						}
+						return c
+					}
+					c := newFixture()
+					if !cold {
+						if _, err := c.PutEdgesWithExpirationOutcomesChecked(edges); err != nil {
+							b.Fatal(err)
+						}
+					}
+					b.ReportAllocs()
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						if cold {
+							c = newFixture()
+						}
+						if _, err := c.PutEdgesWithExpirationOutcomesChecked(edges); err != nil {
+							b.Fatal(err)
+						}
+					}
+				})
+			}
+		}
+	}
 }

@@ -1,0 +1,54 @@
+# Local-only benchmark base. Every node has an operator-signed private plane,
+# even when public data APIs use OFF/h2c. run.sh owns all ephemeral trust/state.
+x-native: &native
+  image: ${LANTERN_IMAGE:-ghcr.io/anaregdesign/lantern:latest}
+  stop_grace_period: 45s
+  networks: [default]
+  healthcheck:
+    test: [CMD, wget, -qO-, 'http://127.0.0.1:9090/readyz']
+    interval: 2s
+    timeout: 2s
+    retries: 40
+    start_period: 40s
+
+services:
+  lantern-0:
+    <<: *native
+    hostname: lantern-0
+    env_file: ["${LANTERN_BENCH_PEER_TLS_DIR:?native benchmark fixture required}/lantern-0.env"]
+    ports: ["127.0.0.1:${LANTERN_BENCH_PUBLIC_PORT_0:-6380}:6380"]
+    volumes:
+      - ${LANTERN_BENCH_PEER_TLS_DIR:?native benchmark fixture required}/lantern-0:/run/lantern-config:ro
+      - state-0:/state
+      - backup-0:/data
+  lantern-1:
+    <<: *native
+    hostname: lantern-1
+    env_file: ["${LANTERN_BENCH_PEER_TLS_DIR:?native benchmark fixture required}/lantern-1.env"]
+    ports: ["127.0.0.1:${LANTERN_BENCH_PUBLIC_PORT_1:-6381}:6380"]
+    volumes:
+      - ${LANTERN_BENCH_PEER_TLS_DIR:?native benchmark fixture required}/lantern-1:/run/lantern-config:ro
+      - state-1:/state
+      - backup-1:/data
+  lantern-2:
+    <<: *native
+    hostname: lantern-2
+    env_file: ["${LANTERN_BENCH_PEER_TLS_DIR:?native benchmark fixture required}/lantern-2.env"]
+    ports: ["127.0.0.1:${LANTERN_BENCH_PUBLIC_PORT_2:-6382}:6380"]
+    volumes:
+      - ${LANTERN_BENCH_PEER_TLS_DIR:?native benchmark fixture required}/lantern-2:/run/lantern-config:ro
+      - state-2:/state
+      - backup-2:/data
+  prometheus:
+    profiles: [off-diagnostics]
+    image: prom/prometheus:v3.5.0
+    ports: ["127.0.0.1:${LANTERN_BENCH_PROM_PORT:-9091}:9090"]
+    volumes: ["./prometheus.native.yml:/etc/prometheus/prometheus.yml:ro"]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=1h"]
+volumes:
+  state-0:
+  state-1:
+  state-2:
+  backup-0:
+  backup-1:
+  backup-2:

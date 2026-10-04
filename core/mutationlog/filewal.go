@@ -14,6 +14,8 @@ import (
 	"sync"
 
 	"github.com/anaregdesign/lantern/core/hlc"
+
+	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
 // FileWAL is an opt-in, synchronous WAL for one exclusively owned file.
@@ -97,7 +99,7 @@ func CreateFileWAL(path string, encode func(MutationOp) ([]byte, error)) (*FileW
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := privatefile.Create(path, os.O_RDWR)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +169,7 @@ func ResumeFileWAL(path string, encode func(MutationOp) ([]byte, error), decode 
 	if err != nil {
 		return nil, err
 	}
-	if !initial.Mode().IsRegular() {
+	if !initial.Mode().IsRegular() || privatefile.Check(f) != nil {
 		return nil, fmt.Errorf("%w: not a regular file", ErrFileWALCorrupt)
 	}
 	lastSeq, offset, rawPrefix, chain, err := replayOpenedFileWAL(f, decode, visit)
@@ -408,6 +410,9 @@ func ReplayFileWAL(path string, decode func([]byte) (MutationOp, error), visit f
 		return err
 	}
 	defer f.Close()
+	if err := privatefile.Check(f); err != nil {
+		return fmt.Errorf("%w: unsafe file security", ErrFileWALCorrupt)
+	}
 	_, _, _, _, err = replayOpenedFileWAL(f, decode, visit)
 	return err
 }

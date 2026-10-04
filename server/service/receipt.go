@@ -13,6 +13,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
 // MaxReceiptStatusBatchSize is the handler-private ceiling for status
@@ -153,6 +154,10 @@ func (s *LanternService) GetReceiptCapability(ctx context.Context, req *pb.GetRe
 	if err != nil || effective.UnixMilli() < 0 {
 		return &pb.GetReceiptCapabilityResponse{}, nil
 	}
+	supported := []pb.ReceiptMutationKind{pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX, pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX, pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE, pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE, pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION}
+	if s.advertiseEdgeCreateReceipt(ctx) {
+		supported = append(supported, pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_CREATE_EDGE)
+	}
 	nodeID := s.clock.NodeID()
 	if nodeID == ([16]byte{}) || runtime.generation == ([16]byte{}) {
 		return &pb.GetReceiptCapabilityResponse{}, nil
@@ -171,14 +176,8 @@ func (s *LanternService) GetReceiptCapability(ctx context.Context, req *pb.GetRe
 			NodeId:     append([]byte(nil), nodeID[:]...),
 			Generation: append([]byte(nil), runtime.generation[:]...),
 		},
-		ServerNowUnixMs: uint64(effective.UnixMilli()),
-		SupportedMutations: []pb.ReceiptMutationKind{
-			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX,
-			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX,
-			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE,
-			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE,
-			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION,
-		},
+		ServerNowUnixMs:    uint64(effective.UnixMilli()),
+		SupportedMutations: supported,
 	}, nil
 }
 
@@ -249,6 +248,24 @@ func (s *LanternService) GetReceiptStatuses(ctx context.Context, req *pb.GetRece
 		return nil, receiptLookupError(err)
 	}
 
+	if err := s.authorizeReceiptObservations(ctx, observations); err != nil {
+		return nil, err
+	}
+	// Whole-batch projection avoids leaking hidden outcomes through alignment,
+	// item counts or otherwise-readable neighbours in the same logical reply.
+	if admission, known := security.AdmissionFromContext(ctx); s.dataAuthorization && known {
+		blind := false
+		for _, observation := range observations {
+			blind = blind || observation.Status == mutationreceipt.Confirmed && !allowsReceiptResource(admission.Access(), observation.Receipt)
+		}
+		if blind {
+			statuses := make([]*pb.ReceiptStatus, len(ids))
+			for i, id := range ids {
+				statuses[i] = &pb.ReceiptStatus{OperationId: id.Bytes(), State: pb.MutationReceiptState_MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED}
+			}
+			return &pb.GetReceiptStatusesResponse{Statuses: statuses}, nil
+		}
+	}
 	statuses := make([]*pb.ReceiptStatus, len(ids))
 	var noLongerProvable uint64
 	for i, observation := range observations {
@@ -326,6 +343,11 @@ func receiptStatusProto(id mutationreceipt.ID, observation mutationreceipt.Obser
 					DeleteEdgeContributionExisted: receipt.Result[0] == 1,
 				},
 			}
+		case mutationreceipt.CreateEdge:
+			if len(receipt.Result) != 1 || !validCreateEdgeOutcome(pb.CreateEdgeOutcome(receipt.Result[0])) {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Edge Create receipt result is invalid"))
+			}
+			result = &pb.ReceiptResult{Result: &pb.ReceiptResult_CreateEdgeOutcome{CreateEdgeOutcome: pb.CreateEdgeOutcome(receipt.Result[0])}}
 		case mutationreceipt.AddEdge:
 			if len(receipt.Result) != 4 {
 				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Edge Add receipt result is invalid"))

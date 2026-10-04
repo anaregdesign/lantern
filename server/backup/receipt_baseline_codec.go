@@ -19,7 +19,7 @@ import (
 
 const (
 	receiptCombinedBaselineMagic      = "LANTCBLN"
-	receiptCombinedBaselineVersion    = uint16(1)
+	receiptCombinedBaselineVersion    = uint16(3)
 	receiptCombinedBaselineReserved   = uint16(0)
 	receiptCombinedBaselineHeaderSize = 8 + 2 + 2 + 2 + 2 + 8 + 8 + 2*sha256.Size
 	receiptCombinedBaselineFooterSize = sha256.Size
@@ -27,7 +27,7 @@ const (
 		receiptCombinedBaselineHeaderSize + receiptCombinedBaselineFooterSize
 
 	retiredCatalogArchiveMagic      = "LANTRET1"
-	retiredCatalogArchiveVersion    = uint16(1)
+	retiredCatalogArchiveVersion    = uint16(2)
 	retiredCatalogArchiveHeaderSize = 8 + 2 + 2 + 4 + 16 + 8 + 8 + 8 + 4 + 8
 	retiredCatalogArchiveFooterSize = 8 + 8 + sha256.Size
 	retiredCatalogEpochRecord       = byte(1)
@@ -138,13 +138,14 @@ func (ReceiptBaselineCodec) StageCombinedReceiptBaseline(
 		return nil, err
 	}
 	return &service.ReceiptBaselineCandidate{
-		Graph:          stage.graph,
-		Receipts:       stage.receipts,
-		Retired:        retired,
-		Policy:         stage.policy,
-		Origins:        append([]service.OriginState(nil), stage.origins...),
-		CutoffLocalSeq: stage.cutoffLocalSeq,
-		CutoffHLC:      stage.cutoffHLC,
+		NamespaceFormat: archive.Graph[0].GetHeader().GetNamespaceFormat(),
+		Graph:           stage.graph,
+		Receipts:        stage.receipts,
+		Retired:         retired,
+		Policy:          stage.policy,
+		Origins:         append([]service.OriginState(nil), stage.origins...),
+		CutoffLocalSeq:  stage.cutoffLocalSeq,
+		CutoffHLC:       stage.cutoffHLC,
 	}, nil
 }
 
@@ -334,7 +335,7 @@ func decodeRetiredCatalogArchive(
 		return mutationreceipt.RetiredCatalogSnapshot{}, retiredCatalogArchiveMetadata{}, errReceiptCombinedBaseline
 	}
 	state := mutationreceipt.RetiredCatalogSnapshot{
-		Version:              uint32(retiredCatalogArchiveVersion),
+		Version:              1, // Core snapshot schema is independent of archive framing.
 		ClockHighWaterMillis: int64(highWater),
 		Epochs:               make([]mutationreceipt.RetiredEpochSnapshot, 0),
 	}
@@ -452,7 +453,7 @@ func decodeRetiredCatalogEpoch(
 	}
 	member.Policy.Retention = time.Duration(retentionMS) * time.Millisecond
 	member.Policy.MaxEntries = int(maxEntries)
-	member.State.Version = uint32(retiredCatalogArchiveVersion)
+	member.State.Version = 1 // Core snapshot schema is independent of archive framing.
 	member.State.Epoch = member.Policy.Epoch
 	member.State.ClockHighWaterMillis = highWaterMillis
 	member.State.Receipts = make([]mutationreceipt.Receipt, 0)

@@ -20,6 +20,9 @@ const (
 	ReceiptConfirmed ReceiptState = iota + 1
 	ReceiptNotYetObserved
 	ReceiptNoLongerProvable
+	// ReceiptEffectUndisclosed carries no original receipt, and is not a
+	// confirmation, absence observation, or authorization to resend.
+	ReceiptEffectUndisclosed
 )
 
 // ReceiptOriginalResult is the typed original result stored in a confirmed
@@ -94,7 +97,7 @@ type MutationReceipt struct {
 	OriginalResult ReceiptOriginalResult
 }
 
-// ReceiptStatus preserves the three-state receipt contract. Receipt is set
+// ReceiptStatus preserves the receipt disclosure contract. Receipt is set
 // exactly for ReceiptConfirmed.
 type ReceiptStatus struct {
 	OperationID ReceiptOperationID
@@ -111,6 +114,8 @@ func (s ReceiptState) String() string {
 		return "NOT_YET_OBSERVED"
 	case ReceiptNoLongerProvable:
 		return "NO_LONGER_PROVABLE"
+	case ReceiptEffectUndisclosed:
+		return "EFFECT_UNDISCLOSED"
 	default:
 		return fmt.Sprintf("ReceiptState(%d)", s)
 	}
@@ -210,6 +215,8 @@ func receiptMutationKindFromProto(raw pb.ReceiptMutationKind) (ReceiptMutationKi
 		return ReceiptMutationDeleteEdge, nil
 	case pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE:
 		return ReceiptMutationAddEdge, nil
+	case pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_CREATE_EDGE:
+		return ReceiptMutationCreateEdge, nil
 	case pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION:
 		return ReceiptMutationDeleteEdgeContribution, nil
 	default:
@@ -299,6 +306,11 @@ func receiptStatusFromProto(expected ReceiptOperationID, status *pb.ReceiptStatu
 			return ReceiptStatus{}, receiptProtocolError("NO_LONGER_PROVABLE status carried a receipt")
 		}
 		out.State = ReceiptNoLongerProvable
+	case pb.MutationReceiptState_MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED:
+		if status.GetReceipt() != nil {
+			return ReceiptStatus{}, receiptProtocolError("EFFECT_UNDISCLOSED status carried a receipt")
+		}
+		out.State = ReceiptEffectUndisclosed
 	default:
 		return ReceiptStatus{}, receiptProtocolError("unknown receipt state %d", status.GetState())
 	}
@@ -348,6 +360,12 @@ func mutationReceiptFromProto(expected ReceiptOperationID, receipt *pb.MutationR
 		result = ReceiptDeleteEdgeResult{Existed: typed.DeleteEdgeExisted}
 	case *pb.ReceiptResult_DeleteEdgeContributionExisted:
 		result = ReceiptDeleteEdgeContributionResult{Existed: typed.DeleteEdgeContributionExisted}
+	case *pb.ReceiptResult_CreateEdgeOutcome:
+		outcome, err := createEdgeOutcomeFromProto(typed.CreateEdgeOutcome)
+		if err != nil {
+			return nil, receiptProtocolError("Edge Create result: %v", err)
+		}
+		result = ReceiptCreateEdgeResult{Outcome: outcome}
 	case *pb.ReceiptResult_AddEdgeEffectiveWeight:
 		result = ReceiptAddEdgeResult{EffectiveWeight: typed.AddEdgeEffectiveWeight}
 	default:

@@ -1,15 +1,5 @@
-# Default values for lantern.
-# Minimal Kubernetes profile for operator-managed installations: a 2-replica
-# StatefulSet + headless Service (peer DNS) + ClusterIP Service (in-cluster
-# clients) + PDB. Lantern is a full-replica store, so 2 replicas give
-# rolling-update / single-node-drain survival at the lowest footprint.
-# The Service is ClusterIP-only — Lantern is never exposed outside the
-# cluster; reach it from other pods via its Service FQDN, or from a laptop
-# with `kubectl port-forward` for verification. Admin, MCP and Prometheus
-# are expected to run locally and are NOT deployed by this profile. Set
-# replicaCount=1 to fall back to single-instance mode (no peer pump, no
-# readiness gating).
-
+# Zero-config default: one OFF Server, no IdP or peer material. HA is opt-in
+# through independently signed workload membership, including in OFF mode.
 image:
   repository: ghcr.io/anaregdesign/lantern
   tag: ""        # defaults to .Chart.AppVersion
@@ -27,12 +17,8 @@ enableServiceLinks: false
 nameOverride: ""
 fullnameOverride: ""
 
-# Number of lantern pods. 2 is the minimal HA default for this profile:
-# a full-replica store means each pod holds the whole graph, so 2 replicas
-# survive a rolling update / single-node drain at the lowest cost. Use 1
-# for single-instance / dev (peer pump becomes a no-op when only the local
-# pod resolves).
-replicaCount: 2
+# More than one replica requires peerPlane.enabled and operator material.
+replicaCount: 1
 
 # StatefulSet update strategy. RollingUpdate is required for the PDB
 # minAvailable guarantee to hold during upgrades.
@@ -88,6 +74,8 @@ service:
 # Metrics endpoint (Prometheus /metrics + /healthz + /readyz).
 metrics:
   port: 9090
+  address: "127.0.0.1:9090"
+  expose: false
   serviceMonitor:
     enabled: false
     namespace: ""
@@ -120,18 +108,40 @@ metrics:
         sourceLabels: [__name__]
         regex: up|go_goroutines|go_memstats_heap_inuse_bytes|process_resident_memory_bytes|process_cpu_seconds_total|grpc_server_.*|lantern_(anti_entropy_.*|auth_rejected_total|backup_.*|build_info|capacity_limit|causal_metadata_.*|edge_contrib_deduped_total|edges|get_(edge|vertex)_(hits|misses)_total|gc_duration_seconds_.*|mutation_log_.*|mutationlog_subscriber_dropped_total|origin_states_count|peer_connected|rate_limit_rejected_total|replication_.*|restore_.*|search_calls_total|search_config_.*|search_index_.*|search_rejections_total|snapshot_.*|subscribe_.*|subscription_.*|tombstone_clamp_rejected_total|ttl_expirations_total|validation_rejected_total|vertex_hlc_.*|vertices)
 
-# Replication / peer discovery. See docs/replication.md §9.1.
+# Public auth and native sys: durability. OIDC configuration is an operator
+# ConfigMap; secret files are mounted, never included in browser/Vite config.
+auth:
+  mode: "off"                  # off | oidc; OFF emits no auth env variables
+  nodeRole: writer             # writer | replica; one fixed writer per domain
+  storeMode: restart           # fresh first initialization only | restart
+  configMap: ""               # complete OIDC/domain/bootstrap env contract
+  existingSecret: ""          # role-specific source Secret; never mounted in Server
+  files: ["writer.pub", "cdc-keys.json"] # explicit common allowlist
+  writerFiles: ["writer.key"] # writer-only; add machines.json when configured
+
+# Distinct public TLS certificates. keys: <pod-name>.crt / <pod-name>.key.
+publicTLS:
+  existingSecret: ""
+
+peerPlane:
+  enabled: false
+  port: 6381
+  mode: resume                 # fresh first enrollment only | resume
+  deployment: ""              # nonzero 32-character lowercase hex
+  workloadIDPrefix: ""        # full URI prefix; append /<pod-name>
+  membershipConfigMap: ""     # signed manifest.json, atomically renewed
+  operatorKeySecret: ""       # operator.pub; public verification key only
+  identitySecret: ""          # <pod-name>.crt / <pod-name>.key / ca.pem
+
+runtimeState:
+  dir: /var/lib/lantern/runtime
+  persistence:
+    existingClaim: ""
+    storageClass: ""
+    accessModes: ["ReadWriteOnce"]
+    size: 1Gi
+
 replication:
-  discovery:
-    mode: dns                   # static | dns
-    # DNS hostname the pump resolves to peer IPs. Empty => template
-    # auto-fills with the headless Service FQDN.
-    dnsName: ""
-    defaultPort: "6380"         # appended to each resolved IP
-    intervalMs: 10000           # 0 = resolve once at startup
-  # Static fallback list, used when discovery.mode == "static".
-  peers: []
-  # Cap per-(peer,origin) replication lag before readiness flips false.
   maxLag: 10000
 
 # Anti-entropy settings (background reconciliation). See #186.
@@ -216,16 +226,6 @@ runtime:
 # Extra environment variables (raw env list, appended after the
 # templated ones). Useful for TLS_* / RATE_LIMIT_* / LOG_* tweaks.
 extraEnv: []
-
-# Optional existing Secret for authenticated HA peer TLS. It must contain
-# server.pem, server.key, and ca.pem. The server certificate must cover the
-# discovery DNS name (or each configured static origin). The chart mounts
-# the files read-only and sets the inbound TLS and outbound peer-CA paths;
-# provide LANTERN_AUTH_TOKENS separately via extraEnv.valueFrom.secretKeyRef.
-# To require mTLS, also put client.pem, client.key, and client-ca.pem in this
-# Secret and set the corresponding LANTERN_* paths via extraEnv.
-peerTLS:
-  existingSecret: ""
 
 # Pod scheduling.
 nodeSelector: {}
@@ -314,6 +314,9 @@ admin:
   # that snippet regardless of `securityContext.readOnlyRootFilesystem`.
   # Leave empty to disable (Metrics page degrades gracefully; operators
   # can still point it at any reachable Prometheus from the browser).
+  server:
+    upstream: ""   # fixed pinned writer origin for auth/browser/control
+    caSecret: ""   # ca.pem mounted at /run/lantern-admin-trust
   prometheus:
     upstream: ""   # e.g. "http://prometheus-server.monitoring.svc:80"
 

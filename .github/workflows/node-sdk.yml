@@ -12,6 +12,9 @@ on:
       - 'server/**'
       - 'testdata/search/**'
       - '.github/workflows/node-sdk.yml'
+      - 'testbed/scripts/native_receipt_fixture.sh'
+      - 'tests/integration/auth_test.go'
+      - 'sdks/go/**'
       - "!sdks/node/*.md"
       - "!server/*.md"
     tags:
@@ -26,6 +29,9 @@ on:
       - 'server/**'
       - 'testdata/search/**'
       - '.github/workflows/node-sdk.yml'
+      - 'testbed/scripts/native_receipt_fixture.sh'
+      - 'tests/integration/auth_test.go'
+      - 'sdks/go/**'
       - "!sdks/node/*.md"
       - "!server/*.md"
   workflow_dispatch:
@@ -59,6 +65,7 @@ jobs:
         working-directory: .
         run: |
           go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
           env LANTERN_PORT=6380 LANTERN_METRICS_ADDR=:9090 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-enabled.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-node.pids"
@@ -72,29 +79,11 @@ jobs:
             LANTERN_SEARCH_MAX_QUERY_TERMS=4 LANTERN_MUTATION_LOG_CAPACITY=2 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-budget.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-node.pids"
-          env LANTERN_PORT=6384 LANTERN_METRICS_ADDR=:9094 \
-            LANTERN_AUTH_TOKENS=node-receipt-test-token \
-            LANTERN_RECEIPT_WAL_MODE=fresh \
-            LANTERN_RECEIPT_WAL_PATH="$RUNNER_TEMP/lantern-node-receipt-a.wal" \
-            LANTERN_RECEIPT_EPOCH=42424242424242424242424242424242 \
-            LANTERN_RECEIPT_RETENTION=2h LANTERN_RECEIPT_MAX_ENTRIES=4096 \
-            LANTERN_RECEIPT_MAX_BYTES=16777216 \
-            LANTERN_NODE_ID=31313131313131313131313131313131 \
-            "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-receipt-a.log" 2>&1 &
-          echo $! >> "$RUNNER_TEMP/lantern-node.pids"
-          env LANTERN_PORT=6385 LANTERN_METRICS_ADDR=:9095 \
-            LANTERN_AUTH_TOKENS=node-receipt-test-token \
-            LANTERN_RECEIPT_WAL_MODE=fresh \
-            LANTERN_RECEIPT_WAL_PATH="$RUNNER_TEMP/lantern-node-receipt-b.wal" \
-            LANTERN_RECEIPT_EPOCH=42424242424242424242424242424242 \
-            LANTERN_RECEIPT_RETENTION=2h LANTERN_RECEIPT_MAX_ENTRIES=4096 \
-            LANTERN_RECEIPT_MAX_BYTES=16777216 \
-            LANTERN_NODE_ID=32323232323232323232323232323232 \
-            "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-receipt-b.log" 2>&1 &
-          echo $! >> "$RUNNER_TEMP/lantern-node.pids"
+          bash testbed/scripts/native_receipt_fixture.sh start "$RUNNER_TEMP/lantern" \
+            "$RUNNER_TEMP/lantern-authfixture" "$RUNNER_TEMP/lantern-node-receipt" 6384,6385 6484,6485
           for attempt in $(seq 1 60); do
             ready=true
-            for port in 6380 6381 6382 6383 6384 6385; do
+            for port in 6380 6381 6382 6383; do
               curl --fail --silent --show-error --max-time 2 \
                 -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
                 --data '{}' "http://127.0.0.1:$port/grpc.health.v1.Health/Check" >/dev/null || ready=false
@@ -108,13 +97,15 @@ jobs:
         working-directory: .
         run: |
           go build -o "$RUNNER_TEMP/lantern-node-nan-fixture" ./sdks/node/testdata/receiptfixture
-          env LANTERN_NODE_RECEIPT_TOKEN=node-receipt-test-token \
+          receipt_token="$(cat "$RUNNER_TEMP/lantern-node-receipt/token")"
+          echo "::add-mask::$receipt_token"
+          env LANTERN_NODE_RECEIPT_TOKEN="$receipt_token" \
             LANTERN_NODE_NAN_FIXTURE_PORT=6386 \
             "$RUNNER_TEMP/lantern-node-nan-fixture" > "$RUNNER_TEMP/lantern-node-nan-fixture.log" 2>&1 &
           echo $! >> "$RUNNER_TEMP/lantern-node.pids"
           for attempt in $(seq 1 60); do
             if curl --fail --silent --max-time 2 \
-              -H 'Authorization: Bearer node-receipt-test-token' \
+              -H "Authorization: Bearer $receipt_token" \
               -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
               --data '{}' "http://127.0.0.1:6386/graph.v1.LanternService/GetReceiptCapability" >/dev/null; then
               exit 0
@@ -161,13 +152,14 @@ jobs:
         run: bun run build
       # Connect-Node h2c runs under the supported Node runtime; Bun owns the
       # browser Connect-Web coverage in the following step.
-      - name: Test authenticated Node h2c receipts
+      - name: Test authenticated Node TLS receipts
         run: bun run test:real-wire
         env:
-          LANTERN_NODE_RECEIPT_ENDPOINT: http://127.0.0.1:6384
-          LANTERN_NODE_RECEIPT_OTHER_ENDPOINT: http://127.0.0.1:6385
+          LANTERN_NODE_RECEIPT_ENDPOINT: https://localhost:6384
+          LANTERN_NODE_RECEIPT_OTHER_ENDPOINT: https://localhost:6385
           LANTERN_NODE_NAN_FIXTURE_ENDPOINT: http://127.0.0.1:6386
-          LANTERN_NODE_RECEIPT_TOKEN: node-receipt-test-token
+          LANTERN_NODE_RECEIPT_TOKEN_FILE: ${{ runner.temp }}/lantern-node-receipt/token
+          LANTERN_NODE_RECEIPT_CA_FILE: ${{ runner.temp }}/lantern-node-receipt/trust/ca.pem
       - name: Test Bun suite
         run: bun test
         env:
@@ -176,10 +168,15 @@ jobs:
           LANTERN_NODE_SEARCH_POSITIONS_DISABLED_ENDPOINT: http://127.0.0.1:6382
           LANTERN_NODE_SEARCH_BUDGET_ENDPOINT: http://127.0.0.1:6383
           LANTERN_NODE_IDENTITY_GAP_ENDPOINT: http://127.0.0.1:6383
-          LANTERN_NODE_RECEIPT_ENDPOINT: http://127.0.0.1:6384
-          LANTERN_NODE_RECEIPT_OTHER_ENDPOINT: http://127.0.0.1:6385
+          LANTERN_NODE_RECEIPT_ENDPOINT: https://localhost:6384
+          LANTERN_NODE_RECEIPT_OTHER_ENDPOINT: https://localhost:6385
           LANTERN_NODE_NAN_FIXTURE_ENDPOINT: http://127.0.0.1:6386
-          LANTERN_NODE_RECEIPT_TOKEN: node-receipt-test-token
+          LANTERN_NODE_RECEIPT_TOKEN_FILE: ${{ runner.temp }}/lantern-node-receipt/token
+          LANTERN_NODE_RECEIPT_CA_FILE: ${{ runner.temp }}/lantern-node-receipt/trust/ca.pem
+      - name: Certified OIDC scoped CDC facade
+        working-directory: .
+        run: go test ./tests/integration -run 'TestAuth_OIDCNodeScopedChangesFacadeRealConnect' -count=1
+
       - name: Verify npm pack candidate
         run: bun run verify:package
 
@@ -187,6 +184,7 @@ jobs:
         if: always()
         working-directory: .
         run: |
+          bash testbed/scripts/native_receipt_fixture.sh stop "$RUNNER_TEMP/lantern-node-receipt"
           if [ -f "$RUNNER_TEMP/lantern-node.pids" ]; then
             xargs kill < "$RUNNER_TEMP/lantern-node.pids" || true
           fi

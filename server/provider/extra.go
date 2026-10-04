@@ -177,6 +177,10 @@ func (v *ValidationInterceptor) validate(req any) error {
 				return err
 			}
 		}
+	case *pb.CreateEdgeRequest:
+		return v.validateEdges([]*pb.Edge{r.GetEdge()})
+	case *pb.CreateEdgesRequest:
+		return v.validateEdges(r.GetEdges())
 	case *pb.AddEdgeRequest:
 		return v.validateEdges([]*pb.Edge{r.GetEdge()})
 	case *pb.AddEdgesRequest:

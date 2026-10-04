@@ -2163,3 +2163,38 @@ func TestSnapshotTombstoneFields(t *testing.T) {
 		})
 	}
 }
+
+func TestApplySnapshotEdgeEffectPreservesPendingSources(t *testing.T) {
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	cache.RetainDanglingEdgeHistory()
+	edge := &pb.SnapshotEdge{Tail: "tail", Head: "head", NoEndpointCreation: true}
+	ts := hlc.Timestamp{WallNs: time.Now().UnixNano(), NodeID: hlc.NodeID{1}}
+	addTS := ts
+	addTS.Logical++
+	rows := []snapshotEdgeRow{{weight: 2, hlc: ts}, {weight: 3, contribID: graphcache.ContribID{1}, hlc: addTS}}
+	for range 3 {
+		for _, row := range rows {
+			if err := applySnapshotEdgeEffect(cache, edge, row); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if len(cache.SnapshotVertices()) != 0 || len(cache.SnapshotEdges()) != 0 {
+		t.Fatal("private Snapshot created or exposed endpoints")
+	}
+	if pending := cache.SnapshotReplication().Graph.Edges; len(pending) != 1 || len(pending[0].Contributions) != 2 {
+		t.Fatal("private Snapshot lost/doubled history", pending)
+	}
+	for _, key := range []string{"tail", "head"} {
+		if err := cache.PutVertex(key, &pb.Vertex{Key: key}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if weight, ok := cache.GetWeight("tail", "head"); !ok || weight != 5 {
+		t.Fatal("Snapshot replay weight", weight, ok)
+	}
+	recorder := &recordingApplier{}
+	if err := applySnapshotEdgeEffect(recorder, edge, rows[0]); err == nil || len(recorder.putEdges) != 0 {
+		t.Fatal("unsupported installer silently downgraded effect", err)
+	}
+}

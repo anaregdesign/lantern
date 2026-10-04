@@ -1,3 +1,4 @@
+import { mutationReply, type MutationReply } from "lantern-sdk/web";
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
 import { flatEdgeToSdkInput } from "./to-flat";
@@ -20,11 +21,13 @@ export async function addEdge(
   head: string,
   body: AddEdgeBody,
   init?: { signal?: AbortSignal },
-): Promise<AddEdgeResponse> {
+): Promise<MutationReply<AddEdgeResponse>> {
   const flat: Edge = { ...(body.edge ?? {}), tail, head };
   try {
-    await client.addEdge(flatEdgeToSdkInput(flat), init?.signal);
-    return {};
+    return await mutationReply(async () => {
+      await client.addEdge(flatEdgeToSdkInput(flat), init?.signal);
+      return {};
+    });
   } catch (err) {
     throw LanternApiError.fromUnknown("AddEdge", err);
   }

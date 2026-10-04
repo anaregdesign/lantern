@@ -1,14 +1,7 @@
-# many_subscribers — N concurrent Subscribe streams across replicas.
-#
-# Goal: validate the leaderless Subscribe contract (#415, Reading B).
-# Writes are intentionally pinned to a single replica while subscribers
-# fan out across all three; under the leaderless contract every
-# subscriber on every replica MUST observe every committed mutation,
-# regardless of which replica it bound to. Pre-Reading-B (and pre-B-3)
-# this pattern starved 42/64 subscribers because the non-writer
-# replicas' local mutation log was empty for them; with Reading B this
-# scenario should report starve = 0/64 (modulo bench-level startup
-# noise; ≤ 5/64 is the documented acceptance bar of #392).
+# many_subscribers — 64 public value CDC consumers across three replicas.
+# Producer workload and floors are retained. Native private pumps still carry
+# complete replication; external consumers now use scope-bound opaque cursors.
+# changeprobe records bounded-stream resumes and gap/bootstrap separately.
 name: many_subscribers
 # This scenario deliberately drives the 10k-entry bench mutation log past its
 # retention window so Subscribe gap recovery and full Snapshot replay are part
@@ -32,14 +25,11 @@ target:
   data_template: |
     {"vertex":{"key":"fan-{{.RequestNumber}}","int64":"{{.RequestNumber}}"}}
 subscribe:
-  # run.sh launches `count` streams round-robined across `endpoints`.
-  # Empty `from_seq_per_origin` map = cold start; the server delivers
-  # every retained entry from every origin. This is what an external
-  # CDC consumer that has never seen this cluster does.
+  # Consumers bootstrap the live tail; this is not historical replay.
   count: 64
   endpoints: ["localhost:6380", "localhost:6381", "localhost:6382"]
-  call: graph.v1.LanternReplicationService/Subscribe
-  data_template: '{}'
+  call: graph.v1.LanternChangeService/WatchChanges
+  data_template: '{"projection":"CHANGE_PROJECTION_VALUE","bootstrap":true}'
 leak_gate:
   goroutine_max_delta: 80     # 64 streams × bookkeeping
   # 2k RPS × 2m of PutVertex with monotonically-increasing keys grows
@@ -56,7 +46,7 @@ leak_gate:
 # nightly baselines. Keep those conservative thresholds until the search-free
 # scenario has accumulated enough nightly samples for a deliberate rebaseline.
 # The perf gate reads only the producer's ghz report; stream health is observed
-# through the lantern_subscription_* series (see #258 item 4).
+# through the lantern_changes_* series (see #258 item 4).
 perf_gate:
   min_steady_rps_total: 180
   max_p99_ms: 1500

@@ -1,23 +1,10 @@
-# Compose override for the bench harness.
-#
-# Layered on top of deploy/compose/docker-compose.yml so the bench can:
-#   1. reach each replica's /debug/pprof/* endpoint from the host, and
-#   2. capture mutex + block profiles (rates are server defaults of 0 in
-#      production; the harness opts in for contention scenarios).
-#
-# Apply via:
-#   docker compose \
-#     -f deploy/compose/docker-compose.yml \
-#     -f testbed/bench/compose.override.yml \
-#     up -d
-#
-# Since #435 the canonical compose declares three explicit lantern-{0,1,2}
-# services with pinned host ports (6380-6382). This override extends each
-# one with bench-only env + an explicit per-replica metrics port mapping
-# (9390/9391/9392) so the harness's pprof.sh and direct /metrics curls
-# address each replica deterministically.
+# OFF-only profiling overlay for the explicit native benchmark base.
+# Native peer trust and workload identity come from per-node env files.
+# Protected receipt runs use compose.receipt-tls.yml to remove anonymous
+# diagnostics ports and profiling; an owned loopback collector reads metrics.
 
 x-lantern-bench-env: &lantern-bench-env
+  LANTERN_METRICS_ADDR: ":9090"
   LANTERN_PPROF_ENABLED: "true"
   # Sample 1/N events. Non-zero values are required for /debug/pprof/mutex
   # and /debug/pprof/block to return useful data. Cheap at these rates.
@@ -55,33 +42,23 @@ x-lantern-bench-env: &lantern-bench-env
   LANTERN_SEARCH_ENABLED: "${LANTERN_BENCH_SEARCH_ENABLED:-true}"
   # Receipt scenarios opt into one fresh durable WAL per replica. Empty
   # defaults preserve graph-only behavior for every existing scenario.
-  LANTERN_AUTH_TOKENS: "${LANTERN_BENCH_AUTH_TOKEN:-}"
   LANTERN_BACKUP_RESTORE_ON_START: "${LANTERN_BENCH_BACKUP_RESTORE_ON_START:-true}"
-  LANTERN_RECEIPT_EPOCH: "${LANTERN_BENCH_RECEIPT_EPOCH:-}"
-  LANTERN_RECEIPT_MAX_BYTES: "${LANTERN_BENCH_RECEIPT_MAX_BYTES:-}"
-  LANTERN_RECEIPT_MAX_ENTRIES: "${LANTERN_BENCH_RECEIPT_MAX_ENTRIES:-}"
-  LANTERN_RECEIPT_RETENTION: "${LANTERN_BENCH_RECEIPT_RETENTION:-}"
-  LANTERN_RECEIPT_WAL_MODE: "${LANTERN_BENCH_RECEIPT_WAL_MODE:-graph-only}"
-  LANTERN_RECEIPT_WAL_PATH: "${LANTERN_BENCH_RECEIPT_WAL_PATH:-}"
 
 services:
   lantern-0:
     environment:
       <<: *lantern-bench-env
-      LANTERN_NODE_ID: "${LANTERN_BENCH_NODE_ID_0:-}"
     ports:
-      - "9390:9090"
+      - "127.0.0.1:${LANTERN_BENCH_METRICS_PORT_0:-9390}:9090"
 
   lantern-1:
     environment:
       <<: *lantern-bench-env
-      LANTERN_NODE_ID: "${LANTERN_BENCH_NODE_ID_1:-}"
     ports:
-      - "9391:9090"
+      - "127.0.0.1:${LANTERN_BENCH_METRICS_PORT_1:-9391}:9090"
 
   lantern-2:
     environment:
       <<: *lantern-bench-env
-      LANTERN_NODE_ID: "${LANTERN_BENCH_NODE_ID_2:-}"
     ports:
-      - "9392:9090"
+      - "127.0.0.1:${LANTERN_BENCH_METRICS_PORT_2:-9392}:9090"

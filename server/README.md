@@ -122,7 +122,7 @@ failure (#847). The most common knobs:
 | `LANTERN_TRAVERSAL_TIMEOUT_MS` | `0` | Server-side wall-clock budget for `Illuminate` (#842); `0` = client-owned deadline. |
 | `LANTERN_MAX_VERTICES` / `LANTERN_MAX_EDGES` | `0` / `0` | Conservative graph-admission soft caps (#848) over live entries plus retained Put barriers. A coexisting live additive edge and Put barrier may count twice; this keeps born-expired Put charged. Replication apply / restore remain exempt. |
 | `LANTERN_MAX_VERTEX_CAUSAL_ENTRIES` / `LANTERN_MAX_EDGE_CAUSAL_ENTRIES` | `0` / `0` | Separate atomic local-origin budgets over the exact retained causal-identity union (live HLC floor, Put barrier, or Delete tombstone); `0` = unlimited. Replication apply remains exempt for convergence and may take a node over-limit. |
-| `LANTERN_AUTH_TOKENS` / `LANTERN_AUTH_EXEMPT_REFLECTION` | _(unset)_ / `true` | Opt-in bearer-token auth for the data plane (#850); health checks always exempt. |
+| `LANTERN_AUTH_MODE` | `off` | Default-off OIDC and Role-only prefix RBAC. OIDC requires complete native security storage, pinned authority and Issuer/admin configuration. Unknown, partial, empty or retired auth settings fail startup. See [ADR 0012](../docs/decisions/0012-oidc-prefix-rbac.md) and the [full environment reference](../docs/env.md). |
 | `LANTERN_LLM_*` | `PROVIDER=disabled` | LLM engine wiring (#828): provider, model, key/base-URL, and the injectable auth modes. |
 | `LANTERN_TOMBSTONE_TTL` | `8760h` (1 year) | Tombstone retention + clamp on caller-supplied `Expiration`; set to `0` to disable (see HA RFC). |
 

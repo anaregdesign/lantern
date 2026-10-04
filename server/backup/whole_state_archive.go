@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/proto"
 
@@ -25,13 +26,13 @@ import (
 // graph dump never enters this codec and cannot certify receipt continuity.
 const (
 	wholeStateArchiveMagic      = "LANTARCH"
-	wholeStateArchiveVersion    = uint16(1)
+	wholeStateArchiveVersion    = uint16(4)
 	wholeStateArchiveReceipts   = uint16(1)
 	wholeStateArchiveMaxFrame   = 32 << 20
 	wholeStateArchiveMaxBytes   = 512 << 20
 	wholeStateArchiveHeaderSize = 8 + 2 + 2 + 4 + 16 + 32 + 8 + 8 + 4 + 8
 	wholeStateArchiveFooterSize = 8 + 8 + 8 + sha256.Size
-	wholeStateArchiveReceiptMin = 49 + 16 + 4 + 4 + 1 + 32 + 24 + 1 + 8 + 4
+	wholeStateArchiveReceiptMin = 49 + 16 + 4 + 4 + 1 + 32 + 24 + 1 + 8 + 4 + 1 + 4 + 4
 	wholeStateArchiveOriginSize = 16 + 8 + 8 + 4 + 16
 
 	wholeStateGraphRecord   = byte(1)
@@ -58,11 +59,15 @@ func wholeStateArchiveError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errWholeStateArchive, fmt.Sprintf(format, args...))
 }
 
-// encodeWholeStateArchive writes a deterministic, bounded v1 container. A
+// encodeWholeStateArchive writes a deterministic, bounded v4 container. A
 // SHA-256 footer detects accidental truncation or corruption; it is not an
 // authenticity signature and cannot prove that the producer captured one
 // atomic graph/receipt/origin cut.
 func encodeWholeStateArchive(w io.Writer, a wholeStateArchive) error {
+	maxEntries, err := archiveMaxEntries(a.Policy.MaxEntries)
+	if err != nil {
+		return err
+	}
 	if err := validateWholeStateArchive(a); err != nil {
 		return err
 	}
@@ -75,7 +80,7 @@ func encodeWholeStateArchive(w io.Writer, a wholeStateArchive) error {
 	out.Write(a.Receipts.PolicyFingerprint[:])
 	writeArchiveU64(&out, uint64(a.Receipts.ClockHighWaterMillis))
 	writeArchiveU64(&out, uint64(a.Policy.Retention/time.Millisecond))
-	writeArchiveU32(&out, uint32(a.Policy.MaxEntries))
+	writeArchiveU32(&out, maxEntries)
 	writeArchiveU64(&out, a.Policy.MaxBytes)
 	for _, frame := range a.Graph {
 		payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(frame)
@@ -215,9 +220,12 @@ func decodeWholeStateArchive(r io.Reader) (wholeStateArchive, error) {
 
 func validateWholeStateArchive(a wholeStateArchive) error {
 	if a.Receipts.Version != 1 || a.Receipts.Epoch == (mutationreceipt.Epoch{}) || a.Policy.Epoch != a.Receipts.Epoch ||
-		a.Receipts.ClockHighWaterMillis < 0 || a.Policy.MaxEntries <= 0 || a.Policy.MaxEntries > math.MaxInt32 ||
+		a.Receipts.ClockHighWaterMillis < 0 ||
 		a.Policy.ClockHighWater.UnixMilli() != a.Receipts.ClockHighWaterMillis {
 		return wholeStateArchiveError("invalid receipt header or policy")
+	}
+	if _, err := archiveMaxEntries(a.Policy.MaxEntries); err != nil {
+		return err
 	}
 	if _, err := mutationreceipt.NewFromSnapshot(a.Policy, a.Receipts); err != nil {
 		return wholeStateArchiveError("invalid receipt snapshot: %v", err)
@@ -226,6 +234,15 @@ func validateWholeStateArchive(a wholeStateArchive) error {
 		return err
 	}
 	return nil
+}
+
+// The v4 header uses uint32, but its capacity contract is positive MaxInt32
+// on every architecture. Keep the narrowing next to its checked bound.
+func archiveMaxEntries(value int) (uint32, error) {
+	if value <= 0 || value > math.MaxInt32 {
+		return 0, wholeStateArchiveError("invalid receipt capacity")
+	}
+	return uint32(value), nil
 }
 
 func validateArchiveGraph(frames []*pb.SnapshotResponse, origins []service.OriginState) error {
@@ -278,6 +295,15 @@ func encodeArchiveReceipt(r mutationreceipt.Receipt) []byte {
 	writeArchiveU64(&b, uint64(r.DeadlineMillis))
 	writeArchiveU32(&b, uint32(len(r.Result)))
 	b.Write(r.Result)
+	if r.LifecycleReduction {
+		b.WriteByte(1)
+	} else {
+		b.WriteByte(0)
+	}
+	writeArchiveU32(&b, uint32(len(r.Resource.Key)))
+	b.WriteString(r.Resource.Key)
+	writeArchiveU32(&b, uint32(len(r.Resource.Head)))
+	b.WriteString(r.Resource.Head)
 	return b.Bytes()
 }
 
@@ -299,10 +325,32 @@ func decodeArchiveReceipt(raw []byte) (mutationreceipt.Receipt, error) {
 	r.HasContrib = raw[130] == 1
 	r.DeadlineMillis = int64(binary.BigEndian.Uint64(raw[131:139]))
 	size := binary.BigEndian.Uint32(raw[139:143])
-	if uint64(size) != uint64(len(raw)-wholeStateArchiveReceiptMin) {
+	if uint64(size) > uint64(len(raw)-wholeStateArchiveReceiptMin) {
 		return r, wholeStateArchiveError("receipt result length mismatch")
 	}
-	r.Result = append([]byte(nil), raw[143:]...)
+	r.Result = append([]byte(nil), raw[143:143+int(size)]...)
+	off := 143 + int(size)
+	if raw[off] > 1 {
+		return r, wholeStateArchiveError("invalid original lifecycle effect")
+	}
+	r.LifecycleReduction = raw[off] == 1
+	off++
+	keySize := binary.BigEndian.Uint32(raw[off : off+4])
+	off += 4
+	if uint64(keySize) > uint64(len(raw)-off-4) || keySize > mutationreceipt.MaxResourceIdentityBytes {
+		return r, wholeStateArchiveError("receipt resource length mismatch")
+	}
+	r.Resource.Key = string(raw[off : off+int(keySize)])
+	off += int(keySize)
+	headSize := binary.BigEndian.Uint32(raw[off : off+4])
+	off += 4
+	if uint64(headSize) != uint64(len(raw)-off) || uint64(keySize)+uint64(headSize) > mutationreceipt.MaxResourceIdentityBytes {
+		return r, wholeStateArchiveError("receipt resource length mismatch")
+	}
+	r.Resource.Head = string(raw[off:])
+	if !utf8.ValidString(r.Resource.Key) || !utf8.ValidString(r.Resource.Head) || (r.Resource.Key == "" && r.Resource.Head != "") {
+		return r, wholeStateArchiveError("invalid receipt resource identity")
+	}
 	return r, nil
 }
 

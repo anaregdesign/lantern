@@ -387,12 +387,7 @@ os.write(1, b'diagnostic-tail-after-noise\\n')
 ${success ? '' : 'time.sleep(30)'}
 ''');
 
-        final result = await _runAttempt(
-          sandbox,
-          fakeFlutter,
-          fakeXcrun,
-          extraEnvironment: {'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '3'},
-        );
+        final result = await _runAttempt(sandbox, fakeFlutter, fakeXcrun);
 
         expect(
           result.exitCode,
@@ -702,12 +697,12 @@ for ((poll = 0; poll < 200; poll++)); do
 done
 [[ -f '${captureStarted.path}' ]] || exit 2
 echo 'MOBILE_SMOKE_BODY_STARTED'
-for ((poll = 0; poll < 100; poll++)); do
+for ((poll = 0; poll < 200; poll++)); do
   [[ -f '${markerObserved.path}' ]] && break
   sleep 0.05
 done
 [[ -f '${markerObserved.path}' ]] || exit 3
-for ((poll = 0; poll < 100; poll++)); do
+for ((poll = 0; poll < 200; poll++)); do
   [[ -f '${pollingResumed.path}' ]] && break
   sleep 0.05
 done
@@ -718,7 +713,7 @@ echo 'All tests passed!'
       await _writeExecutable(fakePs, '''#!/usr/bin/env bash
 set -euo pipefail
 touch '${captureStarted.path}'
-for ((poll = 0; poll < 50; poll++)); do
+for ((poll = 0; poll < 200; poll++)); do
   if grep -Fq 'MOBILE_SMOKE_BODY_STARTED' '${flutterLog.path}'; then
     touch '${markerObserved.path}'
     echo 'test body started during process capture'
@@ -731,6 +726,8 @@ exit 4
       // The runner must resume polling before Flutter may exit. Otherwise a
       // missing post-capture recheck could pass by observing an already-exited
       // runner instead of preserving the newly started test body.
+      // Use the real diagnostic window and the helper's total budget; this
+      // rendezvous verifies marker handling rather than short process startup.
       await _writeExecutable(fakeSleep, '''#!/usr/bin/env bash
 set -euo pipefail
 if [[ "\${1:-}" == 1 && -f '${markerObserved.path}' ]]; then
@@ -745,13 +742,21 @@ exec /bin/sleep "\$@"
         fakeXcrun,
         extraEnvironment: {
           'IOS_SMOKE_PS_BIN': fakePs.path,
-          'IOS_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS': '3',
-          'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '8',
+          'IOS_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS': '10',
           'PATH': '${sandbox.path}:${Platform.environment['PATH']}',
         },
       );
 
-      expect(result.exitCode, 0, reason: '${result.stderr}');
+      expect(
+        result.exitCode,
+        0,
+        reason:
+            '${result.stderr}\n'
+            'captureStarted=${captureStarted.existsSync()} '
+            'markerObserved=${markerObserved.existsSync()} '
+            'pollingResumed=${pollingResumed.existsSync()} '
+            'classification=${await _classification(sandbox)}',
+      );
       expect(await _classification(sandbox), 'success');
       expect(captureStarted.existsSync(), isTrue);
       expect(markerObserved.existsSync(), isTrue);

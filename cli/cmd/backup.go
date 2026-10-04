@@ -133,11 +133,15 @@ EXAMPLES
 		}
 		defer func() { _ = cli.Close() }()
 
-		stats, err := cli.Restore(cmd.Context(), r, client.WithRestoreFormat(format), client.WithRestoreChunkSize(flagChunkSize))
+		reply, err := client.MutationReplyFrom(cli.Restore(cmd.Context(), r, client.WithRestoreFormat(format), client.WithRestoreChunkSize(flagChunkSize)))
 		if err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", stats.Vertices+stats.Edges)
+		if reply.AcceptedUndisclosed() {
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), `{"acceptance":"acceptedUndisclosed"}`)
+		} else if stats, known := reply.Effect(); known {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "OK %d\n", stats.Vertices+stats.Edges)
+		}
 		return nil
 	},
 }

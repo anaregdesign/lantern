@@ -86,3 +86,224 @@ export async function deleteVerticesByPrefix(prefix: string): Promise<void> {
 export function bytesToBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
 }
+
+/** Rendered SPA contract fixture; real Connect authority is tested separately. */
+export async function securityUI(
+  page: import("@playwright/test").Page,
+  options: {
+    mode?: "ready" | "login" | "off" | "unavailable";
+    recent?: boolean;
+    apply?: "conflict" | "lost";
+    denied?: boolean;
+  } = {},
+) {
+  const calls: Array<{
+    method: string;
+    body: Record<string, unknown>;
+    csrf?: string;
+    authorization?: string;
+  }> = [];
+  const version = {
+    revision: "3",
+    digest: Buffer.alloc(32, 1).toString("base64"),
+    generation: Buffer.alloc(16, 2).toString("base64"),
+  };
+  let signedIn = options.mode !== "login";
+  const primary = "https://admin.example";
+  await page.addInitScript(
+    ({ key, url }) => {
+      localStorage.setItem(key, url);
+      localStorage.setItem("lantern.admin.authToken", "retired-token");
+    },
+    { key: STORAGE_KEY, url: primary },
+  );
+  await page.route(`${primary}/**`, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const json = (body: unknown, status = 200) =>
+      route.fulfill({
+        status,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+        headers: { "cache-control": "no-store" },
+      });
+    if (path.endsWith("/GetAuthCapabilities"))
+      return json(
+        options.mode === "off"
+          ? { mode: "AUTH_MODE_OFF", protocolVersion: 1, ready: true }
+          : {
+              mode: "AUTH_MODE_OIDC",
+              protocolVersion: 1,
+              ready: options.mode !== "unavailable",
+              loginPath: "/auth/login",
+              loginIssuers: [
+                { issuer: "https://idp.example", label: "Example" },
+              ],
+            },
+      );
+    if (path === "/auth/session") {
+      if (!signedIn) return json({ code: "unauthenticated" }, 401);
+      return json({
+        mode: "AUTH_MODE_OIDC",
+        principal: {
+          identity: {
+            kind: "SECURITY_PRINCIPAL_KIND_OIDC",
+            issuer: "https://idp.example",
+            subject: "admin",
+          },
+          version,
+          expiresAt: new Date(Date.now() + 25_000).toISOString(),
+          recentAuthentication: options.recent !== false,
+          csrfToken: "c".repeat(43),
+        },
+      });
+    }
+    if (path === "/auth/logout") {
+      signedIn = false;
+      return json({
+        version,
+        enforcement: "SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING",
+      });
+    }
+    if (path.startsWith("/browser/graph.v1.LanternSecurityService/")) {
+      const method = path.split("/").at(-1)!;
+      const body = request.postDataJSON() as Record<string, unknown>;
+      calls.push({
+        method,
+        body,
+        csrf: request.headers()["x-lantern-csrf"],
+        authorization: request.headers().authorization,
+      });
+      if (options.denied)
+        return json({ code: "permission_denied", message: "Denied" }, 403);
+      if (method === "ListRoles")
+        return json({
+          version,
+          roles: [
+            {
+              id: "security_admin",
+              name: "Security administrator",
+              envOwned: true,
+              rules: [],
+            },
+            {
+              id: "reader",
+              name: "Reader",
+              rules: [
+                {
+                  id: "read",
+                  action: "SECURITY_ACTION_VERTEX_READ",
+                  effect: "SECURITY_EFFECT_ALLOW",
+                  prefix: "tenant:",
+                },
+              ],
+            },
+          ],
+        });
+      if (method === "ListUsers")
+        return json({
+          version,
+          users: [
+            {
+              identity: {
+                kind: "SECURITY_PRINCIPAL_KIND_OIDC",
+                issuer: "https://idp.example",
+                subject: "alice",
+              },
+              state: "SECURITY_PRINCIPAL_STATE_ACTIVE",
+              assignments: [{ roleId: "reader", envOwned: true }],
+            },
+          ],
+        });
+      if (method === "ListIssuers")
+        return json({
+          version,
+          issuers: [
+            {
+              issuer: "https://idp.example",
+              enabled: true,
+              clientId: "admin",
+              apiAudience: "lantern",
+              redirectUri: `${primary}/auth/callback`,
+              algorithms: ["EdDSA"],
+              envOwned: true,
+              configRevision: "1",
+              hasSecretBinding: true,
+            },
+          ],
+        });
+      if (method === "ApplySecurityChanges") {
+        if (options.apply === "conflict")
+          return json({ code: "aborted", message: "Revision conflict" }, 409);
+        if (options.apply === "lost") return route.abort("failed");
+        return json({
+          version: { ...version, revision: "4" },
+          applied: [true],
+          enforcement: "SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING",
+        });
+      }
+      if (method === "GetSecurityChangeStatus")
+        return json({
+          version: { ...version, revision: "4" },
+          applied: [true],
+          enforcement: "SECURITY_ENFORCEMENT_STATE_ENFORCED",
+        });
+      if (method === "ExplainAccess")
+        return json({
+          version,
+          allowed: false,
+          matches: [
+            {
+              roleId: "private",
+              ruleId: "hide",
+              effect: "SECURITY_EFFECT_DENY",
+              action: body.edge
+                ? "SECURITY_ACTION_VERTEX_WRITE"
+                : "SECURITY_ACTION_VERTEX_READ",
+              endpoint: body.edge ? "head" : "",
+            },
+          ],
+        });
+      if (method === "GetRoleTemplates")
+        return json({
+          version,
+          roles: [
+            {
+              id: "reader",
+              name: "Reader template",
+              rules: [
+                {
+                  id: "read",
+                  action: "SECURITY_ACTION_VERTEX_READ",
+                  effect: "SECURITY_EFFECT_ALLOW",
+                  prefix: body.prefix,
+                },
+              ],
+            },
+          ],
+        });
+      if (method === "ListSecurityAudit")
+        return json({
+          version,
+          records: [
+            {
+              revision: "4",
+              operation: "security.update",
+              outcome: "committed",
+              changeId: "redacted-id",
+            },
+          ],
+        });
+      if (method === "ValidateIssuer") return json({ valid: true });
+    }
+    const base = new URL(
+      `http://127.0.0.1:${process.env.LANTERN_E2E_PREVIEW_PORT ?? 4173}`,
+    );
+    const local = new URL(request.url());
+    local.protocol = base.protocol;
+    local.host = base.host;
+    const response = await page.request.get(local.href);
+    return route.fulfill({ response });
+  });
+  return { calls, primary };
+}

@@ -166,7 +166,7 @@ func (s *LanternService) CountVerticesByPrefix(ctx context.Context, in *pb.Count
 	start := time.Now()
 	var n int
 	if err := s.withPublicGraphReadRetry(ctx, func() error {
-		n = s.cache.CountByPrefix(in.GetPrefix())
+		n = s.cache.CountByPrefixContext(ctx, in.GetPrefix())
 		return nil
 	}); err != nil {
 		return nil, err
@@ -192,7 +192,7 @@ func (s *LanternService) DeleteVerticesByPrefix(ctx context.Context, in *pb.Dele
 	if in.GetDryRun() {
 		var n uint64
 		if err := s.withPublicGraphReadRetry(ctx, func() error {
-			n = uint64(s.cache.CountByPrefix(in.GetPrefix()))
+			n = uint64(s.cache.CountByPrefixContext(ctx, in.GetPrefix()))
 			return nil
 		}); err != nil {
 			return nil, err

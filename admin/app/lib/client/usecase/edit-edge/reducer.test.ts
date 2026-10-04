@@ -79,3 +79,36 @@ describe("editEdgeReducer", () => {
     expect(out.deleteRequested).toBe(false);
   });
 });
+
+test("blind acceptance clears stale Edge values without claiming absence", () => {
+  const start = {
+    ...INITIAL_EDIT_EDGE_STATE,
+    edge: { tail: "a", head: "b", weight: 99 },
+    loadStatus: "ready" as const,
+  };
+  for (const action of [
+    { type: "WRITE_ACCEPTED_UNDISCLOSED", mode: "add" },
+    { type: "WRITE_ACCEPTED_UNDISCLOSED", mode: "put" },
+    { type: "DELETE_ACCEPTED_UNDISCLOSED" },
+  ] as const) {
+    const next = editEdgeReducer(start, action);
+    expect(next.edge).toBeNull();
+    expect(next.loadStatus).toBe("undisclosed");
+    expect(next.deleteStatus).not.toBe("deleted");
+  }
+});
+
+test("a fresh authored intent releases the handled form without retrying", () => {
+  const accepted = editEdgeReducer(INITIAL_EDIT_EDGE_STATE, {
+    type: "WRITE_ACCEPTED_UNDISCLOSED",
+    mode: "add",
+  });
+  const next = editEdgeReducer(accepted, {
+    type: "WEIGHT_CHANGED",
+    mode: "add",
+    value: "3",
+  });
+  expect(next.addStatus).toBe("idle");
+  expect(next.edge).toBeNull();
+  expect(next.loadStatus).toBe("undisclosed");
+});

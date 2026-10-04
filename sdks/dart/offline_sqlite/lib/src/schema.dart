@@ -1,6 +1,6 @@
 part of '../lantern_client_offline_sqlite.dart';
 
-const _schemaVersion = 4;
+const _schemaVersion = 5;
 const _applicationId = 0x4c4e544f;
 const _legacyPartitions = '''CREATE TABLE partitions (
     partition_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
@@ -22,6 +22,10 @@ String _deadlineState(String column) => column == 'dead_lettered_at'
     ? "state='deadLetter'"
     : "state IN ('enqueued','sending')";
 const _tables = <String>[
+  '''CREATE TABLE cdc_scoped (
+    partition_id TEXT PRIMARY KEY, cursor BLOB NOT NULL
+      CHECK(typeof(cursor)='blob' AND length(cursor) BETWEEN 1 AND 8192),
+    FOREIGN KEY(partition_id) REFERENCES partitions(partition_id)) WITHOUT ROWID''',
   '''CREATE TABLE cdc_origins (
     partition_id TEXT NOT NULL, origin TEXT NOT NULL, completed TEXT NOT NULL,
     pending TEXT, next_chunk INTEGER NOT NULL, PRIMARY KEY(partition_id, origin),
@@ -115,7 +119,10 @@ Future<void> _upgradeSchema(
   int newVersion,
   OfflineStoreLimits limits,
 ) async {
-  if ((oldVersion != 1 && oldVersion != 2 && oldVersion != 3) ||
+  if ((oldVersion != 1 &&
+          oldVersion != 2 &&
+          oldVersion != 3 &&
+          oldVersion != 4) ||
       newVersion != _schemaVersion ||
       (await db.rawQuery('PRAGMA application_id')).single.values.single !=
           _applicationId) {
@@ -131,7 +138,8 @@ Future<void> _upgradeSchema(
   if (oldVersion == 1) {
     await _checkDefinitions(db, <String, String>{
       for (final statement in _tables)
-        if (!statement.startsWith('CREATE TABLE recovery'))
+        if (!statement.startsWith('CREATE TABLE recovery') &&
+            !statement.startsWith('CREATE TABLE cdc_scoped'))
           RegExp(r'CREATE TABLE (\w+)')
               .firstMatch(statement)!
               .group(1)!: statement.startsWith('CREATE TABLE partitions')
@@ -149,12 +157,16 @@ Future<void> _upgradeSchema(
   } else {
     await _checkDefinitions(db, <String, String>{
       for (final statement in _tables)
-        RegExp(r'CREATE TABLE (\w+)').firstMatch(statement)!.group(1)!:
-            statement,
+        if (!statement.startsWith('CREATE TABLE cdc_scoped'))
+          RegExp(r'CREATE TABLE (\w+)').firstMatch(statement)!.group(1)!:
+              statement,
       for (final entry in _indexes.entries)
         entry.key: 'CREATE INDEX ${entry.key} ON ${entry.value}',
     });
   }
+  await db.execute(
+    _tables.firstWhere((table) => table.startsWith('CREATE TABLE cdc_scoped')),
+  );
   await _rewritePayloads(db, 'outbox', 'record_id', (row) {
     final record = _outbox(row);
     return _outboxColumns(record, limits);
@@ -164,6 +176,23 @@ Future<void> _upgradeSchema(
     return _operationColumns(record, limits);
   });
   final transaction = _SqlTransaction(db, limits);
+  String? afterPartition;
+  while (true) {
+    final rows = await db.query(
+      'partitions',
+      columns: ['partition_id'],
+      where: afterPartition == null ? null : 'partition_id>?',
+      whereArgs: afterPartition == null ? null : [afterPartition],
+      orderBy: 'partition_id',
+      limit: 128,
+    );
+    if (rows.isEmpty) break;
+    for (final row in rows) {
+      final id = row['partition_id']! as String;
+      await transaction.resetScopedChangeCursor(id, null);
+      afterPartition = id;
+    }
+  }
   await transaction.validateAll();
   await transaction.finish();
   await db.update(

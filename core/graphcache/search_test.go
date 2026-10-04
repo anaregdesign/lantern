@@ -960,3 +960,125 @@ func TestGraphCache_SearchVerticesSnapshotContext(t *testing.T) {
 		t.Fatalf("owned snapshot changed to %q", hits[0].Value)
 	}
 }
+
+func BenchmarkAuthorizationSearchCosts(b *testing.B) {
+	for _, documents := range []int{1000, 10000} {
+		b.Run(fmt.Sprintf("documents_%d", documents), func(b *testing.B) {
+			c := NewGraphCache[string, string](time.Hour)
+			c.EnablePrefixIndex(identityExtract)
+			c.EnableSearchIndex(textExtract, compareStringID)
+			for i := 0; i < documents; i++ {
+				text := "background ordinary document"
+				if i%100 == 0 {
+					text = "needle project launch"
+				}
+				c.PutVertex(fmt.Sprintf("visible:%06d", i), text)
+				c.PutVertex(fmt.Sprintf("hidden:%06d", i), text)
+			}
+			ranges := []KeyRange{{"visible:", "visible;"}}
+			view, _ := NewQueryView(ranges, ranges)
+			for _, query := range []string{"needle", "background"} {
+				for _, restricted := range []bool{false, true} {
+					b.Run(fmt.Sprintf("%s/scoped_%v", query, restricted), func(b *testing.B) {
+						ctx := context.Background()
+						if restricted {
+							ctx = WithQueryView(ctx, view)
+						}
+						b.ReportAllocs()
+						for b.Loop() {
+							hits, _, err := c.SearchVerticesMatchContext(ctx, query, 10, "", search.MatchOptions{}, false, search.Budget{})
+							if err != nil || len(hits) == 0 {
+								b.Fatal(err)
+							}
+						}
+					})
+				}
+			}
+		})
+	}
+}
+
+// First-scope requests construct fresh ranges over a preindexed corpus. No
+// permission-statistics cache is populated. Explicit collections outside the
+// timed loop measure retained heap, without changing GC thresholds.
+func BenchmarkAuthorizationSearchWorkloads(b *testing.B) {
+	workloads := []struct {
+		name          string
+		every         int
+		prefix        string
+		fresh, remove bool
+	}{
+		{"first_scope", 0, "", true, false}, {"reused_scope", 0, "", false, false},
+		{"visible_update_100", 100, "visible:", false, false}, {"hidden_update_100", 100, "hidden:", false, false},
+		{"visible_update_1", 1, "visible:", false, false}, {"hidden_update_1", 1, "hidden:", false, false},
+		{"visible_put_delete_100", 100, "visible:", false, true}, {"hidden_put_delete_100", 100, "hidden:", false, true},
+		{"visible_put_delete_1", 1, "visible:", false, true}, {"hidden_put_delete_1", 1, "hidden:", false, true},
+	}
+	for _, workload := range workloads {
+		for _, constrained := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%s/constrained_%v", workload.name, constrained), func(b *testing.B) {
+				c := NewGraphCache[string, string](time.Hour)
+				c.EnablePrefixIndex(identityExtract)
+				c.EnableSearchIndex(textExtract, compareStringID)
+				deadline := time.Now().Add(time.Hour)
+				for i := range 10000 {
+					text := "background ordinary document"
+					if i%100 == 0 {
+						text = "needle project launch"
+					}
+					if err := c.PutVertexWithExpiration(fmt.Sprintf("visible:%06d", i), text, deadline); err != nil {
+						b.Fatal(err)
+					}
+					if err := c.PutVertexWithExpiration(fmt.Sprintf("hidden:%06d", i), "background private ordinary document", deadline); err != nil {
+						b.Fatal(err)
+					}
+				}
+				ranges := []KeyRange{{"visible:", "visible;"}}
+				view, _ := NewQueryView(ranges, ranges)
+				ctx := context.Background()
+				if constrained {
+					ctx = WithQueryView(ctx, view)
+				}
+				runtime.GC()
+				var before runtime.MemStats
+				runtime.ReadMemStats(&before)
+				iteration := 0
+				b.ReportAllocs()
+				for b.Loop() {
+					iteration++
+					if constrained && workload.fresh {
+						fresh, _ := NewQueryView(ranges, ranges)
+						ctx = WithQueryView(context.Background(), fresh)
+					}
+					if workload.every > 0 && iteration%workload.every == 0 {
+						key := workload.prefix + "000000"
+						if workload.remove && iteration/workload.every%2 == 0 {
+							c.DeleteVertex(key)
+						} else {
+							text := "background private ordinary document"
+							if workload.prefix == "visible:" {
+								text = "needle project launch"
+							}
+							if iteration/workload.every%2 == 0 {
+								text += " altered longer payload"
+							}
+							if err := c.PutVertexWithExpiration(key, text, deadline); err != nil {
+								b.Fatal(err)
+							}
+						}
+					}
+					hits, _, err := c.SearchVerticesMatchContext(ctx, "needle", 10, "", search.MatchOptions{}, false, search.Budget{})
+					if err != nil || len(hits) != 10 {
+						b.Fatal("query did not fill top-k", err)
+					}
+				}
+				runtime.GC()
+				var after runtime.MemStats
+				runtime.ReadMemStats(&after)
+				b.ReportMetric(float64(after.HeapAlloc)-float64(before.HeapAlloc), "retained_delta_B")
+				b.ReportMetric(float64(c.searchIndex.MemoryStats().EstimatedRetainedBytes), "index_retained_B")
+				runtime.KeepAlive(c)
+			})
+		}
+	}
+}

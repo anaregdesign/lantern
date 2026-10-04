@@ -1074,3 +1074,42 @@ func TestServingRuntimeDurableRejectsLeaseAndGenerationFaults(t *testing.T) {
 		}
 	})
 }
+
+func TestNamespacedRuntimeSelectsEdgeHistoryBeforeWrites(t *testing.T) {
+	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	t.Cleanup(func() { _ = log.Close() })
+	if _, err := NewGraphOnlyServingRuntime(graph, log, hlc.New(hlc.NodeID{1}, hlc.Options{}), "namespaced-v1"); err != nil {
+		t.Fatal(err)
+	}
+	if !graph.RetainsDanglingEdgeHistory() {
+		t.Fatal("private runtime omitted retained history")
+	}
+	occupied := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	if err := occupied.PutVertex("data:existing", &pb.Vertex{Key: "data:existing"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewGraphOnlyServingRuntime(occupied, log, hlc.New(hlc.NodeID{2}, hlc.Options{}), "namespaced-v1"); err == nil {
+		t.Fatal("late history policy selection admitted")
+	}
+	config := durableRuntimeTestConfig(t.TempDir() + "/history.wal")
+	config.NamespaceFormat = "namespaced-v1"
+	runtime, err := CreateDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.GraphCache().RetainsDanglingEdgeHistory() {
+		t.Fatal("fresh durable runtime omitted history")
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := OpenDurableReceiptWALServingRuntime(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.Close()
+	if !resumed.GraphCache().RetainsDanglingEdgeHistory() {
+		t.Fatal("durable restart omitted history")
+	}
+}
