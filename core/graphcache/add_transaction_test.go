@@ -188,3 +188,36 @@ func equalFloat32s(left, right []float32) bool {
 	}
 	return true
 }
+
+func TestEdgeAddTransactionEndpointConstraints(t *testing.T) {
+	c := NewGraphCacheWithStaging[string, string](time.Hour)
+	expiration := time.Now().Add(time.Hour)
+	item := EdgeItem[string]{Tail: "tail", Head: "head", Weight: 2, Expiration: expiration, ContribID: ContribID{1}, RequireLiveEndpoints: true, NoEndpointCreation: true}
+	if tx, err := c.BeginEdgeAdd([]EdgeItem[string]{item}, hlc.Timestamp{}); err != ErrEdgeEndpointNotLive || tx != nil {
+		t.Fatalf("missing endpoint: %v/%v", tx, err)
+	}
+	for _, key := range []string{"tail", "head"} {
+		if err := c.PutVertexWithExpiration(key, key, expiration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := captureStagedDeleteState(c)
+	tx, err := c.BeginEdgeAdd([]EdgeItem[string]{item}, hlc.Timestamp{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.Abort()
+	if after := captureStagedDeleteState(c); !reflect.DeepEqual(before, after) {
+		t.Fatal("abort changed retained endpoint/Edge state")
+	}
+	item.RequireLiveEndpoints = false
+	c.DeleteVertices([]string{"tail", "head"})
+	tx, err = c.BeginReplicatedEdgeAdd([]EdgeItem[string]{item}, hlc.Timestamp{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.Commit()
+	if len(c.SnapshotVertices()) != 0 || len(c.SnapshotEdges()) != 0 {
+		t.Fatal("accepted replay fabricated or exposed endpoints")
+	}
+}

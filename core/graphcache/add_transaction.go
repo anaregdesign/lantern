@@ -150,6 +150,10 @@ func (c *GraphCache[S, T]) beginEdgeAdd(
 		c.searchCommitMu.Lock()
 		lockState = 3
 		applicationTime := c.applicationTime()
+		if err := c.validateEdgeEndpointsLocked(items, applicationTime); err != nil {
+			unlockAll()
+			return nil, err
+		}
 		plans, effective, accepted, err := c.planStagedEdgeAddLocked(items, ts, applicationTime)
 		if err != nil {
 			unlockAll()

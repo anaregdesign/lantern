@@ -151,12 +151,13 @@ func (c *GraphCache[S, T]) SnapshotReplication() ReplicationSnapshot[S, T] {
 	now := time.Now()
 	c.migrateExpiredVertexHLCToBarriersLocked(now)
 	c.migrateExpiredEdgeHLCToBarriersLocked(now)
+	edges := c.snapshotEdgesModeRLocked(now, !c.retainDanglingEdgeHistory)
 	return ReplicationSnapshot[S, T]{
 		Barriers:   c.snapshotReplicationCausalBarriersRLocked(),
 		Tombstones: c.snapshotTombstonesRLocked(now),
 		Graph: GraphSnapshot[S, T]{
 			Vertices: c.snapshotVerticesRLocked(now),
-			Edges:    c.snapshotEdgesRLocked(now),
+			Edges:    edges,
 		},
 	}
 }
@@ -288,6 +289,10 @@ func (c *GraphCache[S, T]) SnapshotEdges() []SnapshotEdge[S] {
 // RLock, snapshotEntry the per-weight mutex, and edgeEndpointsLive the
 // inner vertex-cache lock; nothing here mutates).
 func (c *GraphCache[S, T]) snapshotEdgesRLocked(now time.Time) []SnapshotEdge[S] {
+	return c.snapshotEdgesModeRLocked(now, true)
+}
+
+func (c *GraphCache[S, T]) snapshotEdgesModeRLocked(now time.Time, requireLiveEndpoints bool) []SnapshotEdge[S] {
 	out := make([]SnapshotEdge[S], 0, c.edges.count())
 	c.edges.rangeBuckets(func(tail, head S, w *weight) bool {
 		contribs, ts, nonEmpty := w.snapshotEntry(now)
@@ -299,7 +304,7 @@ func (c *GraphCache[S, T]) snapshotEdgesRLocked(now time.Time) []SnapshotEdge[S]
 		// expired-but-not-flushed endpoints without any prior flush (#843), so
 		// no path leaks a dangling edge to a deleted or expired vertex ahead
 		// of the GC sweep.
-		if !c.vertices.HasAt(tail, now) || !c.vertices.HasAt(head, now) {
+		if requireLiveEndpoints && (!c.vertices.HasAt(tail, now) || !c.vertices.HasAt(head, now)) {
 			return true
 		}
 		// A retained accepted-expired Put floor may coexist with newer additive

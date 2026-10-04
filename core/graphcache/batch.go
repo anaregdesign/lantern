@@ -51,6 +51,12 @@ type EdgeItem[S comparable] struct {
 	// endpoint vertices.
 	CausalBarrier          bool
 	DenyLifecycleReduction bool
+	// RequireLiveEndpoints is checked at local ingress under the final lock.
+	// Receivers must not re-evaluate this against asynchronous endpoint state.
+	RequireLiveEndpoints bool
+	// NoEndpointCreation freezes an Edge-only effect, including on replay.
+	// It never inserts, revives or extends an endpoint.
+	NoEndpointCreation bool
 }
 
 func vertexItemLiveAt[S comparable, T any](item VertexItem[S, T], now time.Time) bool {
@@ -601,6 +607,12 @@ func (c *GraphCache[S, T]) AddEdgesWithExpirationContrib(items []EdgeItem[S]) (e
 	if len(items) == 0 {
 		return nil, 0
 	}
+	for _, item := range items {
+		if item.RequireLiveEndpoints || item.NoEndpointCreation {
+			effective, deduped, _ = c.AddEdgesWithExpirationContribChecked(items)
+			return effective, deduped
+		}
+	}
 	// now is sampled once for the whole batch so every item's live-sum
 	// compaction shares one clock read (issue #838 single-clock pattern).
 	now := time.Now()
@@ -674,11 +686,14 @@ func (c *GraphCache[S, T]) putEdgesWithExpiration(items []EdgeItem[S], outcomes 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.applicationTime()
+	if err := c.validateEdgeEndpointsLocked(items, now); err != nil {
+		return err
+	}
 	if err := c.validateEdgeLifecycleLocked(items, nil, now, true); err != nil {
 		return err
 	}
 	for i, it := range items {
-		stored := c.putEdgeLockedAt(it.Tail, it.Head, it.Weight, it.Expiration, now)
+		stored := c.putEdgeModeLockedAt(it.Tail, it.Head, it.Weight, it.Expiration, now, it.NoEndpointCreation)
 		if outcomes != nil {
 			if stored {
 				outcomes[i] = PutOutcomeAppliedAndLive
@@ -1033,6 +1048,9 @@ func (c *GraphCache[S, T]) putEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.applicationTime()
+	if err := c.validateEdgeEndpointsLocked(items, now); err != nil {
+		return 0, err
+	}
 	if err := c.validateEdgeHLCLifecycleLocked(items, ts, now); err != nil {
 		return 0, err
 	}
@@ -1064,7 +1082,7 @@ func (c *GraphCache[S, T]) putEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 			}
 			continue
 		}
-		if c.putEdgeHLCLocked(it.Tail, it.Head, it.Weight, it.Expiration, ts, it.DerivedAggregate) {
+		if c.putEdgeHLCModeLocked(it.Tail, it.Head, it.Weight, it.Expiration, ts, it.DerivedAggregate, it.NoEndpointCreation) {
 			c.clearEdgeCausalBarrierLocked(it.Tail, it.Head)
 			c.clearEdgeTombstoneLocked(it.Tail, it.Head)
 			if outcomes != nil {
@@ -1096,7 +1114,7 @@ func (c *GraphCache[S, T]) putEdgesWithExpirationHLC(items []EdgeItem[S], ts hlc
 // ContribID-deduped path — so a genuinely nonzero live weight (e.g. from a
 // newer contribution that re-created the edge) is never misreported as 0 (#918).
 func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLC(items []EdgeItem[S], ts hlc.Timestamp) (effective []float32, deduped int) {
-	effective, _, deduped = c.addEdgesWithExpirationContribHLC(items, ts, false)
+	effective, _, deduped, _ = c.addEdgesWithExpirationContribHLC(items, ts, false)
 	return effective, deduped
 }
 
@@ -1106,20 +1124,37 @@ func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLC(items []EdgeItem[S],
 // item was fenced or deduplicated and did not create an endpoint or weight.
 // The legacy Add method avoids this result slice on the serving hot path.
 func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLCResults(items []EdgeItem[S], ts hlc.Timestamp) (effective []float32, accepted []bool, deduped int) {
+	effective, accepted, deduped, _ = c.addEdgesWithExpirationContribHLC(items, ts, true)
+	return
+}
+
+// AddEdgesWithExpirationContribChecked rejects constrained batches atomically.
+// Unconstrained callers retain the existing hot-edge fast path.
+func (c *GraphCache[S, T]) AddEdgesWithExpirationContribChecked(items []EdgeItem[S]) (effective []float32, deduped int, err error) {
+	effective, _, deduped, err = c.addEdgesWithExpirationContribHLC(items, hlc.Timestamp{}, false)
+	return
+}
+
+// AddEdgesWithExpirationContribHLCResultsChecked includes local constraint
+// errors and the exact per-item accepted contribution evidence.
+func (c *GraphCache[S, T]) AddEdgesWithExpirationContribHLCResultsChecked(items []EdgeItem[S], ts hlc.Timestamp) (effective []float32, accepted []bool, deduped int, err error) {
 	return c.addEdgesWithExpirationContribHLC(items, ts, true)
 }
 
-func (c *GraphCache[S, T]) addEdgesWithExpirationContribHLC(items []EdgeItem[S], ts hlc.Timestamp, capture bool) (effective []float32, accepted []bool, deduped int) {
+func (c *GraphCache[S, T]) addEdgesWithExpirationContribHLC(items []EdgeItem[S], ts hlc.Timestamp, capture bool) (effective []float32, accepted []bool, deduped int, err error) {
 	if len(items) == 0 {
-		return nil, nil, 0
+		return nil, nil, 0, nil
 	}
-	now := time.Now()
 	effective = make([]float32, len(items))
 	if capture {
 		accepted = make([]bool, len(items))
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := c.applicationTime()
+	if err := c.validateEdgeEndpointsLocked(items, now); err != nil {
+		return nil, nil, 0, err
+	}
 	for i, it := range items {
 		if !c.edgeAddWriteAllowedLocked(it.Tail, it.Head, ts) ||
 			(!it.ContribID.IsZero() && c.edgeContributionTombstoneLockedAt(
@@ -1131,7 +1166,7 @@ func (c *GraphCache[S, T]) addEdgesWithExpirationContribHLC(items []EdgeItem[S],
 			deduped++
 			continue
 		}
-		applied, eff := c.addEdgeContribHLCLocked(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID, ts, now)
+		applied, eff := c.addEdgeContribHLCModeLocked(it.Tail, it.Head, it.Weight, it.Expiration, it.ContribID, ts, now, it.NoEndpointCreation)
 		effective[i] = eff
 		if applied {
 			if capture {
@@ -1143,5 +1178,5 @@ func (c *GraphCache[S, T]) addEdgesWithExpirationContribHLC(items []EdgeItem[S],
 		}
 		deduped++
 	}
-	return effective, accepted, deduped
+	return effective, accepted, deduped, nil
 }

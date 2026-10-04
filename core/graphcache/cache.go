@@ -205,6 +205,8 @@ type GraphCache[S comparable, T any] struct {
 	gcEdgeBudget int
 	gcSweepPlan  []vertexID
 	gcSweepPos   int
+	// Generic retained-source mode for asynchronous endpoint delivery.
+	retainDanglingEdgeHistory bool
 }
 
 func (c *GraphCache[S, T]) applicationTime() time.Time {
