@@ -79,3 +79,46 @@ func TestAuthorityWriterReceiverCapFailsClosed(t *testing.T) {
 		t.Fatal("expired holder retained", err)
 	}
 }
+
+func TestAuthorityCheckpointSinceKeepsExactSignedCut(t *testing.T) {
+	store, clock := newAuthorityTestStore(t)
+	authority, err := NewLeaseAuthority(store, LeaseAuthorityOptions{Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(35 * time.Second)
+	request := LeaseRequest{Receiver: [16]byte{1}, BootNonce: [16]byte{2}, Challenge: [32]byte{3}}
+	lease, checkpoint, err := authority.CheckpointSince(t.Context(), request, [32]byte{})
+	if err != nil || len(lease) == 0 || len(checkpoint) == 0 {
+		t.Fatal("initial cut omitted", err)
+	}
+	cut, err := DecodeRevision(checkpoint, store.publicKey, store.limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodeAuthorityLease(lease, store.publicKey)
+	if err != nil || decoded.digest != cut.Digest() || decoded.revision != cut.Sequence() {
+		t.Fatal("lease/image cut differs", err)
+	}
+	lease, checkpoint, err = authority.CheckpointSince(t.Context(), request, cut.Digest())
+	if err != nil || len(lease) == 0 || len(checkpoint) != 0 {
+		t.Fatal("unchanged cut retransferred", err)
+	}
+	image := cut.Snapshot().Image()
+	image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: MachinePrincipal, MachineName: "later"}, State: Suspended})
+	if _, err := store.Commit(t.Context(), cut.Sequence(), [16]byte{5}, image); err != nil {
+		t.Fatal(err)
+	}
+	lease, checkpoint, err = authority.CheckpointSince(t.Context(), request, cut.Digest())
+	if err != nil || len(checkpoint) == 0 {
+		t.Fatal("changed cut omitted", err)
+	}
+	cut, err = DecodeRevision(checkpoint, store.publicKey, store.limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err = decodeAuthorityLease(lease, store.publicKey)
+	if err != nil || decoded.digest != cut.Digest() || decoded.revision != cut.Sequence() {
+		t.Fatal("new lease/image cut differs", err)
+	}
+}

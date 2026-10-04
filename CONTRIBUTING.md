@@ -115,6 +115,11 @@ window, or weaken load or thresholds.
 
 ## Before every `git push` — local quality gate
 
+Complete frozen Bun dependency installation in Node and Admin before Go walks
+the root workspace. Installation can mutate dependency directories containing
+Go files; those operations must not run concurrently (#1646). Independent tests
+may run in parallel after installation completes.
+
 Run from the repo root; this matches the required CI checks (Build & Test, Lint,
 Proto (buf), govulncheck):
 

@@ -95,6 +95,20 @@ func (a *LeaseAuthority) Checkpoint(ctx context.Context, request LeaseRequest) (
 	}
 	return lease, revision.Encode(), nil
 }
+
+// CheckpointSince captures the same atomic cut as Checkpoint, but avoids
+// encoding/transferring an unchanged complete policy on routine renewals.
+// known is merely a size optimization; it never substitutes for signed proof.
+func (a *LeaseAuthority) CheckpointSince(ctx context.Context, request LeaseRequest, known [32]byte) ([]byte, []byte, error) {
+	lease, revision, err := a.issue(ctx, request)
+	if err != nil {
+		return nil, nil, err
+	}
+	if known == revision.digest {
+		return lease, nil, nil
+	}
+	return lease, revision.Encode(), nil
+}
 func (a *LeaseAuthority) issue(ctx context.Context, request LeaseRequest) ([]byte, *Revision, error) {
 	if a == nil || !request.valid() {
 		return nil, nil, ErrInvalidLease

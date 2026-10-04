@@ -52,6 +52,93 @@ type pumpNode struct {
 	nodeID hlc.NodeID
 }
 
+// This covers the owned-client bridge in isolation. The complete operator
+// mTLS/member/domain boundary is qualified by the separate peer-security suite.
+func TestPeerPumpVerifiedTransportUsesOwnedClientAndCurrentEligibility(t *testing.T) {
+	source := newPumpNode(t, hlc.NodeID{21})
+	peer := service.NewLanternReplicationService(source.log, source.cache, source.clock).WithOriginStates(source.svc)
+	_, handler := graphv1connect.NewLanternReplicationServiceHandler(service.NewLanternReplicationServiceConnectHandler(peer))
+	var calls atomic.Uint64
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		calls.Add(1)
+		if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" {
+			t.Error("owned transport acquired public credentials")
+		}
+		handler.ServeHTTP(w, req)
+	}))
+	t.Cleanup(srv.Close)
+	var eligible atomic.Bool
+	eligible.Store(true)
+	transport, err := replication.NewVerifiedPeerTransport(srv.Client(), func(origin string) bool { return eligible.Load() && origin == srv.URL })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, origin := range []string{strings.Replace(srv.URL, "https://", "http://", 1), srv.URL + "/unknown", "https://unapproved.example:6391"} {
+		if _, err := transport.BaseURL(origin); err == nil {
+			t.Fatal("unapproved peer became eligible", origin)
+		}
+	}
+	destination := newPumpNode(t, hlc.NodeID{22})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := source.svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "owned-peer:visible"}}); err != nil {
+		t.Fatal(err)
+	}
+	newPump := func() *replication.Pump {
+		return replication.NewPump(replication.Config{NodeID: destination.nodeID, Peers: []string{srv.URL}, PeerTransport: transport, BackoffMin: 10 * time.Millisecond, BackoffMax: 20 * time.Millisecond}, destination.svc, destination.cache)
+	}
+	run := func(pump *replication.Pump) (context.CancelFunc, <-chan error) {
+		pumpCtx, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- pump.Run(pumpCtx) }()
+		return stop, done
+	}
+	stop, done := run(newPump())
+	if !waitForVertex(t, destination.cache, "owned-peer:visible", 2*time.Second) {
+		stop()
+		<-done
+		t.Fatal("owned verified TLS client did not replicate")
+	}
+	stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	before := calls.Load()
+	if before == 0 {
+		t.Fatal("real Connect peer was not called")
+	}
+	eligible.Store(false)
+	if _, err := transport.BaseURL(srv.URL); err == nil {
+		t.Fatal("removed member still eligible")
+	}
+	if _, err := source.svc.PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "owned-peer:after-removal"}}); err != nil {
+		t.Fatal(err)
+	}
+	pump := newPump()
+	stop, done = run(pump)
+	defer func() {
+		stop()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		state := pump.Snapshot()
+		if len(state) == 1 && strings.Contains(state[0].LastError, "unapproved workload peer origin") {
+			if calls.Load() != before {
+				t.Fatal("removed member was dialed")
+			}
+			if _, live := destination.cache.GetVertex("owned-peer:after-removal"); live {
+				t.Fatal("removed member replicated")
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("pump did not report current eligibility failure")
+}
+
 func newPumpNode(t *testing.T, nodeID hlc.NodeID) *pumpNode {
 	return newPumpNodeWithSearch(t, nodeID, 1024, true)
 }
