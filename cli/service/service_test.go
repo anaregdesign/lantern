@@ -292,11 +292,24 @@ func TestHandleMutationAcceptance(t *testing.T) {
 	var output bytes.Buffer
 	svc := NewCLIService(nil, WithOutput(&output))
 	for _, failure := range []error{nil, errors.New("transport failure"), fmt.Errorf("partial: %w", &client.MutationAcceptance{})} {
-		if svc.handleMutationAcceptance(failure) || output.Len() != 0 {
+		if handled, err := svc.handleMutationAcceptance(failure); handled || err != nil || output.Len() != 0 {
 			t.Fatal("failure became accepted", failure)
 		}
 	}
-	if !svc.handleMutationAcceptance(&client.MutationAcceptance{}) || output.String() != "{\"acceptance\":\"acceptedUndisclosed\"}\n" {
+	if handled, err := svc.handleMutationAcceptance(&client.MutationAcceptance{}); !handled || err != nil || output.String() != "{\"acceptance\":\"acceptedUndisclosed\"}\n" {
 		t.Fatal("missing typed acknowledgement", output.String())
 	}
 }
+
+func TestMutationAcceptanceOutputFailure(t *testing.T) {
+	failure := errors.New("closed output")
+	svc := &CLIService{out: acknowledgementFailureWriter{failure}}
+	handled, err := svc.handleMutationAcceptance(&client.MutationAcceptance{})
+	if !handled || !errors.Is(err, failure) {
+		t.Fatal("accepted mutation lost output failure", handled, err)
+	}
+}
+
+type acknowledgementFailureWriter struct{ err error }
+
+func (w acknowledgementFailureWriter) Write([]byte) (int, error) { return 0, w.err }

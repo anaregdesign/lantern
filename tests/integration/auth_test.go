@@ -2995,7 +2995,7 @@ func TestAuth_HeadManagedBlindCreateDeleteReceiptAndGoFacadeRealConnect(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sdk.Close()
+	defer func() { _ = sdk.Close() }()
 	capability, err := sdk.GetReceiptCapability(ctx)
 	if err != nil || !capability.Supports(client.ReceiptMutationCreateEdge) {
 		t.Fatal("blind Create capability unavailable", err)

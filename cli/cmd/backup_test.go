@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,7 +86,7 @@ func TestRestoreBlindAcknowledgementAndLaterFailure(t *testing.T) {
 			var output bytes.Buffer
 			restoreCmd.SetOut(&output)
 			restoreCmd.SetContext(t.Context())
-			t.Cleanup(func() { restoreCmd.SetOut(nil); restoreCmd.SetContext(nil) })
+			t.Cleanup(func() { restoreCmd.SetOut(nil); restoreCmd.SetContext(context.Background()) })
 			err := restoreCmd.RunE(restoreCmd, []string{path})
 			if failAt == 0 {
 				if err != nil || wire.calls != 3 || output.String() != "{\"acceptance\":\"acceptedUndisclosed\"}\n" {
