@@ -90,6 +90,7 @@ enum SecurityEffect {
   SECURITY_EFFECT_ALLOW = 1;
   SECURITY_EFFECT_DENY = 2;
 }
+
 // Selectors use literal logical-key prefixes. Empty prefix explicitly means
 // all data. Pair is a retired diagnostic shape: Server rejects every pair
 // selector and independent Edge action in a Role. Edge permissions are derived
@@ -154,6 +155,7 @@ message GetCurrentPrincipalResponse {
   // Opaque browser CSRF proof, returned only on the browser session surface.
   string csrf_token = 6;
 }
+
 // Same-origin /auth/session and /auth/logout HTTP responses. OIDC tokens never
 // cross this boundary; principal is absent only when mode is explicitly OFF.
 message BrowserSession {

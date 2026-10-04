@@ -180,8 +180,12 @@ validates the exact synthetic merge, not a preliminary local branch image.
 
 Per-module test runs are mandatory: the root `go test ./...` does **not** span
 submodules. `make lint` runs the same linter as the `Lint` job. The `Proto (buf)` check
-requires `buf format -d --exit-code`, `buf lint` and zero uncommitted codegen drift.
-Use `buf format -w` for source formatting and regenerate locally first (below).
+uses the Buf version pinned in `generate.go`, `Makefile` and `.github/workflows/go.yml`.
+Run `go run github.com/bufbuild/buf/cmd/buf@v1.70.0 format -d --exit-code` and
+`go run github.com/bufbuild/buf/cmd/buf@v1.70.0 lint`, then require zero uncommitted
+codegen drift. Use that same pinned command with `format -w` for source formatting
+and regenerate locally first (below). A different Buf version on `PATH` does not
+reproduce the required formatter gate.
 
 The Dart SDK is outside `go.work`; its format/analyze/test gate is therefore
 separate too. When `proto/` changes, run `sdks/dart/scripts/codegen.sh` and commit
@@ -496,8 +500,9 @@ Update **all** of these in one PR, then re-run the local quality gate:
 
 ## Bumping the `buf` pin
 
-Update **both** the `@vX.Y.Z` suffix in [generate.go](generate.go) and `BUF_VERSION` in
-the [Makefile](Makefile) — keep them identical.
+Update the `@vX.Y.Z` suffix in [generate.go](generate.go), `BUF_VERSION` in the
+[Makefile](Makefile), the Proto setup version in [.github/workflows/go.yml](.github/workflows/go.yml)
+and the pinned local commands above together. Keep those versions identical.
 
 ## Cutting a release (`vX.Y.Z`)
 
