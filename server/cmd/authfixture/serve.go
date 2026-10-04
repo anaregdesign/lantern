@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
 // fixtureProcess owns a production child and its private diagnostic log.
@@ -221,7 +223,7 @@ func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFil
 		if err != nil {
 			return err
 		}
-		log, err := os.OpenFile(filepath.Join(dir, node.Name+"-server.log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		log, err := privatefile.Create(filepath.Join(dir, node.Name+"-server.log"), os.O_WRONLY)
 		if err != nil {
 			return err
 		}
@@ -231,7 +233,7 @@ func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFil
 		command.Stderr = log
 		if err := command.Start(); err != nil {
 			_ = log.Close()
-			return errors.New("cannot start production fixture node")
+			return &fixtureFailure{stage: "spawn", cause: err}
 		}
 		process := &fixtureProcess{command: command, log: log, done: make(chan struct{})}
 		children = append(children, process)
@@ -244,10 +246,10 @@ func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFil
 		if ctx.Err() != nil {
 			return nil
 		}
-		return err
+		return &fixtureFailure{stage: "readiness", cause: err}
 	}
 	if err := json.NewEncoder(output).Encode(result); err != nil {
-		return err
+		return &fixtureFailure{stage: "publication", cause: err}
 	}
 
 	// Also stop the cohort if a child exits after readiness.
@@ -259,6 +261,6 @@ func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFil
 	case <-ctx.Done():
 		return nil
 	case <-failure:
-		return errors.New("production fixture node exited")
+		return &fixtureFailure{stage: "exit", cause: errors.New("production fixture node exited")}
 	}
 }

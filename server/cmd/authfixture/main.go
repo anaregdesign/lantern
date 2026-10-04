@@ -34,6 +34,8 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 	"github.com/anaregdesign/lantern/server/internal/security"
+
+	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
 type fixtureNode struct {
@@ -51,6 +53,7 @@ type fixture struct {
 }
 
 func main() {
+	privateInput := flag.String("private-input", "", "write one bounded stdin fixture input into a new private file")
 	directory := flag.String("directory", "", "new private local fixture directory")
 	compose := flag.Bool("compose", false, "generate the fixed three-node Compose benchmark topology")
 	renew := flag.Bool("renew", false, "renew only the existing operator-signed Compose membership")
@@ -64,10 +67,23 @@ func main() {
 	overridesFile := flag.String("overrides-file", "", "optional per-node JSON configuration overrides")
 	publicMTLS := flag.Bool("public-mtls", false, "require a separate local client certificate on public listeners")
 	receiptHA := flag.Bool("receipt-ha", false, "four-node native receipt HA with a separate policy writer and controlled data relay")
-	edgeCreate := flag.Bool("edge-create", false, "standalone OIDC fixture grants bench:source: -> bench:target: Create only")
+	edgeCreate := flag.Bool("edge-create", false, "qualify standalone existing-endpoint Create under Vertex-derived Head authority")
 	receipt := flag.Bool("receipt", false, "enable native receipt WAL for each OIDC node")
 	readyTimeout := flag.Duration("ready-timeout", time.Minute, "bounded verified-TLS production readiness wait")
 	flag.Parse()
+	if *privateInput != "" {
+		valid := flag.NArg() == 0
+		flag.Visit(func(value *flag.Flag) {
+			if value.Name != "private-input" {
+				valid = false
+			}
+		})
+		if !valid || writePrivateInput(*privateInput, os.Stdin) != nil {
+			fmt.Fprintln(os.Stderr, "authfixture: private_input_failed")
+			os.Exit(1)
+		}
+		return
+	}
 	if *restartNode != "" {
 		if !*compose || *directory == "" || *renew || *renewEvery != 0 || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *overridesFile != "" || flag.NArg() != 0 {
 			fmt.Fprintln(os.Stderr, "authfixture: restart requires only -compose -restart-node -directory")
@@ -153,7 +169,11 @@ func main() {
 		}
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "authfixture:", err)
+		if *serverBinary != "" {
+			fmt.Fprintln(os.Stderr, "authfixture_failure:"+fixtureFailureCategory(err))
+		} else {
+			fmt.Fprintln(os.Stderr, "authfixture:", err)
+		}
 		os.Exit(1)
 	}
 	if err = json.NewEncoder(os.Stdout).Encode(result); err != nil {
@@ -181,7 +201,7 @@ func ports(raw string) ([]int, error) {
 }
 func writeFile(dir, name string, raw []byte) (string, error) {
 	path := filepath.Join(dir, name)
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	file, err := privatefile.Create(path, os.O_WRONLY)
 	if err != nil {
 		return "", err
 	}

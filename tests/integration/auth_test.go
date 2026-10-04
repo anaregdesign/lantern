@@ -841,7 +841,7 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 		t.Fatal(err)
 	}
 	for name, block := range map[string]*pem.Block{"writer.key": {Type: "PRIVATE KEY", Bytes: privateDER}, "writer.pub": {Type: "PUBLIC KEY", Bytes: publicDER}, "provider.pem": {Type: "CERTIFICATE", Bytes: f.provider.Certificate().Raw}} {
-		if err := os.WriteFile(filepath.Join(dir, name), pem.EncodeToMemory(block), 0600); err != nil {
+		if err := createPrivateTestFile(filepath.Join(dir, name), pem.EncodeToMemory(block)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1104,7 +1104,7 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 			t.Fatal(err)
 		}
 		config.MachineBootstrapFile = filepath.Join(t.TempDir(), "machines.json")
-		if err := os.WriteFile(config.MachineBootstrapFile, raw, 0600); err != nil {
+		if err := createPrivateTestFile(config.MachineBootstrapFile, raw); err != nil {
 			t.Fatal(err)
 		}
 	})

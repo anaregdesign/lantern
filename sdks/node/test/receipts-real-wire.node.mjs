@@ -34,6 +34,16 @@ function authenticated(baseUrl, args = {}) {
   return connect(baseUrl, { token, ...args, transportOptions: { nodeOptions: { ca } } });
 }
 
+async function seedEdgeEndpoints(client, edge) {
+  await client.putVertices(
+    [...new Set([edge.tail, edge.head])].map((key) => ({
+      key,
+      value: "endpoint",
+      ttlSeconds: 3600,
+    })),
+  );
+}
+
 function randomContribId() {
   const contribId = new Uint8Array(randomBytes(CONTRIB_ID_BYTES));
   if (!contribId.some((value) => value !== 0)) contribId[0] = 1;
@@ -126,6 +136,7 @@ test("plain contribution Delete retains the Put base and never retries response 
   const idA = randomContribId();
   const idB = randomContribId();
   try {
+    await seedEdgeEndpoints(client, { tail, head });
     await client.putEdge({ tail, head, weight: 2 });
     await client.addEdges([
       { tail, head, weight: 1, contribId: idA },
@@ -260,6 +271,7 @@ test("all receipt mutation families reconcile exact results over real Connect/TL
       tail: `${prefix}:edge:tail`,
       head: `${prefix}:edge:missing`,
     };
+    await seedEdgeEndpoints(client, presentEdge);
     await client.putEdge({ ...presentEdge, weight: 1 });
     const edgeDeleteContext = mintReceiptOperationContext(capability, 2);
     const edgeDeleted = await client.deleteEdgesWithReceipt(
@@ -297,6 +309,7 @@ test("all receipt mutation families reconcile exact results over real Connect/TL
       tail: `${prefix}:edge:tail`,
       head: `${prefix}:edge:singular`,
     };
+    await seedEdgeEndpoints(client, singularEdge);
     await client.putEdge({ ...singularEdge, weight: 2 });
     const singularEdgeContext = mintReceiptOperationContext(capability, 1);
     const singularEdgeDeleted = await client.deleteEdgeWithReceipt(
@@ -321,6 +334,7 @@ test("all receipt mutation families reconcile exact results over real Connect/TL
       tail: `${prefix}:edge:tail`,
       head: `${prefix}:edge:protected`,
     };
+    await seedEdgeEndpoints(client, protectedEdge);
     await client.putEdge({ ...protectedEdge, weight: 3 });
     await assert.rejects(
       client.deleteEdgesWithReceipt([protectedEdge, missingEdge], edgeDeleteContext),
@@ -332,6 +346,7 @@ test("all receipt mutation families reconcile exact results over real Connect/TL
       tail: `${prefix}:add:tail`,
       head: `${prefix}:add:head`,
     };
+    await seedEdgeEndpoints(client, addEdge);
     const addContribIds = [randomContribId(), randomContribId()];
     const addContext = mintReceiptOperationContext(capability, 2);
     const added = await client.addEdgesWithReceipt(
@@ -377,6 +392,7 @@ test("all receipt mutation families reconcile exact results over real Connect/TL
       head: `${prefix}:selective:head`,
     };
     const selectiveIds = [randomContribId(), randomContribId()];
+    await seedEdgeEndpoints(client, selectiveEdge);
     await client.putEdge({ ...selectiveEdge, weight: 2 });
     await client.addEdgesWithReceipt(
       [
@@ -458,6 +474,7 @@ test("all receipt mutation families reconcile exact results over real Connect/TL
       "notYetObserved",
     );
 
+    await seedEdgeEndpoints(client, { tail: `${prefix}:add:expired`, head: "edge" });
     const zeroContext = mintReceiptOperationContext(capability, 1);
     const zero = await client.addEdgeWithReceipt(
       {
@@ -481,6 +498,7 @@ test("all receipt mutation families reconcile exact results over real Connect/TL
       tail: `${prefix}:add:overflow`,
       head: "edge",
     };
+    await seedEdgeEndpoints(client, overflowEdge);
     await client.putEdge({ ...overflowEdge, weight: maxFloat32 });
     const overflowContext = mintReceiptOperationContext(capability, 1);
     const overflow = await client.addEdgeWithReceipt(
@@ -504,6 +522,7 @@ test("all receipt mutation families reconcile exact results over real Connect/TL
       tail: `${prefix}:add:negative-overflow`,
       head: "edge",
     };
+    await seedEdgeEndpoints(client, negativeOverflowEdge);
     await client.putEdge({ ...negativeOverflowEdge, weight: -maxFloat32 });
     const negativeOverflowContext = mintReceiptOperationContext(capability, 1);
     const negativeOverflow = await client.addEdgeWithReceipt(
@@ -671,6 +690,7 @@ test("real TLS response loss replays Add proof without reapplying after Delete",
   try {
     const capability = await lossy.getReceiptCapability();
     assert.equal(capability.enabled, true, "receipt test endpoint is disabled");
+    await seedEdgeEndpoints(lossy, edge);
     const context = mintReceiptOperationContext(capability, 1);
     persistedContext = JSON.stringify(context);
     try {

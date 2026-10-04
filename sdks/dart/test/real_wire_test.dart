@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' as io;
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:connectrpc/connect.dart' as connect;
@@ -472,6 +473,7 @@ void main() {
         '$prefix-receipt-edge-absent-tail',
         '$prefix-receipt-edge-absent-head',
       );
+      await _seedEdgeEndpoints(receiptClient, presentEdge);
       expect(
         await receiptClient.putEdge(
           EdgeInput(tail: presentEdge.tail, head: presentEdge.head, weight: 1),
@@ -509,8 +511,9 @@ void main() {
         '$prefix-receipt-add-tail',
         '$prefix-receipt-add-head',
       );
-      final firstContribution = Uint8List(24)..[23] = 1;
-      final secondContribution = Uint8List(24)..[23] = 2;
+      await _seedEdgeEndpoints(receiptClient, addEdge);
+      final firstContribution = _randomContribId();
+      final secondContribution = _randomContribId();
       final edgeAddContext = receiptClient.mintReceiptContext(
         capability: capability,
         mutation: ReceiptMutationKind.edgeAdd,
@@ -578,6 +581,13 @@ void main() {
         mutation: ReceiptMutationKind.edgeAdd,
         itemCount: 1,
       );
+      await _seedEdgeEndpoints(
+        receiptClient,
+        EdgeRef(
+          '$prefix-receipt-expired-add-tail',
+          '$prefix-receipt-expired-add-head',
+        ),
+      );
       final expiredAdd = await receiptClient.addEdgeWithReceipt(
         EdgeInput(
           tail: '$prefix-receipt-expired-add-tail',
@@ -586,7 +596,7 @@ void main() {
           expiresAt: DateTime.now().toUtc().subtract(
             const Duration(seconds: 1),
           ),
-          contribId: Uint8List(24)..[23] = 3,
+          contribId: _randomContribId(),
         ),
         context: expiredAddContext,
       );
@@ -605,6 +615,7 @@ void main() {
         '$prefix-receipt-overflow-negative-tail',
         '$prefix-receipt-overflow-negative-head',
       );
+      await _seedEdgeEndpoints(receiptClient, positiveOverflow);
       expect(
         await receiptClient.putEdge(
           EdgeInput(
@@ -615,6 +626,7 @@ void main() {
         ),
         PutOutcome.appliedAndLive,
       );
+      await _seedEdgeEndpoints(receiptClient, negativeOverflow);
       expect(
         await receiptClient.putEdge(
           EdgeInput(
@@ -635,13 +647,13 @@ void main() {
           tail: positiveOverflow.tail,
           head: positiveOverflow.head,
           weight: maxFloat32,
-          contribId: Uint8List(24)..[23] = 4,
+          contribId: _randomContribId(),
         ),
         EdgeInput(
           tail: negativeOverflow.tail,
           head: negativeOverflow.head,
           weight: -maxFloat32,
-          contribId: Uint8List(24)..[23] = 5,
+          contribId: _randomContribId(),
         ),
       ], context: overflowContext);
       expect(overflow.map((result) => result.effectiveWeight), [
@@ -692,6 +704,7 @@ void main() {
         '$prefix-receipt-add-response-loss-tail',
         '$prefix-receipt-add-response-loss-head',
       );
+      await _seedEdgeEndpoints(receiptClient, retryAddRef);
       final addFault = _CommittedResponseLossTransport(
         receiptEndpoint,
         loseProcedure: '/graph.v1.LanternService/AddEdges',
@@ -720,7 +733,7 @@ void main() {
           tail: retryAddRef.tail,
           head: retryAddRef.head,
           weight: 4,
-          contribId: Uint8List(24)..[23] = 6,
+          contribId: _randomContribId(),
         ),
         context: retryAddContext,
       );
@@ -1589,4 +1602,18 @@ io.HttpClient _receiptHttpClient() {
     context: io.SecurityContext(withTrustedRoots: false)
       ..setTrustedCertificates(ca),
   );
+}
+
+Future<void> _seedEdgeEndpoints(LanternClient client, EdgeRef edge) async {
+  await client.putVertices([
+    for (final key in {edge.tail, edge.head})
+      VertexInput(key: key, value: VertexValue.string('endpoint')),
+  ]);
+}
+
+Uint8List _randomContribId() {
+  final random = Random.secure();
+  final id = Uint8List.fromList(List.generate(24, (_) => random.nextInt(256)));
+  if (id.every((value) => value == 0)) id[0] = 1;
+  return id;
 }

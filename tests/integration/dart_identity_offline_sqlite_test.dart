@@ -1,6 +1,7 @@
 // Run from sdks/dart/offline_sqlite over public CDC and native private replicas.
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -109,11 +110,18 @@ void main() {
       final prefix =
           'identity-contribution-${DateTime.now().microsecondsSinceEpoch}';
       final edge = EdgeRef('$prefix-t', '$prefix-h');
+      final contributionIds = {
+        for (final id in [1, 2, 3, 9]) id: _randomContribId(),
+      };
       EdgeContributionRef target(int id) => EdgeContributionRef(
         tail: edge.tail,
         head: edge.head,
-        contribId: Uint8List(24)..[23] = id,
+        contribId: contributionIds[id]!,
       );
+      await client.putVertices([
+        for (final key in {edge.tail, edge.head})
+          VertexInput(key: key, value: VertexValue.string('endpoint')),
+      ]);
       await client.putEdge(
         EdgeInput(tail: edge.tail, head: edge.head, weight: 1),
       );
@@ -794,4 +802,11 @@ final class _WireSession implements OfflineScopedChangeSession {
 
   @override
   Future<void> close() => session.close();
+}
+
+Uint8List _randomContribId() {
+  final random = Random.secure();
+  final id = Uint8List.fromList(List.generate(24, (_) => random.nextInt(256)));
+  if (id.every((value) => value == 0)) id[0] = 1;
+  return id;
 }

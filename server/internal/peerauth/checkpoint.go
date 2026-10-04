@@ -1,10 +1,11 @@
 package peerauth
 
 import (
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
 const checkpointMagic = "LNPMS001"
@@ -14,7 +15,7 @@ func readCheckpoint(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() <= int64(len(checkpointMagic)) || info.Size() > MaxManifestBytes+int64(len(checkpointMagic)) {
+	if !info.Mode().IsRegular() || info.Size() <= int64(len(checkpointMagic)) || info.Size() > MaxManifestBytes+int64(len(checkpointMagic)) {
 		return nil, ErrMembership
 	}
 	f, err := os.Open(path)
@@ -23,7 +24,7 @@ func readCheckpoint(path string) ([]byte, error) {
 	}
 	defer func() { _ = f.Close() }()
 	opened, err := f.Stat()
-	if err != nil || !os.SameFile(info, opened) {
+	if err != nil || !os.SameFile(info, opened) || privatefile.Check(f) != nil {
 		return nil, ErrMembership
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, MaxManifestBytes+int64(len(checkpointMagic))+1))
@@ -37,9 +38,9 @@ func writeCheckpoint(path string, raw []byte, fresh bool) error {
 	var f *os.File
 	var err error
 	if fresh {
-		f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		f, err = privatefile.Create(path, os.O_WRONLY)
 	} else {
-		f, err = os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".next-")
+		f, err = privatefile.CreateTemp(filepath.Dir(path), filepath.Base(path)+".next-")
 	}
 	if err != nil {
 		return err
@@ -68,9 +69,5 @@ func writeCheckpoint(path string, raw []byte, fresh bool) error {
 			return err
 		}
 	}
-	d, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	return errors.Join(d.Sync(), d.Close())
+	return privatefile.SyncDirectory(filepath.Dir(path))
 }

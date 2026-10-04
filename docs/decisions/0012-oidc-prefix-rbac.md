@@ -68,7 +68,7 @@ no legacy bearer is automatically promoted to a machine or administrator. Health
 reflection and global diagnostics have explicit capabilities.
 
 The writer may load `LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE`, an absolute
-regular private file (mode `0600` or `0400`, no symlinks). Its strict JSON array
+regular private file (Unix owner-only mode such as `0600`/`0400`, or the Windows owner/DACL contract below; no symlinks). Its strict JSON array
 contains `name`, `role_ids`, and `credentials` with `token`, `created_at`, and
 `expires_at`. Role IDs refer to `LANTERN_SECURITY_BOOTSTRAP_ROLES`; permissions
 cannot be attached to a machine directly. At most 64 machines with four
@@ -657,3 +657,11 @@ cache under existing ownership/generation/authentication fences. It never
 fabricates confirmation, a receipt original or a reusable cache image.
 Paired-source Dart checks and hosted-archive/publication/device exits remain
 separate; publication is deferred until the end of the implementation work.
+
+### Native private-file contract (#1650)
+
+Private operator keys, bound OIDC secrets, peer checkpoints and native security/receipt WAL metadata use generic Core file-security primitives. Unix retains owner-only mode validation. Windows validates the opened handle's owner and DACL: the owner must be the current Server account; the DACL must be protected and contain one explicit recognized owner-only file grant with read access. Null/empty, broad, inherited, unprotected, unknown-mask/ACE and reparse configurations fail closed. A Windows read-only attribute or `chmod(0600)` is not privacy evidence.
+
+Private creation installs the owner and protected DACL in `CreateFile` before any content is written. Checkpoints/manifests use private temporary files and preserve file-sync, replacement and native directory-flush errors; failed directory flushes never become successful durability acknowledgements. Restart validates native metadata before replay. Provision Windows secrets for the actual Server account rather than assuming an inherited Administrators/Users ACL is accepted. This is file privacy and local persistence admission, not a claim of survival after sole-volume loss or every storage stack's power failure.
+
+The maintained native fixture exposes bounded stdin-only `-private-input` creation for Rust test inputs. Credentials/configuration never enter argv or a broadly created temporary file. Public startup failures contain only fixed categories; arbitrary child log/exception contents stay private. Native Windows CI executes positive/negative DACL tests and the existing authenticated Rust wire cases; cross-compilation alone does not qualify Windows.

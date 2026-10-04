@@ -20,6 +20,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
 // receiptHAControl isolates data replication without isolating policy leases.
@@ -197,7 +199,7 @@ func receiptHAStart(node fixtureNode, binary, directory, suffix string) (*fixtur
 	if err != nil {
 		return nil, err
 	}
-	log, err := os.OpenFile(filepath.Join(directory, node.Name+suffix+"-server.log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	log, err := privatefile.Create(filepath.Join(directory, node.Name+suffix+"-server.log"), os.O_WRONLY)
 	if err != nil {
 		return nil, err
 	}

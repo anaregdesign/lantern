@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:connectrpc/connect.dart' as connect;
@@ -137,8 +138,9 @@ void main() {
       final ref = EdgeContributionRef(
         tail: edge.tail,
         head: edge.head,
-        contribId: Uint8List(24)..[23] = 1,
+        contribId: _randomContribId(),
       );
+      await _seedEdgeEndpoints(direct, edge);
       await direct.putEdge(
         EdgeInput(tail: edge.tail, head: edge.head, weight: 1),
       );
@@ -227,7 +229,7 @@ void main() {
       final changed = EdgeContributionRef(
         tail: edge.tail,
         head: edge.head,
-        contribId: Uint8List(24)..[23] = 2,
+        contribId: _randomContribId(),
       );
       await expectLater(
         restarted.deleteEdgeContributionsWithReceipt([
@@ -271,8 +273,9 @@ void main() {
       final ref = EdgeContributionRef(
         tail: edge.tail,
         head: edge.head,
-        contribId: Uint8List(24)..[23] = 1,
+        contribId: _randomContribId(),
       );
+      await _seedEdgeEndpoints(client, edge);
       await client.putEdge(
         EdgeInput(tail: edge.tail, head: edge.head, weight: 1),
       );
@@ -377,4 +380,18 @@ HttpClient _receiptHttpClient() {
     context: SecurityContext(withTrustedRoots: false)
       ..setTrustedCertificates(ca),
   );
+}
+
+Future<void> _seedEdgeEndpoints(LanternClient client, EdgeRef edge) async {
+  await client.putVertices([
+    for (final key in {edge.tail, edge.head})
+      VertexInput(key: key, value: VertexValue.string('endpoint')),
+  ]);
+}
+
+Uint8List _randomContribId() {
+  final random = Random.secure();
+  final id = Uint8List.fromList(List.generate(24, (_) => random.nextInt(256)));
+  if (id.every((value) => value == 0)) id[0] = 1;
+  return id;
 }

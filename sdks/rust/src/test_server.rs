@@ -2,8 +2,8 @@ use std::{
     collections::BTreeMap,
     env,
     error::Error,
-    fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    fs::{self, File},
+    io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     process::{Child, Command, ExitStatus, Stdio},
     thread,
@@ -36,15 +36,57 @@ pub(crate) struct GoServer {
     _files: Option<TempDir>,
 }
 
-fn write_private_fixture(path: &std::path::Path, bytes: Vec<u8>) -> std::io::Result<()> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+fn write_private_fixture(
+    fixture: &std::ffi::OsStr,
+    path: &std::path::Path,
+    bytes: Vec<u8>,
+) -> std::io::Result<()> {
+    let mut child = Command::new(fixture)
+        .arg("-private-input")
+        .arg(path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let written = child
+        .stdin
+        .take()
+        .ok_or_else(|| std::io::Error::other("private input pipe missing"))?
+        .write_all(&bytes);
+    let status = child.wait()?;
+    written?;
+    if !status.success() {
+        return Err(std::io::Error::other(
+            "native private input creation failed",
+        ));
     }
-    options.open(path)?.write_all(&bytes)
+    Ok(())
+}
+
+fn fixture_failure_category(path: &std::path::Path) -> &'static str {
+    let mut bytes = Vec::new();
+    if File::open(path)
+        .and_then(|file| file.take(4096).read_to_end(&mut bytes))
+        .is_err()
+    {
+        return "unknown";
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    for line in text.lines() {
+        if let Some(category) = line.strip_prefix("authfixture_failure:") {
+            return match category {
+                "configuration" => "configuration",
+                "generation" => "generation",
+                "spawn" => "spawn",
+                "readiness" => "readiness",
+                "publication" => "publication",
+                "exit" => "exit",
+                "private_input" => "private_input",
+                _ => "unknown",
+            };
+        }
+    }
+    "unknown"
 }
 
 impl GoServer {
@@ -103,12 +145,14 @@ impl GoServer {
         let files = tempfile::tempdir()?;
         let credentials = files.path().join("credentials.json");
         write_private_fixture(
+            &fixture,
             &credentials,
             serde_json::to_vec(&[TEST_TOKEN, SECOND_TEST_TOKEN])?,
         )?;
         let override_file = files.path().join("overrides.json");
         let configured: BTreeMap<&str, &str> = overrides.iter().copied().collect();
         write_private_fixture(
+            &fixture,
             &override_file,
             serde_json::to_vec(&vec![configured; count])?,
         )?;
@@ -130,6 +174,9 @@ impl GoServer {
             .collect::<Vec<_>>()
             .join(",");
         drop(listeners);
+        let diagnostic_path = files.path().join("fixture-startup.log");
+        write_private_fixture(&fixture, &diagnostic_path, vec![b'\n'])?;
+        let diagnostics = fs::OpenOptions::new().append(true).open(&diagnostic_path)?;
         let mut command = Command::new(fixture);
         command
             .args(["-directory"])
@@ -148,7 +195,7 @@ impl GoServer {
             .arg(server)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::from(diagnostics));
         if mtls {
             command.arg("-public-mtls");
         }
@@ -171,9 +218,11 @@ impl GoServer {
             .ok_or("fixture metadata pipe missing")?;
         BufReader::new(stdout).read_line(&mut line)?;
         if line.is_empty() {
-            return Err(
-                "native fixture failed certified readiness; inspect its private node log".into(),
-            );
+            return Err(format!(
+                "native fixture failed certified readiness: {}",
+                fixture_failure_category(&diagnostic_path)
+            )
+            .into());
         }
         let native: NativeFixture = serde_json::from_str(&line)?;
         if native.nodes.len() != count {
@@ -266,5 +315,30 @@ impl Drop for GoServer {
         if let Err(error) = self.child.wait() {
             eprintln!("failed to reap real-wire Lantern server: {error}");
         }
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn only_fixed_fixture_categories_leave_private_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("diagnostic");
+        for (content, expected) in [
+            ("authfixture_failure:readiness\n", "readiness"),
+            ("authfixture_failure:private credential\n", "unknown"),
+            ("raw private key content\n", "unknown"),
+            (
+                "authfixture_failure:exit extra private content\n",
+                "unknown",
+            ),
+        ] {
+            fs::write(&path, content).unwrap();
+            assert_eq!(fixture_failure_category(&path), expected);
+        }
+        fs::write(&path, vec![b'x'; 8192]).unwrap();
+        assert_eq!(fixture_failure_category(&path), "unknown");
     }
 }

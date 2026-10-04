@@ -54,6 +54,13 @@ if (endpoint && token) {
     try {
       const capability = await client.getReceiptCapability();
       if (!capability.enabled) throw new Error("receipt test endpoint is disabled");
+      await client.putVertices(
+        ["head", "selective", "overflow", "negative-overflow"].map((suffix) => ({
+          key: `${key}:${suffix}`,
+          value: "endpoint",
+          ttlSeconds: 3600,
+        })),
+      );
       const frames = client.watchChanges({ bootstrap: true, prefix: key });
       const stream = frames[Symbol.asyncIterator]();
       try {

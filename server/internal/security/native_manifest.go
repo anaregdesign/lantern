@@ -6,11 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"io"
 	"math"
 	"os"
 	"path/filepath"
+
+	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
 const systemManifestMagic = "LNSMAN01"
@@ -79,7 +80,7 @@ func readNativeManifest(anchor string, binding [32]byte) (nativeManifest, error)
 	}
 	defer func() { _ = file.Close() }()
 	opened, err := file.Stat()
-	if err != nil || !os.SameFile(info, opened) {
+	if err != nil || !os.SameFile(info, opened) || privatefile.Check(file) != nil {
 		return nativeManifest{}, ErrInvalidRevision
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, int64(systemManifestBytes+1)))
@@ -93,9 +94,9 @@ func writeNativeManifest(anchor string, manifest nativeManifest, fresh bool) err
 	var file *os.File
 	var err error
 	if fresh {
-		file, err = os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		file, err = privatefile.Create(target, os.O_WRONLY)
 	} else {
-		file, err = os.CreateTemp(filepath.Dir(anchor), filepath.Base(anchor)+".current-tmp-")
+		file, err = privatefile.CreateTemp(filepath.Dir(anchor), filepath.Base(anchor)+".current-tmp-")
 	}
 	if err != nil {
 		return err
@@ -126,13 +127,8 @@ func writeNativeManifest(anchor string, manifest nativeManifest, fresh bool) err
 	}
 	return syncSystemDirectory(filepath.Dir(anchor))
 }
-func syncSystemDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	return errors.Join(directory.Sync(), directory.Close())
-}
+func syncSystemDirectory(path string) error { return privatefile.SyncDirectory(path) }
+
 func newNativeManifest(binding [32]byte, revision *Revision) (nativeManifest, error) {
 	if revision == nil || !revision.completeCheckpointHistory() {
 		return nativeManifest{}, ErrInvalidRevision

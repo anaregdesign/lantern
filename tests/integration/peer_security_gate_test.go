@@ -80,7 +80,7 @@ type peerSecurityOptions struct {
 func peerSecurityPEM(t *testing.T, directory, name, kind string, raw []byte) string {
 	t.Helper()
 	path := filepath.Join(directory, name)
-	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: kind, Bytes: raw}), 0600); err != nil {
+	if err := createPrivateTestFile(path, pem.EncodeToMemory(&pem.Block{Type: kind, Bytes: raw})); err != nil {
 		t.Fatal(err)
 	}
 	return path

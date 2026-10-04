@@ -8,6 +8,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/anaregdesign/lantern/server/internal/security"
+
+	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
 // SecretBinding is operator configuration, never management API input. The
@@ -50,7 +52,7 @@ func (r *SecretRegistry) load(issuer security.Issuer, tokenEndpoint string) (str
 		return "", ErrFetch
 	}
 	before, err := os.Lstat(binding.Path)
-	if err != nil || !before.Mode().IsRegular() || before.Mode().Perm()&0077 != 0 || before.Size() > 4096 {
+	if err != nil || !before.Mode().IsRegular() || before.Size() > 4096 {
 		return "", ErrFetch
 	}
 	file, err := os.Open(binding.Path)
@@ -59,7 +61,7 @@ func (r *SecretRegistry) load(issuer security.Issuer, tokenEndpoint string) (str
 	}
 	defer file.Close()
 	opened, err := file.Stat()
-	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) || opened.Mode().Perm()&0077 != 0 {
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) || privatefile.Check(file) != nil {
 		return "", ErrFetch
 	}
 	value, err := io.ReadAll(io.LimitReader(file, 4097))

@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
 const (
@@ -58,7 +60,7 @@ func CreateClockJournal(walPath string, epoch Epoch, policyFingerprint [32]byte)
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_APPEND, 0o600)
+	f, err := privatefile.Create(path, os.O_RDWR|os.O_APPEND)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +113,7 @@ func ResumeClockJournal(walPath string, epoch Epoch, policyFingerprint [32]byte)
 	if err != nil {
 		return nil, err
 	}
-	if !os.SameFile(info, opened) {
+	if !os.SameFile(info, opened) || privatefile.Check(f) != nil {
 		return nil, fmt.Errorf("%w: sidecar changed during open", ErrClockJournalCorrupt)
 	}
 	var actual [clockJournalHeaderSize]byte
