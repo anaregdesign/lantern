@@ -6,54 +6,48 @@ import (
 )
 
 type RuleMatch struct {
-	RoleID string
-	RuleID string
-	Effect Effect
+	RoleID   string
+	RuleID   string
+	Effect   Effect
+	Action   Action
+	Endpoint string
 }
 
-// ExplainEdge explains one action's complete directed selector. Endpoint and
-// other action dependencies belong to the public operation, not this check.
+// ExplainEdge records each required endpoint capability with the same
+// Deny-wins result used for admission. No Role-specific pair rule exists.
 func (s *Snapshot) ExplainEdge(identity Identity, action Action, tail, head string) (bool, []RuleMatch, error) {
 	if !edgeSelectorAction(action) || tail == "" || head == "" || !utf8.ValidString(tail) || !utf8.ValidString(head) || len(tail) > DefaultPolicyLimits().MaxPrefixBytes || len(head) > DefaultPolicyLimits().MaxPrefixBytes {
 		return false, nil, ErrInvalidPolicy
 	}
-	access, active := s.AccessFor(identity)
-	if !active {
-		return false, nil, nil
+	tailAction, headAction := action, action
+	switch action {
+	case EdgeRead:
+		tailAction, headAction = VertexRead, VertexRead
+	case EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete:
+		tailAction, headAction = VertexRead, VertexWrite
 	}
-	image := s.Image()
-	assigned := make(map[string]bool, len(access.roles))
-	for _, principal := range image.Principals {
-		if principal.Identity == identity {
-			for _, assignment := range principal.Assignments {
-				assigned[assignment.RoleID] = true
-			}
-		}
+	tailAllowed, tailMatches, err := s.Explain(identity, tailAction, &tail)
+	if err != nil {
+		return false, nil, err
 	}
-	var matches []RuleMatch
-	for _, role := range image.Roles {
-		if !assigned[role.ID] {
-			continue
-		}
-		for _, rule := range role.Rules {
-			if rule.Action != action || rule.Resource != DataResource {
-				continue
-			}
-			prefixMatch := rule.Prefix != nil && (strings.HasPrefix(tail, *rule.Prefix) || strings.HasPrefix(head, *rule.Prefix))
-			pairMatch := rule.Pair != nil && strings.HasPrefix(tail, rule.Pair.Tail) && strings.HasPrefix(head, rule.Pair.Head)
-			if prefixMatch || pairMatch {
-				matches = append(matches, RuleMatch{RoleID: role.ID, RuleID: rule.ID, Effect: rule.Effect})
-			}
-		}
+	headAllowed, headMatches, err := s.Explain(identity, headAction, &head)
+	if err != nil {
+		return false, nil, err
 	}
-	return access.AllowsEdgeAction(action, tail, head), matches, nil
+	for i := range tailMatches {
+		tailMatches[i].Endpoint = "tail"
+	}
+	for i := range headMatches {
+		headMatches[i].Endpoint = "head"
+	}
+	return tailAllowed && headAllowed, append(tailMatches, headMatches...), nil
 }
 
 // Explain returns the same Deny-wins result as compiled access plus the stable
 // source Role/rule identities. Disabled or unregistered accounts never match.
 func (s *Snapshot) Explain(identity Identity, action Action, key *string) (bool, []RuleMatch, error) {
 	kind, known := actionResource(action)
-	if !known || (kind == DataResource) != (key != nil) || key != nil && *key == "" {
+	if !known || !grantableAction(action) || (kind == DataResource) != (key != nil) || key != nil && *key == "" {
 		return false, nil, ErrInvalidPolicy
 	}
 	access, active := s.AccessFor(identity)
@@ -77,7 +71,7 @@ func (s *Snapshot) Explain(identity Identity, action Action, key *string) (bool,
 		for _, rule := range role.Rules {
 			if rule.Action == action && rule.Resource == kind &&
 				(key == nil || rule.Prefix != nil && strings.HasPrefix(*key, *rule.Prefix)) {
-				matches = append(matches, RuleMatch{RoleID: role.ID, RuleID: rule.ID, Effect: rule.Effect})
+				matches = append(matches, RuleMatch{RoleID: role.ID, RuleID: rule.ID, Effect: rule.Effect, Action: action})
 			}
 		}
 	}

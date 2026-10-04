@@ -222,6 +222,11 @@ export type ReceiptStatus =
   | {
       readonly state: "noLongerProvable";
       readonly operationId: OperationID;
+    }
+  | {
+      /** No original result, confirmation, absence proof or resend permission. */
+      readonly state: "effectUndisclosed";
+      readonly operationId: OperationID;
     };
 
 export type ReceiptReconciliationReason =
@@ -843,6 +848,11 @@ function receiptStatusFromWire(raw: PbReceiptStatus, expected: OperationID): Rec
         throw new LanternError("no-longer-provable receipt status unexpectedly carried a receipt");
       }
       return Object.freeze({ state: "noLongerProvable", operationId });
+    case PbMutationReceiptState.EFFECT_UNDISCLOSED:
+      if (raw.receipt !== undefined) {
+        throw new LanternError("undisclosed receipt status carried an original receipt");
+      }
+      return Object.freeze({ state: "effectUndisclosed", operationId });
     default:
       throw new LanternError(`server returned unknown receipt status ${raw.state}`);
   }

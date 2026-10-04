@@ -86,7 +86,7 @@ func stageReceiptStartupRestore(
 		raw,
 		clearReceiptClockHighWater(config.Receipt),
 		config.DefaultTTL,
-		config.ConfigureGraph,
+		durableRuntimeGraphPolicy(config),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("service: stage receipt startup restore: %w", err)

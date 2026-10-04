@@ -43,6 +43,20 @@ func TestSecurityConnectAtomicRoleMembershipAndRetry(t *testing.T) {
 	if err != nil || !explanation.Msg.Allowed {
 		t.Fatal(explanation, err)
 	}
+	for _, match := range explanation.Msg.Matches {
+		if match.Action != pb.SecurityAction_SECURITY_ACTION_VERTEX_READ || match.Endpoint != "" {
+			t.Fatal("key explanation lost its constituent action", match)
+		}
+	}
+	explanation, err = handler.ExplainAccess(current, connect.NewRequest(&pb.ExplainAccessRequest{Identity: identity, Action: pb.SecurityAction_SECURITY_ACTION_EDGE_READ, Edge: &pb.SecurityEdgeIdentity{Tail: "orders:public:1", Head: "orders:private:1"}}))
+	if err != nil || explanation.Msg.Allowed || len(explanation.Msg.Matches) != 3 {
+		t.Fatal("derived Edge explanation drift", explanation, err)
+	}
+	for _, match := range explanation.Msg.Matches {
+		if match.Action != pb.SecurityAction_SECURITY_ACTION_VERTEX_READ || match.Endpoint != "tail" && match.Endpoint != "head" {
+			t.Fatal("Edge explanation omitted its endpoint/action", match)
+		}
+	}
 	// Role deletion cannot silently remove memberships.
 	_, err = handler.ApplySecurityChange(current, connect.NewRequest(&pb.ApplySecurityChangeRequest{ExpectedRevision: 2, ChangeId: bytes.Repeat([]byte{3}, 16), Change: &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteRole{DeleteRole: "orders_reader"}}}))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition || sink.calls != 2 {

@@ -2,7 +2,8 @@
 // from transport authentication and never imports a client SDK.
 package security
 
-// Action is a primitive permission. There are no implicit action hierarchies.
+// Action identifies a grantable capability or a derived Edge operation.
+// Edge operations are explained/evaluated from Vertex Roles, never granted.
 type Action string
 
 const (
@@ -23,6 +24,16 @@ const (
 	SchemaRead     Action = "schema.read"
 	SecurityManage Action = "security.manage"
 )
+
+func grantableAction(action Action) bool {
+	switch action {
+	case VertexRead, VertexWrite, VertexDelete, Query, CDCIdentity, CDCValue,
+		Export, ReceiptRead, OperationsRead, SchemaRead, SecurityManage:
+		return true
+	default:
+		return false
+	}
+}
 
 // ResourceKind distinguishes literal data prefixes from global capabilities.
 type ResourceKind string
@@ -45,7 +56,8 @@ func actionResource(action Action) (ResourceKind, bool) {
 	}
 }
 
-// Pair selectors grant Edge capabilities only, never access to a Vertex.
+// Edge operations and independent capabilities that accept endpoint selectors.
+// These selectors explain an operation; they are not configurable Role pairs.
 func edgeSelectorAction(action Action) bool {
 	switch action {
 	case EdgeRead, EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete, CDCIdentity, CDCValue, Export, ReceiptRead:

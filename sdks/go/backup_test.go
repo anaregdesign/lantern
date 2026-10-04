@@ -3,6 +3,7 @@ package client
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"math"
@@ -10,10 +11,57 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+type blindRestoreClient struct {
+	graphv1connect.LanternServiceClient
+	calls    int
+	failLast bool
+}
+
+func (c *blindRestoreClient) PutEdges(_ context.Context, _ *connect.Request[pb.PutEdgesRequest]) (*connect.Response[pb.PutEdgesResponse], error) {
+	c.calls++
+	if c.calls == 3 && c.failLast {
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("response lost"))
+	}
+	if c.calls == 2 {
+		return connect.NewResponse(&pb.PutEdgesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}), nil
+	}
+	return connect.NewResponse(&pb.PutEdgesResponse{Outcomes: []pb.PutOutcome{pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}}), nil
+}
+
+func TestRestoreBlindEffectNeverFabricatesCountsOrAcknowledgesPartialSource(t *testing.T) {
+	for _, failLast := range []bool{false, true} {
+		var buffer bytes.Buffer
+		writer := bufio.NewWriter(&buffer)
+		for _, head := range []string{"b", "c", "d"} {
+			if err := encodeBackupRecord(writer, FormatProto, mkEdgeRec(&pb.Edge{Tail: "a", Head: head, Weight: 1})); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := writer.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		fake := &blindRestoreClient{failLast: failLast}
+		l := &Lantern{client: fake}
+		stats, err := l.Restore(context.Background(), &buffer, WithRestoreChunkSize(1))
+		if stats != (RestoreStats{}) || fake.calls != 3 {
+			t.Fatal("blind restore exposed counts, skipped or resent input", stats, fake.calls)
+		}
+		if failLast {
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatal("later restore failure became acceptance", err)
+			}
+		} else if _, accepted := err.(*MutationAcceptance); !accepted {
+			t.Fatal("complete restore lost acceptance", err)
+		}
+	}
+}
 
 func mkVertexRec(v *pb.Vertex) *pb.BackupSnapshotResponse {
 	return &pb.BackupSnapshotResponse{Record: &pb.BackupSnapshotResponse_Vertex{Vertex: v}}

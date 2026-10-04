@@ -29,6 +29,11 @@ message HLCTimestamp {
 // arms — they are the wire form chosen by the client and round-tripping
 // them faithfully simplifies CDC consumers that mirror RPC semantics.
 message MutationOp {
+  // Immutable origin effect for Edge Add/Put: replay may update Edge sources
+  // but must never insert, revive, or extend either endpoint Vertex. Origin
+  // liveness is checked separately; peers never re-evaluate that condition.
+  // Only Edge Add/Put and receipt Edge Add arms may carry this flag.
+  bool no_endpoint_creation = 23;
   oneof op {
     PutVertexRequest put_vertex = 1;
     PutVerticesRequest put_vertices = 2;
@@ -553,6 +558,10 @@ message SnapshotEdge {
   // zero-ContribID Put/base slot. Ordinary contributions must be empty when
   // present; only derived_aggregate.adds can accompany this base.
   SnapshotEdgeDerivedAggregate derived_aggregate = 5;
+  // Private retained history may precede either explicit endpoint. Installing
+  // these sources must never create or extend a Vertex. Public graph exports
+  // remain referentially closed.
+  bool no_endpoint_creation = 6;
 }
 
 // SnapshotEdgeCausalBarrier is the edge sibling of

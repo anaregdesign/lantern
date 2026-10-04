@@ -26,7 +26,7 @@ import (
 // graph dump never enters this codec and cannot certify receipt continuity.
 const (
 	wholeStateArchiveMagic      = "LANTARCH"
-	wholeStateArchiveVersion    = uint16(3)
+	wholeStateArchiveVersion    = uint16(4)
 	wholeStateArchiveReceipts   = uint16(1)
 	wholeStateArchiveMaxFrame   = 32 << 20
 	wholeStateArchiveMaxBytes   = 512 << 20
@@ -59,7 +59,7 @@ func wholeStateArchiveError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errWholeStateArchive, fmt.Sprintf(format, args...))
 }
 
-// encodeWholeStateArchive writes a deterministic, bounded v3 container. A
+// encodeWholeStateArchive writes a deterministic, bounded v4 container. A
 // SHA-256 footer detects accidental truncation or corruption; it is not an
 // authenticity signature and cannot prove that the producer captured one
 // atomic graph/receipt/origin cut.

@@ -640,6 +640,9 @@ func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string
 // NewGraphCache uses it for the ordinary graph-only provider. Indexes must be
 // enabled before the first mutation reaches the cache.
 func ConfigureGraphCache(gc *graphcache.GraphCache[string, *v1.Vertex], c CacheConfig, sc SearchConfig) {
+	if c.namespaceFormat != "" {
+		gc.RetainDanglingEdgeHistory()
+	}
 	gc.SetGCEdgeBudget(c.GCEdgeBudget)
 	gc.SetCausalMetadataLimits(graphcache.CausalMetadataLimits{
 		MaxVertexEntries: c.MaxVertexCausalEntries,

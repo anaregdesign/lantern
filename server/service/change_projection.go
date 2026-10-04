@@ -68,8 +68,8 @@ func (p *changeProjection) edge(ctx context.Context, physical *pb.EdgeKey) (*pb.
 	if !tailAllowed || !headAllowed {
 		return nil, nil
 	}
-	if p.access != nil && (!p.access.AllowsEdgeAction(security.CDCIdentity, tail, head) ||
-		p.value && (!p.access.AllowsEdgeAction(security.CDCValue, tail, head) || !p.access.AllowsEdge(security.EdgeRead, tail, head))) {
+	if p.access != nil && (!p.access.AllowsEdge(security.EdgeRead, tail, head) || !p.access.AllowsEdgeAction(security.CDCIdentity, tail, head) ||
+		p.value && !p.access.AllowsEdgeAction(security.CDCValue, tail, head)) {
 		return nil, nil
 	}
 	item := &pb.ChangeInvalidation{Identity: &pb.ChangeInvalidation_EdgeKey{EdgeKey: &pb.EdgeKey{Tail: tail, Head: head}}}

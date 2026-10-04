@@ -351,7 +351,7 @@ func (h *SecurityConnectHandler) ExplainAccess(ctx context.Context, req *connect
 	}
 	response := &pb.ExplainAccessResponse{Allowed: allowed, Version: securityVersion(admission.Revision())}
 	for _, match := range matches {
-		response.Matches = append(response.Matches, &pb.SecurityRuleMatch{RoleId: match.RoleID, RuleId: match.RuleID, Effect: encodeSecurityEffect(match.Effect)})
+		response.Matches = append(response.Matches, &pb.SecurityRuleMatch{RoleId: match.RoleID, RuleId: match.RuleID, Effect: encodeSecurityEffect(match.Effect), Action: encodeSecurityAction(match.Action), Endpoint: match.Endpoint})
 	}
 	return securityReadResponse(ctx, admission, h.now(), response)
 }

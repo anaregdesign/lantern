@@ -10,6 +10,19 @@ sealed class OfflineException implements Exception {
   String toString() => 'OfflineException($code)';
 }
 
+/// A complete mutation was handled without disclosing its effect.
+///
+/// This acknowledgement is neither an RPC failure nor an authoritative result.
+/// Remote adapters may throw it only for a complete, directly acknowledged call;
+/// a partial batch or transport failure must retain its original uncertainty.
+final class OfflineMutationAcceptedUndisclosed implements Exception {
+  /// Creates a content-free acknowledgement.
+  const OfflineMutationAcceptedUndisclosed();
+
+  @override
+  String toString() => 'OfflineMutationAcceptedUndisclosed';
+}
+
 /// A caller supplied an invalid offline API argument.
 final class OfflineArgumentException extends OfflineException {
   /// Creates an invalid-argument failure.

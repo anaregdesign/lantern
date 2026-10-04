@@ -173,6 +173,7 @@ class MutationOp extends $pb.GeneratedMessage {
     ReplicatedReceiptEdgeContributionDelete?
         replicatedReceiptEdgeContributionDelete,
     EdgeCreateEffect? edgeCreateEffect,
+    $core.bool? noEndpointCreation,
   }) {
     final result = create();
     if (putVertex != null) result.putVertex = putVertex;
@@ -209,6 +210,8 @@ class MutationOp extends $pb.GeneratedMessage {
       result.replicatedReceiptEdgeContributionDelete =
           replicatedReceiptEdgeContributionDelete;
     if (edgeCreateEffect != null) result.edgeCreateEffect = edgeCreateEffect;
+    if (noEndpointCreation != null)
+      result.noEndpointCreation = noEndpointCreation;
     return result;
   }
 
@@ -328,6 +331,7 @@ class MutationOp extends $pb.GeneratedMessage {
         subBuilder: ReplicatedReceiptEdgeContributionDelete.create)
     ..aOM<EdgeCreateEffect>(22, _omitFieldNames ? '' : 'edgeCreateEffect',
         subBuilder: EdgeCreateEffect.create)
+    ..aOB(23, _omitFieldNames ? '' : 'noEndpointCreation')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -627,6 +631,19 @@ class MutationOp extends $pb.GeneratedMessage {
   void clearEdgeCreateEffect() => $_clearField(22);
   @$pb.TagNumber(22)
   EdgeCreateEffect ensureEdgeCreateEffect() => $_ensure(21);
+
+  /// Immutable origin effect for Edge Add/Put: replay may update Edge sources
+  /// but must never insert, revive, or extend either endpoint Vertex. Origin
+  /// liveness is checked separately; peers never re-evaluate that condition.
+  /// Only Edge Add/Put and receipt Edge Add arms may carry this flag.
+  @$pb.TagNumber(23)
+  $core.bool get noEndpointCreation => $_getBF(22);
+  @$pb.TagNumber(23)
+  set noEndpointCreation($core.bool value) => $_setBool(22, value);
+  @$pb.TagNumber(23)
+  $core.bool hasNoEndpointCreation() => $_has(22);
+  @$pb.TagNumber(23)
+  void clearNoEndpointCreation() => $_clearField(23);
 }
 
 /// Retains the origin decision; restore never re-evaluates rejected positions.
@@ -4073,6 +4090,7 @@ class SnapshotEdge extends $pb.GeneratedMessage {
     HLCTimestamp? hlc,
     $core.Iterable<SnapshotEdgeContribution>? contributions,
     SnapshotEdgeDerivedAggregate? derivedAggregate,
+    $core.bool? noEndpointCreation,
   }) {
     final result = create();
     if (tail != null) result.tail = tail;
@@ -4080,6 +4098,8 @@ class SnapshotEdge extends $pb.GeneratedMessage {
     if (hlc != null) result.hlc = hlc;
     if (contributions != null) result.contributions.addAll(contributions);
     if (derivedAggregate != null) result.derivedAggregate = derivedAggregate;
+    if (noEndpointCreation != null)
+      result.noEndpointCreation = noEndpointCreation;
     return result;
   }
 
@@ -4106,6 +4126,7 @@ class SnapshotEdge extends $pb.GeneratedMessage {
     ..aOM<SnapshotEdgeDerivedAggregate>(
         5, _omitFieldNames ? '' : 'derivedAggregate',
         subBuilder: SnapshotEdgeDerivedAggregate.create)
+    ..aOB(6, _omitFieldNames ? '' : 'noEndpointCreation')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4175,6 +4196,18 @@ class SnapshotEdge extends $pb.GeneratedMessage {
   void clearDerivedAggregate() => $_clearField(5);
   @$pb.TagNumber(5)
   SnapshotEdgeDerivedAggregate ensureDerivedAggregate() => $_ensure(4);
+
+  /// Private retained history may precede either explicit endpoint. Installing
+  /// these sources must never create or extend a Vertex. Public graph exports
+  /// remain referentially closed.
+  @$pb.TagNumber(6)
+  $core.bool get noEndpointCreation => $_getBF(5);
+  @$pb.TagNumber(6)
+  set noEndpointCreation($core.bool value) => $_setBool(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasNoEndpointCreation() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearNoEndpointCreation() => $_clearField(6);
 }
 
 /// SnapshotEdgeCausalBarrier is the edge sibling of

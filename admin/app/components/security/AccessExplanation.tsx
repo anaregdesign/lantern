@@ -11,7 +11,10 @@ import {
   type ExplainAccessResponse,
 } from "lantern-sdk/web";
 import type { SecurityEditor } from "~/lib/client/usecase/security/use-security-editor";
-import { pairAction } from "~/lib/client/usecase/security/security-drafts";
+import {
+  edgeSelectorAction,
+  derivedEdgeAction,
+} from "~/lib/client/usecase/security/security-drafts";
 import styles from "./AccessExplanation.module.css";
 
 export function AccessExplanation({
@@ -50,9 +53,9 @@ export function AccessExplanation({
               editor.patchExplanation({
                 action: Number(data.value) as SecurityAction,
                 edge:
-                  pairAction(Number(data.value) as SecurityAction) &&
-                  (editor.explanation.edge ||
-                    Number(data.value) === SecurityAction.EDGE_CREATE),
+                  derivedEdgeAction(Number(data.value) as SecurityAction) ||
+                  (edgeSelectorAction(Number(data.value) as SecurityAction) &&
+                    editor.explanation.edge),
               })
             }
           >
@@ -63,10 +66,11 @@ export function AccessExplanation({
             ))}
           </Select>
         </Field>
-        {pairAction(editor.explanation.action) && (
+        {edgeSelectorAction(editor.explanation.action) && (
           <Field label="Explanation resource">
             <Select
               value={editor.explanation.edge ? "edge" : "key"}
+              disabled={derivedEdgeAction(editor.explanation.action)}
               onChange={(_, data) =>
                 editor.patchExplanation({ edge: data.value === "edge" })
               }
@@ -95,8 +99,8 @@ export function AccessExplanation({
               />
             </Field>
             <p>
-              Check endpoint read access and any other required actions
-              separately.
+              Edge read needs both endpoint reads. Every modification needs tail
+              read and head write. Deny takes precedence.
             </p>
           </>
         ) : (
@@ -125,6 +129,9 @@ export function AccessExplanation({
               <li key={i}>
                 {match.roleId} / {match.ruleId}:{" "}
                 {match.effect === SecurityEffect.DENY ? "Deny" : "Allow"}
+                {match.endpoint && ` · ${match.endpoint}`}
+                {match.action !== SecurityAction.UNSPECIFIED &&
+                  ` · ${editor.actions.find(([action]) => action === match.action)?.[1] ?? "Unknown action"}`}
               </li>
             ))}
           </ul>

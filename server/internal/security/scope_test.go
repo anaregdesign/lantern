@@ -19,8 +19,11 @@ func TestScope(t *testing.T) {
 				if random.Intn(2) == 0 {
 					effect = Deny
 				}
-				if random.Intn(2) == 0 {
+				switch random.Intn(3) {
+				case 1:
 					action = Query
+				case 2:
+					action = VertexWrite
 				}
 				roles[i].Rules = append(roles[i].Rules, dataRule(effect, action, prefixes[random.Intn(len(prefixes))]))
 			}
@@ -34,8 +37,13 @@ func TestScope(t *testing.T) {
 			t.Fatal(err)
 		}
 		read := access.Scope(VertexRead)
+		write := access.Scope(VertexWrite)
+		union := unionScopes(read, write)
 		both := access.Scope(VertexRead, Query)
 		for _, key := range keys {
+			if got, want := union.Contains(key), access.Allows(VertexRead, key) || access.Allows(VertexWrite, key); got != want {
+				t.Fatalf("union %q: %v want %v", key, got, want)
+			}
 			if got, want := read.Contains(key), referenceAllows(roles, VertexRead, key); got != want {
 				t.Fatalf("iteration %d key %q: scope=%v rules=%v ranges=%v", iteration, key, got, roles, read.Ranges())
 			}
@@ -79,6 +87,38 @@ func TestScopeConcurrentSharedAccess(t *testing.T) {
 		})
 	}
 	wait.Wait()
+}
+
+func TestScopeIsSubsetOf(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		from, to []Range
+		want     bool
+	}{
+		{"empty", nil, nil, true},
+		{"no coverage", []Range{{"a", "b"}}, nil, false},
+		{"equal", []Range{{"a", "b"}}, []Range{{"a", "b"}}, true},
+		{"adjacent", []Range{{"a", "d"}}, []Range{{"a", "b"}, {"b", "d"}}, true},
+		{"gap", []Range{{"a", "d"}}, []Range{{"a", "b"}, {"c", "d"}}, false},
+		{"lower missing", []Range{{"a", "d"}}, []Range{{"b", ""}}, false},
+		{"upper missing", []Range{{"a", "d"}}, []Range{{"", "c"}}, false},
+		{"infinite", []Range{{"c", ""}}, []Range{{"", ""}}, true},
+		{"infinite uncovered", []Range{{"a", ""}}, []Range{{"a", "z"}}, false},
+		{"adjacent infinite", []Range{{"a", ""}}, []Range{{"a", "b"}, {"b", ""}}, true},
+		{"multiple in one", []Range{{"b", "c"}, {"d", "e"}}, []Range{{"a", "f"}}, true},
+		{"multiple aligned", []Range{{"b", "c"}, {"e", "f"}}, []Range{{"a", "d"}, {"e", "g"}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			from, to := &Scope{ranges: tc.from}, &Scope{ranges: tc.to}
+			if got := from.IsSubsetOf(to); got != tc.want {
+				t.Fatalf("subset = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	var absent *Scope
+	if !absent.IsSubsetOf(&Scope{}) || (&Scope{ranges: []Range{{"a", "b"}}}).IsSubsetOf(absent) {
+		t.Fatal("nil scope coverage drift")
+	}
 }
 
 func TestScopeMembershipReuse(t *testing.T) {

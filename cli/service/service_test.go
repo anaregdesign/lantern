@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -284,5 +285,18 @@ func TestRunArgs_FamilyParseErrorsReturnSpecificSentinels(t *testing.T) {
 				t.Errorf("RunArgs(%v) = %v, want an error matching %v", tc.args, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestHandleMutationAcceptance(t *testing.T) {
+	var output bytes.Buffer
+	svc := NewCLIService(nil, WithOutput(&output))
+	for _, failure := range []error{nil, errors.New("transport failure"), fmt.Errorf("partial: %w", &client.MutationAcceptance{})} {
+		if svc.handleMutationAcceptance(failure) || output.Len() != 0 {
+			t.Fatal("failure became accepted", failure)
+		}
+	}
+	if !svc.handleMutationAcceptance(&client.MutationAcceptance{}) || output.String() != "{\"acceptance\":\"acceptedUndisclosed\"}\n" {
+		t.Fatal("missing typed acknowledgement", output.String())
 	}
 }

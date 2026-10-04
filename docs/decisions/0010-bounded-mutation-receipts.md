@@ -641,7 +641,7 @@ returns before live publication. Snapshot wiring alone does not enable receipt
 writes, public status, or capability; the production provider applies the
 downstream certification and authentication gate.
 The private [whole-state archive codec](../../server/backup/whole_state_archive.go)
-is the active-epoch-only LANTARCH codec (staged internal format version 3), separate
+is the active-epoch-only LANTARCH codec (staged internal format version 4), separate
 from both `.lbk` and the RECEIPT transport. Its graph section carries the
 current receipt-format tag but no transport receipt metadata; separate archive
 records carry the active Store snapshot/policy, clock high-water, and origin
@@ -923,7 +923,7 @@ digest and byte count to its source cutoff/HLC, epoch, policy fingerprint,
 previous generation, rotated generation, exact active and retired receipt
 clock high-water, and actual staged local HLC restore floor. The marker format
 is `ReceiptBaselineFormatCombined` with numeric value 1. The `LANTCBLN`
-container has staged schema version 3 and embeds the current canonical
+container has staged schema version 4 and embeds the current canonical
 active `LANTARCH` bytes unchanged plus a bounded canonical `LANTRET1` retired
 section (staged archive version 2). The retired section binds the active epoch and aggregate caps;
 decoding requires those fields and its high-water to match the active section
@@ -1124,7 +1124,7 @@ A simultaneous four-family mixed load is not additionally required.
 ADR 0012 defines the separate `edge.create` action and `CreateEdges`/`CreateEdge`
 family. Public receipt kind `CREATE_EDGE` preserves one of the four original
 Create outcomes, without disclosing an existing Edge. Private Store kind 7 and
-WAL union version 8 retain the canonical original Edge resource/action and
+WAL union version 9 retain the canonical original Edge resource/action and
 accepted-effect evidence. Raw graph mutation decoding cannot substitute for
 that evidence. Duplicate receipt replay never reruns the conditional operation;
 WAL recovery cannot create endpoints, overwrite live collisions or resurrect

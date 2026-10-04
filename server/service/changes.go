@@ -224,11 +224,9 @@ func changeScope(access *security.Access, projection pb.ChangeProjection, edges 
 	actions := []security.Action{security.CDCIdentity}
 	if projection == pb.ChangeProjection_CHANGE_PROJECTION_VALUE {
 		actions = []security.Action{security.CDCIdentity, security.CDCValue, security.VertexRead}
-		if edges {
-			actions = append(actions, security.EdgeRead)
-		}
 	}
 	if edges {
+		actions = append(actions, security.EdgeRead)
 		return access.EdgeCandidateScope(actions...)
 	}
 	return access.Scope(actions...)

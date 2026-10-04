@@ -108,6 +108,10 @@ func decodeSecurityRole(role *pb.SecurityRole) (security.Role, error) {
 		if !known {
 			return security.Role{}, security.ErrInvalidPolicy
 		}
+		switch action {
+		case security.EdgeRead, security.EdgeCreate, security.EdgeAdd, security.EdgeWrite, security.EdgeDelete:
+			return security.Role{}, security.ErrInvalidPolicy
+		}
 		target := security.PermissionRule{ID: rule.Id, Action: action}
 		switch rule.Effect {
 		case pb.SecurityEffect_SECURITY_EFFECT_ALLOW:
@@ -131,11 +135,7 @@ func decodeSecurityRole(role *pb.SecurityRole) (security.Role, error) {
 			}
 			target.Resource = security.GlobalResource
 		case *pb.SecurityRule_Pair:
-			if resource == nil || resource.Pair == nil {
-				return security.Role{}, security.ErrInvalidPolicy
-			}
-			target.Resource = security.DataResource
-			target.Pair = &security.PrefixPair{Tail: resource.Pair.TailPrefix, Head: resource.Pair.HeadPrefix}
+			return security.Role{}, security.ErrInvalidPolicy
 		default:
 			return security.Role{}, security.ErrInvalidPolicy
 		}
@@ -147,12 +147,7 @@ func encodeSecurityRole(role security.Role) *pb.SecurityRole {
 	result := &pb.SecurityRole{Id: role.ID, Name: role.Name, Rules: make([]*pb.SecurityRule, len(role.Rules))}
 	for i, rule := range role.Rules {
 		target := &pb.SecurityRule{Id: rule.ID, Effect: encodeSecurityEffect(rule.Effect)}
-		for value, action := range securityActions {
-			if action == rule.Action {
-				target.Action = value
-				break
-			}
-		}
+		target.Action = encodeSecurityAction(rule.Action)
 		if rule.Pair != nil {
 			target.Resource = &pb.SecurityRule_Pair{Pair: &pb.SecurityPrefixPair{TailPrefix: rule.Pair.Tail, HeadPrefix: rule.Pair.Head}}
 		} else if rule.Prefix != nil {
@@ -163,6 +158,15 @@ func encodeSecurityRole(role security.Role) *pb.SecurityRole {
 		result.Rules[i] = target
 	}
 	return result
+}
+
+func encodeSecurityAction(action security.Action) pb.SecurityAction {
+	for value, candidate := range securityActions {
+		if candidate == action {
+			return value
+		}
+	}
+	return pb.SecurityAction_SECURITY_ACTION_UNSPECIFIED
 }
 
 // Environment policy locks are response metadata, never client-owned grants.

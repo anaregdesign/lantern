@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'claim_probe.dart';
+import 'probe_protocol.dart';
 
 const _scenarios = [
   'schema',
@@ -70,8 +71,10 @@ Future<void> main(List<String> arguments) async {
         'cross_process_claim': claims,
       }),
     );
-  } catch (_) {
-    stderr.writeln('crash_probe_failed_after_$verified:$stage');
+  } on Object catch (error) {
+    stderr.writeln(
+      'crash_probe_failed_after_$verified:$stage:${_failureCode(error)}',
+    );
     exitCode = 1;
   } finally {
     await directory.delete(recursive: true);
@@ -154,7 +157,17 @@ Future<void> _runReceiptCrash() async {
       }),
     );
   } on Object catch (error) {
-    stderr.writeln('receipt_crash_probe_failed:$stage:${error.runtimeType}');
+    stderr.writeln('receipt_crash_probe_failed:$stage:${_failureCode(error)}');
+    if (proxy != null) {
+      for (final rpc in _receiptMutations) {
+        final rejected = proxy.rejected(rpc);
+        if (rejected > 0) {
+          stderr.writeln(
+            'receipt_upstream_rejected:$rpc:$rejected:${proxy.rejectedStatus(rpc)}',
+          );
+        }
+      }
+    }
     exitCode = 1;
   } finally {
     if (proxy != null) await proxy.close();
@@ -162,10 +175,38 @@ Future<void> _runReceiptCrash() async {
   }
 }
 
+// Only fixture-owned fixed categories cross the public diagnostic boundary.
+// An arbitrary exception message may contain credentials or record contents.
+String _failureCode(Object error) {
+  if (error is TimeoutException) return 'timeout';
+  if (error is StateError && isProbeFailureCode(error.message)) {
+    return error.message;
+  }
+  if (error is StateError &&
+      const {
+        'initial_status_first',
+        'initial_status_order',
+        'initial_mutation_count',
+        'reopened_status_first',
+        'proxy_transport_failure',
+        'mutation_resent_or_not_committed',
+        'marker',
+        'early_exit',
+        'sigkill',
+        'normal_exit',
+        'verification',
+      }.contains(error.message)) {
+    return error.message;
+  }
+  return 'unexpected_failure';
+}
+
 void _requireReceiptCounts(_ResponseDroppingProxy proxy) {
   if (proxy.forwardFailures != 0) throw StateError('proxy_transport_failure');
   for (final rpc in _receiptMutations) {
-    if (proxy.forwarded(rpc) != 1 || proxy.dropped(rpc) != 1) {
+    if (proxy.forwarded(rpc) != 1 ||
+        proxy.dropped(rpc) != 1 ||
+        proxy.rejected(rpc) != 0) {
       throw StateError('mutation_resent_or_not_committed');
     }
   }
@@ -215,6 +256,11 @@ Future<void> _crash(
         (line) {
           try {
             final message = jsonDecode(line) as Map<String, Object?>;
+            final failure = parseProbeFailure(message);
+            if (failure != null && !ready.isCompleted) {
+              ready.completeError(StateError(failure));
+              return;
+            }
             if (message['event'] != 'ready' || ready.isCompleted) {
               throw StateError('marker');
             }
@@ -274,6 +320,8 @@ Future<void> _verify(
     exited = true;
     await stderrDrained;
     final message = jsonDecode(await output) as Map<String, Object?>;
+    final failure = parseProbeFailure(message);
+    if (failure != null) throw StateError(failure);
     if (result != 0 || message['event'] != 'verified') {
       throw StateError('verification');
     }
@@ -316,6 +364,8 @@ final class _ResponseDroppingProxy {
   final Map<String, int> _remainingDrops;
   final Map<String, int> _forwarded = <String, int>{};
   final Map<String, int> _dropped = <String, int>{};
+  final Map<String, int> _rejected = <String, int>{};
+  final Map<String, int> _rejectedStatus = <String, int>{};
   final List<String> _requestTrace = <String>[];
   int _forwardFailures = 0;
 
@@ -325,6 +375,10 @@ final class _ResponseDroppingProxy {
   int forwarded(String rpc) => _forwarded[rpc] ?? 0;
 
   int dropped(String rpc) => _dropped[rpc] ?? 0;
+
+  int rejected(String rpc) => _rejected[rpc] ?? 0;
+
+  int rejectedStatus(String rpc) => _rejectedStatus[rpc] ?? 0;
 
   int get forwardFailures => _forwardFailures;
 
@@ -354,8 +408,13 @@ final class _ResponseDroppingProxy {
         (builder, bytes) => builder..add(bytes),
       );
 
+      if (_receiptMutations.contains(rpc) &&
+          upstreamResponse.statusCode != HttpStatus.ok) {
+        _rejected[rpc] = (_rejected[rpc] ?? 0) + 1;
+        _rejectedStatus[rpc] = upstreamResponse.statusCode;
+      }
       final remaining = _remainingDrops[rpc] ?? 0;
-      if (remaining > 0) {
+      if (remaining > 0 && upstreamResponse.statusCode == HttpStatus.ok) {
         _remainingDrops[rpc] = remaining - 1;
         _dropped[rpc] = (_dropped[rpc] ?? 0) + 1;
         final socket = await downstream.response.detachSocket(

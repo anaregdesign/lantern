@@ -32,3 +32,11 @@ func (c *GraphCache[S, T]) validateEdgeEndpointsLocked(items []EdgeItem[S], now 
 	}
 	return nil
 }
+
+// RetainsDanglingEdgeHistory reports the immutable private snapshot/GC policy.
+// Startup composition can certify it without inspecting or changing graph data.
+func (c *GraphCache[S, T]) RetainsDanglingEdgeHistory() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.retainDanglingEdgeHistory
+}

@@ -3511,12 +3511,75 @@ class DeleteEdgeRequest extends $pb.GeneratedMessage {
   MutationReceiptContext ensureReceiptContext() => $_ensure(2);
 }
 
+class MutationAcceptance extends $pb.GeneratedMessage {
+  factory MutationAcceptance({
+    MutationAcceptanceKind? kind,
+  }) {
+    final result = create();
+    if (kind != null) result.kind = kind;
+    return result;
+  }
+
+  MutationAcceptance._();
+
+  factory MutationAcceptance.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory MutationAcceptance.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'MutationAcceptance',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..e<MutationAcceptanceKind>(
+        1, _omitFieldNames ? '' : 'kind', $pb.PbFieldType.OE,
+        defaultOrMaker:
+            MutationAcceptanceKind.MUTATION_ACCEPTANCE_KIND_UNSPECIFIED,
+        valueOf: MutationAcceptanceKind.valueOf,
+        enumValues: MutationAcceptanceKind.values)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MutationAcceptance clone() => MutationAcceptance()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MutationAcceptance copyWith(void Function(MutationAcceptance) updates) =>
+      super.copyWith((message) => updates(message as MutationAcceptance))
+          as MutationAcceptance;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static MutationAcceptance create() => MutationAcceptance._();
+  @$core.override
+  MutationAcceptance createEmptyInstance() => create();
+  static $pb.PbList<MutationAcceptance> createRepeated() =>
+      $pb.PbList<MutationAcceptance>();
+  @$core.pragma('dart2js:noInline')
+  static MutationAcceptance getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<MutationAcceptance>(create);
+  static MutationAcceptance? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  MutationAcceptanceKind get kind => $_getN(0);
+  @$pb.TagNumber(1)
+  set kind(MutationAcceptanceKind value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasKind() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearKind() => $_clearField(1);
+}
+
 class DeleteEdgeResponse extends $pb.GeneratedMessage {
   factory DeleteEdgeResponse({
     $core.bool? existed,
+    MutationAcceptance? acceptance,
   }) {
     final result = create();
     if (existed != null) result.existed = existed;
+    if (acceptance != null) result.acceptance = acceptance;
     return result;
   }
 
@@ -3534,6 +3597,8 @@ class DeleteEdgeResponse extends $pb.GeneratedMessage {
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
     ..aOB(1, _omitFieldNames ? '' : 'existed')
+    ..aOM<MutationAcceptance>(2, _omitFieldNames ? '' : 'acceptance',
+        subBuilder: MutationAcceptance.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3566,6 +3631,17 @@ class DeleteEdgeResponse extends $pb.GeneratedMessage {
   $core.bool hasExisted() => $_has(0);
   @$pb.TagNumber(1)
   void clearExisted() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  MutationAcceptance get acceptance => $_getN(1);
+  @$pb.TagNumber(2)
+  set acceptance(MutationAcceptance value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasAcceptance() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearAcceptance() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationAcceptance ensureAcceptance() => $_ensure(1);
 }
 
 /// An additive contribution is identified by its directed edge and its
@@ -3754,9 +3830,11 @@ class DeleteEdgeContributionRequest extends $pb.GeneratedMessage {
 class DeleteEdgeContributionResponse extends $pb.GeneratedMessage {
   factory DeleteEdgeContributionResponse({
     $core.bool? existed,
+    MutationAcceptance? acceptance,
   }) {
     final result = create();
     if (existed != null) result.existed = existed;
+    if (acceptance != null) result.acceptance = acceptance;
     return result;
   }
 
@@ -3774,6 +3852,8 @@ class DeleteEdgeContributionResponse extends $pb.GeneratedMessage {
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
     ..aOB(1, _omitFieldNames ? '' : 'existed')
+    ..aOM<MutationAcceptance>(2, _omitFieldNames ? '' : 'acceptance',
+        subBuilder: MutationAcceptance.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3810,6 +3890,17 @@ class DeleteEdgeContributionResponse extends $pb.GeneratedMessage {
   $core.bool hasExisted() => $_has(0);
   @$pb.TagNumber(1)
   void clearExisted() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  MutationAcceptance get acceptance => $_getN(1);
+  @$pb.TagNumber(2)
+  set acceptance(MutationAcceptance value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasAcceptance() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearAcceptance() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationAcceptance ensureAcceptance() => $_ensure(1);
 }
 
 class DeleteEdgeContributionsRequest extends $pb.GeneratedMessage {
@@ -3889,10 +3980,12 @@ class DeleteEdgeContributionsResponse extends $pb.GeneratedMessage {
   factory DeleteEdgeContributionsResponse({
     $core.int? deleted,
     $core.Iterable<$core.bool>? existed,
+    MutationAcceptance? acceptance,
   }) {
     final result = create();
     if (deleted != null) result.deleted = deleted;
     if (existed != null) result.existed.addAll(existed);
+    if (acceptance != null) result.acceptance = acceptance;
     return result;
   }
 
@@ -3911,6 +4004,8 @@ class DeleteEdgeContributionsResponse extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..a<$core.int>(1, _omitFieldNames ? '' : 'deleted', $pb.PbFieldType.O3)
     ..p<$core.bool>(2, _omitFieldNames ? '' : 'existed', $pb.PbFieldType.KB)
+    ..aOM<MutationAcceptance>(3, _omitFieldNames ? '' : 'acceptance',
+        subBuilder: MutationAcceptance.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3951,6 +4046,17 @@ class DeleteEdgeContributionsResponse extends $pb.GeneratedMessage {
   /// One observation per input position, including duplicates and misses.
   @$pb.TagNumber(2)
   $pb.PbList<$core.bool> get existed => $_getList(1);
+
+  @$pb.TagNumber(3)
+  MutationAcceptance get acceptance => $_getN(2);
+  @$pb.TagNumber(3)
+  set acceptance(MutationAcceptance value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasAcceptance() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearAcceptance() => $_clearField(3);
+  @$pb.TagNumber(3)
+  MutationAcceptance ensureAcceptance() => $_ensure(2);
 }
 
 /// EdgeKey identifies an edge by its (tail, head) pair without weight.
@@ -4273,10 +4379,12 @@ class DeleteEdgesResponse extends $pb.GeneratedMessage {
   factory DeleteEdgesResponse({
     $core.int? deleted,
     $core.Iterable<$core.bool>? existed,
+    MutationAcceptance? acceptance,
   }) {
     final result = create();
     if (deleted != null) result.deleted = deleted;
     if (existed != null) result.existed.addAll(existed);
+    if (acceptance != null) result.acceptance = acceptance;
     return result;
   }
 
@@ -4295,6 +4403,8 @@ class DeleteEdgesResponse extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..a<$core.int>(1, _omitFieldNames ? '' : 'deleted', $pb.PbFieldType.O3)
     ..p<$core.bool>(2, _omitFieldNames ? '' : 'existed', $pb.PbFieldType.KB)
+    ..aOM<MutationAcceptance>(3, _omitFieldNames ? '' : 'acceptance',
+        subBuilder: MutationAcceptance.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4334,6 +4444,17 @@ class DeleteEdgesResponse extends $pb.GeneratedMessage {
   /// an accepted Delete while existed still reports the pre-item bucket.
   @$pb.TagNumber(2)
   $pb.PbList<$core.bool> get existed => $_getList(1);
+
+  @$pb.TagNumber(3)
+  MutationAcceptance get acceptance => $_getN(2);
+  @$pb.TagNumber(3)
+  set acceptance(MutationAcceptance value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasAcceptance() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearAcceptance() => $_clearField(3);
+  @$pb.TagNumber(3)
+  MutationAcceptance ensureAcceptance() => $_ensure(2);
 }
 
 /// DeleteEdgesByPrefixRequest deletes up to `limit` live edges whose tail key
@@ -4449,9 +4570,11 @@ class DeleteEdgesByPrefixRequest extends $pb.GeneratedMessage {
 class DeleteEdgesByPrefixResponse extends $pb.GeneratedMessage {
   factory DeleteEdgesByPrefixResponse({
     $fixnum.Int64? deleted,
+    MutationAcceptance? acceptance,
   }) {
     final result = create();
     if (deleted != null) result.deleted = deleted;
+    if (acceptance != null) result.acceptance = acceptance;
     return result;
   }
 
@@ -4470,6 +4593,8 @@ class DeleteEdgesByPrefixResponse extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..a<$fixnum.Int64>(1, _omitFieldNames ? '' : 'deleted', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOM<MutationAcceptance>(2, _omitFieldNames ? '' : 'acceptance',
+        subBuilder: MutationAcceptance.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4505,6 +4630,17 @@ class DeleteEdgesByPrefixResponse extends $pb.GeneratedMessage {
   $core.bool hasDeleted() => $_has(0);
   @$pb.TagNumber(1)
   void clearDeleted() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  MutationAcceptance get acceptance => $_getN(1);
+  @$pb.TagNumber(2)
+  set acceptance(MutationAcceptance value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasAcceptance() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearAcceptance() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationAcceptance ensureAcceptance() => $_ensure(1);
 }
 
 /// AddEdgeRequest accumulates weight onto a single (tail, head) pair: repeated
@@ -4612,9 +4748,11 @@ class AddEdgeRequest extends $pb.GeneratedMessage {
 class AddEdgeResponse extends $pb.GeneratedMessage {
   factory AddEdgeResponse({
     $core.double? effectiveWeight,
+    MutationAcceptance? acceptance,
   }) {
     final result = create();
     if (effectiveWeight != null) result.effectiveWeight = effectiveWeight;
+    if (acceptance != null) result.acceptance = acceptance;
     return result;
   }
 
@@ -4633,6 +4771,8 @@ class AddEdgeResponse extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..a<$core.double>(
         1, _omitFieldNames ? '' : 'effectiveWeight', $pb.PbFieldType.OF)
+    ..aOM<MutationAcceptance>(2, _omitFieldNames ? '' : 'acceptance',
+        subBuilder: MutationAcceptance.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4675,6 +4815,17 @@ class AddEdgeResponse extends $pb.GeneratedMessage {
   $core.bool hasEffectiveWeight() => $_has(0);
   @$pb.TagNumber(1)
   void clearEffectiveWeight() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  MutationAcceptance get acceptance => $_getN(1);
+  @$pb.TagNumber(2)
+  set acceptance(MutationAcceptance value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasAcceptance() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearAcceptance() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationAcceptance ensureAcceptance() => $_ensure(1);
 }
 
 /// AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
@@ -4782,11 +4933,13 @@ class AddEdgesResponse extends $pb.GeneratedMessage {
   factory AddEdgesResponse({
     $core.int? written,
     $core.Iterable<$core.double>? effectiveWeights,
+    MutationAcceptance? acceptance,
   }) {
     final result = create();
     if (written != null) result.written = written;
     if (effectiveWeights != null)
       result.effectiveWeights.addAll(effectiveWeights);
+    if (acceptance != null) result.acceptance = acceptance;
     return result;
   }
 
@@ -4806,6 +4959,8 @@ class AddEdgesResponse extends $pb.GeneratedMessage {
     ..a<$core.int>(1, _omitFieldNames ? '' : 'written', $pb.PbFieldType.O3)
     ..p<$core.double>(
         2, _omitFieldNames ? '' : 'effectiveWeights', $pb.PbFieldType.KF)
+    ..aOM<MutationAcceptance>(3, _omitFieldNames ? '' : 'acceptance',
+        subBuilder: MutationAcceptance.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4847,6 +5002,17 @@ class AddEdgesResponse extends $pb.GeneratedMessage {
   /// AddEdgeResponse.effective_weight for the counter and replication caveats.
   @$pb.TagNumber(2)
   $pb.PbList<$core.double> get effectiveWeights => $_getList(1);
+
+  @$pb.TagNumber(3)
+  MutationAcceptance get acceptance => $_getN(2);
+  @$pb.TagNumber(3)
+  set acceptance(MutationAcceptance value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasAcceptance() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearAcceptance() => $_clearField(3);
+  @$pb.TagNumber(3)
+  MutationAcceptance ensureAcceptance() => $_ensure(2);
 }
 
 class CreateEdgeRequest extends $pb.GeneratedMessage {
@@ -4925,9 +5091,11 @@ class CreateEdgeRequest extends $pb.GeneratedMessage {
 class CreateEdgeResponse extends $pb.GeneratedMessage {
   factory CreateEdgeResponse({
     CreateEdgeOutcome? outcome,
+    MutationAcceptance? acceptance,
   }) {
     final result = create();
     if (outcome != null) result.outcome = outcome;
+    if (acceptance != null) result.acceptance = acceptance;
     return result;
   }
 
@@ -4949,6 +5117,8 @@ class CreateEdgeResponse extends $pb.GeneratedMessage {
         defaultOrMaker: CreateEdgeOutcome.CREATE_EDGE_OUTCOME_UNSPECIFIED,
         valueOf: CreateEdgeOutcome.valueOf,
         enumValues: CreateEdgeOutcome.values)
+    ..aOM<MutationAcceptance>(2, _omitFieldNames ? '' : 'acceptance',
+        subBuilder: MutationAcceptance.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4980,6 +5150,17 @@ class CreateEdgeResponse extends $pb.GeneratedMessage {
   $core.bool hasOutcome() => $_has(0);
   @$pb.TagNumber(1)
   void clearOutcome() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  MutationAcceptance get acceptance => $_getN(1);
+  @$pb.TagNumber(2)
+  set acceptance(MutationAcceptance value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasAcceptance() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearAcceptance() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationAcceptance ensureAcceptance() => $_ensure(1);
 }
 
 /// Creates connections only between existing live endpoints, with a finite
@@ -5056,9 +5237,11 @@ class CreateEdgesRequest extends $pb.GeneratedMessage {
 class CreateEdgesResponse extends $pb.GeneratedMessage {
   factory CreateEdgesResponse({
     $core.Iterable<CreateEdgeOutcome>? outcomes,
+    MutationAcceptance? acceptance,
   }) {
     final result = create();
     if (outcomes != null) result.outcomes.addAll(outcomes);
+    if (acceptance != null) result.acceptance = acceptance;
     return result;
   }
 
@@ -5080,6 +5263,8 @@ class CreateEdgesResponse extends $pb.GeneratedMessage {
         valueOf: CreateEdgeOutcome.valueOf,
         enumValues: CreateEdgeOutcome.values,
         defaultEnumValue: CreateEdgeOutcome.CREATE_EDGE_OUTCOME_UNSPECIFIED)
+    ..aOM<MutationAcceptance>(2, _omitFieldNames ? '' : 'acceptance',
+        subBuilder: MutationAcceptance.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -5105,6 +5290,17 @@ class CreateEdgesResponse extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(1)
   $pb.PbList<CreateEdgeOutcome> get outcomes => $_getList(0);
+
+  @$pb.TagNumber(2)
+  MutationAcceptance get acceptance => $_getN(1);
+  @$pb.TagNumber(2)
+  set acceptance(MutationAcceptance value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasAcceptance() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearAcceptance() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationAcceptance ensureAcceptance() => $_ensure(1);
 }
 
 /// PutEdgeRequest overwrites a single (tail, head) pair, replacing any
@@ -5171,9 +5367,11 @@ class PutEdgeRequest extends $pb.GeneratedMessage {
 class PutEdgeResponse extends $pb.GeneratedMessage {
   factory PutEdgeResponse({
     PutOutcome? outcome,
+    MutationAcceptance? acceptance,
   }) {
     final result = create();
     if (outcome != null) result.outcome = outcome;
+    if (acceptance != null) result.acceptance = acceptance;
     return result;
   }
 
@@ -5194,6 +5392,8 @@ class PutEdgeResponse extends $pb.GeneratedMessage {
         defaultOrMaker: PutOutcome.PUT_OUTCOME_UNSPECIFIED,
         valueOf: PutOutcome.valueOf,
         enumValues: PutOutcome.values)
+    ..aOM<MutationAcceptance>(2, _omitFieldNames ? '' : 'acceptance',
+        subBuilder: MutationAcceptance.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -5226,6 +5426,17 @@ class PutEdgeResponse extends $pb.GeneratedMessage {
   $core.bool hasOutcome() => $_has(0);
   @$pb.TagNumber(1)
   void clearOutcome() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  MutationAcceptance get acceptance => $_getN(1);
+  @$pb.TagNumber(2)
+  set acceptance(MutationAcceptance value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasAcceptance() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearAcceptance() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationAcceptance ensureAcceptance() => $_ensure(1);
 }
 
 /// PutEdgesRequest overwrites each (tail, head) pair, replacing any existing
@@ -5284,9 +5495,11 @@ class PutEdgesRequest extends $pb.GeneratedMessage {
 class PutEdgesResponse extends $pb.GeneratedMessage {
   factory PutEdgesResponse({
     $core.Iterable<PutOutcome>? outcomes,
+    MutationAcceptance? acceptance,
   }) {
     final result = create();
     if (outcomes != null) result.outcomes.addAll(outcomes);
+    if (acceptance != null) result.acceptance = acceptance;
     return result;
   }
 
@@ -5307,6 +5520,8 @@ class PutEdgesResponse extends $pb.GeneratedMessage {
         valueOf: PutOutcome.valueOf,
         enumValues: PutOutcome.values,
         defaultEnumValue: PutOutcome.PUT_OUTCOME_UNSPECIFIED)
+    ..aOM<MutationAcceptance>(2, _omitFieldNames ? '' : 'acceptance',
+        subBuilder: MutationAcceptance.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -5334,6 +5549,17 @@ class PutEdgesResponse extends $pb.GeneratedMessage {
   /// request returns an empty list.
   @$pb.TagNumber(1)
   $pb.PbList<PutOutcome> get outcomes => $_getList(0);
+
+  @$pb.TagNumber(2)
+  MutationAcceptance get acceptance => $_getN(1);
+  @$pb.TagNumber(2)
+  set acceptance(MutationAcceptance value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasAcceptance() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearAcceptance() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationAcceptance ensureAcceptance() => $_ensure(1);
 }
 
 /// GetServerStatusRequest carries no parameters — the response is a

@@ -1,3 +1,4 @@
+import { mutationReply, type MutationReply } from "lantern-sdk/web";
 import type { LanternClient } from "./lantern-client";
 import { LanternApiError } from "./error";
 
@@ -18,9 +19,11 @@ export async function deleteEdges(
   client: LanternClient,
   refs: readonly EdgeRef[],
   init?: { signal?: AbortSignal },
-): Promise<number> {
+): Promise<MutationReply<number>> {
   try {
-    return await client.deleteEdges(refs, init?.signal);
+    return await mutationReply(async () => {
+      return await client.deleteEdges(refs, init?.signal);
+    });
   } catch (err) {
     throw LanternApiError.fromUnknown("DeleteEdges", err);
   }

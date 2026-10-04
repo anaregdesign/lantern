@@ -9,10 +9,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Receipt disclosure uses original provenance and today's captured Role cut.
+// Receipt handling uses original provenance and today's captured Role cut.
 // This check performs no control Store access or I/O while a receipt/graph
 // transaction is open; protected publication separately fences the admission.
-func allowsReceiptResource(access *security.Access, receipt mutationreceipt.Receipt) bool {
+func allowsReceiptMutationResource(access *security.Access, receipt mutationreceipt.Receipt) bool {
 	resource := receipt.Resource
 	allow := func(action security.Action) bool {
 		if resource == (mutationreceipt.ResourceIdentity{}) {
@@ -23,14 +23,14 @@ func allowsReceiptResource(access *security.Access, receipt mutationreceipt.Rece
 		}
 		return access.Allows(action, resource.Key) && (resource.Head == "" || access.Allows(action, resource.Head))
 	}
-	if !allow(security.ReceiptRead) || !allow(security.VertexRead) {
+	if !allow(security.ReceiptRead) {
 		return false
 	}
 	switch receipt.Kind {
 	case mutationreceipt.PutVertex:
-		return resource.Head == "" && allow(security.VertexWrite) && ((!receipt.LifecycleReduction && resource != (mutationreceipt.ResourceIdentity{})) || allow(security.VertexDelete))
+		return resource.Head == "" && allow(security.VertexRead) && allow(security.VertexWrite) && ((!receipt.LifecycleReduction && resource != (mutationreceipt.ResourceIdentity{})) || allow(security.VertexDelete))
 	case mutationreceipt.DeleteVertex:
-		return resource.Head == "" && allow(security.VertexDelete)
+		return resource.Head == "" && allow(security.VertexRead) && allow(security.VertexDelete)
 	case mutationreceipt.CreateEdge:
 		return resource.Head != "" && allow(security.EdgeCreate)
 	case mutationreceipt.AddEdge, mutationreceipt.PutEdge:
@@ -38,12 +38,25 @@ func allowsReceiptResource(access *security.Access, receipt mutationreceipt.Rece
 		if receipt.Kind == mutationreceipt.PutEdge {
 			mutation = security.EdgeWrite
 		}
-		return (resource.Head != "" || resource == (mutationreceipt.ResourceIdentity{})) && allow(security.EdgeRead) && allow(security.VertexWrite) && allow(mutation) && ((!receipt.LifecycleReduction && (resource != (mutationreceipt.ResourceIdentity{}) || receipt.Kind == mutationreceipt.AddEdge)) || allow(security.EdgeDelete))
+		return (resource.Head != "" || resource == (mutationreceipt.ResourceIdentity{})) && allow(mutation)
 	case mutationreceipt.DeleteEdge, mutationreceipt.DeleteEdgeContribution:
-		return (resource.Head != "" || resource == (mutationreceipt.ResourceIdentity{})) && allow(security.EdgeRead) && allow(security.EdgeDelete)
+		return (resource.Head != "" || resource == (mutationreceipt.ResourceIdentity{})) && allow(security.EdgeDelete)
 	default:
 		return false
 	}
+}
+
+// Detailed original effects additionally need ordinary data disclosure. A
+// handling acknowledgement must not expose the original receipt metadata.
+func allowsReceiptResource(access *security.Access, receipt mutationreceipt.Receipt) bool {
+	if !allowsReceiptMutationResource(access, receipt) {
+		return false
+	}
+	resource := receipt.Resource
+	if resource == (mutationreceipt.ResourceIdentity{}) {
+		return access.AllowsAll(security.VertexRead)
+	}
+	return access.Allows(security.VertexRead, resource.Key) && (resource.Head == "" || access.Allows(security.VertexRead, resource.Head))
 }
 
 func wholeReceiptAbsence(access *security.Access) bool {
@@ -129,7 +142,7 @@ func (s *LanternService) authorizeReceiptRows(ctx context.Context, receipts []mu
 		return dataPermissionError()
 	}
 	for _, receipt := range receipts {
-		if !allowsReceiptResource(admission.Access(), receipt) {
+		if !allowsReceiptMutationResource(admission.Access(), receipt) {
 			return dataPermissionError()
 		}
 	}
@@ -146,7 +159,7 @@ func (s *LanternService) authorizeReceiptObservations(ctx context.Context, obser
 	}
 	for _, observation := range observations {
 		if observation.Status == mutationreceipt.Confirmed {
-			if !allowsReceiptResource(admission.Access(), observation.Receipt) {
+			if !allowsReceiptMutationResource(admission.Access(), observation.Receipt) {
 				return dataPermissionError()
 			}
 		} else if !wholeReceiptAbsence(admission.Access()) {

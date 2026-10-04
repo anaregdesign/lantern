@@ -148,6 +148,21 @@ final $typed_data.Uint8List searchHitProjectionStatusDescriptor = $convert.base6
     'FSQ0hfSElUX1BST0pFQ1RJT05fU1RBVFVTX01JU1NJTkcQAxIpCiVTRUFSQ0hfSElUX1BST0pF'
     'Q1RJT05fU1RBVFVTX1JFUExBQ0VEEAQ=');
 
+@$core.Deprecated('Use mutationAcceptanceKindDescriptor instead')
+const MutationAcceptanceKind$json = {
+  '1': 'MutationAcceptanceKind',
+  '2': [
+    {'1': 'MUTATION_ACCEPTANCE_KIND_UNSPECIFIED', '2': 0},
+    {'1': 'MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED', '2': 1},
+  ],
+};
+
+/// Descriptor for `MutationAcceptanceKind`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List mutationAcceptanceKindDescriptor = $convert.base64Decode(
+    'ChZNdXRhdGlvbkFjY2VwdGFuY2VLaW5kEigKJE1VVEFUSU9OX0FDQ0VQVEFOQ0VfS0lORF9VTl'
+    'NQRUNJRklFRBAAEjcKM01VVEFUSU9OX0FDQ0VQVEFOQ0VfS0lORF9IQU5ETEVEX0VGRkVDVF9V'
+    'TkRJU0NMT1NFRBAB');
+
 @$core.Deprecated('Use createEdgeOutcomeDescriptor instead')
 const CreateEdgeOutcome$json = {
   '1': 'CreateEdgeOutcome',
@@ -241,6 +256,7 @@ const MutationReceiptState$json = {
     {'1': 'MUTATION_RECEIPT_STATE_CONFIRMED', '2': 1},
     {'1': 'MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED', '2': 2},
     {'1': 'MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE', '2': 3},
+    {'1': 'MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED', '2': 4},
   ],
 };
 
@@ -249,7 +265,8 @@ final $typed_data.Uint8List mutationReceiptStateDescriptor = $convert.base64Deco
     'ChRNdXRhdGlvblJlY2VpcHRTdGF0ZRImCiJNVVRBVElPTl9SRUNFSVBUX1NUQVRFX1VOU1BFQ0'
     'lGSUVEEAASJAogTVVUQVRJT05fUkVDRUlQVF9TVEFURV9DT05GSVJNRUQQARIrCidNVVRBVElP'
     'Tl9SRUNFSVBUX1NUQVRFX05PVF9ZRVRfT0JTRVJWRUQQAhItCilNVVRBVElPTl9SRUNFSVBUX1'
-    'NUQVRFX05PX0xPTkdFUl9QUk9WQUJMRRAD');
+    'NUQVRFX05PX0xPTkdFUl9QUk9WQUJMRRADEi0KKU1VVEFUSU9OX1JFQ0VJUFRfU1RBVEVfRUZG'
+    'RUNUX1VORElTQ0xPU0VEEAQ=');
 
 @$core.Deprecated('Use vertexDescriptor instead')
 const Vertex$json = {
@@ -1210,18 +1227,46 @@ final $typed_data.Uint8List deleteEdgeRequestDescriptor = $convert.base64Decode(
     'hlYWQSSQoPcmVjZWlwdF9jb250ZXh0GAMgASgLMiAuZ3JhcGgudjEuTXV0YXRpb25SZWNlaXB0'
     'Q29udGV4dFIOcmVjZWlwdENvbnRleHQ=');
 
+@$core.Deprecated('Use mutationAcceptanceDescriptor instead')
+const MutationAcceptance$json = {
+  '1': 'MutationAcceptance',
+  '2': [
+    {
+      '1': 'kind',
+      '3': 1,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.MutationAcceptanceKind',
+      '10': 'kind'
+    },
+  ],
+};
+
+/// Descriptor for `MutationAcceptance`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List mutationAcceptanceDescriptor = $convert.base64Decode(
+    'ChJNdXRhdGlvbkFjY2VwdGFuY2USNAoEa2luZBgBIAEoDjIgLmdyYXBoLnYxLk11dGF0aW9uQW'
+    'NjZXB0YW5jZUtpbmRSBGtpbmQ=');
+
 @$core.Deprecated('Use deleteEdgeResponseDescriptor instead')
 const DeleteEdgeResponse$json = {
   '1': 'DeleteEdgeResponse',
   '2': [
     {'1': 'existed', '3': 1, '4': 1, '5': 8, '10': 'existed'},
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `DeleteEdgeResponse`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List deleteEdgeResponseDescriptor =
-    $convert.base64Decode(
-        'ChJEZWxldGVFZGdlUmVzcG9uc2USGAoHZXhpc3RlZBgBIAEoCFIHZXhpc3RlZA==');
+final $typed_data.Uint8List deleteEdgeResponseDescriptor = $convert.base64Decode(
+    'ChJEZWxldGVFZGdlUmVzcG9uc2USGAoHZXhpc3RlZBgBIAEoCFIHZXhpc3RlZBI8CgphY2NlcH'
+    'RhbmNlGAIgASgLMhwuZ3JhcGgudjEuTXV0YXRpb25BY2NlcHRhbmNlUgphY2NlcHRhbmNl');
 
 @$core.Deprecated('Use edgeContributionKeyDescriptor instead')
 const EdgeContributionKey$json = {
@@ -1268,6 +1313,14 @@ const DeleteEdgeContributionResponse$json = {
   '1': 'DeleteEdgeContributionResponse',
   '2': [
     {'1': 'existed', '3': 1, '4': 1, '5': 8, '10': 'existed'},
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
@@ -1275,7 +1328,8 @@ const DeleteEdgeContributionResponse$json = {
 final $typed_data.Uint8List deleteEdgeContributionResponseDescriptor =
     $convert.base64Decode(
         'Ch5EZWxldGVFZGdlQ29udHJpYnV0aW9uUmVzcG9uc2USGAoHZXhpc3RlZBgBIAEoCFIHZXhpc3'
-        'RlZA==');
+        'RlZBI8CgphY2NlcHRhbmNlGAIgASgLMhwuZ3JhcGgudjEuTXV0YXRpb25BY2NlcHRhbmNlUgph'
+        'Y2NlcHRhbmNl');
 
 @$core.Deprecated('Use deleteEdgeContributionsRequestDescriptor instead')
 const DeleteEdgeContributionsRequest$json = {
@@ -1314,6 +1368,14 @@ const DeleteEdgeContributionsResponse$json = {
   '2': [
     {'1': 'deleted', '3': 1, '4': 1, '5': 5, '10': 'deleted'},
     {'1': 'existed', '3': 2, '4': 3, '5': 8, '10': 'existed'},
+    {
+      '1': 'acceptance',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
@@ -1321,7 +1383,8 @@ const DeleteEdgeContributionsResponse$json = {
 final $typed_data.Uint8List deleteEdgeContributionsResponseDescriptor =
     $convert.base64Decode(
         'Ch9EZWxldGVFZGdlQ29udHJpYnV0aW9uc1Jlc3BvbnNlEhgKB2RlbGV0ZWQYASABKAVSB2RlbG'
-        'V0ZWQSGAoHZXhpc3RlZBgCIAMoCFIHZXhpc3RlZA==');
+        'V0ZWQSGAoHZXhpc3RlZBgCIAMoCFIHZXhpc3RlZBI8CgphY2NlcHRhbmNlGAMgASgLMhwuZ3Jh'
+        'cGgudjEuTXV0YXRpb25BY2NlcHRhbmNlUgphY2NlcHRhbmNl');
 
 @$core.Deprecated('Use edgeKeyDescriptor instead')
 const EdgeKey$json = {
@@ -1409,13 +1472,22 @@ const DeleteEdgesResponse$json = {
   '2': [
     {'1': 'deleted', '3': 1, '4': 1, '5': 5, '10': 'deleted'},
     {'1': 'existed', '3': 2, '4': 3, '5': 8, '10': 'existed'},
+    {
+      '1': 'acceptance',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `DeleteEdgesResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List deleteEdgesResponseDescriptor = $convert.base64Decode(
     'ChNEZWxldGVFZGdlc1Jlc3BvbnNlEhgKB2RlbGV0ZWQYASABKAVSB2RlbGV0ZWQSGAoHZXhpc3'
-    'RlZBgCIAMoCFIHZXhpc3RlZA==');
+    'RlZBgCIAMoCFIHZXhpc3RlZBI8CgphY2NlcHRhbmNlGAMgASgLMhwuZ3JhcGgudjEuTXV0YXRp'
+    'b25BY2NlcHRhbmNlUgphY2NlcHRhbmNl');
 
 @$core.Deprecated('Use deleteEdgesByPrefixRequestDescriptor instead')
 const DeleteEdgesByPrefixRequest$json = {
@@ -1440,14 +1512,23 @@ const DeleteEdgesByPrefixResponse$json = {
   '1': 'DeleteEdgesByPrefixResponse',
   '2': [
     {'1': 'deleted', '3': 1, '4': 1, '5': 4, '10': 'deleted'},
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `DeleteEdgesByPrefixResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List deleteEdgesByPrefixResponseDescriptor =
     $convert.base64Decode(
-        'ChtEZWxldGVFZGdlc0J5UHJlZml4UmVzcG9uc2USGAoHZGVsZXRlZBgBIAEoBFIHZGVsZXRlZA'
-        '==');
+        'ChtEZWxldGVFZGdlc0J5UHJlZml4UmVzcG9uc2USGAoHZGVsZXRlZBgBIAEoBFIHZGVsZXRlZB'
+        'I8CgphY2NlcHRhbmNlGAIgASgLMhwuZ3JhcGgudjEuTXV0YXRpb25BY2NlcHRhbmNlUgphY2Nl'
+        'cHRhbmNl');
 
 @$core.Deprecated('Use addEdgeRequestDescriptor instead')
 const AddEdgeRequest$json = {
@@ -1477,13 +1558,22 @@ const AddEdgeResponse$json = {
   '1': 'AddEdgeResponse',
   '2': [
     {'1': 'effective_weight', '3': 1, '4': 1, '5': 2, '10': 'effectiveWeight'},
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `AddEdgeResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List addEdgeResponseDescriptor = $convert.base64Decode(
     'Cg9BZGRFZGdlUmVzcG9uc2USKQoQZWZmZWN0aXZlX3dlaWdodBgBIAEoAlIPZWZmZWN0aXZlV2'
-    'VpZ2h0');
+    'VpZ2h0EjwKCmFjY2VwdGFuY2UYAiABKAsyHC5ncmFwaC52MS5NdXRhdGlvbkFjY2VwdGFuY2VS'
+    'CmFjY2VwdGFuY2U=');
 
 @$core.Deprecated('Use addEdgesRequestDescriptor instead')
 const AddEdgesRequest$json = {
@@ -1527,13 +1617,22 @@ const AddEdgesResponse$json = {
       '5': 2,
       '10': 'effectiveWeights'
     },
+    {
+      '1': 'acceptance',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `AddEdgesResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List addEdgesResponseDescriptor = $convert.base64Decode(
     'ChBBZGRFZGdlc1Jlc3BvbnNlEhgKB3dyaXR0ZW4YASABKAVSB3dyaXR0ZW4SKwoRZWZmZWN0aX'
-    'ZlX3dlaWdodHMYAiADKAJSEGVmZmVjdGl2ZVdlaWdodHM=');
+    'ZlX3dlaWdodHMYAiADKAJSEGVmZmVjdGl2ZVdlaWdodHMSPAoKYWNjZXB0YW5jZRgDIAEoCzIc'
+    'LmdyYXBoLnYxLk11dGF0aW9uQWNjZXB0YW5jZVIKYWNjZXB0YW5jZQ==');
 
 @$core.Deprecated('Use createEdgeRequestDescriptor instead')
 const CreateEdgeRequest$json = {
@@ -1569,13 +1668,22 @@ const CreateEdgeResponse$json = {
       '6': '.graph.v1.CreateEdgeOutcome',
       '10': 'outcome'
     },
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `CreateEdgeResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List createEdgeResponseDescriptor = $convert.base64Decode(
     'ChJDcmVhdGVFZGdlUmVzcG9uc2USNQoHb3V0Y29tZRgBIAEoDjIbLmdyYXBoLnYxLkNyZWF0ZU'
-    'VkZ2VPdXRjb21lUgdvdXRjb21l');
+    'VkZ2VPdXRjb21lUgdvdXRjb21lEjwKCmFjY2VwdGFuY2UYAiABKAsyHC5ncmFwaC52MS5NdXRh'
+    'dGlvbkFjY2VwdGFuY2VSCmFjY2VwdGFuY2U=');
 
 @$core.Deprecated('Use createEdgesRequestDescriptor instead')
 const CreateEdgesRequest$json = {
@@ -1618,13 +1726,22 @@ const CreateEdgesResponse$json = {
       '6': '.graph.v1.CreateEdgeOutcome',
       '10': 'outcomes'
     },
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `CreateEdgesResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List createEdgesResponseDescriptor = $convert.base64Decode(
     'ChNDcmVhdGVFZGdlc1Jlc3BvbnNlEjcKCG91dGNvbWVzGAEgAygOMhsuZ3JhcGgudjEuQ3JlYX'
-    'RlRWRnZU91dGNvbWVSCG91dGNvbWVz');
+    'RlRWRnZU91dGNvbWVSCG91dGNvbWVzEjwKCmFjY2VwdGFuY2UYAiABKAsyHC5ncmFwaC52MS5N'
+    'dXRhdGlvbkFjY2VwdGFuY2VSCmFjY2VwdGFuY2U=');
 
 @$core.Deprecated('Use putEdgeRequestDescriptor instead')
 const PutEdgeRequest$json = {
@@ -1650,13 +1767,22 @@ const PutEdgeResponse$json = {
       '6': '.graph.v1.PutOutcome',
       '10': 'outcome'
     },
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `PutEdgeResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List putEdgeResponseDescriptor = $convert.base64Decode(
     'Cg9QdXRFZGdlUmVzcG9uc2USLgoHb3V0Y29tZRgBIAEoDjIULmdyYXBoLnYxLlB1dE91dGNvbW'
-    'VSB291dGNvbWU=');
+    'VSB291dGNvbWUSPAoKYWNjZXB0YW5jZRgCIAEoCzIcLmdyYXBoLnYxLk11dGF0aW9uQWNjZXB0'
+    'YW5jZVIKYWNjZXB0YW5jZQ==');
 
 @$core.Deprecated('Use putEdgesRequestDescriptor instead')
 const PutEdgesRequest$json = {
@@ -1690,13 +1816,22 @@ const PutEdgesResponse$json = {
       '6': '.graph.v1.PutOutcome',
       '10': 'outcomes'
     },
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
   ],
 };
 
 /// Descriptor for `PutEdgesResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List putEdgesResponseDescriptor = $convert.base64Decode(
     'ChBQdXRFZGdlc1Jlc3BvbnNlEjAKCG91dGNvbWVzGAEgAygOMhQuZ3JhcGgudjEuUHV0T3V0Y2'
-    '9tZVIIb3V0Y29tZXM=');
+    '9tZVIIb3V0Y29tZXMSPAoKYWNjZXB0YW5jZRgCIAEoCzIcLmdyYXBoLnYxLk11dGF0aW9uQWNj'
+    'ZXB0YW5jZVIKYWNjZXB0YW5jZQ==');
 
 @$core.Deprecated('Use getServerStatusRequestDescriptor instead')
 const GetServerStatusRequest$json = {
@@ -2848,6 +2983,7 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.GetEdgesResponse': GetEdgesResponse$json,
   '.graph.v1.AddEdgeRequest': AddEdgeRequest$json,
   '.graph.v1.AddEdgeResponse': AddEdgeResponse$json,
+  '.graph.v1.MutationAcceptance': MutationAcceptance$json,
   '.graph.v1.AddEdgesRequest': AddEdgesRequest$json,
   '.graph.v1.AddEdgesResponse': AddEdgesResponse$json,
   '.graph.v1.CreateEdgeRequest': CreateEdgeRequest$json,

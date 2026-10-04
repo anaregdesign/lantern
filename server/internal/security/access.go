@@ -73,6 +73,12 @@ func (a *Access) AllowsGlobal(action Action) bool {
 // AllowsAll proves a whole-data-domain fast path. Any applicable Deny defeats
 // it, including a descendant Deny alongside an explicit empty-prefix Allow.
 func (a *Access) AllowsAll(action Action) bool {
+	switch action {
+	case EdgeRead:
+		return a.AllowsAll(VertexRead)
+	case EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete:
+		return a.AllowsAll(VertexRead) && a.AllowsAll(VertexWrite)
+	}
 	kind, known := actionResource(action)
 	if a == nil || !known || kind != DataResource {
 		return false
@@ -80,9 +86,6 @@ func (a *Access) AllowsAll(action Action) bool {
 	allowed := false
 	for _, role := range a.roles {
 		rules := role.data[action]
-		if len(role.pairs[action].deny) > 0 {
-			return false
-		}
 		if len(rules.deny) > 0 {
 			return false
 		}
@@ -91,22 +94,16 @@ func (a *Access) AllowsAll(action Action) bool {
 	return allowed
 }
 
-// AllowsEdge includes both endpoint reads and, for Add/Put, creation rights.
-// Lifecycle reduction additionally needs EdgeDelete at the mutation preflight.
+// AllowsEdge derives authority from Vertex Roles. An Edge belongs to its head:
+// every modification needs tail read and head write. Response disclosure and
+// actual endpoint-creation effects are separate Server checks.
 func (a *Access) AllowsEdge(action Action, tail, head string) bool {
-	if action != EdgeRead && action != EdgeCreate && action != EdgeAdd && action != EdgeWrite && action != EdgeDelete {
+	switch action {
+	case EdgeRead:
+		return a.Allows(VertexRead, tail) && a.Allows(VertexRead, head)
+	case EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete:
+		return a.Allows(VertexRead, tail) && a.Allows(VertexWrite, head)
+	default:
 		return false
 	}
-	if !a.AllowsEdgeAction(action, tail, head) ||
-		!a.Allows(VertexRead, tail) || !a.Allows(VertexRead, head) {
-		return false
-	}
-	if action == EdgeAdd || action == EdgeWrite {
-		return a.AllowsEdgeAction(EdgeRead, tail, head) &&
-			a.Allows(VertexWrite, tail) && a.Allows(VertexWrite, head)
-	}
-	if action == EdgeDelete {
-		return a.AllowsEdgeAction(EdgeRead, tail, head)
-	}
-	return true
 }

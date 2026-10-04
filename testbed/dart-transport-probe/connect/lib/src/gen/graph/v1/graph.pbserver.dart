@@ -55,6 +55,10 @@ abstract class LanternServiceBase extends $pb.GeneratedService {
       $pb.ServerContext ctx, $2.AddEdgeRequest request);
   $async.Future<$2.AddEdgesResponse> addEdges(
       $pb.ServerContext ctx, $2.AddEdgesRequest request);
+  $async.Future<$2.CreateEdgeResponse> createEdge(
+      $pb.ServerContext ctx, $2.CreateEdgeRequest request);
+  $async.Future<$2.CreateEdgesResponse> createEdges(
+      $pb.ServerContext ctx, $2.CreateEdgesRequest request);
   $async.Future<$2.PutEdgeResponse> putEdge(
       $pb.ServerContext ctx, $2.PutEdgeRequest request);
   $async.Future<$2.PutEdgesResponse> putEdges(
@@ -120,6 +124,10 @@ abstract class LanternServiceBase extends $pb.GeneratedService {
         return $2.AddEdgeRequest();
       case 'AddEdges':
         return $2.AddEdgesRequest();
+      case 'CreateEdge':
+        return $2.CreateEdgeRequest();
+      case 'CreateEdges':
+        return $2.CreateEdgesRequest();
       case 'PutEdge':
         return $2.PutEdgeRequest();
       case 'PutEdges':
@@ -193,6 +201,10 @@ abstract class LanternServiceBase extends $pb.GeneratedService {
         return addEdge(ctx, request as $2.AddEdgeRequest);
       case 'AddEdges':
         return addEdges(ctx, request as $2.AddEdgesRequest);
+      case 'CreateEdge':
+        return createEdge(ctx, request as $2.CreateEdgeRequest);
+      case 'CreateEdges':
+        return createEdges(ctx, request as $2.CreateEdgesRequest);
       case 'PutEdge':
         return putEdge(ctx, request as $2.PutEdgeRequest);
       case 'PutEdges':

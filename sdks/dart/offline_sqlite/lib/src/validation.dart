@@ -221,6 +221,7 @@ bool _isQuarantinedLegacyAdd(OfflineOutboxRecord record) =>
 
 bool _terminalWriteState(OfflineWriteState state) =>
     state == OfflineWriteState.confirmed ||
+    state == OfflineWriteState.acceptedUndisclosed ||
     state == OfflineWriteState.deadLetter ||
     state == OfflineWriteState.expired ||
     state == OfflineWriteState.outcomeUnknown;

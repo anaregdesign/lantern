@@ -22,7 +22,7 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 	actions := []security.Action{security.VertexRead, security.Query}
 	var vertexPrefix, tailPrefix, headPrefix string
 	edgeCollection, needsEdges := false, false
-	var extraEdgeActions []security.Action
+	headModification := false
 	switch request := message.(type) {
 	case *pb.ScanVerticesRequest:
 		actions = []security.Action{security.VertexRead}
@@ -41,8 +41,7 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 	case *pb.DeleteVerticesByPrefixRequest:
 		actions, vertexPrefix = []security.Action{security.VertexRead, security.VertexDelete}, request.GetPrefix()
 	case *pb.DeleteEdgesByPrefixRequest:
-		actions = []security.Action{security.VertexRead}
-		extraEdgeActions = []security.Action{security.EdgeDelete}
+		actions, headModification = nil, true
 		tailPrefix, headPrefix, edgeCollection, needsEdges = request.GetTailPrefix(), request.GetHeadPrefix(), true, true
 	case *pb.IlluminateRequest:
 		needsEdges = true
@@ -60,14 +59,25 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 	}
 	access := admission.Access()
 	vertices := access.Scope(actions...)
+	if headModification {
+		vertices = access.EdgeCandidateScope(security.EdgeDelete)
+		// Collection authority is proved from policy alone, before scanning
+		// hidden state. Each final Edge keeps its tail/read, head/write cut.
+		if access.Scope(security.VertexRead).Within(tailPrefix).Empty() || access.Scope(security.VertexWrite).Within(headPrefix).Empty() {
+			return nil, dataPermissionError()
+		}
+	}
 	if vertices.Within(vertexPrefix).Empty() {
 		return nil, dataPermissionError()
 	}
 	edgeActions := append([]security.Action(nil), actions...)
 	var edges *security.Scope
 	if needsEdges {
-		edgeActions = append(edgeActions, security.EdgeRead)
-		edgeActions = append(edgeActions, extraEdgeActions...)
+		if headModification {
+			edgeActions = append(edgeActions, security.EdgeDelete)
+		} else {
+			edgeActions = append(edgeActions, security.EdgeRead)
+		}
 		edges = access.EdgeCandidateScope(edgeActions...)
 	}
 	if edgeCollection && (edges.Within(tailPrefix).Empty() || edges.Within(headPrefix).Empty()) {
@@ -95,23 +105,18 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 		return result
 	}
 	var filters []graphcache.EdgeRangeFilter
-	if needsEdges && access.HasPairSelectors(edgeActions...) {
-		seen := make(map[security.Action]bool, len(edgeActions))
-		for _, action := range edgeActions {
-			if seen[action] {
-				continue
-			}
-			seen[action] = true
-			ranges := access.EdgeRanges(action)
-			filter := graphcache.EdgeRangeFilter{Endpoints: physicalRanges(ranges.Endpoints), ExcludedEndpoints: physicalRanges(ranges.ExcludedEndpoints)}
-			for _, pair := range ranges.Pairs {
-				filter.Included = append(filter.Included, graphcache.KeyPairRange{Tail: physicalRange(pair[0]), Head: physicalRange(pair[1])})
-			}
-			for _, pair := range ranges.ExcludedPairs {
-				filter.Excluded = append(filter.Excluded, graphcache.KeyPairRange{Tail: physicalRange(pair[0]), Head: physicalRange(pair[1])})
-			}
-			filters = append(filters, filter)
+	if headModification {
+		// Two independent generic filters avoid a read-ranges × write-ranges
+		// product. Core has no knowledge of which endpoint owns the Edge.
+		whole := physicalRange(security.Range{})
+		tails, heads := graphcache.EdgeRangeFilter{}, graphcache.EdgeRangeFilter{}
+		for _, r := range access.Scope(security.VertexRead).Ranges() {
+			tails.Included = append(tails.Included, graphcache.KeyPairRange{Tail: physicalRange(r), Head: whole})
 		}
+		for _, r := range access.Scope(security.VertexWrite).Ranges() {
+			heads.Included = append(heads.Included, graphcache.KeyPairRange{Tail: whole, Head: physicalRange(r)})
+		}
+		filters = []graphcache.EdgeRangeFilter{tails, heads}
 	}
 	view, err := graphcache.NewQueryViewWithEdgeFilters(physicalRanges(vertices.Ranges()), physicalRanges(edges.Ranges()), filters)
 	if err != nil {

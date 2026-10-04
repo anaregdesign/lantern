@@ -641,9 +641,20 @@ message DeleteEdgeRequest {
   MutationReceiptContext receipt_context = 3;
 }
 
+// Acceptance is a handling acknowledgement, never proof of any mutation
+// effect, liveness, creation, deletion, collision or original result.
+// A response with acceptance MUST omit every detailed effect field. A batch
+// uses this response for the whole call if any result is undisclosed.
+enum MutationAcceptanceKind {
+  MUTATION_ACCEPTANCE_KIND_UNSPECIFIED = 0;
+  MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED = 1;
+}
+message MutationAcceptance { MutationAcceptanceKind kind = 1; }
+
 message DeleteEdgeResponse {
   // existed is true if the edge was present and removed by this call.
   bool existed = 1;
+  MutationAcceptance acceptance = 2;
 }
 
 // An additive contribution is identified by its directed edge and its
@@ -664,6 +675,7 @@ message DeleteEdgeContributionRequest {
 message DeleteEdgeContributionResponse {
   // True only when a live contribution with this identity was removed.
   bool existed = 1;
+  MutationAcceptance acceptance = 2;
 }
 
 message DeleteEdgeContributionsRequest {
@@ -677,6 +689,7 @@ message DeleteEdgeContributionsResponse {
   int32 deleted = 1;
   // One observation per input position, including duplicates and misses.
   repeated bool existed = 2;
+  MutationAcceptance acceptance = 3;
 }
 
 // EdgeKey identifies an edge by its (tail, head) pair without weight.
@@ -736,6 +749,7 @@ message DeleteEdgesResponse {
   // observed at its turn in the batch; a newer HLC Add may remain live after
   // an accepted Delete while existed still reports the pre-item bucket.
   repeated bool existed = 2;
+  MutationAcceptance acceptance = 3;
 }
 
 // DeleteEdgesByPrefixRequest deletes up to `limit` live edges whose tail key
@@ -762,6 +776,7 @@ message DeleteEdgesByPrefixRequest {
 
 message DeleteEdgesByPrefixResponse {
   uint64 deleted = 1;
+  MutationAcceptance acceptance = 2;
 }
 
 // AddEdgeRequest accumulates weight onto a single (tail, head) pair: repeated
@@ -799,6 +814,7 @@ message AddEdgeResponse {
   // Note: with replication enabled the value is the serving node's local view
   // at apply time — the same async-replica caveat as a Redis INCR read.
   float effective_weight = 1;
+  MutationAcceptance acceptance = 2;
 }
 
 // AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
@@ -845,6 +861,7 @@ message AddEdgesResponse {
   // results instead. Empty only for an empty request. See
   // AddEdgeResponse.effective_weight for the counter and replication caveats.
   repeated float effective_weights = 2;
+  MutationAcceptance acceptance = 3;
 }
 
 // CreateEdgeOutcome is a disclosure-limited, request-index-aligned result.
@@ -865,6 +882,7 @@ message CreateEdgeRequest {
 
 message CreateEdgeResponse {
   CreateEdgeOutcome outcome = 1;
+  MutationAcceptance acceptance = 2;
 }
 
 // Creates connections only between existing live endpoints, with a finite
@@ -879,6 +897,7 @@ message CreateEdgesRequest {
 
 message CreateEdgesResponse {
   repeated CreateEdgeOutcome outcomes = 1;
+  MutationAcceptance acceptance = 2;
 }
 
 // PutEdgeRequest overwrites a single (tail, head) pair, replacing any
@@ -891,6 +910,7 @@ message PutEdgeRequest {
 message PutEdgeResponse {
   // Server-authoritative result for edge in the request.
   PutOutcome outcome = 1;
+  MutationAcceptance acceptance = 2;
 }
 
 // PutEdgesRequest overwrites each (tail, head) pair, replacing any existing
@@ -903,6 +923,7 @@ message PutEdgesResponse {
   // Index-aligned with request.edges and always the same length. An empty
   // request returns an empty list.
   repeated PutOutcome outcomes = 1;
+  MutationAcceptance acceptance = 2;
 }
 
 // GetServerStatusRequest carries no parameters — the response is a
@@ -1243,6 +1264,9 @@ enum MutationReceiptState {
   MUTATION_RECEIPT_STATE_CONFIRMED = 1;
   MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED = 2;
   MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE = 3;
+  // Lookup handled under current original-resource mutation authority, with
+  // no disclosure of the effect or stored receipt metadata. Never CONFIRMED.
+  MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED = 4;
 }
 
 // ReceiptResult stores the original public result, not the current graph

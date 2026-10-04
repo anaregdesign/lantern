@@ -337,6 +337,11 @@ func (x *HLCTimestamp) GetNodeId() []byte {
 // them faithfully simplifies CDC consumers that mirror RPC semantics.
 type MutationOp struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
+	// Immutable origin effect for Edge Add/Put: replay may update Edge sources
+	// but must never insert, revive, or extend either endpoint Vertex. Origin
+	// liveness is checked separately; peers never re-evaluate that condition.
+	// Only Edge Add/Put and receipt Edge Add arms may carry this flag.
+	NoEndpointCreation bool `protobuf:"varint,23,opt,name=no_endpoint_creation,json=noEndpointCreation,proto3" json:"no_endpoint_creation,omitempty"`
 	// Types that are valid to be assigned to Op:
 	//
 	//	*MutationOp_PutVertex
@@ -394,6 +399,13 @@ func (x *MutationOp) ProtoReflect() protoreflect.Message {
 // Deprecated: Use MutationOp.ProtoReflect.Descriptor instead.
 func (*MutationOp) Descriptor() ([]byte, []int) {
 	return file_graph_v1_replication_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *MutationOp) GetNoEndpointCreation() bool {
+	if x != nil {
+		return x.NoEndpointCreation
+	}
+	return false
 }
 
 func (x *MutationOp) GetOp() isMutationOp_Op {
@@ -3273,8 +3285,12 @@ type SnapshotEdge struct {
 	// zero-ContribID Put/base slot. Ordinary contributions must be empty when
 	// present; only derived_aggregate.adds can accompany this base.
 	DerivedAggregate *SnapshotEdgeDerivedAggregate `protobuf:"bytes,5,opt,name=derived_aggregate,json=derivedAggregate,proto3" json:"derived_aggregate,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Private retained history may precede either explicit endpoint. Installing
+	// these sources must never create or extend a Vertex. Public graph exports
+	// remain referentially closed.
+	NoEndpointCreation bool `protobuf:"varint,6,opt,name=no_endpoint_creation,json=noEndpointCreation,proto3" json:"no_endpoint_creation,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *SnapshotEdge) Reset() {
@@ -3340,6 +3356,13 @@ func (x *SnapshotEdge) GetDerivedAggregate() *SnapshotEdgeDerivedAggregate {
 		return x.DerivedAggregate
 	}
 	return nil
+}
+
+func (x *SnapshotEdge) GetNoEndpointCreation() bool {
+	if x != nil {
+		return x.NoEndpointCreation
+	}
+	return false
 }
 
 // SnapshotEdgeCausalBarrier is the edge sibling of
@@ -4041,9 +4064,10 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\fHLCTimestamp\x12\x17\n" +
 	"\awall_ns\x18\x01 \x01(\x03R\x06wallNs\x12\x18\n" +
 	"\alogical\x18\x02 \x01(\rR\alogical\x12\x17\n" +
-	"\anode_id\x18\x03 \x01(\fR\x06nodeId\"\xd8\x0e\n" +
+	"\anode_id\x18\x03 \x01(\fR\x06nodeId\"\x8a\x0f\n" +
 	"\n" +
-	"MutationOp\x12;\n" +
+	"MutationOp\x120\n" +
+	"\x14no_endpoint_creation\x18\x17 \x01(\bR\x12noEndpointCreation\x12;\n" +
 	"\n" +
 	"put_vertex\x18\x01 \x01(\v2\x1a.graph.v1.PutVertexRequestH\x00R\tputVertex\x12A\n" +
 	"\fput_vertices\x18\x02 \x01(\v2\x1c.graph.v1.PutVerticesRequestH\x00R\vputVertices\x12D\n" +
@@ -4258,13 +4282,14 @@ const file_graph_v1_replication_proto_rawDesc = "" +
 	"\n" +
 	"expiration\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"expiration\x126\n" +
-	"\x04adds\x18\x03 \x03(\v2\".graph.v1.SnapshotEdgeContributionR\x04adds\"\xff\x01\n" +
+	"\x04adds\x18\x03 \x03(\v2\".graph.v1.SnapshotEdgeContributionR\x04adds\"\xb1\x02\n" +
 	"\fSnapshotEdge\x12\x12\n" +
 	"\x04tail\x18\x01 \x01(\tR\x04tail\x12\x12\n" +
 	"\x04head\x18\x02 \x01(\tR\x04head\x12(\n" +
 	"\x03hlc\x18\x03 \x01(\v2\x16.graph.v1.HLCTimestampR\x03hlc\x12H\n" +
 	"\rcontributions\x18\x04 \x03(\v2\".graph.v1.SnapshotEdgeContributionR\rcontributions\x12S\n" +
-	"\x11derived_aggregate\x18\x05 \x01(\v2&.graph.v1.SnapshotEdgeDerivedAggregateR\x10derivedAggregate\"m\n" +
+	"\x11derived_aggregate\x18\x05 \x01(\v2&.graph.v1.SnapshotEdgeDerivedAggregateR\x10derivedAggregate\x120\n" +
+	"\x14no_endpoint_creation\x18\x06 \x01(\bR\x12noEndpointCreation\"m\n" +
 	"\x19SnapshotEdgeCausalBarrier\x12\x12\n" +
 	"\x04tail\x18\x01 \x01(\tR\x04tail\x12\x12\n" +
 	"\x04head\x18\x02 \x01(\tR\x04head\x12(\n" +

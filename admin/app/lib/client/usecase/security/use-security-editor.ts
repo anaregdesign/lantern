@@ -8,13 +8,12 @@ import {
 } from "lantern-sdk/web";
 import type { SecurityManagementController } from "./security-management";
 import {
-  ACTIONS,
+  EXPLANATION_ACTIONS,
   assignmentChange,
   buildIssuer,
   buildRole,
   change,
   globalAction,
-  pairAction,
   issuerDraft,
   newRule,
   roleDraft,
@@ -58,7 +57,7 @@ export function useSecurityEditor(controller: SecurityManagementController) {
     templatePrefix,
     setTemplatePrefix,
     explanation,
-    actions: ACTIONS,
+    actions: EXPLANATION_ACTIONS,
     editIssuer: (value?: SecurityIssuer) => {
       controller.cancelReview();
       setError("");
@@ -67,17 +66,19 @@ export function useSecurityEditor(controller: SecurityManagementController) {
     editRole: (value?: SecurityRole) => {
       controller.cancelReview();
       setError("");
-      setRole(roleDraft(value));
+      run(() => setRole(roleDraft(value)));
     },
     useTemplate: (value: SecurityRole) => {
       controller.cancelReview();
       setError("");
-      setRole({
-        ...roleDraft(value),
-        id: "",
-        name: value.name,
-        existing: false,
-      });
+      run(() =>
+        setRole({
+          ...roleDraft(value),
+          id: "",
+          name: value.name,
+          existing: false,
+        }),
+      );
     },
     editUser: (value?: SecurityUser) => {
       controller.cancelReview();
@@ -119,11 +120,6 @@ export function useSecurityEditor(controller: SecurityManagementController) {
                   patch.action !== undefined
                     ? globalAction(patch.action)
                     : rule.global,
-                pair:
-                  patch.action !== undefined
-                    ? patch.action === SecurityAction.EDGE_CREATE ||
-                      (pairAction(patch.action) && rule.pair)
-                    : (patch.pair ?? rule.pair),
               }
             : rule,
         ),

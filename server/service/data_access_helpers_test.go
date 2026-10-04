@@ -18,10 +18,6 @@ func dataAccessRule(id string, effect security.Effect, action security.Action, p
 	return security.PermissionRule{ID: id, Effect: effect, Action: action, Resource: security.DataResource, Prefix: &prefix}
 }
 
-func dataAccessPairRule(id string, effect security.Effect, action security.Action, tail, head string) security.PermissionRule {
-	return security.PermissionRule{ID: id, Effect: effect, Action: action, Resource: security.DataResource, Pair: &security.PrefixPair{Tail: tail, Head: head}}
-}
-
 // Data-boundary tests exercise the policy engine directly, independently of
 // management DTO/HTTP fixtures. They share one immutable admitted revision.
 func dataAccessFixture(t *testing.T, rules []security.PermissionRule) (func() time.Time, func(string, time.Time) context.Context) {

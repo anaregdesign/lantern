@@ -15,11 +15,6 @@ export const ACTIONS = [
   [SecurityAction.VERTEX_READ, "Read vertices"],
   [SecurityAction.VERTEX_WRITE, "Write vertices"],
   [SecurityAction.VERTEX_DELETE, "Delete vertices"],
-  [SecurityAction.EDGE_READ, "Read edges"],
-  [SecurityAction.EDGE_CREATE, "Create connections"],
-  [SecurityAction.EDGE_ADD, "Add edge contributions"],
-  [SecurityAction.EDGE_WRITE, "Write edges"],
-  [SecurityAction.EDGE_DELETE, "Delete edges"],
   [SecurityAction.QUERY, "Search and explore"],
   [SecurityAction.CDC_IDENTITY, "Identity CDC"],
   [SecurityAction.CDC_VALUE, "Value CDC"],
@@ -28,6 +23,14 @@ export const ACTIONS = [
   [SecurityAction.OPERATIONS_READ, "Observe operations"],
   [SecurityAction.SCHEMA_READ, "Read schema"],
   [SecurityAction.MANAGE, "Manage security"],
+] as const;
+export const EXPLANATION_ACTIONS = [
+  ...ACTIONS,
+  [SecurityAction.EDGE_READ, "Read edges"],
+  [SecurityAction.EDGE_CREATE, "Create connections"],
+  [SecurityAction.EDGE_ADD, "Add edge contributions"],
+  [SecurityAction.EDGE_WRITE, "Write edges"],
+  [SecurityAction.EDGE_DELETE, "Delete edges"],
 ] as const;
 const GLOBAL_ACTIONS = new Set<SecurityAction>([
   SecurityAction.OPERATIONS_READ,
@@ -53,11 +56,6 @@ export interface RuleDraft {
   prefix: string;
   allKeys: boolean;
   global: boolean;
-  pair: boolean;
-  tailPrefix: string;
-  headPrefix: string;
-  allTails: boolean;
-  allHeads: boolean;
 }
 export interface RoleDraft {
   id: string;
@@ -100,6 +98,16 @@ export function issuerDraft(value?: SecurityIssuer): IssuerDraft {
   };
 }
 export function roleDraft(value?: SecurityRole): RoleDraft {
+  if (
+    value?.rules.some(
+      (rule) =>
+        rule.resource.case === "pair" ||
+        !ACTIONS.some(([action]) => action === rule.action),
+    )
+  )
+    throw new Error(
+      "This Role uses obsolete Edge grants or pair selectors. Ask the operator to migrate its policy.",
+    );
   return {
     id: value?.id ?? "",
     name: value?.name ?? "",
@@ -113,17 +121,6 @@ export function roleDraft(value?: SecurityRole): RoleDraft {
         prefix: rule.resource.case === "prefix" ? rule.resource.value : "",
         allKeys: rule.resource.case === "prefix" && rule.resource.value === "",
         global: rule.resource.case === "global",
-        pair: rule.resource.case === "pair",
-        tailPrefix:
-          rule.resource.case === "pair" ? rule.resource.value.tailPrefix : "",
-        headPrefix:
-          rule.resource.case === "pair" ? rule.resource.value.headPrefix : "",
-        allTails:
-          rule.resource.case === "pair" &&
-          rule.resource.value.tailPrefix === "",
-        allHeads:
-          rule.resource.case === "pair" &&
-          rule.resource.value.headPrefix === "",
       })) ?? [],
   };
 }
@@ -142,7 +139,7 @@ export function userDraft(value?: SecurityUser): UserDraft {
 export function globalAction(action: SecurityAction) {
   return GLOBAL_ACTIONS.has(action);
 }
-export function pairAction(action: SecurityAction) {
+export function edgeSelectorAction(action: SecurityAction) {
   return [
     SecurityAction.EDGE_READ,
     SecurityAction.EDGE_CREATE,
@@ -155,6 +152,15 @@ export function pairAction(action: SecurityAction) {
     SecurityAction.RECEIPT_READ,
   ].includes(action);
 }
+export function derivedEdgeAction(action: SecurityAction) {
+  return [
+    SecurityAction.EDGE_READ,
+    SecurityAction.EDGE_CREATE,
+    SecurityAction.EDGE_ADD,
+    SecurityAction.EDGE_WRITE,
+    SecurityAction.EDGE_DELETE,
+  ].includes(action);
+}
 export function newRule(index: number): RuleDraft {
   return {
     id: `rule-${index}`,
@@ -163,11 +169,6 @@ export function newRule(index: number): RuleDraft {
     prefix: "",
     allKeys: false,
     global: false,
-    pair: false,
-    tailPrefix: "",
-    headPrefix: "",
-    allTails: false,
-    allHeads: false,
   };
 }
 function required(value: string, label: string) {
@@ -254,34 +255,11 @@ export function buildRole(draft: RoleDraft): SecurityRole {
       throw new Error("Choose an action and Allow or Deny.");
     if (globalAction(rule.action) !== rule.global)
       throw new Error("Choose the resource scope appropriate to the action.");
-    if (rule.pair && (!pairAction(rule.action) || rule.global))
-      throw new Error("Directed pairs select Edge actions only.");
-    if (rule.action === SecurityAction.EDGE_CREATE && !rule.pair)
-      throw new Error("Connection creation requires a directed prefix pair.");
-    if (rule.pair) {
-      if (
-        (!rule.allTails && !rule.tailPrefix) ||
-        (!rule.allHeads && !rule.headPrefix)
-      )
-        throw new Error(
-          "Enter both literal prefixes or explicitly select all sources or targets.",
-        );
-      if (
-        (!rule.allTails && /^(sys:|data:)/.test(rule.tailPrefix)) ||
-        (!rule.allHeads && /^(sys:|data:)/.test(rule.headPrefix))
-      )
-        throw new Error("Use public logical keys for both endpoints.");
-    }
-    if (!rule.global && !rule.pair && !rule.allKeys && !rule.prefix)
+    if (!rule.global && !rule.allKeys && !rule.prefix)
       throw new Error(
         "Enter a literal logical prefix or explicitly select all data keys.",
       );
-    if (
-      !rule.global &&
-      !rule.pair &&
-      !rule.allKeys &&
-      /^(sys:|data:)/.test(rule.prefix)
-    )
+    if (!rule.global && !rule.allKeys && /^(sys:|data:)/.test(rule.prefix))
       throw new Error(
         "Use public logical keys, without sys: or data: prefixes.",
       );
@@ -292,16 +270,7 @@ export function buildRole(draft: RoleDraft): SecurityRole {
       effect: rule.effect,
       resource: rule.global
         ? { case: "global", value: true }
-        : rule.pair
-          ? {
-              case: "pair",
-              value: {
-                $typeName: "graph.v1.SecurityPrefixPair",
-                tailPrefix: rule.allTails ? "" : rule.tailPrefix,
-                headPrefix: rule.allHeads ? "" : rule.headPrefix,
-              },
-            }
-          : { case: "prefix", value: rule.allKeys ? "" : rule.prefix },
+        : { case: "prefix", value: rule.allKeys ? "" : rule.prefix },
     };
   });
   return {

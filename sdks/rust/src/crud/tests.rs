@@ -161,6 +161,7 @@ fn outcome_vectors_and_counts_fail_closed_without_erasing_server_results() {
             validate_add(
                 1,
                 AddEdgesResponse {
+                    acceptance: None,
                     written,
                     effective_weights: weights,
                 },
@@ -171,6 +172,7 @@ fn outcome_vectors_and_counts_fail_closed_without_erasing_server_results() {
     let result = validate_add(
         2,
         AddEdgesResponse {
+            acceptance: None,
             written: 1,
             effective_weights: vec![f32::NAN, f32::INFINITY],
         },
@@ -213,6 +215,7 @@ fn contribution_delete_validates_ids_keys_and_indexed_results() {
         validate_delete_contributions(
             3,
             DeleteEdgeContributionsResponse {
+                acceptance: None,
                 deleted: 1,
                 existed: vec![true, false, false],
             }
@@ -230,7 +233,14 @@ fn contribution_delete_validates_ids_keys_and_indexed_results() {
         (-1, vec![true, false, false]),
     ] {
         assert!(matches!(
-            validate_delete_contributions(3, DeleteEdgeContributionsResponse { deleted, existed }),
+            validate_delete_contributions(
+                3,
+                DeleteEdgeContributionsResponse {
+                    acceptance: None,
+                    deleted,
+                    existed
+                }
+            ),
             Err(LanternError::Protocol(_))
         ));
     }

@@ -27,13 +27,16 @@ func TestRoleTemplatesSeparateDataCDCExportAndControl(t *testing.T) {
 	if err != nil || !operations.AllowsGlobal(OperationsRead) || operations.AllowsGlobal(SecurityManage) {
 		t.Fatal("operations access acquired management", err)
 	}
-	creator, err := policy.ForRoles([]string{"connection_creator"})
-	if err != nil || !creator.AllowsEdge(EdgeCreate, "tenant:1:a", "tenant:1:b") || creator.AllowsEdge(EdgeCreate, "tenant:1:a", "tenant:2:b") || creator.AllowsEdge(EdgeDelete, "tenant:1:a", "tenant:1:b") || creator.AllowsEdge(EdgeAdd, "tenant:1:a", "tenant:1:b") || creator.Allows(VertexWrite, "tenant:1:a") || creator.AllowsEdge(EdgeRead, "tenant:1:a", "tenant:1:b") {
-		t.Fatal("connection creator acquired unrelated rights", err)
+	writer, err := policy.ForRoles([]string{"application_writer"})
+	if err != nil || !writer.AllowsEdge(EdgeCreate, "tenant:1:a", "tenant:1:b") || !writer.AllowsEdge(EdgeDelete, "tenant:1:a", "tenant:1:b") || writer.Allows(VertexDelete, "tenant:1:a") {
+		t.Fatal("writer did not retain Head ownership without Vertex deletion", err)
 	}
-	deleter, err := policy.ForRoles([]string{"connection_deleter"})
-	if err != nil || !deleter.AllowsEdge(EdgeDelete, "tenant:1:a", "tenant:1:b") || deleter.AllowsEdge(EdgeCreate, "tenant:1:a", "tenant:1:b") {
-		t.Fatal("connection deletion implies creation", err)
+	manager, err := policy.ForRoles([]string{"head_relationship_manager"})
+	if err != nil || !manager.AllowsEdge(EdgeAdd, "tenant:1:a", "tenant:1:b") || !manager.Allows(ReceiptRead, "tenant:1:b") || manager.AllowsEdge(EdgeWrite, "tenant:1:a", "tenant:2:b") {
+		t.Fatal("head manager crossed capability/scope boundary", err)
+	}
+	if _, err = policy.ForRoles([]string{"connection_creator"}); err == nil {
+		t.Fatal("obsolete create-only template survived")
 	}
 	// Editor-owned templates are detached from a later caller and each other.
 	*roles[0].Rules[0].Prefix = "different:"

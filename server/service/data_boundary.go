@@ -241,29 +241,46 @@ func dataUnary[Req, Resp any](ctx context.Context, req *connect.Request[Req], sv
 	if err != nil {
 		return nil, err
 	}
-	if svc.namespaceFormat == "" {
+	blind := blindMutationRequired(admission, any(req.Msg).(proto.Message))
+	if svc.namespaceFormat == "" && !blind {
 		return unary(ctx, req, fn)
 	}
 	var scope [][32]byte
 	if admission != nil {
 		scope = append(scope, admission.ScopeBinding())
 	}
-	mapped, binding, err := svc.mapDataRequest(any(req.Msg).(proto.Message), scope...)
-	if err != nil {
-		return nil, err
+	mapped := any(req.Msg).(proto.Message)
+	var binding []byte
+	if svc.namespaceFormat != "" {
+		mapped, binding, err = svc.mapDataRequest(mapped, scope...)
+		if err != nil {
+			return nil, err
+		}
 	}
 	response, err := fn(ctx, any(mapped).(*Req))
 	if err != nil {
-		return nil, err
+		if !blind || !blindReceiptDisposition(err) {
+			return nil, err
+		}
+		response = new(Resp)
 	}
 	if admission != nil {
 		if err := admission.Check(ctx, svc.securityNow()); err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err)
 		}
 	}
-	logical, err := svc.mapDataResponse(any(response).(proto.Message), binding)
-	if err != nil {
-		return nil, err
+	logical := any(response).(proto.Message)
+	if svc.namespaceFormat != "" {
+		logical, err = svc.mapDataResponse(logical, binding)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if blind {
+		logical, err = mutationAcceptanceResponse(logical)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return connect.NewResponse(any(logical).(*Resp)), nil
 }

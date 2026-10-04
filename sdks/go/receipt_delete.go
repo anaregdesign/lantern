@@ -48,6 +48,9 @@ func (l *Lantern) DeleteEdgesWithReceipt(
 	if err != nil {
 		return nil, err
 	}
+	if err := mutationAcceptanceFromProto(response); err != nil {
+		return nil, err
+	}
 	return edgeDeleteReceiptResults(stableRefs, stableContext.OperationIDs, response)
 }
 

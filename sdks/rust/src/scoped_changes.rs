@@ -345,10 +345,19 @@ mod tests {
                 crate::CreateEdgeOutcome::Expired
             ]
         );
-        let denied_create = sdk
-            .create_edge(crate::EdgeInput::new(
+        assert_eq!(
+            sdk.create_edge(crate::EdgeInput::new(
                 "orders:create:target:b",
                 "orders:create:source:a",
+                1.0,
+            ))
+            .await?,
+            crate::CreateEdgeOutcome::CreatedAndLive
+        );
+        let denied_create = sdk
+            .create_edge(crate::EdgeInput::new(
+                "orders:create:source:a",
+                "outside:denied",
                 1.0,
             ))
             .await;

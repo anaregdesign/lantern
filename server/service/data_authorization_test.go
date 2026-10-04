@@ -15,7 +15,7 @@ import (
 
 func TestDataAuthorizationExactMatrixAndProtectedCollections(t *testing.T) {
 	var rules []security.PermissionRule
-	for i, action := range []security.Action{security.VertexRead, security.VertexWrite, security.VertexDelete, security.EdgeRead, security.EdgeWrite, security.EdgeAdd, security.EdgeDelete} {
+	for i, action := range []security.Action{security.VertexRead, security.VertexWrite, security.VertexDelete} {
 		rules = append(rules, dataAccessRule(string(rune('a'+i)), security.Allow, action, "orders:"))
 	}
 	rules = append(rules, dataAccessRule("private", security.Deny, security.VertexRead, "orders:private:"))

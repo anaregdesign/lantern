@@ -26,8 +26,8 @@ func archiveWireHeaderFrame(header []byte) []byte {
 
 func TestArchiveGraphWireSchemaPinRejectsFutureField(t *testing.T) {
 	current := (&pb.SnapshotResponse{}).ProtoReflect().Descriptor()
-	if got := protoschema.Fingerprint(current); got != archiveGraphSchemaFingerprintV3 {
-		t.Fatalf("archive v3 graph schema changed to %s; review the archive contract", got)
+	if got := protoschema.Fingerprint(current); got != archiveGraphSchemaFingerprintV4 {
+		t.Fatalf("archive v4 graph schema changed to %s; review the archive contract", got)
 	}
 	for _, tc := range []struct {
 		name  string
@@ -57,7 +57,7 @@ func TestArchiveGraphWireSchemaPinRejectsFutureField(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := protoschema.Fingerprint(changed.Messages().ByName("SnapshotResponse")); got == archiveGraphSchemaFingerprintV3 {
+			if got := protoschema.Fingerprint(changed.Messages().ByName("SnapshotResponse")); got == archiveGraphSchemaFingerprintV4 {
 				t.Fatal("new nested graph field did not invalidate archive v2 schema")
 			}
 		})

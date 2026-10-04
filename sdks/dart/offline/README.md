@@ -15,9 +15,14 @@ hosted `lantern_client 0.3.0`. The receipt-bearing `0.4.0` release uses hosted
 `lantern_client ^0.3.3` and was published after the final source, performance,
 Android/iPhone, OIDC, and archive gates in
 [#1399](https://github.com/anaregdesign/lantern/issues/1399).
-The `0.5.0` contribution Delete candidate uses hosted `lantern_client ^0.4.1`;
-its new qualification and publication are tracked separately in
-[#1586](https://github.com/anaregdesign/lantern/issues/1586). The maintained
+The published `0.5.0` contribution Delete release uses hosted
+`lantern_client ^0.4.1`; its exact-source, device and publication evidence is in
+[#1586](https://github.com/anaregdesign/lantern/issues/1586).
+The in-flight `0.6.0` Head-managed acceptance candidate requires the parent
+`lantern_client ^0.5.0` API. Paired-source development checks use an explicit
+test-only path override. Standalone hosted-parent lock/archive qualification
+remains pending parent publication; no override qualifies that release exit.
+The maintained
 Flutter example and unpublished SQLite adapter use local path overrides for
 development. The private offline OIDC binding requires package-admin
 verification before a later release tag.
@@ -121,7 +126,18 @@ records mean it may already have been sent and can never authorize rekeying.
 The freshness check includes elapsed time since the capability request began,
 including response latency; a delayed preparation cannot make an old ID safe.
 A retained `CONFIRMED` receipt completes the local aggregate with the exact
-original result. `NOT_YET_OBSERVED` permits one send only after mutation
+original result. A direct complete-call `MutationAcceptance` is mapped to
+`OfflineMutationAcceptedUndisclosed`; a known receipt `EFFECT_UNDISCLOSED`
+observation reaches the same terminal `acceptedUndisclosed` state. Under the
+current lease/generation/auth fences, the transaction removes owned outbox and
+pending overlay, invalidates the affected confirmed cache, and stores no effect
+or original result. Restart does not queue it again. `drain` counts confirmed
+results only; inspect `acceptedUndisclosedCount` or per-item status to observe
+these acknowledgements. Partial batches and real failures retain their original
+uncertainty contract. Operation codec v3 retains strict v1/v2 migration; cache,
+outbox and SQLite table schemas are unchanged by this terminal state.
+
+`NOT_YET_OBSERVED` permits one send only after mutation
 support, endpoint continuity, deployment epoch, retention, caps, and policy
 fingerprint still match the persisted evidence.
 A lookup failure remains retryable and unresolved; `NO_LONGER_PROVABLE`,
@@ -338,8 +354,8 @@ server identity. Credentials remain application-owned and are acquired at RPC
 time; the Server validates policy-bound, encrypted cursors. No status/peer RPC,
 fake origin vector, dynamic API probe or offline runtime path dependency is
 used. This composition needs a parent SDK release containing WatchChanges;
-currently hosted archive resolution is a separate release gate. The offline
-storage-neutral port itself compiles against the hosted parent constraint.
+hosted archive resolution is a separate release gate. The `0.6.0` source
+candidate is validated against its paired parent until that version is hosted.
 
 ```dart
 // Application composition; online/offline release versions must expose these APIs.
@@ -371,8 +387,15 @@ natural TTL expiry event.
 The `0.3.0` CDC bridge requires hosted `lantern_client 0.3.0` with
 `subscribeIdentity`; the published `0.4.0` receipt release requires hosted
 `lantern_client ^0.3.3` for receipt APIs and single-attempt receipt-less
-Add. The `0.5.0` candidate requires hosted `lantern_client ^0.4.1` for targeted
-contribution Delete. The in-flight opaque public CDC composition additionally
-requires a separately published online WatchChanges API; local path testing is
-not proof of hosted availability. Earlier published versions
+Add. Published `0.5.0` requires hosted `lantern_client ^0.4.1` for targeted
+contribution Delete. The `0.6.0` candidate requires parent `^0.5.0` for typed
+acceptance/status and opaque public CDC composition. A separately published
+parent API is required; local path testing is not proof of hosted availability. Earlier published versions
 retain their original parent constraints.
+
+
+For this paired source candidate, run
+`python3 -B tool/paired_source_gate.py -- dart test` (and likewise `dart analyze`
+or `dart doc`). It enforces the separately generated source lockfile, checks the
+parent version, and restores the hosted lockfile and temporary override on exit.
+It provides no hosted archive, publication or physical-device qualification.

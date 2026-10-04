@@ -261,7 +261,7 @@ func (s *LanternService) CreateEdge(ctx context.Context, req *pb.CreateEdgeReque
 	return &pb.CreateEdgeResponse{Outcome: resp.GetOutcomes()[0]}, nil
 }
 
-// Create receipt capability is scoped to a current directed grant. It is not
+// Create receipt capability is scoped to current Head-derived authority. It is not
 // retry authorization; actual calls still check their exact original resources.
 func (s *LanternService) advertiseEdgeCreateReceipt(ctx context.Context) bool {
 	if s.edgeCreateHA {

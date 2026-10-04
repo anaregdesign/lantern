@@ -683,7 +683,7 @@ func graphPutReplayEdgeItem(op *pb.MutationOp, accepted graphPutAcceptedEffect) 
 		entry := source.ReplicatedPutEdges.Entries[index]
 		value, barrier = entry.GetLive(), entry.GetCausalBarrier()
 	}
-	item := graphcache.EdgeItem[string]{CausalBarrier: accepted.Kind == graphPutEffectBarrier}
+	item := graphcache.EdgeItem[string]{NoEndpointCreation: op.GetNoEndpointCreation(), CausalBarrier: accepted.Kind == graphPutEffectBarrier}
 	if value != nil {
 		item.Tail, item.Head, item.Weight = value.GetTail(), value.GetHead(), value.GetWeight()
 		item.Expiration = prototime.Expiration(value.GetExpiration())
@@ -749,7 +749,8 @@ func replayGraphAddEffect(graph *graphcache.GraphCache[string, *pb.Vertex], effe
 			id = contribIDFor(m.GetOrigin(), m.GetSeq(), uint16(index))
 		}
 		items[i] = graphcache.EdgeItem[string]{
-			Tail: edge.GetTail(), Head: edge.GetHead(), Weight: edge.GetWeight(),
+			NoEndpointCreation: m.GetOp().GetNoEndpointCreation(),
+			Tail:               edge.GetTail(), Head: edge.GetHead(), Weight: edge.GetWeight(),
 			Expiration: prototime.Expiration(edge.GetExpiration()), ContribID: id,
 		}
 	}

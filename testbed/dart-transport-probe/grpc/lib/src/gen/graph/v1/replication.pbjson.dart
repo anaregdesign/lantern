@@ -114,6 +114,13 @@ const MutationOp$json = {
   '1': 'MutationOp',
   '2': [
     {
+      '1': 'no_endpoint_creation',
+      '3': 23,
+      '4': 1,
+      '5': 8,
+      '10': 'noEndpointCreation'
+    },
+    {
       '1': 'put_vertex',
       '3': 1,
       '4': 1,
@@ -302,6 +309,15 @@ const MutationOp$json = {
       '9': 0,
       '10': 'replicatedReceiptEdgeContributionDelete'
     },
+    {
+      '1': 'edge_create_effect',
+      '3': 22,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.EdgeCreateEffect',
+      '9': 0,
+      '10': 'edgeCreateEffect'
+    },
   ],
   '8': [
     {'1': 'op'},
@@ -310,39 +326,108 @@ const MutationOp$json = {
 
 /// Descriptor for `MutationOp`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List mutationOpDescriptor = $convert.base64Decode(
-    'CgpNdXRhdGlvbk9wEjsKCnB1dF92ZXJ0ZXgYASABKAsyGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZX'
-    'F1ZXN0SABSCXB1dFZlcnRleBJBCgxwdXRfdmVydGljZXMYAiABKAsyHC5ncmFwaC52MS5QdXRW'
-    'ZXJ0aWNlc1JlcXVlc3RIAFILcHV0VmVydGljZXMSRAoNZGVsZXRlX3ZlcnRleBgDIAEoCzIdLm'
-    'dyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3RIAFIMZGVsZXRlVmVydGV4EkoKD2RlbGV0ZV92'
-    'ZXJ0aWNlcxgEIAEoCzIfLmdyYXBoLnYxLkRlbGV0ZVZlcnRpY2VzUmVxdWVzdEgAUg5kZWxldG'
-    'VWZXJ0aWNlcxJkChlkZWxldGVfdmVydGljZXNfYnlfcHJlZml4GAUgASgLMicuZ3JhcGgudjEu'
-    'RGVsZXRlVmVydGljZXNCeVByZWZpeFJlcXVlc3RIAFIWZGVsZXRlVmVydGljZXNCeVByZWZpeB'
-    'I1CghhZGRfZWRnZRgGIAEoCzIYLmdyYXBoLnYxLkFkZEVkZ2VSZXF1ZXN0SABSB2FkZEVkZ2US'
-    'OAoJYWRkX2VkZ2VzGAcgASgLMhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0SABSCGFkZEVkZ2'
-    'VzEjUKCHB1dF9lZGdlGAggASgLMhguZ3JhcGgudjEuUHV0RWRnZVJlcXVlc3RIAFIHcHV0RWRn'
-    'ZRI4CglwdXRfZWRnZXMYCSABKAsyGS5ncmFwaC52MS5QdXRFZGdlc1JlcXVlc3RIAFIIcHV0RW'
-    'RnZXMSPgoLZGVsZXRlX2VkZ2UYCiABKAsyGy5ncmFwaC52MS5EZWxldGVFZGdlUmVxdWVzdEgA'
-    'UgpkZWxldGVFZGdlEkEKDGRlbGV0ZV9lZGdlcxgLIAEoCzIcLmdyYXBoLnYxLkRlbGV0ZUVkZ2'
-    'VzUmVxdWVzdEgAUgtkZWxldGVFZGdlcxJbChZkZWxldGVfZWRnZXNfYnlfcHJlZml4GAwgASgL'
-    'MiQuZ3JhcGgudjEuRGVsZXRlRWRnZXNCeVByZWZpeFJlcXVlc3RIAFITZGVsZXRlRWRnZXNCeV'
-    'ByZWZpeBJZChdyZXBsaWNhdGVkX3B1dF92ZXJ0aWNlcxgNIAEoCzIfLmdyYXBoLnYxLlJlcGxp'
-    'Y2F0ZWRQdXRWZXJ0aWNlc0gAUhVyZXBsaWNhdGVkUHV0VmVydGljZXMSUAoUcmVwbGljYXRlZF'
-    '9wdXRfZWRnZXMYDiABKAsyHC5ncmFwaC52MS5SZXBsaWNhdGVkUHV0RWRnZXNIAFIScmVwbGlj'
-    'YXRlZFB1dEVkZ2VzEmwKHnJlcGxpY2F0ZWRfcmVjZWlwdF9lZGdlX2RlbGV0ZRgPIAEoCzIlLm'
-    'dyYXBoLnYxLlJlcGxpY2F0ZWRSZWNlaXB0RWRnZURlbGV0ZUgAUhtyZXBsaWNhdGVkUmVjZWlw'
-    'dEVkZ2VEZWxldGUSaQodcmVwbGljYXRlZF9yZWNlaXB0X3ZlcnRleF9wdXQYECABKAsyJC5ncm'
-    'FwaC52MS5SZXBsaWNhdGVkUmVjZWlwdFZlcnRleFB1dEgAUhpyZXBsaWNhdGVkUmVjZWlwdFZl'
-    'cnRleFB1dBJyCiByZXBsaWNhdGVkX3JlY2VpcHRfdmVydGV4X2RlbGV0ZRgRIAEoCzInLmdyYX'
-    'BoLnYxLlJlcGxpY2F0ZWRSZWNlaXB0VmVydGV4RGVsZXRlSABSHXJlcGxpY2F0ZWRSZWNlaXB0'
-    'VmVydGV4RGVsZXRlEmMKG3JlcGxpY2F0ZWRfcmVjZWlwdF9lZGdlX2FkZBgSIAEoCzIiLmdyYX'
-    'BoLnYxLlJlcGxpY2F0ZWRSZWNlaXB0RWRnZUFkZEgAUhhyZXBsaWNhdGVkUmVjZWlwdEVkZ2VB'
-    'ZGQSYwoYZGVsZXRlX2VkZ2VfY29udHJpYnV0aW9uGBMgASgLMicuZ3JhcGgudjEuRGVsZXRlRW'
-    'RnZUNvbnRyaWJ1dGlvblJlcXVlc3RIAFIWZGVsZXRlRWRnZUNvbnRyaWJ1dGlvbhJmChlkZWxl'
-    'dGVfZWRnZV9jb250cmlidXRpb25zGBQgASgLMiguZ3JhcGgudjEuRGVsZXRlRWRnZUNvbnRyaW'
-    'J1dGlvbnNSZXF1ZXN0SABSF2RlbGV0ZUVkZ2VDb250cmlidXRpb25zEpEBCityZXBsaWNhdGVk'
-    'X3JlY2VpcHRfZWRnZV9jb250cmlidXRpb25fZGVsZXRlGBUgASgLMjEuZ3JhcGgudjEuUmVwbG'
-    'ljYXRlZFJlY2VpcHRFZGdlQ29udHJpYnV0aW9uRGVsZXRlSABSJ3JlcGxpY2F0ZWRSZWNlaXB0'
-    'RWRnZUNvbnRyaWJ1dGlvbkRlbGV0ZUIECgJvcA==');
+    'CgpNdXRhdGlvbk9wEjAKFG5vX2VuZHBvaW50X2NyZWF0aW9uGBcgASgIUhJub0VuZHBvaW50Q3'
+    'JlYXRpb24SOwoKcHV0X3ZlcnRleBgBIAEoCzIaLmdyYXBoLnYxLlB1dFZlcnRleFJlcXVlc3RI'
+    'AFIJcHV0VmVydGV4EkEKDHB1dF92ZXJ0aWNlcxgCIAEoCzIcLmdyYXBoLnYxLlB1dFZlcnRpY2'
+    'VzUmVxdWVzdEgAUgtwdXRWZXJ0aWNlcxJECg1kZWxldGVfdmVydGV4GAMgASgLMh0uZ3JhcGgu'
+    'djEuRGVsZXRlVmVydGV4UmVxdWVzdEgAUgxkZWxldGVWZXJ0ZXgSSgoPZGVsZXRlX3ZlcnRpY2'
+    'VzGAQgASgLMh8uZ3JhcGgudjEuRGVsZXRlVmVydGljZXNSZXF1ZXN0SABSDmRlbGV0ZVZlcnRp'
+    'Y2VzEmQKGWRlbGV0ZV92ZXJ0aWNlc19ieV9wcmVmaXgYBSABKAsyJy5ncmFwaC52MS5EZWxldG'
+    'VWZXJ0aWNlc0J5UHJlZml4UmVxdWVzdEgAUhZkZWxldGVWZXJ0aWNlc0J5UHJlZml4EjUKCGFk'
+    'ZF9lZGdlGAYgASgLMhguZ3JhcGgudjEuQWRkRWRnZVJlcXVlc3RIAFIHYWRkRWRnZRI4CglhZG'
+    'RfZWRnZXMYByABKAsyGS5ncmFwaC52MS5BZGRFZGdlc1JlcXVlc3RIAFIIYWRkRWRnZXMSNQoI'
+    'cHV0X2VkZ2UYCCABKAsyGC5ncmFwaC52MS5QdXRFZGdlUmVxdWVzdEgAUgdwdXRFZGdlEjgKCX'
+    'B1dF9lZGdlcxgJIAEoCzIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdEgAUghwdXRFZGdlcxI+'
+    'CgtkZWxldGVfZWRnZRgKIAEoCzIbLmdyYXBoLnYxLkRlbGV0ZUVkZ2VSZXF1ZXN0SABSCmRlbG'
+    'V0ZUVkZ2USQQoMZGVsZXRlX2VkZ2VzGAsgASgLMhwuZ3JhcGgudjEuRGVsZXRlRWRnZXNSZXF1'
+    'ZXN0SABSC2RlbGV0ZUVkZ2VzElsKFmRlbGV0ZV9lZGdlc19ieV9wcmVmaXgYDCABKAsyJC5ncm'
+    'FwaC52MS5EZWxldGVFZGdlc0J5UHJlZml4UmVxdWVzdEgAUhNkZWxldGVFZGdlc0J5UHJlZml4'
+    'ElkKF3JlcGxpY2F0ZWRfcHV0X3ZlcnRpY2VzGA0gASgLMh8uZ3JhcGgudjEuUmVwbGljYXRlZF'
+    'B1dFZlcnRpY2VzSABSFXJlcGxpY2F0ZWRQdXRWZXJ0aWNlcxJQChRyZXBsaWNhdGVkX3B1dF9l'
+    'ZGdlcxgOIAEoCzIcLmdyYXBoLnYxLlJlcGxpY2F0ZWRQdXRFZGdlc0gAUhJyZXBsaWNhdGVkUH'
+    'V0RWRnZXMSbAoecmVwbGljYXRlZF9yZWNlaXB0X2VkZ2VfZGVsZXRlGA8gASgLMiUuZ3JhcGgu'
+    'djEuUmVwbGljYXRlZFJlY2VpcHRFZGdlRGVsZXRlSABSG3JlcGxpY2F0ZWRSZWNlaXB0RWRnZU'
+    'RlbGV0ZRJpCh1yZXBsaWNhdGVkX3JlY2VpcHRfdmVydGV4X3B1dBgQIAEoCzIkLmdyYXBoLnYx'
+    'LlJlcGxpY2F0ZWRSZWNlaXB0VmVydGV4UHV0SABSGnJlcGxpY2F0ZWRSZWNlaXB0VmVydGV4UH'
+    'V0EnIKIHJlcGxpY2F0ZWRfcmVjZWlwdF92ZXJ0ZXhfZGVsZXRlGBEgASgLMicuZ3JhcGgudjEu'
+    'UmVwbGljYXRlZFJlY2VpcHRWZXJ0ZXhEZWxldGVIAFIdcmVwbGljYXRlZFJlY2VpcHRWZXJ0ZX'
+    'hEZWxldGUSYwobcmVwbGljYXRlZF9yZWNlaXB0X2VkZ2VfYWRkGBIgASgLMiIuZ3JhcGgudjEu'
+    'UmVwbGljYXRlZFJlY2VpcHRFZGdlQWRkSABSGHJlcGxpY2F0ZWRSZWNlaXB0RWRnZUFkZBJjCh'
+    'hkZWxldGVfZWRnZV9jb250cmlidXRpb24YEyABKAsyJy5ncmFwaC52MS5EZWxldGVFZGdlQ29u'
+    'dHJpYnV0aW9uUmVxdWVzdEgAUhZkZWxldGVFZGdlQ29udHJpYnV0aW9uEmYKGWRlbGV0ZV9lZG'
+    'dlX2NvbnRyaWJ1dGlvbnMYFCABKAsyKC5ncmFwaC52MS5EZWxldGVFZGdlQ29udHJpYnV0aW9u'
+    'c1JlcXVlc3RIAFIXZGVsZXRlRWRnZUNvbnRyaWJ1dGlvbnMSkQEKK3JlcGxpY2F0ZWRfcmVjZW'
+    'lwdF9lZGdlX2NvbnRyaWJ1dGlvbl9kZWxldGUYFSABKAsyMS5ncmFwaC52MS5SZXBsaWNhdGVk'
+    'UmVjZWlwdEVkZ2VDb250cmlidXRpb25EZWxldGVIAFIncmVwbGljYXRlZFJlY2VpcHRFZGdlQ2'
+    '9udHJpYnV0aW9uRGVsZXRlEkoKEmVkZ2VfY3JlYXRlX2VmZmVjdBgWIAEoCzIaLmdyYXBoLnYx'
+    'LkVkZ2VDcmVhdGVFZmZlY3RIAFIQZWRnZUNyZWF0ZUVmZmVjdEIECgJvcA==');
+
+@$core.Deprecated('Use edgeCreateEffectItemDescriptor instead')
+const EdgeCreateEffectItem$json = {
+  '1': 'EdgeCreateEffectItem',
+  '2': [
+    {
+      '1': 'original',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.Edge',
+      '10': 'original'
+    },
+    {
+      '1': 'outcome',
+      '3': 2,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.CreateEdgeOutcome',
+      '10': 'outcome'
+    },
+    {
+      '1': 'receipt',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceipt',
+      '10': 'receipt'
+    },
+  ],
+};
+
+/// Descriptor for `EdgeCreateEffectItem`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List edgeCreateEffectItemDescriptor = $convert.base64Decode(
+    'ChRFZGdlQ3JlYXRlRWZmZWN0SXRlbRIqCghvcmlnaW5hbBgBIAEoCzIOLmdyYXBoLnYxLkVkZ2'
+    'VSCG9yaWdpbmFsEjUKB291dGNvbWUYAiABKA4yGy5ncmFwaC52MS5DcmVhdGVFZGdlT3V0Y29t'
+    'ZVIHb3V0Y29tZRIzCgdyZWNlaXB0GAMgASgLMhkuZ3JhcGgudjEuTXV0YXRpb25SZWNlaXB0Ug'
+    'dyZWNlaXB0');
+
+@$core.Deprecated('Use edgeCreateEffectDescriptor instead')
+const EdgeCreateEffect$json = {
+  '1': 'EdgeCreateEffect',
+  '2': [
+    {
+      '1': 'items',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.EdgeCreateEffectItem',
+      '10': 'items'
+    },
+    {'1': 'deployment_epoch', '3': 2, '4': 1, '5': 12, '10': 'deploymentEpoch'},
+    {
+      '1': 'policy_fingerprint',
+      '3': 3,
+      '4': 1,
+      '5': 12,
+      '10': 'policyFingerprint'
+    },
+  ],
+};
+
+/// Descriptor for `EdgeCreateEffect`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List edgeCreateEffectDescriptor = $convert.base64Decode(
+    'ChBFZGdlQ3JlYXRlRWZmZWN0EjQKBWl0ZW1zGAEgAygLMh4uZ3JhcGgudjEuRWRnZUNyZWF0ZU'
+    'VmZmVjdEl0ZW1SBWl0ZW1zEikKEGRlcGxveW1lbnRfZXBvY2gYAiABKAxSD2RlcGxveW1lbnRF'
+    'cG9jaBItChJwb2xpY3lfZmluZ2VycHJpbnQYAyABKAxSEXBvbGljeUZpbmdlcnByaW50');
 
 @$core.Deprecated('Use replicatedReceiptEdgeDeleteItemDescriptor instead')
 const ReplicatedReceiptEdgeDeleteItem$json = {
@@ -531,16 +616,23 @@ const ReplicatedReceiptVertexPutItem$json = {
       '6': '.graph.v1.ReplicatedPutVertex',
       '10': 'accepted'
     },
+    {
+      '1': 'lifecycle_reduced',
+      '3': 4,
+      '4': 1,
+      '5': 8,
+      '10': 'lifecycleReduced'
+    },
   ],
 };
 
 /// Descriptor for `ReplicatedReceiptVertexPutItem`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List replicatedReceiptVertexPutItemDescriptor =
-    $convert.base64Decode(
-        'Ch5SZXBsaWNhdGVkUmVjZWlwdFZlcnRleFB1dEl0ZW0SLAoIb3JpZ2luYWwYASABKAsyEC5ncm'
-        'FwaC52MS5WZXJ0ZXhSCG9yaWdpbmFsEjMKB3JlY2VpcHQYAiABKAsyGS5ncmFwaC52MS5NdXRh'
-        'dGlvblJlY2VpcHRSB3JlY2VpcHQSOQoIYWNjZXB0ZWQYAyABKAsyHS5ncmFwaC52MS5SZXBsaW'
-        'NhdGVkUHV0VmVydGV4UghhY2NlcHRlZA==');
+final $typed_data.Uint8List replicatedReceiptVertexPutItemDescriptor = $convert.base64Decode(
+    'Ch5SZXBsaWNhdGVkUmVjZWlwdFZlcnRleFB1dEl0ZW0SLAoIb3JpZ2luYWwYASABKAsyEC5ncm'
+    'FwaC52MS5WZXJ0ZXhSCG9yaWdpbmFsEjMKB3JlY2VpcHQYAiABKAsyGS5ncmFwaC52MS5NdXRh'
+    'dGlvblJlY2VpcHRSB3JlY2VpcHQSOQoIYWNjZXB0ZWQYAyABKAsyHS5ncmFwaC52MS5SZXBsaW'
+    'NhdGVkUHV0VmVydGV4UghhY2NlcHRlZBIrChFsaWZlY3ljbGVfcmVkdWNlZBgEIAEoCFIQbGlm'
+    'ZWN5Y2xlUmVkdWNlZA==');
 
 @$core.Deprecated('Use replicatedReceiptVertexPutDescriptor instead')
 const ReplicatedReceiptVertexPut$json = {
@@ -874,6 +966,7 @@ const Mutation$json = {
       '6': '.google.protobuf.Timestamp',
       '10': 'tombstoneExpiration'
     },
+    {'1': 'namespace_format', '3': 6, '4': 1, '5': 9, '10': 'namespaceFormat'},
   ],
 };
 
@@ -882,7 +975,8 @@ final $typed_data.Uint8List mutationDescriptor = $convert.base64Decode(
     'CghNdXRhdGlvbhIQCgNzZXEYASABKARSA3NlcRIoCgNobGMYAiABKAsyFi5ncmFwaC52MS5ITE'
     'NUaW1lc3RhbXBSA2hsYxIWCgZvcmlnaW4YAyABKAxSBm9yaWdpbhIkCgJvcBgEIAEoCzIULmdy'
     'YXBoLnYxLk11dGF0aW9uT3BSAm9wEk0KFHRvbWJzdG9uZV9leHBpcmF0aW9uGAUgASgLMhouZ2'
-    '9vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFITdG9tYnN0b25lRXhwaXJhdGlvbg==');
+    '9vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFITdG9tYnN0b25lRXhwaXJhdGlvbhIpChBuYW1lc3Bh'
+    'Y2VfZm9ybWF0GAYgASgJUg9uYW1lc3BhY2VGb3JtYXQ=');
 
 @$core.Deprecated('Use subscribeRequestDescriptor instead')
 const SubscribeRequest$json = {
@@ -913,6 +1007,7 @@ const SubscribeRequest$json = {
       '5': 8,
       '10': 'acceptReceiptEnvelopes'
     },
+    {'1': 'namespace_format', '3': 6, '4': 1, '5': 9, '10': 'namespaceFormat'},
   ],
   '3': [SubscribeRequest_FromSeqPerOriginEntry$json],
 };
@@ -934,8 +1029,9 @@ final $typed_data.Uint8List subscribeRequestDescriptor = $convert.base64Decode(
     'aWdpbhIkCg5mcm9tX2xvY2FsX3NlcRgCIAEoBFIMZnJvbUxvY2FsU2VxEj0KCnByb2plY3Rpb2'
     '4YAyABKA4yHS5ncmFwaC52MS5TdWJzY3JpYmVQcm9qZWN0aW9uUgpwcm9qZWN0aW9uEhwKCWJv'
     'b3RzdHJhcBgEIAEoCFIJYm9vdHN0cmFwEjgKGGFjY2VwdF9yZWNlaXB0X2VudmVsb3BlcxgFIA'
-    'EoCFIWYWNjZXB0UmVjZWlwdEVudmVsb3BlcxpDChVGcm9tU2VxUGVyT3JpZ2luRW50cnkSEAoD'
-    'a2V5GAEgASgJUgNrZXkSFAoFdmFsdWUYAiABKARSBXZhbHVlOgI4AQ==');
+    'EoCFIWYWNjZXB0UmVjZWlwdEVudmVsb3BlcxIpChBuYW1lc3BhY2VfZm9ybWF0GAYgASgJUg9u'
+    'YW1lc3BhY2VGb3JtYXQaQwoVRnJvbVNlcVBlck9yaWdpbkVudHJ5EhAKA2tleRgBIAEoCVIDa2'
+    'V5EhQKBXZhbHVlGAIgASgEUgV2YWx1ZToCOAE=');
 
 @$core.Deprecated('Use identityCheckpointDescriptor instead')
 const IdentityCheckpoint$json = {
@@ -1073,13 +1169,15 @@ const SnapshotRequest$json = {
       '6': '.graph.v1.SnapshotFormat',
       '10': 'requiredFormat'
     },
+    {'1': 'namespace_format', '3': 2, '4': 1, '5': 9, '10': 'namespaceFormat'},
   ],
 };
 
 /// Descriptor for `SnapshotRequest`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List snapshotRequestDescriptor = $convert.base64Decode(
     'Cg9TbmFwc2hvdFJlcXVlc3QSQQoPcmVxdWlyZWRfZm9ybWF0GAEgASgOMhguZ3JhcGgudjEuU2'
-    '5hcHNob3RGb3JtYXRSDnJlcXVpcmVkRm9ybWF0');
+    '5hcHNob3RGb3JtYXRSDnJlcXVpcmVkRm9ybWF0EikKEG5hbWVzcGFjZV9mb3JtYXQYAiABKAlS'
+    'D25hbWVzcGFjZUZvcm1hdA==');
 
 @$core.Deprecated('Use snapshotReceiptMetadataDescriptor instead')
 const SnapshotReceiptMetadata$json = {
@@ -1131,6 +1229,7 @@ final $typed_data.Uint8List snapshotReceiptMetadataDescriptor = $convert.base64D
 const SnapshotHeader$json = {
   '1': 'SnapshotHeader',
   '2': [
+    {'1': 'namespace_format', '3': 20, '4': 1, '5': 9, '10': 'namespaceFormat'},
     {
       '1': 'cutoff_seq_per_origin',
       '3': 1,
@@ -1180,14 +1279,15 @@ const SnapshotHeader_CutoffSeqPerOriginEntry$json = {
 
 /// Descriptor for `SnapshotHeader`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List snapshotHeaderDescriptor = $convert.base64Decode(
-    'Cg5TbmFwc2hvdEhlYWRlchJjChVjdXRvZmZfc2VxX3Blcl9vcmlnaW4YASADKAsyMC5ncmFwaC'
-    '52MS5TbmFwc2hvdEhlYWRlci5DdXRvZmZTZXFQZXJPcmlnaW5FbnRyeVISY3V0b2ZmU2VxUGVy'
-    'T3JpZ2luEjUKCmN1dG9mZl9obGMYAiABKAsyFi5ncmFwaC52MS5ITENUaW1lc3RhbXBSCWN1dG'
-    '9mZkhsYxIoChBjdXRvZmZfbG9jYWxfc2VxGAMgASgEUg5jdXRvZmZMb2NhbFNlcRIwCgZmb3Jt'
-    'YXQYBCABKA4yGC5ncmFwaC52MS5TbmFwc2hvdEZvcm1hdFIGZm9ybWF0EkwKEHJlY2VpcHRfbW'
-    'V0YWRhdGEYBSABKAsyIS5ncmFwaC52MS5TbmFwc2hvdFJlY2VpcHRNZXRhZGF0YVIPcmVjZWlw'
-    'dE1ldGFkYXRhGkUKF0N1dG9mZlNlcVBlck9yaWdpbkVudHJ5EhAKA2tleRgBIAEoCVIDa2V5Eh'
-    'QKBXZhbHVlGAIgASgEUgV2YWx1ZToCOAE=');
+    'Cg5TbmFwc2hvdEhlYWRlchIpChBuYW1lc3BhY2VfZm9ybWF0GBQgASgJUg9uYW1lc3BhY2VGb3'
+    'JtYXQSYwoVY3V0b2ZmX3NlcV9wZXJfb3JpZ2luGAEgAygLMjAuZ3JhcGgudjEuU25hcHNob3RI'
+    'ZWFkZXIuQ3V0b2ZmU2VxUGVyT3JpZ2luRW50cnlSEmN1dG9mZlNlcVBlck9yaWdpbhI1CgpjdX'
+    'RvZmZfaGxjGAIgASgLMhYuZ3JhcGgudjEuSExDVGltZXN0YW1wUgljdXRvZmZIbGMSKAoQY3V0'
+    'b2ZmX2xvY2FsX3NlcRgDIAEoBFIOY3V0b2ZmTG9jYWxTZXESMAoGZm9ybWF0GAQgASgOMhguZ3'
+    'JhcGgudjEuU25hcHNob3RGb3JtYXRSBmZvcm1hdBJMChByZWNlaXB0X21ldGFkYXRhGAUgASgL'
+    'MiEuZ3JhcGgudjEuU25hcHNob3RSZWNlaXB0TWV0YWRhdGFSD3JlY2VpcHRNZXRhZGF0YRpFCh'
+    'dDdXRvZmZTZXFQZXJPcmlnaW5FbnRyeRIQCgNrZXkYASABKAlSA2tleRIUCgV2YWx1ZRgCIAEo'
+    'BFIFdmFsdWU6AjgB');
 
 @$core.Deprecated('Use snapshotFooterDescriptor instead')
 const SnapshotFooter$json = {
@@ -1283,6 +1383,21 @@ final $typed_data.Uint8List snapshotReceiptContributionDescriptor =
         'ChtTbmFwc2hvdFJlY2VpcHRDb250cmlidXRpb24SJwoPY29udHJpYnV0aW9uX2lkGAEgASgMUg'
         '5jb250cmlidXRpb25JZA==');
 
+@$core.Deprecated('Use snapshotReceiptResourceDescriptor instead')
+const SnapshotReceiptResource$json = {
+  '1': 'SnapshotReceiptResource',
+  '2': [
+    {'1': 'logical_key', '3': 1, '4': 1, '5': 9, '10': 'logicalKey'},
+    {'1': 'logical_head', '3': 2, '4': 1, '5': 9, '10': 'logicalHead'},
+  ],
+};
+
+/// Descriptor for `SnapshotReceiptResource`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List snapshotReceiptResourceDescriptor =
+    $convert.base64Decode(
+        'ChdTbmFwc2hvdFJlY2VpcHRSZXNvdXJjZRIfCgtsb2dpY2FsX2tleRgBIAEoCVIKbG9naWNhbE'
+        'tleRIhCgxsb2dpY2FsX2hlYWQYAiABKAlSC2xvZ2ljYWxIZWFk');
+
 @$core.Deprecated('Use snapshotReceiptDescriptor instead')
 const SnapshotReceipt$json = {
   '1': 'SnapshotReceipt',
@@ -1310,6 +1425,21 @@ const SnapshotReceipt$json = {
       '6': '.graph.v1.SnapshotReceiptContribution',
       '10': 'contribution'
     },
+    {
+      '1': 'resource',
+      '3': 10,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SnapshotReceiptResource',
+      '10': 'resource'
+    },
+    {
+      '1': 'lifecycle_reduced',
+      '3': 11,
+      '4': 1,
+      '5': 8,
+      '10': 'lifecycleReduced'
+    },
   ],
 };
 
@@ -1322,7 +1452,9 @@ final $typed_data.Uint8List snapshotReceiptDescriptor = $convert.base64Decode(
     'GAYgASgMUgxpbnRlbnRTaGEyNTYSKAoQZGVhZGxpbmVfdW5peF9tcxgHIAEoBFIOZGVhZGxpbm'
     'VVbml4TXMSJwoPb3JpZ2luYWxfcmVzdWx0GAggASgMUg5vcmlnaW5hbFJlc3VsdBJJCgxjb250'
     'cmlidXRpb24YCSABKAsyJS5ncmFwaC52MS5TbmFwc2hvdFJlY2VpcHRDb250cmlidXRpb25SDG'
-    'NvbnRyaWJ1dGlvbg==');
+    'NvbnRyaWJ1dGlvbhI9CghyZXNvdXJjZRgKIAEoCzIhLmdyYXBoLnYxLlNuYXBzaG90UmVjZWlw'
+    'dFJlc291cmNlUghyZXNvdXJjZRIrChFsaWZlY3ljbGVfcmVkdWNlZBgLIAEoCFIQbGlmZWN5Y2'
+    'xlUmVkdWNlZA==');
 
 @$core.Deprecated('Use snapshotVertexDescriptor instead')
 const SnapshotVertex$json = {
@@ -1467,6 +1599,13 @@ const SnapshotEdge$json = {
       '6': '.graph.v1.SnapshotEdgeDerivedAggregate',
       '10': 'derivedAggregate'
     },
+    {
+      '1': 'no_endpoint_creation',
+      '3': 6,
+      '4': 1,
+      '5': 8,
+      '10': 'noEndpointCreation'
+    },
   ],
 };
 
@@ -1476,7 +1615,8 @@ final $typed_data.Uint8List snapshotEdgeDescriptor = $convert.base64Decode(
     'gKA2hsYxgDIAEoCzIWLmdyYXBoLnYxLkhMQ1RpbWVzdGFtcFIDaGxjEkgKDWNvbnRyaWJ1dGlv'
     'bnMYBCADKAsyIi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VDb250cmlidXRpb25SDWNvbnRyaWJ1dG'
     'lvbnMSUwoRZGVyaXZlZF9hZ2dyZWdhdGUYBSABKAsyJi5ncmFwaC52MS5TbmFwc2hvdEVkZ2VE'
-    'ZXJpdmVkQWdncmVnYXRlUhBkZXJpdmVkQWdncmVnYXRl');
+    'ZXJpdmVkQWdncmVnYXRlUhBkZXJpdmVkQWdncmVnYXRlEjAKFG5vX2VuZHBvaW50X2NyZWF0aW'
+    '9uGAYgASgIUhJub0VuZHBvaW50Q3JlYXRpb24=');
 
 @$core.Deprecated('Use snapshotEdgeCausalBarrierDescriptor instead')
 const SnapshotEdgeCausalBarrier$json = {
@@ -1715,11 +1855,15 @@ final $typed_data.Uint8List snapshotResponseDescriptor = $convert.base64Decode(
 @$core.Deprecated('Use peerStatusRequestDescriptor instead')
 const PeerStatusRequest$json = {
   '1': 'PeerStatusRequest',
+  '2': [
+    {'1': 'namespace_format', '3': 1, '4': 1, '5': 9, '10': 'namespaceFormat'},
+  ],
 };
 
 /// Descriptor for `PeerStatusRequest`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List peerStatusRequestDescriptor =
-    $convert.base64Decode('ChFQZWVyU3RhdHVzUmVxdWVzdA==');
+final $typed_data.Uint8List peerStatusRequestDescriptor = $convert.base64Decode(
+    'ChFQZWVyU3RhdHVzUmVxdWVzdBIpChBuYW1lc3BhY2VfZm9ybWF0GAEgASgJUg9uYW1lc3BhY2'
+    'VGb3JtYXQ=');
 
 @$core.Deprecated('Use originStateDescriptor instead')
 const OriginState$json = {
@@ -1748,6 +1892,7 @@ final $typed_data.Uint8List originStateDescriptor = $convert.base64Decode(
 const PeerStatusResponse$json = {
   '1': 'PeerStatusResponse',
   '2': [
+    {'1': 'namespace_format', '3': 20, '4': 1, '5': 9, '10': 'namespaceFormat'},
     {'1': 'self_origin', '3': 1, '4': 1, '5': 12, '10': 'selfOrigin'},
     {
       '1': 'origins',
@@ -1777,8 +1922,9 @@ const PeerStatusResponse$json = {
 
 /// Descriptor for `PeerStatusResponse`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List peerStatusResponseDescriptor = $convert.base64Decode(
-    'ChJQZWVyU3RhdHVzUmVzcG9uc2USHwoLc2VsZl9vcmlnaW4YASABKAxSCnNlbGZPcmlnaW4SLw'
-    'oHb3JpZ2lucxgCIAMoCzIVLmdyYXBoLnYxLk9yaWdpblN0YXRlUgdvcmlnaW5zEjoKGXNlYXJj'
-    'aF9jb25maWdfZmluZ2VycHJpbnQYAyABKAlSF3NlYXJjaENvbmZpZ0ZpbmdlcnByaW50ElIKGH'
-    'JlcXVpcmVkX3NuYXBzaG90X2Zvcm1hdBgEIAEoDjIYLmdyYXBoLnYxLlNuYXBzaG90Rm9ybWF0'
-    'UhZyZXF1aXJlZFNuYXBzaG90Rm9ybWF0');
+    'ChJQZWVyU3RhdHVzUmVzcG9uc2USKQoQbmFtZXNwYWNlX2Zvcm1hdBgUIAEoCVIPbmFtZXNwYW'
+    'NlRm9ybWF0Eh8KC3NlbGZfb3JpZ2luGAEgASgMUgpzZWxmT3JpZ2luEi8KB29yaWdpbnMYAiAD'
+    'KAsyFS5ncmFwaC52MS5PcmlnaW5TdGF0ZVIHb3JpZ2lucxI6ChlzZWFyY2hfY29uZmlnX2Zpbm'
+    'dlcnByaW50GAMgASgJUhdzZWFyY2hDb25maWdGaW5nZXJwcmludBJSChhyZXF1aXJlZF9zbmFw'
+    'c2hvdF9mb3JtYXQYBCABKA4yGC5ncmFwaC52MS5TbmFwc2hvdEZvcm1hdFIWcmVxdWlyZWRTbm'
+    'Fwc2hvdEZvcm1hdA==');

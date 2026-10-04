@@ -95,6 +95,189 @@ void main() {
     );
   }
 
+  group('effect-undisclosed acceptance', () {
+    for (final asynchronous in [false, true]) {
+      for (final family in ['put', 'delete', 'contribution', 'add', 'status']) {
+        test(
+          '$family retires owned work without cache or resend (async: $asynchronous)',
+          () async {
+            final clock = MutableClock(initial);
+            final memory = InMemoryOfflineStore();
+            final OfflineStore store = asynchronous
+                ? DelayedOfflineStore(memory)
+                : memory;
+            const edge = EdgeRef('tail', 'head');
+            final remote = _UndisclosedRemote()
+              ..edges[edge] = Edge(
+                tail: edge.tail,
+                head: edge.head,
+                weight: 7,
+                expiration: null,
+              );
+            final repository = OfflineLanternRepository(
+              store: store,
+              remote: remote,
+              config: testConfig(clock),
+            );
+            await repository.readEdge(
+              'p',
+              edge,
+              policy: OfflineReadPolicy.serverOnly,
+            );
+            final handle = switch (family) {
+              'put' => await repository.putEdge(
+                partitionId: 'p',
+                input: EdgeInput(tail: edge.tail, head: edge.head, weight: 9),
+              ),
+              'contribution' => await repository.deleteEdgeContribution(
+                partitionId: 'p',
+                contribution: EdgeContributionRef(
+                  tail: edge.tail,
+                  head: edge.head,
+                  contribId: testBytes(24, 1),
+                ),
+              ),
+              'add' => await repository.addEdge(
+                partitionId: 'p',
+                input: EdgeInput(
+                  tail: edge.tail,
+                  head: edge.head,
+                  weight: 9,
+                  contribId: testBytes(24, 2),
+                ),
+              ),
+              _ => await repository.deleteEdge(partitionId: 'p', edge: edge),
+            };
+            if (family == 'status') {
+              remote.beforeReceiptStatusReturn = (id) async {
+                remote.receiptStatuses[id] = OfflineReceiptStatus(
+                  operationId: id,
+                  state: ReceiptStatusState.effectUndisclosed,
+                );
+              };
+            }
+            final transitions = handle.statuses.toList();
+            expect(await repository.drain('p'), 0);
+            final status = await repository.getWriteStatus(
+              'p',
+              handle.operationId,
+            );
+            expect(status!.isTerminal, isTrue);
+            expect(status.confirmedCount, 0);
+            expect(status.acceptedUndisclosedCount, 1);
+            expect(status.items.single.receiptResult, isNull);
+            expect(
+              status.items.single.attemptCount,
+              family == 'status' ? 0 : 1,
+            );
+            expect(
+              (await transitions).last.state,
+              OfflineWriteState.acceptedUndisclosed,
+            );
+            expect(await repository.listPending('p'), isEmpty);
+            expect(await repository.listDeadLetters('p'), isEmpty);
+            final read = await repository.readEdge(
+              'p',
+              edge,
+              policy: OfflineReadPolicy.cacheOnly,
+            );
+            expect(read.hasPendingWrites, isFalse);
+            expect(read.value, isNull);
+            expect(read.state, OfflineReadState.unknown);
+            final calls = (
+              remote.edgePutCalls,
+              remote.receiptSendCalls,
+              remote.receiptStatusCalls,
+            );
+            expect(await repository.drain('p'), 0);
+            expect((
+              remote.edgePutCalls,
+              remote.receiptSendCalls,
+              remote.receiptStatusCalls,
+            ), calls);
+            expect(
+              remote.receiptSendCalls,
+              family == 'status' || family == 'put' ? 0 : 1,
+            );
+            final snapshot = await memory.exportSnapshot();
+            await repository.dispose();
+            final restored = OfflineLanternRepository(
+              store: InMemoryOfflineStore.fromSnapshot(snapshot),
+              remote: remote,
+              config: testConfig(clock),
+            );
+            addTearDown(restored.dispose);
+            final persisted = await restored.getWriteStatus(
+              'p',
+              handle.operationId,
+            );
+            expect(persisted!.acceptedUndisclosedCount, 1);
+            expect(persisted.items.single.receiptResult, isNull);
+            expect(await restored.drain('p'), 0);
+            expect((
+              remote.edgePutCalls,
+              remote.receiptSendCalls,
+              remote.receiptStatusCalls,
+            ), calls);
+          },
+        );
+      }
+    }
+
+    test('only a direct complete SDK acknowledgement maps to acceptance', () {
+      const ack = MutationAcceptance();
+      expect(
+        mapLanternClientFailure(ack),
+        isA<OfflineMutationAcceptedUndisclosed>(),
+      );
+      const partial = BatchException(committed: 1, cause: ack);
+      expect(mapLanternClientFailure(partial), isA<OfflineRemoteFailure>());
+      final unavailable = failure(OfflineRemoteErrorKind.unavailable);
+      expect(mapLanternClientFailure(unavailable), same(unavailable));
+      expect(
+        () => OfflineWriteStatus(
+          recordId: 'r',
+          operationId: 'o',
+          itemIndex: 0,
+          state: OfflineWriteState.acceptedUndisclosed,
+          attemptCount: 1,
+          receiptResult: const OfflineEdgeDeleteReceiptResult(true),
+        ),
+        throwsA(isA<OfflineArgumentException>()),
+      );
+    });
+
+    test('a stale generation cannot publish undisclosed acceptance', () async {
+      final clock = MutableClock(initial);
+      final store = InMemoryOfflineStore();
+      final started = Completer<void>();
+      final release = Completer<void>();
+      final remote = _UndisclosedRemote()
+        ..beforePutAcknowledgement = () async {
+          started.complete();
+          await release.future;
+        };
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: testConfig(clock),
+      );
+      addTearDown(repository.dispose);
+      final write = await repository.putEdge(
+        partitionId: 'p',
+        input: EdgeInput(tail: 'a', head: 'b', weight: 1),
+      );
+      final drain = repository.drain('p');
+      await started.future;
+      await store.transaction((tx) async => await tx.wipePartition('p'));
+      release.complete();
+      expect(await drain, 0);
+      expect(await repository.getWriteStatus('p', write.operationId), isNull);
+      expect(await repository.listPending('p'), isEmpty);
+      expect(remote.edgePutCalls, 1);
+    });
+  });
+
   group('receipt reconciliation', () {
     for (final asynchronous in [false, true]) {
       test(
@@ -5656,4 +5839,30 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
   @override
   Future<void> wipePartition(String partitionId) async =>
       await inner.wipePartition(partitionId);
+}
+
+final class _UndisclosedRemote extends FakeOfflineRemote {
+  Future<void> Function()? beforePutAcknowledgement;
+
+  @override
+  Future<PutOutcome> putEdge(
+    Edge edge, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    edgePutCalls++;
+    await beforePutAcknowledgement?.call();
+    throw const OfflineMutationAcceptedUndisclosed();
+  }
+
+  @override
+  Future<OfflineReceiptResult> sendReceiptMutation(
+    OfflineIntent intent, {
+    required ReceiptContext context,
+    LanternCancellationToken? cancellation,
+  }) async {
+    receiptCalls.add('send');
+    receiptSendCalls++;
+    receiptSendContexts.add(context);
+    throw const OfflineMutationAcceptedUndisclosed();
+  }
 }

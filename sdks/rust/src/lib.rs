@@ -23,6 +23,7 @@ mod contrib;
 mod crud;
 mod discovery;
 mod error;
+mod mutation;
 mod paging;
 mod prefix;
 mod scans;
@@ -56,6 +57,7 @@ pub use generated::graph::v1::{
     SearchCapabilities, SearchErrorReason, SearchHitProjectionStatus, SearchIndexHealth,
     SearchProjection, Vertex, Weighting, vertex::Value as VertexValue,
 };
+pub use mutation::MutationReply;
 pub use paging::QueryStream;
 pub use prost_types::{Duration as ProtoDuration, Timestamp};
 pub use scans::{EdgeCursor, EdgeScanOptions, KeyCursor, ScanOptions, ScanPage, VertexCursor};

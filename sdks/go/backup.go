@@ -134,7 +134,7 @@ func (l *Lantern) Backup(ctx context.Context, w io.Writer, opts ...BackupOption)
 // *Vertex / *Edge and put as-is, so value types and absolute expirations
 // round-trip exactly. There is no rollback on a mid-restore failure
 // (Lantern has no transactions). The returned stats count what was loaded.
-func (l *Lantern) Restore(ctx context.Context, r io.Reader, opts ...RestoreOption) (RestoreStats, error) {
+func (l *Lantern) Restore(ctx context.Context, r io.Reader, opts ...RestoreOption) (result RestoreStats, failure error) {
 	cfg := restoreConfig{format: FormatProto, chunkSize: defaultRestoreChunkSize}
 	for _, o := range opts {
 		o(&cfg)
@@ -142,6 +142,12 @@ func (l *Lantern) Restore(ctx context.Context, r io.Reader, opts ...RestoreOptio
 
 	dec := newBackupDecoder(r, cfg.format)
 	var stats RestoreStats
+	undisclosed := false
+	defer func() {
+		if undisclosed {
+			result = RestoreStats{}
+		}
+	}()
 	vbatch := make([]*pb.Vertex, 0, cfg.chunkSize)
 	ebatch := make([]*pb.Edge, 0, cfg.chunkSize)
 
@@ -168,6 +174,14 @@ func (l *Lantern) Restore(ctx context.Context, r io.Reader, opts ...RestoreOptio
 		resp, err := l.client.PutEdges(ctx, connect.NewRequest(&pb.PutEdgesRequest{Edges: ebatch}))
 		if err != nil {
 			return wrapConnectErr(err)
+		}
+		if err := mutationAcceptanceFromProto(resp.Msg); err != nil {
+			if _, accepted := err.(*MutationAcceptance); !accepted {
+				return err
+			}
+			undisclosed = true
+			ebatch = ebatch[:0]
+			return nil
 		}
 		applied, err := appliedPutOutcomeCount(resp.Msg.GetOutcomes(), len(ebatch))
 		if err != nil {
@@ -210,6 +224,9 @@ func (l *Lantern) Restore(ctx context.Context, r io.Reader, opts ...RestoreOptio
 	}
 	if err := flushEdges(); err != nil {
 		return stats, err
+	}
+	if undisclosed {
+		return RestoreStats{}, &MutationAcceptance{}
 	}
 	return stats, nil
 }

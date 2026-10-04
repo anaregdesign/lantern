@@ -23,7 +23,7 @@ final class OfflineCodec {
   static const int outboxSchemaVersion = 4;
 
   /// Current operation aggregate schema version.
-  static const int operationSchemaVersion = 2;
+  static const int operationSchemaVersion = 3;
 
   /// Encodes one exact confirmed cache record to canonical JSON.
   static String encodeCacheRecord(OfflineCacheRecord record) =>
@@ -190,7 +190,7 @@ final class OfflineCodec {
     final schema = _recordSchema(
       value,
       'operation',
-      supported: const <int>{1, 2},
+      supported: const <int>{1, 2, 3},
     );
     _expectKeys(value, schema == 1 ? _operationKeysV1 : _operationKeys);
     final operationId = _nonEmpty(value['operationId']);
@@ -206,6 +206,9 @@ final class OfflineCodec {
           item,
           schema == 1 ? _operationItemKeysV1 : _operationItemKeys,
         );
+        if (schema < 3 && item['state'] == 'acceptedUndisclosed') {
+          throw const OfflineCodecException();
+        }
         items.add(
           OfflineWriteStatus(
             recordId: _nonEmpty(item['recordId']),
@@ -1058,6 +1061,7 @@ OfflineWriteState _writeState(String value) => switch (value) {
   'locallyCommitted' => OfflineWriteState.locallyCommitted,
   'sending' => OfflineWriteState.sending,
   'confirmed' => OfflineWriteState.confirmed,
+  'acceptedUndisclosed' => OfflineWriteState.acceptedUndisclosed,
   'retryScheduled' => OfflineWriteState.retryScheduled,
   'pausedForAuth' => OfflineWriteState.pausedForAuth,
   'deadLetter' => OfflineWriteState.deadLetter,

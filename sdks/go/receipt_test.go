@@ -266,6 +266,26 @@ type receiptReadClient struct {
 	singularCalls   int
 }
 
+func TestReceiptEffectUndisclosedHasNoOriginalResultOrResendMeaning(t *testing.T) {
+	capability := testReceiptCapability(0x17)
+	context := testReceiptContext(t, capability, 1, 0x27)
+	id := context.OperationIDs[0]
+	raw := &pb.ReceiptStatus{OperationId: id.Bytes(), State: pb.MutationReceiptState_MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED}
+	status, err := receiptStatusFromProto(id, raw)
+	if err != nil || status.State != ReceiptEffectUndisclosed || status.Receipt != nil || status.State.String() != "EFFECT_UNDISCLOSED" {
+		t.Fatal("undisclosed status became an effect", status, err)
+	}
+	raw.Receipt = testConfirmedEdgeDeleteStatus(id, context.GroupID, 0, 1, true).Receipt
+	if _, err := receiptStatusFromProto(id, raw); !errors.Is(err, ErrReceiptProtocol) {
+		t.Fatal("undisclosed status carried an original receipt", err)
+	}
+	other := testReceiptContext(t, capability, 1, 0x28).OperationIDs[0]
+	raw.Receipt = nil
+	if _, err := receiptStatusFromProto(other, raw); !errors.Is(err, ErrReceiptProtocol) {
+		t.Fatal("undisclosed status lost ID alignment", err)
+	}
+}
+
 func (c *receiptReadClient) GetReceiptCapability(
 	_ context.Context,
 	_ *connect.Request[pb.GetReceiptCapabilityRequest],

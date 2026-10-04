@@ -58,6 +58,11 @@ rotating an account's credentials, as required by the offline core contract.
   does not require another database schema migration. Legacy Add stays
   quarantined. Reopening preserves absolute expiration and retry deadlines;
   replay never extends TTL.
+- The offline 0.6.0 / parent 0.5.0 source candidates persist terminal
+  `acceptedUndisclosed` operation metadata through codec v3. The owned outbox and
+  overlay are retired atomically with cache invalidation, without an invented
+  result or mutation resend after reopen. This requires no SQLite table-schema
+  change. Host tests do not qualify hosted archives or physical devices.
 - Unknown schemas, noncanonical records, damaged indexes, and inconsistent
   cache/outbox/operation state fail closed. Schema 2 added a key-only recovery
   table and a partition change epoch. Schema 3 introduced receipt evidence;
@@ -114,17 +119,21 @@ flutter pub get --enforce-lockfile
 flutter analyze --no-pub
 flutter test --no-pub
 dart run tool/crash_probe.dart
-LANTERN_DART_RECEIPT_ENDPOINT=http://127.0.0.1:6396 \
+LANTERN_DART_RECEIPT_ENDPOINT=https://localhost:6396 \
+LANTERN_DART_RECEIPT_CA_FILE="$RECEIPT_CA_FILE" \
 LANTERN_DART_RECEIPT_TOKEN="$RECEIPT_TOKEN" \
   dart run tool/crash_probe.dart --receipt
 dart run tool/performance_probe.dart
 LANTERN_DART_REAL_WIRE_ENDPOINT=http://127.0.0.1:6397 \
   flutter test --no-pub ../../../tests/integration/dart_offline_sqlite_test.dart
 LANTERN_DART_REAL_WIRE_ENDPOINT=http://127.0.0.1:6397 \
-LANTERN_DART_RECEIPT_ENDPOINT=http://127.0.0.1:6396 \
+LANTERN_DART_RECEIPT_ENDPOINT=https://localhost:6396 \
+LANTERN_DART_RECEIPT_CA_FILE="$RECEIPT_CA_FILE" \
 LANTERN_DART_RECEIPT_TOKEN="$RECEIPT_TOKEN" \
-LANTERN_DART_IDENTITY_GAP_ENDPOINT=http://127.0.0.1:6399 \
-LANTERN_DART_IDENTITY_CLUSTER_ENDPOINTS=http://127.0.0.1:6400,http://127.0.0.1:6401,http://127.0.0.1:6402 \
+LANTERN_DART_IDENTITY_GAP_ENDPOINT=https://localhost:6399 \
+LANTERN_DART_IDENTITY_GAP_CA_FILE="$IDENTITY_GAP_CA_FILE" \
+LANTERN_DART_IDENTITY_CLUSTER_ENDPOINTS=https://localhost:6400,https://localhost:6401,https://localhost:6402 \
+LANTERN_DART_IDENTITY_CA_FILE="$IDENTITY_CLUSTER_CA_FILE" \
   flutter test --no-pub ../../../tests/integration/dart_identity_offline_sqlite_test.dart
 ```
 

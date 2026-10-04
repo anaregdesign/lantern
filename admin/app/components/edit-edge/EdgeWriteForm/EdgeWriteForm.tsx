@@ -18,7 +18,7 @@ export interface EdgeWriteFormProps {
   title: string;
   description: string;
   inputs: EdgeWriteInputs;
-  status: "idle" | "saving" | "saved" | "error";
+  status: "idle" | "saving" | "saved" | "acceptedUndisclosed" | "error";
   error: string | null;
   valid: boolean;
   onWeight: (value: string) => void;
@@ -62,6 +62,14 @@ export function EdgeWriteForm(props: EdgeWriteFormProps) {
         onChange={props.onTtl}
         label="Expires in"
       />
+      {props.status === "acceptedUndisclosed" ? (
+        <MessageBar intent="info" layout="multiline" className={styles.alert}>
+          <MessageBarBody>
+            Request handled. The effect is not disclosed by your access policy.
+            Do not retry this request.
+          </MessageBarBody>
+        </MessageBar>
+      ) : null}
       {props.error ? (
         <MessageBar intent="error" className={styles.alert}>
           <MessageBarBody>{props.error}</MessageBarBody>
@@ -78,7 +86,11 @@ export function EdgeWriteForm(props: EdgeWriteFormProps) {
               <Save20Regular />
             )
           }
-          disabled={!props.valid || props.status === "saving"}
+          disabled={
+            !props.valid ||
+            props.status === "saving" ||
+            props.status === "acceptedUndisclosed"
+          }
           data-testid={`edge-${props.mode}-submit`}
         >
           {props.submitLabel}

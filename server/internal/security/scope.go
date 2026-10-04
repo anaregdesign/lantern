@@ -31,6 +31,37 @@ func (s *Scope) Contains(key string) bool {
 	return i >= 0 && (s.ranges[i].Upper == "" || key < s.ranges[i].Upper)
 }
 
+// IsSubsetOf proves disclosure from immutable policy ranges alone. It never
+// samples graph presence and permits adjacent intervals to cover one range.
+func (s *Scope) IsSubsetOf(other *Scope) bool {
+	if s.Empty() {
+		return true
+	}
+	if other.Empty() {
+		return false
+	}
+	j := 0
+	for _, r := range s.ranges {
+		lower, covered := r.Lower, false
+		for j < len(other.ranges) && endBefore(other.ranges[j].Upper, lower) {
+			j++
+		}
+		for j < len(other.ranges) && other.ranges[j].Lower <= lower {
+			end := other.ranges[j].Upper
+			if end == "" || r.Upper != "" && end >= r.Upper {
+				covered = true
+				break
+			}
+			lower = end
+			j++
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
 // Within narrows a permission scope to a literal requested prefix.
 func (s *Scope) Within(prefix string) *Scope {
 	if s == nil || !utf8.ValidString(prefix) {
@@ -47,6 +78,9 @@ func (a *Access) Scope(actions ...Action) *Scope {
 	}
 	var result *Scope
 	for _, action := range actions {
+		if action == EdgeRead {
+			action = VertexRead
+		}
 		i := scopeActionIndex(action)
 		if i < 0 {
 			return &Scope{}
@@ -171,6 +205,23 @@ func intersectScopes(a, b *Scope) *Scope {
 			i++
 		} else {
 			j++
+		}
+	}
+	return result
+}
+
+func unionScopes(a, b *Scope) *Scope {
+	ranges := append(a.Ranges(), b.Ranges()...)
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].Lower < ranges[j].Lower })
+	result := &Scope{}
+	for _, r := range ranges {
+		last := len(result.ranges) - 1
+		if last < 0 || result.ranges[last].Upper != "" && result.ranges[last].Upper < r.Lower {
+			result.ranges = append(result.ranges, r)
+			continue
+		}
+		if result.ranges[last].Upper != "" && (r.Upper == "" || r.Upper > result.ranges[last].Upper) {
+			result.ranges[last].Upper = r.Upper
 		}
 	}
 	return result

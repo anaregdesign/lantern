@@ -115,6 +115,8 @@ export {
   FailedPreconditionError,
   InvalidArgumentError,
   LanternError,
+  MutationAcceptance,
+  MutationProtocolError,
   NotFoundError,
   OverflowError,
   ReceiptMutationUncertainError,
@@ -123,6 +125,8 @@ export {
   SearchContinuationLimitedError,
   SearchCursorStaleError,
 } from "./errors.js";
+export { mutationReply } from "./mutation-reply.js";
+export type { MutationReply } from "./mutation-reply.js";
 export {
   RECEIPT_EPOCH_BYTES,
   RECEIPT_GENERATION_BYTES,

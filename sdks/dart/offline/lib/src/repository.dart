@@ -991,7 +991,8 @@ final class OfflineLanternRepository {
   /// [OfflineConfig.maxConcurrency] and
   /// [OfflineConfig.maxConcurrencyPerPartition] govern sends across every
   /// replay entry point. Returns the number of items transactionally confirmed by this
-  /// invocation. An unauthenticated failure durably pauses the partition
+  /// invocation. Effect-undisclosed acknowledgements retire replay work but do
+  /// not increment this confirmed-result count. An unauthenticated failure durably pauses the partition
   /// without incrementing its attempt count; call [resume] only after
   /// credentials rotate. Other entry points throw [OfflineAuthPausedException]
   /// while that pause remains active.
@@ -2766,6 +2767,16 @@ final class OfflineLanternRepository {
         confirmed: terminal?.state == OfflineWriteState.confirmed,
         deadLetter: terminal?.state == OfflineWriteState.deadLetter,
       );
+    } on OfflineMutationAcceptedUndisclosed {
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, claimed, owner, authEpoch);
+      }
+      return _acceptUndisclosed(
+        partitionId,
+        claimed,
+        owner,
+        mutationAttempted: true,
+      );
     } on OfflineRemoteFailure catch (failure) {
       return _recordReplayFailure(
         partitionId,
@@ -2863,6 +2874,13 @@ final class OfflineLanternRepository {
     }
 
     switch (status.state) {
+      case ReceiptStatusState.effectUndisclosed:
+        return _acceptUndisclosed(
+          partitionId,
+          claimed,
+          owner,
+          mutationAttempted: false,
+        );
       case ReceiptStatusState.confirmed:
         late final OfflineReceiptResult result;
         try {
@@ -3068,6 +3086,16 @@ final class OfflineLanternRepository {
         observed,
         owner,
         result,
+        mutationAttempted: true,
+      );
+    } on OfflineMutationAcceptedUndisclosed {
+      if (authEpoch.pauseInProgress) {
+        return _settleAuthEpochClaim(partitionId, observed, owner, authEpoch);
+      }
+      return _acceptUndisclosed(
+        partitionId,
+        observed,
+        owner,
         mutationAttempted: true,
       );
     } on OfflineRemoteFailure catch (failure) {
@@ -3574,6 +3602,55 @@ final class OfflineLanternRepository {
     await transaction.updateOutbox(updated);
     return updated;
   });
+
+  Future<_ReplayOutcome> _acceptUndisclosed(
+    String partitionId,
+    OfflineOutboxRecord claimed,
+    String owner, {
+    required bool mutationAttempted,
+  }) async {
+    final accepted = await store.transaction((transaction) async {
+      final current = await transaction.getOutbox(
+        partitionId,
+        claimed.recordId,
+      );
+      final now = config.clock().toUtc();
+      if (!_ownsLiveClaim(current, claimed, owner, now) ||
+          (await transaction.generation(partitionId)) != claimed.generation ||
+          (await transaction.replayPausedForAuth(partitionId))) {
+        return null;
+      }
+      final attempts = current!.attemptCount + (mutationAttempted ? 1 : 0);
+      final transitionAt = await _transitionTime(transaction, current, now);
+      // The attempted value and an older cached value are both unproven.
+      await transaction.deleteCache(partitionId, current.intent.key);
+      await _updateOperationStatus(
+        transaction,
+        current,
+        OfflineWriteState.acceptedUndisclosed,
+        attemptCount: attempts,
+        now: transitionAt,
+      );
+      await transaction.deleteOutbox(partitionId, current.recordId);
+      return attempts;
+    });
+    if (accepted == null) {
+      _recordDiagnostic(
+        OfflineDiagnosticEvent(
+          kind: OfflineDiagnosticKind.staleOutcomeRejected,
+          category: claimed.intent.category,
+          attempt: claimed.attemptCount + (mutationAttempted ? 1 : 0),
+        ),
+      );
+      return const _ReplayOutcome();
+    }
+    _emit(
+      claimed,
+      OfflineWriteState.acceptedUndisclosed,
+      attemptCount: accepted,
+    );
+    return const _ReplayOutcome();
+  }
 
   Future<_ReplayOutcome> _confirmReceiptResult(
     String partitionId,
@@ -4706,6 +4783,7 @@ final class OfflineLanternRepository {
       ),
     );
     if (state == OfflineWriteState.confirmed ||
+        state == OfflineWriteState.acceptedUndisclosed ||
         state == OfflineWriteState.deadLetter ||
         state == OfflineWriteState.expired ||
         state == OfflineWriteState.outcomeUnknown) {

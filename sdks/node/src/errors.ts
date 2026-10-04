@@ -39,6 +39,26 @@ export class LanternError extends Error {
   }
 }
 
+/**
+ * The complete logical request was handled with its effects undisclosed.
+ * This acknowledgement is not an RPC failure, a permission rejection, a
+ * confirmed change, or permission to retry. Use mutationReply to receive it
+ * as an explicit successful reply instead of a fabricated primitive effect.
+ */
+export class MutationAcceptance extends LanternError {
+  constructor() {
+    super("mutation handled; effect undisclosed");
+    this.name = "MutationAcceptance";
+  }
+}
+
+export class MutationProtocolError extends LanternError {
+  constructor(message: string) {
+    super(message);
+    this.name = "MutationProtocolError";
+  }
+}
+
 export class NotFoundError extends LanternError {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);

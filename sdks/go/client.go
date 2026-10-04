@@ -778,6 +778,9 @@ func (l *Lantern) addEdgeAtWithIDs(ctx context.Context, tail string, head string
 	if err != nil {
 		return 0, err
 	}
+	if err := mutationAcceptanceFromProto(resp); err != nil {
+		return 0, err
+	}
 	if ew := resp.GetEffectiveWeights(); len(ew) > 0 {
 		return ew[0], nil
 	}
@@ -828,10 +831,13 @@ func (l *Lantern) addEdgesWithIDs(ctx context.Context, inputs []EdgeInput, ids [
 		if err != nil {
 			return 0, err
 		}
+		sent += len(chunk)
+		if err := mutationAcceptanceFromProto(resp); err != nil {
+			return 0, err
+		}
 		// effective_weights is index-aligned per chunk; appending in chunk
 		// order keeps the aggregate aligned with inputs.
 		effective = append(effective, resp.GetEffectiveWeights()...)
-		sent += len(chunk)
 		return 0, nil
 	})
 	if err != nil {
@@ -925,6 +931,9 @@ func (l *Lantern) putEdgeAt(ctx context.Context, tail string, head string, weigh
 	if err != nil {
 		return 0, err
 	}
+	if err := mutationAcceptanceFromProto(resp); err != nil {
+		return 0, err
+	}
 	inputs := []EdgeInput{{Tail: tail, Head: head, Expiration: expiration}}
 	results, err := edgePutResults(inputs, resp.GetOutcomes())
 	if err != nil {
@@ -948,19 +957,30 @@ func (l *Lantern) PutEdges(ctx context.Context, inputs []EdgeInput) ([]EdgePutRe
 	}
 	initiallyLive := edgeInitialLiveness(inputs, l.now())
 	var results []EdgePutResult
+	offset, undisclosed := 0, false
 	_, err := runBatchWrite(ctx, l, edgesFrom(inputs), func(ctx context.Context, chunk []*pb.Edge) (int32, error) {
 		resp, err := unary(ctx, l, &pb.PutEdgesRequest{Edges: chunk}, l.client.PutEdges)
 		if err != nil {
 			return 0, err
 		}
-		offset := len(results)
-		chunkResults, err := edgePutResults(inputs[offset:offset+len(chunk)], resp.GetOutcomes())
+		chunkInputs := inputs[offset : offset+len(chunk)]
+		offset += len(chunk)
+		if err := mutationAcceptanceFromProto(resp); err != nil {
+			if _, accepted := err.(*MutationAcceptance); accepted {
+				undisclosed = true
+			}
+			return 0, err
+		}
+		chunkResults, err := edgePutResults(chunkInputs, resp.GetOutcomes())
 		if err != nil {
 			return 0, err
 		}
 		results = append(results, chunkResults...)
 		return int32(len(chunk)), nil
 	})
+	if undisclosed {
+		return nil, err
+	}
 	return clientBoundedEdgePutResults(results, inputs[:len(results)], initiallyLive[:len(results)], l.now()), err
 }
 
@@ -971,6 +991,9 @@ func (l *Lantern) DeleteEdge(ctx context.Context, tail string, head string) (boo
 	defer cancel()
 	resp, err := unary(ctx, l, &pb.DeleteEdgeRequest{Tail: tail, Head: head}, l.client.DeleteEdge)
 	if err != nil {
+		return false, err
+	}
+	if err := mutationAcceptanceFromProto(resp); err != nil {
 		return false, err
 	}
 	return resp.GetExisted(), nil
@@ -1006,6 +1029,9 @@ func (l *Lantern) DeleteEdges(ctx context.Context, refs []EdgeRef) (int, error) 
 	return runBatchWrite(ctx, l, keys, func(ctx context.Context, chunk []*pb.EdgeKey) (int32, error) {
 		resp, err := unary(ctx, l, &pb.DeleteEdgesRequest{Edges: chunk}, l.client.DeleteEdges)
 		if err != nil {
+			return 0, err
+		}
+		if err := mutationAcceptanceFromProto(resp); err != nil {
 			return 0, err
 		}
 		return resp.GetDeleted(), nil

@@ -41,6 +41,7 @@ type Backend interface {
 	// each edge (#897) plus the count of items suppressed by a matching live
 	// ContribID. Items with a zero ContribID keep legacy additive semantics.
 	AddEdgesWithExpirationContrib(items []graphcache.EdgeItem[string]) (effective []float32, deduped int)
+	AddEdgesWithExpirationContribChecked(items []graphcache.EdgeItem[string]) (effective []float32, deduped int, err error)
 	PutEdgesWithExpirationOutcomes(items []graphcache.EdgeItem[string]) []graphcache.PutOutcome
 	PutEdgesWithExpirationOutcomesChecked(items []graphcache.EdgeItem[string]) ([]graphcache.PutOutcome, error)
 	DeleteEdges(keys []graphcache.EdgeKey[string]) int
@@ -92,6 +93,7 @@ type Backend interface {
 	PutEdgesWithExpirationHLCOutcomesChecked(items []graphcache.EdgeItem[string], ts hlc.Timestamp) ([]graphcache.PutOutcome, error)
 	AddEdgesWithExpirationContribHLC(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, deduped int)
 	AddEdgesWithExpirationContribHLCResults(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, accepted []bool, deduped int)
+	AddEdgesWithExpirationContribHLCResultsChecked(items []graphcache.EdgeItem[string], ts hlc.Timestamp) (effective []float32, accepted []bool, deduped int, err error)
 	ApplyVertexCausalBarrierHLC(key string, ts hlc.Timestamp) bool
 	ApplyEdgeCausalBarrierHLC(tail, head string, ts hlc.Timestamp) bool
 

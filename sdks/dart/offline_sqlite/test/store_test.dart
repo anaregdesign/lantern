@@ -70,6 +70,71 @@ void main() {
   );
 
   test(
+    'undisclosed acknowledgement survives SQLite reopen without resend',
+    () async {
+      final now = DateTime.utc(2026, 10, 4);
+      final remote = _UndisclosedRemote();
+      final store = await open();
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: remote,
+        config: OfflineConfig(clock: () => now),
+      );
+      await store.transaction((tx) async {
+        await tx.putCache(
+          'p',
+          OfflineCacheRecord.value(
+            partitionId: 'p',
+            generation: 0,
+            key: const OfflineEntityKey.edge('tail', 'head'),
+            entity: Edge(
+              tail: 'tail',
+              head: 'head',
+              weight: 3,
+              expiration: null,
+            ),
+            validatedAt: now,
+            lastAccessAt: now,
+          ),
+        );
+      });
+      final write = await repository.putEdge(
+        partitionId: 'p',
+        input: EdgeInput(tail: 'tail', head: 'head', weight: 9),
+      );
+      expect(await repository.drain('p'), 0);
+      expect(remote.calls, 1);
+      final status = await repository.getWriteStatus('p', write.operationId);
+      expect(status!.isTerminal, isTrue);
+      expect(status.confirmedCount, 0);
+      expect(status.acceptedUndisclosedCount, 1);
+      expect(status.items.single.receiptResult, isNull);
+      await repository.dispose();
+      final reopened = await reopen(store);
+      final restored = OfflineLanternRepository(
+        store: reopened,
+        remote: remote,
+        config: OfflineConfig(clock: () => now),
+      );
+      addTearDown(restored.dispose);
+      final persisted = await restored.getWriteStatus('p', write.operationId);
+      expect(persisted!.acceptedUndisclosedCount, 1);
+      expect(persisted.items.single.receiptResult, isNull);
+      expect(await restored.listPending('p'), isEmpty);
+      expect(await restored.drain('p'), 0);
+      expect(remote.calls, 1);
+      final read = await restored.readEdge(
+        'p',
+        const EdgeRef('tail', 'head'),
+        policy: OfflineReadPolicy.cacheOnly,
+      );
+      expect(read.state, OfflineReadState.unknown);
+      expect(read.hasPendingWrites, isFalse);
+      expect(read.value, isNull);
+    },
+  );
+
+  test(
     'CDC conformance persists partial chunks and unsigned cursors',
     () async {
       await runChangeStoreConformanceSuite(open, reopen: reopen);
@@ -1110,7 +1175,7 @@ void main() {
       utf8.decode(
         (await check.query('operations')).single['payload']! as List<int>,
       ),
-      contains('"schema":2'),
+      contains('"schema":3'),
     );
     await check.close();
   });
@@ -1546,4 +1611,21 @@ ReceiptOperationId _receiptOperationId(ReceiptEpoch epoch) {
   }
   bytes.fillRange(25, 49, 6);
   return ReceiptOperationId(bytes);
+}
+
+final class _UndisclosedRemote implements OfflineRemote {
+  int calls = 0;
+
+  @override
+  Future<PutOutcome> putEdge(
+    Edge edge, {
+    LanternCancellationToken? cancellation,
+  }) async {
+    calls++;
+    throw const OfflineMutationAcceptedUndisclosed();
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw StateError('unexpected remote call');
 }

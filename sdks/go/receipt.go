@@ -20,6 +20,9 @@ const (
 	ReceiptConfirmed ReceiptState = iota + 1
 	ReceiptNotYetObserved
 	ReceiptNoLongerProvable
+	// ReceiptEffectUndisclosed carries no original receipt, and is not a
+	// confirmation, absence observation, or authorization to resend.
+	ReceiptEffectUndisclosed
 )
 
 // ReceiptOriginalResult is the typed original result stored in a confirmed
@@ -94,7 +97,7 @@ type MutationReceipt struct {
 	OriginalResult ReceiptOriginalResult
 }
 
-// ReceiptStatus preserves the three-state receipt contract. Receipt is set
+// ReceiptStatus preserves the receipt disclosure contract. Receipt is set
 // exactly for ReceiptConfirmed.
 type ReceiptStatus struct {
 	OperationID ReceiptOperationID
@@ -111,6 +114,8 @@ func (s ReceiptState) String() string {
 		return "NOT_YET_OBSERVED"
 	case ReceiptNoLongerProvable:
 		return "NO_LONGER_PROVABLE"
+	case ReceiptEffectUndisclosed:
+		return "EFFECT_UNDISCLOSED"
 	default:
 		return fmt.Sprintf("ReceiptState(%d)", s)
 	}
@@ -301,6 +306,11 @@ func receiptStatusFromProto(expected ReceiptOperationID, status *pb.ReceiptStatu
 			return ReceiptStatus{}, receiptProtocolError("NO_LONGER_PROVABLE status carried a receipt")
 		}
 		out.State = ReceiptNoLongerProvable
+	case pb.MutationReceiptState_MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED:
+		if status.GetReceipt() != nil {
+			return ReceiptStatus{}, receiptProtocolError("EFFECT_UNDISCLOSED status carried a receipt")
+		}
+		out.State = ReceiptEffectUndisclosed
 	default:
 		return ReceiptStatus{}, receiptProtocolError("unknown receipt state %d", status.GetState())
 	}

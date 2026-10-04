@@ -264,3 +264,62 @@ func TestQueryViewEdgeScanDelete(t *testing.T) {
 		}
 	}
 }
+
+func TestQueryViewRetainedDanglingSourcesNeverCreatePaths(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	c.RetainDanglingEdgeHistory()
+	c.EnablePrefixIndex(identityExtract)
+	c.PutVertex("visible:seed", "seed")
+	c.PutVertex("visible:a", "allowed")
+	c.PutVertex("visible:unreachable", "behind missing bridge")
+	for _, item := range []EdgeItem[string]{
+		{Tail: "visible:seed", Head: "visible:a", Weight: 1, NoEndpointCreation: true},
+		{Tail: "visible:seed", Head: "visible:missing", Weight: 1000, NoEndpointCreation: true},
+		{Tail: "visible:missing", Head: "visible:unreachable", Weight: 1000, NoEndpointCreation: true},
+	} {
+		if _, err := c.PutEdgesWithExpirationOutcomesChecked([]EdgeItem[string]{item}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.flush()
+	if len(c.SnapshotReplication().Graph.Edges) != 3 {
+		t.Fatal("private pending history lost")
+	}
+	view, err := NewQueryView([]KeyRange{{"visible:", "visible;"}}, []KeyRange{{"visible:", "visible;"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ctx := range []context.Context{context.Background(), WithQueryView(context.Background(), view)} {
+		for _, weighting := range []EdgeWeighting{WeightingRaw, WeightingTFIDF, WeightingBM25} {
+			bfs, _, err := c.NeighborWithExpirationsContext(ctx, "visible:seed", 3, 1, weighting, false, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(bfs.Vertices) != 2 || len(bfs.Edges["visible:seed"]) != 1 {
+				t.Fatal("dangling source displaced live top-k", bfs)
+			}
+			ppr, err := c.PersonalizedPageRankContext(ctx, "visible:seed", 10, .2, 1e-4, weighting, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			community, _, err := c.LocalCommunityContext(ctx, "visible:seed", 10, .2, 1e-4, weighting, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, result := range []*graph.Graph[string, string]{bfs, ppr, community} {
+				for key := range result.Vertices {
+					if key != "visible:seed" && key != "visible:a" {
+						t.Fatal("traversal passed through absent endpoint", key)
+					}
+				}
+				for tail, row := range result.Edges {
+					for head := range row {
+						if !c.vertices.Has(tail) || !c.vertices.Has(head) {
+							t.Fatal("dangling public Edge", tail, head)
+						}
+					}
+				}
+			}
+		}
+	}
+}

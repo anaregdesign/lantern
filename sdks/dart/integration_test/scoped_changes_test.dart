@@ -110,9 +110,15 @@ void main() {
           CreateEdgeOutcome.edgeExists,
         ),
       );
+      expect(
+        await sdk.createEdge(
+          EdgeInput(tail: input.head, head: input.tail, weight: 1),
+        ),
+        CreateEdgeOutcome.createdAndLive,
+      );
       await expectLater(
         sdk.createEdge(
-          EdgeInput(tail: input.head, head: input.tail, weight: 1),
+          EdgeInput(tail: input.tail, head: 'outside:denied', weight: 1),
         ),
         throwsA(
           isA<BatchException>().having(

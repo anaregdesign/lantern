@@ -21,11 +21,12 @@ import (
 // This private, unwired codec covers graph-only Mutations, accepted-effect
 // sidecars, and receipt-bearing exact mutation envelopes. The
 // FileWAL frame owns its checksum, replica-local sequence and HLC. The union
-// header is versioned independently of the inner receipt formats. V8 freezes
-// physical namespaces, original lifecycle effects and conditional Edge Create. Earlier histories are
+// header is versioned independently of the inner receipt formats. V9 freezes
+// physical namespaces, immutable Edge-only endpoint effects, original lifecycle
+// effects and conditional Edge Create. Earlier histories are
 // refused; operators must perform an explicit offline migration.
 const (
-	receiptWALUnionMagic                  = "LRWU\x08\x00\x00\x00"
+	receiptWALUnionMagic                  = "LRWU\x09\x00\x00\x00"
 	receiptWALUnionHeaderSize             = 16 // magic, kind, reserved[3], body length
 	receiptWALUnionEdgeCreate             = byte(10)
 	receiptWALUnionGraph                  = byte(1)
@@ -42,17 +43,17 @@ const (
 	// Each receipt-envelope body has a stricter independent 8 MiB cap.
 	receiptWALUnionMaxBytes = (32 << 20) - 36
 	// Every reachable Mutation field is reviewed before advancing this pin.
-	// The V8 descriptor includes immutable origin lifecycle effects;
+	// The V9 descriptor includes immutable endpoint and origin lifecycle effects;
 	// graph-only codec paths still reject populated receipt contexts.
-	receiptWALGraphSchemaFingerprintV8 = "11a0ed2e1d6c418b461ae2c27aceda465289b95e53519145cddbba7f2780fa73"
+	receiptWALGraphSchemaFingerprintV9 = "92a299d04670341c8a9d73113dc712e7dabd0a56b7ba840b0d769fc10e3d384a"
 )
 
 var errReceiptWALUnion = errors.New("service: invalid receipt WAL union payload")
 
 var receiptWALGraphSchemaError = sync.OnceValue(func() error {
 	digest := protoschema.Fingerprint((&pb.Mutation{}).ProtoReflect().Descriptor())
-	if digest != receiptWALGraphSchemaFingerprintV8 {
-		return receiptWALUnionError("WAL union v8 graph schema changed: %s", digest)
+	if digest != receiptWALGraphSchemaFingerprintV9 {
+		return receiptWALUnionError("WAL union v9 graph schema changed: %s", digest)
 	}
 	return nil
 })
@@ -428,6 +429,7 @@ func scanReceiptWALGraphWireMode(
 	var oneofs map[protoreflect.FullName]struct{}
 	var opCount int
 	var armCount int
+	var endpointEffectCount int
 	for len(raw) != 0 {
 		number, wireType, tagBytes := protowire.ConsumeTag(raw)
 		if tagBytes < 0 {
@@ -444,7 +446,13 @@ func scanReceiptWALGraphWireMode(
 				return receiptWALUnionError("duplicate outer Mutation.op field")
 			}
 		}
-		if descriptor.FullName() == "graph.v1.MutationOp" {
+		if descriptor.FullName() == "graph.v1.MutationOp" && number == 23 {
+			endpointEffectCount++
+			if endpointEffectCount != 1 {
+				return receiptWALUnionError("duplicate endpoint effect field")
+			}
+		}
+		if descriptor.FullName() == "graph.v1.MutationOp" && number != 23 {
 			if number < 1 || (number > 14 && number != 19 && number != 20 &&
 				(!allowReceiptAdd || number != 18 && number != 22)) {
 				return receiptWALUnionError("graph kind cannot contain receipt or unknown operation arm %d", number)

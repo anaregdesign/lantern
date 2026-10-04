@@ -34,10 +34,17 @@ func (l *Lantern) DeleteEdgeContributions(ctx context.Context, refs []EdgeContri
 		return []bool{}, 0, nil
 	}
 	existed = make([]bool, 0, len(keys))
+	undisclosed := false
 	deleted, err = runBatchWrite(ctx, l, keys, func(ctx context.Context, chunk []*pb.EdgeContributionKey) (int32, error) {
 		response, callErr := unary(ctx, l, &pb.DeleteEdgeContributionsRequest{Contributions: chunk}, l.client.DeleteEdgeContributions)
 		if callErr != nil {
 			return 0, callErr
+		}
+		if err := mutationAcceptanceFromProto(response); err != nil {
+			if _, accepted := err.(*MutationAcceptance); accepted {
+				undisclosed = true
+			}
+			return 0, err
 		}
 		if checkErr := validateContributionDeleteResponse(len(chunk), response); checkErr != nil {
 			return 0, checkErr
@@ -45,6 +52,9 @@ func (l *Lantern) DeleteEdgeContributions(ctx context.Context, refs []EdgeContri
 		existed = append(existed, response.GetExisted()...)
 		return response.GetDeleted(), nil
 	})
+	if undisclosed {
+		return nil, 0, err
+	}
 	return existed, deleted, err
 }
 

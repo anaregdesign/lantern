@@ -684,10 +684,17 @@ pub struct DeleteEdgeRequest {
     pub receipt_context: ::core::option::Option<MutationReceiptContext>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MutationAcceptance {
+    #[prost(enumeration = "MutationAcceptanceKind", tag = "1")]
+    pub kind: i32,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DeleteEdgeResponse {
     /// existed is true if the edge was present and removed by this call.
     #[prost(bool, tag = "1")]
     pub existed: bool,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// An additive contribution is identified by its directed edge and its
 /// nonzero 24-byte ContribID. The ID is not a receipt operation ID.
@@ -716,6 +723,8 @@ pub struct DeleteEdgeContributionResponse {
     /// True only when a live contribution with this identity was removed.
     #[prost(bool, tag = "1")]
     pub existed: bool,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DeleteEdgeContributionsRequest {
@@ -733,6 +742,8 @@ pub struct DeleteEdgeContributionsResponse {
     /// One observation per input position, including duplicates and misses.
     #[prost(bool, repeated, tag = "2")]
     pub existed: ::prost::alloc::vec::Vec<bool>,
+    #[prost(message, optional, tag = "3")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// EdgeKey identifies an edge by its (tail, head) pair without weight.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -804,6 +815,8 @@ pub struct DeleteEdgesResponse {
     /// an accepted Delete while existed still reports the pre-item bucket.
     #[prost(bool, repeated, tag = "2")]
     pub existed: ::prost::alloc::vec::Vec<bool>,
+    #[prost(message, optional, tag = "3")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// DeleteEdgesByPrefixRequest deletes up to `limit` live edges whose tail key
 /// starts with `tail_prefix` AND whose head key starts with `head_prefix`.
@@ -834,6 +847,8 @@ pub struct DeleteEdgesByPrefixRequest {
 pub struct DeleteEdgesByPrefixResponse {
     #[prost(uint64, tag = "1")]
     pub deleted: u64,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// AddEdgeRequest accumulates weight onto a single (tail, head) pair: repeated
 /// calls with the same endpoints sum their weights. This is the singular
@@ -875,6 +890,8 @@ pub struct AddEdgeResponse {
     /// at apply time — the same async-replica caveat as a Redis INCR read.
     #[prost(float, tag = "1")]
     pub effective_weight: f32,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// AddEdgesRequest accumulates weight onto each (tail, head) pair: repeated
 /// calls with the same endpoints sum their weights. An index-aligned
@@ -926,6 +943,8 @@ pub struct AddEdgesResponse {
     /// AddEdgeResponse.effective_weight for the counter and replication caveats.
     #[prost(float, repeated, tag = "2")]
     pub effective_weights: ::prost::alloc::vec::Vec<f32>,
+    #[prost(message, optional, tag = "3")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateEdgeRequest {
@@ -938,6 +957,8 @@ pub struct CreateEdgeRequest {
 pub struct CreateEdgeResponse {
     #[prost(enumeration = "CreateEdgeOutcome", tag = "1")]
     pub outcome: i32,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// Creates connections only between existing live endpoints, with a finite
 /// nonzero source weight. Input expiration, endpoint liveness and absence of
@@ -955,6 +976,8 @@ pub struct CreateEdgesRequest {
 pub struct CreateEdgesResponse {
     #[prost(enumeration = "CreateEdgeOutcome", repeated, tag = "1")]
     pub outcomes: ::prost::alloc::vec::Vec<i32>,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// PutEdgeRequest overwrites a single (tail, head) pair, replacing any
 /// existing weight and expiration. This is the singular convenience wrapper
@@ -969,6 +992,8 @@ pub struct PutEdgeResponse {
     /// Server-authoritative result for edge in the request.
     #[prost(enumeration = "PutOutcome", tag = "1")]
     pub outcome: i32,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// PutEdgesRequest overwrites each (tail, head) pair, replacing any existing
 /// weight and expiration. This operation is idempotent.
@@ -983,6 +1008,8 @@ pub struct PutEdgesResponse {
     /// request returns an empty list.
     #[prost(enumeration = "PutOutcome", repeated, tag = "1")]
     pub outcomes: ::prost::alloc::vec::Vec<i32>,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
 }
 /// GetServerStatusRequest carries no parameters — the response is a
 /// snapshot of the server's identity, build, configuration ceilings, and
@@ -1819,6 +1846,40 @@ impl SearchHitProjectionStatus {
         }
     }
 }
+/// Acceptance is a handling acknowledgement, never proof of any mutation
+/// effect, liveness, creation, deletion, collision or original result.
+/// A response with acceptance MUST omit every detailed effect field. A batch
+/// uses this response for the whole call if any result is undisclosed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MutationAcceptanceKind {
+    Unspecified = 0,
+    HandledEffectUndisclosed = 1,
+}
+impl MutationAcceptanceKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "MUTATION_ACCEPTANCE_KIND_UNSPECIFIED",
+            Self::HandledEffectUndisclosed => {
+                "MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "MUTATION_ACCEPTANCE_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED" => {
+                Some(Self::HandledEffectUndisclosed)
+            }
+            _ => None,
+        }
+    }
+}
 /// CreateEdgeOutcome is a disclosure-limited, request-index-aligned result.
 /// Successful creation never changes either endpoint. Existing Edge values,
 /// expirations and contribution identities are never returned by this family.
@@ -2009,6 +2070,9 @@ pub enum MutationReceiptState {
     Confirmed = 1,
     NotYetObserved = 2,
     NoLongerProvable = 3,
+    /// Lookup handled under current original-resource mutation authority, with
+    /// no disclosure of the effect or stored receipt metadata. Never CONFIRMED.
+    EffectUndisclosed = 4,
 }
 impl MutationReceiptState {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -2021,6 +2085,7 @@ impl MutationReceiptState {
             Self::Confirmed => "MUTATION_RECEIPT_STATE_CONFIRMED",
             Self::NotYetObserved => "MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED",
             Self::NoLongerProvable => "MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE",
+            Self::EffectUndisclosed => "MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -2030,6 +2095,7 @@ impl MutationReceiptState {
             "MUTATION_RECEIPT_STATE_CONFIRMED" => Some(Self::Confirmed),
             "MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED" => Some(Self::NotYetObserved),
             "MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE" => Some(Self::NoLongerProvable),
+            "MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED" => Some(Self::EffectUndisclosed),
             _ => None,
         }
     }
@@ -3244,6 +3310,12 @@ pub struct HlcTimestamp {
 /// them faithfully simplifies CDC consumers that mirror RPC semantics.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MutationOp {
+    /// Immutable origin effect for Edge Add/Put: replay may update Edge sources
+    /// but must never insert, revive, or extend either endpoint Vertex. Origin
+    /// liveness is checked separately; peers never re-evaluate that condition.
+    /// Only Edge Add/Put and receipt Edge Add arms may carry this flag.
+    #[prost(bool, tag = "23")]
+    pub no_endpoint_creation: bool,
     #[prost(
         oneof = "mutation_op::Op",
         tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22"
@@ -3918,6 +3990,11 @@ pub struct SnapshotEdge {
     /// present; only derived_aggregate.adds can accompany this base.
     #[prost(message, optional, tag = "5")]
     pub derived_aggregate: ::core::option::Option<SnapshotEdgeDerivedAggregate>,
+    /// Private retained history may precede either explicit endpoint. Installing
+    /// these sources must never create or extend a Vertex. Public graph exports
+    /// remain referentially closed.
+    #[prost(bool, tag = "6")]
+    pub no_endpoint_creation: bool,
 }
 /// SnapshotEdgeCausalBarrier is the edge sibling of
 /// SnapshotVertexCausalBarrier. It carries no contribution and must not create
@@ -4484,8 +4561,9 @@ pub struct SecurityIdentity {
     pub machine_name: ::prost::alloc::string::String,
 }
 /// Selectors use literal logical-key prefixes. Empty prefix explicitly means
-/// all data. An Edge pair matches BOTH directed endpoints within one rule.
-/// Pair selectors grant no Vertex actions and cannot be reversed or composed.
+/// all data. Pair is a retired diagnostic shape: Server rejects every pair
+/// selector and independent Edge action in a Role. Edge permissions are derived
+/// from Vertex grants; pair must never be interpreted as permission authority.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SecurityPrefixPair {
     #[prost(string, tag = "1")]
@@ -4799,6 +4877,12 @@ pub struct SecurityRuleMatch {
     pub rule_id: ::prost::alloc::string::String,
     #[prost(enumeration = "SecurityEffect", tag = "3")]
     pub effect: i32,
+    /// Actual grantable capability required by this part of the operation.
+    #[prost(enumeration = "SecurityAction", tag = "4")]
+    pub action: i32,
+    /// "tail" or "head" for a derived Edge check; empty for ordinary grants.
+    #[prost(string, tag = "5")]
+    pub endpoint: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExplainAccessResponse {

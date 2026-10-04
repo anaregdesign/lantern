@@ -542,6 +542,36 @@ func applySnapshotEdge(snap SnapshotApplier, tail, head string, weight float32, 
 	snap.AddEdgeWithExpirationContribHLC(tail, head, weight, exp, cid, ts)
 }
 
+// A flag-bearing private frame requires the generic batch effect seams. It is
+// never downgraded to legacy endpoint creation by a narrow adapter.
+type snapshotEdgeEffectApplier interface {
+	PutEdgesWithExpirationHLCOutcomes([]graphcache.EdgeItem[string], hlc.Timestamp) []graphcache.PutOutcome
+	AddEdgesWithExpirationContribHLCResults([]graphcache.EdgeItem[string], hlc.Timestamp) ([]float32, []bool, int)
+}
+
+func applySnapshotEdgeEffect(snap SnapshotApplier, edge *pb.SnapshotEdge, row snapshotEdgeRow) error {
+	if !edge.GetNoEndpointCreation() {
+		if row.derivedAggregate {
+			snap.PutEdgeDerivedAggregateWithExpirationHLC(edge.GetTail(), edge.GetHead(), row.weight, row.expiration, row.hlc)
+		} else {
+			applySnapshotEdge(snap, edge.GetTail(), edge.GetHead(), row.weight, row.expiration, row.contribID, row.hlc)
+		}
+		return nil
+	}
+	effects, ok := snap.(snapshotEdgeEffectApplier)
+	if !ok {
+		return snapshotProtocolError("snapshot installer does not support Edge-only effects")
+	}
+	items := []graphcache.EdgeItem[string]{{Tail: edge.GetTail(), Head: edge.GetHead(), Weight: row.weight,
+		Expiration: row.expiration, ContribID: row.contribID, DerivedAggregate: row.derivedAggregate, NoEndpointCreation: true}}
+	if row.contribID.IsZero() {
+		effects.PutEdgesWithExpirationHLCOutcomes(items, row.hlc)
+	} else {
+		effects.AddEdgesWithExpirationContribHLCResults(items, row.hlc)
+	}
+	return nil
+}
+
 type snapshotEdgeRow struct {
 	weight           float32
 	expiration       time.Time
@@ -790,6 +820,9 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 				return SnapshotInstallResult{}, err
 			}
 			se := e.Edge
+			if replay.header.GetNamespaceFormat() != "" && !se.GetNoEndpointCreation() {
+				return SnapshotInstallResult{}, snapshotProtocolError("namespaced Snapshot requires an Edge-only effect")
+			}
 			rows, err := snapshotEdgeRows(se)
 			if err != nil {
 				return SnapshotInstallResult{}, err
@@ -814,13 +847,8 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 				}
 			}
 			for _, row := range rows {
-				if row.derivedAggregate {
-					i.snap.PutEdgeDerivedAggregateWithExpirationHLC(
-						se.GetTail(), se.GetHead(), row.weight, row.expiration, row.hlc,
-					)
-				} else {
-					applySnapshotEdge(i.snap, se.GetTail(), se.GetHead(), row.weight,
-						row.expiration, row.contribID, row.hlc)
+				if err := applySnapshotEdgeEffect(i.snap, se, row); err != nil {
+					return SnapshotInstallResult{}, err
 				}
 			}
 			replay.counts.edges++

@@ -41,3 +41,14 @@ func TestEdgeEndpointConstraints(t *testing.T) {
 	}()
 	c.RetainDanglingEdgeHistory()
 }
+
+func TestRetainedEdgeHistoryPolicyInspection(t *testing.T) {
+	c := NewGraphCache[string, string](time.Hour)
+	if c.RetainsDanglingEdgeHistory() {
+		t.Fatal("retained history enabled by default")
+	}
+	c.RetainDanglingEdgeHistory()
+	if !c.RetainsDanglingEdgeHistory() {
+		t.Fatal("retained history policy not observable at composition")
+	}
+}

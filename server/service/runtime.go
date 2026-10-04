@@ -124,6 +124,9 @@ func NewGraphOnlyServingRuntime(
 	if err := validateDataFormat(format); err != nil {
 		return nil, err
 	}
+	if err := ensureRuntimeEdgeHistory(graph, format); err != nil {
+		return nil, err
+	}
 	return &ServingRuntime{
 		graph: graph, log: log, clock: clock, origins: newOriginStateTracker(), owner: log,
 		namespaceFormat: format,
@@ -146,7 +149,7 @@ func CreateDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig
 		config.Receipt,
 		config.Log,
 		config.DefaultTTL,
-		config.ConfigureGraph,
+		durableRuntimeGraphPolicy(config),
 	)
 	if err != nil {
 		return nil, err
@@ -214,7 +217,7 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 	if config.BaselineCodec == nil {
 		candidate, err = openLeasedReceiptWALCandidate(
 			config.Path, config.Receipt, now, config.Log, config.DefaultTTL,
-			config.ConfigureGraph, preflight,
+			durableRuntimeGraphPolicy(config), preflight,
 		)
 	} else {
 		validateBaseline := func(scan receiptBaselineWALScan) error {
@@ -228,7 +231,7 @@ func OpenDurableReceiptWALServingRuntime(config DurableReceiptWALRuntimeConfig) 
 		}
 		candidate, err = openLeasedReceiptWALCandidateWithBaseline(
 			config.Path, config.Receipt, now, config.Log, config.DefaultTTL,
-			config.ConfigureGraph, config.NodeID, config.BaselineCodec, validateBaseline, preflight,
+			durableRuntimeGraphPolicy(config), config.NodeID, config.BaselineCodec, validateBaseline, preflight,
 		)
 	}
 	if err != nil {
@@ -265,6 +268,26 @@ func validateDurableReceiptWALRuntimeConfig(config DurableReceiptWALRuntimeConfi
 		return fmt.Errorf("service: durable receipt WAL policy: %w", err)
 	}
 	return nil
+}
+
+func ensureRuntimeEdgeHistory(graph *graphcache.GraphCache[string, *pb.Vertex], namespace string) error {
+	if namespace == "" || graph.RetainsDanglingEdgeHistory() {
+		return nil
+	}
+	if graph.VertexCount() != 0 || graph.EdgeCount() != 0 {
+		return errors.New("service: namespaced graph must select retained Edge history before writes")
+	}
+	graph.RetainDanglingEdgeHistory()
+	return nil
+}
+
+func durableRuntimeGraphPolicy(config DurableReceiptWALRuntimeConfig) func(*graphcache.GraphCache[string, *pb.Vertex]) error {
+	return func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
+		if err := ensureRuntimeEdgeHistory(graph, config.NamespaceFormat); err != nil {
+			return err
+		}
+		return config.ConfigureGraph(graph)
+	}
 }
 
 func clearReceiptClockHighWater(config mutationreceipt.Config) mutationreceipt.Config {
@@ -512,7 +535,7 @@ func certifyReceiptWALServingRuntime(
 			operationAdmission: newReceiptOperationAdmission(),
 			baselineCodec:      config.BaselineCodec,
 			defaultTTL:         config.DefaultTTL,
-			configureGraph:     config.ConfigureGraph,
+			configureGraph:     durableRuntimeGraphPolicy(config),
 			owner:              candidate,
 		},
 		owner: candidate,
@@ -655,6 +678,9 @@ func (r *ServingRuntime) CertifyInstallationWithReplicationSendLimit(
 		primary.clock != r.clock || primary.origins != r.origins ||
 		primary.namespaceFormat != r.namespaceFormat || replication.namespaceFormat != r.namespaceFormat {
 		return errors.New("service: primary service is not installed from the serving runtime")
+	}
+	if r.namespaceFormat != "" && !r.graph.RetainsDanglingEdgeHistory() {
+		return errors.New("service: private runtime lacks retained Edge history policy")
 	}
 	if r.receipt == nil {
 		if primary.receiptStore != nil || primary.receiptRetiredCatalog != nil ||

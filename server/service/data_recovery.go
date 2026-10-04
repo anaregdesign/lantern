@@ -71,7 +71,7 @@ func preflightDataNamespaceWAL(path string, config DurableReceiptWALRuntimeConfi
 		}
 		return err
 	} // normal recovery owns the narrowly eligible fallback classification
-	stage, err := config.BaselineCodec.StageCombinedReceiptBaseline(context.Background(), raw, clearReceiptClockHighWater(config.Receipt), config.DefaultTTL, config.ConfigureGraph)
+	stage, err := config.BaselineCodec.StageCombinedReceiptBaseline(context.Background(), raw, clearReceiptClockHighWater(config.Receipt), config.DefaultTTL, durableRuntimeGraphPolicy(config))
 	if err != nil {
 		return err
 	}

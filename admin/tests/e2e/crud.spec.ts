@@ -205,14 +205,21 @@ test.describe("edge detail", () => {
   test("AddEdge accumulates weight and PutEdge replaces it", async ({
     page,
   }) => {
+    // Each parallel case owns its complete endpoint/Edge fixture (#1652).
+    const tail = `${EDGE_TAIL}:writes`;
+    const head = `${EDGE_HEAD}:writes`;
+    await putVertices([
+      { key: tail, string: "tail" },
+      { key: head, string: "head" },
+    ]);
     // Reset edge state so this test owns the row.
     await connectCall("DeleteEdge", {
-      tail: EDGE_TAIL,
-      head: EDGE_HEAD,
+      tail: tail,
+      head: head,
     }).catch(() => undefined);
 
     await page.goto(
-      `/edges/${encodeURIComponent(EDGE_TAIL)}/${encodeURIComponent(EDGE_HEAD)}`,
+      `/edges/${encodeURIComponent(tail)}/${encodeURIComponent(head)}`,
     );
 
     // Either the row is missing (first run) or already exists — both are
@@ -232,14 +239,14 @@ test.describe("edge detail", () => {
     await page.getByTestId("edge-add-weight").fill("1.5");
     await page.getByTestId("edge-add-submit").click();
     await expect(page.getByTestId("edge-detail-read")).toBeVisible();
-    const afterFirst = await fetchEdgeWeight(EDGE_TAIL, EDGE_HEAD);
+    const afterFirst = await fetchEdgeWeight(tail, head);
     expect(afterFirst).toBeGreaterThan(0);
 
     await page.getByTestId("edge-add-weight").fill("1.5");
     await page.getByTestId("edge-add-submit").click();
     await expect(page.getByTestId("edge-current-weight")).toBeVisible();
 
-    const afterSecond = await fetchEdgeWeight(EDGE_TAIL, EDGE_HEAD);
+    const afterSecond = await fetchEdgeWeight(tail, head);
     // A second AddEdge must accumulate strictly more weight than one.
     expect(afterSecond).toBeGreaterThan(afterFirst);
 
@@ -248,18 +255,25 @@ test.describe("edge detail", () => {
     await page.getByTestId("edge-put-submit").click();
     await expect(page.getByTestId("edge-current-weight")).toContainText("7");
 
-    const afterPut = await fetchEdgeWeight(EDGE_TAIL, EDGE_HEAD);
+    const afterPut = await fetchEdgeWeight(tail, head);
     expect(afterPut).toBeCloseTo(7, 5);
   });
 
   test("delete removes the edge", async ({ page }) => {
+    // Each parallel case owns its complete endpoint/Edge fixture (#1652).
+    const tail = `${EDGE_TAIL}:delete`;
+    const head = `${EDGE_HEAD}:delete`;
+    await putVertices([
+      { key: tail, string: "tail" },
+      { key: head, string: "head" },
+    ]);
     // Make sure something exists first.
     await connectCall("PutEdges", {
-      edges: [{ tail: EDGE_TAIL, head: EDGE_HEAD, weight: 1 }],
+      edges: [{ tail: tail, head: head, weight: 1 }],
     });
 
     await page.goto(
-      `/edges/${encodeURIComponent(EDGE_TAIL)}/${encodeURIComponent(EDGE_HEAD)}`,
+      `/edges/${encodeURIComponent(tail)}/${encodeURIComponent(head)}`,
     );
     await expect(page.getByTestId("edge-detail-read")).toBeVisible();
     await page.getByTestId("edge-delete-trigger").click();
@@ -269,7 +283,7 @@ test.describe("edge detail", () => {
 
     let edgeGone = false;
     try {
-      await connectCall("GetEdge", { tail: EDGE_TAIL, head: EDGE_HEAD });
+      await connectCall("GetEdge", { tail: tail, head: head });
     } catch {
       edgeGone = true;
     }

@@ -4,12 +4,19 @@
 - Driving issue: [#1599](https://github.com/anaregdesign/lantern/issues/1599)
 - Contract issue: [#1600](https://github.com/anaregdesign/lantern/issues/1600)
 
-The current implementation composes native signed sys state, short-lived
+The 2026-10-04 Head-managed Edge decision in #1626 supersedes configurable
+directed prefix-pair Roles. The prior candidate and its measurements remain
+historical evidence; they do not qualify the new policy. Kubernetes/Helm is
+deferred from this task; Docker/Compose/native and Server HA/security remain.
+
+The preserved runtime candidate composes native signed sys state, short-lived
 policy authority, Role admission, logical data boundaries, public Security/
 Changes/browser APIs and a separate signed-membership workload plane in the
 production Wire graph. Source, CI, final exact-source acceptance and external
-provider/clock evidence remain separate exit buckets in #1599/#1610. Local
-conformance does not complete deployment or provider qualification.
+provider/clock evidence remain separate exit buckets in #1599/#1610. The Head
+transition is in progress and must qualify its own response/SDK contract before
+activation. Prior local conformance does not complete Head, deployment or
+provider qualification.
 
 The native Store reserves private nonexpiring GraphCache state and reuses
 FileWAL framing, ownership, sync, lower-bound tip proofs and bounded checkpoint
@@ -176,9 +183,11 @@ not perform network access or persistence under graph locks.
 
 ### RPC / action / projection contract
 
-The primitive data actions are `vertex.read`, `vertex.write`, `vertex.delete`,
-`edge.read`, `edge.add`, `edge.write`, `edge.delete`, `query`, `cdc.identity`,
-`cdc.value`, `export` and `receipt.read`. They are independently granted.
+The independently grantable data actions are `vertex.read`, `vertex.write`,
+`vertex.delete`, `query`, `cdc.identity`, `cdc.value`, `export` and
+`receipt.read`. Edge operation names identify derived checks, not independent
+Role grants. Edge visibility requires `vertex.read` on both endpoints.
+Every Edge modification requires tail `vertex.read` AND head `vertex.write`.
 `vertex.read` includes a key's existence, value and TTL; `edge.read` includes
 existence, effective weight, TTL and contribution identity. Global actions are
 `operations.read`, `schema.read` and `security.manage`. Internal
@@ -189,18 +198,16 @@ existence, effective weight, TTL and contribution identity. Global actions are
 | GetVertex / GetVertices | `vertex.read` for every exact key, including missing results |
 | PutVertex / PutVertices | `vertex.write` and `vertex.read`; conditional state and outcomes are observable; effective lifetime reduction additionally requires `vertex.delete` |
 | DeleteVertex / DeleteVertices | `vertex.delete` and `vertex.read`; incident-edge cleanup is aggregate lifecycle maintenance |
-| GetEdge / GetEdges | `edge.read` and `vertex.read` on both endpoints |
-| AddEdge / AddEdges | `edge.add`, `edge.read`, `vertex.read` and endpoint-creation `vertex.write` on both endpoints |
-| PutEdge / PutEdges | `edge.write`, `edge.read`, `vertex.read` and endpoint-creation `vertex.write` on both endpoints; lifetime reduction additionally requires `edge.delete` |
-| DeleteEdge(s) / DeleteEdgeContribution(s) | `edge.delete`, `edge.read` and `vertex.read` on both endpoints; contribution Delete remains exact |
+| GetEdge / GetEdges | `vertex.read` on both endpoints, including missing results |
+| CreateEdge(s), AddEdge(s), PutEdge(s), DeleteEdge(s), DeleteEdgeContribution(s) | Tail `vertex.read` AND head `vertex.write`; existing-state responses require a separate disclosure check; contribution Delete stays exact |
 | ScanVertices / ScanVertexKeys / CountVerticesByPrefix | Only the `vertex.read` subset, before limits, counts and cursor generation |
-| ScanEdges | Only the subset with `edge.read` and `vertex.read` on both endpoints |
+| ScanEdges | Only the subset with `vertex.read` on both endpoints |
 | DeleteVerticesByPrefix | Delete only the `vertex.delete` plus `vertex.read` subset; dry-run/count/limit use the same subset |
-| DeleteEdgesByPrefix | Delete only the `edge.delete` plus readable-edge/endpoints subset |
+| DeleteEdgesByPrefix | Head-derived modification subset; dry-run, victim identities and actual counts additionally need both endpoint reads |
 | Illuminate / TopVerticesByDegree | `query` plus readable vertices/edges; restrict paths and actual degree to the authorized induced graph; TF-IDF/BM25 use shared corpus statistics |
 | SearchVertices | `query` plus `vertex.read`; restrict candidates before top-k; reuse this index's shared ranking statistics |
 | BackupSnapshot | `export` plus readable vertices/edges; include only the referentially closed authorized data subset |
-| Scoped CDC | Explicit `cdc.identity`; values additionally require `cdc.value` and ordinary data reads; endpoints must both qualify |
+| Scoped CDC | Explicit `cdc.identity`; Edge identities require both endpoint reads; values additionally require `cdc.value` and ordinary data reads |
 | GetReceiptCapability | Current authority plus `receipt.read` and `vertex.read` within an applicable logical scope; supported capabilities only |
 | GetReceiptStatus(es) / receipt replay | `receipt.read` and current rights for every proven original resource; absence needs caller intent proof or fails closed |
 | GetServerStatus / GetReplicationStatus / metrics | `operations.read`; never inferred from data read |
@@ -217,43 +224,47 @@ resources. Collection APIs instead operate on an authorized subset, subtracting
 all Deny ranges before pagination, ranking, limits, counts and dry-run.
 
 A Vertex owns incident-edge lifetime. An authorized Vertex Delete or expiry
-removes incident edges even if an edge Delete rule denies explicit edge
-mutation. Shortening a lifetime or a born-expired Put is an effective Delete
-and must pass its Delete action; a separate lifecycle Allow cannot bypass a
-Delete Deny. Already committed expiry and admitted replication are protected
+removes incident edges as lifecycle maintenance. Head write does not authorize
+Vertex deletion or shortening a Vertex lifetime: Vertex lifetime reduction or
+born-expired Put still requires `vertex.delete` and cannot bypass its Deny.
+Edge lifetime reduction/deletion uses the same Head-derived modification
+predicate as other Edge changes. Already committed expiry and replication are protected
 system maintenance, not new actions by the original user's current Roles.
 If an operation cannot prove its effects safely, reject it before mutation.
 
-### Directed existing-endpoint connection creation (#1626)
+### Head-managed existing-endpoint connections (#1626)
 
 A separate plural-canonical `CreateEdges` / singular `CreateEdge` family uses
-an independent `edge.create` action. Existing Add accumulation, Put replacement
-and endpoint creation retain their current contracts. Creation authority never
-implies Add, Put, update or Delete. Both endpoint Vertices must be readable and
-live at the same atomic application-time cut as Edge absence. The operation
+tail read and head write, like Add/Put/Delete/contribution and Edge TTL changes.
+Both endpoint Vertices must exist and be live at the same atomic application-time
+cut as Edge absence. Neither endpoint read/write nor its existence is inferred
+from a caller's owner assertion. The operation
 never creates/resurrects a Vertex or changes its value/TTL. No omitted option
 may broaden this existing-endpoints-only default.
 
-A directed pair selector matches one rule's tail prefix AND head prefix AND
-action. All three must match that same rule; no half-rule/half-Role combination
-or reverse-direction inference is permitted. Any applicable Deny wins. Delete
-requires an independent explicit grant. A caller-supplied owner/prefix never
-establishes identity: initial ownprefix assignments use Server-resolved verified
-identity and explicit literal Roles. General dynamic templates need a separate
-design and are not activated implicitly.
+Role selectors are literal prefixes or explicit global capabilities. Generalized
+directed pair configuration and independent Edge grants are withdrawn. Tail
+read and head write may come from different assigned Roles; each constituent
+check independently applies Deny precedence. Reversing an Edge changes which
+endpoint needs write. Tail read Deny or head write Deny defeats every mutation.
+Head write never grants VertexDelete or endpoint value/TTL updates. Obsolete
+pair/Edge-grant configuration must fail closed, not be converted into broader
+Vertex authority. No permanent alternative policy mode is introduced.
 
-The Rule resource oneof is literal prefix, directed prefix pair, or global.
-Pairs select Edge Read/Create/Add/Write/Delete, CDC Identity/Value, Export and
-Receipt Read only; they never grant a Vertex or Query action. `edge.create`
-requires a pair. Existing prefix rules retain their endpoint-union semantics;
-matching prefix Deny on either endpoint and matching complete pair Deny both
-defeat an Edge Allow. Core receives detached bounded endpoint ranges and
-two-dimensional range filters, applied before scan limits/top-k and on every
-traversed Edge. Pair-only IDENTITY CDC does not require Vertex/Edge Read; VALUE
-CDC additionally requires both endpoint reads and the full Edge Read selector.
-Receipt absence still requires a whole-domain proof, never a pair-only grant.
-Admin edits each direction explicitly and asks Server to explain one complete
-action selector; operation-specific additional actions are checked separately.
+Server derives generic endpoint/path constraints for Core. Graph exploration
+requires both endpoint reads and its independent Query capability. CDC,
+export and receipt capabilities stay independent and compose with base Edge
+visibility/current original-resource authorization. Admin edits Vertex grants
+and asks Server to explain the derived Edge check and its constituent rules.
+Client prefix/identity assertions grant nothing. Dynamic owner templates are
+outside this initial design.
+
+Legacy OFF Add/Put accumulation, replacement and endpoint auto-creation remain
+unchanged. Protected Edge writes cannot infer tail Vertex creation/update from
+head write. The OIDC mutation matrix must certify existing/live endpoints at
+application time for a new connection and must not resurrect endpoints or
+change their values/TTL through an Edge operation. These constraints have no
+OIDC/Role meaning inside Core.
 
 Standalone outcomes are `CREATED_AND_LIVE`, `EDGE_EXISTS`, `ENDPOINT_NOT_LIVE`
 and `EXPIRED`, one per request position. Source weights must be finite and
@@ -263,8 +274,18 @@ never removes or rewrites contributions. Born-expired input is a no-op before
 endpoint/absence checks. A successful earlier duplicate makes later positions
 `EDGE_EXISTS`. Storage evaluates all conditions at one application-time cut.
 
-Authorized conditional results expose only bounded creation/no-change outcomes,
-not existing Edge weights, TTLs, owner fields or another receipt. Duplicate
+Internal conditional results are bounded creation/no-change outcomes.
+A head write-only caller cannot receive prior existence/collision details,
+weights, TTLs, contributions or original receipt results. The user selected
+typed blind acceptance: policy-authorized input is handled, but the response
+does not assert mutation success, liveness, creation, deletion or collision.
+SDKs must represent undisclosed effects explicitly and never fabricate a
+weight, existence flag, effect count or detailed outcome from a placeholder.
+Authentication, policy rejection and input-format errors remain distinguishable
+before resource lookup/effects. Batch positions, receipt replay/status,
+idempotency conflicts and current permission changes must obey the same
+disclosure rule. No mutation may be applied and then reported as an ordinary
+permission failure. OFF legacy results remain unchanged. Duplicate
 positions, collision outcomes, TTL/Delete races and response-loss reconciliation
 must be request-index-aligned and preserved as original receipt evidence.
 Replicated committed effects must not fabricate endpoints, resurrect deleted
@@ -280,7 +301,7 @@ The new family stays disabled in HA until the durable convergence guarantee is
 designed and verified (#1626). This restriction applies only to the new operation;
 existing Add/Put families keep their contracts. It does not waive cluster-wide
 create-if-absent guarantees or authorize replica-local absence as a substitute.
-Activation also requires matching SDK outcomes, the Admin pair editor and
+Activation also requires matching SDK outcomes, Head-aware Admin explanations and
 real-wire/receipt/restart tests. Independent OIDC/RBAC deliveries continue while
 this gate remains closed.
 
@@ -291,12 +312,11 @@ mechanisms. Operators may copy them for a namespace and add Deny exceptions.
 
 | Role | Scenario / permissions |
 | --- | --- |
-| `namespace_reader` | Application reads, scans, Search and traversal in one prefix; vertex/edge read and query; no CDC/export/global diagnostics |
-| `namespace_editor` | Reader plus vertex write, edge Add/Put; Delete denied; lifetime reduction denied |
-| `namespace_maintainer` | Editor plus vertex/edge Delete and collection Delete in its prefix |
-| `connection_creator` | Both endpoint Vertex reads plus directed Create and receipt access; no Edge read, Add/Put/Delete or endpoint write |
-| `connection_deleter` | Both endpoint Vertex reads plus directed Edge read/Delete and receipt access; independent of Create |
-| `cdc_identity_consumer` | Explicit identity invalidations for allowed prefixes; no values, weights or raw cluster progress |
+| `namespace_reader` | Vertex read and Query in explicit prefixes; readable Edges follow both endpoint reads; no mutation/CDC/export/global diagnostics |
+| `namespace_editor` | Reader plus Vertex write; manages incoming Edges whose tails are readable, including Edge Delete/TTL; no VertexDelete |
+| `namespace_maintainer` | Editor plus explicit VertexDelete and collection Vertex lifecycle operations |
+| `head_relationship_manager` | Tail-prefix VertexRead and head-prefix VertexWrite through explicit Roles; same base authority for every Edge mutation; head read is separately granted |
+| `cdc_identity_consumer` | Explicit identity invalidations; Edge events also require both endpoint reads; identity frames omit values/weights/raw cluster progress |
 | `cdc_value_consumer` | Identity consumer plus value CDC and normal reads for the same resources |
 | `backup_exporter` | Explicit export plus required reads; no mutations or raw peer Snapshot |
 | `operations_observer` | Global sanitized operational status/metrics; no implicit business reads |
@@ -374,13 +394,24 @@ The staged Server records exact original logical Vertex/Edge identities in
 bounded native receipt rows, checks them against canonical mutation envelopes,
 and preserves them through active/retired Snapshot and backup recovery. Core
 owns only opaque comparable identities, byte bounds and original effect bytes.
-Status and replay require `receipt.read`, ordinary reads and the original
-mutation's actions for every original resource, including both Edge endpoints.
-Put/Add endpoint-creation rights still apply. The origin's application-time
-lifecycle-reduction bit preserves a Put's Delete requirement after Graph churn;
-an ordinary live Put does not acquire that requirement. These checks use the
-captured local policy cut, with the admission fenced before publication.
-Mixed-scope status batches fail atomically with a generic permission error.
+Status and replay require `receipt.read` and the current original mutation's
+authority for every proven original resource. Vertex receipts retain their
+ordinary Vertex read/write/delete requirements. Edge authority is tail read
+and head write; both endpoint reads additionally determine disclosure of the
+original result. A policy-authorized head write-only caller gets typed blind
+acceptance without the original result, existence, intent digest or effect
+count. A batch with any undisclosed Edge result gets a whole-batch blind
+acknowledgement, without revealing detailed results for its other positions.
+Stored original bytes are never replaced by the redacted response.
+
+Legacy endpoint-creation effects require their own explicit Vertex authority;
+Head ownership cannot authorize them. The origin's application-time
+lifecycle-reduction bit preserves a Vertex Put's Delete requirement after
+Graph churn; an ordinary live Vertex Put does not acquire that requirement.
+Every Edge TTL/deletion effect uses the same Head mutation predicate. These
+checks use the captured local policy cut, fenced before publication.
+Unauthorized mixed-scope batches fail atomically with a generic policy error;
+an authorized blind batch must not execute and then fail on disclosure alone.
 Unknown/expired IDs without resource evidence fail closed for scoped callers,
 without returning absence or a result. Unproven legacy rows require explicit
 whole-domain original actions, including conservative Delete for legacy Put;
@@ -537,19 +568,23 @@ branch or simulator success cannot close that phase.
 `CreateEdges` is canonical; `CreateEdge` forwards one item. Receipt-bearing
 Create is one atomic logical batch of at most 10,000 items, never SDK-chunked.
 The original resource, action and aligned outcome are sealed before WAL
-publication. A confirmed replay returns the original outcomes without executing
-Create again; later Edge/Vertex deletion or TTL expiry cannot be reversed by
+publication. An authorized confirmed replay returns the original outcomes only
+with current disclosure rights; otherwise it returns blind acceptance without
+executing Create again. Later Edge/Vertex deletion or TTL expiry cannot be reversed by
 that replay. Recovery applies only originally accepted positions, suppresses
 expired effects/missing endpoints/newer causal floors and rejects a live
 collision. Rejected original positions are never reevaluated after restore.
 
-Create needs the complete directed `edge.create` pair and both `vertex.read`
-grants. It does not require or imply `edge.read`, `vertex.write`, `edge.write`,
-`edge.add` or deletion. Receipt status/replay additionally requires the matching
-`receipt.read` selector and the current original Create/read authorization.
+Create needs tail `vertex.read` and head `vertex.write`, with both endpoints
+live at application time. It grants no endpoint mutation or VertexDelete.
+Receipt status/replay additionally requires explicit `receipt.read` and current
+original-resource authority; a head write-only caller receives only a typed
+blind acknowledgement, never an original result that reveals ungranted Edge
+state. The public return contract above must be implemented before new-policy
+qualification; stored authoritative results remain private and unchanged.
 Standalone capability discovery advertises Create only to a captured admission
-with a nonempty Create/read candidate scope; this is a family preflight, not
-permission for any particular pair or a promise that a later retry is allowed.
+with a nonempty Head-derived candidate scope; this is a family preflight, not
+permission for a particular Edge or a promise that a later retry is allowed.
 HA capability discovery omits Create and HA ingress rejects it before effects.
 
 Go, Node and Dart expose normal and receipt-bearing plural/singular facades;
@@ -559,12 +594,66 @@ context and absolute expiration inputs before dispatch, or use the Dart/Node
 operation-issuance TTL anchor. Malformed/unspecified/misaligned outcomes fail
 closed; receipt-bearing uncertain results require original-ID reconciliation.
 
-The private WAL union is now version 8 (`LRWU\x08`), with a typed standalone
+The private WAL union is now version 9 (`LRWU\x09`), with a typed standalone
 Create effect discriminator and frozen Mutation descriptor fingerprint
-`11a0ed2e1d6c418b461ae2c27aceda465289b95e53519145cddbba7f2780fa73`.
+`92a299d04670341c8a9d73113dc712e7dabd0a56b7ba840b0d769fc10e3d384a`.
 Previous union versions fail closed and require the documented offline migration;
 raw graph decoding cannot downgrade a Create accepted effect. Public identity
 CDC projects only `CREATED_AND_LIVE` Edge identities, with no rejected inputs,
 endpoint auto-creation, source weights or receipt payloads. The typed full effect
 is local WAL/full-CDC evidence and is rejected by peer ApplyMutation until the
 HA arbitration gate above is complete.
+
+
+### Immutable endpoint effects and retained private history
+
+Protected public Add/Put requires both existing live endpoints under the final
+Core application lock. An entire batch fails atomically if either endpoint is
+not live. A caller without complete EdgeRead receives only typed handled/effect-
+undisclosed acceptance for that private liveness disposition. Malformed input,
+authority, transport and WAL failures retain their ordinary failure contract.
+Auth OFF keeps legacy implicit endpoint creation at public origin.
+
+The origin records `MutationOp.no_endpoint_creation` for protected Edge Add/Put
+and receipt Add. Every peer, relay, accepted-effect WAL record and restart applies
+that immutable Edge-only effect; it never inserts, revives, or extends a Vertex.
+Peers do not recheck origin liveness against asynchronously replicated state.
+Receipt Add binds this effect into its immutable intent digest. A misplaced flag
+fails before graph/WAL/origin progress. HA Create remains unavailable.
+
+Production private graphs retain pending accepted Edge sources through GC and
+Snapshot until their own expiration or causal removal. Physical Edge capacity
+accounts for these buckets at local admission; replica union preserves accepted
+remote effects and can exceed that local cap. Nil-TTL sources may remain until
+causal removal. This does not introduce a separate pending queue or promise a
+hard memory bound.
+Private `SnapshotEdge.no_endpoint_creation` permits missing explicit endpoints
+and restores only Edge sources. Public reads, counts, traversal and graph export
+continue to require live endpoints. Private archive V4 pins the reachable
+Snapshot descriptor to
+`a8c8af1e98800f47365f1b25711019315f07bef319490243401e9b1e4ed6d662`.
+V3 archives and V8 WAL unions require explicit offline migration and fail closed;
+there is no silent reinterpretation of existing persisted bytes.
+
+### Consumer presentation of undisclosed handling (#1626)
+
+Primitive SDK facades return a dedicated complete-call `MutationAcceptance`
+signal; typed reply adapters expose `knownEffect` or `acceptedUndisclosed`.
+Only the direct acknowledgement becomes a handled reply. Wrapping, partial
+batches and genuine failures retain their error/reconciliation semantics.
+Neither branch may infer an effect from a zero weight, false existence flag,
+empty outcome vector or count.
+
+Admin Edge forms clear stale values and show a handled/effect-undisclosed state
+without reading the Edge back or claiming it is absent. Admin CLI and Go CLI
+emit only an explicit acceptance object in that case. Streaming bulk and
+Restore consume the complete input and preserve any later failure; they redact
+final effect counts if any chunk was undisclosed. An acknowledgement does not
+invite automatic retry.
+
+The offline candidate persists `acceptedUndisclosed` as a terminal operation
+state in codec version 3, removes the outbox entry and invalidates confirmed
+cache under existing ownership/generation/authentication fences. It never
+fabricates confirmation, a receipt original or a reusable cache image.
+Paired-source Dart checks and hosted-archive/publication/device exits remain
+separate; publication is deferred until the end of the implementation work.

@@ -117,55 +117,42 @@ test("Server-owned Role locks are not client-owned policy metadata", () => {
   expect(buildRole(mutable).envOwned).toBe(false);
 });
 
-test("directed pairs preserve one action and independent explicit bounds", () => {
+test("Head-managed Roles contain Vertex prefix grants, not derived Edge operations", () => {
   const draft = {
     ...roleDraft(),
-    id: "connections",
-    name: "Connections",
+    id: "relationships",
+    name: "Head relationships",
     rules: [
       {
         ...newRule(1),
-        action: SecurityAction.EDGE_CREATE,
-        pair: true,
-        tailPrefix: "users:alice:",
-        headPrefix: "profiles:",
+        action: SecurityAction.VERTEX_READ,
+        prefix: "users:alice:",
+      },
+      {
+        ...newRule(2),
+        action: SecurityAction.VERTEX_WRITE,
+        prefix: "profiles:",
       },
     ],
   };
   const role = buildRole(draft);
-  expect(role.rules[0].resource).toEqual({
-    case: "pair",
-    value: {
-      $typeName: "graph.v1.SecurityPrefixPair",
-      tailPrefix: "users:alice:",
-      headPrefix: "profiles:",
-    },
-  });
+  expect(role.rules.map((rule) => rule.resource)).toEqual([
+    { case: "prefix", value: "users:alice:" },
+    { case: "prefix", value: "profiles:" },
+  ]);
   expect(buildRole(roleDraft(role))).toEqual(role);
-  expect(() =>
-    buildRole({
-      ...draft,
-      rules: [{ ...draft.rules[0], pair: false, allKeys: true }],
-    }),
-  ).toThrow("directed");
-  expect(() =>
-    buildRole({ ...draft, rules: [{ ...draft.rules[0], headPrefix: "" }] }),
-  ).toThrow("both");
-  expect(() =>
-    buildRole({
-      ...draft,
-      rules: [{ ...draft.rules[0], action: SecurityAction.VERTEX_READ }],
-    }),
-  ).toThrow("Edge");
-  const allTargets = buildRole({
-    ...draft,
-    rules: [{ ...draft.rules[0], allHeads: true }],
-  });
-  expect(
-    allTargets.rules[0].resource.case === "pair" &&
-      allTargets.rules[0].resource.value.headPrefix,
-  ).toBe("");
-  expect(allTargets.rules[0].action).toBe(SecurityAction.EDGE_CREATE);
-  expect(roleDraft(allTargets).rules[0].allHeads).toBe(true);
-  expect(roleDraft(allTargets).rules[0].allTails).toBe(false);
+  for (const action of [
+    SecurityAction.EDGE_READ,
+    SecurityAction.EDGE_CREATE,
+    SecurityAction.EDGE_ADD,
+    SecurityAction.EDGE_WRITE,
+    SecurityAction.EDGE_DELETE,
+  ]) {
+    expect(() =>
+      buildRole({
+        ...draft,
+        rules: [{ ...newRule(1), action, allKeys: true }],
+      }),
+    ).toThrow("action");
+  }
 });

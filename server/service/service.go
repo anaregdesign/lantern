@@ -1187,11 +1187,12 @@ func (s *LanternService) RestoreEdges(ctx context.Context, request *pb.PutEdgesR
 			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("edges[%d]: %w", i, err))
 		}
 		items = append(items, graphcache.EdgeItem[string]{
-			Tail:             edge.GetTail(),
-			Head:             edge.GetHead(),
-			Weight:           edge.GetWeight(),
-			Expiration:       expiration,
-			DerivedAggregate: !edgeweight.IsFiniteSource(edge.GetWeight()),
+			Tail:               edge.GetTail(),
+			Head:               edge.GetHead(),
+			Weight:             edge.GetWeight(),
+			Expiration:         expiration,
+			DerivedAggregate:   !edgeweight.IsFiniteSource(edge.GetWeight()),
+			NoEndpointCreation: s.namespaceFormat != "",
 		})
 	}
 	outcomes := s.cache.PutEdgesWithExpirationHLCOutcomes(items, hlc.Timestamp{})
@@ -1399,7 +1400,7 @@ func replicatedPutVerticesMutation(in []*pb.Vertex, outcomes []graphcache.PutOut
 	return &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutVertices{ReplicatedPutVertices: &pb.ReplicatedPutVertices{Entries: entries}}}
 }
 
-func replicatedPutEdgesMutation(in []*pb.Edge, outcomes []graphcache.PutOutcome) *pb.MutationOp {
+func replicatedPutEdgesMutation(in []*pb.Edge, outcomes []graphcache.PutOutcome, noEndpointCreation ...bool) *pb.MutationOp {
 	entries := make([]*pb.ReplicatedPutEdge, 0, len(outcomes))
 	for i, outcome := range outcomes {
 		switch outcome {
@@ -1412,7 +1413,7 @@ func replicatedPutEdgesMutation(in []*pb.Edge, outcomes []graphcache.PutOutcome)
 	if len(entries) == 0 {
 		return nil
 	}
-	return &pb.MutationOp{Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{Entries: entries}}}
+	return &pb.MutationOp{NoEndpointCreation: len(noEndpointCreation) != 0 && noEndpointCreation[0], Op: &pb.MutationOp_ReplicatedPutEdges{ReplicatedPutEdges: &pb.ReplicatedPutEdges{Entries: entries}}}
 }
 
 func acceptedPutOutcomes(outcomes []graphcache.PutOutcome) []graphcache.PutOutcome {
@@ -1445,7 +1446,7 @@ func (s *LanternService) preflightLocalGraphPutEdgesLocked(in []*pb.Edge, ts hlc
 	for i := range outcomes {
 		outcomes[i] = graphcache.PutOutcomeAppliedAndLive
 	}
-	op := replicatedPutEdgesMutation(in, outcomes)
+	op := replicatedPutEdgesMutation(in, outcomes, s.dataAuthorization)
 	if op == nil {
 		return nil
 	}
@@ -1467,6 +1468,9 @@ func (s *LanternService) preflightLocalGraphDeleteLocked(op *pb.MutationOp, ts h
 }
 
 func writeError(err error) error {
+	if errors.Is(err, graphcache.ErrEdgeEndpointNotLive) {
+		return connect.NewError(connect.CodeFailedPrecondition, err)
+	}
 	if errors.Is(err, graphcache.ErrLifecycleEffectDenied) {
 		return connect.NewError(connect.CodePermissionDenied, security.ErrPermissionDenied)
 	}
@@ -1735,10 +1739,12 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 			return nil, err
 		}
 		item := graphcache.EdgeItem[string]{
-			Tail:       e.GetTail(),
-			Head:       e.GetHead(),
-			Weight:     e.GetWeight(),
-			Expiration: expiration,
+			RequireLiveEndpoints: s.dataAuthorization,
+			NoEndpointCreation:   s.dataAuthorization,
+			Tail:                 e.GetTail(),
+			Head:                 e.GetHead(),
+			Weight:               e.GetWeight(),
+			Expiration:           expiration,
 		}
 		// contrib_ids is index-aligned and optional (#588): a shorter or
 		// missing slot, or an empty/zero key, leaves ContribID zero — the
@@ -1767,7 +1773,7 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 			return nil, err
 		}
 		// Check both capacity caps before pending WAL repair or graph apply.
-		if err := s.checkVertexCapacity(2 * len(items)); err != nil {
+		if err := s.checkEdgeEndpointCapacity(len(items), s.dataAuthorization); err != nil {
 			return nil, err
 		}
 		if err := s.checkEdgeCapacity(len(items)); err != nil {
@@ -1784,7 +1790,7 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 		ts := s.clock.Now()
-		mutation := s.newLocalMutationLocked(&pb.MutationOp{Op: &pb.MutationOp_AddEdges{AddEdges: request}}, ts)
+		mutation := s.newLocalMutationLocked(&pb.MutationOp{NoEndpointCreation: s.dataAuthorization, Op: &pb.MutationOp_AddEdges{AddEdges: request}}, ts)
 		if err := s.validateGraphPublicationShape(mutation); err != nil {
 			return nil, publicationShapeError("AddEdges", err)
 		}
@@ -1802,7 +1808,10 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 				items[i].ContribID = contribIDFor(s.origin, seq, uint16(wireIndexes[i]))
 			}
 		}
-		compactEffective, accepted, noWeight := s.cache.AddEdgesWithExpirationContribHLCResults(items, ts)
+		compactEffective, accepted, noWeight, err := s.applyLocalEdgeAddHLC(items, ts)
+		if err != nil {
+			return nil, writeError(err)
+		}
 		deduped = noWeight
 		for i, wireIndex := range wireIndexes {
 			effective[wireIndex] = compactEffective[i]
@@ -1817,13 +1826,16 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
 			return nil, err
 		}
-		if err := s.checkVertexCapacity(2 * len(items)); err != nil {
+		if err := s.checkEdgeEndpointCapacity(len(items), s.dataAuthorization); err != nil {
 			return nil, err
 		}
 		if err := s.checkEdgeCapacity(len(items)); err != nil {
 			return nil, err
 		}
-		compactEffective, count := s.cache.AddEdgesWithExpirationContrib(items)
+		compactEffective, count, err := s.applyLocalEdgeAdd(items)
+		if err != nil {
+			return nil, writeError(err)
+		}
 		deduped = count
 		for i, wireIndex := range wireIndexes {
 			effective[wireIndex] = compactEffective[i]
@@ -1867,6 +1879,8 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 			return nil, err
 		}
 		items = append(items, graphcache.EdgeItem[string]{
+			RequireLiveEndpoints:   s.dataAuthorization,
+			NoEndpointCreation:     s.dataAuthorization,
 			Tail:                   e.GetTail(),
 			Head:                   e.GetHead(),
 			Weight:                 e.GetWeight(),
@@ -1890,7 +1904,7 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 			return nil, err
 		}
 		// The capacity decision shares the Snapshot-fault gate with apply.
-		if err := s.checkVertexCapacity(2 * len(items)); err != nil {
+		if err := s.checkEdgeEndpointCapacity(len(items), s.dataAuthorization); err != nil {
 			return nil, err
 		}
 		if err := s.checkEdgeCapacity(len(items)); err != nil {
@@ -1911,7 +1925,7 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 		if err != nil {
 			return nil, err
 		}
-		if mutation := replicatedPutEdgesMutation(in, outcomes); mutation != nil {
+		if mutation := replicatedPutEdgesMutation(in, outcomes, s.dataAuthorization); mutation != nil {
 			if err := s.publishLocalGraphPutLocked(mutation, ts, acceptedPutOutcomes(outcomes)); err != nil {
 				return nil, err
 			}
@@ -1923,7 +1937,7 @@ func (s *LanternService) PutEdges(ctx context.Context, request *pb.PutEdgesReque
 		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
 			return nil, err
 		}
-		if err := s.checkVertexCapacity(2 * len(items)); err != nil {
+		if err := s.checkEdgeEndpointCapacity(len(items), s.dataAuthorization); err != nil {
 			return nil, err
 		}
 		if err := s.checkEdgeCapacity(len(items)); err != nil {

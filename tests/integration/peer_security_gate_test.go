@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -23,11 +24,13 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -468,6 +471,131 @@ func TestPeerSecurityIdleSubscribeFlushesHeadersWithoutAnEvent(t *testing.T) {
 			t.Fatal("malformed cursor admitted", rejected.Err())
 		}
 	} else if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatal(err)
+	}
+}
+
+// Origin authorization is covered by the OIDC Head-managed real-wire cases.
+// Here the same immutable accepted effects cross the operator mTLS peer plane,
+// including an actual Subscribe gap repaired by private Snapshot.
+func TestPeerSecurityEdgeOnlyHistorySubscribeSnapshotAndTombstoneRealConnect(t *testing.T) {
+	var graphs [2]*graphcache.GraphCache[string, *pb.Vertex]
+	var snapshots atomic.Int32
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var writer [32]byte
+	copy(writer[:], public)
+	f := newPeerSecurityFixture(t, peerSecurityOptions{Generation: [16]byte{6}, WriterKey: writer, Mount: func(f *peerSecurityFixture, index int, runtime *service.ServingRuntime, mux *http.ServeMux) {
+		graphs[index] = runtime.GraphCache()
+		graphs[index].RetainDanglingEdgeHistory()
+		f.primary[index].WithTombstoneTTL(time.Hour)
+		if index == 0 {
+			peer, err := runtime.NewLanternReplicationService(f.primary[index])
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, handler := graphv1connect.NewLanternReplicationServiceHandler(service.NewLanternReplicationServiceConnectHandler(peer))
+			mux.Handle("/graph.v1.LanternReplicationService/Snapshot", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { snapshots.Add(1); handler.ServeHTTP(w, r) }))
+		}
+	}})
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	origin := hlc.NodeID{9}
+	apply := func(seq uint64, op *pb.MutationOp) {
+		t.Helper()
+		ts := &pb.HLCTimestamp{WallNs: time.Now().UnixNano(), NodeId: origin[:]}
+		if err := f.primary[0].ApplyMutation(ctx, &pb.Mutation{NamespaceFormat: "namespaced-v1", Seq: seq, Origin: origin[:], Hlc: ts, Op: op}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply(1, &pb.MutationOp{NoEndpointCreation: true, Op: &pb.MutationOp_PutEdge{PutEdge: &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "data:tail", Head: "data:head", Weight: 2}}}})
+	apply(2, &pb.MutationOp{NoEndpointCreation: true, Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "data:tail", Head: "data:head", Weight: 3}}}})
+	transport, err := provider.NewWorkloadPeerTransport(f.runtimes[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := func() (context.CancelFunc, <-chan error) {
+		pctx, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		pump := replication.NewPump(replication.Config{NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{f.servers[0].URL}, PeerTransport: transport, BackoffMin: 10 * time.Millisecond, BackoffMax: 20 * time.Millisecond}, f.primary[1], graphs[1])
+		go func() { done <- pump.Run(pctx) }()
+		return stop, done
+	}
+	wait := func(message string, condition func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !condition() && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !condition() {
+			t.Fatal(message)
+		}
+	}
+	stop, done := start()
+	wait("private Subscribe did not apply sources", func() bool { return f.primary[1].LocalSeq(origin) == 2 })
+	stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	assertHiddenHistory := func() {
+		t.Helper()
+		if _, ok := graphs[1].GetVertex("data:head"); ok {
+			t.Fatal("peer fabricated/revived head")
+		}
+		if _, ok := graphs[1].GetWeight("data:tail", "data:head"); ok {
+			t.Fatal("dangling Edge exposed")
+		}
+		rows := graphs[1].SnapshotReplication().Graph.Edges
+		if len(rows) != 1 || len(rows[0].Contributions) != 2 {
+			t.Fatal("private accepted history lost", rows)
+		}
+	}
+	assertHiddenHistory()
+	for _, graph := range graphs {
+		gctx, gcancel := context.WithCancel(ctx)
+		ended := make(chan struct{})
+		graph.SetGCHooks(nil, func(time.Duration) { gcancel() })
+		go func() { defer close(ended); graph.Watch(gctx, time.Millisecond) }()
+		select {
+		case <-ended:
+		case <-ctx.Done():
+			gcancel()
+			t.Fatal(ctx.Err())
+		}
+	}
+	assertHiddenHistory()
+	// Evict the original relay log window. The next pump must use Snapshot,
+	// whose graph contains pending sources but neither missing endpoint.
+	for i := range 20 {
+		if _, err := f.primary[0].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: fmt.Sprintf("data:noise:%02d", i)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop, done = start()
+	wait("private Snapshot did not repair the gap", func() bool { return snapshots.Load() > 0 && f.primary[1].LocalSeq(hlc.NodeID{3}) == 20 })
+	assertHiddenHistory()
+	for _, key := range []string{"data:tail", "data:head"} {
+		if _, err := f.primary[0].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wait("explicit endpoints did not expose original converged sources", func() bool { weight, ok := graphs[1].GetWeight("data:tail", "data:head"); return ok && weight == 5 })
+	if _, err := f.primary[0].DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "data:head"}); err != nil {
+		t.Fatal(err)
+	}
+	wait("Vertex tombstone did not replicate", func() bool { return f.primary[1].LocalSeq(hlc.NodeID{3}) == 23 })
+	apply(3, &pb.MutationOp{NoEndpointCreation: true, Op: &pb.MutationOp_AddEdge{AddEdge: &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "data:tail", Head: "data:head", Weight: 1}}}})
+	wait("post-tombstone Edge-only Add did not replicate", func() bool { return f.primary[1].LocalSeq(origin) == 3 })
+	if _, ok := graphs[1].GetVertex("data:head"); ok {
+		t.Fatal("accepted Edge revived tombstoned head")
+	}
+	if _, ok := graphs[1].GetWeight("data:tail", "data:head"); ok {
+		t.Fatal("post-tombstone dangling Edge exposed")
+	}
+	stop()
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 }

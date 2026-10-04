@@ -27,6 +27,8 @@ part 'crud.dart';
 part 'data.dart';
 part 'decay.dart';
 part 'receipt.dart';
+part 'mutation_acceptance.dart';
+part 'mutation_reply.dart';
 part 'retry.dart';
 part 'scan.dart';
 part 'search.dart';

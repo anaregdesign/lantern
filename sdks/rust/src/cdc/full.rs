@@ -658,7 +658,10 @@ mod tests {
                 node_id: origin().as_bytes().to_vec(),
             }),
             origin: origin().as_bytes().to_vec(),
-            op: Some(MutationOp { op: Some(op) }),
+            op: Some(MutationOp {
+                op: Some(op),
+                ..Default::default()
+            }),
             tombstone_expiration: None,
             namespace_format: String::new(),
         }
@@ -795,6 +798,7 @@ mod tests {
         let mut invalid = original.clone();
         if let Some(MutationOp {
             op: Some(Op::ReplicatedReceiptEdgeDelete(envelope)),
+            ..
         }) = &mut invalid.op
         {
             envelope.items[0].receipt = None;
@@ -814,7 +818,7 @@ mod tests {
         assert_eq!(stream.cursor.next_expected(origin()), 1);
 
         let mut invalid = mutation(valid_arms()[18].clone());
-        invalid.op = Some(MutationOp { op: None });
+        invalid.op = Some(MutationOp::default());
         assert!(matches!(
             stream.decode_mutation(invalid),
             Err(LanternError::CdcGap(_))
@@ -822,6 +826,7 @@ mod tests {
         let mut invalid = mutation(valid_arms()[19].clone());
         if let Some(MutationOp {
             op: Some(Op::DeleteEdgeContributions(request)),
+            ..
         }) = &mut invalid.op
         {
             request.contributions[0].contrib_id = vec![0; 24];

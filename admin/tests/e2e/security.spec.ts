@@ -17,7 +17,7 @@ async function reviewRole(page: import("@playwright/test").Page) {
     .click();
 }
 for (const width of [1280, 390]) {
-  test(`Directed pair review and Server explanation at ${width}px`, async ({
+  test(`Head-managed Role review and Server explanation at ${width}px`, async ({
     page,
   }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
@@ -25,23 +25,34 @@ for (const width of [1280, 390]) {
     await page.goto(`${fixture.primary}/security/roles`);
     await page
       .getByRole("textbox", { name: "Role ID", exact: true })
-      .fill("connection-creator");
+      .fill("head-manager");
     await page
       .getByRole("textbox", { name: "Role name", exact: true })
-      .fill("Connection creator");
+      .fill("Head relationship manager");
     await page.getByRole("button", { name: "Add rule", exact: true }).click();
     await page
       .getByLabel("Rule 1 action", { exact: true })
-      .selectOption({ label: "Create connections" });
+      .selectOption({ label: "Read vertices" });
+    await page
+      .getByLabel("Rule 1 logical prefix", { exact: true })
+      .fill("users:alice:");
+    await page.getByRole("button", { name: "Add rule", exact: true }).click();
+    await page
+      .getByLabel("Rule 2 action", { exact: true })
+      .selectOption({ label: "Write vertices" });
+    await page
+      .getByLabel("Rule 2 logical prefix", { exact: true })
+      .fill("profiles:");
     await expect(
       page.getByLabel("Rule 1 selector", { exact: true }),
-    ).toBeDisabled();
-    await page
-      .getByLabel("Rule 1 tail prefix", { exact: true })
-      .fill("users:alice:");
-    await page
-      .getByLabel("Rule 1 head prefix", { exact: true })
-      .fill("profiles:");
+    ).toHaveCount(0);
+    for (const label of ["Create connections", "Delete edges"]) {
+      await expect(
+        page
+          .getByLabel("Rule 2 action")
+          .getByRole("option", { name: label, exact: true }),
+      ).toHaveCount(0);
+    }
     await page
       .getByRole("button", { name: "Review Role change", exact: true })
       .click();
@@ -59,8 +70,14 @@ for (const width of [1280, 390]) {
       {
         id: "rule-1",
         effect: "SECURITY_EFFECT_ALLOW",
-        action: "SECURITY_ACTION_EDGE_CREATE",
-        pair: { tailPrefix: "users:alice:", headPrefix: "profiles:" },
+        action: "SECURITY_ACTION_VERTEX_READ",
+        prefix: "users:alice:",
+      },
+      {
+        id: "rule-2",
+        effect: "SECURITY_EFFECT_ALLOW",
+        action: "SECURITY_ACTION_VERTEX_WRITE",
+        prefix: "profiles:",
       },
     ]);
     await page.getByRole("button", { name: "Reload security state" }).click();
@@ -73,6 +90,9 @@ for (const width of [1280, 390]) {
     await page.getByLabel("Explanation head").fill("profiles:bob");
     await page.getByRole("button", { name: "Ask Server" }).click();
     await expect(page.getByText("Denied · Server revision 3")).toBeVisible();
+    await expect(
+      page.getByText("private / hide: Deny · head · Write vertices"),
+    ).toBeVisible();
     const explain = fixture.calls.find(
       (call) => call.method === "ExplainAccess",
     )!;
@@ -87,7 +107,7 @@ for (const width of [1280, 390]) {
       ),
     ).toBe(true);
     await page.screenshot({
-      path: testInfo.outputPath(`pair-${width}.png`),
+      path: testInfo.outputPath(`head-role-${width}.png`),
       fullPage: true,
     });
   });
@@ -127,7 +147,9 @@ for (const width of [1280, 390]) {
       .fill("tenant:private:one");
     await page.getByRole("button", { name: "Ask Server" }).click();
     await expect(page.getByText("Denied · Server revision 3")).toBeVisible();
-    await expect(page.getByText("private / hide: Deny")).toBeVisible();
+    await expect(
+      page.getByText("private / hide: Deny · Read vertices"),
+    ).toBeVisible();
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -288,3 +310,100 @@ test("environment Role policy locks and paginated member inspection", async ({
     page.getByRole("link", { name: "Manage user memberships" }),
   ).toBeVisible();
 });
+
+for (const width of [1280, 390]) {
+  test(`blind Edge handling has no effect or automatic readback at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const fixture = await securityUI(page);
+    let reads = 0;
+    let writes = 0;
+    await page.route(
+      `${fixture.primary}/browser/graph.v1.LanternService/*`,
+      async (route) => {
+        const method = new URL(route.request().url()).pathname
+          .split("/")
+          .at(-1);
+        if (method === "ScanVertices")
+          return route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({ vertices: [] }),
+          });
+        if (method === "GetEdge") {
+          reads++;
+          return route.fulfill({
+            status: 403,
+            contentType: "application/json",
+            body: JSON.stringify({
+              code: "permission_denied",
+              message: "Edge read is unavailable",
+            }),
+          });
+        }
+        if (
+          [
+            "AddEdge",
+            "AddEdges",
+            "PutEdge",
+            "PutEdges",
+            "DeleteEdge",
+            "DeleteEdges",
+          ].includes(method ?? "")
+        ) {
+          writes++;
+          return route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({
+              acceptance: {
+                kind: "MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED",
+              },
+            }),
+          });
+        }
+        throw new Error(`Unexpected blind Edge call: ${method}`);
+      },
+    );
+    await page.goto(`${fixture.primary}/edges/tails%3Aa/heads%3Ab`);
+    await expect(page.getByTestId("edge-form-add")).toBeVisible();
+    await page.getByTestId("edge-add-weight").fill("7");
+    await page.getByTestId("edge-add-submit").click();
+    await expect(
+      page.getByText("Request handled.", { exact: false }),
+    ).toBeVisible();
+    await expect(page.getByTestId("edge-current-weight")).toHaveCount(0);
+    expect(reads).toBe(1);
+    expect(writes).toBe(1);
+    await expect(page.getByTestId("edge-add-submit")).toBeDisabled();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`blind-Edge-${width}.png`),
+      fullPage: true,
+    });
+    await page.goto(`${fixture.primary}/cli`);
+    const input = page.getByTestId("cli-input");
+    for (const command of [
+      "put edge tails:a heads:b 7",
+      "delete edge tails:a heads:b",
+    ]) {
+      const previous = await page.getByTestId("cli-entry-ok").count();
+      await input.fill(command);
+      await input.press("Enter");
+      await expect(page.getByTestId("cli-entry-ok")).toHaveCount(previous + 1);
+      await expect(page.getByTestId("cli-entry-ok").last()).toContainText(
+        '"acceptance": "acceptedUndisclosed"',
+      );
+      await expect(page.getByTestId("cli-entry-ok").last()).not.toContainText(
+        '"deleted"',
+      );
+    }
+    expect(reads).toBe(1);
+    expect(writes).toBe(3);
+  });
+}

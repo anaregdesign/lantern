@@ -17,17 +17,18 @@ import (
 // actually applied. Mutation stays the original relay/Subscribe projection.
 // Every serving graph Add publication selects this envelope.
 type graphAddEffectEnvelope struct {
-	NamespaceFormat   string
-	Mutation          *pb.Mutation
-	AcceptedIndexes   []uint32
-	Origin            hlc.NodeID
-	OriginSeq         uint64
-	HLC               hlc.Timestamp
-	Epoch             mutationreceipt.Epoch
-	PolicyFingerprint [32]byte
-	Original          []*pb.Edge
-	ContribIDs        []graphcache.ContribID
-	Receipts          []mutationreceipt.Receipt
+	NamespaceFormat    string
+	NoEndpointCreation bool
+	Mutation           *pb.Mutation
+	AcceptedIndexes    []uint32
+	Origin             hlc.NodeID
+	OriginSeq          uint64
+	HLC                hlc.Timestamp
+	Epoch              mutationreceipt.Epoch
+	PolicyFingerprint  [32]byte
+	Original           []*pb.Edge
+	ContribIDs         []graphcache.ContribID
+	Receipts           []mutationreceipt.Receipt
 }
 
 func (e *graphAddEffectEnvelope) GraphMutation() *pb.Mutation {

@@ -287,6 +287,12 @@ extension LanternScan on LanternClient {
         onTrailer: onTrailer,
       ),
     );
+    if (_mutationAcceptedUndisclosed(
+      response,
+      response.hasAcceptance() ? response.acceptance : null,
+    )) {
+      throw const MutationAcceptance();
+    }
     return _uint64ToBigInt(response.deleted);
   }
 }

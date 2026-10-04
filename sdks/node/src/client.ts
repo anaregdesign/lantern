@@ -65,12 +65,14 @@ import {
   FailedPreconditionError,
   InvalidArgumentError,
   LanternError,
+  MutationAcceptance,
   NotFoundError,
   ReceiptMutationUncertainError,
   ReceiptReconciliationError,
   SearchContinuationLimitedError,
   wrapConnectError,
 } from "./errors.js";
+import { checkMutationAcceptance } from "./mutation-acceptance.js";
 import {
   Duration,
   Float32,
@@ -1323,6 +1325,7 @@ export class Lantern {
         contribId ? { edge, contribId } : { edge },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(resp);
       return resp.effectiveWeight;
     });
   }
@@ -1343,6 +1346,7 @@ export class Lantern {
   async deleteEdge(tail: string, head: string, signal?: AbortSignal): Promise<boolean> {
     return this.invoke(async () => {
       const resp = await this.client.deleteEdge({ tail, head }, this.callOpts(signal));
+      checkMutationAcceptance(resp);
       return resp.existed;
     });
   }
@@ -1394,6 +1398,7 @@ export class Lantern {
         contribIds ? { edges, contribIds } : { edges },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(resp);
       for (const w of resp.effectiveWeights) {
         effective.push(w);
       }
@@ -1431,6 +1436,7 @@ export class Lantern {
         },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(response);
       if (response.written !== prepared.edges.length) {
         throw new LanternError(
           `server returned written=${response.written} for ${prepared.edges.length} receipt Edge Add items`,
@@ -1515,6 +1521,7 @@ export class Lantern {
     const outcomes: CreateEdgeOutcome[] = [];
     await this.runBatchWrite(prepared, async (chunk) => {
       const response = await this.client.createEdges({ edges: chunk }, this.callOpts(signal));
+      checkMutationAcceptance(response);
       if (response.outcomes.length !== chunk.length)
         throw new LanternError("server returned misaligned Create outcomes");
       const decoded = response.outcomes.map(createEdgeOutcomeFromWire);
@@ -1561,6 +1568,7 @@ export class Lantern {
         { edges, receiptContext: receiptContextToWire(normalized) },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(response);
       if (response.outcomes.length !== edges.length)
         throw new LanternError("server returned misaligned receipt Create outcomes");
       return Object.freeze(response.outcomes.map(createEdgeOutcomeFromWire));
@@ -1594,6 +1602,7 @@ export class Lantern {
     await this.runBatchWrite(prepared, async (chunk) => {
       const edges = chunk.map((value) => fromJson(EdgeSchema, value.json as JsonValue));
       const resp = await this.client.putEdges({ edges }, this.callOpts(signal));
+      checkMutationAcceptance(resp);
       if (resp.outcomes.length !== chunk.length) {
         throw new LanternError(
           `server returned ${resp.outcomes.length} Put outcomes for ${chunk.length} edges`,
@@ -1629,6 +1638,7 @@ export class Lantern {
         { edges: chunk.map((r) => ({ tail: r.tail, head: r.head })) },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(resp);
       total += resp.deleted;
     });
     return total;
@@ -1665,6 +1675,7 @@ export class Lantern {
         },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(response);
       if (response.existed.length !== edges.length) {
         throw new LanternError(
           `server returned ${response.existed.length} Edge Delete outcomes for ${edges.length} items`,
@@ -1733,6 +1744,7 @@ export class Lantern {
         },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(response);
       const result = checkedContributionDeleteResult(response, chunk.length);
       deleted += result.deleted;
       existed.push(...result.existed);
@@ -1771,6 +1783,7 @@ export class Lantern {
         },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(response);
       const result = checkedContributionDeleteResult(response, contributions.length);
       return Object.freeze({
         context: normalizedContext,
@@ -1876,6 +1889,7 @@ export class Lantern {
         },
         this.callOpts(signal),
       );
+      checkMutationAcceptance(resp);
       return resp.deleted;
     });
   }
@@ -2230,6 +2244,7 @@ export class Lantern {
     const stats: RestoreStats = { vertices: 0, edges: 0 };
     let vbatch: PbVertex[] = [];
     let ebatch: PbEdge[] = [];
+    let undisclosed = false;
 
     const flushVertices = async (): Promise<void> => {
       if (vbatch.length === 0) return;
@@ -2252,6 +2267,13 @@ export class Lantern {
       const edges = ebatch;
       ebatch = [];
       const resp = await this.invoke(() => this.client.putEdges({ edges }, this.callOpts(signal)));
+      try {
+        checkMutationAcceptance(resp);
+      } catch (error) {
+        if (!(error instanceof MutationAcceptance)) throw error;
+        undisclosed = true;
+        return;
+      }
       if (resp.outcomes.length !== edges.length) {
         throw new LanternError(
           `server returned ${resp.outcomes.length} Put outcomes for ${edges.length} edges`,
@@ -2273,6 +2295,7 @@ export class Lantern {
     }
     await flushVertices();
     await flushEdges();
+    if (undisclosed) throw new MutationAcceptance();
     return stats;
   }
 
@@ -2432,6 +2455,7 @@ export class Lantern {
     error: unknown,
     signal?: AbortSignal,
   ): Promise<LanternError> {
+    if (error instanceof MutationAcceptance) return error;
     if (error instanceof ConnectError && error.code === Code.FailedPrecondition) {
       return this.receiptPreconditionError(context, mutation.kind, error, signal);
     }
@@ -2510,15 +2534,21 @@ export class Lantern {
   ): Promise<void> {
     const size = this.chunkSize();
     let written = 0;
+    let undisclosed = false;
     for (let i = 0; i < items.length; i += size) {
       const chunk = items.slice(i, Math.min(i + size, items.length));
       try {
         await sendChunk(chunk);
       } catch (err) {
-        throw new BatchError(written, wrapConnectError(err));
+        if (err instanceof MutationAcceptance) {
+          undisclosed = true;
+        } else {
+          throw new BatchError(written, wrapConnectError(err));
+        }
       }
       written += chunk.length;
     }
+    if (undisclosed) throw new MutationAcceptance();
   }
 
   private async runBatchRead<T>(

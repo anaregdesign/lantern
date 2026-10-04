@@ -13,6 +13,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   InvalidArgumentError,
+  MutationAcceptance,
   NotFoundError,
   Objective as SdkObjective,
   Reduction as SdkReduction,
@@ -899,4 +900,38 @@ describe("dispatch search (#1068 shared request semantics)", () => {
     ).rejects.toThrow("unpadded URL-safe base64");
     expect(fake.calls).toHaveLength(0);
   });
+});
+
+test("CLI blind Edge operations return only a handled acknowledgement", async () => {
+  const commands = [
+    "add edge a b 7",
+    "put edge a b 7",
+    "delete edge a b",
+    "delete edge a b c d",
+    "add decaying-edge a b 16 0.5 5 1",
+  ];
+  const fake = {
+    addEdge: async () => {
+      throw new MutationAcceptance();
+    },
+    putEdge: async () => {
+      throw new MutationAcceptance();
+    },
+    deleteEdge: async () => {
+      throw new MutationAcceptance();
+    },
+    deleteEdges: async () => {
+      throw new MutationAcceptance();
+    },
+    addDecayingEdge: async () => {
+      throw new MutationAcceptance();
+    },
+  } as unknown as LanternClient;
+  for (const text of commands) {
+    const parsed = parse(text);
+    if (!parsed.ok) throw new Error(parsed.usage);
+    expect(await dispatch({ client: fake, command: parsed.command })).toEqual({
+      acceptance: "acceptedUndisclosed",
+    });
+  }
 });

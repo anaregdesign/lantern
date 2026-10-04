@@ -59,7 +59,9 @@ func validateReceiptEdgeAddWALRequestCapacity(edges []*pb.Edge) error {
 		}
 		callSize += fieldSize
 	}
-	size := worstCaseReceiptVertexWALMutationSize(callSize, receiptEdgeAddMutationArm)
+	// Field 23 is an immutable Edge-only effect. Bound the protected case
+	// before cloning/apply, including its outer length-prefix growth.
+	size := worstCaseReceiptVertexWALMutationSize(callSize, receiptEdgeAddMutationArm) + 4
 	if size > receiptVertexWALMaxBytes {
 		return receiptEdgeAddWireCapacityError(size)
 	}
@@ -121,6 +123,16 @@ func receiptEdgeAddDigest(edge *pb.Edge, contribID graphcache.ContribID, namespa
 	return mutationreceipt.IntentDigest(canonical), nil
 }
 
+// Endpoint semantics are part of the immutable receipt intent, so reusing an
+// operation ID after an auth-mode change cannot silently change its effect.
+func receiptEdgeAddEffectDigest(edge *pb.Edge, id graphcache.ContribID, noEndpointCreation bool, namespace ...string) ([32]byte, error) {
+	digest, err := receiptEdgeAddDigest(edge, id, namespace...)
+	if err != nil || !noEndpointCreation {
+		return digest, err
+	}
+	return mutationreceipt.IntentDigest(append([]byte("edge-only-v1\x00"), digest[:]...)), nil
+}
+
 func receiptEdgeAddMutation(e *graphAddEffectEnvelope) *pb.Mutation {
 	items := make([]*pb.ReplicatedReceiptEdgeAddItem, len(e.Receipts))
 	accepted := make([]bool, len(e.Receipts))
@@ -158,7 +170,7 @@ func receiptEdgeAddMutation(e *graphAddEffectEnvelope) *pb.Mutation {
 		Origin:          append([]byte(nil), e.Origin[:]...),
 		Seq:             e.OriginSeq,
 		Hlc:             hlcToProto(e.HLC),
-		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptEdgeAdd{
+		Op: &pb.MutationOp{NoEndpointCreation: e.NoEndpointCreation, Op: &pb.MutationOp_ReplicatedReceiptEdgeAdd{
 			ReplicatedReceiptEdgeAdd: &pb.ReplicatedReceiptEdgeAdd{
 				DeploymentEpoch:   append([]byte(nil), e.Epoch[:]...),
 				PolicyFingerprint: append([]byte(nil), e.PolicyFingerprint[:]...),
@@ -188,13 +200,14 @@ func decodeReceiptEdgeAddMutation(m *pb.Mutation) (*graphAddEffectEnvelope, erro
 		return nil, receiptWALUnionError("invalid receipt Add wire envelope header")
 	}
 	e := &graphAddEffectEnvelope{
-		NamespaceFormat: m.GetNamespaceFormat(),
-		Mutation:        proto.Clone(m).(*pb.Mutation),
-		OriginSeq:       m.GetSeq(),
-		HLC:             hlcFromProto(m.GetHlc()),
-		Original:        make([]*pb.Edge, len(call.GetItems())),
-		ContribIDs:      make([]graphcache.ContribID, len(call.GetItems())),
-		Receipts:        make([]mutationreceipt.Receipt, len(call.GetItems())),
+		NamespaceFormat:    m.GetNamespaceFormat(),
+		NoEndpointCreation: m.GetOp().GetNoEndpointCreation(),
+		Mutation:           proto.Clone(m).(*pb.Mutation),
+		OriginSeq:          m.GetSeq(),
+		HLC:                hlcFromProto(m.GetHlc()),
+		Original:           make([]*pb.Edge, len(call.GetItems())),
+		ContribIDs:         make([]graphcache.ContribID, len(call.GetItems())),
+		Receipts:           make([]mutationreceipt.Receipt, len(call.GetItems())),
 	}
 	copy(e.Origin[:], m.GetOrigin())
 	copy(e.Epoch[:], call.GetDeploymentEpoch())
@@ -269,6 +282,7 @@ func hydrateReceiptEdgeAddEnvelope(e *graphAddEffectEnvelope) error {
 	if !slices.Equal(e.AcceptedIndexes, parsed.AcceptedIndexes) {
 		return receiptWALUnionError("receipt Add accepted projection differs from WAL sidecar")
 	}
+	e.NoEndpointCreation = parsed.NoEndpointCreation
 	e.Origin, e.OriginSeq, e.HLC = parsed.Origin, parsed.OriginSeq, parsed.HLC
 	e.NamespaceFormat = parsed.NamespaceFormat
 	e.Epoch, e.PolicyFingerprint = parsed.Epoch, parsed.PolicyFingerprint
@@ -305,7 +319,7 @@ func validateReceiptEdgeAddEnvelope(e *graphAddEffectEnvelope) (int64, error) {
 		); err != nil {
 			return 0, receiptWALUnionError("%v", err)
 		}
-		digest, err := receiptEdgeAddDigest(e.Original[i], e.ContribIDs[i], e.NamespaceFormat)
+		digest, err := receiptEdgeAddEffectDigest(e.Original[i], e.ContribIDs[i], e.NoEndpointCreation, e.NamespaceFormat)
 		if err != nil {
 			return 0, receiptWALUnionError("invalid receipt Add item %d: %v", i, err)
 		}
@@ -374,16 +388,17 @@ func maximalReceiptEdgeAddEnvelope(e *graphAddEffectEnvelope) (*graphAddEffectEn
 		return nil, receiptWALUnionError("maximal receipt Edge Add envelope is not receipt-bearing")
 	}
 	maximal := &graphAddEffectEnvelope{
-		NamespaceFormat:   e.NamespaceFormat,
-		Origin:            e.Origin,
-		OriginSeq:         e.OriginSeq,
-		HLC:               e.HLC,
-		Epoch:             e.Epoch,
-		PolicyFingerprint: e.PolicyFingerprint,
-		Original:          make([]*pb.Edge, len(e.Original)),
-		ContribIDs:        append([]graphcache.ContribID(nil), e.ContribIDs...),
-		AcceptedIndexes:   make([]uint32, len(e.Original)),
-		Receipts:          append([]mutationreceipt.Receipt(nil), e.Receipts...),
+		NamespaceFormat:    e.NamespaceFormat,
+		NoEndpointCreation: e.NoEndpointCreation,
+		Origin:             e.Origin,
+		OriginSeq:          e.OriginSeq,
+		HLC:                e.HLC,
+		Epoch:              e.Epoch,
+		PolicyFingerprint:  e.PolicyFingerprint,
+		Original:           make([]*pb.Edge, len(e.Original)),
+		ContribIDs:         append([]graphcache.ContribID(nil), e.ContribIDs...),
+		AcceptedIndexes:    make([]uint32, len(e.Original)),
+		Receipts:           append([]mutationreceipt.Receipt(nil), e.Receipts...),
 	}
 	for i, edge := range e.Original {
 		maximal.Original[i] = proto.Clone(edge).(*pb.Edge)
@@ -429,7 +444,7 @@ func validateReceiptEdgeAddRow(
 // Each relay persists the same origin evidence but computes its own causal
 // projection against local graph history.
 func sameReceiptEdgeAddIntent(a, b *graphAddEffectEnvelope) bool {
-	if a == nil || b == nil || a.Origin != b.Origin || a.OriginSeq != b.OriginSeq ||
+	if a == nil || b == nil || a.NoEndpointCreation != b.NoEndpointCreation || a.Origin != b.Origin || a.OriginSeq != b.OriginSeq ||
 		a.HLC != b.HLC || a.Epoch != b.Epoch ||
 		a.PolicyFingerprint != b.PolicyFingerprint ||
 		len(a.Original) != len(b.Original) ||

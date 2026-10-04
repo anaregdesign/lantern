@@ -44,26 +44,31 @@ func TestSecurityCodecStrictContract(t *testing.T) {
 	}
 }
 
-func TestSecurityCodecPreservesDirectedPairAndRejectsMissingPair(t *testing.T) {
-	role := &pb.SecurityRole{Id: "creator", Rules: []*pb.SecurityRule{{Id: "create", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_EDGE_CREATE, Resource: &pb.SecurityRule_Pair{Pair: &pb.SecurityPrefixPair{TailPrefix: "users:a:", HeadPrefix: "profiles:"}}}}}
-	decoded, err := decodeSecurityRole(role)
-	if err != nil || decoded.Rules[0].Pair == nil || *decoded.Rules[0].Pair != (security.PrefixPair{Tail: "users:a:", Head: "profiles:"}) {
-		t.Fatal(decoded, err)
+func TestSecurityCodecRejectsObsoleteEdgeGrantsAndPairSelectors(t *testing.T) {
+	for _, action := range []pb.SecurityAction{
+		pb.SecurityAction_SECURITY_ACTION_VERTEX_READ,
+		pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ,
+		pb.SecurityAction_SECURITY_ACTION_EDGE_READ,
+		pb.SecurityAction_SECURITY_ACTION_EDGE_CREATE,
+	} {
+		for _, resource := range []*pb.SecurityRule_Pair{
+			{}, {Pair: &pb.SecurityPrefixPair{TailPrefix: "users:", HeadPrefix: "targets:"}},
+		} {
+			role := &pb.SecurityRole{Id: "obsolete", Rules: []*pb.SecurityRule{{Id: "rule", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: resource}}}
+			if _, err := decodeSecurityRole(role); err == nil {
+				t.Fatal("obsolete pair decoded", action, resource)
+			}
+		}
 	}
-	if _, err := security.CompileRoles([]security.Role{decoded}, security.DefaultPolicyLimits()); err != nil {
-		t.Fatal(err)
-	}
-	encoded := encodeSecurityRole(decoded)
-	if encoded.Rules[0].GetPair().GetTailPrefix() != "users:a:" || encoded.Rules[0].GetPair().GetHeadPrefix() != "profiles:" {
-		t.Fatal("pair codec lost direction", encoded)
-	}
-	role.Rules[0].GetPair().TailPrefix = "mutated:"
-	if decoded.Rules[0].Pair.Tail != "users:a:" {
-		t.Fatal("decode retained caller's mutable pair")
-	}
-	role.Rules[0].Resource = &pb.SecurityRule_Pair{}
-	if _, err := decodeSecurityRole(role); err == nil {
-		t.Fatal("nil pair interpreted as all data")
+	for _, action := range []pb.SecurityAction{
+		pb.SecurityAction_SECURITY_ACTION_EDGE_READ, pb.SecurityAction_SECURITY_ACTION_EDGE_CREATE,
+		pb.SecurityAction_SECURITY_ACTION_EDGE_ADD, pb.SecurityAction_SECURITY_ACTION_EDGE_WRITE,
+		pb.SecurityAction_SECURITY_ACTION_EDGE_DELETE,
+	} {
+		role := &pb.SecurityRole{Id: "obsolete", Rules: []*pb.SecurityRule{{Id: "rule", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: ""}}}}
+		if _, err := decodeSecurityRole(role); err == nil {
+			t.Fatal("obsolete Edge grant decoded", action)
+		}
 	}
 }
 

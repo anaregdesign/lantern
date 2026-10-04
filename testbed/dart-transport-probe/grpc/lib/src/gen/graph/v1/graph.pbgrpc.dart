@@ -186,6 +186,21 @@ class LanternServiceClient extends $grpc.Client {
     return $createUnaryCall(_$addEdges, request, options: options);
   }
 
+  /// CreateEdge is the one-item facade over the conditional CreateEdges family.
+  $grpc.ResponseFuture<$0.CreateEdgeResponse> createEdge(
+    $0.CreateEdgeRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$createEdge, request, options: options);
+  }
+
+  $grpc.ResponseFuture<$0.CreateEdgesResponse> createEdges(
+    $0.CreateEdgesRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$createEdges, request, options: options);
+  }
+
   /// PutEdge is idempotent (replaces weight). Thin facade over PutEdges.
   $grpc.ResponseFuture<$0.PutEdgeResponse> putEdge(
     $0.PutEdgeRequest request, {
@@ -414,6 +429,16 @@ class LanternServiceClient extends $grpc.Client {
           '/graph.v1.LanternService/AddEdges',
           ($0.AddEdgesRequest value) => value.writeToBuffer(),
           $0.AddEdgesResponse.fromBuffer);
+  static final _$createEdge =
+      $grpc.ClientMethod<$0.CreateEdgeRequest, $0.CreateEdgeResponse>(
+          '/graph.v1.LanternService/CreateEdge',
+          ($0.CreateEdgeRequest value) => value.writeToBuffer(),
+          $0.CreateEdgeResponse.fromBuffer);
+  static final _$createEdges =
+      $grpc.ClientMethod<$0.CreateEdgesRequest, $0.CreateEdgesResponse>(
+          '/graph.v1.LanternService/CreateEdges',
+          ($0.CreateEdgesRequest value) => value.writeToBuffer(),
+          $0.CreateEdgesResponse.fromBuffer);
   static final _$putEdge =
       $grpc.ClientMethod<$0.PutEdgeRequest, $0.PutEdgeResponse>(
           '/graph.v1.LanternService/PutEdge',
@@ -631,6 +656,22 @@ abstract class LanternServiceBase extends $grpc.Service {
         false,
         ($core.List<$core.int> value) => $0.AddEdgesRequest.fromBuffer(value),
         ($0.AddEdgesResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.CreateEdgeRequest, $0.CreateEdgeResponse>(
+        'CreateEdge',
+        createEdge_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.CreateEdgeRequest.fromBuffer(value),
+        ($0.CreateEdgeResponse value) => value.writeToBuffer()));
+    $addMethod(
+        $grpc.ServiceMethod<$0.CreateEdgesRequest, $0.CreateEdgesResponse>(
+            'CreateEdges',
+            createEdges_Pre,
+            false,
+            false,
+            ($core.List<$core.int> value) =>
+                $0.CreateEdgesRequest.fromBuffer(value),
+            ($0.CreateEdgesResponse value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.PutEdgeRequest, $0.PutEdgeResponse>(
         'PutEdge',
         putEdge_Pre,
@@ -894,6 +935,22 @@ abstract class LanternServiceBase extends $grpc.Service {
 
   $async.Future<$0.AddEdgesResponse> addEdges(
       $grpc.ServiceCall call, $0.AddEdgesRequest request);
+
+  $async.Future<$0.CreateEdgeResponse> createEdge_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.CreateEdgeRequest> $request) async {
+    return createEdge($call, await $request);
+  }
+
+  $async.Future<$0.CreateEdgeResponse> createEdge(
+      $grpc.ServiceCall call, $0.CreateEdgeRequest request);
+
+  $async.Future<$0.CreateEdgesResponse> createEdges_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.CreateEdgesRequest> $request) async {
+    return createEdges($call, await $request);
+  }
+
+  $async.Future<$0.CreateEdgesResponse> createEdges(
+      $grpc.ServiceCall call, $0.CreateEdgesRequest request);
 
   $async.Future<$0.PutEdgeResponse> putEdge_Pre($grpc.ServiceCall $call,
       $async.Future<$0.PutEdgeRequest> $request) async {

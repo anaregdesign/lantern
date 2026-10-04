@@ -1087,6 +1087,21 @@ Framing contract:
   closed. This invariant is load-bearing for gap recovery because edge-only
   working sets contain implicit endpoints even when no `PutVertex*` call has
   occurred.
+- Protected public Edge Add/Put records the immutable
+  `MutationOp.no_endpoint_creation` effect after checking both live endpoints
+  at origin. Peer apply, relay and WAL restart update only Edge sources and
+  never create, revive or extend either Vertex. Receiver liveness is not an
+  origin admission proof. Auth OFF public writes retain legacy endpoint creation.
+- Private Snapshot may retain accepted Edge sources whose explicit endpoints
+  have not arrived or have been deleted/expired. These frames set
+  `SnapshotEdge.no_endpoint_creation`; a receiver without the effect seam fails
+  closed instead of applying legacy creation. GC retains sources until their own
+  expiry/causal removal, including indefinitely for nil TTL. Pending buckets
+  participate in physical Edge accounting and local admission limits; replica
+  union preserves already accepted effects and can exceed a local admission cap. Public graph export,
+  reads and exploration remain referentially closed. Private archive V4 and
+  WAL union V9 freeze this contract; older persisted formats require explicit
+  offline migration. HA Create remains disabled.
 - Retained Put causal barriers are streamed **before live entries**.
   They use explicit `SnapshotVertexCausalBarrier` and
   `SnapshotEdgeCausalBarrier` oneof arms, never overloaded live

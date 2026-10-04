@@ -218,11 +218,12 @@ func sendSnapshotFrames(ctx context.Context, cut replicationSnapshotCut, format 
 		entry := &pb.SnapshotResponse{
 			Entry: &pb.SnapshotResponse_Edge{
 				Edge: &pb.SnapshotEdge{
-					Tail:             e.Tail,
-					Head:             e.Head,
-					Hlc:              hlcToProto(e.HLC),
-					Contributions:    contribs,
-					DerivedAggregate: aggregate,
+					NoEndpointCreation: cut.namespaceFormat != "",
+					Tail:               e.Tail,
+					Head:               e.Head,
+					Hlc:                hlcToProto(e.HLC),
+					Contributions:      contribs,
+					DerivedAggregate:   aggregate,
 				},
 			},
 		}
@@ -518,6 +519,12 @@ func validateReceiptSnapshotGraphBody(
 	bounds receiptSnapshotCausalBounds,
 	requireCanonical bool,
 ) error {
+	requireEdgeOnly := false
+	for _, frame := range frames {
+		if frame.GetHeader().GetNamespaceFormat() != "" {
+			requireEdgeOnly = true
+		}
+	}
 	var counts [7]uint64
 	phase := 0
 	vertexBarriers := make(map[string]hlc.Timestamp)
@@ -650,6 +657,9 @@ func validateReceiptSnapshotGraphBody(
 			vertices[key] = struct{}{}
 		case *pb.SnapshotResponse_Edge:
 			item := entry.Edge
+			if requireEdgeOnly && !item.GetNoEndpointCreation() {
+				return fmt.Errorf("namespaced Snapshot requires an Edge-only effect")
+			}
 			key := receiptSnapshotEdgeKey{item.GetTail(), item.GetHead()}
 			putFloor, err := validateReceiptSnapshotEdge(
 				item,
@@ -671,10 +681,10 @@ func validateReceiptSnapshotGraphBody(
 			} else if putFloor != (hlc.Timestamp{}) {
 				return fmt.Errorf("live edge Put floor lacks a causal barrier")
 			}
-			if _, exists := vertices[key.tail]; !exists {
+			if _, exists := vertices[key.tail]; !exists && !item.GetNoEndpointCreation() {
 				return fmt.Errorf("live edge tail is absent")
 			}
-			if _, exists := vertices[key.head]; !exists {
+			if _, exists := vertices[key.head]; !exists && !item.GetNoEndpointCreation() {
 				return fmt.Errorf("live edge head is absent")
 			}
 			edges[key] = struct{}{}

@@ -18,7 +18,7 @@ func TestChangeProjectionExactScopesAndCurrentImage(t *testing.T) {
 	handler, _, contexts := securityAPIFixture(t)
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: "https://idp.example", Subject: "reader"}
 	var rules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityAction_SECURITY_ACTION_CDC_VALUE, pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_EDGE_READ} {
+	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityAction_SECURITY_ACTION_CDC_VALUE, pb.SecurityAction_SECURITY_ACTION_VERTEX_READ} {
 		rules = append(rules, &pb.SecurityRule{Id: string(rune('a' + i)), Action: action, Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"}})
 	}
 	rules = append(rules, &pb.SecurityRule{Id: "private", Action: pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:private:"}}, &pb.SecurityRule{Id: "unreadable", Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:unreadable:"}})
@@ -118,36 +118,47 @@ func BenchmarkChangeProjectionMixedScopes(b *testing.B) {
 	}
 }
 
-func TestChangeProjectionDirectedPairRequiresCompleteSelector(t *testing.T) {
+func TestChangeProjectionRequiresReadableEndpointsAndIndependentCapabilities(t *testing.T) {
 	for _, value := range []bool{false, true} {
-		rules := []security.PermissionRule{
-			dataAccessPairRule("cdc", security.Allow, security.CDCIdentity, "users:", "targets:"),
-			dataAccessPairRule("private", security.Deny, security.CDCIdentity, "users:", "targets:private:"),
-		}
-		projection := pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY
-		if value {
-			projection = pb.ChangeProjection_CHANGE_PROJECTION_VALUE
-			rules = append(rules, dataAccessRule("read", security.Allow, security.VertexRead, ""),
-				dataAccessPairRule("edge-read", security.Allow, security.EdgeRead, "users:", "targets:"),
-				dataAccessPairRule("value", security.Allow, security.CDCValue, "users:", "targets:"))
-		}
-		clock, contexts := dataAccessFixture(t, rules)
-		cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
-		svc := NewLanternService(cache).WithDataNamespace().WithDataAuthorization(clock)
-		ctx := contexts("reader", clock())
-		admission, _ := security.AdmissionFromContext(ctx)
-		if !changeScope(admission.Access(), projection, false).Empty() {
-			t.Fatal("pair CDC granted Vertex invalidations")
-		}
-		p := newChangeProjection(svc, &pb.WatchChangesRequest{Projection: projection}, admission)
-		for _, test := range []struct {
-			tail, head string
-			allowed    bool
-		}{{"users:1", "targets:1", true}, {"targets:1", "users:1", false}, {"users:1", "users:2", false}, {"users:1", "targets:private:1", false}, {"users:1", "outside:1", false}} {
-			cache.AddEdge("data:"+test.tail, "data:"+test.head, 7)
-			item, err := p.edge(ctx, &pb.EdgeKey{Tail: "data:" + test.tail, Head: "data:" + test.head})
-			if err != nil || (item != nil) != test.allowed || item != nil && (item.GetCurrentImage() != nil) != value {
-				t.Fatal("CDC pair disclosed reverse/hidden value or required unrelated read", value, test, item, err)
+		for _, readable := range []bool{false, true} {
+			rules := []security.PermissionRule{
+				dataAccessRule("cdc-users", security.Allow, security.CDCIdentity, "users:"),
+				dataAccessRule("cdc-targets", security.Allow, security.CDCIdentity, "targets:"),
+				dataAccessRule("private", security.Deny, security.CDCIdentity, "targets:private:"),
+			}
+			if readable {
+				rules = append(rules,
+					dataAccessRule("read-users", security.Allow, security.VertexRead, "users:"),
+					dataAccessRule("read-targets", security.Allow, security.VertexRead, "targets:"))
+			}
+			projection := pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY
+			if value {
+				projection = pb.ChangeProjection_CHANGE_PROJECTION_VALUE
+				rules = append(rules,
+					dataAccessRule("value-users", security.Allow, security.CDCValue, "users:"),
+					dataAccessRule("value-targets", security.Allow, security.CDCValue, "targets:"))
+			}
+			clock, contexts := dataAccessFixture(t, rules)
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			svc := NewLanternService(cache).WithDataNamespace().WithDataAuthorization(clock)
+			ctx := contexts("reader", clock())
+			admission, _ := security.AdmissionFromContext(ctx)
+			p := newChangeProjection(svc, &pb.WatchChangesRequest{Projection: projection}, admission)
+			for _, test := range []struct {
+				tail, head string
+				allowed    bool
+			}{
+				{"users:1", "targets:1", true},
+				{"targets:1", "users:1", true},
+				{"users:1", "users:2", true},
+				{"users:1", "targets:private:1", false},
+				{"users:1", "outside:1", false},
+			} {
+				cache.AddEdge("data:"+test.tail, "data:"+test.head, 7)
+				item, err := p.edge(ctx, &pb.EdgeKey{Tail: "data:" + test.tail, Head: "data:" + test.head})
+				if err != nil || (item != nil) != (test.allowed && readable) || item != nil && (item.GetCurrentImage() != nil) != value {
+					t.Fatal("CDC did not intersect both endpoint reads and independent capabilities", value, readable, test, item, err)
+				}
 			}
 		}
 	}

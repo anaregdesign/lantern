@@ -257,6 +257,10 @@ export async function securityUI(
               roleId: "private",
               ruleId: "hide",
               effect: "SECURITY_EFFECT_DENY",
+              action: body.edge
+                ? "SECURITY_ACTION_VERTEX_WRITE"
+                : "SECURITY_ACTION_VERTEX_READ",
+              endpoint: body.edge ? "head" : "",
             },
           ],
         });

@@ -289,7 +289,7 @@ final class ReceiptContext {
   ReceiptEpoch get epoch => operationIds.first.epoch;
 }
 
-/// The three possible read-only receipt lookup states.
+/// Read-only receipt states, including an explicit non-disclosure state.
 enum ReceiptStatusState {
   /// The server retains an exact receipt and original operation result.
   confirmed,
@@ -299,6 +299,9 @@ enum ReceiptStatusState {
 
   /// The retention boundary means execution can no longer be proven.
   noLongerProvable,
+
+  /// No original result, confirmation, absence proof or resend permission.
+  effectUndisclosed,
 }
 
 /// An exact retained receipt and its original operation result.
@@ -948,6 +951,12 @@ extension LanternReceipts on LanternClient {
         onTrailer: onTrailer,
       ),
     );
+    if (_mutationAcceptedUndisclosed(
+      response,
+      response.hasAcceptance() ? response.acceptance : null,
+    )) {
+      throw const MutationAcceptance();
+    }
     if (response.effectiveWeights.length != input.length ||
         response.written != input.length) {
       throw _malformedReceiptResponse(
@@ -1020,6 +1029,12 @@ extension LanternReceipts on LanternClient {
         onTrailer: onTrailer,
       ),
     );
+    if (_mutationAcceptedUndisclosed(
+      response,
+      response.hasAcceptance() ? response.acceptance : null,
+    )) {
+      throw const MutationAcceptance();
+    }
     try {
       if (response.outcomes.length != input.length) {
         throw _internalSdkException('misaligned receipt Create outcomes');
@@ -1190,6 +1205,12 @@ extension LanternReceipts on LanternClient {
         onTrailer: onTrailer,
       ),
     );
+    if (_mutationAcceptedUndisclosed(
+      response,
+      response.hasAcceptance() ? response.acceptance : null,
+    )) {
+      throw const MutationAcceptance();
+    }
     if (response.existed.length != input.length) {
       throw _malformedReceiptResponse(
         context,
@@ -1257,6 +1278,12 @@ extension LanternReceipts on LanternClient {
             onTrailer: onTrailer,
           ),
     );
+    if (_mutationAcceptedUndisclosed(
+      response,
+      response.hasAcceptance() ? response.acceptance : null,
+    )) {
+      throw const MutationAcceptance();
+    }
     try {
       _validateContributionDeleteResponse(input.length, response);
     } on LanternException catch (error) {
@@ -1642,6 +1669,16 @@ ReceiptStatus _receiptStatusFromProto(
       return ReceiptStatus._(
         operationId: operationId,
         state: ReceiptStatusState.noLongerProvable,
+      );
+    case $graph.MutationReceiptState.MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED:
+      if (value.hasReceipt()) {
+        throw _internalSdkException(
+          'undisclosed status carried an original receipt',
+        );
+      }
+      return ReceiptStatus._(
+        operationId: operationId,
+        state: ReceiptStatusState.effectUndisclosed,
       );
     case $graph.MutationReceiptState.MUTATION_RECEIPT_STATE_UNSPECIFIED:
     default:

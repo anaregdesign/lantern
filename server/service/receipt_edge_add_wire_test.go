@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -318,5 +319,41 @@ func TestReceiptEdgeAddStatusRejectsInvalidStoredResult(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("invalid Add result was exposed as a confirmed receipt")
+	}
+}
+
+func TestReceiptEdgeAddEndpointEffectWireWALAndIntent(t *testing.T) {
+	envelope := committedReceiptEdgeAddEnvelope(t, 1)
+	oldDigest := envelope.Receipts[0].Digest
+	digest, err := receiptEdgeAddEffectDigest(envelope.Original[0], envelope.ContribIDs[0], true, envelope.NamespaceFormat)
+	if err != nil || digest == oldDigest {
+		t.Fatal("endpoint effect did not bind receipt intent", err)
+	}
+	envelope.NoEndpointCreation = true
+	envelope.Receipts[0].Digest = digest
+	envelope.Mutation = receiptEdgeAddMutation(envelope)
+	raw, err := encodeReceiptWALUnion(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodeReceiptWALUnion(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, ok := decoded.(*graphAddEffectEnvelope)
+	if !ok || !recovered.NoEndpointCreation || !recovered.Mutation.GetOp().GetNoEndpointCreation() || !sameReceiptEdgeAddIntent(envelope, recovered) {
+		t.Fatal("WAL hydration lost immutable endpoint effect")
+	}
+	graph := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	graph.RetainDanglingEdgeHistory()
+	if err := replayReceiptEnvelopeGraph(graph, recovered); err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.SnapshotVertices()) != 0 || len(graph.SnapshotReplication().Graph.Edges) != 1 {
+		t.Fatal("receipt WAL replay fabricated endpoints or lost source")
+	}
+	recovered.NoEndpointCreation = false
+	if _, err := validateReceiptEdgeAddEnvelope(recovered); err == nil {
+		t.Fatal("effect drift accepted")
 	}
 }

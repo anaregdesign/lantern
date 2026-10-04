@@ -13,6 +13,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
 // MaxReceiptStatusBatchSize is the handler-private ceiling for status
@@ -249,6 +250,21 @@ func (s *LanternService) GetReceiptStatuses(ctx context.Context, req *pb.GetRece
 
 	if err := s.authorizeReceiptObservations(ctx, observations); err != nil {
 		return nil, err
+	}
+	// Whole-batch projection avoids leaking hidden outcomes through alignment,
+	// item counts or otherwise-readable neighbours in the same logical reply.
+	if admission, known := security.AdmissionFromContext(ctx); s.dataAuthorization && known {
+		blind := false
+		for _, observation := range observations {
+			blind = blind || observation.Status == mutationreceipt.Confirmed && !allowsReceiptResource(admission.Access(), observation.Receipt)
+		}
+		if blind {
+			statuses := make([]*pb.ReceiptStatus, len(ids))
+			for i, id := range ids {
+				statuses[i] = &pb.ReceiptStatus{OperationId: id.Bytes(), State: pb.MutationReceiptState_MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED}
+			}
+			return &pb.GetReceiptStatusesResponse{Statuses: statuses}, nil
+		}
 	}
 	statuses := make([]*pb.ReceiptStatus, len(ids))
 	var noLongerProvable uint64

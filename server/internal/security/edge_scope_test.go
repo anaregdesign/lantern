@@ -2,76 +2,72 @@ package security
 
 import "testing"
 
-func TestDirectedPairRolesDoNotComposeHalvesOrActions(t *testing.T) {
-	rule := func(action Action, effect Effect, tail, head string) PermissionRule {
-		return PermissionRule{Effect: effect, Action: action, Resource: DataResource, Pair: &PrefixPair{Tail: tail, Head: head}}
+func TestHeadCandidateRangesAndCapabilityIntersection(t *testing.T) {
+	roles := []Role{
+		{ID: "read", Rules: []PermissionRule{dataRule(Allow, VertexRead, "tails:"), dataRule(Allow, VertexRead, "heads:visible:"), dataRule(Deny, VertexRead, "tails:private:")}},
+		{ID: "write", Rules: []PermissionRule{dataRule(Allow, VertexWrite, "heads:"), dataRule(Deny, VertexWrite, "heads:protected:")}},
+		{ID: "receipts", Rules: []PermissionRule{dataRule(Allow, ReceiptRead, ""), dataRule(Deny, ReceiptRead, "heads:sealed:")}},
 	}
-	read := PermissionRule{Effect: Allow, Action: VertexRead, Resource: DataResource, Prefix: new("")}
-	roles := []Role{{ID: "first", Rules: []PermissionRule{read, rule(EdgeCreate, Allow, "users:a:", "topics:")}}, {ID: "second", Rules: []PermissionRule{rule(EdgeCreate, Allow, "users:b:", "assets:")}}, {ID: "deny", Rules: []PermissionRule{rule(EdgeCreate, Deny, "users:a:private:", "topics:")}}}
 	policy, err := CompileRoles(roles, DefaultPolicyLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
-	access, err := policy.ForRoles([]string{"first", "second", "deny"})
+	access, err := policy.ForRoles([]string{"read", "write", "receipts"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct {
-		action     Action
-		tail, head string
-		want       bool
-	}{
-		{EdgeCreate, "users:a:1", "topics:1", true}, {EdgeCreate, "topics:1", "users:a:1", false},
-		{EdgeCreate, "users:a:1", "assets:1", false}, {EdgeCreate, "users:b:1", "assets:1", true},
-		{EdgeCreate, "users:a:private:1", "topics:1", false}, {EdgeDelete, "users:a:1", "topics:1", false},
-		{EdgeAdd, "users:a:1", "topics:1", false}, {EdgeWrite, "users:a:1", "topics:1", false},
-	} {
-		if got := access.AllowsEdge(tc.action, tc.tail, tc.head); got != tc.want {
-			t.Fatalf("%+v got %t", tc, got)
+	for _, action := range []Action{EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete} {
+		candidate := access.EdgeCandidateScope(action)
+		for _, key := range []string{"tails:1", "heads:hidden:1", "heads:visible:1"} {
+			if !candidate.Contains(key) {
+				t.Fatal("candidate omitted an authorized endpoint", action, key)
+			}
+		}
+		if candidate.Contains("tails:private:1") || candidate.Contains("heads:protected:1") || candidate.Contains("outside:1") {
+			t.Fatal("candidate broadened endpoint authority")
+		}
+		if access.AllowsEdge(action, "heads:hidden:1", "tails:1") {
+			t.Fatal("candidate union was mistaken for final oriented authority")
 		}
 	}
-	if access.Allows(VertexWrite, "users:a:1") || access.Allows(EdgeCreate, "topics:1") {
-		t.Fatal("pair granted Vertex/one-dimensional rights")
+	read := access.EdgeCandidateScope(EdgeRead)
+	if !read.Contains("heads:visible:1") || read.Contains("heads:hidden:1") {
+		t.Fatal("read candidate inherited write visibility")
 	}
-	candidate := access.EdgeCandidateScope(VertexRead, EdgeCreate)
-	if !candidate.Contains("users:a:1") || !candidate.Contains("topics:1") || candidate.Contains("users:a:private:1") != true {
-		t.Fatal("unsafe endpoint candidate superset")
+	if !access.AllowsEdgeAction(ReceiptRead, "tails:1", "heads:hidden:1") || access.AllowsEdgeAction(ReceiptRead, "tails:1", "heads:sealed:1") {
+		t.Fatal("independent endpoint capability or cross-Role Deny was lost")
 	}
-	roles[0].Rules[1].Pair.Tail = ""
-	if access.AllowsEdge(EdgeCreate, "unassigned:1", "topics:1") {
-		t.Fatal("compiled policy retained mutable pair")
+	restricted := access.EdgeCandidateScope(EdgeCreate, ReceiptRead)
+	if restricted.Contains("heads:sealed:1") || !restricted.Contains("heads:hidden:1") {
+		t.Fatal("capability candidate did not intersect")
 	}
-}
-func TestPairDenyAndVertexPermissionAreIndependent(t *testing.T) {
-	all := ""
-	roles := []Role{{ID: "edges", Rules: []PermissionRule{
-		{Effect: Allow, Action: EdgeRead, Resource: DataResource, Prefix: &all},
-		{Effect: Deny, Action: EdgeRead, Resource: DataResource, Pair: &PrefixPair{Tail: "a:", Head: "secret:"}},
-		{Effect: Allow, Action: ReceiptRead, Resource: DataResource, Pair: &PrefixPair{}},
-	}}}
-	policy, err := CompileRoles(roles, DefaultPolicyLimits())
+	for _, action := range []Action{"unknown", OperationsRead} {
+		if !access.EdgeCandidateScope(action).Empty() || access.AllowsEdgeAction(action, "tails:1", "heads:1") {
+			t.Fatal("unknown/global action acquired Edge authority")
+		}
+	}
+	empty, err := policy.ForRoles([]string{"read"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	access, _ := policy.ForRoles([]string{"edges"})
-	if access.AllowsEdgeAction(EdgeRead, "a:1", "secret:1") || !access.AllowsEdgeAction(EdgeRead, "secret:1", "a:1") {
-		t.Fatal("directed Deny drift")
-	}
-	if access.AllowsEdge(EdgeRead, "public:1", "a:1") || access.AllowsAll(EdgeRead) || access.AllowsAll(ReceiptRead) || access.Allows(ReceiptRead, "public:1") {
-		t.Fatal("pair granted endpoint/whole-data privileges")
+	if !empty.EdgeCandidateScope(EdgeDelete).Empty() {
+		t.Fatal("read-only policy acquired modification candidates")
 	}
 }
-func TestCompilePairSelectorRejectsWrongActionOrAmbiguousSelectors(t *testing.T) {
-	all := ""
-	for _, rule := range []PermissionRule{
-		{Effect: Allow, Action: VertexWrite, Resource: DataResource, Pair: &PrefixPair{}},
-		{Effect: Allow, Action: SecurityManage, Resource: GlobalResource, Pair: &PrefixPair{}},
-		{Effect: Allow, Action: EdgeCreate, Resource: DataResource, Prefix: &all},
-		{Effect: Allow, Action: EdgeRead, Resource: DataResource, Prefix: &all, Pair: &PrefixPair{}},
-		{Effect: Allow, Action: EdgeCreate, Resource: DataResource, Pair: &PrefixPair{Tail: string(make([]byte, 1025))}},
-	} {
-		if _, err := CompileRoles([]Role{{ID: "invalid", Rules: []PermissionRule{rule}}}, DefaultPolicyLimits()); err == nil {
-			t.Fatal("invalid pair admitted")
+
+func TestRoleRejectsDerivedEdgeActionsAndObsoleteSelectors(t *testing.T) {
+	for _, action := range []Action{EdgeRead, EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete} {
+		for _, effect := range []Effect{Allow, Deny} {
+			if _, err := CompileRoles([]Role{{ID: "invalid", Rules: []PermissionRule{dataRule(effect, action, "")}}}, DefaultPolicyLimits()); err == nil {
+				t.Fatal("derived operation admitted as a Role grant", action, effect)
+			}
+		}
+	}
+	// Older signed images must fail closed instead of silently dropping a pair
+	// Deny and interpreting the remaining Vertex grants under a broader model.
+	for _, action := range []Action{VertexRead, ReceiptRead, EdgeCreate} {
+		if _, err := CompileRoles([]Role{{ID: "invalid", Rules: []PermissionRule{{Effect: Allow, Action: action, Resource: DataResource, Pair: &PrefixPair{}}}}}, DefaultPolicyLimits()); err == nil {
+			t.Fatal("obsolete selector admitted")
 		}
 	}
 }

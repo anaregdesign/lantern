@@ -289,6 +289,36 @@ class SearchHitProjectionStatus extends $pb.ProtobufEnum {
   const SearchHitProjectionStatus._(super.value, super.name);
 }
 
+/// Acceptance is a handling acknowledgement, never proof of any mutation
+/// effect, liveness, creation, deletion, collision or original result.
+/// A response with acceptance MUST omit every detailed effect field. A batch
+/// uses this response for the whole call if any result is undisclosed.
+class MutationAcceptanceKind extends $pb.ProtobufEnum {
+  static const MutationAcceptanceKind MUTATION_ACCEPTANCE_KIND_UNSPECIFIED =
+      MutationAcceptanceKind._(
+          0, _omitEnumNames ? '' : 'MUTATION_ACCEPTANCE_KIND_UNSPECIFIED');
+  static const MutationAcceptanceKind
+      MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED =
+      MutationAcceptanceKind._(
+          1,
+          _omitEnumNames
+              ? ''
+              : 'MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED');
+
+  static const $core.List<MutationAcceptanceKind> values =
+      <MutationAcceptanceKind>[
+    MUTATION_ACCEPTANCE_KIND_UNSPECIFIED,
+    MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED,
+  ];
+
+  static final $core.List<MutationAcceptanceKind?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 1);
+  static MutationAcceptanceKind? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const MutationAcceptanceKind._(super.value, super.name);
+}
+
 /// CreateEdgeOutcome is a disclosure-limited, request-index-aligned result.
 /// Successful creation never changes either endpoint. Existing Edge values,
 /// expirations and contribution identities are never returned by this family.
@@ -487,15 +517,22 @@ class MutationReceiptState extends $pb.ProtobufEnum {
       MutationReceiptState._(
           3, _omitEnumNames ? '' : 'MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE');
 
+  /// Lookup handled under current original-resource mutation authority, with
+  /// no disclosure of the effect or stored receipt metadata. Never CONFIRMED.
+  static const MutationReceiptState MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED =
+      MutationReceiptState._(
+          4, _omitEnumNames ? '' : 'MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED');
+
   static const $core.List<MutationReceiptState> values = <MutationReceiptState>[
     MUTATION_RECEIPT_STATE_UNSPECIFIED,
     MUTATION_RECEIPT_STATE_CONFIRMED,
     MUTATION_RECEIPT_STATE_NOT_YET_OBSERVED,
     MUTATION_RECEIPT_STATE_NO_LONGER_PROVABLE,
+    MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED,
   ];
 
   static final $core.List<MutationReceiptState?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 3);
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
   static MutationReceiptState? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

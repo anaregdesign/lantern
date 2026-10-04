@@ -582,6 +582,34 @@ void main() {
         ),
         PutOutcome.appliedAndLive,
       );
+      // Protected Edge mutations require independently seeded live endpoints.
+      final endpoints = <VertexInput>[
+        VertexInput(
+          key: deleteEdge.tail,
+          value: VertexValue.string('endpoint'),
+        ),
+        VertexInput(
+          key: deleteEdge.head,
+          value: VertexValue.string('endpoint'),
+        ),
+        VertexInput(key: addEdge.tail, value: VertexValue.string('endpoint')),
+        VertexInput(key: addEdge.head, value: VertexValue.string('endpoint')),
+        VertexInput(
+          key: '${prefix}expired-tail',
+          value: VertexValue.string('endpoint'),
+        ),
+        VertexInput(
+          key: '${prefix}expired-head',
+          value: VertexValue.string('endpoint'),
+        ),
+      ];
+      final endpointResults = await serverClient.putVertices(endpoints);
+      expect(
+        endpointResults.every(
+          (item) => item.outcome == PutOutcome.appliedAndLive,
+        ),
+        isTrue,
+      );
       expect(
         await serverClient.putEdge(
           EdgeInput(tail: deleteEdge.tail, head: deleteEdge.head, weight: 1),
@@ -844,6 +872,20 @@ void main() {
           VertexInput(key: vertexKey, value: VertexValue.string('seed')),
         ),
         PutOutcome.appliedAndLive,
+      );
+      // Protected Edge mutations require independently seeded live endpoints.
+      final endpoints = <VertexInput>[
+        VertexInput(key: edgeKey.tail, value: VertexValue.string('endpoint')),
+        VertexInput(key: edgeKey.head, value: VertexValue.string('endpoint')),
+        VertexInput(key: addKey.tail, value: VertexValue.string('endpoint')),
+        VertexInput(key: addKey.head, value: VertexValue.string('endpoint')),
+      ];
+      final endpointResults = await origin.putVertices(endpoints);
+      expect(
+        endpointResults.every(
+          (item) => item.outcome == PutOutcome.appliedAndLive,
+        ),
+        isTrue,
       );
       expect(
         await origin.putEdge(

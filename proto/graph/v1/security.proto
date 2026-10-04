@@ -88,8 +88,9 @@ enum SecurityEffect {
   SECURITY_EFFECT_DENY = 2;
 }
 // Selectors use literal logical-key prefixes. Empty prefix explicitly means
-// all data. An Edge pair matches BOTH directed endpoints within one rule.
-// Pair selectors grant no Vertex actions and cannot be reversed or composed.
+// all data. Pair is a retired diagnostic shape: Server rejects every pair
+// selector and independent Edge action in a Role. Edge permissions are derived
+// from Vertex grants; pair must never be interpreted as permission authority.
 message SecurityPrefixPair { string tail_prefix = 1; string head_prefix = 2; }
 message SecurityRule {
   string id = 1;
@@ -200,7 +201,15 @@ message ExplainAccessRequest {
   optional string logical_key = 3;
   SecurityEdgeIdentity edge = 4;
 }
-message SecurityRuleMatch { string role_id = 1; string rule_id = 2; SecurityEffect effect = 3; }
+message SecurityRuleMatch {
+  string role_id = 1;
+  string rule_id = 2;
+  SecurityEffect effect = 3;
+  // Actual grantable capability required by this part of the operation.
+  SecurityAction action = 4;
+  // "tail" or "head" for a derived Edge check; empty for ordinary grants.
+  string endpoint = 5;
+}
 message ExplainAccessResponse { bool allowed = 1; repeated SecurityRuleMatch matches = 2; SecurityVersion version = 3; }
 message ValidateIssuerRequest { SecurityIssuer issuer = 1; }
 message ValidateIssuerResponse { bool valid = 1; }

@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	cliservice "github.com/anaregdesign/lantern/cli/service"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
@@ -1094,7 +1095,7 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 	}
 	readerToken := "lnt_m1_" + base64.RawURLEncoding.EncodeToString(readerSecret)
 	f := newOIDCControlWireFixtureConfigured(t, func(config *provider.SecurityConfig) {
-		if err := json.Unmarshal([]byte(`[{"id":"machine_reader","rules":[{"id":"read","effect":"allow","action":"vertex.read","resource":"data","prefix":"orders:"},{"id":"private","effect":"deny","action":"vertex.read","resource":"data","prefix":"orders:private:"}]},{"id":"machine_exporter","rules":[{"id":"export","effect":"allow","action":"export","resource":"data","prefix":"orders:"},{"id":"edge-read","effect":"allow","action":"edge.read","resource":"data","prefix":"orders:"}]}]`), &config.Bootstrap.Roles); err != nil {
+		if err := json.Unmarshal([]byte(`[{"id":"machine_reader","rules":[{"id":"read","effect":"allow","action":"vertex.read","resource":"data","prefix":"orders:"},{"id":"private","effect":"deny","action":"vertex.read","resource":"data","prefix":"orders:private:"}]},{"id":"machine_exporter","rules":[{"id":"export","effect":"allow","action":"export","resource":"data","prefix":"orders:"}]}]`), &config.Bootstrap.Roles); err != nil {
 			t.Fatal(err)
 		}
 		now := config.Clock()
@@ -1196,7 +1197,7 @@ func TestAuth_OIDCScopedReceiptRealConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_EDGE_READ, pb.SecurityAction_SECURITY_ACTION_EDGE_ADD, pb.SecurityAction_SECURITY_ACTION_EDGE_WRITE, pb.SecurityAction_SECURITY_ACTION_EDGE_DELETE, pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ} {
+	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ} {
 		rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("allow%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"}})
 	}
 	private := &pb.SecurityRule{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:private:"}}
@@ -1251,6 +1252,9 @@ func TestAuth_OIDCScopedReceiptRealConnect(t *testing.T) {
 		if response != nil || connect.CodeOf(err) != connect.CodePermissionDenied {
 			t.Fatal("hidden/unknown mixed status leaked", err)
 		}
+	}
+	if _, err := f.data.PutVertices(t.Context(), securityWireRequest(token, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "orders:a"}, {Key: "orders:b"}}})); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := f.data.PutEdge(t.Context(), securityWireRequest(token, &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "orders:a", Head: "orders:b", Weight: math.MaxFloat32}})); err != nil {
 		t.Fatal(err)
@@ -1310,12 +1314,17 @@ func TestAuth_OIDCScopedChangesRealConnect(t *testing.T) {
 	rule := func(id string, action pb.SecurityAction, effect pb.SecurityEffect, prefix string) *pb.SecurityRule {
 		return &pb.SecurityRule{Id: id, Action: action, Effect: effect, Resource: &pb.SecurityRule_Prefix{Prefix: prefix}}
 	}
-	readerRules := []*pb.SecurityRule{rule("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"), rule("edge", pb.SecurityAction_SECURITY_ACTION_EDGE_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"), rule("private", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:")}
-	identityRules := []*pb.SecurityRule{rule("identity", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"), rule("private", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:")}
+	readerRules := []*pb.SecurityRule{rule("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"), rule("private", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:")}
+	identityRules := []*pb.SecurityRule{
+		rule("identity", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
+		rule("private", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:"),
+		rule("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
+		rule("private-read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:"),
+	}
 	valueOnlyRules := append(append([]*pb.SecurityRule(nil), readerRules...), rule("value", pb.SecurityAction_SECURITY_ACTION_CDC_VALUE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"))
 	valueRules := append(append([]*pb.SecurityRule(nil), valueOnlyRules...), rule("identity", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"))
 	var writerRules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_EDGE_READ, pb.SecurityAction_SECURITY_ACTION_EDGE_WRITE, pb.SecurityAction_SECURITY_ACTION_EDGE_ADD, pb.SecurityAction_SECURITY_ACTION_EDGE_DELETE} {
+	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE} {
 		writerRules = append(writerRules, rule(fmt.Sprintf("write%d", i), action, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, ""))
 	}
 	roles := map[string][]*pb.SecurityRule{"reader": readerRules, "identity": identityRules, "values": valueRules, "value_only": valueOnlyRules, "writer": writerRules, "identity2": identityRules}
@@ -1394,6 +1403,16 @@ func TestAuth_OIDCScopedChangesRealConnect(t *testing.T) {
 	// projecting a hidden identity, original batch count or raw origin watermark.
 	if !resumed.Receive() || len(resumed.Msg().Invalidations) != 0 || len(resumed.Msg().Cursor) != len(resumeCursor) {
 		t.Fatal("hidden-only progress", resumed.Err())
+	}
+	// Protected Edge Put requires explicit live endpoints; verify its separate CDC event.
+	if _, err := f.data.PutVertex(ctx, securityWireRequest(writer, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "orders:2"}})); err != nil {
+		t.Fatal(err)
+	}
+	for _, stream := range []*connect.ServerStreamForClient[pb.WatchChangesResponse]{resumed, valueStream} {
+		frame := nextVisible(stream)
+		if len(frame.Invalidations) != 1 || frame.Invalidations[0].GetVertexKey() != "orders:2" {
+			t.Fatal("explicit endpoint CDC", frame)
+		}
 	}
 	if _, err := f.data.PutEdges(ctx, securityWireRequest(writer, &pb.PutEdgesRequest{Edges: []*pb.Edge{{Tail: "orders:1", Head: "orders:2", Weight: 3}, {Tail: "orders:1", Head: "orders:private:1", Weight: 99}}})); err != nil {
 		t.Fatal(err)
@@ -1703,10 +1722,10 @@ func TestAuth_OIDCExactDataAndLifecycleRealConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_EDGE_READ, pb.SecurityAction_SECURITY_ACTION_EDGE_ADD, pb.SecurityAction_SECURITY_ACTION_EDGE_WRITE} {
+	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE} {
 		rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("allow%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
 	}
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_EDGE_DELETE} {
+	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE} {
 		rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("deny%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
 	}
 	rules = append(rules, &pb.SecurityRule{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:private:"}})
@@ -1782,13 +1801,19 @@ func TestAuth_OIDCExactDataAndLifecycleRealConnect(t *testing.T) {
 	if _, live := f.graph.GetVertex("data:users:mixed"); live {
 		t.Fatal("permission failure partially wrote")
 	}
+	if _, err := f.data.AddEdge(t.Context(), securityWireRequest(writer, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "users:a", Head: "users:b", Weight: 1}})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatal("missing live endpoints admitted", err)
+	}
+	if _, err := f.data.PutVertices(t.Context(), securityWireRequest(writer, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "users:a"}, {Key: "users:b"}}})); err != nil {
+		t.Fatal(err)
+	}
 	_, err = f.data.AddEdges(t.Context(), securityWireRequest(writer, &pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "users:a", Head: "users:b", Weight: 2, Expiration: timestamppb.New(time.Now().Add(time.Hour))}}}))
 	if err != nil {
 		t.Fatal("authorized edge creation", err)
 	}
 	for _, key := range []string{"data:users:a", "data:users:b"} {
 		if _, live := f.graph.GetVertex(key); !live {
-			t.Fatal("authorized endpoint not created")
+			t.Fatal("explicitly created endpoint was lost")
 		}
 	}
 	_, err = f.data.AddEdge(t.Context(), securityWireRequest(writer, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "users:a", Head: "other:b", Weight: 1}}))
@@ -1799,12 +1824,12 @@ func TestAuth_OIDCExactDataAndLifecycleRealConnect(t *testing.T) {
 		t.Fatal("denied Add created endpoint")
 	}
 	_, err = f.data.PutEdge(t.Context(), securityWireRequest(writer, &pb.PutEdgeRequest{Edge: &pb.Edge{Tail: "users:a", Head: "users:b", Weight: 9, Expiration: timestamppb.New(time.Now().Add(time.Minute))}}))
-	if connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("edge TTL shortening bypassed Delete Deny", err)
+	if err != nil {
+		t.Fatal("Head Write did not permit Edge TTL change", err)
 	}
 	edge, err := f.data.GetEdge(t.Context(), securityWireRequest(writer, &pb.GetEdgeRequest{Tail: "users:a", Head: "users:b"}))
-	if err != nil || edge.Msg.Edge.Weight != 2 {
-		t.Fatal("denied Edge Put changed effective value", err)
+	if err != nil || edge.Msg.Edge.Weight != 9 {
+		t.Fatal("authorized Edge Put did not update the Edge", err)
 	}
 	if _, err := f.data.DeleteVertex(t.Context(), securityWireRequest(writer, &pb.DeleteVertexRequest{Key: "users:1"})); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("direct Delete Deny bypassed", err)
@@ -1829,10 +1854,11 @@ func TestAuth_OIDCScopedCollectionsRealConnect(t *testing.T) {
 	}
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "scoped"}
 	var rules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_EDGE_READ, pb.SecurityAction_SECURITY_ACTION_EDGE_DELETE, pb.SecurityAction_SECURITY_ACTION_QUERY} {
+	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_QUERY} {
 		rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("allow%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
 	}
 	rules = append(rules, &pb.SecurityRule{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:private:"}})
+	rules = append(rules, &pb.SecurityRule{Id: "private-write", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, Resource: &pb.SecurityRule_Prefix{Prefix: "users:private:"}})
 	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: principal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{8}, 16), Changes: []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "scoped", Rules: rules}}},
 		{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
@@ -1928,10 +1954,10 @@ func TestAuth_OIDCSharedRankingConstrainedQueriesRealConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_EDGE_READ, pb.SecurityAction_SECURITY_ACTION_QUERY} {
+	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_QUERY} {
 		rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("allow%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
 	}
-	rules = append(rules, &pb.SecurityRule{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:private:"}}, &pb.SecurityRule{Id: "blocked-edge", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_EDGE_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:blocked:"}})
+	rules = append(rules, &pb.SecurityRule{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:private:"}}, &pb.SecurityRule{Id: "blocked-vertex", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:blocked:"}})
 	changes := []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "query", Rules: rules}}}}
 	for _, subject := range []string{"query1", "query2"} {
 		identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: subject}
@@ -2199,9 +2225,7 @@ func newScopedSDKFixture(t *testing.T) *oidcControlWireFixture {
 		return &pb.SecurityRule{Id: id, Action: action, Effect: effect, Resource: &pb.SecurityRule_Prefix{Prefix: prefix}}
 	}
 	rules := []*pb.SecurityRule{rule("cdc", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"), rule("private", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:"), rule("write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"), rule("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:")}
-	for _, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_EDGE_CREATE, pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ} {
-		rules = append(rules, &pb.SecurityRule{Id: "create_" + strings.ToLower(action.String()), Action: action, Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Resource: &pb.SecurityRule_Pair{Pair: &pb.SecurityPrefixPair{TailPrefix: "orders:create:source:", HeadPrefix: "orders:create:target:"}}})
-	}
+	rules = append(rules, rule("receipt", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:create:"))
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "sdk"}
 	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{73}, 16), Changes: []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "sdk", Rules: rules}}},
@@ -2397,7 +2421,8 @@ try {
  if(await sdk.createEdgeWithReceipt(input,context)!=="edgeExists") throw new Error("receipt collision changed existing Edge");
  const status=await sdk.getReceiptStatus(context.operationIds[0]);
  if(status.state!=="confirmed" || status.receipt.originalResult.kind!=="createEdge" || status.receipt.originalResult.outcome!=="edgeExists") throw new Error("original Create result missing");
- try {await sdk.createEdge({tail:input.head,head:input.tail,weight:1}); throw new Error("reverse pair authorized");}
+ if(await sdk.createEdge({tail:input.head,head:input.tail,weight:1})!=="createdAndLive") throw new Error("whole-prefix Vertex grants did not derive reverse authority");
+ try {await sdk.createEdge({tail:input.tail,head:"outside:denied",weight:1}); throw new Error("outside Head authorized");}
  catch(error) {const cause=error instanceof BatchError?error.cause:error; if(!(cause instanceof LanternError) || cause.cause?.code!==7) throw error;}
 
  try { for await(const frame of sdk.watchChanges({prefix:"orders:",projection:"value",bootstrap:true})) throw new Error("value projection inherited grant"); }
@@ -2628,7 +2653,7 @@ func TestAuth_DartOfflineScopedChangesRealConnect(t *testing.T) {
 	}
 }
 
-func TestAuth_OIDCDirectedPairsRealConnect(t *testing.T) {
+func TestAuth_OIDCHeadManagedEdgesRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixtureOptions(t, nil, true, service.TraversalLimits{WorkBudget: graphcache.PPRWorkBudget{MaxPushes: 10000, MaxTouchedEdges: 10000}})
 	admin := f.token(t, "admin", nil)
 	current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
@@ -2638,36 +2663,43 @@ func TestAuth_OIDCDirectedPairsRealConnect(t *testing.T) {
 	prefix := func(id string, action pb.SecurityAction, effect pb.SecurityEffect, value string) *pb.SecurityRule {
 		return &pb.SecurityRule{Id: id, Action: action, Effect: effect, Resource: &pb.SecurityRule_Prefix{Prefix: value}}
 	}
-	pair := func(id string, action pb.SecurityAction, effect pb.SecurityEffect, tail, head string) *pb.SecurityRule {
-		return &pb.SecurityRule{Id: id, Action: action, Effect: effect, Resource: &pb.SecurityRule_Pair{Pair: &pb.SecurityPrefixPair{TailPrefix: tail, HeadPrefix: head}}}
-	}
 	readerRules := []*pb.SecurityRule{
-		prefix("vertices", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, ""),
+		prefix("read-users", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:"),
+		prefix("read-targets", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
+		prefix("write-heads", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
 		prefix("query", pb.SecurityAction_SECURITY_ACTION_QUERY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, ""),
 		prefix("export", pb.SecurityAction_SECURITY_ACTION_EXPORT, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, ""),
-		prefix("private-endpoint", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "targets:secret:"),
+		prefix("receipt-users", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:"),
+		prefix("receipt-targets", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
 	}
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_EDGE_READ, pb.SecurityAction_SECURITY_ACTION_EDGE_CREATE, pb.SecurityAction_SECURITY_ACTION_EDGE_DELETE, pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ} {
-		readerRules = append(readerRules, pair(fmt.Sprintf("pair%d", i), action, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:", "targets:"), pair(fmt.Sprintf("deny%d", i), action, pb.SecurityEffect_SECURITY_EFFECT_DENY, "users:", "targets:private:"))
+	for _, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ} {
+		for i, denied := range []string{"targets:private:", "targets:secret:"} {
+			readerRules = append(readerRules, prefix(fmt.Sprintf("deny_%s_%d", strings.ToLower(action.String()), i), action, pb.SecurityEffect_SECURITY_EFFECT_DENY, denied))
+		}
 	}
-	identityRules := []*pb.SecurityRule{
-		pair("cdc", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:", "targets:"),
-		pair("private", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_DENY, "users:", "targets:private:"),
-		pair("secret", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_DENY, "users:", "targets:secret:"),
+	var identityRules []*pb.SecurityRule
+	for _, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY} {
+		identityRules = append(identityRules,
+			prefix("users_"+strings.ToLower(action.String()), action, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:"),
+			prefix("targets_"+strings.ToLower(action.String()), action, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
+			prefix("private_"+strings.ToLower(action.String()), action, pb.SecurityEffect_SECURITY_EFFECT_DENY, "targets:private:"),
+			prefix("secret_"+strings.ToLower(action.String()), action, pb.SecurityEffect_SECURITY_EFFECT_DENY, "targets:secret:"))
 	}
 	creatorRules := []*pb.SecurityRule{
-		prefix("own-endpoint", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:1"),
-		prefix("targets", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
-		prefix("private-target", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "targets:secret:"),
-		pair("create", pb.SecurityAction_SECURITY_ACTION_EDGE_CREATE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:1", "targets:"),
-		pair("receipt", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:1", "targets:"),
+		prefix("own-tail-read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:1"),
+		prefix("head-read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
+		prefix("head-write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
+		prefix("receipt-tail", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "users:1"),
+		prefix("receipt-head", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "targets:"),
+		prefix("secret-read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "targets:secret:"),
+		prefix("secret-write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_DENY, "targets:secret:"),
 	}
-	var writerRules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_EDGE_READ, pb.SecurityAction_SECURITY_ACTION_EDGE_WRITE} {
-		writerRules = append(writerRules, prefix(fmt.Sprintf("write%d", i), action, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, ""))
+	writerRules := []*pb.SecurityRule{
+		prefix("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, ""),
+		prefix("write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, ""),
 	}
 	var changes []*pb.SecurityChange
-	for _, role := range []*pb.SecurityRole{{Id: "pair_reader", Rules: readerRules}, {Id: "pair_identity", Rules: identityRules}, {Id: "pair_writer", Rules: writerRules}, {Id: "pair_creator", Rules: creatorRules}} {
+	for _, role := range []*pb.SecurityRole{{Id: "head_reader", Rules: readerRules}, {Id: "head_identity", Rules: identityRules}, {Id: "head_writer", Rules: writerRules}, {Id: "head_creator", Rules: creatorRules}} {
 		identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: role.Id}
 		changes = append(changes,
 			&pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
@@ -2677,7 +2709,7 @@ func TestAuth_OIDCDirectedPairsRealConnect(t *testing.T) {
 	if _, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{111}, 16), Changes: changes})); err != nil {
 		t.Fatal(err)
 	}
-	reader, writer, identity := f.token(t, "pair_reader", nil), f.token(t, "pair_writer", nil), f.token(t, "pair_identity", nil)
+	reader, writer, identity := f.token(t, "head_reader", nil), f.token(t, "head_writer", nil), f.token(t, "head_identity", nil)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	stream, err := f.changes.WatchChanges(ctx, securityWireRequest(identity, &pb.WatchChangesRequest{Bootstrap: true, Projection: pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY}))
@@ -2686,12 +2718,25 @@ func TestAuth_OIDCDirectedPairsRealConnect(t *testing.T) {
 	}
 	defer func() { _ = stream.Close() }()
 	if !stream.Receive() || !stream.Msg().Bootstrap || len(stream.Msg().Cursor) == 0 {
-		t.Fatal("pair-only CDC bootstrap denied", stream.Err())
+		t.Fatal("explicit CDC bootstrap denied", stream.Err())
 	}
-	if _, err := f.data.GetVertex(ctx, securityWireRequest(identity, &pb.GetVertexRequest{Key: "users:1"})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("pair CDC granted Vertex access", err)
+	if _, err := f.data.GetVertex(ctx, securityWireRequest(identity, &pb.GetVertexRequest{Key: "outside:hidden"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("CDC consumer inherited an outside-prefix read", err)
 	}
 	edges := []*pb.Edge{{Tail: "users:1", Head: "targets:1", Weight: 3}, {Tail: "users:1", Head: "targets:2", Weight: 2}, {Tail: "targets:1", Head: "users:1", Weight: 99}, {Tail: "users:1", Head: "users:2", Weight: 99}, {Tail: "users:1", Head: "targets:private:1", Weight: 99}, {Tail: "users:1", Head: "targets:secret:1", Weight: 99}, {Tail: "targets:1", Head: "outside:unreachable", Weight: 99}}
+	var endpoints []*pb.Vertex
+	endpointKeys := make(map[string]bool)
+	for _, edge := range edges {
+		for _, key := range []string{edge.Tail, edge.Head} {
+			if !endpointKeys[key] {
+				endpointKeys[key] = true
+				endpoints = append(endpoints, &pb.Vertex{Key: key, Value: &pb.Vertex_Nil{Nil: true}})
+			}
+		}
+	}
+	if _, err := f.data.PutVertices(ctx, securityWireRequest(writer, &pb.PutVerticesRequest{Vertices: endpoints})); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.data.PutEdges(ctx, securityWireRequest(writer, &pb.PutEdgesRequest{Edges: edges})); err != nil {
 		t.Fatal(err)
 	}
@@ -2700,13 +2745,22 @@ func TestAuth_OIDCDirectedPairsRealConnect(t *testing.T) {
 		if len(frame.Invalidations) == 0 {
 			continue
 		}
-		if len(frame.Invalidations) != 2 || len(frame.Cursor) == 0 {
-			t.Fatal("pair-only CDC disclosed hidden batch items", frame)
+		if frame.Invalidations[0].GetEdgeKey() == nil {
+			for _, item := range frame.Invalidations {
+				key := item.GetVertexKey()
+				if key != "users:1" && key != "users:2" && key != "targets:1" && key != "targets:2" || item.CurrentImage != nil {
+					t.Fatal("explicit Vertex seed disclosed a denied identity or value", item)
+				}
+			}
+			continue
+		}
+		if len(frame.Invalidations) != 4 || len(frame.Cursor) == 0 {
+			t.Fatal("scoped CDC disclosed hidden batch items", frame)
 		}
 		for _, item := range frame.Invalidations {
 			key := item.GetEdgeKey()
-			if key == nil || key.Tail != "users:1" || key.Head != "targets:1" && key.Head != "targets:2" || item.CurrentImage != nil {
-				t.Fatal("CDC composed halves/reversed pair/disclosed value", item)
+			if key == nil || key.Tail != "users:1" && key.Tail != "targets:1" || key.Head != "targets:1" && key.Head != "targets:2" && key.Head != "users:1" && key.Head != "users:2" || item.CurrentImage != nil {
+				t.Fatal("CDC bypassed both endpoint visibility or disclosed a value", item)
 			}
 		}
 		break
@@ -2729,8 +2783,8 @@ func TestAuth_OIDCDirectedPairsRealConnect(t *testing.T) {
 			break
 		}
 	}
-	if !reflect.DeepEqual(got, [][2]string{{"users:1", "targets:1"}, {"users:1", "targets:2"}}) {
-		t.Fatal("pair scan/page leaked reverse, private or endpoint-denied edge", got)
+	if !reflect.DeepEqual(got, [][2]string{{"targets:1", "users:1"}, {"users:1", "targets:1"}, {"users:1", "targets:2"}, {"users:1", "users:2"}}) {
+		t.Fatal("Head scan/page did not preserve readable reverse Edges or hide denied endpoints", got)
 	}
 	for _, weighting := range []pb.Weighting{pb.Weighting_WEIGHTING_RAW, pb.Weighting_WEIGHTING_TFIDF, pb.Weighting_WEIGHTING_BM25} {
 		for _, params := range []*pb.IlluminateRequest{
@@ -2744,29 +2798,29 @@ func TestAuth_OIDCDirectedPairsRealConnect(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, vertex := range result.Msg.Graph.Vertices {
-				if vertex.Key != "users:1" && vertex.Key != "targets:1" && vertex.Key != "targets:2" {
-					t.Fatal("pair traversal followed a private/reverse bridge", vertex.Key)
+				if vertex.Key != "users:1" && vertex.Key != "users:2" && vertex.Key != "targets:1" && vertex.Key != "targets:2" {
+					t.Fatal("Head traversal crossed a hidden endpoint", vertex.Key)
 				}
 			}
 			for _, edge := range result.Msg.Graph.Edges {
-				if edge.Tail != "users:1" || edge.Head != "targets:1" && edge.Head != "targets:2" {
-					t.Fatal("pair traversal disclosed an unauthorized edge", edge)
+				if edge.Tail != "users:1" && edge.Tail != "targets:1" || edge.Head != "targets:1" && edge.Head != "targets:2" && edge.Head != "users:1" && edge.Head != "users:2" {
+					t.Fatal("Head traversal disclosed an unauthorized Edge", edge)
 				}
 			}
 		}
 	}
 	degree, err := f.data.TopVerticesByDegree(ctx, securityWireRequest(reader, &pb.TopVerticesByDegreeRequest{Prefix: "users:1", K: 1, Weighted: true}))
-	if err != nil || len(degree.Msg.Entries) != 1 || degree.Msg.Entries[0].Degree != 2 || degree.Msg.Entries[0].WeightedDegree != 5 {
-		t.Fatal("pair degree included hidden edges", degree, err)
+	if err != nil || len(degree.Msg.Entries) != 1 || degree.Msg.Entries[0].Degree != 3 || degree.Msg.Entries[0].WeightedDegree != 104 {
+		t.Fatal("Head degree included hidden edges", degree, err)
 	}
-	readerIdentity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "pair_reader"}
+	readerIdentity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "head_reader"}
 	for _, test := range []struct {
 		tail, head string
 		allowed    bool
 	}{{"users:1", "targets:1", true}, {"targets:1", "users:1", false}, {"users:1", "targets:private:1", false}} {
 		result, err := f.client.ExplainAccess(ctx, securityWireRequest(admin, &pb.ExplainAccessRequest{Identity: readerIdentity, Action: pb.SecurityAction_SECURITY_ACTION_EDGE_CREATE, Edge: &pb.SecurityEdgeIdentity{Tail: test.tail, Head: test.head}}))
 		if err != nil || result.Msg.Allowed != test.allowed {
-			t.Fatal("pair explanation differs from Server predicate", test, result, err)
+			t.Fatal("Head explanation differs from Server predicate", test, result, err)
 		}
 	}
 	logical := "users:1"
@@ -2781,7 +2835,7 @@ func TestAuth_OIDCDirectedPairsRealConnect(t *testing.T) {
 	}
 	capability, err := f.data.GetReceiptCapability(ctx, securityWireRequest(reader, &pb.GetReceiptCapabilityRequest{}))
 	if err != nil || !capability.Msg.Enabled {
-		t.Fatal("pair receipt capability denied", err)
+		t.Fatal("Head receipt capability denied", err)
 	}
 	var epoch mutationreceipt.Epoch
 	copy(epoch[:], capability.Msg.Policy.DeploymentEpoch)
@@ -2792,30 +2846,30 @@ func TestAuth_OIDCDirectedPairsRealConnect(t *testing.T) {
 	receiptContext := &pb.MutationReceiptContext{Endpoint: capability.Msg.Endpoint, LogicalCallId: bytes.Repeat([]byte{112}, 16), OperationIds: [][]byte{id.Bytes()}}
 	deleted, err := f.data.DeleteEdge(ctx, securityWireRequest(reader, &pb.DeleteEdgeRequest{Tail: "users:1", Head: "targets:1", ReceiptContext: receiptContext}))
 	if err != nil || !deleted.Msg.Existed {
-		t.Fatal("pair authorized receipt Delete failed", deleted, err)
+		t.Fatal("Head-authorized receipt Delete failed", deleted, err)
 	}
 	if _, err := f.data.GetReceiptStatus(ctx, securityWireRequest(reader, &pb.GetReceiptStatusRequest{OperationId: id.Bytes()})); err != nil {
-		t.Fatal("pair original receipt result denied", err)
+		t.Fatal("Head original receipt result denied", err)
 	}
 	missing, err := mutationreceipt.NewID(epoch, time.UnixMilli(int64(capability.Msg.ServerNowUnixMs)), [24]byte{113})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.data.GetReceiptStatus(ctx, securityWireRequest(reader, &pb.GetReceiptStatusRequest{OperationId: missing.Bytes()})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("pair grant disclosed receipt absence", err)
+		t.Fatal("scoped grant disclosed receipt absence", err)
 	}
-	if _, err := f.data.AddEdge(ctx, securityWireRequest(reader, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "users:1", Head: "targets:1", Weight: 1}})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("Create/Delete pair granted Add", err)
+	if added, err := f.data.AddEdge(ctx, securityWireRequest(reader, &pb.AddEdgeRequest{Edge: &pb.Edge{Tail: "users:1", Head: "targets:1", Weight: 1}})); err != nil || added.Msg.GetEffectiveWeight() != 1 {
+		t.Fatal("Head Write did not permit Add through the same base predicate", added, err)
 	}
 
-	creator := f.token(t, "pair_creator", nil)
+	creator := f.token(t, "head_creator", nil)
 	for _, key := range []string{"targets:new", "targets:later"} {
 		if _, err := f.data.PutVertex(ctx, securityWireRequest(writer, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key, Expiration: timestamppb.New(time.Now().Add(time.Hour))}})); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := f.data.GetEdge(ctx, securityWireRequest(creator, &pb.GetEdgeRequest{Tail: "users:1", Head: "targets:2"})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("creator inherited Edge Read", err)
+	if _, err := f.data.GetEdge(ctx, securityWireRequest(creator, &pb.GetEdgeRequest{Tail: "users:1", Head: "targets:2"})); err != nil {
+		t.Fatal("both endpoint reads did not derive Edge Read", err)
 	}
 	createCap, err := f.data.GetReceiptCapability(ctx, securityWireRequest(creator, &pb.GetReceiptCapabilityRequest{}))
 	if err != nil || !slices.Contains(createCap.Msg.SupportedMutations, pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_CREATE_EDGE) {
@@ -2893,5 +2947,164 @@ func TestAuth_OIDCDirectedPairsRealConnect(t *testing.T) {
 	}
 	if _, err := f.data.GetEdge(ctx, securityWireRequest(writer, &pb.GetEdgeRequest{Tail: "users:1", Head: "targets:later"})); connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatal("unauthorized Create batch partially applied", err)
+	}
+}
+
+func TestAuth_HeadManagedBlindCreateDeleteReceiptAndGoFacadeRealConnect(t *testing.T) {
+	f := newOIDCControlWireFixtureOptions(t, nil, true)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	admin := f.token(t, "admin", nil)
+	current, err := f.client.GetCurrentPrincipal(ctx, securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := func(id string, action pb.SecurityAction, value string) *pb.SecurityRule {
+		return &pb.SecurityRule{Id: id, Action: action, Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Resource: &pb.SecurityRule_Prefix{Prefix: value}}
+	}
+	blindRules := []*pb.SecurityRule{
+		prefix("tail-read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, "tails:"),
+		prefix("head-write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, "heads:"),
+		prefix("receipts", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, ""),
+	}
+	roles := []*pb.SecurityRole{
+		{Id: "blind", Rules: blindRules},
+		{Id: "seed", Rules: []*pb.SecurityRule{prefix("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, ""), prefix("write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, "")}},
+	}
+	var changes []*pb.SecurityChange
+	for _, role := range roles {
+		identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: role.Id}
+		changes = append(changes,
+			&pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
+			&pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
+			&pb.SecurityChange{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: role.Id}}},
+		)
+	}
+	committed, err := f.client.ApplySecurityChanges(ctx, securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{117}, 16), Changes: changes}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := f.token(t, "seed", nil)
+	vertexTTL := timestamppb.New(time.Now().Add(time.Hour))
+	vertices := []*pb.Vertex{{Key: "tails:a", Value: &pb.Vertex_String_{String_: "tail value"}, Expiration: vertexTTL}, {Key: "heads:b", Value: &pb.Vertex_String_{String_: "private head value"}, Expiration: vertexTTL}}
+	if _, err := f.data.PutVertices(ctx, securityWireRequest(seed, &pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+		t.Fatal(err)
+	}
+	blind := f.token(t, "blind", nil)
+	sdk, err := client.NewLantern(f.server.URL, client.WithHTTPClient(&http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}), client.WithAuthToken(blind))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sdk.Close()
+	capability, err := sdk.GetReceiptCapability(ctx)
+	if err != nil || !capability.Supports(client.ReceiptMutationCreateEdge) {
+		t.Fatal("blind Create capability unavailable", err)
+	}
+	receiptContext, err := sdk.NewReceiptContext(capability, client.ReceiptMutationCreateEdge, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := client.EdgeInput{Tail: "tails:a", Head: "heads:b", Weight: 2}
+	reply, err := client.MutationReplyFrom(sdk.CreateEdgeWithReceipt(ctx, input, receiptContext))
+	if err != nil || !reply.AcceptedUndisclosed() {
+		t.Fatal("blind Create was not handled with typed acceptance", err)
+	}
+	if _, known := reply.Effect(); known {
+		t.Fatal("blind Create disclosed an outcome")
+	}
+	status, err := sdk.GetReceiptStatus(ctx, receiptContext.OperationIDs[0])
+	if err != nil || status.State != client.ReceiptEffectUndisclosed || status.Receipt != nil {
+		t.Fatal("blind status disclosed original receipt", status.State, err)
+	}
+	input.Weight = 7
+	reply, err = client.MutationReplyFrom(sdk.CreateEdgeWithReceipt(ctx, input, receiptContext))
+	if err != nil || !reply.AcceptedUndisclosed() {
+		t.Fatal("private idempotency conflict disclosed", err)
+	}
+	stored, found := f.graph.GetWeight("data:tails:a", "data:heads:b")
+	if !found || stored != 2 {
+		t.Fatal("conflicting replay reexecuted Create")
+	}
+	if _, err := sdk.GetEdge(ctx, "tails:a", "heads:b"); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("Head write granted Edge read", err)
+	}
+	if _, err := sdk.PutVertex(ctx, "heads:b", "overwritten", 0); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("Head write granted endpoint value/TTL updates", err)
+	}
+	if _, err := sdk.DeleteVertex(ctx, "tails:a"); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("Head write granted VertexDelete", err)
+	}
+	deleteReply, err := client.MutationReplyFrom(sdk.DeleteEdge(ctx, "tails:a", "heads:b"))
+	if err != nil || !deleteReply.AcceptedUndisclosed() {
+		t.Fatal("blind Delete disclosed existence", err)
+	}
+	input.Weight = 2
+	reply, err = client.MutationReplyFrom(sdk.CreateEdgeWithReceipt(ctx, input, receiptContext))
+	if err != nil || !reply.AcceptedUndisclosed() {
+		t.Fatal("original replay after Delete failed", err)
+	}
+	if _, found := f.graph.GetWeight("data:tails:a", "data:heads:b"); found {
+		t.Fatal("receipt replay resurrected deleted Edge")
+	}
+	for _, vertex := range vertices {
+		stored, found := f.graph.GetVertex("data:" + vertex.Key)
+		if !found || stored.GetString_() != vertex.GetString_() || !stored.Expiration.AsTime().Equal(vertex.Expiration.AsTime()) {
+			t.Fatal("Edge mutation changed endpoint value/TTL", vertex.Key)
+		}
+	}
+
+	// Liveness is a private effect detail for a head writer without HeadRead.
+	// A missing endpoint rejects the whole batch internally and still returns
+	// only typed acceptance, never auto-creating the endpoint or first Edge.
+	hiddenBatch := []*pb.Edge{{Tail: "tails:a", Head: "heads:b", Weight: 7}, {Tail: "tails:a", Head: "heads:missing", Weight: 3}}
+	addReply, err := f.data.AddEdges(ctx, securityWireRequest(blind, &pb.AddEdgesRequest{Edges: hiddenBatch}))
+	if err != nil || !proto.Equal(addReply.Msg, &pb.AddEdgesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}) {
+		t.Fatal("blind Add disclosed endpoint liveness", err)
+	}
+	putReply, err := f.data.PutEdges(ctx, securityWireRequest(blind, &pb.PutEdgesRequest{Edges: hiddenBatch}))
+	if err != nil || !proto.Equal(putReply.Msg, &pb.PutEdgesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}) {
+		t.Fatal("blind Put disclosed endpoint liveness", err)
+	}
+	if _, ok := f.graph.GetVertex("data:heads:missing"); ok {
+		t.Fatal("protected Edge created missing endpoint")
+	}
+	if _, ok := f.graph.GetWeight("data:tails:a", "data:heads:b"); ok {
+		t.Fatal("protected mixed batch partially applied")
+	}
+	// The CLI consumes the same dedicated SDK acknowledgement, emits no
+	// fabricated effect and preserves real authorization errors over Connect.
+	var cliOutput bytes.Buffer
+	cli := cliservice.NewCLIService(sdk, cliservice.WithOutput(&cliOutput))
+	for _, args := range [][]string{
+		{"add", "edge", "tails:a", "heads:b", "2"},
+		{"put", "edge", "tails:a", "heads:b", "3"},
+		{"add", "decaying-edge", "tails:a", "heads:b", "16", "0.5", "5", "1"},
+		{"delete", "edge", "tails:a", "heads:b"},
+		{"delete", "edge", "tails:a", "heads:b", "tails:a", "heads:missing"},
+		{"delete", "contribution", "tails:a", "heads:b", strings.Repeat("ab", client.ContribIDSize)},
+	} {
+		cliOutput.Reset()
+		if err := cli.RunArgs(ctx, args); err != nil || cliOutput.String() != "{\"acceptance\":\"acceptedUndisclosed\"}\n" {
+			t.Fatal("CLI blind acknowledgement", args, err, cliOutput.String())
+		}
+	}
+	cliOutput.Reset()
+	if err := cli.RunArgs(ctx, []string{"put", "edge", "outside:a", "heads:b", "2"}); err == nil || cliOutput.Len() != 0 {
+		t.Fatal("CLI concealed authorization failure", err, cliOutput.String())
+	}
+	// Current disclosure rights expose the original result only after they are
+	// granted; the private receipt bytes remain intact across blind handling.
+	blindRules = append(blindRules, prefix("head-read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, "heads:"))
+	_, err = f.client.ApplySecurityChanges(ctx, securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: committed.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{118}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "blind", Rules: blindRules}}}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err = sdk.GetReceiptStatus(ctx, receiptContext.OperationIDs[0])
+	if err != nil || status.State != client.ReceiptConfirmed || status.Receipt == nil {
+		t.Fatal("original receipt lost after disclosure grant", status.State, err)
+	}
+	result, ok := status.Receipt.OriginalResult.(client.ReceiptCreateEdgeResult)
+	if !ok || result.Outcome != client.CreateEdgeCreatedAndLive {
+		t.Fatal("original Create outcome was replaced")
 	}
 }

@@ -2,6 +2,8 @@ package service
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,8 +13,67 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/security"
 )
+
+func TestDataUnaryBlindHandlingAndPublicationFence(t *testing.T) {
+	clock, contexts := dataAccessFixture(t, []security.PermissionRule{
+		dataAccessRule("read", security.Allow, security.VertexRead, "tails:"),
+		dataAccessRule("write", security.Allow, security.VertexWrite, "heads:"),
+	})
+	now := clock()
+	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)).WithDataNamespace().WithDataAuthorization(func() time.Time { return now })
+	ctx := contexts("reader", now)
+	request := connect.NewRequest(&pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "tails:a", Head: "heads:b", Weight: 3}}})
+	for _, outcome := range []struct {
+		failure error
+		code    connect.Code
+	}{
+		{nil, 0},
+		{connect.NewError(connect.CodeAlreadyExists, mutationreceipt.ErrIntentConflict), 0},
+		{connect.NewError(connect.CodeFailedPrecondition, mutationreceipt.ErrNoLongerProvable), 0},
+		{connect.NewError(connect.CodeInvalidArgument, mutationreceipt.ErrInvalidID), connect.CodeInvalidArgument},
+		{connect.NewError(connect.CodeInternal, errors.New("WAL commit failed")), connect.CodeInternal},
+	} {
+		calls := 0
+		response, err := dataUnary(ctx, request, svc, func(_ context.Context, mapped *pb.AddEdgesRequest) (*pb.AddEdgesResponse, error) {
+			calls++
+			if mapped.Edges[0].Tail != "data:tails:a" || mapped.Edges[0].Head != "data:heads:b" {
+				t.Fatal("namespace conversion drift")
+			}
+			if outcome.failure != nil {
+				return nil, outcome.failure
+			}
+			return &pb.AddEdgesResponse{Written: 1, EffectiveWeights: []float32{17}}, nil
+		})
+		if calls != 1 {
+			t.Fatal("blind handling was replayed or skipped")
+		}
+		if outcome.code != 0 {
+			if connect.CodeOf(err) != outcome.code || response != nil {
+				t.Fatal("public failure was masked", response, err)
+			}
+		} else if err != nil || response.Msg.GetAcceptance().GetKind() != pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED || response.Msg.Written != 0 || len(response.Msg.EffectiveWeights) != 0 {
+			t.Fatal("blind handling disclosed effects", response, err)
+		}
+	}
+	_, err := dataUnary(ctx, connect.NewRequest(&pb.AddEdgesRequest{Edges: []*pb.Edge{{Tail: "other:a", Head: "heads:b"}}}), svc, func(context.Context, *pb.AddEdgesRequest) (*pb.AddEdgesResponse, error) {
+		t.Fatal("unauthorized input reached mutation handling")
+		return nil, nil
+	})
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("policy rejection was hidden", err)
+	}
+	response, err := dataUnary(ctx, request, svc, func(context.Context, *pb.AddEdgesRequest) (*pb.AddEdgesResponse, error) {
+		now = now.Add(2 * time.Hour)
+		return &pb.AddEdgesResponse{Written: 1, EffectiveWeights: []float32{17}}, nil
+	})
+	if response != nil || connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatal("expired admission published acceptance", response, err)
+	}
+}
 
 func TestDataBoundarySchemaCoverage(t *testing.T) {
 	service := pb.File_graph_v1_graph_proto.Services().ByName("LanternService")

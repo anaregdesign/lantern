@@ -1073,3 +1073,14 @@ func (f *fakeBackend) TopVerticesByDegreeContext(ctx context.Context, prefix str
 func (f *fakeBackend) SnapshotGraphContext(ctx context.Context) (graphcache.GraphSnapshot[string, *pb.Vertex], error) {
 	return f.SnapshotGraph(), ctx.Err()
 }
+
+// Checked seams preserve the fake's existing recording behavior. Constraint
+// semantics are exercised against GraphCache in service and wire fixtures.
+func (f *fakeBackend) AddEdgesWithExpirationContribChecked(items []graphcache.EdgeItem[string]) ([]float32, int, error) {
+	effective, deduped := f.AddEdgesWithExpirationContrib(items)
+	return effective, deduped, nil
+}
+func (f *fakeBackend) AddEdgesWithExpirationContribHLCResultsChecked(items []graphcache.EdgeItem[string], ts hlc.Timestamp) ([]float32, []bool, int, error) {
+	effective, accepted, deduped := f.AddEdgesWithExpirationContribHLCResults(items, ts)
+	return effective, accepted, deduped, nil
+}

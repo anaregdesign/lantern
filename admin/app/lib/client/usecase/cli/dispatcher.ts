@@ -150,7 +150,7 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
       }
       {
         const expiration = ttlSecondsToExpiration(command.ttlSeconds);
-        await putEdge(
+        const reply = await putEdge(
           client,
           command.tail,
           command.head,
@@ -164,6 +164,8 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
           },
           { signal },
         );
+        if (reply.kind === "acceptedUndisclosed")
+          return { acceptance: reply.kind };
         return writeEcho(
           { tail: command.tail, head: command.head, weight: command.weight },
           command.ttlSeconds,
@@ -180,7 +182,7 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
         };
       }
       if (command.pairs.length === 1) {
-        return deleteEdge(
+        const reply = await deleteEdge(
           client,
           command.pairs[0].tail,
           command.pairs[0].head,
@@ -188,8 +190,16 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
             signal,
           },
         );
+        return reply.kind === "acceptedUndisclosed"
+          ? { acceptance: reply.kind }
+          : reply.effect;
       }
-      return { deleted: await deleteEdges(client, command.pairs, { signal }) };
+      {
+        const reply = await deleteEdges(client, command.pairs, { signal });
+        return reply.kind === "acceptedUndisclosed"
+          ? { acceptance: reply.kind }
+          : { deleted: reply.effect };
+      }
     case "add": {
       if (command.objective === "decaying-edge") {
         // The staircase has staggered per-step TTLs, so there is no single
@@ -198,7 +208,7 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
         // REPL's `add decaying-edge` echo.
         const horizonSeconds = command.steps * command.intervalSeconds;
         const expiration = ttlSecondsToExpiration(horizonSeconds);
-        const { effectiveWeight } = await addDecayingEdge(
+        const reply = await addDecayingEdge(
           client,
           command.tail,
           command.head,
@@ -210,6 +220,9 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
           },
           { signal },
         );
+        if (reply.kind === "acceptedUndisclosed")
+          return { acceptance: reply.kind };
+        const { effectiveWeight } = reply.effect;
         return writeEcho(
           {
             tail: command.tail,
@@ -224,7 +237,7 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
         );
       }
       const expiration = ttlSecondsToExpiration(command.ttlSeconds);
-      await addEdge(
+      const reply = await addEdge(
         client,
         command.tail,
         command.head,
@@ -238,6 +251,8 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
         },
         { signal },
       );
+      if (reply.kind === "acceptedUndisclosed")
+        return { acceptance: reply.kind };
       return writeEcho(
         { tail: command.tail, head: command.head, weight: command.weight },
         command.ttlSeconds,

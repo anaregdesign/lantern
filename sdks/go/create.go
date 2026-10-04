@@ -54,9 +54,16 @@ func (l *Lantern) CreateEdges(ctx context.Context, inputs []EdgeInput) ([]Create
 		return nil, err
 	}
 	results := []CreateEdgeOutcome{}
+	undisclosed := false
 	_, err := runBatchWrite(ctx, l, edgesFrom(inputs), func(ctx context.Context, chunk []*pb.Edge) (int32, error) {
 		resp, err := unaryOnce(ctx, &pb.CreateEdgesRequest{Edges: chunk}, l.client.CreateEdges)
 		if err != nil {
+			return 0, err
+		}
+		if err := mutationAcceptanceFromProto(resp); err != nil {
+			if _, accepted := err.(*MutationAcceptance); accepted {
+				undisclosed = true
+			}
 			return 0, err
 		}
 		decoded, err := createEdgeOutcomes(resp.GetOutcomes(), len(chunk))
@@ -66,6 +73,9 @@ func (l *Lantern) CreateEdges(ctx context.Context, inputs []EdgeInput) ([]Create
 		results = append(results, decoded...)
 		return int32(len(chunk)), nil
 	})
+	if undisclosed {
+		return nil, err
+	}
 	return results, err
 }
 
@@ -107,6 +117,9 @@ func (l *Lantern) CreateEdgesWithReceipt(ctx context.Context, inputs []EdgeInput
 		return err
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := mutationAcceptanceFromProto(response); err != nil {
 		return nil, err
 	}
 	return createEdgeOutcomes(response.GetOutcomes(), len(inputs))

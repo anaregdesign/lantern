@@ -596,8 +596,9 @@ func (x *SecurityIdentity) GetMachineName() string {
 }
 
 // Selectors use literal logical-key prefixes. Empty prefix explicitly means
-// all data. An Edge pair matches BOTH directed endpoints within one rule.
-// Pair selectors grant no Vertex actions and cannot be reversed or composed.
+// all data. Pair is a retired diagnostic shape: Server rejects every pair
+// selector and independent Edge action in a Role. Edge permissions are derived
+// from Vertex grants; pair must never be interpreted as permission authority.
 type SecurityPrefixPair struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TailPrefix    string                 `protobuf:"bytes,1,opt,name=tail_prefix,json=tailPrefix,proto3" json:"tail_prefix,omitempty"`
@@ -2567,10 +2568,14 @@ func (x *ExplainAccessRequest) GetEdge() *SecurityEdgeIdentity {
 }
 
 type SecurityRuleMatch struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RoleId        string                 `protobuf:"bytes,1,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
-	RuleId        string                 `protobuf:"bytes,2,opt,name=rule_id,json=ruleId,proto3" json:"rule_id,omitempty"`
-	Effect        SecurityEffect         `protobuf:"varint,3,opt,name=effect,proto3,enum=graph.v1.SecurityEffect" json:"effect,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	RoleId string                 `protobuf:"bytes,1,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	RuleId string                 `protobuf:"bytes,2,opt,name=rule_id,json=ruleId,proto3" json:"rule_id,omitempty"`
+	Effect SecurityEffect         `protobuf:"varint,3,opt,name=effect,proto3,enum=graph.v1.SecurityEffect" json:"effect,omitempty"`
+	// Actual grantable capability required by this part of the operation.
+	Action SecurityAction `protobuf:"varint,4,opt,name=action,proto3,enum=graph.v1.SecurityAction" json:"action,omitempty"`
+	// "tail" or "head" for a derived Edge check; empty for ordinary grants.
+	Endpoint      string `protobuf:"bytes,5,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2624,6 +2629,20 @@ func (x *SecurityRuleMatch) GetEffect() SecurityEffect {
 		return x.Effect
 	}
 	return SecurityEffect_SECURITY_EFFECT_UNSPECIFIED
+}
+
+func (x *SecurityRuleMatch) GetAction() SecurityAction {
+	if x != nil {
+		return x.Action
+	}
+	return SecurityAction_SECURITY_ACTION_UNSPECIFIED
+}
+
+func (x *SecurityRuleMatch) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
+	}
+	return ""
 }
 
 type ExplainAccessResponse struct {
@@ -3572,11 +3591,13 @@ const file_graph_v1_security_proto_rawDesc = "" +
 	"\vlogical_key\x18\x03 \x01(\tH\x00R\n" +
 	"logicalKey\x88\x01\x01\x122\n" +
 	"\x04edge\x18\x04 \x01(\v2\x1e.graph.v1.SecurityEdgeIdentityR\x04edgeB\x0e\n" +
-	"\f_logical_key\"w\n" +
+	"\f_logical_key\"\xc5\x01\n" +
 	"\x11SecurityRuleMatch\x12\x17\n" +
 	"\arole_id\x18\x01 \x01(\tR\x06roleId\x12\x17\n" +
 	"\arule_id\x18\x02 \x01(\tR\x06ruleId\x120\n" +
-	"\x06effect\x18\x03 \x01(\x0e2\x18.graph.v1.SecurityEffectR\x06effect\"\x9d\x01\n" +
+	"\x06effect\x18\x03 \x01(\x0e2\x18.graph.v1.SecurityEffectR\x06effect\x120\n" +
+	"\x06action\x18\x04 \x01(\x0e2\x18.graph.v1.SecurityActionR\x06action\x12\x1a\n" +
+	"\bendpoint\x18\x05 \x01(\tR\bendpoint\"\x9d\x01\n" +
 	"\x15ExplainAccessResponse\x12\x18\n" +
 	"\aallowed\x18\x01 \x01(\bR\aallowed\x125\n" +
 	"\amatches\x18\x02 \x03(\v2\x1b.graph.v1.SecurityRuleMatchR\amatches\x123\n" +
@@ -3805,63 +3826,64 @@ var file_graph_v1_security_proto_depIdxs = []int32{
 	3,  // 41: graph.v1.ExplainAccessRequest.action:type_name -> graph.v1.SecurityAction
 	40, // 42: graph.v1.ExplainAccessRequest.edge:type_name -> graph.v1.SecurityEdgeIdentity
 	4,  // 43: graph.v1.SecurityRuleMatch.effect:type_name -> graph.v1.SecurityEffect
-	42, // 44: graph.v1.ExplainAccessResponse.matches:type_name -> graph.v1.SecurityRuleMatch
-	16, // 45: graph.v1.ExplainAccessResponse.version:type_name -> graph.v1.SecurityVersion
-	15, // 46: graph.v1.ValidateIssuerRequest.issuer:type_name -> graph.v1.SecurityIssuer
-	9,  // 47: graph.v1.SecurityUserStateChange.identity:type_name -> graph.v1.SecurityIdentity
-	2,  // 48: graph.v1.SecurityUserStateChange.state:type_name -> graph.v1.SecurityPrincipalState
-	15, // 49: graph.v1.SecurityChange.put_issuer:type_name -> graph.v1.SecurityIssuer
-	12, // 50: graph.v1.SecurityChange.put_role:type_name -> graph.v1.SecurityRole
-	46, // 51: graph.v1.SecurityChange.put_user:type_name -> graph.v1.SecurityUserStateChange
-	9,  // 52: graph.v1.SecurityChange.delete_user:type_name -> graph.v1.SecurityIdentity
-	13, // 53: graph.v1.SecurityChange.put_assignment:type_name -> graph.v1.SecurityRoleAssignment
-	13, // 54: graph.v1.SecurityChange.delete_assignment:type_name -> graph.v1.SecurityRoleAssignment
-	9,  // 55: graph.v1.SecurityChange.revoke_user_sessions:type_name -> graph.v1.SecurityIdentity
-	47, // 56: graph.v1.ApplySecurityChangesRequest.changes:type_name -> graph.v1.SecurityChange
-	16, // 57: graph.v1.ApplySecurityChangesResponse.version:type_name -> graph.v1.SecurityVersion
-	5,  // 58: graph.v1.ApplySecurityChangesResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	47, // 59: graph.v1.ApplySecurityChangeRequest.change:type_name -> graph.v1.SecurityChange
-	16, // 60: graph.v1.ApplySecurityChangeResponse.version:type_name -> graph.v1.SecurityVersion
-	5,  // 61: graph.v1.ApplySecurityChangeResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	16, // 62: graph.v1.GetSecurityChangeStatusResponse.version:type_name -> graph.v1.SecurityVersion
-	5,  // 63: graph.v1.GetSecurityChangeStatusResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	6,  // 64: graph.v1.LanternSecurityService.GetAuthCapabilities:input_type -> graph.v1.GetAuthCapabilitiesRequest
-	17, // 65: graph.v1.LanternSecurityService.GetCurrentPrincipal:input_type -> graph.v1.GetCurrentPrincipalRequest
-	21, // 66: graph.v1.LanternSecurityService.ListIssuers:input_type -> graph.v1.ListIssuersRequest
-	25, // 67: graph.v1.LanternSecurityService.GetIssuer:input_type -> graph.v1.GetIssuerRequest
-	22, // 68: graph.v1.LanternSecurityService.ListRoles:input_type -> graph.v1.ListRolesRequest
-	27, // 69: graph.v1.LanternSecurityService.GetRole:input_type -> graph.v1.GetRoleRequest
-	23, // 70: graph.v1.LanternSecurityService.ListUsers:input_type -> graph.v1.ListUsersRequest
-	29, // 71: graph.v1.LanternSecurityService.GetUser:input_type -> graph.v1.GetUserRequest
-	34, // 72: graph.v1.LanternSecurityService.ListRoleAssignments:input_type -> graph.v1.ListRoleAssignmentsRequest
-	24, // 73: graph.v1.LanternSecurityService.ListSecurityAudit:input_type -> graph.v1.ListSecurityAuditRequest
-	38, // 74: graph.v1.LanternSecurityService.GetRoleTemplates:input_type -> graph.v1.GetRoleTemplatesRequest
-	41, // 75: graph.v1.LanternSecurityService.ExplainAccess:input_type -> graph.v1.ExplainAccessRequest
-	44, // 76: graph.v1.LanternSecurityService.ValidateIssuer:input_type -> graph.v1.ValidateIssuerRequest
-	48, // 77: graph.v1.LanternSecurityService.ApplySecurityChanges:input_type -> graph.v1.ApplySecurityChangesRequest
-	50, // 78: graph.v1.LanternSecurityService.ApplySecurityChange:input_type -> graph.v1.ApplySecurityChangeRequest
-	52, // 79: graph.v1.LanternSecurityService.GetSecurityChangeStatus:input_type -> graph.v1.GetSecurityChangeStatusRequest
-	8,  // 80: graph.v1.LanternSecurityService.GetAuthCapabilities:output_type -> graph.v1.GetAuthCapabilitiesResponse
-	18, // 81: graph.v1.LanternSecurityService.GetCurrentPrincipal:output_type -> graph.v1.GetCurrentPrincipalResponse
-	31, // 82: graph.v1.LanternSecurityService.ListIssuers:output_type -> graph.v1.ListIssuersResponse
-	26, // 83: graph.v1.LanternSecurityService.GetIssuer:output_type -> graph.v1.GetIssuerResponse
-	32, // 84: graph.v1.LanternSecurityService.ListRoles:output_type -> graph.v1.ListRolesResponse
-	28, // 85: graph.v1.LanternSecurityService.GetRole:output_type -> graph.v1.GetRoleResponse
-	33, // 86: graph.v1.LanternSecurityService.ListUsers:output_type -> graph.v1.ListUsersResponse
-	30, // 87: graph.v1.LanternSecurityService.GetUser:output_type -> graph.v1.GetUserResponse
-	35, // 88: graph.v1.LanternSecurityService.ListRoleAssignments:output_type -> graph.v1.ListRoleAssignmentsResponse
-	37, // 89: graph.v1.LanternSecurityService.ListSecurityAudit:output_type -> graph.v1.ListSecurityAuditResponse
-	39, // 90: graph.v1.LanternSecurityService.GetRoleTemplates:output_type -> graph.v1.GetRoleTemplatesResponse
-	43, // 91: graph.v1.LanternSecurityService.ExplainAccess:output_type -> graph.v1.ExplainAccessResponse
-	45, // 92: graph.v1.LanternSecurityService.ValidateIssuer:output_type -> graph.v1.ValidateIssuerResponse
-	49, // 93: graph.v1.LanternSecurityService.ApplySecurityChanges:output_type -> graph.v1.ApplySecurityChangesResponse
-	51, // 94: graph.v1.LanternSecurityService.ApplySecurityChange:output_type -> graph.v1.ApplySecurityChangeResponse
-	53, // 95: graph.v1.LanternSecurityService.GetSecurityChangeStatus:output_type -> graph.v1.GetSecurityChangeStatusResponse
-	80, // [80:96] is the sub-list for method output_type
-	64, // [64:80] is the sub-list for method input_type
-	64, // [64:64] is the sub-list for extension type_name
-	64, // [64:64] is the sub-list for extension extendee
-	0,  // [0:64] is the sub-list for field type_name
+	3,  // 44: graph.v1.SecurityRuleMatch.action:type_name -> graph.v1.SecurityAction
+	42, // 45: graph.v1.ExplainAccessResponse.matches:type_name -> graph.v1.SecurityRuleMatch
+	16, // 46: graph.v1.ExplainAccessResponse.version:type_name -> graph.v1.SecurityVersion
+	15, // 47: graph.v1.ValidateIssuerRequest.issuer:type_name -> graph.v1.SecurityIssuer
+	9,  // 48: graph.v1.SecurityUserStateChange.identity:type_name -> graph.v1.SecurityIdentity
+	2,  // 49: graph.v1.SecurityUserStateChange.state:type_name -> graph.v1.SecurityPrincipalState
+	15, // 50: graph.v1.SecurityChange.put_issuer:type_name -> graph.v1.SecurityIssuer
+	12, // 51: graph.v1.SecurityChange.put_role:type_name -> graph.v1.SecurityRole
+	46, // 52: graph.v1.SecurityChange.put_user:type_name -> graph.v1.SecurityUserStateChange
+	9,  // 53: graph.v1.SecurityChange.delete_user:type_name -> graph.v1.SecurityIdentity
+	13, // 54: graph.v1.SecurityChange.put_assignment:type_name -> graph.v1.SecurityRoleAssignment
+	13, // 55: graph.v1.SecurityChange.delete_assignment:type_name -> graph.v1.SecurityRoleAssignment
+	9,  // 56: graph.v1.SecurityChange.revoke_user_sessions:type_name -> graph.v1.SecurityIdentity
+	47, // 57: graph.v1.ApplySecurityChangesRequest.changes:type_name -> graph.v1.SecurityChange
+	16, // 58: graph.v1.ApplySecurityChangesResponse.version:type_name -> graph.v1.SecurityVersion
+	5,  // 59: graph.v1.ApplySecurityChangesResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	47, // 60: graph.v1.ApplySecurityChangeRequest.change:type_name -> graph.v1.SecurityChange
+	16, // 61: graph.v1.ApplySecurityChangeResponse.version:type_name -> graph.v1.SecurityVersion
+	5,  // 62: graph.v1.ApplySecurityChangeResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	16, // 63: graph.v1.GetSecurityChangeStatusResponse.version:type_name -> graph.v1.SecurityVersion
+	5,  // 64: graph.v1.GetSecurityChangeStatusResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	6,  // 65: graph.v1.LanternSecurityService.GetAuthCapabilities:input_type -> graph.v1.GetAuthCapabilitiesRequest
+	17, // 66: graph.v1.LanternSecurityService.GetCurrentPrincipal:input_type -> graph.v1.GetCurrentPrincipalRequest
+	21, // 67: graph.v1.LanternSecurityService.ListIssuers:input_type -> graph.v1.ListIssuersRequest
+	25, // 68: graph.v1.LanternSecurityService.GetIssuer:input_type -> graph.v1.GetIssuerRequest
+	22, // 69: graph.v1.LanternSecurityService.ListRoles:input_type -> graph.v1.ListRolesRequest
+	27, // 70: graph.v1.LanternSecurityService.GetRole:input_type -> graph.v1.GetRoleRequest
+	23, // 71: graph.v1.LanternSecurityService.ListUsers:input_type -> graph.v1.ListUsersRequest
+	29, // 72: graph.v1.LanternSecurityService.GetUser:input_type -> graph.v1.GetUserRequest
+	34, // 73: graph.v1.LanternSecurityService.ListRoleAssignments:input_type -> graph.v1.ListRoleAssignmentsRequest
+	24, // 74: graph.v1.LanternSecurityService.ListSecurityAudit:input_type -> graph.v1.ListSecurityAuditRequest
+	38, // 75: graph.v1.LanternSecurityService.GetRoleTemplates:input_type -> graph.v1.GetRoleTemplatesRequest
+	41, // 76: graph.v1.LanternSecurityService.ExplainAccess:input_type -> graph.v1.ExplainAccessRequest
+	44, // 77: graph.v1.LanternSecurityService.ValidateIssuer:input_type -> graph.v1.ValidateIssuerRequest
+	48, // 78: graph.v1.LanternSecurityService.ApplySecurityChanges:input_type -> graph.v1.ApplySecurityChangesRequest
+	50, // 79: graph.v1.LanternSecurityService.ApplySecurityChange:input_type -> graph.v1.ApplySecurityChangeRequest
+	52, // 80: graph.v1.LanternSecurityService.GetSecurityChangeStatus:input_type -> graph.v1.GetSecurityChangeStatusRequest
+	8,  // 81: graph.v1.LanternSecurityService.GetAuthCapabilities:output_type -> graph.v1.GetAuthCapabilitiesResponse
+	18, // 82: graph.v1.LanternSecurityService.GetCurrentPrincipal:output_type -> graph.v1.GetCurrentPrincipalResponse
+	31, // 83: graph.v1.LanternSecurityService.ListIssuers:output_type -> graph.v1.ListIssuersResponse
+	26, // 84: graph.v1.LanternSecurityService.GetIssuer:output_type -> graph.v1.GetIssuerResponse
+	32, // 85: graph.v1.LanternSecurityService.ListRoles:output_type -> graph.v1.ListRolesResponse
+	28, // 86: graph.v1.LanternSecurityService.GetRole:output_type -> graph.v1.GetRoleResponse
+	33, // 87: graph.v1.LanternSecurityService.ListUsers:output_type -> graph.v1.ListUsersResponse
+	30, // 88: graph.v1.LanternSecurityService.GetUser:output_type -> graph.v1.GetUserResponse
+	35, // 89: graph.v1.LanternSecurityService.ListRoleAssignments:output_type -> graph.v1.ListRoleAssignmentsResponse
+	37, // 90: graph.v1.LanternSecurityService.ListSecurityAudit:output_type -> graph.v1.ListSecurityAuditResponse
+	39, // 91: graph.v1.LanternSecurityService.GetRoleTemplates:output_type -> graph.v1.GetRoleTemplatesResponse
+	43, // 92: graph.v1.LanternSecurityService.ExplainAccess:output_type -> graph.v1.ExplainAccessResponse
+	45, // 93: graph.v1.LanternSecurityService.ValidateIssuer:output_type -> graph.v1.ValidateIssuerResponse
+	49, // 94: graph.v1.LanternSecurityService.ApplySecurityChanges:output_type -> graph.v1.ApplySecurityChangesResponse
+	51, // 95: graph.v1.LanternSecurityService.ApplySecurityChange:output_type -> graph.v1.ApplySecurityChangeResponse
+	53, // 96: graph.v1.LanternSecurityService.GetSecurityChangeStatus:output_type -> graph.v1.GetSecurityChangeStatusResponse
+	81, // [81:97] is the sub-list for method output_type
+	65, // [65:81] is the sub-list for method input_type
+	65, // [65:65] is the sub-list for extension type_name
+	65, // [65:65] is the sub-list for extension extendee
+	0,  // [0:65] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_security_proto_init() }

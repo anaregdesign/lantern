@@ -505,3 +505,33 @@ async fn real_wire_backup_prefix_restore_corruption_and_partial_progress()
     assert!(destination.get_vertex("rust:partial:valid").await.is_ok());
     Ok(())
 }
+
+#[test]
+fn restore_reply_preserves_real_or_partial_failure() {
+    let report = RestoreReport {
+        completed_vertices: 2,
+        completed_edges: 3,
+    };
+    assert_eq!(
+        MutationReply::from_restore_result(Ok(report)).unwrap(),
+        MutationReply::KnownEffect(report)
+    );
+    assert_eq!(
+        MutationReply::from_restore_result(Err(RestoreFailure {
+            progress: RestoreReport::default(),
+            source: LanternError::MutationAcceptedUndisclosed,
+        }))
+        .unwrap(),
+        MutationReply::AcceptedUndisclosed
+    );
+    let result = MutationReply::from_restore_result(Err(RestoreFailure {
+        progress: report,
+        source: LanternError::Batch(crate::BatchError {
+            completed_items: 2,
+            source: Box::new(LanternError::MutationAcceptedUndisclosed),
+        }),
+    }));
+    let failure = result.unwrap_err();
+    assert_eq!(failure.progress, report);
+    assert!(matches!(failure.source, LanternError::Batch(_)));
+}

@@ -124,6 +124,9 @@ func (l *Lantern) DeleteEdgesByPrefix(ctx context.Context, opts ...DeleteEdgesBy
 	if err != nil {
 		return 0, err
 	}
+	if err := mutationAcceptanceFromProto(resp); err != nil {
+		return 0, err
+	}
 	return resp.GetDeleted(), nil
 }
 

@@ -80,7 +80,7 @@ func TestAccessDenyAndIsolation(t *testing.T) {
 
 func TestAccessEdgeEndpoints(t *testing.T) {
 	rules := []PermissionRule{}
-	for _, action := range []Action{VertexRead, VertexWrite, EdgeRead, EdgeAdd, EdgeWrite, EdgeDelete} {
+	for _, action := range []Action{VertexRead, VertexWrite} {
 		rules = append(rules, dataRule(Allow, action, "orders:"))
 	}
 	roles := []Role{{ID: "editor", Rules: rules}, {ID: "restriction", Rules: []PermissionRule{dataRule(Deny, VertexWrite, "orders:protected:")}}}
@@ -97,8 +97,8 @@ func TestAccessEdgeEndpoints(t *testing.T) {
 			t.Fatal("cross-prefix endpoint bypass")
 		}
 	}
-	if access.AllowsEdge(EdgeAdd, "orders:a", "orders:protected:b") || access.AllowsEdge(EdgeWrite, "orders:protected:a", "orders:b") {
-		t.Fatal("endpoint creation bypass")
+	if access.AllowsEdge(EdgeAdd, "orders:a", "orders:protected:b") || access.AllowsEdge(EdgeWrite, "orders:a", "orders:protected:b") {
+		t.Fatal("head write Deny bypass")
 	}
 	if !access.AllowsEdge(EdgeRead, "orders:a", "orders:protected:b") || access.AllowsEdge(Query, "orders:a", "orders:b") {
 		t.Fatal("edge action confused")
@@ -130,5 +130,45 @@ func BenchmarkAccess(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func TestAccessHeadManagedEdges(t *testing.T) {
+	roles := []Role{
+		{ID: "tails", Rules: []PermissionRule{dataRule(Allow, VertexRead, "tails:")}},
+		{ID: "heads", Rules: []PermissionRule{dataRule(Allow, VertexWrite, "heads:")}},
+		{ID: "head_reader", Rules: []PermissionRule{dataRule(Allow, VertexRead, "heads:")}},
+		{ID: "tail_deny", Rules: []PermissionRule{dataRule(Deny, VertexRead, "tails:private:")}},
+		{ID: "head_deny", Rules: []PermissionRule{dataRule(Deny, VertexWrite, "heads:protected:")}},
+	}
+	policy, err := CompileRoles(roles, DefaultPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := policy.ForRoles([]string{"tails", "heads", "tail_deny", "head_deny"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []Action{EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete} {
+		t.Run(string(action), func(t *testing.T) {
+			if !writer.AllowsEdge(action, "tails:public", "heads:public") {
+				t.Fatal("tail read and head write did not authorize the modification")
+			}
+			for _, endpoints := range [][2]string{{"heads:public", "tails:public"}, {"tails:private:x", "heads:public"}, {"tails:public", "heads:protected:x"}} {
+				if writer.AllowsEdge(action, endpoints[0], endpoints[1]) {
+					t.Fatal("reverse orientation or cross-Role Deny was bypassed")
+				}
+			}
+		})
+	}
+	if writer.AllowsEdge(EdgeRead, "tails:public", "heads:public") || writer.Allows(VertexDelete, "heads:public") || writer.Allows(VertexWrite, "tails:public") {
+		t.Fatal("head modification authority implied data disclosure or Vertex mutation")
+	}
+	reader, err := policy.ForRoles([]string{"tails", "head_reader"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reader.AllowsEdge(EdgeRead, "tails:public", "heads:public") || reader.AllowsEdge(EdgeDelete, "tails:public", "heads:public") {
+		t.Fatal("both endpoint reads did not define independent base visibility")
 	}
 }

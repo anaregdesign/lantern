@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0 candidate
+
+- Require the typed acceptance API in parent `lantern_client ^0.5.0`.
+- Persist terminal `acceptedUndisclosed` acknowledgements in operation schema
+  v3, retaining strict v1/v2 decoding. Retire the owned outbox and overlay,
+  invalidate confirmed cache, preserve no effect/result, and never resend.
+- Handle immediate mutation acknowledgement and known receipt
+  `effectUndisclosed` status separately from confirmed results and uncertainty.
+  Lease/generation/auth fences and partial-failure semantics remain enforced.
+- Paired-source development checks do not qualify standalone hosted-parent
+  archives, physical devices or publication. All three remain separate exits.
+
 ## 0.5.0
 
 - Require hosted `lantern_client ^0.4.1` and add singular/plural targeted

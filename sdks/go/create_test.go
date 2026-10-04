@@ -32,6 +32,45 @@ func (c *createTestClient) CreateEdges(_ context.Context, request *connect.Reque
 func (c *createTestClient) GetReceiptCapability(context.Context, *connect.Request[pb.GetReceiptCapabilityRequest]) (*connect.Response[pb.GetReceiptCapabilityResponse], error) {
 	return connect.NewResponse(proto.Clone(c.capability).(*pb.GetReceiptCapabilityResponse)), nil
 }
+
+func TestCreateBlindAcceptanceCoversWholeLogicalCallAndReceiptWithoutReplay(t *testing.T) {
+	for _, failLast := range []bool{false, true} {
+		fake := &createTestClient{}
+		fake.call = func(*pb.CreateEdgesRequest) (*pb.CreateEdgesResponse, error) {
+			if len(fake.requests) == 3 && failLast {
+				return nil, connect.NewError(connect.CodeUnavailable, errors.New("response lost"))
+			}
+			if len(fake.requests) == 2 {
+				return &pb.CreateEdgesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}, nil
+			}
+			return &pb.CreateEdgesResponse{Outcomes: []pb.CreateEdgeOutcome{pb.CreateEdgeOutcome_CREATE_EDGE_OUTCOME_CREATED_AND_LIVE}}, nil
+		}
+		l := &Lantern{client: fake, opts: options{batchChunkSize: 1, retry: testRetryPolicy(3)}}
+		results, err := l.CreateEdges(context.Background(), []EdgeInput{{Tail: "a", Head: "b", Weight: 1}, {Tail: "a", Head: "c", Weight: 1}, {Tail: "a", Head: "d", Weight: 1}})
+		if results != nil || len(fake.requests) != 3 {
+			t.Fatal("blind Create exposed effects, replayed or skipped input", results, len(fake.requests))
+		}
+		if failLast {
+			var batch *BatchError
+			if !errors.As(err, &batch) || batch.Written != 2 || !errors.Is(err, ErrUnavailable) {
+				t.Fatal("later failure became acceptance", err)
+			}
+		} else if _, accepted := err.(*MutationAcceptance); !accepted {
+			t.Fatal("missing blind acceptance", err)
+		}
+	}
+	capability := testReceiptCapability(0x18)
+	capability.SupportedMutations = append(capability.SupportedMutations, ReceiptMutationCreateEdge)
+	receiptContext := testReceiptContextForMutation(t, capability, ReceiptMutationCreateEdge, 1, 0x28)
+	fake := &createTestClient{capability: testReceiptCapabilityProto(capability), call: func(*pb.CreateEdgesRequest) (*pb.CreateEdgesResponse, error) {
+		return &pb.CreateEdgesResponse{Acceptance: &pb.MutationAcceptance{Kind: pb.MutationAcceptanceKind_MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED}}, nil
+	}}
+	l := &Lantern{client: fake, opts: options{retry: testRetryPolicy(3)}}
+	_, err := l.CreateEdgesWithReceipt(context.Background(), []EdgeInput{{Tail: "a", Head: "b", Weight: 1}}, receiptContext)
+	if _, accepted := err.(*MutationAcceptance); !accepted || len(fake.requests) != 1 {
+		t.Fatal("receipt acceptance was replayed or decoded as an outcome", err, len(fake.requests))
+	}
+}
 func TestCreateEdgesAlignmentValidationAndAmbiguity(t *testing.T) {
 	t.Run("ordered chunks and singular facade", func(t *testing.T) {
 		fake := &createTestClient{}
