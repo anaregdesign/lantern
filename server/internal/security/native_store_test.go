@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"errors"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/server/internal/keyspace"
 )
 
 func TestNativeStoreMachineDigestsSurviveSignedRecovery(t *testing.T) {
@@ -273,5 +275,42 @@ func TestNativeStoreRejectsSignedUnlinkedSuffix(t *testing.T) {
 				t.Fatal("rejected signed suffix was published or attested")
 			}
 		})
+	}
+}
+
+func TestNativeStoreRejectsOldAuthenticationImageBinding(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "system.wal")
+	options := nativeTestOptions(t, path)
+	native, err := CreateNativeStore(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Store().ReconcileBootstrap(t.Context(), 0, [16]byte{1}, testImage()); err != nil {
+		t.Fatal(err)
+	}
+	if err := native.Close(); err != nil {
+		t.Fatal(err)
+	}
+	old := []byte("lantern-system-journal-v1\x00" + keyspace.Version + "\x00")
+	old = append(old, options.Generation[:]...)
+	old = append(old, options.PublicKey...)
+	manifest, err := readNativeManifest(path, systemJournalBinding(options))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.binding = sha256.Sum256(old)
+	if err := writeNativeManifest(path, manifest, false); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path + ".tip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed, err := ResumeNativeStore(nativeTestOptions(t, path)); !errors.Is(err, ErrInvalidRevision) || resumed != nil {
+		t.Fatal("old session-family binding admitted", err)
+	}
+	after, err := os.ReadFile(path + ".tip")
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("rejected old family advanced durable floor", err)
 	}
 }

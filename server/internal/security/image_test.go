@@ -3,6 +3,7 @@ package security
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -67,12 +68,31 @@ func TestImageCanonicalRecovery(t *testing.T) {
 	}
 	for _, malformed := range [][]byte{
 		nil, []byte("{"), append(append([]byte(nil), encoded...), []byte("{}")...),
-		[]byte(strings.Replace(string(encoded), "\"version\":1", "\"version\":2,\"version\":1", 1)),
-		[]byte(strings.Replace(string(encoded), "\"version\":1", "\"unknown\":1,\"version\":1", 1)),
+		[]byte(strings.Replace(string(encoded), "\"version\":"+strconv.Itoa(ImageVersion), "\"version\":1,\"version\":"+strconv.Itoa(ImageVersion), 1)),
+		[]byte(strings.Replace(string(encoded), "\"version\":"+strconv.Itoa(ImageVersion), "\"unknown\":1,\"version\":"+strconv.Itoa(ImageVersion), 1)),
 		append([]byte(" "), encoded...), []byte(strings.Repeat(" ", MaxImageBytes+1)),
 	} {
 		if _, err := DecodeImage(malformed, DefaultPolicyLimits()); !errors.Is(err, ErrInvalidImage) {
 			t.Fatalf("malformed image admitted: %v", err)
 		}
+	}
+}
+
+func TestImageUnknownAuthenticationTimeAndOldReaderBoundary(t *testing.T) {
+	image := testImage()
+	image.Sessions = []Session{testSession()}
+	image.Sessions[0].AuthTime = time.Time{}
+	snapshot, err := CompileImage(image, DefaultPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := DecodeImage(snapshot.image, DefaultPolicyLimits())
+	if err != nil || !restored.Image().Sessions[0].AuthTime.IsZero() {
+		t.Fatal("unknown evidence changed after canonical recovery", err)
+	}
+	image.Version = 1
+	encoded, _ := json.Marshal(image)
+	if _, err := DecodeImage(encoded, DefaultPolicyLimits()); !errors.Is(err, ErrInvalidImage) {
+		t.Fatal("old image silently migrated", err)
 	}
 }

@@ -1,31 +1,43 @@
 # Google OIDC setup and provider qualification
 
-Tracks #1657, #1602, #1604 and #1610. This is operator setup, not a record of
+Tracks #1658, #1657, #1602, #1604 and #1610. This is operator setup, not a record of
 successful Google login. Creating a client, synthetic provider tests, and
 mobile machine-credential tests do not complete real-provider acceptance.
 
-## Check the recent-authentication prerequisite first
+## Separate ordinary login from recent-authentication management
 
-Lantern's adopted browser-session policy requires a verified, recent signed
-`auth_time`. Authorization requests include PKCE S256, state, nonce, `max_age`
-and `claims={"id_token":{"auth_time":{"essential":true}}}`. Missing or stale
-evidence fails closed; token `iat`, callback time, consent and account selection
-are never substitutes for user authentication time.
+Ordinary login uses Authorization Code, PKCE S256, state, nonce and verified
+ID tokens, then checks the current registered Issuer and Principal. It accepts
+existing Google SSO without requiring the optional `auth_time` claim. A missing
+claim stays unknown; an older signed value stays unchanged. Normal login and
+session replacement do not request `max_age`, `prompt=login` or essential
+`auth_time`. Neither operation makes old or unknown evidence recent. Future
+or contradictory signed authentication times are rejected.
+
+Important security changes require a signed authentication event within five
+minutes and current `security.manage` authority. An explicit step-up transaction
+requests `max_age=0`, `prompt=login` and
+`claims={"id_token":{"auth_time":{"essential":true}}}`. The Server saves that
+purpose before redirecting; a callback cannot downgrade it. Missing or old
+evidence fails step-up without replacing the existing session. Token `iat`,
+callback time, consent and account selection are never authentication-time
+substitutes. Ordinary Google login and Google management eligibility therefore
+have separate acceptance records.
 
 Google's [OIDC documentation](https://developers.google.com/identity/openid-connect/openid-connect)
 describes `auth_time` as an optional claim that must be requested and enabled.
 Its [Security bundle setup](https://developers.google.com/identity/siwg/security-bundle)
 requires a published, verified OAuth app, then **Settings → Advanced Settings →
-Session age claims**. An ordinary **Testing** client alone does not satisfy
-that prerequisite. Google also documents that it does not support Google
+Session age claims**. A **Testing** client can prepare ordinary login; it does
+not establish this management prerequisite. Google also documents that it does not support Google
 Account reauthentication requests. Lantern's step-up redirect therefore cannot
 promise to refresh an old Google session: the returned signed evidence must
 still pass the Server's recent-authentication check.
 
-Do not publish a Google app, claim provider acceptance, or relax that policy to
-make a test pass. The operator must decide and complete provider prerequisites
-separately. If the selected client cannot supply the required evidence, record
-Google login as unsupported under this policy and keep the provider exit open.
+Google app publication/verification is a separate operator decision. If the
+selected client cannot supply recent signed evidence, record management step-up
+as unavailable and keep that acceptance exit open; this does not disqualify an
+otherwise verified ordinary login.
 
 ## Create the OAuth Web client
 
@@ -36,8 +48,8 @@ Google login as unsupported under this policy and keep the provider exit open.
 3. Choose the intended **Audience**. An organization's Internal audience is
    appropriate only when all intended users belong to that organization.
    Otherwise configure External and add the operator account as a test user
-   while in Testing. This is client preparation; it does not meet the Security
-   bundle prerequisite above.
+   while in Testing. The Security bundle is only a separate prerequisite for
+   the optional management evidence described above.
 4. In **Clients**, create an OAuth client of type **Web application**, with a
    clear name such as `Lantern local OIDC verification`. Do not substitute a
    mobile, service-account, or Desktop client for Server-owned code exchange.
@@ -115,8 +127,11 @@ Google API tokens simply because browser login uses Google.
 
 From a clean exact candidate, verify the real callback/session flow, CSRF,
 unknown/revoked users, security-admin without graph access, Role edits and
-assignments, prefix Deny, scoped CDC and replica admission. Include a missing
-or stale `auth_time` refusal and preserve the control-node/step-up limitation.
+assignments, prefix Deny, scoped CDC and replica admission. Record ordinary
+login with missing/old `auth_time`, unchanged recent-auth eligibility after
+ordinary rotation, and management/step-up refusal without recent evidence.
+Test a genuinely recent signed event separately if the provider supports it;
+retain the control-node and Google reauthentication limitations.
 The user performs the Google sign-in and any provider-owned MFA; an agent does
 not collect their password or MFA code.
 

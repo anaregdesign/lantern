@@ -32,10 +32,10 @@ func TestLoginTransactionsPKCESingleUseMixUpAndRestart(t *testing.T) {
 	parsed, _ := url.Parse(start.AuthorizationURL)
 	query := parsed.Query()
 	state := query.Get("state")
-	if query.Get("claims") != `{"id_token":{"auth_time":{"essential":true}}}` {
-		t.Fatal("signed authentication time was not requested")
+	if query.Get("claims") != "" || query.Get("max_age") != "" || query.Get("prompt") != "" {
+		t.Fatal("ordinary login forced provider reauthentication")
 	}
-	if query.Get("code_challenge_method") != "S256" || query.Get("response_type") != "code" || query.Get("scope") != "openid" || query.Get("max_age") != "300" || strings.Contains(start.String(), state) {
+	if query.Get("code_challenge_method") != "S256" || query.Get("response_type") != "code" || query.Get("scope") != "openid" || strings.Contains(start.String(), state) {
 		t.Fatal("unsafe login redirect")
 	}
 	if _, err = manager.Consume(state, start.TransactionCookie, CallbackPath("https://other.example"), ""); err == nil {
@@ -53,7 +53,7 @@ func TestLoginTransactionsPKCESingleUseMixUpAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	challenge := sha256.Sum256([]byte(completion.Verifier()))
-	if query.Get("code_challenge") != base64.RawURLEncoding.EncodeToString(challenge[:]) || completion.Nonce() != query.Get("nonce") || completion.ReturnPath() != "/security/roles" {
+	if query.Get("code_challenge") != base64.RawURLEncoding.EncodeToString(challenge[:]) || completion.Nonce() != query.Get("nonce") || completion.ReturnPath() != "/security/roles" || completion.RequiresRecentAuthentication() {
 		t.Fatal("transaction not bound")
 	}
 	if _, err = manager.Consume(state, start.TransactionCookie, CallbackPath(trust.Issuer.URL), ""); err == nil {
@@ -124,5 +124,21 @@ func TestLoginTransactionsRedirectAndExpiry(t *testing.T) {
 	now = now.Add(loginTransactionLifetime)
 	if _, err = manager.Consume(parsed.Query().Get("state"), start.TransactionCookie, CallbackPath(trust.Issuer.URL), ""); err == nil {
 		t.Fatal("expired transaction accepted")
+	}
+}
+
+func TestLoginTransactionsPurposeIndependentOfReplacement(t *testing.T) {
+	for _, stepUp := range []bool{false, true} {
+		manager, trust, discovery := loginTransactionFixture(t)
+		digest := strings.Repeat("a", 64)
+		start, err := manager.Begin(trust, discovery, "/", digest, stepUp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, _ := url.Parse(start.AuthorizationURL)
+		completion, err := manager.Consume(parsed.Query().Get("state"), start.TransactionCookie, CallbackPath(trust.Issuer.URL), "")
+		if err != nil || completion.RequiresRecentAuthentication() != stepUp || completion.ReplacesDigest() != digest {
+			t.Fatal("replacement changed saved purpose", err)
+		}
 	}
 }

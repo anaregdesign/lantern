@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	ImageVersion       = 1
+	ImageVersion       = 2
 	MaxImageBytes      = 4 << 20
 	MaxIssuers         = 64
 	MaxPrincipals      = 10000
@@ -155,7 +155,7 @@ func compileImage(image Image, limits PolicyLimits, previous *Snapshot) (*Snapsh
 	}
 	for _, session := range image.Sessions {
 		if !validHexDigest(session.Digest) || (session.CSRFDigest != "" && !validHexDigest(session.CSRFDigest)) || session.Identity.Kind != OIDCPrincipal ||
-			session.CreatedAt.IsZero() || session.AuthTime.IsZero() || !session.ExpiresAt.After(session.CreatedAt) ||
+			session.CreatedAt.IsZero() || !session.ExpiresAt.After(session.CreatedAt) ||
 			session.ExpiresAt.Sub(session.CreatedAt) > MaxSessionLifetime || session.AuthTime.After(session.CreatedAt) {
 			return nil, fmt.Errorf("%w: Session", ErrInvalidImage)
 		}

@@ -235,7 +235,7 @@ func prepareNativeStore(options NativeStoreOptions) (*NativeStore, error) {
 }
 
 func systemJournalBinding(options NativeStoreOptions) [32]byte {
-	data := []byte("lantern-system-journal-v1\x00" + keyspace.Version + "\x00")
+	data := []byte("lantern-system-journal-v2\x00" + keyspace.Version + "\x00")
 	data = append(data, options.Generation[:]...)
 	data = append(data, options.PublicKey...)
 	return sha256.Sum256(data)

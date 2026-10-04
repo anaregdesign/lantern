@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,14 @@ func TestNativeCheckpointFreshReplicaAndRestart(t *testing.T) {
 	writer, clock := newAuthorityTestStore(t)
 	for expected := uint64(1); expected < 12; expected++ {
 		image := testImage()
+		unknown := testSession()
+		unknown.CreatedAt = clock.Now()
+		unknown.ExpiresAt = clock.Now().Add(time.Hour)
+		unknown.AuthTime = time.Time{}
+		old := unknown
+		old.Digest = strings.Repeat("c", 64)
+		old.AuthTime = clock.Now().Add(-time.Hour)
+		image.Sessions = []Session{unknown, old}
 		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: MachinePrincipal, MachineName: "reader"}, State: Suspended})
 		if _, err := writer.Commit(t.Context(), expected, [16]byte{byte(expected + 1)}, image); err != nil {
 			t.Fatal(err)
@@ -46,6 +55,12 @@ func TestNativeCheckpointFreshReplicaAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	current, _ := replica.Store().Current()
+	for _, session := range current.Snapshot().Image().Sessions {
+		_, authTime, active := current.Snapshot().SessionAccess(session.Digest, clock.Now())
+		if !active || !authTime.Equal(session.AuthTime) {
+			t.Fatal("checkpoint changed authentication evidence")
+		}
+	}
 	if current.Sequence() != 12 || len(replica.Store().changes) != 12 {
 		t.Fatal("incomplete cut or retry history")
 	}
@@ -70,6 +85,12 @@ func TestNativeCheckpointFreshReplicaAndRestart(t *testing.T) {
 	restored, known := recovered.Store().Current()
 	if !known || restored.Digest() != current.Digest() {
 		t.Fatal("checkpoint did not recover", err)
+	}
+	for _, session := range current.Snapshot().Image().Sessions {
+		_, authTime, active := restored.Snapshot().SessionAccess(session.Digest, clock.Now())
+		if !active || !authTime.Equal(session.AuthTime) {
+			t.Fatal("restart changed authentication evidence")
+		}
 	}
 	freshReceiver, _ := NewLeaseReceiver(recovered.Store(), [16]byte{5}, options.PublicKey, clock, 2*time.Second)
 	if err = freshReceiver.Check(context.Background(), restored); err == nil {

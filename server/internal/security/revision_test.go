@@ -22,6 +22,13 @@ func TestRevisionAuthenticity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	legacy := revision.Encode()
+	copy(legacy, []byte("LNSEC02\n"))
+	unsigned := legacy[:len(legacy)-ed25519.SignatureSize]
+	copy(legacy[len(unsigned):], ed25519.Sign(privateKey, unsigned))
+	if _, err := DecodeRevision(legacy, publicKey, DefaultPolicyLimits()); !errors.Is(err, ErrInvalidRevision) {
+		t.Fatal("old signed framing admitted", err)
+	}
 	encoded := revision.Encode()
 	decoded, err := DecodeRevision(encoded, publicKey, DefaultPolicyLimits())
 	if err != nil {

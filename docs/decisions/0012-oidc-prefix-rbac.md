@@ -439,8 +439,19 @@ nonce, exact redirects and single-use bounded login transactions. A fixed
 same-origin gateway routes callbacks to the pinned security writer. Exchange
 and ID-token validation produce an opaque Secure/HttpOnly cookie; Admin does
 not persist IdP tokens in localStorage. CSRF and exact-origin checks protect
-cookie-authenticated mutations. Recent authentication is required for security
-changes. Role-scoped data export uses explicit export/read grants and current
+cookie-authenticated mutations. Ordinary login accepts provider SSO and missing
+`auth_time` as unknown, retaining an older signed time without upgrading it.
+Future or contradictory evidence is rejected; `iat`, callback time, consent and
+account selection never supply authentication time. A Server-owned transaction
+saves ordinary versus step-up intent independently from session replacement;
+only step-up requests fresh provider authentication and essential signed
+`auth_time`. Step-up and important security changes require a signed event
+within five minutes. A failed step-up retains the old session. Canonical state,
+replication and recovery preserve unknown/old evidence. This interpretation uses
+security image v2, `LNSEC03` and native binding v2; old cohorts fail closed before
+admission or durable-floor advancement, without automatic migration or mixed
+rolling acceptance. The graph namespace and receipt formats do not change.
+Role-scoped data export uses explicit export/read grants and current
 admission; machine exporters do not assert interactive recent authentication. Fixed session expiry, revocation and per-stream authority checks remain
 independent of JWT expiry. Passwords, MFA and account enrollment stay with the
 IdP; no password store, email linking, implicit group grants, SCIM or opaque

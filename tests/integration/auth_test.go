@@ -827,6 +827,13 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 				delete(claims, "auth_time")
 			case "stale":
 				claims["auth_time"] = now.Add(-6 * time.Minute).Unix()
+			case "future":
+				claims["auth_time"] = now.Add(time.Second).Unix()
+			case "contradictory":
+				claims["iat"] = now.Add(-2 * time.Minute).Unix()
+				claims["auth_time"] = now.Add(-time.Minute).Unix()
+			case "null":
+				claims["auth_time"] = nil
 			}
 			id := f.signedToken(claims, "JWT")
 			_ = json.NewEncoder(w).Encode(map[string]any{"id_token": id, "access_token": "provider-private-access-token", "token_type": "Bearer"})
@@ -1534,8 +1541,15 @@ func (f *oidcControlWireFixture) browserCallbackPath(t *testing.T, start *http.R
 		t.Fatal(err)
 	}
 	query := authorize.Query()
-	if query.Get("code_challenge_method") != "S256" || query.Get("response_type") != "code" || query.Get("scope") != "openid" || query.Get("nonce") == "" || query.Get("state") == "" || query.Get("claims") != `{"id_token":{"auth_time":{"essential":true}}}` {
+	if query.Get("code_challenge_method") != "S256" || query.Get("response_type") != "code" || query.Get("scope") != "openid" || query.Get("nonce") == "" || query.Get("state") == "" {
 		t.Fatal("code/nonce/PKCE missing")
+	}
+	if query.Get("max_age") == "0" {
+		if query.Get("prompt") != "login" || query.Get("claims") != `{"id_token":{"auth_time":{"essential":true}}}` {
+			t.Fatal("step-up omitted signed authentication evidence")
+		}
+	} else if query.Get("max_age") != "" || query.Get("prompt") != "" || query.Get("claims") != "" {
+		t.Fatal("ordinary login imposed reauthentication")
 	}
 	var rawCode [16]byte
 	if _, err := rand.Read(rawCode[:]); err != nil {
@@ -1707,7 +1721,7 @@ func TestAuth_OIDCBrowserLoginFailuresRealConnect(t *testing.T) {
 			}
 		})
 	}
-	for _, evidence := range []string{"missing", "stale"} {
+	for _, evidence := range []string{"future", "contradictory", "null"} {
 		t.Run(evidence+" signed auth_time", func(t *testing.T) {
 			start := f.browserLoginStart(t, nil, false)
 			path := f.browserCallbackPath(t, start, "admin", false)
@@ -3134,5 +3148,112 @@ func TestAuth_HeadManagedBlindCreateDeleteReceiptAndGoFacadeRealConnect(t *testi
 	result, ok := status.Receipt.OriginalResult.(client.ReceiptCreateEdgeResult)
 	if !ok || result.Outcome != client.CreateEdgeCreatedAndLive {
 		t.Fatal("original Create outcome was replaced")
+	}
+}
+
+func TestAuth_OIDCBrowserLoginAndStepUpPurposesRealConnect(t *testing.T) {
+	for _, evidence := range []string{"missing", "stale"} {
+		t.Run(evidence, func(t *testing.T) {
+			f := newOIDCControlWireFixture(t)
+			callback := func(start *http.Response, evidence string) string {
+				path := f.browserCallbackPath(t, start, "admin", false)
+				parsed, _ := url.Parse(path)
+				f.mu.Lock()
+				code := f.codes[parsed.Query().Get("code")]
+				code.authTime = evidence
+				f.codes[parsed.Query().Get("code")] = code
+				f.mu.Unlock()
+				return path
+			}
+			sessionCookies := func(response *http.Response) []*http.Cookie {
+				var cookies []*http.Cookie
+				for _, cookie := range response.Cookies() {
+					if cookie.Name == "__Host-lantern-session" || cookie.Name == "__Host-lantern-csrf" {
+						cookies = append(cookies, cookie)
+					}
+				}
+				return cookies
+			}
+			clientFor := func(cookies []*http.Cookie, csrf string) graphv1connect.LanternSecurityServiceClient {
+				return graphv1connect.NewLanternSecurityServiceClient(&http.Client{Transport: authWireRoundTripper{next: http.DefaultTransport, cookies: cookies, csrf: csrf}}, f.server.URL+"/browser")
+			}
+			start := f.browserLoginStart(t, nil, false)
+			response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback(start, evidence), start.Cookies(), ""))
+			if response.StatusCode != http.StatusSeeOther {
+				t.Fatal("ordinary SSO denied", response.StatusCode)
+			}
+			cookies := sessionCookies(response)
+			if len(cookies) != 2 {
+				t.Fatal("ordinary login did not issue opaque session")
+			}
+			csrf := browserCookieValue(cookies, "__Host-lantern-csrf")
+			client := clientFor(cookies, csrf)
+			principal, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
+			if err != nil || principal.Msg.RecentAuthentication {
+				t.Fatal("ordinary session inferred recent authentication", err)
+			}
+			roles, err := client.ListRoles(t.Context(), connect.NewRequest(&pb.ListRolesRequest{}))
+			if err != nil {
+				t.Fatal("ordinary session could not read permitted management state", err)
+			}
+			change := &pb.ApplySecurityChangesRequest{ExpectedRevision: roles.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{42}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "recent_proof", Rules: []*pb.SecurityRule{{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}}}}}}}}
+			if _, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(change)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatal("unproven management change admitted", err)
+			}
+			if _, err := clientFor(cookies, "").ApplySecurityChanges(t.Context(), connect.NewRequest(change)); connect.CodeOf(err) != connect.CodePermissionDenied {
+				t.Fatal("ordinary session bypassed CSRF", err)
+			}
+
+			// The callback cannot downgrade the saved step-up purpose. Refusal leaves
+			// the existing ordinary cookie usable, with no new recent-auth evidence.
+			stepUp := f.browserLoginStart(t, cookies, true)
+			stepPath := callback(stepUp, evidence)
+			if rejected := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, stepPath+"&step_up=false", stepUp.Cookies(), "")); rejected.StatusCode != http.StatusBadRequest {
+				t.Fatal("callback purpose override accepted", rejected.StatusCode)
+			}
+			failed := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, stepPath, stepUp.Cookies(), ""))
+			if failed.StatusCode != http.StatusUnauthorized || len(sessionCookies(failed)) != 0 {
+				t.Fatal("step-up accepted missing/old proof", failed.StatusCode)
+			}
+			unchanged, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
+			if err != nil || unchanged.Msg.RecentAuthentication || unchanged.Msg.Version.Revision != principal.Msg.Version.Revision {
+				t.Fatal("failed step-up changed ordinary session", err)
+			}
+
+			// A normal relogin also replaces a cookie; replacement is not step-up.
+			relogin := f.browserLoginStart(t, cookies, false)
+			rotated := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback(relogin, evidence), relogin.Cookies(), ""))
+			if rotated.StatusCode != http.StatusSeeOther {
+				t.Fatal("ordinary replacement required recent authentication", rotated.StatusCode)
+			}
+			newCookies := sessionCookies(rotated)
+			if browserCookieValue(newCookies, "__Host-lantern-session") == browserCookieValue(cookies, "__Host-lantern-session") {
+				t.Fatal("ordinary replacement reused cookie")
+			}
+			if old := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, "")); old.StatusCode != http.StatusUnauthorized {
+				t.Fatal("ordinary replacement left old cookie live")
+			}
+			client = clientFor(newCookies, browserCookieValue(newCookies, "__Host-lantern-csrf"))
+			ordinary, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
+			if err != nil || ordinary.Msg.RecentAuthentication {
+				t.Fatal("rotation upgraded unknown/old evidence", err)
+			}
+
+			fresh := f.browserLoginStart(t, newCookies, true)
+			freshResponse := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback(fresh, ""), fresh.Cookies(), ""))
+			if freshResponse.StatusCode != http.StatusSeeOther {
+				t.Fatal("fresh step-up refused", freshResponse.StatusCode)
+			}
+			freshCookies := sessionCookies(freshResponse)
+			client = clientFor(freshCookies, browserCookieValue(freshCookies, "__Host-lantern-csrf"))
+			verified, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
+			if err != nil || !verified.Msg.RecentAuthentication {
+				t.Fatal("actual fresh evidence did not qualify", err)
+			}
+			change.ExpectedRevision = verified.Msg.Version.Revision
+			if _, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(change)); err != nil {
+				t.Fatal("fresh authorized management change refused", err)
+			}
+		})
 	}
 }

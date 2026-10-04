@@ -11,7 +11,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 )
 
-const revisionPrefix = "LNSEC02\n" + keyspace.Version + "\x00"
+const revisionPrefix = "LNSEC03\n" + keyspace.Version + "\x00"
 const revisionHeaderBytes = len(revisionPrefix) + 16 + 32 + 8 + 32 + 16 + 32 + 2 + 4
 
 var ErrInvalidRevision = errors.New("invalid signed security revision")

@@ -52,3 +52,54 @@ test("logout clears protected views", async ({ page }) => {
     page.getByRole("button", { name: "Review Role change" }),
   ).toHaveCount(0);
 });
+for (const width of [1280, 390]) {
+  test(`ordinary session without recent evidence offers explicit step-up at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const fixture = await securityUI(page, { recent: false });
+    await page.goto(`${fixture.primary}/security/roles`);
+    await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Verify identity" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Sign in with Example" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Review Role change" }),
+    ).toBeVisible();
+    expect(fixture.calls.some((call) => call.method === "ListRoles")).toBe(
+      true,
+    );
+    expect(
+      fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+    ).toHaveLength(0);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`ordinary-session-${width}.png`),
+      fullPage: true,
+    });
+    // Observe the rendered controller's redirect without contacting an IdP.
+    await page.route(`${fixture.primary}/auth/login?**`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "text/plain",
+        body: "Step-up",
+      }),
+    );
+    const redirect = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === "/auth/login",
+    );
+    await page.getByRole("button", { name: "Verify identity" }).click();
+    const url = new URL((await redirect).url());
+    expect(url.origin).toBe(fixture.primary);
+    expect(url.searchParams.get("issuer")).toBe("https://idp.example");
+    expect(url.searchParams.get("step_up")).toBe("true");
+    expect(url.searchParams.get("return")).toBe("/");
+  });
+}

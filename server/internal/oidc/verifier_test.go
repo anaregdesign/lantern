@@ -116,8 +116,25 @@ func TestVerifierIDProfileAndNonce(t *testing.T) {
 		t.Fatal(err)
 	}
 	delete(claims, "auth_time")
+	identity, err := v.VerifyID(context.Background(), p.sign(t, claims, "JWT"), p.trust, "expected")
+	if err != nil || !identity.AuthTime.IsZero() {
+		t.Fatal("ordinary login lost unknown authentication time", err)
+	}
+	claims["auth_time"] = p.now().Add(-time.Hour).Unix()
+	identity, err = v.VerifyID(context.Background(), p.sign(t, claims, "JWT"), p.trust, "expected")
+	if err != nil || identity.AuthTime.Unix() != p.now().Add(-time.Hour).Unix() {
+		t.Fatal("old signed authentication time was refreshed", err)
+	}
+	for _, value := range []any{nil, "not numeric", p.now().Add(time.Second).Unix(), time.Time{}.Unix()} {
+		claims["auth_time"] = value
+		if _, err := v.VerifyID(context.Background(), p.sign(t, claims, "JWT"), p.trust, "expected"); err == nil {
+			t.Fatal("invalid authentication evidence accepted", value)
+		}
+	}
+	claims["iat"] = p.now().Add(-2 * time.Minute).Unix()
+	claims["auth_time"] = p.now().Add(-time.Minute).Unix()
 	if _, err := v.VerifyID(context.Background(), p.sign(t, claims, "JWT"), p.trust, "expected"); err == nil {
-		t.Fatal("missing recent-auth evidence accepted")
+		t.Fatal("authentication after issuance accepted")
 	}
 }
 

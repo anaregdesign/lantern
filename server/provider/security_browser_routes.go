@@ -184,7 +184,7 @@ func (r *SecurityRuntime) browserCallback(w http.ResponseWriter, req *http.Reque
 		return
 	}
 	now := r.now()
-	_, err = r.native.Store().IssueSession(req.Context(), security.SessionRequest{ChangeID: changeID, Identity: verified.Identity, IssuerConfigRevision: trust.ConfigRevision, Digest: browserDigest(value), CSRFDigest: browserDigest(csrf), ReplacesDigest: completion.ReplacesDigest(), AuthTime: verified.AuthTime, Now: now, Lifetime: security.MaxSessionLifetime})
+	_, err = r.native.Store().IssueSession(req.Context(), security.SessionRequest{ChangeID: changeID, Identity: verified.Identity, IssuerConfigRevision: trust.ConfigRevision, Digest: browserDigest(value), CSRFDigest: browserDigest(csrf), ReplacesDigest: completion.ReplacesDigest(), RequireRecentAuth: completion.RequiresRecentAuthentication(), AuthTime: verified.AuthTime, Now: now, Lifetime: security.MaxSessionLifetime})
 	if err != nil {
 		browserHTTPError(w, connect.CodeUnauthenticated)
 		return

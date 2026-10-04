@@ -36,6 +36,7 @@ type loginTransaction struct {
 	cookieDigest                                [32]byte
 	nonce, verifier, returnPath, replacesDigest string
 	createdAt, expiresAt                        time.Time
+	stepUp                                      bool
 }
 
 // LoginStart contains only the redirect and host-bound transaction-cookie
@@ -57,6 +58,10 @@ func (c LoginCompletion) Nonce() string          { return c.transaction.nonce }
 func (c LoginCompletion) Verifier() string       { return c.transaction.verifier }
 func (c LoginCompletion) ReturnPath() string     { return c.transaction.returnPath }
 func (c LoginCompletion) ReplacesDigest() string { return c.transaction.replacesDigest }
+
+// RequiresRecentAuthentication is saved Server intent, independent of ordinary
+// session replacement and of any callback parameters controlled by the browser.
+func (c LoginCompletion) RequiresRecentAuthentication() bool { return c.transaction.stepUp }
 
 func NewLoginTransactions(origin string, returnPaths []string) (*LoginTransactions, error) {
 	return NewLoginTransactionsWithClock(origin, returnPaths, time.Now)
@@ -148,14 +153,15 @@ func (m *LoginTransactions) Begin(trust Trust, discovery Discovery, returnPath, 
 	query.Set("nonce", nonce)
 	query.Set("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:]))
 	query.Set("code_challenge_method", "S256")
-	query.Set("max_age", "300")
-	// max_age alone does not make every provider include auth_time. Request
-	// the signed claim explicitly; verification still rejects missing/stale
-	// evidence rather than inferring authentication time from issuance.
-	query.Set("claims", `{"id_token":{"auth_time":{"essential":true}}}`)
+	// Ordinary login accepts existing provider SSO. Only a saved step-up
+	// transaction requests an essential authentication-time claim/fresh login.
+	query.Del("max_age")
+	query.Del("prompt")
+	query.Del("claims")
 	if stepUp {
 		query.Set("max_age", "0")
 		query.Set("prompt", "login")
+		query.Set("claims", `{"id_token":{"auth_time":{"essential":true}}}`)
 	}
 	authorize.RawQuery = query.Encode()
 	m.mu.Lock()
@@ -169,7 +175,7 @@ func (m *LoginTransactions) Begin(trust Trust, discovery Discovery, returnPath, 
 	if len(m.pending) >= maxLoginTransactions {
 		return LoginStart{}, ErrLoginTransaction
 	}
-	transaction := loginTransaction{trust: trust, discovery: discovery, cookieDigest: sha256.Sum256([]byte(cookie)), nonce: nonce, verifier: verifier, returnPath: returnPath, replacesDigest: replacesDigest, createdAt: now, expiresAt: now.Add(loginTransactionLifetime)}
+	transaction := loginTransaction{trust: trust, discovery: discovery, cookieDigest: sha256.Sum256([]byte(cookie)), nonce: nonce, verifier: verifier, returnPath: returnPath, replacesDigest: replacesDigest, createdAt: now, expiresAt: now.Add(loginTransactionLifetime), stepUp: stepUp}
 	// Detach every mutable configuration slice retained across the redirect.
 	transaction.trust.Issuer.Algorithms = append([]string(nil), trust.Issuer.Algorithms...)
 	transaction.discovery.ResponseTypes = append([]string(nil), discovery.ResponseTypes...)

@@ -24,6 +24,14 @@ Bootstrap Issuer/subjects and machine assignments are operator owned; ordinary
 management cannot replace them. Audit records retain bounded redacted identities
 and commit outcomes, with capacity reserved for restrictive changes.
 
+Ordinary browser sessions preserve absent authentication time as unknown and
+retain older signed evidence. Neither issuance, replacement, replication nor
+recovery refreshes it. Explicit step-up and important management changes still
+require a signed event within five minutes. The current image v2 / `LNSEC03` /
+native binding v2 cohort rejects incompatible old state before admission or
+durable-floor advancement; [operator recovery](oidc-operations.md#security-state-version-boundary)
+requires a fenced, explicit decision rather than implicit migration/reset.
+
 The native system lane uses existing mutation-log durability, ownership locks,
 classified segments and an atomic selector. A complete revision is persisted
 before publication. Rotation checkpoints retain replay evidence and recover

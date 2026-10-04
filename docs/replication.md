@@ -32,6 +32,17 @@ when leases expire. Manual replacement requires fencing and certified state;
 there is no automatic security election. See ADR 0012 for the lease,
 anti-rollback, durable system lane, recovery and response-publication contracts.
 
+The #1658 browser-session interpretation uses security image v2, `LNSEC03`
+signed revisions and native journal binding v2. Replication/checkpoint/restart
+preserve missing authentication time as unknown and retain old signed evidence;
+neither can make a session eligible for recent-auth management. Image v1,
+`LNSEC02` and native binding v1 are incompatible, with no implicit migration or
+mixed-cohort rolling acceptance. Reject incompatible state before admission or
+advancing any durable security floor. Operators must fence an old cohort before
+an explicit certified generation/bootstrap or separately reviewed migration.
+This security boundary does not change the graph namespace, receipt-WAL V9 or
+receipt archive V4. See [the operations runbook](oidc-operations.md#security-state-version-boundary).
+
 ## 1. Goal
 
 Lantern must run as a **leaderless, full-replica cluster** with the operational

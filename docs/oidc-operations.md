@@ -21,13 +21,33 @@ Identity is the verified Issuer/subject pair, not email, display name or a clien
 header. Machines use dedicated credentials bound only to Roles and cannot
 claim recent interactive authentication.
 For Google, first review the [provider setup and qualification prerequisites](google-oidc-setup.md),
-including signed `auth_time`, exact callback and private secret binding.
+including the exact callback and private secret binding. Ordinary Google login
+does not require `auth_time`; important management changes require separately
+qualified recent signed evidence.
 
 Provision fresh native sys: state only for a new generation. Use durable restart
 for existing state. Policy changes require expected revision, immutable change
 ID and original-status reconciliation after an uncertain response. Separate
 committed policy from cluster-enforced policy: a write acknowledgment alone is
 not evidence that every replica stopped serving the old revision.
+
+## Security state version boundary
+
+The ordinary-login/recent-auth split (#1658) uses security image version 2,
+signed revision prefix `LNSEC03` and native journal binding v2. Missing
+`auth_time` is persisted as unknown; old signed times are retained exactly.
+Every current reader, replica and restart/restore path must preserve that
+meaning. Management continues to require recent signed evidence.
+
+Image version 1, `LNSEC02` revisions and native binding v1 are incompatible.
+There is no automatic migration, implicit reset or mixed-cohort rolling
+upgrade. A v2 process rejects the old durable binding before replay or tip/floor
+advancement; old readers reject v2 images/revisions. Preserve existing bytes
+and stop serving an unproven cohort. An operator moving an experimental old
+cohort must fence it and explicitly choose a certified new generation/bootstrap
+or independently reviewed migration; this runbook does not perform that action.
+Graph namespace format, receipt-WAL V9 and receipt archive V4 are unchanged.
+Graph backups cannot substitute for certified security state.
 
 ## Workload membership and freshness
 

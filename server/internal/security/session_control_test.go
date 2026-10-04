@@ -65,3 +65,65 @@ func TestSessionControlIssuanceRotationAndCurrentIssuer(t *testing.T) {
 		t.Fatal("login automatically enrolled unknown subject", err)
 	}
 }
+
+func TestSessionControlOrdinaryAndStepUpAuthenticationEvidence(t *testing.T) {
+	for _, evidence := range []string{"unknown", "old", "recent", "future"} {
+		for _, stepUp := range []bool{false, true} {
+			t.Run(evidence+"/"+map[bool]string{false: "login", true: "step_up"}[stepUp], func(t *testing.T) {
+				store, sink, _ := testStore(t, true)
+				image := testImage()
+				image.Issuers[0].ConfigRevision = 1
+				if _, err := store.ReconcileBootstrap(t.Context(), 0, [16]byte{1}, image); err != nil {
+					t.Fatal(err)
+				}
+				now := time.Now().UTC()
+				authTime := time.Time{}
+				switch evidence {
+				case "old":
+					authTime = now.Add(-time.Hour)
+				case "recent":
+					authTime = now.Add(-time.Minute)
+				case "future":
+					authTime = now.Add(time.Second)
+				}
+				request := SessionRequest{ChangeID: [16]byte{2}, Identity: testIdentity(), IssuerConfigRevision: 1, Digest: strings.Repeat("a", 64), CSRFDigest: strings.Repeat("b", 64), AuthTime: authTime, RequireRecentAuth: stepUp, Now: now, Lifetime: time.Hour}
+				before, _ := store.Current()
+				_, err := store.IssueSession(t.Context(), request)
+				want := error(nil)
+				if evidence == "future" {
+					want = ErrInvalidImage
+				} else if stepUp && evidence != "recent" {
+					want = ErrRecentAuthentication
+				}
+				if !errors.Is(err, want) {
+					t.Fatal("wrong evidence verdict", err, want)
+				}
+				current, _ := store.Current()
+				if want != nil {
+					if current.Digest() != before.Digest() || sink.calls != 1 {
+						t.Fatal("rejected evidence changed state")
+					}
+					return
+				}
+				_, saved, active := current.Snapshot().SessionAccess(request.Digest, now)
+				if !active || !saved.Equal(authTime) {
+					t.Fatal("authentication evidence inferred/refreshed", saved, authTime)
+				}
+				next := request
+				next.ChangeID = [16]byte{3}
+				next.Digest = strings.Repeat("c", 64)
+				next.ReplacesDigest = request.Digest
+				next.AuthTime = time.Time{}
+				next.RequireRecentAuth = false
+				next.Now = now.Add(time.Second)
+				if _, err := store.IssueSession(t.Context(), next); err != nil {
+					t.Fatal("ordinary replacement was treated as step-up", err)
+				}
+				current, _ = store.Current()
+				if _, saved, active := current.Snapshot().SessionAccess(next.Digest, next.Now); !active || !saved.IsZero() {
+					t.Fatal("replacement invented recent authentication")
+				}
+			})
+		}
+	}
+}

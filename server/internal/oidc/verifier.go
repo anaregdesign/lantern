@@ -85,6 +85,15 @@ func decodeToken(raw string) (tokenHeader, tokenClaims, error) {
 		header.Algorithm == "" || header.KeyID == "" || len(header.KeyID) > 256 {
 		return tokenHeader{}, tokenClaims{}, ErrInvalidToken
 	}
+	// A supplied authentication-time claim must be numeric. Only absence is
+	// unknown; signed null cannot masquerade as a missing optional claim.
+	var claimMembers map[string]json.RawMessage
+	if json.Unmarshal(claimBytes, &claimMembers) != nil {
+		return tokenHeader{}, tokenClaims{}, ErrInvalidToken
+	}
+	if _, present := claimMembers["auth_time"]; present && claims.AuthTime == nil {
+		return tokenHeader{}, tokenClaims{}, ErrInvalidToken
+	}
 	var members map[string]json.RawMessage
 	if json.Unmarshal(headerBytes, &members) != nil {
 		return tokenHeader{}, tokenClaims{}, ErrInvalidToken
@@ -122,21 +131,26 @@ func (v *Verifier) VerifyAccess(ctx context.Context, raw string, trust Trust) (V
 
 // VerifyID is limited to the outstanding authorization-code login transaction.
 // Nonce, client audience, azp and auth_time are validated independently from the
-// API profile. Login requests use max_age, so auth_time is required.
+// API profile. Authentication time is optional evidence for ordinary login;
+// only the consumed Server transaction may require recent evidence for step-up.
 func (v *Verifier) VerifyID(ctx context.Context, raw string, trust Trust, nonce string) (VerifiedIdentity, error) {
 	header, claims, err := decodeToken(raw)
 	if err != nil || (header.Type != "" && header.Type != "JWT") || nonce == "" ||
-		subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(nonce)) != 1 || claims.AuthTime == nil ||
+		subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(nonce)) != 1 ||
 		(len(claims.Audience) > 1 && claims.AZP != trust.Issuer.ClientID) ||
 		(claims.AZP != "" && claims.AZP != trust.Issuer.ClientID) {
 		return VerifiedIdentity{}, ErrInvalidToken
 	}
 	verified, err := v.verify(ctx, raw, trust, header, claims, trust.Issuer.ClientID)
-	if err != nil || claims.AuthTime.Time.After(v.now().Add(30*time.Second)) ||
-		claims.AuthTime.Time.After(claims.IssuedAt.Time) {
-		return VerifiedIdentity{}, ErrInvalidToken
+	if err != nil {
+		return VerifiedIdentity{}, err
 	}
-	verified.AuthTime = claims.AuthTime.Time
+	if claims.AuthTime != nil {
+		if claims.AuthTime.Time.IsZero() || claims.AuthTime.Time.After(v.now()) || claims.AuthTime.Time.After(claims.IssuedAt.Time) {
+			return VerifiedIdentity{}, ErrInvalidToken
+		}
+		verified.AuthTime = claims.AuthTime.Time
+	}
 	return verified, nil
 }
 

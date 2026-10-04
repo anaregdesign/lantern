@@ -19,6 +19,7 @@ type SessionRequest struct {
 	CSRFDigest           string
 	ReplacesDigest       string
 	AuthTime             time.Time
+	RequireRecentAuth    bool
 	Now                  time.Time
 	Lifetime             time.Duration
 }
@@ -33,9 +34,13 @@ func (s *Store) IssueSession(ctx context.Context, request SessionRequest) (Chang
 	if request.ChangeID == [16]byte{} || request.Identity.Kind != OIDCPrincipal || !request.Identity.valid() ||
 		request.IssuerConfigRevision == 0 || !validHexDigest(request.Digest) || !validHexDigest(request.CSRFDigest) ||
 		(request.ReplacesDigest != "" && (!validHexDigest(request.ReplacesDigest) || request.ReplacesDigest == request.Digest)) ||
-		request.Now.IsZero() || request.AuthTime.IsZero() || request.AuthTime.After(request.Now) ||
-		request.Now.Sub(request.AuthTime) > RecentAuthenticationLifetime || request.Lifetime <= 0 || request.Lifetime > MaxSessionLifetime {
+		request.Now.IsZero() || request.AuthTime.After(request.Now) || request.Lifetime <= 0 || request.Lifetime > MaxSessionLifetime {
 		return ChangeResult{}, ErrInvalidImage
+	}
+	// Ordinary login and rotation preserve unknown/old signed evidence. Only
+	// Server-owned step-up intent requires freshness at the application cut.
+	if request.RequireRecentAuth && (request.AuthTime.IsZero() || request.Now.Sub(request.AuthTime) > RecentAuthenticationLifetime) {
+		return ChangeResult{}, ErrRecentAuthentication
 	}
 	// Keep request identity stable across a retry; the initial issuance time is
 	// part of that session's fixed lifetime and must not slide on retry.

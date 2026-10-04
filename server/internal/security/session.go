@@ -3,7 +3,8 @@ package security
 import "time"
 
 // Session contains only the digest of an opaque random cookie. Fixed expiry
-// avoids a synchronous security write on every business data request.
+// avoids a synchronous security write on every business data request. AuthTime
+// is verified provider evidence; zero means unknown, never CreatedAt or iat.
 type Session struct {
 	CSRFDigest           string    `json:"csrf_digest,omitempty"`
 	IssuerConfigRevision uint64    `json:"issuer_config_revision"`

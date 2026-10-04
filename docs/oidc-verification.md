@@ -23,12 +23,24 @@ State, nonce, cookie, exact Issuer/client/callback and allowed return path belon
 to one bounded single-use transaction on the pinned control process. Restart
 invalidates unfinished transactions. Optional at_hash is validated against the
 co-returned access token; tokens and code-exchange credentials remain private.
-Session issuance separately requires recent auth_time and the current Issuer
-configuration revision. Groups/email never grant Roles or link accounts.
-Authorization requests explicitly require the signed `auth_time` claim through
-the OIDC `claims` parameter; missing evidence still fails closed. Provider
-prerequisites and Google's step-up limitation are documented in the
+Ordinary session issuance accepts missing `auth_time` as unknown and preserves
+older signed evidence; current Issuer configuration, Principal and Role checks
+still apply. Future or contradictory signed evidence is rejected. Ordinary
+login and replacement do not infer authentication time from `iat`, callback,
+consent or account selection, and do not request forced provider reauthentication.
+The Server-owned transaction saves an explicit step-up purpose independent of
+session replacement. Only step-up requests `max_age=0`, `prompt=login` and an
+essential signed `auth_time` through the OIDC `claims` parameter. Step-up and
+important security changes require a signed event within five minutes; failure
+preserves the existing session. Groups/email never grant Roles or link accounts.
+Provider prerequisites and Google's step-up limitation are documented in the
 [Google setup runbook](google-oidc-setup.md).
+
+Unknown authentication evidence survives canonical images, signed replication,
+checkpoints and restart. The current security cohort is image version 2,
+`LNSEC03` revisions and native journal binding v2. Old cohorts are incompatible
+and must be rejected before admission or advancing durable floors; see the
+[operations upgrade boundary](oidc-operations.md#security-state-version-boundary).
 
 Discovery and JWKS use a bounded proxy-free HTTPS fetcher with normal TLS
 verification, pinned validated DNS destinations and no redirects. Private

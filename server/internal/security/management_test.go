@@ -94,6 +94,10 @@ func TestManagementAdmissionLastAdminAndCAS(t *testing.T) {
 		edit func(*ManagementRequest)
 		want error
 	}{
+		{"unknown authentication", func(r *ManagementRequest) {
+			r.AuthTime = time.Time{}
+			r.Changes = []Change{{Kind: RevokeSessions, Identity: &identity}}
+		}, ErrRecentAuthentication},
 		{"old authentication", func(r *ManagementRequest) {
 			r.AuthTime = now.Add(-6 * time.Minute)
 			r.Changes = []Change{{Kind: RevokeSessions, Identity: &identity}}
