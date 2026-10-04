@@ -136,8 +136,12 @@ public CDC endpoints. Policy/session changes partition client cache state.
 The new existing-endpoint-only Edge Create family (#1626) must preserve local
 atomic liveness/absence and original receipts. It stays disabled in HA until
 concurrent creation versus Add/Put/Delete and delayed endpoint/tombstone/TTL
-convergence are proven. Existing Add/Put behavior remains available. Directed
-pair grants cannot combine halves across rules or Roles or imply Delete.
+convergence are proven. Protected Add/Put/Create require live endpoints and never
+create, update or revive them; OFF retains legacy Add/Put endpoint creation.
+Edge read requires tail VertexRead and head VertexRead. Every Edge modification
+requires tail VertexRead and head VertexWrite, with matching Deny winning across
+Roles and default deny. Pair selectors and independent Edge grants are rejected.
+VertexDelete remains an independent permission.
 
 See the [replication RFC](replication.md), [HA runbook](ha-runbook.md),
 [Compose profile](../deploy/compose/README.md) and
