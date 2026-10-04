@@ -1,0 +1,1225 @@
+{
+  "qualification": "candidate_component_diagnostic",
+  "head": "6323e91ef1fe323842239c2c8f6c7ff65738b3a8",
+  "tree": "ca9668de47e34c4f8295f74aaffe7c75e80ec7a1",
+  "binary_sha256": "9b7aa89b8f30ad962a449f701e7cd4844f07245d664fb78a02d26ff9f8546c52",
+  "core_source_sha256": "fbd75e3116d957db18bff5482c67876cd5ab45b1a1ce9352d8e4e024252de090",
+  "platform": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "release": "25.6.0"
+  },
+  "go_version": "go version go1.27.0 darwin/arm64",
+  "env": {
+    "GOGC": "default",
+    "GOMEMLIMIT": "default",
+    "GOMAXPROCS": "default"
+  },
+  "preflight": [
+    {
+      "family": "search",
+      "utc": "2026-10-04T08:35:04.773035+00:00",
+      "load_average": [
+        5.8671875,
+        11.21337890625,
+        11.67724609375
+      ],
+      "aggregate_process_cpu_percent": 412.7,
+      "maximum_process_cpu_percent": 109.5,
+      "owned_cpu_workloads_running": false
+    },
+    {
+      "family": "bfs",
+      "utc": "2026-10-04T08:35:30.645092+00:00",
+      "load_average": [
+        8.17041015625,
+        11.3369140625,
+        11.7080078125
+      ],
+      "aggregate_process_cpu_percent": 504.0,
+      "maximum_process_cpu_percent": 136.2,
+      "owned_cpu_workloads_running": false
+    },
+    {
+      "family": "ppr",
+      "utc": "2026-10-04T08:35:40.373815+00:00",
+      "load_average": [
+        7.59619140625,
+        11.11083984375,
+        11.623046875
+      ],
+      "aggregate_process_cpu_percent": 335.8,
+      "maximum_process_cpu_percent": 95.0,
+      "owned_cpu_workloads_running": false
+    },
+    {
+      "family": "community",
+      "utc": "2026-10-04T08:35:50.417441+00:00",
+      "load_average": [
+        7.203125,
+        10.90966796875,
+        11.54541015625
+      ],
+      "aggregate_process_cpu_percent": 371.2,
+      "maximum_process_cpu_percent": 72.9,
+      "owned_cpu_workloads_running": false
+    }
+  ],
+  "samples": [
+    {
+      "family": "search",
+      "name": "first-search-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^first_scope$/^constrained_false$",
+      "duration": "1x",
+      "count": 1,
+      "observations": 1,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^first_scope$/^constrained_false$",
+        "-test.benchtime=1x",
+        "-test.count=1",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "first-search-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^first_scope$/^constrained_true$",
+      "duration": "1x",
+      "count": 1,
+      "observations": 1,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^first_scope$/^constrained_true$",
+        "-test.benchtime=1x",
+        "-test.count=1",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-first_scope-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^first_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^first_scope$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-first_scope-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^first_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^first_scope$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-reused_scope-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^reused_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^reused_scope$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-reused_scope-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^reused_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^reused_scope$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-visible_update_100-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_update_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^visible_update_100$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-visible_update_100-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_update_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^visible_update_100$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-hidden_update_100-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_update_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^hidden_update_100$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-hidden_update_100-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_update_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^hidden_update_100$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-visible_update_1-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_update_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^visible_update_1$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-visible_update_1-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_update_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^visible_update_1$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-hidden_update_1-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_update_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^hidden_update_1$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-hidden_update_1-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_update_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^hidden_update_1$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-visible_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^visible_put_delete_100$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-visible_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^visible_put_delete_100$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-hidden_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^hidden_put_delete_100$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-hidden_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^hidden_put_delete_100$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-visible_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^visible_put_delete_1$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-visible_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^visible_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^visible_put_delete_1$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-hidden_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^hidden_put_delete_1$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "search",
+      "name": "search-hidden_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationSearchWorkloads$/^hidden_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationSearchWorkloads$/^hidden_put_delete_1$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "first-bfs-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^first_scope$/^constrained_false$",
+      "duration": "1x",
+      "count": 1,
+      "observations": 1,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^first_scope$/^constrained_false$",
+        "-test.benchtime=1x",
+        "-test.count=1",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "first-bfs-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^first_scope$/^constrained_true$",
+      "duration": "1x",
+      "count": 1,
+      "observations": 1,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^first_scope$/^constrained_true$",
+        "-test.benchtime=1x",
+        "-test.count=1",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "bfs-first_scope-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^first_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^first_scope$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "bfs-first_scope-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^first_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^first_scope$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "bfs-reused_scope-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^reused_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^reused_scope$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "bfs-reused_scope-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^reused_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^reused_scope$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "bfs-visible_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^visible_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^visible_put_delete_100$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "bfs-visible_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^visible_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^visible_put_delete_100$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "bfs-hidden_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^hidden_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^hidden_put_delete_100$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "bfs-hidden_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^hidden_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^hidden_put_delete_100$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "bfs-visible_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^visible_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^visible_put_delete_1$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "bfs-visible_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^visible_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^visible_put_delete_1$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "bfs-hidden_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^hidden_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^hidden_put_delete_1$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "bfs",
+      "name": "bfs-hidden_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^hidden_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^bfs$/^hidden_put_delete_1$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "first-ppr-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^first_scope$/^constrained_false$",
+      "duration": "1x",
+      "count": 1,
+      "observations": 1,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^first_scope$/^constrained_false$",
+        "-test.benchtime=1x",
+        "-test.count=1",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "first-ppr-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^first_scope$/^constrained_true$",
+      "duration": "1x",
+      "count": 1,
+      "observations": 1,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^first_scope$/^constrained_true$",
+        "-test.benchtime=1x",
+        "-test.count=1",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "ppr-first_scope-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^first_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^first_scope$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "ppr-first_scope-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^first_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^first_scope$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "ppr-reused_scope-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^reused_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^reused_scope$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "ppr-reused_scope-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^reused_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^reused_scope$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "ppr-visible_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^visible_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^visible_put_delete_100$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "ppr-visible_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^visible_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^visible_put_delete_100$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "ppr-hidden_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^hidden_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^hidden_put_delete_100$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "ppr-hidden_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^hidden_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^hidden_put_delete_100$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "ppr-visible_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^visible_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^visible_put_delete_1$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "ppr-visible_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^visible_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^visible_put_delete_1$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "ppr-hidden_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^hidden_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^hidden_put_delete_1$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "ppr",
+      "name": "ppr-hidden_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^hidden_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^ppr$/^hidden_put_delete_1$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "first-community-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^first_scope$/^constrained_false$",
+      "duration": "1x",
+      "count": 1,
+      "observations": 1,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^first_scope$/^constrained_false$",
+        "-test.benchtime=1x",
+        "-test.count=1",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "first-community-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^first_scope$/^constrained_true$",
+      "duration": "1x",
+      "count": 1,
+      "observations": 1,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^first_scope$/^constrained_true$",
+        "-test.benchtime=1x",
+        "-test.count=1",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "community-first_scope-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^first_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^first_scope$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "community-first_scope-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^first_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^first_scope$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "community-reused_scope-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^reused_scope$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^reused_scope$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "community-reused_scope-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^reused_scope$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^reused_scope$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "community-visible_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^visible_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^visible_put_delete_100$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "community-visible_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^visible_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^visible_put_delete_100$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "community-hidden_put_delete_100-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^hidden_put_delete_100$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^hidden_put_delete_100$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "community-hidden_put_delete_100-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^hidden_put_delete_100$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^hidden_put_delete_100$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "community-visible_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^visible_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^visible_put_delete_1$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "community-visible_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^visible_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^visible_put_delete_1$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "community-hidden_put_delete_1-false",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^hidden_put_delete_1$/^constrained_false$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^hidden_put_delete_1$/^constrained_false$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    },
+    {
+      "family": "community",
+      "name": "community-hidden_put_delete_1-true",
+      "pattern": "^BenchmarkAuthorizationTraversalWorkloads$/^community$/^hidden_put_delete_1$/^constrained_true$",
+      "duration": "200ms",
+      "count": 3,
+      "observations": 3,
+      "exit_code": 0,
+      "command": [
+        "/private/tmp/lantern-head-ranking-candidate-v1.test",
+        "-test.run=^$",
+        "-test.bench=^BenchmarkAuthorizationTraversalWorkloads$/^community$/^hidden_put_delete_1$/^constrained_true$",
+        "-test.benchtime=200ms",
+        "-test.count=3",
+        "-test.benchmem",
+        "-test.timeout=15m"
+      ]
+    }
+  ],
+  "forced_gc_in_timed_loop": false,
+  "production_capacity_qualified": false,
+  "verdict": "pass"
+}

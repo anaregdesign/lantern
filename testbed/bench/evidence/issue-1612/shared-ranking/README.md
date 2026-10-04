@@ -205,3 +205,7 @@ still needs immutable final-source OFF/namespace-OFF/OIDC comparisons, real
 wire/HA lifecycle and concurrency, broad matches/dense paths, capacity/peak
 memory and lock-delay evidence, and final provider/device evidence. The epic's
 merged-source, final-source, publication and human/device exits remain open.
+
+## Head-managed candidate follow-up
+
+[The pinned Head-managed candidate matrix](head-candidate-20261004/README.md) preserves all 64 fresh processes / 176 observations, first-query and visible/hidden mixed-update cases, exact source/binary hashes, retained/allocation metrics and max RSS. Family host preflights record background contention. It remains a component diagnostic; it does not close whole-Server OFF/OIDC, final merged-source, native stable-clock HA or provider/device qualification.
