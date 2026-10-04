@@ -7,12 +7,14 @@ Future<void> main() async {
   const tlsUrl = String.fromEnvironment('LANTERN_PROBE_TLS_URL');
   const token = String.fromEnvironment('LANTERN_PROBE_TOKEN');
   const caPemBase64 = String.fromEnvironment('LANTERN_PROBE_CA_PEM_BASE64');
+  const caBase64 = String.fromEnvironment('LANTERN_PROBE_CA_BASE64');
   const leafBase64 = String.fromEnvironment('LANTERN_PROBE_LEAF_BASE64');
   if ([
     plaintextUrl,
     tlsUrl,
     token,
     caPemBase64,
+    caBase64,
     leafBase64,
   ].any((value) => value.isEmpty)) {
     throw StateError('mobile probe configuration is incomplete');
@@ -26,7 +28,13 @@ Future<void> main() async {
     utf8.decode(base64Decode(leafBase64)),
   ];
 
-  await _expectFailure(runProbe(wrongHostTls, token: token));
+  await _expectFailure(
+    runProbe(
+      wrongHostTls,
+      token: token,
+      trustedCertificateBytes: base64Decode(caBase64),
+    ),
+  );
   await _expectFailure(runProbe(trustedTls, pinnedCertificatePems: pins));
   _expectSuccess(
     await runProbe(trustedTls, token: token, pinnedCertificatePems: pins),

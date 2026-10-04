@@ -38,10 +38,22 @@ LANTERN_PORT=6433 LANTERN_METRICS_ADDR=:9143 go run ./server/cmd
 (cd testbed/dart-transport-probe/grpc && dart run tool/probe.dart http://127.0.0.1:6433)
 ```
 
-For a TLS/auth server, set `LANTERN_TLS_CERT_FILE`,
-`LANTERN_TLS_KEY_FILE`, and `LANTERN_AUTH_TOKENS`, pass the bearer token as
-the second CLI argument, and set `LANTERN_PROBE_CA_CERT` to the trusted CA
-PEM path.
+For protected TLS, build the production Server and `server/cmd/authfixture`,
+then use `testbed/scripts/dart_transport_fixture.sh start <absolute-server>
+<absolute-authfixture> <new-private-state-directory> 6434`. This supervises
+native OIDC security state and qualified-clock admission with a named machine
+Principal. Its Role grants read/write/export only under `probe/connect/` and
+`probe/grpc/`; no security, receipt, CDC or private peer capability is added.
+The fixture's public certificate is valid only for `localhost`, preserving a
+separate hostname-mismatch check. No external IdP or retired static-token
+setting is used.
+
+Read the CA path from private `metadata.json` (`ca_file`) and set
+`LANTERN_PROBE_CA_CERT` to it. Pass `<state>/token`, a private token **file**, as
+the second CLI argument; the token value is never a shell argument. Finish with
+`bash testbed/scripts/dart_transport_fixture.sh stop <state>`; teardown failure
+invalidates the run. Keep metadata and native diagnostics private. This local
+fixture does not qualify production clocks, Google or physical devices.
 
 Each successful probe checks a generated `int64` round-trip, unary Put/Get,
 auth metadata, a `BackupSnapshot` server stream, and cancellation after the
@@ -57,15 +69,18 @@ contract over plaintext plus an authenticated self-signed TLS endpoint:
 
 ```bash
 testbed/dart-transport-probe/scripts/mobile.sh \
-  connect <device-id> http://<host>:6433 https://<host>:6434 \
-  probe-token /path/to/ca.pem
+  connect <device-id> http://<host>:6433 https://localhost:6434 \
+  /path/to/private/state/token /path/to/ca.pem
 testbed/dart-transport-probe/scripts/mobile.sh \
-  grpc <device-id> http://<host>:6433 https://<host>:6434 \
-  probe-token /path/to/ca.pem
+  grpc <device-id> http://<host>:6433 https://localhost:6434 \
+  /path/to/private/state/token /path/to/ca.pem
 ```
 
-Use `10.0.2.2` as `<host>` for the standard Android emulator and `127.0.0.1`
-for the iOS simulator. The test proves:
+The maintained native fixture targets the iOS simulator on `localhost`; use
+`127.0.0.1` for its plaintext `<host>`. A physical device or Android emulator
+needs separately scoped routing and a certificate for that actual host; the
+localhost-only fixture must not be relabeled as physical qualification.
+The test proves:
 
 - plaintext local development connectivity;
 - TLS fails closed before CA injection;
@@ -77,7 +92,9 @@ The script prints the generated debug APK byte size or iOS simulator app size.
 For Flutter's integration-test driver it converts the supplied PEM CA to a
 single-certificate DER trust anchor. The CI `simctl` driver injects a
 per-client callback that accepts only the expected hostname and exact leaf or
-CA PEM, then proves fail-closed behavior with a hostname mismatch. It never
+CA PEM. The hostname-mismatch test separately injects the trusted CA bytes
+without a pin callback, so an untrusted-CA error cannot stand in for hostname
+validation. It never
 uses a global or allow-all certificate bypass. Android separately proves
 app-level custom CA injection for both candidates.
 On Flutter 3.44.6 / Dart 3.12.2 with Android emulator 36.6.11, the measured

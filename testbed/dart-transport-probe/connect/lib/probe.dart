@@ -13,15 +13,21 @@ Future<Map<String, Object>> runProbe(
   Uri endpoint, {
   String? token,
   String? caPath,
+  List<int>? trustedCertificateBytes,
   HttpClient? httpClient,
   String keyPrefix = 'probe/connect/',
   Iterable<String> pinnedCertificatePems = const <String>[],
 }) async {
   final securityContext =
-      caPath == null
+      caPath == null && trustedCertificateBytes == null
           ? null
-          : (SecurityContext(withTrustedRoots: false)
-            ..setTrustedCertificates(caPath));
+          : SecurityContext(withTrustedRoots: false);
+  if (caPath != null) {
+    securityContext!.setTrustedCertificates(caPath);
+  }
+  if (trustedCertificateBytes != null) {
+    securityContext!.setTrustedCertificatesBytes(trustedCertificateBytes);
+  }
   final ownsHttpClient = httpClient == null;
   final ioClient = httpClient ?? HttpClient(context: securityContext);
   final normalizedPins = pinnedCertificatePems.map(_normalizePem).toSet();

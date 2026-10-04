@@ -9,6 +9,7 @@ Future<Map<String, Object>> runProbe(
   Uri endpoint, {
   String? token,
   String? caPath,
+  List<int>? trustedCertificateBytes,
   ClientChannel? clientChannel,
   String keyPrefix = 'probe/grpc/',
   Iterable<String> pinnedCertificatePems = const <String>[],
@@ -16,7 +17,9 @@ Future<Map<String, Object>> runProbe(
   final normalizedPins = pinnedCertificatePems.map(_normalizePem).toSet();
   final credentials = endpoint.scheme == 'https'
       ? ChannelCredentials.secure(
-          certificates: caPath == null ? null : File(caPath).readAsBytesSync(),
+          certificates:
+              trustedCertificateBytes ??
+              (caPath == null ? null : File(caPath).readAsBytesSync()),
           onBadCertificate: normalizedPins.isEmpty
               ? null
               : (certificate, host) =>

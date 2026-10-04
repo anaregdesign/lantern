@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -105,6 +106,49 @@ func TestWholeStateArchiveRejectsShortWrite(t *testing.T) {
 	err := encodeWholeStateArchive(archiveShortWriter{}, wholeStateArchiveFixture(t))
 	if !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("short write = %v, want io.ErrShortWrite", err)
+	}
+}
+
+func TestWholeStateArchiveCapacityBounds(t *testing.T) {
+	values := []int{0, -1, 1, math.MaxInt32}
+	if strconv.IntSize == 64 {
+		above := int64(math.MaxInt32) + 1
+		wrapsToFour := int64(1)<<32 + 4
+		values = append(values, int(above), int(wrapsToFour))
+	}
+	for _, value := range values {
+		t.Run(strconv.Itoa(value), func(t *testing.T) {
+			a := wholeStateArchiveFixture(t)
+			a.Policy.MaxEntries = value
+			valid := value > 0 && value <= math.MaxInt32
+			if value > 0 {
+				store, err := mutationreceipt.New(a.Policy)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Match the changed policy, so refusal cannot be attributed to
+				// an unrelated fingerprint mismatch.
+				a.Receipts.PolicyFingerprint = store.PolicyFingerprint()
+			}
+			var output bytes.Buffer
+			err := encodeWholeStateArchive(&output, a)
+			if !valid {
+				if !errors.Is(err, errWholeStateArchive) || output.Len() != 0 {
+					t.Fatalf("invalid capacity wrote archive: bytes=%d error=%v", output.Len(), err)
+				}
+				if err := validateWholeStateArchive(a); !errors.Is(err, errWholeStateArchive) {
+					t.Fatalf("shared archive validation accepted invalid capacity: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := decodeWholeStateArchive(&output)
+			if err != nil || got.Policy.MaxEntries != value {
+				t.Fatalf("capacity changed across v4 encoding: value=%d error=%v", got.Policy.MaxEntries, err)
+			}
+		})
 	}
 }
 

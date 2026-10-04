@@ -64,6 +64,10 @@ func wholeStateArchiveError(format string, args ...any) error {
 // authenticity signature and cannot prove that the producer captured one
 // atomic graph/receipt/origin cut.
 func encodeWholeStateArchive(w io.Writer, a wholeStateArchive) error {
+	maxEntries, err := archiveMaxEntries(a.Policy.MaxEntries)
+	if err != nil {
+		return err
+	}
 	if err := validateWholeStateArchive(a); err != nil {
 		return err
 	}
@@ -76,7 +80,7 @@ func encodeWholeStateArchive(w io.Writer, a wholeStateArchive) error {
 	out.Write(a.Receipts.PolicyFingerprint[:])
 	writeArchiveU64(&out, uint64(a.Receipts.ClockHighWaterMillis))
 	writeArchiveU64(&out, uint64(a.Policy.Retention/time.Millisecond))
-	writeArchiveU32(&out, uint32(a.Policy.MaxEntries))
+	writeArchiveU32(&out, maxEntries)
 	writeArchiveU64(&out, a.Policy.MaxBytes)
 	for _, frame := range a.Graph {
 		payload, err := (proto.MarshalOptions{Deterministic: true}).Marshal(frame)
@@ -216,9 +220,12 @@ func decodeWholeStateArchive(r io.Reader) (wholeStateArchive, error) {
 
 func validateWholeStateArchive(a wholeStateArchive) error {
 	if a.Receipts.Version != 1 || a.Receipts.Epoch == (mutationreceipt.Epoch{}) || a.Policy.Epoch != a.Receipts.Epoch ||
-		a.Receipts.ClockHighWaterMillis < 0 || a.Policy.MaxEntries <= 0 || a.Policy.MaxEntries > math.MaxInt32 ||
+		a.Receipts.ClockHighWaterMillis < 0 ||
 		a.Policy.ClockHighWater.UnixMilli() != a.Receipts.ClockHighWaterMillis {
 		return wholeStateArchiveError("invalid receipt header or policy")
+	}
+	if _, err := archiveMaxEntries(a.Policy.MaxEntries); err != nil {
+		return err
 	}
 	if _, err := mutationreceipt.NewFromSnapshot(a.Policy, a.Receipts); err != nil {
 		return wholeStateArchiveError("invalid receipt snapshot: %v", err)
@@ -227,6 +234,15 @@ func validateWholeStateArchive(a wholeStateArchive) error {
 		return err
 	}
 	return nil
+}
+
+// The v4 header uses uint32, but its capacity contract is positive MaxInt32
+// on every architecture. Keep the narrowing next to its checked bound.
+func archiveMaxEntries(value int) (uint32, error) {
+	if value <= 0 || value > math.MaxInt32 {
+		return 0, wholeStateArchiveError("invalid receipt capacity")
+	}
+	return uint32(value), nil
 }
 
 func validateArchiveGraph(frames []*pb.SnapshotResponse, origins []service.OriginState) error {

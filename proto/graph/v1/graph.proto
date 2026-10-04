@@ -649,7 +649,9 @@ enum MutationAcceptanceKind {
   MUTATION_ACCEPTANCE_KIND_UNSPECIFIED = 0;
   MUTATION_ACCEPTANCE_KIND_HANDLED_EFFECT_UNDISCLOSED = 1;
 }
-message MutationAcceptance { MutationAcceptanceKind kind = 1; }
+message MutationAcceptance {
+  MutationAcceptanceKind kind = 1;
+}
 
 message DeleteEdgeResponse {
   // existed is true if the edge was present and removed by this call.

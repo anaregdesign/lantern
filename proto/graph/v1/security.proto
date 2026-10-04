@@ -33,7 +33,10 @@ enum AuthMode {
 }
 
 message GetAuthCapabilitiesRequest {}
-message LoginIssuer { string issuer = 1; string label = 2; }
+message LoginIssuer {
+  string issuer = 1;
+  string label = 2;
+}
 message GetAuthCapabilitiesResponse {
   AuthMode mode = 1;
   repeated LoginIssuer login_issuers = 2;
@@ -91,12 +94,19 @@ enum SecurityEffect {
 // all data. Pair is a retired diagnostic shape: Server rejects every pair
 // selector and independent Edge action in a Role. Edge permissions are derived
 // from Vertex grants; pair must never be interpreted as permission authority.
-message SecurityPrefixPair { string tail_prefix = 1; string head_prefix = 2; }
+message SecurityPrefixPair {
+  string tail_prefix = 1;
+  string head_prefix = 2;
+}
 message SecurityRule {
   string id = 1;
   SecurityEffect effect = 2;
   SecurityAction action = 3;
-  oneof resource { string prefix = 4; bool global = 5; SecurityPrefixPair pair = 6; }
+  oneof resource {
+    string prefix = 4;
+    bool global = 5;
+    SecurityPrefixPair pair = 6;
+  }
 }
 message SecurityRole {
   string id = 1;
@@ -105,7 +115,11 @@ message SecurityRole {
   // Read-only: an environment-owned membership protects this Role policy.
   bool env_owned = 4;
 }
-message SecurityRoleAssignment { SecurityIdentity identity = 1; string role_id = 2; bool env_owned = 3; }
+message SecurityRoleAssignment {
+  SecurityIdentity identity = 1;
+  string role_id = 2;
+  bool env_owned = 3;
+}
 message SecurityUser {
   SecurityIdentity identity = 1;
   SecurityPrincipalState state = 2;
@@ -142,8 +156,14 @@ message GetCurrentPrincipalResponse {
 }
 // Same-origin /auth/session and /auth/logout HTTP responses. OIDC tokens never
 // cross this boundary; principal is absent only when mode is explicitly OFF.
-message BrowserSession { AuthMode mode = 1; GetCurrentPrincipalResponse principal = 2; }
-message SessionRevocation { SecurityVersion version = 1; SecurityEnforcementState enforcement = 2; }
+message BrowserSession {
+  AuthMode mode = 1;
+  GetCurrentPrincipalResponse principal = 2;
+}
+message SessionRevocation {
+  SecurityVersion version = 1;
+  SecurityEnforcementState enforcement = 2;
+}
 message ListIssuersRequest {
   uint32 limit = 1;
   string cursor = 2;
@@ -168,17 +188,49 @@ message ListSecurityAuditRequest {
   // Optional exact URL, Role ID or subject selector within the selected list.
   string exact = 3;
 }
-message GetIssuerRequest { string issuer = 1; }
-message GetIssuerResponse { SecurityIssuer issuer = 1; SecurityVersion version = 2; }
-message GetRoleRequest { string id = 1; }
-message GetRoleResponse { SecurityRole role = 1; SecurityVersion version = 2; }
-message GetUserRequest { SecurityIdentity identity = 1; }
-message GetUserResponse { SecurityUser user = 1; SecurityVersion version = 2; }
-message ListIssuersResponse { repeated SecurityIssuer issuers = 1; SecurityVersion version = 2; string next_cursor = 3; }
-message ListRolesResponse { repeated SecurityRole roles = 1; SecurityVersion version = 2; string next_cursor = 3; }
-message ListUsersResponse { repeated SecurityUser users = 1; SecurityVersion version = 2; string next_cursor = 3; }
-message ListRoleAssignmentsRequest { SecurityIdentity identity = 1; }
-message ListRoleAssignmentsResponse { repeated SecurityRoleAssignment assignments = 1; SecurityVersion version = 2; }
+message GetIssuerRequest {
+  string issuer = 1;
+}
+message GetIssuerResponse {
+  SecurityIssuer issuer = 1;
+  SecurityVersion version = 2;
+}
+message GetRoleRequest {
+  string id = 1;
+}
+message GetRoleResponse {
+  SecurityRole role = 1;
+  SecurityVersion version = 2;
+}
+message GetUserRequest {
+  SecurityIdentity identity = 1;
+}
+message GetUserResponse {
+  SecurityUser user = 1;
+  SecurityVersion version = 2;
+}
+message ListIssuersResponse {
+  repeated SecurityIssuer issuers = 1;
+  SecurityVersion version = 2;
+  string next_cursor = 3;
+}
+message ListRolesResponse {
+  repeated SecurityRole roles = 1;
+  SecurityVersion version = 2;
+  string next_cursor = 3;
+}
+message ListUsersResponse {
+  repeated SecurityUser users = 1;
+  SecurityVersion version = 2;
+  string next_cursor = 3;
+}
+message ListRoleAssignmentsRequest {
+  SecurityIdentity identity = 1;
+}
+message ListRoleAssignmentsResponse {
+  repeated SecurityRoleAssignment assignments = 1;
+  SecurityVersion version = 2;
+}
 message SecurityAuditRecord {
   uint64 revision = 1;
   string change_id = 2;
@@ -190,10 +242,22 @@ message SecurityAuditRecord {
   uint32 additional_targets = 8;
   string outcome = 9;
 }
-message ListSecurityAuditResponse { repeated SecurityAuditRecord records = 1; SecurityVersion version = 2; string next_cursor = 3; }
-message GetRoleTemplatesRequest { string prefix = 1; }
-message GetRoleTemplatesResponse { repeated SecurityRole roles = 1; SecurityVersion version = 2; }
-message SecurityEdgeIdentity { string tail = 1; string head = 2; }
+message ListSecurityAuditResponse {
+  repeated SecurityAuditRecord records = 1;
+  SecurityVersion version = 2;
+  string next_cursor = 3;
+}
+message GetRoleTemplatesRequest {
+  string prefix = 1;
+}
+message GetRoleTemplatesResponse {
+  repeated SecurityRole roles = 1;
+  SecurityVersion version = 2;
+}
+message SecurityEdgeIdentity {
+  string tail = 1;
+  string head = 2;
+}
 message ExplainAccessRequest {
   SecurityIdentity identity = 1;
   SecurityAction action = 2;
@@ -210,11 +274,22 @@ message SecurityRuleMatch {
   // "tail" or "head" for a derived Edge check; empty for ordinary grants.
   string endpoint = 5;
 }
-message ExplainAccessResponse { bool allowed = 1; repeated SecurityRuleMatch matches = 2; SecurityVersion version = 3; }
-message ValidateIssuerRequest { SecurityIssuer issuer = 1; }
-message ValidateIssuerResponse { bool valid = 1; }
+message ExplainAccessResponse {
+  bool allowed = 1;
+  repeated SecurityRuleMatch matches = 2;
+  SecurityVersion version = 3;
+}
+message ValidateIssuerRequest {
+  SecurityIssuer issuer = 1;
+}
+message ValidateIssuerResponse {
+  bool valid = 1;
+}
 
-message SecurityUserStateChange { SecurityIdentity identity = 1; SecurityPrincipalState state = 2; }
+message SecurityUserStateChange {
+  SecurityIdentity identity = 1;
+  SecurityPrincipalState state = 2;
+}
 message SecurityChange {
   oneof operation {
     SecurityIssuer put_issuer = 1;
@@ -234,16 +309,31 @@ enum SecurityEnforcementState {
   SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING = 1;
   SECURITY_ENFORCEMENT_STATE_ENFORCED = 2;
 }
-message ApplySecurityChangesRequest { uint64 expected_revision = 1; bytes change_id = 2; repeated SecurityChange changes = 3; }
+message ApplySecurityChangesRequest {
+  uint64 expected_revision = 1;
+  bytes change_id = 2;
+  repeated SecurityChange changes = 3;
+}
 message ApplySecurityChangesResponse {
   SecurityVersion version = 1;
   repeated bool applied = 2;
   bool replayed = 3;
   SecurityEnforcementState enforcement = 4;
 }
-message ApplySecurityChangeRequest { uint64 expected_revision = 1; bytes change_id = 2; SecurityChange change = 3; }
-message ApplySecurityChangeResponse { SecurityVersion version = 1; bool applied = 2; bool replayed = 3; SecurityEnforcementState enforcement = 4; }
-message GetSecurityChangeStatusRequest { bytes change_id = 1; }
+message ApplySecurityChangeRequest {
+  uint64 expected_revision = 1;
+  bytes change_id = 2;
+  SecurityChange change = 3;
+}
+message ApplySecurityChangeResponse {
+  SecurityVersion version = 1;
+  bool applied = 2;
+  bool replayed = 3;
+  SecurityEnforcementState enforcement = 4;
+}
+message GetSecurityChangeStatusRequest {
+  bytes change_id = 1;
+}
 
 message GetSecurityChangeStatusResponse {
   SecurityVersion version = 1;

@@ -180,7 +180,8 @@ validates the exact synthetic merge, not a preliminary local branch image.
 
 Per-module test runs are mandatory: the root `go test ./...` does **not** span
 submodules. `make lint` runs the same linter as the `Lint` job. The `Proto (buf)` check
-fails on any uncommitted codegen diff — regenerate locally first (below).
+requires `buf format -d --exit-code`, `buf lint` and zero uncommitted codegen drift.
+Use `buf format -w` for source formatting and regenerate locally first (below).
 
 The Dart SDK is outside `go.work`; its format/analyze/test gate is therefore
 separate too. When `proto/` changes, run `sdks/dart/scripts/codegen.sh` and commit

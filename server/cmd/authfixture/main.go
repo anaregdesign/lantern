@@ -70,6 +70,7 @@ func main() {
 	receiptHA := flag.Bool("receipt-ha", false, "four-node native receipt HA with a separate policy writer and controlled data relay")
 	edgeCreate := flag.Bool("edge-create", false, "qualify standalone existing-endpoint Create under Vertex-derived Head authority")
 	headEdge := flag.Bool("head-edge", false, "qualify standalone Head write-only handling with a separate machine Role")
+	transportProbe := flag.Bool("transport-probe", false, "standalone scoped transport probe with a localhost-only certificate")
 	receipt := flag.Bool("receipt", false, "enable native receipt WAL for each OIDC node")
 	readyTimeout := flag.Duration("ready-timeout", time.Minute, "bounded verified-TLS production readiness wait")
 	flag.Parse()
@@ -87,7 +88,7 @@ func main() {
 		return
 	}
 	if *restartNode != "" {
-		if !*compose || *directory == "" || *renew || *renewEvery != 0 || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *overridesFile != "" || flag.NArg() != 0 {
+		if !*compose || *directory == "" || *renew || *renewEvery != 0 || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *overridesFile != "" || flag.NArg() != 0 {
 			fmt.Fprintln(os.Stderr, "authfixture: restart requires only -compose -restart-node -directory")
 			os.Exit(1)
 		}
@@ -98,7 +99,7 @@ func main() {
 		return
 	}
 	if *renew {
-		if !*compose || *directory == "" || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *overridesFile != "" || flag.NArg() != 0 {
+		if !*compose || *directory == "" || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *overridesFile != "" || flag.NArg() != 0 {
 			fmt.Fprintln(os.Stderr, "authfixture: renewal requires only -compose -renew -directory")
 			os.Exit(1)
 		}
@@ -143,9 +144,12 @@ func main() {
 	if err == nil && *headEdge && (*compose || *mode != "oidc" || !*receipt || len(public) != 1 || len(peer) != 0 || *serverBinary == "" || *edgeCreate) {
 		err = errors.New("head-edge requires one supervised standalone OIDC receipt node")
 	}
+	if err == nil && *transportProbe && (*compose || *mode != "oidc" || len(public) != 1 || len(peer) != 0 || *serverBinary == "" || *publicMTLS || *receipt || *edgeCreate || *headEdge || *overridesFile != "") {
+		err = errors.New("transport probe requires one supervised standalone OIDC node")
+	}
 	var result fixture
 	if err == nil {
-		result, err = generateTopology(*directory, public, peer, *mode, *tokensFile, *compose)
+		result, err = generateTopologyProfile(*directory, public, peer, *mode, *tokensFile, *compose, *transportProbe)
 	}
 	if err == nil && *publicMTLS {
 		for i := range result.Nodes {
@@ -240,13 +244,17 @@ func writeKey(dir, name string, key any, private bool) (string, error) {
 	return writeFile(dir, name, pem.EncodeToMemory(&pem.Block{Type: kind, Bytes: raw}))
 }
 func certificate(dir, name, identity string, ca *x509.Certificate, signer crypto.Signer, dns ...string) (string, string, [32]byte, error) {
+	return certificateWithAddresses(dir, name, identity, ca, signer, []net.IP{net.ParseIP("127.0.0.1")}, dns...)
+}
+
+func certificateWithAddresses(dir, name, identity string, ca *x509.Certificate, signer crypto.Signer, addresses []net.IP, dns ...string) (string, string, [32]byte, error) {
 	private, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return "", "", [32]byte{}, err
 	}
 	public := &private.PublicKey
 	now := time.Now().UTC()
-	template := &x509.Certificate{SerialNumber: big.NewInt(now.UnixNano()), Subject: pkix.Name{CommonName: name}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), DNSNames: []string{"localhost"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}}
+	template := &x509.Certificate{SerialNumber: big.NewInt(now.UnixNano()), Subject: pkix.Name{CommonName: name}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), DNSNames: []string{"localhost"}, IPAddresses: addresses, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}}
 	template.DNSNames = append(template.DNSNames, dns...)
 	if identity != "" {
 		uri, err := url.Parse(identity)
@@ -279,8 +287,15 @@ func generate(dir string, publicPorts, peerPorts []int, mode, tokensFile string)
 	return generateTopology(dir, publicPorts, peerPorts, mode, tokensFile, false)
 }
 func generateTopology(dir string, publicPorts, peerPorts []int, mode, tokensFile string, compose bool) (fixture, error) {
+	return generateTopologyProfile(dir, publicPorts, peerPorts, mode, tokensFile, compose, false)
+}
+
+func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tokensFile string, compose, transportProbe bool) (fixture, error) {
 	if !filepath.IsAbs(dir) || mode != "oidc" && mode != "off" || compose && (len(publicPorts) != 3 || len(peerPorts) != 3) {
 		return fixture{}, errors.New("absolute fixture directory and exact mode required")
+	}
+	if transportProbe && (mode != "oidc" || compose || len(publicPorts) != 1 || len(peerPorts) != 0) {
+		return fixture{}, errors.New("transport probe requires standalone OIDC")
 	}
 	if err := os.Mkdir(dir, 0700); err != nil {
 		return fixture{}, errors.New("fixture directory must be new")
@@ -310,6 +325,9 @@ func generateTopology(dir string, publicPorts, peerPorts []int, mode, tokensFile
 	}
 	issuer := "https://fixture-idp.invalid"
 	roles := fixtureRoles()
+	if transportProbe {
+		roles = transportProbeRoles()
+	}
 	var securityEnv map[string]string
 	var writerPublic ed25519.PublicKey
 	var generation [16]byte
@@ -413,7 +431,12 @@ func generateTopology(dir string, publicPorts, peerPorts []int, mode, tokensFile
 		if compose {
 			serviceName = fmt.Sprintf("lantern-%d", index)
 		}
-		certFile, keyFile, _, err := certificate(dir, name+"-public", "", ca, caPrivate, serviceName)
+		var certFile, keyFile string
+		if transportProbe {
+			certFile, keyFile, _, err = certificateWithAddresses(dir, name+"-public", "", ca, caPrivate, nil)
+		} else {
+			certFile, keyFile, _, err = certificate(dir, name+"-public", "", ca, caPrivate, serviceName)
+		}
 		if err != nil {
 			return fixture{}, err
 		}
