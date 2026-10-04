@@ -321,13 +321,19 @@ The `Build & Test` job measures per-module coverage (`-covermode=atomic`), merge
 six profiles with `gocovmerge`, and then enforces a **per-module floor** in the
 `Enforce coverage floors` step. A PR that drops any module below its floor fails CI.
 
-The floors are a **ratchet, not an aspiration**: each sits just below that module's
-current measured baseline, so coverage can only hold or climb. They are per-module
+The floors are a **ratchet, not an aspiration**: adopted floors are never lowered.
+Raise them against a durable baseline under the same measurement scope. They are per-module
 (not one workspace number) because module totals vary widely — generated `pb` and the
 CLI sit far below `core`/`mcp`, and a single merged floor would let a regression in a
 well-tested module hide behind the large low-coverage denominator.
 
-Current floors (baseline measured on `main`; **raise these in the same PR** whenever a
+Each module uses `-coverpkg=./...` so calls between its packages count, including
+the generated Connect/protobuf boundary. The pattern stays within the selected
+module; it neither attributes another workspace module's code nor excludes
+generated code. Transport mocks qualify wire fidelity only; real Server policy
+and provider/device evidence remain separate.
+
+Current floors (**raise these in the same PR** whenever a
 module's coverage rises durably):
 
 | Module (profile slug) | Floor |
@@ -339,12 +345,19 @@ module's coverage rises durably):
 | `sdks-go` | 37% |
 | `server` | 52% |
 
+The #1660 integration candidate measured 63.8 / 87.9 / 87.6 / 23.8 / 70.4 /
+80.5% respectively with race, shuffle and module-wide instrumentation. Existing
+floors remain unchanged during this measurement-scope correction. The earlier
+package-only figures and these figures are not a same-condition improvement
+comparison. Ratchet updates need a durable baseline under the corrected scope,
+including main-directed CI; generated statements remain in the denominator.
+
 The authoritative values live in the `floors=` line of the `Enforce coverage floors`
 step in [`.github/workflows/go.yml`](.github/workflows/go.yml); this table must be kept
 in sync with it. To reproduce a module's number locally:
 
 ```bash
-(cd <module> && go test -covermode=atomic -coverprofile=/tmp/cov.out ./...)
+(cd <module> && go test -coverpkg=./... -covermode=atomic -coverprofile=/tmp/cov.out ./...)
 go tool cover -func=/tmp/cov.out | tail -1   # the `total:` line
 ```
 

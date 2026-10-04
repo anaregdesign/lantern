@@ -121,13 +121,16 @@ jobs:
             # Slug for coverage filename: '.' -> root, 'sdks/go' -> sdks-go.
             slug=$(echo "$mod" | sed 's|/|-|g; s|^\.$|root|')
             echo "::group::go test ($mod)"
-            (cd "$mod" && go test -race -shuffle=on -covermode=atomic -coverprofile="$GITHUB_WORKSPACE/coverage/${slug}.out" ./...)
+            (cd "$mod" && go test -race -shuffle=on -coverpkg=./... -covermode=atomic -coverprofile="$GITHUB_WORKSPACE/coverage/${slug}.out" ./...)
             echo "::endgroup::"
           done
           # Keep the legacy artifact path so downstream tooling that expects
           # coverage.out at the repo root keeps working.
           cp coverage/root.out coverage.out
 
+      # coverpkg=./... instruments only this module, including calls crossing
+      # its package boundaries (e.g. generated Connect -> protobuf messages).
+      # It does not instrument another workspace module or exclude generated code.
       # Merge the six per-module coverage profiles into a single workspace-wide
       # profile. `go test -coverprofile` only sees one module's packages, so
       # merging is the only way to get a unified view across the workspace.
