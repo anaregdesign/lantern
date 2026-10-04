@@ -8,6 +8,7 @@ import 'change_store.dart';
 import 'errors.dart';
 import 'identity_consumer.dart';
 import 'remote.dart';
+import 'scoped_change_consumer.dart';
 import 'store.dart';
 import 'types.dart';
 
@@ -197,6 +198,40 @@ final class OfflineLanternRepository {
         partitionId,
         cancellation,
         (owned) => runOfflineIdentityConsumer(
+          repository: this,
+          partitionId: partitionId,
+          source: source,
+          cancellation: owned,
+        ),
+      );
+    } catch (_) {
+      _activeIdentitySessions.remove(partitionId);
+      rethrow;
+    }
+    return run.whenComplete(() => _activeIdentitySessions.remove(partitionId));
+  }
+
+  /// Consumes public scoped identity CDC using opaque Server checkpoints.
+  ///
+  /// Exactly one identity session (legacy or scoped) owns each partition.
+  /// Logout/dispose cancel the stream and recovery reads. Pending outbox work
+  /// survives gaps. No background reconnect or mutation retry is started.
+  Future<void> consumeScopedChanges(
+    String partitionId, {
+    required OfflineScopedChangeSource source,
+    LanternCancellationToken? cancellation,
+  }) {
+    _validatePartition(partitionId);
+    _ensurePartitionActive(partitionId);
+    if (!_activeIdentitySessions.add(partitionId)) {
+      throw const OfflineCapacityException();
+    }
+    Future<void> run;
+    try {
+      run = _runPartitionWork(
+        partitionId,
+        cancellation,
+        (owned) => runOfflineScopedChangeConsumer(
           repository: this,
           partitionId: partitionId,
           source: source,

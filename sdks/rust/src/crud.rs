@@ -5,11 +5,12 @@ use std::{
 };
 
 use crate::{
-    AddBatch, AddInput, BatchError, CallOptions, DeleteBatch, Edge, EdgeContributionRef, EdgeInput,
-    EdgeRef, GetBatch, LanternClient, LanternError, PreparedAdd, PutOutcome, Vertex, VertexInput,
+    AddBatch, AddInput, BatchError, CallOptions, CreateEdgeOutcome, DeleteBatch, Edge,
+    EdgeContributionRef, EdgeInput, EdgeRef, GetBatch, LanternClient, LanternError, PreparedAdd,
+    PutOutcome, Vertex, VertexInput,
     batch::chunk_plan,
     generated::graph::v1::{
-        AddEdgesRequest, AddEdgesResponse, DeleteEdgeContributionsRequest,
+        AddEdgesRequest, AddEdgesResponse, CreateEdgesRequest, DeleteEdgeContributionsRequest,
         DeleteEdgeContributionsResponse, DeleteEdgesRequest, DeleteEdgesResponse,
         DeleteVerticesRequest, DeleteVerticesResponse, EdgeContributionKey, EdgeKey,
         GetEdgesRequest, GetEdgesResponse, GetVerticesRequest, GetVerticesResponse,
@@ -369,6 +370,91 @@ impl LanternClient {
             (0, 1) => Err(LanternError::NotFound),
             _ => Err(LanternError::Protocol("invalid single-edge read result")),
         }
+    }
+
+    /// Creates only between existing live endpoints. Failed chunks are never retried.
+    pub async fn create_edges<I>(&self, edges: I) -> Result<Vec<CreateEdgeOutcome>, LanternError>
+    where
+        I: IntoIterator<Item = EdgeInput>,
+    {
+        self.create_edges_with_options(edges, CallOptions::Default)
+            .await
+    }
+    pub async fn create_edges_with_options<I>(
+        &self,
+        edges: I,
+        options: CallOptions,
+    ) -> Result<Vec<CreateEdgeOutcome>, LanternError>
+    where
+        I: IntoIterator<Item = EdgeInput>,
+    {
+        let deadline = self.deadline_for(options)?;
+        let now = SystemTime::now();
+        let edges: Vec<Edge> = collect_bounded(edges)?
+            .into_iter()
+            .map(|input| input.into_wire(now))
+            .collect::<Result<_, _>>()?;
+        if edges
+            .iter()
+            .any(|edge| edge.weight == 0.0 || !edge.weight.is_finite())
+        {
+            return Err(LanternError::InvalidInput(
+                "Create requires a finite nonzero weight",
+            ));
+        }
+        let make = |range: Range<usize>| CreateEdgesRequest {
+            edges: edges[range].to_vec(),
+            receipt_context: None,
+        };
+        let ranges = chunk_plan(
+            edges.len(),
+            self.batch_chunk_size(),
+            self.encode_limit(),
+            make,
+        )?;
+        let mut outcomes = Vec::with_capacity(edges.len());
+        for range in ranges {
+            let response = self
+                .data_unary_at(
+                    make(range.clone()),
+                    deadline,
+                    RetryClass::Never,
+                    |svc, req| Box::pin(svc.create_edges(req)),
+                )
+                .await
+                .map_err(|source| failed_chunk(range.start, source))?;
+            if response.outcomes.len() != range.len() {
+                return Err(failed_chunk(
+                    range.start,
+                    LanternError::Protocol("misaligned Create outcomes"),
+                ));
+            }
+            let decoded = response
+                .outcomes
+                .into_iter()
+                .map(|value| {
+                    CreateEdgeOutcome::try_from(value)
+                        .ok()
+                        .filter(|outcome| *outcome != CreateEdgeOutcome::Unspecified)
+                        .ok_or_else(|| LanternError::Protocol("invalid Create outcome"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|source| failed_chunk(range.start, source))?;
+            outcomes.extend(decoded);
+        }
+        Ok(outcomes)
+    }
+    pub async fn create_edge(&self, edge: EdgeInput) -> Result<CreateEdgeOutcome, LanternError> {
+        self.create_edge_with_options(edge, CallOptions::Default)
+            .await
+    }
+
+    pub async fn create_edge_with_options(
+        &self,
+        edge: EdgeInput,
+        options: CallOptions,
+    ) -> Result<CreateEdgeOutcome, LanternError> {
+        only(self.create_edges_with_options([edge], options).await?)
     }
 
     /// Idempotent replacement of each edge's weight and expiration. This

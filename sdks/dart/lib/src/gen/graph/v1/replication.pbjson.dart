@@ -305,6 +305,15 @@ const MutationOp$json = {
       '9': 0,
       '10': 'replicatedReceiptEdgeContributionDelete'
     },
+    {
+      '1': 'edge_create_effect',
+      '3': 22,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.EdgeCreateEffect',
+      '9': 0,
+      '10': 'edgeCreateEffect'
+    },
   ],
   '8': [
     {'1': 'op'},
@@ -345,7 +354,75 @@ final $typed_data.Uint8List mutationOpDescriptor = $convert.base64Decode(
     'J1dGlvbnNSZXF1ZXN0SABSF2RlbGV0ZUVkZ2VDb250cmlidXRpb25zEpEBCityZXBsaWNhdGVk'
     'X3JlY2VpcHRfZWRnZV9jb250cmlidXRpb25fZGVsZXRlGBUgASgLMjEuZ3JhcGgudjEuUmVwbG'
     'ljYXRlZFJlY2VpcHRFZGdlQ29udHJpYnV0aW9uRGVsZXRlSABSJ3JlcGxpY2F0ZWRSZWNlaXB0'
-    'RWRnZUNvbnRyaWJ1dGlvbkRlbGV0ZUIECgJvcA==');
+    'RWRnZUNvbnRyaWJ1dGlvbkRlbGV0ZRJKChJlZGdlX2NyZWF0ZV9lZmZlY3QYFiABKAsyGi5ncm'
+    'FwaC52MS5FZGdlQ3JlYXRlRWZmZWN0SABSEGVkZ2VDcmVhdGVFZmZlY3RCBAoCb3A=');
+
+@$core.Deprecated('Use edgeCreateEffectItemDescriptor instead')
+const EdgeCreateEffectItem$json = {
+  '1': 'EdgeCreateEffectItem',
+  '2': [
+    {
+      '1': 'original',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.Edge',
+      '10': 'original'
+    },
+    {
+      '1': 'outcome',
+      '3': 2,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.CreateEdgeOutcome',
+      '10': 'outcome'
+    },
+    {
+      '1': 'receipt',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceipt',
+      '10': 'receipt'
+    },
+  ],
+};
+
+/// Descriptor for `EdgeCreateEffectItem`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List edgeCreateEffectItemDescriptor = $convert.base64Decode(
+    'ChRFZGdlQ3JlYXRlRWZmZWN0SXRlbRIqCghvcmlnaW5hbBgBIAEoCzIOLmdyYXBoLnYxLkVkZ2'
+    'VSCG9yaWdpbmFsEjUKB291dGNvbWUYAiABKA4yGy5ncmFwaC52MS5DcmVhdGVFZGdlT3V0Y29t'
+    'ZVIHb3V0Y29tZRIzCgdyZWNlaXB0GAMgASgLMhkuZ3JhcGgudjEuTXV0YXRpb25SZWNlaXB0Ug'
+    'dyZWNlaXB0');
+
+@$core.Deprecated('Use edgeCreateEffectDescriptor instead')
+const EdgeCreateEffect$json = {
+  '1': 'EdgeCreateEffect',
+  '2': [
+    {
+      '1': 'items',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.EdgeCreateEffectItem',
+      '10': 'items'
+    },
+    {'1': 'deployment_epoch', '3': 2, '4': 1, '5': 12, '10': 'deploymentEpoch'},
+    {
+      '1': 'policy_fingerprint',
+      '3': 3,
+      '4': 1,
+      '5': 12,
+      '10': 'policyFingerprint'
+    },
+  ],
+};
+
+/// Descriptor for `EdgeCreateEffect`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List edgeCreateEffectDescriptor = $convert.base64Decode(
+    'ChBFZGdlQ3JlYXRlRWZmZWN0EjQKBWl0ZW1zGAEgAygLMh4uZ3JhcGgudjEuRWRnZUNyZWF0ZU'
+    'VmZmVjdEl0ZW1SBWl0ZW1zEikKEGRlcGxveW1lbnRfZXBvY2gYAiABKAxSD2RlcGxveW1lbnRF'
+    'cG9jaBItChJwb2xpY3lfZmluZ2VycHJpbnQYAyABKAxSEXBvbGljeUZpbmdlcnByaW50');
 
 @$core.Deprecated('Use replicatedReceiptEdgeDeleteItemDescriptor instead')
 const ReplicatedReceiptEdgeDeleteItem$json = {
@@ -1921,6 +1998,8 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
       ReplicatedReceiptEdgeContributionDelete$json,
   '.graph.v1.ReplicatedReceiptEdgeContributionDeleteItem':
       ReplicatedReceiptEdgeContributionDeleteItem$json,
+  '.graph.v1.EdgeCreateEffect': EdgeCreateEffect$json,
+  '.graph.v1.EdgeCreateEffectItem': EdgeCreateEffectItem$json,
   '.graph.v1.IdentityCheckpoint': IdentityCheckpoint$json,
   '.graph.v1.IdentityCheckpoint.LastSeqPerOriginEntry':
       IdentityCheckpoint_LastSeqPerOriginEntry$json,

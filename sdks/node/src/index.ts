@@ -30,6 +30,7 @@
  */
 
 import { Lantern, normaliseBaseUrl, withTokenInterceptors, type LanternArgs } from "./client.js";
+import { SecurityClient } from "./security.js";
 import { makeNodeTransport } from "./transport-node.js";
 
 /**
@@ -64,6 +65,7 @@ export function connect(baseUrl: string, args: LanternArgs = {}): Lantern {
 export { Lantern } from "./client.js";
 export type {
   EdgeContributionDeleteBatchResult,
+  CreateEdgeOutcome,
   EdgePutResult,
   LanternArgs,
   PutOutcome,
@@ -206,3 +208,17 @@ export type {
   VertexKind,
   VertexValue,
 } from "./values.js";
+
+export { SecurityClient } from "./security.js";
+export * from "./security-types.js";
+
+/** Open a control-plane client without authentication-policy interpretation. */
+export function connectSecurity(baseUrl: string, args: LanternArgs = {}): SecurityClient {
+  const normalised = normaliseBaseUrl("connectSecurity", baseUrl);
+  return SecurityClient.withTransport(
+    makeNodeTransport(normalised, withTokenInterceptors(args), args.transportOptions),
+  );
+}
+
+export { ChangeCursor } from "./scoped-changes.js";
+export type { ChangeFrame, ChangeInvalidation, WatchChangesOptions } from "./scoped-changes.js";

@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -15,10 +14,10 @@ func TestAuthModePreflight(t *testing.T) {
 	}{
 		{"unset", nil, false},
 		{"explicit off", map[string]string{"LANTERN_AUTH_MODE": "off"}, false},
-		{"legacy token", map[string]string{"LANTERN_AUTH_TOKENS": "legacy-token"}, false},
+		{"retired token", map[string]string{"LANTERN_AUTH_TOKENS": "legacy-token"}, true},
 		{"empty mode", map[string]string{"LANTERN_AUTH_MODE": ""}, true},
 		{"unknown mode", map[string]string{"LANTERN_AUTH_MODE": "OIDC"}, true},
-		{"OIDC pending", map[string]string{"LANTERN_AUTH_MODE": "oidc"}, true},
+		{"OIDC explicit mode", map[string]string{"LANTERN_AUTH_MODE": "oidc"}, false},
 		{"implicit Issuer", map[string]string{"LANTERN_OIDC_ADMIN_ISSUER": "https://idp.example"}, true},
 		{"empty Issuer", map[string]string{"LANTERN_OIDC_ADMIN_ISSUER": ""}, true},
 		{"implicit system setting", map[string]string{"LANTERN_SECURITY_STORE_DIR": "/tmp/sys"}, true},
@@ -44,8 +43,10 @@ func TestAuthModePreflight(t *testing.T) {
 			if (err != nil) != test.wantError {
 				t.Fatalf("preflight = %v", err)
 			}
-			if test.name == "OIDC pending" && !errors.Is(err, ErrOIDCRuntimeUnavailable) {
-				t.Fatal("unavailable runtime accepted")
+			if test.name == "OIDC explicit mode" {
+				if cfg, err := NewConfig(); err == nil || cfg != nil {
+					t.Fatal("partial OIDC configuration accepted")
+				}
 			}
 			if test.wantError {
 				if cfg, err := NewConfig(); err == nil || cfg != nil {

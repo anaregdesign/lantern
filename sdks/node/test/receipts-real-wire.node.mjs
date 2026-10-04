@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import process from "node:process";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -27,7 +28,11 @@ function requiredEnvironment(name) {
 const endpoint = requiredEnvironment("LANTERN_NODE_RECEIPT_ENDPOINT");
 const otherEndpoint = requiredEnvironment("LANTERN_NODE_RECEIPT_OTHER_ENDPOINT");
 const nanFixtureEndpoint = requiredEnvironment("LANTERN_NODE_NAN_FIXTURE_ENDPOINT");
-const token = requiredEnvironment("LANTERN_NODE_RECEIPT_TOKEN");
+const token = readFileSync(requiredEnvironment("LANTERN_NODE_RECEIPT_TOKEN_FILE"), "utf8").trim();
+const ca = readFileSync(requiredEnvironment("LANTERN_NODE_RECEIPT_CA_FILE"));
+function authenticated(baseUrl, args = {}) {
+  return connect(baseUrl, { token, ...args, transportOptions: { nodeOptions: { ca } } });
+}
 
 function randomContribId() {
   const contribId = new Uint8Array(randomBytes(CONTRIB_ID_BYTES));
@@ -59,10 +64,10 @@ function dropNextAddEdgesResponse() {
   };
 }
 
-test("plain Node Delete is single-attempt over h2c, with an ambiguous lost result", async () => {
+test("plain Node Delete is single-attempt over verified TLS, with an ambiguous lost result", async () => {
   let attempts = 0;
-  const ordinary = connect(endpoint, { token });
-  const lossy = connect(endpoint, {
+  const ordinary = authenticated(endpoint);
+  const lossy = authenticated(endpoint, {
     token,
     interceptors: [
       (next) => async (request) => {
@@ -103,9 +108,9 @@ test("plain Node Delete is single-attempt over h2c, with an ambiguous lost resul
 });
 
 test("plain contribution Delete retains the Put base and never retries response loss", async () => {
-  const client = connect(endpoint, { token });
+  const client = authenticated(endpoint);
   let attempts = 0;
-  const lossy = connect(endpoint, {
+  const lossy = authenticated(endpoint, {
     token,
     interceptors: [
       (next) => async (request) => {
@@ -166,8 +171,8 @@ test("plain contribution Delete retains the Put base and never retries response 
   }
 });
 
-test("all receipt mutation families reconcile exact results over real Connect/h2c", async () => {
-  const client = connect(endpoint, { token });
+test("all receipt mutation families reconcile exact results over real Connect/TLS", async () => {
+  const client = authenticated(endpoint);
   const prefix = `node-receipt-${randomUUID()}`;
   try {
     const capability = await client.getReceiptCapability();
@@ -603,8 +608,8 @@ test("test-only NaN receipt fixture decodes original results over authenticated 
   }
 });
 
-test("real h2c response loss replays the exact original conditional Put result", async () => {
-  const lossy = connect(endpoint, {
+test("real TLS response loss replays the exact original conditional Put result", async () => {
+  const lossy = authenticated(endpoint, {
     token,
     interceptors: [dropNextPutVerticesResponse()],
   });
@@ -630,7 +635,7 @@ test("real h2c response loss replays the exact original conditional Put result",
   assert.equal(uncertain.mutation.kind, "putVertex");
   assert.equal(uncertain.mutation.ifAbsent, true);
 
-  const replay = connect(endpoint, { token });
+  const replay = authenticated(endpoint);
   try {
     const restored = parseReceiptOperationContext(JSON.parse(persistedContext));
     const result = await replay.putVertexIfAbsentWithReceipt(input, restored);
@@ -646,8 +651,8 @@ test("real h2c response loss replays the exact original conditional Put result",
   }
 });
 
-test("real h2c response loss replays Add proof without reapplying after Delete", async () => {
-  const lossy = connect(endpoint, {
+test("real TLS response loss replays Add proof without reapplying after Delete", async () => {
+  const lossy = authenticated(endpoint, {
     token,
     interceptors: [dropNextAddEdgesResponse()],
   });
@@ -681,7 +686,7 @@ test("real h2c response loss replays Add proof without reapplying after Delete",
   assert.equal(uncertain.mutation.kind, "addEdge");
   assert.deepEqual(uncertain.mutation.inputs[0].contribId, input.contribId);
 
-  const replay = connect(endpoint, { token });
+  const replay = authenticated(endpoint);
   try {
     assert.equal((await replay.getEdge(edge.tail, edge.head)).weight, 4);
     assert.equal(await replay.deleteEdge(edge.tail, edge.head), true);
@@ -701,8 +706,8 @@ test("real h2c response loss replays Add proof without reapplying after Delete",
 });
 
 test("receipt retry rejects a different real endpoint before mutation", async () => {
-  const first = connect(endpoint, { token });
-  const second = connect(otherEndpoint, { token });
+  const first = authenticated(endpoint);
+  const second = authenticated(otherEndpoint);
   const edge = {
     tail: `node-receipt-endpoint-${randomUUID()}`,
     head: "edge",

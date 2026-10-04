@@ -5621,6 +5621,23 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
       await inner.updateOutbox(record);
 
   @override
+  Future<OfflineScopedChangeCursor?> scopedChangeCursor(
+    String partitionId,
+  ) async => await inner.scopedChangeCursor(partitionId);
+
+  @override
+  Future<void> applyScopedChangeFrame(
+    String partitionId,
+    OfflineScopedChangeFrame frame,
+  ) async => await inner.applyScopedChangeFrame(partitionId, frame);
+
+  @override
+  Future<void> resetScopedChangeCursor(
+    String partitionId,
+    OfflineScopedChangeCursor? checkpoint,
+  ) async => await inner.resetScopedChangeCursor(partitionId, checkpoint);
+
+  @override
   Future<OfflineChangeCursor> changeCursor(String partitionId) async =>
       await inner.changeCursor(partitionId);
 

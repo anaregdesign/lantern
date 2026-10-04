@@ -367,6 +367,12 @@ func (r *receiptBaselineSuffixReplay) apply(entry mutationlog.Entry) error {
 			if err := replayGraphPutEffect(r.graph, value); err != nil {
 				return fmt.Errorf("receipt WAL local seq %d: graph Put effect replay: %w", entry.Seq, err)
 			}
+		case *edgeCreateEnvelope:
+			copy(origin[:], value.Mutation.GetOrigin())
+			originSequence = value.Mutation.GetSeq()
+			if err := replayEdgeCreateEffect(r.graph, value); err != nil {
+				return fmt.Errorf("receipt WAL Create replay: %w", err)
+			}
 		case *graphAddEffectEnvelope:
 			copy(origin[:], value.Mutation.GetOrigin())
 			originSequence = value.Mutation.GetSeq()

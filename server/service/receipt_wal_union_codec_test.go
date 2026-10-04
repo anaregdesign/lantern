@@ -221,8 +221,8 @@ func TestReceiptWALUnionGraphOnlyContributionDeleteEffect(t *testing.T) {
 
 func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
 	current := (&pb.Mutation{}).ProtoReflect().Descriptor()
-	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV7 {
-		t.Fatalf("WAL union v7 graph schema changed to %s; review replay and migration", got)
+	if got := protoschema.Fingerprint(current); got != receiptWALGraphSchemaFingerprintV8 {
+		t.Fatalf("WAL union v8 graph schema changed to %s; review replay and migration", got)
 	}
 	for _, tc := range []struct {
 		name  string
@@ -252,8 +252,8 @@ func TestReceiptWALUnionGraphSchemaPinRejectsFutureField(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV7 {
-				t.Fatal("new graph mutation field did not invalidate WAL union v7 schema")
+			if got := protoschema.Fingerprint(changed.Messages().ByName("Mutation")); got == receiptWALGraphSchemaFingerprintV8 {
+				t.Fatal("new graph mutation field did not invalidate WAL union v8 schema")
 			}
 		})
 	}

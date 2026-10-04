@@ -338,3 +338,35 @@ func mustWriteReceiptArtifact(t *testing.T, path string, value any) {
 		t.Fatal(err)
 	}
 }
+
+func TestRunReceiptLeakEvaluationSamplingProtocol(t *testing.T) {
+	t.Parallel()
+	for _, protocol := range []string{"forced_gc_minimum", "natural_gc_single", "invalid"} {
+		t.Run(protocol, func(t *testing.T) {
+			pre, post, steady, _ := receiptLeakFixture(t)
+			out := filepath.Join(t.TempDir(), "gate.json")
+			args := []string{"-pre", pre, "-post", post, "-steady", steady, "-duration", "45s", "-interval", "5s", "-max-goroutines", "15", "-max-heap-mb", "32", "-max-steady-heap-mb", "40", "-out", out, "-snapshot-protocol", protocol}
+			code := runReceiptLeakEvaluation(args)
+			if protocol == "invalid" {
+				if code != 2 {
+					t.Fatalf("invalid protocol exit=%d", code)
+				}
+				if _, err := os.Stat(out); !os.IsNotExist(err) {
+					t.Fatal("invalid protocol wrote artifact")
+				}
+				return
+			}
+			if code != 0 {
+				t.Fatalf("exit=%d", code)
+			}
+			raw, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report receiptLeakReport
+			if err := json.Unmarshal(raw, &report); err != nil || report.SnapshotProtocol != protocol {
+				t.Fatalf("protocol=%q, error=%v", report.SnapshotProtocol, err)
+			}
+		})
+	}
+}

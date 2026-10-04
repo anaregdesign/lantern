@@ -1,95 +1,23 @@
-# Docker Compose: HA topology (3-replica peer-discovery cluster).
-#
-# Mirrors the Helm chart's HA topology for local development and
-# single-host HA experiments. Each replica is its own service
-# (`lantern-0`, `lantern-1`, `lantern-2`) with a pinned host port
-# (`6380`, `6381`, `6382` respectively), so the admin SPA's default
-# gateway URL (`http://localhost:6380`) keeps working across restarts
-# (#435). All three share the `lantern` network alias, so Compose
-# embedded DNS still resolves `lantern` to one A per healthy replica
-# — the lantern peer pump (#190) and lantern-mcp / prometheus / SDK
-# DNS round-robin continue to work unchanged.
-#
-# Clients pick one of:
-#   c, _ := lantern.NewLantern("http://lantern:6380")  // DNS round-robin
-#   c, _ := lantern.NewLantern("http://localhost:6380") // single replica
-# There is intentionally no client-side LB sidecar in this example —
-# picking one would push opinions that don't belong in a quickstart.
-#
-# Usage:
-#   cd deploy/compose
-#   docker compose up -d --pull always   # --pull always re-fetches the :latest images
-#   docker compose down -v
-#
-# To scale beyond three replicas, edit the file (each replica needs
-# its own service + host port) or use the Helm chart. The previous
-# `--scale lantern=N` workflow is gone — it depended on Compose's
-# port-range allocator, which is what #435 fixes.
-#
-# The lantern services default to ghcr.io/anaregdesign/lantern:latest, so a
-# bare `docker compose up -d` runs the published image with no local build.
-# Override to pin a release or run a local build instead:
-#   LANTERN_IMAGE=ghcr.io/anaregdesign/lantern:v0.7.1 docker compose up -d
-#   LANTERN_IMAGE=lantern:local docker compose up -d   # after `docker build -t lantern:local .`
-
-# Shared lantern config. Each replica differs only in the published
-# host port; container naming is left to Compose so the canonical
-# stack and the testbed/bench overlay can run side-by-side without
-# colliding on globally-scoped container names.
+# Zero-config OFF quick start. HA uses the explicit signed-membership overlay.
 x-lantern-common: &lantern-common
   image: ${LANTERN_IMAGE:-ghcr.io/anaregdesign/lantern:latest}
-  # Zero-drop drain on recreate (#768): Docker SIGKILLs 10s after SIGTERM by
-  # default, which is shorter than LANTERN_DRAIN_DELAY_SECONDS (5) + the
-  # server shutdown timeout (30). Give the drain + in-flight flush room.
   stop_grace_period: 45s
   environment:
     LANTERN_PORT: "6380"
     LANTERN_METRICS_ADDR: ":9090"
     LANTERN_DEFAULT_TTL_SECONDS: "3600"
     LANTERN_LOG_FORMAT: "json"
-    LANTERN_LOG_LEVEL: "info"
-    # Peer discovery (#190): resolve the shared `lantern` alias via
-    # Compose DNS. All three services join the default network with
-    # this alias, so the pump sees one A per healthy peer.
-    LANTERN_PEER_DISCOVERY: "dns"
-    LANTERN_PEER_DNS_NAME: "lantern"
-    LANTERN_PEER_DEFAULT_PORT: "6380"
-    LANTERN_PEER_DISCOVERY_INTERVAL_MS: "10000"
-    # Readiness gating (#188).
-    LANTERN_MAX_REPLICATION_LAG: "10000"
-    # Zero-drop rolling-update drain (#768): on SIGTERM the server flips
-    # readiness to NOT_SERVING then keeps serving this long so clients /
-    # DNS round-robin stop hitting the dying replica before it closes.
     LANTERN_DRAIN_DELAY_SECONDS: "5"
-    # Allow the admin SPA to call this listener from the browser.
-    # Lantern serves Connect / gRPC / gRPC-Web on the same h2c socket,
-    # and the admin container does not proxy the gateway (the browser
-    # calls it directly), so CORS must allow the admin origin. (The
-    # admin container DOES optionally reverse-proxy Prometheus same-
-    # origin under /api/prom — that path needs no gateway CORS.)
-    LANTERN_CORS_ALLOWED_ORIGINS: "http://localhost:8080"
-    # Snapshot durability (#770, #779): each replica periodically dumps its
-    # whole graph to its own mounted volume (declared per-service below) and
-    # replays the newest dump on boot as a BASELINE. Peer bootstrap then
-    # overlays that baseline through the write path, so HLC ordering lets
-    # newer peer state win per key — replicas take priority, the dump only
-    # fills gaps, and a whole-cluster restart recovers from the dumps instead
-    # of coming up empty. Each replica's LANTERN_BACKUP_INSTANCE_ID defaults
-    # to its hostname, pinned per-service below so dumps never collide and
-    # retention prunes the right files across restarts. The default TTL
-    # (3600s) stays well above the 5m interval per the TTL-vs-interval caveat,
-    # so a restored dump is still live.
     LANTERN_BACKUP_ENABLED: "true"
-    LANTERN_BACKUP_DIR: "/data"
-    LANTERN_BACKUP_INTERVAL: "5m"
+    LANTERN_BACKUP_DIR: /data
+    LANTERN_BACKUP_INTERVAL: 5m
     LANTERN_BACKUP_RETAIN: "3"
     LANTERN_BACKUP_RESTORE_ON_START: "true"
   networks:
     default:
-      aliases:
-        - lantern
+      aliases: [lantern]
   healthcheck:
-    test: ["CMD", "wget", "-qO-", "http://localhost:9090/readyz"]
+    test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/readyz"]
     interval: 5s
     timeout: 2s
     retries: 12
@@ -98,105 +26,40 @@ x-lantern-common: &lantern-common
 services:
   lantern-0:
     <<: *lantern-common
-    # Pin the hostname so LANTERN_BACKUP_INSTANCE_ID (defaults to the
-    # hostname) is stable + distinct per replica across recreations; each
-    # replica owns one named volume mounted at LANTERN_BACKUP_DIR (/data).
     hostname: lantern-0
-    ports:
-      - "6380:6380"
-    volumes:
-      - lantern-backup-0:/data
-
-  lantern-1:
-    <<: *lantern-common
-    hostname: lantern-1
-    ports:
-      - "6381:6380"
-    volumes:
-      - lantern-backup-1:/data
-
-  lantern-2:
-    <<: *lantern-common
-    hostname: lantern-2
-    ports:
-      - "6382:6380"
-    volumes:
-      - lantern-backup-2:/data
-
+    ports: ["127.0.0.1:6380:6380"]
+    volumes: [lantern-backup-0:/data]
   admin:
     image: ${LANTERN_ADMIN_IMAGE:-ghcr.io/anaregdesign/lantern-admin:latest}
-    ports:
-      - "8080:8080"
+    ports: ["127.0.0.1:8080:8080"]
     environment:
-      # Enable the same-origin Prometheus reverse proxy. The admin
-      # entrypoint writes a `handle_path /api/prom/* { reverse_proxy ... }`
-      # Caddy snippet from this value, so the SPA's default Prometheus URL
-      # (`/api/prom`) reaches Prometheus without a cross-origin browser
-      # call. Unset this to disable the proxy.
-      LANTERN_ADMIN_PROMETHEUS_UPSTREAM: "http://prometheus:9090"
+      LANTERN_ADMIN_SERVER_UPSTREAM: h2c://lantern-0:6380
     depends_on:
       lantern-0:
         condition: service_healthy
-      lantern-1:
-        condition: service_healthy
-      lantern-2:
-        condition: service_healthy
-      prometheus:
-        condition: service_started
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 10s
       timeout: 3s
       retries: 6
-      start_period: 5s
-
-  # MCP server. lantern-mcp serves the Model Context Protocol over
-  # Streamable HTTP, so it's a long-lived service — it comes up with the
-  # rest of the stack on `docker compose up -d`. Point your agent at
-  # http://localhost:6390/mcp. See `mcp/examples/` for the configs that
-  # wire Claude Desktop / VS Code / Cursor to it.
   lantern-mcp:
+    profiles: [tools]
     image: ${LANTERN_MCP_IMAGE:-ghcr.io/anaregdesign/lantern-mcp:latest}
-    ports:
-      - "6390:6390"
+    ports: ["127.0.0.1:6390:6390"]
     environment:
-      # Bind all interfaces so the published port is reachable (the bare
-      # binary defaults to loopback only).
-      LANTERN_MCP_HTTP_ADDR: "0.0.0.0:6390"
-      # Compose DNS round-robins the `lantern` alias across the three
-      # lantern-N services.
-      LANTERN_ADDR: "http://lantern:6380"
-      LANTERN_MCP_PING_TIMEOUT: "5s"
+      LANTERN_MCP_HTTP_ADDR: 0.0.0.0:6390
+      LANTERN_ADDR: http://lantern-0:6380
     depends_on:
       lantern-0:
         condition: service_healthy
-      lantern-1:
-        condition: service_healthy
-      lantern-2:
-        condition: service_healthy
-
   prometheus:
+    profiles: [diagnostics]
     image: prom/prometheus:v3.5.0
-    ports:
-      - "9091:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=1h"
+    ports: ["127.0.0.1:9091:9090"]
+    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=1h"]
     depends_on:
       lantern-0:
         condition: service_healthy
-      lantern-1:
-        condition: service_healthy
-      lantern-2:
-        condition: service_healthy
-
-# Per-replica backup volumes (#770). Each lantern-N owns one named volume so
-# its snapshot dumps survive `docker compose down` (but are removed by
-# `down -v`, matching the experiment-stack teardown). Mirrors the Helm
-# StatefulSet's per-pod backup PVC (volumeClaimTemplate).
 volumes:
   lantern-backup-0:
-  lantern-backup-1:
-  lantern-backup-2:

@@ -1,7 +1,16 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func serveReplica(t *testing.T, dir, service string) (*httptest.Server, string) {
@@ -141,4 +151,109 @@ func TestGenerateRejectsNonemptyOrUnprotectedDirectory(t *testing.T) {
 	if err := generate(dir); err == nil || !strings.Contains(err.Error(), "0700") {
 		t.Fatalf("unprotected directory = %v", err)
 	}
+}
+
+func serial() (*big.Int, error) {
+	limit := new(big.Int).Lsh(big.NewInt(1), 128)
+	n, err := rand.Int(rand.Reader, limit)
+	if err != nil {
+		return nil, err
+	}
+	return n.Add(n, big.NewInt(1)), nil
+}
+
+func certificatePEM(der []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func generate(dir string) error {
+	stat, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("stat private TLS directory: %w", err)
+	}
+	if !stat.IsDir() || stat.Mode().Perm() != 0o700 {
+		return errors.New("private TLS directory must exist with mode 0700")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		return errors.New("private TLS directory must be empty")
+	}
+	now := time.Now()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	caSerial, err := serial()
+	if err != nil {
+		return err
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber: caSerial, Subject: pkix.Name{CommonName: "Lantern receipt benchmark CA"},
+		NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true, IsCA: true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		return err
+	}
+	caPEM := certificatePEM(caDER)
+	if err := writeMountedFile(filepath.Join(dir, "ca.pem"), caPEM); err != nil {
+		return err
+	}
+	for _, service := range replicas {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return err
+		}
+		number, err := serial()
+		if err != nil {
+			return err
+		}
+		leaf := &x509.Certificate{
+			SerialNumber: number, Subject: pkix.Name{CommonName: service},
+			NotBefore: now.Add(-5 * time.Minute), NotAfter: now.Add(24 * time.Hour),
+			KeyUsage:              x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			BasicConstraintsValid: true,
+			DNSNames:              []string{"localhost", service},
+			IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		}
+		der, err := x509.CreateCertificate(rand.Reader, leaf, caTemplate, &key.PublicKey, caKey)
+		if err != nil {
+			return err
+		}
+		keyDER, err := x509.MarshalECPrivateKey(key)
+		if err != nil {
+			return err
+		}
+		replicaDir := filepath.Join(dir, service)
+		if err := os.Mkdir(replicaDir, 0o755); err != nil {
+			return err
+		}
+		if err := os.Chmod(replicaDir, 0o755); err != nil {
+			return err
+		}
+		// The outer directory is host-private. Only this replica's leaf
+		// key is mounted inside its non-root container, read-only.
+		keyFile := filepath.Join(replicaDir, "server.key")
+		if err := writeMountedFile(keyFile,
+			pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})); err != nil {
+			return err
+		}
+		if err := writeMountedFile(filepath.Join(replicaDir, "server.pem"), certificatePEM(der)); err != nil {
+			return err
+		}
+		if err := writeMountedFile(filepath.Join(replicaDir, "ca.pem"), caPEM); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeMountedFile(path string, data []byte) error {
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o644)
 }

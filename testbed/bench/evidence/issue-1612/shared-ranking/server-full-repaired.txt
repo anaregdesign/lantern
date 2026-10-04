@@ -1,0 +1,19 @@
+?   	github.com/anaregdesign/lantern/server	[no test files]
+ok  	github.com/anaregdesign/lantern/server/backup	33.108s
+ok  	github.com/anaregdesign/lantern/server/cmd	3.649s
+ok  	github.com/anaregdesign/lantern/server/internal/edgeweight	0.628s
+ok  	github.com/anaregdesign/lantern/server/internal/envconfig	0.483s
+ok  	github.com/anaregdesign/lantern/server/internal/envdoc	3.878s
+?   	github.com/anaregdesign/lantern/server/internal/envdoc/cmd	[no test files]
+ok  	github.com/anaregdesign/lantern/server/internal/keyspace	3.139s
+ok  	github.com/anaregdesign/lantern/server/internal/oidc	2.205s
+?   	github.com/anaregdesign/lantern/server/internal/protoschema	[no test files]
+ok  	github.com/anaregdesign/lantern/server/internal/prototime	1.281s
+ok  	github.com/anaregdesign/lantern/server/internal/replicationstatus	0.964s
+ok  	github.com/anaregdesign/lantern/server/internal/security	31.667s
+ok  	github.com/anaregdesign/lantern/server/llmauth	2.606s
+ok  	github.com/anaregdesign/lantern/server/metrics	3.516s
+ok  	github.com/anaregdesign/lantern/server/provider	9.378s
+ok  	github.com/anaregdesign/lantern/server/readiness	4.691s
+ok  	github.com/anaregdesign/lantern/server/replication	5.428s
+ok  	github.com/anaregdesign/lantern/server/service	30.440s

@@ -309,6 +309,20 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 		category = pb.IdentityOperation_IDENTITY_OPERATION_DELETE_VERTEX
 	case *pb.MutationOp_AddEdge, *pb.MutationOp_AddEdges:
 		category = pb.IdentityOperation_IDENTITY_OPERATION_ADD_EDGE
+	case *pb.MutationOp_EdgeCreateEffect:
+		effect, err := decodeEdgeCreateMutation(m)
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, err)
+		}
+		category = pb.IdentityOperation_IDENTITY_OPERATION_PUT_EDGE
+		for _, item := range effect.Mutation.GetOp().GetEdgeCreateEffect().GetItems() {
+			if item.GetOutcome() == pb.CreateEdgeOutcome_CREATE_EDGE_OUTCOME_CREATED_AND_LIVE {
+				receiptAddEdges = append(receiptAddEdges, item.GetOriginal())
+			}
+		}
+		if len(receiptAddEdges) == 0 {
+			category = pb.IdentityOperation_IDENTITY_OPERATION_RECEIPT_ONLY
+		}
 	case *pb.MutationOp_ReplicatedReceiptEdgeAdd:
 		var err error
 		receiptAddEdges, err = acceptedReceiptEdgeAddEdges(m)
@@ -478,6 +492,12 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 		}
 	case *pb.MutationOp_ReplicatedReceiptEdgeContributionDelete:
 		for _, edge := range receiptEdgeKeys {
+			if err = p.addEdge(edge.GetTail(), edge.GetHead()); err != nil {
+				return err
+			}
+		}
+	case *pb.MutationOp_EdgeCreateEffect:
+		for _, edge := range receiptAddEdges {
 			if err = p.addEdge(edge.GetTail(), edge.GetHead()); err != nil {
 				return err
 			}

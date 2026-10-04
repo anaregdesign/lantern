@@ -2,9 +2,20 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/binary"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"fmt"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/oidc"
+	"github.com/anaregdesign/lantern/server/internal/security"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -59,7 +70,7 @@ func productionReceiptEdgeDeleteMutation(
 		NodeID: origin,
 	}
 	return &pb.Mutation{
-		Seq: seq, Origin: origin[:],
+		Seq: seq, Origin: origin[:], NamespaceFormat: "namespaced-v1",
 		Hlc: &pb.HLCTimestamp{WallNs: stamp.WallNs, NodeId: origin[:]},
 		Op: &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptEdgeDelete{
 			ReplicatedReceiptEdgeDelete: &pb.ReplicatedReceiptEdgeDelete{
@@ -67,7 +78,7 @@ func productionReceiptEdgeDeleteMutation(
 				PolicyFingerprint:   policy[:],
 				TombstoneExpiration: timestamppb.New(time.Unix(0, stamp.WallNs).Add(30 * time.Minute)),
 				Items: []*pb.ReplicatedReceiptEdgeDeleteItem{{
-					Key: &pb.EdgeKey{Tail: tail, Head: head},
+					Key: &pb.EdgeKey{Tail: "data:" + tail, Head: "data:" + head},
 					Receipt: &pb.MutationReceipt{
 						OperationId: id.Bytes(), LogicalCallId: group[:],
 						ItemIndex: 0, ItemCount: 1, IntentSha256: digest[:],
@@ -171,10 +182,11 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		"provider.NewRuntimeRestored(",
 		"provider.NewRuntimeCertified(",
 		"provider.NewBackupper(",
-		"provider.NewPublicReceiptsCertified(",
+		"provider.NewPublicSecurityCertified(",
+		"provider.NewOIDCPublicReceiptsCertified(",
 		"provider.NewListener(",
-		"provider.NewMetricsServer(",
-		"provider.NewPeerTransport(",
+		"provider.NewServingMetricsServer(",
+		"provider.NewWorkloadPeerTransport(",
 		"provider.NewSnapshotInstallerSelection(",
 		"provider.NewReplicationPump(",
 		"provider.NewAntiEntropyDriver(",
@@ -190,11 +202,11 @@ func TestWireRuntimeCertificationPrecedesNetworkConsumers(t *testing.T) {
 		}
 		previous = index
 	}
-	if !strings.Contains(text, "cleanup2()\n\t\tcleanup()") {
+	if !strings.Contains(text, "cleanup4()\n\t\tcleanup3()\n\t\tcleanup2()\n\t\tcleanup()") {
 		t.Fatal("generated injector does not release listener before the serving runtime")
 	}
 	if strings.Count(text, "provider.NewSnapshotInstallerSelection(") != 1 ||
-		strings.Count(text, "provider.NewPeerTransport(") != 1 ||
+		strings.Count(text, "provider.NewWorkloadPeerTransport(") != 1 ||
 		!strings.Contains(text, "peerTransport, lanternService, graphCache, metrics, logger, snapshotInstallerSelection, runtimeCertified)") ||
 		!strings.Contains(text, "peerTransport, lanternService, graphCache, pump, antiEntropyMetrics, logger, snapshotInstallerSelection)") {
 		t.Fatal("generated injector does not share the certified peer transport and Snapshot installer across Pump and anti-entropy")
@@ -291,7 +303,7 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 	future := timestamppb.New(time.Now().Add(time.Hour))
 	for _, key := range []string{"local-live", "local-remove"} {
 		response, err := app.svc.PutVertex(ctx, &pb.PutVertexRequest{
-			Vertex: &pb.Vertex{Key: key, Expiration: future},
+			Vertex: &pb.Vertex{Key: "data:" + key, Expiration: future},
 		})
 		if err != nil {
 			cleanup()
@@ -302,7 +314,7 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 			t.Fatalf("local Put %q outcome = %v", key, response.GetOutcome())
 		}
 	}
-	if response, err := app.svc.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "local-remove"}); err != nil {
+	if response, err := app.svc.DeleteVertex(ctx, &pb.DeleteVertexRequest{Key: "data:local-remove"}); err != nil {
 		cleanup()
 		t.Fatalf("local Delete: %v", err)
 	} else if !response.GetExisted() {
@@ -311,7 +323,7 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 	}
 	receiptTail, receiptHead := "receipt-tail", "receipt-head"
 	if response, err := app.svc.PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
-		Tail: receiptTail, Head: receiptHead, Weight: 1, Expiration: future,
+		Tail: "data:" + receiptTail, Head: "data:" + receiptHead, Weight: 1, Expiration: future,
 	}}); err != nil || response.GetOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
 		cleanup()
 		t.Fatalf("local receipt fixture PutEdge = (%v, %v)", response, err)
@@ -322,22 +334,23 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 	remoteOps := []*pb.MutationOp{
 		{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
 			Vertex: &pb.Vertex{
-				Key:        "remote-barrier",
+				Key:        "data:remote-barrier",
 				Expiration: timestamppb.New(base.Add(-time.Minute)),
 			},
 		}}},
 		{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{
-			Vertex: &pb.Vertex{Key: "remote-live", Expiration: future},
+			Vertex: &pb.Vertex{Key: "data:remote-live", Expiration: future},
 		}}},
 		{Op: &pb.MutationOp_DeleteVertex{DeleteVertex: &pb.DeleteVertexRequest{
-			Key: "remote-absent",
+			Key: "data:remote-absent",
 		}}},
 	}
 	for i, op := range remoteOps {
 		seq := uint64(i + 1)
 		mutation := &pb.Mutation{
-			Origin: remote[:],
-			Seq:    seq,
+			NamespaceFormat: "namespaced-v1",
+			Origin:          remote[:],
+			Seq:             seq,
 			Hlc: &pb.HLCTimestamp{
 				NodeId: remote[:],
 				WallNs: base.Add(time.Duration(i) * time.Nanosecond).UnixNano(),
@@ -363,7 +376,7 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 		cleanup()
 		t.Fatalf("production durable receipt follower apply: %v", err)
 	}
-	if response, err := app.svc.GetEdge(ctx, &pb.GetEdgeRequest{Tail: receiptTail, Head: receiptHead}); response != nil ||
+	if response, err := app.svc.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "data:" + receiptTail, Head: "data:" + receiptHead}); response != nil ||
 		connect.CodeOf(err) != connect.CodeNotFound {
 		cleanup()
 		t.Fatalf("receipt follower graph decision = %v, %v, want absent", response, err)
@@ -428,24 +441,24 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 		t.Fatalf("restarted remote origin sequence = %d, want 4", got)
 	}
 	for _, key := range []string{"local-live", "remote-live"} {
-		response, err := restarted.svc.GetVertex(ctx, &pb.GetVertexRequest{Key: key})
-		if err != nil || response.GetVertex().GetKey() != key {
+		response, err := restarted.svc.GetVertex(ctx, &pb.GetVertexRequest{Key: "data:" + key})
+		if err != nil || response.GetVertex().GetKey() != "data:"+key {
 			cleanupRestart()
 			t.Fatalf("restarted live vertex %q = %v, %v", key, response.GetVertex(), err)
 		}
 	}
 	for _, key := range []string{"local-remove", "remote-barrier", "remote-absent"} {
-		if response, err := restarted.svc.GetVertex(ctx, &pb.GetVertexRequest{Key: key}); response != nil ||
+		if response, err := restarted.svc.GetVertex(ctx, &pb.GetVertexRequest{Key: "data:" + key}); response != nil ||
 			connect.CodeOf(err) != connect.CodeNotFound {
 			cleanupRestart()
 			t.Fatalf("restarted absent vertex %q = %v, %v", key, response, err)
 		}
 	}
-	if got := restarted.runtime.GraphCache().CountByPrefix("remote-"); got != 1 {
+	if got := restarted.runtime.GraphCache().CountByPrefix("data:remote-"); got != 1 {
 		cleanupRestart()
 		t.Fatalf("rebuilt prefix index count = %d, want 1", got)
 	}
-	if response, err := restarted.svc.GetEdge(ctx, &pb.GetEdgeRequest{Tail: receiptTail, Head: receiptHead}); response != nil ||
+	if response, err := restarted.svc.GetEdge(ctx, &pb.GetEdgeRequest{Tail: "data:" + receiptTail, Head: "data:" + receiptHead}); response != nil ||
 		connect.CodeOf(err) != connect.CodeNotFound {
 		cleanupRestart()
 		t.Fatalf("restarted receipt follower graph decision = %v, %v, want absent", response, err)
@@ -633,5 +646,153 @@ func TestInitializeAppGraphOnlyDefault(t *testing.T) {
 	}
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Exercise the generated production injector, its real authority restart fence,
+// and the public TLS listener. Deterministic component gates cover the remaining
+// clock and failure permutations without weakening this production barrier.
+func TestInitializeAppOIDCProductionSurface(t *testing.T) {
+	probe, port := reserveRuntimeTestPort(t)
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	setDurableRuntimeEnv(t, "fresh", filepath.Join(dir, "receipts.wal"), port)
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicDER, err := x509.MarshalPKIXPublicKey(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsSource := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer tlsSource.Close()
+	tlsKey, err := x509.MarshalPKCS8PrivateKey(tlsSource.TLS.Certificates[0].PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, block := range map[string]*pem.Block{
+		"writer.key": {Type: "PRIVATE KEY", Bytes: privateDER}, "writer.pub": {Type: "PUBLIC KEY", Bytes: publicDER},
+		"tls.key": {Type: "PRIVATE KEY", Bytes: tlsKey}, "tls.pem": {Type: "CERTIFICATE", Bytes: tlsSource.Certificate().Raw},
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), pem.EncodeToMemory(block), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token, err := security.NewMachineToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	raw, err := json.Marshal([]map[string]any{{"name": "worker", "role_ids": []string{"worker"}, "credentials": []map[string]any{{"token": token, "created_at": now, "expires_at": now.Add(time.Hour)}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machines := filepath.Join(dir, "machines.json")
+	if err := os.WriteFile(machines, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	origin := fmt.Sprintf("https://127.0.0.1:%d", port)
+	for name, value := range map[string]string{
+		"LANTERN_AUTH_MODE": "oidc", "LANTERN_OIDC_ADMIN_ISSUER": "https://issuer.example", "LANTERN_OIDC_ADMIN_SUBJECTS": `["administrator"]`,
+		"LANTERN_OIDC_CLIENT_ID": "admin", "LANTERN_OIDC_API_AUDIENCE": "api", "LANTERN_OIDC_BROWSER_ORIGIN": origin,
+		"LANTERN_OIDC_REDIRECT_URI":   origin + oidc.CallbackPath("https://issuer.example"),
+		"LANTERN_SECURITY_STORE_MODE": "fresh", "LANTERN_SECURITY_STORE_PATH": filepath.Join(dir, "security.wal"),
+		"LANTERN_SECURITY_GENERATION": "01000000000000000000000000000000", "LANTERN_SECURITY_NODE_ROLE": "writer",
+		"LANTERN_SECURITY_WRITER_KEY_FILE": filepath.Join(dir, "writer.key"), "LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE": filepath.Join(dir, "writer.pub"),
+		"LANTERN_SECURITY_WRITER_ENDPOINT": "https://peer.example", "LANTERN_SECURITY_BOOTSTRAP_REVISION": "1", "LANTERN_SECURITY_CLOCK_QUALIFIED": "true",
+		"LANTERN_SECURITY_BOOTSTRAP_ROLES":        `[{"id":"worker","name":"Worker","rules":[{"id":"read","effect":"allow","action":"vertex.read","resource":"data","prefix":"tenant:"},{"id":"receipts","effect":"allow","action":"receipt.read","resource":"data","prefix":"tenant:"},{"id":"write","effect":"allow","action":"vertex.write","resource":"data","prefix":"tenant:"}]}]`,
+		"LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE": machines, "LANTERN_CDC_ENABLED": "false",
+		"LANTERN_TLS_CERT_FILE": filepath.Join(dir, "tls.pem"), "LANTERN_TLS_KEY_FILE": filepath.Join(dir, "tls.key"),
+		"LANTERN_LOG_LEVEL": "error", "LANTERN_METRICS_ADDR": "", "LANTERN_DRAIN_DELAY_MS": "0",
+	} {
+		t.Setenv(name, value)
+	}
+	t.Setenv("LANTERN_METRICS_ADDR", "")
+	envconfig.ResetForTesting()
+	app, cleanup, err := initializeApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- app.Run(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("production App did not join")
+		}
+	}()
+	control := graphv1connect.NewLanternSecurityServiceClient(tlsSource.Client(), origin)
+	data := graphv1connect.NewLanternServiceClient(tlsSource.Client(), origin)
+	request := func(key string) *connect.Request[pb.GetVertexRequest] {
+		req := connect.NewRequest(&pb.GetVertexRequest{Key: key})
+		req.Header().Set("Authorization", "Bearer "+token)
+		return req
+	}
+	deadline := time.Now().Add(40 * time.Second)
+	seenFence := false
+	for time.Now().Before(deadline) {
+		caps, err := control.GetAuthCapabilities(ctx, connect.NewRequest(&pb.GetAuthCapabilitiesRequest{}))
+		if err == nil {
+			if caps.Msg.Mode != pb.AuthMode_AUTH_MODE_OIDC {
+				t.Fatal("production mode downgraded")
+			}
+			if caps.Msg.Ready {
+				break
+			}
+			seenFence = true
+			if _, err := data.GetVertex(ctx, request("tenant:one")); connect.CodeOf(err) != connect.CodeUnavailable {
+				t.Fatal("writer served during restart fence", err)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	caps, err := control.GetAuthCapabilities(ctx, connect.NewRequest(&pb.GetAuthCapabilitiesRequest{}))
+	if err != nil || !caps.Msg.Ready || !seenFence {
+		t.Fatal("production authority readiness", err)
+	}
+	put := connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "tenant:one", Value: &pb.Vertex_String_{String_: "live"}, Expiration: timestamppb.New(time.Now().Add(time.Minute))}})
+	put.Header().Set("Authorization", "Bearer "+token)
+	if _, err := data.PutVertex(ctx, put); err != nil {
+		t.Fatal("Role-scoped production Put", err)
+	}
+	got, err := data.GetVertex(ctx, request("tenant:one"))
+	if err != nil || got.Msg.Vertex.Key != "tenant:one" || got.Msg.Vertex.GetString_() != "live" {
+		t.Fatal("logical production read", err)
+	}
+	if _, err := data.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "tenant:one"})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatal("anonymous protected read", err)
+	}
+	if _, err := data.GetVertex(ctx, request("private:one")); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("prefix denial", err)
+	}
+	capability := connect.NewRequest(&pb.GetReceiptCapabilityRequest{})
+	capability.Header().Set("Authorization", "Bearer "+token)
+	cap, err := data.GetReceiptCapability(ctx, capability)
+	if err != nil || !cap.Msg.GetEnabled() {
+		t.Fatal("production native receipt activation", err)
+	}
+	peer := graphv1connect.NewLanternReplicationServiceClient(tlsSource.Client(), origin)
+	peerReq := connect.NewRequest(&pb.PeerStatusRequest{})
+	peerReq.Header().Set("Authorization", "Bearer "+token)
+	if _, err := peer.PeerStatus(ctx, peerReq); connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Fatal("public surface exposed private replication", err)
 	}
 }

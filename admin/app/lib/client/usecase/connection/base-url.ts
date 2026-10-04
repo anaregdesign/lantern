@@ -25,6 +25,7 @@ export function normaliseBaseUrl(input: string): string | null {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     return null;
   }
+  if (url.username || url.password || url.search || url.hash) return null;
   const stripped = `${url.protocol}//${url.host}${url.pathname.replace(/\/$/, "")}`;
-  return stripped === `${url.protocol}//${url.host}` ? stripped : stripped;
+  return stripped;
 }

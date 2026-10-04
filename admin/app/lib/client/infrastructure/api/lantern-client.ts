@@ -1,4 +1,5 @@
 import { connectWeb, type Lantern } from "lantern-sdk/web";
+import { browserTransport } from "./security-client";
 
 /**
  * Thin re-export of the lantern-sdk Lantern client type. The admin SPA
@@ -10,8 +11,8 @@ export type LanternClient = Lantern;
 
 export interface LanternClientOptions {
   baseUrl: string;
-  /** Optional bearer token for LANTERN_AUTH_TOKENS servers (#850). */
-  token?: string;
+  csrf?: string;
+  signal?: AbortSignal;
 }
 
 /**
@@ -28,6 +29,6 @@ export interface LanternClientOptions {
  */
 export function createLanternClient(opts: LanternClientOptions): LanternClient {
   return connectWeb(opts.baseUrl.replace(/\/$/, ""), {
-    token: opts.token || undefined,
+    ...browserTransport(opts.signal, opts.csrf),
   });
 }

@@ -56,6 +56,8 @@ import {
   type GetServerStatusResponse,
   type Vertex as PbVertex,
 } from "./gen/graph/v1/graph_pb.js";
+import { LanternChangeService, ChangeProjection } from "./gen/graph/v1/changes_pb.js";
+import { decodeChangeFrame, type WatchChangesOptions, type ChangeFrame } from "./scoped-changes.js";
 import { LanternReplicationService, SubscribeProjection } from "./gen/graph/v1/replication_pb.js";
 
 import {
@@ -93,6 +95,12 @@ import {
   type Vertex,
   type VertexInput,
 } from "./values.js";
+import {
+  createEdgeOutcomeFromWire,
+  validateCreateEdgeInput,
+  type CreateEdgeOutcome,
+} from "./create-outcome.js";
+export type { CreateEdgeOutcome } from "./create-outcome.js";
 import { putOutcomeFromWire, type PutOutcome } from "./put-outcome.js";
 export type { PutOutcome } from "./put-outcome.js";
 
@@ -559,7 +567,7 @@ function buildSearchOptions(opts: SearchOptions) {
 export interface LanternArgs {
   options?: ConnectOptions;
   /**
-   * Bearer token for servers running with LANTERN_AUTH_TOKENS (#850).
+   * OIDC access token or named machine credential for protected servers.
    * Attached as `Authorization: Bearer <token>` on every call via a
    * Connect interceptor prepended ahead of `interceptors`. Bearer tokens
    * over plaintext h2c are sniffable — use an https:// baseUrl outside
@@ -651,6 +659,7 @@ export { normaliseBaseUrl };
  */
 export class Lantern {
   private readonly client: Client<typeof LanternService>;
+  private readonly changeClient: Client<typeof LanternChangeService>;
   private readonly replicationClient: Client<typeof LanternReplicationService>;
   private readonly options: ConnectOptions;
   /**
@@ -669,11 +678,13 @@ export class Lantern {
   private constructor(
     client: Client<typeof LanternService>,
     replicationClient: Client<typeof LanternReplicationService>,
+    changeClient: Client<typeof LanternChangeService>,
     options: ConnectOptions,
     baseUrl?: string,
   ) {
     this.client = client;
     this.replicationClient = replicationClient;
+    this.changeClient = changeClient;
     this.options = options;
     this.baseUrl = baseUrl;
   }
@@ -710,6 +721,7 @@ export class Lantern {
     return new Lantern(
       createClient(LanternService, transport),
       createClient(LanternReplicationService, transport),
+      createClient(LanternChangeService, transport),
       {
         batchChunkSize: DEFAULT_BATCH_CHUNK_SIZE,
         ...options,
@@ -1490,6 +1502,81 @@ export class Lantern {
     return effective[effective.length - 1] ?? 0;
   }
 
+  /** Creates connections between existing endpoints, without automatic retry. */
+  async createEdges(
+    inputs: readonly EdgeInput[],
+    signal?: AbortSignal,
+  ): Promise<CreateEdgeOutcome[]> {
+    inputs.forEach(validateCreateEdgeInput);
+    const sampledAt = Date.now();
+    const prepared = inputs.map((input) =>
+      fromJson(EdgeSchema, edgeInputToJsonAt(input, sampledAt) as JsonValue),
+    );
+    const outcomes: CreateEdgeOutcome[] = [];
+    await this.runBatchWrite(prepared, async (chunk) => {
+      const response = await this.client.createEdges({ edges: chunk }, this.callOpts(signal));
+      if (response.outcomes.length !== chunk.length)
+        throw new LanternError("server returned misaligned Create outcomes");
+      const decoded = response.outcomes.map(createEdgeOutcomeFromWire);
+      outcomes.push(...decoded);
+    });
+    return outcomes;
+  }
+
+  async createEdge(input: EdgeInput, signal?: AbortSignal): Promise<CreateEdgeOutcome> {
+    return (await this.createEdges([input], signal))[0]!;
+  }
+
+  /** One atomic receipt-bearing call; relative TTLs are anchored to operation IDs. */
+  async createEdgesWithReceipt(
+    inputs: readonly EdgeInput[],
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<readonly CreateEdgeOutcome[]> {
+    if (!Array.isArray(inputs) || inputs.length === 0 || inputs.length > 10000)
+      throw new InvalidArgumentError("receipt Create requires 1..10000 Edges");
+    inputs.forEach(validateCreateEdgeInput);
+    const normalized = receiptContextForItemCount(context, inputs.length);
+    const snapshots = Object.freeze(
+      inputs.map((input) =>
+        Object.freeze({
+          ...input,
+          ...(input.expiration ? { expiration: new Date(input.expiration.getTime()) } : {}),
+        }),
+      ),
+    );
+    const edges = snapshots.map((input, index) => {
+      const issuedAt = operationIDIssuedAtUnixMs(normalized.operationIds[index]!);
+      if (issuedAt > MAX_JAVASCRIPT_DATE_MS)
+        throw new InvalidArgumentError("operation issuance exceeds JavaScript Date range");
+      return fromJson(EdgeSchema, edgeInputToJsonAt(input, Number(issuedAt)) as JsonValue);
+    });
+    const mutation = Object.freeze({
+      kind: "createEdge",
+      inputs: snapshots,
+    }) satisfies ReceiptMutationIntent;
+    await this.requireReceiptContinuity(normalized, "createEdge", signal);
+    try {
+      const response = await this.client.createEdges(
+        { edges, receiptContext: receiptContextToWire(normalized) },
+        this.callOpts(signal),
+      );
+      if (response.outcomes.length !== edges.length)
+        throw new LanternError("server returned misaligned receipt Create outcomes");
+      return Object.freeze(response.outcomes.map(createEdgeOutcomeFromWire));
+    } catch (error) {
+      throw await this.receiptMutationError(normalized, mutation, error, signal);
+    }
+  }
+
+  async createEdgeWithReceipt(
+    input: EdgeInput,
+    context: ReceiptOperationContext,
+    signal?: AbortSignal,
+  ): Promise<CreateEdgeOutcome> {
+    return (await this.createEdgesWithReceipt([input], context, signal))[0]!;
+  }
+
   async putEdges(inputs: readonly EdgeInput[], signal?: AbortSignal): Promise<EdgePutResult[]> {
     if (inputs.length === 0) return [];
     const sampledAtMs = Date.now();
@@ -1953,7 +2040,9 @@ export class Lantern {
   }
 
   /**
-   * Stream value-free, deployment-scoped identities for cache invalidation.
+   * Private workload-only replication identities. Public applications must use watchChanges.
+   * A public bearer/cookie never admits this private protocol; the caller owns
+   * explicit signed workload mTLS transport and domain attestation.
    *
    * Bootstrap yields one atomic LAST-sequence checkpoint before live chunks.
    * Resume uses a per-origin NEXT cursor; the caller must durably apply every
@@ -2017,6 +2106,60 @@ export class Lantern {
       );
     } catch (err) {
       throw wrapConnectError(err);
+    } finally {
+      cancellation.abort();
+      signal?.removeEventListener("abort", relayAbort);
+    }
+  }
+
+  /** Public authorized invalidations. No automatic reconnect/retry. Keep a
+   * bootstrap tail open while rebuilding resident keys with ordinary reads.
+   * Values, when requested and authorized, are the current local image rather
+   * than the original mutation payload. Hidden-only commits add no frame. */
+  async *watchChanges(
+    opts: WatchChangesOptions = {},
+    signal?: AbortSignal,
+  ): AsyncIterable<ChangeFrame> {
+    const projection = opts.projection ?? "identity";
+    if (
+      (projection !== "identity" && projection !== "value") ||
+      (opts.bootstrap && opts.cursor) ||
+      (opts.prefix !== undefined && typeof opts.prefix !== "string") ||
+      (opts.timeoutMs !== undefined &&
+        (!Number.isSafeInteger(opts.timeoutMs) || opts.timeoutMs <= 0))
+    )
+      throw new InvalidArgumentError("invalid WatchChanges options");
+    const request = {
+      prefix: opts.prefix ?? "",
+      projection: projection === "identity" ? ChangeProjection.IDENTITY : ChangeProjection.VALUE,
+      bootstrap: opts.bootstrap ?? false,
+      cursor: opts.cursor?.toBytes() ?? new Uint8Array(),
+    };
+    const cancellation = new AbortController();
+    const relayAbort = () => cancellation.abort(signal?.reason);
+    if (signal?.aborted) relayAbort();
+    else signal?.addEventListener("abort", relayAbort, { once: true });
+    let bootstrapped = false;
+    try {
+      for await (const raw of this.changeClient.watchChanges(request, {
+        signal: cancellation.signal,
+        ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
+      })) {
+        const frame = decodeChangeFrame(raw, projection);
+        if (frame.bootstrap) {
+          if (!request.bootstrap || bootstrapped)
+            throw new LanternError("unexpected change bootstrap");
+          bootstrapped = true;
+        } else if (request.bootstrap && !bootstrapped)
+          throw new LanternError("change invalidation preceded bootstrap");
+        yield frame;
+      }
+      if (!signal?.aborted)
+        throw new FailedPreconditionError(
+          "change stream ended; resume with the last applied opaque cursor or rebuild after a gap",
+        );
+    } catch (error) {
+      if (!signal?.aborted) throw wrapConnectError(error);
     } finally {
       cancellation.abort();
       signal?.removeEventListener("abort", relayAbort);

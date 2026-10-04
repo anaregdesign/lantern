@@ -68,3 +68,14 @@ func TestDataAuthorizationExactMatrixAndProtectedCollections(t *testing.T) {
 		t.Fatal("unknown request field ignored", err)
 	}
 }
+
+func TestDataExportDoesNotInventInteractiveAuthentication(t *testing.T) {
+	clock, contexts := dataAccessFixture(t, []security.PermissionRule{
+		dataAccessRule("read", security.Allow, security.VertexRead, "orders:"),
+		dataAccessRule("export", security.Allow, security.Export, "orders:"),
+	})
+	svc := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)).WithDataNamespace().WithDataAuthorization(clock)
+	if _, err := svc.authorizeData(contexts("reader", time.Time{}), &pb.BackupSnapshotRequest{VertexPrefix: "orders:"}); err != nil {
+		t.Fatal("scoped export demanded interactive auth", err)
+	}
+}

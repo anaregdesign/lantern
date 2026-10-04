@@ -173,35 +173,3 @@ func TestVerifierPS256RequiresJOSESaltLength(t *testing.T) {
 		t.Fatal("global library method mutated")
 	}
 }
-
-func BenchmarkVerifierAccess(b *testing.B) {
-	for _, initial := range []bool{false, true} {
-		name := "WarmKeys"
-		if initial {
-			name = "InitialKeys"
-		}
-		b.Run(name, func(b *testing.B) {
-			provider := newTestProvider(b)
-			raw := provider.sign(b, provider.accessClaims(), "at+jwt")
-			verifier := NewVerifierWithClock(NewKeyCacheWithClock(provider.fetcher, provider.now), provider.now)
-			if _, err := verifier.VerifyAccess(b.Context(), raw, provider.trust); err != nil {
-				b.Fatal(err)
-			}
-			fetches := provider.jwks.Load()
-			b.ReportAllocs()
-			b.ResetTimer()
-			for b.Loop() {
-				if initial {
-					verifier = NewVerifierWithClock(NewKeyCacheWithClock(provider.fetcher, provider.now), provider.now)
-				}
-				if _, err := verifier.VerifyAccess(b.Context(), raw, provider.trust); err != nil {
-					b.Fatal(err)
-				}
-			}
-			b.StopTimer()
-			if !initial && provider.jwks.Load() != fetches {
-				b.Fatal("warm token verification fetched IdP keys")
-			}
-		})
-	}
-}

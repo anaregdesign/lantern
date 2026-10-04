@@ -400,6 +400,7 @@ void main() {
         receiptEndpoint,
         allowInsecure: receiptEndpoint.scheme == 'http',
         token: receiptToken,
+        httpClientFactory: _receiptHttpClient,
         retryPolicy: _realWireRetry,
       );
       addTearDown(receiptClient.close);
@@ -1368,50 +1369,51 @@ void main() {
     },
   );
 
-  test('identity CDC bootstraps and resumes over real Connect/h2c', () async {
+  test('public CDC bootstraps and resumes with opaque cursors', () async {
     final firstKey = '$prefix-cdc-first';
     final secondKey = '$prefix-cdc-second';
-    final bootstrap = StreamIterator<IdentityFrame>(
-      client.subscribeIdentity(bootstrap: true),
+    final bootstrap = StreamIterator<ChangeFrame>(
+      client.watchChanges(prefix: '$prefix-cdc-', bootstrap: true),
     );
     try {
       expect(
         await bootstrap.moveNext().timeout(const Duration(seconds: 10)),
         isTrue,
       );
-      final checkpoint = bootstrap.current as IdentityCheckpointFrame;
-      expect(checkpoint.lastSequences, isA<Map<String, BigInt>>());
+      expect(bootstrap.current.bootstrap, isTrue);
+      expect(bootstrap.current.cursor, isNotNull);
       await client.putVertex(
         VertexInput(
           key: firstKey,
           value: VertexValue.string('identity-stream-must-not-carry-this'),
         ),
       );
+      while (true) {
+        expect(
+          await bootstrap.moveNext().timeout(const Duration(seconds: 10)),
+          isTrue,
+        );
+        if (bootstrap.current.invalidations.isNotEmpty) break;
+      }
+      final first = bootstrap.current;
+      expect((first.invalidations.single as VertexInvalidation).key, firstKey);
       expect(
-        await bootstrap.moveNext().timeout(const Duration(seconds: 10)),
-        isTrue,
+        (first.invalidations.single as VertexInvalidation).current,
+        isNull,
       );
-      final first = bootstrap.current as IdentityChunkFrame;
-      expect(first.operation, IdentityOperation.putVertex);
-      expect(first.vertexKeys, [firstKey]);
-      expect(first.edgeKeys, isEmpty);
-      expect(first.isLast, isTrue);
-      final lastApplied = {
-        ...checkpoint.lastSequences,
-        first.origin: first.sequence,
-      };
       final resumed = client
-          .subscribeIdentity(
-            cursor: IdentityNextCursor.fromLastApplied(lastApplied),
-          )
-          .first
+          .watchChanges(prefix: '$prefix-cdc-', cursor: first.cursor!)
+          .firstWhere((frame) => frame.invalidations.isNotEmpty)
           .timeout(const Duration(seconds: 10));
       await client.putVertex(
         VertexInput(key: secondKey, value: VertexValue.string('second')),
       );
-      final second = (await resumed) as IdentityChunkFrame;
-      expect(second.vertexKeys, [secondKey]);
-      expect(second.sequence, first.sequence + BigInt.one);
+      final second = await resumed;
+      expect(
+        (second.invalidations.single as VertexInvalidation).key,
+        secondKey,
+      );
+      expect(second.cursor, isNotNull);
     } finally {
       await bootstrap.cancel();
     }
@@ -1420,21 +1422,21 @@ void main() {
   final identityGapEndpoint =
       io.Platform.environment['LANTERN_DART_IDENTITY_GAP_ENDPOINT'];
   test(
-    'identity CDC rejects an evicted per-origin resume over real Connect/h2c',
+    'public CDC rejects an evicted opaque resume',
     () async {
       final gap = LanternClient.connect(
         Uri.parse(identityGapEndpoint!),
         allowInsecure: identityGapEndpoint.startsWith('http://'),
       );
       addTearDown(gap.close);
-      final bootstrap = StreamIterator<IdentityFrame>(
-        gap.subscribeIdentity(bootstrap: true),
+      final bootstrap = StreamIterator<ChangeFrame>(
+        gap.watchChanges(bootstrap: true),
       );
       expect(
         await bootstrap.moveNext().timeout(const Duration(seconds: 10)),
         isTrue,
       );
-      final checkpoint = bootstrap.current as IdentityCheckpointFrame;
+      final checkpoint = bootstrap.current;
       await bootstrap.cancel();
       for (var index = 0; index < 3; index++) {
         await gap.putVertex(
@@ -1445,13 +1447,7 @@ void main() {
         );
       }
       await expectLater(
-        gap
-            .subscribeIdentity(
-              cursor: IdentityNextCursor.fromLastApplied(
-                checkpoint.lastSequences,
-              ),
-            )
-            .first,
+        gap.watchChanges(cursor: checkpoint.cursor!).first,
         throwsA(isA<LanternFailedPreconditionException>()),
       );
     },
@@ -1474,7 +1470,9 @@ final class _CommittedResponseLossTransport implements connect.Transport {
     Future<void> Function()? onCommittedResponse,
   }) : _loseProcedure = loseProcedure,
        _onCommittedResponse = onCommittedResponse {
-    _httpClient = io.HttpClient();
+    _httpClient = endpoint.scheme == 'https'
+        ? _receiptHttpClient()
+        : io.HttpClient();
     _inner = connect_protocol.Transport(
       baseUrl: endpoint.toString(),
       codec: const ProtoCodec(),
@@ -1529,7 +1527,9 @@ final class _BlockingResponseTransport implements connect.Transport {
     required this.procedure,
     required this.blockRequest,
   }) {
-    _httpClient = io.HttpClient();
+    _httpClient = endpoint.scheme == 'https'
+        ? _receiptHttpClient()
+        : io.HttpClient();
     _inner = connect_protocol.Transport(
       baseUrl: endpoint.toString(),
       codec: const ProtoCodec(),
@@ -1578,4 +1578,15 @@ final class _BlockingResponseTransport implements connect.Transport {
   >(connect.Spec<I, O> spec, Stream<I> input, [connect.CallOptions? options]) {
     return _inner.stream(spec, input, options);
   }
+}
+
+io.HttpClient _receiptHttpClient() {
+  final ca = io.Platform.environment['LANTERN_DART_RECEIPT_CA_FILE'];
+  if (ca == null || ca.isEmpty) {
+    throw StateError('native receipt CA is required');
+  }
+  return io.HttpClient(
+    context: io.SecurityContext(withTrustedRoots: false)
+      ..setTrustedCertificates(ca),
+  );
 }

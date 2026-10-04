@@ -1,27 +1,24 @@
-# Receipt-only overlay: the shared DNS alias resolves to IPs, while each
-# replica presents its own CA-signed certificate with SANs for `lantern` and
-# the localhost-facing HTTPS driver. No private key is committed or shared
-# between replicas. run.sh generates LANTERN_BENCH_PEER_TLS_DIR before Compose.
-x-receipt-tls-env: &receipt-tls-env
-  LANTERN_TLS_CERT_FILE: /run/lantern-tls/server.pem
-  LANTERN_TLS_KEY_FILE: /run/lantern-tls/server.key
-  LANTERN_PEER_CA_FILE: /run/lantern-tls/ca.pem
-
+# Protected native receipt overlay. Trust, authority and machine Role bindings
+# are generated into each workload's private env file before Compose starts.
+x-protected-env: &protected-env
+  LANTERN_METRICS_ADDR: "127.0.0.1:9090"
+  LANTERN_PPROF_ENABLED: "false"
+  LANTERN_MUTEX_PROFILE_FRACTION: "0"
+  LANTERN_BLOCK_PROFILE_RATE: "0"
+  LANTERN_BACKUP_RESTORE_ON_START: "false"
+  LANTERN_RECEIPT_MAX_BYTES: "${LANTERN_BENCH_RECEIPT_MAX_BYTES:?receipt byte budget required}"
+  LANTERN_RECEIPT_MAX_ENTRIES: "${LANTERN_BENCH_RECEIPT_MAX_ENTRIES:?receipt entry budget required}"
+  LANTERN_RECEIPT_RETENTION: "${LANTERN_BENCH_RECEIPT_RETENTION:?receipt retention required}"
 services:
   lantern-0:
     environment:
-      <<: *receipt-tls-env
-    volumes:
-      - ${LANTERN_BENCH_PEER_TLS_DIR:?receipt TLS certificates required}/lantern-0:/run/lantern-tls:ro
-
+      <<: *protected-env
+    ports: !override ["127.0.0.1:${LANTERN_BENCH_PUBLIC_PORT_0:-6380}:6380"]
   lantern-1:
     environment:
-      <<: *receipt-tls-env
-    volumes:
-      - ${LANTERN_BENCH_PEER_TLS_DIR:?receipt TLS certificates required}/lantern-1:/run/lantern-tls:ro
-
+      <<: *protected-env
+    ports: !override ["127.0.0.1:${LANTERN_BENCH_PUBLIC_PORT_1:-6381}:6380"]
   lantern-2:
     environment:
-      <<: *receipt-tls-env
-    volumes:
-      - ${LANTERN_BENCH_PEER_TLS_DIR:?receipt TLS certificates required}/lantern-2:/run/lantern-tls:ro
+      <<: *protected-env
+    ports: !override ["127.0.0.1:${LANTERN_BENCH_PUBLIC_PORT_2:-6382}:6380"]

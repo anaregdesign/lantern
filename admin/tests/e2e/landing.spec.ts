@@ -1,4 +1,12 @@
 import { expect, test } from "@playwright/test";
+import { CONNECT_URL, STORAGE_KEY } from "./helpers";
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(({ key, url }) => localStorage.setItem(key, url), {
+    key: STORAGE_KEY,
+    url: CONNECT_URL,
+  });
+});
 
 test("landing page renders with navigation and gateway connection", async ({
   page,
@@ -15,7 +23,7 @@ test("landing page renders with navigation and gateway connection", async ({
   // top-level sections.
   await expect(page.getByRole("link", { name: /Open CLI/i })).toBeVisible();
   await expect(page.getByRole("link", { name: /Open Ops/i })).toBeVisible();
-  await expect(page.getByText("http://localhost:6380")).toBeVisible();
+  await expect(page.getByText(CONNECT_URL)).toBeVisible();
 });
 
 test.describe("placeholder routes", () => {

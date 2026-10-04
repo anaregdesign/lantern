@@ -64,7 +64,7 @@ COPY admin/Caddyfile /etc/caddy/Caddyfile
 COPY admin/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh \
     && mkdir -p /etc/caddy/conf.d \
-    && : > /etc/caddy/conf.d/prom.caddy \
+    && : > /etc/caddy/conf.d/routes.caddy \
     && chgrp -R 0 /etc/caddy/conf.d \
     && chmod -R g+rwX /etc/caddy/conf.d
 

@@ -289,6 +289,42 @@ class SearchHitProjectionStatus extends $pb.ProtobufEnum {
   const SearchHitProjectionStatus._(super.value, super.name);
 }
 
+/// CreateEdgeOutcome is a disclosure-limited, request-index-aligned result.
+/// Successful creation never changes either endpoint. Existing Edge values,
+/// expirations and contribution identities are never returned by this family.
+class CreateEdgeOutcome extends $pb.ProtobufEnum {
+  static const CreateEdgeOutcome CREATE_EDGE_OUTCOME_UNSPECIFIED =
+      CreateEdgeOutcome._(
+          0, _omitEnumNames ? '' : 'CREATE_EDGE_OUTCOME_UNSPECIFIED');
+  static const CreateEdgeOutcome CREATE_EDGE_OUTCOME_CREATED_AND_LIVE =
+      CreateEdgeOutcome._(
+          1, _omitEnumNames ? '' : 'CREATE_EDGE_OUTCOME_CREATED_AND_LIVE');
+  static const CreateEdgeOutcome CREATE_EDGE_OUTCOME_EDGE_EXISTS =
+      CreateEdgeOutcome._(
+          2, _omitEnumNames ? '' : 'CREATE_EDGE_OUTCOME_EDGE_EXISTS');
+  static const CreateEdgeOutcome CREATE_EDGE_OUTCOME_ENDPOINT_NOT_LIVE =
+      CreateEdgeOutcome._(
+          3, _omitEnumNames ? '' : 'CREATE_EDGE_OUTCOME_ENDPOINT_NOT_LIVE');
+  static const CreateEdgeOutcome CREATE_EDGE_OUTCOME_EXPIRED =
+      CreateEdgeOutcome._(
+          4, _omitEnumNames ? '' : 'CREATE_EDGE_OUTCOME_EXPIRED');
+
+  static const $core.List<CreateEdgeOutcome> values = <CreateEdgeOutcome>[
+    CREATE_EDGE_OUTCOME_UNSPECIFIED,
+    CREATE_EDGE_OUTCOME_CREATED_AND_LIVE,
+    CREATE_EDGE_OUTCOME_EDGE_EXISTS,
+    CREATE_EDGE_OUTCOME_ENDPOINT_NOT_LIVE,
+    CREATE_EDGE_OUTCOME_EXPIRED,
+  ];
+
+  static final $core.List<CreateEdgeOutcome?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
+  static CreateEdgeOutcome? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const CreateEdgeOutcome._(super.value, super.name);
+}
+
 /// SearchErrorReason is the bounded, machine-readable reason attached to
 /// SearchVertices failures and search-index write rejections. Clients must
 /// branch on this enum, never on the human-readable status message.
@@ -413,6 +449,9 @@ class ReceiptMutationKind extends $pb.ProtobufEnum {
           _omitEnumNames
               ? ''
               : 'RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION');
+  static const ReceiptMutationKind RECEIPT_MUTATION_KIND_CREATE_EDGE =
+      ReceiptMutationKind._(
+          6, _omitEnumNames ? '' : 'RECEIPT_MUTATION_KIND_CREATE_EDGE');
 
   static const $core.List<ReceiptMutationKind> values = <ReceiptMutationKind>[
     RECEIPT_MUTATION_KIND_UNSPECIFIED,
@@ -421,10 +460,11 @@ class ReceiptMutationKind extends $pb.ProtobufEnum {
     RECEIPT_MUTATION_KIND_DELETE_EDGE,
     RECEIPT_MUTATION_KIND_ADD_EDGE,
     RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION,
+    RECEIPT_MUTATION_KIND_CREATE_EDGE,
   ];
 
   static final $core.List<ReceiptMutationKind?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 5);
+      $pb.ProtobufEnum.$_initByValueList(values, 6);
   static ReceiptMutationKind? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

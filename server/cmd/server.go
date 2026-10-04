@@ -29,22 +29,24 @@ import (
 // goroutine (lantern http server, metrics HTTP server) so main only has to
 // call Run.
 type App struct {
-	cfg         *provider.Config
-	logger      *slog.Logger
-	svc         *service.LanternService
-	server      *service.LanternServer
-	metrics     provider.MetricsServer
-	tracing     *provider.Tracing
-	domain      *domainmetrics.DomainMetrics
-	health      *provider.HealthChecker
-	gate        *readiness.Gate
-	drainDelay  time.Duration
-	backupper   *backup.Backupper
-	restoreReq  bool
-	pump        *replication.Pump
-	llm         *provider.LLMEngine
-	antiEntropy *replication.AntiEntropy
-	runtime     *service.ServingRuntime
+	cfg             *provider.Config
+	logger          *slog.Logger
+	svc             *service.LanternService
+	server          *service.LanternServer
+	metrics         provider.MetricsServer
+	tracing         *provider.Tracing
+	domain          *domainmetrics.DomainMetrics
+	health          *provider.HealthChecker
+	gate            *readiness.Gate
+	drainDelay      time.Duration
+	backupper       *backup.Backupper
+	restoreReq      bool
+	pump            *replication.Pump
+	llm             *provider.LLMEngine
+	antiEntropy     *replication.AntiEntropy
+	runtime         *service.ServingRuntime
+	peerServer      *provider.PeerPlaneServer
+	securityWorkers *provider.SecurityWorkers
 }
 
 func newApp(
@@ -66,6 +68,9 @@ func newApp(
 	rc provider.ReplicationConfig,
 	engine *provider.LLMEngine,
 	runtime *service.ServingRuntime,
+	peerServer *provider.PeerPlaneServer,
+	securityWorkers *provider.SecurityWorkers,
+	peerPlane provider.PeerPlaneConfig,
 	_ provider.DomainMetricsWired,
 	_ provider.CacheGCHooksWired,
 ) *App {
@@ -77,7 +82,7 @@ func newApp(
 	// replicationSnapshotter concurrently. enabled reflects "this server
 	// is wired to talk to peers": static peer list non-empty OR DNS
 	// discovery configured.
-	enabled := len(pc.Peers) > 0 || pc.Discovery == "dns"
+	enabled := peerPlane.ListenAddress != "" || len(pc.Peers) > 0 || pc.Discovery == "dns"
 	svc.WithReplicationStatus(pump, service.ReplicationStatusInfo{
 		NodeID:  rc.NodeID,
 		Enabled: enabled,
@@ -89,22 +94,24 @@ func newApp(
 	logger.Info("llm engine", slog.String("provider", engine.Provider()))
 
 	return &App{
-		cfg:         cfg,
-		logger:      logger,
-		llm:         engine,
-		svc:         svc,
-		server:      server,
-		metrics:     metricsServer,
-		tracing:     tracing,
-		domain:      domain,
-		health:      hc,
-		gate:        gate,
-		drainDelay:  sc.DrainDelay,
-		backupper:   backupper,
-		restoreReq:  bcfg.RestoreRequired,
-		pump:        pump,
-		antiEntropy: antiEntropy,
-		runtime:     runtime,
+		cfg:             cfg,
+		logger:          logger,
+		llm:             engine,
+		svc:             svc,
+		server:          server,
+		metrics:         metricsServer,
+		tracing:         tracing,
+		domain:          domain,
+		health:          hc,
+		gate:            gate,
+		drainDelay:      sc.DrainDelay,
+		backupper:       backupper,
+		restoreReq:      bcfg.RestoreRequired,
+		pump:            pump,
+		antiEntropy:     antiEntropy,
+		runtime:         runtime,
+		peerServer:      peerServer,
+		securityWorkers: securityWorkers,
 	}
 }
 
@@ -278,6 +285,8 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 	// sync.Once-guarded, so a hot-reload that re-enters Run does not reset it.
 	a.svc.MarkStarted(time.Now())
 	g.Go(func() error { return a.server.Run(gctx) })
+	g.Go(func() error { return a.peerServer.Run(gctx) })
+	g.Go(func() error { return a.securityWorkers.Run(gctx) })
 	g.Go(func() error { return a.metrics.Run(gctx) })
 	g.Go(func() error { a.domain.Run(gctx); return nil })
 	g.Go(func() error { return a.pump.Run(gctx) })

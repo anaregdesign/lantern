@@ -55,6 +55,9 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 	if m == nil || (m.GetSeq() == 0 && len(m.GetOrigin()) == 0 && m.GetHlc() == nil && m.GetOp() == nil) {
 		return nil
 	}
+	if m.GetOp().GetEdgeCreateEffect() != nil {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("replication: Edge Create has no cluster-wide absence proof"))
+	}
 	if m.GetOp() == nil || m.GetOp().GetOp() == nil {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: sequenced mutation has no op"))
 	}

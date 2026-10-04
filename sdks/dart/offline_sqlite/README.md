@@ -74,15 +74,27 @@ Database paths are application-owned and should have a single canonical spelling
 
 ## CDC storage boundary
 
-`changeCursor`, `applyChangeChunk`, and `resetChangeCursor` implement the storage
-prerequisite for identity-only CDC in #1116. Origin sequences retain the complete
-uint64 range as decimal text. Cache invalidation and chunk progress commit
-together; every accepted chunk also advances the durable change epoch, while
-only the final chunk advances the origin's last-applied sequence. Checkpoint
-reset preserves bounded resident identities as key-only Unknown work and
-removes confirmed values, while keeping pending outbox work. Bounded scans and
-epoch-checked completion survive reopen. Partition wipe removes CDC and
-recovery state.
+Public scoped CDC uses `scopedChangeCursor`, `applyScopedChangeFrame` and
+`resetScopedChangeCursor`. Schema 5 stores one bounded opaque BLOB checkpoint
+in an indexed row per partition. Frame invalidation and optional completion
+cursor commit together; partial frames advance the read epoch but preserve the
+prior checkpoint. A gap/bootstrap hides confirmed values as bounded key-only
+Unknown work, with indexed scans and epoch-checked plural completion. Outbox
+records and receipt dispatch evidence survive unchanged; wipe removes both CDC
+protocols and recovery state.
+
+Schema 1/2/3/4 upgrades validate the existing schema and payload graph, create
+opaque state, hide legacy cache as Unknown and clear private origin progress
+atomically. They never infer a public checkpoint from origin vectors. Corrupt or
+unsupported state fails closed without resetting the database. Copied snapshots
+and native-file continuity are separate Server concerns.
+
+The legacy origin-vector methods remain private/historical conformance only.
+The application composes public WatchChanges using the maintained Flutter
+[bridge](../example/lib/scoped_change_source.dart), with a pinned responder and
+foreground cancellation. Run `runScopedChangeStoreConformanceSuite` over the
+actual close/reopen boundary. Host FFI tests verify storage logic, not physical
+Android/iOS qualification or availability of an unpublished parent API.
 An ordinary `serverOnly` Get cannot clear a checkpoint-Unknown resident marker;
 only the explicit plural recovery batch does so, while pending Put overlays
 remain visible.

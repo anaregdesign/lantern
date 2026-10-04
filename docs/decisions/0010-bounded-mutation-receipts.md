@@ -13,10 +13,16 @@ establish scoped receipt authorization. Canonical public intent continues to
 use logical keys after physical `data:` mapping. Scoped status/replay requires
 durable original-resource provenance and current rights; an operation ID does
 not authorize disclosure, including an absent-ID result. Raw peer history
-remains internal. Until those gates pass, scoped receipt capability stays
-disabled; only an explicitly authorized whole-data-domain receipt Role can
-use the qualified protocol. Namespace migration must preserve possibly sent
-IDs, canonical digests and original result bytes.
+remains internal. The staged #1613 implementation records opaque comparable
+original logical resource identities and the origin's actual Put lifecycle
+reduction alongside exact result bytes. Server checks current Role actions for
+status/replay, including the original Delete effect after Graph churn. Unknown
+or expired IDs without evidence fail closed for scoped callers; client-provided
+keys cannot authorize absence. Active/retired Snapshot, native archive and WAL
+recovery retain the evidence and include its bytes in admission accounting.
+Production activation and final-source qualification remain separate gates;
+the previously qualified deployment bearer does not complete them. Namespace
+migration must preserve possibly sent IDs, canonical digests and result bytes.
 
 Published `lantern_client_offline` 0.4.0 implements receipt-backed conditional
 Vertex Put, exact Vertex/Edge Delete, and explicit-ContribID Edge Add and
@@ -123,8 +129,8 @@ partitioned cold starters must not select competing active epochs
 automatically. A single-node fresh start may mint a new epoch but cannot
 inherit prior continuity. Known receipts
 restored from an older backup may remain queryable, but an absent old-epoch ID
-must never execute in the new epoch. A future authenticated-principal/ACL
-design is required before tenant-scoped receipts are claimed.
+must never execute in the new epoch. ADR 0012 defines the separately qualified
+Role/resource authorization boundary for scoped receipt disclosure.
 
 The deployment bearer grants both graph and receipt RPCs. For an HA
 deployment, Pump and anti-entropy may send it only to an approved
@@ -635,7 +641,7 @@ returns before live publication. Snapshot wiring alone does not enable receipt
 writes, public status, or capability; the production provider applies the
 downstream certification and authentication gate.
 The private [whole-state archive codec](../../server/backup/whole_state_archive.go)
-is the active-epoch-only LANTARCH codec (internal format version 1), separate
+is the active-epoch-only LANTARCH codec (staged internal format version 3), separate
 from both `.lbk` and the RECEIPT transport. Its graph section carries the
 current receipt-format tag but no transport receipt metadata; separate archive
 records carry the active Store snapshot/policy, clock high-water, and origin
@@ -917,9 +923,9 @@ digest and byte count to its source cutoff/HLC, epoch, policy fingerprint,
 previous generation, rotated generation, exact active and retired receipt
 clock high-water, and actual staged local HLC restore floor. The marker format
 is `ReceiptBaselineFormatCombined` with numeric value 1. The `LANTCBLN`
-container likewise has schema version 1 and embeds the existing canonical
+container has staged schema version 3 and embeds the current canonical
 active `LANTARCH` bytes unchanged plus a bounded canonical `LANTRET1` retired
-section. The retired section binds the active epoch and aggregate caps;
+section (staged archive version 2). The retired section binds the active epoch and aggregate caps;
 decoding requires those fields and its high-water to match the active section
 exactly. This private persistence path recognizes only
 `<wal>.receipt.<lowerhex-digest>.baseline` sidecars; all other magic, format
@@ -1111,3 +1117,18 @@ and image provenance without archiving ephemeral tokens or keys. A branch
 diagnostic or a run on the old h2c topology cannot count as final-source
 acceptance; the new merged-source sweep belongs to #1399 and #1442.
 A simultaneous four-family mixed load is not additionally required.
+
+
+## Standalone conditional connection creation (#1626)
+
+ADR 0012 defines the separate `edge.create` action and `CreateEdges`/`CreateEdge`
+family. Public receipt kind `CREATE_EDGE` preserves one of the four original
+Create outcomes, without disclosing an existing Edge. Private Store kind 7 and
+WAL union version 8 retain the canonical original Edge resource/action and
+accepted-effect evidence. Raw graph mutation decoding cannot substitute for
+that evidence. Duplicate receipt replay never reruns the conditional operation;
+WAL recovery cannot create endpoints, overwrite live collisions or resurrect
+newer-deleted/expired resources. HA serving and peer application reject this
+family until cluster-wide absence/arbitration is qualified. Existing receipt
+families keep their own semantics. This staged format supersedes older union
+version references above; old unions require explicit offline migration.

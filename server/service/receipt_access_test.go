@@ -63,3 +63,32 @@ func TestReceiptResourceRequiresOriginalActionsAndDenyWins(t *testing.T) {
 		}
 	}
 }
+
+func TestReceiptDirectedPairCannotComposeOrReverseOriginalActions(t *testing.T) {
+	rules := []security.PermissionRule{dataAccessRule("read", security.Allow, security.VertexRead, "")}
+	for i, action := range []security.Action{security.ReceiptRead, security.EdgeRead, security.EdgeDelete} {
+		rules = append(rules, dataAccessPairRule(string(rune('a'+i)), security.Allow, action, "users:", "targets:"))
+	}
+	rules = append(rules, dataAccessPairRule("private", security.Deny, security.ReceiptRead, "users:", "targets:private:"))
+	policy, err := security.CompileRoles([]security.Role{{ID: "delete", Rules: rules}}, security.DefaultPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	access, _ := policy.ForRoles([]string{"delete"})
+	for _, test := range []struct {
+		tail, head string
+		allowed    bool
+	}{{"users:1", "targets:1", true}, {"targets:1", "users:1", false}, {"users:1", "users:2", false}, {"users:1", "targets:private:1", false}} {
+		row := mutationreceipt.Receipt{Intent: mutationreceipt.Intent{Kind: mutationreceipt.DeleteEdge, Resource: mutationreceipt.ResourceIdentity{Key: test.tail, Head: test.head}}}
+		if allowsReceiptResource(access, row) != test.allowed || (authorizeReceiptRequest(access, &pb.DeleteEdgeRequest{Tail: test.tail, Head: test.head}) == nil) != test.allowed {
+			t.Fatal("receipt pair broadened original resource/action", test)
+		}
+		row.Kind = mutationreceipt.AddEdge
+		if allowsReceiptResource(access, row) {
+			t.Fatal("Delete pair disclosed Add result")
+		}
+	}
+	if wholeReceiptAbsence(access) {
+		t.Fatal("pair-only receipt grant disclosed missing IDs")
+	}
+}

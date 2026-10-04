@@ -28,6 +28,9 @@ Future<void> main(List<String> arguments) async {
           'cursor-chunk',
           'cursor-final',
           'checkpoint-reset',
+          'scoped-partial',
+          'scoped-final',
+          'scoped-reset',
           'wipe',
           'receipt',
         ].contains(scenario) ||
@@ -104,7 +107,7 @@ Future<void> _verify(String path, String scenario, String boundary) async {
       _require(
         boundary == 'before'
             ? tables.isEmpty && version == 0
-            : tables.isNotEmpty && version == 4,
+            : tables.isNotEmpty && version == 5,
       );
     } finally {
       await raw.close();
@@ -510,10 +513,17 @@ Future<void> _seed(OfflineStore store, String scenario) async {
     // A second partition detects accidental cross-partition cleanup.
     await transaction.putCache('other', _cache('other', 'untouched'));
     if (scenario == 'enqueue') return;
-    await transaction.resetChangeCursor(
-      _partition,
-      OfflineChangeCursor({_origin: BigInt.from(7)}),
-    );
+    if (scenario.startsWith('scoped-')) {
+      await transaction.resetScopedChangeCursor(
+        _partition,
+        OfflineScopedChangeCursor([7, 0, 255]),
+      );
+    } else {
+      await transaction.resetChangeCursor(
+        _partition,
+        OfflineChangeCursor({_origin: BigInt.from(7)}),
+      );
+    }
     for (final key in ['first', 'last', 'untouched']) {
       await transaction.putCache(_partition, _cache(_partition, key));
     }
@@ -521,6 +531,9 @@ Future<void> _seed(OfflineStore store, String scenario) async {
     if (scenario == 'confirmation') await _claim(transaction);
     if (scenario == 'cursor-final') {
       await transaction.applyChangeChunk(_partition, _chunk(0));
+    }
+    if (scenario == 'scoped-final') {
+      await transaction.applyScopedChangeFrame(_partition, _scopedFrame(false));
     }
   });
 }
@@ -560,6 +573,15 @@ Future<void> _mutate(
       await transaction.resetChangeCursor(
         _partition,
         OfflineChangeCursor({_origin: BigInt.from(9)}),
+      );
+    case 'scoped-partial':
+      await transaction.applyScopedChangeFrame(_partition, _scopedFrame(false));
+    case 'scoped-final':
+      await transaction.applyScopedChangeFrame(_partition, _scopedFrame(true));
+    case 'scoped-reset':
+      await transaction.resetScopedChangeCursor(
+        _partition,
+        OfflineScopedChangeCursor([9, 255, 0]),
       );
     case 'wipe':
       await transaction.wipePartition(_partition);
@@ -655,6 +677,12 @@ OfflineChangeChunk _chunk(int index) => OfflineChangeChunk(
   keys: [OfflineEntityKey.vertex(index == 0 ? 'first' : 'last')],
 );
 
+OfflineScopedChangeFrame _scopedFrame(bool finalFrame) =>
+    OfflineScopedChangeFrame(
+      keys: [OfflineEntityKey.vertex(finalFrame ? 'last' : 'first')],
+      cursor: finalFrame ? OfflineScopedChangeCursor([8, 0, 255]) : null,
+    );
+
 Future<void> _finishChunk(OfflineStore store, {required bool committed}) async {
   try {
     await store.transaction(
@@ -690,6 +718,9 @@ Future<String> _snapshot(OfflineStore store) => store.transaction((
         partition,
       )).map(OfflineCodec.encodeOperationRecord).toList(),
       'cursor': (await transaction.changeCursor(partition)).toJson(),
+      'scopedCursor': (await transaction.scopedChangeCursor(
+        partition,
+      ))?.toJson(),
       'changeEpoch': await transaction.changeEpoch(partition),
       'unknownResidents': [
         for (final key in await transaction.unknownResidents(

@@ -1,9 +1,12 @@
 # Registered OIDC verification
 
-This internal verifier delivery tracks #1602 and the login transaction
-primitives of #1604. It depends on native security state (#1624). Production
-listeners remain guarded until the remaining authorization, browser and HA
-boundaries are installed.
+The verifier tracks #1602 and the login transaction primitives of #1604.
+The certified production public listener installs authentication, current native
+Role admission, browser sessions and bounded authorization leases. Private
+policy/replication uses a separate workload listener. The complete boundary and
+configuration contract is [ADR 0012](decisions/0012-oidc-prefix-rbac.md).
+Source implementation and local conformance do not establish final real-provider,
+qualified production clock, device or publication acceptance (#1610).
 
 API Bearer authentication accepts the signed JWT access-token profile in
 [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.html). The bounded unverified
@@ -43,5 +46,7 @@ ambiguous/weak key rejection, rotation/expiry/cache caps, access versus ID-token
 profiles, nonce/PKCE/replay/mix-up and exact secret destinations. Initial-key and
 warm-key benchmarks include allocations; initial keys use a deterministic local
 HTTPS provider and are diagnostic, not a real-provider latency qualification.
-Real Connect admission, browser flow and final provider/HA acceptance are
-subsequent deliveries.
+Real Connect tests cover certified admission, browser login/session/logout,
+management and scope-bound query/CDC/receipt behavior. Actual production startup
+and two-process HA local conformance retain the real restart fencing interval.
+Final real-provider and deployment clock qualification remain separate #1610 gates.

@@ -17,17 +17,15 @@ import { DEFAULT_BASE_URL } from "~/lib/client/usecase/connection/base-url";
 import styles from "./ConnectionSwitcher.module.css";
 
 export function ConnectionSwitcher() {
-  const { connection, setBaseUrl, setToken, reset } = useConnection();
+  const { connection, setBaseUrl, reset } = useConnection();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(connection.baseUrl);
-  const [tokenDraft, setTokenDraft] = useState(connection.token);
   const [error, setError] = useState<string | null>(null);
 
   const onOpenChange = (next: boolean) => {
     setOpen(next);
     if (next) {
       setDraft(connection.baseUrl);
-      setTokenDraft(connection.token);
       setError(null);
     }
   };
@@ -38,7 +36,6 @@ export function ConnectionSwitcher() {
       setError("Enter an http(s) URL like http://localhost:6380");
       return;
     }
-    setToken(tokenDraft);
     setOpen(false);
   };
 
@@ -76,17 +73,6 @@ export function ConnectionSwitcher() {
                   placeholder={DEFAULT_BASE_URL}
                 />
               </Field>
-              <Field
-                label="Bearer token"
-                hint="Leave blank unless the server sets LANTERN_AUTH_TOKENS (#850)."
-              >
-                <Input
-                  type="password"
-                  value={tokenDraft}
-                  onChange={(_, data) => setTokenDraft(data.value)}
-                  placeholder="(no auth)"
-                />
-              </Field>
             </div>
           </DialogContent>
           <DialogActions>
@@ -95,7 +81,6 @@ export function ConnectionSwitcher() {
               onClick={() => {
                 reset();
                 setDraft(DEFAULT_BASE_URL);
-                setTokenDraft("");
                 setError(null);
               }}
             >

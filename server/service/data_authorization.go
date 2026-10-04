@@ -101,6 +101,14 @@ func (s *LanternService) authorizeData(ctx context.Context, message proto.Messag
 				break
 			}
 		}
+	case *pb.CreateEdgeRequest:
+		err = edge(request.GetEdge().GetTail(), request.GetEdge().GetHead(), security.EdgeCreate)
+	case *pb.CreateEdgesRequest:
+		for _, item := range request.GetEdges() {
+			if err = edge(item.GetTail(), item.GetHead(), security.EdgeCreate); err != nil {
+				break
+			}
+		}
 	case *pb.AddEdgeRequest:
 		err = edge(request.GetEdge().GetTail(), request.GetEdge().GetHead(), security.EdgeAdd)
 	case *pb.AddEdgesRequest:
@@ -136,7 +144,7 @@ func (s *LanternService) authorizeData(ctx context.Context, message proto.Messag
 	case *pb.GetServerStatusRequest, *pb.GetReplicationStatusRequest:
 		err = global(security.OperationsRead)
 	case *pb.GetReceiptCapabilityRequest, *pb.GetReceiptStatusRequest, *pb.GetReceiptStatusesRequest:
-		if access.Scope(security.ReceiptRead, security.VertexRead).Empty() {
+		if access.Scope(security.ReceiptRead, security.VertexRead).Empty() && access.EdgeCandidateScope(security.ReceiptRead, security.VertexRead).Empty() {
 			err = dataPermissionError()
 		}
 	case *pb.ScanVerticesRequest, *pb.ScanVertexKeysRequest, *pb.CountVerticesByPrefixRequest:
@@ -155,9 +163,9 @@ func (s *LanternService) authorizeData(ctx context.Context, message proto.Messag
 	case *pb.TopVerticesByDegreeRequest:
 		// Degree is computed inside the authorized induced graph.
 	case *pb.BackupSnapshotRequest:
-		if admission.AuthTime().IsZero() || admission.AuthTime().After(s.securityNow()) || s.securityNow().Sub(admission.AuthTime()) > security.RecentAuthenticationLifetime {
-			err = connect.NewError(connect.CodeFailedPrecondition, security.ErrRecentAuthentication)
-		}
+		// Export/read grants are compiled by dataQueryContext. Interactive
+		// recent auth belongs to security changes, not Role-scoped automation.
+
 	default:
 		err = connect.NewError(connect.CodeUnimplemented, errors.New("data authorization boundary missing"))
 	}

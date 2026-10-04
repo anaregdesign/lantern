@@ -1,0 +1,1 @@
+ok  	github.com/anaregdesign/lantern/tests/integration	2.056s

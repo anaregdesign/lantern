@@ -26,6 +26,7 @@ mod error;
 mod paging;
 mod prefix;
 mod scans;
+mod scoped_changes;
 mod search;
 mod transport;
 mod traversal;
@@ -37,12 +38,12 @@ pub use backup::{
 };
 pub use batch::{AddBatch, DeleteBatch, GetBatch};
 pub use cdc::{
-    CdcCursor, CdcHlc, EdgeWrite, FullMutation, FullMutationOp, FullMutationStream,
-    IdentityCategory, IdentityCheckpoint, IdentityChunk, IdentityEvent, IdentityStream, OriginId,
-    Receipt, ReceiptEdgeAdd, ReceiptEdgeAddItem, ReceiptEdgeContributionDelete,
-    ReceiptEdgeContributionDeleteItem, ReceiptEdgeDelete, ReceiptEdgeDeleteItem, ReceiptMetadata,
-    ReceiptOriginalResult, ReceiptVertexDelete, ReceiptVertexDeleteItem, ReceiptVertexPut,
-    ReceiptVertexPutItem, VertexWrite,
+    CdcCursor, CdcHlc, EdgeCreateEffect, EdgeCreateEffectItem, EdgeWrite, FullMutation,
+    FullMutationOp, FullMutationStream, IdentityCategory, IdentityCheckpoint, IdentityChunk,
+    IdentityEvent, IdentityStream, OriginId, Receipt, ReceiptEdgeAdd, ReceiptEdgeAddItem,
+    ReceiptEdgeContributionDelete, ReceiptEdgeContributionDeleteItem, ReceiptEdgeDelete,
+    ReceiptEdgeDeleteItem, ReceiptMetadata, ReceiptOriginalResult, ReceiptVertexDelete,
+    ReceiptVertexDeleteItem, ReceiptVertexPut, ReceiptVertexPutItem, VertexWrite,
 };
 pub use contrib::{AddInput, ContribId, PreparedAdd};
 pub use discovery::{
@@ -51,13 +52,17 @@ pub use discovery::{
 };
 pub use error::{BatchError, CdcGap, LanternError, RpcErrorKind, RpcFailure, SearchDetails};
 pub use generated::graph::v1::{
-    Edge, MatchMode, Objective, PutOutcome, Reduction, ScanOrder, SearchCapabilities,
-    SearchErrorReason, SearchHitProjectionStatus, SearchIndexHealth, SearchProjection, Vertex,
-    Weighting, vertex::Value as VertexValue,
+    CreateEdgeOutcome, Edge, MatchMode, Objective, PutOutcome, Reduction, ScanOrder,
+    SearchCapabilities, SearchErrorReason, SearchHitProjectionStatus, SearchIndexHealth,
+    SearchProjection, Vertex, Weighting, vertex::Value as VertexValue,
 };
 pub use paging::QueryStream;
 pub use prost_types::{Duration as ProtoDuration, Timestamp};
 pub use scans::{EdgeCursor, EdgeScanOptions, KeyCursor, ScanOptions, ScanPage, VertexCursor};
+pub use scoped_changes::{
+    ChangeCursor, ChangeFrame, ChangeInvalidation, ChangeProjection, ChangeStream,
+    WatchChangesOptions,
+};
 pub use search::{SearchCursor, SearchHit, SearchPage, SearchRequest};
 pub use transport::{
     CallOptions, LanternClient, LanternClientBuilder, RetryPolicy, StreamOptions, TokenError,

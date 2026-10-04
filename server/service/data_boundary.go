@@ -48,7 +48,7 @@ var publicDataRequests = map[protoreflect.Name]bool{
 	"DeleteVerticesRequest": true, "ScanVerticesRequest": true, "ScanVertexKeysRequest": true,
 	"SearchVerticesRequest": true, "CountVerticesByPrefixRequest": true, "DeleteVerticesByPrefixRequest": true,
 	"TopVerticesByDegreeRequest": true, "GetEdgeRequest": true, "GetEdgesRequest": true,
-	"AddEdgeRequest": true, "AddEdgesRequest": true, "PutEdgeRequest": true, "PutEdgesRequest": true,
+	"CreateEdgeRequest": true, "CreateEdgesRequest": true, "AddEdgeRequest": true, "AddEdgesRequest": true, "PutEdgeRequest": true, "PutEdgesRequest": true,
 	"DeleteEdgeRequest": true, "DeleteEdgesRequest": true, "DeleteEdgeContributionRequest": true,
 	"DeleteEdgeContributionsRequest": true, "DeleteEdgesByPrefixRequest": true, "ScanEdgesRequest": true,
 	"GetServerStatusRequest": true, "GetReplicationStatusRequest": true, "GetReceiptCapabilityRequest": true,
@@ -126,6 +126,18 @@ func mapDataIdentities(message protoreflect.Message, encode bool) error {
 
 func dataCursorBinding(request proto.Message) ([]byte, error) {
 	clone := proto.Clone(request)
+	// Preserve the canonical ascending default in the encrypted outer scope.
+	// Prefix/RPC/direction/policy bindings remain independent of this spelling.
+	switch r := clone.(type) {
+	case *pb.ScanVerticesRequest:
+		if r.Order == pb.ScanOrder_SCAN_ORDER_UNSPECIFIED {
+			r.Order = pb.ScanOrder_SCAN_ORDER_ASC
+		}
+	case *pb.ScanVertexKeysRequest:
+		if r.Order == pb.ScanOrder_SCAN_ORDER_UNSPECIFIED {
+			r.Order = pb.ScanOrder_SCAN_ORDER_ASC
+		}
+	}
 	m := clone.ProtoReflect()
 	for _, name := range []protoreflect.Name{"cursor", "limit"} {
 		if field := m.Descriptor().Fields().ByName(name); field != nil {
@@ -134,6 +146,20 @@ func dataCursorBinding(request proto.Message) ([]byte, error) {
 	}
 	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(clone)
 	return append([]byte(keyspace.Version+"\x00"+string(m.Descriptor().FullName())+"\x00"), encoded...), err
+}
+
+func dataCursorError(request proto.Message, stale bool, cause error) error {
+	if _, search := request.(*pb.SearchVerticesRequest); search {
+		if stale {
+			return newSearchAbortedError(pb.SearchErrorReason_SEARCH_CURSOR_STALE, cause)
+		}
+		return newSearchInvalidCursorError(pb.SearchErrorReason_SEARCH_CURSOR_INVALID, cause)
+	}
+	code := connect.CodeInvalidArgument
+	if stale {
+		code = connect.CodeAborted
+	}
+	return connect.NewError(code, cause)
 }
 
 func (s *LanternService) mapDataRequest(request proto.Message, scope ...[32]byte) (proto.Message, []byte, error) {
@@ -172,15 +198,11 @@ func (s *LanternService) mapDataRequest(request proto.Message, scope ...[32]byte
 	if field := m.Descriptor().Fields().ByName("cursor"); field != nil {
 		if cursor := m.Get(field).Bytes(); len(cursor) > 0 {
 			if len(cursor) > 16<<10 || len(cursor) < s.namespaceCursor.NonceSize()+s.namespaceCursor.Overhead() {
-				return nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid data cursor"))
+				return nil, nil, dataCursorError(request, false, errors.New("invalid data cursor"))
 			}
 			plain, openErr := s.namespaceCursor.Open(nil, cursor[:s.namespaceCursor.NonceSize()], cursor[s.namespaceCursor.NonceSize():], binding)
 			if openErr != nil {
-				code := connect.CodeInvalidArgument
-				if len(scope) > 0 {
-					code = connect.CodeAborted
-				}
-				return nil, nil, connect.NewError(code, errors.New("invalid data cursor scope"))
+				return nil, nil, dataCursorError(request, len(scope) > 0, errors.New("invalid data cursor scope"))
 			}
 			m.Set(field, protoreflect.ValueOfBytes(plain))
 		}

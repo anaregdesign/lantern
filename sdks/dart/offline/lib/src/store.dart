@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'change_store.dart';
 import 'errors.dart';
+import 'scoped_change_store.dart';
 import 'types.dart';
 
 /// Storage-neutral transaction port used by [OfflineLanternRepository].
@@ -195,6 +196,25 @@ abstract interface class OfflineStoreTransaction {
     required DateTime now,
     required Duration leaseDuration,
   });
+
+  /// Last fully applied opaque public checkpoint, or null before bootstrap.
+  FutureOr<OfflineScopedChangeCursor?> scopedChangeCursor(String partitionId);
+
+  /// Atomically invalidates a public frame and commits its optional cursor.
+  /// Requires an installed bootstrap checkpoint; partial frames preserve it.
+  /// Each accepted frame advances the read epoch, including partial frames.
+  FutureOr<void> applyScopedChangeFrame(
+    String partitionId,
+    OfflineScopedChangeFrame frame,
+  );
+
+  /// Hides all confirmed rows as durable Unknown, clears private progress and
+  /// installs an opaque bootstrap checkpoint (null after a gap). Pending
+  /// writes and receipt dispatch evidence are preserved.
+  FutureOr<void> resetScopedChangeCursor(
+    String partitionId,
+    OfflineScopedChangeCursor? checkpoint,
+  );
 
   /// Reads the last fully applied sequence per CDC origin.
   FutureOr<OfflineChangeCursor> changeCursor(String partitionId);

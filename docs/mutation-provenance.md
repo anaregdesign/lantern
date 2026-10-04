@@ -1,9 +1,12 @@
 # Generic mutation effects and receipt provenance
 
-This Core delivery tracks #1603/#1613. It extends the internal primitives needed
-by Server authorization without teaching Core OIDC, Roles, namespaces or
-permission policies. Server adapters and durable wire formats are separate
-dependent deliveries.
+The implementation tracks #1603/#1613. Core owns generic atomic lifetime
+restrictions and immutable receipt evidence without interpreting OIDC, Roles,
+namespaces or permission policies. Server resolves the verified Principal and
+current Role policy, maps public logical keys to physical `data:` resources,
+and authorizes exact actions before effects or original-result disclosure.
+See [ADR 0012](decisions/0012-oidc-prefix-rbac.md) and
+[ADR 0010](decisions/0010-bounded-mutation-receipts.md) for the complete contract.
 
 Vertex/Edge batch items may carry a generic restriction against reducing a live
 resource's lifetime. The planner checks only touched resources under the same
@@ -26,6 +29,9 @@ receipt responses do not acquire these private fields automatically.
 
 Paired tests cover atomic reductions/duplicates, receipt provenance, owned
 bytes, capacity, replay/snapshot/retired state and immutable effect flags.
-Complete Server RPC authorization, native WAL/replication/archive formats and
-real Connect result disclosure tests remain #1603/#1613 work. This layer does
-not activate a new public mutation family.
+Server adapters carry original logical resource/action evidence through native
+WAL, private replication, snapshots, retirement and recovery. Real Connect tests
+cover exact admission, response-loss replay/status, unknown scoped receipt IDs
+and permission loss. Public CDC does not disclose private receipt envelopes.
+Final immutable-source acceptance remains #1610. Conditional existing-endpoint
+Create is a distinct #1626 family; provenance alone does not activate it.

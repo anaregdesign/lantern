@@ -1,0 +1,50 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/anaregdesign/lantern/core/graphcache
+cpu: Apple M3 Max
+BenchmarkAuthorizationSearchWorkloads/first_scope/constrained_false-16         	       1	    190125 ns/op	   7781736 index_retained_B	     -2872 retained_delta_B	    3880 B/op	      73 allocs/op
+BenchmarkAuthorizationSearchWorkloads/first_scope/constrained_true-16          	       1	    114541 ns/op	   7781736 index_retained_B	     -3032 retained_delta_B	    5336 B/op	      84 allocs/op
+BenchmarkAuthorizationSearchWorkloads/reused_scope/constrained_false-16        	       1	    116375 ns/op	   7781736 index_retained_B	     -2504 retained_delta_B	    3880 B/op	      73 allocs/op
+BenchmarkAuthorizationSearchWorkloads/reused_scope/constrained_true-16         	       1	    120042 ns/op	   7781736 index_retained_B	     -3048 retained_delta_B	    5176 B/op	      80 allocs/op
+BenchmarkAuthorizationSearchWorkloads/visible_update_100/constrained_false-16  	       1	    142959 ns/op	   7781736 index_retained_B	     -2888 retained_delta_B	    3880 B/op	      73 allocs/op
+BenchmarkAuthorizationSearchWorkloads/visible_update_100/constrained_true-16   	       1	    148958 ns/op	   7781736 index_retained_B	     -3048 retained_delta_B	    5176 B/op	      80 allocs/op
+BenchmarkAuthorizationSearchWorkloads/hidden_update_100/constrained_false-16   	       1	    128500 ns/op	   7781736 index_retained_B	     -2888 retained_delta_B	    3880 B/op	      73 allocs/op
+BenchmarkAuthorizationSearchWorkloads/hidden_update_100/constrained_true-16    	       1	    119917 ns/op	   7781736 index_retained_B	     -2856 retained_delta_B	    5176 B/op	      80 allocs/op
+BenchmarkAuthorizationSearchWorkloads/visible_update_1/constrained_false-16    	       1	    147500 ns/op	   7781736 index_retained_B	     -2664 retained_delta_B	   14680 B/op	     136 allocs/op
+BenchmarkAuthorizationSearchWorkloads/visible_update_1/constrained_true-16     	       1	    129500 ns/op	   7781736 index_retained_B	     -3208 retained_delta_B	   15976 B/op	     143 allocs/op
+BenchmarkAuthorizationSearchWorkloads/hidden_update_1/constrained_false-16     	       1	    114875 ns/op	   7781736 index_retained_B	     -3064 retained_delta_B	   19120 B/op	     154 allocs/op
+BenchmarkAuthorizationSearchWorkloads/hidden_update_1/constrained_true-16      	       1	    125459 ns/op	   7781736 index_retained_B	     -2824 retained_delta_B	   20416 B/op	     161 allocs/op
+BenchmarkAuthorizationSearchWorkloads/visible_put_delete_100/constrained_false-16         	       1	    102834 ns/op	   7781736 index_retained_B	     -2696 retained_delta_B	    3880 B/op	      73 allocs/op
+BenchmarkAuthorizationSearchWorkloads/visible_put_delete_100/constrained_true-16          	       1	    119000 ns/op	   7781736 index_retained_B	     -3048 retained_delta_B	    5176 B/op	      80 allocs/op
+BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_100/constrained_false-16          	       1	     99084 ns/op	   7781736 index_retained_B	     -2904 retained_delta_B	    3880 B/op	      73 allocs/op
+BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_100/constrained_true-16           	       1	    144625 ns/op	   7781736 index_retained_B	     -3048 retained_delta_B	    5176 B/op	      80 allocs/op
+BenchmarkAuthorizationSearchWorkloads/visible_put_delete_1/constrained_false-16           	       1	    152792 ns/op	   7781736 index_retained_B	     -3032 retained_delta_B	   14680 B/op	     136 allocs/op
+BenchmarkAuthorizationSearchWorkloads/visible_put_delete_1/constrained_true-16            	       1	    145125 ns/op	   7781736 index_retained_B	     -3016 retained_delta_B	   15976 B/op	     143 allocs/op
+BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_1/constrained_false-16            	       1	    129500 ns/op	   7781736 index_retained_B	     -2664 retained_delta_B	   19120 B/op	     154 allocs/op
+BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_1/constrained_true-16             	       1	    122125 ns/op	   7781736 index_retained_B	     -2824 retained_delta_B	   20416 B/op	     161 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/first_scope/constrained_false-16             	       1	     51458 ns/op	     -2888 retained_delta_B	    4288 B/op	      33 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/first_scope/constrained_true-16              	       1	     14375 ns/op	     -3064 retained_delta_B	    4448 B/op	      37 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/reused_scope/constrained_false-16            	       1	     13125 ns/op	     -2696 retained_delta_B	    4288 B/op	      33 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/reused_scope/constrained_true-16             	       1	     15208 ns/op	     -3432 retained_delta_B	    4288 B/op	      33 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_100/constrained_false-16  	       1	      9250 ns/op	     -3480 retained_delta_B	    4288 B/op	      33 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_100/constrained_true-16   	       1	     14542 ns/op	     -3448 retained_delta_B	    4288 B/op	      33 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_100/constrained_false-16   	       1	      9042 ns/op	     -3464 retained_delta_B	    4288 B/op	      33 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_100/constrained_true-16    	       1	     16167 ns/op	     -3256 retained_delta_B	    4288 B/op	      33 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_1/constrained_false-16    	       1	     17500 ns/op	     -3096 retained_delta_B	    4304 B/op	      34 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_1/constrained_true-16     	       1	     11291 ns/op	     -3448 retained_delta_B	    4304 B/op	      34 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_1/constrained_false-16     	       1	      8875 ns/op	     -3288 retained_delta_B	    4304 B/op	      34 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_1/constrained_true-16      	       1	     14291 ns/op	     -3064 retained_delta_B	    4304 B/op	      34 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/ppr/first_scope/constrained_false-16             	       1	     77333 ns/op	     -3480 retained_delta_B	   16248 B/op	      92 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/ppr/first_scope/constrained_true-16              	       1	     54875 ns/op	     -3064 retained_delta_B	   17176 B/op	     128 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/ppr/reused_scope/constrained_false-16            	       1	     45250 ns/op	     -3288 retained_delta_B	   16248 B/op	      92 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/ppr/reused_scope/constrained_true-16             	       1	     40541 ns/op	     -3448 retained_delta_B	   17016 B/op	     124 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_100/constrained_false-16  	       1	     51375 ns/op	     -3080 retained_delta_B	   16248 B/op	      92 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_100/constrained_true-16   	       1	     50292 ns/op	     -2664 retained_delta_B	   17016 B/op	     124 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_100/constrained_false-16   	       1	     35375 ns/op	     -2888 retained_delta_B	   16248 B/op	      92 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_100/constrained_true-16    	       1	     57458 ns/op	     -3256 retained_delta_B	   17016 B/op	     124 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_1/constrained_false-16    	       1	     38000 ns/op	     -3480 retained_delta_B	   16264 B/op	      93 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_1/constrained_true-16     	       1	     70500 ns/op	     -3064 retained_delta_B	   17032 B/op	     125 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_1/constrained_false-16     	       1	     42166 ns/op	     -3096 retained_delta_B	   16264 B/op	      93 allocs/op
+BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_1/constrained_true-16      	       1	     58792 ns/op	     -3448 retained_delta_B	   17032 B/op	     125 allocs/op
+PASS
+ok  	github.com/anaregdesign/lantern/core/graphcache	4.314s

@@ -49,6 +49,7 @@ const ServiceName = "graph.v1.LanternService"
 // wire binding maps it to *graphcache.GraphCache in production. Tests can supply
 // a fake without standing up the real cache.
 type LanternService struct {
+	edgeCreateHA              bool
 	dataAuthorization         bool
 	securityNow               func() time.Time
 	namespaceFormat           string

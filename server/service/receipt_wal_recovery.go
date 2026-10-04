@@ -43,6 +43,17 @@ type receiptWALEnvelopeMetadata struct {
 
 func receiptWALEnvelopeInfo(op mutationlog.MutationOp) (receiptWALEnvelopeMetadata, bool) {
 	switch value := op.(type) {
+	case *edgeCreateEnvelope:
+		if len(value.Receipts) == 0 {
+			return receiptWALEnvelopeMetadata{}, false
+		}
+		m := value.Mutation
+		call := m.GetOp().GetEdgeCreateEffect()
+		metadata := receiptWALEnvelopeMetadata{originSeq: m.GetSeq(), receipts: value.Receipts}
+		copy(metadata.origin[:], m.GetOrigin())
+		copy(metadata.epoch[:], call.GetDeploymentEpoch())
+		copy(metadata.policy[:], call.GetPolicyFingerprint())
+		return metadata, true
 	case *graphAddEffectEnvelope:
 		if !value.receiptBearing() {
 			return receiptWALEnvelopeMetadata{}, false
@@ -135,6 +146,9 @@ func auditReceiptDecisionsFromFileWAL(path string, config mutationreceipt.Config
 				}
 				copy(origin[:], value.GetOrigin())
 				seq = value.GetSeq()
+			case *edgeCreateEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
 			case *graphPutEffectEnvelope:
 				copy(origin[:], value.Mutation.GetOrigin())
 				seq = value.Mutation.GetSeq()
@@ -258,6 +272,8 @@ func replayReceiptEnvelopeGraph(
 	op mutationlog.MutationOp,
 ) error {
 	switch value := op.(type) {
+	case *edgeCreateEnvelope:
+		return replayEdgeCreateEffect(graph, value)
 	case *graphAddEffectEnvelope:
 		if !value.receiptBearing() {
 			return fmt.Errorf("%w: graph-only Add reached receipt replay", errReceiptWALUnion)
@@ -497,6 +513,12 @@ func resumeReceiptWALCandidateWithEffectPolicy(path string, config mutationrecei
 				seq = value.Mutation.GetSeq()
 				if err := replayGraphPutEffect(graph, value); err != nil {
 					return fmt.Errorf("receipt WAL local seq %d: graph Put effect replay: %w", entry.Seq, err)
+				}
+			case *edgeCreateEnvelope:
+				copy(origin[:], value.Mutation.GetOrigin())
+				seq = value.Mutation.GetSeq()
+				if err := replayEdgeCreateEffect(graph, value); err != nil {
+					return fmt.Errorf("receipt WAL local seq %d: Create replay: %w", entry.Seq, err)
 				}
 			case *graphAddEffectEnvelope:
 				copy(origin[:], value.Mutation.GetOrigin())

@@ -4,16 +4,18 @@
 - Driving issue: [#1599](https://github.com/anaregdesign/lantern/issues/1599)
 - Contract issue: [#1600](https://github.com/anaregdesign/lantern/issues/1600)
 
-The initial implementation supplies inactive policy/state foundations and a
-fail-closed mode preflight. It does not enable OIDC: `LANTERN_AUTH_MODE=oidc`
-currently rejects startup until the complete serving boundary is installed.
-The following sections define the target contract, not completed qualification.
+The current implementation composes native signed sys state, short-lived
+policy authority, Role admission, logical data boundaries, public Security/
+Changes/browser APIs and a separate signed-membership workload plane in the
+production Wire graph. Source, CI, final exact-source acceptance and external
+provider/clock evidence remain separate exit buckets in #1599/#1610. Local
+conformance does not complete deployment or provider qualification.
 
-The staged native Store reserves a private nonexpiring GraphCache image and
-reuses FileWAL framing, process ownership, sync and lower-bound tip proofs.
-It verifies full signed history before installing the recovered image. Its
-hard journal cap fails closed; checkpoint/rotation, audit, public namespace
-mapping and serving leases remain prerequisites for production activation.
+The native Store reserves private nonexpiring GraphCache state and reuses
+FileWAL framing, ownership, sync, lower-bound tip proofs and bounded checkpoint
+rotation. Recovery verifies signed history before installing an image and
+never restores a serving lease. A fresh writer observes the full restart fence
+before public serving; replicas require a challenge-bound current writer proof.
 
 ## Context
 
@@ -53,10 +55,25 @@ Role-assignment model. Bootstrap does not grant access to data.
 
 Legacy `LANTERN_AUTH_TOKENS` needs an explicit migration to named machine
 Principals and Role assignments. It must not silently become a security-admin
-credential. During staged implementation, existing static-token behavior is
-still the existing runtime; an unavailable new mode must be rejected rather
-than advertised as working. Health remains structurally auth-exempt. Schema
+credential. The retired static-token and reflection-exemption settings are rejected even
+when explicitly empty. Only absent authentication configuration selects OFF;
+no legacy bearer is automatically promoted to a machine or administrator. Health remains structurally auth-exempt. Schema
 reflection and global diagnostics have explicit capabilities.
+
+The writer may load `LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE`, an absolute
+regular private file (mode `0600` or `0400`, no symlinks). Its strict JSON array
+contains `name`, `role_ids`, and `credentials` with `token`, `created_at`, and
+`expires_at`. Role IDs refer to `LANTERN_SECURITY_BOOTSTRAP_ROLES`; permissions
+cannot be attached to a machine directly. At most 64 machines with four
+credentials each are admitted. Tokens use `lnt_m1_` followed by canonical
+unpadded base64url of 32 cryptographically random bytes; lifespan is positive
+and at most 90 days. Rotate/remove credentials by advancing the operator
+bootstrap revision; account suspension and current Role changes apply locally.
+Only domain-separated SHA-256 digests enter signed sys state and its native
+journal/replica recovery. Raw tokens are never management responses, graph
+records or audit fields. No last-seen write or IdP lookup runs for machine
+requests, and a machine credential does not prove interactive recent auth or
+create a browser session. This public credential route cannot admit a peer.
 
 The capability endpoint returns a sanitized mode, readiness and supported
 features. Admin must not interpret a 401, network failure or malformed response
@@ -180,11 +197,11 @@ existence, effective weight, TTL and contribution identity. Global actions are
 | ScanEdges | Only the subset with `edge.read` and `vertex.read` on both endpoints |
 | DeleteVerticesByPrefix | Delete only the `vertex.delete` plus `vertex.read` subset; dry-run/count/limit use the same subset |
 | DeleteEdgesByPrefix | Delete only the `edge.delete` plus readable-edge/endpoints subset |
-| Illuminate / TopVerticesByDegree | `query` plus readable vertices/edges; operate on the authorized induced graph before scoring |
-| SearchVertices | `query` plus `vertex.read`; membership and all scoring statistics use the authorized corpus |
+| Illuminate / TopVerticesByDegree | `query` plus readable vertices/edges; restrict paths and actual degree to the authorized induced graph; TF-IDF/BM25 use shared corpus statistics |
+| SearchVertices | `query` plus `vertex.read`; restrict candidates before top-k; reuse this index's shared ranking statistics |
 | BackupSnapshot | `export` plus readable vertices/edges; include only the referentially closed authorized data subset |
 | Scoped CDC | Explicit `cdc.identity`; values additionally require `cdc.value` and ordinary data reads; endpoints must both qualify |
-| GetReceiptCapability | Authenticated, current authority; only supported capabilities applicable to the actor |
+| GetReceiptCapability | Current authority plus `receipt.read` and `vertex.read` within an applicable logical scope; supported capabilities only |
 | GetReceiptStatus(es) / receipt replay | `receipt.read` and current rights for every proven original resource; absence needs caller intent proof or fails closed |
 | GetServerStatus / GetReplicationStatus / metrics | `operations.read`; never inferred from data read |
 | Issuer / Principal / Role / assignment / session / audit management | `security.manage` and recent authentication; expected revision required on writes |
@@ -207,6 +224,66 @@ Delete Deny. Already committed expiry and admitted replication are protected
 system maintenance, not new actions by the original user's current Roles.
 If an operation cannot prove its effects safely, reject it before mutation.
 
+### Directed existing-endpoint connection creation (#1626)
+
+A separate plural-canonical `CreateEdges` / singular `CreateEdge` family uses
+an independent `edge.create` action. Existing Add accumulation, Put replacement
+and endpoint creation retain their current contracts. Creation authority never
+implies Add, Put, update or Delete. Both endpoint Vertices must be readable and
+live at the same atomic application-time cut as Edge absence. The operation
+never creates/resurrects a Vertex or changes its value/TTL. No omitted option
+may broaden this existing-endpoints-only default.
+
+A directed pair selector matches one rule's tail prefix AND head prefix AND
+action. All three must match that same rule; no half-rule/half-Role combination
+or reverse-direction inference is permitted. Any applicable Deny wins. Delete
+requires an independent explicit grant. A caller-supplied owner/prefix never
+establishes identity: initial ownprefix assignments use Server-resolved verified
+identity and explicit literal Roles. General dynamic templates need a separate
+design and are not activated implicitly.
+
+The Rule resource oneof is literal prefix, directed prefix pair, or global.
+Pairs select Edge Read/Create/Add/Write/Delete, CDC Identity/Value, Export and
+Receipt Read only; they never grant a Vertex or Query action. `edge.create`
+requires a pair. Existing prefix rules retain their endpoint-union semantics;
+matching prefix Deny on either endpoint and matching complete pair Deny both
+defeat an Edge Allow. Core receives detached bounded endpoint ranges and
+two-dimensional range filters, applied before scan limits/top-k and on every
+traversed Edge. Pair-only IDENTITY CDC does not require Vertex/Edge Read; VALUE
+CDC additionally requires both endpoint reads and the full Edge Read selector.
+Receipt absence still requires a whole-domain proof, never a pair-only grant.
+Admin edits each direction explicitly and asks Server to explain one complete
+action selector; operation-specific additional actions are checked separately.
+
+Standalone outcomes are `CREATED_AND_LIVE`, `EDGE_EXISTS`, `ENDPOINT_NOT_LIVE`
+and `EXPIRED`, one per request position. Source weights must be finite and
+nonzero so successful creation denotes a live Edge. Any unexpired contribution
+counts as an existing Edge even if its current aggregate is zero; collision
+never removes or rewrites contributions. Born-expired input is a no-op before
+endpoint/absence checks. A successful earlier duplicate makes later positions
+`EDGE_EXISTS`. Storage evaluates all conditions at one application-time cut.
+
+Authorized conditional results expose only bounded creation/no-change outcomes,
+not existing Edge weights, TTLs, owner fields or another receipt. Duplicate
+positions, collision outcomes, TTL/Delete races and response-loss reconciliation
+must be request-index-aligned and preserved as original receipt evidence.
+Replicated committed effects must not fabricate endpoints, resurrect deleted
+Vertices, overwrite an already existing Edge on replay, or reinterpret creation
+as Add/Put. Missing remote endpoints require a convergence design that retains
+the original causal intent rather than silently dropping it or creating Nodes.
+
+Leaderless data replication cannot prove cluster-wide absence from one local
+atomic check. Before activation, #1626 must freeze concurrent-create versus
+legacy Add/Put/Delete arbitration, delayed endpoint delivery and tombstone/TTL
+behavior. A locally successful create is not a cluster-wide uniqueness claim.
+The new family stays disabled in HA until the durable convergence guarantee is
+designed and verified (#1626). This restriction applies only to the new operation;
+existing Add/Put families keep their contracts. It does not waive cluster-wide
+create-if-absent guarantees or authorize replica-local absence as a substitute.
+Activation also requires matching SDK outcomes, the Admin pair editor and
+real-wire/receipt/restart tests. Independent OIDC/RBAC deliveries continue while
+this gate remains closed.
+
 ### Practical Role templates
 
 Templates are explicit Roles with literal prefixes, not additional privilege
@@ -217,6 +294,8 @@ mechanisms. Operators may copy them for a namespace and add Deny exceptions.
 | `namespace_reader` | Application reads, scans, Search and traversal in one prefix; vertex/edge read and query; no CDC/export/global diagnostics |
 | `namespace_editor` | Reader plus vertex write, edge Add/Put; Delete denied; lifetime reduction denied |
 | `namespace_maintainer` | Editor plus vertex/edge Delete and collection Delete in its prefix |
+| `connection_creator` | Both endpoint Vertex reads plus directed Create and receipt access; no Edge read, Add/Put/Delete or endpoint write |
+| `connection_deleter` | Both endpoint Vertex reads plus directed Edge read/Delete and receipt access; independent of Create |
 | `cdc_identity_consumer` | Explicit identity invalidations for allowed prefixes; no values, weights or raw cluster progress |
 | `cdc_value_consumer` | Identity consumer plus value CDC and normal reads for the same resources |
 | `backup_exporter` | Explicit export plus required reads; no mutations or raw peer Snapshot |
@@ -231,23 +310,51 @@ who cannot inspect application records.
 
 ## Queries, cursors, CDC and receipts
 
-Query isolation happens before scoring. BM25 document frequency, corpus size,
-field length, phrase evidence and fuzzy vocabulary use the visible corpus;
-degree, graph document frequency, PPR and community conductance use the visible
-induced graph. Adding hidden or system records must not change visible scores,
-membership or order. TTL expiry invalidates any cached statistics even without
-a new write. A global fast path is valid only after proving full coverage of
-every required action with no effective Deny, and still excludes `sys:`.
+Authorization scope and ranking corpus are separate. Search candidates are
+restricted before top-k selection; traversal never visits hidden vertices or
+edges. Actual counts, degree/weighted-degree aggregates, prefix-delete victims,
+exported topology, paging, and CDC remain scoped. Graph TF-IDF/BM25 base weights
+reuse the existing graph-wide DF, tail count, and structural out-degree totals.
+PPR transition normalization and community cuts still use only traversable
+edges, so different scopes can produce different destinations and final scores.
+Resource budgets bound physical posting/adjacency work, including rejected
+candidates. Public authorized traversal failures expose the exhaustion reason
+without physical scan counters; these counters are not public data aggregates.
 
-Use prefix-range candidate pushdown, shared postings and request-local
-memoization rather than copying/reindexing the whole graph per request.
-Cache keys include identity, scope, query, policy revision and generation.
+Search reuses the existing index's field/class DF, N, document lengths, and
+length totals. Private application records in the same corpus may affect visible
+scores and order. The former requirement that denied-only data changes leave
+visible scores/ranking unchanged is withdrawn. Do not build, cache, invalidate,
+persist, or replicate per-Principal/Role ranking statistics. Search candidates
+combine posting bitmaps and admitted matching IDs, without enumerating every
+visible non-match. Query-time TTL cleanup maintains shared live search statistics;
+graph structural statistics retain the existing bucket/GC semantics. Neither
+kind of ranking statistic is an actual public count or permission check.
+
+One existing GraphCache/search-index instance remains one corpus. Lantern has no
+separate tenant/corpus selector today; do not infer one from an Issuer, Role or
+key prefix, or share statistics across independent graph/index instances. Future
+explicit tenant/corpus boundaries must retain their own statistics. Native
+`sys:` metadata is outside business indexes and never affects data scores,
+counts or paths; the physical `data:` prefix is excluded from document text.
+
+Core receives immutable generic range constraints and owns corpus statistics;
+Server interprets OIDC identities, Roles and policy. No policy callbacks, Store
+locks, network calls, or credentials enter Core. Reuse shared postings and
+prefix-range pushdown rather than copying/reindexing a graph per request.
+Caches of protected results, pages and cursors bind identity, scope, query,
+policy revision and generation; this is distinct from shared ranking statistics.
 Unchanged Roles can share compiled state; unrelated session churn must not
 recompile all data policies. Cursors are confidential and integrity protected
 (AEAD or opaque Server handles), not merely signed/base64 physical keys.
 They are bound to the actor/scope/query/revision/generation; policy changes
 invalidate them. Retained Search pagination keeps its stable snapshot across
 ordinary graph churn and remains node-local until portable state is designed.
+
+The staged switch's [local component comparison](../../testbed/bench/evidence/issue-1612/shared-ranking/README.md)
+records first requests, fresh/reused scopes, mixed updates/deletes, allocations
+and retained-memory diagnostics. It does not complete production OIDC or final
+exact-source acceptance.
 
 Public scoped CDC is separate from raw peer Subscribe/Snapshot, while reusing
 the log/projector machinery. Identity projection carries no values, effective
@@ -263,9 +370,26 @@ of physical mapping. Preserve original effective `float32` result bytes,
 including historically accepted NaN/Infinity. Proven resource provenance must
 survive WAL, replication, private Snapshot, retirement and restore. An operation
 ID is not authority; unknown IDs cannot be queried broadly to infer absence.
-Until scoped receipt provenance is qualified, scoped receipt use is unavailable;
-only an explicit whole-data-domain receipt Role may use the qualified existing
-protocol. Possibly sent operation IDs never change during namespace migration.
+The staged Server records exact original logical Vertex/Edge identities in
+bounded native receipt rows, checks them against canonical mutation envelopes,
+and preserves them through active/retired Snapshot and backup recovery. Core
+owns only opaque comparable identities, byte bounds and original effect bytes.
+Status and replay require `receipt.read`, ordinary reads and the original
+mutation's actions for every original resource, including both Edge endpoints.
+Put/Add endpoint-creation rights still apply. The origin's application-time
+lifecycle-reduction bit preserves a Put's Delete requirement after Graph churn;
+an ordinary live Put does not acquire that requirement. These checks use the
+captured local policy cut, with the admission fenced before publication.
+Mixed-scope status batches fail atomically with a generic permission error.
+Unknown/expired IDs without resource evidence fail closed for scoped callers,
+without returning absence or a result. Unproven legacy rows require explicit
+whole-domain original actions, including conservative Delete for legacy Put;
+whole-domain absence requires explicit whole-domain receipt/data reads.
+No client-supplied resource is accepted as status evidence, and public results
+omit resource/effect metadata. Production activation and final acceptance remain
+gated by #1613/#1610. Possibly sent operation IDs never change during namespace
+migration; scoped offline clients must retain an unknown ID after denial and
+cannot assume automatic status-first retry is qualified.
 
 ## OIDC and browser session boundary
 
@@ -285,7 +409,8 @@ same-origin gateway routes callbacks to the pinned security writer. Exchange
 and ID-token validation produce an opaque Secure/HttpOnly cookie; Admin does
 not persist IdP tokens in localStorage. CSRF and exact-origin checks protect
 cookie-authenticated mutations. Recent authentication is required for security
-changes. Fixed session expiry, revocation and per-stream authority checks remain
+changes. Role-scoped data export uses explicit export/read grants and current
+admission; machine exporters do not assert interactive recent authentication. Fixed session expiry, revocation and per-stream authority checks remain
 independent of JWT expiry. Passwords, MFA and account enrollment stay with the
 IdP; no password store, email linking, implicit group grants, SCIM or opaque
 token introspection is introduced.
@@ -335,6 +460,37 @@ results. No lease renewal is performed per key or under graph locks.
 | Unknown session on lagging node | Deny; no arbitrary node issues/accepts an unobserved session |
 | Mixed OFF/OIDC, namespace version or trust generation | Reject before bootstrap/full graph transfer; drain incompatible peers |
 
+The staged private implementation uses TLS 1.3 with normal chain/hostname
+verification plus one exact operator-approved SPIFFE URI SAN and SPKI digest.
+It uses certificate files directly; no SPIFFE controller or runtime dependency
+is introduced. A bounded, canonical Ed25519-signed membership manifest pins
+workload IDs, fixed HTTPS origins, deployment, namespace format, homogeneous
+public mode, CA digest and OIDC security generation/writer key. Versions never
+renew expiry in place. A synchronized native checkpoint under the existing
+FileWAL path lease retains the version floor through restart. Missing/damaged
+state fails closed; a complete trusted-volume rollback still requires operator
+fencing and cannot be detected merely by signing historical bytes.
+
+Every private request checks current membership and an exact domain digest,
+including reused inbound TLS connections. Original admission ends within
+30 seconds and at certificate/membership expiry; removal cancels active streams
+and bounds blocked writes. Public Bearer/cookie credentials, redirects, proxies
+and plaintext fallback are refused on outbound peer requests. The initial client
+uses one fresh TLS 1.3 handshake per bounded private RPC rather than pooling
+certificate authority across requests. The handshake cost belongs to peer
+renewal/catch-up, not each data RPC, and needs final #1610 measurement.
+
+`LanternSecurityPeerService.RenewPolicyLease` exists only on this private mux.
+Its receiver ID must match the authenticated workload. The writer serializes
+challenge-bound signing with policy publication and returns the original complete
+signed checkpoint only when the receiver's known digest differs. A known digest
+is a transfer optimization, never serving proof. The replica atomically persists
+and installs that exact cut before activating its process-local lease. Routine
+renewal runs every five seconds, with a five-second request deadline; no network
+call or system WAL write occurs in unchanged-policy data admission. Losing local
+workload membership also invalidates protected public serving even if its last
+policy lease has time remaining.
+
 Peer authentication is separate from public mode: dedicated mTLS and
 operator-managed versioned trust/membership, optionally an existing SPIFFE
 identity. The protected replica Role cannot be assigned to a human. A security
@@ -354,7 +510,9 @@ are regenerated, and relevant hot paths have benchmark scenarios.
 
 Compare existing OFF, namespace-only OFF and OIDC/RBAC under matched visible
 work, with unsaturated latency percentiles and separate capacity measurements.
-Measure batches, scoped statistics, hidden-data ratios, subscribers, TTL churn,
+Measure batches, shared statistics and constrained candidates, hidden-data ratios,
+first/reused scopes, mixed updates/deletes, allocations and retained memory,
+subscribers, TTL churn,
 policy compilation, caches, system WAL/compaction, lease expiry and revocation.
 Producer throughput alone does not prove CDC consumer latency. No performance
 percentage is claimed without measurements. Avoid per-data fsync/network calls
@@ -372,3 +530,41 @@ branch or simulator success cannot close that phase.
 - [RFC 9700: OAuth security best current practice](https://www.rfc-editor.org/rfc/rfc9700)
 - [Replication RFC](../replication.md)
 - [ADR 0010: bounded mutation receipts](0010-bounded-mutation-receipts.md)
+
+
+### Standalone Create accepted effects and SDK reconciliation (#1626)
+
+`CreateEdges` is canonical; `CreateEdge` forwards one item. Receipt-bearing
+Create is one atomic logical batch of at most 10,000 items, never SDK-chunked.
+The original resource, action and aligned outcome are sealed before WAL
+publication. A confirmed replay returns the original outcomes without executing
+Create again; later Edge/Vertex deletion or TTL expiry cannot be reversed by
+that replay. Recovery applies only originally accepted positions, suppresses
+expired effects/missing endpoints/newer causal floors and rejects a live
+collision. Rejected original positions are never reevaluated after restore.
+
+Create needs the complete directed `edge.create` pair and both `vertex.read`
+grants. It does not require or imply `edge.read`, `vertex.write`, `edge.write`,
+`edge.add` or deletion. Receipt status/replay additionally requires the matching
+`receipt.read` selector and the current original Create/read authorization.
+Standalone capability discovery advertises Create only to a captured admission
+with a nonempty Create/read candidate scope; this is a family preflight, not
+permission for any particular pair or a promise that a later retry is allowed.
+HA capability discovery omits Create and HA ingress rejects it before effects.
+
+Go, Node and Dart expose normal and receipt-bearing plural/singular facades;
+Rust exposes normal plural/singular facades and typed accepted-effect CDC.
+Normal Create is not automatically retried after response loss. Persist receipt
+context and absolute expiration inputs before dispatch, or use the Dart/Node
+operation-issuance TTL anchor. Malformed/unspecified/misaligned outcomes fail
+closed; receipt-bearing uncertain results require original-ID reconciliation.
+
+The private WAL union is now version 8 (`LRWU\x08`), with a typed standalone
+Create effect discriminator and frozen Mutation descriptor fingerprint
+`11a0ed2e1d6c418b461ae2c27aceda465289b95e53519145cddbba7f2780fa73`.
+Previous union versions fail closed and require the documented offline migration;
+raw graph decoding cannot downgrade a Create accepted effect. Public identity
+CDC projects only `CREATED_AND_LIVE` Edge identities, with no rejected inputs,
+endpoint auto-creation, source weights or receipt payloads. The typed full effect
+is local WAL/full-CDC evidence and is rejected by peer ApplyMutation until the
+HA arbitration gate above is complete.

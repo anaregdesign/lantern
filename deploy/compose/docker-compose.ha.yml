@@ -1,0 +1,64 @@
+# Operator-provisioned full-replica cohort, using a distinct private mTLS plane.
+# Env files contain complete mode/domain/workload settings and absolute paths
+# under /run/lantern-config and /state. Never put the operator signing key here.
+x-peer: &peer
+  image: ${LANTERN_IMAGE:-ghcr.io/anaregdesign/lantern:latest}
+  stop_grace_period: 45s
+  environment:
+    LANTERN_PORT: "6380"
+    LANTERN_METRICS_ADDR: "127.0.0.1:9090"
+    LANTERN_PEER_LISTEN_ADDR: ":6381"
+    LANTERN_DEFAULT_TTL_SECONDS: "3600"
+    LANTERN_LOG_FORMAT: "json"
+    LANTERN_DRAIN_DELAY_SECONDS: "5"
+  networks:
+    default:
+      aliases: [lantern]
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/readyz"]
+    interval: 5s
+    timeout: 2s
+    retries: 24
+    start_period: 40s
+
+services:
+  lantern-0:
+    environment:
+      LANTERN_METRICS_ADDR: "127.0.0.1:9090"
+      LANTERN_PEER_LISTEN_ADDR: ":6381"
+    env_file: ["${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-0.env"]
+    volumes:
+      - ${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-0:/run/lantern-config:ro
+      - lantern-state-0:/state
+  lantern-1:
+    <<: *peer
+    hostname: lantern-1
+    ports: ["127.0.0.1:6381:6380"]
+    env_file: ["${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-1.env"]
+    volumes:
+      - ${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-1:/run/lantern-config:ro
+      - lantern-state-1:/state
+  lantern-2:
+    <<: *peer
+    hostname: lantern-2
+    ports: ["127.0.0.1:6382:6380"]
+    env_file: ["${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-2.env"]
+    volumes:
+      - ${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-2:/run/lantern-config:ro
+      - lantern-state-2:/state
+  admin:
+    # OIDC operators place this private HTTP service behind their HTTPS host.
+    ports: !reset []
+    environment:
+      LANTERN_ADMIN_SERVER_UPSTREAM: ${LANTERN_HA_ADMIN_UPSTREAM:?fixed HTTPS writer origin required}
+      LANTERN_ADMIN_SERVER_CA_FILE: /run/lantern-admin-trust/ca.pem
+    volumes:
+      - ${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/admin-trust:/run/lantern-admin-trust:ro
+  lantern-mcp:
+    # Machine Role credentials and CA are application-owned; no anonymous MCP
+    # process is automatically started against a protected cohort.
+    profiles: [operator-mcp]
+volumes:
+  lantern-state-0:
+  lantern-state-1:
+  lantern-state-2:

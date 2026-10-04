@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package graph.v1;
+
+import "graph/v1/graph.proto";
+
+// Public CDC never exposes the private replication protocol. Every event is an
+// invalidation of an exact committed identity. Value mode requires explicit
+// identity/value CDC and data-read grants and additionally samples
+// the current local live value; it is not a causally ordered event-sourcing log.
+service LanternChangeService {
+  rpc WatchChanges(WatchChangesRequest) returns (stream WatchChangesResponse);
+}
+
+enum ChangeProjection {
+  CHANGE_PROJECTION_UNSPECIFIED = 0;
+  CHANGE_PROJECTION_IDENTITY = 1;
+  CHANGE_PROJECTION_VALUE = 2;
+}
+
+message WatchChangesRequest {
+  string prefix = 1; // Literal logical prefix, applied to both Edge endpoints.
+  ChangeProjection projection = 2;
+  // Bootstrap opens a tail at an atomic publication cut. Keep it open while
+  // rebuilding the authorized resident cache with ordinary read RPCs.
+  bool bootstrap = 3;
+  bytes cursor = 4; // Opaque, encrypted and bound to this Principal/policy/scope.
+}
+
+message ChangeInvalidation {
+  oneof identity {
+    string vertex_key = 1;
+    EdgeKey edge_key = 2;
+  }
+  // Only VALUE projection may include this current local live image. Omitted
+  // image means invalidate/refetch, including deletes, TTL and concurrent writes.
+  oneof current_image {
+    Vertex vertex = 3;
+    Edge edge = 4;
+  }
+}
+
+message WatchChangesResponse {
+  repeated ChangeInvalidation invalidations = 1;
+  // Persist cursor only after applying every invalidation in this frame. A
+  // mutation may span frames; only its final visible frame carries a cursor.
+  bytes cursor = 2;
+  // Bootstrap/periodic progress frames have no invalidations and fixed-sized
+  // encrypted cursors. Hidden-only commits never cause an extra frame.
+  bool bootstrap = 3;
+}

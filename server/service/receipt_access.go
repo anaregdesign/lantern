@@ -18,6 +18,9 @@ func allowsReceiptResource(access *security.Access, receipt mutationreceipt.Rece
 		if resource == (mutationreceipt.ResourceIdentity{}) {
 			return access.AllowsAll(action)
 		}
+		if resource.Head != "" && action != security.VertexRead && action != security.VertexWrite && action != security.VertexDelete {
+			return access.AllowsEdgeAction(action, resource.Key, resource.Head)
+		}
 		return access.Allows(action, resource.Key) && (resource.Head == "" || access.Allows(action, resource.Head))
 	}
 	if !allow(security.ReceiptRead) || !allow(security.VertexRead) {
@@ -28,6 +31,8 @@ func allowsReceiptResource(access *security.Access, receipt mutationreceipt.Rece
 		return resource.Head == "" && allow(security.VertexWrite) && ((!receipt.LifecycleReduction && resource != (mutationreceipt.ResourceIdentity{})) || allow(security.VertexDelete))
 	case mutationreceipt.DeleteVertex:
 		return resource.Head == "" && allow(security.VertexDelete)
+	case mutationreceipt.CreateEdge:
+		return resource.Head != "" && allow(security.EdgeCreate)
 	case mutationreceipt.AddEdge, mutationreceipt.PutEdge:
 		mutation := security.EdgeAdd
 		if receipt.Kind == mutationreceipt.PutEdge {
@@ -49,7 +54,13 @@ func wholeReceiptAbsence(access *security.Access) bool {
 // rows subsequently add the stored lifecycle-effect requirement.
 func authorizeReceiptRequest(access *security.Access, message proto.Message) error {
 	check := func(key, head string) error {
-		if !access.Allows(security.ReceiptRead, key) || (head != "" && !access.Allows(security.ReceiptRead, head)) {
+		if head != "" {
+			if !access.AllowsEdgeAction(security.ReceiptRead, key, head) {
+				return dataPermissionError()
+			}
+			return nil
+		}
+		if !access.Allows(security.ReceiptRead, key) {
 			return dataPermissionError()
 		}
 		return nil
@@ -68,6 +79,14 @@ func authorizeReceiptRequest(access *security.Access, message proto.Message) err
 	case *pb.DeleteVerticesRequest:
 		for _, key := range req.GetKeys() {
 			if err := check(key, ""); err != nil {
+				return err
+			}
+		}
+	case *pb.CreateEdgeRequest:
+		return check(req.GetEdge().GetTail(), req.GetEdge().GetHead())
+	case *pb.CreateEdgesRequest:
+		for _, edge := range req.GetEdges() {
+			if err := check(edge.GetTail(), edge.GetHead()); err != nil {
 				return err
 			}
 		}

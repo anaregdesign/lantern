@@ -9,6 +9,8 @@ import 'package:integration_test/integration_test.dart';
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
+
+import 'package:lantern_example/scoped_change_source.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 
 import 'support/physical_result_marker.dart';
@@ -109,8 +111,7 @@ void main() {
       );
       result.addTrackedTearDown(client.close);
       await client.ping();
-      final responder = (await client.getReplicationStatus()).nodeId;
-      expect(responder, matches(RegExp(r'^[0-9a-f]{32}$')));
+      final responder = client.endpoint.toString();
       await result.recordPhase('seed_remote');
 
       final unique = DateTime.now().microsecondsSinceEpoch;
@@ -187,9 +188,12 @@ void main() {
       });
       await result.recordPhase('checkpoint_revalidation');
 
-      final source = LanternClientIdentitySource(client);
+      final source = LanternScopedChangeSource(
+        client: client,
+        responderId: responder,
+      );
       final foreground = LanternCancellationToken();
-      final firstRun = repository.consumeIdentityChanges(
+      final firstRun = repository.consumeScopedChanges(
         partition,
         source: source,
         cancellation: foreground,
@@ -215,9 +219,9 @@ void main() {
             checkedEdge.value?.weight == 1;
       });
       final initialCursor = await store.transaction(
-        (transaction) => transaction.changeCursor(partition),
+        (transaction) => transaction.scopedChangeCursor(partition),
       );
-      expect(initialCursor.sequences[responder], isNotNull);
+      expect(initialCursor, isNotNull);
       await result.recordPhase('live_invalidation');
       final tokenFetchesAtCheckpoint = tokenFetches;
       cachedToken = null;
@@ -252,12 +256,9 @@ void main() {
             checkedEdge.state == OfflineReadState.unknown;
       });
       final liveCursor = await store.transaction(
-        (transaction) => transaction.changeCursor(partition),
+        (transaction) => transaction.scopedChangeCursor(partition),
       );
-      expect(
-        liveCursor.sequences[responder],
-        greaterThan(initialCursor.sequences[responder]!),
-      );
+      expect(liveCursor!.toBytes(), isNot(equals(initialCursor!.toBytes())));
       expect(tokenFetches, greaterThan(tokenFetchesAtCheckpoint));
       foreground.cancel();
       await firstStopped;
@@ -272,9 +273,9 @@ void main() {
       );
       expect(
         (await store.transaction(
-          (transaction) => transaction.changeCursor(partition),
-        )).sequences,
-        liveCursor.sequences,
+          (transaction) => transaction.scopedChangeCursor(partition),
+        ))?.toBytes(),
+        liveCursor.toBytes(),
       );
       expect(
         (await repository.readVertex(
@@ -316,7 +317,7 @@ void main() {
 
       final resumed = LanternCancellationToken();
       result.addTrackedTearDown(resumed.cancel);
-      final secondRun = repository.consumeIdentityChanges(
+      final secondRun = repository.consumeScopedChanges(
         partition,
         source: source,
         cancellation: resumed,
@@ -354,7 +355,7 @@ void main() {
         return vertex.state == OfflineReadState.unknown &&
             checkedEdge.state == OfflineReadState.unknown;
       });
-      expect((await client.getReplicationStatus()).nodeId, responder);
+      expect(client.endpoint.toString(), responder);
       await result.recordPhase('contribution_delete_refetch');
       expect(
         (await repository.readEdge(
@@ -424,9 +425,9 @@ void main() {
       await secondStopped;
       expect(
         (await store.transaction(
-          (transaction) => transaction.changeCursor(partition),
-        )).sequences,
-        isEmpty,
+          (transaction) => transaction.scopedChangeCursor(partition),
+        )),
+        isNull,
       );
       expect(
         (await repository.readVertex(

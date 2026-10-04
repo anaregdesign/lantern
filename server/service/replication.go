@@ -89,6 +89,9 @@ type publicationStatusProvider interface {
 
 func validateSubscribeReceiptEnvelope(m *pb.Mutation) (bool, error) {
 	switch m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_EdgeCreateEffect:
+		effect, err := decodeEdgeCreateMutation(m)
+		return effect != nil && len(effect.Receipts) != 0, err
 	case *pb.MutationOp_ReplicatedReceiptEdgeAdd:
 		_, err := acceptedReceiptEdgeAddEdges(m)
 		return true, err
@@ -393,6 +396,13 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 
 	s.metrics.OnSubscribeStarted()
 	defer s.metrics.OnSubscribeEnded()
+	// Complete an accepted idle stream's transport handshake without an event,
+	// sequence advance or synthetic checkpoint. Keep all validation above it.
+	if headers, ok := stream.(interface{ FlushHeaders() error }); ok {
+		if err := headers.FlushHeaders(); err != nil {
+			return err
+		}
+	}
 
 	for {
 		select {

@@ -1,0 +1,1514 @@
+{
+  "bfs-hidden_put_delete_1-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_1/constrained_true-16",
+        "ns": 3299.0,
+        "bytes": 4772.0,
+        "allocs": 40.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_1/constrained_true-16",
+        "ns": 3348.0,
+        "bytes": 4772.0,
+        "allocs": 40.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_1/constrained_true-16",
+        "ns": 3358.0,
+        "bytes": 4771.0,
+        "allocs": 40.0
+      }
+    ],
+    "peak_rss_bytes": 69894144
+  },
+  "search-visible_update_1-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_update_1/constrained_true-16",
+        "ns": 100295.0,
+        "bytes": 23840.0,
+        "allocs": 220.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_update_1/constrained_true-16",
+        "ns": 98907.0,
+        "bytes": 23840.0,
+        "allocs": 220.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_update_1/constrained_true-16",
+        "ns": 97970.0,
+        "bytes": 23840.0,
+        "allocs": 220.0
+      }
+    ],
+    "peak_rss_bytes": 52281344
+  },
+  "bfs-first_scope-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/first_scope/constrained_false-16",
+        "ns": 2665.0,
+        "bytes": 4280.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/first_scope/constrained_false-16",
+        "ns": 2636.0,
+        "bytes": 4280.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/first_scope/constrained_false-16",
+        "ns": 2626.0,
+        "bytes": 4280.0,
+        "allocs": 33.0
+      }
+    ],
+    "peak_rss_bytes": 69615616
+  },
+  "ppr-first_scope-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/first_scope/constrained_false-16",
+        "ns": 16574.0,
+        "bytes": 16248.0,
+        "allocs": 92.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/first_scope/constrained_false-16",
+        "ns": 16672.0,
+        "bytes": 16248.0,
+        "allocs": 92.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/first_scope/constrained_false-16",
+        "ns": 16594.0,
+        "bytes": 16248.0,
+        "allocs": 92.0
+      }
+    ],
+    "peak_rss_bytes": 69320704
+  },
+  "search-hidden_update_100-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_update_100/constrained_false-16",
+        "ns": 70904.0,
+        "bytes": 4120.0,
+        "allocs": 74.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_update_100/constrained_false-16",
+        "ns": 74282.0,
+        "bytes": 4124.0,
+        "allocs": 74.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_update_100/constrained_false-16",
+        "ns": 73081.0,
+        "bytes": 4126.0,
+        "allocs": 74.0
+      }
+    ],
+    "peak_rss_bytes": 52871168
+  },
+  "community-visible_put_delete_100-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/visible_put_delete_100/constrained_true-16",
+        "ns": 33583.0,
+        "bytes": 30029.0,
+        "allocs": 232.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/visible_put_delete_100/constrained_true-16",
+        "ns": 33395.0,
+        "bytes": 30028.0,
+        "allocs": 232.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/visible_put_delete_100/constrained_true-16",
+        "ns": 33875.0,
+        "bytes": 30028.0,
+        "allocs": 232.0
+      }
+    ],
+    "peak_rss_bytes": 69468160
+  },
+  "ppr-visible_put_delete_1-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_1/constrained_false-16",
+        "ns": 17120.0,
+        "bytes": 16740.0,
+        "allocs": 99.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_1/constrained_false-16",
+        "ns": 17895.0,
+        "bytes": 16740.0,
+        "allocs": 99.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_1/constrained_false-16",
+        "ns": 17318.0,
+        "bytes": 16740.0,
+        "allocs": 99.0
+      }
+    ],
+    "peak_rss_bytes": 68452352
+  },
+  "staging": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_false/get_vertex-16",
+        "ns": 44.62,
+        "bytes": 0.0,
+        "allocs": 0.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_false/get_vertex-16",
+        "ns": 44.3,
+        "bytes": 0.0,
+        "allocs": 0.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_false/get_vertex-16",
+        "ns": 44.87,
+        "bytes": 0.0,
+        "allocs": 0.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_false/put_vertex-16",
+        "ns": 144.1,
+        "bytes": 0.0,
+        "allocs": 0.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_false/put_vertex-16",
+        "ns": 144.3,
+        "bytes": 0.0,
+        "allocs": 0.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_false/put_vertex-16",
+        "ns": 143.4,
+        "bytes": 0.0,
+        "allocs": 0.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_false/get_weight-16",
+        "ns": 179.8,
+        "bytes": 56.0,
+        "allocs": 2.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_false/get_weight-16",
+        "ns": 180.0,
+        "bytes": 56.0,
+        "allocs": 2.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_false/get_weight-16",
+        "ns": 180.7,
+        "bytes": 56.0,
+        "allocs": 2.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_true/get_vertex-16",
+        "ns": 47.93,
+        "bytes": 0.0,
+        "allocs": 0.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_true/get_vertex-16",
+        "ns": 48.03,
+        "bytes": 0.0,
+        "allocs": 0.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_true/get_vertex-16",
+        "ns": 47.33,
+        "bytes": 0.0,
+        "allocs": 0.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_true/put_vertex-16",
+        "ns": 143.3,
+        "bytes": 0.0,
+        "allocs": 0.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_true/put_vertex-16",
+        "ns": 143.1,
+        "bytes": 0.0,
+        "allocs": 0.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_true/put_vertex-16",
+        "ns": 143.4,
+        "bytes": 0.0,
+        "allocs": 0.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_true/get_weight-16",
+        "ns": 181.4,
+        "bytes": 56.0,
+        "allocs": 2.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_true/get_weight-16",
+        "ns": 180.9,
+        "bytes": 56.0,
+        "allocs": 2.0
+      },
+      {
+        "benchmark": "BenchmarkGraphCacheStagingCosts/staging_true/get_weight-16",
+        "ns": 180.7,
+        "bytes": 56.0,
+        "allocs": 2.0
+      }
+    ],
+    "peak_rss_bytes": 15679488
+  },
+  "community-hidden_put_delete_100-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/hidden_put_delete_100/constrained_false-16",
+        "ns": 37893.0,
+        "bytes": 28461.0,
+        "allocs": 167.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/hidden_put_delete_100/constrained_false-16",
+        "ns": 37683.0,
+        "bytes": 28460.0,
+        "allocs": 167.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/hidden_put_delete_100/constrained_false-16",
+        "ns": 38092.0,
+        "bytes": 28460.0,
+        "allocs": 167.0
+      }
+    ],
+    "peak_rss_bytes": 68616192
+  },
+  "search-visible_put_delete_1-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_put_delete_1/constrained_false-16",
+        "ns": 74807.0,
+        "bytes": 9312.0,
+        "allocs": 105.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_put_delete_1/constrained_false-16",
+        "ns": 75602.0,
+        "bytes": 9313.0,
+        "allocs": 105.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_put_delete_1/constrained_false-16",
+        "ns": 74574.0,
+        "bytes": 9313.0,
+        "allocs": 105.0
+      }
+    ],
+    "peak_rss_bytes": 51986432
+  },
+  "community-visible_put_delete_1-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/visible_put_delete_1/constrained_false-16",
+        "ns": 38106.0,
+        "bytes": 28948.0,
+        "allocs": 174.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/visible_put_delete_1/constrained_false-16",
+        "ns": 38279.0,
+        "bytes": 28947.0,
+        "allocs": 174.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/visible_put_delete_1/constrained_false-16",
+        "ns": 38128.0,
+        "bytes": 28948.0,
+        "allocs": 174.0
+      }
+    ],
+    "peak_rss_bytes": 68845568
+  },
+  "bfs-hidden_put_delete_100-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_100/constrained_true-16",
+        "ns": 2864.0,
+        "bytes": 4284.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_100/constrained_true-16",
+        "ns": 2895.0,
+        "bytes": 4284.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_100/constrained_true-16",
+        "ns": 2865.0,
+        "bytes": 4284.0,
+        "allocs": 33.0
+      }
+    ],
+    "peak_rss_bytes": 70500352
+  },
+  "search-hidden_update_100-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_update_100/constrained_true-16",
+        "ns": 84391.0,
+        "bytes": 5419.0,
+        "allocs": 81.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_update_100/constrained_true-16",
+        "ns": 84588.0,
+        "bytes": 5415.0,
+        "allocs": 81.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_update_100/constrained_true-16",
+        "ns": 85511.0,
+        "bytes": 5418.0,
+        "allocs": 81.0
+      }
+    ],
+    "peak_rss_bytes": 51298304
+  },
+  "first-ppr-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/first_scope/constrained_true-16",
+        "ns": 68750.0,
+        "bytes": 17208.0,
+        "allocs": 128.0
+      }
+    ],
+    "peak_rss_bytes": 41385984
+  },
+  "bfs-visible_put_delete_1-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_1/constrained_true-16",
+        "ns": 3368.0,
+        "bytes": 4772.0,
+        "allocs": 40.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_1/constrained_true-16",
+        "ns": 3380.0,
+        "bytes": 4772.0,
+        "allocs": 40.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_1/constrained_true-16",
+        "ns": 3358.0,
+        "bytes": 4772.0,
+        "allocs": 40.0
+      }
+    ],
+    "peak_rss_bytes": 68583424
+  },
+  "ppr-visible_put_delete_100-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_100/constrained_false-16",
+        "ns": 16513.0,
+        "bytes": 16253.0,
+        "allocs": 92.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_100/constrained_false-16",
+        "ns": 17058.0,
+        "bytes": 16252.0,
+        "allocs": 92.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_100/constrained_false-16",
+        "ns": 16841.0,
+        "bytes": 16252.0,
+        "allocs": 92.0
+      }
+    ],
+    "peak_rss_bytes": 69861376
+  },
+  "search-visible_put_delete_1-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_put_delete_1/constrained_true-16",
+        "ns": 88657.0,
+        "bytes": 10610.0,
+        "allocs": 112.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_put_delete_1/constrained_true-16",
+        "ns": 89002.0,
+        "bytes": 10610.0,
+        "allocs": 112.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_put_delete_1/constrained_true-16",
+        "ns": 88445.0,
+        "bytes": 10610.0,
+        "allocs": 112.0
+      }
+    ],
+    "peak_rss_bytes": 52559872
+  },
+  "first-bfs-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/first_scope/constrained_true-16",
+        "ns": 32917.0,
+        "bytes": 4480.0,
+        "allocs": 37.0
+      }
+    ],
+    "peak_rss_bytes": 40910848
+  },
+  "community-visible_put_delete_1-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/visible_put_delete_1/constrained_true-16",
+        "ns": 34230.0,
+        "bytes": 30516.0,
+        "allocs": 239.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/visible_put_delete_1/constrained_true-16",
+        "ns": 35150.0,
+        "bytes": 30515.0,
+        "allocs": 239.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/visible_put_delete_1/constrained_true-16",
+        "ns": 36445.0,
+        "bytes": 30515.0,
+        "allocs": 239.0
+      }
+    ],
+    "peak_rss_bytes": 69025792
+  },
+  "ppr-hidden_put_delete_1-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_1/constrained_false-16",
+        "ns": 17105.0,
+        "bytes": 16740.0,
+        "allocs": 99.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_1/constrained_false-16",
+        "ns": 16928.0,
+        "bytes": 16740.0,
+        "allocs": 99.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_1/constrained_false-16",
+        "ns": 16997.0,
+        "bytes": 16740.0,
+        "allocs": 99.0
+      }
+    ],
+    "peak_rss_bytes": 68386816
+  },
+  "search-visible_put_delete_100-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_put_delete_100/constrained_true-16",
+        "ns": 85243.0,
+        "bytes": 5232.0,
+        "allocs": 80.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_put_delete_100/constrained_true-16",
+        "ns": 84755.0,
+        "bytes": 5229.0,
+        "allocs": 80.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_put_delete_100/constrained_true-16",
+        "ns": 84551.0,
+        "bytes": 5232.0,
+        "allocs": 80.0
+      }
+    ],
+    "peak_rss_bytes": 51462144
+  },
+  "bfs-reused_scope-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/reused_scope/constrained_true-16",
+        "ns": 2829.0,
+        "bytes": 4280.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/reused_scope/constrained_true-16",
+        "ns": 2859.0,
+        "bytes": 4280.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/reused_scope/constrained_true-16",
+        "ns": 2828.0,
+        "bytes": 4280.0,
+        "allocs": 33.0
+      }
+    ],
+    "peak_rss_bytes": 70451200
+  },
+  "ppr-reused_scope-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/reused_scope/constrained_true-16",
+        "ns": 18203.0,
+        "bytes": 17016.0,
+        "allocs": 124.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/reused_scope/constrained_true-16",
+        "ns": 18123.0,
+        "bytes": 17016.0,
+        "allocs": 124.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/reused_scope/constrained_true-16",
+        "ns": 18253.0,
+        "bytes": 17016.0,
+        "allocs": 124.0
+      }
+    ],
+    "peak_rss_bytes": 69124096
+  },
+  "first-bfs-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/first_scope/constrained_false-16",
+        "ns": 54667.0,
+        "bytes": 4288.0,
+        "allocs": 33.0
+      }
+    ],
+    "peak_rss_bytes": 41353216
+  },
+  "search-hidden_put_delete_100-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_100/constrained_false-16",
+        "ns": 70733.0,
+        "bytes": 3958.0,
+        "allocs": 73.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_100/constrained_false-16",
+        "ns": 70462.0,
+        "bytes": 3955.0,
+        "allocs": 73.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_100/constrained_false-16",
+        "ns": 71130.0,
+        "bytes": 3954.0,
+        "allocs": 73.0
+      }
+    ],
+    "peak_rss_bytes": 51363840
+  },
+  "bfs-reused_scope-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/reused_scope/constrained_false-16",
+        "ns": 2617.0,
+        "bytes": 4280.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/reused_scope/constrained_false-16",
+        "ns": 2626.0,
+        "bytes": 4280.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/reused_scope/constrained_false-16",
+        "ns": 2650.0,
+        "bytes": 4280.0,
+        "allocs": 33.0
+      }
+    ],
+    "peak_rss_bytes": 69222400
+  },
+  "community-visible_put_delete_100-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/visible_put_delete_100/constrained_false-16",
+        "ns": 37262.0,
+        "bytes": 28460.0,
+        "allocs": 167.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/visible_put_delete_100/constrained_false-16",
+        "ns": 37995.0,
+        "bytes": 28461.0,
+        "allocs": 167.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/visible_put_delete_100/constrained_false-16",
+        "ns": 37389.0,
+        "bytes": 28460.0,
+        "allocs": 167.0
+      }
+    ],
+    "peak_rss_bytes": 69484544
+  },
+  "search-hidden_update_1-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_update_1/constrained_true-16",
+        "ns": 101036.0,
+        "bytes": 30288.0,
+        "allocs": 237.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_update_1/constrained_true-16",
+        "ns": 103590.0,
+        "bytes": 30284.0,
+        "allocs": 237.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_update_1/constrained_true-16",
+        "ns": 99617.0,
+        "bytes": 30284.0,
+        "allocs": 237.0
+      }
+    ],
+    "peak_rss_bytes": 53215232
+  },
+  "first-search-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/first_scope/constrained_false-16",
+        "ns": 177000.0,
+        "bytes": 3880.0,
+        "allocs": 73.0
+      }
+    ],
+    "peak_rss_bytes": 50610176
+  },
+  "ppr-first_scope-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/first_scope/constrained_true-16",
+        "ns": 18263.0,
+        "bytes": 17208.0,
+        "allocs": 128.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/first_scope/constrained_true-16",
+        "ns": 18276.0,
+        "bytes": 17208.0,
+        "allocs": 128.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/first_scope/constrained_true-16",
+        "ns": 18200.0,
+        "bytes": 17208.0,
+        "allocs": 128.0
+      }
+    ],
+    "peak_rss_bytes": 68567040
+  },
+  "community-reused_scope-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/reused_scope/constrained_false-16",
+        "ns": 36922.0,
+        "bytes": 28456.0,
+        "allocs": 167.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/reused_scope/constrained_false-16",
+        "ns": 37160.0,
+        "bytes": 28456.0,
+        "allocs": 167.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/reused_scope/constrained_false-16",
+        "ns": 37012.0,
+        "bytes": 28456.0,
+        "allocs": 167.0
+      }
+    ],
+    "peak_rss_bytes": 68698112
+  },
+  "community-reused_scope-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/reused_scope/constrained_true-16",
+        "ns": 33091.0,
+        "bytes": 30024.0,
+        "allocs": 232.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/reused_scope/constrained_true-16",
+        "ns": 33096.0,
+        "bytes": 30024.0,
+        "allocs": 232.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/reused_scope/constrained_true-16",
+        "ns": 33178.0,
+        "bytes": 30024.0,
+        "allocs": 232.0
+      }
+    ],
+    "peak_rss_bytes": 69042176
+  },
+  "search-first_scope-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/first_scope/constrained_false-16",
+        "ns": 72751.0,
+        "bytes": 3880.0,
+        "allocs": 73.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/first_scope/constrained_false-16",
+        "ns": 70969.0,
+        "bytes": 3880.0,
+        "allocs": 73.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/first_scope/constrained_false-16",
+        "ns": 70999.0,
+        "bytes": 3880.0,
+        "allocs": 73.0
+      }
+    ],
+    "peak_rss_bytes": 52969472
+  },
+  "first-ppr-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/first_scope/constrained_false-16",
+        "ns": 73458.0,
+        "bytes": 16248.0,
+        "allocs": 92.0
+      }
+    ],
+    "peak_rss_bytes": 41402368
+  },
+  "bfs-visible_put_delete_100-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_100/constrained_false-16",
+        "ns": 2619.0,
+        "bytes": 4284.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_100/constrained_false-16",
+        "ns": 2941.0,
+        "bytes": 4284.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_100/constrained_false-16",
+        "ns": 2830.0,
+        "bytes": 4284.0,
+        "allocs": 33.0
+      }
+    ],
+    "peak_rss_bytes": 70172672
+  },
+  "ppr-visible_put_delete_100-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_100/constrained_true-16",
+        "ns": 18265.0,
+        "bytes": 17020.0,
+        "allocs": 124.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_100/constrained_true-16",
+        "ns": 18600.0,
+        "bytes": 17020.0,
+        "allocs": 124.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_100/constrained_true-16",
+        "ns": 18369.0,
+        "bytes": 17020.0,
+        "allocs": 124.0
+      }
+    ],
+    "peak_rss_bytes": 69009408
+  },
+  "ppr-reused_scope-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/reused_scope/constrained_false-16",
+        "ns": 16650.0,
+        "bytes": 16248.0,
+        "allocs": 92.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/reused_scope/constrained_false-16",
+        "ns": 16575.0,
+        "bytes": 16248.0,
+        "allocs": 92.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/reused_scope/constrained_false-16",
+        "ns": 16363.0,
+        "bytes": 16248.0,
+        "allocs": 92.0
+      }
+    ],
+    "peak_rss_bytes": 69107712
+  },
+  "search-first_scope-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/first_scope/constrained_true-16",
+        "ns": 85331.0,
+        "bytes": 5368.0,
+        "allocs": 84.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/first_scope/constrained_true-16",
+        "ns": 84988.0,
+        "bytes": 5368.0,
+        "allocs": 84.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/first_scope/constrained_true-16",
+        "ns": 85196.0,
+        "bytes": 5368.0,
+        "allocs": 84.0
+      }
+    ],
+    "peak_rss_bytes": 51871744
+  },
+  "ppr-hidden_put_delete_100-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_100/constrained_false-16",
+        "ns": 16316.0,
+        "bytes": 16253.0,
+        "allocs": 92.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_100/constrained_false-16",
+        "ns": 16532.0,
+        "bytes": 16252.0,
+        "allocs": 92.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_100/constrained_false-16",
+        "ns": 16523.0,
+        "bytes": 16252.0,
+        "allocs": 92.0
+      }
+    ],
+    "peak_rss_bytes": 68485120
+  },
+  "community-first_scope-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/first_scope/constrained_true-16",
+        "ns": 33053.0,
+        "bytes": 30216.0,
+        "allocs": 236.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/first_scope/constrained_true-16",
+        "ns": 33234.0,
+        "bytes": 30216.0,
+        "allocs": 236.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/first_scope/constrained_true-16",
+        "ns": 32966.0,
+        "bytes": 30216.0,
+        "allocs": 236.0
+      }
+    ],
+    "peak_rss_bytes": 69287936
+  },
+  "search-visible_put_delete_100-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_put_delete_100/constrained_false-16",
+        "ns": 71731.0,
+        "bytes": 3935.0,
+        "allocs": 73.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_put_delete_100/constrained_false-16",
+        "ns": 70633.0,
+        "bytes": 3933.0,
+        "allocs": 73.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_put_delete_100/constrained_false-16",
+        "ns": 72306.0,
+        "bytes": 3933.0,
+        "allocs": 73.0
+      }
+    ],
+    "peak_rss_bytes": 52969472
+  },
+  "first-community-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/first_scope/constrained_false-16",
+        "ns": 104042.0,
+        "bytes": 28456.0,
+        "allocs": 167.0
+      }
+    ],
+    "peak_rss_bytes": 40910848
+  },
+  "create": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkEdgeCreateTransaction-16",
+        "ns": 1310.0,
+        "bytes": 2881.0,
+        "allocs": 29.0
+      },
+      {
+        "benchmark": "BenchmarkEdgeCreateTransaction-16",
+        "ns": 1309.0,
+        "bytes": 2881.0,
+        "allocs": 29.0
+      },
+      {
+        "benchmark": "BenchmarkEdgeCreateTransaction-16",
+        "ns": 1313.0,
+        "bytes": 2881.0,
+        "allocs": 29.0
+      }
+    ],
+    "peak_rss_bytes": 16465920
+  },
+  "community-first_scope-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/first_scope/constrained_false-16",
+        "ns": 37503.0,
+        "bytes": 28456.0,
+        "allocs": 167.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/first_scope/constrained_false-16",
+        "ns": 37092.0,
+        "bytes": 28456.0,
+        "allocs": 167.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/first_scope/constrained_false-16",
+        "ns": 37014.0,
+        "bytes": 28456.0,
+        "allocs": 167.0
+      }
+    ],
+    "peak_rss_bytes": 67698688
+  },
+  "search-hidden_update_1-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_update_1/constrained_false-16",
+        "ns": 88351.0,
+        "bytes": 28990.0,
+        "allocs": 230.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_update_1/constrained_false-16",
+        "ns": 87913.0,
+        "bytes": 28989.0,
+        "allocs": 230.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_update_1/constrained_false-16",
+        "ns": 88608.0,
+        "bytes": 28992.0,
+        "allocs": 230.0
+      }
+    ],
+    "peak_rss_bytes": 52379648
+  },
+  "search-reused_scope-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/reused_scope/constrained_true-16",
+        "ns": 84204.0,
+        "bytes": 5176.0,
+        "allocs": 80.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/reused_scope/constrained_true-16",
+        "ns": 84481.0,
+        "bytes": 5176.0,
+        "allocs": 80.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/reused_scope/constrained_true-16",
+        "ns": 84990.0,
+        "bytes": 5176.0,
+        "allocs": 80.0
+      }
+    ],
+    "peak_rss_bytes": 52297728
+  },
+  "ppr-hidden_put_delete_1-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_1/constrained_true-16",
+        "ns": 18783.0,
+        "bytes": 17508.0,
+        "allocs": 131.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_1/constrained_true-16",
+        "ns": 18985.0,
+        "bytes": 17507.0,
+        "allocs": 131.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_1/constrained_true-16",
+        "ns": 18820.0,
+        "bytes": 17507.0,
+        "allocs": 131.0
+      }
+    ],
+    "peak_rss_bytes": 69074944
+  },
+  "bfs-visible_put_delete_1-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_1/constrained_false-16",
+        "ns": 3117.0,
+        "bytes": 4772.0,
+        "allocs": 40.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_1/constrained_false-16",
+        "ns": 3121.0,
+        "bytes": 4772.0,
+        "allocs": 40.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_1/constrained_false-16",
+        "ns": 3124.0,
+        "bytes": 4772.0,
+        "allocs": 40.0
+      }
+    ],
+    "peak_rss_bytes": 69484544
+  },
+  "community-hidden_put_delete_1-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/hidden_put_delete_1/constrained_true-16",
+        "ns": 34273.0,
+        "bytes": 30516.0,
+        "allocs": 239.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/hidden_put_delete_1/constrained_true-16",
+        "ns": 34003.0,
+        "bytes": 30516.0,
+        "allocs": 239.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/hidden_put_delete_1/constrained_true-16",
+        "ns": 34235.0,
+        "bytes": 30515.0,
+        "allocs": 239.0
+      }
+    ],
+    "peak_rss_bytes": 68927488
+  },
+  "search-visible_update_100-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_update_100/constrained_false-16",
+        "ns": 71379.0,
+        "bytes": 4062.0,
+        "allocs": 74.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_update_100/constrained_false-16",
+        "ns": 71902.0,
+        "bytes": 4064.0,
+        "allocs": 74.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_update_100/constrained_false-16",
+        "ns": 72795.0,
+        "bytes": 4060.0,
+        "allocs": 74.0
+      }
+    ],
+    "peak_rss_bytes": 52002816
+  },
+  "first-search-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/first_scope/constrained_true-16",
+        "ns": 186583.0,
+        "bytes": 5368.0,
+        "allocs": 84.0
+      }
+    ],
+    "peak_rss_bytes": 50987008
+  },
+  "search-visible_update_1-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_update_1/constrained_false-16",
+        "ns": 84556.0,
+        "bytes": 22545.0,
+        "allocs": 213.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_update_1/constrained_false-16",
+        "ns": 86495.0,
+        "bytes": 22541.0,
+        "allocs": 212.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_update_1/constrained_false-16",
+        "ns": 83611.0,
+        "bytes": 22544.0,
+        "allocs": 213.0
+      }
+    ],
+    "peak_rss_bytes": 53362688
+  },
+  "bfs-hidden_put_delete_100-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_100/constrained_false-16",
+        "ns": 2640.0,
+        "bytes": 4284.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_100/constrained_false-16",
+        "ns": 2640.0,
+        "bytes": 4284.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_100/constrained_false-16",
+        "ns": 2632.0,
+        "bytes": 4284.0,
+        "allocs": 33.0
+      }
+    ],
+    "peak_rss_bytes": 69566464
+  },
+  "search-hidden_put_delete_100-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_100/constrained_true-16",
+        "ns": 85108.0,
+        "bytes": 5253.0,
+        "allocs": 80.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_100/constrained_true-16",
+        "ns": 85665.0,
+        "bytes": 5251.0,
+        "allocs": 80.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_100/constrained_true-16",
+        "ns": 85327.0,
+        "bytes": 5249.0,
+        "allocs": 80.0
+      }
+    ],
+    "peak_rss_bytes": 53198848
+  },
+  "community-hidden_put_delete_100-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/hidden_put_delete_100/constrained_true-16",
+        "ns": 33906.0,
+        "bytes": 30028.0,
+        "allocs": 232.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/hidden_put_delete_100/constrained_true-16",
+        "ns": 33823.0,
+        "bytes": 30029.0,
+        "allocs": 232.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/hidden_put_delete_100/constrained_true-16",
+        "ns": 33432.0,
+        "bytes": 30028.0,
+        "allocs": 232.0
+      }
+    ],
+    "peak_rss_bytes": 69271552
+  },
+  "search-hidden_put_delete_1-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_1/constrained_true-16",
+        "ns": 90354.0,
+        "bytes": 12828.0,
+        "allocs": 121.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_1/constrained_true-16",
+        "ns": 90803.0,
+        "bytes": 12830.0,
+        "allocs": 121.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_1/constrained_true-16",
+        "ns": 90713.0,
+        "bytes": 12827.0,
+        "allocs": 121.0
+      }
+    ],
+    "peak_rss_bytes": 53379072
+  },
+  "bfs-hidden_put_delete_1-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_1/constrained_false-16",
+        "ns": 3123.0,
+        "bytes": 4772.0,
+        "allocs": 40.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_1/constrained_false-16",
+        "ns": 3120.0,
+        "bytes": 4772.0,
+        "allocs": 40.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/hidden_put_delete_1/constrained_false-16",
+        "ns": 3122.0,
+        "bytes": 4772.0,
+        "allocs": 40.0
+      }
+    ],
+    "peak_rss_bytes": 69517312
+  },
+  "ppr-hidden_put_delete_100-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_100/constrained_true-16",
+        "ns": 18159.0,
+        "bytes": 17020.0,
+        "allocs": 124.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_100/constrained_true-16",
+        "ns": 18491.0,
+        "bytes": 17020.0,
+        "allocs": 124.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/hidden_put_delete_100/constrained_true-16",
+        "ns": 18530.0,
+        "bytes": 17020.0,
+        "allocs": 124.0
+      }
+    ],
+    "peak_rss_bytes": 68780032
+  },
+  "search-visible_update_100-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_update_100/constrained_true-16",
+        "ns": 85395.0,
+        "bytes": 5359.0,
+        "allocs": 81.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_update_100/constrained_true-16",
+        "ns": 85002.0,
+        "bytes": 5362.0,
+        "allocs": 81.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/visible_update_100/constrained_true-16",
+        "ns": 85758.0,
+        "bytes": 5357.0,
+        "allocs": 81.0
+      }
+    ],
+    "peak_rss_bytes": 51806208
+  },
+  "search-hidden_put_delete_1-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_1/constrained_false-16",
+        "ns": 76735.0,
+        "bytes": 11532.0,
+        "allocs": 114.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_1/constrained_false-16",
+        "ns": 77535.0,
+        "bytes": 11532.0,
+        "allocs": 114.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/hidden_put_delete_1/constrained_false-16",
+        "ns": 75874.0,
+        "bytes": 11532.0,
+        "allocs": 114.0
+      }
+    ],
+    "peak_rss_bytes": 51724288
+  },
+  "bfs-first_scope-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/first_scope/constrained_true-16",
+        "ns": 2846.0,
+        "bytes": 4472.0,
+        "allocs": 37.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/first_scope/constrained_true-16",
+        "ns": 2977.0,
+        "bytes": 4472.0,
+        "allocs": 37.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/first_scope/constrained_true-16",
+        "ns": 2918.0,
+        "bytes": 4472.0,
+        "allocs": 37.0
+      }
+    ],
+    "peak_rss_bytes": 70516736
+  },
+  "community-hidden_put_delete_1-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/hidden_put_delete_1/constrained_false-16",
+        "ns": 38610.0,
+        "bytes": 28947.0,
+        "allocs": 174.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/hidden_put_delete_1/constrained_false-16",
+        "ns": 38465.0,
+        "bytes": 28948.0,
+        "allocs": 174.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/hidden_put_delete_1/constrained_false-16",
+        "ns": 38541.0,
+        "bytes": 28948.0,
+        "allocs": 174.0
+      }
+    ],
+    "peak_rss_bytes": 69320704
+  },
+  "bfs-visible_put_delete_100-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_100/constrained_true-16",
+        "ns": 2819.0,
+        "bytes": 4284.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_100/constrained_true-16",
+        "ns": 2866.0,
+        "bytes": 4284.0,
+        "allocs": 33.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/bfs/visible_put_delete_100/constrained_true-16",
+        "ns": 2855.0,
+        "bytes": 4284.0,
+        "allocs": 33.0
+      }
+    ],
+    "peak_rss_bytes": 68780032
+  },
+  "ppr-visible_put_delete_1-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_1/constrained_true-16",
+        "ns": 18922.0,
+        "bytes": 17508.0,
+        "allocs": 131.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_1/constrained_true-16",
+        "ns": 19052.0,
+        "bytes": 17508.0,
+        "allocs": 131.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/ppr/visible_put_delete_1/constrained_true-16",
+        "ns": 18905.0,
+        "bytes": 17508.0,
+        "allocs": 131.0
+      }
+    ],
+    "peak_rss_bytes": 68255744
+  },
+  "first-community-true": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationTraversalWorkloads/community/first_scope/constrained_true-16",
+        "ns": 94083.0,
+        "bytes": 30216.0,
+        "allocs": 236.0
+      }
+    ],
+    "peak_rss_bytes": 40910848
+  },
+  "search-reused_scope-false": {
+    "samples": [
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/reused_scope/constrained_false-16",
+        "ns": 71407.0,
+        "bytes": 3880.0,
+        "allocs": 73.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/reused_scope/constrained_false-16",
+        "ns": 70000.0,
+        "bytes": 3880.0,
+        "allocs": 73.0
+      },
+      {
+        "benchmark": "BenchmarkAuthorizationSearchWorkloads/reused_scope/constrained_false-16",
+        "ns": 72285.0,
+        "bytes": 3880.0,
+        "allocs": 73.0
+      }
+    ],
+    "peak_rss_bytes": 51429376
+  }
+}

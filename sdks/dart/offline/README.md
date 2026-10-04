@@ -258,11 +258,14 @@ outbox/operation capacity rejection. Configure the adapter's test limits below
 the default probe bounds or raise `maxCapacityProbeRecords` and
 `maxNotificationControllerProbe` explicitly. `exportSnapshot` and
 `InMemoryOfflineStore.fromSnapshot` exist
-only for deterministic fresh-process conformance tests; snapshot schema v7
+only for deterministic fresh-process conformance tests; snapshot schema v8
 persists operation aggregates, exact dead-letter transition time, durable
-auth pause, per-origin CDC chunk progress, the change epoch, and key-only
-Unknown residents. Schema v6 restores with an empty resident queue and epoch
-zero; schemas v1–v5 restore with empty CDC state. Restore transactionally reconstructs active v1 metadata, recovers
+auth pause, an independent opaque public CDC cursor, legacy private chunk
+progress, the change epoch, and key-only Unknown residents. Migrating legacy
+private progress from schemas v1–v7 hides confirmed rows and clears that
+progress before public rebootstrap. No private sequence becomes an opaque
+cursor. Schema v6 initially has an empty resident queue; schemas v1–v5
+initially have empty CDC state. Restore transactionally reconstructs active v1 metadata, recovers
 auth pause from v1-v4 durable metadata, quarantines legacy Add records only
 from v1-v3, reopens only that exact terminal quarantine in v5–v7, migrates v1-v3
 outbox retention metadata conservatively, and fails
@@ -307,59 +310,69 @@ through `sqflite`. Applications own protected storage, any additional encryption
 and backup policy, and must call `wipePartition` before a different user can open
 the same application session. The core retains no platform dependencies.
 
-Transaction operations return `FutureOr<T>` so adapters can use asynchronous
-database APIs. Await every operation inside the transaction callback. The
-`changeCursor`, `applyChangeChunk`, and `resetChangeCursor` atomically persist
-identity-only invalidation and per-origin progress. Accepted partial and final
-chunks advance a durable partition change epoch. A checkpoint reset removes
-confirmed values but retains bounded resident identities as Unknown until
-`revalidateResidentBatch` finishes plural Get calls and their epoch-checked
-cache commits. Late ordinary Get results and server-first failure fallbacks
-cannot restore a record invalidated during the read. Adapter tests run
-`runChangeStoreConformanceSuite` across a real reopen boundary.
+Transaction operations return `FutureOr<T>`; await each operation inside its
+transaction callback. Public scoped CDC uses `scopedChangeCursor`,
+`applyScopedChangeFrame` and `resetScopedChangeCursor`. Invalidation and an
+optional opaque completion cursor commit atomically; an intermediate frame
+invalidates immediately and preserves the last completed cursor. Every frame
+advances the durable read epoch. The Store never interprets Role, Principal,
+policy, raw origin progress or cursor contents.
 
-`consumeIdentityChanges(partitionId, source: ...)` is an explicit foreground CDC
-session. The application injects an `OfflineIdentitySource` that opens an
-identity-only Subscribe stream and performs plural reads against that same
-responder. The source must pin a real responder for the entire checkpoint and
-revalidation, propagate stream pause/resume, map retention and slow-subscriber
-gaps to `OfflineChangeGapException`, and acquire credentials at call time.
-The core owns a single session per partition and cancels it on logout or
-disposal. It resumes each origin at the durable last-applied sequence plus one,
-checks sequence, chunk, operation, and item-index continuity, and advances the
-cursor only with a final chunk. A gap hides confirmed cache as durable Unknown
-and permits one checkpoint retry per invocation. The stream is read one frame
-at a time, so recovery does not create an unbounded Dart event queue. The
-server's bounded stream buffer may still gap during a slow revalidation; that
-also triggers Unknown recovery. No network subscription starts at Repository
-construction, and the application remains responsible for foreground timing.
+`consumeScopedChanges(partitionId, source: ...)` owns one explicit foreground
+subscription per partition. Inject an `OfflineScopedChangeSource` with bounded,
+paused public identity frames and plural reads pinned to the same actual node.
+Bootstrap holds its registered tail open while revalidating resident keys.
+Unknown markers complete only with epoch-checked plural-read commits; racing
+invalidations cannot restore old data. EOF, malformed frames, retention or
+policy gaps hide confirmed rows as durable Unknown and permit one fresh
+bootstrap per invocation. Authorization and availability errors hide cache and
+stop without automatic reconnect. Pending outbox writes and immutable receipt
+dispatch evidence survive. Account logout and dispose cancel owned stream/read
+work; no background subscription starts at construction.
 
-The production bridge is `LanternClientIdentitySource(pinnedClient)`. Pass the
-same application-owned client to `LanternClientOfflineRemote` for ordinary
-reads and writes, then explicitly run the foreground CDC session:
+The maintained [Flutter composition bridge](https://github.com/anaregdesign/lantern/blob/main/sdks/dart/example/lib/scoped_change_source.dart)
+uses the online SDK's typed `watchChanges` with identity projection. It requires
+an explicitly pinned client: an ordinary load-balancing endpoint is unsupported
+for resident revalidation. Its endpoint label grants no access or proof of
+server identity. Credentials remain application-owned and are acquired at RPC
+time; the Server validates policy-bound, encrypted cursors. No status/peer RPC,
+fake origin vector, dynamic API probe or offline runtime path dependency is
+used. This composition needs a parent SDK release containing WatchChanges;
+currently hosted archive resolution is a separate release gate. The offline
+storage-neutral port itself compiles against the hosted parent constraint.
 
 ```dart
+// Application composition; online/offline release versions must expose these APIs.
+final source = LanternScopedChangeSource(
+  client: pinnedClient,
+  responderId: pinnedClient.endpoint.toString(),
+);
 final cancellation = LanternCancellationToken();
-final source = LanternClientIdentitySource(pinnedClient);
-await repository.consumeIdentityChanges(
-  partitionId,
-  source: source,
-  cancellation: cancellation,
+await repository.consumeScopedChanges(
+  partitionId, source: source, cancellation: cancellation,
 );
 ```
 
-Cancel that token when the app leaves the foreground or the account logs out;
-the repository also cancels an active session on partition wipe or disposal.
-The client must route its stream, status checks, and plural reads to one real
-responder for the session. The adapter checks the node ID around plural reads,
-but the Subscribe frames do not expose the responder ID; an ordinary
-load-balancing endpoint cannot be validated as pinned by this adapter.
-Application configuration must guarantee that routing property. The client
-acquires its configured credentials at each RPC call.
+Adapters run `runScopedChangeStoreConformanceSuite` across their real persistence
+boundary. Memory snapshots add independent opaque state in schema 8; SQLite
+schema 5 keeps one indexed BLOB cursor per partition. Legacy origin cursors do
+not establish scoped freshness. Migration/rebootstrap hides old confirmed rows
+as Unknown, preserves outbox records and requires authorized plural reads.
+The legacy `changeCursor`/`applyChangeChunk` and `LanternClientIdentitySource`
+remain historical/private-plane conformance surfaces; current public listeners
+reject their replication status/Subscribe calls. They cannot qualify public CDC.
+
+Cancel foreground work on account/lifecycle transitions. Already delivered
+plaintext cannot be recalled while a device is offline; the application owns
+protected storage, encryption and identity-bound partition wipe. Local TTL
+continues to expire cache records; public mutation CDC does not promise every
+natural TTL expiry event.
 
 The `0.3.0` CDC bridge requires hosted `lantern_client 0.3.0` with
 `subscribeIdentity`; the published `0.4.0` receipt release requires hosted
 `lantern_client ^0.3.3` for receipt APIs and single-attempt receipt-less
 Add. The `0.5.0` candidate requires hosted `lantern_client ^0.4.1` for targeted
-contribution Delete and its typed identity CDC event. Earlier published versions
+contribution Delete. The in-flight opaque public CDC composition additionally
+requires a separately published online WatchChanges API; local path testing is
+not proof of hosted availability. Earlier published versions
 retain their original parent constraints.

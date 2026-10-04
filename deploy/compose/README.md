@@ -1,208 +1,59 @@
-# Docker Compose: HA lantern cluster
+# Lantern Compose profiles
 
-3-replica peer-discovery cluster on a single Docker host. Mirrors
-the Helm chart in [`../helm/lantern/`](../helm/lantern/) for local dev and
-single-host HA experiments.
+The default starts one OFF Server and Admin on loopback ports 6380 and 8080.
+No authentication environment variables, IdP, peer credentials or external
+storage service are needed. Server capabilities report OFF explicitly; security
+management remains unavailable. The image tags must include the same source
+and protocol revision as these configuration files.
 
-## Topology
-
-- 3 × explicit lantern services — `lantern-0`, `lantern-1`, `lantern-2` —
-  on host ports **`6380`**, **`6381`**, **`6382`** respectively. Each
-  service is its own entry (no `deploy.replicas`) so the host-port
-  mapping is pinned across restarts; this is what `#435` fixes. The
-  admin SPA's default gateway `http://localhost:6380` therefore keeps
-  working out of the box.
-- All three services share the network alias `lantern`. Compose's
-  embedded DNS resolves `lantern` to one A per healthy replica, so the
-  peer pump (#190) — and any SDK / MCP container dialing
-  `http://lantern:6380` — continues to round-robin across the live
-  replicas without knowing about the per-service names.
-- 1 × `admin` browser SPA (`ghcr.io/anaregdesign/lantern-admin`)
-  on host port `8080`. Caddy SPA host on `:8080`; the browser talks to
-  the gateway directly (not proxied), so each lantern service has
-  `LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080` baked in. The
-  admin container *does* reverse-proxy Prometheus same-origin under
-  `/api/prom` (`LANTERN_ADMIN_PROMETHEUS_UPSTREAM=http://prometheus:9090`
-  is set on the admin service) so the Ops Metrics charts work without a
-  cross-origin call to Prometheus.
-- 1 × `lantern-mcp` MCP server (`ghcr.io/anaregdesign/lantern-mcp`) on
-  host port `6390`, serving the Model Context Protocol over Streamable
-  HTTP at `/mcp`. It dials the `lantern` alias, so Compose DNS
-  round-robins its calls across the three replicas. It now comes up with
-  the rest of the stack on `docker compose up -d` — see
-  [Single-node + MCP server](#single-node--mcp-server) below.
-- `prometheus` scrapes via `dns_sd_configs` against the `lantern`
-  alias, so it picks up every replica automatically (no static targets
-  file to maintain).
-
-| service     | host port → container | compose container name              |
-|-------------|-----------------------|-------------------------------------|
-| `lantern-0` | `6380` → `6380`       | `${COMPOSE_PROJECT_NAME}-lantern-0-1` |
-| `lantern-1` | `6381` → `6380`       | `${COMPOSE_PROJECT_NAME}-lantern-1-1` |
-| `lantern-2` | `6382` → `6380`       | `${COMPOSE_PROJECT_NAME}-lantern-2-1` |
-
-Use the service name (`lantern-0`, ...) when invoking
-`docker compose` subcommands; use the full container name only when
-shelling out to `docker` directly (e.g. `docker inspect`,
-`docker logs --details`). The project name defaults to the directory
-basename (`compose`).
-
-## Run
-
-```shell
+```sh
 cd deploy/compose
-# Images default to the published `:latest` tags (no local build needed);
-# `--pull always` re-fetches them so you never run a stale cached image.
-docker compose up -d --pull always
-docker compose ps
-```
-
-Tear down:
-
-```shell
-docker compose down -v
-```
-
-> `docker compose up -d --scale lantern=N` no longer applies — the
-> canonical compose uses three explicit services so the host-port
-> mapping stays stable across restarts (#435). For >3 replicas, add a
-> `lantern-3` block (host port `6383`, etc.) using the
-> `x-lantern-common` YAML anchor, or switch to the Helm chart in
-> [`../helm/lantern/`](../helm/lantern/) which has no host-port
-> constraint.
-
-## Client access
-
-The example does **not** include an in-cluster client LB sidecar.
-Pick one of:
-
-- **Reverse proxy / sidecar.** Drop in Caddy / Traefik / envoy with a
-  DNS-resolved upstream pool against `lantern:6380`. The SDK then dials
-  one URL (`http://lantern-proxy:6380`), TLS terminates at the edge,
-  and replica scaling is automatically picked up.
-  ```go
-  c, _ := lantern.NewLantern("http://lantern-proxy:6380")
-  ```
-- **DNS round-robin from the client.** If the SDK lives in the same
-  Compose network, dial the service name and let the OS resolver hand
-  out IPs:
-  ```go
-  c, _ := lantern.NewLantern("http://lantern:6380")
-  ```
-- **SDK static-endpoint failover.** For a **fixed, known** replica set,
-  the Go SDK can fail over client-side with no extra infrastructure —
-  pass the endpoint list to `NewLanternFailover` and it sticks to one
-  node, rotating only when a node is unreachable:
-  ```go
-  c, _ := lantern.NewLanternFailover([]string{
-      "http://lantern-0:6380",
-      "http://lantern-1:6380",
-      "http://lantern-2:6380",
-  })
-  ```
-  This suits stable sets (a pinned replica count); prefer a proxy / DNS
-  when endpoints churn. See
-  [sdks/go/README.md](../../sdks/go/README.md#static-endpoint-failover).
-- **CLI / grpcurl**: hit any container directly; writes propagate via
-  the peer pump.
-
-> The pre-#367 `NewLanternWithEndpoints([]string{...})` SDK-side
-> round-robin LB was removed when the SDK collapsed to Connect-only
-> ([#367](https://github.com/anaregdesign/lantern/issues/367)). The new
-> `NewLanternFailover` (#592) is **not** a revival of that round-robin
-> load balancer: it is sticky-current failover over a *static* endpoint
-> set with no dynamic discovery, complementing — not replacing — the
-> reverse-proxy / DNS options above. Use a proxy or DNS round-robin for
-> churning endpoints; use SDK failover for small fixed sets.
-
-## Admin UI
-
-The compose file ships the `lantern-admin` browser SPA alongside the
-cluster. Open **<http://localhost:8080/>** after `docker compose up -d`
-finishes warming up. The admin connects to whichever lantern node the
-**Gateway** button (top-right of the SPA header) is set to — defaults
-to `http://localhost:6380`; change to `:6381` or `:6382` to point at
-the other replicas.
-
-The browser fetches directly against the gateway, so the lantern
-service sets `LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080`.
-If you map the admin to a different external port / host, override
-that env to match (otherwise the browser preflight blocks the
-request). Override the image with
-`LANTERN_ADMIN_IMAGE=ghcr.io/anaregdesign/lantern-admin:v0.1.1
-docker compose up -d`.
-
-The **Ops** page's Prometheus time-series charts query Prometheus
-same-origin under `/api/prom`; the admin service's
-`LANTERN_ADMIN_PROMETHEUS_UPSTREAM=http://prometheus:9090` makes the
-admin container reverse-proxy that path to the bundled `prometheus`
-service, so the charts render out of the box. Point the **Prometheus**
-button in the Metrics toolbar elsewhere to override at runtime.
-
-The admin container is **not** auth-fronted. Run it only on trusted
-networks, or put your own ingress-level auth proxy in front.
-
-## Verifying peer discovery
-
-```shell
-# Each replica logs a "replication pump: peer transition" line
-# (transition=connect, peer=<addr>) for each of the other 2 peers.
-docker compose logs lantern-0 lantern-1 lantern-2 | grep "peer transition"
-
-# Prometheus (http://localhost:9091):
-#   lantern_peer_connected              — 1 gauge per active peer link
-#   lantern_replication_lag_seq         — per (peer, origin) lag
-```
-
-## Single-instance fallback
-
-For non-HA development bring up only one replica:
-
-```shell
-docker compose up -d --pull always lantern-0 admin prometheus
-```
-
-`LANTERN_PEER_DNS_NAME=lantern` still resolves — to the single A
-record for `lantern-0`, which `LocalIPSet()` filters as self, so the
-pump becomes a no-op.
-
-## Cross-references
-
-- Helm chart (production path): [`../helm/lantern/`](../helm/lantern/)
-- Peer discovery spec: [`../../docs/replication.md` §9.1](../../docs/replication.md#91-peer-discovery-190)
-- HA runbook: issue #192 (in flight).
-- Testbed (single-instance observability QA): [`../../testbed/`](../../testbed/)
-
-## Single-node + MCP server
-
-The HA compose file in this directory ships a `lantern-mcp` service that
-comes up with the rest of the stack on `docker compose up -d`, talking to
-the 3-replica cluster — Compose DNS round-robins `lantern:6380` across the
-live replicas. For a smaller single-`lantern` topology there is also
-[`docker-compose.mcp.yml`](docker-compose.mcp.yml) that stands up one
-`lantern` + one `lantern-mcp`:
-
-```shell
-# HA cluster (this file): lantern-mcp starts with the rest of the stack.
 docker compose up -d
-
-# Single-node (small file): one lantern + the MCP server. `--pull always`
-# re-fetches the `:latest` tags so you never run a stale cached image.
-docker compose -f docker-compose.mcp.yml up -d --pull always
 ```
 
-`lantern-mcp` serves the Model Context Protocol over **Streamable
-HTTP**, so it's a long-lived service: bring it up with `up -d` and
-point your agent at `http://localhost:6390/mcp` (a `GET /healthz`
-returns `200 ok` for probes).
+Each Server owns its graph backup volume. Graph-only snapshots restore a
+baseline, not authentication state or receipt continuity. `down -v` removes
+those volumes. The optional `tools` and `diagnostics` profiles are local OFF
+examples. Prometheus is reachable on loopback 9091; enabling its Admin proxy
+also requires the fixed Server upstream. See [Admin](../../admin/README.md).
 
-In production, the agent runtime (Claude Desktop, VS Code, Cursor, …)
-connects to that URL — see
-[`../../mcp/examples/`](../../mcp/examples/) for those configs and
-[`../../mcp/README.md`](../../mcp/README.md) for the full operator
-reference.
+## Explicit HA
 
-> The standalone `docker-compose.mcp.yml` covers the single-node case
-> and stays useful as a template for embedding `lantern-mcp` in your
-> own agent-runtime compose file. The HA file brings `lantern-mcp` up
-> by default alongside the multi-replica cluster.
+Use `docker-compose.ha.yml` with operator-provisioned per-node env files and
+read-only material in `LANTERN_HA_CONFIG_DIR`. All three members need distinct
+workload certificates, exact signed HTTPS private origins on port 6381 and
+homogeneous public mode/domain/namespace. The operator signing private key
+stays outside every Server volume. DNS only resolves those approved origins.
+Never share a peer private key across nodes.
+
+```sh
+export LANTERN_HA_CONFIG_DIR=/absolute/operator/lantern
+export LANTERN_HA_ADMIN_UPSTREAM=https://lantern-0:6380
+docker compose -f docker-compose.yml -f docker-compose.ha.yml config
+docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d
+```
+
+Env files reference certificate/CA/manifest files under `/run/lantern-config`
+and writable sys:/membership state under `/state`. Choose `fresh` only for a
+new domain/enrollment, then `restart`/`resume` for existing durable state.
+Renew the signed membership manifest atomically before its expiry (at most
+ten minutes), including OFF HA. Lost renewal fails closed. Public credentials
+never authorize a private peer. The private port has no host publication.
+
+OIDC uses one fixed security writer and leased replicas. Configure the complete
+[env contract](../../docs/env.md), including required administrator Issuer and
+subjects, generation, writer trust, browser public HTTPS origin and callback.
+Pin `/auth/*`, `/browser/*` and control operations to that writer. The HA Admin
+HTTP service is private and requires an operator HTTPS frontend; the Server
+upstream uses verified TLS and `admin-trust/ca.pem`. Public listener certificates
+must cover the configured public origins; peer certificates are separate.
+
+Diagnostics remain on each Server's loopback. An operator-authenticated local
+scraper/sidecar is required for protected production collection. The optional
+OFF Prometheus/MCP profiles are not a protected HA deployment recipe. Machine
+clients need explicit Role assignments and current credentials.
+
+See the [HA runbook](../../docs/ha-runbook.md), [replication RFC](../../docs/replication.md),
+and [OIDC operations](../../docs/oidc-operations.md) for fencing and recovery.
+The `docker-compose.backup.yml` and `docker-compose.mcp.yml` files remain
+standalone local OFF examples.

@@ -4849,6 +4849,264 @@ class AddEdgesResponse extends $pb.GeneratedMessage {
   $pb.PbList<$core.double> get effectiveWeights => $_getList(1);
 }
 
+class CreateEdgeRequest extends $pb.GeneratedMessage {
+  factory CreateEdgeRequest({
+    Edge? edge,
+    MutationReceiptContext? receiptContext,
+  }) {
+    final result = create();
+    if (edge != null) result.edge = edge;
+    if (receiptContext != null) result.receiptContext = receiptContext;
+    return result;
+  }
+
+  CreateEdgeRequest._();
+
+  factory CreateEdgeRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CreateEdgeRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CreateEdgeRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<Edge>(1, _omitFieldNames ? '' : 'edge', subBuilder: Edge.create)
+    ..aOM<MutationReceiptContext>(2, _omitFieldNames ? '' : 'receiptContext',
+        subBuilder: MutationReceiptContext.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CreateEdgeRequest clone() => CreateEdgeRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CreateEdgeRequest copyWith(void Function(CreateEdgeRequest) updates) =>
+      super.copyWith((message) => updates(message as CreateEdgeRequest))
+          as CreateEdgeRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CreateEdgeRequest create() => CreateEdgeRequest._();
+  @$core.override
+  CreateEdgeRequest createEmptyInstance() => create();
+  static $pb.PbList<CreateEdgeRequest> createRepeated() =>
+      $pb.PbList<CreateEdgeRequest>();
+  @$core.pragma('dart2js:noInline')
+  static CreateEdgeRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CreateEdgeRequest>(create);
+  static CreateEdgeRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  Edge get edge => $_getN(0);
+  @$pb.TagNumber(1)
+  set edge(Edge value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasEdge() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearEdge() => $_clearField(1);
+  @$pb.TagNumber(1)
+  Edge ensureEdge() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  MutationReceiptContext get receiptContext => $_getN(1);
+  @$pb.TagNumber(2)
+  set receiptContext(MutationReceiptContext value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasReceiptContext() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearReceiptContext() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationReceiptContext ensureReceiptContext() => $_ensure(1);
+}
+
+class CreateEdgeResponse extends $pb.GeneratedMessage {
+  factory CreateEdgeResponse({
+    CreateEdgeOutcome? outcome,
+  }) {
+    final result = create();
+    if (outcome != null) result.outcome = outcome;
+    return result;
+  }
+
+  CreateEdgeResponse._();
+
+  factory CreateEdgeResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CreateEdgeResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CreateEdgeResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..e<CreateEdgeOutcome>(
+        1, _omitFieldNames ? '' : 'outcome', $pb.PbFieldType.OE,
+        defaultOrMaker: CreateEdgeOutcome.CREATE_EDGE_OUTCOME_UNSPECIFIED,
+        valueOf: CreateEdgeOutcome.valueOf,
+        enumValues: CreateEdgeOutcome.values)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CreateEdgeResponse clone() => CreateEdgeResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CreateEdgeResponse copyWith(void Function(CreateEdgeResponse) updates) =>
+      super.copyWith((message) => updates(message as CreateEdgeResponse))
+          as CreateEdgeResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CreateEdgeResponse create() => CreateEdgeResponse._();
+  @$core.override
+  CreateEdgeResponse createEmptyInstance() => create();
+  static $pb.PbList<CreateEdgeResponse> createRepeated() =>
+      $pb.PbList<CreateEdgeResponse>();
+  @$core.pragma('dart2js:noInline')
+  static CreateEdgeResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CreateEdgeResponse>(create);
+  static CreateEdgeResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  CreateEdgeOutcome get outcome => $_getN(0);
+  @$pb.TagNumber(1)
+  set outcome(CreateEdgeOutcome value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasOutcome() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearOutcome() => $_clearField(1);
+}
+
+/// Creates connections only between existing live endpoints, with a finite
+/// nonzero source weight. Input expiration, endpoint liveness and absence of
+/// any live Edge contribution are checked at one atomic application cut.
+/// Duplicate positions are ordered: a success is followed by EDGE_EXISTS.
+/// HA endpoints fail closed until cluster-wide create arbitration is supported.
+class CreateEdgesRequest extends $pb.GeneratedMessage {
+  factory CreateEdgesRequest({
+    $core.Iterable<Edge>? edges,
+    MutationReceiptContext? receiptContext,
+  }) {
+    final result = create();
+    if (edges != null) result.edges.addAll(edges);
+    if (receiptContext != null) result.receiptContext = receiptContext;
+    return result;
+  }
+
+  CreateEdgesRequest._();
+
+  factory CreateEdgesRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CreateEdgesRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CreateEdgesRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..pc<Edge>(1, _omitFieldNames ? '' : 'edges', $pb.PbFieldType.PM,
+        subBuilder: Edge.create)
+    ..aOM<MutationReceiptContext>(2, _omitFieldNames ? '' : 'receiptContext',
+        subBuilder: MutationReceiptContext.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CreateEdgesRequest clone() => CreateEdgesRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CreateEdgesRequest copyWith(void Function(CreateEdgesRequest) updates) =>
+      super.copyWith((message) => updates(message as CreateEdgesRequest))
+          as CreateEdgesRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CreateEdgesRequest create() => CreateEdgesRequest._();
+  @$core.override
+  CreateEdgesRequest createEmptyInstance() => create();
+  static $pb.PbList<CreateEdgesRequest> createRepeated() =>
+      $pb.PbList<CreateEdgesRequest>();
+  @$core.pragma('dart2js:noInline')
+  static CreateEdgesRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CreateEdgesRequest>(create);
+  static CreateEdgesRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<Edge> get edges => $_getList(0);
+
+  @$pb.TagNumber(2)
+  MutationReceiptContext get receiptContext => $_getN(1);
+  @$pb.TagNumber(2)
+  set receiptContext(MutationReceiptContext value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasReceiptContext() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearReceiptContext() => $_clearField(2);
+  @$pb.TagNumber(2)
+  MutationReceiptContext ensureReceiptContext() => $_ensure(1);
+}
+
+class CreateEdgesResponse extends $pb.GeneratedMessage {
+  factory CreateEdgesResponse({
+    $core.Iterable<CreateEdgeOutcome>? outcomes,
+  }) {
+    final result = create();
+    if (outcomes != null) result.outcomes.addAll(outcomes);
+    return result;
+  }
+
+  CreateEdgesResponse._();
+
+  factory CreateEdgesResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CreateEdgesResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CreateEdgesResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..pc<CreateEdgeOutcome>(
+        1, _omitFieldNames ? '' : 'outcomes', $pb.PbFieldType.KE,
+        valueOf: CreateEdgeOutcome.valueOf,
+        enumValues: CreateEdgeOutcome.values,
+        defaultEnumValue: CreateEdgeOutcome.CREATE_EDGE_OUTCOME_UNSPECIFIED)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CreateEdgesResponse clone() => CreateEdgesResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CreateEdgesResponse copyWith(void Function(CreateEdgesResponse) updates) =>
+      super.copyWith((message) => updates(message as CreateEdgesResponse))
+          as CreateEdgesResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CreateEdgesResponse create() => CreateEdgesResponse._();
+  @$core.override
+  CreateEdgesResponse createEmptyInstance() => create();
+  static $pb.PbList<CreateEdgesResponse> createRepeated() =>
+      $pb.PbList<CreateEdgesResponse>();
+  @$core.pragma('dart2js:noInline')
+  static CreateEdgesResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CreateEdgesResponse>(create);
+  static CreateEdgesResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<CreateEdgeOutcome> get outcomes => $_getList(0);
+}
+
 /// PutEdgeRequest overwrites a single (tail, head) pair, replacing any
 /// existing weight and expiration. This is the singular convenience wrapper
 /// over PutEdges and shares its idempotent semantics.
@@ -7213,6 +7471,7 @@ enum ReceiptResult_Result {
   deleteVertexExisted,
   addEdgeEffectiveWeight,
   deleteEdgeContributionExisted,
+  createEdgeOutcome,
   notSet
 }
 
@@ -7226,6 +7485,7 @@ class ReceiptResult extends $pb.GeneratedMessage {
     $core.bool? deleteVertexExisted,
     $core.double? addEdgeEffectiveWeight,
     $core.bool? deleteEdgeContributionExisted,
+    CreateEdgeOutcome? createEdgeOutcome,
   }) {
     final result = create();
     if (deleteEdgeExisted != null) result.deleteEdgeExisted = deleteEdgeExisted;
@@ -7236,6 +7496,7 @@ class ReceiptResult extends $pb.GeneratedMessage {
       result.addEdgeEffectiveWeight = addEdgeEffectiveWeight;
     if (deleteEdgeContributionExisted != null)
       result.deleteEdgeContributionExisted = deleteEdgeContributionExisted;
+    if (createEdgeOutcome != null) result.createEdgeOutcome = createEdgeOutcome;
     return result;
   }
 
@@ -7255,13 +7516,14 @@ class ReceiptResult extends $pb.GeneratedMessage {
     3: ReceiptResult_Result.deleteVertexExisted,
     4: ReceiptResult_Result.addEdgeEffectiveWeight,
     5: ReceiptResult_Result.deleteEdgeContributionExisted,
+    6: ReceiptResult_Result.createEdgeOutcome,
     0: ReceiptResult_Result.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'ReceiptResult',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5])
+    ..oo(0, [1, 2, 3, 4, 5, 6])
     ..aOB(1, _omitFieldNames ? '' : 'deleteEdgeExisted')
     ..e<PutOutcome>(
         2, _omitFieldNames ? '' : 'putVertexOutcome', $pb.PbFieldType.OE,
@@ -7272,6 +7534,11 @@ class ReceiptResult extends $pb.GeneratedMessage {
     ..a<$core.double>(
         4, _omitFieldNames ? '' : 'addEdgeEffectiveWeight', $pb.PbFieldType.OF)
     ..aOB(5, _omitFieldNames ? '' : 'deleteEdgeContributionExisted')
+    ..e<CreateEdgeOutcome>(
+        6, _omitFieldNames ? '' : 'createEdgeOutcome', $pb.PbFieldType.OE,
+        defaultOrMaker: CreateEdgeOutcome.CREATE_EDGE_OUTCOME_UNSPECIFIED,
+        valueOf: CreateEdgeOutcome.valueOf,
+        enumValues: CreateEdgeOutcome.values)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -7343,6 +7610,15 @@ class ReceiptResult extends $pb.GeneratedMessage {
   $core.bool hasDeleteEdgeContributionExisted() => $_has(4);
   @$pb.TagNumber(5)
   void clearDeleteEdgeContributionExisted() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  CreateEdgeOutcome get createEdgeOutcome => $_getN(5);
+  @$pb.TagNumber(6)
+  set createEdgeOutcome(CreateEdgeOutcome value) => $_setField(6, value);
+  @$pb.TagNumber(6)
+  $core.bool hasCreateEdgeOutcome() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearCreateEdgeOutcome() => $_clearField(6);
 }
 
 /// MutationReceipt is one request-index-aligned item from an atomic logical
@@ -8077,6 +8353,16 @@ class LanternServiceApi {
           $pb.ClientContext? ctx, AddEdgesRequest request) =>
       _client.invoke<AddEdgesResponse>(
           ctx, 'LanternService', 'AddEdges', request, AddEdgesResponse());
+
+  /// CreateEdge is the one-item facade over the conditional CreateEdges family.
+  $async.Future<CreateEdgeResponse> createEdge(
+          $pb.ClientContext? ctx, CreateEdgeRequest request) =>
+      _client.invoke<CreateEdgeResponse>(
+          ctx, 'LanternService', 'CreateEdge', request, CreateEdgeResponse());
+  $async.Future<CreateEdgesResponse> createEdges(
+          $pb.ClientContext? ctx, CreateEdgesRequest request) =>
+      _client.invoke<CreateEdgesResponse>(
+          ctx, 'LanternService', 'CreateEdges', request, CreateEdgesResponse());
 
   /// PutEdge is idempotent (replaces weight). Thin facade over PutEdges.
   $async.Future<PutEdgeResponse> putEdge(

@@ -26,5 +26,8 @@ export 'src/lantern_identity_source.dart' show LanternClientIdentitySource;
 export 'src/memory_store.dart';
 export 'src/remote.dart';
 export 'src/repository.dart';
+export 'src/scoped_change_conformance.dart';
+export 'src/scoped_change_consumer.dart';
+export 'src/scoped_change_store.dart';
 export 'src/store.dart';
 export 'src/types.dart';

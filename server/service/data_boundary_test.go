@@ -102,3 +102,61 @@ func TestDataCursorConfidentialityAndRequestBinding(t *testing.T) {
 		}
 	}
 }
+
+func TestDataCursorEquivalentScanOrderAndTypedSearchRejection(t *testing.T) {
+	s := NewLanternService(graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)).WithDataNamespace()
+	for _, keys := range []bool{false, true} {
+		var request proto.Message = &pb.ScanVerticesRequest{Prefix: "orders:", Limit: 1}
+		var response proto.Message = &pb.ScanVerticesResponse{NextCursor: []byte("inner")}
+		if keys {
+			request = &pb.ScanVertexKeysRequest{Prefix: "orders:", Limit: 1}
+			response = &pb.ScanVertexKeysResponse{NextCursor: []byte("inner")}
+		}
+		binding, err := dataCursorBinding(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrapped, err := s.mapDataResponse(response, binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cursor := wrapped.ProtoReflect().Get(wrapped.ProtoReflect().Descriptor().Fields().ByName("next_cursor")).Bytes()
+		m := request.ProtoReflect()
+		m.Set(m.Descriptor().Fields().ByName("cursor"), protoreflect.ValueOfBytes(cursor))
+		m.Set(m.Descriptor().Fields().ByName("order"), protoreflect.ValueOfEnum(protoreflect.EnumNumber(pb.ScanOrder_SCAN_ORDER_ASC)))
+		if _, _, err := s.mapDataRequest(request); err != nil {
+			t.Fatal("equivalent ascending resume", keys, err)
+		}
+		m.Set(m.Descriptor().Fields().ByName("order"), protoreflect.ValueOfEnum(protoreflect.EnumNumber(pb.ScanOrder_SCAN_ORDER_DESC)))
+		if _, _, err := s.mapDataRequest(request); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatal("changed direction accepted", err)
+		}
+	}
+	for _, tc := range []struct {
+		cursor []byte
+		scoped bool
+		reason pb.SearchErrorReason
+		code   connect.Code
+	}{
+		{[]byte{1}, false, pb.SearchErrorReason_SEARCH_CURSOR_INVALID, connect.CodeInvalidArgument},
+		{bytes.Repeat([]byte{3}, 40), false, pb.SearchErrorReason_SEARCH_CURSOR_INVALID, connect.CodeInvalidArgument},
+		{bytes.Repeat([]byte{3}, 40), true, pb.SearchErrorReason_SEARCH_CURSOR_STALE, connect.CodeAborted},
+	} {
+		var scope [][32]byte
+		if tc.scoped {
+			scope = append(scope, [32]byte{1})
+		}
+		_, _, err := s.mapDataRequest(&pb.SearchVerticesRequest{Prefix: "orders:", Query: "term", Cursor: tc.cursor}, scope...)
+		if connect.CodeOf(err) != tc.code {
+			t.Fatal(err)
+		}
+		ce, ok := err.(*connect.Error)
+		if !ok || len(ce.Details()) != 1 {
+			t.Fatal("missing typed Search detail", err)
+		}
+		detail, err := ce.Details()[0].Value()
+		if err != nil || detail.(*pb.SearchErrorDetail).Reason != tc.reason {
+			t.Fatal(detail, err)
+		}
+	}
+}

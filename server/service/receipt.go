@@ -153,6 +153,10 @@ func (s *LanternService) GetReceiptCapability(ctx context.Context, req *pb.GetRe
 	if err != nil || effective.UnixMilli() < 0 {
 		return &pb.GetReceiptCapabilityResponse{}, nil
 	}
+	supported := []pb.ReceiptMutationKind{pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX, pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX, pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE, pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE, pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION}
+	if s.advertiseEdgeCreateReceipt(ctx) {
+		supported = append(supported, pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_CREATE_EDGE)
+	}
 	nodeID := s.clock.NodeID()
 	if nodeID == ([16]byte{}) || runtime.generation == ([16]byte{}) {
 		return &pb.GetReceiptCapabilityResponse{}, nil
@@ -171,14 +175,8 @@ func (s *LanternService) GetReceiptCapability(ctx context.Context, req *pb.GetRe
 			NodeId:     append([]byte(nil), nodeID[:]...),
 			Generation: append([]byte(nil), runtime.generation[:]...),
 		},
-		ServerNowUnixMs: uint64(effective.UnixMilli()),
-		SupportedMutations: []pb.ReceiptMutationKind{
-			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_PUT_VERTEX,
-			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_VERTEX,
-			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE,
-			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE,
-			pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION,
-		},
+		ServerNowUnixMs:    uint64(effective.UnixMilli()),
+		SupportedMutations: supported,
 	}, nil
 }
 
@@ -329,6 +327,11 @@ func receiptStatusProto(id mutationreceipt.ID, observation mutationreceipt.Obser
 					DeleteEdgeContributionExisted: receipt.Result[0] == 1,
 				},
 			}
+		case mutationreceipt.CreateEdge:
+			if len(receipt.Result) != 1 || !validCreateEdgeOutcome(pb.CreateEdgeOutcome(receipt.Result[0])) {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Edge Create receipt result is invalid"))
+			}
+			result = &pb.ReceiptResult{Result: &pb.ReceiptResult_CreateEdgeOutcome{CreateEdgeOutcome: pb.CreateEdgeOutcome(receipt.Result[0])}}
 		case mutationreceipt.AddEdge:
 			if len(receipt.Result) != 4 {
 				return nil, connect.NewError(connect.CodeInternal, errors.New("confirmed Edge Add receipt result is invalid"))

@@ -13,6 +13,9 @@ const _scenarios = [
   'cursor-chunk',
   'cursor-final',
   'checkpoint-reset',
+  'scoped-partial',
+  'scoped-final',
+  'scoped-reset',
   'wipe',
 ];
 const _timeout = Duration(seconds: 30);
@@ -80,7 +83,7 @@ Future<void> _runReceiptCrash() async {
   final token = Platform.environment['LANTERN_DART_RECEIPT_TOKEN'];
   final endpoint = value == null ? null : Uri.tryParse(value);
   if (endpoint == null ||
-      endpoint.scheme != 'http' ||
+      endpoint.scheme != 'https' ||
       !['127.0.0.1', 'localhost', '::1'].contains(endpoint.host) ||
       token == null ||
       token.isEmpty) {
@@ -303,7 +306,13 @@ final class _ResponseDroppingProxy {
 
   final HttpServer _server;
   final Uri _upstreamEndpoint;
-  final HttpClient _upstream = HttpClient();
+  final HttpClient _upstream = HttpClient(
+    context: SecurityContext(withTrustedRoots: false)
+      ..setTrustedCertificates(
+        Platform.environment['LANTERN_DART_RECEIPT_CA_FILE'] ??
+            (throw StateError('native receipt CA is required')),
+      ),
+  );
   final Map<String, int> _remainingDrops;
   final Map<String, int> _forwarded = <String, int>{};
   final Map<String, int> _dropped = <String, int>{};

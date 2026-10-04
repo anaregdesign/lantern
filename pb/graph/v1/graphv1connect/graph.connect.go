@@ -80,6 +80,12 @@ const (
 	LanternServiceAddEdgeProcedure = "/graph.v1.LanternService/AddEdge"
 	// LanternServiceAddEdgesProcedure is the fully-qualified name of the LanternService's AddEdges RPC.
 	LanternServiceAddEdgesProcedure = "/graph.v1.LanternService/AddEdges"
+	// LanternServiceCreateEdgeProcedure is the fully-qualified name of the LanternService's CreateEdge
+	// RPC.
+	LanternServiceCreateEdgeProcedure = "/graph.v1.LanternService/CreateEdge"
+	// LanternServiceCreateEdgesProcedure is the fully-qualified name of the LanternService's
+	// CreateEdges RPC.
+	LanternServiceCreateEdgesProcedure = "/graph.v1.LanternService/CreateEdges"
 	// LanternServicePutEdgeProcedure is the fully-qualified name of the LanternService's PutEdge RPC.
 	LanternServicePutEdgeProcedure = "/graph.v1.LanternService/PutEdge"
 	// LanternServicePutEdgesProcedure is the fully-qualified name of the LanternService's PutEdges RPC.
@@ -174,6 +180,9 @@ type LanternServiceClient interface {
 	AddEdge(context.Context, *connect.Request[v1.AddEdgeRequest]) (*connect.Response[v1.AddEdgeResponse], error)
 	// AddEdges is non-idempotent (accumulates weight). POST per REST conventions.
 	AddEdges(context.Context, *connect.Request[v1.AddEdgesRequest]) (*connect.Response[v1.AddEdgesResponse], error)
+	// CreateEdge is the one-item facade over the conditional CreateEdges family.
+	CreateEdge(context.Context, *connect.Request[v1.CreateEdgeRequest]) (*connect.Response[v1.CreateEdgeResponse], error)
+	CreateEdges(context.Context, *connect.Request[v1.CreateEdgesRequest]) (*connect.Response[v1.CreateEdgesResponse], error)
 	// PutEdge is idempotent (replaces weight). Thin facade over PutEdges.
 	PutEdge(context.Context, *connect.Request[v1.PutEdgeRequest]) (*connect.Response[v1.PutEdgeResponse], error)
 	// PutEdges is idempotent (replaces weight). PUT per REST conventions.
@@ -340,6 +349,18 @@ func NewLanternServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(lanternServiceMethods.ByName("AddEdges")),
 			connect.WithClientOptions(opts...),
 		),
+		createEdge: connect.NewClient[v1.CreateEdgeRequest, v1.CreateEdgeResponse](
+			httpClient,
+			baseURL+LanternServiceCreateEdgeProcedure,
+			connect.WithSchema(lanternServiceMethods.ByName("CreateEdge")),
+			connect.WithClientOptions(opts...),
+		),
+		createEdges: connect.NewClient[v1.CreateEdgesRequest, v1.CreateEdgesResponse](
+			httpClient,
+			baseURL+LanternServiceCreateEdgesProcedure,
+			connect.WithSchema(lanternServiceMethods.ByName("CreateEdges")),
+			connect.WithClientOptions(opts...),
+		),
 		putEdge: connect.NewClient[v1.PutEdgeRequest, v1.PutEdgeResponse](
 			httpClient,
 			baseURL+LanternServicePutEdgeProcedure,
@@ -446,6 +467,8 @@ type lanternServiceClient struct {
 	getEdges                *connect.Client[v1.GetEdgesRequest, v1.GetEdgesResponse]
 	addEdge                 *connect.Client[v1.AddEdgeRequest, v1.AddEdgeResponse]
 	addEdges                *connect.Client[v1.AddEdgesRequest, v1.AddEdgesResponse]
+	createEdge              *connect.Client[v1.CreateEdgeRequest, v1.CreateEdgeResponse]
+	createEdges             *connect.Client[v1.CreateEdgesRequest, v1.CreateEdgesResponse]
 	putEdge                 *connect.Client[v1.PutEdgeRequest, v1.PutEdgeResponse]
 	putEdges                *connect.Client[v1.PutEdgesRequest, v1.PutEdgesResponse]
 	deleteEdge              *connect.Client[v1.DeleteEdgeRequest, v1.DeleteEdgeResponse]
@@ -545,6 +568,16 @@ func (c *lanternServiceClient) AddEdge(ctx context.Context, req *connect.Request
 // AddEdges calls graph.v1.LanternService.AddEdges.
 func (c *lanternServiceClient) AddEdges(ctx context.Context, req *connect.Request[v1.AddEdgesRequest]) (*connect.Response[v1.AddEdgesResponse], error) {
 	return c.addEdges.CallUnary(ctx, req)
+}
+
+// CreateEdge calls graph.v1.LanternService.CreateEdge.
+func (c *lanternServiceClient) CreateEdge(ctx context.Context, req *connect.Request[v1.CreateEdgeRequest]) (*connect.Response[v1.CreateEdgeResponse], error) {
+	return c.createEdge.CallUnary(ctx, req)
+}
+
+// CreateEdges calls graph.v1.LanternService.CreateEdges.
+func (c *lanternServiceClient) CreateEdges(ctx context.Context, req *connect.Request[v1.CreateEdgesRequest]) (*connect.Response[v1.CreateEdgesResponse], error) {
+	return c.createEdges.CallUnary(ctx, req)
 }
 
 // PutEdge calls graph.v1.LanternService.PutEdge.
@@ -669,6 +702,9 @@ type LanternServiceHandler interface {
 	AddEdge(context.Context, *connect.Request[v1.AddEdgeRequest]) (*connect.Response[v1.AddEdgeResponse], error)
 	// AddEdges is non-idempotent (accumulates weight). POST per REST conventions.
 	AddEdges(context.Context, *connect.Request[v1.AddEdgesRequest]) (*connect.Response[v1.AddEdgesResponse], error)
+	// CreateEdge is the one-item facade over the conditional CreateEdges family.
+	CreateEdge(context.Context, *connect.Request[v1.CreateEdgeRequest]) (*connect.Response[v1.CreateEdgeResponse], error)
+	CreateEdges(context.Context, *connect.Request[v1.CreateEdgesRequest]) (*connect.Response[v1.CreateEdgesResponse], error)
 	// PutEdge is idempotent (replaces weight). Thin facade over PutEdges.
 	PutEdge(context.Context, *connect.Request[v1.PutEdgeRequest]) (*connect.Response[v1.PutEdgeResponse], error)
 	// PutEdges is idempotent (replaces weight). PUT per REST conventions.
@@ -831,6 +867,18 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 		connect.WithSchema(lanternServiceMethods.ByName("AddEdges")),
 		connect.WithHandlerOptions(opts...),
 	)
+	lanternServiceCreateEdgeHandler := connect.NewUnaryHandler(
+		LanternServiceCreateEdgeProcedure,
+		svc.CreateEdge,
+		connect.WithSchema(lanternServiceMethods.ByName("CreateEdge")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternServiceCreateEdgesHandler := connect.NewUnaryHandler(
+		LanternServiceCreateEdgesProcedure,
+		svc.CreateEdges,
+		connect.WithSchema(lanternServiceMethods.ByName("CreateEdges")),
+		connect.WithHandlerOptions(opts...),
+	)
 	lanternServicePutEdgeHandler := connect.NewUnaryHandler(
 		LanternServicePutEdgeProcedure,
 		svc.PutEdge,
@@ -951,6 +999,10 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 			lanternServiceAddEdgeHandler.ServeHTTP(w, r)
 		case LanternServiceAddEdgesProcedure:
 			lanternServiceAddEdgesHandler.ServeHTTP(w, r)
+		case LanternServiceCreateEdgeProcedure:
+			lanternServiceCreateEdgeHandler.ServeHTTP(w, r)
+		case LanternServiceCreateEdgesProcedure:
+			lanternServiceCreateEdgesHandler.ServeHTTP(w, r)
 		case LanternServicePutEdgeProcedure:
 			lanternServicePutEdgeHandler.ServeHTTP(w, r)
 		case LanternServicePutEdgesProcedure:
@@ -1054,6 +1106,14 @@ func (UnimplementedLanternServiceHandler) AddEdge(context.Context, *connect.Requ
 
 func (UnimplementedLanternServiceHandler) AddEdges(context.Context, *connect.Request[v1.AddEdgesRequest]) (*connect.Response[v1.AddEdgesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.AddEdges is not implemented"))
+}
+
+func (UnimplementedLanternServiceHandler) CreateEdge(context.Context, *connect.Request[v1.CreateEdgeRequest]) (*connect.Response[v1.CreateEdgeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.CreateEdge is not implemented"))
+}
+
+func (UnimplementedLanternServiceHandler) CreateEdges(context.Context, *connect.Request[v1.CreateEdgesRequest]) (*connect.Response[v1.CreateEdgesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.CreateEdges is not implemented"))
 }
 
 func (UnimplementedLanternServiceHandler) PutEdge(context.Context, *connect.Request[v1.PutEdgeRequest]) (*connect.Response[v1.PutEdgeResponse], error) {

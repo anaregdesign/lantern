@@ -847,6 +847,40 @@ message AddEdgesResponse {
   repeated float effective_weights = 2;
 }
 
+// CreateEdgeOutcome is a disclosure-limited, request-index-aligned result.
+// Successful creation never changes either endpoint. Existing Edge values,
+// expirations and contribution identities are never returned by this family.
+enum CreateEdgeOutcome {
+  CREATE_EDGE_OUTCOME_UNSPECIFIED = 0;
+  CREATE_EDGE_OUTCOME_CREATED_AND_LIVE = 1;
+  CREATE_EDGE_OUTCOME_EDGE_EXISTS = 2;
+  CREATE_EDGE_OUTCOME_ENDPOINT_NOT_LIVE = 3;
+  CREATE_EDGE_OUTCOME_EXPIRED = 4;
+}
+
+message CreateEdgeRequest {
+  Edge edge = 1;
+  MutationReceiptContext receipt_context = 2;
+}
+
+message CreateEdgeResponse {
+  CreateEdgeOutcome outcome = 1;
+}
+
+// Creates connections only between existing live endpoints, with a finite
+// nonzero source weight. Input expiration, endpoint liveness and absence of
+// any live Edge contribution are checked at one atomic application cut.
+// Duplicate positions are ordered: a success is followed by EDGE_EXISTS.
+// HA endpoints fail closed until cluster-wide create arbitration is supported.
+message CreateEdgesRequest {
+  repeated Edge edges = 1;
+  MutationReceiptContext receipt_context = 2;
+}
+
+message CreateEdgesResponse {
+  repeated CreateEdgeOutcome outcomes = 1;
+}
+
 // PutEdgeRequest overwrites a single (tail, head) pair, replacing any
 // existing weight and expiration. This is the singular convenience wrapper
 // over PutEdges and shares its idempotent semantics.
@@ -1187,6 +1221,7 @@ enum ReceiptMutationKind {
   RECEIPT_MUTATION_KIND_DELETE_EDGE = 3;
   RECEIPT_MUTATION_KIND_ADD_EDGE = 4;
   RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION = 5;
+  RECEIPT_MUTATION_KIND_CREATE_EDGE = 6;
 }
 
 message GetReceiptCapabilityResponse {
@@ -1220,6 +1255,7 @@ message ReceiptResult {
     bool delete_vertex_existed = 3;
     float add_edge_effective_weight = 4;
     bool delete_edge_contribution_existed = 5;
+    CreateEdgeOutcome create_edge_outcome = 6;
   }
 }
 
@@ -1350,6 +1386,11 @@ service LanternService {
 
   // AddEdges is non-idempotent (accumulates weight). POST per REST conventions.
   rpc AddEdges(AddEdgesRequest) returns (AddEdgesResponse);
+
+  // CreateEdge is the one-item facade over the conditional CreateEdges family.
+  rpc CreateEdge(CreateEdgeRequest) returns (CreateEdgeResponse);
+
+  rpc CreateEdges(CreateEdgesRequest) returns (CreateEdgesResponse);
 
   // PutEdge is idempotent (replaces weight). Thin facade over PutEdges.
   rpc PutEdge(PutEdgeRequest) returns (PutEdgeResponse);

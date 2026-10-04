@@ -19,6 +19,7 @@ import (
 	v1 "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
+	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/service"
@@ -273,6 +274,8 @@ type Config struct {
 	Validation    ValidationLimits
 	Traversal     TraversalConfig
 	Auth          AuthConfig
+	Security      SecurityConfig
+	Changes       ChangeConfig
 	LLM           LLMConfig
 	Scan          ScanConfig
 	Search        SearchConfig
@@ -280,6 +283,7 @@ type Config struct {
 	ReceiptWAL    ReceiptWALConfig
 	Replication   ReplicationConfig
 	Peer          PeerConfig
+	PeerPlane     PeerPlaneConfig
 	AntiEntropy   AntiEntropyConfig
 	Readiness     ReadinessConfig
 	CORS          CORSConfig
@@ -297,13 +301,32 @@ func NewConfig() (*Config, error) {
 	if err := validateAuthMode(); err != nil {
 		return nil, err
 	}
+	securityConfig, err := loadSecurityConfig()
+	if err != nil {
+		return nil, err
+	}
 	rps := envconfig.Float("LANTERN_RATE_LIMIT_RPS", 0)
 	burst := envconfig.Int("LANTERN_RATE_LIMIT_BURST", int(2*rps))
 	if burst <= 0 && rps > 0 {
 		burst = int(2 * rps)
 	}
 	peer := loadPeerConfig()
+	peerPlane, err := loadPeerPlaneConfig(securityConfig, peer)
+	if err != nil {
+		return nil, err
+	}
+	changeConfig, err := loadChangeConfig(securityConfig, peerPlane)
+	if err != nil {
+		return nil, err
+	}
+	metricsDefault := ":9090"
+	if securityConfig.Mode == "oidc" {
+		metricsDefault = "127.0.0.1:9090"
+	}
 	cfg := &Config{
+		Security:  securityConfig,
+		PeerPlane: peerPlane,
+		Changes:   changeConfig,
 		Net: NetConfig{
 			Port:                 envconfig.Int("LANTERN_PORT", 6380),
 			MaxRecvMsgBytes:      envconfig.Int("LANTERN_MAX_RECV_MSG_BYTES", 16*1024*1024),
@@ -322,7 +345,7 @@ func NewConfig() (*Config, error) {
 		Observability: ObservabilityConfig{
 			LogLevel:             envconfig.Level("LANTERN_LOG_LEVEL", slog.LevelInfo),
 			LogFormat:            envconfig.String("LANTERN_LOG_FORMAT", "json"),
-			MetricsAddr:          envconfig.String("LANTERN_METRICS_ADDR", ":9090"),
+			MetricsAddr:          envconfig.String("LANTERN_METRICS_ADDR", metricsDefault),
 			EnableReflection:     envconfig.Bool("LANTERN_REFLECTION", true),
 			Version:              envconfig.String("LANTERN_VERSION", ""),
 			Commit:               envconfig.String("LANTERN_COMMIT", ""),
@@ -332,6 +355,7 @@ func NewConfig() (*Config, error) {
 			BlockProfileRate:     envconfig.Int("LANTERN_BLOCK_PROFILE_RATE", 0),
 		},
 		Cache: CacheConfig{
+			namespaceFormat:        keyspace.Version,
 			TTL:                    time.Duration(envconfig.Int("LANTERN_DEFAULT_TTL_SECONDS", 60)) * time.Second,
 			GCInterval:             time.Duration(envconfig.Int("LANTERN_GC_INTERVAL_SECONDS", 60)) * time.Second,
 			GCEdgeBudget:           envconfig.Int("LANTERN_GC_EDGE_BUDGET", 0),
@@ -606,7 +630,7 @@ func newLogger(o ObservabilityConfig, w io.Writer) *slog.Logger {
 }
 
 func NewGraphCache(c CacheConfig, sc SearchConfig) *graphcache.GraphCache[string, *v1.Vertex] {
-	gc := graphcache.NewGraphCache[string, *v1.Vertex](c.TTL)
+	gc := graphcache.NewGraphCacheWithStaging[string, *v1.Vertex](c.TTL)
 	ConfigureGraphCache(gc, c, sc)
 	return gc
 }

@@ -120,6 +120,12 @@ the root workspace. Installation can mutate dependency directories containing
 Go files; those operations must not run concurrently (#1646). Independent tests
 may run in parallel after installation completes.
 
+When copying changed sources into a reused validation worktree, update their
+modification times or use a fresh build target. Preserving older times can let
+incremental tools reuse binaries from the previous source (#1648). Bind results
+to the candidate tree, check generation/content drift, and verify that explicitly
+selected wire tests actually ran; an empty selection is not acceptance.
+
 Run from the repo root; this matches the required CI checks (Build & Test, Lint,
 Proto (buf), govulncheck):
 

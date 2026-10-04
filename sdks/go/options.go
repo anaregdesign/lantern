@@ -62,8 +62,7 @@ func WithConnectClientOption(opts ...connect.ClientOption) Option {
 }
 
 // WithAuthToken attaches "Authorization: Bearer <token>" to every RPC —
-// unary and streaming — matching the server's LANTERN_AUTH_TOKENS bearer
-// auth (#850). An empty token is a no-op. Works unchanged through
+// unary and streaming — using OIDC access tokens or named machine credentials. An empty token is a no-op. Works unchanged through
 // NewLanternFailover (each endpoint client inherits the option).
 //
 // Bearer tokens over plaintext h2c are sniffable: pair with

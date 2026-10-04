@@ -12,6 +12,33 @@ import 'package:lantern_client/src/gen/graph/v1/graph.pb.dart' as graph;
 import 'package:test/test.dart';
 
 void main() {
+  test('conditional Create never retries an ambiguous response', () async {
+    var calls = 0;
+    final transport = FakeTransportBuilder()
+        .unary<graph.CreateEdgesRequest, graph.CreateEdgesResponse>(
+          LanternService.createEdges,
+          (request, context) {
+            calls++;
+            throw connect.ConnectException(
+              connect.Code.unavailable,
+              'committed response lost',
+            );
+          },
+        )
+        .build();
+    final client = _client(transport, retryPolicy: _fastRetry);
+    await expectLater(
+      client.createEdge(EdgeInput(tail: 'a', head: 'b', weight: 1)),
+      throwsA(
+        isA<BatchException>().having(
+          (e) => e.cause,
+          'cause',
+          isA<LanternUnavailableException>(),
+        ),
+      ),
+    );
+    expect(calls, 1);
+  });
   test('contribution IDs match the cross-SDK golden vectors', () {
     final nonce = Uint8List.fromList(List.generate(16, (index) => index));
     expect(contributionIdFrom(nonce: nonce, sequence: BigInt.one, index: 0), [

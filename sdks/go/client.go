@@ -66,8 +66,8 @@ var ErrUnavailable = errors.New("unavailable")
 var ErrFailedPrecondition = errors.New("failed precondition")
 
 // ErrUnauthenticated wraps connect.CodeUnauthenticated responses — the
-// server has LANTERN_AUTH_TOKENS armed and the request carried no (or a
-// stale) bearer token (#850). Configure the client with WithAuthToken.
+// server requires OIDC or named machine credentials and the request carried
+// no valid credential. Configure the client with WithAuthToken.
 var ErrUnauthenticated = errors.New("unauthenticated")
 
 // Edge re-exports the generated protobuf Edge type so SDK callers do not
@@ -278,6 +278,7 @@ func clientBoundedEdgePutResults(results []EdgePutResult, inputs []EdgeInput, in
 type Lantern struct {
 	client            graphv1connect.LanternServiceClient
 	replicationClient graphv1connect.LanternReplicationServiceClient
+	changeClient      graphv1connect.LanternChangeServiceClient
 	opts              options
 	httpClient        *http.Client
 	baseURL           string
@@ -320,6 +321,7 @@ func NewLantern(baseURL string, opts ...Option) (*Lantern, error) {
 	l := &Lantern{
 		client:            graphv1connect.NewLanternServiceClient(o.httpClient, baseURL, o.clientOptions...),
 		replicationClient: graphv1connect.NewLanternReplicationServiceClient(o.httpClient, baseURL, o.clientOptions...),
+		changeClient:      graphv1connect.NewLanternChangeServiceClient(o.httpClient, baseURL, o.clientOptions...),
 		opts:              o,
 		httpClient:        o.httpClient,
 		baseURL:           baseURL,

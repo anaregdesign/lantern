@@ -1,0 +1,244 @@
+syntax = "proto3";
+
+package graph.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Security is a separate control plane. Logical data RPCs cannot write sys:.
+// User resources contain identity and Role membership, never direct grants.
+service LanternSecurityService {
+  rpc GetAuthCapabilities(GetAuthCapabilitiesRequest) returns (GetAuthCapabilitiesResponse);
+  rpc GetCurrentPrincipal(GetCurrentPrincipalRequest) returns (GetCurrentPrincipalResponse);
+  rpc ListIssuers(ListIssuersRequest) returns (ListIssuersResponse);
+  rpc GetIssuer(GetIssuerRequest) returns (GetIssuerResponse);
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+  rpc GetRole(GetRoleRequest) returns (GetRoleResponse);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc ListRoleAssignments(ListRoleAssignmentsRequest) returns (ListRoleAssignmentsResponse);
+  rpc ListSecurityAudit(ListSecurityAuditRequest) returns (ListSecurityAuditResponse);
+  rpc GetRoleTemplates(GetRoleTemplatesRequest) returns (GetRoleTemplatesResponse);
+  rpc ExplainAccess(ExplainAccessRequest) returns (ExplainAccessResponse);
+  rpc ValidateIssuer(ValidateIssuerRequest) returns (ValidateIssuerResponse);
+  // Plural is canonical and atomic, with request-index-aligned outcomes.
+  rpc ApplySecurityChanges(ApplySecurityChangesRequest) returns (ApplySecurityChangesResponse);
+  rpc ApplySecurityChange(ApplySecurityChangeRequest) returns (ApplySecurityChangeResponse);
+  rpc GetSecurityChangeStatus(GetSecurityChangeStatusRequest) returns (GetSecurityChangeStatusResponse);
+}
+
+enum AuthMode {
+  AUTH_MODE_UNSPECIFIED = 0;
+  AUTH_MODE_OFF = 1;
+  AUTH_MODE_OIDC = 2;
+}
+
+message GetAuthCapabilitiesRequest {}
+message LoginIssuer { string issuer = 1; string label = 2; }
+message GetAuthCapabilitiesResponse {
+  AuthMode mode = 1;
+  repeated LoginIssuer login_issuers = 2;
+  string login_path = 3;
+  uint32 protocol_version = 4;
+  // Explicit OFF is ready; OIDC readiness requires current serving authority.
+  // False never implies OFF, and clients must reject unknown protocol versions.
+  bool ready = 5;
+}
+
+enum SecurityPrincipalKind {
+  SECURITY_PRINCIPAL_KIND_UNSPECIFIED = 0;
+  SECURITY_PRINCIPAL_KIND_OIDC = 1;
+  SECURITY_PRINCIPAL_KIND_MACHINE = 2;
+}
+message SecurityIdentity {
+  SecurityPrincipalKind kind = 1;
+  string issuer = 2;
+  string subject = 3;
+  string machine_name = 4;
+}
+
+enum SecurityPrincipalState {
+  SECURITY_PRINCIPAL_STATE_UNSPECIFIED = 0;
+  SECURITY_PRINCIPAL_STATE_ACTIVE = 1;
+  SECURITY_PRINCIPAL_STATE_SUSPENDED = 2;
+  SECURITY_PRINCIPAL_STATE_DELETED = 3;
+}
+
+enum SecurityAction {
+  SECURITY_ACTION_UNSPECIFIED = 0;
+  SECURITY_ACTION_VERTEX_READ = 1;
+  SECURITY_ACTION_VERTEX_WRITE = 2;
+  SECURITY_ACTION_VERTEX_DELETE = 3;
+  SECURITY_ACTION_EDGE_READ = 4;
+  SECURITY_ACTION_EDGE_ADD = 5;
+  SECURITY_ACTION_EDGE_WRITE = 6;
+  SECURITY_ACTION_EDGE_DELETE = 7;
+  SECURITY_ACTION_QUERY = 8;
+  SECURITY_ACTION_CDC_IDENTITY = 9;
+  SECURITY_ACTION_CDC_VALUE = 10;
+  SECURITY_ACTION_EXPORT = 11;
+  SECURITY_ACTION_RECEIPT_READ = 12;
+  SECURITY_ACTION_OPERATIONS_READ = 13;
+  SECURITY_ACTION_SCHEMA_READ = 14;
+  SECURITY_ACTION_MANAGE = 15;
+  SECURITY_ACTION_EDGE_CREATE = 16;
+}
+enum SecurityEffect {
+  SECURITY_EFFECT_UNSPECIFIED = 0;
+  SECURITY_EFFECT_ALLOW = 1;
+  SECURITY_EFFECT_DENY = 2;
+}
+// Selectors use literal logical-key prefixes. Empty prefix explicitly means
+// all data. An Edge pair matches BOTH directed endpoints within one rule.
+// Pair selectors grant no Vertex actions and cannot be reversed or composed.
+message SecurityPrefixPair { string tail_prefix = 1; string head_prefix = 2; }
+message SecurityRule {
+  string id = 1;
+  SecurityEffect effect = 2;
+  SecurityAction action = 3;
+  oneof resource { string prefix = 4; bool global = 5; SecurityPrefixPair pair = 6; }
+}
+message SecurityRole {
+  string id = 1;
+  string name = 2;
+  repeated SecurityRule rules = 3;
+  // Read-only: an environment-owned membership protects this Role policy.
+  bool env_owned = 4;
+}
+message SecurityRoleAssignment { SecurityIdentity identity = 1; string role_id = 2; bool env_owned = 3; }
+message SecurityUser {
+  SecurityIdentity identity = 1;
+  SecurityPrincipalState state = 2;
+  repeated SecurityRoleAssignment assignments = 3;
+}
+message SecurityIssuer {
+  string issuer = 1;
+  bool enabled = 2;
+  string client_id = 3;
+  string api_audience = 4;
+  string redirect_uri = 5;
+  repeated string algorithms = 6;
+  // Write-only handle to an operator binding; reads never return the handle.
+  optional string secret_ref = 7;
+  uint64 config_revision = 8;
+  bool env_owned = 9;
+  bool deleted = 10;
+  bool has_secret_binding = 11;
+}
+message SecurityVersion {
+  uint64 revision = 1;
+  bytes digest = 2;
+  bytes generation = 3;
+}
+message GetCurrentPrincipalRequest {}
+message GetCurrentPrincipalResponse {
+  SecurityIdentity identity = 1;
+  repeated SecurityRole roles = 2;
+  SecurityVersion version = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  bool recent_authentication = 5;
+  // Opaque browser CSRF proof, returned only on the browser session surface.
+  string csrf_token = 6;
+}
+// Same-origin /auth/session and /auth/logout HTTP responses. OIDC tokens never
+// cross this boundary; principal is absent only when mode is explicitly OFF.
+message BrowserSession { AuthMode mode = 1; GetCurrentPrincipalResponse principal = 2; }
+message SessionRevocation { SecurityVersion version = 1; SecurityEnforcementState enforcement = 2; }
+message ListIssuersRequest {
+  uint32 limit = 1;
+  string cursor = 2;
+  // Optional exact URL, Role ID or subject selector within the selected list.
+  string exact = 3;
+}
+message ListRolesRequest {
+  uint32 limit = 1;
+  string cursor = 2;
+  // Optional exact URL, Role ID or subject selector within the selected list.
+  string exact = 3;
+}
+message ListUsersRequest {
+  uint32 limit = 1;
+  string cursor = 2;
+  // Optional exact URL, Role ID or subject selector within the selected list.
+  string exact = 3;
+}
+message ListSecurityAuditRequest {
+  uint32 limit = 1;
+  string cursor = 2;
+  // Optional exact URL, Role ID or subject selector within the selected list.
+  string exact = 3;
+}
+message GetIssuerRequest { string issuer = 1; }
+message GetIssuerResponse { SecurityIssuer issuer = 1; SecurityVersion version = 2; }
+message GetRoleRequest { string id = 1; }
+message GetRoleResponse { SecurityRole role = 1; SecurityVersion version = 2; }
+message GetUserRequest { SecurityIdentity identity = 1; }
+message GetUserResponse { SecurityUser user = 1; SecurityVersion version = 2; }
+message ListIssuersResponse { repeated SecurityIssuer issuers = 1; SecurityVersion version = 2; string next_cursor = 3; }
+message ListRolesResponse { repeated SecurityRole roles = 1; SecurityVersion version = 2; string next_cursor = 3; }
+message ListUsersResponse { repeated SecurityUser users = 1; SecurityVersion version = 2; string next_cursor = 3; }
+message ListRoleAssignmentsRequest { SecurityIdentity identity = 1; }
+message ListRoleAssignmentsResponse { repeated SecurityRoleAssignment assignments = 1; SecurityVersion version = 2; }
+message SecurityAuditRecord {
+  uint64 revision = 1;
+  string change_id = 2;
+  string intent_digest = 3;
+  string actor_digest = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+  string operation = 6;
+  repeated string target_digests = 7;
+  uint32 additional_targets = 8;
+  string outcome = 9;
+}
+message ListSecurityAuditResponse { repeated SecurityAuditRecord records = 1; SecurityVersion version = 2; string next_cursor = 3; }
+message GetRoleTemplatesRequest { string prefix = 1; }
+message GetRoleTemplatesResponse { repeated SecurityRole roles = 1; SecurityVersion version = 2; }
+message SecurityEdgeIdentity { string tail = 1; string head = 2; }
+message ExplainAccessRequest {
+  SecurityIdentity identity = 1;
+  SecurityAction action = 2;
+  // Omit both selectors for a global capability. Supplying both is invalid.
+  optional string logical_key = 3;
+  SecurityEdgeIdentity edge = 4;
+}
+message SecurityRuleMatch { string role_id = 1; string rule_id = 2; SecurityEffect effect = 3; }
+message ExplainAccessResponse { bool allowed = 1; repeated SecurityRuleMatch matches = 2; SecurityVersion version = 3; }
+message ValidateIssuerRequest { SecurityIssuer issuer = 1; }
+message ValidateIssuerResponse { bool valid = 1; }
+
+message SecurityUserStateChange { SecurityIdentity identity = 1; SecurityPrincipalState state = 2; }
+message SecurityChange {
+  oneof operation {
+    SecurityIssuer put_issuer = 1;
+    string disable_issuer = 2;
+    string delete_issuer = 3;
+    SecurityRole put_role = 4;
+    string delete_role = 5;
+    SecurityUserStateChange put_user = 6;
+    SecurityIdentity delete_user = 7;
+    SecurityRoleAssignment put_assignment = 8;
+    SecurityRoleAssignment delete_assignment = 9;
+    SecurityIdentity revoke_user_sessions = 10;
+  }
+}
+enum SecurityEnforcementState {
+  SECURITY_ENFORCEMENT_STATE_UNSPECIFIED = 0;
+  SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING = 1;
+  SECURITY_ENFORCEMENT_STATE_ENFORCED = 2;
+}
+message ApplySecurityChangesRequest { uint64 expected_revision = 1; bytes change_id = 2; repeated SecurityChange changes = 3; }
+message ApplySecurityChangesResponse {
+  SecurityVersion version = 1;
+  repeated bool applied = 2;
+  bool replayed = 3;
+  SecurityEnforcementState enforcement = 4;
+}
+message ApplySecurityChangeRequest { uint64 expected_revision = 1; bytes change_id = 2; SecurityChange change = 3; }
+message ApplySecurityChangeResponse { SecurityVersion version = 1; bool applied = 2; bool replayed = 3; SecurityEnforcementState enforcement = 4; }
+message GetSecurityChangeStatusRequest { bytes change_id = 1; }
+
+message GetSecurityChangeStatusResponse {
+  SecurityVersion version = 1;
+  repeated bool applied = 2;
+  bool replayed = 3;
+  SecurityEnforcementState enforcement = 4;
+}

@@ -210,6 +210,8 @@ func receiptMutationKindFromProto(raw pb.ReceiptMutationKind) (ReceiptMutationKi
 		return ReceiptMutationDeleteEdge, nil
 	case pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_ADD_EDGE:
 		return ReceiptMutationAddEdge, nil
+	case pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_CREATE_EDGE:
+		return ReceiptMutationCreateEdge, nil
 	case pb.ReceiptMutationKind_RECEIPT_MUTATION_KIND_DELETE_EDGE_CONTRIBUTION:
 		return ReceiptMutationDeleteEdgeContribution, nil
 	default:
@@ -348,6 +350,12 @@ func mutationReceiptFromProto(expected ReceiptOperationID, receipt *pb.MutationR
 		result = ReceiptDeleteEdgeResult{Existed: typed.DeleteEdgeExisted}
 	case *pb.ReceiptResult_DeleteEdgeContributionExisted:
 		result = ReceiptDeleteEdgeContributionResult{Existed: typed.DeleteEdgeContributionExisted}
+	case *pb.ReceiptResult_CreateEdgeOutcome:
+		outcome, err := createEdgeOutcomeFromProto(typed.CreateEdgeOutcome)
+		if err != nil {
+			return nil, receiptProtocolError("Edge Create result: %v", err)
+		}
+		result = ReceiptCreateEdgeResult{Outcome: outcome}
 	case *pb.ReceiptResult_AddEdgeEffectiveWeight:
 		result = ReceiptAddEdgeResult{EffectiveWeight: typed.AddEdgeEffectiveWeight}
 	default:

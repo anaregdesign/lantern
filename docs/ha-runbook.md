@@ -22,9 +22,9 @@ Start here. Pick a row, then jump to the corresponding section.
 | Platform | HA (multi-instance) | Single-instance | Section |
 |---|---|---|---|
 | Kubernetes (StatefulSet + headless Service) | ✅ canonical | ✅ | [§3.1](#31-kubernetes) |
-| Docker Compose (explicit `lantern-N` services + DNS alias) | ✅ | ✅ | [§3.2](#32-docker-compose) |
+| Docker Compose (explicit signed `lantern-N` origins) | ✅ | ✅ | [§3.2](#32-docker-compose) |
 | HashiCorp Nomad + Consul DNS | ✅ user-configured | ✅ | [§3.3](#33-nomad) |
-| Plain VMs / bare metal | ✅ static or DNS | ✅ | [§3.4](#34-plain-vms) |
+| Plain VMs / bare metal | ✅ signed private origins | ✅ | [§3.4](#34-plain-vms) |
 
 **Why some platforms can't do HA.** Lantern's leaderless P2P needs
 (a) stable per-instance addressing for peer discovery and (b)
@@ -32,7 +32,7 @@ long-lived inbound gRPC streams between every pair of instances.
 Platforms that hide instance addresses behind a load balancer and
 recycle instances on the request lifecycle cannot satisfy these, so
 only single-instance mode works there — still genuinely useful as a
-fast in-memory KVS with CDC via `Subscribe`. See RFC
+fast in-memory KVS with public CDC via `WatchChanges`. See RFC
 [D7](replication.md#3-binding-decisions-d1d7).
 
 ---
@@ -44,41 +44,29 @@ receipt-WAL storage is an independent runtime choice in either topology.
 
 ### 2.1 Single-instance mode (no HA)
 
-Triggered when `LANTERN_PEERS` is empty **and** `LANTERN_PEER_DISCOVERY`
-is unset (or `static`). In this mode:
+No private peer settings means no pump or data-lag gate. No auth settings means
+OFF; explicit OIDC still requires native authority, a qualified fencing barrier
+and current policy. Public CDC uses Role-scoped `WatchChanges`. Raw peer
+Subscribe/Snapshot is never mounted on this public listener.
 
-- No peer pump is started.
-- `/healthz/ready` is **not** gated on replication lag (because there
-  is no peer to lag against). It returns `SERVING` as soon as the
-  gRPC listener is up.
-- `Subscribe` still works — external CDC consumers see every mutation
-  in real time.
-- In default graph-only mode, cold start = empty cache **unless snapshot
-  backups are configured** (`LANTERN_BACKUP_*`, see [backup.md](backup.md)).
-  A durable receipt-WAL `restart` instead validates its complete current
-  WAL and serving state before opening listeners.
+Graph-only cold start restores a configured graph backup or begins empty.
+Receipt-WAL restart certifies its owned durable bundle separately. Neither a
+public export nor a graph-only snapshot restores sys: security continuity.
 
-This is the supported mode for every "❌ HA not supported" row in §1.
+### 2.2 HA mode (leaderless data replication)
 
-### 2.2 HA mode (leaderless replication)
+Configure the complete independent signed private peer plane in either public
+mode. Distinct per-node TLS 1.3/mTLS identities, exact private origins and
+homogeneous mode/domain/generation/namespace are mandatory. DNS locates only
+approved peers. Renew the signed manifest before expiry (at most ten minutes);
+a lost renewal stops serving and peer work after bounded admission expires.
 
-Triggered when `LANTERN_PEER_DISCOVERY=dns` **or** when
-`LANTERN_PEERS` is a non-empty CSV. In this mode:
-
-- The pump opens one `Subscribe` stream per peer.
-- Every local mutation fans out asynchronously to every peer.
-- `/healthz/ready` returns `NOT_SERVING` (503) while replication lag
-  for any peer exceeds `LANTERN_MAX_REPLICATION_LAG`, so load
-  balancers drain the pod.
-- Bootstrap = `Snapshot` against the first responding peer, then tail
-  `Subscribe` from the responder-local log position and the later of each
-  snapshot origin cutoff plus one and its locally committed next sequence.
-  These are separate cursors; a truly evicted tail still requires repair.
-  See RFC §[9](replication.md#9-bootstrap-flow).
-
-Use one of the §3 topologies to deliver this mode.
-When authentication is enabled, peer replication additionally requires
-certificate-verified HTTPS (§5); a token alone does not start an HA node.
+The data pump obtains a certified Snapshot and tails each private Subscribe
+from the responder-local and per-origin cutoffs described in RFC §9. Data-lag
+and search-fingerprint readiness gates remain. OIDC adds current signed sys:
+revisions and bounded leases from one fixed security writer. A replicated sys:
+image by itself does not prove current authorization. Writer/lease loss may
+stop protected requests even while application replication is healthy.
 
 ### 2.3 Opt-in durable receipt-WAL runtime
 
@@ -103,206 +91,49 @@ obsolete receipt artifacts never certify this mode.
 
 ### 3.1 Kubernetes
 
-**Recommended via the Helm chart at
-[`deploy/helm/lantern/`](../deploy/helm/lantern/).** The chart ships a
-3-replica StatefulSet, a headless `Service` (peer-discovery DNS),
-a `ClusterIP` `Service` (client traffic), a `PodDisruptionBudget`
-(`minAvailable: 2`), and an optional Prometheus `ServiceMonitor`.
+The [Helm chart](../deploy/helm/lantern/README.md) defaults to one OFF Server.
+HA requires explicit `peerPlane` membership/operator/identity material and
+per-pod durable runtime-state PVCs. The private headless Service includes
+bootstrapping pods; the public Service remains readiness gated. More than one
+replica without signed membership fails rendering/startup.
 
-Defaults are HA-mode. Override `replication.peers` (CSV) and set
-`replication.discovery.mode: static` for static peer lists, or just
-leave the defaults to use DNS discovery against the headless Service.
-The stock chart is bearer-free h2c; an authenticated HA installation
-must set `peerTLS.existingSecret` to an operator-managed Secret containing
-`server.pem`, `server.key`, and `ca.pem`, plus source
-`LANTERN_AUTH_TOKENS` through `extraEnv.valueFrom.secretKeyRef`. The chart
-mounts the files read-only on each pod and sets inbound TLS and the
-separate outbound peer CA paths. Every certificate must cover the
-discovery FQDN in its DNS SAN; add the client Service FQDN for direct
-HTTPS clients. See the [chart's authenticated HA example](../deploy/helm/lantern/README.md#authenticated-ha).
-Its Secret is
-shared across replicas; use an external per-pod projection when
-independent leaf keys are required.
-
-```sh
-helm install lantern deploy/helm/lantern
-kubectl get statefulset,svc,pdb -l app.kubernetes.io/instance=lantern
-```
-
-**Why two Services?** The headless Service (`*-headless`,
-`clusterIP: None`, `publishNotReadyAddresses: true`) is what the
-DNS pump resolves — its A records include bootstrapping pod IPs so a
-simultaneous cold start cannot deadlock behind readiness. The
-`ClusterIP` Service is what clients hit; they get a stable VIP and
-kube-proxy spreads load across the backing pods. Splitting them means
-client traffic never accidentally targets a pod that's still
-bootstrapping.
-
-**Single-instance on k8s.** Set `replicaCount: 1` and
-`replication.discovery.mode: static` with empty `replication.peers`.
-The chart strips the peer env entirely; you get single-instance
-mode (§2.1) with k8s scheduling and probes intact.
-
-**Probes.** Startup, liveness, and readiness all hit the metrics port
-(9090). Startup and liveness use `/healthz`; readiness uses `/readyz`.
-The startup probe waits 60 seconds before its first check, then allows 36
-failures at five-second intervals, giving restore-on-start about four minutes
-before Kubernetes restarts the container. Liveness and readiness do not run
-until startup succeeds. Readiness then checks every five seconds; **brief 503s
-on `/readyz` while anti-entropy establishes the peer baseline are expected**
-and remove the pod from the client Service without restarting it.
-
-**Probe-port gotcha.** Probes are on the metrics port (9090), not the
-Lantern RPC port (6380). The RPC port serves the `grpc.health.v1`
-surface via `connectrpc.com/grpchealth` (reachable by `grpc-health-probe`
-and any Connect / gRPC / gRPC-Web client); the metrics port serves
-HTTP `/healthz` and `/readyz`. Use the HTTP probes — they're cheaper
-and don't open an HTTP/2 stream on every check.
-
-**Upgrade procedure.** See [§7](#7-rolling-upgrade-procedure).
+OIDC uses one fixed writer release and a separately configured replica release.
+Supply the complete bootstrap/domain ConfigMap, mounted security files and
+separate public TLS Secret. Changing public mode, security generation or
+namespace requires a fenced homogeneous migration. No pod-ordinal election is
+provided. Protected diagnostics remain on loopback, with local exec probes;
+production scraping needs an operator-authenticated sidecar.
 
 ### 3.2 Docker Compose
 
-**Example at [`deploy/compose/`](../deploy/compose/).** Since
-[#435](https://github.com/anaregdesign/lantern/issues/435) the compose
-file declares three explicit `lantern-{0,1,2}` services with pinned
-host ports (`6380`, `6381`, `6382`); all three share the `lantern`
-network alias so `LANTERN_PEER_DNS_NAME=lantern` round-robins across
-them via Compose's embedded DNS.
-This stock Compose example is **bearer-free graph-only**. Supplying
-`LANTERN_AUTH_TOKENS` without TLS material is not an authenticated HA
-configuration: the replicas now refuse to start. The receipt benchmark's
-[`compose.receipt-tls.yml`](../testbed/bench/compose.receipt-tls.yml)
-demonstrates a separate, receipt-only overlay with per-replica TLS
-certificates; its HTTPS driver trusts an ephemeral CA. Do not reuse those
-short-lived benchmark identities or token in a production deployment.
+The [default Compose](../deploy/compose/README.md) starts one OFF Server/Admin
+on loopback. `docker-compose.ha.yml` adds three explicitly configured private
+origins using per-node env/material directories and durable state volumes.
+The operator signing private key stays outside them. Public OFF does not
+weaken private membership. OIDC Admin needs an HTTPS public frontend and a
+verified pinned writer upstream; optional anonymous MCP/Prometheus examples
+are not protected deployment recipes.
 
-```sh
-cd deploy/compose
-docker compose up -d
-```
-
-Scaling past three replicas via `docker compose --scale` no longer
-applies — the canonical compose is a fixed 3-node topology. For larger
-clusters, use the [Helm chart](../deploy/helm/lantern/).
-
-There is **no nginx / haproxy sidecar**. OSS nginx's `resolve` keyword
-on `upstream server` is an nginx-plus feature, so a generic Compose
-recipe would need stream-block trickery to re-resolve DNS. Two pragmatic
-answers:
-
-1. **Reverse proxy / sidecar fan-out.** Drop in Caddy, Traefik, or
-   envoy with a `lantern` DNS-resolved upstream pool. Each of these
-   re-resolves DNS A records on a cadence (Caddy: `dynamic dns`;
-   Traefik: Docker provider; envoy: `STRICT_DNS` cluster), so adding or
-   removing replicas is picked up without a config push. The proxy
-   may speak h2c upstream **only** in a bearer-free deployment; with
-   authentication, protect and verify every hop to Lantern, including the
-   peer-to-peer paths, rather than terminating TLS solely at the edge.
-2. **DNS round-robin from the client.** Point the SDK at a host name
-   that resolves to all backends; the OS resolver hands the addresses
-   to `net/http`'s `http2.Transport` in shuffled order, and any backend
-   returning a transient error triggers a fresh dial against the next
-   IP. Suitable for steady-state read traffic from a single client.
-3. **SDK static-endpoint failover.** When the replica set is **fixed and
-   known**, the Go SDK can fail over client-side with no proxy or DNS
-   plumbing via `NewLanternFailover([]string{...})` (#592). It sticks to
-   one node and rotates to the next only when a node is unreachable
-   (`ErrUnavailable`). It performs **no** dynamic discovery, so it is the
-   wrong tool for churning endpoints — use option 1 or 2 there.
-
-```go
-// Reverse-proxy fan-out: point one URL at the proxy, not at the pool.
-c, err := lantern.NewLantern("http://lantern-proxy.svc:6380")
-
-// SDK static-endpoint failover: a fixed, known replica set, no proxy.
-c, err = lantern.NewLanternFailover([]string{
-    "http://lantern-0.svc:6380",
-    "http://lantern-1.svc:6380",
-    "http://lantern-2.svc:6380",
-})
-```
-
-#### Client-connectivity options at a glance
-
-| Option | Endpoints | Discovery | Extra infra | Best for |
-| --- | --- | --- | --- | --- |
-| Reverse proxy / sidecar | Churning | Proxy re-resolves DNS | Proxy | Autoscaled / churning replica sets, edge TLS |
-| DNS round-robin | Churning | OS resolver | DNS records | Single-client steady-state reads |
-| SDK `NewLanternFailover` | **Fixed/known** | **None** (static set) | None | Small pinned replica sets, no proxy/DNS |
-| SDK `NewLantern` (single URL) | One | None | None (front with proxy for HA) | Single endpoint or a proxy VIP |
-
-The pre-#367 `NewLanternWithEndpoints([]string{...})` constructor that
-did SDK-side round-robin LB has been removed
-([#367](https://github.com/anaregdesign/lantern/issues/367)); the
-Connect-only SDK takes a single base URL per `NewLantern`. The newer
-`NewLanternFailover` (#592) is **not** a revival of that round-robin LB —
-it is sticky-current failover over a *static* endpoint set, complementing
-the patterns above rather than replacing them. For Swarm mode, use
-`tasks.lantern` instead of `lantern` for the discovery DNS name on the
-server side; clients still target a single proxy URL (or a fixed failover
-list).
-
-**Single-instance on Compose.** `docker compose up -d lantern-0 admin
-prometheus` plus omitting `LANTERN_PEER_DISCOVERY` (override the env
-locally) puts the service in single-instance mode (§2.1). Useful for
-local dev against the same compose file you'd run in HA.
+SDK failover remains opt-in over fixed known public endpoints. Dynamic pools
+belong to an operator proxy/DNS boundary; clients do not discover membership.
+A load-balancing URL does not prove read/stream responder stickiness. Public
+CDC resumes only with Server-issued opaque scope-bound checkpoints, and gaps
+require revalidation rather than manufactured origin offsets.
 
 ### 3.3 Nomad
 
-Use a `service { check { type = "grpc" } }` block against port 6380,
-register the service in Consul, and point Lantern at it:
-
-```hcl
-env {
-  LANTERN_PEER_DISCOVERY        = "dns"
-  LANTERN_PEER_DNS_NAME         = "lantern.service.consul"
-  LANTERN_PEER_DEFAULT_PORT     = "6380"
-  LANTERN_PEER_DISCOVERY_INTERVAL_MS = "10000"
-}
-```
-
-Consul DNS returns one A record per healthy instance; the pump
-converges on the next discovery interval. Scaling = `nomad job scale`.
-We don't ship a sample job spec; the env contract above is the entire
-integration.
+Provision stable per-instance HTTPS private origins, unique workload URI/SAN/SPKI
+identities and independently signed membership. Consul DNS locates these
+approved names only. Persist anti-rollback enrollment and sys: state with
+exclusive node ownership. Never derive approval from discovered IPs.
 
 ### 3.4 Plain VMs
 
-Two options, depending on whether you have stable DNS:
-
-**Static peer list (easiest):**
-
-```sh
-export LANTERN_PEERS=host-a:6380,host-b:6380,host-c:6380
-./lantern-server
-```
-
-Empty `LANTERN_PEERS` = single-instance mode. Editing the list
-requires restarting the affected pods, but rolling restarts converge
-cleanly via the bootstrap flow.
-When using authentication, replace those bare addresses with explicit
-`https://host-a:6380,https://host-b:6380,...` origins and provision
-certificate SANs for each configured host. Configure the same trusted
-peer CA independently of the inbound server certificate (see §5).
-
-**DNS round-robin (e.g., Route53 multi-value, internal coredns):**
-
-```sh
-export LANTERN_PEER_DISCOVERY=dns
-export LANTERN_PEER_DNS_NAME=lantern.internal.example.com
-export LANTERN_PEER_DEFAULT_PORT=6380
-export LANTERN_PEER_DISCOVERY_INTERVAL_MS=10000
-./lantern-server
-```
-
-The pump re-resolves the DNS name every interval and reconciles its
-peer set. Authenticated DNS peers verify every server certificate
-against `lantern.internal.example.com`, not the resolved IP; include
-that DNS name as a SAN on **every** peer certificate, and distribute
-the issuing CA to every node.
-
----
+Use the same exact signed private origins and per-node mTLS identity contract.
+Omit the peer plane for one instance. Public OIDC clients need verified TLS,
+explicit machine/OIDC Roles and current policy; a peer credential is not a
+client credential. See [OIDC operations](oidc-operations.md) for renewal,
+operator fencing, native restore and fixed-writer availability.
 
 ## 4. What to watch (signals)
 
@@ -513,60 +344,20 @@ write burst faster than TTL decay fails fast instead:
   newer write supersedes it. It does free the legacy live/barrier-cap slot.
   Prefix Delete cannot find barrier-only identities.
 
-**Securing the cluster (#850) — decision table:**
+**Securing the cluster (#1599/#1608)**
 
-The legacy token-only row describes trusted **single-instance**
-development, not a replicated cluster. Its old shared-dev wording
-does not authorize bearer-bearing HA over h2c; the verified-TLS row
-is mandatory for every authenticated HA deployment.
+No auth settings means public OFF. Explicit OIDC requires administrator Issuer
+and subjects, complete current native sys: authority and secure transport.
+Permissions come only through Roles, with literal prefix Deny precedence.
+Reflection requires schema permission; machine export requires explicit
+export/read Roles. Recent interactive authentication is required for security
+changes, not ordinary machine export.
 
-| Tier | When | How |
-|---|---|---|
-| Open | isolated network, single-tenant dev | default (no `LANTERN_AUTH_TOKENS`, no TLS) |
-| Bearer token | shared dev cluster, managed platform where client certs are friction — `requirepass`-tier | `LANTERN_AUTH_TOKENS=<token>` on every node; clients use `WithAuthToken` / `--token` / `LANTERN_TOKEN` |
-| Token + verified TLS | **every authenticated HA deployment**, and any untrusted client link | `LANTERN_AUTH_TOKENS`, inbound `LANTERN_TLS_CERT_FILE` + `LANTERN_TLS_KEY_FILE`, and separate outbound `LANTERN_PEER_CA_FILE` on every node; TLS peer identities must match the configured static origin or discovery DNS name |
-| mTLS | zero-trust | add inbound `LANTERN_TLS_CLIENT_CA_FILE` and outbound `LANTERN_PEER_CLIENT_CERT_FILE` + `LANTERN_PEER_CLIENT_KEY_FILE` on every node |
-
-Operational notes:
-
-- The token-without-TLS tier above applies **only to trusted
-  single-instance development**. It never qualifies an HA deployment,
-  even when every peer is on a private network. A browser, SDK, reverse
-  proxy or MCP client sending a bearer also needs its own trusted HTTPS
-  path; HA peer TLS does not automatically secure external clients.
-- All nodes in a cluster share the token set; the pump and anti-entropy
-  clients send `tokens[0]` **only over their approved, certificate-verified
-  HTTPS peer transport**. Static peers must use exact `https://host:port`
-  origins without URL credentials, paths, or query parameters; bare
-  `host:port` and `http://` fail startup with auth enabled. DNS discovery
-  dials the returned IPs but verifies the discovery DNS name against
-  each peer's SAN. An invalid answer, wrong CA/identity, redirect or
-  downgraded destination never receives the bearer.
-- **Migration:** issue server certificates with the right DNS/IP SANs,
-  mount them and a separate peer CA trust bundle on all replicas, switch
-  every static peer URL to HTTPS (or keep DNS discovery with its shared
-  SAN), then restart the nodes using a TLS-aware client path. The main
-  listener changes from h2c to TLS; update client SDKs, any browser
-  gateway, MCP target and reverse proxies to HTTPS and a trusted CA.
-  The default graph-only Compose/Helm client URLs and their h2c examples
-  are not drop-in authenticated-HA clients. Plan a controlled transition:
-  mixed plaintext and TLS peers cannot exchange authenticated traffic.
-  For cert/CA rotation, temporarily trust both issuers, roll verified
-  certificates and clients, then remove the old issuer; peer trust is
-  read at startup, not hot-reloaded. Never copy the inbound client CA
-  path as a substitute for `LANTERN_PEER_CA_FILE`.
-- **Token rotation order:** add the new token to
-  `LANTERN_AUTH_TOKENS` on every server (old,new) → switch clients and
-  restart nodes so peers pick the new `tokens[0]` → drop the old token.
-- `grpc.health.v1.Health` is always exempt (Kubernetes gRPC probes cannot
-  attach headers). Reflection is exempt by default; set
-  `LANTERN_AUTH_EXEMPT_REFLECTION=false` to require the token there too.
-- The metrics listener is bind-address-scoped and carries no auth — keep
-  it off public interfaces.
-- Watch `lantern_auth_rejected_total`: a non-zero steady rate after a
-  rotation usually means a client is still on the dropped token.
-
----
+Every HA member, including OFF, uses the independent signed private peer plane.
+Retired static bearer and public peer settings fail startup, even when empty.
+Do not roll a mixed OFF/OIDC domain, share peer keys or use a public token for
+private synchronization. The [operations guide](oidc-operations.md) is the
+configuration, renewal, browser, diagnostics and fencing contract.
 
 ## 6. Partition behaviour & split-brain
 
@@ -678,16 +469,17 @@ deploys:
 
 1. **Pre-flight:** verify all peers are in sync.
    `max(lantern_replication_lag_seq) == 0` across the cluster.
-2. **Drain one pod:** stop or evict it. The PDB (`minAvailable: 2`)
-   prevents draining a majority simultaneously.
+2. **Drain one pod:** stop or evict it. Set the PDB to the required serving minimum for this cohort
+   (for example `minAvailable: 2` with three replicas); its chart default is 1.
 3. **Restart with the new image.** Graph-only mode bootstraps from a
    remaining peer's Snapshot and tails `Subscribe`. A compatible durable
    `restart` first verifies its own WAL; a peer gap requires a `RECEIPT`
    Snapshot and tail, never a graph-only downgrade. Do not use this
    rolling procedure across incompatible private receipt formats.
-4. **Wait for `/readyz` = 200** on the new pod. It should land within
-   `LANTERN_ANTI_ENTROPY_SUBSCRIBE_TIMEOUT_MS` + a few seconds. If
-   not, see [§9.3](#93-pod-stuck-not_serving-after-restart).
+4. **Wait for `/readyz` = 200** on the new pod. Allow for data catch-up, current signed membership and policy
+   acquisition. An OIDC authority restart also waits for the full 35s clock
+   fence; elapsed time alone does not establish readiness. If the pod remains
+   unavailable, see [§9.3](#93-pod-stuck-not_serving-after-restart).
 5. **Confirm convergence:** `lantern_replication_lag_seq{peer=*} == 0`
    for the new pod. `lantern_build_info{version=…}` reflects the new
    tag.
@@ -751,36 +543,21 @@ before any rollout. No obsolete receipt compatibility path is supported.
 
 ### 8.1 Scale up (add a pod)
 
-- New pod starts → resolves discovery DNS → picks a peer → `Snapshot`
-  → `Subscribe` from `cutoff_seq + 1`.
-- Existing pods detect the new IP within
-  `LANTERN_PEER_DISCOVERY_INTERVAL_MS` (default 10s) and start pumping
-  to it.
-- `/readyz` flips to 200 once lag-to-all-peers is below the threshold.
-
-No operator action required. Just `kubectl scale statefulset lantern
---replicas=N`. On Docker Compose the canonical topology is a fixed
-three-node cluster (`lantern-{0,1,2}`) since
-[#435](https://github.com/anaregdesign/lantern/issues/435); use the
-Helm chart when you need to scale past three.
+Provision a unique workload identity, public/private certificate pair and fresh
+owned enrollment state. Publish a newer signed manifest authorizing its exact
+private origin before starting the node; distribute it to all members within
+the expiry budget. Snapshot/Subscribe catches up application data. OIDC also
+requires current security revision and lease before public readiness.
+Kubernetes replica count or a DNS record alone does not authorize this node.
 
 ### 8.2 Scale down (remove a pod)
 
-- The departing pod is removed from the headless Service's A records.
-- Peers detect the removal on the next discovery interval and cancel
-  the pump goroutine for that address.
-- Mutations already in flight to that pod are simply lost from its
-  perspective — that's fine, the pod is going away. No
-  consumer-visible data loss because the writes were already
-  committed to the receiving pod and other peers.
-
-PDB still applies: on k8s, `kubectl scale` will block if going below
-`minAvailable`. Lower the PDB before scaling down hard. Going to zero
-loses any unbacked writes; graph-only data needs a backup or re-ingestion,
-while durable receipt state needs a certified current WAL or strict receipt
-backup set with a new active epoch ([§9.4](#94-total-cluster-loss)).
-
----
+Drain public traffic, publish and distribute signed membership revocation, then
+stop the workload and retire its identity/state according to operator policy.
+Existing admissions expire within their bounds. A disappearing DNS record alone
+is not revocation evidence. Preserve PDB and surviving current-policy capacity.
+Going to zero loses unbacked graph data; certified receipt and sys: continuity
+have separate restore requirements. See §9.4 and [OIDC operations](oidc-operations.md).
 
 ## 9. Recovery procedures
 
@@ -851,30 +628,14 @@ until exact recovery proves its frontier.
 
 ### 9.3 Pod stuck `NOT_SERVING` after restart
 
-Walk the bootstrap flow:
-
-1. `kubectl logs <pod>` — look for `snapshot from peer …`.
-2. If no log line: pump can't reach any peer.
-   - Check `LANTERN_PEER_DISCOVERY` env values.
-   - With auth enabled, confirm startup accepted `LANTERN_PEER_CA_FILE`,
-     inbound TLS certificate/key and valid HTTPS origins. TLS errors
-     from `PeerStatus` or `Subscribe` indicate a missing CA, wrong DNS/IP
-     SAN, invalid certificate, or a plaintext peer; never disable
-     verification to work around them.
-   - From inside the pod, `getent hosts <discovery-dns-name>` should
-     return one A record per other pod.
-   - Confirm the headless Service has `publishNotReadyAddresses: true` so
-     bootstrapping pods are discoverable. The separate client Service remains
-     readiness-gated.
-3. If snapshot succeeds but `/readyz` stays 503: lag is above
-   threshold. Check `lantern_replication_lag_seq`. Either wait
-   (steady-state catch-up) or bump `LANTERN_MAX_REPLICATION_LAG`.
-4. **Port mismatch gotcha.** The server's default
-   `LANTERN_PEER_DEFAULT_PORT` is `"50051"` (legacy), but the gRPC
-   port (`LANTERN_PORT`) defaults to `"6380"`. The Helm chart and
-   Compose example both override `LANTERN_PEER_DEFAULT_PORT=6380`
-   explicitly. Custom Pod specs that don't set it will try to
-   connect to `:50051` and time out. Set it.
+Check the rejected native mode/configuration, exact owned durable state,
+per-node certificates and signed membership expiry/revision/domain first.
+Confirm the writer is fenced/current, the initial 35-second barrier completed
+and the replica has a current policy lease. Check actual private port/origin,
+CA/SAN/SPKI and DNS resolution; never relax verification to diagnose a failure.
+Then inspect data lag and search configuration/index readiness. Probes use the
+loopback diagnostics listener; protected production collection needs its own
+authenticated boundary. Preserve content-free errors and private raw evidence.
 
 ### 9.4 Total-cluster loss
 
@@ -903,36 +664,21 @@ release gates remain outstanding.
 
 A short checklist to walk before opening an incident:
 
-- [ ] **Port mismatch:** `LANTERN_PEER_DEFAULT_PORT` defaults to
-      `50051` but `LANTERN_PORT` defaults to `6380`. Set
-      `LANTERN_PEER_DEFAULT_PORT=6380` (or whatever you've set
-      `LANTERN_PORT` to). The Helm chart and Compose example do this
-      for you; custom manifests must.
-- [ ] **Token set with bare/static HTTP peers, missing inbound TLS or
-      outbound CA:** authenticated HA now fails startup. Provision
-      `LANTERN_TLS_CERT_FILE`, `LANTERN_TLS_KEY_FILE`,
-      `LANTERN_PEER_CA_FILE`, and HTTPS static origins, or check that the
-      DNS discovery name is in every peer certificate SAN. Inbound mTLS
-      additionally requires outbound peer-client cert/key files.
-- [ ] **Probes on wrong port:** `/healthz` and `/readyz` are on the
-      **metrics** port (9090), not the gRPC port (6380).
-- [ ] **`publishNotReadyAddresses: false` deadlock:** if every pod restarts
-      simultaneously, none is "ready", the headless Service publishes
-      nothing, and nobody bootstraps. The maintained Helm chart sets this to
-      `true`; custom manifests must do the same for peer discovery while
-      keeping the client-facing Service readiness-gated.
-- [ ] **OSS nginx as a Lantern LB:** the `resolve` keyword on
-      `upstream server` is nginx-plus only. Use an HTTP/2-aware
-      reverse proxy (Envoy, Caddy, Traefik) or kube-proxy via a
-      ClusterIP Service instead.
+- [ ] **Incomplete native peer plane:** private/public listeners have distinct
+      ports and approved exact origins; every member has its own mTLS identity.
+- [ ] **Expired/stale membership or policy lease:** check renewal/distribution,
+      current revision/generation and fixed writer. Namespace isolation alone
+      does not prove policy freshness.
+- [ ] **Retired static-auth/discovery config:** remove it and provision native
+      Roles/signed membership. Empty retired settings are not valid OFF config.
+- [ ] **Wrong probes or scraping boundary:** health/readiness is loopback;
+      public Health Check is auth-exempt and reports current serving status.
+- [ ] **Bootstrapping names unavailable:** the private headless Service must
+      publish not-ready addresses while the public Service stays readiness gated.
 - [ ] **Tombstone TTL < live TTL:** RFC §4 / D4 — any `Put*` whose
       TTL would exceed `tombstone_ttl` is **rejected** with
       `InvalidArgument`. Either lower the live TTL or raise the
       tombstone TTL.
-- [ ] **Empty `LANTERN_PEERS` + `LANTERN_PEER_DISCOVERY=static`** =
-      single-instance mode, not "no readiness gating please". If you
-      want HA, set discovery to `dns` (or put hosts in
-      `LANTERN_PEERS`).
 - [ ] **Durable mode assumed from backups alone.** `graph-only` remains the
       default. `fresh`/`restart` require stable explicit NodeID, WAL path,
       epoch, positive immutable receipt limits/retention, and full startup
@@ -996,25 +742,28 @@ kubectl get pods -l app.kubernetes.io/instance=lantern
 kubectl port-forward svc/lantern 6380:6380 &
 
 # Compose
-cd deploy/compose && docker compose up -d && docker compose ps
+cd deploy/compose
+# After provisioning the signed cohort described in §2.1:
+docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.ha.yml ps
 ```
 
 Then from a host that can reach the cluster:
 
 ```sh
-# Write to one pod (the Service VIP / reverse proxy fans it out;
-# it might land anywhere — that's the point).
+# OFF-only application smoke. OIDC clients must use trusted HTTPS and
+# a current machine Role credential; configure those in the client application.
 go run ./sdks/go/example -addr http://localhost:6380 -op put-vertices
 
-# Within ~1s, every pod should report the same vertex count.
+# After readiness and data lag reach their declared bounds, compare each pod's vertex count.
 for pod in lantern-0 lantern-1 lantern-2; do
   kubectl exec "$pod" -- wget -qO- http://localhost:9090/metrics \
     | grep '^lantern_vertices '
 done
 ```
 
-If the counts agree, replication is working. If they don't agree
-within a few seconds, check `lantern_replication_lag_seq` and walk
+Matching counts are a smoke signal, not proof of matching values or current
+policy. If convergence misses the declared deployment budget, check `lantern_replication_lag_seq` and walk
 [§9.3](#93-pod-stuck-not_serving-after-restart).
 
 ### 12.1 Production rollout go/no-go

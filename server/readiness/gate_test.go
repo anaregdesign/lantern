@@ -212,3 +212,29 @@ func TestGate_BeginDrain_LatchesOverRecovery(t *testing.T) {
 		t.Fatalf("expected latest health NOT_SERVING, got %v", latest)
 	}
 }
+
+func TestGate_ServingAuthorityIsRequiredEvenWithoutPeers(t *testing.T) {
+	for _, hasPeers := range []bool{false, true} {
+		g := NewGate(100, hasPeers, &fakeHealth{})
+		g.MarkBootstrapped()
+		g.SetServingPermission(false)
+		if g.Ready() {
+			t.Fatal("withdrawn serving authority ignored", hasPeers)
+		}
+		g.SetLag("peer", "origin", 0)
+		g.MarkBootstrapped()
+		if g.Ready() {
+			t.Fatal("data freshness granted serving authority")
+		}
+		g.SetServingPermission(true)
+		if !g.Ready() {
+			t.Fatal("current authority not restored")
+		}
+		g.BeginDrain()
+		g.SetServingPermission(false)
+		g.SetServingPermission(true)
+		if g.Ready() {
+			t.Fatal("renewal undid irreversible drain")
+		}
+	}
+}

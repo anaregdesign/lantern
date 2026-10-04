@@ -10,6 +10,111 @@ import 'package:lantern_client/src/gen/graph/v1/graph.pb.dart' as graph;
 import 'package:test/test.dart';
 
 void main() {
+  test(
+    'receipt Create reuses original TTL and ID after response loss',
+    () async {
+      final requests = <Uint8List>[];
+      final transport = FakeTransportBuilder()
+          .unary<graph.CreateEdgesRequest, graph.CreateEdgesResponse>(
+            LanternService.createEdges,
+            (request, callContext) {
+              requests.add(request.writeToBuffer());
+              expect(
+                request.edges.single.expiration.toDateTime(),
+                DateTime.fromMillisecondsSinceEpoch(6000, isUtc: true),
+              );
+              if (requests.length == 1) {
+                throw connect.ConnectException(
+                  connect.Code.unavailable,
+                  'response lost',
+                );
+              }
+              return graph.CreateEdgesResponse(
+                outcomes: [
+                  graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_CREATED_AND_LIVE,
+                ],
+              );
+            },
+          )
+          .unary<
+            graph.GetReceiptCapabilityRequest,
+            graph.GetReceiptCapabilityResponse
+          >(
+            LanternService.getReceiptCapability,
+            (request, callContext) => _capabilityResponse(
+              supportedMutations: [
+                graph.ReceiptMutationKind.RECEIPT_MUTATION_KIND_CREATE_EDGE,
+              ],
+            ),
+          )
+          .build();
+      final client = _client(
+        transport,
+        retryPolicy: _fastRetry,
+        clock: () => DateTime.utc(2030),
+      );
+      final result = await client.createEdgeWithReceipt(
+        EdgeInput(
+          tail: 'users:1',
+          head: 'targets:1',
+          weight: 1,
+          expiresIn: const Duration(seconds: 5),
+        ),
+        context: _receiptContext(
+          count: 1,
+          mutation: ReceiptMutationKind.edgeCreate,
+        ),
+      );
+      expect(result, CreateEdgeOutcome.createdAndLive);
+      expect(requests, hasLength(2));
+      expect(requests[0], requests[1]);
+    },
+  );
+  test('Create receipts preserve strict original results', () async {
+    final id = _operationId(epoch: 1, random: 1);
+    for (final outcome in [
+      graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_CREATED_AND_LIVE,
+      graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_EDGE_EXISTS,
+      graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_ENDPOINT_NOT_LIVE,
+      graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_EXPIRED,
+      graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_UNSPECIFIED,
+    ]) {
+      final client = _client(
+        FakeTransportBuilder()
+            .unary<
+              graph.GetReceiptStatusesRequest,
+              graph.GetReceiptStatusesResponse
+            >(
+              LanternService.getReceiptStatuses,
+              (request, context) => graph.GetReceiptStatusesResponse(
+                statuses: [
+                  _confirmedStatus(
+                    id,
+                    result: graph.ReceiptResult(createEdgeOutcome: outcome),
+                  ),
+                ],
+              ),
+            )
+            .build(),
+      );
+      if (outcome == graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_UNSPECIFIED) {
+        await expectLater(
+          client.getReceiptStatus(id),
+          throwsA(isA<LanternInternalException>()),
+        );
+      } else {
+        final status = await client.getReceiptStatus(id);
+        expect(
+          status.receipt,
+          isA<EdgeCreateReceipt>().having(
+            (r) => r.outcome.index,
+            'outcome',
+            outcome.value - 1,
+          ),
+        );
+      }
+    }
+  });
   test('receipt identity values validate and defensively copy bytes', () {
     final epochBytes = _bytes(16, 1);
     final epoch = ReceiptEpoch(epochBytes);

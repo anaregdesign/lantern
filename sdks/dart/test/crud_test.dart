@@ -8,6 +8,99 @@ import 'package:lantern_client/src/gen/graph/v1/graph.pb.dart' as graph;
 import 'package:test/test.dart';
 
 void main() {
+  group('conditional Edge Create', () {
+    test(
+      'chunked outcomes preserve duplicates and singular uses plural',
+      () async {
+        final requests = <graph.CreateEdgesRequest>[];
+        final transport = FakeTransportBuilder()
+            .unary<graph.CreateEdgesRequest, graph.CreateEdgesResponse>(
+              LanternService.createEdges,
+              (request, context) {
+                requests.add(request.deepCopy());
+                return graph.CreateEdgesResponse(
+                  outcomes: List.filled(
+                    request.edges.length,
+                    graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_EDGE_EXISTS,
+                  ),
+                );
+              },
+            )
+            .build();
+        final client = _client(transport);
+        final input = EdgeInput(tail: 'users:1', head: 'targets:1', weight: 1);
+        expect(
+          await client.createEdges([input, input, input], batchSize: 2),
+          List.filled(3, CreateEdgeOutcome.edgeExists),
+        );
+        expect(requests.map((r) => r.edges.length), [2, 1]);
+        expect(requests.every((r) => !r.hasReceiptContext()), isTrue);
+        expect(await client.createEdge(input), CreateEdgeOutcome.edgeExists);
+      },
+    );
+    test('invalid later sources cannot commit an earlier chunk', () async {
+      var calls = 0;
+      final transport = FakeTransportBuilder()
+          .unary<graph.CreateEdgesRequest, graph.CreateEdgesResponse>(
+            LanternService.createEdges,
+            (request, context) {
+              calls++;
+              return graph.CreateEdgesResponse(
+                outcomes: [
+                  graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_CREATED_AND_LIVE,
+                ],
+              );
+            },
+          )
+          .build();
+      final client = _client(transport);
+      for (final weight in [0.0, double.nan, double.infinity, 1e100, 1e-100]) {
+        await expectLater(
+          Future.sync(
+            () => client.createEdges([
+              EdgeInput(tail: 'a', head: 'b', weight: 1),
+              EdgeInput(tail: 'b', head: 'c', weight: weight),
+            ], batchSize: 1),
+          ),
+          throwsA(isA<LanternInvalidArgumentException>()),
+        );
+      }
+      expect(calls, 0);
+    });
+    test(
+      'malformed outcomes fail closed without exposing partial chunk results',
+      () async {
+        for (final outcomes in <List<graph.CreateEdgeOutcome>>[
+          [],
+          [graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_UNSPECIFIED],
+          [
+            graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_CREATED_AND_LIVE,
+            graph.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_EXPIRED,
+          ],
+        ]) {
+          var calls = 0;
+          final client = _client(
+            FakeTransportBuilder()
+                .unary<graph.CreateEdgesRequest, graph.CreateEdgesResponse>(
+                  LanternService.createEdges,
+                  (request, context) {
+                    calls++;
+                    return graph.CreateEdgesResponse(outcomes: outcomes);
+                  },
+                )
+                .build(),
+          );
+          await expectLater(
+            client.createEdge(EdgeInput(tail: 'a', head: 'b', weight: 1)),
+            throwsA(
+              isA<BatchException>().having((e) => e.committed, 'committed', 0),
+            ),
+          );
+          expect(calls, 1);
+        }
+      },
+    );
+  });
   test('plural reads chunk and preserve present and missing values', () async {
     final requests = <List<String>>[];
     final transport = FakeTransportBuilder()

@@ -2,6 +2,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -547,6 +548,7 @@ void main() {
       final endpoint = Uri.parse(endpointValue);
       final serverClient = LanternClient.connect(
         endpoint,
+        httpClientFactory: _receiptHttpClient,
         allowInsecure: endpoint.scheme == 'http',
         token: token,
       );
@@ -770,17 +772,12 @@ void main() {
       if (token == null || token.isEmpty) {
         throw StateError('LANTERN_DART_RECEIPT_TOKEN is required for HA');
       }
-      final tlsDirectory =
-          Platform.environment['LANTERN_DART_RECEIPT_HA_TLS_DIR'];
-      if (tlsDirectory == null || tlsDirectory.isEmpty) {
-        throw StateError('LANTERN_DART_RECEIPT_HA_TLS_DIR is required for HA');
+      final helper = Platform.environment['LANTERN_DART_RECEIPT_HA_FIXTURE'];
+      if (helper == null || helper.isEmpty) {
+        throw StateError('LANTERN_DART_RECEIPT_HA_FIXTURE is required for HA');
       }
 
-      final cluster = await _ReceiptHaCluster.create(
-        binary,
-        token,
-        tlsDirectory,
-      );
+      final cluster = await _ReceiptHaCluster.create(binary, token, helper);
       addTearDown(cluster.close);
       await cluster.start();
       LanternClient connect(Uri endpoint) => LanternClient.connect(
@@ -1756,215 +1753,122 @@ Future<void> _awaitEdgeGone(LanternClient client, EdgeRef edge) async {
 }
 
 final class _ReceiptHaCluster {
-  _ReceiptHaCluster._(
-    this._binary,
-    this._token,
-    this._directory,
-    this._tlsDirectory,
-    this.trustedContext,
-  );
-
+  _ReceiptHaCluster._(this._binary, this._token, this._helper, this._directory);
   static Future<_ReceiptHaCluster> create(
     String binary,
     String token,
-    String tlsDirectory,
-  ) async {
-    final tls = Directory(tlsDirectory);
-    if (await FileSystemEntity.type(tls.path) !=
-        FileSystemEntityType.directory) {
-      throw StateError('HA TLS fixture directory is missing');
-    }
-    final trustedContext = SecurityContext(withTrustedRoots: false)
-      ..setTrustedCertificates('${tls.path}/ca.pem');
-    return _ReceiptHaCluster._(
-      binary,
-      token,
-      await Directory.systemTemp.createTemp('lantern-offline-ha-'),
-      tls,
-      trustedContext,
-    );
-  }
-
+    String helper,
+  ) async => _ReceiptHaCluster._(
+    binary,
+    token,
+    helper,
+    await Directory.systemTemp.createTemp('lantern-offline-native-ha-'),
+  );
   final String _binary;
   final String _token;
+  final String _helper;
   final Directory _directory;
-  final Directory _tlsDirectory;
-  final SecurityContext trustedContext;
   final Set<int> _reservedPorts = <int>{};
-  final Map<String, Process> _running = <String, Process>{};
+  Process? _supervisor;
+  StreamIterator<String>? _responses;
+  late final SecurityContext trustedContext;
+  late final Map<String, dynamic> _originEnvironment;
   late final Uri a;
   late final Uri b;
   late final Uri c;
-  late final int _cMetricsPort;
-
   HttpClient trustedHttpClient() => HttpClient(context: trustedContext);
-
   SecurityContext proxyTlsContext() => SecurityContext()
-    ..useCertificateChain('${_tlsDirectory.path}/lantern-0/server.pem')
-    ..usePrivateKey('${_tlsDirectory.path}/lantern-0/server.key');
+    ..useCertificateChain(_originEnvironment['LANTERN_TLS_CERT_FILE'] as String)
+    ..usePrivateKey(_originEnvironment['LANTERN_TLS_KEY_FILE'] as String);
 
   Future<void> start() async {
-    final aPort = await _freePort();
-    a = _endpoint(aPort);
-    await _startNode(
-      'a',
-      a,
-      await _freePort(),
-      '000000000000000000000000000000a1',
-      'fresh',
-    );
-    final bPort = await _freePort();
-    b = _endpoint(bPort);
-    await _startNode(
-      'b',
-      b,
-      await _freePort(),
-      '000000000000000000000000000000b2',
-      'fresh',
-      peer: a,
-    );
-    final cPort = await _freePort();
-    c = _endpoint(cPort);
-    _cMetricsPort = await _freePort();
-    await _startNode(
-      'c',
-      c,
-      _cMetricsPort,
-      '000000000000000000000000000000c3',
-      'fresh',
-    );
-  }
-
-  Future<void> stopA() => _stopNode('a');
-
-  Future<void> relayBtoC() async {
-    await _stopNode('c');
-    await _startNode(
-      'c',
-      c,
-      _cMetricsPort,
-      '000000000000000000000000000000c3',
-      'restart',
-      peer: b,
-    );
-  }
-
-  Future<void> close() async {
-    final processes = _running.values.toList(growable: false);
-    _running.clear();
-    for (final process in processes) {
-      process.kill(ProcessSignal.sigkill);
+    final public = [for (var i = 0; i < 4; i++) await _freePort()];
+    final private = [for (var i = 0; i < 4; i++) await _freePort()];
+    final tokens = File('${_directory.path}/tokens.json');
+    await tokens.writeAsString(jsonEncode([_token]));
+    // Test credentials stay in a private local fixture, never in public logs.
+    if (!Platform.isWindows) {
+      await Process.run('chmod', ['600', tokens.path]);
     }
-    try {
-      await Future.wait(
-        processes.map(
-          (process) => process.exitCode.timeout(const Duration(seconds: 5)),
-        ),
-      );
-    } finally {
-      await _directory.delete(recursive: true);
-    }
-  }
-
-  Future<void> _startNode(
-    String name,
-    Uri endpoint,
-    int metricsPort,
-    String nodeId,
-    String mode, {
-    Uri? peer,
-  }) async {
-    final replica = switch (name) {
-      'a' => 'lantern-0',
-      'b' => 'lantern-1',
-      'c' => 'lantern-2',
-      _ => throw StateError('unexpected receipt node $name'),
-    };
-    final process = await Process.start(
+    final process = await Process.start(_helper, [
+      '-directory',
+      '${_directory.path}/trust',
+      '-public-ports',
+      public.join(','),
+      '-peer-ports',
+      private.join(','),
+      '-tokens-file',
+      tokens.path,
+      '-receipt',
+      '-receipt-ha',
+      '-serve',
       _binary,
-      const <String>[],
-      environment: <String, String>{
-        'LANTERN_PORT': '${endpoint.port}',
-        'LANTERN_METRICS_ADDR': '127.0.0.1:$metricsPort',
-        'LANTERN_LOG_LEVEL': 'warn',
-        'LANTERN_AUTH_TOKENS': _token,
-        'LANTERN_TLS_CERT_FILE': '${_tlsDirectory.path}/$replica/server.pem',
-        'LANTERN_TLS_KEY_FILE': '${_tlsDirectory.path}/$replica/server.key',
-        'LANTERN_PEER_CA_FILE': '${_tlsDirectory.path}/ca.pem',
-        'LANTERN_NODE_ID': nodeId,
-        'LANTERN_PEERS': peer?.origin ?? '',
-        'LANTERN_PUMP_BACKOFF_MIN_MS': '50',
-        'LANTERN_PUMP_BACKOFF_MAX_MS': '200',
-        'LANTERN_ANTI_ENTROPY_INTERVAL_MS': '250',
-        'LANTERN_RECEIPT_WAL_MODE': mode,
-        'LANTERN_RECEIPT_WAL_PATH': '${_directory.path}/$name.wal',
-        'LANTERN_RECEIPT_EPOCH': '42424242424242424242424242424242',
-        'LANTERN_RECEIPT_RETENTION': '1h',
-        'LANTERN_RECEIPT_MAX_ENTRIES': '128',
-        'LANTERN_RECEIPT_MAX_BYTES': '1048576',
-        'LANTERN_BACKUP_ENABLED': 'false',
-        'LANTERN_BACKUP_RESTORE_ON_START': 'false',
-      },
-      includeParentEnvironment: false,
+      '-ready-timeout',
+      '2m',
+    ], includeParentEnvironment: false);
+    _supervisor = process;
+    final log = File('${_directory.path}/supervisor.log').openWrite();
+    process.stderr.listen(log.add, onDone: log.close);
+    _responses = StreamIterator(
+      process.stdout.transform(utf8.decoder).transform(const LineSplitter()),
     );
-    _running[name] = process;
-    process.stdout.listen((_) {});
-    var stderrTail = '';
-    process.stderr.listen((chunk) {
-      stderrTail += String.fromCharCodes(chunk);
-      if (stderrTail.length > 4096) {
-        stderrTail = stderrTail.substring(stderrTail.length - 4096);
-      }
-    });
-    int? exitCode;
-    unawaited(
-      process.exitCode.then((code) {
-        exitCode = code;
-      }),
-    );
+    final metadata = await _response();
+    final nodes = metadata['nodes'] as List<dynamic>;
+    expect(nodes, hasLength(4));
+    trustedContext = SecurityContext(withTrustedRoots: false)
+      ..setTrustedCertificates(metadata['ca_file'] as String);
+    a = Uri.parse(
+      (nodes[1] as Map<String, dynamic>)['public_origin'] as String,
+    ).replace(host: InternetAddress.loopbackIPv4.address);
+    b = Uri.parse(
+      (nodes[2] as Map<String, dynamic>)['public_origin'] as String,
+    ).replace(host: InternetAddress.loopbackIPv4.address);
+    c = Uri.parse(
+      (nodes[3] as Map<String, dynamic>)['public_origin'] as String,
+    ).replace(host: InternetAddress.loopbackIPv4.address);
+    _originEnvironment =
+        (nodes[1] as Map<String, dynamic>)['environment']
+            as Map<String, dynamic>;
+  }
 
-    final probe = LanternClient.connect(
-      endpoint,
-      httpClientFactory: trustedHttpClient,
-      defaultTimeout: const Duration(seconds: 1),
-    );
-    try {
-      final elapsed = Stopwatch()..start();
-      while (elapsed.elapsed < const Duration(seconds: 15)) {
-        if (exitCode != null) break;
-        try {
-          await probe.ping();
-          return;
-        } on LanternUnavailableException {
-          await Future<void>.delayed(const Duration(milliseconds: 50));
-        } on LanternDeadlineExceededException {
-          await Future<void>.delayed(const Duration(milliseconds: 50));
-        } on LanternHealthStatusException {
-          await Future<void>.delayed(const Duration(milliseconds: 50));
-        }
-      }
-      final failure = stderrTail.toLowerCase();
-      final category = failure.contains('address already in use')
-          ? 'listener address in use'
-          : failure.contains('permission denied')
-          ? 'filesystem permission denied'
-          : failure.contains('receipt') || failure.contains('wal')
-          ? 'receipt WAL startup failure'
-          : 'unclassified startup failure';
+  Future<Map<String, dynamic>> _response() async {
+    if (!await _responses!.moveNext().timeout(const Duration(minutes: 2))) {
       throw StateError(
-        'authenticated receipt node $name did not become ready '
-        '(exit: ${exitCode ?? 'still running'}, category: $category)',
+        'native receipt HA supervisor ended; inspect private fixture diagnostics',
       );
-    } finally {
-      await probe.close();
+    }
+    return jsonDecode(_responses!.current) as Map<String, dynamic>;
+  }
+
+  Future<void> _command(String command) async {
+    _supervisor!.stdin.writeln(command);
+    await _supervisor!.stdin.flush();
+    final response = await _response();
+    if (response['completed'] != command) {
+      throw StateError('native HA command failed');
     }
   }
 
-  Future<void> _stopNode(String name) async {
-    final process = _running.remove(name);
-    if (process == null) throw StateError('receipt node $name is not running');
-    process.kill(ProcessSignal.sigkill);
-    await process.exitCode.timeout(const Duration(seconds: 5));
+  Future<void> stopA() => _command('stop-origin');
+  Future<void> relayBtoC() => _command('relay-b-to-c');
+  Future<void> close() async {
+    final process = _supervisor;
+    if (process != null) {
+      try {
+        process.stdin.writeln('shutdown');
+        await process.stdin.flush();
+      } on Object {
+        process.kill(ProcessSignal.sigint);
+      }
+      final code = await process.exitCode.timeout(const Duration(seconds: 30));
+      await _responses?.cancel();
+      if (code != 0) {
+        throw StateError(
+          'native HA supervisor failed; private diagnostics: ${_directory.path}',
+        );
+      }
+    }
+    await _directory.delete(recursive: true);
   }
 
   Future<int> _freePort() async {
@@ -1976,12 +1880,6 @@ final class _ReceiptHaCluster {
     }
     throw StateError('could not reserve distinct receipt fixture ports');
   }
-
-  static Uri _endpoint(int port) => Uri(
-    scheme: 'https',
-    host: InternetAddress.loopbackIPv4.address,
-    port: port,
-  );
 }
 
 final class _RecordingRemote implements OfflineRemote {
@@ -2090,8 +1988,13 @@ final class _ResponseDroppingProxy {
     port: _server.port,
   );
 
-  HttpClient _newUpstream() =>
-      HttpClient(context: _upstreamTlsContext)..autoUncompress = false;
+  HttpClient _newUpstream() => HttpClient(
+    context:
+        _upstreamTlsContext ??
+        (_upstreamEndpoint.scheme == 'https'
+            ? _receiptSecurityContext()
+            : null),
+  )..autoUncompress = false;
 
   int forwarded(String rpc) => _forwarded[rpc] ?? 0;
 
@@ -2291,3 +2194,14 @@ final class _FailingAfterRemote implements OfflineRemote {
     return delegate.putVertex(vertex, cancellation: cancellation);
   }
 }
+
+SecurityContext _receiptSecurityContext() {
+  final ca = Platform.environment['LANTERN_DART_RECEIPT_CA_FILE'];
+  if (ca == null || ca.isEmpty) {
+    throw StateError('native receipt CA is required');
+  }
+  return SecurityContext(withTrustedRoots: false)..setTrustedCertificates(ca);
+}
+
+HttpClient _receiptHttpClient() =>
+    HttpClient(context: _receiptSecurityContext());

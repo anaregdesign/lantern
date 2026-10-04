@@ -18,7 +18,7 @@ import (
 // descriptions is the curated one-line operator description per variable.
 // Render enforces that this table and the envconfig registry agree exactly.
 var descriptions = map[string]string{
-	"LANTERN_AUTH_MODE":              "OIDC/RBAC rollout preflight: unset preserves the existing optional static-token tier; explicit off requires no credentials. Partial OIDC/security settings, empty/unknown modes and conflicting settings fail startup. oidc is rejected until its complete runtime is installed (#1599).",
+	"LANTERN_AUTH_MODE":              "Authentication mode: off (default) or oidc. OFF has anonymous data and unavailable security management; complete OIDC configuration enables Role-only RBAC. Empty/unknown modes, partial trust settings and retired authentication options fail startup.",
 	"LANTERN_PORT":                   "TCP port of the primary Connect listener (h2c without TLS, HTTPS when TLS is configured).",
 	"LANTERN_MAX_RECV_MSG_BYTES":     "Maximum accepted request size per Protobuf message, enforced by every generated Connect handler (0 = unlimited); independent of replication response expansion.",
 	"LANTERN_MAX_SEND_MSG_BYTES":     "Maximum produced response size per Protobuf message (0 = unlimited); certified before publication against both actual binary SubscribeResponse frames and maximal receiver-local receipt relays.",
@@ -51,8 +51,8 @@ var descriptions = map[string]string{
 
 	"LANTERN_MAX_KEY_LEN":                 "Maximum accepted vertex-key length in bytes.",
 	"LANTERN_MAX_BATCH_SIZE":              "Maximum items accepted per batch RPC (Put/Get/Add/Delete plural forms and receipt status lookups). Receipt status lookups retain a hard 10,000-item ceiling when this value is higher or unlimited.",
-	"LANTERN_AUTH_TOKENS":                 "Comma-separated bearer tokens arming data-plane auth (empty = open, the default). Requests must send 'Authorization: Bearer <token>' matching any entry (constant-time compare); multiple entries allow zero-downtime rotation (add new on all servers -> switch clients -> drop old). Health checks are always exempt. Pair with TLS outside trusted networks - bearer tokens over plaintext h2c are sniffable.",
-	"LANTERN_AUTH_EXEMPT_REFLECTION":      "Keep gRPC server reflection reachable without a token when auth is enabled (schema discovery is not data access). Set false to require the bearer token for reflection too.",
+	"LANTERN_AUTH_TOKENS":                 "Retired. Any explicit value, including empty, is rejected; use OIDC and named machine identities or schema.read Roles.",
+	"LANTERN_AUTH_EXEMPT_REFLECTION":      "Retired. Any explicit value, including empty, is rejected; use OIDC and named machine identities or schema.read Roles.",
 	"LANTERN_LLM_PROVIDER":                "LLM backend for server-side features (#828): disabled (default) | openai | anthropic | gemini. disabled composes the server without any LLM.",
 	"LANTERN_LLM_MODEL":                   "Provider model id (required unless provider=disabled).",
 	"LANTERN_LLM_API_KEY":                 "Secret for LANTERN_LLM_AUTH=api-key; leave empty for the token auth modes.",
@@ -113,14 +113,14 @@ var descriptions = map[string]string{
 	"LANTERN_NODE_ID":                        "Stable nonzero 32-hex-char (16-byte) node identity for HLC/replication; random per boot when unset in graph-only mode, but explicitly required and immutable in durable receipt-WAL modes.",
 	"LANTERN_TOMBSTONE_TTL":                  "Delete-tombstone retention window (D4) and upper bound on caller-supplied expirations. A tombstone consumes one causal-identity entry until expiration; an equal/newer write can transition the same identity between live floor, Put barrier, and tombstone without consuming another slot.",
 
-	"LANTERN_PEERS":                      "Comma-separated static peer origins: host:port without auth or explicit https://host:port when HA bears a token; empty = single instance.",
-	"LANTERN_PEER_DISCOVERY":             "Peer discovery mode: static or dns.",
-	"LANTERN_PEER_DNS_NAME":              "DNS name resolved for peer discovery; with bearer auth, the peer TLS certificate must contain this name as a DNS SAN even though the client dials its resolved IP.",
-	"LANTERN_PEER_DEFAULT_PORT":          "Port appended to DNS-discovered peer addresses.",
-	"LANTERN_PEER_DISCOVERY_INTERVAL_MS": "Peer re-resolution cadence in milliseconds (0 = resolve once at startup).",
-	"LANTERN_PEER_CA_FILE":               "Required PEM CA roots for verifying HTTPS peer identities whenever HA peers share bearer tokens; inbound client-CA settings are not outbound trust roots.",
-	"LANTERN_PEER_CLIENT_CERT_FILE":      "Outbound client certificate for bearer-enabled peer mTLS; required with LANTERN_PEER_CLIENT_KEY_FILE when inbound peer client-CA verification is enabled.",
-	"LANTERN_PEER_CLIENT_KEY_FILE":       "Outbound client private key for peer mTLS; paired with LANTERN_PEER_CLIENT_CERT_FILE.",
+	"LANTERN_PEERS":                      "Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected.",
+	"LANTERN_PEER_DISCOVERY":             "Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected.",
+	"LANTERN_PEER_DNS_NAME":              "Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected.",
+	"LANTERN_PEER_DEFAULT_PORT":          "Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected.",
+	"LANTERN_PEER_DISCOVERY_INTERVAL_MS": "Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected.",
+	"LANTERN_PEER_CA_FILE":               "Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected.",
+	"LANTERN_PEER_CLIENT_CERT_FILE":      "Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected.",
+	"LANTERN_PEER_CLIENT_KEY_FILE":       "Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected.",
 	"LANTERN_PUMP_BACKOFF_MIN_MS":        "Initial reconnect backoff after a peer session error, in milliseconds.",
 	"LANTERN_PUMP_BACKOFF_MAX_MS":        "Reconnect backoff ceiling, in milliseconds.",
 
@@ -142,10 +142,46 @@ var descriptions = map[string]string{
 
 	"LANTERN_STRICT_CONFIG": "Refuse to boot when any LANTERN_* value is malformed or an unknown LANTERN_* variable is set.",
 
-	"LANTERN_TRAVERSAL_MAX_PUSHES":        "Maximum PPR/PageRank-Nibble forward pushes per Illuminate call; exhaustion returns RESOURCE_EXHAUSTED, never a partial result.",
-	"LANTERN_TRAVERSAL_MAX_RESULTS":       "Maximum PPR star members or local-community members returned by Illuminate; wire top_n=0/max_size=0 resolve to this cap.",
-	"LANTERN_TRAVERSAL_MAX_TOUCHED_EDGES": "Maximum adjacency entries scanned by PPR/PageRank-Nibble per Illuminate call; exhaustion returns RESOURCE_EXHAUSTED.",
-	"LANTERN_TRAVERSAL_TIMEOUT_MS":        "Server-side wall-clock budget for Illuminate traversals in milliseconds (default 5000; 0 explicitly disables it); expiry surfaces as DEADLINE_EXCEEDED.",
+	"LANTERN_TRAVERSAL_MAX_PUSHES":            "Maximum PPR/PageRank-Nibble forward pushes per Illuminate call; exhaustion returns RESOURCE_EXHAUSTED, never a partial result.",
+	"LANTERN_TRAVERSAL_MAX_RESULTS":           "Maximum PPR star members or local-community members returned by Illuminate; wire top_n=0/max_size=0 resolve to this cap.",
+	"LANTERN_TRAVERSAL_MAX_TOUCHED_EDGES":     "Maximum adjacency entries scanned by PPR/PageRank-Nibble per Illuminate call; exhaustion returns RESOURCE_EXHAUSTED.",
+	"LANTERN_TRAVERSAL_TIMEOUT_MS":            "Server-side wall-clock budget for Illuminate traversals in milliseconds (default 5000; 0 explicitly disables it); expiry surfaces as DEADLINE_EXCEEDED.",
+	"LANTERN_OIDC_ADMIN_ISSUER":               "Exact HTTPS bootstrap administrator Issuer, required in OIDC mode.",
+	"LANTERN_OIDC_ADMIN_SUBJECTS":             "Nonempty JSON array of exact administrator subjects. Creates protected environment-owned security_admin memberships, with no implicit data grants.",
+	"LANTERN_OIDC_CLIENT_ID":                  "Registered browser client ID, required in OIDC mode.",
+	"LANTERN_OIDC_API_AUDIENCE":               "Required audience of API access tokens; ID tokens are not API credentials.",
+	"LANTERN_OIDC_BROWSER_ORIGIN":             "One exact HTTPS Admin origin. Browser sessions and login return paths are bound to it.",
+	"LANTERN_OIDC_REDIRECT_URI":               "Exact registered Admin origin plus Issuer-specific /auth/callback/<SHA-256> path.",
+	"LANTERN_OIDC_ALGORITHMS":                 "JSON array of allowed signing algorithms: RS256, ES256 and/or EdDSA.",
+	"LANTERN_OIDC_SECRET_REF":                 "Optional operator-installed browser client secret binding handle; no raw secret is stored in security state.",
+	"LANTERN_OIDC_SECRET_BINDINGS":            "Strict JSON map of installed secret handles to operator-owned private files and versions. Handles are write-only through management APIs.",
+	"LANTERN_OIDC_PRIVATE_ORIGINS":            "Strict JSON map of exact metadata origins to explicit nonzero CIDRs for private IdP access; no broad SSRF exemption.",
+	"LANTERN_OIDC_ROOT_CA_FILE":               "Optional absolute operator CA bundle for IdP HTTPS verification.",
+	"LANTERN_OIDC_TRUSTED_PROXY_IPS":          "JSON array of exact proxy IPs permitted to attest HTTPS with a single matching forwarded host/protocol. Never trust arbitrary forwarded headers.",
+	"LANTERN_SECURITY_STORE_MODE":             "Required native durable security storage mode: fresh or restart. Replica recovery never restores serving authority.",
+	"LANTERN_SECURITY_STORE_PATH":             "Absolute private security journal path with owned recovery proof sidecars; system metadata is nonexpiring and separate from public data.",
+	"LANTERN_SECURITY_GENERATION":             "Required nonzero generation, exactly 32 lowercase hexadecimal characters. Shared by the homogeneous protected cluster.",
+	"LANTERN_SECURITY_WRITER_KEY_FILE":        "Absolute private Ed25519 PKCS8 signing key; writer only. Replicas must not configure it.",
+	"LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE": "Required absolute pinned Ed25519 SPKI public key, shared by writer and replicas.",
+	"LANTERN_SECURITY_NODE_ROLE":              "Security authority role: writer or replica. This does not impose a leader on graph data writes.",
+	"LANTERN_SECURITY_WRITER_ENDPOINT":        "Exact HTTPS private workload endpoint of the single pinned policy writer.",
+	"LANTERN_SECURITY_BOOTSTRAP_REVISION":     "Positive operator bootstrap revision; stale/reused incompatible configuration cannot recreate removed administrators.",
+	"LANTERN_SECURITY_BOOTSTRAP_ROLES":        "Strict JSON array of bootstrap Roles; rules own all permissions. Existing immutable environment memberships protect their policies.",
+	"LANTERN_SECURITY_MAX_JOURNAL_BYTES":      "Hard security journal cap between 20 and 512 MiB. Capacity exhaustion fails closed; revocation has an independent image reserve.",
+	"LANTERN_SECURITY_CLOCK_QUALIFIED":        "Required exact true operator attestation that clock skew/drift meets the documented lease bounds; not a clock-check bypass or automatic qualification.",
+	"LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE": "Writer-only absolute private JSON file of named machine credentials and existing Role IDs. Canonical lnt_m1_ tokens have at most a 90-day lifetime; only digests enter sys state.",
+	"LANTERN_PEER_LISTEN_ADDR":                "Dedicated private workload host:port. Enables only replication/policy peer APIs, with TLS 1.3 and mutual certificates.",
+	"LANTERN_PEER_DEPLOYMENT":                 "Nonzero deployment ID, exactly 32 lowercase hexadecimal characters, bound into signed membership.",
+	"LANTERN_PEER_MEMBERSHIP_MODE":            "Private durable membership mode: fresh or resume. Retained floors prevent rollback.",
+	"LANTERN_PEER_MEMBERSHIP_FILE":            "Absolute signed operator membership manifest; reloaded periodically. At most a ten-minute lifetime.",
+	"LANTERN_PEER_MEMBERSHIP_STATE_FILE":      "Absolute owned membership floor/recovery path for this workload.",
+	"LANTERN_PEER_OPERATOR_PUBLIC_KEY_FILE":   "Absolute pinned Ed25519 operator SPKI key verifying membership; serving nodes never need its private key.",
+	"LANTERN_PEER_WORKLOAD_ID":                "Exact operator-approved SPIFFE URI identity for this node; independent of HLC NodeID and public identities.",
+	"LANTERN_PEER_CERT_FILE":                  "Absolute workload certificate with the approved URI SAN and pinned SPKI. Separate from public TLS identity.",
+	"LANTERN_PEER_KEY_FILE":                   "Absolute private workload key matching the admitted certificate.",
+	"LANTERN_PEER_TRUST_CA_FILE":              "Absolute CA bundle for the private mTLS domain; public credentials cannot grant workload membership.",
+	"LANTERN_CDC_ENABLED":                     "Exact true or false. Enables public scoped WatchChanges; never enables private Subscribe on the public listener.",
+	"LANTERN_CDC_CURSOR_KEY_RING_FILE":        "Absolute private JSON key ring with current_version and up to four versioned 32-byte lowercase-hex AEAD keys. Required for protected or HA CDC and shared across its replicas.",
 }
 
 // Render produces the docs/env.md markdown for the given registry specs. It
@@ -199,11 +235,11 @@ func Render(specs []envconfig.Spec) (string, error) {
 	b.WriteString("use compatible peer read limits. Full-mutation Subscribe requires binary\n")
 	b.WriteString("protobuf (not gRPC-Web text); identity-only ProtoJSON remains supported.\n")
 	b.WriteString("Snapshot keeps its independent bounded transport contract.\n\n")
-	b.WriteString("Authenticated HA peers require inbound TLS cert/key plus a separately pinned\n")
-	b.WriteString("outbound peer CA before startup; static peers must use HTTPS origins, while\n")
-	b.WriteString("DNS-discovered IPs are verified against the discovery DNS name. Every bearer-\n")
-	b.WriteString("sending peer path rejects redirects and plaintext; this does not secure\n")
-	b.WriteString("external clients, which must configure trusted HTTPS separately.\n\n")
+	b.WriteString("Authentication and peer trust settings are validated strictly even when general strict mode is off.\n")
+	b.WriteString("An explicitly empty authentication setting is configured, not absent. Retired bearer options fail startup.\n")
+	b.WriteString("HA uses a separate TLS 1.3 mTLS listener, signed membership and pinned workload identities in both OFF and OIDC.\n")
+	b.WriteString("Public tokens and browser cookies never admit a peer. OIDC also requires current short policy authority;\n")
+	b.WriteString("namespace isolation alone does not prove asynchronous policy freshness. See [ADR 0012](decisions/0012-oidc-prefix-rbac.md).\n\n")
 	b.WriteString("| Variable | Type | Default | Description |\n")
 	b.WriteString("|---|---|---|---|\n")
 	for _, s := range sorted {

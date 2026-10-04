@@ -75,6 +75,10 @@ func register(key, kind, def string) {
 	}
 }
 
+// RegisterString declares a conditional setting without reading its value.
+// This keeps strict typo checks and generated docs complete in disabled modes.
+func RegisterString(key, def string) { register(key, "string", def) }
+
 func markSet(key string) {
 	mu.Lock()
 	defer mu.Unlock()

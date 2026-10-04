@@ -136,6 +136,7 @@ enum MutationOp_Op {
   deleteEdgeContribution,
   deleteEdgeContributions,
   replicatedReceiptEdgeContributionDelete,
+  edgeCreateEffect,
   notSet
 }
 
@@ -171,6 +172,7 @@ class MutationOp extends $pb.GeneratedMessage {
     $0.DeleteEdgeContributionsRequest? deleteEdgeContributions,
     ReplicatedReceiptEdgeContributionDelete?
         replicatedReceiptEdgeContributionDelete,
+    EdgeCreateEffect? edgeCreateEffect,
   }) {
     final result = create();
     if (putVertex != null) result.putVertex = putVertex;
@@ -206,6 +208,7 @@ class MutationOp extends $pb.GeneratedMessage {
     if (replicatedReceiptEdgeContributionDelete != null)
       result.replicatedReceiptEdgeContributionDelete =
           replicatedReceiptEdgeContributionDelete;
+    if (edgeCreateEffect != null) result.edgeCreateEffect = edgeCreateEffect;
     return result;
   }
 
@@ -240,6 +243,7 @@ class MutationOp extends $pb.GeneratedMessage {
     19: MutationOp_Op.deleteEdgeContribution,
     20: MutationOp_Op.deleteEdgeContributions,
     21: MutationOp_Op.replicatedReceiptEdgeContributionDelete,
+    22: MutationOp_Op.edgeCreateEffect,
     0: MutationOp_Op.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
@@ -267,7 +271,8 @@ class MutationOp extends $pb.GeneratedMessage {
       18,
       19,
       20,
-      21
+      21,
+      22
     ])
     ..aOM<$0.PutVertexRequest>(1, _omitFieldNames ? '' : 'putVertex',
         subBuilder: $0.PutVertexRequest.create)
@@ -321,6 +326,8 @@ class MutationOp extends $pb.GeneratedMessage {
     ..aOM<ReplicatedReceiptEdgeContributionDelete>(
         21, _omitFieldNames ? '' : 'replicatedReceiptEdgeContributionDelete',
         subBuilder: ReplicatedReceiptEdgeContributionDelete.create)
+    ..aOM<EdgeCreateEffect>(22, _omitFieldNames ? '' : 'edgeCreateEffect',
+        subBuilder: EdgeCreateEffect.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -607,6 +614,191 @@ class MutationOp extends $pb.GeneratedMessage {
   @$pb.TagNumber(21)
   ReplicatedReceiptEdgeContributionDelete
       ensureReplicatedReceiptEdgeContributionDelete() => $_ensure(20);
+
+  /// Local WAL/CDC accepted-effect evidence. Peer apply rejects this arm:
+  /// local absence is not a cluster-wide absence proof.
+  @$pb.TagNumber(22)
+  EdgeCreateEffect get edgeCreateEffect => $_getN(21);
+  @$pb.TagNumber(22)
+  set edgeCreateEffect(EdgeCreateEffect value) => $_setField(22, value);
+  @$pb.TagNumber(22)
+  $core.bool hasEdgeCreateEffect() => $_has(21);
+  @$pb.TagNumber(22)
+  void clearEdgeCreateEffect() => $_clearField(22);
+  @$pb.TagNumber(22)
+  EdgeCreateEffect ensureEdgeCreateEffect() => $_ensure(21);
+}
+
+/// Retains the origin decision; restore never re-evaluates rejected positions.
+class EdgeCreateEffectItem extends $pb.GeneratedMessage {
+  factory EdgeCreateEffectItem({
+    $0.Edge? original,
+    $0.CreateEdgeOutcome? outcome,
+    $0.MutationReceipt? receipt,
+  }) {
+    final result = create();
+    if (original != null) result.original = original;
+    if (outcome != null) result.outcome = outcome;
+    if (receipt != null) result.receipt = receipt;
+    return result;
+  }
+
+  EdgeCreateEffectItem._();
+
+  factory EdgeCreateEffectItem.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory EdgeCreateEffectItem.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'EdgeCreateEffectItem',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<$0.Edge>(1, _omitFieldNames ? '' : 'original',
+        subBuilder: $0.Edge.create)
+    ..e<$0.CreateEdgeOutcome>(
+        2, _omitFieldNames ? '' : 'outcome', $pb.PbFieldType.OE,
+        defaultOrMaker: $0.CreateEdgeOutcome.CREATE_EDGE_OUTCOME_UNSPECIFIED,
+        valueOf: $0.CreateEdgeOutcome.valueOf,
+        enumValues: $0.CreateEdgeOutcome.values)
+    ..aOM<$0.MutationReceipt>(3, _omitFieldNames ? '' : 'receipt',
+        subBuilder: $0.MutationReceipt.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  EdgeCreateEffectItem clone() =>
+      EdgeCreateEffectItem()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  EdgeCreateEffectItem copyWith(void Function(EdgeCreateEffectItem) updates) =>
+      super.copyWith((message) => updates(message as EdgeCreateEffectItem))
+          as EdgeCreateEffectItem;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static EdgeCreateEffectItem create() => EdgeCreateEffectItem._();
+  @$core.override
+  EdgeCreateEffectItem createEmptyInstance() => create();
+  static $pb.PbList<EdgeCreateEffectItem> createRepeated() =>
+      $pb.PbList<EdgeCreateEffectItem>();
+  @$core.pragma('dart2js:noInline')
+  static EdgeCreateEffectItem getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<EdgeCreateEffectItem>(create);
+  static EdgeCreateEffectItem? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $0.Edge get original => $_getN(0);
+  @$pb.TagNumber(1)
+  set original($0.Edge value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasOriginal() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearOriginal() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $0.Edge ensureOriginal() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $0.CreateEdgeOutcome get outcome => $_getN(1);
+  @$pb.TagNumber(2)
+  set outcome($0.CreateEdgeOutcome value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasOutcome() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearOutcome() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $0.MutationReceipt get receipt => $_getN(2);
+  @$pb.TagNumber(3)
+  set receipt($0.MutationReceipt value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasReceipt() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearReceipt() => $_clearField(3);
+  @$pb.TagNumber(3)
+  $0.MutationReceipt ensureReceipt() => $_ensure(2);
+}
+
+/// Receipt fields are all present or all absent. No receiver may treat this as
+/// an unconditional Put/Add, fabricate endpoints, or overwrite a live Edge.
+class EdgeCreateEffect extends $pb.GeneratedMessage {
+  factory EdgeCreateEffect({
+    $core.Iterable<EdgeCreateEffectItem>? items,
+    $core.List<$core.int>? deploymentEpoch,
+    $core.List<$core.int>? policyFingerprint,
+  }) {
+    final result = create();
+    if (items != null) result.items.addAll(items);
+    if (deploymentEpoch != null) result.deploymentEpoch = deploymentEpoch;
+    if (policyFingerprint != null) result.policyFingerprint = policyFingerprint;
+    return result;
+  }
+
+  EdgeCreateEffect._();
+
+  factory EdgeCreateEffect.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory EdgeCreateEffect.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'EdgeCreateEffect',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..pc<EdgeCreateEffectItem>(
+        1, _omitFieldNames ? '' : 'items', $pb.PbFieldType.PM,
+        subBuilder: EdgeCreateEffectItem.create)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'deploymentEpoch', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'policyFingerprint', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  EdgeCreateEffect clone() => EdgeCreateEffect()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  EdgeCreateEffect copyWith(void Function(EdgeCreateEffect) updates) =>
+      super.copyWith((message) => updates(message as EdgeCreateEffect))
+          as EdgeCreateEffect;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static EdgeCreateEffect create() => EdgeCreateEffect._();
+  @$core.override
+  EdgeCreateEffect createEmptyInstance() => create();
+  static $pb.PbList<EdgeCreateEffect> createRepeated() =>
+      $pb.PbList<EdgeCreateEffect>();
+  @$core.pragma('dart2js:noInline')
+  static EdgeCreateEffect getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<EdgeCreateEffect>(create);
+  static EdgeCreateEffect? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<EdgeCreateEffectItem> get items => $_getList(0);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get deploymentEpoch => $_getN(1);
+  @$pb.TagNumber(2)
+  set deploymentEpoch($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasDeploymentEpoch() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearDeploymentEpoch() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get policyFingerprint => $_getN(2);
+  @$pb.TagNumber(3)
+  set policyFingerprint($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasPolicyFingerprint() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearPolicyFingerprint() => $_clearField(3);
 }
 
 /// One request-index-aligned item in a receipt-bearing Edge Delete. The

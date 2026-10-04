@@ -1,21 +1,16 @@
-# Auth-on overlay (#850): run the testbed with bearer-token auth armed.
-#
-# Usage:
-#   cd testbed
-#   docker compose -f docker-compose.yml -f docker-compose.auth.yml up -d
-#   LANTERN_TOKEN=testbed-secret lantern-cli get vertex alice     # env form
-#   lantern-cli --token testbed-secret get vertex alice           # flag form
-#
-# Notes:
-#   - LANTERN_AUTH_TOKENS carries two entries to exercise the documented
-#     zero-downtime rotation shape (clients may present either).
-#   - The healthcheck needs no token: /readyz lives on the metrics
-#     listener (bind-scoped, no auth by design) and grpc.health.v1 is
-#     always exempt.
-#   - Bearer tokens over plaintext h2c are sniffable; this overlay is for
-#     LOCAL testbed exercise only — see docs/ha-runbook.md "Securing the
-#     cluster" for the token+TLS guidance.
+# Native OIDC testbed profile. Provision complete config/secret files first.
+# For deterministic CI use server/cmd/authfixture and native_receipt_fixture.sh.
 services:
   lantern:
+    env_file: ["${LANTERN_OIDC_CONFIG_DIR:?native OIDC configuration required}/server.env"]
     environment:
-      LANTERN_AUTH_TOKENS: "testbed-secret,testbed-secret-rotating"
+      LANTERN_AUTH_MODE: oidc
+      LANTERN_METRICS_ADDR: 127.0.0.1:9090
+    volumes:
+      - ${LANTERN_OIDC_CONFIG_DIR:?native OIDC configuration required}/files:/run/lantern-config:ro
+      - lantern-oidc-state:/state
+    ports: !override ["127.0.0.1:6380:6380"]
+  prometheus:
+    profiles: [operator-diagnostics]
+volumes:
+  lantern-oidc-state:

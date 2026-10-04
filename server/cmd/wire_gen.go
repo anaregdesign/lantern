@@ -53,33 +53,66 @@ func initializeApp() (*App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	authConfig := provider.NewAuthConfig(config)
+	securityConfig := provider.NewSecurityConfig(config)
+	securityRuntime, cleanup2, err := provider.NewSecurityRuntime(securityConfig, servingRuntime)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
 	backupper, err := provider.NewBackupper(backupConfig, receiptWALConfig, servingRuntime, lanternService, runtimeCertified, registry, logger)
 	if err != nil {
+		cleanup2()
 		cleanup()
 		return nil, nil, err
 	}
-	publicReceiptsCertified, err := provider.NewPublicReceiptsCertified(receiptWALConfig, authConfig, servingRuntime, lanternService, backupper, runtimeCertified)
+	peerPlaneConfig := provider.NewPeerPlaneConfig(config)
+	peerIdentityRuntime, cleanup3, err := provider.NewConfiguredPeerIdentity(peerPlaneConfig)
 	if err != nil {
+		cleanup2()
 		cleanup()
 		return nil, nil, err
 	}
-	listener, cleanup2, err := provider.NewListener(netConfig, runtimeCertified, publicReceiptsCertified)
+	securityPeerRuntime, err := provider.NewConfiguredSecurityPeer(securityRuntime, peerIdentityRuntime)
 	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	publicSecurityCertified, err := provider.NewPublicSecurityCertified(securityRuntime, tlsConfig, peerIdentityRuntime, securityPeerRuntime, servingRuntime, lanternService, runtimeCertified)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	publicReceiptsCertified, err := provider.NewOIDCPublicReceiptsCertified(receiptWALConfig, securityRuntime, servingRuntime, lanternService, backupper, runtimeCertified, publicSecurityCertified)
+	if err != nil {
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	listener, cleanup4, err := provider.NewListener(netConfig, runtimeCertified, publicReceiptsCertified)
+	if err != nil {
+		cleanup3()
+		cleanup2()
 		cleanup()
 		return nil, nil, err
 	}
 	corsConfig := provider.NewCORSConfig(config)
+	changeConfig := provider.NewChangeConfig(config, domainMetrics)
 	validationInterceptor := provider.NewValidationInterceptorProvider(validationLimits, domainMetrics, logger)
 	rateLimitConfig := provider.NewRateLimitConfig(config)
 	rateLimitInterceptor := provider.NewRateLimitInterceptorProvider(rateLimitConfig, domainMetrics)
-	authInterceptor := provider.NewAuthInterceptorProvider(authConfig, domainMetrics)
 	loggingInterceptor := provider.NewLoggingInterceptor(logger)
 	prometheusInterceptor := provider.NewPrometheusInterceptor(registry)
 	slowRPCInterceptor := provider.NewSlowRPCInterceptorProvider(observabilityConfig, logger)
 	healthChecker := provider.NewHealthChecker()
-	lanternListener, err := provider.NewLanternListener(listener, netConfig, tlsConfig, observabilityConfig, corsConfig, lanternService, lanternReplicationService, validationInterceptor, rateLimitInterceptor, authInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger)
+	lanternListener, err := provider.NewPublicLanternListener(listener, netConfig, tlsConfig, observabilityConfig, corsConfig, lanternService, securityRuntime, changeConfig, validationInterceptor, rateLimitInterceptor, loggingInterceptor, prometheusInterceptor, slowRPCInterceptor, healthChecker, logger, publicSecurityCertified)
 	if err != nil {
+		cleanup4()
+		cleanup3()
 		cleanup2()
 		cleanup()
 		return nil, nil, err
@@ -90,17 +123,28 @@ func initializeApp() (*App, func(), error) {
 	lanternServer := service.NewLanternServer(lanternListener, logger, lifecycleConfig, healthChecker, graphCache, lanternService, lanternReplicationService)
 	readinessConfig := provider.NewReadinessConfig(config)
 	peerConfig := provider.NewPeerConfig(config)
-	peerResolver := provider.NewPeerResolver(peerConfig, logger)
-	gate := provider.NewReadinessGate(readinessConfig, peerConfig, peerResolver, healthChecker)
-	metricsServer := provider.NewMetricsServer(observabilityConfig, registry, gate, logger, runtimeCertified)
-	tracing, err := provider.NewTracing(logger)
+	peerResolver := provider.NewWorkloadPeerResolver(peerIdentityRuntime)
+	gate := provider.NewServingReadinessGate(readinessConfig, peerConfig, peerResolver, healthChecker, securityRuntime)
+	metricsServer, err := provider.NewServingMetricsServer(observabilityConfig, registry, gate, logger, runtimeCertified, publicSecurityCertified)
 	if err != nil {
+		cleanup4()
+		cleanup3()
 		cleanup2()
 		cleanup()
 		return nil, nil, err
 	}
-	peerTransport, err := provider.NewPeerTransport(peerConfig, tlsConfig, authConfig)
+	tracing, err := provider.NewTracing(logger)
 	if err != nil {
+		cleanup4()
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	peerTransport, err := provider.NewWorkloadPeerTransport(peerIdentityRuntime)
+	if err != nil {
+		cleanup4()
+		cleanup3()
 		cleanup2()
 		cleanup()
 		return nil, nil, err
@@ -108,6 +152,8 @@ func initializeApp() (*App, func(), error) {
 	metrics := provider.NewPumpMetrics(domainMetrics, gate)
 	snapshotInstallerSelection, err := provider.NewSnapshotInstallerSelection(receiptWALConfig, cacheConfig, searchConfig, servingRuntime, lanternService, logger, runtimeCertified)
 	if err != nil {
+		cleanup4()
+		cleanup3()
 		cleanup2()
 		cleanup()
 		return nil, nil, err
@@ -119,14 +165,28 @@ func initializeApp() (*App, func(), error) {
 	llmConfig := provider.NewLLMConfig(config)
 	llmEngine, err := provider.NewLLMEngine(llmConfig)
 	if err != nil {
+		cleanup4()
+		cleanup3()
 		cleanup2()
 		cleanup()
 		return nil, nil, err
 	}
+	peerPlaneServer, cleanup5, err := provider.NewPeerPlaneServer(peerPlaneConfig, peerIdentityRuntime, securityPeerRuntime, lanternReplicationService, netConfig, logger, runtimeCertified)
+	if err != nil {
+		cleanup4()
+		cleanup3()
+		cleanup2()
+		cleanup()
+		return nil, nil, err
+	}
+	securityWorkers := provider.NewSecurityWorkers(securityRuntime, peerIdentityRuntime, securityPeerRuntime, gate, logger)
 	domainMetricsWired := provider.WireDomainMetrics(graphCache, servingRuntime, domainMetrics)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
-	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, domainMetricsWired, cacheGCHooksWired)
+	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, peerPlaneServer, securityWorkers, peerPlaneConfig, domainMetricsWired, cacheGCHooksWired)
 	return app, func() {
+		cleanup5()
+		cleanup4()
+		cleanup3()
 		cleanup2()
 		cleanup()
 	}, nil

@@ -34,7 +34,7 @@ type testProvider struct {
 	nanos     atomic.Int64
 }
 
-func newTestProvider(t testing.TB) *testProvider {
+func newTestProvider(t *testing.T) *testProvider {
 	t.Helper()
 	pub, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -86,7 +86,7 @@ func (p *testProvider) accessClaims() jwt.MapClaims {
 	return jwt.MapClaims{"iss": p.trust.Issuer.URL, "sub": "user", "aud": "lantern", "client_id": "client", "jti": "unique", "iat": p.now().Unix(), "exp": p.now().Add(time.Hour).Unix()}
 }
 
-func (p *testProvider) sign(t testing.TB, claims jwt.MapClaims, typ string) string {
+func (p *testProvider) sign(t *testing.T, claims jwt.MapClaims, typ string) string {
 	t.Helper()
 	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
 	token.Header["kid"], token.Header["typ"] = "key", typ

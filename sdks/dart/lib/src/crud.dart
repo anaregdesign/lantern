@@ -342,6 +342,62 @@ extension LanternCrud on LanternClient {
     return AddEdgesResult(written: written, effectiveWeights: weights);
   }
 
+  /// Creates connections in bounded chunks, without automatically replaying a failed chunk.
+  Future<List<CreateEdgeOutcome>> createEdges(
+    Iterable<EdgeInput> edges, {
+    int batchSize = defaultBatchSize,
+    LanternCallOptions? options,
+  }) async {
+    _ensureOpen();
+    final input = List<EdgeInput>.unmodifiable(edges);
+    _validateBatch(input.length, batchSize);
+    _validateCreateInputs(input);
+    final expirations = _resolveExpirations(input, _clock().toUtc());
+    final callOptions = _freezeCallOptions(options);
+    final outcomes = <CreateEdgeOutcome>[];
+    for (var offset = 0; offset < input.length; offset += batchSize) {
+      try {
+        _throwIfCanceled(callOptions?.cancellation);
+        final end = _chunkEnd(offset, batchSize, input.length);
+        final request = $graph.CreateEdgesRequest(
+          edges: [
+            for (var i = offset; i < end; i++)
+              _edgeInputToProto(input[i], expirations[i]),
+          ],
+        );
+        final response = await _invoke(
+          'CreateEdges',
+          callOptions,
+          (raw, headers, signal, onHeader, onTrailer) => raw.createEdges(
+            request,
+            headers: headers,
+            signal: signal,
+            onHeader: onHeader,
+            onTrailer: onTrailer,
+          ),
+        );
+        if (response.outcomes.length != end - offset) {
+          throw _internalSdkException(
+            'server returned misaligned Create outcomes',
+          );
+        }
+        final decoded = response.outcomes
+            .map(_createOutcomeFromProto)
+            .toList(growable: false);
+        outcomes.addAll(decoded);
+      } on Exception catch (error) {
+        throw BatchException(committed: offset, cause: error);
+      }
+    }
+    return List<CreateEdgeOutcome>.unmodifiable(outcomes);
+  }
+
+  /// One-item facade over [createEdges].
+  Future<CreateEdgeOutcome> createEdge(
+    EdgeInput edge, {
+    LanternCallOptions? options,
+  }) async => (await createEdges([edge], options: options)).single;
+
   /// Idempotently overwrites one edge and returns its authoritative outcome.
   Future<PutOutcome> putEdge(
     EdgeInput edge, {

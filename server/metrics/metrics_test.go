@@ -911,3 +911,17 @@ func collectHistogramCount(t *testing.T, h prometheus.Histogram) uint64 {
 	}
 	return dtoM.GetHistogram().GetSampleCount()
 }
+
+func TestDomainMetrics_PublicChangesSeparateFromPrivateSubscribe(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(reg, Options{})
+	m.OnChangeStarted()
+	if testutil.ToFloat64(m.changesActive) != 1 || testutil.ToFloat64(m.subscribeActive) != 0 {
+		t.Fatal("public CDC confused with private peers")
+	}
+	m.OnChangeEnded()
+	m.OnChangeDropped("gapped")
+	if testutil.ToFloat64(m.changesActive) != 0 || testutil.ToFloat64(m.changesDropped.WithLabelValues("gapped")) != 1 {
+		t.Fatal("unbalanced public CDC lifecycle")
+	}
+}

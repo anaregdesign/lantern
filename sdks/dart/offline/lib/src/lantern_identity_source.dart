@@ -9,7 +9,11 @@ import 'types.dart';
 
 final _responderPattern = RegExp(r'^[0-9a-f]{32}$');
 
-/// Bridges the official online identity stream to the offline CDC consumer.
+/// Legacy private-plane identity bridge for historical conformance only.
+///
+/// Public Server listeners reject its replication status/Subscribe operations.
+/// Applications must use consumeScopedChanges and the public WatchChanges
+/// composition shown by the maintained Flutter example.
 ///
 /// [client] must connect to one real responder for the lifetime of each
 /// session. In particular, an ordinary load-balancing URL does not satisfy

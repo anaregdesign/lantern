@@ -188,11 +188,16 @@ func (h *lanternReplicationServiceConnect) Subscribe(ctx context.Context, req *c
 		return connect.NewError(connect.CodeInvalidArgument,
 			errors.New("full-mutation Subscribe requires binary protobuf encoding; JSON and unknown codecs are unsupported"))
 	}
-	// *connect.ServerStream[T] satisfies service.Sender[T] directly
-	// (both expose Send(*T) error). The service method returns a
-	// *connect.Error already, so no translation layer is needed.
-	return h.svc.Subscribe(ctx, req.Msg, stream)
+	return h.svc.Subscribe(ctx, req.Msg, replicationHeaderSender{stream})
 }
+
+// A nil transport send flushes headers without serializing a protobuf frame.
+// The service invokes it only after accepting and registering a subscription.
+type replicationHeaderSender struct {
+	*connect.ServerStream[pb.SubscribeResponse]
+}
+
+func (s replicationHeaderSender) FlushHeaders() error { return s.Send(nil) }
 
 func binaryProtobufContentType(contentType string) bool {
 	mediaType, _, err := mime.ParseMediaType(contentType)
@@ -231,4 +236,11 @@ type replicationDisabledError struct{}
 
 func (*replicationDisabledError) Error() string {
 	return "replication is not enabled on this server"
+}
+
+func (h *lanternServiceConnect) CreateEdge(ctx context.Context, req *connect.Request[pb.CreateEdgeRequest]) (*connect.Response[pb.CreateEdgeResponse], error) {
+	return dataUnary(ctx, req, h.svc, h.svc.CreateEdge)
+}
+func (h *lanternServiceConnect) CreateEdges(ctx context.Context, req *connect.Request[pb.CreateEdgesRequest]) (*connect.Response[pb.CreateEdgesResponse], error) {
+	return dataUnary(ctx, req, h.svc, h.svc.CreateEdges)
 }

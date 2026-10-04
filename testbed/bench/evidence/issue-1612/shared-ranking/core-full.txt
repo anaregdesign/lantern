@@ -1,0 +1,26 @@
+ok  	github.com/anaregdesign/lantern/core/cache	(cached)
+?   	github.com/anaregdesign/lantern/core/cache/example	[no test files]
+ok  	github.com/anaregdesign/lantern/core/collection/pq	(cached)
+ok  	github.com/anaregdesign/lantern/core/collection/set	(cached)
+ok  	github.com/anaregdesign/lantern/core/collection/slice	(cached)
+ok  	github.com/anaregdesign/lantern/core/concurrent/pubsub	(cached)
+?   	github.com/anaregdesign/lantern/core/concurrent/pubsub/example	[no test files]
+ok  	github.com/anaregdesign/lantern/core/graph	(cached)
+?   	github.com/anaregdesign/lantern/core/graph/example	[no test files]
+ok  	github.com/anaregdesign/lantern/core/graphcache	4.268s
+?   	github.com/anaregdesign/lantern/core/graphcache/example	[no test files]
+ok  	github.com/anaregdesign/lantern/core/hlc	(cached)
+ok  	github.com/anaregdesign/lantern/core/llm	(cached)
+ok  	github.com/anaregdesign/lantern/core/llm/anthropic	(cached)
+?   	github.com/anaregdesign/lantern/core/llm/anthropic/example	[no test files]
+ok  	github.com/anaregdesign/lantern/core/llm/gemini	(cached)
+?   	github.com/anaregdesign/lantern/core/llm/gemini/example	[no test files]
+ok  	github.com/anaregdesign/lantern/core/llm/openai	(cached)
+?   	github.com/anaregdesign/lantern/core/llm/openai/example	[no test files]
+?   	github.com/anaregdesign/lantern/core/model/function	[no test files]
+ok  	github.com/anaregdesign/lantern/core/mutationlog	(cached)
+ok  	github.com/anaregdesign/lantern/core/mutationreceipt	(cached)
+ok  	github.com/anaregdesign/lantern/core/nlp	(cached)
+ok  	github.com/anaregdesign/lantern/core/search	0.765s
+?   	github.com/anaregdesign/lantern/core/search/example	[no test files]
+ok  	github.com/anaregdesign/lantern/core/search/relevance	(cached)

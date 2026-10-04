@@ -65,7 +65,25 @@ message MutationOp {
     // Independent receipt family; the target ContribID is not the
     // deletion operation's receipt identity.
     ReplicatedReceiptEdgeContributionDelete replicated_receipt_edge_contribution_delete = 21;
+    // Local WAL/CDC accepted-effect evidence. Peer apply rejects this arm:
+    // local absence is not a cluster-wide absence proof.
+    EdgeCreateEffect edge_create_effect = 22;
   }
+}
+
+// Retains the origin decision; restore never re-evaluates rejected positions.
+message EdgeCreateEffectItem {
+  Edge original = 1;
+  CreateEdgeOutcome outcome = 2;
+  MutationReceipt receipt = 3;
+}
+
+// Receipt fields are all present or all absent. No receiver may treat this as
+// an unconditional Put/Add, fabricate endpoints, or overwrite a live Edge.
+message EdgeCreateEffect {
+  repeated EdgeCreateEffectItem items = 1;
+  bytes deployment_epoch = 2;
+  bytes policy_fingerprint = 3;
 }
 
 // One request-index-aligned item in a receipt-bearing Edge Delete. The
