@@ -20,6 +20,8 @@ Issuers, users and Role assignments via current authenticated Server APIs.
 Identity is the verified Issuer/subject pair, not email, display name or a client
 header. Machines use dedicated credentials bound only to Roles and cannot
 claim recent interactive authentication.
+For Google, first review the [provider setup and qualification prerequisites](google-oidc-setup.md),
+including signed `auth_time`, exact callback and private secret binding.
 
 Provision fresh native sys: state only for a new generation. Use durable restart
 for existing state. Policy changes require expected revision, immutable change

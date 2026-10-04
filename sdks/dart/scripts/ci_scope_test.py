@@ -179,6 +179,11 @@ class ScopeTest(unittest.TestCase):
                 False,
                 (True, False),
             ),
+            "Head write-only native host fixture": (
+                ["testbed/scripts/native_head_fixture.sh"],
+                False,
+                (True, False),
+            ),
         }
         for name, (paths, toolchain_changed, expected) in cases.items():
             with self.subTest(name):

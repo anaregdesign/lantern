@@ -149,6 +149,10 @@ func (m *LoginTransactions) Begin(trust Trust, discovery Discovery, returnPath, 
 	query.Set("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:]))
 	query.Set("code_challenge_method", "S256")
 	query.Set("max_age", "300")
+	// max_age alone does not make every provider include auth_time. Request
+	// the signed claim explicitly; verification still rejects missing/stale
+	// evidence rather than inferring authentication time from issuance.
+	query.Set("claims", `{"id_token":{"auth_time":{"essential":true}}}`)
 	if stepUp {
 		query.Set("max_age", "0")
 		query.Set("prompt", "login")

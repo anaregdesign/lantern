@@ -33,6 +33,7 @@ on:
       - "tests/integration/dart_contribution_delete_test.dart"
       - "testbed/scripts/dart_identity_fixture.sh"
       - "testbed/scripts/native_receipt_fixture.sh"
+      - "testbed/scripts/native_head_fixture.sh"
       - "testbed/scripts/dart_receipt_fixture.sh"
       - "tests/integration/auth_test.go"
       - "docs/decisions/0001-dart-mobile-transport.md"
@@ -79,6 +80,7 @@ on:
       - "tests/integration/dart_contribution_delete_test.dart"
       - "testbed/scripts/dart_identity_fixture.sh"
       - "testbed/scripts/native_receipt_fixture.sh"
+      - "testbed/scripts/native_head_fixture.sh"
       - "testbed/scripts/dart_receipt_fixture.sh"
       - "tests/integration/auth_test.go"
       - "docs/decisions/0001-dart-mobile-transport.md"
@@ -682,6 +684,22 @@ jobs:
       - name: Resolve maintained offline application composition
         working-directory: sdks/dart/example
         run: flutter pub get --enforce-lockfile
+
+      - name: Verify maintained Head write-only assertions over native TLS
+        working-directory: .
+        run: |
+          state="$RUNNER_TEMP/lantern-head-wire"
+          fixture_script="$GITHUB_WORKSPACE/testbed/scripts/native_head_fixture.sh"
+          trap 'bash "$fixture_script" stop "$state"' EXIT
+          bash "$fixture_script" start \
+            "$RUNNER_TEMP/lantern-sqlite" "$RUNNER_TEMP/lantern-sqlite-authfixture" "$state" 6403
+          cd sdks/dart/example
+          LANTERN_HEAD_WIRE_ENDPOINT=https://localhost:6403 \
+            LANTERN_HEAD_WIRE_CA_FILE="$state/trust/ca.pem" \
+            LANTERN_HEAD_WIRE_OBSERVER_TOKEN_FILE="$state/observer-token" \
+            LANTERN_HEAD_WIRE_WRITER_TOKEN_FILE="$state/trust/head-writer-token" \
+            flutter test --no-pub test/head_edge_fixture_test.dart --reporter expanded
+          cd ../../..
 
       - name: Test offline scoped CDC over authenticated Connect
         working-directory: .

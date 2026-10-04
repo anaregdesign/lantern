@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:connectrpc/connect.dart' as connect;
 import 'package:flutter_test/flutter_test.dart';
@@ -13,6 +12,7 @@ import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart
 import 'package:lantern_example/scoped_change_source.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 
+import 'support/head_edge_fixture.dart';
 import 'support/physical_result_marker.dart';
 
 void main() {
@@ -120,6 +120,14 @@ void main() {
         'physical-cdc:$unique:tail',
         'physical-cdc:$unique:head',
       );
+      result.addTrackedTearDown(() async {
+        await client.deleteEdge(edge);
+        await client.deleteVertices([
+          vertexKey,
+          ...edgeEndpointKeys([edge]),
+        ]);
+      });
+      await seedLiveEdgeEndpoints(client, [edge]);
       await client.putVertex(
         VertexInput(
           key: vertexKey,
@@ -368,7 +376,7 @@ void main() {
       final contribution = EdgeContributionRef(
         tail: edge.tail,
         head: edge.head,
-        contribId: Uint8List(24)..[23] = 11,
+        contribId: physicalContributionId('$unique', 11),
       );
       await client.addEdge(
         EdgeInput(

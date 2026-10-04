@@ -12,6 +12,7 @@ import 'package:path/path.dart' as paths;
 import 'package:sqflite/sqflite.dart' as sqflite;
 
 import 'support/receipt_attestation.dart';
+import 'support/head_edge_fixture.dart';
 import 'support/receipt_physical_fixture.dart';
 import 'support/receipt_restart_journal.dart';
 import 'support/receipt_scenarios.dart';
@@ -479,6 +480,7 @@ Future<void> _verifyEdgeDelete(
 ) => run.verifyScenario('receipt_edge_delete_exact', () async {
   final present = keys.edge('delete_edge');
   final missing = keys.edge('missing_edge');
+  await seedLiveEdgeEndpoints(direct, [present]);
   expect(
     await direct.putEdge(
       EdgeInput(
@@ -519,6 +521,7 @@ Future<void> _verifyContributionAdd(
   _ReceiptKeys keys,
 ) => run.verifyScenario('receipt_contribution_add_after_delete', () async {
   final edge = keys.edge('contribution');
+  await seedLiveEdgeEndpoints(direct, [edge]);
   final expiration = DateTime.now().toUtc().add(_expiresIn);
   expect(
     await direct.putEdge(
@@ -538,14 +541,14 @@ Future<void> _verifyContributionAdd(
     head: edge.head,
     weight: 2,
     expiresAt: expiration,
-    contribId: _contribution(1),
+    contribId: keys.contribution(1),
   );
   final second = EdgeInput(
     tail: edge.tail,
     head: edge.head,
     weight: 3,
     expiresAt: expiration,
-    contribId: _contribution(2),
+    contribId: keys.contribution(2),
   );
   final write = await repository.addEdges(
     partitionId: _partition,
@@ -590,7 +593,7 @@ Future<void> _verifyContributionAdd(
         head: edge.head,
         weight: 6,
         expiresAt: expiration,
-        contribId: _contribution(1),
+        contribId: keys.contribution(1),
       ),
       context: original,
     ),
@@ -610,13 +613,13 @@ Future<void> _verifyContributionAdd(
         tail: edge.tail,
         head: edge.head,
         weight: 1,
-        contribId: _contribution(3),
+        contribId: keys.contribution(3),
       ),
       EdgeInput(
         tail: edge.tail,
         head: edge.head,
         weight: 1,
-        contribId: _contribution(3),
+        contribId: keys.contribution(3),
       ),
     ],
   ]) {
@@ -636,6 +639,7 @@ Future<void> _verifyOverflow(
   _ReceiptKeys keys,
 ) async {
   final edge = keys.edge('overflow');
+  await seedLiveEdgeEndpoints(direct, [edge]);
   expect(
     await direct.putEdge(
       EdgeInput(
@@ -655,7 +659,7 @@ Future<void> _verifyOverflow(
       head: edge.head,
       weight: _maxFloat32,
       expiresIn: _expiresIn,
-      contribId: _contribution(4),
+      contribId: keys.contribution(4),
     ),
   );
   expect(await repository.drain(_partition), 1);
@@ -780,10 +784,11 @@ Future<void> _verifyContributionDelete(
   _ReceiptKeys keys,
 ) => run.verifyScenario('receipt_edge_contribution_delete_exact', () async {
   final edge = keys.edge('contribution_delete');
+  await seedLiveEdgeEndpoints(direct, [edge]);
   EdgeContributionRef target(int id, {String? head}) => EdgeContributionRef(
     tail: edge.tail,
     head: head ?? edge.head,
-    contribId: _contribution(id),
+    contribId: keys.contribution(id),
   );
   await direct.putEdge(
     EdgeInput(
@@ -899,6 +904,7 @@ Future<String> _verifyCommittedLoss(
     );
     for (final name in ['lost_edge_delete', 'lost_add']) {
       final edge = keys.edge(name);
+      await seedLiveEdgeEndpoints(direct, [edge]);
       expect(
         await direct.putEdge(
           EdgeInput(
@@ -915,6 +921,7 @@ Future<String> _verifyCommittedLoss(
     await _missingEdge(direct, keys.edge('lost_add'));
 
     final targeted = keys.edge('lost_contribution_delete');
+    await seedLiveEdgeEndpoints(direct, [targeted]);
     await direct.putEdge(
       EdgeInput(
         tail: targeted.tail,
@@ -929,14 +936,14 @@ Future<String> _verifyCommittedLoss(
         head: targeted.head,
         weight: 2,
         expiresAt: expiration,
-        contribId: _contribution(9),
+        contribId: keys.contribution(9),
       ),
       EdgeInput(
         tail: targeted.tail,
         head: targeted.head,
         weight: 3,
         expiresAt: expiration,
-        contribId: _contribution(10),
+        contribId: keys.contribution(10),
       ),
     ]);
     await repository.putVertexIfAbsent(
@@ -966,7 +973,7 @@ Future<String> _verifyCommittedLoss(
         head: keys.edge('lost_add').head,
         weight: 4,
         expiresAt: expiration,
-        contribId: _contribution(5),
+        contribId: keys.contribution(5),
       ),
     );
     await repository.deleteEdgeContribution(
@@ -975,7 +982,7 @@ Future<String> _verifyCommittedLoss(
       contribution: EdgeContributionRef(
         tail: targeted.tail,
         head: targeted.head,
-        contribId: _contribution(9),
+        contribId: keys.contribution(9),
       ),
     );
     final beforeSend = await store.transaction(
@@ -1106,11 +1113,12 @@ Future<void> _missingEdge(LanternClient client, EdgeRef edge) =>
     expectLater(client.getEdge(edge), throwsA(isA<LanternNotFoundException>()));
 
 Future<void> _cleanupRemote(LanternClient client, _ReceiptKeys keys) async {
-  await client.deleteVertices(keys.vertices);
   await client.deleteEdges(keys.edges);
+  await client.deleteVertices([
+    ...keys.vertices,
+    ...edgeEndpointKeys(keys.edges),
+  ]);
 }
-
-Uint8List _contribution(int suffix) => Uint8List(24)..[23] = suffix;
 
 int _float32Bits(double value) =>
     (ByteData(4)..setFloat32(0, value, Endian.big)).getUint32(0, Endian.big);
@@ -1151,6 +1159,7 @@ final class _ReceiptKeys {
   EdgeRef edge(String name) =>
       EdgeRef('$prefix${name}_tail', '$prefix${name}_head');
   String operation(String name) => 'receipt-$runId-$name';
+  Uint8List contribution(int intent) => physicalContributionId(runId, intent);
 
   Iterable<String> get vertices => [
     'existing',

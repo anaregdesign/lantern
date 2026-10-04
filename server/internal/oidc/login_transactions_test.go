@@ -32,6 +32,9 @@ func TestLoginTransactionsPKCESingleUseMixUpAndRestart(t *testing.T) {
 	parsed, _ := url.Parse(start.AuthorizationURL)
 	query := parsed.Query()
 	state := query.Get("state")
+	if query.Get("claims") != `{"id_token":{"auth_time":{"essential":true}}}` {
+		t.Fatal("signed authentication time was not requested")
+	}
 	if query.Get("code_challenge_method") != "S256" || query.Get("response_type") != "code" || query.Get("scope") != "openid" || query.Get("max_age") != "300" || strings.Contains(start.String(), state) {
 		t.Fatal("unsafe login redirect")
 	}
@@ -70,7 +73,7 @@ func TestLoginTransactionsConcurrentConsumeAndBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	parsed, _ := url.Parse(start.AuthorizationURL)
-	if parsed.Query().Get("max_age") != "0" || parsed.Query().Get("prompt") != "login" {
+	if parsed.Query().Get("max_age") != "0" || parsed.Query().Get("prompt") != "login" || parsed.Query().Get("claims") != `{"id_token":{"auth_time":{"essential":true}}}` {
 		t.Fatal("step-up did not force auth")
 	}
 	var successes atomic.Int32

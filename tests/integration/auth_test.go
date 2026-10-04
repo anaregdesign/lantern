@@ -770,6 +770,7 @@ type oidcControlWireFixture struct {
 type oidcWireCode struct {
 	nonce, challenge, subject string
 	wrongNonce                bool
+	authTime                  string
 }
 
 func newOIDCControlWireFixture(t *testing.T, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
@@ -820,7 +821,14 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 				nonce = "wrong-nonce"
 			}
 			accessHash := sha512.Sum512([]byte("provider-private-access-token"))
-			id := f.signedToken(map[string]any{"iss": f.provider.URL, "sub": code.subject, "aud": "admin", "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(), "auth_time": now.Unix(), "nonce": nonce, "at_hash": base64.RawURLEncoding.EncodeToString(accessHash[:32])}, "JWT")
+			claims := map[string]any{"iss": f.provider.URL, "sub": code.subject, "aud": "admin", "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(), "auth_time": now.Unix(), "nonce": nonce, "at_hash": base64.RawURLEncoding.EncodeToString(accessHash[:32])}
+			switch code.authTime {
+			case "missing":
+				delete(claims, "auth_time")
+			case "stale":
+				claims["auth_time"] = now.Add(-6 * time.Minute).Unix()
+			}
+			id := f.signedToken(claims, "JWT")
 			_ = json.NewEncoder(w).Encode(map[string]any{"id_token": id, "access_token": "provider-private-access-token", "token_type": "Bearer"})
 		default:
 			http.NotFound(w, r)
@@ -1526,7 +1534,7 @@ func (f *oidcControlWireFixture) browserCallbackPath(t *testing.T, start *http.R
 		t.Fatal(err)
 	}
 	query := authorize.Query()
-	if query.Get("code_challenge_method") != "S256" || query.Get("response_type") != "code" || query.Get("scope") != "openid" || query.Get("nonce") == "" || query.Get("state") == "" {
+	if query.Get("code_challenge_method") != "S256" || query.Get("response_type") != "code" || query.Get("scope") != "openid" || query.Get("nonce") == "" || query.Get("state") == "" || query.Get("claims") != `{"id_token":{"auth_time":{"essential":true}}}` {
 		t.Fatal("code/nonce/PKCE missing")
 	}
 	var rawCode [16]byte
@@ -1652,7 +1660,7 @@ func TestAuth_OIDCBrowserSessionRealConnect(t *testing.T) {
 	}
 	stepUp := f.browserLoginStart(t, cookies, true)
 	authorize, _ := url.Parse(stepUp.Header.Get("Location"))
-	if authorize.Query().Get("max_age") != "0" || authorize.Query().Get("prompt") != "login" {
+	if authorize.Query().Get("max_age") != "0" || authorize.Query().Get("prompt") != "login" || authorize.Query().Get("claims") != `{"id_token":{"auth_time":{"essential":true}}}` {
 		t.Fatal("step-up omitted fresh authentication")
 	}
 	rotated := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, f.browserCallbackPath(t, stepUp, "admin", false), stepUp.Cookies(), ""))
@@ -1696,6 +1704,26 @@ func TestAuth_OIDCBrowserLoginFailuresRealConnect(t *testing.T) {
 			response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), ""))
 			if response.StatusCode != http.StatusUnauthorized || browserCookieValue(response.Cookies(), "__Host-lantern-session") != "" {
 				t.Fatal("invalid login created a session", response.StatusCode)
+			}
+		})
+	}
+	for _, evidence := range []string{"missing", "stale"} {
+		t.Run(evidence+" signed auth_time", func(t *testing.T) {
+			start := f.browserLoginStart(t, nil, false)
+			path := f.browserCallbackPath(t, start, "admin", false)
+			callback, err := url.Parse(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			codeID := callback.Query().Get("code")
+			f.mu.Lock()
+			code := f.codes[codeID]
+			code.authTime = evidence
+			f.codes[codeID] = code
+			f.mu.Unlock()
+			response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), ""))
+			if response.StatusCode != http.StatusUnauthorized || browserCookieValue(response.Cookies(), "__Host-lantern-session") != "" {
+				t.Fatal("unproven recent authentication created a session", response.StatusCode)
 			}
 		})
 	}

@@ -25,6 +25,10 @@ invalidates unfinished transactions. Optional at_hash is validated against the
 co-returned access token; tokens and code-exchange credentials remain private.
 Session issuance separately requires recent auth_time and the current Issuer
 configuration revision. Groups/email never grant Roles or link accounts.
+Authorization requests explicitly require the signed `auth_time` claim through
+the OIDC `claims` parameter; missing evidence still fails closed. Provider
+prerequisites and Google's step-up limitation are documented in the
+[Google setup runbook](google-oidc-setup.md).
 
 Discovery and JWKS use a bounded proxy-free HTTPS fetcher with normal TLS
 verification, pinned validated DNS destinations and no redirects. Private

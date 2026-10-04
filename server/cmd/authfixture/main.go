@@ -45,11 +45,12 @@ type fixtureNode struct {
 	Environment  map[string]string `json:"environment"`
 }
 type fixture struct {
-	Nodes          []fixtureNode `json:"nodes"`
-	CAFile         string        `json:"ca_file"`
-	TokenFile      string        `json:"token_file"`
-	ClientCertFile string        `json:"client_cert_file"`
-	ClientKeyFile  string        `json:"client_key_file"`
+	Nodes               []fixtureNode `json:"nodes"`
+	CAFile              string        `json:"ca_file"`
+	TokenFile           string        `json:"token_file"`
+	HeadWriterTokenFile string        `json:"head_writer_token_file,omitempty"`
+	ClientCertFile      string        `json:"client_cert_file"`
+	ClientKeyFile       string        `json:"client_key_file"`
 }
 
 func main() {
@@ -68,6 +69,7 @@ func main() {
 	publicMTLS := flag.Bool("public-mtls", false, "require a separate local client certificate on public listeners")
 	receiptHA := flag.Bool("receipt-ha", false, "four-node native receipt HA with a separate policy writer and controlled data relay")
 	edgeCreate := flag.Bool("edge-create", false, "qualify standalone existing-endpoint Create under Vertex-derived Head authority")
+	headEdge := flag.Bool("head-edge", false, "qualify standalone Head write-only handling with a separate machine Role")
 	receipt := flag.Bool("receipt", false, "enable native receipt WAL for each OIDC node")
 	readyTimeout := flag.Duration("ready-timeout", time.Minute, "bounded verified-TLS production readiness wait")
 	flag.Parse()
@@ -85,7 +87,7 @@ func main() {
 		return
 	}
 	if *restartNode != "" {
-		if !*compose || *directory == "" || *renew || *renewEvery != 0 || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *overridesFile != "" || flag.NArg() != 0 {
+		if !*compose || *directory == "" || *renew || *renewEvery != 0 || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *overridesFile != "" || flag.NArg() != 0 {
 			fmt.Fprintln(os.Stderr, "authfixture: restart requires only -compose -restart-node -directory")
 			os.Exit(1)
 		}
@@ -96,7 +98,7 @@ func main() {
 		return
 	}
 	if *renew {
-		if !*compose || *directory == "" || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *overridesFile != "" || flag.NArg() != 0 {
+		if !*compose || *directory == "" || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *overridesFile != "" || flag.NArg() != 0 {
 			fmt.Fprintln(os.Stderr, "authfixture: renewal requires only -compose -renew -directory")
 			os.Exit(1)
 		}
@@ -138,6 +140,9 @@ func main() {
 	if err == nil && *edgeCreate && (*compose || *mode != "oidc" || len(public) != 1 || len(peer) != 0 || *serverBinary == "") {
 		err = errors.New("edge-create requires one supervised standalone OIDC node")
 	}
+	if err == nil && *headEdge && (*compose || *mode != "oidc" || !*receipt || len(public) != 1 || len(peer) != 0 || *serverBinary == "" || *edgeCreate) {
+		err = errors.New("head-edge requires one supervised standalone OIDC receipt node")
+	}
 	var result fixture
 	if err == nil {
 		result, err = generateTopology(*directory, public, peer, *mode, *tokensFile, *compose)
@@ -152,6 +157,9 @@ func main() {
 	}
 	if err == nil && *edgeCreate {
 		err = addFixtureEdgeCreate(&result)
+	}
+	if err == nil && *headEdge {
+		err = addFixtureHeadEdge(&result, *directory)
 	}
 	if err == nil && *compose {
 		err = exportComposeFixture(&result, *directory)
