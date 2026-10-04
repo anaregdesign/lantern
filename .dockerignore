@@ -26,3 +26,12 @@ admin/.vite
 admin/.react-router
 admin/test-results
 admin/playwright-report
+
+# Native SDK build products are host-specific and not image inputs (#1640).
+sdks/rust/**/target
+**/.dart_tool
+sdks/dart/**/build
+
+# Bench output can include retained private operator/machine fixture material.
+# Keep it outside both Server and Admin repository-root build contexts.
+testbed/bench/out
