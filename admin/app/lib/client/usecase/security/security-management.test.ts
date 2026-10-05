@@ -123,6 +123,126 @@ function fixture(
   );
 }
 describe("reviewed security changes", () => {
+  for (const [read, supersede] of [
+    [
+      "audit",
+      (controller: SecurityManagementController) => controller.loadAudit(),
+    ],
+    [
+      "templates",
+      (controller: SecurityManagementController) =>
+        controller.loadTemplates("tenant:"),
+    ],
+    [
+      "members",
+      (controller: SecurityManagementController) =>
+        controller.loadRoleMembers("reader"),
+    ],
+  ] as const) {
+    for (const outcome of ["resolve", "reject"] as const) {
+      test(`${read} supersession retires repeated delayed Prepare ${outcome} and requires fresh review`, async () => {
+        const settlements: (() => void)[] = [];
+        const signals: AbortSignal[] = [];
+        let prepares = 0,
+          ids = 0,
+          applied = 0;
+        const controller = fixture({
+          newChangeId: () => new Uint8Array(16).fill(7 + ids++),
+          prepare: (review, signal) => {
+            const response = {
+              $typeName: "graph.v1.PrepareSecurityChangesResponse" as const,
+              expectedVersion: review.expectedVersion,
+              changeId: review.changeId,
+              intentDigest: new Uint8Array(32).fill(4),
+              requirement: SecurityAuthorizationRequirement.ORDINARY,
+            };
+            if (++prepares > 2) return Promise.resolve(response);
+            signals.push(signal);
+            // Settling after cancellation exercises an already in-flight response.
+            return new Promise((resolve, reject) => {
+              settlements.push(() =>
+                outcome === "resolve"
+                  ? resolve(response)
+                  : reject(new Error("interrupted")),
+              );
+            });
+          },
+          apply: async () => {
+            applied++;
+            return result;
+          },
+        });
+        await controller.load();
+        let originalID: Uint8Array | undefined;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const preparing = controller.review("Original", changes);
+          expect(controller.getSnapshot().review?.approval).toBe("preparing");
+          const original = controller.getSnapshot().review!;
+          originalID = original.changeId;
+          await supersede(controller);
+          expect(signals[attempt].aborted).toBe(true);
+          expect(controller.getSnapshot().review?.approval).toBe("failed");
+          expect(controller.getSnapshot().review?.changeId).toEqual(
+            original.changeId,
+          );
+          expect(controller.getSnapshot().review?.changes).toEqual(
+            original.changes,
+          );
+          expect(controller.getSnapshot().review?.version).toEqual(
+            original.version,
+          );
+          settlements[attempt]();
+          await preparing;
+          expect(controller.getSnapshot().review?.approval).toBe("failed");
+          await controller.apply();
+          expect(applied).toBe(0);
+        }
+        await controller.review("Reviewed again", changes);
+        expect(controller.getSnapshot().review?.approval).toBe("ordinary");
+        expect(controller.getSnapshot().review?.changeId).not.toEqual(
+          originalID,
+        );
+        expect(applied).toBe(0);
+        await controller.apply();
+        expect(applied).toBe(1);
+        controller.dispose();
+      });
+    }
+  }
+  for (const outcome of ["resolve", "reject"] as const) {
+    test(`cancelling a delayed Prepare ignores its later ${outcome}`, async () => {
+      let settle = () => {};
+      let applied = 0;
+      const controller = fixture({
+        prepare: (review) =>
+          new Promise((resolve, reject) => {
+            settle = () =>
+              outcome === "resolve"
+                ? resolve({
+                    $typeName: "graph.v1.PrepareSecurityChangesResponse",
+                    expectedVersion: review.expectedVersion,
+                    changeId: review.changeId,
+                    intentDigest: new Uint8Array(32).fill(4),
+                    requirement: SecurityAuthorizationRequirement.ORDINARY,
+                  })
+                : reject(new Error("cancelled"));
+          }),
+        apply: async () => {
+          applied++;
+          return result;
+        },
+      });
+      await controller.load();
+      const preparing = controller.review("Cancelled", changes);
+      controller.cancelReview();
+      settle();
+      await preparing;
+      expect(controller.getSnapshot().review).toBeUndefined();
+      await controller.apply();
+      expect(applied).toBe(0);
+      controller.dispose();
+    });
+  }
   test("audit supersession rejects delayed Begin and closes its popup without stranding the review", async () => {
     let closed = 0,
       begins = 0;

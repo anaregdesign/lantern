@@ -261,6 +261,15 @@ export class SecurityManagementController {
     if (this.disposed || this.scope.aborted)
       throw new Error("Authentication scope changed.");
     const review = this.state.review;
+    if (review?.approval === "preparing") {
+      // A scope read can interrupt preflight. Retire its preparation without
+      // authorizing Apply, and ignore its eventual response through the ticket.
+      this.publish({
+        review: { ...review, approval: "failed" },
+        message:
+          "The review check was interrupted. No Apply was sent; review the change again before applying.",
+      });
+    }
     if (review?.approval === "starting") {
       // Every scope operation may supersede Begin, including audit/member
       // reads. Close only the owned window and leave this exact review usable.

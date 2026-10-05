@@ -24,6 +24,81 @@ async function reviewRole(page: import("@playwright/test").Page) {
     .getByRole("button", { name: "Review Role change", exact: true })
     .click();
 }
+test("audit interrupts slow review preparation and permits explicit fresh review", async ({
+  page,
+}) => {
+  const fixture = await securityUI(page);
+  let release = () => {};
+  let intercepted = () => {};
+  const received = new Promise<void>((resolve) => {
+    intercepted = resolve;
+  });
+  const paused = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let prepares = 0;
+  await page.route(
+    `${fixture.primary}/**/PrepareSecurityChanges`,
+    async (route) => {
+      if (++prepares !== 1) return route.fallback();
+      intercepted();
+      await paused;
+      try {
+        await route.fallback();
+      } catch (error) {
+        if (!route.request().failure()) throw error;
+      }
+    },
+  );
+  try {
+    await page.goto(`${fixture.primary}/security/roles`);
+    await reviewRole(page);
+    await received;
+    await expect(
+      page
+        .getByRole("region", { name: "Review security change", exact: true })
+        .getByText("Checking the reviewed change with Server…", {
+          exact: true,
+        }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Load audit", exact: true }).click();
+    await expect(
+      page.getByText("The review check was interrupted.", { exact: false }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Checking the reviewed change with Server…", {
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Review Role change", exact: true }),
+    ).toBeEnabled();
+    release();
+    await page
+      .getByRole("button", { name: "Review Role change", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+    ).toBeEnabled();
+    expect(
+      fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+    ).toHaveLength(0);
+    await page
+      .getByRole("button", { name: "Apply reviewed change", exact: true })
+      .click();
+    await expect(
+      page.getByText("Change committed.", { exact: false }),
+    ).toBeVisible();
+    expect(
+      fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+    ).toHaveLength(1);
+  } finally {
+    release();
+  }
+});
 for (const width of [1280, 390]) {
   test(`Head-managed Role review and Server explanation at ${width}px`, async ({
     page,
