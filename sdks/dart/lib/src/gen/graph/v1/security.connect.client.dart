@@ -231,6 +231,58 @@ extension type LanternSecurityServiceClient (connect.Transport _transport) {
     );
   }
 
+  /// Nonmutating authoritative review; approval never rotates a session.
+  Future<graphv1security.PrepareSecurityChangesResponse> prepareSecurityChanges(
+    graphv1security.PrepareSecurityChangesRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternSecurityService.prepareSecurityChanges,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
+  Future<graphv1security.BeginSecurityChangeAuthorizationResponse> beginSecurityChangeAuthorization(
+    graphv1security.BeginSecurityChangeAuthorizationRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternSecurityService.beginSecurityChangeAuthorization,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
+  Future<graphv1security.GetSecurityChangeAuthorizationResponse> getSecurityChangeAuthorization(
+    graphv1security.GetSecurityChangeAuthorizationRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternSecurityService.getSecurityChangeAuthorization,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
   /// Plural is canonical and atomic, with request-index-aligned outcomes.
   Future<graphv1security.ApplySecurityChangesResponse> applySecurityChanges(
     graphv1security.ApplySecurityChangesRequest input, {

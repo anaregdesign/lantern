@@ -7,8 +7,9 @@ policy/replication uses a separate workload listener. The complete boundary and
 configuration contract is [ADR 0012](decisions/0012-oidc-prefix-rbac.md).
 Source implementation and local conformance do not establish final real-provider,
 qualified production clock, device or publication acceptance (#1610).
-Merged fixed-writer source `93d53789` and the approved, pending #1672 policy
-are distinguished below; this guide does not change runtime behavior.
+The fixed-writer baseline `93d53789` used a blanket five-minute management gate.
+The #1672 implementation below removes it for qualified-human ordinary actions;
+final real-provider and combined browser acceptance remain pending.
 
 API Bearer authentication accepts the signed JWT access-token profile in
 [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.html). The bounded unverified
@@ -20,9 +21,11 @@ current account state, Role evaluation and serving authority remain Server
 admission responsibilities.
 An OIDC identity kind and verified `(iss, sub)` do not by themselves distinguish
 end-user and machine access tokens. Legitimate end-user Bearer management
-eligibility is preserved; the trusted provenance/classification mechanism and
-existing mixed-Bearer compatibility remain under review. Do not infer machine
-write eligibility from gate removal or impose a browser-only policy. See the
+eligibility requires exact durable human enrollment and qualification of the
+actual Issuer's client-subject noncollision/nonimpersonation contract. Existing
+mixed profiles must be qualified before activation; ambiguous actors cannot
+mutate. Do not infer machine write eligibility from gate removal or impose a
+browser-only policy. See the
 [operation/actor matrix](decisions/0012-oidc-prefix-rbac.md#management-operation-and-actor-policy).
 
 Login uses Authorization Code with PKCE S256 and independent ID-token
@@ -36,22 +39,25 @@ older signed evidence; current Issuer configuration, Principal and Role checks
 still apply. Future or contradictory signed evidence is rejected. Ordinary
 login and replacement do not infer authentication time from `iat`, callback,
 consent or account selection, and do not request forced provider reauthentication.
-The current Server-owned transaction saves an explicit step-up purpose
-independent of session replacement. At `93d53789`, step-up requests `max_age=0`,
-`prompt=login` and an essential signed `auth_time` through the OIDC `claims`
-parameter. Step-up and
-Apply/Store management/ValidateIssuer require a signed event within five
-minutes; failure preserves the existing session. #1672 removes that blanket
-gate for ordinary end-user management, including Role creation/data grants/
-exact self-assignment and non-mutating Issuer validation. Missing/older evidence
-is allowed with valid authentication and current explicit authority. Trust
-changes and effective `security.manage` expansion require per-operation
-reauthentication with a separately reviewed intent/identity/one-use proof;
-the current step-up endpoint does not establish that contract. Machines may
-perform authorized reference/status reads but no management mutation. Current
-authority, CSRF, CAS, credential/session expiry, env-owned locks, administrator
-invariants and invalid/future/contradictory-evidence rejection remain.
-Groups/email never grant Roles or link accounts.
+The Server-owned transaction saves an explicit step-up purpose independent of
+session replacement. Explicit session step-up and operation approval request
+`max_age=0`, `prompt=login` and an
+essential signed `auth_time` through the OIDC `claims` parameter. Ordinary
+qualified-human management has no fixed age gate. Issuer trust and effective
+`security.manage` expansion use a separate operation-purpose transaction bound
+to the final reviewed ID, canonical v1 intent, actor and full current cut.
+Its signed event must follow review under the qualified whole-second NumericDate
+boundary; a same-second event is ambiguous and cannot approve the operation.
+The purpose callback branches before session issuance and ordinary cookie writes.
+Generic session step-up remains separate; it cannot substitute for operation
+approval. Groups/email never grant Roles or link accounts. RFC 9068 Bearer
+classification additionally requires exact durable human enrollment and a
+qualified Issuer noncollision/nonimpersonation contract; ambiguous and client
+actors cannot perform management mutations.
+Current authority, CSRF, CAS, credential/session expiry, env-owned locks and
+administrator invariants remain. ValidateIssuer has separate conservative
+qualified-human probe admission without an age gate; authorized machine
+reference/status reads do not settle eligibility for that outbound network probe.
 Provider prerequisites and Google's step-up limitation are documented in the
 [Google setup runbook](google-oidc-setup.md). Google Security bundle and its
 extra-claim app publication/verification are optional outside baseline gates.

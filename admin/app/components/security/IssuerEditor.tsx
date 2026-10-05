@@ -108,6 +108,17 @@ export function IssuerEditor({
             editor.patchIssuer({ enabled: data.checked === true })
           }
         />
+        <Field hint="Enable only after verifying that this Issuer prevents OAuth clients from using or impersonating enrolled human subjects. This trust change requires operation reauthentication.">
+          <Checkbox
+            label="Human and OAuth client subjects are qualified as separate"
+            checked={draft.humanSubjectNamespaceQualified}
+            onChange={(_, data) =>
+              editor.patchIssuer({
+                humanSubjectNamespaceQualified: data.checked === true,
+              })
+            }
+          />
+        </Field>
         <div className={styles.actions}>
           <Button onClick={editor.validateIssuer}>Validate with Server</Button>
           <Button type="submit" appearance="primary">

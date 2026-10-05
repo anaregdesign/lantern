@@ -805,13 +805,25 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 				http.Error(w, "invalid", http.StatusBadRequest)
 				return
 			}
+			if r.Form.Get("grant_type") == "client_credentials" {
+				// Fixture issuance contract: this OAuth client cannot select or
+				// impersonate a human subject, and never receives an ID token.
+				if r.Form.Get("client_id") != "wire-worker" || r.Form.Get("requested_sub") != "" {
+					http.Error(w, "invalid client profile", http.StatusBadRequest)
+					return
+				}
+				now := f.clock()
+				claims := map[string]any{"iss": f.provider.URL, "sub": "oauth-client:wire-worker", "aud": "api", "client_id": "wire-worker", "jti": "client-wire", "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(), "auth_time": now.Unix()}
+				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": f.signedToken(claims, "at+jwt"), "token_type": "Bearer"})
+				return
+			}
 			f.mu.Lock()
 			code, known := f.codes[r.Form.Get("code")]
 			delete(f.codes, r.Form.Get("code"))
 			f.mu.Unlock()
 			challenge := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
 			callback := sha256.Sum256([]byte(f.provider.URL))
-			if !known || r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("client_id") != "admin" || r.Form.Get("redirect_uri") != fmt.Sprintf("https://admin.example/auth/callback/%x", callback) || base64.RawURLEncoding.EncodeToString(challenge[:]) != code.challenge {
+			if !known || strings.HasPrefix(code.subject, "oauth-client:") || r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("client_id") != "admin" || r.Form.Get("redirect_uri") != fmt.Sprintf("https://admin.example/auth/callback/%x", callback) || base64.RawURLEncoding.EncodeToString(challenge[:]) != code.challenge {
 				http.Error(w, "invalid", http.StatusBadRequest)
 				return
 			}
@@ -875,7 +887,11 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 	for name, value := range map[string]string{
 		"LANTERN_AUTH_MODE": "oidc", "LANTERN_OIDC_ADMIN_ISSUER": f.provider.URL, "LANTERN_OIDC_ADMIN_SUBJECTS": `["admin","other"]`,
 		"LANTERN_OIDC_CLIENT_ID": "admin", "LANTERN_OIDC_API_AUDIENCE": "api", "LANTERN_OIDC_ALGORITHMS": `["EdDSA"]`, "LANTERN_OIDC_BROWSER_ORIGIN": "https://admin.example",
-		"LANTERN_OIDC_REDIRECT_URI": fmt.Sprintf("https://admin.example/auth/callback/%x", callback), "LANTERN_OIDC_ROOT_CA_FILE": filepath.Join(dir, "provider.pem"), "LANTERN_OIDC_PRIVATE_ORIGINS": string(origins),
+		// This deterministic issuer reserves enrolled human subjects; its
+		// client-credentials profile uses disjoint client subjects. Dedicated
+		// mixed-profile tests below revoke this qualification and fail closed.
+		"LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED": "true",
+		"LANTERN_OIDC_REDIRECT_URI":                      fmt.Sprintf("https://admin.example/auth/callback/%x", callback), "LANTERN_OIDC_ROOT_CA_FILE": filepath.Join(dir, "provider.pem"), "LANTERN_OIDC_PRIVATE_ORIGINS": string(origins),
 		"LANTERN_OIDC_TRUSTED_PROXY_IPS": `["127.0.0.1"]`,
 		"LANTERN_SECURITY_STORE_MODE":    "fresh", "LANTERN_SECURITY_STORE_PATH": filepath.Join(dir, "sys.wal"), "LANTERN_SECURITY_GENERATION": "01000000000000000000000000000000",
 		"LANTERN_SECURITY_NODE_ROLE": "writer", "LANTERN_SECURITY_WRITER_ENDPOINT": "https://peer.example", "LANTERN_SECURITY_WRITER_KEY_FILE": filepath.Join(dir, "writer.key"), "LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE": filepath.Join(dir, "writer.pub"),
@@ -1175,8 +1191,8 @@ for (const lost of [false, true]) {
  check(before.getSnapshot().phase === "ready", "actual browser role inspection");
  const expected = before.getSnapshot().version.revision;
  const changes = Array.from({length: lost ? 2 : 1}, (_, i) => ({ $typeName: "graph.v1.SecurityChange", operation: {case: "putRole", value: {$typeName: "graph.v1.SecurityRole", id: "admin_recovery_" + lost + "_" + i, name: "Reviewed role", rules: [], envOwned: false}}}));
- before.review("Reviewed recovery", changes);
- await before.apply(true);
+ await before.review("Reviewed recovery", changes);
+ await before.apply();
  const originalID = before.changeId();
  check(originalID.length === 32, "original immutable change ID");
  check(before.getSnapshot().mutation === (lost ? "unconfirmed" : "enforced"), "Apply acknowledgement boundary");
@@ -3466,6 +3482,266 @@ func TestAuth_HeadManagedBlindCreateDeleteReceiptAndGoFacadeRealConnect(t *testi
 	}
 }
 
+func TestAuth_OIDCOrdinaryManagementQualifiedHumanRealConnect(t *testing.T) {
+	for _, surface := range []string{"browser", "human bearer"} {
+		for _, evidence := range []string{"missing", "stale"} {
+			t.Run(surface+"/"+evidence, func(t *testing.T) {
+				f := newOIDCControlWireFixture(t)
+				client, data := f.client, f.data
+				token := f.token(t, "admin", func(claims map[string]any) {
+					if evidence == "missing" {
+						delete(claims, "auth_time")
+					} else {
+						claims["auth_time"] = f.clock().Add(-time.Hour).Unix()
+					}
+				})
+				var cookies []*http.Cookie
+				if surface == "browser" {
+					start := f.browserLoginStart(t, nil, false)
+					callback := f.browserCallbackPath(t, start, "admin", false)
+					parsed, _ := url.Parse(callback)
+					f.mu.Lock()
+					code := f.codes[parsed.Query().Get("code")]
+					code.authTime = evidence
+					f.codes[parsed.Query().Get("code")] = code
+					f.mu.Unlock()
+					response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback, start.Cookies(), ""))
+					if response.StatusCode != http.StatusSeeOther {
+						t.Fatal("ordinary login", response.StatusCode)
+					}
+					for _, cookie := range response.Cookies() {
+						if cookie.Name == "__Host-lantern-session" || cookie.Name == "__Host-lantern-csrf" {
+							cookies = append(cookies, cookie)
+						}
+					}
+					transport := authWireRoundTripper{next: http.DefaultTransport, cookies: cookies, csrf: browserCookieValue(cookies, "__Host-lantern-csrf")}
+					client = graphv1connect.NewLanternSecurityServiceClient(&http.Client{Transport: transport}, f.server.URL+"/browser")
+					data = graphv1connect.NewLanternServiceClient(&http.Client{Transport: transport}, f.server.URL+"/browser")
+					token = ""
+				}
+				principal, err := client.GetCurrentPrincipal(t.Context(), securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
+				if err != nil || principal.Msg.RecentAuthentication {
+					t.Fatal("ordinary authentication evidence", err)
+				}
+				issuer, err := client.GetIssuer(t.Context(), securityWireRequest(token, &pb.GetIssuerRequest{Issuer: f.provider.URL}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				probe := proto.Clone(issuer.Msg.Issuer).(*pb.SecurityIssuer)
+				probe.ConfigRevision, probe.EnvOwned, probe.HasSecretBinding = 0, false, false
+				if valid, err := client.ValidateIssuer(t.Context(), securityWireRequest(token, &pb.ValidateIssuerRequest{Issuer: probe})); err != nil || !valid.Msg.Valid {
+					t.Fatal("ordinary human issuer probe demanded recent auth", err)
+				}
+				role := &pb.SecurityRole{Id: "ordinary_data"}
+				for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_QUERY} {
+					role.Rules = append(role.Rules, &pb.SecurityRule{Id: fmt.Sprintf("action_%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
+				}
+				review := &pb.SecurityChangeReview{ExpectedVersion: principal.Msg.Version, ChangeId: bytes.Repeat([]byte{61}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: role}}, {Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: principal.Msg.Identity, RoleId: role.Id}}}}}
+				prepared, err := client.PrepareSecurityChanges(t.Context(), securityWireRequest(token, &pb.PrepareSecurityChangesRequest{Review: review}))
+				if err != nil || prepared.Msg.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY {
+					t.Fatal("data expansion required recent auth", err)
+				}
+				command := &pb.ApplySecurityChangesRequest{ExpectedRevision: review.ExpectedVersion.Revision, ChangeId: review.ChangeId, Changes: review.Changes}
+				applied, err := client.ApplySecurityChanges(t.Context(), securityWireRequest(token, command))
+				if err != nil {
+					t.Fatal("ordinary change", err)
+				}
+				for _, value := range []string{"first", "updated"} {
+					if _, err := data.PutVertex(t.Context(), securityWireRequest(token, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "users:owned", Value: &pb.Vertex_String_{String_: value}}})); err != nil {
+						t.Fatal("permitted scoped write", err)
+					}
+				}
+				if got, err := data.GetVertex(t.Context(), securityWireRequest(token, &pb.GetVertexRequest{Key: "users:owned"})); err != nil || got.Msg.Vertex.GetString_() != "updated" {
+					t.Fatal("permitted scoped read", err)
+				}
+				if _, err := data.PutVertex(t.Context(), securityWireRequest(token, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "outside:blocked", Value: &pb.Vertex_Nil{Nil: true}}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+					t.Fatal("outside prefix write", err)
+				}
+				if _, err := data.GetVertex(t.Context(), securityWireRequest(token, &pb.GetVertexRequest{Key: "outside:blocked"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+					t.Fatal("outside prefix read", err)
+				}
+				if _, err := data.DeleteVertex(t.Context(), securityWireRequest(token, &pb.DeleteVertexRequest{Key: "users:owned"})); err != nil {
+					t.Fatal("permitted scoped delete", err)
+				}
+				replay, err := client.ApplySecurityChanges(t.Context(), securityWireRequest(token, command))
+				if err != nil || !replay.Msg.Replayed || !proto.Equal(replay.Msg.Version, applied.Msg.Version) {
+					t.Fatal("ordinary exact retry", err)
+				}
+			})
+		}
+	}
+}
+
+func TestAuth_OIDCPurposeAuthorizationRealConnect(t *testing.T) {
+	for _, evidence := range []string{"fresh", "missing", "stale", "future", "null", "contradictory", "other subject", "wrong nonce"} {
+		t.Run(evidence, func(t *testing.T) {
+			f := newOIDCControlWireFixture(t)
+			login := f.browserLoginStart(t, nil, false)
+			ordinaryCallback := f.browserCallbackPath(t, login, "admin", false)
+			parsed, _ := url.Parse(ordinaryCallback)
+			f.mu.Lock()
+			ordinaryCode := f.codes[parsed.Query().Get("code")]
+			ordinaryCode.authTime = "missing"
+			f.codes[parsed.Query().Get("code")] = ordinaryCode
+			f.mu.Unlock()
+			ordinary := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, ordinaryCallback, login.Cookies(), ""))
+			if ordinary.StatusCode != http.StatusSeeOther {
+				t.Fatal("ordinary login", ordinary.StatusCode)
+			}
+			var cookies []*http.Cookie
+			for _, cookie := range ordinary.Cookies() {
+				if cookie.Name == "__Host-lantern-session" || cookie.Name == "__Host-lantern-csrf" {
+					cookies = append(cookies, cookie)
+				}
+			}
+			csrf := browserCookieValue(cookies, "__Host-lantern-csrf")
+			client := graphv1connect.NewLanternSecurityServiceClient(&http.Client{Transport: authWireRoundTripper{next: http.DefaultTransport, cookies: cookies, csrf: csrf}}, f.server.URL+"/browser")
+			before, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
+			if err != nil || before.Msg.RecentAuthentication {
+				t.Fatal(err)
+			}
+			identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "oauth-client:wire-worker"}
+			review := &pb.SecurityChangeReview{ExpectedVersion: before.Msg.Version, ChangeId: bytes.Repeat([]byte{62}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}}, {Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "security_admin"}}}}}
+			prepared, err := client.PrepareSecurityChanges(t.Context(), connect.NewRequest(&pb.PrepareSecurityChangesRequest{Review: review}))
+			if err != nil || prepared.Msg.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION {
+				t.Fatal("latent client grant did not require proof", err)
+			}
+			command := &pb.ApplySecurityChangesRequest{ExpectedRevision: review.ExpectedVersion.Revision, ChangeId: review.ChangeId, Changes: review.Changes}
+			if _, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(command)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatal("unapproved high impact", err)
+			}
+			begin, err := client.BeginSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.BeginSecurityChangeAuthorizationRequest{Review: review}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending, err := client.GetSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.GetSecurityChangeAuthorizationRequest{AuthorizationId: begin.Msg.AuthorizationId}))
+			if err != nil || pending.Msg.State != pb.SecurityAuthorizationState_SECURITY_AUTHORIZATION_STATE_PENDING || len(pending.Msg.AuthorizationProof) != 0 {
+				t.Fatal("pending approval", err)
+			}
+			// The challenge cannot begin until a whole NumericDate second after review.
+			f.advance(2 * time.Second)
+			startURL, _ := url.Parse(begin.Msg.StartUrl)
+			start := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, startURL.RequestURI(), cookies, ""))
+			if start.StatusCode != http.StatusFound {
+				t.Fatal("purpose start", start.StatusCode)
+			}
+			if strings.Contains(start.Header.Get("Location"), "max_age=0") == false {
+				t.Fatal("purpose did not request fresh signed authentication")
+			}
+			subject := "admin"
+			if evidence == "other subject" {
+				subject = "other"
+			}
+			callback := f.browserCallbackPath(t, start, subject, evidence == "wrong nonce")
+			parsed, _ = url.Parse(callback)
+			f.mu.Lock()
+			code := f.codes[parsed.Query().Get("code")]
+			if evidence != "fresh" {
+				code.authTime = evidence
+			}
+			f.codes[parsed.Query().Get("code")] = code
+			f.mu.Unlock()
+			beforeCallback, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			callbackResponse := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback, start.Cookies(), ""))
+			for _, cookie := range callbackResponse.Cookies() {
+				if cookie.Name == "__Host-lantern-session" || cookie.Name == "__Host-lantern-csrf" {
+					t.Fatal("purpose callback rotated ordinary cookies")
+				}
+			}
+			afterCallback, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
+			if err != nil || !proto.Equal(beforeCallback.Msg, afterCallback.Msg) || afterCallback.Msg.CsrfToken != csrf {
+				t.Fatal("purpose changed session/auth evidence/expiry/full cut", err)
+			}
+			status, err := client.GetSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.GetSecurityChangeAuthorizationRequest{AuthorizationId: begin.Msg.AuthorizationId}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evidence != "fresh" {
+				if callbackResponse.StatusCode != http.StatusUnauthorized || status.Msg.State != pb.SecurityAuthorizationState_SECURITY_AUTHORIZATION_STATE_DENIED || len(status.Msg.AuthorizationProof) != 0 {
+					t.Fatal("unqualified callback approved", callbackResponse.StatusCode, status.Msg)
+				}
+				return
+			}
+			if callbackResponse.StatusCode != http.StatusOK || status.Msg.State != pb.SecurityAuthorizationState_SECURITY_AUTHORIZATION_STATE_APPROVED || len(status.Msg.AuthorizationProof) != 32 {
+				t.Fatal("fresh operation approval", callbackResponse.StatusCode, status.Msg)
+			}
+			command.AuthorizationProof = status.Msg.AuthorizationProof
+			applied, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(command))
+			if err != nil || applied.Msg.Version.Revision != review.ExpectedVersion.Revision+1 {
+				t.Fatal("approved exact command", err)
+			}
+			command.AuthorizationProof = nil
+			retry, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(command))
+			if err != nil || !retry.Msg.Replayed || !proto.Equal(retry.Msg.Version, applied.Msg.Version) {
+				t.Fatal("known exact retry demanded fresh proof", err)
+			}
+			// The qualified fixture's client profile has disjoint subjects. A signed
+			// auth_time and management assignment still cannot make it an end-user.
+			form := url.Values{"grant_type": {"client_credentials"}, "client_id": {"wire-worker"}}
+			clientResponse, err := f.provider.Client().PostForm(f.provider.URL+"/token", form)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var clientTokens map[string]string
+			if err := json.NewDecoder(clientResponse.Body).Decode(&clientTokens); err != nil {
+				t.Fatal(err)
+			}
+			clientResponse.Body.Close()
+			clientToken := clientTokens["access_token"]
+			if clientToken == "" || clientTokens["id_token"] != "" {
+				t.Fatal("qualified client profile issued human evidence")
+			}
+			form.Set("requested_sub", "admin")
+			impersonation, err := f.provider.Client().PostForm(f.provider.URL+"/token", form)
+			if err != nil {
+				t.Fatal(err)
+			}
+			impersonation.Body.Close()
+			if impersonation.StatusCode == http.StatusOK {
+				t.Fatal("client profile impersonated enrolled human")
+			}
+			clientPrincipal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(clientToken, &pb.GetCurrentPrincipalRequest{}))
+			if err != nil {
+				t.Fatal("client reference", err)
+			}
+			if _, err := f.client.ListRoles(t.Context(), securityWireRequest(clientToken, &pb.ListRolesRequest{})); err != nil {
+				t.Fatal("client explicit reference authority", err)
+			}
+			issuer, err := f.client.GetIssuer(t.Context(), securityWireRequest(clientToken, &pb.GetIssuerRequest{Issuer: f.provider.URL}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			probe := proto.Clone(issuer.Msg.Issuer).(*pb.SecurityIssuer)
+			probe.ConfigRevision, probe.EnvOwned, probe.HasSecretBinding = 0, false, false
+			if _, err := f.client.ValidateIssuer(t.Context(), securityWireRequest(clientToken, &pb.ValidateIssuerRequest{Issuer: probe})); connect.CodeOf(err) != connect.CodePermissionDenied {
+				t.Fatal("client reference rights implicitly qualified network probe", err)
+			}
+			if _, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(clientToken, &pb.ApplySecurityChangesRequest{ExpectedRevision: clientPrincipal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{63}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "client_forbidden"}}}}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+				t.Fatal("OAuth client was classified human", err)
+			}
+		})
+	}
+}
+
+func TestAuth_OIDCMixedBearerProfileCannotMutateRealConnect(t *testing.T) {
+	f := newOIDCControlWireFixtureConfigured(t, func(config *provider.SecurityConfig) { config.Bootstrap.Issuer.HumanSubjectNamespaceQualified = false })
+	admin := f.token(t, "admin", nil)
+	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil {
+		t.Fatal("mixed-profile reference", err)
+	}
+	if _, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: principal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{64}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "unresolved_forbidden"}}}}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("ambiguous bearer inferred human from enrolled sub/auth_time/client_id", err)
+	}
+	after, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil || !proto.Equal(principal.Msg.Version, after.Msg.Version) {
+		t.Fatal("ambiguous bearer mutated", err)
+	}
+}
+
 func TestAuth_OIDCBrowserLoginAndStepUpPurposesRealConnect(t *testing.T) {
 	for _, evidence := range []string{"missing", "stale"} {
 		t.Run(evidence, func(t *testing.T) {
@@ -3512,8 +3788,9 @@ func TestAuth_OIDCBrowserLoginAndStepUpPurposesRealConnect(t *testing.T) {
 				t.Fatal("ordinary session could not read permitted management state", err)
 			}
 			change := &pb.ApplySecurityChangesRequest{ExpectedRevision: roles.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{42}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "recent_proof", Rules: []*pb.SecurityRule{{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}}}}}}}}
-			if _, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(change)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-				t.Fatal("unproven management change admitted", err)
+			ordinaryCommit, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(change))
+			if err != nil {
+				t.Fatal("ordinary management required recent authentication", err)
 			}
 			if _, err := clientFor(cookies, "").ApplySecurityChanges(t.Context(), connect.NewRequest(change)); connect.CodeOf(err) != connect.CodePermissionDenied {
 				t.Fatal("ordinary session bypassed CSRF", err)
@@ -3531,7 +3808,7 @@ func TestAuth_OIDCBrowserLoginAndStepUpPurposesRealConnect(t *testing.T) {
 				t.Fatal("step-up accepted missing/old proof", failed.StatusCode)
 			}
 			unchanged, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
-			if err != nil || unchanged.Msg.RecentAuthentication || unchanged.Msg.Version.Revision != principal.Msg.Version.Revision {
+			if err != nil || unchanged.Msg.RecentAuthentication || unchanged.Msg.Version.Revision != ordinaryCommit.Msg.Version.Revision {
 				t.Fatal("failed step-up changed ordinary session", err)
 			}
 
@@ -3566,6 +3843,7 @@ func TestAuth_OIDCBrowserLoginAndStepUpPurposesRealConnect(t *testing.T) {
 				t.Fatal("actual fresh evidence did not qualify", err)
 			}
 			change.ExpectedRevision = verified.Msg.Version.Revision
+			change.ChangeId = bytes.Repeat([]byte{43}, 16)
 			if _, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(change)); err != nil {
 				t.Fatal("fresh authorized management change refused", err)
 			}

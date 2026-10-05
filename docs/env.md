@@ -89,6 +89,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_NODE_ID` | string | (empty) | Stable nonzero 32-hex-char (16-byte) node identity for HLC/replication; random per boot when unset in graph-only mode, but explicitly required and immutable in durable receipt-WAL modes. |
 | `LANTERN_OIDC_ADMIN_ISSUER` | string | (empty) | Exact HTTPS bootstrap administrator Issuer, required in OIDC mode. |
 | `LANTERN_OIDC_ADMIN_SUBJECTS` | string | (empty) | Nonempty JSON array of exact administrator subjects. Creates protected environment-owned security_admin memberships, with no implicit data grants. |
+| `LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED` | bool | `false` | Operator qualification that OAuth clients cannot collide with or impersonate exact enrolled human subjects. Required for human Bearer management; RFC 9068/client_id/auth_time alone are insufficient. Qualify the actual issuer profile before enabling and raise bootstrap revision to attest its issuer while preserving reviewed AdminSubjects. Adding bootstrap subjects grants protected security_admin and is not generic human enrollment. |
 | `LANTERN_OIDC_ALGORITHMS` | string | `["RS256"]` | JSON array of allowed signing algorithms: RS256, ES256 and/or EdDSA. |
 | `LANTERN_OIDC_API_AUDIENCE` | string | (empty) | Required audience of API access tokens; ID tokens are not API credentials. |
 | `LANTERN_OIDC_BROWSER_ORIGIN` | string | (empty) | One exact HTTPS Admin origin. Browser sessions and login return paths are bound to it. |

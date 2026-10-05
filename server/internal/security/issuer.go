@@ -13,4 +13,8 @@ type Issuer struct {
 	RedirectURI    string   `json:"redirect_uri"`
 	Algorithms     []string `json:"algorithms"`
 	SecretRef      string   `json:"secret_ref,omitempty"`
+	// The trusted issuer guarantees client subjects cannot collide with or
+	// impersonate enrolled end-user subjects. Qualification is required before
+	// enabling this contract; RFC 9068 alone makes no such guarantee.
+	HumanSubjectNamespaceQualified bool `json:"human_subject_namespace_qualified,omitempty"`
 }

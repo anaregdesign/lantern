@@ -89,7 +89,7 @@ func TestLoginTransactionsConcurrentConsumeAndBounds(t *testing.T) {
 	if successes.Load() != 1 {
 		t.Fatal("state consumed more than once", successes.Load())
 	}
-	for range maxLoginTransactions {
+	for range MaxLoginTransactions {
 		if _, err := manager.Begin(trust, discovery, "/", "", false); err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +97,7 @@ func TestLoginTransactionsConcurrentConsumeAndBounds(t *testing.T) {
 	if _, err = manager.Begin(trust, discovery, "/", "", false); err == nil {
 		t.Fatal("unbounded pending logins")
 	}
-	now = now.Add(loginTransactionLifetime)
+	now = now.Add(LoginTransactionLifetime)
 	if _, err = manager.Begin(trust, discovery, "/", "", false); err != nil {
 		t.Fatal("expired transactions not reclaimed", err)
 	}
@@ -121,7 +121,7 @@ func TestLoginTransactionsRedirectAndExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	parsed, _ := url.Parse(start.AuthorizationURL)
-	now = now.Add(loginTransactionLifetime)
+	now = now.Add(LoginTransactionLifetime)
 	if _, err = manager.Consume(parsed.Query().Get("state"), start.TransactionCookie, CallbackPath(trust.Issuer.URL), ""); err == nil {
 		t.Fatal("expired transaction accepted")
 	}
@@ -140,5 +140,23 @@ func TestLoginTransactionsPurposeIndependentOfReplacement(t *testing.T) {
 		if err != nil || completion.RequiresRecentAuthentication() != stepUp || completion.ReplacesDigest() != digest {
 			t.Fatal("replacement changed saved purpose", err)
 		}
+	}
+}
+
+func TestLoginTransactionsOperationPurposeCannotReplaceSession(t *testing.T) {
+	manager, trust, discovery := loginTransactionFixture(t)
+	id := [32]byte{8}
+	start, err := manager.BeginAuthorization(trust, discovery, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := url.Parse(start.AuthorizationURL)
+	completion, err := manager.Consume(parsed.Query().Get("state"), start.TransactionCookie, CallbackPath(trust.Issuer.URL), trust.Issuer.URL)
+	got, purpose := completion.AuthorizationID()
+	if err != nil || !purpose || got != id || !completion.RequiresRecentAuthentication() || completion.ReplacesDigest() != "" {
+		t.Fatal("operation purpose became ordinary session replacement", err)
+	}
+	if parsed.Query().Get("max_age") != "0" || parsed.Query().Get("claims") != `{"id_token":{"auth_time":{"essential":true}}}` {
+		t.Fatal("operation omitted signed fresh-event request")
 	}
 }

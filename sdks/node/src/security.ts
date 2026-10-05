@@ -1,6 +1,7 @@
 import type { MessageInitShape } from "@bufbuild/protobuf";
-import { createClient, type Client, type CallOptions, type Transport } from "@connectrpc/connect";
-import { wrapConnectError } from "./errors.js";
+import { createClient, ConnectError, type Client, type CallOptions, type Transport } from "@connectrpc/connect";
+import { wrapConnectError, FailedPreconditionError } from "./errors.js";
+import type { SecurityOperationAuthorizationRequired } from "./gen/graph/v1/security_pb.js";
 import {
   LanternSecurityService,
   ApplySecurityChangeRequestSchema,
@@ -19,7 +20,20 @@ import {
   ListUsersRequestSchema,
   ListSecurityAuditRequestSchema,
   ValidateIssuerRequestSchema,
+  PrepareSecurityChangesRequestSchema,
+  BeginSecurityChangeAuthorizationRequestSchema,
+  GetSecurityChangeAuthorizationRequestSchema,
+  SecurityOperationAuthorizationRequiredSchema,
 } from "./gen/graph/v1/security_pb.js";
+
+/** This invocation definitely did not commit. Earlier uncertain attempts
+ * remain uncertain and must be reconciled using their original change ID. */
+export class SecurityOperationAuthorizationRequiredError extends FailedPreconditionError {
+  constructor(readonly detail: SecurityOperationAuthorizationRequired, cause: unknown) {
+    super("Reauthenticate the exact reviewed security operation.", { cause });
+    this.name = "SecurityOperationAuthorizationRequiredError";
+  }
+}
 
 /** Thin control-plane facade. The Server owns identity, Role and CAS semantics.
  * Mutations receive one attempt; applications retain change IDs for status lookup.
@@ -37,6 +51,8 @@ export class SecurityClient {
     try {
       return await call();
     } catch (error) {
+      const detail = ConnectError.from(error).findDetails(SecurityOperationAuthorizationRequiredSchema)[0];
+      if (ConnectError.from(error).code === 9 && detail) throw new SecurityOperationAuthorizationRequiredError(detail, error);
       throw wrapConnectError(error);
     }
   }
@@ -108,6 +124,24 @@ export class SecurityClient {
     options?: CallOptions,
   ) {
     return this.invoke(() => this.client.applySecurityChanges(request, options));
+  }
+  prepareSecurityChanges(
+    request: MessageInitShape<typeof PrepareSecurityChangesRequestSchema> = {},
+    options?: CallOptions,
+  ) {
+    return this.invoke(() => this.client.prepareSecurityChanges(request, options));
+  }
+  beginSecurityChangeAuthorization(
+    request: MessageInitShape<typeof BeginSecurityChangeAuthorizationRequestSchema> = {},
+    options?: CallOptions,
+  ) {
+    return this.invoke(() => this.client.beginSecurityChangeAuthorization(request, options));
+  }
+  getSecurityChangeAuthorization(
+    request: MessageInitShape<typeof GetSecurityChangeAuthorizationRequestSchema> = {},
+    options?: CallOptions,
+  ) {
+    return this.invoke(() => this.client.getSecurityChangeAuthorization(request, options));
   }
   applySecurityChange(
     request: MessageInitShape<typeof ApplySecurityChangeRequestSchema> = {},

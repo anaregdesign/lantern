@@ -4649,6 +4649,10 @@ pub struct SecurityIssuer {
     pub deleted: bool,
     #[prost(bool, tag = "11")]
     pub has_secret_binding: bool,
+    /// Trusted issuance contract: OAuth client subjects cannot collide with or
+    /// impersonate exact enrolled end-users. Qualify before enabling.
+    #[prost(bool, tag = "12")]
+    pub human_subject_namespace_qualified: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SecurityVersion {
@@ -4952,6 +4956,9 @@ pub struct ApplySecurityChangesRequest {
     pub change_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, repeated, tag = "3")]
     pub changes: ::prost::alloc::vec::Vec<SecurityChange>,
+    /// Purpose proof is excluded from retained canonical business intent.
+    #[prost(bytes = "vec", tag = "4")]
+    pub authorization_proof: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ApplySecurityChangesResponse {
@@ -4972,6 +4979,78 @@ pub struct ApplySecurityChangeRequest {
     pub change_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, optional, tag = "3")]
     pub change: ::core::option::Option<SecurityChange>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub authorization_proof: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SecurityChangeReview {
+    #[prost(message, optional, tag = "1")]
+    pub expected_version: ::core::option::Option<SecurityVersion>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub change_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "3")]
+    pub changes: ::prost::alloc::vec::Vec<SecurityChange>,
+}
+/// Apply error detail: this invocation was definitely refused before durable
+/// persistence because operation authorization was missing/invalid/expired.
+/// It does not settle any earlier invocation whose response was lost.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityOperationAuthorizationRequired {
+    #[prost(bytes = "vec", tag = "1")]
+    pub change_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub expected_version: ::core::option::Option<SecurityVersion>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub intent_digest: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PrepareSecurityChangesRequest {
+    #[prost(message, optional, tag = "1")]
+    pub review: ::core::option::Option<SecurityChangeReview>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PrepareSecurityChangesResponse {
+    #[prost(message, optional, tag = "1")]
+    pub expected_version: ::core::option::Option<SecurityVersion>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub change_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub intent_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "SecurityAuthorizationRequirement", tag = "4")]
+    pub requirement: i32,
+    /// A known committed ID is recovered using its original retained proof.
+    #[prost(message, optional, tag = "5")]
+    pub retained_commit: ::core::option::Option<GetSecurityChangeStatusResponse>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BeginSecurityChangeAuthorizationRequest {
+    #[prost(message, optional, tag = "1")]
+    pub review: ::core::option::Option<SecurityChangeReview>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BeginSecurityChangeAuthorizationResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    pub authorization_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub start_url: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "3")]
+    pub expires_at: ::core::option::Option<::prost_types::Timestamp>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSecurityChangeAuthorizationRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub authorization_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSecurityChangeAuthorizationResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    pub authorization_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "SecurityAuthorizationState", tag = "2")]
+    pub state: i32,
+    #[prost(bytes = "vec", tag = "3")]
+    pub authorization_proof: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub expires_at: ::core::option::Option<::prost_types::Timestamp>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ApplySecurityChangeResponse {
@@ -5217,6 +5296,71 @@ impl SecurityEnforcementState {
                 Some(Self::CommittedPending)
             }
             "SECURITY_ENFORCEMENT_STATE_ENFORCED" => Some(Self::Enforced),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SecurityAuthorizationRequirement {
+    Unspecified = 0,
+    Ordinary = 1,
+    Reauthentication = 2,
+}
+impl SecurityAuthorizationRequirement {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SECURITY_AUTHORIZATION_REQUIREMENT_UNSPECIFIED",
+            Self::Ordinary => "SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY",
+            Self::Reauthentication => {
+                "SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SECURITY_AUTHORIZATION_REQUIREMENT_UNSPECIFIED" => Some(Self::Unspecified),
+            "SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY" => Some(Self::Ordinary),
+            "SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION" => {
+                Some(Self::Reauthentication)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SecurityAuthorizationState {
+    Unspecified = 0,
+    Pending = 1,
+    Approved = 2,
+    Denied = 3,
+}
+impl SecurityAuthorizationState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SECURITY_AUTHORIZATION_STATE_UNSPECIFIED",
+            Self::Pending => "SECURITY_AUTHORIZATION_STATE_PENDING",
+            Self::Approved => "SECURITY_AUTHORIZATION_STATE_APPROVED",
+            Self::Denied => "SECURITY_AUTHORIZATION_STATE_DENIED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SECURITY_AUTHORIZATION_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "SECURITY_AUTHORIZATION_STATE_PENDING" => Some(Self::Pending),
+            "SECURITY_AUTHORIZATION_STATE_APPROVED" => Some(Self::Approved),
+            "SECURITY_AUTHORIZATION_STATE_DENIED" => Some(Self::Denied),
             _ => None,
         }
     }
@@ -5656,6 +5800,98 @@ pub mod lantern_security_service_client {
             req.extensions_mut()
                 .insert(
                     GrpcMethod::new("graph.v1.LanternSecurityService", "ValidateIssuer"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Nonmutating authoritative review; approval never rotates a session.
+        pub async fn prepare_security_changes(
+            &mut self,
+            request: impl tonic::IntoRequest<super::PrepareSecurityChangesRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PrepareSecurityChangesResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/PrepareSecurityChanges",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "PrepareSecurityChanges",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn begin_security_change_authorization(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                super::BeginSecurityChangeAuthorizationRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<super::BeginSecurityChangeAuthorizationResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/BeginSecurityChangeAuthorization",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "BeginSecurityChangeAuthorization",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_security_change_authorization(
+            &mut self,
+            request: impl tonic::IntoRequest<
+                super::GetSecurityChangeAuthorizationRequest,
+            >,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSecurityChangeAuthorizationResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/GetSecurityChangeAuthorization",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "GetSecurityChangeAuthorization",
+                    ),
                 );
             self.inner.unary(req, path, codec).await
         }

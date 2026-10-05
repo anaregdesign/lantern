@@ -16,20 +16,21 @@ import (
 // one exact data runtime. The production listener requires certification of
 // its role/query/CDC/peer/browser boundaries before accepting requests.
 type SecurityRuntime struct {
-	mode      string
-	native    *security.NativeStore
-	authority *security.LeaseAuthority
-	receiver  *security.LeaseReceiver
-	peer      *PeerIdentityRuntime
-	fetcher   *oidc.Fetcher
-	secrets   *oidc.SecretRegistry
-	keys      *oidc.KeyCache
-	verifier  *oidc.Verifier
-	logins    *oidc.LoginTransactions
-	control   *service.SecurityConnectHandler
-	data      *service.ServingRuntime
-	config    SecurityConfig
-	now       func() time.Time
+	mode           string
+	native         *security.NativeStore
+	authority      *security.LeaseAuthority
+	receiver       *security.LeaseReceiver
+	peer           *PeerIdentityRuntime
+	fetcher        *oidc.Fetcher
+	secrets        *oidc.SecretRegistry
+	keys           *oidc.KeyCache
+	verifier       *oidc.Verifier
+	logins         *oidc.LoginTransactions
+	authorizations *security.ManagementAuthorizations
+	control        *service.SecurityConnectHandler
+	data           *service.ServingRuntime
+	config         SecurityConfig
+	now            func() time.Time
 }
 
 type securityRuntimeClock struct{ now func() time.Time }
@@ -98,6 +99,7 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (_ 
 	if err != nil {
 		return nil, nil, err
 	}
+	runtime.authorizations = security.NewManagementAuthorizations(oidc.LoginTransactionLifetime, oidc.MaxLoginTransactions)
 	if config.StoreMode == "fresh" {
 		runtime.native, err = security.CreateNativeStore(options)
 	} else {
@@ -136,7 +138,7 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (_ 
 		return runtime.authorityCheck(ctx, revision) == nil
 	}, Enforced: func(result security.ChangeResult) bool {
 		return runtime.authority != nil && runtime.authority.Enforced(result)
-	}})
+	}, BeginAuthorization: runtime.beginManagementAuthorization, ReadAuthorization: runtime.readManagementAuthorization, VerifyAuthorization: runtime.authorizations.Verify})
 	if err != nil {
 		return nil, nil, err
 	}

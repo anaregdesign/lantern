@@ -14,14 +14,15 @@ var ErrAuthorityUnavailable = errors.New("authenticated serving authority unavai
 // locally checked serving fence. Construct it only after credential verification.
 // A policy snapshot alone is insufficient to construct serving authority.
 type Admission struct {
-	identity  Identity
-	authTime  time.Time
-	expiresAt time.Time
-	csrfToken string
-	browser   bool
-	revision  *Revision
-	access    *Access
-	fence     func(context.Context, *Revision) error
+	identity       Identity
+	authTime       time.Time
+	expiresAt      time.Time
+	csrfToken      string
+	browser        bool
+	revision       *Revision
+	access         *Access
+	fence          func(context.Context, *Revision) error
+	authentication Authentication
 }
 
 func NewAdmission(identity Identity, authTime, expiresAt time.Time, revision *Revision,

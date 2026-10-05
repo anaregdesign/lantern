@@ -96,6 +96,7 @@ export async function securityUI(
     apply?: "conflict" | "lost";
     status?: "pending-then-enforced" | "unknown" | "mismatch";
     denied?: boolean;
+    reauthentication?: boolean;
   } = {},
 ) {
   const calls: Array<{
@@ -112,6 +113,16 @@ export async function securityUI(
   let signedIn = options.mode !== "login";
   let statusCalls = 0;
   const primary = "https://admin.example";
+  let approved = false;
+  const authorizationPath = "/auth/management-authorization/" + "A".repeat(43);
+  if (options.reauthentication)
+    await page.context().route(primary + authorizationPath, async (route) => {
+      approved = true;
+      await route.fulfill({
+        contentType: "text/html",
+        body: "<title>Operation authentication</title><p>Authentication recorded. Return to the reviewed change in Admin.</p>",
+      });
+    });
   await page.addInitScript(
     ({ key, url }) => {
       localStorage.setItem(key, url);
@@ -244,6 +255,34 @@ export async function securityUI(
           enforcement: "SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING",
         });
       }
+      if (method === "PrepareSecurityChanges") {
+        const review = body.review as Record<string, unknown>;
+        return json({
+          expectedVersion: review.expectedVersion,
+          changeId: review.changeId,
+          intentDigest: Buffer.alloc(32, 4).toString("base64"),
+          requirement: options.reauthentication
+            ? "SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION"
+            : "SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY",
+        });
+      }
+      if (method === "BeginSecurityChangeAuthorization")
+        return json({
+          authorizationId: Buffer.alloc(32, 8).toString("base64"),
+          startUrl: primary + authorizationPath,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        });
+      if (method === "GetSecurityChangeAuthorization")
+        return json({
+          authorizationId: body.authorizationId,
+          state: approved
+            ? "SECURITY_AUTHORIZATION_STATE_APPROVED"
+            : "SECURITY_AUTHORIZATION_STATE_PENDING",
+          authorizationProof: approved
+            ? Buffer.alloc(32, 9).toString("base64")
+            : "",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        });
       if (method === "GetSecurityChangeStatus") {
         statusCalls++;
         if (options.status === "unknown")

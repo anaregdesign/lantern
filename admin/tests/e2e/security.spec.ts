@@ -1,10 +1,12 @@
 import { expect, test } from "@playwright/test";
+import { Buffer } from "node:buffer";
 import { securityUI } from "./helpers";
 
 // Finish fixture requests before Playwright closes the browser context. Route
 // transitions can leave a lazy asset fetch in flight after the last assertion.
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
+  await page.context().unrouteAll({ behavior: "wait" });
 });
 
 async function reviewRole(page: import("@playwright/test").Page) {
@@ -348,21 +350,64 @@ test("revision conflict requires reload and another review", async ({
     fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
   ).toHaveLength(1);
 });
-test("recent authentication is required", async ({ page }) => {
+test("ordinary Role review applies with an older ordinary session", async ({
+  page,
+}) => {
   const fixture = await securityUI(page, { recent: false });
   await page.goto(`${fixture.primary}/security/roles`);
   await reviewRole(page);
   await expect(
     page.getByRole("button", { name: "Apply reviewed change" }),
-  ).toBeDisabled();
-  await expect(
-    page
-      .getByRole("region", { name: "Review security change" })
-      .getByRole("button", { name: "Sign in again" }),
-  ).toBeVisible();
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "Apply reviewed change" }).click();
   expect(
     fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
-  ).toHaveLength(0);
+  ).toHaveLength(1);
+  expect(
+    fixture.calls.find((call) => call.method === "ApplySecurityChanges")!.body
+      .authorizationProof,
+  ).toBeUndefined();
+});
+
+test("high-impact review keeps the Admin window active through operation approval", async ({
+  page,
+}) => {
+  const fixture = await securityUI(page, {
+    recent: false,
+    reauthentication: true,
+  });
+  await page.goto(`${fixture.primary}/security/roles`);
+  await reviewRole(page);
+  await expect(
+    page.getByRole("button", { name: "Apply reviewed change" }),
+  ).toBeDisabled();
+  const popupPromise = page.waitForEvent("popup");
+  await page
+    .getByRole("button", { name: "Reauthenticate reviewed change" })
+    .click();
+  const popup = await popupPromise;
+  await expect(
+    popup.getByText("Authentication recorded.", { exact: false }),
+  ).toBeVisible();
+  expect(page.url()).toBe(`${fixture.primary}/security/roles`);
+  await page.getByRole("button", { name: "Check reauthentication" }).click();
+  await expect(
+    page.getByRole("button", { name: "Apply reviewed change" }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "Apply reviewed change" }).click();
+  const review = fixture.calls.find(
+    (call) => call.method === "PrepareSecurityChanges",
+  )!.body.review as Record<string, unknown>;
+  const applied = fixture.calls.find(
+    (call) => call.method === "ApplySecurityChanges",
+  )!.body;
+  expect(applied.changeId).toBe(review.changeId);
+  expect(applied.authorizationProof).toBe(
+    Buffer.alloc(32, 9).toString("base64"),
+  );
+  expect(
+    fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+  ).toHaveLength(1);
 });
 test("user membership uses exact identity and environment locks", async ({
   page,

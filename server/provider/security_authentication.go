@@ -48,6 +48,7 @@ func (r *SecurityRuntime) AuthenticateBearer(ctx context.Context, headers http.H
 	}
 	var identity security.Identity
 	var authTime, credentialExpiry time.Time
+	authentication := security.Authentication{Provenance: security.NativeMachine, Class: security.MachineActor}
 	if strings.HasPrefix(raw, security.MachineTokenPrefix) {
 		var valid bool
 		identity, credentialExpiry, valid = revision.Snapshot().MachineAccess(raw, r.now())
@@ -69,6 +70,7 @@ func (r *SecurityRuntime) AuthenticateBearer(ctx context.Context, headers http.H
 			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
 		}
 		identity, authTime, credentialExpiry = verified.Identity, verified.AuthTime, verified.ExpiresAt
+		authentication = security.Authentication{Provenance: security.RFC9068Bearer, Class: revision.Snapshot().BearerActor(identity), IssuerConfigRevision: issuer.ConfigRevision}
 	}
 	expiry := minSecurityTime(credentialExpiry, r.now().Add(28*time.Second))
 	if r.receiver != nil {
@@ -81,6 +83,7 @@ func (r *SecurityRuntime) AuthenticateBearer(ctx context.Context, headers http.H
 	if err := admission.Check(ctx, r.now()); err != nil {
 		return ctx, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
 	}
+	admission = admission.WithAuthentication(authentication)
 	return context.WithValue(security.WithAdmission(ctx, admission), verifiedRuntimeKey{}, r), nil
 }
 func minSecurityTime(a, b time.Time) time.Time {

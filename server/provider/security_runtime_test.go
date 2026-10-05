@@ -27,7 +27,7 @@ func TestSecurityRuntimeWriterBootstrapAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	identity := security.Identity{Kind: security.OIDCPrincipal, Issuer: config.Bootstrap.Issuer.URL, Subject: "admin"}
-	_, err = runtime.native.Store().Manage(context.Background(), security.ManagementRequest{ExpectedRevision: current.Sequence(), ChangeID: [16]byte{9}, Actor: identity, AuthTime: clock.Now(), Now: clock.Now(), Changes: []security.Change{{Kind: security.PutPrincipal, Identity: &identity, State: security.Suspended}}})
+	_, err = runtime.native.Store().Manage(context.Background(), security.ManagementRequest{ExpectedRevision: current.Sequence(), ChangeID: [16]byte{9}, Actor: identity, Authentication: security.Authentication{Provenance: security.BrowserCode, Class: security.EndUser, IssuerConfigRevision: 1}, AuthTime: clock.Now(), Now: clock.Now(), Changes: []security.Change{{Kind: security.PutPrincipal, Identity: &identity, State: security.Suspended}}})
 	if err != nil {
 		t.Fatal(err)
 	}
