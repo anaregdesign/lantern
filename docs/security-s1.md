@@ -230,3 +230,68 @@ all actual policy/capacity fields, strict bounded parsing, proof separation,
 detached storage, fixed trusted floor and a complete-ledger overflow with valid
 S1 bounds. They retain S1 reserve/issuer regressions and confer no native or
 deployment qualification.
+
+## S2-B local materialization journal
+
+S2-B adds a private, unwired append-only owner of already-certified S1
+transitions. Its local receipt identifies the fixed journal scope, local index,
+physical chain, complete capsule digest and control prefix. It records local
+materialization, including terminal rejection, NOOP, replay and conflict. It
+does not acknowledge original H, a voter acceptance, quorum choice, current
+authorization or serving freshness. There is no production trusted-genesis or
+historical-proof constructor and no runtime, transport or environment switch.
+
+The existing FileWAL framing, canonical-path lease and bound tip are reused.
+The application family is
+`lantern/security/s2/local-materialization\0\x01`: a GENESIS or APPLY tag,
+big-endian uint32 canonical-header length, typed canonical JSON header,
+big-endian uint32 capsule length and raw complete S2-A capsule. The GENESIS
+binds independently supplied store identity, journal epoch, S1 scope, actual
+execution configuration, genesis/fixed retirement roots and explicit storage
+policy. Each APPLY binds the previous and next whole-capsule digests and that
+control entry's logical CommitRef. Local index and metadata revision equal
+control slot plus one; semantic sequence is independent. The header is at most
+4 KiB and the entire application payload must fit FileWAL's existing bound.
+
+Prepare evaluates the exact verified next input and freezes its successor and
+payload. Exactly one volatile plan holds the complete `payload bytes + 88`
+WAL/tip append charge against the fixed file-content budget. Stale, discarded
+or previous-owner plans cannot append. This is local quota accounting, not a
+physical block reservation or durable credit before a vote. The journal is
+finite. An unrepresentable or full-budget decision remains
+`BlockedSameDecision`; the owner cannot manufacture a capacity rejection,
+change H, evict an original result or advance the retirement floor.
+
+Publication holds one owner gate across SystemMetadata, the matching complete
+S1 state and Log completion. Reads return detached historical state through
+that gate. Any uncertain I/O or interrupted publication closes reads and
+writes until a new recovery owner succeeds. No raw cache, metadata handle or
+Log escapes. Close stops admission and drains work before releasing the lease.
+
+Resume needs independent exact trusted genesis, the complete verified
+contiguous history through the selected local head, and an explicit trusted
+minimum local receipt. Every GENESIS/APPLY capsule must equal deterministic
+replay. Capsule bytes retain H's digest, not the original authorization and
+purpose evidence: this journal cannot reconstruct its own missing proofs.
+Deployments must retain that evidence independently. A genesis-only minimum
+protects genesis continuity; it provides no whole-family rollback guarantee
+after a later acknowledged cut. A known minimum must never be lowered to
+reopen stale storage.
+
+After all detached validation, the dedicated durable resume bridge syncs the
+same reopened WAL descriptor that will append, verifies or catches up the tip,
+unconditionally syncs the same tip descriptor, then syncs the parent directory
+before binding the live Log. A readable equal-frontier tip still needs that
+barrier. The WAL may lead its existing tip by only one complete frame; recovery
+can spend the reserved final 44 bytes for that record, without duplicating an
+already-complete tip. Missing files, partial frames/tips, incomplete creation,
+scope/path changes, invalid proof history or failed barriers leave no owner.
+No truncation, automatic genesis, migration, rotation or compaction is used.
+
+Focused native tests cover the B1–B9 format, proof, reservation, recovery
+barrier, ambiguous failure, quota, visibility, ownership and finite-exhaustion
+contracts. Process restarts and injected sync order/failures do not qualify
+hardware power loss. The guarantee assumes cooperative exclusive writers and
+a storage stack honoring successful file and directory syncs. Pending-H and
+Promise/Accept durability, before-vote reservations, network quorum, Profile B
+serving and #1668 remain outside this component.
