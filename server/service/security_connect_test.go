@@ -3,12 +3,16 @@ package service
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/internal/security"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestSecurityConnectAtomicRoleMembershipAndRetry(t *testing.T) {
@@ -147,12 +151,49 @@ func TestSecurityConnectGetResourcesAndEnforcementStatus(t *testing.T) {
 	id[0] = 1
 	handler.enforced = func(security.ChangeResult) bool { return true }
 	status, err := handler.GetSecurityChangeStatus(ctx, connect.NewRequest(&pb.GetSecurityChangeStatusRequest{ChangeId: id}))
-	if err != nil || status.Msg.Enforcement != pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED || status.Msg.Version.Revision != 1 {
+	if err != nil || status.Msg.Enforcement != pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED || status.Msg.Version.Revision != 1 || !bytes.Equal(status.Msg.ChangeId, id) {
 		t.Fatal(status, err)
 	}
 	id[0] = 2
 	_, err = handler.GetSecurityChangeStatus(ctx, connect.NewRequest(&pb.GetSecurityChangeStatusRequest{ChangeId: id}))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatal("unknown commit returned rollback proof", err)
+	}
+}
+
+func TestSecurityConnectCommitProofPendingToEnforcedOverWire(t *testing.T) {
+	handler, sink, contexts := securityAPIFixture(t)
+	path, mounted := graphv1connect.NewLanternSecurityServiceHandler(handler, SecurityHandlerOptions()...)
+	mux := http.NewServeMux()
+	mux.Handle(path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mounted.ServeHTTP(w, r.WithContext(contexts("admin", handler.now())))
+	}))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	client := graphv1connect.NewLanternSecurityServiceClient(server.Client(), server.URL)
+	for count := 1; count <= 2; count++ {
+		id := bytes.Repeat([]byte{byte(count + 20)}, 16)
+		changes := make([]*pb.SecurityChange, count)
+		for i := range changes {
+			changes[i] = &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: string(rune('a' + i)), Name: "Reviewed policy"}}}
+		}
+		current, _ := handler.store.Current()
+		committed, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(&pb.ApplySecurityChangesRequest{ExpectedRevision: current.Sequence(), ChangeId: id, Changes: changes}))
+		if err != nil || len(committed.Msg.Applied) != count || committed.Msg.Enforcement != pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING {
+			t.Fatal("Apply acknowledgement", committed, err)
+		}
+		proof, err := client.GetSecurityChangeStatus(t.Context(), connect.NewRequest(&pb.GetSecurityChangeStatusRequest{ChangeId: id}))
+		if err != nil || !proto.Equal(proof.Msg.Version, committed.Msg.Version) || !bytes.Equal(proof.Msg.ChangeId, id) || proof.Msg.Enforcement != pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING {
+			t.Fatal("pending retained proof", proof, err)
+		}
+		handler.enforced = func(result security.ChangeResult) bool { return result.Revision == committed.Msg.Version.Revision }
+		proof, err = client.GetSecurityChangeStatus(t.Context(), connect.NewRequest(&pb.GetSecurityChangeStatusRequest{ChangeId: id}))
+		if err != nil || !proto.Equal(proof.Msg.Version, committed.Msg.Version) || proof.Msg.Enforcement != pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED {
+			t.Fatal("enforced retained proof", proof, err)
+		}
+		if sink.calls != count+1 {
+			t.Fatal("status resent or committed a mutation", sink.calls)
+		}
+		handler.enforced = nil
 	}
 }

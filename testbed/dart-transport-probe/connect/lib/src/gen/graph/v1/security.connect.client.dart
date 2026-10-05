@@ -266,6 +266,7 @@ extension type LanternSecurityServiceClient (connect.Transport _transport) {
     );
   }
 
+  /// Retained commit proof only; item outcomes and replay acknowledgement belong to Apply.
   Future<graphv1security.GetSecurityChangeStatusResponse> getSecurityChangeStatus(
     graphv1security.GetSecurityChangeStatusRequest input, {
     connect.Headers? headers,

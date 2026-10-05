@@ -141,6 +141,7 @@ class LanternSecurityServiceClient extends $grpc.Client {
     return $createUnaryCall(_$applySecurityChange, request, options: options);
   }
 
+  /// Retained commit proof only; item outcomes and replay acknowledgement belong to Apply.
   $grpc.ResponseFuture<$0.GetSecurityChangeStatusResponse>
       getSecurityChangeStatus(
     $0.GetSecurityChangeStatusRequest request, {

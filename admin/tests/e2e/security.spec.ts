@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 import { securityUI } from "./helpers";
 
+// Finish fixture requests before Playwright closes the browser context. Route
+// transitions can leave a lazy asset fetch in flight after the last assertion.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 async function reviewRole(page: import("@playwright/test").Page) {
   await page
     .getByRole("textbox", { name: "Role ID", exact: true })
@@ -139,6 +145,9 @@ for (const width of [1280, 390]) {
     await expect(
       page.getByText("Change enforced.", { exact: true }),
     ).toBeVisible();
+    await expect(
+      page.getByText("Original Apply outcomes: 1: applied."),
+    ).toBeVisible();
     await page.getByRole("button", { name: "Reload security state" }).click();
     await page.getByLabel("Explanation Issuer").fill("https://idp.example");
     await page.getByLabel("Explanation subject").fill("alice");
@@ -179,6 +188,9 @@ test("response loss performs status-only recovery", async ({ page }) => {
   await expect(
     page.getByText("Change enforced.", { exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByText("Original item outcomes are unavailable;", { exact: false }),
+  ).toBeVisible();
   expect(
     fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
   ).toHaveLength(1);
@@ -189,6 +201,128 @@ test("response loss performs status-only recovery", async ({ page }) => {
     fixture.calls.find((call) => call.method === "ApplySecurityChanges")!.body
       .changeId,
   );
+});
+
+for (const width of [1280, 390]) {
+  test(`response-loss remount recovers proof-only pending then enforced at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const fixture = await securityUI(page, {
+      apply: "lost",
+      status: "pending-then-enforced",
+    });
+    await page.goto(`${fixture.primary}/security/roles`);
+    await reviewRole(page);
+    await page.getByRole("button", { name: "Apply reviewed change" }).click();
+    await expect(
+      page.getByText("The response was not confirmed.", { exact: false }),
+    ).toBeVisible();
+    const sent = fixture.calls.find(
+      (call) => call.method === "ApplySecurityChanges",
+    )!;
+    await page
+      .getByRole("navigation", { name: "Security", exact: true })
+      .getByRole("link", { name: "Users", exact: true })
+      .click();
+    await expect(
+      page.getByText("A prior control change is retained.", { exact: false }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Check original change status" })
+      .click();
+    await expect(
+      page.getByText("Change committed.", { exact: false }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Original item outcomes are unavailable;", {
+        exact: false,
+      }),
+    ).toBeVisible();
+    await page
+      .getByRole("navigation", { name: "Security", exact: true })
+      .getByRole("link", { name: "Roles", exact: true })
+      .click();
+    await expect(page.getByText("Committed revision 4")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Check original change status" })
+      .click();
+    await expect(
+      page.getByText("Change enforced.", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Original item outcomes are unavailable;", {
+        exact: false,
+      }),
+    ).toBeVisible();
+    expect(
+      fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+    ).toHaveLength(1);
+    const statuses = fixture.calls.filter(
+      (call) => call.method === "GetSecurityChangeStatus",
+    );
+    expect(statuses).toHaveLength(2);
+    expect(
+      statuses.every((call) => call.body.changeId === sent.body.changeId),
+    ).toBe(true);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`proof-recovery-${width}.png`),
+      fullPage: true,
+    });
+  });
+}
+
+test("unknown status retains the original ID and disables another Apply", async ({
+  page,
+}) => {
+  const fixture = await securityUI(page, { apply: "lost", status: "unknown" });
+  await page.goto(`${fixture.primary}/security/roles`);
+  await reviewRole(page);
+  await page.getByRole("button", { name: "Apply reviewed change" }).click();
+  await page
+    .getByRole("button", { name: "Check original change status" })
+    .click();
+  await expect(
+    page.getByText("Change status is unavailable.", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Review Role change" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByText("Committed revision", { exact: false }),
+  ).toHaveCount(0);
+  expect(
+    fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+  ).toHaveLength(1);
+});
+
+test("mismatched status preserves the original Apply outcomes and pending state", async ({
+  page,
+}) => {
+  const fixture = await securityUI(page, { status: "mismatch" });
+  await page.goto(`${fixture.primary}/security/roles`);
+  await reviewRole(page);
+  await page.getByRole("button", { name: "Apply reviewed change" }).click();
+  await page
+    .getByRole("button", { name: "Check original change status" })
+    .click();
+  await expect(
+    page.getByText("Change status is unavailable.", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Original Apply outcomes: 1: applied."),
+  ).toBeVisible();
+  await expect(page.getByText("Change enforced.", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole("region", { name: "Change status" }),
+  ).toContainText("pending");
 });
 test("revision conflict requires reload and another review", async ({
   page,

@@ -1003,6 +1003,216 @@ func securityWireRequest[T any](token string, message *T) *connect.Request[T] {
 	return req
 }
 
+// Status proves only the retained original commit. It cannot reconstruct item
+// outcomes or certify that the policy introduced by that commit is still current.
+func TestAuth_OIDCSecurityChangeCommitProofRealConnect(t *testing.T) {
+	f := newOIDCControlWireFixture(t)
+	admin := f.token(t, "admin", nil)
+	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := principal.Msg.Version.Revision
+	var original *pb.SecurityVersion
+	var originalID []byte
+	for _, count := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d_changes", count), func(t *testing.T) {
+			id := bytes.Repeat([]byte{byte(70 + count)}, 16)
+			changes := make([]*pb.SecurityChange, count)
+			for i := range changes {
+				changes[i] = &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: fmt.Sprintf("proof_%d_%d", count, i), Name: "Original policy"}}}
+			}
+			var committed *pb.SecurityVersion
+			if count == 1 {
+				apply, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: revision, ChangeId: id, Change: changes[0]}))
+				if err != nil || !apply.Msg.Applied {
+					t.Fatal("single Apply", apply, err)
+				}
+				committed = apply.Msg.Version
+			} else {
+				apply, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: revision, ChangeId: id, Changes: changes}))
+				if err != nil || len(apply.Msg.Applied) != count || !apply.Msg.Applied[0] || !apply.Msg.Applied[1] {
+					t.Fatal("multi Apply", apply, err)
+				}
+				committed = apply.Msg.Version
+			}
+			if committed.Revision != revision+1 {
+				t.Fatal("fixed-writer CAS revision", committed)
+			}
+			status, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: id}))
+			if err != nil || !proto.Equal(status.Msg.Version, committed) || !bytes.Equal(status.Msg.ChangeId, id) || status.Msg.Enforcement != pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED {
+				t.Fatal("retained commit proof", status, err)
+			}
+			fields := status.Msg.ProtoReflect().Descriptor().Fields()
+			if fields.ByName("applied") != nil || fields.ByName("replayed") != nil {
+				t.Fatal("Status claims unavailable Apply evidence")
+			}
+			if status.Header().Get("Cache-Control") != "no-store" {
+				t.Fatal("proof was cacheable")
+			}
+			revision = committed.Revision
+			if count == 1 {
+				original, originalID = proto.Clone(committed).(*pb.SecurityVersion), bytes.Clone(id)
+			}
+		})
+	}
+	// Change the original policy and show that status still names the original cut.
+	update, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: revision, ChangeId: bytes.Repeat([]byte{74}, 16), Change: &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteRole{DeleteRole: "proof_1_0"}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision = update.Msg.Version.Revision
+	status, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: originalID}))
+	if err != nil || !proto.Equal(status.Msg.Version, original) {
+		t.Fatal("current policy replaced original proof", status, err)
+	}
+	if _, err := f.client.GetSecurityChangeStatus(t.Context(), connect.NewRequest(&pb.GetSecurityChangeStatusRequest{ChangeId: originalID})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatal("anonymous proof", err)
+	}
+	if _, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: []byte{1}})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatal("malformed ID", err)
+	}
+	if _, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: bytes.Repeat([]byte{99}, 16)})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatal("unknown ID proved rollback", err)
+	}
+	// Retained history is bounded. Retired IDs remain indeterminate, including
+	// after later accepted changes; status never creates a replacement mutation.
+	for i := 0; i < 256; i++ {
+		id := make([]byte, 16)
+		id[0], id[1], id[2] = byte(i), byte(i>>8), 200
+		apply, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: revision, ChangeId: id, Change: &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "history", Name: fmt.Sprint(i)}}}}))
+		if err != nil {
+			t.Fatal(i, err)
+		}
+		revision = apply.Msg.Version.Revision
+	}
+	if _, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: originalID})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatal("retired ID proved rollback", err)
+	}
+	current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil || current.Msg.Version.Revision != revision {
+		t.Fatal("status mutated state", err)
+	}
+}
+
+// The real Admin adapter/controller uses the authenticated browser control
+// mount against the production Server and deterministic TLS-verified IdP.
+// The trusted gateway hop is represented as in the other browser wire tests;
+// separate Playwright tests cover rendering, not external-provider acceptance.
+func TestAuth_OIDCAdminCommitProofRecoveryRealConnect(t *testing.T) {
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Skip("Bun is required for the Admin recovery wire gate")
+	}
+	f := newOIDCControlWireFixture(t)
+	start := f.browserLoginStart(t, nil, false)
+	callback := f.browserCallbackPath(t, start, "admin", false)
+	response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback, start.Cookies(), ""))
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatal("browser login", response.StatusCode)
+	}
+	_ = response.Body.Close()
+	var cookies []string
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == "__Host-lantern-session" || cookie.Name == "__Host-lantern-csrf" {
+			cookies = append(cookies, cookie.Name+"="+cookie.Value)
+		}
+	}
+	csrf := browserCookieValue(response.Cookies(), "__Host-lantern-csrf")
+	if len(cookies) != 2 || csrf == "" {
+		t.Fatal("browser session cookies missing")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := func(path string) string {
+		absolute, err := filepath.Abs(filepath.Join(cwd, "../../", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(absolute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(encoded)
+	}
+	script := `import { SecurityManagementController, SecurityChangeRecovery } from ` + entry("admin/app/lib/client/usecase/security/security-management.ts") + `;
+import { createSecurityManagementClient } from ` + entry("admin/app/lib/client/infrastructure/api/security-management-client.ts") + `;
+const check = (value, message) => { if (!value) throw new Error(message); };
+const originalFetch = globalThis.fetch;
+let sent = 0, statusCalls = 0, ids = 0, dropApply = false;
+const appliedIDs = [], statusIDs = [];
+globalThis.fetch = async (input, init) => {
+ const request = new Request(input, init);
+ request.headers.set("Cookie", process.env.LANTERN_RECOVERY_COOKIE);
+ request.headers.set("Host", "admin.example");
+ request.headers.set("X-Forwarded-Host", "admin.example");
+ request.headers.set("X-Forwarded-Proto", "https");
+ request.headers.set("Origin", "https://admin.example");
+ request.headers.set("Sec-Fetch-Site", "same-origin");
+ const method = new URL(request.url).pathname.split("/").at(-1);
+ const body = await request.clone().json();
+ if (method === "ApplySecurityChanges") { sent++; appliedIDs.push(body.changeId); }
+ if (method === "GetSecurityChangeStatus") { statusCalls++; statusIDs.push(body.changeId); }
+ const response = await originalFetch(request);
+ if (method === "ApplySecurityChanges" && dropApply) {
+  check(response.ok, "Apply must actually commit before dropping its response");
+  await response.arrayBuffer();
+  throw new TypeError("committed Apply response dropped");
+ }
+ return response;
+};
+for (const lost of [false, true]) {
+ dropApply = lost;
+ const recovery = new SecurityChangeRecovery();
+ const scope = new AbortController();
+ const port = createSecurityManagementClient(process.env.LANTERN_RECOVERY_URL, scope.signal, process.env.LANTERN_RECOVERY_CSRF);
+ const newID = port.newChangeId;
+ port.newChangeId = () => { ids++; return newID(); };
+ const before = new SecurityManagementController(port, "roles", scope.signal, recovery, "original-browser-session");
+ await before.load();
+ check(before.getSnapshot().phase === "ready", "actual browser role inspection");
+ const expected = before.getSnapshot().version.revision;
+ const changes = Array.from({length: lost ? 2 : 1}, (_, i) => ({ $typeName: "graph.v1.SecurityChange", operation: {case: "putRole", value: {$typeName: "graph.v1.SecurityRole", id: "admin_recovery_" + lost + "_" + i, name: "Reviewed role", rules: [], envOwned: false}}}));
+ before.review("Reviewed recovery", changes);
+ await before.apply(true);
+ const originalID = before.changeId();
+ check(originalID.length === 32, "original immutable change ID");
+ check(before.getSnapshot().mutation === (lost ? "unconfirmed" : "enforced"), "Apply acknowledgement boundary");
+ const acknowledgement = before.getSnapshot().result?.applied?.slice();
+ before.dispose();
+ const after = new SecurityManagementController(port, "roles", scope.signal, recovery, "original-browser-session");
+ check(after.changeId() === originalID, "remount retained original ID");
+ await after.checkStatus();
+ check(after.getSnapshot().mutation === "enforced", "actual Server retained proof accepted by Admin");
+ check(after.getSnapshot().result.version.revision === expected + 1n, "fixed writer original result version");
+ if (lost) {
+  check(after.getSnapshot().result.applied === undefined && after.getSnapshot().result.replayed === undefined, "status must not fabricate item outcomes or replay acknowledgement");
+ } else {
+  check(JSON.stringify(after.getSnapshot().result.applied) === JSON.stringify(acknowledgement), "status preserves original Apply outcomes");
+  check(after.getSnapshot().result.replayed === false, "status preserves original replay acknowledgement");
+ }
+ await after.checkStatus();
+ after.dispose();
+}
+check(sent === 2 && ids === 2 && statusCalls === 4, "status recovery allocated another ID or resent Apply");
+check(statusIDs[0] === appliedIDs[0] && statusIDs[1] === appliedIDs[0] && statusIDs[2] === appliedIDs[1] && statusIDs[3] === appliedIDs[1], "status used another change ID");
+console.log("Admin real browser Connect recovery: original acknowledgement and response-loss remount passed; two Apply calls, two IDs, four proof reads.");
+`
+	file := filepath.Join(t.TempDir(), "admin-recovery-wire.ts")
+	if err := os.WriteFile(file, []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bun, "run", file)
+	cmd.Env = append(os.Environ(), "LANTERN_RECOVERY_URL="+f.server.URL, "LANTERN_RECOVERY_CSRF="+csrf, "LANTERN_RECOVERY_COOKIE="+strings.Join(cookies, "; "))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Admin browser recovery wire: %v\n%s", err, output)
+	}
+}
+
 func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixture(t)
 	ctx := t.Context()

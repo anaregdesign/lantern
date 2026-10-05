@@ -101,6 +101,7 @@ type LanternSecurityServiceClient interface {
 	// Plural is canonical and atomic, with request-index-aligned outcomes.
 	ApplySecurityChanges(context.Context, *connect.Request[v1.ApplySecurityChangesRequest]) (*connect.Response[v1.ApplySecurityChangesResponse], error)
 	ApplySecurityChange(context.Context, *connect.Request[v1.ApplySecurityChangeRequest]) (*connect.Response[v1.ApplySecurityChangeResponse], error)
+	// Retained commit proof only; item outcomes and replay acknowledgement belong to Apply.
 	GetSecurityChangeStatus(context.Context, *connect.Request[v1.GetSecurityChangeStatusRequest]) (*connect.Response[v1.GetSecurityChangeStatusResponse], error)
 }
 
@@ -333,6 +334,7 @@ type LanternSecurityServiceHandler interface {
 	// Plural is canonical and atomic, with request-index-aligned outcomes.
 	ApplySecurityChanges(context.Context, *connect.Request[v1.ApplySecurityChangesRequest]) (*connect.Response[v1.ApplySecurityChangesResponse], error)
 	ApplySecurityChange(context.Context, *connect.Request[v1.ApplySecurityChangeRequest]) (*connect.Response[v1.ApplySecurityChangeResponse], error)
+	// Retained commit proof only; item outcomes and replay acknowledgement belong to Apply.
 	GetSecurityChangeStatus(context.Context, *connect.Request[v1.GetSecurityChangeStatusRequest]) (*connect.Response[v1.GetSecurityChangeStatusResponse], error)
 }
 

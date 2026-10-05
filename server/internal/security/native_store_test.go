@@ -98,6 +98,10 @@ func TestNativeStoreDurableOwnershipAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanupNativeStore(t, resumed)
+	status, err := resumed.Store().ChangeStatus([16]byte{2})
+	if err != nil || status != result {
+		t.Fatal("WAL restart lost exact original commit proof", status, err)
+	}
 	replay, err := resumed.Store().Commit(ctx, 1, [16]byte{2}, nativeTestSuspendedImage())
 	if err != nil || !replay.Replayed || replay.Digest != result.Digest {
 		t.Fatalf("restart lost idempotent result: %+v %v", replay, err)

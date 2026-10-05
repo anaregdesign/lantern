@@ -50,6 +50,13 @@ func TestSignedChangeHistoryCheckpointPreservesReplayWindow(t *testing.T) {
 	if _, known := replica.changes[[16]byte{2}]; known || result.Revision != 2 {
 		t.Fatal("old change IDs were retained without bound")
 	}
+	if _, err := replica.ChangeStatus([16]byte{2}); err != ErrUnknownChange {
+		t.Fatal("retired checkpoint ID became rollback proof", err)
+	}
+	proof, err := replica.ChangeStatus(id)
+	if err != nil || proof.Revision != replay.Revision || proof.Digest != replay.Digest || proof.Replayed {
+		t.Fatal("retained checkpoint proof claimed replay acknowledgement", proof, err)
+	}
 	bad := append([]byte(nil), current.Encode()...)
 	bad[revisionHeaderBytes] ^= 1
 	if _, err := DecodeRevision(bad, options.PublicKey, options.Limits); err == nil {

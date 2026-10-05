@@ -545,7 +545,9 @@ func (h *SecurityConnectHandler) GetSecurityChangeStatus(ctx context.Context, re
 		return nil, connect.NewError(securityErrorCode(err), err)
 	}
 	digest, generation := result.Digest, admission.Revision().Generation()
-	response := &pb.GetSecurityChangeStatusResponse{Version: &pb.SecurityVersion{Revision: result.Revision, Digest: append([]byte(nil), digest[:]...), Generation: append([]byte(nil), generation[:]...)}, Enforcement: pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING}
+	// Retained history proves the original commit, not request-aligned item
+	// outcomes or the current policy. Keep those acknowledgements on Apply.
+	response := &pb.GetSecurityChangeStatusResponse{Version: &pb.SecurityVersion{Revision: result.Revision, Digest: append([]byte(nil), digest[:]...), Generation: append([]byte(nil), generation[:]...)}, ChangeId: append([]byte(nil), id[:]...), Enforcement: pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING}
 	if h.enforced != nil && h.enforced(result) {
 		response.Enforcement = pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED
 	}
