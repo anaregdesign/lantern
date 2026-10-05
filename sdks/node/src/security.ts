@@ -1,5 +1,11 @@
 import type { MessageInitShape } from "@bufbuild/protobuf";
-import { createClient, ConnectError, type Client, type CallOptions, type Transport } from "@connectrpc/connect";
+import {
+  createClient,
+  ConnectError,
+  type Client,
+  type CallOptions,
+  type Transport,
+} from "@connectrpc/connect";
 import { wrapConnectError, FailedPreconditionError } from "./errors.js";
 import type { SecurityOperationAuthorizationRequired } from "./gen/graph/v1/security_pb.js";
 import {
@@ -29,7 +35,10 @@ import {
 /** This invocation definitely did not commit. Earlier uncertain attempts
  * remain uncertain and must be reconciled using their original change ID. */
 export class SecurityOperationAuthorizationRequiredError extends FailedPreconditionError {
-  constructor(readonly detail: SecurityOperationAuthorizationRequired, cause: unknown) {
+  constructor(
+    readonly detail: SecurityOperationAuthorizationRequired,
+    cause: unknown,
+  ) {
     super("Reauthenticate the exact reviewed security operation.", { cause });
     this.name = "SecurityOperationAuthorizationRequiredError";
   }
@@ -51,8 +60,11 @@ export class SecurityClient {
     try {
       return await call();
     } catch (error) {
-      const detail = ConnectError.from(error).findDetails(SecurityOperationAuthorizationRequiredSchema)[0];
-      if (ConnectError.from(error).code === 9 && detail) throw new SecurityOperationAuthorizationRequiredError(detail, error);
+      const detail = ConnectError.from(error).findDetails(
+        SecurityOperationAuthorizationRequiredSchema,
+      )[0];
+      if (ConnectError.from(error).code === 9 && detail)
+        throw new SecurityOperationAuthorizationRequiredError(detail, error);
       throw wrapConnectError(error);
     }
   }
