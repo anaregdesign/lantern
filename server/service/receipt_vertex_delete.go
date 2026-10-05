@@ -190,15 +190,8 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 	defer s.replicationCutMu.Unlock()
 	s.receiptOriginCutMu.Lock()
 	defer s.receiptOriginCutMu.Unlock()
-	walAttempted := false
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			if walAttempted {
-				s.markReceiptCommitFaultLocked()
-			}
-			panic(recovered)
-		}
-	}()
+	publication := stagedPublication{service: s}
+	defer publication.failClosedOnPanic()
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
 		return nil, publicationGapError()
 	}
@@ -300,18 +293,8 @@ func (c *vertexDeleteReceiptCoordinator) Commit(
 	if err := storeTx.Stage(); err != nil {
 		return nil, receiptStoreError(err)
 	}
-	walAttempted = true
-	_, err = s.log.CommitWithPostRingPublication(envelope, ts, func(mutationlog.Entry) {
-		storeTx.Commit()
-		graphTx.Commit()
-		originTx.Commit()
-	})
+	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx)
 	if err != nil {
-		var definite *mutationlog.DefiniteWALAbort
-		if !errors.As(err, &definite) && !errors.Is(err, mutationlog.ErrClosed) &&
-			!errors.Is(err, mutationlog.ErrSeqExhausted) {
-			s.markReceiptCommitFaultLocked()
-		}
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)
 		}
@@ -367,15 +350,8 @@ func (c *vertexDeleteReceiptCoordinator) commitReplicated(
 	s := c.service
 	s.receiptOriginCutMu.Lock()
 	defer s.receiptOriginCutMu.Unlock()
-	walAttempted := false
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			if walAttempted {
-				s.markReceiptCommitFaultLocked()
-			}
-			panic(recovered)
-		}
-	}()
+	publication := stagedPublication{service: s}
+	defer publication.failClosedOnPanic()
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
 		return publicationGapError()
 	}
@@ -438,18 +414,8 @@ func (c *vertexDeleteReceiptCoordinator) commitReplicated(
 		return ctxToConnect(err)
 	}
 	pending.receiptWAL = localEnvelope
-	walAttempted = true
-	_, err = s.log.CommitWithPostRingPublication(localEnvelope, ts, func(mutationlog.Entry) {
-		storeTx.Commit()
-		graphTx.Commit()
-		originTx.Commit()
-	})
+	err = publication.commit(localEnvelope, ts, storeTx, graphTx.Commit, originTx)
 	if err != nil {
-		var definite *mutationlog.DefiniteWALAbort
-		if !errors.As(err, &definite) && !errors.Is(err, mutationlog.ErrClosed) &&
-			!errors.Is(err, mutationlog.ErrSeqExhausted) {
-			s.markReceiptCommitFaultLocked()
-		}
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return connect.NewError(connect.CodeResourceExhausted, err)
 		}

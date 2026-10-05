@@ -28,7 +28,7 @@ type EdgeAddStageResult[S comparable] struct {
 type EdgeAddTransaction[S comparable, T any] struct {
 	stage  *stagedEdgeAdd[S, T]
 	result EdgeAddStageResult[S]
-	closed bool
+	stagedMutationLifecycle
 }
 
 // BeginEdgeAdd stages a locally originated Add batch.
@@ -257,8 +257,7 @@ func (tx *EdgeAddTransaction[S, T]) Commit() {
 	if tx == nil || tx.closed || !tx.stage.applied {
 		panic("graphcache: staged Add committed in invalid state")
 	}
-	tx.closed = true
-	tx.stage.vertex.release()
+	tx.stagedMutationLifecycle.commit(tx.stage.vertex.release)
 }
 
 // Abort restores the exact pre-Add state and releases the visibility locks.
@@ -266,7 +265,8 @@ func (tx *EdgeAddTransaction[S, T]) Abort() {
 	if tx == nil || tx.closed {
 		return
 	}
+	// Preserve Edge rollback before entering the Vertex cleanup boundary.
 	tx.closed = true
 	tx.stage.rollbackEdgesLocked()
-	tx.stage.vertex.abort()
+	tx.stagedMutationLifecycle.abort(tx.stage.vertex.rollbackWithEvictionsLocked, tx.stage.vertex.release)
 }

@@ -252,15 +252,8 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 	defer s.replicationCutMu.Unlock()
 	s.receiptOriginCutMu.Lock()
 	defer s.receiptOriginCutMu.Unlock()
-	walAttempted := false
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			if walAttempted {
-				s.markReceiptCommitFaultLocked()
-			}
-			panic(recovered)
-		}
-	}()
+	publication := stagedPublication{service: s}
+	defer publication.failClosedOnPanic()
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
 		return nil, publicationGapError()
 	}
@@ -367,22 +360,8 @@ func (c *edgeDeleteReceiptCoordinator) Commit(ctx context.Context, call receiptE
 		return nil, receiptStoreError(err)
 	}
 	graphTx.Apply()
-	walAttempted = true
-	_, err = s.log.CommitWithPostRingPublication(envelope, ts, func(mutationlog.Entry) {
-		// The ring/seq now contain the matching entry, but log readers
-		// still wait on Log.mu. Release Store before GraphCache, then the
-		// origin frontier last. The dispatcher handoff follows this callback,
-		// so no Core lock is held across its back-pressure wait. Server-owned
-		// observers remain blocked by replicationCutMu throughout.
-		tx.Commit()
-		graphTx.Commit()
-		originTx.Commit()
-	})
+	err = publication.commit(envelope, ts, tx, graphTx.Commit, originTx)
 	if err != nil {
-		var definite *mutationlog.DefiniteWALAbort
-		if !errors.As(err, &definite) && !errors.Is(err, mutationlog.ErrClosed) && !errors.Is(err, mutationlog.ErrSeqExhausted) {
-			s.markReceiptCommitFaultLocked()
-		}
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)
 		}
@@ -439,15 +418,8 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	s := c.service
 	s.receiptOriginCutMu.Lock()
 	defer s.receiptOriginCutMu.Unlock()
-	walAttempted := false
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			if walAttempted {
-				s.markReceiptCommitFaultLocked()
-			}
-			panic(recovered)
-		}
-	}()
+	publication := stagedPublication{service: s}
+	defer publication.failClosedOnPanic()
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
 		return publicationGapError()
 	}
@@ -521,18 +493,8 @@ func (c *edgeDeleteReceiptCoordinator) commitReplicated(
 	// indeterminate return this is the recovery identity while the service
 	// faults reads, writes, status, Snapshot, and Subscribe.
 	pending.receiptWAL = localEnvelope
-	walAttempted = true
-	_, err = s.log.CommitWithPostRingPublication(localEnvelope, ts, func(mutationlog.Entry) {
-		tx.Commit()
-		graphTx.Commit()
-		originTx.Commit()
-	})
+	err = publication.commit(localEnvelope, ts, tx, graphTx.Commit, originTx)
 	if err != nil {
-		var definite *mutationlog.DefiniteWALAbort
-		if !errors.As(err, &definite) && !errors.Is(err, mutationlog.ErrClosed) &&
-			!errors.Is(err, mutationlog.ErrSeqExhausted) {
-			s.markReceiptCommitFaultLocked()
-		}
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return connect.NewError(connect.CodeResourceExhausted, err)
 		}
@@ -598,18 +560,4 @@ func (c *edgeDeleteReceiptCoordinator) Lookup(id mutationreceipt.ID, now time.Ti
 		return 0, mutationreceipt.Receipt{}, receiptStoreError(lookupErr)
 	}
 	return status, receipt, nil
-}
-
-// markReceiptCommitFaultLocked has no local retry path: a generic WAL error
-// may already have committed the envelope. Only a future certified replay or
-// receipt-bearing Snapshot may clear this fail-stop state.
-func (s *LanternService) markReceiptCommitFaultLocked() {
-	if s.receiptCommitFaulted {
-		return
-	}
-	s.receiptCommitFaulted = true
-	if s.publicationFaultCount == 0 {
-		close(s.publicationFaultCh)
-	}
-	s.publicationFaultCount++
 }

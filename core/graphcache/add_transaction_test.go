@@ -29,7 +29,16 @@ func TestEdgeAddTransaction(t *testing.T) {
 		if len(result.Accepted) != 2 || result.Accepted[0].Index != 0 || result.Accepted[1].Index != 1 {
 			t.Fatalf("Accepted = %+v", result.Accepted)
 		}
+		result.Effective[0] = 99
+		result.Accepted[0].Index = 99
+		result.Accepted[0].Item.Weight = 99
+		if got := tx.Result(); !equalFloat32s(got.Effective, []float32{2, 5}) ||
+			got.Accepted[0].Index != 0 || got.Accepted[0].Item.Weight != 2 {
+			t.Fatalf("result aliases authoritative state: %+v", got)
+		}
 		tx.Commit()
+		tx.Abort()
+		assertTransactionPanics(t, tx.Commit)
 		if got, ok := c.GetWeight("a", "b"); !ok || got != 5 {
 			t.Fatalf("GetWeight = %v, %v, want 5, true", got, ok)
 		}
@@ -51,6 +60,7 @@ func TestEdgeAddTransaction(t *testing.T) {
 		}
 		tx.Abort()
 		tx.Abort()
+		assertTransactionPanics(t, tx.Commit)
 		if after := captureStagedDeleteState(c); !reflect.DeepEqual(after, before) {
 			t.Fatalf("transaction Abort drift: before=%+v after=%+v", before, after)
 		}
@@ -120,6 +130,12 @@ func TestEdgeAddTransaction(t *testing.T) {
 			t.Fatal("born-expired Add remained live")
 		}
 	})
+}
+
+func TestEdgeAddTransactionNilClose(t *testing.T) {
+	var tx *EdgeAddTransaction[string, string]
+	tx.Abort()
+	assertTransactionPanics(t, tx.Commit)
 }
 
 func TestStagedEdgeAddRejectedHistoryAllocationIsPerEdge(t *testing.T) {

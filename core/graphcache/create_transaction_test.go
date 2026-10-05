@@ -41,6 +41,8 @@ func TestEdgeCreateTransaction(t *testing.T) {
 			t.Fatal("result aliases authoritative state")
 		}
 		tx.Commit()
+		tx.Abort()
+		assertTransactionPanics(t, tx.Commit)
 		if weight, live := c.GetWeight("a", "b"); !live || weight != 2 {
 			t.Fatal("duplicate overwrote original creation", weight, live)
 		}
@@ -85,6 +87,7 @@ func TestEdgeCreateTransaction(t *testing.T) {
 		}
 		tx.Abort()
 		tx.Abort()
+		assertTransactionPanics(t, tx.Commit)
 		if after := captureStagedDeleteState(c); !reflect.DeepEqual(after, before) {
 			t.Fatalf("abort drift: before=%+v after=%+v", before, after)
 		}
@@ -148,6 +151,12 @@ func TestEdgeCreateTransaction(t *testing.T) {
 			t.Fatal("unstaged graph admitted conditional publication")
 		}
 	})
+}
+
+func TestEdgeCreateTransactionNilClose(t *testing.T) {
+	var tx *EdgeCreateTransaction[string, string]
+	tx.Abort()
+	assertTransactionPanics(t, tx.Commit)
 }
 
 func TestEdgeCreateTransactionSerializesDeleteAndConcurrentCreate(t *testing.T) {

@@ -4,11 +4,22 @@ import (
 	"reflect"
 	"strings"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/search"
 )
+
+func assertTransactionPanics(t *testing.T, operation func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Error("invalid transaction operation did not panic")
+		}
+	}()
+	operation()
+}
 
 func newVertexTransactionTestCache() *GraphCache[string, string] {
 	c := NewGraphCacheWithStaging[string, string](time.Hour)

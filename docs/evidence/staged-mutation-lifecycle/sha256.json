@@ -1,0 +1,7 @@
+{
+  "baseline-core.txt": "962753b6ea09c8be481f69c768dc68563043f8ad3f1d25e2c9934e81820c2cc0",
+  "baseline-service.txt": "014325d37ad0cfc05c6070403e6e4e8a09b8157cc0c1236ba38a9fe052c3ddb4",
+  "comparison.json": "39838c5845fa332091ab24560ec4c86a914516871e06b904a15068e54321a669",
+  "final-core.txt": "2688695c7053d784bf2a87eed0af954eb0c5784afbbc2d7a07513cd6bbfed436",
+  "final-service.txt": "3610d177a7b435bbb57b55ff86ce321f95b82a351916caba21fad490445649b6"
+}

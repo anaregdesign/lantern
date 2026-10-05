@@ -1,0 +1,39 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/anaregdesign/lantern/core/graphcache
+cpu: Apple M3 Max
+BenchmarkAddEdges_ExistingBatch-16        	     100	     14976 ns/op	   24279 B/op	     133 allocs/op
+BenchmarkAddEdges_ExistingBatch-16        	     100	     13420 ns/op	   24279 B/op	     133 allocs/op
+BenchmarkAddEdges_ExistingBatch-16        	     100	     13140 ns/op	   24279 B/op	     133 allocs/op
+BenchmarkPutVertex_Search/Plain-16        	     100	       757.1 ns/op	     348 B/op	       2 allocs/op
+BenchmarkPutVertex_Search/Plain-16        	     100	       446.2 ns/op	     348 B/op	       2 allocs/op
+BenchmarkPutVertex_Search/Plain-16        	     100	       407.5 ns/op	     348 B/op	       2 allocs/op
+BenchmarkPutVertex_Search/Indexed-16      	     100	      7738 ns/op	   15870 B/op	      84 allocs/op
+BenchmarkPutVertex_Search/Indexed-16      	     100	      6891 ns/op	   15872 B/op	      84 allocs/op
+BenchmarkPutVertex_Search/Indexed-16      	     100	      6444 ns/op	   15871 B/op	      84 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/get_vertex-16         	     100	        47.50 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/get_vertex-16         	     100	        45.41 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/get_vertex-16         	     100	        46.67 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/put_vertex-16         	     100	       143.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/put_vertex-16         	     100	       143.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/put_vertex-16         	     100	       144.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/get_weight-16         	     100	       192.1 ns/op	      56 B/op	       2 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/get_weight-16         	     100	       254.2 ns/op	      56 B/op	       2 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_false/get_weight-16         	     100	       186.7 ns/op	      56 B/op	       2 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/get_vertex-16          	     100	        47.92 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/get_vertex-16          	     100	        50.00 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/get_vertex-16          	     100	        52.08 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/put_vertex-16          	     100	       155.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/put_vertex-16          	     100	       146.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/put_vertex-16          	     100	       145.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/get_weight-16          	     100	       262.5 ns/op	      56 B/op	       2 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/get_weight-16          	     100	       189.2 ns/op	      56 B/op	       2 allocs/op
+BenchmarkGraphCacheStagingCosts/staging_true/get_weight-16          	     100	       183.3 ns/op	      56 B/op	       2 allocs/op
+BenchmarkEdgeCreateTransaction-16                                   	     100	      1903 ns/op	    2885 B/op	      29 allocs/op
+BenchmarkEdgeCreateTransaction-16                                   	     100	      1350 ns/op	    2885 B/op	      29 allocs/op
+BenchmarkEdgeCreateTransaction-16                                   	     100	      1218 ns/op	    2885 B/op	      29 allocs/op
+BenchmarkEdgeDeleteTransactionAbort-16                              	     100	      2378 ns/op	    6209 B/op	      36 allocs/op
+BenchmarkEdgeDeleteTransactionAbort-16                              	     100	      2020 ns/op	    6209 B/op	      36 allocs/op
+BenchmarkEdgeDeleteTransactionAbort-16                              	     100	      3029 ns/op	    6209 B/op	      36 allocs/op
+PASS
+ok  	github.com/anaregdesign/lantern/core/graphcache	0.312s

@@ -207,8 +207,8 @@ type stagedEdgeContributionDelete[S comparable, T any] struct {
 // EdgeContributionDeleteTransaction holds both visibility gates until its
 // enclosing durable WAL publication commits or aborts.
 type EdgeContributionDeleteTransaction[S comparable, T any] struct {
-	stage  *stagedEdgeContributionDelete[S, T]
-	closed bool
+	stage *stagedEdgeContributionDelete[S, T]
+	stagedMutationLifecycle
 }
 
 func (c *GraphCache[S, T]) PrepareEdgeContributionDelete(
@@ -484,18 +484,12 @@ func (tx *EdgeContributionDeleteTransaction[S, T]) Commit() {
 	if tx == nil || tx.closed || !tx.stage.base.applied {
 		panic("graphcache: staged contribution Delete committed after close")
 	}
-	tx.closed = true
-	tx.stage.base.cache.publicationGate.Unlock()
-	tx.stage.base.cache.mu.Unlock()
+	tx.stagedMutationLifecycle.commit(tx.stage.base.cache.releaseStagedEdges)
 }
 
 func (tx *EdgeContributionDeleteTransaction[S, T]) Abort() {
 	if tx == nil || tx.closed {
 		return
 	}
-	tx.closed = true
-	c := tx.stage.base.cache
-	defer c.mu.Unlock()
-	defer c.publicationGate.Unlock()
-	tx.stage.rollbackLocked()
+	tx.stagedMutationLifecycle.abort(tx.stage.rollbackLocked, tx.stage.base.cache.releaseStagedEdges)
 }

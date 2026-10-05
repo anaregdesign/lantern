@@ -481,7 +481,7 @@ func TestReceiptWholeStateCaptureDefiniteAbortKeepsGraphAndCutoff(t *testing.T) 
 	}))
 	f.cache.AddEdgeWithExpiration("tail", "head", 1, time.Now().Add(time.Hour))
 	policy := receiptCapturePolicy(f.epoch)
-	before, err := f.coordinator.captureReceiptWholeState(context.Background(), policy)
+	before, err := receiptCaptureSource(t, f).Capture(context.Background(), policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +489,7 @@ func TestReceiptWholeStateCaptureDefiniteAbortKeepsGraphAndCutoff(t *testing.T) 
 	if _, err := f.coordinator.Commit(context.Background(), call); connect.CodeOf(err) != connect.CodeUnavailable {
 		t.Fatalf("definite WAL abort = %v", err)
 	}
-	after, err := f.coordinator.captureReceiptWholeState(context.Background(), policy)
+	after, err := receiptCaptureSource(t, f).Capture(context.Background(), policy)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +516,7 @@ func TestReceiptWholeStateCaptureCopiesUncommittedClockAdvance(t *testing.T) {
 	if status, _, err := f.coordinator.Lookup(call.Items[0].ID, lookupAt); err != nil || status != mutationreceipt.NotYetObserved {
 		t.Fatalf("uncommitted receipt Lookup = %v, %v", status, err)
 	}
-	capture, err := f.coordinator.captureReceiptWholeState(context.Background(), receiptCapturePolicy(f.epoch))
+	capture, err := receiptCaptureSource(t, f).Capture(context.Background(), receiptCapturePolicy(f.epoch))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1190,7 +1190,7 @@ func TestReceiptWholeStateCaptureFailsClosed(t *testing.T) {
 			if tc.mutate != nil {
 				tc.mutate(&f, &policy)
 			}
-			capture, err := f.coordinator.captureReceiptWholeState(context.Background(), policy)
+			capture, err := receiptCaptureSource(t, f).Capture(context.Background(), policy)
 			if err == nil || !reflect.DeepEqual(capture, ReceiptWholeStateCapture{}) {
 				t.Fatalf("invalid capture returned partial state: %+v, %v", capture, err)
 			}
@@ -1211,7 +1211,7 @@ func TestReceiptWholeStateCaptureRejectsSnapshotInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer finish(false)
-	capture, err := f.coordinator.captureReceiptWholeState(context.Background(), receiptCapturePolicy(f.epoch))
+	capture, err := receiptCaptureSource(t, f).Capture(context.Background(), receiptCapturePolicy(f.epoch))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition || !reflect.DeepEqual(capture, ReceiptWholeStateCapture{}) {
 		t.Fatalf("incomplete install capture = %+v, %v", capture, err)
 	}
@@ -1223,7 +1223,7 @@ func TestReceiptWholeStateCaptureFrameValuesAreDetached(t *testing.T) {
 	if err := f.cache.PutVertex("value", value); err != nil {
 		t.Fatal(err)
 	}
-	capture, err := f.coordinator.captureReceiptWholeState(context.Background(), receiptCapturePolicy(f.epoch))
+	capture, err := receiptCaptureSource(t, f).Capture(context.Background(), receiptCapturePolicy(f.epoch))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1240,4 +1240,15 @@ func TestReceiptWholeStateCaptureFrameValuesAreDetached(t *testing.T) {
 	if copied.GetString_() != "original" {
 		t.Fatalf("captured Vertex changed with cache alias: %+v", copied)
 	}
+}
+
+// receiptCaptureSource binds the same service-owned graph/Store/catalog cut as
+// production Snapshot and backup, independently of an Edge Delete adapter.
+func receiptCaptureSource(t *testing.T, f receiptEdgeDeleteFixture) *ReceiptWholeStateSource {
+	t.Helper()
+	source, err := NewReceiptWholeStateSource(f.service, f.coordinator.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return source
 }
