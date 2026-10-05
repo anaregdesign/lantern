@@ -1214,7 +1214,58 @@ for (const lost of [false, true]) {
 }
 check(sent === 2 && ids === 2 && statusCalls === 4, "status recovery allocated another ID or resent Apply");
 check(statusIDs[0] === appliedIDs[0] && statusIDs[1] === appliedIDs[0] && statusIDs[2] === appliedIDs[1] && statusIDs[3] === appliedIDs[1], "status used another change ID");
-console.log("Admin real browser Connect recovery: original acknowledgement and response-loss remount passed; two Apply calls, two IDs, four proof reads.");
+// A real, competing ordinary commit after review makes the first Apply stale.
+// No response substitution or RPC mock supplies the typed rejection detail.
+dropApply = false;
+const scope = new AbortController();
+const recovery = new SecurityChangeRecovery();
+const port = createSecurityManagementClient(process.env.LANTERN_RECOVERY_URL, scope.signal, process.env.LANTERN_RECOVERY_CSRF);
+const newID = port.newChangeId;
+port.newChangeId = () => { ids++; return newID(); };
+const correction = new SecurityManagementController(port, "roles", scope.signal, recovery, "correction-browser-session");
+const roleChange = (id, name) => [{ $typeName: "graph.v1.SecurityChange", operation: {case: "putRole", value: {$typeName: "graph.v1.SecurityRole", id, name, rules: [], envOwned: false}}}];
+const sameVersion = (a, b) => a.revision === b.revision && Buffer.from(a.digest).equals(Buffer.from(b.digest)) && Buffer.from(a.generation).equals(Buffer.from(b.generation));
+await correction.load();
+const baseline = correction.getSnapshot().version;
+const auditBefore = await port.audit("", scope.signal);
+await correction.review("Original correction", roleChange("admin_correction", "Original draft"));
+check(correction.getSnapshot().review.approval === "ordinary", "real Prepare admitted ordinary change");
+const refusedReview = structuredClone(correction.getSnapshot().review);
+await port.apply({expectedRevision: baseline.revision, changeId: crypto.getRandomValues(new Uint8Array(16)), changes: roleChange("competing_commit", "Competing ordinary change")}, scope.signal);
+const afterCompeting = await port.roles("", scope.signal);
+check(afterCompeting.version.revision === baseline.revision + 1n, "competing commit advanced one revision");
+await correction.apply();
+check(correction.getSnapshot().mutation === "conflict" && correction.getSnapshot().review === undefined && correction.getSnapshot().version === undefined, "typed first refusal retires review and requires reload");
+check(correction.changeId() === "" && recovery.read("correction-browser-session") === undefined, "first refusal is not retained as uncertain work");
+check(sent === 4 && ids === 3, "one refused Apply after one explicit competing commit");
+const afterRefusal = await port.roles("", scope.signal);
+const auditAfterRefusal = await port.audit("", scope.signal);
+check(sameVersion(afterRefusal.version, afterCompeting.version), "refusal changed signed revision/cut");
+check(!afterRefusal.roles.some(role => role.id === "admin_correction"), "refused role effect escaped");
+check(auditAfterRefusal.records.length === auditBefore.records.length + 1, "refusal appended a committed audit entry");
+try { await port.status(refusedReview.changeId, scope.signal); throw new Error("refused ID acquired retained commit proof"); }
+catch (error) {
+ let statusError = error;
+ for (let depth = 0; depth < 4 && statusError?.code === undefined; depth++) statusError = statusError?.cause;
+ check(statusError?.code === 9 && statusError?.rawMessage === "security change is outside retained history", "refused ID must report the existing outside-retained-history contract");
+ check(port.failure(error) === "invalid" && port.precommitRejected(error) === undefined, "unknown status must not supply a committed proof or an Apply rejection marker");
+}
+await correction.review("Blocked before reload", roleChange("admin_correction", "Corrected draft"));
+await correction.apply();
+check(sent === 4 && ids === 3, "correction before reload sent another command");
+await correction.load();
+await correction.review("Explicit fresh review", roleChange("admin_correction", "Corrected draft"));
+const fresh = correction.getSnapshot().review;
+check(fresh.approval === "ordinary" && !Buffer.from(fresh.changeId).equals(Buffer.from(refusedReview.changeId)), "correction must use a newly reviewed ID");
+check(fresh.expectedRevision === afterCompeting.version.revision && sent === 4 && ids === 4, "fresh review uses current cut without Apply");
+await correction.apply();
+check(sent === 5 && ids === 4 && correction.getSnapshot().mutation === "enforced", "one explicit corrected Apply");
+const finalRoles = await port.roles("", scope.signal);
+const finalAudit = await port.audit("", scope.signal);
+check(finalRoles.version.revision === afterCompeting.version.revision + 1n && finalRoles.roles.find(role => role.id === "admin_correction")?.name === "Corrected draft", "corrected role effect/revision mismatch");
+check(finalAudit.records.length === auditBefore.records.length + 2, "corrected flow committed other effects");
+correction.dispose();
+console.log("Admin real browser Connect recovery and precommit correction passed: retained ambiguity stays status-only; first typed refusal has no effect/audit/proof and requires reload/new-ID review before one corrected Apply.");
 `
 	file := filepath.Join(t.TempDir(), "admin-recovery-wire.ts")
 	if err := os.WriteFile(file, []byte(script), 0600); err != nil {
@@ -3852,5 +3903,87 @@ func TestAuth_OIDCBrowserLoginAndStepUpPurposesRealConnect(t *testing.T) {
 				t.Fatal("fresh authorized management change refused", err)
 			}
 		})
+	}
+}
+
+// Production Connect admission/codec/Store prove a local refusal only for this
+// invocation. Unknown status cannot settle a prior attempt with the same ID.
+func TestAuth_OIDCSecurityPrecommitRefusalsRealConnect(t *testing.T) {
+	f := newOIDCControlWireFixtureConfigured(t, func(config *provider.SecurityConfig) {
+		// This case must have one human administrator. With the ordinary two-
+		// administrator fixture, suspending admin legitimately commits.
+		config.Bootstrap.AdminSubjects = []string{"admin"}
+	})
+	token := f.token(t, "admin", nil)
+	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := principal.Msg.Version.Revision
+	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "admin"}
+	for _, singular := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plural", true: "singular"}[singular], func(t *testing.T) {
+			for i, test := range []struct {
+				name   string
+				change *pb.SecurityChange
+				reason pb.SecurityChangeRejectionReason
+				stale  bool
+			}{
+				{"malformed", &pb.SecurityChange{}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, false},
+				{"unknown role", &pb.SecurityChange{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "not_registered"}}}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_UNKNOWN_ROLE, false},
+				{"env assignment", &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "security_admin"}}}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_ENVIRONMENT_OWNED, false},
+				{"last human", &pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_SUSPENDED}}}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_LAST_ADMINISTRATOR, false},
+				{"stale revision", &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "ordinary"}}}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_REVISION_CONFLICT, true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					expected := initial
+					if test.stale {
+						expected++
+					}
+					id := bytes.Repeat([]byte{byte(140 + i)}, 16)
+					if singular {
+						id[0] = 150
+					}
+					var err error
+					if singular {
+						_, err = f.client.ApplySecurityChange(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangeRequest{ExpectedRevision: expected, ChangeId: id, Change: test.change}))
+					} else {
+						_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangesRequest{ExpectedRevision: expected, ChangeId: id, Changes: []*pb.SecurityChange{test.change}}))
+					}
+					var ce *connect.Error
+					if !errors.As(err, &ce) || len(ce.Details()) != 1 {
+						t.Fatal("wire refusal detail missing", err)
+					}
+					value, err := ce.Details()[0].Value()
+					if err != nil {
+						t.Fatal(err)
+					}
+					detail, ok := value.(*pb.SecurityChangePrecommitRejected)
+					if !ok || !bytes.Equal(detail.ChangeId, id) || detail.ExpectedRevision != expected || detail.Reason != test.reason {
+						t.Fatal("wire correlation", value)
+					}
+					current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
+					if err != nil || !proto.Equal(current.Msg.Version, principal.Msg.Version) {
+						t.Fatal("refusal changed signed cut", current, err)
+					}
+				})
+			}
+		})
+	}
+	committedID := bytes.Repeat([]byte{160}, 16)
+	committed, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangeRequest{ExpectedRevision: initial, ChangeId: committedID, Change: &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "corrected_after_refusal"}}}}))
+	if err != nil || !committed.Msg.Applied {
+		t.Fatal("corrected explicit command", committed, err)
+	}
+	for _, change := range []*pb.SecurityChange{{}, {Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "changed_intent"}}}} {
+		_, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangeRequest{ExpectedRevision: initial, ChangeId: committedID, Change: change}))
+		var ce *connect.Error
+		if !errors.As(err, &ce) || len(ce.Details()) != 0 {
+			t.Fatal("retained ID got correction permission", err)
+		}
+	}
+	proof, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(token, &pb.GetSecurityChangeStatusRequest{ChangeId: committedID}))
+	if err != nil || !proto.Equal(proof.Msg.Version, committed.Msg.Version) {
+		t.Fatal("retained original proof changed", proof, err)
 	}
 }

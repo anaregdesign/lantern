@@ -85,6 +85,28 @@ authorization-required detail settles only that invocation's pre-persistence
 refusal. Admin may reacquire proof for the same reviewed ID after a first definite
 refusal; an earlier ambiguous dispatch always remains status-only.
 
+
+For a decoded management Apply, `SecurityChangePrecommitRejected` identifies
+only a known validation refusal reached before persistence. Its nonzero 16-byte
+Change-ID and expected revision bind that invocation. Reasons cover malformed
+or duplicate changes, an unknown Role, failed Issuer validation,
+environment-owned configuration, the last usable human administrator and a
+stale expected revision. Authentication, authority/freshness failures,
+retained-ID intent conflicts and persistence failures cannot supply this
+marker. An unknown status result is not evidence that an earlier call did not
+commit; the existing outside-retained-history status contract is unchanged.
+
+The Node/Web SDK exposes a typed rejection only for singular or plural Apply
+with one valid detail and the matching RPC code. Admin accepts a matching
+ID/revision marker only for its first dispatch. It retires that review, clears
+the inspected version, and requires reload, draft correction and a new-ID
+review before one explicit Apply. Generic conflicts, transport failures,
+malformed/mismatched details and any earlier ambiguous dispatch preserve the
+original ID for read-only status reconciliation. No automatic retry or
+replacement ID follows those outcomes. The separately bound
+`SecurityOperationAuthorizationRequired` branch keeps the exact reviewed
+ID, intent digest and full policy cut for explicit operation reauthentication.
+
 The native system lane uses existing mutation-log durability, ownership locks,
 classified segments and an atomic selector. A complete revision is persisted
 before publication. Rotation checkpoints retain replay evidence and recover

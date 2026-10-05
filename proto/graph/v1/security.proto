@@ -353,6 +353,23 @@ message SecurityOperationAuthorizationRequired {
   SecurityVersion expected_version = 2;
   bytes intent_digest = 3;
 }
+
+// Definitive refusal of this decoded Apply invocation before any persistence
+// attempt. This never settles earlier invocations of the same change ID.
+message SecurityChangePrecommitRejected {
+  bytes change_id = 1;
+  uint64 expected_revision = 2;
+  SecurityChangeRejectionReason reason = 3;
+}
+enum SecurityChangeRejectionReason {
+  SECURITY_CHANGE_REJECTION_REASON_UNSPECIFIED = 0;
+  SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES = 1;
+  SECURITY_CHANGE_REJECTION_REASON_UNKNOWN_ROLE = 2;
+  SECURITY_CHANGE_REJECTION_REASON_ISSUER_VALIDATION = 3;
+  SECURITY_CHANGE_REJECTION_REASON_ENVIRONMENT_OWNED = 4;
+  SECURITY_CHANGE_REJECTION_REASON_LAST_ADMINISTRATOR = 5;
+  SECURITY_CHANGE_REJECTION_REASON_REVISION_CONFLICT = 6;
+}
 enum SecurityAuthorizationRequirement {
   SECURITY_AUTHORIZATION_REQUIREMENT_UNSPECIFIED = 0;
   SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY = 1;

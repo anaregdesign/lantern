@@ -18,11 +18,13 @@ import type {
   BeginSecurityChangeAuthorizationResponse,
   GetSecurityChangeAuthorizationResponse,
   SecurityOperationAuthorizationRequired,
+  SecurityChangePrecommitRejected,
 } from "lantern-sdk/web";
 import {
   SecurityEnforcementState,
   SecurityAuthorizationRequirement,
   SecurityAuthorizationState,
+  SecurityChangeRejectionReason,
 } from "lantern-sdk/web";
 
 export type SecurityApplyAcknowledgement = Pick<
@@ -87,6 +89,9 @@ export interface SecurityManagementPort {
   authorizationRequired(
     error: unknown,
   ): SecurityOperationAuthorizationRequired | undefined;
+  precommitRejected(
+    error: unknown,
+  ): SecurityChangePrecommitRejected | undefined;
   apply(
     request: {
       expectedRevision: bigint;
@@ -146,9 +151,30 @@ export interface SecurityManagementState {
     | "unconfirmed"
     | "pending"
     | "enforced"
-    | "conflict";
+    | "conflict"
+    | "rejected";
   result?: SecurityChangeResult;
   explanation?: ExplainAccessResponse;
+}
+function precommitRejectionMessage(
+  reason: SecurityChangeRejectionReason,
+): string | undefined {
+  switch (reason) {
+    case SecurityChangeRejectionReason.INVALID_CHANGES:
+      return "The change contains invalid or duplicate operations.";
+    case SecurityChangeRejectionReason.UNKNOWN_ROLE:
+      return "A referenced Role does not exist.";
+    case SecurityChangeRejectionReason.ISSUER_VALIDATION:
+      return "Issuer discovery or signing-key validation failed.";
+    case SecurityChangeRejectionReason.ENVIRONMENT_OWNED:
+      return "The change would modify environment-owned security configuration.";
+    case SecurityChangeRejectionReason.LAST_ADMINISTRATOR:
+      return "The change would remove the last usable human administrator.";
+    case SecurityChangeRejectionReason.REVISION_CONFLICT:
+      return "The security revision changed.";
+    default:
+      return undefined;
+  }
 }
 function validateVersion(
   version: SecurityVersion | undefined,
@@ -335,7 +361,10 @@ export class SecurityManagementController {
         users: "users" in page ? page.users : [],
         roles: "roles" in page ? page.roles : [],
         mutation:
-          this.state.mutation === "conflict" ? "idle" : this.state.mutation,
+          this.state.mutation === "conflict" ||
+          this.state.mutation === "rejected"
+            ? "idle"
+            : this.state.mutation,
       });
     } catch (error) {
       if (this.current(ticket))
@@ -695,11 +724,13 @@ export class SecurityManagementController {
     } catch (error) {
       if (!this.current(ticket)) return;
       const refused = this.port.authorizationRequired(error);
+      const rejected = this.port.precommitRejected(error);
       const refusedVersion = refused?.expectedVersion;
       // Only this first, bound invocation is settled by the typed refusal.
       // An older ambiguous command cannot reach Apply and remains status-only.
       if (
         refused &&
+        !rejected &&
         refusedVersion &&
         review.intentDigest &&
         refused.changeId.length === 16 &&
@@ -729,14 +760,27 @@ export class SecurityManagementController {
           message:
             "This Apply was refused before commit. Reauthenticate the same reviewed change, then apply when ready.",
         });
-      } else if (this.port.failure(error) === "conflict") {
+      } else if (
+        !refused &&
+        rejected &&
+        rejected.changeId.length === 16 &&
+        pending.changeId.every((byte, i) => byte === rejected.changeId[i]) &&
+        rejected.expectedRevision === pending.expectedRevision &&
+        precommitRejectionMessage(rejected.reason)
+      ) {
         this.pending = undefined;
         this.recovery?.clear();
         this.publish({
-          mutation: "conflict",
+          mutation:
+            rejected.reason === SecurityChangeRejectionReason.REVISION_CONFLICT
+              ? "conflict"
+              : "rejected",
+          result: undefined,
           review: undefined,
           version: undefined,
-          message: "The revision changed. Reload and review your change again.",
+          message:
+            precommitRejectionMessage(rejected.reason)! +
+            " This Apply was refused before commit. Reload, correct the draft, and review a new change before applying.",
         });
       } else {
         this.publish({

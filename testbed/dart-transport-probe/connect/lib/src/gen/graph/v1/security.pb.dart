@@ -4102,6 +4102,101 @@ class SecurityOperationAuthorizationRequired extends $pb.GeneratedMessage {
   void clearIntentDigest() => $_clearField(3);
 }
 
+/// Definitive refusal of this decoded Apply invocation before any persistence
+/// attempt. This never settles earlier invocations of the same change ID.
+class SecurityChangePrecommitRejected extends $pb.GeneratedMessage {
+  factory SecurityChangePrecommitRejected({
+    $core.List<$core.int>? changeId,
+    $fixnum.Int64? expectedRevision,
+    SecurityChangeRejectionReason? reason,
+  }) {
+    final result = create();
+    if (changeId != null) result.changeId = changeId;
+    if (expectedRevision != null) result.expectedRevision = expectedRevision;
+    if (reason != null) result.reason = reason;
+    return result;
+  }
+
+  SecurityChangePrecommitRejected._();
+
+  factory SecurityChangePrecommitRejected.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SecurityChangePrecommitRejected.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SecurityChangePrecommitRejected',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'changeId', $pb.PbFieldType.OY)
+    ..a<$fixnum.Int64>(
+        2, _omitFieldNames ? '' : 'expectedRevision', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..e<SecurityChangeRejectionReason>(
+        3, _omitFieldNames ? '' : 'reason', $pb.PbFieldType.OE,
+        defaultOrMaker: SecurityChangeRejectionReason
+            .SECURITY_CHANGE_REJECTION_REASON_UNSPECIFIED,
+        valueOf: SecurityChangeRejectionReason.valueOf,
+        enumValues: SecurityChangeRejectionReason.values)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityChangePrecommitRejected clone() =>
+      SecurityChangePrecommitRejected()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityChangePrecommitRejected copyWith(
+          void Function(SecurityChangePrecommitRejected) updates) =>
+      super.copyWith(
+              (message) => updates(message as SecurityChangePrecommitRejected))
+          as SecurityChangePrecommitRejected;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SecurityChangePrecommitRejected create() =>
+      SecurityChangePrecommitRejected._();
+  @$core.override
+  SecurityChangePrecommitRejected createEmptyInstance() => create();
+  static $pb.PbList<SecurityChangePrecommitRejected> createRepeated() =>
+      $pb.PbList<SecurityChangePrecommitRejected>();
+  @$core.pragma('dart2js:noInline')
+  static SecurityChangePrecommitRejected getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SecurityChangePrecommitRejected>(
+          create);
+  static SecurityChangePrecommitRejected? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get changeId => $_getN(0);
+  @$pb.TagNumber(1)
+  set changeId($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasChangeId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearChangeId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get expectedRevision => $_getI64(1);
+  @$pb.TagNumber(2)
+  set expectedRevision($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasExpectedRevision() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearExpectedRevision() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  SecurityChangeRejectionReason get reason => $_getN(2);
+  @$pb.TagNumber(3)
+  set reason(SecurityChangeRejectionReason value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasReason() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearReason() => $_clearField(3);
+}
+
 class PrepareSecurityChangesRequest extends $pb.GeneratedMessage {
   factory PrepareSecurityChangesRequest({
     SecurityChangeReview? review,

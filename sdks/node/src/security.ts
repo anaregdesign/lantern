@@ -6,8 +6,11 @@ import {
   type CallOptions,
   type Transport,
 } from "@connectrpc/connect";
-import { wrapConnectError, FailedPreconditionError } from "./errors.js";
-import type { SecurityOperationAuthorizationRequired } from "./gen/graph/v1/security_pb.js";
+import { wrapConnectError, FailedPreconditionError, LanternError } from "./errors.js";
+import type {
+  SecurityOperationAuthorizationRequired,
+  SecurityChangePrecommitRejected,
+} from "./gen/graph/v1/security_pb.js";
 import {
   LanternSecurityService,
   ApplySecurityChangeRequestSchema,
@@ -30,6 +33,8 @@ import {
   BeginSecurityChangeAuthorizationRequestSchema,
   GetSecurityChangeAuthorizationRequestSchema,
   SecurityOperationAuthorizationRequiredSchema,
+  SecurityChangePrecommitRejectedSchema,
+  SecurityChangeRejectionReason,
 } from "./gen/graph/v1/security_pb.js";
 
 /** This invocation definitely did not commit. Earlier uncertain attempts
@@ -44,6 +49,42 @@ export class SecurityOperationAuthorizationRequiredError extends FailedPrecondit
   }
 }
 
+/** This Apply invocation was refused before persistence. It does not settle
+ * previous attempts; applications must correlate ID/revision and dispatch history. */
+export class SecurityChangePrecommitRejectedError extends LanternError {
+  constructor(
+    readonly detail: SecurityChangePrecommitRejected,
+    cause: unknown,
+  ) {
+    super("The security change was refused before commit.", { cause });
+    this.name = "SecurityChangePrecommitRejectedError";
+  }
+}
+function validPrecommitDetail(detail: SecurityChangePrecommitRejected, code: number): boolean {
+  const reason = detail.reason;
+  const expectedCode =
+    reason === SecurityChangeRejectionReason.INVALID_CHANGES
+      ? 3
+      : reason === SecurityChangeRejectionReason.REVISION_CONFLICT
+        ? 10
+        : [
+              SecurityChangeRejectionReason.UNKNOWN_ROLE,
+              SecurityChangeRejectionReason.ISSUER_VALIDATION,
+              SecurityChangeRejectionReason.ENVIRONMENT_OWNED,
+              SecurityChangeRejectionReason.LAST_ADMINISTRATOR,
+            ].includes(reason)
+          ? 9
+          : 0;
+  return (
+    expectedCode !== 0 &&
+    code === expectedCode &&
+    detail.changeId.length === 16 &&
+    detail.changeId.some((byte) => byte !== 0) &&
+    detail.expectedRevision > 0n &&
+    detail.expectedRevision <= 0xffffffffffffffffn
+  );
+}
+
 /** Thin control-plane facade. The Server owns identity, Role and CAS semantics.
  * Mutations receive one attempt; applications retain change IDs for status lookup.
  * Browser cookies, CSRF and session lifetime are application-owned transport policy.
@@ -56,15 +97,29 @@ export class SecurityClient {
   static withTransport(transport: Transport): SecurityClient {
     return new SecurityClient(transport);
   }
-  private async invoke<T>(call: () => Promise<T>): Promise<T> {
+  private async invoke<T>(call: () => Promise<T>, apply = false): Promise<T> {
     try {
       return await call();
     } catch (error) {
-      const detail = ConnectError.from(error).findDetails(
-        SecurityOperationAuthorizationRequiredSchema,
-      )[0];
-      if (ConnectError.from(error).code === 9 && detail)
-        throw new SecurityOperationAuthorizationRequiredError(detail, error);
+      const failure = ConnectError.from(error);
+      const authorization = failure.findDetails(SecurityOperationAuthorizationRequiredSchema);
+      const rejections = failure.findDetails(SecurityChangePrecommitRejectedSchema);
+      // Conflicting/duplicated details cannot establish a definite first refusal.
+      if (
+        failure.details.length === 1 &&
+        authorization.length === 1 &&
+        rejections.length === 0 &&
+        failure.code === 9
+      )
+        throw new SecurityOperationAuthorizationRequiredError(authorization[0]!, error);
+      if (
+        apply &&
+        failure.details.length === 1 &&
+        rejections.length === 1 &&
+        authorization.length === 0 &&
+        validPrecommitDetail(rejections[0]!, failure.code)
+      )
+        throw new SecurityChangePrecommitRejectedError(rejections[0]!, error);
       throw wrapConnectError(error);
     }
   }
@@ -135,7 +190,7 @@ export class SecurityClient {
     request: MessageInitShape<typeof ApplySecurityChangesRequestSchema> = {},
     options?: CallOptions,
   ) {
-    return this.invoke(() => this.client.applySecurityChanges(request, options));
+    return this.invoke(() => this.client.applySecurityChanges(request, options), true);
   }
   prepareSecurityChanges(
     request: MessageInitShape<typeof PrepareSecurityChangesRequestSchema> = {},
@@ -159,7 +214,7 @@ export class SecurityClient {
     request: MessageInitShape<typeof ApplySecurityChangeRequestSchema> = {},
     options?: CallOptions,
   ) {
-    return this.invoke(() => this.client.applySecurityChange(request, options));
+    return this.invoke(() => this.client.applySecurityChange(request, options), true);
   }
   getSecurityChangeStatus(
     request: MessageInitShape<typeof GetSecurityChangeStatusRequestSchema> = {},

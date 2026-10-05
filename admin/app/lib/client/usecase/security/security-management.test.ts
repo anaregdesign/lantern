@@ -3,6 +3,7 @@ import {
   SecurityEnforcementState,
   SecurityAuthorizationRequirement,
   SecurityAuthorizationState,
+  SecurityChangeRejectionReason,
   type SecurityChange,
   type SecurityVersion,
 } from "lantern-sdk/web";
@@ -108,6 +109,7 @@ function fixture(
     }),
     openAuthorization: () => ({ navigate() {}, close() {} }),
     authorizationRequired: () => undefined,
+    precommitRejected: () => undefined,
     apply: async () => result,
     status: async () => proof,
     newChangeId: () => new Uint8Array(16).fill(7),
@@ -699,6 +701,12 @@ describe("reviewed security changes", () => {
         throw new Error("conflict");
       },
       failure: () => "conflict",
+      precommitRejected: () => ({
+        $typeName: "graph.v1.SecurityChangePrecommitRejected",
+        changeId,
+        expectedRevision: version.revision,
+        reason: SecurityChangeRejectionReason.REVISION_CONFLICT,
+      }),
     });
     await controller.load();
     await controller.review("Delete reader", changes);
@@ -986,4 +994,145 @@ test("membership pages from another revision cannot populate the inspected Role"
   expect(controller.getSnapshot().memberRole).toBe("");
   expect(controller.getSnapshot().message).toContain("revision changed");
   controller.dispose();
+});
+
+describe("definitive precommit correction", () => {
+  test("each bound first refusal retires the old draft and needs an explicit new review", async () => {
+    for (const reason of [
+      SecurityChangeRejectionReason.INVALID_CHANGES,
+      SecurityChangeRejectionReason.UNKNOWN_ROLE,
+      SecurityChangeRejectionReason.ISSUER_VALIDATION,
+      SecurityChangeRejectionReason.ENVIRONMENT_OWNED,
+      SecurityChangeRejectionReason.LAST_ADMINISTRATOR,
+      SecurityChangeRejectionReason.REVISION_CONFLICT,
+    ]) {
+      let sent = 0,
+        ids = 0;
+      const appliedIDs: Uint8Array[] = [];
+      const error = new Error("definite refusal");
+      const recovery = new SecurityChangeRecovery();
+      const controller = fixture(
+        {
+          newChangeId: () => new Uint8Array(16).fill(7 + ids++),
+          apply: async (request) => {
+            sent++;
+            appliedIDs.push(request.changeId);
+            if (sent === 1) throw error;
+            return result;
+          },
+          precommitRejected: (value) =>
+            value === error
+              ? {
+                  $typeName: "graph.v1.SecurityChangePrecommitRejected",
+                  changeId,
+                  expectedRevision: 3n,
+                  reason,
+                }
+              : undefined,
+        },
+        new AbortController(),
+        recovery,
+      );
+      await controller.load();
+      await controller.review("First draft", changes);
+      await controller.apply();
+      expect(controller.getSnapshot().mutation).toBe(
+        reason === SecurityChangeRejectionReason.REVISION_CONFLICT
+          ? "conflict"
+          : "rejected",
+      );
+      expect(controller.getSnapshot().message).toContain(
+        "refused before commit",
+      );
+      expect(controller.getSnapshot().review).toBeUndefined();
+      expect(controller.getSnapshot().version).toBeUndefined();
+      expect(recovery.read("browser-session")).toBeUndefined();
+      expect(controller.changeId()).toBe("");
+      await controller.apply();
+      await controller.review("Unloaded correction", changes);
+      expect(sent).toBe(1);
+      expect(ids).toBe(1);
+      await controller.load();
+      expect(sent).toBe(1);
+      expect(ids).toBe(1);
+      await controller.review("Corrected new review", changes);
+      expect(ids).toBe(2);
+      expect(sent).toBe(1);
+      await controller.apply();
+      expect(sent).toBe(2);
+      expect(appliedIDs[1]).not.toEqual(appliedIDs[0]);
+      controller.dispose();
+    }
+  });
+  test("generic failures and malformed or mismatched refusals retain the original recovery record", async () => {
+    const bound = {
+      $typeName: "graph.v1.SecurityChangePrecommitRejected" as const,
+      changeId,
+      expectedRevision: 3n,
+      reason: SecurityChangeRejectionReason.UNKNOWN_ROLE,
+    };
+    for (const detail of [
+      undefined,
+      { ...bound, changeId: new Uint8Array(16).fill(8) },
+      { ...bound, changeId: new Uint8Array(15) },
+      { ...bound, expectedRevision: 4n },
+      { ...bound, reason: 999 },
+      { ...bound, reason: SecurityChangeRejectionReason.UNSPECIFIED },
+    ]) {
+      for (const failure of [
+        "conflict",
+        "invalid",
+        "denied",
+        "unavailable",
+      ] as const) {
+        let sent = 0;
+        const recovery = new SecurityChangeRecovery();
+        const controller = fixture(
+          {
+            apply: async () => {
+              sent++;
+              throw new Error("unconfirmed");
+            },
+            failure: () => failure,
+            precommitRejected: () => detail,
+          },
+          new AbortController(),
+          recovery,
+        );
+        await controller.load();
+        await controller.review("First", changes);
+        await controller.apply();
+        expect(controller.getSnapshot().mutation).toBe("unconfirmed");
+        expect(recovery.read("browser-session")?.changeId).toEqual(changeId);
+        await controller.load();
+        await controller.review("Second", changes);
+        await controller.apply();
+        expect(sent).toBe(1);
+        controller.dispose();
+        const after = fixture(
+          {
+            apply: async () => {
+              sent++;
+              return result;
+            },
+            precommitRejected: () => bound,
+            status: async () => {
+              throw new Error("unknown status");
+            },
+          },
+          new AbortController(),
+          recovery,
+        );
+        await after.apply();
+        await after.checkStatus();
+        await after.load();
+        await after.review("After restart", changes);
+        await after.apply();
+        expect(sent).toBe(1);
+        expect(after.getSnapshot().mutation).toBe("unconfirmed");
+        expect(after.changeId()).toBe("07".repeat(16));
+        after.dispose();
+      }
+    }
+  });
 });

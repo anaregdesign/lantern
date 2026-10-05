@@ -139,18 +139,18 @@ func (s *Store) prepareManagementLocked(ctx context.Context, request ManagementR
 		return prepared, Image{}, nil
 	}
 	if request.ExpectedRevision != current.sequence {
-		return PreparedManagement{}, Image{}, ErrRevisionConflict
+		return PreparedManagement{}, Image{}, rejectManagementValidation(ErrRevisionConflict)
 	}
 	image := current.snapshot.Image()
 	if err := applyManagementChanges(&image, request.Changes); err != nil {
-		return PreparedManagement{}, Image{}, err
+		return PreparedManagement{}, Image{}, rejectManagementValidation(err)
 	}
 	if !sameEnvOwned(current.snapshot.Image(), image) {
-		return PreparedManagement{}, Image{}, ErrBootstrapLocked
+		return PreparedManagement{}, Image{}, rejectManagementValidation(ErrBootstrapLocked)
 	}
 	next, err := compileImage(image, s.limits, current.snapshot)
 	if err != nil {
-		return PreparedManagement{}, Image{}, err
+		return PreparedManagement{}, Image{}, rejectManagementValidation(err)
 	}
 	for _, change := range request.Changes {
 		prepared.AuthorizationRequired = prepared.AuthorizationRequired || change.Kind == PutIssuer || change.Kind == DisableIssuer || change.Kind == DeleteIssuer
@@ -176,7 +176,7 @@ func (s *Store) PrepareManagement(ctx context.Context, request ManagementRequest
 	}
 	digest, _, err := s.managementIntent(request)
 	if err != nil {
-		return PreparedManagement{}, err
+		return PreparedManagement{}, rejectManagementValidation(err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -196,7 +196,7 @@ func (s *Store) Manage(ctx context.Context, request ManagementRequest) (ChangeRe
 	}
 	digest, urgent, err := s.managementIntent(request)
 	if err != nil {
-		return ChangeResult{}, err
+		return ChangeResult{}, rejectManagementValidation(err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -233,7 +233,7 @@ func (s *Store) Manage(ctx context.Context, request ManagementRequest) (ChangeRe
 	}
 	snapshot, err := compileImage(image, s.limits, current.snapshot)
 	if err != nil {
-		return ChangeResult{}, err
+		return ChangeResult{}, rejectManagementValidation(err)
 	}
 	if !urgent && len(snapshot.image) > ordinaryImageMaxBytes {
 		return ChangeResult{}, ErrControlReserve

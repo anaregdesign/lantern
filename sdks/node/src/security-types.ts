@@ -9,9 +9,11 @@ export {
   SecurityPrincipalState,
   SecurityAuthorizationRequirement,
   SecurityAuthorizationState,
+  SecurityChangeRejectionReason,
 } from "./gen/graph/v1/security_pb.js";
 export type {
   SecurityOperationAuthorizationRequired,
+  SecurityChangePrecommitRejected,
   GetAuthCapabilitiesResponse,
   LoginIssuer,
   GetCurrentPrincipalResponse,

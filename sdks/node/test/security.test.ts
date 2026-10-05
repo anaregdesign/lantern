@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { create } from "@bufbuild/protobuf";
 import { createRouterTransport, Code, ConnectError } from "@connectrpc/connect";
-import { SecurityClient, SecurityOperationAuthorizationRequiredError } from "../src/security.js";
+import {
+  SecurityClient,
+  SecurityOperationAuthorizationRequiredError,
+  SecurityChangePrecommitRejectedError,
+} from "../src/security.js";
 import {
   AuthMode,
   SecurityEnforcementState,
@@ -12,6 +16,8 @@ import {
 import {
   LanternSecurityService,
   SecurityOperationAuthorizationRequiredSchema,
+  SecurityChangePrecommitRejectedSchema,
+  SecurityChangeRejectionReason,
 } from "../src/gen/graph/v1/security_pb.js";
 import { FailedPreconditionError } from "../src/errors.js";
 test("Security facade preserves protocol readiness and makes one mutation attempt", async () => {
@@ -177,4 +183,96 @@ test("Security SDK preserves exact typed noncommit proof refusal through plural 
     }
   }
   expect(attempts).toBe(2);
+});
+
+test("precommit refusal preserves exact invocation through single and batch Apply", async () => {
+  const detail = create(SecurityChangePrecommitRejectedSchema, {
+    changeId: new Uint8Array(16).fill(7),
+    expectedRevision: 3n,
+    reason: SecurityChangeRejectionReason.UNKNOWN_ROLE,
+  });
+  let attempts = 0;
+  const refuse = () => {
+    attempts++;
+    throw new ConnectError("unknown Role", Code.FailedPrecondition, undefined, [
+      { desc: SecurityChangePrecommitRejectedSchema, value: detail },
+    ]);
+  };
+  const client = SecurityClient.withTransport(
+    createRouterTransport(({ service }) =>
+      service(LanternSecurityService, {
+        applySecurityChanges: refuse,
+        applySecurityChange: refuse,
+      }),
+    ),
+  );
+  for (const call of [
+    () => client.applySecurityChanges({ expectedRevision: 3n, changeId: detail.changeId }),
+    () => client.applySecurityChange({ expectedRevision: 3n, changeId: detail.changeId }),
+  ]) {
+    try {
+      await call();
+      throw new Error("refusal absent");
+    } catch (error) {
+      expect(error).toBeInstanceOf(SecurityChangePrecommitRejectedError);
+      expect((error as SecurityChangePrecommitRejectedError).detail).toEqual(detail);
+      expect(ConnectError.from((error as SecurityChangePrecommitRejectedError).cause).code).toBe(
+        Code.FailedPrecondition,
+      );
+    }
+  }
+  expect(attempts).toBe(2);
+});
+
+test("malformed, duplicated, unknown, conflicting or postcommit error details remain generic", async () => {
+  const valid = create(SecurityChangePrecommitRejectedSchema, {
+    changeId: new Uint8Array(16).fill(7),
+    expectedRevision: 3n,
+    reason: SecurityChangeRejectionReason.UNKNOWN_ROLE,
+  });
+  const encode = (value: typeof valid) => ({ desc: SecurityChangePrecommitRejectedSchema, value });
+  const auth = create(SecurityOperationAuthorizationRequiredSchema);
+  for (const fixture of [
+    { code: Code.Unavailable, details: [encode(valid)] },
+    { code: Code.Aborted, details: [encode(valid)] },
+    { code: Code.FailedPrecondition, details: [encode({ ...valid, reason: 999 })] },
+    {
+      code: Code.FailedPrecondition,
+      details: [encode({ ...valid, changeId: new Uint8Array(15) })],
+    },
+    {
+      code: Code.FailedPrecondition,
+      details: [encode({ ...valid, changeId: new Uint8Array(16) })],
+    },
+    { code: Code.FailedPrecondition, details: [encode({ ...valid, expectedRevision: 0n })] },
+    { code: Code.FailedPrecondition, details: [encode(valid), encode(valid)] },
+    {
+      code: Code.FailedPrecondition,
+      details: [
+        encode(valid),
+        { type: SecurityChangePrecommitRejectedSchema.typeName, value: new Uint8Array([255]) },
+      ],
+    },
+    {
+      code: Code.FailedPrecondition,
+      details: [encode(valid), { desc: SecurityOperationAuthorizationRequiredSchema, value: auth }],
+    },
+    { code: Code.FailedPrecondition, details: [] },
+  ]) {
+    const client = SecurityClient.withTransport(
+      createRouterTransport(({ service }) =>
+        service(LanternSecurityService, {
+          applySecurityChanges: () => {
+            throw new ConnectError("unconfirmed", fixture.code, undefined, fixture.details);
+          },
+        }),
+      ),
+    );
+    try {
+      await client.applySecurityChanges({});
+      throw new Error("error absent");
+    } catch (error) {
+      expect(error).not.toBeInstanceOf(SecurityChangePrecommitRejectedError);
+    }
+  }
 });

@@ -1,4 +1,9 @@
 import { Buffer } from "node:buffer";
+import { create, toBinary } from "@bufbuild/protobuf";
+import {
+  SecurityChangePrecommitRejectedSchema,
+  SecurityChangeRejectionReason,
+} from "../../../sdks/node/src/gen/graph/v1/security_pb";
 
 /**
  * The Lantern primary listener URL the Playwright webServer starts on
@@ -93,7 +98,7 @@ export async function securityUI(
   options: {
     mode?: "ready" | "login" | "off" | "unavailable";
     recent?: boolean;
-    apply?: "conflict" | "lost";
+    apply?: "conflict" | "lost" | "unknown-role-once" | "generic-conflict";
     status?: "pending-then-enforced" | "unknown" | "mismatch";
     denied?: boolean;
     reauthentication?: boolean;
@@ -112,6 +117,7 @@ export async function securityUI(
   };
   let signedIn = options.mode !== "login";
   let statusCalls = 0;
+  let applyCalls = 0;
   const primary = "https://admin.example";
   let approved = false;
   const authorizationPath = "/auth/management-authorization/" + "A".repeat(43);
@@ -246,8 +252,43 @@ export async function securityUI(
           ],
         });
       if (method === "ApplySecurityChanges") {
-        if (options.apply === "conflict")
-          return json({ code: "aborted", message: "Revision conflict" }, 409);
+        applyCalls++;
+        if (options.apply === "generic-conflict")
+          return json(
+            {
+              code: "aborted",
+              message: "Retained change ID conflicts with another intent",
+            },
+            409,
+          );
+        if (
+          options.apply === "conflict" ||
+          (options.apply === "unknown-role-once" && applyCalls === 1)
+        ) {
+          const conflict = options.apply === "conflict";
+          const detail = create(SecurityChangePrecommitRejectedSchema, {
+            changeId: Buffer.from(String(body.changeId), "base64"),
+            expectedRevision: BigInt(String(body.expectedRevision)),
+            reason: conflict
+              ? SecurityChangeRejectionReason.REVISION_CONFLICT
+              : SecurityChangeRejectionReason.UNKNOWN_ROLE,
+          });
+          return json(
+            {
+              code: conflict ? "aborted" : "failed_precondition",
+              message: conflict ? "Revision conflict" : "Unknown Role",
+              details: [
+                {
+                  type: SecurityChangePrecommitRejectedSchema.typeName,
+                  value: Buffer.from(
+                    toBinary(SecurityChangePrecommitRejectedSchema, detail),
+                  ).toString("base64"),
+                },
+              ],
+            },
+            conflict ? 409 : 400,
+          );
+        }
         if (options.apply === "lost") return route.abort("failed");
         return json({
           version: { ...version, revision: "4" },

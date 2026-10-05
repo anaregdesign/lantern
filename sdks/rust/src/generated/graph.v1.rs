@@ -5003,6 +5003,17 @@ pub struct SecurityOperationAuthorizationRequired {
     #[prost(bytes = "vec", tag = "3")]
     pub intent_digest: ::prost::alloc::vec::Vec<u8>,
 }
+/// Definitive refusal of this decoded Apply invocation before any persistence
+/// attempt. This never settles earlier invocations of the same change ID.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityChangePrecommitRejected {
+    #[prost(bytes = "vec", tag = "1")]
+    pub change_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub expected_revision: u64,
+    #[prost(enumeration = "SecurityChangeRejectionReason", tag = "3")]
+    pub reason: i32,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PrepareSecurityChangesRequest {
     #[prost(message, optional, tag = "1")]
@@ -5296,6 +5307,65 @@ impl SecurityEnforcementState {
                 Some(Self::CommittedPending)
             }
             "SECURITY_ENFORCEMENT_STATE_ENFORCED" => Some(Self::Enforced),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SecurityChangeRejectionReason {
+    Unspecified = 0,
+    InvalidChanges = 1,
+    UnknownRole = 2,
+    IssuerValidation = 3,
+    EnvironmentOwned = 4,
+    LastAdministrator = 5,
+    RevisionConflict = 6,
+}
+impl SecurityChangeRejectionReason {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SECURITY_CHANGE_REJECTION_REASON_UNSPECIFIED",
+            Self::InvalidChanges => "SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES",
+            Self::UnknownRole => "SECURITY_CHANGE_REJECTION_REASON_UNKNOWN_ROLE",
+            Self::IssuerValidation => {
+                "SECURITY_CHANGE_REJECTION_REASON_ISSUER_VALIDATION"
+            }
+            Self::EnvironmentOwned => {
+                "SECURITY_CHANGE_REJECTION_REASON_ENVIRONMENT_OWNED"
+            }
+            Self::LastAdministrator => {
+                "SECURITY_CHANGE_REJECTION_REASON_LAST_ADMINISTRATOR"
+            }
+            Self::RevisionConflict => {
+                "SECURITY_CHANGE_REJECTION_REASON_REVISION_CONFLICT"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SECURITY_CHANGE_REJECTION_REASON_UNSPECIFIED" => Some(Self::Unspecified),
+            "SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES" => {
+                Some(Self::InvalidChanges)
+            }
+            "SECURITY_CHANGE_REJECTION_REASON_UNKNOWN_ROLE" => Some(Self::UnknownRole),
+            "SECURITY_CHANGE_REJECTION_REASON_ISSUER_VALIDATION" => {
+                Some(Self::IssuerValidation)
+            }
+            "SECURITY_CHANGE_REJECTION_REASON_ENVIRONMENT_OWNED" => {
+                Some(Self::EnvironmentOwned)
+            }
+            "SECURITY_CHANGE_REJECTION_REASON_LAST_ADMINISTRATOR" => {
+                Some(Self::LastAdministrator)
+            }
+            "SECURITY_CHANGE_REJECTION_REASON_REVISION_CONFLICT" => {
+                Some(Self::RevisionConflict)
+            }
             _ => None,
         }
     }
