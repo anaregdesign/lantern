@@ -331,8 +331,31 @@ func TestPumpIsNotPinnedByRejectedUnstreamableLocalMutation(t *testing.T) {
 	}
 	target := newPumpNode(t, hlc.NodeID{0x93})
 	target.startPump(ctx, t, []string{source.url})
-	if !waitForVertex(t, target.cache, "streamable", 5*time.Second) {
-		t.Fatal("Pump did not advance through the first accepted source frame")
+	// Raw cache visibility may precede relay-log and origin-cursor publication.
+	// The source peer's event is recorded after ApplyMutation returns; it is a
+	// completion fence, while LocalSeq below remains an independent assertion.
+	deadline := time.Now().Add(5 * time.Second)
+	var applied replication.PeerSnapshot
+	for time.Now().Before(deadline) {
+		for _, row := range target.pump.Snapshot() {
+			if row.Address == source.url && !row.LastEventAt.IsZero() {
+				applied = row
+				break
+			}
+		}
+		if !applied.LastEventAt.IsZero() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if applied.LastEventAt.IsZero() {
+		t.Fatalf("Pump did not complete the first accepted source frame: %+v", target.pump.Snapshot())
+	}
+	if applied.AppliedSeq != 1 {
+		t.Fatalf("Pump applied source frame = %d, want 1", applied.AppliedSeq)
+	}
+	if vertex, ok := target.cache.GetVertex("streamable"); !ok || vertex.GetKey() != "streamable" || vertex.GetString_() != "ok" {
+		t.Fatalf("Pump accepted source payload = %v, present %v", vertex, ok)
 	}
 	if _, ok := target.cache.GetVertex("too-large-to-replicate"); ok {
 		t.Fatal("Pump observed rejected oversized mutation")
