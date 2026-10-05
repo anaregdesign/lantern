@@ -2,9 +2,56 @@ package security
 
 import (
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 )
+
+func TestS1CandidateRequiresExactLogicalPositionWithoutCertification(t *testing.T) {
+	s := s1Fixture(t, s1Image())
+	h := s1Seal(s.projection, s1Operation(t, s.projection, testIdentity(), s1Changes(s1ReaderRole())), 1, false)
+	next := s1Next(s, h)
+	want := s1Apply(t, s, h)
+	// The evaluator does not need a witness. The same uncertified candidate
+	// cannot enter ApplyS1: only that wrapper requires the opaque certificate.
+	got, err := evaluateS1Candidate(s, h, next.certificate.commit, s.prefix)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatal("uncertified evaluator differs", err)
+	}
+	next.certificate.witness = [32]byte{}
+	if result, err := ApplyS1(s, next); !errors.Is(err, ErrS1Contract) || result.State != nil {
+		t.Fatal("uncertified evaluation became Apply authority", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*CommitRef, *[32]byte)
+	}{
+		{"version", func(c *CommitRef, _ *[32]byte) { c.Version++ }},
+		{"domain", func(c *CommitRef, _ *[32]byte) { c.Domain[0]++ }},
+		{"cohort", func(c *CommitRef, _ *[32]byte) { c.Cohort[0]++ }},
+		{"membership", func(c *CommitRef, _ *[32]byte) { c.Membership[0]++ }},
+		{"configuration", func(c *CommitRef, _ *[32]byte) { c.Configuration[0]++ }},
+		{"slot", func(c *CommitRef, _ *[32]byte) { c.Slot++ }},
+		{"value", func(c *CommitRef, _ *[32]byte) { c.Value[0]++ }},
+		{"predecessor", func(_ *CommitRef, p *[32]byte) { p[0]++ }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			commit, previous := next.certificate.commit, s.prefix
+			tc.change(&commit, &previous)
+			if result, err := evaluateS1Candidate(s, h, commit, previous); !errors.Is(err, ErrS1Contract) || result.State != nil {
+				t.Fatal("invalid logical candidate advanced state", err)
+			}
+		})
+	}
+	exhausted := *s
+	exhausted.slot = math.MaxUint64
+	if _, err := evaluateS1Candidate(&exhausted, h, next.certificate.commit, s.prefix); !errors.Is(err, ErrS1Contract) {
+		t.Fatal("slot overflow", err)
+	}
+	if s.slot != 0 || len(s.ledger) != 0 || s.projection.cut.Sequence != 1 {
+		t.Fatal("candidate evaluation mutated predecessor")
+	}
+}
 
 func TestS1ApplyAuthenticityAndPrefixBeforeOwnership(t *testing.T) {
 	for _, tc := range []struct {
