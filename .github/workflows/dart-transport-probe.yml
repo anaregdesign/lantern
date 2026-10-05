@@ -50,12 +50,16 @@ jobs:
           testbed/dart-transport-probe/scripts/codegen.sh
           git diff --exit-code -- testbed/dart-transport-probe
 
+      - name: Check iOS diagnostic contracts
+        run: python3 -m unittest discover -s testbed/dart-transport-probe/scripts -p '*_test.py'
+
       - name: Check Connect candidate
         working-directory: testbed/dart-transport-probe/connect
         run: |
           dart pub get
           dart format --output=none --set-exit-if-changed \
-            lib/probe.dart test tool ../templates/connect ../templates/main.dart
+            lib/probe.dart test tool ../templates/connect ../templates/main.dart \
+            ../templates/probe_diagnostics.dart ../templates/probe_diagnostics_test_cases.dart
           dart analyze
           dart test
 
@@ -102,6 +106,7 @@ jobs:
           echo "PROBE_APP=$probe_app" >> "$GITHUB_ENV"
           echo "PROBE_FIXTURE=$probe_fixture" >> "$GITHUB_ENV"
           echo "LANTERN_PROBE_WORKDIR=$RUNNER_TEMP/dart-mobile" >> "$GITHUB_ENV"
+          echo "LANTERN_PROBE_DIAGNOSTICS_DIR=$RUNNER_TEMP/transport-probe-diagnostics" >> "$GITHUB_ENV"
 
       - name: Start plaintext and TLS probe servers
         shell: bash
@@ -133,7 +138,7 @@ jobs:
               sleep 1
             done
             if [[ $ready -ne 1 ]]; then
-              cat "$RUNNER_TEMP/plain.log"
+              echo 'Plaintext probe server did not become ready; bounded diagnostics follow.' >&2
               exit 1
             fi
           done
@@ -161,11 +166,27 @@ jobs:
             "${{ matrix.transport }}" "$DEVICE_ID" http://127.0.0.1:6433 \
             https://localhost:6434 "$RUNNER_TEMP/transport-native/token" "$PROBE_CA"
 
-      - name: Show server logs and clean up
+      - name: Collect bounded probe diagnostics
+        if: always()
+        run: |
+          python3 testbed/dart-transport-probe/scripts/ios_diagnostics.py \
+            servers "$RUNNER_TEMP/transport-probe-diagnostics" \
+            --plain-log "$RUNNER_TEMP/plain.log" \
+            --native-directory "$RUNNER_TEMP/transport-native"
+
+      - name: Upload bounded probe diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-transport-${{ matrix.transport }}-diagnostics
+          path: ${{ runner.temp }}/transport-probe-diagnostics
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Clean up owned probe processes
         if: always()
         shell: bash
         run: |
-          cat "$RUNNER_TEMP/plain.log" 2>/dev/null || true
           kill "${PLAIN_PID:-}" 2>/dev/null || true
           bash testbed/scripts/dart_transport_fixture.sh stop "$RUNNER_TEMP/transport-native"
           if [[ -n ${DEVICE_ID:-} ]]; then

@@ -40,9 +40,30 @@ project_name="lantern_${transport}_transport_mobile_probe"
 work_root=${LANTERN_PROBE_WORKDIR:-$(mktemp -d)}
 app="$work_root/$project_name"
 mkdir -p "$work_root"
-if [[ -z ${LANTERN_PROBE_WORKDIR:-} ]]; then
-  trap 'rm -rf "$work_root"' EXIT
+diagnostics=${LANTERN_PROBE_DIAGNOSTICS_DIR:-"$work_root/diagnostics-$transport"}
+diagnostic_tool="$probe_root/scripts/ios_diagnostics.py"
+diagnostic_pid=
+finish_mobile() {
+  local status=$? diagnostic_status=0
+  trap - EXIT
+  set +e
+  if [[ ${LANTERN_PROBE_DRIVER:-flutter-test} == simctl ]]; then
+    if [[ -n $diagnostic_pid ]]; then
+      kill -TERM "$diagnostic_pid" 2>/dev/null
+      wait "$diagnostic_pid"
+    fi
+    python3 "$diagnostic_tool" finish "$diagnostics" \
+      --device "$device" --exit-code "$status"
+    diagnostic_status=$?
+    if [[ $status -eq 0 ]]; then status=$diagnostic_status; fi
+  fi
+  if [[ -z ${LANTERN_PROBE_WORKDIR:-} ]]; then rm -rf "$work_root"; fi
+  exit "$status"
+}
+if [[ ${LANTERN_PROBE_DRIVER:-flutter-test} == simctl ]]; then
+  python3 "$diagnostic_tool" init "$diagnostics" --transport "$transport"
 fi
+trap finish_mobile EXIT
 
 flutter create \
   --platforms=android,ios \
@@ -58,6 +79,7 @@ sed \
   "$probe_root/templates/pubspec.yaml" > "$app/pubspec.yaml"
 if [[ ${LANTERN_PROBE_DRIVER:-flutter-test} == simctl ]]; then
   cp "$probe_root/templates/$transport/mobile_main.dart" "$app/lib/main.dart"
+  cp "$probe_root/templates/probe_diagnostics.dart" "$app/lib/probe_diagnostics.dart"
 else
   cp "$probe_root/templates/main.dart" "$app/lib/main.dart"
   mkdir -p "$app/integration_test"
@@ -101,12 +123,23 @@ dart_defines=(
 )
 
 if [[ ${LANTERN_PROBE_DRIVER:-flutter-test} == simctl ]]; then
+  python3 "$diagnostic_tool" phase "$diagnostics" --phase building
   flutter build ios --simulator --debug "${dart_defines[@]}"
   ios_app=build/ios/iphonesimulator/Runner.app
   bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
     "$ios_app/Info.plist")
+  python3 "$diagnostic_tool" phase "$diagnostics" --phase installing
   xcrun simctl install "$device" "$ios_app"
-  xcrun simctl launch --terminate-running-process "$device" "$bundle_id"
+  python3 "$diagnostic_tool" phase "$diagnostics" --phase launching
+  launch=$(xcrun simctl launch --terminate-running-process "$device" "$bundle_id")
+  pid=${launch##*: }
+  if [[ ! $pid =~ ^[0-9]+$ ]]; then
+    echo 'iOS launch did not return a Runner PID' >&2
+    exit 1
+  fi
+  python3 "$diagnostic_tool" phase "$diagnostics" --phase observing --pid "$pid"
+  python3 "$diagnostic_tool" watch "$diagnostics" --device "$device" &
+  diagnostic_pid=$!
 
   count_url="${tls_url%/}/graph.v1.LanternService/CountVerticesByPrefix"
   success_prefix="probe/$transport/ios-success/"
@@ -118,14 +151,11 @@ if [[ ${LANTERN_PROBE_DRIVER:-flutter-test} == simctl ]]; then
       --header 'Content-Type: application/json' \
       --data "{\"prefix\":\"$success_prefix\"}" "$count_url" || true)
     if jq -e '(.count | tonumber) > 0' <<<"$response" >/dev/null 2>&1; then
-      echo "$transport iOS real-wire probe passed"
       break
     fi
     sleep 1
   done
   if ! jq -e '(.count | tonumber) > 0' <<<"${response:-}" >/dev/null 2>&1; then
-    xcrun simctl spawn "$device" log show --last 5m \
-      --predicate 'process == "Runner"' || true
     echo "$transport iOS real-wire probe did not publish its success marker" >&2
     exit 1
   fi
