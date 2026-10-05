@@ -2,8 +2,8 @@
 
 This is the #1599/#1608/#1609 operational contract. The fixed-writer behavior
 below describes merged source `93d537892f3025d4a1666dcab36c5748d5cfb9f6`.
-The approved #1672 management policy and #1608 leaderless target are identified
-separately; this documentation does not implement them. Source and local
+The #1672 management implementation and #1608 leaderless target are identified
+separately; the latter remains outside this fixed-writer delivery. Source and local
 conformance do not complete final provider, production-clock or device
 qualification in #1610. Lantern is the database; no PostgreSQL, external policy
 Store, coordinator or additional runtime service is required. The approved
@@ -25,8 +25,9 @@ Issuers, users and Role assignments via current authenticated Server APIs.
 Identity is the verified Issuer/subject pair, not email, display name or a client
 header. Machines use dedicated credentials bound only to Roles. The approved
 actor policy allows authorized management reference/status reads, but no
-management mutation; credential provenance still needs the implementation
-review described in [ADR 0012](decisions/0012-oidc-prefix-rbac.md#management-operation-and-actor-policy).
+management mutation. Trusted provenance and durable human qualification are
+described in [ADR 0012](decisions/0012-oidc-prefix-rbac.md#management-operation-and-actor-policy);
+existing mixed Bearer profiles need actual issuance qualification before activation.
 For Google, first review the [provider setup and qualification prerequisites](google-oidc-setup.md),
 including the exact callback and private secret binding. Ordinary Google login
 and approved ordinary management do not require recent `auth_time`. Google
@@ -60,11 +61,11 @@ or independently reviewed migration; this runbook does not perform that action.
 Graph namespace format, receipt-WAL V9 and receipt archive V4 are unchanged.
 Graph backups cannot substitute for certified security state.
 
-## Approved management policy — implementation pending
+## Management operation and actor policy
 
 An authenticated end user with current explicit `security.manage` authority may
-perform ordinary management with missing or older signed `auth_time` after
-#1672. This includes creating a mutable scoped data Role and assigning it to
+perform ordinary management with missing or older signed `auth_time` under
+#1672 after trusted human qualification. This includes creating a mutable scoped data Role and assigning it to
 the exact verified bootstrap identity while preserving the environment-owned
 `security_admin` assignment. Data grants alone do not require additional
 authentication. Bootstrap continues to have no implicit data rights, and
@@ -74,8 +75,13 @@ Changes to accepted Issuer/credential trust and effective expansion of
 `security.manage` require reauthentication for each operation. Removing a
 Deny, deleting a Role or removing an assignment may expand authority; assess
 the complete resulting policy. A general recent-session flag is insufficient
-for this approved target. The [operation matrix and proof review requirements](decisions/0012-oidc-prefix-rbac.md#management-operation-and-actor-policy)
-distinguish it from the current five-minute gate.
+for this operation. The [operation matrix and proof contract](decisions/0012-oidc-prefix-rbac.md#management-operation-and-actor-policy)
+binds actor, original ID, unchanged v1 intent and full policy cut to a signed
+post-review event. The purpose callback preserves the ordinary session, CSRF,
+authentication evidence, expiry and policy revision. Generic session step-up
+retains its five-minute rule and cannot substitute for this proof. ValidateIssuer
+uses separate conservative qualified-human probe admission with no age gate;
+machine reference/status authorization does not settle probe eligibility.
 
 Valid authentication, exact identity, token/session expiry, current Roles,
 revocation/suspension, CSRF/exact origin, expected revision/CAS, current

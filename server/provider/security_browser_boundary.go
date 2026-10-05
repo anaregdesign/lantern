@@ -134,6 +134,7 @@ func (r *SecurityRuntime) authenticateBrowser(req *http.Request, requireCSRF boo
 	if err != nil || admission.Check(ctx, r.now()) != nil {
 		return ctx, "", connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
 	}
+	admission = admission.WithAuthentication(security.Authentication{Provenance: security.BrowserCode, Class: security.EndUser, IssuerConfigRevision: session.IssuerConfigRevision, SessionDigest: digest})
 	return security.WithAdmission(ctx, admission.WithBrowserProof(csrf)), digest, nil
 }
 

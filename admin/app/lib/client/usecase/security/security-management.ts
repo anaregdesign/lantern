@@ -13,8 +13,17 @@ import type {
   SecurityRole,
   SecurityUser,
   SecurityVersion,
+  SecurityChangeReview,
+  PrepareSecurityChangesResponse,
+  BeginSecurityChangeAuthorizationResponse,
+  GetSecurityChangeAuthorizationResponse,
+  SecurityOperationAuthorizationRequired,
 } from "lantern-sdk/web";
-import { SecurityEnforcementState } from "lantern-sdk/web";
+import {
+  SecurityEnforcementState,
+  SecurityAuthorizationRequirement,
+  SecurityAuthorizationState,
+} from "lantern-sdk/web";
 
 export type SecurityApplyAcknowledgement = Pick<
   ApplySecurityChangesResponse,
@@ -62,11 +71,28 @@ export interface SecurityManagementPort {
     signal: AbortSignal,
     edge?: { tail: string; head: string },
   ): Promise<ExplainAccessResponse>;
+  prepare(
+    review: SecurityChangeReview,
+    signal: AbortSignal,
+  ): Promise<PrepareSecurityChangesResponse>;
+  beginAuthorization(
+    review: SecurityChangeReview,
+    signal: AbortSignal,
+  ): Promise<BeginSecurityChangeAuthorizationResponse>;
+  authorization(
+    id: Uint8Array,
+    signal: AbortSignal,
+  ): Promise<GetSecurityChangeAuthorizationResponse>;
+  openAuthorization(): SecurityAuthorizationWindow;
+  authorizationRequired(
+    error: unknown,
+  ): SecurityOperationAuthorizationRequired | undefined;
   apply(
     request: {
       expectedRevision: bigint;
       changeId: Uint8Array;
       changes: SecurityChange[];
+      authorizationProof?: Uint8Array;
     },
     signal: AbortSignal,
   ): Promise<ApplySecurityChangesResponse>;
@@ -76,6 +102,10 @@ export interface SecurityManagementPort {
   ): Promise<SecurityChangeCommitProof>;
   failure(error: unknown): SecurityFailure;
   newChangeId(): Uint8Array;
+}
+export interface SecurityAuthorizationWindow {
+  navigate(url: string): void;
+  close(): void;
 }
 export interface SecurityManagementState {
   phase: "loading" | "ready" | "error";
@@ -95,6 +125,20 @@ export interface SecurityManagementState {
     label: string;
     changes: SecurityChange[];
     expectedRevision: bigint;
+    changeId: Uint8Array;
+    version: SecurityVersion;
+    approval:
+      | "preparing"
+      | "ordinary"
+      | "required"
+      | "starting"
+      | "authenticating"
+      | "approved"
+      | "failed";
+    requirement?: SecurityAuthorizationRequirement;
+    authorizationId?: Uint8Array;
+    authorizationProof?: Uint8Array;
+    intentDigest?: Uint8Array;
   };
   mutation:
     | "idle"
@@ -177,6 +221,7 @@ export class SecurityManagementController {
   private ticket = 0;
   private disposed = false;
   private pending?: PendingSecurityChange;
+  private authorizationWindow?: SecurityAuthorizationWindow;
   constructor(
     private readonly port: SecurityManagementPort,
     private readonly section: SecuritySection,
@@ -215,6 +260,32 @@ export class SecurityManagementController {
   private operation() {
     if (this.disposed || this.scope.aborted)
       throw new Error("Authentication scope changed.");
+    const review = this.state.review;
+    if (review?.approval === "preparing") {
+      // A scope read can interrupt preflight. Retire its preparation without
+      // authorizing Apply, and ignore its eventual response through the ticket.
+      this.publish({
+        review: { ...review, approval: "failed" },
+        message:
+          "The review check was interrupted. No Apply was sent; review the change again before applying.",
+      });
+    }
+    if (review?.approval === "starting") {
+      // Every scope operation may supersede Begin, including audit/member
+      // reads. Close only the owned window and leave this exact review usable.
+      this.authorizationWindow?.close();
+      this.authorizationWindow = undefined;
+      this.publish({
+        review: {
+          ...review,
+          approval: "required",
+          authorizationId: undefined,
+          authorizationProof: undefined,
+        },
+        message:
+          "The approval request was interrupted. Reauthenticate this reviewed change when ready; no Apply was sent.",
+      });
+    }
     this.request?.abort();
     this.request = new AbortController();
     return {
@@ -229,6 +300,7 @@ export class SecurityManagementController {
     this.disposed = true;
     this.ticket++;
     this.request?.abort();
+    this.authorizationWindow?.close();
     this.listeners.clear();
   }
   async load(cursor = "") {
@@ -239,6 +311,8 @@ export class SecurityManagementController {
     )
       return;
     const { ticket, signal } = this.operation();
+    this.authorizationWindow?.close();
+    this.authorizationWindow = undefined;
     this.publish({
       phase: "loading",
       message: "",
@@ -275,7 +349,7 @@ export class SecurityManagementController {
         });
     }
   }
-  review(label: string, changes: SecurityChange[]) {
+  async review(label: string, changes: SecurityChange[]) {
     if (
       this.state.phase !== "ready" ||
       !this.state.version ||
@@ -285,14 +359,222 @@ export class SecurityManagementController {
       changes.length > 64
     )
       return;
+    const id = this.port.newChangeId();
+    if (id.length !== 16 || id.every((byte) => byte === 0))
+      throw new Error("Invalid change ID.");
+    this.authorizationWindow?.close();
+    const review: NonNullable<SecurityManagementState["review"]> = {
+      label,
+      changes: structuredClone(changes),
+      expectedRevision: this.state.version.revision,
+      changeId: id.slice(),
+      version: structuredClone(this.state.version),
+      approval: "preparing",
+    };
+    const { ticket, signal } = this.operation();
     this.publish({
-      review: {
-        label,
-        changes: structuredClone(changes),
-        expectedRevision: this.state.version.revision,
-      },
-      message: "",
+      review,
+      message: "Checking the reviewed change with Server…",
     });
+    try {
+      const prepared = await this.port.prepare(
+        this.reviewRequest(review),
+        signal,
+      );
+      if (!this.current(ticket) || this.state.review !== review) return;
+      validateVersion(prepared.expectedVersion);
+      if (
+        !sameGeneration(prepared.expectedVersion, review.version) ||
+        prepared.expectedVersion.revision !== review.expectedRevision ||
+        !prepared.expectedVersion.digest.every(
+          (byte, i) => byte === review.version.digest[i],
+        ) ||
+        prepared.changeId.length !== 16 ||
+        !review.changeId.every((byte, i) => byte === prepared.changeId[i]) ||
+        prepared.intentDigest.length !== 32 ||
+        prepared.intentDigest.every((byte) => byte === 0) ||
+        (prepared.requirement !== SecurityAuthorizationRequirement.ORDINARY &&
+          prepared.requirement !==
+            SecurityAuthorizationRequirement.REAUTHENTICATION)
+      )
+        throw new Error("Invalid reviewed change requirement.");
+      if (prepared.retainedCommit) {
+        const pending = this.pendingFromReview(review);
+        this.pending = pending;
+        this.recovery?.save(this.recoveryOwner, pending);
+        this.acceptStatus(pending, prepared.retainedCommit);
+        return;
+      }
+      this.publish({
+        review: {
+          ...review,
+          intentDigest: prepared.intentDigest.slice(),
+          requirement: prepared.requirement,
+          approval:
+            prepared.requirement === SecurityAuthorizationRequirement.ORDINARY
+              ? "ordinary"
+              : "required",
+        },
+        message: "",
+      });
+    } catch (error) {
+      if (!this.current(ticket) || this.state.review !== review) return;
+      if (this.port.failure(error) === "conflict")
+        this.publish({
+          review: undefined,
+          version: undefined,
+          mutation: "conflict",
+          message: "The revision changed. Reload and review your change again.",
+        });
+      else
+        this.publish({
+          review: { ...review, approval: "failed" },
+          message:
+            "The reviewed change could not be checked. No Apply was sent; review again before applying.",
+        });
+    }
+  }
+  private reviewRequest(
+    review: NonNullable<SecurityManagementState["review"]>,
+  ): SecurityChangeReview {
+    return {
+      $typeName: "graph.v1.SecurityChangeReview",
+      expectedVersion: structuredClone(review.version),
+      changeId: review.changeId.slice(),
+      changes: structuredClone(review.changes),
+    };
+  }
+  private pendingFromReview(
+    review: NonNullable<SecurityManagementState["review"]>,
+  ): PendingSecurityChange {
+    return {
+      changes: structuredClone(review.changes),
+      expectedRevision: review.expectedRevision,
+      changeId: review.changeId.slice(),
+      version: structuredClone(review.version),
+    };
+  }
+  async authorize() {
+    const review = this.state.review;
+    if (
+      !review ||
+      review.requirement !==
+        SecurityAuthorizationRequirement.REAUTHENTICATION ||
+      (review.approval !== "required" && review.approval !== "failed")
+    )
+      return;
+    const { ticket, signal } = this.operation();
+    const starting = {
+      ...review,
+      approval: "starting" as const,
+      authorizationId: undefined,
+      authorizationProof: undefined,
+    };
+    this.publish({ review: starting, message: "" });
+    try {
+      this.authorizationWindow?.close();
+      const authorizationWindow = this.port.openAuthorization();
+      this.authorizationWindow = authorizationWindow;
+      const start = await this.port.beginAuthorization(
+        this.reviewRequest(starting),
+        signal,
+      );
+      if (!this.current(ticket) || this.state.review !== starting) {
+        authorizationWindow.close();
+        return;
+      }
+      if (
+        start.authorizationId.length !== 32 ||
+        start.authorizationId.every((byte) => byte === 0) ||
+        !start.expiresAt ||
+        !start.startUrl
+      )
+        throw new Error("Invalid operation authorization start.");
+      authorizationWindow.navigate(start.startUrl);
+      this.publish({
+        review: {
+          ...starting,
+          approval: "authenticating",
+          authorizationId: start.authorizationId.slice(),
+        },
+        message:
+          "Complete reauthentication in the opened window, then check the approval here. Your ordinary session remains active.",
+      });
+    } catch {
+      if (this.current(ticket) && this.state.review === starting) {
+        this.authorizationWindow?.close();
+        this.publish({
+          review: { ...starting, approval: "failed" },
+          message:
+            "Operation reauthentication could not be started. Your reviewed change was not applied.",
+        });
+      }
+    }
+  }
+  async checkAuthorization() {
+    const review = this.state.review;
+    if (
+      !review ||
+      review.approval !== "authenticating" ||
+      !review.authorizationId
+    )
+      return;
+    const { ticket, signal } = this.operation();
+    try {
+      const response = await this.port.authorization(
+        review.authorizationId.slice(),
+        signal,
+      );
+      if (!this.current(ticket) || this.state.review !== review) return;
+      if (
+        response.authorizationId.length !== 32 ||
+        !review.authorizationId.every(
+          (byte, i) => byte === response.authorizationId[i],
+        ) ||
+        !response.expiresAt
+      )
+        throw new Error("Invalid operation authorization response.");
+      if (
+        response.state === SecurityAuthorizationState.PENDING &&
+        response.authorizationProof.length === 0
+      ) {
+        this.publish({
+          message:
+            "Reauthentication is still pending. Complete it in the opened window, then check again.",
+        });
+        return;
+      }
+      if (
+        response.state !== SecurityAuthorizationState.APPROVED ||
+        response.authorizationProof.length !== 32 ||
+        response.authorizationProof.every((byte) => byte === 0)
+      )
+        throw new Error("Operation was not approved.");
+      this.authorizationWindow?.close();
+      this.publish({
+        review: {
+          ...review,
+          approval: "approved",
+          authorizationProof: response.authorizationProof.slice(),
+        },
+        message:
+          "Reauthentication approved this exact reviewed change. Apply when ready.",
+      });
+    } catch {
+      if (this.current(ticket) && this.state.review === review) {
+        this.authorizationWindow?.close();
+        this.publish({
+          review: {
+            ...review,
+            approval: "failed",
+            authorizationId: undefined,
+            authorizationProof: undefined,
+          },
+          message:
+            "Operation approval is unavailable or was refused. Your ordinary session remains active; no Apply was sent.",
+        });
+      }
+    }
   }
   changeId(): string {
     return this.pending
@@ -302,6 +584,8 @@ export class SecurityManagementController {
       : "";
   }
   cancelReview() {
+    this.operation();
+    this.authorizationWindow?.close();
     this.publish({ review: undefined });
   }
   private accept(pending: PendingSecurityChange, result: SecurityChangeResult) {
@@ -376,27 +660,23 @@ export class SecurityManagementController {
       replayed: retained?.replayed,
     });
   }
-  async apply(recentAuthentication: boolean) {
+  async apply() {
     const review = this.state.review;
     const version = this.state.version;
     if (
-      !recentAuthentication ||
       !review ||
       !version ||
       this.state.mutation === "sending" ||
       this.state.mutation === "unconfirmed" ||
-      review.expectedRevision !== version.revision
+      review.expectedRevision !== version.revision ||
+      !sameGeneration(review.version, version) ||
+      !review.version.digest.every((byte, i) => byte === version.digest[i]) ||
+      (review.approval !== "ordinary" && review.approval !== "approved")
     )
       return;
-    const id = this.port.newChangeId();
-    if (id.length !== 16 || id.every((byte) => byte === 0))
-      throw new Error("Invalid change ID.");
+    const id = review.changeId;
     const { ticket, signal } = this.operation();
-    this.pending = {
-      ...review,
-      changeId: id.slice(),
-      version: structuredClone(version),
-    };
+    this.pending = this.pendingFromReview(review);
     const pending = this.pending;
     this.recovery?.save(this.recoveryOwner, this.pending);
     this.publish({ mutation: "sending", message: "Applying reviewed change…" });
@@ -406,6 +686,7 @@ export class SecurityManagementController {
           expectedRevision: review.expectedRevision,
           changeId: id.slice(),
           changes: structuredClone(review.changes),
+          authorizationProof: review.authorizationProof?.slice(),
         },
         signal,
       );
@@ -413,7 +694,42 @@ export class SecurityManagementController {
         this.acceptApply(pending, result);
     } catch (error) {
       if (!this.current(ticket)) return;
-      if (this.port.failure(error) === "conflict") {
+      const refused = this.port.authorizationRequired(error);
+      const refusedVersion = refused?.expectedVersion;
+      // Only this first, bound invocation is settled by the typed refusal.
+      // An older ambiguous command cannot reach Apply and remains status-only.
+      if (
+        refused &&
+        refusedVersion &&
+        review.intentDigest &&
+        refused.changeId.length === 16 &&
+        pending.changeId.every((byte, i) => byte === refused.changeId[i]) &&
+        refusedVersion.revision === pending.expectedRevision &&
+        refusedVersion.digest.length === 32 &&
+        pending.version.digest.every(
+          (byte, i) => byte === refusedVersion.digest[i],
+        ) &&
+        refusedVersion.generation.length === 16 &&
+        sameGeneration(pending.version, refusedVersion) &&
+        refused.intentDigest.length === 32 &&
+        review.intentDigest.every((byte, i) => byte === refused.intentDigest[i])
+      ) {
+        this.pending = undefined;
+        this.recovery?.clear();
+        this.publish({
+          mutation: "idle",
+          result: undefined,
+          review: {
+            ...review,
+            requirement: SecurityAuthorizationRequirement.REAUTHENTICATION,
+            approval: "required",
+            authorizationId: undefined,
+            authorizationProof: undefined,
+          },
+          message:
+            "This Apply was refused before commit. Reauthenticate the same reviewed change, then apply when ready.",
+        });
+      } else if (this.port.failure(error) === "conflict") {
         this.pending = undefined;
         this.recovery?.clear();
         this.publish({

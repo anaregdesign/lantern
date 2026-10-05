@@ -15,8 +15,8 @@ import (
 	"time"
 )
 
-const loginTransactionLifetime = 10 * time.Minute
-const maxLoginTransactions = 1024
+const LoginTransactionLifetime = 10 * time.Minute
+const MaxLoginTransactions = 1024
 
 var ErrLoginTransaction = errors.New("invalid or expired login transaction")
 
@@ -37,6 +37,7 @@ type loginTransaction struct {
 	nonce, verifier, returnPath, replacesDigest string
 	createdAt, expiresAt                        time.Time
 	stepUp                                      bool
+	authorizationID                             [32]byte
 }
 
 // LoginStart contains only the redirect and host-bound transaction-cookie
@@ -62,6 +63,9 @@ func (c LoginCompletion) ReplacesDigest() string { return c.transaction.replaces
 // RequiresRecentAuthentication is saved Server intent, independent of ordinary
 // session replacement and of any callback parameters controlled by the browser.
 func (c LoginCompletion) RequiresRecentAuthentication() bool { return c.transaction.stepUp }
+func (c LoginCompletion) AuthorizationID() ([32]byte, bool) {
+	return c.transaction.authorizationID, c.transaction.authorizationID != [32]byte{}
+}
 
 func NewLoginTransactions(origin string, returnPaths []string) (*LoginTransactions, error) {
 	return NewLoginTransactionsWithClock(origin, returnPaths, time.Now)
@@ -112,6 +116,18 @@ func randomLoginValue() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(bytes[:]), nil
 }
 func (m *LoginTransactions) Begin(trust Trust, discovery Discovery, returnPath, replacesDigest string, stepUp bool) (LoginStart, error) {
+	return m.begin(trust, discovery, returnPath, replacesDigest, stepUp, [32]byte{})
+}
+
+// BeginAuthorization keeps operation approval distinct from session login and
+// replacement. The purpose is saved only on the Server transaction.
+func (m *LoginTransactions) BeginAuthorization(trust Trust, discovery Discovery, authorizationID [32]byte) (LoginStart, error) {
+	if authorizationID == [32]byte{} {
+		return LoginStart{}, ErrLoginTransaction
+	}
+	return m.begin(trust, discovery, "/security/roles", "", true, authorizationID)
+}
+func (m *LoginTransactions) begin(trust Trust, discovery Discovery, returnPath, replacesDigest string, stepUp bool, authorizationID [32]byte) (LoginStart, error) {
 	if m == nil || !trust.Issuer.Enabled || trust.Generation == [16]byte{} || trust.ConfigRevision == 0 || discovery.Issuer != trust.Issuer.URL || trust.Issuer.RedirectURI != m.origin+CallbackPath(trust.Issuer.URL) || !m.returns[returnPath] ||
 		!slices.Contains(discovery.ResponseTypes, "code") || !slices.Contains(discovery.CodeChallengeMethods, "S256") {
 		return LoginStart{}, ErrLoginTransaction
@@ -172,10 +188,10 @@ func (m *LoginTransactions) Begin(trust Trust, discovery Discovery, returnPath, 
 			delete(m.pending, id)
 		}
 	}
-	if len(m.pending) >= maxLoginTransactions {
+	if len(m.pending) >= MaxLoginTransactions {
 		return LoginStart{}, ErrLoginTransaction
 	}
-	transaction := loginTransaction{trust: trust, discovery: discovery, cookieDigest: sha256.Sum256([]byte(cookie)), nonce: nonce, verifier: verifier, returnPath: returnPath, replacesDigest: replacesDigest, createdAt: now, expiresAt: now.Add(loginTransactionLifetime), stepUp: stepUp}
+	transaction := loginTransaction{trust: trust, discovery: discovery, cookieDigest: sha256.Sum256([]byte(cookie)), nonce: nonce, verifier: verifier, returnPath: returnPath, replacesDigest: replacesDigest, createdAt: now, expiresAt: now.Add(LoginTransactionLifetime), stepUp: stepUp, authorizationID: authorizationID}
 	// Detach every mutable configuration slice retained across the redirect.
 	transaction.trust.Issuer.Algorithms = append([]string(nil), trust.Issuer.Algorithms...)
 	transaction.discovery.ResponseTypes = append([]string(nil), discovery.ResponseTypes...)

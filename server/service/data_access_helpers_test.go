@@ -33,7 +33,7 @@ func dataAccessFixture(t *testing.T, rules []security.PermissionRule) (func() ti
 	image := security.Image{Version: security.ImageVersion, BootstrapRevision: 1,
 		Issuers:    []security.Issuer{{URL: "https://idp.example", Enabled: true, ConfigRevision: 1, ClientID: "admin", APIAudience: "api", RedirectURI: "https://admin.example/auth/callback", Algorithms: []string{"EdDSA"}}},
 		Roles:      []security.Role{{ID: "security_admin", Rules: []security.PermissionRule{{ID: "manage", Effect: security.Allow, Action: security.SecurityManage, Resource: security.GlobalResource}}}, {ID: "data", Rules: rules}},
-		Principals: []security.Principal{{Identity: identity("admin"), State: security.Active, Assignments: []security.RoleAssignment{{RoleID: "security_admin", EnvOwned: true}}}, {Identity: identity("reader"), State: security.Active, Assignments: []security.RoleAssignment{{RoleID: "data"}}}}}
+		Principals: []security.Principal{{Identity: identity("admin"), State: security.Active, HumanIssuerConfigRevision: 1, Assignments: []security.RoleAssignment{{RoleID: "security_admin", EnvOwned: true}}}, {Identity: identity("reader"), State: security.Active, Assignments: []security.RoleAssignment{{RoleID: "data"}}}}}
 	if _, err := store.ReconcileBootstrap(t.Context(), 0, [16]byte{1}, image); err != nil {
 		t.Fatal(err)
 	}

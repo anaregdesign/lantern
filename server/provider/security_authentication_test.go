@@ -53,7 +53,7 @@ func TestSecurityAuthenticationVerifiedCurrentCut(t *testing.T) {
 	}
 	current, _ := runtime.native.Store().Current()
 	identity := admission.Identity()
-	_, err = runtime.native.Store().Manage(context.Background(), security.ManagementRequest{ExpectedRevision: current.Sequence(), ChangeID: [16]byte{1}, Actor: identity, Now: clock.Now(), AuthTime: clock.Now(), Changes: []security.Change{{Kind: security.PutPrincipal, Identity: &identity, State: security.Suspended}}})
+	_, err = runtime.native.Store().Manage(context.Background(), security.ManagementRequest{ExpectedRevision: current.Sequence(), ChangeID: [16]byte{1}, Actor: identity, Authentication: security.Authentication{Provenance: security.BrowserCode, Class: security.EndUser, IssuerConfigRevision: 1}, Now: clock.Now(), AuthTime: clock.Now(), Changes: []security.Change{{Kind: security.PutPrincipal, Identity: &identity, State: security.Suspended}}})
 	if err != nil {
 		t.Fatal(err)
 	}

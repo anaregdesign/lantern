@@ -1,4 +1,6 @@
 import { createSecurityClient } from "./security-client";
+import { openSecurityAuthorizationWindow } from "../browser/security-authorization-window";
+import { SecurityOperationAuthorizationRequiredError } from "lantern-sdk/web";
 import type {
   SecurityManagementPort,
   SecurityFailure,
@@ -46,6 +48,20 @@ export function createSecurityManagementClient(
       ),
     apply: (request, signal) =>
       client.applySecurityChanges(request, options(signal)),
+    prepare: (review, signal) =>
+      client.prepareSecurityChanges({ review }, options(signal)),
+    beginAuthorization: (review, signal) =>
+      client.beginSecurityChangeAuthorization({ review }, options(signal)),
+    authorization: (authorizationId, signal) =>
+      client.getSecurityChangeAuthorization(
+        { authorizationId },
+        options(signal),
+      ),
+    openAuthorization: () => openSecurityAuthorizationWindow(baseUrl),
+    authorizationRequired: (error) =>
+      error instanceof SecurityOperationAuthorizationRequiredError
+        ? error.detail
+        : undefined,
     status: (changeId, signal) =>
       client.getSecurityChangeStatus({ changeId }, options(signal)),
     newChangeId: () => crypto.getRandomValues(new Uint8Array(16)),

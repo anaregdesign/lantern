@@ -1,9 +1,50 @@
 package security
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 )
+
+func TestBootstrapExplicitHumanBearerQualificationPreservesSubjectsAndLifecycle(t *testing.T) {
+	store, _, options := testStore(t, true)
+	legacy := testImage()
+	legacy.Principals[0].HumanIssuerConfigRevision = 0
+	legacy.Principals[0].State = Suspended
+	legacy.Issuers[0].EnvOwned = true
+	human := testIdentity()
+	human.Subject = "legacy-human"
+	client := testIdentity()
+	client.Subject = "oauth-client"
+	legacy.Principals = append(legacy.Principals, Principal{Identity: human, State: Active, Assignments: []RoleAssignment{{RoleID: "security_admin", EnvOwned: true}}}, Principal{Identity: client, State: Active, Assignments: []RoleAssignment{{RoleID: "security_admin"}}})
+	encoded, _ := json.Marshal(legacy)
+	snapshot, err := DecodeImage(encoded, options.Limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := SignRevision(options.Generation, 1, [32]byte{}, [16]byte{1}, snapshot, options.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Apply(t.Context(), old.Encode()); err != nil {
+		t.Fatal(err)
+	}
+	configuration := Bootstrap{Revision: 2, Issuer: legacy.Issuers[0], AdminSubjects: []string{"admin", "legacy-human"}}
+	configuration.Issuer.HumanSubjectNamespaceQualified = true // verified operator issuance contract
+	if _, err := store.ApplyBootstrap(t.Context(), configuration); err != nil {
+		t.Fatal("explicit legacy qualification failed", err)
+	}
+	current, _ := store.Current()
+	if current.Snapshot().BearerActor(human) != EndUser || current.Snapshot().BearerActor(client) != UnresolvedActor {
+		t.Fatal("qualification inferred all OIDC subjects as human")
+	}
+	if _, active := current.Snapshot().AccessFor(testIdentity()); active {
+		t.Fatal("qualification resurrected suspended bootstrap human")
+	}
+	if len(current.Snapshot().Image().Sessions) != 0 {
+		t.Fatal("durable enrollment required browser session")
+	}
+}
 
 func TestBootstrapMonotonicConfigAndNoUserResurrection(t *testing.T) {
 	store, _, _ := testStore(t, true)

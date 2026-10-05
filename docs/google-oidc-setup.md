@@ -9,7 +9,7 @@ certificate expired. Neither fact completes the pending real-provider/human or
 actual combined UI exit. Reuse the existing client for separately approved
 work; this guide does not authorize recreating clients or changing credentials.
 
-## Ordinary login and approved ordinary management
+## Separate ordinary management from operation reauthentication
 
 Ordinary login uses Authorization Code, PKCE S256, state, nonce and verified
 ID tokens, then checks the current registered Issuer and Principal. It accepts
@@ -19,51 +19,49 @@ session replacement do not request `max_age`, `prompt=login` or essential
 `auth_time`. Neither operation makes old or unknown evidence recent. Future
 or contradictory signed authentication times are rejected.
 
-#1672's approved target allows ordinary end-user management with valid OIDC
-authentication and current explicit `security.manage`, including missing/older
-signed `auth_time`. Bootstrap may create a mutable scoped data Role and assign
-it to the exact verified identity without replacing its environment-owned
-`security_admin` assignment. Bootstrap grants no data by itself. Data grants
-alone do not need additional authentication or extra initial provisioning.
-Current credential/session expiry, policy admission, CSRF, CAS, env-owned locks
-and administrator invariants remain required. This policy is not yet implemented
-by merged fixed-writer source `93d53789`.
-
-Trust changes and effective `security.manage` expansion require per-operation
-reauthentication; removal of a Deny/Role/assignment can expand that authority.
-The [operation/actor matrix and proof review](decisions/0012-oidc-prefix-rbac.md#management-operation-and-actor-policy)
-are provider-neutral. Machines may perform authorized reference/status reads,
-but no management mutation. Ordinary Google login and actual provider-neutral
-ordinary-management evidence remain separate records.
-
-## Historical step-up and optional Google extensions
-
-At `93d53789`, Apply, Store management, ValidateIssuer and explicit step-up
-enforce a five-minute signed authentication event. Step-up requests `max_age=0`,
-`prompt=login` and `claims={"id_token":{"auth_time":{"essential":true}}}`.
-Missing/old evidence fails step-up without replacing the old usable session.
-This historical flow does not implement the approved operation-bound proof.
-Token `iat`, callback time, consent and account selection remain invalid
-authentication-time substitutes after the ordinary gate is removed.
+Ordinary management by a qualified human with current `security.manage`
+authority accepts old or missing signed authentication time. Issuer trust changes
+and effective expansion of management authority require a signed authentication
+event after the final reviewed operation, bound to its original ID, intent and
+full policy cut. A separate operation-purpose transaction
+requests `max_age=0`, `prompt=login` and
+`claims={"id_token":{"auth_time":{"essential":true}}}`. The Server saves that
+purpose before redirecting; a callback cannot downgrade it. Missing or old
+evidence fails operation approval without replacing the existing session or
+changing its CSRF proof, expiry or policy revision. Token `iat`,
+callback time, consent and account selection are never authentication-time
+substitutes. Ordinary Google login and high-impact operation approval therefore
+have separate acceptance records.
+Bootstrap may create a mutable scoped data Role and assign it to the exact
+verified identity while preserving its environment-owned `security_admin`
+assignment. Bootstrap grants no data by itself. Data grants alone require no
+additional authentication or extra initial provisioning. Current expiry,
+admission, CSRF, CAS, environment-owned locks and administrator invariants remain.
+Machines may perform authorized reference/status reads but no management mutation.
 
 Google's [OIDC documentation](https://developers.google.com/identity/openid-connect/openid-connect)
 describes `auth_time` as an optional claim that must be requested and enabled.
 Its [Security bundle setup](https://developers.google.com/identity/siwg/security-bundle)
 requires a published, verified OAuth app, then **Settings → Advanced Settings →
-Session age claims**. These extra claims, Security bundle and their Google app
-publication/verification are optional and outside baseline implementation,
-acceptance, Issue-closure and release gates. A **Testing** client can prepare
-ordinary login and does not have to enable these extensions for ordinary
-management. Google's documented OIDC `prompt` values do not establish support
-for Lantern's historical `prompt=login` step-up request. Do not assume that a
-redirect refreshes an old Google session; qualify the actual returned signed
-evidence against the selected high-impact proof contract separately.
+Session age claims**. These extra claims, Security bundle and Google app
+publication/verification are optional outside baseline implementation, acceptance,
+Issue-closure and release gates. A **Testing** client can prepare ordinary login
+and need not enable these extensions for ordinary management. Google's documented
+OIDC `prompt` values do not establish support for Lantern's `prompt=login`
+request. Lantern's redirect therefore cannot
+promise to refresh an old Google session: the returned signed evidence must
+still prove an event after final review. Lantern waits until the next whole-second
+NumericDate boundary before opening the challenge; same-second old evidence is
+insufficient.
 
-Google app publication/verification is a separate operator decision. If a
-selected optional/high-impact flow cannot supply its required evidence, record
-that flow as unavailable; do not make it an ordinary-login/ordinary-management
-or Google Security bundle baseline prerequisite. Qualifying high-impact
-protection remains separate from verifying ordinary Google compatibility.
+Google app publication/verification is a separate operator decision. If the
+selected client cannot supply fresh signed evidence, record high-impact approval
+as unavailable and keep that acceptance exit open; this does not disqualify an
+otherwise verified ordinary login or ordinary qualified-human management.
+Human API Bearer use additionally needs an exact enrolled subject and qualification
+that the actual Issuer's client-credentials profile cannot collide with or
+impersonate that human. Do not infer this contract from Google login alone or set
+the qualification flag without verifying the actual API issuance profile.
 
 ## Configure or inspect the OAuth Web client
 
@@ -157,13 +155,15 @@ From a clean exact candidate, verify the real callback/session flow, CSRF,
 unknown/revoked users, security-admin without graph access, Role edits and
 assignments, prefix Deny, scoped CDC and replica admission. Record ordinary
 login with missing/old `auth_time`, unchanged recent-auth eligibility after
-ordinary rotation, and successful ordinary data-Role creation/exact self-
-assignment after #1672. Verify allowed in-prefix CRUD and outside-prefix
-rejection without implicit grants. Retain historical five-minute rejections
-as source-specific evidence. Test invalid/future/contradictory evidence and
-the selected operation-bound high-impact/machine restrictions separately;
-retain current fixed-writer routing and Google reauthentication limitations.
-No current-source API success or UI contract fixture proves the pending target.
+ordinary rotation, ordinary management without an age gate, and refusal of
+high-impact approval without a provable post-review event.
+Verify scoped data-Role creation and exact self-assignment, allowed in-prefix
+CRUD and outside-prefix rejection without implicit grants. Retain historical
+five-minute rejections as source-specific evidence. Test invalid, future and
+contradictory evidence and machine restrictions separately. Test a signed
+post-review event separately if the provider supports it; retain the fixed-writer
+and Google reauthentication limitations. Synthetic wire and UI contract
+fixtures do not prove actual provider/browser acceptance.
 The user performs the Google sign-in and any provider-owned MFA; an agent does
 not collect their password or MFA code.
 

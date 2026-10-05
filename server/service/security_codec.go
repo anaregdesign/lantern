@@ -89,11 +89,11 @@ func decodeSecurityIssuer(issuer *pb.SecurityIssuer) (security.Issuer, error) {
 	if issuer == nil || issuer.ConfigRevision != 0 || issuer.EnvOwned || issuer.Deleted || issuer.HasSecretBinding {
 		return security.Issuer{}, security.ErrInvalidImage
 	}
-	return security.Issuer{URL: issuer.Issuer, Enabled: issuer.Enabled, ClientID: issuer.ClientId, APIAudience: issuer.ApiAudience, RedirectURI: issuer.RedirectUri, Algorithms: append([]string(nil), issuer.Algorithms...), SecretRef: issuer.GetSecretRef()}, nil
+	return security.Issuer{URL: issuer.Issuer, Enabled: issuer.Enabled, ClientID: issuer.ClientId, APIAudience: issuer.ApiAudience, RedirectURI: issuer.RedirectUri, Algorithms: append([]string(nil), issuer.Algorithms...), SecretRef: issuer.GetSecretRef(), HumanSubjectNamespaceQualified: issuer.HumanSubjectNamespaceQualified}, nil
 }
 func encodeSecurityIssuer(issuer security.Issuer) *pb.SecurityIssuer {
 	// SecretRef is deliberately write-only, including for security administrators.
-	return &pb.SecurityIssuer{Issuer: issuer.URL, Enabled: issuer.Enabled, ClientId: issuer.ClientID, ApiAudience: issuer.APIAudience, RedirectUri: issuer.RedirectURI, Algorithms: append([]string(nil), issuer.Algorithms...), ConfigRevision: issuer.ConfigRevision, EnvOwned: issuer.EnvOwned, Deleted: issuer.Deleted, HasSecretBinding: issuer.SecretRef != ""}
+	return &pb.SecurityIssuer{Issuer: issuer.URL, Enabled: issuer.Enabled, ClientId: issuer.ClientID, ApiAudience: issuer.APIAudience, RedirectUri: issuer.RedirectURI, Algorithms: append([]string(nil), issuer.Algorithms...), ConfigRevision: issuer.ConfigRevision, EnvOwned: issuer.EnvOwned, Deleted: issuer.Deleted, HasSecretBinding: issuer.SecretRef != "", HumanSubjectNamespaceQualified: issuer.HumanSubjectNamespaceQualified}
 }
 func decodeSecurityRole(role *pb.SecurityRole) (security.Role, error) {
 	if role == nil || role.EnvOwned || len(role.Rules) > security.DefaultPolicyLimits().MaxRules {
@@ -277,14 +277,14 @@ func decodeSecurityAssignment(result *security.Change, assignment *pb.SecurityRo
 }
 func securityErrorCode(err error) connect.Code {
 	switch {
+	case errors.Is(err, security.ErrStoreUnavailable), errors.Is(err, security.ErrAuthorityUnavailable):
+		return connect.CodeUnavailable
 	case errors.Is(err, security.ErrRevisionConflict), errors.Is(err, security.ErrChangeConflict):
 		return connect.CodeAborted
 	case errors.Is(err, security.ErrPermissionDenied):
 		return connect.CodePermissionDenied
-	case errors.Is(err, security.ErrUnknownChange), errors.Is(err, security.ErrRecentAuthentication), errors.Is(err, security.ErrBootstrapLocked), errors.Is(err, security.ErrLastAdministrator), errors.Is(err, security.ErrReadOnlyWriter), errors.Is(err, security.ErrUnknownRole):
+	case errors.Is(err, security.ErrUnknownChange), errors.Is(err, security.ErrRecentAuthentication), errors.Is(err, security.ErrOperationAuthorization), errors.Is(err, security.ErrBootstrapLocked), errors.Is(err, security.ErrLastAdministrator), errors.Is(err, security.ErrReadOnlyWriter), errors.Is(err, security.ErrUnknownRole):
 		return connect.CodeFailedPrecondition
-	case errors.Is(err, security.ErrStoreUnavailable), errors.Is(err, security.ErrAuthorityUnavailable):
-		return connect.CodeUnavailable
 	case errors.Is(err, security.ErrControlReserve):
 		return connect.CodeResourceExhausted
 	default:

@@ -20,6 +20,10 @@ service LanternSecurityService {
   rpc GetRoleTemplates(GetRoleTemplatesRequest) returns (GetRoleTemplatesResponse);
   rpc ExplainAccess(ExplainAccessRequest) returns (ExplainAccessResponse);
   rpc ValidateIssuer(ValidateIssuerRequest) returns (ValidateIssuerResponse);
+  // Nonmutating authoritative review; approval never rotates a session.
+  rpc PrepareSecurityChanges(PrepareSecurityChangesRequest) returns (PrepareSecurityChangesResponse);
+  rpc BeginSecurityChangeAuthorization(BeginSecurityChangeAuthorizationRequest) returns (BeginSecurityChangeAuthorizationResponse);
+  rpc GetSecurityChangeAuthorization(GetSecurityChangeAuthorizationRequest) returns (GetSecurityChangeAuthorizationResponse);
   // Plural is canonical and atomic, with request-index-aligned outcomes.
   rpc ApplySecurityChanges(ApplySecurityChangesRequest) returns (ApplySecurityChangesResponse);
   rpc ApplySecurityChange(ApplySecurityChangeRequest) returns (ApplySecurityChangeResponse);
@@ -140,6 +144,9 @@ message SecurityIssuer {
   bool env_owned = 9;
   bool deleted = 10;
   bool has_secret_binding = 11;
+  // Trusted issuance contract: OAuth client subjects cannot collide with or
+  // impersonate exact enrolled end-users. Qualify before enabling.
+  bool human_subject_namespace_qualified = 12;
 }
 message SecurityVersion {
   uint64 revision = 1;
@@ -316,6 +323,8 @@ message ApplySecurityChangesRequest {
   uint64 expected_revision = 1;
   bytes change_id = 2;
   repeated SecurityChange changes = 3;
+  // Purpose proof is excluded from retained canonical business intent.
+  bytes authorization_proof = 4;
 }
 message ApplySecurityChangesResponse {
   SecurityVersion version = 1;
@@ -327,6 +336,61 @@ message ApplySecurityChangeRequest {
   uint64 expected_revision = 1;
   bytes change_id = 2;
   SecurityChange change = 3;
+  bytes authorization_proof = 4;
+}
+
+message SecurityChangeReview {
+  SecurityVersion expected_version = 1;
+  bytes change_id = 2;
+  repeated SecurityChange changes = 3;
+}
+
+// Apply error detail: this invocation was definitely refused before durable
+// persistence because operation authorization was missing/invalid/expired.
+// It does not settle any earlier invocation whose response was lost.
+message SecurityOperationAuthorizationRequired {
+  bytes change_id = 1;
+  SecurityVersion expected_version = 2;
+  bytes intent_digest = 3;
+}
+enum SecurityAuthorizationRequirement {
+  SECURITY_AUTHORIZATION_REQUIREMENT_UNSPECIFIED = 0;
+  SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY = 1;
+  SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION = 2;
+}
+message PrepareSecurityChangesRequest {
+  SecurityChangeReview review = 1;
+}
+message PrepareSecurityChangesResponse {
+  SecurityVersion expected_version = 1;
+  bytes change_id = 2;
+  bytes intent_digest = 3;
+  SecurityAuthorizationRequirement requirement = 4;
+  // A known committed ID is recovered using its original retained proof.
+  GetSecurityChangeStatusResponse retained_commit = 5;
+}
+message BeginSecurityChangeAuthorizationRequest {
+  SecurityChangeReview review = 1;
+}
+message BeginSecurityChangeAuthorizationResponse {
+  bytes authorization_id = 1;
+  string start_url = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+enum SecurityAuthorizationState {
+  SECURITY_AUTHORIZATION_STATE_UNSPECIFIED = 0;
+  SECURITY_AUTHORIZATION_STATE_PENDING = 1;
+  SECURITY_AUTHORIZATION_STATE_APPROVED = 2;
+  SECURITY_AUTHORIZATION_STATE_DENIED = 3;
+}
+message GetSecurityChangeAuthorizationRequest {
+  bytes authorization_id = 1;
+}
+message GetSecurityChangeAuthorizationResponse {
+  bytes authorization_id = 1;
+  SecurityAuthorizationState state = 2;
+  bytes authorization_proof = 3;
+  google.protobuf.Timestamp expires_at = 4;
 }
 message ApplySecurityChangeResponse {
   SecurityVersion version = 1;

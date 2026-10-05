@@ -241,13 +241,17 @@ export function SecurityManagementView({
       {state.review && (
         <ChangeReview
           review={state.review}
-          recent={principal.recentAuthentication}
           busy={busy}
           apply={() => {
-            void controller.apply(principal.recentAuthentication);
+            void controller.apply();
           }}
           cancel={() => controller.cancelReview()}
-          stepUp={() => auth.controller.login(principal.identity!.issuer, true)}
+          authorize={() => {
+            void controller.authorize();
+          }}
+          checkAuthorization={() => {
+            void controller.checkAuthorization();
+          }}
         />
       )}
       <AccessExplanation

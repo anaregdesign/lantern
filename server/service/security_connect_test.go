@@ -71,7 +71,7 @@ func TestSecurityConnectAtomicRoleMembershipAndRetry(t *testing.T) {
 		t.Fatal("atomic removal failed", err)
 	}
 }
-func TestSecurityConnectVisibilityCursorAndRecentAuth(t *testing.T) {
+func TestSecurityConnectVisibilityCursorAndOrdinaryIssuerProbe(t *testing.T) {
 	handler, sink, contexts := securityAPIFixture(t)
 	now := handler.now()
 	admin := contexts("admin", now)
@@ -101,8 +101,12 @@ func TestSecurityConnectVisibilityCursorAndRecentAuth(t *testing.T) {
 	calls := 0
 	handler.validateIssuer = func(context.Context, security.Issuer) error { calls++; return nil }
 	_, err = handler.ValidateIssuer(contexts("admin", now.Add(-6*time.Minute)), connect.NewRequest(&pb.ValidateIssuerRequest{Issuer: &pb.SecurityIssuer{Issuer: "https://another.example"}}))
-	if connect.CodeOf(err) != connect.CodeFailedPrecondition || calls != 0 || sink.calls != 1 {
-		t.Fatal("stale auth triggered network", err, calls, sink.calls)
+	if err != nil || calls != 1 || sink.calls != 1 {
+		t.Fatal("old human authentication blocked nonmutating issuer probe", err, calls, sink.calls)
+	}
+	_, err = handler.ValidateIssuer(contexts("admin", time.Time{}), connect.NewRequest(&pb.ValidateIssuerRequest{Issuer: &pb.SecurityIssuer{Issuer: "https://another.example"}}))
+	if err != nil || calls != 2 || sink.calls != 1 {
+		t.Fatal("missing human authentication blocked nonmutating issuer probe", err, calls, sink.calls)
 	}
 	off, err := NewSecurityConnectHandler(SecurityServiceOptions{})
 	if err != nil {

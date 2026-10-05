@@ -52,6 +52,7 @@ var securityEnvironmentNames = []string{
 	"LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE", "LANTERN_SECURITY_NODE_ROLE", "LANTERN_SECURITY_WRITER_ENDPOINT",
 	"LANTERN_SECURITY_BOOTSTRAP_REVISION", "LANTERN_SECURITY_BOOTSTRAP_ROLES", "LANTERN_SECURITY_MAX_JOURNAL_BYTES", "LANTERN_SECURITY_CLOCK_QUALIFIED",
 	"LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE",
+	"LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED",
 }
 
 // loadSecurityConfig validates operator trust before the production serving
@@ -105,6 +106,11 @@ func loadSecurityConfig() (SecurityConfig, error) {
 	config.WriterEndpoint = required("LANTERN_SECURITY_WRITER_ENDPOINT")
 	config.BrowserOrigin = required("LANTERN_OIDC_BROWSER_ORIGIN")
 	issuer := security.Issuer{URL: required("LANTERN_OIDC_ADMIN_ISSUER"), Enabled: true, ClientID: required("LANTERN_OIDC_CLIENT_ID"), APIAudience: required("LANTERN_OIDC_API_AUDIENCE"), RedirectURI: required("LANTERN_OIDC_REDIRECT_URI"), SecretRef: envconfig.String("LANTERN_OIDC_SECRET_REF", "")}
+	qualification := envconfig.String("LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED", "")
+	if qualification != "" && qualification != "true" && qualification != "false" {
+		return SecurityConfig{}, errors.New("invalid human subject namespace qualification")
+	}
+	issuer.HumanSubjectNamespaceQualified = qualification == "true"
 	if err := strictSecurityConfigJSON(envconfig.String("LANTERN_OIDC_ALGORITHMS", `["RS256"]`), &issuer.Algorithms); err != nil {
 		return SecurityConfig{}, err
 	}

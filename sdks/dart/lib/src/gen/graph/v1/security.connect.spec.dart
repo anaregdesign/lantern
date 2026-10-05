@@ -103,6 +103,28 @@ abstract final class LanternSecurityService {
     graphv1security.ValidateIssuerResponse.new,
   );
 
+  /// Nonmutating authoritative review; approval never rotates a session.
+  static const prepareSecurityChanges = connect.Spec(
+    '/$name/PrepareSecurityChanges',
+    connect.StreamType.unary,
+    graphv1security.PrepareSecurityChangesRequest.new,
+    graphv1security.PrepareSecurityChangesResponse.new,
+  );
+
+  static const beginSecurityChangeAuthorization = connect.Spec(
+    '/$name/BeginSecurityChangeAuthorization',
+    connect.StreamType.unary,
+    graphv1security.BeginSecurityChangeAuthorizationRequest.new,
+    graphv1security.BeginSecurityChangeAuthorizationResponse.new,
+  );
+
+  static const getSecurityChangeAuthorization = connect.Spec(
+    '/$name/GetSecurityChangeAuthorization',
+    connect.StreamType.unary,
+    graphv1security.GetSecurityChangeAuthorizationRequest.new,
+    graphv1security.GetSecurityChangeAuthorizationResponse.new,
+  );
+
   /// Plural is canonical and atomic, with request-index-aligned outcomes.
   static const applySecurityChanges = connect.Spec(
     '/$name/ApplySecurityChanges',
