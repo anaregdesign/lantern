@@ -201,8 +201,8 @@ predecessor checks, and the resulting **complete canonical aggregate** must
 equal the candidate bytes. Only that replayed state escapes, with independently
 owned snapshots/maps/item slices; failure returns no state. Bare Image, hash
 correct fabricated capsule, slot zero, a later-slot QC or serialized root/floor
-cannot create this trusted input. Arbitrary compact checkpoint installation and
-historical authenticity verification remain later work.
+cannot create this trusted input. Arbitrary compact checkpoint installation
+remains later work; S2-C below supplies a private historical verification path.
 
 All codec limits are explicit. `s2CapsuleMeasure.Bytes` counts exactly this
 framed aggregate, including retained operation JSON escaping, lengths, lineage,
@@ -238,8 +238,10 @@ transitions. Its local receipt identifies the fixed journal scope, local index,
 physical chain, complete capsule digest and control prefix. It records local
 materialization, including terminal rejection, NOOP, replay and conflict. It
 does not acknowledge original H, a voter acceptance, quorum choice, current
-authorization or serving freshness. There is no production trusted-genesis or
-historical-proof constructor and no runtime, transport or environment switch.
+authorization or serving freshness. S2-B itself provides no production
+trusted-genesis or historical-proof constructor; S2-C below supplies the private
+historical/QC verification path. Neither component has a runtime, transport or
+environment switch.
 
 The existing FileWAL framing, canonical-path lease and bound tip are reused.
 The application family is
@@ -295,3 +297,85 @@ hardware power loss. The guarantee assumes cooperative exclusive writers and
 a storage stack honoring successful file and directory syncs. Pending-H and
 Promise/Accept durability, before-vote reservations, network quorum, Profile B
 serving and #1668 remain outside this component.
+
+## S2-C durable participant and quorum kernel
+
+S2-C composes the S2-B journal with a separate append-only protocol journal in
+one private owner. The kernel has a fixed, independently supplied membership
+of 3–31 distinct Ed25519 voting keys with an odd member count. Eligible members
+may propose; no member is permanently designated as the security writer. A
+serialized in-process scheduler delivers signed messages between independent
+native owners for qualification. There is no socket, service, provider, serving
+or environment activation path.
+
+Independent bootstrap fixes the exact S1 genesis and execution configuration,
+membership and proposer roles, origin keys/incarnations/admission profiles, and
+common format bounds. The common protocol scope excludes each member's local
+paths, store identity and journal quotas. The local composite scope separately
+binds both P and B families, their identities/epochs, canonical paths and
+explicit budgets. Stored headers, signatures and embedded keys cannot supply
+their own trust root.
+
+The historical verifier authenticates the complete original H: exact operation
+bytes, actor and review, FullChangeID, origin serial, authentication and lineage,
+credential/consume/profile claims, exclusive deadlines, and the complete
+present-or-absent purpose claim. Commitments have a fixed nonrecursive order
+and preserve the existing S1 H digest. H is independent of an ordering ballot
+or slot; each protocol message additionally binds its scoped attempt. Historical
+verification samples no current time and cannot mint a new operation, ID,
+serial or consume. Only tests issue origin attestations in this stage. The
+private persistence path accepts exact already-signed bytes; a production
+current-admission producer remains a separate requirement.
+
+P retains GENESIS, original H, issued ballots, promises with frozen accepted
+snapshots, selected values and their phase-one proofs, complete accepts with
+credits, complete chosen evidence, and drained B receipts. Durability precedes
+each corresponding outward action. Phase one requires distinct configured
+majority signers and carries the exact highest accepted value. Equal highest
+ballots with different values are corruption. A persisted selection cannot
+change on a same-ballot retry or restart. Missing selected H bytes cannot be
+replaced with NOOP. A choice needs matching authenticated Accepted witnesses;
+replaceable witness signatures never change the logical CommitRef.
+
+Before accepting, the shared pure S1 evaluator previews the exact next result
+and whole B capsule without constructing a choice certificate. A genuine
+chosen application must reproduce those bytes. P reserves bounded CHOSEN and
+DRAINED completion charges, while B reserves the exact APPLY charge. Existing
+actual ACCEPT records remain charged; the active slot retains the conservative
+maximum of previous and new future credits. Ordinary promises, ballots,
+selections and pending H cannot spend those credits. CHOSEN and B success
+consume their corresponding credits into actual usage; unused slack is
+released only after DRAINED. This is finite logical quota accounting, not a
+physical disk-block reservation or unlimited progress guarantee.
+
+The only completion order is durable CHOSEN, durable complete B cut, then
+durable DRAINED. Next-slot voting waits for that sequence. Recovery authenticates
+the full retained P history, crosses the existing same-descriptor WAL/tip and
+directory barriers, then supplies the exact matching verified prefix to B.
+A complete B cut without DRAINED is verified and resynchronized without a
+second APPLY or a second charge for already-consumed credit. B ahead of retained
+authentic choice, missing H, torn families or unexplained suffixes remain closed.
+Bounded chosen-history export and contiguous ingestion use retained signed
+evidence, rather than another member's capsule as a proof oracle.
+
+Independent minimum P and B cuts detect known rollback. P's floor also protects
+promises and selections when B has not advanced. Neither local signatures nor
+epochs detect a whole-family rollback when every independent witness is lost.
+Stable identity and a storage stack honoring completed sync barriers remain
+assumptions. Ambiguous I/O or publication, including errors that also contain a
+definite-abort sentinel, closes the composite owner before subsequent reads,
+replies or publication. Resume never adopts a B-only store or creates a missing
+family under an old voter identity.
+
+The C1–C10 tests cover cryptographic binding, majority/highest-accepted rules,
+durability-before-send, lost-quorum-evidence recovery, preview/application
+parity, cross-journal crash cuts, exact credits and exhaustion, fail-stop
+ownership, independent rollback floors and three-node delivery schedules. The
+approved exact preexpiry H may first become chosen and materialized after its
+original deadline; expiry or an unrelated NOOP is not cancellation. Progress
+still needs surviving H, a connected majority with capacity, eventual delivery
+and storage completion, and a period with a stable eligible proposer. These
+tests do not qualify physical power loss or a production origin's clock,
+credential, CSRF or purpose checks. Current admission and disclosure, qualified
+clock/freshness renewal, key lifecycle/fencing/rejoin, production transport and
+runtime activation, retention/compaction, and #1668 remain later work.

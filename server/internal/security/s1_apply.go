@@ -55,10 +55,12 @@ func (o *OriginalOutcome) Observed() SemanticCut        { return o.observed }
 func (o *OriginalOutcome) Resulting() SemanticCut       { return o.resulting }
 
 // s1VerifiedAuthorization and s1PrefixCertificate are intentionally private.
-// There is NO production constructor/verifier in S1. Only future trusted S2
-// verification may create them after authentic historical authority, exact
-// purpose/final consume and contiguous prefix/checkpoint verification. Tests
-// supply explicit fixtures. A caller Boolean is never a certification API.
+// The private S2-C historical/QC verifier may construct them after checking
+// complete configured-origin attestations and authenticated quorum witnesses;
+// Apply separately enforces the exact contiguous predecessor. This is not a
+// production current-consume or runtime-admission constructor.
+// S1 tests also supply explicit fixtures; a caller Boolean is never a
+// certification API.
 type s1VerifiedAuthorization struct {
 	authentication                                      Authentication
 	lineage                                             uint64
@@ -222,36 +224,46 @@ type S1ApplyResult struct {
 }
 
 func ApplyS1(s *S1ApplyState, next S1CertifiedNext) (S1ApplyResult, error) {
-	if s == nil || next.certificate == nil || s.slot == math.MaxUint64 {
+	if next.certificate == nil || next.certificate.witness == [32]byte{} {
 		return S1ApplyResult{}, ErrS1Contract
 	}
 	c := next.certificate
+	return evaluateS1Candidate(s, next.handoff, c.commit, c.previous)
+}
+
+// evaluateS1Candidate is the one pure transition body for certified Apply and
+// uncertified preaccept evaluation. Its logical position/value is not a choice
+// certificate, and its result confers no publication or materialization right.
+// In particular, a preview never manufactures a witness to enter ApplyS1.
+func evaluateS1Candidate(s *S1ApplyState, h *S1Handoff, commit CommitRef, previous [32]byte) (S1ApplyResult, error) {
+	if s == nil || s.projection == nil || s.projection.snapshot == nil || s.slot == math.MaxUint64 {
+		return S1ApplyResult{}, ErrS1Contract
+	}
 	cut := s.projection.cut
 	configuration := s.configuration
 	if !configuration.valid() || configuration.Policy != s.projection.snapshot.limits || cut.Policy != s1PolicyConfiguration(configuration.Policy) {
 		return S1ApplyResult{}, ErrS1Contract
 	}
 	value := s1Digest("noop", struct{ Domain, Cohort [32]byte }{cut.Domain, cut.Cohort})
-	if next.handoff != nil {
+	if h != nil {
 		// Historical authenticity/scope precedes ID ownership and lookup.
-		if !next.handoff.valid(cut) {
+		if !h.valid(cut) {
 			return S1ApplyResult{}, ErrS1Contract
 		}
-		value = next.handoff.digest()
+		value = h.digest()
 	}
-	if c.commit.Version != S1Version || c.commit.Domain != cut.Domain || c.commit.Cohort != cut.Cohort || c.commit.Membership != s.membership || c.commit.Configuration != configuration.Digest() || c.commit.Slot != s.slot+1 || c.commit.Value != value || c.previous != s.prefix || c.witness == [32]byte{} {
+	if commit.Version != S1Version || commit.Domain != cut.Domain || commit.Cohort != cut.Cohort || commit.Membership != s.membership || commit.Configuration != configuration.Digest() || commit.Slot != s.slot+1 || commit.Value != value || previous != s.prefix {
 		return S1ApplyResult{}, ErrS1Contract
 	}
 	advanced := *s
-	advanced.slot = c.commit.Slot
+	advanced.slot = commit.Slot
 	advanced.prefix = s1Digest("prefix", struct {
 		Previous [32]byte
 		Commit   CommitRef
-	}{s.prefix, c.commit})
-	if next.handoff == nil {
+	}{s.prefix, commit})
+	if h == nil {
 		return S1ApplyResult{&advanced, nil, S1Noop}, nil
 	}
-	h := next.handoff
 	if original, known := s.ledger[h.id]; known {
 		if original.operation != h.operation {
 			return S1ApplyResult{&advanced, nil, S1IDConflict}, nil
@@ -307,7 +319,7 @@ func ApplyS1(s *S1ApplyState, next S1CertifiedNext) (S1ApplyResult, error) {
 			items[i] = S1ItemOutcome{i, change.Kind, disposition}
 		}
 	}
-	outcome := &OriginalOutcome{id: h.id, operation: h.operation, handoff: h.digest(), commit: c.commit, disposition: disposition, items: items, observed: h.operation.reviewed, resulting: advanced.projection.cut}
+	outcome := &OriginalOutcome{id: h.id, operation: h.operation, handoff: h.digest(), commit: commit, disposition: disposition, items: items, observed: h.operation.reviewed, resulting: advanced.projection.cut}
 	advanced.ledger = make(map[FullChangeID]*OriginalOutcome, len(s.ledger)+1)
 	for id, o := range s.ledger {
 		advanced.ledger[id] = o
