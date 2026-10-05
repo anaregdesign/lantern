@@ -149,3 +149,84 @@ already certified slots. They validate the pure atomic result boundary, not
 native durability, cryptography, consensus, timing or deployed freshness.
 
 Run from `server/`: `go test ./internal/security -run '^TestS1' -count=1`.
+
+## S2-A materialized recovery capsule
+
+S2-A adds a package-private, unwired codec and detached replay validation. A
+capsule is **data, not a certificate or durability barrier**. It does not prove
+original authorization/consume, quorum choice, first ID ownership, freshness,
+serving authority or successful native persistence. There are no production
+constructors for historical authorization, prefix certificates or the new
+opaque trusted genesis capability, and no permissive verifier callback or
+serialized trust flag. Tests supply explicit independent trusted fixtures.
+
+The version-one encoding starts with
+`lantern/security/s2/materialized-capsule\0\x01`, followed by big-endian uint32
+length-prefixed canonical typed JSON header and Image, a uint32 lineage count
+with length-prefixed rows, and a uint32 ledger count with length-prefixed rows.
+The header contains exact genesis identity, actual `S1ExecutionConfig` and its
+digest, membership commitment, complete `SemanticCut`, installed control slot
+and prefix, and fixed retirement floor with domain/cohort and a separate root.
+Zero floor requires zero retirement root; a nonzero floor requires an
+independently trusted matching root at restoration. S2-A never advances a floor
+or prunes outcomes.
+
+The complete typed Image preserves S1's exact committed array order, including
+ordered Role rules and existing audit/session/machine data. Lineage map rows
+are sorted by exact issuer then subject and retain identities without sessions.
+FullID map rows use the total order version, domain bytes, cohort bytes,
+namespace, nonce bytes. Each ledger row retains exact canonical original
+OperationIdentity bytes, actor/review/digest, selected original H digest, first
+CommitRef, original disposition, request-index-aligned item outcomes and
+observed/resulting cuts. A rejected CAS may retain an original review with
+different generation/fences/policy/sequence; it is preserved, never replaced
+with the current review. Every retained CommitRef binds the actual execution
+configuration. NOOP, same-ID replay and ID conflict retain control advancement
+even with identical Image bytes.
+
+Decoding returns only `s2DecodedCandidate` with detached immutable bytes. It
+checks total input length before parsing, frame lengths/counts against remaining
+input and explicit limits before keyed allocation, and nested JSON counts/depth
+before typed decoding. Unknown/duplicate fields, aliases, noncanonical JSON,
+short/long fixed arrays, duplicate/reordered keys, malformed original intent or
+items, mixed configuration/scope and trailing input fail closed. It recompiles
+the full policy/issuer/qualified-admin closure and recomputes projection and
+configuration commitments. These checks establish structural consistency only.
+There is no old `LNSEC03` decode, legacy Image admission fallback or migration.
+
+Restoration requires a separately supplied `s2TrustedGenesis` and already
+verified opaque `S1CertifiedNext` inputs. The exact genesis state and fixed floor
+are detached, every input is replayed with `ApplyS1`'s contiguous scoped
+predecessor checks, and the resulting **complete canonical aggregate** must
+equal the candidate bytes. Only that replayed state escapes, with independently
+owned snapshots/maps/item slices; failure returns no state. Bare Image, hash
+correct fabricated capsule, slot zero, a later-slot QC or serialized root/floor
+cannot create this trusted input. Arbitrary compact checkpoint installation and
+historical authenticity verification remain later work.
+
+All codec limits are explicit. `s2CapsuleMeasure.Bytes` counts exactly this
+framed aggregate, including retained operation JSON escaping, lengths, lineage,
+outcomes, configuration and control/root fields. Checked uint64 accounting
+precedes whole-buffer allocation. The configured capsule limit cannot exceed
+the existing 8 MiB whole SystemMetadata compatibility ceiling. This ceiling is
+not an approved production capacity. S1's independent 4 MiB Image and entry
+limits can pass while the retained aggregate exceeds it; encoding then returns
+an unpersistable error with measured bytes and leaves source/prefix/ledger/
+reserves/floor unchanged. It never evicts first outcomes or substitutes a value.
+Later voting admission must reserve the exact successor before ACK and prevent
+unpersistable newly accepted values.
+
+This byte count excludes pending original H, voter promises/accepted values,
+evidence, WAL framing/tips and checkpoint overlap. WAL append, native owner,
+voting/transport, runtime calls, checkpoint selection/install, compaction and
+operational migration are outside S2-A. The later one-unsettled-slot, exact
+certified predecessor, reservation-before-ACK and recovered-WAL self-sync
+barrier contracts remain obligations. No unmerged #1667/#1674/#1678 helper is
+required by this code.
+
+Run from `server/`: `go test ./internal/security -run '^TestS[12]' -count=1`.
+S2-A tests cover complete replay, original ownership, component substitution,
+all actual policy/capacity fields, strict bounded parsing, proof separation,
+detached storage, fixed trusted floor and a complete-ledger overflow with valid
+S1 bounds. They retain S1 reserve/issuer regressions and confer no native or
+deployment qualification.
