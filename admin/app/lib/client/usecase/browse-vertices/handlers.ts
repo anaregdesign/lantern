@@ -3,7 +3,7 @@ import { LanternApiError } from "~/lib/client/infrastructure/api/error";
 import type { LanternClient } from "~/lib/client/infrastructure/api/lantern-client";
 import { scanVertices } from "~/lib/client/infrastructure/api/scan-vertices";
 import type { BrowseVerticesAction } from "./reducer";
-import type { VertexPage } from "./state";
+import type { BrowseVerticesFailure, VertexPage } from "./state";
 
 export interface FetchPageInput {
   client: LanternClient;
@@ -11,12 +11,14 @@ export interface FetchPageInput {
   cursor: string;
   pageSize: number;
   epoch: number;
+  requestId: number;
   /**
    * How the resulting page should enter the history stack. Defaults to
    * "append"; Refresh/retry passes "replace" so the current page is
-   * overwritten in place instead of duplicated.
+   * overwritten in place instead of duplicated. A fresh first page uses
+   * "reset" to discard history from an earlier client or page-size setting.
    */
-  mode?: "append" | "replace";
+  mode?: "append" | "replace" | "reset";
   signal?: AbortSignal;
 }
 
@@ -30,7 +32,11 @@ export async function fetchPage(
   input: FetchPageInput,
   dispatch: (action: BrowseVerticesAction) => void,
 ): Promise<void> {
-  dispatch({ type: "PAGE_REQUESTED", epoch: input.epoch });
+  dispatch({
+    type: "PAGE_REQUESTED",
+    epoch: input.epoch,
+    requestId: input.requestId,
+  });
   try {
     const response = await scanVertices(
       input.client,
@@ -49,6 +55,7 @@ export async function fetchPage(
     dispatch({
       type: "PAGE_RECEIVED",
       epoch: input.epoch,
+      requestId: input.requestId,
       page,
       mode: input.mode ?? "append",
     });
@@ -59,7 +66,8 @@ export async function fetchPage(
     dispatch({
       type: "PAGE_FAILED",
       epoch: input.epoch,
-      error: messageOf(err),
+      requestId: input.requestId,
+      error: failureOf(err),
     });
   }
 }
@@ -68,6 +76,7 @@ export interface FetchCountInput {
   client: LanternClient;
   prefix: string;
   epoch: number;
+  requestId: number;
   signal?: AbortSignal;
 }
 
@@ -75,22 +84,46 @@ export async function fetchCount(
   input: FetchCountInput,
   dispatch: (action: BrowseVerticesAction) => void,
 ): Promise<void> {
+  dispatch({
+    type: "COUNT_REQUESTED",
+    epoch: input.epoch,
+    requestId: input.requestId,
+  });
   try {
     const count = await countVerticesByPrefix(input.client, input.prefix, {
       signal: input.signal,
     });
-    dispatch({ type: "COUNT_RECEIVED", epoch: input.epoch, count });
+    dispatch({
+      type: "COUNT_RECEIVED",
+      epoch: input.epoch,
+      requestId: input.requestId,
+      count,
+    });
   } catch (err) {
     if (isAbortError(err)) {
       return;
     }
-    // Count is non-critical — surface it as 0 rather than failing the page.
-    dispatch({ type: "COUNT_RECEIVED", epoch: input.epoch, count: 0 });
+    dispatch({
+      type: "COUNT_FAILED",
+      epoch: input.epoch,
+      requestId: input.requestId,
+      error: failureOf(err),
+    });
   }
 }
 
 function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
+}
+
+function failureOf(err: unknown): BrowseVerticesFailure {
+  return {
+    kind:
+      err instanceof LanternApiError && err.code === "permission_denied"
+        ? "denied"
+        : "unavailable",
+    message: messageOf(err),
+  };
 }
 
 function messageOf(err: unknown): string {

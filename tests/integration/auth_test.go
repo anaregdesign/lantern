@@ -2484,6 +2484,111 @@ try {
 	}
 }
 
+// #1671: exercise the production OIDC/Connect path, Node SDK wrapping, and
+// Admin adapters/handlers. Bootstrap management authority never implies data read.
+func TestAuth_OIDCAdminVertexCountRealConnect(t *testing.T) {
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Skip("Bun is required for the Admin vertex-count wire gate")
+	}
+	f := newOIDCControlWireFixture(t)
+	admin := f.token(t, "admin", nil)
+	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil || len(principal.Msg.Roles) != 1 || principal.Msg.Roles[0].Id != "security_admin" || len(principal.Msg.Roles[0].Rules) != 1 || principal.Msg.Roles[0].Rules[0].Action != pb.SecurityAction_SECURITY_ACTION_MANAGE {
+		t.Fatal("bootstrap must have management authority without data grants", err)
+	}
+	if err := f.graph.PutVertex("data:tenant:a", &pb.Vertex{Key: "data:tenant:a", Value: &pb.Vertex_String_{String_: "visible"}}); err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	module := func(path string) string {
+		quoted, err := json.Marshal(filepath.Join(root, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(quoted)
+	}
+	script := `import { connectWeb, LanternError } from ` + module("admin/node_modules/lantern-sdk/dist/web.js") + `;
+import { LanternApiError } from ` + module("admin/app/lib/client/infrastructure/api/error.ts") + `;
+import { countVerticesByPrefix } from ` + module("admin/app/lib/client/infrastructure/api/count-vertices-by-prefix.ts") + `;
+import { fetchCount, fetchPage } from ` + module("admin/app/lib/client/usecase/browse-vertices/handlers.ts") + `;
+import { browseVerticesReducer } from ` + module("admin/app/lib/client/usecase/browse-vertices/reducer.ts") + `;
+import { INITIAL_BROWSE_VERTICES_STATE } from ` + module("admin/app/lib/client/usecase/browse-vertices/state.ts") + `;
+const gatewayFetch = (input, init) => {
+ const headers = new Headers(init?.headers);
+ headers.set("X-Forwarded-Proto", "https");
+ headers.set("X-Forwarded-Host", new URL(typeof input === "string" ? input : input.url).host);
+ return fetch(input, {...init, headers});
+};
+const client = connectWeb(process.env.LANTERN_SDK_URL, {token: process.env.LANTERN_SDK_CREDENTIAL, transportOptions: {fetch: gatewayFetch}});
+const require = (condition, message) => { if (!condition) throw new Error(message); };
+let state = INITIAL_BROWSE_VERTICES_STATE;
+const dispatch = action => { state = browseVerticesReducer(state, action); };
+const input = {client, prefix: "tenant:", epoch: 0, requestId: 1};
+try {
+ if (process.env.LANTERN_ADMIN_WIRE_PHASE === "denied") {
+  let denied = false;
+  try { await client.countVerticesByPrefix("tenant:"); }
+  catch (error) {
+   require(error instanceof LanternError && error.cause?.code === 7, "SDK did not preserve real PermissionDenied cause");
+   const adapted = LanternApiError.fromUnknown("CountVerticesByPrefix", error);
+   require(adapted instanceof LanternApiError && adapted.code === "permission_denied", "Admin lost structured denial");
+   denied = true;
+  }
+  require(denied, "bootstrap unexpectedly received data count");
+ }
+ await fetchPage({...input, cursor: "", pageSize: 50}, dispatch);
+ await fetchCount(input, dispatch);
+ if (process.env.LANTERN_ADMIN_WIRE_PHASE === "denied") {
+  require(state.status === "error" && state.error?.kind === "denied" && state.count.status === "denied", "Admin did not retain independent scan/count denial");
+  require(state.pages.length === 0 && !("count" in state.count), "denial fabricated data or zero");
+ } else {
+  require(state.status === "ready" && state.error === null && state.pages[0]?.vertices[0]?.key === "tenant:a", "explicit read Role did not authorize scan");
+  require(state.count.status === "success" && state.count.count === 1, "explicit read Role did not authorize count");
+  require(await countVerticesByPrefix(client, "tenant:empty:") === 0, "successful empty count lost zero");
+  let denied = false;
+  try { await countVerticesByPrefix(client, "outside:"); }
+  catch (error) { denied = error instanceof LanternApiError && error.code === "permission_denied"; }
+  require(denied, "scoped Role accidentally authorized an outside prefix");
+ }
+ console.log("Admin vertex count " + process.env.LANTERN_ADMIN_WIRE_PHASE + ": PASS");
+} finally { client.close(); }
+`
+	file := filepath.Join(t.TempDir(), "admin-vertex-count-wire.ts")
+	if err := os.WriteFile(file, []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(phase string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bun, "run", file)
+		cmd.Dir = filepath.Join(root, "admin")
+		cmd.Env = append(os.Environ(), "LANTERN_SDK_URL="+f.server.URL, "LANTERN_SDK_CREDENTIAL="+f.token(t, "admin", nil), "LANTERN_ADMIN_WIRE_PHASE="+phase)
+		if output, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(output), "Admin vertex count "+phase+": PASS") {
+			t.Fatalf("Admin OIDC vertex-count wire (%s): %v\n%s", phase, err, output)
+		} else {
+			t.Log(strings.TrimSpace(string(output)))
+		}
+	}
+	run("denied")
+	role := &pb.SecurityRole{Id: "data_reader", Rules: []*pb.SecurityRule{{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "tenant:"}}}}
+	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{
+		ExpectedRevision: principal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{119}, 16),
+		Changes: []*pb.SecurityChange{
+			{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
+			{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: principal.Msg.Identity, RoleId: role.Id}}},
+		},
+	}))
+	if err != nil {
+		t.Fatal("explicit data Role assignment", err)
+	}
+	run("authorized")
+}
+
 func runScopedLanguageWire(t *testing.T, language string) {
 	t.Helper()
 	binary, err := exec.LookPath(language)

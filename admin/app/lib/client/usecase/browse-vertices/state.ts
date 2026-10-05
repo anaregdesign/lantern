@@ -14,6 +14,16 @@ export interface VertexPage {
 
 export type BrowseVerticesStatus = "idle" | "loading" | "ready" | "error";
 
+export type BrowseVerticesFailure = {
+  kind: "denied" | "unavailable";
+  message: string;
+};
+
+export type VertexCountState =
+  | { status: "idle" | "loading" }
+  | { status: "success"; count: number }
+  | { status: "denied" | "unavailable"; error: string };
+
 export interface BrowseVerticesState {
   /** The prefix typed by the user (already debounced upstream). */
   prefix: string;
@@ -22,9 +32,12 @@ export interface BrowseVerticesState {
   /** Zero-based index into `pages` of the page on screen. */
   currentPageIndex: number;
   /** Result of the most recent `CountVerticesByPrefix` call. */
-  count: number | null;
+  count: VertexCountState;
   status: BrowseVerticesStatus;
-  error: string | null;
+  error: BrowseVerticesFailure | null;
+  /** Independent generations also reject late responses after a refresh. */
+  pageRequestId: number;
+  countRequestId: number;
   /**
    * Monotonic counter bumped on every prefix change. Async handlers carry
    * the value they saw at dispatch time and discard their result if the
@@ -37,8 +50,10 @@ export const INITIAL_BROWSE_VERTICES_STATE: BrowseVerticesState = {
   prefix: "",
   pages: [],
   currentPageIndex: -1,
-  count: null,
+  count: { status: "idle" },
   status: "idle",
   error: null,
+  pageRequestId: 0,
+  countRequestId: 0,
   prefixEpoch: 0,
 };

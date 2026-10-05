@@ -72,7 +72,10 @@ describe("browse-vertices selectors", () => {
 
 describe("selectTotalPages", () => {
   function stateWithCount(count: number | null): BrowseVerticesState {
-    return { ...INITIAL_BROWSE_VERTICES_STATE, count };
+    return {
+      ...INITIAL_BROWSE_VERTICES_STATE,
+      count: count === null ? { status: "idle" } : { status: "success", count },
+    };
   }
 
   it("divides an exact multiple", () => {
@@ -98,5 +101,17 @@ describe("selectTotalPages", () => {
   it("returns null for a non-positive page size", () => {
     expect(selectTotalPages(stateWithCount(100), 0)).toBeNull();
     expect(selectTotalPages(stateWithCount(100), -50)).toBeNull();
+  });
+
+  it("withholds totals while loading, denied, or unavailable", () => {
+    for (const count of [
+      { status: "loading" },
+      { status: "denied", error: "denied" },
+      { status: "unavailable", error: "unavailable" },
+    ] as const) {
+      expect(
+        selectTotalPages({ ...INITIAL_BROWSE_VERTICES_STATE, count }, 50),
+      ).toBeNull();
+    }
   });
 });
