@@ -1,6 +1,9 @@
 import { createSecurityClient } from "./security-client";
 import { openSecurityAuthorizationWindow } from "../browser/security-authorization-window";
-import { SecurityOperationAuthorizationRequiredError } from "lantern-sdk/web";
+import {
+  SecurityOperationAuthorizationRequiredError,
+  SecurityChangePrecommitRejectedError,
+} from "lantern-sdk/web";
 import type {
   SecurityManagementPort,
   SecurityFailure,
@@ -60,6 +63,10 @@ export function createSecurityManagementClient(
     openAuthorization: () => openSecurityAuthorizationWindow(baseUrl),
     authorizationRequired: (error) =>
       error instanceof SecurityOperationAuthorizationRequiredError
+        ? error.detail
+        : undefined,
+    precommitRejected: (error) =>
+      error instanceof SecurityChangePrecommitRejectedError
         ? error.detail
         : undefined,
     status: (changeId, signal) =>

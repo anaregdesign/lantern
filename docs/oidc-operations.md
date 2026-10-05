@@ -94,6 +94,16 @@ response. Ordinary authority can remain usable for the credential's actual
 lifetime, subject to these independent checks; removing the five-minute gate
 does not extend that lifetime.
 
+
+When the first Apply returns a matching typed precommit rejection, reload the
+current policy, correct the draft, review a new Change-ID and apply explicitly.
+The refusal carries no committed effect, revision or audit entry. Keep the
+original ID and use status lookup after an ambiguous dispatch or a generic
+conflict, including one seen after route remount; a later refusal cannot settle
+that earlier call. A status outside retained history does not prove noncommit.
+For the separate operation-authorization refusal, reauthenticate the unchanged
+reviewed tuple rather than editing it or allocating a replacement ID.
+
 ## Workload membership and freshness
 
 HA, including public OFF, has a distinct private TLS 1.3/mTLS listener. Every

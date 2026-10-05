@@ -134,6 +134,31 @@ final $typed_data.Uint8List securityEnforcementStateDescriptor = $convert.base64
     'VfVU5TUEVDSUZJRUQQABIwCixTRUNVUklUWV9FTkZPUkNFTUVOVF9TVEFURV9DT01NSVRURURf'
     'UEVORElORxABEicKI1NFQ1VSSVRZX0VORk9SQ0VNRU5UX1NUQVRFX0VORk9SQ0VEEAI=');
 
+@$core.Deprecated('Use securityChangeRejectionReasonDescriptor instead')
+const SecurityChangeRejectionReason$json = {
+  '1': 'SecurityChangeRejectionReason',
+  '2': [
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_UNSPECIFIED', '2': 0},
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES', '2': 1},
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_UNKNOWN_ROLE', '2': 2},
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_ISSUER_VALIDATION', '2': 3},
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_ENVIRONMENT_OWNED', '2': 4},
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_LAST_ADMINISTRATOR', '2': 5},
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_REVISION_CONFLICT', '2': 6},
+  ],
+};
+
+/// Descriptor for `SecurityChangeRejectionReason`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List securityChangeRejectionReasonDescriptor = $convert.base64Decode(
+    'Ch1TZWN1cml0eUNoYW5nZVJlamVjdGlvblJlYXNvbhIwCixTRUNVUklUWV9DSEFOR0VfUkVKRU'
+    'NUSU9OX1JFQVNPTl9VTlNQRUNJRklFRBAAEjQKMFNFQ1VSSVRZX0NIQU5HRV9SRUpFQ1RJT05f'
+    'UkVBU09OX0lOVkFMSURfQ0hBTkdFUxABEjEKLVNFQ1VSSVRZX0NIQU5HRV9SRUpFQ1RJT05fUk'
+    'VBU09OX1VOS05PV05fUk9MRRACEjYKMlNFQ1VSSVRZX0NIQU5HRV9SRUpFQ1RJT05fUkVBU09O'
+    'X0lTU1VFUl9WQUxJREFUSU9OEAMSNgoyU0VDVVJJVFlfQ0hBTkdFX1JFSkVDVElPTl9SRUFTT0'
+    '5fRU5WSVJPTk1FTlRfT1dORUQQBBI3CjNTRUNVUklUWV9DSEFOR0VfUkVKRUNUSU9OX1JFQVNP'
+    'Tl9MQVNUX0FETUlOSVNUUkFUT1IQBRI2CjJTRUNVUklUWV9DSEFOR0VfUkVKRUNUSU9OX1JFQV'
+    'NPTl9SRVZJU0lPTl9DT05GTElDVBAG');
+
 @$core.Deprecated('Use securityAuthorizationRequirementDescriptor instead')
 const SecurityAuthorizationRequirement$json = {
   '1': 'SecurityAuthorizationRequirement',
@@ -1490,6 +1515,37 @@ final $typed_data.Uint8List securityOperationAuthorizationRequiredDescriptor =
         'ABKAxSCGNoYW5nZUlkEkQKEGV4cGVjdGVkX3ZlcnNpb24YAiABKAsyGS5ncmFwaC52MS5TZWN1'
         'cml0eVZlcnNpb25SD2V4cGVjdGVkVmVyc2lvbhIjCg1pbnRlbnRfZGlnZXN0GAMgASgMUgxpbn'
         'RlbnREaWdlc3Q=');
+
+@$core.Deprecated('Use securityChangePrecommitRejectedDescriptor instead')
+const SecurityChangePrecommitRejected$json = {
+  '1': 'SecurityChangePrecommitRejected',
+  '2': [
+    {'1': 'change_id', '3': 1, '4': 1, '5': 12, '10': 'changeId'},
+    {
+      '1': 'expected_revision',
+      '3': 2,
+      '4': 1,
+      '5': 4,
+      '10': 'expectedRevision'
+    },
+    {
+      '1': 'reason',
+      '3': 3,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.SecurityChangeRejectionReason',
+      '10': 'reason'
+    },
+  ],
+};
+
+/// Descriptor for `SecurityChangePrecommitRejected`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List securityChangePrecommitRejectedDescriptor =
+    $convert.base64Decode(
+        'Ch9TZWN1cml0eUNoYW5nZVByZWNvbW1pdFJlamVjdGVkEhsKCWNoYW5nZV9pZBgBIAEoDFIIY2'
+        'hhbmdlSWQSKwoRZXhwZWN0ZWRfcmV2aXNpb24YAiABKARSEGV4cGVjdGVkUmV2aXNpb24SPwoG'
+        'cmVhc29uGAMgASgOMicuZ3JhcGgudjEuU2VjdXJpdHlDaGFuZ2VSZWplY3Rpb25SZWFzb25SBn'
+        'JlYXNvbg==');
 
 @$core.Deprecated('Use prepareSecurityChangesRequestDescriptor instead')
 const PrepareSecurityChangesRequest$json = {

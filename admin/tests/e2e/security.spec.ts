@@ -409,7 +409,7 @@ test("revision conflict requires reload and another review", async ({
   await reviewRole(page);
   await page.getByRole("button", { name: "Apply reviewed change" }).click();
   await expect(
-    page.getByText("The revision changed.", { exact: false }),
+    page.getByText("The security revision changed.", { exact: false }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Apply reviewed change" }),
@@ -661,3 +661,82 @@ for (const width of [1280, 390]) {
     expect(writes).toBe(3);
   });
 }
+
+test("definitive first refusal allows correction only after a fresh review with another ID", async ({
+  page,
+}) => {
+  const fixture = await securityUI(page, { apply: "unknown-role-once" });
+  await page.goto(`${fixture.primary}/security/roles`);
+  await reviewRole(page);
+  await page
+    .getByRole("button", { name: "Apply reviewed change", exact: true })
+    .click();
+  await expect(
+    page.getByText("A referenced Role does not exist.", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Review Role change", exact: true }),
+  ).toBeDisabled();
+  const first = fixture.calls.filter(
+    (call) => call.method === "ApplySecurityChanges",
+  )[0];
+  await page
+    .getByRole("button", { name: "Reload security state", exact: true })
+    .click();
+  await page
+    .getByRole("textbox", { name: "Role name", exact: true })
+    .fill("Corrected Role");
+  expect(
+    fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+  ).toHaveLength(1);
+  await page
+    .getByRole("button", { name: "Review Role change", exact: true })
+    .click();
+  expect(
+    fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+  ).toHaveLength(1);
+  await page
+    .getByRole("button", { name: "Apply reviewed change", exact: true })
+    .click();
+  await expect(
+    page.getByText("Change committed.", { exact: false }),
+  ).toBeVisible();
+  const attempts = fixture.calls.filter(
+    (call) => call.method === "ApplySecurityChanges",
+  );
+  expect(attempts).toHaveLength(2);
+  expect(attempts[1].body.changeId).not.toEqual(first.body.changeId);
+  const corrected = attempts[1].body.changes as { putRole: { name: string } }[];
+  expect(corrected[0].putRole.name).toBe("Corrected Role");
+});
+
+test("generic committed-ID conflict remains status-only across route remount", async ({
+  page,
+}) => {
+  const fixture = await securityUI(page, {
+    apply: "generic-conflict",
+    status: "unknown",
+  });
+  await page.goto(`${fixture.primary}/security/roles`);
+  await reviewRole(page);
+  await page
+    .getByRole("button", { name: "Apply reviewed change", exact: true })
+    .click();
+  await expect(
+    page.getByText("The response was not confirmed.", { exact: false }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: "Users", exact: true }).click();
+  await page.getByRole("link", { name: "Roles", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Check original change status", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Review Role change", exact: true }),
+  ).toBeDisabled();
+  expect(
+    fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+  ).toHaveLength(1);
+});

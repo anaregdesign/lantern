@@ -59,7 +59,9 @@ export function SecurityManagementView({
       {state.message && (
         <MessageBar
           intent={
-            state.phase === "error" || state.mutation === "conflict"
+            state.phase === "error" ||
+            state.mutation === "conflict" ||
+            state.mutation === "rejected"
               ? "error"
               : "info"
           }

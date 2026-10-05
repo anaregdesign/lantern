@@ -396,13 +396,13 @@ func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *
 		return nil, err
 	}
 	if err = securityRequestError(req.Msg); err != nil {
-		return nil, err
+		return nil, h.precommitRejectionError(err, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 	}
 	if len(req.Msg.ChangeId) != 16 || req.Msg.ExpectedRevision == 0 || len(req.Msg.Changes) == 0 || len(req.Msg.Changes) > security.MaxTransactionChanges {
-		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrInvalidImage)
+		return nil, h.precommitRejectionError(security.ErrInvalidImage, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 	}
 	if len(req.Msg.AuthorizationProof) != 0 && len(req.Msg.AuthorizationProof) != 32 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrInvalidImage)
+		return nil, h.precommitRejectionError(security.ErrInvalidImage, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 	}
 	var changeID [16]byte
 	copy(changeID[:], req.Msg.ChangeId)
@@ -410,13 +410,13 @@ func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *
 	for i, change := range req.Msg.Changes {
 		changes[i], err = decodeSecurityChange(change)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, h.precommitRejectionError(err, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 		}
 	}
 	management := h.managementRequest(admission, req.Msg.ExpectedRevision, changeID, changes)
 	prepared, err := h.store.PrepareManagement(ctx, management)
 	if err != nil {
-		return nil, connect.NewError(securityErrorCode(err), err)
+		return nil, h.managementApplyError(err, security.ManagementBinding{}, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 	}
 	if !prepared.Retained && prepared.AuthorizationRequired {
 		if h.verifyAuthorization == nil {
@@ -444,7 +444,7 @@ func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *
 					}
 				}
 				if err = h.validateIssuer(ctx, issuer); err != nil {
-					return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("issuer validation failed"))
+					return nil, h.precommitRejectionError(errors.New("issuer validation failed"), pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_ISSUER_VALIDATION, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 				}
 			}
 		}
@@ -454,7 +454,7 @@ func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *
 	}
 	result, err := h.store.Manage(ctx, management)
 	if err != nil {
-		return nil, operationAuthorizationError(err, prepared.Binding)
+		return nil, h.managementApplyError(err, prepared.Binding, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 	}
 	digest, generation := result.Digest, admission.Revision().Generation()
 	response := &pb.ApplySecurityChangesResponse{Version: &pb.SecurityVersion{Revision: result.Revision, Digest: append([]byte(nil), digest[:]...), Generation: append([]byte(nil), generation[:]...)}, Applied: make([]bool, len(changes)), Replayed: result.Replayed, Enforcement: pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING}
@@ -468,7 +468,10 @@ func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *
 }
 func (h *SecurityConnectHandler) ApplySecurityChange(ctx context.Context, req *connect.Request[pb.ApplySecurityChangeRequest]) (*connect.Response[pb.ApplySecurityChangeResponse], error) {
 	if err := securityRequestError(req.Msg); err != nil {
-		return nil, err
+		if _, admissionErr := h.admission(ctx, true); admissionErr != nil {
+			return nil, admissionErr
+		}
+		return nil, h.precommitRejectionError(err, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 	}
 	batch := connect.NewRequest(&pb.ApplySecurityChangesRequest{ExpectedRevision: req.Msg.ExpectedRevision, ChangeId: req.Msg.ChangeId, Changes: []*pb.SecurityChange{req.Msg.Change}, AuthorizationProof: req.Msg.AuthorizationProof})
 	result, err := h.ApplySecurityChanges(ctx, batch)
