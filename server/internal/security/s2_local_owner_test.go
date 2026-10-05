@@ -425,7 +425,14 @@ func TestS2LocalProcessCrash(t *testing.T) {
 		case "afterLog":
 			o.hooks.afterLog = exit
 		case "holdBeforePublish":
-			o.hooks.beforePublish = func() { fmt.Fprintln(os.Stdout, "held"); select {} }
+			o.hooks.beforePublish = func() {
+				fmt.Fprintln(os.Stdout, "held")
+				// Keep a timer alive in the standalone test subprocess. An
+				// empty select can trigger Go's deadlock exit and release the
+				// lease before the parent actually probes the paused owner.
+				time.Sleep(30 * time.Second)
+				t.Fatal("parent did not terminate the paused child")
+			}
 		default:
 			t.Fatal("unknown crash stage")
 		}
@@ -509,6 +516,7 @@ func TestS2LocalCrossProcessAliasLease(t *testing.T) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestS2LocalProcessCrash$")
 	cmd.Env = append(os.Environ(), "LANTERN_S2_LOCAL_CRASH_PATH="+path, "LANTERN_S2_LOCAL_CRASH_STAGE=holdBeforePublish")
+	cmd.Stderr = os.Stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
