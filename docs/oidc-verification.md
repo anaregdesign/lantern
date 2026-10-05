@@ -7,6 +7,8 @@ policy/replication uses a separate workload listener. The complete boundary and
 configuration contract is [ADR 0012](decisions/0012-oidc-prefix-rbac.md).
 Source implementation and local conformance do not establish final real-provider,
 qualified production clock, device or publication acceptance (#1610).
+Merged fixed-writer source `93d53789` and the approved, pending #1672 policy
+are distinguished below; this guide does not change runtime behavior.
 
 API Bearer authentication accepts the signed JWT access-token profile in
 [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068.html). The bounded unverified
@@ -16,6 +18,12 @@ subject, expiry and required profile claims. An ID token or opaque token is not
 an alternative API profile. Authentication returns identity evidence only;
 current account state, Role evaluation and serving authority remain Server
 admission responsibilities.
+An OIDC identity kind and verified `(iss, sub)` do not by themselves distinguish
+end-user and machine access tokens. Legitimate end-user Bearer management
+eligibility is preserved; the trusted provenance/classification mechanism and
+existing mixed-Bearer compatibility remain under review. Do not infer machine
+write eligibility from gate removal or impose a browser-only policy. See the
+[operation/actor matrix](decisions/0012-oidc-prefix-rbac.md#management-operation-and-actor-policy).
 
 Login uses Authorization Code with PKCE S256 and independent ID-token
 validation under [OIDC Core](https://openid.net/specs/openid-connect-core-1_0.html).
@@ -28,13 +36,25 @@ older signed evidence; current Issuer configuration, Principal and Role checks
 still apply. Future or contradictory signed evidence is rejected. Ordinary
 login and replacement do not infer authentication time from `iat`, callback,
 consent or account selection, and do not request forced provider reauthentication.
-The Server-owned transaction saves an explicit step-up purpose independent of
-session replacement. Only step-up requests `max_age=0`, `prompt=login` and an
-essential signed `auth_time` through the OIDC `claims` parameter. Step-up and
-important security changes require a signed event within five minutes; failure
-preserves the existing session. Groups/email never grant Roles or link accounts.
+The current Server-owned transaction saves an explicit step-up purpose
+independent of session replacement. At `93d53789`, step-up requests `max_age=0`,
+`prompt=login` and an essential signed `auth_time` through the OIDC `claims`
+parameter. Step-up and
+Apply/Store management/ValidateIssuer require a signed event within five
+minutes; failure preserves the existing session. #1672 removes that blanket
+gate for ordinary end-user management, including Role creation/data grants/
+exact self-assignment and non-mutating Issuer validation. Missing/older evidence
+is allowed with valid authentication and current explicit authority. Trust
+changes and effective `security.manage` expansion require per-operation
+reauthentication with a separately reviewed intent/identity/one-use proof;
+the current step-up endpoint does not establish that contract. Machines may
+perform authorized reference/status reads but no management mutation. Current
+authority, CSRF, CAS, credential/session expiry, env-owned locks, administrator
+invariants and invalid/future/contradictory-evidence rejection remain.
+Groups/email never grant Roles or link accounts.
 Provider prerequisites and Google's step-up limitation are documented in the
-[Google setup runbook](google-oidc-setup.md).
+[Google setup runbook](google-oidc-setup.md). Google Security bundle and its
+extra-claim app publication/verification are optional outside baseline gates.
 
 Unknown authentication evidence survives canonical images, signed replication,
 checkpoints and restart. The current security cohort is image version 2,
