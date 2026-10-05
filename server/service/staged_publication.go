@@ -56,10 +56,15 @@ func (p *stagedPublication) commit(
 	return err
 }
 
-// Preserve the existing receipt/Create classifier, including wrapped sentinel
-// precedence. Family-specific resource/capacity response codes stay in adapters.
-// Neither cancellation nor a generic WAL error certifies a definite abort.
+// Uncertain outcomes take precedence over abort/readiness sentinels: a WAL can
+// return ErrClosed or ErrSeqExhausted as its underlying error, and the Log then
+// joins it with ErrWALIndeterminate. Family-specific response codes stay in the
+// adapters; they cannot certify whether the durable write was absent.
 func stagedPublicationRequiresRecovery(err error) bool {
+	if errors.Is(err, mutationlog.ErrWALIndeterminate) ||
+		errors.Is(err, mutationlog.ErrPublicationInterrupted) {
+		return true
+	}
 	var definite *mutationlog.DefiniteWALAbort
 	return err != nil && !errors.As(err, &definite) &&
 		!errors.Is(err, mutationlog.ErrClosed) && !errors.Is(err, mutationlog.ErrSeqExhausted)

@@ -6272,3 +6272,73 @@ func TestReceiptProbeFourFamilies_RealConnectWire(t *testing.T) {
 		}
 	})
 }
+
+// Receipt-less standalone Create shares the staged publication classifier even
+// when no receipt Store is installed. Exercise its visible fail-stop over h2c.
+func TestStagedPublicationWALSentinels_RealConnectWire(t *testing.T) {
+	for _, sentinel := range []error{mutationlog.ErrClosed, mutationlog.ErrSeqExhausted} {
+		for _, definite := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%v/definite=%v", sentinel, definite), func(t *testing.T) {
+				wal := &stagedPublicationFaultWAL{cause: sentinel}
+				if definite {
+					wal.cause = &mutationlog.DefiniteWALAbort{Cause: sentinel}
+				}
+				cache := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+				for _, key := range []string{"tail", "head"} {
+					if err := cache.PutVertex(key, &pb.Vertex{Key: key}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				log := mutationlog.New(mutationlog.Options{Capacity: 16, WAL: wal})
+				t.Cleanup(func() { _ = log.Close() })
+				node := hlc.NodeID{0x67}
+				svc := service.NewLanternService(cache).
+					WithReplication(log, hlc.New(node, hlc.Options{}), nil).
+					WithTombstoneTTL(time.Hour)
+				srv := newConnectTestServer(t, svc, nil)
+				raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				request := &pb.CreateEdgesRequest{Edges: []*pb.Edge{{Tail: "tail", Head: "head", Weight: 7}}}
+				_, err := raw.CreateEdges(ctx, connect.NewRequest(request))
+				wantCode := connect.CodeUnavailable
+				if errors.Is(sentinel, mutationlog.ErrSeqExhausted) {
+					wantCode = connect.CodeResourceExhausted
+				}
+				if connect.CodeOf(err) != wantCode || wal.writes.Load() != 1 {
+					t.Fatalf("first Create = %v, writes=%d", err, wal.writes.Load())
+				}
+				if _, live := cache.GetWeight("tail", "head"); live || log.Len() != 0 || svc.LocalSeq(node) != 0 {
+					t.Fatal("failed WAL published graph/log/origin state")
+				}
+				_, readErr := raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "tail"}))
+				_, retryErr := raw.CreateEdges(ctx, connect.NewRequest(request))
+				if !definite {
+					if connect.CodeOf(readErr) != connect.CodeFailedPrecondition || connect.CodeOf(retryErr) != connect.CodeFailedPrecondition || wal.writes.Load() != 1 {
+						t.Fatalf("uncertain service remained available: read=%v retry=%v writes=%d", readErr, retryErr, wal.writes.Load())
+					}
+					return
+				}
+				if readErr != nil || retryErr != nil || wal.writes.Load() != 2 || log.Len() != 1 || svc.LocalSeq(node) != 1 {
+					t.Fatalf("definite abort did not permit one retry: read=%v retry=%v writes=%d", readErr, retryErr, wal.writes.Load())
+				}
+				edge, err := raw.GetEdge(ctx, connect.NewRequest(&pb.GetEdgeRequest{Tail: "tail", Head: "head"}))
+				if err != nil || edge.Msg.GetEdge().GetWeight() != 7 {
+					t.Fatalf("retried Create graph = %v, %v", edge, err)
+				}
+			})
+		}
+	}
+}
+
+type stagedPublicationFaultWAL struct {
+	cause  error
+	writes atomic.Int32
+}
+
+func (w *stagedPublicationFaultWAL) Write(mutationlog.Entry) error {
+	if w.writes.Add(1) == 1 {
+		return w.cause
+	}
+	return nil
+}
