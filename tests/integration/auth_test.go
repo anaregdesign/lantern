@@ -3689,7 +3689,9 @@ func TestAuth_OIDCPurposeAuthorizationRealConnect(t *testing.T) {
 			if err := json.NewDecoder(clientResponse.Body).Decode(&clientTokens); err != nil {
 				t.Fatal(err)
 			}
-			clientResponse.Body.Close()
+			if err := clientResponse.Body.Close(); err != nil {
+				t.Fatal("client response cleanup", err)
+			}
 			clientToken := clientTokens["access_token"]
 			if clientToken == "" || clientTokens["id_token"] != "" {
 				t.Fatal("qualified client profile issued human evidence")
@@ -3699,7 +3701,9 @@ func TestAuth_OIDCPurposeAuthorizationRealConnect(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			impersonation.Body.Close()
+			if err := impersonation.Body.Close(); err != nil {
+				t.Fatal("impersonation response cleanup", err)
+			}
 			if impersonation.StatusCode == http.StatusOK {
 				t.Fatal("client profile impersonated enrolled human")
 			}
