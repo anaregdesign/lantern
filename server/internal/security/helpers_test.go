@@ -71,7 +71,7 @@ func testImage() Image {
 
 func testSession() Session {
 	now := time.Date(2026, 10, 3, 1, 0, 0, 0, time.UTC)
-	return Session{Digest: strings.Repeat("a", 64), Identity: testIdentity(), CreatedAt: now, AuthTime: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}
+	return Session{IssuerConfigRevision: 1, Digest: strings.Repeat("a", 64), Identity: testIdentity(), CreatedAt: now, AuthTime: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}
 }
 
 func globalRule(effect Effect, action Action) PermissionRule {

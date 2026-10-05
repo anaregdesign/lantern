@@ -182,6 +182,8 @@ var descriptions = map[string]string{
 	"LANTERN_PEER_TRUST_CA_FILE":              "Absolute CA bundle for the private mTLS domain; public credentials cannot grant workload membership.",
 	"LANTERN_CDC_ENABLED":                     "Exact true or false. Enables public scoped WatchChanges; never enables private Subscribe on the public listener.",
 	"LANTERN_CDC_CURSOR_KEY_RING_FILE":        "Absolute private JSON key ring with current_version and up to four versioned 32-byte lowercase-hex AEAD keys. Required for protected or HA CDC and shared across its replicas.",
+
+	"LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED": "Exact true/false operator qualification that OAuth clients cannot collide with or impersonate enrolled human subjects; empty defaults to false. Required for human Bearer management; RFC 9068/client_id/auth_time alone are insufficient. Qualify the actual issuer profile before enabling and raise bootstrap revision to attest its issuer while preserving reviewed AdminSubjects. Adding bootstrap subjects grants protected security_admin and is not generic human enrollment.",
 }
 
 // Render produces the docs/env.md markdown for the given registry specs. It

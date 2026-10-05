@@ -73,6 +73,7 @@ func TestSnapshotSessionLifecycle(t *testing.T) {
 		{"expiry boundary", func(*Image) {}, session.ExpiresAt, false},
 		{"before issuance", func(*Image) {}, session.CreatedAt.Add(-time.Nanosecond), false},
 		{"revoked", func(i *Image) { i.Sessions[0].Revoked = true }, session.CreatedAt, false},
+		{"different Issuer configuration", func(i *Image) { i.Sessions[0].IssuerConfigRevision = 0 }, session.CreatedAt, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			candidate := testImage()
