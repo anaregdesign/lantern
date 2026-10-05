@@ -86,9 +86,16 @@ export function SecurityManagementView({
             Check original change status
           </Button>
           {state.result && (
-            <p>
-              Committed revision {state.result.version?.revision.toString()}
-            </p>
+            <>
+              <p>
+                Committed revision {state.result.version?.revision.toString()}
+              </p>
+              <p>
+                {state.result.applied
+                  ? `Original Apply outcomes: ${state.result.applied.map((applied, i) => `${i + 1}: ${applied ? "applied" : "not applied"}`).join("; ")}.`
+                  : "Original item outcomes are unavailable; retained status proves the commit and its enforcement."}
+              </p>
+            </>
           )}
         </section>
       )}

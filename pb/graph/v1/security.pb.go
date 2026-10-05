@@ -3356,10 +3356,11 @@ func (x *GetSecurityChangeStatusRequest) GetChangeId() []byte {
 }
 
 type GetSecurityChangeStatusResponse struct {
-	state         protoimpl.MessageState   `protogen:"open.v1"`
-	Version       *SecurityVersion         `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
-	Applied       []bool                   `protobuf:"varint,2,rep,packed,name=applied,proto3" json:"applied,omitempty"`
-	Replayed      bool                     `protobuf:"varint,3,opt,name=replayed,proto3" json:"replayed,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The original retained commit, not a snapshot of currently effective policy.
+	Version *SecurityVersion `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	// Echoes the exact requested immutable ID. Unknown or retired IDs are indeterminate.
+	ChangeId      []byte                   `protobuf:"bytes,2,opt,name=change_id,json=changeId,proto3" json:"change_id,omitempty"`
 	Enforcement   SecurityEnforcementState `protobuf:"varint,4,opt,name=enforcement,proto3,enum=graph.v1.SecurityEnforcementState" json:"enforcement,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3402,18 +3403,11 @@ func (x *GetSecurityChangeStatusResponse) GetVersion() *SecurityVersion {
 	return nil
 }
 
-func (x *GetSecurityChangeStatusResponse) GetApplied() []bool {
+func (x *GetSecurityChangeStatusResponse) GetChangeId() []byte {
 	if x != nil {
-		return x.Applied
+		return x.ChangeId
 	}
 	return nil
-}
-
-func (x *GetSecurityChangeStatusResponse) GetReplayed() bool {
-	if x != nil {
-		return x.Replayed
-	}
-	return false
 }
 
 func (x *GetSecurityChangeStatusResponse) GetEnforcement() SecurityEnforcementState {
@@ -3644,11 +3638,10 @@ const file_graph_v1_security_proto_rawDesc = "" +
 	"\breplayed\x18\x03 \x01(\bR\breplayed\x12D\n" +
 	"\venforcement\x18\x04 \x01(\x0e2\".graph.v1.SecurityEnforcementStateR\venforcement\"=\n" +
 	"\x1eGetSecurityChangeStatusRequest\x12\x1b\n" +
-	"\tchange_id\x18\x01 \x01(\fR\bchangeId\"\xd2\x01\n" +
+	"\tchange_id\x18\x01 \x01(\fR\bchangeId\"\xb9\x01\n" +
 	"\x1fGetSecurityChangeStatusResponse\x123\n" +
-	"\aversion\x18\x01 \x01(\v2\x19.graph.v1.SecurityVersionR\aversion\x12\x18\n" +
-	"\aapplied\x18\x02 \x03(\bR\aapplied\x12\x1a\n" +
-	"\breplayed\x18\x03 \x01(\bR\breplayed\x12D\n" +
+	"\aversion\x18\x01 \x01(\v2\x19.graph.v1.SecurityVersionR\aversion\x12\x1b\n" +
+	"\tchange_id\x18\x02 \x01(\fR\bchangeId\x12D\n" +
 	"\venforcement\x18\x04 \x01(\x0e2\".graph.v1.SecurityEnforcementStateR\venforcement*L\n" +
 	"\bAuthMode\x12\x19\n" +
 	"\x15AUTH_MODE_UNSPECIFIED\x10\x00\x12\x11\n" +

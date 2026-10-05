@@ -2,6 +2,7 @@ import type {
   ApplySecurityChangesResponse,
   ExplainAccessResponse,
   GetRoleTemplatesResponse,
+  GetSecurityChangeStatusResponse,
   ListIssuersResponse,
   ListRolesResponse,
   ListUsersResponse,
@@ -15,10 +16,20 @@ import type {
 } from "lantern-sdk/web";
 import { SecurityEnforcementState } from "lantern-sdk/web";
 
-export type SecurityChangeResult = Pick<
+export type SecurityApplyAcknowledgement = Pick<
   ApplySecurityChangesResponse,
   "version" | "applied" | "replayed" | "enforcement"
 >;
+export type SecurityChangeCommitProof = Pick<
+  GetSecurityChangeStatusResponse,
+  "version" | "changeId" | "enforcement"
+>;
+export type SecurityChangeResult = SecurityChangeCommitProof & {
+  // Available only from the original Apply acknowledgement, never inferred
+  // from retained commit proof or a later policy snapshot.
+  applied?: boolean[];
+  replayed?: boolean;
+};
 
 export type SecuritySection = "issuers" | "users" | "roles";
 export type SecurityFailure =
@@ -62,7 +73,7 @@ export interface SecurityManagementPort {
   status(
     changeId: Uint8Array,
     signal: AbortSignal,
-  ): Promise<SecurityChangeResult>;
+  ): Promise<SecurityChangeCommitProof>;
   failure(error: unknown): SecurityFailure;
   newChangeId(): Uint8Array;
 }
@@ -101,8 +112,10 @@ function validateVersion(
   if (
     !version ||
     version.revision < 1n ||
+    version.revision > 0xffffffffffffffffn ||
     version.digest.length !== 32 ||
-    version.generation.length !== 16
+    version.generation.length !== 16 ||
+    version.generation.every((byte) => byte === 0)
   ) {
     throw new Error("Invalid security revision.");
   }
@@ -291,19 +304,7 @@ export class SecurityManagementController {
   cancelReview() {
     this.publish({ review: undefined });
   }
-  private accept(result: SecurityChangeResult) {
-    const pending = this.pending;
-    validateVersion(result.version);
-    if (
-      !pending ||
-      !sameGeneration(pending.version, result.version) ||
-      result.version.revision < pending.expectedRevision ||
-      result.applied.length !== pending.changes.length ||
-      (result.enforcement !== SecurityEnforcementState.COMMITTED_PENDING &&
-        result.enforcement !== SecurityEnforcementState.ENFORCED)
-    ) {
-      throw new Error("Invalid change acknowledgement.");
-    }
+  private accept(pending: PendingSecurityChange, result: SecurityChangeResult) {
     pending.result = structuredClone(result);
     this.recovery?.save(this.recoveryOwner, pending);
     this.publish({
@@ -318,6 +319,61 @@ export class SecurityManagementController {
         result.enforcement === SecurityEnforcementState.ENFORCED
           ? "Change enforced."
           : "Change committed. Cluster enforcement is pending; allow up to 35 seconds while previous authority expires.",
+    });
+  }
+  private validateCommit(
+    pending: PendingSecurityChange,
+    version: SecurityVersion | undefined,
+    enforcement: SecurityEnforcementState,
+  ): asserts version is SecurityVersion {
+    validateVersion(version);
+    if (
+      !sameGeneration(pending.version, version) ||
+      // The present fixed writer commits exactly one CAS revision per batch.
+      version.revision !== pending.expectedRevision + 1n ||
+      (enforcement !== SecurityEnforcementState.COMMITTED_PENDING &&
+        enforcement !== SecurityEnforcementState.ENFORCED)
+    ) {
+      throw new Error("Invalid retained commit version.");
+    }
+  }
+  private acceptApply(
+    pending: PendingSecurityChange,
+    result: SecurityApplyAcknowledgement,
+  ) {
+    this.validateCommit(pending, result.version, result.enforcement);
+    if (
+      result.applied.length !== pending.changes.length ||
+      result.applied.some((applied) => typeof applied !== "boolean") ||
+      typeof result.replayed !== "boolean"
+    ) {
+      throw new Error("Invalid change acknowledgement.");
+    }
+    this.accept(pending, { ...result, changeId: pending.changeId.slice() });
+  }
+  private acceptStatus(
+    pending: PendingSecurityChange,
+    proof: SecurityChangeCommitProof,
+  ) {
+    this.validateCommit(pending, proof.version, proof.enforcement);
+    const retained = pending.result;
+    if (
+      proof.changeId.length !== 16 ||
+      !pending.changeId.every((byte, i) => byte === proof.changeId[i]) ||
+      (retained &&
+        (retained.version!.revision !== proof.version.revision ||
+          !retained.version!.digest.every(
+            (byte, i) => byte === proof.version!.digest[i],
+          )))
+    ) {
+      throw new Error(
+        "Retained commit proof does not match the original change.",
+      );
+    }
+    this.accept(pending, {
+      ...proof,
+      applied: retained?.applied,
+      replayed: retained?.replayed,
     });
   }
   async apply(recentAuthentication: boolean) {
@@ -341,6 +397,7 @@ export class SecurityManagementController {
       changeId: id.slice(),
       version: structuredClone(version),
     };
+    const pending = this.pending;
     this.recovery?.save(this.recoveryOwner, this.pending);
     this.publish({ mutation: "sending", message: "Applying reviewed change…" });
     try {
@@ -352,7 +409,8 @@ export class SecurityManagementController {
         },
         signal,
       );
-      if (this.current(ticket)) this.accept(result);
+      if (this.current(ticket) && this.pending === pending)
+        this.acceptApply(pending, result);
     } catch (error) {
       if (!this.current(ticket)) return;
       if (this.port.failure(error) === "conflict") {
@@ -379,7 +437,8 @@ export class SecurityManagementController {
     const { ticket, signal } = this.operation();
     try {
       const result = await this.port.status(pending.changeId.slice(), signal);
-      if (this.current(ticket)) this.accept(result);
+      if (this.current(ticket) && this.pending === pending)
+        this.acceptStatus(pending, result);
     } catch {
       if (this.current(ticket))
         this.publish({

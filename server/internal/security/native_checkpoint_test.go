@@ -64,6 +64,16 @@ func TestNativeCheckpointFreshReplicaAndRestart(t *testing.T) {
 	if current.Sequence() != 12 || len(replica.Store().changes) != 12 {
 		t.Fatal("incomplete cut or retry history")
 	}
+	// The checkpoint retains exact historical commit cuts, not just current
+	// policy. Item outcomes are absent from the unchanged signed history.
+	retained, err := writer.ChangeStatus([16]byte{2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := replica.Store().ChangeStatus([16]byte{2})
+	if err != nil || installed != retained || installed.Digest == current.Digest() {
+		t.Fatal("checkpoint lost original commit proof", installed, err)
+	}
 	if err = receiver.Check(t.Context(), current); err == nil {
 		t.Fatal("installation itself granted serving")
 	}
@@ -85,6 +95,10 @@ func TestNativeCheckpointFreshReplicaAndRestart(t *testing.T) {
 	restored, known := recovered.Store().Current()
 	if !known || restored.Digest() != current.Digest() {
 		t.Fatal("checkpoint did not recover", err)
+	}
+	restarted, err := recovered.Store().ChangeStatus([16]byte{2})
+	if err != nil || restarted != retained {
+		t.Fatal("restart lost checkpoint commit proof", restarted, err)
 	}
 	for _, session := range current.Snapshot().Image().Sessions {
 		_, authTime, active := restored.Snapshot().SessionAccess(session.Digest, clock.Now())

@@ -1434,8 +1434,7 @@ const GetSecurityChangeStatusResponse$json = {
       '6': '.graph.v1.SecurityVersion',
       '10': 'version'
     },
-    {'1': 'applied', '3': 2, '4': 3, '5': 8, '10': 'applied'},
-    {'1': 'replayed', '3': 3, '4': 1, '5': 8, '10': 'replayed'},
+    {'1': 'change_id', '3': 2, '4': 1, '5': 12, '10': 'changeId'},
     {
       '1': 'enforcement',
       '3': 4,
@@ -1451,9 +1450,9 @@ const GetSecurityChangeStatusResponse$json = {
 final $typed_data.Uint8List getSecurityChangeStatusResponseDescriptor =
     $convert.base64Decode(
         'Ch9HZXRTZWN1cml0eUNoYW5nZVN0YXR1c1Jlc3BvbnNlEjMKB3ZlcnNpb24YASABKAsyGS5ncm'
-        'FwaC52MS5TZWN1cml0eVZlcnNpb25SB3ZlcnNpb24SGAoHYXBwbGllZBgCIAMoCFIHYXBwbGll'
-        'ZBIaCghyZXBsYXllZBgDIAEoCFIIcmVwbGF5ZWQSRAoLZW5mb3JjZW1lbnQYBCABKA4yIi5ncm'
-        'FwaC52MS5TZWN1cml0eUVuZm9yY2VtZW50U3RhdGVSC2VuZm9yY2VtZW50');
+        'FwaC52MS5TZWN1cml0eVZlcnNpb25SB3ZlcnNpb24SGwoJY2hhbmdlX2lkGAIgASgMUghjaGFu'
+        'Z2VJZBJECgtlbmZvcmNlbWVudBgEIAEoDjIiLmdyYXBoLnYxLlNlY3VyaXR5RW5mb3JjZW1lbn'
+        'RTdGF0ZVILZW5mb3JjZW1lbnQ=');
 
 const $core.Map<$core.String, $core.dynamic> LanternSecurityServiceBase$json = {
   '1': 'LanternSecurityService',

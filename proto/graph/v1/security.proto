@@ -23,6 +23,7 @@ service LanternSecurityService {
   // Plural is canonical and atomic, with request-index-aligned outcomes.
   rpc ApplySecurityChanges(ApplySecurityChangesRequest) returns (ApplySecurityChangesResponse);
   rpc ApplySecurityChange(ApplySecurityChangeRequest) returns (ApplySecurityChangeResponse);
+  // Retained commit proof only; item outcomes and replay acknowledgement belong to Apply.
   rpc GetSecurityChangeStatus(GetSecurityChangeStatusRequest) returns (GetSecurityChangeStatusResponse);
 }
 
@@ -338,8 +339,9 @@ message GetSecurityChangeStatusRequest {
 }
 
 message GetSecurityChangeStatusResponse {
+  // The original retained commit, not a snapshot of currently effective policy.
   SecurityVersion version = 1;
-  repeated bool applied = 2;
-  bool replayed = 3;
+  // Echoes the exact requested immutable ID. Unknown or retired IDs are indeterminate.
+  bytes change_id = 2;
   SecurityEnforcementState enforcement = 4;
 }

@@ -118,6 +118,7 @@ abstract final class LanternSecurityService {
     graphv1security.ApplySecurityChangeResponse.new,
   );
 
+  /// Retained commit proof only; item outcomes and replay acknowledgement belong to Apply.
   static const getSecurityChangeStatus = connect.Spec(
     '/$name/GetSecurityChangeStatus',
     connect.StreamType.unary,

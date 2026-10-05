@@ -4991,12 +4991,12 @@ pub struct GetSecurityChangeStatusRequest {
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetSecurityChangeStatusResponse {
+    /// The original retained commit, not a snapshot of currently effective policy.
     #[prost(message, optional, tag = "1")]
     pub version: ::core::option::Option<SecurityVersion>,
-    #[prost(bool, repeated, tag = "2")]
-    pub applied: ::prost::alloc::vec::Vec<bool>,
-    #[prost(bool, tag = "3")]
-    pub replayed: bool,
+    /// Echoes the exact requested immutable ID. Unknown or retired IDs are indeterminate.
+    #[prost(bytes = "vec", tag = "2")]
+    pub change_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(enumeration = "SecurityEnforcementState", tag = "4")]
     pub enforcement: i32,
 }
@@ -5718,6 +5718,7 @@ pub mod lantern_security_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Retained commit proof only; item outcomes and replay acknowledgement belong to Apply.
         pub async fn get_security_change_status(
             &mut self,
             request: impl tonic::IntoRequest<super::GetSecurityChangeStatusRequest>,

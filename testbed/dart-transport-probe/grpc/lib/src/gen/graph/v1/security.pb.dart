@@ -3917,14 +3917,12 @@ class GetSecurityChangeStatusRequest extends $pb.GeneratedMessage {
 class GetSecurityChangeStatusResponse extends $pb.GeneratedMessage {
   factory GetSecurityChangeStatusResponse({
     SecurityVersion? version,
-    $core.Iterable<$core.bool>? applied,
-    $core.bool? replayed,
+    $core.List<$core.int>? changeId,
     SecurityEnforcementState? enforcement,
   }) {
     final result = create();
     if (version != null) result.version = version;
-    if (applied != null) result.applied.addAll(applied);
-    if (replayed != null) result.replayed = replayed;
+    if (changeId != null) result.changeId = changeId;
     if (enforcement != null) result.enforcement = enforcement;
     return result;
   }
@@ -3944,8 +3942,8 @@ class GetSecurityChangeStatusResponse extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..aOM<SecurityVersion>(1, _omitFieldNames ? '' : 'version',
         subBuilder: SecurityVersion.create)
-    ..p<$core.bool>(2, _omitFieldNames ? '' : 'applied', $pb.PbFieldType.KB)
-    ..aOB(3, _omitFieldNames ? '' : 'replayed')
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'changeId', $pb.PbFieldType.OY)
     ..aE<SecurityEnforcementState>(4, _omitFieldNames ? '' : 'enforcement',
         enumValues: SecurityEnforcementState.values)
     ..hasRequiredFields = false;
@@ -3973,6 +3971,7 @@ class GetSecurityChangeStatusResponse extends $pb.GeneratedMessage {
           create);
   static GetSecurityChangeStatusResponse? _defaultInstance;
 
+  /// The original retained commit, not a snapshot of currently effective policy.
   @$pb.TagNumber(1)
   SecurityVersion get version => $_getN(0);
   @$pb.TagNumber(1)
@@ -3984,24 +3983,22 @@ class GetSecurityChangeStatusResponse extends $pb.GeneratedMessage {
   @$pb.TagNumber(1)
   SecurityVersion ensureVersion() => $_ensure(0);
 
+  /// Echoes the exact requested immutable ID. Unknown or retired IDs are indeterminate.
   @$pb.TagNumber(2)
-  $pb.PbList<$core.bool> get applied => $_getList(1);
-
-  @$pb.TagNumber(3)
-  $core.bool get replayed => $_getBF(2);
-  @$pb.TagNumber(3)
-  set replayed($core.bool value) => $_setBool(2, value);
-  @$pb.TagNumber(3)
-  $core.bool hasReplayed() => $_has(2);
-  @$pb.TagNumber(3)
-  void clearReplayed() => $_clearField(3);
+  $core.List<$core.int> get changeId => $_getN(1);
+  @$pb.TagNumber(2)
+  set changeId($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasChangeId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearChangeId() => $_clearField(2);
 
   @$pb.TagNumber(4)
-  SecurityEnforcementState get enforcement => $_getN(3);
+  SecurityEnforcementState get enforcement => $_getN(2);
   @$pb.TagNumber(4)
   set enforcement(SecurityEnforcementState value) => $_setField(4, value);
   @$pb.TagNumber(4)
-  $core.bool hasEnforcement() => $_has(3);
+  $core.bool hasEnforcement() => $_has(2);
   @$pb.TagNumber(4)
   void clearEnforcement() => $_clearField(4);
 }

@@ -94,6 +94,7 @@ export async function securityUI(
     mode?: "ready" | "login" | "off" | "unavailable";
     recent?: boolean;
     apply?: "conflict" | "lost";
+    status?: "pending-then-enforced" | "unknown" | "mismatch";
     denied?: boolean;
   } = {},
 ) {
@@ -109,6 +110,7 @@ export async function securityUI(
     generation: Buffer.alloc(16, 2).toString("base64"),
   };
   let signedIn = options.mode !== "login";
+  let statusCalls = 0;
   const primary = "https://admin.example";
   await page.addInitScript(
     ({ key, url }) => {
@@ -242,12 +244,32 @@ export async function securityUI(
           enforcement: "SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING",
         });
       }
-      if (method === "GetSecurityChangeStatus")
+      if (method === "GetSecurityChangeStatus") {
+        statusCalls++;
+        if (options.status === "unknown")
+          return json(
+            {
+              code: "failed_precondition",
+              message: "Outside retained history",
+            },
+            412,
+          );
         return json({
-          version: { ...version, revision: "4" },
-          applied: [true],
-          enforcement: "SECURITY_ENFORCEMENT_STATE_ENFORCED",
+          version: {
+            ...version,
+            revision: "4",
+            digest:
+              options.status === "mismatch"
+                ? Buffer.alloc(32, 9).toString("base64")
+                : version.digest,
+          },
+          changeId: body.changeId,
+          enforcement:
+            options.status === "pending-then-enforced" && statusCalls === 1
+              ? "SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING"
+              : "SECURITY_ENFORCEMENT_STATE_ENFORCED",
         });
+      }
       if (method === "ExplainAccess")
         return json({
           version,

@@ -24,6 +24,15 @@ Bootstrap Issuer/subjects and machine assignments are operator owned; ordinary
 management cannot replace them. Audit records retain bounded redacted identities
 and commit outcomes, with capacity reserved for restrictive changes.
 
+`GetSecurityChangeStatus` exposes only retained commit proof: the original
+change ID, generation, revision, digest and enforcement. The unchanged signed
+history does not retain request-aligned item outcomes. Apply owns item results
+and replay acknowledgement; Admin preserves those only when its original Apply
+response was retained. Response-loss recovery can prove the commit while item
+results remain unavailable. The current fixed writer produces the reviewed CAS
+revision plus one; this scalar is not leaderless ordering or proof of currently
+effective grants. Unknown and retired IDs remain indeterminate.
+
 Ordinary browser sessions preserve absent authentication time as unknown and
 retain older signed evidence. Neither issuance, replacement, replication nor
 recovery refreshes it. Explicit step-up and important management changes still
