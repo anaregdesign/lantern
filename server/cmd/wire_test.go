@@ -743,7 +743,9 @@ func TestInitializeAppOIDCProductionSurface(t *testing.T) {
 		return req
 	}
 	deadline := time.Now().Add(40 * time.Second)
-	seenFence := false
+	// A capability response and a subsequent data RPC may straddle the real
+	// restart-fence expiry. Fixed-clock public TLS tests assert data denial at
+	// startup and the final fenced nanosecond, as well as that boundary crossing.
 	for time.Now().Before(deadline) {
 		caps, err := control.GetAuthCapabilities(ctx, connect.NewRequest(&pb.GetAuthCapabilitiesRequest{}))
 		if err == nil {
@@ -753,10 +755,6 @@ func TestInitializeAppOIDCProductionSurface(t *testing.T) {
 			if caps.Msg.Ready {
 				break
 			}
-			seenFence = true
-			if _, err := data.GetVertex(ctx, request("tenant:one")); connect.CodeOf(err) != connect.CodeUnavailable {
-				t.Fatal("writer served during restart fence", err)
-			}
 		}
 		select {
 		case <-ctx.Done():
@@ -765,7 +763,7 @@ func TestInitializeAppOIDCProductionSurface(t *testing.T) {
 		}
 	}
 	caps, err := control.GetAuthCapabilities(ctx, connect.NewRequest(&pb.GetAuthCapabilitiesRequest{}))
-	if err != nil || !caps.Msg.Ready || !seenFence {
+	if err != nil || caps.Msg.Mode != pb.AuthMode_AUTH_MODE_OIDC || !caps.Msg.Ready {
 		t.Fatal("production authority readiness", err)
 	}
 	put := connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "tenant:one", Value: &pb.Vertex_String_{String_: "live"}, Expiration: timestamppb.New(time.Now().Add(time.Minute))}})
