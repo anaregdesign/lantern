@@ -60,7 +60,7 @@ func s1Next(s *S1ApplyState, h *S1Handoff) S1CertifiedNext {
 	if h != nil {
 		value = h.digest()
 	}
-	return S1CertifiedNext{certificate: &s1PrefixCertificate{commit: CommitRef{S1Version, s.projection.cut.Domain, s.projection.cut.Cohort, s.membership, s.slot + 1, value}, previous: s.prefix, witness: [32]byte{10}}, handoff: h}
+	return S1CertifiedNext{certificate: &s1PrefixCertificate{commit: CommitRef{S1Version, s.projection.cut.Domain, s.projection.cut.Cohort, s.membership, s.configuration.Digest(), s.slot + 1, value}, previous: s.prefix, witness: [32]byte{10}}, handoff: h}
 }
 func s1Apply(t *testing.T, s *S1ApplyState, h *S1Handoff) S1ApplyResult {
 	t.Helper()

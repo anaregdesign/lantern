@@ -147,3 +147,68 @@ func TestS1SessionLineageAndExclusiveRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestS1IssuerRevocationPurposeAndRestrictiveReserve(t *testing.T) {
+	for _, kind := range []string{DisableIssuer, DeleteIssuer} {
+		t.Run(kind, func(t *testing.T) {
+			image := s1Image()
+			other := image.Issuers[0]
+			other.URL = "https://surviving-admin.example"
+			admin := testIdentity()
+			admin.Issuer = other.URL
+			candidate := admin
+			candidate.Subject = "candidate"
+			image.Issuers = append(image.Issuers, other)
+			image.Principals = append(image.Principals, Principal{Identity: admin, State: Active, HumanIssuerConfigRevision: 1, Assignments: []RoleAssignment{{RoleID: "security_admin"}}}, Principal{Identity: candidate, State: Active, HumanIssuerConfigRevision: 1})
+			session := testSession()
+			session.CSRFDigest = strings.Repeat("b", 64)
+			image.Sessions = []Session{session}
+			base := s1Fixture(t, image)
+			capacity := base.configuration.Capacity
+			capacity.LedgerEntries, capacity.RestrictiveEntries = 2, 1
+			base, err := NewS1ApplyState(base.projection, base.membership, capacity, S1Retention{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := s1Changes(Change{Kind: kind, IssuerURL: testIdentity().Issuer})
+			op := s1Operation(t, base.projection, admin, command)
+			missing := s1Apply(t, base, s1Seal(base.projection, op, 1, false))
+			if missing.Outcome.Disposition() != S1RejectedPurpose || missing.State.projection != base.projection {
+				t.Fatal("trust revocation lost purpose requirement")
+			}
+			a, err := AssessS1(missing.State.projection, op)
+			if err != nil || !a.NeedsPurpose || !a.ProvenNonexpanding {
+				t.Fatal("trust revocation classification", a, err)
+			}
+			if a.Next.SessionLineage(testIdentity()) != 2 || a.Next.SessionLineage(s1Bob()) != 2 || a.Next.SessionLineage(admin) != 1 {
+				t.Fatal("full issuer lineage closure")
+			}
+			stored, _ := a.Next.snapshot.Session(session.Digest)
+			if !stored.Revoked || !a.Next.snapshot.HumanIdentity(admin) {
+				t.Fatal("session/qualified admin closure")
+			}
+			if _, active := a.Next.snapshot.AccessFor(testIdentity()); active {
+				t.Fatal("disabled issuer still active")
+			}
+			mixed := s1Operation(t, missing.State.projection, admin, s1Changes(Change{Kind: kind, IssuerURL: testIdentity().Issuer}, Change{Kind: PutAssignment, Identity: &candidate, RoleID: "security_admin"}))
+			ma, err := AssessS1(missing.State.projection, mixed)
+			if err != nil || !ma.NeedsPurpose || ma.ProvenNonexpanding {
+				t.Fatal("mixed expansion spent restrictive reserve", err)
+			}
+			if _, err := ApplyS1(missing.State, s1Next(missing.State, s1Seal(missing.State.projection, mixed, 2, true))); !errors.Is(err, ErrControlReserve) {
+				t.Fatal("mixed expansion admitted into reserve", err)
+			}
+			applied := s1Apply(t, missing.State, s1Seal(missing.State.projection, op, 3, true))
+			if applied.Outcome.Disposition() != S1Applied || len(applied.State.ledger) != 2 {
+				t.Fatal("purpose-bearing trust revocation cannot use reserve")
+			}
+			locked := image
+			locked.Issuers = append([]Issuer(nil), image.Issuers...)
+			locked.Issuers[0].EnvOwned = true
+			lockedState := s1Fixture(t, locked)
+			if _, err := AssessS1(lockedState.projection, s1Operation(t, lockedState.projection, admin, command)); !errors.Is(err, ErrBootstrapLocked) {
+				t.Fatal("operator-owned issuer lock lost", err)
+			}
+		})
+	}
+}

@@ -22,6 +22,7 @@ const (
 type CommitRef struct {
 	Version                    uint16
 	Domain, Cohort, Membership [32]byte
+	Configuration              [32]byte
 	Slot                       uint64
 	Value                      [32]byte
 }
@@ -156,7 +157,7 @@ type S1ApplyState struct {
 	membership     [32]byte
 	slot           uint64
 	prefix         [32]byte
-	capacity       S1Capacity
+	configuration  S1ExecutionConfig
 	retiredThrough uint64
 }
 
@@ -175,12 +176,19 @@ func NewS1ApplyState(p *S1Projection, membership [32]byte, capacity S1Capacity, 
 	if retention.retiredThrough != 0 && (retention.domain != p.cut.Domain || retention.cohort != p.cut.Cohort || retention.checkpoint == [32]byte{}) {
 		return nil, ErrS1Contract
 	}
+	configuration := S1ExecutionConfig{S1Version, p.snapshot.limits, capacity}
+	if !configuration.valid() || p.cut.Policy != s1PolicyConfiguration(configuration.Policy) {
+		return nil, ErrS1Contract
+	}
 	return &S1ApplyState{projection: p, ledger: make(map[FullChangeID]*OriginalOutcome), membership: membership, prefix: s1Digest("initial-prefix", struct {
 		Cut            SemanticCut
 		Membership     [32]byte
 		RetiredThrough uint64
-	}{p.cut, membership, retention.retiredThrough}), capacity: capacity, retiredThrough: retention.retiredThrough}, nil
+		Configuration  [32]byte
+	}{p.cut, membership, retention.retiredThrough, configuration.Digest()}), configuration: configuration, retiredThrough: retention.retiredThrough}, nil
 }
+
+func (s *S1ApplyState) Configuration() S1ExecutionConfig { return s.configuration }
 
 func (s *S1ApplyState) Projection() *S1Projection    { return s.projection }
 func (s *S1ApplyState) Position() (uint64, [32]byte) { return s.slot, s.prefix }
@@ -219,6 +227,10 @@ func ApplyS1(s *S1ApplyState, next S1CertifiedNext) (S1ApplyResult, error) {
 	}
 	c := next.certificate
 	cut := s.projection.cut
+	configuration := s.configuration
+	if !configuration.valid() || configuration.Policy != s.projection.snapshot.limits || cut.Policy != s1PolicyConfiguration(configuration.Policy) {
+		return S1ApplyResult{}, ErrS1Contract
+	}
 	value := s1Digest("noop", struct{ Domain, Cohort [32]byte }{cut.Domain, cut.Cohort})
 	if next.handoff != nil {
 		// Historical authenticity/scope precedes ID ownership and lookup.
@@ -227,7 +239,7 @@ func ApplyS1(s *S1ApplyState, next S1CertifiedNext) (S1ApplyResult, error) {
 		}
 		value = next.handoff.digest()
 	}
-	if c.commit.Version != S1Version || c.commit.Domain != cut.Domain || c.commit.Cohort != cut.Cohort || c.commit.Membership != s.membership || c.commit.Slot != s.slot+1 || c.commit.Value != value || c.previous != s.prefix || c.witness == [32]byte{} {
+	if c.commit.Version != S1Version || c.commit.Domain != cut.Domain || c.commit.Cohort != cut.Cohort || c.commit.Membership != s.membership || c.commit.Configuration != configuration.Digest() || c.commit.Slot != s.slot+1 || c.commit.Value != value || c.previous != s.prefix || c.witness == [32]byte{} {
 		return S1ApplyResult{}, ErrS1Contract
 	}
 	advanced := *s
@@ -251,7 +263,8 @@ func ApplyS1(s *S1ApplyState, next S1CertifiedNext) (S1ApplyResult, error) {
 	}
 	// Without a terminal-record reservation even refusal cannot be promised.
 	// Leave prefix/state untouched; S2 must reserve before certifying acceptance.
-	if len(s.ledger) >= int(s.capacity.LedgerEntries) {
+	capacity := configuration.Capacity
+	if len(s.ledger) >= int(capacity.LedgerEntries) {
 		return S1ApplyResult{}, ErrControlReserve
 	}
 	command, _ := h.operation.command()
@@ -267,19 +280,19 @@ func ApplyS1(s *S1ApplyState, next S1CertifiedNext) (S1ApplyResult, error) {
 	if err == nil && assessment.NeedsPurpose && h.authorization.purposeEvidence == [32]byte{} {
 		err = ErrOperationAuthorization
 	}
-	// Rejected/unknown-effect work also needs ordinary metadata reservation;
-	// repeated terminal refusals cannot consume the restrictive reserve.
-	if len(s.ledger) >= int(s.capacity.LedgerEntries-s.capacity.RestrictiveEntries) && (err != nil || !assessment.ProvenNonexpanding) {
-		return S1ApplyResult{}, ErrControlReserve
-	}
 	if err == nil {
-		limit := s.capacity.ImageBytes
+		limit := capacity.ImageBytes
 		if !assessment.ProvenNonexpanding {
-			limit -= s.capacity.RestrictiveImageBytes
+			limit -= capacity.RestrictiveImageBytes
 		}
-		if len(assessment.Next.snapshot.image) > int(limit) || !assessment.ProvenNonexpanding && len(s.ledger) >= int(s.capacity.LedgerEntries-s.capacity.RestrictiveEntries) {
+		if len(assessment.Next.snapshot.image) > int(limit) || !assessment.ProvenNonexpanding && len(s.ledger) >= int(capacity.LedgerEntries-capacity.RestrictiveEntries) {
 			err = ErrControlReserve
 		}
+	}
+	// Decide metadata reserve eligibility only after EVERY error is final.
+	// Even a nonexpanding candidate's image refusal needs ordinary metadata.
+	if len(s.ledger) >= int(capacity.LedgerEntries-capacity.RestrictiveEntries) && (err != nil || !assessment.ProvenNonexpanding) {
+		return S1ApplyResult{}, ErrControlReserve
 	}
 	disposition := S1Applied
 	if err != nil {

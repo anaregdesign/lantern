@@ -29,6 +29,12 @@ The cut binds full compiled Image (Role/Deny, all identities, human enrollment,
 Issuer configuration, sessions, machines, operator locks and audit), separately
 sorted session-lineage floors, generation, semantic sequence, previous-cut
 digest, successful semantic-event ancestry and explicit independent fences.
+The actual validated `PolicyLimits` have a versioned canonical digest in the
+reviewed cut. The full `S1ExecutionConfig` (PolicyLimits and all S1Capacity
+fields) is committed to certified genesis/prefix and CommitRef. Constructors
+and Apply check the actual compiled limits/configuration, rather than accepting
+an unverified opaque config digest. Different capacity scopes cannot reuse one
+certificate; different policy limits also require a different semantic review.
 Every successful semantic operation advances ancestry, including a visible
 policy ABA. NOOP, ledger refusal, replay and replaceable witnesses do not.
 
@@ -73,9 +79,15 @@ Effective `security.manage` expansion, including Deny rule/assignment removal,
 activation and indirect Role changes, requires exact operation-bound purpose.
 Every Issuer trust operation does too. Data-only expansion remains ordinary.
 Reserve eligibility is a separate full-closure proof: all effective global
-capabilities and data intervals must be subsets, no trust change and no new
+capabilities and data intervals must be subsets, no possible trust expansion and no new
 session issuance. Edge permissions derive from Vertex subsets. Machines and
 unresolved actors cannot mutate; qualified human Bearer remains supported.
+
+Issuer disable/delete can use restrictive reserve after full subset/closure
+checks, while still requiring purpose. PutIssuer remains conservatively
+excluded as a possible trust expansion. An expanding member of a mixed batch
+excludes the entire batch from reserve. Ordinary nonexpanding Role, assignment,
+principal and session revocations acquire no new purpose requirement.
 
 ## Atomic Apply and trusted boundaries
 
@@ -107,6 +119,9 @@ semantically unchanged. A full ledger cannot promise even a terminal refusal:
 Apply returns capacity failure without advancing prefix. Rejected ordinary work
 cannot spend restrictive metadata reserve. S2 must reserve enough capacity
 before promising acceptance, including failure outcomes and recovery tails.
+The final image-capacity check precedes reserve admission for terminal metadata:
+an oversized nonexpanding candidate's refusal cannot consume reserved entries
+or prevent a following legitimate restriction from recording its outcome.
 
 `S1Retention` is an opaque externally certified retirement input; S1 implements
 no barrier, floor advancement, TTL, outcome pruning or checkpoint restoration.

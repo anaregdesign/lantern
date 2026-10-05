@@ -27,7 +27,7 @@ func NewS1Projection(image Image, limits PolicyLimits, domain, cohort, fences [3
 			p.lineage[identity] = 1
 		}
 	}
-	p.cut = SemanticCut{Version: S1Version, Domain: domain, Cohort: cohort, Generation: generation, Sequence: 1, Fences: fences}
+	p.cut = SemanticCut{Version: S1Version, Domain: domain, Cohort: cohort, Generation: generation, Sequence: 1, Fences: fences, Policy: s1PolicyConfiguration(snapshot.limits)}
 	p.cut.Projection = p.projectionDigest()
 	p.cut.Frontier = s1Digest("initial-frontier", p.cut.Projection)
 	if !p.cut.valid() {
@@ -86,7 +86,7 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 	for id, epoch := range p.lineage {
 		next.lineage[id] = epoch
 	}
-	needsPurpose, trustChange := false, false
+	needsPurpose, trustMayExpand := false, false
 	bump := func(identity Identity) error {
 		if identity.Kind != OIDCPrincipal {
 			return nil
@@ -108,7 +108,8 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 		for _, change := range command.Changes {
 			switch change.Kind {
 			case PutIssuer, DisableIssuer, DeleteIssuer:
-				needsPurpose, trustChange = true, true
+				needsPurpose = true
+				trustMayExpand = trustMayExpand || change.Kind == PutIssuer
 				url := change.IssuerURL
 				if change.Issuer != nil {
 					url = change.Issuer.URL
@@ -209,7 +210,7 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 		Previous  [32]byte
 		Operation string
 	}{p.cut.Frontier, operation.canonical})
-	nonexpanding := !trustChange && command.Kind != S1IssueSession && s1PermissionsSubset(p.snapshot, next.snapshot)
+	nonexpanding := !trustMayExpand && command.Kind != S1IssueSession && s1PermissionsSubset(p.snapshot, next.snapshot)
 	return S1Assessment{next, needsPurpose, nonexpanding}, nil
 }
 

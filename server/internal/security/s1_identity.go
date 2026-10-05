@@ -39,10 +39,11 @@ type SemanticCut struct {
 	Projection [32]byte
 	Frontier   [32]byte
 	Fences     [32]byte
+	Policy     [32]byte
 }
 
 func (c SemanticCut) valid() bool {
-	return c.Version == S1Version && c.Domain != [32]byte{} && c.Cohort != [32]byte{} && c.Generation != [16]byte{} && c.Sequence != 0 && c.Projection != [32]byte{} && c.Frontier != [32]byte{} && c.Fences != [32]byte{}
+	return c.Version == S1Version && c.Domain != [32]byte{} && c.Cohort != [32]byte{} && c.Generation != [16]byte{} && c.Sequence != 0 && c.Projection != [32]byte{} && c.Frontier != [32]byte{} && c.Fences != [32]byte{} && c.Policy != [32]byte{}
 }
 
 const (
@@ -74,7 +75,7 @@ type OperationIdentity struct {
 }
 
 func NewS1Operation(actor Identity, reviewed SemanticCut, command S1Command, limits PolicyLimits) (OperationIdentity, error) {
-	if !actor.valid() || !reviewed.valid() {
+	if !actor.valid() || !reviewed.valid() || reviewed.Policy != s1PolicyConfiguration(limits) {
 		return OperationIdentity{}, ErrS1Contract
 	}
 	if err := validateS1Command(command, limits); err != nil {

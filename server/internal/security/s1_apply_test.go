@@ -98,9 +98,11 @@ func TestS1ApplyTerminalRejectionReplayAndCapacity(t *testing.T) {
 	if retry.Status != S1Replay || retry.Outcome != denied.Outcome {
 		t.Fatal("terminal refusal rehabilitated")
 	}
-	small := *s
-	small.capacity = S1Capacity{LedgerEntries: 2, RestrictiveEntries: 1, ImageBytes: MaxImageBytes, RestrictiveImageBytes: 1 << 20}
-	r := s1Apply(t, &small, h)
+	small, err := NewS1ApplyState(s.projection, s.membership, S1Capacity{LedgerEntries: 2, RestrictiveEntries: 1, ImageBytes: MaxImageBytes, RestrictiveImageBytes: 1 << 20}, S1Retention{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := s1Apply(t, small, h)
 	second := s1Seal(s.projection, grant, 2, false)
 	if _, err := ApplyS1(r.State, s1Next(r.State, second)); !errors.Is(err, ErrControlReserve) {
 		t.Fatal("refusals consumed reserve", err)
@@ -129,7 +131,7 @@ func TestS1RetentionAndNoop(t *testing.T) {
 		t.Fatal("NOOP invalidated review")
 	}
 	retained := S1Retention{retiredThrough: 1, domain: s.projection.cut.Domain, cohort: s.projection.cut.Cohort, checkpoint: [32]byte{99}}
-	retired, err := NewS1ApplyState(s.projection, s.membership, s.capacity, retained)
+	retired, err := NewS1ApplyState(s.projection, s.membership, s.configuration.Capacity, retained)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +147,7 @@ func TestS1RetentionAndNoop(t *testing.T) {
 		t.Fatal("absence presented as noncommit")
 	}
 	retained.domain[0]++
-	if _, err := NewS1ApplyState(s.projection, s.membership, s.capacity, retained); err == nil {
+	if _, err := NewS1ApplyState(s.projection, s.membership, s.configuration.Capacity, retained); err == nil {
 		t.Fatal("wrong floor scope")
 	}
 }
@@ -160,5 +162,41 @@ func TestS1HandoffRecoveryHasNoAmbientTime(t *testing.T) {
 	b := s1Apply(t, s, h)
 	if a.Outcome.Disposition() != S1Applied || a.State.projection.cut != b.State.projection.cut || a.State.prefix != b.State.prefix || !reflect.DeepEqual(a.Outcome, b.Outcome) || !reflect.DeepEqual(a.State.projection.Image(), b.State.projection.Image()) {
 		t.Fatal("Apply depends on wall time/side effects")
+	}
+}
+
+func TestS1FinalCapacityRefusalCannotConsumeRestrictiveMetadata(t *testing.T) {
+	base := s1Fixture(t, s1Image())
+	capacity := S1Capacity{LedgerEntries: 2, RestrictiveEntries: 1, ImageBytes: uint32(len(base.projection.snapshot.image))}
+	s, err := NewS1ApplyState(base.projection, base.membership, capacity, S1Retention{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob := s1Bob()
+	grant := s1Operation(t, s.projection, testIdentity(), s1Changes(Change{Kind: PutAssignment, Identity: &bob, RoleID: "security_admin"}))
+	ordinary := s1Apply(t, s, s1Seal(s.projection, grant, 1, false))
+	if ordinary.Outcome.Disposition() != S1RejectedPurpose || len(ordinary.State.ledger) != 1 {
+		t.Fatal("ordinary fixture")
+	}
+	op := s1Operation(t, ordinary.State.projection, testIdentity(), s1Changes(s1ReaderRole()))
+	a, err := AssessS1(ordinary.State.projection, op)
+	if err != nil || !a.ProvenNonexpanding || len(a.Next.snapshot.image) <= int(capacity.ImageBytes) {
+		t.Fatal("oversized nonexpanding fixture", err)
+	}
+	h := s1Seal(ordinary.State.projection, op, 2, false)
+	refusal, err := ApplyS1(ordinary.State, s1Next(ordinary.State, h))
+	if !errors.Is(err, ErrControlReserve) || refusal.State != nil || refusal.Outcome != nil {
+		t.Fatal("capacity refusal consumed reserve", err)
+	}
+	if ordinary.State.slot != 1 || len(ordinary.State.ledger) != 1 {
+		t.Fatal("refusal advanced prefix/ledger")
+	}
+	if status, _ := ordinary.State.Lookup(h.id); status != S1Unresolved {
+		t.Fatal("unreserved refusal claimed ID")
+	}
+	revoke := s1Seal(ordinary.State.projection, s1Operation(t, ordinary.State.projection, testIdentity(), s1Changes(Change{Kind: RevokeSessions, Identity: &bob})), 3, false)
+	result := s1Apply(t, ordinary.State, revoke)
+	if result.Outcome.Disposition() != S1Applied || len(result.State.ledger) != 2 || result.State.projection.SessionLineage(bob) != 2 {
+		t.Fatal("following restriction lost reserve")
 	}
 }
