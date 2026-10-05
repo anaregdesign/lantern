@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-client";
-import { browseVerticesReducer, type BrowseVerticesAction } from "./reducer";
+import { browseVerticesReducer } from "./reducer";
 import {
   INITIAL_BROWSE_VERTICES_STATE,
   type BrowseVerticesState,
@@ -39,7 +39,7 @@ export interface UseBrowseVerticesResult {
    * page-count math (see `selectTotalPages`). */
   pageSize: number;
   vertices: ReturnType<typeof selectVisibleVertices>;
-  count: number | null;
+  count: BrowseVerticesState["count"];
   canGoPrevious: boolean;
   canGoNext: boolean;
   setPrefix: (next: string) => void;
@@ -64,6 +64,10 @@ export function useBrowseVertices(
     browseVerticesReducer,
     INITIAL_BROWSE_VERTICES_STATE,
   );
+  const pageRequestId = useRef(0);
+  const countRequestId = useRef(0);
+  const pageController = useRef<AbortController | null>(null);
+  const countController = useRef<AbortController | null>(null);
 
   // Debounce the user-supplied prefix into the reducer.
   useEffect(() => {
@@ -74,13 +78,11 @@ export function useBrowseVertices(
   }, [rawPrefix, debounceMs]);
 
   // On every prefix change, refetch the first page + the count.
-  const lastEpochRef = useRef<number>(-1);
   useEffect(() => {
-    if (state.prefixEpoch === lastEpochRef.current) {
-      return;
-    }
-    lastEpochRef.current = state.prefixEpoch;
-    const controller = new AbortController();
+    pageController.current?.abort();
+    countController.current?.abort();
+    pageController.current = new AbortController();
+    countController.current = new AbortController();
     void fetchPage(
       {
         client,
@@ -88,20 +90,26 @@ export function useBrowseVertices(
         cursor: "",
         pageSize,
         epoch: state.prefixEpoch,
-        signal: controller.signal,
+        requestId: ++pageRequestId.current,
+        mode: "reset",
+        signal: pageController.current.signal,
       },
-      dispatch as (action: BrowseVerticesAction) => void,
+      dispatch,
     );
     void fetchCount(
       {
         client,
         prefix: state.prefix,
         epoch: state.prefixEpoch,
-        signal: controller.signal,
+        requestId: ++countRequestId.current,
+        signal: countController.current.signal,
       },
-      dispatch as (action: BrowseVerticesAction) => void,
+      dispatch,
     );
-    return () => controller.abort();
+    return () => {
+      pageController.current?.abort();
+      countController.current?.abort();
+    };
   }, [client, state.prefix, state.prefixEpoch, pageSize]);
 
   const setPrefix = useCallback((next: string) => {
@@ -109,7 +117,8 @@ export function useBrowseVertices(
   }, []);
 
   const goPrevious = useCallback(() => {
-    dispatch({ type: "NAVIGATE_PREVIOUS" });
+    pageController.current?.abort();
+    dispatch({ type: "NAVIGATE_PREVIOUS", requestId: ++pageRequestId.current });
   }, []);
 
   const goNext = useCallback(() => {
@@ -117,18 +126,26 @@ export function useBrowseVertices(
     if (!current) {
       return;
     }
+    pageController.current?.abort();
+    const requestId = ++pageRequestId.current;
     // Cached forward page: reducer handles the transition synchronously.
     if (state.currentPageIndex + 1 < state.pages.length) {
       dispatch({
         type: "NAVIGATE_NEXT_REQUESTED",
         epoch: state.prefixEpoch,
+        requestId,
       });
       return;
     }
     if (current.nextCursor === "") {
       return;
     }
-    dispatch({ type: "NAVIGATE_NEXT_REQUESTED", epoch: state.prefixEpoch });
+    dispatch({
+      type: "NAVIGATE_NEXT_REQUESTED",
+      epoch: state.prefixEpoch,
+      requestId,
+    });
+    pageController.current = new AbortController();
     void fetchPage(
       {
         client,
@@ -136,14 +153,20 @@ export function useBrowseVertices(
         cursor: current.nextCursor,
         pageSize,
         epoch: state.prefixEpoch,
+        requestId,
+        signal: pageController.current.signal,
       },
-      dispatch as (action: BrowseVerticesAction) => void,
+      dispatch,
     );
   }, [client, pageSize, state]);
 
   const retry = useCallback(() => {
     const current = selectCurrentPage(state);
     const cursor = current?.startCursor ?? "";
+    pageController.current?.abort();
+    countController.current?.abort();
+    pageController.current = new AbortController();
+    countController.current = new AbortController();
     void fetchPage(
       {
         client,
@@ -151,9 +174,21 @@ export function useBrowseVertices(
         cursor,
         pageSize,
         epoch: state.prefixEpoch,
+        requestId: ++pageRequestId.current,
         mode: "replace",
+        signal: pageController.current.signal,
       },
-      dispatch as (action: BrowseVerticesAction) => void,
+      dispatch,
+    );
+    void fetchCount(
+      {
+        client,
+        prefix: state.prefix,
+        epoch: state.prefixEpoch,
+        requestId: ++countRequestId.current,
+        signal: countController.current.signal,
+      },
+      dispatch,
     );
   }, [client, pageSize, state]);
 

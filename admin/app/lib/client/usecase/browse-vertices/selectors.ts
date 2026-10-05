@@ -43,8 +43,8 @@ export function selectPageNumber(state: BrowseVerticesState): number {
  * of a bare "Page N".
  *
  * Returns `null` when there is no usable total to show:
- *   - `state.count === null` — no fresh count. The reducer resets `count` to
- *     `null` on every prefix change, so a non-null count is always fresh for
+ *   - `state.count.status !== "success"` — no fresh successful count. The reducer resets `count` on
+ *     every prefix change, so a successful count is always fresh for
  *     the prefix currently on screen; a stale total never renders while the
  *     operator retypes the prefix.
  *   - `pageSize <= 0` — guards against a divide-by-zero / negative page size.
@@ -59,8 +59,8 @@ export function selectTotalPages(
   state: BrowseVerticesState,
   pageSize: number,
 ): number | null {
-  if (state.count === null || pageSize <= 0) {
+  if (state.count.status !== "success" || pageSize <= 0) {
     return null;
   }
-  return Math.max(1, Math.ceil(state.count / pageSize));
+  return Math.max(1, Math.ceil(state.count.count / pageSize));
 }
