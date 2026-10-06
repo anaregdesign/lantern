@@ -536,20 +536,33 @@ mod diagnostic_tests {
         // through the existing connection closing when its child is reaped,
         // while the other live child's actual Health endpoint keeps serving.
         let deadline = first.readiness_deadline();
-        let remaining = deadline
+        deadline
             .checked_duration_since(Instant::now())
             .ok_or("first fixture startup deadline expired")?;
-        let mut connection = TcpStream::connect_timeout(
-            &SocketAddr::from(([127, 0, 0, 1], first.port())),
-            remaining,
-        )?;
+        let timeout = tokio::time::Instant::from_std(deadline);
+        let mut connection = tokio::time::timeout_at(
+            timeout,
+            tokio::net::TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], first.port()))),
+        )
+        .await
+        .map_err(|error| format!("ownership connection exceeded startup deadline: {error}"))?
+        .map_err(|error| format!("ownership connection failed: {error}"))?;
         drop(first);
-        connection.set_read_timeout(Some(
-            deadline
-                .checked_duration_since(Instant::now())
-                .ok_or("first fixture startup deadline expired during cleanup")?,
-        ))?;
-        match connection.read(&mut [0]) {
+        deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("first fixture startup deadline expired during cleanup")?;
+        // A reset socket may reject setsockopt on macOS. Use the original
+        // absolute deadline without configuring a socket after child exit.
+        let closed = tokio::time::timeout_at(
+            timeout,
+            tokio::io::AsyncReadExt::read(&mut connection, &mut [0]),
+        )
+        .await
+        .map_err(|error| format!("owned child close exceeded startup deadline: {error}"))?;
+        deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("first fixture startup deadline expired during close observation")?;
+        match closed {
             Ok(0) => {}
             Err(error)
                 if matches!(
