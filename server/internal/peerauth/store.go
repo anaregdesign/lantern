@@ -30,6 +30,9 @@ type Store struct {
 	lastWall    time.Time
 	faulted     bool
 	faultReason string
+	// Only the typed control constructor sets this. Legacy Domain remains
+	// unchanged; no synthetic OFF/OIDC domain represents control membership.
+	controlBinding *[32]byte
 }
 
 type membershipSnapshot struct {
@@ -103,6 +106,9 @@ func snapshot(m Manifest, raw []byte) *membershipSnapshot {
 }
 
 func (s *Store) nowLocked() (time.Time, bool) {
+	if s.controlBinding != nil && s.lease.WithPath(func(string) error { return nil }) != nil {
+		s.faultLocked("checkpoint_ownership")
+	}
 	now := s.options.Now()
 	if now.UnixNano() < s.lastWall.UnixNano() {
 		s.faultLocked("clock_rollback")
@@ -192,6 +198,13 @@ func (s *Store) Member(identity string) (Member, time.Time, error) {
 }
 
 func (s *Store) Domain() Domain { return s.options.Domain }
+
+func (s *Store) wireProfile() (string, [32]byte) {
+	if s.controlBinding != nil {
+		return ControlHeader, *s.controlBinding
+	}
+	return DomainHeader, s.Domain().Digest()
+}
 
 func (s *Store) Origins() ([]string, error) {
 	if s == nil {

@@ -379,3 +379,13 @@ tests do not qualify physical power loss or a production origin's clock,
 credential, CSRF or purpose checks. Current admission and disclosure, qualified
 clock/freshness renewal, key lifecycle/fencing/rejoin, production transport and
 runtime activation, retention/compaction, and #1668 remain later work.
+
+## S3-A inactive authenticated network owner
+
+The separately constructed [S3-A owner](security-s3a.md) (#1688) composes the
+unchanged S2-C kernel with typed control membership, independent M/P/B minima,
+strict fixed-identity TLS, bounded delivery and real process recovery tests.
+It is not mounted in product routes, providers, environment configuration or
+startup. Its network ACKs and workload admission do not qualify current policy
+freshness, production H issuance or serving activation. The linked document
+records wire, capacity, lifecycle and later-proof boundaries.

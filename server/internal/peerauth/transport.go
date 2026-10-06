@@ -51,6 +51,7 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 	var once sync.Once
 	var timerMu sync.Mutex
 	var certificateTimer *time.Timer
+	var handshakeAdmission *Admission
 	cleanup := func() {
 		once.Do(func() {
 			close(stop)
@@ -103,6 +104,7 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 				// Bound writes and blocked response headers at the certificate
 				// expiry immediately, before sending any authenticated request.
 				timerMu.Lock()
+				handshakeAdmission = admission
 				if certificateTimer != nil {
 					certificateTimer.Stop()
 				}
@@ -112,10 +114,21 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 				timerMu.Unlock()
 				return check()
 			}}}
+	if t.store.controlBinding != nil {
+		transport.MaxResponseHeaderBytes = 64 << 10
+	}
 	request = request.Clone(ctx)
 	request.Header = request.Header.Clone()
-	digest := t.store.Domain().Digest()
-	request.Header.Set(DomainHeader, hex.EncodeToString(digest[:]))
+	header, digest := t.store.wireProfile()
+	foreignHeader := ControlHeader
+	if header == ControlHeader {
+		foreignHeader = DomainHeader
+	}
+	if len(request.Header.Values(foreignHeader)) != 0 {
+		cleanup()
+		return nil, ErrMembership
+	}
+	request.Header.Set(header, hex.EncodeToString(digest[:]))
 	if err := check(); err != nil {
 		cleanup()
 		return nil, err
@@ -125,13 +138,19 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 		cleanup()
 		return nil, err
 	}
-	admission, err := t.store.Admit(response.TLS, origin)
-	if err != nil || admission.member != member || check() != nil {
+	timerMu.Lock()
+	admission := handshakeAdmission
+	timerMu.Unlock()
+	if t.store.controlBinding == nil {
+		// Preserve the legacy graph profile's response admission behavior.
+		admission, err = t.store.Admit(response.TLS, origin)
+	}
+	if err != nil || admission == nil || admission.member != member || admission.Check(ctx) != nil || check() != nil {
 		_ = response.Body.Close()
 		cleanup()
 		return nil, ErrMembership
 	}
-	response.Body = &workloadBody{ReadCloser: response.Body, check: func() error {
+	response.Body = &workloadBody{ReadCloser: response.Body, admission: admission, check: func() error {
 		if err := check(); err != nil {
 			return err
 		}
@@ -142,8 +161,23 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 
 type workloadBody struct {
 	io.ReadCloser
-	check   func() error
-	cleanup func()
+	admission *Admission
+	check     func() error
+	cleanup   func()
+}
+
+// ResponseAdmission preserves the original verified workload/deadline while a
+// bounded caller processes already-read response bytes. Membership refresh must
+// not silently mint a longer admission between reading and kernel application.
+func ResponseAdmission(response *http.Response) (*Admission, bool) {
+	if response == nil {
+		return nil, false
+	}
+	body, ok := response.Body.(*workloadBody)
+	if !ok || body.admission == nil {
+		return nil, false
+	}
+	return body.admission, true
 }
 
 func (b *workloadBody) Read(data []byte) (int, error) {
