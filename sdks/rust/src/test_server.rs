@@ -474,33 +474,94 @@ mod diagnostic_tests {
         Ok(())
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
-    fn real_wire_fixture_owns_ephemeral_listener_on_return() -> Result<(), Box<dyn Error>> {
+    async fn real_wire_fixture_owns_ephemeral_listener_on_return() -> Result<(), Box<dyn Error>> {
+        async fn require_serving(server: &GoServer) -> Result<(), Box<dyn Error>> {
+            use tonic_health::pb::{
+                HealthCheckRequest, health_check_response::ServingStatus,
+                health_client::HealthClient,
+            };
+            let check = async {
+                let channel = tonic::transport::Endpoint::from_shared(format!(
+                    "http://127.0.0.1:{}",
+                    server.port()
+                ))?
+                .connect_timeout(Duration::from_secs(1))
+                .connect()
+                .await?;
+                let mut request = tonic::Request::new(HealthCheckRequest {
+                    service: "graph.v1.LanternService".into(),
+                });
+                request.set_timeout(Duration::from_secs(1));
+                let response = HealthClient::new(channel).check(request).await?;
+                assert_eq!(response.get_ref().status, ServingStatus::Serving as i32);
+                Ok::<(), Box<dyn Error>>(())
+            };
+            tokio::time::timeout_at(
+                tokio::time::Instant::from_std(server.readiness_deadline()),
+                check,
+            )
+            .await?
+        }
+
         let mut first = GoServer::start(&[])?;
         let mut second = GoServer::start(&[])?;
         assert_ne!(first.port(), 0);
         assert_ne!(first.port(), second.port());
         for server in [&mut first, &mut second] {
             assert!(server.try_wait()?.is_none());
-            // The IPv4 reservation used by the old helper need not conflict
-            // with the server's wildcard IPv6 listener on every host. Check
-            // ownership against the actual published address instead.
-            let address = server
-                ._startup_log
-                .as_ref()
-                .ok_or("startup log missing")?
-                .bound_address()?
-                .ok_or("bound address missing")?;
+            let log = server._startup_log.as_ref().ok_or("startup log missing")?;
+            let address = log.bound_address()?.ok_or("bound address missing")?;
             assert_eq!(address.port(), server.port());
-            let error = TcpListener::bind(address)
-                .expect_err("the production child must still own its published listener");
-            assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
-            // Bound-port discovery consumes the original readiness budget.
+            let events = BufReader::new(log.0.reopen()?.take(64 * 1024)).lines();
+            let mut requested_ephemeral_port = false;
+            for line in events {
+                let Ok(event) = serde_json::from_str::<serde_json::Value>(&line?) else {
+                    continue;
+                };
+                if event["msg"] == "lantern starting" && event["port"] == 0 {
+                    requested_ephemeral_port = true;
+                }
+            }
+            assert!(requested_ephemeral_port, "the child must request port zero");
+            // Bound-port discovery and wire readiness share the original budget.
             let deadline = server.readiness_deadline();
             server.wait_for_listener()?;
+            require_serving(server).await?;
             assert_eq!(server.readiness_deadline(), deadline);
         }
+
+        // Rebinding a live address need not fail on Windows. Prove ownership
+        // through the existing connection closing when its child is reaped,
+        // while the other live child's actual Health endpoint keeps serving.
+        let deadline = first.readiness_deadline();
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("first fixture startup deadline expired")?;
+        let mut connection = TcpStream::connect_timeout(
+            &SocketAddr::from(([127, 0, 0, 1], first.port())),
+            remaining,
+        )?;
+        drop(first);
+        connection.set_read_timeout(Some(
+            deadline
+                .checked_duration_since(Instant::now())
+                .ok_or("first fixture startup deadline expired during cleanup")?,
+        ))?;
+        match connection.read(&mut [0]) {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) => {}
+            result => {
+                return Err(format!("owned child connection did not close: {result:?}").into());
+            }
+        }
+        assert!(second.try_wait()?.is_none());
+        require_serving(&second).await?;
         Ok(())
     }
 }
