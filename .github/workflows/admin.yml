@@ -46,7 +46,25 @@ jobs:
         working-directory: .
         run: |
           docker pull caddy:2.10-alpine
-          python3 -B -m unittest discover -s admin/tests/container -p '*_test.py'
+          python3 -B - <<'PY'
+          import unittest
+
+          suite = unittest.defaultTestLoader.discover('admin/tests/container', pattern='*_test.py')
+
+          def test_ids(tests):
+              for test in tests:
+                  if isinstance(test, unittest.TestSuite):
+                      yield from test_ids(test)
+                  else:
+                      yield test.id()
+
+          required = 'entrypoint_test.EntrypointTest.test_real_caddy_route_and_operations_admission'
+          if required not in set(test_ids(suite)):
+              raise SystemExit('Required real Caddy test was not discovered')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful() or result.skipped or result.expectedFailures:
+              raise SystemExit('Caddy route gate requires all tests to pass with zero skips')
+          PY
 
       - name: Setup Bun
         # Pin to commit SHA (v2.2.0) instead of the floating v2 tag so a

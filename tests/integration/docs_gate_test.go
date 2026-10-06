@@ -153,6 +153,18 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 			},
 			retired: []string{"does not reverse-proxy the Lantern listener"},
 		},
+		"admin/README.md": {
+			required: []string{
+				"OFF mode", "LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080", "For **OIDC**",
+				"select that exact public origin", "LANTERN_OIDC_BROWSER_ORIGIN", "/auth/callback/<SHA-256>",
+				"/auth/*", "/browser/*", "/graph.v1.*/*", "LANTERN_ADMIN_SERVER_UPSTREAM",
+				"gateway picker never selects that upstream", "verified HTTPS upstream", "exact trusted proxy",
+				"public Host/scheme", "current fixed-writer baseline", "#1608/#1609 S5 work",
+				"/auth/operations", "each GET", "Prometheus never receives cookies or Authorization",
+				"#fixed-server-and-diagnostics-proxy", "docs/oidc-operations.md#browser-and-diagnostics-boundary",
+			},
+			retired: []string{"does **not** reverse-proxy the Lantern gateway"},
+		},
 		"docs/oidc-operations.md": {
 			required: []string{"OFF can serve the static Admin separately", "same configured HTTPS public origin",
 				"LANTERN_ADMIN_SERVER_UPSTREAM", "LANTERN_ADMIN_SERVER_CA_FILE", "LANTERN_OIDC_TRUSTED_PROXY_IPS",
