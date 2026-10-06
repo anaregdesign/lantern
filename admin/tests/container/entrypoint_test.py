@@ -56,6 +56,44 @@ class EntrypointTest(unittest.TestCase):
             with self.subTest(setting=list(setting)):
                 self.assertNotEqual(self.generate(**setting).returncode, 0)
 
+    def test_documented_fixed_upstreams_and_private_ca_routes(self):
+        # Generation-only fixture: no certificate issuance or trust-store change.
+        for scheme in ('http', 'h2c', 'https'):
+            with self.subTest(scheme=scheme):
+                upstream = f'{scheme}://writer.internal.example:6380'
+                result = self.generate(LANTERN_ADMIN_SERVER_UPSTREAM=upstream)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                text = (self.conf / 'routes.caddy').read_text()
+                for route in ('/auth/*', '/browser/*', '/graph.v1.*/*'):
+                    self.assertIn(f'handle {route}', text)
+                self.assertEqual(text.count(f'reverse_proxy {upstream}'), 3)
+                self.assertEqual(text.count('header_up Host {hostport}'), 3)
+                self.assertIn('diagnostics upstream unavailable', text)
+                self.assertNotIn('tls_insecure_skip_verify', text)
+
+        ca = Path(self.directory.name) / 'ca.pem'
+        ca.write_text('generation-only CA fixture')
+        result = self.generate(
+            LANTERN_ADMIN_SERVER_UPSTREAM='https://writer.internal.example:6380',
+            LANTERN_ADMIN_SERVER_CA_FILE=str(ca),
+            LANTERN_ADMIN_PROMETHEUS_UPSTREAM='http://prometheus:9090')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.conf / 'routes.caddy').read_text()
+        # Every Server hop, including operations admission, verifies the CA.
+        self.assertEqual(text.count(f'tls_trust_pool file {ca}'), 4)
+        self.assertEqual(text.count('header_up Host {hostport}'), 4)
+        self.assertIn('forward_auth https://writer.internal.example:6380', text)
+        self.assertIn('uri /auth/operations?', text)
+        self.assertIn('@write not method GET', text)
+        self.assertIn('header_up -Cookie', text)
+        self.assertIn('header_up -Authorization', text)
+        self.assertNotIn('tls_insecure_skip_verify', text)
+        for scheme in ('http', 'h2c'):
+            with self.subTest(ca_scheme=scheme):
+                self.assertNotEqual(self.generate(
+                    LANTERN_ADMIN_SERVER_UPSTREAM=f'{scheme}://writer.internal.example:6380',
+                    LANTERN_ADMIN_SERVER_CA_FILE=str(ca)).returncode, 0)
+
     def test_real_caddy_route_and_operations_admission(self):
         if not shutil.which('docker'):
             self.skipTest('Docker is required for the Caddy route gate')

@@ -1,10 +1,13 @@
 """Exercise real git ranges and the checked-in workflow routing contracts."""
 
+import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -174,6 +177,87 @@ class WorkflowRoutingTest(unittest.TestCase):
             body = re.search(rf"(?ms)^  {job}:\n(.*?)(?=^  [\w-]+:\n|\Z)", text).group(1)
             condition = next(line for line in body.splitlines() if line.startswith("    if:"))
             self.assertIn("needs.scope.outputs.docs_only != 'true'", condition)
+
+
+class AdminReleaseGuidanceTest(unittest.TestCase):
+    def test_generated_create_and_edit_notes_preserve_routing_contract(self):
+        # Execute the actual release step, with gh replaced by a local capture.
+        # No GitHub write, image publication, or release tag is performed.
+        workflow = (ROOT / '.github/workflows/admin-publish.yml').read_text()
+        step = workflow.split('      - name: Create or update GitHub Release\n', 1)[1]
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        tag = 'admin/v9.8.7'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gh = root / 'gh'
+            gh.write_text(f'#!{sys.executable}\n' + textwrap.dedent('''\
+                import json
+                import os
+                from pathlib import Path
+                import sys
+                args = sys.argv[1:]
+                if args[:2] == ['release', 'view']:
+                    sys.exit(0 if os.environ['RELEASE_EXISTS'] == 'yes' else 1)
+                if args[:2] not in (['release', 'create'], ['release', 'edit']):
+                    sys.exit(2)
+                root = Path(os.environ['GH_CAPTURE'])
+                notes = Path(args[args.index('--notes-file') + 1]).read_text()
+                (root / 'notes.md').write_text(notes)
+                (root / 'args.json').write_text(json.dumps(args))
+                '''))
+            gh.chmod(0o755)
+            for exists, action in (('no', 'create'), ('yes', 'edit')):
+                with self.subTest(action=action):
+                    env = os.environ | {
+                        'PATH': f'{root}{os.pathsep}{os.environ["PATH"]}',
+                        'TAG': tag, 'REPO': 'anaregdesign/lantern',
+                        'IMAGE': 'ghcr.io/anaregdesign/lantern-admin',
+                        'GH_TOKEN': 'fixture-only', 'GH_CAPTURE': str(root),
+                        'RELEASE_EXISTS': exists, 'TMPDIR': str(root),
+                    }
+                    result = subprocess.run(['bash', '-c', script], env=env,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    args = json.loads((root / 'args.json').read_text())
+                    self.assertEqual(args[:3], ['release', action, tag])
+                    self.assertIn('--verify-tag', args)
+                    if action == 'create':
+                        self.assertEqual(args[args.index('--title') + 1], tag)
+                    notes = (root / 'notes.md').read_text()
+                    for contract in (
+                        'ghcr.io/anaregdesign/lantern-admin:v9.8.7',
+                        '### OFF: direct Server with CORS',
+                        'LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080',
+                        '### OIDC: HTTPS same-origin routes',
+                        'select that exact origin',
+                        'LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example.com:8443',
+                        'LANTERN_OIDC_REDIRECT_URI', '/auth/callback/<SHA-256>',
+                        '/auth/*', '/browser/*', '/graph.v1.*/*',
+                        'LANTERN_ADMIN_SERVER_UPSTREAM', 'scheme://hostname:port',
+                        'https://writer.internal.example:6380',
+                        'gateway picker never selects that upstream',
+                        'Verify the upstream certificate against its hostname',
+                        'LANTERN_ADMIN_SERVER_CA_FILE', 'public Host/scheme',
+                        'LANTERN_OIDC_TRUSTED_PROXY_IPS',
+                        'explicitly trusted exact gateway IP',
+                        'current fixed-writer baseline',
+                        'Future eligible-node routing', '#1608/#1609 S5 work',
+                        'Missing upstream routes fail closed', '/auth/operations',
+                        'operations.read', 'Only GET diagnostics',
+                        'Prometheus never receives cookies or Authorization',
+                        'browser local storage and Vite env',
+                    ):
+                        self.assertIn(contract, notes)
+                    for path in ('docs/oidc-operations.md#browser-and-diagnostics-boundary',
+                                 'docs/ha-runbook.md', 'server/README.md'):
+                        self.assertIn(f'https://github.com/anaregdesign/lantern/blob/{tag}/{path}',
+                                      notes)
+                        self.assertTrue((ROOT / path.split('#')[0]).is_file())
+                    self.assertIn('## Browser and diagnostics boundary',
+                                  (ROOT / 'docs/oidc-operations.md').read_text())
+                    for retired in ('does not reverse-proxy', 'LANTERN_PEERS',
+                                    'tls_insecure_skip_verify', 'fixture-only', '${REPO}'):
+                        self.assertNotIn(retired, notes)
 
 
 if __name__ == "__main__":
