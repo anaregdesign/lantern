@@ -270,10 +270,28 @@ func TestDartPublishingContractGate(t *testing.T) {
 				`gh release edit "$TAG" --title "$TAG"`,
 			},
 		},
-		"offline-release-preflight": {
-			needs:       []string{"gate"},
+		"offline-hosted": {
+			needs:       []string{"changes", "gate", "verify-published"},
 			permissions: map[string]string{"contents": "read"},
-			condition:   "${{ !cancelled() && needs.gate.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}",
+			condition:   "${{ !cancelled() && needs.gate.result == 'success' && needs.changes.outputs.full == 'true' && (needs.verify-published.result == 'success' || (needs.verify-published.result == 'skipped' && (github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/sdks/dart/v')))) }}",
+			contracts: []string{
+				"python3 sdks/dart/offline/tool/release_contract.py --check-parent",
+				`--parent-candidate "$archive"`,
+				`--parent-sha256 "$(sha256sum "$archive" | cut -d ' ' -f 1)"`,
+				"--require-hosted",
+				`git archive "$GITHUB_SHA:sdks/dart/offline"`,
+				`PUB_CACHE="$isolated_pub_cache" dart pub get --enforce-lockfile`,
+				"dart pub publish --dry-run",
+				`cp "$source_dir/pubspec.lock" "$package_dir/pubspec.lock"`,
+				`PUB_CACHE="$isolated_pub_cache" dart pub get --enforce-lockfile --no-example`,
+				`PUB_CACHE="$isolated_pub_cache" dart analyze lib`,
+				`echo 'qualified=true' >> "$GITHUB_OUTPUT"`,
+			},
+		},
+		"offline-release-preflight": {
+			needs:       []string{"gate", "offline-hosted"},
+			permissions: map[string]string{"contents": "read"},
+			condition:   "${{ !cancelled() && needs.gate.result == 'success' && needs.offline-hosted.result == 'success' && needs.offline-hosted.outputs.qualified == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}",
 			contracts: []string{
 				`[[ "$TAG" =~ ^sdks/dart/offline/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`,
 				`test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$GITHUB_SHA"`,
@@ -285,7 +303,8 @@ func TestDartPublishingContractGate(t *testing.T) {
 				"dart pub get --enforce-lockfile",
 				`dart pub publish -C "$source_dir" --to-archive="$archive"`,
 				"python3 sdks/dart/offline/tool/release_contract.py",
-				`PUB_CACHE="$isolated_pub_cache" dart pub get --no-example`,
+				`PUB_CACHE="$isolated_pub_cache" dart pub get --enforce-lockfile --no-example`,
+				`cp "$source_dir/pubspec.lock" "$package_dir/pubspec.lock"`,
 				"python3 sdks/dart/scripts/release.py preflight",
 				"--package lantern_client_offline",
 			},
@@ -372,6 +391,20 @@ func TestDartPublishingContractGate(t *testing.T) {
 			}
 		})
 	}
+	if definition.Jobs["offline-hosted"].Outputs["qualified"] != "${{ steps.archive.outputs.qualified }}" {
+		t.Error("hosted readiness must not be substituted for completed offline archive qualification")
+	}
+	for _, need := range definition.Jobs["gate"].Needs {
+		if need == "offline-hosted" || need == "verify-published" {
+			t.Error("source Gate must precede hosted publication prerequisites")
+		}
+	}
+	for _, step := range definition.Jobs["offline-test"].Steps {
+		if strings.Contains(step.Run, "--parent-candidate") || strings.Contains(step.Run, "git archive") {
+			t.Error("paired-source offline job must not resolve the hosted offline archive before parent publication")
+		}
+	}
+
 	for name, job := range definition.Jobs {
 		if job.Permissions["id-token"] == "write" && name != "publish" && name != "publish-offline" {
 			t.Errorf("unexpected OIDC authority in job %s", name)
@@ -447,7 +480,7 @@ func TestSDKManualDispatchGate(t *testing.T) {
 			tags: []string{"sdks/dart/v*.*.*", "sdks/dart/offline/v*.*.*"},
 			releaseGuards: map[string]string{
 				"release-preflight":         "${{ !cancelled() && needs.gate.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v') }}",
-				"offline-release-preflight": "${{ !cancelled() && needs.gate.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}",
+				"offline-release-preflight": "${{ !cancelled() && needs.gate.result == 'success' && needs.offline-hosted.result == 'success' && needs.offline-hosted.outputs.qualified == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}",
 			},
 		},
 		{
@@ -628,7 +661,7 @@ func TestDartWorkflowGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read CONTRIBUTING.md: %v", err)
 	}
-	if !strings.Contains(string(contributing), "lib test tool && dart pub get --enforce-lockfile") {
+	if !strings.Contains(string(contributing), "lib test tool && python3 tool/paired_source_gate.py") {
 		t.Error("documented offline format gate does not include tool sources")
 	}
 	if strings.Contains(text, "flutter build apk --debug") {

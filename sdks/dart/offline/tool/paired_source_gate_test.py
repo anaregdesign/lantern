@@ -46,6 +46,16 @@ class PairedSourceOwnershipTests(unittest.TestCase):
         self.assertEqual(self.lock.read_bytes(), b"hosted-original\n")
         self.assertFalse(self.state.exists())
 
+    def test_paired_success_restores_stale_hosted_lock_without_claiming_hosted_proof(self):
+        with patch.object(gate.subprocess, 'run') as run:
+            gate.prepare()
+            self.assertEqual(self.lock.read_bytes(), self.source.read_bytes())
+            run.assert_called_once_with(['dart', 'pub', 'get', '--enforce-lockfile'], cwd=gate.PACKAGE, check=True)
+            gate.cleanup()
+        self.assertEqual(self.lock.read_bytes(), b'hosted-original\n')
+        self.assertFalse(self.override.exists())
+        self.assertFalse(self.state.exists())
+
     def test_cleanup_refuses_modified_override_and_preserves_recovery(self):
         with patch.object(gate.subprocess, "run") as run:
             gate.prepare()
