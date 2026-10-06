@@ -143,9 +143,8 @@ go test ./...                    # root module
   && dart doc --output "$(mktemp -d)" --validate-links \
   && dart pub publish --dry-run)
 (cd sdks/dart/offline && dart format --output=none --set-exit-if-changed \
-  lib test tool && dart pub get --enforce-lockfile \
-  && dart analyze && dart test \
-  && dart doc --output "$(mktemp -d)" --validate-links)
+  lib test tool && python3 tool/paired_source_gate.py -- bash -c \
+  'dart analyze && dart test && dart doc --output "$(mktemp -d)" --validate-links')
 (cd sdks/dart/example && dart format --output=none --set-exit-if-changed \
   lib test integration_test \
   && flutter pub get --enforce-lockfile && flutter analyze && flutter test)
@@ -201,8 +200,17 @@ release-tag, and Go language/toolchain directive changes; ordinary Go dependency
 changes skip native jobs. Ordinary prose-only changes skip package and native jobs. The stable `Gate` job checks
 both decisions independently. The experimental
 `sdks/dart/offline/` child runs from its own working directory at minimum/current
-Dart, including fresh-process canonical snapshot tests and real-server
-committed-response-loss replay. Android and iOS jobs upload content-free JSON
+Dart, including locked paired-source resolution, fresh-process canonical snapshot
+tests and real-server committed-response-loss replay. These checks and the isolated parent archive precede
+parent publication. The separate read-only `offline-hosted` job follows the source
+`Gate`; on a parent tag push it also waits for `verify-published`. It compares the
+hosted parent archive bytes before checking the committed offline hosted lock,
+then resolves the offline archive with an isolated cache and no overrides. Missing
+parent versions and stale locks report **pending** without claiming hosted archive
+acceptance on PR/main/manual or parent-tag runs. They block an offline tag push.
+Transport errors, archive mismatches, and invalid hosted-source/checksum evidence
+fail the hosted job. The source Gate does not depend on hosted readiness.
+Android and iOS jobs upload content-free JSON
 manifests bound to the exact commit, workflow run, Flutter/Dart revisions,
 application package, platform kind, scenario set, and pass result. Simulator
 manifests do not substitute for the sanitized exact-revision physical-device
@@ -624,15 +632,20 @@ number rather than force-moving the tag.
   including on reruns of an existing version. Only then may a separate job with
   `contents: write` and no OIDC create/update the GitHub Release; its title is exactly
   the tag. A missing package, failed publication, or differing/missing published
-  archive blocks the Release.
+  archive blocks the Release. Paired-source offline validation remains required;
+  its future hosted parent dependency cannot block this parent publication.
 - `sdks/dart/offline/vX.Y.Z` independently publishes the storage-neutral
   `lantern_client_offline` core owned by #1162. It does not include SQLite,
   encryption, secure storage, or another production adapter; #1163 owns the
   separately versioned SQLite package. The offline tag must match its
   `pubspec.yaml` version and `CHANGELOG.md` heading. It triggers the full
   minimum/current Dart, real-wire, archive, Android emulator, and iOS simulator
-  Gate in `dart-sdk.yml`. A separate offline preflight builds an isolated
-  archive from the exact tag, checks its hosted parent dependency and contents,
+  Gate in `dart-sdk.yml`. The separate `offline-hosted` job must finish with
+  `qualified=true` after verifying the already-published parent bytes and the
+  refreshed hosted lock. A pending, failed or unexpectedly skipped prerequisite
+  blocks offline preflight. That preflight retains the physical Android/iOS matrix
+  and builds an isolated archive from the exact tag, checks its hosted parent
+  dependency and contents,
   resolves it outside the checkout, and checks pub.dev state. The package
   already exists on pub.dev; later versions use the separate offline OIDC
   publish job only after a package admin verifies its private automated
@@ -659,8 +672,15 @@ uses hosted `lantern_client ^0.3.3` and completed #1399. Published 0.5.0 adds
 targeted contribution Delete with hosted `lantern_client ^0.4.1`; #1586 completed
 its frozen-source, physical and publication gates. The new 0.6.0 candidate binds
 typed undisclosed acceptance to parent 0.5.0 source and future hosted `^0.5.0`.
-Its source, hosted archive, final-source, physical and publication exits are
-independent; previous release evidence does not qualify this candidate. The maintained Flutter example and
+The committed offline hosted lock still records parent 0.4.1, which does not satisfy
+`^0.5.0`; it is pending release preparation, not hosted 0.6.0 acceptance.
+Publish and verify parent 0.5.0 first when separately authorized, then generate
+and review the offline hosted lock in a follow-up preparation change before
+freezing the offline device candidate. The bounded commands are in the
+[lock-refresh procedure](sdks/dart/example/offline-release-resume.md#parent-publication-and-hosted-lock-refresh).
+`paired_source_gate.py --refresh-lock` updates only the paired-source lock; it
+cannot refresh or qualify the hosted lock. Its source, hosted archive, final-source,
+physical and publication exits are independent; previous release evidence does not qualify this candidate. The maintained Flutter example and
 unpublished SQLite adapter use local path overrides; resolve the offline
 candidate archive against the hosted parent outside the checkout without
 a path override. Before tagging, confirm the target version and tag are

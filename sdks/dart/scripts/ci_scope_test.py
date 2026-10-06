@@ -35,8 +35,9 @@ def release_job_runs(expression, context, *, canceled=False):
     # the actual release chain: evidence-only skipped -> Gate succeeded.
     if not re.search(r'\b(?:success|failure|always|cancelled)\(', expression):
         return False
-    parsed = ast.parse(expression.replace('&&', ' and ').replace(
-        '!cancelled()', 'not cancelled()'), mode='eval')
+    expression = re.sub(r'needs\.([\w-]+)', r"needs['\1']", expression)
+    expression = re.sub(r'!(?!=)', 'not ', expression)
+    parsed = ast.parse(expression.replace('&&', ' and ').replace('||', ' or '), mode='eval')
 
     def value(node):
         if isinstance(node, ast.Constant):
@@ -49,10 +50,14 @@ def release_job_runs(expression, context, *, canceled=False):
             return value(node.value)[value(node.slice)]
         if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
             return all(value(item) for item in node.values)
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+            return any(value(item) for item in node.values)
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             return not value(node.operand)
         if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
             return value(node.left) == value(node.comparators[0])
+        if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.NotEq):
+            return value(node.left) != value(node.comparators[0])
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id == 'cancelled' and not node.args:
                 return canceled
@@ -82,9 +87,60 @@ class ReleaseConditionsTest(unittest.TestCase):
                 ('success', 'push', other + '0.4.1', False, False),
             ):
                 with self.subTest(job=job, result=result, event=event, ref=ref, canceled=canceled):
-                    context = {'needs': {'gate': {'result': result}},
+                    context = {'needs': {'gate': {'result': result},
+                                        'offline-hosted': {'result': 'success', 'outputs': {'qualified': 'true'}}},
                                'github': {'event_name': event, 'ref': ref}}
                     self.assertEqual(release_job_runs(expression, context, canceled=canceled), expected)
+
+    def test_hosted_qualification_waits_for_parent_equality_and_survives_expected_skips(self):
+        expression = release_condition('offline-hosted')
+        parent = 'refs/tags/sdks/dart/v0.5.0'
+        for event, ref, verification, expected in (
+            ('push', parent, 'success', True),
+            ('push', parent, 'failure', False),
+            ('push', parent, 'cancelled', False),
+            ('push', parent, 'skipped', False),
+            ('push', 'refs/tags/sdks/dart/offline/v0.6.0', 'skipped', True),
+            ('push', 'refs/heads/main', 'skipped', True),
+            ('pull_request', 'refs/pull/1/merge', 'skipped', True),
+            ('workflow_dispatch', parent, 'skipped', True),
+            ('workflow_dispatch', 'refs/tags/sdks/dart/offline/v0.6.0', 'skipped', True),
+            ('workflow_dispatch', 'refs/heads/main', 'skipped', True),
+        ):
+            for gate, full, canceled in (('success', 'true', False), ('failure', 'true', False),
+                                         ('skipped', 'true', False), ('success', 'false', False),
+                                         ('success', 'true', True)):
+                with self.subTest(event=event, ref=ref, verification=verification, gate=gate, full=full):
+                    context = {'github': {'event_name': event, 'ref': ref}, 'needs': {
+                        'gate': {'result': gate}, 'changes': {'outputs': {'full': full}},
+                        'verify-published': {'result': verification}}}
+                    self.assertEqual(release_job_runs(expression, context, canceled=canceled),
+                                     expected and gate == 'success' and full == 'true' and not canceled)
+
+    def test_offline_preflight_never_accepts_pending_failed_or_skipped_hosted_proof(self):
+        expression = release_condition('offline-release-preflight')
+        for result, qualified in (('failure', 'true'), ('cancelled', 'true'),
+                                  ('skipped', 'true'), ('success', 'false'), ('success', None)):
+            with self.subTest(result=result, qualified=qualified):
+                context = {'github': {'event_name': 'push', 'ref': 'refs/tags/sdks/dart/offline/v0.6.0'},
+                           'needs': {'gate': {'result': 'success'}, 'offline-hosted': {
+                               'result': result, 'outputs': {'qualified': qualified}}}}
+                self.assertFalse(release_job_runs(expression, context))
+
+    def test_published_verification_rejects_failed_publish_and_unexpected_skips(self):
+        for job, preflight, publish in (
+            ('verify-published', 'release-preflight', 'publish'),
+            ('verify-offline-published', 'offline-release-preflight', 'publish-offline'),
+        ):
+            for result, required, expected in (
+                ('success', 'true', True), ('skipped', 'false', True),
+                ('skipped', 'true', False), ('failure', 'false', False),
+                ('cancelled', 'true', False), ('skipped', None, False),
+            ):
+                with self.subTest(job=job, result=result, required=required):
+                    context = {'needs': {preflight: {'result': 'success', 'outputs': {'publish_required': required}},
+                                         publish: {'result': result}}}
+                    self.assertEqual(release_job_runs(release_condition(job), context), expected)
 
     def test_publish_survives_skipped_ancestor_and_requires_verified_artifact(self):
         for job, preflight in (
@@ -224,6 +280,24 @@ class ScopeTest(unittest.TestCase):
                     failed = dict(env, **{name: result})
                     self.assertNotEqual(subprocess.run(['bash', '-c', script], env=failed,
                                                        capture_output=True).returncode, 0)
+
+    def test_source_gate_keeps_package_native_and_paired_jobs_mandatory(self):
+        workflow = Path(__file__).resolve().parents[3] / '.github/workflows/dart-sdk.yml'
+        gate = workflow.read_text().split('  gate:\n')[1].split('  release-preflight:\n')[0]
+        script = '\n'.join(line[10:] for line in gate.split('        run: |\n')[1].splitlines())
+        with tempfile.TemporaryDirectory() as directory:
+            env = dict(os.environ, FULL='true', MOBILE='true', EVIDENCE_ONLY='false', DOCS_ONLY='false',
+                       DOCS_RESULT='skipped', EVIDENCE_RESULT='skipped',
+                       GITHUB_STEP_SUMMARY=str(Path(directory) / 'summary'))
+            required = ('CHANGES_RESULT', 'TEST_RESULT', 'MINIMUM_DART_RESULT', 'OFFLINE_TEST_RESULT',
+                        'OFFLINE_MINIMUM_DART_RESULT', 'OFFLINE_SQLITE_RESULT', 'ANDROID_RESULT', 'IOS_RESULT')
+            env.update(dict.fromkeys(required, 'success'))
+            self.assertEqual(subprocess.run(['bash', '-c', script], env=env, capture_output=True).returncode, 0)
+            for name in required:
+                for result in ('failure', 'cancelled', 'skipped'):
+                    with self.subTest(name=name, result=result):
+                        self.assertNotEqual(subprocess.run(['bash', '-c', script],
+                            env=dict(env, **{name: result}), capture_output=True).returncode, 0)
 
     def test_workflow_dispatch_requires_both_gates_without_push_range(self):
         with tempfile.TemporaryDirectory() as directory:
