@@ -23,26 +23,33 @@ import (
 // SecurityServiceOptions comes from certified Server composition, never clients.
 // A nil Store means explicitly OFF; enabled-but-unavailable never becomes OFF.
 type SecurityServiceOptions struct {
-	Store          *security.Store
-	ValidateIssuer func(context.Context, security.Issuer) error
-	Enforced       func(security.ChangeResult) bool
-	Now            func() time.Time
-	Ready          func(context.Context, *security.Revision) bool
+	Store               *security.Store
+	ValidateIssuer      func(context.Context, security.Issuer) error
+	Enforced            func(security.ChangeResult) bool
+	Now                 func() time.Time
+	Ready               func(context.Context, *security.Revision) bool
+	BeginAuthorization  func(context.Context, *security.Admission, security.ManagementBinding) (security.AuthorizationStart, string, error)
+	ReadAuthorization   func(context.Context, *security.Admission, [32]byte) (security.AuthorizationStatus, error)
+	VerifyAuthorization func([]byte, security.ManagementBinding, time.Time) error
 }
 
 type SecurityConnectHandler struct {
-	store          *security.Store
-	validateIssuer func(context.Context, security.Issuer) error
-	enforced       func(security.ChangeResult) bool
-	cursors        cipher.AEAD
-	now            func() time.Time
-	ready          func(context.Context, *security.Revision) bool
+	store               *security.Store
+	validateIssuer      func(context.Context, security.Issuer) error
+	enforced            func(security.ChangeResult) bool
+	cursors             cipher.AEAD
+	now                 func() time.Time
+	ready               func(context.Context, *security.Revision) bool
+	beginAuthorization  func(context.Context, *security.Admission, security.ManagementBinding) (security.AuthorizationStart, string, error)
+	readAuthorization   func(context.Context, *security.Admission, [32]byte) (security.AuthorizationStatus, error)
+	verifyAuthorization func([]byte, security.ManagementBinding, time.Time) error
 }
 
 var _ graphv1connect.LanternSecurityServiceHandler = (*SecurityConnectHandler)(nil)
 
 func NewSecurityConnectHandler(options SecurityServiceOptions) (*SecurityConnectHandler, error) {
 	handler := &SecurityConnectHandler{store: options.Store, validateIssuer: options.ValidateIssuer, enforced: options.Enforced, ready: options.Ready, now: time.Now}
+	handler.beginAuthorization, handler.readAuthorization, handler.verifyAuthorization = options.BeginAuthorization, options.ReadAuthorization, options.VerifyAuthorization
 	if options.Now != nil {
 		handler.now = options.Now
 	}
@@ -363,8 +370,8 @@ func (h *SecurityConnectHandler) ValidateIssuer(ctx context.Context, req *connec
 	if err = securityRequestError(req.Msg); err != nil {
 		return nil, err
 	}
-	if err = h.recentAuthentication(admission); err != nil {
-		return nil, err
+	if err = admission.CheckIssuerProbe(ctx, admission.Revision(), h.now()); err != nil {
+		return nil, connect.NewError(securityErrorCode(err), err)
 	}
 	issuer, err := decodeSecurityIssuer(req.Msg.Issuer)
 	if err != nil {
@@ -383,27 +390,19 @@ func (h *SecurityConnectHandler) ValidateIssuer(ctx context.Context, req *connec
 	}
 	return connect.NewResponse(&pb.ValidateIssuerResponse{Valid: true}), nil
 }
-func (h *SecurityConnectHandler) recentAuthentication(admission *security.Admission) error {
-	now := h.now()
-	if admission.AuthTime().IsZero() || admission.AuthTime().After(now) || now.Sub(admission.AuthTime()) > security.RecentAuthenticationLifetime {
-		return connect.NewError(connect.CodeFailedPrecondition, security.ErrRecentAuthentication)
-	}
-	return nil
-}
-
 func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *connect.Request[pb.ApplySecurityChangesRequest]) (*connect.Response[pb.ApplySecurityChangesResponse], error) {
 	admission, err := h.admission(ctx, true)
 	if err != nil {
 		return nil, err
 	}
 	if err = securityRequestError(req.Msg); err != nil {
-		return nil, err
+		return nil, h.precommitRejectionError(err, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 	}
 	if len(req.Msg.ChangeId) != 16 || req.Msg.ExpectedRevision == 0 || len(req.Msg.Changes) == 0 || len(req.Msg.Changes) > security.MaxTransactionChanges {
-		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrInvalidImage)
+		return nil, h.precommitRejectionError(security.ErrInvalidImage, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 	}
-	if err = h.recentAuthentication(admission); err != nil {
-		return nil, err
+	if len(req.Msg.AuthorizationProof) != 0 && len(req.Msg.AuthorizationProof) != 32 {
+		return nil, h.precommitRejectionError(security.ErrInvalidImage, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 	}
 	var changeID [16]byte
 	copy(changeID[:], req.Msg.ChangeId)
@@ -411,7 +410,24 @@ func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *
 	for i, change := range req.Msg.Changes {
 		changes[i], err = decodeSecurityChange(change)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, h.precommitRejectionError(err, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
+		}
+	}
+	management := h.managementRequest(admission, req.Msg.ExpectedRevision, changeID, changes)
+	prepared, err := h.store.PrepareManagement(ctx, management)
+	if err != nil {
+		return nil, h.managementApplyError(err, security.ManagementBinding{}, req.Msg.ChangeId, req.Msg.ExpectedRevision)
+	}
+	if !prepared.Retained && prepared.AuthorizationRequired {
+		if h.verifyAuthorization == nil {
+			return nil, operationAuthorizationError(security.ErrOperationAuthorization, prepared.Binding)
+		}
+		if err := h.verifyAuthorization(req.Msg.AuthorizationProof, prepared.Binding, h.now()); err != nil {
+			return nil, operationAuthorizationError(err, prepared.Binding)
+		}
+		proof := append([]byte(nil), req.Msg.AuthorizationProof...)
+		management.Authorize = func(binding security.ManagementBinding, now time.Time) error {
+			return h.verifyAuthorization(proof, binding, now)
 		}
 	}
 	// No network fetch for a stale CAS, invalid or unauthenticated command.
@@ -428,7 +444,7 @@ func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *
 					}
 				}
 				if err = h.validateIssuer(ctx, issuer); err != nil {
-					return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("issuer validation failed"))
+					return nil, h.precommitRejectionError(errors.New("issuer validation failed"), pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_ISSUER_VALIDATION, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 				}
 			}
 		}
@@ -436,9 +452,9 @@ func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *
 	if err = admission.Check(ctx, h.now()); err != nil {
 		return nil, connect.NewError(securityErrorCode(err), err)
 	}
-	result, err := h.store.Manage(ctx, security.ManagementRequest{ExpectedRevision: req.Msg.ExpectedRevision, ChangeID: changeID, Actor: admission.Identity(), AuthTime: admission.AuthTime(), Now: h.now(), Changes: changes})
+	result, err := h.store.Manage(ctx, management)
 	if err != nil {
-		return nil, connect.NewError(securityErrorCode(err), err)
+		return nil, h.managementApplyError(err, prepared.Binding, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 	}
 	digest, generation := result.Digest, admission.Revision().Generation()
 	response := &pb.ApplySecurityChangesResponse{Version: &pb.SecurityVersion{Revision: result.Revision, Digest: append([]byte(nil), digest[:]...), Generation: append([]byte(nil), generation[:]...)}, Applied: make([]bool, len(changes)), Replayed: result.Replayed, Enforcement: pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING}
@@ -452,9 +468,12 @@ func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *
 }
 func (h *SecurityConnectHandler) ApplySecurityChange(ctx context.Context, req *connect.Request[pb.ApplySecurityChangeRequest]) (*connect.Response[pb.ApplySecurityChangeResponse], error) {
 	if err := securityRequestError(req.Msg); err != nil {
-		return nil, err
+		if _, admissionErr := h.admission(ctx, true); admissionErr != nil {
+			return nil, admissionErr
+		}
+		return nil, h.precommitRejectionError(err, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
 	}
-	batch := connect.NewRequest(&pb.ApplySecurityChangesRequest{ExpectedRevision: req.Msg.ExpectedRevision, ChangeId: req.Msg.ChangeId, Changes: []*pb.SecurityChange{req.Msg.Change}})
+	batch := connect.NewRequest(&pb.ApplySecurityChangesRequest{ExpectedRevision: req.Msg.ExpectedRevision, ChangeId: req.Msg.ChangeId, Changes: []*pb.SecurityChange{req.Msg.Change}, AuthorizationProof: req.Msg.AuthorizationProof})
 	result, err := h.ApplySecurityChanges(ctx, batch)
 	if err != nil {
 		return nil, err
@@ -545,7 +564,9 @@ func (h *SecurityConnectHandler) GetSecurityChangeStatus(ctx context.Context, re
 		return nil, connect.NewError(securityErrorCode(err), err)
 	}
 	digest, generation := result.Digest, admission.Revision().Generation()
-	response := &pb.GetSecurityChangeStatusResponse{Version: &pb.SecurityVersion{Revision: result.Revision, Digest: append([]byte(nil), digest[:]...), Generation: append([]byte(nil), generation[:]...)}, Enforcement: pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING}
+	// Retained history proves the original commit, not request-aligned item
+	// outcomes or the current policy. Keep those acknowledgements on Apply.
+	response := &pb.GetSecurityChangeStatusResponse{Version: &pb.SecurityVersion{Revision: result.Revision, Digest: append([]byte(nil), digest[:]...), Generation: append([]byte(nil), generation[:]...)}, ChangeId: append([]byte(nil), id[:]...), Enforcement: pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING}
 	if h.enforced != nil && h.enforced(result) {
 		response.Enforcement = pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED
 	}

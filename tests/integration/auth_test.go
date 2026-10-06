@@ -805,13 +805,25 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 				http.Error(w, "invalid", http.StatusBadRequest)
 				return
 			}
+			if r.Form.Get("grant_type") == "client_credentials" {
+				// Fixture issuance contract: this OAuth client cannot select or
+				// impersonate a human subject, and never receives an ID token.
+				if r.Form.Get("client_id") != "wire-worker" || r.Form.Get("requested_sub") != "" {
+					http.Error(w, "invalid client profile", http.StatusBadRequest)
+					return
+				}
+				now := f.clock()
+				claims := map[string]any{"iss": f.provider.URL, "sub": "oauth-client:wire-worker", "aud": "api", "client_id": "wire-worker", "jti": "client-wire", "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(), "auth_time": now.Unix()}
+				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": f.signedToken(claims, "at+jwt"), "token_type": "Bearer"})
+				return
+			}
 			f.mu.Lock()
 			code, known := f.codes[r.Form.Get("code")]
 			delete(f.codes, r.Form.Get("code"))
 			f.mu.Unlock()
 			challenge := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
 			callback := sha256.Sum256([]byte(f.provider.URL))
-			if !known || r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("client_id") != "admin" || r.Form.Get("redirect_uri") != fmt.Sprintf("https://admin.example/auth/callback/%x", callback) || base64.RawURLEncoding.EncodeToString(challenge[:]) != code.challenge {
+			if !known || strings.HasPrefix(code.subject, "oauth-client:") || r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("client_id") != "admin" || r.Form.Get("redirect_uri") != fmt.Sprintf("https://admin.example/auth/callback/%x", callback) || base64.RawURLEncoding.EncodeToString(challenge[:]) != code.challenge {
 				http.Error(w, "invalid", http.StatusBadRequest)
 				return
 			}
@@ -875,7 +887,11 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 	for name, value := range map[string]string{
 		"LANTERN_AUTH_MODE": "oidc", "LANTERN_OIDC_ADMIN_ISSUER": f.provider.URL, "LANTERN_OIDC_ADMIN_SUBJECTS": `["admin","other"]`,
 		"LANTERN_OIDC_CLIENT_ID": "admin", "LANTERN_OIDC_API_AUDIENCE": "api", "LANTERN_OIDC_ALGORITHMS": `["EdDSA"]`, "LANTERN_OIDC_BROWSER_ORIGIN": "https://admin.example",
-		"LANTERN_OIDC_REDIRECT_URI": fmt.Sprintf("https://admin.example/auth/callback/%x", callback), "LANTERN_OIDC_ROOT_CA_FILE": filepath.Join(dir, "provider.pem"), "LANTERN_OIDC_PRIVATE_ORIGINS": string(origins),
+		// This deterministic issuer reserves enrolled human subjects; its
+		// client-credentials profile uses disjoint client subjects. Dedicated
+		// mixed-profile tests below revoke this qualification and fail closed.
+		"LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED": "true",
+		"LANTERN_OIDC_REDIRECT_URI":                      fmt.Sprintf("https://admin.example/auth/callback/%x", callback), "LANTERN_OIDC_ROOT_CA_FILE": filepath.Join(dir, "provider.pem"), "LANTERN_OIDC_PRIVATE_ORIGINS": string(origins),
 		"LANTERN_OIDC_TRUSTED_PROXY_IPS": `["127.0.0.1"]`,
 		"LANTERN_SECURITY_STORE_MODE":    "fresh", "LANTERN_SECURITY_STORE_PATH": filepath.Join(dir, "sys.wal"), "LANTERN_SECURITY_GENERATION": "01000000000000000000000000000000",
 		"LANTERN_SECURITY_NODE_ROLE": "writer", "LANTERN_SECURITY_WRITER_ENDPOINT": "https://peer.example", "LANTERN_SECURITY_WRITER_KEY_FILE": filepath.Join(dir, "writer.key"), "LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE": filepath.Join(dir, "writer.pub"),
@@ -1001,6 +1017,267 @@ func securityWireRequest[T any](token string, message *T) *connect.Request[T] {
 		req.Header().Set("Authorization", "Bearer "+token)
 	}
 	return req
+}
+
+// Status proves only the retained original commit. It cannot reconstruct item
+// outcomes or certify that the policy introduced by that commit is still current.
+func TestAuth_OIDCSecurityChangeCommitProofRealConnect(t *testing.T) {
+	f := newOIDCControlWireFixture(t)
+	admin := f.token(t, "admin", nil)
+	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := principal.Msg.Version.Revision
+	var original *pb.SecurityVersion
+	var originalID []byte
+	for _, count := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d_changes", count), func(t *testing.T) {
+			id := bytes.Repeat([]byte{byte(70 + count)}, 16)
+			changes := make([]*pb.SecurityChange, count)
+			for i := range changes {
+				changes[i] = &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: fmt.Sprintf("proof_%d_%d", count, i), Name: "Original policy"}}}
+			}
+			var committed *pb.SecurityVersion
+			if count == 1 {
+				apply, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: revision, ChangeId: id, Change: changes[0]}))
+				if err != nil || !apply.Msg.Applied {
+					t.Fatal("single Apply", apply, err)
+				}
+				committed = apply.Msg.Version
+			} else {
+				apply, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: revision, ChangeId: id, Changes: changes}))
+				if err != nil || len(apply.Msg.Applied) != count || !apply.Msg.Applied[0] || !apply.Msg.Applied[1] {
+					t.Fatal("multi Apply", apply, err)
+				}
+				committed = apply.Msg.Version
+			}
+			if committed.Revision != revision+1 {
+				t.Fatal("fixed-writer CAS revision", committed)
+			}
+			status, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: id}))
+			if err != nil || !proto.Equal(status.Msg.Version, committed) || !bytes.Equal(status.Msg.ChangeId, id) || status.Msg.Enforcement != pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED {
+				t.Fatal("retained commit proof", status, err)
+			}
+			fields := status.Msg.ProtoReflect().Descriptor().Fields()
+			if fields.ByName("applied") != nil || fields.ByName("replayed") != nil {
+				t.Fatal("Status claims unavailable Apply evidence")
+			}
+			if status.Header().Get("Cache-Control") != "no-store" {
+				t.Fatal("proof was cacheable")
+			}
+			revision = committed.Revision
+			if count == 1 {
+				original, originalID = proto.Clone(committed).(*pb.SecurityVersion), bytes.Clone(id)
+			}
+		})
+	}
+	// Change the original policy and show that status still names the original cut.
+	update, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: revision, ChangeId: bytes.Repeat([]byte{74}, 16), Change: &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteRole{DeleteRole: "proof_1_0"}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision = update.Msg.Version.Revision
+	status, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: originalID}))
+	if err != nil || !proto.Equal(status.Msg.Version, original) {
+		t.Fatal("current policy replaced original proof", status, err)
+	}
+	if _, err := f.client.GetSecurityChangeStatus(t.Context(), connect.NewRequest(&pb.GetSecurityChangeStatusRequest{ChangeId: originalID})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatal("anonymous proof", err)
+	}
+	if _, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: []byte{1}})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatal("malformed ID", err)
+	}
+	if _, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: bytes.Repeat([]byte{99}, 16)})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatal("unknown ID proved rollback", err)
+	}
+	// Retained history is bounded. Retired IDs remain indeterminate, including
+	// after later accepted changes; status never creates a replacement mutation.
+	for i := 0; i < 256; i++ {
+		id := make([]byte, 16)
+		id[0], id[1], id[2] = byte(i), byte(i>>8), 200
+		apply, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: revision, ChangeId: id, Change: &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "history", Name: fmt.Sprint(i)}}}}))
+		if err != nil {
+			t.Fatal(i, err)
+		}
+		revision = apply.Msg.Version.Revision
+	}
+	if _, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: originalID})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatal("retired ID proved rollback", err)
+	}
+	current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil || current.Msg.Version.Revision != revision {
+		t.Fatal("status mutated state", err)
+	}
+}
+
+// The real Admin adapter/controller uses the authenticated browser control
+// mount against the production Server and deterministic TLS-verified IdP.
+// The trusted gateway hop is represented as in the other browser wire tests;
+// separate Playwright tests cover rendering, not external-provider acceptance.
+func TestAuth_OIDCAdminCommitProofRecoveryRealConnect(t *testing.T) {
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Skip("Bun is required for the Admin recovery wire gate")
+	}
+	f := newOIDCControlWireFixture(t)
+	start := f.browserLoginStart(t, nil, false)
+	callback := f.browserCallbackPath(t, start, "admin", false)
+	response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback, start.Cookies(), ""))
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatal("browser login", response.StatusCode)
+	}
+	_ = response.Body.Close()
+	var cookies []string
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == "__Host-lantern-session" || cookie.Name == "__Host-lantern-csrf" {
+			cookies = append(cookies, cookie.Name+"="+cookie.Value)
+		}
+	}
+	csrf := browserCookieValue(response.Cookies(), "__Host-lantern-csrf")
+	if len(cookies) != 2 || csrf == "" {
+		t.Fatal("browser session cookies missing")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := func(path string) string {
+		absolute, err := filepath.Abs(filepath.Join(cwd, "../../", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := json.Marshal(absolute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(encoded)
+	}
+	script := `import { SecurityManagementController, SecurityChangeRecovery } from ` + entry("admin/app/lib/client/usecase/security/security-management.ts") + `;
+import { createSecurityManagementClient } from ` + entry("admin/app/lib/client/infrastructure/api/security-management-client.ts") + `;
+const check = (value, message) => { if (!value) throw new Error(message); };
+const originalFetch = globalThis.fetch;
+let sent = 0, statusCalls = 0, ids = 0, dropApply = false;
+const appliedIDs = [], statusIDs = [];
+globalThis.fetch = async (input, init) => {
+ const request = new Request(input, init);
+ request.headers.set("Cookie", process.env.LANTERN_RECOVERY_COOKIE);
+ request.headers.set("Host", "admin.example");
+ request.headers.set("X-Forwarded-Host", "admin.example");
+ request.headers.set("X-Forwarded-Proto", "https");
+ request.headers.set("Origin", "https://admin.example");
+ request.headers.set("Sec-Fetch-Site", "same-origin");
+ const method = new URL(request.url).pathname.split("/").at(-1);
+ const body = await request.clone().json();
+ if (method === "ApplySecurityChanges") { sent++; appliedIDs.push(body.changeId); }
+ if (method === "GetSecurityChangeStatus") { statusCalls++; statusIDs.push(body.changeId); }
+ const response = await originalFetch(request);
+ if (method === "ApplySecurityChanges" && dropApply) {
+  check(response.ok, "Apply must actually commit before dropping its response");
+  await response.arrayBuffer();
+  throw new TypeError("committed Apply response dropped");
+ }
+ return response;
+};
+for (const lost of [false, true]) {
+ dropApply = lost;
+ const recovery = new SecurityChangeRecovery();
+ const scope = new AbortController();
+ const port = createSecurityManagementClient(process.env.LANTERN_RECOVERY_URL, scope.signal, process.env.LANTERN_RECOVERY_CSRF);
+ const newID = port.newChangeId;
+ port.newChangeId = () => { ids++; return newID(); };
+ const before = new SecurityManagementController(port, "roles", scope.signal, recovery, "original-browser-session");
+ await before.load();
+ check(before.getSnapshot().phase === "ready", "actual browser role inspection");
+ const expected = before.getSnapshot().version.revision;
+ const changes = Array.from({length: lost ? 2 : 1}, (_, i) => ({ $typeName: "graph.v1.SecurityChange", operation: {case: "putRole", value: {$typeName: "graph.v1.SecurityRole", id: "admin_recovery_" + lost + "_" + i, name: "Reviewed role", rules: [], envOwned: false}}}));
+ await before.review("Reviewed recovery", changes);
+ await before.apply();
+ const originalID = before.changeId();
+ check(originalID.length === 32, "original immutable change ID");
+ check(before.getSnapshot().mutation === (lost ? "unconfirmed" : "enforced"), "Apply acknowledgement boundary");
+ const acknowledgement = before.getSnapshot().result?.applied?.slice();
+ before.dispose();
+ const after = new SecurityManagementController(port, "roles", scope.signal, recovery, "original-browser-session");
+ check(after.changeId() === originalID, "remount retained original ID");
+ await after.checkStatus();
+ check(after.getSnapshot().mutation === "enforced", "actual Server retained proof accepted by Admin");
+ check(after.getSnapshot().result.version.revision === expected + 1n, "fixed writer original result version");
+ if (lost) {
+  check(after.getSnapshot().result.applied === undefined && after.getSnapshot().result.replayed === undefined, "status must not fabricate item outcomes or replay acknowledgement");
+ } else {
+  check(JSON.stringify(after.getSnapshot().result.applied) === JSON.stringify(acknowledgement), "status preserves original Apply outcomes");
+  check(after.getSnapshot().result.replayed === false, "status preserves original replay acknowledgement");
+ }
+ await after.checkStatus();
+ after.dispose();
+}
+check(sent === 2 && ids === 2 && statusCalls === 4, "status recovery allocated another ID or resent Apply");
+check(statusIDs[0] === appliedIDs[0] && statusIDs[1] === appliedIDs[0] && statusIDs[2] === appliedIDs[1] && statusIDs[3] === appliedIDs[1], "status used another change ID");
+// A real, competing ordinary commit after review makes the first Apply stale.
+// No response substitution or RPC mock supplies the typed rejection detail.
+dropApply = false;
+const scope = new AbortController();
+const recovery = new SecurityChangeRecovery();
+const port = createSecurityManagementClient(process.env.LANTERN_RECOVERY_URL, scope.signal, process.env.LANTERN_RECOVERY_CSRF);
+const newID = port.newChangeId;
+port.newChangeId = () => { ids++; return newID(); };
+const correction = new SecurityManagementController(port, "roles", scope.signal, recovery, "correction-browser-session");
+const roleChange = (id, name) => [{ $typeName: "graph.v1.SecurityChange", operation: {case: "putRole", value: {$typeName: "graph.v1.SecurityRole", id, name, rules: [], envOwned: false}}}];
+const sameVersion = (a, b) => a.revision === b.revision && Buffer.from(a.digest).equals(Buffer.from(b.digest)) && Buffer.from(a.generation).equals(Buffer.from(b.generation));
+await correction.load();
+const baseline = correction.getSnapshot().version;
+const auditBefore = await port.audit("", scope.signal);
+await correction.review("Original correction", roleChange("admin_correction", "Original draft"));
+check(correction.getSnapshot().review.approval === "ordinary", "real Prepare admitted ordinary change");
+const refusedReview = structuredClone(correction.getSnapshot().review);
+await port.apply({expectedRevision: baseline.revision, changeId: crypto.getRandomValues(new Uint8Array(16)), changes: roleChange("competing_commit", "Competing ordinary change")}, scope.signal);
+const afterCompeting = await port.roles("", scope.signal);
+check(afterCompeting.version.revision === baseline.revision + 1n, "competing commit advanced one revision");
+await correction.apply();
+check(correction.getSnapshot().mutation === "conflict" && correction.getSnapshot().review === undefined && correction.getSnapshot().version === undefined, "typed first refusal retires review and requires reload");
+check(correction.changeId() === "" && recovery.read("correction-browser-session") === undefined, "first refusal is not retained as uncertain work");
+check(sent === 4 && ids === 3, "one refused Apply after one explicit competing commit");
+const afterRefusal = await port.roles("", scope.signal);
+const auditAfterRefusal = await port.audit("", scope.signal);
+check(sameVersion(afterRefusal.version, afterCompeting.version), "refusal changed signed revision/cut");
+check(!afterRefusal.roles.some(role => role.id === "admin_correction"), "refused role effect escaped");
+check(auditAfterRefusal.records.length === auditBefore.records.length + 1, "refusal appended a committed audit entry");
+try { await port.status(refusedReview.changeId, scope.signal); throw new Error("refused ID acquired retained commit proof"); }
+catch (error) {
+ let statusError = error;
+ for (let depth = 0; depth < 4 && statusError?.code === undefined; depth++) statusError = statusError?.cause;
+ check(statusError?.code === 9 && statusError?.rawMessage === "security change is outside retained history", "refused ID must report the existing outside-retained-history contract");
+ check(port.failure(error) === "invalid" && port.precommitRejected(error) === undefined, "unknown status must not supply a committed proof or an Apply rejection marker");
+}
+await correction.review("Blocked before reload", roleChange("admin_correction", "Corrected draft"));
+await correction.apply();
+check(sent === 4 && ids === 3, "correction before reload sent another command");
+await correction.load();
+await correction.review("Explicit fresh review", roleChange("admin_correction", "Corrected draft"));
+const fresh = correction.getSnapshot().review;
+check(fresh.approval === "ordinary" && !Buffer.from(fresh.changeId).equals(Buffer.from(refusedReview.changeId)), "correction must use a newly reviewed ID");
+check(fresh.expectedRevision === afterCompeting.version.revision && sent === 4 && ids === 4, "fresh review uses current cut without Apply");
+await correction.apply();
+check(sent === 5 && ids === 4 && correction.getSnapshot().mutation === "enforced", "one explicit corrected Apply");
+const finalRoles = await port.roles("", scope.signal);
+const finalAudit = await port.audit("", scope.signal);
+check(finalRoles.version.revision === afterCompeting.version.revision + 1n && finalRoles.roles.find(role => role.id === "admin_correction")?.name === "Corrected draft", "corrected role effect/revision mismatch");
+check(finalAudit.records.length === auditBefore.records.length + 2, "corrected flow committed other effects");
+correction.dispose();
+console.log("Admin real browser Connect recovery and precommit correction passed: retained ambiguity stays status-only; first typed refusal has no effect/audit/proof and requires reload/new-ID review before one corrected Apply.");
+`
+	file := filepath.Join(t.TempDir(), "admin-recovery-wire.ts")
+	if err := os.WriteFile(file, []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bun, "run", file)
+	cmd.Env = append(os.Environ(), "LANTERN_RECOVERY_URL="+f.server.URL, "LANTERN_RECOVERY_CSRF="+csrf, "LANTERN_RECOVERY_COOKIE="+strings.Join(cookies, "; "))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Admin browser recovery wire: %v\n%s", err, output)
+	}
 }
 
 func TestAuth_OIDCManagementRealConnect(t *testing.T) {
@@ -2484,6 +2761,111 @@ try {
 	}
 }
 
+// #1671: exercise the production OIDC/Connect path, Node SDK wrapping, and
+// Admin adapters/handlers. Bootstrap management authority never implies data read.
+func TestAuth_OIDCAdminVertexCountRealConnect(t *testing.T) {
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Skip("Bun is required for the Admin vertex-count wire gate")
+	}
+	f := newOIDCControlWireFixture(t)
+	admin := f.token(t, "admin", nil)
+	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil || len(principal.Msg.Roles) != 1 || principal.Msg.Roles[0].Id != "security_admin" || len(principal.Msg.Roles[0].Rules) != 1 || principal.Msg.Roles[0].Rules[0].Action != pb.SecurityAction_SECURITY_ACTION_MANAGE {
+		t.Fatal("bootstrap must have management authority without data grants", err)
+	}
+	if err := f.graph.PutVertex("data:tenant:a", &pb.Vertex{Key: "data:tenant:a", Value: &pb.Vertex_String_{String_: "visible"}}); err != nil {
+		t.Fatal(err)
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	module := func(path string) string {
+		quoted, err := json.Marshal(filepath.Join(root, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(quoted)
+	}
+	script := `import { connectWeb, LanternError } from ` + module("admin/node_modules/lantern-sdk/dist/web.js") + `;
+import { LanternApiError } from ` + module("admin/app/lib/client/infrastructure/api/error.ts") + `;
+import { countVerticesByPrefix } from ` + module("admin/app/lib/client/infrastructure/api/count-vertices-by-prefix.ts") + `;
+import { fetchCount, fetchPage } from ` + module("admin/app/lib/client/usecase/browse-vertices/handlers.ts") + `;
+import { browseVerticesReducer } from ` + module("admin/app/lib/client/usecase/browse-vertices/reducer.ts") + `;
+import { INITIAL_BROWSE_VERTICES_STATE } from ` + module("admin/app/lib/client/usecase/browse-vertices/state.ts") + `;
+const gatewayFetch = (input, init) => {
+ const headers = new Headers(init?.headers);
+ headers.set("X-Forwarded-Proto", "https");
+ headers.set("X-Forwarded-Host", new URL(typeof input === "string" ? input : input.url).host);
+ return fetch(input, {...init, headers});
+};
+const client = connectWeb(process.env.LANTERN_SDK_URL, {token: process.env.LANTERN_SDK_CREDENTIAL, transportOptions: {fetch: gatewayFetch}});
+const require = (condition, message) => { if (!condition) throw new Error(message); };
+let state = INITIAL_BROWSE_VERTICES_STATE;
+const dispatch = action => { state = browseVerticesReducer(state, action); };
+const input = {client, prefix: "tenant:", epoch: 0, requestId: 1};
+try {
+ if (process.env.LANTERN_ADMIN_WIRE_PHASE === "denied") {
+  let denied = false;
+  try { await client.countVerticesByPrefix("tenant:"); }
+  catch (error) {
+   require(error instanceof LanternError && error.cause?.code === 7, "SDK did not preserve real PermissionDenied cause");
+   const adapted = LanternApiError.fromUnknown("CountVerticesByPrefix", error);
+   require(adapted instanceof LanternApiError && adapted.code === "permission_denied", "Admin lost structured denial");
+   denied = true;
+  }
+  require(denied, "bootstrap unexpectedly received data count");
+ }
+ await fetchPage({...input, cursor: "", pageSize: 50}, dispatch);
+ await fetchCount(input, dispatch);
+ if (process.env.LANTERN_ADMIN_WIRE_PHASE === "denied") {
+  require(state.status === "error" && state.error?.kind === "denied" && state.count.status === "denied", "Admin did not retain independent scan/count denial");
+  require(state.pages.length === 0 && !("count" in state.count), "denial fabricated data or zero");
+ } else {
+  require(state.status === "ready" && state.error === null && state.pages[0]?.vertices[0]?.key === "tenant:a", "explicit read Role did not authorize scan");
+  require(state.count.status === "success" && state.count.count === 1, "explicit read Role did not authorize count");
+  require(await countVerticesByPrefix(client, "tenant:empty:") === 0, "successful empty count lost zero");
+  let denied = false;
+  try { await countVerticesByPrefix(client, "outside:"); }
+  catch (error) { denied = error instanceof LanternApiError && error.code === "permission_denied"; }
+  require(denied, "scoped Role accidentally authorized an outside prefix");
+ }
+ console.log("Admin vertex count " + process.env.LANTERN_ADMIN_WIRE_PHASE + ": PASS");
+} finally { client.close(); }
+`
+	file := filepath.Join(t.TempDir(), "admin-vertex-count-wire.ts")
+	if err := os.WriteFile(file, []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(phase string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, bun, "run", file)
+		cmd.Dir = filepath.Join(root, "admin")
+		cmd.Env = append(os.Environ(), "LANTERN_SDK_URL="+f.server.URL, "LANTERN_SDK_CREDENTIAL="+f.token(t, "admin", nil), "LANTERN_ADMIN_WIRE_PHASE="+phase)
+		if output, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(output), "Admin vertex count "+phase+": PASS") {
+			t.Fatalf("Admin OIDC vertex-count wire (%s): %v\n%s", phase, err, output)
+		} else {
+			t.Log(strings.TrimSpace(string(output)))
+		}
+	}
+	run("denied")
+	role := &pb.SecurityRole{Id: "data_reader", Rules: []*pb.SecurityRule{{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "tenant:"}}}}
+	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{
+		ExpectedRevision: principal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{119}, 16),
+		Changes: []*pb.SecurityChange{
+			{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
+			{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: principal.Msg.Identity, RoleId: role.Id}}},
+		},
+	}))
+	if err != nil {
+		t.Fatal("explicit data Role assignment", err)
+	}
+	run("authorized")
+}
+
 func runScopedLanguageWire(t *testing.T, language string) {
 	t.Helper()
 	binary, err := exec.LookPath(language)
@@ -3151,6 +3533,270 @@ func TestAuth_HeadManagedBlindCreateDeleteReceiptAndGoFacadeRealConnect(t *testi
 	}
 }
 
+func TestAuth_OIDCOrdinaryManagementQualifiedHumanRealConnect(t *testing.T) {
+	for _, surface := range []string{"browser", "human bearer"} {
+		for _, evidence := range []string{"missing", "stale"} {
+			t.Run(surface+"/"+evidence, func(t *testing.T) {
+				f := newOIDCControlWireFixture(t)
+				client, data := f.client, f.data
+				token := f.token(t, "admin", func(claims map[string]any) {
+					if evidence == "missing" {
+						delete(claims, "auth_time")
+					} else {
+						claims["auth_time"] = f.clock().Add(-time.Hour).Unix()
+					}
+				})
+				var cookies []*http.Cookie
+				if surface == "browser" {
+					start := f.browserLoginStart(t, nil, false)
+					callback := f.browserCallbackPath(t, start, "admin", false)
+					parsed, _ := url.Parse(callback)
+					f.mu.Lock()
+					code := f.codes[parsed.Query().Get("code")]
+					code.authTime = evidence
+					f.codes[parsed.Query().Get("code")] = code
+					f.mu.Unlock()
+					response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback, start.Cookies(), ""))
+					if response.StatusCode != http.StatusSeeOther {
+						t.Fatal("ordinary login", response.StatusCode)
+					}
+					for _, cookie := range response.Cookies() {
+						if cookie.Name == "__Host-lantern-session" || cookie.Name == "__Host-lantern-csrf" {
+							cookies = append(cookies, cookie)
+						}
+					}
+					transport := authWireRoundTripper{next: http.DefaultTransport, cookies: cookies, csrf: browserCookieValue(cookies, "__Host-lantern-csrf")}
+					client = graphv1connect.NewLanternSecurityServiceClient(&http.Client{Transport: transport}, f.server.URL+"/browser")
+					data = graphv1connect.NewLanternServiceClient(&http.Client{Transport: transport}, f.server.URL+"/browser")
+					token = ""
+				}
+				principal, err := client.GetCurrentPrincipal(t.Context(), securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
+				if err != nil || principal.Msg.RecentAuthentication {
+					t.Fatal("ordinary authentication evidence", err)
+				}
+				issuer, err := client.GetIssuer(t.Context(), securityWireRequest(token, &pb.GetIssuerRequest{Issuer: f.provider.URL}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				probe := proto.Clone(issuer.Msg.Issuer).(*pb.SecurityIssuer)
+				probe.ConfigRevision, probe.EnvOwned, probe.HasSecretBinding = 0, false, false
+				if valid, err := client.ValidateIssuer(t.Context(), securityWireRequest(token, &pb.ValidateIssuerRequest{Issuer: probe})); err != nil || !valid.Msg.Valid {
+					t.Fatal("ordinary human issuer probe demanded recent auth", err)
+				}
+				role := &pb.SecurityRole{Id: "ordinary_data"}
+				for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_QUERY} {
+					role.Rules = append(role.Rules, &pb.SecurityRule{Id: fmt.Sprintf("action_%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
+				}
+				review := &pb.SecurityChangeReview{ExpectedVersion: principal.Msg.Version, ChangeId: bytes.Repeat([]byte{61}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: role}}, {Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: principal.Msg.Identity, RoleId: role.Id}}}}}
+				prepared, err := client.PrepareSecurityChanges(t.Context(), securityWireRequest(token, &pb.PrepareSecurityChangesRequest{Review: review}))
+				if err != nil || prepared.Msg.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY {
+					t.Fatal("data expansion required recent auth", err)
+				}
+				command := &pb.ApplySecurityChangesRequest{ExpectedRevision: review.ExpectedVersion.Revision, ChangeId: review.ChangeId, Changes: review.Changes}
+				applied, err := client.ApplySecurityChanges(t.Context(), securityWireRequest(token, command))
+				if err != nil {
+					t.Fatal("ordinary change", err)
+				}
+				for _, value := range []string{"first", "updated"} {
+					if _, err := data.PutVertex(t.Context(), securityWireRequest(token, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "users:owned", Value: &pb.Vertex_String_{String_: value}}})); err != nil {
+						t.Fatal("permitted scoped write", err)
+					}
+				}
+				if got, err := data.GetVertex(t.Context(), securityWireRequest(token, &pb.GetVertexRequest{Key: "users:owned"})); err != nil || got.Msg.Vertex.GetString_() != "updated" {
+					t.Fatal("permitted scoped read", err)
+				}
+				if _, err := data.PutVertex(t.Context(), securityWireRequest(token, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "outside:blocked", Value: &pb.Vertex_Nil{Nil: true}}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+					t.Fatal("outside prefix write", err)
+				}
+				if _, err := data.GetVertex(t.Context(), securityWireRequest(token, &pb.GetVertexRequest{Key: "outside:blocked"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+					t.Fatal("outside prefix read", err)
+				}
+				if _, err := data.DeleteVertex(t.Context(), securityWireRequest(token, &pb.DeleteVertexRequest{Key: "users:owned"})); err != nil {
+					t.Fatal("permitted scoped delete", err)
+				}
+				replay, err := client.ApplySecurityChanges(t.Context(), securityWireRequest(token, command))
+				if err != nil || !replay.Msg.Replayed || !proto.Equal(replay.Msg.Version, applied.Msg.Version) {
+					t.Fatal("ordinary exact retry", err)
+				}
+			})
+		}
+	}
+}
+
+func TestAuth_OIDCPurposeAuthorizationRealConnect(t *testing.T) {
+	for _, evidence := range []string{"fresh", "missing", "stale", "future", "null", "contradictory", "other subject", "wrong nonce"} {
+		t.Run(evidence, func(t *testing.T) {
+			f := newOIDCControlWireFixture(t)
+			login := f.browserLoginStart(t, nil, false)
+			ordinaryCallback := f.browserCallbackPath(t, login, "admin", false)
+			parsed, _ := url.Parse(ordinaryCallback)
+			f.mu.Lock()
+			ordinaryCode := f.codes[parsed.Query().Get("code")]
+			ordinaryCode.authTime = "missing"
+			f.codes[parsed.Query().Get("code")] = ordinaryCode
+			f.mu.Unlock()
+			ordinary := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, ordinaryCallback, login.Cookies(), ""))
+			if ordinary.StatusCode != http.StatusSeeOther {
+				t.Fatal("ordinary login", ordinary.StatusCode)
+			}
+			var cookies []*http.Cookie
+			for _, cookie := range ordinary.Cookies() {
+				if cookie.Name == "__Host-lantern-session" || cookie.Name == "__Host-lantern-csrf" {
+					cookies = append(cookies, cookie)
+				}
+			}
+			csrf := browserCookieValue(cookies, "__Host-lantern-csrf")
+			client := graphv1connect.NewLanternSecurityServiceClient(&http.Client{Transport: authWireRoundTripper{next: http.DefaultTransport, cookies: cookies, csrf: csrf}}, f.server.URL+"/browser")
+			before, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
+			if err != nil || before.Msg.RecentAuthentication {
+				t.Fatal(err)
+			}
+			identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "oauth-client:wire-worker"}
+			review := &pb.SecurityChangeReview{ExpectedVersion: before.Msg.Version, ChangeId: bytes.Repeat([]byte{62}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}}, {Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "security_admin"}}}}}
+			prepared, err := client.PrepareSecurityChanges(t.Context(), connect.NewRequest(&pb.PrepareSecurityChangesRequest{Review: review}))
+			if err != nil || prepared.Msg.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION {
+				t.Fatal("latent client grant did not require proof", err)
+			}
+			command := &pb.ApplySecurityChangesRequest{ExpectedRevision: review.ExpectedVersion.Revision, ChangeId: review.ChangeId, Changes: review.Changes}
+			if _, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(command)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatal("unapproved high impact", err)
+			}
+			begin, err := client.BeginSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.BeginSecurityChangeAuthorizationRequest{Review: review}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending, err := client.GetSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.GetSecurityChangeAuthorizationRequest{AuthorizationId: begin.Msg.AuthorizationId}))
+			if err != nil || pending.Msg.State != pb.SecurityAuthorizationState_SECURITY_AUTHORIZATION_STATE_PENDING || len(pending.Msg.AuthorizationProof) != 0 {
+				t.Fatal("pending approval", err)
+			}
+			// The challenge cannot begin until a whole NumericDate second after review.
+			f.advance(2 * time.Second)
+			startURL, _ := url.Parse(begin.Msg.StartUrl)
+			start := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, startURL.RequestURI(), cookies, ""))
+			if start.StatusCode != http.StatusFound {
+				t.Fatal("purpose start", start.StatusCode)
+			}
+			if strings.Contains(start.Header.Get("Location"), "max_age=0") == false {
+				t.Fatal("purpose did not request fresh signed authentication")
+			}
+			subject := "admin"
+			if evidence == "other subject" {
+				subject = "other"
+			}
+			callback := f.browserCallbackPath(t, start, subject, evidence == "wrong nonce")
+			parsed, _ = url.Parse(callback)
+			f.mu.Lock()
+			code := f.codes[parsed.Query().Get("code")]
+			if evidence != "fresh" {
+				code.authTime = evidence
+			}
+			f.codes[parsed.Query().Get("code")] = code
+			f.mu.Unlock()
+			beforeCallback, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			callbackResponse := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback, start.Cookies(), ""))
+			for _, cookie := range callbackResponse.Cookies() {
+				if cookie.Name == "__Host-lantern-session" || cookie.Name == "__Host-lantern-csrf" {
+					t.Fatal("purpose callback rotated ordinary cookies")
+				}
+			}
+			afterCallback, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
+			if err != nil || !proto.Equal(beforeCallback.Msg, afterCallback.Msg) || afterCallback.Msg.CsrfToken != csrf {
+				t.Fatal("purpose changed session/auth evidence/expiry/full cut", err)
+			}
+			status, err := client.GetSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.GetSecurityChangeAuthorizationRequest{AuthorizationId: begin.Msg.AuthorizationId}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evidence != "fresh" {
+				if callbackResponse.StatusCode != http.StatusUnauthorized || status.Msg.State != pb.SecurityAuthorizationState_SECURITY_AUTHORIZATION_STATE_DENIED || len(status.Msg.AuthorizationProof) != 0 {
+					t.Fatal("unqualified callback approved", callbackResponse.StatusCode, status.Msg)
+				}
+				return
+			}
+			if callbackResponse.StatusCode != http.StatusOK || status.Msg.State != pb.SecurityAuthorizationState_SECURITY_AUTHORIZATION_STATE_APPROVED || len(status.Msg.AuthorizationProof) != 32 {
+				t.Fatal("fresh operation approval", callbackResponse.StatusCode, status.Msg)
+			}
+			command.AuthorizationProof = status.Msg.AuthorizationProof
+			applied, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(command))
+			if err != nil || applied.Msg.Version.Revision != review.ExpectedVersion.Revision+1 {
+				t.Fatal("approved exact command", err)
+			}
+			command.AuthorizationProof = nil
+			retry, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(command))
+			if err != nil || !retry.Msg.Replayed || !proto.Equal(retry.Msg.Version, applied.Msg.Version) {
+				t.Fatal("known exact retry demanded fresh proof", err)
+			}
+			// The qualified fixture's client profile has disjoint subjects. A signed
+			// auth_time and management assignment still cannot make it an end-user.
+			form := url.Values{"grant_type": {"client_credentials"}, "client_id": {"wire-worker"}}
+			clientResponse, err := f.provider.Client().PostForm(f.provider.URL+"/token", form)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var clientTokens map[string]string
+			if err := json.NewDecoder(clientResponse.Body).Decode(&clientTokens); err != nil {
+				t.Fatal(err)
+			}
+			if err := clientResponse.Body.Close(); err != nil {
+				t.Fatal("client response cleanup", err)
+			}
+			clientToken := clientTokens["access_token"]
+			if clientToken == "" || clientTokens["id_token"] != "" {
+				t.Fatal("qualified client profile issued human evidence")
+			}
+			form.Set("requested_sub", "admin")
+			impersonation, err := f.provider.Client().PostForm(f.provider.URL+"/token", form)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := impersonation.Body.Close(); err != nil {
+				t.Fatal("impersonation response cleanup", err)
+			}
+			if impersonation.StatusCode == http.StatusOK {
+				t.Fatal("client profile impersonated enrolled human")
+			}
+			clientPrincipal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(clientToken, &pb.GetCurrentPrincipalRequest{}))
+			if err != nil {
+				t.Fatal("client reference", err)
+			}
+			if _, err := f.client.ListRoles(t.Context(), securityWireRequest(clientToken, &pb.ListRolesRequest{})); err != nil {
+				t.Fatal("client explicit reference authority", err)
+			}
+			issuer, err := f.client.GetIssuer(t.Context(), securityWireRequest(clientToken, &pb.GetIssuerRequest{Issuer: f.provider.URL}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			probe := proto.Clone(issuer.Msg.Issuer).(*pb.SecurityIssuer)
+			probe.ConfigRevision, probe.EnvOwned, probe.HasSecretBinding = 0, false, false
+			if _, err := f.client.ValidateIssuer(t.Context(), securityWireRequest(clientToken, &pb.ValidateIssuerRequest{Issuer: probe})); connect.CodeOf(err) != connect.CodePermissionDenied {
+				t.Fatal("client reference rights implicitly qualified network probe", err)
+			}
+			if _, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(clientToken, &pb.ApplySecurityChangesRequest{ExpectedRevision: clientPrincipal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{63}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "client_forbidden"}}}}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+				t.Fatal("OAuth client was classified human", err)
+			}
+		})
+	}
+}
+
+func TestAuth_OIDCMixedBearerProfileCannotMutateRealConnect(t *testing.T) {
+	f := newOIDCControlWireFixtureConfigured(t, func(config *provider.SecurityConfig) { config.Bootstrap.Issuer.HumanSubjectNamespaceQualified = false })
+	admin := f.token(t, "admin", nil)
+	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil {
+		t.Fatal("mixed-profile reference", err)
+	}
+	if _, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: principal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{64}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "unresolved_forbidden"}}}}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("ambiguous bearer inferred human from enrolled sub/auth_time/client_id", err)
+	}
+	after, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil || !proto.Equal(principal.Msg.Version, after.Msg.Version) {
+		t.Fatal("ambiguous bearer mutated", err)
+	}
+}
+
 func TestAuth_OIDCBrowserLoginAndStepUpPurposesRealConnect(t *testing.T) {
 	for _, evidence := range []string{"missing", "stale"} {
 		t.Run(evidence, func(t *testing.T) {
@@ -3197,8 +3843,9 @@ func TestAuth_OIDCBrowserLoginAndStepUpPurposesRealConnect(t *testing.T) {
 				t.Fatal("ordinary session could not read permitted management state", err)
 			}
 			change := &pb.ApplySecurityChangesRequest{ExpectedRevision: roles.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{42}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "recent_proof", Rules: []*pb.SecurityRule{{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}}}}}}}}
-			if _, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(change)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-				t.Fatal("unproven management change admitted", err)
+			ordinaryCommit, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(change))
+			if err != nil {
+				t.Fatal("ordinary management required recent authentication", err)
 			}
 			if _, err := clientFor(cookies, "").ApplySecurityChanges(t.Context(), connect.NewRequest(change)); connect.CodeOf(err) != connect.CodePermissionDenied {
 				t.Fatal("ordinary session bypassed CSRF", err)
@@ -3216,7 +3863,7 @@ func TestAuth_OIDCBrowserLoginAndStepUpPurposesRealConnect(t *testing.T) {
 				t.Fatal("step-up accepted missing/old proof", failed.StatusCode)
 			}
 			unchanged, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
-			if err != nil || unchanged.Msg.RecentAuthentication || unchanged.Msg.Version.Revision != principal.Msg.Version.Revision {
+			if err != nil || unchanged.Msg.RecentAuthentication || unchanged.Msg.Version.Revision != ordinaryCommit.Msg.Version.Revision {
 				t.Fatal("failed step-up changed ordinary session", err)
 			}
 
@@ -3251,9 +3898,92 @@ func TestAuth_OIDCBrowserLoginAndStepUpPurposesRealConnect(t *testing.T) {
 				t.Fatal("actual fresh evidence did not qualify", err)
 			}
 			change.ExpectedRevision = verified.Msg.Version.Revision
+			change.ChangeId = bytes.Repeat([]byte{43}, 16)
 			if _, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(change)); err != nil {
 				t.Fatal("fresh authorized management change refused", err)
 			}
 		})
+	}
+}
+
+// Production Connect admission/codec/Store prove a local refusal only for this
+// invocation. Unknown status cannot settle a prior attempt with the same ID.
+func TestAuth_OIDCSecurityPrecommitRefusalsRealConnect(t *testing.T) {
+	f := newOIDCControlWireFixtureConfigured(t, func(config *provider.SecurityConfig) {
+		// This case must have one human administrator. With the ordinary two-
+		// administrator fixture, suspending admin legitimately commits.
+		config.Bootstrap.AdminSubjects = []string{"admin"}
+	})
+	token := f.token(t, "admin", nil)
+	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := principal.Msg.Version.Revision
+	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "admin"}
+	for _, singular := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plural", true: "singular"}[singular], func(t *testing.T) {
+			for i, test := range []struct {
+				name   string
+				change *pb.SecurityChange
+				reason pb.SecurityChangeRejectionReason
+				stale  bool
+			}{
+				{"malformed", &pb.SecurityChange{}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, false},
+				{"unknown role", &pb.SecurityChange{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "not_registered"}}}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_UNKNOWN_ROLE, false},
+				{"env assignment", &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "security_admin"}}}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_ENVIRONMENT_OWNED, false},
+				{"last human", &pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_SUSPENDED}}}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_LAST_ADMINISTRATOR, false},
+				{"stale revision", &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "ordinary"}}}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_REVISION_CONFLICT, true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					expected := initial
+					if test.stale {
+						expected++
+					}
+					id := bytes.Repeat([]byte{byte(140 + i)}, 16)
+					if singular {
+						id[0] = 150
+					}
+					var err error
+					if singular {
+						_, err = f.client.ApplySecurityChange(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangeRequest{ExpectedRevision: expected, ChangeId: id, Change: test.change}))
+					} else {
+						_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangesRequest{ExpectedRevision: expected, ChangeId: id, Changes: []*pb.SecurityChange{test.change}}))
+					}
+					var ce *connect.Error
+					if !errors.As(err, &ce) || len(ce.Details()) != 1 {
+						t.Fatal("wire refusal detail missing", err)
+					}
+					value, err := ce.Details()[0].Value()
+					if err != nil {
+						t.Fatal(err)
+					}
+					detail, ok := value.(*pb.SecurityChangePrecommitRejected)
+					if !ok || !bytes.Equal(detail.ChangeId, id) || detail.ExpectedRevision != expected || detail.Reason != test.reason {
+						t.Fatal("wire correlation", value)
+					}
+					current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
+					if err != nil || !proto.Equal(current.Msg.Version, principal.Msg.Version) {
+						t.Fatal("refusal changed signed cut", current, err)
+					}
+				})
+			}
+		})
+	}
+	committedID := bytes.Repeat([]byte{160}, 16)
+	committed, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangeRequest{ExpectedRevision: initial, ChangeId: committedID, Change: &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "corrected_after_refusal"}}}}))
+	if err != nil || !committed.Msg.Applied {
+		t.Fatal("corrected explicit command", committed, err)
+	}
+	for _, change := range []*pb.SecurityChange{{}, {Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "changed_intent"}}}} {
+		_, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangeRequest{ExpectedRevision: initial, ChangeId: committedID, Change: change}))
+		var ce *connect.Error
+		if !errors.As(err, &ce) || len(ce.Details()) != 0 {
+			t.Fatal("retained ID got correction permission", err)
+		}
+	}
+	proof, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(token, &pb.GetSecurityChangeStatusRequest{ChangeId: committedID}))
+	if err != nil || !proto.Equal(proof.Msg.Version, committed.Msg.Version) {
+		t.Fatal("retained original proof changed", proof, err)
 	}
 }

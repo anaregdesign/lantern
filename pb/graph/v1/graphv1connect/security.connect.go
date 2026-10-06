@@ -72,6 +72,15 @@ const (
 	// LanternSecurityServiceValidateIssuerProcedure is the fully-qualified name of the
 	// LanternSecurityService's ValidateIssuer RPC.
 	LanternSecurityServiceValidateIssuerProcedure = "/graph.v1.LanternSecurityService/ValidateIssuer"
+	// LanternSecurityServicePrepareSecurityChangesProcedure is the fully-qualified name of the
+	// LanternSecurityService's PrepareSecurityChanges RPC.
+	LanternSecurityServicePrepareSecurityChangesProcedure = "/graph.v1.LanternSecurityService/PrepareSecurityChanges"
+	// LanternSecurityServiceBeginSecurityChangeAuthorizationProcedure is the fully-qualified name of
+	// the LanternSecurityService's BeginSecurityChangeAuthorization RPC.
+	LanternSecurityServiceBeginSecurityChangeAuthorizationProcedure = "/graph.v1.LanternSecurityService/BeginSecurityChangeAuthorization"
+	// LanternSecurityServiceGetSecurityChangeAuthorizationProcedure is the fully-qualified name of the
+	// LanternSecurityService's GetSecurityChangeAuthorization RPC.
+	LanternSecurityServiceGetSecurityChangeAuthorizationProcedure = "/graph.v1.LanternSecurityService/GetSecurityChangeAuthorization"
 	// LanternSecurityServiceApplySecurityChangesProcedure is the fully-qualified name of the
 	// LanternSecurityService's ApplySecurityChanges RPC.
 	LanternSecurityServiceApplySecurityChangesProcedure = "/graph.v1.LanternSecurityService/ApplySecurityChanges"
@@ -98,9 +107,14 @@ type LanternSecurityServiceClient interface {
 	GetRoleTemplates(context.Context, *connect.Request[v1.GetRoleTemplatesRequest]) (*connect.Response[v1.GetRoleTemplatesResponse], error)
 	ExplainAccess(context.Context, *connect.Request[v1.ExplainAccessRequest]) (*connect.Response[v1.ExplainAccessResponse], error)
 	ValidateIssuer(context.Context, *connect.Request[v1.ValidateIssuerRequest]) (*connect.Response[v1.ValidateIssuerResponse], error)
+	// Nonmutating authoritative review; approval never rotates a session.
+	PrepareSecurityChanges(context.Context, *connect.Request[v1.PrepareSecurityChangesRequest]) (*connect.Response[v1.PrepareSecurityChangesResponse], error)
+	BeginSecurityChangeAuthorization(context.Context, *connect.Request[v1.BeginSecurityChangeAuthorizationRequest]) (*connect.Response[v1.BeginSecurityChangeAuthorizationResponse], error)
+	GetSecurityChangeAuthorization(context.Context, *connect.Request[v1.GetSecurityChangeAuthorizationRequest]) (*connect.Response[v1.GetSecurityChangeAuthorizationResponse], error)
 	// Plural is canonical and atomic, with request-index-aligned outcomes.
 	ApplySecurityChanges(context.Context, *connect.Request[v1.ApplySecurityChangesRequest]) (*connect.Response[v1.ApplySecurityChangesResponse], error)
 	ApplySecurityChange(context.Context, *connect.Request[v1.ApplySecurityChangeRequest]) (*connect.Response[v1.ApplySecurityChangeResponse], error)
+	// Retained commit proof only; item outcomes and replay acknowledgement belong to Apply.
 	GetSecurityChangeStatus(context.Context, *connect.Request[v1.GetSecurityChangeStatusRequest]) (*connect.Response[v1.GetSecurityChangeStatusResponse], error)
 }
 
@@ -193,6 +207,24 @@ func NewLanternSecurityServiceClient(httpClient connect.HTTPClient, baseURL stri
 			connect.WithSchema(lanternSecurityServiceMethods.ByName("ValidateIssuer")),
 			connect.WithClientOptions(opts...),
 		),
+		prepareSecurityChanges: connect.NewClient[v1.PrepareSecurityChangesRequest, v1.PrepareSecurityChangesResponse](
+			httpClient,
+			baseURL+LanternSecurityServicePrepareSecurityChangesProcedure,
+			connect.WithSchema(lanternSecurityServiceMethods.ByName("PrepareSecurityChanges")),
+			connect.WithClientOptions(opts...),
+		),
+		beginSecurityChangeAuthorization: connect.NewClient[v1.BeginSecurityChangeAuthorizationRequest, v1.BeginSecurityChangeAuthorizationResponse](
+			httpClient,
+			baseURL+LanternSecurityServiceBeginSecurityChangeAuthorizationProcedure,
+			connect.WithSchema(lanternSecurityServiceMethods.ByName("BeginSecurityChangeAuthorization")),
+			connect.WithClientOptions(opts...),
+		),
+		getSecurityChangeAuthorization: connect.NewClient[v1.GetSecurityChangeAuthorizationRequest, v1.GetSecurityChangeAuthorizationResponse](
+			httpClient,
+			baseURL+LanternSecurityServiceGetSecurityChangeAuthorizationProcedure,
+			connect.WithSchema(lanternSecurityServiceMethods.ByName("GetSecurityChangeAuthorization")),
+			connect.WithClientOptions(opts...),
+		),
 		applySecurityChanges: connect.NewClient[v1.ApplySecurityChangesRequest, v1.ApplySecurityChangesResponse](
 			httpClient,
 			baseURL+LanternSecurityServiceApplySecurityChangesProcedure,
@@ -216,22 +248,25 @@ func NewLanternSecurityServiceClient(httpClient connect.HTTPClient, baseURL stri
 
 // lanternSecurityServiceClient implements LanternSecurityServiceClient.
 type lanternSecurityServiceClient struct {
-	getAuthCapabilities     *connect.Client[v1.GetAuthCapabilitiesRequest, v1.GetAuthCapabilitiesResponse]
-	getCurrentPrincipal     *connect.Client[v1.GetCurrentPrincipalRequest, v1.GetCurrentPrincipalResponse]
-	listIssuers             *connect.Client[v1.ListIssuersRequest, v1.ListIssuersResponse]
-	getIssuer               *connect.Client[v1.GetIssuerRequest, v1.GetIssuerResponse]
-	listRoles               *connect.Client[v1.ListRolesRequest, v1.ListRolesResponse]
-	getRole                 *connect.Client[v1.GetRoleRequest, v1.GetRoleResponse]
-	listUsers               *connect.Client[v1.ListUsersRequest, v1.ListUsersResponse]
-	getUser                 *connect.Client[v1.GetUserRequest, v1.GetUserResponse]
-	listRoleAssignments     *connect.Client[v1.ListRoleAssignmentsRequest, v1.ListRoleAssignmentsResponse]
-	listSecurityAudit       *connect.Client[v1.ListSecurityAuditRequest, v1.ListSecurityAuditResponse]
-	getRoleTemplates        *connect.Client[v1.GetRoleTemplatesRequest, v1.GetRoleTemplatesResponse]
-	explainAccess           *connect.Client[v1.ExplainAccessRequest, v1.ExplainAccessResponse]
-	validateIssuer          *connect.Client[v1.ValidateIssuerRequest, v1.ValidateIssuerResponse]
-	applySecurityChanges    *connect.Client[v1.ApplySecurityChangesRequest, v1.ApplySecurityChangesResponse]
-	applySecurityChange     *connect.Client[v1.ApplySecurityChangeRequest, v1.ApplySecurityChangeResponse]
-	getSecurityChangeStatus *connect.Client[v1.GetSecurityChangeStatusRequest, v1.GetSecurityChangeStatusResponse]
+	getAuthCapabilities              *connect.Client[v1.GetAuthCapabilitiesRequest, v1.GetAuthCapabilitiesResponse]
+	getCurrentPrincipal              *connect.Client[v1.GetCurrentPrincipalRequest, v1.GetCurrentPrincipalResponse]
+	listIssuers                      *connect.Client[v1.ListIssuersRequest, v1.ListIssuersResponse]
+	getIssuer                        *connect.Client[v1.GetIssuerRequest, v1.GetIssuerResponse]
+	listRoles                        *connect.Client[v1.ListRolesRequest, v1.ListRolesResponse]
+	getRole                          *connect.Client[v1.GetRoleRequest, v1.GetRoleResponse]
+	listUsers                        *connect.Client[v1.ListUsersRequest, v1.ListUsersResponse]
+	getUser                          *connect.Client[v1.GetUserRequest, v1.GetUserResponse]
+	listRoleAssignments              *connect.Client[v1.ListRoleAssignmentsRequest, v1.ListRoleAssignmentsResponse]
+	listSecurityAudit                *connect.Client[v1.ListSecurityAuditRequest, v1.ListSecurityAuditResponse]
+	getRoleTemplates                 *connect.Client[v1.GetRoleTemplatesRequest, v1.GetRoleTemplatesResponse]
+	explainAccess                    *connect.Client[v1.ExplainAccessRequest, v1.ExplainAccessResponse]
+	validateIssuer                   *connect.Client[v1.ValidateIssuerRequest, v1.ValidateIssuerResponse]
+	prepareSecurityChanges           *connect.Client[v1.PrepareSecurityChangesRequest, v1.PrepareSecurityChangesResponse]
+	beginSecurityChangeAuthorization *connect.Client[v1.BeginSecurityChangeAuthorizationRequest, v1.BeginSecurityChangeAuthorizationResponse]
+	getSecurityChangeAuthorization   *connect.Client[v1.GetSecurityChangeAuthorizationRequest, v1.GetSecurityChangeAuthorizationResponse]
+	applySecurityChanges             *connect.Client[v1.ApplySecurityChangesRequest, v1.ApplySecurityChangesResponse]
+	applySecurityChange              *connect.Client[v1.ApplySecurityChangeRequest, v1.ApplySecurityChangeResponse]
+	getSecurityChangeStatus          *connect.Client[v1.GetSecurityChangeStatusRequest, v1.GetSecurityChangeStatusResponse]
 }
 
 // GetAuthCapabilities calls graph.v1.LanternSecurityService.GetAuthCapabilities.
@@ -299,6 +334,23 @@ func (c *lanternSecurityServiceClient) ValidateIssuer(ctx context.Context, req *
 	return c.validateIssuer.CallUnary(ctx, req)
 }
 
+// PrepareSecurityChanges calls graph.v1.LanternSecurityService.PrepareSecurityChanges.
+func (c *lanternSecurityServiceClient) PrepareSecurityChanges(ctx context.Context, req *connect.Request[v1.PrepareSecurityChangesRequest]) (*connect.Response[v1.PrepareSecurityChangesResponse], error) {
+	return c.prepareSecurityChanges.CallUnary(ctx, req)
+}
+
+// BeginSecurityChangeAuthorization calls
+// graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization.
+func (c *lanternSecurityServiceClient) BeginSecurityChangeAuthorization(ctx context.Context, req *connect.Request[v1.BeginSecurityChangeAuthorizationRequest]) (*connect.Response[v1.BeginSecurityChangeAuthorizationResponse], error) {
+	return c.beginSecurityChangeAuthorization.CallUnary(ctx, req)
+}
+
+// GetSecurityChangeAuthorization calls
+// graph.v1.LanternSecurityService.GetSecurityChangeAuthorization.
+func (c *lanternSecurityServiceClient) GetSecurityChangeAuthorization(ctx context.Context, req *connect.Request[v1.GetSecurityChangeAuthorizationRequest]) (*connect.Response[v1.GetSecurityChangeAuthorizationResponse], error) {
+	return c.getSecurityChangeAuthorization.CallUnary(ctx, req)
+}
+
 // ApplySecurityChanges calls graph.v1.LanternSecurityService.ApplySecurityChanges.
 func (c *lanternSecurityServiceClient) ApplySecurityChanges(ctx context.Context, req *connect.Request[v1.ApplySecurityChangesRequest]) (*connect.Response[v1.ApplySecurityChangesResponse], error) {
 	return c.applySecurityChanges.CallUnary(ctx, req)
@@ -330,9 +382,14 @@ type LanternSecurityServiceHandler interface {
 	GetRoleTemplates(context.Context, *connect.Request[v1.GetRoleTemplatesRequest]) (*connect.Response[v1.GetRoleTemplatesResponse], error)
 	ExplainAccess(context.Context, *connect.Request[v1.ExplainAccessRequest]) (*connect.Response[v1.ExplainAccessResponse], error)
 	ValidateIssuer(context.Context, *connect.Request[v1.ValidateIssuerRequest]) (*connect.Response[v1.ValidateIssuerResponse], error)
+	// Nonmutating authoritative review; approval never rotates a session.
+	PrepareSecurityChanges(context.Context, *connect.Request[v1.PrepareSecurityChangesRequest]) (*connect.Response[v1.PrepareSecurityChangesResponse], error)
+	BeginSecurityChangeAuthorization(context.Context, *connect.Request[v1.BeginSecurityChangeAuthorizationRequest]) (*connect.Response[v1.BeginSecurityChangeAuthorizationResponse], error)
+	GetSecurityChangeAuthorization(context.Context, *connect.Request[v1.GetSecurityChangeAuthorizationRequest]) (*connect.Response[v1.GetSecurityChangeAuthorizationResponse], error)
 	// Plural is canonical and atomic, with request-index-aligned outcomes.
 	ApplySecurityChanges(context.Context, *connect.Request[v1.ApplySecurityChangesRequest]) (*connect.Response[v1.ApplySecurityChangesResponse], error)
 	ApplySecurityChange(context.Context, *connect.Request[v1.ApplySecurityChangeRequest]) (*connect.Response[v1.ApplySecurityChangeResponse], error)
+	// Retained commit proof only; item outcomes and replay acknowledgement belong to Apply.
 	GetSecurityChangeStatus(context.Context, *connect.Request[v1.GetSecurityChangeStatusRequest]) (*connect.Response[v1.GetSecurityChangeStatusResponse], error)
 }
 
@@ -421,6 +478,24 @@ func NewLanternSecurityServiceHandler(svc LanternSecurityServiceHandler, opts ..
 		connect.WithSchema(lanternSecurityServiceMethods.ByName("ValidateIssuer")),
 		connect.WithHandlerOptions(opts...),
 	)
+	lanternSecurityServicePrepareSecurityChangesHandler := connect.NewUnaryHandler(
+		LanternSecurityServicePrepareSecurityChangesProcedure,
+		svc.PrepareSecurityChanges,
+		connect.WithSchema(lanternSecurityServiceMethods.ByName("PrepareSecurityChanges")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternSecurityServiceBeginSecurityChangeAuthorizationHandler := connect.NewUnaryHandler(
+		LanternSecurityServiceBeginSecurityChangeAuthorizationProcedure,
+		svc.BeginSecurityChangeAuthorization,
+		connect.WithSchema(lanternSecurityServiceMethods.ByName("BeginSecurityChangeAuthorization")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternSecurityServiceGetSecurityChangeAuthorizationHandler := connect.NewUnaryHandler(
+		LanternSecurityServiceGetSecurityChangeAuthorizationProcedure,
+		svc.GetSecurityChangeAuthorization,
+		connect.WithSchema(lanternSecurityServiceMethods.ByName("GetSecurityChangeAuthorization")),
+		connect.WithHandlerOptions(opts...),
+	)
 	lanternSecurityServiceApplySecurityChangesHandler := connect.NewUnaryHandler(
 		LanternSecurityServiceApplySecurityChangesProcedure,
 		svc.ApplySecurityChanges,
@@ -467,6 +542,12 @@ func NewLanternSecurityServiceHandler(svc LanternSecurityServiceHandler, opts ..
 			lanternSecurityServiceExplainAccessHandler.ServeHTTP(w, r)
 		case LanternSecurityServiceValidateIssuerProcedure:
 			lanternSecurityServiceValidateIssuerHandler.ServeHTTP(w, r)
+		case LanternSecurityServicePrepareSecurityChangesProcedure:
+			lanternSecurityServicePrepareSecurityChangesHandler.ServeHTTP(w, r)
+		case LanternSecurityServiceBeginSecurityChangeAuthorizationProcedure:
+			lanternSecurityServiceBeginSecurityChangeAuthorizationHandler.ServeHTTP(w, r)
+		case LanternSecurityServiceGetSecurityChangeAuthorizationProcedure:
+			lanternSecurityServiceGetSecurityChangeAuthorizationHandler.ServeHTTP(w, r)
 		case LanternSecurityServiceApplySecurityChangesProcedure:
 			lanternSecurityServiceApplySecurityChangesHandler.ServeHTTP(w, r)
 		case LanternSecurityServiceApplySecurityChangeProcedure:
@@ -532,6 +613,18 @@ func (UnimplementedLanternSecurityServiceHandler) ExplainAccess(context.Context,
 
 func (UnimplementedLanternSecurityServiceHandler) ValidateIssuer(context.Context, *connect.Request[v1.ValidateIssuerRequest]) (*connect.Response[v1.ValidateIssuerResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternSecurityService.ValidateIssuer is not implemented"))
+}
+
+func (UnimplementedLanternSecurityServiceHandler) PrepareSecurityChanges(context.Context, *connect.Request[v1.PrepareSecurityChangesRequest]) (*connect.Response[v1.PrepareSecurityChangesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternSecurityService.PrepareSecurityChanges is not implemented"))
+}
+
+func (UnimplementedLanternSecurityServiceHandler) BeginSecurityChangeAuthorization(context.Context, *connect.Request[v1.BeginSecurityChangeAuthorizationRequest]) (*connect.Response[v1.BeginSecurityChangeAuthorizationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization is not implemented"))
+}
+
+func (UnimplementedLanternSecurityServiceHandler) GetSecurityChangeAuthorization(context.Context, *connect.Request[v1.GetSecurityChangeAuthorizationRequest]) (*connect.Response[v1.GetSecurityChangeAuthorizationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternSecurityService.GetSecurityChangeAuthorization is not implemented"))
 }
 
 func (UnimplementedLanternSecurityServiceHandler) ApplySecurityChanges(context.Context, *connect.Request[v1.ApplySecurityChangesRequest]) (*connect.Response[v1.ApplySecurityChangesResponse], error) {

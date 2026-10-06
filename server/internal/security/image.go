@@ -46,6 +46,13 @@ func CompileImage(image Image, limits PolicyLimits) (*Snapshot, error) {
 }
 
 func compileImage(image Image, limits PolicyLimits, previous *Snapshot) (*Snapshot, error) {
+	return compileImageAdmission(image, limits, previous, true)
+}
+
+// Historical images retain their original signed encoding and validation
+// contract. New writes always require a qualified human administrator. Reading
+// a legacy cut does not enroll its OIDC principals or permit their mutations.
+func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot, requireHuman bool) (*Snapshot, error) {
 	if image.Version != ImageVersion || image.BootstrapDigest != "" && !validHexDigest(image.BootstrapDigest) || len(image.Issuers) > MaxIssuers ||
 		len(image.Principals) > MaxPrincipals || len(image.Sessions) > MaxSessions || len(image.Audit) > retainedChanges || len(image.MachineCredentials) > MaxMachineCredentials {
 		return nil, ErrInvalidImage
@@ -109,6 +116,9 @@ func compileImage(image Image, limits PolicyLimits, previous *Snapshot) (*Snapsh
 		snapshot.issuers[issuer.URL] = issuer
 	}
 	for _, principal := range image.Principals {
+		if principal.HumanIssuerConfigRevision != 0 && principal.Identity.Kind != OIDCPrincipal {
+			return nil, ErrInvalidImage
+		}
 		if !principal.Identity.valid() || (principal.State != Active && principal.State != Suspended && principal.State != Deleted) ||
 			len(principal.Assignments) > limits.MaxAssignments {
 			return nil, fmt.Errorf("%w: Principal", ErrInvalidImage)
@@ -148,7 +158,11 @@ func compileImage(image Image, limits PolicyLimits, previous *Snapshot) (*Snapsh
 			}
 		}
 		snapshot.accessSets[setKey] = access
-		snapshot.principals[principal.Identity] = principalAccess{state: principal.State, access: access}
+		bootstrapHuman := false
+		for _, assignment := range principal.Assignments {
+			bootstrapHuman = bootstrapHuman || image.BootstrapRevision != 0 && assignment.EnvOwned && assignment.RoleID == "security_admin"
+		}
+		snapshot.principals[principal.Identity] = principalAccess{state: principal.State, access: access, humanIssuerConfigRevision: principal.HumanIssuerConfigRevision, bootstrapHuman: bootstrapHuman}
 	}
 	if err := snapshot.compileMachines(image.MachineCredentials); err != nil {
 		return nil, err
@@ -170,6 +184,9 @@ func compileImage(image Image, limits PolicyLimits, previous *Snapshot) (*Snapsh
 	usableAdmin := false
 	for identity := range snapshot.principals {
 		if identity.Kind != OIDCPrincipal {
+			continue
+		}
+		if requireHuman && !snapshot.HumanIdentity(identity) {
 			continue
 		}
 		access, active := snapshot.AccessFor(identity)
@@ -199,7 +216,14 @@ func DecodeImage(encoded []byte, limits PolicyLimits) (*Snapshot, error) {
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%w: trailing input", ErrInvalidImage)
 	}
-	snapshot, err := CompileImage(image, limits)
+	legacy := true
+	for _, principal := range image.Principals {
+		legacy = legacy && principal.HumanIssuerConfigRevision == 0
+	}
+	for _, issuer := range image.Issuers {
+		legacy = legacy && !issuer.HumanSubjectNamespaceQualified
+	}
+	snapshot, err := compileImageAdmission(image, limits, nil, !legacy)
 	if err != nil {
 		return nil, err
 	}

@@ -213,7 +213,11 @@ export type {
   VertexValue,
 } from "./values.js";
 
-export { SecurityClient } from "./security.js";
+export {
+  SecurityClient,
+  SecurityOperationAuthorizationRequiredError,
+  SecurityChangePrecommitRejectedError,
+} from "./security.js";
 export * from "./security-types.js";
 
 /** Open a control-plane client without authentication-policy interpretation. */

@@ -4,6 +4,16 @@
 - Driving issue: [#1599](https://github.com/anaregdesign/lantern/issues/1599)
 - Contract issue: [#1600](https://github.com/anaregdesign/lantern/issues/1600)
 
+The 2026-10-05 owner-approved #1672 policy removes the blanket five-minute
+authentication gate from ordinary management. Trust changes and effective
+`security.manage` expansion require per-operation reauthentication; machines
+may perform authorized reference/status reads, but no management mutation.
+The implementation is described below; final exact-source and provider/browser
+qualification remain separate. The historical fixed-writer source
+`93d537892f3025d4a1666dcab36c5748d5cfb9f6` used the blanket age gate.
+#1608 owns the leaderless design; its selected G1 Profile B freshness target
+and remaining proof/implementation are separate from that source history.
+
 The 2026-10-04 Head-managed Edge decision in #1626 supersedes configurable
 directed prefix-pair Roles. The prior candidate and its measurements remain
 historical evidence; they do not qualify the new policy. Kubernetes/Helm is
@@ -211,11 +221,82 @@ existence, effective weight, TTL and contribution identity. Global actions are
 | GetReceiptCapability | Current authority plus `receipt.read` and `vertex.read` within an applicable logical scope; supported capabilities only |
 | GetReceiptStatus(es) / receipt replay | `receipt.read` and current rights for every proven original resource; absence needs caller intent proof or fails closed |
 | GetServerStatus / GetReplicationStatus / metrics | `operations.read`; never inferred from data read |
-| Issuer / Principal / Role / assignment / session / audit management | `security.manage` and recent authentication; expected revision required on writes |
+| Ordinary Principal / Role / assignment / session / audit management | Current `security.manage` and qualified end-user; no fixed authentication age; expected revision required on writes |
+| Issuer trust / effective `security.manage` expansion | Exact final reviewed operation approval with a signed post-review event; actor/ID/v1 intent/full cut bound |
 | Peer Subscribe / Snapshot / PeerStatus | Separate admitted peer identity and `cluster.replicate`; no human token or prefix filtering |
 | Health | Auth-exempt, content-free liveness/readiness |
 | Reflection | `schema.read` in OIDC; explicit OFF behavior |
 | Any unclassified new RPC | Deny until the action matrix is extended |
+
+### Management operation and actor policy
+
+The following separates verified baseline behavior from the #1672 implementation.
+Final exact-source and actual provider/browser qualification remain separate
+acceptance exits. Every row retains valid authentication, exact verified identity,
+credential/session expiry, current explicit Roles, CSRF/exact origin where
+applicable, session/policy admission freshness, request validation,
+environment-owned locks and administrator invariants. Writes retain expected
+revision/CAS and immutable original Change-ID recovery (#1669/#1670).
+Authentication-time freshness is independent of policy freshness.
+
+| Operation / effective consequence | Fixed-writer `93d53789` | #1672 implementation |
+| --- | --- | --- |
+| Management reference/read/status, including audit | Current `security.manage`; no five-minute gate | Same authority; authorized machines may read/reference/status, without mutation rights |
+| Non-mutating ValidateIssuer network probe | Current `security.manage` plus five-minute signed evidence | Qualified end-user authority without an age gate; separate conservative probe admission excludes ambiguous/machine callers, whose probe qualification remains unresolved |
+| Ordinary end-user Role creation/data grants/exact self-assignment and other changes without trust change or control-authority expansion | Apply and Store enforce five-minute signed evidence | Valid end-user authentication and current explicit authority; missing/older signed `auth_time` alone is allowed |
+| Change accepted Issuer/credential trust or expand effective `security.manage` | Blanket five-minute signed evidence | Separate purpose proof binds actor, original ID, canonical v1 intent and full policy cut to a signed post-review event |
+| Machine management mutation | No explicit human-only policy; a named machine's unknown authentication time fails the blanket gate | Explicitly prohibited, even if a machine has a Role containing `security.manage` |
+
+Classify the full proposed policy by effective consequences. Removing a Deny,
+deleting a Role or deleting an assignment can expand `security.manage`, including
+latent authority in another assigned Role. A data permission grant alone is
+ordinary; do not add a reauthentication requirement just because it expands
+data access. Bootstrap can create a mutable scoped data Role and assign it to
+its exact verified identity after #1672, preserving its environment-owned
+`security_admin` assignment and receiving no implicit data rights. Missing
+`auth_time` alone no longer requires extra initial operator provisioning.
+
+Identity kind is not credential provenance. Both a verified browser Code/PKCE/
+nonce exchange and an RFC 9068 Bearer can map to an OIDC `(iss, sub)` Principal;
+that pair or `KindOIDCPrincipal` alone cannot establish whether the Bearer
+represents an end user or a machine. Legitimate end-user Bearer management
+eligibility is preserved; no browser-only restriction is selected. The trusted
+classification separates browser Code, RFC 9068 Bearer and native machine
+provenance from end-user, machine and unresolved actor classes. Bearer human
+eligibility requires exact durable human enrollment plus an operator-qualified
+Issuer contract preventing client-subject collision and impersonation. Existing
+mixed profiles require actual issuance qualification before activation; the
+default does not infer trust from an OIDC kind or signed authentication time.
+Issuer profile configuration that changes accepted credential trust itself
+belongs to the high-impact set.
+
+The operation-purpose proof contract is:
+
+- Bind Server-owned purpose to canonical reviewed intent, expected state and
+  original Change-ID; bind state/nonce to the same verified Issuer and subject.
+- Verify a qualified signed authentication event for that operation. A generic
+  recent-session flag, `iat`, callback time, consent or account selection is not
+  a proof. Navigation starts no earlier than the next whole NumericDate second
+  after final review, and the signed event must meet that boundary. Purpose
+  state uses the existing bounded ten-minute login lifetime.
+- Under the Store lock, recheck current authority, credential/proof expiry,
+  serving fence and CAS immediately before durable entry. Immutable original
+  ID plus fixed-writer CAS permits one effect; exact retained retries return
+  their original result before demanding a new proof. Outstanding purpose
+  capabilities are process-bound and restart invalidates them.
+- Preserve the old usable session after failed step-up. Recovery of an already
+  committed same-ID operation needs no further reauthentication and never
+  executes a new mutation. Current recovery/disclosure checks and original
+  commit evidence still apply.
+
+The purpose callback branches before ordinary session issuance or cookie writes;
+generic session step-up cannot authorize an operation. A typed, fully bound
+pre-persistence authorization refusal permits same-ID proof reacquisition only
+for a first previously unambiguous Apply; earlier uncertainty stays status-only.
+Malformed, future or contradictory signed times and invalid session
+creation evidence remain rejected independently of the removed ordinary gate.
+Ordinary management remains exposed for the actual valid credential/session
+lifetime; it receives no implicit extension or automatic machine grant.
 
 An exact batch with any denied identity is rejected before lookup or mutation,
 including a batch mixing visible and denied keys. Responses must not reveal
@@ -320,7 +401,7 @@ mechanisms. Operators may copy them for a namespace and add Deny exceptions.
 | `cdc_value_consumer` | Identity consumer plus value CDC and normal reads for the same resources |
 | `backup_exporter` | Explicit export plus required reads; no mutations or raw peer Snapshot |
 | `operations_observer` | Global sanitized operational status/metrics; no implicit business reads |
-| `security_admin` | Global recent-auth security management; no implicit data read/write/export |
+| `security_admin` | Global security management; high-impact operation proof; no implicit data read/write/export |
 | `cluster_replica` | Protected internal full replication, assigned by versioned peer trust; cannot be assigned to users through Admin |
 
 Examples include an analytics reader excluding `customers:private:`, a service
@@ -443,16 +524,26 @@ cookie-authenticated mutations. Ordinary login accepts provider SSO and missing
 `auth_time` as unknown, retaining an older signed time without upgrading it.
 Future or contradictory evidence is rejected; `iat`, callback time, consent and
 account selection never supply authentication time. A Server-owned transaction
-saves ordinary versus step-up intent independently from session replacement;
-only step-up requests fresh provider authentication and essential signed
-`auth_time`. Step-up and important security changes require a signed event
-within five minutes. A failed step-up retains the old session. Canonical state,
+saves ordinary versus step-up intent independently from session replacement.
+Explicit session step-up and separate operation approval request fresh provider
+authentication and essential signed
+`auth_time`. Generic session step-up requires a signed event
+within five minutes. This generic session step-up does not authorize a reviewed
+management operation. Under #1672 ordinary qualified-human management has no age
+gate; high-impact changes use a separate purpose callback and signed post-review
+event, preserving the ordinary session. A failed step-up retains the old session.
+Canonical state,
 replication and recovery preserve unknown/old evidence. This interpretation uses
 security image v2, `LNSEC03` and native binding v2; old cohorts fail closed before
 admission or durable-floor advancement, without automatic migration or mixed
 rolling acceptance. The graph namespace and receipt formats do not change.
-Role-scoped data export uses explicit export/read grants and current
-admission; machine exporters do not assert interactive recent authentication. Fixed session expiry, revocation and per-stream authority checks remain
+Google Security bundle, extra Google claims and the associated app publication/
+verification are optional outside baseline implementation, acceptance and
+release gates. Ordinary Google login and actual provider-neutral ordinary
+management remain separately required evidence. Role-scoped data export uses
+explicit export/read grants and current admission; machine exporters do not
+assert interactive recent authentication. Fixed session expiry, revocation and
+per-stream authority checks remain
 independent of JWT expiry. Passwords, MFA and account enrollment stay with the
 IdP; no password store, email linking, implicit group grants, SCIM or opaque
 token introspection is introduced.
@@ -465,10 +556,20 @@ suggestion, cursor and metric cache is identity/scope/revision/generation-bound.
 Logout, Role changes, cross-tab events, resume and late callbacks invalidate
 old state. Already delivered data cannot be recalled.
 
-## HA authority, leases and recovery
+## Fixed-writer HA baseline: authority, leases and recovery
 
-Application data remains leaderless and asynchronously replicated. Initially
-one operator-pinned internal security writer owns control changes. There is
+This section records the merged `93d53789` implementation, including its
+timings. #1608's leaderless security target is not implemented by these leases.
+The selected G1 Profile B target requires isolated/stale nodes to stop
+authorization-required processing within a proven bound. Its numerical bound,
+protocol and clock/suspension proof remain pending; Go monotonic elapsed time
+alone does not certify suspension. #1609's [remaining S5 contracts](../oidc-operations.md#leaderless-s5--remaining-contracts-and-qualification)
+follow #1608 S2–S4, including eligible-node/per-attempt routing, per-origin key/
+secret custody and reviewed versioned migration. Preserve fixed-writer history
+without claiming target acceptance.
+
+Application data remains leaderless and asynchronously replicated. In this
+baseline one operator-pinned internal security writer owns control changes. There is
 no automatic election, external coordinator or home-built consensus protocol.
 Replicas consume signed complete security transactions/checkpoints through
 the existing pipeline; they never LWW-merge independent security records.

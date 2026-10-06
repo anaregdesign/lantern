@@ -1,4 +1,9 @@
 import { Buffer } from "node:buffer";
+import { create, toBinary } from "@bufbuild/protobuf";
+import {
+  SecurityChangePrecommitRejectedSchema,
+  SecurityChangeRejectionReason,
+} from "../../../sdks/node/src/gen/graph/v1/security_pb";
 
 /**
  * The Lantern primary listener URL the Playwright webServer starts on
@@ -93,8 +98,10 @@ export async function securityUI(
   options: {
     mode?: "ready" | "login" | "off" | "unavailable";
     recent?: boolean;
-    apply?: "conflict" | "lost";
+    apply?: "conflict" | "lost" | "unknown-role-once" | "generic-conflict";
+    status?: "pending-then-enforced" | "unknown" | "mismatch";
     denied?: boolean;
+    reauthentication?: boolean;
   } = {},
 ) {
   const calls: Array<{
@@ -109,7 +116,19 @@ export async function securityUI(
     generation: Buffer.alloc(16, 2).toString("base64"),
   };
   let signedIn = options.mode !== "login";
+  let statusCalls = 0;
+  let applyCalls = 0;
   const primary = "https://admin.example";
+  let approved = false;
+  const authorizationPath = "/auth/management-authorization/" + "A".repeat(43);
+  if (options.reauthentication)
+    await page.context().route(primary + authorizationPath, async (route) => {
+      approved = true;
+      await route.fulfill({
+        contentType: "text/html",
+        body: "<title>Operation authentication</title><p>Authentication recorded. Return to the reviewed change in Admin.</p>",
+      });
+    });
   await page.addInitScript(
     ({ key, url }) => {
       localStorage.setItem(key, url);
@@ -233,8 +252,43 @@ export async function securityUI(
           ],
         });
       if (method === "ApplySecurityChanges") {
-        if (options.apply === "conflict")
-          return json({ code: "aborted", message: "Revision conflict" }, 409);
+        applyCalls++;
+        if (options.apply === "generic-conflict")
+          return json(
+            {
+              code: "aborted",
+              message: "Retained change ID conflicts with another intent",
+            },
+            409,
+          );
+        if (
+          options.apply === "conflict" ||
+          (options.apply === "unknown-role-once" && applyCalls === 1)
+        ) {
+          const conflict = options.apply === "conflict";
+          const detail = create(SecurityChangePrecommitRejectedSchema, {
+            changeId: Buffer.from(String(body.changeId), "base64"),
+            expectedRevision: BigInt(String(body.expectedRevision)),
+            reason: conflict
+              ? SecurityChangeRejectionReason.REVISION_CONFLICT
+              : SecurityChangeRejectionReason.UNKNOWN_ROLE,
+          });
+          return json(
+            {
+              code: conflict ? "aborted" : "failed_precondition",
+              message: conflict ? "Revision conflict" : "Unknown Role",
+              details: [
+                {
+                  type: SecurityChangePrecommitRejectedSchema.typeName,
+                  value: Buffer.from(
+                    toBinary(SecurityChangePrecommitRejectedSchema, detail),
+                  ).toString("base64"),
+                },
+              ],
+            },
+            conflict ? 409 : 400,
+          );
+        }
         if (options.apply === "lost") return route.abort("failed");
         return json({
           version: { ...version, revision: "4" },
@@ -242,12 +296,60 @@ export async function securityUI(
           enforcement: "SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING",
         });
       }
-      if (method === "GetSecurityChangeStatus")
+      if (method === "PrepareSecurityChanges") {
+        const review = body.review as Record<string, unknown>;
         return json({
-          version: { ...version, revision: "4" },
-          applied: [true],
-          enforcement: "SECURITY_ENFORCEMENT_STATE_ENFORCED",
+          expectedVersion: review.expectedVersion,
+          changeId: review.changeId,
+          intentDigest: Buffer.alloc(32, 4).toString("base64"),
+          requirement: options.reauthentication
+            ? "SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION"
+            : "SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY",
         });
+      }
+      if (method === "BeginSecurityChangeAuthorization")
+        return json({
+          authorizationId: Buffer.alloc(32, 8).toString("base64"),
+          startUrl: primary + authorizationPath,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        });
+      if (method === "GetSecurityChangeAuthorization")
+        return json({
+          authorizationId: body.authorizationId,
+          state: approved
+            ? "SECURITY_AUTHORIZATION_STATE_APPROVED"
+            : "SECURITY_AUTHORIZATION_STATE_PENDING",
+          authorizationProof: approved
+            ? Buffer.alloc(32, 9).toString("base64")
+            : "",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        });
+      if (method === "GetSecurityChangeStatus") {
+        statusCalls++;
+        if (options.status === "unknown")
+          return json(
+            {
+              code: "failed_precondition",
+              message: "Outside retained history",
+            },
+            412,
+          );
+        return json({
+          version: {
+            ...version,
+            revision: "4",
+            digest:
+              options.status === "mismatch"
+                ? Buffer.alloc(32, 9).toString("base64")
+                : version.digest,
+          },
+          changeId: body.changeId,
+          enforcement:
+            options.status === "pending-then-enforced" && statusCalls === 1
+              ? "SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING"
+              : "SECURITY_ENFORCEMENT_STATE_ENFORCED",
+        });
+      }
       if (method === "ExplainAccess")
         return json({
           version,

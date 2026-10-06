@@ -48,6 +48,7 @@ export interface IssuerDraft {
   secretRef: string;
   locked: boolean;
   existing: boolean;
+  humanSubjectNamespaceQualified: boolean;
 }
 export interface RuleDraft {
   id: string;
@@ -95,6 +96,8 @@ export function issuerDraft(value?: SecurityIssuer): IssuerDraft {
     secretRef: "",
     locked: value?.envOwned ?? false,
     existing: !!value,
+    humanSubjectNamespaceQualified:
+      value?.humanSubjectNamespaceQualified ?? false,
   };
 }
 export function roleDraft(value?: SecurityRole): RoleDraft {
@@ -220,6 +223,7 @@ export function buildIssuer(draft: IssuerDraft): SecurityIssuer {
     redirectUri: https(draft.redirectUri, "Redirect URI"),
     algorithms,
     enabled: draft.enabled,
+    humanSubjectNamespaceQualified: draft.humanSubjectNamespaceQualified,
     secretRef:
       draft.secretMode === "preserve"
         ? undefined

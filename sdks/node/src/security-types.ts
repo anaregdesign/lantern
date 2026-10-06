@@ -7,8 +7,13 @@ export {
   SecurityEnforcementState,
   SecurityPrincipalKind,
   SecurityPrincipalState,
+  SecurityAuthorizationRequirement,
+  SecurityAuthorizationState,
+  SecurityChangeRejectionReason,
 } from "./gen/graph/v1/security_pb.js";
 export type {
+  SecurityOperationAuthorizationRequired,
+  SecurityChangePrecommitRejected,
   GetAuthCapabilitiesResponse,
   LoginIssuer,
   GetCurrentPrincipalResponse,
@@ -32,6 +37,10 @@ export type {
   ListIssuersResponse,
   ListUsersResponse,
   ExplainAccessResponse,
+  SecurityChangeReview,
+  PrepareSecurityChangesResponse,
+  BeginSecurityChangeAuthorizationResponse,
+  GetSecurityChangeAuthorizationResponse,
 } from "./gen/graph/v1/security_pb.js";
 export function parseBrowserSession(json: string) {
   return fromJsonString(BrowserSessionSchema, json);

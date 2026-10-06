@@ -746,6 +746,25 @@ error hierarchy, and option types as the Node entrypoint; only the
 transport differs. CORS preflights must be allowed on the Lantern
 server via `LANTERN_CORS_ALLOWED_ORIGINS`.
 
+### Management Apply refusals in this checkout
+
+`SecurityClient` and `SecurityChangePrecommitRejectedError` are exported by the
+Node and Web entrypoints. These checkout changes do not establish support in
+the installed npm release. A singular or plural Apply raises this typed error
+only for one valid `SecurityChangePrecommitRejected` detail with its expected
+RPC code, nonzero 16-byte Change-ID, expected revision and recognized reason.
+The detail settles that invocation before persistence; it never settles an
+earlier attempt with the same ID.
+
+Correlate the detail with the exact dispatched ID/revision and the application's
+send history. A matching first refusal permits reloading the current policy,
+correcting the draft and explicitly reviewing a new ID before applying. Do not
+retry automatically. Any earlier uncertain dispatch, generic RPC conflict,
+missing/mismatched detail or persistence/transport error keeps the original ID
+for status reconciliation. An unknown status is not noncommit proof.
+`SecurityOperationAuthorizationRequiredError` remains a separate refusal that
+binds the unchanged reviewed tuple for explicit operation reauthentication.
+
 ## Candidate package check
 
 Before publishing, build and check the same archive selection npm would

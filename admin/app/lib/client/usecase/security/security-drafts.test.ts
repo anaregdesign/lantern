@@ -62,6 +62,11 @@ describe("explicit security drafts", () => {
     };
     expect(buildIssuer(draft).secretRef).toBeUndefined();
     expect(buildIssuer(draft).configRevision).toBe(0n);
+    expect(buildIssuer(draft).humanSubjectNamespaceQualified).toBe(false);
+    expect(
+      buildIssuer({ ...draft, humanSubjectNamespaceQualified: true })
+        .humanSubjectNamespaceQualified,
+    ).toBe(true);
     expect(buildIssuer({ ...draft, secretMode: "clear" }).secretRef).toBe("");
     expect(
       buildIssuer({

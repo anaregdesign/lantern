@@ -206,5 +206,137 @@ class SecurityEnforcementState extends $pb.ProtobufEnum {
   const SecurityEnforcementState._(super.value, super.name);
 }
 
+class SecurityChangeRejectionReason extends $pb.ProtobufEnum {
+  static const SecurityChangeRejectionReason
+      SECURITY_CHANGE_REJECTION_REASON_UNSPECIFIED =
+      SecurityChangeRejectionReason._(0,
+          _omitEnumNames ? '' : 'SECURITY_CHANGE_REJECTION_REASON_UNSPECIFIED');
+  static const SecurityChangeRejectionReason
+      SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES =
+      SecurityChangeRejectionReason._(
+          1,
+          _omitEnumNames
+              ? ''
+              : 'SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES');
+  static const SecurityChangeRejectionReason
+      SECURITY_CHANGE_REJECTION_REASON_UNKNOWN_ROLE =
+      SecurityChangeRejectionReason._(
+          2,
+          _omitEnumNames
+              ? ''
+              : 'SECURITY_CHANGE_REJECTION_REASON_UNKNOWN_ROLE');
+  static const SecurityChangeRejectionReason
+      SECURITY_CHANGE_REJECTION_REASON_ISSUER_VALIDATION =
+      SecurityChangeRejectionReason._(
+          3,
+          _omitEnumNames
+              ? ''
+              : 'SECURITY_CHANGE_REJECTION_REASON_ISSUER_VALIDATION');
+  static const SecurityChangeRejectionReason
+      SECURITY_CHANGE_REJECTION_REASON_ENVIRONMENT_OWNED =
+      SecurityChangeRejectionReason._(
+          4,
+          _omitEnumNames
+              ? ''
+              : 'SECURITY_CHANGE_REJECTION_REASON_ENVIRONMENT_OWNED');
+  static const SecurityChangeRejectionReason
+      SECURITY_CHANGE_REJECTION_REASON_LAST_ADMINISTRATOR =
+      SecurityChangeRejectionReason._(
+          5,
+          _omitEnumNames
+              ? ''
+              : 'SECURITY_CHANGE_REJECTION_REASON_LAST_ADMINISTRATOR');
+  static const SecurityChangeRejectionReason
+      SECURITY_CHANGE_REJECTION_REASON_REVISION_CONFLICT =
+      SecurityChangeRejectionReason._(
+          6,
+          _omitEnumNames
+              ? ''
+              : 'SECURITY_CHANGE_REJECTION_REASON_REVISION_CONFLICT');
+
+  static const $core.List<SecurityChangeRejectionReason> values =
+      <SecurityChangeRejectionReason>[
+    SECURITY_CHANGE_REJECTION_REASON_UNSPECIFIED,
+    SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES,
+    SECURITY_CHANGE_REJECTION_REASON_UNKNOWN_ROLE,
+    SECURITY_CHANGE_REJECTION_REASON_ISSUER_VALIDATION,
+    SECURITY_CHANGE_REJECTION_REASON_ENVIRONMENT_OWNED,
+    SECURITY_CHANGE_REJECTION_REASON_LAST_ADMINISTRATOR,
+    SECURITY_CHANGE_REJECTION_REASON_REVISION_CONFLICT,
+  ];
+
+  static final $core.List<SecurityChangeRejectionReason?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 6);
+  static SecurityChangeRejectionReason? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const SecurityChangeRejectionReason._(super.value, super.name);
+}
+
+class SecurityAuthorizationRequirement extends $pb.ProtobufEnum {
+  static const SecurityAuthorizationRequirement
+      SECURITY_AUTHORIZATION_REQUIREMENT_UNSPECIFIED =
+      SecurityAuthorizationRequirement._(
+          0,
+          _omitEnumNames
+              ? ''
+              : 'SECURITY_AUTHORIZATION_REQUIREMENT_UNSPECIFIED');
+  static const SecurityAuthorizationRequirement
+      SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY =
+      SecurityAuthorizationRequirement._(1,
+          _omitEnumNames ? '' : 'SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY');
+  static const SecurityAuthorizationRequirement
+      SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION =
+      SecurityAuthorizationRequirement._(
+          2,
+          _omitEnumNames
+              ? ''
+              : 'SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION');
+
+  static const $core.List<SecurityAuthorizationRequirement> values =
+      <SecurityAuthorizationRequirement>[
+    SECURITY_AUTHORIZATION_REQUIREMENT_UNSPECIFIED,
+    SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY,
+    SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION,
+  ];
+
+  static final $core.List<SecurityAuthorizationRequirement?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 2);
+  static SecurityAuthorizationRequirement? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const SecurityAuthorizationRequirement._(super.value, super.name);
+}
+
+class SecurityAuthorizationState extends $pb.ProtobufEnum {
+  static const SecurityAuthorizationState
+      SECURITY_AUTHORIZATION_STATE_UNSPECIFIED = SecurityAuthorizationState._(
+          0, _omitEnumNames ? '' : 'SECURITY_AUTHORIZATION_STATE_UNSPECIFIED');
+  static const SecurityAuthorizationState SECURITY_AUTHORIZATION_STATE_PENDING =
+      SecurityAuthorizationState._(
+          1, _omitEnumNames ? '' : 'SECURITY_AUTHORIZATION_STATE_PENDING');
+  static const SecurityAuthorizationState
+      SECURITY_AUTHORIZATION_STATE_APPROVED = SecurityAuthorizationState._(
+          2, _omitEnumNames ? '' : 'SECURITY_AUTHORIZATION_STATE_APPROVED');
+  static const SecurityAuthorizationState SECURITY_AUTHORIZATION_STATE_DENIED =
+      SecurityAuthorizationState._(
+          3, _omitEnumNames ? '' : 'SECURITY_AUTHORIZATION_STATE_DENIED');
+
+  static const $core.List<SecurityAuthorizationState> values =
+      <SecurityAuthorizationState>[
+    SECURITY_AUTHORIZATION_STATE_UNSPECIFIED,
+    SECURITY_AUTHORIZATION_STATE_PENDING,
+    SECURITY_AUTHORIZATION_STATE_APPROVED,
+    SECURITY_AUTHORIZATION_STATE_DENIED,
+  ];
+
+  static final $core.List<SecurityAuthorizationState?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
+  static SecurityAuthorizationState? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const SecurityAuthorizationState._(super.value, super.name);
+}
+
 const $core.bool _omitEnumNames =
     $core.bool.fromEnvironment('protobuf.omit_enum_names');

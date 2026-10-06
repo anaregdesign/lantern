@@ -6,8 +6,10 @@ import (
 )
 
 type principalAccess struct {
-	state  PrincipalState
-	access *Access
+	state                     PrincipalState
+	access                    *Access
+	humanIssuerConfigRevision uint64
+	bootstrapHuman            bool
 }
 
 // Snapshot owns a validated image and its compiled indexes. All fields are
@@ -36,6 +38,18 @@ func (s *Snapshot) AccessFor(identity Identity) (*Access, bool) {
 		return nil, false
 	}
 	return principal.access, true
+}
+
+// HumanIdentity is durable exact enrollment, independent of live sessions.
+// Legacy signed bootstrap membership is operator human enrollment; ordinary
+// OIDC client subjects and public Role assignments cannot create it.
+func (s *Snapshot) HumanIdentity(identity Identity) bool {
+	if s == nil || identity.Kind != OIDCPrincipal {
+		return false
+	}
+	principal, known := s.principals[identity]
+	issuer, registered := s.issuers[identity.Issuer]
+	return known && registered && (principal.humanIssuerConfigRevision != 0 && principal.humanIssuerConfigRevision == issuer.ConfigRevision || principal.bootstrapHuman && issuer.EnvOwned)
 }
 
 func (s *Snapshot) Issuer(exactURL string) (Issuer, bool) {

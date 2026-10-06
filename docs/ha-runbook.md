@@ -68,6 +68,15 @@ revisions and bounded leases from one fixed security writer. A replicated sys:
 image by itself does not prove current authorization. Writer/lease loss may
 stop protected requests even while application replication is healthy.
 
+That is the merged `93d53789` fixed-writer baseline. #1608's approved G1 Profile B
+target stops isolated/stale nodes' authorization-required processing within a
+proven bound; its numerical bound, clock/suspension proof and protocol remain
+pending. Eligible-node control routing, per-attempt login affinity, per-origin
+secret/key custody and stopped/fenced migration follow #1608 S2–S4 through
+[#1609 S5](oidc-operations.md#leaderless-s5--remaining-contracts-and-qualification).
+Current native/Compose conformance does not complete target topology or final
+#1610 acceptance. Helm/Kubernetes #1636 is deferred outside this task's gates.
+
 ### 2.3 Opt-in durable receipt-WAL runtime
 
 `LANTERN_RECEIPT_WAL_MODE=graph-only` is the default; it offers no durable

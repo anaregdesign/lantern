@@ -34,7 +34,9 @@ func (r *SecurityRuntime) AuthHTTPHandler() http.Handler {
 		case "/auth/logout":
 			r.browserLogout(w, req)
 		default:
-			if strings.HasPrefix(req.URL.Path, "/auth/callback/") {
+			if strings.HasPrefix(req.URL.Path, "/auth/management-authorization/") {
+				r.browserManagementAuthorization(w, req)
+			} else if strings.HasPrefix(req.URL.Path, "/auth/callback/") {
 				r.browserCallback(w, req)
 			} else {
 				http.NotFound(w, req)
@@ -138,6 +140,15 @@ func (r *SecurityRuntime) browserCallback(w http.ResponseWriter, req *http.Reque
 		browserHTTPError(w, connect.CodeUnauthenticated)
 		return
 	}
+	authorizationID, operationAuthorization := completion.AuthorizationID()
+	operationApproved := false
+	if operationAuthorization {
+		defer func() {
+			if !operationApproved {
+				r.authorizations.Reject(authorizationID)
+			}
+		}()
+	}
 	browserClearCookie(w, transactionCookieName, http.SameSiteLaxMode)
 	if query.Get("error") != "" || query.Get("code") == "" {
 		browserHTTPError(w, connect.CodeUnauthenticated)
@@ -166,6 +177,18 @@ func (r *SecurityRuntime) browserCallback(w http.ResponseWriter, req *http.Reque
 	}
 	if r.authorityCheck(req.Context(), current) != nil {
 		browserHTTPError(w, connect.CodeUnavailable)
+		return
+	}
+	if operationAuthorization {
+		if err := r.authorizations.Complete(authorizationID, verified.Identity, verified.AuthTime, verified.ExpiresAt, trust.ConfigRevision, current, r.now()); err != nil {
+			browserHTTPError(w, connect.CodeUnauthenticated)
+			return
+		}
+		operationApproved = true
+		// Purpose approval never reaches IssueSession or ordinary cookie writes.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		_, _ = w.Write([]byte("<!doctype html><html lang=\"en\"><title>Operation authentication complete</title><body><p>Authentication recorded. Return to your reviewed change in Admin.</p></body></html>"))
 		return
 	}
 	value, err := newBrowserSecret()

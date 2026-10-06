@@ -178,6 +178,14 @@ enforced revisions are shown separately. OFF exposes setup guidance without
 an anonymous authentication toggle. IdP account/password/MFA management remains
 with the provider. See [ADR 0012](../docs/decisions/0012-oidc-prefix-rbac.md).
 
+`GetSecurityChangeStatus` returns retained commit proof for the original change
+ID, version and enforcement. It does not return item outcomes or prove that
+the original grants are still effective. Admin preserves request-aligned
+outcomes only from an original Apply acknowledgement; after response loss it
+shows item outcomes as unavailable. Status recovery retains the original ID
+across policy remounts in the same browser session without sending Apply again.
+Unknown or retired IDs remain indeterminate.
+
 ## Fixed Server and diagnostics proxy
 
 The image entrypoint supports `LANTERN_ADMIN_SERVER_UPSTREAM` (fixed

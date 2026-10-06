@@ -126,6 +126,34 @@ class LanternSecurityServiceClient extends $grpc.Client {
     return $createUnaryCall(_$validateIssuer, request, options: options);
   }
 
+  /// Nonmutating authoritative review; approval never rotates a session.
+  $grpc.ResponseFuture<$0.PrepareSecurityChangesResponse>
+      prepareSecurityChanges(
+    $0.PrepareSecurityChangesRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$prepareSecurityChanges, request,
+        options: options);
+  }
+
+  $grpc.ResponseFuture<$0.BeginSecurityChangeAuthorizationResponse>
+      beginSecurityChangeAuthorization(
+    $0.BeginSecurityChangeAuthorizationRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$beginSecurityChangeAuthorization, request,
+        options: options);
+  }
+
+  $grpc.ResponseFuture<$0.GetSecurityChangeAuthorizationResponse>
+      getSecurityChangeAuthorization(
+    $0.GetSecurityChangeAuthorizationRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getSecurityChangeAuthorization, request,
+        options: options);
+  }
+
   /// Plural is canonical and atomic, with request-index-aligned outcomes.
   $grpc.ResponseFuture<$0.ApplySecurityChangesResponse> applySecurityChanges(
     $0.ApplySecurityChangesRequest request, {
@@ -141,6 +169,7 @@ class LanternSecurityServiceClient extends $grpc.Client {
     return $createUnaryCall(_$applySecurityChange, request, options: options);
   }
 
+  /// Retained commit proof only; item outcomes and replay acknowledgement belong to Apply.
   $grpc.ResponseFuture<$0.GetSecurityChangeStatusResponse>
       getSecurityChangeStatus(
     $0.GetSecurityChangeStatusRequest request, {
@@ -217,6 +246,24 @@ class LanternSecurityServiceClient extends $grpc.Client {
           '/graph.v1.LanternSecurityService/ValidateIssuer',
           ($0.ValidateIssuerRequest value) => value.writeToBuffer(),
           $0.ValidateIssuerResponse.fromBuffer);
+  static final _$prepareSecurityChanges = $grpc.ClientMethod<
+          $0.PrepareSecurityChangesRequest, $0.PrepareSecurityChangesResponse>(
+      '/graph.v1.LanternSecurityService/PrepareSecurityChanges',
+      ($0.PrepareSecurityChangesRequest value) => value.writeToBuffer(),
+      $0.PrepareSecurityChangesResponse.fromBuffer);
+  static final _$beginSecurityChangeAuthorization = $grpc.ClientMethod<
+          $0.BeginSecurityChangeAuthorizationRequest,
+          $0.BeginSecurityChangeAuthorizationResponse>(
+      '/graph.v1.LanternSecurityService/BeginSecurityChangeAuthorization',
+      ($0.BeginSecurityChangeAuthorizationRequest value) =>
+          value.writeToBuffer(),
+      $0.BeginSecurityChangeAuthorizationResponse.fromBuffer);
+  static final _$getSecurityChangeAuthorization = $grpc.ClientMethod<
+          $0.GetSecurityChangeAuthorizationRequest,
+          $0.GetSecurityChangeAuthorizationResponse>(
+      '/graph.v1.LanternSecurityService/GetSecurityChangeAuthorization',
+      ($0.GetSecurityChangeAuthorizationRequest value) => value.writeToBuffer(),
+      $0.GetSecurityChangeAuthorizationResponse.fromBuffer);
   static final _$applySecurityChanges = $grpc.ClientMethod<
           $0.ApplySecurityChangesRequest, $0.ApplySecurityChangesResponse>(
       '/graph.v1.LanternSecurityService/ApplySecurityChanges',
@@ -347,6 +394,35 @@ abstract class LanternSecurityServiceBase extends $grpc.Service {
         ($core.List<$core.int> value) =>
             $0.ValidateIssuerRequest.fromBuffer(value),
         ($0.ValidateIssuerResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.PrepareSecurityChangesRequest,
+            $0.PrepareSecurityChangesResponse>(
+        'PrepareSecurityChanges',
+        prepareSecurityChanges_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.PrepareSecurityChangesRequest.fromBuffer(value),
+        ($0.PrepareSecurityChangesResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.BeginSecurityChangeAuthorizationRequest,
+            $0.BeginSecurityChangeAuthorizationResponse>(
+        'BeginSecurityChangeAuthorization',
+        beginSecurityChangeAuthorization_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.BeginSecurityChangeAuthorizationRequest.fromBuffer(value),
+        ($0.BeginSecurityChangeAuthorizationResponse value) =>
+            value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.GetSecurityChangeAuthorizationRequest,
+            $0.GetSecurityChangeAuthorizationResponse>(
+        'GetSecurityChangeAuthorization',
+        getSecurityChangeAuthorization_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.GetSecurityChangeAuthorizationRequest.fromBuffer(value),
+        ($0.GetSecurityChangeAuthorizationResponse value) =>
+            value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.ApplySecurityChangesRequest,
             $0.ApplySecurityChangesResponse>(
         'ApplySecurityChanges',
@@ -486,6 +562,39 @@ abstract class LanternSecurityServiceBase extends $grpc.Service {
 
   $async.Future<$0.ValidateIssuerResponse> validateIssuer(
       $grpc.ServiceCall call, $0.ValidateIssuerRequest request);
+
+  $async.Future<$0.PrepareSecurityChangesResponse> prepareSecurityChanges_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.PrepareSecurityChangesRequest> $request) async {
+    return prepareSecurityChanges($call, await $request);
+  }
+
+  $async.Future<$0.PrepareSecurityChangesResponse> prepareSecurityChanges(
+      $grpc.ServiceCall call, $0.PrepareSecurityChangesRequest request);
+
+  $async.Future<$0.BeginSecurityChangeAuthorizationResponse>
+      beginSecurityChangeAuthorization_Pre(
+          $grpc.ServiceCall $call,
+          $async.Future<$0.BeginSecurityChangeAuthorizationRequest>
+              $request) async {
+    return beginSecurityChangeAuthorization($call, await $request);
+  }
+
+  $async.Future<$0.BeginSecurityChangeAuthorizationResponse>
+      beginSecurityChangeAuthorization($grpc.ServiceCall call,
+          $0.BeginSecurityChangeAuthorizationRequest request);
+
+  $async.Future<$0.GetSecurityChangeAuthorizationResponse>
+      getSecurityChangeAuthorization_Pre(
+          $grpc.ServiceCall $call,
+          $async.Future<$0.GetSecurityChangeAuthorizationRequest>
+              $request) async {
+    return getSecurityChangeAuthorization($call, await $request);
+  }
+
+  $async.Future<$0.GetSecurityChangeAuthorizationResponse>
+      getSecurityChangeAuthorization($grpc.ServiceCall call,
+          $0.GetSecurityChangeAuthorizationRequest request);
 
   $async.Future<$0.ApplySecurityChangesResponse> applySecurityChanges_Pre(
       $grpc.ServiceCall $call,

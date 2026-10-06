@@ -91,7 +91,11 @@ export class LanternApiError extends Error {
       );
     }
     if (err instanceof LanternError) {
-      return new LanternApiError(rpc, "unknown", err.message);
+      return new LanternApiError(
+        rpc,
+        connectCodeFromCause(err) ?? "unknown",
+        err.message,
+      );
     }
     return err instanceof Error ? err : new Error(String(err));
   }
@@ -146,4 +150,55 @@ export class LanternApiError extends Error {
       `${identity} was not live after server application: ${outcome}`,
     );
   }
+}
+
+/** gRPC-compatible Connect status codes; never infer status from message text. */
+const CONNECT_ERROR_CODES = [
+  "unknown",
+  "canceled",
+  "unknown",
+  "invalid_argument",
+  "deadline_exceeded",
+  "not_found",
+  "already_exists",
+  "permission_denied",
+  "resource_exhausted",
+  "failed_precondition",
+  "aborted",
+  "out_of_range",
+  "unimplemented",
+  "internal",
+  "unavailable",
+  "data_loss",
+  "unauthenticated",
+] as const;
+
+/** SDK wrappers retain ConnectError in cause. Bound both depth and cycles. */
+function connectCodeFromCause(error: LanternError): string | undefined {
+  let cause: unknown = error.cause;
+  const seen = new Set<object>();
+  for (let depth = 0; depth < 8; depth++) {
+    if (typeof cause !== "object" || cause === null || seen.has(cause)) {
+      return undefined;
+    }
+    seen.add(cause);
+    try {
+      if ("code" in cause) {
+        const code: unknown = cause.code;
+        if (
+          typeof code === "number" &&
+          Number.isInteger(code) &&
+          code > 0 &&
+          code < CONNECT_ERROR_CODES.length
+        ) {
+          return CONNECT_ERROR_CODES[code];
+        }
+      }
+      cause = "cause" in cause ? cause.cause : undefined;
+    } catch {
+      // An opaque or hostile cause must not break error conversion.
+      return undefined;
+    }
+  }
+  return undefined;
 }

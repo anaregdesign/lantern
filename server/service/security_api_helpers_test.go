@@ -9,11 +9,14 @@ import (
 	"time"
 )
 
-type securityAPICommitter struct{ calls int }
+type securityAPICommitter struct {
+	calls int
+	err   error
+}
 
 func (c *securityAPICommitter) CommitRevision(context.Context, *security.Revision) error {
 	c.calls++
-	return nil
+	return c.err
 }
 func securityAPIFixture(t *testing.T) (*SecurityConnectHandler, *securityAPICommitter, func(string, time.Time) context.Context) {
 	t.Helper()
@@ -30,7 +33,7 @@ func securityAPIFixture(t *testing.T) (*SecurityConnectHandler, *securityAPIComm
 	image := security.Image{Version: security.ImageVersion, BootstrapRevision: 1,
 		Issuers:    []security.Issuer{{URL: issuer, Enabled: true, ConfigRevision: 1, ClientID: "admin", APIAudience: "api", RedirectURI: "https://admin.example/auth/callback", Algorithms: []string{"EdDSA"}, SecretRef: "hidden"}},
 		Roles:      []security.Role{{ID: "security_admin", Rules: []security.PermissionRule{{ID: "manage", Effect: security.Allow, Action: security.SecurityManage, Resource: security.GlobalResource}}}},
-		Principals: []security.Principal{{Identity: identity("admin"), State: security.Active, Assignments: []security.RoleAssignment{{RoleID: "security_admin", EnvOwned: true}}}, {Identity: identity("other_admin"), State: security.Active, Assignments: []security.RoleAssignment{{RoleID: "security_admin"}}}, {Identity: identity("reader"), State: security.Active}}}
+		Principals: []security.Principal{{Identity: identity("admin"), State: security.Active, HumanIssuerConfigRevision: 1, Assignments: []security.RoleAssignment{{RoleID: "security_admin", EnvOwned: true}}}, {Identity: identity("other_admin"), State: security.Active, HumanIssuerConfigRevision: 1, Assignments: []security.RoleAssignment{{RoleID: "security_admin"}}}, {Identity: identity("reader"), State: security.Active}}}
 	if _, err = store.ReconcileBootstrap(t.Context(), 0, [16]byte{1}, image); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +58,7 @@ func securityAPIFixture(t *testing.T) (*SecurityConnectHandler, *securityAPIComm
 		if err != nil {
 			t.Fatal(err)
 		}
-		return security.WithAdmission(t.Context(), admission)
+		return security.WithAdmission(t.Context(), admission.WithAuthentication(security.Authentication{Provenance: security.BrowserCode, Class: security.EndUser, IssuerConfigRevision: 1}))
 	}
 	return handler, sink, contexts
 }

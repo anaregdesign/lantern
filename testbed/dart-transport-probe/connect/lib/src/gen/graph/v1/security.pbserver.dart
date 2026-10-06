@@ -47,6 +47,14 @@ abstract class LanternSecurityServiceBase extends $pb.GeneratedService {
       $pb.ServerContext ctx, $1.ExplainAccessRequest request);
   $async.Future<$1.ValidateIssuerResponse> validateIssuer(
       $pb.ServerContext ctx, $1.ValidateIssuerRequest request);
+  $async.Future<$1.PrepareSecurityChangesResponse> prepareSecurityChanges(
+      $pb.ServerContext ctx, $1.PrepareSecurityChangesRequest request);
+  $async.Future<$1.BeginSecurityChangeAuthorizationResponse>
+      beginSecurityChangeAuthorization($pb.ServerContext ctx,
+          $1.BeginSecurityChangeAuthorizationRequest request);
+  $async.Future<$1.GetSecurityChangeAuthorizationResponse>
+      getSecurityChangeAuthorization($pb.ServerContext ctx,
+          $1.GetSecurityChangeAuthorizationRequest request);
   $async.Future<$1.ApplySecurityChangesResponse> applySecurityChanges(
       $pb.ServerContext ctx, $1.ApplySecurityChangesRequest request);
   $async.Future<$1.ApplySecurityChangeResponse> applySecurityChange(
@@ -82,6 +90,12 @@ abstract class LanternSecurityServiceBase extends $pb.GeneratedService {
         return $1.ExplainAccessRequest();
       case 'ValidateIssuer':
         return $1.ValidateIssuerRequest();
+      case 'PrepareSecurityChanges':
+        return $1.PrepareSecurityChangesRequest();
+      case 'BeginSecurityChangeAuthorization':
+        return $1.BeginSecurityChangeAuthorizationRequest();
+      case 'GetSecurityChangeAuthorization':
+        return $1.GetSecurityChangeAuthorizationRequest();
       case 'ApplySecurityChanges':
         return $1.ApplySecurityChangesRequest();
       case 'ApplySecurityChange':
@@ -125,6 +139,15 @@ abstract class LanternSecurityServiceBase extends $pb.GeneratedService {
         return explainAccess(ctx, request as $1.ExplainAccessRequest);
       case 'ValidateIssuer':
         return validateIssuer(ctx, request as $1.ValidateIssuerRequest);
+      case 'PrepareSecurityChanges':
+        return prepareSecurityChanges(
+            ctx, request as $1.PrepareSecurityChangesRequest);
+      case 'BeginSecurityChangeAuthorization':
+        return beginSecurityChangeAuthorization(
+            ctx, request as $1.BeginSecurityChangeAuthorizationRequest);
+      case 'GetSecurityChangeAuthorization':
+        return getSecurityChangeAuthorization(
+            ctx, request as $1.GetSecurityChangeAuthorizationRequest);
       case 'ApplySecurityChanges':
         return applySecurityChanges(
             ctx, request as $1.ApplySecurityChangesRequest);

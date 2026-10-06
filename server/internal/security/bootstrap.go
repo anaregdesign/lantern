@@ -184,6 +184,11 @@ func (s *Store) ApplyBootstrap(ctx context.Context, configuration Bootstrap) (Ch
 		if err := assign(Identity{Kind: OIDCPrincipal, Issuer: b.Issuer.URL, Subject: subject}, []string{admin.ID}); err != nil {
 			return ChangeResult{}, err
 		}
+		for i := range image.Principals {
+			if image.Principals[i].Identity == (Identity{Kind: OIDCPrincipal, Issuer: b.Issuer.URL, Subject: subject}) {
+				image.Principals[i].HumanIssuerConfigRevision = issuerRevision
+			}
+		}
 	}
 	image.MachineCredentials = nil
 	for _, machine := range b.Machines {
@@ -213,7 +218,7 @@ func (b Bootstrap) Validate() error {
 	issuer.ConfigRevision = 1
 	image := Image{Version: ImageVersion, Issuers: []Issuer{issuer}, Roles: append([]Role{{ID: "security_admin", Rules: []PermissionRule{{ID: "manage", Effect: Allow, Action: SecurityManage, Resource: GlobalResource}}}}, canonical.Roles...)}
 	for _, subject := range canonical.AdminSubjects {
-		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuer.URL, Subject: subject}, State: Active, Assignments: []RoleAssignment{{RoleID: "security_admin", EnvOwned: true}}})
+		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuer.URL, Subject: subject}, State: Active, Assignments: []RoleAssignment{{RoleID: "security_admin", EnvOwned: true}}, HumanIssuerConfigRevision: issuer.ConfigRevision})
 	}
 	for _, machine := range canonical.Machines {
 		principal := Principal{Identity: Identity{Kind: MachinePrincipal, MachineName: machine.Name}, State: Active}

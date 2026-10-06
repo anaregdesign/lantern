@@ -821,6 +821,7 @@ class SecurityIssuer extends $pb.GeneratedMessage {
     $core.bool? envOwned,
     $core.bool? deleted,
     $core.bool? hasSecretBinding,
+    $core.bool? humanSubjectNamespaceQualified,
   }) {
     final result = create();
     if (issuer != null) result.issuer = issuer;
@@ -834,6 +835,8 @@ class SecurityIssuer extends $pb.GeneratedMessage {
     if (envOwned != null) result.envOwned = envOwned;
     if (deleted != null) result.deleted = deleted;
     if (hasSecretBinding != null) result.hasSecretBinding = hasSecretBinding;
+    if (humanSubjectNamespaceQualified != null)
+      result.humanSubjectNamespaceQualified = humanSubjectNamespaceQualified;
     return result;
   }
 
@@ -863,6 +866,7 @@ class SecurityIssuer extends $pb.GeneratedMessage {
     ..aOB(9, _omitFieldNames ? '' : 'envOwned')
     ..aOB(10, _omitFieldNames ? '' : 'deleted')
     ..aOB(11, _omitFieldNames ? '' : 'hasSecretBinding')
+    ..aOB(12, _omitFieldNames ? '' : 'humanSubjectNamespaceQualified')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -979,6 +983,17 @@ class SecurityIssuer extends $pb.GeneratedMessage {
   $core.bool hasHasSecretBinding() => $_has(10);
   @$pb.TagNumber(11)
   void clearHasSecretBinding() => $_clearField(11);
+
+  /// Trusted issuance contract: OAuth client subjects cannot collide with or
+  /// impersonate exact enrolled end-users. Qualify before enabling.
+  @$pb.TagNumber(12)
+  $core.bool get humanSubjectNamespaceQualified => $_getBF(11);
+  @$pb.TagNumber(12)
+  set humanSubjectNamespaceQualified($core.bool value) => $_setBool(11, value);
+  @$pb.TagNumber(12)
+  $core.bool hasHumanSubjectNamespaceQualified() => $_has(11);
+  @$pb.TagNumber(12)
+  void clearHumanSubjectNamespaceQualified() => $_clearField(12);
 }
 
 class SecurityVersion extends $pb.GeneratedMessage {
@@ -3618,11 +3633,14 @@ class ApplySecurityChangesRequest extends $pb.GeneratedMessage {
     $fixnum.Int64? expectedRevision,
     $core.List<$core.int>? changeId,
     $core.Iterable<SecurityChange>? changes,
+    $core.List<$core.int>? authorizationProof,
   }) {
     final result = create();
     if (expectedRevision != null) result.expectedRevision = expectedRevision;
     if (changeId != null) result.changeId = changeId;
     if (changes != null) result.changes.addAll(changes);
+    if (authorizationProof != null)
+      result.authorizationProof = authorizationProof;
     return result;
   }
 
@@ -3647,6 +3665,8 @@ class ApplySecurityChangesRequest extends $pb.GeneratedMessage {
     ..pc<SecurityChange>(
         3, _omitFieldNames ? '' : 'changes', $pb.PbFieldType.PM,
         subBuilder: SecurityChange.create)
+    ..a<$core.List<$core.int>>(
+        4, _omitFieldNames ? '' : 'authorizationProof', $pb.PbFieldType.OY)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3694,6 +3714,16 @@ class ApplySecurityChangesRequest extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(3)
   $pb.PbList<SecurityChange> get changes => $_getList(2);
+
+  /// Purpose proof is excluded from retained canonical business intent.
+  @$pb.TagNumber(4)
+  $core.List<$core.int> get authorizationProof => $_getN(3);
+  @$pb.TagNumber(4)
+  set authorizationProof($core.List<$core.int> value) => $_setBytes(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasAuthorizationProof() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearAuthorizationProof() => $_clearField(4);
 }
 
 class ApplySecurityChangesResponse extends $pb.GeneratedMessage {
@@ -3799,11 +3829,14 @@ class ApplySecurityChangeRequest extends $pb.GeneratedMessage {
     $fixnum.Int64? expectedRevision,
     $core.List<$core.int>? changeId,
     SecurityChange? change,
+    $core.List<$core.int>? authorizationProof,
   }) {
     final result = create();
     if (expectedRevision != null) result.expectedRevision = expectedRevision;
     if (changeId != null) result.changeId = changeId;
     if (change != null) result.change = change;
+    if (authorizationProof != null)
+      result.authorizationProof = authorizationProof;
     return result;
   }
 
@@ -3827,6 +3860,8 @@ class ApplySecurityChangeRequest extends $pb.GeneratedMessage {
         2, _omitFieldNames ? '' : 'changeId', $pb.PbFieldType.OY)
     ..aOM<SecurityChange>(3, _omitFieldNames ? '' : 'change',
         subBuilder: SecurityChange.create)
+    ..a<$core.List<$core.int>>(
+        4, _omitFieldNames ? '' : 'authorizationProof', $pb.PbFieldType.OY)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3881,6 +3916,801 @@ class ApplySecurityChangeRequest extends $pb.GeneratedMessage {
   void clearChange() => $_clearField(3);
   @$pb.TagNumber(3)
   SecurityChange ensureChange() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  $core.List<$core.int> get authorizationProof => $_getN(3);
+  @$pb.TagNumber(4)
+  set authorizationProof($core.List<$core.int> value) => $_setBytes(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasAuthorizationProof() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearAuthorizationProof() => $_clearField(4);
+}
+
+class SecurityChangeReview extends $pb.GeneratedMessage {
+  factory SecurityChangeReview({
+    SecurityVersion? expectedVersion,
+    $core.List<$core.int>? changeId,
+    $core.Iterable<SecurityChange>? changes,
+  }) {
+    final result = create();
+    if (expectedVersion != null) result.expectedVersion = expectedVersion;
+    if (changeId != null) result.changeId = changeId;
+    if (changes != null) result.changes.addAll(changes);
+    return result;
+  }
+
+  SecurityChangeReview._();
+
+  factory SecurityChangeReview.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SecurityChangeReview.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SecurityChangeReview',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<SecurityVersion>(1, _omitFieldNames ? '' : 'expectedVersion',
+        subBuilder: SecurityVersion.create)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'changeId', $pb.PbFieldType.OY)
+    ..pc<SecurityChange>(
+        3, _omitFieldNames ? '' : 'changes', $pb.PbFieldType.PM,
+        subBuilder: SecurityChange.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityChangeReview clone() =>
+      SecurityChangeReview()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityChangeReview copyWith(void Function(SecurityChangeReview) updates) =>
+      super.copyWith((message) => updates(message as SecurityChangeReview))
+          as SecurityChangeReview;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SecurityChangeReview create() => SecurityChangeReview._();
+  @$core.override
+  SecurityChangeReview createEmptyInstance() => create();
+  static $pb.PbList<SecurityChangeReview> createRepeated() =>
+      $pb.PbList<SecurityChangeReview>();
+  @$core.pragma('dart2js:noInline')
+  static SecurityChangeReview getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SecurityChangeReview>(create);
+  static SecurityChangeReview? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  SecurityVersion get expectedVersion => $_getN(0);
+  @$pb.TagNumber(1)
+  set expectedVersion(SecurityVersion value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasExpectedVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearExpectedVersion() => $_clearField(1);
+  @$pb.TagNumber(1)
+  SecurityVersion ensureExpectedVersion() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get changeId => $_getN(1);
+  @$pb.TagNumber(2)
+  set changeId($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasChangeId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearChangeId() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $pb.PbList<SecurityChange> get changes => $_getList(2);
+}
+
+/// Apply error detail: this invocation was definitely refused before durable
+/// persistence because operation authorization was missing/invalid/expired.
+/// It does not settle any earlier invocation whose response was lost.
+class SecurityOperationAuthorizationRequired extends $pb.GeneratedMessage {
+  factory SecurityOperationAuthorizationRequired({
+    $core.List<$core.int>? changeId,
+    SecurityVersion? expectedVersion,
+    $core.List<$core.int>? intentDigest,
+  }) {
+    final result = create();
+    if (changeId != null) result.changeId = changeId;
+    if (expectedVersion != null) result.expectedVersion = expectedVersion;
+    if (intentDigest != null) result.intentDigest = intentDigest;
+    return result;
+  }
+
+  SecurityOperationAuthorizationRequired._();
+
+  factory SecurityOperationAuthorizationRequired.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SecurityOperationAuthorizationRequired.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SecurityOperationAuthorizationRequired',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'changeId', $pb.PbFieldType.OY)
+    ..aOM<SecurityVersion>(2, _omitFieldNames ? '' : 'expectedVersion',
+        subBuilder: SecurityVersion.create)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'intentDigest', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityOperationAuthorizationRequired clone() =>
+      SecurityOperationAuthorizationRequired()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityOperationAuthorizationRequired copyWith(
+          void Function(SecurityOperationAuthorizationRequired) updates) =>
+      super.copyWith((message) =>
+              updates(message as SecurityOperationAuthorizationRequired))
+          as SecurityOperationAuthorizationRequired;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SecurityOperationAuthorizationRequired create() =>
+      SecurityOperationAuthorizationRequired._();
+  @$core.override
+  SecurityOperationAuthorizationRequired createEmptyInstance() => create();
+  static $pb.PbList<SecurityOperationAuthorizationRequired> createRepeated() =>
+      $pb.PbList<SecurityOperationAuthorizationRequired>();
+  @$core.pragma('dart2js:noInline')
+  static SecurityOperationAuthorizationRequired getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<
+          SecurityOperationAuthorizationRequired>(create);
+  static SecurityOperationAuthorizationRequired? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get changeId => $_getN(0);
+  @$pb.TagNumber(1)
+  set changeId($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasChangeId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearChangeId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  SecurityVersion get expectedVersion => $_getN(1);
+  @$pb.TagNumber(2)
+  set expectedVersion(SecurityVersion value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasExpectedVersion() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearExpectedVersion() => $_clearField(2);
+  @$pb.TagNumber(2)
+  SecurityVersion ensureExpectedVersion() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get intentDigest => $_getN(2);
+  @$pb.TagNumber(3)
+  set intentDigest($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasIntentDigest() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearIntentDigest() => $_clearField(3);
+}
+
+/// Definitive refusal of this decoded Apply invocation before any persistence
+/// attempt. This never settles earlier invocations of the same change ID.
+class SecurityChangePrecommitRejected extends $pb.GeneratedMessage {
+  factory SecurityChangePrecommitRejected({
+    $core.List<$core.int>? changeId,
+    $fixnum.Int64? expectedRevision,
+    SecurityChangeRejectionReason? reason,
+  }) {
+    final result = create();
+    if (changeId != null) result.changeId = changeId;
+    if (expectedRevision != null) result.expectedRevision = expectedRevision;
+    if (reason != null) result.reason = reason;
+    return result;
+  }
+
+  SecurityChangePrecommitRejected._();
+
+  factory SecurityChangePrecommitRejected.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SecurityChangePrecommitRejected.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SecurityChangePrecommitRejected',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'changeId', $pb.PbFieldType.OY)
+    ..a<$fixnum.Int64>(
+        2, _omitFieldNames ? '' : 'expectedRevision', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..e<SecurityChangeRejectionReason>(
+        3, _omitFieldNames ? '' : 'reason', $pb.PbFieldType.OE,
+        defaultOrMaker: SecurityChangeRejectionReason
+            .SECURITY_CHANGE_REJECTION_REASON_UNSPECIFIED,
+        valueOf: SecurityChangeRejectionReason.valueOf,
+        enumValues: SecurityChangeRejectionReason.values)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityChangePrecommitRejected clone() =>
+      SecurityChangePrecommitRejected()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityChangePrecommitRejected copyWith(
+          void Function(SecurityChangePrecommitRejected) updates) =>
+      super.copyWith(
+              (message) => updates(message as SecurityChangePrecommitRejected))
+          as SecurityChangePrecommitRejected;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SecurityChangePrecommitRejected create() =>
+      SecurityChangePrecommitRejected._();
+  @$core.override
+  SecurityChangePrecommitRejected createEmptyInstance() => create();
+  static $pb.PbList<SecurityChangePrecommitRejected> createRepeated() =>
+      $pb.PbList<SecurityChangePrecommitRejected>();
+  @$core.pragma('dart2js:noInline')
+  static SecurityChangePrecommitRejected getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SecurityChangePrecommitRejected>(
+          create);
+  static SecurityChangePrecommitRejected? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get changeId => $_getN(0);
+  @$pb.TagNumber(1)
+  set changeId($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasChangeId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearChangeId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get expectedRevision => $_getI64(1);
+  @$pb.TagNumber(2)
+  set expectedRevision($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasExpectedRevision() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearExpectedRevision() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  SecurityChangeRejectionReason get reason => $_getN(2);
+  @$pb.TagNumber(3)
+  set reason(SecurityChangeRejectionReason value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasReason() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearReason() => $_clearField(3);
+}
+
+class PrepareSecurityChangesRequest extends $pb.GeneratedMessage {
+  factory PrepareSecurityChangesRequest({
+    SecurityChangeReview? review,
+  }) {
+    final result = create();
+    if (review != null) result.review = review;
+    return result;
+  }
+
+  PrepareSecurityChangesRequest._();
+
+  factory PrepareSecurityChangesRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory PrepareSecurityChangesRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'PrepareSecurityChangesRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<SecurityChangeReview>(1, _omitFieldNames ? '' : 'review',
+        subBuilder: SecurityChangeReview.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PrepareSecurityChangesRequest clone() =>
+      PrepareSecurityChangesRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PrepareSecurityChangesRequest copyWith(
+          void Function(PrepareSecurityChangesRequest) updates) =>
+      super.copyWith(
+              (message) => updates(message as PrepareSecurityChangesRequest))
+          as PrepareSecurityChangesRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static PrepareSecurityChangesRequest create() =>
+      PrepareSecurityChangesRequest._();
+  @$core.override
+  PrepareSecurityChangesRequest createEmptyInstance() => create();
+  static $pb.PbList<PrepareSecurityChangesRequest> createRepeated() =>
+      $pb.PbList<PrepareSecurityChangesRequest>();
+  @$core.pragma('dart2js:noInline')
+  static PrepareSecurityChangesRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<PrepareSecurityChangesRequest>(create);
+  static PrepareSecurityChangesRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  SecurityChangeReview get review => $_getN(0);
+  @$pb.TagNumber(1)
+  set review(SecurityChangeReview value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasReview() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearReview() => $_clearField(1);
+  @$pb.TagNumber(1)
+  SecurityChangeReview ensureReview() => $_ensure(0);
+}
+
+class PrepareSecurityChangesResponse extends $pb.GeneratedMessage {
+  factory PrepareSecurityChangesResponse({
+    SecurityVersion? expectedVersion,
+    $core.List<$core.int>? changeId,
+    $core.List<$core.int>? intentDigest,
+    SecurityAuthorizationRequirement? requirement,
+    GetSecurityChangeStatusResponse? retainedCommit,
+  }) {
+    final result = create();
+    if (expectedVersion != null) result.expectedVersion = expectedVersion;
+    if (changeId != null) result.changeId = changeId;
+    if (intentDigest != null) result.intentDigest = intentDigest;
+    if (requirement != null) result.requirement = requirement;
+    if (retainedCommit != null) result.retainedCommit = retainedCommit;
+    return result;
+  }
+
+  PrepareSecurityChangesResponse._();
+
+  factory PrepareSecurityChangesResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory PrepareSecurityChangesResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'PrepareSecurityChangesResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<SecurityVersion>(1, _omitFieldNames ? '' : 'expectedVersion',
+        subBuilder: SecurityVersion.create)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'changeId', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'intentDigest', $pb.PbFieldType.OY)
+    ..e<SecurityAuthorizationRequirement>(
+        4, _omitFieldNames ? '' : 'requirement', $pb.PbFieldType.OE,
+        defaultOrMaker: SecurityAuthorizationRequirement
+            .SECURITY_AUTHORIZATION_REQUIREMENT_UNSPECIFIED,
+        valueOf: SecurityAuthorizationRequirement.valueOf,
+        enumValues: SecurityAuthorizationRequirement.values)
+    ..aOM<GetSecurityChangeStatusResponse>(
+        5, _omitFieldNames ? '' : 'retainedCommit',
+        subBuilder: GetSecurityChangeStatusResponse.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PrepareSecurityChangesResponse clone() =>
+      PrepareSecurityChangesResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PrepareSecurityChangesResponse copyWith(
+          void Function(PrepareSecurityChangesResponse) updates) =>
+      super.copyWith(
+              (message) => updates(message as PrepareSecurityChangesResponse))
+          as PrepareSecurityChangesResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static PrepareSecurityChangesResponse create() =>
+      PrepareSecurityChangesResponse._();
+  @$core.override
+  PrepareSecurityChangesResponse createEmptyInstance() => create();
+  static $pb.PbList<PrepareSecurityChangesResponse> createRepeated() =>
+      $pb.PbList<PrepareSecurityChangesResponse>();
+  @$core.pragma('dart2js:noInline')
+  static PrepareSecurityChangesResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<PrepareSecurityChangesResponse>(create);
+  static PrepareSecurityChangesResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  SecurityVersion get expectedVersion => $_getN(0);
+  @$pb.TagNumber(1)
+  set expectedVersion(SecurityVersion value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasExpectedVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearExpectedVersion() => $_clearField(1);
+  @$pb.TagNumber(1)
+  SecurityVersion ensureExpectedVersion() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get changeId => $_getN(1);
+  @$pb.TagNumber(2)
+  set changeId($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasChangeId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearChangeId() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get intentDigest => $_getN(2);
+  @$pb.TagNumber(3)
+  set intentDigest($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasIntentDigest() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearIntentDigest() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  SecurityAuthorizationRequirement get requirement => $_getN(3);
+  @$pb.TagNumber(4)
+  set requirement(SecurityAuthorizationRequirement value) =>
+      $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasRequirement() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearRequirement() => $_clearField(4);
+
+  /// A known committed ID is recovered using its original retained proof.
+  @$pb.TagNumber(5)
+  GetSecurityChangeStatusResponse get retainedCommit => $_getN(4);
+  @$pb.TagNumber(5)
+  set retainedCommit(GetSecurityChangeStatusResponse value) =>
+      $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasRetainedCommit() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearRetainedCommit() => $_clearField(5);
+  @$pb.TagNumber(5)
+  GetSecurityChangeStatusResponse ensureRetainedCommit() => $_ensure(4);
+}
+
+class BeginSecurityChangeAuthorizationRequest extends $pb.GeneratedMessage {
+  factory BeginSecurityChangeAuthorizationRequest({
+    SecurityChangeReview? review,
+  }) {
+    final result = create();
+    if (review != null) result.review = review;
+    return result;
+  }
+
+  BeginSecurityChangeAuthorizationRequest._();
+
+  factory BeginSecurityChangeAuthorizationRequest.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory BeginSecurityChangeAuthorizationRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'BeginSecurityChangeAuthorizationRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<SecurityChangeReview>(1, _omitFieldNames ? '' : 'review',
+        subBuilder: SecurityChangeReview.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  BeginSecurityChangeAuthorizationRequest clone() =>
+      BeginSecurityChangeAuthorizationRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  BeginSecurityChangeAuthorizationRequest copyWith(
+          void Function(BeginSecurityChangeAuthorizationRequest) updates) =>
+      super.copyWith((message) =>
+              updates(message as BeginSecurityChangeAuthorizationRequest))
+          as BeginSecurityChangeAuthorizationRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static BeginSecurityChangeAuthorizationRequest create() =>
+      BeginSecurityChangeAuthorizationRequest._();
+  @$core.override
+  BeginSecurityChangeAuthorizationRequest createEmptyInstance() => create();
+  static $pb.PbList<BeginSecurityChangeAuthorizationRequest> createRepeated() =>
+      $pb.PbList<BeginSecurityChangeAuthorizationRequest>();
+  @$core.pragma('dart2js:noInline')
+  static BeginSecurityChangeAuthorizationRequest getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<
+          BeginSecurityChangeAuthorizationRequest>(create);
+  static BeginSecurityChangeAuthorizationRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  SecurityChangeReview get review => $_getN(0);
+  @$pb.TagNumber(1)
+  set review(SecurityChangeReview value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasReview() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearReview() => $_clearField(1);
+  @$pb.TagNumber(1)
+  SecurityChangeReview ensureReview() => $_ensure(0);
+}
+
+class BeginSecurityChangeAuthorizationResponse extends $pb.GeneratedMessage {
+  factory BeginSecurityChangeAuthorizationResponse({
+    $core.List<$core.int>? authorizationId,
+    $core.String? startUrl,
+    $0.Timestamp? expiresAt,
+  }) {
+    final result = create();
+    if (authorizationId != null) result.authorizationId = authorizationId;
+    if (startUrl != null) result.startUrl = startUrl;
+    if (expiresAt != null) result.expiresAt = expiresAt;
+    return result;
+  }
+
+  BeginSecurityChangeAuthorizationResponse._();
+
+  factory BeginSecurityChangeAuthorizationResponse.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory BeginSecurityChangeAuthorizationResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'BeginSecurityChangeAuthorizationResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'authorizationId', $pb.PbFieldType.OY)
+    ..aOS(2, _omitFieldNames ? '' : 'startUrl')
+    ..aOM<$0.Timestamp>(3, _omitFieldNames ? '' : 'expiresAt',
+        subBuilder: $0.Timestamp.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  BeginSecurityChangeAuthorizationResponse clone() =>
+      BeginSecurityChangeAuthorizationResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  BeginSecurityChangeAuthorizationResponse copyWith(
+          void Function(BeginSecurityChangeAuthorizationResponse) updates) =>
+      super.copyWith((message) =>
+              updates(message as BeginSecurityChangeAuthorizationResponse))
+          as BeginSecurityChangeAuthorizationResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static BeginSecurityChangeAuthorizationResponse create() =>
+      BeginSecurityChangeAuthorizationResponse._();
+  @$core.override
+  BeginSecurityChangeAuthorizationResponse createEmptyInstance() => create();
+  static $pb.PbList<BeginSecurityChangeAuthorizationResponse>
+      createRepeated() =>
+          $pb.PbList<BeginSecurityChangeAuthorizationResponse>();
+  @$core.pragma('dart2js:noInline')
+  static BeginSecurityChangeAuthorizationResponse getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<
+          BeginSecurityChangeAuthorizationResponse>(create);
+  static BeginSecurityChangeAuthorizationResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get authorizationId => $_getN(0);
+  @$pb.TagNumber(1)
+  set authorizationId($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasAuthorizationId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearAuthorizationId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get startUrl => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set startUrl($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasStartUrl() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearStartUrl() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $0.Timestamp get expiresAt => $_getN(2);
+  @$pb.TagNumber(3)
+  set expiresAt($0.Timestamp value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasExpiresAt() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearExpiresAt() => $_clearField(3);
+  @$pb.TagNumber(3)
+  $0.Timestamp ensureExpiresAt() => $_ensure(2);
+}
+
+class GetSecurityChangeAuthorizationRequest extends $pb.GeneratedMessage {
+  factory GetSecurityChangeAuthorizationRequest({
+    $core.List<$core.int>? authorizationId,
+  }) {
+    final result = create();
+    if (authorizationId != null) result.authorizationId = authorizationId;
+    return result;
+  }
+
+  GetSecurityChangeAuthorizationRequest._();
+
+  factory GetSecurityChangeAuthorizationRequest.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetSecurityChangeAuthorizationRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetSecurityChangeAuthorizationRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'authorizationId', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetSecurityChangeAuthorizationRequest clone() =>
+      GetSecurityChangeAuthorizationRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetSecurityChangeAuthorizationRequest copyWith(
+          void Function(GetSecurityChangeAuthorizationRequest) updates) =>
+      super.copyWith((message) =>
+              updates(message as GetSecurityChangeAuthorizationRequest))
+          as GetSecurityChangeAuthorizationRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetSecurityChangeAuthorizationRequest create() =>
+      GetSecurityChangeAuthorizationRequest._();
+  @$core.override
+  GetSecurityChangeAuthorizationRequest createEmptyInstance() => create();
+  static $pb.PbList<GetSecurityChangeAuthorizationRequest> createRepeated() =>
+      $pb.PbList<GetSecurityChangeAuthorizationRequest>();
+  @$core.pragma('dart2js:noInline')
+  static GetSecurityChangeAuthorizationRequest getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<
+          GetSecurityChangeAuthorizationRequest>(create);
+  static GetSecurityChangeAuthorizationRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get authorizationId => $_getN(0);
+  @$pb.TagNumber(1)
+  set authorizationId($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasAuthorizationId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearAuthorizationId() => $_clearField(1);
+}
+
+class GetSecurityChangeAuthorizationResponse extends $pb.GeneratedMessage {
+  factory GetSecurityChangeAuthorizationResponse({
+    $core.List<$core.int>? authorizationId,
+    SecurityAuthorizationState? state,
+    $core.List<$core.int>? authorizationProof,
+    $0.Timestamp? expiresAt,
+  }) {
+    final result = create();
+    if (authorizationId != null) result.authorizationId = authorizationId;
+    if (state != null) result.state = state;
+    if (authorizationProof != null)
+      result.authorizationProof = authorizationProof;
+    if (expiresAt != null) result.expiresAt = expiresAt;
+    return result;
+  }
+
+  GetSecurityChangeAuthorizationResponse._();
+
+  factory GetSecurityChangeAuthorizationResponse.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetSecurityChangeAuthorizationResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetSecurityChangeAuthorizationResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.List<$core.int>>(
+        1, _omitFieldNames ? '' : 'authorizationId', $pb.PbFieldType.OY)
+    ..e<SecurityAuthorizationState>(
+        2, _omitFieldNames ? '' : 'state', $pb.PbFieldType.OE,
+        defaultOrMaker:
+            SecurityAuthorizationState.SECURITY_AUTHORIZATION_STATE_UNSPECIFIED,
+        valueOf: SecurityAuthorizationState.valueOf,
+        enumValues: SecurityAuthorizationState.values)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'authorizationProof', $pb.PbFieldType.OY)
+    ..aOM<$0.Timestamp>(4, _omitFieldNames ? '' : 'expiresAt',
+        subBuilder: $0.Timestamp.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetSecurityChangeAuthorizationResponse clone() =>
+      GetSecurityChangeAuthorizationResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetSecurityChangeAuthorizationResponse copyWith(
+          void Function(GetSecurityChangeAuthorizationResponse) updates) =>
+      super.copyWith((message) =>
+              updates(message as GetSecurityChangeAuthorizationResponse))
+          as GetSecurityChangeAuthorizationResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetSecurityChangeAuthorizationResponse create() =>
+      GetSecurityChangeAuthorizationResponse._();
+  @$core.override
+  GetSecurityChangeAuthorizationResponse createEmptyInstance() => create();
+  static $pb.PbList<GetSecurityChangeAuthorizationResponse> createRepeated() =>
+      $pb.PbList<GetSecurityChangeAuthorizationResponse>();
+  @$core.pragma('dart2js:noInline')
+  static GetSecurityChangeAuthorizationResponse getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<
+          GetSecurityChangeAuthorizationResponse>(create);
+  static GetSecurityChangeAuthorizationResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.List<$core.int> get authorizationId => $_getN(0);
+  @$pb.TagNumber(1)
+  set authorizationId($core.List<$core.int> value) => $_setBytes(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasAuthorizationId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearAuthorizationId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  SecurityAuthorizationState get state => $_getN(1);
+  @$pb.TagNumber(2)
+  set state(SecurityAuthorizationState value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasState() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearState() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get authorizationProof => $_getN(2);
+  @$pb.TagNumber(3)
+  set authorizationProof($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasAuthorizationProof() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearAuthorizationProof() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $0.Timestamp get expiresAt => $_getN(3);
+  @$pb.TagNumber(4)
+  set expiresAt($0.Timestamp value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasExpiresAt() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearExpiresAt() => $_clearField(4);
+  @$pb.TagNumber(4)
+  $0.Timestamp ensureExpiresAt() => $_ensure(3);
 }
 
 class ApplySecurityChangeResponse extends $pb.GeneratedMessage {
@@ -4051,14 +4881,12 @@ class GetSecurityChangeStatusRequest extends $pb.GeneratedMessage {
 class GetSecurityChangeStatusResponse extends $pb.GeneratedMessage {
   factory GetSecurityChangeStatusResponse({
     SecurityVersion? version,
-    $core.Iterable<$core.bool>? applied,
-    $core.bool? replayed,
+    $core.List<$core.int>? changeId,
     SecurityEnforcementState? enforcement,
   }) {
     final result = create();
     if (version != null) result.version = version;
-    if (applied != null) result.applied.addAll(applied);
-    if (replayed != null) result.replayed = replayed;
+    if (changeId != null) result.changeId = changeId;
     if (enforcement != null) result.enforcement = enforcement;
     return result;
   }
@@ -4078,8 +4906,8 @@ class GetSecurityChangeStatusResponse extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..aOM<SecurityVersion>(1, _omitFieldNames ? '' : 'version',
         subBuilder: SecurityVersion.create)
-    ..p<$core.bool>(2, _omitFieldNames ? '' : 'applied', $pb.PbFieldType.KB)
-    ..aOB(3, _omitFieldNames ? '' : 'replayed')
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'changeId', $pb.PbFieldType.OY)
     ..e<SecurityEnforcementState>(
         4, _omitFieldNames ? '' : 'enforcement', $pb.PbFieldType.OE,
         defaultOrMaker:
@@ -4114,6 +4942,7 @@ class GetSecurityChangeStatusResponse extends $pb.GeneratedMessage {
           create);
   static GetSecurityChangeStatusResponse? _defaultInstance;
 
+  /// The original retained commit, not a snapshot of currently effective policy.
   @$pb.TagNumber(1)
   SecurityVersion get version => $_getN(0);
   @$pb.TagNumber(1)
@@ -4125,24 +4954,22 @@ class GetSecurityChangeStatusResponse extends $pb.GeneratedMessage {
   @$pb.TagNumber(1)
   SecurityVersion ensureVersion() => $_ensure(0);
 
+  /// Echoes the exact requested immutable ID. Unknown or retired IDs are indeterminate.
   @$pb.TagNumber(2)
-  $pb.PbList<$core.bool> get applied => $_getList(1);
-
-  @$pb.TagNumber(3)
-  $core.bool get replayed => $_getBF(2);
-  @$pb.TagNumber(3)
-  set replayed($core.bool value) => $_setBool(2, value);
-  @$pb.TagNumber(3)
-  $core.bool hasReplayed() => $_has(2);
-  @$pb.TagNumber(3)
-  void clearReplayed() => $_clearField(3);
+  $core.List<$core.int> get changeId => $_getN(1);
+  @$pb.TagNumber(2)
+  set changeId($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasChangeId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearChangeId() => $_clearField(2);
 
   @$pb.TagNumber(4)
-  SecurityEnforcementState get enforcement => $_getN(3);
+  SecurityEnforcementState get enforcement => $_getN(2);
   @$pb.TagNumber(4)
   set enforcement(SecurityEnforcementState value) => $_setField(4, value);
   @$pb.TagNumber(4)
-  $core.bool hasEnforcement() => $_has(3);
+  $core.bool hasEnforcement() => $_has(2);
   @$pb.TagNumber(4)
   void clearEnforcement() => $_clearField(4);
 }
@@ -4207,6 +5034,34 @@ class LanternSecurityServiceApi {
       _client.invoke<ValidateIssuerResponse>(ctx, 'LanternSecurityService',
           'ValidateIssuer', request, ValidateIssuerResponse());
 
+  /// Nonmutating authoritative review; approval never rotates a session.
+  $async.Future<PrepareSecurityChangesResponse> prepareSecurityChanges(
+          $pb.ClientContext? ctx, PrepareSecurityChangesRequest request) =>
+      _client.invoke<PrepareSecurityChangesResponse>(
+          ctx,
+          'LanternSecurityService',
+          'PrepareSecurityChanges',
+          request,
+          PrepareSecurityChangesResponse());
+  $async.Future<BeginSecurityChangeAuthorizationResponse>
+      beginSecurityChangeAuthorization($pb.ClientContext? ctx,
+              BeginSecurityChangeAuthorizationRequest request) =>
+          _client.invoke<BeginSecurityChangeAuthorizationResponse>(
+              ctx,
+              'LanternSecurityService',
+              'BeginSecurityChangeAuthorization',
+              request,
+              BeginSecurityChangeAuthorizationResponse());
+  $async.Future<GetSecurityChangeAuthorizationResponse>
+      getSecurityChangeAuthorization($pb.ClientContext? ctx,
+              GetSecurityChangeAuthorizationRequest request) =>
+          _client.invoke<GetSecurityChangeAuthorizationResponse>(
+              ctx,
+              'LanternSecurityService',
+              'GetSecurityChangeAuthorization',
+              request,
+              GetSecurityChangeAuthorizationResponse());
+
   /// Plural is canonical and atomic, with request-index-aligned outcomes.
   $async.Future<ApplySecurityChangesResponse> applySecurityChanges(
           $pb.ClientContext? ctx, ApplySecurityChangesRequest request) =>
@@ -4220,6 +5075,8 @@ class LanternSecurityServiceApi {
           $pb.ClientContext? ctx, ApplySecurityChangeRequest request) =>
       _client.invoke<ApplySecurityChangeResponse>(ctx, 'LanternSecurityService',
           'ApplySecurityChange', request, ApplySecurityChangeResponse());
+
+  /// Retained commit proof only; item outcomes and replay acknowledgement belong to Apply.
   $async.Future<GetSecurityChangeStatusResponse> getSecurityChangeStatus(
           $pb.ClientContext? ctx, GetSecurityChangeStatusRequest request) =>
       _client.invoke<GetSecurityChangeStatusResponse>(

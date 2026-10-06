@@ -259,13 +259,25 @@ export function BrowseVerticesPage() {
                   : `${rows.length} ${rows.length === 1 ? "result" : "results"}`}
               </Badge>
             ) : null
-          ) : browse.count !== null ? (
+          ) : browse.count.status === "success" ? (
             <Badge
               appearance="tint"
               shape="rounded"
               data-testid="vertex-count-badge"
             >
-              {browse.count.toLocaleString()} vertices
+              {browse.count.count.toLocaleString()} vertices
+            </Badge>
+          ) : browse.count.status !== "idle" ? (
+            <Badge
+              appearance="tint"
+              shape="rounded"
+              data-testid="vertex-count-status"
+            >
+              {browse.count.status === "loading"
+                ? "Counting vertices…"
+                : browse.count.status === "denied"
+                  ? "Count denied"
+                  : "Count unavailable"}
             </Badge>
           ) : null}
           {searching ? (
@@ -467,9 +479,51 @@ export function BrowseVerticesPage() {
         </MessageBar>
       ) : null}
 
-      {!searching && browse.state.error ? (
-        <MessageBar intent="error" className={styles.alert}>
-          <MessageBarBody>{browse.state.error}</MessageBarBody>
+      {!searching &&
+      (browse.state.error?.kind === "denied" ||
+        browse.count.status === "denied") ? (
+        <MessageBar
+          intent="warning"
+          className={styles.alert}
+          data-testid="vertex-read-permission"
+        >
+          <MessageBarBody>
+            <MessageBarTitle>Vertex read permission required</MessageBarTitle>
+            Scanning and counting require Vertex read access to{" "}
+            {browse.prefix ? (
+              <>
+                prefix <code>{browse.prefix}</code>
+              </>
+            ) : (
+              "all prefixes"
+            )}
+            . Choose a prefix you can read, or ask a security administrator to
+            assign a Role with read access through{" "}
+            <Link to="/security/roles">Roles</Link>.
+          </MessageBarBody>
+        </MessageBar>
+      ) : null}
+
+      {!searching && browse.state.error?.kind === "unavailable" ? (
+        <MessageBar
+          intent="error"
+          className={styles.alert}
+          data-testid="vertex-scan-error"
+        >
+          <MessageBarBody>{browse.state.error.message}</MessageBarBody>
+        </MessageBar>
+      ) : null}
+
+      {!searching && browse.count.status === "unavailable" ? (
+        <MessageBar
+          intent="warning"
+          className={styles.alert}
+          data-testid="vertex-count-error"
+        >
+          <MessageBarBody>
+            <MessageBarTitle>Vertex count unavailable</MessageBarTitle>
+            {browse.count.error} Use Refresh to try again.
+          </MessageBarBody>
         </MessageBar>
       ) : null}
 

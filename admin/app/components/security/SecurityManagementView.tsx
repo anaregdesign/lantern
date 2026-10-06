@@ -59,7 +59,9 @@ export function SecurityManagementView({
       {state.message && (
         <MessageBar
           intent={
-            state.phase === "error" || state.mutation === "conflict"
+            state.phase === "error" ||
+            state.mutation === "conflict" ||
+            state.mutation === "rejected"
               ? "error"
               : "info"
           }
@@ -86,9 +88,16 @@ export function SecurityManagementView({
             Check original change status
           </Button>
           {state.result && (
-            <p>
-              Committed revision {state.result.version?.revision.toString()}
-            </p>
+            <>
+              <p>
+                Committed revision {state.result.version?.revision.toString()}
+              </p>
+              <p>
+                {state.result.applied
+                  ? `Original Apply outcomes: ${state.result.applied.map((applied, i) => `${i + 1}: ${applied ? "applied" : "not applied"}`).join("; ")}.`
+                  : "Original item outcomes are unavailable; retained status proves the commit and its enforcement."}
+              </p>
+            </>
           )}
         </section>
       )}
@@ -234,13 +243,17 @@ export function SecurityManagementView({
       {state.review && (
         <ChangeReview
           review={state.review}
-          recent={principal.recentAuthentication}
           busy={busy}
           apply={() => {
-            void controller.apply(principal.recentAuthentication);
+            void controller.apply();
           }}
           cancel={() => controller.cancelReview()}
-          stepUp={() => auth.controller.login(principal.identity!.issuer, true)}
+          authorize={() => {
+            void controller.authorize();
+          }}
+          checkAuthorization={() => {
+            void controller.checkAuthorization();
+          }}
         />
       )}
       <AccessExplanation

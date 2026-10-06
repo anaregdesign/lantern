@@ -25,6 +25,9 @@ func TestSecurityConfigStrictOperatorContract(t *testing.T) {
 		{name: "empty subjects", key: "LANTERN_OIDC_ADMIN_SUBJECTS", value: "[]", wantError: true},
 		{name: "duplicate subjects", key: "LANTERN_OIDC_ADMIN_SUBJECTS", value: `["admin","admin"]`, wantError: true},
 		{name: "email is not inferred", key: "LANTERN_OIDC_ADMIN_SUBJECTS", value: `["Admin@example.com"]`},
+		{name: "qualified human namespace", key: "LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED", value: "true"},
+		{name: "mixed human namespace", key: "LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED", value: "false"},
+		{name: "ambiguous namespace assertion", key: "LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED", value: "yes", wantError: true},
 		{name: "shared callback", key: "LANTERN_OIDC_REDIRECT_URI", value: "https://admin.example/auth/callback", wantError: true},
 		{name: "plaintext origin", key: "LANTERN_OIDC_BROWSER_ORIGIN", value: "http://admin.example", wantError: true},
 		{name: "missing client", key: "LANTERN_OIDC_CLIENT_ID", remove: true, wantError: true},
@@ -93,6 +96,9 @@ func TestSecurityConfigStrictOperatorContract(t *testing.T) {
 			}
 			if test.name == "machine bootstrap" && (len(config.Bootstrap.Machines) != 1 || len(config.Bootstrap.Machines[0].Credentials) != 1) {
 				t.Fatal("machine configuration lost")
+			}
+			if err == nil && config.Bootstrap.Issuer.HumanSubjectNamespaceQualified != (test.value == "true" && test.key == "LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED") {
+				t.Fatal("human namespace qualification was inferred")
 			}
 		})
 	}

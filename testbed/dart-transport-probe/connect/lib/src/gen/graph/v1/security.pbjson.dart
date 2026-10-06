@@ -134,6 +134,67 @@ final $typed_data.Uint8List securityEnforcementStateDescriptor = $convert.base64
     'VfVU5TUEVDSUZJRUQQABIwCixTRUNVUklUWV9FTkZPUkNFTUVOVF9TVEFURV9DT01NSVRURURf'
     'UEVORElORxABEicKI1NFQ1VSSVRZX0VORk9SQ0VNRU5UX1NUQVRFX0VORk9SQ0VEEAI=');
 
+@$core.Deprecated('Use securityChangeRejectionReasonDescriptor instead')
+const SecurityChangeRejectionReason$json = {
+  '1': 'SecurityChangeRejectionReason',
+  '2': [
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_UNSPECIFIED', '2': 0},
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES', '2': 1},
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_UNKNOWN_ROLE', '2': 2},
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_ISSUER_VALIDATION', '2': 3},
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_ENVIRONMENT_OWNED', '2': 4},
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_LAST_ADMINISTRATOR', '2': 5},
+    {'1': 'SECURITY_CHANGE_REJECTION_REASON_REVISION_CONFLICT', '2': 6},
+  ],
+};
+
+/// Descriptor for `SecurityChangeRejectionReason`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List securityChangeRejectionReasonDescriptor = $convert.base64Decode(
+    'Ch1TZWN1cml0eUNoYW5nZVJlamVjdGlvblJlYXNvbhIwCixTRUNVUklUWV9DSEFOR0VfUkVKRU'
+    'NUSU9OX1JFQVNPTl9VTlNQRUNJRklFRBAAEjQKMFNFQ1VSSVRZX0NIQU5HRV9SRUpFQ1RJT05f'
+    'UkVBU09OX0lOVkFMSURfQ0hBTkdFUxABEjEKLVNFQ1VSSVRZX0NIQU5HRV9SRUpFQ1RJT05fUk'
+    'VBU09OX1VOS05PV05fUk9MRRACEjYKMlNFQ1VSSVRZX0NIQU5HRV9SRUpFQ1RJT05fUkVBU09O'
+    'X0lTU1VFUl9WQUxJREFUSU9OEAMSNgoyU0VDVVJJVFlfQ0hBTkdFX1JFSkVDVElPTl9SRUFTT0'
+    '5fRU5WSVJPTk1FTlRfT1dORUQQBBI3CjNTRUNVUklUWV9DSEFOR0VfUkVKRUNUSU9OX1JFQVNP'
+    'Tl9MQVNUX0FETUlOSVNUUkFUT1IQBRI2CjJTRUNVUklUWV9DSEFOR0VfUkVKRUNUSU9OX1JFQV'
+    'NPTl9SRVZJU0lPTl9DT05GTElDVBAG');
+
+@$core.Deprecated('Use securityAuthorizationRequirementDescriptor instead')
+const SecurityAuthorizationRequirement$json = {
+  '1': 'SecurityAuthorizationRequirement',
+  '2': [
+    {'1': 'SECURITY_AUTHORIZATION_REQUIREMENT_UNSPECIFIED', '2': 0},
+    {'1': 'SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY', '2': 1},
+    {'1': 'SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION', '2': 2},
+  ],
+};
+
+/// Descriptor for `SecurityAuthorizationRequirement`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List securityAuthorizationRequirementDescriptor =
+    $convert.base64Decode(
+        'CiBTZWN1cml0eUF1dGhvcml6YXRpb25SZXF1aXJlbWVudBIyCi5TRUNVUklUWV9BVVRIT1JJWk'
+        'FUSU9OX1JFUVVJUkVNRU5UX1VOU1BFQ0lGSUVEEAASLworU0VDVVJJVFlfQVVUSE9SSVpBVElP'
+        'Tl9SRVFVSVJFTUVOVF9PUkRJTkFSWRABEjcKM1NFQ1VSSVRZX0FVVEhPUklaQVRJT05fUkVRVU'
+        'lSRU1FTlRfUkVBVVRIRU5USUNBVElPThAC');
+
+@$core.Deprecated('Use securityAuthorizationStateDescriptor instead')
+const SecurityAuthorizationState$json = {
+  '1': 'SecurityAuthorizationState',
+  '2': [
+    {'1': 'SECURITY_AUTHORIZATION_STATE_UNSPECIFIED', '2': 0},
+    {'1': 'SECURITY_AUTHORIZATION_STATE_PENDING', '2': 1},
+    {'1': 'SECURITY_AUTHORIZATION_STATE_APPROVED', '2': 2},
+    {'1': 'SECURITY_AUTHORIZATION_STATE_DENIED', '2': 3},
+  ],
+};
+
+/// Descriptor for `SecurityAuthorizationState`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List securityAuthorizationStateDescriptor = $convert.base64Decode(
+    'ChpTZWN1cml0eUF1dGhvcml6YXRpb25TdGF0ZRIsCihTRUNVUklUWV9BVVRIT1JJWkFUSU9OX1'
+    'NUQVRFX1VOU1BFQ0lGSUVEEAASKAokU0VDVVJJVFlfQVVUSE9SSVpBVElPTl9TVEFURV9QRU5E'
+    'SU5HEAESKQolU0VDVVJJVFlfQVVUSE9SSVpBVElPTl9TVEFURV9BUFBST1ZFRBACEicKI1NFQ1'
+    'VSSVRZX0FVVEhPUklaQVRJT05fU1RBVEVfREVOSUVEEAM=');
+
 @$core.Deprecated('Use getAuthCapabilitiesRequestDescriptor instead')
 const GetAuthCapabilitiesRequest$json = {
   '1': 'GetAuthCapabilitiesRequest',
@@ -389,6 +450,13 @@ const SecurityIssuer$json = {
       '5': 8,
       '10': 'hasSecretBinding'
     },
+    {
+      '1': 'human_subject_namespace_qualified',
+      '3': 12,
+      '4': 1,
+      '5': 8,
+      '10': 'humanSubjectNamespaceQualified'
+    },
   ],
   '8': [
     {'1': '_secret_ref'},
@@ -403,8 +471,9 @@ final $typed_data.Uint8List securityIssuerDescriptor = $convert.base64Decode(
     '4KCmFsZ29yaXRobXMYBiADKAlSCmFsZ29yaXRobXMSIgoKc2VjcmV0X3JlZhgHIAEoCUgAUglz'
     'ZWNyZXRSZWaIAQESJwoPY29uZmlnX3JldmlzaW9uGAggASgEUg5jb25maWdSZXZpc2lvbhIbCg'
     'llbnZfb3duZWQYCSABKAhSCGVudk93bmVkEhgKB2RlbGV0ZWQYCiABKAhSB2RlbGV0ZWQSLAoS'
-    'aGFzX3NlY3JldF9iaW5kaW5nGAsgASgIUhBoYXNTZWNyZXRCaW5kaW5nQg0KC19zZWNyZXRfcm'
-    'Vm');
+    'aGFzX3NlY3JldF9iaW5kaW5nGAsgASgIUhBoYXNTZWNyZXRCaW5kaW5nEkkKIWh1bWFuX3N1Ym'
+    'plY3RfbmFtZXNwYWNlX3F1YWxpZmllZBgMIAEoCFIeaHVtYW5TdWJqZWN0TmFtZXNwYWNlUXVh'
+    'bGlmaWVkQg0KC19zZWNyZXRfcmVm');
 
 @$core.Deprecated('Use securityVersionDescriptor instead')
 const SecurityVersion$json = {
@@ -1304,15 +1373,22 @@ const ApplySecurityChangesRequest$json = {
       '6': '.graph.v1.SecurityChange',
       '10': 'changes'
     },
+    {
+      '1': 'authorization_proof',
+      '3': 4,
+      '4': 1,
+      '5': 12,
+      '10': 'authorizationProof'
+    },
   ],
 };
 
 /// Descriptor for `ApplySecurityChangesRequest`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List applySecurityChangesRequestDescriptor =
-    $convert.base64Decode(
-        'ChtBcHBseVNlY3VyaXR5Q2hhbmdlc1JlcXVlc3QSKwoRZXhwZWN0ZWRfcmV2aXNpb24YASABKA'
-        'RSEGV4cGVjdGVkUmV2aXNpb24SGwoJY2hhbmdlX2lkGAIgASgMUghjaGFuZ2VJZBIyCgdjaGFu'
-        'Z2VzGAMgAygLMhguZ3JhcGgudjEuU2VjdXJpdHlDaGFuZ2VSB2NoYW5nZXM=');
+final $typed_data.Uint8List applySecurityChangesRequestDescriptor = $convert.base64Decode(
+    'ChtBcHBseVNlY3VyaXR5Q2hhbmdlc1JlcXVlc3QSKwoRZXhwZWN0ZWRfcmV2aXNpb24YASABKA'
+    'RSEGV4cGVjdGVkUmV2aXNpb24SGwoJY2hhbmdlX2lkGAIgASgMUghjaGFuZ2VJZBIyCgdjaGFu'
+    'Z2VzGAMgAygLMhguZ3JhcGgudjEuU2VjdXJpdHlDaGFuZ2VSB2NoYW5nZXMSLwoTYXV0aG9yaX'
+    'phdGlvbl9wcm9vZhgEIAEoDFISYXV0aG9yaXphdGlvblByb29m');
 
 @$core.Deprecated('Use applySecurityChangesResponseDescriptor instead')
 const ApplySecurityChangesResponse$json = {
@@ -1366,15 +1442,276 @@ const ApplySecurityChangeRequest$json = {
       '6': '.graph.v1.SecurityChange',
       '10': 'change'
     },
+    {
+      '1': 'authorization_proof',
+      '3': 4,
+      '4': 1,
+      '5': 12,
+      '10': 'authorizationProof'
+    },
   ],
 };
 
 /// Descriptor for `ApplySecurityChangeRequest`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List applySecurityChangeRequestDescriptor =
+final $typed_data.Uint8List applySecurityChangeRequestDescriptor = $convert.base64Decode(
+    'ChpBcHBseVNlY3VyaXR5Q2hhbmdlUmVxdWVzdBIrChFleHBlY3RlZF9yZXZpc2lvbhgBIAEoBF'
+    'IQZXhwZWN0ZWRSZXZpc2lvbhIbCgljaGFuZ2VfaWQYAiABKAxSCGNoYW5nZUlkEjAKBmNoYW5n'
+    'ZRgDIAEoCzIYLmdyYXBoLnYxLlNlY3VyaXR5Q2hhbmdlUgZjaGFuZ2USLwoTYXV0aG9yaXphdG'
+    'lvbl9wcm9vZhgEIAEoDFISYXV0aG9yaXphdGlvblByb29m');
+
+@$core.Deprecated('Use securityChangeReviewDescriptor instead')
+const SecurityChangeReview$json = {
+  '1': 'SecurityChangeReview',
+  '2': [
+    {
+      '1': 'expected_version',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityVersion',
+      '10': 'expectedVersion'
+    },
+    {'1': 'change_id', '3': 2, '4': 1, '5': 12, '10': 'changeId'},
+    {
+      '1': 'changes',
+      '3': 3,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.SecurityChange',
+      '10': 'changes'
+    },
+  ],
+};
+
+/// Descriptor for `SecurityChangeReview`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List securityChangeReviewDescriptor = $convert.base64Decode(
+    'ChRTZWN1cml0eUNoYW5nZVJldmlldxJEChBleHBlY3RlZF92ZXJzaW9uGAEgASgLMhkuZ3JhcG'
+    'gudjEuU2VjdXJpdHlWZXJzaW9uUg9leHBlY3RlZFZlcnNpb24SGwoJY2hhbmdlX2lkGAIgASgM'
+    'UghjaGFuZ2VJZBIyCgdjaGFuZ2VzGAMgAygLMhguZ3JhcGgudjEuU2VjdXJpdHlDaGFuZ2VSB2'
+    'NoYW5nZXM=');
+
+@$core
+    .Deprecated('Use securityOperationAuthorizationRequiredDescriptor instead')
+const SecurityOperationAuthorizationRequired$json = {
+  '1': 'SecurityOperationAuthorizationRequired',
+  '2': [
+    {'1': 'change_id', '3': 1, '4': 1, '5': 12, '10': 'changeId'},
+    {
+      '1': 'expected_version',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityVersion',
+      '10': 'expectedVersion'
+    },
+    {'1': 'intent_digest', '3': 3, '4': 1, '5': 12, '10': 'intentDigest'},
+  ],
+};
+
+/// Descriptor for `SecurityOperationAuthorizationRequired`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List securityOperationAuthorizationRequiredDescriptor =
     $convert.base64Decode(
-        'ChpBcHBseVNlY3VyaXR5Q2hhbmdlUmVxdWVzdBIrChFleHBlY3RlZF9yZXZpc2lvbhgBIAEoBF'
-        'IQZXhwZWN0ZWRSZXZpc2lvbhIbCgljaGFuZ2VfaWQYAiABKAxSCGNoYW5nZUlkEjAKBmNoYW5n'
-        'ZRgDIAEoCzIYLmdyYXBoLnYxLlNlY3VyaXR5Q2hhbmdlUgZjaGFuZ2U=');
+        'CiZTZWN1cml0eU9wZXJhdGlvbkF1dGhvcml6YXRpb25SZXF1aXJlZBIbCgljaGFuZ2VfaWQYAS'
+        'ABKAxSCGNoYW5nZUlkEkQKEGV4cGVjdGVkX3ZlcnNpb24YAiABKAsyGS5ncmFwaC52MS5TZWN1'
+        'cml0eVZlcnNpb25SD2V4cGVjdGVkVmVyc2lvbhIjCg1pbnRlbnRfZGlnZXN0GAMgASgMUgxpbn'
+        'RlbnREaWdlc3Q=');
+
+@$core.Deprecated('Use securityChangePrecommitRejectedDescriptor instead')
+const SecurityChangePrecommitRejected$json = {
+  '1': 'SecurityChangePrecommitRejected',
+  '2': [
+    {'1': 'change_id', '3': 1, '4': 1, '5': 12, '10': 'changeId'},
+    {
+      '1': 'expected_revision',
+      '3': 2,
+      '4': 1,
+      '5': 4,
+      '10': 'expectedRevision'
+    },
+    {
+      '1': 'reason',
+      '3': 3,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.SecurityChangeRejectionReason',
+      '10': 'reason'
+    },
+  ],
+};
+
+/// Descriptor for `SecurityChangePrecommitRejected`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List securityChangePrecommitRejectedDescriptor =
+    $convert.base64Decode(
+        'Ch9TZWN1cml0eUNoYW5nZVByZWNvbW1pdFJlamVjdGVkEhsKCWNoYW5nZV9pZBgBIAEoDFIIY2'
+        'hhbmdlSWQSKwoRZXhwZWN0ZWRfcmV2aXNpb24YAiABKARSEGV4cGVjdGVkUmV2aXNpb24SPwoG'
+        'cmVhc29uGAMgASgOMicuZ3JhcGgudjEuU2VjdXJpdHlDaGFuZ2VSZWplY3Rpb25SZWFzb25SBn'
+        'JlYXNvbg==');
+
+@$core.Deprecated('Use prepareSecurityChangesRequestDescriptor instead')
+const PrepareSecurityChangesRequest$json = {
+  '1': 'PrepareSecurityChangesRequest',
+  '2': [
+    {
+      '1': 'review',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityChangeReview',
+      '10': 'review'
+    },
+  ],
+};
+
+/// Descriptor for `PrepareSecurityChangesRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List prepareSecurityChangesRequestDescriptor =
+    $convert.base64Decode(
+        'Ch1QcmVwYXJlU2VjdXJpdHlDaGFuZ2VzUmVxdWVzdBI2CgZyZXZpZXcYASABKAsyHi5ncmFwaC'
+        '52MS5TZWN1cml0eUNoYW5nZVJldmlld1IGcmV2aWV3');
+
+@$core.Deprecated('Use prepareSecurityChangesResponseDescriptor instead')
+const PrepareSecurityChangesResponse$json = {
+  '1': 'PrepareSecurityChangesResponse',
+  '2': [
+    {
+      '1': 'expected_version',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityVersion',
+      '10': 'expectedVersion'
+    },
+    {'1': 'change_id', '3': 2, '4': 1, '5': 12, '10': 'changeId'},
+    {'1': 'intent_digest', '3': 3, '4': 1, '5': 12, '10': 'intentDigest'},
+    {
+      '1': 'requirement',
+      '3': 4,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.SecurityAuthorizationRequirement',
+      '10': 'requirement'
+    },
+    {
+      '1': 'retained_commit',
+      '3': 5,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.GetSecurityChangeStatusResponse',
+      '10': 'retainedCommit'
+    },
+  ],
+};
+
+/// Descriptor for `PrepareSecurityChangesResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List prepareSecurityChangesResponseDescriptor = $convert.base64Decode(
+    'Ch5QcmVwYXJlU2VjdXJpdHlDaGFuZ2VzUmVzcG9uc2USRAoQZXhwZWN0ZWRfdmVyc2lvbhgBIA'
+    'EoCzIZLmdyYXBoLnYxLlNlY3VyaXR5VmVyc2lvblIPZXhwZWN0ZWRWZXJzaW9uEhsKCWNoYW5n'
+    'ZV9pZBgCIAEoDFIIY2hhbmdlSWQSIwoNaW50ZW50X2RpZ2VzdBgDIAEoDFIMaW50ZW50RGlnZX'
+    'N0EkwKC3JlcXVpcmVtZW50GAQgASgOMiouZ3JhcGgudjEuU2VjdXJpdHlBdXRob3JpemF0aW9u'
+    'UmVxdWlyZW1lbnRSC3JlcXVpcmVtZW50ElIKD3JldGFpbmVkX2NvbW1pdBgFIAEoCzIpLmdyYX'
+    'BoLnYxLkdldFNlY3VyaXR5Q2hhbmdlU3RhdHVzUmVzcG9uc2VSDnJldGFpbmVkQ29tbWl0');
+
+@$core
+    .Deprecated('Use beginSecurityChangeAuthorizationRequestDescriptor instead')
+const BeginSecurityChangeAuthorizationRequest$json = {
+  '1': 'BeginSecurityChangeAuthorizationRequest',
+  '2': [
+    {
+      '1': 'review',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityChangeReview',
+      '10': 'review'
+    },
+  ],
+};
+
+/// Descriptor for `BeginSecurityChangeAuthorizationRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List beginSecurityChangeAuthorizationRequestDescriptor =
+    $convert.base64Decode(
+        'CidCZWdpblNlY3VyaXR5Q2hhbmdlQXV0aG9yaXphdGlvblJlcXVlc3QSNgoGcmV2aWV3GAEgAS'
+        'gLMh4uZ3JhcGgudjEuU2VjdXJpdHlDaGFuZ2VSZXZpZXdSBnJldmlldw==');
+
+@$core.Deprecated(
+    'Use beginSecurityChangeAuthorizationResponseDescriptor instead')
+const BeginSecurityChangeAuthorizationResponse$json = {
+  '1': 'BeginSecurityChangeAuthorizationResponse',
+  '2': [
+    {'1': 'authorization_id', '3': 1, '4': 1, '5': 12, '10': 'authorizationId'},
+    {'1': 'start_url', '3': 2, '4': 1, '5': 9, '10': 'startUrl'},
+    {
+      '1': 'expires_at',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'expiresAt'
+    },
+  ],
+};
+
+/// Descriptor for `BeginSecurityChangeAuthorizationResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List beginSecurityChangeAuthorizationResponseDescriptor =
+    $convert.base64Decode(
+        'CihCZWdpblNlY3VyaXR5Q2hhbmdlQXV0aG9yaXphdGlvblJlc3BvbnNlEikKEGF1dGhvcml6YX'
+        'Rpb25faWQYASABKAxSD2F1dGhvcml6YXRpb25JZBIbCglzdGFydF91cmwYAiABKAlSCHN0YXJ0'
+        'VXJsEjkKCmV4cGlyZXNfYXQYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUglleH'
+        'BpcmVzQXQ=');
+
+@$core.Deprecated('Use getSecurityChangeAuthorizationRequestDescriptor instead')
+const GetSecurityChangeAuthorizationRequest$json = {
+  '1': 'GetSecurityChangeAuthorizationRequest',
+  '2': [
+    {'1': 'authorization_id', '3': 1, '4': 1, '5': 12, '10': 'authorizationId'},
+  ],
+};
+
+/// Descriptor for `GetSecurityChangeAuthorizationRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getSecurityChangeAuthorizationRequestDescriptor =
+    $convert.base64Decode(
+        'CiVHZXRTZWN1cml0eUNoYW5nZUF1dGhvcml6YXRpb25SZXF1ZXN0EikKEGF1dGhvcml6YXRpb2'
+        '5faWQYASABKAxSD2F1dGhvcml6YXRpb25JZA==');
+
+@$core
+    .Deprecated('Use getSecurityChangeAuthorizationResponseDescriptor instead')
+const GetSecurityChangeAuthorizationResponse$json = {
+  '1': 'GetSecurityChangeAuthorizationResponse',
+  '2': [
+    {'1': 'authorization_id', '3': 1, '4': 1, '5': 12, '10': 'authorizationId'},
+    {
+      '1': 'state',
+      '3': 2,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.SecurityAuthorizationState',
+      '10': 'state'
+    },
+    {
+      '1': 'authorization_proof',
+      '3': 3,
+      '4': 1,
+      '5': 12,
+      '10': 'authorizationProof'
+    },
+    {
+      '1': 'expires_at',
+      '3': 4,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'expiresAt'
+    },
+  ],
+};
+
+/// Descriptor for `GetSecurityChangeAuthorizationResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getSecurityChangeAuthorizationResponseDescriptor =
+    $convert.base64Decode(
+        'CiZHZXRTZWN1cml0eUNoYW5nZUF1dGhvcml6YXRpb25SZXNwb25zZRIpChBhdXRob3JpemF0aW'
+        '9uX2lkGAEgASgMUg9hdXRob3JpemF0aW9uSWQSOgoFc3RhdGUYAiABKA4yJC5ncmFwaC52MS5T'
+        'ZWN1cml0eUF1dGhvcml6YXRpb25TdGF0ZVIFc3RhdGUSLwoTYXV0aG9yaXphdGlvbl9wcm9vZh'
+        'gDIAEoDFISYXV0aG9yaXphdGlvblByb29mEjkKCmV4cGlyZXNfYXQYBCABKAsyGi5nb29nbGUu'
+        'cHJvdG9idWYuVGltZXN0YW1wUglleHBpcmVzQXQ=');
 
 @$core.Deprecated('Use applySecurityChangeResponseDescriptor instead')
 const ApplySecurityChangeResponse$json = {
@@ -1434,8 +1771,7 @@ const GetSecurityChangeStatusResponse$json = {
       '6': '.graph.v1.SecurityVersion',
       '10': 'version'
     },
-    {'1': 'applied', '3': 2, '4': 3, '5': 8, '10': 'applied'},
-    {'1': 'replayed', '3': 3, '4': 1, '5': 8, '10': 'replayed'},
+    {'1': 'change_id', '3': 2, '4': 1, '5': 12, '10': 'changeId'},
     {
       '1': 'enforcement',
       '3': 4,
@@ -1451,9 +1787,9 @@ const GetSecurityChangeStatusResponse$json = {
 final $typed_data.Uint8List getSecurityChangeStatusResponseDescriptor =
     $convert.base64Decode(
         'Ch9HZXRTZWN1cml0eUNoYW5nZVN0YXR1c1Jlc3BvbnNlEjMKB3ZlcnNpb24YASABKAsyGS5ncm'
-        'FwaC52MS5TZWN1cml0eVZlcnNpb25SB3ZlcnNpb24SGAoHYXBwbGllZBgCIAMoCFIHYXBwbGll'
-        'ZBIaCghyZXBsYXllZBgDIAEoCFIIcmVwbGF5ZWQSRAoLZW5mb3JjZW1lbnQYBCABKA4yIi5ncm'
-        'FwaC52MS5TZWN1cml0eUVuZm9yY2VtZW50U3RhdGVSC2VuZm9yY2VtZW50');
+        'FwaC52MS5TZWN1cml0eVZlcnNpb25SB3ZlcnNpb24SGwoJY2hhbmdlX2lkGAIgASgMUghjaGFu'
+        'Z2VJZBJECgtlbmZvcmNlbWVudBgEIAEoDjIiLmdyYXBoLnYxLlNlY3VyaXR5RW5mb3JjZW1lbn'
+        'RTdGF0ZVILZW5mb3JjZW1lbnQ=');
 
 const $core.Map<$core.String, $core.dynamic> LanternSecurityServiceBase$json = {
   '1': 'LanternSecurityService',
@@ -1524,6 +1860,21 @@ const $core.Map<$core.String, $core.dynamic> LanternSecurityServiceBase$json = {
       '3': '.graph.v1.ValidateIssuerResponse'
     },
     {
+      '1': 'PrepareSecurityChanges',
+      '2': '.graph.v1.PrepareSecurityChangesRequest',
+      '3': '.graph.v1.PrepareSecurityChangesResponse'
+    },
+    {
+      '1': 'BeginSecurityChangeAuthorization',
+      '2': '.graph.v1.BeginSecurityChangeAuthorizationRequest',
+      '3': '.graph.v1.BeginSecurityChangeAuthorizationResponse'
+    },
+    {
+      '1': 'GetSecurityChangeAuthorization',
+      '2': '.graph.v1.GetSecurityChangeAuthorizationRequest',
+      '3': '.graph.v1.GetSecurityChangeAuthorizationResponse'
+    },
+    {
       '1': 'ApplySecurityChanges',
       '2': '.graph.v1.ApplySecurityChangesRequest',
       '3': '.graph.v1.ApplySecurityChangesResponse'
@@ -1583,16 +1934,28 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.SecurityRuleMatch': SecurityRuleMatch$json,
   '.graph.v1.ValidateIssuerRequest': ValidateIssuerRequest$json,
   '.graph.v1.ValidateIssuerResponse': ValidateIssuerResponse$json,
-  '.graph.v1.ApplySecurityChangesRequest': ApplySecurityChangesRequest$json,
+  '.graph.v1.PrepareSecurityChangesRequest': PrepareSecurityChangesRequest$json,
+  '.graph.v1.SecurityChangeReview': SecurityChangeReview$json,
   '.graph.v1.SecurityChange': SecurityChange$json,
   '.graph.v1.SecurityUserStateChange': SecurityUserStateChange$json,
+  '.graph.v1.PrepareSecurityChangesResponse':
+      PrepareSecurityChangesResponse$json,
+  '.graph.v1.GetSecurityChangeStatusResponse':
+      GetSecurityChangeStatusResponse$json,
+  '.graph.v1.BeginSecurityChangeAuthorizationRequest':
+      BeginSecurityChangeAuthorizationRequest$json,
+  '.graph.v1.BeginSecurityChangeAuthorizationResponse':
+      BeginSecurityChangeAuthorizationResponse$json,
+  '.graph.v1.GetSecurityChangeAuthorizationRequest':
+      GetSecurityChangeAuthorizationRequest$json,
+  '.graph.v1.GetSecurityChangeAuthorizationResponse':
+      GetSecurityChangeAuthorizationResponse$json,
+  '.graph.v1.ApplySecurityChangesRequest': ApplySecurityChangesRequest$json,
   '.graph.v1.ApplySecurityChangesResponse': ApplySecurityChangesResponse$json,
   '.graph.v1.ApplySecurityChangeRequest': ApplySecurityChangeRequest$json,
   '.graph.v1.ApplySecurityChangeResponse': ApplySecurityChangeResponse$json,
   '.graph.v1.GetSecurityChangeStatusRequest':
       GetSecurityChangeStatusRequest$json,
-  '.graph.v1.GetSecurityChangeStatusResponse':
-      GetSecurityChangeStatusResponse$json,
 };
 
 /// Descriptor for `LanternSecurityService`. Decode as a `google.protobuf.ServiceDescriptorProto`.
@@ -1616,10 +1979,17 @@ final $typed_data.Uint8List lanternSecurityServiceDescriptor = $convert.base64De
     'Ii5ncmFwaC52MS5HZXRSb2xlVGVtcGxhdGVzUmVzcG9uc2USUAoNRXhwbGFpbkFjY2VzcxIeLm'
     'dyYXBoLnYxLkV4cGxhaW5BY2Nlc3NSZXF1ZXN0Gh8uZ3JhcGgudjEuRXhwbGFpbkFjY2Vzc1Jl'
     'c3BvbnNlElMKDlZhbGlkYXRlSXNzdWVyEh8uZ3JhcGgudjEuVmFsaWRhdGVJc3N1ZXJSZXF1ZX'
-    'N0GiAuZ3JhcGgudjEuVmFsaWRhdGVJc3N1ZXJSZXNwb25zZRJlChRBcHBseVNlY3VyaXR5Q2hh'
-    'bmdlcxIlLmdyYXBoLnYxLkFwcGx5U2VjdXJpdHlDaGFuZ2VzUmVxdWVzdBomLmdyYXBoLnYxLk'
-    'FwcGx5U2VjdXJpdHlDaGFuZ2VzUmVzcG9uc2USYgoTQXBwbHlTZWN1cml0eUNoYW5nZRIkLmdy'
-    'YXBoLnYxLkFwcGx5U2VjdXJpdHlDaGFuZ2VSZXF1ZXN0GiUuZ3JhcGgudjEuQXBwbHlTZWN1cm'
-    'l0eUNoYW5nZVJlc3BvbnNlEm4KF0dldFNlY3VyaXR5Q2hhbmdlU3RhdHVzEiguZ3JhcGgudjEu'
-    'R2V0U2VjdXJpdHlDaGFuZ2VTdGF0dXNSZXF1ZXN0GikuZ3JhcGgudjEuR2V0U2VjdXJpdHlDaG'
-    'FuZ2VTdGF0dXNSZXNwb25zZQ==');
+    'N0GiAuZ3JhcGgudjEuVmFsaWRhdGVJc3N1ZXJSZXNwb25zZRJrChZQcmVwYXJlU2VjdXJpdHlD'
+    'aGFuZ2VzEicuZ3JhcGgudjEuUHJlcGFyZVNlY3VyaXR5Q2hhbmdlc1JlcXVlc3QaKC5ncmFwaC'
+    '52MS5QcmVwYXJlU2VjdXJpdHlDaGFuZ2VzUmVzcG9uc2USiQEKIEJlZ2luU2VjdXJpdHlDaGFu'
+    'Z2VBdXRob3JpemF0aW9uEjEuZ3JhcGgudjEuQmVnaW5TZWN1cml0eUNoYW5nZUF1dGhvcml6YX'
+    'Rpb25SZXF1ZXN0GjIuZ3JhcGgudjEuQmVnaW5TZWN1cml0eUNoYW5nZUF1dGhvcml6YXRpb25S'
+    'ZXNwb25zZRKDAQoeR2V0U2VjdXJpdHlDaGFuZ2VBdXRob3JpemF0aW9uEi8uZ3JhcGgudjEuR2'
+    'V0U2VjdXJpdHlDaGFuZ2VBdXRob3JpemF0aW9uUmVxdWVzdBowLmdyYXBoLnYxLkdldFNlY3Vy'
+    'aXR5Q2hhbmdlQXV0aG9yaXphdGlvblJlc3BvbnNlEmUKFEFwcGx5U2VjdXJpdHlDaGFuZ2VzEi'
+    'UuZ3JhcGgudjEuQXBwbHlTZWN1cml0eUNoYW5nZXNSZXF1ZXN0GiYuZ3JhcGgudjEuQXBwbHlT'
+    'ZWN1cml0eUNoYW5nZXNSZXNwb25zZRJiChNBcHBseVNlY3VyaXR5Q2hhbmdlEiQuZ3JhcGgudj'
+    'EuQXBwbHlTZWN1cml0eUNoYW5nZVJlcXVlc3QaJS5ncmFwaC52MS5BcHBseVNlY3VyaXR5Q2hh'
+    'bmdlUmVzcG9uc2USbgoXR2V0U2VjdXJpdHlDaGFuZ2VTdGF0dXMSKC5ncmFwaC52MS5HZXRTZW'
+    'N1cml0eUNoYW5nZVN0YXR1c1JlcXVlc3QaKS5ncmFwaC52MS5HZXRTZWN1cml0eUNoYW5nZVN0'
+    'YXR1c1Jlc3BvbnNl');

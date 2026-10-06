@@ -80,6 +80,13 @@ func (s *Store) IssueSession(ctx context.Context, request SessionRequest) (Chang
 		return ChangeResult{}, ErrChangeConflict
 	}
 	image := current.snapshot.Image()
+	// This trusted entry point follows successful Code/PKCE/nonce verification.
+	// Persist human qualification separately from the revocable session.
+	for i := range image.Principals {
+		if image.Principals[i].Identity == request.Identity {
+			image.Principals[i].HumanIssuerConfigRevision = request.IssuerConfigRevision
+		}
+	}
 	sessions := make([]Session, 0, len(image.Sessions)+1)
 	replaced := request.ReplacesDigest == ""
 	for _, session := range image.Sessions {
