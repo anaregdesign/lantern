@@ -48,8 +48,7 @@ func (o *s3aOwner) Start(listener net.Listener) error {
 	protected := o.membership.ProtectHandler(http.HandlerFunc(o.serveHTTP))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !o.enterCall() {
-			_ = http.NewResponseController(w).SetWriteDeadline(time.Now())
-			return
+			panic(http.ErrAbortHandler)
 		}
 		defer o.calls.Done()
 		// The shared workload wrapper may set a later certificate/manifest
@@ -123,8 +122,7 @@ func (o *s3aOwner) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	admission, ok := peerauth.AdmissionFromContext(r.Context())
 	fail := func(code int) {
 		if o.check(r.Context()) != nil || ok && admission.Check(r.Context()) != nil {
-			_ = http.NewResponseController(w).SetWriteDeadline(time.Now())
-			return
+			panic(http.ErrAbortHandler)
 		}
 		http.Error(w, "private control unavailable", code)
 	}
@@ -204,8 +202,9 @@ func (o *s3aOwner) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if check() != nil {
 		// Suppress even the transport ACK; this cannot undo durable work.
-		_ = http.NewResponseController(w).SetWriteDeadline(time.Now())
-		return
+		// The workload wrapper clears its write deadline when unwinding, so
+		// returning silently would let net/http synthesize a successful 200.
+		panic(http.ErrAbortHandler)
 	}
 	if response == nil {
 		w.WriteHeader(http.StatusNoContent)

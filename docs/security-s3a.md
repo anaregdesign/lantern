@@ -31,7 +31,11 @@ binding is durably checkpointed and then closes admission. `MembershipFloor`
 can return that terminal fence for external retention. Resume rejects the old
 binding even with no supplied floor; the new binding is never auto-adopted.
 Unauthenticated and foreign-lineage input cannot fence the owner. Uncertain
-checkpoint I/O returns no retained-fence receipt and closes admission.
+checkpoint I/O, including a panic before the complete persistence/publication
+operation finishes, returns no retained-fence receipt and closes admission. The
+possibly retained checkpoint is preserved for explicit recovery, never replaced
+by a retry over uncertainty. Refresh also stops the outer network owner before
+propagating a membership-operation panic.
 
 ## Composite ownership and recovery
 
@@ -40,7 +44,9 @@ validates canonical, disjoint M/P/B families, all provisioned identities and
 limits, then owns every acquired lease, signing key, client, listener and
 worker. No listener starts until M/P/B validation, retained CHOSEN→B→DRAINED
 recovery and current workload eligibility have succeeded. Partial construction
-closes all acquired resources; it never creates a missing family on resume.
+closes all acquired resources; M lease cleanup is registered immediately after
+acquisition, before any configured clock callback. It never creates a missing
+family on resume.
 
 The caller supplies three independent minima without conversion:
 
@@ -57,14 +63,21 @@ node; they do not deploy or qualify a witness service. Missing/corrupt families,
 wrong identity/incarnation/epoch or known rollback fail before dispatch. There
 is no P reconstruction from B, graph snapshot fallback, clone repair or rejoin.
 
-Close and uncertainty stop admission and scheduling, cancel network work, and
-wait for entered kernel work, admitted HTTP handlers and active recovery calls
-before releasing durable ownership and clearing owned signing keys. TLS signer
+Uncertainty stops admission and scheduling and cancels network work. Close
+also waits for entered kernel work, admitted HTTP handlers and active recovery
+calls before releasing durable ownership and clearing owned signing keys. TLS signer
 access is serialized with key clearing, including handshakes unwinding during
-shutdown. A cancelled/lost response cannot undo a durable promise or accept.
+shutdown. If an owned closer panics, all remaining cleanup steps are attempted
+before the first panic is propagated; subsequent Close calls retain a cleanup
+failure instead of concealing it. Pending transition producers are joined before
+queued closures and delivery buffers are discarded. A cancelled/lost response
+cannot undo a durable promise or accept.
 Workload eligibility is checked before mutation and response/dispatch release;
 response processing retains the original TLS admission expiry across refresh.
-These checks are not a policy-freshness certificate or a qualified suspend bound.
+Terminal response suppression aborts the HTTP handler/connection through
+`http.ErrAbortHandler`, so wrapper deadline cleanup cannot produce an implicit
+successful response. These checks are not a policy-freshness certificate or a
+qualified suspend bound.
 
 ## Private wire contract
 
@@ -105,9 +118,12 @@ pools; **Q is not the total memory budget**:
 
 - One serialized transition reserves O + N×E before calling any kernel method
   that can produce an outbox. Pending network work cannot occupy this pool.
-- Pending delivery caches use at most Q charged bytes and the configured
-  per-peer count. Each of N workers transfers one frame from this pool into
-  its independent active-delivery slot before waiting on network or self Receive.
+- Pending delivery caches partition Q into N separate budgets of floor(Q/N)
+  bytes, each also bounded by the configured per-peer count. The division
+  remainder is unused. Validation guarantees floor(Q/N) >= F+E, so another
+  destination cannot consume the space needed for an empty peer/self queue to
+  admit one maximum frame. Each worker transfers one frame into its independent
+  active-delivery slot before waiting on network or self Receive.
 - Active delivery retains at most N×(F+E). One outgoing chosen-range operation
   has its own slot. One local Begin/Retry and one Drive may be outstanding.
 - Each external peer has one admitted inbound body/range operation. The bounded
@@ -121,12 +137,14 @@ retained-state budgets are additional memory, not part of Q or an RSS guarantee.
 Range response framing reserves 12 + 4×RangeSlots bytes beyond RangeBytes.
 
 The transition pool releases unused credit once, including cancellation and
-terminal errors. Produced frames transfer into pending caches if their count
-and byte limits permit. Otherwise the transport copy is dropped, like a failed
+terminal errors. Produced frames transfer into their destination's pending
+cache if its count and byte limits permit. Otherwise the transport copy is dropped, like a failed
 send, while its durable protocol obligation remains in P/B. This deliberate
 loss-safe policy keeps maximum-outbox reservations available despite one
-unavailable peer. The separate staging pool and cache-drop policy are explicit
-independent-review boundaries.
+unavailable peer. Separate per-destination pending-byte partitions also prevent
+a low-ID unavailable peer from repeatedly taking healthy/self capacity during
+sorted broadcasts; fair worker execution alone would not establish this. The
+staging, active and pending pools preserve distinct ownership.
 
 Workers retry exact frame bytes for a bounded number of timed attempts and
 then discard that transport copy. Kernel Retry, repeated incoming Prepare/
@@ -157,6 +175,18 @@ Source-paired tests and the cross-source `s3a_gate_test.go` integration cover:
 | A-only/A+B hidden accepts, issuer loss, expired original H, real higher ballot, process recovery | `TestS3AGateHiddenChoiceTLSProcessRecovery`: each history crosses afterChosen, afterB and beforeDrained process exits |
 | Explicit floors, missing families, actual rollback, lifecycle | `TestS3AOwnerExplicitResumeFamiliesAndFloors`, `TestS3AOwnerKnownNativeRollbackWithIndependentFloors`, `TestS3AOwnerCloseRacesAndReleasesLeases`, `TestS3AOwnerCloseDrainsAdmittedHTTPBeforeReleasingState` |
 | Saturation, self-credit, pre-mutation limits, cancellation and native uncertain I/O | `TestS3ADeliverySaturatedPeerSelfCreditAndEventualQuorum`, `TestS3AOwnerRejectsUnrepresentableLimitsBeforeState`, `TestS3ADeliveryCancellationDoesNotReleaseEnteredDurability`, `TestS3ADeliveryUncertainNativeIOClosesAllOutwardAPIs` |
+
+Review regressions additionally cover the original low-ID/multiple-copy cache
+counterexample at minimum Q (`TestS3ADeliveryLowIDPartitionPreservesHealthyAndSelfOpportunity`),
+M checkpoint panic cuts and construction callback panics
+(`TestS3AIndependentControlCheckpointPanicMustClose`,
+`TestS3AIndependentControlConstructionPanicMustReleaseLease`), outer Close and
+Refresh panic handling (`TestS3AIndependentOwnerClosePanicMustReleaseMAndSigner`,
+`TestS3AOwnerRefreshPanicStopsScheduling`), and terminal response suppression
+observed by a raw mTLS client independent of membership cancellation
+(`TestS3ATransportRawTLSExpiryWithdrawalAndCancelSuppressResponse`). The cache
+regression controls finite worker turns over native protocol bytes; it is not
+an exhaustive or unbounded HTTP liveness proof.
 
 The child process receives only independent test configuration and provisioned
 identity files; restart discards volatile messages and proofs. Consensus and

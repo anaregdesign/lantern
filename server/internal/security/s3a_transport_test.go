@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -414,5 +415,143 @@ func TestS3ATransportIncomingContextRetainsConfiguredRPCLimit(t *testing.T) {
 	}
 	if got := <-remaining; got <= 0 || got > n.configs[2].Limits.RPCTimeout {
 		t.Fatal("workload wrapper extended configured RPC lifetime", got)
+	}
+}
+
+func TestS3ATransportTerminalEntryAndFailureAbort(t *testing.T) {
+	for _, path := range []string{"entry", "failure"} {
+		t.Run(path, func(t *testing.T) {
+			n := s3aTestCluster(t, nil)
+			o := n.start(2)
+			request := httptest.NewRequest(http.MethodPost, s3aMessagePath, nil)
+			handler := http.Handler(http.HandlerFunc(o.serveHTTP))
+			if path == "entry" {
+				o.fail()
+				handler = o.server.Handler
+			} else {
+				ctx, cancel := context.WithCancel(request.Context())
+				cancel()
+				request = request.WithContext(ctx)
+			}
+			response := httptest.NewRecorder()
+			var failure any
+			func() {
+				defer func() { failure = recover() }()
+				handler.ServeHTTP(response, request)
+			}()
+			if failure != http.ErrAbortHandler || response.Body.Len() != 0 {
+				t.Fatal("terminal handler did not abort before HTTP finalization", failure, response.Body.String())
+			}
+		})
+	}
+}
+
+// Retain the independent review's raw mTLS counterexample without a peerauth
+// client transport: client-side membership checks must not hide a wire 200.
+// Extend its exact-expiry cut to withdrawal and server-context cancellation.
+func TestS3ATransportRawTLSExpiryWithdrawalAndCancelSuppressResponse(t *testing.T) {
+	for _, cut := range []string{"expiry", "withdrawal", "cancel"} {
+		t.Run(cut, func(t *testing.T) {
+			entered, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			n := s3aTestCluster(t, func(id uint32, c *s3aConfig) {
+				c.Limits.RPCTimeout = 2 * time.Second
+				if id == 2 {
+					c.hooks = &s3aHooks{beforeResponse: func(ctx context.Context) {
+						once.Do(func() { close(entered) })
+						select {
+						case <-release:
+						case <-ctx.Done():
+						}
+					}}
+				}
+			})
+			n.start(1)
+			n.start(2)
+			o := n.nodes[1]
+			client := &http.Client{Timeout: 4 * time.Second, Transport: &http.Transport{
+				Proxy: nil, DisableKeepAlives: true,
+				TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13,
+					RootCAs: o.identity.roots, Certificates: []tls.Certificate{o.identity.certificate},
+					NextProtos: []string{"http/1.1"}},
+			}}
+			defer client.CloseIdleConnections()
+			message, err := s2cSignPrepare(n.f.trust, n.f.keys[1], 1, 1, n.f.genesis.state.prefix, s2cBallot{Counter: 1, Member: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := n.nodes[2].Floors()
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+				n.configs[2].Membership.Self.Origin+s3aMessagePath, bytes.NewReader([]byte(message.raw)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Content-Type", s3aMediaType)
+			request.Header.Set(peerauth.ControlHeader, hex.EncodeToString(o.binding[:]))
+			type wireResult struct {
+				status int
+				body   []byte
+				err    error
+			}
+			done := make(chan wireResult, 1)
+			go func() {
+				response, err := client.Do(request)
+				if err != nil {
+					done <- wireResult{err: err}
+					return
+				}
+				defer func() { _ = response.Body.Close() }()
+				body, err := io.ReadAll(io.LimitReader(response.Body, 4097))
+				done <- wireResult{status: response.StatusCode, body: body, err: err}
+			}()
+			select {
+			case <-entered:
+			case <-time.After(3 * time.Second):
+				close(release)
+				t.Fatal("probe did not reach the native post-persistence response hook")
+			}
+			retained, err := n.nodes[2].Floors()
+			if err != nil || retained.P.Index <= before.P.Index || retained.B != before.B {
+				close(release)
+				t.Fatal("probe did not establish durable promise before response suppression", retained, err)
+			}
+			switch cut {
+			case "expiry":
+				// The raw client's TLS certificate clock remains real and valid.
+				n.clock.Store(n.manifest.ExpiresAt.Add(-peerauth.ClockMargin).UnixNano())
+			case "withdrawal":
+				next := n.manifest
+				next.Version++
+				next.Profile.TrustDigest[0]++
+				if n.nodes[2].Refresh(n.sign(next)) == nil {
+					close(release)
+					t.Fatal("withdrawal not fenced")
+				}
+			case "cancel":
+				// Cancel only the server. The raw client remains able to observe
+				// any response net/http emits while the handler unwinds.
+				n.nodes[2].cancel()
+			}
+			close(release)
+			select {
+			case result := <-done:
+				t.Logf("raw mTLS after server-side %s: status=%d body_bytes=%d err=%v; durable P index %d -> %d",
+					cut, result.status, len(result.body), result.err, before.P.Index, retained.P.Index)
+				if result.status >= 200 && result.status < 300 {
+					t.Fatalf("response suppression failed: raw mTLS received HTTP %d with %d body bytes after %s", result.status, len(result.body), cut)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("raw mTLS probe exceeded its finite timeout")
+			}
+			// A terminal M fence closes the outer floor API, so inspect the
+			// still-owned native kernel before cleanup releases its P/B leases.
+			p, b, err := n.nodes[2].kernel.Floors()
+			if err != nil || p != retained.P || b != retained.B {
+				t.Fatal("response suppression changed the durable promise or B", p, b, err)
+			}
+		})
 	}
 }

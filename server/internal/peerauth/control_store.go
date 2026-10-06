@@ -42,7 +42,7 @@ type ControlStore struct {
 	checkpointHook func(string) error
 }
 
-func prepareControlStore(o ControlStoreOptions) (*ControlStore, error) {
+func prepareControlStore(o ControlStoreOptions) (_ *ControlStore, err error) {
 	if !filepath.IsAbs(o.Path) || len(o.Key) != ed25519.PublicKeySize || !o.Profile.Valid() || o.Self == (Member{}) {
 		return nil, ErrMembership
 	}
@@ -61,12 +61,22 @@ func prepareControlStore(o ControlStoreOptions) (*ControlStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Own the lease before the first configured callback can panic. No caller
+	// can release it until this constructor has returned a complete store.
+	transferred := false
+	defer func() {
+		if !transferred {
+			err = errors.Join(err, lease.Close())
+		}
+	}()
 	binding := o.Profile.Digest()
 	s := &Store{options: StoreOptions{Path: o.Path, Key: bytes.Clone(o.Key), Self: o.Self, Now: o.Now}, lease: lease, lastWall: o.Now(), controlBinding: &binding}
-	return &ControlStore{store: s, profile: o.Profile}, nil
+	c := &ControlStore{store: s, profile: o.Profile}
+	transferred = true
+	return c, nil
 }
 
-func CreateControlStore(o ControlStoreOptions, raw []byte) (*ControlStore, error) {
+func CreateControlStore(o ControlStoreOptions, raw []byte) (_ *ControlStore, err error) {
 	m, err := VerifyControlManifest(raw, o.Key, o.Profile.Lineage)
 	if err != nil || m.Profile.Digest() != o.Profile.Digest() {
 		return nil, ErrMembership
@@ -75,14 +85,21 @@ func CreateControlStore(o ControlStoreOptions, raw []byte) (*ControlStore, error
 	if err != nil {
 		return nil, err
 	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			err = errors.Join(err, c.Close())
+		}
+	}()
 	s := c.store
 	if !manifestLive(controlSnapshot(m, raw).manifest, s.options.Now()) {
-		return nil, errors.Join(ErrMembership, c.Close())
+		return nil, ErrMembership
 	}
 	if err := writeCheckpoint(o.Path, raw, true); err != nil {
-		return nil, errors.Join(err, c.Close())
+		return nil, err
 	}
 	s.current = controlSnapshot(m, raw)
+	transferred = true
 	return c, nil
 }
 
@@ -147,13 +164,24 @@ func (c *ControlStore) Apply(raw []byte) error {
 	if !changed && !manifestLive(controlSnapshot(m, raw).manifest, now) {
 		return ErrMembership
 	}
+	// A failed or panicking write may already have retained the new checkpoint.
+	// Keep the guard under the store mutex until both memory and any terminal
+	// binding fence reflect the completed checkpoint. Never retry over uncertainty.
+	completed := false
+	defer func() {
+		if !completed {
+			s.faultLocked("checkpoint_failure")
+		}
+	}()
 	if err := writeCheckpointWithHook(s.options.Path, raw, false, c.checkpointHook); err != nil {
-		s.faultLocked("checkpoint_failure")
 		return errors.Join(ErrMembership, err)
 	}
 	s.current = controlSnapshot(m, raw)
 	if changed {
 		s.faultLocked("control_binding_changed")
+	}
+	completed = true
+	if changed {
 		return ErrMembership
 	}
 	return nil

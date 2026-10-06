@@ -16,10 +16,11 @@ import (
 )
 
 var (
-	errS3AConfig = errors.New("invalid S3-A fixed owner configuration")
-	errS3AClosed = errors.New("S3-A network owner closed")
-	errS3ACredit = errors.New("S3-A delivery credit unavailable before transition")
-	errS3AWire   = errors.New("invalid S3-A private wire request")
+	errS3AConfig  = errors.New("invalid S3-A fixed owner configuration")
+	errS3AClosed  = errors.New("S3-A network owner closed")
+	errS3ACredit  = errors.New("S3-A delivery credit unavailable before transition")
+	errS3AWire    = errors.New("invalid S3-A private wire request")
+	errS3ACleanup = errors.New("S3-A owner cleanup panicked")
 )
 
 type s3aLimits struct {
@@ -48,6 +49,8 @@ func (l s3aLimits) valid(c s2cParticipantConfig) bool {
 	if maxFrame > c.OutboxBytes/uint64(len(c.Trust.members)) {
 		return false // Every representable valid broadcast must fit one reservation.
 	}
+	// Q >= O+N*overhead and O/N >= maxFrame also guarantee each pending
+	// destination's floor(Q/N) partition can hold one maximum frame+envelope.
 	return true
 }
 
@@ -267,11 +270,16 @@ func (o *s3aOwner) Refresh(raw []byte) error {
 	if o == nil || o.closed.Load() {
 		return errS3AClosed
 	}
-	err := o.membership.Apply(raw)
-	if o.membership.FaultReason() != "none" {
-		o.fail()
-	}
-	return err
+	defer func() {
+		if failure := recover(); failure != nil {
+			o.fail()
+			panic(failure)
+		}
+		if o.membership.FaultReason() != "none" {
+			o.fail()
+		}
+	}()
+	return o.membership.Apply(raw)
 }
 
 func (o *s3aOwner) Floors() (s3aFloors, error) {
@@ -303,33 +311,67 @@ func (o *s3aOwner) Close() error {
 	if o == nil {
 		return nil
 	}
+	var failure any
 	o.closeOnce.Do(func() {
+		// The kernel finishes its own P/B cleanup before re-panicking. Every
+		// outer resource must still get its close attempt before that panic
+		// escapes. Keep an error for later/concurrent Close callers as well.
+		closeOne := func(close func() error) {
+			defer func() {
+				if value := recover(); value != nil {
+					if failure == nil {
+						failure = value
+						o.closeErr = errors.Join(o.closeErr, errS3ACleanup)
+					}
+				}
+			}()
+			o.closeErr = errors.Join(o.closeErr, close())
+		}
 		o.fail()
 		o.serverMu.Lock()
 		if o.server != nil {
-			_ = o.server.Close()
+			closeOne(o.server.Close)
 		}
 		if o.listener != nil {
-			_ = o.listener.Close()
+			closeOne(func() error {
+				err := o.listener.Close()
+				// Server.Close normally already closed this listener. Ignore
+				// only that single condition, never a combined cleanup failure.
+				if err == net.ErrClosed {
+					return nil
+				}
+				if op, ok := err.(*net.OpError); ok && op.Err == net.ErrClosed {
+					return nil
+				}
+				return err
+			})
 		}
 		o.serverMu.Unlock()
 		o.workers.Wait()
 		o.calls.Wait()
+		// All transition producers have left as well as the consumer. Drop
+		// canceled pending closures/bodies without racing a late enqueue.
+		for len(o.requests) != 0 {
+			<-o.requests
+		}
 		if o.client != nil {
-			o.client.CloseIdleConnections()
+			closeOne(func() error { o.client.CloseIdleConnections(); return nil })
 		}
 		if o.kernel != nil {
-			o.closeErr = errors.Join(o.closeErr, o.kernel.Close())
+			closeOne(o.kernel.Close)
 		}
 		if o.membership != nil {
-			o.closeErr = errors.Join(o.closeErr, o.membership.Close())
+			closeOne(o.membership.Close)
 		}
-		o.identity.clear()
+		closeOne(func() error { o.identity.clear(); return nil })
 		o.queueMu.Lock()
 		clear(o.queues)
 		o.queued = 0
 		o.queueMu.Unlock()
 	})
+	if failure != nil {
+		panic(failure)
+	}
 	return o.closeErr
 }
 

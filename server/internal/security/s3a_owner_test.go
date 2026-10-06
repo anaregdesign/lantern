@@ -2,10 +2,16 @@ package security
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/mutationlog"
 )
 
 func TestS3AOwnerExplicitResumeFamiliesAndFloors(t *testing.T) {
@@ -283,5 +289,141 @@ func TestS3AOwnerRejectsUnrepresentableLimitsBeforeState(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Independent finite probe: the inherited kernel attempts its owned native
+// shutdown, finishes P/B cleanup, and re-panics. The outer M/TLS owner must
+// still complete cleanup, including on a repeated Close.
+func TestS3AIndependentOwnerClosePanicMustReleaseMAndSigner(t *testing.T) {
+	n := s3aTestCluster(t, nil)
+	o, err := createS3AOwner(n.configs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.nodes[1] = o
+	// Fallback cleanup keeps a regression failure from stranding the
+	// real lease/key in this test process. Assertions precede this fallback.
+	defer func() {
+		_ = o.membership.Close()
+		o.identity.clear()
+	}()
+	o.kernel.b.walOwner = s2cPanicCloser{o.kernel.b.walOwner}
+	var recovered any
+	var closeErr error
+	func() {
+		defer func() { recovered = recover() }()
+		closeErr = o.Close()
+	}()
+	if recovered == nil && closeErr == nil {
+		t.Fatal("owned native closer fault was silently lost")
+	}
+	if err := o.Close(); !errors.Is(err, errS3ACleanup) {
+		t.Errorf("repeated Close lost the recorded cleanup failure: %v", err)
+	}
+	t.Logf("close_panic=%v close_error=%v owner_closed=%v kernel_key_bytes=%d tls_signer_retained=%v",
+		recovered, closeErr, o.closed.Load(), len(o.kernel.key), o.identity.signer.key != nil)
+	if o.identity.signer.key != nil {
+		t.Error("SAFETY: terminal outer Close retained the TLS private signer")
+	}
+	for _, path := range []string{n.configs[1].Membership.Path, n.configs[1].Participant.PPath, n.configs[1].Participant.BPath} {
+		lease, err := mutationlog.AcquireFileWALLease(path)
+		if err != nil {
+			t.Errorf("SAFETY: terminal Close stranded ownership at %s: %v", path, err)
+			continue
+		}
+		if err := lease.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestS3AOwnerRefreshPanicStopsScheduling(t *testing.T) {
+	var armed atomic.Bool
+	failure := errors.New("configured M clock callback panic")
+	n := s3aTestCluster(t, func(id uint32, c *s3aConfig) {
+		if id == 1 {
+			now := c.Membership.Now
+			c.Membership.Now = func() time.Time {
+				if armed.CompareAndSwap(true, false) {
+					panic(failure)
+				}
+				return now()
+			}
+		}
+	})
+	o, err := createS3AOwner(n.configs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.nodes[1] = o
+	// Stop otherwise idle workers before arming the configured callback; only
+	// the synchronous Refresh owns this panic. Persistence-panic cutpoints are
+	// separately exercised inside peerauth without exporting its private hook.
+	o.cancel()
+	o.workers.Wait()
+	m := n.manifest
+	m.Version++
+	armed.Store(true)
+	var recovered any
+	func() { defer func() { recovered = recover() }(); _ = o.Refresh(n.sign(m)) }()
+	if recovered != failure {
+		t.Fatalf("original M panic lost: %v", recovered)
+	}
+	if !o.closed.Load() || o.ctx.Err() == nil {
+		t.Fatal("Refresh panic left scheduling admitted")
+	}
+	if err := o.Begin(t.Context(), [32]byte{}); !errors.Is(err, errS3AClosed) {
+		t.Fatal("Begin remained open", err)
+	}
+	if _, err := o.Floors(); !errors.Is(err, errS3AClosed) {
+		t.Fatal("floors remained open", err)
+	}
+	if _, err := o.CatchUp(t.Context(), 2); !errors.Is(err, errS3AClosed) {
+		t.Fatal("CatchUp remained open", err)
+	}
+	if _, err := o.Drive(t.Context(), [32]byte{}); !errors.Is(err, errS3AClosed) {
+		t.Fatal("Drive remained open", err)
+	}
+	if err := o.Start(n.listeners[1]); !errors.Is(err, errS3AClosed) {
+		t.Fatal("listener remained open", err)
+	}
+	if err := o.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type s3aErrorCloser struct {
+	io.Closer
+	failure error
+}
+
+func (c s3aErrorCloser) Close() error { return errors.Join(c.Closer.Close(), c.failure) }
+
+func TestS3AOwnerCloseRetainsCombinedErrors(t *testing.T) {
+	n := s3aTestCluster(t, nil)
+	o, err := createS3AOwner(n.configs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.nodes[1] = o
+	failure := errors.New("native close failure combined with closed sentinel")
+	o.kernel.b.walOwner = s3aErrorCloser{o.kernel.b.walOwner, errors.Join(net.ErrClosed, failure)}
+	for i := 0; i < 2; i++ {
+		if err := o.Close(); !errors.Is(err, failure) {
+			t.Errorf("Close %d lost combined failure: %v", i, err)
+		}
+	}
+	if o.identity.signer.key != nil || len(o.kernel.key) != 0 {
+		t.Fatal("failed close retained a signing key")
+	}
+	for _, path := range []string{n.configs[1].Membership.Path, n.configs[1].Participant.PPath, n.configs[1].Participant.BPath} {
+		lease, err := mutationlog.AcquireFileWALLease(path)
+		if err != nil {
+			t.Fatal("failed close retained native ownership", path, err)
+		}
+		if err := lease.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

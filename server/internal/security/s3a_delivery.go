@@ -24,6 +24,10 @@ type s3aTransition struct {
 // A separate maximum-outbox staging credit cannot be occupied by an unavailable
 // peer's delivery cache. FIFO admission therefore includes self and replies.
 func (o *s3aOwner) transition(ctx context.Context, check func() error, apply func() ([]s2cOutbox, error)) error {
+	if !o.enterCall() {
+		return errS3AClosed
+	}
+	defer o.calls.Done()
 	if err := o.check(ctx); err != nil {
 		return err
 	}
@@ -122,9 +126,19 @@ func (o *s3aOwner) applyTransition(r s3aTransition) (err error) {
 		return errS2CUnknown
 	}
 	o.queueMu.Lock()
+	// Partition pending bytes by destination, including self. valid guarantees
+	// floor(Q/N) >= maximum frame + envelope, so an empty destination queue can
+	// always admit its next valid frame. A slow peer cannot borrow that room by
+	// retaining many copies, regardless of the kernel's broadcast order. The
+	// division remainder stays unused; total pending ownership remains <= Q.
+	peerBudget := o.limits.QueueBytes / uint64(len(o.peers))
 	for _, item := range out {
 		charge := uint64(len(item.Bytes)) + s3aQueueOverhead
-		if len(o.queues[item.To]) >= o.limits.PerPeerQueue || charge > o.limits.QueueBytes-o.queued {
+		var peerQueued uint64
+		for _, pending := range o.queues[item.To] { // At most PerPeerQueue <= 32.
+			peerQueued += uint64(len(pending.raw)) + s3aQueueOverhead
+		}
+		if len(o.queues[item.To]) >= o.limits.PerPeerQueue || charge > peerBudget || peerQueued > peerBudget-charge {
 			// Full staging credit already owned every produced byte before the
 			// transition. This bounded, disposable delivery cache may drop a
 			// datagram just like a failed network send. It acknowledges no vote,
