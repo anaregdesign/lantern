@@ -105,6 +105,24 @@ test.describe("Ops metrics section", () => {
     );
   });
 
+  test("links private signed membership setup when replication is disabled", async ({
+    page,
+  }) => {
+    await page.goto("/ops");
+    const hint = page.getByTestId("ops-replication-disabled");
+    await expect(hint).toBeVisible();
+    await expect(hint).toContainText("dedicated private workload listener");
+    await expect(hint).toContainText("signed membership");
+    await expect(hint).toContainText("including in OFF mode");
+    await expect(hint).not.toContainText("LANTERN_PEERS");
+    await expect(
+      hint.getByRole("link", { name: "HA runbook" }),
+    ).toHaveAttribute(
+      "href",
+      "https://github.com/anaregdesign/lantern/blob/main/docs/ha-runbook.md",
+    );
+  });
+
   test("shows the degraded banner when no Prometheus is reachable", async ({
     page,
   }) => {
@@ -228,6 +246,14 @@ test.describe("Ops metrics section", () => {
       () => document.documentElement.scrollWidth - window.innerWidth,
     );
     expect(overflow).toBeLessThanOrEqual(0);
+    const hint = page.getByTestId("ops-replication-disabled");
+    await expect(hint).toContainText(
+      "signed membership, including in OFF mode",
+    );
+    await hint.scrollIntoViewIfNeeded();
+    await expect(
+      hint.getByRole("link", { name: "HA runbook" }),
+    ).toBeInViewport();
   });
 
   test("shows the replica key in per-replica mode and hides it in sum mode", async ({

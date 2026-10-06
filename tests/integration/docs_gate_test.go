@@ -113,6 +113,97 @@ func TestTraversalDocumentationGate(t *testing.T) {
 	}
 }
 
+// TestAdminOperationsDocumentationGate binds current Ops/release guidance to
+// the existing private peer plane and optional fixed Caddy routes. It does not
+// qualify future S5 topology or a real provider/deployment.
+func TestAdminOperationsDocumentationGate(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(path string) string {
+		t.Helper()
+		contents, err := os.ReadFile(filepath.Join(repoRoot, path))
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		return strings.Join(strings.Fields(string(contents)), " ")
+	}
+	files := map[string]struct {
+		required []string
+		retired  []string
+	}{
+		"admin/app/components/ops/OpsPage/OpsPage.tsx": {
+			required: []string{"dedicated private workload listener and signed membership", "including in OFF mode", "docs/ha-runbook.md"},
+			retired:  []string{"LANTERN_PEERS"},
+		},
+		"CONTRIBUTING.md": {
+			required: []string{
+				"`sdks/node/v*` release", "optionally proxies", "/auth/*", "/browser/*", "/graph.v1.*/*",
+				"OFF direct-Server example", "LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080",
+				"OIDC same-origin example", "LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example.com:8443",
+				"LANTERN_OIDC_REDIRECT_URI", "/auth/callback/<SHA-256>",
+				"LANTERN_ADMIN_SERVER_UPSTREAM=https://writer.internal.example:6380",
+				"gateway picker never selects that upstream", "certificate against that upstream hostname",
+				"LANTERN_ADMIN_SERVER_CA_FILE", "LANTERN_OIDC_TRUSTED_PROXY_IPS", "public Host/scheme",
+				"explicitly trusted exact gateway IP", "current fixed-writer baseline", "remain #1608/#1609 S5 work",
+				"Missing upstream routes fail closed", "/auth/operations", "operations.read", "Only GET diagnostics",
+				"Prometheus never receives cookies or Authorization", "browser local storage and Vite env",
+				"docs/oidc-operations.md#browser-and-diagnostics-boundary", "docs/ha-runbook.md",
+			},
+			retired: []string{"does not reverse-proxy the Lantern listener"},
+		},
+		"admin/README.md": {
+			required: []string{
+				"OFF mode", "LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080", "For **OIDC**",
+				"select that exact public origin", "LANTERN_OIDC_BROWSER_ORIGIN", "/auth/callback/<SHA-256>",
+				"/auth/*", "/browser/*", "/graph.v1.*/*", "LANTERN_ADMIN_SERVER_UPSTREAM",
+				"gateway picker never selects that upstream", "verified HTTPS upstream", "exact trusted proxy",
+				"public Host/scheme", "current fixed-writer baseline", "#1608/#1609 S5 work",
+				"/auth/operations", "each GET", "Prometheus never receives cookies or Authorization",
+				"#fixed-server-and-diagnostics-proxy", "docs/oidc-operations.md#browser-and-diagnostics-boundary",
+			},
+			retired: []string{"does **not** reverse-proxy the Lantern gateway"},
+		},
+		"docs/oidc-operations.md": {
+			required: []string{"OFF can serve the static Admin separately", "same configured HTTPS public origin",
+				"LANTERN_ADMIN_SERVER_UPSTREAM", "LANTERN_ADMIN_SERVER_CA_FILE", "LANTERN_OIDC_TRUSTED_PROXY_IPS",
+				"Issuer-specific callback", "fixed writer", "#1609 S5 remains incomplete", "operations.read"},
+		},
+		"docs/ha-runbook.md": {
+			required: []string{"Single-instance mode (no HA)", "independent signed private peer plane",
+				"either public mode", "fixed-writer baseline", "#1609 S5"},
+		},
+		"admin/docker-entrypoint.sh": {
+			required: []string{"LANTERN_ADMIN_SERVER_UPSTREAM", "LANTERN_ADMIN_SERVER_CA_FILE", "validate_origin",
+				"handle /auth/*", "handle /browser/*", "handle /graph.v1.*/*", "header_up Host {hostport}",
+				"tls_trust_pool file", "Server upstream unavailable", "forward_auth", "/auth/operations?",
+				"not method GET", "header_up -Cookie", "header_up -Authorization"},
+			retired: []string{"tls_insecure_skip_verify"},
+		},
+		"docs/env.md": {
+			required: []string{"LANTERN_PEER_LISTEN_ADDR", "LANTERN_PEER_MEMBERSHIP_FILE",
+				"LANTERN_PEER_TRUST_CA_FILE", "LANTERN_PEER_OPERATOR_PUBLIC_KEY_FILE", "LANTERN_OIDC_REDIRECT_URI",
+				"/auth/callback/<SHA-256>", "LANTERN_OIDC_TRUSTED_PROXY_IPS"},
+		},
+	}
+	for path, checks := range files {
+		t.Run(path, func(t *testing.T) {
+			text := read(path)
+			for _, want := range checks.required {
+				if !strings.Contains(text, want) {
+					t.Errorf("missing current operator contract %q", want)
+				}
+			}
+			for _, retired := range checks.retired {
+				if strings.Contains(text, retired) {
+					t.Errorf("retired or unsafe operator contract %q", retired)
+				}
+			}
+		})
+	}
+}
+
 // TestPythonArchiveHTTPJSONFixture runs the archived README's standalone
 // example against the real Connect handler. The former gRPC Python SDK stays
 // unmaintained; this protects only the documented interim HTTP+JSON path.

@@ -592,9 +592,38 @@ number rather than force-moving the tag.
   `sdks/node/` package through `file:../sdks/node`; the release workflow builds
   that SDK from the tagged tree before building the SPA. A `pb/` change that
   requires a new admin image must first flow through a published
-  `sdks/node/v*` release. The container hosts the SPA on Caddy and does not
-  reverse-proxy the Lantern listener — the browser calls the gateway directly, so the
-  server's `LANTERN_CORS_ALLOWED_ORIGINS` must include the admin origin.
+  `sdks/node/v*` release. Caddy serves the SPA and optionally proxies
+  `/auth/*`, `/browser/*` and `/graph.v1.*/*` to the operator-fixed
+  `LANTERN_ADMIN_SERVER_UPSTREAM` (`scheme://hostname:port`). The browser's
+  gateway picker never selects that upstream.
+
+  **OFF direct-Server example:** open `http://localhost:8080`, select
+  `http://localhost:6380` as the gateway, and set the Server's
+  `LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080`. This local example
+  has no IdP or browser session.
+
+  **OIDC same-origin example:** expose Admin at `https://admin.example.com:8443`
+  and select that exact HTTPS public origin as the gateway. Set
+  `LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example.com:8443` and register
+  `LANTERN_OIDC_REDIRECT_URI` with the same origin plus the exact
+  Issuer-specific `/auth/callback/<SHA-256>` path. Configure, for example,
+  `LANTERN_ADMIN_SERVER_UPSTREAM=https://writer.internal.example:6380`;
+  verify its certificate against that upstream hostname and mount
+  `LANTERN_ADMIN_SERVER_CA_FILE` for a private CA. Preserve the public
+  Host/scheme through the proxy chain and configure exact
+  `LANTERN_OIDC_TRUSTED_PROXY_IPS` where required. A plaintext Server hop is
+  permitted only behind the explicitly trusted exact gateway IP with validated
+  HTTPS/public Host headers. Keep credentials and private keys out of the SPA,
+  browser local storage and Vite env.
+
+  The current fixed-writer baseline pins auth/browser and security/control
+  routes to that writer. Future eligible-node routing and per-attempt login
+  affinity remain #1608/#1609 S5 work. Missing upstream routes fail closed
+  instead of returning the SPA shell. The optional Prometheus proxy checks
+  `/auth/operations` first: OFF permits diagnostics; OIDC requires current
+  `operations.read` authority. Only GET diagnostics pass, and Prometheus never
+  receives cookies or Authorization. See the [OIDC operations guide](docs/oidc-operations.md#browser-and-diagnostics-boundary)
+  and [HA runbook](docs/ha-runbook.md) for the current deployment contract.
 - `sdks/node/vX.Y.Z` triggers the two-runtime real-wire `node-sdk.yml` gate and npm
   trusted publishing with provenance. Before creating an exact-title GitHub Release,
   dispatch the read-only `node-registry-audit.yml` on the default branch with the
