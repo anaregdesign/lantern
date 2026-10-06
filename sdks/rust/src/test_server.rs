@@ -34,7 +34,7 @@ struct NativeFixture {
 struct StartupLog(tempfile::NamedTempFile);
 
 impl StartupLog {
-    fn bound_port(&self) -> Result<Option<u16>, Box<dyn Error>> {
+    fn bound_address(&self) -> Result<Option<SocketAddr>, Box<dyn Error>> {
         // Startup metadata is small; never scan an unbounded child log.
         let reader = BufReader::new(self.0.reopen()?.take(64 * 1024));
         for line in reader.lines() {
@@ -54,7 +54,7 @@ impl StartupLog {
             if address.port() == 0 {
                 return Err("production Lantern listener port is still zero".into());
             }
-            return Ok(Some(address.port()));
+            return Ok(Some(address));
         }
         Ok(None)
     }
@@ -190,13 +190,13 @@ impl GoServer {
                 )
                 .into());
             }
-            if let Some(port) = self
+            if let Some(address) = self
                 ._startup_log
                 .as_ref()
                 .ok_or("production Lantern startup log missing")?
-                .bound_port()?
+                .bound_address()?
             {
-                self.port = port;
+                self.port = address.port();
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -444,31 +444,31 @@ mod diagnostic_tests {
                 "{\"msg\":\"lantern server starting\",\"addr\":\"[::]:45678\"}\n"
             ),
         )?;
-        assert_eq!(log.bound_port()?, Some(45678));
+        assert_eq!(log.bound_address()?, Some("[::]:45678".parse()?));
         for event in [
             r#"{"msg":"lantern server starting"}"#,
             r#"{"msg":"lantern server starting","addr":"[::]:0"}"#,
             r#"{"msg":"lantern server starting","addr":"not a socket"}"#,
         ] {
             fs::write(log.0.path(), event)?;
-            assert!(log.bound_port().is_err());
+            assert!(log.bound_address().is_err());
         }
         fs::write(
             log.0.path(),
             r#"{"msg":"lantern server starting","addr":"127.0.0.1:45679"}"#,
         )?;
-        assert_eq!(log.bound_port()?, Some(45679));
+        assert_eq!(log.bound_address()?, Some("127.0.0.1:45679".parse()?));
         fs::write(
             log.0.path(),
             r#"{"msg":"lantern server starting","addr":"[::]:"#,
         )?;
-        assert_eq!(log.bound_port()?, None);
+        assert_eq!(log.bound_address()?, None);
         let mut oversized = vec![b'x'; 64 * 1024];
         oversized.extend_from_slice(
             b"\n{\"msg\":\"lantern server starting\",\"addr\":\"[::]:45678\"}\n",
         );
         fs::write(log.0.path(), oversized)?;
-        assert_eq!(log.bound_port()?, None);
+        assert_eq!(log.bound_address()?, None);
         // Keep the synthetic diagnostic fixture quiet when its log is replayed.
         fs::write(log.0.path(), "")?;
         Ok(())
@@ -483,7 +483,17 @@ mod diagnostic_tests {
         assert_ne!(first.port(), second.port());
         for server in [&mut first, &mut second] {
             assert!(server.try_wait()?.is_none());
-            let error = TcpListener::bind(("127.0.0.1", server.port()))
+            // The IPv4 reservation used by the old helper need not conflict
+            // with the server's wildcard IPv6 listener on every host. Check
+            // ownership against the actual published address instead.
+            let address = server
+                ._startup_log
+                .as_ref()
+                .ok_or("startup log missing")?
+                .bound_address()?
+                .ok_or("bound address missing")?;
+            assert_eq!(address.port(), server.port());
+            let error = TcpListener::bind(address)
                 .expect_err("the production child must still own its published listener");
             assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
             // Bound-port discovery consumes the original readiness budget.
