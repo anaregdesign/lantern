@@ -15,6 +15,56 @@ evidence schema and historical observations. Earlier h2c or simulator results
 do not qualify the release. Do not tag or publish until
 both physical platforms pass this matrix on one exact clean code commit.
 
+## Parent publication and hosted lock refresh
+
+The 0.6.0 offline candidate requires parent `lantern_client ^0.5.0`. Its
+committed hosted lock still records 0.4.1; that is pending, not a valid hosted
+qualification. Source CI uses the separately generated paired-source lock and
+restores the hosted lock afterwards. A path override never qualifies publication.
+
+When a parent release is separately authorized, pass paired-source offline,
+isolated parent archive, package and native gates first. Publish the parent
+through its tag-push workflow, then require `verify-published` archive equality.
+The separate `offline-hosted` job follows that verification on a parent tag; a
+stale lock reports pending and cannot hold the parent release in a cycle. PR,
+main and manual runs also report pending truthfully. Manual dispatch is test-only.
+An offline tag push requires hosted readiness and complete archive qualification;
+missing parent, stale lock, failed/mismatched parent bytes or skipped prerequisites
+block offline publication. Physical evidence is still required in offline preflight.
+
+After the exact compatible parent is visible, use a clean checkout and a fresh
+isolated directory to verify its current-source archive and generate a real hosted
+lock. These commands prepare files only; `--to-archive` does not publish:
+
+```bash
+work=$(mktemp -d)
+mkdir -p "$work/parent" "$work/offline" "$work/pub-cache"
+git archive HEAD:sdks/dart | tar -x -C "$work/parent"
+git archive HEAD:sdks/dart/offline | tar -x -C "$work/offline"
+parent_version=$(awk '$1 == "version:" { print $2; exit }' sdks/dart/pubspec.yaml)
+dart pub publish -C "$work/parent" --to-archive="$work/parent.tar.gz"
+python3 sdks/dart/scripts/release.py verify --version "$parent_version" \
+  --candidate "$work/parent.tar.gz" \
+  --sha256 "$(shasum -a 256 "$work/parent.tar.gz" | cut -d ' ' -f 1)"
+(cd "$work/offline" && PUB_CACHE="$work/pub-cache" dart pub get --no-example)
+python3 sdks/dart/offline/tool/release_contract.py --check-parent --require-hosted \
+  --parent-version "$parent_version" --parent-candidate "$work/parent.tar.gz" \
+  --parent-sha256 "$(shasum -a 256 "$work/parent.tar.gz" | cut -d ' ' -f 1)" \
+  --pubspec "$work/offline/pubspec.yaml" --lockfile "$work/offline/pubspec.lock"
+(cd "$work/offline" && PUB_CACHE="$work/pub-cache" dart pub get --enforce-lockfile --no-example)
+cp "$work/offline/pubspec.lock" sdks/dart/offline/pubspec.lock
+git diff -- sdks/dart/offline/pubspec.lock
+```
+
+Run the commands with fail-fast shell settings (`set -euo pipefail`). Review all
+resolver changes and merge the generated lock through the ordinary gate/PR path;
+never hand-author a hosted version or checksum, lower the manifest floor, or use
+`pubspec_overrides.yaml` here. `paired_source_gate.py --refresh-lock` is only for
+paired-source CI. After the hosted-lock preparation has merged, run test-only
+manual dispatch and require the hosted job's `qualified=true` result before
+freezing the offline source and starting fresh physical evidence. This ordering
+repair alone does not complete the future CDC, device or publication exits.
+
 ## Freeze one code candidate
 
 After all release-preparation PRs have merged, choose one full `main` SHA. Use
