@@ -1,6 +1,7 @@
 from contextlib import contextmanager, redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -351,8 +352,138 @@ class SessionTest(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertIn("restart", result["error"])
 
+    def test_docs_discovery_pattern_runs_from_repo_root_with_nested_test_files(self):
+        # Reproduce step 74's layout: no root test_*.py; five discovery files
+        # under .github/scripts. These are real unittest subprocesses, not a
+        # mock success or imported gate receipt.
+        names = ("test_ci_docs.py", "test_evidence_only_pr.py", "test_go_modules.py",
+                 "test_local_gate_session.py", "test_verify_go_sdk_release.py")
+        for name in names:
+            self.write(".github/scripts/" + name,
+                       "import unittest\nfrom pathlib import Path\n"
+                       "class Discovery(unittest.TestCase):\n"
+                       "    def test_root(self):\n"
+                       "        self.assertTrue(Path('.github/scripts').is_dir())\n"
+                       "        self.assertFalse(list(Path('.').glob('test_*.py')))\n")
+        step = next(s for s in steps(self.session.evidence) if s.name == "docs-tests")
+        self.assertEqual(step.cwd, ".")
+        self.assertEqual(step.command, ("python3", "-B", "-m", "unittest", "discover",
+                                      "-s", ".github/scripts", "-p", "test_*.py"))
+        # Negative control: the original expansion fails before unittest starts.
+        with self.assertRaisesRegex(ValueError, "empty command glob"):
+            for arg in step.command:
+                if "*" in arg and not list((self.root / step.cwd).glob(arg)):
+                    raise ValueError("empty command glob: " + arg)
+        self.session.env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + self.session.env["PATH"]
+        self.commit()
+        self.session.plan = steps(self.session.evidence)
+        actual_run = self.session.run
+        synthetic_prefix = []
+        def run(step, log):
+            if step.name in {"docs-tests", "final-diff", "final-clean"}:
+                return actual_run(step, log)
+            synthetic_prefix.append(step.name)
+            log.write_text("Synthetic test prefix; no production qualification\n")
+            return 0, True
+        # 73 mock prefix commands followed by real subprocesses for 74–76.
+        # The temporary fixture report is only a regression test artifact.
+        with patch.object(self.session, "run", side_effect=run):
+            result = self.qualify()
+        self.assertEqual(len(synthetic_prefix), 73)
+        self.assertEqual((result["executed"], result["carried"]), (76, 0))
+        self.assertEqual([r["name"] for r in result["steps"][-3:]],
+                         ["docs-tests", "final-diff", "final-clean"])
+        log = Path(result["steps"][-3]["log"])
+        self.assertIn("Ran 5 tests", log.read_text())
+        self.assertIn("OK", log.read_text())
+
+    def test_only_declared_pathname_glob_expands_and_preserves_space_argument(self):
+        self.write("sdks/dart/lib/src/z.dart", "")
+        self.write("sdks/dart/lib/src/a space.dart", "")
+        self.write("sdks/dart/lib/src/ignored.txt", "")
+        executable = self.base / "bin/dart"
+        executable.parent.mkdir()
+        executable.write_text("#!" + sys.executable + "\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+        executable.chmod(0o755)
+        self.session.env["PATH"] = str(executable.parent) + os.pathsep + self.session.env["PATH"]
+        step = next(s for s in steps(self.session.evidence) if s.name == "dart-format")
+        log = self.session.evidence / "real-pathname-glob.log"
+        self.assertEqual(self.session.run(step, log), (0, True))
+        self.assertEqual(json.loads(log.read_text()),
+                         ["format", "--output=none", "--set-exit-if-changed", "lib/lantern_client.dart",
+                          "lib/src/a space.dart", "lib/src/z.dart", "test"])
+        (self.root / "sdks/dart/lib/src/z.dart").unlink()
+        (self.root / "sdks/dart/lib/src/a space.dart").unlink()
+        with patch.object(gate.subprocess, "run") as execute:
+            with self.assertRaisesRegex(ValueError, "empty command glob"):
+                self.session.run(step, self.session.evidence / "empty-pathname-glob.log")
+            execute.assert_not_called()
+
+    def test_literal_patterns_quotes_and_shell_syntax_remain_single_argv_values(self):
+        self.write("test_decoy.py", "must not replace the literal pattern")
+        values = ("*.py", "a space", "'quotes'", "$HOME", "$(touch sentinel)", "; touch sentinel")
+        command = (sys.executable, "-c", "import json, sys; print(json.dumps(sys.argv[1:]))") + values
+        log = self.session.evidence / "real-literal-argv.log"
+        self.assertEqual(self.session.run(Step("literal-fixture", ".", command), log), (0, True))
+        self.assertEqual(json.loads(log.read_text()), list(values))
+        self.assertFalse((self.root / "sentinel").exists())
+
 
 class PlanTest(unittest.TestCase):
+    def test_glob_metadata_marks_only_the_formatter_pathname_and_refuses_invalid_indexes(self):
+        plan = steps(Path("/tmp/fixture-evidence"))
+        marked = [(s.name, i, s.command[i]) for s in plan for i in s.glob_args]
+        self.assertEqual(marked, [("dart-format", 5, "lib/src/*.dart")])
+        docs = next(s for s in plan if s.name == "docs-tests")
+        self.assertEqual(docs.glob_args, ())
+        for indexes in ((0,), (-1,), (2,), (1, 1), (True,)):
+            with self.subTest(indexes=indexes), self.assertRaises(ValueError):
+                Step("invalid", ".", ("fixture", "*.py"), glob_args=indexes)
+
+    def test_all_76_executor_calls_preserve_declared_argv_cwd_and_environment(self):
+        with tempfile.TemporaryDirectory(prefix="gate argv with spaces ") as directory:
+            root = Path(directory) / "repo with spaces"
+            root.mkdir()
+            session = gate.Session(root, Path(directory) / "evidence with spaces")
+            root = session.root
+            session.env = {"PATH": "/fixture tool path", "RUSTDOCFLAGS": "-D warnings",
+                           "LITERAL": "$HOME;*.py", "GOWORK": "/developer/workspace"}
+            session.eligible_root = Path(directory) / "committed export"
+            for rel in ("lib/src/z.dart", "lib/src/a space.dart"):
+                path = root / "sdks/dart" / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("")
+            captured = []
+            def execute(command, **kwargs):
+                captured.append((command, kwargs))
+                return subprocess.CompletedProcess(command, 0)
+            with patch.object(gate.subprocess, "run", side_effect=execute), \
+                    patch.object(session, "check_go_inputs") as check_inputs:
+                for index, step in enumerate(session.plan):
+                    self.assertEqual(session.run(step, session.evidence / f"mock-{index}.log"), (0, True))
+            self.assertEqual(len(captured), 76)
+            self.assertEqual(check_inputs.call_count, 6)
+            for step, (command, kwargs) in zip(session.plan, captured):
+                with self.subTest(step=step.name):
+                    expected = list(step.command)
+                    if step.name == "dart-format":
+                        expected[5:6] = ["lib/src/a space.dart", "lib/src/z.dart"]
+                    self.assertEqual(command, expected)
+                    execution_root = session.eligible_root if step.name in gate.ELIGIBLE else root
+                    self.assertEqual(kwargs["cwd"], execution_root / step.cwd)
+                    environment = session.env.copy()
+                    if step.name in gate.ELIGIBLE:
+                        environment.update(GOWORK=str(execution_root / "go.work"), PWD=str(execution_root / step.cwd))
+                    if step.name == "admin-playwright":
+                        environment.update(LANTERN_E2E_PREVIEW_PORT="44469", LANTERN_PORT="64469", LANTERN_E2E_METRICS_PORT="59469")
+                    if step.name == "rust-real-wire":
+                        environment.update(LANTERN_RUST_TEST_SERVER=str(root / "sdks/rust/target/lantern-smoke"),
+                                           LANTERN_RUST_TEST_AUTH_FIXTURE=str(root / "sdks/rust/target/lantern-authfixture"))
+                    self.assertEqual(kwargs["env"], environment)
+                    self.assertNotIn("shell", kwargs)
+                    self.assertEqual(kwargs["stderr"], subprocess.STDOUT)
+                    self.assertFalse(kwargs["check"])
+
     def test_complete_plan_keeps_install_order_generation_and_unsupported_qualification(self):
         plan = steps(Path("/tmp/fixture-evidence"))
         self.assertEqual(len(plan), 76)
