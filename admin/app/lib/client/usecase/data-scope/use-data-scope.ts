@@ -12,6 +12,7 @@ export function useDataScope(actions: readonly SecurityAction[]) {
     options: scopeOptions(roles, actions),
     denied: deniedScopes(roles, actions, prefix),
     exceptions: (value: string) => deniedScopes(roles, actions, value),
-    select: (value: string) => controller.selectScope(value),
+    select: (value: string, replaceExplicitPrefix = false) =>
+      controller.selectScope(value, replaceExplicitPrefix),
   };
 }

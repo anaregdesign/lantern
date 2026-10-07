@@ -56,7 +56,9 @@ Add records bounded recovery metadata in per-tab `sessionStorage` before a possi
 send. It contains gateway/identity, target and receipt identifiers, without browser
 credentials, tokens or CSRF secrets. A lost or cancelled response remains uncertain
 across reload and login. **Check original Add** reads the existing receipt Status
-API with the original operation ID when receipts are supported; it never resends a
+API with the original operation ID when receipts are supported and both endpoints
+have current ReceiptRead grants. ReceiptRead is not required for ordinary Add.
+The check never resends a
 mutation. An unavailable, unobserved, undisclosed or no-longer-provable result keeps
 the request locked. Legacy Add and decaying Add have no original-result receipt in
 this flow: reading the current Edge cannot confirm them or authorize a retry.

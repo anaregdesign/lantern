@@ -8,6 +8,7 @@ import {
   scopeOptions,
   deniedScopes,
   QUERY_SCOPE_ACTIONS,
+  receiptSuggestedForEdge,
 } from "./scope-options";
 const rule = (action: A, effect: E, prefix: string): SecurityRule => ({
   $typeName: "graph.v1.SecurityRule",
@@ -18,6 +19,44 @@ const rule = (action: A, effect: E, prefix: string): SecurityRule => ({
 });
 const roles = (rules: SecurityRule[]) => [{ id: "reader", rules }];
 describe("Scopes suggested by current Server Roles", () => {
+  test("optional receipts need grants for both endpoints, with Deny precedence", () => {
+    expect(
+      receiptSuggestedForEdge(
+        roles([
+          rule(A.VERTEX_READ, E.ALLOW, "orders:"),
+          rule(A.VERTEX_WRITE, E.ALLOW, "orders:"),
+        ]),
+        "orders:a",
+        "orders:b",
+      ),
+    ).toBe(false);
+    expect(
+      receiptSuggestedForEdge(
+        roles([rule(A.RECEIPT_READ, E.ALLOW, "audit:")]),
+        "orders:a",
+        "orders:b",
+      ),
+    ).toBe(false);
+    expect(
+      receiptSuggestedForEdge(
+        roles([rule(A.RECEIPT_READ, E.ALLOW, "orders:a")]),
+        "orders:a",
+        "orders:b",
+      ),
+    ).toBe(false);
+    const grants = roles([rule(A.RECEIPT_READ, E.ALLOW, "orders:")]);
+    expect(receiptSuggestedForEdge(grants, "orders:a", "orders:b")).toBe(true);
+    expect(
+      receiptSuggestedForEdge(
+        [
+          ...grants,
+          { id: "deny", rules: [rule(A.RECEIPT_READ, E.DENY, "orders:b")] },
+        ],
+        "orders:a",
+        "orders:b",
+      ),
+    ).toBe(false);
+  });
   test("intersects query and read grants and shows nested Deny exceptions", () => {
     const r = roles([
       rule(A.VERTEX_READ, E.ALLOW, "orders:"),

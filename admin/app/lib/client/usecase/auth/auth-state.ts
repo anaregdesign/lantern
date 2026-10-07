@@ -74,11 +74,11 @@ export class AuthController {
   ) {}
   getSnapshot = (): AuthState => this.state;
   getSelectedScope = (): string => this.selectedScope;
-  selectScope(prefix: string) {
+  selectScope(prefix: string, replaceExplicitPrefix = false) {
     const state = this.state;
     if (
       (state.kind !== "ready" && state.kind !== "off") ||
-      prefix === this.selectedScope
+      (prefix === this.selectedScope && !replaceExplicitPrefix)
     )
       return;
     this.selectedScope = prefix;

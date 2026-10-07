@@ -2874,52 +2874,69 @@ func TestAuth_OIDCAdminScopeAndAddRecoveryRealConnect(t *testing.T) {
 	if err != nil {
 		t.Skip("Bun is required for the Admin Add recovery wire gate")
 	}
-	f := newOIDCControlWireFixtureOptions(t, nil, true)
-	admin := f.token(t, "admin", nil)
-	current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	rule := func(id string, action pb.SecurityAction, effect pb.SecurityEffect, prefix string) *pb.SecurityRule {
-		return &pb.SecurityRule{Id: id, Action: action, Effect: effect, Resource: &pb.SecurityRule_Prefix{Prefix: prefix}}
-	}
-	role := &pb.SecurityRole{Id: "admin_data", Rules: []*pb.SecurityRule{
-		rule("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
-		rule("audit", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "audit:"),
-		rule("query", pb.SecurityAction_SECURITY_ACTION_QUERY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
-		rule("deny", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:"),
-		rule("write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
-		rule("receipt", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
-	}}
-	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{121}, 16), Changes: []*pb.SecurityChange{
-		{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
-		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: current.Msg.Identity, RoleId: role.Id}}},
-	}}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, key := range []string{"orders:tail", "orders:head", "orders:private:hidden", "audit:read"} {
-		if err := f.graph.PutVertex("data:"+key, &pb.Vertex{Key: "data:" + key, Value: &pb.Vertex_String_{String_: "visible"}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	root, err := filepath.Abs("../..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	module := func(path string) string { quoted, _ := json.Marshal(filepath.Join(root, path)); return string(quoted) }
-	script := `import { connectWeb, connectSecurityWeb } from ` + module("admin/node_modules/lantern-sdk/dist/web.js") + `;
+	for _, phase := range []string{"receipt", "legacy-none", "legacy-other"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newOIDCControlWireFixtureOptions(t, nil, true)
+			admin := f.token(t, "admin", nil)
+			current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rule := func(id string, action pb.SecurityAction, effect pb.SecurityEffect, prefix string) *pb.SecurityRule {
+				return &pb.SecurityRule{Id: id, Action: action, Effect: effect, Resource: &pb.SecurityRule_Prefix{Prefix: prefix}}
+			}
+			role := &pb.SecurityRole{Id: "admin_data", Rules: []*pb.SecurityRule{
+				rule("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
+				rule("audit", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "audit:"),
+				rule("query", pb.SecurityAction_SECURITY_ACTION_QUERY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
+				rule("deny", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:"),
+				rule("write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
+			}}
+			if phase != "legacy-none" {
+				receiptPrefix := "orders:"
+				if phase == "legacy-other" {
+					receiptPrefix = "audit:"
+				}
+				role.Rules = append(role.Rules, rule("receipt", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, receiptPrefix))
+			}
+			_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{121}, 16), Changes: []*pb.SecurityChange{
+				{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
+				{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: current.Msg.Identity, RoleId: role.Id}}},
+			}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			capability, capErr := f.data.GetReceiptCapability(t.Context(), securityWireRequest(admin, &pb.GetReceiptCapabilityRequest{}))
+			if phase == "legacy-none" {
+				if connect.CodeOf(capErr) != connect.CodePermissionDenied {
+					t.Fatal("missing ReceiptRead must reject capability", capErr)
+				}
+			} else if capErr != nil || !capability.Msg.Enabled {
+				t.Fatal("receipt capability", capErr)
+			}
+			for _, key := range []string{"orders:tail", "orders:head", "orders:private:hidden", "audit:read"} {
+				if err := f.graph.PutVertex("data:"+key, &pb.Vertex{Key: "data:" + key, Value: &pb.Vertex_String_{String_: "visible"}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			root, err := filepath.Abs("../..")
+			if err != nil {
+				t.Fatal(err)
+			}
+			module := func(path string) string { quoted, _ := json.Marshal(filepath.Join(root, path)); return string(quoted) }
+			script := `import { connectWeb, connectSecurityWeb } from ` + module("admin/node_modules/lantern-sdk/dist/web.js") + `;
 import { createAddRecoveryGateway } from ` + module("admin/app/lib/client/infrastructure/api/add-recovery.ts") + `;
 import { AddRecoveryStore } from ` + module("admin/app/lib/client/usecase/add-recovery/add-recovery.ts") + `;
-import { scopeOptions, BROWSE_SCOPE_ACTIONS, QUERY_SCOPE_ACTIONS } from ` + module("admin/app/lib/client/usecase/data-scope/scope-options.ts") + `;
+import { scopeOptions, BROWSE_SCOPE_ACTIONS, QUERY_SCOPE_ACTIONS, receiptSuggestedForEdge } from ` + module("admin/app/lib/client/usecase/data-scope/scope-options.ts") + `;
 const check = (value, message) => { if (!value) throw new Error(message); };
-let adds=0, statuses=0, dropStatus=true;
+let adds=0, statuses=0, capabilities=0, dropStatus=true;
 const ids=[];
 const gatewayFetch=async(input,init)=>{
  const request=new Request(input,init);
  request.headers.set("X-Forwarded-Proto","https"); request.headers.set("X-Forwarded-Host",new URL(request.url).host);
  const method=new URL(request.url).pathname.split("/").at(-1);
  if(method==="AddEdges") adds++;
+ if(method==="GetReceiptCapability") capabilities++;
  if(method==="GetReceiptStatuses") { statuses++; ids.push((await request.clone().json()).operationIds[0]); }
  const response=await fetch(request);
  if((method==="AddEdges" && adds===1) || (method==="GetReceiptStatuses" && dropStatus)) {
@@ -2928,7 +2945,6 @@ const gatewayFetch=async(input,init)=>{
  return response;
 };
 const client=connectWeb(process.env.LANTERN_SDK_URL,{token:process.env.LANTERN_SDK_CREDENTIAL,transportOptions:{fetch:gatewayFetch}});
-const gateway=createAddRecoveryGateway(client);
 let raw=null;
 const storage={read:()=>raw,write:value=>{raw=value;},newID:()=>"original-add"};
 try {
@@ -2938,10 +2954,17 @@ try {
  check(JSON.stringify(browse.map(o=>o.prefix))===JSON.stringify(["audit:","orders:"]),"Server Role browse scopes lost");
  check(query.length===1 && query[0].prefix==="orders:" && query[0].denied.includes("orders:private:"),"Query intersection or Deny lost");
  const visible=await client.scanVertices("orders:"); check(!visible.vertices.some(v=>v.key.startsWith("orders:private:")),"Deny leaked");
+ const gateway=createAddRecoveryGateway(client,input=>receiptSuggestedForEdge(principal.roles,input.tail,input.head));
  const input={tail:"orders:tail",head:"orders:head",weight:7};
  let store=new AddRecoveryStore(storage);
  await store.add("actor",input,gateway).then(()=>{throw new Error("lost Add accepted as known");},()=>{});
  check(adds===1 && store.getSnapshot()[0].phase==="uncertain","original Add lost or replayed");
+ if(process.env.LANTERN_ADMIN_ADD_WIRE_PHASE!=="receipt") {
+  check(!store.getSnapshot()[0].receipt && capabilities===0,"ordinary Add unexpectedly required receipt authority");
+  store=new AddRecoveryStore(storage); await store.check("original-add","actor",gateway);
+  check(statuses===0 && store.getSnapshot()[0].phase==="uncertain" && adds===1,"legacy uncertainty became confirmation or resend");
+  check((await client.getEdge(input.tail,input.head)).weight===7,"ordinary Add was not applied exactly once");
+ } else {
  const original=store.getSnapshot()[0].receipt.operationIds[0];
  store=new AddRecoveryStore(storage);
  await store.check("original-add","actor",gateway);
@@ -2955,22 +2978,25 @@ try {
  const denied={...input,head:"outside:head"};
  await store.add("actor",denied,gateway).then(()=>{throw new Error("outside Add authorized");},()=>{});
  check(adds===2 && !store.pending("actor",denied.tail,denied.head),"first-dispatch refusal became retained ambiguity");
- console.log("Admin Server Role scopes and original Add receipt recovery: PASS");
+ }
+ console.log("Admin scope/Add "+process.env.LANTERN_ADMIN_ADD_WIRE_PHASE+": PASS");
 } finally { client.close(); }
 `
-	file := filepath.Join(t.TempDir(), "admin-scope-add-wire.ts")
-	if err := os.WriteFile(file, []byte(script), 0600); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bun, "run", file)
-	cmd.Dir = filepath.Join(root, "admin")
-	cmd.Env = append(os.Environ(), "LANTERN_SDK_URL="+f.server.URL, "LANTERN_SDK_CREDENTIAL="+admin)
-	if output, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(output), "Admin Server Role scopes and original Add receipt recovery: PASS") {
-		t.Fatalf("Admin scope/Add recovery wire: %v\n%s", err, output)
-	} else {
-		t.Log(strings.TrimSpace(string(output)))
+			file := filepath.Join(t.TempDir(), "admin-scope-add-wire.ts")
+			if err := os.WriteFile(file, []byte(script), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, bun, "run", file)
+			cmd.Dir = filepath.Join(root, "admin")
+			cmd.Env = append(os.Environ(), "LANTERN_SDK_URL="+f.server.URL, "LANTERN_SDK_CREDENTIAL="+admin, "LANTERN_ADMIN_ADD_WIRE_PHASE="+phase)
+			if output, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(output), "Admin scope/Add "+phase+": PASS") {
+				t.Fatalf("Admin scope/Add recovery wire: %v\n%s", err, output)
+			} else {
+				t.Log(strings.TrimSpace(string(output)))
+			}
+		})
 	}
 }
 

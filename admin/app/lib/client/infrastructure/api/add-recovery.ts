@@ -24,7 +24,7 @@ export function createDecayingAddRecoveryGateway(
   body: AddDecayingEdgeBody,
 ): AddRecoveryGateway {
   return {
-    ...createAddRecoveryGateway(client),
+    ...createAddRecoveryGateway(client, () => false),
     prepare: async (input) => ({ input }),
     send: (prepared, signal) =>
       mutationReply(() =>
@@ -53,9 +53,13 @@ export interface AddRecoveryGateway {
 /** Existing receipt APIs only. Status never sends a mutation. */
 export function createAddRecoveryGateway(
   client: LanternClient,
+  receiptSuggested: (input: EdgeInput) => boolean,
 ): AddRecoveryGateway {
   return {
     async prepare(input, signal) {
+      // ReceiptRead is an optional, separate privilege. Preserve ordinary
+      // Add for callers without receipt grants; no extra grant is required.
+      if (!receiptSuggested(input)) return { input: { ...input } };
       const capability = await client.getReceiptCapability(signal);
       if (
         !capability.enabled ||

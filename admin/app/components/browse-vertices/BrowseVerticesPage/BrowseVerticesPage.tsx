@@ -190,6 +190,9 @@ export function BrowseVerticesPage() {
           {...scope}
           prefix={searching ? searchPrefix : prefix}
           denied={scope.exceptions(searching ? searchPrefix : prefix)}
+          select={(value) =>
+            scope.select(value, value !== (searching ? searchPrefix : prefix))
+          }
         />
       ) : null}
       <header className={styles.header}>

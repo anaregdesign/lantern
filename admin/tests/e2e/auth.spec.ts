@@ -67,6 +67,17 @@ for (const width of [1280, 390]) {
     await expect(
       page.getByRole("table", { name: "Vertices", exact: true }),
     ).not.toContainText("tenant:visible");
+    await page.getByLabel("Key prefix", { exact: true }).fill("tenant:");
+    await expect(
+      page.getByRole("table", { name: "Vertices", exact: true }),
+    ).toContainText("tenant:visible");
+    await page.getByTestId("data-scope-select").selectOption("audit:");
+    await expect(page.getByLabel("Key prefix", { exact: true })).toHaveValue(
+      "audit:",
+    );
+    await expect(
+      page.getByRole("table", { name: "Vertices", exact: true }),
+    ).toContainText("audit:visible");
     await page
       .getByRole("tab", { name: "Content search", exact: true })
       .click();

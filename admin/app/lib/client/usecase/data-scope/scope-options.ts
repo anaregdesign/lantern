@@ -65,6 +65,31 @@ export function deniedScopes(
 }
 
 export const BROWSE_SCOPE_ACTIONS = [SecurityAction.VERTEX_READ] as const;
+
+/** Chooses an optional receipt strategy; the Server still authorizes every Add. */
+export function receiptSuggestedForEdge(
+  roles: Roles,
+  tail: string,
+  head: string,
+): boolean {
+  const rules = roles
+    .flatMap((role) => role.rules)
+    .filter(
+      (rule) =>
+        rule.action === SecurityAction.RECEIPT_READ &&
+        rule.resource.case === "prefix",
+    );
+  return [tail, head].every((key) => {
+    const matches = rules.filter(
+      (rule) =>
+        rule.resource.case === "prefix" && key.startsWith(rule.resource.value),
+    );
+    return (
+      matches.some((rule) => rule.effect === SecurityEffect.ALLOW) &&
+      !matches.some((rule) => rule.effect === SecurityEffect.DENY)
+    );
+  });
+}
 export const QUERY_SCOPE_ACTIONS = [
   SecurityAction.VERTEX_READ,
   SecurityAction.QUERY,

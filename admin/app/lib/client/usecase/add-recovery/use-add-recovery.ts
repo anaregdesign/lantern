@@ -8,12 +8,27 @@ import {
 } from "~/lib/client/infrastructure/api/add-recovery";
 import type { EdgeInput } from "lantern-sdk/web";
 import type { AddDecayingEdgeBody } from "~/lib/client/infrastructure/api/types";
+import { receiptSuggestedForEdge } from "../data-scope/scope-options";
 
 export function useAddRecovery() {
   const { state, adds } = useAuth();
   const { connection } = useConnection();
   const client = useLanternClient();
-  const gateway = useMemo(() => createAddRecoveryGateway(client), [client]);
+  const gateway = useMemo(
+    () =>
+      createAddRecoveryGateway(
+        client,
+        (input) =>
+          state.kind === "off" ||
+          (state.kind === "ready" &&
+            receiptSuggestedForEdge(
+              state.principal.roles,
+              input.tail,
+              input.head,
+            )),
+      ),
+    [client, state],
+  );
   const actor = JSON.stringify([
     connection.baseUrl,
     state.kind,
