@@ -2866,6 +2866,114 @@ try {
 	run("authorized")
 }
 
+// #1606: the Admin retains a possibly sent Add across reload and reconciles
+// only its original receipt. Dropped responses follow successful production
+// Connect handling; current Edge values and later refusals cannot prove it.
+func TestAuth_OIDCAdminScopeAndAddRecoveryRealConnect(t *testing.T) {
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Skip("Bun is required for the Admin Add recovery wire gate")
+	}
+	f := newOIDCControlWireFixtureOptions(t, nil, true)
+	admin := f.token(t, "admin", nil)
+	current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := func(id string, action pb.SecurityAction, effect pb.SecurityEffect, prefix string) *pb.SecurityRule {
+		return &pb.SecurityRule{Id: id, Action: action, Effect: effect, Resource: &pb.SecurityRule_Prefix{Prefix: prefix}}
+	}
+	role := &pb.SecurityRole{Id: "admin_data", Rules: []*pb.SecurityRule{
+		rule("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
+		rule("audit", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "audit:"),
+		rule("query", pb.SecurityAction_SECURITY_ACTION_QUERY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
+		rule("deny", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:"),
+		rule("write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
+		rule("receipt", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"),
+	}}
+	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{121}, 16), Changes: []*pb.SecurityChange{
+		{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
+		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: current.Msg.Identity, RoleId: role.Id}}},
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"orders:tail", "orders:head", "orders:private:hidden", "audit:read"} {
+		if err := f.graph.PutVertex("data:"+key, &pb.Vertex{Key: "data:" + key, Value: &pb.Vertex_String_{String_: "visible"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	module := func(path string) string { quoted, _ := json.Marshal(filepath.Join(root, path)); return string(quoted) }
+	script := `import { connectWeb, connectSecurityWeb } from ` + module("admin/node_modules/lantern-sdk/dist/web.js") + `;
+import { createAddRecoveryGateway } from ` + module("admin/app/lib/client/infrastructure/api/add-recovery.ts") + `;
+import { AddRecoveryStore } from ` + module("admin/app/lib/client/usecase/add-recovery/add-recovery.ts") + `;
+import { scopeOptions, BROWSE_SCOPE_ACTIONS, QUERY_SCOPE_ACTIONS } from ` + module("admin/app/lib/client/usecase/data-scope/scope-options.ts") + `;
+const check = (value, message) => { if (!value) throw new Error(message); };
+let adds=0, statuses=0, dropStatus=true;
+const ids=[];
+const gatewayFetch=async(input,init)=>{
+ const request=new Request(input,init);
+ request.headers.set("X-Forwarded-Proto","https"); request.headers.set("X-Forwarded-Host",new URL(request.url).host);
+ const method=new URL(request.url).pathname.split("/").at(-1);
+ if(method==="AddEdges") adds++;
+ if(method==="GetReceiptStatuses") { statuses++; ids.push((await request.clone().json()).operationIds[0]); }
+ const response=await fetch(request);
+ if((method==="AddEdges" && adds===1) || (method==="GetReceiptStatuses" && dropStatus)) {
+  check(response.ok,"production response must succeed before loss"); await response.arrayBuffer(); throw new TypeError("response lost after application");
+ }
+ return response;
+};
+const client=connectWeb(process.env.LANTERN_SDK_URL,{token:process.env.LANTERN_SDK_CREDENTIAL,transportOptions:{fetch:gatewayFetch}});
+const gateway=createAddRecoveryGateway(client);
+let raw=null;
+const storage={read:()=>raw,write:value=>{raw=value;},newID:()=>"original-add"};
+try {
+ const principal=await connectSecurityWeb(process.env.LANTERN_SDK_URL,{token:process.env.LANTERN_SDK_CREDENTIAL,transportOptions:{fetch:gatewayFetch}}).getCurrentPrincipal();
+ const browse=scopeOptions(principal.roles,BROWSE_SCOPE_ACTIONS);
+ const query=scopeOptions(principal.roles,QUERY_SCOPE_ACTIONS);
+ check(JSON.stringify(browse.map(o=>o.prefix))===JSON.stringify(["audit:","orders:"]),"Server Role browse scopes lost");
+ check(query.length===1 && query[0].prefix==="orders:" && query[0].denied.includes("orders:private:"),"Query intersection or Deny lost");
+ const visible=await client.scanVertices("orders:"); check(!visible.vertices.some(v=>v.key.startsWith("orders:private:")),"Deny leaked");
+ const input={tail:"orders:tail",head:"orders:head",weight:7};
+ let store=new AddRecoveryStore(storage);
+ await store.add("actor",input,gateway).then(()=>{throw new Error("lost Add accepted as known");},()=>{});
+ check(adds===1 && store.getSnapshot()[0].phase==="uncertain","original Add lost or replayed");
+ const original=store.getSnapshot()[0].receipt.operationIds[0];
+ store=new AddRecoveryStore(storage);
+ await store.check("original-add","actor",gateway);
+ check(statuses===1 && store.getSnapshot()[0].phase==="uncertain","unavailable status cleared uncertainty");
+ await store.add("actor",input,{...gateway,send:()=>{throw new Error("later refusal must not dispatch");}}).then(()=>{throw new Error("new Add admitted");},()=>{});
+ check(adds===1 && store.getSnapshot()[0].receipt.operationIds[0]===original,"later attempt changed original");
+ dropStatus=false;
+ await store.check("original-add","actor",gateway);
+ check(store.getSnapshot()[0].phase==="confirmed" && adds===1 && statuses===2 && ids.every(id=>id===ids[0]),"original receipt did not reconcile without resend");
+ check((await client.getEdge(input.tail,input.head)).weight===7,"Add effect changed or replayed");
+ const denied={...input,head:"outside:head"};
+ await store.add("actor",denied,gateway).then(()=>{throw new Error("outside Add authorized");},()=>{});
+ check(adds===2 && !store.pending("actor",denied.tail,denied.head),"first-dispatch refusal became retained ambiguity");
+ console.log("Admin Server Role scopes and original Add receipt recovery: PASS");
+} finally { client.close(); }
+`
+	file := filepath.Join(t.TempDir(), "admin-scope-add-wire.ts")
+	if err := os.WriteFile(file, []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bun, "run", file)
+	cmd.Dir = filepath.Join(root, "admin")
+	cmd.Env = append(os.Environ(), "LANTERN_SDK_URL="+f.server.URL, "LANTERN_SDK_CREDENTIAL="+admin)
+	if output, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(output), "Admin Server Role scopes and original Add receipt recovery: PASS") {
+		t.Fatalf("Admin scope/Add recovery wire: %v\n%s", err, output)
+	} else {
+		t.Log(strings.TrimSpace(string(output)))
+	}
+}
+
 func runScopedLanguageWire(t *testing.T, language string) {
 	t.Helper()
 	binary, err := exec.LookPath(language)

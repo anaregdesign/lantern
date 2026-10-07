@@ -56,6 +56,9 @@ import {
   searchVertices,
 } from "~/lib/client/infrastructure/api/search-vertices";
 import type { Edge, Vertex } from "~/lib/client/infrastructure/api/types";
+import type { AddDecayingEdgeBody } from "~/lib/client/infrastructure/api/types";
+import type { EdgeInput, MutationReply } from "lantern-sdk/web";
+import { flatEdgeToSdkInput } from "~/lib/client/infrastructure/api/to-flat";
 import type {
   Command,
   ObjectiveName,
@@ -67,6 +70,16 @@ export interface DispatchInput {
   client: LanternClient;
   command: Command;
   signal?: AbortSignal;
+  add?: (
+    edge: EdgeInput,
+    signal?: AbortSignal,
+  ) => Promise<MutationReply<number>>;
+  addDecaying?: (
+    tail: string,
+    head: string,
+    body: AddDecayingEdgeBody,
+    signal?: AbortSignal,
+  ) => Promise<MutationReply<number>>;
 }
 
 // Translate the CLI's friendly axis vocabulary to the wire enum the
@@ -208,21 +221,36 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
         // REPL's `add decaying-edge` echo.
         const horizonSeconds = command.steps * command.intervalSeconds;
         const expiration = ttlSecondsToExpiration(horizonSeconds);
-        const reply = await addDecayingEdge(
-          client,
-          command.tail,
-          command.head,
-          {
-            initialWeight: command.initialWeight,
-            ratio: command.ratio,
-            steps: command.steps,
-            intervalSeconds: command.intervalSeconds,
-          },
-          { signal },
-        );
+        const reply = input.addDecaying
+          ? await input.addDecaying(
+              command.tail,
+              command.head,
+              {
+                initialWeight: command.initialWeight,
+                ratio: command.ratio,
+                steps: command.steps,
+                intervalSeconds: command.intervalSeconds,
+              },
+              signal,
+            )
+          : await addDecayingEdge(
+              client,
+              command.tail,
+              command.head,
+              {
+                initialWeight: command.initialWeight,
+                ratio: command.ratio,
+                steps: command.steps,
+                intervalSeconds: command.intervalSeconds,
+              },
+              { signal },
+            );
         if (reply.kind === "acceptedUndisclosed")
           return { acceptance: reply.kind };
-        const { effectiveWeight } = reply.effect;
+        const effectiveWeight =
+          typeof reply.effect === "number"
+            ? reply.effect
+            : reply.effect.effectiveWeight;
         return writeEcho(
           {
             tail: command.tail,
@@ -237,20 +265,30 @@ export async function dispatch(input: DispatchInput): Promise<unknown> {
         );
       }
       const expiration = ttlSecondsToExpiration(command.ttlSeconds);
-      const reply = await addEdge(
-        client,
-        command.tail,
-        command.head,
-        {
-          edge: {
-            tail: command.tail,
-            head: command.head,
-            weight: command.weight,
-            expiration,
-          },
-        },
-        { signal },
-      );
+      const reply = input.add
+        ? await input.add(
+            flatEdgeToSdkInput({
+              tail: command.tail,
+              head: command.head,
+              weight: command.weight,
+              expiration,
+            }),
+            signal,
+          )
+        : await addEdge(
+            client,
+            command.tail,
+            command.head,
+            {
+              edge: {
+                tail: command.tail,
+                head: command.head,
+                weight: command.weight,
+                expiration,
+              },
+            },
+            { signal },
+          );
       if (reply.kind === "acceptedUndisclosed")
         return { acceptance: reply.kind };
       return writeEcho(

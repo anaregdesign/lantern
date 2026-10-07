@@ -29,6 +29,37 @@ import {
 import type { Command } from "~/lib/cli/types";
 import { parse } from "~/lib/cli/parser";
 
+test("CLI Add uses the recovery port once and preserves the typed target", async () => {
+  const parsed = parse("add edge outside:tail outside:head 7");
+  if (!parsed.ok) throw new Error(parsed.usage);
+  const fake = new FakeLanternClient();
+  let sends = 0;
+  const add = async (input: { tail: string; head: string; weight: number }) => {
+    sends++;
+    expect(input).toMatchObject({
+      tail: "outside:tail",
+      head: "outside:head",
+      weight: 7,
+    });
+    return { kind: "knownEffect" as const, effect: 9 };
+  };
+  expect(
+    await dispatch({ client: asClient(fake), command: parsed.command, add }),
+  ).toMatchObject({ tail: "outside:tail", head: "outside:head", weight: 7 });
+  expect(sends).toBe(1);
+  expect(fake.calls).toHaveLength(0);
+  await expect(
+    dispatch({
+      client: asClient(fake),
+      command: parsed.command,
+      add: async () => {
+        throw new Error("Add outcome is unknown");
+      },
+    }),
+  ).rejects.toThrow("Add outcome is unknown");
+  expect(fake.calls).toHaveLength(0);
+});
+
 // ----------------------------------------------------------------------------
 // FakeLanternClient
 // ----------------------------------------------------------------------------

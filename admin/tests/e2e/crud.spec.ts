@@ -19,6 +19,58 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
+for (const width of [1280, 390]) {
+  test(`an applied Add with a lost response remains uncertain across reload at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const tail = `e2e:crud:uncertain:${width}:tail`,
+      head = `e2e:crud:uncertain:${width}:head`;
+    await putVertices([{ key: tail }, { key: head }]);
+    await connectCall("PutEdges", { edges: [{ tail, head, weight: 1 }] });
+    let adds = 0;
+    await page.route("**/graph.v1.LanternService/AddEdges", async (route) => {
+      adds++;
+      const response = await route.fetch();
+      expect(response.status()).toBe(200);
+      await route.abort("failed");
+    });
+    await page.goto(
+      `/edges/${encodeURIComponent(tail)}/${encodeURIComponent(head)}`,
+    );
+    await page.getByTestId("edge-add-weight").fill("7");
+    await page.getByTestId("edge-add-submit").click();
+    await expect(
+      page.getByText("Add outcome is unknown.", { exact: false }).first(),
+    ).toBeVisible();
+    expect(adds).toBe(1);
+    await page.reload();
+    await expect(page.getByTestId("edge-add-submit")).toBeDisabled();
+    await page
+      .getByRole("button", { name: "Check original Add", exact: true })
+      .click();
+    await expect(
+      page.getByText("Reading the current edge cannot confirm it", {
+        exact: false,
+      }),
+    ).toBeVisible();
+    expect(adds).toBe(1);
+    const edge = (await connectCall("GetEdge", { tail, head })) as {
+      edge: { weight: number };
+    };
+    expect(edge.edge.weight).toBe(8);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`uncertain-add-${width}.png`),
+      fullPage: true,
+    });
+  });
+}
+
 test.describe("vertex detail", () => {
   test("string values render multi-line with a working Markdown toggle", async ({
     page,

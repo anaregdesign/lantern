@@ -13,6 +13,7 @@ import { ExpirationCell } from "../../browse-edges/ExpirationCell/ExpirationCell
 import { DeleteEdgeDialog } from "../DeleteEdgeDialog/DeleteEdgeDialog";
 import { EdgeWriteForm } from "../EdgeWriteForm/EdgeWriteForm";
 import styles from "./EdgeDetailPage.module.css";
+import { AddRecoveryNotice } from "~/components/shared/AddRecoveryNotice/AddRecoveryNotice";
 
 export interface EdgeDetailPageProps {
   tail: string;
@@ -90,6 +91,12 @@ export function EdgeDetailPage(props: EdgeDetailPageProps) {
       ) : null}
 
       <div className={styles.cards}>
+        <AddRecoveryNotice
+          attempts={editor.addRecovery.attempts.filter(
+            (a) => a.tail === props.tail && a.head === props.head,
+          )}
+          check={editor.addRecovery.check}
+        />
         <EdgeWriteForm
           mode="add"
           title="Add contribution"

@@ -24,6 +24,11 @@ import { CliCommandReference } from "~/components/cli/CliCommandReference/CliCom
 import { JsonView } from "~/components/cli/JsonView/JsonView";
 import { TraversalResultCompanion } from "~/components/cli/TraversalResultCompanion/TraversalResultCompanion";
 import styles from "./CliPage.module.css";
+import { useDataScope } from "~/lib/client/usecase/data-scope/use-data-scope";
+import { QUERY_SCOPE_ACTIONS } from "~/lib/client/usecase/data-scope/scope-options";
+import { ScopeSelector } from "~/components/shared/ScopeSelector/ScopeSelector";
+import { useAddRecovery } from "~/lib/client/usecase/add-recovery/use-add-recovery";
+import { AddRecoveryNotice } from "~/components/shared/AddRecoveryNotice/AddRecoveryNotice";
 
 const IlluminateCanvas = lazy(async () => {
   const module =
@@ -42,6 +47,8 @@ const IlluminateCanvas = lazy(async () => {
  */
 export function CliPage() {
   const cli = useCli();
+  const scope = useDataScope(QUERY_SCOPE_ACTIONS);
+  const addRecovery = useAddRecovery();
   const { enqueueScript, runRaw } = cli;
   const [searchParams] = useSearchParams();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -63,6 +70,13 @@ export function CliPage() {
   });
   // Owns one persisted native-value set per traversal family (#991).
   const axisPicker = useCliAxisPicker();
+  const axes = useMemo(
+    () =>
+      scope.authenticated
+        ? { ...axisPicker.axes, vertexPrefix: scope.prefix }
+        : axisPicker.axes,
+    [axisPicker.axes, scope.authenticated, scope.prefix],
+  );
   const [isAxisPickerCommandValid, setIsAxisPickerCommandValid] =
     useState(true);
   const axisPickerCommandValidRef = useRef(true);
@@ -101,8 +115,13 @@ export function CliPage() {
     // no-op (mirrors the retired Illuminate page's lastSeedRef).
     if (seedHandoffRef.current === seed) return;
     seedHandoffRef.current = seed;
-    runRawRef.current(formatFamilyClick(seed, CLI_CLICK_AXIS_DEFAULTS.bfs));
-  }, [seedParam]);
+    runRawRef.current(
+      formatFamilyClick(seed, {
+        ...CLI_CLICK_AXIS_DEFAULTS.bfs,
+        vertexPrefix: scope.prefix,
+      }),
+    );
+  }, [seedParam, scope.prefix]);
 
   // Auto-scroll the scrollback to the bottom on every new entry so the
   // operator always sees their most recent output without chasing the
@@ -138,9 +157,9 @@ export function CliPage() {
   const onNodeClick = useCallback(
     (key: string) => {
       if (!axisPickerCommandValidRef.current) return;
-      runRaw(formatFamilyClick(key, axisPicker.axes));
+      runRaw(formatFamilyClick(key, axes));
     },
-    [runRaw, axisPicker.axes],
+    [runRaw, axes],
   );
 
   const onKeyDown = useCallback(
@@ -248,6 +267,11 @@ export function CliPage() {
       {/* Left column — the unified shell terminal. Always present; owns
           the full width until a graph-producing command opens the canvas. */}
       <section className={styles.terminal} data-testid="cli-terminal">
+        {scope.authenticated ? <ScopeSelector {...scope} /> : null}
+        <AddRecoveryNotice
+          attempts={addRecovery.attempts}
+          check={addRecovery.check}
+        />
         <div className={styles.chrome}>
           <span className={styles.dots} aria-hidden="true">
             <span className={`${styles.dot} ${styles.dotRed}`} />
@@ -293,9 +317,10 @@ export function CliPage() {
             initial command intentional instead of silently assuming BFS. */}
         <div className={styles.axisControls}>
           <CliAxisPicker
-            axes={axisPicker.axes}
+            axes={axes}
             selectFamily={axisPicker.selectFamily}
             setAxes={axisPicker.setAxes}
+            prefixReadOnly={scope.authenticated}
             disabled={cli.busy}
             onPushKnobValidityChange={onPushKnobValidityChange}
           />
@@ -384,7 +409,7 @@ export function CliPage() {
                 Next walk →{" "}
                 <code data-testid="cli-click-hint">
                   {isAxisPickerCommandValid
-                    ? formatFamilyClick("<key>", axisPicker.axes)
+                    ? formatFamilyClick("<key>", axes)
                     : "Fix push-knob validation errors before clicking a node."}
                 </code>
               </span>

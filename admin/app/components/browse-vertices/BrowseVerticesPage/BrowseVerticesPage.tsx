@@ -27,7 +27,7 @@ import {
   LightbulbFilament20Regular,
   Search20Regular,
 } from "@fluentui/react-icons";
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import {
   useBrowseVertices,
   DEFAULT_VERTEX_PAGE_SIZE,
@@ -50,6 +50,12 @@ import { ExpirationCell } from "../ExpirationCell/ExpirationCell";
 import { Pager } from "../Pager/Pager";
 import { SearchParameterLabel } from "../SearchParameterLabel/SearchParameterLabel";
 import styles from "./BrowseVerticesPage.module.css";
+import { useDataScope } from "~/lib/client/usecase/data-scope/use-data-scope";
+import {
+  BROWSE_SCOPE_ACTIONS,
+  QUERY_SCOPE_ACTIONS,
+} from "~/lib/client/usecase/data-scope/scope-options";
+import { ScopeSelector } from "~/components/shared/ScopeSelector/ScopeSelector";
 
 /**
  * How the operator locates a vertex on the Data surface:
@@ -102,10 +108,15 @@ interface VertexRow {
  * are the sibling half, reachable via the Vertices / Edges sub-nav.
  */
 export function BrowseVerticesPage() {
-  const [mode, setMode] = useState<FindMode>("prefix");
-  const [prefix, setPrefix] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const mode: FindMode =
+    searchParams.get("find") === "search" ? "search" : "prefix";
+  const scope = useDataScope(
+    mode === "search" ? QUERY_SCOPE_ACTIONS : BROWSE_SCOPE_ACTIONS,
+  );
+  const [prefix, setPrefix] = useState(scope.prefix);
   const [query, setQuery] = useState("");
-  const [searchPrefix, setSearchPrefix] = useState("");
+  const [searchPrefix, setSearchPrefix] = useState(scope.prefix);
   const [matchMode, setMatchMode] = useState<SearchMatchMode>("server");
   const [minShouldMatch, setMinShouldMatch] = useState(2);
   const [phrase, setPhrase] = useState(false);
@@ -174,6 +185,13 @@ export function BrowseVerticesPage() {
 
   return (
     <div className={styles.root}>
+      {scope.authenticated ? (
+        <ScopeSelector
+          {...scope}
+          prefix={searching ? searchPrefix : prefix}
+          denied={scope.exceptions(searching ? searchPrefix : prefix)}
+        />
+      ) : null}
       <header className={styles.header}>
         <div className={styles.titleRow}>
           <h1 className={styles.title}>Vertices</h1>
@@ -211,7 +229,17 @@ export function BrowseVerticesPage() {
 
       <TabList
         selectedValue={mode}
-        onTabSelect={(_, data) => setMode(data.value as FindMode)}
+        onTabSelect={(_, data) =>
+          setSearchParams(
+            (previous) => {
+              const next = new URLSearchParams(previous);
+              if (data.value === "search") next.set("find", "search");
+              else next.delete("find");
+              return next;
+            },
+            { replace: true },
+          )
+        }
         data-testid="vertex-find-mode"
       >
         <Tab value="prefix">Key prefix</Tab>

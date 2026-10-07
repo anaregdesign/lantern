@@ -65,12 +65,33 @@ export class AuthController {
   private serving = new AbortController();
   private ticket = 0;
   private blockedCSRF = "";
+  private selectedScope = "";
+  private scopeIdentity = "";
   private deadline?: ReturnType<typeof setTimeout>;
   constructor(
     private readonly gateway: AuthGateway,
     private readonly now = Date.now,
   ) {}
   getSnapshot = (): AuthState => this.state;
+  getSelectedScope = (): string => this.selectedScope;
+  selectScope(prefix: string) {
+    const state = this.state;
+    if (
+      (state.kind !== "ready" && state.kind !== "off") ||
+      prefix === this.selectedScope
+    )
+      return;
+    this.selectedScope = prefix;
+    // Keep the original authority-expiry timer. Selecting a scope cannot
+    // extend the permission lease while cancelling the previous generation.
+    this.serving.abort();
+    this.serving = new AbortController();
+    this.publish({
+      ...state,
+      epoch: state.epoch + 1,
+      signal: this.serving.signal,
+    });
+  }
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => {
@@ -119,6 +140,8 @@ export class AuthController {
       if (!caps.ready)
         throw new Error("Authentication service is unavailable.");
       if (caps.mode === AuthMode.OFF) {
+        this.selectedScope = "";
+        this.scopeIdentity = "";
         if (caps.loginIssuers.length || caps.loginPath)
           throw new Error("Invalid OFF capabilities.");
         if (this.state.kind !== "off") this.invalidate();
@@ -152,6 +175,14 @@ export class AuthController {
         throw new Error("Invalid browser session response.");
       const principal = session.principal;
       const partition = principalPartition(principal);
+      const identity = JSON.stringify([
+        principal.identity!.issuer,
+        principal.identity!.subject,
+      ]);
+      if (identity !== this.scopeIdentity) {
+        this.selectedScope = "";
+        this.scopeIdentity = identity;
+      }
       if (principal.csrfToken === this.blockedCSRF) {
         this.invalidate();
         this.publish({
