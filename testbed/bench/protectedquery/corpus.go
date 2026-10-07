@@ -177,7 +177,7 @@ func verifyCorpus(ctx context.Context, endpoint *queryEndpoint, invalid string) 
 		}
 		for _, key := range []string{hiddenHit, "outside:absent"} {
 			if _, err := endpoint.client.GetVertex(ctx, authenticated(endpoint.reader, &pb.GetVertexRequest{Key: key})); connect.CodeOf(err) != connect.CodePermissionDenied {
-				return errors.New("Role denial was not enforced")
+				return errors.New("role denial was not enforced")
 			}
 		}
 		if _, err := endpoint.client.Illuminate(ctx, authenticated(endpoint.reader, traversal("bfs", hiddenBridge))); connect.CodeOf(err) != connect.CodePermissionDenied {
