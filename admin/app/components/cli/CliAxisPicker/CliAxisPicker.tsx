@@ -41,6 +41,7 @@ export interface CliAxisPickerProps {
   selectFamily(family: AlgorithmName): void;
   setAxes(axes: CliClickAxes): void;
   disabled?: boolean;
+  prefixReadOnly?: boolean;
   /** Lets the canvas block a click while an α/ε draft is incomplete. */
   onPushKnobValidityChange(valid: boolean): void;
 }
@@ -55,6 +56,7 @@ export function CliAxisPicker({
   selectFamily,
   setAxes,
   disabled,
+  prefixReadOnly,
   onPushKnobValidityChange,
 }: CliAxisPickerProps) {
   const [isPushCommandValid, setIsPushCommandValid] = useState(true);
@@ -100,9 +102,15 @@ export function CliAxisPicker({
       </label>
 
       {axes.family === "bfs" ? (
-        <BfsControls axes={axes} setAxes={setAxes} disabled={disabled} />
+        <BfsControls
+          axes={axes}
+          setAxes={setAxes}
+          disabled={disabled}
+          prefixReadOnly={prefixReadOnly}
+        />
       ) : axes.family === "pagerank" ? (
         <PagerankControls
+          prefixReadOnly={prefixReadOnly}
           axes={axes}
           setAxes={setAxes}
           disabled={disabled}
@@ -110,6 +118,7 @@ export function CliAxisPicker({
         />
       ) : (
         <CommunityControls
+          prefixReadOnly={prefixReadOnly}
           axes={axes}
           setAxes={setAxes}
           disabled={disabled}
@@ -125,10 +134,12 @@ function BfsControls({
   axes,
   setAxes,
   disabled,
+  prefixReadOnly,
 }: {
   axes: BfsCliClickAxes;
   setAxes(axes: CliClickAxes): void;
   disabled?: boolean;
+  prefixReadOnly?: boolean;
 }) {
   return (
     <>
@@ -151,7 +162,12 @@ function BfsControls({
         onValue={(fanOut) => setAxes({ ...axes, fanOut })}
       />
       <TreeControls axes={axes} setAxes={setAxes} disabled={disabled} />
-      <SharedControls axes={axes} setAxes={setAxes} disabled={disabled} />
+      <SharedControls
+        axes={axes}
+        setAxes={setAxes}
+        disabled={disabled}
+        prefixReadOnly={prefixReadOnly}
+      />
     </>
   );
 }
@@ -160,11 +176,13 @@ function PagerankControls({
   axes,
   setAxes,
   disabled,
+  prefixReadOnly,
   onPushKnobValidityChange,
 }: {
   axes: PagerankCliClickAxes;
   setAxes(axes: CliClickAxes): void;
   disabled?: boolean;
+  prefixReadOnly?: boolean;
   onPushKnobValidityChange(valid: boolean): void;
 }) {
   return (
@@ -186,7 +204,12 @@ function PagerankControls({
         disabled={disabled}
         onPushKnobValidityChange={onPushKnobValidityChange}
       />
-      <SharedControls axes={axes} setAxes={setAxes} disabled={disabled} />
+      <SharedControls
+        axes={axes}
+        setAxes={setAxes}
+        disabled={disabled}
+        prefixReadOnly={prefixReadOnly}
+      />
     </>
   );
 }
@@ -195,11 +218,13 @@ function CommunityControls({
   axes,
   setAxes,
   disabled,
+  prefixReadOnly,
   onPushKnobValidityChange,
 }: {
   axes: CommunityCliClickAxes;
   setAxes(axes: CliClickAxes): void;
   disabled?: boolean;
+  prefixReadOnly?: boolean;
   onPushKnobValidityChange(valid: boolean): void;
 }) {
   return (
@@ -222,7 +247,12 @@ function CommunityControls({
         onPushKnobValidityChange={onPushKnobValidityChange}
       />
       <TreeControls axes={axes} setAxes={setAxes} disabled={disabled} />
-      <SharedControls axes={axes} setAxes={setAxes} disabled={disabled} />
+      <SharedControls
+        axes={axes}
+        setAxes={setAxes}
+        disabled={disabled}
+        prefixReadOnly={prefixReadOnly}
+      />
     </>
   );
 }
@@ -340,10 +370,12 @@ function SharedControls({
   axes,
   setAxes,
   disabled,
+  prefixReadOnly,
 }: {
   axes: CliClickAxes;
   setAxes(axes: CliClickAxes): void;
   disabled?: boolean;
+  prefixReadOnly?: boolean;
 }) {
   return (
     <>
@@ -378,6 +410,7 @@ function SharedControls({
           className={styles.textInput}
           type="text"
           value={axes.vertexPrefix}
+          readOnly={prefixReadOnly}
           onChange={(_, data) => setAxes({ ...axes, vertexPrefix: data.value })}
           disabled={disabled}
           placeholder="(none)"

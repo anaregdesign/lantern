@@ -38,6 +38,32 @@ bun run dev                                   # http://localhost:5173
 The server base URL can be changed at runtime via the **Gateway** button in
 the top-right header. The choice is persisted to `localStorage`.
 
+## Authenticated scopes and Add recovery
+
+OIDC requires a same-origin HTTPS gateway and a valid browser session. Only a
+supported, explicit OFF capability opens an anonymous view. Resume and permission
+lease expiry hide protected views until a new authentication check succeeds;
+identity, policy, gateway or selected scope changes abort and clear old results.
+
+**Role scope** suggestions come from the Roles returned by the Server for the
+current principal. Browse uses VertexRead prefixes; search and generated traversal
+commands use the intersection with Query. The picker displays overlapping Deny
+exceptions. Every request still passes the Server's authorization checks, including
+typed CLI commands: their keys and prefixes are never silently rewritten. The
+selection is held in memory and is not a persisted grant.
+
+Add records bounded recovery metadata in per-tab `sessionStorage` before a possible
+send. It contains gateway/identity, target and receipt identifiers, without browser
+credentials, tokens or CSRF secrets. A lost or cancelled response remains uncertain
+across reload and login. **Check original Add** reads the existing receipt Status
+API with the original operation ID when receipts are supported and both endpoints
+have current ReceiptRead grants. ReceiptRead is not required for ordinary Add.
+The check never resends a
+mutation. An unavailable, unobserved, undisclosed or no-longer-provable result keeps
+the request locked. Legacy Add and decaying Add have no original-result receipt in
+this flow: reading the current Edge cannot confirm them or authorize a retry.
+Pending metadata is not automatically discarded to admit another Add.
+
 ## Scripts
 
 | Script              | Purpose                               |

@@ -62,6 +62,62 @@ function fixture(overrides: Partial<AuthGateway> = {}) {
   );
 }
 describe("Admin authority lifetime", () => {
+  test("scope changes abort the old display generation without extending its authority", async () => {
+    let reads = 0;
+    let release!: (value: BrowserSession) => void;
+    const short = session();
+    short.principal!.expiresAt = {
+      $typeName: "google.protobuf.Timestamp",
+      seconds: BigInt(Math.floor((now + 1150) / 1000)),
+      nanos: ((now + 1150) % 1000) * 1e6,
+    };
+    const controller = fixture({
+      session: async () =>
+        ++reads === 1
+          ? short
+          : new Promise<BrowserSession>((done) => {
+              release = done;
+            }),
+    });
+    await controller.refresh();
+    const before = controller.getSnapshot();
+    if (before.kind !== "ready") throw new Error("ready expected");
+    controller.selectScope("orders:");
+    const scoped = controller.getSnapshot();
+    expect(before.signal.aborted).toBe(true);
+    expect(scoped.epoch).toBe(before.epoch + 1);
+    controller.selectScope("orders:");
+    expect(controller.getSnapshot()).toBe(scoped);
+    await new Promise<void>((done) => setTimeout(done, 180));
+    expect(controller.getSnapshot().kind).toBe("checking");
+    expect(scoped.kind === "ready" && scoped.signal.aborted).toBe(true);
+    release(session());
+    await Promise.resolve();
+    controller.dispose();
+  });
+  test("resume hides protected data before a slow or unavailable session check completes", async () => {
+    let fail!: (error: Error) => void;
+    let resumed = false;
+    const controller = fixture({
+      session: () =>
+        resumed
+          ? new Promise<BrowserSession>((_, reject) => {
+              fail = reject;
+            })
+          : Promise.resolve(session()),
+    });
+    await controller.refresh();
+    const before = controller.getSnapshot();
+    resumed = true;
+    const pending = controller.refresh(true);
+    expect(controller.getSnapshot().kind).toBe("checking");
+    expect(before.kind === "ready" && before.signal.aborted).toBe(true);
+    await Promise.resolve();
+    fail(new Error("session unavailable"));
+    await pending;
+    expect(controller.getSnapshot().kind).toBe("error");
+    controller.dispose();
+  });
   test("only supported explicit OFF opens data without session requests", async () => {
     let calls = 0;
     const controller = fixture({

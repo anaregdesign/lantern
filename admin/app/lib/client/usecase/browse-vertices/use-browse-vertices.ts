@@ -60,10 +60,10 @@ export function useBrowseVertices(
   const pageSize = options.pageSize ?? DEFAULT_VERTEX_PAGE_SIZE;
   const debounceMs = options.debounceMs ?? PREFIX_DEBOUNCE_MS;
   const client = useLanternClient();
-  const [state, dispatch] = useReducer(
-    browseVerticesReducer,
-    INITIAL_BROWSE_VERTICES_STATE,
-  );
+  const [state, dispatch] = useReducer(browseVerticesReducer, {
+    ...INITIAL_BROWSE_VERTICES_STATE,
+    prefix: rawPrefix,
+  });
   const pageRequestId = useRef(0);
   const countRequestId = useRef(0);
   const pageController = useRef<AbortController | null>(null);

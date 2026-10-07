@@ -102,6 +102,7 @@ export async function securityUI(
     status?: "pending-then-enforced" | "unknown" | "mismatch";
     denied?: boolean;
     reauthentication?: boolean;
+    roles?: Array<Record<string, unknown>>;
   } = {},
 ) {
   const calls: Array<{
@@ -171,6 +172,7 @@ export async function securityUI(
             subject: "admin",
           },
           version,
+          roles: options.roles ?? [],
           expiresAt: new Date(Date.now() + 25_000).toISOString(),
           recentAuthentication: options.recent !== false,
           csrfToken: "c".repeat(43),
