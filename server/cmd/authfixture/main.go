@@ -51,6 +51,7 @@ type fixture struct {
 	HeadWriterTokenFile string        `json:"head_writer_token_file,omitempty"`
 	ClientCertFile      string        `json:"client_cert_file"`
 	ClientKeyFile       string        `json:"client_key_file"`
+	Query               *queryFixture `json:"protected_query,omitempty"`
 }
 
 func main() {
@@ -71,6 +72,7 @@ func main() {
 	edgeCreate := flag.Bool("edge-create", false, "qualify standalone existing-endpoint Create under Vertex-derived Head authority")
 	headEdge := flag.Bool("head-edge", false, "qualify standalone Head write-only handling with a separate machine Role")
 	transportProbe := flag.Bool("transport-probe", false, "standalone scoped transport probe with a localhost-only certificate")
+	protectedQuery := flag.Bool("protected-query", false, "opt-in standalone OFF/OIDC query preparation with matched verified TLS and a local JWT issuer")
 	receipt := flag.Bool("receipt", false, "enable native receipt WAL for each OIDC node")
 	readyTimeout := flag.Duration("ready-timeout", time.Minute, "bounded verified-TLS production readiness wait")
 	flag.Parse()
@@ -88,7 +90,7 @@ func main() {
 		return
 	}
 	if *restartNode != "" {
-		if !*compose || *directory == "" || *renew || *renewEvery != 0 || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *overridesFile != "" || flag.NArg() != 0 {
+		if !*compose || *directory == "" || *renew || *renewEvery != 0 || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *protectedQuery || *overridesFile != "" || flag.NArg() != 0 {
 			fmt.Fprintln(os.Stderr, "authfixture: restart requires only -compose -restart-node -directory")
 			os.Exit(1)
 		}
@@ -99,7 +101,7 @@ func main() {
 		return
 	}
 	if *renew {
-		if !*compose || *directory == "" || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *overridesFile != "" || flag.NArg() != 0 {
+		if !*compose || *directory == "" || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *protectedQuery || *overridesFile != "" || flag.NArg() != 0 {
 			fmt.Fprintln(os.Stderr, "authfixture: renewal requires only -compose -renew -directory")
 			os.Exit(1)
 		}
@@ -147,6 +149,9 @@ func main() {
 	if err == nil && *transportProbe && (*compose || *mode != "oidc" || len(public) != 1 || len(peer) != 0 || *serverBinary == "" || *publicMTLS || *receipt || *edgeCreate || *headEdge || *overridesFile != "") {
 		err = errors.New("transport probe requires one supervised standalone OIDC node")
 	}
+	if err == nil && *protectedQuery && (*compose || len(public) != 1 || len(peer) != 0 || *serverBinary == "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *tokensFile != "" || *overridesFile != "" || flag.NArg() != 0) {
+		err = errors.New("protected query requires one supervised standalone OFF/OIDC node and no other profile or overrides")
+	}
 	var result fixture
 	if err == nil {
 		result, err = generateTopologyProfile(*directory, public, peer, *mode, *tokensFile, *compose, *transportProbe)
@@ -165,6 +170,14 @@ func main() {
 	if err == nil && *headEdge {
 		err = addFixtureHeadEdge(&result, *directory)
 	}
+	if err == nil && *protectedQuery {
+		var stop func()
+		stop, err = addFixtureQuery(&result, *directory)
+		if err == nil {
+			defer stop()
+			result.Query.Server, err = queryBinaryProvenance(*serverBinary)
+		}
+	}
 	if err == nil && *compose {
 		err = exportComposeFixture(&result, *directory)
 	}
@@ -181,6 +194,13 @@ func main() {
 		}
 	}
 	if err != nil {
+		if *protectedQuery && result.Query != nil {
+			cause := err
+			for errors.Unwrap(cause) != nil {
+				cause = errors.Unwrap(cause)
+			}
+			_, _ = writeFile(*directory, "query-supervision-failure.log", []byte(cause.Error()+"\n"))
+		}
 		if *serverBinary != "" {
 			fmt.Fprintln(os.Stderr, "authfixture_failure:"+fixtureFailureCategory(err))
 		} else {
