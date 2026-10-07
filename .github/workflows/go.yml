@@ -74,6 +74,7 @@ jobs:
         run: python3 -B .github/scripts/evidence_only_pr.py validate
 
       - name: Set up Go
+        id: toolchain
         if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
         uses: actions/setup-go@v7
         with:
@@ -90,43 +91,12 @@ jobs:
             exit 1
           fi
 
-      # Per-module loop. Each module is a separate go.mod; the root `./...`
-      # does NOT recurse into core/, mcp/, pb/, sdks/go/, server/.
-      - name: Vet (all modules)
-        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
-        run: |
-          set -e
-          for mod in . core mcp pb sdks/go server; do
-            echo "::group::go vet ($mod)"
-            (cd "$mod" && go vet ./...)
-            echo "::endgroup::"
-          done
-
-      - name: Build (all modules)
-        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
-        run: |
-          set -e
-          for mod in . core mcp pb sdks/go server; do
-            echo "::group::go build ($mod)"
-            (cd "$mod" && go build -v ./...)
-            echo "::endgroup::"
-          done
-
-      - name: Test (race + coverage, all modules)
-        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
-        run: |
-          set -e
-          mkdir -p coverage
-          for mod in . core mcp pb sdks/go server; do
-            # Slug for coverage filename: '.' -> root, 'sdks/go' -> sdks-go.
-            slug=$(echo "$mod" | sed 's|/|-|g; s|^\.$|root|')
-            echo "::group::go test ($mod)"
-            (cd "$mod" && go test -race -shuffle=on -coverpkg=./... -covermode=atomic -coverprofile="$GITHUB_WORKSPACE/coverage/${slug}.out" ./...)
-            echo "::endgroup::"
-          done
-          # Keep the legacy artifact path so downstream tooling that expects
-          # coverage.out at the repo root keeps working.
-          cp coverage/root.out coverage.out
+      # Keep one required Build & Test check; every phase/module runs even
+      # after another phase fails, and the collector returns a blocking exit.
+      - name: Vet, build and test (all modules)
+        id: modules
+        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
+        run: python3 -B .github/scripts/go_modules.py
 
       # coverpkg=./... instruments only this module, including calls crossing
       # its package boundaries (e.g. generated Connect -> protobuf messages).
@@ -137,7 +107,7 @@ jobs:
       # gocovmerge is the standard tool — see https://github.com/wadey/gocovmerge.
       # Refs #295.
       - name: Merge per-module coverage
-        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        if: ${{ !cancelled() && steps.modules.outcome != 'skipped' && steps.modules.outcome != '' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
         run: |
           go install github.com/wadey/gocovmerge@latest
           gocovmerge coverage/*.out > coverage/merged.out
@@ -154,7 +124,7 @@ jobs:
       # denominator -- hence per-module floors over the merged total. Reuses the
       # per-module profiles from the test step; no extra dependency. Refs #717.
       - name: Enforce coverage floors
-        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        if: ${{ !cancelled() && steps.modules.outcome != 'skipped' && steps.modules.outcome != '' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
         run: |
           set -euo pipefail
           # slug:floor% -- keep in sync with CONTRIBUTING.md "Coverage floor".
