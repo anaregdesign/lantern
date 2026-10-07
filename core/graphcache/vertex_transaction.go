@@ -33,7 +33,7 @@ type VertexPutStageResult[S comparable, T any] struct {
 type VertexPutTransaction[S comparable, T any] struct {
 	stage  *stagedVertexMutation[S, T]
 	result VertexPutStageResult[S, T]
-	closed bool
+	stagedMutationLifecycle
 }
 
 // BeginVertexPut validates and stages a locally-originated Vertex Put batch.
@@ -275,8 +275,7 @@ func (tx *VertexPutTransaction[S, T]) Commit() {
 	if tx.closed {
 		panic("graphcache: staged Vertex Put committed after close")
 	}
-	tx.closed = true
-	tx.stage.release()
+	tx.stagedMutationLifecycle.commit(tx.stage.release)
 }
 
 // Abort restores the exact pre-Begin logical state and releases the visibility
@@ -285,8 +284,7 @@ func (tx *VertexPutTransaction[S, T]) Abort() {
 	if tx == nil || tx.closed {
 		return
 	}
-	tx.closed = true
-	tx.stage.abort()
+	tx.stagedMutationLifecycle.abort(tx.stage.rollbackWithEvictionsLocked, tx.stage.release)
 }
 
 // IndexedVertexDelete identifies one causally admitted Delete request item.
@@ -307,7 +305,7 @@ type VertexDeleteStageResult[S comparable] struct {
 type VertexDeleteTransaction[S comparable, T any] struct {
 	stage  *stagedVertexMutation[S, T]
 	result VertexDeleteStageResult[S]
-	closed bool
+	stagedMutationLifecycle
 }
 
 // BeginVertexDelete validates and stages a locally-originated exact Vertex
@@ -515,8 +513,7 @@ func (tx *VertexDeleteTransaction[S, T]) Commit() {
 	if tx.closed {
 		panic("graphcache: staged Vertex Delete committed after close")
 	}
-	tx.closed = true
-	tx.stage.release()
+	tx.stagedMutationLifecycle.commit(tx.stage.release)
 }
 
 // Abort restores the exact pre-Begin logical state and releases the visibility
@@ -525,6 +522,5 @@ func (tx *VertexDeleteTransaction[S, T]) Abort() {
 	if tx == nil || tx.closed {
 		return
 	}
-	tx.closed = true
-	tx.stage.abort()
+	tx.stagedMutationLifecycle.abort(tx.stage.rollbackWithEvictionsLocked, tx.stage.release)
 }

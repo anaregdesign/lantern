@@ -47,7 +47,7 @@ type EdgeCreateTransaction[S comparable, T any] struct {
 	usagePeak  int
 	highWater  int
 	bytesHigh  uint64
-	closed     bool
+	stagedMutationLifecycle
 }
 
 // BeginEdgeCreate checks input TTL, both endpoint liveness and absence at one
@@ -224,9 +224,7 @@ func (tx *EdgeCreateTransaction[S, T]) Commit() {
 	if tx == nil || tx.closed {
 		panic("graphcache: staged Create committed in invalid state")
 	}
-	tx.closed = true
-	tx.cache.publicationGate.Unlock()
-	tx.cache.mu.Unlock()
+	tx.stagedMutationLifecycle.commit(tx.cache.releaseStagedEdges)
 }
 func (tx *EdgeCreateTransaction[S, T]) rollbackLocked() {
 	tx.stage.rollbackEdgesLocked()
@@ -246,8 +244,5 @@ func (tx *EdgeCreateTransaction[S, T]) Abort() {
 	if tx == nil || tx.closed {
 		return
 	}
-	tx.closed = true
-	defer tx.cache.mu.Unlock()
-	defer tx.cache.publicationGate.Unlock()
-	tx.rollbackLocked()
+	tx.stagedMutationLifecycle.abort(tx.rollbackLocked, tx.cache.releaseStagedEdges)
 }

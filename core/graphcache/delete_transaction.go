@@ -35,8 +35,8 @@ type EdgeDeleteStageResult[S comparable] struct {
 // must fail closed on an ambiguous WAL result rather than treating Abort as
 // evidence that the durable envelope did not commit.
 type EdgeDeleteTransaction[S comparable, T any] struct {
-	stage  *stagedEdgeDelete[S, T]
-	closed bool
+	stage *stagedEdgeDelete[S, T]
+	stagedMutationLifecycle
 }
 
 // BeginEdgeDelete validates, stages, and hides an Edge Delete batch while the
@@ -171,9 +171,7 @@ func (tx *EdgeDeleteTransaction[S, T]) Commit() {
 	if tx.closed || !tx.stage.applied {
 		panic("graphcache: staged Delete committed after close")
 	}
-	tx.closed = true
-	tx.stage.cache.publicationGate.Unlock()
-	tx.stage.cache.mu.Unlock()
+	tx.stagedMutationLifecycle.commit(tx.stage.cache.releaseStagedEdges)
 }
 
 // Abort restores the exact pre-Begin graph/index/causal state, then releases
@@ -182,9 +180,5 @@ func (tx *EdgeDeleteTransaction[S, T]) Abort() {
 	if tx == nil || tx.closed {
 		return
 	}
-	tx.closed = true
-	c := tx.stage.cache
-	defer c.mu.Unlock()
-	defer c.publicationGate.Unlock()
-	tx.stage.rollbackLocked()
+	tx.stagedMutationLifecycle.abort(tx.stage.rollbackLocked, tx.stage.cache.releaseStagedEdges)
 }

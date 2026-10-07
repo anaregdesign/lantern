@@ -65,43 +65,69 @@ func TestEdgeDeleteTransactionResultAndCommit(t *testing.T) {
 }
 
 func TestEdgeDeleteTransactionPrepareDoesNotApply(t *testing.T) {
-	c := NewGraphCacheWithStaging[string, string](time.Hour)
-	c.EnablePrefixIndex(func(key string) string { return key })
-	expiration := time.Now().Add(time.Hour)
-	key := EdgeKey[string]{Tail: "tail", Head: "head"}
-	c.AddEdgeWithExpiration(key.Tail, key.Head, 1, expiration)
+	for _, mode := range []string{"local", "replicated"} {
+		for _, action := range []string{"prepare commit", "prepare abort", "begin commit", "begin abort"} {
+			t.Run(mode+"/"+action, func(t *testing.T) {
+				c := NewGraphCacheWithStaging[string, string](time.Hour)
+				c.EnablePrefixIndex(identityExtract)
+				expiration := time.Now().Add(time.Hour)
+				key := EdgeKey[string]{Tail: "tail", Head: "head"}
+				c.AddEdgeWithExpiration(key.Tail, key.Head, 1, expiration)
+				before := captureStagedDeleteState(c)
+				prepare, begin := c.PrepareEdgeDelete, c.BeginEdgeDelete
+				if mode == "replicated" {
+					prepare, begin = c.PrepareReplicatedEdgeDelete, c.BeginReplicatedEdgeDelete
+				}
+				start := prepare
+				if strings.HasPrefix(action, "begin") {
+					start = begin
+				}
+				tx, err := start([]EdgeKey[string]{key}, hlc.Timestamp{WallNs: 20}, expiration)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Abort()
+				if strings.HasPrefix(action, "prepare") {
+					if c.edges.edgeCount != 1 || len(c.edgeTombstones) != 0 ||
+						len(c.edgeCausalBarriers) != 0 || len(c.edgeCausalUsage) != 0 {
+						t.Fatal("Prepare changed graph or causal state")
+					}
+					assertTransactionPanics(t, tx.Commit)
+					if action == "prepare commit" {
+						tx.Apply()
+					}
+				}
+				if action != "prepare abort" {
+					if c.edges.edgeCount != 0 || len(c.edgeTombstones) != 1 {
+						t.Fatal("Apply or Begin did not stage the Delete")
+					}
+					assertTransactionPanics(t, tx.Apply)
+				}
+				if strings.HasSuffix(action, "commit") {
+					tx.Commit()
+					if _, ok := c.GetWeight(key.Tail, key.Head); ok {
+						t.Fatal("committed Delete left the edge visible")
+					}
+				} else {
+					tx.Abort()
+					if after := captureStagedDeleteState(c); !reflect.DeepEqual(after, before) {
+						t.Fatalf("Abort drift: before=%+v after=%+v", before, after)
+					}
+				}
+				tx.Abort()
+				tx.Abort()
+				assertTransactionPanics(t, tx.Commit)
+				assertTransactionPanics(t, tx.Apply)
+			})
+		}
+	}
+}
 
-	tx, err := c.PrepareEdgeDelete(
-		[]EdgeKey[string]{key},
-		hlc.Timestamp{WallNs: 20},
-		expiration,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Abort()
-	if tx.stage.applied {
-		t.Fatal("prepared transaction applied graph state")
-	}
-	if c.edges.edgeCount != 1 || len(c.edgeTombstones) != 0 ||
-		len(c.edgeCausalBarriers) != 0 || len(c.edgeCausalUsage) != 0 {
-		t.Fatalf(
-			"prepared transaction changed graph or causal state: edges=%d tombstones=%d barriers=%d usage=%d",
-			c.edges.edgeCount,
-			len(c.edgeTombstones),
-			len(c.edgeCausalBarriers),
-			len(c.edgeCausalUsage),
-		)
-	}
-
-	tx.Apply()
-	if !tx.stage.applied {
-		t.Fatal("Apply left the prepared transaction unapplied")
-	}
-	tx.Commit()
-	if _, ok := c.GetWeight(key.Tail, key.Head); ok {
-		t.Fatal("committed prepared Delete left the edge visible")
-	}
+func TestEdgeDeleteTransactionNilClose(t *testing.T) {
+	var tx *EdgeDeleteTransaction[string, string]
+	tx.Abort()
+	assertTransactionPanics(t, tx.Apply)
+	assertTransactionPanics(t, tx.Commit)
 }
 
 func TestEdgeDeleteTransactionAbortRestoresState(t *testing.T) {

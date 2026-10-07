@@ -106,7 +106,7 @@ func (s *ReceiptWholeStateSource) belongsTo(replication *LanternReplicationServi
 		s.owner.receiptEdgeContributionDeleteCoordinator.store == s.store
 }
 
-// NewReceiptWholeStateSource exposes only the coordinator's detached capture,
+// NewReceiptWholeStateSource exposes only the service's detached capture,
 // never its commit or status operations. Runtime certification constructs the
 // production instance shared by replication Snapshot and backup; direct
 // callers do not gain receipt admission or restore authority. The service
@@ -136,14 +136,12 @@ func NewReceiptWholeStateSource(s *LanternService, store *mutationreceipt.Store)
 	if _, err := newEdgeContributionDeleteReceiptCoordinator(s, store); err != nil {
 		return nil, err
 	}
-	return &ReceiptWholeStateSource{
-		owner:         s,
-		store:         store,
-		retired:       retired,
-		cache:         coordinator.cache,
-		capture:       coordinator.captureReceiptWholeState,
-		captureBackup: coordinator.captureReceiptWholeStateForBackup,
-	}, nil
+	source := &ReceiptWholeStateSource{
+		owner: s, store: store, retired: retired, cache: coordinator.cache,
+	}
+	source.capture = source.captureReceiptWholeState
+	source.captureBackup = source.captureReceiptWholeStateForBackup
+	return source, nil
 }
 
 // captureReceiptWholeState copies the graph, receipts, origin vector, local
@@ -156,7 +154,7 @@ func NewReceiptWholeStateSource(s *LanternService, store *mutationreceipt.Store)
 // durable. Store.Begin and Store.Lookup also advance high-water without a WAL
 // envelope. Restore must persist those advances or rotate the active epoch
 // before serving receipt-capable traffic; this private seam enables neither.
-func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeState(
+func (c *ReceiptWholeStateSource) captureReceiptWholeState(
 	ctx context.Context,
 	policy mutationreceipt.Config,
 ) (ReceiptWholeStateCapture, error) {
@@ -167,14 +165,14 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeState(
 	return capture.WholeState, nil
 }
 
-func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateForBackup(
+func (c *ReceiptWholeStateSource) captureReceiptWholeStateForBackup(
 	ctx context.Context,
 	policy mutationreceipt.Config,
 ) (ReceiptWholeStateBackupCapture, error) {
 	return c.captureReceiptWholeStateCut(ctx, policy, true)
 }
 
-func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateCut(
+func (c *ReceiptWholeStateSource) captureReceiptWholeStateCut(
 	ctx context.Context,
 	policy mutationreceipt.Config,
 	includeWALTip bool,
@@ -182,10 +180,10 @@ func (c *edgeDeleteReceiptCoordinator) captureReceiptWholeStateCut(
 	if err := ctx.Err(); err != nil {
 		return ReceiptWholeStateBackupCapture{}, ctxToConnect(err)
 	}
-	if c == nil || c.service == nil || c.cache == nil || c.store == nil || c.retired == nil {
+	if c == nil || c.owner == nil || c.cache == nil || c.store == nil || c.retired == nil {
 		return ReceiptWholeStateBackupCapture{}, errors.New("receipt whole-state capture requires a staged service, Store, and retired catalog")
 	}
-	s := c.service
+	s := c.owner
 	cache, ok := s.cache.(*graphcache.GraphCache[string, *pb.Vertex])
 	if s.log == nil || s.clock == nil || s.origins == nil || !ok || cache != c.cache {
 		return ReceiptWholeStateBackupCapture{}, errors.New("receipt whole-state capture requires one wired graph, log, clock, and origin tracker")

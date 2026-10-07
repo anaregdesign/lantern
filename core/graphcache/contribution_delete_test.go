@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,6 +129,13 @@ func TestDeleteEdgeContributionStagesAndRestoresExactState(t *testing.T) {
 	if got := tx.Result(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("prepared result=%+v want=%+v", got, want)
 	}
+	tampered := tx.Result()
+	tampered.Existed[0] = false
+	tampered.Accepted[0].Index = 99
+	tampered.Accepted[0].Key.ContribID = ContribID{99}
+	if got := tx.Result(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("result aliases authoritative state: %+v", got)
+	}
 	if len(cache.edgeContributionTombstones) != 0 || cache.edges.edgeCount != 1 {
 		t.Fatal("Prepare changed graph before WAL admission")
 	}
@@ -171,4 +179,71 @@ func TestDeleteEdgeContributionRejectsZeroIdentityAndDeadline(t *testing.T) {
 	); err == nil {
 		t.Fatal("nonzero causal Delete without D4 deadline was accepted")
 	}
+}
+
+func TestEdgeContributionDeleteTransactionLifecycle(t *testing.T) {
+	for _, mode := range []string{"local", "replicated"} {
+		for _, action := range []string{"prepare commit", "prepare abort", "begin commit", "begin abort"} {
+			t.Run(mode+"/"+action, func(t *testing.T) {
+				c := NewGraphCacheWithStaging[string, string](time.Hour)
+				c.EnablePrefixIndex(identityExtract)
+				expiration := time.Now().Add(time.Hour)
+				key := EdgeContributionKey[string]{Tail: "tail", Head: "head", ContribID: ContribID{1}}
+				if !c.AddEdgeWithExpirationContrib(key.Tail, key.Head, 2, expiration, key.ContribID) {
+					t.Fatal("seed contribution failed")
+				}
+				before := captureStagedDeleteState(c)
+				prepare, begin := c.PrepareEdgeContributionDelete, c.BeginEdgeContributionDelete
+				if mode == "replicated" {
+					prepare, begin = c.PrepareReplicatedEdgeContributionDelete, c.BeginReplicatedEdgeContributionDelete
+				}
+				start := prepare
+				if strings.HasPrefix(action, "begin") {
+					start = begin
+				}
+				tx, err := start([]EdgeContributionKey[string]{key}, hlc.Timestamp{WallNs: 20}, expiration)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Abort()
+				if strings.HasPrefix(action, "prepare") {
+					if c.edges.edgeCount != 1 || len(c.edgeContributionTombstones) != 0 {
+						t.Fatal("Prepare changed graph or contribution tombstones")
+					}
+					assertTransactionPanics(t, tx.Commit)
+					if action == "prepare commit" {
+						tx.Apply()
+					}
+				}
+				if action != "prepare abort" {
+					if c.edges.edgeCount != 0 || len(c.edgeContributionTombstones) != 1 {
+						t.Fatal("Apply or Begin did not stage the contribution Delete")
+					}
+					assertTransactionPanics(t, tx.Apply)
+				}
+				if strings.HasSuffix(action, "commit") {
+					tx.Commit()
+					if _, ok := c.GetWeight(key.Tail, key.Head); ok {
+						t.Fatal("committed contribution Delete left the edge visible")
+					}
+				} else {
+					tx.Abort()
+					if after := captureStagedDeleteState(c); !reflect.DeepEqual(after, before) {
+						t.Fatalf("Abort drift: before=%+v after=%+v", before, after)
+					}
+				}
+				tx.Abort()
+				tx.Abort()
+				assertTransactionPanics(t, tx.Commit)
+				assertTransactionPanics(t, tx.Apply)
+			})
+		}
+	}
+}
+
+func TestEdgeContributionDeleteTransactionNilClose(t *testing.T) {
+	var tx *EdgeContributionDeleteTransaction[string, string]
+	tx.Abort()
+	assertTransactionPanics(t, tx.Apply)
+	assertTransactionPanics(t, tx.Commit)
 }
