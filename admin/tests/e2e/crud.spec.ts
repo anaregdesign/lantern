@@ -283,7 +283,13 @@ test.describe("edge detail", () => {
     expect(afterFirst).toBeGreaterThan(0);
 
     await page.getByTestId("edge-add-weight").fill("1.5");
+    const secondAddResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname.endsWith("/AddEdges") &&
+        response.request().method() === "POST",
+    );
     await page.getByTestId("edge-add-submit").click();
+    expect((await secondAddResponse).status()).toBe(200);
     await expect(page.getByTestId("edge-current-weight")).toBeVisible();
 
     const afterSecond = await fetchEdgeWeight(tail, head);
