@@ -10,12 +10,19 @@ class Step:
     cwd: str
     command: tuple[str, ...]
     empty: bool = False
+    # Argument indexes are pathname operands; every other argv value is literal.
+    glob_args: tuple[int, ...] = ()
+
+    def __post_init__(self):
+        if (len(set(self.glob_args)) != len(self.glob_args)
+                or any(type(i) is not int or not 0 < i < len(self.command) for i in self.glob_args)):
+            raise ValueError("invalid pathname glob argument indexes")
 
 
 def steps(evidence: Path) -> tuple[Step, ...]:
     plan = []
-    def add(name, directory, *cmd, empty=False):
-        plan.append(Step(name, directory, tuple(cmd), empty))
+    def add(name, directory, *cmd, empty=False, glob_args=()):
+        plan.append(Step(name, directory, tuple(cmd), empty, glob_args))
     add("node-frozen-install", "sdks/node", "bun", "install", "--frozen-lockfile")
     add("node-prebuild", "sdks/node", "bun", "run", "build")
     add("admin-frozen-install", "admin", "bun", "install", "--frozen-lockfile", "--force")
@@ -41,8 +48,7 @@ def steps(evidence: Path) -> tuple[Step, ...]:
         add("govulncheck-" + mod.replace("/", "-"), mod, "go", "run", "golang.org/x/vuln/cmd/govulncheck@v1.8.0", "./...")
     for script in ["lint", "format:check", "typecheck", "example:typecheck", "test", "build", "verify:package"]:
         add("node-" + script.replace(":", "-"), "sdks/node", "bun", "run", script)
-    add("dart-format", "sdks/dart", "dart", "format", "--output=none", "--set-exit-if-changed", "lib/lantern_client.dart", "lib/src/*.dart", "test")
-    # Expand shell-free globs before running below.
+    add("dart-format", "sdks/dart", "dart", "format", "--output=none", "--set-exit-if-changed", "lib/lantern_client.dart", "lib/src/*.dart", "test", glob_args=(5,))
     for name, cmd in [("get", ["pub", "get", "--enforce-lockfile"]), ("analyze", ["analyze", "lib", "test"]), ("test", ["test"]), ("doc", ["doc", "--output", str(evidence / "dartdoc"), "--validate-links"]), ("publish-dry-run", ["pub", "publish", "--dry-run"])]:
         add("dart-" + name, "sdks/dart", "dart", *cmd)
     add("offline-format", "sdks/dart/offline", "dart", "format", "--output=none", "--set-exit-if-changed", "lib", "test", "tool")

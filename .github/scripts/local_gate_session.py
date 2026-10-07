@@ -304,8 +304,8 @@ class Session:
         if root is None:
             raise ValueError("eligible execution requires committed read-only inputs")
         command = []
-        for arg in step.command:
-            if "*" in arg:
+        for index, arg in enumerate(step.command):
+            if index in step.glob_args:
                 matches = sorted((root / step.cwd).glob(arg))
                 if not matches:
                     raise ValueError(f"empty command glob: {arg}")
