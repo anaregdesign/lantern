@@ -129,13 +129,26 @@ docker run --rm -p 8080:8080 ghcr.io/anaregdesign/lantern-admin:latest
 # → http://localhost:8080
 ```
 
-The container does **not** reverse-proxy the Lantern gateway — the user's
-browser talks to the gateway directly, so the server must have
-`LANTERN_CORS_ALLOWED_ORIGINS` set to allow the admin origin (see
-[`server/README.md`](../server/README.md)). Switch between gateways at
-runtime via the **Gateway** button in the header. The container _does_
-optionally reverse-proxy Prometheus same-origin under `/api/prom` for the
-Ops Metrics page — see [Metrics (Prometheus)](#metrics-prometheus).
+In **OFF mode**, this default run serves the static Admin separately from the
+Server. Select the direct Server address with the **Gateway** button and set
+`LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080` on the Server (see
+[`server/README.md`](../server/README.md)).
+
+For **OIDC**, expose Admin over HTTPS and select that exact public origin in the
+Gateway picker. Configure `LANTERN_OIDC_BROWSER_ORIGIN` to the same origin and
+register the exact Issuer-specific `/auth/callback/<SHA-256>` redirect URI.
+The container optionally proxies `/auth/*`, `/browser/*` and `/graph.v1.*/*` to
+an operator-fixed `LANTERN_ADMIN_SERVER_UPSTREAM`; the gateway picker never
+selects that upstream. Use the verified HTTPS upstream, optional private CA,
+exact trusted proxy and preserved public Host/scheme configuration described in
+[Fixed Server and diagnostics proxy](#fixed-server-and-diagnostics-proxy) and the
+[operations guide](../docs/oidc-operations.md#browser-and-diagnostics-boundary).
+This is the current fixed-writer baseline; future eligible-node routing remains
+#1608/#1609 S5 work.
+
+The optional same-origin `/api/prom` proxy for Ops Metrics requires the Server
+upstream and checks `/auth/operations` admission before each GET. Prometheus
+never receives cookies or Authorization — see [Metrics (Prometheus)](#metrics-prometheus).
 
 ### Releasing
 

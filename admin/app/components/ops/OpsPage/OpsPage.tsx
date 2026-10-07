@@ -191,8 +191,9 @@ function ReplicationCard({ status, data, error }: ReplicationCardProps) {
             )
           ) : (
             <p className={styles.empty} data-testid="ops-replication-disabled">
-              Single-instance deployment — set <code>LANTERN_PEERS</code> to
-              wire replication. See the{" "}
+              Single-instance deployment. HA requires a dedicated private
+              workload listener and signed membership, including in OFF mode.
+              See the{" "}
               <a
                 href="https://github.com/anaregdesign/lantern/blob/main/docs/ha-runbook.md"
                 target="_blank"

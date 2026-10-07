@@ -172,7 +172,19 @@ jobs:
             echo "docker run --rm -p 8080:8080 ${IMAGE}:${version}"
             echo '```'
             echo
-            echo "Then open http://localhost:8080 and point the Lantern picker in the header at your Lantern server (defaults to \`http://localhost:6380\`). Make sure \`LANTERN_CORS_ALLOWED_ORIGINS\` on the server includes the admin origin — see [server/README.md](https://github.com/${REPO}/blob/${TAG}/server/README.md)."
+            echo "### OFF: direct Server with CORS"
+            echo
+            echo "For a local OFF trial, open http://localhost:8080, select \`http://localhost:6380\` in the Lantern picker, and set the Server's \`LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080\`. This example has no IdP or browser session."
+            echo
+            echo "### OIDC: HTTPS same-origin routes"
+            echo
+            echo "Expose Admin and its auth/browser/RPC routes at one HTTPS public origin, for example \`https://admin.example.com:8443\`, and select that exact origin in the Lantern picker. Set \`LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example.com:8443\` and register \`LANTERN_OIDC_REDIRECT_URI\` with the same origin plus the exact Issuer-specific \`/auth/callback/<SHA-256>\` path. The direct-Server default does not configure OIDC."
+            echo
+            echo "Caddy optionally proxies \`/auth/*\`, \`/browser/*\` and \`/graph.v1.*/*\` to the operator-fixed \`LANTERN_ADMIN_SERVER_UPSTREAM\` (\`scheme://hostname:port\`), for example \`https://writer.internal.example:6380\`. The browser's gateway picker never selects that upstream. Verify the upstream certificate against its hostname and mount \`LANTERN_ADMIN_SERVER_CA_FILE\` for a private CA. Preserve the public Host/scheme through the proxy chain and configure exact \`LANTERN_OIDC_TRUSTED_PROXY_IPS\` where required. A plaintext Server hop is permitted only behind the explicitly trusted exact gateway IP with validated HTTPS/public Host headers."
+            echo
+            echo "The current fixed-writer baseline pins auth/browser and security/control routes to that writer. Future eligible-node routing and per-attempt login affinity remain #1608/#1609 S5 work. Missing upstream routes fail closed instead of returning the SPA shell. The optional Prometheus proxy checks \`/auth/operations\` first: OFF permits diagnostics; OIDC requires current \`operations.read\` authority. Only GET diagnostics pass, and Prometheus never receives cookies or Authorization. Keep credentials and private keys out of the SPA, browser local storage and Vite env."
+            echo
+            echo "See the [OIDC operations guide](https://github.com/${REPO}/blob/${TAG}/docs/oidc-operations.md#browser-and-diagnostics-boundary), [HA runbook](https://github.com/${REPO}/blob/${TAG}/docs/ha-runbook.md) and [Server guide](https://github.com/${REPO}/blob/${TAG}/server/README.md) for the current deployment contract."
           } > "$notes_file"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --notes-file "$notes_file" --verify-tag
