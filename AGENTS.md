@@ -202,17 +202,37 @@ The load-bearing always-on essentials:
   exact-source acceptance, publication, and human/device evidence, each with
   done/total and linked blockers. Preliminary branch or simulator results do not
   complete the final-source or physical buckets.
-- **Batch validation without relaxing it**: targeted checks during edits, then
-  the mandatory full gate before every push. Budget costly whole-host/device
-  runs in the driving Issue; preflight each required run/family boundary while
-  reusing the one immutable image and unchanged setup, pin final merged source,
-  and preserve raw evidence with exact SHA-256. Repeat only after a relevant
-  build change, documented invalid run, or predeclared stability check; never
-  choose a passing sample or change workload, GC, or thresholds to obtain a pass.
-- **Before every push**, run the local quality gate: `gofmt -l` must print nothing, then
-  `go test ./...` from the root **and** from each Go submodule (the root run does not span
-  submodules), plus Dart/Flutter gates and the standalone Rust crate gate in
-  [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Preflight the complete task**: read the linked Issue acceptance, relevant CI
+  jobs, repository instructions, existing authorization and environment/toolchain
+  requirements before editing. Resolve missing prerequisites early; do independent
+  work while a required input or shared validation slot is pending.
+- **One bounded implementation Issue → one cohesive PR** is the default. Include
+  source, paired tests, documentation and generated consumers; fix review and CI
+  findings within that PR. Epics and final acceptance owners keep separate exits.
+- **Iterate, review, then qualify**: run focused checks during edits, resolve review
+  findings, freeze the coherent candidate and run the complete local quality gate
+  before push. Every push needs passing results for all required components,
+  recorded as newly executed or mechanically carried by the live local runner in
+  [CONTRIBUTING.md](CONTRIBUTING.md#local-validation-carry). Unverified results and
+  unsupported components require execution; CI still qualifies its exact merge.
+- **Continue within existing authorization** through implementation, tests, review
+  fixes, CI repair and ordinary integration. Do not ask again for an already
+  authorized action. Surface actual permission/environment blockers precisely;
+  do not change credentials, scopes, protections or production environments to
+  bypass them.
+- **Keep review and evidence concise**: pin head/tree, review changed behavior and
+  its dependency boundaries, retain raw logs and a short machine-generated verdict
+  with hashes. Re-review changed inputs and their implications after a fix; expand
+  only for new findings or invalid evidence. Use normal implementation effort for
+  routine work; reserve Ultra for new safety invariants and proof questions.
+- **Budget costly validation** in the driving Issue; pin final merged source,
+  preflight required family boundaries and reuse one immutable image/setup.
+  Repeat only after relevant changes, invalid evidence or predeclared stability
+  checks; never choose a pass or change workload, GC or thresholds to obtain one.
+- **Before every push**, satisfy the local quality gate in CONTRIBUTING.md:
+  `gofmt -l` must be empty; root and every Go submodule, Dart/Flutter and Rust
+  components must all have valid results. The policy-changing PR itself uses the
+  previously applicable full gate and cannot qualify itself with its relaxation.
 - **Never hand-edit generated code.** Regenerate `pb/**` with `go generate ./...` (buf,
   never `--clean`) and `server/cmd/wire_gen.go` from `server/` with `go tool wire ./cmd`.
 - **When your work surfaces a fact another open Issue needs, comment it on that Issue in

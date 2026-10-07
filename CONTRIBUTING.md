@@ -79,8 +79,20 @@ a hard rule for non-trivial changes, including bugs, improvements, and validatio
 repairs discovered while another PR is in flight. Record the expected outcome,
 boundaries, dependencies, and verification before editing, not after a diff exists.
 
-- One Issue per coherent problem (`gh issue create` if none exists). Related Issues
-  may share a cohesive PR when each outcome remains independently reviewable.
+- Default to one bounded implementation Issue → one cohesive PR containing source,
+  paired tests, documentation and generated consumers. Epics/specification parents
+  and final acceptance owners remain separate. Related existing Issues may share a
+  cohesive PR when each outcome remains independently reviewable; do not split CI
+  or review repairs into another PR or accumulate unrelated changes to save a gate.
+- Before editing, read the acceptance and relevant required CI, identify generation
+  and dependency inputs, check toolchain/environment prerequisites and existing
+  authorization. Record meaningful blockers early and continue independent work.
+- Within that authorization, continue implementation, focused tests, review fixes,
+  final qualification, CI repair and ordinary integration without repeated approval
+  requests. Permission failures must identify the exact action/target; do not work
+  around them by changing connections, credentials, scopes or protections.
+- Use normal implementation effort for routine changes. Concentrate Ultra on new
+  safety/proof boundaries, not repeated status narration or unchanged gate output.
 - Reference every closing Issue in the PR (`Closes #N` per Issue) so the merge
   wires each discussion to the diff.
 - Exceptions (no new Issue required): already-scoped direct documentation edits
@@ -169,13 +181,21 @@ in tag/publication preflight and record that separate exit as pending until the
 parent has been published and the hosted lockfile regenerated. Do not publish a
 parent early merely to unblock source development.
 
-During edits, run the narrowest targeted checks for changed behavior rather than
-repeating the whole gate after each intermediate change. Plan one complete
-mandatory gate for the reviewed, cohesive PR head before pushing; every later
-push must again have passing results for all required components. A passing
-component can carry across a documentation-only follow-up only when its inputs
-and any required documentation-dependent checks are unchanged. CI then
-validates the exact synthetic merge, not a preliminary local branch image.
+During edits, run the narrowest targeted checks for changed behavior. Resolve
+review findings, freeze the coherent candidate, then qualify all required
+components before push. Every later push also needs passing results for every
+required component, with fresh executions and mechanically verified carries
+explicitly distinguished under the local carry contract below. Repair a CI
+failure in the same PR, preserve the failed run, and repeat checks whose inputs
+changed or whose evidence became invalid. CI qualifies the exact synthetic merge.
+
+Review the immutable candidate diff and its dependency/acceptance boundaries.
+After corrections, re-review the changed behavior and affected boundaries;
+expand the review only when a new finding warrants it. Retain raw logs privately
+and report a short machine-generated head/tree verdict, executed/carried counts,
+manifest SHA-256 and material blockers instead of hand-maintained checklists of
+successful command output. A policy-changing PR uses the previous full gate on
+its final source; it must not apply its proposed relaxation to itself.
 
 Per-module test runs are mandatory: the root `go test ./...` does **not** span
 submodules. `make lint` runs the same linter as the `Lint` job. The `Proto (buf)` check
@@ -328,11 +348,99 @@ clean candidate, inspects its license and archive, tests the package in
 isolation, runs a publish dry-run, and compares a fresh repackage. It does
 not authorize publishing during SDK development.
 
+## Local validation carry
+
+The optional [live runner](.github/scripts/local_gate_session.py) owns a reviewed
+[76-step command plan](.github/scripts/local_gate_plan.py). It installs dependencies
+serially before Go traverses the workspace and executes the complete plan on its
+first candidate. It accepts no manifest, receipt, digest or success JSON as input.
+The external historical full-gate runner is not modified by this mechanism.
+
+```sh
+# Configure the repository-pinned tools on PATH; acquire the shared host slot first.
+# Use a new evidence directory outside the checkout. One invocation runs the full gate.
+python3 -B .github/scripts/local_gate_session.py "$PWD" ../gate-evidence-new --session
+# Keep this process alive while committing reviewed fixes in another terminal.
+# Enter qualify to validate the new clean head; enter quit to end the session.
+```
+
+The initial eligible set is deliberately small: `go-test-core`, `go-test-mcp`,
+`go-test-pb`, `go-test-sdks-go`, `go-test-server` and `server-vet`. Each fingerprints
+all Go workspace source/manifests, proto/generated inputs, shared fixtures under
+`tests/`, `testdata/` and `testbed/`, relevant root inputs, gate commands and
+configuration. Cross-module Go changes therefore invalidate these receipts
+conservatively. At most **6 of 76 steps** can carry; the other **70 steps execute
+again**. A useful case is a reviewed follow-up changing only `admin/app/` or
+`sdks/node/src/`, with locks, configuration, Go/shared inputs and the execution
+context unchanged while the original runner process remains alive. This saves
+repeated Go submodule tests and server vet; dependency preparation, root integration
+and Rust/Dart/Flutter gates still run. Time savings depend on those six actual
+runtimes and have not been measured by the synthetic regression tests. Session
+receipts are discarded on exit; there is no persistent validation cache.
+Eligible commands execute in a runner-owned read-only Git export containing
+exactly their fingerprinted tracked input closure and its directories. The export
+is populated from the pinned Git objects, verified, and made read-only; developer
+checkout bytes, hardlinks, symlinks, ignored fixtures and untracked files never
+enter it. A developer source edit followed by restoration cannot change these
+execution inputs. A required fixture outside this namespace fails qualification;
+nondefault GOFLAGS/overlays and external local module/workspace replacements have
+no support. The remaining 70 fresh steps keep the existing owner-frozen checkout
+contract. Toolchain binary/source/tool files, actual Go version/settings,
+downloaded dependency integrity and effective environment are checked as well.
+The Go-generated decimal work-directory suffix in `GOGCCFLAGS` prefix maps is
+normalized; map kind/base/destination, other compiler flags and user CGO settings
+remain fingerprinted. Malformed or ambiguous flags fail qualification.
+
+All other components execute on every qualification. In particular, root Go
+integration, SDK real-wire, generation/drift, package/archive, Rust, Dart/Flutter,
+SQLite, Admin and documentation gates have no carry support. Their full-tree
+input closure includes backend, proto, shared fixtures and generated consumers;
+backend-only edits cannot retain SDK real-wire success. Do not reinterpret a
+missing/unsupported result as a skip or a pass.
+
+**Evidence trust boundary.** The live reviewed Python process creates a receipt
+only after its fixed subprocess command returns zero and any empty-output contract
+passes. It retains the input fingerprint, source head/tree and raw-log SHA-256 in
+memory; it verifies every raw log establishing the complete current baseline,
+including unsupported/fresh steps, and its output manifest against retained values
+before reuse. Altering an output JSON or log cannot create a receipt.
+Missing/altered evidence, unknown paths, classification errors, policy/dependency/
+configuration changes or toolchain/environment changes force full execution.
+Ignored input detection covers Go, proto, shared fixture, root and policy inputs.
+Only the plan's named dependency/build output directories are exempt from that
+presence guard: they are absent from the read-only export and their owning fresh
+gates still execute. A required ignored fixture cannot produce a successful
+eligible receipt. Unknown ignored inputs in the closure conservatively disable
+carry, even if a particular unit test does not read them.
+Changing the loaded runner/plan/classifier requires a restart and a new full run.
+Failures invalidate the baseline. A fresh process imports nothing and starts full.
+
+This protects against stale inputs, damaged files and self-reported evidence within
+a trusted local development session. The developer who owns the process and host
+can change executables, permissions, private exports or process memory; this is
+not an attestation against a hostile host owner. Do not accept an exported
+manifest alone as externally verified proof. The existing required hosted checks remain independent and blocking;
+no signing keys, tokens or new authentication permissions are introduced.
+
+Carry applies only to descendant commits on the same local feature branch.
+Synthetic PR merge, exact-main, release/tag/archive equality, physical-device,
+provider, quiet-host performance and final acceptance qualifications need their own
+exact-source execution. A local source result never completes those independent
+exits. Start a new full session when switching branch, restarting or changing the
+validation policy. Confirm every selected real-wire case actually ran and preserve
+original failures; an empty selection is not acceptance.
+
 ## Coverage floor (ratchet)
 
-The `Build & Test` job measures per-module coverage (`-covermode=atomic`), merges the
-six profiles with `gocovmerge`, and then enforces a **per-module floor** in the
-`Enforce coverage floors` step. A PR that drops any module below its floor fails CI.
+The `Build & Test` job collects vet, build and race/coverage test outcomes for all
+six modules before returning a blocking aggregate exit. A root/module failure
+does not hide later module results. The existing single job avoids matrix setup
+and new aggregation/check names. Its JSON outcomes and partial profiles survive
+failure in the coverage artifact. Coverage merging and floors still run after a
+collector failure; missing profiles or any lowered coverage fail the job.
+It measures `-covermode=atomic`, merges six profiles with `gocovmerge`, and enforces
+the unchanged per-module floors in `Enforce coverage floors`. No failed module is
+converted to success.
 
 The floors are a **ratchet, not an aspiration**: adopted floors are never lowered.
 Raise them against a durable baseline under the same measurement scope. They are per-module
