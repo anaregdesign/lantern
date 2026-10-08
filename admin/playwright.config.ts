@@ -27,7 +27,9 @@ export default defineConfig({
   reporter: process.env.CI ? "github" : "list",
   use: {
     baseURL: `http://127.0.0.1:${PORT}`,
-    trace: "on-first-retry",
+    // Local runs have no retries, so retain evidence from the first failure.
+    trace: process.env.CI ? "on-first-retry" : "retain-on-failure",
+    screenshot: process.env.CI ? "off" : "only-on-failure",
   },
   projects: [
     {
