@@ -5,6 +5,7 @@ go 1.27.0
 require (
 	connectrpc.com/connect v1.21.0
 	connectrpc.com/grpchealth v1.5.0
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.2
 	github.com/anaregdesign/lantern/core v0.19.2
 	github.com/anaregdesign/lantern/mcp v0.0.0-00010101000000-000000000000
 	github.com/anaregdesign/lantern/pb v0.14.0
@@ -25,7 +26,6 @@ require (
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	connectrpc.com/grpcreflect v1.3.1 // indirect
-	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.8.0 // indirect

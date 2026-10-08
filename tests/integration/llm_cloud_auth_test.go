@@ -2,10 +2,15 @@ package integration_test
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 
 	"github.com/anaregdesign/lantern/core/llm/gemini"
 	"github.com/anaregdesign/lantern/core/llm/openai"
@@ -27,6 +32,51 @@ type cloudAuthAnswer struct {
 }
 
 const cloudAuthInstruction = `Reply with a JSON object whose "reply" field is the word "pong".`
+
+type cloudAzureCredential struct{ calls int }
+
+func (c *cloudAzureCredential) GetToken(ctx context.Context, opts policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	if err := ctx.Err(); err != nil {
+		return azcore.AccessToken{}, err
+	}
+	c.calls++
+	if len(opts.Scopes) != 1 || opts.Scopes[0] != llmauth.AzureOpenAIScope {
+		return azcore.AccessToken{}, io.ErrUnexpectedEOF
+	}
+	return azcore.AccessToken{Token: "local-azure-token", ExpiresOn: time.Now().Add(time.Hour)}, nil
+}
+
+// This local wire regression runs without cloud credentials; it does not qualify
+// Entra ID or a live Azure deployment.
+func TestAzureOpenAICloudAuthLocalWire(t *testing.T) {
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/openai/v1/responses" || r.Header.Get("Authorization") != "Bearer local-azure-token" || r.Header.Get("api-key") != "" {
+			t.Errorf("unexpected Azure request: %s %s auth=%q api-key=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("api-key"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"completed","output":[{"content":[{"type":"output_text","text":"{\"reply\":\"pong\"}"}]}]}`)
+	}))
+	defer endpoint.Close()
+	cred := &cloudAzureCredential{}
+	authClient, err := llmauth.NewAzureCredentialHTTPClient(cred, "", llmauth.WithTimeout(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := openai.NewClient("", "local-deployment", openai.WithBaseURL(endpoint.URL+"/openai"), openai.WithHTTPClient(authClient))
+	model, err := openai.New[cloudAuthAnswer](client, cloudAuthInstruction, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		resp, err := model.Generate(context.Background(), "ping")
+		if err != nil || resp.Output.Reply != "pong" {
+			t.Fatalf("Generate = %+v, %v", resp, err)
+		}
+	}
+	if cred.calls != 1 {
+		t.Fatalf("credential fetches = %d, want one cached token", cred.calls)
+	}
+}
 
 // TestVertexAIGeminiGoogleCredential drives the Service Account / ADC → Vertex AI
 // Gemini path: llmauth builds a Google-credential HTTP client whose transport

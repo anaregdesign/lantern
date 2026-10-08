@@ -6,7 +6,7 @@ require (
 	connectrpc.com/connect v1.21.0
 	connectrpc.com/grpchealth v1.5.0
 	connectrpc.com/grpcreflect v1.3.1
-	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.1
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.2
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.1
 	github.com/anaregdesign/lantern/core v0.0.0-00010101000000-000000000000
 	github.com/anaregdesign/lantern/pb v0.0.0-00010101000000-000000000000
