@@ -211,9 +211,14 @@ The Security pages manage exact Issuer/subject identities and Role memberships.
 Permissions belong only to Roles. Prefixes are literal logical keys; all-key
 selection is explicit, and matching Deny wins. ExplainAccess is Server-derived.
 Environment-owned Issuers, memberships and Role policies are locked. Mutations
-require a reviewed revision and recent authentication; response loss retains
-the original change ID for status-only recovery. Committed/pending and globally
-enforced revisions are shown separately. OFF exposes setup guidance without
+require a reviewed revision and current explicit authority. Ordinary management
+by a qualified human allows missing or older signed `auth_time`; valid
+authentication, credential/session expiry and current policy admission still apply.
+Changes to accepted Issuer/credential trust and effective `security.manage`
+expansion require purpose-bound per-operation reauthentication. Machine
+management mutations are prohibited. Response loss retains the original change
+ID for status-only recovery. Committed/pending and globally enforced revisions
+are shown separately. OFF exposes setup guidance without
 an anonymous authentication toggle. IdP account/password/MFA management remains
 with the provider. See [ADR 0012](../docs/decisions/0012-oidc-prefix-rbac.md).
 

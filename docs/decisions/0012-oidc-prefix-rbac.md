@@ -24,9 +24,12 @@ policy authority, Role admission, logical data boundaries, public Security/
 Changes/browser APIs and a separate signed-membership workload plane in the
 production Wire graph. Source, CI, final exact-source acceptance and external
 provider/clock evidence remain separate exit buckets in #1599/#1610. The Head
-transition is in progress and must qualify its own response/SDK contract before
-activation. Prior local conformance does not complete Head, deployment or
-provider qualification.
+source and response/SDK implementation were merged in
+[#1661](https://github.com/anaregdesign/lantern/pull/1661) under
+[#1626](https://github.com/anaregdesign/lantern/issues/1626). Final exact-source,
+provider, device and HA qualification remain separate. HA Edge Create stays
+disabled pending distributed absence/arbitration and endpoint/tombstone proof.
+Prior local conformance does not complete deployment or provider qualification.
 
 The native Store reserves private nonexpiring GraphCache state and reuses
 FileWAL framing, ownership, sync, lower-bound tip proofs and bounded checkpoint

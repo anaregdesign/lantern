@@ -185,20 +185,32 @@ personal data; retain private fixture material outside Git/artifact uploads.
 
 ## Trusted HTTPS fixture preparation
 
-The previous actual Server/IdP/Admin investigation used short-lived
-certificates, expired and was stopped. A fresh actual UI fixture still needs
-valid trusted HTTPS and matching Issuer, callback and browser origin. API
-results and browser contract fixtures do not qualify that combined flow.
+The earlier actual Server/IdP/Admin fixture used short-lived certificates,
+expired and was stopped. Subsequent bounded normal-TLS acceptance completed:
+[#1670's four rendered recovery cases](https://github.com/anaregdesign/lantern/issues/1670#issuecomment-6008965699)
+passed 4/4, and
+[#1606's bounded UI supplement](https://github.com/anaregdesign/lantern/issues/1606#issuecomment-6060077406)
+reached 8/8 at their recorded source revisions. Temporary trust, keys and owned
+fixture processes were cleaned up. These historical results do not qualify a
+later final source, real provider, physical device, HA or production deployment.
+A new actual UI run still needs fresh valid trusted HTTPS and matching Issuer,
+callback and browser origin. API results and browser contract fixtures alone do
+not qualify that combined flow.
 
-The proposed local-only origins are
+### Historical, unexecuted DNS-01 proposal
+
+The older local-only proposal used
 `https://lantern-test.replary.com:17443` and
 `https://idp-test.replary.com:17444`. A DNS-01 certificate and local host
-resolution can serve these without exposing the Server publicly. DNS records,
-ACME issuance, certificate installation, host mapping and runtime restart each
-await individual approval; these names are a proposal, not an installed setup.
+resolution could serve these without exposing the Server publicly. The proposal
+was not executed: no DNS changes, ACME issuance or production setup were performed
+for it. Any future DNS records, ACME issuance, certificate installation, host
+mapping and runtime restart each need their applicable individual approval;
+these names are a proposal, not an installed setup.
 Preserve existing website/mail records and keep certificate keys private.
 
-Choose renewal before using the fixture for repeated work. [Manual Certbot issuance](https://eff-certbot.readthedocs.io/en/stable/using.html#manual)
+If this proposal is adopted, choose renewal before repeated fixture work.
+[Manual Certbot issuance](https://eff-certbot.readthedocs.io/en/stable/using.html#manual)
 needs manual renewal unless authentication hooks are configured.
 [DNS-01](https://letsencrypt.org/docs/challenge-types/#dns-01-challenge) can
 delegate only ACME challenge records to an API-capable DNS zone; that is a
