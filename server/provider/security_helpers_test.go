@@ -33,10 +33,12 @@ type securityTestClock struct {
 }
 
 type securityProviderFixture struct {
-	server  *httptest.Server
-	private ed25519.PrivateKey
-	fetches atomic.Int64
-	clock   *securityTestClock
+	server     *httptest.Server
+	private    ed25519.PrivateKey
+	fetches    atomic.Int64
+	clock      *securityTestClock
+	exchangeMu sync.Mutex
+	exchange   http.Handler
 }
 
 func newSecurityProviderFixture(t *testing.T, config *SecurityConfig, clock *securityTestClock) *securityProviderFixture {
@@ -48,6 +50,15 @@ func newSecurityProviderFixture(t *testing.T, config *SecurityConfig, clock *sec
 	p := &securityProviderFixture{private: private, clock: clock}
 	p.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p.fetches.Add(1)
+		if r.URL.Path == "/token" {
+			p.exchangeMu.Lock()
+			handler := p.exchange
+			p.exchangeMu.Unlock()
+			if handler != nil {
+				handler.ServeHTTP(w, r)
+				return
+			}
+		}
 		if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
 			t.Error("credentials sent to metadata endpoint")
 		}

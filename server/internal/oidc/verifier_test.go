@@ -44,16 +44,16 @@ func TestVerifierAccessProfile(t *testing.T) {
 	v.now = p.now
 	raw := p.sign(t, p.accessClaims(), "at+jwt")
 	identity, err := v.VerifyAccess(context.Background(), raw, p.trust)
-	if err != nil || identity.Identity.Issuer != p.trust.Issuer.URL || identity.Identity.Subject != "user" {
+	if err != nil || identity.Identity().Issuer != p.trust.Issuer.URL || identity.Identity().Subject != "user" {
 		t.Fatalf("valid RFC 9068 token: %v", err)
 	}
-	if !identity.AuthTime.IsZero() {
+	if !identity.AuthTime().IsZero() {
 		t.Fatal("issuance time used as authentication time")
 	}
 	recentClaims := p.accessClaims()
 	recentClaims["auth_time"] = p.now().Add(-time.Minute).Unix()
 	recent, err := v.VerifyAccess(context.Background(), p.sign(t, recentClaims, "at+jwt"), p.trust)
-	if err != nil || recent.AuthTime.Unix() != p.now().Add(-time.Minute).Unix() {
+	if err != nil || recent.AuthTime().Unix() != p.now().Add(-time.Minute).Unix() {
 		t.Fatal("verified auth_time lost", err)
 	}
 	for name, mutate := range map[string]func(jwt.MapClaims){
@@ -117,12 +117,12 @@ func TestVerifierIDProfileAndNonce(t *testing.T) {
 	}
 	delete(claims, "auth_time")
 	identity, err := v.VerifyID(context.Background(), p.sign(t, claims, "JWT"), p.trust, "expected")
-	if err != nil || !identity.AuthTime.IsZero() {
+	if err != nil || !identity.AuthTime().IsZero() {
 		t.Fatal("ordinary login lost unknown authentication time", err)
 	}
 	claims["auth_time"] = p.now().Add(-time.Hour).Unix()
 	identity, err = v.VerifyID(context.Background(), p.sign(t, claims, "JWT"), p.trust, "expected")
-	if err != nil || identity.AuthTime.Unix() != p.now().Add(-time.Hour).Unix() {
+	if err != nil || identity.AuthTime().Unix() != p.now().Add(-time.Hour).Unix() {
 		t.Fatal("old signed authentication time was refreshed", err)
 	}
 	for _, value := range []any{nil, "not numeric", p.now().Add(time.Second).Unix(), time.Time{}.Unix()} {

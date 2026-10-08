@@ -50,11 +50,24 @@ type LoginStart struct {
 func (LoginStart) String() string { return "[redacted OIDC login start]" }
 
 // LoginCompletion is server-private single-use evidence for code exchange.
-type LoginCompletion struct{ transaction loginTransaction }
+type LoginCompletion struct {
+	transaction   loginTransaction
+	consumedState [32]byte
+	consumedAt    time.Time
+}
 
-func (LoginCompletion) String() string           { return "[redacted OIDC login completion]" }
-func (c LoginCompletion) Trust() Trust           { return c.transaction.trust }
-func (c LoginCompletion) Discovery() Discovery   { return c.transaction.discovery }
+func (LoginCompletion) String() string { return "[redacted OIDC login completion]" }
+func (c LoginCompletion) Trust() Trust {
+	trust := c.transaction.trust
+	trust.Issuer.Algorithms = slices.Clone(trust.Issuer.Algorithms)
+	return trust
+}
+func (c LoginCompletion) Discovery() Discovery {
+	d := c.transaction.discovery
+	d.ResponseTypes = slices.Clone(d.ResponseTypes)
+	d.CodeChallengeMethods = slices.Clone(d.CodeChallengeMethods)
+	return d
+}
 func (c LoginCompletion) Nonce() string          { return c.transaction.nonce }
 func (c LoginCompletion) Verifier() string       { return c.transaction.verifier }
 func (c LoginCompletion) ReturnPath() string     { return c.transaction.returnPath }
@@ -224,5 +237,5 @@ func (m *LoginTransactions) Consume(state, cookie, callbackPath, responseIssuer 
 		return LoginCompletion{}, ErrLoginTransaction
 	}
 	delete(m.pending, id)
-	return LoginCompletion{transaction: transaction}, nil
+	return LoginCompletion{transaction: transaction, consumedState: id, consumedAt: now}, nil
 }

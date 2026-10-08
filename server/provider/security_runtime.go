@@ -56,6 +56,7 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (_ 
 		runtime.now = time.Now
 	}
 	cleanup = func() {
+		runtime.authorizations.Close()
 		if runtime.fetcher != nil {
 			runtime.fetcher.CloseIdleConnections()
 		}

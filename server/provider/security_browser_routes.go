@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -170,7 +171,7 @@ func (r *SecurityRuntime) browserCallback(w http.ResponseWriter, req *http.Reque
 		browserHTTPError(w, connect.CodeUnauthenticated)
 		return
 	}
-	verified, err := r.verifier.VerifyLogin(req.Context(), tokens.IDToken(), trust, completion.Nonce(), tokens.AccessToken())
+	verified, err := r.verifier.VerifyLoginCompletion(req.Context(), completion, tokens)
 	if err != nil {
 		browserHTTPError(w, connect.CodeUnauthenticated)
 		return
@@ -179,8 +180,11 @@ func (r *SecurityRuntime) browserCallback(w http.ResponseWriter, req *http.Reque
 		browserHTTPError(w, connect.CodeUnavailable)
 		return
 	}
+	evidence := requestEvidenceCut(current, time.Time{})
+	evidence.kind, evidence.token = "token", verified
+	callbackContext := withRequestAuthenticationEvidence(req.Context(), evidence)
 	if operationAuthorization {
-		if err := r.authorizations.Complete(authorizationID, verified.Identity, verified.AuthTime, verified.ExpiresAt, trust.ConfigRevision, current, r.now()); err != nil {
+		if err := r.completeOperationAuthentication(callbackContext, authorizationID, current, r.now()); err != nil {
 			browserHTTPError(w, connect.CodeUnauthenticated)
 			return
 		}
@@ -207,7 +211,7 @@ func (r *SecurityRuntime) browserCallback(w http.ResponseWriter, req *http.Reque
 		return
 	}
 	now := r.now()
-	_, err = r.native.Store().IssueSession(req.Context(), security.SessionRequest{ChangeID: changeID, Identity: verified.Identity, IssuerConfigRevision: trust.ConfigRevision, Digest: browserDigest(value), CSRFDigest: browserDigest(csrf), ReplacesDigest: completion.ReplacesDigest(), RequireRecentAuth: completion.RequiresRecentAuthentication(), AuthTime: verified.AuthTime, Now: now, Lifetime: security.MaxSessionLifetime})
+	_, err = r.native.Store().IssueSession(callbackContext, security.SessionRequest{ChangeID: changeID, Identity: verified.Identity(), IssuerConfigRevision: trust.ConfigRevision, Digest: browserDigest(value), CSRFDigest: browserDigest(csrf), ReplacesDigest: completion.ReplacesDigest(), RequireRecentAuth: completion.RequiresRecentAuthentication(), AuthTime: verified.AuthTime(), Now: now, Lifetime: security.MaxSessionLifetime})
 	if err != nil {
 		browserHTTPError(w, connect.CodeUnauthenticated)
 		return

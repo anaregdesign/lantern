@@ -135,6 +135,13 @@ func (r *SecurityRuntime) authenticateBrowser(req *http.Request, requireCSRF boo
 		return ctx, "", connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
 	}
 	admission = admission.WithAuthentication(security.Authentication{Provenance: security.BrowserCode, Class: security.EndUser, IssuerConfigRevision: session.IssuerConfigRevision, SessionDigest: digest})
+	evidence := requestEvidenceCut(revision, expiry)
+	evidence.kind, evidence.session, evidence.classification = "session", session, security.EndUser
+	evidence.issuerConfigRevision = session.IssuerConfigRevision
+	evidence.origin = requestCredentialCommitment("browser-origin", r.config.BrowserOrigin)
+	evidence.exactOriginChecked = len(req.Header.Values("Origin")) != 0
+	evidence.mutationCSRFChecked = requireCSRF
+	ctx = withRequestAuthenticationEvidence(ctx, evidence)
 	return security.WithAdmission(ctx, admission.WithBrowserProof(csrf)), digest, nil
 }
 

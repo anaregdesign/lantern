@@ -12,8 +12,9 @@ import (
 // CodeTokens are server-private evidence. They are never persisted in browser
 // storage or returned by the Admin session API.
 type CodeTokens struct {
-	idToken     string
-	accessToken string
+	idToken           string
+	accessToken       string
+	binding, exchange [32]byte
 }
 
 func (t CodeTokens) IDToken() string     { return t.idToken }
@@ -64,5 +65,6 @@ func (f *Fetcher) ExchangeCode(ctx context.Context, trust Trust, discovery Disco
 		len(result.IDToken) > maxTokenBytes || len(result.AccessToken) > maxTokenBytes || !strings.EqualFold(result.TokenType, "Bearer") {
 		return CodeTokens{}, ErrInvalidToken
 	}
-	return CodeTokens{idToken: result.IDToken, accessToken: result.AccessToken}, nil
+	binding := exchangeBinding(trust, discovery, verifier)
+	return CodeTokens{idToken: result.IDToken, accessToken: result.AccessToken, binding: binding, exchange: evidenceDigest("code-exchange", struct{ Binding, Code, ID, Access [32]byte }{binding, evidenceDigest("authorization-code", code), evidenceDigest("credential", result.IDToken), evidenceDigest("access-token", result.AccessToken)})}, nil
 }
