@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -61,10 +62,277 @@ func TestS3ADeliverySaturatedPeerSelfCreditAndEventualQuorum(t *testing.T) {
 	// All three transports remain authenticated, but only the reachable quorum
 	// received voting traffic; intact laggard catches up a QC from another peer.
 	n.waitCut(2, 1)
-	if count, err := n.nodes[3].CatchUp(ctx, 2); err != nil || count != 1 {
-		t.Fatal("authenticated QC relay from non-proposer", count, err)
+	relay := s3aTestPrepareRelay(t, n)
+	count, err := n.nodes[3].CatchUp(ctx, 2)
+	t.Logf("single authenticated QC relay observation: count=%d err=%v", count, err)
+	if err := s3aTestReconcileRelay(ctx, n.nodes[3], relay, count, err); err != nil {
+		t.Fatal("authenticated QC relay from non-proposer", err)
 	}
-	n.waitCut(3, 1)
+}
+
+type s3aTestRelayProof struct {
+	prefix           [32]byte
+	chosen           []byte
+	entered, drained chan struct{}
+}
+
+// Synchronize cancellation after reconciliation's first live-context check;
+// otherwise an immediate cancel could test only the already-cancelled branch.
+type s3aTestRelayContext struct {
+	context.Context
+	checked chan struct{}
+	once    sync.Once
+}
+
+func (c *s3aTestRelayContext) Err() error {
+	err := c.Context.Err()
+	c.once.Do(func() { close(c.checked) })
+	return err
+}
+
+func s3aTestPrepareRelay(t *testing.T, n *s3aTestNetwork) s3aTestRelayProof {
+	t.Helper()
+	_, before, err := n.nodes[3].kernel.ReadLocalCut()
+	if err != nil || before.ControlSlot != 0 {
+		t.Fatal("relay requires a healthy empty laggard", before, err)
+	}
+	_, source, err := n.nodes[2].kernel.ReadLocalCut()
+	if err != nil || source.ControlSlot != 1 {
+		t.Fatal("relay source requires exactly slot 1", source, err)
+	}
+	chosen, err := n.nodes[2].kernel.ExportChosen(1, 1, n.nodes[2].limits.RangeBytes)
+	if err != nil || len(chosen) != 1 {
+		t.Fatal("relay source QC missing", len(chosen), err)
+	}
+	proof := s3aTestRelayProof{source.ControlPrefix, bytes.Clone(chosen[0]), make(chan struct{}), make(chan struct{})}
+	var entered, drained sync.Once
+	n.nodes[3].kernel.gate.Lock()
+	n.nodes[3].kernel.hooks = &s2cParticipantHooks{
+		afterChosen:  func() { entered.Do(func() { close(proof.entered) }) },
+		afterDrained: func() { drained.Do(func() { close(proof.drained) }) },
+	}
+	n.nodes[3].kernel.gate.Unlock()
+	return proof
+}
+
+// Count observes successful Receive returns, not every durable installation.
+// Reconcile only this known one-slot relay; arbitrary errors/empty successful
+// ranges cannot repair its proven empty starting state. No RPC is retried.
+func s3aTestReconcileRelay(ctx context.Context, o *s3aOwner, proof s3aTestRelayProof, count uint64, callErr error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !(count == 1 && callErr == nil || count == 0 && callErr == context.DeadlineExceeded) {
+		return fmt.Errorf("unexpected relay observation: count=%d err=%v", count, callErr)
+	}
+	select {
+	case <-proof.entered:
+	default:
+		return errors.New("relay did not enter native CHOSEN application")
+	}
+	// Preserve waitCut's five-second observation budget and the remaining outer
+	// deadline. A witness alone cannot prove the kernel gate has been released.
+	observation, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	select {
+	case <-proof.drained:
+	case <-observation.Done():
+		return fmt.Errorf("relay did not finish DRAINED: %w", observation.Err())
+	}
+	// ReadLocalCut is not context-aware. Keep one gated observer, supervised by
+	// the same budget; a timeout fails without claiming native work was aborted.
+	result := make(chan error, 1)
+	go func() {
+		if err := o.check(observation); err != nil {
+			result <- err
+			return
+		}
+		_, cut, err := o.kernel.ReadLocalCut()
+		if err != nil {
+			result <- err
+			return
+		}
+		if cut.ControlSlot != 1 || cut.ControlPrefix != proof.prefix {
+			result <- errors.New("relay durable slot/prefix differs from source")
+			return
+		}
+		chosen, err := o.kernel.ExportChosen(1, 1, o.limits.RangeBytes)
+		if err != nil {
+			result <- err
+			return
+		}
+		if len(chosen) != 1 || !bytes.Equal(chosen[0], proof.chosen) {
+			result <- errors.New("relay retained QC differs from source")
+			return
+		}
+		result <- o.check(observation)
+	}()
+	select {
+	case err := <-result:
+		if expired := observation.Err(); expired != nil {
+			return expired
+		}
+		return err
+	case <-observation.Done():
+		return fmt.Errorf("relay durable observation unresolved: %w", observation.Err())
+	}
+}
+
+func TestS3ADeliveryRelayDeadlineRequiresExactDrainedEvidence(t *testing.T) {
+	n := s3aTestCluster(t, func(_ uint32, c *s3aConfig) {
+		c.Limits.PerPeerQueue = 1
+		c.Limits.QueueBytes = c.Participant.OutboxBytes + 3*s3aQueueOverhead
+		c.Limits.RPCTimeout = 80 * time.Millisecond
+		c.Limits.Attempts = 1
+		c.Limits.Rounds = 64
+		c.Limits.Backoff = 20 * time.Millisecond
+		c.hooks = &s3aHooks{beforeSend: func(ctx context.Context, to uint32, _ []byte) error {
+			if to == 3 {
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			return nil
+		}}
+	})
+	n.startAll()
+	ctx := s3aTestContext(t)
+	if receipt, err := n.nodes[1].Drive(ctx, [32]byte{}); err != nil || receipt.ControlSlot != 1 {
+		t.Fatal("produce real chosen history", receipt, err)
+	}
+	n.waitCut(2, 1)
+	proof := s3aTestPrepareRelay(t, n)
+	beforeEntry, err := n.nodes[3].Floors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, cancelExpired := context.WithDeadline(ctx, time.Time{})
+	preCount, preErr := n.nodes[3].CatchUp(expired, 2)
+	cancelExpired()
+	if preCount != 0 || preErr != context.DeadlineExceeded {
+		t.Fatal("pre-entry deadline observation", preCount, preErr)
+	}
+	if err := s3aTestReconcileRelay(ctx, n.nodes[3], proof, preCount, preErr); err == nil {
+		t.Fatal("deadline before native entry was accepted")
+	}
+	afterEntry, err := n.nodes[3].Floors()
+	if err != nil || afterEntry != beforeEntry {
+		t.Fatal("pre-entry deadline changed local P/B floors", afterEntry, beforeEntry, err)
+	}
+	t.Log("pre-entry deadline rejected with unchanged local P/B floors")
+	held, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	releaseApply := func() { once.Do(func() { close(release) }) }
+	defer releaseApply()
+	n.nodes[3].kernel.gate.Lock()
+	n.nodes[3].kernel.hooks.beforeB = func() { close(held); <-release }
+	n.nodes[3].kernel.gate.Unlock()
+	type relayResult struct {
+		count uint64
+		err   error
+	}
+	result := make(chan relayResult, 1)
+	go func() { count, err := n.nodes[3].CatchUp(ctx, 2); result <- relayResult{count, err} }()
+	select {
+	case <-held:
+	case got := <-result:
+		t.Fatal("relay did not reach controlled native entry", got.count, got.err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	var got relayResult
+	select {
+	case got = <-result:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if got.count != 0 || got.err != context.DeadlineExceeded {
+		t.Fatal("entered relay did not expose natural deadline", got.count, got.err)
+	}
+	t.Log("entered native relay returned 0/DeadlineExceeded while B was held")
+	// CHOSEN entry alone cannot pass while native completion remains held. Do
+	// not synchronously read the gated cut behind this controlled barrier.
+	pendingCtx, cancelPending := context.WithCancel(ctx)
+	observed := &s3aTestRelayContext{Context: pendingCtx, checked: make(chan struct{})}
+	pending := make(chan error, 1)
+	go func() { pending <- s3aTestReconcileRelay(observed, n.nodes[3], proof, got.count, got.err) }()
+	select {
+	case <-observed.checked:
+	case <-ctx.Done():
+		cancelPending()
+		t.Fatal(ctx.Err())
+	}
+	cancelPending()
+	if err := <-pending; err == nil {
+		t.Fatal("pending CHOSEN was mistaken for durable completion")
+	}
+	releaseApply()
+	if err := s3aTestReconcileRelay(ctx, n.nodes[3], proof, got.count, got.err); err != nil {
+		t.Fatal("entered deadline did not reconcile exact DRAINED cut/QC", err)
+	}
+	t.Log("deadline reconciled only after DRAINED, exact slot 1/prefix/QC and eligibility")
+	before, err := n.nodes[3].Floors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, retryErr := n.nodes[3].CatchUp(ctx, 2)
+	if count != 0 || retryErr != nil && retryErr != context.DeadlineExceeded {
+		t.Fatal("completed relay retry observation", count, retryErr)
+	}
+	// A fresh call starts at installed slot+1. Check its native empty-range
+	// consequence without imposing a new 80ms success guarantee on every RPC.
+	empty, err := n.nodes[2].kernel.ExportChosen(2, 1, n.nodes[2].limits.RangeBytes)
+	if err != nil || len(empty) != 0 {
+		t.Fatal("completed retry must request beyond retained history", len(empty), err)
+	}
+	parts, err := n.nodes[3].decodeRange(append([]byte(s3aRangeMagic), 0, 0, 0, 0), 2)
+	if err != nil || len(parts) != 0 {
+		t.Fatal("valid empty range cannot require an applied count", len(parts), err)
+	}
+	after, err := n.nodes[3].Floors()
+	if err != nil || after != before {
+		t.Fatal("completed retry changed local P/B floors", after, before, err)
+	}
+	if err := s3aTestReconcileRelay(ctx, n.nodes[3], proof, got.count, got.err); err != nil {
+		t.Fatal("completed retry changed exact durable relay proof", err)
+	}
+	t.Logf("single retry after durable completion: count=%d err=%v; empty range and local floors unchanged", count, retryErr)
+
+	wrongPrefix, wrongQC := proof, proof
+	wrongPrefix.prefix[0] ^= 1
+	wrongQC.chosen = bytes.Clone(proof.chosen)
+	wrongQC.chosen[len(wrongQC.chosen)-1] ^= 1
+	for _, tc := range []struct {
+		name  string
+		proof s3aTestRelayProof
+		count uint64
+		err   error
+	}{
+		{"wrong-prefix", wrongPrefix, 0, context.DeadlineExceeded},
+		{"wrong-QC", wrongQC, 0, context.DeadlineExceeded},
+		{"empty-success-from-cut-zero", proof, 0, nil},
+		{"joined-unknown-deadline", proof, 0, errors.Join(context.DeadlineExceeded, errS2CUnknown)},
+		{"wire-error", proof, 0, errS3AWire},
+		{"cancelled-call", proof, 0, context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := s3aTestReconcileRelay(ctx, n.nodes[3], tc.proof, tc.count, tc.err); err == nil {
+				t.Fatal("invalid relay evidence accepted")
+			}
+		})
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := s3aTestReconcileRelay(cancelled, n.nodes[3], proof, 1, nil); err == nil {
+		t.Fatal("outer cancellation converted to relay success")
+	}
+	n.clock.Store(n.manifest.ExpiresAt.UnixNano())
+	if err := s3aTestReconcileRelay(ctx, n.nodes[3], proof, 1, nil); err == nil {
+		t.Fatal("expired workload converted to relay success")
+	}
+	_ = n.nodes[3].Close()
+	if err := s3aTestReconcileRelay(ctx, n.nodes[3], proof, 1, nil); err == nil {
+		t.Fatal("closed owner converted to relay success")
+	}
 }
 
 func TestS3ADeliveryCancellationDoesNotReleaseEnteredDurability(t *testing.T) {

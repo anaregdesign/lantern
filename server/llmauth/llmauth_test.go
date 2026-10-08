@@ -19,6 +19,12 @@ import (
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
+type azureCredentialFunc func(context.Context, policy.TokenRequestOptions) (azcore.AccessToken, error)
+
+func (f azureCredentialFunc) GetToken(ctx context.Context, opts policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	return f(ctx, opts)
+}
+
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
@@ -188,6 +194,52 @@ func TestCachedTokenCredential(t *testing.T) {
 	ctx := context.Background()
 	opts := policy.TokenRequestOptions{Scopes: []string{AzureOpenAIScope}}
 
+	t.Run("cancelled waiter leaves owner and cached token usable", func(t *testing.T) {
+		started, release := make(chan struct{}), make(chan struct{})
+		cache := &cachedTokenCredential{inner: azureCredentialFunc(func(ctx context.Context, _ policy.TokenRequestOptions) (azcore.AccessToken, error) {
+			close(started)
+			select {
+			case <-release:
+				return azcore.AccessToken{Token: "shared", ExpiresOn: time.Now().Add(time.Hour)}, nil
+			case <-ctx.Done():
+				return azcore.AccessToken{}, ctx.Err()
+			}
+		})}
+		owner := make(chan error, 1)
+		go func() { _, err := cache.GetToken(ctx, opts); owner <- err }()
+		<-started
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err := cache.GetToken(cancelled, opts)
+		close(release)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiter error = %v", err)
+		}
+		if err := <-owner; err != nil {
+			t.Fatal(err)
+		}
+		if tok, err := cache.GetToken(ctx, opts); err != nil || tok.Token != "shared" {
+			t.Fatalf("cached token after cancellation = %+v, %v", tok, err)
+		}
+	})
+
+	t.Run("cancelled token acquisition does not poison next flight", func(t *testing.T) {
+		cache := &cachedTokenCredential{inner: azureCredentialFunc(func(ctx context.Context, _ policy.TokenRequestOptions) (azcore.AccessToken, error) {
+			if err := ctx.Err(); err != nil {
+				return azcore.AccessToken{}, err
+			}
+			return azcore.AccessToken{Token: "retry", ExpiresOn: time.Now().Add(time.Hour)}, nil
+		})}
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := cache.GetToken(cancelled, opts); !errors.Is(err, context.Canceled) {
+			t.Fatalf("owner error = %v", err)
+		}
+		if tok, err := cache.GetToken(ctx, opts); err != nil || tok.Token != "retry" {
+			t.Fatalf("retry = %+v, %v", tok, err)
+		}
+	})
+
 	t.Run("concurrent cold start coalesces to one GetToken", func(t *testing.T) {
 		block := make(chan struct{})
 		inner := &countingCredential{expires: time.Now().Add(time.Hour), block: block}
@@ -286,6 +338,34 @@ func TestCachedTokenCredential(t *testing.T) {
 			t.Fatalf("calls = %d, want 2 (one retry flight)", got)
 		}
 	})
+}
+
+func TestAzureTransportPreservesRequest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.invalid/test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "original")
+	req.Header.Set("X-Request-ID", "request-1")
+	client, err := NewAzureCredentialHTTPClient(&fakeAzureCredential{token: "azure"}, "", WithBaseTransport(roundTripFunc(func(next *http.Request) (*http.Response, error) {
+		if next == req || next.Context() != ctx || next.Header.Get("Authorization") != "Bearer azure" || next.Header.Get("X-Request-ID") != "request-1" {
+			t.Errorf("request clone/context/headers were not preserved: %+v", next)
+		}
+		return textResponse(http.StatusOK, "ok"), nil
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if req.Header.Get("Authorization") != "original" {
+		t.Fatal("original Authorization mutated")
+	}
 }
 
 // TestGoogleTransport_ReusesToken is the Google-side counting twin: the
