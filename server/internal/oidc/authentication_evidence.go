@@ -18,11 +18,14 @@ import (
 // value is not evidence. Getters detach all facts; JSON cannot mint this type.
 type VerifiedIdentity struct {
 	evidence security.TokenAuthenticationEvidence
+	// Preserve the verifier's original time representation for existing callers:
+	// SessionRequest hashes its JSON before canonicalizing the durable Session.
+	expiresAt, authTime time.Time
 }
 
 func (v VerifiedIdentity) Identity() security.Identity                    { return v.evidence.Identity }
-func (v VerifiedIdentity) ExpiresAt() time.Time                           { return v.evidence.ExpiresAt.Time() }
-func (v VerifiedIdentity) AuthTime() time.Time                            { return v.evidence.AuthTime.Time() }
+func (v VerifiedIdentity) ExpiresAt() time.Time                           { return v.expiresAt }
+func (v VerifiedIdentity) AuthTime() time.Time                            { return v.authTime }
 func (v VerifiedIdentity) Evidence() security.TokenAuthenticationEvidence { return v.evidence }
 func (VerifiedIdentity) String() string                                   { return "[redacted verified OIDC identity]" }
 
@@ -68,7 +71,11 @@ func tokenEvidence(raw string, trust Trust, header tokenHeader, claims tokenClai
 	if claims.Nonce != "" {
 		e.Nonce = evidenceDigest("nonce", claims.Nonce)
 	}
-	return VerifiedIdentity{evidence: e}, nil
+	verified := VerifiedIdentity{evidence: e, expiresAt: claims.ExpiresAt.Time}
+	if claims.AuthTime != nil {
+		verified.authTime = claims.AuthTime.Time
+	}
+	return verified, nil
 }
 func finishEvidence(v VerifiedIdentity, mode, profile string) (VerifiedIdentity, error) {
 	v.evidence.Mode, v.evidence.Profile = mode, profile

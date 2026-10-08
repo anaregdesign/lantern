@@ -41,6 +41,10 @@ func TestAuthenticationEvidenceSignedAccessFacts(t *testing.T) {
 				t.Fatal(err)
 			}
 			e := verified.Evidence()
+			_, parsed, err := decodeToken(raw)
+			if err != nil || verified.AuthTime() != parsed.AuthTime.Time || verified.ExpiresAt() != parsed.ExpiresAt.Time {
+				t.Fatal("retention changed existing caller time representation", err)
+			}
 			key, _ := x509.MarshalPKIXPublicKey(p.private.Public())
 			if e.Mode != "access" || e.Profile != "rfc9068" || e.Identity != verified.Identity() || e.IssuedAt.Time().Unix() != claims["iat"] || e.NotBefore.Present != tc.present || e.NotBefore.Numeric != (tc.nbf != nil) || e.ExpiresAt.Time() != p.now().Add(time.Hour) || e.AuthTime.Time() != p.now().Add(-time.Hour) || e.Credential != evidenceDigest("credential", raw) || e.Key != evidenceDigest("key-spki", key) || e.Configuration != evidenceDigest("trust", p.trust) || e.ConfigRevision != 1 || e.Generation != p.trust.Generation {
 				t.Fatalf("lost signed facts: %+v", e)
@@ -241,5 +245,30 @@ func TestAuthenticationEvidenceGenuineCodeCompletion(t *testing.T) {
 				t.Fatal("failed exchange minted producer result")
 			}
 		})
+	}
+}
+
+func TestAuthenticationEvidencePreservesSessionRequestTimeEncoding(t *testing.T) {
+	p := newTestProvider(t)
+	claims := p.accessClaims()
+	claims["aud"] = "admin"
+	claims["nonce"] = "expected"
+	claims["auth_time"] = p.now().Add(-time.Hour).Unix()
+	raw := p.sign(t, claims, "JWT")
+	verified, err := NewVerifierWithClock(NewKeyCacheWithClock(p.fetcher, p.now), p.now).VerifyLogin(t.Context(), raw, p.trust, "expected", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, original, _ := decodeToken(raw)
+	before := security.SessionRequest{ChangeID: [16]byte{1}, Identity: verified.Identity(), IssuerConfigRevision: 1, Digest: strings.Repeat("a", 64), CSRFDigest: strings.Repeat("b", 64), Now: p.now(), AuthTime: original.AuthTime.Time, Lifetime: security.MaxSessionLifetime}
+	after := before
+	after.AuthTime = verified.AuthTime()
+	oldJSON, _ := json.Marshal(before)
+	newJSON, _ := json.Marshal(after)
+	if string(oldJSON) != string(newJSON) {
+		t.Fatal("evidence accessor changed existing session intent bytes")
+	}
+	if !verified.Evidence().AuthTime.Time().Equal(original.AuthTime.Time) {
+		t.Fatal("normalized facts changed signed instant")
 	}
 }
