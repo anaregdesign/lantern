@@ -39,7 +39,7 @@ func TestSecurityAuthorizationTypedRefusalPluralSingularAndIndeterminateCommit(t
 				}
 				now = now.Add(2 * time.Second)
 				handler.now = func() time.Time { return now }
-				if err := manager.Complete(start.ID, admission.Identity(), now.Truncate(time.Second), now.Add(time.Hour), 1, current, now); err != nil {
+				if err := manager.Complete(start.ID, authorizationEventFixture(start.ID, admission.Identity(), now.Truncate(time.Second), now.Add(time.Hour), 1, current, now), current, now); err != nil {
 					t.Fatal(err)
 				}
 				status, err := manager.Status(start.ID, admission.Identity(), current, now)
@@ -129,7 +129,7 @@ func TestSecurityAuthorizationPreflightApprovalAndOriginalRetry(t *testing.T) {
 	now = now.Add(2 * time.Second)
 	handler.now = func() time.Time { return now }
 	admission, _ := security.AdmissionFromContext(ctx)
-	if err := manager.Complete(id, admission.Identity(), now.Add(-time.Second), now.Add(time.Hour), 1, current, now); err != nil {
+	if err := manager.Complete(id, authorizationEventFixture(id, admission.Identity(), now.Add(-time.Second), now.Add(time.Hour), 1, current, now), current, now); err != nil {
 		t.Fatal(err)
 	}
 	status, err = handler.GetSecurityChangeAuthorization(ctx, connect.NewRequest(&pb.GetSecurityChangeAuthorizationRequest{AuthorizationId: id[:]}))
@@ -175,4 +175,16 @@ func TestSecurityAuthorizationInvalidReviewAndActor(t *testing.T) {
 	if sink.calls != 1 {
 		t.Fatal("rejected preflight mutated")
 	}
+}
+
+// This fixture models the trusted adapter only for owner/service unit tests.
+// Actual cryptographic producer and callback coverage lives with oidc/provider.
+func authorizationEventFixture(id [32]byte, actor security.Identity, authTime, expiry time.Time, revision uint64, current *security.Revision, now time.Time) security.TokenAuthenticationEvidence {
+	date := func(t time.Time) security.AuthenticationTime {
+		if t.IsZero() {
+			return security.AuthenticationTime{}
+		}
+		return security.AuthenticationTime{Present: !t.IsZero(), Numeric: !t.IsZero(), Seconds: t.Unix(), Nanoseconds: int32(t.Nanosecond())}
+	}
+	return security.TokenAuthenticationEvidence{Version: 1, Policy: "lantern-oidc-v1", Mode: "code", Profile: "oidc-id", Identity: actor, Algorithm: "EdDSA", KeyID: "fixture", Credential: [32]byte{1}, Key: [32]byte{2}, Configuration: [32]byte{3}, AudienceClient: [32]byte{4}, Generation: current.Generation(), ConfigRevision: revision, IssuedAt: date(now), ExpiresAt: date(expiry), AuthTime: date(authTime), Nonce: [32]byte{5}, Code: security.CodeAuthenticationEvidence{Flow: "operation", AuthorizationID: id, Transaction: [32]byte{6}, Exchange: [32]byte{7}, Nonce: [32]byte{5}, PKCE: [32]byte{8}, CreatedAt: now, ConsumedAt: now, ExpiresAt: now.Add(time.Minute)}}
 }
