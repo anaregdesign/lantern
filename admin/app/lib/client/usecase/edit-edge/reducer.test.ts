@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { editEdgeReducer } from "./reducer";
 import { INITIAL_EDIT_EDGE_STATE } from "./state";
+import { selectAddBody } from "./selectors";
 
 describe("editEdgeReducer", () => {
   test("TARGET_CHANGED bumps epoch", () => {
@@ -14,9 +15,9 @@ describe("editEdgeReducer", () => {
     expect(next.loadEpoch).toBe(1);
   });
 
-  test("LOAD_RECEIVED seeds put inputs but clears add inputs", () => {
+  test("LOAD_RECEIVED seeds put inputs and keeps the untouched Add draft", () => {
     const seeded = editEdgeReducer(
-      { ...INITIAL_EDIT_EDGE_STATE, loadEpoch: 1 },
+      { ...INITIAL_EDIT_EDGE_STATE, loadEpoch: 1, loadStatus: "loading" },
       {
         type: "LOAD_RECEIVED",
         epoch: 1,
@@ -30,7 +31,7 @@ describe("editEdgeReducer", () => {
 
   test("LOAD_RECEIVED with null marks not-found", () => {
     const out = editEdgeReducer(
-      { ...INITIAL_EDIT_EDGE_STATE, loadEpoch: 1 },
+      { ...INITIAL_EDIT_EDGE_STATE, loadEpoch: 1, loadStatus: "loading" },
       { type: "LOAD_RECEIVED", epoch: 1, edge: null },
     );
     expect(out.loadStatus).toBe("not-found");
@@ -77,6 +78,136 @@ describe("editEdgeReducer", () => {
     expect(out.edge).toBeNull();
     expect(out.deleteStatus).toBe("deleted");
     expect(out.deleteRequested).toBe(false);
+  });
+});
+
+describe("late initial Edge reads", () => {
+  for (const edge of [null, { tail: "a", head: "b", weight: 3 }]) {
+    test(`preserves an authored Add weight and TTL when the read returns ${edge ? "an edge" : "not-found"}`, () => {
+      let state = editEdgeReducer(INITIAL_EDIT_EDGE_STATE, {
+        type: "TARGET_CHANGED",
+        tail: "a",
+        head: "b",
+      });
+      state = editEdgeReducer(state, {
+        type: "LOAD_REQUESTED",
+        epoch: state.loadEpoch,
+      });
+      state = editEdgeReducer(state, {
+        type: "WEIGHT_CHANGED",
+        mode: "add",
+        value: "7",
+      });
+      state = editEdgeReducer(state, {
+        type: "TTL_CHANGED",
+        mode: "add",
+        ttl: { mode: "preset24h", custom: "" },
+      });
+      const now = Date.parse("2026-10-08T00:00:00Z");
+      const authoredBody = selectAddBody(state, now);
+      expect(authoredBody.body?.edge).toEqual({
+        weight: 7,
+        expiration: "2026-10-09T00:00:00.000Z",
+      });
+      const saving = editEdgeReducer(state, {
+        type: "WRITE_REQUESTED",
+        mode: "add",
+      });
+      const readWhileSaving = editEdgeReducer(saving, {
+        type: "LOAD_RECEIVED",
+        epoch: saving.loadEpoch,
+        edge,
+      });
+      expect(selectAddBody(readWhileSaving, now)).toEqual(authoredBody);
+      expect(readWhileSaving.addStatus).toBe("saving");
+      state = editEdgeReducer(state, {
+        type: "LOAD_RECEIVED",
+        epoch: state.loadEpoch,
+        edge,
+      });
+      expect(selectAddBody(state, now)).toEqual(authoredBody);
+      expect(state.putInputs.weight).toBe(edge ? "3" : "1");
+
+      state = editEdgeReducer(state, { type: "WRITE_REQUESTED", mode: "add" });
+      expect(selectAddBody(state, now)).toEqual(authoredBody);
+    });
+  }
+
+  for (const edge of [null, { tail: "a", head: "b", weight: 9 }]) {
+    test(`a late initial read cannot replace a completed ${edge ? "live" : "absent"} Add result or a new draft`, () => {
+      let state = editEdgeReducer(INITIAL_EDIT_EDGE_STATE, {
+        type: "TARGET_CHANGED",
+        tail: "a",
+        head: "b",
+      });
+      state = editEdgeReducer(state, {
+        type: "LOAD_REQUESTED",
+        epoch: state.loadEpoch,
+      });
+      state = editEdgeReducer(state, {
+        type: "WEIGHT_CHANGED",
+        mode: "add",
+        value: "7",
+      });
+      const sentBody = selectAddBody(state);
+      state = editEdgeReducer(state, { type: "WRITE_REQUESTED", mode: "add" });
+      state = editEdgeReducer(state, {
+        type: "WRITE_SUCCEEDED",
+        mode: "add",
+        edge,
+      });
+      expect(sentBody.body?.edge?.weight).toBe(7);
+      expect(state.addInputs.weight).toBe("1");
+      state = editEdgeReducer(state, {
+        type: "WEIGHT_CHANGED",
+        mode: "add",
+        value: "11",
+      });
+      for (const completion of [
+        {
+          type: "LOAD_RECEIVED",
+          epoch: state.loadEpoch,
+          edge: { tail: "a", head: "b", weight: 2 },
+        },
+        {
+          type: "LOAD_FAILED",
+          epoch: state.loadEpoch,
+          error: "late read failure",
+        },
+      ] as const) {
+        expect(editEdgeReducer(state, completion)).toBe(state);
+      }
+      expect(state.edge).toEqual(edge);
+      expect(state.loadStatus).toBe(edge ? "ready" : "not-found");
+      expect(state.addInputs.weight).toBe("11");
+    });
+  }
+
+  test("target changes reset the draft and ignore the prior target read", () => {
+    let state = editEdgeReducer(INITIAL_EDIT_EDGE_STATE, {
+      type: "TARGET_CHANGED",
+      tail: "a",
+      head: "b",
+    });
+    const priorEpoch = state.loadEpoch;
+    state = editEdgeReducer(state, {
+      type: "WEIGHT_CHANGED",
+      mode: "add",
+      value: "7",
+    });
+    state = editEdgeReducer(state, {
+      type: "TARGET_CHANGED",
+      tail: "c",
+      head: "d",
+    });
+    expect(state.addInputs).toEqual(INITIAL_EDIT_EDGE_STATE.addInputs);
+    expect(
+      editEdgeReducer(state, {
+        type: "LOAD_RECEIVED",
+        epoch: priorEpoch,
+        edge: { tail: "a", head: "b", weight: 2 },
+      }),
+    ).toBe(state);
   });
 });
 

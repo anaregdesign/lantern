@@ -82,18 +82,22 @@ export function editEdgeReducer(
       };
     }
     case "LOAD_RECEIVED": {
-      if (action.epoch !== state.loadEpoch) return state;
+      // A completed write supersedes the initial read for this target.
+      if (action.epoch !== state.loadEpoch || state.loadStatus !== "loading")
+        return state;
       const seeded = inputsFromEdge(action.edge);
       return {
         ...state,
         loadStatus: action.edge ? "ready" : "not-found",
         edge: action.edge,
-        addInputs: INITIAL_EDGE_WRITE_INPUTS,
+        // A contribution draft is independent of the Edge being read.
+        // Target changes and confirmed writes own its reset.
         putInputs: seeded,
       };
     }
     case "LOAD_FAILED": {
-      if (action.epoch !== state.loadEpoch) return state;
+      if (action.epoch !== state.loadEpoch || state.loadStatus !== "loading")
+        return state;
       return { ...state, loadStatus: "error", loadError: action.error };
     }
     case "WEIGHT_CHANGED": {
@@ -117,8 +121,8 @@ export function editEdgeReducer(
     case "WRITE_SUCCEEDED": {
       const next: EditEdgeState = {
         ...state,
-        edge: action.edge ?? state.edge,
-        loadStatus: action.edge ? "ready" : state.loadStatus,
+        edge: action.edge,
+        loadStatus: action.edge ? "ready" : "not-found",
       };
       if (action.mode === "add") {
         next.addStatus = "saved";
