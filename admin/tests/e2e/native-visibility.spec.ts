@@ -1,9 +1,80 @@
 import { chromium, expect, test } from "@playwright/test";
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawn, type ChildProcess } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { securityUI } from "./helpers";
+
+type OwnedBrowserConnection = {
+  isConnected(): boolean;
+  newBrowserCDPSession(): Promise<{
+    send(method: "Browser.close"): Promise<unknown>;
+  }>;
+  close(): Promise<void>;
+};
+
+async function closeOwnedChromium(
+  child: ChildProcess,
+  exited: Promise<void>,
+  profile: string,
+  browser?: OwnedBrowserConnection,
+) {
+  const exitedWithin = async (milliseconds: number) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        exited.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), milliseconds);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const signalOwnedBrowser = (signal: "SIGTERM" | "SIGKILL") => {
+    if (!child.pid) return;
+    try {
+      if (process.platform === "win32") child.kill(signal);
+      else process.kill(-child.pid, signal);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  };
+  try {
+    // Closing a CDP attachment only disconnects it. Ask the owned browser
+    // to shut down and flush its profile before removing that directory.
+    if (browser?.isConnected()) {
+      await Promise.race([
+        browser
+          .newBrowserCDPSession()
+          .then((session) => session.send("Browser.close")),
+        exitedWithin(5_000).then((stopped) => {
+          if (!stopped) throw new Error("Owned Chromium close timed out");
+        }),
+      ]);
+    }
+  } finally {
+    if (!(await exitedWithin(5_000))) signalOwnedBrowser("SIGTERM");
+    if (!(await exitedWithin(2_000))) signalOwnedBrowser("SIGKILL");
+    await exited;
+    // Stop any remaining children in the group created by this spawn.
+    signalOwnedBrowser("SIGTERM");
+    await browser?.close();
+    rmSync(profile, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
+  }
+}
 
 // Playwright normally enables focus emulation, which keeps background pages
 // visible. Attach to our own ephemeral default context without that override.
@@ -30,28 +101,6 @@ test("native hidden-to-visible resume clears protected history before revalidati
   const exited = new Promise<void>((resolve) =>
     child.once("exit", () => resolve()),
   );
-  const exitedWithin = async (milliseconds: number) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        exited.then(() => true),
-        new Promise<boolean>((resolve) => {
-          timer = setTimeout(() => resolve(false), milliseconds);
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-  const signalOwnedBrowser = (signal: "SIGTERM" | "SIGKILL") => {
-    if (!child.pid) return;
-    try {
-      if (process.platform === "win32") child.kill(signal);
-      else process.kill(-child.pid, signal);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-    }
-  };
   let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | undefined;
   try {
     await expect
@@ -141,32 +190,66 @@ test("native hidden-to-visible resume clears protected history before revalidati
       page.getByText("old protected value", { exact: false }),
     ).toHaveCount(0);
   } finally {
-    try {
-      // Closing a CDP attachment only disconnects it. Ask the owned browser
-      // to shut down and flush its profile before removing that directory.
-      if (browser?.isConnected()) {
-        await Promise.race([
-          browser
-            .newBrowserCDPSession()
-            .then((session) => session.send("Browser.close")),
-          exitedWithin(5_000).then((stopped) => {
-            if (!stopped) throw new Error("Owned Chromium close timed out");
-          }),
-        ]);
-      }
-    } finally {
-      if (!(await exitedWithin(5_000))) signalOwnedBrowser("SIGTERM");
-      if (!(await exitedWithin(2_000))) signalOwnedBrowser("SIGKILL");
-      await exited;
-      // Stop any remaining children in the group created by this spawn.
-      signalOwnedBrowser("SIGTERM");
-      await browser?.close();
-      rmSync(profile, {
-        recursive: true,
-        force: true,
-        maxRetries: 5,
-        retryDelay: 100,
-      });
-    }
+    await closeOwnedChromium(child, exited, profile, browser);
+  }
+});
+
+// A real child owns the profile writer. SIGTERM loses its final write;
+// the explicit browser-close request flushes it before process exit.
+// This keeps shutdown ordering deterministic without relying on an rmdir race.
+test("owned Chromium cleanup waits for the profile writer to flush", async () => {
+  const root = mkdtempSync(join(tmpdir(), "lantern-visibility-shutdown-"));
+  const profile = join(root, "profile");
+  const proof = join(root, "flush-proof");
+  mkdirSync(profile);
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      `
+        const { writeFileSync } = require("node:fs");
+        const { join } = require("node:path");
+        const [profile, proof] = process.argv.slice(1);
+        writeFileSync(join(profile, "Preferences"), "pending");
+        process.on("message", (method) => {
+          if (method !== "Browser.close") process.exit(1);
+          writeFileSync(join(profile, "Preferences"), "flushed");
+          writeFileSync(proof, "flushed");
+          process.disconnect();
+          process.exit(0);
+        });
+        process.send("ready");
+      `,
+      profile,
+      proof,
+    ],
+    { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] },
+  );
+  const exited = new Promise<void>((resolve) =>
+    child.once("exit", () => resolve()),
+  );
+  const ready = new Promise<void>((resolve, reject) => {
+    child.once("message", () => resolve());
+    child.once("error", reject);
+  });
+  const connection: OwnedBrowserConnection = {
+    isConnected: () => true,
+    newBrowserCDPSession: async () => ({
+      send: async (method) => {
+        child.send(method);
+      },
+    }),
+    close: async () => {},
+  };
+  try {
+    await ready;
+    await closeOwnedChromium(child, exited, profile, connection);
+    expect(existsSync(proof)).toBe(true);
+    expect(readFileSync(proof, "utf8")).toBe("flushed");
+    expect(existsSync(profile)).toBe(false);
+    expect(child.exitCode).toBe(0);
+  } finally {
+    await closeOwnedChromium(child, exited, profile);
+    rmSync(root, { recursive: true, force: true });
   }
 });
