@@ -163,7 +163,7 @@ partition liveness, unbounded retention or exactly-once delivery claim.
 
 ## Native qualification boundary
 
-Source-paired tests and the cross-source `s3a_gate_test.go` integration cover:
+Source-paired tests and the cross-source `control_network_gate_test.go` integration cover:
 
 | Boundary | Test evidence |
 | --- | --- |
