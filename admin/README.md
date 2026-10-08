@@ -38,6 +38,32 @@ bun run dev                                   # http://localhost:5173
 The server base URL can be changed at runtime via the **Gateway** button in
 the top-right header. The choice is persisted to `localStorage`.
 
+## Authenticated scopes and Add recovery
+
+OIDC requires a same-origin HTTPS gateway and a valid browser session. Only a
+supported, explicit OFF capability opens an anonymous view. Resume and permission
+lease expiry hide protected views until a new authentication check succeeds;
+identity, policy, gateway or selected scope changes abort and clear old results.
+
+**Role scope** suggestions come from the Roles returned by the Server for the
+current principal. Browse uses VertexRead prefixes; search and generated traversal
+commands use the intersection with Query. The picker displays overlapping Deny
+exceptions. Every request still passes the Server's authorization checks, including
+typed CLI commands: their keys and prefixes are never silently rewritten. The
+selection is held in memory and is not a persisted grant.
+
+Add records bounded recovery metadata in per-tab `sessionStorage` before a possible
+send. It contains gateway/identity, target and receipt identifiers, without browser
+credentials, tokens or CSRF secrets. A lost or cancelled response remains uncertain
+across reload and login. **Check original Add** reads the existing receipt Status
+API with the original operation ID when receipts are supported and both endpoints
+have current ReceiptRead grants. ReceiptRead is not required for ordinary Add.
+The check never resends a
+mutation. An unavailable, unobserved, undisclosed or no-longer-provable result keeps
+the request locked. Legacy Add and decaying Add have no original-result receipt in
+this flow: reading the current Edge cannot confirm them or authorize a retry.
+Pending metadata is not automatically discarded to admit another Add.
+
 ## Scripts
 
 | Script              | Purpose                               |
@@ -129,13 +155,26 @@ docker run --rm -p 8080:8080 ghcr.io/anaregdesign/lantern-admin:latest
 # → http://localhost:8080
 ```
 
-The container does **not** reverse-proxy the Lantern gateway — the user's
-browser talks to the gateway directly, so the server must have
-`LANTERN_CORS_ALLOWED_ORIGINS` set to allow the admin origin (see
-[`server/README.md`](../server/README.md)). Switch between gateways at
-runtime via the **Gateway** button in the header. The container _does_
-optionally reverse-proxy Prometheus same-origin under `/api/prom` for the
-Ops Metrics page — see [Metrics (Prometheus)](#metrics-prometheus).
+In **OFF mode**, this default run serves the static Admin separately from the
+Server. Select the direct Server address with the **Gateway** button and set
+`LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080` on the Server (see
+[`server/README.md`](../server/README.md)).
+
+For **OIDC**, expose Admin over HTTPS and select that exact public origin in the
+Gateway picker. Configure `LANTERN_OIDC_BROWSER_ORIGIN` to the same origin and
+register the exact Issuer-specific `/auth/callback/<SHA-256>` redirect URI.
+The container optionally proxies `/auth/*`, `/browser/*` and `/graph.v1.*/*` to
+an operator-fixed `LANTERN_ADMIN_SERVER_UPSTREAM`; the gateway picker never
+selects that upstream. Use the verified HTTPS upstream, optional private CA,
+exact trusted proxy and preserved public Host/scheme configuration described in
+[Fixed Server and diagnostics proxy](#fixed-server-and-diagnostics-proxy) and the
+[operations guide](../docs/oidc-operations.md#browser-and-diagnostics-boundary).
+This is the current fixed-writer baseline; future eligible-node routing remains
+#1608/#1609 S5 work.
+
+The optional same-origin `/api/prom` proxy for Ops Metrics requires the Server
+upstream and checks `/auth/operations` admission before each GET. Prometheus
+never receives cookies or Authorization — see [Metrics (Prometheus)](#metrics-prometheus).
 
 ### Releasing
 

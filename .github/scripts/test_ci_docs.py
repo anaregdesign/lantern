@@ -1,10 +1,13 @@
 """Exercise real git ranges and the checked-in workflow routing contracts."""
 
+import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -174,6 +177,172 @@ class WorkflowRoutingTest(unittest.TestCase):
             body = re.search(rf"(?ms)^  {job}:\n(.*?)(?=^  [\w-]+:\n|\Z)", text).group(1)
             condition = next(line for line in body.splitlines() if line.startswith("    if:"))
             self.assertIn("needs.scope.outputs.docs_only != 'true'", condition)
+
+
+class AdminCaddyGateTest(unittest.TestCase):
+    def test_existing_ci_step_requires_real_test_success_without_skips(self):
+        # Exercise the actual CI shell/Python step with synthetic suites. These
+        # fixtures qualify the gate control, not real Caddy route behavior.
+        workflow = (ROOT / '.github/workflows/admin.yml').read_text()
+        step = workflow.split('      - name: Verify fixed API and protected diagnostics routes\n', 1)[1]
+        step = step.split('      - name: Setup Bun\n', 1)[0]
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        required = re.search(r"required = '([^']+)'", script).group(1)
+        container_tests = str(ROOT / 'admin/tests/container')
+        pending = list(unittest.TestLoader().discover(container_tests, pattern='*_test.py',
+                                                     top_level_dir=container_tests))
+        actual_ids = set()
+        while pending:
+            test = pending.pop()
+            if isinstance(test, unittest.TestSuite):
+                pending.extend(test)
+            else:
+                actual_ids.add(test.id())
+        self.assertIn(required, actual_ids)
+
+        def fixture(body, extra=''):
+            return ('import unittest\n\nclass EntrypointTest(unittest.TestCase):\n'
+                    '    def test_real_caddy_route_and_operations_admission(self):\n'
+                    f'        {body}\n{extra}')
+
+        cases = (
+            ('pass', fixture('self.assertTrue(True)'), 0, 0),
+            ('missing-suite', '', 0, 1),
+            ('missing-real-test', fixture('pass').replace(
+                'test_real_caddy_route_and_operations_admission', 'test_other'), 0, 1),
+            ('real-test-skipped', fixture("self.skipTest('fixture skip')"), 0, 1),
+            ('other-test-skipped', fixture('pass',
+                "    def test_other(self):\n        self.skipTest('other skip')\n"), 0, 1),
+            ('failure', fixture("self.fail('fixture failure')"), 0, 1),
+            ('error', fixture("raise RuntimeError('fixture error')"), 0, 1),
+            ('expected-failure', fixture("self.fail('expected failure')").replace(
+                '    def test_real', '    @unittest.expectedFailure\n    def test_real'), 0, 1),
+            ('image-pull-failed', fixture('pass'), 1, 1),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tests = root / 'admin/tests/container'
+            tests.mkdir(parents=True)
+            docker = root / 'docker'
+            docker.write_text(f'#!{sys.executable}\n' + textwrap.dedent('''\
+                import json
+                import os
+                from pathlib import Path
+                import sys
+                args = sys.argv[1:]
+                Path(os.environ['DOCKER_CAPTURE']).write_text(json.dumps(args))
+                if args != ['pull', 'caddy:2.10-alpine']:
+                    sys.exit(2)
+                sys.exit(int(os.environ['DOCKER_PULL_EXIT']))
+                '''))
+            docker.chmod(0o755)
+            for name, source, pull_exit, expected_exit in cases:
+                with self.subTest(case=name):
+                    (tests / 'entrypoint_test.py').write_text(source)
+                    env = os.environ | {
+                        'PATH': f'{root}{os.pathsep}{os.environ["PATH"]}',
+                        'DOCKER_CAPTURE': str(root / 'docker-args.json'),
+                        'DOCKER_PULL_EXIT': str(pull_exit),
+                    }
+                    result = subprocess.run(
+                        ['bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', script],
+                        cwd=root, env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, expected_exit, result.stderr)
+                    self.assertEqual(json.loads((root / 'docker-args.json').read_text()),
+                                     ['pull', 'caddy:2.10-alpine'])
+                    if name == 'pass':
+                        self.assertIn('test_real_caddy_route_and_operations_admission',
+                                      result.stderr)
+                        self.assertIn('Ran 1 test', result.stderr)
+                        self.assertIn('\nOK\n', result.stderr)
+                    elif name.startswith('missing-'):
+                        self.assertIn('Required real Caddy test was not discovered', result.stderr)
+                    elif name == 'image-pull-failed':
+                        self.assertNotIn('Ran ', result.stderr)
+                    else:
+                        self.assertIn('Caddy route gate requires all tests to pass with zero skips',
+                                      result.stderr)
+
+
+class AdminReleaseGuidanceTest(unittest.TestCase):
+    def test_generated_create_and_edit_notes_preserve_routing_contract(self):
+        # Execute the actual release step, with gh replaced by a local capture.
+        # No GitHub write, image publication, or release tag is performed.
+        workflow = (ROOT / '.github/workflows/admin-publish.yml').read_text()
+        step = workflow.split('      - name: Create or update GitHub Release\n', 1)[1]
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        tag = 'admin/v9.8.7'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gh = root / 'gh'
+            gh.write_text(f'#!{sys.executable}\n' + textwrap.dedent('''\
+                import json
+                import os
+                from pathlib import Path
+                import sys
+                args = sys.argv[1:]
+                if args[:2] == ['release', 'view']:
+                    sys.exit(0 if os.environ['RELEASE_EXISTS'] == 'yes' else 1)
+                if args[:2] not in (['release', 'create'], ['release', 'edit']):
+                    sys.exit(2)
+                root = Path(os.environ['GH_CAPTURE'])
+                notes = Path(args[args.index('--notes-file') + 1]).read_text()
+                (root / 'notes.md').write_text(notes)
+                (root / 'args.json').write_text(json.dumps(args))
+                '''))
+            gh.chmod(0o755)
+            for exists, action in (('no', 'create'), ('yes', 'edit')):
+                with self.subTest(action=action):
+                    env = os.environ | {
+                        'PATH': f'{root}{os.pathsep}{os.environ["PATH"]}',
+                        'TAG': tag, 'REPO': 'anaregdesign/lantern',
+                        'IMAGE': 'ghcr.io/anaregdesign/lantern-admin',
+                        'GH_TOKEN': 'fixture-only', 'GH_CAPTURE': str(root),
+                        'RELEASE_EXISTS': exists, 'TMPDIR': str(root),
+                    }
+                    result = subprocess.run(['bash', '-c', script], env=env,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    args = json.loads((root / 'args.json').read_text())
+                    self.assertEqual(args[:3], ['release', action, tag])
+                    self.assertIn('--verify-tag', args)
+                    if action == 'create':
+                        self.assertEqual(args[args.index('--title') + 1], tag)
+                    notes = (root / 'notes.md').read_text()
+                    for contract in (
+                        'ghcr.io/anaregdesign/lantern-admin:v9.8.7',
+                        '### OFF: direct Server with CORS',
+                        'LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080',
+                        '### OIDC: HTTPS same-origin routes',
+                        'select that exact origin',
+                        'LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example.com:8443',
+                        'LANTERN_OIDC_REDIRECT_URI', '/auth/callback/<SHA-256>',
+                        '/auth/*', '/browser/*', '/graph.v1.*/*',
+                        'LANTERN_ADMIN_SERVER_UPSTREAM', 'scheme://hostname:port',
+                        'https://writer.internal.example:6380',
+                        'gateway picker never selects that upstream',
+                        'Verify the upstream certificate against its hostname',
+                        'LANTERN_ADMIN_SERVER_CA_FILE', 'public Host/scheme',
+                        'LANTERN_OIDC_TRUSTED_PROXY_IPS',
+                        'explicitly trusted exact gateway IP',
+                        'current fixed-writer baseline',
+                        'Future eligible-node routing', '#1608/#1609 S5 work',
+                        'Missing upstream routes fail closed', '/auth/operations',
+                        'operations.read', 'Only GET diagnostics',
+                        'Prometheus never receives cookies or Authorization',
+                        'browser local storage and Vite env',
+                    ):
+                        self.assertIn(contract, notes)
+                    for path in ('docs/oidc-operations.md#browser-and-diagnostics-boundary',
+                                 'docs/ha-runbook.md', 'server/README.md'):
+                        self.assertIn(f'https://github.com/anaregdesign/lantern/blob/{tag}/{path}',
+                                      notes)
+                        self.assertTrue((ROOT / path.split('#')[0]).is_file())
+                    self.assertIn('## Browser and diagnostics boundary',
+                                  (ROOT / 'docs/oidc-operations.md').read_text())
+                    for retired in ('does not reverse-proxy', 'LANTERN_PEERS',
+                                    'tls_insecure_skip_verify', 'fixture-only', '${REPO}'):
+                        self.assertNotIn(retired, notes)
 
 
 if __name__ == "__main__":

@@ -86,7 +86,7 @@ go run ./server/cmd              # start the server (:6380)
 go run ./cli                     # start the CLI
 docker build -t lantern .        # container build
 (cd sdks/dart && dart pub get --enforce-lockfile && dart analyze && dart test)
-(cd sdks/dart/offline && dart pub get --enforce-lockfile && dart analyze && dart test)
+(cd sdks/dart/offline && python3 tool/paired_source_gate.py -- bash -c 'dart analyze && dart test')
 (cd sdks/dart/example && flutter pub get --enforce-lockfile && flutter analyze && flutter test)
 sdks/dart/scripts/codegen.sh     # regenerate only sdks/dart/lib/src/gen
 (cd sdks/rust && cargo xtask codegen)  # regenerate only sdks/rust/src/generated
@@ -149,7 +149,7 @@ Release workflows publish artifacts only. Project-managed GKE deployment is reti
 - **wire and generics**: as the `// Avoiding bug of 'wire'. Generic type is not supported.` comment in `service.go` notes, wire cannot handle generic type arguments, so the provider returns the concrete `GraphCache[string, *Vertex]`. Re-check this constraint before trying to introduce generics there.
 - **Regenerating proto**: `go_package_prefix` in `buf.gen.yaml` is `github.com/anaregdesign/lantern/pb`, so the generated files land **inside the standalone `pb/` module** at `pb/graph/v1`. `go generate ./...` (or `make proto`) runs `buf generate` and rebuilds everything under `pb/`. **Do NOT pass `--clean`** — `buf`'s output root is `pb/`, and `--clean` would delete `pb/go.mod` and `pb/doc.go` along with the stubs. `buf.yaml` (v2 workspace) and `buf.gen.yaml` live at the repo root. `buf` does not need to be installed locally — the directive in [generate.go](generate.go) falls back to running buf via `go run` at the version pinned there (mirrored as `BUF_VERSION` in the Makefile and the Proto CI setup version — bump all together). Use the pinned formatter for the local format gate; another Buf version on `PATH` can produce different output (#1664). Treat `pb/` as generated-only — never hand-edit, never add domain code there.
 - **Multi-module layout**: the workspace modules are stitched together for local dev via [go.work](go.work) and via `replace` directives in each importing module's `go.mod`. When adding a dep, place it in the module that actually uses it (e.g. server-only middleware → `server/go.mod`; client transport → `sdks/go/go.mod`; cli/integration-test only → root `go.mod`). After dependency changes run `go mod tidy` in **every** affected module. The `tool github.com/google/wire/cmd/wire` directive lives in `server/go.mod` (not root), so wire regen must be run from `server/`.
-- **Dart release gate**: `.github/workflows/dart-sdk.yml` is path-filtered on `sdks/dart/**`, proto/Buf inputs, compatible server paths, Go workspace/toolchain pins, ADR 0001/0002, and the root release-contract docs/workflow. It tests the documented Dart floor plus the Flutter version pinned by `docs/decisions/0001-dart-mobile-transport.md`, checks actual `lib/src/gen` drift, real wire, warning-free dartdoc, example Android/iOS conformance, publish dry-run, and uploads a pinned `pana` report. Dedicated offline jobs run its minimum/current Dart gates, fresh-process snapshot verification, a response-dropping proxy over the real server, resource/performance baselines, and isolated offline archive resolution. Android/iOS jobs upload content-free exact-commit simulator manifests, which do not replace the physical-device record required before an offline receipt release. After the aggregate Gate passes, parent `sdks/dart/vX.Y.Z` and independently tagged `sdks/dart/offline/vX.Y.Z` publication each follow read-only preflight → `contents: read` + OIDC (`id-token: write`) publish → read-only published-archive equality → `contents: write` with no OIDC for the exact-title GitHub Release. The initial offline 0.2.0 publication used one-time manual OAuth; 0.3.0 and receipt-bearing 0.4.0 are also hosted. Before a later offline tag, a package admin must verify the private pub.dev OIDC binding; the protected GitHub `pub.dev` environment already selects both tag patterns and requires reviewers. There is no long-lived pub token.
+- **Dart release gate**: `.github/workflows/dart-sdk.yml` is path-filtered on `sdks/dart/**`, proto/Buf inputs, compatible server paths, Go workspace/toolchain pins, ADR 0001/0002, and the root release-contract docs/workflow. It tests the documented Dart floor plus the Flutter version pinned by `docs/decisions/0001-dart-mobile-transport.md`, checks actual `lib/src/gen` drift, real wire, warning-free dartdoc, example Android/iOS conformance, publish dry-run, and uploads a pinned `pana` report. Dedicated offline jobs run its minimum/current Dart gates, fresh-process snapshot verification, a response-dropping proxy over the real server, resource/performance baselines. Locked paired-source offline checks and the isolated parent archive precede parent publication. A separate read-only `offline-hosted` job follows the source Gate and, for parent tag pushes, published-parent archive equality. Missing hosted parents or stale offline locks stay explicitly pending on source/parent runs and block offline tag pushes; failed or mismatched archives fail. Only successful isolated hosted offline archive qualification can admit offline release preflight, which retains its physical evidence gate. Android/iOS jobs upload content-free exact-commit simulator manifests, which do not replace the physical-device record required before an offline receipt release. After the aggregate Gate passes, parent `sdks/dart/vX.Y.Z` and independently tagged `sdks/dart/offline/vX.Y.Z` publication each follow read-only preflight → `contents: read` + OIDC (`id-token: write`) publish → read-only published-archive equality → `contents: write` with no OIDC for the exact-title GitHub Release. The initial offline 0.2.0 publication used one-time manual OAuth; 0.3.0 and receipt-bearing 0.4.0 are also hosted. Before a later offline tag, a package admin must verify the private pub.dev OIDC binding; the protected GitHub `pub.dev` environment already selects both tag patterns and requires reviewers. There is no long-lived pub token.
 - **External-surface testing policy (Definition of Done)** — canonical text in
   [CONTRIBUTING.md](CONTRIBUTING.md) "External-surface testing policy". The always-on
   summary: every PR that adds or changes externally observable behaviour (RPC surface,
@@ -202,17 +202,37 @@ The load-bearing always-on essentials:
   exact-source acceptance, publication, and human/device evidence, each with
   done/total and linked blockers. Preliminary branch or simulator results do not
   complete the final-source or physical buckets.
-- **Batch validation without relaxing it**: targeted checks during edits, then
-  the mandatory full gate before every push. Budget costly whole-host/device
-  runs in the driving Issue; preflight each required run/family boundary while
-  reusing the one immutable image and unchanged setup, pin final merged source,
-  and preserve raw evidence with exact SHA-256. Repeat only after a relevant
-  build change, documented invalid run, or predeclared stability check; never
-  choose a passing sample or change workload, GC, or thresholds to obtain a pass.
-- **Before every push**, run the local quality gate: `gofmt -l` must print nothing, then
-  `go test ./...` from the root **and** from each Go submodule (the root run does not span
-  submodules), plus Dart/Flutter gates and the standalone Rust crate gate in
-  [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Preflight the complete task**: read the linked Issue acceptance, relevant CI
+  jobs, repository instructions, existing authorization and environment/toolchain
+  requirements before editing. Resolve missing prerequisites early; do independent
+  work while a required input or shared validation slot is pending.
+- **One bounded implementation Issue → one cohesive PR** is the default. Include
+  source, paired tests, documentation and generated consumers; fix review and CI
+  findings within that PR. Epics and final acceptance owners keep separate exits.
+- **Iterate, review, then qualify**: run focused checks during edits, resolve review
+  findings, freeze the coherent candidate and run the complete local quality gate
+  before push. Every push needs passing results for all required components,
+  recorded as newly executed or mechanically carried by the live local runner in
+  [CONTRIBUTING.md](CONTRIBUTING.md#local-validation-carry). Unverified results and
+  unsupported components require execution; CI still qualifies its exact merge.
+- **Continue within existing authorization** through implementation, tests, review
+  fixes, CI repair and ordinary integration. Do not ask again for an already
+  authorized action. Surface actual permission/environment blockers precisely;
+  do not change credentials, scopes, protections or production environments to
+  bypass them.
+- **Keep review and evidence concise**: pin head/tree, review changed behavior and
+  its dependency boundaries, retain raw logs and a short machine-generated verdict
+  with hashes. Re-review changed inputs and their implications after a fix; expand
+  only for new findings or invalid evidence. Use normal implementation effort for
+  routine work; reserve Ultra for new safety invariants and proof questions.
+- **Budget costly validation** in the driving Issue; pin final merged source,
+  preflight required family boundaries and reuse one immutable image/setup.
+  Repeat only after relevant changes, invalid evidence or predeclared stability
+  checks; never choose a pass or change workload, GC or thresholds to obtain one.
+- **Before every push**, satisfy the local quality gate in CONTRIBUTING.md:
+  `gofmt -l` must be empty; root and every Go submodule, Dart/Flutter and Rust
+  components must all have valid results. The policy-changing PR itself uses the
+  previously applicable full gate and cannot qualify itself with its relaxation.
 - **Never hand-edit generated code.** Regenerate `pb/**` with `go generate ./...` (buf,
   never `--clean`) and `server/cmd/wire_gen.go` from `server/` with `go tool wire ./cmd`.
 - **When your work surfaces a fact another open Issue needs, comment it on that Issue in

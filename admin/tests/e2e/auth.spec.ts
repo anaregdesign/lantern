@@ -1,6 +1,129 @@
 import { expect, test } from "@playwright/test";
 import { securityUI } from "./helpers";
 
+for (const width of [1280, 390]) {
+  test(`Server Role scope selection clears old rows and scopes generated traversal at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const allow = (action: string, prefix: string) => ({
+      id: action + prefix,
+      action: "SECURITY_ACTION_" + action,
+      effect: "SECURITY_EFFECT_ALLOW",
+      prefix,
+    });
+    const fixture = await securityUI(page, {
+      roles: [
+        {
+          id: "scoped",
+          rules: [
+            allow("VERTEX_READ", "tenant:"),
+            allow("VERTEX_READ", "audit:"),
+            allow("QUERY", "tenant:"),
+            {
+              ...allow("VERTEX_READ", "tenant:private:"),
+              effect: "SECURITY_EFFECT_DENY",
+            },
+          ],
+        },
+      ],
+    });
+    const calls: Array<{ method: string; prefix: string }> = [];
+    await page.route(
+      `${fixture.primary}/browser/graph.v1.LanternService/**`,
+      async (route) => {
+        const method = new URL(route.request().url()).pathname
+          .split("/")
+          .at(-1)!;
+        const body = route.request().postDataJSON();
+        calls.push({ method, prefix: body.prefix ?? body.vertexPrefix ?? "" });
+        const vertices = [
+          {
+            key: body.prefix === "audit:" ? "audit:visible" : "tenant:visible",
+            string: "visible",
+          },
+        ];
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify(
+            method === "ScanVertices"
+              ? { vertices }
+              : method === "CountVerticesByPrefix"
+                ? { count: "1" }
+                : {},
+          ),
+        });
+      },
+    );
+    await page.goto(`${fixture.primary}/vertices`);
+    await expect(page.getByTestId("data-scope-select")).toBeVisible();
+    await expect(page.getByTestId("scope-deny-exceptions")).toContainText(
+      "tenant:private:",
+    );
+    await page.getByTestId("data-scope-select").selectOption("audit:");
+    await expect(
+      page.getByRole("table", { name: "Vertices", exact: true }),
+    ).toContainText("audit:visible");
+    await expect(
+      page.getByRole("table", { name: "Vertices", exact: true }),
+    ).not.toContainText("tenant:visible");
+    await page.getByLabel("Key prefix", { exact: true }).fill("tenant:");
+    await expect(
+      page.getByRole("table", { name: "Vertices", exact: true }),
+    ).toContainText("tenant:visible");
+    await page.getByTestId("data-scope-select").selectOption("audit:");
+    await expect(page.getByLabel("Key prefix", { exact: true })).toHaveValue(
+      "audit:",
+    );
+    await expect(
+      page.getByRole("table", { name: "Vertices", exact: true }),
+    ).toContainText("audit:visible");
+    await page
+      .getByRole("tab", { name: "Content search", exact: true })
+      .click();
+    await expect(
+      page.getByTestId("data-scope-select").locator("option[value='audit:']"),
+    ).toHaveText("audit: (explicit prefix)");
+    await page.getByTestId("data-scope-select").selectOption("tenant:");
+    await expect(
+      page.getByRole("tab", { name: "Content search", exact: true }),
+    ).toHaveAttribute("aria-selected", "true");
+    await expect(
+      page.getByLabel("Key namespace prefix", { exact: true }),
+    ).toHaveValue("tenant:");
+    await page.goto(`${fixture.primary}/cli`);
+    await page.getByTestId("data-scope-select").selectOption("tenant:");
+    await expect(page.locator("#cli-axis-picker-preview")).toContainText(
+      "prefix=tenant:",
+    );
+    await expect(page.getByTestId("cli-axis-prefix")).toHaveAttribute(
+      "readonly",
+      "",
+    );
+    const prompt = page.getByTestId("cli-input");
+    await prompt.fill("scan vertices outside:");
+    await prompt.press("Enter");
+    await expect
+      .poll(
+        () => calls.filter((c) => c.method === "ScanVertices").at(-1)?.prefix,
+      )
+      .toBe("outside:");
+    await page.getByTestId("data-scope-select").selectOption("");
+    await expect(page.getByTestId("cli-scrollback")).not.toContainText(
+      "scan vertices outside:",
+    );
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`scope-${width}.png`),
+      fullPage: true,
+    });
+  });
+}
+
 test("OFF shows setup guidance without security mutation controls", async ({
   page,
 }) => {

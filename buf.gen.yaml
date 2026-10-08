@@ -20,7 +20,7 @@ plugins:
   # convention from connectrpc.com/connect. Since #362 the gRPC,
   # grpc-gateway, and openapiv2 plugins are gone — Lantern is
   # Connect-only end-to-end.
-  - remote: buf.build/connectrpc/go
+  - remote: buf.build/connectrpc/go:v1.21.0
     out: pb
     opt:
       - paths=source_relative

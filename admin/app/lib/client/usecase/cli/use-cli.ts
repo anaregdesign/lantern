@@ -23,6 +23,7 @@ import {
   type ScrollbackEntry,
   type TraversalResultMetadata,
 } from "./state";
+import { useAddRecovery } from "~/lib/client/usecase/add-recovery/use-add-recovery";
 
 /**
  * Upper bound on the number of commands a single paste may enqueue (#945).
@@ -87,6 +88,7 @@ export interface UseCliResult {
  */
 export function useCli(): UseCliResult {
   const client = useLanternClient();
+  const addRecovery = useAddRecovery();
   const [state, dispatch] = useReducer(cliReducer, INITIAL_CLI_STATE);
   // Backs the `Cancel` action (#433). `runCommand` populates this with
   // a fresh controller before each dispatch and clears it on settle;
@@ -136,6 +138,8 @@ export function useCli(): UseCliResult {
           client,
           command,
           signal: controller.signal,
+          add: addRecovery.add,
+          addDecaying: addRecovery.addDecaying,
         });
         const elapsed = performance.now() - start;
         dispatch({
@@ -210,7 +214,7 @@ export function useCli(): UseCliResult {
         dispatch({ type: "RUN_SETTLED" });
       }
     },
-    [client],
+    [client, addRecovery.add, addRecovery.addDecaying],
   );
 
   // Executes one accepted line end-to-end: records it in `history` (at run

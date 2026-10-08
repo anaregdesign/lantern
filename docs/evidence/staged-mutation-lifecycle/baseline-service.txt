@@ -1,0 +1,30 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/anaregdesign/lantern/server/service
+cpu: Apple M3 Max
+BenchmarkPublicReceiptEdgeAddAdmission/no_receipt-16         	     100	   9911391 ns/op	   19307 B/op	     323 allocs/op
+BenchmarkPublicReceiptEdgeAddAdmission/no_receipt-16         	     100	   9906962 ns/op	   19302 B/op	     323 allocs/op
+BenchmarkPublicReceiptEdgeAddAdmission/no_receipt-16         	     100	   9361276 ns/op	   19302 B/op	     323 allocs/op
+BenchmarkPublicReceiptEdgeAddAdmission/admitted_receipt-16   	     100	  13785495 ns/op	   45951 B/op	     551 allocs/op
+BenchmarkPublicReceiptEdgeAddAdmission/admitted_receipt-16   	     100	  14209175 ns/op	   45944 B/op	     551 allocs/op
+BenchmarkPublicReceiptEdgeAddAdmission/admitted_receipt-16   	     100	  15252720 ns/op	   45946 B/op	     551 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/no_receipt-16      	     100	   9360380 ns/op	    7256 B/op	     223 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/no_receipt-16      	     100	   9352841 ns/op	    7253 B/op	     223 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/no_receipt-16      	     100	   9255296 ns/op	    7253 B/op	     223 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/admitted_receipt-16         	     100	  14060615 ns/op	   14815 B/op	     195 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/admitted_receipt-16         	     100	  13648497 ns/op	   14814 B/op	     195 allocs/op
+BenchmarkPublicReceiptEdgeDeleteAdmission/admitted_receipt-16         	     100	  13584115 ns/op	   14817 B/op	     195 allocs/op
+BenchmarkPublicReceiptVertexDeleteAdmission/no_receipt-16             	     100	  12289292 ns/op	    5870 B/op	     178 allocs/op
+BenchmarkPublicReceiptVertexDeleteAdmission/no_receipt-16             	     100	   9158835 ns/op	    5866 B/op	     178 allocs/op
+BenchmarkPublicReceiptVertexDeleteAdmission/no_receipt-16             	     100	   9360468 ns/op	    5866 B/op	     178 allocs/op
+BenchmarkPublicReceiptVertexDeleteAdmission/admitted_receipt-16       	     100	  13826464 ns/op	   21598 B/op	     321 allocs/op
+BenchmarkPublicReceiptVertexDeleteAdmission/admitted_receipt-16       	     100	  14648172 ns/op	   21652 B/op	     321 allocs/op
+BenchmarkPublicReceiptVertexDeleteAdmission/admitted_receipt-16       	     100	  13655980 ns/op	   21600 B/op	     321 allocs/op
+BenchmarkPublicReceiptVertexPutAdmission/no_receipt-16                	     100	   9168733 ns/op	   24616 B/op	     347 allocs/op
+BenchmarkPublicReceiptVertexPutAdmission/no_receipt-16                	     100	   9441198 ns/op	   24616 B/op	     347 allocs/op
+BenchmarkPublicReceiptVertexPutAdmission/no_receipt-16                	     100	   9299805 ns/op	   24616 B/op	     347 allocs/op
+BenchmarkPublicReceiptVertexPutAdmission/admitted_receipt-16          	     100	  13598016 ns/op	   37779 B/op	     394 allocs/op
+BenchmarkPublicReceiptVertexPutAdmission/admitted_receipt-16          	     100	  14773840 ns/op	   37777 B/op	     394 allocs/op
+BenchmarkPublicReceiptVertexPutAdmission/admitted_receipt-16          	     100	  13047994 ns/op	   37777 B/op	     394 allocs/op
+PASS
+ok  	github.com/anaregdesign/lantern/server/service	31.566s

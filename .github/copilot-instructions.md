@@ -78,20 +78,24 @@ they must not conflict.
   final exact-source acceptance, publication, and human/device evidence, each with
   done/total and linked blockers. A branch diagnostic or simulator is not final
   acceptance.
-- **Batch validation, not standards**: targeted checks during edits, full mandatory
-  gate before each push. Budget costly whole-host/device runs before execution,
-  preflight every required run/family boundary while reusing the one immutable
-  image and unchanged setup, pin final merged source, and retain raw evidence
-  with its SHA-256. Repeat only for a relevant build change, documented invalid
-  run, or predeclared stability check; never select a pass or relax load, GC, or limits.
+- **Preflight acceptance, CI, authorization and environment** before editing.
+  Default to one bounded implementation Issue → one cohesive PR; include paired
+  tests/docs/generated consumers and repair review/CI findings in the same PR.
+  Continue within existing authorization and surface exact permission blockers.
+- **Iterate, review, then qualify**: focused tests during edits, review fixes before
+  the final coherent candidate gate. Every push requires valid results for every
+  required component, newly executed or mechanically carried by the live local
+  runner under CONTRIBUTING.md. Unknown/invalid evidence requires full execution;
+  unsupported gates run, and hosted merge/main/release/device/performance proof
+  remains independent. Policy changes use the previous full gate on themselves.
+- Review the immutable diff and affected boundaries, retain short generated
+  head/tree/hash evidence and raw logs. Reserve Ultra for new safety/proof questions.
+  Budget costly runs, pin final merged source and reuse one immutable image/setup;
+  repeat only for relevant changes, invalid runs or declared stability checks.
 - **PR titles must be Conventional Commits** (`feat`/`fix`/`docs`/`chore`/`ci`/
   `refactor`/`perf`/`test`/`build`/`revert`); a required check rejects others.
-- **Before every push**, run the local quality gate: `gofmt -l` must print nothing,
-  then `go test ./...` from the root **and** from each Go submodule (the root run does
-  not span submodules), plus Dart format/analyze/test in `sdks/dart/` and Flutter
-  analyze/test in `sdks/dart/example/`; the standalone Rust crate has its own
-  format, Clippy (warnings denied), test, and warning-free doc gate in
-  [CONTRIBUTING.md](../CONTRIBUTING.md).
+- **Before every push**, satisfy all local components in CONTRIBUTING.md:
+  empty `gofmt -l`, root and every Go submodule, Dart/Flutter and Rust gates.
 - **Dart releases are independent.** `sdks/dart/vX.Y.Z` must match
   `sdks/dart/pubspec.yaml` and `CHANGELOG.md`; the tag workflow runs Dart plus
   Android/iOS gates, publishes `lantern_client` through pub.dev OIDC, and only then

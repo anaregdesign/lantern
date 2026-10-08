@@ -29,11 +29,58 @@ struct NativeFixture {
     client_key_file: String,
 }
 
+// The production server binds port zero itself. Read its actual listener
+// address without opening and releasing a competing reservation socket.
+struct StartupLog(tempfile::NamedTempFile);
+
+impl StartupLog {
+    fn bound_address(&self) -> Result<Option<SocketAddr>, Box<dyn Error>> {
+        // Startup metadata is small; never scan an unbounded child log.
+        let reader = BufReader::new(self.0.reopen()?.take(64 * 1024));
+        for line in reader.lines() {
+            let line = line?;
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if event.get("msg").and_then(|value| value.as_str()) != Some("lantern server starting")
+            {
+                continue;
+            }
+            let address: SocketAddr = event
+                .get("addr")
+                .and_then(|value| value.as_str())
+                .ok_or("production Lantern listener address missing")?
+                .parse()?;
+            if address.port() == 0 {
+                return Err("production Lantern listener port is still zero".into());
+            }
+            return Ok(Some(address));
+        }
+        Ok(None)
+    }
+}
+
+impl Drop for StartupLog {
+    fn drop(&mut self) {
+        // GoServer reaps its child first. Preserve all original stderr in the
+        // test log, including failures before a bound address was published.
+        let copied = self
+            .0
+            .reopen()
+            .and_then(|mut file| std::io::copy(&mut file, &mut std::io::stderr()));
+        if let Err(error) = copied {
+            eprintln!("failed to retain real-wire Lantern stderr: {error}");
+        }
+    }
+}
+
 pub(crate) struct GoServer {
     child: Child,
     port: u16,
     native: Option<NativeFixture>,
     _files: Option<TempDir>,
+    _startup_log: Option<StartupLog>,
+    startup_deadline: Option<Instant>,
 }
 
 fn write_private_fixture(
@@ -94,13 +141,21 @@ impl GoServer {
         let binary = env::var_os("LANTERN_RUST_TEST_SERVER")
             .filter(|value| !value.is_empty())
             .ok_or("set LANTERN_RUST_TEST_SERVER to the built production Go server")?;
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
-
+        if overrides.iter().any(|(name, _)| {
+            matches!(
+                *name,
+                "LANTERN_PORT" | "LANTERN_LOG_LEVEL" | "LANTERN_LOG_FORMAT"
+            )
+        }) {
+            return Err("port and startup logging are fixture-owned settings".into());
+        }
+        let startup_log = StartupLog(tempfile::NamedTempFile::new()?);
+        let deadline = Instant::now() + Duration::from_secs(15);
         let mut command = Command::new(binary);
         command
-            .env("LANTERN_PORT", port.to_string())
+            .env("LANTERN_PORT", "0")
+            .env("LANTERN_LOG_LEVEL", "info")
+            .env("LANTERN_LOG_FORMAT", "json")
             .env("LANTERN_METRICS_ADDR", "")
             .env_remove("LANTERN_AUTH_TOKENS")
             .env("LANTERN_TLS_CERT_FILE", "")
@@ -110,16 +165,50 @@ impl GoServer {
             .env_remove("LANTERN_RUST_TEST_AUTH_FIXTURE")
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::from(startup_log.0.reopen()?));
         for (name, value) in overrides {
             command.env(name, value);
         }
-        Ok(Self {
+        let mut result = Self {
             child: command.spawn()?,
-            port,
+            port: 0,
             native: None,
             _files: None,
-        })
+            _startup_log: Some(startup_log),
+            startup_deadline: Some(deadline),
+        };
+        result.wait_for_bound_port()?;
+        Ok(result)
+    }
+
+    fn wait_for_bound_port(&mut self) -> Result<(), Box<dyn Error>> {
+        let deadline = self.readiness_deadline();
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                return Err(format!(
+                    "production Lantern exited before listener readiness: {status}"
+                )
+                .into());
+            }
+            if let Some(address) = self
+                ._startup_log
+                .as_ref()
+                .ok_or("production Lantern startup log missing")?
+                .bound_address()?
+            {
+                self.port = address.port();
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("production Lantern bound address did not arrive in 15 seconds".into());
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    pub(crate) fn readiness_deadline(&self) -> Instant {
+        self.startup_deadline
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(15))
     }
 
     pub(crate) fn start_authenticated(
@@ -208,6 +297,8 @@ impl GoServer {
             port: ports[0],
             native: None,
             _files: Some(files),
+            _startup_log: None,
+            startup_deadline: None,
         };
         // A failed readiness/JSON read still owns the supervisor for cleanup.
         let mut line = String::new();
@@ -267,7 +358,7 @@ impl GoServer {
 
     pub(crate) fn wait_for_listener(&mut self) -> Result<(), Box<dyn Error>> {
         let addr = SocketAddr::from(([127, 0, 0, 1], self.port));
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = self.readiness_deadline();
         loop {
             if let Some(status) = self.child.try_wait()? {
                 return Err(format!(
@@ -340,5 +431,150 @@ mod diagnostic_tests {
         }
         fs::write(&path, vec![b'x'; 8192]).unwrap();
         assert_eq!(fixture_failure_category(&path), "unknown");
+    }
+
+    #[test]
+    fn startup_port_comes_only_from_the_bound_listener() -> Result<(), Box<dyn Error>> {
+        let log = StartupLog(tempfile::NamedTempFile::new()?);
+        fs::write(
+            log.0.path(),
+            concat!(
+                "{\"msg\":\"lantern starting\",\"port\":0}\n",
+                "{\"msg\":\"metrics server starting\",\"addr\":\"127.0.0.1:9090\"}\n",
+                "{\"msg\":\"lantern server starting\",\"addr\":\"[::]:45678\"}\n"
+            ),
+        )?;
+        assert_eq!(log.bound_address()?, Some("[::]:45678".parse()?));
+        for event in [
+            r#"{"msg":"lantern server starting"}"#,
+            r#"{"msg":"lantern server starting","addr":"[::]:0"}"#,
+            r#"{"msg":"lantern server starting","addr":"not a socket"}"#,
+        ] {
+            fs::write(log.0.path(), event)?;
+            assert!(log.bound_address().is_err());
+        }
+        fs::write(
+            log.0.path(),
+            r#"{"msg":"lantern server starting","addr":"127.0.0.1:45679"}"#,
+        )?;
+        assert_eq!(log.bound_address()?, Some("127.0.0.1:45679".parse()?));
+        fs::write(
+            log.0.path(),
+            r#"{"msg":"lantern server starting","addr":"[::]:"#,
+        )?;
+        assert_eq!(log.bound_address()?, None);
+        let mut oversized = vec![b'x'; 64 * 1024];
+        oversized.extend_from_slice(
+            b"\n{\"msg\":\"lantern server starting\",\"addr\":\"[::]:45678\"}\n",
+        );
+        fs::write(log.0.path(), oversized)?;
+        assert_eq!(log.bound_address()?, None);
+        // Keep the synthetic diagnostic fixture quiet when its log is replayed.
+        fs::write(log.0.path(), "")?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
+    async fn real_wire_fixture_owns_ephemeral_listener_on_return() -> Result<(), Box<dyn Error>> {
+        async fn require_serving(server: &GoServer) -> Result<(), Box<dyn Error>> {
+            use tonic_health::pb::{
+                HealthCheckRequest, health_check_response::ServingStatus,
+                health_client::HealthClient,
+            };
+            let check = async {
+                let channel = tonic::transport::Endpoint::from_shared(format!(
+                    "http://127.0.0.1:{}",
+                    server.port()
+                ))?
+                .connect_timeout(Duration::from_secs(1))
+                .connect()
+                .await?;
+                let mut request = tonic::Request::new(HealthCheckRequest {
+                    service: "graph.v1.LanternService".into(),
+                });
+                request.set_timeout(Duration::from_secs(1));
+                let response = HealthClient::new(channel).check(request).await?;
+                assert_eq!(response.get_ref().status, ServingStatus::Serving as i32);
+                Ok::<(), Box<dyn Error>>(())
+            };
+            tokio::time::timeout_at(
+                tokio::time::Instant::from_std(server.readiness_deadline()),
+                check,
+            )
+            .await?
+        }
+
+        let mut first = GoServer::start(&[])?;
+        let mut second = GoServer::start(&[])?;
+        assert_ne!(first.port(), 0);
+        assert_ne!(first.port(), second.port());
+        for server in [&mut first, &mut second] {
+            assert!(server.try_wait()?.is_none());
+            let log = server._startup_log.as_ref().ok_or("startup log missing")?;
+            let address = log.bound_address()?.ok_or("bound address missing")?;
+            assert_eq!(address.port(), server.port());
+            let events = BufReader::new(log.0.reopen()?.take(64 * 1024)).lines();
+            let mut requested_ephemeral_port = false;
+            for line in events {
+                let Ok(event) = serde_json::from_str::<serde_json::Value>(&line?) else {
+                    continue;
+                };
+                if event["msg"] == "lantern starting" && event["port"] == 0 {
+                    requested_ephemeral_port = true;
+                }
+            }
+            assert!(requested_ephemeral_port, "the child must request port zero");
+            // Bound-port discovery and wire readiness share the original budget.
+            let deadline = server.readiness_deadline();
+            server.wait_for_listener()?;
+            require_serving(server).await?;
+            assert_eq!(server.readiness_deadline(), deadline);
+        }
+
+        // Rebinding a live address need not fail on Windows. Prove ownership
+        // through the existing connection closing when its child is reaped,
+        // while the other live child's actual Health endpoint keeps serving.
+        let deadline = first.readiness_deadline();
+        deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("first fixture startup deadline expired")?;
+        let timeout = tokio::time::Instant::from_std(deadline);
+        let mut connection = tokio::time::timeout_at(
+            timeout,
+            tokio::net::TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], first.port()))),
+        )
+        .await
+        .map_err(|error| format!("ownership connection exceeded startup deadline: {error}"))?
+        .map_err(|error| format!("ownership connection failed: {error}"))?;
+        drop(first);
+        deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("first fixture startup deadline expired during cleanup")?;
+        // A reset socket may reject setsockopt on macOS. Use the original
+        // absolute deadline without configuring a socket after child exit.
+        let closed = tokio::time::timeout_at(
+            timeout,
+            tokio::io::AsyncReadExt::read(&mut connection, &mut [0]),
+        )
+        .await
+        .map_err(|error| format!("owned child close exceeded startup deadline: {error}"))?;
+        deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("first fixture startup deadline expired during close observation")?;
+        match closed {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) => {}
+            result => {
+                return Err(format!("owned child connection did not close: {result:?}").into());
+            }
+        }
+        assert!(second.try_wait()?.is_none());
+        require_serving(&second).await?;
+        Ok(())
     }
 }

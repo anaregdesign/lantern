@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { useLanternClient } from "~/lib/client/infrastructure/api/use-lantern-client";
-import {
-  addEdgeHandler,
-  deleteEdgeHandler,
-  loadEdge,
-  putEdgeHandler,
-} from "./handlers";
+import { deleteEdgeHandler, loadEdge, putEdgeHandler } from "./handlers";
 import { editEdgeReducer } from "./reducer";
 import { INITIAL_EDIT_EDGE_STATE, type EditEdgeState } from "./state";
 import type { EdgeWriteMode } from "./edge-codec";
@@ -16,6 +11,9 @@ import {
   selectPutValid,
 } from "./selectors";
 import type { TtlInput } from "../edit-vertex/value-codec";
+import { useAddRecovery } from "~/lib/client/usecase/add-recovery/use-add-recovery";
+import { flatEdgeToSdkInput } from "~/lib/client/infrastructure/api/to-flat";
+import { getEdge } from "~/lib/client/infrastructure/api/get-edge";
 
 export interface UseEditEdgeResult {
   state: EditEdgeState;
@@ -30,10 +28,13 @@ export interface UseEditEdgeResult {
   closeDeleteDialog: () => void;
   confirmDelete: () => Promise<void>;
   reload: () => void;
+  addRecovery: ReturnType<typeof useAddRecovery>;
 }
 
 export function useEditEdge(tail: string, head: string): UseEditEdgeResult {
   const client = useLanternClient();
+  const addRecovery = useAddRecovery();
+  const { add } = addRecovery;
   const [state, dispatch] = useReducer(
     editEdgeReducer,
     INITIAL_EDIT_EDGE_STATE,
@@ -77,11 +78,32 @@ export function useEditEdge(tail: string, head: string): UseEditEdgeResult {
       }
       return;
     }
-    await addEdgeHandler(
-      { client, tail: state.tail, head: state.head, body },
-      dispatch,
-    );
-  }, [client, state]);
+    dispatch({ type: "WRITE_REQUESTED", mode: "add" });
+    try {
+      const reply = await add(
+        flatEdgeToSdkInput({
+          ...body.edge,
+          tail: state.tail,
+          head: state.head,
+        }),
+      );
+      if (reply.kind === "acceptedUndisclosed") {
+        dispatch({ type: "WRITE_ACCEPTED_UNDISCLOSED", mode: "add" });
+        return;
+      }
+      const edge = await getEdge(client, state.tail, state.head);
+      dispatch({ type: "WRITE_SUCCEEDED", mode: "add", edge });
+    } catch (error) {
+      dispatch({
+        type: "WRITE_FAILED",
+        mode: "add",
+        error:
+          error instanceof Error
+            ? error.message
+            : "Add could not be confirmed.",
+      });
+    }
+  }, [add, client, state]);
 
   const submitPut = useCallback(async () => {
     const { body, error } = selectPutBody(state);
@@ -114,7 +136,7 @@ export function useEditEdge(tail: string, head: string): UseEditEdgeResult {
     dispatch({ type: "TARGET_CHANGED", tail, head });
   }, [tail, head]);
 
-  const addValid = useMemo(() => selectAddValid(state), [state]);
+  const addValid = selectAddValid(state) && !addRecovery.pending(tail, head);
   const putValid = useMemo(() => selectPutValid(state), [state]);
   const deleted = state.deleteStatus === "deleted";
 
@@ -132,6 +154,7 @@ export function useEditEdge(tail: string, head: string): UseEditEdgeResult {
       closeDeleteDialog,
       confirmDelete,
       reload,
+      addRecovery,
     }),
     [
       state,
@@ -146,6 +169,7 @@ export function useEditEdge(tail: string, head: string): UseEditEdgeResult {
       closeDeleteDialog,
       confirmDelete,
       reload,
+      addRecovery,
     ],
   );
 }

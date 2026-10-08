@@ -1,0 +1,401 @@
+[
+  {
+    "name": "BenchmarkAddEdges_ExistingBatch-16",
+    "baseline": [
+      13514.0,
+      24279.0,
+      133.0
+    ],
+    "final": [
+      13420.0,
+      24279.0,
+      133.0
+    ],
+    "delta_percent": [
+      -0.6955749593014704,
+      0.0,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkPutVertex_Search/Plain-16",
+    "baseline": [
+      509.6,
+      348.0,
+      2.0
+    ],
+    "final": [
+      446.2,
+      348.0,
+      2.0
+    ],
+    "delta_percent": [
+      -12.441130298273162,
+      0.0,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkPutVertex_Search/Indexed-16",
+    "baseline": [
+      6685.0,
+      15871.0,
+      84.0
+    ],
+    "final": [
+      6891.0,
+      15871.0,
+      84.0
+    ],
+    "delta_percent": [
+      3.081525804038887,
+      0.0,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkGraphCacheStagingCosts/staging_false/get_vertex-16",
+    "baseline": [
+      55.84,
+      0.0,
+      0.0
+    ],
+    "final": [
+      46.67,
+      0.0,
+      0.0
+    ],
+    "delta_percent": [
+      -16.42191977077364,
+      0,
+      0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkGraphCacheStagingCosts/staging_false/put_vertex-16",
+    "baseline": [
+      178.3,
+      0.0,
+      0.0
+    ],
+    "final": [
+      143.8,
+      0.0,
+      0.0
+    ],
+    "delta_percent": [
+      -19.34941110487941,
+      0,
+      0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkGraphCacheStagingCosts/staging_false/get_weight-16",
+    "baseline": [
+      213.8,
+      56.0,
+      2.0
+    ],
+    "final": [
+      192.1,
+      56.0,
+      2.0
+    ],
+    "delta_percent": [
+      -10.149672591206738,
+      0.0,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkGraphCacheStagingCosts/staging_true/get_vertex-16",
+    "baseline": [
+      50.83,
+      0.0,
+      0.0
+    ],
+    "final": [
+      50.0,
+      0.0,
+      0.0
+    ],
+    "delta_percent": [
+      -1.6328939602596848,
+      0,
+      0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkGraphCacheStagingCosts/staging_true/put_vertex-16",
+    "baseline": [
+      179.6,
+      0.0,
+      0.0
+    ],
+    "final": [
+      146.2,
+      0.0,
+      0.0
+    ],
+    "delta_percent": [
+      -18.596881959910917,
+      0,
+      0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkGraphCacheStagingCosts/staging_true/get_weight-16",
+    "baseline": [
+      230.8,
+      56.0,
+      2.0
+    ],
+    "final": [
+      189.2,
+      56.0,
+      2.0
+    ],
+    "delta_percent": [
+      -18.024263431542476,
+      0.0,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkEdgeCreateTransaction-16",
+    "baseline": [
+      1582.0,
+      2885.0,
+      29.0
+    ],
+    "final": [
+      1350.0,
+      2885.0,
+      29.0
+    ],
+    "delta_percent": [
+      -14.66498103666245,
+      0.0,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkEdgeDeleteTransactionAbort-16",
+    "baseline": [
+      2270.0,
+      6209.0,
+      36.0
+    ],
+    "final": [
+      2378.0,
+      6209.0,
+      36.0
+    ],
+    "delta_percent": [
+      4.7577092511013275,
+      0.0,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkPublicReceiptEdgeAddAdmission/no_receipt-16",
+    "baseline": [
+      9906962.0,
+      19302.0,
+      323.0
+    ],
+    "final": [
+      9516138.0,
+      19303.0,
+      323.0
+    ],
+    "delta_percent": [
+      -3.9449429603141684,
+      0.005180810278737624,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkPublicReceiptEdgeAddAdmission/admitted_receipt-16",
+    "baseline": [
+      14209175.0,
+      45946.0,
+      551.0
+    ],
+    "final": [
+      13861703.0,
+      45948.0,
+      551.0
+    ],
+    "delta_percent": [
+      -2.445405873317763,
+      0.00435293605536291,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkPublicReceiptEdgeDeleteAdmission/no_receipt-16",
+    "baseline": [
+      9352841.0,
+      7253.0,
+      223.0
+    ],
+    "final": [
+      8967852.0,
+      7254.0,
+      223.0
+    ],
+    "delta_percent": [
+      -4.116278679387364,
+      0.013787398317943733,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkPublicReceiptEdgeDeleteAdmission/admitted_receipt-16",
+    "baseline": [
+      13648497.0,
+      14815.0,
+      195.0
+    ],
+    "final": [
+      14255419.0,
+      14814.0,
+      195.0
+    ],
+    "delta_percent": [
+      4.446804655486969,
+      -0.006749915626058645,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkPublicReceiptVertexDeleteAdmission/no_receipt-16",
+    "baseline": [
+      9360468.0,
+      5866.0,
+      178.0
+    ],
+    "final": [
+      9120052.0,
+      5866.0,
+      178.0
+    ],
+    "delta_percent": [
+      -2.568418587617627,
+      0.0,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkPublicReceiptVertexDeleteAdmission/admitted_receipt-16",
+    "baseline": [
+      13826464.0,
+      21600.0,
+      321.0
+    ],
+    "final": [
+      13409768.0,
+      21599.0,
+      321.0
+    ],
+    "delta_percent": [
+      -3.0137568072357457,
+      -0.004629629629626653,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkPublicReceiptVertexPutAdmission/no_receipt-16",
+    "baseline": [
+      9299805.0,
+      24616.0,
+      347.0
+    ],
+    "final": [
+      8520717.0,
+      24618.0,
+      347.0
+    ],
+    "delta_percent": [
+      -8.377465979125365,
+      0.008124796880082386,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  },
+  {
+    "name": "BenchmarkPublicReceiptVertexPutAdmission/admitted_receipt-16",
+    "baseline": [
+      13598016.0,
+      37777.0,
+      394.0
+    ],
+    "final": [
+      13968547.0,
+      37777.0,
+      394.0
+    ],
+    "delta_percent": [
+      2.7248901604469467,
+      0.0,
+      0.0
+    ],
+    "timing_budget_exceeded": false,
+    "bytes_budget_exceeded": false,
+    "allocations_added": false
+  }
+]

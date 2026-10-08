@@ -79,8 +79,20 @@ a hard rule for non-trivial changes, including bugs, improvements, and validatio
 repairs discovered while another PR is in flight. Record the expected outcome,
 boundaries, dependencies, and verification before editing, not after a diff exists.
 
-- One Issue per coherent problem (`gh issue create` if none exists). Related Issues
-  may share a cohesive PR when each outcome remains independently reviewable.
+- Default to one bounded implementation Issue → one cohesive PR containing source,
+  paired tests, documentation and generated consumers. Epics/specification parents
+  and final acceptance owners remain separate. Related existing Issues may share a
+  cohesive PR when each outcome remains independently reviewable; do not split CI
+  or review repairs into another PR or accumulate unrelated changes to save a gate.
+- Before editing, read the acceptance and relevant required CI, identify generation
+  and dependency inputs, check toolchain/environment prerequisites and existing
+  authorization. Record meaningful blockers early and continue independent work.
+- Within that authorization, continue implementation, focused tests, review fixes,
+  final qualification, CI repair and ordinary integration without repeated approval
+  requests. Permission failures must identify the exact action/target; do not work
+  around them by changing connections, credentials, scopes or protections.
+- Use normal implementation effort for routine changes. Concentrate Ultra on new
+  safety/proof boundaries, not repeated status narration or unchanged gate output.
 - Reference every closing Issue in the PR (`Closes #N` per Issue) so the merge
   wires each discussion to the diff.
 - Exceptions (no new Issue required): already-scoped direct documentation edits
@@ -143,9 +155,8 @@ go test ./...                    # root module
   && dart doc --output "$(mktemp -d)" --validate-links \
   && dart pub publish --dry-run)
 (cd sdks/dart/offline && dart format --output=none --set-exit-if-changed \
-  lib test tool && dart pub get --enforce-lockfile \
-  && dart analyze && dart test \
-  && dart doc --output "$(mktemp -d)" --validate-links)
+  lib test tool && python3 tool/paired_source_gate.py -- bash -c \
+  'dart analyze && dart test && dart doc --output "$(mktemp -d)" --validate-links')
 (cd sdks/dart/example && dart format --output=none --set-exit-if-changed \
   lib test integration_test \
   && flutter pub get --enforce-lockfile && flutter analyze && flutter test)
@@ -170,13 +181,21 @@ in tag/publication preflight and record that separate exit as pending until the
 parent has been published and the hosted lockfile regenerated. Do not publish a
 parent early merely to unblock source development.
 
-During edits, run the narrowest targeted checks for changed behavior rather than
-repeating the whole gate after each intermediate change. Plan one complete
-mandatory gate for the reviewed, cohesive PR head before pushing; every later
-push must again have passing results for all required components. A passing
-component can carry across a documentation-only follow-up only when its inputs
-and any required documentation-dependent checks are unchanged. CI then
-validates the exact synthetic merge, not a preliminary local branch image.
+During edits, run the narrowest targeted checks for changed behavior. Resolve
+review findings, freeze the coherent candidate, then qualify all required
+components before push. Every later push also needs passing results for every
+required component, with fresh executions and mechanically verified carries
+explicitly distinguished under the local carry contract below. Repair a CI
+failure in the same PR, preserve the failed run, and repeat checks whose inputs
+changed or whose evidence became invalid. CI qualifies the exact synthetic merge.
+
+Review the immutable candidate diff and its dependency/acceptance boundaries.
+After corrections, re-review the changed behavior and affected boundaries;
+expand the review only when a new finding warrants it. Retain raw logs privately
+and report a short machine-generated head/tree verdict, executed/carried counts,
+manifest SHA-256 and material blockers instead of hand-maintained checklists of
+successful command output. A policy-changing PR uses the previous full gate on
+its final source; it must not apply its proposed relaxation to itself.
 
 Per-module test runs are mandatory: the root `go test ./...` does **not** span
 submodules. `make lint` runs the same linter as the `Lint` job. The `Proto (buf)` check
@@ -201,8 +220,17 @@ release-tag, and Go language/toolchain directive changes; ordinary Go dependency
 changes skip native jobs. Ordinary prose-only changes skip package and native jobs. The stable `Gate` job checks
 both decisions independently. The experimental
 `sdks/dart/offline/` child runs from its own working directory at minimum/current
-Dart, including fresh-process canonical snapshot tests and real-server
-committed-response-loss replay. Android and iOS jobs upload content-free JSON
+Dart, including locked paired-source resolution, fresh-process canonical snapshot
+tests and real-server committed-response-loss replay. These checks and the isolated parent archive precede
+parent publication. The separate read-only `offline-hosted` job follows the source
+`Gate`; on a parent tag push it also waits for `verify-published`. It compares the
+hosted parent archive bytes before checking the committed offline hosted lock,
+then resolves the offline archive with an isolated cache and no overrides. Missing
+parent versions and stale locks report **pending** without claiming hosted archive
+acceptance on PR/main/manual or parent-tag runs. They block an offline tag push.
+Transport errors, archive mismatches, and invalid hosted-source/checksum evidence
+fail the hosted job. The source Gate does not depend on hosted readiness.
+Android and iOS jobs upload content-free JSON
 manifests bound to the exact commit, workflow run, Flutter/Dart revisions,
 application package, platform kind, scenario set, and pass result. Simulator
 manifests do not substitute for the sanitized exact-revision physical-device
@@ -320,11 +348,99 @@ clean candidate, inspects its license and archive, tests the package in
 isolation, runs a publish dry-run, and compares a fresh repackage. It does
 not authorize publishing during SDK development.
 
+## Local validation carry
+
+The optional [live runner](.github/scripts/local_gate_session.py) owns a reviewed
+[76-step command plan](.github/scripts/local_gate_plan.py). It installs dependencies
+serially before Go traverses the workspace and executes the complete plan on its
+first candidate. It accepts no manifest, receipt, digest or success JSON as input.
+The external historical full-gate runner is not modified by this mechanism.
+
+```sh
+# Configure the repository-pinned tools on PATH; acquire the shared host slot first.
+# Use a new evidence directory outside the checkout. One invocation runs the full gate.
+python3 -B .github/scripts/local_gate_session.py "$PWD" ../gate-evidence-new --session
+# Keep this process alive while committing reviewed fixes in another terminal.
+# Enter qualify to validate the new clean head; enter quit to end the session.
+```
+
+The initial eligible set is deliberately small: `go-test-core`, `go-test-mcp`,
+`go-test-pb`, `go-test-sdks-go`, `go-test-server` and `server-vet`. Each fingerprints
+all Go workspace source/manifests, proto/generated inputs, shared fixtures under
+`tests/`, `testdata/` and `testbed/`, relevant root inputs, gate commands and
+configuration. Cross-module Go changes therefore invalidate these receipts
+conservatively. At most **6 of 76 steps** can carry; the other **70 steps execute
+again**. A useful case is a reviewed follow-up changing only `admin/app/` or
+`sdks/node/src/`, with locks, configuration, Go/shared inputs and the execution
+context unchanged while the original runner process remains alive. This saves
+repeated Go submodule tests and server vet; dependency preparation, root integration
+and Rust/Dart/Flutter gates still run. Time savings depend on those six actual
+runtimes and have not been measured by the synthetic regression tests. Session
+receipts are discarded on exit; there is no persistent validation cache.
+Eligible commands execute in a runner-owned read-only Git export containing
+exactly their fingerprinted tracked input closure and its directories. The export
+is populated from the pinned Git objects, verified, and made read-only; developer
+checkout bytes, hardlinks, symlinks, ignored fixtures and untracked files never
+enter it. A developer source edit followed by restoration cannot change these
+execution inputs. A required fixture outside this namespace fails qualification;
+nondefault GOFLAGS/overlays and external local module/workspace replacements have
+no support. The remaining 70 fresh steps keep the existing owner-frozen checkout
+contract. Toolchain binary/source/tool files, actual Go version/settings,
+downloaded dependency integrity and effective environment are checked as well.
+The Go-generated decimal work-directory suffix in `GOGCCFLAGS` prefix maps is
+normalized; map kind/base/destination, other compiler flags and user CGO settings
+remain fingerprinted. Malformed or ambiguous flags fail qualification.
+
+All other components execute on every qualification. In particular, root Go
+integration, SDK real-wire, generation/drift, package/archive, Rust, Dart/Flutter,
+SQLite, Admin and documentation gates have no carry support. Their full-tree
+input closure includes backend, proto, shared fixtures and generated consumers;
+backend-only edits cannot retain SDK real-wire success. Do not reinterpret a
+missing/unsupported result as a skip or a pass.
+
+**Evidence trust boundary.** The live reviewed Python process creates a receipt
+only after its fixed subprocess command returns zero and any empty-output contract
+passes. It retains the input fingerprint, source head/tree and raw-log SHA-256 in
+memory; it verifies every raw log establishing the complete current baseline,
+including unsupported/fresh steps, and its output manifest against retained values
+before reuse. Altering an output JSON or log cannot create a receipt.
+Missing/altered evidence, unknown paths, classification errors, policy/dependency/
+configuration changes or toolchain/environment changes force full execution.
+Ignored input detection covers Go, proto, shared fixture, root and policy inputs.
+Only the plan's named dependency/build output directories are exempt from that
+presence guard: they are absent from the read-only export and their owning fresh
+gates still execute. A required ignored fixture cannot produce a successful
+eligible receipt. Unknown ignored inputs in the closure conservatively disable
+carry, even if a particular unit test does not read them.
+Changing the loaded runner/plan/classifier requires a restart and a new full run.
+Failures invalidate the baseline. A fresh process imports nothing and starts full.
+
+This protects against stale inputs, damaged files and self-reported evidence within
+a trusted local development session. The developer who owns the process and host
+can change executables, permissions, private exports or process memory; this is
+not an attestation against a hostile host owner. Do not accept an exported
+manifest alone as externally verified proof. The existing required hosted checks remain independent and blocking;
+no signing keys, tokens or new authentication permissions are introduced.
+
+Carry applies only to descendant commits on the same local feature branch.
+Synthetic PR merge, exact-main, release/tag/archive equality, physical-device,
+provider, quiet-host performance and final acceptance qualifications need their own
+exact-source execution. A local source result never completes those independent
+exits. Start a new full session when switching branch, restarting or changing the
+validation policy. Confirm every selected real-wire case actually ran and preserve
+original failures; an empty selection is not acceptance.
+
 ## Coverage floor (ratchet)
 
-The `Build & Test` job measures per-module coverage (`-covermode=atomic`), merges the
-six profiles with `gocovmerge`, and then enforces a **per-module floor** in the
-`Enforce coverage floors` step. A PR that drops any module below its floor fails CI.
+The `Build & Test` job collects vet, build and race/coverage test outcomes for all
+six modules before returning a blocking aggregate exit. A root/module failure
+does not hide later module results. The existing single job avoids matrix setup
+and new aggregation/check names. Its JSON outcomes and partial profiles survive
+failure in the coverage artifact. Coverage merging and floors still run after a
+collector failure; missing profiles or any lowered coverage fail the job.
+It measures `-covermode=atomic`, merges six profiles with `gocovmerge`, and enforces
+the unchanged per-module floors in `Enforce coverage floors`. No failed module is
+converted to success.
 
 The floors are a **ratchet, not an aspiration**: adopted floors are never lowered.
 Raise them against a durable baseline under the same measurement scope. They are per-module
@@ -584,9 +700,38 @@ number rather than force-moving the tag.
   `sdks/node/` package through `file:../sdks/node`; the release workflow builds
   that SDK from the tagged tree before building the SPA. A `pb/` change that
   requires a new admin image must first flow through a published
-  `sdks/node/v*` release. The container hosts the SPA on Caddy and does not
-  reverse-proxy the Lantern listener — the browser calls the gateway directly, so the
-  server's `LANTERN_CORS_ALLOWED_ORIGINS` must include the admin origin.
+  `sdks/node/v*` release. Caddy serves the SPA and optionally proxies
+  `/auth/*`, `/browser/*` and `/graph.v1.*/*` to the operator-fixed
+  `LANTERN_ADMIN_SERVER_UPSTREAM` (`scheme://hostname:port`). The browser's
+  gateway picker never selects that upstream.
+
+  **OFF direct-Server example:** open `http://localhost:8080`, select
+  `http://localhost:6380` as the gateway, and set the Server's
+  `LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080`. This local example
+  has no IdP or browser session.
+
+  **OIDC same-origin example:** expose Admin at `https://admin.example.com:8443`
+  and select that exact HTTPS public origin as the gateway. Set
+  `LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example.com:8443` and register
+  `LANTERN_OIDC_REDIRECT_URI` with the same origin plus the exact
+  Issuer-specific `/auth/callback/<SHA-256>` path. Configure, for example,
+  `LANTERN_ADMIN_SERVER_UPSTREAM=https://writer.internal.example:6380`;
+  verify its certificate against that upstream hostname and mount
+  `LANTERN_ADMIN_SERVER_CA_FILE` for a private CA. Preserve the public
+  Host/scheme through the proxy chain and configure exact
+  `LANTERN_OIDC_TRUSTED_PROXY_IPS` where required. A plaintext Server hop is
+  permitted only behind the explicitly trusted exact gateway IP with validated
+  HTTPS/public Host headers. Keep credentials and private keys out of the SPA,
+  browser local storage and Vite env.
+
+  The current fixed-writer baseline pins auth/browser and security/control
+  routes to that writer. Future eligible-node routing and per-attempt login
+  affinity remain #1608/#1609 S5 work. Missing upstream routes fail closed
+  instead of returning the SPA shell. The optional Prometheus proxy checks
+  `/auth/operations` first: OFF permits diagnostics; OIDC requires current
+  `operations.read` authority. Only GET diagnostics pass, and Prometheus never
+  receives cookies or Authorization. See the [OIDC operations guide](docs/oidc-operations.md#browser-and-diagnostics-boundary)
+  and [HA runbook](docs/ha-runbook.md) for the current deployment contract.
 - `sdks/node/vX.Y.Z` triggers the two-runtime real-wire `node-sdk.yml` gate and npm
   trusted publishing with provenance. Before creating an exact-title GitHub Release,
   dispatch the read-only `node-registry-audit.yml` on the default branch with the
@@ -624,15 +769,20 @@ number rather than force-moving the tag.
   including on reruns of an existing version. Only then may a separate job with
   `contents: write` and no OIDC create/update the GitHub Release; its title is exactly
   the tag. A missing package, failed publication, or differing/missing published
-  archive blocks the Release.
+  archive blocks the Release. Paired-source offline validation remains required;
+  its future hosted parent dependency cannot block this parent publication.
 - `sdks/dart/offline/vX.Y.Z` independently publishes the storage-neutral
   `lantern_client_offline` core owned by #1162. It does not include SQLite,
   encryption, secure storage, or another production adapter; #1163 owns the
   separately versioned SQLite package. The offline tag must match its
   `pubspec.yaml` version and `CHANGELOG.md` heading. It triggers the full
   minimum/current Dart, real-wire, archive, Android emulator, and iOS simulator
-  Gate in `dart-sdk.yml`. A separate offline preflight builds an isolated
-  archive from the exact tag, checks its hosted parent dependency and contents,
+  Gate in `dart-sdk.yml`. The separate `offline-hosted` job must finish with
+  `qualified=true` after verifying the already-published parent bytes and the
+  refreshed hosted lock. A pending, failed or unexpectedly skipped prerequisite
+  blocks offline preflight. That preflight retains the physical Android/iOS matrix
+  and builds an isolated archive from the exact tag, checks its hosted parent
+  dependency and contents,
   resolves it outside the checkout, and checks pub.dev state. The package
   already exists on pub.dev; later versions use the separate offline OIDC
   publish job only after a package admin verifies its private automated
@@ -659,8 +809,15 @@ uses hosted `lantern_client ^0.3.3` and completed #1399. Published 0.5.0 adds
 targeted contribution Delete with hosted `lantern_client ^0.4.1`; #1586 completed
 its frozen-source, physical and publication gates. The new 0.6.0 candidate binds
 typed undisclosed acceptance to parent 0.5.0 source and future hosted `^0.5.0`.
-Its source, hosted archive, final-source, physical and publication exits are
-independent; previous release evidence does not qualify this candidate. The maintained Flutter example and
+The committed offline hosted lock still records parent 0.4.1, which does not satisfy
+`^0.5.0`; it is pending release preparation, not hosted 0.6.0 acceptance.
+Publish and verify parent 0.5.0 first when separately authorized, then generate
+and review the offline hosted lock in a follow-up preparation change before
+freezing the offline device candidate. The bounded commands are in the
+[lock-refresh procedure](sdks/dart/example/offline-release-resume.md#parent-publication-and-hosted-lock-refresh).
+`paired_source_gate.py --refresh-lock` updates only the paired-source lock; it
+cannot refresh or qualify the hosted lock. Its source, hosted archive, final-source,
+physical and publication exits are independent; previous release evidence does not qualify this candidate. The maintained Flutter example and
 unpublished SQLite adapter use local path overrides; resolve the offline
 candidate archive against the hosted parent outside the checkout without
 a path override. Before tagging, confirm the target version and tag are

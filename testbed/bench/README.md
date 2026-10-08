@@ -6,6 +6,11 @@ narrow scenario-owned verified Connect/HTTPS receipt driver, captures Prometheus
 Go pprof snapshots, applies per-scenario leak / lifecycle-metric / semantic /
 producer-performance gates, and renders a Markdown report.
 
+The explicitly selected [protected query preparation lane](protectedquery/README.md)
+uses matched standalone OFF/OIDC verified TLS, local JWT/Role admission and
+Search/BFS/PPR/Community contracts for #1612. It does not run through the release
+sweep or qualify final performance, provider login or #1608 admission integration.
+
 > **PR CI does not run the wall-clock scenarios.** The default PR pipeline
 > runs their schema/contract tests, but not a Compose load run. On a root
 > `vX.Y.Z` tag, however, `docker-publish.yml` runs the short

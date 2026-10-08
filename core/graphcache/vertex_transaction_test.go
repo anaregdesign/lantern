@@ -565,3 +565,110 @@ func TestVertexDeleteTransactionCommitAfterAbortPanics(t *testing.T) {
 	}()
 	tx.Commit()
 }
+
+func TestVertexTransactionsWithoutEffectsCanClose(t *testing.T) {
+	for _, mode := range []string{"local", "replicated"} {
+		for _, input := range []string{"empty", "superseded", "condition miss"} {
+			if mode == "replicated" && input == "condition miss" {
+				continue // Replication does not reevaluate the origin's condition.
+			}
+			for _, closeWith := range []string{"commit", "abort"} {
+				t.Run(mode+"/"+input+"/"+closeWith, func(t *testing.T) {
+					c := newVertexTransactionTestCache()
+					expiration := time.Now().Add(time.Hour)
+					if _, err := c.PutVerticesWithExpirationHLCOutcomesChecked(
+						[]VertexItem[string, string]{{Key: "key", Value: "original searchable", Expiration: expiration}},
+						hlc.Timestamp{WallNs: 30},
+					); err != nil {
+						t.Fatal(err)
+					}
+					before := captureVertexTransactionState(c)
+					var items []VertexItem[string, string]
+					var keys []string
+					if input != "empty" {
+						items = []VertexItem[string, string]{{Key: "key", Value: "replacement", Expiration: expiration}}
+						keys = []string{"key"}
+					}
+					ts := hlc.Timestamp{WallNs: 20}
+					if input == "condition miss" {
+						ts.WallNs = 40
+					}
+					var put *VertexPutTransaction[string, string]
+					var err error
+					if mode == "replicated" {
+						put, err = c.BeginReplicatedVertexPut(items, ts)
+					} else {
+						put, err = c.BeginVertexPut(items, ts, input == "condition miss")
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer put.Abort()
+					result := put.Result()
+					if put.stage.applied || result.Outcomes == nil || result.Accepted == nil ||
+						len(result.Outcomes) != len(items) || len(result.Accepted) != 0 {
+						t.Fatalf("no-effect Put applied=%v result=%+v", put.stage.applied, result)
+					}
+					if input != "empty" {
+						want := PutOutcomeSuperseded
+						if input == "condition miss" {
+							want = PutOutcomeConditionNotMet
+						}
+						if result.Outcomes[0] != want {
+							t.Fatalf("no-effect Put outcome=%v, want %v", result.Outcomes[0], want)
+						}
+					}
+					if closeWith == "commit" {
+						put.Commit()
+					} else {
+						put.Abort()
+					}
+					put.Abort()
+					put.Abort()
+					assertTransactionPanics(t, put.Commit)
+					if after := captureVertexTransactionState(c); !equalVertexTransactionAbortState(after, before) {
+						t.Fatal("closing no-effect Put changed graph, search or causal state")
+					}
+					if input == "condition miss" {
+						return
+					}
+					beginDelete := c.BeginVertexDelete
+					if mode == "replicated" {
+						beginDelete = c.BeginReplicatedVertexDelete
+					}
+					del, err := beginDelete(keys, ts, expiration)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer del.Abort()
+					deleted := del.Result()
+					if del.stage.applied || deleted.Existed == nil || deleted.Accepted == nil ||
+						len(deleted.Existed) != len(keys) || len(deleted.Accepted) != 0 ||
+						(len(keys) != 0 && deleted.Existed[0]) {
+						t.Fatalf("no-effect Delete applied=%v result=%+v", del.stage.applied, deleted)
+					}
+					if closeWith == "commit" {
+						del.Commit()
+					} else {
+						del.Abort()
+					}
+					del.Abort()
+					del.Abort()
+					assertTransactionPanics(t, del.Commit)
+					if after := captureVertexTransactionState(c); !equalVertexTransactionAbortState(after, before) {
+						t.Fatal("closing no-effect Delete changed graph, search or causal state")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestVertexTransactionsNilClose(t *testing.T) {
+	var put *VertexPutTransaction[string, string]
+	put.Abort()
+	assertTransactionPanics(t, put.Commit)
+	var del *VertexDeleteTransaction[string, string]
+	del.Abort()
+	assertTransactionPanics(t, del.Commit)
+}

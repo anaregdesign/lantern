@@ -527,29 +527,10 @@ jobs:
         working-directory: .
         run: python3 -B -m unittest discover -s sdks/dart/offline/tool -p release_contract_test.py
 
-      # Hosted archive qualification is independent of paired-source CI.
-      # The publication preflight also resolves an isolated hosted parent.
-      - name: Build and verify isolated offline publish archive
-        if: startsWith(github.ref, 'refs/tags/sdks/dart/') || github.event_name == 'workflow_dispatch'
-        working-directory: .
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifact_root="$RUNNER_TEMP/lantern-offline-artifact"
-          source_dir="$artifact_root/source"
-          archive="$artifact_root/lantern_client_offline.tar.gz"
-          package_dir="$artifact_root/unpacked/package"
-          isolated_pub_cache="$artifact_root/pub-cache"
-          mkdir -p "$source_dir" "$package_dir" "$isolated_pub_cache"
-          git archive HEAD:sdks/dart/offline | tar -x -C "$source_dir"
-          (cd "$source_dir" && dart pub get --enforce-lockfile && dart pub publish --dry-run)
-          dart pub publish -C "$source_dir" --to-archive="$archive"
-          version=$(awk '$1 == "version:" { print $2; exit }' "$source_dir/pubspec.yaml")
-          python3 sdks/dart/offline/tool/release_contract.py \
-            --archive "$archive" --version "$version" --parent-version 0.5.0
-          tar -xzf "$archive" -C "$package_dir"
-          (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --no-example && \
-            PUB_CACHE="$isolated_pub_cache" dart analyze lib)
+      # Source qualification can precede parent publication. Hosted offline
+      # qualification runs separately after Gate (and parent archive equality).
+      - name: Record source-only offline qualification
+        run: echo 'Paired-source checks do not qualify the hosted offline archive; see the offline-hosted job and lock-refresh runbook.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Restore paired source resolver state
         if: always()
@@ -1477,11 +1458,85 @@ jobs:
               --notes-file "$notes_file" --verify-tag
           fi
 
+  offline-hosted:
+    name: Qualify offline archive against verified hosted parent
+    needs: [changes, gate, verify-published]
+    if: >-
+      ${{ !cancelled() && needs.gate.result == 'success' && needs.changes.outputs.full == 'true' &&
+          (needs.verify-published.result == 'success' ||
+           (needs.verify-published.result == 'skipped' &&
+            (github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/sdks/dart/v')))) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      qualified: ${{ steps.archive.outputs.qualified }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up current supported Dart without OIDC
+        uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: 3.12.2
+
+      - name: Verify hosted parent bytes and committed offline lock
+        id: parent
+        shell: bash
+        env:
+          REQUIRE_HOSTED: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}
+        run: |
+          set -euo pipefail
+          artifact_root="$RUNNER_TEMP/lantern-offline-hosted-parent"
+          source_dir="$artifact_root/source"
+          archive="$artifact_root/lantern_client.tar.gz"
+          mkdir -p "$source_dir"
+          git archive "$GITHUB_SHA:sdks/dart" | tar -x -C "$source_dir"
+          parent_version=$(awk '$1 == "version:" { print $2; exit }' "$source_dir/pubspec.yaml")
+          dart pub publish -C "$source_dir" --to-archive="$archive"
+          required=()
+          if [[ "$REQUIRE_HOSTED" == true ]]; then required+=(--require-hosted); fi
+          python3 sdks/dart/offline/tool/release_contract.py --check-parent \
+            --parent-version "$parent_version" --parent-candidate "$archive" \
+            --parent-sha256 "$(sha256sum "$archive" | cut -d ' ' -f 1)" \
+            --pubspec sdks/dart/offline/pubspec.yaml --lockfile sdks/dart/offline/pubspec.lock \
+            --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY" "${required[@]}"
+
+      - name: Build and verify isolated offline publish archive
+        id: archive
+        if: steps.parent.outputs.parent_ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_root="$RUNNER_TEMP/lantern-offline-artifact"
+          source_dir="$artifact_root/source"
+          archive="$artifact_root/lantern_client_offline.tar.gz"
+          package_dir="$artifact_root/unpacked/package"
+          isolated_pub_cache="$artifact_root/pub-cache"
+          mkdir -p "$source_dir" "$package_dir" "$isolated_pub_cache"
+          git archive "$GITHUB_SHA:sdks/dart/offline" | tar -x -C "$source_dir"
+          (cd "$source_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --enforce-lockfile && dart pub publish --dry-run)
+          dart pub publish -C "$source_dir" --to-archive="$archive"
+          version=$(awk '$1 == "version:" { print $2; exit }' "$source_dir/pubspec.yaml")
+          parent_version=$(awk '$1 == "version:" { print $2; exit }' sdks/dart/pubspec.yaml)
+          python3 sdks/dart/offline/tool/release_contract.py \
+            --archive "$archive" --version "$version" --parent-version "$parent_version"
+          tar -xzf "$archive" -C "$package_dir"
+          cp "$source_dir/pubspec.lock" "$package_dir/pubspec.lock"
+          (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --enforce-lockfile --no-example && \
+            PUB_CACHE="$isolated_pub_cache" dart analyze lib)
+          echo 'qualified=true' >> "$GITHUB_OUTPUT"
+          echo 'Offline hosted archive qualification passed with verified parent bytes and an isolated cache.' >> "$GITHUB_STEP_SUMMARY"
+
   offline-release-preflight:
     name: Verify offline release candidate
-    needs: [gate]
+    needs: [gate, offline-hosted]
     if: >-
-      ${{ !cancelled() && needs.gate.result == 'success' &&
+      ${{ !cancelled() && needs.gate.result == 'success' && needs.offline-hosted.result == 'success' &&
+          needs.offline-hosted.outputs.qualified == 'true' &&
           github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1550,12 +1605,14 @@ jobs:
           isolated_pub_cache="$artifact_root/pub-cache"
           mkdir -p "$source_dir" "$package_dir" "$isolated_pub_cache"
           git archive "$GITHUB_SHA:sdks/dart/offline" | tar -x -C "$source_dir"
-          (cd "$source_dir" && dart pub get --enforce-lockfile)
+          (cd "$source_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --enforce-lockfile)
           dart pub publish -C "$source_dir" --to-archive="$archive"
           python3 sdks/dart/offline/tool/release_contract.py \
-            --archive "$archive" --version "$version" --parent-version 0.5.0
+            --archive "$archive" --version "$version" \
+            --parent-version "$(awk '$1 == "version:" { print $2; exit }' sdks/dart/pubspec.yaml)"
           tar -xzf "$archive" -C "$package_dir"
-          (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --no-example && \
+          cp "$source_dir/pubspec.lock" "$package_dir/pubspec.lock"
+          (cd "$package_dir" && PUB_CACHE="$isolated_pub_cache" dart pub get --enforce-lockfile --no-example && \
             PUB_CACHE="$isolated_pub_cache" dart analyze lib)
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "archive_sha256=$(sha256sum "$archive" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"

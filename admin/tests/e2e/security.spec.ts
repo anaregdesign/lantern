@@ -625,7 +625,9 @@ for (const width of [1280, 390]) {
     await page.getByTestId("edge-add-weight").fill("7");
     await page.getByTestId("edge-add-submit").click();
     await expect(
-      page.getByText("Request handled.", { exact: false }),
+      page
+        .getByTestId("edge-form-add")
+        .getByText("Request handled.", { exact: false }),
     ).toBeVisible();
     await expect(page.getByTestId("edge-current-weight")).toHaveCount(0);
     expect(reads).toBe(1);

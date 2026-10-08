@@ -476,13 +476,10 @@ func (s *stagedVertexMutation[S, T]) rollbackLocked() {
 }
 
 func (s *stagedVertexMutation[S, T]) release() {
-	s.cache.searchCommitMu.Unlock()
-	s.cache.publicationGate.Unlock()
-	s.cache.mu.Unlock()
+	s.cache.releaseStagedMutation(true)
 }
 
-func (s *stagedVertexMutation[S, T]) abort() {
-	defer s.release()
+func (s *stagedVertexMutation[S, T]) rollbackWithEvictionsLocked() {
 	if s.applied {
 		s.cache.vertices.SetOnEvictMany(nil)
 		defer s.cache.vertices.SetOnEvictMany(s.cache.onVerticesEvicted)
@@ -491,7 +488,5 @@ func (s *stagedVertexMutation[S, T]) abort() {
 }
 
 func (c *GraphCache[S, T]) unlockStagedVertexBegin() {
-	c.searchCommitMu.Unlock()
-	c.publicationGate.Unlock()
-	c.mu.Unlock()
+	c.releaseStagedMutation(true)
 }

@@ -2022,6 +2022,13 @@ func TestStandaloneCreateRunnerContract(t *testing.T) {
 	}
 }
 
+func TestProtectedQueryComparisonContract(t *testing.T) {
+	command := exec.CommandContext(t.Context(), "python3", "-B", "-m", "unittest", "discover", "-s", "protectedquery", "-p", "compare_test.py")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("protected query comparison: %v\n%s", err, output)
+	}
+}
+
 func TestBenchConsumerAndChaosFailureCannotMasqueradeAsProducerFailure(t *testing.T) {
 	script, err := os.ReadFile("run.sh")
 	if err != nil {

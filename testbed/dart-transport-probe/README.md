@@ -22,6 +22,7 @@ Run from the repository root:
 testbed/dart-transport-probe/scripts/codegen.sh
 (cd testbed/dart-transport-probe/connect && dart pub get && dart analyze && dart test)
 (cd testbed/dart-transport-probe/grpc && dart pub get && dart analyze && dart test)
+python3 -m unittest discover -s testbed/dart-transport-probe/scripts -p '*_test.py'
 git diff --exit-code -- testbed/dart-transport-probe
 ```
 
@@ -109,3 +110,28 @@ with `simctl`, then observes a success marker over the real Lantern wire path;
 this avoids coupling the gate to Flutter's integration-test VM service. See
 the decision record in
 `docs/decisions/0001-dart-mobile-transport.md`.
+
+The direct iOS harness also requires a terminal success event after the marker
+probe finishes its assertions and owned-client cleanup. Both candidates emit
+content-free scenario/RPC start and result events: plaintext, wrong hostname,
+missing authentication, trusted TLS, and the final marker. Expected negative
+results are labelled separately. Events contain only allowlisted labels/status
+codes and at most eight known Dart source locations; exception messages,
+endpoints, headers, tokens, certificates and returned values are never emitted.
+The existing five-second RPC deadlines and TLS/authentication assertions are
+unchanged. A deadline or assertion failure is blocking; the transport harness
+does not retry any failed attempt.
+
+`scripts/ios_diagnostics.py` observes only the launched Runner PID and persists
+sanitized events while the existing host observer polls. Sticky failure state
+survives noisy log rotation and an interrupted outer step. Each retained file is
+bounded to 256 KiB; the fixed artifact set remains below 2 MiB. Raw Simulator
+logs and authenticated VM-service URLs are discarded. Server diagnostics retain
+only timestamps, levels, broad event categories and omission counts from the
+owned plaintext/native fixture logs; private metadata and credentials are not
+artifact inputs. CI always uploads these diagnostics, including failed runs.
+
+Issue #1678 adds this evidence after the unlocalized iOS gRPC RPC failure on
+#1677. Improved diagnostics do not establish the cause of that original failure,
+and host contract tests do not replace fresh exact-source simulator validation
+or physical-device qualification.

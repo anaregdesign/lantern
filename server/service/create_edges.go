@@ -100,15 +100,8 @@ func (s *LanternService) CreateEdges(ctx context.Context, req *pb.CreateEdgesReq
 	defer s.replicationCutMu.Unlock()
 	s.receiptOriginCutMu.Lock()
 	defer s.receiptOriginCutMu.Unlock()
-	walAttempted := false
-	defer func() {
-		if value := recover(); value != nil {
-			if walAttempted {
-				s.markReceiptCommitFaultLocked()
-			}
-			panic(value)
-		}
-	}()
+	publication := stagedPublication{service: s}
+	defer publication.failClosedOnPanic()
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted || s.snapshotInstallFaulted {
 		return nil, publicationGapError()
 	}
@@ -212,19 +205,8 @@ func (s *LanternService) CreateEdges(ctx context.Context, req *pb.CreateEdgesReq
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
-	walAttempted = true
-	_, err = s.log.CommitWithPostRingPublication(envelope, ts, func(mutationlog.Entry) {
-		if storeTx != nil {
-			storeTx.Commit()
-		}
-		graphTx.Commit()
-		originTx.Commit()
-	})
+	err = publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx)
 	if err != nil {
-		var definite *mutationlog.DefiniteWALAbort
-		if !errors.As(err, &definite) && !errors.Is(err, mutationlog.ErrClosed) && !errors.Is(err, mutationlog.ErrSeqExhausted) {
-			s.markReceiptCommitFaultLocked()
-		}
 		if errors.Is(err, mutationlog.ErrSeqExhausted) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)
 		}

@@ -56,7 +56,7 @@ async fn real_wire_health_and_unary() -> Result<(), Box<dyn Error>> {
     let port = server.port();
     let endpoint = Endpoint::from_shared(format!("http://127.0.0.1:{port}"))?
         .connect_timeout(Duration::from_secs(1));
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = server.readiness_deadline();
     let channel = loop {
         if let Some(status) = server.try_wait()? {
             return Err(
