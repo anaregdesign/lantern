@@ -35,6 +35,16 @@ func readCheckpoint(path string) ([]byte, error) {
 }
 
 func writeCheckpoint(path string, raw []byte, fresh bool) error {
+	return writeCheckpointWithHook(path, raw, fresh, nil)
+}
+
+func writeCheckpointWithHook(path string, raw []byte, fresh bool, hook func(string) error) error {
+	check := func(stage string) error {
+		if hook != nil {
+			return hook(stage)
+		}
+		return nil
+	}
 	var f *os.File
 	var err error
 	if fresh {
@@ -53,10 +63,16 @@ func writeCheckpoint(path string, raw []byte, fresh bool) error {
 		}
 	}()
 	payload := append([]byte(checkpointMagic), raw...)
+	if err := check("write"); err != nil {
+		return err
+	}
 	if n, err := f.Write(payload); err != nil {
 		return err
 	} else if n != len(payload) {
 		return io.ErrShortWrite
+	}
+	if err := check("sync"); err != nil {
+		return err
 	}
 	if err := f.Sync(); err != nil {
 		return err
@@ -65,9 +81,15 @@ func writeCheckpoint(path string, raw []byte, fresh bool) error {
 		return err
 	}
 	if !fresh {
+		if err := check("rename"); err != nil {
+			return err
+		}
 		if err := os.Rename(temporary, path); err != nil {
 			return err
 		}
+	}
+	if err := check("directory_sync"); err != nil {
+		return err
 	}
 	return privatefile.SyncDirectory(filepath.Dir(path))
 }

@@ -21,12 +21,20 @@ func (s *Store) ProtectHandler(next http.Handler, options ...connect.HandlerOpti
 		_ = errors.Write(w, req, connect.NewError(connect.CodeUnavailable, ErrMembership))
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if s == nil || len(req.Header.Values(DomainHeader)) != 1 || len(req.Header.Values("Authorization")) != 0 || len(req.Header.Values("Cookie")) != 0 {
+		if s == nil || len(req.Header.Values("Authorization")) != 0 || len(req.Header.Values("Cookie")) != 0 {
 			refuse(w, req)
 			return
 		}
-		digest := s.Domain().Digest()
-		if req.Header.Get(DomainHeader) != hex.EncodeToString(digest[:]) {
+		header, digest := s.wireProfile()
+		foreignHeader := ControlHeader
+		if header == ControlHeader {
+			foreignHeader = DomainHeader
+			if len(req.Header.Values("Proxy-Authorization")) != 0 {
+				refuse(w, req)
+				return
+			}
+		}
+		if len(req.Header.Values(header)) != 1 || len(req.Header.Values(foreignHeader)) != 0 || req.Header.Get(header) != hex.EncodeToString(digest[:]) {
 			refuse(w, req)
 			return
 		}
@@ -76,6 +84,9 @@ func (s *Store) ProtectHandler(next http.Handler, options ...connect.HandlerOpti
 		if admission.Check(ctx) != nil {
 			refuse(w, req)
 			return
+		}
+		if header == ControlHeader {
+			w.Header().Set(header, hex.EncodeToString(digest[:]))
 		}
 		next.ServeHTTP(w, req.WithContext(ctx))
 	})
