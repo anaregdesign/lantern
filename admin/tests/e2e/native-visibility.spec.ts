@@ -25,11 +25,33 @@ test("native hidden-to-visible resume clears protected history before revalidati
       "--disable-sync",
       "about:blank",
     ],
-    { stdio: "ignore" },
+    { stdio: "ignore", detached: true },
   );
   const exited = new Promise<void>((resolve) =>
     child.once("exit", () => resolve()),
   );
+  const exitedWithin = async (milliseconds: number) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        exited.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), milliseconds);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const signalOwnedBrowser = (signal: "SIGTERM" | "SIGKILL") => {
+    if (!child.pid) return;
+    try {
+      if (process.platform === "win32") child.kill(signal);
+      else process.kill(-child.pid, signal);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  };
   let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | undefined;
   try {
     await expect
@@ -119,9 +141,32 @@ test("native hidden-to-visible resume clears protected history before revalidati
       page.getByText("old protected value", { exact: false }),
     ).toHaveCount(0);
   } finally {
-    await browser?.close();
-    child.kill("SIGTERM");
-    await exited;
-    rmSync(profile, { recursive: true, force: true });
+    try {
+      // Closing a CDP attachment only disconnects it. Ask the owned browser
+      // to shut down and flush its profile before removing that directory.
+      if (browser?.isConnected()) {
+        await Promise.race([
+          browser
+            .newBrowserCDPSession()
+            .then((session) => session.send("Browser.close")),
+          exitedWithin(5_000).then((stopped) => {
+            if (!stopped) throw new Error("Owned Chromium close timed out");
+          }),
+        ]);
+      }
+    } finally {
+      if (!(await exitedWithin(5_000))) signalOwnedBrowser("SIGTERM");
+      if (!(await exitedWithin(2_000))) signalOwnedBrowser("SIGKILL");
+      await exited;
+      // Stop any remaining children in the group created by this spawn.
+      signalOwnedBrowser("SIGTERM");
+      await browser?.close();
+      rmSync(profile, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
+    }
   }
 });
