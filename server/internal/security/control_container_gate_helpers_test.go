@@ -483,7 +483,13 @@ func (g *ContainerAuthorityGate) ResumeContainerProcess(p CurrentCredentialProdu
 		containerMust(t, err)
 		r, err := o.lookupOriginal(t.Context(), h.handoff.id, h.handoff.operation)
 		containerMust(t, err)
-		if r.raw != string(raw) {
+		// Terminal lookup deliberately returns an outcome rather than the H
+		// body. Verify the separately replayed original bytes as well.
+		o.network.kernel.gate.Lock()
+		retained := o.network.kernel.origins[h.digest()]
+		exact := retained != nil && retained.raw == string(raw)
+		o.network.kernel.gate.Unlock()
+		if !exact || r.digest != h.digest() {
 			t.Fatal("retained original H replaced")
 		}
 		if bytes.Equal(raw, c.AppliedH) {
@@ -507,7 +513,7 @@ func (g *ContainerAuthorityGate) ResumeContainerProcess(p CurrentCredentialProdu
 	containerMust(t, err)
 	result, err = o.lookupOriginal(t.Context(), old.handoff.id, old.handoff.operation)
 	containerMust(t, err)
-	if result.raw != string(c.PendingH) || result.outcome == nil || result.outcome.disposition != S1Applied {
+	if result.digest != old.digest() || result.outcome == nil || result.outcome.disposition != S1Applied {
 		t.Fatal("expired original completion changed")
 	}
 	// Prepare freezes a review; only final consume requires current quorum.
