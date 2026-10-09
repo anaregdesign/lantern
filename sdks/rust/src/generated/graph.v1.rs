@@ -4548,6 +4548,15 @@ pub struct GetAuthCapabilitiesResponse {
     /// False never implies OFF, and clients must reject unknown protocol versions.
     #[prost(bool, tag = "5")]
     pub ready: bool,
+    /// Required when protocol_version=2. Configuration identity, never a lease.
+    #[prost(message, optional, tag = "6")]
+    pub current_profile: ::core::option::Option<CurrentAuthorityProfile>,
+    /// Routing capability only: an eligible member without an owned origin may
+    /// read/complete original work, but cannot mint a new change or login session.
+    #[prost(bool, tag = "7")]
+    pub current_origin_enabled: bool,
+    #[prost(uint32, tag = "8")]
+    pub current_member: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SecurityIdentity {
@@ -4662,6 +4671,14 @@ pub struct SecurityVersion {
     pub digest: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "3")]
     pub generation: ::prost::alloc::vec::Vec<u8>,
+    /// Current protocol uses these fields and leaves the legacy scalar fields
+    /// above empty. Never compare cuts from different profiles by sequence.
+    #[prost(message, optional, tag = "4")]
+    pub current_profile: ::core::option::Option<CurrentAuthorityProfile>,
+    #[prost(message, optional, tag = "5")]
+    pub current_cut: ::core::option::Option<CurrentSemanticCut>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub admission_binding: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetCurrentPrincipalRequest {}
@@ -4689,13 +4706,52 @@ pub struct BrowserSession {
     pub mode: i32,
     #[prost(message, optional, tag = "2")]
     pub principal: ::core::option::Option<GetCurrentPrincipalResponse>,
+    #[prost(message, optional, tag = "3")]
+    pub current_profile: ::core::option::Option<CurrentAuthorityProfile>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SessionRevocation {
     #[prost(message, optional, tag = "1")]
     pub version: ::core::option::Option<SecurityVersion>,
     #[prost(enumeration = "SecurityEnforcementState", tag = "2")]
     pub enforcement: i32,
+    #[prost(message, optional, tag = "3")]
+    pub current_result: ::core::option::Option<CurrentSecurityChangeResult>,
+    /// Local cookie removal is independent of durable cluster completion.
+    #[prost(bool, tag = "4")]
+    pub local_cookie_cleared: bool,
+    /// First, retain this server-minted review before dispatching logout Apply.
+    #[prost(message, optional, tag = "5")]
+    pub current_review: ::core::option::Option<CurrentSessionRevocationReview>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CurrentSessionRevocationReview {
+    #[prost(message, optional, tag = "1")]
+    pub profile: ::core::option::Option<CurrentAuthorityProfile>,
+    #[prost(message, optional, tag = "2")]
+    pub expected_cut: ::core::option::Option<CurrentSemanticCut>,
+    #[prost(message, optional, tag = "3")]
+    pub change_id: ::core::option::Option<CurrentSecurityChangeId>,
+    #[prost(message, optional, tag = "4")]
+    pub actor: ::core::option::Option<SecurityIdentity>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub intent_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "6")]
+    pub session_digest: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "7")]
+    pub session_lineage: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CurrentLogoutRequest {
+    #[prost(message, optional, tag = "1")]
+    pub profile: ::core::option::Option<CurrentAuthorityProfile>,
+    #[prost(bool, tag = "2")]
+    pub prepare_only: bool,
+    #[prost(message, optional, tag = "3")]
+    pub review: ::core::option::Option<CurrentSessionRevocationReview>,
+    /// Same-origin local cookie deletion makes no cluster completion claim.
+    #[prost(bool, tag = "4")]
+    pub local_only: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListIssuersRequest {
@@ -4841,6 +4897,8 @@ pub struct ListSecurityAuditResponse {
     pub version: ::core::option::Option<SecurityVersion>,
     #[prost(string, tag = "3")]
     pub next_cursor: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "4")]
+    pub current_records: ::prost::alloc::vec::Vec<CurrentSecurityAuditRecord>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetRoleTemplatesRequest {
@@ -4959,8 +5017,11 @@ pub struct ApplySecurityChangesRequest {
     /// Purpose proof is excluded from retained canonical business intent.
     #[prost(bytes = "vec", tag = "4")]
     pub authorization_proof: ::prost::alloc::vec::Vec<u8>,
+    /// Protocol 2: legacy expected_revision/change_id/changes must be absent.
+    #[prost(message, optional, tag = "5")]
+    pub current_review: ::core::option::Option<CurrentSecurityReview>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ApplySecurityChangesResponse {
     #[prost(message, optional, tag = "1")]
     pub version: ::core::option::Option<SecurityVersion>,
@@ -4970,6 +5031,8 @@ pub struct ApplySecurityChangesResponse {
     pub replayed: bool,
     #[prost(enumeration = "SecurityEnforcementState", tag = "4")]
     pub enforcement: i32,
+    #[prost(message, optional, tag = "5")]
+    pub current_result: ::core::option::Option<CurrentSecurityChangeResult>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ApplySecurityChangeRequest {
@@ -4981,6 +5044,9 @@ pub struct ApplySecurityChangeRequest {
     pub change: ::core::option::Option<SecurityChange>,
     #[prost(bytes = "vec", tag = "4")]
     pub authorization_proof: ::prost::alloc::vec::Vec<u8>,
+    /// Exactly one change; the same review/identity as the plural operation.
+    #[prost(message, optional, tag = "5")]
+    pub current_review: ::core::option::Option<CurrentSecurityReview>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SecurityChangeReview {
@@ -5018,8 +5084,12 @@ pub struct SecurityChangePrecommitRejected {
 pub struct PrepareSecurityChangesRequest {
     #[prost(message, optional, tag = "1")]
     pub review: ::core::option::Option<SecurityChangeReview>,
+    /// First preparation supplies profile/cut/changes only. The enrolled origin
+    /// allocates the identity. A retained review resolves its original operation.
+    #[prost(message, optional, tag = "2")]
+    pub current_review: ::core::option::Option<CurrentSecurityReview>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PrepareSecurityChangesResponse {
     #[prost(message, optional, tag = "1")]
     pub expected_version: ::core::option::Option<SecurityVersion>,
@@ -5032,11 +5102,17 @@ pub struct PrepareSecurityChangesResponse {
     /// A known committed ID is recovered using its original retained proof.
     #[prost(message, optional, tag = "5")]
     pub retained_commit: ::core::option::Option<GetSecurityChangeStatusResponse>,
+    #[prost(message, optional, tag = "6")]
+    pub current_review: ::core::option::Option<CurrentSecurityReview>,
+    #[prost(message, optional, tag = "7")]
+    pub current_result: ::core::option::Option<CurrentSecurityChangeResult>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BeginSecurityChangeAuthorizationRequest {
     #[prost(message, optional, tag = "1")]
     pub review: ::core::option::Option<SecurityChangeReview>,
+    #[prost(message, optional, tag = "2")]
+    pub current_review: ::core::option::Option<CurrentSecurityReview>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BeginSecurityChangeAuthorizationResponse {
@@ -5046,11 +5122,20 @@ pub struct BeginSecurityChangeAuthorizationResponse {
     pub start_url: ::prost::alloc::string::String,
     #[prost(message, optional, tag = "3")]
     pub expires_at: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(message, optional, tag = "4")]
+    pub current_profile: ::core::option::Option<CurrentAuthorityProfile>,
+    /// Opaque, process/attempt-bound routing hint, not authentication authority.
+    #[prost(string, tag = "5")]
+    pub attempt_affinity: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetSecurityChangeAuthorizationRequest {
     #[prost(bytes = "vec", tag = "1")]
     pub authorization_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub current_profile: ::core::option::Option<CurrentAuthorityProfile>,
+    #[prost(string, tag = "3")]
+    pub attempt_affinity: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetSecurityChangeAuthorizationResponse {
@@ -5062,8 +5147,10 @@ pub struct GetSecurityChangeAuthorizationResponse {
     pub authorization_proof: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, optional, tag = "4")]
     pub expires_at: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(message, optional, tag = "5")]
+    pub current_profile: ::core::option::Option<CurrentAuthorityProfile>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ApplySecurityChangeResponse {
     #[prost(message, optional, tag = "1")]
     pub version: ::core::option::Option<SecurityVersion>,
@@ -5073,13 +5160,21 @@ pub struct ApplySecurityChangeResponse {
     pub replayed: bool,
     #[prost(enumeration = "SecurityEnforcementState", tag = "4")]
     pub enforcement: i32,
+    #[prost(message, optional, tag = "5")]
+    pub current_result: ::core::option::Option<CurrentSecurityChangeResult>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetSecurityChangeStatusRequest {
     #[prost(bytes = "vec", tag = "1")]
     pub change_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "2")]
+    pub current_change_id: ::core::option::Option<CurrentSecurityChangeId>,
+    #[prost(message, optional, tag = "3")]
+    pub current_profile: ::core::option::Option<CurrentAuthorityProfile>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub current_intent_digest: ::prost::alloc::vec::Vec<u8>,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetSecurityChangeStatusResponse {
     /// The original retained commit, not a snapshot of currently effective policy.
     #[prost(message, optional, tag = "1")]
@@ -5089,6 +5184,162 @@ pub struct GetSecurityChangeStatusResponse {
     pub change_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(enumeration = "SecurityEnforcementState", tag = "4")]
     pub enforcement: i32,
+    #[prost(message, optional, tag = "5")]
+    pub current_result: ::core::option::Option<CurrentSecurityChangeResult>,
+}
+/// Public current authority protocol 2. These are identity/status data only;
+/// replay/current authority is always verified independently by the owner.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CurrentAuthorityProfile {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub domain: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub cohort: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub generation: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub protocol: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "6")]
+    pub time_profile: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub membership: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub configuration: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CurrentSemanticCut {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub domain: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub cohort: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub generation: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "5")]
+    pub sequence: u64,
+    #[prost(bytes = "vec", tag = "6")]
+    pub previous: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub projection: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "8")]
+    pub frontier: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "9")]
+    pub fences: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "10")]
+    pub policy: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CurrentSecurityChangeId {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub domain: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub cohort: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "4")]
+    pub namespace: u64,
+    #[prost(bytes = "vec", tag = "5")]
+    pub nonce: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CurrentSecurityReview {
+    #[prost(message, optional, tag = "1")]
+    pub profile: ::core::option::Option<CurrentAuthorityProfile>,
+    #[prost(message, optional, tag = "2")]
+    pub expected_cut: ::core::option::Option<CurrentSemanticCut>,
+    #[prost(message, optional, tag = "3")]
+    pub change_id: ::core::option::Option<CurrentSecurityChangeId>,
+    #[prost(message, optional, tag = "4")]
+    pub actor: ::core::option::Option<SecurityIdentity>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub intent_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "6")]
+    pub changes: ::prost::alloc::vec::Vec<SecurityChange>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CurrentControlCommit {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub domain: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub cohort: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub membership: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub configuration: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "6")]
+    pub slot: u64,
+    #[prost(bytes = "vec", tag = "7")]
+    pub value: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CurrentSecurityItemOutcome {
+    #[prost(uint32, tag = "1")]
+    pub index: u32,
+    #[prost(string, tag = "2")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(enumeration = "CurrentSecurityDisposition", tag = "3")]
+    pub disposition: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CurrentSecurityOriginalOutcome {
+    #[prost(message, optional, tag = "1")]
+    pub change_id: ::core::option::Option<CurrentSecurityChangeId>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub intent_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub handoff_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub commit: ::core::option::Option<CurrentControlCommit>,
+    #[prost(enumeration = "CurrentSecurityDisposition", tag = "5")]
+    pub disposition: i32,
+    #[prost(message, repeated, tag = "6")]
+    pub items: ::prost::alloc::vec::Vec<CurrentSecurityItemOutcome>,
+    #[prost(message, optional, tag = "7")]
+    pub observed_cut: ::core::option::Option<CurrentSemanticCut>,
+    #[prost(message, optional, tag = "8")]
+    pub resulting_cut: ::core::option::Option<CurrentSemanticCut>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CurrentSecurityChangeResult {
+    #[prost(message, optional, tag = "1")]
+    pub profile: ::core::option::Option<CurrentAuthorityProfile>,
+    #[prost(message, optional, tag = "2")]
+    pub change_id: ::core::option::Option<CurrentSecurityChangeId>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub intent_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "CurrentSecurityProgress", tag = "4")]
+    pub progress: i32,
+    #[prost(message, optional, tag = "5")]
+    pub original: ::core::option::Option<CurrentSecurityOriginalOutcome>,
+    #[prost(enumeration = "CurrentAuthorizationStopObservation", tag = "6")]
+    pub stop_observation: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CurrentSecurityAuditRecord {
+    #[prost(message, optional, tag = "1")]
+    pub result: ::core::option::Option<CurrentSecurityChangeResult>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub actor_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "3")]
+    pub operation: ::prost::alloc::string::String,
+}
+/// This invocation was refused before H, without settling any earlier
+/// ambiguous invocation. Preserve the original identity for status-first use.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CurrentSecurityInvocationRejected {
+    #[prost(message, optional, tag = "1")]
+    pub profile: ::core::option::Option<CurrentAuthorityProfile>,
+    #[prost(message, optional, tag = "2")]
+    pub change_id: ::core::option::Option<CurrentSecurityChangeId>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub intent_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag = "4")]
+    pub purpose_required: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -5431,6 +5682,136 @@ impl SecurityAuthorizationState {
             "SECURITY_AUTHORIZATION_STATE_PENDING" => Some(Self::Pending),
             "SECURITY_AUTHORIZATION_STATE_APPROVED" => Some(Self::Approved),
             "SECURITY_AUTHORIZATION_STATE_DENIED" => Some(Self::Denied),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CurrentSecurityDisposition {
+    Unspecified = 0,
+    Applied = 1,
+    RejectedCas = 2,
+    RejectedAdmin = 3,
+    RejectedAuthority = 4,
+    RejectedPurpose = 5,
+    RejectedCapacity = 6,
+    RejectedInvariant = 7,
+}
+impl CurrentSecurityDisposition {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CURRENT_SECURITY_DISPOSITION_UNSPECIFIED",
+            Self::Applied => "CURRENT_SECURITY_DISPOSITION_APPLIED",
+            Self::RejectedCas => "CURRENT_SECURITY_DISPOSITION_REJECTED_CAS",
+            Self::RejectedAdmin => "CURRENT_SECURITY_DISPOSITION_REJECTED_ADMIN",
+            Self::RejectedAuthority => "CURRENT_SECURITY_DISPOSITION_REJECTED_AUTHORITY",
+            Self::RejectedPurpose => "CURRENT_SECURITY_DISPOSITION_REJECTED_PURPOSE",
+            Self::RejectedCapacity => "CURRENT_SECURITY_DISPOSITION_REJECTED_CAPACITY",
+            Self::RejectedInvariant => "CURRENT_SECURITY_DISPOSITION_REJECTED_INVARIANT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CURRENT_SECURITY_DISPOSITION_UNSPECIFIED" => Some(Self::Unspecified),
+            "CURRENT_SECURITY_DISPOSITION_APPLIED" => Some(Self::Applied),
+            "CURRENT_SECURITY_DISPOSITION_REJECTED_CAS" => Some(Self::RejectedCas),
+            "CURRENT_SECURITY_DISPOSITION_REJECTED_ADMIN" => Some(Self::RejectedAdmin),
+            "CURRENT_SECURITY_DISPOSITION_REJECTED_AUTHORITY" => {
+                Some(Self::RejectedAuthority)
+            }
+            "CURRENT_SECURITY_DISPOSITION_REJECTED_PURPOSE" => {
+                Some(Self::RejectedPurpose)
+            }
+            "CURRENT_SECURITY_DISPOSITION_REJECTED_CAPACITY" => {
+                Some(Self::RejectedCapacity)
+            }
+            "CURRENT_SECURITY_DISPOSITION_REJECTED_INVARIANT" => {
+                Some(Self::RejectedInvariant)
+            }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CurrentSecurityProgress {
+    Unspecified = 0,
+    /// Local absence/timeout/retirement never proves safe nonexecution.
+    Unresolved = 1,
+    OriginDurable = 2,
+    Chosen = 3,
+    Applied = 4,
+}
+impl CurrentSecurityProgress {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CURRENT_SECURITY_PROGRESS_UNSPECIFIED",
+            Self::Unresolved => "CURRENT_SECURITY_PROGRESS_UNRESOLVED",
+            Self::OriginDurable => "CURRENT_SECURITY_PROGRESS_ORIGIN_DURABLE",
+            Self::Chosen => "CURRENT_SECURITY_PROGRESS_CHOSEN",
+            Self::Applied => "CURRENT_SECURITY_PROGRESS_APPLIED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CURRENT_SECURITY_PROGRESS_UNSPECIFIED" => Some(Self::Unspecified),
+            "CURRENT_SECURITY_PROGRESS_UNRESOLVED" => Some(Self::Unresolved),
+            "CURRENT_SECURITY_PROGRESS_ORIGIN_DURABLE" => Some(Self::OriginDurable),
+            "CURRENT_SECURITY_PROGRESS_CHOSEN" => Some(Self::Chosen),
+            "CURRENT_SECURITY_PROGRESS_APPLIED" => Some(Self::Applied),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CurrentAuthorizationStopObservation {
+    Unspecified = 0,
+    NotObserved = 1,
+    Waiting = 2,
+    /// New authorizations using old cuts have stopped under this profile. This
+    /// does not assert physical delivery or termination of an already authorized A.
+    OldCutNewAuthorizationsStopped = 3,
+}
+impl CurrentAuthorizationStopObservation {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CURRENT_AUTHORIZATION_STOP_OBSERVATION_UNSPECIFIED",
+            Self::NotObserved => "CURRENT_AUTHORIZATION_STOP_OBSERVATION_NOT_OBSERVED",
+            Self::Waiting => "CURRENT_AUTHORIZATION_STOP_OBSERVATION_WAITING",
+            Self::OldCutNewAuthorizationsStopped => {
+                "CURRENT_AUTHORIZATION_STOP_OBSERVATION_OLD_CUT_NEW_AUTHORIZATIONS_STOPPED"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CURRENT_AUTHORIZATION_STOP_OBSERVATION_UNSPECIFIED" => {
+                Some(Self::Unspecified)
+            }
+            "CURRENT_AUTHORIZATION_STOP_OBSERVATION_NOT_OBSERVED" => {
+                Some(Self::NotObserved)
+            }
+            "CURRENT_AUTHORIZATION_STOP_OBSERVATION_WAITING" => Some(Self::Waiting),
+            "CURRENT_AUTHORIZATION_STOP_OBSERVATION_OLD_CUT_NEW_AUTHORIZATIONS_STOPPED" => {
+                Some(Self::OldCutNewAuthorizationsStopped)
+            }
             _ => None,
         }
     }

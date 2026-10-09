@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -34,6 +35,7 @@ type Domain struct {
 	SecurityGeneration [16]byte `json:"security_generation"`
 	WriterPublicKey    [32]byte `json:"writer_public_key"`
 	TrustDigest        [32]byte `json:"trust_digest"`
+	CurrentProfile     string   `json:"current_profile,omitempty"`
 }
 
 func (d Domain) valid() bool {
@@ -42,8 +44,12 @@ func (d Domain) valid() bool {
 	}
 	switch d.AuthMode {
 	case "off":
-		return d.SecurityGeneration == [16]byte{} && d.WriterPublicKey == [32]byte{}
+		return d.SecurityGeneration == [16]byte{} && d.WriterPublicKey == [32]byte{} && d.CurrentProfile == ""
 	case "oidc":
+		if d.CurrentProfile != "" {
+			raw, err := hex.DecodeString(strings.TrimPrefix(d.CurrentProfile, "current-v2:"))
+			return strings.HasPrefix(d.CurrentProfile, "current-v2:") && err == nil && len(raw) == 32 && d.CurrentProfile == "current-v2:"+hex.EncodeToString(raw) && [32]byte(raw) != [32]byte{} && d.SecurityGeneration != [16]byte{} && d.WriterPublicKey == [32]byte{}
+		}
 		return d.SecurityGeneration != [16]byte{} && d.WriterPublicKey != [32]byte{}
 	default:
 		return false

@@ -54,7 +54,21 @@ TLS roots, all-feature tests, and warning-free rustdoc; the stable lane on
 h2c/TLS/auth/CRUD/query failure tests. A path-filtered green PR workflow
 does not substitute for this full tag matrix.
 
-Only after all six lanes pass, preflight audits locked dependencies with
+An additional single [native SDK4 lane](../../.github/workflows/current-sdk4.yml)
+is mandatory for the exact tagged source. It exercises current Go, Node/Admin,
+Dart and Rust over actual TLS through the existing native constructor and
+qualified current quorum. Missing tools/configuration, native readiness failure,
+zero execution or skipped cases fail the lane. This is the limited SDK seam,
+not a repetition of the full clock/recovery campaign.
+Before archive inspection, preflight downloads that same-run job's artifact by
+its ID and verifies the producer's receipt SHA-256, exact tag HEAD/tree, tracked
+source and runner hashes, toolchain/configuration binding and required execution
+logs. An older/manual receipt or a status field alone cannot authorize release.
+Publication depends on both that lane and successful archive preflight, whose
+existing byte comparison binds the `.crate` to the same tag checkout.
+
+Only after all six conformance lanes and native SDK4 pass, preflight audits
+locked dependencies with
 warnings denied (including unmaintained crates), builds the tagged `.crate`
 with `cargo package --locked`, checks its license, version, source and
 generated-code identity, verifies its **packaged** README links to the

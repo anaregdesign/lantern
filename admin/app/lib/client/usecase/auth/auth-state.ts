@@ -1,6 +1,16 @@
+import { copySecurityContract } from "lantern-sdk/web";
 import {
   AuthMode,
   SecurityPrincipalKind,
+  currentSecurityVersionBinding,
+  currentProfileBinding,
+  currentCutBinding,
+  validateCurrentSessionReview,
+  reconcileCurrentResult,
+  type CurrentLogoutRequest,
+  type CurrentSessionRevocationReview,
+  type SessionRevocation,
+  type CurrentSecurityChangeResult,
   type GetAuthCapabilitiesResponse,
   type BrowserSession,
   type GetCurrentPrincipalResponse,
@@ -9,8 +19,17 @@ import {
 export interface AuthGateway {
   capabilities(signal: AbortSignal): Promise<GetAuthCapabilitiesResponse>;
   session(signal: AbortSignal): Promise<BrowserSession | null>;
-  logout(csrf: string, signal: AbortSignal): Promise<void>;
-  login(issuer: string, stepUp: boolean): void;
+  logout(
+    request: CurrentLogoutRequest,
+    csrf: string,
+    signal: AbortSignal,
+  ): Promise<SessionRevocation>;
+  logoutStatus(
+    review: CurrentSessionRevocationReview,
+    csrf: string,
+    signal: AbortSignal,
+  ): Promise<CurrentSecurityChangeResult>;
+  login(issuer: string): void;
   sameOriginHTTPS: boolean;
 }
 export type AuthState =
@@ -26,6 +45,7 @@ export type AuthState =
       kind: "ready";
       epoch: number;
       principal: GetCurrentPrincipalResponse;
+      canMutate: boolean;
       signal: AbortSignal;
       issuers: GetAuthCapabilitiesResponse["loginIssuers"];
     };
@@ -40,9 +60,6 @@ export function principalPartition(
     !identity.issuer ||
     !identity.subject ||
     !version ||
-    version.revision <= 0n ||
-    version.digest.length !== 32 ||
-    version.generation.length !== 16 ||
     !expiresAt ||
     !/^[A-Za-z0-9_-]{43}$/.test(principal.csrfToken)
   ) {
@@ -51,10 +68,39 @@ export function principalPartition(
   return JSON.stringify([
     identity.issuer,
     identity.subject,
-    version.revision.toString(),
-    Array.from(version.generation),
-    Array.from(version.digest),
+    currentSecurityVersionBinding(version),
   ]);
+}
+
+interface RetainedSessionRevocation {
+  review: CurrentSessionRevocationReview;
+  result?: CurrentSecurityChangeResult;
+}
+
+/** App-lifetime recovery metadata; never an authority or an Apply queue. */
+export class SessionRevocationRecovery {
+  private readonly records: RetainedSessionRevocation[] = [];
+  hasRecords = () => this.records.length !== 0;
+  retain(review: CurrentSessionRevocationReview): RetainedSessionRevocation {
+    if (this.records.length >= 20)
+      throw new Error(
+        "Retained logout history is full. No new Apply was sent.",
+      );
+    const record = { review: copySecurityContract(review) };
+    this.records.push(record);
+    return record;
+  }
+  forPrincipal(
+    principal: GetCurrentPrincipalResponse,
+  ): RetainedSessionRevocation[] {
+    return this.records.filter(
+      ({ review }) =>
+        currentProfileBinding(review.profile) ===
+          currentProfileBinding(principal.version?.currentProfile) &&
+        review.actor?.issuer === principal.identity?.issuer &&
+        review.actor?.subject === principal.identity?.subject,
+    );
+  }
 }
 
 /** Owns one gateway/session lifetime. Stale promises cannot restore authority. */
@@ -68,9 +114,13 @@ export class AuthController {
   private selectedScope = "";
   private scopeIdentity = "";
   private deadline?: ReturnType<typeof setTimeout>;
+  private logoutMessage = "";
+  getLogoutMessage = () => this.logoutMessage;
+  hasLogoutRecord = () => this.logoutRecovery.hasRecords();
   constructor(
     private readonly gateway: AuthGateway,
     private readonly now = Date.now,
+    private readonly logoutRecovery = new SessionRevocationRecovery(),
   ) {}
   getSnapshot = (): AuthState => this.state;
   getSelectedScope = (): string => this.selectedScope;
@@ -133,7 +183,9 @@ export class AuthController {
       const caps = await this.gateway.capabilities(request.signal);
       if (ticket !== this.ticket) return;
       if (
-        caps.protocolVersion !== 1 ||
+        (caps.mode === AuthMode.OFF
+          ? caps.protocolVersion !== 1
+          : caps.protocolVersion !== 2) ||
         (caps.mode !== AuthMode.OFF && caps.mode !== AuthMode.OIDC)
       )
         throw new Error("Unsupported authentication protocol.");
@@ -152,6 +204,7 @@ export class AuthController {
         });
         return;
       }
+      currentProfileBinding(caps.currentProfile);
       if (!this.gateway.sameOriginHTTPS)
         throw new Error("OIDC requires an HTTPS gateway on the Admin origin.");
       if (
@@ -175,6 +228,13 @@ export class AuthController {
         throw new Error("Invalid browser session response.");
       const principal = session.principal;
       const partition = principalPartition(principal);
+      if (
+        currentProfileBinding(session.currentProfile) !==
+          currentProfileBinding(caps.currentProfile) ||
+        currentProfileBinding(principal.version?.currentProfile) !==
+          currentProfileBinding(caps.currentProfile)
+      )
+        throw new Error("Session authority profile changed.");
       const identity = JSON.stringify([
         principal.identity!.issuer,
         principal.identity!.subject,
@@ -196,11 +256,7 @@ export class AuthController {
         Number(principal.expiresAt!.seconds) * 1000 +
         principal.expiresAt!.nanos / 1e6;
       const remaining = expiry - this.now();
-      if (
-        !Number.isFinite(remaining) ||
-        remaining <= 1000 ||
-        remaining > 31_000
-      )
+      if (!Number.isFinite(remaining) || remaining <= 1000)
         throw new Error("Browser authority has expired.");
       const same =
         this.state.kind === "ready" &&
@@ -209,13 +265,17 @@ export class AuthController {
       const epoch = this.state.epoch + (same ? 0 : 1);
       if (!same) this.invalidate();
       clearTimeout(this.deadline);
-      this.deadline = setTimeout(() => {
-        void this.refresh(true);
-      }, remaining - 1000);
+      this.deadline = setTimeout(
+        () => {
+          void this.refresh(true);
+        },
+        Math.min(remaining - 1000, 15_000),
+      );
       this.publish({
         kind: "ready",
         epoch,
         principal,
+        canMutate: caps.currentOriginEnabled,
         signal: this.serving.signal,
         issuers: caps.loginIssuers,
       });
@@ -232,7 +292,7 @@ export class AuthController {
       });
     }
   }
-  login(issuer: string, stepUp = false) {
+  login(issuer: string) {
     const state = this.state;
     if (
       (state.kind !== "login" && state.kind !== "ready") ||
@@ -240,25 +300,116 @@ export class AuthController {
     )
       return;
     this.suspend();
-    this.gateway.login(issuer, stepUp);
+    this.gateway.login(issuer);
   }
   async logout(): Promise<void> {
     if (this.state.kind !== "ready") return;
-    const csrf = this.state.principal.csrfToken;
+    const { principal, canMutate } = this.state;
+    const csrf = principal.csrfToken;
+    const profile = copySecurityContract(principal.version!.currentProfile!);
     this.invalidateSession();
     const ticket = this.ticket;
     const request = (this.request = new AbortController());
+    let localCleared = false;
+    let record: RetainedSessionRevocation | undefined;
+    this.logoutMessage = "Cluster revocation has not been confirmed.";
+    const payload = (
+      extra: Partial<CurrentLogoutRequest>,
+    ): CurrentLogoutRequest => ({
+      $typeName: "graph.v1.CurrentLogoutRequest",
+      profile,
+      prepareOnly: false,
+      localOnly: false,
+      ...extra,
+    });
     try {
-      await this.gateway.logout(csrf, request.signal);
-      if (ticket === this.ticket) await this.refresh();
+      if (canMutate) {
+        const prepared = await this.gateway.logout(
+          payload({ prepareOnly: true }),
+          csrf,
+          request.signal,
+        );
+        if (ticket !== this.ticket) return;
+        validateCurrentSessionReview(prepared.currentReview);
+        const review = prepared.currentReview;
+        if (
+          currentProfileBinding(review.profile) !==
+            currentProfileBinding(profile) ||
+          currentCutBinding(review.expectedCut, profile) !==
+            currentCutBinding(principal.version!.currentCut, profile) ||
+          review.actor!.issuer !== principal.identity!.issuer ||
+          review.actor!.subject !== principal.identity!.subject ||
+          prepared.currentResult ||
+          prepared.localCookieCleared
+        )
+          throw new Error("Mismatched logout review.");
+        // Retain the exact origin-minted review before dispatch. It survives
+        // local display invalidation, policy refresh and a new sign-in.
+        record = this.logoutRecovery.retain(review);
+        const response = await this.gateway.logout(
+          payload({ review: copySecurityContract(review) }),
+          csrf,
+          request.signal,
+        );
+        localCleared = response.localCookieCleared;
+        if (response.currentResult)
+          record.result = reconcileCurrentResult(
+            undefined,
+            response.currentResult,
+            review,
+          );
+      }
     } catch {
-      if (ticket === this.ticket)
-        this.publish({
-          kind: "error",
-          epoch: this.state.epoch,
-          message:
-            "Logout could not be confirmed. Retry the authentication check.",
-        });
+      /* possible dispatch is retained; never mint/retry another ID */
     }
+    if (!localCleared) {
+      try {
+        localCleared = (
+          await this.gateway.logout(
+            payload({ localOnly: true }),
+            csrf,
+            request.signal,
+          )
+        ).localCookieCleared;
+      } catch {
+        /* local deletion is separately unconfirmed */
+      }
+    }
+    if (ticket !== this.ticket) return;
+    this.logoutMessage =
+      (localCleared
+        ? "Local sign-out confirmed. "
+        : "Local sign-out could not be confirmed. ") +
+      (record?.result?.original
+        ? "The original cluster revocation result is retained."
+        : "Cluster revocation is unconfirmed; no operation was retried.");
+    await this.refresh();
+  }
+  async checkLogoutStatus(): Promise<void> {
+    if (this.state.kind !== "ready") return;
+    const { principal, signal } = this.state;
+    const records = this.logoutRecovery.forPrincipal(principal);
+    if (!records.length) return;
+    for (const record of records) {
+      try {
+        const next = await this.gateway.logoutStatus(
+          copySecurityContract(record.review),
+          principal.csrfToken,
+          signal,
+        );
+        if (signal.aborted) return;
+        record.result = reconcileCurrentResult(
+          record.result,
+          next,
+          record.review,
+        );
+      } catch {
+        if (signal.aborted) return;
+      }
+    }
+    this.logoutMessage = records.every((record) => record.result?.original)
+      ? "The original cluster revocation results are available; each does not describe the new session."
+      : "Original cluster revocation remains unresolved. Its identity is retained; no operation was retried.";
+    this.publish({ ...this.state });
   }
 }

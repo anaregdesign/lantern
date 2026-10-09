@@ -23,6 +23,7 @@ type Admission struct {
 	access         *Access
 	fence          func(context.Context, *Revision) error
 	authentication Authentication
+	current        *currentPublicAdmission
 }
 
 func NewAdmission(identity Identity, authTime, expiresAt time.Time, revision *Revision,
@@ -39,6 +40,9 @@ func NewAdmission(identity Identity, authTime, expiresAt time.Time, revision *Re
 }
 
 func (a *Admission) Check(ctx context.Context, now time.Time) error {
+	if a != nil && a.current != nil {
+		return a.current.check(ctx)
+	}
 	if a == nil || !now.Before(a.expiresAt) || a.fence == nil {
 		return ErrAuthorityUnavailable
 	}
@@ -56,9 +60,30 @@ func (a *Admission) ExpiresAt() time.Time { return a.expiresAt }
 func (a *Admission) Browser() bool        { return a.browser }
 func (a *Admission) CSRFToken() string    { return a.csrfToken }
 
+// Snapshot is policy data captured by this admission, not fresh authority.
+// Current-profile admissions deliberately have no legacy signed Revision.
+func (a *Admission) Snapshot() *Snapshot {
+	if a == nil {
+		return nil
+	}
+	if a.current != nil {
+		return a.current.snapshot
+	}
+	if a.revision == nil {
+		return nil
+	}
+	return a.revision.snapshot
+}
+
 // WithBrowserProof attaches the separately verified browser-session CSRF proof.
 // It cannot change the authenticated identity or captured policy cut.
 func (a *Admission) WithBrowserProof(csrf string) *Admission {
+	if a.current != nil {
+		session := a.current.credential.claim.Session
+		if session == nil || sha256.Sum256([]byte("lantern/current-CSRF/v2\x00"+session.Digest+"\x00"+csrf)) != a.current.credential.claim.CSRF {
+			return a
+		}
+	}
 	copy := *a
 	copy.browser, copy.csrfToken = true, csrf
 	return &copy
@@ -67,6 +92,9 @@ func (a *Admission) WithBrowserProof(csrf string) *Admission {
 // ScopeBinding is stable only within this exact Principal/policy/generation
 // cut. Public cursors and caches must include it, never a mutable Role lookup.
 func (a *Admission) ScopeBinding() [32]byte {
+	if a != nil && a.current != nil {
+		return a.current.binding
+	}
 	if a == nil || a.revision == nil {
 		return [32]byte{}
 	}

@@ -23,37 +23,48 @@ import (
 // SecurityServiceOptions comes from certified Server composition, never clients.
 // A nil Store means explicitly OFF; enabled-but-unavailable never becomes OFF.
 type SecurityServiceOptions struct {
-	Store               *security.Store
-	ValidateIssuer      func(context.Context, security.Issuer) error
-	Enforced            func(security.ChangeResult) bool
-	Now                 func() time.Time
-	Ready               func(context.Context, *security.Revision) bool
-	BeginAuthorization  func(context.Context, *security.Admission, security.ManagementBinding) (security.AuthorizationStart, string, error)
-	ReadAuthorization   func(context.Context, *security.Admission, [32]byte) (security.AuthorizationStatus, error)
-	VerifyAuthorization func([]byte, security.ManagementBinding, time.Time) error
+	Store                     *security.Store
+	Current                   *security.CurrentAuthority
+	CurrentBeginAuthorization func(context.Context, *security.Admission, security.CurrentReview) (security.AuthorizationStart, string, string, error)
+	CurrentReadAuthorization  func(context.Context, *security.Admission, [32]byte, string) (security.AuthorizationStatus, error)
+	ValidateIssuer            func(context.Context, security.Issuer) error
+	Enforced                  func(security.ChangeResult) bool
+	Now                       func() time.Time
+	Ready                     func(context.Context, *security.Revision) bool
+	BeginAuthorization        func(context.Context, *security.Admission, security.ManagementBinding) (security.AuthorizationStart, string, error)
+	ReadAuthorization         func(context.Context, *security.Admission, [32]byte) (security.AuthorizationStatus, error)
+	VerifyAuthorization       func([]byte, security.ManagementBinding, time.Time) error
 }
 
 type SecurityConnectHandler struct {
-	store               *security.Store
-	validateIssuer      func(context.Context, security.Issuer) error
-	enforced            func(security.ChangeResult) bool
-	cursors             cipher.AEAD
-	now                 func() time.Time
-	ready               func(context.Context, *security.Revision) bool
-	beginAuthorization  func(context.Context, *security.Admission, security.ManagementBinding) (security.AuthorizationStart, string, error)
-	readAuthorization   func(context.Context, *security.Admission, [32]byte) (security.AuthorizationStatus, error)
-	verifyAuthorization func([]byte, security.ManagementBinding, time.Time) error
+	store                     *security.Store
+	current                   *security.CurrentAuthority
+	currentBeginAuthorization func(context.Context, *security.Admission, security.CurrentReview) (security.AuthorizationStart, string, string, error)
+	currentReadAuthorization  func(context.Context, *security.Admission, [32]byte, string) (security.AuthorizationStatus, error)
+	validateIssuer            func(context.Context, security.Issuer) error
+	enforced                  func(security.ChangeResult) bool
+	cursors                   cipher.AEAD
+	now                       func() time.Time
+	ready                     func(context.Context, *security.Revision) bool
+	beginAuthorization        func(context.Context, *security.Admission, security.ManagementBinding) (security.AuthorizationStart, string, error)
+	readAuthorization         func(context.Context, *security.Admission, [32]byte) (security.AuthorizationStatus, error)
+	verifyAuthorization       func([]byte, security.ManagementBinding, time.Time) error
 }
 
 var _ graphv1connect.LanternSecurityServiceHandler = (*SecurityConnectHandler)(nil)
 
 func NewSecurityConnectHandler(options SecurityServiceOptions) (*SecurityConnectHandler, error) {
+	if options.Current != nil && (options.Store != nil || options.Current.Profile().Binding() == "") {
+		return nil, security.ErrS1Contract
+	}
 	handler := &SecurityConnectHandler{store: options.Store, validateIssuer: options.ValidateIssuer, enforced: options.Enforced, ready: options.Ready, now: time.Now}
+	handler.current = options.Current
+	handler.currentBeginAuthorization, handler.currentReadAuthorization = options.CurrentBeginAuthorization, options.CurrentReadAuthorization
 	handler.beginAuthorization, handler.readAuthorization, handler.verifyAuthorization = options.BeginAuthorization, options.ReadAuthorization, options.VerifyAuthorization
 	if options.Now != nil {
 		handler.now = options.Now
 	}
-	if options.Store == nil {
+	if options.Store == nil && options.Current == nil {
 		return handler, nil
 	}
 	if options.ValidateIssuer == nil {
@@ -71,7 +82,7 @@ func NewSecurityConnectHandler(options SecurityServiceOptions) (*SecurityConnect
 	return handler, err
 }
 func (h *SecurityConnectHandler) admission(ctx context.Context, manage bool) (*security.Admission, error) {
-	if h.store == nil {
+	if h.store == nil && h.current == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("security management is disabled"))
 	}
 	admission, ok := security.AdmissionFromContext(ctx)
@@ -83,6 +94,25 @@ func (h *SecurityConnectHandler) admission(ctx context.Context, manage bool) (*s
 	}
 	if manage && !admission.Access().AllowsGlobal(security.SecurityManage) {
 		return nil, connect.NewError(connect.CodePermissionDenied, security.ErrPermissionDenied)
+	}
+	if h.current != nil {
+		profile, current := admission.CurrentProfile()
+		if !current || profile != h.current.Profile() {
+			return nil, connect.NewError(connect.CodeUnauthenticated, security.ErrPermissionDenied)
+		}
+		var bindErr error
+		if manage {
+			bindErr = admission.BindCurrentGlobalOutput(ctx, security.SecurityManage)
+		} else {
+			bindErr = admission.BindCurrentSelfOutput(ctx)
+		}
+		if bindErr != nil {
+			return nil, connect.NewError(securityErrorCode(bindErr), bindErr)
+		}
+		return admission, nil
+	}
+	if admission.Revision() == nil {
+		return nil, connect.NewError(connect.CodeUnauthenticated, security.ErrPermissionDenied)
 	}
 	current, ok := h.store.Current()
 	if !ok || current.Digest() != admission.Revision().Digest() {
@@ -105,6 +135,27 @@ func (h *SecurityConnectHandler) GetAuthCapabilities(ctx context.Context, req *c
 		return nil, err
 	}
 	response := &pb.GetAuthCapabilitiesResponse{Mode: pb.AuthMode_AUTH_MODE_OFF, ProtocolVersion: 1, Ready: true}
+	if h.current != nil {
+		if err := h.current.BindPublicMetadata(ctx, security.CurrentCapabilitiesMetadata); err != nil {
+			return nil, connect.NewError(connect.CodeUnavailable, err)
+		}
+		response.Mode, response.ProtocolVersion = pb.AuthMode_AUTH_MODE_OIDC, security.CurrentPublicVersion
+		response.Ready, response.CurrentProfile = h.current.Ready(ctx), EncodeCurrentProfile(h.current.Profile())
+		response.LoginPath = "/auth/login"
+		response.CurrentOriginEnabled, response.CurrentMember = h.current.OriginEnabled(), h.current.MemberID()
+		if response.Ready {
+			issuers, err := h.current.PublicLoginIssuers(ctx)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeUnavailable, err)
+			}
+			for _, issuer := range issuers {
+				response.LoginIssuers = append(response.LoginIssuers, &pb.LoginIssuer{Issuer: issuer, Label: issuer})
+			}
+		}
+		result := connect.NewResponse(response)
+		result.Header().Set("Cache-Control", "no-store")
+		return result, nil
+	}
 	if h.store == nil && h.ready != nil {
 		response.Ready = h.ready(ctx, nil)
 	}
@@ -133,8 +184,8 @@ func (h *SecurityConnectHandler) GetCurrentPrincipal(ctx context.Context, req *c
 	if err = securityRequestError(req.Msg); err != nil {
 		return nil, err
 	}
-	response := &pb.GetCurrentPrincipalResponse{Identity: encodeSecurityIdentity(admission.Identity()), Version: securityVersion(admission.Revision()), ExpiresAt: timestamppb.New(admission.ExpiresAt()), RecentAuthentication: !admission.AuthTime().IsZero() && !admission.AuthTime().After(h.now()) && h.now().Sub(admission.AuthTime()) <= security.RecentAuthenticationLifetime}
-	image := admission.Revision().Snapshot().Image()
+	response := &pb.GetCurrentPrincipalResponse{Identity: encodeSecurityIdentity(admission.Identity()), Version: SecurityVersionForAdmission(admission), ExpiresAt: timestamppb.New(admission.ExpiresAt()), RecentAuthentication: !admission.AuthTime().IsZero() && !admission.AuthTime().After(h.now()) && h.now().Sub(admission.AuthTime()) <= security.RecentAuthenticationLifetime}
+	image := admission.Snapshot().Image()
 	roles := make(map[string]bool)
 	for _, user := range image.Principals {
 		if user.Identity == admission.Identity() {
@@ -216,7 +267,7 @@ func (h *SecurityConnectHandler) ListIssuers(ctx context.Context, req *connect.R
 		return nil, err
 	}
 	var items []*pb.SecurityIssuer
-	for _, issuer := range admission.Revision().Snapshot().Image().Issuers {
+	for _, issuer := range admission.Snapshot().Image().Issuers {
 		if req.Msg.Exact == "" || req.Msg.Exact == issuer.URL {
 			items = append(items, encodeSecurityIssuer(issuer))
 		}
@@ -228,7 +279,7 @@ func (h *SecurityConnectHandler) ListIssuers(ctx context.Context, req *connect.R
 	if err = admission.Check(ctx, h.now()); err != nil {
 		return nil, connect.NewError(securityErrorCode(err), err)
 	}
-	return securityReadResponse(ctx, admission, h.now(), &pb.ListIssuersResponse{Issuers: items[start:end], Version: securityVersion(admission.Revision()), NextCursor: h.nextCursor(end, len(items), "issuers", req.Msg.Exact, admission)})
+	return securityReadResponse(ctx, admission, h.now(), &pb.ListIssuersResponse{Issuers: items[start:end], Version: SecurityVersionForAdmission(admission), NextCursor: h.nextCursor(end, len(items), "issuers", req.Msg.Exact, admission)})
 }
 func (h *SecurityConnectHandler) ListRoles(ctx context.Context, req *connect.Request[pb.ListRolesRequest]) (*connect.Response[pb.ListRolesResponse], error) {
 	admission, err := h.admission(ctx, true)
@@ -236,9 +287,9 @@ func (h *SecurityConnectHandler) ListRoles(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 	var items []*pb.SecurityRole
-	for _, role := range admission.Revision().Snapshot().Image().Roles {
+	for _, role := range admission.Snapshot().Image().Roles {
 		if req.Msg.Exact == "" || req.Msg.Exact == role.ID {
-			items = append(items, encodeSecurityManagedRole(role, admission.Revision().Snapshot().Image()))
+			items = append(items, encodeSecurityManagedRole(role, admission.Snapshot().Image()))
 		}
 	}
 	start, end, err := h.page(req.Msg, "roles", admission, len(items))
@@ -248,7 +299,7 @@ func (h *SecurityConnectHandler) ListRoles(ctx context.Context, req *connect.Req
 	if err = admission.Check(ctx, h.now()); err != nil {
 		return nil, connect.NewError(securityErrorCode(err), err)
 	}
-	return securityReadResponse(ctx, admission, h.now(), &pb.ListRolesResponse{Roles: items[start:end], Version: securityVersion(admission.Revision()), NextCursor: h.nextCursor(end, len(items), "roles", req.Msg.Exact, admission)})
+	return securityReadResponse(ctx, admission, h.now(), &pb.ListRolesResponse{Roles: items[start:end], Version: SecurityVersionForAdmission(admission), NextCursor: h.nextCursor(end, len(items), "roles", req.Msg.Exact, admission)})
 }
 func (h *SecurityConnectHandler) ListUsers(ctx context.Context, req *connect.Request[pb.ListUsersRequest]) (*connect.Response[pb.ListUsersResponse], error) {
 	admission, err := h.admission(ctx, true)
@@ -256,7 +307,7 @@ func (h *SecurityConnectHandler) ListUsers(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 	var items []*pb.SecurityUser
-	for _, user := range admission.Revision().Snapshot().Image().Principals {
+	for _, user := range admission.Snapshot().Image().Principals {
 		if req.Msg.Exact == "" || req.Msg.Exact == user.Identity.Subject || req.Msg.Exact == user.Identity.MachineName {
 			items = append(items, encodeSecurityUser(user))
 		}
@@ -268,7 +319,7 @@ func (h *SecurityConnectHandler) ListUsers(ctx context.Context, req *connect.Req
 	if err = admission.Check(ctx, h.now()); err != nil {
 		return nil, connect.NewError(securityErrorCode(err), err)
 	}
-	return securityReadResponse(ctx, admission, h.now(), &pb.ListUsersResponse{Users: items[start:end], Version: securityVersion(admission.Revision()), NextCursor: h.nextCursor(end, len(items), "users", req.Msg.Exact, admission)})
+	return securityReadResponse(ctx, admission, h.now(), &pb.ListUsersResponse{Users: items[start:end], Version: SecurityVersionForAdmission(admission), NextCursor: h.nextCursor(end, len(items), "users", req.Msg.Exact, admission)})
 }
 func (h *SecurityConnectHandler) ListRoleAssignments(ctx context.Context, req *connect.Request[pb.ListRoleAssignmentsRequest]) (*connect.Response[pb.ListRoleAssignmentsResponse], error) {
 	admission, err := h.admission(ctx, true)
@@ -282,9 +333,9 @@ func (h *SecurityConnectHandler) ListRoleAssignments(ctx context.Context, req *c
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	for _, user := range admission.Revision().Snapshot().Image().Principals {
+	for _, user := range admission.Snapshot().Image().Principals {
 		if user.Identity == identity {
-			return securityReadResponse(ctx, admission, h.now(), &pb.ListRoleAssignmentsResponse{Assignments: encodeSecurityUser(user).Assignments, Version: securityVersion(admission.Revision())})
+			return securityReadResponse(ctx, admission, h.now(), &pb.ListRoleAssignmentsResponse{Assignments: encodeSecurityUser(user).Assignments, Version: SecurityVersionForAdmission(admission)})
 		}
 	}
 	return nil, connect.NewError(connect.CodeNotFound, errors.New("user not registered"))
@@ -294,8 +345,30 @@ func (h *SecurityConnectHandler) ListSecurityAudit(ctx context.Context, req *con
 	if err != nil {
 		return nil, err
 	}
+	if h.current != nil {
+		if err := securityRequestError(req.Msg); err != nil {
+			return nil, err
+		}
+		view, err := h.current.Audit(ctx, admission, req.Msg.Exact)
+		if err != nil {
+			return nil, currentControlError(err)
+		}
+		start, end, err := h.page(req.Msg, "current-audit", admission, view.Len())
+		if err != nil {
+			return nil, err
+		}
+		records, err := view.Page(start, end)
+		if err != nil {
+			return nil, currentControlError(err)
+		}
+		response := &pb.ListSecurityAuditResponse{Version: SecurityVersionForAdmission(admission), NextCursor: h.nextCursor(end, view.Len(), "current-audit", req.Msg.Exact, admission)}
+		for _, record := range records {
+			response.CurrentRecords = append(response.CurrentRecords, &pb.CurrentSecurityAuditRecord{Result: EncodeCurrentResult(record.Result), ActorDigest: record.Actor[:], Operation: record.Operation})
+		}
+		return securityReadResponse(ctx, admission, h.now(), response)
+	}
 	var items []*pb.SecurityAuditRecord
-	for _, record := range admission.Revision().Snapshot().Image().Audit {
+	for _, record := range admission.Snapshot().Image().Audit {
 		if req.Msg.Exact == "" || req.Msg.Exact == record.ChangeID || req.Msg.Exact == strconv.FormatUint(record.Revision, 10) {
 			items = append(items, &pb.SecurityAuditRecord{Revision: record.Revision, ChangeId: record.ChangeID, IntentDigest: record.IntentDigest, ActorDigest: record.ActorDigest, OccurredAt: timestamppb.New(record.OccurredAt), Operation: record.Operation, TargetDigests: append([]string(nil), record.TargetDigests...), AdditionalTargets: uint32(record.AdditionalTargets), Outcome: record.Outcome})
 		}
@@ -307,7 +380,7 @@ func (h *SecurityConnectHandler) ListSecurityAudit(ctx context.Context, req *con
 	if err = admission.Check(ctx, h.now()); err != nil {
 		return nil, connect.NewError(securityErrorCode(err), err)
 	}
-	return securityReadResponse(ctx, admission, h.now(), &pb.ListSecurityAuditResponse{Records: items[start:end], Version: securityVersion(admission.Revision()), NextCursor: h.nextCursor(end, len(items), "audit", req.Msg.Exact, admission)})
+	return securityReadResponse(ctx, admission, h.now(), &pb.ListSecurityAuditResponse{Records: items[start:end], Version: SecurityVersionForAdmission(admission), NextCursor: h.nextCursor(end, len(items), "audit", req.Msg.Exact, admission)})
 }
 func (h *SecurityConnectHandler) GetRoleTemplates(ctx context.Context, req *connect.Request[pb.GetRoleTemplatesRequest]) (*connect.Response[pb.GetRoleTemplatesResponse], error) {
 	admission, err := h.admission(ctx, true)
@@ -321,7 +394,7 @@ func (h *SecurityConnectHandler) GetRoleTemplates(ctx context.Context, req *conn
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	response := &pb.GetRoleTemplatesResponse{Version: securityVersion(admission.Revision())}
+	response := &pb.GetRoleTemplatesResponse{Version: SecurityVersionForAdmission(admission)}
 	for _, role := range roles {
 		response.Roles = append(response.Roles, encodeSecurityRole(role))
 	}
@@ -349,14 +422,14 @@ func (h *SecurityConnectHandler) ExplainAccess(ctx context.Context, req *connect
 		if req.Msg.LogicalKey != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrInvalidPolicy)
 		}
-		allowed, matches, err = admission.Revision().Snapshot().ExplainEdge(identity, action, req.Msg.Edge.Tail, req.Msg.Edge.Head)
+		allowed, matches, err = admission.Snapshot().ExplainEdge(identity, action, req.Msg.Edge.Tail, req.Msg.Edge.Head)
 	} else {
-		allowed, matches, err = admission.Revision().Snapshot().Explain(identity, action, req.Msg.LogicalKey)
+		allowed, matches, err = admission.Snapshot().Explain(identity, action, req.Msg.LogicalKey)
 	}
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	response := &pb.ExplainAccessResponse{Allowed: allowed, Version: securityVersion(admission.Revision())}
+	response := &pb.ExplainAccessResponse{Allowed: allowed, Version: SecurityVersionForAdmission(admission)}
 	for _, match := range matches {
 		response.Matches = append(response.Matches, &pb.SecurityRuleMatch{RoleId: match.RoleID, RuleId: match.RuleID, Effect: encodeSecurityEffect(match.Effect), Action: encodeSecurityAction(match.Action), Endpoint: match.Endpoint})
 	}
@@ -378,7 +451,7 @@ func (h *SecurityConnectHandler) ValidateIssuer(ctx context.Context, req *connec
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	if req.Msg.Issuer.SecretRef == nil {
-		if existing, known := admission.Revision().Snapshot().Issuer(issuer.URL); known {
+		if existing, known := admission.Snapshot().Issuer(issuer.URL); known {
 			issuer.SecretRef = existing.SecretRef
 		}
 	}
@@ -391,6 +464,12 @@ func (h *SecurityConnectHandler) ValidateIssuer(ctx context.Context, req *connec
 	return connect.NewResponse(&pb.ValidateIssuerResponse{Valid: true}), nil
 }
 func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *connect.Request[pb.ApplySecurityChangesRequest]) (*connect.Response[pb.ApplySecurityChangesResponse], error) {
+	if h.current != nil {
+		return h.applyCurrentChanges(ctx, req)
+	}
+	if req.Msg.CurrentReview != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrS1Contract)
+	}
 	admission, err := h.admission(ctx, true)
 	if err != nil {
 		return nil, err
@@ -439,7 +518,7 @@ func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *
 			if change.Issuer != nil && change.Issuer.Enabled {
 				issuer := *change.Issuer
 				if change.PreserveSecret {
-					if existing, known := admission.Revision().Snapshot().Issuer(issuer.URL); known {
+					if existing, known := admission.Snapshot().Issuer(issuer.URL); known {
 						issuer.SecretRef = existing.SecretRef
 					}
 				}
@@ -467,6 +546,21 @@ func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *
 	return connect.NewResponse(response), nil
 }
 func (h *SecurityConnectHandler) ApplySecurityChange(ctx context.Context, req *connect.Request[pb.ApplySecurityChangeRequest]) (*connect.Response[pb.ApplySecurityChangeResponse], error) {
+	if h.current != nil {
+		if securityRequestError(req.Msg) != nil || req.Msg.CurrentReview == nil || len(req.Msg.CurrentReview.Changes) != 1 || req.Msg.Change != nil || req.Msg.ExpectedRevision != 0 || len(req.Msg.ChangeId) != 0 {
+			return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrS1Contract)
+		}
+		result, err := h.ApplySecurityChanges(ctx, connect.NewRequest(&pb.ApplySecurityChangesRequest{CurrentReview: req.Msg.CurrentReview, AuthorizationProof: req.Msg.AuthorizationProof}))
+		if err != nil {
+			return nil, err
+		}
+		response := connect.NewResponse(&pb.ApplySecurityChangeResponse{CurrentResult: result.Msg.CurrentResult})
+		response.Header().Set("Cache-Control", "no-store")
+		return response, nil
+	}
+	if req.Msg.CurrentReview != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrS1Contract)
+	}
 	if err := securityRequestError(req.Msg); err != nil {
 		if _, admissionErr := h.admission(ctx, true); admissionErr != nil {
 			return nil, admissionErr
@@ -503,11 +597,11 @@ func (h *SecurityConnectHandler) GetIssuer(ctx context.Context, req *connect.Req
 	if req.Msg.Issuer == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrInvalidImage)
 	}
-	issuer, known := admission.Revision().Snapshot().Issuer(req.Msg.Issuer)
+	issuer, known := admission.Snapshot().Issuer(req.Msg.Issuer)
 	if !known {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("issuer not registered"))
 	}
-	return securityReadResponse(ctx, admission, h.now(), &pb.GetIssuerResponse{Issuer: encodeSecurityIssuer(issuer), Version: securityVersion(admission.Revision())})
+	return securityReadResponse(ctx, admission, h.now(), &pb.GetIssuerResponse{Issuer: encodeSecurityIssuer(issuer), Version: SecurityVersionForAdmission(admission)})
 }
 func (h *SecurityConnectHandler) GetRole(ctx context.Context, req *connect.Request[pb.GetRoleRequest]) (*connect.Response[pb.GetRoleResponse], error) {
 	admission, err := h.admission(ctx, true)
@@ -520,9 +614,9 @@ func (h *SecurityConnectHandler) GetRole(ctx context.Context, req *connect.Reque
 	if req.Msg.Id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrInvalidImage)
 	}
-	for _, role := range admission.Revision().Snapshot().Image().Roles {
+	for _, role := range admission.Snapshot().Image().Roles {
 		if role.ID == req.Msg.Id {
-			return securityReadResponse(ctx, admission, h.now(), &pb.GetRoleResponse{Role: encodeSecurityManagedRole(role, admission.Revision().Snapshot().Image()), Version: securityVersion(admission.Revision())})
+			return securityReadResponse(ctx, admission, h.now(), &pb.GetRoleResponse{Role: encodeSecurityManagedRole(role, admission.Snapshot().Image()), Version: SecurityVersionForAdmission(admission)})
 		}
 	}
 	return nil, connect.NewError(connect.CodeNotFound, errors.New("role not registered"))
@@ -539,14 +633,20 @@ func (h *SecurityConnectHandler) GetUser(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	for _, user := range admission.Revision().Snapshot().Image().Principals {
+	for _, user := range admission.Snapshot().Image().Principals {
 		if user.Identity == identity {
-			return securityReadResponse(ctx, admission, h.now(), &pb.GetUserResponse{User: encodeSecurityUser(user), Version: securityVersion(admission.Revision())})
+			return securityReadResponse(ctx, admission, h.now(), &pb.GetUserResponse{User: encodeSecurityUser(user), Version: SecurityVersionForAdmission(admission)})
 		}
 	}
 	return nil, connect.NewError(connect.CodeNotFound, errors.New("user not registered"))
 }
 func (h *SecurityConnectHandler) GetSecurityChangeStatus(ctx context.Context, req *connect.Request[pb.GetSecurityChangeStatusRequest]) (*connect.Response[pb.GetSecurityChangeStatusResponse], error) {
+	if h.current != nil {
+		return h.currentChangeStatus(ctx, req)
+	}
+	if req.Msg.CurrentProfile != nil || req.Msg.CurrentChangeId != nil || len(req.Msg.CurrentIntentDigest) != 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrS1Contract)
+	}
 	admission, err := h.admission(ctx, true)
 	if err != nil {
 		return nil, err

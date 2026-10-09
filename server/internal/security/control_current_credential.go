@@ -59,6 +59,9 @@ type CurrentCredentialFacts struct {
 	Session       *Session
 	Origin, CSRF  [32]byte
 	MachineDigest string
+	// Set only by the trusted same-origin GET-session adapter. Cookie/CSRF
+	// digests are still verified; the mutation Origin/header proof is absent.
+	BrowserReadOnly bool
 }
 
 // CurrentCredentialProducer is trusted private composition, never a request
@@ -69,12 +72,13 @@ type CurrentCredentialProducer interface {
 }
 
 type authorityCredential struct {
-	actor          Identity
-	authentication Authentication
-	lineage        uint64
-	cut            SemanticCut
-	claim          authorityCredentialClaim
-	machine        *MachineCredential
+	actor           Identity
+	authentication  Authentication
+	lineage         uint64
+	cut             SemanticCut
+	claim           authorityCredentialClaim
+	machine         *MachineCredential
+	browserReadOnly bool
 }
 
 // Matches oidc's original trust commitment without importing that higher layer.
@@ -107,7 +111,7 @@ func captureAuthorityUseCredential(view CurrentCredentialView, facts CurrentCred
 	if facts.MachineDigest != "" {
 		kinds++
 	}
-	if view.Snapshot() == nil || kinds != 1 {
+	if view.Snapshot() == nil || kinds != 1 || facts.BrowserReadOnly && (facts.Session == nil || humanOnly) {
 		return result, ErrPermissionDenied
 	}
 	low, high, err := view.TimeBounds()
@@ -199,7 +203,7 @@ func captureAuthorityUseCredential(view CurrentCredentialView, facts CurrentCred
 	if lineage == 0 {
 		return result, ErrPermissionDenied
 	}
-	return authorityCredential{actor: actor, authentication: auth, lineage: lineage, cut: view.projection.cut, claim: c}, nil
+	return authorityCredential{actor: actor, authentication: auth, lineage: lineage, cut: view.projection.cut, claim: c, browserReadOnly: facts.BrowserReadOnly}, nil
 }
 
 func (c authorityCredential) matches(p *S1Projection) bool {

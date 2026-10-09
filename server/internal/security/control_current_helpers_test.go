@@ -63,15 +63,24 @@ func authorityTestConverge(t *testing.T, owners map[uint32]*authorityOriginOwner
 }
 
 func authorityTestComposite(t *testing.T) (*s3aTestNetwork, map[uint32]*authorityOriginOwner, map[uint32]*atomic.Uint64) {
+	return authorityTestCompositeOrigins(t, 3)
+}
+
+func authorityTestCompositeOrigins(t *testing.T, originCount int) (*s3aTestNetwork, map[uint32]*authorityOriginOwner, map[uint32]*atomic.Uint64) {
 	t.Helper()
 	n := s3aTestCluster(t, nil)
-	f, originKeys := authorityTestFixture(t, 3)
+	f := s2cTestCluster(t, 3)
+	f.origins = f.origins[:originCount]
+	f, originKeys := authorityTestFixtureState(t, f)
 	n.f = f
 	n.manifest.Profile.ProtocolScope = f.trust.scope
 	raw := n.sign(n.manifest)
 	owners, ticks := make(map[uint32]*authorityOriginOwner), make(map[uint32]*atomic.Uint64)
 	for id, c := range n.configs {
 		c.Participant.Trust = f.trust
+		if int(id) > originCount {
+			c.Participant.OwnedOrigin = 0
+		}
 		c.Membership.Profile, c.Manifest = n.manifest.Profile, raw
 		clock, counter := fakeAuthorityTimeOwnerAt(t, time.Unix(0, n.clock.Load()).UTC())
 		ticks[id] = counter
@@ -79,13 +88,17 @@ func authorityTestComposite(t *testing.T) (*s3aTestNetwork, map[uint32]*authorit
 			t.Fatal(err)
 		}
 		c.hooks = &s3aHooks{beforeRenewal: func(ctx context.Context) { <-ctx.Done() }}
-		keyPath := filepath.Join(filepath.Dir(c.Identity.VotingKey), "origin.key")
-		if err := os.WriteFile(keyPath, originKeys[id], 0600); err != nil {
-			t.Fatal(err)
-		}
-		key, err := loadAuthorityOriginKey(c, keyPath)
-		if err != nil {
-			t.Fatal(err)
+		var key ed25519.PrivateKey
+		if c.Participant.OwnedOrigin != 0 {
+			keyPath := filepath.Join(filepath.Dir(c.Identity.VotingKey), "origin.key")
+			if err := os.WriteFile(keyPath, originKeys[id], 0600); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			key, err = loadAuthorityOriginKey(c, keyPath)
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
 		n.configs[id] = c
 		owner, err := createS3AOwner(c)

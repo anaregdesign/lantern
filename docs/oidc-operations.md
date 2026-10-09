@@ -9,6 +9,11 @@ qualification in #1610. Lantern is the database; no PostgreSQL, external policy
 Store, coordinator or additional runtime service is required. The approved
 Dart platform SQLite adapter remains a separate client option.
 
+Current source requires explicit `legacy-v1` for the fixed-writer instructions
+below. The separate `current-v2` startup/API contract is documented in
+[current authority](security-current-authority.md#public-current-v2-composition).
+There is no implicit profile fallback or online state conversion.
+
 ## Public mode and bootstrap
 
 No authentication environment variables means OFF. Configure OIDC explicitly

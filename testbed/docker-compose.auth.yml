@@ -5,6 +5,7 @@ services:
     env_file: ["${LANTERN_OIDC_CONFIG_DIR:?native OIDC configuration required}/server.env"]
     environment:
       LANTERN_AUTH_MODE: oidc
+      LANTERN_SECURITY_PROFILE: legacy-v1
       LANTERN_METRICS_ADDR: 127.0.0.1:9090
     volumes:
       - ${LANTERN_OIDC_CONFIG_DIR:?native OIDC configuration required}/files:/run/lantern-config:ro

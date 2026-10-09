@@ -49,7 +49,7 @@ func NewPeerIdentityRuntime(config PeerIdentityConfig) (_ *PeerIdentityRuntime, 
 	if err != nil {
 		return nil, nil, err
 	}
-	domain := peerauth.Domain{Deployment: config.Deployment, NamespaceFormat: keyspace.Version, AuthMode: config.AuthMode, SecurityGeneration: config.SecurityGeneration, WriterPublicKey: config.WriterPublicKey, TrustDigest: sha256.Sum256(ca)}
+	domain := peerauth.Domain{Deployment: config.Deployment, NamespaceFormat: keyspace.Version, AuthMode: config.AuthMode, SecurityGeneration: config.SecurityGeneration, WriterPublicKey: config.WriterPublicKey, TrustDigest: sha256.Sum256(ca), CurrentProfile: config.CurrentProfile}
 	manifest, err := peerauth.VerifyManifest(raw, key, domain)
 	if err != nil {
 		return nil, nil, err

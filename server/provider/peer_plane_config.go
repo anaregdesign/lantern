@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
+	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
 // PeerPlaneConfig owns the separate workload listener and durable membership.
@@ -67,7 +68,14 @@ func loadPeerPlaneConfig(auth SecurityConfig, legacy PeerConfig) (PeerPlaneConfi
 		SelfIdentity: values["LANTERN_PEER_WORKLOAD_ID"], CertFile: values["LANTERN_PEER_CERT_FILE"], KeyFile: values["LANTERN_PEER_KEY_FILE"], CAFile: values["LANTERN_PEER_TRUST_CA_FILE"],
 	}}
 	copy(cfg.Identity.Deployment[:], id)
-	if auth.Mode == "oidc" {
+	if auth.Mode == "oidc" && auth.Profile == "current-v2" {
+		provisioned, err := security.LoadCurrentProvisioning(auth.CurrentConfigFile)
+		if err != nil {
+			return PeerPlaneConfig{}, err
+		}
+		profile := provisioned.Profile()
+		cfg.Identity.CurrentProfile, cfg.Identity.SecurityGeneration = profile.Binding(), profile.Generation
+	} else if auth.Mode == "oidc" {
 		key, err := loadSecurityWriterPublicKey(auth.WriterPublicKeyFile)
 		if err != nil {
 			return PeerPlaneConfig{}, err
@@ -110,4 +118,18 @@ func NewConfiguredPeerIdentity(cfg PeerPlaneConfig) (*PeerIdentityRuntime, func(
 		return nil, func() {}, nil
 	}
 	return NewPeerIdentityRuntime(cfg.Identity)
+}
+
+func NewCurrentConfiguredPeerIdentity(cfg PeerPlaneConfig, runtime *SecurityRuntime) (*PeerIdentityRuntime, func(), error) {
+	if runtime == nil {
+		return nil, nil, errors.New("missing security runtime")
+	}
+	if runtime.current != nil && cfg.ListenAddress != "" {
+		p := runtime.current.Profile()
+		if cfg.Identity.AuthMode != "oidc" || cfg.Identity.CurrentProfile != p.Binding() || cfg.Identity.SecurityGeneration != p.Generation || cfg.Identity.WriterPublicKey != [32]byte{} {
+			return nil, nil, errors.New("data workload belongs to a different current cohort")
+		}
+		cfg.Identity.Now = runtime.current.VerificationTime
+	}
+	return NewConfiguredPeerIdentity(cfg)
 }

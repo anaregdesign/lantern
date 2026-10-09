@@ -407,7 +407,7 @@ func validateSearchOptions(o *pb.SearchOptions) error {
 
 func newSearchPreconditionError(reason pb.SearchErrorReason, cause error) error {
 	err := connect.NewError(connect.CodeFailedPrecondition, cause)
-	detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{Reason: reason})
+	detail, detailErr := boundedErrorDetail(&pb.SearchErrorDetail{Reason: reason})
 	if detailErr != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("marshal SearchErrorDetail: %w", detailErr))
 	}
@@ -417,7 +417,7 @@ func newSearchPreconditionError(reason pb.SearchErrorReason, cause error) error 
 
 func newSearchResourceError(reason pb.SearchErrorReason, workKind string, cause error) error {
 	err := connect.NewError(connect.CodeResourceExhausted, cause)
-	detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{Reason: reason, WorkKind: workKind})
+	detail, detailErr := boundedErrorDetail(&pb.SearchErrorDetail{Reason: reason, WorkKind: workKind})
 	if detailErr != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("marshal SearchErrorDetail: %w", detailErr))
 	}
@@ -427,7 +427,7 @@ func newSearchResourceError(reason pb.SearchErrorReason, workKind string, cause 
 
 func newSearchInvalidCursorError(reason pb.SearchErrorReason, cause error) error {
 	err := connect.NewError(connect.CodeInvalidArgument, cause)
-	detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{Reason: reason})
+	detail, detailErr := boundedErrorDetail(&pb.SearchErrorDetail{Reason: reason})
 	if detailErr != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("marshal SearchErrorDetail: %w", detailErr))
 	}
@@ -437,7 +437,7 @@ func newSearchInvalidCursorError(reason pb.SearchErrorReason, cause error) error
 
 func newSearchAbortedError(reason pb.SearchErrorReason, cause error) error {
 	err := connect.NewError(connect.CodeAborted, cause)
-	detail, detailErr := connect.NewErrorDetail(&pb.SearchErrorDetail{Reason: reason})
+	detail, detailErr := boundedErrorDetail(&pb.SearchErrorDetail{Reason: reason})
 	if detailErr != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("marshal SearchErrorDetail: %w", detailErr))
 	}

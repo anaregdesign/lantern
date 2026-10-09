@@ -2,6 +2,7 @@ package security
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"time"
 )
@@ -13,9 +14,14 @@ func openCurrentAuthorityOwner(ctx context.Context, c s3aConfig, originKey, brow
 	if c.timeOwner != nil {
 		return nil, errS3AConfig
 	}
-	key, err := loadAuthorityOriginKey(c, originKey)
-	if err != nil {
-		return nil, err
+	var key ed25519.PrivateKey
+	if c.Participant.OwnedOrigin != 0 {
+		key, err = loadAuthorityOriginKey(c, originKey)
+		if err != nil {
+			return nil, err
+		}
+	} else if originKey != "" {
+		return nil, errS3AConfig
 	}
 	transferred := false
 	defer func() {

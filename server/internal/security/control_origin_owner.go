@@ -25,6 +25,7 @@ type authorityOriginOwner struct {
 	requestBytes  uint64
 	closed        bool
 	outputs       authorityOutputPool
+	publicOutputs *CurrentOutput
 	outputHooks   atomic.Pointer[authorityOutputHooks]
 	hooks         *authorityOriginHooks
 }
@@ -85,7 +86,13 @@ func attachAuthorityOrigin(n *s3aOwner, key ed25519.PrivateKey, browserOrigin st
 		return nil, errS3AConfig
 	}
 	d, known := n.kernel.trust.origin(n.kernel.config.OwnedOrigin)
-	if !known || d.Profile != authorityAdmissionProfile() || len(key) != ed25519.PrivateKeySize || !bytes.Equal(key.Public().(ed25519.PublicKey), d.PublicKey[:]) {
+	if n.kernel.config.OwnedOrigin == 0 {
+		// An enrolled participant may serve current reads and complete retained
+		// foreign originals without enrolling a new consume/signing origin.
+		if known || len(key) != 0 {
+			return nil, errS3AConfig
+		}
+	} else if !known || d.Profile != authorityAdmissionProfile() || len(key) != ed25519.PrivateKeySize || !bytes.Equal(key.Public().(ed25519.PublicKey), d.PublicKey[:]) {
 		return nil, errS3AConfig
 	}
 	o := &authorityOriginOwner{network: n, descriptor: d, key: key, purposes: NewManagementAuthorizations(10*time.Minute, 1024), browserOrigin: browserOrigin, inputs: make(chan struct{}, 4), assemblies: make(chan struct{}, 4), requests: make(map[*authorityOriginRequest]uint64)}
@@ -151,7 +158,7 @@ func (o *authorityOriginOwner) authenticate(ctx context.Context, producer Curren
 }
 
 func (o *authorityOriginOwner) prepare(ctx context.Context, producer CurrentCredentialProducer, reviewed SemanticCut, command S1Command) (*authorityOriginRequest, error) {
-	if o == nil || !o.network.enterCall() {
+	if o == nil || o.descriptor.Namespace == 0 || !o.network.enterCall() {
 		return nil, errS3AClosed
 	}
 	defer o.network.calls.Done()

@@ -1,11 +1,11 @@
-# Private current authority and durable origin owner
+# Current authority and public activation
 
-#1722 extends the [S3-A owner](security-s3a.md) for the fixed-membership,
-intact-storage scope of #1608. It is separately constructed and unwired from
-public Wire, environment variables, RPCs, SDKs and Admin. The existing public
-fixed-writer runtime keeps its existing meanings. S4 owns current session/control
-API composition and deliberate activation; #1609/#1610 retain deployment and
-final target acceptance.
+#1722 supplies the fixed-membership, intact-storage owner. #1725 connects that
+same owner to the public control/session/data APIs under the explicit
+`current-v2` profile. `legacy-v1` retains the prior fixed-writer meanings; the
+two profiles never share authority or import live state. #1609 owns deployment
+and cutover, and #1610 owns final target acceptance. The source and focused
+fixtures below do not claim either operational exit.
 
 The private path is actual credential verification → installed certified S1 →
 current quorum renewal and native time → exact operation/purpose consume →
@@ -307,5 +307,223 @@ filesystem/device stack to honor the existing WAL, tip and directory sync
 contract and exclusive custody; they do not certify Docker Desktop volumes
 against physical power loss. Missing, corrupt, conflicting or known-old state
 continues to refuse. Raw attempts and failures are retained; the matrix, review,
-full local gate, CI and exact main receipt remain separate exits. This source
-change alone does not close #1722 or activate S4/#1610.
+full local gate, CI and exact main receipt remain separate exits. These private campaign results do not substitute for the separate public S4
+wire gate or final #1610 acceptance.
+
+
+## Public current-v2 composition
+
+The production Wire graph selects `SecurityRuntime.openCurrent`, which calls
+`LoadCurrentProvisioning` then `OpenCurrentAuthority`. The private listener and
+workers start before public readiness, so peers can acquire quorum without a
+public-ready startup cycle. The actual public `http.Server` owns output credit
+through `ConnContext`/`ConnState`; copying only its Handler into another server
+is not equivalent composition. The private consensus, original-H lookup and
+renewal routes are never mounted on the public mux.
+
+No-env/OFF remains unchanged. OIDC requires `LANTERN_SECURITY_PROFILE` explicitly.
+A fresh current cohort uses:
+
+```text
+LANTERN_AUTH_MODE=oidc
+LANTERN_SECURITY_PROFILE=current-v2
+LANTERN_SECURITY_CURRENT_CONFIG_FILE=/operator/node.json
+LANTERN_SECURITY_STORE_MODE=fresh
+LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example
+```
+
+The existing exact TLS/trusted HTTPS gateway boundary remains required. Optional
+OIDC roots, private-origin allowlists and secret bindings keep their existing
+meanings. Current configuration rejects writer keys/endpoints, old bootstrap,
+legacy Store paths/generations, `CLOCK_QUALIFIED`, and injected clocks. It accepts
+only the already selected native time profile and existing source configuration;
+it does not configure the host or install trust roots.
+
+### Independent operator documents
+
+Both inputs are private regular files with absolute paths. JSON uses the exact
+canonical Go JSON shape in
+[`control_public_config.go`](../server/internal/security/control_public_config.go):
+no duplicate/unknown fields, padded/truncated fixed arrays, aliases, or unknown
+versions. Hash the exact genesis file bytes (including an optional final newline).
+Do not reconstruct genesis from a replayed projection, journal, peer response or
+old fixed-writer image.
+
+| Document | Required original inputs |
+| --- | --- |
+| `currentGenesisDocument`, Version 2 | Domain, Cohort, Generation, Fences, original Image, complete S1 Execution configuration/capacity, original capsule Roots, voter Members, enrolled Origins, finite Bounds and the exact platform TimeProfile digest |
+| `currentNodeDocument`, Version 2 | GenesisFile/SHA256; Participant member/incarnation, P/B paths and their original scope/identity/epoch/policy, OwnedOrigin and pending/outbox reserves; Membership path/operator key/signed manifest/full profile/self; separate workload TLS, voting and origin key paths; actual private ListenAddress and bounded Limits |
+| `FloorsFile` for resume only | Independently retained M binding/version and P/B minimum cuts from the intact owner; this is minimum-cut evidence, never serving authority |
+
+The membership profile binds the same voter keys, workloads and protocol as the
+independent genesis. An origin-free enrolled member has OwnedOrigin zero and no
+origin private key: it can read, catch up and complete retained originals, but
+cannot mint a new management or login-session operation. Origin signing keys
+remain distinct from voting and workload TLS keys. All configured paths must
+retain exclusive custody; missing/corrupt/mixed families fail before publication.
+
+`fresh` refuses supplied resume floors and existing families. `resume` requires
+all original identities, intact M/P/B and independently retained floors; it never
+falls back to fresh. The internal owner `ExportFloors` returns minimum-cut bytes
+for an operator lifecycle integration, not a public HTTP endpoint. It must be
+retained with independent original provisioning. Neither a backup snapshot nor
+an old capability establishes current time, quorum, pending approval or output
+permission after reopen. Production floor custody/cutover integration remains
+an S5 operator responsibility; do not infer it from process volume survival.
+
+`TestCurrentProvisioningExportPublicFixture` is a **test-only** authoring example:
+it writes original canonical documents and fixture keys before any M/P/B exists.
+It is opt-in via `LANTERN_CURRENT_FIXTURE_DIR` and a loopback TLS issuer. Its fixed
+test keys/identities are unsuitable for deployment. The root native public gate
+uses those files through the production constructor, without injected time or H.
+
+### Public contracts and clients
+
+Protocol v2 carries the complete profile and SemanticCut. New preparation sends
+profile/cut/changes; the server returns its enrolled namespace/nonce, exact actor
+and intent digest. Retain the entire review **before** the one Apply dispatch.
+After uncertainty, status uses that original full reference. Unresolved, origin
+durable, chosen, and original Apply are different stages; local absence never
+proves safe nonexecution. Original commit, disposition, items and cuts are
+immutable. The separate stop observation concerns new old-cut authorizations,
+not physical packet arrival. Its volatile observer restarts conservatively.
+
+Normal end-user management has no generic auth_time age gate. Effective manage
+expansion and trust changes use the existing exact operation approval. The Code
+callback belongs to its node/process and exchanges Code once; the purpose path
+never refreshes an ordinary session or cut. Approved proof remains pending for
+public consumers until the native lower endpoint reaches approval's recorded
+upper endpoint. Final consume independently checks it again.
+
+Session issue/replacement becomes effective only through original Apply. Cookie
+publication requires a fresh credential/view after Apply. GET session obtains a
+read-only CSRF bootstrap; mutations require the separate exact origin/header
+proof. Logout first returns a server-minted review, then accepts that retained
+review once. Local cookie clearing and cluster revocation remain separate; a
+self-revoked cookie cannot disclose protected original outcomes using its old
+admission. Use another currently authorized credential for status recovery.
+
+Node/Admin consume v2 reviews, exact refusal details and immutable original
+outcomes. Go `GetCurrentPrincipal`/`CurrentSecurityVersionBinding`, Dart
+`getCurrentAuthorityBinding`, and Rust `current_authority_binding` use the normal
+single-endpoint authenticated transport and reject scalar legacy versions. Their
+binding includes full profile/cut and credential lineage/evidence, and is a cache
+partition only. Opaque CDC cursors remain responder/profile/cut scoped. CLI and
+MCP have no separate security mutation facade or granting policy cache: their
+existing data calls use the same per-request server admission. No management
+mutation is silently retried by the current facade.
+
+Dart offline's scoped session supplies the complete `authorityBinding`; drift
+hides confirmed values/cursors and rejects late reads while preserving pending
+and possibly dispatched mutation IDs. The maintained hosted example keeps its
+explicit legacy client lifetime; a current composition supplies the SDK binding
+callback and updates it with credentials/scope. Paired-source success does not
+publish a new SDK/offline archive or qualify physical devices.
+
+### Finite public output and performance boundary
+
+Every admitted output unit freezes bytes, headers/trailers, actual request and
+connection, sequence, complete cut and typed resource/receipt provenance before
+its last native sample. A unit authorized before expiry can complete late; the
+next unit needs its own event. Data results are never relabeled with a newer
+cut. Post-Apply control/session disclosure deliberately captures a fresh view. It may
+wait up to ten operational seconds for peers to install that cut and answer a
+fresh renewal challenge; this never repeats consume/Apply or makes the timer
+authority. Native time uncertainty still refuses immediately.
+
+Limits are pre-compression as well as wire limits. The owner reserves a 2 GiB
+virtual-credit pool, at most 64 connections and 8 active request encoders globally.
+Each request reserves `12*read + 10*send + 512*N + 2 MiB`, where
+`N = min(131072, max(256, floor(read/32)))`. Each connection reserves
+`(streams+1)*(2*32 KiB+16 KiB)+4 MiB`, including finite HTTP/2 framing/flow/header
+storage. Read/send limits must be positive and at most 64 MiB, streams 1..4096;
+configurations exceeding the per-owner reserves refuse. The 2 GiB pool may
+admit fewer than eight simultaneous requests when their complete reservations
+are large. Headers/trailers have a 32 KiB/256-key bound. Request-owned Connect
+codec/compression pools cannot survive as uncharged shared pools.
+Cancellation/Close join entered producers and release actual sockets.
+
+The allocating protobuf/protojson decoder is preceded by a non-allocating
+structural scan of the complete decompressed input. Both the encoded-byte limit
+and this structural envelope apply, independently of authentication and the
+later business batch limit:
+
+- Binary counts the root, every field occurrence (including duplicates and
+  unknown tags), every nested message/group and every packed scalar element.
+  Length-delimited strings, bytes and unknown payloads consume byte credit,
+  rather than being misinterpreted as nested messages.
+- JSON counts the root and every container, field name and scalar token,
+  including unknown fields. It skips strings without unescaping or building a
+  DOM. Protojson still validates grammar, duplicate/unknown fields, values and
+  schema semantics. The `json; charset=utf-8` alias has the same guard.
+- More than `N` units or 100 nested binary message/group or JSON container
+  levels refuse before resetting or allocating into the destination. For
+  example, at a 128 KiB read limit `N=4096`: up to 2047 empty repeated messages
+  fit the structural cap; the 65,536-empty-Vertex / 128 KiB counterexample does
+  not. Legal payloads within both limits retain their protobuf/JSON semantics.
+  There is no new fixed per-business-RPC batch count.
+
+The structural charge is derived from the pinned generated representation and
+Go/protobuf decoder, not an assumed encoded-size expansion factor:
+
+| Reserved component | Bound and enforcement |
+| --- | --- |
+| `4*read` | Simultaneously retained compressed and decompressed Connect buffers, each with capacity growth up to twice its byte limit; fixed minimum/growth slack uses the fixed reserve. |
+| `8*read` | Decoder-owned strings/bytes/unknown backing storage, string-unescape and base64 scratch, simultaneous old/new append storage and error-string copies. Copied payload spans are disjoint portions of the input; nested messages are scanned as structure, not copied again as payload. Minimum allocation/rounding for individual spans is charged by their structural units. |
+| `512*N` | Every generated message has a checked struct size at most 256 bytes. A field/scalar/list element has at most a 24-byte representation; old/new slice backing storage is bounded by four times element storage plus small-allocation slack. Scalar pointers, oneof wrappers, reflection values and JSON seen-field bookkeeping fit the remaining per-unit allowance. Binary message fields pay both a field and a message unit; JSON pays separate container/name/value units. This covers reachable decoder objects and simultaneously live growth/scratch, not unreclaimed garbage as an RSS promise. |
+| Additional `1 MiB` | Bounded preflight/decoder stacks (depth 100), scalar/error scratch and fixed decoder overhead. The linked immutable schema certificate is constructed before serving, has no request-driven entries, and is shared static metadata. |
+| Existing `10*send + 1 MiB` | Encoded output originals/copies and compression/metadata pools; retained independently while read/decode storage is live. |
+
+The certificate accepts only the linked generated graph, health, reflection,
+Timestamp, Duration and Empty representations. All 56 current public method
+inputs are checked by the paired inventory test. Current public inputs have no
+map, group, extension or custom WKT fields. Schemas with maps/extensions/groups,
+Any/Struct/Value/custom WKT decoders, dynamic messages, foreign implementations
+or a generated struct larger than 256 bytes refuse before decoding; adding one
+to a public RPC requires extending this proof and the inventory test. Unknown
+binary fields, including bounded groups, remain supported as opaque storage.
+This avoids silently applying a scalar/list allocation proof to Go maps or
+arbitrary custom decoders. The pinned Go/protobuf/Connect representation and
+buffering rules must be rechecked on dependency changes.
+
+A structural rejection is `ResourceExhausted` at the codec boundary. Connect
+wraps decode errors before the unary authentication interceptor; without an
+existing output grant the current output owner aborts that HTTP stream/socket.
+It does not manufacture an authorization grant to disclose a decoder error.
+Credit is released and a later valid request can proceed. The seam reservation
+covers transport/codec-owned storage, not business-owned graph/index/query
+results, authority state, application caches, the whole Go heap or Server RSS.
+Those retain their independent limits; no full Server RSS claim follows.
+
+The source-paired output tests cover before/after-final timing, immutable payload
+and metadata, trailers, TLS HTTP/1+HTTP/2, Connect proto/JSON, gRPC/gRPC-Web,
+compression, oversize and separate HTTP/2 recipients. The root native public gate
+covers the actual constructor and public API flow. Keep fake-time transport
+fault tests distinct from native qualification. `TestCurrentWarmAdmissionUsesNoPeerJournalOrTimeRefresh`
+checks 1000 warm captures/checks and final output units with unchanged HTTP peer-call count, time measurement
+sequence and M/P/B floors. `BenchmarkCurrentPublicOutputCodec` measures the bounded
+encoding seam only; `bash testbed/bench/scenarios/current_authority_seam.sh` runs
+these two bounded cases. It is not the final Server OFF/ON, HA/load or device gate.
+
+### Migration refusal
+
+Existing fixtures and fixed-writer installations select `legacy-v1` explicitly.
+Do not roll current and legacy authorities together, feed v1 scalar mutations to
+v2, import old sessions, or call a live writer image an intact current resume.
+S5 must stop/fence the old cohort, retain old status/data/receipt history, choose
+a new generation/cohort with independent keys/genesis, invalidate old sessions
+and cursors, install compatible clients and perform a separately approved
+cutover. This source change performs none of those environment actions.
+
+The local `SecurityRuntime.ExportCurrentAuthorityFloors` lifecycle API exports the
+existing owner's minimum M/P/B cut document. Retain it independently with the
+original provisioning, then set `FloorsFile` for `resume`; no public HTTP route
+exports it. It is a minimum floor, not authorization to restore a backup or
+replace an intact journal. Deployment custody and shutdown integration remain
+part of #1609.
+
+A current status lookup may complete an already verified durable original H
+through the existing driver, including when its first invocation stopped before
+phase 1. It cannot prepare, consume, refresh credentials for, or mint a new
+operation. This lets status-only clients recover the original without resending
+Apply; absence remains unresolved and never becomes permission to retry.

@@ -67,7 +67,7 @@ func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), err
 		return nil, nil, err
 	}
 	peerPlaneConfig := provider.NewPeerPlaneConfig(config)
-	peerIdentityRuntime, cleanup3, err := provider.NewConfiguredPeerIdentity(peerPlaneConfig)
+	peerIdentityRuntime, cleanup3, err := provider.NewCurrentConfiguredPeerIdentity(peerPlaneConfig, securityRuntime)
 	if err != nil {
 		cleanup2()
 		cleanup()

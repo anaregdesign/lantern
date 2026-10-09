@@ -55,7 +55,7 @@ func TestSecurityConfigStrictOperatorContract(t *testing.T) {
 				}
 			}
 			for name, value := range map[string]string{
-				"LANTERN_AUTH_MODE": "oidc", "LANTERN_OIDC_ADMIN_ISSUER": "https://idp.example", "LANTERN_OIDC_ADMIN_SUBJECTS": `["admin"]`,
+				"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_PROFILE": "legacy-v1", "LANTERN_OIDC_ADMIN_ISSUER": "https://idp.example", "LANTERN_OIDC_ADMIN_SUBJECTS": `["admin"]`,
 				"LANTERN_OIDC_CLIENT_ID": "admin", "LANTERN_OIDC_API_AUDIENCE": "api", "LANTERN_OIDC_BROWSER_ORIGIN": "https://admin.example",
 				"LANTERN_OIDC_REDIRECT_URI":   "https://admin.example" + oidc.CallbackPath("https://idp.example"),
 				"LANTERN_SECURITY_STORE_MODE": "fresh", "LANTERN_SECURITY_STORE_PATH": "/tmp/security.wal", "LANTERN_SECURITY_GENERATION": "01000000000000000000000000000000",

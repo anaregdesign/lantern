@@ -1,9 +1,20 @@
 import { Buffer } from "node:buffer";
-import { create, toBinary } from "@bufbuild/protobuf";
+import { fromJson, toJson, type JsonValue } from "@bufbuild/protobuf";
 import {
-  SecurityChangePrecommitRejectedSchema,
-  SecurityChangeRejectionReason,
+  CurrentAuthorityProfileSchema,
+  CurrentSecurityReviewSchema,
+  CurrentSecurityChangeResultSchema,
+  SecurityVersionSchema,
+  CurrentSecurityDisposition,
+  CurrentAuthorizationStopObservation,
+  type CurrentSecurityReview,
 } from "../../../sdks/node/src/gen/graph/v1/security_pb";
+import {
+  profile as currentProfile,
+  version as currentVersion,
+  review as makeReview,
+  result as makeResult,
+} from "../../test/current-security";
 
 /**
  * The Lantern primary listener URL the Playwright webServer starts on
@@ -111,10 +122,22 @@ export async function securityUI(
     csrf?: string;
     authorization?: string;
   }> = [];
-  const version = {
-    revision: "3",
-    digest: Buffer.alloc(32, 1).toString("base64"),
-    generation: Buffer.alloc(16, 2).toString("base64"),
+  const version = toJson(SecurityVersionSchema, currentVersion);
+  const profile = toJson(CurrentAuthorityProfileSchema, currentProfile);
+  let preparations = 0;
+  let retained = makeReview();
+  const wireResult = (
+    review: CurrentSecurityReview,
+    stopped = false,
+    disposition = CurrentSecurityDisposition.APPLIED,
+    mismatch = false,
+  ) => {
+    const value = makeResult(review, undefined, disposition);
+    if (stopped && disposition === CurrentSecurityDisposition.APPLIED)
+      value.stopObservation =
+        CurrentAuthorizationStopObservation.OLD_CUT_NEW_AUTHORIZATIONS_STOPPED;
+    if (mismatch) value.original!.commit!.value = new Uint8Array(32).fill(99);
+    return toJson(CurrentSecurityChangeResultSchema, value);
   };
   let signedIn = options.mode !== "login";
   let statusCalls = 0;
@@ -153,7 +176,10 @@ export async function securityUI(
           ? { mode: "AUTH_MODE_OFF", protocolVersion: 1, ready: true }
           : {
               mode: "AUTH_MODE_OIDC",
-              protocolVersion: 1,
+              protocolVersion: 2,
+              currentProfile: profile,
+              currentOriginEnabled: true,
+              currentMember: 1,
               ready: options.mode !== "unavailable",
               loginPath: "/auth/login",
               loginIssuers: [
@@ -165,6 +191,7 @@ export async function securityUI(
       if (!signedIn) return json({ code: "unauthenticated" }, 401);
       return json({
         mode: "AUTH_MODE_OIDC",
+        currentProfile: profile,
         principal: {
           identity: {
             kind: "SECURITY_PRINCIPAL_KIND_OIDC",
@@ -180,11 +207,26 @@ export async function securityUI(
       });
     }
     if (path === "/auth/logout") {
+      const body = request.postDataJSON();
+      if (body.prepareOnly)
+        return json({
+          currentReview: {
+            ...(toJson(CurrentSecurityReviewSchema, makeReview()) as Record<
+              string,
+              unknown
+            >),
+            changes: undefined,
+            actor: {
+              kind: "SECURITY_PRINCIPAL_KIND_OIDC",
+              issuer: "https://idp.example",
+              subject: "admin",
+            },
+            sessionDigest: "a".repeat(64),
+            sessionLineage: "1",
+          },
+        });
       signedIn = false;
-      return json({
-        version,
-        enforcement: "SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING",
-      });
+      return json({ localCookieCleared: true });
     }
     if (path.startsWith("/browser/graph.v1.LanternSecurityService/")) {
       const method = path.split("/").at(-1)!;
@@ -263,47 +305,40 @@ export async function securityUI(
             },
             409,
           );
+        const reviewed = fromJson(
+          CurrentSecurityReviewSchema,
+          body.currentReview as JsonValue,
+        );
+        retained = reviewed;
         if (
           options.apply === "conflict" ||
           (options.apply === "unknown-role-once" && applyCalls === 1)
-        ) {
-          const conflict = options.apply === "conflict";
-          const detail = create(SecurityChangePrecommitRejectedSchema, {
-            changeId: Buffer.from(String(body.changeId), "base64"),
-            expectedRevision: BigInt(String(body.expectedRevision)),
-            reason: conflict
-              ? SecurityChangeRejectionReason.REVISION_CONFLICT
-              : SecurityChangeRejectionReason.UNKNOWN_ROLE,
+        )
+          return json({
+            currentResult: wireResult(
+              reviewed,
+              false,
+              options.apply === "conflict"
+                ? CurrentSecurityDisposition.REJECTED_CAS
+                : CurrentSecurityDisposition.REJECTED_INVARIANT,
+            ),
           });
-          return json(
-            {
-              code: conflict ? "aborted" : "failed_precondition",
-              message: conflict ? "Revision conflict" : "Unknown Role",
-              details: [
-                {
-                  type: SecurityChangePrecommitRejectedSchema.typeName,
-                  value: Buffer.from(
-                    toBinary(SecurityChangePrecommitRejectedSchema, detail),
-                  ).toString("base64"),
-                },
-              ],
-            },
-            conflict ? 409 : 400,
-          );
-        }
         if (options.apply === "lost") return route.abort("failed");
-        return json({
-          version: { ...version, revision: "4" },
-          applied: [true],
-          enforcement: "SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING",
-        });
+        return json({ currentResult: wireResult(reviewed) });
       }
       if (method === "PrepareSecurityChanges") {
-        const review = body.review as Record<string, unknown>;
+        const draft = fromJson(
+          CurrentSecurityReviewSchema,
+          body.currentReview as JsonValue,
+        );
+        retained = {
+          ...makeReview(7 + preparations++),
+          profile: draft.profile,
+          expectedCut: draft.expectedCut,
+          changes: draft.changes,
+        };
         return json({
-          expectedVersion: review.expectedVersion,
-          changeId: review.changeId,
-          intentDigest: Buffer.alloc(32, 4).toString("base64"),
+          currentReview: toJson(CurrentSecurityReviewSchema, retained),
           requirement: options.reauthentication
             ? "SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION"
             : "SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY",
@@ -313,11 +348,14 @@ export async function securityUI(
         return json({
           authorizationId: Buffer.alloc(32, 8).toString("base64"),
           startUrl: primary + authorizationPath,
+          currentProfile: profile,
+          attemptAffinity: "node-process-attempt",
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
         });
       if (method === "GetSecurityChangeAuthorization")
         return json({
           authorizationId: body.authorizationId,
+          currentProfile: profile,
           state: approved
             ? "SECURITY_AUTHORIZATION_STATE_APPROVED"
             : "SECURITY_AUTHORIZATION_STATE_PENDING",
@@ -337,19 +375,12 @@ export async function securityUI(
             412,
           );
         return json({
-          version: {
-            ...version,
-            revision: "4",
-            digest:
-              options.status === "mismatch"
-                ? Buffer.alloc(32, 9).toString("base64")
-                : version.digest,
-          },
-          changeId: body.changeId,
-          enforcement:
-            options.status === "pending-then-enforced" && statusCalls === 1
-              ? "SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING"
-              : "SECURITY_ENFORCEMENT_STATE_ENFORCED",
+          currentResult: wireResult(
+            retained,
+            !(options.status === "pending-then-enforced" && statusCalls === 1),
+            CurrentSecurityDisposition.APPLIED,
+            options.status === "mismatch",
+          ),
         });
       }
       if (method === "ExplainAccess")
@@ -389,12 +420,11 @@ export async function securityUI(
       if (method === "ListSecurityAudit")
         return json({
           version,
-          records: [
+          currentRecords: [
             {
-              revision: "4",
-              operation: "security.update",
-              outcome: "committed",
-              changeId: "redacted-id",
+              result: wireResult(retained),
+              actorDigest: Buffer.alloc(32, 4).toString("base64"),
+              operation: "management",
             },
           ],
         });

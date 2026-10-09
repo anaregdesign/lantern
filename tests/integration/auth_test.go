@@ -759,6 +759,7 @@ type oidcControlWireFixture struct {
 	private     ed25519.PrivateKey
 	mu          sync.Mutex
 	now         time.Time
+	realClock   bool
 	fetches     atomic.Int64
 	codes       map[string]oidcWireCode
 	graph       *graphcache.GraphCache[string, *pb.Vertex]
@@ -773,15 +774,8 @@ type oidcWireCode struct {
 	authTime                  string
 }
 
-func newOIDCControlWireFixture(t *testing.T, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
-	return newOIDCControlWireFixtureConfigured(t, nil, traversalLimits...)
-}
-
-func newOIDCControlWireFixtureConfigured(t *testing.T, configure func(*provider.SecurityConfig), traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
-	return newOIDCControlWireFixtureOptions(t, configure, false, traversalLimits...)
-}
-
-func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.SecurityConfig), durableReceipts bool, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
+// Shared local HTTPS issuer; native current tests use its real wall only for token issuance.
+func newOIDCWireIssuer(t *testing.T) *oidcControlWireFixture {
 	t.Helper()
 	f := &oidcControlWireFixture{now: time.Now(), codes: make(map[string]oidcWireCode)}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
@@ -854,6 +848,20 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 		}
 	}))
 	t.Cleanup(f.provider.Close)
+	return f
+}
+
+func newOIDCControlWireFixture(t *testing.T, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
+	return newOIDCControlWireFixtureConfigured(t, nil, traversalLimits...)
+}
+
+func newOIDCControlWireFixtureConfigured(t *testing.T, configure func(*provider.SecurityConfig), traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
+	return newOIDCControlWireFixtureOptions(t, configure, false, traversalLimits...)
+}
+
+func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.SecurityConfig), durableReceipts bool, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
+	t.Helper()
+	f := newOIDCWireIssuer(t)
 	dir := t.TempDir()
 	writerPublic, writerPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -885,7 +893,7 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 	callback := sha256.Sum256([]byte(f.provider.URL))
 	origins, _ := json.Marshal(map[string][]string{f.provider.URL: {"127.0.0.1/32"}})
 	for name, value := range map[string]string{
-		"LANTERN_AUTH_MODE": "oidc", "LANTERN_OIDC_ADMIN_ISSUER": f.provider.URL, "LANTERN_OIDC_ADMIN_SUBJECTS": `["admin","other"]`,
+		"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_PROFILE": "legacy-v1", "LANTERN_OIDC_ADMIN_ISSUER": f.provider.URL, "LANTERN_OIDC_ADMIN_SUBJECTS": `["admin","other"]`,
 		"LANTERN_OIDC_CLIENT_ID": "admin", "LANTERN_OIDC_API_AUDIENCE": "api", "LANTERN_OIDC_ALGORITHMS": `["EdDSA"]`, "LANTERN_OIDC_BROWSER_ORIGIN": "https://admin.example",
 		// This deterministic issuer reserves enrolled human subjects; its
 		// client-credentials profile uses disjoint client subjects. Dedicated
@@ -990,7 +998,14 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 	f.changes = graphv1connect.NewLanternChangeServiceClient(&http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}, f.server.URL)
 	return f
 }
-func (f *oidcControlWireFixture) clock() time.Time { f.mu.Lock(); defer f.mu.Unlock(); return f.now }
+func (f *oidcControlWireFixture) clock() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.realClock {
+		return time.Now().UTC()
+	}
+	return f.now
+}
 func (f *oidcControlWireFixture) advance(d time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1111,11 +1126,12 @@ func TestAuth_OIDCSecurityChangeCommitProofRealConnect(t *testing.T) {
 	}
 }
 
-// The real Admin adapter/controller uses the authenticated browser control
-// mount against the production Server and deterministic TLS-verified IdP.
-// The trusted gateway hop is represented as in the other browser wire tests;
-// separate Playwright tests cover rendering, not external-provider acceptance.
-func TestAuth_OIDCAdminCommitProofRecoveryRealConnect(t *testing.T) {
+// The current Admin must refuse this explicitly legacy fixture. The thin
+// browser SDK retains the legacy original-proof/rejection wire contract for
+// existing callers; current Admin recovery is covered by the native SDK4 gate
+// and the source-paired v2 controller tests. This fixture uses the production
+// Server and a deterministic TLS-verified IdP through the trusted gateway hop.
+func TestAuth_OIDCLegacyAdminRefusalAndCommitProofRecoveryRealConnect(t *testing.T) {
 	bun, err := exec.LookPath("bun")
 	if err != nil {
 		t.Skip("Bun is required for the Admin recovery wire gate")
@@ -1155,9 +1171,10 @@ func TestAuth_OIDCAdminCommitProofRecoveryRealConnect(t *testing.T) {
 	}
 	script := `import { SecurityManagementController, SecurityChangeRecovery } from ` + entry("admin/app/lib/client/usecase/security/security-management.ts") + `;
 import { createSecurityManagementClient } from ` + entry("admin/app/lib/client/infrastructure/api/security-management-client.ts") + `;
+import { createSecurityClient } from ` + entry("admin/app/lib/client/infrastructure/api/security-client.ts") + `;
 const check = (value, message) => { if (!value) throw new Error(message); };
 const originalFetch = globalThis.fetch;
-let sent = 0, statusCalls = 0, ids = 0, dropApply = false;
+let sent = 0, statusCalls = 0, ids = 0, dropApply = false, lostResponses = 0;
 const appliedIDs = [], statusIDs = [];
 globalThis.fetch = async (input, init) => {
  const request = new Request(input, init);
@@ -1175,97 +1192,94 @@ globalThis.fetch = async (input, init) => {
  if (method === "ApplySecurityChanges" && dropApply) {
   check(response.ok, "Apply must actually commit before dropping its response");
   await response.arrayBuffer();
+  lostResponses++;
   throw new TypeError("committed Apply response dropped");
  }
  return response;
 };
-for (const lost of [false, true]) {
- dropApply = lost;
- const recovery = new SecurityChangeRecovery();
- const scope = new AbortController();
- const port = createSecurityManagementClient(process.env.LANTERN_RECOVERY_URL, scope.signal, process.env.LANTERN_RECOVERY_CSRF);
- const newID = port.newChangeId;
- port.newChangeId = () => { ids++; return newID(); };
- const before = new SecurityManagementController(port, "roles", scope.signal, recovery, "original-browser-session");
- await before.load();
- check(before.getSnapshot().phase === "ready", "actual browser role inspection");
- const expected = before.getSnapshot().version.revision;
- const changes = Array.from({length: lost ? 2 : 1}, (_, i) => ({ $typeName: "graph.v1.SecurityChange", operation: {case: "putRole", value: {$typeName: "graph.v1.SecurityRole", id: "admin_recovery_" + lost + "_" + i, name: "Reviewed role", rules: [], envOwned: false}}}));
- await before.review("Reviewed recovery", changes);
- await before.apply();
- const originalID = before.changeId();
- check(originalID.length === 32, "original immutable change ID");
- check(before.getSnapshot().mutation === (lost ? "unconfirmed" : "enforced"), "Apply acknowledgement boundary");
- const acknowledgement = before.getSnapshot().result?.applied?.slice();
- before.dispose();
- const after = new SecurityManagementController(port, "roles", scope.signal, recovery, "original-browser-session");
- check(after.changeId() === originalID, "remount retained original ID");
- await after.checkStatus();
- check(after.getSnapshot().mutation === "enforced", "actual Server retained proof accepted by Admin");
- check(after.getSnapshot().result.version.revision === expected + 1n, "fixed writer original result version");
- if (lost) {
-  check(after.getSnapshot().result.applied === undefined && after.getSnapshot().result.replayed === undefined, "status must not fabricate item outcomes or replay acknowledgement");
- } else {
-  check(JSON.stringify(after.getSnapshot().result.applied) === JSON.stringify(acknowledgement), "status preserves original Apply outcomes");
-  check(after.getSnapshot().result.replayed === false, "status preserves original replay acknowledgement");
- }
- await after.checkStatus();
- after.dispose();
-}
-check(sent === 2 && ids === 2 && statusCalls === 4, "status recovery allocated another ID or resent Apply");
-check(statusIDs[0] === appliedIDs[0] && statusIDs[1] === appliedIDs[0] && statusIDs[2] === appliedIDs[1] && statusIDs[3] === appliedIDs[1], "status used another change ID");
-// A real, competing ordinary commit after review makes the first Apply stale.
-// No response substitution or RPC mock supplies the typed rejection detail.
-dropApply = false;
 const scope = new AbortController();
 const recovery = new SecurityChangeRecovery();
 const port = createSecurityManagementClient(process.env.LANTERN_RECOVERY_URL, scope.signal, process.env.LANTERN_RECOVERY_CSRF);
-const newID = port.newChangeId;
-port.newChangeId = () => { ids++; return newID(); };
-const correction = new SecurityManagementController(port, "roles", scope.signal, recovery, "correction-browser-session");
+const controller = new SecurityManagementController(port, "roles", scope.signal, recovery, "legacy-browser-session");
 const roleChange = (id, name) => [{ $typeName: "graph.v1.SecurityChange", operation: {case: "putRole", value: {$typeName: "graph.v1.SecurityRole", id, name, rules: [], envOwned: false}}}];
-const sameVersion = (a, b) => a.revision === b.revision && Buffer.from(a.digest).equals(Buffer.from(b.digest)) && Buffer.from(a.generation).equals(Buffer.from(b.generation));
-await correction.load();
-const baseline = correction.getSnapshot().version;
-const auditBefore = await port.audit("", scope.signal);
-await correction.review("Original correction", roleChange("admin_correction", "Original draft"));
-check(correction.getSnapshot().review.approval === "ordinary", "real Prepare admitted ordinary change");
-const refusedReview = structuredClone(correction.getSnapshot().review);
-await port.apply({expectedRevision: baseline.revision, changeId: crypto.getRandomValues(new Uint8Array(16)), changes: roleChange("competing_commit", "Competing ordinary change")}, scope.signal);
-const afterCompeting = await port.roles("", scope.signal);
-check(afterCompeting.version.revision === baseline.revision + 1n, "competing commit advanced one revision");
-await correction.apply();
-check(correction.getSnapshot().mutation === "conflict" && correction.getSnapshot().review === undefined && correction.getSnapshot().version === undefined, "typed first refusal retires review and requires reload");
-check(correction.changeId() === "" && recovery.read("correction-browser-session") === undefined, "first refusal is not retained as uncertain work");
-check(sent === 4 && ids === 3, "one refused Apply after one explicit competing commit");
-const afterRefusal = await port.roles("", scope.signal);
-const auditAfterRefusal = await port.audit("", scope.signal);
+await controller.load();
+check(controller.getSnapshot().phase === "error" && controller.getSnapshot().version === undefined, "current Admin must refuse legacy scalar authority");
+await controller.review("Unsupported legacy review", roleChange("never_from_current_admin", "Must refuse"));
+await controller.apply();
+check(sent === 0 && controller.changeId() === "" && recovery.read("legacy-browser-session") === undefined, "legacy refusal must not create or dispatch current work");
+controller.dispose();
+
+// Retain v1 proof/rejection behavior on the actual legacy browser SDK wire,
+// independently of the current-only Admin's deliberate format refusal.
+const client = createSecurityClient(process.env.LANTERN_RECOVERY_URL, scope.signal, process.env.LANTERN_RECOVERY_CSRF);
+const newID = () => { ids++; return crypto.getRandomValues(new Uint8Array(16)); };
+const sameBytes = (a, b) => Buffer.from(a).equals(Buffer.from(b));
+const sameVersion = (a, b) => a.revision === b.revision && sameBytes(a.digest, b.digest) && sameBytes(a.generation, b.generation);
+for (const lost of [false, true]) {
+ dropApply = lost;
+ const page = await client.listRoles({});
+ const changes = Array.from({length: lost ? 2 : 1}, (_, i) => roleChange("legacy_recovery_" + lost + "_" + i, "Reviewed role")[0]);
+ const retained = {expectedVersion: page.version, changeId: newID(), changes};
+ const prepared = await client.prepareSecurityChanges({review: retained});
+ check(prepared.requirement === 1 && sameBytes(prepared.changeId, retained.changeId), "legacy ordinary preparation retained ID");
+ let acknowledgement;
+ try {
+  acknowledgement = await client.applySecurityChanges({expectedRevision: retained.expectedVersion.revision, changeId: retained.changeId, changes});
+  check(!lost, "lost response unexpectedly acknowledged");
+ } catch (error) { if (!lost) throw error; }
+ for (let poll = 0; poll < 2; poll++) {
+  const status = await client.getSecurityChangeStatus({changeId: retained.changeId});
+  check(sameBytes(status.changeId, retained.changeId) && status.enforcement === 2, "legacy original proof/status");
+  check(status.version.revision === page.version.revision + 1n, "original result revision");
+  check(status.applied === undefined && status.replayed === undefined, "status must not fabricate per-item or replay acknowledgement");
+  if (acknowledgement) check(sameVersion(status.version, acknowledgement.version) && acknowledgement.applied.length === changes.length && acknowledgement.applied.every(Boolean) && acknowledgement.replayed === false, "retained Apply acknowledgement changed");
+ }
+}
+check(sent === 2 && ids === 2 && statusCalls === 4 && lostResponses === 1, "legacy status recovery allocated an ID or resent Apply");
+check(statusIDs[0] === appliedIDs[0] && statusIDs[1] === appliedIDs[0] && statusIDs[2] === appliedIDs[1] && statusIDs[3] === appliedIDs[1], "status used another change ID");
+
+// A real competing commit, not an RPC substitution, supplies typed first
+// refusal. Preserve no-effect/audit/proof checks and explicit new-ID correction.
+dropApply = false;
+const baseline = (await client.listRoles({})).version;
+const auditBefore = await client.listSecurityAudit({});
+const refusedReview = {expectedVersion: baseline, changeId: newID(), changes: roleChange("legacy_correction", "Original draft")};
+check((await client.prepareSecurityChanges({review: refusedReview})).requirement === 1, "ordinary review");
+await client.applySecurityChanges({expectedRevision: baseline.revision, changeId: newID(), changes: roleChange("competing_commit", "Competing ordinary change")});
+const afterCompeting = await client.listRoles({});
+check(afterCompeting.version.revision === baseline.revision + 1n, "competing revision");
+try {
+ await client.applySecurityChanges({expectedRevision: baseline.revision, changeId: refusedReview.changeId, changes: refusedReview.changes});
+ throw new Error("stale Apply accepted");
+} catch (error) {
+ check(error.name === "SecurityChangePrecommitRejectedError" && error.detail.reason === 6 && error.detail.expectedRevision === baseline.revision && sameBytes(error.detail.changeId, refusedReview.changeId), "uncorrelated typed first refusal");
+}
+const afterRefusal = await client.listRoles({});
+const auditAfterRefusal = await client.listSecurityAudit({});
 check(sameVersion(afterRefusal.version, afterCompeting.version), "refusal changed signed revision/cut");
-check(!afterRefusal.roles.some(role => role.id === "admin_correction"), "refused role effect escaped");
-check(auditAfterRefusal.records.length === auditBefore.records.length + 1, "refusal appended a committed audit entry");
-try { await port.status(refusedReview.changeId, scope.signal); throw new Error("refused ID acquired retained commit proof"); }
+check(!afterRefusal.roles.some(role => role.id === "legacy_correction"), "refused effect escaped");
+check(auditAfterRefusal.records.length === auditBefore.records.length + 1, "refusal appended audit");
+try { await client.getSecurityChangeStatus({changeId: refusedReview.changeId}); throw new Error("refused ID acquired proof"); }
 catch (error) {
  let statusError = error;
  for (let depth = 0; depth < 4 && statusError?.code === undefined; depth++) statusError = statusError?.cause;
- check(statusError?.code === 9 && statusError?.rawMessage === "security change is outside retained history", "refused ID must report the existing outside-retained-history contract");
- check(port.failure(error) === "invalid" && port.precommitRejected(error) === undefined, "unknown status must not supply a committed proof or an Apply rejection marker");
+ check(statusError?.code === 9 && statusError?.rawMessage === "security change is outside retained history", "unknown status contract");
+ check(error.name !== "SecurityChangePrecommitRejectedError", "status supplied an Apply rejection marker");
 }
-await correction.review("Blocked before reload", roleChange("admin_correction", "Corrected draft"));
-await correction.apply();
-check(sent === 4 && ids === 3, "correction before reload sent another command");
-await correction.load();
-await correction.review("Explicit fresh review", roleChange("admin_correction", "Corrected draft"));
-const fresh = correction.getSnapshot().review;
-check(fresh.approval === "ordinary" && !Buffer.from(fresh.changeId).equals(Buffer.from(refusedReview.changeId)), "correction must use a newly reviewed ID");
-check(fresh.expectedRevision === afterCompeting.version.revision && sent === 4 && ids === 4, "fresh review uses current cut without Apply");
-await correction.apply();
-check(sent === 5 && ids === 4 && correction.getSnapshot().mutation === "enforced", "one explicit corrected Apply");
-const finalRoles = await port.roles("", scope.signal);
-const finalAudit = await port.audit("", scope.signal);
-check(finalRoles.version.revision === afterCompeting.version.revision + 1n && finalRoles.roles.find(role => role.id === "admin_correction")?.name === "Corrected draft", "corrected role effect/revision mismatch");
-check(finalAudit.records.length === auditBefore.records.length + 2, "corrected flow committed other effects");
-correction.dispose();
-console.log("Admin real browser Connect recovery and precommit correction passed: retained ambiguity stays status-only; first typed refusal has no effect/audit/proof and requires reload/new-ID review before one corrected Apply.");
+const current = (await client.listRoles({})).version;
+const corrected = {expectedVersion: current, changeId: newID(), changes: roleChange("legacy_correction", "Corrected draft")};
+check(!sameBytes(corrected.changeId, refusedReview.changeId) && (await client.prepareSecurityChanges({review: corrected})).requirement === 1, "explicit new-ID review");
+await client.applySecurityChanges({expectedRevision: current.revision, changeId: corrected.changeId, changes: corrected.changes});
+const finalRoles = await client.listRoles({});
+const finalAudit = await client.listSecurityAudit({});
+check(sent === 5 && ids === 5 && statusCalls === 5, "unexpected extra command or ID");
+check(finalRoles.version.revision === afterCompeting.version.revision + 1n && finalRoles.roles.find(role => role.id === "legacy_correction")?.name === "Corrected draft", "corrected effect/version");
+check(finalAudit.records.length === auditBefore.records.length + 2, "corrected flow committed extra effects");
+const remount = new SecurityManagementController(port, "roles", scope.signal, recovery, "legacy-browser-session");
+await remount.load();
+check(remount.getSnapshot().phase === "error" && remount.getSnapshot().result === undefined && sent === 5, "Admin interpreted legacy ENFORCED as current authority");
+remount.dispose();
+console.log("Current Admin refuses legacy authority; legacy browser SDK original-proof recovery and typed first-refusal correction passed.");
 `
 	file := filepath.Join(t.TempDir(), "admin-recovery-wire.ts")
 	if err := os.WriteFile(file, []byte(script), 0600); err != nil {
@@ -3104,6 +3118,14 @@ func scopedSDKTLSServer(t *testing.T, f *oidcControlWireFixture) (*httptest.Serv
 	t.Helper()
 	tlsServer := httptest.NewUnstartedServer(f.server.Config.Handler)
 	tlsServer.EnableHTTP2 = true
+	caFile := configureSDKServerTLS(t, tlsServer)
+	tlsServer.StartTLS()
+	t.Cleanup(tlsServer.Close)
+	return tlsServer, caFile
+}
+
+func configureSDKServerTLS(t *testing.T, tlsServer *httptest.Server) string {
+	t.Helper()
 	caPrivate, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -3132,13 +3154,11 @@ func scopedSDKTLSServer(t *testing.T, f *oidcControlWireFixture) (*httptest.Serv
 		t.Fatal(err)
 	}
 	tlsServer.TLS = &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12}
-	tlsServer.StartTLS()
-	t.Cleanup(tlsServer.Close)
 	caFile := filepath.Join(t.TempDir(), "public-ca.pem")
 	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return tlsServer, caFile
+	return caFile
 }
 
 func TestAuth_PublicChangesBenchmarkConsumerRealWire(t *testing.T) {

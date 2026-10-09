@@ -109,6 +109,9 @@ func (o *authorityOriginOwner) outputConnState(c net.Conn, state http.ConnState)
 	}
 }
 func (o *authorityOriginOwner) stopOutputs() {
+	if o.publicOutputs != nil {
+		o.publicOutputs.stop()
+	}
 	p := &o.outputs
 	p.mu.Lock()
 	p.closed = true
@@ -152,6 +155,15 @@ func (o *authorityOriginOwner) authorizeOutput(ctx context.Context, c authorityC
 	defer k.gate.Unlock()
 	defer k.poisonPanic()
 	if ctx.Err() != nil || !c.matches(k.replayState.projection) || !requirement.allows(k.replayState.projection, c) {
+		return authorityCurrentTime{}, ErrPermissionDenied
+	}
+	return o.authorizeCurrentCredentialLocked(ctx, c)
+}
+
+// The caller owns kernel.gate and fixes all non-time inputs before this final
+// native sample. The public admission/output adapters share the same event.
+func (o *authorityOriginOwner) authorizeCurrentCredentialLocked(ctx context.Context, c authorityCredential) (authorityCurrentTime, error) {
+	if ctx.Err() != nil || !c.matches(o.network.kernel.replayState.projection) {
 		return authorityCurrentTime{}, ErrPermissionDenied
 	}
 	start, expiry, err := o.eligibilityLocked(ctx)

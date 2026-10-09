@@ -17,6 +17,9 @@ import (
 // its role/query/CDC/peer/browser boundaries before accepting requests.
 type SecurityRuntime struct {
 	mode           string
+	current        *security.CurrentAuthority
+	output         *security.CurrentOutput
+	attemptProcess [32]byte
 	native         *security.NativeStore
 	authority      *security.LeaseAuthority
 	receiver       *security.LeaseReceiver
@@ -63,6 +66,9 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (_ 
 		if runtime.native != nil {
 			_ = runtime.native.Close()
 		}
+		if runtime.current != nil {
+			_ = runtime.current.Close()
+		}
 	}
 	if config.Mode == "off" {
 		runtime.control, err = service.NewSecurityConnectHandler(service.SecurityServiceOptions{Ready: func(ctx context.Context, _ *security.Revision) bool { return runtime.Ready(ctx) }})
@@ -70,6 +76,13 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (_ 
 	}
 	if data == nil || data.DataNamespaceFormat() != keyspace.Version {
 		return nil, nil, errors.New("OIDC requires the certified data namespace boundary")
+	}
+	if config.Profile == "current-v2" {
+		if err := runtime.openCurrent(); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		return runtime, cleanup, nil
 	}
 	publicKey, err := loadSecurityWriterPublicKey(config.WriterPublicKeyFile)
 	if err != nil {
@@ -149,6 +162,9 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (_ 
 func (r *SecurityRuntime) Mode() string                                    { return r.mode }
 func (r *SecurityRuntime) ControlHandler() *service.SecurityConnectHandler { return r.control }
 func (r *SecurityRuntime) authorityCheck(ctx context.Context, revision *security.Revision) error {
+	if r.current != nil {
+		return security.ErrAuthorityUnavailable
+	} // Legacy Revision never certifies current.
 	if r.peer != nil && r.peer.CheckWorkload(ctx) != nil {
 		return security.ErrAuthorityUnavailable
 	}

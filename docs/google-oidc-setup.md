@@ -123,6 +123,7 @@ a complete production or HA configuration:
 
 ```text
 LANTERN_AUTH_MODE=oidc
+LANTERN_SECURITY_PROFILE=legacy-v1
 LANTERN_OIDC_ADMIN_ISSUER=https://accounts.google.com
 LANTERN_OIDC_ADMIN_SUBJECTS=["<verified exact Google sub>"]
 LANTERN_OIDC_CLIENT_ID=<Web client ID>

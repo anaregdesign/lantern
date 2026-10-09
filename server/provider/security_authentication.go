@@ -31,6 +31,21 @@ func (r *SecurityRuntime) AuthenticateBearer(ctx context.Context, headers http.H
 		}
 		return ctx, nil
 	}
+	if r.current != nil {
+		p, err := r.CurrentBearerProducer(headers)
+		if err != nil {
+			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
+		}
+		verified, _, err := r.current.WithRequestCredential(ctx, p)
+		if err != nil {
+			code := connect.CodeUnauthenticated
+			if errors.Is(err, security.ErrAuthorityUnavailable) {
+				code = connect.CodeUnavailable
+			}
+			return ctx, connect.NewError(code, errors.New("current authentication unavailable"))
+		}
+		return context.WithValue(verified, verifiedRuntimeKey{}, r), nil
+	}
 	values := headers.Values("Authorization")
 	if len(values) != 1 || len(values[0]) > 16<<10+7 {
 		return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)

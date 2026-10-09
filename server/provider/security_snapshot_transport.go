@@ -22,7 +22,7 @@ type snapshotTransport struct {
 func (r *SecurityRuntime) boundSnapshotHTTPHandler(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		path := strings.TrimPrefix(req.URL.Path, "/browser")
-		if r.mode != "oidc" || path != graphv1connect.LanternServiceBackupSnapshotProcedure {
+		if r.mode != "oidc" || r.current != nil || path != graphv1connect.LanternServiceBackupSnapshotProcedure {
 			handler.ServeHTTP(w, req)
 			return
 		}

@@ -21,6 +21,10 @@ import 'gen/graph/v1/graph.pb.dart' as $graph;
 import 'gen/graph/v1/replication.connect.client.dart' as $replication_client;
 import 'gen/graph/v1/replication.pb.dart' as $replication;
 
+import 'gen/graph/v1/security.connect.client.dart' as $security_client;
+import 'gen/graph/v1/security.pb.dart' as $security;
+
+part 'security.dart';
 part 'changes.dart';
 part 'scoped_changes.dart';
 part 'crud.dart';
