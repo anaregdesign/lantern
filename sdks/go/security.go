@@ -50,7 +50,8 @@ func CurrentSecurityVersionBinding(v *pb.SecurityVersion) (string, error) {
 // GetCurrentPrincipal reads the current-v2 identity and effective roles through
 // the normal authenticated transport. It does not confer authority on later
 // calls; the server admits each call independently. Explicit legacy responses
-// are refused rather than reinterpreted as current cuts.
+// are refused rather than reinterpreted as current cuts. This call makes one
+// attempt even with WithRetry; the caller owns explicit binding refresh.
 func (l *Lantern) GetCurrentPrincipal(ctx context.Context) (*pb.GetCurrentPrincipalResponse, error) {
 	ctx, cancel := l.applyTimeout(ctx)
 	defer cancel()

@@ -388,6 +388,7 @@ func TestRetryableMethod(t *testing.T) {
 		{"BootstrapIdentity", false},
 		{"SubscribeIdentity", false},
 		{"Backup", false},
+		{"GetCurrentPrincipal", false},
 		{"NotAMethod", false},
 	}
 	for _, c := range cases {

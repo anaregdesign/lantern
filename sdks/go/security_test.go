@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"connectrpc.com/connect"
 	"context"
+	"errors"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"google.golang.org/protobuf/proto"
@@ -73,5 +74,19 @@ func TestGetCurrentPrincipalWire(t *testing.T) {
 	}
 	if f.calls != 2 {
 		t.Fatal("unexpected retry", f.calls)
+	}
+}
+
+func TestGetCurrentPrincipalDoesNotRetryUnavailable(t *testing.T) {
+	calls := 0
+	interceptor := connect.UnaryInterceptorFunc(func(connect.UnaryFunc) connect.UnaryFunc {
+		return func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+			calls++
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("current binding response unavailable"))
+		}
+	})
+	c := mustLantern(t, WithRetry(RetryPolicy{MaxAttempts: 3, sleepFn: noSleep}), WithConnectClientOption(connect.WithInterceptors(interceptor)))
+	if _, err := c.GetCurrentPrincipal(context.Background()); !errors.Is(err, ErrUnavailable) || calls != 1 {
+		t.Fatal("current binding read retried despite its single-attempt contract", calls, err)
 	}
 }

@@ -649,10 +649,10 @@ func TestInitializeAppGraphOnlyDefault(t *testing.T) {
 	}
 }
 
-// Exercise the generated production injector, its real authority restart fence,
-// and the public TLS listener. Deterministic component gates cover the remaining
-// clock and failure permutations without weakening this production barrier.
-func TestInitializeAppOIDCProductionSurface(t *testing.T) {
+// Exercise the generated legacy production injector, its real restart fence
+// and public TLS listener. Current-v2 has independent provisioning/native-time
+// gates; this fixed-writer fixture must select its legacy profile explicitly.
+func TestInitializeAppOIDCLegacyProductionSurface(t *testing.T) {
 	probe, port := reserveRuntimeTestPort(t)
 	if err := probe.Close(); err != nil {
 		t.Fatal(err)
@@ -700,7 +700,8 @@ func TestInitializeAppOIDCProductionSurface(t *testing.T) {
 	}
 	origin := fmt.Sprintf("https://127.0.0.1:%d", port)
 	for name, value := range map[string]string{
-		"LANTERN_AUTH_MODE": "oidc", "LANTERN_OIDC_ADMIN_ISSUER": "https://issuer.example", "LANTERN_OIDC_ADMIN_SUBJECTS": `["administrator"]`,
+		"LANTERN_SECURITY_PROFILE": "legacy-v1",
+		"LANTERN_AUTH_MODE":        "oidc", "LANTERN_OIDC_ADMIN_ISSUER": "https://issuer.example", "LANTERN_OIDC_ADMIN_SUBJECTS": `["administrator"]`,
 		"LANTERN_OIDC_CLIENT_ID": "admin", "LANTERN_OIDC_API_AUDIENCE": "api", "LANTERN_OIDC_BROWSER_ORIGIN": origin,
 		"LANTERN_OIDC_REDIRECT_URI":   origin + oidc.CallbackPath("https://issuer.example"),
 		"LANTERN_SECURITY_STORE_MODE": "fresh", "LANTERN_SECURITY_STORE_PATH": filepath.Join(dir, "security.wal"),
