@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -68,6 +69,13 @@ func TestAuthorityOutputConnectUnaryAndStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var outputCalls sync.WaitGroup
+	handler := private.Handler
+	private.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		outputCalls.Add(1)
+		defer outputCalls.Done()
+		handler.ServeHTTP(w, r)
+	})
 	server := httptest.NewUnstartedServer(private.Handler)
 	server.Config = private
 	server.TLS = private.TLSConfig
@@ -119,6 +127,19 @@ func TestAuthorityOutputConnectUnaryAndStream(t *testing.T) {
 		t.Fatal("authorization event count", events.Load())
 	}
 	stream.Close()
+	// A refused Write closes the socket before serveOutput's deferred credit
+	// release. Client EOF/Close does not join that server-side cleanup. Every
+	// request above has entered its handler, and no new requests are started.
+	finished := make(chan struct{})
+	go func() {
+		outputCalls.Wait()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-ctx.Done():
+		t.Fatal("output handlers did not finish", ctx.Err())
+	}
 	o.outputs.mu.Lock()
 	defer o.outputs.mu.Unlock()
 	if o.outputs.active != 0 {
