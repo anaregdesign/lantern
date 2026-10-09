@@ -58,6 +58,12 @@ def main():
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if not inspect(name)["State"]["Running"]:
+                # The final controller result is atomically published before
+                # exit; retain/read it even when the process wins this poll.
+                recovered = args.evidence / (name + "-" + pathlib.PurePosixPath(path).name)
+                copied = docker("cp", name + ":" + path, str(recovered), check=False, record=False)
+                if copied.returncode == 0:
+                    return json.loads(recovered.read_text())
                 raise RuntimeError(f"{name} exited before {path}")
             result = docker("exec", name, "cat", path, check=False, record=False)
             if result.returncode == 0:
