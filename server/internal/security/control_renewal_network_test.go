@@ -105,34 +105,86 @@ func TestAuthorityRenewalNetworkConfiguration(t *testing.T) {
 }
 
 func TestAuthorityRenewalNetworkCatchesUpBeforeNewChallenge(t *testing.T) {
-	n, owners, _ := authorityTestComposite(t)
-	n.nodes[1].hooks.beforeSend = func(_ context.Context, to uint32, raw []byte) error {
-		if to == 3 && raw[len(s2cMessageMagic)] == s2cChosen {
-			return errS3AWire
+	for _, occupied := range []bool{false, true} {
+		name := "ordinary_delivery"
+		if occupied {
+			name = "occupied_source_ingress"
 		}
-		return nil
-	}
-	ctx := s3aTestContext(t)
-	if _, err := n.nodes[1].Drive(ctx, [32]byte{}); err != nil {
-		t.Fatal(err)
-	}
-	n.nodes[3].kernel.gate.Lock()
-	old := n.nodes[3].kernel.replayState.slot
-	n.nodes[3].kernel.gate.Unlock()
-	if old != 0 {
-		t.Fatal("fixture did not lose chosen notification")
-	}
-	if err := n.nodes[3].renewAuthority(ctx); err == nil {
-		t.Fatal("old installed head renewed")
-	}
-	if err := n.nodes[3].renewAndCatchUp(ctx, 1); err != nil {
-		t.Fatal("range recovery then fresh renewal", err)
-	}
-	k := owners[3].network.kernel
-	k.gate.Lock()
-	defer k.gate.Unlock()
-	_, active, err := owners[3].network.receiver.currentLocked()
-	if err != nil || active.certificate.request.statement.Slot != 1 {
-		t.Fatal("reused old prefix challenge", err)
+		t.Run(name, func(t *testing.T) {
+			n, owners, _ := authorityTestComposite(t)
+			n.nodes[1].hooks.beforeSend = func(_ context.Context, to uint32, raw []byte) error {
+				if to == 3 && raw[len(s2cMessageMagic)] == s2cChosen {
+					return errS3AWire
+				}
+				return nil
+			}
+			ctx := s3aTestContext(t)
+			if _, err := n.nodes[1].Drive(ctx, [32]byte{}); err != nil {
+				t.Fatal("source installation", err)
+			}
+			_, source, err := n.nodes[1].kernel.ReadLocalCut()
+			if err != nil || source.ControlSlot != 1 {
+				t.Fatal("source cut", source.ControlSlot, err)
+			}
+			_, before, err := n.nodes[3].kernel.ReadLocalCut()
+			if err != nil || before.ControlSlot != 0 {
+				t.Fatal("fixture did not lose chosen notification", before.ControlSlot, err)
+			}
+			if err := n.nodes[3].renewAuthority(ctx); err == nil {
+				t.Fatal("old installed head renewed")
+			}
+			if occupied {
+				// Model a real authenticated handler paused after source apply
+				// and before releasing its existing per-sender ingress credit.
+				// Drive guarantees local installation, not remote handler exit.
+				credit := n.nodes[1].inbound[3]
+				select {
+				case credit <- struct{}{}:
+				case <-ctx.Done():
+					t.Fatal("acquire source ingress", ctx.Err())
+				}
+				func() {
+					defer func() { <-credit }()
+					if err := n.nodes[3].renewAndCatchUp(ctx, 1); err == nil {
+						t.Fatal("recovery succeeded with source ingress occupied")
+					}
+					k := owners[3].network.kernel
+					k.gate.Lock()
+					slot := k.replayState.slot
+					_, _, currentErr := owners[3].network.receiver.currentLocked()
+					k.gate.Unlock()
+					if slot != 0 || currentErr == nil {
+						t.Fatalf("occupied ingress admitted stale authority: slot=%d current_error=%v", slot, currentErr)
+					}
+				}()
+			}
+			// Progress the same real recovery operation within the existing
+			// deadline. Transient ingress occupancy is not an authority grant.
+			for cycles := 1; ; cycles++ {
+				err := n.nodes[3].renewAndCatchUp(ctx, 1)
+				if err == nil {
+					break
+				}
+				if !s3aPause(ctx, 20*time.Millisecond) {
+					_, recovered, readErr := n.nodes[3].kernel.ReadLocalCut()
+					t.Fatalf("range recovery then fresh renewal exhausted: cycles=%d source_slot=%d recovered_slot=%d read_error=%v recovery_error=%v context=%v", cycles, source.ControlSlot, recovered.ControlSlot, readErr, err, ctx.Err())
+				}
+			}
+			_, recovered, err := n.nodes[3].kernel.ReadLocalCut()
+			if err != nil || recovered.ControlSlot != source.ControlSlot || recovered.ControlPrefix != source.ControlPrefix || recovered.CapsuleDigest != source.CapsuleDigest {
+				t.Fatal("recovery did not install the exact source cut", err)
+			}
+			k := owners[3].network.kernel
+			k.gate.Lock()
+			defer k.gate.Unlock()
+			_, active, err := owners[3].network.receiver.currentLocked()
+			if err != nil || active == nil {
+				t.Fatal("recovered head has no current authority", err)
+			}
+			statement := active.certificate.request.statement
+			if statement.Slot != source.ControlSlot || statement.Prefix != source.ControlPrefix || statement.Capsule != source.CapsuleDigest {
+				t.Fatal("fresh certificate does not match the exact recovered source cut")
+			}
+		})
 	}
 }

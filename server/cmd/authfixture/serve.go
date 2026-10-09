@@ -57,7 +57,11 @@ func fixtureEnvironment(node fixtureNode, overrides map[string]string) ([]string
 		if !strings.HasPrefix(key, "LANTERN_") || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, 0) {
 			return nil, errors.New("invalid fixture override")
 		}
-		if _, locked := node.Environment[key]; locked && key != "LANTERN_METRICS_ADDR" && key != "LANTERN_LOG_LEVEL" {
+		_, locked := node.Environment[key]
+		if key == "LANTERN_PORT" || strings.HasPrefix(key, "LANTERN_TLS_") || strings.HasPrefix(key, "LANTERN_PEER_") {
+			locked = true
+		}
+		if locked && key != "LANTERN_METRICS_ADDR" && key != "LANTERN_LOG_LEVEL" {
 			return nil, errors.New("fixture trust, identity and listener settings cannot be overridden")
 		}
 		native[key] = value
@@ -258,7 +262,7 @@ func fixtureProbeErrorCategory(err error) string {
 // then supervises every child until cancellation or an explicit stdin shutdown.
 // EOF does not stop detached CI supervision. Startup failures always reap children.
 func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFile string, input io.Reader, output io.Writer, readyTimeout time.Duration) error {
-	if len(result.Nodes) == 0 || len(result.Nodes) > 8 || !filepath.IsAbs(binary) || readyTimeout < time.Second || readyTimeout > 5*time.Minute {
+	if len(result.launches) != 0 && len(result.launches) != len(result.Nodes) || len(result.Nodes) == 0 || len(result.Nodes) > 8 || !filepath.IsAbs(binary) || readyTimeout < time.Second || readyTimeout > 5*time.Minute {
 		return errors.New("absolute Server binary and bounded readiness timeout required")
 	}
 	overrides, err := loadFixtureOverrides(overridesFile, len(result.Nodes))
@@ -280,6 +284,10 @@ func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFil
 
 	children := make([]*fixtureProcess, 0, len(result.Nodes))
 	defer func() {
+		if len(result.launches) != 0 {
+			closeFixtureLaunches(result.launches)
+			return
+		}
 		for i := len(children) - 1; i >= 0; i-- {
 			children[i].stop()
 		}
@@ -288,6 +296,17 @@ func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFil
 		env, err := fixtureEnvironment(node, overrides[i])
 		if err != nil {
 			return err
+		}
+		if len(result.launches) != 0 {
+			launch := result.launches[i]
+			if err := checkFixtureLaunchNode(launch, node); err != nil {
+				return err
+			}
+			children = append(children, launch.process)
+			if err := launch.configure(ctx, env); err != nil {
+				return &fixtureFailure{stage: "spawn", cause: err}
+			}
+			continue
 		}
 		log, err := privatefile.Create(filepath.Join(dir, node.Name+"-server.log"), os.O_WRONLY)
 		if err != nil {
@@ -306,6 +325,10 @@ func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFil
 		go func() { _ = command.Wait(); close(process.done) }()
 	}
 	startup, cancel := context.WithTimeout(ctx, readyTimeout)
+	if len(result.launches) != 0 {
+		cancel()
+		startup, cancel = context.WithDeadline(ctx, result.launches[0].deadline)
+	}
 	err = waitFixtureReady(startup, result, children)
 	cancel()
 	if err != nil {

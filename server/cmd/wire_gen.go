@@ -7,13 +7,14 @@
 package main
 
 import (
+	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
 // Injectors from wire.go:
 
-func initializeApp() (*App, func(), error) {
+func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), error) {
 	config, err := provider.NewConfig()
 	if err != nil {
 		return nil, nil, err
@@ -93,7 +94,7 @@ func initializeApp() (*App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	listener, cleanup4, err := provider.NewListener(netConfig, runtimeCertified, publicReceiptsCertified)
+	listener, cleanup4, err := provider.NewListener(netConfig, runtimeCertified, publicReceiptsCertified, launch)
 	if err != nil {
 		cleanup3()
 		cleanup2()
@@ -171,7 +172,7 @@ func initializeApp() (*App, func(), error) {
 		cleanup()
 		return nil, nil, err
 	}
-	peerPlaneServer, cleanup5, err := provider.NewPeerPlaneServer(peerPlaneConfig, peerIdentityRuntime, securityPeerRuntime, lanternReplicationService, netConfig, logger, runtimeCertified)
+	peerPlaneServer, cleanup5, err := provider.NewPeerPlaneServer(peerPlaneConfig, peerIdentityRuntime, securityPeerRuntime, lanternReplicationService, netConfig, logger, runtimeCertified, launch)
 	if err != nil {
 		cleanup4()
 		cleanup3()

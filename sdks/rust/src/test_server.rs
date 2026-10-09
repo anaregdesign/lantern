@@ -4,7 +4,7 @@ use std::{
     error::Error,
     fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{SocketAddr, TcpStream},
     process::{Child, Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
@@ -322,24 +322,6 @@ impl GoServer {
             &override_file,
             serde_json::to_vec(&vec![configured; count])?,
         )?;
-        let listeners = (0..if count > 1 { count * 2 } else { count })
-            .map(|_| TcpListener::bind("127.0.0.1:0"))
-            .collect::<Result<Vec<_>, _>>()?;
-        let ports = listeners
-            .iter()
-            .map(|listener| Ok(listener.local_addr()?.port()))
-            .collect::<Result<Vec<_>, std::io::Error>>()?;
-        let public = ports[..count]
-            .iter()
-            .map(u16::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        let peers = ports[count..]
-            .iter()
-            .map(u16::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        drop(listeners);
         let diagnostic_path = files.path().join("fixture-startup.log");
         write_private_fixture(&fixture, &diagnostic_path, vec![b'\n'])?;
         let diagnostics = fs::OpenOptions::new().append(true).open(&diagnostic_path)?;
@@ -347,13 +329,9 @@ impl GoServer {
         command
             .args(["-directory"])
             .arg(files.path().join("trust"))
-            .args([
-                "-public-ports",
-                &public,
-                "-peer-ports",
-                &peers,
-                "-tokens-file",
-            ])
+            .arg("-allocated-nodes")
+            .arg(count.to_string())
+            .arg("-tokens-file")
             .arg(&credentials)
             .arg("-overrides-file")
             .arg(&override_file)
@@ -371,7 +349,7 @@ impl GoServer {
         let child = command.spawn()?;
         let mut result = Self {
             child,
-            port: ports[0],
+            port: 0,
             native: None,
             _files: Some(files),
             _startup_log: None,
@@ -392,6 +370,12 @@ impl GoServer {
         if native.nodes.len() != count {
             return Err("native fixture node count drift".into());
         }
+        result.port = native.nodes[0]
+            .public_origin
+            .rsplit_once(':')
+            .ok_or("invalid native public origin")?
+            .1
+            .parse()?;
         result.native = Some(native);
         Ok(result)
     }

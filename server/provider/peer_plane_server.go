@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"github.com/anaregdesign/lantern/server/service"
 	"log/slog"
 	"net"
@@ -19,11 +20,14 @@ type PeerPlaneServer struct {
 	listener net.Listener
 }
 
-func NewPeerPlaneServer(config PeerPlaneConfig, peer *PeerIdentityRuntime, policy *SecurityPeerRuntime, replication *service.LanternReplicationService, limits NetConfig, logger *slog.Logger, certified runtimeCertified) (*PeerPlaneServer, func(), error) {
+func NewPeerPlaneServer(config PeerPlaneConfig, peer *PeerIdentityRuntime, policy *SecurityPeerRuntime, replication *service.LanternReplicationService, limits NetConfig, logger *slog.Logger, certified runtimeCertified, launch *listenerlaunch.Owner) (*PeerPlaneServer, func(), error) {
 	if !certified.valid || certified.replication != replication || certified.replicationSendMaxBytes != limits.MaxSendMsgBytes {
 		return nil, nil, errors.New("private listener requires the exact certified replication service and frame limit")
 	}
 	if config.ListenAddress == "" {
+		if err := launch.NoPeer(); err != nil {
+			return nil, nil, err
+		}
 		if peer != nil || policy != nil {
 			return nil, nil, errors.New("private runtime without a configured listener")
 		}
@@ -41,7 +45,13 @@ func NewPeerPlaneServer(config PeerPlaneConfig, peer *PeerIdentityRuntime, polic
 	if policy != nil {
 		mux.Handle(policy.PrivateHTTPHandler())
 	}
-	listener, err := net.Listen("tcp", config.ListenAddress)
+	var listener net.Listener
+	var err error
+	if launch != nil {
+		listener, err = launch.Peer(config.ListenAddress)
+	} else {
+		listener, err = net.Listen("tcp", config.ListenAddress)
+	}
 	if err != nil {
 		return nil, nil, err
 	}

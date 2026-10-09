@@ -27,7 +27,7 @@ func TestFixtureEnvironmentPreservesOwnedTrust(t *testing.T) {
 	if strings.Contains(joined, "LANTERN_AUTH_TOKENS=") || !strings.Contains(joined, "LANTERN_AUTH_MODE=oidc") || !strings.Contains(joined, "LANTERN_SEARCH_ENABLED=false") {
 		t.Fatal("inherited credentials or lost fixture configuration")
 	}
-	for _, override := range []map[string]string{{"LANTERN_AUTH_MODE": "off"}, {"LANTERN_PORT": "16381"}, {"PATH": "forged"}, {"LANTERN_BAD": "\x00"}} {
+	for _, override := range []map[string]string{{"LANTERN_AUTH_MODE": "off"}, {"LANTERN_PORT": "16381"}, {"PATH": "forged"}, {"LANTERN_BAD": "\x00"}, {"LANTERN_TLS_CLIENT_CA_FILE": "foreign"}, {"LANTERN_PEER_LISTEN_ADDR": "127.0.0.1:1"}} {
 		if _, err := fixtureEnvironment(node, override); err == nil {
 			t.Fatal("unsafe fixture override admitted")
 		}
