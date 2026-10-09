@@ -1,12 +1,21 @@
 package security
 
 import (
+	"context"
 	"fmt"
 	"testing"
 )
 
 func TestCurrentPublicAuditUsesOriginalLedgerAndExactAdmission(t *testing.T) {
 	_, owners, _ := authorityTestComposite(t)
+	// Hold peers behind the local Apply cut: production delivery is asynchronous,
+	// and this fixture deliberately disables automatic renewal/catch-up.
+	owners[1].network.hooks.beforeSend = func(_ context.Context, to uint32, raw []byte) error {
+		if to != 1 && raw[len(s2cMessageMagic)] == s2cChosen {
+			return errS3AWire
+		}
+		return nil
+	}
 	o := &CurrentAuthority{origin: owners[1]}
 	ctx := s3aTestContext(t)
 	if err := o.origin.network.renewAuthority(ctx); err != nil {
@@ -33,6 +42,11 @@ func TestCurrentPublicAuditUsesOriginalLedgerAndExactAdmission(t *testing.T) {
 	if _, err := o.Audit(ctx, a, ""); err == nil {
 		t.Fatal("old cut disclosed audit")
 	}
+	if err := o.origin.network.renewAuthority(ctx); err == nil {
+		t.Fatal("lagging peers renewed the new local cut")
+	}
+	// Install only authenticated CHOSEN ranges before requesting fresh authority.
+	authorityTestConverge(t, owners)
 	if err := o.origin.network.renewAuthority(ctx); err != nil {
 		t.Fatal(err)
 	}
