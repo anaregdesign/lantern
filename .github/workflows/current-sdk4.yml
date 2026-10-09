@@ -38,6 +38,11 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Trust this owned checkout in subsequent container steps
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git status --porcelain
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod

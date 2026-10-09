@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -77,6 +78,21 @@ class SDK4ReceiptTest(unittest.TestCase):
 
     def test_complete_execution_and_exact_source(self):
         self.assertEqual(self.verify()["executed_tests"], [gate.ROOT_TEST, *gate.SDK_TESTS])
+
+    def test_container_checkout_trust_is_exact_and_job_local(self):
+        # Model the host-owned bind mount; never change the developer's Git config.
+        env = os.environ | {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1",
+                            "GIT_CONFIG_NOSYSTEM": "1",
+                            "GIT_CONFIG_GLOBAL": str(Path(self.temp.name) / "job.gitconfig")}
+        def run(*args):
+            return subprocess.run(["git", *args], cwd=self.root, env=env,
+                                  capture_output=True, text=True)
+        self.assertNotEqual(run("status", "--porcelain").returncode, 0)
+        self.assertEqual(run("config", "--global", "--add", "safe.directory", str(self.root.resolve())).returncode, 0)
+        self.assertEqual(run("status", "--porcelain").returncode, 0)
+        other = Path(self.temp.name) / "another-source"
+        subprocess.run(["git", "init", "-q", str(other)], check=True)
+        self.assertNotEqual(run("-C", str(other), "status", "--porcelain").returncode, 0)
 
     def test_missing_receipt_or_missing_trusted_job_digest_refuses(self):
         with self.assertRaisesRegex(ValueError, "untrusted"):
@@ -244,6 +260,8 @@ class SDK4WiringTest(unittest.TestCase):
         self.assertNotIn("continue-on-error", native)
         # This pure-Dart lane does not provision the separate Flutter example.
         self.assertIn("dart pub get --enforce-lockfile --no-example", native)
+        self.assertIn('git config --global --add safe.directory "$GITHUB_WORKSPACE"', native)
+        self.assertNotIn('safe.directory "*"', native)
         qualify = native.split("- name: Require exact candidate native SDK4 execution", 1)[1].split("- name:", 1)[0]
         self.assertNotIn("if:", qualify)
         self.assertIn('run --expected-head "$GITHUB_SHA"', qualify)
