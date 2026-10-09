@@ -1,0 +1,71 @@
+name: lantern-current-custody
+
+# Operator-provided immutable inputs only. This example creates no keys, changes
+# no host clock/trust, and performs no legacy cutover. See README.md first.
+x-node: &node
+  image: ${LANTERN_IMAGE:?supply an approved immutable Lantern image digest}
+  user: ${LANTERN_RUN_UID:?supply the provisioned volume owner UID}:${LANTERN_RUN_GID:?supply its GID}
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  stop_signal: SIGTERM
+  stop_grace_period: 90s
+  restart: "no"
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,size=64m,mode=1777
+  environment: &environment
+    LANTERN_AUTH_MODE: oidc
+    LANTERN_SECURITY_PROFILE: current-v2
+    LANTERN_SECURITY_CURRENT_CONFIG_FILE: /operator/node.json
+    LANTERN_SECURITY_STORE_MODE: ${LANTERN_SYS_MODE:?use fresh initially or resume after CLEAN}
+    LANTERN_OIDC_BROWSER_ORIGIN: ${LANTERN_BROWSER_ORIGIN:?supply the registered HTTPS browser origin}
+    LANTERN_OIDC_ROOT_CA_FILE: /operator/oidc-roots.pem
+    LANTERN_TLS_CERT_FILE: /operator/public.pem
+    LANTERN_TLS_KEY_FILE: /operator/public.key
+    LANTERN_PORT: "6380"
+    LANTERN_METRICS_ADDR: ""
+    LANTERN_RECEIPT_WAL_MODE: ${LANTERN_DATA_MODE:?use fresh initially or restart for the existing data WAL}
+    LANTERN_RECEIPT_WAL_PATH: /journal/business.wal
+    LANTERN_RECEIPT_EPOCH: ${LANTERN_RECEIPT_EPOCH:?supply the original independent data receipt epoch}
+    LANTERN_RECEIPT_RETENTION: 24h
+    LANTERN_RECEIPT_MAX_ENTRIES: "10000"
+    LANTERN_RECEIPT_MAX_BYTES: "16777216"
+    LANTERN_BACKUP_ENABLED: "false"
+    LANTERN_BACKUP_RESTORE_ON_START: "false"
+    LANTERN_DRAIN_DELAY_SECONDS: "5"
+    LANTERN_SHUTDOWN_TIMEOUT_SECONDS: "30"
+
+services:
+  node-1:
+    <<: *node
+    environment:
+      <<: *environment
+      LANTERN_NODE_ID: "00000000000000000000000000000001"
+    volumes:
+      - ./operator/node-1:/operator:ro
+      - ./native/ntp.conf:/etc/ntp.conf:ro
+      - ./state/node-1/journal:/journal
+      - ./state/node-1/custody:/custody
+    ports: ["127.0.0.1:6381:6380"]
+  node-2:
+    <<: *node
+    environment:
+      <<: *environment
+      LANTERN_NODE_ID: "00000000000000000000000000000002"
+    volumes:
+      - ./operator/node-2:/operator:ro
+      - ./native/ntp.conf:/etc/ntp.conf:ro
+      - ./state/node-2/journal:/journal
+      - ./state/node-2/custody:/custody
+    ports: ["127.0.0.1:6382:6380"]
+  node-3:
+    <<: *node
+    environment:
+      <<: *environment
+      LANTERN_NODE_ID: "00000000000000000000000000000003"
+    volumes:
+      - ./operator/node-3:/operator:ro
+      - ./native/ntp.conf:/etc/ntp.conf:ro
+      - ./state/node-3/journal:/journal
+      - ./state/node-3/custody:/custody
+    ports: ["127.0.0.1:6383:6380"]

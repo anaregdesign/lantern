@@ -105,8 +105,17 @@ func (s *LanternServer) Run(ctx context.Context) error {
 		s.health.SetServingStatus(ReplicationServiceName, grpchealth.StatusServing)
 	}
 
-	go s.gracefulShutdown(ctx)
-	go s.watcher.Watch(ctx, s.gcInterval)
+	owned, cancelOwned := context.WithCancel(ctx)
+	defer cancelOwned()
+	stopped := make(chan error, 1)
+	go func() { stopped <- s.gracefulShutdown(owned) }()
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		if s.watcher != nil {
+			s.watcher.Watch(owned, s.gcInterval)
+		}
+	}()
 
 	s.logger.Info("lantern server starting",
 		slog.String("addr", s.listener.Addr().String()),
@@ -124,11 +133,18 @@ func (s *LanternServer) Run(ctx context.Context) error {
 	} else {
 		err = s.server.Serve(s.listener)
 	}
-	// http.ErrServerClosed is the post-Shutdown sentinel; surface as
-	// nil so the App errgroup doesn't treat a clean drain as fatal.
+	// Serve returns when listeners close, before Shutdown has joined handlers.
+	// Keep ownership through that join and propagate timeout/forced-close errors.
 	if errors.Is(err, http.ErrServerClosed) {
-		err = nil
+		if ctx.Err() == nil {
+			err = errors.New("public listener stopped without shutdown request")
+		} else {
+			err = nil
+		}
 	}
+	cancelOwned()
+	err = errors.Join(err, <-stopped)
+	<-watched
 
 	if s.health != nil {
 		s.health.SetServingStatus(ServiceName, grpchealth.StatusNotServing)
@@ -142,7 +158,7 @@ func (s *LanternServer) Run(ctx context.Context) error {
 // drain does not complete within that bound, it escalates to Close so
 // the process can exit. A non-positive ShutdownTimeout disables the
 // deadline.
-func (s *LanternServer) gracefulShutdown(ctx context.Context) {
+func (s *LanternServer) gracefulShutdown(ctx context.Context) error {
 	<-ctx.Done()
 	s.logger.Info("shutting down lantern server",
 		slog.Duration("timeout", s.shutdownTimeout))
@@ -162,6 +178,7 @@ func (s *LanternServer) gracefulShutdown(ctx context.Context) {
 		// Serve returns.
 		s.logger.Warn("graceful shutdown deadline exceeded; forcing close",
 			slog.Any("err", err))
-		_ = s.server.Close()
+		return errors.Join(err, s.server.Close())
 	}
+	return nil
 }

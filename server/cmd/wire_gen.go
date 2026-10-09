@@ -183,7 +183,7 @@ func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), err
 	securityWorkers := provider.NewSecurityWorkers(securityRuntime, peerIdentityRuntime, securityPeerRuntime, gate, logger)
 	domainMetricsWired := provider.WireDomainMetrics(graphCache, servingRuntime, domainMetrics)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
-	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, peerPlaneServer, securityWorkers, peerPlaneConfig, domainMetricsWired, cacheGCHooksWired)
+	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, peerPlaneServer, securityWorkers, securityRuntime, peerPlaneConfig, domainMetricsWired, cacheGCHooksWired)
 	return app, func() {
 		cleanup5()
 		cleanup4()

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -84,5 +85,40 @@ func TestSecurityRuntimeOffHasNoOIDCPrerequisites(t *testing.T) {
 	defer cleanup()
 	if runtime.mode != "off" || runtime.native != nil || runtime.verifier != nil || runtime.authority != nil {
 		t.Fatal("OFF constructed protected runtime")
+	}
+}
+
+func TestSecurityRuntimeOrderlyAndAbortAreTerminal(t *testing.T) {
+	for _, mode := range []string{"off", "legacy-v1"} {
+		t.Run(mode, func(t *testing.T) {
+			config, data, _ := securityRuntimeFixture(t)
+			if mode == "off" {
+				config = SecurityConfig{Mode: "off"}
+			}
+			r, cleanup, err := NewSecurityRuntime(config, data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cleanup()
+			var joined sync.WaitGroup
+			for range 4 {
+				joined.Go(func() {
+					if err := r.Shutdown(); err != nil {
+						t.Error(err)
+					}
+				})
+			}
+			joined.Wait()
+			if err := r.Close(); err != nil {
+				t.Fatal("Wire cleanup changed completed result", err)
+			}
+		})
+	}
+	r := &SecurityRuntime{}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if r.Shutdown() == nil {
+		t.Fatal("abort upgraded to orderly success")
 	}
 }

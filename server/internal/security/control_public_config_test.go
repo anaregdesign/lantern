@@ -2,12 +2,18 @@ package security
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -42,7 +48,7 @@ func TestCurrentProvisioningIndependentGenesisAndStrictProfile(t *testing.T) {
 	node := currentNodeDocument{Version: CurrentPublicVersion, GenesisFile: genesisPath, GenesisSHA256: sha256.Sum256(genesisRaw),
 		Participant: currentParticipantDocument{p.Member, p.Incarnation, p.PPath, p.BPath, p.PIdentity, p.PEpoch, p.PPolicy, p.BScope, p.OwnedOrigin, p.PendingBytes, p.PendingCount, p.OutboxBytes},
 		Membership:  currentMembershipDocument{c.Membership.Path, keyPath, manifestPath, c.Membership.Profile, c.Membership.Self},
-		Identity:    c.Identity, OriginKeyFile: filepath.Join(filepath.Dir(c.Identity.VotingKey), "origin.key"), ListenAddress: n.listeners[1].Addr().String(), Limits: c.Limits}
+		Identity:    c.Identity, OriginKeyFile: filepath.Join(filepath.Dir(c.Identity.VotingKey), "origin.key"), FloorsFile: filepath.Join(dir, "floors.json"), ListenAddress: n.listeners[1].Addr().String(), Limits: c.Limits}
 	path, raw := write("node.json", node)
 	provisioned, err := LoadCurrentProvisioning(path)
 	if err != nil || provisioned.Profile().Protocol != n.f.trust.scope || provisioned.Profile().Membership != c.Membership.Profile.Digest() {
@@ -58,6 +64,8 @@ func TestCurrentProvisioningIndependentGenesisAndStrictProfile(t *testing.T) {
 		"wrong member":        func(d *currentNodeDocument) { d.Participant.Member = 99 },
 		"another origin":      func(d *currentNodeDocument) { d.Participant.OwnedOrigin = 2 },
 		"wrong listener":      func(d *currentNodeDocument) { d.ListenAddress = "127.0.0.1:0" },
+		"missing custody":     func(d *currentNodeDocument) { d.FloorsFile = "" },
+		"relative custody":    func(d *currentNodeDocument) { d.FloorsFile = "floors.json" },
 		"borrowed membership": func(d *currentNodeDocument) { d.Membership.Profile.ProtocolScope[0] ^= 1 },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -111,10 +119,30 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	}
 	issuerURL := os.Getenv("LANTERN_CURRENT_FIXTURE_ISSUER")
 	u, err := url.Parse(issuerURL)
-	if err != nil || u.Scheme != "https" || u.Hostname() != "127.0.0.1" {
-		t.Fatal("loopback TLS fixture issuer required")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts := currentFixtureContainerHosts(t)
+	issuerIP, addressErr := netip.ParseAddr(u.Hostname())
+	if u.Scheme != "https" || u.Hostname() != "127.0.0.1" && (len(hosts) != 3 || addressErr != nil || !issuerIP.IsPrivate()) {
+		t.Fatal("loopback or declared private container TLS fixture issuer required")
 	}
 	n := s3aTestCluster(t, nil)
+	if len(hosts) != 0 {
+		// One independently provisioned lifetime covers the bounded campaign;
+		// restart never rewrites or extends this signed membership.
+		n.manifest.IssuedAt = time.Now().UTC().Add(-time.Minute)
+		n.manifest.ExpiresAt = time.Now().UTC().Add(time.Hour)
+		for id, c := range n.configs {
+			c.Membership.Self.Origin = "https://" + hosts[id-1] + ":16380"
+			n.configs[id] = c
+			for i := range n.manifest.Profile.Voters {
+				if n.manifest.Profile.Voters[i].Voter == id {
+					n.manifest.Profile.Voters[i].Workload = c.Membership.Self
+				}
+			}
+		}
+	}
 	image := s1Image()
 	callback := sha256.Sum256([]byte(issuerURL))
 	image.Issuers = []Issuer{{URL: issuerURL, ConfigRevision: 1, Enabled: true, ClientID: "admin", APIAudience: "api", RedirectURI: fmt.Sprintf("https://admin.example/auth/callback/%x", callback), Algorithms: []string{"EdDSA"}, HumanSubjectNamespaceQualified: true}}
@@ -192,6 +220,22 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
+			if len(hosts) != 0 && from == old.Identity.Certificate {
+				block, _ := pem.Decode(raw)
+				if block == nil {
+					t.Fatal("fixture workload certificate missing")
+				}
+				leaf, e := x509.ParseCertificate(block.Bytes)
+				if e != nil {
+					t.Fatal(e)
+				}
+				leaf.IPAddresses, leaf.DNSNames = []net.IP{net.ParseIP(hosts[id-1])}, nil
+				der, e := x509.CreateCertificate(rand.Reader, leaf, n.ca, leaf.PublicKey, n.caKey)
+				if e != nil {
+					t.Fatal(e)
+				}
+				raw = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+			}
 			write(to, raw)
 		}
 		keyPath, manifestPath := filepath.Join(nodeDir, "membership.pub"), filepath.Join(nodeDir, "membership.signed")
@@ -204,11 +248,39 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 		} else {
 			p.OwnedOrigin = 0
 		}
-		node := currentNodeDocument{Version: CurrentPublicVersion, GenesisFile: genesisPath, GenesisSHA256: sha256.Sum256(genesisRaw), Participant: currentParticipantDocument{p.Member, p.Incarnation, p.PPath, p.BPath, p.PIdentity, p.PEpoch, p.PPolicy, p.BScope, p.OwnedOrigin, p.PendingBytes, p.PendingCount, p.OutboxBytes}, Membership: currentMembershipDocument{filepath.Join(nodeDir, "membership"), keyPath, manifestPath, n.manifest.Profile, old.Membership.Self}, Identity: identity, OriginKeyFile: originPath, ListenAddress: n.listeners[id].Addr().String(), Limits: old.Limits}
+		node := currentNodeDocument{Version: CurrentPublicVersion, GenesisFile: genesisPath, GenesisSHA256: sha256.Sum256(genesisRaw), Participant: currentParticipantDocument{p.Member, p.Incarnation, p.PPath, p.BPath, p.PIdentity, p.PEpoch, p.PPolicy, p.BScope, p.OwnedOrigin, p.PendingBytes, p.PendingCount, p.OutboxBytes}, Membership: currentMembershipDocument{filepath.Join(nodeDir, "membership"), keyPath, manifestPath, n.manifest.Profile, old.Membership.Self}, Identity: identity, OriginKeyFile: originPath, FloorsFile: filepath.Join(nodeDir, "floors.json"), ListenAddress: n.listeners[id].Addr().String(), Limits: old.Limits}
+		if len(hosts) != 0 {
+			node.Participant.PPath, node.Participant.BPath = "/journal/protocol.wal", "/journal/materialized.wal"
+			node.Membership.Path, node.FloorsFile, node.ListenAddress = "/journal/membership", "/custody/floors.json", "0.0.0.0:16380"
+		}
 		path := filepath.Join(nodeDir, "node.json")
 		doc(path, node)
 		if _, err := LoadCurrentProvisioning(path); err != nil {
 			t.Fatal("export invalid", id, err)
 		}
 	}
+}
+
+func currentFixtureContainerHosts(t *testing.T) []string {
+	t.Helper()
+	raw := os.Getenv("LANTERN_CURRENT_FIXTURE_HOSTS")
+	if raw == "" {
+		return nil
+	}
+	if os.Getenv("LANTERN_CURRENT_CUSTODY_GATE") != "1" {
+		t.Fatal("private container addresses require the explicit custody gate")
+	}
+	hosts := strings.Split(raw, ",")
+	if len(hosts) != 3 {
+		t.Fatal("exactly three private fixture addresses required")
+	}
+	seen := map[string]bool{}
+	for _, host := range hosts {
+		ip, err := netip.ParseAddr(host)
+		if err != nil || !ip.Is4() || !ip.IsPrivate() || ip.String() != host || seen[host] {
+			t.Fatal("invalid private fixture address", host)
+		}
+		seen[host] = true
+	}
+	return hosts
 }

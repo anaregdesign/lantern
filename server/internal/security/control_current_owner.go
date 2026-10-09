@@ -11,6 +11,12 @@ import (
 // it has no clock/bool injection port. Public Wire startup does not select it.
 // A first bounded anchor is required before even opening a current M/P/B family.
 func openCurrentAuthorityOwner(ctx context.Context, c s3aConfig, originKey, browserOrigin string, fresh bool, floors s3aFloors) (_ *authorityOriginOwner, err error) {
+	return openCurrentAuthorityOwnerWithCustody(ctx, c, originKey, browserOrigin, fresh, floors, nil)
+}
+
+// Custody is a private durable lifecycle boundary, never an injected clock or
+// a readiness assertion. Private protocol fixtures can still own their floors.
+func openCurrentAuthorityOwnerWithCustody(ctx context.Context, c s3aConfig, originKey, browserOrigin string, fresh bool, floors s3aFloors, custody *currentCustody) (_ *authorityOriginOwner, err error) {
 	if c.timeOwner != nil {
 		return nil, errS3AConfig
 	}
@@ -60,6 +66,14 @@ func openCurrentAuthorityOwner(ctx context.Context, c s3aConfig, originKey, brow
 	if err = bindAuthorityNetworkTime(&c, clock); err != nil {
 		return nil, err
 	}
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	if custody != nil {
+		if err = custody.running(); err != nil {
+			return nil, err
+		}
+	}
 	n, err := openS3AOwner(c, fresh, floors)
 	if err != nil {
 		return nil, err
@@ -67,8 +81,7 @@ func openCurrentAuthorityOwner(ctx context.Context, c s3aConfig, originKey, brow
 	n.ownedTime = true
 	origin, err := attachAuthorityOrigin(n, key, browserOrigin)
 	if err != nil {
-		_ = n.Close()
-		return nil, err
+		return nil, errors.Join(err, n.Close())
 	}
 	transferred = true
 	return origin, nil

@@ -72,6 +72,9 @@ type CurrentProvisioning struct {
 	floors    string
 	listen    string
 	profile   CurrentProfile
+	source    string
+	binding   [32]byte
+	paths     []string
 }
 
 func currentDocument(path string, limit int64, target any) ([]byte, error) {
@@ -89,8 +92,13 @@ func currentDocument(path string, limit int64, target any) ([]byte, error) {
 // created. Paths/identities/budgets remain fixed across ordinary intact reopen.
 func LoadCurrentProvisioning(path string) (*CurrentProvisioning, error) {
 	var node currentNodeDocument
-	if _, err := currentDocument(path, 256<<10, &node); err != nil || node.Version != CurrentPublicVersion {
+	nodeRaw, err := currentDocument(path, 256<<10, &node)
+	if err != nil || node.Version != CurrentPublicVersion {
 		return nil, errS3AConfig
+	}
+	floorsPath, err := currentCustodyPath(node.FloorsFile)
+	if err != nil {
+		return nil, err
 	}
 	var genesis currentGenesisDocument
 	raw, err := currentDocument(node.GenesisFile, MaxImageBytes+256<<10, &genesis)
@@ -169,7 +177,28 @@ func LoadCurrentProvisioning(path string) (*CurrentProvisioning, error) {
 		return nil, errS3AConfig
 	}
 	profile := CurrentProfile{CurrentPublicVersion, genesis.Domain, genesis.Cohort, genesis.Generation, trust.scope, genesis.TimeProfile, c.Membership.Profile.Digest(), state.configuration.Digest()}
-	return &CurrentProvisioning{c, node.OriginKeyFile, node.FloorsFile, node.ListenAddress, profile}, nil
+	paths := []string{path, node.GenesisFile, node.Membership.KeyFile, node.Membership.ManifestFile,
+		node.Identity.Roots, node.Identity.Certificate, node.Identity.TLSKey, node.Identity.VotingKey}
+	if node.OriginKeyFile != "" {
+		paths = append(paths, node.OriginKeyFile)
+	}
+	for _, family := range []string{c.Participant.PPath, c.Participant.BPath, c.Membership.Path} {
+		paths = append(paths, family, family+".tip", family+".lease")
+	}
+	for i := range paths {
+		paths[i], err = currentCustodyPath(paths[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	binding := s2cHash("current-custody-v1", struct {
+		Node, Genesis [32]byte
+		Paths         []string
+		Floors        string
+	}{sha256.Sum256(nodeRaw), node.GenesisSHA256, paths, floorsPath})
+	return &CurrentProvisioning{config: c, originKey: node.OriginKeyFile, floors: floorsPath,
+		listen: node.ListenAddress, profile: profile, source: path,
+		binding: binding, paths: paths}, nil
 }
 
 func (p *CurrentProvisioning) Profile() CurrentProfile {
@@ -182,20 +211,21 @@ func (p *CurrentProvisioning) Profile() CurrentProfile {
 // OpenCurrentAuthority uses only the production native constructor. Its private
 // listener starts before public readiness; quorum absence never falls back to
 // OFF or a fixed writer. The owner joins listener/workers/producers on Close.
-func OpenCurrentAuthority(ctx context.Context, p *CurrentProvisioning, mode, browserOrigin string) (*CurrentAuthority, error) {
+func OpenCurrentAuthority(ctx context.Context, p *CurrentProvisioning, mode, browserOrigin string) (_ *CurrentAuthority, err error) {
 	if p == nil || p.config.Participant.Trust == nil || p.profile.Version != CurrentPublicVersion || mode != "fresh" && mode != "resume" {
 		return nil, errS3AConfig
 	}
-	floors := s3aFloors{}
-	if mode == "resume" {
-		if _, err := currentDocument(p.floors, 16<<10, &floors); err != nil || floors.M.Binding != p.profile.Membership || floors.M.Version == 0 ||
-			floors.P.Scope == [32]byte{} || floors.P.Index == 0 || floors.B.ScopeDigest == [32]byte{} || floors.B.LocalIndex == 0 {
-			return nil, errS3AConfig
-		}
-	} else if p.floors != "" {
-		return nil, errS3AConfig
+	p, custody, floors, err := openCurrentCustody(p, mode)
+	if err != nil {
+		return nil, err
 	}
-	o, err := openCurrentAuthorityOwner(ctx, p.config, p.originKey, browserOrigin, mode == "fresh", floors)
+	transferred := false
+	defer func() {
+		if !transferred {
+			err = errors.Join(err, custody.close())
+		}
+	}()
+	o, err := openCurrentAuthorityOwnerWithCustody(ctx, p.config, p.originKey, browserOrigin, mode == "fresh", floors, custody)
 	if err != nil {
 		return nil, err
 	}
@@ -206,19 +236,14 @@ func OpenCurrentAuthority(ctx context.Context, p *CurrentProvisioning, mode, bro
 	if err = o.network.Start(listener); err != nil {
 		return nil, errors.Join(err, listener.Close(), o.network.Close())
 	}
-	return &CurrentAuthority{origin: o}, nil
+	transferred = true
+	return &CurrentAuthority{origin: o, custody: custody}, nil
 }
 
+// Close aborts ownership without declaring a normal restart checkpoint. Wire
+// uses it for failed initialization; Shutdown is the explicit orderly path.
 func (o *CurrentAuthority) Close() error {
-	if o == nil || o.origin == nil {
-		return nil
-	}
-	err := o.origin.network.Close()
-	o.observations.mu.Lock()
-	clear(o.observations.items)
-	o.observations.order = nil
-	o.observations.mu.Unlock()
-	return err
+	return o.finish(false)
 }
 
 func (o *CurrentAuthority) TimeBounds() (time.Time, time.Time, error) {
@@ -262,8 +287,8 @@ func (o *CurrentAuthority) Ready(ctx context.Context) bool {
 	return err == nil && !time.Unix(0, int64(now.utc.low)).Before(start) && time.Unix(0, int64(now.utc.high)).Before(expiry)
 }
 
-// ExportFloors returns only independent minimum-cut data, never a resume
-// capability. Operators retain it beside the provisioned genesis and identity.
+// ExportFloors returns a live minimum-cut observation, never a resume capability
+// or a final shutdown checkpoint. Shutdown owns durable floor custody.
 func (o *CurrentAuthority) ExportFloors() ([]byte, error) {
 	if o == nil || o.origin == nil || !o.origin.network.enterCall() {
 		return nil, ErrAuthorityUnavailable

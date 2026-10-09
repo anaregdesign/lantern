@@ -87,7 +87,9 @@ func TestCurrentPublicOutputCreditBeforeHandler(t *testing.T) {
 	if p.active != 0 || p.connections[connections[0].conn] != nil {
 		t.Fatal("request/connection credit leaked")
 	}
-	p.stop()
+	if err := p.stop(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := p.reserve(connections[1], req); err == nil {
 		t.Fatal("owner Close accepted new request")
 	}

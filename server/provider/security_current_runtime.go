@@ -92,8 +92,8 @@ func (r *SecurityRuntime) readCurrentManagementAuthorization(ctx context.Context
 }
 
 // ExportCurrentAuthorityFloors returns the owner's minimum-cut document for
-// independent operator custody before an intact resume. It is a local lifecycle
-// API, not an HTTP route or an authority/backup-restore capability.
+// observation. It is not a final shutdown cut and does not publish custody.
+// Shutdown owns the durable restart checkpoint; no HTTP floor API is exposed.
 func (r *SecurityRuntime) ExportCurrentAuthorityFloors() ([]byte, error) {
 	if r == nil || r.current == nil {
 		return nil, security.ErrAuthorityUnavailable

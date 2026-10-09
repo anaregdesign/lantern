@@ -66,21 +66,25 @@ func (p *PeerPlaneServer) Run(ctx context.Context) error {
 	}
 	owned, cancelOwned := context.WithCancel(ctx)
 	defer cancelOwned()
-	stopped := make(chan struct{})
+	stopped := make(chan error, 1)
 	go func() {
-		defer close(stopped)
 		<-owned.Done()
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if p.server.Shutdown(stopCtx) != nil {
-			_ = p.server.Close()
+		err := p.server.Shutdown(stopCtx)
+		if err != nil {
+			err = errors.Join(err, p.server.Close())
 		}
+		stopped <- err
 	}()
 	err := p.server.ServeTLS(p.listener, "", "")
-	cancelOwned()
-	<-stopped
 	if errors.Is(err, http.ErrServerClosed) {
-		return nil
+		if ctx.Err() == nil {
+			err = errors.New("private listener stopped without shutdown request")
+		} else {
+			err = nil
+		}
 	}
-	return err
+	cancelOwned()
+	return errors.Join(err, <-stopped)
 }
