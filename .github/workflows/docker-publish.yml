@@ -39,7 +39,7 @@ jobs:
         continue-on-error: true
         uses: actions/setup-go@v7
         with:
-          go-version: '1.27.0'
+          go-version: '1.27.2'
           check-latest: true
 
       - name: Verify checked-out tag SHA
@@ -282,7 +282,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.27.0'
+          go-version: '1.27.2'
           check-latest: true
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
