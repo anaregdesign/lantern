@@ -122,7 +122,8 @@ The existing five-second RPC deadlines and TLS/authentication assertions are
 unchanged. A deadline or assertion failure is blocking; the transport harness
 does not retry any failed attempt.
 
-`scripts/ios_diagnostics.py` observes only the launched Runner PID and persists
+`scripts/ios_diagnostics.py` attaches an owned `simctl launch --console` reader
+before the Runner starts, verifies its exact bundle/PID acknowledgement, and persists
 sanitized events while the existing host observer polls. Sticky failure state
 survives noisy log rotation and an interrupted outer step. Each retained file is
 bounded to 256 KiB; the fixed artifact set remains below 2 MiB. Raw Simulator

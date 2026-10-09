@@ -3,6 +3,7 @@ import io
 import json
 import os
 import signal
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -213,6 +214,104 @@ class IOSDiagnosticsTest(unittest.TestCase):
         self.assertEqual(result, {"unavailable": True, "errno": 2})
         self.assertNotIn("SECRET", (self.output / "app-collection.json").read_text())
         self.assertEqual(diagnostics.classify(diagnostics.load_state(self.output), 1), "probe_incomplete")
+
+    def console_attempt(self, name, lines):
+        output = self.root / name
+        output.mkdir()
+        diagnostics.write_json(output / "state.json", {"phase": "launching", "transport": "grpc"})
+        script = self.root / (name + ".py")
+        script.write_text(
+            "import sys\n"
+            "assert sys.argv[1:] == ['simctl', 'launch', '--console', '--terminate-running-process', 'fixture-device', 'com.example.probe']\n"
+            f"print({chr(10).join(lines)!r}, flush=True)\n"
+        )
+        diagnostics.launch_console(output, "fixture-device", "com.example.probe",
+                                   [sys.executable, str(script)])
+        return output
+
+    def test_console_capture_preserves_the_existing_blocking_verdicts(self):
+        success = self.marker(event(kind="result", state="success", scenario="marker"))
+        negative = self.marker(event(scenario="wrong_host", state="expected_failure"))
+        cases = (
+            ("success", [negative, success], 0, "success"),
+            ("missing_terminal", [negative], 0, "probe_incomplete"),
+            ("host_failure", [success], 1, "wire_observer_failure"),
+            ("rpc_failure", [self.marker(event()), success], 0, "rpc_failure"),
+            ("assertion", [self.marker(event(kind="result", code="assertion")), success], 0, "application_failure"),
+            ("runtime", ["Unhandled Exception: SECRET", success], 0, "application_failure"),
+        )
+        for name, events, status, expected in cases:
+            with self.subTest(name=name):
+                # Include an event before the PID acknowledgement: attaching
+                # the console must not lose the first application failure.
+                output = self.console_attempt(name, [events[0], "com.example.probe: 66208", *events[1:]])
+                self.assertEqual(diagnostics.await_console_launch(output, timeout=0.2), 0)
+                with mock.patch.object(diagnostics, "observe_app", side_effect=AssertionError("retrospective query")):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        code = diagnostics.finish(output, "fixture-device", status)
+                result = json.loads((output / "classification.json").read_text())
+                self.assertEqual(result["classification"], expected)
+                self.assertEqual(code, 0 if expected == "success" else 1)
+                self.assertFalse(result["retry_eligible"])
+                self.assertNotIn("SECRET", "".join(p.read_text() for p in output.iterdir()))
+                with self.assertRaises(ValueError):
+                    diagnostics.launch_console(output, "fixture-device", "com.example.probe")
+
+    def test_console_requires_its_exact_launch_ack_and_filters_noisy_output(self):
+        output = self.console_attempt("no_ack", ["com.other.probe: 66208", "SECRET" * 20000])
+        self.assertEqual(diagnostics.await_console_launch(output, timeout=0.2), 1)
+        self.assertNotIn("pid", diagnostics.load_state(output))
+        result = json.loads((output / "console-collection.json").read_text())
+        self.assertEqual(result["oversized_lines_omitted"], 1)
+        self.assertNotIn("SECRET", "".join(p.read_text() for p in output.iterdir()))
+
+    def test_live_console_settles_terminal_event_before_stopping_owned_reader(self):
+        for result_state in ("success", "failure"):
+            with self.subTest(result_state=result_state):
+                self.live_console_terminal(result_state)
+
+    def live_console_terminal(self, result_state):
+        output = self.root / ("live-" + result_state)
+        output.mkdir()
+        diagnostics.write_json(output / "state.json", {"phase": "launching", "transport": "grpc"})
+        release = self.root / ("release-" + result_state)
+        script = self.root / ("live_console_" + result_state + ".py")
+        terminal = self.marker(event(kind="result", state=result_state, scenario="marker"))
+        script.write_text(
+            "import os,time\nfrom pathlib import Path\n"
+            "print(f'com.example.probe: {os.getpid()}', flush=True)\n"
+            f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+            f"print({terminal!r}, flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        worker = subprocess.Popen([sys.executable, "-c",
+            f"import sys; sys.path.insert(0, {str(Path(diagnostics.__file__).parent)!r}); "
+            "from pathlib import Path; import ios_diagnostics as d; "
+            f"d.launch_console(Path({str(output)!r}), 'fixture-device', 'com.example.probe', "
+            f"[{sys.executable!r}, {str(script)!r}])"])
+        unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertEqual(diagnostics.await_console_launch(output, timeout=5), 0)
+            reader_pid = diagnostics.load_state(output)["pid"]
+            self.assertFalse(diagnostics.load_state(output).get("terminal_success", False))
+            release.write_text("release\n")
+            diagnostics.settle_console(output, 0, timeout=5)
+            self.assertTrue(diagnostics.load_state(output).get("terminal_" + result_state))
+            worker.terminate()
+            self.assertEqual(worker.wait(timeout=5), 0)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(reader_pid, 0)
+            self.assertIsNone(unrelated.poll())
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(diagnostics.finish(output, "fixture-device", 0),
+                                 0 if result_state == "success" else 1)
+            summary = json.loads((output / "classification.json").read_text())
+            self.assertFalse(summary["retry_eligible"])
+        finally:
+            for process in (worker, unrelated):
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=5)
 
     def test_server_diagnostics_retain_only_safe_fields_with_fixed_bounds(self):
         source = self.root / "server.log"

@@ -49,6 +49,7 @@ finish_mobile() {
   set +e
   if [[ ${LANTERN_PROBE_DRIVER:-flutter-test} == simctl ]]; then
     if [[ -n $diagnostic_pid ]]; then
+      python3 "$diagnostic_tool" settle-console "$diagnostics" --exit-code "$status"
       kill -TERM "$diagnostic_pid" 2>/dev/null
       wait "$diagnostic_pid"
     fi
@@ -131,15 +132,13 @@ if [[ ${LANTERN_PROBE_DRIVER:-flutter-test} == simctl ]]; then
   python3 "$diagnostic_tool" phase "$diagnostics" --phase installing
   xcrun simctl install "$device" "$ios_app"
   python3 "$diagnostic_tool" phase "$diagnostics" --phase launching
-  launch=$(xcrun simctl launch --terminate-running-process "$device" "$bundle_id")
-  pid=${launch##*: }
-  if [[ ! $pid =~ ^[0-9]+$ ]]; then
-    echo 'iOS launch did not return a Runner PID' >&2
-    exit 1
-  fi
-  python3 "$diagnostic_tool" phase "$diagnostics" --phase observing --pid "$pid"
-  python3 "$diagnostic_tool" watch "$diagnostics" --device "$device" &
+  # Attach before launch so terminal evidence does not depend on retrospective
+  # Simulator log queries. The reader filters and bounds output before retaining
+  # it, owns one console process, and never retries application work.
+  python3 "$diagnostic_tool" launch-console "$diagnostics" \
+    --device "$device" --bundle "$bundle_id" &
   diagnostic_pid=$!
+  python3 "$diagnostic_tool" await-console-launch "$diagnostics"
 
   count_url="${tls_url%/}/graph.v1.LanternService/CountVerticesByPrefix"
   success_prefix="probe/$transport/ios-success/"
