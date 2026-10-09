@@ -181,6 +181,9 @@ func s2cVerifyPurpose(h s2cHistoricalHeader, operation OperationIdentity) bool {
 // Parsing and signature validation never sample current time. Expiry governs
 // the original consume only, so an exact preexpiry H can finish after expiry.
 func verifyHistoricalH(t *s2cTrust, encoded []byte) (*s2cHistoricalH, error) {
+	if bytes.HasPrefix(encoded, []byte(authorityHistoricalMagic)) {
+		return verifyAuthorityHistoricalH(t, encoded)
+	}
 	if t == nil || uint64(len(encoded)) > t.bounds.HistoricalBytes || len(encoded) < len(s2cHistoricalMagic)+8+ed25519.SignatureSize || !bytes.HasPrefix(encoded, []byte(s2cHistoricalMagic)) {
 		return nil, errS2CHistorical
 	}
@@ -206,7 +209,7 @@ func verifyHistoricalH(t *s2cTrust, encoded []byte) (*s2cHistoricalH, error) {
 		return nil, errS2CHistorical
 	}
 	o, known := t.origin(h.OriginID)
-	if !known || h.OriginDigest != t.originDigests[o.ID] || h.Incarnation != o.Incarnation || !ed25519.Verify(ed25519.PublicKey(o.PublicKey[:]), encoded[:len(encoded)-ed25519.SignatureSize], reader.remaining) {
+	if !known || o.Profile.Version != s2cVersion || h.OriginDigest != t.originDigests[o.ID] || h.Incarnation != o.Incarnation || !ed25519.Verify(ed25519.PublicKey(o.PublicKey[:]), encoded[:len(encoded)-ed25519.SignatureSize], reader.remaining) {
 		return nil, errS2CHistorical
 	}
 	const prefix = "lantern/security/s1/operation\x00"

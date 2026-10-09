@@ -1,6 +1,12 @@
 package security
 
-import "encoding/binary"
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // Shared deterministic facts. These assumptions are test inputs, not an
 // admission of the actual Mac oscillator, Apple source or Internet path.
@@ -25,4 +31,33 @@ func fakeAuthorityNTPResponse(nonce [8]byte) [48]byte {
 	binary.BigEndian.PutUint64(response[32:40], uint64(4_000_000_000)<<32)
 	binary.BigEndian.PutUint64(response[40:48], uint64(4_000_000_000)<<32)
 	return response
+}
+
+func fakeAuthorityTimeOwner(t *testing.T) (*authorityTimeOwner, *atomic.Uint64) {
+	t.Helper()
+	ticks := new(atomic.Uint64)
+	ticks.Store(100_000_000)
+	source, _ := parseAuthorityTimeSource([]byte("server time.asia.apple.com"))
+	p := &authorityTimeProducer{source: source, sample: func() (authorityTimeStamp, error) { return fakeAuthorityTimeStamp(ticks.Load()), nil }}
+	o := &authorityTimeOwner{producer: p, premises: authorityOperationalTimePremises(), profile: sha256.Sum256([]byte(authorityTimeProfileDescription))}
+	nonce := [8]byte{1}
+	raw := fakeAuthorityNTPResponse(nonce)
+	packet, err := parseAuthorityNTP(raw[:], nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := authorityTimeMeasurement{source: source, sent: fakeAuthorityTimeStamp(0), received: fakeAuthorityTimeStamp(ticks.Load()), packet: packet, sequence: 1}
+	if err = o.installLocked(m); err != nil {
+		t.Fatal(err)
+	}
+	return o, ticks
+}
+
+func fakeAuthorityTimeOwnerAt(t *testing.T, utc time.Time) (*authorityTimeOwner, *atomic.Uint64) {
+	t.Helper()
+	o, ticks := fakeAuthorityTimeOwner(t)
+	// Deliberate interval fixture for TLS/current-authority unit tests; this
+	// is not the separate native raw-producer qualification campaign.
+	o.anchor.utc = authorityTimeRange{uint64(utc.Add(-10 * time.Millisecond).UnixNano()), uint64(utc.Add(10 * time.Millisecond).UnixNano())}
+	return o, ticks
 }

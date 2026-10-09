@@ -70,6 +70,10 @@ func (o *s3aOwner) Start(listener net.Listener) error {
 			o.fail()
 		}
 	}()
+	if o.receiver != nil {
+		o.workers.Add(1)
+		go o.renewalsLoop()
+	}
 	return nil
 }
 
@@ -139,12 +143,14 @@ func (o *s3aOwner) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusForbidden)
 		return
 	}
-	select {
-	case o.inbound[sender] <- struct{}{}:
-		defer func() { <-o.inbound[sender] }()
-	default:
-		fail(http.StatusServiceUnavailable)
-		return
+	if r.URL.Path != authorityRenewalPath {
+		select {
+		case o.inbound[sender] <- struct{}{}:
+			defer func() { <-o.inbound[sender] }()
+		default:
+			fail(http.StatusServiceUnavailable)
+			return
+		}
 	}
 	check := func() error {
 		if err := o.check(r.Context()); err != nil {
@@ -154,6 +160,21 @@ func (o *s3aOwner) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var response []byte
 	switch r.URL.Path {
+	case authorityRenewalPath:
+		if o.receiver == nil || r.ContentLength > int64(authorityRenewalRequestLimit) {
+			fail(http.StatusForbidden)
+			return
+		}
+		raw, err := s3aReadBody(r.Body, uint64(authorityRenewalRequestLimit))
+		if err != nil {
+			fail(http.StatusBadRequest)
+			return
+		}
+		response, err = o.renewalVote(r.Context(), sender, raw, check)
+		if err != nil {
+			fail(http.StatusServiceUnavailable)
+			return
+		}
 	case s3aMessagePath:
 		if r.ContentLength > int64(o.frameBytes()) {
 			fail(http.StatusRequestEntityTooLarge)

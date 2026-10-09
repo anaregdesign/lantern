@@ -117,6 +117,9 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 	if t.store.controlBinding != nil {
 		transport.MaxResponseHeaderBytes = 64 << 10
 	}
+	if t.store.timeBounds != nil {
+		transport.TLSClientConfig.Time = t.store.options.Now
+	}
 	request = request.Clone(ctx)
 	request.Header = request.Header.Clone()
 	header, digest := t.store.wireProfile()

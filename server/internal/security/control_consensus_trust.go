@@ -46,6 +46,9 @@ type s2cAdmissionProfile struct {
 }
 
 func (p s2cAdmissionProfile) valid() bool {
+	if p.Version == authorityAdmissionVersion {
+		return p == authorityAdmissionProfile()
+	}
 	return p.Version == s2cVersion && (p.BrowserCode || p.HumanBearer) && p.CredentialContract != [32]byte{} && p.ConsumeContract != [32]byte{} && p.PurposeContract != [32]byte{}
 }
 
@@ -57,6 +60,9 @@ type s2cOriginDescriptor struct {
 	PublicKey   [32]byte
 	Incarnation [16]byte
 	Profile     s2cAdmissionProfile
+	// Absent in the historical v1 encoding. Current profiles independently pin
+	// one retry namespace; local requests cannot supply a replacement namespace.
+	Namespace uint64 `json:",omitempty"`
 }
 
 type s2cBootstrap struct {
@@ -140,9 +146,26 @@ func newS2CTrust(b s2cBootstrap) (*s2cTrust, error) {
 	c := g.projection.cut
 	basic := s2cBasicScope{c.Domain, c.Cohort, c.Generation, c.Fences}
 	keys := make(map[[32]byte]bool, len(t.origins))
+	namespaces := make(map[uint64]bool, len(t.origins))
 	for i, o := range t.origins {
 		_, member := t.member(o.Member)
 		if o.ID == 0 || !member || !s2cValidPublicKey(o.PublicKey) || o.Incarnation == [16]byte{} || !o.Profile.valid() || keys[o.PublicKey] || i > 0 && t.origins[i-1].ID >= o.ID {
+			return nil, errS2CTrust
+		}
+		if o.Profile.Version != t.origins[0].Profile.Version {
+			return nil, errS2CTrust
+		}
+		if o.Profile.Version == authorityAdmissionVersion {
+			if o.Namespace == 0 || namespaces[o.Namespace] || o.Namespace <= g.retiredThrough {
+				return nil, errS2CTrust
+			}
+			for _, m := range t.members {
+				if m.PublicKey == o.PublicKey {
+					return nil, errS2CTrust
+				}
+			}
+			namespaces[o.Namespace] = true
+		} else if o.Namespace != 0 {
 			return nil, errS2CTrust
 		}
 		keys[o.PublicKey] = true

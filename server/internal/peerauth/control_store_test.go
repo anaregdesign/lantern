@@ -10,6 +10,48 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 )
 
+func TestControlStoreUsesWholeTimeInterval(t *testing.T) {
+	m, key, opts, now := controlFixture(t)
+	low, high := *now, now.Add(time.Second)
+	var sourceErr error
+	opts.TimeBounds = func() (time.Time, time.Time, error) { return low, high, sourceErr }
+	s, err := CreateControlStore(opts, signControlFixture(t, m, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Check(t.Context()) != nil {
+		t.Fatal("valid interval rejected")
+	}
+	low = m.IssuedAt.Add(-time.Nanosecond)
+	if s.Check(t.Context()) == nil {
+		t.Fatal("upper endpoint substituted for not-before")
+	}
+	low = m.IssuedAt
+	high = high.Add(-time.Millisecond)
+	if s.Check(t.Context()) != nil || s.FaultReason() != "none" {
+		t.Fatal("tighter interval mislabeled as clock rollback")
+	}
+	sourceErr = errors.New("source unavailable")
+	if s.Check(t.Context()) == nil || s.FaultReason() != "none" {
+		t.Fatal("source loss ignored or membership permanently poisoned")
+	}
+	sourceErr = nil
+	if s.Check(t.Context()) != nil {
+		t.Fatal("fresh source recovery refused")
+	}
+	high = m.ExpiresAt.Add(-ClockMargin)
+	if s.Check(t.Context()) == nil {
+		t.Fatal("expiry equality accepted")
+	}
+	m.Version++
+	m.IssuedAt = high.Add(-time.Second)
+	m.ExpiresAt = high.Add(time.Minute)
+	if s.Apply(signControlFixture(t, m, key)) == nil {
+		t.Fatal("refresh ignored low endpoint")
+	}
+}
+
 func TestControlStoreRefreshFenceAndIndependentFloor(t *testing.T) {
 	m, key, opts, _ := controlFixture(t)
 	raw := signControlFixture(t, m, key)
