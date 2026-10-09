@@ -109,14 +109,23 @@ func TestNativeListenerLaunchLifecycle(t *testing.T) {
 						}
 						result.CAFile = foreign.CAFile
 					}
-					ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+					// Readiness belongs to the same bounded launch, not a separate
+					// two-second startup SLA under concurrent package execution.
+					// Keep the deliberately failing TLS probe independently bounded.
+					deadline := launch.deadline
+					if phase == "failed_tls_readiness" {
+						deadline = time.Now().Add(2 * time.Second)
+					}
+					ctx, cancel := context.WithDeadline(t.Context(), deadline)
 					err = waitFixtureReady(ctx, result, []*fixtureProcess{launch.process})
 					cancel()
 					if phase == "failed_tls_readiness" && err == nil {
 						t.Fatal("unverified TLS became ready")
 					}
 					if phase == "certified_tls_then_eof" && err != nil {
-						t.Fatal("verified native mTLS readiness", err)
+						var diagnostic bytes.Buffer
+						writeFixtureFailure(&diagnostic, &fixtureFailure{stage: "readiness", cause: err})
+						t.Fatalf("verified native mTLS readiness: %v; %s", err, diagnostic.String())
 					}
 				}
 			}

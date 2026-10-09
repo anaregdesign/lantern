@@ -3,55 +3,22 @@ package security
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"io"
 	"math"
-	"os"
 	"runtime"
 	"sync"
 
 	"golang.org/x/sys/unix"
 )
 
-// Only this native constructor is available to production composition. The
-// existing public runtime and the data-domain HLC remain unchanged.
-func newNativeAuthorityTimeOwner() (*authorityTimeOwner, error) {
+func newNativeAuthorityTimeSampler() (func() (authorityTimeStamp, error), error) {
 	if runtime.GOARCH != "arm64" {
 		return nil, errAuthorityTime
 	}
-	producer, err := newNativeAuthorityTimeProducer()
-	if err != nil {
-		return nil, err
-	}
-	if producer.source.host != "time.asia.apple.com" {
-		producer.close()
-		return nil, errAuthorityTime
-	}
-	return startAuthorityTimeOwner(producer), nil
+	return newDarwinAuthorityTimeSampler()
 }
 
 // Darwin CLOCK_MONOTONIC_RAW uses mach_continuous_time and includes sleep.
 // That API property is not a rate bound or a resume-health certification.
-func newNativeAuthorityTimeProducer() (*authorityTimeProducer, error) {
-	f, err := os.Open("/etc/ntp.conf")
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	config, err := io.ReadAll(io.LimitReader(f, 4097))
-	if err != nil {
-		return nil, err
-	}
-	source, err := parseAuthorityTimeSource(config)
-	if err != nil {
-		return nil, err
-	}
-	sample, err := newDarwinAuthorityTimeSampler()
-	if err != nil {
-		return nil, err
-	}
-	return &authorityTimeProducer{source: source, sample: sample}, nil
-}
-
 func newDarwinAuthorityTimeSampler() (func() (authorityTimeStamp, error), error) {
 	boot, err := unix.Sysctl("kern.bootsessionuuid")
 	if err != nil || boot == "" {

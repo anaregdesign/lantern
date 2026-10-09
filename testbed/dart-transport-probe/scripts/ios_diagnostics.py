@@ -2,6 +2,7 @@
 """Retain content-free iOS transport evidence; never retry a failed probe."""
 
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -117,9 +118,26 @@ class AppEvidence:
         write_json(self.root / "state.json", self.state)
 
 
-def read_lines(command, consume, timeout=10):
+def read_lines(command, consume, timeout=10, stop_requested=None, *, terminal=False):
     """Bound time, line memory and retained output; kill only this owned reader."""
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    if terminal:
+        # simctl buffers its launch acknowledgement when stdout is a pipe.
+        # Attach simctl itself to our PTY; --console-pty alone only changes the
+        # application's transport and still leaves simctl's acknowledgement buffered.
+        import pty
+        master, slave = pty.openpty()
+        stream = os.fdopen(master, "rb", buffering=0)
+        try:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=slave,
+                                       stderr=slave, start_new_session=True)
+        except BaseException:
+            stream.close()
+            raise
+        finally:
+            os.close(slave)
+    else:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+        stream = process.stdout
     selector = None
     pending = bytearray()
     discarding = False
@@ -128,13 +146,20 @@ def read_lines(command, consume, timeout=10):
     timed_out = False
     try:
         selector = selectors.DefaultSelector()
-        selector.register(process.stdout, selectors.EVENT_READ)
+        selector.register(stream, selectors.EVENT_READ)
         while selector.get_map():
+            if stop_requested is not None and stop_requested():
+                break
             if time.monotonic() >= deadline:
                 timed_out = True
                 break
             for key, _ in selector.select(min(0.1, max(0, deadline - time.monotonic()))):
-                chunk = os.read(key.fd, 65536)
+                try:
+                    chunk = os.read(key.fd, 65536)
+                except OSError as error:
+                    if not terminal or error.errno != errno.EIO:
+                        raise
+                    chunk = b""  # An owned PTY reports EOF as EIO on some hosts.
                 if not chunk:
                     selector.unregister(key.fileobj)
                     if pending and not discarding:
@@ -172,8 +197,74 @@ def read_lines(command, consume, timeout=10):
                 pass
             process.wait()
         finally:
-            process.stdout.close()
+            stream.close()
     return {"exit_code": process.returncode, "timed_out": timed_out, "oversized_lines_omitted": omitted}
+
+
+def launch_console(root, device, bundle, xcrun="xcrun", timeout=900):
+    """Capture only the app launched by this owned console, before it can run."""
+    evidence = AppEvidence(root)
+    if "capture" in evidence.state or "pid" in evidence.state:
+        raise ValueError("console launch requires a fresh attempt")
+    evidence.state.update(capture="console", phase="launching")
+    write_json(root / "state.json", evidence.state)
+    stopped = False
+
+    def stop(_signum, _frame):
+        nonlocal stopped
+        stopped = True
+
+    previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    launched = re.compile(re.escape(bundle) + r": ([1-9][0-9]{0,9})\Z")
+
+    def consume(line):
+        match = launched.fullmatch(line.strip())
+        if match:
+            pid = int(match[1])
+            if evidence.state.get("pid", pid) != pid:
+                evidence.state["runtime_failure"] = True
+            evidence.state.update(pid=pid, phase="observing")
+            write_json(root / "state.json", evidence.state)
+        else:
+            evidence.line(line)
+
+    executable = [xcrun] if isinstance(xcrun, str) else xcrun
+    try:
+        result = read_lines([*executable, "simctl", "launch", "--console",
+                             "--terminate-running-process", device, bundle],
+                            consume, timeout, lambda: stopped, terminal=True)
+    except OSError as error:
+        result = {"unavailable": True, "errno": error.errno}
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+    write_json(root / "console-collection.json", result)
+
+
+def await_console_launch(root, timeout=900):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = load_state(root)
+        if (state.get("capture") == "console" and type(state.get("pid")) is int
+                and state["pid"] > 0 and state.get("phase") == "observing"):
+            return 0
+        if (root / "console-collection.json").exists():
+            return 1
+        time.sleep(0.1)
+    return 1
+
+
+def settle_console(root, exit_code, timeout=10):
+    # The marker vertex precedes owned RPC/channel cleanup. Keep the existing
+    # terminal-event requirement and allowance, with the console still attached.
+    deadline = time.monotonic() + (timeout if exit_code == 0 else 0)
+    while time.monotonic() < deadline:
+        state = load_state(root)
+        if (any(state.get(key) for key in ("terminal_success", "terminal_failure",
+                                         "rpc_failure", "runtime_failure"))
+                or (root / "console-collection.json").exists()):
+            break
+        time.sleep(0.1)
 
 
 def observe_app(root, device, xcrun="xcrun"):
@@ -238,10 +329,13 @@ def finish(root, device, exit_code, xcrun="xcrun"):
     # not rerun any application operation or forgive an RPC/assertion failure.
     deadline = time.monotonic() + (10 if exit_code == 0 else 0)
     while True:
-        observe_app(root, device, xcrun)
+        # The shell settles, stops and joins its live console before finalizing.
+        # Never replace missing terminal evidence with host-marker success.
+        if load_state(root).get("capture") != "console":
+            observe_app(root, device, xcrun)
         state = load_state(root)
         result = classify(state, exit_code)
-        if result != "probe_incomplete" or time.monotonic() >= deadline:
+        if state.get("capture") == "console" or result != "probe_incomplete" or time.monotonic() >= deadline:
             break
         time.sleep(0.25)
     summary = summarize(state, exit_code)
@@ -290,12 +384,13 @@ def server_summary(source, destination):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("init", "phase", "watch", "finish", "servers"))
+    parser.add_argument("command", choices=("init", "phase", "watch", "launch-console", "await-console-launch", "settle-console", "finish", "servers"))
     parser.add_argument("output", type=Path)
     parser.add_argument("--transport", choices=("connect", "grpc"))
     parser.add_argument("--phase", choices=sorted(PHASES))
     parser.add_argument("--pid", type=int)
     parser.add_argument("--device", default="")
+    parser.add_argument("--bundle", default="")
     parser.add_argument("--exit-code", type=int, default=1)
     parser.add_argument("--plain-log", type=Path)
     parser.add_argument("--native-directory", type=Path)
@@ -321,6 +416,14 @@ def main():
         write_json(args.output / "state.json", state)
     elif args.command == "watch":
         watch(args.output, args.device)
+    elif args.command == "launch-console":
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9.-]{1,127}", args.bundle):
+            parser.error("bounded app bundle identifier required")
+        launch_console(args.output, args.device, args.bundle)
+    elif args.command == "await-console-launch":
+        return await_console_launch(args.output)
+    elif args.command == "settle-console":
+        settle_console(args.output, args.exit_code)
     elif args.command == "finish":
         return finish(args.output, args.device, args.exit_code)
     else:

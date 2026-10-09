@@ -13,7 +13,7 @@ import (
 // This fixed profile is conditional on honest conservative source reporting,
 // an intact DNS/UDP time path and a host counter within the admitted envelope.
 // It does not assert authenticated NTP or vendor-certified oscillator bounds.
-const authorityTimeProfileDescription = "lantern/current-authority/time/v1;darwin-arm64;continuous;rate=1000ppm;sample=1000ns;source-host=time.asia.apple.com;source=root-dispersion+nonnegative-root-delay/2+precision+10ms;source-max=1s;rtt-max-exclusive=1s;age-max-exclusive=60s;width-max-exclusive=4s;UTC=[2020,2080);trusted-source-and-path;no-NTP-authentication"
+const authorityTimeProfileDescription = "lantern/current-authority/time/v1;" + authorityTimePlatformProfile + ";rate=1000ppm;sample=1000ns;source-host=time.asia.apple.com;source=root-dispersion+nonnegative-root-delay/2+precision+10ms;source-max=1s;rtt-max-exclusive=1s;age-max-exclusive=60s;width-max-exclusive=4s;UTC=[2020,2080);trusted-source-and-path;no-NTP-authentication"
 
 func authorityOperationalTimePremises() authorityTimePremises {
 	return authorityTimePremises{

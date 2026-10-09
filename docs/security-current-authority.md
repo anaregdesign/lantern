@@ -44,11 +44,18 @@ cessation of new old-cut authorization only after elapsed **lower >= 15 seconds*
 A rejected operation has no successful-revocation claim. This observer does not
 change the old public `globally_enforced` field or promise a last physical byte.
 
-The implemented native adapter is the observed Darwin/arm64 profile:
+The private native factory supports distinct Darwin/arm64 and Linux/amd64/arm64
+profiles. The Linux target is a normal container with a continuously running
+host/guest kernel. Neither physical host sleep/suspend with live resume nor VM
+snapshot/rollback/clone/live migration is supported. Container pause/unpause,
+scheduler delays and CPU throttling remain in scope. These are conditional
+operating profiles, not kernel or hardware certification.
 
 | Input | Fixed conditional bound |
 | --- | --- |
-| Counter | `CLOCK_MONOTONIC_RAW` / `mach_continuous_time`; `kern.bootsessionuuid` plus a random process nonce; sampled regression or epoch change closes use |
+| Darwin counter/epoch | `CLOCK_MONOTONIC_RAW` / `mach_continuous_time`; `kern.bootsessionuuid` plus a fresh owner/process nonce |
+| Linux counter/epoch | `CLOCK_MONOTONIC_RAW`; bounded canonical `/proc/sys/kernel/random/boot_id`; fresh owner/process nonce; fixed zero-offset time namespace |
+| Native failures | Missing/malformed metadata, syscall error, counter overflow/regression or changed boot/namespace fail-stop the sampler; no wall-clock fallback |
 | Admitted rate/read error | 1000 ppm and 1000 ns; operational assumptions, not an independently certified oscillator guarantee |
 | Source | Exactly the existing `/etc/ntp.conf` host `time.asia.apple.com`; no OS time/configuration writes |
 | Source/path premise | Honest conservative upstream reports and intact DNS/UDP path; **unauthenticated NTP**, not resistance to forged time packets |
@@ -68,6 +75,33 @@ Every new use samples the native counter and propagates the interval locally;
 no per-output NTP request occurs. Source loss, uncertainty, overflow and unknown
 or changed epoch refuse new use. An unsupported native target has no Go wall-clock
 fallback. This does not change the existing product's platform support.
+
+Linux `CLOCK_MONOTONIC_RAW` follows the underlying clocksource without NTP
+frequency discipline and excludes host suspend. It continues while container
+processes are frozen, provided the kernel/VM clock continues. The admitted
+1000 ppm rate and 1000 ns sample error are explicit requirements on that chosen
+host/guest clocksource; the API name, one measurement and Docker do not establish
+those limits. Detected contradictory source intervals or sampled clock faults
+close use. Undetected common clock/source failure is outside these premises.
+See the [kernel timekeeping contract](https://www.kernel.org/doc/html/latest/core-api/timekeeping.html).
+
+The Linux sampler pins each observation to one OS thread and compares its time
+namespace with the process leader's current and child namespaces. All must match
+one fixed identity and expose zero monotonic/boottime offsets. It reads the
+leader's `/proc/self/timens_offsets`, which describes its child namespace.
+A kernel exposing these procfs interfaces and readable boot identity is required;
+missing support refuses. No `setns`, namespace creation, clock write or capability
+is used. The deployment must prohibit time-namespace changes throughout the
+process lifetime; sampling is not an atomic detector for arbitrary privileged
+concurrent namespace manipulation. See [Linux time namespaces](https://man7.org/linux/man-pages/man7/time_namespaces.7.html).
+
+The exact Linux profile description is separate from Darwin's unchanged
+identity. It consequently binds a different admission/trust scope in renewal
+and historical H. A cohort must use one matching profile; this change provides
+no Darwin-to-Linux persistent-family migration or mixed-profile quorum. The
+source configuration is an explicit read-only `/etc/ntp.conf` deployment input,
+not an assumed container image feature. It retains the already selected single
+`time.asia.apple.com` upstream and the existing producer/interval bounds.
 
 Membership, workload TLS and current-profile OIDC HTTPS checks use both UTC
 endpoints. HTTPS response checks cover reused TLS connections too. Existing
@@ -198,8 +232,15 @@ endpoint, profile, boot/process epochs, counters, genuine origin H, Apply,
 intact M/P/B reopen and exact original bytes. This demonstrates the mechanisms
 under the declared source/path/rate assumptions, not universal host/VM safety.
 Failed runs and negative controls remain evidence. No physical OS sleep or OS
-reboot was executed on the user's working Mac. New-epoch refusal and intact
-owner reopen tests do not substitute for target OS reboot/suspend qualification.
+reboot was executed on the user's working Mac. Physical sleep/live resume is
+outside the current scope, and a Mac reboot is not a completion gate. Host reboot
+recovery is conditional on intact persistent state and native kernel/storage
+semantics: all volatile anchors, renewals, purposes and output permits disappear;
+a new process reopens the independently provisioned original genesis, keys,
+M/P/B and minima, then acquires fresh native time and quorum authority. Boot-epoch
+injection checks complement same-volume whole-process recovery. Neither a
+container restart nor a SIGKILL observes power-loss flush behavior or the actual
+host boot sequence.
 Independent review, mandatory full76, CI, exact main integration and final target
 acceptance remain distinct recorded exits.
 
@@ -212,3 +253,59 @@ outside this unit. Shared typed `sys:*` consensus and `data:*` HLC/LWW remain
 distinct; SystemMetadata is the bounded storage/publication boundary. There is
 no arbitrary sys KV, namespace rename or cross-domain atomic transaction, and
 #1668 is unchanged.
+
+
+## Bounded Linux container campaign
+
+`control_container_gate_test.go` and its test-only helper connect the production
+private constructor to three actual TLS owners, genuine OIDC/JWKS credentials,
+original genesis, intact M/P/B, separate identity keys and retained floors.
+The opt-in `.github/scripts/current_authority_container.py` controller uses a
+prebuilt static Linux test binary and an already cached immutable image ID.
+It creates only new labeled task containers, a network and a retained volume;
+workers run as UID/GID 65534 with no capabilities, a read-only root filesystem
+and no Docker socket. Test keys remain in that task volume.
+
+The accepted evidence is split explicitly: five actual configured-source
+production-constructor cases, plus one fixture/native source-loss mechanism
+case. Final-candidate success of the former also supplies actual source/native
+constructor/current/quorum compatibility; no duplicate public-source outage is
+required. A fixture-only pass cannot qualify the production source. Previous
+combined campaign failures remain historical failures.
+
+The six bounded cases are graceful SIGTERM/Close/restart, SIGKILL/recreate on the
+same volume, Docker pause/unpause before and after final output authorization,
+peer outage and controlled time-source loss/recovery. Peer outage closes actual
+newly accepted TCP sockets before TLS on two enrolled listeners; it is a test listener fault,
+not Docker bridge isolation. Time-source loss uses one test-only loopback UDP
+socket that continues reading requests while dropping responses, then replies to fresh requests on the same
+socket. Three separate real Linux samplers/producers feed the unchanged time
+owner run loop and private owners. The fixture supplies a fixed synthetic UTC
+base propagated by its native counter; it is not UTC accuracy evidence and does
+not replace the production source. Production clock injection remains rejected. The fixture records request/response nonces, each actual attempt and retry gap,
+last successful anchors and native elapsed bounds. Successful sequences remain
+unchanged during loss; after holdover each current sample, fresh renewal and
+new Consume refuses. Recovery keeps boot/process identity but requires a new
+measurement/anchor and quorum challenge before Consume/Apply. Native source
+refresh/backoff, credential validity, quorum and interval bounds are unchanged. Explicit test
+hooks disable automatic renewal so an expired challenge cannot be replaced
+before its rejection assertion; successful recovery uses the ordinary real
+quorum path. No injected clock enters the production constructor.
+
+Restart compares exact original H and applied outcome bytes, retains serials
+and floors, rejects old volatile authority, and completes retained pending H
+after its original credential expiry without manufacturing new consent. Fresh
+work needs new native time and renewal and a strictly greater origin serial.
+The bootstrap predates the first journal and is never recovered by treating a
+later replayed state as genesis. Pause cases record authorization separately
+from physical completion: approved A permits the exact preauthorized unit to
+finish late, while another unit requires fresh authority. A transport failure
+is reported separately from a delivered immutable unit.
+
+Volume survival is distinct from durability. These results require the selected
+filesystem/device stack to honor the existing WAL, tip and directory sync
+contract and exclusive custody; they do not certify Docker Desktop volumes
+against physical power loss. Missing, corrupt, conflicting or known-old state
+continues to refuse. Raw attempts and failures are retained; the matrix, review,
+full local gate, CI and exact main receipt remain separate exits. This source
+change alone does not close #1722 or activate S4/#1610.
