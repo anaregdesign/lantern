@@ -53,6 +53,7 @@ type custodyProcessGate struct {
 	controls    []graphv1connect.LanternSecurityServiceClient
 	data        []graphv1connect.LanternServiceClient
 	token       string
+	machine     string
 	originals   []custodyGateOriginal
 	cookies     []*http.Cookie
 	pending     []*http.Cookie
@@ -118,6 +119,11 @@ func TestCurrentCustodyProcessGate(t *testing.T) {
 	defer transport.CloseIdleConnections()
 	httpClient := &http.Client{Transport: transport, Timeout: 6 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	g := &custodyProcessGate{t: t, issuer: f, http: httpClient, token: token}
+	machine, err := os.ReadFile("/provision/machine.token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.machine = string(machine)
 	provisioning := custodyGateProvisioning(t)
 	custodyGateJSON(t, "/control/provision-manifest.json", provisioning)
 	for _, host := range hosts {
@@ -295,6 +301,9 @@ func (g *custodyProcessGate) waitReady(ids ...int) {
 		deadline := time.Now().Add(100 * time.Second)
 		for {
 			if _, err := g.principal(id); err == nil {
+				if _, err := g.controls[id].GetCurrentPrincipal(g.t.Context(), securityWireRequest(g.machine, &pb.GetCurrentPrincipalRequest{})); err != nil {
+					g.t.Fatal("same durable machine credential failed after fresh authority", id+1, err)
+				}
 				break
 			} else if time.Now().After(deadline) {
 				g.t.Fatal("fresh native/current authority did not become ready", id+1, err)
@@ -315,9 +324,9 @@ func (g *custodyProcessGate) requireUnavailable(id int) {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		_, err := g.principal(id)
-		if custodyGateUnavailable(err) {
-			g.t.Log("protected public API refused before quorum/current authority")
+		_, err := g.controls[id].GetCurrentPrincipal(g.t.Context(), securityWireRequest(g.machine, &pb.GetCurrentPrincipalRequest{}))
+		if custodyGateRefusal(err) {
+			g.t.Log("protected public API refused before quorum/current authority", connect.CodeOf(err))
 			return
 		}
 		if err == nil || time.Now().After(deadline) {
@@ -346,10 +355,15 @@ func custodyGateReachableTLS(client *http.Client, endpoint string) bool {
 	return response.StatusCode == http.StatusOK && decodeErr == nil && health.Status != "" && response.TLS != nil && response.TLS.Version == tls.VersionTLS13
 }
 
-func custodyGateUnavailable(err error) bool {
+func custodyGateRefusal(err error) bool {
 	var transport *url.Error
 	var socket *net.OpError
-	return connect.CodeOf(err) == connect.CodeUnavailable && !errors.As(err, &transport) && !errors.As(err, &socket)
+	// The existing public adapter maps the private missing/expired renewal error
+	// to Unauthenticated and ErrAuthorityUnavailable to Unavailable. Both are
+	// actual RPC refusals. The unchanged machine credential is also required to
+	// succeed after authority returns, so a bad credential cannot qualify this.
+	code := connect.CodeOf(err)
+	return (code == connect.CodeUnavailable || code == connect.CodeUnauthenticated) && !errors.As(err, &transport) && !errors.As(err, &socket)
 }
 
 func (g *custodyProcessGate) apply(role string) {
@@ -518,7 +532,7 @@ func TestCurrentCustodyLocalProbe(t *testing.T) {
 			continue
 		}
 		_, err = control.GetCurrentPrincipal(t.Context(), securityWireRequest(string(raw), &pb.GetCurrentPrincipalRequest{}))
-		if custodyGateUnavailable(err) {
+		if custodyGateRefusal(err) {
 			break
 		}
 		if err == nil || time.Now().After(deadline) {
@@ -526,8 +540,8 @@ func TestCurrentCustodyLocalProbe(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if _, err = data.GetVertex(t.Context(), securityWireRequest(string(raw), &pb.GetVertexRequest{Key: "orders:custody-3"})); !custodyGateUnavailable(err) {
+	if _, err = data.GetVertex(t.Context(), securityWireRequest(string(raw), &pb.GetVertexRequest{Key: "orders:custody-3"})); !custodyGateRefusal(err) {
 		t.Fatal("isolated protected data operation not refused", err)
 	}
-	t.Log("actual local public TLS returned unavailable for control and protected data with a valid durable machine credential; no peer/IdP lookup substituted for the refusal")
+	t.Log("actual local public TLS refused control and protected data with the same durable machine credential checked before/after isolation; no peer/IdP lookup substituted for the refusal")
 }
