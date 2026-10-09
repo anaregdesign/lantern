@@ -242,6 +242,8 @@ class SDK4WiringTest(unittest.TestCase):
     def test_native_lane_cannot_conditionally_omit_execution_or_hide_failure(self):
         native = workflow_job("current-sdk4", "native")
         self.assertNotIn("continue-on-error", native)
+        # This pure-Dart lane does not provision the separate Flutter example.
+        self.assertIn("dart pub get --enforce-lockfile --no-example", native)
         qualify = native.split("- name: Require exact candidate native SDK4 execution", 1)[1].split("- name:", 1)[0]
         self.assertNotIn("if:", qualify)
         self.assertIn('run --expected-head "$GITHUB_SHA"', qualify)

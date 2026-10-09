@@ -56,7 +56,7 @@ jobs:
           set -euo pipefail
           (cd sdks/node && bun install --frozen-lockfile && bun run build)
           (cd admin && bun install --frozen-lockfile)
-          (cd sdks/dart && dart pub get --enforce-lockfile)
+          (cd sdks/dart && dart pub get --enforce-lockfile --no-example)
           (cd sdks/rust && cargo test --locked --lib --no-run)
       - name: Require exact candidate native SDK4 execution
         id: qualify
