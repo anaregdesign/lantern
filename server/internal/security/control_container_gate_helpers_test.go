@@ -174,6 +174,10 @@ func NewContainerAuthorityGate(t *testing.T, issuer Issuer, dir string, resume b
 				containerCopy(t, from, to)
 			}
 			containerKey(t, filepath.Join(nodeDir, "origin.key"), keys[id])
+			directory, err := os.Open(nodeDir)
+			containerMust(t, err)
+			containerMust(t, directory.Sync())
+			containerMust(t, directory.Close())
 			participant.Trust = nil
 			boot.Nodes[id] = containerConfig{participant, identity, old.Limits, filepath.Join(nodeDir, "membership"), old.Membership.Key, old.Membership.Self}
 		}

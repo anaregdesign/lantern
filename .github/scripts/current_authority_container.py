@@ -92,6 +92,8 @@ def collect(name, case, suffix):
 
 
 def start(case, name):
+    if hashlib.sha256(a.binary.read_bytes()).hexdigest() != receipt['binary_sha256']:
+        raise RuntimeError('immutable test binary changed')
     phase = 'pre-stop' if case in ('graceful', 'kill') else case
     # exec makes the test worker PID 1. Restart chooses explicit resume of the
     # exact persisted case. Missing/corrupt bootstrap is never fresh fallback.
@@ -102,6 +104,8 @@ def start(case, name):
 
 try:
     docker('image', 'inspect', a.image)
+    if docker('volume', 'inspect', volume, check=False).returncode == 0:
+        raise RuntimeError('refusing an existing volume; choose a fresh task name')
     docker('network', 'create', '--label', 'lantern.task=1722-linux-matrix', network)
     created_network = True
     docker('volume', 'create', '--label', 'lantern.task=1722-linux-matrix', volume)
@@ -156,6 +160,11 @@ try:
             touch(name, case, 'release')
         finish(name)
         collect(name, case, 'finished')
+        if '--- PASS: TestContainerCurrentAuthority ' not in (a.evidence / f'{case}-finished.log').read_text():
+            raise RuntimeError('selected container test did not execute successfully')
+        needed = ['restart-result.json'] if case in ('graceful', 'kill') else ['recovery-result.json', 'boundary-result.json' if case.startswith('pause-') else 'fault-result.json']
+        if any(not (a.evidence / f'{case}-finished' / item).is_file() for item in needed):
+            raise RuntimeError('required result evidence was not collected')
         receipt['cases'][case]['status'] = 'PASS'
         print('PASS', case, flush=True)
         docker('rm', name)
@@ -163,6 +172,8 @@ try:
     receipt['status'] = 'PASS'
 except BaseException as exc:
     receipt['status'], receipt['error'] = 'FAIL', repr(exc)
+    if 'case' in locals() and case in receipt['cases']:
+        receipt['cases'][case]['status'] = 'FAIL'
     print('FAIL', repr(exc), flush=True)
 finally:
     # Cleanup is explicit and limited to names successfully created by this run.

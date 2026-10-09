@@ -5,9 +5,11 @@ package security
 import (
 	"errors"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -159,16 +161,56 @@ func TestAuthorityTimeLinuxConfiguredUpstream(t *testing.T) {
 	}
 }
 
-// The controller mounts an empty task file over only this container's boot_id.
-// No host procfs, namespace or clock setting is modified.
+// The opt-in test adds a restrictive seccomp filter only to its own locked
+// OS thread. Existing Docker restrictions remain in force. No procfs mount,
+// host setting, added capability or production injection is involved.
 func TestAuthorityTimeLinuxUnavailableNativeIdentity(t *testing.T) {
 	if os.Getenv("LANTERN_TEST_NATIVE_IDENTITY_UNAVAILABLE") != "1" {
 		t.Skip("explicit native failure campaign only")
 	}
-	if _, err := newNativeAuthorityTimeSampler(); err == nil {
-		t.Fatal("unavailable boot identity admitted by native factory")
+	runtime.LockOSThread()
+	// Do not unlock: exiting this test goroutine retires its restricted thread.
+	sample, err := newNativeAuthorityTimeSampler()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := newNativeAuthorityTimeOwner(); err == nil {
-		t.Fatal("unavailable boot identity admitted by production owner")
+	if _, err = sample(); err != nil {
+		t.Fatal(err)
 	}
+	arch := uint32(unix.AUDIT_ARCH_AARCH64)
+	if runtime.GOARCH == "amd64" {
+		arch = unix.AUDIT_ARCH_X86_64
+	}
+	filter := []unix.SockFilter{
+		{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 4}, // seccomp_data.arch
+		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: arch, Jt: 1},
+		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
+		{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0}, // syscall number
+		{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, K: unix.SYS_OPENAT, Jf: 1},
+		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ERRNO | uint32(unix.EPERM)},
+		{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
+	}
+	program := unix.SockFprog{Len: uint16(len(filter)), Filter: &filter[0]}
+	if err = unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err = unix.Prctl(unix.PR_SET_SECCOMP, unix.SECCOMP_MODE_FILTER, uintptr(unsafe.Pointer(&program)), 0, 0); err != nil {
+		t.Fatal("unprivileged restrictive filter unavailable", err)
+	}
+	runtime.KeepAlive(filter)
+	if _, err = readLinuxAuthorityTimeIdentity(); !errors.Is(err, unix.EPERM) {
+		t.Fatal("actual identity read was not denied", err)
+	}
+	for range 2 {
+		if _, err = sample(); err == nil {
+			t.Fatal("failed native sampler admitted use")
+		}
+	}
+	if _, err = newNativeAuthorityTimeSampler(); err == nil {
+		t.Fatal("unavailable identity admitted by native factory")
+	}
+	if _, err = newNativeAuthorityTimeOwner(); err == nil {
+		t.Fatal("unavailable native input admitted by production factory")
+	}
+	t.Log("actual procfs read denied with EPERM; native factory and existing sampler refused; no new capability")
 }
