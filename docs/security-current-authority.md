@@ -266,13 +266,28 @@ It creates only new labeled task containers, a network and a retained volume;
 workers run as UID/GID 65534 with no capabilities, a read-only root filesystem
 and no Docker socket. Test keys remain in that task volume.
 
+The accepted evidence is split explicitly: five actual configured-source
+production-constructor cases, plus one fixture/native source-loss mechanism
+case. Final-candidate success of the former also supplies actual source/native
+constructor/current/quorum compatibility; no duplicate public-source outage is
+required. A fixture-only pass cannot qualify the production source. Previous
+combined campaign failures remain historical failures.
+
 The six bounded cases are graceful SIGTERM/Close/restart, SIGKILL/recreate on the
 same volume, Docker pause/unpause before and after final output authorization,
-peer outage and time-source outage. Peer outage closes actual newly accepted
-TCP sockets before TLS on two enrolled listeners; it is a test listener fault,
-not Docker bridge isolation. Time-source outage disconnects the task egress
-network while loopback peers remain alive. Native source refresh/backoff,
-credential validity, quorum and interval bounds are unchanged. Explicit test
+peer outage and controlled time-source loss/recovery. Peer outage closes actual
+newly accepted TCP sockets before TLS on two enrolled listeners; it is a test listener fault,
+not Docker bridge isolation. Time-source loss uses one test-only loopback UDP
+socket that continues reading requests while dropping responses, then replies to fresh requests on the same
+socket. Three separate real Linux samplers/producers feed the unchanged time
+owner run loop and private owners. The fixture supplies a fixed synthetic UTC
+base propagated by its native counter; it is not UTC accuracy evidence and does
+not replace the production source. Production clock injection remains rejected. The fixture records request/response nonces, each actual attempt and retry gap,
+last successful anchors and native elapsed bounds. Successful sequences remain
+unchanged during loss; after holdover each current sample, fresh renewal and
+new Consume refuses. Recovery keeps boot/process identity but requires a new
+measurement/anchor and quorum challenge before Consume/Apply. Native source
+refresh/backoff, credential validity, quorum and interval bounds are unchanged. Explicit test
 hooks disable automatic renewal so an expired challenge cannot be replaced
 before its rejection assertion; successful recovery uses the ordinary real
 quorum path. No injected clock enters the production constructor.

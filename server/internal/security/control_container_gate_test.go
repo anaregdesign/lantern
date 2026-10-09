@@ -41,7 +41,7 @@ func TestContainerCurrentAuthority(t *testing.T) {
 	if mode != "container" {
 		t.Fatal("explicit mode required")
 	}
-	if phase != "pause-before" && phase != "pause-after" && phase != "pre-stop" && phase != "resume-process" && phase != "peer-loss" && phase != "time-loss" {
+	if phase != "pause-before" && phase != "pause-after" && phase != "pre-stop" && phase != "resume-process" && phase != "peer-loss" && phase != "time-loss-fixture" {
 		t.Fatal("unknown phase")
 	}
 	resume := phase == "resume-process"
@@ -161,7 +161,10 @@ func TestContainerCurrentAuthority(t *testing.T) {
 		return
 	}
 	g.Renew()
-	if phase == "peer-loss" || phase == "time-loss" {
+	if phase == "time-loss-fixture" {
+		g.ExerciseOutput(p)
+	}
+	if phase == "peer-loss" || phase == "time-loss-fixture" {
 		g.ExerciseNetwork(p, phase)
 		return
 	}

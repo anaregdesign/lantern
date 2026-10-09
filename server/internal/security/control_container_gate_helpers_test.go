@@ -71,6 +71,7 @@ type containerCheckpoint struct {
 	PendingPurposes, ActiveOutputs int
 }
 type ContainerAuthorityGate struct {
+	timeFixture *containerTimeFixture
 	*CurrentAuthorityGate
 	dir        string
 	bootstrap  containerBootstrap
@@ -253,11 +254,28 @@ func NewContainerAuthorityGate(t *testing.T, issuer Issuer, dir string, resume b
 	}
 	raw := n.sign(n.manifest)
 	g := &ContainerAuthorityGate{CurrentAuthorityGate: &CurrentAuthorityGate{t, n, map[uint32]*authorityOriginOwner{}, map[uint32]*atomic.Uint64{}}, dir: dir, bootstrap: boot, checkpoint: checkpoint, anchors: map[uint32]authorityTimeEstimate{}}
+	if os.Getenv("LANTERN_CONTAINER_PHASE") == "time-loss-fixture" {
+		g.timeFixture = newContainerTimeFixture(t)
+	}
 	for id := uint32(1); id <= 3; id++ {
 		b := boot.Nodes[id]
 		b.Participant.Trust = n.f.trust
 		c := s3aConfig{Participant: b.Participant, Identity: b.Identity, Limits: b.Limits, Membership: peerauth.ControlStoreOptions{Path: b.MembershipPath, Key: b.OperatorPublic, Profile: n.manifest.Profile, Self: b.Self}, Manifest: raw, hooks: &s3aHooks{beforeRenewal: func(ctx context.Context) { <-ctx.Done() }}}
-		o, err := openCurrentAuthorityOwner(t.Context(), c, filepath.Join(filepath.Dir(b.Identity.VotingKey), "origin.key"), "https://admin.example", !resume, checkpoint.Floors[id])
+		var o *authorityOriginOwner
+		var err error
+		originPath := filepath.Join(filepath.Dir(b.Identity.VotingKey), "origin.key")
+		if g.timeFixture == nil {
+			o, err = openCurrentAuthorityOwner(t.Context(), c, originPath, "https://admin.example", !resume, checkpoint.Floors[id])
+		} else {
+			clock := g.timeFixture.owner(t, id)
+			containerMust(t, bindAuthorityNetworkTime(&c, clock))
+			node, openErr := openS3AOwner(c, true, s3aFloors{})
+			containerMust(t, openErr)
+			node.ownedTime = true
+			key, keyErr := loadAuthorityOriginKey(c, originPath)
+			containerMust(t, keyErr)
+			o, err = attachAuthorityOrigin(node, key, "https://admin.example")
+		}
 		containerMust(t, err)
 		g.owners[id], n.nodes[id], n.configs[id] = o, o.network, c
 		if resume {
@@ -284,7 +302,11 @@ func NewContainerAuthorityGate(t *testing.T, issuer Issuer, dir string, resume b
 		g.peers[id] = peer
 		containerMust(t, o.network.Start(peer))
 	}
-	g.LogEvidence(true)
+	if g.timeFixture == nil {
+		g.LogEvidence(true)
+	} else {
+		t.Log("time-loss fixture: real Linux sampler/UDP/private quorum; synthetic fixture UTC; NOT configured-source production-constructor evidence")
+	}
 	return g
 }
 
@@ -571,28 +593,16 @@ func (g *ContainerAuthorityGate) ExerciseNetwork(p CurrentCredentialProducer, ph
 		g.peers[2].unavailable.Store(true)
 		g.peers[3].unavailable.Store(true)
 	}
+	if g.timeFixture != nil {
+		g.stopTimeFixture()
+	}
 	g.saveCheckpoint(phase, nil, nil, [32]byte{})
 	containerWrite(t, filepath.Join(g.dir, "ready.json"), map[string]any{"phase": phase, "pid": os.Getpid()})
-	wait := func(name string) {
-		deadline := time.Now().Add(4 * time.Minute)
-		for {
-			if _, err := os.Stat(filepath.Join(g.dir, name)); err == nil {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("controller marker unavailable", name)
-			}
-			time.Sleep(25 * time.Millisecond)
-		}
+	containerWaitMarker(t, g.dir, "check.json")
+	if g.timeFixture != nil {
+		g.verifyTimeFixtureLoss()
 	}
-	wait("check.json")
-	if phase == "time-loss" {
-		for _, owner := range g.owners {
-			if _, err := owner.network.timeOwner.current(); err == nil {
-				t.Fatal("time outage retained current anchor")
-			}
-		}
-	}
+
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	err = o.network.renewAuthority(ctx)
 	cancel()
@@ -606,7 +616,12 @@ func (g *ContainerAuthorityGate) ExerciseNetwork(p CurrentCredentialProducer, ph
 		t.Fatal("outage consumed new H")
 	}
 	containerWrite(t, filepath.Join(g.dir, "fault-result.json"), map[string]any{"phase": phase, "new_H_refused": true, "fresh_renewal_refused": true, "rejected_peer_sockets": g.peers[2].rejected.Load() + g.peers[3].rejected.Load(), "stamp": containerObserve(t, o.network.timeOwner)})
-	wait("release.json")
+	containerWaitMarker(t, g.dir, "release.json")
+	if g.timeFixture != nil {
+		g.timeFixture.mu.Lock()
+		g.timeFixture.drop = false
+		g.timeFixture.mu.Unlock()
+	}
 	g.peers[2].unavailable.Store(false)
 	g.peers[3].unavailable.Store(false)
 	deadline := time.Now().Add(150 * time.Second)
@@ -626,6 +641,9 @@ func (g *ContainerAuthorityGate) ExerciseNetwork(p CurrentCredentialProducer, ph
 		time.Sleep(50 * time.Millisecond)
 	}
 	g.Renew()
+	if g.timeFixture != nil {
+		g.verifyTimeFixtureRecovery()
+	}
 	r, err = g.Prepare(p, s1Changes(s1ReaderRole()))
 	containerMust(t, err)
 	raw, err := g.Consume(r, p, [32]byte{})

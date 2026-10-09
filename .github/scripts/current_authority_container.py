@@ -21,7 +21,7 @@ parser.add_argument('--evidence', type=pathlib.Path, required=True)
 parser.add_argument('--name', required=True)
 parser.add_argument('--head', required=True)
 parser.add_argument('--tree', required=True)
-parser.add_argument('--cases', nargs='+', choices=['graceful', 'kill', 'pause-before', 'pause-after', 'peer-loss', 'time-loss'], default=['graceful', 'kill', 'pause-before', 'pause-after', 'peer-loss', 'time-loss'])
+parser.add_argument('--cases', nargs='+', choices=['graceful', 'kill', 'pause-before', 'pause-after', 'peer-loss', 'time-loss-fixture'], default=['graceful', 'kill', 'pause-before', 'pause-after', 'peer-loss', 'time-loss-fixture'])
 a = parser.parse_args()
 if not a.image.startswith('sha256:') or len(a.image) != 71:
     parser.error('use the immutable cached image ID')
@@ -29,7 +29,7 @@ if not a.name.startswith('lantern-1722-') or not all(c.isalnum() or c == '-' for
     parser.error('task-specific resource name required')
 a.evidence.mkdir(parents=True, exist_ok=False)
 network, volume = a.name + '-net', a.name + '-state'
-receipt = {'started': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'head': a.head, 'tree': a.tree, 'image': a.image, 'binary_sha256': hashlib.sha256(a.binary.read_bytes()).hexdigest(), 'config_sha256': hashlib.sha256(a.config.read_bytes()).hexdigest(), 'volume': volume, 'events': [], 'cases': {}, 'status': 'RUNNING'}
+receipt = {'started': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'head': a.head, 'tree': a.tree, 'image': a.image, 'binary_sha256': hashlib.sha256(a.binary.read_bytes()).hexdigest(), 'config_sha256': hashlib.sha256(a.config.read_bytes()).hexdigest(), 'volume': volume, 'qualification_layout': 'five actual configured-source production cases + distinct native-counter/local-UDP source-loss mechanism', 'events': [], 'cases': {}, 'status': 'RUNNING'}
 containers = []
 created_network = False
 
@@ -86,7 +86,7 @@ def collect(name, case, suffix):
     destination = a.evidence / f'{case}-{suffix}'
     destination.mkdir(exist_ok=True)
     # Deliberately leave test private keys only in the task-owned volume.
-    for item in ['bootstrap.json', 'checkpoint.json', 'ready.json', 'authorization.json', 'stop-request.json', 'graceful-close.json', 'restart-result.json', 'boundary-result.json', 'fault-result.json', 'recovery-result.json']:
+    for item in ['bootstrap.json', 'checkpoint.json', 'ready.json', 'authorization.json', 'stop-request.json', 'graceful-close.json', 'restart-result.json', 'boundary-result.json', 'fault-result.json', 'recovery-result.json', 'fixture-loss.json', 'fixture-result.json']:
         docker('cp', f'{name}:/state/{case}/{item}', str(destination / item), check=False, record=False)
     save()
 
@@ -98,7 +98,7 @@ def start(case, name):
     # exec makes the test worker PID 1. Restart chooses explicit resume of the
     # exact persisted case. Missing/corrupt bootstrap is never fresh fallback.
     command = f'if test -f /state/{case}/checkpoint.json; then export LANTERN_CONTAINER_PHASE=resume-process; fi; exec /test -test.v -test.run=^TestContainerCurrentAuthority$ -test.timeout=8m'
-    docker('run', '-d', '--pull=never', '--name', name, '--label', 'lantern.task=1722-linux-matrix', '--network', network, '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--user', '65534:65534', '--pids-limit', '256', '--memory', '1g', '--cpus', '2', '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m,mode=1777', '--mount', f'type=volume,src={volume},dst=/state', '--mount', f'type=bind,src={a.binary.resolve()},dst=/test,readonly', '--mount', f'type=bind,src={a.config.resolve()},dst=/etc/ntp.conf,readonly', '--env', 'LANTERN_CONTAINER_MODE=container', '--env', f'LANTERN_CONTAINER_DIR=/state/{case}', '--env', f'LANTERN_CONTAINER_PHASE={phase}', '--env', f'LANTERN_CONTAINER_HEAD={a.head}', '--env', f'LANTERN_CONTAINER_TREE={a.tree}', a.image, '/bin/sh', '-c', command)
+    docker('run', '-d', '--pull=never', '--name', name, '--label', 'lantern.task=1722-linux-matrix', '--network', 'none' if case == 'time-loss-fixture' else network, '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--user', '65534:65534', '--pids-limit', '256', '--memory', '1g', '--cpus', '2', '--tmpfs', '/tmp:rw,nosuid,nodev,size=64m,mode=1777', '--mount', f'type=volume,src={volume},dst=/state', '--mount', f'type=bind,src={a.binary.resolve()},dst=/test,readonly', '--mount', f'type=bind,src={a.config.resolve()},dst=/etc/ntp.conf,readonly', '--env', 'LANTERN_CONTAINER_MODE=container', '--env', f'LANTERN_CONTAINER_DIR=/state/{case}', '--env', f'LANTERN_CONTAINER_PHASE={phase}', '--env', f'LANTERN_CONTAINER_HEAD={a.head}', '--env', f'LANTERN_CONTAINER_TREE={a.tree}', a.image, '/bin/sh', '-c', command)
     containers.append((name, case))
 
 
@@ -115,7 +115,7 @@ try:
     for case in a.cases:
         print('START', case, flush=True)
         name = a.name + '-' + case
-        receipt['cases'][case] = {'status': 'RUNNING'}
+        receipt['cases'][case] = {'status': 'RUNNING', 'source': 'synthetic local UDP fixture; real native counter; no UTC accuracy claim' if case == 'time-loss-fixture' else 'actual configured upstream and production constructor'}
         start(case, name)
         marker(name, f'/state/{case}/ready.json')
         print('READY', case, flush=True)
@@ -148,21 +148,19 @@ try:
             receipt['cases'][case]['controller_pause_ns'] = time.monotonic_ns() - before
             touch(name, case, 'release')
         else:
-            if case == 'time-loss':
-                docker('network', 'disconnect', network, name)
             before = time.monotonic_ns()
-            time.sleep(77 if case == 'time-loss' else 18)
+            time.sleep(77 if case == 'time-loss-fixture' else 18)
             receipt['cases'][case]['controller_outage_ns'] = time.monotonic_ns() - before
             touch(name, case, 'check')
             marker(name, f'/state/{case}/fault-result.json', timeout=15)
-            if case == 'time-loss':
-                docker('network', 'connect', network, name)
             touch(name, case, 'release')
         finish(name)
         collect(name, case, 'finished')
         if '--- PASS: TestContainerCurrentAuthority ' not in (a.evidence / f'{case}-finished.log').read_text():
             raise RuntimeError('selected container test did not execute successfully')
         needed = ['restart-result.json'] if case in ('graceful', 'kill') else ['recovery-result.json', 'boundary-result.json' if case.startswith('pause-') else 'fault-result.json']
+        if case == 'time-loss-fixture':
+            needed += ['fixture-loss.json', 'fixture-result.json']
         if any(not (a.evidence / f'{case}-finished' / item).is_file() for item in needed):
             raise RuntimeError('required result evidence was not collected')
         receipt['cases'][case]['status'] = 'PASS'
