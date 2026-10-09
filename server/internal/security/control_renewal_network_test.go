@@ -103,3 +103,36 @@ func TestAuthorityRenewalNetworkConfiguration(t *testing.T) {
 		t.Fatal("source loss supplied bounds")
 	}
 }
+
+func TestAuthorityRenewalNetworkCatchesUpBeforeNewChallenge(t *testing.T) {
+	n, owners, _ := authorityTestComposite(t)
+	n.nodes[1].hooks.beforeSend = func(_ context.Context, to uint32, raw []byte) error {
+		if to == 3 && raw[len(s2cMessageMagic)] == s2cChosen {
+			return errS3AWire
+		}
+		return nil
+	}
+	ctx := s3aTestContext(t)
+	if _, err := n.nodes[1].Drive(ctx, [32]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	n.nodes[3].kernel.gate.Lock()
+	old := n.nodes[3].kernel.replayState.slot
+	n.nodes[3].kernel.gate.Unlock()
+	if old != 0 {
+		t.Fatal("fixture did not lose chosen notification")
+	}
+	if err := n.nodes[3].renewAuthority(ctx); err == nil {
+		t.Fatal("old installed head renewed")
+	}
+	if err := n.nodes[3].renewAndCatchUp(ctx, 1); err != nil {
+		t.Fatal("range recovery then fresh renewal", err)
+	}
+	k := owners[3].network.kernel
+	k.gate.Lock()
+	defer k.gate.Unlock()
+	_, active, err := owners[3].network.receiver.currentLocked()
+	if err != nil || active.certificate.request.statement.Slot != 1 {
+		t.Fatal("reused old prefix challenge", err)
+	}
+}

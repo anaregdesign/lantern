@@ -5,6 +5,7 @@ import (
 	"context"
 	"math"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 )
@@ -167,6 +168,14 @@ func (o *s3aOwner) renewAuthority(ctx context.Context) error {
 
 func (o *s3aOwner) renewalsLoop() {
 	defer o.workers.Done()
+	peers := make([]uint32, 0, len(o.peers)-1)
+	for id := range o.peers {
+		if id != o.kernel.config.Member {
+			peers = append(peers, id)
+		}
+	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i] < peers[j] })
+	next := 0
 	for {
 		if o.hooks != nil && o.hooks.beforeRenewal != nil {
 			o.hooks.beforeRenewal(o.ctx)
@@ -174,7 +183,12 @@ func (o *s3aOwner) renewalsLoop() {
 		if o.ctx.Err() != nil {
 			return
 		}
-		_ = o.renewAuthority(o.ctx)
+		if len(peers) == 0 {
+			_ = o.renewAuthority(o.ctx)
+		} else {
+			_ = o.renewAndCatchUp(o.ctx, peers[next])
+			next = (next + 1) % len(peers)
+		}
 		timer := time.NewTimer(5 * time.Second)
 		select {
 		case <-o.ctx.Done():
@@ -183,4 +197,20 @@ func (o *s3aOwner) renewalsLoop() {
 		case <-timer.C:
 		}
 	}
+}
+
+// A failed renewal may indicate a newer retained CHOSEN prefix. Pull one
+// bounded authenticated range, in rotating peer order, before another fresh
+// challenge. This does not infer a hidden choice or create a replacement H;
+// hidden ACCEPT without a certificate still requires the existing real Drive
+// phase-one recovery. No old challenge start survives prefix installation.
+func (o *s3aOwner) renewAndCatchUp(ctx context.Context, peer uint32) error {
+	err := o.renewAuthority(ctx)
+	if err == nil {
+		return nil
+	}
+	if applied, pullErr := o.CatchUp(ctx, peer); pullErr == nil && applied != 0 {
+		return o.renewAuthority(ctx)
+	}
+	return err
 }

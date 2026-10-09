@@ -35,15 +35,17 @@ type authorityCurrentTime struct {
 }
 
 type authorityTimeOwner struct {
-	mu             sync.Mutex
-	producer       *authorityTimeProducer
-	premises       authorityTimePremises
-	profile        [32]byte
-	anchor         *authorityTimeEstimate
-	sequence       uint64
-	failed, closed bool
-	cancel         context.CancelFunc
-	done           chan struct{}
+	mu              sync.Mutex
+	producer        *authorityTimeProducer
+	premises        authorityTimePremises
+	profile         [32]byte
+	anchor          *authorityTimeEstimate
+	sequence        uint64
+	failed, closed  bool
+	lastObservation *authorityTimeMeasurement
+	lastError       error // bounded latest source/qualification failure, for startup diagnosis
+	cancel          context.CancelFunc
+	done            chan struct{}
 }
 
 func startAuthorityTimeOwner(producer *authorityTimeProducer) *authorityTimeOwner {
@@ -68,6 +70,7 @@ func (o *authorityTimeOwner) run(ctx context.Context, measure func(context.Conte
 		if err == nil {
 			err = o.installLocked(m)
 		}
+		o.lastError = err
 		if errors.Is(err, errAuthorityTimeDenied) {
 			o.failed = true
 			o.anchor = nil
@@ -139,6 +142,7 @@ func (o *authorityTimeOwner) installLocked(m authorityTimeMeasurement) error {
 		}
 	}
 	o.anchor = &a
+	o.lastObservation = &m
 	o.sequence = m.sequence
 	return nil
 }

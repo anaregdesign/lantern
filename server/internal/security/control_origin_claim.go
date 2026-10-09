@@ -63,6 +63,17 @@ func authorityMinTime(a, b time.Time) time.Time {
 	return b
 }
 
+// Original producer transcript dates may carry their original UTC offset.
+// Preserve that encoding; only newly derived consume/deadline fields require
+// canonical UTC. Marshalability is the same requirement as #1719 evidence.
+func authorityOriginalTime(t time.Time) bool {
+	if t.IsZero() {
+		return false
+	}
+	_, err := t.MarshalJSON()
+	return err == nil
+}
+
 func verifyAuthorityCredential(h authorityHistoricalHeader, operation OperationIdentity, command S1Command) bool {
 	c, a := h.Credential, h.Authentication
 	low, high := h.Time.utcTimes()
@@ -72,6 +83,11 @@ func verifyAuthorityCredential(h authorityHistoricalHeader, operation OperationI
 		return false
 	}
 	var expires time.Time
+	if command.Kind == S1IssueSession {
+		if c.Kind != "code" || c.Token == nil || command.Session == nil || !command.Session.AuthTime.Equal(c.Token.AuthTime.Time()) || command.Session.CreatedAt.Before(c.Token.Code.ConsumedAt) || low.Before(command.Session.CreatedAt) {
+			return false
+		}
+	}
 	switch c.Kind {
 	case "access", "code":
 		if c.Token == nil || c.Session != nil || c.Origin != [32]byte{} || c.CSRF != [32]byte{} || a.SessionDigest != "" {
@@ -94,7 +110,7 @@ func verifyAuthorityCredential(h authorityHistoricalHeader, operation OperationI
 				return false
 			}
 			for _, stamp := range []time.Time{e.Code.CreatedAt, e.Code.ConsumedAt, e.Code.ExpiresAt} {
-				if !s2cCanonicalTime(stamp, false) {
+				if !authorityOriginalTime(stamp) {
 					return false
 				}
 			}
@@ -135,14 +151,19 @@ func verifyAuthorityPurpose(h authorityHistoricalHeader, operation OperationIden
 		e.Identity != operation.actor || e.ConfigRevision != h.Authentication.IssuerConfigRevision || e.Generation != operation.reviewed.Generation || !e.AuthTime.Present || !e.AuthTime.Numeric {
 		return false
 	}
-	for _, stamp := range []time.Time{p.ReviewAt, p.NotBefore, p.ApprovedAt, p.ExpiresAt, e.Code.CreatedAt, e.Code.ConsumedAt, e.Code.ExpiresAt, h.PurposeDeadline} {
+	for _, stamp := range []time.Time{p.ReviewAt, p.NotBefore, p.ApprovedAt, p.ExpiresAt, h.PurposeDeadline} {
 		if !s2cCanonicalTime(stamp, false) {
+			return false
+		}
+	}
+	for _, stamp := range []time.Time{e.Code.CreatedAt, e.Code.ConsumedAt, e.Code.ExpiresAt} {
+		if !authorityOriginalTime(stamp) {
 			return false
 		}
 	}
 	low, high := h.Time.utcTimes()
 	return p.ReviewAt.Before(p.NotBefore) && !e.Code.CreatedAt.Before(p.NotBefore) && !e.Code.ConsumedAt.Before(e.Code.CreatedAt) && e.Code.ConsumedAt.Before(e.Code.ExpiresAt) &&
-		!p.ApprovedAt.Before(e.Code.ConsumedAt) && !e.AuthTime.Time().Before(p.NotBefore) && !p.ApprovedAt.Before(e.AuthTime.Time()) &&
+		!p.ApprovedAt.Before(e.Code.ConsumedAt) && !e.AuthTime.Time().Before(p.NotBefore) && !p.ApprovedAt.Before(e.AuthTime.Time()) && !e.AuthTime.Time().After(e.IssuedAt.Time()) &&
 		!low.Before(p.ApprovedAt) && !low.Before(authorityCredentialStart(authorityCredentialClaim{Token: &e}).Time()) &&
 		!p.ExpiresAt.After(p.ReviewAt.Add(10*time.Minute)) && !p.ExpiresAt.After(e.ExpiresAt.Time()) &&
 		h.PurposeDeadline == p.ExpiresAt && high.Before(h.PurposeDeadline) && h.PurposeBinding == s1PurposeBinding(h.ID, operation) && h.PurposeEvidence == s2cHash("current-purpose-evidence-v2", p)

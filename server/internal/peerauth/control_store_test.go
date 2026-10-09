@@ -32,9 +32,16 @@ func TestControlStoreUsesWholeTimeInterval(t *testing.T) {
 	if s.Check(t.Context()) != nil || s.FaultReason() != "none" {
 		t.Fatal("tighter interval mislabeled as clock rollback")
 	}
+	start, end, validityErr := s.CurrentValidity(t.Context())
+	if validityErr != nil || start != m.IssuedAt || end != m.ExpiresAt.Add(-ClockMargin) {
+		t.Fatal("frozen membership interval", validityErr)
+	}
 	sourceErr = errors.New("source unavailable")
 	if s.Check(t.Context()) == nil || s.FaultReason() != "none" {
 		t.Fatal("source loss ignored or membership permanently poisoned")
+	}
+	if _, _, err := s.CurrentValidity(t.Context()); err == nil {
+		t.Fatal("source loss returned current validity")
 	}
 	sourceErr = nil
 	if s.Check(t.Context()) != nil {

@@ -21,8 +21,8 @@ The legacy `peerauth.Domain` format and OFF/OIDC rules remain separate. Neither
 profile accepts the other's signed manifest or scope header. Control requests
 and responses carry the exact hex `Lantern-Control-Scope` digest. No fake legacy
 writer identity or caller-asserted verified constructor is introduced. Original
-H identity, key and incarnation remain independent S2-C bootstrap inputs; only
-test fixtures issue H.
+H identity, key and incarnation remain independent S2-C bootstrap inputs; the base S3-A stage uses fixture H; the subsequent current owner issues genuine
+private-profile H as described below.
 
 M uses the existing private checkpoint and FileWAL lease mechanisms. A current
 same-binding operator manifest can refresh only revision and time. A strictly
@@ -196,17 +196,16 @@ The unchanged S2-C source/evidence remains its own qualification, not newly
 executed evidence. Focused native and race results, exact commit/tree hashes,
 independent review and later mandatory full76/CI are recorded separately.
 
-## Preserved later freshness seam
+## Subsequent current-authority extension
 
-A+B can durably accept restrictive R while all installed cuts still show zero.
-An A+C majority reporting identical materialized cut zero therefore cannot
-justify renewal. Future renewal assertions must share the ACCEPT/CHOSEN/DRAINED
-participant gate, require an exact drained prefix and no acceptance or undrained
-choice beyond it, and bind receiver identity, boot nonce, challenge and immutable
-qualified time profile. The window must begin at challenge creation, not reply
-receipt. S3-A implements none of that renewal protocol.
+S3-A alone does not establish policy freshness: A+B may retain a restrictive
+ACCEPT while every materialized head remains old. The subsequent private
+[#1722 current-authority/origin owner](security-current-authority.md) implements
+the serialized renewal, conditional native-time, genuine credential/origin and
+bounded output boundaries without changing S3-A's public activation status.
+That document records its explicit profile, limits and remaining qualification.
 
-Production current-admission H issuance, G1/freshness and suspend qualification,
-independent witness deployment, clone fencing, key rotation/rejoin, compaction,
-public service/runtime activation and #1668 remain later work. Old 28/35-second
-constants and fixed-writer authority do not become guarantees here.
+Public session/control API activation, final target OS evidence, deployment,
+dynamic key/membership operations and #1668 remain separate. Deferred
+backup/snapshot/clone return is not silently enabled. Old 28/35-second constants
+and fixed-writer authority do not become guarantees of this component.

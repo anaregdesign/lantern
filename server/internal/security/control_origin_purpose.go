@@ -30,6 +30,17 @@ func authorityPurposeBindingLive(b authorityPurposeBinding, p *S1Projection) boo
 // Lock order: participant gate -> purpose pool -> native time owner. Callers
 // additionally validate current workload eligibility at the composite boundary.
 func (m *ManagementAuthorizations) beginCurrent(r *authorityRenewalReceiver, binding authorityPurposeBinding, credentialExpiry time.Time) (AuthorizationStart, error) {
+	if m == nil || r == nil {
+		return AuthorizationStart{}, ErrOperationAuthorization
+	}
+	r.kernel.gate.Lock()
+	defer r.kernel.gate.Unlock()
+	defer r.kernel.poisonPanic()
+	return m.beginCurrentLocked(r, binding, credentialExpiry)
+}
+
+// Caller owns participant gate through the purpose event.
+func (m *ManagementAuthorizations) beginCurrentLocked(r *authorityRenewalReceiver, binding authorityPurposeBinding, credentialExpiry time.Time) (AuthorizationStart, error) {
 	if m == nil || r == nil || m.lifetime <= 0 || m.limit <= 0 || !s2cCanonicalTime(credentialExpiry, false) {
 		return AuthorizationStart{}, ErrOperationAuthorization
 	}
@@ -39,9 +50,6 @@ func (m *ManagementAuthorizations) beginCurrent(r *authorityRenewalReceiver, bin
 			return AuthorizationStart{}, err
 		}
 	}
-	r.kernel.gate.Lock()
-	defer r.kernel.gate.Unlock()
-	defer r.kernel.poisonPanic()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed || !authorityPurposeBindingLive(binding, r.kernel.replayState.projection) {
@@ -84,6 +92,14 @@ func (m *ManagementAuthorizations) startCurrent(r *authorityRenewalReceiver, tic
 	r.kernel.gate.Lock()
 	defer r.kernel.gate.Unlock()
 	defer r.kernel.poisonPanic()
+	return m.startCurrentLocked(r, ticket)
+}
+
+// Caller owns participant gate through the purpose event.
+func (m *ManagementAuthorizations) startCurrentLocked(r *authorityRenewalReceiver, ticket [32]byte) ([32]byte, authorityPurposeBinding, error) {
+	if m == nil || r == nil {
+		return [32]byte{}, authorityPurposeBinding{}, ErrOperationAuthorization
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := sha256.Sum256(ticket[:])
@@ -113,6 +129,17 @@ func (m *ManagementAuthorizations) completeCurrent(r *authorityRenewalReceiver, 
 	if m == nil || r == nil {
 		return AuthorizationStatus{}, ErrOperationAuthorization
 	}
+	r.kernel.gate.Lock()
+	defer r.kernel.gate.Unlock()
+	defer r.kernel.poisonPanic()
+	return m.completeCurrentLocked(r, id, event)
+}
+
+// Caller owns participant gate through the purpose event.
+func (m *ManagementAuthorizations) completeCurrentLocked(r *authorityRenewalReceiver, id [32]byte, event TokenAuthenticationEvidence) (AuthorizationStatus, error) {
+	if m == nil || r == nil {
+		return AuthorizationStatus{}, ErrOperationAuthorization
+	}
 	commitment, err := event.Commitment()
 	if err != nil {
 		return AuthorizationStatus{}, err
@@ -121,9 +148,6 @@ func (m *ManagementAuthorizations) completeCurrent(r *authorityRenewalReceiver, 
 	if _, err = rand.Read(proof[:]); err != nil {
 		return AuthorizationStatus{}, err
 	}
-	r.kernel.gate.Lock()
-	defer r.kernel.gate.Unlock()
-	defer r.kernel.poisonPanic()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o, known := m.pending[id]

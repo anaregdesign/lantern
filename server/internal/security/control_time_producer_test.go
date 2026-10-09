@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -136,5 +137,29 @@ func TestAuthorityTimeProducerNoCachedSuccess(t *testing.T) {
 	p.sequence = ^uint64(0)
 	if _, err := p.exchange(context.Background(), "127.0.0.1:123"); err == nil {
 		t.Fatal("sequence wrapped")
+	}
+}
+
+func TestAuthorityTimeEndpointUsesBoundedConfiguredAnswers(t *testing.T) {
+	answers := []netip.Addr{netip.MustParseAddr("2001:db8::2"), netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.1")}
+	a, err := authorityTimeEndpoint(answers, 0)
+	if err != nil || a != "192.0.2.1:123" {
+		t.Fatal(a, err)
+	}
+	b, err := authorityTimeEndpoint(answers, 1)
+	if err != nil || b != "[2001:db8::2]:123" {
+		t.Fatal(b, err)
+	}
+	c, err := authorityTimeEndpoint(answers, 2)
+	if err != nil || c != a {
+		t.Fatal("no scheduled rotation", c, err)
+	}
+	if answers[0].String() != "2001:db8::2" {
+		t.Fatal("mutated resolver result")
+	}
+	for _, bad := range [][]netip.Addr{nil, make([]netip.Addr, 17), {netip.Addr{}}, {netip.MustParseAddr("::")}, {netip.MustParseAddr("ff02::1")}} {
+		if _, err := authorityTimeEndpoint(bad, 0); err == nil {
+			t.Fatal("bad DNS answer scope")
+		}
 	}
 }

@@ -2,7 +2,48 @@ package security
 
 import (
 	"testing"
+	"time"
 )
+
+func TestAuthorityRenewalSigningHoldsAcceptGate(t *testing.T) {
+	n := s2cTestNativeCluster(t, 3, nil)
+	workloads := [32]byte{7}
+	raw := testAuthorityRenewalRequest(t, n, 1, workloads)
+	n.selectValue(1, [32]byte{}, 1, 2)
+	accept := n.take(s2cAccept, 1, 1)
+	inside, release := make(chan struct{}), make(chan struct{})
+	voteDone, acceptDone := make(chan error, 1), make(chan error, 1)
+	go func() {
+		_, err := n.nodes[1].signAuthorityRenewal(raw, workloads, func() error {
+			close(inside)
+			<-release
+			return nil
+		})
+		voteDone <- err
+	}()
+	<-inside
+	go func() {
+		_, err := n.nodes[1].Receive(accept.raw)
+		acceptDone <- err
+	}()
+	select {
+	case err := <-acceptDone:
+		close(release)
+		<-voteDone
+		t.Fatal("ACCEPT escaped the signing gate", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-voteDone; err != nil {
+		t.Fatal("serialized pre-accept vote", err)
+	}
+	if err := <-acceptDone; err != nil {
+		t.Fatal("durable ACCEPT after vote", err)
+	}
+	if _, err := n.nodes[1].signAuthorityRenewal(raw, workloads, func() error { return nil }); err == nil {
+		t.Fatal("accepted suffix renewed its old prefix")
+	}
+}
 
 func TestAuthorityRenewalDurableAcceptExclusion(t *testing.T) {
 	n := s2cTestNativeCluster(t, 3, nil)

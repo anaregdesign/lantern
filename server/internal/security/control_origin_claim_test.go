@@ -8,7 +8,7 @@ import (
 
 func TestAuthorityCredentialOriginalSourceFacts(t *testing.T) {
 	for _, kind := range []string{"access", "code", "session"} {
-		for _, date := range []string{"absent", "null", "ancient"} {
+		for _, date := range []string{"absent", "null", "ancient", "offset"} {
 			t.Run(kind+"/"+date, func(t *testing.T) {
 				f, keys := authorityTestFixture(t, 3)
 				h, op := authorityTestHeader(t, f)
@@ -28,6 +28,10 @@ func TestAuthorityCredentialOriginalSourceFacts(t *testing.T) {
 					h.Authentication.Provenance = BrowserCode
 					e.Mode, e.Profile, e.Nonce = "code", "oidc-id", [32]byte{7}
 					e.Code = CodeAuthenticationEvidence{Flow: "login", Transaction: [32]byte{8}, Exchange: [32]byte{9}, Nonce: e.Nonce, PKCE: [32]byte{10}, CreatedAt: low.Add(-20 * time.Second), ConsumedAt: low.Add(-10 * time.Second), ExpiresAt: low.Add(time.Minute)}
+					if date == "offset" {
+						zone := time.FixedZone("original-provider-offset", 9*60*60)
+						e.Code.CreatedAt, e.Code.ConsumedAt, e.Code.ExpiresAt = e.Code.CreatedAt.In(zone), e.Code.ConsumedAt.In(zone), e.Code.ExpiresAt.In(zone)
+					}
 					c.Enrollment, c.HumanNamespace = [32]byte{}, [32]byte{}
 				case "session":
 					c.Token = nil

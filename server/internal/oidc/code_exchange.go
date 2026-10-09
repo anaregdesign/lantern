@@ -46,7 +46,7 @@ func (f *Fetcher) ExchangeCode(ctx context.Context, trust Trust, discovery Disco
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	response, err := f.client.Do(req)
+	response, err := f.do(req)
 	if err != nil {
 		return CodeTokens{}, ErrFetch
 	}

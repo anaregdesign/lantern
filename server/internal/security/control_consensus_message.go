@@ -558,16 +558,22 @@ func s2cLogicalCommit(t *s2cTrust, slot uint64, value [32]byte) CommitRef {
 // Every term is bounded before conversion; accepted completion can therefore
 // survive a replacement quorum without increasing this encoded-message charge.
 func s2cChosenBytesBound(t *s2cTrust, h *s2cHistoricalH) uint64 {
+	var n uint64
+	if h != nil {
+		n = uint64(len(h.raw))
+	}
+	return s2cChosenSizeBound(t, n)
+}
+
+func s2cChosenSizeBound(t *s2cTrust, historicalBytes uint64) uint64 {
 	if t == nil || len(t.members) < 3 || len(t.members) > 31 || uint64(s2cMessageOverhead) > t.bounds.HeaderBytes {
 		return 0
 	}
 	base := uint64(s2cMessageOverhead)
-	if h != nil {
-		if uint64(len(h.raw)) > t.bounds.HistoricalBytes || len(h.raw) > 8<<20 {
-			return 0
-		}
-		base += uint64(len(h.raw))
+	if historicalBytes > t.bounds.HistoricalBytes || historicalBytes > 8<<20 {
+		return 0
 	}
+	base += historicalBytes
 	payload := min(t.bounds.PayloadBytes, uint64(s2cHardPayloadBytes))
 	if base > payload {
 		return 0

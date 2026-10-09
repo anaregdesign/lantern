@@ -78,6 +78,7 @@ type s3aOwner struct {
 	limits         s3aLimits
 	now            func() time.Time
 	timeOwner      *authorityTimeOwner
+	ownedTime      bool
 	peers          map[uint32]peerauth.ControlVoter
 	byIdentity     map[string]uint32
 	binding        [32]byte
@@ -94,6 +95,7 @@ type s3aOwner struct {
 	renewals       chan authorityRenewalTask
 	renewalInbound map[uint32]chan struct{}
 	receiver       *authorityRenewalReceiver
+	origin         *authorityOriginOwner
 	ballotReady    time.Time // Owned only by the serialized transition worker.
 	ballotSlot     uint64
 	queueMu        sync.Mutex
@@ -287,9 +289,15 @@ func (o *s3aOwner) enterCall() bool {
 }
 
 func (o *s3aOwner) Refresh(raw []byte) error {
-	if o == nil || o.closed.Load() {
+	if !o.enterCall() {
 		return errS3AClosed
 	}
+	defer o.calls.Done()
+	// Current consumers freeze membership and the exact S1 cut under this
+	// same gate before their final native sample. A refresh cannot slip between
+	// that snapshot and the logical authorization event.
+	o.kernel.gate.Lock()
+	defer o.kernel.gate.Unlock()
 	defer func() {
 		if failure := recover(); failure != nil {
 			o.fail()
@@ -348,6 +356,9 @@ func (o *s3aOwner) Close() error {
 			o.closeErr = errors.Join(o.closeErr, close())
 		}
 		o.fail()
+		if o.origin != nil {
+			o.origin.stopOutputs()
+		}
 		o.serverMu.Lock()
 		if o.server != nil {
 			closeOne(o.server.Close)
@@ -381,6 +392,9 @@ func (o *s3aOwner) Close() error {
 		if o.receiver != nil {
 			o.receiver.close()
 		}
+		if o.origin != nil {
+			closeOne(func() error { o.origin.closeOwned(); return nil })
+		}
 		if o.client != nil {
 			closeOne(func() error { o.client.CloseIdleConnections(); return nil })
 		}
@@ -391,6 +405,9 @@ func (o *s3aOwner) Close() error {
 			closeOne(o.membership.Close)
 		}
 		closeOne(func() error { o.identity.clear(); return nil })
+		if o.ownedTime {
+			closeOne(func() error { o.timeOwner.close(); return nil })
+		}
 		o.queueMu.Lock()
 		clear(o.queues)
 		o.queued = 0

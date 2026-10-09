@@ -217,6 +217,27 @@ func (c *ControlStore) Check(ctx context.Context) error {
 	return err
 }
 
+// CurrentValidity returns the immutable self-membership interval for a caller
+// that serializes Apply/Close with its own final authorization event. It is
+// metadata, not a reusable admission. The final event must still compare its
+// justified UTC low/high against both endpoints.
+func (c *ControlStore) CurrentValidity(ctx context.Context) (time.Time, time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if c == nil || c.store == nil {
+		return time.Time{}, time.Time{}, ErrMembership
+	}
+	s := c.store
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now, valid := s.nowLocked()
+	if !valid || !s.liveLocked(now) {
+		return time.Time{}, time.Time{}, ErrMembership
+	}
+	return s.current.manifest.IssuedAt, s.current.manifest.ExpiresAt.Add(-ClockMargin), nil
+}
+
 func (c *ControlStore) Admit(state *tls.ConnectionState, origin string) (*Admission, error) {
 	if c == nil {
 		return nil, ErrMembership

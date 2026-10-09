@@ -1,14 +1,135 @@
 package security
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// Automatic workers are deliberately blocked in these fixtures. A range RPC
+// can compete with an in-flight CHOSEN for the same finite per-peer ingress
+// credit. Retry only needed authenticated ranges in a bounded window, then
+// require every live owner to have the exact prefix/capsule before fresh renewal.
+// Reading fixture receipts selects a source; only the real CatchUp path installs
+// its signed CHOSEN history, never these test observations.
+func authorityTestConverge(t *testing.T, owners map[uint32]*authorityOriginOwner) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	var last error
+	for {
+		receipts := make(map[uint32]s2LocalReceipt)
+		var source uint32
+		for id, o := range owners {
+			if o.network.closed.Load() {
+				continue
+			}
+			_, receipt, err := o.network.kernel.ReadLocalCut()
+			if err != nil {
+				t.Fatal("read convergence receipt", id, err)
+			}
+			receipts[id] = receipt
+			if source == 0 || receipt.ControlSlot > receipts[source].ControlSlot {
+				source = id
+			}
+		}
+		complete := true
+		for id, receipt := range receipts {
+			if receipt.ControlSlot == receipts[source].ControlSlot {
+				// B store identity and local chain are intentionally per-member.
+				if receipt.ControlPrefix != receipts[source].ControlPrefix || receipt.CapsuleDigest != receipts[source].CapsuleDigest {
+					t.Fatal("converged slot has different prefix/capsule", id, source)
+				}
+				continue
+			}
+			complete = false
+			if _, err := owners[id].network.CatchUp(ctx, source); err != nil {
+				last = err
+			}
+		}
+		if complete {
+			return
+		}
+		if !s3aPause(ctx, 20*time.Millisecond) {
+			t.Fatal("authenticated convergence deadline", ctx.Err(), last)
+		}
+	}
+}
+
+func authorityTestComposite(t *testing.T) (*s3aTestNetwork, map[uint32]*authorityOriginOwner, map[uint32]*atomic.Uint64) {
+	t.Helper()
+	n := s3aTestCluster(t, nil)
+	f, originKeys := authorityTestFixture(t, 3)
+	n.f = f
+	n.manifest.Profile.ProtocolScope = f.trust.scope
+	raw := n.sign(n.manifest)
+	owners, ticks := make(map[uint32]*authorityOriginOwner), make(map[uint32]*atomic.Uint64)
+	for id, c := range n.configs {
+		c.Participant.Trust = f.trust
+		c.Membership.Profile, c.Manifest = n.manifest.Profile, raw
+		clock, counter := fakeAuthorityTimeOwnerAt(t, time.Unix(0, n.clock.Load()).UTC())
+		ticks[id] = counter
+		if err := bindAuthorityNetworkTime(&c, clock); err != nil {
+			t.Fatal(err)
+		}
+		c.hooks = &s3aHooks{beforeRenewal: func(ctx context.Context) { <-ctx.Done() }}
+		keyPath := filepath.Join(filepath.Dir(c.Identity.VotingKey), "origin.key")
+		if err := os.WriteFile(keyPath, originKeys[id], 0600); err != nil {
+			t.Fatal(err)
+		}
+		key, err := loadAuthorityOriginKey(c, keyPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.configs[id] = c
+		owner, err := createS3AOwner(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.nodes[id] = owner
+		origin, err := attachAuthorityOrigin(owner, key, "https://admin.example")
+		if err != nil {
+			t.Fatal(err)
+		}
+		owners[id] = origin
+	}
+	for id, owner := range n.nodes {
+		if err := owner.Start(n.listeners[id]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return n, owners, ticks
+}
+
+// Explicit factual unit fixture. It does not qualify the actual provider-to-H
+// path; those gates use real signed tokens/Code/cookies and native time.
+type authorityFakeCredentialProducer struct{ expiry time.Duration }
+
+func (producer authorityFakeCredentialProducer) VerifyCurrentCredential(_ context.Context, view CurrentCredentialView) (CurrentCredentialFacts, error) {
+	low, high, err := view.TimeBounds()
+	if err != nil {
+		return CurrentCredentialFacts{}, err
+	}
+	actor := testIdentity()
+	i, known := view.Snapshot().Issuer(actor.Issuer)
+	if !known {
+		return CurrentCredentialFacts{}, ErrPermissionDenied
+	}
+	lifetime := producer.expiry
+	if lifetime == 0 {
+		lifetime = time.Hour
+	}
+	e := TokenAuthenticationEvidence{Version: 1, Mode: "access", Profile: "rfc9068", Policy: "lantern-oidc-v1", Identity: actor,
+		Credential: [32]byte{1}, Key: [32]byte{2}, Configuration: authorityIssuerCommitment(i, view.Cut().Generation), AudienceClient: [32]byte{4}, Algorithm: "EdDSA", KeyID: "unit-facts-only",
+		Generation: view.Cut().Generation, ConfigRevision: i.ConfigRevision, IssuedAt: authorityNumericTime(low.Add(-time.Minute)), ExpiresAt: authorityNumericTime(high.Add(lifetime))}
+	return CurrentCredentialFacts{Token: &e}, nil
+}
 
 func authorityTestReceiver(t *testing.T, n *s2cTestNetwork) (*authorityRenewalReceiver, *atomic.Uint64) {
 	t.Helper()
@@ -32,7 +153,11 @@ func authorityTestReceiver(t *testing.T, n *s2cTestNetwork) (*authorityRenewalRe
 
 func authorityTestFixture(t *testing.T, count int) (*s2cTestFixture, map[uint32]ed25519.PrivateKey) {
 	t.Helper()
-	f := s2cTestCluster(t, count)
+	return authorityTestFixtureState(t, s2cTestCluster(t, count))
+}
+
+func authorityTestFixtureState(t *testing.T, f *s2cTestFixture) (*s2cTestFixture, map[uint32]ed25519.PrivateKey) {
+	t.Helper()
 	keys := make(map[uint32]ed25519.PrivateKey)
 	for i := range f.origins {
 		d := &f.origins[i]

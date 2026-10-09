@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"net"
+	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -68,19 +70,20 @@ type authorityTimeMeasurement struct {
 
 // Private, unwired fact producer. One bounded datagram exchange at a time, no
 // retries, no background goroutine, no cached success after loss, no OS writes.
-// A future background owner must own refresh/backoff and qualified invalidation.
+// The time owner owns refresh/backoff and qualified invalidation.
 type authorityTimeProducer struct {
 	mu           sync.Mutex
 	closed, busy bool
 	cancel       context.CancelFunc
 	workers      sync.WaitGroup
 	sequence     uint64
+	addressTurn  uint64
 	source       authorityTimeSource
 	sample       func() (authorityTimeStamp, error)
 }
 
 func (p *authorityTimeProducer) measure(ctx context.Context) (authorityTimeMeasurement, error) {
-	return p.exchange(ctx, net.JoinHostPort(p.source.host, "123"))
+	return p.exchange(ctx, "")
 }
 
 // The address seam permits local UDP fault tests. Production composition, when
@@ -95,13 +98,17 @@ func (p *authorityTimeProducer) exchange(ctx context.Context, address string) (a
 		p.mu.Unlock()
 		return authorityTimeMeasurement{}, errAuthorityTimeBusy
 	}
-	if ctx == nil || p.sample == nil || p.source.host == "" || p.source.configuration == [32]byte{} || p.sequence == ^uint64(0) {
+	if ctx == nil || p.sample == nil || p.source.host == "" || p.source.configuration == [32]byte{} || p.sequence == ^uint64(0) || (address == "" && p.addressTurn == ^uint64(0)) {
 		p.mu.Unlock()
 		return authorityTimeMeasurement{}, errAuthorityTime
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	p.cancel, p.busy = cancel, true
 	sequence := p.sequence + 1
+	addressTurn := p.addressTurn
+	if address == "" {
+		p.addressTurn++
+	}
 	p.workers.Add(1)
 	p.mu.Unlock()
 	defer func() {
@@ -111,6 +118,19 @@ func (p *authorityTimeProducer) exchange(ctx context.Context, address string) (a
 		p.mu.Unlock()
 		p.workers.Done()
 	}()
+	if address == "" {
+		// UDP connect has no response-driven happy-eyeballs fallback. Keep one
+		// datagram per scheduled attempt, rotating the exact configured host's
+		// bounded DNS answers on normal backoff instead of pinning a silent one.
+		answers, err := net.DefaultResolver.LookupNetIP(ctx, "ip", p.source.host)
+		if err != nil {
+			return authorityTimeMeasurement{}, err
+		}
+		address, err = authorityTimeEndpoint(answers, addressTurn)
+		if err != nil {
+			return authorityTimeMeasurement{}, err
+		}
+	}
 
 	var request [48]byte
 	request[0] = 4<<3 | 3
@@ -177,6 +197,23 @@ func (p *authorityTimeProducer) exchange(ctx context.Context, address string) (a
 	}
 	p.sequence = sequence
 	return authorityTimeMeasurement{p.source, conn.RemoteAddr().String(), sent, received, packet, request, [48]byte(raw[:48]), sequence}, nil
+}
+
+func authorityTimeEndpoint(answers []netip.Addr, turn uint64) (string, error) {
+	if len(answers) == 0 || len(answers) > 16 {
+		return "", errAuthorityTime
+	}
+	answers = slices.Clone(answers)
+	for i, a := range answers {
+		a = a.Unmap()
+		if !a.IsValid() || a.IsUnspecified() || a.IsMulticast() || a.Zone() != "" {
+			return "", errAuthorityTime
+		}
+		answers[i] = a
+	}
+	slices.SortFunc(answers, func(a, b netip.Addr) int { return a.Compare(b) })
+	answers = slices.Compact(answers)
+	return net.JoinHostPort(answers[turn%uint64(len(answers))].String(), "123"), nil
 }
 
 func (p *authorityTimeProducer) close() {

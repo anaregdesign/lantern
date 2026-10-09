@@ -506,6 +506,20 @@ gated by #1613/#1610. Possibly sent operation IDs never change during namespace
 migration; scoped offline clients must retain an unknown ID after denial and
 cannot assume automatic status-first retry is qualified.
 
+## Private current-authority implementation
+
+The separately constructed [current-authority/origin owner](../security-current-authority.md)
+(#1722) extends the fixed-membership S1/S2/S3 components. It combines serialized
+challenge-start renewal, conditional native UTC/elapsed intervals, actual
+credential and one-use full-S1 purpose verification, durable serial/original H,
+and bounded immutable output authorization. Existing HLC/data and fixed-writer
+public meanings remain unchanged. Approved A permits an exact preexpiry output
+unit to finish arbitrarily late; it promises no physical-send deadline. The new
+private APPLIED wait concerns cessation of new stale authorization and does not
+reinterpret `globally_enforced`. Public S4 activation and final #1610 target,
+provider and OS qualification remain separate; source-level/native focused
+evidence is not deployment certification.
+
 ## OIDC and browser session boundary
 
 Use registered Issuers only. Verify exact Issuer, audience, permitted algorithm,
