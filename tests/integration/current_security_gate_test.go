@@ -289,7 +289,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		defer sdk.Close()
+		defer func() { _ = sdk.Close() }()
 		if _, e = sdk.GetCurrentPrincipal(ctx); e != nil {
 			t.Fatal(e)
 		}
@@ -417,7 +417,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		defer stream.Close()
+		defer func() { _ = stream.Close() }()
 		if !stream.Receive() || !stream.Msg().Bootstrap || len(stream.Msg().Cursor) == 0 {
 			t.Fatal("current CDC bootstrap", stream.Err())
 		}
@@ -830,7 +830,7 @@ func runCurrentPublicSDK4(t *testing.T, s *httptest.Server, token, ca string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer sdk.Close()
+		defer func() { _ = sdk.Close() }()
 		if _, err := sdk.GetCurrentPrincipal(t.Context()); err != nil {
 			t.Fatal(err)
 		}
