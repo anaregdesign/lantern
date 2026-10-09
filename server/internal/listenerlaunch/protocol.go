@@ -65,6 +65,13 @@ func Read(in *bufio.Reader) (Message, error) {
 		if err != nil || !ok || seen[key] {
 			return result, ErrLaunch
 		}
+		// The typed decoder also recognizes case-insensitive aliases. Admit
+		// only canonical spellings before its duplicate/field handling.
+		switch key {
+		case "phase", "nonce", "pid", "private", "public", "peer", "environment":
+		default:
+			return result, ErrLaunch
+		}
 		seen[key] = true
 		var value json.RawMessage
 		if keys.Decode(&value) != nil {
