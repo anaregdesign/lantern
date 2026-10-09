@@ -1,5 +1,9 @@
-import { fromJsonString } from "@bufbuild/protobuf";
-import { BrowserSessionSchema, SessionRevocationSchema } from "./gen/graph/v1/security_pb.js";
+import { create, fromJsonString, toJsonString, type MessageInitShape } from "@bufbuild/protobuf";
+import {
+  BrowserSessionSchema,
+  SessionRevocationSchema,
+  CurrentLogoutRequestSchema,
+} from "./gen/graph/v1/security_pb.js";
 export {
   AuthMode,
   SecurityAction,
@@ -10,6 +14,9 @@ export {
   SecurityAuthorizationRequirement,
   SecurityAuthorizationState,
   SecurityChangeRejectionReason,
+  CurrentSecurityDisposition,
+  CurrentSecurityProgress,
+  CurrentAuthorizationStopObservation,
 } from "./gen/graph/v1/security_pb.js";
 export type {
   SecurityOperationAuthorizationRequired,
@@ -41,6 +48,17 @@ export type {
   PrepareSecurityChangesResponse,
   BeginSecurityChangeAuthorizationResponse,
   GetSecurityChangeAuthorizationResponse,
+  CurrentAuthorityProfile,
+  CurrentSemanticCut,
+  CurrentSecurityChangeID,
+  CurrentSecurityReview,
+  CurrentSecurityChangeResult,
+  CurrentSecurityOriginalOutcome,
+  CurrentSecurityItemOutcome,
+  CurrentSecurityAuditRecord,
+  CurrentSecurityInvocationRejected,
+  CurrentSessionRevocationReview,
+  CurrentLogoutRequest,
 } from "./gen/graph/v1/security_pb.js";
 export function parseBrowserSession(json: string) {
   return fromJsonString(BrowserSessionSchema, json);
@@ -48,3 +66,10 @@ export function parseBrowserSession(json: string) {
 export function parseSessionRevocation(json: string) {
   return fromJsonString(SessionRevocationSchema, json);
 }
+export function encodeCurrentLogoutRequest(
+  request: MessageInitShape<typeof CurrentLogoutRequestSchema>,
+): string {
+  return toJsonString(CurrentLogoutRequestSchema, create(CurrentLogoutRequestSchema, request));
+}
+
+export * from "./security-current.js";

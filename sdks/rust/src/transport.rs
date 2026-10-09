@@ -212,6 +212,37 @@ impl LanternClient {
         require_serving(health.status)
     }
 
+    /// Read a current-v2 cache binding with one authenticated attempt. Legacy
+    /// scalar versions are refused; this does not authorize any later call.
+    pub async fn current_authority_binding(
+        &self,
+        options: CallOptions,
+    ) -> Result<crate::CurrentAuthorityBinding, LanternError> {
+        use crate::generated::graph::v1::{
+            GetCurrentPrincipalRequest,
+            lantern_security_service_client::LanternSecurityServiceClient,
+        };
+        let response = self
+            .call_unary(
+                GetCurrentPrincipalRequest {},
+                options,
+                RetryClass::Never,
+                AuthMode::Data,
+                |channel, encode, decode| {
+                    LanternSecurityServiceClient::new(channel)
+                        .max_encoding_message_size(encode)
+                        .max_decoding_message_size(decode)
+                },
+                |client, request| Box::pin(client.get_current_principal(request)),
+            )
+            .await?;
+        crate::CurrentAuthorityBinding::from_wire(
+            response
+                .version
+                .ok_or(LanternError::Protocol("missing current authority version"))?,
+        )
+    }
+
     /// Open exactly one data-plane server stream. Keep the raw protobuf frame
     /// until it has been checked for unknown fields before decoding it into
     /// generated types; Prost otherwise discards newly introduced oneof arms.

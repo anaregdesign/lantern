@@ -392,7 +392,7 @@ func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tok
 		if err != nil {
 			return fixture{}, err
 		}
-		securityEnv = map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_STORE_MODE": "fresh", "LANTERN_SECURITY_GENERATION": hex.EncodeToString(generation[:]), "LANTERN_SECURITY_WRITER_KEY_FILE": privatePath, "LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE": publicPath, "LANTERN_SECURITY_BOOTSTRAP_REVISION": "1", "LANTERN_SECURITY_BOOTSTRAP_ROLES": string(roleJSON), "LANTERN_SECURITY_CLOCK_QUALIFIED": "true", "LANTERN_OIDC_ADMIN_ISSUER": issuer, "LANTERN_OIDC_ADMIN_SUBJECTS": `["fixture-admin"]`, "LANTERN_OIDC_CLIENT_ID": "fixture-admin", "LANTERN_OIDC_API_AUDIENCE": "lantern-fixture", "LANTERN_OIDC_ALGORITHMS": `["EdDSA"]`}
+		securityEnv = map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_PROFILE": "legacy-v1", "LANTERN_SECURITY_STORE_MODE": "fresh", "LANTERN_SECURITY_GENERATION": hex.EncodeToString(generation[:]), "LANTERN_SECURITY_WRITER_KEY_FILE": privatePath, "LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE": publicPath, "LANTERN_SECURITY_BOOTSTRAP_REVISION": "1", "LANTERN_SECURITY_BOOTSTRAP_ROLES": string(roleJSON), "LANTERN_SECURITY_CLOCK_QUALIFIED": "true", "LANTERN_OIDC_ADMIN_ISSUER": issuer, "LANTERN_OIDC_ADMIN_SUBJECTS": `["fixture-admin"]`, "LANTERN_OIDC_CLIENT_ID": "fixture-admin", "LANTERN_OIDC_API_AUDIENCE": "lantern-fixture", "LANTERN_OIDC_ALGORITHMS": `["EdDSA"]`}
 		var tokens []string
 		if tokensFile != "" {
 			raw, err := os.ReadFile(tokensFile)

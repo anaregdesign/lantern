@@ -1,9 +1,31 @@
 package security
 
 import (
+	"crypto/sha256"
 	"testing"
 	"time"
 )
+
+func TestCurrentCredentialReadOnlySessionCannotBecomeMutation(t *testing.T) {
+	session := testSession()
+	image := s1Image()
+	image.Sessions = []Session{session}
+	state := s1Fixture(t, image)
+	clock, _ := fakeAuthorityTimeOwnerAt(t, session.CreatedAt.Add(time.Minute))
+	view := CurrentCredentialView{projection: state.projection, clock: clock, browserOrigin: "https://admin.example"}
+	facts := CurrentCredentialFacts{Session: &session, Origin: sha256.Sum256([]byte("lantern/authentication/browser-origin/v1\x00https://admin.example")), CSRF: [32]byte{1}, BrowserReadOnly: true}
+	c, err := captureAuthorityUseCredential(view, facts, false)
+	if err != nil || !c.browserReadOnly {
+		t.Fatal("read-only bootstrap did not retain its limited evidence", err)
+	}
+	if _, err = captureAuthorityCredential(view, facts); err == nil {
+		t.Fatal("read-only session bootstrapped a mutation credential")
+	}
+	facts.BrowserReadOnly = false
+	if _, err = captureAuthorityCredential(view, facts); err != nil {
+		t.Fatal("separately proven mutation session refused", err)
+	}
+}
 
 func TestCurrentCredentialCapturesInstalledS1AndOriginalFacts(t *testing.T) {
 	n, _ := authorityTestNativeCluster(t, 3)

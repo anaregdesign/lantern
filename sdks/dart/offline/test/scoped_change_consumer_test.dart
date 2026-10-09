@@ -239,6 +239,56 @@ void main() {
     },
   );
   test(
+    'authority binding drift during recovery cannot commit fetched values',
+    () async {
+      await seed();
+      final pending = await repository.putVertexIfAbsent(
+        partitionId: 'p',
+        input: const VertexInput(
+          key: 'pending',
+          value: StringValue('retained'),
+        ),
+      );
+      final retained = await store.transaction((tx) async {
+        final record = (await tx.outbox('p')).single;
+        final sent = record.copyWith(
+          receipt: record.receipt!.copyWith(mayHaveDispatched: true),
+        );
+        await tx.updateOutbox(sent);
+        return sent;
+      });
+      final s = _Session('one')..vertices['resident'] = _vertex('new');
+      s.afterRead = () => s.authorityBinding = 'current-v2:new-cut-or-lineage';
+      source.queue(s);
+      final stopped = expectLater(
+        repository.consumeScopedChanges('p', source: source),
+        throwsA(isA<OfflineChangeGapException>()),
+      );
+      await _wait(() => s.listening);
+      s.add(
+        OfflineScopedChangeFrame(
+          bootstrap: true,
+          cursor: OfflineScopedChangeCursor([1]),
+        ),
+      );
+      await stopped;
+      final after = await store.transaction(
+        (tx) async => (await tx.outbox('p')).single,
+      );
+      expect(after.operationId, pending.operationId);
+      expect(after.receipt!.operationId, retained.receipt!.operationId);
+      expect(after.receipt!.groupId, retained.receipt!.groupId);
+      expect(after.receipt!.mayHaveDispatched, isTrue);
+      expect(await cursor(), isNull);
+      expect(
+        await store.transaction(
+          (tx) => tx.getCache('p', const OfflineEntityKey.vertex('resident')),
+        ),
+        isNull,
+      );
+    },
+  );
+  test(
     'logout releases the stream and prevents late frame publication',
     () async {
       final s = _Session('one');
@@ -314,6 +364,8 @@ final class _Session implements OfflineScopedChangeSession {
   }
   @override
   String responderId;
+  @override
+  String authorityBinding = "current-v2:fixture-cut-lineage";
   late final StreamController<OfflineScopedChangeFrame> controller;
   final Map<String, Vertex> vertices = {};
   int reads = 0;

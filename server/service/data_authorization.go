@@ -54,12 +54,18 @@ func (s *LanternService) authorizeData(ctx context.Context, message proto.Messag
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid data request"))
 	}
 	access := admission.Access()
+	_, current := admission.CurrentProfile()
+	var resources []security.PublicOutputResource
+	globalOutput := false
 	vertices := func(keys []string, actions ...security.Action) error {
 		for _, key := range keys {
 			for _, action := range actions {
 				if !access.Allows(action, key) {
 					return dataPermissionError()
 				}
+			}
+			if current {
+				resources = append(resources, security.PublicOutputResource{Kind: security.OutputKey, Key: key, Actions: actions})
 			}
 		}
 		return nil
@@ -68,13 +74,17 @@ func (s *LanternService) authorizeData(ctx context.Context, message proto.Messag
 		if !access.AllowsEdge(action, tail, head) {
 			return dataPermissionError()
 		}
+		if current {
+			resources = append(resources, security.PublicOutputResource{Kind: security.OutputEdge, Tail: tail, Head: head, Actions: []security.Action{action}})
+		}
 		return nil
 	}
 	global := func(action security.Action) error {
 		if !access.AllowsGlobal(action) {
 			return dataPermissionError()
 		}
-		return nil
+		globalOutput = true
+		return admission.BindCurrentGlobalOutput(ctx, action)
 	}
 	switch request := message.(type) {
 	case *pb.GetVertexRequest:
@@ -147,6 +157,14 @@ func (s *LanternService) authorizeData(ctx context.Context, message proto.Messag
 		if access.Scope(security.ReceiptRead, security.VertexRead).Empty() && access.EdgeCandidateScope(security.ReceiptRead, security.VertexRead).Empty() {
 			err = dataPermissionError()
 		}
+		if current {
+			if !access.Scope(security.ReceiptRead, security.VertexRead).Empty() {
+				resources = append(resources, security.PublicOutputResource{Kind: security.OutputVertexCollection, Actions: []security.Action{security.ReceiptRead, security.VertexRead}})
+			}
+			if !access.EdgeCandidateScope(security.ReceiptRead, security.VertexRead).Empty() {
+				resources = append(resources, security.PublicOutputResource{Kind: security.OutputEdgeCollection, Actions: []security.Action{security.ReceiptRead, security.VertexRead}})
+			}
+		}
 	case *pb.ScanVerticesRequest, *pb.ScanVertexKeysRequest, *pb.CountVerticesByPrefixRequest:
 		// The immutable range view rejects empty scopes before index lookup.
 	case *pb.SearchVerticesRequest:
@@ -173,6 +191,12 @@ func (s *LanternService) authorizeData(ctx context.Context, message proto.Messag
 		GetReceiptContext() *pb.MutationReceiptContext
 	}); err == nil && known && receiptRequest.GetReceiptContext() != nil {
 		err = authorizeReceiptRequest(access, message)
+		for i := range resources {
+			resources[i].Actions = append(append([]security.Action(nil), resources[i].Actions...), security.ReceiptRead)
+		}
+	}
+	if err == nil && current && !globalOutput {
+		err = bindCurrentDataOutput(ctx, admission, message, resources)
 	}
 	return admission, err
 }

@@ -759,6 +759,7 @@ type oidcControlWireFixture struct {
 	private     ed25519.PrivateKey
 	mu          sync.Mutex
 	now         time.Time
+	realClock   bool
 	fetches     atomic.Int64
 	codes       map[string]oidcWireCode
 	graph       *graphcache.GraphCache[string, *pb.Vertex]
@@ -773,15 +774,8 @@ type oidcWireCode struct {
 	authTime                  string
 }
 
-func newOIDCControlWireFixture(t *testing.T, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
-	return newOIDCControlWireFixtureConfigured(t, nil, traversalLimits...)
-}
-
-func newOIDCControlWireFixtureConfigured(t *testing.T, configure func(*provider.SecurityConfig), traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
-	return newOIDCControlWireFixtureOptions(t, configure, false, traversalLimits...)
-}
-
-func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.SecurityConfig), durableReceipts bool, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
+// Shared local HTTPS issuer; native current tests use its real wall only for token issuance.
+func newOIDCWireIssuer(t *testing.T) *oidcControlWireFixture {
 	t.Helper()
 	f := &oidcControlWireFixture{now: time.Now(), codes: make(map[string]oidcWireCode)}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
@@ -854,6 +848,20 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 		}
 	}))
 	t.Cleanup(f.provider.Close)
+	return f
+}
+
+func newOIDCControlWireFixture(t *testing.T, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
+	return newOIDCControlWireFixtureConfigured(t, nil, traversalLimits...)
+}
+
+func newOIDCControlWireFixtureConfigured(t *testing.T, configure func(*provider.SecurityConfig), traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
+	return newOIDCControlWireFixtureOptions(t, configure, false, traversalLimits...)
+}
+
+func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.SecurityConfig), durableReceipts bool, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
+	t.Helper()
+	f := newOIDCWireIssuer(t)
 	dir := t.TempDir()
 	writerPublic, writerPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -885,7 +893,7 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 	callback := sha256.Sum256([]byte(f.provider.URL))
 	origins, _ := json.Marshal(map[string][]string{f.provider.URL: {"127.0.0.1/32"}})
 	for name, value := range map[string]string{
-		"LANTERN_AUTH_MODE": "oidc", "LANTERN_OIDC_ADMIN_ISSUER": f.provider.URL, "LANTERN_OIDC_ADMIN_SUBJECTS": `["admin","other"]`,
+		"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_PROFILE": "legacy-v1", "LANTERN_OIDC_ADMIN_ISSUER": f.provider.URL, "LANTERN_OIDC_ADMIN_SUBJECTS": `["admin","other"]`,
 		"LANTERN_OIDC_CLIENT_ID": "admin", "LANTERN_OIDC_API_AUDIENCE": "api", "LANTERN_OIDC_ALGORITHMS": `["EdDSA"]`, "LANTERN_OIDC_BROWSER_ORIGIN": "https://admin.example",
 		// This deterministic issuer reserves enrolled human subjects; its
 		// client-credentials profile uses disjoint client subjects. Dedicated
@@ -990,7 +998,14 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.Sec
 	f.changes = graphv1connect.NewLanternChangeServiceClient(&http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}, f.server.URL)
 	return f
 }
-func (f *oidcControlWireFixture) clock() time.Time { f.mu.Lock(); defer f.mu.Unlock(); return f.now }
+func (f *oidcControlWireFixture) clock() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.realClock {
+		return time.Now().UTC()
+	}
+	return f.now
+}
 func (f *oidcControlWireFixture) advance(d time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -3104,6 +3119,14 @@ func scopedSDKTLSServer(t *testing.T, f *oidcControlWireFixture) (*httptest.Serv
 	t.Helper()
 	tlsServer := httptest.NewUnstartedServer(f.server.Config.Handler)
 	tlsServer.EnableHTTP2 = true
+	caFile := configureSDKServerTLS(t, tlsServer)
+	tlsServer.StartTLS()
+	t.Cleanup(tlsServer.Close)
+	return tlsServer, caFile
+}
+
+func configureSDKServerTLS(t *testing.T, tlsServer *httptest.Server) string {
+	t.Helper()
 	caPrivate, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -3132,13 +3155,11 @@ func scopedSDKTLSServer(t *testing.T, f *oidcControlWireFixture) (*httptest.Serv
 		t.Fatal(err)
 	}
 	tlsServer.TLS = &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12}
-	tlsServer.StartTLS()
-	t.Cleanup(tlsServer.Close)
 	caFile := filepath.Join(t.TempDir(), "public-ca.pem")
 	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return tlsServer, caFile
+	return caFile
 }
 
 func TestAuth_PublicChangesBenchmarkConsumerRealWire(t *testing.T) {

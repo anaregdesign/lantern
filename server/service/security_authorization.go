@@ -16,7 +16,7 @@ func operationAuthorizationError(err error, binding security.ManagementBinding) 
 		return connect.NewError(securityErrorCode(err), err)
 	}
 	result := connect.NewError(connect.CodeFailedPrecondition, err)
-	detail, detailErr := connect.NewErrorDetail(&pb.SecurityOperationAuthorizationRequired{
+	detail, detailErr := boundedErrorDetail(&pb.SecurityOperationAuthorizationRequired{
 		ChangeId:        append([]byte(nil), binding.ChangeID[:]...),
 		ExpectedVersion: &pb.SecurityVersion{Revision: binding.ExpectedRevision, Digest: append([]byte(nil), binding.ExpectedDigest[:]...), Generation: append([]byte(nil), binding.Generation[:]...)},
 		IntentDigest:    append([]byte(nil), binding.IntentDigest[:]...),
@@ -61,6 +61,12 @@ func (h *SecurityConnectHandler) prepareReviewed(ctx context.Context, review *pb
 	return admission, prepared, nil
 }
 func (h *SecurityConnectHandler) PrepareSecurityChanges(ctx context.Context, req *connect.Request[pb.PrepareSecurityChangesRequest]) (*connect.Response[pb.PrepareSecurityChangesResponse], error) {
+	if h.current != nil {
+		return h.prepareCurrentChanges(ctx, req)
+	}
+	if req.Msg.CurrentReview != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrS1Contract)
+	}
 	if err := securityRequestError(req.Msg); err != nil {
 		return nil, err
 	}
@@ -84,6 +90,12 @@ func (h *SecurityConnectHandler) PrepareSecurityChanges(ctx context.Context, req
 	return securityReadResponse(ctx, admission, h.now(), response)
 }
 func (h *SecurityConnectHandler) BeginSecurityChangeAuthorization(ctx context.Context, req *connect.Request[pb.BeginSecurityChangeAuthorizationRequest]) (*connect.Response[pb.BeginSecurityChangeAuthorizationResponse], error) {
+	if h.current != nil {
+		return h.beginCurrentAuthorization(ctx, req)
+	}
+	if req.Msg.CurrentReview != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrS1Contract)
+	}
 	if err := securityRequestError(req.Msg); err != nil {
 		return nil, err
 	}
@@ -104,6 +116,12 @@ func (h *SecurityConnectHandler) BeginSecurityChangeAuthorization(ctx context.Co
 	return securityReadResponse(ctx, admission, h.now(), &pb.BeginSecurityChangeAuthorizationResponse{AuthorizationId: append([]byte(nil), start.ID[:]...), StartUrl: startURL, ExpiresAt: timestamppb.New(start.ExpiresAt)})
 }
 func (h *SecurityConnectHandler) GetSecurityChangeAuthorization(ctx context.Context, req *connect.Request[pb.GetSecurityChangeAuthorizationRequest]) (*connect.Response[pb.GetSecurityChangeAuthorizationResponse], error) {
+	if h.current != nil {
+		return h.readCurrentAuthorization(ctx, req)
+	}
+	if req.Msg.CurrentProfile != nil || req.Msg.AttemptAffinity != "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrS1Contract)
+	}
 	admission, err := h.admission(ctx, true)
 	if err != nil {
 		return nil, err

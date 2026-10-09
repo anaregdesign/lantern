@@ -14,11 +14,17 @@ final class LanternScopedChangeSource implements OfflineScopedChangeSource {
     required this.client,
     required this.responderId,
     this.prefix = '',
+    this.currentAuthorityBinding,
   });
 
   final LanternClient client;
   final String responderId;
   final String prefix;
+
+  /// Supply the online SDK's full current binding for current-v2. The hosted
+  /// legacy demo has an immutable client/credential lifetime; changing it
+  /// cancels this source. The label is cache partitioning, never authority.
+  final String Function()? currentAuthorityBinding;
 
   @override
   Future<OfflineScopedChangeSession> open({
@@ -33,6 +39,7 @@ final class LanternScopedChangeSource implements OfflineScopedChangeSource {
     return _Session(
       client,
       responderId,
+      currentAuthorityBinding ?? () => 'legacy-v1:${identityHashCode(client)}',
       prefix,
       bootstrap,
       cursor,
@@ -45,6 +52,7 @@ final class _Session implements OfflineScopedChangeSession {
   _Session(
     this.client,
     this.responderId,
+    this._authorityBinding,
     String prefix,
     bool bootstrap,
     OfflineScopedChangeCursor? cursor,
@@ -114,6 +122,11 @@ final class _Session implements OfflineScopedChangeSession {
   final LanternClient client;
   @override
   final String responderId;
+  final String Function() _authorityBinding;
+  // Also compiles against the hosted legacy port until the paired current
+  // source is published; the new port consumes this complete binding.
+  // ignore: annotate_overrides
+  String get authorityBinding => _authorityBinding();
   @override
   late final Stream<OfflineScopedChangeFrame> frames;
   late final LanternClientOfflineRemote _reads;

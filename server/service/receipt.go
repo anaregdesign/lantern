@@ -258,6 +258,9 @@ func (s *LanternService) GetReceiptStatuses(ctx context.Context, req *pb.GetRece
 		for _, observation := range observations {
 			blind = blind || observation.Status == mutationreceipt.Confirmed && !allowsReceiptResource(admission.Access(), observation.Receipt)
 		}
+		if err := bindCurrentReceiptOutput(ctx, admission, req, observations, blind); err != nil {
+			return nil, err
+		}
 		if blind {
 			statuses := make([]*pb.ReceiptStatus, len(ids))
 			for i, id := range ids {

@@ -176,7 +176,7 @@ test("logout clears protected views", async ({ page }) => {
   ).toHaveCount(0);
 });
 for (const width of [1280, 390]) {
-  test(`ordinary session without recent evidence offers explicit step-up at ${width}px`, async ({
+  test(`ordinary session needs no generic step-up at ${width}px`, async ({
     page,
   }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
@@ -185,7 +185,7 @@ for (const width of [1280, 390]) {
     await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Verify identity" }),
-    ).toBeVisible();
+    ).toHaveCount(0);
     await expect(
       page.getByRole("button", { name: "Sign in with Example" }),
     ).toHaveCount(0);
@@ -207,22 +207,5 @@ for (const width of [1280, 390]) {
       path: testInfo.outputPath(`ordinary-session-${width}.png`),
       fullPage: true,
     });
-    // Observe the rendered controller's redirect without contacting an IdP.
-    await page.route(`${fixture.primary}/auth/login?**`, (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "text/plain",
-        body: "Step-up",
-      }),
-    );
-    const redirect = page.waitForRequest(
-      (request) => new URL(request.url()).pathname === "/auth/login",
-    );
-    await page.getByRole("button", { name: "Verify identity" }).click();
-    const url = new URL((await redirect).url());
-    expect(url.origin).toBe(fixture.primary);
-    expect(url.searchParams.get("issuer")).toBe("https://idp.example");
-    expect(url.searchParams.get("step_up")).toBe("true");
-    expect(url.searchParams.get("return")).toBe("/");
   });
 }

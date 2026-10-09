@@ -48,6 +48,19 @@ func NewConfiguredSecurityPeer(runtime *SecurityRuntime, peer *PeerIdentityRunti
 		runtime.peer = peer
 		return nil, nil
 	}
+	if runtime.current != nil {
+		if runtime.native != nil || runtime.authority != nil || runtime.receiver != nil || runtime.peer != nil {
+			return nil, errors.New("current cohort cannot share a legacy policy authority")
+		}
+		if peer != nil {
+			d, p := peer.store.Domain(), runtime.current.Profile()
+			if d.AuthMode != "oidc" || d.CurrentProfile != p.Binding() || d.SecurityGeneration != p.Generation || d.WriterPublicKey != [32]byte{} {
+				return nil, errors.New("data workload current profile mismatch")
+			}
+		}
+		runtime.peer = peer
+		return nil, nil // Current private consensus/renewal has its own listener.
+	}
 	if peer == nil {
 		if runtime.authority == nil {
 			return nil, errors.New("security replica requires workload membership")

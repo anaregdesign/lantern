@@ -24,6 +24,7 @@ import (
 // an anonymous fallback for an invalid or unavailable OIDC runtime.
 type SecurityConfig struct {
 	Mode                                    string
+	Profile, CurrentConfigFile              string
 	StoreMode, StorePath                    string
 	Generation                              [16]byte
 	WriterKeyFile, WriterPublicKeyFile      string
@@ -45,6 +46,7 @@ func LoadSecurityConfig() (SecurityConfig, error)  { return loadSecurityConfig()
 func NewSecurityConfig(cfg *Config) SecurityConfig { return cfg.Security }
 
 var securityEnvironmentNames = []string{
+	"LANTERN_SECURITY_PROFILE", "LANTERN_SECURITY_CURRENT_CONFIG_FILE",
 	"LANTERN_OIDC_ADMIN_ISSUER", "LANTERN_OIDC_ADMIN_SUBJECTS", "LANTERN_OIDC_CLIENT_ID", "LANTERN_OIDC_API_AUDIENCE",
 	"LANTERN_OIDC_BROWSER_ORIGIN", "LANTERN_OIDC_REDIRECT_URI", "LANTERN_OIDC_ALGORITHMS", "LANTERN_OIDC_SECRET_REF",
 	"LANTERN_OIDC_SECRET_BINDINGS", "LANTERN_OIDC_PRIVATE_ORIGINS", "LANTERN_OIDC_ROOT_CA_FILE", "LANTERN_OIDC_TRUSTED_PROXY_IPS",
@@ -98,50 +100,65 @@ func loadSecurityConfig() (SecurityConfig, error) {
 		}
 	}
 	required := func(name string) string { return envconfig.String(name, "") }
+	config.Profile = required("LANTERN_SECURITY_PROFILE")
+	config.CurrentConfigFile = required("LANTERN_SECURITY_CURRENT_CONFIG_FILE")
+	if config.Profile != "current-v2" && config.Profile != "legacy-v1" {
+		return SecurityConfig{}, errors.New("OIDC requires an explicit current-v2 or legacy-v1 profile")
+	}
 	config.StoreMode = required("LANTERN_SECURITY_STORE_MODE")
-	config.StorePath = required("LANTERN_SECURITY_STORE_PATH")
-	config.NodeRole = required("LANTERN_SECURITY_NODE_ROLE")
-	config.WriterKeyFile = required("LANTERN_SECURITY_WRITER_KEY_FILE")
-	config.WriterPublicKeyFile = required("LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE")
-	config.WriterEndpoint = required("LANTERN_SECURITY_WRITER_ENDPOINT")
 	config.BrowserOrigin = required("LANTERN_OIDC_BROWSER_ORIGIN")
-	issuer := security.Issuer{URL: required("LANTERN_OIDC_ADMIN_ISSUER"), Enabled: true, ClientID: required("LANTERN_OIDC_CLIENT_ID"), APIAudience: required("LANTERN_OIDC_API_AUDIENCE"), RedirectURI: required("LANTERN_OIDC_REDIRECT_URI"), SecretRef: envconfig.String("LANTERN_OIDC_SECRET_REF", "")}
-	qualification := envconfig.String("LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED", "")
-	if qualification != "" && qualification != "true" && qualification != "false" {
-		return SecurityConfig{}, errors.New("invalid human subject namespace qualification")
-	}
-	issuer.HumanSubjectNamespaceQualified = qualification == "true"
-	if err := strictSecurityConfigJSON(envconfig.String("LANTERN_OIDC_ALGORITHMS", `["RS256"]`), &issuer.Algorithms); err != nil {
-		return SecurityConfig{}, err
-	}
-	if err := strictSecurityConfigJSON(required("LANTERN_OIDC_ADMIN_SUBJECTS"), &config.Bootstrap.AdminSubjects); err != nil {
-		return SecurityConfig{}, err
-	}
-	revision, err := strconv.ParseUint(required("LANTERN_SECURITY_BOOTSTRAP_REVISION"), 10, 64)
-	if err != nil || revision == 0 {
-		return SecurityConfig{}, errors.New("security bootstrap revision must be a positive integer")
-	}
-	config.Bootstrap.Revision = revision
-	config.Bootstrap.Issuer = issuer
-	if err := strictSecurityConfigJSON(envconfig.String("LANTERN_SECURITY_BOOTSTRAP_ROLES", "[]"), &config.Bootstrap.Roles); err != nil {
-		return SecurityConfig{}, err
-	}
-	config.MachineBootstrapFile = envconfig.String("LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE", "")
-	if config.MachineBootstrapFile != "" {
-		if config.NodeRole != "writer" {
-			return SecurityConfig{}, errors.New("only the security writer may read machine bootstrap credentials")
+	if config.Profile == "current-v2" {
+		allowed := map[string]bool{"LANTERN_SECURITY_PROFILE": true, "LANTERN_SECURITY_CURRENT_CONFIG_FILE": true, "LANTERN_SECURITY_STORE_MODE": true, "LANTERN_OIDC_BROWSER_ORIGIN": true, "LANTERN_OIDC_ROOT_CA_FILE": true, "LANTERN_OIDC_SECRET_BINDINGS": true, "LANTERN_OIDC_PRIVATE_ORIGINS": true, "LANTERN_OIDC_TRUSTED_PROXY_IPS": true}
+		for _, name := range securityEnvironmentNames {
+			if value, set := os.LookupEnv(name); set && value != "" && !allowed[name] {
+				return SecurityConfig{}, errors.New("current-v2 cannot consume legacy writer/bootstrap/clock settings")
+			}
 		}
-		config.Bootstrap.Machines, err = loadSecurityMachines(config.MachineBootstrapFile)
-		if err != nil {
+	} else {
+		config.StorePath = required("LANTERN_SECURITY_STORE_PATH")
+		config.NodeRole = required("LANTERN_SECURITY_NODE_ROLE")
+		config.WriterKeyFile = required("LANTERN_SECURITY_WRITER_KEY_FILE")
+		config.WriterPublicKeyFile = required("LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE")
+		config.WriterEndpoint = required("LANTERN_SECURITY_WRITER_ENDPOINT")
+		config.BrowserOrigin = required("LANTERN_OIDC_BROWSER_ORIGIN")
+		issuer := security.Issuer{URL: required("LANTERN_OIDC_ADMIN_ISSUER"), Enabled: true, ClientID: required("LANTERN_OIDC_CLIENT_ID"), APIAudience: required("LANTERN_OIDC_API_AUDIENCE"), RedirectURI: required("LANTERN_OIDC_REDIRECT_URI"), SecretRef: envconfig.String("LANTERN_OIDC_SECRET_REF", "")}
+		qualification := envconfig.String("LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED", "")
+		if qualification != "" && qualification != "true" && qualification != "false" {
+			return SecurityConfig{}, errors.New("invalid human subject namespace qualification")
+		}
+		issuer.HumanSubjectNamespaceQualified = qualification == "true"
+		if err := strictSecurityConfigJSON(envconfig.String("LANTERN_OIDC_ALGORITHMS", `["RS256"]`), &issuer.Algorithms); err != nil {
 			return SecurityConfig{}, err
 		}
+		if err := strictSecurityConfigJSON(required("LANTERN_OIDC_ADMIN_SUBJECTS"), &config.Bootstrap.AdminSubjects); err != nil {
+			return SecurityConfig{}, err
+		}
+		revision, err := strconv.ParseUint(required("LANTERN_SECURITY_BOOTSTRAP_REVISION"), 10, 64)
+		if err != nil || revision == 0 {
+			return SecurityConfig{}, errors.New("security bootstrap revision must be a positive integer")
+		}
+		config.Bootstrap.Revision = revision
+		config.Bootstrap.Issuer = issuer
+		if err := strictSecurityConfigJSON(envconfig.String("LANTERN_SECURITY_BOOTSTRAP_ROLES", "[]"), &config.Bootstrap.Roles); err != nil {
+			return SecurityConfig{}, err
+		}
+		config.MachineBootstrapFile = envconfig.String("LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE", "")
+		if config.MachineBootstrapFile != "" {
+			if config.NodeRole != "writer" {
+				return SecurityConfig{}, errors.New("only the security writer may read machine bootstrap credentials")
+			}
+			config.Bootstrap.Machines, err = loadSecurityMachines(config.MachineBootstrapFile)
+			if err != nil {
+				return SecurityConfig{}, err
+			}
+		}
+		rawGeneration := required("LANTERN_SECURITY_GENERATION")
+		generation, err := hex.DecodeString(rawGeneration)
+		if err != nil || len(generation) != 16 || rawGeneration != hex.EncodeToString(generation) {
+			return SecurityConfig{}, errors.New("security generation must be 32 lowercase hexadecimal characters")
+		}
+		copy(config.Generation[:], generation)
 	}
-	rawGeneration := required("LANTERN_SECURITY_GENERATION")
-	generation, err := hex.DecodeString(rawGeneration)
-	if err != nil || len(generation) != 16 || rawGeneration != hex.EncodeToString(generation) {
-		return SecurityConfig{}, errors.New("security generation must be 32 lowercase hexadecimal characters")
-	}
-	copy(config.Generation[:], generation)
 	config.RootCAFile = envconfig.String("LANTERN_OIDC_ROOT_CA_FILE", "")
 	if err := strictSecurityConfigJSON(envconfig.String("LANTERN_OIDC_SECRET_BINDINGS", "{}"), &config.SecretBindings); err != nil {
 		return SecurityConfig{}, err
@@ -180,12 +197,15 @@ func loadSecurityConfig() (SecurityConfig, error) {
 		}
 		config.TrustedProxyIPs = append(config.TrustedProxyIPs, ip.Unmap())
 	}
-	capText := envconfig.String("LANTERN_SECURITY_MAX_JOURNAL_BYTES", strconv.FormatInt(security.DefaultSystemJournalMax, 10))
-	config.MaxJournalBytes, err = strconv.ParseInt(capText, 10, 64)
-	if err != nil || config.MaxJournalBytes < 20<<20 || config.MaxJournalBytes > security.MaxSystemJournalBytes {
-		return SecurityConfig{}, errors.New("security journal cap must be between 20 and 512 MiB")
+	if config.Profile == "legacy-v1" {
+		capText := envconfig.String("LANTERN_SECURITY_MAX_JOURNAL_BYTES", strconv.FormatInt(security.DefaultSystemJournalMax, 10))
+		var err error
+		config.MaxJournalBytes, err = strconv.ParseInt(capText, 10, 64)
+		if err != nil || config.MaxJournalBytes < 20<<20 || config.MaxJournalBytes > security.MaxSystemJournalBytes {
+			return SecurityConfig{}, errors.New("security journal cap must be between 20 and 512 MiB")
+		}
+		config.ClockQualified = envconfig.String("LANTERN_SECURITY_CLOCK_QUALIFIED", "") == "true"
 	}
-	config.ClockQualified = envconfig.String("LANTERN_SECURITY_CLOCK_QUALIFIED", "") == "true"
 	if err := validateSecurityConfig(config); err != nil {
 		return SecurityConfig{}, err
 	}
@@ -216,6 +236,12 @@ func validateSecurityConfig(config SecurityConfig) error {
 			return errors.New("OFF mode cannot ignore OIDC/security configuration")
 		}
 		return nil
+	}
+	if config.Profile == "current-v2" {
+		return validateCurrentSecurityConfig(config)
+	}
+	if config.Profile != "legacy-v1" || config.CurrentConfigFile != "" {
+		return errors.New("OIDC requires an explicit isolated security profile")
 	}
 	if config.Mode != "oidc" || (config.StoreMode != "fresh" && config.StoreMode != "restart") || !filepath.IsAbs(config.StorePath) || config.Generation == [16]byte{} || !filepath.IsAbs(config.WriterPublicKeyFile) || !config.ClockQualified {
 		return errors.New("OIDC requires explicit durable store, generation, pinned writer key and qualified clock")

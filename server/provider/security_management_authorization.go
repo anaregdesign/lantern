@@ -35,6 +35,10 @@ func (r *SecurityRuntime) readManagementAuthorization(ctx context.Context, admis
 // final review. It permits starting the exact actor-bound Code challenge, not
 // approval or session access. This also supports qualified human Bearer users.
 func (r *SecurityRuntime) browserManagementAuthorization(w http.ResponseWriter, req *http.Request) {
+	if r.current != nil {
+		r.currentBrowserManagementAuthorization(w, req)
+		return
+	}
 	if req.Method != http.MethodGet || req.URL.RawQuery != "" || !r.browserWriter(req) {
 		browserHTTPError(w, connect.CodeUnavailable)
 		return

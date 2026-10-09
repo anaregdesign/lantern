@@ -276,6 +276,9 @@ func decodeSecurityAssignment(result *security.Change, assignment *pb.SecurityRo
 	return err
 }
 func securityErrorCode(err error) connect.Code {
+	if errors.Is(err, security.ErrS1Contract) {
+		return connect.CodeInvalidArgument
+	}
 	switch {
 	case errors.Is(err, security.ErrStoreUnavailable), errors.Is(err, security.ErrAuthorityUnavailable):
 		return connect.CodeUnavailable

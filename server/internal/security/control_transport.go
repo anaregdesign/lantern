@@ -160,6 +160,17 @@ func (o *s3aOwner) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var response []byte
 	switch r.URL.Path {
+	case currentOriginalPath:
+		raw, err := s3aReadBody(r.Body, currentOriginalRequestLimit)
+		if err != nil || r.ContentLength > currentOriginalRequestLimit || check() != nil {
+			fail(http.StatusBadRequest)
+			return
+		}
+		response, err = o.originalResponse(r.Context(), raw)
+		if err != nil {
+			fail(http.StatusServiceUnavailable)
+			return
+		}
 	case authorityRenewalPath:
 		if o.receiver == nil || r.ContentLength > int64(authorityRenewalRequestLimit) {
 			fail(http.StatusForbidden)

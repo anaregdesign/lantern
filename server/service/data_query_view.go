@@ -83,6 +83,20 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 	if edgeCollection && (edges.Within(tailPrefix).Empty() || edges.Within(headPrefix).Empty()) {
 		return nil, dataPermissionError()
 	}
+	var resources []security.PublicOutputResource
+	if headModification {
+		resources = append(resources,
+			security.PublicOutputResource{Kind: security.OutputVertexCollection, Prefix: tailPrefix, Actions: []security.Action{security.VertexRead}},
+			security.PublicOutputResource{Kind: security.OutputVertexCollection, Prefix: headPrefix, Actions: []security.Action{security.VertexWrite}})
+	} else {
+		resources = append(resources, security.PublicOutputResource{Kind: security.OutputVertexCollection, Prefix: vertexPrefix, Actions: actions})
+	}
+	if needsEdges && !edges.Empty() {
+		resources = append(resources, security.PublicOutputResource{Kind: security.OutputEdgeCollection, Prefix: tailPrefix, Actions: edgeActions}, security.PublicOutputResource{Kind: security.OutputEdgeCollection, Prefix: headPrefix, Actions: edgeActions})
+	}
+	if err := bindCurrentDataOutput(ctx, admission, message, resources); err != nil {
+		return nil, err
+	}
 	all := true
 	for _, action := range edgeActions {
 		all = all && access.AllowsAll(action)

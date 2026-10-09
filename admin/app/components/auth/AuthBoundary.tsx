@@ -15,6 +15,11 @@ export function AuthBoundary({ children }: { children: ReactNode }) {
     return <div key={`${state.kind}:${state.epoch}`}>{children}</div>;
   return (
     <section className={styles.panel} aria-label="Authentication">
+      {controller.getLogoutMessage() && (
+        <MessageBar>
+          <MessageBarBody>{controller.getLogoutMessage()}</MessageBarBody>
+        </MessageBar>
+      )}
       {state.kind === "checking" ? (
         <Spinner label="Checking authentication" />
       ) : (

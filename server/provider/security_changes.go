@@ -23,7 +23,9 @@ func (r *SecurityRuntime) PublicChangeHTTPHandler(svc *service.LanternService, c
 		return "", nil, err
 	}
 	options = append(options, service.StrictJSONHandlerOption(), connect.WithReadMaxBytes(16<<10), connect.WithSendMaxBytes(1<<20))
-	path, handler := graphv1connect.NewLanternChangeServiceHandler(changes, options...)
+	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternChangeServiceName+"/", func(options ...connect.HandlerOption) (string, http.Handler) {
+		return graphv1connect.NewLanternChangeServiceHandler(changes, options...)
+	}, options...)
 	return path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		ctx, err := r.AuthenticateBearer(req.Context(), req.Header)
 		if err != nil {
@@ -44,12 +46,20 @@ func (r *SecurityRuntime) BrowserChangeHTTPHandler(svc *service.LanternService, 
 		return "", nil, err
 	}
 	options = append(options, service.StrictJSONHandlerOption(), connect.WithReadMaxBytes(16<<10), connect.WithSendMaxBytes(1<<20))
-	path, handler := graphv1connect.NewLanternChangeServiceHandler(changes, options...)
+	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternChangeServiceName+"/", func(options ...connect.HandlerOption) (string, http.Handler) {
+		return graphv1connect.NewLanternChangeServiceHandler(changes, options...)
+	}, options...)
 	bounded := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { r.serveBoundedChanges(w, req, handler) })
 	return "/browser" + path, r.BrowserRPCHandler(path, bounded), nil
 }
 
 func (r *SecurityRuntime) serveBoundedChanges(w http.ResponseWriter, req *http.Request, handler http.Handler) {
+	if r.current != nil {
+		// Each immutable encoded unit is independently authorized by the
+		// native owner. A previously authorized unit may complete late (A).
+		handler.ServeHTTP(w, req)
+		return
+	}
 	wallStarted := time.Now()
 	lifetime := 28 * time.Second
 	if r.mode == "oidc" {

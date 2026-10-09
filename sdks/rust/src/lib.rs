@@ -29,6 +29,8 @@ mod prefix;
 mod scans;
 mod scoped_changes;
 mod search;
+mod security;
+pub use security::CurrentAuthorityBinding;
 mod transport;
 mod traversal;
 mod value;

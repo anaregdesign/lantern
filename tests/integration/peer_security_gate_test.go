@@ -249,7 +249,7 @@ func TestPeerSecurityPolicyLeaseRealConnectFreshCutAndRevocation(t *testing.T) {
 	var policies [2]*provider.SecurityPeerRuntime
 	f := newPeerSecurityFixture(t, peerSecurityOptions{Generation: [16]byte{8}, WriterKey: publicBinding,
 		Mount: func(f *peerSecurityFixture, i int, data *service.ServingRuntime, mux *http.ServeMux) {
-			config := provider.SecurityConfig{Mode: "oidc", StoreMode: "fresh", StorePath: filepath.Join(dir, "policy-"+string(rune('a'+i))+".wal"),
+			config := provider.SecurityConfig{Mode: "oidc", Profile: "legacy-v1", StoreMode: "fresh", StorePath: filepath.Join(dir, "policy-"+string(rune('a'+i))+".wal"),
 				Generation: [16]byte{8}, WriterPublicKeyFile: publicPath, NodeRole: "replica", WriterEndpoint: f.manifest.Members[0].Origin,
 				BrowserOrigin: "https://admin.example", ClockQualified: true, Clock: clock}
 			config.Bootstrap.Revision = 1

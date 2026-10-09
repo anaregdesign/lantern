@@ -23,7 +23,7 @@ export function ChangeReview({
     <section className={styles.review} aria-label="Review security change">
       <Title3>Review security change</Title3>
       <p>{review.label}</p>
-      <p>Revision {review.expectedRevision.toString()}</p>
+      <p>Policy cut {review.version.currentCut?.sequence.toString()}</p>
       <details>
         <summary>Change details</summary>
         <pre className={styles.details}>{reviewSummary(review.changes)}</pre>

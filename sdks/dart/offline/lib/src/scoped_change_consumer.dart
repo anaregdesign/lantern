@@ -31,6 +31,12 @@ abstract interface class OfflineScopedChangeSession
   /// This label grants no permission and never substitutes for Server auth.
   String get responderId;
 
+  /// Complete profile/cut/credential binding read by the online SDK. Update
+  /// this value when credentials or scope change; the consumer rejects late
+  /// frames/read completions and hides confirmed data while preserving pending
+  /// mutation identities. This application-owned label grants no permission.
+  String get authorityBinding;
+
   /// Single subscription with transport pause/resume and bounded buffering.
   Stream<OfflineScopedChangeFrame> get frames;
 
@@ -70,7 +76,8 @@ Future<void> runOfflineScopedChangeConsumer({
       session = opened;
       _checkCancellation(cancellation);
       final responder = opened.responderId;
-      _checkResponder(opened, responder);
+      final authority = opened.authorityBinding;
+      _checkResponder(opened, responder, authority);
       final active = StreamIterator<OfflineScopedChangeFrame>(opened.frames);
       iterator = active;
       removeCancellation = cancellation.listen((_) => active.cancel().ignore());
@@ -79,7 +86,7 @@ Future<void> runOfflineScopedChangeConsumer({
         if (!first.bootstrap || first.cursor == null) {
           throw const OfflineChangeGapException();
         }
-        _checkResponder(opened, responder);
+        _checkResponder(opened, responder, authority);
         await repository.store.transaction(
           (tx) => tx.resetScopedChangeCursor(partitionId, first.cursor),
         );
@@ -89,14 +96,14 @@ Future<void> runOfflineScopedChangeConsumer({
             (tx) => tx.unknownResidents(partitionId, limit: 1),
           );
           if (unfinished.isEmpty) break;
-          _checkResponder(opened, responder);
+          _checkResponder(opened, responder, authority);
           final completed = await repository.revalidateResidentBatch(
             partitionId,
             recoveryRemote: opened,
             cancellation: cancellation,
-            beforeCommit: () => _checkResponder(opened, responder),
+            beforeCommit: () => _checkResponder(opened, responder, authority),
           );
-          _checkResponder(opened, responder);
+          _checkResponder(opened, responder, authority);
           if (completed == 0) throw const OfflineChangeGapException();
         }
       }
@@ -104,7 +111,7 @@ Future<void> runOfflineScopedChangeConsumer({
         _checkCancellation(cancellation);
         final frame = await _next(active, cancellation);
         if (frame.bootstrap) throw const OfflineChangeGapException();
-        _checkResponder(opened, responder);
+        _checkResponder(opened, responder, authority);
         await repository.store.transaction(
           (tx) => tx.applyScopedChangeFrame(partitionId, frame),
         );
@@ -133,10 +140,17 @@ void _checkCancellation(LanternCancellationToken cancellation) {
   if (cancellation.isCanceled) throw const OfflineCanceledException();
 }
 
-void _checkResponder(OfflineScopedChangeSession session, String expected) {
+void _checkResponder(
+  OfflineScopedChangeSession session,
+  String expected,
+  String authority,
+) {
   if (expected.isEmpty ||
       utf8.encode(expected).length > 512 ||
-      session.responderId != expected) {
+      session.responderId != expected ||
+      authority.isEmpty ||
+      utf8.encode(authority).length > 4096 ||
+      session.authorityBinding != authority) {
     throw const OfflineChangeGapException();
   }
 }

@@ -29,6 +29,9 @@ func (r *SecurityRuntime) Ready(ctx context.Context) bool {
 	if r.mode == "off" {
 		return true
 	}
+	if r.current != nil {
+		return r.current.Ready(ctx)
+	}
 	if r.native == nil {
 		return false
 	}

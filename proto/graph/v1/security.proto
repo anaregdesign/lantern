@@ -50,6 +50,12 @@ message GetAuthCapabilitiesResponse {
   // Explicit OFF is ready; OIDC readiness requires current serving authority.
   // False never implies OFF, and clients must reject unknown protocol versions.
   bool ready = 5;
+  // Required when protocol_version=2. Configuration identity, never a lease.
+  CurrentAuthorityProfile current_profile = 6;
+  // Routing capability only: an eligible member without an owned origin may
+  // read/complete original work, but cannot mint a new change or login session.
+  bool current_origin_enabled = 7;
+  uint32 current_member = 8;
 }
 
 enum SecurityPrincipalKind {
@@ -152,6 +158,11 @@ message SecurityVersion {
   uint64 revision = 1;
   bytes digest = 2;
   bytes generation = 3;
+  // Current protocol uses these fields and leaves the legacy scalar fields
+  // above empty. Never compare cuts from different profiles by sequence.
+  CurrentAuthorityProfile current_profile = 4;
+  CurrentSemanticCut current_cut = 5;
+  bytes admission_binding = 6;
 }
 message GetCurrentPrincipalRequest {}
 message GetCurrentPrincipalResponse {
@@ -169,10 +180,32 @@ message GetCurrentPrincipalResponse {
 message BrowserSession {
   AuthMode mode = 1;
   GetCurrentPrincipalResponse principal = 2;
+  CurrentAuthorityProfile current_profile = 3;
 }
 message SessionRevocation {
   SecurityVersion version = 1;
   SecurityEnforcementState enforcement = 2;
+  CurrentSecurityChangeResult current_result = 3;
+  // Local cookie removal is independent of durable cluster completion.
+  bool local_cookie_cleared = 4;
+  // First, retain this server-minted review before dispatching logout Apply.
+  CurrentSessionRevocationReview current_review = 5;
+}
+message CurrentSessionRevocationReview {
+  CurrentAuthorityProfile profile = 1;
+  CurrentSemanticCut expected_cut = 2;
+  CurrentSecurityChangeID change_id = 3;
+  SecurityIdentity actor = 4;
+  bytes intent_digest = 5;
+  string session_digest = 6;
+  uint64 session_lineage = 7;
+}
+message CurrentLogoutRequest {
+  CurrentAuthorityProfile profile = 1;
+  bool prepare_only = 2;
+  CurrentSessionRevocationReview review = 3;
+  // Same-origin local cookie deletion makes no cluster completion claim.
+  bool local_only = 4;
 }
 message ListIssuersRequest {
   uint32 limit = 1;
@@ -256,6 +289,7 @@ message ListSecurityAuditResponse {
   repeated SecurityAuditRecord records = 1;
   SecurityVersion version = 2;
   string next_cursor = 3;
+  repeated CurrentSecurityAuditRecord current_records = 4;
 }
 message GetRoleTemplatesRequest {
   string prefix = 1;
@@ -325,18 +359,23 @@ message ApplySecurityChangesRequest {
   repeated SecurityChange changes = 3;
   // Purpose proof is excluded from retained canonical business intent.
   bytes authorization_proof = 4;
+  // Protocol 2: legacy expected_revision/change_id/changes must be absent.
+  CurrentSecurityReview current_review = 5;
 }
 message ApplySecurityChangesResponse {
   SecurityVersion version = 1;
   repeated bool applied = 2;
   bool replayed = 3;
   SecurityEnforcementState enforcement = 4;
+  CurrentSecurityChangeResult current_result = 5;
 }
 message ApplySecurityChangeRequest {
   uint64 expected_revision = 1;
   bytes change_id = 2;
   SecurityChange change = 3;
   bytes authorization_proof = 4;
+  // Exactly one change; the same review/identity as the plural operation.
+  CurrentSecurityReview current_review = 5;
 }
 
 message SecurityChangeReview {
@@ -377,6 +416,9 @@ enum SecurityAuthorizationRequirement {
 }
 message PrepareSecurityChangesRequest {
   SecurityChangeReview review = 1;
+  // First preparation supplies profile/cut/changes only. The enrolled origin
+  // allocates the identity. A retained review resolves its original operation.
+  CurrentSecurityReview current_review = 2;
 }
 message PrepareSecurityChangesResponse {
   SecurityVersion expected_version = 1;
@@ -385,14 +427,20 @@ message PrepareSecurityChangesResponse {
   SecurityAuthorizationRequirement requirement = 4;
   // A known committed ID is recovered using its original retained proof.
   GetSecurityChangeStatusResponse retained_commit = 5;
+  CurrentSecurityReview current_review = 6;
+  CurrentSecurityChangeResult current_result = 7;
 }
 message BeginSecurityChangeAuthorizationRequest {
   SecurityChangeReview review = 1;
+  CurrentSecurityReview current_review = 2;
 }
 message BeginSecurityChangeAuthorizationResponse {
   bytes authorization_id = 1;
   string start_url = 2;
   google.protobuf.Timestamp expires_at = 3;
+  CurrentAuthorityProfile current_profile = 4;
+  // Opaque, process/attempt-bound routing hint, not authentication authority.
+  string attempt_affinity = 5;
 }
 enum SecurityAuthorizationState {
   SECURITY_AUTHORIZATION_STATE_UNSPECIFIED = 0;
@@ -402,21 +450,28 @@ enum SecurityAuthorizationState {
 }
 message GetSecurityChangeAuthorizationRequest {
   bytes authorization_id = 1;
+  CurrentAuthorityProfile current_profile = 2;
+  string attempt_affinity = 3;
 }
 message GetSecurityChangeAuthorizationResponse {
   bytes authorization_id = 1;
   SecurityAuthorizationState state = 2;
   bytes authorization_proof = 3;
   google.protobuf.Timestamp expires_at = 4;
+  CurrentAuthorityProfile current_profile = 5;
 }
 message ApplySecurityChangeResponse {
   SecurityVersion version = 1;
   bool applied = 2;
   bool replayed = 3;
   SecurityEnforcementState enforcement = 4;
+  CurrentSecurityChangeResult current_result = 5;
 }
 message GetSecurityChangeStatusRequest {
   bytes change_id = 1;
+  CurrentSecurityChangeID current_change_id = 2;
+  CurrentAuthorityProfile current_profile = 3;
+  bytes current_intent_digest = 4;
 }
 
 message GetSecurityChangeStatusResponse {
@@ -425,4 +480,116 @@ message GetSecurityChangeStatusResponse {
   // Echoes the exact requested immutable ID. Unknown or retired IDs are indeterminate.
   bytes change_id = 2;
   SecurityEnforcementState enforcement = 4;
+  CurrentSecurityChangeResult current_result = 5;
+}
+
+// Public current authority protocol 2. These are identity/status data only;
+// replay/current authority is always verified independently by the owner.
+message CurrentAuthorityProfile {
+  uint32 version = 1;
+  bytes domain = 2;
+  bytes cohort = 3;
+  bytes generation = 4;
+  bytes protocol = 5;
+  bytes time_profile = 6;
+  bytes membership = 7;
+  bytes configuration = 8;
+}
+message CurrentSemanticCut {
+  uint32 version = 1;
+  bytes domain = 2;
+  bytes cohort = 3;
+  bytes generation = 4;
+  uint64 sequence = 5;
+  bytes previous = 6;
+  bytes projection = 7;
+  bytes frontier = 8;
+  bytes fences = 9;
+  bytes policy = 10;
+}
+message CurrentSecurityChangeID {
+  uint32 version = 1;
+  bytes domain = 2;
+  bytes cohort = 3;
+  uint64 namespace = 4;
+  bytes nonce = 5;
+}
+message CurrentSecurityReview {
+  CurrentAuthorityProfile profile = 1;
+  CurrentSemanticCut expected_cut = 2;
+  CurrentSecurityChangeID change_id = 3;
+  SecurityIdentity actor = 4;
+  bytes intent_digest = 5;
+  repeated SecurityChange changes = 6;
+}
+message CurrentControlCommit {
+  uint32 version = 1;
+  bytes domain = 2;
+  bytes cohort = 3;
+  bytes membership = 4;
+  bytes configuration = 5;
+  uint64 slot = 6;
+  bytes value = 7;
+}
+enum CurrentSecurityDisposition {
+  CURRENT_SECURITY_DISPOSITION_UNSPECIFIED = 0;
+  CURRENT_SECURITY_DISPOSITION_APPLIED = 1;
+  CURRENT_SECURITY_DISPOSITION_REJECTED_CAS = 2;
+  CURRENT_SECURITY_DISPOSITION_REJECTED_ADMIN = 3;
+  CURRENT_SECURITY_DISPOSITION_REJECTED_AUTHORITY = 4;
+  CURRENT_SECURITY_DISPOSITION_REJECTED_PURPOSE = 5;
+  CURRENT_SECURITY_DISPOSITION_REJECTED_CAPACITY = 6;
+  CURRENT_SECURITY_DISPOSITION_REJECTED_INVARIANT = 7;
+}
+message CurrentSecurityItemOutcome {
+  uint32 index = 1;
+  string kind = 2;
+  CurrentSecurityDisposition disposition = 3;
+}
+message CurrentSecurityOriginalOutcome {
+  CurrentSecurityChangeID change_id = 1;
+  bytes intent_digest = 2;
+  bytes handoff_digest = 3;
+  CurrentControlCommit commit = 4;
+  CurrentSecurityDisposition disposition = 5;
+  repeated CurrentSecurityItemOutcome items = 6;
+  CurrentSemanticCut observed_cut = 7;
+  CurrentSemanticCut resulting_cut = 8;
+}
+enum CurrentSecurityProgress {
+  CURRENT_SECURITY_PROGRESS_UNSPECIFIED = 0;
+  // Local absence/timeout/retirement never proves safe nonexecution.
+  CURRENT_SECURITY_PROGRESS_UNRESOLVED = 1;
+  CURRENT_SECURITY_PROGRESS_ORIGIN_DURABLE = 2;
+  CURRENT_SECURITY_PROGRESS_CHOSEN = 3;
+  CURRENT_SECURITY_PROGRESS_APPLIED = 4;
+}
+enum CurrentAuthorizationStopObservation {
+  CURRENT_AUTHORIZATION_STOP_OBSERVATION_UNSPECIFIED = 0;
+  CURRENT_AUTHORIZATION_STOP_OBSERVATION_NOT_OBSERVED = 1;
+  CURRENT_AUTHORIZATION_STOP_OBSERVATION_WAITING = 2;
+  // New authorizations using old cuts have stopped under this profile. This
+  // does not assert physical delivery or termination of an already authorized A.
+  CURRENT_AUTHORIZATION_STOP_OBSERVATION_OLD_CUT_NEW_AUTHORIZATIONS_STOPPED = 3;
+}
+message CurrentSecurityChangeResult {
+  CurrentAuthorityProfile profile = 1;
+  CurrentSecurityChangeID change_id = 2;
+  bytes intent_digest = 3;
+  CurrentSecurityProgress progress = 4;
+  CurrentSecurityOriginalOutcome original = 5;
+  CurrentAuthorizationStopObservation stop_observation = 6;
+}
+message CurrentSecurityAuditRecord {
+  CurrentSecurityChangeResult result = 1;
+  bytes actor_digest = 2;
+  string operation = 3;
+}
+// This invocation was refused before H, without settling any earlier
+// ambiguous invocation. Preserve the original identity for status-first use.
+message CurrentSecurityInvocationRejected {
+  CurrentAuthorityProfile profile = 1;
+  CurrentSecurityChangeID change_id = 2;
+  bytes intent_digest = 3;
+  bool purpose_required = 4;
 }

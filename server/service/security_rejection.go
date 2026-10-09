@@ -28,7 +28,7 @@ func (h *SecurityConnectHandler) precommitRejectionError(err error, reason pb.Se
 	if _, statusErr := h.store.ChangeStatus(changeID); !errors.Is(statusErr, security.ErrUnknownChange) {
 		return result
 	}
-	detail, detailErr := connect.NewErrorDetail(&pb.SecurityChangePrecommitRejected{ChangeId: append([]byte(nil), id...), ExpectedRevision: expected, Reason: reason})
+	detail, detailErr := boundedErrorDetail(&pb.SecurityChangePrecommitRejected{ChangeId: append([]byte(nil), id...), ExpectedRevision: expected, Reason: reason})
 	if detailErr == nil {
 		result.AddDetail(detail)
 	}

@@ -39,16 +39,17 @@ func (r *CurrentCredentialRuntime) Browser(req *http.Request) (security.CurrentC
 
 // These private-profile producers deliberately read the supplied installed S1
 // view. They never read the old fixed-writer Store or manufacture a genesis.
-// Ordinary public Wire/RPC paths do not select them yet.
+// The current-v2 public Wire/RPC composition selects these same producers.
 type currentCredentialProducer struct {
-	keys       *oidc.KeyCache
-	kind       string
-	bearer     string
-	cookie     string
-	csrf       string
-	origin     string
-	completion oidc.LoginCompletion
-	tokens     oidc.CodeTokens
+	keys            *oidc.KeyCache
+	kind            string
+	bearer          string
+	cookie          string
+	csrf            string
+	origin          string
+	completion      oidc.LoginCompletion
+	tokens          oidc.CodeTokens
+	browserReadOnly bool
 }
 
 func (currentCredentialProducer) String() string   { return "[redacted current credential producer]" }
@@ -84,7 +85,20 @@ func (r *SecurityRuntime) CurrentCodeProducer(completion oidc.LoginCompletion, t
 }
 
 func (r *SecurityRuntime) CurrentBrowserProducer(req *http.Request) (security.CurrentCredentialProducer, error) {
-	if r == nil || req == nil || r.browserOrigin(req, true) != nil || len(req.Header.Values("Authorization")) != 0 {
+	return r.currentBrowserProducer(req, false)
+}
+
+// Only the same-origin session bootstrap may omit the mutation CSRF header.
+// Its facts remain explicitly read-only through capture, admission and output.
+func (r *SecurityRuntime) CurrentBrowserReadProducer(req *http.Request) (security.CurrentCredentialProducer, error) {
+	if req == nil || req.Method != http.MethodGet || req.URL.Path != "/auth/session" {
+		return nil, errBrowserBoundary
+	}
+	return r.currentBrowserProducer(req, true)
+}
+
+func (r *SecurityRuntime) currentBrowserProducer(req *http.Request, readOnly bool) (security.CurrentCredentialProducer, error) {
+	if r == nil || req == nil || r.browserOrigin(req, !readOnly) != nil || len(req.Header.Values("Authorization")) != 0 {
 		return nil, errBrowserBoundary
 	}
 	cookie, err := browserCookie(req, sessionCookieName)
@@ -92,10 +106,10 @@ func (r *SecurityRuntime) CurrentBrowserProducer(req *http.Request) (security.Cu
 		return nil, err
 	}
 	csrf, err := browserCookie(req, csrfCookieName)
-	if err != nil || !exactBrowserHeader(req.Header, browserCSRFHeader, csrf) {
+	if err != nil || !readOnly && !exactBrowserHeader(req.Header, browserCSRFHeader, csrf) {
 		return nil, errBrowserBoundary
 	}
-	return currentCredentialProducer{kind: "session", cookie: cookie, csrf: csrf, origin: r.config.BrowserOrigin}, nil
+	return currentCredentialProducer{kind: "session", cookie: cookie, csrf: csrf, origin: r.config.BrowserOrigin, browserReadOnly: readOnly}, nil
 }
 
 func (p currentCredentialProducer) VerifyCurrentCredential(ctx context.Context, view security.CurrentCredentialView) (security.CurrentCredentialFacts, error) {
@@ -126,7 +140,7 @@ func (p currentCredentialProducer) VerifyCurrentCredential(ctx context.Context, 
 		if !known || !active || low.Before(s.CreatedAt) || subtle.ConstantTimeCompare([]byte(s.CSRFDigest), []byte(browserDigest(p.csrf))) != 1 {
 			return security.CurrentCredentialFacts{}, errBrowserBoundary
 		}
-		return security.CurrentCredentialFacts{Session: &s, Origin: requestCredentialCommitment("browser-origin", p.origin), CSRF: sha256.Sum256([]byte("lantern/current-CSRF/v2\x00" + s.Digest + "\x00" + p.csrf))}, nil
+		return security.CurrentCredentialFacts{Session: &s, Origin: requestCredentialCommitment("browser-origin", p.origin), CSRF: sha256.Sum256([]byte("lantern/current-CSRF/v2\x00" + s.Digest + "\x00" + p.csrf)), BrowserReadOnly: p.browserReadOnly}, nil
 	}
 	verifier := oidc.NewVerifierWithClock(p.keys, view.VerificationTime)
 	var verified oidc.VerifiedIdentity
@@ -155,5 +169,50 @@ func (p currentCredentialProducer) VerifyCurrentCredential(ctx context.Context, 
 		return security.CurrentCredentialFacts{}, err
 	}
 	event := verified.Evidence()
+	if p.kind == "code" {
+		// A newly issued Code token can be valid at the qualified upper
+		// endpoint while its signed start is still ahead of the lower one.
+		// Keep this one exchange; pace locally until the exact original facts
+		// are usable. Capture/consume still recheck the full current view.
+		start := event.IssuedAt.Time()
+		for _, candidate := range []time.Time{event.NotBefore.Time(), event.AuthTime.Time(), event.Code.ConsumedAt} {
+			if candidate.After(start) {
+				start = candidate
+			}
+		}
+		expires := event.ExpiresAt.Time()
+		if event.Code.ExpiresAt.Before(expires) {
+			expires = event.Code.ExpiresAt
+		}
+		if err := waitCurrentCodeStart(ctx, view.TimeBounds, start, expires); err != nil {
+			return security.CurrentCredentialFacts{}, err
+		}
+	}
 	return security.CurrentCredentialFacts{Token: &event}, nil
+}
+
+// Timers only pace the wait; each decision uses the existing native owner.
+func waitCurrentCodeStart(ctx context.Context, bounds func() (time.Time, time.Time, error), start, expires time.Time) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		low, high, err := bounds()
+		if err != nil {
+			return err
+		}
+		if !high.Before(expires) {
+			return oidc.ErrInvalidToken
+		}
+		if !low.Before(start) {
+			return nil
+		}
+		timer := time.NewTimer(min(start.Sub(low), 250*time.Millisecond))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }

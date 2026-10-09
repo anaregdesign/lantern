@@ -162,11 +162,13 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_SECURITY_BOOTSTRAP_REVISION` | string | (empty) | Positive operator bootstrap revision; stale/reused incompatible configuration cannot recreate removed administrators. |
 | `LANTERN_SECURITY_BOOTSTRAP_ROLES` | string | `[]` | Strict JSON array of bootstrap Roles; rules own all permissions. Existing immutable environment memberships protect their policies. |
 | `LANTERN_SECURITY_CLOCK_QUALIFIED` | string | (empty) | Required exact true operator attestation that clock skew/drift meets the documented lease bounds; not a clock-check bypass or automatic qualification. |
+| `LANTERN_SECURITY_CURRENT_CONFIG_FILE` | string | (empty) | current-v2 only: absolute private canonical node JSON binding independent genesis, M/P/B identities, workload membership, origins, and native time profile. |
 | `LANTERN_SECURITY_GENERATION` | string | (empty) | Required nonzero generation, exactly 32 lowercase hexadecimal characters. Shared by the homogeneous protected cluster. |
 | `LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE` | string | (empty) | Writer-only absolute private JSON file of named machine credentials and existing Role IDs. Canonical lnt_m1_ tokens have at most a 90-day lifetime; only digests enter sys state. |
 | `LANTERN_SECURITY_MAX_JOURNAL_BYTES` | string | `67108864` | Hard security journal cap between 20 and 512 MiB. Capacity exhaustion fails closed; revocation has an independent image reserve. |
 | `LANTERN_SECURITY_NODE_ROLE` | string | (empty) | Security authority role: writer or replica. This does not impose a leader on graph data writes. |
-| `LANTERN_SECURITY_STORE_MODE` | string | (empty) | Required native durable security storage mode: fresh or restart. Replica recovery never restores serving authority. |
+| `LANTERN_SECURITY_PROFILE` | string | (empty) | Required OIDC authority profile: legacy-v1 or current-v2; no implicit fallback or live import. |
+| `LANTERN_SECURITY_STORE_MODE` | string | (empty) | Required durable mode: legacy-v1 fresh/restart; current-v2 fresh/resume with independent minimum floors. Recovery never restores volatile serving authority. |
 | `LANTERN_SECURITY_STORE_PATH` | string | (empty) | Absolute private security journal path with owned recovery proof sidecars; system metadata is nonexpiring and separate from public data. |
 | `LANTERN_SECURITY_WRITER_ENDPOINT` | string | (empty) | Exact HTTPS private workload endpoint of the single pinned policy writer. |
 | `LANTERN_SECURITY_WRITER_KEY_FILE` | string | (empty) | Absolute private Ed25519 PKCS8 signing key; writer only. Replicas must not configure it. |

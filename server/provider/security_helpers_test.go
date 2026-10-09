@@ -134,7 +134,7 @@ func securityRuntimeFixture(t *testing.T) (SecurityConfig, *service.ServingRunti
 	privatePath, publicPath := securityKeyFixture(t, dir)
 	clock := &securityTestClock{now: time.Now()}
 	issuer := security.Issuer{URL: "https://idp.example", Enabled: true, ClientID: "admin", APIAudience: "api", RedirectURI: "https://admin.example" + oidc.CallbackPath("https://idp.example"), Algorithms: []string{"EdDSA"}}
-	config := SecurityConfig{Mode: "oidc", StoreMode: "fresh", StorePath: filepath.Join(dir, "security.wal"), Generation: [16]byte{1}, WriterKeyFile: privatePath, WriterPublicKeyFile: publicPath, NodeRole: "writer", WriterEndpoint: "https://writer-peer.example", BrowserOrigin: "https://admin.example", Bootstrap: security.Bootstrap{Revision: 1, Issuer: issuer, AdminSubjects: []string{"admin", "other"}}, MaxJournalBytes: security.DefaultSystemJournalMax, ClockQualified: true, Clock: clock.Now}
+	config := SecurityConfig{Mode: "oidc", Profile: "legacy-v1", StoreMode: "fresh", StorePath: filepath.Join(dir, "security.wal"), Generation: [16]byte{1}, WriterKeyFile: privatePath, WriterPublicKeyFile: publicPath, NodeRole: "writer", WriterEndpoint: "https://writer-peer.example", BrowserOrigin: "https://admin.example", Bootstrap: security.Bootstrap{Revision: 1, Issuer: issuer, AdminSubjects: []string{"admin", "other"}}, MaxJournalBytes: security.DefaultSystemJournalMax, ClockQualified: true, Clock: clock.Now}
 	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	log := mutationlog.New(mutationlog.Options{Capacity: 16})
 	hlcClock := hlc.New(hlc.NodeID{7}, hlc.Options{})

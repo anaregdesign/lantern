@@ -21,6 +21,7 @@ export 'src/client.dart'
         VertexInvalidation,
         EdgeInvalidation,
         LanternScopedChanges,
+        LanternCurrentAuthority,
         CausalMetadataKindStatus,
         CausalMetadataStatus,
         DecayOptions,

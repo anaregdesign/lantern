@@ -85,6 +85,20 @@ func (h *ChangeConnectHandler) watch(ctx context.Context, req *pb.WatchChangesRe
 			return dataPermissionError()
 		}
 		binding = admission.ScopeBinding()
+		actions := []security.Action{security.CDCIdentity}
+		if req.GetProjection() == pb.ChangeProjection_CHANGE_PROJECTION_VALUE {
+			actions = append(actions, security.CDCValue, security.VertexRead)
+		}
+		var resources []security.PublicOutputResource
+		if !changeScope(admission.Access(), req.GetProjection(), false).Within(req.GetPrefix()).Empty() {
+			resources = append(resources, security.PublicOutputResource{Kind: security.OutputVertexCollection, Prefix: req.GetPrefix(), Actions: actions})
+		}
+		if !changeScope(admission.Access(), req.GetProjection(), true).Within(req.GetPrefix()).Empty() {
+			resources = append(resources, security.PublicOutputResource{Kind: security.OutputEdgeCollection, Prefix: req.GetPrefix(), Actions: append(append([]security.Action(nil), actions...), security.EdgeRead)})
+		}
+		if err := bindCurrentDataOutput(ctx, admission, req, resources); err != nil {
+			return err
+		}
 	}
 	requestBinding := changeRequestBinding(req)
 	projection := newChangeProjection(h.svc, req, admission)

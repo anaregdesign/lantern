@@ -56,6 +56,13 @@ Both ports are configurable via environment variables (see below).
 | `replication/` | Peer discovery, pump (Subscribe consumer), anti-entropy driver. |
 | `internal/envconfig/` | Env-var parsing helpers used by `provider/`. |
 
+## Current authority profile
+
+OIDC selects `legacy-v1` or `current-v2` explicitly. The latter uses independent
+original provisioning, native time/quorum, full-cut public contracts and finite
+output ownership. See [current authority](../docs/security-current-authority.md#public-current-v2-composition)
+for required files, compatibility refusal, sessions and client recovery.
+
 ## Private authentication evidence
 
 The OIDC verifier retains immutable signed-time facts and commitments to the

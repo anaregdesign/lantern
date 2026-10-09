@@ -90,7 +90,7 @@ test("audit interrupts slow review preparation and permits explicit fresh review
       .getByRole("button", { name: "Apply reviewed change", exact: true })
       .click();
     await expect(
-      page.getByText("Change committed.", { exact: false }),
+      page.getByText("The original change applied.", { exact: false }),
     ).toBeVisible();
     expect(
       fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
@@ -143,12 +143,13 @@ for (const width of [1280, 390]) {
       .getByRole("button", { name: "Apply reviewed change", exact: true })
       .click();
     await expect(
-      page.getByText("Change committed.", { exact: false }),
+      page.getByText("The original change applied.", { exact: false }),
     ).toBeVisible();
     const call = fixture.calls.find(
       (call) => call.method === "ApplySecurityChanges",
     )!;
-    const changes = call.body.changes as { putRole: { rules: unknown[] } }[];
+    const changes = (call.body.currentReview as Record<string, unknown>)
+      .changes as { putRole: { rules: unknown[] } }[];
     expect(changes[0].putRole.rules).toEqual([
       {
         id: "rule-1",
@@ -172,7 +173,7 @@ for (const width of [1280, 390]) {
     await page.getByLabel("Explanation tail").fill("users:alice:connections");
     await page.getByLabel("Explanation head").fill("profiles:bob");
     await page.getByRole("button", { name: "Ask Server" }).click();
-    await expect(page.getByText("Denied · Server revision 3")).toBeVisible();
+    await expect(page.getByText("Denied · Policy cut 3")).toBeVisible();
     await expect(
       page.getByText("private / hide: Deny · head · Write vertices"),
     ).toBeVisible();
@@ -208,22 +209,30 @@ for (const width of [1280, 390]) {
       .getByRole("button", { name: "Apply reviewed change", exact: true })
       .click();
     await expect(
-      page.getByText("Change committed.", { exact: false }),
+      page.getByText("The original change applied.", { exact: false }),
     ).toBeVisible();
     const sent = fixture.calls.find(
       (call) => call.method === "ApplySecurityChanges",
     )!;
-    expect(sent.body.expectedRevision).toBe("3");
+    expect(
+      (
+        (sent.body.currentReview as Record<string, unknown>)
+          .expectedCut as Record<string, unknown>
+      ).sequence,
+    ).toBe("3");
+    expect(sent.body.expectedRevision).toBeUndefined();
     expect(sent.csrf).toBe("c".repeat(43));
     expect(sent.authorization).toBeUndefined();
     await page
       .getByRole("button", { name: "Check original change status" })
       .click();
     await expect(
-      page.getByText("Change enforced.", { exact: true }),
+      page.getByText("New authorizations using earlier policy have stopped", {
+        exact: false,
+      }),
     ).toBeVisible();
     await expect(
-      page.getByText("Original Apply outcomes: 1: applied."),
+      page.getByText("Original commit 11 · 1: APPLIED"),
     ).toBeVisible();
     await page.getByRole("button", { name: "Reload security state" }).click();
     await page.getByLabel("Explanation Issuer").fill("https://idp.example");
@@ -232,7 +241,7 @@ for (const width of [1280, 390]) {
       .getByLabel("Logical key", { exact: true })
       .fill("tenant:private:one");
     await page.getByRole("button", { name: "Ask Server" }).click();
-    await expect(page.getByText("Denied · Server revision 3")).toBeVisible();
+    await expect(page.getByText("Denied · Policy cut 3")).toBeVisible();
     await expect(
       page.getByText("private / hide: Deny · Read vertices"),
     ).toBeVisible();
@@ -263,20 +272,22 @@ test("response loss performs status-only recovery", async ({ page }) => {
     .getByRole("button", { name: "Check original change status" })
     .click();
   await expect(
-    page.getByText("Change enforced.", { exact: true }),
+    page.getByText("New authorizations using earlier policy have stopped", {
+      exact: false,
+    }),
   ).toBeVisible();
-  await expect(
-    page.getByText("Original item outcomes are unavailable;", { exact: false }),
-  ).toBeVisible();
+  await expect(page.getByText("Original commit 11 · 1: APPLIED")).toBeVisible();
   expect(
     fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
   ).toHaveLength(1);
   expect(
     fixture.calls.find((call) => call.method === "GetSecurityChangeStatus")!
-      .body.changeId,
-  ).toBe(
-    fixture.calls.find((call) => call.method === "ApplySecurityChanges")!.body
-      .changeId,
+      .body.currentChangeId,
+  ).toEqual(
+    (
+      fixture.calls.find((call) => call.method === "ApplySecurityChanges")!.body
+        .currentReview as Record<string, unknown>
+    ).changeId,
   );
 });
 
@@ -309,28 +320,28 @@ for (const width of [1280, 390]) {
       .getByRole("button", { name: "Check original change status" })
       .click();
     await expect(
-      page.getByText("Change committed.", { exact: false }),
+      page.getByText("The original change applied.", { exact: false }),
     ).toBeVisible();
     await expect(
-      page.getByText("Original item outcomes are unavailable;", {
-        exact: false,
-      }),
+      page.getByText("Original commit 11 · 1: APPLIED"),
     ).toBeVisible();
     await page
       .getByRole("navigation", { name: "Security", exact: true })
       .getByRole("link", { name: "Roles", exact: true })
       .click();
-    await expect(page.getByText("Committed revision 4")).toBeVisible();
+    await expect(
+      page.getByText("Original commit 11 · 1: APPLIED"),
+    ).toBeVisible();
     await page
       .getByRole("button", { name: "Check original change status" })
       .click();
     await expect(
-      page.getByText("Change enforced.", { exact: true }),
-    ).toBeVisible();
-    await expect(
-      page.getByText("Original item outcomes are unavailable;", {
+      page.getByText("New authorizations using earlier policy have stopped", {
         exact: false,
       }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Original commit 11 · 1: APPLIED"),
     ).toBeVisible();
     expect(
       fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
@@ -340,7 +351,13 @@ for (const width of [1280, 390]) {
     );
     expect(statuses).toHaveLength(2);
     expect(
-      statuses.every((call) => call.body.changeId === sent.body.changeId),
+      statuses.every(
+        (call) =>
+          JSON.stringify(call.body.currentChangeId) ===
+          JSON.stringify(
+            (sent.body.currentReview as Record<string, unknown>).changeId,
+          ),
+      ),
     ).toBe(true);
     expect(
       await page.evaluate(
@@ -370,9 +387,9 @@ test("unknown status retains the original ID and disables another Apply", async 
   await expect(
     page.getByRole("button", { name: "Review Role change" }),
   ).toBeDisabled();
-  await expect(
-    page.getByText("Committed revision", { exact: false }),
-  ).toHaveCount(0);
+  await expect(page.getByText("Original commit", { exact: false })).toHaveCount(
+    0,
+  );
   expect(
     fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
   ).toHaveLength(1);
@@ -391,15 +408,15 @@ test("mismatched status preserves the original Apply outcomes and pending state"
   await expect(
     page.getByText("Change status is unavailable.", { exact: false }),
   ).toBeVisible();
+  await expect(page.getByText("Original commit 11 · 1: APPLIED")).toBeVisible();
   await expect(
-    page.getByText("Original Apply outcomes: 1: applied."),
-  ).toBeVisible();
-  await expect(page.getByText("Change enforced.", { exact: true })).toHaveCount(
-    0,
-  );
+    page.getByText("New authorizations using earlier policy have stopped", {
+      exact: false,
+    }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("region", { name: "Change status" }),
-  ).toContainText("pending");
+  ).toContainText("applied");
 });
 test("revision conflict requires reload and another review", async ({
   page,
@@ -409,7 +426,9 @@ test("revision conflict requires reload and another review", async ({
   await reviewRole(page);
   await page.getByRole("button", { name: "Apply reviewed change" }).click();
   await expect(
-    page.getByText("The security revision changed.", { exact: false }),
+    page.getByText("The original operation was rejected: REJECTED_CAS.", {
+      exact: false,
+    }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Apply reviewed change" }),
@@ -472,11 +491,17 @@ test("high-impact review keeps the Admin window active through operation approva
   await page.getByRole("button", { name: "Apply reviewed change" }).click();
   const review = fixture.calls.find(
     (call) => call.method === "PrepareSecurityChanges",
-  )!.body.review as Record<string, unknown>;
+  )!.body.currentReview as Record<string, unknown>;
   const applied = fixture.calls.find(
     (call) => call.method === "ApplySecurityChanges",
   )!.body;
-  expect(applied.changeId).toBe(review.changeId);
+  expect((applied.currentReview as Record<string, unknown>).changes).toEqual(
+    review.changes,
+  );
+  expect(
+    (applied.currentReview as Record<string, unknown>).changeId,
+  ).toBeDefined();
+  expect(review.changeId).toBeUndefined();
   expect(applied.authorizationProof).toBe(
     Buffer.alloc(32, 9).toString("base64"),
   );
@@ -499,8 +524,10 @@ test("user membership uses exact identity and environment locks", async ({
   await page.getByRole("button", { name: "Review Role assignment" }).click();
   await page.getByRole("button", { name: "Apply reviewed change" }).click();
   expect(
-    fixture.calls.find((call) => call.method === "ApplySecurityChanges")!.body
-      .changes,
+    (
+      fixture.calls.find((call) => call.method === "ApplySecurityChanges")!.body
+        .currentReview as Record<string, unknown>
+    ).changes,
   ).toEqual([
     {
       putAssignment: {
@@ -664,7 +691,7 @@ for (const width of [1280, 390]) {
   });
 }
 
-test("definitive first refusal allows correction only after a fresh review with another ID", async ({
+test("original rejection allows correction only after a fresh review with another origin-minted ID", async ({
   page,
 }) => {
   const fixture = await securityUI(page, { apply: "unknown-role-once" });
@@ -674,7 +701,9 @@ test("definitive first refusal allows correction only after a fresh review with 
     .getByRole("button", { name: "Apply reviewed change", exact: true })
     .click();
   await expect(
-    page.getByText("A referenced Role does not exist.", { exact: false }),
+    page.getByText("The original operation was rejected: REJECTED_INVARIANT.", {
+      exact: false,
+    }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Apply reviewed change", exact: true }),
@@ -704,14 +733,17 @@ test("definitive first refusal allows correction only after a fresh review with 
     .getByRole("button", { name: "Apply reviewed change", exact: true })
     .click();
   await expect(
-    page.getByText("Change committed.", { exact: false }),
+    page.getByText("The original change applied.", { exact: false }),
   ).toBeVisible();
   const attempts = fixture.calls.filter(
     (call) => call.method === "ApplySecurityChanges",
   );
   expect(attempts).toHaveLength(2);
-  expect(attempts[1].body.changeId).not.toEqual(first.body.changeId);
-  const corrected = attempts[1].body.changes as { putRole: { name: string } }[];
+  expect(
+    (attempts[1].body.currentReview as Record<string, unknown>).changeId,
+  ).not.toEqual((first.body.currentReview as Record<string, unknown>).changeId);
+  const corrected = (attempts[1].body.currentReview as Record<string, unknown>)
+    .changes as { putRole: { name: string } }[];
   expect(corrected[0].putRole.name).toBe("Corrected Role");
 });
 

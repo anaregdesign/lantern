@@ -9,13 +9,16 @@ export function SessionControls() {
   return (
     <div className={styles.controls}>
       <Text className={styles.label}>{state.principal.identity?.subject}</Text>
-      {!state.principal.recentAuthentication && (
+      {controller.getLogoutMessage() && (
+        <Text>{controller.getLogoutMessage()}</Text>
+      )}
+      {controller.hasLogoutRecord() && (
         <Button
-          onClick={() =>
-            controller.login(state.principal.identity!.issuer, true)
-          }
+          onClick={() => {
+            void controller.checkLogoutStatus();
+          }}
         >
-          Verify identity
+          Check previous sign-out
         </Button>
       )}
       <Button

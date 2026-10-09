@@ -106,6 +106,7 @@ type s3aOwner struct {
 	queueWake      map[uint32]chan struct{}
 	inbound        map[uint32]chan struct{}
 	rangeSlot      chan struct{}
+	originalSlot   chan struct{}
 	localSlot      chan struct{}
 	driveSlot      chan struct{}
 	serverMu       sync.Mutex
@@ -177,7 +178,7 @@ func openS3AOwner(c s3aConfig, fresh bool, floors s3aFloors) (_ *s3aOwner, err e
 		return nil, err
 	}
 	o := &s3aOwner{identity: identity, limits: c.Limits, now: c.Membership.Now, timeOwner: c.timeOwner, hooks: c.hooks, rangeSlot: make(chan struct{}, 1), binding: c.Membership.Profile.Digest(),
-		localSlot: make(chan struct{}, 1), driveSlot: make(chan struct{}, 1),
+		localSlot: make(chan struct{}, 1), driveSlot: make(chan struct{}, 1), originalSlot: make(chan struct{}, 1),
 		peers: map[uint32]peerauth.ControlVoter{}, byIdentity: map[string]uint32{},
 		queues: map[uint32][]s3aDelivery{}, queueWake: map[uint32]chan struct{}{}, inbound: map[uint32]chan struct{}{}}
 	o.ctx, o.cancel = context.WithCancel(context.Background())

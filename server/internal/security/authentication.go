@@ -45,6 +45,9 @@ func (s *Snapshot) BearerActor(identity Identity) ActorClass {
 }
 
 func (a *Admission) WithAuthentication(authentication Authentication) *Admission {
+	if a.current != nil {
+		return a // Current facts are captured inside the owner and cannot be relabeled.
+	}
 	copy := *a
 	copy.authentication = authentication
 	return &copy
@@ -65,6 +68,12 @@ func (a *Admission) CheckIssuerProbe(ctx context.Context, current *Revision, now
 }
 
 func (a *Admission) checkHumanAdmission(ctx context.Context, current *Revision, now time.Time) error {
+	if a != nil && a.current != nil {
+		if current != nil || a.current.credential.browserReadOnly || a.current.credential.authentication.Class != EndUser {
+			return ErrPermissionDenied
+		}
+		return a.current.check(ctx)
+	}
 	if a == nil || current == nil || a.revision.digest != current.digest {
 		return ErrAuthorityUnavailable
 	}

@@ -23,6 +23,63 @@ func loginTransactionFixture(t *testing.T) (*LoginTransactions, Trust, Discovery
 	issuer.RedirectURI = "https://admin.example" + CallbackPath(issuer.URL)
 	return manager, Trust{Issuer: issuer, Generation: [16]byte{1}, ConfigRevision: 1}, Discovery{Issuer: issuer.URL, AuthorizationEndpoint: "https://idp.example/auth", TokenEndpoint: "https://idp.example/token", JWKSURI: "https://idp.example/keys", ResponseTypes: []string{"code"}, CodeChallengeMethods: []string{"S256"}}
 }
+
+func TestLoginTransactionsCurrentQualifiedBoundsAndAttemptAffinity(t *testing.T) {
+	_, trust, discovery := loginTransactionFixture(t)
+	low := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	high := low.Add(20 * time.Millisecond)
+	bounds := func() (time.Time, time.Time, error) { return low, high, nil }
+	process := [32]byte{1}
+	prefix := "v2.2." + base64.RawURLEncoding.EncodeToString(process[:])
+	m, err := NewLoginTransactionsWithBounds("https://admin.example", []string{"/"}, bounds, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, err := m.Begin(trust, discovery, "/", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(start.AuthorizationURL)
+	state := u.Query().Get("state")
+	if !strings.HasPrefix(state, prefix+".") {
+		t.Fatal("missing process routing identity")
+	}
+	created := high
+	if _, err := m.Consume(state, start.TransactionCookie, CallbackPath(trust.Issuer.URL), ""); err == nil {
+		t.Fatal("upper endpoint substituted for strict start")
+	}
+	low, high = low.Add(time.Second), high.Add(time.Second)
+	other, err := NewLoginTransactionsWithBounds("https://admin.example", []string{"/"}, bounds, "v2.3."+base64.RawURLEncoding.EncodeToString(process[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Consume(state, start.TransactionCookie, CallbackPath(trust.Issuer.URL), ""); err == nil {
+		t.Fatal("another node accepted attempt")
+	}
+	restarted, err := NewLoginTransactionsWithBounds("https://admin.example", []string{"/"}, bounds, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Consume(state, start.TransactionCookie, CallbackPath(trust.Issuer.URL), ""); err == nil {
+		t.Fatal("routing hint became restored attempt authority")
+	}
+	c, err := m.Consume(state, start.TransactionCookie, CallbackPath(trust.Issuer.URL), "")
+	if err != nil || c.transaction.createdAt != created || c.consumedAt != low {
+		t.Fatal("Code event lost conservative endpoints", err)
+	}
+	if _, err := m.Consume(state, start.TransactionCookie, CallbackPath(trust.Issuer.URL), ""); err == nil {
+		t.Fatal("current Code event consumed twice")
+	}
+	start, err = m.Begin(trust, discovery, "/", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ = url.Parse(start.AuthorizationURL)
+	low, high = start.ExpiresAt.Add(-time.Millisecond), start.ExpiresAt
+	if _, err := m.Consume(u.Query().Get("state"), start.TransactionCookie, CallbackPath(trust.Issuer.URL), ""); err == nil {
+		t.Fatal("lower endpoint substituted for strict expiry")
+	}
+}
 func TestLoginTransactionsPKCESingleUseMixUpAndRestart(t *testing.T) {
 	manager, trust, discovery := loginTransactionFixture(t)
 	start, err := manager.Begin(trust, discovery, "/security/roles", "", false)

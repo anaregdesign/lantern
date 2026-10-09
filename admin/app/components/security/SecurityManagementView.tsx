@@ -1,4 +1,8 @@
 import {
+  currentProfileBinding,
+  CurrentSecurityDisposition,
+} from "lantern-sdk/web";
+import {
   Button,
   Field,
   Input,
@@ -37,8 +41,7 @@ export function SecurityManagementView({
   const owner = JSON.stringify([
     principal.identity?.issuer,
     principal.identity?.subject,
-    Array.from(principal.version!.generation),
-    principal.csrfToken,
+    currentProfileBinding(principal.version!.currentProfile),
   ]);
   const { state, controller } = useSecurityManagement(
     port,
@@ -51,13 +54,16 @@ export function SecurityManagementView({
   const busy = state.mutation === "sending";
   const disabled =
     busy ||
+    !auth.state.canMutate ||
     state.mutation === "unconfirmed" ||
+    state.mutation === "pending" ||
     state.phase !== "ready" ||
     !state.version;
   return (
     <div className={styles.view}>
       {state.message && (
         <MessageBar
+          layout="multiline"
           intent={
             state.phase === "error" ||
             state.mutation === "conflict" ||
@@ -70,7 +76,7 @@ export function SecurityManagementView({
         </MessageBar>
       )}
       {editor.error && (
-        <MessageBar intent="error">
+        <MessageBar intent="error" layout="multiline">
           <MessageBarBody>{editor.error}</MessageBarBody>
         </MessageBar>
       )}
@@ -87,17 +93,16 @@ export function SecurityManagementView({
           >
             Check original change status
           </Button>
-          {state.result && (
-            <>
-              <p>
-                Committed revision {state.result.version?.revision.toString()}
-              </p>
-              <p>
-                {state.result.applied
-                  ? `Original Apply outcomes: ${state.result.applied.map((applied, i) => `${i + 1}: ${applied ? "applied" : "not applied"}`).join("; ")}.`
-                  : "Original item outcomes are unavailable; retained status proves the commit and its enforcement."}
-              </p>
-            </>
+          {state.result?.original && (
+            <p>
+              Original commit {state.result.original.commit?.slot.toString()} ·{" "}
+              {state.result.original.items
+                .map(
+                  (item) =>
+                    `${item.index + 1}: ${CurrentSecurityDisposition[item.disposition]}`,
+                )
+                .join("; ")}
+            </p>
           )}
         </section>
       )}
@@ -132,7 +137,9 @@ export function SecurityManagementView({
         <Spinner label="Loading security state" />
       )}
       {state.version && (
-        <p>Inspected revision {state.version.revision.toString()}</p>
+        <p>
+          Inspected policy cut {state.version.currentCut?.sequence.toString()}
+        </p>
       )}
       <div className={styles.records} aria-label={`${section} list`}>
         {section === "issuers" &&
@@ -273,9 +280,11 @@ export function SecurityManagementView({
         </Button>
         <ul>
           {state.audit.map((record) => (
-            <li key={record.revision.toString()}>
-              {record.revision.toString()} · {record.operation} ·{" "}
-              {record.outcome} · Change {record.changeId}
+            <li key={record.result?.original?.commit?.slot.toString()}>
+              Commit {record.result?.original?.commit?.slot.toString()} ·{" "}
+              {record.operation} ·{" "}
+              {record.result?.original &&
+                CurrentSecurityDisposition[record.result.original.disposition]}
             </li>
           ))}
         </ul>

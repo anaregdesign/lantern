@@ -10,6 +10,7 @@ type PeerIdentityConfig struct {
 	Deployment         [16]byte
 	SecurityGeneration [16]byte
 	WriterPublicKey    [32]byte
+	CurrentProfile     string
 	CAFile             string
 	OperatorKeyFile    string
 	ManifestFile       string

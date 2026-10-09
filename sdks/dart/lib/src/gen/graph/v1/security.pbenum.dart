@@ -338,5 +338,153 @@ class SecurityAuthorizationState extends $pb.ProtobufEnum {
   const SecurityAuthorizationState._(super.value, super.name);
 }
 
+class CurrentSecurityDisposition extends $pb.ProtobufEnum {
+  static const CurrentSecurityDisposition
+      CURRENT_SECURITY_DISPOSITION_UNSPECIFIED = CurrentSecurityDisposition._(
+          0, _omitEnumNames ? '' : 'CURRENT_SECURITY_DISPOSITION_UNSPECIFIED');
+  static const CurrentSecurityDisposition CURRENT_SECURITY_DISPOSITION_APPLIED =
+      CurrentSecurityDisposition._(
+          1, _omitEnumNames ? '' : 'CURRENT_SECURITY_DISPOSITION_APPLIED');
+  static const CurrentSecurityDisposition
+      CURRENT_SECURITY_DISPOSITION_REJECTED_CAS = CurrentSecurityDisposition._(
+          2, _omitEnumNames ? '' : 'CURRENT_SECURITY_DISPOSITION_REJECTED_CAS');
+  static const CurrentSecurityDisposition
+      CURRENT_SECURITY_DISPOSITION_REJECTED_ADMIN =
+      CurrentSecurityDisposition._(3,
+          _omitEnumNames ? '' : 'CURRENT_SECURITY_DISPOSITION_REJECTED_ADMIN');
+  static const CurrentSecurityDisposition
+      CURRENT_SECURITY_DISPOSITION_REJECTED_AUTHORITY =
+      CurrentSecurityDisposition._(
+          4,
+          _omitEnumNames
+              ? ''
+              : 'CURRENT_SECURITY_DISPOSITION_REJECTED_AUTHORITY');
+  static const CurrentSecurityDisposition
+      CURRENT_SECURITY_DISPOSITION_REJECTED_PURPOSE =
+      CurrentSecurityDisposition._(
+          5,
+          _omitEnumNames
+              ? ''
+              : 'CURRENT_SECURITY_DISPOSITION_REJECTED_PURPOSE');
+  static const CurrentSecurityDisposition
+      CURRENT_SECURITY_DISPOSITION_REJECTED_CAPACITY =
+      CurrentSecurityDisposition._(
+          6,
+          _omitEnumNames
+              ? ''
+              : 'CURRENT_SECURITY_DISPOSITION_REJECTED_CAPACITY');
+  static const CurrentSecurityDisposition
+      CURRENT_SECURITY_DISPOSITION_REJECTED_INVARIANT =
+      CurrentSecurityDisposition._(
+          7,
+          _omitEnumNames
+              ? ''
+              : 'CURRENT_SECURITY_DISPOSITION_REJECTED_INVARIANT');
+
+  static const $core.List<CurrentSecurityDisposition> values =
+      <CurrentSecurityDisposition>[
+    CURRENT_SECURITY_DISPOSITION_UNSPECIFIED,
+    CURRENT_SECURITY_DISPOSITION_APPLIED,
+    CURRENT_SECURITY_DISPOSITION_REJECTED_CAS,
+    CURRENT_SECURITY_DISPOSITION_REJECTED_ADMIN,
+    CURRENT_SECURITY_DISPOSITION_REJECTED_AUTHORITY,
+    CURRENT_SECURITY_DISPOSITION_REJECTED_PURPOSE,
+    CURRENT_SECURITY_DISPOSITION_REJECTED_CAPACITY,
+    CURRENT_SECURITY_DISPOSITION_REJECTED_INVARIANT,
+  ];
+
+  static final $core.List<CurrentSecurityDisposition?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 7);
+  static CurrentSecurityDisposition? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const CurrentSecurityDisposition._(super.value, super.name);
+}
+
+class CurrentSecurityProgress extends $pb.ProtobufEnum {
+  static const CurrentSecurityProgress CURRENT_SECURITY_PROGRESS_UNSPECIFIED =
+      CurrentSecurityProgress._(
+          0, _omitEnumNames ? '' : 'CURRENT_SECURITY_PROGRESS_UNSPECIFIED');
+
+  /// Local absence/timeout/retirement never proves safe nonexecution.
+  static const CurrentSecurityProgress CURRENT_SECURITY_PROGRESS_UNRESOLVED =
+      CurrentSecurityProgress._(
+          1, _omitEnumNames ? '' : 'CURRENT_SECURITY_PROGRESS_UNRESOLVED');
+  static const CurrentSecurityProgress
+      CURRENT_SECURITY_PROGRESS_ORIGIN_DURABLE = CurrentSecurityProgress._(
+          2, _omitEnumNames ? '' : 'CURRENT_SECURITY_PROGRESS_ORIGIN_DURABLE');
+  static const CurrentSecurityProgress CURRENT_SECURITY_PROGRESS_CHOSEN =
+      CurrentSecurityProgress._(
+          3, _omitEnumNames ? '' : 'CURRENT_SECURITY_PROGRESS_CHOSEN');
+  static const CurrentSecurityProgress CURRENT_SECURITY_PROGRESS_APPLIED =
+      CurrentSecurityProgress._(
+          4, _omitEnumNames ? '' : 'CURRENT_SECURITY_PROGRESS_APPLIED');
+
+  static const $core.List<CurrentSecurityProgress> values =
+      <CurrentSecurityProgress>[
+    CURRENT_SECURITY_PROGRESS_UNSPECIFIED,
+    CURRENT_SECURITY_PROGRESS_UNRESOLVED,
+    CURRENT_SECURITY_PROGRESS_ORIGIN_DURABLE,
+    CURRENT_SECURITY_PROGRESS_CHOSEN,
+    CURRENT_SECURITY_PROGRESS_APPLIED,
+  ];
+
+  static final $core.List<CurrentSecurityProgress?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
+  static CurrentSecurityProgress? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const CurrentSecurityProgress._(super.value, super.name);
+}
+
+class CurrentAuthorizationStopObservation extends $pb.ProtobufEnum {
+  static const CurrentAuthorizationStopObservation
+      CURRENT_AUTHORIZATION_STOP_OBSERVATION_UNSPECIFIED =
+      CurrentAuthorizationStopObservation._(
+          0,
+          _omitEnumNames
+              ? ''
+              : 'CURRENT_AUTHORIZATION_STOP_OBSERVATION_UNSPECIFIED');
+  static const CurrentAuthorizationStopObservation
+      CURRENT_AUTHORIZATION_STOP_OBSERVATION_NOT_OBSERVED =
+      CurrentAuthorizationStopObservation._(
+          1,
+          _omitEnumNames
+              ? ''
+              : 'CURRENT_AUTHORIZATION_STOP_OBSERVATION_NOT_OBSERVED');
+  static const CurrentAuthorizationStopObservation
+      CURRENT_AUTHORIZATION_STOP_OBSERVATION_WAITING =
+      CurrentAuthorizationStopObservation._(
+          2,
+          _omitEnumNames
+              ? ''
+              : 'CURRENT_AUTHORIZATION_STOP_OBSERVATION_WAITING');
+
+  /// New authorizations using old cuts have stopped under this profile. This
+  /// does not assert physical delivery or termination of an already authorized A.
+  static const CurrentAuthorizationStopObservation
+      CURRENT_AUTHORIZATION_STOP_OBSERVATION_OLD_CUT_NEW_AUTHORIZATIONS_STOPPED =
+      CurrentAuthorizationStopObservation._(
+          3,
+          _omitEnumNames
+              ? ''
+              : 'CURRENT_AUTHORIZATION_STOP_OBSERVATION_OLD_CUT_NEW_AUTHORIZATIONS_STOPPED');
+
+  static const $core.List<CurrentAuthorizationStopObservation> values =
+      <CurrentAuthorizationStopObservation>[
+    CURRENT_AUTHORIZATION_STOP_OBSERVATION_UNSPECIFIED,
+    CURRENT_AUTHORIZATION_STOP_OBSERVATION_NOT_OBSERVED,
+    CURRENT_AUTHORIZATION_STOP_OBSERVATION_WAITING,
+    CURRENT_AUTHORIZATION_STOP_OBSERVATION_OLD_CUT_NEW_AUTHORIZATIONS_STOPPED,
+  ];
+
+  static final $core.List<CurrentAuthorizationStopObservation?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
+  static CurrentAuthorizationStopObservation? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const CurrentAuthorizationStopObservation._(super.value, super.name);
+}
+
 const $core.bool _omitEnumNames =
     $core.bool.fromEnvironment('protobuf.omit_enum_names');

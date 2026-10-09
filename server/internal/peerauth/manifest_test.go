@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"strings"
 	"testing"
 	"time"
 )
@@ -60,6 +61,25 @@ func TestManifestBoundsAndExplicitWorkloadIdentity(t *testing.T) {
 		mutate(&candidate)
 		if _, err := SignManifest(candidate, key); err == nil {
 			t.Fatal("invalid manifest signed")
+		}
+	}
+}
+
+func TestManifestCurrentDomainCannotBorrowLegacyWriter(t *testing.T) {
+	_, _, options, _ := membershipFixture(t)
+	d := options.Domain
+	d.AuthMode = "oidc"
+	d.SecurityGeneration = [16]byte{1}
+	d.WriterPublicKey = [32]byte{}
+	d.CurrentProfile = "current-v2:" + strings.Repeat("ab", 32)
+	if !d.valid() {
+		t.Fatal("complete current domain refused")
+	}
+	for _, edit := range []func(*Domain){func(d *Domain) { d.WriterPublicKey[0] = 1 }, func(d *Domain) { d.CurrentProfile = "current-v2:" + strings.Repeat("AB", 32) }, func(d *Domain) { d.CurrentProfile = "current-v2:" + strings.Repeat("00", 32) }, func(d *Domain) { d.AuthMode = "off" }, func(d *Domain) { d.SecurityGeneration = [16]byte{} }} {
+		copy := d
+		edit(&copy)
+		if copy.valid() {
+			t.Fatal("mixed or incomplete domain accepted", copy)
 		}
 	}
 }
