@@ -165,11 +165,40 @@ class IOSDiagnosticsTest(unittest.TestCase):
         def reject(_line):
             raise ValueError("diagnostic consumer interrupted")
 
-        with mock.patch.object(diagnostics.subprocess, "Popen", side_effect=capture):
-            with self.assertRaises(ValueError):
-                diagnostics.read_lines([sys.executable, "-c", "import time; print('event',flush=True); time.sleep(30)"], reject)
-        self.assertIsNotNone(created[0].returncode)
-        self.assertTrue(created[0].stdout.closed)
+        for terminal in (False, True):
+            with self.subTest(terminal=terminal):
+                with mock.patch.object(diagnostics.subprocess, "Popen", side_effect=capture):
+                    with self.assertRaises(ValueError):
+                        diagnostics.read_lines([sys.executable, "-c", "import time; print('event',flush=True); time.sleep(30)"], reject, terminal=terminal)
+                self.assertIsNotNone(created[-1].returncode)
+                if created[-1].stdout is not None:
+                    self.assertTrue(created[-1].stdout.closed)
+
+    def test_terminal_reader_retains_final_partial_line_at_native_eof(self):
+        retained = []
+        result = diagnostics.read_lines(
+            [sys.executable, "-c", "import sys; sys.stdout.write('complete\\npartial'); sys.stdout.flush()"],
+            retained.append, timeout=5, terminal=True)
+        self.assertEqual(result, {"exit_code": 0, "timed_out": False, "oversized_lines_omitted": 0})
+        self.assertEqual("".join(retained).replace("\r\n", "\n"), "complete\npartial")
+
+    def test_terminal_launch_failure_closes_both_owned_descriptors(self):
+        import pty
+        descriptors = []
+        openpty = pty.openpty
+
+        def capture():
+            pair = openpty()
+            descriptors.extend(pair)
+            return pair
+
+        with mock.patch.object(pty, "openpty", side_effect=capture):
+            with self.assertRaises(FileNotFoundError):
+                diagnostics.read_lines([str(self.root / "missing-reader")], lambda _line: None, terminal=True)
+        self.assertEqual(len(descriptors), 2)
+        for descriptor in descriptors:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
 
     def test_reader_stops_owned_descendant_after_launcher_exits(self):
         created = []
@@ -278,10 +307,13 @@ class IOSDiagnosticsTest(unittest.TestCase):
         script = self.root / ("live_console_" + result_state + ".py")
         terminal = self.marker(event(kind="result", state=result_state, scenario="marker"))
         script.write_text(
-            "import os,time\nfrom pathlib import Path\n"
-            "print(f'com.example.probe: {os.getpid()}', flush=True)\n"
+            "import os,sys,time\nfrom pathlib import Path\n"
+            # Model simctl's terminal-dependent line buffering: the PID must
+            # arrive while the launcher is still alive, without explicit flush.
+            "assert sys.stdout.isatty() and sys.stderr.isatty()\n"
+            "print(f'com.example.probe: {os.getpid()}')\n"
             f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
-            f"print({terminal!r}, flush=True)\n"
+            f"print({terminal!r})\n"
             "time.sleep(30)\n"
         )
         worker = subprocess.Popen([sys.executable, "-c",

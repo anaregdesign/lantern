@@ -2,6 +2,7 @@
 """Retain content-free iOS transport evidence; never retry a failed probe."""
 
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -117,9 +118,26 @@ class AppEvidence:
         write_json(self.root / "state.json", self.state)
 
 
-def read_lines(command, consume, timeout=10, stop_requested=None):
+def read_lines(command, consume, timeout=10, stop_requested=None, *, terminal=False):
     """Bound time, line memory and retained output; kill only this owned reader."""
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    if terminal:
+        # simctl buffers its launch acknowledgement when stdout is a pipe.
+        # Attach simctl itself to our PTY; --console-pty alone only changes the
+        # application's transport and still leaves simctl's acknowledgement buffered.
+        import pty
+        master, slave = pty.openpty()
+        stream = os.fdopen(master, "rb", buffering=0)
+        try:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=slave,
+                                       stderr=slave, start_new_session=True)
+        except BaseException:
+            stream.close()
+            raise
+        finally:
+            os.close(slave)
+    else:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+        stream = process.stdout
     selector = None
     pending = bytearray()
     discarding = False
@@ -128,7 +146,7 @@ def read_lines(command, consume, timeout=10, stop_requested=None):
     timed_out = False
     try:
         selector = selectors.DefaultSelector()
-        selector.register(process.stdout, selectors.EVENT_READ)
+        selector.register(stream, selectors.EVENT_READ)
         while selector.get_map():
             if stop_requested is not None and stop_requested():
                 break
@@ -136,7 +154,12 @@ def read_lines(command, consume, timeout=10, stop_requested=None):
                 timed_out = True
                 break
             for key, _ in selector.select(min(0.1, max(0, deadline - time.monotonic()))):
-                chunk = os.read(key.fd, 65536)
+                try:
+                    chunk = os.read(key.fd, 65536)
+                except OSError as error:
+                    if not terminal or error.errno != errno.EIO:
+                        raise
+                    chunk = b""  # An owned PTY reports EOF as EIO on some hosts.
                 if not chunk:
                     selector.unregister(key.fileobj)
                     if pending and not discarding:
@@ -174,7 +197,7 @@ def read_lines(command, consume, timeout=10, stop_requested=None):
                 pass
             process.wait()
         finally:
-            process.stdout.close()
+            stream.close()
     return {"exit_code": process.returncode, "timed_out": timed_out, "oversized_lines_omitted": omitted}
 
 
@@ -209,7 +232,7 @@ def launch_console(root, device, bundle, xcrun="xcrun", timeout=900):
     try:
         result = read_lines([*executable, "simctl", "launch", "--console",
                              "--terminate-running-process", device, bundle],
-                            consume, timeout, lambda: stopped)
+                            consume, timeout, lambda: stopped, terminal=True)
     except OSError as error:
         result = {"unavailable": True, "errno": error.errno}
     finally:
