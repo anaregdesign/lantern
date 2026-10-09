@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -104,6 +107,82 @@ func TestFixtureReadinessRequiresHealthAndCertifiedCapabilities(t *testing.T) {
 			if (err == nil) != tc.accept {
 				t.Fatalf("accept=%t error=%v", tc.accept, err)
 			}
+			if !tc.accept {
+				var failure *fixtureReadinessError
+				if !errors.As(err, &failure) || failure.diagnostic.Reason != "timeout" || failure.diagnostic.Port == 0 || failure.diagnostic.ElapsedMillis < 90 || failure.diagnostic.HTTPStatus != tc.status || failure.diagnostic.ChildExited {
+					t.Fatal("missing bounded readiness timeout diagnostic")
+				}
+			}
 		})
+	}
+}
+
+func TestFixtureReadinessDiagnosticChild(t *testing.T) {
+	if os.Getenv("LANTERN_TEST_FIXTURE_DIAGNOSTIC_CHILD") != "exit" {
+		return
+	}
+	// Arbitrary private text must never be replayed into the public diagnostic.
+	_, _ = os.Stderr.WriteString("{\"msg\":\"failed to initialize app\",\"err\":\"listen tcp :12345: bind: address already in use private-token-key-body\"}\n")
+	os.Exit(23)
+}
+
+func TestFixtureReadinessRetainsExitedChildBeforeCleanup(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	dir := t.TempDir()
+	ca := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	log, err := os.OpenFile(filepath.Join(dir, "private-child.log"), os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestFixtureReadinessDiagnosticChild$")
+	command.Env = append(os.Environ(), "LANTERN_TEST_FIXTURE_DIAGNOSTIC_CHILD=exit")
+	command.Stdout, command.Stderr = log, log
+	if err := command.Run(); err == nil || command.ProcessState.ExitCode() != 23 {
+		t.Fatal("controlled child did not exit as requested", err)
+	}
+	child := &fixtureProcess{command: command, log: log, done: make(chan struct{})}
+	close(child.done)
+	err = waitFixtureReady(context.Background(), fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: "https://localhost:12345"}}}, []*fixtureProcess{child})
+	// Match supervision ordering: capture failure, reap/close child, remove
+	// temporary private material, then inspect the retained public evidence.
+	child.stop()
+	if removeErr := os.RemoveAll(dir); removeErr != nil {
+		t.Fatal(removeErr)
+	}
+	var output bytes.Buffer
+	writeFixtureFailure(&output, &fixtureFailure{stage: "readiness", cause: err})
+	var failure *fixtureReadinessError
+	if !errors.As(err, &failure) {
+		t.Fatal("child exit lost readiness detail", err)
+	}
+	d := failure.diagnostic
+	if d.Reason != "child_exit" || !d.ChildExited || d.ChildExitCode != 23 || d.Port != 12345 || d.Node != 0 || d.ServerLog != "bind_address_in_use" || d.ElapsedMillis < 0 {
+		t.Fatal("wrong retained child diagnostic", d)
+	}
+	if !strings.Contains(output.String(), "authfixture_readiness:") || strings.Contains(output.String(), "private-token-key-body") || strings.Contains(output.String(), dir) {
+		t.Fatal("missing safe record or private log disclosure")
+	}
+}
+
+func TestFixtureReadinessDiagnosticDoesNotExposeResponse(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"private-token-key-body"}`))
+	}))
+	defer server.Close()
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := waitFixtureReady(ctx, fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}, []*fixtureProcess{{done: make(chan struct{})}})
+	var output bytes.Buffer
+	writeFixtureFailure(&output, &fixtureFailure{stage: "readiness", cause: err})
+	if !strings.Contains(output.String(), `"probe":"health"`) || strings.Contains(output.String(), "private-token-key-body") {
+		t.Fatal("response escaped fixed diagnostic categories")
 	}
 }

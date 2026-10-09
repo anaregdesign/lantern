@@ -11,11 +11,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,21 +121,55 @@ func addFixtureReceipts(result *fixture, dir string) error {
 }
 
 func waitFixtureReady(ctx context.Context, result fixture, children []*fixtureProcess) error {
+	started := time.Now()
+	lastNode := 0
+	probes, statuses := make([]string, len(result.Nodes)), make([]int, len(result.Nodes))
+	for i := range probes {
+		probes[i] = "none"
+	}
+	fail := func(reason string, cause error) error {
+		diagnostic := fixtureReadinessDiagnostic{Reason: reason, Node: lastNode, ElapsedMillis: time.Since(started).Milliseconds(), Probe: "none", ServerLog: "unavailable"}
+		if lastNode < len(result.Nodes) {
+			diagnostic.Probe, diagnostic.HTTPStatus = probes[lastNode], statuses[lastNode]
+			if origin, err := url.Parse(result.Nodes[lastNode].PublicOrigin); err == nil {
+				port, _ := strconv.ParseUint(origin.Port(), 10, 16)
+				diagnostic.Port = uint16(port)
+			}
+		}
+		if lastNode < len(children) {
+			child := children[lastNode]
+			select {
+			case <-child.done:
+				// Wait publishes ProcessState before closing done.
+				diagnostic.ChildExited = true
+				diagnostic.ChildExitCode = -1
+				if child.command != nil && child.command.ProcessState != nil {
+					diagnostic.ChildExitCode = child.command.ProcessState.ExitCode()
+				}
+			default:
+			}
+			if child.log != nil {
+				diagnostic.ServerLog = fixtureServerLogCategory(child.log.Name())
+			}
+		}
+		return &fixtureReadinessError{cause: cause, diagnostic: diagnostic}
+	}
 	pem, err := os.ReadFile(result.CAFile)
 	if err != nil {
-		return err
+		return fail("ca_read", err)
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(pem) {
-		return errors.New("fixture CA is invalid")
+		return fail("ca_parse", errors.New("fixture CA is invalid"))
 	}
 	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true}
 	defer transport.CloseIdleConnections()
-	for _, node := range result.Nodes {
+	for i, node := range result.Nodes {
 		if node.Environment["LANTERN_TLS_CLIENT_CA_FILE"] != "" {
+			lastNode = i
 			clientCert, err := tls.LoadX509KeyPair(result.ClientCertFile, result.ClientKeyFile)
 			if err != nil {
-				return err
+				return fail("client_identity", err)
 			}
 			transport.TLSClientConfig.Certificates = []tls.Certificate{clientCert}
 			break
@@ -145,20 +182,22 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 	for {
 		ready := true
 		for i, node := range result.Nodes {
+			lastNode = i
 			select {
 			case <-children[i].done:
-				return fmt.Errorf("fixture node %d exited before readiness", i)
+				return fail("child_exit", fmt.Errorf("fixture node %d exited before readiness", i))
 			default:
 			}
 			for _, path := range []string{"/grpc.health.v1.Health/Check", "/graph.v1.LanternSecurityService/GetAuthCapabilities"} {
 				req, err := http.NewRequestWithContext(ctx, http.MethodPost, node.PublicOrigin+path, bytes.NewReader([]byte("{}")))
 				if err != nil {
-					return err
+					return fail("request", err)
 				}
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("Connect-Protocol-Version", "1")
 				response, err := client.Do(req)
 				if err != nil {
+					probes[i], statuses[i] = fixtureProbeErrorCategory(err), 0
 					ready = false
 					break
 				}
@@ -171,6 +210,17 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 				decodeErr := json.NewDecoder(io.LimitReader(response.Body, 8192)).Decode(&body)
 				_ = response.Body.Close()
 				last[i] = fmt.Sprintf("node-%d %s HTTP=%d Health=%s ready=%t mode=%s version=%d", i, path, response.StatusCode, body.Status, body.Ready, body.Mode, body.Protocol)
+				statuses[i] = response.StatusCode
+				switch {
+				case response.StatusCode != 200:
+					probes[i] = "http"
+				case decodeErr != nil:
+					probes[i] = "json"
+				case path == "/grpc.health.v1.Health/Check":
+					probes[i] = "health"
+				default:
+					probes[i] = "capabilities"
+				}
 				if response.StatusCode != 200 || decodeErr != nil || path == "/grpc.health.v1.Health/Check" && body.Status != "SERVING_STATUS_SERVING" || path != "/grpc.health.v1.Health/Check" && (!body.Ready || body.Protocol != 1 || body.Mode != "AUTH_MODE_OFF" && body.Mode != "AUTH_MODE_OIDC") {
 					ready = false
 					break
@@ -182,9 +232,25 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("fixture timed out before certified readiness: %s", strings.Join(last, "; "))
+			return fail("timeout", fmt.Errorf("fixture timed out before certified readiness: %s", strings.Join(last, "; ")))
 		case <-ticker.C:
 		}
+	}
+}
+
+func fixtureProbeErrorCategory(err error) string {
+	var certificate *tls.CertificateVerificationError
+	var network net.Error
+	var operation *net.OpError
+	switch {
+	case errors.As(err, &certificate):
+		return "tls_certificate"
+	case errors.As(err, &network) && network.Timeout():
+		return "timeout"
+	case errors.As(err, &operation) && operation.Op == "dial":
+		return "dial"
+	default:
+		return "transport"
 	}
 }
 

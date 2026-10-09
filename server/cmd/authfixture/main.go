@@ -202,7 +202,7 @@ func main() {
 			_, _ = writeFile(*directory, "query-supervision-failure.log", []byte(cause.Error()+"\n"))
 		}
 		if *serverBinary != "" {
-			fmt.Fprintln(os.Stderr, "authfixture_failure:"+fixtureFailureCategory(err))
+			writeFixtureFailure(os.Stderr, err)
 		} else {
 			fmt.Fprintln(os.Stderr, "authfixture:", err)
 		}

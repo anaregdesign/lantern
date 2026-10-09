@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -22,5 +25,27 @@ func TestFixtureFailureCategory(t *testing.T) {
 	}
 	if fixtureFailureCategory(private) != "configuration" {
 		t.Fatal("arbitrary error changed the category")
+	}
+}
+
+func TestFixtureServerLogClassificationIsBounded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "private.log")
+	for _, tc := range []struct{ raw, want string }{
+		{`{"msg":"failed to initialize app","err":"private-token-key-body"}`, "initialization"},
+		{`{"msg":"server exited with error","err":"private-token-key-body"}`, "server_exit"},
+		{"private-token-key-body", "none"},
+		{strings.Repeat("x", 64<<10) + "\n" + `{"msg":"failed to initialize app","err":"bind: address already in use"}`, "none"},
+	} {
+		if err := os.WriteFile(path, []byte(tc.raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if got := fixtureServerLogCategory(path); got != tc.want {
+			t.Fatal("wrong bounded classification", got)
+		}
+	}
+	var output bytes.Buffer
+	writeFixtureFailure(&output, &fixtureFailure{stage: "spawn", cause: errors.New("private-token-key-body")})
+	if output.String() != "authfixture_failure:spawn\n" {
+		t.Fatal("private failure escaped fixed category")
 	}
 }
