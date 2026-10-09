@@ -433,13 +433,67 @@ authority. Native time uncertainty still refuses immediately.
 
 Limits are pre-compression as well as wire limits. The owner reserves a 2 GiB
 virtual-credit pool, at most 64 connections and 8 active request encoders globally.
-Each request reserves `4*read + 10*send + 1 MiB`; each connection reserves
+Each request reserves `12*read + 10*send + 512*N + 2 MiB`, where
+`N = min(131072, max(256, floor(read/32)))`. Each connection reserves
 `(streams+1)*(2*32 KiB+16 KiB)+4 MiB`, including finite HTTP/2 framing/flow/header
 storage. Read/send limits must be positive and at most 64 MiB, streams 1..4096;
-configurations exceeding the per-owner reserves refuse. Headers/trailers have a
-32 KiB/256-key bound. This accounts for the output seam, not all application RSS.
-Request-owned Connect codec/compression pools cannot survive as uncharged shared
-pools. Cancellation/Close join entered producers and release actual sockets.
+configurations exceeding the per-owner reserves refuse. The 2 GiB pool may
+admit fewer than eight simultaneous requests when their complete reservations
+are large. Headers/trailers have a 32 KiB/256-key bound. Request-owned Connect
+codec/compression pools cannot survive as uncharged shared pools.
+Cancellation/Close join entered producers and release actual sockets.
+
+The allocating protobuf/protojson decoder is preceded by a non-allocating
+structural scan of the complete decompressed input. Both the encoded-byte limit
+and this structural envelope apply, independently of authentication and the
+later business batch limit:
+
+- Binary counts the root, every field occurrence (including duplicates and
+  unknown tags), every nested message/group and every packed scalar element.
+  Length-delimited strings, bytes and unknown payloads consume byte credit,
+  rather than being misinterpreted as nested messages.
+- JSON counts the root and every container, field name and scalar token,
+  including unknown fields. It skips strings without unescaping or building a
+  DOM. Protojson still validates grammar, duplicate/unknown fields, values and
+  schema semantics. The `json; charset=utf-8` alias has the same guard.
+- More than `N` units or 100 nested binary message/group or JSON container
+  levels refuse before resetting or allocating into the destination. For
+  example, at a 128 KiB read limit `N=4096`: up to 2047 empty repeated messages
+  fit the structural cap; the 65,536-empty-Vertex / 128 KiB counterexample does
+  not. Legal payloads within both limits retain their protobuf/JSON semantics.
+  There is no new fixed per-business-RPC batch count.
+
+The structural charge is derived from the pinned generated representation and
+Go/protobuf decoder, not an assumed encoded-size expansion factor:
+
+| Reserved component | Bound and enforcement |
+| --- | --- |
+| `4*read` | Simultaneously retained compressed and decompressed Connect buffers, each with capacity growth up to twice its byte limit; fixed minimum/growth slack uses the fixed reserve. |
+| `8*read` | Decoder-owned strings/bytes/unknown backing storage, string-unescape and base64 scratch, simultaneous old/new append storage and error-string copies. Copied payload spans are disjoint portions of the input; nested messages are scanned as structure, not copied again as payload. Minimum allocation/rounding for individual spans is charged by their structural units. |
+| `512*N` | Every generated message has a checked struct size at most 256 bytes. A field/scalar/list element has at most a 24-byte representation; old/new slice backing storage is bounded by four times element storage plus small-allocation slack. Scalar pointers, oneof wrappers, reflection values and JSON seen-field bookkeeping fit the remaining per-unit allowance. Binary message fields pay both a field and a message unit; JSON pays separate container/name/value units. This covers reachable decoder objects and simultaneously live growth/scratch, not unreclaimed garbage as an RSS promise. |
+| Additional `1 MiB` | Bounded preflight/decoder stacks (depth 100), scalar/error scratch and fixed decoder overhead. The linked immutable schema certificate is constructed before serving, has no request-driven entries, and is shared static metadata. |
+| Existing `10*send + 1 MiB` | Encoded output originals/copies and compression/metadata pools; retained independently while read/decode storage is live. |
+
+The certificate accepts only the linked generated graph, health, reflection,
+Timestamp, Duration and Empty representations. All 56 current public method
+inputs are checked by the paired inventory test. Current public inputs have no
+map, group, extension or custom WKT fields. Schemas with maps/extensions/groups,
+Any/Struct/Value/custom WKT decoders, dynamic messages, foreign implementations
+or a generated struct larger than 256 bytes refuse before decoding; adding one
+to a public RPC requires extending this proof and the inventory test. Unknown
+binary fields, including bounded groups, remain supported as opaque storage.
+This avoids silently applying a scalar/list allocation proof to Go maps or
+arbitrary custom decoders. The pinned Go/protobuf/Connect representation and
+buffering rules must be rechecked on dependency changes.
+
+A structural rejection is `ResourceExhausted` at the codec boundary. Connect
+wraps decode errors before the unary authentication interceptor; without an
+existing output grant the current output owner aborts that HTTP stream/socket.
+It does not manufacture an authorization grant to disclose a decoder error.
+Credit is released and a later valid request can proceed. The seam reservation
+covers transport/codec-owned storage, not business-owned graph/index/query
+results, authority state, application caches, the whole Go heap or Server RSS.
+Those retain their independent limits; no full Server RSS claim follows.
 
 The source-paired output tests cover before/after-final timing, immutable payload
 and metadata, trailers, TLS HTTP/1+HTTP/2, Connect proto/JSON, gRPC/gRPC-Web,

@@ -68,8 +68,10 @@ func (o *CurrentAuthority) ConfigurePublicOutput(server *http.Server, limits Cur
 	if o == nil || o.origin == nil || server == nil || limits.ReadBytes <= 0 || limits.SendBytes <= 0 || limits.ConcurrentStreams == 0 || limits.ReadBytes > 64<<20 || limits.SendBytes > 64<<20 || limits.ConcurrentStreams > 4096 {
 		return nil, ErrS1Contract
 	}
+	// Complete the fixed linked-schema certificate before any socket can enter.
+	_ = currentDecodeSchemas()
 	p := &CurrentOutput{owner: o, server: server, limits: limits, connections: make(map[net.Conn]*currentOutputConnection)}
-	p.requestCharge = uint64(4*limits.ReadBytes + 10*limits.SendBytes + 1<<20)
+	p.requestCharge = uint64(4*limits.ReadBytes+10*limits.SendBytes+1<<20) + currentDecodeCharge(limits.ReadBytes)
 	p.connectionCharge = uint64(limits.ConcurrentStreams+1)*(2*currentOutputHeaderBytes+16<<10) + 4<<20
 	p.wireBytes = limits.SendBytes + limits.SendBytes/65535*5 + 1<<20
 	if p.requestCharge > currentOutputPoolBytes/2 || p.connectionCharge > currentOutputPoolBytes/4 {

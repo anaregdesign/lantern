@@ -1,6 +1,7 @@
 package security
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -185,5 +186,108 @@ func TestCurrentPublicOutputHTTP2RequestsCannotShareFinalEvent(t *testing.T) {
 	defer mu.Unlock()
 	if len(recipients) != 2 || recipients[0].connection != recipients[1].connection || recipients[0].sequence == recipients[1].sequence {
 		t.Fatal("test did not cover two independent streams on one actual connection")
+	}
+}
+
+func TestCurrentPublicOutputDecodeRefusalTLSProtocols(t *testing.T) {
+	o, p, server, _ := currentPublicOutputFixture(t)
+	const path = "/graph.v1.LanternService/PutVertices"
+	var entered atomic.Int64
+	server.Config.Handler = p.Wrap(p.Handler(func() http.Handler {
+		return connect.NewUnaryHandler(path, func(ctx context.Context, req *connect.Request[pb.PutVerticesRequest]) (*connect.Response[pb.PutVerticesResponse], error) {
+			entered.Add(1)
+			_, a, err := o.WithRequestCredential(ctx, authorityFakeCredentialProducer{})
+			if err != nil {
+				return nil, err
+			}
+			if err = a.BindCurrentSelfOutput(ctx); err != nil {
+				return nil, err
+			}
+			return connect.NewResponse(&pb.PutVerticesResponse{}), nil
+		}, p.Options(connect.WithReadMaxBytes(p.limits.ReadBytes), connect.WithSendMaxBytes(p.limits.SendBytes))...)
+	}))
+	server.StartTLS()
+	bad := &pb.PutVerticesRequest{Vertices: make([]*pb.Vertex, 65536)}
+	for i := range bad.Vertices {
+		bad.Vertices[i] = &pb.Vertex{}
+	}
+	before, err := o.ExportFloors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitReleased := func() {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			p.mu.Lock()
+			active, held := p.active, p.bytes
+			expected := uint64(len(p.connections)) * p.connectionCharge
+			p.mu.Unlock()
+			if active == 0 {
+				if held != expected {
+					t.Fatal("decode failure leaked credit", held, expected)
+				}
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("decode failure retained request credit")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	for _, h2 := range []bool{false, true} {
+		transport := server.Client().Transport.(*http.Transport).Clone()
+		if !h2 {
+			transport.ForceAttemptHTTP2 = false
+			transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+			transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
+		}
+		t.Cleanup(transport.CloseIdleConnections)
+		client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+		for _, protocol := range []string{"connect-proto", "connect-json", "grpc", "grpc-web", "grpc-web-json"} {
+			if !h2 && protocol == "grpc" {
+				continue
+			}
+			label := "http1/" + protocol
+			if h2 {
+				label = "http2/" + protocol
+			}
+			t.Run(label, func(t *testing.T) {
+				options := []connect.ClientOption{connect.WithSendCompression("gzip"), connect.WithCompressMinBytes(1)}
+				switch protocol {
+				case "connect-json":
+					options = append(options, connect.WithProtoJSON())
+				case "grpc":
+					options = append(options, connect.WithGRPC())
+				case "grpc-web":
+					options = append(options, connect.WithGRPCWeb())
+				case "grpc-web-json":
+					options = append(options, connect.WithGRPCWeb(), connect.WithProtoJSON())
+				}
+				rpc := connect.NewClient[pb.PutVerticesRequest, pb.PutVerticesResponse](client, server.URL+path, options...)
+				prior := entered.Load()
+				if _, err := rpc.CallUnary(context.Background(), connect.NewRequest(bad)); err == nil {
+					t.Fatal("dense request reached business handler")
+				}
+				waitReleased()
+				if entered.Load() != prior {
+					t.Fatal("predecode refusal called business handler")
+				}
+				// The actual current output boundary aborts an unauthenticated decode
+				// error rather than publishing it with a fabricated authorization grant.
+				// A fresh valid request still succeeds after all credit is released.
+				if _, err := rpc.CallUnary(context.Background(), connect.NewRequest(&pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "orders:valid"}}})); err != nil {
+					t.Fatal("valid request after refusal", err)
+				}
+				waitReleased()
+				if entered.Load() != prior+1 {
+					t.Fatal("unexpected invocation count")
+				}
+			})
+		}
+	}
+	after, err := o.ExportFloors()
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("decoder rejection mutated authority", err)
 	}
 }

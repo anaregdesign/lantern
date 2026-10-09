@@ -2,11 +2,14 @@ package security
 
 import (
 	"bytes"
+	"connectrpc.com/connect"
 	"context"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -157,5 +160,46 @@ func TestCurrentPublicOutputCloseJoinsBlockedSocketProducer(t *testing.T) {
 	defer p.mu.Unlock()
 	if p.active != 0 || !p.closed {
 		t.Fatal("entered encoder credit survived Close", p.active)
+	}
+}
+
+func TestCurrentPublicOutputDecodeRefusalReleasesCredit(t *testing.T) {
+	o, p, _, _ := currentPublicOutputFixture(t)
+	before, err := o.ExportFloors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	req := httptest.NewRequest(http.MethodPost, "/rpc", nil)
+	req = req.WithContext(p.connContext(req.Context(), left))
+	initial := p.bytes
+	for _, name := range []string{"proto", "json", "json; charset=utf-8"} {
+		raw := bytes.Repeat([]byte{0x0a, 0}, 65536)
+		if name != "proto" {
+			raw = []byte(`{"vertices":[` + strings.TrimSuffix(strings.Repeat(`{},`, 65536), ",") + `]}`)
+		}
+		message := &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "unchanged"}}}
+		h := p.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if p.active != 1 || p.bytes != initial+p.requestCharge || p.requestCharge != uint64(4*p.limits.ReadBytes+10*p.limits.SendBytes+1<<20)+currentDecodeCharge(p.limits.ReadBytes) {
+				t.Fatal("decoder entered without complete credit")
+			}
+			err := (currentOutputCodec{name: name, read: p.limits.ReadBytes, send: p.limits.SendBytes}).Unmarshal(raw, message)
+			if connect.CodeOf(err) != connect.CodeResourceExhausted {
+				t.Fatal("no predecode refusal", err)
+			}
+			BindCurrentFailure(w)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("fixed public refusal"))
+		}))
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		if p.active != 0 || p.bytes != initial || len(message.Vertices) != 1 || message.Vertices[0].Key != "unchanged" {
+			t.Fatal("refusal leaked credit or mutated destination")
+		}
+	}
+	after, err := o.ExportFloors()
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("decode refusal changed M/P/B floors", err)
 	}
 }

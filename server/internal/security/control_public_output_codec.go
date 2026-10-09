@@ -91,10 +91,13 @@ func (c currentOutputCodec) Unmarshal(raw []byte, value any) error {
 	if len(raw) > c.read {
 		return currentEncodingLimit()
 	}
-	if c.IsBinary() {
-		return (proto.UnmarshalOptions{RecursionLimit: 100}).Unmarshal(raw, m)
+	if err := currentCheckDecode(raw, m, c.IsBinary(), currentDecodeNodes(c.read)); err != nil {
+		return err
 	}
-	return (protojson.UnmarshalOptions{DiscardUnknown: false, RecursionLimit: 100}).Unmarshal(raw, m)
+	if c.IsBinary() {
+		return (proto.UnmarshalOptions{RecursionLimit: currentDecodeDepth}).Unmarshal(raw, m)
+	}
+	return (protojson.UnmarshalOptions{DiscardUnknown: false, RecursionLimit: currentDecodeDepth}).Unmarshal(raw, m)
 }
 
 func currentEncodingLimit() error {
