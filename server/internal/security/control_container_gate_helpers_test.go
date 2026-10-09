@@ -443,13 +443,10 @@ func (g *ContainerAuthorityGate) ExerciseContainerBoundary(p CurrentCredentialPr
 	if _, err := client.CallUnary(t.Context(), connect.NewRequest(wrapperspb.String("next"))); err == nil {
 		t.Fatal("next output inherited old permit")
 	}
-	if _, err := g.Prepare(p, s1Changes(s1ReaderRole())); err == nil {
-		t.Fatal("stale new H admission succeeded")
-	}
 	if raw, err := g.Consume(staleRequest, p, [32]byte{}); err == nil || len(raw) > 0 {
 		t.Fatal("pre-pause request consumed into new H after expiry")
 	}
-	containerWrite(t, filepath.Join(g.dir, "boundary-result.json"), map[string]any{"phase": phase, "mode": os.Getenv("LANTERN_CONTAINER_MODE"), "before": start, "after": end, "elapsed_low_ns": elapsed.low, "elapsed_high_ns": elapsed.high, "old_anchor_refused": true, "next_output_refused": true, "new_H_admission_refused": true, "exact_late_unit_delivered": phase == "pause-after" && callErr == nil, "transport_interrupted": phase == "pause-after" && callErr != nil, "call_error": fmt.Sprint(callErr)})
+	containerWrite(t, filepath.Join(g.dir, "boundary-result.json"), map[string]any{"phase": phase, "mode": os.Getenv("LANTERN_CONTAINER_MODE"), "before": start, "after": end, "elapsed_low_ns": elapsed.low, "elapsed_high_ns": elapsed.high, "old_anchor_refused": true, "next_output_refused": true, "new_H_consume_refused": true, "exact_late_unit_delivered": phase == "pause-after" && callErr == nil, "transport_interrupted": phase == "pause-after" && callErr != nil, "call_error": fmt.Sprint(callErr)})
 	// Recovery is independently requalified by the unchanged production owner.
 	for _, member := range g.owners {
 		deadline := time.Now().Add(150 * time.Second)
@@ -480,9 +477,6 @@ func (g *ContainerAuthorityGate) ResumeContainerProcess(p CurrentCredentialProdu
 	}
 	if _, err := g.Start(c.PurposeTicket); err == nil {
 		t.Fatal("purpose ticket survived restart")
-	}
-	if _, err := g.Prepare(p, s1Changes(s1ReaderRole())); err == nil {
-		t.Fatal("new H admitted before fresh quorum")
 	}
 	for _, raw := range [][]byte{c.AppliedH, c.PendingH} {
 		h, err := verifyHistoricalH(g.n.f.trust, raw)
@@ -515,6 +509,13 @@ func (g *ContainerAuthorityGate) ResumeContainerProcess(p CurrentCredentialProdu
 	containerMust(t, err)
 	if result.raw != string(c.PendingH) || result.outcome == nil || result.outcome.disposition != S1Applied {
 		t.Fatal("expired original completion changed")
+	}
+	// Prepare freezes a review; only final consume requires current quorum.
+	// Test after pending completion so pending-capacity refusal cannot mask it.
+	beforeRenewal, err := g.Prepare(p, s1Changes(s1ReaderRole()))
+	containerMust(t, err)
+	if raw, err := g.Consume(beforeRenewal, p, [32]byte{}); err == nil || len(raw) != 0 {
+		t.Fatal("new H consumed before fresh quorum")
 	}
 	g.Renew()
 	r, err := g.Prepare(p, s1Changes(s1ReaderRole()))
@@ -593,9 +594,6 @@ func (g *ContainerAuthorityGate) ExerciseNetwork(p CurrentCredentialProducer, ph
 	}
 	if raw, err := g.Consume(r, p, [32]byte{}); err == nil || len(raw) > 0 {
 		t.Fatal("outage consumed new H")
-	}
-	if _, err := g.Prepare(p, s1Changes(s1ReaderRole())); err == nil {
-		t.Fatal("outage admitted new H")
 	}
 	containerWrite(t, filepath.Join(g.dir, "fault-result.json"), map[string]any{"phase": phase, "new_H_refused": true, "fresh_renewal_refused": true, "rejected_peer_sockets": g.peers[2].rejected.Load() + g.peers[3].rejected.Load(), "stamp": containerObserve(t, o.network.timeOwner)})
 	wait("release.json")
