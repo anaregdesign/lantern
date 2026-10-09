@@ -428,8 +428,17 @@ mkdir -p sdks/rust/target
 go build -o sdks/rust/target/lantern-smoke ./server/cmd
 cd sdks/rust
 LANTERN_RUST_TEST_SERVER="$PWD/target/lantern-smoke" \
-  cargo test --locked --all-features -- --ignored --test-threads=1
+  cargo test --locked --all-features -- --ignored --test-threads=1 \
+    --skip scoped_changes::tests::real_public_scoped_wire \
+    --skip security::tests::real_public_current_wire
 ```
+
+The public scoped-CDC and current-authority cases use separately provisioned
+root Go fixtures. `TestAuth_OIDCRustScopedChangesFacadeRealConnect` runs the
+former; the native public SDK4 gate in
+`tests/integration/current_security_gate_test.go` runs the latter and checks
+that the exact Rust test executed. A standalone run does not qualify the native
+current-authority case.
 
 Tests exercise the explicit single-instance h2c exception, verified TLS,
 mTLS, bearer rotation, authenticated two-node HA streaming, retained-log

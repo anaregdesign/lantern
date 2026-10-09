@@ -337,8 +337,18 @@ build the server from the root and run that suite from the crate:
 mkdir -p sdks/rust/target
 go build -o sdks/rust/target/lantern-smoke ./server/cmd
 (cd sdks/rust && LANTERN_RUST_TEST_SERVER="$PWD/target/lantern-smoke" \
-  cargo test --locked --all-features -- --ignored --test-threads=1)
+  cargo test --locked --all-features -- --ignored --test-threads=1 \
+    --skip scoped_changes::tests::real_public_scoped_wire \
+    --skip security::tests::real_public_current_wire)
 ```
+
+The two public fixture tests require their root Go orchestrators. Scoped CDC
+runs through `TestAuth_OIDCRustScopedChangesFacadeRealConnect`; current authority
+runs through the opt-in native public SDK4 gate in
+`tests/integration/current_security_gate_test.go`. The latter provisions native
+time and a current quorum, passes the private fixture inputs, and requires the
+exact Rust test to execute successfully. Standalone-suite success does not
+qualify that native current-authority case.
 
 Audit locked runtime and codegen dependencies with
 `(cd sdks/rust && cargo audit --deny warnings --file Cargo.lock)`; an
