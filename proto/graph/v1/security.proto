@@ -585,6 +585,7 @@ message CurrentSecurityAuditRecord {
   bytes actor_digest = 2;
   string operation = 3;
 }
+
 // This invocation was refused before H, without settling any earlier
 // ambiguous invocation. Preserve the original identity for status-first use.
 message CurrentSecurityInvocationRejected {
