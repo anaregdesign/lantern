@@ -317,13 +317,22 @@ func (g *custodyProcessGate) requireUnavailable(id int) {
 }
 
 func custodyGateReachableTLS(client *http.Client, endpoint string) bool {
-	response, err := client.Get(endpoint + "/healthz")
+	request, err := http.NewRequest(http.MethodPost, endpoint+"/grpc.health.v1.Health/Check", strings.NewReader("{}"))
 	if err != nil {
 		return false
 	}
-	_, _ = io.Copy(io.Discard, response.Body)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Connect-Protocol-Version", "1")
+	response, err := client.Do(request)
+	if err != nil {
+		return false
+	}
+	var health struct {
+		Status string `json:"status"`
+	}
+	decodeErr := json.NewDecoder(response.Body).Decode(&health)
 	_ = response.Body.Close()
-	return response.TLS != nil && response.TLS.Version == tls.VersionTLS13
+	return response.StatusCode == http.StatusOK && decodeErr == nil && health.Status != "" && response.TLS != nil && response.TLS.Version == tls.VersionTLS13
 }
 
 func custodyGateUnavailable(err error) bool {

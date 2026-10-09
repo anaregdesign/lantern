@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
 
 func TestCurrentProvisioningIndependentGenesisAndStrictProfile(t *testing.T) {
@@ -131,8 +133,8 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	if len(hosts) != 0 {
 		// One independently provisioned lifetime covers the bounded campaign;
 		// restart never rewrites or extends this signed membership.
-		n.manifest.IssuedAt = time.Now().UTC().Add(-time.Minute)
-		n.manifest.ExpiresAt = time.Now().UTC().Add(time.Hour)
+		n.manifest.IssuedAt = time.Now().UTC().Add(-5 * time.Second)
+		n.manifest.ExpiresAt = n.manifest.IssuedAt.Add(peerauth.MaxMembershipLifetime)
 		for id, c := range n.configs {
 			c.Membership.Self.Origin = "https://" + hosts[id-1] + ":16380"
 			n.configs[id] = c
