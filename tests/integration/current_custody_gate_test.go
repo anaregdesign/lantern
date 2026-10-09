@@ -71,6 +71,17 @@ func TestCurrentCustodyProcessGate(t *testing.T) {
 		t.Fatal("exact private container addresses required")
 	}
 	cert := custodyGatePublicTLS(t, append(append([]string{}, hosts...), driver))
+	// Provision one immutable shared cursor key with the original fixture inputs.
+	// The actual entry point requires it for protected CDC even when this bounded
+	// lifecycle campaign makes only control and ordinary data calls.
+	var cursorKey [32]byte
+	if _, err := rand.Read(cursorKey[:]); err != nil {
+		t.Fatal(err)
+	}
+	ring := fmt.Sprintf(`{"current_version":1,"keys":[{"version":1,"key":"%x"}]}`, cursorKey)
+	if err := createPrivateTestFile("/provision/cursor-keys.json", []byte(ring)); err != nil {
+		t.Fatal(err)
+	}
 	f := newOIDCWireIssuer(t)
 	f.realClock = true
 	handler := f.provider.Config.Handler

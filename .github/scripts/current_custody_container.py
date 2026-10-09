@@ -134,6 +134,7 @@ def main():
             "LANTERN_OIDC_ROOT_CA_FILE": "/provision/oidc.pem",
             "LANTERN_OIDC_PRIVATE_ORIGINS": json.dumps({issuer: [driver_ip + "/32"]}, separators=(",", ":")),
             "LANTERN_TLS_CERT_FILE": "/provision/public.pem", "LANTERN_TLS_KEY_FILE": "/provision/public.key",
+            "LANTERN_CDC_CURSOR_KEY_RING_FILE": "/provision/cursor-keys.json",
             "LANTERN_PORT": "6380", "LANTERN_METRICS_ADDR": "", "LANTERN_NODE_ID": f"{node:032x}",
             "LANTERN_RECEIPT_WAL_MODE": "fresh" if mode == "fresh" else "restart",
             "LANTERN_RECEIPT_WAL_PATH": "/journal/business.wal", "LANTERN_RECEIPT_EPOCH": "42424242424242424242424242424242",

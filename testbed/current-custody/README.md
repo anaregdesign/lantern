@@ -9,7 +9,8 @@ Before using the example, provide an approved immutable image and independently
 provisioned current-v2 cohort. Each `operator/node-N` directory contains its
 original canonical `node.json`, the exact genesis bytes, signed membership and
 operator public key, that node's separate workload TLS/voting/origin key material,
-public TLS files, and the IdP trust roots referenced by the configuration. An
+public TLS files, the shared protected-CDC `cursor-keys.json` ring, and the IdP
+trust roots referenced by the configuration. An
 origin-free member has no origin key. Preserve the original member/incarnation,
 scope, identities, file bytes and paths across normal restart. No script here
 issues production secrets or changes DNS, host trust, host time or deployments.

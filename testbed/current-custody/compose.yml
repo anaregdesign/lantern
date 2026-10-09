@@ -22,6 +22,7 @@ x-node: &node
     LANTERN_OIDC_ROOT_CA_FILE: /operator/oidc-roots.pem
     LANTERN_TLS_CERT_FILE: /operator/public.pem
     LANTERN_TLS_KEY_FILE: /operator/public.key
+    LANTERN_CDC_CURSOR_KEY_RING_FILE: /operator/cursor-keys.json
     LANTERN_PORT: "6380"
     LANTERN_METRICS_ADDR: ""
     LANTERN_RECEIPT_WAL_MODE: ${LANTERN_DATA_MODE:?use fresh initially or restart for the existing data WAL}
