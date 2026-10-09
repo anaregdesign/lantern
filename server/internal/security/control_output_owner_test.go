@@ -2,10 +2,29 @@ package security
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"testing"
 )
+
+func TestAuthorityOutputClosePreservesFailuresAndAttemptsAllResources(t *testing.T) {
+	failure := errors.New("output close failure")
+	if err := closeAuthorityOutputs(func() error { return net.ErrClosed }, func() error {
+		return errors.Join(net.ErrClosed, failure)
+	}); !errors.Is(err, failure) {
+		t.Fatal("combined close failure suppressed", err)
+	}
+	last := false
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		_ = closeAuthorityOutputs(func() error { panic(failure) }, func() error { last = true; return nil })
+	}()
+	if recovered != failure || !last {
+		t.Fatal("panic skipped remaining output cleanup", recovered, last)
+	}
+}
 
 func TestAuthorityOutputPoolOwnsFiniteConnectionsAndEncoders(t *testing.T) {
 	_, owners, _ := authorityTestComposite(t)
@@ -48,7 +67,9 @@ func TestAuthorityOutputPoolOwnsFiniteConnectionsAndEncoders(t *testing.T) {
 	if o.outputs.active != 0 {
 		t.Fatal("encoder leak")
 	}
-	o.stopOutputs()
+	if err := o.stopOutputs(); err != nil {
+		t.Fatal(err)
+	}
 	if o.reserveOutput(connections[authorityOutputActive]) {
 		t.Fatal("closed output pool")
 	}

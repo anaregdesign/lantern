@@ -144,7 +144,7 @@ func (p *CurrentOutput) release(r *currentOutputRequest) {
 	}
 }
 
-func (p *CurrentOutput) stop() {
+func (p *CurrentOutput) stop() error {
 	p.mu.Lock()
 	p.closed = true
 	connections := make([]net.Conn, 0, len(p.connections))
@@ -152,10 +152,11 @@ func (p *CurrentOutput) stop() {
 		connections = append(connections, c)
 	}
 	p.mu.Unlock()
-	_ = p.server.Close()
+	closes := []func() error{p.server.Close}
 	for _, c := range connections {
-		_ = c.Close()
+		closes = append(closes, c.Close)
 	}
+	return closeAuthorityOutputs(closes...)
 }
 
 func (p *CurrentOutput) Wrap(next http.Handler) http.Handler {

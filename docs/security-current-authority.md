@@ -353,7 +353,7 @@ old fixed-writer image.
 | --- | --- |
 | `currentGenesisDocument`, Version 2 | Domain, Cohort, Generation, Fences, original Image, complete S1 Execution configuration/capacity, original capsule Roots, voter Members, enrolled Origins, finite Bounds and the exact platform TimeProfile digest |
 | `currentNodeDocument`, Version 2 | GenesisFile/SHA256; Participant member/incarnation, P/B paths and their original scope/identity/epoch/policy, OwnedOrigin and pending/outbox reserves; Membership path/operator key/signed manifest/full profile/self; separate workload TLS, voting and origin key paths; actual private ListenAddress and bounded Limits |
-| `FloorsFile` for resume only | Independently retained M binding/version and P/B minimum cuts from the intact owner; this is minimum-cut evidence, never serving authority |
+| `FloorsFile` in both modes | Fixed absolute private persistent custody path, separate from provisioning and all M/P/B files; the runtime retains final M/P/B minima here on orderly shutdown |
 
 The membership profile binds the same voter keys, workloads and protocol as the
 independent genesis. An origin-free enrolled member has OwnedOrigin zero and no
@@ -362,14 +362,96 @@ cannot mint a new management or login-session operation. Origin signing keys
 remain distinct from voting and workload TLS keys. All configured paths must
 retain exclusive custody; missing/corrupt/mixed families fail before publication.
 
-`fresh` refuses supplied resume floors and existing families. `resume` requires
-all original identities, intact M/P/B and independently retained floors; it never
-falls back to fresh. The internal owner `ExportFloors` returns minimum-cut bytes
-for an operator lifecycle integration, not a public HTTP endpoint. It must be
-retained with independent original provisioning. Neither a backup snapshot nor
-an old capability establishes current time, quorum, pending approval or output
-permission after reopen. Production floor custody/cutover integration remains
-an S5 operator responsibility; do not infer it from process volume survival.
+`fresh` requires absent floor/state bodies and absent M/P/B families. `resume`
+requires the same original provisioning, intact M/P/B, and a matching CLEAN
+custody pair. It never falls back to fresh. Neither a backup snapshot nor an old
+capability establishes current time, quorum, pending approval or output permission
+after reopen. See the orderly lifecycle below; volume survival alone is not a
+completed shutdown.
+
+### Orderly floor custody and process restart
+
+Keep three storage classes: read-only original provisioning/keys, private durable
+M/P/B storage, and private durable custody storage. Set `FloorsFile` once in the
+original node document, including for `fresh`. Do not rewrite it for `resume`.
+The runtime also owns `FloorsFile + ".state"` and its persistent `.lease` sidecar.
+All three custody paths must be distinct by path and inode from journals, tips,
+leases, genesis/node documents and keys. Symlinks, nonregular files, unsafe file
+permissions and aliases are refused. Existing files are checked through opened
+private descriptors. A separate custody lease excludes competing startups from
+validation until all native cleanup and final checkpoint publication have ended;
+the lease file is never unlinked as a repair step.
+
+The small canonical state record has version 1, phase `RUNNING` or `CLEAN`, a
+nonzero bounded cycle, a binding of exact original genesis/node inputs and fixed
+paths, and the SHA-256 of final floor bytes for CLEAN. The cycle is a local
+lifecycle generation, **not** an external monotonic witness or serving epoch.
+The existing floor document keeps its 16 KiB bound. State is bounded at 4 KiB;
+unknown/duplicate fields and cycle overflow are refused.
+
+Startup acquires custody first and revalidates the original inputs under that
+lease. A resume accepts only CLEAN with the matching binding and floor hash.
+Read-only preflight, including acquiring a new native time anchor, can fail while
+leaving old CLEAN reusable. Before the first update-capable M/P/B operation
+(including M's resume checkpoint barrier), startup durably publishes RUNNING.
+Only then can the existing constructors replay and validate the independent
+floors, keys, membership, journals and tips. Neither state nor floor bytes grant
+current authority: fresh native time, current identity, quorum/catch-up and the
+separate data runtime readiness remain necessary.
+
+For an orderly stop, App completes its readiness drain and joins its public and
+private workers. The security owner closes admission and output, joins its own
+renewal/catch-up and admitted producers, then captures final M/P/B minima while
+the native owners remain open. P/B/M and resource closes must all succeed before
+the runtime stores the final floors and publishes CLEAN last. Both writes use a
+private temporary file, a complete write, file Sync, checked Close, atomic rename
+and directory Sync. They are not a two-file transaction: RUNNING and the CLEAN
+hash reject partial pairs. The outer custody lease remains held after individual
+family leases have been released and is released last.
+
+`SecurityRuntime.Shutdown` is this explicit terminal lifecycle. Wire cleanup and
+`Close` are abort paths and cannot turn initialization failure, worker failure,
+timeout or panic into CLEAN. Concurrent/repeated closure retains the terminal
+result. App observes both security and data shutdown results before the process
+logs `server stopped cleanly` or returns success. HTTP shutdown timeout/forced
+close errors propagate through App. The final floor is a minimum, so an existing
+chosen-but-undrained tail can legitimately advance during the next full replay.
+No new consensus, original discard, or global sys/data transaction is introduced.
+
+Use an explicit `resume` only after successful normal shutdown with the original
+volumes and identity. An example of the required mount separation and stop budget
+is in [the custody Compose runbook](../testbed/current-custody/README.md).
+Durable sessions are re-evaluated with normal expiry and current policy; process
+callback/purpose/output permits are not restored. Network recovery similarly
+requires new current authority and catch-up; floors never extend an old permit.
+
+| Observed startup state | Operator interpretation |
+| --- | --- |
+| Complete CLEAN + matching floor hash/binding | Eligible for the usual full native resume checks; not proof of present readiness |
+| RUNNING, missing/mixed state/floor, hash mismatch, invalid original binding | Refuse startup; retain files and error logs for diagnosis |
+| Intact custody but old/missing/corrupt M, P, B or tip | Existing independent-floor/replay validation refuses startup |
+| Normal shutdown reports an I/O or close error | Treat the process as failed and stopped; do not retry writes inside that owner |
+
+Do not repair a refusal by deleting sidecars, switching to `fresh`, refreshing old
+floors from the local journals, or rewriting original provisioning. This release
+does not promise automatic availability after SIGKILL, shutdown deadline expiry,
+panic, power loss or partial initialization. RUNNING published before native
+updates invalidates the prior checkpoint. There is one deliberate uncertainty
+boundary: a final CLEAN rename/directory-sync operation can report failure even
+though complete new bytes are visible next startup. Such a matching CLEAN may
+proceed to ordinary full validation because final cut capture, all M/P/B cleanup
+and final floor durability preceded its publication. The failed process still
+returns failure; it does not resume serving. Uncertain M/P/B must never be CLEAN.
+
+The native fixture qualifies container/whole-process restart, not physical host
+reboot or power-loss flushing. Normal OS restart availability is conditional on
+the service receiving enough stop time to finish this sequence, the native
+kernel/storage contract, and intact persistent volumes. Expired membership or
+certificates still block restart. Separate custody storage is not a witness
+against rolling back or cloning the entire bundle. Backup/VM rollback/clone
+return to the same cluster and production deployment remain outside this scope.
+Sys CLEAN also does not certify data persistence or cluster enforcement: the
+sys install-before-ring and data post-ring/HLC/WAL contracts remain separate.
 
 `TestCurrentProvisioningExportPublicFixture` is a **test-only** authoring example:
 it writes original canonical documents and fixture keys before any M/P/B exists.
@@ -515,12 +597,11 @@ a new generation/cohort with independent keys/genesis, invalidate old sessions
 and cursors, install compatible clients and perform a separately approved
 cutover. This source change performs none of those environment actions.
 
-The local `SecurityRuntime.ExportCurrentAuthorityFloors` lifecycle API exports the
-existing owner's minimum M/P/B cut document. Retain it independently with the
-original provisioning, then set `FloorsFile` for `resume`; no public HTTP route
-exports it. It is a minimum floor, not authorization to restore a backup or
-replace an intact journal. Deployment custody and shutdown integration remain
-part of #1609.
+The local `SecurityRuntime.ExportCurrentAuthorityFloors` API remains a live
+minimum-cut observation. It is not the final quiescent cut and does not publish
+custody; exporting and then calling Close cannot substitute for Shutdown. No
+public HTTP floor route is added. Actual cutover/deployment, the wider #1609
+requirements and final #1610 acceptance remain separately owned.
 
 A current status lookup may complete an already verified durable original H
 through the existing driver, including when its first invocation stopped before

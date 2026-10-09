@@ -2,12 +2,60 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+func TestPeerPlaneRunReturnsDrainTimeout(t *testing.T) {
+	seed := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	tlsConfig, client := seed.TLS.Clone(), seed.Client()
+	seed.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	server := &http.Server{TLSConfig: tlsConfig, Handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-r.Context().Done()
+	})}
+	t.Cleanup(func() { _ = server.Close() })
+	p := &PeerPlaneServer{server: server, listener: listener}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	requestDone := make(chan struct{})
+	go func() {
+		defer close(requestDone)
+		response, _ := client.Get("https://" + listener.Addr().String())
+		if response != nil {
+			_ = response.Body.Close()
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("private TLS request did not enter")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatal("private forced close became orderly success", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("private worker did not join")
+	}
+	<-requestDone
+}
 
 func TestPeerPlaneDisabledStillRequiresCertifiedServiceAndJoins(t *testing.T) {
 	_, data, _ := securityRuntimeFixture(t)

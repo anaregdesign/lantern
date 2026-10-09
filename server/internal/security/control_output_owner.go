@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"slices"
@@ -108,9 +109,10 @@ func (o *authorityOriginOwner) outputConnState(c net.Conn, state http.ConnState)
 		}
 	}
 }
-func (o *authorityOriginOwner) stopOutputs() {
+func (o *authorityOriginOwner) stopOutputs() error {
+	var closes []func() error
 	if o.publicOutputs != nil {
-		o.publicOutputs.stop()
+		closes = append(closes, o.publicOutputs.stop)
 	}
 	p := &o.outputs
 	p.mu.Lock()
@@ -122,11 +124,42 @@ func (o *authorityOriginOwner) stopOutputs() {
 	}
 	p.mu.Unlock()
 	if server != nil {
-		_ = server.Close()
+		closes = append(closes, server.Close)
 	}
 	for _, c := range connections {
-		_ = c.Close()
+		closes = append(closes, c.Close)
 	}
+	return closeAuthorityOutputs(closes...)
+}
+
+func closeAuthorityOutputs(closes ...func() error) (err error) {
+	var failure any
+	for _, close := range closes {
+		func() {
+			defer func() {
+				if value := recover(); value != nil {
+					if failure == nil {
+						failure = value
+					}
+					err = errors.Join(err, errS3ACleanup)
+				}
+			}()
+			e := close()
+			// The HTTP server may have closed this exact connection already.
+			// Never suppress an error merely because it contains ErrClosed.
+			if e == net.ErrClosed {
+				return
+			}
+			if op, ok := e.(*net.OpError); ok && op.Err == net.ErrClosed {
+				return
+			}
+			err = errors.Join(err, e)
+		}()
+	}
+	if failure != nil {
+		panic(failure)
+	}
+	return err
 }
 func (o *authorityOriginOwner) reserveOutput(c *authorityOutputConnection) bool {
 	p := &o.outputs

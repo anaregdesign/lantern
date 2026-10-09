@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
@@ -34,13 +35,16 @@ type SecurityRuntime struct {
 	data           *service.ServingRuntime
 	config         SecurityConfig
 	now            func() time.Time
+	closeOnce      sync.Once
+	closeErr       error
+	closeOrderly   bool
 }
 
 type securityRuntimeClock struct{ now func() time.Time }
 
 func (c securityRuntimeClock) Now() time.Time { return c.now() }
 
-func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (_ *SecurityRuntime, cleanup func(), err error) {
+func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (result *SecurityRuntime, cleanup func(), err error) {
 	if err := validateSecurityConfig(config); err != nil {
 		return nil, nil, err
 	}
@@ -58,20 +62,17 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (_ 
 	if runtime.now == nil {
 		runtime.now = time.Now
 	}
-	cleanup = func() {
-		runtime.authorizations.Close()
-		if runtime.fetcher != nil {
-			runtime.fetcher.CloseIdleConnections()
+	cleanup = func() { _ = runtime.Close() }
+	defer func() {
+		if result == nil {
+			err = errors.Join(err, runtime.Close())
 		}
-		if runtime.native != nil {
-			_ = runtime.native.Close()
-		}
-		if runtime.current != nil {
-			_ = runtime.current.Close()
-		}
-	}
+	}()
 	if config.Mode == "off" {
 		runtime.control, err = service.NewSecurityConnectHandler(service.SecurityServiceOptions{Ready: func(ctx context.Context, _ *security.Revision) bool { return runtime.Ready(ctx) }})
+		if err != nil {
+			return nil, nil, err
+		}
 		return runtime, cleanup, err
 	}
 	if data == nil || data.DataNamespaceFormat() != keyspace.Version {
@@ -79,7 +80,6 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (_ 
 	}
 	if config.Profile == "current-v2" {
 		if err := runtime.openCurrent(); err != nil {
-			cleanup()
 			return nil, nil, err
 		}
 		return runtime, cleanup, nil
@@ -122,13 +122,6 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (_ 
 	if err != nil {
 		return nil, nil, err
 	}
-	complete := false
-	closeRuntime := cleanup
-	defer func() {
-		if !complete {
-			closeRuntime()
-		}
-	}()
 	if config.NodeRole == "writer" {
 		// Bootstrap is operator-declared trust. Online metadata validation occurs
 		// for login/explicit management activation; restart does not depend on IdP
@@ -156,8 +149,58 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (_ 
 	if err != nil {
 		return nil, nil, err
 	}
-	complete = true
 	return runtime, cleanup, nil
+}
+
+// Close is abort cleanup. A partially constructed or failed runtime must never
+// create an orderly current-authority checkpoint. Wire may call it repeatedly.
+func (r *SecurityRuntime) Close() error { return r.finish(false) }
+
+// Shutdown is the error-returning normal lifecycle used after App has joined
+// all public/private workers. Current sys custody and data durability remain
+// separate owners; App must observe both terminal results.
+func (r *SecurityRuntime) Shutdown() error { return r.finish(true) }
+
+func (r *SecurityRuntime) finish(orderly bool) error {
+	if r == nil {
+		return nil
+	}
+	var failure any
+	r.closeOnce.Do(func() {
+		closeOne := func(close func() error) {
+			defer func() {
+				if value := recover(); value != nil {
+					if failure == nil {
+						failure = value
+					}
+					r.closeErr = errors.Join(r.closeErr, errors.New("security runtime cleanup panicked"))
+				}
+			}()
+			r.closeErr = errors.Join(r.closeErr, close())
+		}
+		closeOne(func() error { r.authorizations.Close(); return nil })
+		if r.fetcher != nil {
+			closeOne(func() error { r.fetcher.CloseIdleConnections(); return nil })
+		}
+		if r.native != nil {
+			closeOne(r.native.Close)
+		}
+		if r.current != nil {
+			if orderly && r.closeErr == nil {
+				closeOne(r.current.Shutdown)
+			} else {
+				closeOne(r.current.Close)
+			}
+		}
+		r.closeOrderly = orderly && r.closeErr == nil
+	})
+	if failure != nil {
+		panic(failure)
+	}
+	if orderly && !r.closeOrderly {
+		return errors.Join(r.closeErr, errors.New("security runtime did not complete orderly shutdown"))
+	}
+	return r.closeErr
 }
 func (r *SecurityRuntime) Mode() string                                    { return r.mode }
 func (r *SecurityRuntime) ControlHandler() *service.SecurityConnectHandler { return r.control }

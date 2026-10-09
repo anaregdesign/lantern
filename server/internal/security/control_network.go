@@ -88,6 +88,8 @@ type s3aOwner struct {
 	closed         atomic.Bool
 	closeOnce      sync.Once
 	closeErr       error
+	closeFloors    s3aFloors
+	closeCaptured  bool
 	workers        sync.WaitGroup
 	callMu         sync.Mutex
 	calls          sync.WaitGroup
@@ -118,9 +120,10 @@ type s3aOwner struct {
 // Hooks alter only delivery/fault timing in native tests, never signatures,
 // authenticated admission, durable certificates, or protocol verification.
 type s3aHooks struct {
-	beforeSend     func(context.Context, uint32, []byte) error
-	beforeResponse func(context.Context)
-	beforeRenewal  func(context.Context)
+	beforeSend           func(context.Context, uint32, []byte) error
+	beforeResponse       func(context.Context)
+	beforeRenewal        func(context.Context)
+	afterMembershipClose func() error
 }
 
 func s3aPaths(c *s3aConfig) error {
@@ -337,8 +340,16 @@ func (o *s3aOwner) MembershipFloor() (peerauth.ControlFloor, error) {
 }
 
 func (o *s3aOwner) Close() error {
+	_, err := o.finish(false)
+	return err
+}
+
+// finish captures a stable cut only inside terminal ownership: no admitted
+// producer remains, but the M/P/B handles and leases have not yet been closed.
+// An earlier abort cannot be upgraded to a normal checkpoint by a later caller.
+func (o *s3aOwner) finish(capture bool) (s3aFloors, error) {
 	if o == nil {
-		return nil
+		return s3aFloors{}, nil
 	}
 	var failure any
 	o.closeOnce.Do(func() {
@@ -356,9 +367,10 @@ func (o *s3aOwner) Close() error {
 			}()
 			o.closeErr = errors.Join(o.closeErr, close())
 		}
+		wasClosed := o.closed.Load()
 		o.fail()
 		if o.origin != nil {
-			o.origin.stopOutputs()
+			closeOne(o.origin.stopOutputs)
 		}
 		o.serverMu.Lock()
 		if o.server != nil {
@@ -391,7 +403,7 @@ func (o *s3aOwner) Close() error {
 			pending.release()
 		}
 		if o.receiver != nil {
-			o.receiver.close()
+			closeOne(func() error { o.receiver.close(); return nil })
 		}
 		if o.origin != nil {
 			closeOne(func() error { o.origin.closeOwned(); return nil })
@@ -399,11 +411,40 @@ func (o *s3aOwner) Close() error {
 		if o.client != nil {
 			closeOne(func() error { o.client.CloseIdleConnections(); return nil })
 		}
+		if capture {
+			closeOne(func() error {
+				if wasClosed || o.kernel == nil || o.membership == nil {
+					return errS3AClosed
+				}
+				m, err := o.membership.Floor()
+				if err != nil {
+					return err
+				}
+				p, b, err := o.kernel.Floors()
+				if err == nil {
+					// No composite producer remains. Also reject a terminal B
+					// poison/close before using its retained receipt as custody.
+					o.kernel.b.gate.Lock()
+					err = o.kernel.b.readyLocked()
+					o.kernel.b.gate.Unlock()
+				}
+				if err == nil {
+					o.closeFloors, o.closeCaptured = s3aFloors{m, p, b}, true
+				}
+				return err
+			})
+		}
 		if o.kernel != nil {
 			closeOne(o.kernel.Close)
 		}
 		if o.membership != nil {
-			closeOne(o.membership.Close)
+			closeOne(func() error {
+				err := o.membership.Close()
+				if o.hooks != nil && o.hooks.afterMembershipClose != nil {
+					err = errors.Join(err, o.hooks.afterMembershipClose())
+				}
+				return err
+			})
 		}
 		closeOne(func() error { o.identity.clear(); return nil })
 		if o.ownedTime {
@@ -417,7 +458,10 @@ func (o *s3aOwner) Close() error {
 	if failure != nil {
 		panic(failure)
 	}
-	return o.closeErr
+	if capture && !o.closeCaptured {
+		return s3aFloors{}, errors.Join(o.closeErr, errS3AClosed)
+	}
+	return o.closeFloors, o.closeErr
 }
 
 func (o *s3aOwner) tlsConfig() *tls.Config {

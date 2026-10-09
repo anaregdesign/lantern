@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"encoding/hex"
+	"sync"
 	"time"
 )
 
@@ -36,6 +37,10 @@ func (p CurrentProfile) Binding() string {
 type CurrentAuthority struct {
 	origin       *authorityOriginOwner
 	observations currentPublicObservations
+	custody      *currentCustody
+	closeOnce    sync.Once
+	closeErr     error
+	closeOrderly bool
 }
 
 type currentPublicAdmission struct {

@@ -427,3 +427,52 @@ func TestS3AOwnerCloseRetainsCombinedErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestS3AOwnerTerminalFloorWaitsForAdmittedProducer(t *testing.T) {
+	n := s3aTestCluster(t, nil)
+	o := n.start(1)
+	// Model an operation already inside enterCall, with its authenticated
+	// membership write still pending. Closing must not read a floor ahead of it.
+	if !o.enterCall() {
+		t.Fatal("producer not admitted")
+	}
+	result := make(chan s3aFloors, 1)
+	errors := make(chan error, 1)
+	go func() {
+		f, err := o.finish(true)
+		result <- f
+		errors <- err
+	}()
+	deadline := time.After(3 * time.Second)
+	for !o.closed.Load() {
+		select {
+		case <-deadline:
+			t.Fatal("terminal admission did not close")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	select {
+	case <-result:
+		t.Fatal("terminal floor preceded the admitted producer")
+	default:
+	}
+	manifest := n.manifest
+	manifest.Version++
+	if err := o.membership.Apply(n.sign(manifest)); err != nil {
+		o.calls.Done()
+		t.Fatal(err)
+	}
+	o.calls.Done()
+	select {
+	case f := <-result:
+		if err := <-errors; err != nil || f.M.Version != manifest.Version {
+			t.Fatal("final floor missed the last joined write", f.M.Version, err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal owner did not join")
+	}
+	if o.enterCall() {
+		o.calls.Done()
+		t.Fatal("terminal floor reopened ordinary admission")
+	}
+}

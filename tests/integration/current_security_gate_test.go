@@ -611,33 +611,14 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			case <-time.After(100 * time.Millisecond):
 			}
 		}
-		// Independent minimum floors plus unchanged M/P/B volumes reopen the
-		// same member. Pending login transactions remain process-owned.
+		// Orderly custody plus unchanged M/P/B volumes reopen the same member.
+		// Pending login transactions remain process-owned.
 		f.server = servers[1]
 		pending := f.browserLoginStart(t, nil, false)
 		oldAttempt := f.browserCallbackPath(t, pending, "admin", false)
-		floors, e := runtimes[1].ExportCurrentAuthorityFloors()
-		if e != nil {
-			t.Fatal("independent floor export", e)
-		}
-		floorPath := filepath.Join(dir, "node-2/floors.json")
-		if e := createPrivateTestFile(floorPath, floors); e != nil {
-			t.Fatal(e)
-		}
-		stops[1]()
 		servers[1].Close()
-		nodePath := filepath.Join(dir, "node-2/node.json")
-		rawNode, e := os.ReadFile(nodePath)
-		if e != nil {
-			t.Fatal(e)
-		}
-		encodedPath, _ := json.Marshal(floorPath)
-		updated := bytes.Replace(rawNode, []byte(`"FloorsFile":""`), append([]byte(`"FloorsFile":`), encodedPath...), 1)
-		if bytes.Equal(rawNode, updated) {
-			t.Fatal("resume floor path not installed")
-		}
-		if e := os.WriteFile(nodePath, updated, 0600); e != nil {
-			t.Fatal(e)
+		if e := runtimes[1].Shutdown(); e != nil {
+			t.Fatal("orderly floor custody", e)
 		}
 		startNode(2, "resume")
 		last := len(runtimes) - 1

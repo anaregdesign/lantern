@@ -14,6 +14,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -36,13 +37,135 @@ func TestAppRunClosesMutationLogOnRequiredRestoreFailure(t *testing.T) {
 		restoreReq: true,
 		runtime:    runtime,
 	}
-	if err := app.Run(context.Background()); err == nil {
-		t.Fatal("required restore failure did not stop startup")
+	cleanupFailure := errors.New("security abort cleanup failure")
+	lifecycle := &appTestSecurityLifecycle{closeErr: cleanupFailure}
+	app.security = lifecycle
+	if err := app.Run(context.Background()); !errors.Is(err, cleanupFailure) || lifecycle.closed != 1 || lifecycle.orderly != 0 {
+		t.Fatal("required restore failure hid abort cleanup or declared CLEAN", err)
 	}
 	if _, err := log.Append(&pb.Mutation{}, hlc.Timestamp{}); !errors.Is(err, mutationlog.ErrClosed) {
 		t.Fatalf("Log after failed startup = %v, want closed", err)
 	}
 }
+
+type appTestSecurityLifecycle struct {
+	owned             securityLifecycle
+	closed, orderly   int
+	closeErr, stopErr error
+}
+
+func (s *appTestSecurityLifecycle) Close() error {
+	s.closed++
+	if s.owned != nil {
+		return errors.Join(s.closeErr, s.owned.Close())
+	}
+	return s.closeErr
+}
+func (s *appTestSecurityLifecycle) Shutdown() error {
+	s.orderly++
+	if s.owned != nil {
+		return errors.Join(s.stopErr, s.owned.Shutdown())
+	}
+	return s.stopErr
+}
+
+type appTestMetricsWorker struct {
+	started chan struct{}
+	failure error
+}
+
+func (w appTestMetricsWorker) Run(ctx context.Context) error {
+	close(w.started)
+	if w.failure != nil {
+		return w.failure
+	}
+	<-ctx.Done()
+	return nil
+}
+
+func TestAppRunOnlyCompletedDrainUsesOrderlySecurityShutdown(t *testing.T) {
+	for _, phase := range []string{"normal", "shutdown-error", "worker-failure", "deadline", "pre-canceled"} {
+		t.Run(phase, func(t *testing.T) {
+			probe, port := reserveRuntimeTestPort(t)
+			if err := probe.Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "receipts.wal")
+			setDurableRuntimeEnv(t, "fresh", path, port)
+			t.Setenv("LANTERN_AUTH_MODE", "off")
+			t.Setenv("LANTERN_METRICS_ADDR", "")
+			t.Setenv("LANTERN_DRAIN_DELAY_SECONDS", "0")
+			app, cleanup, err := initializeApp()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cleanup()
+			lifecycle := &appTestSecurityLifecycle{owned: app.security}
+			app.security = lifecycle
+			failure := errors.New("injected lifecycle failure")
+			worker := appTestMetricsWorker{started: make(chan struct{})}
+			if phase == "worker-failure" {
+				worker.failure = failure
+			}
+			app.metrics = worker
+			if phase == "shutdown-error" {
+				lifecycle.stopErr = failure
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			if phase == "deadline" {
+				cancel()
+				ctx, cancel = context.WithTimeout(t.Context(), 100*time.Millisecond)
+			}
+			defer cancel()
+			if phase == "pre-canceled" {
+				cancel()
+			}
+			done := make(chan error, 1)
+			go func() { done <- app.Run(ctx) }()
+			if phase != "pre-canceled" {
+				<-worker.started
+			}
+			if phase == "normal" || phase == "shutdown-error" {
+				cancel()
+			}
+			select {
+			case err = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("App did not join")
+			}
+			orderly := phase == "normal" || phase == "shutdown-error"
+			if orderly && (lifecycle.orderly != 1 || lifecycle.closed != 0) || !orderly && (lifecycle.orderly != 0 || lifecycle.closed != 1) {
+				t.Fatal("wrong terminal lifecycle", lifecycle.orderly, lifecycle.closed)
+			}
+			switch phase {
+			case "normal":
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "shutdown-error", "worker-failure":
+				if !errors.Is(err, failure) {
+					t.Fatal("App lost lifecycle error", err)
+				}
+			case "deadline":
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatal("deadline became success", err)
+				}
+			case "pre-canceled":
+				if !errors.Is(err, context.Canceled) {
+					t.Fatal("unstarted app declared normal shutdown", err)
+				}
+			}
+			// Data remains an independent terminal owner, including on sys failure.
+			lease, err := mutationlog.AcquireFileWALLease(path)
+			if err != nil {
+				t.Fatal("App did not close its data runtime", err)
+			}
+			_ = lease.Close()
+		})
+	}
+}
+
+var _ provider.MetricsServer = appTestMetricsWorker{}
 
 // TestDrainPhase_SigtermDrainsThenReturns verifies that when the parent
 // context is cancelled (SIGTERM), drainPhase invokes begin exactly once and
