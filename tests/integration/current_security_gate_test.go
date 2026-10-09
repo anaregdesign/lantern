@@ -871,7 +871,7 @@ console.log("Node/Admin current native wire: PASS");process.exit(0);
 				cmd = exec.CommandContext(ctx, binary, "run", file)
 				cmd.Dir = filepath.Join(root, "admin")
 			case "dart":
-				cmd = exec.CommandContext(ctx, binary, "test", "integration_test/current_security_test.dart")
+				cmd = exec.CommandContext(ctx, binary, "test", "--reporter=json", "integration_test/current_security_test.dart")
 				cmd.Dir = filepath.Join(root, "sdks/dart")
 			case "cargo":
 				cmd = exec.CommandContext(ctx, binary, "test", "--locked", "--lib", "security::tests::real_public_current_wire", "--", "--ignored", "--exact")
@@ -882,10 +882,101 @@ console.log("Node/Admin current native wire: PASS");process.exit(0);
 			if err != nil {
 				t.Fatalf("%s native current wire: %v\n%s", language, err, out)
 			}
-			if language == "cargo" && !strings.Contains(string(out), "test security::tests::real_public_current_wire ... ok") {
-				t.Fatal("Rust selected test did not run")
+			if !currentSDKExecuted(language, out) {
+				t.Fatalf("%s required current wire case missing, skipped or unsuccessful\n%s", language, out)
 			}
 			t.Logf("%s native public current wire: PASS", language)
+		})
+	}
+}
+
+// Child exit zero is insufficient: a filtered/skipped SDK test must not
+// authorize the mandatory native qualification receipt.
+func currentSDKExecuted(language string, output []byte) bool {
+	if language != "dart" {
+		marker := map[string]string{"bun": "Node/Admin current native wire: PASS", "cargo": "test security::tests::real_public_current_wire ... ok"}[language]
+		if marker == "" {
+			return false
+		}
+		count := 0
+		for _, line := range strings.Split(string(output), "\n") {
+			if strings.TrimSpace(line) == marker {
+				count++
+			}
+		}
+		return count == 1
+	}
+	selected, starts, passes, finished := -1, 0, 0, false
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	for {
+		var event struct {
+			Type string `json:"type"`
+			Test struct {
+				ID   int    `json:"id"`
+				Name string `json:"name"`
+			} `json:"test"`
+			TestID  int    `json:"testID"`
+			Result  string `json:"result"`
+			Skipped bool   `json:"skipped"`
+			Success *bool  `json:"success"`
+		}
+		if err := decoder.Decode(&event); err == io.EOF {
+			break
+		} else if err != nil {
+			return false
+		}
+		if finished {
+			return false
+		}
+		switch event.Type {
+		case "error":
+			return false
+		case "testStart":
+			if event.Test.Name == "current native public binding over authenticated TLS" {
+				starts++
+				selected = event.Test.ID
+			}
+		case "testDone":
+			if event.Skipped || event.Result != "success" {
+				return false
+			}
+			if event.TestID == selected {
+				passes++
+			}
+		case "done":
+			if finished || event.Success == nil || !*event.Success {
+				return false
+			}
+			finished = true
+		}
+	}
+	return starts == 1 && passes == 1 && finished
+}
+
+func TestCurrentSDKExecutionEvidence(t *testing.T) {
+	dart := "{\"type\":\"testStart\",\"test\":{\"id\":1,\"name\":\"current native public binding over authenticated TLS\"}}\n" +
+		"{\"type\":\"testDone\",\"testID\":1,\"result\":\"success\",\"skipped\":false}\n{\"type\":\"done\",\"success\":true}\n"
+	for _, tc := range []struct {
+		name, language, output string
+		want                   bool
+	}{
+		{"node complete", "bun", "Node/Admin current native wire: PASS\n", true},
+		{"node absent", "bun", "", false},
+		{"rust exact", "cargo", "test security::tests::real_public_current_wire ... ok\n", true},
+		{"rust zero", "cargo", "test result: ok. 0 passed; 0 failed", false},
+		{"rust ignored", "cargo", "test security::tests::real_public_current_wire ... ignored\n", false},
+		{"dart complete", "dart", dart, true},
+		{"dart skipped", "dart", strings.Replace(dart, `"skipped":false`, `"skipped":true`, 1), false},
+		{"dart wrong test", "dart", strings.Replace(dart, "current native public binding", "unrelated binding", 1), false},
+		{"dart missing completion", "dart", strings.Split(dart, `{"type":"done"`)[0], false},
+		{"dart failure", "dart", strings.Replace(dart, `"success":true`, `"success":false`, 1), false},
+		{"dart zero", "dart", `{"type":"done","success":true}`, false},
+		{"dart malformed", "dart", "All tests passed!", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := currentSDKExecuted(tc.language, []byte(tc.output)); got != tc.want {
+				t.Fatalf("evidence acceptance=%v, want %v", got, tc.want)
+			}
 		})
 	}
 }

@@ -440,6 +440,12 @@ former; the native public SDK4 gate in
 that the exact Rust test executed. A standalone run does not qualify the native
 current-authority case.
 
+Current SDK4 execution is mandatory in the repository local gate and required
+PR/main checks. A single native lane also gates Rust tag preflight/publication.
+Its receipt binds the exact candidate, toolchains, native source configuration
+and all four SDK executions; an absent/skipped case or another candidate's
+receipt fails acceptance. See the [SDK4 qualification contract](../../CONTRIBUTING.md#standalone-rust-sdk-gate).
+
 Tests exercise the explicit single-instance h2c exception, verified TLS,
 mTLS, bearer rotation, authenticated two-node HA streaming, retained-log
 gaps, receipt-WAL envelope negotiation, subscriber cancellation, graph

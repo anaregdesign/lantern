@@ -44,9 +44,14 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 -B .github/scripts/evidence_only_pr.py classify
 
+  current-sdk4:
+    needs: scope
+    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+    uses: ./.github/workflows/current-sdk4.yml
+
   build:
     name: Build & Test
-    needs: scope
+    needs: [scope, current-sdk4]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -59,6 +64,22 @@ jobs:
         env:
           SCOPE_RESULT: ${{ needs.scope.result }}
         run: test "$SCOPE_RESULT" = success
+
+      - name: Require native SDK4 qualification
+        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        env:
+          NATIVE_RESULT: ${{ needs.current-sdk4.result }}
+        run: test "$NATIVE_RESULT" = success
+      - uses: actions/download-artifact@v8
+        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        with:
+          artifact-ids: ${{ needs.current-sdk4.outputs.artifact_id }}
+          path: ${{ runner.temp }}/current-sdk4
+      - name: Verify native SDK4 receipt against this merge candidate
+        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        env:
+          SDK4_RECEIPT_SHA256: ${{ needs.current-sdk4.outputs.receipt_sha256 }}
+        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --trusted-receipt-sha256 "$SDK4_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4"
 
       - name: Validate documentation CI contracts
         if: needs.scope.outputs.docs_only == 'true'

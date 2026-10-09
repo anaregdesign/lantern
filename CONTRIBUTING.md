@@ -344,11 +344,45 @@ go build -o sdks/rust/target/lantern-smoke ./server/cmd
 
 The two public fixture tests require their root Go orchestrators. Scoped CDC
 runs through `TestAuth_OIDCRustScopedChangesFacadeRealConnect`; current authority
-runs through the opt-in native public SDK4 gate in
+runs through the native public SDK4 gate in
 `tests/integration/current_security_gate_test.go`. The latter provisions native
 time and a current quorum, passes the private fixture inputs, and requires the
 exact Rust test to execute successfully. Standalone-suite success does not
 qualify that native current-authority case.
+
+The [mandatory SDK4 runner](.github/scripts/current_sdk4_gate.py) selects the
+exact root gate with both native/SDK4 flags and `-count=1`, then requires the
+root, Go, Node/Admin, Dart and Rust subtests to run and pass. Child-language
+evidence also rejects zero selected tests and skips. Native constructor,
+readiness, source/path and counter assumptions remain unchanged. Unsupported
+native environments, missing tools/configuration, unreachable time sources,
+missing executions and skips fail qualification; they never become success.
+The runner neither changes host configuration nor installs tools.
+
+The 76-step local plan now runs this gate together with the existing scoped
+Rust case in `rust-oidc-scoped-wire`. Every invocation creates a fresh receipt;
+no SDK4 receipt is imported or carried. The historical full76 plan without this
+mandatory execution is insufficient for current-authority pre-push acceptance.
+For a focused run after acquiring the native host slot and preparing the pinned
+tools/frozen dependencies:
+
+```sh
+python3 -B .github/scripts/current_sdk4_gate.py run --include-scoped \
+  --evidence ../native-sdk4-new
+```
+
+PR/main `Build & Test` requires the native SDK4 job and verifies its artifact
+against that exact merge/main checkout. Rust release preflight and publication
+depend on the same lane for the exact immutable tag; preflight verifies it
+before inspecting the archive from that source. The lane uses one disposable
+Linux container with an explicit read-only selected source file; failure of
+the existing native profile remains blocking. It does not repeat the full
+clock/recovery campaign or claim physical-host qualification.
+Receipts bind HEAD/tree, all tracked input hashes, runner/configuration,
+actual toolchain identities, required executions and raw log hashes. Artifact
+verification requires the digest output of the successful same-run producer
+job, not a status or digest taken from the artifact itself. Changed candidates,
+missing receipts, altered logs and skipped SDKs are refused.
 
 Audit locked runtime and codegen dependencies with
 `(cd sdks/rust && cargo audit --deny warnings --file Cargo.lock)`; an
