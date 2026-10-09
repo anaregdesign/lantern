@@ -20,6 +20,7 @@ import (
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
+	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/service"
@@ -809,6 +810,7 @@ func NewListener(
 	n NetConfig,
 	certified runtimeCertified,
 	publicReceipts publicReceiptsCertified,
+	launch *listenerlaunch.Owner,
 ) (net.Listener, func(), error) {
 	if !certified.valid || !publicReceipts.valid {
 		return nil, nil, errors.New("serving runtime or public receipt state is not certified")
@@ -819,7 +821,13 @@ func NewListener(
 	if certified.replicationSendMaxBytes != n.MaxSendMsgBytes {
 		return nil, nil, errors.New("listener send limit differs from certified replication frame admission")
 	}
-	listener, err := net.Listen("tcp", ":"+strconv.Itoa(n.Port))
+	var listener net.Listener
+	var err error
+	if launch != nil {
+		listener, err = launch.Public(n.Port)
+	} else {
+		listener, err = net.Listen("tcp", ":"+strconv.Itoa(n.Port))
+	}
 	if err != nil {
 		return nil, nil, err
 	}

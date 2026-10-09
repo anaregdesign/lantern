@@ -30,6 +30,10 @@ type ControlStoreOptions struct {
 	Profile ControlProfile
 	Self    Member
 	Now     func() time.Time
+	// TimeBounds is an optional trusted composition input for the current
+	// authority profile. The producer owns UTC uncertainty and source health;
+	// this store checks both endpoints and never manufactures qualification.
+	TimeBounds func() (low, high time.Time, err error)
 }
 
 // ControlStore shares the existing certificate/HTTP/checkpoint mechanisms but
@@ -71,6 +75,7 @@ func prepareControlStore(o ControlStoreOptions) (_ *ControlStore, err error) {
 	}()
 	binding := o.Profile.Digest()
 	s := &Store{options: StoreOptions{Path: o.Path, Key: bytes.Clone(o.Key), Self: o.Self, Now: o.Now}, lease: lease, lastWall: o.Now(), controlBinding: &binding}
+	s.timeBounds = o.TimeBounds
 	c := &ControlStore{store: s, profile: o.Profile}
 	transferred = true
 	return c, nil
@@ -92,7 +97,8 @@ func CreateControlStore(o ControlStoreOptions, raw []byte) (_ *ControlStore, err
 		}
 	}()
 	s := c.store
-	if !manifestLive(controlSnapshot(m, raw).manifest, s.options.Now()) {
+	now, valid := s.nowLocked()
+	if !valid || !s.manifestLiveLocked(controlSnapshot(m, raw).manifest, now) {
 		return nil, ErrMembership
 	}
 	if err := writeCheckpoint(o.Path, raw, true); err != nil {
@@ -161,7 +167,7 @@ func (c *ControlStore) Apply(raw []byte) error {
 		return ErrMembership
 	}
 	changed := m.Profile.Digest() != c.profile.Digest()
-	if !changed && !manifestLive(controlSnapshot(m, raw).manifest, now) {
+	if !changed && !s.manifestLiveLocked(controlSnapshot(m, raw).manifest, now) {
 		return ErrMembership
 	}
 	// A failed or panicking write may already have retained the new checkpoint.
@@ -209,6 +215,27 @@ func (c *ControlStore) Check(ctx context.Context) error {
 	}
 	_, _, err := c.store.Member(c.store.options.Self.Identity)
 	return err
+}
+
+// CurrentValidity returns the immutable self-membership interval for a caller
+// that serializes Apply/Close with its own final authorization event. It is
+// metadata, not a reusable admission. The final event must still compare its
+// justified UTC low/high against both endpoints.
+func (c *ControlStore) CurrentValidity(ctx context.Context) (time.Time, time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if c == nil || c.store == nil {
+		return time.Time{}, time.Time{}, ErrMembership
+	}
+	s := c.store
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now, valid := s.nowLocked()
+	if !valid || !s.liveLocked(now) {
+		return time.Time{}, time.Time{}, ErrMembership
+	}
+	return s.current.manifest.IssuedAt, s.current.manifest.ExpiresAt.Add(-ClockMargin), nil
 }
 
 func (c *ControlStore) Admit(state *tls.ConnectionState, origin string) (*Admission, error) {

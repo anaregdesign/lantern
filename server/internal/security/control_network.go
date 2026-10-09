@@ -61,6 +61,7 @@ type s3aConfig struct {
 	Identity    s3aIdentityFiles
 	Limits      s3aLimits
 	hooks       *s3aHooks
+	timeOwner   *authorityTimeOwner // Installed only by the private current profile.
 }
 
 // The three floors deliberately remain different types and independent inputs.
@@ -71,40 +72,46 @@ type s3aFloors struct {
 }
 
 type s3aOwner struct {
-	kernel      *s2cParticipant
-	membership  *peerauth.ControlStore
-	identity    *s3aIdentity
-	limits      s3aLimits
-	now         func() time.Time
-	peers       map[uint32]peerauth.ControlVoter
-	byIdentity  map[string]uint32
-	binding     [32]byte
-	client      *http.Client
-	ctx         context.Context
-	cancel      context.CancelFunc
-	closed      atomic.Bool
-	closeOnce   sync.Once
-	closeErr    error
-	workers     sync.WaitGroup
-	callMu      sync.Mutex
-	calls       sync.WaitGroup
-	requests    chan s3aTransition
-	ballotReady time.Time // Owned only by the serialized transition worker.
-	ballotSlot  uint64
-	queueMu     sync.Mutex
-	queues      map[uint32][]s3aDelivery
-	queued      uint64
-	staged      uint64 // One reserved maximum outbox, separate from delivery caches.
-	dropped     uint64 // Transport-cache drops, never durable obligation release.
-	queueWake   map[uint32]chan struct{}
-	inbound     map[uint32]chan struct{}
-	rangeSlot   chan struct{}
-	localSlot   chan struct{}
-	driveSlot   chan struct{}
-	serverMu    sync.Mutex
-	server      *http.Server
-	listener    net.Listener
-	hooks       *s3aHooks
+	kernel         *s2cParticipant
+	membership     *peerauth.ControlStore
+	identity       *s3aIdentity
+	limits         s3aLimits
+	now            func() time.Time
+	timeOwner      *authorityTimeOwner
+	ownedTime      bool
+	peers          map[uint32]peerauth.ControlVoter
+	byIdentity     map[string]uint32
+	binding        [32]byte
+	client         *http.Client
+	ctx            context.Context
+	cancel         context.CancelFunc
+	closed         atomic.Bool
+	closeOnce      sync.Once
+	closeErr       error
+	workers        sync.WaitGroup
+	callMu         sync.Mutex
+	calls          sync.WaitGroup
+	requests       chan s3aTransition
+	renewals       chan authorityRenewalTask
+	renewalInbound map[uint32]chan struct{}
+	receiver       *authorityRenewalReceiver
+	origin         *authorityOriginOwner
+	ballotReady    time.Time // Owned only by the serialized transition worker.
+	ballotSlot     uint64
+	queueMu        sync.Mutex
+	queues         map[uint32][]s3aDelivery
+	queued         uint64
+	staged         uint64 // One reserved maximum outbox, separate from delivery caches.
+	dropped        uint64 // Transport-cache drops, never durable obligation release.
+	queueWake      map[uint32]chan struct{}
+	inbound        map[uint32]chan struct{}
+	rangeSlot      chan struct{}
+	localSlot      chan struct{}
+	driveSlot      chan struct{}
+	serverMu       sync.Mutex
+	server         *http.Server
+	listener       net.Listener
+	hooks          *s3aHooks
 }
 
 // Hooks alter only delivery/fault timing in native tests, never signatures,
@@ -112,6 +119,7 @@ type s3aOwner struct {
 type s3aHooks struct {
 	beforeSend     func(context.Context, uint32, []byte) error
 	beforeResponse func(context.Context)
+	beforeRenewal  func(context.Context)
 }
 
 func s3aPaths(c *s3aConfig) error {
@@ -168,7 +176,7 @@ func openS3AOwner(c s3aConfig, fresh bool, floors s3aFloors) (_ *s3aOwner, err e
 	if err != nil {
 		return nil, err
 	}
-	o := &s3aOwner{identity: identity, limits: c.Limits, now: c.Membership.Now, hooks: c.hooks, rangeSlot: make(chan struct{}, 1), binding: c.Membership.Profile.Digest(),
+	o := &s3aOwner{identity: identity, limits: c.Limits, now: c.Membership.Now, timeOwner: c.timeOwner, hooks: c.hooks, rangeSlot: make(chan struct{}, 1), binding: c.Membership.Profile.Digest(),
 		localSlot: make(chan struct{}, 1), driveSlot: make(chan struct{}, 1),
 		peers: map[uint32]peerauth.ControlVoter{}, byIdentity: map[string]uint32{},
 		queues: map[uint32][]s3aDelivery{}, queueWake: map[uint32]chan struct{}{}, inbound: map[uint32]chan struct{}{}}
@@ -215,6 +223,14 @@ func openS3AOwner(c s3aConfig, fresh bool, floors s3aFloors) (_ *s3aOwner, err e
 		o.peers[v.Voter], o.byIdentity[v.Workload.Identity] = v, v.Voter
 		o.queueWake[v.Voter], o.inbound[v.Voter] = make(chan struct{}, 1), make(chan struct{}, 1)
 	}
+	if o.timeOwner != nil {
+		o.renewals = make(chan authorityRenewalTask, len(o.peers))
+		o.renewalInbound = make(map[uint32]chan struct{}, len(o.peers))
+		for id := range o.peers {
+			o.renewalInbound[id] = make(chan struct{}, 1)
+		}
+		o.receiver = &authorityRenewalReceiver{kernel: o.kernel, clock: o.timeOwner, workloads: o.binding}
+	}
 	o.client = o.membership.NewHTTPClient(identity.certificate, identity.roots)
 	o.requests = make(chan s3aTransition, c.Limits.TransitionCount)
 	o.workers.Add(1)
@@ -236,6 +252,12 @@ func (o *s3aOwner) check(ctx context.Context) error {
 	}
 	if !o.now().Before(o.identity.expires) {
 		return peerauth.ErrMembership
+	}
+	if o.timeOwner != nil {
+		now, err := o.timeOwner.current()
+		if err != nil || time.Unix(0, int64(now.utc.low)).Before(o.identity.starts) || !time.Unix(0, int64(now.utc.high)).Before(o.identity.expires) {
+			return peerauth.ErrMembership
+		}
 	}
 	err := o.membership.Check(ctx)
 	if err != nil && o.membership.FaultReason() != "none" {
@@ -267,9 +289,15 @@ func (o *s3aOwner) enterCall() bool {
 }
 
 func (o *s3aOwner) Refresh(raw []byte) error {
-	if o == nil || o.closed.Load() {
+	if !o.enterCall() {
 		return errS3AClosed
 	}
+	defer o.calls.Done()
+	// Current consumers freeze membership and the exact S1 cut under this
+	// same gate before their final native sample. A refresh cannot slip between
+	// that snapshot and the logical authorization event.
+	o.kernel.gate.Lock()
+	defer o.kernel.gate.Unlock()
 	defer func() {
 		if failure := recover(); failure != nil {
 			o.fail()
@@ -328,6 +356,9 @@ func (o *s3aOwner) Close() error {
 			o.closeErr = errors.Join(o.closeErr, close())
 		}
 		o.fail()
+		if o.origin != nil {
+			o.origin.stopOutputs()
+		}
 		o.serverMu.Lock()
 		if o.server != nil {
 			closeOne(o.server.Close)
@@ -354,6 +385,16 @@ func (o *s3aOwner) Close() error {
 		for len(o.requests) != 0 {
 			<-o.requests
 		}
+		for len(o.renewals) != 0 {
+			pending := <-o.renewals
+			pending.release()
+		}
+		if o.receiver != nil {
+			o.receiver.close()
+		}
+		if o.origin != nil {
+			closeOne(func() error { o.origin.closeOwned(); return nil })
+		}
 		if o.client != nil {
 			closeOne(func() error { o.client.CloseIdleConnections(); return nil })
 		}
@@ -364,6 +405,9 @@ func (o *s3aOwner) Close() error {
 			closeOne(o.membership.Close)
 		}
 		closeOne(func() error { o.identity.clear(); return nil })
+		if o.ownedTime {
+			closeOne(func() error { o.timeOwner.close(); return nil })
+		}
 		o.queueMu.Lock()
 		clear(o.queues)
 		o.queued = 0
@@ -376,7 +420,7 @@ func (o *s3aOwner) Close() error {
 }
 
 func (o *s3aOwner) tlsConfig() *tls.Config {
-	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{o.identity.certificate},
+	config := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{o.identity.certificate},
 		ClientCAs: o.identity.roots.Clone(), ClientAuth: tls.RequireAndVerifyClientCert,
 		NextProtos: []string{"http/1.1"}, SessionTicketsDisabled: true,
 		VerifyConnection: func(state tls.ConnectionState) error {
@@ -386,4 +430,8 @@ func (o *s3aOwner) tlsConfig() *tls.Config {
 			_, err := o.membership.Admit(&state, "")
 			return err
 		}}
+	if o.timeOwner != nil {
+		config.Time = o.now
+	}
+	return config
 }

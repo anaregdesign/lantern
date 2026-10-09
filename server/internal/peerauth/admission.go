@@ -15,6 +15,7 @@ type Admission struct {
 	store     *Store
 	member    Member
 	expiresAt time.Time
+	startsAt  time.Time
 }
 
 func (a *Admission) Member() Member       { return a.member }
@@ -42,20 +43,26 @@ func (s *Store) Admit(state *tls.ConnectionState, expectedOrigin string) (*Admis
 	// Select a verified chain for this exact leaf and bound the admission by
 	// every certificate in that chain. A chain cached by TLS is not immortal.
 	chainExpiry := time.Time{}
+	chainStart := time.Time{}
 	for _, chain := range state.VerifiedChains {
 		if len(chain) == 0 || !chain[0].Equal(leaf) {
 			continue
 		}
 		candidate := chain[0].NotAfter
+		candidateStart := chain[0].NotBefore
 		usable := true
 		for _, cert := range chain {
-			usable = usable && !now.Before(cert.NotBefore) && now.Add(ClockMargin).Before(cert.NotAfter)
+			usable = usable && !s.sampleLow.Before(cert.NotBefore) && now.Add(ClockMargin).Before(cert.NotAfter)
+			if cert.NotBefore.After(candidateStart) {
+				candidateStart = cert.NotBefore
+			}
 			if cert.NotAfter.Before(candidate) {
 				candidate = cert.NotAfter
 			}
 		}
 		if usable && candidate.After(chainExpiry) {
 			chainExpiry = candidate
+			chainStart = candidateStart
 		}
 	}
 	if chainExpiry.IsZero() {
@@ -66,7 +73,7 @@ func (s *Store) Admit(state *tls.ConnectionState, expectedOrigin string) (*Admis
 			expiry = bound
 		}
 	}
-	return &Admission{store: s, member: member, expiresAt: expiry}, nil
+	return &Admission{store: s, member: member, expiresAt: expiry, startsAt: chainStart}, nil
 }
 
 func (a *Admission) Check(ctx context.Context) error {
@@ -80,7 +87,7 @@ func (a *Admission) Check(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now, valid := s.nowLocked()
-	if !valid || !now.Before(a.expiresAt) || !s.liveLocked(now) ||
+	if !valid || s.sampleLow.Before(a.startsAt) || !now.Before(a.expiresAt) || !s.liveLocked(now) ||
 		s.current.members[a.member.Identity] != a.member {
 		return ErrMembership
 	}

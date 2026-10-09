@@ -351,16 +351,33 @@ func drainPhase(parent context.Context, serveDone <-chan struct{}, drainDelay ti
 	}
 }
 
+func initializeApp() (*App, func(), error) { return initializeAppWithListeners(nil) }
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	app, cleanup, err := initializeApp()
+	launch, err := prepareListenerLaunch(ctx, stop)
+	if err != nil {
+		slog.Error("native listener launch failed")
+		os.Exit(1)
+	}
+	defer launch.Close()
+	app, cleanup, err := initializeAppWithListeners(launch.owner)
 	if err != nil {
 		slog.Error("failed to initialize app", slog.Any("err", err))
 		os.Exit(1)
 	}
 	defer cleanup()
+	if ctx.Err() != nil {
+		return
+	}
+	if err := launch.acknowledge(); err != nil {
+		slog.Error("native listener adoption failed")
+		cleanup()
+		launch.Close()
+		os.Exit(1)
+	}
 
 	// Apply runtime mutex/block profile sampling rates as early as
 	// possible so any subsequent contention is captured. Both knobs are

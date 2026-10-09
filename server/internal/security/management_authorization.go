@@ -34,6 +34,7 @@ type managementAuthorization struct {
 	proof                                       [32]byte
 	evidence                                    *PurposeAuthenticationEvidence
 	evidenceBytes                               int
+	current                                     *authorityPendingPurpose
 }
 
 // ManagementAuthorizations is process-bound to the pinned fixed writer. A
@@ -120,6 +121,9 @@ func (m *ManagementAuthorizations) Start(ticket [32]byte, current *Revision, now
 }
 
 func validAuthorizationCut(operation managementAuthorization, current *Revision, now time.Time) bool {
+	if operation.current != nil {
+		return false
+	}
 	binding := operation.binding
 	if current == nil || now.Before(operation.createdAt) || !now.Before(operation.expiresAt) || current.generation != binding.Generation || current.sequence != binding.ExpectedRevision || current.digest != binding.ExpectedDigest || current.writer != binding.Writer {
 		return false
@@ -215,7 +219,7 @@ func (m *ManagementAuthorizations) Verify(proof []byte, binding ManagementBindin
 	defer m.mu.Unlock()
 	id, known := m.proofs[sha256.Sum256(proof)]
 	operation, pending := m.pending[id]
-	if !known || !pending || operation.state != AuthorizationApproved || operation.binding != binding || now.Before(operation.approvedAt) || !now.Before(operation.expiresAt) {
+	if !known || !pending || operation.current != nil || operation.state != AuthorizationApproved || operation.binding != binding || now.Before(operation.approvedAt) || !now.Before(operation.expiresAt) {
 		return ErrOperationAuthorization
 	}
 	return nil

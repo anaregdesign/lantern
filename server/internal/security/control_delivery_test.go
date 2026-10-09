@@ -11,6 +11,71 @@ import (
 	"time"
 )
 
+func TestS3ADeliveryBoundedRenewalTurn(t *testing.T) {
+	n := s3aTestCluster(t, func(_ uint32, c *s3aConfig) {
+		clock, _ := fakeAuthorityTimeOwnerAt(t, c.Membership.Now())
+		if err := bindAuthorityNetworkTime(c, clock); err != nil {
+			t.Fatal(err)
+		}
+	})
+	o, err := createS3AOwner(n.configs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.nodes[1] = o
+	ctx := s3aTestContext(t)
+	request, err := o.receiver.challenge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var completed atomic.Int32
+	first := s3aTransition{ctx: ctx, done: make(chan error, 1), apply: func() ([]s2cOutbox, error) {
+		close(entered)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		completed.Add(1)
+		return nil, nil
+	}}
+	o.requests <- first
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	var later []chan error
+	for range 12 {
+		done := make(chan error, 1)
+		later = append(later, done)
+		o.requests <- s3aTransition{ctx: ctx, done: done, apply: func() ([]s2cOutbox, error) { completed.Add(1); return nil, nil }}
+	}
+	var observed atomic.Int32
+	result := make(chan authorityRenewalResult, 1)
+	o.renewals <- authorityRenewalTask{ctx: ctx, sender: 1, raw: request, check: func() error { observed.Store(completed.Load()); return nil }, release: func() {}, done: result}
+	close(release)
+	select {
+	case got := <-result:
+		if got.err != nil || len(got.raw) != 68 || observed.Load() != authorityConsensusBurst {
+			t.Fatal("renewal starved or stole consensus share", observed.Load(), got.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("renewal starved", ctx.Err())
+	}
+	for _, done := range append(later, first.done) {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}
+
 func TestS3ADeliverySaturatedPeerSelfCreditAndEventualQuorum(t *testing.T) {
 	var blocked atomic.Int64
 	n := s3aTestCluster(t, func(_ uint32, c *s3aConfig) {

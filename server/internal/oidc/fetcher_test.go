@@ -2,12 +2,15 @@ package oidc
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPublicAddress(t *testing.T) {
@@ -90,4 +93,47 @@ func TestFetcherHTTPSAndBounds(t *testing.T) {
 			t.Errorf("unbounded/ambiguous response accepted: %s", path)
 		}
 	}
+}
+
+func TestFetcherQualifiedTLSBoundsOnReusedResponse(t *testing.T) {
+	p := newTestProvider(t)
+	roots := x509.NewCertPool()
+	roots.AddCert(p.server.Certificate())
+	now := p.now()
+	low, high := now.Add(-time.Second), now.Add(time.Second)
+	var fault error
+	bounds := func() (time.Time, time.Time, error) { return low, high, fault }
+	f, err := NewFetcher(FetcherOptions{Roots: roots, PrivateOrigins: map[string][]netip.Prefix{p.server.URL: {netip.MustParsePrefix("127.0.0.1/32")}}, TimeBounds: bounds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.CloseIdleConnections()
+	var out map[string]any
+	if err := f.GetJSON(t.Context(), p.server.URL+"/jwks", &out); err != nil {
+		t.Fatal(err)
+	}
+	// The next request uses the same TLS session, so a handshake-only check
+	// would miss this equality boundary.
+	high = p.server.Certificate().NotAfter
+	if err := f.GetJSON(t.Context(), p.server.URL+"/jwks", &out); err == nil {
+		t.Fatal("reused expired TLS connection")
+	}
+	high = now.Add(time.Second)
+	low = p.server.Certificate().NotBefore.Add(-time.Nanosecond)
+	if err := f.checkTLS(&tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{p.server.Certificate()}}}); err == nil {
+		t.Fatal("optimistic NotBefore endpoint")
+	}
+	low = now
+	fault = ErrFetch
+	if _, err := f.do(mustFetcherRequest(t, p.server.URL+"/jwks")); err == nil {
+		t.Fatal("source fault used cached TLS")
+	}
+}
+func mustFetcherRequest(t *testing.T, endpoint string) *http.Request {
+	t.Helper()
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, endpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
 }

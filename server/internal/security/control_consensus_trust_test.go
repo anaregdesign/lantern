@@ -2,6 +2,25 @@ package security
 
 import "testing"
 
+func TestS2CTrustCurrentProfileEnrollment(t *testing.T) {
+	for name, edit := range map[string]func(*s2cBootstrap){
+		"mixed profiles":      func(b *s2cBootstrap) { b.Origins[0].Profile = s2cTestProfile() },
+		"voting key":          func(b *s2cBootstrap) { b.Origins[0].PublicKey = b.Members[1].PublicKey },
+		"missing namespace":   func(b *s2cBootstrap) { b.Origins[0].Namespace = 0 },
+		"duplicate namespace": func(b *s2cBootstrap) { b.Origins[1].Namespace = b.Origins[0].Namespace },
+		"arbitrary contract":  func(b *s2cBootstrap) { b.Origins[0].Profile.ConsumeContract[0] ^= 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, _ := authorityTestFixture(t, 3)
+			b := s2cBootstrap{f.genesis, f.members, f.origins, f.trust.bounds}
+			edit(&b)
+			if _, err := newS2CTrust(b); err == nil {
+				t.Fatal("invalid v2 enrollment accepted")
+			}
+		})
+	}
+}
+
 func TestS2CTrustIndependentImmutableBootstrap(t *testing.T) {
 	f := s2cTestCluster(t, 3)
 	t0 := f.trust

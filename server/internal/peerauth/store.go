@@ -33,6 +33,8 @@ type Store struct {
 	// Only the typed control constructor sets this. Legacy Domain remains
 	// unchanged; no synthetic OFF/OIDC domain represents control membership.
 	controlBinding *[32]byte
+	timeBounds     func() (low, high time.Time, err error)
+	sampleLow      time.Time // Same sample as nowLocked's returned high; owned by mu.
 }
 
 type membershipSnapshot struct {
@@ -109,7 +111,18 @@ func (s *Store) nowLocked() (time.Time, bool) {
 	if s.controlBinding != nil && s.lease.WithPath(func(string) error { return nil }) != nil {
 		s.faultLocked("checkpoint_ownership")
 	}
+	if s.timeBounds != nil {
+		low, high, err := s.timeBounds()
+		if err != nil || low.IsZero() || high.IsZero() || low.After(high) {
+			return time.Time{}, false
+		}
+		// A tighter honest interval may lower its high endpoint. The native
+		// producer, rather than that endpoint, detects counter/epoch rollback.
+		s.sampleLow, s.lastWall = low, high
+		return high, !s.faulted
+	}
 	now := s.options.Now()
+	s.sampleLow = now
 	if now.UnixNano() < s.lastWall.UnixNano() {
 		s.faultLocked("clock_rollback")
 	}
@@ -138,8 +151,12 @@ func (s *Store) FaultReason() string {
 }
 
 func (s *Store) liveLocked(now time.Time) bool {
-	return s.current != nil && manifestLive(s.current.manifest, now) &&
+	return s.current != nil && s.manifestLiveLocked(s.current.manifest, now) &&
 		(s.options.Self == (Member{}) || s.current.members[s.options.Self.Identity] == s.options.Self)
+}
+
+func (s *Store) manifestLiveLocked(m Manifest, high time.Time) bool {
+	return manifestLive(m, high) && (s.timeBounds == nil || !s.sampleLow.Before(m.IssuedAt))
 }
 
 func (s *Store) Apply(raw []byte) error {

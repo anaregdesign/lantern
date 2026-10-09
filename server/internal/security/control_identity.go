@@ -30,6 +30,7 @@ type s3aIdentity struct {
 	roots       *x509.CertPool
 	self        peerauth.Member
 	expires     time.Time
+	starts      time.Time
 	votingKey   ed25519.PrivateKey
 	signer      *s3aSigner
 }
@@ -127,22 +128,46 @@ func s3aLoadIdentity(c s3aConfig) (_ *s3aIdentity, err error) {
 		intermediates.AddCert(parsed)
 	}
 	expiry := leaf.NotAfter
+	start := leaf.NotBefore
+	low, high := c.Membership.Now(), c.Membership.Now()
+	if c.Membership.TimeBounds != nil {
+		low, high, err = c.Membership.TimeBounds()
+		if err != nil || low.IsZero() || low.After(high) {
+			return nil, errS3AConfig
+		}
+	}
 	for _, usage := range []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth} {
-		chains, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: c.Membership.Now(), KeyUsages: []x509.ExtKeyUsage{usage}})
+		chains, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: high, KeyUsages: []x509.ExtKeyUsage{usage}})
 		if err != nil {
 			return nil, errS3AConfig
 		}
 		latest := time.Time{}
+		selectedStart := time.Time{}
 		for _, chain := range chains {
 			end := leaf.NotAfter
+			begin := leaf.NotBefore
+			usable := true
 			for _, certificate := range chain {
+				if c.Membership.TimeBounds != nil && low.Before(certificate.NotBefore) {
+					usable = false
+				}
+				if certificate.NotBefore.After(begin) {
+					begin = certificate.NotBefore
+				}
 				if certificate.NotAfter.Before(end) {
 					end = certificate.NotAfter
 				}
 			}
-			if end.After(latest) {
+			if usable && end.After(latest) {
 				latest = end
+				selectedStart = begin
 			}
+		}
+		if latest.IsZero() {
+			return nil, errS3AConfig
+		}
+		if selectedStart.After(start) {
+			start = selectedStart
 		}
 		if latest.Before(expiry) {
 			expiry = latest
@@ -161,7 +186,7 @@ func s3aLoadIdentity(c s3aConfig) (_ *s3aIdentity, err error) {
 		return nil, errS3AConfig
 	}
 	transferred = true
-	return &s3aIdentity{certificate: cert, roots: roots, self: self, expires: expiry.Add(-peerauth.ClockMargin), votingKey: voting, signer: signer}, nil
+	return &s3aIdentity{certificate: cert, roots: roots, self: self, starts: start, expires: expiry.Add(-peerauth.ClockMargin), votingKey: voting, signer: signer}, nil
 }
 
 func s3aVotingSPKI(key [32]byte) []byte {

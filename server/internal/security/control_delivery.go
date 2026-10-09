@@ -7,6 +7,7 @@ import (
 )
 
 const s3aQueueOverhead uint64 = 64
+const authorityConsensusBurst = 8
 
 type s3aDelivery struct {
 	raw []byte
@@ -53,12 +54,40 @@ func (o *s3aOwner) transition(ctx context.Context, check func() error, apply fun
 
 func (o *s3aOwner) transitions() {
 	defer o.workers.Done()
+	consensus := 0
 	for {
+		// Both classes have bounded turns. Consensus/drain/recovery gets eight
+		// turns before one waiting renewal; neither continuous workload can
+		// starve the other. Renewal never uses consensus outbox credit.
+		if consensus == authorityConsensusBurst {
+			consensus = 0
+			select {
+			case <-o.ctx.Done():
+				return
+			case r := <-o.renewals:
+				r.done <- o.applyRenewal(r)
+				continue
+			default:
+			}
+		}
 		select {
 		case <-o.ctx.Done():
 			return
 		case r := <-o.requests:
 			r.done <- o.applyTransition(r)
+			consensus++
+			continue
+		default:
+		}
+		select {
+		case <-o.ctx.Done():
+			return
+		case r := <-o.requests:
+			r.done <- o.applyTransition(r)
+			consensus++
+		case r := <-o.renewals:
+			r.done <- o.applyRenewal(r)
+			consensus = 0
 		}
 	}
 }

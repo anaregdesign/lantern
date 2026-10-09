@@ -25,23 +25,27 @@ var ErrFetch = errors.New("OIDC endpoint unavailable")
 type FetcherOptions struct {
 	PrivateOrigins map[string][]netip.Prefix
 	Roots          *x509.CertPool
+	// Private current-authority composition supplies its qualified UTC bounds.
+	// Nil preserves the ordinary fixed-writer path until its explicit migration.
+	TimeBounds func() (time.Time, time.Time, error)
 }
 
 // Fetcher uses a dedicated, proxy-free HTTPS transport. Every new connection
 // resolves once, validates all answers, and dials a validated numeric address
 // while TLS still authenticates the requested host. Redirects are prohibited.
 type Fetcher struct {
-	client  *http.Client
-	private map[string][]netip.Prefix
-	resolve func(context.Context, string) ([]netip.Addr, error)
-	dial    func(context.Context, string, string) (net.Conn, error)
+	client     *http.Client
+	private    map[string][]netip.Prefix
+	resolve    func(context.Context, string) ([]netip.Addr, error)
+	dial       func(context.Context, string, string) (net.Conn, error)
+	timeBounds func() (time.Time, time.Time, error)
 }
 
 func NewFetcher(options FetcherOptions) (*Fetcher, error) {
 	if len(options.PrivateOrigins) > 64 {
 		return nil, ErrFetch
 	}
-	f := &Fetcher{private: make(map[string][]netip.Prefix),
+	f := &Fetcher{private: make(map[string][]netip.Prefix), timeBounds: options.TimeBounds,
 		resolve: func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		}, dial: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext}
@@ -66,9 +70,57 @@ func NewFetcher(options FetcherOptions) (*Fetcher, error) {
 		TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 5 * time.Second,
 		IdleConnTimeout: time.Minute, MaxIdleConns: 16, MaxIdleConnsPerHost: 2,
 		MaxConnsPerHost: 4, MaxResponseHeaderBytes: 16 << 10, DisableCompression: true}
+	if f.timeBounds != nil {
+		transport.TLSClientConfig.Time = func() time.Time {
+			_, high, err := f.timeBounds()
+			if err != nil {
+				return time.Unix(0, int64(^uint64(0)>>1)).UTC()
+			}
+			return high
+		}
+		transport.TLSClientConfig.VerifyConnection = func(s tls.ConnectionState) error { return f.checkTLS(&s) }
+	}
 	f.client = &http.Client{Transport: transport, Timeout: 10 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return ErrFetch }}
 	return f, nil
+}
+
+// Includes reused HTTPS connections: handshake-time validity alone cannot
+// authorize a later key discovery or Code response after certificate expiry.
+func (f *Fetcher) checkTLS(state *tls.ConnectionState) error {
+	if f.timeBounds == nil {
+		return nil
+	}
+	low, high, err := f.timeBounds()
+	if err != nil || low.IsZero() || high.Before(low) || state == nil || len(state.VerifiedChains) == 0 {
+		return ErrFetch
+	}
+	for _, chain := range state.VerifiedChains {
+		valid := len(chain) != 0
+		for _, cert := range chain {
+			valid = valid && !low.Before(cert.NotBefore) && high.Before(cert.NotAfter)
+		}
+		if valid {
+			return nil
+		}
+	}
+	return ErrFetch
+}
+func (f *Fetcher) do(req *http.Request) (*http.Response, error) {
+	if f.timeBounds != nil {
+		if _, _, err := f.timeBounds(); err != nil {
+			return nil, ErrFetch
+		}
+	}
+	response, err := f.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.checkTLS(response.TLS); err != nil {
+		response.Body.Close()
+		return nil, err
+	}
+	return response, nil
 }
 
 func endpointURL(raw string) (*url.URL, error) {
@@ -172,7 +224,7 @@ func (f *Fetcher) GetJSON(ctx context.Context, endpoint string, target any) erro
 		return ErrFetch
 	}
 	req.Header.Set("Accept", "application/json")
-	response, err := f.client.Do(req)
+	response, err := f.do(req)
 	if err != nil {
 		return ErrFetch
 	}
