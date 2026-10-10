@@ -26,6 +26,23 @@ import {
   SecurityChangeRecovery,
   type SecurityManagementPort,
 } from "./security-management";
+import {
+  securityRecoveryOwner,
+  type SecurityRecoveryStorage,
+} from "./security-change-recovery";
+const owner = securityRecoveryOwner("https://admin.example", {
+  identity: review().actor,
+  version,
+});
+function memoryStorage(): SecurityRecoveryStorage {
+  let raw: string | null = null;
+  return {
+    read: () => raw,
+    replace: (value) => {
+      raw = value;
+    },
+  };
+}
 const expiry = {
   $typeName: "google.protobuf.Timestamp" as const,
   seconds: 3000000000n,
@@ -45,7 +62,7 @@ function fixture(
   overrides: Partial<SecurityManagementPort> = {},
   scope = new AbortController(),
   recovery?: SecurityChangeRecovery,
-  owner = "browser-session",
+  recoveryOwner = owner,
 ) {
   const port: SecurityManagementPort = {
     roles: async () => ({
@@ -105,7 +122,7 @@ function fixture(
     "roles",
     scope.signal,
     recovery,
-    owner,
+    recoveryOwner,
   );
 }
 async function ready(c: SecurityManagementController) {
@@ -229,7 +246,7 @@ describe("current reviewed changes", () => {
     }
   });
   test("purpose keeps exact review, process affinity and one-use proof separate from recovery", async () => {
-    const recovery = new SecurityChangeRecovery();
+    const recovery = new SecurityChangeRecovery(memoryStorage());
     let sends = 0,
       navigated = "";
     const c = fixture(
@@ -249,7 +266,7 @@ describe("current reviewed changes", () => {
         apply: async (request) => {
           sends++;
           expect(request.authorizationProof).toEqual(bytes(32, 9));
-          expect(recovery.read("browser-session")?.review).toEqual(review());
+          expect(recovery.read(owner)?.review).toEqual(review());
           throw new Error("lost");
         },
       },
@@ -265,9 +282,7 @@ describe("current reviewed changes", () => {
     await c.apply();
     expect(sends).toBe(1);
     expect(c.getSnapshot().mutation).toBe("unconfirmed");
-    expect("authorizationProof" in recovery.read("browser-session")!).toBe(
-      false,
-    );
+    expect("authorizationProof" in recovery.read(owner)!).toBe(false);
     await c.apply();
     expect(sends).toBe(1);
     c.dispose();
@@ -398,7 +413,7 @@ describe("current reviewed changes", () => {
     CurrentSecurityProgress.CHOSEN,
   ]) {
     test(`stage ${progress} retains full identity across remount and never creates or resends a mutation`, async () => {
-      const recovery = new SecurityChangeRecovery();
+      const recovery = new SecurityChangeRecovery(memoryStorage());
       let sends = 0,
         prepares = 0;
       const c = fixture(
@@ -445,15 +460,13 @@ describe("current reviewed changes", () => {
     });
   }
   test("response loss retains review before dispatch and transport failure is not nonexecution", async () => {
-    const recovery = new SecurityChangeRecovery();
+    const recovery = new SecurityChangeRecovery(memoryStorage());
     let sends = 0;
     const c = fixture(
       {
         apply: async (r) => {
           sends++;
-          expect(recovery.read("browser-session")?.review).toEqual(
-            r.currentReview,
-          );
+          expect(recovery.read(owner)?.review).toEqual(r.currentReview);
           throw new Error("lost");
         },
         status: async (r) => result(r, CurrentSecurityProgress.UNRESOLVED),
@@ -621,7 +634,7 @@ describe("current reviewed changes", () => {
     }
   });
   test("different browser owner cannot inherit an original recovery record", async () => {
-    const recovery = new SecurityChangeRecovery();
+    const recovery = new SecurityChangeRecovery(memoryStorage());
     const c = fixture({}, undefined, recovery);
     await ready(c);
     await c.apply();
@@ -629,6 +642,232 @@ describe("current reviewed changes", () => {
     const other = fixture({}, undefined, recovery, "other-session");
     expect(other.changeId()).toBe("");
     other.dispose();
-    expect(recovery.read("browser-session")?.review).toEqual(review());
+    expect(recovery.read(owner)?.review).toEqual(review());
+  });
+  test("document replacement and rotated view use exact original status without Prepare or Apply replay", async () => {
+    const backend = memoryStorage();
+    let sends = 0,
+      prepares = 0,
+      statuses = 0;
+    const before = fixture(
+      {
+        prepare: async (draft) => {
+          prepares++;
+          return prepare(draft);
+        },
+        apply: async () => {
+          sends++;
+          throw new Error("lost response");
+        },
+      },
+      undefined,
+      new SecurityChangeRecovery(backend),
+    );
+    await ready(before);
+    await before.apply();
+    before.dispose();
+    const rotated = {
+      ...version,
+      admissionBinding: bytes(32, 99),
+      currentCut: { ...version.currentCut!, sequence: 900n },
+    };
+    const after = fixture(
+      {
+        roles: async () => ({
+          $typeName: "graph.v1.ListRolesResponse",
+          roles: [],
+          nextCursor: "",
+          version: rotated,
+        }),
+        prepare: async (draft) => {
+          prepares++;
+          return prepare(draft);
+        },
+        apply: async () => {
+          sends++;
+          throw new Error("unexpected replay");
+        },
+        status: async (original) => {
+          statuses++;
+          expect(original).toEqual(review());
+          return result(original);
+        },
+      },
+      undefined,
+      new SecurityChangeRecovery(backend),
+    );
+    await ready(after);
+    await after.apply();
+    expect(prepares).toBe(1);
+    expect(sends).toBe(1);
+    await after.checkStatus();
+    expect(statuses).toBe(1);
+    expect(after.getSnapshot().mutation).toBe("applied");
+    expect(new SecurityChangeRecovery(backend).read(owner)?.review).toEqual(
+      review(),
+    );
+    after.dispose();
+  });
+  test("restored cached terminal needs a fresh original; weaker status keeps new review blocked", async () => {
+    const backend = memoryStorage();
+    const before = fixture({}, undefined, new SecurityChangeRecovery(backend));
+    await ready(before);
+    await before.apply();
+    before.dispose();
+    let freshOriginal = false,
+      prepares = 0;
+    const after = fixture(
+      {
+        prepare: async (draft) => {
+          prepares++;
+          return prepare(draft);
+        },
+        status: async (r) =>
+          result(
+            r,
+            freshOriginal
+              ? CurrentSecurityProgress.APPLIED
+              : CurrentSecurityProgress.UNRESOLVED,
+          ),
+      },
+      undefined,
+      new SecurityChangeRecovery(backend),
+    );
+    expect(after.getSnapshot().mutation).toBe("unconfirmed");
+    await after.checkStatus();
+    expect(after.getSnapshot().result?.original).toBeDefined();
+    expect(after.getSnapshot().mutation).toBe("unconfirmed");
+    await ready(after);
+    expect(prepares).toBe(0);
+    freshOriginal = true;
+    await after.checkStatus();
+    expect(after.getSnapshot().mutation).toBe("applied");
+    after.dispose();
+  });
+  test("pre-dispatch storage failure sends zero Apply and a retry keeps the same prepared identity", async () => {
+    const backend = memoryStorage();
+    let fail = true,
+      sends = 0;
+    const storage: SecurityRecoveryStorage = {
+      read: backend.read,
+      replace: (value) => {
+        if (fail) throw new Error("quota");
+        backend.replace(value);
+      },
+    };
+    const c = fixture(
+      {
+        apply: async (r) => {
+          sends++;
+          expect(r.currentReview).toEqual(review());
+          return acknowledgement();
+        },
+      },
+      undefined,
+      new SecurityChangeRecovery(storage),
+    );
+    await ready(c);
+    await c.apply();
+    expect(sends).toBe(0);
+    expect(c.getSnapshot().message).toContain("storage");
+    expect(c.getSnapshot().review?.contract).toEqual(review());
+    fail = false;
+    await c.apply();
+    expect(sends).toBe(1);
+    c.dispose();
+  });
+  test("post-Apply save failure keeps received evidence and does not enter first-refusal cleanup", async () => {
+    const backend = memoryStorage();
+    let writes = 0,
+      refusals = 0;
+    const storage: SecurityRecoveryStorage = {
+      read: backend.read,
+      replace: (value) => {
+        if (++writes === 2) throw new Error("quota");
+        backend.replace(value);
+      },
+    };
+    const c = fixture(
+      {
+        invocationRejected: () => {
+          refusals++;
+          return refused();
+        },
+      },
+      undefined,
+      new SecurityChangeRecovery(storage),
+    );
+    await ready(c);
+    await c.apply();
+    expect(refusals).toBe(0);
+    expect(c.getSnapshot().mutation).toBe("unconfirmed");
+    expect(c.getSnapshot().result?.original).toBeDefined();
+    const persisted = new SecurityChangeRecovery(backend).read(owner)!;
+    expect(persisted.review).toEqual(review());
+    expect(persisted.result).toBeUndefined();
+    await c.checkStatus();
+    expect(c.getSnapshot().mutation).toBe("applied");
+    c.dispose();
+  });
+  test("failed exact first-refusal removal preserves ambiguity and disables approval retry", async () => {
+    const backend = memoryStorage();
+    let writes = 0,
+      sends = 0;
+    const storage: SecurityRecoveryStorage = {
+      read: backend.read,
+      replace: (value) => {
+        if (++writes === 2) throw new Error("quota");
+        backend.replace(value);
+      },
+    };
+    const c = fixture(
+      {
+        apply: async () => {
+          sends++;
+          throw new Error("typed first refusal");
+        },
+        invocationRejected: () => refused(),
+      },
+      undefined,
+      new SecurityChangeRecovery(storage),
+    );
+    await ready(c);
+    await c.apply();
+    expect(c.getSnapshot().mutation).toBe("unconfirmed");
+    expect(c.getSnapshot().message).toContain("storage");
+    expect(new SecurityChangeRecovery(backend).read(owner)?.review).toEqual(
+      review(),
+    );
+    await c.apply();
+    expect(sends).toBe(1);
+    c.dispose();
+  });
+  test("unreadable recovery blocks new management mutation without erasing existing bytes", async () => {
+    const backend = memoryStorage();
+    backend.replace("corrupt original bytes");
+    let sends = 0,
+      prepares = 0;
+    const c = fixture(
+      {
+        prepare: async (draft) => {
+          prepares++;
+          return prepare(draft);
+        },
+        apply: async () => {
+          sends++;
+          return acknowledgement();
+        },
+      },
+      undefined,
+      new SecurityChangeRecovery(backend),
+    );
+    await ready(c);
+    await c.apply();
+    expect(c.getSnapshot().recoveryBlocked).toBe(true);
+    expect(c.getSnapshot().message).toContain("storage");
+    expect(prepares).toBe(0);
+    expect(sends).toBe(0);
+    expect(backend.read()).toBe("corrupt original bytes");
+    c.dispose();
   });
 });

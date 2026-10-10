@@ -747,6 +747,69 @@ test("original rejection allows correction only after a fresh review with anothe
   expect(corrected[0].putRole.name).toBe("Corrected Role");
 });
 
+for (const width of [1280, 390]) {
+  test(`document replacement preserves the original and gates cached status at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const fixture = await securityUI(page, { apply: "lost" });
+    await page.goto(`${fixture.primary}/security/roles`);
+    await reviewRole(page);
+    await page
+      .getByRole("button", { name: "Apply reviewed change", exact: true })
+      .click();
+    await expect(
+      page.getByText("The response was not confirmed.", { exact: false }),
+    ).toBeVisible();
+    const sent = fixture.calls.find(
+      (call) => call.method === "ApplySecurityChanges",
+    )!.body.currentReview as Record<string, unknown>;
+    for (let reload = 0; reload < 2; reload++) {
+      await page.reload();
+      await expect(
+        page.getByText("A prior control change is retained.", { exact: false }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Review Role change", exact: true }),
+      ).toBeDisabled();
+      expect(
+        fixture.calls.filter(
+          (call) => call.method === "GetSecurityChangeStatus",
+        ),
+      ).toHaveLength(reload);
+      await page
+        .getByRole("button", {
+          name: "Check original change status",
+          exact: true,
+        })
+        .click();
+      await expect(
+        page.getByText("Original commit 11 · 1: APPLIED"),
+      ).toBeVisible();
+    }
+    expect(
+      fixture.calls.filter((call) => call.method === "PrepareSecurityChanges"),
+    ).toHaveLength(1);
+    expect(
+      fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
+    ).toHaveLength(1);
+    const statuses = fixture.calls.filter(
+      (call) => call.method === "GetSecurityChangeStatus",
+    );
+    expect(statuses).toHaveLength(2);
+    for (const { body } of statuses) {
+      expect(body.currentProfile).toEqual(sent.profile);
+      expect(body.currentChangeId).toEqual(sent.changeId);
+      expect(body.currentIntentDigest).toEqual(sent.intentDigest);
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  });
+}
+
 test("generic committed-ID conflict remains status-only across route remount", async ({
   page,
 }) => {

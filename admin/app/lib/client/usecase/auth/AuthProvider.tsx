@@ -14,6 +14,7 @@ import { SecurityChangeRecovery } from "~/lib/client/usecase/security/security-m
 import { AuthContext } from "./use-auth";
 import { AddRecoveryStore } from "~/lib/client/usecase/add-recovery/add-recovery";
 import { browserAddRecoveryStorage } from "~/lib/client/infrastructure/browser/add-recovery-storage";
+import { browserSecurityRecoveryStorage } from "~/lib/client/infrastructure/browser/security-change-recovery-storage";
 
 export interface AuthLifecycle {
   watch(refresh: (logout: boolean) => void): () => void;
@@ -35,7 +36,10 @@ export function AuthProvider({
     () => new AddRecoveryStore(browserAddRecoveryStorage()),
     [],
   );
-  const recovery = useMemo(() => new SecurityChangeRecovery(), []);
+  const recovery = useMemo(
+    () => new SecurityChangeRecovery(browserSecurityRecoveryStorage()),
+    [],
+  );
   const logoutRecovery = useMemo(() => new SessionRevocationRecovery(), []);
   const controller = useMemo(
     () =>

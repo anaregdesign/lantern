@@ -333,6 +333,9 @@ export async function securityUI(
         );
         retained = {
           ...makeReview(7 + preparations++),
+          // This fixture authenticates admin above; preparation must return
+          // that same actor rather than the unit helper's default alice.
+          actor: { ...makeReview().actor!, subject: "admin" },
           profile: draft.profile,
           expectedCut: draft.expectedCut,
           changes: draft.changes,
