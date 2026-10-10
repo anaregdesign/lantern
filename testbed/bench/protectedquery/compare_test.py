@@ -13,16 +13,19 @@ def shutdown_receipts(off, on):
     return receipts
 
 
-from compare import compare
+from compare import compare, search_expectation
 
 
 def reports():
+    off_ranking, off_expected = search_expectation("off")
+    on_ranking, on_expected = search_expectation("oidc")
     sample = {"slot": 0, "status": "ok"}
     producer = {"offered": 1, "samples": [sample], "p99_ns": 1000}
     off = {"schema_version": 1, "qualification": "preparation_only", "passed": True,
            "action": "measure", "mode": "off", "security_profile": "legacy-v1",
            "server_processes": 1, "comparison_axis": "end_to_end_mode_specific_authorized_results",
-           "expected_search_keys": ["bench:ranking:a", "bench:ranking:b", "bench:private:best"], "transport": "verified_tls_http2",
+           "expected_search_keys": off_expected, "search_required_ranking_keys": off_ranking,
+           "search_matching_candidates": 36, "search_limit": 20, "transport": "verified_tls_http2",
            "reader_actor": "unauthenticated_off", "writer_actor": "unauthenticated_off",
            "driver_source": {"revision": "a" * 40, "modified": "false", "sha256": "d" * 64},
            "server_binary": {"revision": "a" * 40, "modified": "false", "sha256": "b" * 64},
@@ -34,7 +37,7 @@ def reports():
     on = copy.deepcopy(off)
     on.update(mode="oidc", reader_actor="synthetic_local_end_user_bearer_jwt_role_bound",
               writer_actor="named_machine_token_all_data_role",
-              expected_search_keys=["bench:ranking:a", "bench:ranking:b"])
+              expected_search_keys=on_expected, search_required_ranking_keys=on_ranking, search_matching_candidates=35)
     return off, on
 
 
@@ -69,6 +72,9 @@ class ComparisonContract(unittest.TestCase):
             lambda r: r.update(server_processes=1),
             lambda r: r.update(expected_search_keys=[]),
             lambda r: r.update(expected_search_keys=off["expected_search_keys"]),
+            lambda r: r.update(search_matching_candidates=20),
+            lambda r: r.update(search_limit=0),
+            lambda r: r.update(search_required_ranking_keys=[]),
             lambda r: r.update(comparison_axis="pure_authorization_overhead"),
             lambda r: r["exporter_binary"].update(modified="true"),
             lambda r: r["load"]["reader"].update(offered=0,samples=[]),

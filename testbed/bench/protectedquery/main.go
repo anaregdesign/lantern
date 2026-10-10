@@ -224,6 +224,7 @@ func execute(ctx context.Context, f fixtureInput, action string, cfg loadConfig)
 	}
 	report := map[string]any{"schema_version": 1, "qualification": "preparation_only", "action": action, "mode": endpoint.mode,
 		"security_profile": f.Query.SecurityProfile, "server_processes": len(f.Nodes), "comparison_axis": "end_to_end_mode_specific_authorized_results", "expected_search_keys": expectedSearchKeys(endpoint.mode),
+		"search_matching_candidates": len(fixtureSearchExpectations[endpoint.mode].candidates), "search_limit": searchLimit, "search_required_ranking_keys": requiredRankingKeys(endpoint.mode),
 		"transport": "verified_tls_http2", "topology": "standalone_broad_illuminate_with_hidden_bridge", "corpus_sha256": corpusDigest(),
 		"reader_actor": "unauthenticated_off", "writer_actor": "unauthenticated_off", "driver_source": buildSource(), "server_binary": f.Query.Server,
 		"measurements": map[string]string{"server_allocations": "not_measured", "server_retained_memory": "not_measured", "server_peak_memory": "not_measured", "internal_writer_lock_wait": "not_measured", "export_revocation": "not_measured", "ttl_delete_restore": "not_measured", "host_qualification": "not_measured"}}

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"testing"
 
@@ -38,7 +40,7 @@ func TestQueryResultValidationRejectsHiddenBridgesAndEmptySuccess(t *testing.T) 
 			t.Fatal("empty success accepted", family)
 		}
 	}
-	endpoint := &queryEndpoint{mode: "oidc", client: queryResultClient{hits: []*pb.SearchHit{{Key: "bench:ranking:a", Vertex: &pb.Vertex{Key: "bench:ranking:a"}}, {Key: "bench:ranking:b", Vertex: &pb.Vertex{Key: "bench:ranking:b"}}, {Key: hiddenHit, Vertex: &pb.Vertex{Key: hiddenHit}}}}}
+	endpoint := &queryEndpoint{mode: "oidc", client: queryResultClient{hits: []*pb.SearchHit{{Key: "bench:ranking:a", Score: 2, Vertex: &pb.Vertex{Key: "bench:ranking:a"}}, {Key: "bench:ranking:b", Score: 2, Vertex: &pb.Vertex{Key: "bench:ranking:b"}}, {Key: hiddenHit, Score: 2, Vertex: &pb.Vertex{Key: hiddenHit}}}}}
 	if queryOnce(t.Context(), endpoint, "search") == nil {
 		t.Fatal("denied search candidate accepted")
 	}
@@ -61,13 +63,27 @@ func TestCorpusRetainsBroadTopologyAndStableLogicalKeys(t *testing.T) {
 	}
 }
 
+func fixtureResultHits(keys ...string) []*pb.SearchHit {
+	var out []*pb.SearchHit
+	for _, key := range keys {
+		score := 2.0
+		if strings.HasPrefix(key, alphaPrefix) {
+			score = 1
+		}
+		out = append(out, &pb.SearchHit{Key: key, Score: score, Vertex: &pb.Vertex{Key: key}})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		return out[i].Key < out[j].Key
+	})
+	return out
+}
+
 func TestSearchRequiresExactModeSpecificNonemptyResults(t *testing.T) {
 	hits := func(keys ...string) []*pb.SearchHit {
-		var out []*pb.SearchHit
-		for _, key := range keys {
-			out = append(out, &pb.SearchHit{Key: key, Vertex: &pb.Vertex{Key: key}})
-		}
-		return out
+		return fixtureResultHits(keys...)
 	}
 	a, b := "bench:ranking:a", "bench:ranking:b"
 	for _, mode := range []string{"off", "oidc"} {
@@ -87,6 +103,186 @@ func TestSearchRequiresExactModeSpecificNonemptyResults(t *testing.T) {
 	}
 }
 
+func TestSearchExpectationDerivesAsciiCandidatesAndLimit(t *testing.T) {
+	terms := fixtureSearchTerms("shared")
+	for _, term := range []string{"word:shared", "gram:sh", "gram:ha", "gram:ar", "gram:re", "gram:ed"} {
+		if !terms[term] {
+			t.Fatal("query term inventory incomplete", term)
+		}
+	}
+	if len(terms) != 6 || fixtureSearchTerms("s h")["gram:sh"] || fixtureSearchTerms("ha")["gram:ha"] {
+		t.Fatal("fixture analyzer crossed boundaries or added exact-width document grams")
+	}
+	for _, mode := range []string{"off", "oidc"} {
+		e := fixtureSearchExpectations[mode]
+		if len(e.candidates) != map[string]int{"off": 36, "oidc": 35}[mode] || len(e.keys) != min(searchLimit, len(e.candidates)) || !e.candidates[unreachable] || e.candidates[hiddenBridge] || e.candidates[hiddenHit] != (mode == "off") {
+			t.Fatal("matching/auth/limit derived from the wrong corpus", mode, e)
+		}
+		alphaCount := 0
+		for key := range e.candidates {
+			if strings.HasPrefix(key, alphaPrefix) {
+				alphaCount++
+			}
+		}
+		if alphaCount != 32 {
+			t.Fatal("complete seeded alpha tie group missing")
+		}
+	}
+}
+
+// A fixture-only independent scalar BM25 calculation: no production index,
+// scorer, live hit list, authorization implementation or timed query is used.
+func fixtureFieldCounts(text string) map[string]int {
+	counts := map[string]int{}
+	for _, word := range strings.FieldsFunc(text, func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9') }) {
+		counts["word:"+word]++
+		if len(word) > 2 {
+			for i := 0; i+2 <= len(word); i++ {
+				counts["gram:"+word[i:i+2]]++
+			}
+		}
+	}
+	return counts
+}
+
+func fixtureIndependentScores(a, private string) map[string]float64 {
+	documents := map[string][2]map[string]int{}
+	for _, v := range corpus().Vertices {
+		text := v.Value.(*pb.Vertex_String_).String_
+		if v.Key == "bench:ranking:a" {
+			text = a
+		}
+		if v.Key == hiddenHit {
+			text = private
+		}
+		documents[v.Key] = [2]map[string]int{fixtureFieldCounts(v.Key), fixtureFieldCounts(text)}
+	}
+	scores := map[string]float64{}
+	for term := range fixtureSearchTerms("shared") {
+		class := "word:"
+		classWeight := 1.0
+		if strings.HasPrefix(term, "gram:") {
+			class, classWeight = "gram:", .2
+		}
+		for field := 0; field < 2; field++ {
+			fieldWeight := 1.0
+			if field == 0 {
+				fieldWeight = 1.75
+			}
+			df, n, total := 0, 0, 0
+			lengths := map[string]int{}
+			for key, fields := range documents {
+				for t, count := range fields[field] {
+					if strings.HasPrefix(t, class) {
+						lengths[key] += count
+					}
+				}
+				if lengths[key] > 0 {
+					n++
+					total += lengths[key]
+				}
+				if fields[field][term] > 0 {
+					df++
+				}
+			}
+			if df == 0 {
+				continue
+			}
+			avg := float64(total) / float64(n)
+			idf := math.Log(1 + (float64(n-df)+.5)/(float64(df)+.5))
+			for key, fields := range documents {
+				tf := float64(fields[field][term])
+				if tf == 0 {
+					continue
+				}
+				denominator := tf + 1.2*(1-.75+.75*float64(lengths[key])/avg)
+				scores[key] += fieldWeight * classWeight * idf * tf * (1.2 + 1) / denominator
+			}
+		}
+	}
+	return scores
+}
+
+func TestSearchFixtureIndependentScoreBoundsAcrossExistingWriterStates(t *testing.T) {
+	short, longer := "shared searchable ordinary document", "shared ordinary longer updated searchable document"
+	for _, a := range []string{short, longer} {
+		for _, private := range []string{"shared shared shared shared searchable document", short, longer} {
+			scores := fixtureIndependentScores(a, private)
+			if len(scores) != 36 {
+				t.Fatal("independent matching inventory changed", len(scores))
+			}
+			alphaScore, count := scores[alphaPrefix+"00"], 0
+			for key, score := range scores {
+				if strings.HasPrefix(key, alphaPrefix) {
+					count++
+					if score != alphaScore {
+						t.Fatal("alpha TF/field lengths do not tie", key)
+					}
+				} else if !(score > alphaScore) {
+					t.Fatal("required anchor fell outside tie boundary", key, score, alphaScore)
+				}
+			}
+			if count != 32 {
+				t.Fatal("incomplete seeded tie group", count)
+			}
+		}
+	}
+}
+
+func TestSearchRejectsFullSizeWrongCandidatesMissingAnchorsLeakAndTieOrder(t *testing.T) {
+	for _, mode := range []string{"off", "oidc"} {
+		for _, mutation := range []func([]*pb.SearchHit) []*pb.SearchHit{
+			func(h []*pb.SearchHit) []*pb.SearchHit { return h[:len(h)-1] },
+			func(h []*pb.SearchHit) []*pb.SearchHit { h[len(h)-1] = h[0]; return h },
+			func(h []*pb.SearchHit) []*pb.SearchHit {
+				h[len(h)-1] = fixtureResultHits("bench:community:alpha:31")[0]
+				return h
+			},
+			func(h []*pb.SearchHit) []*pb.SearchHit { h[len(h)-1] = fixtureResultHits(hiddenBridge)[0]; return h },
+			func(h []*pb.SearchHit) []*pb.SearchHit { h[0].Score = math.NaN(); return h },
+			func(h []*pb.SearchHit) []*pb.SearchHit { h[0].Score = math.Inf(1); return h },
+			func(h []*pb.SearchHit) []*pb.SearchHit { h[len(h)-1].Score = 0; return h },
+			func(h []*pb.SearchHit) []*pb.SearchHit { h[0], h[len(h)-1] = h[len(h)-1], h[0]; return h },
+			func(h []*pb.SearchHit) []*pb.SearchHit { h[len(h)-1], h[len(h)-2] = h[len(h)-2], h[len(h)-1]; return h },
+			func(h []*pb.SearchHit) []*pb.SearchHit {
+				for _, hit := range h {
+					if strings.HasPrefix(hit.Key, alphaPrefix) {
+						hit.Score = 1.01
+						break
+					}
+				}
+				return h
+			},
+			func(h []*pb.SearchHit) []*pb.SearchHit {
+				for _, hit := range h {
+					hit.Score = 1
+				}
+				sort.Slice(h, func(i, j int) bool { return h[i].Key < h[j].Key })
+				return h
+			},
+			func(h []*pb.SearchHit) []*pb.SearchHit {
+				keys := []string{}
+				for _, hit := range h {
+					if hit.Key != "bench:ranking:a" {
+						keys = append(keys, hit.Key)
+					}
+				}
+				return fixtureResultHits(append(keys, "bench:community:alpha:31")...)
+			},
+		} {
+			hits := mutation(fixtureResultHits(expectedSearchKeys(mode)...))
+			if queryOnce(t.Context(), &queryEndpoint{mode: mode, client: queryResultClient{hits: hits}}, "search") == nil {
+				t.Fatal("bad full-size selection/cardinality/score/tie passed", mode)
+			}
+		}
+	}
+	hits := fixtureResultHits(expectedSearchKeys("oidc")...)
+	hits[len(hits)-1] = fixtureResultHits(hiddenHit)[0]
+	if queryOnce(t.Context(), &queryEndpoint{mode: "oidc", client: queryResultClient{hits: hits}}, "search") == nil {
+		t.Fatal("same-size private leak passed")
+	}
+}
+
 func TestSearchFailureRetainsActualBoundedKeysWithoutValues(t *testing.T) {
 	var many []*pb.SearchHit
 	for i := 0; i < 21; i++ {
@@ -100,7 +296,7 @@ func TestSearchFailureRetainsActualBoundedKeysWithoutValues(t *testing.T) {
 		if !errors.As(fmt.Errorf("preflight: %w", err), &failure) || failure.HitCount != len(hits) || failure.Mode != "oidc" || failure.Query != "shared" || failure.Limit != 20 || failure.Prefix != "" {
 			t.Fatal("actual failed response/request observation missing", err)
 		}
-		if len(failure.ObservedKeys) != min(len(hits), 20) || failure.ObservedKeysTruncated != (len(hits) > 20) || len(failure.ExpectedKeys) != 2 {
+		if len(failure.ObservedKeys) != min(len(hits), 20) || failure.ObservedKeysTruncated != (len(hits) > 20) || len(failure.ExpectedKeys) != 20 {
 			t.Fatal("bounded observations or expected set missing", failure)
 		}
 		for i, key := range failure.ObservedKeys {

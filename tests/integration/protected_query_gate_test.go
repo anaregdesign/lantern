@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -202,10 +203,13 @@ func testProtectedQueryPreparationWire(t *testing.T, profile string) {
 					FixtureID     string            `json:"fixture_id"`
 					Processes     int               `json:"server_processes"`
 					Expected      []string          `json:"expected_search_keys"`
+					Candidates    int               `json:"search_matching_candidates"`
+					SearchLimit   int               `json:"search_limit"`
+					Ranking       []string          `json:"search_required_ranking_keys"`
 					Axis          string            `json:"comparison_axis"`
 					Measurements  map[string]string `json:"measurements"`
 				}
-				if json.Unmarshal(raw, &result) != nil || !result.Passed || result.Transport != "verified_tls_http2" || result.Qualification != "preparation_only" || mode == "oidc" && !strings.Contains(result.Actor, "jwt_role_bound") || result.Profile != profile || result.Processes != count || profile == "current-v2" && result.FixtureID != fixtureID || result.Axis != "end_to_end_mode_specific_authorized_results" || len(result.Expected) != map[string]int{"off": 3, "oidc": 2}[mode] {
+				if json.Unmarshal(raw, &result) != nil || !result.Passed || result.Transport != "verified_tls_http2" || result.Qualification != "preparation_only" || mode == "oidc" && !strings.Contains(result.Actor, "jwt_role_bound") || result.Profile != profile || result.Processes != count || profile == "current-v2" && result.FixtureID != fixtureID || result.Axis != "end_to_end_mode_specific_authorized_results" || !slices.Equal(result.Expected, wireExpectedQuerySearchKeys(mode)) || result.Candidates != map[string]int{"off": 36, "oidc": 35}[mode] || result.SearchLimit != 20 || !slices.Equal(result.Ranking, wireExpectedQuerySearchKeys(mode)[:map[string]int{"off": 3, "oidc": 2}[mode]]) {
 					t.Fatalf("wrong report contract: %s", raw)
 				}
 				for _, status := range result.Measurements {
@@ -222,4 +226,16 @@ func testProtectedQueryPreparationWire(t *testing.T, profile string) {
 			}
 		})
 	}
+}
+
+func wireExpectedQuerySearchKeys(mode string) []string {
+	keys := []string{"bench:ranking:a", "bench:ranking:b"}
+	if mode == "off" {
+		keys = append(keys, "bench:private:best")
+	}
+	keys = append(keys, "bench:walk:unreachable")
+	for i := 0; len(keys) < 20; i++ {
+		keys = append(keys, fmt.Sprintf("bench:community:alpha:%02d", i))
+	}
+	return keys
 }

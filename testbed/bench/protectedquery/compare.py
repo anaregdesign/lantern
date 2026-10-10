@@ -6,6 +6,15 @@ import json
 import re
 
 
+def search_expectation(mode):
+    ranking = ["bench:ranking:a", "bench:ranking:b"] + (["bench:private:best"] if mode == "off" else [])
+    anchors = ranking + ["bench:walk:unreachable"]
+    # The 32 alpha documents share identical query TF/field lengths. Their
+    # equal-score boundary uses the existing ascending typed key comparator.
+    expected = anchors + [f"bench:community:alpha:{i:02d}" for i in range(20 - len(anchors))]
+    return ranking, expected
+
+
 def compare(off, on, off_shutdown=None, on_shutdown=None):
     profile = on.get("security_profile")
     if profile not in ("legacy-v1", "current-v2") or off.get("security_profile") != profile:
@@ -20,9 +29,12 @@ def compare(off, on, off_shutdown=None, on_shutdown=None):
                 or report.get("topology") != "standalone_broad_illuminate_with_hidden_bridge"
                 or report.get("reader_actor") != reader or report.get("writer_actor") != writer):
             raise ValueError("unqualified preparation report or actor/transport mismatch")
-        expected = ["bench:ranking:a", "bench:ranking:b"] + (["bench:private:best"] if mode == "off" else [])
+        ranking, expected = search_expectation(mode)
         if (report.get("comparison_axis") != "end_to_end_mode_specific_authorized_results"
                 or report.get("expected_search_keys") != expected
+                or report.get("search_required_ranking_keys") != ranking
+                or report.get("search_matching_candidates") != (36 if mode == "off" else 35)
+                or report.get("search_limit") != 20
                 or report.get("server_processes") != (3 if profile == "current-v2" else 1)):
             raise ValueError("mode-specific result contract or process layout mismatch")
         binding = report.get("current_profile_binding", "")

@@ -45,10 +45,27 @@ rejection, and absence of denied vertices/edges or paths through them. The
 all-data writer control must actually reach the planted bridge-only destination.
 Shared statistics remain corpus-wide; hidden updates may change visible ranking.
 
-The expected Search set is `bench:ranking:a`, `bench:ranking:b` and
-`bench:private:best` in OFF; OIDC expects only `bench:ranking:a/b`. Empty, missing,
-duplicate or unexpected results refuse. OFF may traverse the planted private
-bridge; OIDC must exclude private vertices/edges and the bridge-only destination.
+Search retains the existing `shared` query, default ANY, no prefix, limit 20 and
+full-vertex projection. Its ScriptAware word/intra-word-bigram contract matches
+36 seeded vertices: the three ranking documents, `bench:walk:unreachable`
+(`re`/`ha` evidence), and all 32 alpha-community documents (`ha` evidence).
+OIDC permits 35 of these, excluding `bench:private:best`. Independent ASCII
+word/gram inventory and field/class BM25 calculations over all six existing
+initial/mixed writer-value combinations establish that the ranking documents
+and `unreachable` outrank alpha's identical TF/field-length tie group. The
+required ascending key tie comparator and limit then select alpha `00..15`
+in OFF and `00..16` in OIDC, giving 20 hits in each mode. This expectation is
+derived before timed actions and is not copied from an observed page.
+
+Each result must include the required ranking keys, match the derived exact
+selection/cardinality, retain a full vertex, and have a finite positive score
+in descending order with ascending keys on exact score ties. Alpha scores must
+tie within each response; absolute scores/order of the upper anchors may vary
+with independent updates. Empty, missing, duplicate, nonmatching, wrong tie
+boundary and private-leaking results refuse. The otherwise visible
+`unreachable` can match Search directly; OIDC traversal must still exclude
+private vertices/edges and any path through the private bridge to that vertex.
+OFF may traverse the planted private bridge.
 The comparison axis is `end_to_end_mode_specific_authorized_results`. These
 correct differences are preserved, rather than requiring OFF/ON result-hash
 equality. Same-allowed-set authorization-overhead comparisons require a
@@ -156,11 +173,11 @@ actual response hit count and up to 20 returned keys alongside its unchanged
 query/expected keys; stored values and credentials are excluded. Seed reports
 retain checked plural Put counts and RPC counts, including partial failure. These
 are application ACKs, not data readback or proof of search-index membership.
-The original failing wire reports did not retain actual hits. A lightweight
-same-corpus public provider/index inspection returns additional candidates for
-the default `shared` query (ANY bigram matching); this indicates the exact-set
-expectation needs investigation, not an OIDC-cause or recovered wire-hit claim.
-The diagnostic changes do not alter that query, corpus, actors or expected sets.
+The original failing wire did not retain actual hits. One subsequent diagnostic
+retained both 20-hit pages with every ranking anchor present and private hits
+excluded in OIDC, confirming the earlier three/two-only fixture expectation was
+too narrow. The corrected contract preserves query, corpus, actors and production
+rules, and retains failure diagnostics and independent leakage/bridge controls.
 
 Ordinary root tests cover the driver, report-pair contract and topology. The
 legacy wire test reports a skip without its three binaries; selected current

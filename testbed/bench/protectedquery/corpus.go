@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,11 +21,94 @@ const (
 	hiddenBridge = "bench:private:bridge"
 	unreachable  = "bench:walk:unreachable"
 	hiddenHit    = "bench:private:best"
+	searchLimit  = 20
+	alphaPrefix  = "bench:community:alpha:"
 )
 
 type logicalCorpus struct {
 	Vertices []*pb.Vertex `json:"vertices"`
 	Edges    []*pb.Edge   `json:"edges"`
+}
+
+type fixtureSearchExpectation struct {
+	keys       []string
+	candidates map[string]bool
+}
+
+// Derive from the ASCII fixture's independent word/gram inventory, not live
+// hits or the production index. Precompute before any timed driver action.
+var fixtureSearchExpectations = deriveFixtureSearchExpectations()
+
+func fixtureSearchTerms(text string) map[string]bool {
+	for _, r := range text {
+		if r > 127 {
+			panic("query fixture requires its pinned ASCII search contract")
+		}
+	}
+	terms := map[string]bool{}
+	for _, word := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	}) {
+		terms["word:"+word] = true
+		if len(word) > 2 { // ScriptAwareTokenizer omits redundant exact-width grams.
+			for i := 0; i+2 <= len(word); i++ {
+				terms["gram:"+word[i:i+2]] = true
+			}
+		}
+	}
+	return terms
+}
+
+func deriveFixtureSearchExpectations() map[string]fixtureSearchExpectation {
+	query := fixtureSearchTerms("shared")
+	matching := map[string]bool{}
+	for _, vertex := range corpus().Vertices {
+		value, ok := vertex.Value.(*pb.Vertex_String_)
+		if !ok {
+			panic("query fixture search requires pinned string fields")
+		}
+		for _, text := range []string{vertex.Key, value.String_} {
+			for term := range fixtureSearchTerms(text) {
+				if query[term] {
+					matching[vertex.Key] = true
+				}
+			}
+		}
+	}
+	result := map[string]fixtureSearchExpectation{}
+	for _, mode := range []string{"off", "oidc"} {
+		keys := append(requiredRankingKeys(mode), unreachable)
+		anchors := map[string]bool{}
+		for _, key := range keys {
+			if !matching[key] {
+				panic("required query fixture anchor does not match")
+			}
+			anchors[key] = true
+		}
+		eligible, alpha := map[string]bool{}, []string{}
+		for key := range matching {
+			if mode == "oidc" && strings.HasPrefix(key, "bench:private:") {
+				continue
+			}
+			eligible[key] = true
+			if strings.HasPrefix(key, alphaPrefix) {
+				alpha = append(alpha, key)
+			} else if !anchors[key] {
+				panic("fixture candidate inventory changed")
+			}
+		}
+		// The full-word ranking anchors and unique key-field 're' in unreachable
+		// outrank alpha's shared 'ha' evidence for every existing writer value.
+		// Alpha documents have identical query TF/field lengths, hence equal BM25
+		// scores even as global statistics change; the required key comparator
+		// chooses their lexical prefix. A bounded independent score check covers
+		// all initial/mixed value combinations; no cross-RPC score is frozen here.
+		sort.Strings(alpha)
+		limit := min(searchLimit, len(eligible))
+		keys = append(keys, alpha[:limit-len(keys)]...)
+		result[mode] = fixtureSearchExpectation{keys: keys, candidates: eligible}
+	}
+	return result
 }
 
 func corpus() logicalCorpus {
@@ -137,7 +222,7 @@ func traversal(family, seed string) *pb.IlluminateRequest {
 
 func queryOnce(ctx context.Context, endpoint *queryEndpoint, family string) error {
 	if family == "search" {
-		response, err := endpoint.client.SearchVertices(ctx, authenticated(endpoint.reader, &pb.SearchVerticesRequest{Query: "shared", Limit: 20, Projection: pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX}))
+		response, err := endpoint.client.SearchVertices(ctx, authenticated(endpoint.reader, &pb.SearchVerticesRequest{Query: "shared", Limit: searchLimit, Projection: pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX}))
 		if err != nil {
 			return err
 		}
@@ -150,6 +235,10 @@ func queryOnce(ctx context.Context, endpoint *queryEndpoint, family string) erro
 			return &searchResultFailure{Reason: reason, Query: "shared", Limit: 20, Mode: endpoint.mode, HitCount: len(response.Msg.Hits), ExpectedKeys: expected, ObservedKeys: keys, ObservedKeysTruncated: len(response.Msg.Hits) > len(keys)}
 		}
 		seen := make(map[string]bool, len(expected))
+		var previous *pb.SearchHit
+		var alphaScore float64
+		minimumAnchorScore := math.Inf(1)
+		alphaSeen := false
 		for _, hit := range response.Msg.Hits {
 			if hit == nil || !strings.HasPrefix(hit.Key, "bench:") || hit.Vertex == nil || hit.Vertex.Key != hit.Key {
 				return fail("search lost logical key or full-vertex result")
@@ -161,9 +250,30 @@ func queryOnce(ctx context.Context, endpoint *queryEndpoint, family string) erro
 			if endpoint.mode == "oidc" && strings.HasPrefix(hit.Key, "bench:private:") {
 				return fail("search disclosed denied hit")
 			}
+			if !fixtureSearchExpectations[endpoint.mode].candidates[hit.Key] {
+				return fail("search returned a nonmatching fixture candidate")
+			}
+			if math.IsNaN(hit.Score) || math.IsInf(hit.Score, 0) || hit.Score <= 0 {
+				return fail("search returned an invalid matching score")
+			}
+			if previous != nil && (hit.Score > previous.Score || hit.Score == previous.Score && hit.Key < previous.Key) {
+				return fail("search violated descending score or ascending tie order")
+			}
+			previous = hit
+			if strings.HasPrefix(hit.Key, alphaPrefix) {
+				if alphaSeen && hit.Score != alphaScore {
+					return fail("search alpha candidates lost identical scoring evidence")
+				}
+				alphaScore, alphaSeen = hit.Score, true
+			} else {
+				minimumAnchorScore = min(minimumAnchorScore, hit.Score)
+			}
+		}
+		if alphaSeen && minimumAnchorScore <= alphaScore {
+			return fail("search required anchors did not outrank the derived alpha tie")
 		}
 		if len(seen) != len(expected) {
-			return fail("search lost corpus results")
+			return fail("search violated derived matching cardinality and limit")
 		}
 		for _, key := range expected {
 			if !seen[key] {
@@ -246,6 +356,10 @@ func verifyCorpus(ctx context.Context, endpoint *queryEndpoint, invalid string) 
 }
 
 func expectedSearchKeys(mode string) []string {
+	return fixtureSearchExpectations[mode].keys
+}
+
+func requiredRankingKeys(mode string) []string {
 	keys := []string{"bench:ranking:a", "bench:ranking:b"}
 	if mode == "off" {
 		keys = append(keys, hiddenHit)
