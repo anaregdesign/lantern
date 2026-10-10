@@ -6,6 +6,7 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -13,12 +14,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +39,30 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
+
+// Installed outside the real current-output handler, so the callback sees only
+// units that have already passed its final authorization. Unwrap preserves the
+// production ResponseController path without changing connection ownership.
+type currentExportBoundary struct {
+	beforeWrite func([]byte, string)
+	afterWrite  func([]byte, int, error)
+	done        chan struct{}
+}
+
+type currentExportBoundaryWriter struct {
+	http.ResponseWriter
+	remote   string
+	boundary *currentExportBoundary
+}
+
+func (w currentExportBoundaryWriter) Write(payload []byte) (int, error) {
+	w.boundary.beforeWrite(payload, w.remote)
+	n, err := w.ResponseWriter.Write(payload)
+	w.boundary.afterWrite(payload, n, err)
+	return n, err
+}
+
+func (w currentExportBoundaryWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	if os.Getenv("LANTERN_CURRENT_PUBLIC_GATE") != "1" {
@@ -64,6 +92,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	var controls []graphv1connect.LanternSecurityServiceClient
 	var runtimes []*provider.SecurityRuntime
 	var stops []func()
+	var exportBoundary atomic.Pointer[currentExportBoundary]
 	transport := &http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}
 	startNode := func(id int, mode string) {
 		graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
@@ -125,6 +154,16 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		// Keep the actual owned http.Server, including ConnContext/ConnState and h2
 		// budgets; copying only Handler would bypass production connection credit.
 		s.Config = listener.Server()
+		if id == 1 {
+			next := s.Config.Handler
+			s.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if boundary := exportBoundary.Load(); boundary != nil && req.URL.Path == graphv1connect.LanternServiceBackupSnapshotProcedure {
+					defer close(boundary.done)
+					w = currentExportBoundaryWriter{w, req.RemoteAddr, boundary}
+				}
+				next.ServeHTTP(w, req)
+			})
+		}
 		if os.Getenv("LANTERN_CURRENT_PUBLIC_SDK4") == "1" {
 			s.EnableHTTP2 = true
 			ca := configureSDKServerTLS(t, s)
@@ -186,7 +225,12 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 	})
 	if principal == nil {
-		t.Fatal("no qualified principal")
+		// A focused subtest still needs the common native principal setup.
+		current, err := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
+		if err != nil {
+			t.Fatal("no qualified principal", err)
+		}
+		principal = current.Msg
 	}
 	t.Run("ordinary review apply foreign status", func(t *testing.T) {
 		before := principal.Version
@@ -458,6 +502,152 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 	})
 	f.server = servers[0]
+	t.Run("active export grant revocation", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		const prefix = "orders:active-export:"
+		vertices := make([]*pb.Vertex, 4)
+		for i := range vertices {
+			vertices[i] = &pb.Vertex{Key: fmt.Sprintf("%s%d", prefix, i), Value: &pb.Vertex_String_{String_: strings.Repeat(fmt.Sprintf("record-%d ", i), 2048)}}
+		}
+		writer := graphv1connect.NewLanternServiceClient(transport, servers[0].URL)
+		if _, err := writer.PutVertices(ctx, securityWireRequest(token, &pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+			t.Fatal("seed multi-unit export", err)
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, "machine.token"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		machine := string(raw)
+		// Separate transport owns the export connection; control keeps its
+		// existing connection and the production server's credit/lifecycle hooks.
+		exportHTTP := h2cClient()
+		defer exportHTTP.CloseIdleConnections()
+		exporter := graphv1connect.NewLanternServiceClient(&http.Client{Transport: authIngressRoundTripper{exportHTTP.Transport}}, servers[0].URL, connect.WithAcceptCompression("gzip", nil, nil))
+		type exportResult struct {
+			vertices []*pb.Vertex
+			err      error
+		}
+		readExport := func() exportResult {
+			stream, err := exporter.BackupSnapshot(ctx, securityWireRequest(machine, &pb.BackupSnapshotRequest{VertexPrefix: prefix}))
+			if err != nil {
+				return exportResult{err: err}
+			}
+			defer func() { _ = stream.Close() }()
+			var got []*pb.Vertex
+			for stream.Receive() {
+				got = append(got, stream.Msg().GetVertex())
+			}
+			return exportResult{got, stream.Err()}
+		}
+		baseline := readExport()
+		if baseline.err != nil || len(baseline.vertices) != len(vertices) {
+			t.Fatal("complete multi-unit positive control", len(baseline.vertices), baseline.err)
+		}
+		for _, vertex := range baseline.vertices {
+			matched := false
+			for _, want := range vertices {
+				matched = matched || proto.Equal(vertex, want)
+			}
+			if !matched {
+				t.Fatal("export baseline changed seeded data")
+			}
+		}
+		type heldUnit struct {
+			payload []byte
+			remote  string
+		}
+		held := make(chan heldUnit, 1)
+		release := make(chan struct{})
+		resume := sync.OnceFunc(func() { close(release) })
+		defer resume()
+		prefixes, bodies := 0, 0
+		var completedPrefix []byte
+		boundary := &currentExportBoundary{done: make(chan struct{}), beforeWrite: func(payload []byte, remote string) {
+			// Connect writes the uncompressed envelope prefix separately. Its
+			// service admission and final Write authorization have both passed;
+			// the body still needs its own Write authorization. Holding a body
+			// instead would let the next service check mask a missing Write check.
+			if len(payload) == 5 && payload[0] == 0 {
+				if size := binary.BigEndian.Uint32(payload[1:]); size == 0 || size > 1<<20 {
+					t.Error("export envelope exceeded unchanged send cap")
+				}
+				prefixes++
+				if prefixes == 2 {
+					held <- heldUnit{bytes.Clone(payload), remote}
+					select {
+					case <-release:
+					case <-ctx.Done():
+					}
+				}
+				return
+			}
+			var frame pb.BackupSnapshotResponse
+			if proto.Unmarshal(payload, &frame) == nil && frame.GetVertex() != nil {
+				bodies++
+			}
+		}, afterWrite: func(payload []byte, n int, err error) {
+			if prefixes == 2 && len(payload) == 5 && payload[0] == 0 {
+				if err != nil || n != len(payload) {
+					t.Error("already authorized prefix could not complete", n, err)
+				}
+				completedPrefix = bytes.Clone(payload)
+			}
+		}}
+		exportBoundary.Store(boundary)
+		defer exportBoundary.Store(nil)
+		result := make(chan exportResult, 1)
+		go func() { result <- readExport() }()
+		var unit heldUnit
+		select {
+		case unit = <-held:
+		case <-ctx.Done():
+			t.Fatal("second authorized export prefix not reached", ctx.Err())
+		}
+		var controlAddress string
+		controlCtx := httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { controlAddress = info.Conn.LocalAddr().String() }})
+		current, err := controls[0].GetCurrentPrincipal(controlCtx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := controls[0].PrepareSecurityChanges(controlCtx, securityWireRequest(token, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: current.Msg.Version.CurrentProfile, ExpectedCut: current.Msg.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_MACHINE, MachineName: "public-worker"}, RoleId: "wire_data"}}}}}}))
+		if err != nil {
+			t.Fatal("prepare export grant withdrawal", err)
+		}
+		applied, err := controls[0].ApplySecurityChanges(controlCtx, securityWireRequest(token, &pb.ApplySecurityChangesRequest{CurrentReview: prepared.Msg.CurrentReview}))
+		var original *pb.CurrentSecurityOriginalOutcome
+		if err == nil {
+			original = applied.Msg.GetCurrentResult().GetOriginal()
+		}
+		if original == nil {
+			original = awaitCurrentPublicOriginal(t, ctx, controls[0], token, prepared.Msg.CurrentReview)
+		}
+		if original.GetDisposition() != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED || proto.Equal(original.ResultingCut, current.Msg.Version.CurrentCut) {
+			t.Fatal("export grant withdrawal not applied", original)
+		}
+		if controlAddress == "" || controlAddress == unit.remote {
+			t.Fatal("control did not use an independent connection")
+		}
+		resume()
+		var got exportResult
+		select {
+		case got = <-result:
+		case <-ctx.Done():
+			t.Fatal("revoked export did not terminate", ctx.Err())
+		}
+		select {
+		case <-boundary.done:
+		case <-ctx.Done():
+			t.Fatal("export handler did not terminate", ctx.Err())
+		}
+		if !bytes.Equal(completedPrefix, unit.payload) {
+			t.Fatal("already authorized immutable prefix changed")
+		}
+		if ctx.Err() != nil || got.err == nil || len(got.vertices) != 1 || bodies != 1 {
+			t.Fatal("revoked export disclosed a body requiring new Write authorization", len(got.vertices), bodies, got.err, ctx.Err())
+		}
+		t.Logf("Contract A: baseline=%d records; independent-connection grant withdrawal APPLIED; immutable held prefix=%d bytes completed; received records=1; later bodies=0; stream refused", len(baseline.vertices), len(unit.payload))
+	})
 	t.Run("operation-bound real Code approval", func(t *testing.T) {
 		current, e := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
 		if e != nil {

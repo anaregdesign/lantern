@@ -19,10 +19,13 @@ import uuid
 
 
 ROOT_TEST = "TestCurrentSecurityPublicNativeGate"
+EXPORT_TEST = f"{ROOT_TEST}/active_export_grant_revocation"
 SCOPED_TEST = "TestAuth_OIDCRustScopedChangesFacadeRealConnect"
 PACKAGE = "github.com/anaregdesign/lantern/tests/integration"
 SDK_TESTS = tuple(f"{ROOT_TEST}/{sdk}" for sdk in ("go", "bun", "dart", "cargo"))
 ENVIRONMENT = {"LANTERN_CURRENT_PUBLIC_GATE": "1", "LANTERN_CURRENT_PUBLIC_SDK4": "1"}
+EXPORT_ENVIRONMENT = {**ENVIRONMENT, "LANTERN_CURRENT_PUBLIC_SDK4": "0"}
+LOG_NAMES = ("events.jsonl", "stderr.log", "export-events.jsonl", "export-stderr.log")
 NATIVE_MARKER = "production native constructor: independently provisioned three voters, two origins, observer; no injected clock or H"
 
 
@@ -69,6 +72,19 @@ def command(include_scoped):
 
 def execution_events(path, include_scoped):
     required = (ROOT_TEST, *SDK_TESTS) + ((SCOPED_TEST,) if include_scoped else ())
+    return required_execution_events(path, required)
+
+
+def export_command():
+    return ["go", "test", "-json", "./tests/integration", "-run",
+            f"^{ROOT_TEST}$/^active_export_grant_revocation$", "-count=1", "-timeout=4m"]
+
+
+def export_execution_events(path):
+    return required_execution_events(path, (ROOT_TEST, EXPORT_TEST))
+
+
+def required_execution_events(path, required):
     state = {name: [] for name in required}
     package_passes = 0
     native_markers = 0
@@ -165,13 +181,19 @@ def verify(root, evidence, expected_head, trusted_digest):
     runner = root / ".github/scripts/current_sdk4_gate.py"
     if receipt.get("runner_sha256") != sha(runner.read_bytes()):
         raise ValueError("SDK4 runner mismatch")
-    if set(receipt.get("logs", {})) != {"events.jsonl", "stderr.log"}:
+    if set(receipt.get("logs", {})) != set(LOG_NAMES):
         raise ValueError("required raw execution logs missing")
     for name, digest in receipt["logs"].items():
         if sha((evidence / name).read_bytes()) != digest:
             raise ValueError(f"SDK4 raw log mismatch: {name}")
     if receipt.get("executed_tests") != execution_events(evidence / "events.jsonl", include_scoped):
         raise ValueError("SDK4 execution evidence mismatch")
+    export = receipt.get("export", {})
+    if (export.get("command") != export_command() or export.get("environment") != EXPORT_ENVIRONMENT
+            or export.get("exit") != 0):
+        raise ValueError("mandatory active-export command/environment/success absent")
+    if export.get("executed_tests") != export_execution_events(evidence / "export-events.jsonl"):
+        raise ValueError("active-export execution evidence mismatch")
     return receipt
 
 
@@ -197,14 +219,24 @@ def run(root, evidence, include_scoped=False, expected_head=None):
         if result.returncode:
             raise ValueError(f"native SDK4 command failed: exit {result.returncode}")
         receipt["executed_tests"] = execution_events(evidence / "events.jsonl", include_scoped)
+        # The SDK4 branch returns before the functional export case. Run only
+        # that case in the same native environment, without repeating SDKs.
+        export = {"command": export_command(), "environment": EXPORT_ENVIRONMENT}
+        receipt["export"] = export
+        with (evidence / "export-events.jsonl").open("wb") as stdout, (evidence / "export-stderr.log").open("wb") as stderr:
+            result = subprocess.run(export_command(), cwd=root, env=env | EXPORT_ENVIRONMENT,
+                                    stdout=stdout, stderr=stderr, timeout=300)
+        export["exit"] = result.returncode
+        if result.returncode:
+            raise ValueError(f"native active-export command failed: exit {result.returncode}")
+        export["executed_tests"] = export_execution_events(evidence / "export-events.jsonl")
         if snapshot(root) != source or environment(root, env) != runtime:
             raise ValueError("source/runtime configuration changed during SDK4 qualification")
-        receipt["logs"] = {name: sha((evidence / name).read_bytes()) for name in ("events.jsonl", "stderr.log")}
         receipt["status"] = "PASS"
     except Exception as error:
         receipt["error"] = str(error)
     receipt["logs"] = {name: sha((evidence / name).read_bytes())
-                       for name in ("events.jsonl", "stderr.log") if (evidence / name).is_file()}
+                       for name in LOG_NAMES if (evidence / name).is_file()}
     receipt["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     data = encoded(receipt)
     (evidence / "receipt.json").write_bytes(data)
