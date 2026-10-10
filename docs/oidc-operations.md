@@ -260,38 +260,80 @@ VertexDelete remains an independent permission.
 
 ## Leaderless S5 — remaining contracts and qualification
 
-#1608 owns the normative shared-sys protocol. The selected G1 Profile B safety
-target requires isolated/stale nodes to stop authorization-required processing
-within the proven freshness bound. The numerical bound, protocol and clock/
-suspension proof remain to be specified; elapsed Go monotonic time alone is
-not proof across suspension. The fixed-writer timings above do not select the
-leaderless target's timings.
+#1608 owns the normative shared-sys protocol. Its fixed-membership current
+authority and public API/client composition are merged in
+[#1723](https://github.com/anaregdesign/lantern/pull/1723),
+[#1724](https://github.com/anaregdesign/lantern/pull/1724) and
+[#1726](https://github.com/anaregdesign/lantern/pull/1726). The explicit
+`current-v2` profile uses current quorum renewal and native UTC/elapsed intervals
+under the selected source/path/rate assumptions and fail-closed bounds in
+[the current-authority contract](security-current-authority.md). Historical
+`legacy-v1` fixed-writer timings above do not select those bounds. Elapsed Go
+monotonic time alone is not proof across suspension.
 
-#1609 S5 remains incomplete until #1608 S2–S4 and their consumers qualify:
+#1609 S5 remains incomplete for operational cutover and final #1610 acceptance;
+S2–S4 implementation delivery is separate from those exits.
 
-- Homogeneous mode/cohort/schema/profile and approved workload capabilities
-  must admit members before full transfer or serving. Distinguish replication,
-  security mutation/session issuance and any selected certification identity.
-- One trusted HTTPS public origin needs eligible-node management routing and
-  affinity only for the initiating login attempt/process. The current fixed
-  writer configuration does not implement these routes.
-- Each origin needs its own private key and only the IdP secret handles its
-  login capability requires. Shared sys state carries public references, never
-  private keys, client secrets, tokens or PKCE verifiers.
-- Specify and qualify readiness, partitions, removal/fencing/rejoin, key and
-  membership rotation, capacity failure and native restore against the selected
-  profile. No failure path becomes OFF. G3 administrator/recovery tooling and
-  the operation/actor policy require their own proof.
-- Review a versioned stopped/fenced migration preserving original journals,
-  import provenance and security/data-origin continuity. Reject old peers and
-  readers before transfer or durable-floor advancement. No mixed-cohort rolling
-  activation, silent reset or unsafe downgrade; new cohort numbers do not prove
-  current grants. Certified checkpoint/tail, stale-backup refusal and session
-  invalidation remain independent of receipt durability.
-- Bind native/Compose topology and failure results to #1610's final source
-  matrix. Real-provider/human, physical-device and publication evidence remain
-  separate. Helm/Kubernetes #1636 is deferred outside these gates. Dart
-  publication remains last, with the parent before offline.
+### Delivered orderly restart and operator requirements
+
+Orderly current-authority floor custody was merged in
+[#1728](https://github.com/anaregdesign/lantern/pull/1728). Follow the
+[current lifecycle contract](security-current-authority.md#orderly-floor-custody-and-process-restart)
+and [custody Compose runbook](../testbed/current-custody/README.md):
+
+- Keep original provisioning/keys read-only, private durable M/P/B journals,
+  and private durable custody in separate mounts. Preserve the original
+  documents, identity, keys and fixed paths; reject symlink/hardlink aliases.
+- A normal stop must finish readiness drain, public/private worker and producer
+  joins, all journal/resource closes, final floor persistence and CLEAN
+  publication last. Check process success and `server stopped cleanly`, plus
+  the matching CLEAN binding/cycle and exact floor hash; a stopped container
+  or surviving volume alone is insufficient.
+- Intact process/container restart uses explicit `LANTERN_SYS_MODE=resume`
+  and `LANTERN_DATA_MODE=restart`. New native time, valid membership/TLS,
+  current quorum/catch-up and independent data readiness are still required.
+  Durable sessions retain normal expiry/current-policy checks; callback,
+  purpose and output permits do not survive the process.
+- On refusal, retain original files and logs. Do not delete custody sidecars or
+  leases, switch to `fresh`, reset state, rewrite provisioning, or derive new
+  floors from suspect journals. RUNNING, mixed/missing or mismatched custody,
+  damaged/known-old families remain fail-closed. A shutdown error is a failed stop;
+  uncertain final CLEAN publication follows the linked lifecycle's matching-pair
+  validation. No failure path becomes OFF; CLEAN is not proof of present
+  authority or data durability.
+
+### Remaining deployment and acceptance exits
+
+- Admit homogeneous mode/cohort/schema/native profile and approved workload
+  capabilities before transfer or serving. Distinguish replication, security
+  mutation/session issuance and any selected certification identity.
+  Keep per-origin private keys and
+  only the IdP secret handles each login capability requires. Shared sys state
+  carries public references, never private keys, client secrets, tokens or PKCE
+  verifiers.
+- Production eligible-node management routing under one trusted HTTPS public
+  origin, with affinity only for the initiating login attempt/process, remains
+  unqualified. The existing fixed-upstream proxy is not that topology.
+- Actual legacy cutover needs a reviewed stopped/fenced migration. Retain
+  original status/data/receipt history and import provenance; choose a new
+  generation/cohort with independent keys/genesis, invalidate old sessions and
+  cursors, and install compatible clients. Reject old peers/readers before
+  transfer or floor advancement; no mixed-cohort rolling activation, silent
+  reset or downgrade. New cohort numbers alone do not prove current grants.
+- Bind ordinary process/container restart, communication recovery, readiness
+  and failure evidence to #1610's final source matrix under the existing native
+  kernel/storage premises. Physical sleep/live resume is outside the current
+  scope; backup/VM snapshot/clone return is deferred and unscheduled. Dynamic
+  membership, rotation, retirement/compaction, lost-state rejoin and automatic
+  migration are outside this fixed-membership, intact-storage unit. These are
+  not prerequisites for its normal CLEAN/resume lifecycle; no physical
+  reboot/power-loss or abnormal recovery qualification follows.
+- Real-provider/Google login, human/physical-device evidence and SDK publication
+  remain separate and unqualified by these source or restart results.
+  G3 administrator/recovery tooling and operation/actor-policy proof remain
+  separately owned.
+  Helm/Kubernetes #1636 is deferred outside these gates. Dart publication remains
+  last, with the parent before offline.
 
 See the [replication RFC](replication.md), [HA runbook](ha-runbook.md),
 [Compose profile](../deploy/compose/README.md) and
