@@ -190,15 +190,16 @@ func s3aTestReconcileRelay(ctx context.Context, o *s3aOwner, proof s3aTestRelayP
 	if !(count == 1 && callErr == nil || count == 0 && callErr == context.DeadlineExceeded) {
 		return fmt.Errorf("unexpected relay observation: count=%d err=%v", count, callErr)
 	}
-	select {
-	case <-proof.entered:
-	default:
-		return errors.New("relay did not enter native CHOSEN application")
-	}
-	// Preserve waitCut's five-second observation budget and the remaining outer
-	// deadline. A witness alone cannot prove the kernel gate has been released.
+	// afterChosen runs after the P append, so an entered native operation may
+	// still be pending when the RPC deadline expires. Observe both witnesses
+	// within waitCut's existing five-second budget and the outer deadline.
 	observation, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	select {
+	case <-proof.entered:
+	case <-observation.Done():
+		return fmt.Errorf("relay did not reach durable CHOSEN witness: %w", observation.Err())
+	}
 	select {
 	case <-proof.drained:
 	case <-observation.Done():
@@ -284,11 +285,21 @@ func TestS3ADeliveryRelayDeadlineRequiresExactDrainedEvidence(t *testing.T) {
 		t.Fatal("pre-entry deadline changed local P/B floors", afterEntry, beforeEntry, err)
 	}
 	t.Log("pre-entry deadline rejected with unchanged local P/B floors")
+	appendHeld, appendRelease := make(chan struct{}), make(chan struct{})
+	var appendOnce sync.Once
+	releaseAppend := func() { appendOnce.Do(func() { close(appendRelease) }) }
+	defer releaseAppend()
 	held, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	releaseApply := func() { once.Do(func() { close(release) }) }
 	defer releaseApply()
 	n.nodes[3].kernel.gate.Lock()
+	n.nodes[3].kernel.hooks.beforePAppend = func(kind byte) {
+		if kind == s2cPChosen {
+			close(appendHeld)
+			<-appendRelease
+		}
+	}
 	n.nodes[3].kernel.hooks.beforeB = func() { close(held); <-release }
 	n.nodes[3].kernel.gate.Unlock()
 	type relayResult struct {
@@ -298,7 +309,7 @@ func TestS3ADeliveryRelayDeadlineRequiresExactDrainedEvidence(t *testing.T) {
 	result := make(chan relayResult, 1)
 	go func() { count, err := n.nodes[3].CatchUp(ctx, 2); result <- relayResult{count, err} }()
 	select {
-	case <-held:
+	case <-appendHeld:
 	case got := <-result:
 		t.Fatal("relay did not reach controlled native entry", got.count, got.err)
 	case <-ctx.Done():
@@ -313,7 +324,35 @@ func TestS3ADeliveryRelayDeadlineRequiresExactDrainedEvidence(t *testing.T) {
 	if got.count != 0 || got.err != context.DeadlineExceeded {
 		t.Fatal("entered relay did not expose natural deadline", got.count, got.err)
 	}
-	t.Log("entered native relay returned 0/DeadlineExceeded while B was held")
+	select {
+	case <-proof.entered:
+		t.Fatal("CHOSEN witness published before native append")
+	default:
+	}
+	// The kernel has entered native work, but afterChosen cannot fire until
+	// the P append completes. Observe cancellation after the first live check
+	// to reject the old immediate missing-witness assertion deterministically.
+	appendCtx, cancelAppend := context.WithCancel(ctx)
+	appendObserved := &s3aTestRelayContext{Context: appendCtx, checked: make(chan struct{})}
+	appendPending := make(chan error, 1)
+	go func() { appendPending <- s3aTestReconcileRelay(appendObserved, n.nodes[3], proof, got.count, got.err) }()
+	select {
+	case <-appendObserved.checked:
+	case <-ctx.Done():
+		cancelAppend()
+		t.Fatal(ctx.Err())
+	}
+	cancelAppend()
+	if err := <-appendPending; !errors.Is(err, context.Canceled) {
+		t.Fatal("pending P append did not retain bounded witness observation", err)
+	}
+	releaseAppend()
+	select {
+	case <-held:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	t.Log("single native relay returned 0/DeadlineExceeded before CHOSEN witness, then reached held B")
 	// CHOSEN entry alone cannot pass while native completion remains held. Do
 	// not synchronously read the gated cut behind this controlled barrier.
 	pendingCtx, cancelPending := context.WithCancel(ctx)
