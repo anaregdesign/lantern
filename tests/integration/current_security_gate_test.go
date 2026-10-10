@@ -820,18 +820,31 @@ func runCurrentPublicSDK4(t *testing.T, s *httptest.Server, token, ca string) {
 	script := `import {readFileSync} from "node:fs";
 import {connectSecurity,currentSecurityVersionBinding,CurrentSecurityProgress} from ` + module("sdks/node/src/index.ts") + `;
 import {SecurityManagementController,SecurityChangeRecovery} from ` + module("admin/app/lib/client/usecase/security/security-management.ts") + `;
+import {securityRecoveryOwner} from ` + module("admin/app/lib/client/usecase/security/security-change-recovery.ts") + `;
 const c=connectSecurity(process.env.LANTERN_CURRENT_WIRE_URL,{token:process.env.LANTERN_CURRENT_WIRE_CREDENTIAL,transportOptions:{nodeOptions:{ca:readFileSync(process.env.LANTERN_CURRENT_WIRE_CA)}}});
 const principal=await c.getCurrentPrincipal({});currentSecurityVersionBinding(principal.version);
-let dispatches=0;
-const port={roles:(cursor,signal)=>c.listRoles({cursor},{signal}),prepare:(currentReview,signal)=>c.prepareSecurityChanges({currentReview},{signal}),apply:async(request,signal)=>{dispatches++;await c.applySecurityChanges(request,{signal});throw new Error("fixture response lost after actual Apply");},status:async(review,signal)=>(await c.getSecurityChangeStatus({currentProfile:review.profile,currentChangeId:review.changeId,currentIntentDigest:review.intentDigest},{signal})).currentResult,invocationRejected:()=>undefined,failure:()=>"unavailable"};
-const recovery=new SecurityChangeRecovery();const owner="native-current";
+let dispatches=0,preparations=0,statuses=0;
+const port={roles:(cursor,signal)=>c.listRoles({cursor},{signal}),prepare:(currentReview,signal)=>{preparations++;return c.prepareSecurityChanges({currentReview},{signal});},apply:async(request,signal)=>{dispatches++;await c.applySecurityChanges(request,{signal});throw new Error("fixture response lost after actual Apply");},status:async(review,signal)=>{statuses++;return (await c.getSecurityChangeStatus({currentProfile:review.profile,currentChangeId:review.changeId,currentIntentDigest:review.intentDigest},{signal})).currentResult;},invocationRejected:()=>undefined,failure:()=>"unavailable"};
+let retainedBytes=null;const storage={read:()=>retainedBytes,replace:value=>{retainedBytes=value;}};
+const recovery=new SecurityChangeRecovery(storage);const owner=securityRecoveryOwner(safeGateway(),principal);
+function safeGateway(){return process.env.LANTERN_CURRENT_WIRE_URL;}
 const controller=new SecurityManagementController(port,"roles",new AbortController().signal,recovery,owner);
 await controller.load();if(controller.getSnapshot().phase!=="ready")throw new Error("Admin full version not loaded");
 await controller.review("ordinary",[{$typeName:"graph.v1.SecurityChange",operation:{case:"putRole",value:{$typeName:"graph.v1.SecurityRole",id:"native_sdk_admin",name:"current",rules:[],envOwned:false}}}]);
 if(controller.getSnapshot().review?.approval!=="ordinary")throw new Error("Admin exact review unavailable");
 await controller.apply();if(dispatches!==1||controller.getSnapshot().mutation!=="unconfirmed"||!recovery.read(owner))throw new Error("ambiguous original not retained");
-await controller.checkStatus();if(controller.getSnapshot().result?.progress!==CurrentSecurityProgress.APPLIED)throw new Error("Admin original status not reconciled");
-if(dispatches!==1)throw new Error("Admin replayed mutation");controller.dispose();
+const original=recovery.read(owner).review;controller.dispose();
+const restored=new SecurityChangeRecovery(storage);
+if(restored.read(securityRecoveryOwner(safeGateway()+"/other",principal)))throw new Error("Admin selected another gateway's history");
+const replacement=new SecurityManagementController(port,"roles",new AbortController().signal,restored,owner);
+await replacement.load();if(replacement.getSnapshot().mutation!=="unconfirmed")throw new Error("Admin replacement lost original");
+if(preparations!==1||dispatches!==1||statuses!==0)throw new Error("Admin restoration dispatched work");
+await replacement.checkStatus();if(replacement.getSnapshot().result?.progress!==CurrentSecurityProgress.APPLIED)throw new Error("Admin original status not reconciled");
+if(JSON.stringify(restored.read(owner).review,(key,value)=>typeof value==="bigint"?String(value):value)!==JSON.stringify(original,(key,value)=>typeof value==="bigint"?String(value):value))throw new Error("Admin original changed during recovery");
+replacement.dispose();
+const cached=new SecurityManagementController(port,"roles",new AbortController().signal,new SecurityChangeRecovery(storage),owner);
+await cached.load();if(cached.getSnapshot().mutation!=="unconfirmed")throw new Error("cached terminal bypassed fresh original status");
+await cached.checkStatus();if(cached.getSnapshot().result?.progress!==CurrentSecurityProgress.APPLIED||dispatches!==1||preparations!==1||statuses!==2)throw new Error("Admin replayed mutation or skipped fresh status");cached.dispose();
 console.log("Node/Admin current native wire: PASS");process.exit(0);
 `
 	file := filepath.Join(t.TempDir(), "current-node-admin.ts")

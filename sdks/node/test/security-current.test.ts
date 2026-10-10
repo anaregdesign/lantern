@@ -1,4 +1,10 @@
 import { expect, test } from "bun:test";
+import {
+  parseCurrentSecurityReview,
+  encodeCurrentSecurityReview,
+  parseCurrentSecurityChangeResult,
+  encodeCurrentSecurityChangeResult,
+} from "../src/security-types.js";
 import { clone, create } from "@bufbuild/protobuf";
 import { createRouterTransport, ConnectError, Code } from "@connectrpc/connect";
 import { SecurityClient, CurrentSecurityInvocationRejectedError } from "../src/security.js";
@@ -266,4 +272,43 @@ test("retained real Node pooled-byte contracts are detached and portable", () =>
   pooled.fill(9);
   expect(detached.review.profile!.protocol).toEqual(new Uint8Array(32).fill(7));
   expect(() => validateCurrentReview(detached.review)).not.toThrow();
+});
+
+test("recovery JSON codecs preserve full uint64 and byte contracts without purpose proof", () => {
+  const { review, result } = fixture();
+  review.changeId!.namespace = 9007199254740997n;
+  result.changeId!.namespace = review.changeId!.namespace;
+  result.original!.changeId!.namespace = review.changeId!.namespace;
+  result.original!.commit!.slot = 9007199254740999n;
+  expect(parseCurrentSecurityReview(encodeCurrentSecurityReview(review))).toEqual(review);
+  expect(parseCurrentSecurityChangeResult(encodeCurrentSecurityChangeResult(result))).toEqual(
+    result,
+  );
+  expect(encodeCurrentSecurityReview(review)).not.toContain("authorizationProof");
+});
+test("recovery JSON codecs reject unknown fields, invalid bytes/uint64 and nested enum/operation values", () => {
+  const { review, result } = fixture();
+  const raw = JSON.parse(encodeCurrentSecurityReview(review));
+  for (const change of [
+    { ...raw, csrfToken: "unexpected" },
+    { ...raw, intentDigest: "!" },
+    { ...raw, changeId: { ...raw.changeId, namespace: "-1" } },
+    { ...raw, changes: [{}] },
+    {
+      ...raw,
+      changes: [
+        {
+          putRole: {
+            id: "role",
+            rules: [{ id: "read", action: 999, effect: 1, prefix: "orders:" }],
+          },
+        },
+      ],
+    },
+  ])
+    expect(() => parseCurrentSecurityReview(JSON.stringify(change))).toThrow();
+  const outcome = JSON.parse(encodeCurrentSecurityChangeResult(result));
+  expect(() =>
+    parseCurrentSecurityChangeResult(JSON.stringify({ ...outcome, progress: 999 })),
+  ).toThrow();
 });

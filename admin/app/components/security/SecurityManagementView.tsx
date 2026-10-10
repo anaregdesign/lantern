@@ -1,7 +1,4 @@
-import {
-  currentProfileBinding,
-  CurrentSecurityDisposition,
-} from "lantern-sdk/web";
+import { CurrentSecurityDisposition } from "lantern-sdk/web";
 import {
   Button,
   Field,
@@ -25,6 +22,8 @@ import { RoleEditor } from "./RoleEditor";
 import { ChangeReview } from "./ChangeReview";
 import { AccessExplanation } from "./AccessExplanation";
 import styles from "./SecurityManagementView.module.css";
+import { securityRecoveryOwner } from "~/lib/client/usecase/security/security-change-recovery";
+import { useConnection } from "~/lib/client/usecase/connection/connection-context";
 
 export function SecurityManagementView({
   section,
@@ -38,11 +37,8 @@ export function SecurityManagementView({
   };
 }) {
   const { principal, signal } = auth.state;
-  const owner = JSON.stringify([
-    principal.identity?.issuer,
-    principal.identity?.subject,
-    currentProfileBinding(principal.version!.currentProfile),
-  ]);
+  const { connection } = useConnection();
+  const owner = securityRecoveryOwner(connection.baseUrl, principal);
   const { state, controller } = useSecurityManagement(
     port,
     section,
@@ -54,6 +50,7 @@ export function SecurityManagementView({
   const busy = state.mutation === "sending";
   const disabled =
     busy ||
+    state.recoveryBlocked ||
     !auth.state.canMutate ||
     state.mutation === "unconfirmed" ||
     state.mutation === "pending" ||

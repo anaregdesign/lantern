@@ -1,4 +1,9 @@
 import { copySecurityContract } from "lantern-sdk/web";
+import {
+  type SecurityChangeRecovery,
+  type PendingSecurityChange,
+} from "./security-change-recovery";
+export { SecurityChangeRecovery } from "./security-change-recovery";
 import type {
   ApplySecurityChangesResponse,
   ExplainAccessResponse,
@@ -145,16 +150,12 @@ export interface SecurityManagementState {
     | "rejected";
   result?: SecurityChangeResult;
   explanation?: ExplainAccessResponse;
+  recoveryBlocked?: boolean;
 }
 function validateVersion(
   version: SecurityVersion | undefined,
 ): asserts version is SecurityVersion {
   currentSecurityVersionBinding(version);
-}
-
-interface PendingSecurityChange {
-  review: CurrentSecurityReview;
-  result?: SecurityChangeResult;
 }
 
 export function securityResultMessage(result: SecurityChangeResult): string {
@@ -187,27 +188,6 @@ function mutationState(
     : "pending";
 }
 
-// Owned by the AuthProvider lifetime, never localStorage. A policy refresh may
-// discard granting views while retaining the immutable ID of a possibly sent
-// control change for status-only recovery under the same browser session.
-export class SecurityChangeRecovery {
-  private readonly records = new Map<string, PendingSecurityChange>();
-  read(owner: string): PendingSecurityChange | undefined {
-    const record = this.records.get(owner);
-    return record ? copySecurityContract(record) : undefined;
-  }
-  save(owner: string, record: PendingSecurityChange) {
-    if (!this.records.has(owner) && this.records.size >= 20)
-      throw new Error(
-        "Retained control history is full. No new operation was sent.",
-      );
-    this.records.set(owner, copySecurityContract(record));
-  }
-  clear(owner: string) {
-    this.records.delete(owner);
-  }
-}
-
 /** Scope-bound management state. The Server interprets every policy and effect. */
 export class SecurityManagementController {
   private state: SecurityManagementState = {
@@ -230,6 +210,8 @@ export class SecurityManagementController {
   private ticket = 0;
   private disposed = false;
   private pending?: PendingSecurityChange;
+  private needsOriginalStatus = false;
+  private recoveryUnavailable = false;
   private authorizationWindow?: SecurityAuthorizationWindow;
   constructor(
     private readonly port: SecurityManagementPort,
@@ -238,13 +220,29 @@ export class SecurityManagementController {
     private readonly recovery?: SecurityChangeRecovery,
     private readonly recoveryOwner = "",
   ) {
-    this.pending = recovery?.read(recoveryOwner);
+    try {
+      const retained = recovery?.read(recoveryOwner);
+      this.pending = retained;
+      this.needsOriginalStatus = retained?.needsOriginalStatus ?? false;
+    } catch {
+      this.recoveryUnavailable = true;
+      this.state = {
+        ...this.state,
+        recoveryBlocked: true,
+        message:
+          "Original-change recovery storage is unavailable. No new Apply can be sent.",
+      };
+    }
     if (this.pending) {
       const result = this.pending.result;
       this.state = {
         ...this.state,
         result,
-        mutation: result ? mutationState(result) : "unconfirmed",
+        mutation: this.needsOriginalStatus
+          ? "unconfirmed"
+          : result
+            ? mutationState(result)
+            : "unconfirmed",
         message:
           "A prior control change is retained. Check its original status before another change.",
       };
@@ -320,7 +318,9 @@ export class SecurityManagementController {
     this.authorizationWindow = undefined;
     this.publish({
       phase: "loading",
-      message: "",
+      message: this.recoveryUnavailable
+        ? "Original-change recovery storage is unavailable. No new Apply can be sent."
+        : "",
       review: undefined,
       explanation: undefined,
     });
@@ -363,6 +363,9 @@ export class SecurityManagementController {
       !this.state.version ||
       this.state.mutation === "sending" ||
       this.state.mutation === "unconfirmed" ||
+      this.needsOriginalStatus ||
+      this.recoveryUnavailable ||
+      (this.pending && !this.pending.result?.original) ||
       changes.length < 1 ||
       changes.length > 64
     )
@@ -602,14 +605,41 @@ export class SecurityManagementController {
           currentCutBinding(pending.review.expectedCut, pending.review.profile))
     )
       throw new Error("Original result differs from the reviewed operation.");
+    try {
+      this.recovery?.update(
+        this.recoveryOwner,
+        pending.review,
+        accepted,
+        !!result.original,
+      );
+    } catch {
+      // Retain freshly received evidence in this controller, while the store
+      // keeps its last successfully persisted pre-dispatch original.
+      pending.result = accepted;
+      this.needsOriginalStatus = true;
+      this.publish({
+        version: undefined,
+        result: accepted,
+        review: undefined,
+        mutation: "unconfirmed",
+        message:
+          "The original result was received, but recovery storage could not be updated. Check original status again before another change.",
+      });
+      return;
+    }
     pending.result = accepted;
-    this.recovery?.save(this.recoveryOwner, pending);
+    // A weaker fresh status cannot unlock a restored cached terminal result.
+    if (result.original) this.needsOriginalStatus = false;
     this.publish({
       version: undefined,
       result: accepted,
       review: undefined,
-      mutation: mutationState(accepted),
-      message: securityResultMessage(accepted),
+      mutation: this.needsOriginalStatus
+        ? "unconfirmed"
+        : mutationState(accepted),
+      message: this.needsOriginalStatus
+        ? "The original is retained. Check its authenticated original status before another change."
+        : securityResultMessage(accepted),
     });
   }
   async apply() {
@@ -619,6 +649,8 @@ export class SecurityManagementController {
       !review?.contract ||
       !version ||
       this.state.mutation === "sending" ||
+      this.needsOriginalStatus ||
+      this.recoveryUnavailable ||
       (this.pending && !this.pending.result?.original) ||
       currentSecurityVersionBinding(review.version) !==
         currentSecurityVersionBinding(version) ||
@@ -629,10 +661,17 @@ export class SecurityManagementController {
     const pending = this.pendingFromReview(review);
     // Persist in the owning recovery object before any possible dispatch.
     try {
-      this.recovery?.save(this.recoveryOwner, pending);
-    } catch {
+      this.recovery?.stage(
+        this.recoveryOwner,
+        pending.review,
+        this.pending?.review,
+      );
+    } catch (error) {
       this.publish({
-        message: "Retained control history is full. No new operation was sent.",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Original-change recovery storage is unavailable. No new Apply was sent.",
       });
       return;
     }
@@ -665,8 +704,19 @@ export class SecurityManagementController {
       // This UI permits one dispatch only. The exact typed refusal therefore
       // settles this invocation; it never clears an earlier ambiguous attempt.
       if (exact) {
+        try {
+          this.recovery?.clearFirstRefusal(this.recoveryOwner, pending.review);
+        } catch {
+          this.recovery?.ambiguous(pending.review);
+          this.needsOriginalStatus = true;
+          this.publish({
+            mutation: "unconfirmed",
+            message:
+              "The invocation was refused, but recovery storage could not be updated. The original is retained for status only.",
+          });
+          return;
+        }
         this.pending = undefined;
-        this.recovery?.clear(this.recoveryOwner);
         this.publish({
           mutation: "idle",
           result: undefined,
@@ -681,12 +731,14 @@ export class SecurityManagementController {
           message:
             "This invocation requires reauthentication for the same reviewed change. No new identity was created.",
         });
-      } else
+      } else {
+        this.recovery?.ambiguous(pending.review);
         this.publish({
           mutation: "unconfirmed",
           message:
             "The response was not confirmed. The full original identity is retained; check status before another change.",
         });
+      }
     }
   }
   async checkStatus() {

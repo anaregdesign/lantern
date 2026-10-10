@@ -222,13 +222,29 @@ are shown separately. OFF exposes setup guidance without
 an anonymous authentication toggle. IdP account/password/MFA management remains
 with the provider. See [ADR 0012](../docs/decisions/0012-oidc-prefix-rbac.md).
 
-`GetSecurityChangeStatus` returns retained commit proof for the original change
+The legacy `GetSecurityChangeStatus` contract returns retained commit proof for the original change
 ID, version and enforcement. It does not return item outcomes or prove that
 the original grants are still effective. Admin preserves request-aligned
 outcomes only from an original Apply acknowledgement; after response loss it
 shows item outcomes as unavailable. Status recovery retains the original ID
 across policy remounts in the same browser session without sending Apply again.
 Unknown or retired IDs remain indeterminate.
+
+Current-v2 management retains the complete original review and validated result
+in this tab's dedicated sessionStorage entry across ordinary OIDC login and
+document replacement. History is partitioned by the canonical gateway URL,
+exact Issuer/subject and full authority profile. New cookies, CSRF and policy
+cuts do not rename the original. Restored history requires an authenticated
+original status check before another change, even when it contains a cached
+terminal result; Apply is never resent by restoration. Current-v2 status can
+return the original request-aligned outcomes, which remain separate from
+current grants and the observed stop of new authorizations under earlier policy.
+
+Recovery stores no credentials or purpose proofs. Twenty owners and a one-MiB
+UTF-8 envelope bound this private metadata; unavailable, corrupt or full storage
+refuses new dispatch rather than dropping an unresolved original. Credential
+expiry and sign-out do not erase it. This is same-tab navigation continuity;
+lost/cleared browser storage is not a server journal or nonexecution proof.
 
 ## Fixed Server and diagnostics proxy
 
