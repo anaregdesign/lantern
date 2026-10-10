@@ -47,7 +47,7 @@ func fixtureSearchTerms(text string) map[string]bool {
 	}
 	terms := map[string]bool{}
 	for _, word := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
 	}) {
 		terms["word:"+word] = true
 		if len(word) > 2 { // ScriptAwareTokenizer omits redundant exact-width grams.

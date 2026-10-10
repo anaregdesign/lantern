@@ -134,7 +134,7 @@ func TestSearchExpectationDerivesAsciiCandidatesAndLimit(t *testing.T) {
 // scorer, live hit list, authorization implementation or timed query is used.
 func fixtureFieldCounts(text string) map[string]int {
 	counts := map[string]int{}
-	for _, word := range strings.FieldsFunc(text, func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9') }) {
+	for _, word := range strings.FieldsFunc(text, func(r rune) bool { return (r < 'a' || r > 'z') && (r < '0' || r > '9') }) {
 		counts["word:"+word]++
 		if len(word) > 2 {
 			for i := 0; i+2 <= len(word); i++ {
