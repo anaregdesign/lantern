@@ -408,6 +408,11 @@ native environments, missing tools/configuration, unreachable time sources,
 missing executions and skips fail qualification; they never become success.
 The runner neither changes host configuration nor installs tools.
 
+The same runner also executes only `active_export_grant_revocation` with the
+native flag enabled and SDK4 disabled, because the SDK4 branch returns before
+that functional case. Its separate raw logs, exact command and environment,
+root/subtest execution, PASS and zero skips are mandatory receipt inputs.
+
 The 76-step local plan now runs this gate together with the existing scoped
 Rust case in `rust-oidc-scoped-wire`. Every invocation creates a fresh receipt;
 no SDK4 receipt is imported or carried. The historical full76 plan without this

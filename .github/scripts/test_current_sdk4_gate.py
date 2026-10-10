@@ -17,10 +17,10 @@ from local_gate_plan import steps
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def events():
+def events(tests=gate.SDK_TESTS):
     result = [{"Action": "run", "Test": gate.ROOT_TEST},
               {"Action": "output", "Test": gate.ROOT_TEST, "Output": gate.NATIVE_MARKER}]
-    for name in gate.SDK_TESTS:
+    for name in tests:
         result += [{"Action": "run", "Test": name}, {"Action": "pass", "Test": name}]
     result += [{"Action": "pass", "Test": gate.ROOT_TEST}, {"Action": "pass"}]
     return [{"Package": gate.PACKAGE, **event} for event in result]
@@ -54,21 +54,25 @@ class SDK4ReceiptTest(unittest.TestCase):
                                   for name in ("go", "bun", "dart", "cargo", "rustc")}}
         self.write_events(events())
         (self.evidence / "stderr.log").write_bytes(b"")
+        self.write_events(events((gate.EXPORT_TEST,)), "export-events.jsonl")
+        (self.evidence / "export-stderr.log").write_bytes(b"")
         self.receipt = {"schema": 1, "status": "PASS", "exit": 0, "source": self.source,
                         "runner_sha256": gate.sha(script.read_bytes()), "runtime": self.runtime,
                         "include_scoped": False, "command": gate.command(False),
-                        "executed_tests": [gate.ROOT_TEST, *gate.SDK_TESTS]}
+                        "executed_tests": [gate.ROOT_TEST, *gate.SDK_TESTS],
+                        "export": {"command": gate.export_command(), "environment": gate.EXPORT_ENVIRONMENT,
+                                   "exit": 0, "executed_tests": [gate.ROOT_TEST, gate.EXPORT_TEST]}}
         self.save()
 
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.STDOUT)
 
-    def write_events(self, records):
-        (self.evidence / "events.jsonl").write_text("".join(json.dumps(record) + "\n" for record in records))
+    def write_events(self, records, name="events.jsonl"):
+        (self.evidence / name).write_text("".join(json.dumps(record) + "\n" for record in records))
 
     def save(self):
         self.receipt["logs"] = {name: gate.sha((self.evidence / name).read_bytes())
-                                for name in ("events.jsonl", "stderr.log")}
+                                for name in gate.LOG_NAMES}
         data = gate.encoded(self.receipt)
         (self.evidence / "receipt.json").write_bytes(data)
         self.trusted_digest = gate.sha(data)
@@ -78,6 +82,72 @@ class SDK4ReceiptTest(unittest.TestCase):
 
     def test_complete_execution_and_exact_source(self):
         self.assertEqual(self.verify()["executed_tests"], [gate.ROOT_TEST, *gate.SDK_TESTS])
+        self.assertEqual(self.verify()["export"]["executed_tests"], [gate.ROOT_TEST, gate.EXPORT_TEST])
+
+    def test_export_missing_skip_fail_duplicate_or_sdk4_only_refuses(self):
+        complete = events((gate.EXPORT_TEST,))
+        variants = [[], events(), complete + [complete[2]],
+                    [record for record in complete if record.get("Test") != gate.EXPORT_TEST]]
+        for action in ("skip", "fail"):
+            variants.append([{**record, "Action": action}
+                             if record.get("Test") == gate.EXPORT_TEST and record["Action"] == "pass"
+                             else record for record in complete])
+        for records in variants:
+            with self.subTest(records=records):
+                self.write_events(records, "export-events.jsonl")
+                self.save()
+                with self.assertRaises(ValueError):
+                    self.verify()
+
+    def test_export_command_environment_exit_and_raw_log_are_bound(self):
+        original = copy.deepcopy(self.receipt["export"])
+        for mutation in ({}, {**original, "command": gate.command(False)},
+                         {**original, "environment": gate.ENVIRONMENT}, {**original, "exit": 1},
+                         {**original, "executed_tests": [gate.ROOT_TEST]}):
+            self.receipt["export"] = mutation
+            self.save()
+            with self.assertRaises(ValueError):
+                self.verify()
+        self.receipt["export"] = original
+        self.save()
+        (self.evidence / "export-events.jsonl").write_text("")
+        with self.assertRaisesRegex(ValueError, "log mismatch"):
+            self.verify()
+
+    def test_runner_executes_export_with_sdk4_disabled_and_retains_failure(self):
+        for export_exit in (0, 1):
+            with self.subTest(export_exit=export_exit):
+                evidence = Path(self.temp.name) / f"export-run-{export_exit}"
+                calls = []
+
+                def execute(cmd, **kwargs):
+                    exporting = len(calls) == 1
+                    self.assertEqual(cmd, gate.export_command() if exporting else gate.command(False))
+                    expected_env = gate.EXPORT_ENVIRONMENT if exporting else gate.ENVIRONMENT
+                    for name, value in expected_env.items():
+                        self.assertEqual(kwargs["env"][name], value)
+                    calls.append(cmd)
+                    records = events((gate.EXPORT_TEST,)) if exporting else events()
+                    if exporting and export_exit:
+                        records[-1]["Action"] = "fail"
+                    for record in records:
+                        kwargs["stdout"].write((json.dumps(record) + "\n").encode())
+                    return subprocess.CompletedProcess(cmd, export_exit if exporting else 0)
+
+                with patch.object(gate, "snapshot", return_value=self.source), \
+                        patch.object(gate, "environment", return_value=self.runtime), \
+                        patch.object(gate.subprocess, "run", side_effect=execute), \
+                        patch.dict(os.environ, {}, clear=True):
+                    if export_exit:
+                        with self.assertRaisesRegex(ValueError, "active-export command failed"):
+                            gate.run(self.root, evidence)
+                    else:
+                        gate.run(self.root, evidence)
+                self.assertEqual(len(calls), 2)
+                receipt = json.loads((evidence / "receipt.json").read_text())
+                self.assertEqual(receipt["status"], "FAIL" if export_exit else "PASS")
+                self.assertEqual(receipt["export"]["exit"], export_exit)
+                self.assertEqual(set(receipt["logs"]), set(gate.LOG_NAMES))
 
     def test_container_checkout_trust_is_exact_and_job_local(self):
         # Model the host-owned bind mount; never change the developer's Git config.
