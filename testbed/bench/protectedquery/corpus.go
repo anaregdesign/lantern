@@ -110,20 +110,27 @@ func queryOnce(ctx context.Context, endpoint *queryEndpoint, family string) erro
 		if err != nil {
 			return err
 		}
-		visible := 0
+		expected := expectedSearchKeys(endpoint.mode)
+		seen := make(map[string]bool, len(expected))
 		for _, hit := range response.Msg.Hits {
 			if !strings.HasPrefix(hit.Key, "bench:") || hit.Vertex == nil || hit.Vertex.Key != hit.Key {
 				return errors.New("search lost logical key or full-vertex result")
 			}
-			if strings.HasPrefix(hit.Key, "bench:ranking:") {
-				visible++
+			if seen[hit.Key] {
+				return errors.New("search duplicated logical result")
 			}
+			seen[hit.Key] = true
 			if endpoint.mode == "oidc" && strings.HasPrefix(hit.Key, "bench:private:") {
 				return errors.New("search disclosed denied hit")
 			}
 		}
-		if visible < 2 || endpoint.mode == "off" && len(response.Msg.Hits) < 3 {
+		if len(seen) != len(expected) {
 			return errors.New("search lost corpus results")
+		}
+		for _, key := range expected {
+			if !seen[key] {
+				return errors.New("search mode-specific expected result missing")
+			}
 		}
 		return nil
 	}
@@ -198,4 +205,12 @@ func verifyCorpus(ctx context.Context, endpoint *queryEndpoint, invalid string) 
 		return errors.New("full-corpus control did not cross planted hidden bridge")
 	}
 	return nil
+}
+
+func expectedSearchKeys(mode string) []string {
+	keys := []string{"bench:ranking:a", "bench:ranking:b"}
+	if mode == "off" {
+		keys = append(keys, hiddenHit)
+	}
+	return keys
 }

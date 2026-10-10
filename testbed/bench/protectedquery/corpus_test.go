@@ -56,3 +56,29 @@ func TestCorpusRetainsBroadTopologyAndStableLogicalKeys(t *testing.T) {
 		t.Fatal("broad topology silently shrank", degree, len(data.Edges))
 	}
 }
+
+func TestSearchRequiresExactModeSpecificNonemptyResults(t *testing.T) {
+	hits := func(keys ...string) []*pb.SearchHit {
+		var out []*pb.SearchHit
+		for _, key := range keys {
+			out = append(out, &pb.SearchHit{Key: key, Vertex: &pb.Vertex{Key: key}})
+		}
+		return out
+	}
+	a, b := "bench:ranking:a", "bench:ranking:b"
+	for _, mode := range []string{"off", "oidc"} {
+		endpoint := &queryEndpoint{mode: mode, client: queryResultClient{hits: hits(expectedSearchKeys(mode)...)}}
+		if err := queryOnce(t.Context(), endpoint, "search"); err != nil {
+			t.Fatal("correct mode-specific expected set", mode, err)
+		}
+		for _, keys := range [][]string{nil, {a}, {a, a}, {a, b, "bench:unexpected"}, {a, b, hiddenHit, hiddenHit}} {
+			endpoint.client = queryResultClient{hits: hits(keys...)}
+			if queryOnce(t.Context(), endpoint, "search") == nil {
+				t.Fatal("empty/missing/duplicate/unexpected results accepted", mode, keys)
+			}
+		}
+	}
+	if len(corpus().Vertices) != 262 || len(corpus().Edges) != 10245 || corpusDigest() != "30014457373ca8142f0c13cc0606078dc39718f6c9ff842ba08912cf89c4a582" {
+		t.Fatal("existing corpus changed")
+	}
+}
