@@ -45,6 +45,8 @@ type fixtureNode struct {
 	Environment  map[string]string `json:"environment"`
 }
 type fixture struct {
+	launches            []*fixtureLaunch
+	queryStop           func()
 	Nodes               []fixtureNode `json:"nodes"`
 	CAFile              string        `json:"ca_file"`
 	TokenFile           string        `json:"token_file"`
@@ -61,6 +63,7 @@ func main() {
 	renew := flag.Bool("renew", false, "renew only the existing operator-signed Compose membership")
 	restartNode := flag.String("restart-node", "", "explicitly prepare one owned Compose workload for restart")
 	renewEvery := flag.Duration("renew-every", 0, "optional owned renewal interval (30s through 2m)")
+	allocatedNodes := flag.Int("allocated-nodes", 0, "supervise 1..8 children that retain their port-zero listeners")
 	publicPorts := flag.String("public-ports", "", "comma-separated public loopback ports")
 	peerPorts := flag.String("peer-ports", "", "comma-separated private loopback ports; empty disables HA")
 	mode := flag.String("mode", "oidc", "off or oidc")
@@ -72,10 +75,17 @@ func main() {
 	edgeCreate := flag.Bool("edge-create", false, "qualify standalone existing-endpoint Create under Vertex-derived Head authority")
 	headEdge := flag.Bool("head-edge", false, "qualify standalone Head write-only handling with a separate machine Role")
 	transportProbe := flag.Bool("transport-probe", false, "standalone scoped transport probe with a localhost-only certificate")
+	queryProfile := flag.String("query-security-profile", "legacy-v1", "explicit protected-query legacy-v1 or current-v2 profile")
+	queryExporter := flag.String("current-fixture-exporter", "", "same-source absolute security test binary for original current query provisioning")
 	protectedQuery := flag.Bool("protected-query", false, "opt-in standalone OFF/OIDC query preparation with matched verified TLS and a local JWT issuer")
 	receipt := flag.Bool("receipt", false, "enable native receipt WAL for each OIDC node")
 	readyTimeout := flag.Duration("ready-timeout", time.Minute, "bounded verified-TLS production readiness wait")
 	flag.Parse()
+	currentQuery := *protectedQuery && *queryProfile == "current-v2"
+	if (*queryProfile != "legacy-v1" && *queryProfile != "current-v2") || (!*protectedQuery && (*queryProfile != "legacy-v1" || *queryExporter != "")) || (*queryExporter != "" && !currentQuery) {
+		fmt.Fprintln(os.Stderr, "authfixture: query profile/exporter requires explicit protected-query selection")
+		os.Exit(1)
+	}
 	if *privateInput != "" {
 		valid := flag.NArg() == 0
 		flag.Visit(func(value *flag.Flag) {
@@ -90,7 +100,7 @@ func main() {
 		return
 	}
 	if *restartNode != "" {
-		if !*compose || *directory == "" || *renew || *renewEvery != 0 || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *protectedQuery || *overridesFile != "" || flag.NArg() != 0 {
+		if *allocatedNodes != 0 || !*compose || *directory == "" || *renew || *renewEvery != 0 || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *protectedQuery || *overridesFile != "" || flag.NArg() != 0 {
 			fmt.Fprintln(os.Stderr, "authfixture: restart requires only -compose -restart-node -directory")
 			os.Exit(1)
 		}
@@ -101,7 +111,7 @@ func main() {
 		return
 	}
 	if *renew {
-		if !*compose || *directory == "" || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *protectedQuery || *overridesFile != "" || flag.NArg() != 0 {
+		if *allocatedNodes != 0 || !*compose || *directory == "" || *publicPorts != "" || *peerPorts != "" || *serverBinary != "" || *tokensFile != "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *protectedQuery || *overridesFile != "" || flag.NArg() != 0 {
 			fmt.Fprintln(os.Stderr, "authfixture: renewal requires only -compose -renew -directory")
 			os.Exit(1)
 		}
@@ -114,6 +124,17 @@ func main() {
 		return
 	}
 	public, err := ports(*publicPorts)
+	var launches []*fixtureLaunch
+	launchCtx, launchCancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer launchCancel()
+	defer func() { closeFixtureLaunches(launches) }()
+	if *allocatedNodes != 0 {
+		if *allocatedNodes < 1 || *allocatedNodes > 8 || *publicPorts != "" || *peerPorts != "" || *serverBinary == "" || *compose || *renew || *restartNode != "" || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *protectedQuery || flag.NArg() != 0 {
+			err = errors.New("allocated-nodes requires ordinary supervised local fixtures and no explicit ports")
+		} else {
+			public = make([]int, *allocatedNodes)
+		}
+	}
 	if *renewEvery != 0 {
 		err = errors.New("renew-every requires -compose -renew")
 	}
@@ -134,7 +155,7 @@ func main() {
 			peer = []int{6381, 6382, 6383}
 		}
 	}
-	if err == nil && len(public) > 1 && len(peer) == 0 {
+	if err == nil && len(public) > 1 && len(peer) == 0 && *allocatedNodes == 0 && !currentQuery {
 		err = errors.New("multiple nodes require the private workload plane")
 	}
 	if err == nil && *receiptHA && (*compose || *mode != "oidc" || !*receipt || len(public) != 4 || len(peer) != 4 || *serverBinary == "" || *publicMTLS || *overridesFile != "") {
@@ -149,12 +170,27 @@ func main() {
 	if err == nil && *transportProbe && (*compose || *mode != "oidc" || len(public) != 1 || len(peer) != 0 || *serverBinary == "" || *publicMTLS || *receipt || *edgeCreate || *headEdge || *overridesFile != "") {
 		err = errors.New("transport probe requires one supervised standalone OIDC node")
 	}
-	if err == nil && *protectedQuery && (*compose || len(public) != 1 || len(peer) != 0 || *serverBinary == "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *tokensFile != "" || *overridesFile != "" || flag.NArg() != 0) {
-		err = errors.New("protected query requires one supervised standalone OFF/OIDC node and no other profile or overrides")
+	queryCount := 1
+	if currentQuery {
+		queryCount = 3
+	}
+	if err == nil && *protectedQuery && (*compose || len(public) != queryCount || len(peer) != 0 || *serverBinary == "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *tokensFile != "" || *overridesFile != "" || flag.NArg() != 0) {
+		err = errors.New("protected query requires its exact supervised OFF/OIDC node count and no other profile or overrides")
 	}
 	var result fixture
+	if err == nil && *allocatedNodes != 0 {
+		launches, public, peer, err = reserveFixtureCohort(launchCtx, *serverBinary, *directory, *allocatedNodes, *allocatedNodes > 1, *readyTimeout)
+	}
 	if err == nil {
-		result, err = generateTopologyProfile(*directory, public, peer, *mode, *tokensFile, *compose, *transportProbe)
+		if currentQuery {
+			result, err = generateCurrentQueryFixture(launchCtx, *directory, public, *mode, *serverBinary, *queryExporter)
+		} else {
+			result, err = generateTopologyProfile(*directory, public, peer, *mode, *tokensFile, *compose, *transportProbe)
+		}
+	}
+	result.launches = launches
+	if result.queryStop != nil {
+		defer result.queryStop()
 	}
 	if err == nil && *publicMTLS {
 		for i := range result.Nodes {
@@ -170,7 +206,7 @@ func main() {
 	if err == nil && *headEdge {
 		err = addFixtureHeadEdge(&result, *directory)
 	}
-	if err == nil && *protectedQuery {
+	if err == nil && *protectedQuery && !currentQuery {
 		var stop func()
 		stop, err = addFixtureQuery(&result, *directory)
 		if err == nil {
@@ -201,8 +237,10 @@ func main() {
 			}
 			_, _ = writeFile(*directory, "query-supervision-failure.log", []byte(cause.Error()+"\n"))
 		}
+		closeFixtureLaunches(launches)
+		launches = nil
 		if *serverBinary != "" {
-			fmt.Fprintln(os.Stderr, "authfixture_failure:"+fixtureFailureCategory(err))
+			writeFixtureFailure(os.Stderr, err)
 		} else {
 			fmt.Fprintln(os.Stderr, "authfixture:", err)
 		}
@@ -373,7 +411,7 @@ func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tok
 		if err != nil {
 			return fixture{}, err
 		}
-		securityEnv = map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_STORE_MODE": "fresh", "LANTERN_SECURITY_GENERATION": hex.EncodeToString(generation[:]), "LANTERN_SECURITY_WRITER_KEY_FILE": privatePath, "LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE": publicPath, "LANTERN_SECURITY_BOOTSTRAP_REVISION": "1", "LANTERN_SECURITY_BOOTSTRAP_ROLES": string(roleJSON), "LANTERN_SECURITY_CLOCK_QUALIFIED": "true", "LANTERN_OIDC_ADMIN_ISSUER": issuer, "LANTERN_OIDC_ADMIN_SUBJECTS": `["fixture-admin"]`, "LANTERN_OIDC_CLIENT_ID": "fixture-admin", "LANTERN_OIDC_API_AUDIENCE": "lantern-fixture", "LANTERN_OIDC_ALGORITHMS": `["EdDSA"]`}
+		securityEnv = map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_PROFILE": "legacy-v1", "LANTERN_SECURITY_STORE_MODE": "fresh", "LANTERN_SECURITY_GENERATION": hex.EncodeToString(generation[:]), "LANTERN_SECURITY_WRITER_KEY_FILE": privatePath, "LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE": publicPath, "LANTERN_SECURITY_BOOTSTRAP_REVISION": "1", "LANTERN_SECURITY_BOOTSTRAP_ROLES": string(roleJSON), "LANTERN_SECURITY_CLOCK_QUALIFIED": "true", "LANTERN_OIDC_ADMIN_ISSUER": issuer, "LANTERN_OIDC_ADMIN_SUBJECTS": `["fixture-admin"]`, "LANTERN_OIDC_CLIENT_ID": "fixture-admin", "LANTERN_OIDC_API_AUDIENCE": "lantern-fixture", "LANTERN_OIDC_ALGORITHMS": `["EdDSA"]`}
 		var tokens []string
 		if tokensFile != "" {
 			raw, err := os.ReadFile(tokensFile)

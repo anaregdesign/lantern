@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -23,6 +24,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"google.golang.org/protobuf/proto"
 )
 
 type fixtureInput struct {
@@ -33,15 +35,20 @@ type fixtureInput struct {
 	CAFile    string `json:"ca_file"`
 	TokenFile string `json:"token_file"`
 	Query     *struct {
-		Mode             string            `json:"mode"`
-		Issuer           string            `json:"issuer"`
-		AdminTokenFile   string            `json:"admin_token_file"`
-		ReaderTokenFile  string            `json:"reader_token_file"`
-		InvalidTokenFile string            `json:"invalid_token_file"`
-		ReaderSubject    string            `json:"reader_subject"`
-		ReaderRole       string            `json:"reader_role"`
-		ExpiresAt        time.Time         `json:"expires_at"`
-		Server           map[string]string `json:"server"`
+		Mode             string                      `json:"mode"`
+		FixtureID        string                      `json:"fixture_id"`
+		SecurityProfile  string                      `json:"security_profile"`
+		CurrentProfile   *pb.CurrentAuthorityProfile `json:"current_profile"`
+		CurrentBinding   string                      `json:"current_binding"`
+		Exporter         *map[string]string          `json:"exporter"`
+		Issuer           string                      `json:"issuer"`
+		AdminTokenFile   string                      `json:"admin_token_file"`
+		ReaderTokenFile  string                      `json:"reader_token_file"`
+		InvalidTokenFile string                      `json:"invalid_token_file"`
+		ReaderSubject    string                      `json:"reader_subject"`
+		ReaderRole       string                      `json:"reader_role"`
+		ExpiresAt        time.Time                   `json:"expires_at"`
+		Server           map[string]string           `json:"server"`
 	} `json:"protected_query"`
 }
 
@@ -109,13 +116,46 @@ func readToken(path string) (string, error) {
 }
 
 func validateFixture(f fixtureInput) error {
-	if len(f.Nodes) != 1 || f.Nodes[0].PeerOrigin != "" || f.Query == nil || f.CAFile == "" || (f.Query.Mode != "off" && f.Query.Mode != "oidc") || f.Query.ReaderRole != "fixture_query_reader" || f.Query.ReaderSubject != "fixture-query-reader" || time.Until(f.Query.ExpiresAt) < time.Minute {
+	if len(f.Nodes) == 0 || f.Query == nil || f.CAFile == "" || (f.Query.Mode != "off" && f.Query.Mode != "oidc") || f.Query.ReaderRole != "fixture_query_reader" || f.Query.ReaderSubject != "fixture-query-reader" || time.Until(f.Query.ExpiresAt) < time.Minute {
 		return errors.New("fresh standalone protected-query fixture required")
 	}
-	u, err := url.Parse(f.Nodes[0].PublicOrigin)
-	if err != nil || u.Scheme != "https" || u.User != nil || u.Hostname() != "localhost" || u.Port() == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("explicit local HTTPS fixture origin required")
+	expectedNodes := 1
+	if f.Query.SecurityProfile == "current-v2" {
+		expectedNodes = 3
+	} else if f.Query.SecurityProfile != "legacy-v1" {
+		return errors.New("explicit supported query security profile required")
 	}
+	if len(f.Nodes) != expectedNodes {
+		return errors.New("query profile process layout mismatch")
+	}
+	seen := map[string]bool{}
+	for _, node := range f.Nodes {
+		u, err := url.Parse(node.PublicOrigin)
+		if err != nil || u.Scheme != "https" || u.User != nil || u.Hostname() != "localhost" || u.Port() == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || node.PeerOrigin != "" || seen[node.PublicOrigin] {
+			return errors.New("distinct local HTTPS data-only fixture origins required")
+		}
+		seen[node.PublicOrigin] = true
+	}
+	if f.Query.SecurityProfile == "current-v2" {
+		if len(f.Query.FixtureID) != 32 {
+			return errors.New("current query requires its owned fixture identity")
+		}
+		if _, err := hex.DecodeString(f.Query.FixtureID); err != nil {
+			return err
+		}
+		if f.Query.Exporter == nil || (*f.Query.Exporter)["revision"] != f.Query.Server["revision"] || (*f.Query.Exporter)["modified"] != f.Query.Server["modified"] || len((*f.Query.Exporter)["sha256"]) != 64 {
+			return errors.New("current query requires matching original-input exporter provenance")
+		}
+		if f.Query.Mode == "oidc" && (!validCurrentProfile(f.Query.CurrentProfile) || !strings.HasPrefix(f.Query.CurrentBinding, "current-v2:") || len(f.Query.CurrentBinding) != 75) {
+			return errors.New("complete expected current profile/binding required")
+		}
+	}
+	if f.Query.Mode == "off" || f.Query.SecurityProfile == "legacy-v1" {
+		if f.Query.CurrentProfile != nil || f.Query.CurrentBinding != "" {
+			return errors.New("OFF/legacy fixture cannot claim current authority")
+		}
+	}
+
 	return nil
 }
 
@@ -128,6 +168,17 @@ func assignReader(ctx context.Context, f fixtureInput, httpClient *http.Client) 
 	status, err := client.ListRoles(ctx, authenticated(token, &pb.ListRolesRequest{}))
 	if err != nil {
 		return fmt.Errorf("setup ListRoles: %w", err)
+	}
+	if f.Query.SecurityProfile == "current-v2" {
+		if !proto.Equal(status.Msg.GetVersion().GetCurrentProfile(), f.Query.CurrentProfile) || status.Msg.GetVersion().GetCurrentCut() == nil {
+			return errors.New("setup did not return current full binding")
+		}
+		for _, role := range status.Msg.Roles {
+			if role.Id == f.Query.ReaderRole {
+				return nil
+			}
+		}
+		return errors.New("original current reader Role missing")
 	}
 	changeID := sha256.Sum256([]byte("protected-query-reader-assignment-v1"))
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.Query.Issuer, Subject: f.Query.ReaderSubject}
@@ -156,6 +207,9 @@ func execute(ctx context.Context, f fixtureInput, action string, cfg loadConfig)
 		return nil, err
 	}
 	defer httpClient.CloseIdleConnections()
+	if err := verifyQueryCapabilities(ctx, f, httpClient); err != nil {
+		return nil, err
+	}
 	endpoint := &queryEndpoint{mode: f.Query.Mode, client: graphv1connect.NewLanternServiceClient(httpClient, f.Nodes[0].PublicOrigin)}
 	if endpoint.mode == "oidc" {
 		endpoint.reader, err = readToken(f.Query.ReaderTokenFile)
@@ -169,9 +223,16 @@ func execute(ctx context.Context, f fixtureInput, action string, cfg loadConfig)
 		endpoint.writer = tokens[0]
 	}
 	report := map[string]any{"schema_version": 1, "qualification": "preparation_only", "action": action, "mode": endpoint.mode,
+		"security_profile": f.Query.SecurityProfile, "server_processes": len(f.Nodes), "comparison_axis": "end_to_end_mode_specific_authorized_results", "expected_search_keys": expectedSearchKeys(endpoint.mode),
+		"search_matching_candidates": len(fixtureSearchExpectations[endpoint.mode].candidates), "search_limit": searchLimit, "search_required_ranking_keys": requiredRankingKeys(endpoint.mode),
 		"transport": "verified_tls_http2", "topology": "standalone_broad_illuminate_with_hidden_bridge", "corpus_sha256": corpusDigest(),
 		"reader_actor": "unauthenticated_off", "writer_actor": "unauthenticated_off", "driver_source": buildSource(), "server_binary": f.Query.Server,
 		"measurements": map[string]string{"server_allocations": "not_measured", "server_retained_memory": "not_measured", "server_peak_memory": "not_measured", "internal_writer_lock_wait": "not_measured", "export_revocation": "not_measured", "ttl_delete_restore": "not_measured", "host_qualification": "not_measured"}}
+	if f.Query.SecurityProfile == "current-v2" {
+		report["fixture_id"] = f.Query.FixtureID
+		report["exporter_binary"] = f.Query.Exporter
+		report["current_profile_binding"] = f.Query.CurrentBinding
+	}
 	if endpoint.mode == "oidc" {
 		report["reader_actor"] = "synthetic_local_end_user_bearer_jwt_role_bound"
 		report["writer_actor"] = "named_machine_token_all_data_role"
@@ -183,7 +244,10 @@ func execute(ctx context.Context, f fixtureInput, action string, cfg loadConfig)
 				return report, err
 			}
 		}
-		err = seedCorpus(ctx, endpoint)
+		var ack seedAcknowledgements
+		ack, err = seedCorpus(ctx, endpoint)
+		report["seed_acknowledgements"] = ack
+		report["seed_evidence"] = "verified_plural_put_acknowledgements_only; not readback or search-index qualification"
 	case "preflight":
 		invalid := ""
 		if endpoint.mode == "oidc" {
@@ -194,7 +258,7 @@ func execute(ctx context.Context, f fixtureInput, action string, cfg loadConfig)
 		}
 	case "measure":
 		source := buildSource()
-		if source["modified"] != "false" || f.Query.Server["modified"] != "false" || len(source["revision"]) != 40 || source["revision"] != f.Query.Server["revision"] || len(f.Query.Server["sha256"]) != 64 {
+		if source["modified"] != "false" || f.Query.Server["modified"] != "false" || len(source["revision"]) != 40 || source["revision"] != f.Query.Server["revision"] || len(f.Query.Server["sha256"]) != 64 || f.Query.SecurityProfile == "current-v2" && (*f.Query.Exporter)["modified"] != "false" {
 			return report, errors.New("measurement requires matching immutable Server and driver source")
 		}
 		if err := cfg.validate(); err != nil {
@@ -212,6 +276,10 @@ func execute(ctx context.Context, f fixtureInput, action string, cfg loadConfig)
 	report["passed"] = err == nil
 	if err != nil {
 		report["failure_code"] = connect.CodeOf(err).String()
+		var failure *searchResultFailure
+		if errors.As(err, &failure) {
+			report["search_failure"] = failure
+		}
 	}
 	return report, err
 }
@@ -281,4 +349,50 @@ func main() {
 	if *output == "" {
 		_ = json.NewEncoder(os.Stdout).Encode(report)
 	}
+}
+
+func validCurrentProfile(p *pb.CurrentAuthorityProfile) bool {
+	if p == nil || p.Version != 2 || len(p.Generation) != 16 || bytes.Equal(p.Generation, make([]byte, 16)) {
+		return false
+	}
+	for _, hash := range [][]byte{p.Domain, p.Cohort, p.Protocol, p.TimeProfile, p.Membership, p.Configuration} {
+		if len(hash) != 32 || bytes.Equal(hash, make([]byte, 32)) {
+			return false
+		}
+	}
+	return true
+}
+
+// Setup-only probes bind the selected profile, never a cached admission grant.
+func verifyQueryCapabilities(ctx context.Context, f fixtureInput, httpClient *http.Client) error {
+	for i, node := range f.Nodes {
+		client := graphv1connect.NewLanternSecurityServiceClient(httpClient, node.PublicOrigin)
+		response, err := client.GetAuthCapabilities(ctx, connect.NewRequest(&pb.GetAuthCapabilitiesRequest{}))
+		if err != nil {
+			return fmt.Errorf("query capability probe node %d: %w", i+1, err)
+		}
+		cap := response.Msg
+		if err := validateQueryCapabilities(f, i, cap); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateQueryCapabilities(f fixtureInput, node int, cap *pb.GetAuthCapabilitiesResponse) error {
+	if cap == nil || !cap.Ready {
+		return errors.New("query authority is not ready")
+	}
+	if f.Query.Mode == "off" {
+		if cap.Mode != pb.AuthMode_AUTH_MODE_OFF || cap.ProtocolVersion != 1 || cap.CurrentProfile != nil || cap.CurrentMember != 0 {
+			return errors.New("OFF mode/profile mismatch")
+		}
+	} else if f.Query.SecurityProfile == "legacy-v1" {
+		if cap.Mode != pb.AuthMode_AUTH_MODE_OIDC || cap.ProtocolVersion != 1 || cap.CurrentProfile != nil || cap.CurrentMember != 0 {
+			return errors.New("legacy mode/profile mismatch")
+		}
+	} else if f.Query.SecurityProfile != "current-v2" || cap.Mode != pb.AuthMode_AUTH_MODE_OIDC || cap.ProtocolVersion != 2 || cap.CurrentMember != uint32(node+1) || !validCurrentProfile(cap.CurrentProfile) || !proto.Equal(cap.CurrentProfile, f.Query.CurrentProfile) {
+		return errors.New("current query refused mode/protocol/member/full-profile fallback")
+	}
+	return nil
 }

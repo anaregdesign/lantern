@@ -140,6 +140,9 @@ class GetAuthCapabilitiesResponse extends $pb.GeneratedMessage {
     $core.String? loginPath,
     $core.int? protocolVersion,
     $core.bool? ready,
+    CurrentAuthorityProfile? currentProfile,
+    $core.bool? currentOriginEnabled,
+    $core.int? currentMember,
   }) {
     final result = create();
     if (mode != null) result.mode = mode;
@@ -147,6 +150,10 @@ class GetAuthCapabilitiesResponse extends $pb.GeneratedMessage {
     if (loginPath != null) result.loginPath = loginPath;
     if (protocolVersion != null) result.protocolVersion = protocolVersion;
     if (ready != null) result.ready = ready;
+    if (currentProfile != null) result.currentProfile = currentProfile;
+    if (currentOriginEnabled != null)
+      result.currentOriginEnabled = currentOriginEnabled;
+    if (currentMember != null) result.currentMember = currentMember;
     return result;
   }
 
@@ -174,6 +181,11 @@ class GetAuthCapabilitiesResponse extends $pb.GeneratedMessage {
     ..a<$core.int>(
         4, _omitFieldNames ? '' : 'protocolVersion', $pb.PbFieldType.OU3)
     ..aOB(5, _omitFieldNames ? '' : 'ready')
+    ..aOM<CurrentAuthorityProfile>(6, _omitFieldNames ? '' : 'currentProfile',
+        subBuilder: CurrentAuthorityProfile.create)
+    ..aOB(7, _omitFieldNames ? '' : 'currentOriginEnabled')
+    ..a<$core.int>(
+        8, _omitFieldNames ? '' : 'currentMember', $pb.PbFieldType.OU3)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -241,6 +253,38 @@ class GetAuthCapabilitiesResponse extends $pb.GeneratedMessage {
   $core.bool hasReady() => $_has(4);
   @$pb.TagNumber(5)
   void clearReady() => $_clearField(5);
+
+  /// Required when protocol_version=2. Configuration identity, never a lease.
+  @$pb.TagNumber(6)
+  CurrentAuthorityProfile get currentProfile => $_getN(5);
+  @$pb.TagNumber(6)
+  set currentProfile(CurrentAuthorityProfile value) => $_setField(6, value);
+  @$pb.TagNumber(6)
+  $core.bool hasCurrentProfile() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearCurrentProfile() => $_clearField(6);
+  @$pb.TagNumber(6)
+  CurrentAuthorityProfile ensureCurrentProfile() => $_ensure(5);
+
+  /// Routing capability only: an eligible member without an owned origin may
+  /// read/complete original work, but cannot mint a new change or login session.
+  @$pb.TagNumber(7)
+  $core.bool get currentOriginEnabled => $_getBF(6);
+  @$pb.TagNumber(7)
+  set currentOriginEnabled($core.bool value) => $_setBool(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasCurrentOriginEnabled() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearCurrentOriginEnabled() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $core.int get currentMember => $_getIZ(7);
+  @$pb.TagNumber(8)
+  set currentMember($core.int value) => $_setUnsignedInt32(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasCurrentMember() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearCurrentMember() => $_clearField(8);
 }
 
 class SecurityIdentity extends $pb.GeneratedMessage {
@@ -1001,11 +1045,17 @@ class SecurityVersion extends $pb.GeneratedMessage {
     $fixnum.Int64? revision,
     $core.List<$core.int>? digest,
     $core.List<$core.int>? generation,
+    CurrentAuthorityProfile? currentProfile,
+    CurrentSemanticCut? currentCut,
+    $core.List<$core.int>? admissionBinding,
   }) {
     final result = create();
     if (revision != null) result.revision = revision;
     if (digest != null) result.digest = digest;
     if (generation != null) result.generation = generation;
+    if (currentProfile != null) result.currentProfile = currentProfile;
+    if (currentCut != null) result.currentCut = currentCut;
+    if (admissionBinding != null) result.admissionBinding = admissionBinding;
     return result;
   }
 
@@ -1029,6 +1079,12 @@ class SecurityVersion extends $pb.GeneratedMessage {
         2, _omitFieldNames ? '' : 'digest', $pb.PbFieldType.OY)
     ..a<$core.List<$core.int>>(
         3, _omitFieldNames ? '' : 'generation', $pb.PbFieldType.OY)
+    ..aOM<CurrentAuthorityProfile>(4, _omitFieldNames ? '' : 'currentProfile',
+        subBuilder: CurrentAuthorityProfile.create)
+    ..aOM<CurrentSemanticCut>(5, _omitFieldNames ? '' : 'currentCut',
+        subBuilder: CurrentSemanticCut.create)
+    ..a<$core.List<$core.int>>(
+        6, _omitFieldNames ? '' : 'admissionBinding', $pb.PbFieldType.OY)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1078,6 +1134,39 @@ class SecurityVersion extends $pb.GeneratedMessage {
   $core.bool hasGeneration() => $_has(2);
   @$pb.TagNumber(3)
   void clearGeneration() => $_clearField(3);
+
+  /// Current protocol uses these fields and leaves the legacy scalar fields
+  /// above empty. Never compare cuts from different profiles by sequence.
+  @$pb.TagNumber(4)
+  CurrentAuthorityProfile get currentProfile => $_getN(3);
+  @$pb.TagNumber(4)
+  set currentProfile(CurrentAuthorityProfile value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasCurrentProfile() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearCurrentProfile() => $_clearField(4);
+  @$pb.TagNumber(4)
+  CurrentAuthorityProfile ensureCurrentProfile() => $_ensure(3);
+
+  @$pb.TagNumber(5)
+  CurrentSemanticCut get currentCut => $_getN(4);
+  @$pb.TagNumber(5)
+  set currentCut(CurrentSemanticCut value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasCurrentCut() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearCurrentCut() => $_clearField(5);
+  @$pb.TagNumber(5)
+  CurrentSemanticCut ensureCurrentCut() => $_ensure(4);
+
+  @$pb.TagNumber(6)
+  $core.List<$core.int> get admissionBinding => $_getN(5);
+  @$pb.TagNumber(6)
+  set admissionBinding($core.List<$core.int> value) => $_setBytes(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasAdmissionBinding() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearAdmissionBinding() => $_clearField(6);
 }
 
 class GetCurrentPrincipalRequest extends $pb.GeneratedMessage {
@@ -1255,10 +1344,12 @@ class BrowserSession extends $pb.GeneratedMessage {
   factory BrowserSession({
     AuthMode? mode,
     GetCurrentPrincipalResponse? principal,
+    CurrentAuthorityProfile? currentProfile,
   }) {
     final result = create();
     if (mode != null) result.mode = mode;
     if (principal != null) result.principal = principal;
+    if (currentProfile != null) result.currentProfile = currentProfile;
     return result;
   }
 
@@ -1281,6 +1372,8 @@ class BrowserSession extends $pb.GeneratedMessage {
         enumValues: AuthMode.values)
     ..aOM<GetCurrentPrincipalResponse>(2, _omitFieldNames ? '' : 'principal',
         subBuilder: GetCurrentPrincipalResponse.create)
+    ..aOM<CurrentAuthorityProfile>(3, _omitFieldNames ? '' : 'currentProfile',
+        subBuilder: CurrentAuthorityProfile.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1323,16 +1416,34 @@ class BrowserSession extends $pb.GeneratedMessage {
   void clearPrincipal() => $_clearField(2);
   @$pb.TagNumber(2)
   GetCurrentPrincipalResponse ensurePrincipal() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  CurrentAuthorityProfile get currentProfile => $_getN(2);
+  @$pb.TagNumber(3)
+  set currentProfile(CurrentAuthorityProfile value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCurrentProfile() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCurrentProfile() => $_clearField(3);
+  @$pb.TagNumber(3)
+  CurrentAuthorityProfile ensureCurrentProfile() => $_ensure(2);
 }
 
 class SessionRevocation extends $pb.GeneratedMessage {
   factory SessionRevocation({
     SecurityVersion? version,
     SecurityEnforcementState? enforcement,
+    CurrentSecurityChangeResult? currentResult,
+    $core.bool? localCookieCleared,
+    CurrentSessionRevocationReview? currentReview,
   }) {
     final result = create();
     if (version != null) result.version = version;
     if (enforcement != null) result.enforcement = enforcement;
+    if (currentResult != null) result.currentResult = currentResult;
+    if (localCookieCleared != null)
+      result.localCookieCleared = localCookieCleared;
+    if (currentReview != null) result.currentReview = currentReview;
     return result;
   }
 
@@ -1357,6 +1468,13 @@ class SessionRevocation extends $pb.GeneratedMessage {
             SecurityEnforcementState.SECURITY_ENFORCEMENT_STATE_UNSPECIFIED,
         valueOf: SecurityEnforcementState.valueOf,
         enumValues: SecurityEnforcementState.values)
+    ..aOM<CurrentSecurityChangeResult>(
+        3, _omitFieldNames ? '' : 'currentResult',
+        subBuilder: CurrentSecurityChangeResult.create)
+    ..aOB(4, _omitFieldNames ? '' : 'localCookieCleared')
+    ..aOM<CurrentSessionRevocationReview>(
+        5, _omitFieldNames ? '' : 'currentReview',
+        subBuilder: CurrentSessionRevocationReview.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1399,6 +1517,287 @@ class SessionRevocation extends $pb.GeneratedMessage {
   $core.bool hasEnforcement() => $_has(1);
   @$pb.TagNumber(2)
   void clearEnforcement() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  CurrentSecurityChangeResult get currentResult => $_getN(2);
+  @$pb.TagNumber(3)
+  set currentResult(CurrentSecurityChangeResult value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCurrentResult() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCurrentResult() => $_clearField(3);
+  @$pb.TagNumber(3)
+  CurrentSecurityChangeResult ensureCurrentResult() => $_ensure(2);
+
+  /// Local cookie removal is independent of durable cluster completion.
+  @$pb.TagNumber(4)
+  $core.bool get localCookieCleared => $_getBF(3);
+  @$pb.TagNumber(4)
+  set localCookieCleared($core.bool value) => $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasLocalCookieCleared() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearLocalCookieCleared() => $_clearField(4);
+
+  /// First, retain this server-minted review before dispatching logout Apply.
+  @$pb.TagNumber(5)
+  CurrentSessionRevocationReview get currentReview => $_getN(4);
+  @$pb.TagNumber(5)
+  set currentReview(CurrentSessionRevocationReview value) =>
+      $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasCurrentReview() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearCurrentReview() => $_clearField(5);
+  @$pb.TagNumber(5)
+  CurrentSessionRevocationReview ensureCurrentReview() => $_ensure(4);
+}
+
+class CurrentSessionRevocationReview extends $pb.GeneratedMessage {
+  factory CurrentSessionRevocationReview({
+    CurrentAuthorityProfile? profile,
+    CurrentSemanticCut? expectedCut,
+    CurrentSecurityChangeID? changeId,
+    SecurityIdentity? actor,
+    $core.List<$core.int>? intentDigest,
+    $core.String? sessionDigest,
+    $fixnum.Int64? sessionLineage,
+  }) {
+    final result = create();
+    if (profile != null) result.profile = profile;
+    if (expectedCut != null) result.expectedCut = expectedCut;
+    if (changeId != null) result.changeId = changeId;
+    if (actor != null) result.actor = actor;
+    if (intentDigest != null) result.intentDigest = intentDigest;
+    if (sessionDigest != null) result.sessionDigest = sessionDigest;
+    if (sessionLineage != null) result.sessionLineage = sessionLineage;
+    return result;
+  }
+
+  CurrentSessionRevocationReview._();
+
+  factory CurrentSessionRevocationReview.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CurrentSessionRevocationReview.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CurrentSessionRevocationReview',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<CurrentAuthorityProfile>(1, _omitFieldNames ? '' : 'profile',
+        subBuilder: CurrentAuthorityProfile.create)
+    ..aOM<CurrentSemanticCut>(2, _omitFieldNames ? '' : 'expectedCut',
+        subBuilder: CurrentSemanticCut.create)
+    ..aOM<CurrentSecurityChangeID>(3, _omitFieldNames ? '' : 'changeId',
+        subBuilder: CurrentSecurityChangeID.create)
+    ..aOM<SecurityIdentity>(4, _omitFieldNames ? '' : 'actor',
+        subBuilder: SecurityIdentity.create)
+    ..a<$core.List<$core.int>>(
+        5, _omitFieldNames ? '' : 'intentDigest', $pb.PbFieldType.OY)
+    ..aOS(6, _omitFieldNames ? '' : 'sessionDigest')
+    ..a<$fixnum.Int64>(
+        7, _omitFieldNames ? '' : 'sessionLineage', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSessionRevocationReview clone() =>
+      CurrentSessionRevocationReview()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSessionRevocationReview copyWith(
+          void Function(CurrentSessionRevocationReview) updates) =>
+      super.copyWith(
+              (message) => updates(message as CurrentSessionRevocationReview))
+          as CurrentSessionRevocationReview;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CurrentSessionRevocationReview create() =>
+      CurrentSessionRevocationReview._();
+  @$core.override
+  CurrentSessionRevocationReview createEmptyInstance() => create();
+  static $pb.PbList<CurrentSessionRevocationReview> createRepeated() =>
+      $pb.PbList<CurrentSessionRevocationReview>();
+  @$core.pragma('dart2js:noInline')
+  static CurrentSessionRevocationReview getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CurrentSessionRevocationReview>(create);
+  static CurrentSessionRevocationReview? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  CurrentAuthorityProfile get profile => $_getN(0);
+  @$pb.TagNumber(1)
+  set profile(CurrentAuthorityProfile value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasProfile() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearProfile() => $_clearField(1);
+  @$pb.TagNumber(1)
+  CurrentAuthorityProfile ensureProfile() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  CurrentSemanticCut get expectedCut => $_getN(1);
+  @$pb.TagNumber(2)
+  set expectedCut(CurrentSemanticCut value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasExpectedCut() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearExpectedCut() => $_clearField(2);
+  @$pb.TagNumber(2)
+  CurrentSemanticCut ensureExpectedCut() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  CurrentSecurityChangeID get changeId => $_getN(2);
+  @$pb.TagNumber(3)
+  set changeId(CurrentSecurityChangeID value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasChangeId() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearChangeId() => $_clearField(3);
+  @$pb.TagNumber(3)
+  CurrentSecurityChangeID ensureChangeId() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  SecurityIdentity get actor => $_getN(3);
+  @$pb.TagNumber(4)
+  set actor(SecurityIdentity value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasActor() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearActor() => $_clearField(4);
+  @$pb.TagNumber(4)
+  SecurityIdentity ensureActor() => $_ensure(3);
+
+  @$pb.TagNumber(5)
+  $core.List<$core.int> get intentDigest => $_getN(4);
+  @$pb.TagNumber(5)
+  set intentDigest($core.List<$core.int> value) => $_setBytes(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasIntentDigest() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearIntentDigest() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.String get sessionDigest => $_getSZ(5);
+  @$pb.TagNumber(6)
+  set sessionDigest($core.String value) => $_setString(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasSessionDigest() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearSessionDigest() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $fixnum.Int64 get sessionLineage => $_getI64(6);
+  @$pb.TagNumber(7)
+  set sessionLineage($fixnum.Int64 value) => $_setInt64(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasSessionLineage() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearSessionLineage() => $_clearField(7);
+}
+
+class CurrentLogoutRequest extends $pb.GeneratedMessage {
+  factory CurrentLogoutRequest({
+    CurrentAuthorityProfile? profile,
+    $core.bool? prepareOnly,
+    CurrentSessionRevocationReview? review,
+    $core.bool? localOnly,
+  }) {
+    final result = create();
+    if (profile != null) result.profile = profile;
+    if (prepareOnly != null) result.prepareOnly = prepareOnly;
+    if (review != null) result.review = review;
+    if (localOnly != null) result.localOnly = localOnly;
+    return result;
+  }
+
+  CurrentLogoutRequest._();
+
+  factory CurrentLogoutRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CurrentLogoutRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CurrentLogoutRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<CurrentAuthorityProfile>(1, _omitFieldNames ? '' : 'profile',
+        subBuilder: CurrentAuthorityProfile.create)
+    ..aOB(2, _omitFieldNames ? '' : 'prepareOnly')
+    ..aOM<CurrentSessionRevocationReview>(3, _omitFieldNames ? '' : 'review',
+        subBuilder: CurrentSessionRevocationReview.create)
+    ..aOB(4, _omitFieldNames ? '' : 'localOnly')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentLogoutRequest clone() =>
+      CurrentLogoutRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentLogoutRequest copyWith(void Function(CurrentLogoutRequest) updates) =>
+      super.copyWith((message) => updates(message as CurrentLogoutRequest))
+          as CurrentLogoutRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CurrentLogoutRequest create() => CurrentLogoutRequest._();
+  @$core.override
+  CurrentLogoutRequest createEmptyInstance() => create();
+  static $pb.PbList<CurrentLogoutRequest> createRepeated() =>
+      $pb.PbList<CurrentLogoutRequest>();
+  @$core.pragma('dart2js:noInline')
+  static CurrentLogoutRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CurrentLogoutRequest>(create);
+  static CurrentLogoutRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  CurrentAuthorityProfile get profile => $_getN(0);
+  @$pb.TagNumber(1)
+  set profile(CurrentAuthorityProfile value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasProfile() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearProfile() => $_clearField(1);
+  @$pb.TagNumber(1)
+  CurrentAuthorityProfile ensureProfile() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.bool get prepareOnly => $_getBF(1);
+  @$pb.TagNumber(2)
+  set prepareOnly($core.bool value) => $_setBool(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasPrepareOnly() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPrepareOnly() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  CurrentSessionRevocationReview get review => $_getN(2);
+  @$pb.TagNumber(3)
+  set review(CurrentSessionRevocationReview value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasReview() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearReview() => $_clearField(3);
+  @$pb.TagNumber(3)
+  CurrentSessionRevocationReview ensureReview() => $_ensure(2);
+
+  /// Same-origin local cookie deletion makes no cluster completion claim.
+  @$pb.TagNumber(4)
+  $core.bool get localOnly => $_getBF(3);
+  @$pb.TagNumber(4)
+  set localOnly($core.bool value) => $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasLocalOnly() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearLocalOnly() => $_clearField(4);
 }
 
 class ListIssuersRequest extends $pb.GeneratedMessage {
@@ -2645,11 +3044,13 @@ class ListSecurityAuditResponse extends $pb.GeneratedMessage {
     $core.Iterable<SecurityAuditRecord>? records,
     SecurityVersion? version,
     $core.String? nextCursor,
+    $core.Iterable<CurrentSecurityAuditRecord>? currentRecords,
   }) {
     final result = create();
     if (records != null) result.records.addAll(records);
     if (version != null) result.version = version;
     if (nextCursor != null) result.nextCursor = nextCursor;
+    if (currentRecords != null) result.currentRecords.addAll(currentRecords);
     return result;
   }
 
@@ -2672,6 +3073,9 @@ class ListSecurityAuditResponse extends $pb.GeneratedMessage {
     ..aOM<SecurityVersion>(2, _omitFieldNames ? '' : 'version',
         subBuilder: SecurityVersion.create)
     ..aOS(3, _omitFieldNames ? '' : 'nextCursor')
+    ..pc<CurrentSecurityAuditRecord>(
+        4, _omitFieldNames ? '' : 'currentRecords', $pb.PbFieldType.PM,
+        subBuilder: CurrentSecurityAuditRecord.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2719,6 +3123,9 @@ class ListSecurityAuditResponse extends $pb.GeneratedMessage {
   $core.bool hasNextCursor() => $_has(2);
   @$pb.TagNumber(3)
   void clearNextCursor() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $pb.PbList<CurrentSecurityAuditRecord> get currentRecords => $_getList(3);
 }
 
 class GetRoleTemplatesRequest extends $pb.GeneratedMessage {
@@ -3634,6 +4041,7 @@ class ApplySecurityChangesRequest extends $pb.GeneratedMessage {
     $core.List<$core.int>? changeId,
     $core.Iterable<SecurityChange>? changes,
     $core.List<$core.int>? authorizationProof,
+    CurrentSecurityReview? currentReview,
   }) {
     final result = create();
     if (expectedRevision != null) result.expectedRevision = expectedRevision;
@@ -3641,6 +4049,7 @@ class ApplySecurityChangesRequest extends $pb.GeneratedMessage {
     if (changes != null) result.changes.addAll(changes);
     if (authorizationProof != null)
       result.authorizationProof = authorizationProof;
+    if (currentReview != null) result.currentReview = currentReview;
     return result;
   }
 
@@ -3667,6 +4076,8 @@ class ApplySecurityChangesRequest extends $pb.GeneratedMessage {
         subBuilder: SecurityChange.create)
     ..a<$core.List<$core.int>>(
         4, _omitFieldNames ? '' : 'authorizationProof', $pb.PbFieldType.OY)
+    ..aOM<CurrentSecurityReview>(5, _omitFieldNames ? '' : 'currentReview',
+        subBuilder: CurrentSecurityReview.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3724,6 +4135,18 @@ class ApplySecurityChangesRequest extends $pb.GeneratedMessage {
   $core.bool hasAuthorizationProof() => $_has(3);
   @$pb.TagNumber(4)
   void clearAuthorizationProof() => $_clearField(4);
+
+  /// Protocol 2: legacy expected_revision/change_id/changes must be absent.
+  @$pb.TagNumber(5)
+  CurrentSecurityReview get currentReview => $_getN(4);
+  @$pb.TagNumber(5)
+  set currentReview(CurrentSecurityReview value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasCurrentReview() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearCurrentReview() => $_clearField(5);
+  @$pb.TagNumber(5)
+  CurrentSecurityReview ensureCurrentReview() => $_ensure(4);
 }
 
 class ApplySecurityChangesResponse extends $pb.GeneratedMessage {
@@ -3732,12 +4155,14 @@ class ApplySecurityChangesResponse extends $pb.GeneratedMessage {
     $core.Iterable<$core.bool>? applied,
     $core.bool? replayed,
     SecurityEnforcementState? enforcement,
+    CurrentSecurityChangeResult? currentResult,
   }) {
     final result = create();
     if (version != null) result.version = version;
     if (applied != null) result.applied.addAll(applied);
     if (replayed != null) result.replayed = replayed;
     if (enforcement != null) result.enforcement = enforcement;
+    if (currentResult != null) result.currentResult = currentResult;
     return result;
   }
 
@@ -3764,6 +4189,9 @@ class ApplySecurityChangesResponse extends $pb.GeneratedMessage {
             SecurityEnforcementState.SECURITY_ENFORCEMENT_STATE_UNSPECIFIED,
         valueOf: SecurityEnforcementState.valueOf,
         enumValues: SecurityEnforcementState.values)
+    ..aOM<CurrentSecurityChangeResult>(
+        5, _omitFieldNames ? '' : 'currentResult',
+        subBuilder: CurrentSecurityChangeResult.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3822,6 +4250,17 @@ class ApplySecurityChangesResponse extends $pb.GeneratedMessage {
   $core.bool hasEnforcement() => $_has(3);
   @$pb.TagNumber(4)
   void clearEnforcement() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  CurrentSecurityChangeResult get currentResult => $_getN(4);
+  @$pb.TagNumber(5)
+  set currentResult(CurrentSecurityChangeResult value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasCurrentResult() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearCurrentResult() => $_clearField(5);
+  @$pb.TagNumber(5)
+  CurrentSecurityChangeResult ensureCurrentResult() => $_ensure(4);
 }
 
 class ApplySecurityChangeRequest extends $pb.GeneratedMessage {
@@ -3830,6 +4269,7 @@ class ApplySecurityChangeRequest extends $pb.GeneratedMessage {
     $core.List<$core.int>? changeId,
     SecurityChange? change,
     $core.List<$core.int>? authorizationProof,
+    CurrentSecurityReview? currentReview,
   }) {
     final result = create();
     if (expectedRevision != null) result.expectedRevision = expectedRevision;
@@ -3837,6 +4277,7 @@ class ApplySecurityChangeRequest extends $pb.GeneratedMessage {
     if (change != null) result.change = change;
     if (authorizationProof != null)
       result.authorizationProof = authorizationProof;
+    if (currentReview != null) result.currentReview = currentReview;
     return result;
   }
 
@@ -3862,6 +4303,8 @@ class ApplySecurityChangeRequest extends $pb.GeneratedMessage {
         subBuilder: SecurityChange.create)
     ..a<$core.List<$core.int>>(
         4, _omitFieldNames ? '' : 'authorizationProof', $pb.PbFieldType.OY)
+    ..aOM<CurrentSecurityReview>(5, _omitFieldNames ? '' : 'currentReview',
+        subBuilder: CurrentSecurityReview.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3925,6 +4368,18 @@ class ApplySecurityChangeRequest extends $pb.GeneratedMessage {
   $core.bool hasAuthorizationProof() => $_has(3);
   @$pb.TagNumber(4)
   void clearAuthorizationProof() => $_clearField(4);
+
+  /// Exactly one change; the same review/identity as the plural operation.
+  @$pb.TagNumber(5)
+  CurrentSecurityReview get currentReview => $_getN(4);
+  @$pb.TagNumber(5)
+  set currentReview(CurrentSecurityReview value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasCurrentReview() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearCurrentReview() => $_clearField(5);
+  @$pb.TagNumber(5)
+  CurrentSecurityReview ensureCurrentReview() => $_ensure(4);
 }
 
 class SecurityChangeReview extends $pb.GeneratedMessage {
@@ -4200,9 +4655,11 @@ class SecurityChangePrecommitRejected extends $pb.GeneratedMessage {
 class PrepareSecurityChangesRequest extends $pb.GeneratedMessage {
   factory PrepareSecurityChangesRequest({
     SecurityChangeReview? review,
+    CurrentSecurityReview? currentReview,
   }) {
     final result = create();
     if (review != null) result.review = review;
+    if (currentReview != null) result.currentReview = currentReview;
     return result;
   }
 
@@ -4221,6 +4678,8 @@ class PrepareSecurityChangesRequest extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..aOM<SecurityChangeReview>(1, _omitFieldNames ? '' : 'review',
         subBuilder: SecurityChangeReview.create)
+    ..aOM<CurrentSecurityReview>(2, _omitFieldNames ? '' : 'currentReview',
+        subBuilder: CurrentSecurityReview.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4258,6 +4717,19 @@ class PrepareSecurityChangesRequest extends $pb.GeneratedMessage {
   void clearReview() => $_clearField(1);
   @$pb.TagNumber(1)
   SecurityChangeReview ensureReview() => $_ensure(0);
+
+  /// First preparation supplies profile/cut/changes only. The enrolled origin
+  /// allocates the identity. A retained review resolves its original operation.
+  @$pb.TagNumber(2)
+  CurrentSecurityReview get currentReview => $_getN(1);
+  @$pb.TagNumber(2)
+  set currentReview(CurrentSecurityReview value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasCurrentReview() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearCurrentReview() => $_clearField(2);
+  @$pb.TagNumber(2)
+  CurrentSecurityReview ensureCurrentReview() => $_ensure(1);
 }
 
 class PrepareSecurityChangesResponse extends $pb.GeneratedMessage {
@@ -4267,6 +4739,8 @@ class PrepareSecurityChangesResponse extends $pb.GeneratedMessage {
     $core.List<$core.int>? intentDigest,
     SecurityAuthorizationRequirement? requirement,
     GetSecurityChangeStatusResponse? retainedCommit,
+    CurrentSecurityReview? currentReview,
+    CurrentSecurityChangeResult? currentResult,
   }) {
     final result = create();
     if (expectedVersion != null) result.expectedVersion = expectedVersion;
@@ -4274,6 +4748,8 @@ class PrepareSecurityChangesResponse extends $pb.GeneratedMessage {
     if (intentDigest != null) result.intentDigest = intentDigest;
     if (requirement != null) result.requirement = requirement;
     if (retainedCommit != null) result.retainedCommit = retainedCommit;
+    if (currentReview != null) result.currentReview = currentReview;
+    if (currentResult != null) result.currentResult = currentResult;
     return result;
   }
 
@@ -4305,6 +4781,11 @@ class PrepareSecurityChangesResponse extends $pb.GeneratedMessage {
     ..aOM<GetSecurityChangeStatusResponse>(
         5, _omitFieldNames ? '' : 'retainedCommit',
         subBuilder: GetSecurityChangeStatusResponse.create)
+    ..aOM<CurrentSecurityReview>(6, _omitFieldNames ? '' : 'currentReview',
+        subBuilder: CurrentSecurityReview.create)
+    ..aOM<CurrentSecurityChangeResult>(
+        7, _omitFieldNames ? '' : 'currentResult',
+        subBuilder: CurrentSecurityChangeResult.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4383,14 +4864,38 @@ class PrepareSecurityChangesResponse extends $pb.GeneratedMessage {
   void clearRetainedCommit() => $_clearField(5);
   @$pb.TagNumber(5)
   GetSecurityChangeStatusResponse ensureRetainedCommit() => $_ensure(4);
+
+  @$pb.TagNumber(6)
+  CurrentSecurityReview get currentReview => $_getN(5);
+  @$pb.TagNumber(6)
+  set currentReview(CurrentSecurityReview value) => $_setField(6, value);
+  @$pb.TagNumber(6)
+  $core.bool hasCurrentReview() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearCurrentReview() => $_clearField(6);
+  @$pb.TagNumber(6)
+  CurrentSecurityReview ensureCurrentReview() => $_ensure(5);
+
+  @$pb.TagNumber(7)
+  CurrentSecurityChangeResult get currentResult => $_getN(6);
+  @$pb.TagNumber(7)
+  set currentResult(CurrentSecurityChangeResult value) => $_setField(7, value);
+  @$pb.TagNumber(7)
+  $core.bool hasCurrentResult() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearCurrentResult() => $_clearField(7);
+  @$pb.TagNumber(7)
+  CurrentSecurityChangeResult ensureCurrentResult() => $_ensure(6);
 }
 
 class BeginSecurityChangeAuthorizationRequest extends $pb.GeneratedMessage {
   factory BeginSecurityChangeAuthorizationRequest({
     SecurityChangeReview? review,
+    CurrentSecurityReview? currentReview,
   }) {
     final result = create();
     if (review != null) result.review = review;
+    if (currentReview != null) result.currentReview = currentReview;
     return result;
   }
 
@@ -4410,6 +4915,8 @@ class BeginSecurityChangeAuthorizationRequest extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..aOM<SecurityChangeReview>(1, _omitFieldNames ? '' : 'review',
         subBuilder: SecurityChangeReview.create)
+    ..aOM<CurrentSecurityReview>(2, _omitFieldNames ? '' : 'currentReview',
+        subBuilder: CurrentSecurityReview.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4448,6 +4955,17 @@ class BeginSecurityChangeAuthorizationRequest extends $pb.GeneratedMessage {
   void clearReview() => $_clearField(1);
   @$pb.TagNumber(1)
   SecurityChangeReview ensureReview() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  CurrentSecurityReview get currentReview => $_getN(1);
+  @$pb.TagNumber(2)
+  set currentReview(CurrentSecurityReview value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasCurrentReview() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearCurrentReview() => $_clearField(2);
+  @$pb.TagNumber(2)
+  CurrentSecurityReview ensureCurrentReview() => $_ensure(1);
 }
 
 class BeginSecurityChangeAuthorizationResponse extends $pb.GeneratedMessage {
@@ -4455,11 +4973,15 @@ class BeginSecurityChangeAuthorizationResponse extends $pb.GeneratedMessage {
     $core.List<$core.int>? authorizationId,
     $core.String? startUrl,
     $0.Timestamp? expiresAt,
+    CurrentAuthorityProfile? currentProfile,
+    $core.String? attemptAffinity,
   }) {
     final result = create();
     if (authorizationId != null) result.authorizationId = authorizationId;
     if (startUrl != null) result.startUrl = startUrl;
     if (expiresAt != null) result.expiresAt = expiresAt;
+    if (currentProfile != null) result.currentProfile = currentProfile;
+    if (attemptAffinity != null) result.attemptAffinity = attemptAffinity;
     return result;
   }
 
@@ -4482,6 +5004,9 @@ class BeginSecurityChangeAuthorizationResponse extends $pb.GeneratedMessage {
     ..aOS(2, _omitFieldNames ? '' : 'startUrl')
     ..aOM<$0.Timestamp>(3, _omitFieldNames ? '' : 'expiresAt',
         subBuilder: $0.Timestamp.create)
+    ..aOM<CurrentAuthorityProfile>(4, _omitFieldNames ? '' : 'currentProfile',
+        subBuilder: CurrentAuthorityProfile.create)
+    ..aOS(5, _omitFieldNames ? '' : 'attemptAffinity')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4539,14 +5064,39 @@ class BeginSecurityChangeAuthorizationResponse extends $pb.GeneratedMessage {
   void clearExpiresAt() => $_clearField(3);
   @$pb.TagNumber(3)
   $0.Timestamp ensureExpiresAt() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  CurrentAuthorityProfile get currentProfile => $_getN(3);
+  @$pb.TagNumber(4)
+  set currentProfile(CurrentAuthorityProfile value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasCurrentProfile() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearCurrentProfile() => $_clearField(4);
+  @$pb.TagNumber(4)
+  CurrentAuthorityProfile ensureCurrentProfile() => $_ensure(3);
+
+  /// Opaque, process/attempt-bound routing hint, not authentication authority.
+  @$pb.TagNumber(5)
+  $core.String get attemptAffinity => $_getSZ(4);
+  @$pb.TagNumber(5)
+  set attemptAffinity($core.String value) => $_setString(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasAttemptAffinity() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearAttemptAffinity() => $_clearField(5);
 }
 
 class GetSecurityChangeAuthorizationRequest extends $pb.GeneratedMessage {
   factory GetSecurityChangeAuthorizationRequest({
     $core.List<$core.int>? authorizationId,
+    CurrentAuthorityProfile? currentProfile,
+    $core.String? attemptAffinity,
   }) {
     final result = create();
     if (authorizationId != null) result.authorizationId = authorizationId;
+    if (currentProfile != null) result.currentProfile = currentProfile;
+    if (attemptAffinity != null) result.attemptAffinity = attemptAffinity;
     return result;
   }
 
@@ -4566,6 +5116,9 @@ class GetSecurityChangeAuthorizationRequest extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..a<$core.List<$core.int>>(
         1, _omitFieldNames ? '' : 'authorizationId', $pb.PbFieldType.OY)
+    ..aOM<CurrentAuthorityProfile>(2, _omitFieldNames ? '' : 'currentProfile',
+        subBuilder: CurrentAuthorityProfile.create)
+    ..aOS(3, _omitFieldNames ? '' : 'attemptAffinity')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4602,6 +5155,26 @@ class GetSecurityChangeAuthorizationRequest extends $pb.GeneratedMessage {
   $core.bool hasAuthorizationId() => $_has(0);
   @$pb.TagNumber(1)
   void clearAuthorizationId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  CurrentAuthorityProfile get currentProfile => $_getN(1);
+  @$pb.TagNumber(2)
+  set currentProfile(CurrentAuthorityProfile value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasCurrentProfile() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearCurrentProfile() => $_clearField(2);
+  @$pb.TagNumber(2)
+  CurrentAuthorityProfile ensureCurrentProfile() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $core.String get attemptAffinity => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set attemptAffinity($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasAttemptAffinity() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearAttemptAffinity() => $_clearField(3);
 }
 
 class GetSecurityChangeAuthorizationResponse extends $pb.GeneratedMessage {
@@ -4610,6 +5183,7 @@ class GetSecurityChangeAuthorizationResponse extends $pb.GeneratedMessage {
     SecurityAuthorizationState? state,
     $core.List<$core.int>? authorizationProof,
     $0.Timestamp? expiresAt,
+    CurrentAuthorityProfile? currentProfile,
   }) {
     final result = create();
     if (authorizationId != null) result.authorizationId = authorizationId;
@@ -4617,6 +5191,7 @@ class GetSecurityChangeAuthorizationResponse extends $pb.GeneratedMessage {
     if (authorizationProof != null)
       result.authorizationProof = authorizationProof;
     if (expiresAt != null) result.expiresAt = expiresAt;
+    if (currentProfile != null) result.currentProfile = currentProfile;
     return result;
   }
 
@@ -4646,6 +5221,8 @@ class GetSecurityChangeAuthorizationResponse extends $pb.GeneratedMessage {
         3, _omitFieldNames ? '' : 'authorizationProof', $pb.PbFieldType.OY)
     ..aOM<$0.Timestamp>(4, _omitFieldNames ? '' : 'expiresAt',
         subBuilder: $0.Timestamp.create)
+    ..aOM<CurrentAuthorityProfile>(5, _omitFieldNames ? '' : 'currentProfile',
+        subBuilder: CurrentAuthorityProfile.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4711,6 +5288,17 @@ class GetSecurityChangeAuthorizationResponse extends $pb.GeneratedMessage {
   void clearExpiresAt() => $_clearField(4);
   @$pb.TagNumber(4)
   $0.Timestamp ensureExpiresAt() => $_ensure(3);
+
+  @$pb.TagNumber(5)
+  CurrentAuthorityProfile get currentProfile => $_getN(4);
+  @$pb.TagNumber(5)
+  set currentProfile(CurrentAuthorityProfile value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasCurrentProfile() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearCurrentProfile() => $_clearField(5);
+  @$pb.TagNumber(5)
+  CurrentAuthorityProfile ensureCurrentProfile() => $_ensure(4);
 }
 
 class ApplySecurityChangeResponse extends $pb.GeneratedMessage {
@@ -4719,12 +5307,14 @@ class ApplySecurityChangeResponse extends $pb.GeneratedMessage {
     $core.bool? applied,
     $core.bool? replayed,
     SecurityEnforcementState? enforcement,
+    CurrentSecurityChangeResult? currentResult,
   }) {
     final result = create();
     if (version != null) result.version = version;
     if (applied != null) result.applied = applied;
     if (replayed != null) result.replayed = replayed;
     if (enforcement != null) result.enforcement = enforcement;
+    if (currentResult != null) result.currentResult = currentResult;
     return result;
   }
 
@@ -4751,6 +5341,9 @@ class ApplySecurityChangeResponse extends $pb.GeneratedMessage {
             SecurityEnforcementState.SECURITY_ENFORCEMENT_STATE_UNSPECIFIED,
         valueOf: SecurityEnforcementState.valueOf,
         enumValues: SecurityEnforcementState.values)
+    ..aOM<CurrentSecurityChangeResult>(
+        5, _omitFieldNames ? '' : 'currentResult',
+        subBuilder: CurrentSecurityChangeResult.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4815,14 +5408,32 @@ class ApplySecurityChangeResponse extends $pb.GeneratedMessage {
   $core.bool hasEnforcement() => $_has(3);
   @$pb.TagNumber(4)
   void clearEnforcement() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  CurrentSecurityChangeResult get currentResult => $_getN(4);
+  @$pb.TagNumber(5)
+  set currentResult(CurrentSecurityChangeResult value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasCurrentResult() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearCurrentResult() => $_clearField(5);
+  @$pb.TagNumber(5)
+  CurrentSecurityChangeResult ensureCurrentResult() => $_ensure(4);
 }
 
 class GetSecurityChangeStatusRequest extends $pb.GeneratedMessage {
   factory GetSecurityChangeStatusRequest({
     $core.List<$core.int>? changeId,
+    CurrentSecurityChangeID? currentChangeId,
+    CurrentAuthorityProfile? currentProfile,
+    $core.List<$core.int>? currentIntentDigest,
   }) {
     final result = create();
     if (changeId != null) result.changeId = changeId;
+    if (currentChangeId != null) result.currentChangeId = currentChangeId;
+    if (currentProfile != null) result.currentProfile = currentProfile;
+    if (currentIntentDigest != null)
+      result.currentIntentDigest = currentIntentDigest;
     return result;
   }
 
@@ -4841,6 +5452,12 @@ class GetSecurityChangeStatusRequest extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..a<$core.List<$core.int>>(
         1, _omitFieldNames ? '' : 'changeId', $pb.PbFieldType.OY)
+    ..aOM<CurrentSecurityChangeID>(2, _omitFieldNames ? '' : 'currentChangeId',
+        subBuilder: CurrentSecurityChangeID.create)
+    ..aOM<CurrentAuthorityProfile>(3, _omitFieldNames ? '' : 'currentProfile',
+        subBuilder: CurrentAuthorityProfile.create)
+    ..a<$core.List<$core.int>>(
+        4, _omitFieldNames ? '' : 'currentIntentDigest', $pb.PbFieldType.OY)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4876,6 +5493,37 @@ class GetSecurityChangeStatusRequest extends $pb.GeneratedMessage {
   $core.bool hasChangeId() => $_has(0);
   @$pb.TagNumber(1)
   void clearChangeId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  CurrentSecurityChangeID get currentChangeId => $_getN(1);
+  @$pb.TagNumber(2)
+  set currentChangeId(CurrentSecurityChangeID value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasCurrentChangeId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearCurrentChangeId() => $_clearField(2);
+  @$pb.TagNumber(2)
+  CurrentSecurityChangeID ensureCurrentChangeId() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  CurrentAuthorityProfile get currentProfile => $_getN(2);
+  @$pb.TagNumber(3)
+  set currentProfile(CurrentAuthorityProfile value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCurrentProfile() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCurrentProfile() => $_clearField(3);
+  @$pb.TagNumber(3)
+  CurrentAuthorityProfile ensureCurrentProfile() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  $core.List<$core.int> get currentIntentDigest => $_getN(3);
+  @$pb.TagNumber(4)
+  set currentIntentDigest($core.List<$core.int> value) => $_setBytes(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasCurrentIntentDigest() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearCurrentIntentDigest() => $_clearField(4);
 }
 
 class GetSecurityChangeStatusResponse extends $pb.GeneratedMessage {
@@ -4883,11 +5531,13 @@ class GetSecurityChangeStatusResponse extends $pb.GeneratedMessage {
     SecurityVersion? version,
     $core.List<$core.int>? changeId,
     SecurityEnforcementState? enforcement,
+    CurrentSecurityChangeResult? currentResult,
   }) {
     final result = create();
     if (version != null) result.version = version;
     if (changeId != null) result.changeId = changeId;
     if (enforcement != null) result.enforcement = enforcement;
+    if (currentResult != null) result.currentResult = currentResult;
     return result;
   }
 
@@ -4914,6 +5564,9 @@ class GetSecurityChangeStatusResponse extends $pb.GeneratedMessage {
             SecurityEnforcementState.SECURITY_ENFORCEMENT_STATE_UNSPECIFIED,
         valueOf: SecurityEnforcementState.valueOf,
         enumValues: SecurityEnforcementState.values)
+    ..aOM<CurrentSecurityChangeResult>(
+        5, _omitFieldNames ? '' : 'currentResult',
+        subBuilder: CurrentSecurityChangeResult.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4972,6 +5625,1297 @@ class GetSecurityChangeStatusResponse extends $pb.GeneratedMessage {
   $core.bool hasEnforcement() => $_has(2);
   @$pb.TagNumber(4)
   void clearEnforcement() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  CurrentSecurityChangeResult get currentResult => $_getN(3);
+  @$pb.TagNumber(5)
+  set currentResult(CurrentSecurityChangeResult value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasCurrentResult() => $_has(3);
+  @$pb.TagNumber(5)
+  void clearCurrentResult() => $_clearField(5);
+  @$pb.TagNumber(5)
+  CurrentSecurityChangeResult ensureCurrentResult() => $_ensure(3);
+}
+
+/// Public current authority protocol 2. These are identity/status data only;
+/// replay/current authority is always verified independently by the owner.
+class CurrentAuthorityProfile extends $pb.GeneratedMessage {
+  factory CurrentAuthorityProfile({
+    $core.int? version,
+    $core.List<$core.int>? domain,
+    $core.List<$core.int>? cohort,
+    $core.List<$core.int>? generation,
+    $core.List<$core.int>? protocol,
+    $core.List<$core.int>? timeProfile,
+    $core.List<$core.int>? membership,
+    $core.List<$core.int>? configuration,
+  }) {
+    final result = create();
+    if (version != null) result.version = version;
+    if (domain != null) result.domain = domain;
+    if (cohort != null) result.cohort = cohort;
+    if (generation != null) result.generation = generation;
+    if (protocol != null) result.protocol = protocol;
+    if (timeProfile != null) result.timeProfile = timeProfile;
+    if (membership != null) result.membership = membership;
+    if (configuration != null) result.configuration = configuration;
+    return result;
+  }
+
+  CurrentAuthorityProfile._();
+
+  factory CurrentAuthorityProfile.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CurrentAuthorityProfile.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CurrentAuthorityProfile',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.int>(1, _omitFieldNames ? '' : 'version', $pb.PbFieldType.OU3)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'domain', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'cohort', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        4, _omitFieldNames ? '' : 'generation', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        5, _omitFieldNames ? '' : 'protocol', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        6, _omitFieldNames ? '' : 'timeProfile', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        7, _omitFieldNames ? '' : 'membership', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        8, _omitFieldNames ? '' : 'configuration', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentAuthorityProfile clone() =>
+      CurrentAuthorityProfile()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentAuthorityProfile copyWith(
+          void Function(CurrentAuthorityProfile) updates) =>
+      super.copyWith((message) => updates(message as CurrentAuthorityProfile))
+          as CurrentAuthorityProfile;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CurrentAuthorityProfile create() => CurrentAuthorityProfile._();
+  @$core.override
+  CurrentAuthorityProfile createEmptyInstance() => create();
+  static $pb.PbList<CurrentAuthorityProfile> createRepeated() =>
+      $pb.PbList<CurrentAuthorityProfile>();
+  @$core.pragma('dart2js:noInline')
+  static CurrentAuthorityProfile getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CurrentAuthorityProfile>(create);
+  static CurrentAuthorityProfile? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get version => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set version($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearVersion() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get domain => $_getN(1);
+  @$pb.TagNumber(2)
+  set domain($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasDomain() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearDomain() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get cohort => $_getN(2);
+  @$pb.TagNumber(3)
+  set cohort($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCohort() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCohort() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.List<$core.int> get generation => $_getN(3);
+  @$pb.TagNumber(4)
+  set generation($core.List<$core.int> value) => $_setBytes(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasGeneration() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearGeneration() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.List<$core.int> get protocol => $_getN(4);
+  @$pb.TagNumber(5)
+  set protocol($core.List<$core.int> value) => $_setBytes(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasProtocol() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearProtocol() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.List<$core.int> get timeProfile => $_getN(5);
+  @$pb.TagNumber(6)
+  set timeProfile($core.List<$core.int> value) => $_setBytes(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasTimeProfile() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearTimeProfile() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.List<$core.int> get membership => $_getN(6);
+  @$pb.TagNumber(7)
+  set membership($core.List<$core.int> value) => $_setBytes(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasMembership() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearMembership() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $core.List<$core.int> get configuration => $_getN(7);
+  @$pb.TagNumber(8)
+  set configuration($core.List<$core.int> value) => $_setBytes(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasConfiguration() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearConfiguration() => $_clearField(8);
+}
+
+class CurrentSemanticCut extends $pb.GeneratedMessage {
+  factory CurrentSemanticCut({
+    $core.int? version,
+    $core.List<$core.int>? domain,
+    $core.List<$core.int>? cohort,
+    $core.List<$core.int>? generation,
+    $fixnum.Int64? sequence,
+    $core.List<$core.int>? previous,
+    $core.List<$core.int>? projection,
+    $core.List<$core.int>? frontier,
+    $core.List<$core.int>? fences,
+    $core.List<$core.int>? policy,
+  }) {
+    final result = create();
+    if (version != null) result.version = version;
+    if (domain != null) result.domain = domain;
+    if (cohort != null) result.cohort = cohort;
+    if (generation != null) result.generation = generation;
+    if (sequence != null) result.sequence = sequence;
+    if (previous != null) result.previous = previous;
+    if (projection != null) result.projection = projection;
+    if (frontier != null) result.frontier = frontier;
+    if (fences != null) result.fences = fences;
+    if (policy != null) result.policy = policy;
+    return result;
+  }
+
+  CurrentSemanticCut._();
+
+  factory CurrentSemanticCut.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CurrentSemanticCut.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CurrentSemanticCut',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.int>(1, _omitFieldNames ? '' : 'version', $pb.PbFieldType.OU3)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'domain', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'cohort', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        4, _omitFieldNames ? '' : 'generation', $pb.PbFieldType.OY)
+    ..a<$fixnum.Int64>(
+        5, _omitFieldNames ? '' : 'sequence', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$core.List<$core.int>>(
+        6, _omitFieldNames ? '' : 'previous', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        7, _omitFieldNames ? '' : 'projection', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        8, _omitFieldNames ? '' : 'frontier', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        9, _omitFieldNames ? '' : 'fences', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        10, _omitFieldNames ? '' : 'policy', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSemanticCut clone() => CurrentSemanticCut()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSemanticCut copyWith(void Function(CurrentSemanticCut) updates) =>
+      super.copyWith((message) => updates(message as CurrentSemanticCut))
+          as CurrentSemanticCut;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CurrentSemanticCut create() => CurrentSemanticCut._();
+  @$core.override
+  CurrentSemanticCut createEmptyInstance() => create();
+  static $pb.PbList<CurrentSemanticCut> createRepeated() =>
+      $pb.PbList<CurrentSemanticCut>();
+  @$core.pragma('dart2js:noInline')
+  static CurrentSemanticCut getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CurrentSemanticCut>(create);
+  static CurrentSemanticCut? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get version => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set version($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearVersion() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get domain => $_getN(1);
+  @$pb.TagNumber(2)
+  set domain($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasDomain() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearDomain() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get cohort => $_getN(2);
+  @$pb.TagNumber(3)
+  set cohort($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCohort() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCohort() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.List<$core.int> get generation => $_getN(3);
+  @$pb.TagNumber(4)
+  set generation($core.List<$core.int> value) => $_setBytes(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasGeneration() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearGeneration() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $fixnum.Int64 get sequence => $_getI64(4);
+  @$pb.TagNumber(5)
+  set sequence($fixnum.Int64 value) => $_setInt64(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasSequence() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearSequence() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.List<$core.int> get previous => $_getN(5);
+  @$pb.TagNumber(6)
+  set previous($core.List<$core.int> value) => $_setBytes(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasPrevious() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearPrevious() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.List<$core.int> get projection => $_getN(6);
+  @$pb.TagNumber(7)
+  set projection($core.List<$core.int> value) => $_setBytes(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasProjection() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearProjection() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $core.List<$core.int> get frontier => $_getN(7);
+  @$pb.TagNumber(8)
+  set frontier($core.List<$core.int> value) => $_setBytes(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasFrontier() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearFrontier() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $core.List<$core.int> get fences => $_getN(8);
+  @$pb.TagNumber(9)
+  set fences($core.List<$core.int> value) => $_setBytes(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasFences() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearFences() => $_clearField(9);
+
+  @$pb.TagNumber(10)
+  $core.List<$core.int> get policy => $_getN(9);
+  @$pb.TagNumber(10)
+  set policy($core.List<$core.int> value) => $_setBytes(9, value);
+  @$pb.TagNumber(10)
+  $core.bool hasPolicy() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearPolicy() => $_clearField(10);
+}
+
+class CurrentSecurityChangeID extends $pb.GeneratedMessage {
+  factory CurrentSecurityChangeID({
+    $core.int? version,
+    $core.List<$core.int>? domain,
+    $core.List<$core.int>? cohort,
+    $fixnum.Int64? namespace,
+    $core.List<$core.int>? nonce,
+  }) {
+    final result = create();
+    if (version != null) result.version = version;
+    if (domain != null) result.domain = domain;
+    if (cohort != null) result.cohort = cohort;
+    if (namespace != null) result.namespace = namespace;
+    if (nonce != null) result.nonce = nonce;
+    return result;
+  }
+
+  CurrentSecurityChangeID._();
+
+  factory CurrentSecurityChangeID.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CurrentSecurityChangeID.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CurrentSecurityChangeID',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.int>(1, _omitFieldNames ? '' : 'version', $pb.PbFieldType.OU3)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'domain', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'cohort', $pb.PbFieldType.OY)
+    ..a<$fixnum.Int64>(
+        4, _omitFieldNames ? '' : 'namespace', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$core.List<$core.int>>(
+        5, _omitFieldNames ? '' : 'nonce', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityChangeID clone() =>
+      CurrentSecurityChangeID()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityChangeID copyWith(
+          void Function(CurrentSecurityChangeID) updates) =>
+      super.copyWith((message) => updates(message as CurrentSecurityChangeID))
+          as CurrentSecurityChangeID;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityChangeID create() => CurrentSecurityChangeID._();
+  @$core.override
+  CurrentSecurityChangeID createEmptyInstance() => create();
+  static $pb.PbList<CurrentSecurityChangeID> createRepeated() =>
+      $pb.PbList<CurrentSecurityChangeID>();
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityChangeID getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CurrentSecurityChangeID>(create);
+  static CurrentSecurityChangeID? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get version => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set version($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearVersion() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get domain => $_getN(1);
+  @$pb.TagNumber(2)
+  set domain($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasDomain() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearDomain() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get cohort => $_getN(2);
+  @$pb.TagNumber(3)
+  set cohort($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCohort() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCohort() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $fixnum.Int64 get namespace => $_getI64(3);
+  @$pb.TagNumber(4)
+  set namespace($fixnum.Int64 value) => $_setInt64(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasNamespace() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearNamespace() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.List<$core.int> get nonce => $_getN(4);
+  @$pb.TagNumber(5)
+  set nonce($core.List<$core.int> value) => $_setBytes(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasNonce() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearNonce() => $_clearField(5);
+}
+
+class CurrentSecurityReview extends $pb.GeneratedMessage {
+  factory CurrentSecurityReview({
+    CurrentAuthorityProfile? profile,
+    CurrentSemanticCut? expectedCut,
+    CurrentSecurityChangeID? changeId,
+    SecurityIdentity? actor,
+    $core.List<$core.int>? intentDigest,
+    $core.Iterable<SecurityChange>? changes,
+  }) {
+    final result = create();
+    if (profile != null) result.profile = profile;
+    if (expectedCut != null) result.expectedCut = expectedCut;
+    if (changeId != null) result.changeId = changeId;
+    if (actor != null) result.actor = actor;
+    if (intentDigest != null) result.intentDigest = intentDigest;
+    if (changes != null) result.changes.addAll(changes);
+    return result;
+  }
+
+  CurrentSecurityReview._();
+
+  factory CurrentSecurityReview.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CurrentSecurityReview.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CurrentSecurityReview',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<CurrentAuthorityProfile>(1, _omitFieldNames ? '' : 'profile',
+        subBuilder: CurrentAuthorityProfile.create)
+    ..aOM<CurrentSemanticCut>(2, _omitFieldNames ? '' : 'expectedCut',
+        subBuilder: CurrentSemanticCut.create)
+    ..aOM<CurrentSecurityChangeID>(3, _omitFieldNames ? '' : 'changeId',
+        subBuilder: CurrentSecurityChangeID.create)
+    ..aOM<SecurityIdentity>(4, _omitFieldNames ? '' : 'actor',
+        subBuilder: SecurityIdentity.create)
+    ..a<$core.List<$core.int>>(
+        5, _omitFieldNames ? '' : 'intentDigest', $pb.PbFieldType.OY)
+    ..pc<SecurityChange>(
+        6, _omitFieldNames ? '' : 'changes', $pb.PbFieldType.PM,
+        subBuilder: SecurityChange.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityReview clone() =>
+      CurrentSecurityReview()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityReview copyWith(
+          void Function(CurrentSecurityReview) updates) =>
+      super.copyWith((message) => updates(message as CurrentSecurityReview))
+          as CurrentSecurityReview;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityReview create() => CurrentSecurityReview._();
+  @$core.override
+  CurrentSecurityReview createEmptyInstance() => create();
+  static $pb.PbList<CurrentSecurityReview> createRepeated() =>
+      $pb.PbList<CurrentSecurityReview>();
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityReview getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CurrentSecurityReview>(create);
+  static CurrentSecurityReview? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  CurrentAuthorityProfile get profile => $_getN(0);
+  @$pb.TagNumber(1)
+  set profile(CurrentAuthorityProfile value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasProfile() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearProfile() => $_clearField(1);
+  @$pb.TagNumber(1)
+  CurrentAuthorityProfile ensureProfile() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  CurrentSemanticCut get expectedCut => $_getN(1);
+  @$pb.TagNumber(2)
+  set expectedCut(CurrentSemanticCut value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasExpectedCut() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearExpectedCut() => $_clearField(2);
+  @$pb.TagNumber(2)
+  CurrentSemanticCut ensureExpectedCut() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  CurrentSecurityChangeID get changeId => $_getN(2);
+  @$pb.TagNumber(3)
+  set changeId(CurrentSecurityChangeID value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasChangeId() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearChangeId() => $_clearField(3);
+  @$pb.TagNumber(3)
+  CurrentSecurityChangeID ensureChangeId() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  SecurityIdentity get actor => $_getN(3);
+  @$pb.TagNumber(4)
+  set actor(SecurityIdentity value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasActor() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearActor() => $_clearField(4);
+  @$pb.TagNumber(4)
+  SecurityIdentity ensureActor() => $_ensure(3);
+
+  @$pb.TagNumber(5)
+  $core.List<$core.int> get intentDigest => $_getN(4);
+  @$pb.TagNumber(5)
+  set intentDigest($core.List<$core.int> value) => $_setBytes(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasIntentDigest() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearIntentDigest() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $pb.PbList<SecurityChange> get changes => $_getList(5);
+}
+
+class CurrentControlCommit extends $pb.GeneratedMessage {
+  factory CurrentControlCommit({
+    $core.int? version,
+    $core.List<$core.int>? domain,
+    $core.List<$core.int>? cohort,
+    $core.List<$core.int>? membership,
+    $core.List<$core.int>? configuration,
+    $fixnum.Int64? slot,
+    $core.List<$core.int>? value,
+  }) {
+    final result = create();
+    if (version != null) result.version = version;
+    if (domain != null) result.domain = domain;
+    if (cohort != null) result.cohort = cohort;
+    if (membership != null) result.membership = membership;
+    if (configuration != null) result.configuration = configuration;
+    if (slot != null) result.slot = slot;
+    if (value != null) result.value = value;
+    return result;
+  }
+
+  CurrentControlCommit._();
+
+  factory CurrentControlCommit.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CurrentControlCommit.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CurrentControlCommit',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.int>(1, _omitFieldNames ? '' : 'version', $pb.PbFieldType.OU3)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'domain', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'cohort', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        4, _omitFieldNames ? '' : 'membership', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        5, _omitFieldNames ? '' : 'configuration', $pb.PbFieldType.OY)
+    ..a<$fixnum.Int64>(6, _omitFieldNames ? '' : 'slot', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$core.List<$core.int>>(
+        7, _omitFieldNames ? '' : 'value', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentControlCommit clone() =>
+      CurrentControlCommit()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentControlCommit copyWith(void Function(CurrentControlCommit) updates) =>
+      super.copyWith((message) => updates(message as CurrentControlCommit))
+          as CurrentControlCommit;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CurrentControlCommit create() => CurrentControlCommit._();
+  @$core.override
+  CurrentControlCommit createEmptyInstance() => create();
+  static $pb.PbList<CurrentControlCommit> createRepeated() =>
+      $pb.PbList<CurrentControlCommit>();
+  @$core.pragma('dart2js:noInline')
+  static CurrentControlCommit getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CurrentControlCommit>(create);
+  static CurrentControlCommit? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get version => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set version($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearVersion() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get domain => $_getN(1);
+  @$pb.TagNumber(2)
+  set domain($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasDomain() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearDomain() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get cohort => $_getN(2);
+  @$pb.TagNumber(3)
+  set cohort($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasCohort() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearCohort() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.List<$core.int> get membership => $_getN(3);
+  @$pb.TagNumber(4)
+  set membership($core.List<$core.int> value) => $_setBytes(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasMembership() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearMembership() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.List<$core.int> get configuration => $_getN(4);
+  @$pb.TagNumber(5)
+  set configuration($core.List<$core.int> value) => $_setBytes(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasConfiguration() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearConfiguration() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $fixnum.Int64 get slot => $_getI64(5);
+  @$pb.TagNumber(6)
+  set slot($fixnum.Int64 value) => $_setInt64(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasSlot() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearSlot() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.List<$core.int> get value => $_getN(6);
+  @$pb.TagNumber(7)
+  set value($core.List<$core.int> value) => $_setBytes(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasValue() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearValue() => $_clearField(7);
+}
+
+class CurrentSecurityItemOutcome extends $pb.GeneratedMessage {
+  factory CurrentSecurityItemOutcome({
+    $core.int? index,
+    $core.String? kind,
+    CurrentSecurityDisposition? disposition,
+  }) {
+    final result = create();
+    if (index != null) result.index = index;
+    if (kind != null) result.kind = kind;
+    if (disposition != null) result.disposition = disposition;
+    return result;
+  }
+
+  CurrentSecurityItemOutcome._();
+
+  factory CurrentSecurityItemOutcome.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CurrentSecurityItemOutcome.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CurrentSecurityItemOutcome',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.int>(1, _omitFieldNames ? '' : 'index', $pb.PbFieldType.OU3)
+    ..aOS(2, _omitFieldNames ? '' : 'kind')
+    ..e<CurrentSecurityDisposition>(
+        3, _omitFieldNames ? '' : 'disposition', $pb.PbFieldType.OE,
+        defaultOrMaker:
+            CurrentSecurityDisposition.CURRENT_SECURITY_DISPOSITION_UNSPECIFIED,
+        valueOf: CurrentSecurityDisposition.valueOf,
+        enumValues: CurrentSecurityDisposition.values)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityItemOutcome clone() =>
+      CurrentSecurityItemOutcome()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityItemOutcome copyWith(
+          void Function(CurrentSecurityItemOutcome) updates) =>
+      super.copyWith(
+              (message) => updates(message as CurrentSecurityItemOutcome))
+          as CurrentSecurityItemOutcome;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityItemOutcome create() => CurrentSecurityItemOutcome._();
+  @$core.override
+  CurrentSecurityItemOutcome createEmptyInstance() => create();
+  static $pb.PbList<CurrentSecurityItemOutcome> createRepeated() =>
+      $pb.PbList<CurrentSecurityItemOutcome>();
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityItemOutcome getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CurrentSecurityItemOutcome>(create);
+  static CurrentSecurityItemOutcome? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get index => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set index($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasIndex() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearIndex() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get kind => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set kind($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasKind() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearKind() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  CurrentSecurityDisposition get disposition => $_getN(2);
+  @$pb.TagNumber(3)
+  set disposition(CurrentSecurityDisposition value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasDisposition() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearDisposition() => $_clearField(3);
+}
+
+class CurrentSecurityOriginalOutcome extends $pb.GeneratedMessage {
+  factory CurrentSecurityOriginalOutcome({
+    CurrentSecurityChangeID? changeId,
+    $core.List<$core.int>? intentDigest,
+    $core.List<$core.int>? handoffDigest,
+    CurrentControlCommit? commit,
+    CurrentSecurityDisposition? disposition,
+    $core.Iterable<CurrentSecurityItemOutcome>? items,
+    CurrentSemanticCut? observedCut,
+    CurrentSemanticCut? resultingCut,
+  }) {
+    final result = create();
+    if (changeId != null) result.changeId = changeId;
+    if (intentDigest != null) result.intentDigest = intentDigest;
+    if (handoffDigest != null) result.handoffDigest = handoffDigest;
+    if (commit != null) result.commit = commit;
+    if (disposition != null) result.disposition = disposition;
+    if (items != null) result.items.addAll(items);
+    if (observedCut != null) result.observedCut = observedCut;
+    if (resultingCut != null) result.resultingCut = resultingCut;
+    return result;
+  }
+
+  CurrentSecurityOriginalOutcome._();
+
+  factory CurrentSecurityOriginalOutcome.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CurrentSecurityOriginalOutcome.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CurrentSecurityOriginalOutcome',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<CurrentSecurityChangeID>(1, _omitFieldNames ? '' : 'changeId',
+        subBuilder: CurrentSecurityChangeID.create)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'intentDigest', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'handoffDigest', $pb.PbFieldType.OY)
+    ..aOM<CurrentControlCommit>(4, _omitFieldNames ? '' : 'commit',
+        subBuilder: CurrentControlCommit.create)
+    ..e<CurrentSecurityDisposition>(
+        5, _omitFieldNames ? '' : 'disposition', $pb.PbFieldType.OE,
+        defaultOrMaker:
+            CurrentSecurityDisposition.CURRENT_SECURITY_DISPOSITION_UNSPECIFIED,
+        valueOf: CurrentSecurityDisposition.valueOf,
+        enumValues: CurrentSecurityDisposition.values)
+    ..pc<CurrentSecurityItemOutcome>(
+        6, _omitFieldNames ? '' : 'items', $pb.PbFieldType.PM,
+        subBuilder: CurrentSecurityItemOutcome.create)
+    ..aOM<CurrentSemanticCut>(7, _omitFieldNames ? '' : 'observedCut',
+        subBuilder: CurrentSemanticCut.create)
+    ..aOM<CurrentSemanticCut>(8, _omitFieldNames ? '' : 'resultingCut',
+        subBuilder: CurrentSemanticCut.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityOriginalOutcome clone() =>
+      CurrentSecurityOriginalOutcome()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityOriginalOutcome copyWith(
+          void Function(CurrentSecurityOriginalOutcome) updates) =>
+      super.copyWith(
+              (message) => updates(message as CurrentSecurityOriginalOutcome))
+          as CurrentSecurityOriginalOutcome;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityOriginalOutcome create() =>
+      CurrentSecurityOriginalOutcome._();
+  @$core.override
+  CurrentSecurityOriginalOutcome createEmptyInstance() => create();
+  static $pb.PbList<CurrentSecurityOriginalOutcome> createRepeated() =>
+      $pb.PbList<CurrentSecurityOriginalOutcome>();
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityOriginalOutcome getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CurrentSecurityOriginalOutcome>(create);
+  static CurrentSecurityOriginalOutcome? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  CurrentSecurityChangeID get changeId => $_getN(0);
+  @$pb.TagNumber(1)
+  set changeId(CurrentSecurityChangeID value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasChangeId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearChangeId() => $_clearField(1);
+  @$pb.TagNumber(1)
+  CurrentSecurityChangeID ensureChangeId() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get intentDigest => $_getN(1);
+  @$pb.TagNumber(2)
+  set intentDigest($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasIntentDigest() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearIntentDigest() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get handoffDigest => $_getN(2);
+  @$pb.TagNumber(3)
+  set handoffDigest($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasHandoffDigest() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearHandoffDigest() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  CurrentControlCommit get commit => $_getN(3);
+  @$pb.TagNumber(4)
+  set commit(CurrentControlCommit value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasCommit() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearCommit() => $_clearField(4);
+  @$pb.TagNumber(4)
+  CurrentControlCommit ensureCommit() => $_ensure(3);
+
+  @$pb.TagNumber(5)
+  CurrentSecurityDisposition get disposition => $_getN(4);
+  @$pb.TagNumber(5)
+  set disposition(CurrentSecurityDisposition value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasDisposition() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearDisposition() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $pb.PbList<CurrentSecurityItemOutcome> get items => $_getList(5);
+
+  @$pb.TagNumber(7)
+  CurrentSemanticCut get observedCut => $_getN(6);
+  @$pb.TagNumber(7)
+  set observedCut(CurrentSemanticCut value) => $_setField(7, value);
+  @$pb.TagNumber(7)
+  $core.bool hasObservedCut() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearObservedCut() => $_clearField(7);
+  @$pb.TagNumber(7)
+  CurrentSemanticCut ensureObservedCut() => $_ensure(6);
+
+  @$pb.TagNumber(8)
+  CurrentSemanticCut get resultingCut => $_getN(7);
+  @$pb.TagNumber(8)
+  set resultingCut(CurrentSemanticCut value) => $_setField(8, value);
+  @$pb.TagNumber(8)
+  $core.bool hasResultingCut() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearResultingCut() => $_clearField(8);
+  @$pb.TagNumber(8)
+  CurrentSemanticCut ensureResultingCut() => $_ensure(7);
+}
+
+class CurrentSecurityChangeResult extends $pb.GeneratedMessage {
+  factory CurrentSecurityChangeResult({
+    CurrentAuthorityProfile? profile,
+    CurrentSecurityChangeID? changeId,
+    $core.List<$core.int>? intentDigest,
+    CurrentSecurityProgress? progress,
+    CurrentSecurityOriginalOutcome? original,
+    CurrentAuthorizationStopObservation? stopObservation,
+  }) {
+    final result = create();
+    if (profile != null) result.profile = profile;
+    if (changeId != null) result.changeId = changeId;
+    if (intentDigest != null) result.intentDigest = intentDigest;
+    if (progress != null) result.progress = progress;
+    if (original != null) result.original = original;
+    if (stopObservation != null) result.stopObservation = stopObservation;
+    return result;
+  }
+
+  CurrentSecurityChangeResult._();
+
+  factory CurrentSecurityChangeResult.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CurrentSecurityChangeResult.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CurrentSecurityChangeResult',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<CurrentAuthorityProfile>(1, _omitFieldNames ? '' : 'profile',
+        subBuilder: CurrentAuthorityProfile.create)
+    ..aOM<CurrentSecurityChangeID>(2, _omitFieldNames ? '' : 'changeId',
+        subBuilder: CurrentSecurityChangeID.create)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'intentDigest', $pb.PbFieldType.OY)
+    ..e<CurrentSecurityProgress>(
+        4, _omitFieldNames ? '' : 'progress', $pb.PbFieldType.OE,
+        defaultOrMaker:
+            CurrentSecurityProgress.CURRENT_SECURITY_PROGRESS_UNSPECIFIED,
+        valueOf: CurrentSecurityProgress.valueOf,
+        enumValues: CurrentSecurityProgress.values)
+    ..aOM<CurrentSecurityOriginalOutcome>(5, _omitFieldNames ? '' : 'original',
+        subBuilder: CurrentSecurityOriginalOutcome.create)
+    ..e<CurrentAuthorizationStopObservation>(
+        6, _omitFieldNames ? '' : 'stopObservation', $pb.PbFieldType.OE,
+        defaultOrMaker: CurrentAuthorizationStopObservation
+            .CURRENT_AUTHORIZATION_STOP_OBSERVATION_UNSPECIFIED,
+        valueOf: CurrentAuthorizationStopObservation.valueOf,
+        enumValues: CurrentAuthorizationStopObservation.values)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityChangeResult clone() =>
+      CurrentSecurityChangeResult()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityChangeResult copyWith(
+          void Function(CurrentSecurityChangeResult) updates) =>
+      super.copyWith(
+              (message) => updates(message as CurrentSecurityChangeResult))
+          as CurrentSecurityChangeResult;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityChangeResult create() =>
+      CurrentSecurityChangeResult._();
+  @$core.override
+  CurrentSecurityChangeResult createEmptyInstance() => create();
+  static $pb.PbList<CurrentSecurityChangeResult> createRepeated() =>
+      $pb.PbList<CurrentSecurityChangeResult>();
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityChangeResult getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CurrentSecurityChangeResult>(create);
+  static CurrentSecurityChangeResult? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  CurrentAuthorityProfile get profile => $_getN(0);
+  @$pb.TagNumber(1)
+  set profile(CurrentAuthorityProfile value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasProfile() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearProfile() => $_clearField(1);
+  @$pb.TagNumber(1)
+  CurrentAuthorityProfile ensureProfile() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  CurrentSecurityChangeID get changeId => $_getN(1);
+  @$pb.TagNumber(2)
+  set changeId(CurrentSecurityChangeID value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasChangeId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearChangeId() => $_clearField(2);
+  @$pb.TagNumber(2)
+  CurrentSecurityChangeID ensureChangeId() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get intentDigest => $_getN(2);
+  @$pb.TagNumber(3)
+  set intentDigest($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasIntentDigest() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearIntentDigest() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  CurrentSecurityProgress get progress => $_getN(3);
+  @$pb.TagNumber(4)
+  set progress(CurrentSecurityProgress value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasProgress() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearProgress() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  CurrentSecurityOriginalOutcome get original => $_getN(4);
+  @$pb.TagNumber(5)
+  set original(CurrentSecurityOriginalOutcome value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasOriginal() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearOriginal() => $_clearField(5);
+  @$pb.TagNumber(5)
+  CurrentSecurityOriginalOutcome ensureOriginal() => $_ensure(4);
+
+  @$pb.TagNumber(6)
+  CurrentAuthorizationStopObservation get stopObservation => $_getN(5);
+  @$pb.TagNumber(6)
+  set stopObservation(CurrentAuthorizationStopObservation value) =>
+      $_setField(6, value);
+  @$pb.TagNumber(6)
+  $core.bool hasStopObservation() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearStopObservation() => $_clearField(6);
+}
+
+class CurrentSecurityAuditRecord extends $pb.GeneratedMessage {
+  factory CurrentSecurityAuditRecord({
+    CurrentSecurityChangeResult? result,
+    $core.List<$core.int>? actorDigest,
+    $core.String? operation,
+  }) {
+    final result$ = create();
+    if (result != null) result$.result = result;
+    if (actorDigest != null) result$.actorDigest = actorDigest;
+    if (operation != null) result$.operation = operation;
+    return result$;
+  }
+
+  CurrentSecurityAuditRecord._();
+
+  factory CurrentSecurityAuditRecord.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CurrentSecurityAuditRecord.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CurrentSecurityAuditRecord',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<CurrentSecurityChangeResult>(1, _omitFieldNames ? '' : 'result',
+        subBuilder: CurrentSecurityChangeResult.create)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'actorDigest', $pb.PbFieldType.OY)
+    ..aOS(3, _omitFieldNames ? '' : 'operation')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityAuditRecord clone() =>
+      CurrentSecurityAuditRecord()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityAuditRecord copyWith(
+          void Function(CurrentSecurityAuditRecord) updates) =>
+      super.copyWith(
+              (message) => updates(message as CurrentSecurityAuditRecord))
+          as CurrentSecurityAuditRecord;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityAuditRecord create() => CurrentSecurityAuditRecord._();
+  @$core.override
+  CurrentSecurityAuditRecord createEmptyInstance() => create();
+  static $pb.PbList<CurrentSecurityAuditRecord> createRepeated() =>
+      $pb.PbList<CurrentSecurityAuditRecord>();
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityAuditRecord getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CurrentSecurityAuditRecord>(create);
+  static CurrentSecurityAuditRecord? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  CurrentSecurityChangeResult get result => $_getN(0);
+  @$pb.TagNumber(1)
+  set result(CurrentSecurityChangeResult value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasResult() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearResult() => $_clearField(1);
+  @$pb.TagNumber(1)
+  CurrentSecurityChangeResult ensureResult() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get actorDigest => $_getN(1);
+  @$pb.TagNumber(2)
+  set actorDigest($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasActorDigest() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearActorDigest() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get operation => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set operation($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasOperation() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearOperation() => $_clearField(3);
+}
+
+/// This invocation was refused before H, without settling any earlier
+/// ambiguous invocation. Preserve the original identity for status-first use.
+class CurrentSecurityInvocationRejected extends $pb.GeneratedMessage {
+  factory CurrentSecurityInvocationRejected({
+    CurrentAuthorityProfile? profile,
+    CurrentSecurityChangeID? changeId,
+    $core.List<$core.int>? intentDigest,
+    $core.bool? purposeRequired,
+  }) {
+    final result = create();
+    if (profile != null) result.profile = profile;
+    if (changeId != null) result.changeId = changeId;
+    if (intentDigest != null) result.intentDigest = intentDigest;
+    if (purposeRequired != null) result.purposeRequired = purposeRequired;
+    return result;
+  }
+
+  CurrentSecurityInvocationRejected._();
+
+  factory CurrentSecurityInvocationRejected.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory CurrentSecurityInvocationRejected.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CurrentSecurityInvocationRejected',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<CurrentAuthorityProfile>(1, _omitFieldNames ? '' : 'profile',
+        subBuilder: CurrentAuthorityProfile.create)
+    ..aOM<CurrentSecurityChangeID>(2, _omitFieldNames ? '' : 'changeId',
+        subBuilder: CurrentSecurityChangeID.create)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'intentDigest', $pb.PbFieldType.OY)
+    ..aOB(4, _omitFieldNames ? '' : 'purposeRequired')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityInvocationRejected clone() =>
+      CurrentSecurityInvocationRejected()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CurrentSecurityInvocationRejected copyWith(
+          void Function(CurrentSecurityInvocationRejected) updates) =>
+      super.copyWith((message) =>
+              updates(message as CurrentSecurityInvocationRejected))
+          as CurrentSecurityInvocationRejected;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityInvocationRejected create() =>
+      CurrentSecurityInvocationRejected._();
+  @$core.override
+  CurrentSecurityInvocationRejected createEmptyInstance() => create();
+  static $pb.PbList<CurrentSecurityInvocationRejected> createRepeated() =>
+      $pb.PbList<CurrentSecurityInvocationRejected>();
+  @$core.pragma('dart2js:noInline')
+  static CurrentSecurityInvocationRejected getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CurrentSecurityInvocationRejected>(
+          create);
+  static CurrentSecurityInvocationRejected? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  CurrentAuthorityProfile get profile => $_getN(0);
+  @$pb.TagNumber(1)
+  set profile(CurrentAuthorityProfile value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasProfile() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearProfile() => $_clearField(1);
+  @$pb.TagNumber(1)
+  CurrentAuthorityProfile ensureProfile() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  CurrentSecurityChangeID get changeId => $_getN(1);
+  @$pb.TagNumber(2)
+  set changeId(CurrentSecurityChangeID value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasChangeId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearChangeId() => $_clearField(2);
+  @$pb.TagNumber(2)
+  CurrentSecurityChangeID ensureChangeId() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get intentDigest => $_getN(2);
+  @$pb.TagNumber(3)
+  set intentDigest($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasIntentDigest() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearIntentDigest() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.bool get purposeRequired => $_getBF(3);
+  @$pb.TagNumber(4)
+  set purposeRequired($core.bool value) => $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasPurposeRequired() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearPurposeRequired() => $_clearField(4);
 }
 
 /// Security is a separate control plane. Logical data RPCs cannot write sys:.

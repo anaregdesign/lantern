@@ -1,9 +1,6 @@
 import { createSecurityClient } from "./security-client";
 import { openSecurityAuthorizationWindow } from "../browser/security-authorization-window";
-import {
-  SecurityOperationAuthorizationRequiredError,
-  SecurityChangePrecommitRejectedError,
-} from "lantern-sdk/web";
+import { CurrentSecurityInvocationRejectedError } from "lantern-sdk/web";
 import type {
   SecurityManagementPort,
   SecurityFailure,
@@ -40,8 +37,17 @@ export function createSecurityManagementClient(
       client.listRoles({ limit: 100, cursor }, options(signal)),
     templates: (prefix, signal) =>
       client.getRoleTemplates({ prefix }, options(signal)),
-    audit: (cursor, signal) =>
-      client.listSecurityAudit({ limit: 100, cursor }, options(signal)),
+    audit: async (cursor, signal) => {
+      const response = await client.listSecurityAudit(
+        { limit: 100, cursor },
+        options(signal),
+      );
+      return {
+        records: response.currentRecords,
+        version: response.version,
+        nextCursor: response.nextCursor,
+      };
+    },
     validateIssuer: async (issuer, signal) =>
       (await client.validateIssuer({ issuer }, options(signal))).valid,
     explain: (identity, action, logicalKey, signal, edge) =>
@@ -52,26 +58,34 @@ export function createSecurityManagementClient(
     apply: (request, signal) =>
       client.applySecurityChanges(request, options(signal)),
     prepare: (review, signal) =>
-      client.prepareSecurityChanges({ review }, options(signal)),
+      client.prepareSecurityChanges({ currentReview: review }, options(signal)),
     beginAuthorization: (review, signal) =>
-      client.beginSecurityChangeAuthorization({ review }, options(signal)),
-    authorization: (authorizationId, signal) =>
+      client.beginSecurityChangeAuthorization(
+        { currentReview: review },
+        options(signal),
+      ),
+    authorization: (review, authorizationId, attemptAffinity, signal) =>
       client.getSecurityChangeAuthorization(
-        { authorizationId },
+        { authorizationId, currentProfile: review.profile, attemptAffinity },
         options(signal),
       ),
     openAuthorization: () => openSecurityAuthorizationWindow(baseUrl),
-    authorizationRequired: (error) =>
-      error instanceof SecurityOperationAuthorizationRequiredError
+    invocationRejected: (error) =>
+      error instanceof CurrentSecurityInvocationRejectedError
         ? error.detail
         : undefined,
-    precommitRejected: (error) =>
-      error instanceof SecurityChangePrecommitRejectedError
-        ? error.detail
-        : undefined,
-    status: (changeId, signal) =>
-      client.getSecurityChangeStatus({ changeId }, options(signal)),
-    newChangeId: () => crypto.getRandomValues(new Uint8Array(16)),
+    status: async (review, signal) => {
+      const response = await client.getSecurityChangeStatus(
+        {
+          currentProfile: review.profile,
+          currentChangeId: review.changeId,
+          currentIntentDigest: review.intentDigest,
+        },
+        options(signal),
+      );
+      if (!response.currentResult) throw new Error("Missing current result.");
+      return response.currentResult;
+    },
     failure,
   };
 }

@@ -121,8 +121,8 @@ export function AccessExplanation({
       {result && (
         <div role="status">
           <p>
-            {result.allowed ? "Allowed" : "Denied"} · Server revision{" "}
-            {result.version?.revision.toString()}
+            {result.allowed ? "Allowed" : "Denied"} · Policy cut{" "}
+            {result.version?.currentCut?.sequence.toString()}
           </p>
           <ul>
             {result.matches.map((match, i) => (

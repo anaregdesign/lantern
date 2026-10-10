@@ -47,6 +47,12 @@ type App struct {
 	runtime         *service.ServingRuntime
 	peerServer      *provider.PeerPlaneServer
 	securityWorkers *provider.SecurityWorkers
+	security        securityLifecycle
+}
+
+type securityLifecycle interface {
+	Close() error
+	Shutdown() error
 }
 
 func newApp(
@@ -70,6 +76,7 @@ func newApp(
 	runtime *service.ServingRuntime,
 	peerServer *provider.PeerPlaneServer,
 	securityWorkers *provider.SecurityWorkers,
+	security *provider.SecurityRuntime,
 	peerPlane provider.PeerPlaneConfig,
 	_ provider.DomainMetricsWired,
 	_ provider.CacheGCHooksWired,
@@ -112,6 +119,7 @@ func newApp(
 		runtime:         runtime,
 		peerServer:      peerServer,
 		securityWorkers: securityWorkers,
+		security:        security,
 	}
 }
 
@@ -242,6 +250,19 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 	// Keep one owner for the complete serving cut until every goroutine has
 	// stopped. Wire also invokes this Close path when later construction fails.
 	defer func() { runErr = errors.Join(runErr, a.runtime.Close()) }()
+	orderly := false
+	defer func() {
+		if a.security != nil {
+			if orderly {
+				runErr = errors.Join(runErr, a.security.Shutdown())
+			} else {
+				runErr = errors.Join(runErr, a.security.Close())
+			}
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Restore-on-startup (#770, #779) runs BEFORE any listener serves: the
 	// newest mounted dump is replayed as a baseline so the node never begins
 	// serving an empty graph. When peers exist the subsequent bootstrap
@@ -292,8 +313,9 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 	g.Go(func() error { return a.pump.Run(gctx) })
 	g.Go(func() error { return a.antiEntropy.Run(gctx) })
 	g.Go(func() error { return a.backupper.Run(gctx) })
+	drained := false // Read only after errgroup has joined the coordinator.
 	g.Go(func() error {
-		drainPhase(ctx, gctx.Done(), a.drainDelay, a.beginDrain)
+		drained = drainPhase(ctx, gctx.Done(), a.drainDelay, a.beginDrain)
 		cancelServe()
 		return nil
 	})
@@ -305,10 +327,21 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 		defer cancel()
 		if err := a.tracing.Shutdown(shutdownCtx); err != nil {
 			a.logger.Warn("otel tracer shutdown returned error", slog.Any("err", err))
+			return err
 		}
 		return nil
 	})
-	return g.Wait()
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	if !drained {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return errors.New("server stopped without completing the requested drain")
+	}
+	orderly = true
+	return nil
 }
 
 // beginDrain latches the readiness Gate into NOT_SERVING (#768) so the
@@ -331,36 +364,62 @@ func (a *App) beginDrain() {
 // serving while load balancers deregister the endpoint. When serveDone
 // fires first it returns immediately without draining: an already-failing
 // server should shut down without an artificial delay.
-func drainPhase(parent context.Context, serveDone <-chan struct{}, drainDelay time.Duration, begin func()) {
+func drainPhase(parent context.Context, serveDone <-chan struct{}, drainDelay time.Duration, begin func()) bool {
 	select {
 	case <-parent.Done():
 	case <-serveDone:
-		return
+		return false
 	}
 	if begin != nil {
 		begin()
 	}
+	if parent.Err() != context.Canceled {
+		return false
+	}
 	if drainDelay <= 0 {
-		return
+		return true
 	}
 	timer := time.NewTimer(drainDelay)
 	defer timer.Stop()
 	select {
 	case <-timer.C:
+		return true
 	case <-serveDone:
+		return false
 	}
 }
 
+func initializeApp() (*App, func(), error) { return initializeAppWithListeners(nil) }
+
 func main() {
+	if err := runMain(); err != nil {
+		slog.Error("server exited with error", slog.Any("err", err))
+		os.Exit(1)
+	}
+}
+
+// Keep os.Exit outside all owned lifetimes. Initialization and abort cleanup
+// may release resources, but only App's completed drain can publish CLEAN.
+func runMain() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	app, cleanup, err := initializeApp()
+	launch, err := prepareListenerLaunch(ctx, stop)
 	if err != nil {
-		slog.Error("failed to initialize app", slog.Any("err", err))
-		os.Exit(1)
+		return fmt.Errorf("native listener launch: %w", err)
+	}
+	defer launch.Close()
+	app, cleanup, err := initializeAppWithListeners(launch.owner)
+	if err != nil {
+		return fmt.Errorf("initialize app: %w", err)
 	}
 	defer cleanup()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err := launch.acknowledge(); err != nil {
+		return fmt.Errorf("native listener adoption: %w", err)
+	}
 
 	// Apply runtime mutex/block profile sampling rates as early as
 	// possible so any subsequent contention is captured. Both knobs are
@@ -376,8 +435,8 @@ func main() {
 	)
 
 	if err := app.Run(ctx); err != nil {
-		app.logger.Error("server exited with error", slog.Any("err", err))
-		os.Exit(1)
+		return err
 	}
 	app.logger.Info("server stopped cleanly")
+	return nil
 }

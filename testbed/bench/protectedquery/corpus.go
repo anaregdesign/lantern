@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,11 +21,94 @@ const (
 	hiddenBridge = "bench:private:bridge"
 	unreachable  = "bench:walk:unreachable"
 	hiddenHit    = "bench:private:best"
+	searchLimit  = 20
+	alphaPrefix  = "bench:community:alpha:"
 )
 
 type logicalCorpus struct {
 	Vertices []*pb.Vertex `json:"vertices"`
 	Edges    []*pb.Edge   `json:"edges"`
+}
+
+type fixtureSearchExpectation struct {
+	keys       []string
+	candidates map[string]bool
+}
+
+// Derive from the ASCII fixture's independent word/gram inventory, not live
+// hits or the production index. Precompute before any timed driver action.
+var fixtureSearchExpectations = deriveFixtureSearchExpectations()
+
+func fixtureSearchTerms(text string) map[string]bool {
+	for _, r := range text {
+		if r > 127 {
+			panic("query fixture requires its pinned ASCII search contract")
+		}
+	}
+	terms := map[string]bool{}
+	for _, word := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		terms["word:"+word] = true
+		if len(word) > 2 { // ScriptAwareTokenizer omits redundant exact-width grams.
+			for i := 0; i+2 <= len(word); i++ {
+				terms["gram:"+word[i:i+2]] = true
+			}
+		}
+	}
+	return terms
+}
+
+func deriveFixtureSearchExpectations() map[string]fixtureSearchExpectation {
+	query := fixtureSearchTerms("shared")
+	matching := map[string]bool{}
+	for _, vertex := range corpus().Vertices {
+		value, ok := vertex.Value.(*pb.Vertex_String_)
+		if !ok {
+			panic("query fixture search requires pinned string fields")
+		}
+		for _, text := range []string{vertex.Key, value.String_} {
+			for term := range fixtureSearchTerms(text) {
+				if query[term] {
+					matching[vertex.Key] = true
+				}
+			}
+		}
+	}
+	result := map[string]fixtureSearchExpectation{}
+	for _, mode := range []string{"off", "oidc"} {
+		keys := append(requiredRankingKeys(mode), unreachable)
+		anchors := map[string]bool{}
+		for _, key := range keys {
+			if !matching[key] {
+				panic("required query fixture anchor does not match")
+			}
+			anchors[key] = true
+		}
+		eligible, alpha := map[string]bool{}, []string{}
+		for key := range matching {
+			if mode == "oidc" && strings.HasPrefix(key, "bench:private:") {
+				continue
+			}
+			eligible[key] = true
+			if strings.HasPrefix(key, alphaPrefix) {
+				alpha = append(alpha, key)
+			} else if !anchors[key] {
+				panic("fixture candidate inventory changed")
+			}
+		}
+		// The full-word ranking anchors and unique key-field 're' in unreachable
+		// outrank alpha's shared 'ha' evidence for every existing writer value.
+		// Alpha documents have identical query TF/field lengths, hence equal BM25
+		// scores even as global statistics change; the required key comparator
+		// chooses their lexical prefix. A bounded independent score check covers
+		// all initial/mixed value combinations; no cross-RPC score is frozen here.
+		sort.Strings(alpha)
+		limit := min(searchLimit, len(eligible))
+		keys = append(keys, alpha[:limit-len(keys)]...)
+		result[mode] = fixtureSearchExpectation{keys: keys, candidates: eligible}
+	}
+	return result
 }
 
 func corpus() logicalCorpus {
@@ -56,39 +141,70 @@ func corpusDigest() string {
 	return hex.EncodeToString(digest[:])
 }
 
-func seedCorpus(ctx context.Context, endpoint *queryEndpoint) error {
+type seedAcknowledgements struct {
+	VertexCount            int `json:"vertex_count"`
+	EdgeCount              int `json:"edge_count"`
+	VerticesAppliedAndLive int `json:"vertices_applied_and_live"`
+	EdgesAppliedAndLive    int `json:"edges_applied_and_live"`
+	VertexPutRPCs          int `json:"vertex_put_rpcs"`
+	EdgePutRPCs            int `json:"edge_put_rpcs"`
+}
+
+func seedCorpus(ctx context.Context, endpoint *queryEndpoint) (seedAcknowledgements, error) {
 	c := corpus()
+	ack := seedAcknowledgements{VertexCount: len(c.Vertices), EdgeCount: len(c.Edges)}
 	for start := 0; start < len(c.Vertices); start += 128 {
 		end := min(start+128, len(c.Vertices))
+		ack.VertexPutRPCs++
 		response, err := endpoint.client.PutVertices(ctx, authenticated(endpoint.writer, &pb.PutVerticesRequest{Vertices: c.Vertices[start:end]}))
 		if err != nil {
-			return err
+			return ack, err
 		}
 		if len(response.Msg.Outcomes) != end-start {
-			return errors.New("seed vertex outcome count mismatch")
+			return ack, errors.New("seed vertex outcome count mismatch")
 		}
 		for _, outcome := range response.Msg.Outcomes {
 			if outcome != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
-				return errors.New("seed vertex not live")
+				return ack, errors.New("seed vertex not live")
 			}
+			ack.VerticesAppliedAndLive++
 		}
 	}
 	for start := 0; start < len(c.Edges); start += 128 {
 		end := min(start+128, len(c.Edges))
+		ack.EdgePutRPCs++
 		response, err := endpoint.client.PutEdges(ctx, authenticated(endpoint.writer, &pb.PutEdgesRequest{Edges: c.Edges[start:end]}))
 		if err != nil {
-			return err
+			return ack, err
 		}
 		if len(response.Msg.Outcomes) != end-start {
-			return errors.New("seed edge outcome count mismatch")
+			return ack, errors.New("seed edge outcome count mismatch")
 		}
 		for _, outcome := range response.Msg.Outcomes {
 			if outcome != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
-				return errors.New("seed edge not live")
+				return ack, errors.New("seed edge not live")
 			}
+			ack.EdgesAppliedAndLive++
 		}
 	}
-	return nil
+	return ack, nil
+}
+
+// Retain bounded keys from the actual failing response, without values or credentials.
+type searchResultFailure struct {
+	Reason                string   `json:"reason"`
+	Query                 string   `json:"query"`
+	Limit                 int      `json:"limit"`
+	Prefix                string   `json:"prefix"`
+	Mode                  string   `json:"mode"`
+	HitCount              int      `json:"hit_count"`
+	ExpectedKeys          []string `json:"expected_keys"`
+	ObservedKeys          []string `json:"observed_keys"`
+	ObservedKeysTruncated bool     `json:"observed_keys_truncated"`
+}
+
+func (f *searchResultFailure) Error() string {
+	return fmt.Sprintf("%s: hits=%d expected=%q observed=%q", f.Reason, f.HitCount, f.ExpectedKeys, f.ObservedKeys)
 }
 
 func traversal(family, seed string) *pb.IlluminateRequest {
@@ -106,24 +222,63 @@ func traversal(family, seed string) *pb.IlluminateRequest {
 
 func queryOnce(ctx context.Context, endpoint *queryEndpoint, family string) error {
 	if family == "search" {
-		response, err := endpoint.client.SearchVertices(ctx, authenticated(endpoint.reader, &pb.SearchVerticesRequest{Query: "shared", Limit: 20, Projection: pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX}))
+		response, err := endpoint.client.SearchVertices(ctx, authenticated(endpoint.reader, &pb.SearchVerticesRequest{Query: "shared", Limit: searchLimit, Projection: pb.SearchProjection_SEARCH_PROJECTION_FULL_VERTEX}))
 		if err != nil {
 			return err
 		}
-		visible := 0
+		expected := expectedSearchKeys(endpoint.mode)
+		fail := func(reason string) error {
+			keys := make([]string, 0, min(len(response.Msg.Hits), 20))
+			for _, hit := range response.Msg.Hits[:min(len(response.Msg.Hits), 20)] {
+				keys = append(keys, hit.GetKey())
+			}
+			return &searchResultFailure{Reason: reason, Query: "shared", Limit: 20, Mode: endpoint.mode, HitCount: len(response.Msg.Hits), ExpectedKeys: expected, ObservedKeys: keys, ObservedKeysTruncated: len(response.Msg.Hits) > len(keys)}
+		}
+		seen := make(map[string]bool, len(expected))
+		var previous *pb.SearchHit
+		var alphaScore float64
+		minimumAnchorScore := math.Inf(1)
+		alphaSeen := false
 		for _, hit := range response.Msg.Hits {
-			if !strings.HasPrefix(hit.Key, "bench:") || hit.Vertex == nil || hit.Vertex.Key != hit.Key {
-				return errors.New("search lost logical key or full-vertex result")
+			if hit == nil || !strings.HasPrefix(hit.Key, "bench:") || hit.Vertex == nil || hit.Vertex.Key != hit.Key {
+				return fail("search lost logical key or full-vertex result")
 			}
-			if strings.HasPrefix(hit.Key, "bench:ranking:") {
-				visible++
+			if seen[hit.Key] {
+				return fail("search duplicated logical result")
 			}
+			seen[hit.Key] = true
 			if endpoint.mode == "oidc" && strings.HasPrefix(hit.Key, "bench:private:") {
-				return errors.New("search disclosed denied hit")
+				return fail("search disclosed denied hit")
+			}
+			if !fixtureSearchExpectations[endpoint.mode].candidates[hit.Key] {
+				return fail("search returned a nonmatching fixture candidate")
+			}
+			if math.IsNaN(hit.Score) || math.IsInf(hit.Score, 0) || hit.Score <= 0 {
+				return fail("search returned an invalid matching score")
+			}
+			if previous != nil && (hit.Score > previous.Score || hit.Score == previous.Score && hit.Key < previous.Key) {
+				return fail("search violated descending score or ascending tie order")
+			}
+			previous = hit
+			if strings.HasPrefix(hit.Key, alphaPrefix) {
+				if alphaSeen && hit.Score != alphaScore {
+					return fail("search alpha candidates lost identical scoring evidence")
+				}
+				alphaScore, alphaSeen = hit.Score, true
+			} else {
+				minimumAnchorScore = min(minimumAnchorScore, hit.Score)
 			}
 		}
-		if visible < 2 || endpoint.mode == "off" && len(response.Msg.Hits) < 3 {
-			return errors.New("search lost corpus results")
+		if alphaSeen && minimumAnchorScore <= alphaScore {
+			return fail("search required anchors did not outrank the derived alpha tie")
+		}
+		if len(seen) != len(expected) {
+			return fail("search violated derived matching cardinality and limit")
+		}
+		for _, key := range expected {
+			if !seen[key] {
+				return fail("search mode-specific expected result missing")
+			}
 		}
 		return nil
 	}
@@ -198,4 +353,16 @@ func verifyCorpus(ctx context.Context, endpoint *queryEndpoint, invalid string) 
 		return errors.New("full-corpus control did not cross planted hidden bridge")
 	}
 	return nil
+}
+
+func expectedSearchKeys(mode string) []string {
+	return fixtureSearchExpectations[mode].keys
+}
+
+func requiredRankingKeys(mode string) []string {
+	keys := []string{"bench:ranking:a", "bench:ranking:b"}
+	if mode == "off" {
+		keys = append(keys, hiddenHit)
+	}
+	return keys
 }

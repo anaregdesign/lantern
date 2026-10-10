@@ -32,6 +32,9 @@ type managementAuthorization struct {
 	createdAt, notBefore, expiresAt, approvedAt time.Time
 	state                                       AuthorizationState
 	proof                                       [32]byte
+	evidence                                    *PurposeAuthenticationEvidence
+	evidenceBytes                               int
+	current                                     *authorityPendingPurpose
 }
 
 // ManagementAuthorizations is process-bound to the pinned fixed writer. A
@@ -45,6 +48,7 @@ type ManagementAuthorizations struct {
 	proofs   map[[32]byte][32]byte
 	lifetime time.Duration
 	limit    int
+	closed   bool
 }
 
 func NewManagementAuthorizations(lifetime time.Duration, limit int) *ManagementAuthorizations {
@@ -63,6 +67,9 @@ func (m *ManagementAuthorizations) Begin(binding ManagementBinding, now time.Tim
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed {
+		return AuthorizationStart{}, ErrOperationAuthorization
+	}
 	for key, operation := range m.pending {
 		if !now.Before(operation.expiresAt) {
 			delete(m.pending, key)
@@ -114,6 +121,9 @@ func (m *ManagementAuthorizations) Start(ticket [32]byte, current *Revision, now
 }
 
 func validAuthorizationCut(operation managementAuthorization, current *Revision, now time.Time) bool {
+	if operation.current != nil {
+		return false
+	}
 	binding := operation.binding
 	if current == nil || now.Before(operation.createdAt) || !now.Before(operation.expiresAt) || current.generation != binding.Generation || current.sequence != binding.ExpectedRevision || current.digest != binding.ExpectedDigest || current.writer != binding.Writer {
 		return false
@@ -123,14 +133,35 @@ func validAuthorizationCut(operation managementAuthorization, current *Revision,
 	return known && issuer.Enabled && !issuer.Deleted && issuer.ConfigRevision == binding.IssuerConfigRevision && active && access.AllowsGlobal(SecurityManage)
 }
 
-func (m *ManagementAuthorizations) Complete(id [32]byte, actor Identity, authTime, credentialExpiry time.Time, issuerRevision uint64, current *Revision, now time.Time) error {
+// Complete accepts detached facts exclusively from the provider's trusted Code
+// adapter. The struct is not independently cryptographic proof of that adapter.
+func (m *ManagementAuthorizations) Complete(id [32]byte, event TokenAuthenticationEvidence, current *Revision, now time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	operation, known := m.pending[id]
-	if !known {
+	if !known || operation.state != AuthorizationPending {
 		return ErrOperationAuthorization
 	}
-	if !validAuthorizationCut(operation, current, now) || operation.state != AuthorizationPending || actor != operation.binding.Actor || issuerRevision != operation.binding.IssuerConfigRevision || authTime.IsZero() || authTime.Before(operation.notBefore) || authTime.After(now) || !now.Before(credentialExpiry) {
+	commitment, evidenceErr := event.Commitment()
+	authTime, credentialExpiry := event.AuthTime.Time(), event.ExpiresAt.Time()
+	if evidenceErr != nil || event.Mode != "code" || event.Code.Flow != "operation" || event.Code.AuthorizationID != id ||
+		event.Generation != operation.binding.Generation || !validAuthorizationCut(operation, current, now) ||
+		event.Identity != operation.binding.Actor || event.ConfigRevision != operation.binding.IssuerConfigRevision ||
+		event.Code.CreatedAt.Before(operation.notBefore) || event.Code.ConsumedAt.Before(event.Code.CreatedAt) ||
+		event.Code.ConsumedAt.After(now) || !event.Code.ConsumedAt.Before(event.Code.ExpiresAt) ||
+		authTime.IsZero() || authTime.Before(operation.notBefore) || authTime.After(now) || !now.Before(credentialExpiry) {
+		operation.state = AuthorizationDenied
+		m.pending[id] = operation
+		return ErrOperationAuthorization
+	}
+	expiry := operation.expiresAt
+	if credentialExpiry.Before(expiry) {
+		expiry = credentialExpiry
+	}
+	evidence := PurposeAuthenticationEvidence{Version: 1, Kind: "operation-approval", Binding: operation.binding, AuthorizationID: id,
+		ReviewAt: operation.createdAt, NotBefore: operation.notBefore, ApprovedAt: now, ExpiresAt: expiry, Event: event, EventCommitment: commitment}
+	encoded, err := authenticationEvidenceBytes(evidence)
+	if err != nil || len(encoded) > MaxAuthenticationEvidenceBytes {
 		operation.state = AuthorizationDenied
 		m.pending[id] = operation
 		return ErrOperationAuthorization
@@ -139,13 +170,25 @@ func (m *ManagementAuthorizations) Complete(id [32]byte, actor Identity, authTim
 	if _, err := rand.Read(proof[:]); err != nil {
 		return err
 	}
-	operation.state, operation.proof, operation.approvedAt = AuthorizationApproved, proof, now
-	if credentialExpiry.Before(operation.expiresAt) {
-		operation.expiresAt = credentialExpiry
-	}
+	operation.state, operation.proof, operation.approvedAt, operation.expiresAt = AuthorizationApproved, proof, now, expiry
+	operation.evidence, operation.evidenceBytes = &evidence, len(encoded)
 	m.pending[id] = operation
 	m.proofs[sha256.Sum256(proof[:])] = id
 	return nil
+}
+
+// Close discards process-owned approvals and their transcripts. It is terminal;
+// native Sessions and retained business results have independent owners.
+func (m *ManagementAuthorizations) Close() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	clear(m.pending)
+	clear(m.tickets)
+	clear(m.proofs)
+	m.closed = true
 }
 func (m *ManagementAuthorizations) Reject(id [32]byte) {
 	m.mu.Lock()
@@ -176,7 +219,7 @@ func (m *ManagementAuthorizations) Verify(proof []byte, binding ManagementBindin
 	defer m.mu.Unlock()
 	id, known := m.proofs[sha256.Sum256(proof)]
 	operation, pending := m.pending[id]
-	if !known || !pending || operation.state != AuthorizationApproved || operation.binding != binding || now.Before(operation.approvedAt) || !now.Before(operation.expiresAt) {
+	if !known || !pending || operation.current != nil || operation.state != AuthorizationApproved || operation.binding != binding || now.Before(operation.approvedAt) || !now.Before(operation.expiresAt) {
 		return ErrOperationAuthorization
 	}
 	return nil

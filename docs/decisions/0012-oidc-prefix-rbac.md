@@ -24,9 +24,12 @@ policy authority, Role admission, logical data boundaries, public Security/
 Changes/browser APIs and a separate signed-membership workload plane in the
 production Wire graph. Source, CI, final exact-source acceptance and external
 provider/clock evidence remain separate exit buckets in #1599/#1610. The Head
-transition is in progress and must qualify its own response/SDK contract before
-activation. Prior local conformance does not complete Head, deployment or
-provider qualification.
+source and response/SDK implementation were merged in
+[#1661](https://github.com/anaregdesign/lantern/pull/1661) under
+[#1626](https://github.com/anaregdesign/lantern/issues/1626). Final exact-source,
+provider, device and HA qualification remain separate. HA Edge Create stays
+disabled pending distributed absence/arbitration and endpoint/tombstone proof.
+Prior local conformance does not complete deployment or provider qualification.
 
 The native Store reserves private nonexpiring GraphCache state and reuses
 FileWAL framing, ownership, sync, lower-bound tip proofs and bounded checkpoint
@@ -503,6 +506,20 @@ gated by #1613/#1610. Possibly sent operation IDs never change during namespace
 migration; scoped offline clients must retain an unknown ID after denial and
 cannot assume automatic status-first retry is qualified.
 
+## Private current-authority implementation
+
+The separately constructed [current-authority/origin owner](../security-current-authority.md)
+(#1722) extends the fixed-membership S1/S2/S3 components. It combines serialized
+challenge-start renewal, conditional native UTC/elapsed intervals, actual
+credential and one-use full-S1 purpose verification, durable serial/original H,
+and bounded immutable output authorization. Existing HLC/data and fixed-writer
+public meanings remain unchanged. Approved A permits an exact preexpiry output
+unit to finish arbitrarily late; it promises no physical-send deadline. The new
+private APPLIED wait concerns cessation of new stale authorization and does not
+reinterpret `globally_enforced`. Public S4 activation and final #1610 target,
+provider and OS qualification remain separate; source-level/native focused
+evidence is not deployment certification.
+
 ## OIDC and browser session boundary
 
 Use registered Issuers only. Verify exact Issuer, audience, permitted algorithm,
@@ -776,4 +793,6 @@ Private operator keys, bound OIDC secrets, peer checkpoints and native security/
 
 Private creation installs the owner and protected DACL in `CreateFile` before any content is written. Checkpoints/manifests use private temporary files and preserve file-sync, replacement and native directory-flush errors; failed directory flushes never become successful durability acknowledgements. Restart validates native metadata before replay. Provision Windows secrets for the actual Server account rather than assuming an inherited Administrators/Users ACL is accepted. This is file privacy and local persistence admission, not a claim of survival after sole-volume loss or every storage stack's power failure.
 
-The maintained native fixture exposes bounded stdin-only `-private-input` creation for Rust test inputs. Credentials/configuration never enter argv or a broadly created temporary file. Public startup failures contain only fixed categories; arbitrary child log/exception contents stay private. Native Windows CI executes positive/negative DACL tests and the existing authenticated Rust wire cases; cross-compilation alone does not qualify Windows.
+The maintained native fixture exposes bounded stdin-only `-private-input` creation for Rust test inputs. Credentials/configuration never enter argv or a broadly created temporary file. Public startup failures contain only fixed categories and bounded typed readiness diagnostics: node/port, elapsed wait, probe category/HTTP status, child exit code, and a fixed classification of a bounded child log. The Rust fixture retains this diagnostic before removing private temporary state; arbitrary child log/exception contents stay private. Native Windows CI executes positive/negative DACL tests and the existing authenticated Rust wire cases; cross-compilation alone does not qualify Windows.
+
+The Rust authenticated fixture uses `authfixture -allocated-nodes` instead of releasing reserved ports before startup. Each supervised production child reserves its actual wildcard public TCP listener and, for a cohort, its IPv4-loopback private listener at port zero. A nonce-bound, bounded local pipe exchange returns only allocation metadata so the supervisor can generate the exact HTTPS origins and signed membership. The child retains the same Go listeners and poller throughout; no descriptor import, cross-process socket duplication, second bind, or fallback bind occurs. Configuration then passes through the ordinary providers: public runtime/receipt/frame certification and private exact-runtime/replication/policy/workload checks precede adoption. Adoption acknowledgment precedes serving and does not replace verified-TLS Health/capabilities readiness. The supervisor publishes fixture metadata only after that existing readiness gate and reaps the entire cohort on failure. Its stdin pipe is also the child's lifetime signal, including on Windows. Without the explicit local launch argument, ordinary server startup still binds through the existing providers. Native platform lifecycle/conflicting-bind tests accompany the existing real authenticated Rust receipt and HA paths; the local launch capability supplies no current-authority or durability proof.

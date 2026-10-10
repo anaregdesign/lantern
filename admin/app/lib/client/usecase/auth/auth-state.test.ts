@@ -1,18 +1,41 @@
+import { clone } from "@bufbuild/protobuf";
+import {
+  BrowserSessionSchema,
+  CurrentSessionRevocationReviewSchema,
+} from "../../../../../../sdks/node/src/gen/graph/v1/security_pb";
 import { describe, expect, test } from "bun:test";
 import {
   AuthMode,
-  parseBrowserSession,
+  SecurityPrincipalKind,
+  SecurityEnforcementState,
+  type SessionRevocation,
+  type CurrentSessionRevocationReview,
   type GetAuthCapabilitiesResponse,
   type BrowserSession,
 } from "lantern-sdk/web";
-import { AuthController, type AuthGateway } from "./auth-state";
+import {
+  AuthController,
+  SessionRevocationRecovery,
+  type AuthGateway,
+} from "./auth-state";
+
+import {
+  profile,
+  cut,
+  version,
+  review,
+  result,
+} from "../../../../../test/current-security";
 
 const now = Date.now();
 function capabilities(mode = AuthMode.OIDC): GetAuthCapabilitiesResponse {
   return {
     $typeName: "graph.v1.GetAuthCapabilitiesResponse",
     mode,
-    protocolVersion: 1,
+    protocolVersion: mode === AuthMode.OIDC ? 2 : 1,
+    currentProfile: mode === AuthMode.OIDC ? profile : undefined,
+    currentOriginEnabled: mode === AuthMode.OIDC,
+    currentMember: 1,
     ready: true,
     loginPath: mode === AuthMode.OIDC ? "/auth/login" : "",
     loginIssuers:
@@ -28,37 +51,75 @@ function capabilities(mode = AuthMode.OIDC): GetAuthCapabilitiesResponse {
   };
 }
 function session(revision = "1", csrf = "A".repeat(43)): BrowserSession {
-  return parseBrowserSession(
-    JSON.stringify({
-      mode: "AUTH_MODE_OIDC",
-      principal: {
-        identity: {
-          kind: "SECURITY_PRINCIPAL_KIND_OIDC",
-          issuer: "https://idp.example",
-          subject: "alice",
-        },
-        version: {
-          revision,
-          digest: btoa("d".repeat(32)),
-          generation: btoa("g".repeat(16)),
-        },
-        expiresAt: new Date(now + 25_000).toISOString(),
-        csrfToken: csrf,
+  return clone(BrowserSessionSchema, {
+    $typeName: "graph.v1.BrowserSession",
+    mode: AuthMode.OIDC,
+    currentProfile: profile,
+    principal: {
+      $typeName: "graph.v1.GetCurrentPrincipalResponse",
+      identity: {
+        $typeName: "graph.v1.SecurityIdentity",
+        kind: SecurityPrincipalKind.OIDC,
+        issuer: "https://idp.example",
+        subject: "alice",
+        machineName: "",
       },
-    }),
-  );
+      roles: [],
+      version: {
+        ...version,
+        currentCut: { ...cut, sequence: BigInt(revision) },
+      },
+      recentAuthentication: false,
+      expiresAt: {
+        $typeName: "google.protobuf.Timestamp",
+        seconds: BigInt(Math.floor((now + 25000) / 1000)),
+        nanos: ((now + 25000) % 1000) * 1e6,
+      },
+      csrfToken: csrf,
+    },
+  });
 }
-function fixture(overrides: Partial<AuthGateway> = {}) {
+function sessionReview(): CurrentSessionRevocationReview {
+  const r = review();
+  return clone(CurrentSessionRevocationReviewSchema, {
+    $typeName: "graph.v1.CurrentSessionRevocationReview",
+    profile: r.profile,
+    expectedCut: { ...cut, sequence: 1n },
+    changeId: r.changeId,
+    actor: r.actor,
+    intentDigest: r.intentDigest,
+    sessionDigest: "a".repeat(64),
+    sessionLineage: 1n,
+  });
+}
+function revocation(extra: Partial<SessionRevocation> = {}): SessionRevocation {
+  return {
+    $typeName: "graph.v1.SessionRevocation",
+    enforcement: SecurityEnforcementState.UNSPECIFIED,
+    localCookieCleared: false,
+    ...extra,
+  };
+}
+
+function fixture(
+  overrides: Partial<AuthGateway> = {},
+  recovery?: SessionRevocationRecovery,
+) {
   return new AuthController(
     {
       sameOriginHTTPS: true,
       capabilities: async () => capabilities(),
       session: async () => session(),
-      logout: async () => {},
+      logout: async (request) =>
+        request.prepareOnly
+          ? revocation({ currentReview: sessionReview() })
+          : revocation({ localCookieCleared: true }),
+      logoutStatus: async () => result(),
       login: () => {},
       ...overrides,
     },
     () => now,
+    recovery,
   );
 }
 describe("Admin authority lifetime", () => {
@@ -212,4 +273,142 @@ describe("Admin authority lifetime", () => {
     await pending;
     expect(controller.getSnapshot().kind).toBe("checking");
   });
+});
+
+test("logout retains review before Apply, separates local deletion, and uses status after sign-in", async () => {
+  let csrf = "A".repeat(43),
+    applies = 0,
+    prepares = 0,
+    local = 0;
+  const controller = fixture({
+    session: async () => session("1", csrf),
+    logout: async (request) => {
+      if (request.prepareOnly) {
+        prepares++;
+        return revocation({ currentReview: sessionReview() });
+      }
+      if (request.localOnly) {
+        local++;
+        return revocation({ localCookieCleared: true });
+      }
+      applies++;
+      expect(controller.hasLogoutRecord()).toBe(true);
+      expect(request.review).toEqual(sessionReview());
+      throw new Error("lost Apply response");
+    },
+    logoutStatus: async (r) => {
+      expect(r).toEqual(sessionReview());
+      return result({ ...review(), expectedCut: r.expectedCut });
+    },
+  });
+  await controller.refresh();
+  await controller.logout();
+  expect(applies).toBe(1);
+  expect(prepares).toBe(1);
+  expect(local).toBe(1);
+  expect(controller.getLogoutMessage()).toContain(
+    "Cluster revocation is unconfirmed",
+  );
+  expect(controller.getSnapshot().kind).toBe("login");
+  csrf = "B".repeat(43);
+  await controller.refresh();
+  await controller.checkLogoutStatus();
+  expect(controller.getLogoutMessage()).toContain(
+    "does not describe the new session",
+  );
+  expect(applies).toBe(1);
+  controller.dispose();
+});
+test("full current profile, cut and credential binding invalidate granting views", async () => {
+  let current = session();
+  const controller = fixture({ session: async () => current });
+  await controller.refresh();
+  for (const change of [
+    () => {
+      current.principal!.version!.currentCut!.fences = new Uint8Array(32).fill(
+        77,
+      );
+    },
+    () => {
+      current.principal!.version!.admissionBinding = new Uint8Array(32).fill(
+        78,
+      );
+    },
+  ]) {
+    const prior = controller.getSnapshot();
+    current = structuredClone(current);
+    change();
+    await controller.refresh();
+    expect(prior.kind === "ready" && prior.signal.aborted).toBe(true);
+  }
+  current = structuredClone(current);
+  current.currentProfile!.timeProfile = new Uint8Array(32).fill(99);
+  await controller.refresh();
+  expect(controller.getSnapshot().kind).toBe("error");
+  controller.dispose();
+});
+test("current-v2 refuses scalar legacy sessions and ordinary long-lived credentials need no recent auth", async () => {
+  const long = session();
+  long.principal!.expiresAt!.seconds += 3600n;
+  const controller = fixture({ session: async () => long });
+  await controller.refresh();
+  expect(controller.getSnapshot().kind).toBe("ready");
+  controller.dispose();
+  const legacy = session();
+  legacy.principal!.version = { ...version, revision: 1n };
+  const refused = fixture({ session: async () => legacy });
+  await refused.refresh();
+  expect(refused.getSnapshot().kind).toBe("error");
+  refused.dispose();
+});
+
+test("logout recovery survives gateway disposal and retains each new session operation", async () => {
+  const recovery = new SessionRevocationRecovery();
+  let applies = 0,
+    statuses = 0;
+  const original = fixture(
+    {
+      logout: async (request) => {
+        if (request.prepareOnly)
+          return revocation({ currentReview: sessionReview() });
+        if (request.localOnly) return revocation({ localCookieCleared: true });
+        applies++;
+        throw new Error("lost response");
+      },
+    },
+    recovery,
+  );
+  await original.refresh();
+  await original.logout();
+  original.dispose();
+  const next = fixture(
+    {
+      session: async () => session("1", "B".repeat(43)),
+      logoutStatus: async (retained) => {
+        statuses++;
+        expect(retained).toEqual(sessionReview());
+        return result({ ...review(), expectedCut: retained.expectedCut });
+      },
+      logout: async (request) => {
+        if (request.prepareOnly) {
+          const nextReview = sessionReview();
+          nextReview.sessionDigest = "b".repeat(64);
+          nextReview.changeId!.nonce = new Uint8Array(16).fill(51);
+          return revocation({ currentReview: nextReview });
+        }
+        applies++;
+        return revocation({ localCookieCleared: true });
+      },
+    },
+    recovery,
+  );
+  await next.refresh();
+  expect(next.hasLogoutRecord()).toBe(true);
+  await next.checkLogoutStatus();
+  expect(statuses).toBe(1);
+  expect(applies).toBe(1);
+  await next.logout();
+  expect(applies).toBe(2);
+  expect(recovery.forPrincipal(session().principal!)).toHaveLength(2);
+  next.dispose();
 });

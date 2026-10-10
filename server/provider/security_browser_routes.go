@@ -1,11 +1,13 @@
 package provider
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -64,6 +66,9 @@ func browserQuery(req *http.Request, allowed ...string) (url.Values, error) {
 	return query, nil
 }
 func (r *SecurityRuntime) browserWriter(req *http.Request) bool {
+	if r != nil && r.current != nil {
+		return r.current.OriginEnabled() && r.browserOrigin(req, false) == nil && r.Ready(req.Context())
+	}
 	if r == nil || r.mode != "oidc" || r.authority == nil || r.browserOrigin(req, false) != nil {
 		return false
 	}
@@ -71,6 +76,10 @@ func (r *SecurityRuntime) browserWriter(req *http.Request) bool {
 	return known && r.authorityCheck(req.Context(), current) == nil
 }
 func (r *SecurityRuntime) browserLogin(w http.ResponseWriter, req *http.Request) {
+	if r.current != nil {
+		r.currentBrowserLogin(w, req)
+		return
+	}
 	if req.Method != http.MethodGet || !r.browserWriter(req) {
 		browserHTTPError(w, connect.CodeUnavailable)
 		return
@@ -121,6 +130,10 @@ func (r *SecurityRuntime) browserLogin(w http.ResponseWriter, req *http.Request)
 	http.Redirect(w, req, start.AuthorizationURL, http.StatusFound)
 }
 func (r *SecurityRuntime) browserCallback(w http.ResponseWriter, req *http.Request) {
+	if r.current != nil {
+		r.currentBrowserCallback(w, req)
+		return
+	}
 	if req.Method != http.MethodGet || !r.browserWriter(req) {
 		browserHTTPError(w, connect.CodeUnavailable)
 		return
@@ -170,7 +183,7 @@ func (r *SecurityRuntime) browserCallback(w http.ResponseWriter, req *http.Reque
 		browserHTTPError(w, connect.CodeUnauthenticated)
 		return
 	}
-	verified, err := r.verifier.VerifyLogin(req.Context(), tokens.IDToken(), trust, completion.Nonce(), tokens.AccessToken())
+	verified, err := r.verifier.VerifyLoginCompletion(req.Context(), completion, tokens)
 	if err != nil {
 		browserHTTPError(w, connect.CodeUnauthenticated)
 		return
@@ -179,8 +192,11 @@ func (r *SecurityRuntime) browserCallback(w http.ResponseWriter, req *http.Reque
 		browserHTTPError(w, connect.CodeUnavailable)
 		return
 	}
+	evidence := requestEvidenceCut(current, time.Time{})
+	evidence.kind, evidence.token = "token", verified
+	callbackContext := withRequestAuthenticationEvidence(req.Context(), evidence)
 	if operationAuthorization {
-		if err := r.authorizations.Complete(authorizationID, verified.Identity, verified.AuthTime, verified.ExpiresAt, trust.ConfigRevision, current, r.now()); err != nil {
+		if err := r.completeOperationAuthentication(callbackContext, authorizationID, current, r.now()); err != nil {
 			browserHTTPError(w, connect.CodeUnauthenticated)
 			return
 		}
@@ -207,7 +223,7 @@ func (r *SecurityRuntime) browserCallback(w http.ResponseWriter, req *http.Reque
 		return
 	}
 	now := r.now()
-	_, err = r.native.Store().IssueSession(req.Context(), security.SessionRequest{ChangeID: changeID, Identity: verified.Identity, IssuerConfigRevision: trust.ConfigRevision, Digest: browserDigest(value), CSRFDigest: browserDigest(csrf), ReplacesDigest: completion.ReplacesDigest(), RequireRecentAuth: completion.RequiresRecentAuthentication(), AuthTime: verified.AuthTime, Now: now, Lifetime: security.MaxSessionLifetime})
+	_, err = r.native.Store().IssueSession(callbackContext, security.SessionRequest{ChangeID: changeID, Identity: verified.Identity(), IssuerConfigRevision: trust.ConfigRevision, Digest: browserDigest(value), CSRFDigest: browserDigest(csrf), ReplacesDigest: completion.ReplacesDigest(), RequireRecentAuth: completion.RequiresRecentAuthentication(), AuthTime: verified.AuthTime(), Now: now, Lifetime: security.MaxSessionLifetime})
 	if err != nil {
 		browserHTTPError(w, connect.CodeUnauthenticated)
 		return
@@ -223,8 +239,14 @@ func newBrowserSecret() (string, error) {
 	}
 	return base64.RawURLEncoding.EncodeToString(value[:]), nil
 }
-func writeBrowserProto(w http.ResponseWriter, message proto.Message) {
-	raw, err := protojson.Marshal(message)
+func (r *SecurityRuntime) writeBrowserProto(w http.ResponseWriter, ctx context.Context, message proto.Message) {
+	var raw []byte
+	var err error
+	if r.current != nil {
+		raw, err = r.output.MarshalBrowserJSON(ctx, message)
+	} else {
+		raw, err = protojson.Marshal(message)
+	}
 	if err != nil {
 		browserHTTPError(w, connect.CodeUnavailable)
 		return
@@ -238,7 +260,7 @@ func (r *SecurityRuntime) browserSession(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	if r.mode == "off" {
-		writeBrowserProto(w, &pb.BrowserSession{Mode: pb.AuthMode_AUTH_MODE_OFF})
+		r.writeBrowserProto(w, req.Context(), &pb.BrowserSession{Mode: pb.AuthMode_AUTH_MODE_OFF})
 		return
 	}
 	ctx, _, err := r.authenticateBrowser(req, false)
@@ -251,9 +273,17 @@ func (r *SecurityRuntime) browserSession(w http.ResponseWriter, req *http.Reques
 		browserHTTPError(w, connect.CodeOf(err))
 		return
 	}
-	writeBrowserProto(w, &pb.BrowserSession{Mode: pb.AuthMode_AUTH_MODE_OIDC, Principal: principal.Msg})
+	response := &pb.BrowserSession{Mode: pb.AuthMode_AUTH_MODE_OIDC, Principal: principal.Msg}
+	if r.current != nil {
+		response.CurrentProfile = principal.Msg.Version.CurrentProfile
+	}
+	r.writeBrowserProto(w, req.Context(), response)
 }
 func (r *SecurityRuntime) browserLogout(w http.ResponseWriter, req *http.Request) {
+	if r.current != nil {
+		r.currentBrowserLogout(w, req)
+		return
+	}
 	if req.Method != http.MethodPost || req.URL.RawQuery != "" || !r.browserWriter(req) {
 		browserHTTPError(w, connect.CodeUnavailable)
 		return
@@ -281,7 +311,7 @@ func (r *SecurityRuntime) browserLogout(w http.ResponseWriter, req *http.Request
 	if r.authority.Enforced(result) {
 		response.Enforcement = pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED
 	}
-	writeBrowserProto(w, response)
+	r.writeBrowserProto(w, req.Context(), response)
 }
 
 // browserOperations is a non-cacheable forward-auth decision for a local
@@ -306,6 +336,10 @@ func (r *SecurityRuntime) browserOperations(w http.ResponseWriter, req *http.Req
 		return
 	}
 	if admission.Check(ctx, r.now()) != nil {
+		browserHTTPError(w, connect.CodeUnavailable)
+		return
+	}
+	if admission.BindCurrentGlobalOutput(ctx, security.OperationsRead) != nil {
 		browserHTTPError(w, connect.CodeUnavailable)
 		return
 	}

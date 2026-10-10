@@ -14,10 +14,14 @@ func (r *SecurityRuntime) PublicControlHTTPHandler(extra ...connect.HandlerOptio
 	options := service.SecurityHandlerOptions()
 	options = append(options, extra...)
 	options = append(options, connect.WithInterceptors(r.PublicAuthenticationInterceptor()))
-	return graphv1connect.NewLanternSecurityServiceHandler(r.control, options...)
+	return r.publicRPCHandler("/"+graphv1connect.LanternSecurityServiceName+"/", func(options ...connect.HandlerOption) (string, http.Handler) {
+		return graphv1connect.NewLanternSecurityServiceHandler(r.control, options...)
+	}, options...)
 }
 
 func (r *SecurityRuntime) BrowserControlHTTPHandler(extra ...connect.HandlerOption) (string, http.Handler) {
-	path, handler := graphv1connect.NewLanternSecurityServiceHandler(r.control, append(service.SecurityHandlerOptions(), extra...)...)
+	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternSecurityServiceName+"/", func(options ...connect.HandlerOption) (string, http.Handler) {
+		return graphv1connect.NewLanternSecurityServiceHandler(r.control, options...)
+	}, append(service.SecurityHandlerOptions(), extra...)...)
 	return "/browser" + path, r.BrowserRPCHandler(path, handler)
 }

@@ -53,10 +53,15 @@ func (c *loadWriterClient) PutVertices(context.Context, *connect.Request[pb.PutV
 
 func TestWriterFailureCannotBeMaskedBySuccessfulReader(t *testing.T) {
 	for _, failure := range []bool{false, true} {
-		client := &loadWriterClient{fail: failure, queryResultClient: queryResultClient{hits: []*pb.SearchHit{
-			{Key: "bench:ranking:a", Vertex: &pb.Vertex{Key: "bench:ranking:a"}},
-			{Key: "bench:ranking:b", Vertex: &pb.Vertex{Key: "bench:ranking:b"}},
-		}}}
+		var hits []*pb.SearchHit
+		for i, key := range expectedSearchKeys("oidc") {
+			score := 1.0
+			if i < len(requiredRankingKeys("oidc"))+1 {
+				score = 2
+			}
+			hits = append(hits, &pb.SearchHit{Key: key, Score: score, Vertex: &pb.Vertex{Key: key}})
+		}
+		client := &loadWriterClient{fail: failure, queryResultClient: queryResultClient{hits: hits}}
 		cfg := loadConfig{Family: "search", Phase: "update-mixed", Count: 2, RPS: 10, WriterRPS: 10, Concurrency: 2, Timeout: time.Second}
 		result, err := runLoad(t.Context(), &queryEndpoint{mode: "oidc", client: client}, cfg)
 		if (err != nil) != failure || client.calls.Load() != 2 || result.Reader.Offered != 2 || result.Writer.Offered != 2 {

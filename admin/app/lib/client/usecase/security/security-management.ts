@@ -1,46 +1,46 @@
+import { copySecurityContract } from "lantern-sdk/web";
+import {
+  type SecurityChangeRecovery,
+  type PendingSecurityChange,
+} from "./security-change-recovery";
+export { SecurityChangeRecovery } from "./security-change-recovery";
 import type {
   ApplySecurityChangesResponse,
   ExplainAccessResponse,
   GetRoleTemplatesResponse,
-  GetSecurityChangeStatusResponse,
   ListIssuersResponse,
   ListRolesResponse,
   ListUsersResponse,
-  SecurityAuditRecord,
+  CurrentSecurityAuditRecord,
   SecurityChange,
   SecurityIdentity,
   SecurityIssuer,
   SecurityRole,
   SecurityUser,
   SecurityVersion,
-  SecurityChangeReview,
+  CurrentSecurityReview,
+  CurrentSecurityChangeResult,
+  CurrentSecurityInvocationRejected,
   PrepareSecurityChangesResponse,
   BeginSecurityChangeAuthorizationResponse,
   GetSecurityChangeAuthorizationResponse,
-  SecurityOperationAuthorizationRequired,
-  SecurityChangePrecommitRejected,
 } from "lantern-sdk/web";
 import {
-  SecurityEnforcementState,
+  CurrentSecurityProgress,
+  CurrentSecurityDisposition,
+  CurrentAuthorizationStopObservation,
+  currentSecurityVersionBinding,
+  currentProfileBinding,
+  currentCutBinding,
+  currentOriginalBinding,
+  validateCurrentReview,
+  validatePreparedCurrentReview,
+  reconcileCurrentResult,
   SecurityAuthorizationRequirement,
   SecurityAuthorizationState,
-  SecurityChangeRejectionReason,
 } from "lantern-sdk/web";
 
-export type SecurityApplyAcknowledgement = Pick<
-  ApplySecurityChangesResponse,
-  "version" | "applied" | "replayed" | "enforcement"
->;
-export type SecurityChangeCommitProof = Pick<
-  GetSecurityChangeStatusResponse,
-  "version" | "changeId" | "enforcement"
->;
-export type SecurityChangeResult = SecurityChangeCommitProof & {
-  // Available only from the original Apply acknowledgement, never inferred
-  // from retained commit proof or a later policy snapshot.
-  applied?: boolean[];
-  replayed?: boolean;
-};
+export type SecurityChangeResult = CurrentSecurityChangeResult;
 
 export type SecuritySection = "issuers" | "users" | "roles";
 export type SecurityFailure =
@@ -61,7 +61,7 @@ export interface SecurityManagementPort {
     cursor: string,
     signal: AbortSignal,
   ): Promise<{
-    records: SecurityAuditRecord[];
+    records: CurrentSecurityAuditRecord[];
     version?: SecurityVersion;
     nextCursor: string;
   }>;
@@ -74,39 +74,35 @@ export interface SecurityManagementPort {
     edge?: { tail: string; head: string },
   ): Promise<ExplainAccessResponse>;
   prepare(
-    review: SecurityChangeReview,
+    review: CurrentSecurityReview,
     signal: AbortSignal,
   ): Promise<PrepareSecurityChangesResponse>;
   beginAuthorization(
-    review: SecurityChangeReview,
+    review: CurrentSecurityReview,
     signal: AbortSignal,
   ): Promise<BeginSecurityChangeAuthorizationResponse>;
   authorization(
+    review: CurrentSecurityReview,
     id: Uint8Array,
+    affinity: string,
     signal: AbortSignal,
   ): Promise<GetSecurityChangeAuthorizationResponse>;
   openAuthorization(): SecurityAuthorizationWindow;
-  authorizationRequired(
+  invocationRejected(
     error: unknown,
-  ): SecurityOperationAuthorizationRequired | undefined;
-  precommitRejected(
-    error: unknown,
-  ): SecurityChangePrecommitRejected | undefined;
+  ): CurrentSecurityInvocationRejected | undefined;
   apply(
     request: {
-      expectedRevision: bigint;
-      changeId: Uint8Array;
-      changes: SecurityChange[];
+      currentReview: CurrentSecurityReview;
       authorizationProof?: Uint8Array;
     },
     signal: AbortSignal,
   ): Promise<ApplySecurityChangesResponse>;
   status(
-    changeId: Uint8Array,
+    review: CurrentSecurityReview,
     signal: AbortSignal,
-  ): Promise<SecurityChangeCommitProof>;
+  ): Promise<CurrentSecurityChangeResult>;
   failure(error: unknown): SecurityFailure;
-  newChangeId(): Uint8Array;
 }
 export interface SecurityAuthorizationWindow {
   navigate(url: string): void;
@@ -121,7 +117,7 @@ export interface SecurityManagementState {
   roles: SecurityRole[];
   nextCursor: string;
   templates: SecurityRole[];
-  audit: SecurityAuditRecord[];
+  audit: CurrentSecurityAuditRecord[];
   auditCursor: string;
   members: SecurityUser[];
   memberCursor: string;
@@ -129,8 +125,7 @@ export interface SecurityManagementState {
   review?: {
     label: string;
     changes: SecurityChange[];
-    expectedRevision: bigint;
-    changeId: Uint8Array;
+    contract?: CurrentSecurityReview;
     version: SecurityVersion;
     approval:
       | "preparing"
@@ -143,86 +138,54 @@ export interface SecurityManagementState {
     requirement?: SecurityAuthorizationRequirement;
     authorizationId?: Uint8Array;
     authorizationProof?: Uint8Array;
-    intentDigest?: Uint8Array;
+    attemptAffinity?: string;
   };
   mutation:
     | "idle"
     | "sending"
     | "unconfirmed"
     | "pending"
-    | "enforced"
+    | "applied"
     | "conflict"
     | "rejected";
   result?: SecurityChangeResult;
   explanation?: ExplainAccessResponse;
-}
-function precommitRejectionMessage(
-  reason: SecurityChangeRejectionReason,
-): string | undefined {
-  switch (reason) {
-    case SecurityChangeRejectionReason.INVALID_CHANGES:
-      return "The change contains invalid or duplicate operations.";
-    case SecurityChangeRejectionReason.UNKNOWN_ROLE:
-      return "A referenced Role does not exist.";
-    case SecurityChangeRejectionReason.ISSUER_VALIDATION:
-      return "Issuer discovery or signing-key validation failed.";
-    case SecurityChangeRejectionReason.ENVIRONMENT_OWNED:
-      return "The change would modify environment-owned security configuration.";
-    case SecurityChangeRejectionReason.LAST_ADMINISTRATOR:
-      return "The change would remove the last usable human administrator.";
-    case SecurityChangeRejectionReason.REVISION_CONFLICT:
-      return "The security revision changed.";
-    default:
-      return undefined;
-  }
+  recoveryBlocked?: boolean;
 }
 function validateVersion(
   version: SecurityVersion | undefined,
 ): asserts version is SecurityVersion {
-  if (
-    !version ||
-    version.revision < 1n ||
-    version.revision > 0xffffffffffffffffn ||
-    version.digest.length !== 32 ||
-    version.generation.length !== 16 ||
-    version.generation.every((byte) => byte === 0)
-  ) {
-    throw new Error("Invalid security revision.");
-  }
-}
-function sameGeneration(a: SecurityVersion, b: SecurityVersion): boolean {
-  return a.generation.every((byte, index) => byte === b.generation[index]);
+  currentSecurityVersionBinding(version);
 }
 
-interface PendingSecurityChange {
-  changeId: Uint8Array;
-  changes: SecurityChange[];
-  expectedRevision: bigint;
-  version: SecurityVersion;
-  result?: SecurityChangeResult;
+export function securityResultMessage(result: SecurityChangeResult): string {
+  if (!result.original)
+    return result.progress === CurrentSecurityProgress.CHOSEN
+      ? "The original operation was chosen; its Apply result is not yet available."
+      : result.progress === CurrentSecurityProgress.ORIGIN_DURABLE
+        ? "The origin durably retained the operation; its final result is not yet available."
+        : "The original operation is unresolved. Keep its identity and check status before another change.";
+  if (result.original.disposition !== CurrentSecurityDisposition.APPLIED)
+    return (
+      "The original operation was rejected: " +
+      CurrentSecurityDisposition[result.original.disposition] +
+      "."
+    );
+  return result.stopObservation ===
+    CurrentAuthorizationStopObservation.OLD_CUT_NEW_AUTHORIZATIONS_STOPPED
+    ? "The original change applied. New authorizations using earlier policy have stopped; previously authorized output may still arrive."
+    : "The original change applied. The stop of new authorizations using earlier policy has not yet been observed.";
 }
-
-// Owned by the AuthProvider lifetime, never localStorage. A policy refresh may
-// discard granting views while retaining the immutable ID of a possibly sent
-// control change for status-only recovery under the same browser session.
-export class SecurityChangeRecovery {
-  private owner = "";
-  private record?: PendingSecurityChange;
-  read(owner: string): PendingSecurityChange | undefined {
-    if (owner !== this.owner) {
-      this.clear();
-      return undefined;
-    }
-    return this.record ? structuredClone(this.record) : undefined;
-  }
-  save(owner: string, record: PendingSecurityChange) {
-    this.owner = owner;
-    this.record = structuredClone(record);
-  }
-  clear() {
-    this.owner = "";
-    this.record = undefined;
-  }
+function mutationState(
+  result: SecurityChangeResult,
+): SecurityManagementState["mutation"] {
+  if (result.original)
+    return result.original.disposition === CurrentSecurityDisposition.APPLIED
+      ? "applied"
+      : "rejected";
+  return result.progress === CurrentSecurityProgress.UNRESOLVED
+    ? "unconfirmed"
+    : "pending";
 }
 
 /** Scope-bound management state. The Server interprets every policy and effect. */
@@ -247,6 +210,8 @@ export class SecurityManagementController {
   private ticket = 0;
   private disposed = false;
   private pending?: PendingSecurityChange;
+  private needsOriginalStatus = false;
+  private recoveryUnavailable = false;
   private authorizationWindow?: SecurityAuthorizationWindow;
   constructor(
     private readonly port: SecurityManagementPort,
@@ -255,17 +220,29 @@ export class SecurityManagementController {
     private readonly recovery?: SecurityChangeRecovery,
     private readonly recoveryOwner = "",
   ) {
-    this.pending = recovery?.read(recoveryOwner);
+    try {
+      const retained = recovery?.read(recoveryOwner);
+      this.pending = retained;
+      this.needsOriginalStatus = retained?.needsOriginalStatus ?? false;
+    } catch {
+      this.recoveryUnavailable = true;
+      this.state = {
+        ...this.state,
+        recoveryBlocked: true,
+        message:
+          "Original-change recovery storage is unavailable. No new Apply can be sent.",
+      };
+    }
     if (this.pending) {
       const result = this.pending.result;
       this.state = {
         ...this.state,
         result,
-        mutation: !result
+        mutation: this.needsOriginalStatus
           ? "unconfirmed"
-          : result.enforcement === SecurityEnforcementState.ENFORCED
-            ? "enforced"
-            : "pending",
+          : result
+            ? mutationState(result)
+            : "unconfirmed",
         message:
           "A prior control change is retained. Check its original status before another change.",
       };
@@ -341,7 +318,9 @@ export class SecurityManagementController {
     this.authorizationWindow = undefined;
     this.publish({
       phase: "loading",
-      message: "",
+      message: this.recoveryUnavailable
+        ? "Original-change recovery storage is unavailable. No new Apply can be sent."
+        : "",
       review: undefined,
       explanation: undefined,
     });
@@ -374,7 +353,7 @@ export class SecurityManagementController {
           message:
             this.port.failure(error) === "denied"
               ? "Security management permission is required."
-              : "Security state could not be loaded. Reload to review the current revision.",
+              : "Security state could not be loaded. Reload to review current policy.",
         });
     }
   }
@@ -384,20 +363,19 @@ export class SecurityManagementController {
       !this.state.version ||
       this.state.mutation === "sending" ||
       this.state.mutation === "unconfirmed" ||
+      this.needsOriginalStatus ||
+      this.recoveryUnavailable ||
+      (this.pending && !this.pending.result?.original) ||
       changes.length < 1 ||
       changes.length > 64
     )
       return;
-    const id = this.port.newChangeId();
-    if (id.length !== 16 || id.every((byte) => byte === 0))
-      throw new Error("Invalid change ID.");
+    if (this.pending && !this.pending.result?.original) return;
     this.authorizationWindow?.close();
     const review: NonNullable<SecurityManagementState["review"]> = {
       label,
-      changes: structuredClone(changes),
-      expectedRevision: this.state.version.revision,
-      changeId: id.slice(),
-      version: structuredClone(this.state.version),
+      changes: copySecurityContract(changes),
+      version: copySecurityContract(this.state.version),
       approval: "preparing",
     };
     const { ticket, signal } = this.operation();
@@ -411,33 +389,21 @@ export class SecurityManagementController {
         signal,
       );
       if (!this.current(ticket) || this.state.review !== review) return;
-      validateVersion(prepared.expectedVersion);
+      validatePreparedCurrentReview(
+        prepared.currentReview,
+        this.reviewRequest(review),
+      );
       if (
-        !sameGeneration(prepared.expectedVersion, review.version) ||
-        prepared.expectedVersion.revision !== review.expectedRevision ||
-        !prepared.expectedVersion.digest.every(
-          (byte, i) => byte === review.version.digest[i],
-        ) ||
-        prepared.changeId.length !== 16 ||
-        !review.changeId.every((byte, i) => byte === prepared.changeId[i]) ||
-        prepared.intentDigest.length !== 32 ||
-        prepared.intentDigest.every((byte) => byte === 0) ||
+        prepared.currentResult ||
         (prepared.requirement !== SecurityAuthorizationRequirement.ORDINARY &&
           prepared.requirement !==
             SecurityAuthorizationRequirement.REAUTHENTICATION)
       )
-        throw new Error("Invalid reviewed change requirement.");
-      if (prepared.retainedCommit) {
-        const pending = this.pendingFromReview(review);
-        this.pending = pending;
-        this.recovery?.save(this.recoveryOwner, pending);
-        this.acceptStatus(pending, prepared.retainedCommit);
-        return;
-      }
+        throw new Error("Invalid fresh review requirement.");
       this.publish({
         review: {
           ...review,
-          intentDigest: prepared.intentDigest.slice(),
+          contract: copySecurityContract(prepared.currentReview),
           requirement: prepared.requirement,
           approval:
             prepared.requirement === SecurityAuthorizationRequirement.ORDINARY
@@ -453,7 +419,7 @@ export class SecurityManagementController {
           review: undefined,
           version: undefined,
           mutation: "conflict",
-          message: "The revision changed. Reload and review your change again.",
+          message: "The policy changed. Reload and review your change again.",
         });
       else
         this.publish({
@@ -465,23 +431,22 @@ export class SecurityManagementController {
   }
   private reviewRequest(
     review: NonNullable<SecurityManagementState["review"]>,
-  ): SecurityChangeReview {
-    return {
-      $typeName: "graph.v1.SecurityChangeReview",
-      expectedVersion: structuredClone(review.version),
-      changeId: review.changeId.slice(),
-      changes: structuredClone(review.changes),
-    };
+  ): CurrentSecurityReview {
+    return review.contract
+      ? copySecurityContract(review.contract)
+      : {
+          $typeName: "graph.v1.CurrentSecurityReview",
+          profile: copySecurityContract(review.version.currentProfile),
+          expectedCut: copySecurityContract(review.version.currentCut),
+          intentDigest: new Uint8Array(),
+          changes: copySecurityContract(review.changes),
+        };
   }
   private pendingFromReview(
     review: NonNullable<SecurityManagementState["review"]>,
   ): PendingSecurityChange {
-    return {
-      changes: structuredClone(review.changes),
-      expectedRevision: review.expectedRevision,
-      changeId: review.changeId.slice(),
-      version: structuredClone(review.version),
-    };
+    validateCurrentReview(review.contract);
+    return { review: copySecurityContract(review.contract) };
   }
   async authorize() {
     const review = this.state.review;
@@ -516,7 +481,11 @@ export class SecurityManagementController {
         start.authorizationId.length !== 32 ||
         start.authorizationId.every((byte) => byte === 0) ||
         !start.expiresAt ||
-        !start.startUrl
+        !start.startUrl ||
+        !start.attemptAffinity ||
+        start.attemptAffinity.length > 512 ||
+        currentProfileBinding(start.currentProfile) !==
+          currentProfileBinding(review.version.currentProfile)
       )
         throw new Error("Invalid operation authorization start.");
       authorizationWindow.navigate(start.startUrl);
@@ -525,6 +494,7 @@ export class SecurityManagementController {
           ...starting,
           approval: "authenticating",
           authorizationId: start.authorizationId.slice(),
+          attemptAffinity: start.attemptAffinity,
         },
         message:
           "Complete reauthentication in the opened window, then check the approval here. Your ordinary session remains active.",
@@ -545,13 +515,17 @@ export class SecurityManagementController {
     if (
       !review ||
       review.approval !== "authenticating" ||
-      !review.authorizationId
+      !review.authorizationId ||
+      !review.contract ||
+      !review.attemptAffinity
     )
       return;
     const { ticket, signal } = this.operation();
     try {
       const response = await this.port.authorization(
+        copySecurityContract(review.contract),
         review.authorizationId.slice(),
+        review.attemptAffinity,
         signal,
       );
       if (!this.current(ticket) || this.state.review !== review) return;
@@ -560,7 +534,9 @@ export class SecurityManagementController {
         !review.authorizationId.every(
           (byte, i) => byte === response.authorizationId[i],
         ) ||
-        !response.expiresAt
+        !response.expiresAt ||
+        currentProfileBinding(response.currentProfile) !==
+          currentProfileBinding(review.contract.profile)
       )
         throw new Error("Invalid operation authorization response.");
       if (
@@ -606,10 +582,9 @@ export class SecurityManagementController {
     }
   }
   changeId(): string {
-    return this.pending
-      ? Array.from(this.pending.changeId, (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join("")
+    const id = this.pending?.review.changeId;
+    return id
+      ? `${id.namespace}:${Array.from(id.nonce, (byte) => byte.toString(16).padStart(2, "0")).join("")}`
       : "";
   }
   cancelReview() {
@@ -618,135 +593,130 @@ export class SecurityManagementController {
     this.publish({ review: undefined });
   }
   private accept(pending: PendingSecurityChange, result: SecurityChangeResult) {
-    pending.result = structuredClone(result);
-    this.recovery?.save(this.recoveryOwner, pending);
+    const accepted = reconcileCurrentResult(
+      pending.result,
+      result,
+      pending.review,
+    );
+    if (
+      accepted.original &&
+      (accepted.original.items.length !== pending.review.changes.length ||
+        currentCutBinding(accepted.original.observedCut, accepted.profile) !==
+          currentCutBinding(pending.review.expectedCut, pending.review.profile))
+    )
+      throw new Error("Original result differs from the reviewed operation.");
+    try {
+      this.recovery?.update(
+        this.recoveryOwner,
+        pending.review,
+        accepted,
+        !!result.original,
+      );
+    } catch {
+      // Retain freshly received evidence in this controller, while the store
+      // keeps its last successfully persisted pre-dispatch original.
+      pending.result = accepted;
+      this.needsOriginalStatus = true;
+      this.publish({
+        version: undefined,
+        result: accepted,
+        review: undefined,
+        mutation: "unconfirmed",
+        message:
+          "The original result was received, but recovery storage could not be updated. Check original status again before another change.",
+      });
+      return;
+    }
+    pending.result = accepted;
+    // A weaker fresh status cannot unlock a restored cached terminal result.
+    if (result.original) this.needsOriginalStatus = false;
     this.publish({
       version: undefined,
-      result,
+      result: accepted,
       review: undefined,
-      mutation:
-        result.enforcement === SecurityEnforcementState.ENFORCED
-          ? "enforced"
-          : "pending",
-      message:
-        result.enforcement === SecurityEnforcementState.ENFORCED
-          ? "Change enforced."
-          : "Change committed. Cluster enforcement is pending; allow up to 35 seconds while previous authority expires.",
-    });
-  }
-  private validateCommit(
-    pending: PendingSecurityChange,
-    version: SecurityVersion | undefined,
-    enforcement: SecurityEnforcementState,
-  ): asserts version is SecurityVersion {
-    validateVersion(version);
-    if (
-      !sameGeneration(pending.version, version) ||
-      // The present fixed writer commits exactly one CAS revision per batch.
-      version.revision !== pending.expectedRevision + 1n ||
-      (enforcement !== SecurityEnforcementState.COMMITTED_PENDING &&
-        enforcement !== SecurityEnforcementState.ENFORCED)
-    ) {
-      throw new Error("Invalid retained commit version.");
-    }
-  }
-  private acceptApply(
-    pending: PendingSecurityChange,
-    result: SecurityApplyAcknowledgement,
-  ) {
-    this.validateCommit(pending, result.version, result.enforcement);
-    if (
-      result.applied.length !== pending.changes.length ||
-      result.applied.some((applied) => typeof applied !== "boolean") ||
-      typeof result.replayed !== "boolean"
-    ) {
-      throw new Error("Invalid change acknowledgement.");
-    }
-    this.accept(pending, { ...result, changeId: pending.changeId.slice() });
-  }
-  private acceptStatus(
-    pending: PendingSecurityChange,
-    proof: SecurityChangeCommitProof,
-  ) {
-    this.validateCommit(pending, proof.version, proof.enforcement);
-    const retained = pending.result;
-    if (
-      proof.changeId.length !== 16 ||
-      !pending.changeId.every((byte, i) => byte === proof.changeId[i]) ||
-      (retained &&
-        (retained.version!.revision !== proof.version.revision ||
-          !retained.version!.digest.every(
-            (byte, i) => byte === proof.version!.digest[i],
-          )))
-    ) {
-      throw new Error(
-        "Retained commit proof does not match the original change.",
-      );
-    }
-    this.accept(pending, {
-      ...proof,
-      applied: retained?.applied,
-      replayed: retained?.replayed,
+      mutation: this.needsOriginalStatus
+        ? "unconfirmed"
+        : mutationState(accepted),
+      message: this.needsOriginalStatus
+        ? "The original is retained. Check its authenticated original status before another change."
+        : securityResultMessage(accepted),
     });
   }
   async apply() {
-    const review = this.state.review;
-    const version = this.state.version;
+    const review = this.state.review,
+      version = this.state.version;
     if (
-      !review ||
+      !review?.contract ||
       !version ||
       this.state.mutation === "sending" ||
-      this.state.mutation === "unconfirmed" ||
-      review.expectedRevision !== version.revision ||
-      !sameGeneration(review.version, version) ||
-      !review.version.digest.every((byte, i) => byte === version.digest[i]) ||
+      this.needsOriginalStatus ||
+      this.recoveryUnavailable ||
+      (this.pending && !this.pending.result?.original) ||
+      currentSecurityVersionBinding(review.version) !==
+        currentSecurityVersionBinding(version) ||
       (review.approval !== "ordinary" && review.approval !== "approved")
     )
       return;
-    const id = review.changeId;
     const { ticket, signal } = this.operation();
-    this.pending = this.pendingFromReview(review);
-    const pending = this.pending;
-    this.recovery?.save(this.recoveryOwner, this.pending);
+    const pending = this.pendingFromReview(review);
+    // Persist in the owning recovery object before any possible dispatch.
+    try {
+      this.recovery?.stage(
+        this.recoveryOwner,
+        pending.review,
+        this.pending?.review,
+      );
+    } catch (error) {
+      this.publish({
+        message:
+          error instanceof Error
+            ? error.message
+            : "Original-change recovery storage is unavailable. No new Apply was sent.",
+      });
+      return;
+    }
+    this.pending = pending;
     this.publish({ mutation: "sending", message: "Applying reviewed change…" });
     try {
-      const result = await this.port.apply(
+      const response = await this.port.apply(
         {
-          expectedRevision: review.expectedRevision,
-          changeId: id.slice(),
-          changes: structuredClone(review.changes),
+          currentReview: copySecurityContract(pending.review),
           authorizationProof: review.authorizationProof?.slice(),
         },
         signal,
       );
-      if (this.current(ticket) && this.pending === pending)
-        this.acceptApply(pending, result);
+      if (this.current(ticket) && this.pending === pending) {
+        if (!response.currentResult) throw new Error("Missing current result.");
+        this.accept(pending, response.currentResult);
+      }
     } catch (error) {
       if (!this.current(ticket)) return;
-      const refused = this.port.authorizationRequired(error);
-      const rejected = this.port.precommitRejected(error);
-      const refusedVersion = refused?.expectedVersion;
-      // Only this first, bound invocation is settled by the typed refusal.
-      // An older ambiguous command cannot reach Apply and remains status-only.
-      if (
-        refused &&
-        !rejected &&
-        refusedVersion &&
-        review.intentDigest &&
-        refused.changeId.length === 16 &&
-        pending.changeId.every((byte, i) => byte === refused.changeId[i]) &&
-        refusedVersion.revision === pending.expectedRevision &&
-        refusedVersion.digest.length === 32 &&
-        pending.version.digest.every(
-          (byte, i) => byte === refusedVersion.digest[i],
-        ) &&
-        refusedVersion.generation.length === 16 &&
-        sameGeneration(pending.version, refusedVersion) &&
-        refused.intentDigest.length === 32 &&
-        review.intentDigest.every((byte, i) => byte === refused.intentDigest[i])
-      ) {
+      const refused = this.port.invocationRejected(error);
+      let exact = false;
+      try {
+        exact =
+          !!refused?.purposeRequired &&
+          currentOriginalBinding(refused) ===
+            currentOriginalBinding(pending.review);
+      } catch {
+        /* ambiguous evidence */
+      }
+      // This UI permits one dispatch only. The exact typed refusal therefore
+      // settles this invocation; it never clears an earlier ambiguous attempt.
+      if (exact) {
+        try {
+          this.recovery?.clearFirstRefusal(this.recoveryOwner, pending.review);
+        } catch {
+          this.recovery?.ambiguous(pending.review);
+          this.needsOriginalStatus = true;
+          this.publish({
+            mutation: "unconfirmed",
+            message:
+              "The invocation was refused, but recovery storage could not be updated. The original is retained for status only.",
+          });
+          return;
+        }
         this.pending = undefined;
-        this.recovery?.clear();
         this.publish({
           mutation: "idle",
           result: undefined,
@@ -756,37 +726,17 @@ export class SecurityManagementController {
             approval: "required",
             authorizationId: undefined,
             authorizationProof: undefined,
+            attemptAffinity: undefined,
           },
           message:
-            "This Apply was refused before commit. Reauthenticate the same reviewed change, then apply when ready.",
-        });
-      } else if (
-        !refused &&
-        rejected &&
-        rejected.changeId.length === 16 &&
-        pending.changeId.every((byte, i) => byte === rejected.changeId[i]) &&
-        rejected.expectedRevision === pending.expectedRevision &&
-        precommitRejectionMessage(rejected.reason)
-      ) {
-        this.pending = undefined;
-        this.recovery?.clear();
-        this.publish({
-          mutation:
-            rejected.reason === SecurityChangeRejectionReason.REVISION_CONFLICT
-              ? "conflict"
-              : "rejected",
-          result: undefined,
-          review: undefined,
-          version: undefined,
-          message:
-            precommitRejectionMessage(rejected.reason)! +
-            " This Apply was refused before commit. Reload, correct the draft, and review a new change before applying.",
+            "This invocation requires reauthentication for the same reviewed change. No new identity was created.",
         });
       } else {
+        this.recovery?.ambiguous(pending.review);
         this.publish({
           mutation: "unconfirmed",
           message:
-            "The response was not confirmed. Check the original change status before making another change.",
+            "The response was not confirmed. The full original identity is retained; check status before another change.",
         });
       }
     }
@@ -796,9 +746,12 @@ export class SecurityManagementController {
     if (!pending || this.state.mutation === "sending") return;
     const { ticket, signal } = this.operation();
     try {
-      const result = await this.port.status(pending.changeId.slice(), signal);
+      const result = await this.port.status(
+        copySecurityContract(pending.review),
+        signal,
+      );
       if (this.current(ticket) && this.pending === pending)
-        this.acceptStatus(pending, result);
+        this.accept(pending, result);
     } catch {
       if (this.current(ticket))
         this.publish({
@@ -828,13 +781,10 @@ export class SecurityManagementController {
       const response = await this.port.users(cursor, signal);
       validateVersion(response.version);
       if (
-        !sameGeneration(inspected, response.version) ||
-        inspected.revision !== response.version.revision ||
-        !inspected.digest.every(
-          (byte, i) => byte === response.version!.digest[i],
-        )
+        currentSecurityVersionBinding(inspected) !==
+        currentSecurityVersionBinding(response.version)
       )
-        throw new Error("Revision changed.");
+        throw new Error("Policy or credential binding changed.");
       if (this.current(ticket))
         this.publish({
           memberRole: roleId,
@@ -850,7 +800,7 @@ export class SecurityManagementController {
           memberCursor: "",
           memberRole: "",
           message:
-            "Membership inspection is unavailable or its revision changed. Reload before reviewing changes.",
+            "Membership inspection is unavailable or its policy changed. Reload before reviewing changes.",
         });
     }
   }

@@ -92,6 +92,10 @@ jobs:
             echo "tag_object_sha=$tag_object_sha"
           } >> "$GITHUB_OUTPUT"
 
+  current-sdk4:
+    needs: tag
+    uses: ./.github/workflows/current-sdk4.yml
+
   conformance:
     name: Conformance (${{ matrix.os }}, Rust ${{ matrix.rust }})
     needs: tag
@@ -155,11 +159,12 @@ jobs:
         shell: bash
         env:
           LANTERN_RUST_TEST_SERVER: ${{ github.workspace }}/sdks/rust/target/lantern-smoke${{ matrix.os == 'windows-latest' && '.exe' || '' }}
-        run: cargo test --locked --all-features -- --ignored --test-threads=1
+        # Current authority is qualified by the native-time SDK4 root gate.
+        run: cargo test --locked --all-features -- --ignored --test-threads=1 --skip security::tests::real_public_current_wire
 
   preflight:
     name: Audit and verify the tagged crate archive
-    needs: [tag, conformance]
+    needs: [tag, conformance, current-sdk4]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -172,6 +177,15 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.current-sdk4.outputs.artifact_id }}
+          path: ${{ runner.temp }}/current-sdk4
+      - name: Require native SDK4 receipt for the exact tagged archive source
+        working-directory: .
+        env:
+          SDK4_RECEIPT_SHA256: ${{ needs.current-sdk4.outputs.receipt_sha256 }}
+        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --trusted-receipt-sha256 "$SDK4_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable action
         with:
           toolchain: '1.97.1'
@@ -382,7 +396,7 @@ jobs:
 
   publish:
     name: Authenticate trusted publisher and publish if missing
-    needs: [tag, preflight]
+    needs: [tag, preflight, current-sdk4]
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment:

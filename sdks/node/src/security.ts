@@ -1,4 +1,13 @@
-import type { MessageInitShape } from "@bufbuild/protobuf";
+import { create, type MessageInitShape } from "@bufbuild/protobuf";
+import {
+  copySecurityContract,
+  currentOriginalBinding,
+  currentProfileBinding,
+  validateCurrentReview,
+  validateCurrentResult,
+  validatePreparedCurrentReview,
+  type CurrentOriginalReference,
+} from "./security-current.js";
 import {
   createClient,
   ConnectError,
@@ -10,6 +19,7 @@ import { wrapConnectError, FailedPreconditionError, LanternError } from "./error
 import type {
   SecurityOperationAuthorizationRequired,
   SecurityChangePrecommitRejected,
+  CurrentSecurityInvocationRejected,
 } from "./gen/graph/v1/security_pb.js";
 import {
   LanternSecurityService,
@@ -35,7 +45,20 @@ import {
   SecurityOperationAuthorizationRequiredSchema,
   SecurityChangePrecommitRejectedSchema,
   SecurityChangeRejectionReason,
+  CurrentSecurityInvocationRejectedSchema,
 } from "./gen/graph/v1/security_pb.js";
+
+/** Only this exact invocation was refused before H. A previous ambiguous
+ * dispatch remains unresolved; callers must retain its full original ID. */
+export class CurrentSecurityInvocationRejectedError extends FailedPreconditionError {
+  constructor(
+    readonly detail: CurrentSecurityInvocationRejected,
+    cause: unknown,
+  ) {
+    super("This invocation requires approval of the exact reviewed operation.", { cause });
+    this.name = "CurrentSecurityInvocationRejectedError";
+  }
+}
 
 /** This invocation definitely did not commit. Earlier uncertain attempts
  * remain uncertain and must be reconciled using their original change ID. */
@@ -97,11 +120,34 @@ export class SecurityClient {
   static withTransport(transport: Transport): SecurityClient {
     return new SecurityClient(transport);
   }
-  private async invoke<T>(call: () => Promise<T>, apply = false): Promise<T> {
+  private async invoke<T>(
+    call: () => Promise<T>,
+    apply = false,
+    current?: CurrentOriginalReference,
+  ): Promise<T> {
     try {
       return await call();
     } catch (error) {
       const failure = ConnectError.from(error);
+      if (current) {
+        const details = failure.findDetails(CurrentSecurityInvocationRejectedSchema);
+        if (
+          apply &&
+          failure.code === 9 &&
+          failure.details.length === 1 &&
+          details.length === 1 &&
+          details[0]!.purposeRequired
+        ) {
+          let matches = false;
+          try {
+            matches = currentOriginalBinding(details[0]!) === currentOriginalBinding(current);
+          } catch {
+            /* malformed evidence remains ambiguous */
+          }
+          if (matches) throw new CurrentSecurityInvocationRejectedError(details[0]!, error);
+        }
+        throw wrapConnectError(error);
+      }
       const authorization = failure.findDetails(SecurityOperationAuthorizationRequiredSchema);
       const rejections = failure.findDetails(SecurityChangePrecommitRejectedSchema);
       // Conflicting/duplicated details cannot establish a definite first refusal.
@@ -186,40 +232,103 @@ export class SecurityClient {
   ) {
     return this.invoke(() => this.client.validateIssuer(request, options));
   }
-  applySecurityChanges(
+  async applySecurityChanges(
     request: MessageInitShape<typeof ApplySecurityChangesRequestSchema> = {},
     options?: CallOptions,
   ) {
-    return this.invoke(() => this.client.applySecurityChanges(request, options), true);
+    const fixed = copySecurityContract(create(ApplySecurityChangesRequestSchema, request));
+    if (fixed.currentReview) validateCurrentReview(fixed.currentReview);
+    const response = await this.invoke(
+      () => this.client.applySecurityChanges(fixed, options),
+      true,
+      fixed.currentReview,
+    );
+    if (fixed.currentReview) validateCurrentResult(response.currentResult, fixed.currentReview);
+    return response;
   }
-  prepareSecurityChanges(
+  async prepareSecurityChanges(
     request: MessageInitShape<typeof PrepareSecurityChangesRequestSchema> = {},
     options?: CallOptions,
   ) {
-    return this.invoke(() => this.client.prepareSecurityChanges(request, options));
+    const fixed = copySecurityContract(create(PrepareSecurityChangesRequestSchema, request));
+    const response = await this.invoke(() => this.client.prepareSecurityChanges(fixed, options));
+    if (fixed.currentReview) {
+      validatePreparedCurrentReview(response.currentReview, fixed.currentReview);
+      if (
+        fixed.currentReview.changeId &&
+        currentOriginalBinding(response.currentReview) !==
+          currentOriginalBinding(fixed.currentReview)
+      )
+        throw new Error("Mismatched retained review.");
+      if (response.currentResult)
+        validateCurrentResult(response.currentResult, response.currentReview);
+    }
+    return response;
   }
-  beginSecurityChangeAuthorization(
+  async beginSecurityChangeAuthorization(
     request: MessageInitShape<typeof BeginSecurityChangeAuthorizationRequestSchema> = {},
     options?: CallOptions,
   ) {
-    return this.invoke(() => this.client.beginSecurityChangeAuthorization(request, options));
+    const fixed = copySecurityContract(
+      create(BeginSecurityChangeAuthorizationRequestSchema, request),
+    );
+    if (fixed.currentReview) validateCurrentReview(fixed.currentReview);
+    const response = await this.invoke(() =>
+      this.client.beginSecurityChangeAuthorization(fixed, options),
+    );
+    if (
+      fixed.currentReview &&
+      (currentProfileBinding(response.currentProfile) !==
+        currentProfileBinding(fixed.currentReview.profile) ||
+        !response.attemptAffinity ||
+        response.attemptAffinity.length > 512)
+    )
+      throw new Error("Invalid current authorization affinity.");
+    return response;
   }
-  getSecurityChangeAuthorization(
+  async getSecurityChangeAuthorization(
     request: MessageInitShape<typeof GetSecurityChangeAuthorizationRequestSchema> = {},
     options?: CallOptions,
   ) {
-    return this.invoke(() => this.client.getSecurityChangeAuthorization(request, options));
+    const fixed = copySecurityContract(
+      create(GetSecurityChangeAuthorizationRequestSchema, request),
+    );
+    const response = await this.invoke(() =>
+      this.client.getSecurityChangeAuthorization(fixed, options),
+    );
+    if (
+      fixed.currentProfile &&
+      currentProfileBinding(response.currentProfile) !== currentProfileBinding(fixed.currentProfile)
+    )
+      throw new Error("Mismatched current authorization profile.");
+    return response;
   }
-  applySecurityChange(
+  async applySecurityChange(
     request: MessageInitShape<typeof ApplySecurityChangeRequestSchema> = {},
     options?: CallOptions,
   ) {
-    return this.invoke(() => this.client.applySecurityChange(request, options), true);
+    const fixed = copySecurityContract(create(ApplySecurityChangeRequestSchema, request));
+    if (fixed.currentReview) validateCurrentReview(fixed.currentReview);
+    const response = await this.invoke(
+      () => this.client.applySecurityChange(fixed, options),
+      true,
+      fixed.currentReview,
+    );
+    if (fixed.currentReview) validateCurrentResult(response.currentResult, fixed.currentReview);
+    return response;
   }
-  getSecurityChangeStatus(
+  async getSecurityChangeStatus(
     request: MessageInitShape<typeof GetSecurityChangeStatusRequestSchema> = {},
     options?: CallOptions,
   ) {
-    return this.invoke(() => this.client.getSecurityChangeStatus(request, options));
+    const fixed = copySecurityContract(create(GetSecurityChangeStatusRequestSchema, request));
+    const response = await this.invoke(() => this.client.getSecurityChangeStatus(fixed, options));
+    if (fixed.currentProfile || fixed.currentChangeId || fixed.currentIntentDigest.length)
+      validateCurrentResult(response.currentResult, {
+        profile: fixed.currentProfile,
+        changeId: fixed.currentChangeId,
+        intentDigest: fixed.currentIntentDigest,
+      });
+    return response;
   }
 }

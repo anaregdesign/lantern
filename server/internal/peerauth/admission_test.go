@@ -10,6 +10,40 @@ import (
 	"time"
 )
 
+func TestAdmissionChecksIntervalNotBeforeAndExpiry(t *testing.T) {
+	m, key, opts, now := controlFixture(t)
+	uri, _ := url.Parse(m.Profile.Voters[0].Workload.Identity)
+	leaf := &x509.Certificate{URIs: []*url.URL{uri}, RawSubjectPublicKeyInfo: []byte("interval workload"), NotBefore: *now, NotAfter: now.Add(20 * time.Second)}
+	m.Profile.Voters[0].Workload.SPKI = sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	opts.Profile, opts.Self = m.Profile, m.Profile.Voters[0].Workload
+	low, high := *now, now.Add(time.Second)
+	opts.TimeBounds = func() (time.Time, time.Time, error) { return low, high, nil }
+	s, err := CreateControlStore(opts, signControlFixture(t, m, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	state := &tls.ConnectionState{Version: tls.VersionTLS13, PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: [][]*x509.Certificate{{leaf}}}
+	a, err := s.Admit(state, opts.Self.Origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf.NotBefore = now.Add(500 * time.Millisecond)
+	if _, err := s.Admit(state, opts.Self.Origin); err == nil {
+		t.Fatal("not-before checked against high only")
+	}
+	leaf.NotBefore = *now
+	low = now.Add(-time.Nanosecond)
+	if a.Check(t.Context()) == nil {
+		t.Fatal("captured admission forgot interval lower endpoint")
+	}
+	low = *now
+	high = leaf.NotAfter.Add(-ClockMargin)
+	if a.Check(t.Context()) == nil {
+		t.Fatal("certificate expiry equality accepted")
+	}
+}
+
 func TestAdmissionRequiresVerifiedExactWorkloadAndBounds(t *testing.T) {
 	m, key, options, now := membershipFixture(t)
 	uri, _ := url.Parse(m.Members[0].Identity)

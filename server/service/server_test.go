@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -69,7 +71,9 @@ func TestLanternServer_gracefulShutdown_TimeoutForcesClose(t *testing.T) {
 	cancel() // gracefulShutdown waits on ctx.Done, so pre-cancel.
 
 	start := time.Now()
-	s.gracefulShutdown(ctx)
+	if err := s.gracefulShutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("shutdown timeout was hidden from App", err)
+	}
 	elapsed := time.Since(start)
 
 	if elapsed < s.shutdownTimeout {
@@ -78,4 +82,63 @@ func TestLanternServer_gracefulShutdown_TimeoutForcesClose(t *testing.T) {
 	if elapsed > 5*time.Second {
 		t.Fatalf("gracefulShutdown blocked far past timeout: %v", elapsed)
 	}
+}
+
+func TestLanternServerRunJoinsHandlersAndWatcher(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	server := &http.Server{Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(entered)
+		<-release
+	})}
+	t.Cleanup(func() { _ = server.Close() })
+	watcher := &serverJoinWatcher{stopped: make(chan struct{}), release: make(chan struct{})}
+	s := &LanternServer{server: server, listener: listener, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), shutdownTimeout: 3 * time.Second, watcher: watcher}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	request := make(chan struct{})
+	go func() {
+		defer close(request)
+		response, _ := http.Get("http://" + listener.Addr().String())
+		if response != nil {
+			_ = response.Body.Close()
+		}
+	}()
+	<-entered
+	cancel()
+	<-watcher.stopped
+	select {
+	case err := <-done:
+		t.Fatal("Serve return bypassed shutdown join", err)
+	default:
+	}
+	close(release)
+	<-request
+	select {
+	case err := <-done:
+		t.Fatal("runtime returned before owned watcher joined", err)
+	default:
+	}
+	close(watcher.release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("drained runtime did not join")
+	}
+}
+
+type serverJoinWatcher struct{ stopped, release chan struct{} }
+
+func (w *serverJoinWatcher) Watch(ctx context.Context, _ time.Duration) {
+	<-ctx.Done()
+	close(w.stopped)
+	<-w.release
 }

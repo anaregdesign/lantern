@@ -7,6 +7,7 @@ import (
 )
 
 const s2cPMagic = "lantern/security/s2c/participant\x00\x01"
+const authorityPMagic = "lantern/security/s2c/participant\x00\x02"
 const (
 	s2cPGenesis byte = iota + 1
 	s2cPOrigin
@@ -16,6 +17,8 @@ const (
 	s2cPAccept
 	s2cPChosen
 	s2cPDrained
+	s2cPOriginReservation
+	s2cPForwardedH
 )
 
 // Fixed-width record metadata keeps quota and completion calculations exact,
@@ -33,12 +36,13 @@ type s2cPRecord struct {
 }
 
 func (o *s2cParticipant) encodeRecord(r s2cPRecord) ([]byte, error) {
+	magic, lastKind := o.recordGrammar()
 	n := uint64(len(s2cPMagic)+s2cPFixedBytes) + uint64(len(r.raw))
-	if r.kind < s2cPGenesis || r.kind > s2cPDrained || r.index == 0 || n > o.trust.bounds.PayloadBytes || n > s2cMaxPayloadBytes {
+	if r.kind < s2cPGenesis || r.kind > lastKind || r.index == 0 || n > o.trust.bounds.PayloadBytes || n > s2cMaxPayloadBytes {
 		return nil, errS2CProtocol
 	}
 	b := make([]byte, 0, int(n))
-	b = append(b, s2cPMagic...)
+	b = append(b, magic...)
 	b = append(b, r.kind)
 	b = append(b, o.binding[:]...)
 	b = binary.BigEndian.AppendUint64(b, r.index)
@@ -59,7 +63,8 @@ func (o *s2cParticipant) encodeRecord(r s2cPRecord) ([]byte, error) {
 }
 func (o *s2cParticipant) decodeRecord(raw []byte, index uint64) (s2cPRecord, error) {
 	var r s2cPRecord
-	if len(raw) < len(s2cPMagic)+s2cPFixedBytes || uint64(len(raw)) > o.trust.bounds.PayloadBytes || uint64(len(raw)) > s2cMaxPayloadBytes || !bytes.HasPrefix(raw, []byte(s2cPMagic)) {
+	magic, lastKind := o.recordGrammar()
+	if len(raw) < len(magic)+s2cPFixedBytes || uint64(len(raw)) > o.trust.bounds.PayloadBytes || uint64(len(raw)) > s2cMaxPayloadBytes || !bytes.HasPrefix(raw, []byte(magic)) {
 		return r, errS2CProtocol
 	}
 	b := raw[len(s2cPMagic):]
@@ -86,11 +91,18 @@ func (o *s2cParticipant) decodeRecord(raw []byte, index uint64) (s2cPRecord, err
 	b = b[32:]
 	n := binary.BigEndian.Uint32(b)
 	b = b[4:]
-	if r.kind < s2cPGenesis || r.kind > s2cPDrained || r.index != index || uint64(n) != uint64(len(b)) {
+	if r.kind < s2cPGenesis || r.kind > lastKind || r.index != index || uint64(n) != uint64(len(b)) {
 		return r, errS2CProtocol
 	}
 	r.raw = string(b)
 	return r, nil
+}
+
+func (o *s2cParticipant) recordGrammar() (string, byte) {
+	if o.trust != nil && len(o.trust.origins) != 0 && o.trust.origins[0].Profile.Version == authorityAdmissionVersion {
+		return authorityPMagic, s2cPForwardedH
+	}
+	return s2cPMagic, s2cPDrained
 }
 func (o *s2cParticipant) appendRecord(r s2cPRecord, remaining s2cCredit) error {
 	if o.p.count == ^uint64(0) {

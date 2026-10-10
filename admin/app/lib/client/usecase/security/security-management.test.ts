@@ -1,49 +1,68 @@
 import { describe, expect, test } from "bun:test";
 import {
-  SecurityEnforcementState,
+  CurrentSecurityProgress,
+  CurrentSecurityDisposition,
+  CurrentAuthorizationStopObservation,
   SecurityAuthorizationRequirement,
   SecurityAuthorizationState,
-  SecurityChangeRejectionReason,
-  type SecurityChange,
-  type SecurityVersion,
+  currentOriginalBinding,
+  type CurrentSecurityReview,
+  type CurrentSecurityChangeResult,
+  type CurrentSecurityInvocationRejected,
+  type BeginSecurityChangeAuthorizationResponse,
 } from "lantern-sdk/web";
+import {
+  profile,
+  version,
+  changes,
+  review,
+  prepare,
+  result,
+  acknowledgement,
+  bytes,
+} from "../../../../../test/current-security";
 import {
   SecurityManagementController,
   SecurityChangeRecovery,
   type SecurityManagementPort,
 } from "./security-management";
-
-const version: SecurityVersion = {
-  $typeName: "graph.v1.SecurityVersion",
-  revision: 3n,
-  digest: new Uint8Array(32).fill(1),
-  generation: new Uint8Array(16).fill(2),
+import {
+  securityRecoveryOwner,
+  type SecurityRecoveryStorage,
+} from "./security-change-recovery";
+const owner = securityRecoveryOwner("https://admin.example", {
+  identity: review().actor,
+  version,
+});
+function memoryStorage(): SecurityRecoveryStorage {
+  let raw: string | null = null;
+  return {
+    read: () => raw,
+    replace: (value) => {
+      raw = value;
+    },
+  };
+}
+const expiry = {
+  $typeName: "google.protobuf.Timestamp" as const,
+  seconds: 3000000000n,
+  nanos: 0,
 };
-const changes: SecurityChange[] = [
-  {
-    $typeName: "graph.v1.SecurityChange",
-    operation: { case: "deleteRole", value: "reader" },
-  },
-];
-const changeId = new Uint8Array(16).fill(7);
-const result = {
-  $typeName: "graph.v1.ApplySecurityChangesResponse" as const,
-  version: { ...version, revision: 4n },
-  applied: [true],
-  replayed: false,
-  enforcement: SecurityEnforcementState.COMMITTED_PENDING,
-};
-const proof = {
-  $typeName: "graph.v1.GetSecurityChangeStatusResponse" as const,
-  version: result.version,
-  changeId,
-  enforcement: SecurityEnforcementState.COMMITTED_PENDING,
-};
+function begin(): BeginSecurityChangeAuthorizationResponse {
+  return {
+    $typeName: "graph.v1.BeginSecurityChangeAuthorizationResponse",
+    authorizationId: bytes(32, 8),
+    startUrl: "https://admin.example/auth/management-authorization/example",
+    expiresAt: expiry,
+    currentProfile: profile,
+    attemptAffinity: "node-process-attempt",
+  };
+}
 function fixture(
   overrides: Partial<SecurityManagementPort> = {},
   scope = new AbortController(),
   recovery?: SecurityChangeRecovery,
-  owner = "browser-session",
+  recoveryOwner = owner,
 ) {
   const port: SecurityManagementPort = {
     roles: async () => ({
@@ -78,41 +97,23 @@ function fixture(
       matches: [],
       version,
     }),
-    prepare: async (review) => ({
-      $typeName: "graph.v1.PrepareSecurityChangesResponse",
-      expectedVersion: review.expectedVersion,
-      changeId: review.changeId,
-      intentDigest: new Uint8Array(32).fill(4),
-      requirement: SecurityAuthorizationRequirement.ORDINARY,
-    }),
-    beginAuthorization: async () => ({
-      $typeName: "graph.v1.BeginSecurityChangeAuthorizationResponse",
-      authorizationId: new Uint8Array(32).fill(8),
-      startUrl:
-        "https://admin.example/auth/management-authorization/" + "A".repeat(43),
-      expiresAt: {
-        $typeName: "google.protobuf.Timestamp",
-        seconds: 3000000000n,
-        nanos: 0,
-      },
-    }),
-    authorization: async (id) => ({
-      $typeName: "graph.v1.GetSecurityChangeAuthorizationResponse",
-      authorizationId: id,
-      state: SecurityAuthorizationState.APPROVED,
-      authorizationProof: new Uint8Array(32).fill(9),
-      expiresAt: {
-        $typeName: "google.protobuf.Timestamp",
-        seconds: 3000000000n,
-        nanos: 0,
-      },
-    }),
+    prepare: async (draft) => prepare(draft),
+    beginAuthorization: async () => begin(),
+    authorization: async (_review, id, affinity) => {
+      expect(affinity).toBe("node-process-attempt");
+      return {
+        $typeName: "graph.v1.GetSecurityChangeAuthorizationResponse",
+        authorizationId: id,
+        state: SecurityAuthorizationState.APPROVED,
+        authorizationProof: bytes(32, 9),
+        expiresAt: expiry,
+        currentProfile: profile,
+      };
+    },
     openAuthorization: () => ({ navigate() {}, close() {} }),
-    authorizationRequired: () => undefined,
-    precommitRejected: () => undefined,
-    apply: async () => result,
-    status: async () => proof,
-    newChangeId: () => new Uint8Array(16).fill(7),
+    invocationRejected: () => undefined,
+    apply: async (request) => acknowledgement(result(request.currentReview)),
+    status: async (r) => result(r),
     failure: () => "unavailable",
     ...overrides,
   };
@@ -121,1018 +122,752 @@ function fixture(
     "roles",
     scope.signal,
     recovery,
-    owner,
+    recoveryOwner,
   );
 }
-describe("reviewed security changes", () => {
-  for (const [read, supersede] of [
-    [
-      "audit",
-      (controller: SecurityManagementController) => controller.loadAudit(),
-    ],
-    [
-      "templates",
-      (controller: SecurityManagementController) =>
-        controller.loadTemplates("tenant:"),
-    ],
-    [
-      "members",
-      (controller: SecurityManagementController) =>
-        controller.loadRoleMembers("reader"),
-    ],
+async function ready(c: SecurityManagementController) {
+  await c.load();
+  await c.review("Delete reader", changes);
+}
+function refused(r = review()): CurrentSecurityInvocationRejected {
+  return {
+    $typeName: "graph.v1.CurrentSecurityInvocationRejected",
+    profile: r.profile,
+    changeId: r.changeId,
+    intentDigest: r.intentDigest,
+    purposeRequired: true,
+  };
+}
+
+describe("current reviewed changes", () => {
+  test("server mints the full identity and one ordinary Apply has no recent-auth gate", async () => {
+    let sends = 0;
+    const c = fixture({
+      prepare: async (draft) => {
+        expect(draft.changeId).toBeUndefined();
+        expect(draft.actor).toBeUndefined();
+        expect(draft.intentDigest.length).toBe(0);
+        return prepare(draft);
+      },
+      apply: async (request) => {
+        sends++;
+        expect(request.currentReview).toEqual(review());
+        expect(request.authorizationProof).toBeUndefined();
+        return acknowledgement();
+      },
+    });
+    await ready(c);
+    await c.apply();
+    await c.apply();
+    expect(sends).toBe(1);
+    expect(c.getSnapshot().mutation).toBe("applied");
+    expect(c.getSnapshot().message).not.toContain("35 seconds");
+    c.dispose();
+  });
+  for (const read of [
+    "audit",
+    "templates",
+    "members",
+    "reload",
+    "cancel",
   ] as const) {
-    for (const outcome of ["resolve", "reject"] as const) {
-      test(`${read} supersession retires repeated delayed Prepare ${outcome} and requires fresh review`, async () => {
-        const settlements: (() => void)[] = [];
-        const signals: AbortSignal[] = [];
-        let prepares = 0,
-          ids = 0,
-          applied = 0;
-        const controller = fixture({
-          newChangeId: () => new Uint8Array(16).fill(7 + ids++),
-          prepare: (review, signal) => {
-            const response = {
-              $typeName: "graph.v1.PrepareSecurityChangesResponse" as const,
-              expectedVersion: review.expectedVersion,
-              changeId: review.changeId,
-              intentDigest: new Uint8Array(32).fill(4),
-              requirement: SecurityAuthorizationRequirement.ORDINARY,
-            };
-            if (++prepares > 2) return Promise.resolve(response);
-            signals.push(signal);
-            // Settling after cancellation exercises an already in-flight response.
+    for (const settle of ["resolve", "reject"] as const) {
+      test(`${read} supersedes delayed Prepare ${settle} without dispatch`, async () => {
+        let finish!: () => void,
+          signal!: AbortSignal,
+          sends = 0;
+        const c = fixture({
+          prepare: (draft, s) => {
+            signal = s;
             return new Promise((resolve, reject) => {
-              settlements.push(() =>
-                outcome === "resolve"
-                  ? resolve(response)
-                  : reject(new Error("interrupted")),
-              );
+              finish = () =>
+                settle === "resolve"
+                  ? resolve(prepare(draft))
+                  : reject(new Error("late"));
             });
           },
           apply: async () => {
-            applied++;
-            return result;
+            sends++;
+            return acknowledgement();
           },
         });
-        await controller.load();
-        let originalID: Uint8Array | undefined;
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const preparing = controller.review("Original", changes);
-          expect(controller.getSnapshot().review?.approval).toBe("preparing");
-          const original = controller.getSnapshot().review!;
-          originalID = original.changeId;
-          await supersede(controller);
-          expect(signals[attempt].aborted).toBe(true);
-          expect(controller.getSnapshot().review?.approval).toBe("failed");
-          expect(controller.getSnapshot().review?.changeId).toEqual(
-            original.changeId,
-          );
-          expect(controller.getSnapshot().review?.changes).toEqual(
-            original.changes,
-          );
-          expect(controller.getSnapshot().review?.version).toEqual(
-            original.version,
-          );
-          settlements[attempt]();
-          await preparing;
-          expect(controller.getSnapshot().review?.approval).toBe("failed");
-          await controller.apply();
-          expect(applied).toBe(0);
-        }
-        await controller.review("Reviewed again", changes);
-        expect(controller.getSnapshot().review?.approval).toBe("ordinary");
-        expect(controller.getSnapshot().review?.changeId).not.toEqual(
-          originalID,
-        );
-        expect(applied).toBe(0);
-        await controller.apply();
-        expect(applied).toBe(1);
-        controller.dispose();
+        await c.load();
+        const pending = c.review("Delete", changes);
+        if (read === "audit") await c.loadAudit();
+        else if (read === "templates") await c.loadTemplates("tenant:");
+        else if (read === "members") await c.loadRoleMembers("reader");
+        else if (read === "reload") await c.load();
+        else c.cancelReview();
+        expect(signal.aborted).toBe(true);
+        finish();
+        await pending;
+        await c.apply();
+        expect(sends).toBe(0);
+        expect(c.getSnapshot().review?.approval).not.toBe("ordinary");
+        c.dispose();
       });
     }
   }
-  for (const outcome of ["resolve", "reject"] as const) {
-    test(`cancelling a delayed Prepare ignores its later ${outcome}`, async () => {
-      let settle = () => {};
-      let applied = 0;
-      const controller = fixture({
-        prepare: (review) =>
-          new Promise((resolve, reject) => {
-            settle = () =>
-              outcome === "resolve"
-                ? resolve({
-                    $typeName: "graph.v1.PrepareSecurityChangesResponse",
-                    expectedVersion: review.expectedVersion,
-                    changeId: review.changeId,
-                    intentDigest: new Uint8Array(32).fill(4),
-                    requirement: SecurityAuthorizationRequirement.ORDINARY,
-                  })
-                : reject(new Error("cancelled"));
-          }),
-        apply: async () => {
-          applied++;
-          return result;
-        },
-      });
-      await controller.load();
-      const preparing = controller.review("Cancelled", changes);
-      controller.cancelReview();
-      settle();
-      await preparing;
-      expect(controller.getSnapshot().review).toBeUndefined();
-      await controller.apply();
-      expect(applied).toBe(0);
-      controller.dispose();
-    });
-  }
-  test("audit supersession rejects delayed Begin and closes its popup without stranding the review", async () => {
-    let closed = 0,
-      begins = 0;
-    const controller = fixture({
-      prepare: async (review) => ({
-        $typeName: "graph.v1.PrepareSecurityChangesResponse",
-        expectedVersion: review.expectedVersion,
-        changeId: review.changeId,
-        intentDigest: new Uint8Array(32).fill(4),
-        requirement: SecurityAuthorizationRequirement.REAUTHENTICATION,
-      }),
-      beginAuthorization: (_review, signal) => {
-        begins++;
-        if (begins === 1)
-          return new Promise((_resolve, reject) =>
-            signal.addEventListener(
-              "abort",
-              () => reject(new Error("interrupted")),
-              { once: true },
-            ),
-          );
-        return Promise.resolve({
-          $typeName: "graph.v1.BeginSecurityChangeAuthorizationResponse",
-          authorizationId: new Uint8Array(32).fill(8),
-          startUrl:
-            "https://admin.example/auth/management-authorization/" +
-            "A".repeat(43),
-          expiresAt: {
-            $typeName: "google.protobuf.Timestamp",
-            seconds: 3000000000n,
-            nanos: 0,
-          },
-        });
+  test("refused or changed preparation cannot authorize Apply", async () => {
+    for (const corrupt of [
+      (r: CurrentSecurityReview) => {
+        r.profile!.timeProfile = bytes(32, 99);
       },
-      openAuthorization: () => ({
-        navigate() {},
-        close() {
-          closed++;
-        },
-      }),
-    });
-    await controller.load();
-    await controller.review("Original", changes);
-    const starting = controller.authorize();
-    await controller.loadAudit();
-    await starting;
-    expect(closed).toBe(1);
-    expect(controller.getSnapshot().review?.approval).toBe("required");
-    expect(controller.getSnapshot().review?.changeId).toEqual(changeId);
-    await controller.authorize();
-    expect(controller.getSnapshot().review?.approval).toBe("authenticating");
-    expect(begins).toBe(2);
-    controller.dispose();
-  });
-  test("expired first Apply reacquires approval for the same ID, while older ambiguity stays status-only", async () => {
-    const refused = {
-      $typeName: "graph.v1.SecurityOperationAuthorizationRequired" as const,
-      changeId,
-      expectedVersion: version,
-      intentDigest: new Uint8Array(32).fill(4),
-    };
-    let sent = 0,
-      ids = 0;
-    const controller = fixture({
-      prepare: async (review) => ({
-        $typeName: "graph.v1.PrepareSecurityChangesResponse",
-        expectedVersion: review.expectedVersion,
-        changeId: review.changeId,
-        intentDigest: refused.intentDigest,
-        requirement: SecurityAuthorizationRequirement.REAUTHENTICATION,
-      }),
-      newChangeId: () => {
-        ids++;
-        return changeId;
+      (r: CurrentSecurityReview) => {
+        r.expectedCut!.fences = bytes(32, 99);
       },
-      authorizationRequired: (error) =>
-        error === refused ? refused : undefined,
-      apply: async () => {
-        sent++;
-        if (sent === 1) throw refused;
-        return result;
+      (r: CurrentSecurityReview) => {
+        r.changes = [];
       },
-    });
-    await controller.load();
-    await controller.review("High impact", changes);
-    await controller.authorize();
-    await controller.checkAuthorization();
-    await controller.apply();
-    expect(controller.getSnapshot().mutation).toBe("idle");
-    expect(controller.getSnapshot().review?.approval).toBe("required");
-    expect(controller.getSnapshot().review?.changeId).toEqual(changeId);
-    await controller.authorize();
-    await controller.checkAuthorization();
-    await controller.apply();
-    expect(sent).toBe(2);
-    expect(ids).toBe(1);
-    controller.dispose();
-
-    const recovery = new SecurityChangeRecovery();
-    sent = 0;
-    const ambiguous = fixture(
-      {
-        apply: async () => {
-          sent++;
-          throw new Error("response lost");
-        },
-        status: async () => {
-          throw refused;
-        },
-        authorizationRequired: (error) =>
-          error === refused ? refused : undefined,
+      (r: CurrentSecurityReview) => {
+        r.changeId!.namespace = 0n;
       },
-      new AbortController(),
-      recovery,
-    );
-    await ambiguous.load();
-    await ambiguous.review("Original", changes);
-    await ambiguous.apply();
-    await ambiguous.checkStatus();
-    expect(ambiguous.getSnapshot().mutation).toBe("unconfirmed");
-    await ambiguous.review("New", changes);
-    await ambiguous.authorize();
-    await ambiguous.apply();
-    expect(sent).toBe(1);
-    ambiguous.dispose();
-    const remounted = fixture(
-      { authorizationRequired: () => refused },
-      new AbortController(),
-      recovery,
-    );
-    expect(remounted.getSnapshot().mutation).toBe("unconfirmed");
-    await remounted.apply();
-    expect(remounted.getSnapshot().review).toBeUndefined();
-    remounted.dispose();
-  });
-  test("authorization-required detail must match every field of this exact reviewed command", async () => {
-    const exact = {
-      $typeName: "graph.v1.SecurityOperationAuthorizationRequired" as const,
-      changeId,
-      expectedVersion: version,
-      intentDigest: new Uint8Array(32).fill(4),
-    };
-    for (const detail of [
-      { ...exact, changeId: new Uint8Array(16).fill(8) },
-      { ...exact, intentDigest: new Uint8Array(32).fill(5) },
-      { ...exact, expectedVersion: { ...version, revision: 4n } },
-      {
-        ...exact,
-        expectedVersion: { ...version, digest: new Uint8Array(32).fill(8) },
-      },
-      {
-        ...exact,
-        expectedVersion: { ...version, generation: new Uint8Array(16).fill(8) },
+      (r: CurrentSecurityReview) => {
+        r.intentDigest = bytes(31);
       },
     ]) {
-      const controller = fixture({
-        apply: async () => {
-          throw detail;
+      let sends = 0;
+      const c = fixture({
+        prepare: async (draft) => {
+          const response = prepare(draft);
+          corrupt(response.currentReview!);
+          return response;
         },
-        authorizationRequired: () => detail,
+        apply: async () => {
+          sends++;
+          return acknowledgement();
+        },
       });
-      await controller.load();
-      await controller.review("Original", changes);
-      await controller.apply();
-      expect(controller.getSnapshot().mutation).toBe("unconfirmed");
-      controller.dispose();
+      await ready(c);
+      await c.apply();
+      expect(sends).toBe(0);
+      expect(c.changeId()).toBe("");
+      c.dispose();
     }
   });
-  test("reload during delayed Begin closes only its owned popup", async () => {
-    const finishes: Array<
-      (
-        value: Awaited<
-          ReturnType<SecurityManagementPort["beginAuthorization"]>
-        >,
-      ) => void
-    > = [];
-    const closed: number[] = [];
-    let opened = 0;
-    const controller = fixture({
-      prepare: async (review) => ({
-        $typeName: "graph.v1.PrepareSecurityChangesResponse",
-        expectedVersion: review.expectedVersion,
-        changeId: review.changeId,
-        intentDigest: new Uint8Array(32).fill(4),
-        requirement: SecurityAuthorizationRequirement.REAUTHENTICATION,
-      }),
-      beginAuthorization: () =>
-        new Promise((resolve) => {
-          finishes.push(resolve);
-        }),
-      openAuthorization: () => {
-        const id = ++opened;
-        return {
-          navigate() {},
-          close() {
-            closed.push(id);
-          },
-        };
-      },
-    });
-    const start = {
-      $typeName: "graph.v1.BeginSecurityChangeAuthorizationResponse" as const,
-      authorizationId: new Uint8Array(32).fill(8),
-      startUrl:
-        "https://admin.example/auth/management-authorization/" + "A".repeat(43),
-      expiresAt: {
-        $typeName: "google.protobuf.Timestamp" as const,
-        seconds: 3000000000n,
-        nanos: 0,
-      },
-    };
-    await controller.load();
-    await controller.review("First", changes);
-    const old = controller.authorize();
-    await controller.load();
-    expect(closed).toContain(1);
-    await controller.review("Second", changes);
-    const current = controller.authorize();
-    finishes[0](start);
-    await old;
-    expect(closed).not.toContain(2);
-    finishes[1](start);
-    await current;
-    expect(controller.getSnapshot().review?.label).toBe("Second");
-    expect(controller.getSnapshot().review?.approval).toBe("authenticating");
-    controller.dispose();
-  });
-  test("operation approval uses the immutable reviewed ID and keeps proof out of response-loss recovery", async () => {
-    const recovery = new SecurityChangeRecovery();
-    let sent = 0,
-      opened = 0,
-      navigated = 0,
-      closed = 0,
-      pending = true;
-    const controller = fixture(
+  test("purpose keeps exact review, process affinity and one-use proof separate from recovery", async () => {
+    const recovery = new SecurityChangeRecovery(memoryStorage());
+    let sends = 0,
+      navigated = "";
+    const c = fixture(
       {
-        prepare: async (review) => ({
-          $typeName: "graph.v1.PrepareSecurityChangesResponse",
-          expectedVersion: review.expectedVersion,
-          changeId: review.changeId,
-          intentDigest: new Uint8Array(32).fill(4),
-          requirement: SecurityAuthorizationRequirement.REAUTHENTICATION,
-        }),
-        beginAuthorization: async (review) => {
-          expect(review.changeId).toEqual(changeId);
-          expect(review.expectedVersion).toEqual(version);
-          expect(review.changes).toEqual(changes);
-          return {
-            $typeName: "graph.v1.BeginSecurityChangeAuthorizationResponse",
-            authorizationId: new Uint8Array(32).fill(8),
-            startUrl:
-              "https://admin.example/auth/management-authorization/" +
-              "A".repeat(43),
-            expiresAt: {
-              $typeName: "google.protobuf.Timestamp",
-              seconds: 3000000000n,
-              nanos: 0,
-            },
-          };
-        },
-        openAuthorization: () => {
-          opened++;
-          return {
-            navigate() {
-              navigated++;
-            },
-            close() {
-              closed++;
-            },
-          };
-        },
-        authorization: async (id) => ({
-          $typeName: "graph.v1.GetSecurityChangeAuthorizationResponse",
-          authorizationId: id,
-          state: pending
-            ? SecurityAuthorizationState.PENDING
-            : SecurityAuthorizationState.APPROVED,
-          authorizationProof: pending
-            ? new Uint8Array()
-            : new Uint8Array(32).fill(9),
-          expiresAt: {
-            $typeName: "google.protobuf.Timestamp",
-            seconds: 3000000000n,
-            nanos: 0,
+        prepare: async (draft) =>
+          prepare(draft, SecurityAuthorizationRequirement.REAUTHENTICATION),
+        openAuthorization: () => ({
+          navigate: (url) => {
+            navigated = url;
           },
+          close() {},
         }),
+        beginAuthorization: async (r) => {
+          expect(r).toEqual(review());
+          return begin();
+        },
         apply: async (request) => {
-          sent++;
-          expect(request.changeId).toEqual(changeId);
-          expect(request.authorizationProof).toEqual(
-            new Uint8Array(32).fill(9),
-          );
-          throw new Error("response dropped");
+          sends++;
+          expect(request.authorizationProof).toEqual(bytes(32, 9));
+          expect(recovery.read(owner)?.review).toEqual(review());
+          throw new Error("lost");
         },
       },
-      new AbortController(),
+      undefined,
       recovery,
     );
-    await controller.load();
-    await controller.review("High impact", changes);
-    await controller.apply();
-    expect(sent).toBe(0);
-    await controller.authorize();
-    expect(opened).toBe(1);
-    expect(navigated).toBe(1);
-    await controller.checkAuthorization();
-    expect(controller.getSnapshot().review?.approval).toBe("authenticating");
-    await controller.apply();
-    expect(sent).toBe(0);
-    pending = false;
-    await controller.checkAuthorization();
-    expect(controller.getSnapshot().review?.approval).toBe("approved");
-    await controller.apply();
-    expect(sent).toBe(1);
-    expect(closed).toBeGreaterThan(0);
-    const retained = recovery.read("browser-session")!;
-    expect("authorizationProof" in retained).toBe(false);
-    controller.dispose();
-    const remounted = fixture({}, new AbortController(), recovery);
-    expect(remounted.getSnapshot().review).toBeUndefined();
-    expect(remounted.getSnapshot().mutation).toBe("unconfirmed");
-    await remounted.checkStatus();
-    expect(remounted.getSnapshot().result?.applied).toBeUndefined();
-    expect(sent).toBe(1);
-    remounted.dispose();
+    await ready(c);
+    await c.apply();
+    expect(sends).toBe(0);
+    await c.authorize();
+    expect(navigated).toContain("/auth/");
+    await c.checkAuthorization();
+    await c.apply();
+    expect(sends).toBe(1);
+    expect(c.getSnapshot().mutation).toBe("unconfirmed");
+    expect("authorizationProof" in recovery.read(owner)!).toBe(false);
+    await c.apply();
+    expect(sends).toBe(1);
+    c.dispose();
   });
-  test("a refused or malformed preflight sends no Apply and creates no ambiguous command", async () => {
-    for (const prepare of [
-      async () => {
-        throw new Error("denied");
-      },
-      async () => ({
-        $typeName: "graph.v1.PrepareSecurityChangesResponse" as const,
-        expectedVersion: version,
-        changeId: new Uint8Array(16).fill(8),
-        intentDigest: new Uint8Array(32).fill(4),
-        requirement: SecurityAuthorizationRequirement.ORDINARY,
-      }),
-    ]) {
-      let sent = 0;
-      const recovery = new SecurityChangeRecovery();
-      const controller = fixture(
-        {
-          prepare,
-          apply: async () => {
-            sent++;
-            return result;
+  for (const supersede of ["audit", "reload", "cancel"] as const) {
+    test(`${supersede} supersedes delayed Begin and closes only its popup`, async () => {
+      let finish!: (value: BeginSecurityChangeAuthorizationResponse) => void,
+        closed = 0,
+        navigated = 0;
+      const c = fixture({
+        prepare: async (draft) =>
+          prepare(draft, SecurityAuthorizationRequirement.REAUTHENTICATION),
+        beginAuthorization: () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+        openAuthorization: () => ({
+          navigate() {
+            navigated++;
           },
-        },
-        new AbortController(),
-        recovery,
-      );
-      await controller.load();
-      await controller.review("Delete", changes);
-      await controller.apply();
-      expect(sent).toBe(0);
-      expect(controller.getSnapshot().mutation).toBe("idle");
-      expect(controller.getSnapshot().review?.approval).toBe("failed");
-      expect(recovery.read("browser-session")).toBeUndefined();
-      controller.dispose();
-    }
-  });
-  test("cancelled approval cannot publish proof into a later review", async () => {
-    let complete!: (
+          close() {
+            closed++;
+          },
+        }),
+      });
+      await ready(c);
+      const pending = c.authorize();
+      if (supersede === "audit") await c.loadAudit();
+      else if (supersede === "reload") await c.load();
+      else c.cancelReview();
+      finish(begin());
+      await pending;
+      expect(closed).toBeGreaterThan(0);
+      expect(navigated).toBe(0);
+      expect(c.getSnapshot().review?.approval).not.toBe("starting");
+      c.dispose();
+    });
+  }
+  test("cancelled or wrong-profile approval cannot publish proof into another review", async () => {
+    let finish!: (
       value: Awaited<ReturnType<SecurityManagementPort["authorization"]>>,
     ) => void;
-    const controller = fixture({
-      prepare: async (review) => ({
-        $typeName: "graph.v1.PrepareSecurityChangesResponse",
-        expectedVersion: review.expectedVersion,
-        changeId: review.changeId,
-        intentDigest: new Uint8Array(32).fill(4),
-        requirement: SecurityAuthorizationRequirement.REAUTHENTICATION,
-      }),
+    const c = fixture({
+      prepare: async (draft) =>
+        prepare(draft, SecurityAuthorizationRequirement.REAUTHENTICATION),
       authorization: () =>
         new Promise((resolve) => {
-          complete = resolve;
+          finish = resolve;
         }),
     });
-    await controller.load();
-    await controller.review("First", changes);
-    await controller.authorize();
-    const checking = controller.checkAuthorization();
-    controller.cancelReview();
-    await controller.review("Second", changes);
-    complete({
+    await ready(c);
+    await c.authorize();
+    const pending = c.checkAuthorization();
+    c.cancelReview();
+    await c.review("New", changes);
+    finish({
       $typeName: "graph.v1.GetSecurityChangeAuthorizationResponse",
-      authorizationId: new Uint8Array(32).fill(8),
+      authorizationId: bytes(32, 8),
       state: SecurityAuthorizationState.APPROVED,
-      authorizationProof: new Uint8Array(32).fill(9),
-      expiresAt: {
-        $typeName: "google.protobuf.Timestamp",
-        seconds: 3000000000n,
-        nanos: 0,
-      },
+      authorizationProof: bytes(32, 9),
+      expiresAt: expiry,
+      currentProfile: profile,
     });
-    await checking;
-    expect(controller.getSnapshot().review?.label).toBe("Second");
-    expect(controller.getSnapshot().review?.approval).toBe("required");
-    expect(controller.getSnapshot().review?.authorizationProof).toBeUndefined();
-    controller.dispose();
+    await pending;
+    expect(c.getSnapshot().review?.authorizationProof).toBeUndefined();
+    c.dispose();
   });
-  test("an ordinary review commits without a recent-auth gate with the inspected revision and aligned acknowledgement", async () => {
-    let sent = 0;
-    const controller = fixture({
-      apply: async (request) => {
-        sent++;
-        expect(request.expectedRevision).toBe(3n);
-        expect(request.changeId).toEqual(new Uint8Array(16).fill(7));
-        return result;
-      },
-    });
-    await controller.load();
-    await controller.review("Delete reader", changes);
-    expect(controller.getSnapshot().review?.approval).toBe("ordinary");
-    await controller.apply();
-    expect(sent).toBe(1);
-    expect(controller.getSnapshot().mutation).toBe("pending");
-    controller.dispose();
-  });
-  test("response loss retains the same ID for status and prevents a fresh mutation", async () => {
-    let sent = 0,
-      status = 0;
-    const controller = fixture({
+  test("only a bound first purpose refusal allows the same reviewed identity to be approved", async () => {
+    let sends = 0;
+    const c = fixture({
       apply: async () => {
-        sent++;
-        throw new Error("response dropped");
+        sends++;
+        throw new Error("purpose");
       },
-      status: async (id) => {
-        status++;
-        expect(id).toEqual(new Uint8Array(16).fill(7));
-        return { ...proof, enforcement: SecurityEnforcementState.ENFORCED };
-      },
+      invocationRejected: () => refused(),
     });
-    await controller.load();
-    await controller.review("Delete reader", changes);
-    await controller.apply();
-    await controller.review("Delete another", changes);
-    await controller.apply();
-    expect(sent).toBe(1);
-    expect(controller.getSnapshot().mutation).toBe("unconfirmed");
-    await controller.checkStatus();
-    expect(status).toBe(1);
-    expect(controller.getSnapshot().mutation).toBe("enforced");
-    expect(controller.getSnapshot().result?.applied).toBeUndefined();
-    expect(controller.getSnapshot().result?.replayed).toBeUndefined();
-    controller.dispose();
+    await ready(c);
+    await c.apply();
+    expect(c.getSnapshot().review?.contract).toEqual(review());
+    expect(c.getSnapshot().review?.approval).toBe("required");
+    expect(c.changeId()).toBe("");
+    await c.authorize();
+    await c.checkAuthorization();
+    await c.apply();
+    expect(sends).toBe(2);
+    c.dispose();
   });
-  test("CAS conflict cannot be applied until a new load and review", async () => {
-    let sent = 0;
-    const controller = fixture({
-      apply: async () => {
-        sent++;
-        throw new Error("conflict");
+  test("malformed or different identity refusals keep the original uncertain record", async () => {
+    for (const corrupt of [
+      (r: ReturnType<typeof refused>) => {
+        r.profile!.configuration = bytes(32, 99);
       },
-      failure: () => "conflict",
-      precommitRejected: () => ({
-        $typeName: "graph.v1.SecurityChangePrecommitRejected",
-        changeId,
-        expectedRevision: version.revision,
-        reason: SecurityChangeRejectionReason.REVISION_CONFLICT,
-      }),
-    });
-    await controller.load();
-    await controller.review("Delete reader", changes);
-    await controller.apply();
-    await controller.review("Delete again", changes);
-    await controller.apply();
-    expect(sent).toBe(1);
-    expect(controller.getSnapshot().version).toBeUndefined();
-    expect(controller.getSnapshot().review).toBeUndefined();
-    await controller.load();
-    expect(controller.getSnapshot().mutation).toBe("idle");
-    controller.dispose();
-  });
-  test("malformed and different-generation acknowledgements stay unconfirmed", async () => {
-    for (const invalid of [
-      { ...result, applied: [] },
-      { ...result, enforcement: SecurityEnforcementState.UNSPECIFIED },
-      { ...result, version: { ...result.version, revision: 3n } },
-      { ...result, version: { ...result.version, revision: 5n } },
-      {
-        ...result,
-        version: { ...version, generation: new Uint8Array(16).fill(3) },
+      (r: ReturnType<typeof refused>) => {
+        r.changeId!.namespace++;
+      },
+      (r: ReturnType<typeof refused>) => {
+        r.changeId!.nonce = bytes(16, 99);
+      },
+      (r: ReturnType<typeof refused>) => {
+        r.intentDigest = bytes(32, 99);
+      },
+      (r: ReturnType<typeof refused>) => {
+        r.purposeRequired = false;
       },
     ]) {
-      const controller = fixture({ apply: async () => invalid });
-      await controller.load();
-      await controller.review("Delete", changes);
-      await controller.apply();
-      expect(controller.getSnapshot().mutation).toBe("unconfirmed");
-      controller.dispose();
+      const detail = structuredClone(refused());
+      corrupt(detail);
+      let sends = 0;
+      const c = fixture({
+        apply: async () => {
+          sends++;
+          throw new Error("unbound");
+        },
+        invocationRejected: () => detail,
+      });
+      await ready(c);
+      await c.apply();
+      await c.review("Other", changes);
+      await c.apply();
+      expect(sends).toBe(1);
+      expect(c.getSnapshot().mutation).toBe("unconfirmed");
+      c.dispose();
     }
   });
-  test("expired scope cannot receive stale granting state", async () => {
-    const scope = new AbortController();
-    let finish!: (value: typeof result) => void;
-    const controller = fixture(
+  for (const progress of [
+    CurrentSecurityProgress.UNRESOLVED,
+    CurrentSecurityProgress.ORIGIN_DURABLE,
+    CurrentSecurityProgress.CHOSEN,
+  ]) {
+    test(`stage ${progress} retains full identity across remount and never creates or resends a mutation`, async () => {
+      const recovery = new SecurityChangeRecovery(memoryStorage());
+      let sends = 0,
+        prepares = 0;
+      const c = fixture(
+        {
+          prepare: async (d) => {
+            prepares++;
+            return prepare(d);
+          },
+          apply: async (r) => {
+            sends++;
+            return acknowledgement(result(r.currentReview, progress));
+          },
+        },
+        undefined,
+        recovery,
+      );
+      await ready(c);
+      await c.apply();
+      await c.load();
+      await c.review("Other", changes);
+      await c.apply();
+      expect(sends).toBe(1);
+      expect(prepares).toBe(1);
+      c.dispose();
+      const after = fixture(
+        {
+          status: async (r) => {
+            expect(currentOriginalBinding(r)).toBe(
+              currentOriginalBinding(review()),
+            );
+            return result(r);
+          },
+          apply: async () => {
+            throw new Error("unexpected replay");
+          },
+        },
+        undefined,
+        recovery,
+      );
+      await after.checkStatus();
+      expect(after.getSnapshot().mutation).toBe("applied");
+      expect(after.getSnapshot().result?.original?.items).toHaveLength(1);
+      after.dispose();
+    });
+  }
+  test("response loss retains review before dispatch and transport failure is not nonexecution", async () => {
+    const recovery = new SecurityChangeRecovery(memoryStorage());
+    let sends = 0;
+    const c = fixture(
       {
-        apply: () =>
+        apply: async (r) => {
+          sends++;
+          expect(recovery.read(owner)?.review).toEqual(r.currentReview);
+          throw new Error("lost");
+        },
+        status: async (r) => result(r, CurrentSecurityProgress.UNRESOLVED),
+      },
+      undefined,
+      recovery,
+    );
+    await ready(c);
+    await c.apply();
+    await c.checkStatus();
+    await c.review("new", changes);
+    await c.apply();
+    expect(sends).toBe(1);
+    expect(c.getSnapshot().mutation).toBe("unconfirmed");
+    c.dispose();
+  });
+  test("CAS and other original rejections are terminal evidence, requiring a fresh explicit review", async () => {
+    for (const disposition of [
+      CurrentSecurityDisposition.REJECTED_CAS,
+      CurrentSecurityDisposition.REJECTED_ADMIN,
+      CurrentSecurityDisposition.REJECTED_AUTHORITY,
+      CurrentSecurityDisposition.REJECTED_PURPOSE,
+      CurrentSecurityDisposition.REJECTED_CAPACITY,
+      CurrentSecurityDisposition.REJECTED_INVARIANT,
+    ]) {
+      const c = fixture({
+        apply: async (r) =>
+          acknowledgement(
+            result(
+              r.currentReview,
+              CurrentSecurityProgress.APPLIED,
+              disposition,
+            ),
+          ),
+      });
+      await ready(c);
+      await c.apply();
+      expect(c.getSnapshot().mutation).toBe("rejected");
+      expect(c.getSnapshot().version).toBeUndefined();
+      expect(c.getSnapshot().review).toBeUndefined();
+      await c.load();
+      await c.review("Corrected", changes);
+      expect(c.getSnapshot().review?.approval).toBe("ordinary");
+      c.dispose();
+    }
+  });
+  test("status preserves original evidence and rejects every changed identity and outcome", async () => {
+    for (const corrupt of [
+      (r: CurrentSecurityChangeResult) => {
+        r.changeId!.namespace++;
+      },
+      (r: CurrentSecurityChangeResult) => {
+        r.profile!.membership = bytes(32, 99);
+      },
+      (r: CurrentSecurityChangeResult) => {
+        r.intentDigest = bytes(31);
+      },
+      (r: CurrentSecurityChangeResult) => {
+        r.original!.commit!.value = bytes(32, 99);
+      },
+      (r: CurrentSecurityChangeResult) => {
+        r.original!.resultingCut!.frontier = bytes(32, 99);
+      },
+      (r: CurrentSecurityChangeResult) => {
+        r.original!.items[0].disposition =
+          CurrentSecurityDisposition.REJECTED_CAS;
+      },
+      (r: CurrentSecurityChangeResult) => {
+        r.progress = CurrentSecurityProgress.CHOSEN;
+      },
+    ]) {
+      const c = fixture({
+        status: async (r) => {
+          const next = result(r);
+          corrupt(next);
+          return next;
+        },
+      });
+      await ready(c);
+      await c.apply();
+      const prior = structuredClone(c.getSnapshot().result);
+      await c.checkStatus();
+      expect(c.getSnapshot().result).toEqual(prior);
+      expect(c.getSnapshot().message).toContain("unavailable");
+      c.dispose();
+    }
+  });
+  test("weaker local status cannot erase proof and native stop observation is separate from Apply", async () => {
+    let calls = 0;
+    const c = fixture({
+      status: async (r) =>
+        ++calls === 1
+          ? result(r, CurrentSecurityProgress.UNRESOLVED)
+          : {
+              ...result(r),
+              stopObservation:
+                CurrentAuthorizationStopObservation.OLD_CUT_NEW_AUTHORIZATIONS_STOPPED,
+            },
+    });
+    await ready(c);
+    await c.apply();
+    await c.checkStatus();
+    expect(c.getSnapshot().result?.original).toBeDefined();
+    await c.checkStatus();
+    expect(c.getSnapshot().message).toContain(
+      "previously authorized output may still arrive",
+    );
+    c.dispose();
+  });
+  test("expired scope and superseded status cannot restore stale evidence or views", async () => {
+    let finish!: (value: CurrentSecurityChangeResult) => void;
+    const scope = new AbortController();
+    const c = fixture(
+      {
+        status: () =>
           new Promise((resolve) => {
             finish = resolve;
           }),
       },
       scope,
     );
-    await controller.load();
-    await controller.review("Delete", changes);
-    const applying = controller.apply();
+    await ready(c);
+    await c.apply();
+    const checking = c.checkStatus();
+    await c.loadAudit();
+    finish({
+      ...result(),
+      stopObservation:
+        CurrentAuthorizationStopObservation.OLD_CUT_NEW_AUTHORIZATIONS_STOPPED,
+    });
+    await checking;
+    expect(c.getSnapshot().result?.stopObservation).toBe(
+      CurrentAuthorizationStopObservation.NOT_OBSERVED,
+    );
     scope.abort();
-    controller.dispose();
-    finish(result);
-    await applying;
-    expect(controller.getSnapshot().mutation).toBe("sending");
+    await expect(c.load()).rejects.toThrow();
+    expect(c.getSnapshot().phase).toBe("ready");
+    c.dispose();
   });
-  test("proof-only status advances enforcement and preserves original aligned Apply outcomes across remount", async () => {
-    const recovery = new SecurityChangeRecovery();
-    let sent = 0,
-      ids = 0;
-    const acknowledgement = {
-      ...result,
-      applied: [true, false],
-      replayed: true,
-    };
+  test("full cut and credential binding partition membership pages", async () => {
+    for (const changed of [
+      { ...version, admissionBinding: bytes(32, 99) },
+      {
+        ...version,
+        currentCut: { ...version.currentCut!, fences: bytes(32, 99) },
+      },
+      {
+        ...version,
+        currentProfile: { ...profile, timeProfile: bytes(32, 99) },
+      },
+    ]) {
+      const c = fixture({
+        users: async () => ({
+          $typeName: "graph.v1.ListUsersResponse",
+          users: [],
+          version: changed,
+          nextCursor: "",
+        }),
+      });
+      await c.load();
+      await c.loadRoleMembers("reader");
+      expect(c.getSnapshot().memberRole).toBe("");
+      expect(c.getSnapshot().message).toContain("policy changed");
+      c.dispose();
+    }
+  });
+  test("different browser owner cannot inherit an original recovery record", async () => {
+    const recovery = new SecurityChangeRecovery(memoryStorage());
+    const c = fixture({}, undefined, recovery);
+    await ready(c);
+    await c.apply();
+    c.dispose();
+    const other = fixture({}, undefined, recovery, "other-session");
+    expect(other.changeId()).toBe("");
+    other.dispose();
+    expect(recovery.read(owner)?.review).toEqual(review());
+  });
+  test("document replacement and rotated view use exact original status without Prepare or Apply replay", async () => {
+    const backend = memoryStorage();
+    let sends = 0,
+      prepares = 0,
+      statuses = 0;
     const before = fixture(
       {
-        apply: async () => {
-          sent++;
-          return acknowledgement;
+        prepare: async (draft) => {
+          prepares++;
+          return prepare(draft);
         },
-        newChangeId: () => {
-          ids++;
-          return changeId;
+        apply: async () => {
+          sends++;
+          throw new Error("lost response");
         },
       },
-      new AbortController(),
-      recovery,
+      undefined,
+      new SecurityChangeRecovery(backend),
     );
-    await before.load();
-    await before.review("Two changes", [...changes, ...changes]);
+    await ready(before);
     await before.apply();
     before.dispose();
+    const rotated = {
+      ...version,
+      admissionBinding: bytes(32, 99),
+      currentCut: { ...version.currentCut!, sequence: 900n },
+    };
     const after = fixture(
       {
-        status: async () => ({
-          ...proof,
-          enforcement: SecurityEnforcementState.ENFORCED,
+        roles: async () => ({
+          $typeName: "graph.v1.ListRolesResponse",
+          roles: [],
+          nextCursor: "",
+          version: rotated,
         }),
-        apply: async () => {
-          sent++;
-          return acknowledgement;
+        prepare: async (draft) => {
+          prepares++;
+          return prepare(draft);
         },
-        newChangeId: () => {
-          ids++;
-          return changeId;
+        apply: async () => {
+          sends++;
+          throw new Error("unexpected replay");
+        },
+        status: async (original) => {
+          statuses++;
+          expect(original).toEqual(review());
+          return result(original);
         },
       },
-      new AbortController(),
-      recovery,
+      undefined,
+      new SecurityChangeRecovery(backend),
     );
-    expect(after.getSnapshot().mutation).toBe("pending");
+    await ready(after);
+    await after.apply();
+    expect(prepares).toBe(1);
+    expect(sends).toBe(1);
     await after.checkStatus();
-    expect(after.getSnapshot().mutation).toBe("enforced");
-    expect(after.getSnapshot().result?.applied).toEqual([true, false]);
-    expect(after.getSnapshot().result?.replayed).toBe(true);
-    expect(sent).toBe(1);
-    expect(ids).toBe(1);
+    expect(statuses).toBe(1);
+    expect(after.getSnapshot().mutation).toBe("applied");
+    expect(new SecurityChangeRecovery(backend).read(owner)?.review).toEqual(
+      review(),
+    );
     after.dispose();
   });
-  test("status rejects ID, generation, digest shape, revision and enforcement mismatches", async () => {
-    for (const invalid of [
-      { ...proof, changeId: new Uint8Array(16).fill(8) },
-      { ...proof, changeId: new Uint8Array(15).fill(7) },
-      { ...proof, version: undefined },
-      {
-        ...proof,
-        version: { ...proof.version, generation: new Uint8Array(16).fill(3) },
-      },
-      {
-        ...proof,
-        version: { ...proof.version, generation: new Uint8Array(16) },
-      },
-      { ...proof, version: { ...proof.version, digest: new Uint8Array(31) } },
-      { ...proof, version: { ...proof.version, revision: 3n } },
-      { ...proof, version: { ...proof.version, revision: 5n } },
-      { ...proof, enforcement: SecurityEnforcementState.UNSPECIFIED },
-      { ...proof, enforcement: 99 as SecurityEnforcementState },
-    ]) {
-      let sent = 0,
-        ids = 0;
-      const controller = fixture({
-        apply: async () => {
-          sent++;
-          throw new Error("response lost");
-        },
-        newChangeId: () => {
-          ids++;
-          return changeId;
-        },
-        status: async () => invalid,
-      });
-      await controller.load();
-      await controller.review("Delete", changes);
-      await controller.apply();
-      await controller.checkStatus();
-      expect(controller.getSnapshot().mutation).toBe("unconfirmed");
-      expect(controller.getSnapshot().result).toBeUndefined();
-      expect(controller.getSnapshot().message).toContain("unavailable");
-      expect(controller.changeId()).toBe("07".repeat(16));
-      expect(sent).toBe(1);
-      expect(ids).toBe(1);
-      controller.dispose();
-    }
-  });
-  test("status must match the exact retained acknowledgement digest and preserves evidence on failure", async () => {
-    const controller = fixture({
-      status: async () => ({
-        ...proof,
-        version: { ...proof.version, digest: new Uint8Array(32).fill(9) },
-        enforcement: SecurityEnforcementState.ENFORCED,
-      }),
-    });
-    await controller.load();
-    await controller.review("Delete", changes);
-    await controller.apply();
-    await controller.checkStatus();
-    expect(controller.getSnapshot().mutation).toBe("pending");
-    expect(controller.getSnapshot().result?.version?.digest).toEqual(
-      result.version.digest,
-    );
-    expect(controller.getSnapshot().result?.applied).toEqual([true]);
-    controller.dispose();
-  });
-  test("a superseded status operation cannot overwrite current enforcement", async () => {
-    const finish: Array<(value: typeof proof) => void> = [];
-    const controller = fixture({
-      status: () => new Promise((resolve) => finish.push(resolve)),
-    });
-    await controller.load();
-    await controller.review("Delete", changes);
-    await controller.apply();
-    const older = controller.checkStatus();
-    const current = controller.checkStatus();
-    finish[1]({ ...proof, enforcement: SecurityEnforcementState.ENFORCED });
-    await current;
-    finish[0](proof);
-    await older;
-    expect(controller.getSnapshot().mutation).toBe("enforced");
-    expect(controller.getSnapshot().result?.applied).toEqual([true]);
-    controller.dispose();
-  });
-  test("unknown or retired status is indeterminate and cannot trigger another send", async () => {
-    for (const failure of ["not-found", "invalid"] as const) {
-      let sent = 0,
-        ids = 0;
-      const controller = fixture({
-        apply: async () => {
-          sent++;
-          throw new Error("response lost");
-        },
-        newChangeId: () => {
-          ids++;
-          return changeId;
-        },
-        status: async () => {
-          throw new Error(failure);
-        },
-        failure: () => failure,
-      });
-      await controller.load();
-      await controller.review("Delete", changes);
-      await controller.apply();
-      await controller.checkStatus();
-      await controller.review("Resend", changes);
-      await controller.apply();
-      expect(controller.getSnapshot().mutation).toBe("unconfirmed");
-      expect(controller.getSnapshot().result).toBeUndefined();
-      expect(controller.changeId()).toBe("07".repeat(16));
-      expect(sent).toBe(1);
-      expect(ids).toBe(1);
-      controller.dispose();
-    }
-  });
-  test("policy remount retains only the immutable change ID for status recovery", async () => {
-    const recovery = new SecurityChangeRecovery();
-    let sent = 0;
-    const before = fixture(
-      {
-        apply: async () => {
-          sent++;
-          throw new Error("response dropped");
-        },
-      },
-      new AbortController(),
-      recovery,
-    );
-    await before.load();
-    await before.review("Delete two", [...changes, ...changes]);
+  test("restored cached terminal needs a fresh original; weaker status keeps new review blocked", async () => {
+    const backend = memoryStorage();
+    const before = fixture({}, undefined, new SecurityChangeRecovery(backend));
+    await ready(before);
     await before.apply();
     before.dispose();
+    let freshOriginal = false,
+      prepares = 0;
     const after = fixture(
       {
-        status: async (id) => {
-          expect(id).toEqual(new Uint8Array(16).fill(7));
-          return proof;
+        prepare: async (draft) => {
+          prepares++;
+          return prepare(draft);
         },
+        status: async (r) =>
+          result(
+            r,
+            freshOriginal
+              ? CurrentSecurityProgress.APPLIED
+              : CurrentSecurityProgress.UNRESOLVED,
+          ),
       },
-      new AbortController(),
-      recovery,
+      undefined,
+      new SecurityChangeRecovery(backend),
     );
     expect(after.getSnapshot().mutation).toBe("unconfirmed");
     await after.checkStatus();
-    expect(after.getSnapshot().mutation).toBe("pending");
-    expect(after.getSnapshot().result?.applied).toBeUndefined();
-    expect(sent).toBe(1);
+    expect(after.getSnapshot().result?.original).toBeDefined();
+    expect(after.getSnapshot().mutation).toBe("unconfirmed");
+    await ready(after);
+    expect(prepares).toBe(0);
+    freshOriginal = true;
+    await after.checkStatus();
+    expect(after.getSnapshot().mutation).toBe("applied");
     after.dispose();
-    const confirmed = fixture({}, new AbortController(), recovery);
-    expect(confirmed.getSnapshot().mutation).toBe("pending");
-    expect(confirmed.getSnapshot().result?.applied).toBeUndefined();
-    await confirmed.checkStatus();
-    expect(confirmed.getSnapshot().mutation).toBe("pending");
-    expect(confirmed.changeId()).toBe("07".repeat(16));
-    confirmed.dispose();
-    const other = fixture(
-      {},
-      new AbortController(),
-      recovery,
-      "other-browser-session",
-    );
-    expect(other.getSnapshot().mutation).toBe("idle");
-    other.dispose();
   });
-});
-
-test("membership pages from another revision cannot populate the inspected Role", async () => {
-  const controller = fixture({
-    users: async () => ({
-      $typeName: "graph.v1.ListUsersResponse",
-      users: [],
-      version: { ...version, revision: 4n },
-      nextCursor: "foreign",
-    }),
-  });
-  await controller.load();
-  await controller.loadRoleMembers("reader");
-  expect(controller.getSnapshot().memberCursor).toBe("");
-  expect(controller.getSnapshot().memberRole).toBe("");
-  expect(controller.getSnapshot().message).toContain("revision changed");
-  controller.dispose();
-});
-
-describe("definitive precommit correction", () => {
-  test("each bound first refusal retires the old draft and needs an explicit new review", async () => {
-    for (const reason of [
-      SecurityChangeRejectionReason.INVALID_CHANGES,
-      SecurityChangeRejectionReason.UNKNOWN_ROLE,
-      SecurityChangeRejectionReason.ISSUER_VALIDATION,
-      SecurityChangeRejectionReason.ENVIRONMENT_OWNED,
-      SecurityChangeRejectionReason.LAST_ADMINISTRATOR,
-      SecurityChangeRejectionReason.REVISION_CONFLICT,
-    ]) {
-      let sent = 0,
-        ids = 0;
-      const appliedIDs: Uint8Array[] = [];
-      const error = new Error("definite refusal");
-      const recovery = new SecurityChangeRecovery();
-      const controller = fixture(
-        {
-          newChangeId: () => new Uint8Array(16).fill(7 + ids++),
-          apply: async (request) => {
-            sent++;
-            appliedIDs.push(request.changeId);
-            if (sent === 1) throw error;
-            return result;
-          },
-          precommitRejected: (value) =>
-            value === error
-              ? {
-                  $typeName: "graph.v1.SecurityChangePrecommitRejected",
-                  changeId,
-                  expectedRevision: 3n,
-                  reason,
-                }
-              : undefined,
-        },
-        new AbortController(),
-        recovery,
-      );
-      await controller.load();
-      await controller.review("First draft", changes);
-      await controller.apply();
-      expect(controller.getSnapshot().mutation).toBe(
-        reason === SecurityChangeRejectionReason.REVISION_CONFLICT
-          ? "conflict"
-          : "rejected",
-      );
-      expect(controller.getSnapshot().message).toContain(
-        "refused before commit",
-      );
-      expect(controller.getSnapshot().review).toBeUndefined();
-      expect(controller.getSnapshot().version).toBeUndefined();
-      expect(recovery.read("browser-session")).toBeUndefined();
-      expect(controller.changeId()).toBe("");
-      await controller.apply();
-      await controller.review("Unloaded correction", changes);
-      expect(sent).toBe(1);
-      expect(ids).toBe(1);
-      await controller.load();
-      expect(sent).toBe(1);
-      expect(ids).toBe(1);
-      await controller.review("Corrected new review", changes);
-      expect(ids).toBe(2);
-      expect(sent).toBe(1);
-      await controller.apply();
-      expect(sent).toBe(2);
-      expect(appliedIDs[1]).not.toEqual(appliedIDs[0]);
-      controller.dispose();
-    }
-  });
-  test("generic failures and malformed or mismatched refusals retain the original recovery record", async () => {
-    const bound = {
-      $typeName: "graph.v1.SecurityChangePrecommitRejected" as const,
-      changeId,
-      expectedRevision: 3n,
-      reason: SecurityChangeRejectionReason.UNKNOWN_ROLE,
+  test("pre-dispatch storage failure sends zero Apply and a retry keeps the same prepared identity", async () => {
+    const backend = memoryStorage();
+    let fail = true,
+      sends = 0;
+    const storage: SecurityRecoveryStorage = {
+      read: backend.read,
+      replace: (value) => {
+        if (fail) throw new Error("quota");
+        backend.replace(value);
+      },
     };
-    for (const detail of [
+    const c = fixture(
+      {
+        apply: async (r) => {
+          sends++;
+          expect(r.currentReview).toEqual(review());
+          return acknowledgement();
+        },
+      },
       undefined,
-      { ...bound, changeId: new Uint8Array(16).fill(8) },
-      { ...bound, changeId: new Uint8Array(15) },
-      { ...bound, expectedRevision: 4n },
-      { ...bound, reason: 999 },
-      { ...bound, reason: SecurityChangeRejectionReason.UNSPECIFIED },
-    ]) {
-      for (const failure of [
-        "conflict",
-        "invalid",
-        "denied",
-        "unavailable",
-      ] as const) {
-        let sent = 0;
-        const recovery = new SecurityChangeRecovery();
-        const controller = fixture(
-          {
-            apply: async () => {
-              sent++;
-              throw new Error("unconfirmed");
-            },
-            failure: () => failure,
-            precommitRejected: () => detail,
-          },
-          new AbortController(),
-          recovery,
-        );
-        await controller.load();
-        await controller.review("First", changes);
-        await controller.apply();
-        expect(controller.getSnapshot().mutation).toBe("unconfirmed");
-        expect(recovery.read("browser-session")?.changeId).toEqual(changeId);
-        await controller.load();
-        await controller.review("Second", changes);
-        await controller.apply();
-        expect(sent).toBe(1);
-        controller.dispose();
-        const after = fixture(
-          {
-            apply: async () => {
-              sent++;
-              return result;
-            },
-            precommitRejected: () => bound,
-            status: async () => {
-              throw new Error("unknown status");
-            },
-          },
-          new AbortController(),
-          recovery,
-        );
-        await after.apply();
-        await after.checkStatus();
-        await after.load();
-        await after.review("After restart", changes);
-        await after.apply();
-        expect(sent).toBe(1);
-        expect(after.getSnapshot().mutation).toBe("unconfirmed");
-        expect(after.changeId()).toBe("07".repeat(16));
-        after.dispose();
-      }
-    }
+      new SecurityChangeRecovery(storage),
+    );
+    await ready(c);
+    await c.apply();
+    expect(sends).toBe(0);
+    expect(c.getSnapshot().message).toContain("storage");
+    expect(c.getSnapshot().review?.contract).toEqual(review());
+    fail = false;
+    await c.apply();
+    expect(sends).toBe(1);
+    c.dispose();
+  });
+  test("post-Apply save failure keeps received evidence and does not enter first-refusal cleanup", async () => {
+    const backend = memoryStorage();
+    let writes = 0,
+      refusals = 0;
+    const storage: SecurityRecoveryStorage = {
+      read: backend.read,
+      replace: (value) => {
+        if (++writes === 2) throw new Error("quota");
+        backend.replace(value);
+      },
+    };
+    const c = fixture(
+      {
+        invocationRejected: () => {
+          refusals++;
+          return refused();
+        },
+      },
+      undefined,
+      new SecurityChangeRecovery(storage),
+    );
+    await ready(c);
+    await c.apply();
+    expect(refusals).toBe(0);
+    expect(c.getSnapshot().mutation).toBe("unconfirmed");
+    expect(c.getSnapshot().result?.original).toBeDefined();
+    const persisted = new SecurityChangeRecovery(backend).read(owner)!;
+    expect(persisted.review).toEqual(review());
+    expect(persisted.result).toBeUndefined();
+    await c.checkStatus();
+    expect(c.getSnapshot().mutation).toBe("applied");
+    c.dispose();
+  });
+  test("failed exact first-refusal removal preserves ambiguity and disables approval retry", async () => {
+    const backend = memoryStorage();
+    let writes = 0,
+      sends = 0;
+    const storage: SecurityRecoveryStorage = {
+      read: backend.read,
+      replace: (value) => {
+        if (++writes === 2) throw new Error("quota");
+        backend.replace(value);
+      },
+    };
+    const c = fixture(
+      {
+        apply: async () => {
+          sends++;
+          throw new Error("typed first refusal");
+        },
+        invocationRejected: () => refused(),
+      },
+      undefined,
+      new SecurityChangeRecovery(storage),
+    );
+    await ready(c);
+    await c.apply();
+    expect(c.getSnapshot().mutation).toBe("unconfirmed");
+    expect(c.getSnapshot().message).toContain("storage");
+    expect(new SecurityChangeRecovery(backend).read(owner)?.review).toEqual(
+      review(),
+    );
+    await c.apply();
+    expect(sends).toBe(1);
+    c.dispose();
+  });
+  test("unreadable recovery blocks new management mutation without erasing existing bytes", async () => {
+    const backend = memoryStorage();
+    backend.replace("corrupt original bytes");
+    let sends = 0,
+      prepares = 0;
+    const c = fixture(
+      {
+        prepare: async (draft) => {
+          prepares++;
+          return prepare(draft);
+        },
+        apply: async () => {
+          sends++;
+          return acknowledgement();
+        },
+      },
+      undefined,
+      new SecurityChangeRecovery(backend),
+    );
+    await ready(c);
+    await c.apply();
+    expect(c.getSnapshot().recoveryBlocked).toBe(true);
+    expect(c.getSnapshot().message).toContain("storage");
+    expect(prepares).toBe(0);
+    expect(sends).toBe(0);
+    expect(backend.read()).toBe("corrupt original bytes");
+    c.dispose();
   });
 });

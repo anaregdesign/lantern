@@ -1,6 +1,6 @@
 module github.com/anaregdesign/lantern/mcp
 
-go 1.27.0
+go 1.27.2
 
 require (
 	connectrpc.com/grpchealth v1.5.0

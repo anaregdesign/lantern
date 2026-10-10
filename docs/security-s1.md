@@ -389,3 +389,14 @@ It is not mounted in product routes, providers, environment configuration or
 startup. Its network ACKs and workload admission do not qualify current policy
 freshness, production H issuance or serving activation. The linked document
 records wire, capacity, lifecycle and later-proof boundaries.
+
+
+## Private current-authority/origin extension
+
+[#1722](security-current-authority.md) adds an explicitly scoped v2 admission
+profile, qualified conditional native time, serialized renewal and actual
+credential/purpose consumption into durable origin H. P retains versioned serial
+reservations and exact foreign original H without granting current authority.
+The original S2-C historical grammar remains unchanged and is not automatically
+migrated. The linked document specifies finite output authorization under approved
+A and keeps public S4 activation, review/CI and target acceptance separate.

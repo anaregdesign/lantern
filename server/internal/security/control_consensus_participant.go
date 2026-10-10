@@ -75,6 +75,9 @@ type s2cParticipant struct {
 	key                                  ed25519.PrivateKey
 	origins                              map[[32]byte]*s2cHistoricalH
 	serials                              map[uint64][32]byte
+	originSerial                         uint64
+	originReservations                   map[uint64]authorityOriginReservation
+	originIDs                            map[FullChangeID]uint64
 	pending                              map[[32]byte]*s2cHistoricalH
 	pendingBytes                         uint64
 	counter                              uint64
@@ -185,6 +188,8 @@ func s2cNewParticipant(c s2cParticipantConfig) (*s2cParticipant, error) {
 	c.Key = nil
 	c.Trust = nil
 	o := &s2cParticipant{config: c, manifest: manifest, binding: binding, trust: t, origins: map[[32]byte]*s2cHistoricalH{}, serials: map[uint64][32]byte{}, pending: map[[32]byte]*s2cHistoricalH{}, promises: map[uint32]*s2cMessage{}, votes: map[uint32]*s2cMessage{}, replayState: state}
+	o.originReservations = make(map[uint64]authorityOriginReservation)
+	o.originIDs = make(map[FullChangeID]uint64)
 	o.replayReceipt = s2LocalReceipt{ScopeDigest: c.BScope.digest(), LocalIndex: 1, CapsuleDigest: s2LocalCapsuleDigest(capsule), ControlPrefix: state.prefix}
 	return o, nil
 }
@@ -378,6 +383,11 @@ func (o *s2cParticipant) persistSealedOriginH(raw []byte) ([32]byte, error) {
 	o.gate.Lock()
 	defer o.gate.Unlock()
 	defer o.poisonPanic()
+	return o.persistSealedOriginLocked(raw)
+}
+
+// Caller holds the composite gate through reserve, consume, seal and append.
+func (o *s2cParticipant) persistSealedOriginLocked(raw []byte) ([32]byte, error) {
 	if e := o.readyLocked(); e != nil {
 		return [32]byte{}, e
 	}
@@ -389,6 +399,9 @@ func (o *s2cParticipant) persistSealedOriginH(raw []byte) ([32]byte, error) {
 		return [32]byte{}, e
 	}
 	if o.config.OwnedOrigin == 0 || h.originID != o.config.OwnedOrigin {
+		return [32]byte{}, errS2CProtocol
+	}
+	if !o.reservationMatches(h) {
 		return [32]byte{}, errS2CProtocol
 	}
 	d := h.digest()

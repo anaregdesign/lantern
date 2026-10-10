@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,11 +25,13 @@ var ErrLoginTransaction = errors.New("invalid or expired login transaction")
 // Restart invalidates unfinished logins. State consumption is atomic and never
 // promised across arbitrary replicas or an automatic owner replacement.
 type LoginTransactions struct {
-	mu      sync.Mutex
-	pending map[[32]byte]loginTransaction
-	origin  string
-	returns map[string]bool
-	now     func() time.Time
+	mu             sync.Mutex
+	pending        map[[32]byte]loginTransaction
+	origin         string
+	returns        map[string]bool
+	now            func() time.Time
+	bounds         func() (time.Time, time.Time, error)
+	affinityPrefix string
 }
 type loginTransaction struct {
 	trust                                       Trust
@@ -50,11 +53,24 @@ type LoginStart struct {
 func (LoginStart) String() string { return "[redacted OIDC login start]" }
 
 // LoginCompletion is server-private single-use evidence for code exchange.
-type LoginCompletion struct{ transaction loginTransaction }
+type LoginCompletion struct {
+	transaction   loginTransaction
+	consumedState [32]byte
+	consumedAt    time.Time
+}
 
-func (LoginCompletion) String() string           { return "[redacted OIDC login completion]" }
-func (c LoginCompletion) Trust() Trust           { return c.transaction.trust }
-func (c LoginCompletion) Discovery() Discovery   { return c.transaction.discovery }
+func (LoginCompletion) String() string { return "[redacted OIDC login completion]" }
+func (c LoginCompletion) Trust() Trust {
+	trust := c.transaction.trust
+	trust.Issuer.Algorithms = slices.Clone(trust.Issuer.Algorithms)
+	return trust
+}
+func (c LoginCompletion) Discovery() Discovery {
+	d := c.transaction.discovery
+	d.ResponseTypes = slices.Clone(d.ResponseTypes)
+	d.CodeChallengeMethods = slices.Clone(d.CodeChallengeMethods)
+	return d
+}
 func (c LoginCompletion) Nonce() string          { return c.transaction.nonce }
 func (c LoginCompletion) Verifier() string       { return c.transaction.verifier }
 func (c LoginCompletion) ReturnPath() string     { return c.transaction.returnPath }
@@ -93,6 +109,39 @@ func NewLoginTransactionsWithClock(origin string, returnPaths []string, clock fu
 		return nil, ErrLoginTransaction
 	}
 	return manager, nil
+}
+
+// Current login attempts use qualified endpoints and a process-owned routing
+// prefix. The hint is not authentication: Consume still requires its stored
+// unpredictable state and cookie. A different process cannot reconstruct it.
+func NewLoginTransactionsWithBounds(origin string, returnPaths []string, bounds func() (time.Time, time.Time, error), affinityPrefix string) (*LoginTransactions, error) {
+	parts := strings.Split(affinityPrefix, ".")
+	if bounds == nil || len(parts) != 3 || parts[0] != "v2" {
+		return nil, ErrLoginTransaction
+	}
+	n, err := strconv.ParseUint(parts[1], 10, 32)
+	process, e := base64.RawURLEncoding.Strict().DecodeString(parts[2])
+	if err != nil || n == 0 || strconv.FormatUint(n, 10) != parts[1] || e != nil || len(process) != 32 || len(parts[2]) != 43 {
+		return nil, ErrLoginTransaction
+	}
+	m, err := NewLoginTransactionsWithClock(origin, returnPaths, func() time.Time { return time.Time{} })
+	if err != nil {
+		return nil, err
+	}
+	m.bounds, m.affinityPrefix = bounds, affinityPrefix
+	return m, nil
+}
+
+func (m *LoginTransactions) timeBounds() (time.Time, time.Time, error) {
+	if m.bounds == nil {
+		now := m.now()
+		return now, now, nil
+	}
+	low, high, err := m.bounds()
+	if err != nil || low.IsZero() || high.Before(low) {
+		return time.Time{}, time.Time{}, ErrLoginTransaction
+	}
+	return low.UTC().Round(0), high.UTC().Round(0), nil
 }
 func validReturnPath(value string) bool {
 	if len(value) == 0 || len(value) > 1024 || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") || strings.ContainsAny(value, "\\\x00\r\n") {
@@ -146,6 +195,9 @@ func (m *LoginTransactions) begin(trust Trust, discovery Discovery, returnPath, 
 	if err != nil {
 		return LoginStart{}, err
 	}
+	if m.affinityPrefix != "" {
+		state = m.affinityPrefix + "." + state
+	}
 	cookie, err := randomLoginValue()
 	if err != nil {
 		return LoginStart{}, err
@@ -182,7 +234,10 @@ func (m *LoginTransactions) begin(trust Trust, discovery Discovery, returnPath, 
 	authorize.RawQuery = query.Encode()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.now()
+	_, now, err := m.timeBounds()
+	if err != nil {
+		return LoginStart{}, err
+	}
 	for id, transaction := range m.pending {
 		if !now.Before(transaction.expiresAt) {
 			delete(m.pending, id)
@@ -200,10 +255,20 @@ func (m *LoginTransactions) begin(trust Trust, discovery Discovery, returnPath, 
 	return LoginStart{AuthorizationURL: authorize.String(), TransactionCookie: cookie, ExpiresAt: transaction.expiresAt}, nil
 }
 func (m *LoginTransactions) Consume(state, cookie, callbackPath, responseIssuer string) (LoginCompletion, error) {
-	if m == nil || len(state) != 43 || len(cookie) != 43 || len(responseIssuer) > 2048 {
+	if m == nil || len(cookie) != 43 || len(responseIssuer) > 2048 {
 		return LoginCompletion{}, ErrLoginTransaction
 	}
-	stateBytes, err := base64.RawURLEncoding.Strict().DecodeString(state)
+	nonce := state
+	if m.affinityPrefix != "" {
+		if !strings.HasPrefix(state, m.affinityPrefix+".") {
+			return LoginCompletion{}, ErrLoginTransaction
+		}
+		nonce = strings.TrimPrefix(state, m.affinityPrefix+".")
+	}
+	if len(nonce) != 43 {
+		return LoginCompletion{}, ErrLoginTransaction
+	}
+	stateBytes, err := base64.RawURLEncoding.Strict().DecodeString(nonce)
 	if err != nil || len(stateBytes) != 32 {
 		return LoginCompletion{}, ErrLoginTransaction
 	}
@@ -218,11 +283,14 @@ func (m *LoginTransactions) Consume(state, cookie, callbackPath, responseIssuer 
 	if !known {
 		return LoginCompletion{}, ErrLoginTransaction
 	}
-	now := m.now()
+	low, high, err := m.timeBounds()
+	if err != nil {
+		return LoginCompletion{}, err
+	}
 	cookieDigest := sha256.Sum256([]byte(cookie))
-	if now.Before(transaction.createdAt) || !now.Before(transaction.expiresAt) || subtle.ConstantTimeCompare(cookieDigest[:], transaction.cookieDigest[:]) != 1 || callbackPath != CallbackPath(transaction.trust.Issuer.URL) || responseIssuer != "" && responseIssuer != transaction.trust.Issuer.URL {
+	if low.Before(transaction.createdAt) || !high.Before(transaction.expiresAt) || subtle.ConstantTimeCompare(cookieDigest[:], transaction.cookieDigest[:]) != 1 || callbackPath != CallbackPath(transaction.trust.Issuer.URL) || responseIssuer != "" && responseIssuer != transaction.trust.Issuer.URL {
 		return LoginCompletion{}, ErrLoginTransaction
 	}
 	delete(m.pending, id)
-	return LoginCompletion{transaction: transaction}, nil
+	return LoginCompletion{transaction: transaction, consumedState: id, consumedAt: low}, nil
 }

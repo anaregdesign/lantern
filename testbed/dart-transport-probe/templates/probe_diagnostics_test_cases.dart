@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:test/test.dart';
 
@@ -28,6 +29,31 @@ void diagnosticsTests({
       writeLine: lines.add,
     );
   });
+
+  test(
+    'default events use stdout despite Flutter print interception',
+    () async {
+      await IOOverrides.runZoned(
+        () => runZoned(
+          () async {
+            final nativeDiagnostics = ProbeDiagnostics(
+              transport: transport,
+              errorCode: errorCode,
+            );
+            await nativeDiagnostics.run(
+              () => nativeDiagnostics.scenario('marker', () async {}),
+            );
+          },
+          zoneSpecification: ZoneSpecification(
+            print: (_, _, _, _) => throw StateError('print was sent to syslog'),
+          ),
+        ),
+        stdout: () => _DiagnosticStdout(lines),
+      );
+      expect(events().last['kind'], 'result');
+      expect(events().last['state'], 'success');
+    },
+  );
 
   for (final scenario in ['plaintext', 'trusted_tls', 'marker']) {
     for (final method in [
@@ -220,4 +246,16 @@ void diagnosticsTests({
       }
     },
   );
+}
+
+class _DiagnosticStdout implements Stdout {
+  _DiagnosticStdout(this.lines);
+
+  final List<String> lines;
+
+  @override
+  void writeln([Object? object = '']) => lines.add('$object');
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

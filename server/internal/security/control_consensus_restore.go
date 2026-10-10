@@ -249,9 +249,18 @@ func (o *s2cParticipant) replayRecord(r s2cPRecord) error {
 	if !o.bootstrapped || o.chosen != nil {
 		return errS2CProtocol
 	}
+	if r.kind == s2cPOriginReservation {
+		return o.replayReservation(r.raw)
+	}
+	if r.kind == s2cPForwardedH {
+		return o.replayForwardedH(r.raw)
+	}
 	if r.kind == s2cPOrigin {
 		h, e := verifyHistoricalH(o.trust, []byte(r.raw))
 		if e != nil || o.config.OwnedOrigin == 0 || h.originID != o.config.OwnedOrigin {
+			return errS2CProtocol
+		}
+		if !o.reservationMatches(h) {
 			return errS2CProtocol
 		}
 		d := h.digest()

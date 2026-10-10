@@ -191,6 +191,7 @@ export type {
 
 export {
   SecurityClient,
+  CurrentSecurityInvocationRejectedError,
   SecurityOperationAuthorizationRequiredError,
   SecurityChangePrecommitRejectedError,
 } from "./security.js";

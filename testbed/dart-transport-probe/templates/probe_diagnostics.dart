@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 /// The mobile runner consumes only these bounded, single-line JSON events.
 /// Never stringify an exception, endpoint, header, certificate, or result here.
@@ -7,7 +8,7 @@ class ProbeDiagnostics {
     required this.transport,
     required this.errorCode,
     void Function(String)? writeLine,
-  }) : _writeLine = writeLine ?? print {
+  }) : _writeLine = writeLine ?? stdout.writeln {
     if (transport != 'connect' && transport != 'grpc') {
       throw ArgumentError('unsupported probe transport');
     }

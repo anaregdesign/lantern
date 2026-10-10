@@ -5,11 +5,16 @@ import {
   type ReactNode,
 } from "react";
 import { useConnection } from "~/lib/client/usecase/connection/connection-context";
-import { AuthController, type AuthGateway } from "./auth-state";
+import {
+  AuthController,
+  SessionRevocationRecovery,
+  type AuthGateway,
+} from "./auth-state";
 import { SecurityChangeRecovery } from "~/lib/client/usecase/security/security-management";
 import { AuthContext } from "./use-auth";
 import { AddRecoveryStore } from "~/lib/client/usecase/add-recovery/add-recovery";
 import { browserAddRecoveryStorage } from "~/lib/client/infrastructure/browser/add-recovery-storage";
+import { browserSecurityRecoveryStorage } from "~/lib/client/infrastructure/browser/security-change-recovery-storage";
 
 export interface AuthLifecycle {
   watch(refresh: (logout: boolean) => void): () => void;
@@ -31,12 +36,19 @@ export function AuthProvider({
     () => new AddRecoveryStore(browserAddRecoveryStorage()),
     [],
   );
-  const { controller, recovery } = useMemo(
-    () => ({
-      controller: new AuthController(gatewayFactory(connection.baseUrl)),
-      recovery: new SecurityChangeRecovery(),
-    }),
-    [connection.baseUrl, gatewayFactory],
+  const recovery = useMemo(
+    () => new SecurityChangeRecovery(browserSecurityRecoveryStorage()),
+    [],
+  );
+  const logoutRecovery = useMemo(() => new SessionRevocationRecovery(), []);
+  const controller = useMemo(
+    () =>
+      new AuthController(
+        gatewayFactory(connection.baseUrl),
+        Date.now,
+        logoutRecovery,
+      ),
+    [connection.baseUrl, gatewayFactory, logoutRecovery],
   );
   const state = useSyncExternalStore(
     controller.subscribe,
@@ -47,7 +59,6 @@ export function AuthProvider({
     void controller.refresh();
     const stop = lifecycle.watch((logout) => {
       if (logout) {
-        recovery.clear();
         controller.invalidateSession();
       }
       void controller.refresh(controller.getSnapshot().kind !== "off");
@@ -68,7 +79,6 @@ export function AuthProvider({
       recovery,
       adds,
       logout: async () => {
-        recovery.clear();
         const pending = controller.logout();
         lifecycle.announceLogout();
         await pending;

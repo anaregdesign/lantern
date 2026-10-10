@@ -31,6 +31,21 @@ func (r *SecurityRuntime) AuthenticateBearer(ctx context.Context, headers http.H
 		}
 		return ctx, nil
 	}
+	if r.current != nil {
+		p, err := r.CurrentBearerProducer(headers)
+		if err != nil {
+			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
+		}
+		verified, _, err := r.current.WithRequestCredential(ctx, p)
+		if err != nil {
+			code := connect.CodeUnauthenticated
+			if errors.Is(err, security.ErrAuthorityUnavailable) {
+				code = connect.CodeUnavailable
+			}
+			return ctx, connect.NewError(code, errors.New("current authentication unavailable"))
+		}
+		return context.WithValue(verified, verifiedRuntimeKey{}, r), nil
+	}
 	values := headers.Values("Authorization")
 	if len(values) != 1 || len(values[0]) > 16<<10+7 {
 		return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
@@ -46,6 +61,7 @@ func (r *SecurityRuntime) AuthenticateBearer(ctx context.Context, headers http.H
 	if err := r.authorityCheck(ctx, revision); err != nil {
 		return ctx, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
 	}
+	evidence := requestEvidenceCut(revision, time.Time{})
 	var identity security.Identity
 	var authTime, credentialExpiry time.Time
 	authentication := security.Authentication{Provenance: security.NativeMachine, Class: security.MachineActor}
@@ -55,6 +71,9 @@ func (r *SecurityRuntime) AuthenticateBearer(ctx context.Context, headers http.H
 		if !valid {
 			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
 		}
+		evidence.kind = "machine"
+		evidence.machineIdentity, evidence.machineExpiry = identity, credentialExpiry
+		evidence.machineCredential = requestCredentialCommitment("native-machine", raw)
 		// Machines cannot claim an interactive recent-authentication event.
 	} else {
 		issuerURL, err := oidc.TokenIssuer(raw)
@@ -69,8 +88,15 @@ func (r *SecurityRuntime) AuthenticateBearer(ctx context.Context, headers http.H
 		if err != nil {
 			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
 		}
-		identity, authTime, credentialExpiry = verified.Identity, verified.AuthTime, verified.ExpiresAt
+		identity, authTime, credentialExpiry = verified.Identity(), verified.AuthTime(), verified.ExpiresAt()
 		authentication = security.Authentication{Provenance: security.RFC9068Bearer, Class: revision.Snapshot().BearerActor(identity), IssuerConfigRevision: issuer.ConfigRevision}
+		evidence.kind, evidence.token = "token", verified
+		evidence.humanNamespaceQualified = issuer.HumanSubjectNamespaceQualified
+		if revision.Snapshot().HumanIdentity(identity) {
+			evidence.enrolledIdentity = identity
+		}
+		evidence.issuerConfigRevision = issuer.ConfigRevision
+		evidence.issuerConfiguration = verified.Evidence().Configuration
 	}
 	expiry := minSecurityTime(credentialExpiry, r.now().Add(28*time.Second))
 	if r.receiver != nil {
@@ -84,6 +110,8 @@ func (r *SecurityRuntime) AuthenticateBearer(ctx context.Context, headers http.H
 		return ctx, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
 	}
 	admission = admission.WithAuthentication(authentication)
+	evidence.admissionExpiry, evidence.classification = expiry, authentication.Class
+	ctx = withRequestAuthenticationEvidence(ctx, evidence)
 	return context.WithValue(security.WithAdmission(ctx, admission), verifiedRuntimeKey{}, r), nil
 }
 func minSecurityTime(a, b time.Time) time.Time {

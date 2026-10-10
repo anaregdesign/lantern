@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-
-	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
 var ErrInvalidToken = errors.New("invalid authentication token")
@@ -35,14 +33,6 @@ type tokenClaims struct {
 	AZP        string           `json:"azp"`
 	AuthTime   *jwt.NumericDate `json:"auth_time"`
 	AccessHash string           `json:"at_hash"`
-}
-
-// VerifiedIdentity carries authentication evidence only. Account/Issuer state,
-// Role resolution and serving freshness must come from the current snapshot.
-type VerifiedIdentity struct {
-	Identity  security.Identity
-	ExpiresAt time.Time
-	AuthTime  time.Time
 }
 
 type Verifier struct {
@@ -124,9 +114,8 @@ func (v *Verifier) VerifyAccess(ctx context.Context, raw string, trust Trust) (V
 		if claims.AuthTime.Time.After(v.now()) || claims.AuthTime.Time.After(claims.IssuedAt.Time) {
 			return VerifiedIdentity{}, ErrInvalidToken
 		}
-		verified.AuthTime = claims.AuthTime.Time
 	}
-	return verified, nil
+	return finishEvidence(verified, "access", "rfc9068")
 }
 
 // VerifyID is limited to the outstanding authorization-code login transaction.
@@ -149,9 +138,8 @@ func (v *Verifier) VerifyID(ctx context.Context, raw string, trust Trust, nonce 
 		if claims.AuthTime.Time.IsZero() || claims.AuthTime.Time.After(v.now()) || claims.AuthTime.Time.After(claims.IssuedAt.Time) {
 			return VerifiedIdentity{}, ErrInvalidToken
 		}
-		verified.AuthTime = claims.AuthTime.Time
 	}
-	return verified, nil
+	return finishEvidence(verified, "id", "oidc-id")
 }
 
 // VerifyLogin additionally checks an optional signed at_hash against the
@@ -173,7 +161,7 @@ func (v *Verifier) VerifyLogin(ctx context.Context, raw string, trust Trust, non
 		return VerifiedIdentity{}, ErrInvalidToken
 	}
 	if _, present := members["at_hash"]; !present {
-		return verified, nil
+		return finishEvidence(verified, "login", "oidc-id")
 	}
 	if claims.AccessHash == "" || len(accessToken) == 0 || len(accessToken) > maxTokenBytes {
 		return VerifiedIdentity{}, ErrInvalidToken
@@ -197,10 +185,12 @@ func (v *Verifier) VerifyLogin(ctx context.Context, raw string, trust Trust, non
 	if subtle.ConstantTimeCompare([]byte(expected), []byte(claims.AccessHash)) != 1 {
 		return VerifiedIdentity{}, ErrInvalidToken
 	}
-	return verified, nil
+	verified.evidence.AccessHashChecked = true
+	return finishEvidence(verified, "login", "oidc-id")
 }
 
 func (v *Verifier) verify(ctx context.Context, raw string, trust Trust, header tokenHeader, claims tokenClaims, audience string) (VerifiedIdentity, error) {
+	trust.Issuer.Algorithms = slices.Clone(trust.Issuer.Algorithms)
 	if v == nil || v.keys == nil || !trust.Issuer.Enabled || audience == "" || claims.Issuer != trust.Issuer.URL ||
 		!slices.Contains(trust.Issuer.Algorithms, header.Algorithm) ||
 		claims.Subject == "" || len(claims.Subject) > 255 || claims.ExpiresAt == nil || claims.IssuedAt == nil ||
@@ -234,6 +224,5 @@ func (v *Verifier) verify(ctx context.Context, raw string, trust Trust, header t
 	if err != nil || !token.Valid || !v.now().Before(validated.ExpiresAt.Time) {
 		return VerifiedIdentity{}, ErrInvalidToken
 	}
-	return VerifiedIdentity{Identity: security.Identity{Kind: security.OIDCPrincipal,
-		Issuer: validated.Issuer, Subject: validated.Subject}, ExpiresAt: validated.ExpiresAt.Time}, nil
+	return tokenEvidence(raw, trust, header, validated, audience, key)
 }

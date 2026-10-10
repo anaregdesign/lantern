@@ -781,6 +781,8 @@ final class _WireSession implements OfflineScopedChangeSession {
   @override
   String get responderId => session.responderId;
   @override
+  String get authorityBinding => session.authorityBinding;
+  @override
   Stream<OfflineScopedChangeFrame> get frames => session.frames;
   @override
   Future<List<OfflineRemoteRead<Vertex>>> getVertices(

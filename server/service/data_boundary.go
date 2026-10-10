@@ -257,6 +257,13 @@ func dataUnary[Req, Resp any](ctx context.Context, req *connect.Request[Req], sv
 			return nil, err
 		}
 	}
+	// The exact mapped batch and immutable access view are complete before
+	// the final local admission. No control lock or I/O enters the graph lock.
+	if admission != nil {
+		if err := admission.Check(ctx, svc.securityNow()); err != nil {
+			return nil, connect.NewError(connect.CodeUnavailable, err)
+		}
+	}
 	response, err := fn(ctx, any(mapped).(*Req))
 	if err != nil {
 		if !blind || !blindReceiptDisposition(err) {

@@ -30,7 +30,9 @@ func (r *SecurityRuntime) PublicDataHTTPHandler(svc *service.LanternService, opt
 		return "", nil, err
 	}
 	options = append(options, service.StrictJSONHandlerOption(), connect.WithInterceptors(r.PublicAuthenticationInterceptor()))
-	path, handler := graphv1connect.NewLanternServiceHandler(service.NewLanternServiceConnectHandler(svc), options...)
+	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternServiceName+"/", func(options ...connect.HandlerOption) (string, http.Handler) {
+		return graphv1connect.NewLanternServiceHandler(service.NewLanternServiceConnectHandler(svc), options...)
+	}, options...)
 	return path, r.boundSnapshotHTTPHandler(handler), nil
 }
 func (r *SecurityRuntime) BrowserDataHTTPHandler(svc *service.LanternService, options ...connect.HandlerOption) (string, http.Handler, error) {
@@ -38,6 +40,8 @@ func (r *SecurityRuntime) BrowserDataHTTPHandler(svc *service.LanternService, op
 		return "", nil, err
 	}
 	options = append(options, service.StrictJSONHandlerOption())
-	path, handler := graphv1connect.NewLanternServiceHandler(service.NewLanternServiceConnectHandler(svc), options...)
+	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternServiceName+"/", func(options ...connect.HandlerOption) (string, http.Handler) {
+		return graphv1connect.NewLanternServiceHandler(service.NewLanternServiceConnectHandler(svc), options...)
+	}, options...)
 	return "/browser" + path, r.boundSnapshotHTTPHandler(r.BrowserRPCHandler(path, handler)), nil
 }

@@ -4,13 +4,13 @@ use std::{
     error::Error,
     fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{SocketAddr, TcpStream},
     process::{Child, Command, ExitStatus, Stdio},
     thread,
     time::{Duration, Instant},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
 // Deterministic local fixture credentials; never installed in production.
@@ -136,6 +136,83 @@ fn fixture_failure_category(path: &std::path::Path) -> &'static str {
     "unknown"
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReadinessReason {
+    CaRead,
+    CaParse,
+    ClientIdentity,
+    ChildExit,
+    Request,
+    Timeout,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReadinessProbe {
+    None,
+    TlsCertificate,
+    Timeout,
+    Dial,
+    Transport,
+    Http,
+    Json,
+    Health,
+    Capabilities,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReadinessServerLog {
+    Unavailable,
+    None,
+    Initialization,
+    BindAddressInUse,
+    ServerExit,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReadinessDiagnostic {
+    reason: ReadinessReason,
+    node: u8,
+    port: u16,
+    elapsed_ms: u64,
+    probe: ReadinessProbe,
+    http_status: u16,
+    child_exited: bool,
+    child_exit_code: i64,
+    server_log: ReadinessServerLog,
+}
+
+fn native_startup_failure(path: &std::path::Path) -> String {
+    let mut message = format!(
+        "native fixture failed certified readiness: {}",
+        fixture_failure_category(path)
+    );
+    // Retain only a bounded, typed record before GoServer drops its TempDir.
+    // Never copy arbitrary private errors, response bodies or child log text.
+    if let Ok(file) = File::open(path) {
+        for line in BufReader::new(file.take(4096))
+            .lines()
+            .map_while(Result::ok)
+        {
+            if let Some(raw) = line.strip_prefix("authfixture_readiness:") {
+                if let Ok(diagnostic) = serde_json::from_str::<ReadinessDiagnostic>(raw)
+                    && diagnostic.node < 8
+                    && diagnostic.http_status <= 599
+                    && let Ok(safe) = serde_json::to_string(&diagnostic)
+                {
+                    message.push(' ');
+                    message.push_str(&safe);
+                }
+                break;
+            }
+        }
+    }
+    message
+}
+
 impl GoServer {
     pub(crate) fn start(overrides: &[(&str, &str)]) -> Result<Self, Box<dyn Error>> {
         let binary = env::var_os("LANTERN_RUST_TEST_SERVER")
@@ -245,24 +322,6 @@ impl GoServer {
             &override_file,
             serde_json::to_vec(&vec![configured; count])?,
         )?;
-        let listeners = (0..if count > 1 { count * 2 } else { count })
-            .map(|_| TcpListener::bind("127.0.0.1:0"))
-            .collect::<Result<Vec<_>, _>>()?;
-        let ports = listeners
-            .iter()
-            .map(|listener| Ok(listener.local_addr()?.port()))
-            .collect::<Result<Vec<_>, std::io::Error>>()?;
-        let public = ports[..count]
-            .iter()
-            .map(u16::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        let peers = ports[count..]
-            .iter()
-            .map(u16::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        drop(listeners);
         let diagnostic_path = files.path().join("fixture-startup.log");
         write_private_fixture(&fixture, &diagnostic_path, vec![b'\n'])?;
         let diagnostics = fs::OpenOptions::new().append(true).open(&diagnostic_path)?;
@@ -270,13 +329,9 @@ impl GoServer {
         command
             .args(["-directory"])
             .arg(files.path().join("trust"))
-            .args([
-                "-public-ports",
-                &public,
-                "-peer-ports",
-                &peers,
-                "-tokens-file",
-            ])
+            .arg("-allocated-nodes")
+            .arg(count.to_string())
+            .arg("-tokens-file")
             .arg(&credentials)
             .arg("-overrides-file")
             .arg(&override_file)
@@ -294,7 +349,7 @@ impl GoServer {
         let child = command.spawn()?;
         let mut result = Self {
             child,
-            port: ports[0],
+            port: 0,
             native: None,
             _files: Some(files),
             _startup_log: None,
@@ -309,16 +364,18 @@ impl GoServer {
             .ok_or("fixture metadata pipe missing")?;
         BufReader::new(stdout).read_line(&mut line)?;
         if line.is_empty() {
-            return Err(format!(
-                "native fixture failed certified readiness: {}",
-                fixture_failure_category(&diagnostic_path)
-            )
-            .into());
+            return Err(native_startup_failure(&diagnostic_path).into());
         }
         let native: NativeFixture = serde_json::from_str(&line)?;
         if native.nodes.len() != count {
             return Err("native fixture node count drift".into());
         }
+        result.port = native.nodes[0]
+            .public_origin
+            .rsplit_once(':')
+            .ok_or("invalid native public origin")?
+            .1
+            .parse()?;
         result.native = Some(native);
         Ok(result)
     }
@@ -412,6 +469,61 @@ impl Drop for GoServer {
 #[cfg(test)]
 mod diagnostic_tests {
     use super::*;
+
+    #[test]
+    fn readiness_detail_survives_cleanup_without_private_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("diagnostic");
+        let record = serde_json::json!({
+            "reason": "child_exit", "node": 0, "port": 12345,
+            "elapsed_ms": 37, "probe": "dial", "http_status": 0,
+            "child_exited": true, "child_exit_code": 23,
+            "server_log": "bind_address_in_use"
+        });
+        fs::write(&path, format!("private-token-key-body\nauthfixture_failure:readiness\nauthfixture_readiness:{record}\n")).unwrap();
+        let retained = native_startup_failure(&path);
+        drop(dir);
+        assert!(!path.exists());
+        assert!(retained.contains(r#""reason":"child_exit""#));
+        assert!(retained.contains(r#""child_exit_code":23"#));
+        assert!(retained.contains(r#""port":12345"#));
+        assert!(retained.contains(r#""elapsed_ms":37"#));
+        assert!(!retained.contains("private-token-key-body"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("diagnostic");
+        for (field, value) in [
+            ("reason", serde_json::json!("private-token-key-body")),
+            ("probe", serde_json::json!("private-token-key-body")),
+            ("server_log", serde_json::json!("private-token-key-body")),
+            ("body", serde_json::json!("private-token-key-body")),
+            ("node", serde_json::json!(8)),
+            ("port", serde_json::json!(65536)),
+            ("elapsed_ms", serde_json::json!(-1)),
+            ("http_status", serde_json::json!(600)),
+        ] {
+            let mut invalid = record.clone();
+            invalid[field] = value;
+            fs::write(
+                &path,
+                format!("authfixture_failure:readiness\nauthfixture_readiness:{invalid}\n"),
+            )
+            .unwrap();
+            assert_eq!(
+                native_startup_failure(&path),
+                "native fixture failed certified readiness: readiness"
+            );
+        }
+        fs::write(
+            &path,
+            format!("{}\nauthfixture_readiness:{record}\n", "x".repeat(4096)),
+        )
+        .unwrap();
+        assert_eq!(
+            native_startup_failure(&path),
+            "native fixture failed certified readiness: unknown"
+        );
+    }
 
     #[test]
     fn only_fixed_fixture_categories_leave_private_logs() {

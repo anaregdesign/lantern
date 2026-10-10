@@ -30,10 +30,14 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 		return publicSecurityCertified{}, errors.New("public security requires its owned workload and policy runtime")
 	}
 	if runtime.mode == "oidc" {
-		if runtime.native == nil || runtime.data != data || (tls.CertFile == "" && len(runtime.config.TrustedProxyIPs) == 0) {
+		if runtime.native == nil && runtime.current == nil || runtime.data != data || (tls.CertFile == "" && len(runtime.config.TrustedProxyIPs) == 0) {
 			return publicSecurityCertified{}, errors.New("OIDC requires native authority and a TLS or exact trusted HTTPS gateway boundary")
 		}
-		if peer != nil && policy == nil || runtime.config.NodeRole == "replica" && policy == nil {
+		if runtime.current != nil {
+			if runtime.native != nil || runtime.authority != nil || runtime.receiver != nil || policy != nil || runtime.config.Profile != "current-v2" {
+				return publicSecurityCertified{}, errors.New("current authority cannot fall back to legacy policy")
+			}
+		} else if peer != nil && policy == nil || runtime.config.NodeRole == "replica" && policy == nil {
 			return publicSecurityCertified{}, errors.New("OIDC peer serving requires policy-lease composition")
 		}
 	}
@@ -90,6 +94,10 @@ func (r *SecurityRuntime) requireGlobalHTTP(action security.Action, next http.Ha
 		admission, known := security.AdmissionFromContext(ctx)
 		if !known || !admission.Access().AllowsGlobal(action) {
 			publicRPCError(w, req, connectCode(security.ErrPermissionDenied))
+			return
+		}
+		if admission.BindCurrentGlobalOutput(ctx, action) != nil {
+			publicRPCError(w, req, connect.CodeUnavailable)
 			return
 		}
 		r.serveBoundedChanges(w, req.WithContext(ctx), next)

@@ -112,6 +112,24 @@ func (r *SecurityRuntime) authenticateBrowser(req *http.Request, requireCSRF boo
 	if err != nil {
 		return ctx, "", connect.NewError(connect.CodeUnauthenticated, errBrowserBoundary)
 	}
+	if r.current != nil {
+		var p security.CurrentCredentialProducer
+		if requireCSRF {
+			p, err = r.CurrentBrowserProducer(req)
+		} else if req.Method == http.MethodGet && (req.URL.Path == "/auth/session" || req.URL.Path == "/auth/operations" || req.URL.Path == "/auth/login") {
+			p, err = r.currentBrowserProducer(req, true)
+		} else {
+			err = errBrowserBoundary
+		}
+		if err != nil {
+			return ctx, "", connect.NewError(connect.CodeUnauthenticated, errBrowserBoundary)
+		}
+		verified, a, err := r.current.WithRequestCredential(ctx, p)
+		if err != nil {
+			return ctx, "", connect.NewError(connect.CodeUnauthenticated, errBrowserBoundary)
+		}
+		return security.WithAdmission(verified, a.WithBrowserProof(csrf)), browserDigest(value), nil
+	}
 	revision, known := r.native.Store().Current()
 	if !known || r.authorityCheck(ctx, revision) != nil {
 		return ctx, "", connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
@@ -135,6 +153,13 @@ func (r *SecurityRuntime) authenticateBrowser(req *http.Request, requireCSRF boo
 		return ctx, "", connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
 	}
 	admission = admission.WithAuthentication(security.Authentication{Provenance: security.BrowserCode, Class: security.EndUser, IssuerConfigRevision: session.IssuerConfigRevision, SessionDigest: digest})
+	evidence := requestEvidenceCut(revision, expiry)
+	evidence.kind, evidence.session, evidence.classification = "session", session, security.EndUser
+	evidence.issuerConfigRevision = session.IssuerConfigRevision
+	evidence.origin = requestCredentialCommitment("browser-origin", r.config.BrowserOrigin)
+	evidence.exactOriginChecked = len(req.Header.Values("Origin")) != 0
+	evidence.mutationCSRFChecked = requireCSRF
+	ctx = withRequestAuthenticationEvidence(ctx, evidence)
 	return security.WithAdmission(ctx, admission.WithBrowserProof(csrf)), digest, nil
 }
 
@@ -165,6 +190,7 @@ func (r *SecurityRuntime) BrowserRPCHandler(path string, handler http.Handler) h
 	})
 }
 func browserHTTPError(w http.ResponseWriter, code connect.Code) {
+	security.BindCurrentFailure(w)
 	status := http.StatusForbidden
 	if code == connect.CodeUnauthenticated {
 		status = http.StatusUnauthorized

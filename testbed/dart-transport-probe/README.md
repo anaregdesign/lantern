@@ -122,8 +122,11 @@ The existing five-second RPC deadlines and TLS/authentication assertions are
 unchanged. A deadline or assertion failure is blocking; the transport harness
 does not retry any failed attempt.
 
-`scripts/ios_diagnostics.py` observes only the launched Runner PID and persists
-sanitized events while the existing host observer polls. Sticky failure state
+`scripts/ios_diagnostics.py` attaches an owned `simctl launch --console` reader
+before the Runner starts. A private PTY makes simctl flush its bundle/PID
+acknowledgement while alive. The reader verifies that exact acknowledgement and persists
+sanitized events while the existing host observer polls. Diagnostic JSON uses explicit
+stdout because Flutter routes `print` through syslog on iOS. Sticky failure state
 survives noisy log rotation and an interrupted outer step. Each retained file is
 bounded to 256 KiB; the fixed artifact set remains below 2 MiB. Raw Simulator
 logs and authenticated VM-service URLs are discarded. Server diagnostics retain

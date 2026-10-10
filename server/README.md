@@ -56,6 +56,34 @@ Both ports are configurable via environment variables (see below).
 | `replication/` | Peer discovery, pump (Subscribe consumer), anti-entropy driver. |
 | `internal/envconfig/` | Env-var parsing helpers used by `provider/`. |
 
+## Current authority profile
+
+OIDC selects `legacy-v1` or `current-v2` explicitly. The latter uses independent
+original provisioning, native time/quorum, full-cut public contracts and finite
+output ownership. See [current authority](../docs/security-current-authority.md#public-current-v2-composition)
+for required files, compatibility refusal, sessions and client recovery.
+
+## Private authentication evidence
+
+The OIDC verifier retains immutable signed-time facts and commitments to the
+credential, actual verification key, registered trust and audience/client
+profile. Only a consumed login transaction joined to its successful Code
+exchange and completed token checks produces Code-complete evidence. Ordinary
+login, session step-up and operation approval remain distinct.
+
+The provider carries the opaque result in request/callback context. Bearer
+classification records exact human enrollment and qualified issuer configuration
+at the captured native revision. Cookie requests retain the native Session and
+which origin/CSRF checks actually ran; they do not reconstruct a login JWT.
+Credential, Session, admission and purpose deadlines remain independent.
+
+Operation approvals retain one detached envelope of at most 16 KiB under the
+existing owner lock and 1024-record/ten-minute bounds, shortened by credential
+expiry. Expiry cleanup and runtime closure discard those process-owned records;
+restart cannot recover an outstanding approval. Public status, native Session,
+security journal and H wire formats are unchanged. These facts grant no Role,
+qualified clock/freshness assertion, final one-use consume or production H.
+
 ## Dependency injection: google/wire
 
 [`google/wire`](https://github.com/google/wire) builds the object graph at

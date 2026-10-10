@@ -199,6 +199,7 @@ const (
 // (and therefore every Failover wrapper). Adding an RPC method without a
 // row here fails TestRetryEligibilityMatrix_CoversEveryRPC.
 var methodRetryClasses = map[string]methodRetryClass{
+	"GetCurrentPrincipal":                retryNever, // current binding refresh is explicitly caller-owned
 	"CreateEdge":                         retryNever,
 	"CreateEdges":                        retryNever,
 	"CreateEdgesWithReceipt":             retryAlways,
