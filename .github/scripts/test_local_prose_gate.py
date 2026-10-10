@@ -125,6 +125,29 @@ class ProseTest(unittest.TestCase):
                 self.assertIsNone(self.qualify())
         self.assertNotEqual(prose.literals("``a`b``\n"), prose.literals("``a`c``\n"))
 
+    def test_html_block_bodies_and_ambiguous_markup_route_to_full(self):
+        for before, after in (
+            ("<pre>\nLANTERN_AUTH_MODE=oidc\n</pre>\n", "<pre>\nLANTERN_AUTH_MODE=off\n</pre>\n"),
+            ("<pre\n class='example'>\noidc\n</pre>\n", "<pre\n class='example'>\noff\n</pre>\n"),
+            ("<pre>\noidc\n", "<pre>\noff\n"),
+            ("<!--\noidc\n-->\n", "<!--\noff\n-->\n"),
+            ("<pre>\nstable\n</pre>\nExplanation\n", "<pre>\nstable\n</pre>\nClear explanation\n"),
+        ):
+            with self.subTest(before=before, after=after):
+                self.git("reset", "--hard", self.base)
+                self.write("README.md", before)
+                self.commit()
+                self.git("update-ref", "refs/remotes/origin/main", self.git("rev-parse", "HEAD"))
+                self.write("README.md", after)
+                self.commit()
+                with patch.object(sys, "argv", ["gate", str(self.root), str(self.session.evidence), "--prose-base", "origin/main"]), \
+                     patch.object(gate, "Session", return_value=self.session), redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(gate.main(), 0)
+                self.assertIn("FULL REQUIRED: prose eligibility refused: HTML or angle markup", output.getvalue())
+                result = __import__("json").loads(sorted(self.session.evidence.glob("*-manifest.json"))[-1].read_text())
+                self.assertEqual([item["name"] for item in result["steps"]], ["fixture-full"])
+                self.assertEqual((result["executed"], result["carried"]), (1, 0))
+
     def test_classifier_error_routes_to_actual_full_control(self):
         self.session.plan = (Step("go-test-core", ".", (sys.executable, "-c", "print('full fixture')")),)
         with redirect_stdout(io.StringIO()):

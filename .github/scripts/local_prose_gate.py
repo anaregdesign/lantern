@@ -33,7 +33,12 @@ def prose_path(path):
 
 
 def literals(text):
-    """Keep fenced/indented examples, inline literals and raw HTML unchanged."""
+    """Reject angle markup; keep fenced/indented examples and inline literals."""
+    # HTML block bodies may be executable examples without fence/indent markers.
+    # Reject the entire file at either revision, including ambiguous/unclosed
+    # markup and autolinks, rather than trying to parse HTML as Markdown prose.
+    if "<" in text:
+        raise ValueError("HTML or angle markup is outside prose eligibility")
     result, block, marker = [], [], None
     for line in text.splitlines(keepends=True):
         fence = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
@@ -45,7 +50,7 @@ def literals(text):
         elif fence:
             block, marker = [line], fence[1]
         else:
-            if line.startswith(("    ", "\t")) or "<" in line or ">" in line:
+            if line.startswith(("    ", "\t")):
                 result.append(line)
             start, width = None, None
             for match in re.finditer(r"`+", line):
@@ -98,7 +103,7 @@ def select(session, base):
                 raise ValueError("NUL in prose input")
             contents.append(data.decode("utf-8"))
         if literals(contents[0]) != literals(contents[1]):
-            raise ValueError("code example, literal or raw HTML changed")
+            raise ValueError("code example or literal changed")
     return base, snapshot, changes
 
 

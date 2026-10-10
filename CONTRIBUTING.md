@@ -343,7 +343,9 @@ README**. It requires origin/main to match the requested base and be an ancestor
 of HEAD, and checks the entire base/head diff without rename inference. Empty or
 mixed changes, adds/deletes, unknown paths, missing/altered working inputs,
 nonregular/non-UTF-8 text and classifier errors retain full qualification.
-Changes to code examples, inline literals or raw HTML also retain full checks.
+Changes to code examples or inline literals also retain full checks. A changed
+file containing `<` at either revision retains full checks, including HTML block
+bodies, ambiguous or unclosed markup and autolinks.
 All `docs/` contracts, instructions, workflows, fixtures, generated outputs,
 deployment/benchmark guidance, generators, locks, configuration and toolchain
 inputs remain outside this eligibility. Even in README, review must confirm that
