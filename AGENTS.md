@@ -210,8 +210,10 @@ The load-bearing always-on essentials:
   source, paired tests, documentation and generated consumers; fix review and CI
   findings within that PR. Epics and final acceptance owners keep separate exits.
 - **Iterate, review, then qualify**: run focused checks during edits, resolve review
-  findings, freeze the coherent candidate and run the complete local quality gate
-  before push. Every push needs passing results for all required components,
+  findings, freeze the coherent candidate and run the applicable local quality gate
+  before push. Explicitly eligible pure prose uses the fresh text/docs-contract
+  path in CONTRIBUTING; other changes require all components. Every push needs
+  passing results for the applicable gate,
   recorded as newly executed or mechanically carried by the live local runner in
   [CONTRIBUTING.md](CONTRIBUTING.md#local-validation-carry). Unverified results and
   unsupported components require execution; CI still qualifies its exact merge.
@@ -230,7 +232,8 @@ The load-bearing always-on essentials:
   Repeat only after relevant changes, invalid evidence or predeclared stability
   checks; never choose a pass or change workload, GC or thresholds to obtain one.
 - **Before every push**, satisfy the local quality gate in CONTRIBUTING.md:
-  `gofmt -l` must be empty; root and every Go submodule, Dart/Flutter and Rust
+  only its explicit pure-prose eligibility may select text/docs-contract checks.
+  Otherwise `gofmt -l` must be empty; root and every Go submodule, Dart/Flutter and Rust
   components must all have valid results. The policy-changing PR itself uses the
   previously applicable full gate and cannot qualify itself with its relaxation.
 - **Never hand-edit generated code.** Regenerate `pb/**` with `go generate ./...` (buf,

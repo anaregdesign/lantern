@@ -83,9 +83,10 @@ they must not conflict.
   tests/docs/generated consumers and repair review/CI findings in the same PR.
   Continue within existing authorization and surface exact permission blockers.
 - **Iterate, review, then qualify**: focused tests during edits, review fixes before
-  the final coherent candidate gate. Every push requires valid results for every
-  required component, newly executed or mechanically carried by the live local
-  runner under CONTRIBUTING.md. Unknown/invalid evidence requires full execution;
+  the final coherent candidate gate. Explicit pure-prose eligibility in CONTRIBUTING
+  selects fresh text/docs-contract checks; other changes require every component.
+  Every push requires valid applicable results, newly executed or mechanically
+  carried by the live local runner under CONTRIBUTING.md. Unknown/invalid evidence requires full execution;
   unsupported gates run, and hosted merge/main/release/device/performance proof
   remains independent. Policy changes use the previous full gate on themselves.
 - Review the immutable diff and affected boundaries, retain short generated
@@ -94,7 +95,8 @@ they must not conflict.
   repeat only for relevant changes, invalid runs or declared stability checks.
 - **PR titles must be Conventional Commits** (`feat`/`fix`/`docs`/`chore`/`ci`/
   `refactor`/`perf`/`test`/`build`/`revert`); a required check rejects others.
-- **Before every push**, satisfy all local components in CONTRIBUTING.md:
+- **Before every push**, satisfy the applicable gate in CONTRIBUTING.md. Only
+  explicit pure-prose eligibility selects text/docs-contract checks; otherwise run
   empty `gofmt -l`, root and every Go submodule, Dart/Flutter and Rust gates.
 - **Dart releases are independent.** `sdks/dart/vX.Y.Z` must match
   `sdks/dart/pubspec.yaml` and `CHANGELOG.md`; the tag workflow runs Dart plus

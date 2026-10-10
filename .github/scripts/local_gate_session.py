@@ -22,6 +22,7 @@ import tempfile
 import time
 
 import ci_docs
+import local_prose_gate
 from local_gate_plan import Step, steps
 
 
@@ -135,7 +136,7 @@ class Session:
         self.attempt = 0
         self.runner_hashes = {p: digest(p.read_bytes()) for p in (
             Path(__file__).resolve(), Path(__file__).with_name("local_gate_plan.py").resolve(),
-            Path(ci_docs.__file__).resolve())}
+            Path(ci_docs.__file__).resolve(), Path(local_prose_gate.__file__).resolve())}
 
     def git(self, *args: str) -> str:
         return subprocess.check_output(["git", *args], cwd=self.root, text=True).strip()
@@ -447,8 +448,15 @@ def main() -> int:
     parser.add_argument("checkout", type=Path)
     parser.add_argument("evidence", type=Path, help="new directory outside the checkout")
     parser.add_argument("--session", action="store_true", help="accept qualify/quit on stdin; no receipt import")
+    parser.add_argument("--prose-base", help="try fresh prose-only eligibility against fetched origin/main; otherwise run full")
     args = parser.parse_args()
+    if args.prose_base and args.session:
+        parser.error("prose eligibility is a one-shot path, separate from component carry")
     session = Session(args.checkout, args.evidence)
+    if args.prose_base:
+        result = local_prose_gate.qualify(session, args.prose_base)
+        if result is not None:
+            return int(not result["passed"])
     result = session.qualify()
     if args.session:
         print("Session ready: commit review fixes, then enter qualify; quit ends all carry eligibility.", flush=True)
