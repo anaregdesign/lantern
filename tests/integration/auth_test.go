@@ -1198,7 +1198,8 @@ globalThis.fetch = async (input, init) => {
  return response;
 };
 const scope = new AbortController();
-const recovery = new SecurityChangeRecovery();
+let retainedRecovery = null;
+const recovery = new SecurityChangeRecovery({read: () => retainedRecovery, replace: value => { retainedRecovery = value; }});
 const port = createSecurityManagementClient(process.env.LANTERN_RECOVERY_URL, scope.signal, process.env.LANTERN_RECOVERY_CSRF);
 const controller = new SecurityManagementController(port, "roles", scope.signal, recovery, "legacy-browser-session");
 const roleChange = (id, name) => [{ $typeName: "graph.v1.SecurityChange", operation: {case: "putRole", value: {$typeName: "graph.v1.SecurityRole", id, name, rules: [], envOwned: false}}}];
@@ -1206,7 +1207,7 @@ await controller.load();
 check(controller.getSnapshot().phase === "error" && controller.getSnapshot().version === undefined, "current Admin must refuse legacy scalar authority");
 await controller.review("Unsupported legacy review", roleChange("never_from_current_admin", "Must refuse"));
 await controller.apply();
-check(sent === 0 && controller.changeId() === "" && recovery.read("legacy-browser-session") === undefined, "legacy refusal must not create or dispatch current work");
+check(sent === 0 && controller.changeId() === "" && recovery.read("legacy-browser-session") === undefined && retainedRecovery === null, "legacy refusal must not create, persist or dispatch current work");
 controller.dispose();
 
 // Retain v1 proof/rejection behavior on the actual legacy browser SDK wire,
