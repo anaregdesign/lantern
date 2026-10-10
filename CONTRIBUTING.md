@@ -127,6 +127,12 @@ window, or weaken load or thresholds.
 
 ## Before every `git push` — local quality gate
 
+The default is the complete component gate below. A reviewed, purely explanatory
+prose change may instead use the explicit [local prose eligibility](#local-prose-eligibility)
+path. This selects fresh checks appropriate to that diff; it carries no previous
+component result. Instructions, validation policy and canonical contracts remain
+subject to the full gate. This adoption PR itself uses the previous full gate.
+
 Complete frozen Bun dependency installation in Node and Admin before Go walks
 the root workspace. Installation can mutate dependency directories containing
 Go files; those operations must not run concurrently (#1646). Independent tests
@@ -183,8 +189,9 @@ parent early merely to unblock source development.
 
 During edits, run the narrowest targeted checks for changed behavior. Resolve
 review findings, freeze the coherent candidate, then qualify all required
-components before push. Every later push also needs passing results for every
-required component, with fresh executions and mechanically verified carries
+components before push, unless the explicit prose path qualifies that candidate.
+Every later push also needs passing results for its applicable gate, with fresh
+executions and mechanically verified component carries
 explicitly distinguished under the local carry contract below. Repair a CI
 failure in the same PR, preserve the failed run, and repeat checks whose inputs
 changed or whose evidence became invalid. CI qualifies the exact synthetic merge.
@@ -318,7 +325,49 @@ is disabled for this repository; checked-in CodeQL security analysis and the
 language-specific Lint/static-analysis gates remain enabled. The repository's
 required contexts stay `Build & Test`, `Lint`, `Proto (buf)` and `govulncheck`;
 job-level skips satisfy GitHub's required-check contract. This hosted routing
-does not change the mandatory local pre-push gate above.
+does not itself select local eligibility; the explicit local path below is narrower.
+
+## Local prose eligibility
+
+After fetching the target main and reviewing the complete diff, a clean committed
+local feature-branch candidate may request fresh prose checks:
+
+```sh
+git fetch origin main
+python3 -B .github/scripts/local_gate_session.py "$PWD" ../prose-evidence-new --prose-base origin/main
+```
+
+The selector reuses `ci_docs.py` and initially accepts **only modifications to
+existing README/CHANGELOG files in its ordinary module directories, plus root
+README**. It requires origin/main to match the requested base and be an ancestor
+of HEAD, and checks the entire base/head diff without rename inference. Empty or
+mixed changes, adds/deletes, unknown paths, missing/altered working inputs,
+nonregular/non-UTF-8 text and classifier errors retain full qualification.
+Changes to code examples or inline literals also retain full checks. A changed
+file containing `<` at either revision retains full checks, including HTML block
+bodies, ambiguous or unclosed markup and autolinks.
+All `docs/` contracts, instructions, workflows, fixtures, generated outputs,
+deployment/benchmark guidance, generators, locks, configuration and toolchain
+inputs remain outside this eligibility. Even in README, review must confirm that
+the change is explanation rather than a new runtime, platform, security, SDK or
+release requirement; use the full gate when that meaning is uncertain.
+
+Eligible candidates execute text/whitespace and new local link-target checks plus
+the existing Python CI, Dart, offline and Rust document-contract suites. External
+URL availability and fragment rendering are checked in content review. Required
+suites must execute nonzero tests with no skips/expected failures. A failed check
+fails qualification; it cannot be replaced by a later full-gate success. The
+runner uses the existing owner-frozen checkout contract, checks committed bytes
+and eligibility before/after, retains raw log
+hashes, and writes a separate `local-prose-pre-push` base/head/tree verdict with
+fresh executed counts and **zero carried** results. It never establishes a carry
+baseline. It needs no language dependency installation or native host slot.
+
+If eligibility is refused, the same invocation runs the ordinary full gate;
+acquire the shared host slot and pinned tools before invoking an uncertain
+candidate. It is one-shot and cannot combine with `--session`. CI, main/detached
+or tagged checkouts cannot select it. Hosted synthetic/main checks and independent
+release/archive, provider/device and performance qualifications are unchanged.
 
 ## Standalone Rust SDK gate
 
@@ -435,7 +484,7 @@ The Go-generated decimal work-directory suffix in `GOGCCFLAGS` prefix maps is
 normalized; map kind/base/destination, other compiler flags and user CGO settings
 remain fingerprinted. Malformed or ambiguous flags fail qualification.
 
-All other components execute on every qualification. In particular, root Go
+All other components execute on every full component qualification. In particular, root Go
 integration, SDK real-wire, generation/drift, package/archive, Rust, Dart/Flutter,
 SQLite, Admin and documentation gates have no carry support. Their full-tree
 input closure includes backend, proto, shared fixtures and generated consumers;
@@ -457,7 +506,8 @@ gates still execute. A required ignored fixture cannot produce a successful
 eligible receipt. Unknown ignored inputs in the closure conservatively disable
 carry, even if a particular unit test does not read them.
 Changing the loaded runner/plan/classifier requires a restart and a new full run.
-Failures invalidate the baseline. A fresh process imports nothing and starts full.
+Failures invalidate the baseline. A fresh component-carry session imports nothing
+and starts full; the separate explicit prose path does not import or create receipts.
 
 This protects against stale inputs, damaged files and self-reported evidence within
 a trusted local development session. The developer who owns the process and host
