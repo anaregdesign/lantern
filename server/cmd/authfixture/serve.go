@@ -206,10 +206,12 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 					break
 				}
 				var body struct {
-					Status   string `json:"status"`
-					Ready    bool   `json:"ready"`
-					Mode     string `json:"mode"`
-					Protocol uint32 `json:"protocolVersion"`
+					Status   string          `json:"status"`
+					Ready    bool            `json:"ready"`
+					Mode     string          `json:"mode"`
+					Protocol uint32          `json:"protocolVersion"`
+					Member   uint32          `json:"currentMember"`
+					Profile  json.RawMessage `json:"currentProfile"`
 				}
 				decodeErr := json.NewDecoder(io.LimitReader(response.Body, 8192)).Decode(&body)
 				_ = response.Body.Close()
@@ -225,7 +227,7 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 				default:
 					probes[i] = "capabilities"
 				}
-				if response.StatusCode != 200 || decodeErr != nil || path == "/grpc.health.v1.Health/Check" && body.Status != "SERVING_STATUS_SERVING" || path != "/grpc.health.v1.Health/Check" && (!body.Ready || body.Protocol != 1 || body.Mode != "AUTH_MODE_OFF" && body.Mode != "AUTH_MODE_OIDC") {
+				if response.StatusCode != 200 || decodeErr != nil || path == "/grpc.health.v1.Health/Check" && body.Status != "SERVING_STATUS_SERVING" || path != "/grpc.health.v1.Health/Check" && (!body.Ready || !queryCapabilitiesReady(result.Query, i, body.Mode, body.Protocol, body.Member, body.Profile)) {
 					ready = false
 					break
 				}
@@ -261,7 +263,7 @@ func fixtureProbeErrorCategory(err error) string {
 // serveFixture publishes metadata only after verified-TLS production readiness,
 // then supervises every child until cancellation or an explicit stdin shutdown.
 // EOF does not stop detached CI supervision. Startup failures always reap children.
-func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFile string, input io.Reader, output io.Writer, readyTimeout time.Duration) error {
+func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFile string, input io.Reader, output io.Writer, readyTimeout time.Duration) (resultErr error) {
 	if len(result.launches) != 0 && len(result.launches) != len(result.Nodes) || len(result.Nodes) == 0 || len(result.Nodes) > 8 || !filepath.IsAbs(binary) || readyTimeout < time.Second || readyTimeout > 5*time.Minute {
 		return errors.New("absolute Server binary and bounded readiness timeout required")
 	}
@@ -284,6 +286,10 @@ func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFil
 
 	children := make([]*fixtureProcess, 0, len(result.Nodes))
 	defer func() {
+		if result.Query != nil && result.Query.SecurityProfile == "current-v2" {
+			resultErr = errors.Join(resultErr, stopCurrentQueryChildren(result, children, dir, 90*time.Second))
+			return
+		}
 		if len(result.launches) != 0 {
 			closeFixtureLaunches(result.launches)
 			return

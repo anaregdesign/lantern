@@ -46,6 +46,7 @@ type fixtureNode struct {
 }
 type fixture struct {
 	launches            []*fixtureLaunch
+	queryStop           func()
 	Nodes               []fixtureNode `json:"nodes"`
 	CAFile              string        `json:"ca_file"`
 	TokenFile           string        `json:"token_file"`
@@ -74,10 +75,17 @@ func main() {
 	edgeCreate := flag.Bool("edge-create", false, "qualify standalone existing-endpoint Create under Vertex-derived Head authority")
 	headEdge := flag.Bool("head-edge", false, "qualify standalone Head write-only handling with a separate machine Role")
 	transportProbe := flag.Bool("transport-probe", false, "standalone scoped transport probe with a localhost-only certificate")
+	queryProfile := flag.String("query-security-profile", "legacy-v1", "explicit protected-query legacy-v1 or current-v2 profile")
+	queryExporter := flag.String("current-fixture-exporter", "", "same-source absolute security test binary for original current query provisioning")
 	protectedQuery := flag.Bool("protected-query", false, "opt-in standalone OFF/OIDC query preparation with matched verified TLS and a local JWT issuer")
 	receipt := flag.Bool("receipt", false, "enable native receipt WAL for each OIDC node")
 	readyTimeout := flag.Duration("ready-timeout", time.Minute, "bounded verified-TLS production readiness wait")
 	flag.Parse()
+	currentQuery := *protectedQuery && *queryProfile == "current-v2"
+	if (*queryProfile != "legacy-v1" && *queryProfile != "current-v2") || (!*protectedQuery && (*queryProfile != "legacy-v1" || *queryExporter != "")) || (*queryExporter != "" && !currentQuery) {
+		fmt.Fprintln(os.Stderr, "authfixture: query profile/exporter requires explicit protected-query selection")
+		os.Exit(1)
+	}
 	if *privateInput != "" {
 		valid := flag.NArg() == 0
 		flag.Visit(func(value *flag.Flag) {
@@ -147,7 +155,7 @@ func main() {
 			peer = []int{6381, 6382, 6383}
 		}
 	}
-	if err == nil && len(public) > 1 && len(peer) == 0 && *allocatedNodes == 0 {
+	if err == nil && len(public) > 1 && len(peer) == 0 && *allocatedNodes == 0 && !currentQuery {
 		err = errors.New("multiple nodes require the private workload plane")
 	}
 	if err == nil && *receiptHA && (*compose || *mode != "oidc" || !*receipt || len(public) != 4 || len(peer) != 4 || *serverBinary == "" || *publicMTLS || *overridesFile != "") {
@@ -162,17 +170,28 @@ func main() {
 	if err == nil && *transportProbe && (*compose || *mode != "oidc" || len(public) != 1 || len(peer) != 0 || *serverBinary == "" || *publicMTLS || *receipt || *edgeCreate || *headEdge || *overridesFile != "") {
 		err = errors.New("transport probe requires one supervised standalone OIDC node")
 	}
-	if err == nil && *protectedQuery && (*compose || len(public) != 1 || len(peer) != 0 || *serverBinary == "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *tokensFile != "" || *overridesFile != "" || flag.NArg() != 0) {
-		err = errors.New("protected query requires one supervised standalone OFF/OIDC node and no other profile or overrides")
+	queryCount := 1
+	if currentQuery {
+		queryCount = 3
+	}
+	if err == nil && *protectedQuery && (*compose || len(public) != queryCount || len(peer) != 0 || *serverBinary == "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *tokensFile != "" || *overridesFile != "" || flag.NArg() != 0) {
+		err = errors.New("protected query requires its exact supervised OFF/OIDC node count and no other profile or overrides")
 	}
 	var result fixture
 	if err == nil && *allocatedNodes != 0 {
 		launches, public, peer, err = reserveFixtureCohort(launchCtx, *serverBinary, *directory, *allocatedNodes, *allocatedNodes > 1, *readyTimeout)
 	}
 	if err == nil {
-		result, err = generateTopologyProfile(*directory, public, peer, *mode, *tokensFile, *compose, *transportProbe)
+		if currentQuery {
+			result, err = generateCurrentQueryFixture(launchCtx, *directory, public, *mode, *serverBinary, *queryExporter)
+		} else {
+			result, err = generateTopologyProfile(*directory, public, peer, *mode, *tokensFile, *compose, *transportProbe)
+		}
 	}
 	result.launches = launches
+	if result.queryStop != nil {
+		defer result.queryStop()
+	}
 	if err == nil && *publicMTLS {
 		for i := range result.Nodes {
 			result.Nodes[i].Environment["LANTERN_TLS_CLIENT_CA_FILE"] = result.CAFile
@@ -187,7 +206,7 @@ func main() {
 	if err == nil && *headEdge {
 		err = addFixtureHeadEdge(&result, *directory)
 	}
-	if err == nil && *protectedQuery {
+	if err == nil && *protectedQuery && !currentQuery {
 		var stop func()
 		stop, err = addFixtureQuery(&result, *directory)
 		if err == nil {

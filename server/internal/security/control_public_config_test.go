@@ -1,6 +1,7 @@
 package security
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"net/url"
@@ -130,11 +132,17 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 		t.Fatal("loopback or declared private container TLS fixture issuer required")
 	}
 	n := s3aTestCluster(t, nil)
-	if len(hosts) != 0 {
+	queryRoles := os.Getenv("LANTERN_CURRENT_FIXTURE_QUERY_ROLES_FILE")
+	if queryRoles != "" && len(hosts) != 0 {
+		t.Fatal("query fixture is local and cannot select the container campaign")
+	}
+	if len(hosts) != 0 || queryRoles != "" {
 		// One independently provisioned lifetime covers the bounded campaign;
 		// restart never rewrites or extends this signed membership.
 		n.manifest.IssuedAt = time.Now().UTC().Add(-5 * time.Second)
 		n.manifest.ExpiresAt = n.manifest.IssuedAt.Add(peerauth.MaxMembershipLifetime)
+	}
+	if len(hosts) != 0 {
 		for id, c := range n.configs {
 			c.Membership.Self.Origin = "https://" + hosts[id-1] + ":16380"
 			n.configs[id] = c
@@ -178,6 +186,9 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "machine.token"), []byte(machineToken), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if queryRoles != "" {
+		image = currentQueryFixtureImage(t, queryRoles, issuerURL, machineToken)
+	}
 	f := s2cTestClusterState(t, 3, s1Fixture(t, image))
 	f.origins = f.origins[:2]
 	f, keys := authorityTestFixtureState(t, f)
@@ -209,6 +220,7 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	genesis := currentGenesisDocument{CurrentPublicVersion, g.projection.cut.Domain, g.projection.cut.Cohort, g.projection.cut.Generation, g.projection.cut.Fences, g.projection.Image(), g.configuration, f.genesis.roots, f.members, f.origins, f.trust.bounds, sha256.Sum256([]byte(authorityTimeProfileDescription))}
 	genesisPath := filepath.Join(dir, "genesis.json")
 	genesisRaw := doc(genesisPath, genesis)
+	var queryNodes []map[string]any
 	for id := uint32(1); id <= 3; id++ {
 		old := n.configs[id]
 		nodeDir := filepath.Join(dir, fmt.Sprintf("node-%d", id))
@@ -257,9 +269,14 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 		}
 		path := filepath.Join(nodeDir, "node.json")
 		doc(path, node)
-		if _, err := LoadCurrentProvisioning(path); err != nil {
+		provisioned, err := LoadCurrentProvisioning(path)
+		if err != nil {
 			t.Fatal("export invalid", id, err)
 		}
+		queryNodes = append(queryNodes, map[string]any{"node_file": path, "floors_file": provisioned.floors, "custody_binding": provisioned.binding})
+	}
+	if queryRoles != "" {
+		doc(filepath.Join(dir, "query-provision.json"), map[string]any{"membership_expires_at": n.manifest.ExpiresAt, "nodes": queryNodes})
 	}
 }
 
@@ -285,4 +302,110 @@ func currentFixtureContainerHosts(t *testing.T) []string {
 		seen[host] = true
 	}
 	return hosts
+}
+
+// Only the private query exporter selects this original genesis image. It adds
+// the existing bench actors/roles, never an injected authority or clock.
+func currentQueryFixtureImage(t *testing.T, path, issuer, machineToken string) Image {
+	t.Helper()
+	var roles []Role
+	raw, err := os.ReadFile(path)
+	if err != nil || !filepath.IsAbs(path) || len(raw) > 64<<10 {
+		t.Fatal("bounded original query roles required", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&roles); err != nil {
+		t.Fatal(err)
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF || len(roles) != 2 || roles[0].ID != "fixture_data" || roles[1].ID != "fixture_query_reader" {
+		t.Fatal("exact query fixture roles required")
+	}
+	image := s1Image()
+	callback := sha256.Sum256([]byte(issuer))
+	image.Issuers = []Issuer{{URL: issuer, ConfigRevision: 1, Enabled: true, ClientID: "fixture-query-client", APIAudience: "lantern-fixture", RedirectURI: fmt.Sprintf("https://admin.example/auth/callback/%x", callback), Algorithms: []string{"EdDSA"}, HumanSubjectNamespaceQualified: true}}
+	admin := image.Principals[0]
+	admin.Identity.Issuer, admin.Identity.Subject = issuer, "fixture-admin"
+	image.Roles = append(image.Roles, roles...)
+	reader := Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuer, Subject: "fixture-query-reader"}, State: Active, HumanIssuerConfigRevision: 1, Assignments: []RoleAssignment{{RoleID: "fixture_query_reader"}}}
+	machine := Identity{Kind: MachinePrincipal, MachineName: "fixture-client"}
+	digest, valid := MachineTokenDigest(machineToken)
+	if !valid {
+		t.Fatal("canonical query machine token required")
+	}
+	image.Principals = []Principal{admin, reader, {Identity: machine, State: Active, Assignments: []RoleAssignment{{RoleID: "fixture_data"}}}}
+	image.MachineCredentials = []MachineCredential{{Identity: machine, Digest: digest, CreatedAt: time.Now().Add(-time.Minute).UTC(), ExpiresAt: time.Now().Add(time.Hour).UTC()}}
+	return image
+}
+
+func TestCurrentQueryFixtureImageRetainsActorsAndDeny(t *testing.T) {
+	path := currentQueryRoleTestFile(t)
+	hidden := "bench:private:"
+	token, err := NewMachineToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	image := currentQueryFixtureImage(t, path, "https://127.0.0.1:12345", token)
+	if len(image.Principals) != 3 || image.Principals[0].Identity.Subject != "fixture-admin" || image.Principals[1].Identity.Subject != "fixture-query-reader" || image.Principals[2].Identity.MachineName != "fixture-client" || image.Issuers[0].APIAudience != "lantern-fixture" {
+		t.Fatal("query actors changed")
+	}
+	got := image.Roles[len(image.Roles)-1]
+	if got.ID != "fixture_query_reader" || got.Rules[1].Effect != Deny || *got.Rules[1].Prefix != hidden {
+		t.Fatal("Deny changed")
+	}
+	_ = s1Fixture(t, image)
+}
+
+func TestCurrentQueryFixtureExportRetainsOriginalFiles(t *testing.T) {
+	path := currentQueryRoleTestFile(t)
+	exportDir := filepath.Join(t.TempDir(), "original")
+	if err := os.Mkdir(exportDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LANTERN_CURRENT_FIXTURE_DIR", exportDir)
+	t.Setenv("LANTERN_CURRENT_FIXTURE_ISSUER", "https://127.0.0.1:12345")
+	t.Setenv("LANTERN_CURRENT_FIXTURE_QUERY_ROLES_FILE", path)
+	t.Setenv("LANTERN_CURRENT_FIXTURE_HOSTS", "")
+	TestCurrentProvisioningExportPublicFixture(t)
+	rawManifest, err := os.ReadFile(filepath.Join(exportDir, "query-provision.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exported struct {
+		Nodes []struct {
+			NodeFile   string   `json:"node_file"`
+			FloorsFile string   `json:"floors_file"`
+			Binding    [32]byte `json:"custody_binding"`
+		} `json:"nodes"`
+		ExpiresAt time.Time `json:"membership_expires_at"`
+	}
+	if json.Unmarshal(rawManifest, &exported) != nil || len(exported.Nodes) != 3 || time.Until(exported.ExpiresAt) < time.Minute {
+		t.Fatal("original query export incomplete")
+	}
+	for _, node := range exported.Nodes {
+		p, err := LoadCurrentProvisioning(node.NodeFile)
+		if err != nil || p.binding != node.Binding || p.floors != node.FloorsFile || p.Profile().Binding() == "" {
+			t.Fatal("original node binding mismatch", err)
+		}
+		if _, err := os.Stat(node.FloorsFile); !os.IsNotExist(err) {
+			t.Fatal("authoring created runtime custody")
+		}
+	}
+
+}
+
+func currentQueryRoleTestFile(t *testing.T) string {
+	t.Helper()
+	prefix, hidden, all := "bench:", "bench:private:", ""
+	roles := []Role{{ID: "fixture_data", Rules: []PermissionRule{{ID: "write", Action: VertexWrite, Effect: Allow, Resource: DataResource, Prefix: &all}}}, {ID: "fixture_query_reader", Rules: []PermissionRule{{ID: "read", Action: VertexRead, Effect: Allow, Resource: DataResource, Prefix: &prefix}, {ID: "deny", Action: VertexRead, Effect: Deny, Resource: DataResource, Prefix: &hidden}, {ID: "query", Action: Query, Effect: Allow, Resource: DataResource, Prefix: &all}}}}
+	raw, err := json.Marshal(roles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "roles.json")
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

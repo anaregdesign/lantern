@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/security"
 )
@@ -25,15 +26,21 @@ import (
 // queryFixture exposes paths only. The synthetic issuer does no provider login,
 // client-credentials issuance or token renewal. Its signing key stays in memory.
 type queryFixture struct {
-	Mode             string      `json:"mode"`
-	Issuer           string      `json:"issuer"`
-	AdminTokenFile   string      `json:"admin_token_file"`
-	ReaderTokenFile  string      `json:"reader_token_file"`
-	InvalidTokenFile string      `json:"invalid_token_file"`
-	ExpiresAt        time.Time   `json:"expires_at"`
-	ReaderSubject    string      `json:"reader_subject"`
-	ReaderRole       string      `json:"reader_role"`
-	Server           queryBinary `json:"server"`
+	FixtureID        string                      `json:"fixture_id,omitempty"`
+	SecurityProfile  string                      `json:"security_profile"`
+	CurrentProfile   *pb.CurrentAuthorityProfile `json:"current_profile,omitempty"`
+	CurrentBinding   string                      `json:"current_binding,omitempty"`
+	CurrentNodes     []queryCurrentNode          `json:"current_nodes,omitempty"`
+	Exporter         *queryBinary                `json:"exporter,omitempty"`
+	Mode             string                      `json:"mode"`
+	Issuer           string                      `json:"issuer"`
+	AdminTokenFile   string                      `json:"admin_token_file"`
+	ReaderTokenFile  string                      `json:"reader_token_file"`
+	InvalidTokenFile string                      `json:"invalid_token_file"`
+	ExpiresAt        time.Time                   `json:"expires_at"`
+	ReaderSubject    string                      `json:"reader_subject"`
+	ReaderRole       string                      `json:"reader_role"`
+	Server           queryBinary                 `json:"server"`
 }
 
 type queryBinary struct {
@@ -89,6 +96,13 @@ func queryJWT(private ed25519.PrivateKey, issuer, subject string, now time.Time)
 // OIDC. Only the existing operator bootstrap inputs and local issuer are set;
 // the driver assigns the reader through the normal management API before load.
 func addFixtureQuery(result *fixture, directory string) (func(), error) {
+	return addFixtureQueryProfile(result, directory, "legacy-v1")
+}
+
+func addFixtureQueryProfile(result *fixture, directory, profile string) (func(), error) {
+	if profile != "legacy-v1" && profile != "current-v2" {
+		return nil, errors.New("explicit query profile required")
+	}
 	if result == nil || len(result.Nodes) != 1 || result.Nodes[0].PeerOrigin != "" || result.Query != nil {
 		return nil, errors.New("query fixture requires one standalone node")
 	}
@@ -140,7 +154,12 @@ func addFixtureQuery(result *fixture, directory string) (func(), error) {
 		}
 	}()
 	now := time.Now().UTC().Truncate(time.Second)
-	query := &queryFixture{Mode: mode, Issuer: issuer, ReaderSubject: "fixture-query-reader", ReaderRole: queryRole().ID, ExpiresAt: now.Add(15 * time.Minute)}
+	// Match the existing native public fixture: signed iat precedes the
+	// conservative current UTC lower endpoint; no verifier/time rule changes.
+	if profile == "current-v2" {
+		now = now.Add(-time.Minute)
+	}
+	query := &queryFixture{SecurityProfile: profile, Mode: mode, Issuer: issuer, ReaderSubject: "fixture-query-reader", ReaderRole: queryRole().ID, ExpiresAt: now.Add(15 * time.Minute)}
 	_, wrongPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
