@@ -56,39 +56,70 @@ func corpusDigest() string {
 	return hex.EncodeToString(digest[:])
 }
 
-func seedCorpus(ctx context.Context, endpoint *queryEndpoint) error {
+type seedAcknowledgements struct {
+	VertexCount            int `json:"vertex_count"`
+	EdgeCount              int `json:"edge_count"`
+	VerticesAppliedAndLive int `json:"vertices_applied_and_live"`
+	EdgesAppliedAndLive    int `json:"edges_applied_and_live"`
+	VertexPutRPCs          int `json:"vertex_put_rpcs"`
+	EdgePutRPCs            int `json:"edge_put_rpcs"`
+}
+
+func seedCorpus(ctx context.Context, endpoint *queryEndpoint) (seedAcknowledgements, error) {
 	c := corpus()
+	ack := seedAcknowledgements{VertexCount: len(c.Vertices), EdgeCount: len(c.Edges)}
 	for start := 0; start < len(c.Vertices); start += 128 {
 		end := min(start+128, len(c.Vertices))
+		ack.VertexPutRPCs++
 		response, err := endpoint.client.PutVertices(ctx, authenticated(endpoint.writer, &pb.PutVerticesRequest{Vertices: c.Vertices[start:end]}))
 		if err != nil {
-			return err
+			return ack, err
 		}
 		if len(response.Msg.Outcomes) != end-start {
-			return errors.New("seed vertex outcome count mismatch")
+			return ack, errors.New("seed vertex outcome count mismatch")
 		}
 		for _, outcome := range response.Msg.Outcomes {
 			if outcome != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
-				return errors.New("seed vertex not live")
+				return ack, errors.New("seed vertex not live")
 			}
+			ack.VerticesAppliedAndLive++
 		}
 	}
 	for start := 0; start < len(c.Edges); start += 128 {
 		end := min(start+128, len(c.Edges))
+		ack.EdgePutRPCs++
 		response, err := endpoint.client.PutEdges(ctx, authenticated(endpoint.writer, &pb.PutEdgesRequest{Edges: c.Edges[start:end]}))
 		if err != nil {
-			return err
+			return ack, err
 		}
 		if len(response.Msg.Outcomes) != end-start {
-			return errors.New("seed edge outcome count mismatch")
+			return ack, errors.New("seed edge outcome count mismatch")
 		}
 		for _, outcome := range response.Msg.Outcomes {
 			if outcome != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
-				return errors.New("seed edge not live")
+				return ack, errors.New("seed edge not live")
 			}
+			ack.EdgesAppliedAndLive++
 		}
 	}
-	return nil
+	return ack, nil
+}
+
+// Retain bounded keys from the actual failing response, without values or credentials.
+type searchResultFailure struct {
+	Reason                string   `json:"reason"`
+	Query                 string   `json:"query"`
+	Limit                 int      `json:"limit"`
+	Prefix                string   `json:"prefix"`
+	Mode                  string   `json:"mode"`
+	HitCount              int      `json:"hit_count"`
+	ExpectedKeys          []string `json:"expected_keys"`
+	ObservedKeys          []string `json:"observed_keys"`
+	ObservedKeysTruncated bool     `json:"observed_keys_truncated"`
+}
+
+func (f *searchResultFailure) Error() string {
+	return fmt.Sprintf("%s: hits=%d expected=%q observed=%q", f.Reason, f.HitCount, f.ExpectedKeys, f.ObservedKeys)
 }
 
 func traversal(family, seed string) *pb.IlluminateRequest {
@@ -111,25 +142,32 @@ func queryOnce(ctx context.Context, endpoint *queryEndpoint, family string) erro
 			return err
 		}
 		expected := expectedSearchKeys(endpoint.mode)
+		fail := func(reason string) error {
+			keys := make([]string, 0, min(len(response.Msg.Hits), 20))
+			for _, hit := range response.Msg.Hits[:min(len(response.Msg.Hits), 20)] {
+				keys = append(keys, hit.GetKey())
+			}
+			return &searchResultFailure{Reason: reason, Query: "shared", Limit: 20, Mode: endpoint.mode, HitCount: len(response.Msg.Hits), ExpectedKeys: expected, ObservedKeys: keys, ObservedKeysTruncated: len(response.Msg.Hits) > len(keys)}
+		}
 		seen := make(map[string]bool, len(expected))
 		for _, hit := range response.Msg.Hits {
-			if !strings.HasPrefix(hit.Key, "bench:") || hit.Vertex == nil || hit.Vertex.Key != hit.Key {
-				return errors.New("search lost logical key or full-vertex result")
+			if hit == nil || !strings.HasPrefix(hit.Key, "bench:") || hit.Vertex == nil || hit.Vertex.Key != hit.Key {
+				return fail("search lost logical key or full-vertex result")
 			}
 			if seen[hit.Key] {
-				return errors.New("search duplicated logical result")
+				return fail("search duplicated logical result")
 			}
 			seen[hit.Key] = true
 			if endpoint.mode == "oidc" && strings.HasPrefix(hit.Key, "bench:private:") {
-				return errors.New("search disclosed denied hit")
+				return fail("search disclosed denied hit")
 			}
 		}
 		if len(seen) != len(expected) {
-			return errors.New("search lost corpus results")
+			return fail("search lost corpus results")
 		}
 		for _, key := range expected {
 			if !seen[key] {
-				return errors.New("search mode-specific expected result missing")
+				return fail("search mode-specific expected result missing")
 			}
 		}
 		return nil

@@ -179,13 +179,18 @@ func testProtectedQueryPreparationWire(t *testing.T, profile string) {
 				t.Fatal(err)
 			}
 			for _, action := range []string{"seed", "preflight"} {
-				probe := exec.CommandContext(ctx, driver, "-fixture", metadataPath, "-action", action)
-				raw, err := probe.CombinedOutput()
-				if err != nil {
-					t.Fatalf("%s %s: %v: %s", mode, action, err, raw)
+				reportPath := filepath.Join(dir, action+"-report.json")
+				probe := exec.CommandContext(ctx, driver, "-fixture", metadataPath, "-action", action, "-report", reportPath)
+				diagnostic, err := probe.CombinedOutput()
+				if saveErr := os.WriteFile(filepath.Join(dir, action+"-driver.log"), diagnostic, 0600); saveErr != nil {
+					t.Fatal(saveErr)
 				}
-				if err := os.WriteFile(filepath.Join(dir, action+"-report.json"), raw, 0600); err != nil {
-					t.Fatal(err)
+				raw, readErr := os.ReadFile(reportPath)
+				if err != nil {
+					t.Fatalf("%s %s: %v; diagnostic: %s; retained report: %s; read error: %v", mode, action, err, diagnostic, raw, readErr)
+				}
+				if readErr != nil {
+					t.Fatal(readErr)
 				}
 				var result struct {
 					Passed        bool              `json:"passed"`

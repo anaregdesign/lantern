@@ -243,7 +243,10 @@ func execute(ctx context.Context, f fixtureInput, action string, cfg loadConfig)
 				return report, err
 			}
 		}
-		err = seedCorpus(ctx, endpoint)
+		var ack seedAcknowledgements
+		ack, err = seedCorpus(ctx, endpoint)
+		report["seed_acknowledgements"] = ack
+		report["seed_evidence"] = "verified_plural_put_acknowledgements_only; not readback or search-index qualification"
 	case "preflight":
 		invalid := ""
 		if endpoint.mode == "oidc" {
@@ -272,6 +275,10 @@ func execute(ctx context.Context, f fixtureInput, action string, cfg loadConfig)
 	report["passed"] = err == nil
 	if err != nil {
 		report["failure_code"] = connect.CodeOf(err).String()
+		var failure *searchResultFailure
+		if errors.As(err, &failure) {
+			report["search_failure"] = failure
+		}
 	}
 	return report, err
 }

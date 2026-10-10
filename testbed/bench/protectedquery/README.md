@@ -150,6 +150,18 @@ inputs, logs and custody on success or failure. These private files include fixt
 credentials/keys; do not publish the directory. A selected gate with missing native
 inputs fails qualification; an unselected gate reports a skip, never evidence.
 
+The wire gate requests a private report file before each driver action and saves
+its driver log even on nonzero exit. A failed Search result contract records the
+actual response hit count and up to 20 returned keys alongside its unchanged
+query/expected keys; stored values and credentials are excluded. Seed reports
+retain checked plural Put counts and RPC counts, including partial failure. These
+are application ACKs, not data readback or proof of search-index membership.
+The original failing wire reports did not retain actual hits. A lightweight
+same-corpus public provider/index inspection returns additional candidates for
+the default `shared` query (ANY bigram matching); this indicates the exact-set
+expectation needs investigation, not an OIDC-cause or recovered wire-hit claim.
+The diagnostic changes do not alter that query, corpus, actors or expected sets.
+
 Ordinary root tests cover the driver, report-pair contract and topology. The
 legacy wire test reports a skip without its three binaries; selected current
 requires all four and its native/evidence inputs. A skipped test is not real-wire evidence. Fixture tests run separately with
