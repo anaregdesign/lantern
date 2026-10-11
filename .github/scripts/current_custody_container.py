@@ -250,14 +250,13 @@ def main():
         if args.mixed_ha:
             data_metadata = marker(controller, "/provision/data-metadata.json")
             nodes = {node: start_node(node, "fresh") for node in (1, 2, 3)}
-            for selected in ("mixed-relay-cdc", "mixed-gap-conflict", "mixed-backup-cut", "mixed-lost-response"):
+            for selected in ("mixed-relay-cdc", "mixed-gap-conflict", "mixed-backup-cut", "mixed-lost-response", "mixed-authorization"):
                 phase(selected)
             for node in (1, 2, 3):
                 stop_node(node, 1, f"mixed-first-clean-{node}")
             phase("mixed-closed-wal")
             nodes = {node: start_node(node, "resume") for node in (1, 2, 3)}
             phase("mixed-restarted")
-            phase("mixed-authorization")
             for node in (1, 2, 3):
                 stop_node(node, 2, f"mixed-final-clean-{node}")
             phase("finish")

@@ -630,6 +630,23 @@ func (m *mixedHAGate) inspectClosedWALs(t *testing.T) {
 	}
 }
 
+// Read-only diagnostic for retained volumes after a campaign has stopped every
+// product process. This does not certify CLEAN or authorize reopening a server.
+func TestMixedHAClosedWALInspection(t *testing.T) {
+	if os.Getenv("LANTERN_MIXED_HA_INSPECT") != "1" {
+		t.Skip("explicit read-only inspection of stopped mixed HA volumes")
+	}
+	m := &mixedHAGate{sdks: make([]*client.Lantern, 3), originals: make([]*mixedHAOriginal, 5)}
+	for node := range m.sdks {
+		selected, err := backup.LoadLatestReceiptBackupSet(fmt.Sprintf("/restore-%d", node+1), fmt.Sprintf("mixed-node-%d", node+1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.backupCuts[node] = selected.WALCut.Seq
+	}
+	m.inspectClosedWALs(t)
+}
+
 func mixedHAWireContext(t *testing.T, g *custodyProcessGate, identity client.GraphMutationReceiptContext) *pb.MutationReceiptContext {
 	t.Helper()
 	capability, err := g.data[0].GetReceiptCapability(t.Context(), securityWireRequest(g.machine, &pb.GetReceiptCapabilityRequest{}))
