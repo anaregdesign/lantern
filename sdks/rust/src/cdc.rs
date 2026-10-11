@@ -209,6 +209,7 @@ impl LanternClient {
                 bootstrap: true,
                 accept_receipt_envelopes: false,
                 namespace_format: String::new(),
+                accept_graph_mutations: false,
             },
             options,
         )?;
@@ -235,6 +236,7 @@ impl LanternClient {
                 bootstrap: false,
                 accept_receipt_envelopes: false,
                 namespace_format: String::new(),
+                accept_graph_mutations: false,
             },
             options,
         )?;
@@ -258,6 +260,7 @@ impl LanternClient {
                 bootstrap: false,
                 accept_receipt_envelopes: true,
                 namespace_format: String::new(),
+                accept_graph_mutations: false,
             },
             options,
         )?;

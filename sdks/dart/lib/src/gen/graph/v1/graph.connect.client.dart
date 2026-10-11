@@ -95,6 +95,24 @@ extension type LanternServiceClient (connect.Transport _transport) {
     );
   }
 
+  /// Publishes one mixed receipt envelope locally; HA uses effect-wise conflicts.
+  Future<graphv1graph.MutateGraphResponse> mutateGraph(
+    graphv1graph.MutateGraphRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternService.mutateGraph,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
   Future<graphv1graph.DeleteVertexResponse> deleteVertex(
     graphv1graph.DeleteVertexRequest input, {
     connect.Headers? headers,

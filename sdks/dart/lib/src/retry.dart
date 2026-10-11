@@ -86,6 +86,7 @@ final class RetryRegistry {
     'GetVertices': RpcRetryClass.read,
     'PutVertex': RpcRetryClass.stablePut,
     'PutVertices': RpcRetryClass.stablePut,
+    'MutateGraph': RpcRetryClass.never,
     'DeleteVertex': RpcRetryClass.never,
     'DeleteVertices': RpcRetryClass.never,
     'ScanVertices': RpcRetryClass.read,

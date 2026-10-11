@@ -146,7 +146,7 @@ func receiptCapabilityFromProto(resp *pb.GetReceiptCapabilityResponse) (ReceiptC
 		return ReceiptCapability{}, receiptProtocolError("capability response is nil")
 	}
 	if !resp.GetEnabled() {
-		if resp.GetPolicy() != nil || resp.GetEndpoint() != nil ||
+		if resp.GetGraphMutation() != nil || resp.GetPolicy() != nil || resp.GetEndpoint() != nil ||
 			resp.GetServerNowUnixMs() != 0 || len(resp.GetSupportedMutations()) != 0 {
 			return ReceiptCapability{}, receiptProtocolError("disabled capability carried receipt identity or policy")
 		}
@@ -198,6 +198,12 @@ func receiptCapabilityFromProto(resp *pb.GetReceiptCapabilityResponse) (ReceiptC
 		MaxBytes:           policy.GetMaxBytes(),
 		ServerTime:         time.UnixMilli(int64(resp.GetServerNowUnixMs())).UTC(),
 		SupportedMutations: supported,
+	}
+	if mixed := resp.GetGraphMutation(); mixed != nil {
+		if mixed.GetMaxItems() < 2 || mixed.GetMaxItems() > 64 || mixed.GetMaxRequestBytes() == 0 || mixed.GetMaxRequestBytes() > 1<<20 {
+			return ReceiptCapability{}, receiptProtocolError("invalid graph mutation capability")
+		}
+		capability.GraphMutation = &GraphMutationCapability{MaxItems: mixed.GetMaxItems(), MaxRequestBytes: mixed.GetMaxRequestBytes()}
 	}
 	if err := capability.Validate(); err != nil {
 		return ReceiptCapability{}, receiptProtocolError("%v", err)

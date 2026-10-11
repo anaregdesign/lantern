@@ -43,7 +43,7 @@ type VertexPutTransaction[S comparable, T any] struct {
 func (c *GraphCache[S, T]) BeginVertexPut(
 	items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent bool,
 ) (*VertexPutTransaction[S, T], error) {
-	return c.beginVertexPut(items, ts, ifAbsent, true)
+	return c.beginVertexPut(items, ts, ifAbsent, true, nil)
 }
 
 // BeginReplicatedVertexPut stages an already-committed receiver projection.
@@ -55,11 +55,12 @@ func (c *GraphCache[S, T]) BeginVertexPut(
 func (c *GraphCache[S, T]) BeginReplicatedVertexPut(
 	items []VertexItem[S, T], ts hlc.Timestamp,
 ) (*VertexPutTransaction[S, T], error) {
-	return c.beginVertexPut(items, ts, false, false)
+	return c.beginVertexPut(items, ts, false, false, nil)
 }
 
 func (c *GraphCache[S, T]) beginVertexPut(
 	items []VertexItem[S, T], ts hlc.Timestamp, ifAbsent, strict bool,
+	mixed *stagedGraphMutation[S, T],
 ) (*VertexPutTransaction[S, T], error) {
 	if c.publicationGate == nil {
 		return nil, errors.New("graphcache: staged Vertex Put requires a publication gate")
@@ -71,7 +72,7 @@ func (c *GraphCache[S, T]) beginVertexPut(
 			}
 		}
 	}
-	if len(items) == 0 {
+	if len(items) == 0 && mixed == nil {
 		c.mu.Lock()
 		c.publicationGate.Lock()
 		c.searchCommitMu.Lock()
@@ -84,7 +85,11 @@ func (c *GraphCache[S, T]) beginVertexPut(
 		}, nil
 	}
 
-	projections, prefixEnabled := c.prepareStagedVertexProjections(vertexItemKeys(items))
+	keys := vertexItemKeys(items)
+	if mixed != nil {
+		keys = mixed.unionKeys(items)
+	}
+	projections, prefixEnabled := c.prepareStagedVertexProjections(keys)
 	preparation := c.newSearchPreparation(len(items))
 	var oldSearch map[S]stagedVertexSearchBefore[T]
 	if preparation != nil {
@@ -104,6 +109,9 @@ func (c *GraphCache[S, T]) beginVertexPut(
 			defer c.searchCommitMu.Unlock()
 		}
 		if pendingStage != nil {
+			if mixed != nil && mixed.edgeStage != nil {
+				mixed.edgeStage.rollbackEdgesLocked()
+			}
 			pendingStage.rollbackLocked()
 		}
 	}()
@@ -117,8 +125,20 @@ func (c *GraphCache[S, T]) beginVertexPut(
 	}
 
 	for {
+		if mixed != nil {
+			if err := mixed.checkPreparation(); err != nil {
+				return nil, err
+			}
+		}
 		c.mu.Lock()
 		lockState = 1
+		if mixed != nil {
+			mixed.lockedAt = time.Now()
+			if err := mixed.checkBudget(); err != nil {
+				unlockMu()
+				return nil, err
+			}
+		}
 		if (c.prefixIndex != nil) != prefixEnabled {
 			unlockMu()
 			return nil, errors.New("graphcache: vertex prefix policy changed during staging")
@@ -144,8 +164,14 @@ func (c *GraphCache[S, T]) beginVertexPut(
 		oldMissing := c.missingStagedVertexSearchBeforeLocked(vertexKeysAt(items, final), oldSearch)
 		if len(missing) > 0 || len(oldMissing) > 0 {
 			unlockMu()
-			c.prepareSearchDocsBounded(items, missing, time.Now(), preparation)
-			prepareStagedVertexSearchBefore(preparation, oldMissing, oldSearch)
+			if mixed != nil {
+				if err := mixed.prepareSearch(items, missing, time.Now(), preparation, oldMissing, oldSearch); err != nil {
+					return nil, err
+				}
+			} else {
+				c.prepareSearchDocsBounded(items, missing, time.Now(), preparation)
+				prepareStagedVertexSearchBefore(preparation, oldMissing, oldSearch)
+			}
 			continue
 		}
 
@@ -167,7 +193,7 @@ func (c *GraphCache[S, T]) beginVertexPut(
 				return nil, err
 			}
 		}
-		if len(applied) == 0 {
+		if len(applied) == 0 && mixed == nil {
 			stage := &stagedVertexMutation[S, T]{cache: c}
 			lockState = 0
 			return &VertexPutTransaction[S, T]{
@@ -184,8 +210,14 @@ func (c *GraphCache[S, T]) beginVertexPut(
 		oldMissing = c.missingStagedVertexSearchBeforeLocked(vertexKeysAt(items, final), oldSearch)
 		if len(missing) > 0 || len(oldMissing) > 0 {
 			unlockAll()
-			c.prepareSearchDocsBounded(items, missing, applicationTime, preparation)
-			prepareStagedVertexSearchBefore(preparation, oldMissing, oldSearch)
+			if mixed != nil {
+				if err := mixed.prepareSearch(items, missing, applicationTime, preparation, oldMissing, oldSearch); err != nil {
+					return nil, err
+				}
+			} else {
+				c.prepareSearchDocsBounded(items, missing, applicationTime, preparation)
+				prepareStagedVertexSearchBefore(preparation, oldMissing, oldSearch)
+			}
 			continue
 		}
 
@@ -222,8 +254,20 @@ func (c *GraphCache[S, T]) beginVertexPut(
 			unlockAll()
 			return nil, err
 		}
+		if mixed != nil {
+			if err := mixed.prepareLocked(c, items, applied, outcomes, stage, ts, strict); err != nil {
+				unlockAll()
+				return nil, err
+			}
+		}
 		pendingStage = stage
 		stage.applyPutLocked(items, applied, outcomes, ts)
+		if mixed != nil {
+			mixed.edgeStage.applyOnlyEdgesLocked()
+			if err := mixed.checkBudget(); err != nil {
+				return nil, err
+			}
+		}
 		lockState = 0
 		return &VertexPutTransaction[S, T]{
 			stage: stage,

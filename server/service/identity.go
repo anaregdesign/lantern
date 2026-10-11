@@ -298,6 +298,9 @@ func projectMutationIdentities(m *pb.Mutation, send func(*pb.SubscribeResponse) 
 	if m == nil || m.GetSeq() == 0 || len(m.GetOrigin()) != 16 || m.GetHlc() == nil || m.GetOp() == nil {
 		return connect.NewError(connect.CodeInternal, errors.New("identity projection received malformed mutation"))
 	}
+	if m.GetOp().GetGraphMutation() != nil {
+		return projectGraphMutationIdentities(m, send)
+	}
 	var category pb.IdentityOperation
 	var receiptEdgeKeys []*pb.EdgeKey
 	var receiptAddEdges []*pb.Edge

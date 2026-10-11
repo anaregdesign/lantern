@@ -389,6 +389,8 @@ Exact reads/writes/deletes have singular and plural forms:
 | Queries | Search, `Illuminate` traversal families, degree ranking |
 | Operations | Health, server/replication status, backup stream, CDC Subscribe/Snapshot, receipt capability/status |
 
+The source candidate also provides receipt-required [mixed graph mutations](docs/mixed-graph-mutations.md): unconditional Vertex Puts followed by explicit-ID Edge Adds, with one local atomic publication and per-effect HA conflict resolution.
+
 **Add is not an idempotent write.** A blind retry after a lost response can
 add a contribution twice. Supported SDKs provide separate opt-in receipt APIs
 for bounded, same-endpoint recovery of exact mutations. Receipt-bearing groups

@@ -66,7 +66,7 @@ func TestStagedPublicationWALSentinelAcrossAdapters(t *testing.T) {
 		{"definite closed", &mutationlog.DefiniteWALAbort{Cause: mutationlog.ErrClosed}, false},
 		{"definite exhausted", &mutationlog.DefiniteWALAbort{Cause: mutationlog.ErrSeqExhausted}, false},
 	} {
-		for _, operation := range []string{"vertex put", "vertex delete", "edge add", "edge delete", "contribution delete", "create", "create without receipt"} {
+		for _, operation := range []string{"graph mutation", "vertex put", "vertex delete", "edge add", "edge delete", "contribution delete", "create", "create without receipt"} {
 			for _, relay := range []bool{false, true} {
 				if relay && (operation == "create" || operation == "create without receipt") {
 					continue // Create has no distributed absence/arbitration contract.
@@ -103,7 +103,7 @@ func TestStagedPublicationWALSentinelAcrossAdapters(t *testing.T) {
 					}
 					err := invoke()
 					wantCode := connect.CodeUnavailable
-					if errors.Is(failure.cause, mutationlog.ErrSeqExhausted) {
+					if errors.Is(failure.cause, mutationlog.ErrSeqExhausted) && (operation != "graph mutation" || !failure.uncertain) {
 						wantCode = connect.CodeResourceExhausted
 					}
 					if writes != 1 || connect.CodeOf(err) != wantCode ||
@@ -161,7 +161,11 @@ func TestStagedPublicationWALSentinelAcrossAdapters(t *testing.T) {
 						if operation != "create without receipt" {
 							metadata, ok := receiptWALEnvelopeInfo(attempted)
 							status, receipt, err := f.coordinator.Lookup(id, time.Now())
-							if !ok || len(metadata.receipts) != 1 || status != mutationreceipt.Confirmed || err != nil ||
+							wantCount := 1
+							if operation == "graph mutation" {
+								wantCount = 2
+							}
+							if !ok || len(metadata.receipts) != wantCount || status != mutationreceipt.Confirmed || err != nil ||
 								!bytes.Equal(receipt.Result, metadata.receipts[0].Result) {
 								t.Fatalf("retry did not retain original receipt result: %v, %v", status, err)
 							}
@@ -182,7 +186,11 @@ func stagedPublicationAdapterCall(t *testing.T, f receiptEdgeDeleteFixture, runt
 	}
 	contribution := graphcache.ContribID{0x80}
 	f.cache.AddEdgeWithExpirationContrib("tail", "head", 3, time.Now().Add(time.Hour), contribution)
-	context := publicReceiptContext(t, runtime, 0x71, 1)
+	count := 1
+	if operation == "graph mutation" {
+		count = 2
+	}
+	context := publicReceiptContext(t, runtime, 0x71, count)
 	id, err := mutationreceipt.DecodeID(context.OperationIds[0])
 	if err != nil {
 		t.Fatal(err)
@@ -190,6 +198,12 @@ func stagedPublicationAdapterCall(t *testing.T, f receiptEdgeDeleteFixture, runt
 	return func() error {
 		var err error
 		switch operation {
+		case "graph mutation":
+			added := graphcache.ContribID{0x81}
+			_, err = f.service.MutateGraph(t.Context(), &pb.MutateGraphRequest{ReceiptContext: context, Items: []*pb.GraphMutationItem{
+				{Operation: &pb.GraphMutationItem_PutVertex{PutVertex: &pb.Vertex{Key: "created"}}},
+				{Operation: &pb.GraphMutationItem_AddEdge{AddEdge: &pb.GraphMutationEdgeAdd{Edge: &pb.Edge{Tail: "tail", Head: "head", Weight: 2}, ContribId: added[:]}}},
+			}})
 		case "vertex put":
 			_, err = f.service.PutVertices(t.Context(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "created"}}, IfAbsent: true, ReceiptContext: context})
 		case "vertex delete":
@@ -240,84 +254,93 @@ func assertStagedPublicationFaultViews(t *testing.T, f receiptEdgeDeleteFixture,
 }
 
 func TestStagedPublicationHeldWALSentinelRejectsWaitingViews(t *testing.T) {
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	f := newReceiptEdgeDeleteFixture(t, receiptEdgeDeleteWALFunc(func(mutationlog.Entry) error {
-		close(entered)
-		<-release
-		return mutationlog.ErrClosed
-	}))
-	defer func() {
-		select {
-		case <-release:
-		default:
+	for _, operation := range []string{"edge delete", "graph mutation"} {
+		t.Run(operation, func(t *testing.T) {
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			f := newReceiptEdgeDeleteFixture(t, receiptEdgeDeleteWALFunc(func(mutationlog.Entry) error {
+				close(entered)
+				<-release
+				return mutationlog.ErrClosed
+			}))
+			defer func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}()
+			runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
+			invoke, id := stagedPublicationAdapterCall(t, f, runtime, operation)
+			committed := make(chan error, 1)
+			go func() { committed <- invoke() }()
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("WAL not reached")
+			}
+			if operation == "graph mutation" {
+				if _, err := f.service.MutateGraph(t.Context(), graphMutationTestRequest(t, runtime, 0x69)); connect.CodeOf(err) != connect.CodeResourceExhausted {
+					t.Fatalf("mixed waiter was queued: %v", err)
+				}
+			}
+			views := map[string]func() error{
+				"read": func() error {
+					_, err := (&lanternServiceConnect{svc: f.service}).GetVertex(t.Context(), connect.NewRequest(&pb.GetVertexRequest{Key: "tail"}))
+					return err
+				},
+				"receipt": func() error {
+					_, err := f.service.GetReceiptStatus(t.Context(), &pb.GetReceiptStatusRequest{OperationId: id.Bytes()})
+					return err
+				},
+				"peer": func() error {
+					_, err := f.replication.PeerStatus(t.Context(), &pb.PeerStatusRequest{})
+					return err
+				},
+				"snapshot": func() error {
+					return f.replication.Snapshot(t.Context(), &pb.SnapshotRequest{}, &replicationSnapshotRecorder{})
+				},
+			}
+			completed := make(chan error, len(views))
+			started := make(chan struct{}, len(views))
+			for name, read := range views {
+				go func() {
+					started <- struct{}{}
+					err := read()
+					wantCode := connect.CodeFailedPrecondition
+					if name == "receipt" {
+						wantCode = connect.CodeInternal
+					}
+					if connect.CodeOf(err) != wantCode {
+						completed <- fmt.Errorf("waiting %s returned %v", name, err)
+						return
+					}
+					completed <- nil
+				}()
+			}
+			for range views {
+				<-started
+			}
+			select {
+			case err := <-completed:
+				t.Fatalf("view completed while WAL was held: %v", err)
+			case <-time.After(25 * time.Millisecond):
+			}
 			close(release)
-		}
-	}()
-	runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
-	invoke, id := stagedPublicationAdapterCall(t, f, runtime, "edge delete")
-	committed := make(chan error, 1)
-	go func() { committed <- invoke() }()
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("WAL not reached")
-	}
-	views := map[string]func() error{
-		"read": func() error {
-			_, err := (&lanternServiceConnect{svc: f.service}).GetVertex(t.Context(), connect.NewRequest(&pb.GetVertexRequest{Key: "tail"}))
-			return err
-		},
-		"receipt": func() error {
-			_, err := f.service.GetReceiptStatus(t.Context(), &pb.GetReceiptStatusRequest{OperationId: id.Bytes()})
-			return err
-		},
-		"peer": func() error {
-			_, err := f.replication.PeerStatus(t.Context(), &pb.PeerStatusRequest{})
-			return err
-		},
-		"snapshot": func() error {
-			return f.replication.Snapshot(t.Context(), &pb.SnapshotRequest{}, &replicationSnapshotRecorder{})
-		},
-	}
-	completed := make(chan error, len(views))
-	started := make(chan struct{}, len(views))
-	for name, read := range views {
-		go func() {
-			started <- struct{}{}
-			err := read()
-			wantCode := connect.CodeFailedPrecondition
-			if name == "receipt" {
-				wantCode = connect.CodeInternal
+			if err := waitReceiptTest(t, "held WAL completion", committed); !errors.Is(err, mutationlog.ErrWALIndeterminate) {
+				t.Fatalf("held WAL outcome = %v", err)
 			}
-			if connect.CodeOf(err) != wantCode {
-				completed <- fmt.Errorf("waiting %s returned %v", name, err)
-				return
+			for range views {
+				select {
+				case err := <-completed:
+					if err != nil {
+						t.Error(err)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("view did not resolve after WAL failure")
+				}
 			}
-			completed <- nil
-		}()
-	}
-	for range views {
-		<-started
-	}
-	select {
-	case err := <-completed:
-		t.Fatalf("view completed while WAL was held: %v", err)
-	case <-time.After(25 * time.Millisecond):
-	}
-	close(release)
-	if err := waitReceiptTest(t, "held WAL completion", committed); !errors.Is(err, mutationlog.ErrWALIndeterminate) {
-		t.Fatalf("held WAL outcome = %v", err)
-	}
-	for range views {
-		select {
-		case err := <-completed:
-			if err != nil {
-				t.Error(err)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("view did not resolve after WAL failure")
-		}
+		})
 	}
 }
 

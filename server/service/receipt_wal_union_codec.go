@@ -21,12 +21,16 @@ import (
 // This private, unwired codec covers graph-only Mutations, accepted-effect
 // sidecars, and receipt-bearing exact mutation envelopes. The
 // FileWAL frame owns its checksum, replica-local sequence and HLC. The union
-// header is versioned independently of the inner receipt formats. V9 freezes
+// header is versioned independently of the inner receipt formats. V10 adds
+// mixed graph envelopes; V9 remains readable with its frozen kind/tag whitelist.
+// V9 freezes
 // physical namespaces, immutable Edge-only endpoint effects, original lifecycle
 // effects and conditional Edge Create. Earlier histories are
 // refused; operators must perform an explicit offline migration.
 const (
-	receiptWALUnionMagic                  = "LRWU\x09\x00\x00\x00"
+	receiptWALUnionMagic                  = "LRWU\x0a\x00\x00\x00"
+	receiptWALUnionMagicV9                = "LRWU\x09\x00\x00\x00"
+	receiptWALUnionGraphMutation          = byte(11)
 	receiptWALUnionHeaderSize             = 16 // magic, kind, reserved[3], body length
 	receiptWALUnionEdgeCreate             = byte(10)
 	receiptWALUnionGraph                  = byte(1)
@@ -45,15 +49,16 @@ const (
 	// Every reachable Mutation field is reviewed before advancing this pin.
 	// The V9 descriptor includes immutable endpoint and origin lifecycle effects;
 	// graph-only codec paths still reject populated receipt contexts.
-	receiptWALGraphSchemaFingerprintV9 = "92a299d04670341c8a9d73113dc712e7dabd0a56b7ba840b0d769fc10e3d384a"
+	receiptWALGraphSchemaFingerprintV10 = "ef5ce9cf8a47f437d150bd56d0a38c6a3f9e65b60b63c24c40c5643a5dfa0ecd"
+	receiptWALGraphSchemaFingerprintV9  = "92a299d04670341c8a9d73113dc712e7dabd0a56b7ba840b0d769fc10e3d384a"
 )
 
 var errReceiptWALUnion = errors.New("service: invalid receipt WAL union payload")
 
 var receiptWALGraphSchemaError = sync.OnceValue(func() error {
 	digest := protoschema.Fingerprint((&pb.Mutation{}).ProtoReflect().Descriptor())
-	if digest != receiptWALGraphSchemaFingerprintV9 {
-		return receiptWALUnionError("WAL union v9 graph schema changed: %s", digest)
+	if digest != receiptWALGraphSchemaFingerprintV10 {
+		return receiptWALUnionError("WAL union v10 graph schema changed: %s", digest)
 	}
 	return nil
 })
@@ -80,6 +85,9 @@ func encodeReceiptWALUnion(op mutationlog.MutationOp) ([]byte, error) {
 		}
 		kind = receiptWALUnionGraph
 		body, err = encodeReceiptWALGraph(value)
+	case *graphMutationEnvelope:
+		kind = receiptWALUnionGraphMutation
+		body, err = encodeGraphMutationWAL(value)
 	case *edgeCreateEnvelope:
 		kind = receiptWALUnionEdgeCreate
 		body, err = encodeEdgeCreateWAL(value)
@@ -137,15 +145,21 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 	if len(raw) < receiptWALUnionHeaderSize || len(raw) > receiptWALUnionMaxBytes {
 		return nil, receiptWALUnionError("invalid payload size %d", len(raw))
 	}
-	if string(raw[:8]) != receiptWALUnionMagic ||
+	legacy := string(raw[:8]) == receiptWALUnionMagicV9
+	if (!legacy && string(raw[:8]) != receiptWALUnionMagic) ||
 		raw[9] != 0 || raw[10] != 0 || raw[11] != 0 {
 		return nil, receiptWALUnionError("unknown version or nonzero reserved header")
 	}
 	if uint64(binary.BigEndian.Uint32(raw[12:16])) != uint64(len(raw)-receiptWALUnionHeaderSize) {
 		return nil, receiptWALUnionError("body length mismatch")
 	}
+	if legacy && (raw[8] < receiptWALUnionGraph || raw[8] > receiptWALUnionEdgeCreate) {
+		return nil, receiptWALUnionError("operation kind is not part of V9")
+	}
 	body := raw[receiptWALUnionHeaderSize:]
 	switch raw[8] {
+	case receiptWALUnionGraphMutation:
+		return decodeGraphMutationWAL(body)
 	case receiptWALUnionGraph:
 		value, err := decodeReceiptWALGraph(body)
 		if err != nil {
@@ -162,9 +176,6 @@ func decodeReceiptWALUnion(raw []byte) (mutationlog.MutationOp, error) {
 		}
 		return value, nil
 	case receiptWALUnionEdgeContributionDelete:
-		if string(raw[:8]) != receiptWALUnionMagic {
-			return nil, receiptWALUnionError("contribution Delete requires union v5")
-		}
 		value, err := decodeReceiptEdgeContributionDeleteWAL(body)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", errReceiptWALUnion, err)
@@ -214,6 +225,14 @@ func validateReceiptWALUnionEntry(entry mutationlog.Entry) error {
 		return receiptWALUnionError("zero FileWAL local seq")
 	}
 	switch value := entry.Op.(type) {
+	case *graphMutationEnvelope:
+		if _, err := encodeGraphMutationWAL(value); err != nil {
+			return err
+		}
+		if !entry.HLC.Equal(hlcFromProto(value.Mutation.GetHlc())) {
+			return receiptWALUnionError("mixed graph mutation frame HLC differs")
+		}
+		return nil
 	case *pb.Mutation:
 		if isAnyGraphDelete(value) {
 			return receiptWALUnionError("graph Delete lacks accepted-effect envelope")

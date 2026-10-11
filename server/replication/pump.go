@@ -1399,6 +1399,7 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 		NamespaceFormat:        p.cfg.NamespaceFormat,
 		FromSeqPerOrigin:       cursor,
 		FromLocalSeq:           fromLocalSeq,
+		AcceptGraphMutations:   true,
 		AcceptReceiptEnvelopes: snapshotAcceptsReceiptEnvelopes(p.installer),
 	}))
 	if err != nil {

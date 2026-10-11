@@ -178,6 +178,7 @@ func (s *LanternService) GetReceiptCapability(ctx context.Context, req *pb.GetRe
 		},
 		ServerNowUnixMs:    uint64(effective.UnixMilli()),
 		SupportedMutations: supported,
+		GraphMutation:      &pb.GraphMutationCapability{MaxItems: 64, MaxRequestBytes: graphMutationMaxBytes},
 	}, nil
 }
 

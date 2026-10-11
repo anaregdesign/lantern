@@ -47,6 +47,14 @@ abstract final class LanternService {
     graphv1graph.PutVerticesResponse.new,
   );
 
+  /// Publishes one mixed receipt envelope locally; HA uses effect-wise conflicts.
+  static const mutateGraph = connect.Spec(
+    '/$name/MutateGraph',
+    connect.StreamType.unary,
+    graphv1graph.MutateGraphRequest.new,
+    graphv1graph.MutateGraphResponse.new,
+  );
+
   static const deleteVertex = connect.Spec(
     '/$name/DeleteVertex',
     connect.StreamType.unary,

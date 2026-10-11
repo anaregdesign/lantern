@@ -89,6 +89,14 @@ func (p vertexSearchProjection) SizeHint() int {
 	return n
 }
 
+// PreparationSizeHint covers the lazy JSON projection before it allocates its
+// parse tree or field slice. Each emitted field is nonempty, so its count is
+// bounded by source bytes plus the optional key field.
+func (p vertexSearchProjection) PreparationSizeHint() (int, int) {
+	bytes := p.SizeHint()
+	return bytes, bytes + 1
+}
+
 // vertexValueText returns the indexable text form of a vertex's value and
 // whether the value carries any text at all. The unset and explicit-nil
 // variants return ("", false) so callers index the key only.

@@ -15,6 +15,7 @@ import (
 
 func TestMutationAcceptanceResponseDiscardsEveryEffectAndPreservesOriginal(t *testing.T) {
 	for _, original := range []proto.Message{
+		&pb.MutateGraphResponse{Results: []*pb.GraphMutationResult{{Result: &pb.GraphMutationResult_PutVertex{PutVertex: pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE}}, {Result: &pb.GraphMutationResult_AddEdgeEffectiveWeight{AddEdgeEffectiveWeight: 9}}}},
 		&pb.AddEdgeResponse{EffectiveWeight: 7},
 		&pb.AddEdgesResponse{Written: 2, EffectiveWeights: []float32{7, 11}},
 		&pb.PutEdgeResponse{Outcome: pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE},

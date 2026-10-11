@@ -134,6 +134,10 @@ func (l *Lantern) AddEdgesWithReceipt(
 	if err != nil {
 		return nil, err
 	}
+	return edgeAddReceiptResults(stableInputs, stableContext.OperationIDs, response)
+}
+
+func edgeAddReceiptResults(stableInputs []EdgeAddReceiptInput, ids []ReceiptOperationID, response *pb.AddEdgesResponse) ([]EdgeAddReceiptResult, error) {
 	if response == nil {
 		return nil, receiptProtocolError("Edge Add response is nil")
 	}
@@ -163,7 +167,7 @@ func (l *Lantern) AddEdgesWithReceipt(
 				Head: input.Edge.Head,
 			},
 			ContribID:       input.ContribID,
-			OperationID:     stableContext.OperationIDs[i],
+			OperationID:     ids[i],
 			EffectiveWeight: weights[i],
 		}
 	}

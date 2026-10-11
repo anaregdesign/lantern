@@ -137,6 +137,7 @@ enum MutationOp_Op {
   deleteEdgeContributions,
   replicatedReceiptEdgeContributionDelete,
   edgeCreateEffect,
+  graphMutation,
   notSet
 }
 
@@ -174,6 +175,7 @@ class MutationOp extends $pb.GeneratedMessage {
         replicatedReceiptEdgeContributionDelete,
     EdgeCreateEffect? edgeCreateEffect,
     $core.bool? noEndpointCreation,
+    ReplicatedGraphMutation? graphMutation,
   }) {
     final result = create();
     if (putVertex != null) result.putVertex = putVertex;
@@ -212,6 +214,7 @@ class MutationOp extends $pb.GeneratedMessage {
     if (edgeCreateEffect != null) result.edgeCreateEffect = edgeCreateEffect;
     if (noEndpointCreation != null)
       result.noEndpointCreation = noEndpointCreation;
+    if (graphMutation != null) result.graphMutation = graphMutation;
     return result;
   }
 
@@ -247,6 +250,7 @@ class MutationOp extends $pb.GeneratedMessage {
     20: MutationOp_Op.deleteEdgeContributions,
     21: MutationOp_Op.replicatedReceiptEdgeContributionDelete,
     22: MutationOp_Op.edgeCreateEffect,
+    24: MutationOp_Op.graphMutation,
     0: MutationOp_Op.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
@@ -275,7 +279,8 @@ class MutationOp extends $pb.GeneratedMessage {
       19,
       20,
       21,
-      22
+      22,
+      24
     ])
     ..aOM<$0.PutVertexRequest>(1, _omitFieldNames ? '' : 'putVertex',
         subBuilder: $0.PutVertexRequest.create)
@@ -332,6 +337,8 @@ class MutationOp extends $pb.GeneratedMessage {
     ..aOM<EdgeCreateEffect>(22, _omitFieldNames ? '' : 'edgeCreateEffect',
         subBuilder: EdgeCreateEffect.create)
     ..aOB(23, _omitFieldNames ? '' : 'noEndpointCreation')
+    ..aOM<ReplicatedGraphMutation>(24, _omitFieldNames ? '' : 'graphMutation',
+        subBuilder: ReplicatedGraphMutation.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -644,6 +651,321 @@ class MutationOp extends $pb.GeneratedMessage {
   $core.bool hasNoEndpointCreation() => $_has(22);
   @$pb.TagNumber(23)
   void clearNoEndpointCreation() => $_clearField(23);
+
+  @$pb.TagNumber(24)
+  ReplicatedGraphMutation get graphMutation => $_getN(23);
+  @$pb.TagNumber(24)
+  set graphMutation(ReplicatedGraphMutation value) => $_setField(24, value);
+  @$pb.TagNumber(24)
+  $core.bool hasGraphMutation() => $_has(23);
+  @$pb.TagNumber(24)
+  void clearGraphMutation() => $_clearField(24);
+  @$pb.TagNumber(24)
+  ReplicatedGraphMutation ensureGraphMutation() => $_ensure(23);
+}
+
+/// One immutable origin item. Put outcomes come from the original receipt;
+/// edge_accepted records origin acceptance independently of receiver projection.
+class ReplicatedGraphMutationItem extends $pb.GeneratedMessage {
+  factory ReplicatedGraphMutationItem({
+    $0.GraphMutationItem? original,
+    $0.MutationReceipt? receipt,
+    $core.bool? lifecycleReduced,
+    $core.bool? edgeAccepted,
+  }) {
+    final result = create();
+    if (original != null) result.original = original;
+    if (receipt != null) result.receipt = receipt;
+    if (lifecycleReduced != null) result.lifecycleReduced = lifecycleReduced;
+    if (edgeAccepted != null) result.edgeAccepted = edgeAccepted;
+    return result;
+  }
+
+  ReplicatedGraphMutationItem._();
+
+  factory ReplicatedGraphMutationItem.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedGraphMutationItem.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedGraphMutationItem',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<$0.GraphMutationItem>(1, _omitFieldNames ? '' : 'original',
+        subBuilder: $0.GraphMutationItem.create)
+    ..aOM<$0.MutationReceipt>(2, _omitFieldNames ? '' : 'receipt',
+        subBuilder: $0.MutationReceipt.create)
+    ..aOB(3, _omitFieldNames ? '' : 'lifecycleReduced')
+    ..aOB(4, _omitFieldNames ? '' : 'edgeAccepted')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedGraphMutationItem clone() =>
+      ReplicatedGraphMutationItem()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedGraphMutationItem copyWith(
+          void Function(ReplicatedGraphMutationItem) updates) =>
+      super.copyWith(
+              (message) => updates(message as ReplicatedGraphMutationItem))
+          as ReplicatedGraphMutationItem;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedGraphMutationItem create() =>
+      ReplicatedGraphMutationItem._();
+  @$core.override
+  ReplicatedGraphMutationItem createEmptyInstance() => create();
+  static $pb.PbList<ReplicatedGraphMutationItem> createRepeated() =>
+      $pb.PbList<ReplicatedGraphMutationItem>();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedGraphMutationItem getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReplicatedGraphMutationItem>(create);
+  static ReplicatedGraphMutationItem? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $0.GraphMutationItem get original => $_getN(0);
+  @$pb.TagNumber(1)
+  set original($0.GraphMutationItem value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasOriginal() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearOriginal() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $0.GraphMutationItem ensureOriginal() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $0.MutationReceipt get receipt => $_getN(1);
+  @$pb.TagNumber(2)
+  set receipt($0.MutationReceipt value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasReceipt() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearReceipt() => $_clearField(2);
+  @$pb.TagNumber(2)
+  $0.MutationReceipt ensureReceipt() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $core.bool get lifecycleReduced => $_getBF(2);
+  @$pb.TagNumber(3)
+  set lifecycleReduced($core.bool value) => $_setBool(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasLifecycleReduced() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearLifecycleReduced() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.bool get edgeAccepted => $_getBF(3);
+  @$pb.TagNumber(4)
+  set edgeAccepted($core.bool value) => $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasEdgeAccepted() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearEdgeAccepted() => $_clearField(4);
+}
+
+enum GraphMutationProjection_Effect { putVertex, addEdge, notSet }
+
+class GraphMutationProjection extends $pb.GeneratedMessage {
+  factory GraphMutationProjection({
+    $core.int? itemIndex,
+    ReplicatedPutVertex? putVertex,
+    $core.bool? addEdge,
+  }) {
+    final result = create();
+    if (itemIndex != null) result.itemIndex = itemIndex;
+    if (putVertex != null) result.putVertex = putVertex;
+    if (addEdge != null) result.addEdge = addEdge;
+    return result;
+  }
+
+  GraphMutationProjection._();
+
+  factory GraphMutationProjection.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GraphMutationProjection.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static const $core.Map<$core.int, GraphMutationProjection_Effect>
+      _GraphMutationProjection_EffectByTag = {
+    2: GraphMutationProjection_Effect.putVertex,
+    3: GraphMutationProjection_Effect.addEdge,
+    0: GraphMutationProjection_Effect.notSet
+  };
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GraphMutationProjection',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..oo(0, [2, 3])
+    ..a<$core.int>(1, _omitFieldNames ? '' : 'itemIndex', $pb.PbFieldType.OU3)
+    ..aOM<ReplicatedPutVertex>(2, _omitFieldNames ? '' : 'putVertex',
+        subBuilder: ReplicatedPutVertex.create)
+    ..aOB(3, _omitFieldNames ? '' : 'addEdge')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GraphMutationProjection clone() =>
+      GraphMutationProjection()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GraphMutationProjection copyWith(
+          void Function(GraphMutationProjection) updates) =>
+      super.copyWith((message) => updates(message as GraphMutationProjection))
+          as GraphMutationProjection;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GraphMutationProjection create() => GraphMutationProjection._();
+  @$core.override
+  GraphMutationProjection createEmptyInstance() => create();
+  static $pb.PbList<GraphMutationProjection> createRepeated() =>
+      $pb.PbList<GraphMutationProjection>();
+  @$core.pragma('dart2js:noInline')
+  static GraphMutationProjection getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GraphMutationProjection>(create);
+  static GraphMutationProjection? _defaultInstance;
+
+  GraphMutationProjection_Effect whichEffect() =>
+      _GraphMutationProjection_EffectByTag[$_whichOneof(0)]!;
+  void clearEffect() => $_clearField($_whichOneof(0));
+
+  @$pb.TagNumber(1)
+  $core.int get itemIndex => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set itemIndex($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasItemIndex() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearItemIndex() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  ReplicatedPutVertex get putVertex => $_getN(1);
+  @$pb.TagNumber(2)
+  set putVertex(ReplicatedPutVertex value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasPutVertex() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPutVertex() => $_clearField(2);
+  @$pb.TagNumber(2)
+  ReplicatedPutVertex ensurePutVertex() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $core.bool get addEdge => $_getBF(2);
+  @$pb.TagNumber(3)
+  set addEdge($core.bool value) => $_setBool(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasAddEdge() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearAddEdge() => $_clearField(3);
+}
+
+/// One origin identity outside this message binds the whole mixed call.
+/// Relays preserve items; local WAL records the accepted receiver projection.
+class ReplicatedGraphMutation extends $pb.GeneratedMessage {
+  factory ReplicatedGraphMutation({
+    $core.int? version,
+    $core.List<$core.int>? deploymentEpoch,
+    $core.List<$core.int>? policyFingerprint,
+    $core.Iterable<ReplicatedGraphMutationItem>? items,
+    $core.Iterable<GraphMutationProjection>? projection,
+  }) {
+    final result = create();
+    if (version != null) result.version = version;
+    if (deploymentEpoch != null) result.deploymentEpoch = deploymentEpoch;
+    if (policyFingerprint != null) result.policyFingerprint = policyFingerprint;
+    if (items != null) result.items.addAll(items);
+    if (projection != null) result.projection.addAll(projection);
+    return result;
+  }
+
+  ReplicatedGraphMutation._();
+
+  factory ReplicatedGraphMutation.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ReplicatedGraphMutation.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplicatedGraphMutation',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..a<$core.int>(1, _omitFieldNames ? '' : 'version', $pb.PbFieldType.OU3)
+    ..a<$core.List<$core.int>>(
+        2, _omitFieldNames ? '' : 'deploymentEpoch', $pb.PbFieldType.OY)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'policyFingerprint', $pb.PbFieldType.OY)
+    ..pc<ReplicatedGraphMutationItem>(
+        4, _omitFieldNames ? '' : 'items', $pb.PbFieldType.PM,
+        subBuilder: ReplicatedGraphMutationItem.create)
+    ..pc<GraphMutationProjection>(
+        5, _omitFieldNames ? '' : 'projection', $pb.PbFieldType.PM,
+        subBuilder: GraphMutationProjection.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedGraphMutation clone() =>
+      ReplicatedGraphMutation()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplicatedGraphMutation copyWith(
+          void Function(ReplicatedGraphMutation) updates) =>
+      super.copyWith((message) => updates(message as ReplicatedGraphMutation))
+          as ReplicatedGraphMutation;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedGraphMutation create() => ReplicatedGraphMutation._();
+  @$core.override
+  ReplicatedGraphMutation createEmptyInstance() => create();
+  static $pb.PbList<ReplicatedGraphMutation> createRepeated() =>
+      $pb.PbList<ReplicatedGraphMutation>();
+  @$core.pragma('dart2js:noInline')
+  static ReplicatedGraphMutation getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReplicatedGraphMutation>(create);
+  static ReplicatedGraphMutation? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get version => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set version($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearVersion() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.List<$core.int> get deploymentEpoch => $_getN(1);
+  @$pb.TagNumber(2)
+  set deploymentEpoch($core.List<$core.int> value) => $_setBytes(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasDeploymentEpoch() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearDeploymentEpoch() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get policyFingerprint => $_getN(2);
+  @$pb.TagNumber(3)
+  set policyFingerprint($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasPolicyFingerprint() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearPolicyFingerprint() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $pb.PbList<ReplicatedGraphMutationItem> get items => $_getList(3);
+
+  @$pb.TagNumber(5)
+  $pb.PbList<GraphMutationProjection> get projection => $_getList(4);
 }
 
 /// Retains the origin decision; restore never re-evaluates rejected positions.
@@ -2381,6 +2703,7 @@ class SubscribeRequest extends $pb.GeneratedMessage {
     $core.bool? bootstrap,
     $core.bool? acceptReceiptEnvelopes,
     $core.String? namespaceFormat,
+    $core.bool? acceptGraphMutations,
   }) {
     final result = create();
     if (fromSeqPerOrigin != null)
@@ -2391,6 +2714,8 @@ class SubscribeRequest extends $pb.GeneratedMessage {
     if (acceptReceiptEnvelopes != null)
       result.acceptReceiptEnvelopes = acceptReceiptEnvelopes;
     if (namespaceFormat != null) result.namespaceFormat = namespaceFormat;
+    if (acceptGraphMutations != null)
+      result.acceptGraphMutations = acceptGraphMutations;
     return result;
   }
 
@@ -2424,6 +2749,7 @@ class SubscribeRequest extends $pb.GeneratedMessage {
     ..aOB(4, _omitFieldNames ? '' : 'bootstrap')
     ..aOB(5, _omitFieldNames ? '' : 'acceptReceiptEnvelopes')
     ..aOS(6, _omitFieldNames ? '' : 'namespaceFormat')
+    ..aOB(7, _omitFieldNames ? '' : 'acceptGraphMutations')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2510,6 +2836,16 @@ class SubscribeRequest extends $pb.GeneratedMessage {
   $core.bool hasNamespaceFormat() => $_has(5);
   @$pb.TagNumber(6)
   void clearNamespaceFormat() => $_clearField(6);
+
+  /// Full consumers must separately opt in to the indivisible mixed arm.
+  @$pb.TagNumber(7)
+  $core.bool get acceptGraphMutations => $_getBF(6);
+  @$pb.TagNumber(7)
+  set acceptGraphMutations($core.bool value) => $_setBool(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasAcceptGraphMutations() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearAcceptGraphMutations() => $_clearField(7);
 }
 
 /// A bootstrap checkpoint is the responder's contiguous publication cut,

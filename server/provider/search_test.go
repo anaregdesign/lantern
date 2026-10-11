@@ -20,6 +20,21 @@ import (
 const projectedFieldsFixturePath = "../../core/search/relevance/testdata/projected_fields.json"
 const luceneBaselinePath = "../../core/search/relevance/testdata/lucene_runs.json"
 
+func TestVertexSearchPreparationBound(t *testing.T) {
+	for _, raw := range []string{"", "value", `{"a":["one","two"],"b":3}`, `["","","three"]`} {
+		doc := vertexSearchProjection{key: "key", vertex: &v1.Vertex{Value: &v1.Vertex_String_{String_: raw}}}
+		bytes, fields := doc.PreparationSizeHint()
+		actual := doc.SearchFields()
+		n := 0
+		for _, field := range actual {
+			n += len(field.Text)
+		}
+		if n > bytes || len(actual) > fields {
+			t.Fatal(raw, n, bytes, len(actual), fields)
+		}
+	}
+}
+
 type projectedFieldsFixture struct {
 	FixtureFormat     string                     `json:"fixture_format"`
 	ProjectionVersion string                     `json:"projection_version"`
