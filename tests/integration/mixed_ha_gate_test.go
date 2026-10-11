@@ -450,7 +450,14 @@ func (m *mixedHAGate) authorization(t *testing.T) {
 			t.Fatal("denied group published prefix", i, err)
 		}
 	}
-	reader := m.g.issuer.token(t, "reader", func(claims map[string]any) { claims["iat"] = time.Now().Add(-time.Minute).Unix() })
+	reader := m.g.issuer.token(t, "reader", func(claims map[string]any) {
+		claims["iat"] = time.Now().Add(-time.Minute).Unix()
+		delete(claims, "auth_time")
+	})
+	read, err := m.g.data[2].GetVertex(t.Context(), securityWireRequest(reader, &pb.GetVertexRequest{Key: "orders:relay:a"}))
+	if err != nil || read.Msg.GetVertex().GetString_() != "initial" {
+		t.Fatal("reader authentication positive control", err)
+	}
 	id := original.identity.OperationIDs[0]
 	response, err := m.g.data[2].GetReceiptStatus(t.Context(), securityWireRequest(reader, &pb.GetReceiptStatusRequest{OperationId: id[:]}))
 	if err == nil && response.Msg.GetStatus().GetReceipt() != nil {
