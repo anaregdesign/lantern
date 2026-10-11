@@ -89,6 +89,9 @@ type publicationStatusProvider interface {
 
 func validateSubscribeReceiptEnvelope(m *pb.Mutation) (bool, error) {
 	switch m.GetOp().GetOp().(type) {
+	case *pb.MutationOp_GraphMutation:
+		_, err := decodeGraphMutation(m)
+		return true, err
 	case *pb.MutationOp_EdgeCreateEffect:
 		effect, err := decodeEdgeCreateMutation(m)
 		return effect != nil && len(effect.Receipts) != 0, err
@@ -468,6 +471,9 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 				}
 			}
 			if receipt, err := validateSubscribeReceiptEnvelope(mu); receipt {
+				if mu.GetOp().GetGraphMutation() != nil && !req.GetAcceptGraphMutations() {
+					return connect.NewError(connect.CodeInvalidArgument, errors.New("full Subscribe consumer must explicitly accept graph mutations"))
+				}
 				if !req.GetAcceptReceiptEnvelopes() {
 					return connect.NewError(connect.CodeInvalidArgument,
 						errors.New("full Subscribe consumer must accept receipt envelopes before receiving them"))

@@ -1005,6 +1005,29 @@ func runCurrentPublicSDK4(t *testing.T, s *httptest.Server, token, ca string) {
 		if _, err := sdk.GetCurrentPrincipal(t.Context()); err != nil {
 			t.Fatal(err)
 		}
+		ctx := t.Context()
+		capability, err := sdk.GetReceiptCapability(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := sdk.NewGraphMutationReceiptContext(capability, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := sdk.NewContribID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		vertices := []client.VertexInput{{Key: "orders:mixed:a", Value: "record"}, {Key: "orders:mixed:b", Value: "target"}}
+		edges := []client.EdgeAddReceiptInput{{Edge: client.EdgeInput{Tail: "orders:mixed:a", Head: "orders:mixed:b", Weight: 2}, ContribID: id}}
+		result, err := sdk.MutateGraph(ctx, vertices, edges, identity)
+		if err != nil || len(result.Vertices) != 2 || len(result.Edges) != 1 || result.Edges[0].EffectiveWeight != 2 {
+			t.Fatal(result, err)
+		}
+		repeated, err := sdk.MutateGraph(ctx, vertices, edges, identity)
+		if err != nil || len(repeated.Edges) != 1 || repeated.Edges[0] != result.Edges[0] {
+			t.Fatal(repeated, err)
+		}
 	})
 	module := func(path string) string { raw, _ := json.Marshal(filepath.Join(root, path)); return string(raw) }
 	script := `import {readFileSync} from "node:fs";

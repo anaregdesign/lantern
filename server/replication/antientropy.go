@@ -440,6 +440,7 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 		NamespaceFormat:        a.cfg.NamespaceFormat,
 		FromSeqPerOrigin:       cursor,
 		FromLocalSeq:           a.snapshotResumeLocal(addr),
+		AcceptGraphMutations:   true,
 		AcceptReceiptEnvelopes: snapshotAcceptsReceiptEnvelopes(a.installer),
 	}))
 	if err != nil {

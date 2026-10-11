@@ -164,8 +164,14 @@ func (c *GraphCache[S, T]) beginVertexPut(
 		oldMissing := c.missingStagedVertexSearchBeforeLocked(vertexKeysAt(items, final), oldSearch)
 		if len(missing) > 0 || len(oldMissing) > 0 {
 			unlockMu()
-			c.prepareSearchDocsBounded(items, missing, time.Now(), preparation)
-			prepareStagedVertexSearchBefore(preparation, oldMissing, oldSearch)
+			if mixed != nil {
+				if err := mixed.prepareSearch(items, missing, time.Now(), preparation, oldMissing, oldSearch); err != nil {
+					return nil, err
+				}
+			} else {
+				c.prepareSearchDocsBounded(items, missing, time.Now(), preparation)
+				prepareStagedVertexSearchBefore(preparation, oldMissing, oldSearch)
+			}
 			continue
 		}
 
@@ -204,8 +210,14 @@ func (c *GraphCache[S, T]) beginVertexPut(
 		oldMissing = c.missingStagedVertexSearchBeforeLocked(vertexKeysAt(items, final), oldSearch)
 		if len(missing) > 0 || len(oldMissing) > 0 {
 			unlockAll()
-			c.prepareSearchDocsBounded(items, missing, applicationTime, preparation)
-			prepareStagedVertexSearchBefore(preparation, oldMissing, oldSearch)
+			if mixed != nil {
+				if err := mixed.prepareSearch(items, missing, applicationTime, preparation, oldMissing, oldSearch); err != nil {
+					return nil, err
+				}
+			} else {
+				c.prepareSearchDocsBounded(items, missing, applicationTime, preparation)
+				prepareStagedVertexSearchBefore(preparation, oldMissing, oldSearch)
+			}
 			continue
 		}
 

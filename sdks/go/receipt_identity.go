@@ -139,6 +139,7 @@ type ReceiptContinuity struct {
 // ReceiptCapability is an authenticated endpoint's receipt preflight result.
 // Disabled capabilities intentionally carry only Enabled=false.
 type ReceiptCapability struct {
+	GraphMutation      *GraphMutationCapability
 	Enabled            bool
 	Continuity         ReceiptContinuity
 	PolicyFingerprint  ReceiptPolicyFingerprint
@@ -477,7 +478,7 @@ func (c ReceiptContinuity) Validate() error {
 // disabled capability carries no identity-bearing fields.
 func (c ReceiptCapability) Validate() error {
 	if !c.Enabled {
-		if c.Continuity != (ReceiptContinuity{}) ||
+		if c.GraphMutation != nil || c.Continuity != (ReceiptContinuity{}) ||
 			c.PolicyFingerprint != (ReceiptPolicyFingerprint{}) ||
 			c.Retention != 0 || c.MaxEntries != 0 || c.MaxBytes != 0 ||
 			!c.ServerTime.IsZero() || len(c.SupportedMutations) != 0 {
@@ -501,6 +502,9 @@ func (c ReceiptCapability) Validate() error {
 		if i > 0 && c.SupportedMutations[i-1] >= mutation {
 			return invalidReceiptError("supported mutation kinds must be strictly increasing")
 		}
+	}
+	if m := c.GraphMutation; m != nil && (m.MaxItems < 2 || m.MaxItems > 64 || m.MaxRequestBytes == 0 || m.MaxRequestBytes > 1<<20 || !c.Supports(ReceiptMutationPutVertex) || !c.Supports(ReceiptMutationAddEdge)) {
+		return invalidReceiptError("invalid mixed graph capability")
 	}
 	return nil
 }

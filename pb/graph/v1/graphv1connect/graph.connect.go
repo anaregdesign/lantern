@@ -48,6 +48,9 @@ const (
 	// LanternServicePutVerticesProcedure is the fully-qualified name of the LanternService's
 	// PutVertices RPC.
 	LanternServicePutVerticesProcedure = "/graph.v1.LanternService/PutVertices"
+	// LanternServiceMutateGraphProcedure is the fully-qualified name of the LanternService's
+	// MutateGraph RPC.
+	LanternServiceMutateGraphProcedure = "/graph.v1.LanternService/MutateGraph"
 	// LanternServiceDeleteVertexProcedure is the fully-qualified name of the LanternService's
 	// DeleteVertex RPC.
 	LanternServiceDeleteVertexProcedure = "/graph.v1.LanternService/DeleteVertex"
@@ -137,6 +140,8 @@ type LanternServiceClient interface {
 	// PutVertex writes a single vertex. Thin facade over PutVertices.
 	PutVertex(context.Context, *connect.Request[v1.PutVertexRequest]) (*connect.Response[v1.PutVertexResponse], error)
 	PutVertices(context.Context, *connect.Request[v1.PutVerticesRequest]) (*connect.Response[v1.PutVerticesResponse], error)
+	// Publishes one mixed receipt envelope locally; HA uses effect-wise conflicts.
+	MutateGraph(context.Context, *connect.Request[v1.MutateGraphRequest]) (*connect.Response[v1.MutateGraphResponse], error)
 	DeleteVertex(context.Context, *connect.Request[v1.DeleteVertexRequest]) (*connect.Response[v1.DeleteVertexResponse], error)
 	// DeleteVertices removes several vertices in one round trip.
 	DeleteVertices(context.Context, *connect.Request[v1.DeleteVerticesRequest]) (*connect.Response[v1.DeleteVerticesResponse], error)
@@ -275,6 +280,12 @@ func NewLanternServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			httpClient,
 			baseURL+LanternServicePutVerticesProcedure,
 			connect.WithSchema(lanternServiceMethods.ByName("PutVertices")),
+			connect.WithClientOptions(opts...),
+		),
+		mutateGraph: connect.NewClient[v1.MutateGraphRequest, v1.MutateGraphResponse](
+			httpClient,
+			baseURL+LanternServiceMutateGraphProcedure,
+			connect.WithSchema(lanternServiceMethods.ByName("MutateGraph")),
 			connect.WithClientOptions(opts...),
 		),
 		deleteVertex: connect.NewClient[v1.DeleteVertexRequest, v1.DeleteVertexResponse](
@@ -455,6 +466,7 @@ type lanternServiceClient struct {
 	getVertices             *connect.Client[v1.GetVerticesRequest, v1.GetVerticesResponse]
 	putVertex               *connect.Client[v1.PutVertexRequest, v1.PutVertexResponse]
 	putVertices             *connect.Client[v1.PutVerticesRequest, v1.PutVerticesResponse]
+	mutateGraph             *connect.Client[v1.MutateGraphRequest, v1.MutateGraphResponse]
 	deleteVertex            *connect.Client[v1.DeleteVertexRequest, v1.DeleteVertexResponse]
 	deleteVertices          *connect.Client[v1.DeleteVerticesRequest, v1.DeleteVerticesResponse]
 	scanVertices            *connect.Client[v1.ScanVerticesRequest, v1.ScanVerticesResponse]
@@ -508,6 +520,11 @@ func (c *lanternServiceClient) PutVertex(ctx context.Context, req *connect.Reque
 // PutVertices calls graph.v1.LanternService.PutVertices.
 func (c *lanternServiceClient) PutVertices(ctx context.Context, req *connect.Request[v1.PutVerticesRequest]) (*connect.Response[v1.PutVerticesResponse], error) {
 	return c.putVertices.CallUnary(ctx, req)
+}
+
+// MutateGraph calls graph.v1.LanternService.MutateGraph.
+func (c *lanternServiceClient) MutateGraph(ctx context.Context, req *connect.Request[v1.MutateGraphRequest]) (*connect.Response[v1.MutateGraphResponse], error) {
+	return c.mutateGraph.CallUnary(ctx, req)
 }
 
 // DeleteVertex calls graph.v1.LanternService.DeleteVertex.
@@ -659,6 +676,8 @@ type LanternServiceHandler interface {
 	// PutVertex writes a single vertex. Thin facade over PutVertices.
 	PutVertex(context.Context, *connect.Request[v1.PutVertexRequest]) (*connect.Response[v1.PutVertexResponse], error)
 	PutVertices(context.Context, *connect.Request[v1.PutVerticesRequest]) (*connect.Response[v1.PutVerticesResponse], error)
+	// Publishes one mixed receipt envelope locally; HA uses effect-wise conflicts.
+	MutateGraph(context.Context, *connect.Request[v1.MutateGraphRequest]) (*connect.Response[v1.MutateGraphResponse], error)
 	DeleteVertex(context.Context, *connect.Request[v1.DeleteVertexRequest]) (*connect.Response[v1.DeleteVertexResponse], error)
 	// DeleteVertices removes several vertices in one round trip.
 	DeleteVertices(context.Context, *connect.Request[v1.DeleteVerticesRequest]) (*connect.Response[v1.DeleteVerticesResponse], error)
@@ -793,6 +812,12 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 		LanternServicePutVerticesProcedure,
 		svc.PutVertices,
 		connect.WithSchema(lanternServiceMethods.ByName("PutVertices")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternServiceMutateGraphHandler := connect.NewUnaryHandler(
+		LanternServiceMutateGraphProcedure,
+		svc.MutateGraph,
+		connect.WithSchema(lanternServiceMethods.ByName("MutateGraph")),
 		connect.WithHandlerOptions(opts...),
 	)
 	lanternServiceDeleteVertexHandler := connect.NewUnaryHandler(
@@ -975,6 +1000,8 @@ func NewLanternServiceHandler(svc LanternServiceHandler, opts ...connect.Handler
 			lanternServicePutVertexHandler.ServeHTTP(w, r)
 		case LanternServicePutVerticesProcedure:
 			lanternServicePutVerticesHandler.ServeHTTP(w, r)
+		case LanternServiceMutateGraphProcedure:
+			lanternServiceMutateGraphHandler.ServeHTTP(w, r)
 		case LanternServiceDeleteVertexProcedure:
 			lanternServiceDeleteVertexHandler.ServeHTTP(w, r)
 		case LanternServiceDeleteVerticesProcedure:
@@ -1058,6 +1085,10 @@ func (UnimplementedLanternServiceHandler) PutVertex(context.Context, *connect.Re
 
 func (UnimplementedLanternServiceHandler) PutVertices(context.Context, *connect.Request[v1.PutVerticesRequest]) (*connect.Response[v1.PutVerticesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.PutVertices is not implemented"))
+}
+
+func (UnimplementedLanternServiceHandler) MutateGraph(context.Context, *connect.Request[v1.MutateGraphRequest]) (*connect.Response[v1.MutateGraphResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternService.MutateGraph is not implemented"))
 }
 
 func (UnimplementedLanternServiceHandler) DeleteVertex(context.Context, *connect.Request[v1.DeleteVertexRequest]) (*connect.Response[v1.DeleteVertexResponse], error) {

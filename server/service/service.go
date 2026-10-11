@@ -120,6 +120,7 @@ type LanternService struct {
 	receiptEdgeContributionDeleteCoordinator *edgeContributionDeleteReceiptCoordinator
 	receiptVertexPutCoordinator              *vertexPutReceiptCoordinator
 	receiptVertexDeleteCoordinator           *vertexDeleteReceiptCoordinator
+	graphMutationAdmission                   sync.Mutex
 
 	// statusInfo + startedAt + startedAtOnce back GetServerStatus
 	// (#314). Populated by WithStatusInfo / MarkStarted from the

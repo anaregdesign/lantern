@@ -234,7 +234,9 @@ type identityChunkProgress struct {
 func (t *identityStreamTracker) accept(chunk *IdentityChunk) error {
 	count := uint64(len(chunk.VertexKeys) + len(chunk.EdgeKeys))
 	if previous := t.active; previous != nil {
-		if chunk.Origin != previous.origin || chunk.Seq != previous.seq || chunk.Operation != previous.operation || previous.index == math.MaxUint32 || chunk.ChunkIndex != previous.index+1 || uint64(chunk.FirstItemIndex) != previous.nextItem {
+		sameFamily := chunk.Operation == previous.operation
+		putThenAdd := previous.operation == IdentityPutVertex && chunk.Operation == IdentityAddEdge
+		if chunk.Origin != previous.origin || chunk.Seq != previous.seq || (!sameFamily && !putThenAdd) || previous.index == math.MaxUint32 || chunk.ChunkIndex != previous.index+1 || uint64(chunk.FirstItemIndex) != previous.nextItem {
 			return fmt.Errorf("%w: noncontiguous mutation chunk", ErrInvalidIdentityEvent)
 		}
 	} else {

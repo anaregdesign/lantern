@@ -217,6 +217,9 @@ impl FullMutationOp {
                     .map(EdgeWrite::from_wire)
                     .collect::<Result<_, _>>()?,
             ),
+            // This legacy full-stream facade does not opt into mixed envelopes.
+            // Refuse before cursor advancement even if a peer sends one anyway.
+            Op::GraphMutation(_) => return Err(gap("mixed graph envelopes are not accepted")),
             Op::ReplicatedReceiptEdgeDelete(envelope) => {
                 Self::ReceiptEdgeDelete(ReceiptEdgeDelete::from_wire(envelope)?)
             }
@@ -835,5 +838,17 @@ mod tests {
             stream.decode_mutation(invalid),
             Err(LanternError::CdcGap(_))
         ));
+    }
+    #[test]
+    fn mixed_envelope_does_not_advance_legacy_full_cursor() {
+        let mut stream = FullMutationStream {
+            wire: None,
+            cursor: CdcCursor::new(),
+        };
+        assert!(matches!(
+            stream.decode_mutation(mutation(Op::GraphMutation(Default::default()))),
+            Err(LanternError::CdcGap(_))
+        ));
+        assert_eq!(stream.cursor.next_expected(origin()), 1);
     }
 }

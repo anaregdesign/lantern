@@ -162,3 +162,24 @@ func TestIdentityContributionDeleteOnlyInvalidatesEdgeKeys(t *testing.T) {
 		t.Fatalf("mixed contribution Delete identity = %v", err)
 	}
 }
+
+func TestIdentityMixedFamiliesAdvanceOnlyAtFinalChunk(t *testing.T) {
+	origin := ChangeOrigin{0x61}
+	tracker := identityStreamTracker{expected: ChangeCursor{origin: 1}}
+	first := &IdentityChunk{Origin: origin, Seq: 1, Operation: IdentityPutVertex, VertexKeys: []string{"a"}}
+	if err := tracker.accept(first); err != nil || tracker.expected[origin] != 1 {
+		t.Fatal(err)
+	}
+	last := &IdentityChunk{Origin: origin, Seq: 1, Operation: IdentityAddEdge, ChunkIndex: 1, FirstItemIndex: 1, EdgeKeys: []EdgeRef{{Tail: "a", Head: "b"}}, IsLast: true}
+	if err := tracker.accept(last); err != nil || tracker.expected[origin] != 2 {
+		t.Fatal(err)
+	}
+	tracker = identityStreamTracker{expected: ChangeCursor{origin: 1}}
+	if err := tracker.accept(first); err != nil {
+		t.Fatal(err)
+	}
+	last.Operation = IdentityDeleteEdge
+	if err := tracker.accept(last); err == nil {
+		t.Fatal("unrelated operation transition accepted")
+	}
+}

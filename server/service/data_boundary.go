@@ -43,7 +43,8 @@ func (s *LanternService) WithDataNamespace() *LanternService {
 // client IDs and metadata out of namespace conversion. A new public RPC needs
 // an explicit entry, even when it has no identities. Schema coverage is tested.
 var publicDataRequests = map[protoreflect.Name]bool{
-	"IlluminateRequest": true, "GetVertexRequest": true, "GetVerticesRequest": true,
+	"MutateGraphRequest": true,
+	"IlluminateRequest":  true, "GetVertexRequest": true, "GetVerticesRequest": true,
 	"PutVertexRequest": true, "PutVerticesRequest": true, "DeleteVertexRequest": true,
 	"DeleteVerticesRequest": true, "ScanVerticesRequest": true, "ScanVertexKeysRequest": true,
 	"SearchVerticesRequest": true, "CountVerticesByPrefixRequest": true, "DeleteVerticesByPrefixRequest": true,

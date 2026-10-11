@@ -23,7 +23,8 @@ import (
 
 type runtimeSearchDocument string
 
-func (d runtimeSearchDocument) String() string { return string(d) }
+func (d runtimeSearchDocument) String() string                  { return string(d) }
+func (d runtimeSearchDocument) PreparationSizeHint() (int, int) { return len(d), 1 }
 
 func durableRuntimeTestConfig(path string) DurableReceiptWALRuntimeConfig {
 	now := time.Now()

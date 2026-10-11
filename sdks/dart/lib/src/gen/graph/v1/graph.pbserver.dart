@@ -31,6 +31,8 @@ abstract class LanternServiceBase extends $pb.GeneratedService {
       $pb.ServerContext ctx, $2.PutVertexRequest request);
   $async.Future<$2.PutVerticesResponse> putVertices(
       $pb.ServerContext ctx, $2.PutVerticesRequest request);
+  $async.Future<$2.MutateGraphResponse> mutateGraph(
+      $pb.ServerContext ctx, $2.MutateGraphRequest request);
   $async.Future<$2.DeleteVertexResponse> deleteVertex(
       $pb.ServerContext ctx, $2.DeleteVertexRequest request);
   $async.Future<$2.DeleteVerticesResponse> deleteVertices(
@@ -100,6 +102,8 @@ abstract class LanternServiceBase extends $pb.GeneratedService {
         return $2.PutVertexRequest();
       case 'PutVertices':
         return $2.PutVerticesRequest();
+      case 'MutateGraph':
+        return $2.MutateGraphRequest();
       case 'DeleteVertex':
         return $2.DeleteVertexRequest();
       case 'DeleteVertices':
@@ -174,6 +178,8 @@ abstract class LanternServiceBase extends $pb.GeneratedService {
         return putVertex(ctx, request as $2.PutVertexRequest);
       case 'PutVertices':
         return putVertices(ctx, request as $2.PutVerticesRequest);
+      case 'MutateGraph':
+        return mutateGraph(ctx, request as $2.MutateGraphRequest);
       case 'DeleteVertex':
         return deleteVertex(ctx, request as $2.DeleteVertexRequest);
       case 'DeleteVertices':

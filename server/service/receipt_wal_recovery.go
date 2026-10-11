@@ -43,6 +43,14 @@ type receiptWALEnvelopeMetadata struct {
 
 func receiptWALEnvelopeInfo(op mutationlog.MutationOp) (receiptWALEnvelopeMetadata, bool) {
 	switch value := op.(type) {
+	case *graphMutationEnvelope:
+		m := value.Mutation
+		call := m.GetOp().GetGraphMutation()
+		metadata := receiptWALEnvelopeMetadata{originSeq: m.GetSeq(), receipts: value.Receipts}
+		copy(metadata.origin[:], m.GetOrigin())
+		copy(metadata.epoch[:], call.GetDeploymentEpoch())
+		copy(metadata.policy[:], call.GetPolicyFingerprint())
+		return metadata, true
 	case *edgeCreateEnvelope:
 		if len(value.Receipts) == 0 {
 			return receiptWALEnvelopeMetadata{}, false
@@ -272,6 +280,8 @@ func replayReceiptEnvelopeGraph(
 	op mutationlog.MutationOp,
 ) error {
 	switch value := op.(type) {
+	case *graphMutationEnvelope:
+		return replayGraphMutation(graph, value)
 	case *edgeCreateEnvelope:
 		return replayEdgeCreateEffect(graph, value)
 	case *graphAddEffectEnvelope:

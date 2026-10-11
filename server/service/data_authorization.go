@@ -87,6 +87,19 @@ func (s *LanternService) authorizeData(ctx context.Context, message proto.Messag
 		return admission.BindCurrentGlobalOutput(ctx, action)
 	}
 	switch request := message.(type) {
+	case *pb.MutateGraphRequest:
+		for _, item := range request.GetItems() {
+			if vertex := item.GetPutVertex(); vertex != nil {
+				err = vertices([]string{vertex.GetKey()}, security.VertexRead, security.VertexWrite)
+			} else if add := item.GetAddEdge(); add != nil {
+				err = edge(add.GetEdge().GetTail(), add.GetEdge().GetHead(), security.EdgeAdd)
+			} else {
+				err = invalidReceiptRequest(errGraphMutation)
+			}
+			if err != nil {
+				break
+			}
+		}
 	case *pb.GetVertexRequest:
 		err = vertices([]string{request.GetKey()}, security.VertexRead)
 	case *pb.GetVerticesRequest:

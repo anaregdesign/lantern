@@ -232,8 +232,10 @@ impl IdentityStream {
             edge_keys.push(EdgeRef::new(edge.tail, edge.head));
         }
         if let Some(pending) = &self.pending {
-            if (origin, chunk.seq, hlc, category)
-                != (pending.origin, pending.seq, pending.hlc, pending.category)
+            if (origin, chunk.seq, hlc) != (pending.origin, pending.seq, pending.hlc)
+                || (category != pending.category
+                    && !(pending.category == IdentityCategory::PutVertex
+                        && category == IdentityCategory::AddEdge))
                 || chunk.chunk_index != pending.next_chunk_index
                 || chunk.first_item_index != pending.next_item_index
             {

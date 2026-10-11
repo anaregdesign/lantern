@@ -21,10 +21,12 @@ func TestGraphMutationCommitAndAbort(t *testing.T) {
 			if err := c.PutVertex("collection", "collection"); err != nil {
 				t.Fatal(err)
 			}
-			c.PutVertex("reuse", "discard")
+			if err := c.PutVertex("reuse", "discard"); err != nil {
+				t.Fatal(err)
+			}
 			c.DeleteVertices([]string{"reuse"})
 			before := captureVertexTransactionState(c)
-			tx, err := c.BeginGraphMutation(context.Background(), []VertexItem[string, string]{{Key: "item", Value: "searchable", Expiration: now.Add(time.Hour)}}, []EdgeItem[string]{{Tail: "collection", Head: "item", Weight: 2, ContribID: ContribID{1}}, {Tail: "collection", Head: "item", Weight: 3, ContribID: ContribID{2}}}, hlc.Timestamp{WallNs: 20})
+			tx, err := c.BeginGraphMutation(context.Background(), []VertexItem[string, string]{{Key: "item", Value: "searchable", Expiration: now.Add(time.Hour)}}, []EdgeItem[string]{{Tail: "collection", Head: "item", Weight: 2, ContribID: ContribID{1}}, {Tail: "collection", Head: "item", Weight: 3, ContribID: ContribID{2}}}, hlc.Timestamp{WallNs: 20}, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -43,8 +45,7 @@ func TestGraphMutationCommitAndAbort(t *testing.T) {
 				after := captureVertexTransactionState(c)
 				// Index generation/diagnostic counters are monotonic, while its
 				// current graph/document representation must be exactly restored.
-				after.search = before.search
-				if !reflect.DeepEqual(before, after) {
+				if !equalVertexTransactionAbortState(before, after) {
 					t.Fatalf("abort state drift: before=%+v after=%+v", before, after)
 				}
 				if got := c.SearchVertices("searchable", 10, "item"); len(got) != 0 {
@@ -78,19 +79,20 @@ func (ctx graphMutationCancelAfterApply) Err() error {
 
 func TestGraphMutationCancelAfterHiddenApplyRollsBackUnion(t *testing.T) {
 	c := newVertexTransactionTestCache()
-	c.PutVertex("collection", "original")
+	if err := c.PutVertex("collection", "original"); err != nil {
+		t.Fatal(err)
+	}
 	before := captureVertexTransactionState(c)
 	ctx := graphMutationCancelAfterApply{Context: context.Background(), cache: c}
 	tx, err := c.BeginGraphMutation(ctx,
 		[]VertexItem[string, string]{{Key: "new", Value: "hidden"}},
 		[]EdgeItem[string]{{Tail: "collection", Head: "new", Weight: 2, ContribID: ContribID{1}}},
-		hlc.Timestamp{WallNs: 1})
+		hlc.Timestamp{WallNs: 1}, 0)
 	if tx != nil || !errors.Is(err, context.Canceled) {
 		t.Fatal(tx, err)
 	}
 	after := captureVertexTransactionState(c)
-	after.search = before.search
-	if !reflect.DeepEqual(before, after) {
+	if !equalVertexTransactionAbortState(before, after) {
 		t.Fatal("hidden cancellation did not undo the complete graph and dictionary")
 	}
 	if c.SearchVertices("hidden", 10, "new") != nil {
@@ -98,10 +100,29 @@ func TestGraphMutationCancelAfterHiddenApplyRollsBackUnion(t *testing.T) {
 	}
 }
 
+func TestGraphMutationPreWALBudgetsAbortHiddenState(t *testing.T) {
+	for _, exclusive := range []bool{false, true} {
+		c := NewGraphCacheWithStaging[string, string](time.Hour)
+		tx, err := c.BeginGraphMutation(t.Context(), []VertexItem[string, string]{{Key: "a", Value: "value"}}, []EdgeItem[string]{{Tail: "a", Head: "a", Weight: 1, ContribID: ContribID{1}}}, hlc.Timestamp{WallNs: 1}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if exclusive {
+			tx.mixed.lockedAt = time.Now().Add(-graphMutationLockBudget - time.Second)
+		} else {
+			tx.mixed.deadline = time.Now().Add(-time.Second)
+		}
+		err = tx.CheckBeforeWAL()
+		tx.Abort()
+		if !errors.Is(err, ErrGraphMutationBudget) || len(c.SnapshotVertices()) != 0 || len(c.SnapshotEdges()) != 0 {
+			t.Fatal("expired hidden stage escaped", err)
+		}
+	}
+}
+
 func TestGraphMutationSearchReplacementIsBounded(t *testing.T) {
 	c := NewGraphCacheWithStaging[string, string](time.Hour)
-	var extract func(string, string) search.Document
-	extract = func(_ string, value string) search.Document {
+	extract := func(_ string, value string) search.Document {
 		c.mu.Lock()
 		c.searchIndex = newSearchIndex[string](true, search.SearchAnalysisLimits{}, strings.Compare)
 		c.mu.Unlock()
@@ -111,7 +132,7 @@ func TestGraphMutationSearchReplacementIsBounded(t *testing.T) {
 	tx, err := c.BeginGraphMutation(context.Background(),
 		[]VertexItem[string, string]{{Key: "a", Value: "a"}, {Key: "b", Value: "b"}},
 		[]EdgeItem[string]{{Tail: "a", Head: "b", Weight: 1, ContribID: ContribID{1}}},
-		hlc.Timestamp{WallNs: 1})
+		hlc.Timestamp{WallNs: 1}, 0)
 	if tx != nil {
 		tx.Abort()
 	}
@@ -128,7 +149,9 @@ func TestGraphMutationEndpointFailureLeavesWholeCallUnchanged(t *testing.T) {
 		c := newVertexTransactionTestCache()
 		now := time.Now()
 		c.applicationClock = func() time.Time { return now }
-		c.PutVertex("collection", "kept")
+		if err := c.PutVertex("collection", "kept"); err != nil {
+			t.Fatal(err)
+		}
 		before := captureVertexTransactionState(c)
 		item := VertexItem[string, string]{Key: "item", Value: "unpublished"}
 		head := "missing"
@@ -136,7 +159,7 @@ func TestGraphMutationEndpointFailureLeavesWholeCallUnchanged(t *testing.T) {
 			item.Expiration = now.Add(-time.Second)
 			head = "item"
 		}
-		tx, err := c.BeginGraphMutation(context.Background(), []VertexItem[string, string]{item}, []EdgeItem[string]{{Tail: "collection", Head: head, Weight: 1, ContribID: ContribID{1}}}, hlc.Timestamp{WallNs: 20})
+		tx, err := c.BeginGraphMutation(context.Background(), []VertexItem[string, string]{item}, []EdgeItem[string]{{Tail: "collection", Head: head, Weight: 1, ContribID: ContribID{1}}}, hlc.Timestamp{WallNs: 20}, 0)
 		if tx != nil || !errors.Is(err, ErrEdgeEndpointNotLive) {
 			t.Fatal(tx, err)
 		}
@@ -150,9 +173,11 @@ func TestGraphMutationProjectionConvergesAndDoesNotRevive(t *testing.T) {
 	for _, order := range [][]int{{0, 1}, {1, 0}} {
 		c := NewGraphCacheWithStaging[string, string](time.Hour)
 		c.RetainDanglingEdgeHistory()
-		c.PutVertex("collection", "live")
+		if err := c.PutVertex("collection", "live"); err != nil {
+			t.Fatal(err)
+		}
 		for _, i := range order {
-			tx, err := c.BeginReplicatedGraphMutation(context.Background(), []VertexItem[string, string]{{Key: "item", Value: []string{"old", "winner"}[i]}}, []EdgeItem[string]{{Tail: "collection", Head: "item", Weight: 1, ContribID: ContribID{byte(i + 1)}}}, hlc.Timestamp{WallNs: int64(i + 1)})
+			tx, err := c.BeginReplicatedGraphMutation(context.Background(), []VertexItem[string, string]{{Key: "item", Value: []string{"old", "winner"}[i]}}, []EdgeItem[string]{{Tail: "collection", Head: "item", Weight: 1, ContribID: ContribID{byte(i + 1)}}}, hlc.Timestamp{WallNs: int64(i + 1)}, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -168,7 +193,7 @@ func TestGraphMutationProjectionConvergesAndDoesNotRevive(t *testing.T) {
 			t.Fatal(got)
 		}
 		// A relay's locally losing Vertex must not suppress the origin Add.
-		tx, err := c.BeginReplicatedGraphMutation(context.Background(), nil, []EdgeItem[string]{{Tail: "absent", Head: "item", Weight: 1, ContribID: ContribID{3}}}, hlc.Timestamp{WallNs: 3})
+		tx, err := c.BeginReplicatedGraphMutation(context.Background(), nil, []EdgeItem[string]{{Tail: "absent", Head: "item", Weight: 1, ContribID: ContribID{3}}}, hlc.Timestamp{WallNs: 3}, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -200,18 +225,18 @@ func TestGraphMutationPreparationReentryAndBounds(t *testing.T) {
 	c.EnableSearchIndex(func(_ string, value string) search.Document { c.GetVertex("observe"); return search.Text(value) }, strings.Compare)
 	vertices := []VertexItem[string, string]{{Key: "a", Value: "searchable"}, {Key: "b", Value: "target"}}
 	edges := []EdgeItem[string]{{Tail: "a", Head: "b", Weight: 1, ContribID: ContribID{1}}}
-	tx, err := c.BeginGraphMutation(context.Background(), vertices, edges, hlc.Timestamp{WallNs: 1})
+	tx, err := c.BeginGraphMutation(context.Background(), vertices, edges, hlc.Timestamp{WallNs: 1}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tx.Commit()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if tx, err := c.BeginGraphMutation(ctx, vertices, edges, hlc.Timestamp{WallNs: 2}); tx != nil || !errors.Is(err, context.Canceled) {
+	if tx, err := c.BeginGraphMutation(ctx, vertices, edges, hlc.Timestamp{WallNs: 2}, 0); tx != nil || !errors.Is(err, context.Canceled) {
 		t.Fatal(tx, err)
 	}
 	for _, bad := range [][]VertexItem[string, string]{nil, {vertices[0], vertices[0]}, make([]VertexItem[string, string], GraphMutationMaxItems)} {
-		if tx, err := c.BeginGraphMutation(context.Background(), bad, edges, hlc.Timestamp{WallNs: 2}); tx != nil || !errors.Is(err, ErrGraphMutationShape) {
+		if tx, err := c.BeginGraphMutation(context.Background(), bad, edges, hlc.Timestamp{WallNs: 2}, 0); tx != nil || !errors.Is(err, ErrGraphMutationShape) {
 			t.Fatal(tx, err)
 		}
 	}
@@ -222,7 +247,7 @@ func TestGraphMutationPreparationReentryAndBounds(t *testing.T) {
 	bucket.values = make([]weightValue, GraphMutationMaxBucketRows+1)
 	bucket.mu.Unlock()
 	c.mu.Unlock()
-	if tx, err := c.BeginGraphMutation(context.Background(), vertices, edges, hlc.Timestamp{WallNs: 2}); tx != nil || !errors.Is(err, ErrGraphMutationBudget) {
+	if tx, err := c.BeginGraphMutation(context.Background(), vertices, edges, hlc.Timestamp{WallNs: 2}, 0); tx != nil || !errors.Is(err, ErrGraphMutationBudget) {
 		t.Fatal(tx, err)
 	}
 }

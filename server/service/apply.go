@@ -15,6 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/prototime"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 )
 
 // ApplyMutation is the internal entry point used by the peer-pump (#184)
@@ -90,6 +91,11 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 		receiptEnvelope, receiptErr = decodeReceiptEdgeDeleteMutation(m)
 	case *pb.MutationOp_ReplicatedReceiptEdgeContributionDelete:
 		receiptEnvelope, receiptErr = decodeReceiptEdgeContributionDeleteMutation(m)
+	case *pb.MutationOp_GraphMutation:
+		receiptEnvelope, receiptErr = decodeGraphMutation(m)
+		if receiptErr == nil {
+			receiptEnvelope.(*graphMutationEnvelope).Mutation = proto.Clone(m).(*pb.Mutation)
+		}
 	case *pb.MutationOp_ReplicatedReceiptVertexPut:
 		receiptEnvelope, receiptErr = decodeReceiptVertexPutMutation(m)
 	case *pb.MutationOp_ReplicatedReceiptVertexDelete:

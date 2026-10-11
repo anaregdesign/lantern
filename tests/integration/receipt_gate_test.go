@@ -6342,3 +6342,102 @@ func (w *stagedPublicationFaultWAL) Write(mutationlog.Entry) error {
 	}
 	return nil
 }
+
+// The minimal mixed facade stays one-shot over the real Connect handler and
+// production search projection, including replay after durable restart.
+// This isolates the data contract; the native current-security gate separately
+// exercises the same facade through production ingress and authorization.
+func TestGraphMutationGoSDKRealConnectAndRestart(t *testing.T) {
+	wire := newPublicReceiptWireServer(t, hlc.NodeID{0x65}, 32)
+	if err := wire.runtime.ActivatePublicReceipts(wire.server.svc, wire.server.rep); err != nil {
+		t.Fatal(err)
+	}
+	sdk, err := client.NewLantern(wire.server.url, client.WithHTTPClient(h2cClient()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sdk.Close() }()
+	cap, err := sdk.GetReceiptCapability(t.Context())
+	if err != nil || cap.GraphMutation == nil {
+		t.Fatal(cap, err)
+	}
+	identity, err := sdk.NewGraphMutationReceiptContext(cap, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := sdk.NewContribID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vertices := []client.VertexInput{{Key: "mixed:a", Value: "first"}, {Key: "mixed:b", Value: "second"}}
+	edges := []client.EdgeAddReceiptInput{{Edge: client.EdgeInput{Tail: "mixed:a", Head: "mixed:b", Weight: 2}, ContribID: id}}
+	first, err := sdk.MutateGraph(t.Context(), vertices, edges, identity)
+	if err != nil || len(first.Vertices) != 2 || len(first.Edges) != 1 || first.Edges[0].EffectiveWeight != 2 {
+		t.Fatal(first, err)
+	}
+	repeated, err := sdk.MutateGraph(t.Context(), vertices, edges, identity)
+	if err != nil || !reflect.DeepEqual(first, repeated) {
+		t.Fatal(repeated, err)
+	}
+	changed := append([]client.EdgeAddReceiptInput(nil), edges...)
+	changed[0].Edge.Weight++
+	if _, err := sdk.MutateGraph(t.Context(), vertices, changed, identity); !errors.Is(err, client.ErrInvalidArgument) {
+		t.Fatal("changed intent accepted", err)
+	}
+	drop := &dropFirstReceiptResponseTransport{inner: h2cClient().Transport, pathSuffix: "/MutateGraph"}
+	lostSDK, err := client.NewLantern(wire.server.url, client.WithHTTPClient(&http.Client{Transport: drop}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lostSDK.Close() }()
+	// Drop a confirmed duplicate's response: one-shot delivery returns unknown
+	// without executing a second attempt; read-only status resolves each member.
+	if _, err := lostSDK.MutateGraph(t.Context(), vertices, edges, identity); err == nil {
+		t.Fatal("lost response unexpectedly succeeded")
+	}
+	for _, id := range identity.OperationIDs {
+		status, err := sdk.GetReceiptStatus(t.Context(), id)
+		if err != nil || status.State != client.ReceiptConfirmed || status.Receipt.ItemCount != 3 {
+			t.Fatal(status, err)
+		}
+	}
+	source, policy, err := wire.runtime.ReceiptWholeStateBackupSource(wire.server.svc, wire.server.rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := source.CaptureForBackup(t.Context(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.WholeState.Receipts.Receipts) != 3 || capture.WALTip.Seq != 1 || len(capture.WholeState.Origins) != 1 || capture.WholeState.Origins[0].LastSeq != 1 {
+		t.Fatal("incomplete mixed cut")
+	}
+	// Existing V4 whole-state archive validation must accept heterogeneous rows
+	// in one group without changing the Snapshot representation.
+	staged, err := (backup.ReceiptBaselineCodec{}).EncodeCombinedReceiptBaseline(t.Context(), capture.WholeState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := (backup.ReceiptBaselineCodec{}).StageCombinedReceiptBaseline(t.Context(), staged, policy, wire.config.DefaultTTL, wire.config.ConfigureGraph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate == nil || candidate.Graph == nil || candidate.Receipts == nil {
+		t.Fatal("incomplete staged baseline")
+	}
+	wire.server.srv.Close()
+	if err := wire.runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := service.OpenDurableReceiptWALServingRuntime(wire.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = recovered.Close() }()
+	if v, live := recovered.GraphCache().GetVertex("mixed:a"); !live || v.GetString_() != "first" {
+		t.Fatal(v, live)
+	}
+	if weight, live := recovered.GraphCache().GetWeight("mixed:a", "mixed:b"); !live || weight != 2 {
+		t.Fatal(weight, live)
+	}
+}

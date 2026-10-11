@@ -207,3 +207,27 @@ fn mismatched_chunks_and_unknown_categories_fail_without_advancing_cursor() {
         Err(LanternError::CdcGap(_))
     ));
 }
+
+#[test]
+fn mixed_put_then_add_has_one_final_cursor() {
+    let mut stream = make_stream(false);
+    let mut first = chunk();
+    first.is_last = false;
+    let IdentityEvent::Chunk(first) = stream.process_frame(frame(first)).unwrap() else {
+        panic!("chunk");
+    };
+    assert!(first.next_cursor.is_none());
+    let mut last = chunk();
+    last.operation = IdentityOperation::AddEdge as i32;
+    last.vertex_keys.clear();
+    last.edge_keys = vec![EdgeKey {
+        tail: "rust:a".into(),
+        head: "rust:b".into(),
+    }];
+    last.chunk_index = 1;
+    last.first_item_index = 1;
+    let IdentityEvent::Chunk(last) = stream.process_frame(frame(last)).unwrap() else {
+        panic!("chunk");
+    };
+    assert_eq!(last.next_cursor.unwrap().next_expected(origin()), 2);
+}

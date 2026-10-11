@@ -73,7 +73,35 @@ message MutationOp {
     // Local WAL/CDC accepted-effect evidence. Peer apply rejects this arm:
     // local absence is not a cluster-wide absence proof.
     EdgeCreateEffect edge_create_effect = 22;
+    ReplicatedGraphMutation graph_mutation = 24;
   }
+}
+
+// One immutable origin item. Put outcomes come from the original receipt;
+// edge_accepted records origin acceptance independently of receiver projection.
+message ReplicatedGraphMutationItem {
+  GraphMutationItem original = 1;
+  MutationReceipt receipt = 2;
+  bool lifecycle_reduced = 3;
+  bool edge_accepted = 4;
+}
+
+message GraphMutationProjection {
+  uint32 item_index = 1;
+  oneof effect {
+    ReplicatedPutVertex put_vertex = 2;
+    bool add_edge = 3;
+  }
+}
+
+// One origin identity outside this message binds the whole mixed call.
+// Relays preserve items; local WAL records the accepted receiver projection.
+message ReplicatedGraphMutation {
+  uint32 version = 1;
+  bytes deployment_epoch = 2;
+  bytes policy_fingerprint = 3;
+  repeated ReplicatedGraphMutationItem items = 4;
+  repeated GraphMutationProjection projection = 5;
 }
 
 // Retains the origin decision; restore never re-evaluates rejected positions.
@@ -291,6 +319,8 @@ message SubscribeRequest {
   // arms before the server can send one. Old full-mutation peers/consumers
   // omit this field and fail closed instead of losing receipt metadata.
   bool accept_receipt_envelopes = 5;
+  // Full consumers must separately opt in to the indivisible mixed arm.
+  bool accept_graph_mutations = 7;
   // Explicit physical-key format; peer sessions must match before transfer.
   string namespace_format = 6;
 }

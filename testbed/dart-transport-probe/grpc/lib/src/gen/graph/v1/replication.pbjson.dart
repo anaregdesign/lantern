@@ -318,6 +318,15 @@ const MutationOp$json = {
       '9': 0,
       '10': 'edgeCreateEffect'
     },
+    {
+      '1': 'graph_mutation',
+      '3': 24,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedGraphMutation',
+      '9': 0,
+      '10': 'graphMutation'
+    },
   ],
   '8': [
     {'1': 'op'},
@@ -360,7 +369,114 @@ final $typed_data.Uint8List mutationOpDescriptor = $convert.base64Decode(
     'lwdF9lZGdlX2NvbnRyaWJ1dGlvbl9kZWxldGUYFSABKAsyMS5ncmFwaC52MS5SZXBsaWNhdGVk'
     'UmVjZWlwdEVkZ2VDb250cmlidXRpb25EZWxldGVIAFIncmVwbGljYXRlZFJlY2VpcHRFZGdlQ2'
     '9udHJpYnV0aW9uRGVsZXRlEkoKEmVkZ2VfY3JlYXRlX2VmZmVjdBgWIAEoCzIaLmdyYXBoLnYx'
-    'LkVkZ2VDcmVhdGVFZmZlY3RIAFIQZWRnZUNyZWF0ZUVmZmVjdEIECgJvcA==');
+    'LkVkZ2VDcmVhdGVFZmZlY3RIAFIQZWRnZUNyZWF0ZUVmZmVjdBJKCg5ncmFwaF9tdXRhdGlvbh'
+    'gYIAEoCzIhLmdyYXBoLnYxLlJlcGxpY2F0ZWRHcmFwaE11dGF0aW9uSABSDWdyYXBoTXV0YXRp'
+    'b25CBAoCb3A=');
+
+@$core.Deprecated('Use replicatedGraphMutationItemDescriptor instead')
+const ReplicatedGraphMutationItem$json = {
+  '1': 'ReplicatedGraphMutationItem',
+  '2': [
+    {
+      '1': 'original',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.GraphMutationItem',
+      '10': 'original'
+    },
+    {
+      '1': 'receipt',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceipt',
+      '10': 'receipt'
+    },
+    {
+      '1': 'lifecycle_reduced',
+      '3': 3,
+      '4': 1,
+      '5': 8,
+      '10': 'lifecycleReduced'
+    },
+    {'1': 'edge_accepted', '3': 4, '4': 1, '5': 8, '10': 'edgeAccepted'},
+  ],
+};
+
+/// Descriptor for `ReplicatedGraphMutationItem`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedGraphMutationItemDescriptor = $convert.base64Decode(
+    'ChtSZXBsaWNhdGVkR3JhcGhNdXRhdGlvbkl0ZW0SNwoIb3JpZ2luYWwYASABKAsyGy5ncmFwaC'
+    '52MS5HcmFwaE11dGF0aW9uSXRlbVIIb3JpZ2luYWwSMwoHcmVjZWlwdBgCIAEoCzIZLmdyYXBo'
+    'LnYxLk11dGF0aW9uUmVjZWlwdFIHcmVjZWlwdBIrChFsaWZlY3ljbGVfcmVkdWNlZBgDIAEoCF'
+    'IQbGlmZWN5Y2xlUmVkdWNlZBIjCg1lZGdlX2FjY2VwdGVkGAQgASgIUgxlZGdlQWNjZXB0ZWQ=');
+
+@$core.Deprecated('Use graphMutationProjectionDescriptor instead')
+const GraphMutationProjection$json = {
+  '1': 'GraphMutationProjection',
+  '2': [
+    {'1': 'item_index', '3': 1, '4': 1, '5': 13, '10': 'itemIndex'},
+    {
+      '1': 'put_vertex',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedPutVertex',
+      '9': 0,
+      '10': 'putVertex'
+    },
+    {'1': 'add_edge', '3': 3, '4': 1, '5': 8, '9': 0, '10': 'addEdge'},
+  ],
+  '8': [
+    {'1': 'effect'},
+  ],
+};
+
+/// Descriptor for `GraphMutationProjection`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List graphMutationProjectionDescriptor = $convert.base64Decode(
+    'ChdHcmFwaE11dGF0aW9uUHJvamVjdGlvbhIdCgppdGVtX2luZGV4GAEgASgNUglpdGVtSW5kZX'
+    'gSPgoKcHV0X3ZlcnRleBgCIAEoCzIdLmdyYXBoLnYxLlJlcGxpY2F0ZWRQdXRWZXJ0ZXhIAFIJ'
+    'cHV0VmVydGV4EhsKCGFkZF9lZGdlGAMgASgISABSB2FkZEVkZ2VCCAoGZWZmZWN0');
+
+@$core.Deprecated('Use replicatedGraphMutationDescriptor instead')
+const ReplicatedGraphMutation$json = {
+  '1': 'ReplicatedGraphMutation',
+  '2': [
+    {'1': 'version', '3': 1, '4': 1, '5': 13, '10': 'version'},
+    {'1': 'deployment_epoch', '3': 2, '4': 1, '5': 12, '10': 'deploymentEpoch'},
+    {
+      '1': 'policy_fingerprint',
+      '3': 3,
+      '4': 1,
+      '5': 12,
+      '10': 'policyFingerprint'
+    },
+    {
+      '1': 'items',
+      '3': 4,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.ReplicatedGraphMutationItem',
+      '10': 'items'
+    },
+    {
+      '1': 'projection',
+      '3': 5,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.GraphMutationProjection',
+      '10': 'projection'
+    },
+  ],
+};
+
+/// Descriptor for `ReplicatedGraphMutation`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replicatedGraphMutationDescriptor = $convert.base64Decode(
+    'ChdSZXBsaWNhdGVkR3JhcGhNdXRhdGlvbhIYCgd2ZXJzaW9uGAEgASgNUgd2ZXJzaW9uEikKEG'
+    'RlcGxveW1lbnRfZXBvY2gYAiABKAxSD2RlcGxveW1lbnRFcG9jaBItChJwb2xpY3lfZmluZ2Vy'
+    'cHJpbnQYAyABKAxSEXBvbGljeUZpbmdlcnByaW50EjsKBWl0ZW1zGAQgAygLMiUuZ3JhcGgudj'
+    'EuUmVwbGljYXRlZEdyYXBoTXV0YXRpb25JdGVtUgVpdGVtcxJBCgpwcm9qZWN0aW9uGAUgAygL'
+    'MiEuZ3JhcGgudjEuR3JhcGhNdXRhdGlvblByb2plY3Rpb25SCnByb2plY3Rpb24=');
 
 @$core.Deprecated('Use edgeCreateEffectItemDescriptor instead')
 const EdgeCreateEffectItem$json = {
@@ -1007,6 +1123,13 @@ const SubscribeRequest$json = {
       '5': 8,
       '10': 'acceptReceiptEnvelopes'
     },
+    {
+      '1': 'accept_graph_mutations',
+      '3': 7,
+      '4': 1,
+      '5': 8,
+      '10': 'acceptGraphMutations'
+    },
     {'1': 'namespace_format', '3': 6, '4': 1, '5': 9, '10': 'namespaceFormat'},
   ],
   '3': [SubscribeRequest_FromSeqPerOriginEntry$json],
@@ -1029,9 +1152,10 @@ final $typed_data.Uint8List subscribeRequestDescriptor = $convert.base64Decode(
     'aWdpbhIkCg5mcm9tX2xvY2FsX3NlcRgCIAEoBFIMZnJvbUxvY2FsU2VxEj0KCnByb2plY3Rpb2'
     '4YAyABKA4yHS5ncmFwaC52MS5TdWJzY3JpYmVQcm9qZWN0aW9uUgpwcm9qZWN0aW9uEhwKCWJv'
     'b3RzdHJhcBgEIAEoCFIJYm9vdHN0cmFwEjgKGGFjY2VwdF9yZWNlaXB0X2VudmVsb3BlcxgFIA'
-    'EoCFIWYWNjZXB0UmVjZWlwdEVudmVsb3BlcxIpChBuYW1lc3BhY2VfZm9ybWF0GAYgASgJUg9u'
-    'YW1lc3BhY2VGb3JtYXQaQwoVRnJvbVNlcVBlck9yaWdpbkVudHJ5EhAKA2tleRgBIAEoCVIDa2'
-    'V5EhQKBXZhbHVlGAIgASgEUgV2YWx1ZToCOAE=');
+    'EoCFIWYWNjZXB0UmVjZWlwdEVudmVsb3BlcxI0ChZhY2NlcHRfZ3JhcGhfbXV0YXRpb25zGAcg'
+    'ASgIUhRhY2NlcHRHcmFwaE11dGF0aW9ucxIpChBuYW1lc3BhY2VfZm9ybWF0GAYgASgJUg9uYW'
+    '1lc3BhY2VGb3JtYXQaQwoVRnJvbVNlcVBlck9yaWdpbkVudHJ5EhAKA2tleRgBIAEoCVIDa2V5'
+    'EhQKBXZhbHVlGAIgASgEUgV2YWx1ZToCOAE=');
 
 @$core.Deprecated('Use identityCheckpointDescriptor instead')
 const IdentityCheckpoint$json = {

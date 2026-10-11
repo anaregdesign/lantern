@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	GraphMutationMaxItems      = 64
-	GraphMutationMaxBucketRows = 4096
-	graphMutationLifetime      = time.Second
-	graphMutationLockBudget    = 25 * time.Millisecond
+	GraphMutationMaxItems        = 64
+	GraphMutationMaxBucketRows   = 4096
+	GraphMutationMaxScratchBytes = 8 << 20
+	graphMutationLifetime        = time.Second
+	graphMutationLockBudget      = 25 * time.Millisecond
 )
 
 var (
@@ -32,6 +33,7 @@ type GraphMutationResult[S comparable, T any] struct {
 // locks; Abort restores Edge effects before the union Vertex/dictionary journal.
 // The caller must not reenter the cache until this transaction is closed.
 type GraphMutationTransaction[S comparable, T any] struct {
+	mixed  *stagedGraphMutation[S, T]
 	vertex *VertexPutTransaction[S, T]
 	edge   *stagedEdgeAdd[S, T]
 	edges  []EdgeItem[S]
@@ -39,32 +41,39 @@ type GraphMutationTransaction[S comparable, T any] struct {
 }
 
 type stagedGraphMutation[S comparable, T any] struct {
-	ctx       context.Context
-	deadline  time.Time
-	lockedAt  time.Time
-	attempts  int
-	edges     []EdgeItem[S]
-	edgeStage *stagedEdgeAdd[S, T]
+	ctx          context.Context
+	deadline     time.Time
+	lockedAt     time.Time
+	attempts     int
+	edges        []EdgeItem[S]
+	edgeStage    *stagedEdgeAdd[S, T]
+	scratchBytes uint64
 }
 
 // BeginGraphMutation stages unconditional Puts followed by explicit-ID Adds.
 // Every Add requires live endpoints in the final planned Vertex view, and can
 // never create or extend endpoints. Both families must be nonempty.
-func (c *GraphCache[S, T]) BeginGraphMutation(ctx context.Context, vertices []VertexItem[S, T], edges []EdgeItem[S], ts hlc.Timestamp) (*GraphMutationTransaction[S, T], error) {
-	return c.beginGraphMutation(ctx, vertices, edges, ts, true)
+// ownedPayloadBytes reserves the caller's immutable input, result/envelope and
+// encoding scratch in the same fixed budget before graph preparation begins.
+func (c *GraphCache[S, T]) BeginGraphMutation(ctx context.Context, vertices []VertexItem[S, T], edges []EdgeItem[S], ts hlc.Timestamp, ownedPayloadBytes uint64) (*GraphMutationTransaction[S, T], error) {
+	return c.beginGraphMutation(ctx, vertices, edges, ts, true, ownedPayloadBytes)
 }
 
 // BeginReplicatedGraphMutation stages trusted origin effects using receiver
 // conflict rules. Empty projections are valid. Origin endpoint admission is not
 // repeated, and delayed contributions never revive an endpoint.
-func (c *GraphCache[S, T]) BeginReplicatedGraphMutation(ctx context.Context, vertices []VertexItem[S, T], edges []EdgeItem[S], ts hlc.Timestamp) (*GraphMutationTransaction[S, T], error) {
-	return c.beginGraphMutation(ctx, vertices, edges, ts, false)
+// ownedPayloadBytes has the same meaning as on BeginGraphMutation.
+func (c *GraphCache[S, T]) BeginReplicatedGraphMutation(ctx context.Context, vertices []VertexItem[S, T], edges []EdgeItem[S], ts hlc.Timestamp, ownedPayloadBytes uint64) (*GraphMutationTransaction[S, T], error) {
+	return c.beginGraphMutation(ctx, vertices, edges, ts, false, ownedPayloadBytes)
 }
 
-func (c *GraphCache[S, T]) beginGraphMutation(ctx context.Context, vertices []VertexItem[S, T], edges []EdgeItem[S], ts hlc.Timestamp, local bool) (*GraphMutationTransaction[S, T], error) {
+func (c *GraphCache[S, T]) beginGraphMutation(ctx context.Context, vertices []VertexItem[S, T], edges []EdgeItem[S], ts hlc.Timestamp, local bool, ownedPayloadBytes uint64) (*GraphMutationTransaction[S, T], error) {
 	started := time.Now()
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if ownedPayloadBytes > GraphMutationMaxScratchBytes {
+		return nil, ErrGraphMutationBudget
 	}
 	if len(vertices)+len(edges) > GraphMutationMaxItems || (local && (len(vertices) == 0 || len(edges) == 0)) {
 		return nil, ErrGraphMutationShape
@@ -83,7 +92,11 @@ func (c *GraphCache[S, T]) beginGraphMutation(ctx context.Context, vertices []Ve
 		}
 		ids[edge.ContribID] = true
 	}
-	mixed := &stagedGraphMutation[S, T]{ctx: ctx, deadline: started.Add(graphMutationLifetime), edges: append([]EdgeItem[S](nil), edges...)}
+	mixed := &stagedGraphMutation[S, T]{ctx: ctx, deadline: started.Add(graphMutationLifetime), scratchBytes: ownedPayloadBytes}
+	if err := mixed.reserveScratch(uint64(len(edges)) * 256); err != nil {
+		return nil, err
+	}
+	mixed.edges = append([]EdgeItem[S](nil), edges...)
 	for i := range mixed.edges {
 		mixed.edges[i].RequireLiveEndpoints = local
 		mixed.edges[i].NoEndpointCreation = true
@@ -92,7 +105,7 @@ func (c *GraphCache[S, T]) beginGraphMutation(ctx context.Context, vertices []Ve
 	if err != nil {
 		return nil, err
 	}
-	return &GraphMutationTransaction[S, T]{vertex: vertex, edge: mixed.edgeStage, edges: mixed.edges}, nil
+	return &GraphMutationTransaction[S, T]{vertex: vertex, edge: mixed.edgeStage, edges: mixed.edges, mixed: mixed}, nil
 }
 
 func (m *stagedGraphMutation[S, T]) unionKeys(vertices []VertexItem[S, T]) []S {
@@ -168,6 +181,12 @@ func (m *stagedGraphMutation[S, T]) prepareLocked(c *GraphCache[S, T], vertices 
 			return ErrGraphMutationBudget
 		}
 	}
+	// Accepted and rejected contributions can each clone the same bucket;
+	// accepted append growth may retain an additional backing array. Include
+	// those copies and input rows before entering the shared Edge planner.
+	if err := m.reserveScratch(uint64(rows+len(m.edges)) * 512); err != nil {
+		return err
+	}
 	plans, effective, accepted, err := c.planStagedEdgeAddLocked(m.edges, ts, vertex.applicationTime)
 	if err != nil {
 		return err
@@ -203,7 +222,7 @@ func (tx *GraphMutationTransaction[S, T]) Commit() {
 	if tx == nil || tx.closed {
 		panic("graphcache: graph mutation committed after close")
 	}
-	tx.stagedMutationLifecycle.commit(tx.vertex.Commit)
+	tx.commit(tx.vertex.Commit)
 }
 
 func (tx *GraphMutationTransaction[S, T]) Abort() {
@@ -214,3 +233,6 @@ func (tx *GraphMutationTransaction[S, T]) Abort() {
 	tx.edge.rollbackEdgesLocked()
 	tx.vertex.Abort()
 }
+
+// CheckBeforeWAL enforces the mixed deadline immediately before durable publication.
+func (tx *GraphMutationTransaction[S, T]) CheckBeforeWAL() error { return tx.mixed.checkBudget() }

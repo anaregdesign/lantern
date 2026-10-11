@@ -279,6 +279,68 @@ pub struct PutVerticesResponse {
     #[prost(enumeration = "PutOutcome", repeated, tag = "1")]
     pub outcomes: ::prost::alloc::vec::Vec<i32>,
 }
+/// One typed mixed item. All Vertex Puts precede all explicit-ID Edge Adds.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GraphMutationItem {
+    #[prost(oneof = "graph_mutation_item::Operation", tags = "1, 2")]
+    pub operation: ::core::option::Option<graph_mutation_item::Operation>,
+}
+/// Nested message and enum types in `GraphMutationItem`.
+pub mod graph_mutation_item {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Operation {
+        #[prost(message, tag = "1")]
+        PutVertex(super::Vertex),
+        #[prost(message, tag = "2")]
+        AddEdge(super::GraphMutationEdgeAdd),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GraphMutationEdgeAdd {
+    #[prost(message, optional, tag = "1")]
+    pub edge: ::core::option::Option<Edge>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub contrib_id: ::prost::alloc::vec::Vec<u8>,
+}
+/// Receipt-required, one-shot local atomic publication. Both kinds must occur;
+/// Vertex keys are unique. Concurrent origins resolve each effect independently.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MutateGraphRequest {
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<GraphMutationItem>,
+    #[prost(message, optional, tag = "2")]
+    pub receipt_context: ::core::option::Option<MutationReceiptContext>,
+}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct GraphMutationResult {
+    #[prost(oneof = "graph_mutation_result::Result", tags = "1, 2")]
+    pub result: ::core::option::Option<graph_mutation_result::Result>,
+}
+/// Nested message and enum types in `GraphMutationResult`.
+pub mod graph_mutation_result {
+    #[derive(Clone, Copy, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(enumeration = "super::PutOutcome", tag = "1")]
+        PutVertex(i32),
+        #[prost(float, tag = "2")]
+        AddEdgeEffectiveWeight(f32),
+    }
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct MutateGraphResponse {
+    /// Aligned with the complete request, or empty for whole-call blind acceptance.
+    #[prost(message, repeated, tag = "1")]
+    pub results: ::prost::alloc::vec::Vec<GraphMutationResult>,
+    #[prost(message, optional, tag = "2")]
+    pub acceptance: ::core::option::Option<MutationAcceptance>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GraphMutationCapability {
+    #[prost(uint32, tag = "1")]
+    pub max_items: u32,
+    #[prost(uint32, tag = "2")]
+    pub max_request_bytes: u32,
+}
 /// DeleteVertexRequest removes the vertex at `key`. Edges incident to the
 /// removed vertex are NOT eagerly cascaded: the periodic GC loop reaps
 /// orphaned (tail, head) rows on its next tick, and reads against missing
@@ -1420,6 +1482,9 @@ pub struct GetReceiptCapabilityResponse {
     /// Stable ascending list of mutation families enabled at this endpoint.
     #[prost(enumeration = "ReceiptMutationKind", repeated, tag = "5")]
     pub supported_mutations: ::prost::alloc::vec::Vec<i32>,
+    /// Present only when the complete mixed durable/recovery runtime is certified.
+    #[prost(message, optional, tag = "6")]
+    pub graph_mutation: ::core::option::Option<GraphMutationCapability>,
 }
 /// ReceiptResult stores the original public result, not the current graph
 /// state. A oneof preserves the presence of a false Delete outcome. Further
@@ -2311,6 +2376,31 @@ pub mod lantern_service_client {
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("graph.v1.LanternService", "PutVertices"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// Publishes one mixed receipt envelope locally; HA uses effect-wise conflicts.
+        pub async fn mutate_graph(
+            &mut self,
+            request: impl tonic::IntoRequest<super::MutateGraphRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::MutateGraphResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternService/MutateGraph",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("graph.v1.LanternService", "MutateGraph"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn delete_vertex(
@@ -3318,7 +3408,7 @@ pub struct MutationOp {
     pub no_endpoint_creation: bool,
     #[prost(
         oneof = "mutation_op::Op",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24"
     )]
     pub op: ::core::option::Option<mutation_op::Op>,
 }
@@ -3388,7 +3478,54 @@ pub mod mutation_op {
         /// local absence is not a cluster-wide absence proof.
         #[prost(message, tag = "22")]
         EdgeCreateEffect(super::EdgeCreateEffect),
+        #[prost(message, tag = "24")]
+        GraphMutation(super::ReplicatedGraphMutation),
     }
+}
+/// One immutable origin item. Put outcomes come from the original receipt;
+/// edge_accepted records origin acceptance independently of receiver projection.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReplicatedGraphMutationItem {
+    #[prost(message, optional, tag = "1")]
+    pub original: ::core::option::Option<GraphMutationItem>,
+    #[prost(message, optional, tag = "2")]
+    pub receipt: ::core::option::Option<MutationReceipt>,
+    #[prost(bool, tag = "3")]
+    pub lifecycle_reduced: bool,
+    #[prost(bool, tag = "4")]
+    pub edge_accepted: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GraphMutationProjection {
+    #[prost(uint32, tag = "1")]
+    pub item_index: u32,
+    #[prost(oneof = "graph_mutation_projection::Effect", tags = "2, 3")]
+    pub effect: ::core::option::Option<graph_mutation_projection::Effect>,
+}
+/// Nested message and enum types in `GraphMutationProjection`.
+pub mod graph_mutation_projection {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Effect {
+        #[prost(message, tag = "2")]
+        PutVertex(super::ReplicatedPutVertex),
+        #[prost(bool, tag = "3")]
+        AddEdge(bool),
+    }
+}
+/// One origin identity outside this message binds the whole mixed call.
+/// Relays preserve items; local WAL records the accepted receiver projection.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ReplicatedGraphMutation {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(bytes = "vec", tag = "2")]
+    pub deployment_epoch: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub policy_fingerprint: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "4")]
+    pub items: ::prost::alloc::vec::Vec<ReplicatedGraphMutationItem>,
+    #[prost(message, repeated, tag = "5")]
+    pub projection: ::prost::alloc::vec::Vec<GraphMutationProjection>,
 }
 /// Retains the origin decision; restore never re-evaluates rejected positions.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3683,6 +3820,9 @@ pub struct SubscribeRequest {
     /// omit this field and fail closed instead of losing receipt metadata.
     #[prost(bool, tag = "5")]
     pub accept_receipt_envelopes: bool,
+    /// Full consumers must separately opt in to the indivisible mixed arm.
+    #[prost(bool, tag = "7")]
+    pub accept_graph_mutations: bool,
     /// Explicit physical-key format; peer sessions must match before transfer.
     #[prost(string, tag = "6")]
     pub namespace_format: ::prost::alloc::string::String,

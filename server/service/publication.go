@@ -46,6 +46,8 @@ type receiptMutationEnvelope interface {
 
 func (s *LanternService) validateReplicatedReceiptEnvelope(envelope receiptMutationEnvelope) error {
 	switch value := envelope.(type) {
+	case *graphMutationEnvelope:
+		return s.validateReplicatedGraphMutation(value)
 	case *graphAddEffectEnvelope:
 		if !value.receiptBearing() {
 			return connect.NewError(connect.CodeInvalidArgument,
@@ -88,6 +90,9 @@ func (s *LanternService) validateReplicatedReceiptEnvelope(envelope receiptMutat
 
 func sameReceiptMutationIntent(left, right receiptMutationEnvelope) bool {
 	switch value := left.(type) {
+	case *graphMutationEnvelope:
+		other, ok := right.(*graphMutationEnvelope)
+		return ok && sameGraphMutationIntent(value, other)
 	case *graphAddEffectEnvelope:
 		other, ok := right.(*graphAddEffectEnvelope)
 		return ok && value.receiptBearing() && other.receiptBearing() &&
@@ -117,6 +122,8 @@ func (s *LanternService) commitReplicatedReceipt(
 	pending *pendingMutation,
 ) (string, error) {
 	switch pending.receipt.(type) {
+	case *graphMutationEnvelope:
+		return "graph_mutation", s.commitReplicatedGraphMutation(ctx, origin, seq, ts, pending)
 	case *graphAddEffectEnvelope:
 		if s.receiptEdgeAddCoordinator == nil {
 			return "", connect.NewError(connect.CodeInternal,
@@ -856,6 +863,10 @@ func (s *LanternService) publishRemoteMutation(
 		}
 	} else {
 		size := proto.Size(m)
+		if mixed, ok := receipt.(*graphMutationEnvelope); ok {
+			// Own the wire manifest, parsed receipts, and a possible retained retry WAL.
+			size = 4*size + 1024*len(mixed.Receipts)
+		}
 		if s.pendingCount >= maxPendingMutations || size > maxPendingBytes-s.pendingBytes {
 			return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("replication: pending mutation buffer full"))
 		}

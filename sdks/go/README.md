@@ -318,6 +318,14 @@ tombstone is retained; use a **fresh ID** for each later Add rather than
 reusing the deleted one. A folded graph-only backup omits per-ID tombstones,
 so restoring it cannot prove this anti-resurrection bound across recovery.
 
+The source candidate adds receipt-required `MutateGraph` for unconditional
+Vertex Puts followed by explicit-ID Edge Adds. Check its distinct capability and
+persist `GraphMutationReceiptContext` before sending. The facade makes one
+mutation attempt; local atomic publication uses per-effect HA conflict rules.
+See [mixed graph mutations](../../docs/mixed-graph-mutations.md) for the example,
+limits, original-result recovery and upgrade contract. This API is not yet part
+of a published Go SDK release.
+
 **Retry safety (#1468):** In v0.25.1, receipt-less Add and exact/prefix
 Delete take one attempt even when `WithRetry` or `NewLanternFailover` is
 enabled. The older v0.25.0 can retry these writes after an ambiguous

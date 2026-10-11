@@ -21,6 +21,7 @@ import (
 	"mime"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
@@ -76,6 +77,12 @@ func (h *lanternServiceConnect) PutVertex(ctx context.Context, req *connect.Requ
 }
 func (h *lanternServiceConnect) PutVertices(ctx context.Context, req *connect.Request[pb.PutVerticesRequest]) (*connect.Response[pb.PutVerticesResponse], error) {
 	return dataUnary(ctx, req, h.svc, h.svc.PutVertices)
+}
+func (h *lanternServiceConnect) MutateGraph(ctx context.Context, req *connect.Request[pb.MutateGraphRequest]) (*connect.Response[pb.MutateGraphResponse], error) {
+	if req.Msg == nil || len(req.Msg.GetItems()) > 64 || proto.Size(req.Msg) > graphMutationMaxBytes {
+		return nil, invalidReceiptRequest(errGraphMutation)
+	}
+	return dataUnary(ctx, req, h.svc, h.svc.MutateGraph)
 }
 func (h *lanternServiceConnect) DeleteVertex(ctx context.Context, req *connect.Request[pb.DeleteVertexRequest]) (*connect.Response[pb.DeleteVertexResponse], error) {
 	return dataUnary(ctx, req, h.svc, h.svc.DeleteVertex)

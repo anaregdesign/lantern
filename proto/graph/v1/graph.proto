@@ -290,6 +290,44 @@ message PutVerticesResponse {
   repeated PutOutcome outcomes = 1;
 }
 
+// One typed mixed item. All Vertex Puts precede all explicit-ID Edge Adds.
+message GraphMutationItem {
+  oneof operation {
+    Vertex put_vertex = 1;
+    GraphMutationEdgeAdd add_edge = 2;
+  }
+}
+
+message GraphMutationEdgeAdd {
+  Edge edge = 1;
+  bytes contrib_id = 2;
+}
+
+// Receipt-required, one-shot local atomic publication. Both kinds must occur;
+// Vertex keys are unique. Concurrent origins resolve each effect independently.
+message MutateGraphRequest {
+  repeated GraphMutationItem items = 1;
+  MutationReceiptContext receipt_context = 2;
+}
+
+message GraphMutationResult {
+  oneof result {
+    PutOutcome put_vertex = 1;
+    float add_edge_effective_weight = 2;
+  }
+}
+
+message MutateGraphResponse {
+  // Aligned with the complete request, or empty for whole-call blind acceptance.
+  repeated GraphMutationResult results = 1;
+  MutationAcceptance acceptance = 2;
+}
+
+message GraphMutationCapability {
+  uint32 max_items = 1;
+  uint32 max_request_bytes = 2;
+}
+
 // DeleteVertexRequest removes the vertex at `key`. Edges incident to the
 // removed vertex are NOT eagerly cascaded: the periodic GC loop reaps
 // orphaned (tail, head) rows on its next tick, and reads against missing
@@ -1257,6 +1295,8 @@ message GetReceiptCapabilityResponse {
   uint64 server_now_unix_ms = 4;
   // Stable ascending list of mutation families enabled at this endpoint.
   repeated ReceiptMutationKind supported_mutations = 5;
+  // Present only when the complete mixed durable/recovery runtime is certified.
+  GraphMutationCapability graph_mutation = 6;
 }
 
 // MutationReceiptState is a read-only observation on the serving replica.
@@ -1357,6 +1397,8 @@ service LanternService {
   rpc PutVertex(PutVertexRequest) returns (PutVertexResponse);
 
   rpc PutVertices(PutVerticesRequest) returns (PutVerticesResponse);
+  // Publishes one mixed receipt envelope locally; HA uses effect-wise conflicts.
+  rpc MutateGraph(MutateGraphRequest) returns (MutateGraphResponse);
 
   rpc DeleteVertex(DeleteVertexRequest) returns (DeleteVertexResponse);
 

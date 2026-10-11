@@ -720,6 +720,166 @@ final $typed_data.Uint8List putVerticesResponseDescriptor = $convert.base64Decod
     'ChNQdXRWZXJ0aWNlc1Jlc3BvbnNlEjAKCG91dGNvbWVzGAEgAygOMhQuZ3JhcGgudjEuUHV0T3'
     'V0Y29tZVIIb3V0Y29tZXM=');
 
+@$core.Deprecated('Use graphMutationItemDescriptor instead')
+const GraphMutationItem$json = {
+  '1': 'GraphMutationItem',
+  '2': [
+    {
+      '1': 'put_vertex',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.Vertex',
+      '9': 0,
+      '10': 'putVertex'
+    },
+    {
+      '1': 'add_edge',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.GraphMutationEdgeAdd',
+      '9': 0,
+      '10': 'addEdge'
+    },
+  ],
+  '8': [
+    {'1': 'operation'},
+  ],
+};
+
+/// Descriptor for `GraphMutationItem`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List graphMutationItemDescriptor = $convert.base64Decode(
+    'ChFHcmFwaE11dGF0aW9uSXRlbRIxCgpwdXRfdmVydGV4GAEgASgLMhAuZ3JhcGgudjEuVmVydG'
+    'V4SABSCXB1dFZlcnRleBI7CghhZGRfZWRnZRgCIAEoCzIeLmdyYXBoLnYxLkdyYXBoTXV0YXRp'
+    'b25FZGdlQWRkSABSB2FkZEVkZ2VCCwoJb3BlcmF0aW9u');
+
+@$core.Deprecated('Use graphMutationEdgeAddDescriptor instead')
+const GraphMutationEdgeAdd$json = {
+  '1': 'GraphMutationEdgeAdd',
+  '2': [
+    {'1': 'edge', '3': 1, '4': 1, '5': 11, '6': '.graph.v1.Edge', '10': 'edge'},
+    {'1': 'contrib_id', '3': 2, '4': 1, '5': 12, '10': 'contribId'},
+  ],
+};
+
+/// Descriptor for `GraphMutationEdgeAdd`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List graphMutationEdgeAddDescriptor = $convert.base64Decode(
+    'ChRHcmFwaE11dGF0aW9uRWRnZUFkZBIiCgRlZGdlGAEgASgLMg4uZ3JhcGgudjEuRWRnZVIEZW'
+    'RnZRIdCgpjb250cmliX2lkGAIgASgMUgljb250cmliSWQ=');
+
+@$core.Deprecated('Use mutateGraphRequestDescriptor instead')
+const MutateGraphRequest$json = {
+  '1': 'MutateGraphRequest',
+  '2': [
+    {
+      '1': 'items',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.GraphMutationItem',
+      '10': 'items'
+    },
+    {
+      '1': 'receipt_context',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
+  ],
+};
+
+/// Descriptor for `MutateGraphRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List mutateGraphRequestDescriptor = $convert.base64Decode(
+    'ChJNdXRhdGVHcmFwaFJlcXVlc3QSMQoFaXRlbXMYASADKAsyGy5ncmFwaC52MS5HcmFwaE11dG'
+    'F0aW9uSXRlbVIFaXRlbXMSSQoPcmVjZWlwdF9jb250ZXh0GAIgASgLMiAuZ3JhcGgudjEuTXV0'
+    'YXRpb25SZWNlaXB0Q29udGV4dFIOcmVjZWlwdENvbnRleHQ=');
+
+@$core.Deprecated('Use graphMutationResultDescriptor instead')
+const GraphMutationResult$json = {
+  '1': 'GraphMutationResult',
+  '2': [
+    {
+      '1': 'put_vertex',
+      '3': 1,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.PutOutcome',
+      '9': 0,
+      '10': 'putVertex'
+    },
+    {
+      '1': 'add_edge_effective_weight',
+      '3': 2,
+      '4': 1,
+      '5': 2,
+      '9': 0,
+      '10': 'addEdgeEffectiveWeight'
+    },
+  ],
+  '8': [
+    {'1': 'result'},
+  ],
+};
+
+/// Descriptor for `GraphMutationResult`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List graphMutationResultDescriptor = $convert.base64Decode(
+    'ChNHcmFwaE11dGF0aW9uUmVzdWx0EjUKCnB1dF92ZXJ0ZXgYASABKA4yFC5ncmFwaC52MS5QdX'
+    'RPdXRjb21lSABSCXB1dFZlcnRleBI7ChlhZGRfZWRnZV9lZmZlY3RpdmVfd2VpZ2h0GAIgASgC'
+    'SABSFmFkZEVkZ2VFZmZlY3RpdmVXZWlnaHRCCAoGcmVzdWx0');
+
+@$core.Deprecated('Use mutateGraphResponseDescriptor instead')
+const MutateGraphResponse$json = {
+  '1': 'MutateGraphResponse',
+  '2': [
+    {
+      '1': 'results',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.GraphMutationResult',
+      '10': 'results'
+    },
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
+  ],
+};
+
+/// Descriptor for `MutateGraphResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List mutateGraphResponseDescriptor = $convert.base64Decode(
+    'ChNNdXRhdGVHcmFwaFJlc3BvbnNlEjcKB3Jlc3VsdHMYASADKAsyHS5ncmFwaC52MS5HcmFwaE'
+    '11dGF0aW9uUmVzdWx0UgdyZXN1bHRzEjwKCmFjY2VwdGFuY2UYAiABKAsyHC5ncmFwaC52MS5N'
+    'dXRhdGlvbkFjY2VwdGFuY2VSCmFjY2VwdGFuY2U=');
+
+@$core.Deprecated('Use graphMutationCapabilityDescriptor instead')
+const GraphMutationCapability$json = {
+  '1': 'GraphMutationCapability',
+  '2': [
+    {'1': 'max_items', '3': 1, '4': 1, '5': 13, '10': 'maxItems'},
+    {
+      '1': 'max_request_bytes',
+      '3': 2,
+      '4': 1,
+      '5': 13,
+      '10': 'maxRequestBytes'
+    },
+  ],
+};
+
+/// Descriptor for `GraphMutationCapability`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List graphMutationCapabilityDescriptor =
+    $convert.base64Decode(
+        'ChdHcmFwaE11dGF0aW9uQ2FwYWJpbGl0eRIbCgltYXhfaXRlbXMYASABKA1SCG1heEl0ZW1zEi'
+        'oKEW1heF9yZXF1ZXN0X2J5dGVzGAIgASgNUg9tYXhSZXF1ZXN0Qnl0ZXM=');
+
 @$core.Deprecated('Use deleteVertexRequestDescriptor instead')
 const DeleteVertexRequest$json = {
   '1': 'DeleteVertexRequest',
@@ -2498,6 +2658,14 @@ const GetReceiptCapabilityResponse$json = {
       '6': '.graph.v1.ReceiptMutationKind',
       '10': 'supportedMutations'
     },
+    {
+      '1': 'graph_mutation',
+      '3': 6,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.GraphMutationCapability',
+      '10': 'graphMutation'
+    },
   ],
 };
 
@@ -2508,7 +2676,8 @@ final $typed_data.Uint8List getReceiptCapabilityResponseDescriptor = $convert.ba
     'ZHBvaW50GAMgASgLMhkuZ3JhcGgudjEuUmVjZWlwdEVuZHBvaW50UghlbmRwb2ludBIrChJzZX'
     'J2ZXJfbm93X3VuaXhfbXMYBCABKARSD3NlcnZlck5vd1VuaXhNcxJOChNzdXBwb3J0ZWRfbXV0'
     'YXRpb25zGAUgAygOMh0uZ3JhcGgudjEuUmVjZWlwdE11dGF0aW9uS2luZFISc3VwcG9ydGVkTX'
-    'V0YXRpb25z');
+    'V0YXRpb25zEkgKDmdyYXBoX211dGF0aW9uGAYgASgLMiEuZ3JhcGgudjEuR3JhcGhNdXRhdGlv'
+    'bkNhcGFiaWxpdHlSDWdyYXBoTXV0YXRpb24=');
 
 @$core.Deprecated('Use receiptResultDescriptor instead')
 const ReceiptResult$json = {

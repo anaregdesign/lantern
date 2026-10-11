@@ -29,6 +29,12 @@ func blindMutationRequired(admission *security.Admission, request proto.Message)
 		return false
 	}
 	switch req := request.(type) {
+	case *pb.MutateGraphRequest:
+		for _, item := range req.GetItems() {
+			if edge := item.GetAddEdge().GetEdge(); edge != nil && blind(edge.GetTail(), edge.GetHead()) {
+				return true
+			}
+		}
 	case *pb.AddEdgeRequest:
 		return blind(req.GetEdge().GetTail(), req.GetEdge().GetHead())
 	case *pb.AddEdgesRequest:

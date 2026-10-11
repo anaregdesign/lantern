@@ -69,6 +69,14 @@ class LanternServiceClient extends $grpc.Client {
     return $createUnaryCall(_$putVertices, request, options: options);
   }
 
+  /// Publishes one mixed receipt envelope locally; HA uses effect-wise conflicts.
+  $grpc.ResponseFuture<$0.MutateGraphResponse> mutateGraph(
+    $0.MutateGraphRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$mutateGraph, request, options: options);
+  }
+
   $grpc.ResponseFuture<$0.DeleteVertexResponse> deleteVertex(
     $0.DeleteVertexRequest request, {
     $grpc.CallOptions? options,
@@ -369,6 +377,11 @@ class LanternServiceClient extends $grpc.Client {
           '/graph.v1.LanternService/PutVertices',
           ($0.PutVerticesRequest value) => value.writeToBuffer(),
           $0.PutVerticesResponse.fromBuffer);
+  static final _$mutateGraph =
+      $grpc.ClientMethod<$0.MutateGraphRequest, $0.MutateGraphResponse>(
+          '/graph.v1.LanternService/MutateGraph',
+          ($0.MutateGraphRequest value) => value.writeToBuffer(),
+          $0.MutateGraphResponse.fromBuffer);
   static final _$deleteVertex =
       $grpc.ClientMethod<$0.DeleteVertexRequest, $0.DeleteVertexResponse>(
           '/graph.v1.LanternService/DeleteVertex',
@@ -556,6 +569,15 @@ abstract class LanternServiceBase extends $grpc.Service {
             ($core.List<$core.int> value) =>
                 $0.PutVerticesRequest.fromBuffer(value),
             ($0.PutVerticesResponse value) => value.writeToBuffer()));
+    $addMethod(
+        $grpc.ServiceMethod<$0.MutateGraphRequest, $0.MutateGraphResponse>(
+            'MutateGraph',
+            mutateGraph_Pre,
+            false,
+            false,
+            ($core.List<$core.int> value) =>
+                $0.MutateGraphRequest.fromBuffer(value),
+            ($0.MutateGraphResponse value) => value.writeToBuffer()));
     $addMethod(
         $grpc.ServiceMethod<$0.DeleteVertexRequest, $0.DeleteVertexResponse>(
             'DeleteVertex',
@@ -831,6 +853,14 @@ abstract class LanternServiceBase extends $grpc.Service {
 
   $async.Future<$0.PutVerticesResponse> putVertices(
       $grpc.ServiceCall call, $0.PutVerticesRequest request);
+
+  $async.Future<$0.MutateGraphResponse> mutateGraph_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.MutateGraphRequest> $request) async {
+    return mutateGraph($call, await $request);
+  }
+
+  $async.Future<$0.MutateGraphResponse> mutateGraph(
+      $grpc.ServiceCall call, $0.MutateGraphRequest request);
 
   $async.Future<$0.DeleteVertexResponse> deleteVertex_Pre(
       $grpc.ServiceCall $call,

@@ -85,6 +85,8 @@ func validateReplicationFrameSize(op mutationlog.MutationOp, limit int) (int, er
 // not just the current node's accepted subset.
 func maximalReplicationRelayEnvelope(op mutationlog.MutationOp) (mutationlog.MutationOp, error) {
 	switch envelope := op.(type) {
+	case *graphMutationEnvelope:
+		return maximalGraphMutationEnvelope(envelope)
 	case *graphAddEffectEnvelope:
 		if envelope == nil {
 			return nil, errors.New("nil receipt Edge Add envelope")

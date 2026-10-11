@@ -79,6 +79,19 @@ func authorizeReceiptRequest(access *security.Access, message proto.Message) err
 		return nil
 	}
 	switch req := message.(type) {
+	case *pb.MutateGraphRequest:
+		for _, item := range req.GetItems() {
+			if vertex := item.GetPutVertex(); vertex != nil {
+				if err := check(vertex.GetKey(), ""); err != nil {
+					return err
+				}
+			} else {
+				edge := item.GetAddEdge().GetEdge()
+				if err := check(edge.GetTail(), edge.GetHead()); err != nil {
+					return err
+				}
+			}
+		}
 	case *pb.PutVertexRequest:
 		return check(req.GetVertex().GetKey(), "")
 	case *pb.PutVerticesRequest:

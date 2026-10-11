@@ -722,6 +722,166 @@ final $typed_data.Uint8List putVerticesResponseDescriptor = $convert.base64Decod
     'ChNQdXRWZXJ0aWNlc1Jlc3BvbnNlEjAKCG91dGNvbWVzGAEgAygOMhQuZ3JhcGgudjEuUHV0T3'
     'V0Y29tZVIIb3V0Y29tZXM=');
 
+@$core.Deprecated('Use graphMutationItemDescriptor instead')
+const GraphMutationItem$json = {
+  '1': 'GraphMutationItem',
+  '2': [
+    {
+      '1': 'put_vertex',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.Vertex',
+      '9': 0,
+      '10': 'putVertex'
+    },
+    {
+      '1': 'add_edge',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.GraphMutationEdgeAdd',
+      '9': 0,
+      '10': 'addEdge'
+    },
+  ],
+  '8': [
+    {'1': 'operation'},
+  ],
+};
+
+/// Descriptor for `GraphMutationItem`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List graphMutationItemDescriptor = $convert.base64Decode(
+    'ChFHcmFwaE11dGF0aW9uSXRlbRIxCgpwdXRfdmVydGV4GAEgASgLMhAuZ3JhcGgudjEuVmVydG'
+    'V4SABSCXB1dFZlcnRleBI7CghhZGRfZWRnZRgCIAEoCzIeLmdyYXBoLnYxLkdyYXBoTXV0YXRp'
+    'b25FZGdlQWRkSABSB2FkZEVkZ2VCCwoJb3BlcmF0aW9u');
+
+@$core.Deprecated('Use graphMutationEdgeAddDescriptor instead')
+const GraphMutationEdgeAdd$json = {
+  '1': 'GraphMutationEdgeAdd',
+  '2': [
+    {'1': 'edge', '3': 1, '4': 1, '5': 11, '6': '.graph.v1.Edge', '10': 'edge'},
+    {'1': 'contrib_id', '3': 2, '4': 1, '5': 12, '10': 'contribId'},
+  ],
+};
+
+/// Descriptor for `GraphMutationEdgeAdd`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List graphMutationEdgeAddDescriptor = $convert.base64Decode(
+    'ChRHcmFwaE11dGF0aW9uRWRnZUFkZBIiCgRlZGdlGAEgASgLMg4uZ3JhcGgudjEuRWRnZVIEZW'
+    'RnZRIdCgpjb250cmliX2lkGAIgASgMUgljb250cmliSWQ=');
+
+@$core.Deprecated('Use mutateGraphRequestDescriptor instead')
+const MutateGraphRequest$json = {
+  '1': 'MutateGraphRequest',
+  '2': [
+    {
+      '1': 'items',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.GraphMutationItem',
+      '10': 'items'
+    },
+    {
+      '1': 'receipt_context',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationReceiptContext',
+      '10': 'receiptContext'
+    },
+  ],
+};
+
+/// Descriptor for `MutateGraphRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List mutateGraphRequestDescriptor = $convert.base64Decode(
+    'ChJNdXRhdGVHcmFwaFJlcXVlc3QSMQoFaXRlbXMYASADKAsyGy5ncmFwaC52MS5HcmFwaE11dG'
+    'F0aW9uSXRlbVIFaXRlbXMSSQoPcmVjZWlwdF9jb250ZXh0GAIgASgLMiAuZ3JhcGgudjEuTXV0'
+    'YXRpb25SZWNlaXB0Q29udGV4dFIOcmVjZWlwdENvbnRleHQ=');
+
+@$core.Deprecated('Use graphMutationResultDescriptor instead')
+const GraphMutationResult$json = {
+  '1': 'GraphMutationResult',
+  '2': [
+    {
+      '1': 'put_vertex',
+      '3': 1,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.PutOutcome',
+      '9': 0,
+      '10': 'putVertex'
+    },
+    {
+      '1': 'add_edge_effective_weight',
+      '3': 2,
+      '4': 1,
+      '5': 2,
+      '9': 0,
+      '10': 'addEdgeEffectiveWeight'
+    },
+  ],
+  '8': [
+    {'1': 'result'},
+  ],
+};
+
+/// Descriptor for `GraphMutationResult`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List graphMutationResultDescriptor = $convert.base64Decode(
+    'ChNHcmFwaE11dGF0aW9uUmVzdWx0EjUKCnB1dF92ZXJ0ZXgYASABKA4yFC5ncmFwaC52MS5QdX'
+    'RPdXRjb21lSABSCXB1dFZlcnRleBI7ChlhZGRfZWRnZV9lZmZlY3RpdmVfd2VpZ2h0GAIgASgC'
+    'SABSFmFkZEVkZ2VFZmZlY3RpdmVXZWlnaHRCCAoGcmVzdWx0');
+
+@$core.Deprecated('Use mutateGraphResponseDescriptor instead')
+const MutateGraphResponse$json = {
+  '1': 'MutateGraphResponse',
+  '2': [
+    {
+      '1': 'results',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.GraphMutationResult',
+      '10': 'results'
+    },
+    {
+      '1': 'acceptance',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.MutationAcceptance',
+      '10': 'acceptance'
+    },
+  ],
+};
+
+/// Descriptor for `MutateGraphResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List mutateGraphResponseDescriptor = $convert.base64Decode(
+    'ChNNdXRhdGVHcmFwaFJlc3BvbnNlEjcKB3Jlc3VsdHMYASADKAsyHS5ncmFwaC52MS5HcmFwaE'
+    '11dGF0aW9uUmVzdWx0UgdyZXN1bHRzEjwKCmFjY2VwdGFuY2UYAiABKAsyHC5ncmFwaC52MS5N'
+    'dXRhdGlvbkFjY2VwdGFuY2VSCmFjY2VwdGFuY2U=');
+
+@$core.Deprecated('Use graphMutationCapabilityDescriptor instead')
+const GraphMutationCapability$json = {
+  '1': 'GraphMutationCapability',
+  '2': [
+    {'1': 'max_items', '3': 1, '4': 1, '5': 13, '10': 'maxItems'},
+    {
+      '1': 'max_request_bytes',
+      '3': 2,
+      '4': 1,
+      '5': 13,
+      '10': 'maxRequestBytes'
+    },
+  ],
+};
+
+/// Descriptor for `GraphMutationCapability`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List graphMutationCapabilityDescriptor =
+    $convert.base64Decode(
+        'ChdHcmFwaE11dGF0aW9uQ2FwYWJpbGl0eRIbCgltYXhfaXRlbXMYASABKA1SCG1heEl0ZW1zEi'
+        'oKEW1heF9yZXF1ZXN0X2J5dGVzGAIgASgNUg9tYXhSZXF1ZXN0Qnl0ZXM=');
+
 @$core.Deprecated('Use deleteVertexRequestDescriptor instead')
 const DeleteVertexRequest$json = {
   '1': 'DeleteVertexRequest',
@@ -2500,6 +2660,14 @@ const GetReceiptCapabilityResponse$json = {
       '6': '.graph.v1.ReceiptMutationKind',
       '10': 'supportedMutations'
     },
+    {
+      '1': 'graph_mutation',
+      '3': 6,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.GraphMutationCapability',
+      '10': 'graphMutation'
+    },
   ],
 };
 
@@ -2510,7 +2678,8 @@ final $typed_data.Uint8List getReceiptCapabilityResponseDescriptor = $convert.ba
     'ZHBvaW50GAMgASgLMhkuZ3JhcGgudjEuUmVjZWlwdEVuZHBvaW50UghlbmRwb2ludBIrChJzZX'
     'J2ZXJfbm93X3VuaXhfbXMYBCABKARSD3NlcnZlck5vd1VuaXhNcxJOChNzdXBwb3J0ZWRfbXV0'
     'YXRpb25zGAUgAygOMh0uZ3JhcGgudjEuUmVjZWlwdE11dGF0aW9uS2luZFISc3VwcG9ydGVkTX'
-    'V0YXRpb25z');
+    'V0YXRpb25zEkgKDmdyYXBoX211dGF0aW9uGAYgASgLMiEuZ3JhcGgudjEuR3JhcGhNdXRhdGlv'
+    'bkNhcGFiaWxpdHlSDWdyYXBoTXV0YXRpb24=');
 
 @$core.Deprecated('Use receiptResultDescriptor instead')
 const ReceiptResult$json = {
@@ -2789,6 +2958,11 @@ const $core.Map<$core.String, $core.dynamic> LanternServiceBase$json = {
       '3': '.graph.v1.PutVerticesResponse'
     },
     {
+      '1': 'MutateGraph',
+      '2': '.graph.v1.MutateGraphRequest',
+      '3': '.graph.v1.MutateGraphResponse'
+    },
+    {
       '1': 'DeleteVertex',
       '2': '.graph.v1.DeleteVertexRequest',
       '3': '.graph.v1.DeleteVertexResponse'
@@ -2955,6 +3129,12 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.PutVertexResponse': PutVertexResponse$json,
   '.graph.v1.PutVerticesRequest': PutVerticesRequest$json,
   '.graph.v1.PutVerticesResponse': PutVerticesResponse$json,
+  '.graph.v1.MutateGraphRequest': MutateGraphRequest$json,
+  '.graph.v1.GraphMutationItem': GraphMutationItem$json,
+  '.graph.v1.GraphMutationEdgeAdd': GraphMutationEdgeAdd$json,
+  '.graph.v1.MutateGraphResponse': MutateGraphResponse$json,
+  '.graph.v1.GraphMutationResult': GraphMutationResult$json,
+  '.graph.v1.MutationAcceptance': MutationAcceptance$json,
   '.graph.v1.DeleteVertexRequest': DeleteVertexRequest$json,
   '.graph.v1.DeleteVertexResponse': DeleteVertexResponse$json,
   '.graph.v1.DeleteVerticesRequest': DeleteVerticesRequest$json,
@@ -2983,7 +3163,6 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.GetEdgesResponse': GetEdgesResponse$json,
   '.graph.v1.AddEdgeRequest': AddEdgeRequest$json,
   '.graph.v1.AddEdgeResponse': AddEdgeResponse$json,
-  '.graph.v1.MutationAcceptance': MutationAcceptance$json,
   '.graph.v1.AddEdgesRequest': AddEdgesRequest$json,
   '.graph.v1.AddEdgesResponse': AddEdgesResponse$json,
   '.graph.v1.CreateEdgeRequest': CreateEdgeRequest$json,
@@ -3022,6 +3201,7 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.GetReceiptCapabilityRequest': GetReceiptCapabilityRequest$json,
   '.graph.v1.GetReceiptCapabilityResponse': GetReceiptCapabilityResponse$json,
   '.graph.v1.ReceiptPolicy': ReceiptPolicy$json,
+  '.graph.v1.GraphMutationCapability': GraphMutationCapability$json,
   '.graph.v1.GetReceiptStatusRequest': GetReceiptStatusRequest$json,
   '.graph.v1.GetReceiptStatusResponse': GetReceiptStatusResponse$json,
   '.graph.v1.ReceiptStatus': ReceiptStatus$json,
@@ -3041,47 +3221,49 @@ final $typed_data.Uint8List lanternServiceDescriptor = $convert.base64Decode(
     'ZlcnRpY2VzEhwuZ3JhcGgudjEuR2V0VmVydGljZXNSZXF1ZXN0Gh0uZ3JhcGgudjEuR2V0VmVy'
     'dGljZXNSZXNwb25zZRJECglQdXRWZXJ0ZXgSGi5ncmFwaC52MS5QdXRWZXJ0ZXhSZXF1ZXN0Gh'
     'suZ3JhcGgudjEuUHV0VmVydGV4UmVzcG9uc2USSgoLUHV0VmVydGljZXMSHC5ncmFwaC52MS5Q'
-    'dXRWZXJ0aWNlc1JlcXVlc3QaHS5ncmFwaC52MS5QdXRWZXJ0aWNlc1Jlc3BvbnNlEk0KDERlbG'
-    'V0ZVZlcnRleBIdLmdyYXBoLnYxLkRlbGV0ZVZlcnRleFJlcXVlc3QaHi5ncmFwaC52MS5EZWxl'
-    'dGVWZXJ0ZXhSZXNwb25zZRJTCg5EZWxldGVWZXJ0aWNlcxIfLmdyYXBoLnYxLkRlbGV0ZVZlcn'
-    'RpY2VzUmVxdWVzdBogLmdyYXBoLnYxLkRlbGV0ZVZlcnRpY2VzUmVzcG9uc2USTQoMU2NhblZl'
-    'cnRpY2VzEh0uZ3JhcGgudjEuU2NhblZlcnRpY2VzUmVxdWVzdBoeLmdyYXBoLnYxLlNjYW5WZX'
-    'J0aWNlc1Jlc3BvbnNlElMKDlNjYW5WZXJ0ZXhLZXlzEh8uZ3JhcGgudjEuU2NhblZlcnRleEtl'
-    'eXNSZXF1ZXN0GiAuZ3JhcGgudjEuU2NhblZlcnRleEtleXNSZXNwb25zZRJTCg5TZWFyY2hWZX'
-    'J0aWNlcxIfLmdyYXBoLnYxLlNlYXJjaFZlcnRpY2VzUmVxdWVzdBogLmdyYXBoLnYxLlNlYXJj'
-    'aFZlcnRpY2VzUmVzcG9uc2USaAoVQ291bnRWZXJ0aWNlc0J5UHJlZml4EiYuZ3JhcGgudjEuQ2'
-    '91bnRWZXJ0aWNlc0J5UHJlZml4UmVxdWVzdBonLmdyYXBoLnYxLkNvdW50VmVydGljZXNCeVBy'
-    'ZWZpeFJlc3BvbnNlEmsKFkRlbGV0ZVZlcnRpY2VzQnlQcmVmaXgSJy5ncmFwaC52MS5EZWxldG'
-    'VWZXJ0aWNlc0J5UHJlZml4UmVxdWVzdBooLmdyYXBoLnYxLkRlbGV0ZVZlcnRpY2VzQnlQcmVm'
-    'aXhSZXNwb25zZRJiChNUb3BWZXJ0aWNlc0J5RGVncmVlEiQuZ3JhcGgudjEuVG9wVmVydGljZX'
-    'NCeURlZ3JlZVJlcXVlc3QaJS5ncmFwaC52MS5Ub3BWZXJ0aWNlc0J5RGVncmVlUmVzcG9uc2US'
-    'PgoHR2V0RWRnZRIYLmdyYXBoLnYxLkdldEVkZ2VSZXF1ZXN0GhkuZ3JhcGgudjEuR2V0RWRnZV'
-    'Jlc3BvbnNlEkEKCEdldEVkZ2VzEhkuZ3JhcGgudjEuR2V0RWRnZXNSZXF1ZXN0GhouZ3JhcGgu'
-    'djEuR2V0RWRnZXNSZXNwb25zZRI+CgdBZGRFZGdlEhguZ3JhcGgudjEuQWRkRWRnZVJlcXVlc3'
-    'QaGS5ncmFwaC52MS5BZGRFZGdlUmVzcG9uc2USQQoIQWRkRWRnZXMSGS5ncmFwaC52MS5BZGRF'
-    'ZGdlc1JlcXVlc3QaGi5ncmFwaC52MS5BZGRFZGdlc1Jlc3BvbnNlEkcKCkNyZWF0ZUVkZ2USGy'
-    '5ncmFwaC52MS5DcmVhdGVFZGdlUmVxdWVzdBocLmdyYXBoLnYxLkNyZWF0ZUVkZ2VSZXNwb25z'
-    'ZRJKCgtDcmVhdGVFZGdlcxIcLmdyYXBoLnYxLkNyZWF0ZUVkZ2VzUmVxdWVzdBodLmdyYXBoLn'
-    'YxLkNyZWF0ZUVkZ2VzUmVzcG9uc2USPgoHUHV0RWRnZRIYLmdyYXBoLnYxLlB1dEVkZ2VSZXF1'
-    'ZXN0GhkuZ3JhcGgudjEuUHV0RWRnZVJlc3BvbnNlEkEKCFB1dEVkZ2VzEhkuZ3JhcGgudjEuUH'
-    'V0RWRnZXNSZXF1ZXN0GhouZ3JhcGgudjEuUHV0RWRnZXNSZXNwb25zZRJHCgpEZWxldGVFZGdl'
-    'EhsuZ3JhcGgudjEuRGVsZXRlRWRnZVJlcXVlc3QaHC5ncmFwaC52MS5EZWxldGVFZGdlUmVzcG'
-    '9uc2USSgoLRGVsZXRlRWRnZXMSHC5ncmFwaC52MS5EZWxldGVFZGdlc1JlcXVlc3QaHS5ncmFw'
-    'aC52MS5EZWxldGVFZGdlc1Jlc3BvbnNlEmsKFkRlbGV0ZUVkZ2VDb250cmlidXRpb24SJy5ncm'
-    'FwaC52MS5EZWxldGVFZGdlQ29udHJpYnV0aW9uUmVxdWVzdBooLmdyYXBoLnYxLkRlbGV0ZUVk'
-    'Z2VDb250cmlidXRpb25SZXNwb25zZRJuChdEZWxldGVFZGdlQ29udHJpYnV0aW9ucxIoLmdyYX'
-    'BoLnYxLkRlbGV0ZUVkZ2VDb250cmlidXRpb25zUmVxdWVzdBopLmdyYXBoLnYxLkRlbGV0ZUVk'
-    'Z2VDb250cmlidXRpb25zUmVzcG9uc2USYgoTRGVsZXRlRWRnZXNCeVByZWZpeBIkLmdyYXBoLn'
-    'YxLkRlbGV0ZUVkZ2VzQnlQcmVmaXhSZXF1ZXN0GiUuZ3JhcGgudjEuRGVsZXRlRWRnZXNCeVBy'
-    'ZWZpeFJlc3BvbnNlEkQKCVNjYW5FZGdlcxIaLmdyYXBoLnYxLlNjYW5FZGdlc1JlcXVlc3QaGy'
-    '5ncmFwaC52MS5TY2FuRWRnZXNSZXNwb25zZRJWCg9HZXRTZXJ2ZXJTdGF0dXMSIC5ncmFwaC52'
-    'MS5HZXRTZXJ2ZXJTdGF0dXNSZXF1ZXN0GiEuZ3JhcGgudjEuR2V0U2VydmVyU3RhdHVzUmVzcG'
-    '9uc2USZQoUR2V0UmVwbGljYXRpb25TdGF0dXMSJS5ncmFwaC52MS5HZXRSZXBsaWNhdGlvblN0'
-    'YXR1c1JlcXVlc3QaJi5ncmFwaC52MS5HZXRSZXBsaWNhdGlvblN0YXR1c1Jlc3BvbnNlEmUKFE'
-    'dldFJlY2VpcHRDYXBhYmlsaXR5EiUuZ3JhcGgudjEuR2V0UmVjZWlwdENhcGFiaWxpdHlSZXF1'
-    'ZXN0GiYuZ3JhcGgudjEuR2V0UmVjZWlwdENhcGFiaWxpdHlSZXNwb25zZRJZChBHZXRSZWNlaX'
-    'B0U3RhdHVzEiEuZ3JhcGgudjEuR2V0UmVjZWlwdFN0YXR1c1JlcXVlc3QaIi5ncmFwaC52MS5H'
-    'ZXRSZWNlaXB0U3RhdHVzUmVzcG9uc2USXwoSR2V0UmVjZWlwdFN0YXR1c2VzEiMuZ3JhcGgudj'
-    'EuR2V0UmVjZWlwdFN0YXR1c2VzUmVxdWVzdBokLmdyYXBoLnYxLkdldFJlY2VpcHRTdGF0dXNl'
-    'c1Jlc3BvbnNlElUKDkJhY2t1cFNuYXBzaG90Eh8uZ3JhcGgudjEuQmFja3VwU25hcHNob3RSZX'
-    'F1ZXN0GiAuZ3JhcGgudjEuQmFja3VwU25hcHNob3RSZXNwb25zZTAB');
+    'dXRWZXJ0aWNlc1JlcXVlc3QaHS5ncmFwaC52MS5QdXRWZXJ0aWNlc1Jlc3BvbnNlEkoKC011dG'
+    'F0ZUdyYXBoEhwuZ3JhcGgudjEuTXV0YXRlR3JhcGhSZXF1ZXN0Gh0uZ3JhcGgudjEuTXV0YXRl'
+    'R3JhcGhSZXNwb25zZRJNCgxEZWxldGVWZXJ0ZXgSHS5ncmFwaC52MS5EZWxldGVWZXJ0ZXhSZX'
+    'F1ZXN0Gh4uZ3JhcGgudjEuRGVsZXRlVmVydGV4UmVzcG9uc2USUwoORGVsZXRlVmVydGljZXMS'
+    'Hy5ncmFwaC52MS5EZWxldGVWZXJ0aWNlc1JlcXVlc3QaIC5ncmFwaC52MS5EZWxldGVWZXJ0aW'
+    'Nlc1Jlc3BvbnNlEk0KDFNjYW5WZXJ0aWNlcxIdLmdyYXBoLnYxLlNjYW5WZXJ0aWNlc1JlcXVl'
+    'c3QaHi5ncmFwaC52MS5TY2FuVmVydGljZXNSZXNwb25zZRJTCg5TY2FuVmVydGV4S2V5cxIfLm'
+    'dyYXBoLnYxLlNjYW5WZXJ0ZXhLZXlzUmVxdWVzdBogLmdyYXBoLnYxLlNjYW5WZXJ0ZXhLZXlz'
+    'UmVzcG9uc2USUwoOU2VhcmNoVmVydGljZXMSHy5ncmFwaC52MS5TZWFyY2hWZXJ0aWNlc1JlcX'
+    'Vlc3QaIC5ncmFwaC52MS5TZWFyY2hWZXJ0aWNlc1Jlc3BvbnNlEmgKFUNvdW50VmVydGljZXNC'
+    'eVByZWZpeBImLmdyYXBoLnYxLkNvdW50VmVydGljZXNCeVByZWZpeFJlcXVlc3QaJy5ncmFwaC'
+    '52MS5Db3VudFZlcnRpY2VzQnlQcmVmaXhSZXNwb25zZRJrChZEZWxldGVWZXJ0aWNlc0J5UHJl'
+    'Zml4EicuZ3JhcGgudjEuRGVsZXRlVmVydGljZXNCeVByZWZpeFJlcXVlc3QaKC5ncmFwaC52MS'
+    '5EZWxldGVWZXJ0aWNlc0J5UHJlZml4UmVzcG9uc2USYgoTVG9wVmVydGljZXNCeURlZ3JlZRIk'
+    'LmdyYXBoLnYxLlRvcFZlcnRpY2VzQnlEZWdyZWVSZXF1ZXN0GiUuZ3JhcGgudjEuVG9wVmVydG'
+    'ljZXNCeURlZ3JlZVJlc3BvbnNlEj4KB0dldEVkZ2USGC5ncmFwaC52MS5HZXRFZGdlUmVxdWVz'
+    'dBoZLmdyYXBoLnYxLkdldEVkZ2VSZXNwb25zZRJBCghHZXRFZGdlcxIZLmdyYXBoLnYxLkdldE'
+    'VkZ2VzUmVxdWVzdBoaLmdyYXBoLnYxLkdldEVkZ2VzUmVzcG9uc2USPgoHQWRkRWRnZRIYLmdy'
+    'YXBoLnYxLkFkZEVkZ2VSZXF1ZXN0GhkuZ3JhcGgudjEuQWRkRWRnZVJlc3BvbnNlEkEKCEFkZE'
+    'VkZ2VzEhkuZ3JhcGgudjEuQWRkRWRnZXNSZXF1ZXN0GhouZ3JhcGgudjEuQWRkRWRnZXNSZXNw'
+    'b25zZRJHCgpDcmVhdGVFZGdlEhsuZ3JhcGgudjEuQ3JlYXRlRWRnZVJlcXVlc3QaHC5ncmFwaC'
+    '52MS5DcmVhdGVFZGdlUmVzcG9uc2USSgoLQ3JlYXRlRWRnZXMSHC5ncmFwaC52MS5DcmVhdGVF'
+    'ZGdlc1JlcXVlc3QaHS5ncmFwaC52MS5DcmVhdGVFZGdlc1Jlc3BvbnNlEj4KB1B1dEVkZ2USGC'
+    '5ncmFwaC52MS5QdXRFZGdlUmVxdWVzdBoZLmdyYXBoLnYxLlB1dEVkZ2VSZXNwb25zZRJBCghQ'
+    'dXRFZGdlcxIZLmdyYXBoLnYxLlB1dEVkZ2VzUmVxdWVzdBoaLmdyYXBoLnYxLlB1dEVkZ2VzUm'
+    'VzcG9uc2USRwoKRGVsZXRlRWRnZRIbLmdyYXBoLnYxLkRlbGV0ZUVkZ2VSZXF1ZXN0GhwuZ3Jh'
+    'cGgudjEuRGVsZXRlRWRnZVJlc3BvbnNlEkoKC0RlbGV0ZUVkZ2VzEhwuZ3JhcGgudjEuRGVsZX'
+    'RlRWRnZXNSZXF1ZXN0Gh0uZ3JhcGgudjEuRGVsZXRlRWRnZXNSZXNwb25zZRJrChZEZWxldGVF'
+    'ZGdlQ29udHJpYnV0aW9uEicuZ3JhcGgudjEuRGVsZXRlRWRnZUNvbnRyaWJ1dGlvblJlcXVlc3'
+    'QaKC5ncmFwaC52MS5EZWxldGVFZGdlQ29udHJpYnV0aW9uUmVzcG9uc2USbgoXRGVsZXRlRWRn'
+    'ZUNvbnRyaWJ1dGlvbnMSKC5ncmFwaC52MS5EZWxldGVFZGdlQ29udHJpYnV0aW9uc1JlcXVlc3'
+    'QaKS5ncmFwaC52MS5EZWxldGVFZGdlQ29udHJpYnV0aW9uc1Jlc3BvbnNlEmIKE0RlbGV0ZUVk'
+    'Z2VzQnlQcmVmaXgSJC5ncmFwaC52MS5EZWxldGVFZGdlc0J5UHJlZml4UmVxdWVzdBolLmdyYX'
+    'BoLnYxLkRlbGV0ZUVkZ2VzQnlQcmVmaXhSZXNwb25zZRJECglTY2FuRWRnZXMSGi5ncmFwaC52'
+    'MS5TY2FuRWRnZXNSZXF1ZXN0GhsuZ3JhcGgudjEuU2NhbkVkZ2VzUmVzcG9uc2USVgoPR2V0U2'
+    'VydmVyU3RhdHVzEiAuZ3JhcGgudjEuR2V0U2VydmVyU3RhdHVzUmVxdWVzdBohLmdyYXBoLnYx'
+    'LkdldFNlcnZlclN0YXR1c1Jlc3BvbnNlEmUKFEdldFJlcGxpY2F0aW9uU3RhdHVzEiUuZ3JhcG'
+    'gudjEuR2V0UmVwbGljYXRpb25TdGF0dXNSZXF1ZXN0GiYuZ3JhcGgudjEuR2V0UmVwbGljYXRp'
+    'b25TdGF0dXNSZXNwb25zZRJlChRHZXRSZWNlaXB0Q2FwYWJpbGl0eRIlLmdyYXBoLnYxLkdldF'
+    'JlY2VpcHRDYXBhYmlsaXR5UmVxdWVzdBomLmdyYXBoLnYxLkdldFJlY2VpcHRDYXBhYmlsaXR5'
+    'UmVzcG9uc2USWQoQR2V0UmVjZWlwdFN0YXR1cxIhLmdyYXBoLnYxLkdldFJlY2VpcHRTdGF0dX'
+    'NSZXF1ZXN0GiIuZ3JhcGgudjEuR2V0UmVjZWlwdFN0YXR1c1Jlc3BvbnNlEl8KEkdldFJlY2Vp'
+    'cHRTdGF0dXNlcxIjLmdyYXBoLnYxLkdldFJlY2VpcHRTdGF0dXNlc1JlcXVlc3QaJC5ncmFwaC'
+    '52MS5HZXRSZWNlaXB0U3RhdHVzZXNSZXNwb25zZRJVCg5CYWNrdXBTbmFwc2hvdBIfLmdyYXBo'
+    'LnYxLkJhY2t1cFNuYXBzaG90UmVxdWVzdBogLmdyYXBoLnYxLkJhY2t1cFNuYXBzaG90UmVzcG'
+    '9uc2UwAQ==');
