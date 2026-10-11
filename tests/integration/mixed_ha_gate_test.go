@@ -138,6 +138,7 @@ type mixedHAGate struct {
 	sdks          []*client.Lantern
 	originals     []*mixedHAOriginal
 	backupCuts    [3]uint64
+	walOrigins    map[string]uint64
 	cdcCursor     []byte
 	extraVertices int
 }
@@ -301,6 +302,11 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 		for _, original := range m.originals {
 			m.awaitReceipts(t, original, 0, 1, 2)
 		}
+		original := m.originals[0]
+		result, err := m.sdks[original.origin].MutateGraph(t.Context(), original.vertices, original.edges, original.identity)
+		if err != nil || !reflect.DeepEqual(result, original.result) {
+			t.Fatal("same-ID confirmation after restart changed the original result", err)
+		}
 		for i := range m.sdks {
 			m.awaitVertex(t, i, "orders:conflict:a", "newer-A")
 			for _, original := range m.originals {
@@ -311,6 +317,7 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 			}
 		}
 		m.snapshot(t, 2, "orders:", 2*len(m.originals)+m.extraVertices, len(m.originals))
+		m.checkRestoredOrigins(t)
 	case "mixed-authorization":
 		m.authorization(t)
 		m.blind(t)
@@ -647,11 +654,7 @@ func (c *mixedHACountTransport) RoundTrip(r *http.Request) (*http.Response, erro
 // Restart consumes this earlier cut plus its real, later WAL suffix.
 func (m *mixedHAGate) captureBackups(t *testing.T) {
 	t.Helper()
-	var epoch mutationreceipt.Epoch
-	for i := range epoch {
-		epoch[i] = 0x42
-	}
-	policy := mutationreceipt.Config{Epoch: epoch, Retention: time.Hour, MaxEntries: 128, MaxBytes: 1048576}
+	policy := mixedHAReceiptPolicy()
 	for node := range m.sdks {
 		source, target := fmt.Sprintf("/archive-%d", node+1), fmt.Sprintf("/restore-%d", node+1)
 		instance := fmt.Sprintf("mixed-node-%d", node+1)
@@ -726,6 +729,7 @@ func (m *mixedHAGate) inspectClosedWALs(t *testing.T) {
 	t.Helper()
 	for node := range m.sdks {
 		groups := make(map[string]bool)
+		origins := make(map[string]uint64)
 		var tip uint64
 		err := mutationlog.ReplayFileWAL(fmt.Sprintf("/journal-%d/business.wal", node+1), func(raw []byte) (mutationlog.MutationOp, error) { return append([]byte(nil), raw...), nil }, func(entry mutationlog.Entry) error {
 			tip = entry.Seq
@@ -744,6 +748,8 @@ func (m *mixedHAGate) inspectClosedWALs(t *testing.T) {
 			if len(call.GetItems()) != 3 || mutation.Seq == 0 || len(mutation.Origin) != 16 {
 				return errors.New("incomplete mixed WAL bundle")
 			}
+			origin := fmt.Sprintf("%x", mutation.Origin)
+			origins[origin] = max(origins[origin], mutation.Seq)
 			group := string(call.Items[0].Receipt.LogicalCallId)
 			if groups[group] {
 				return errors.New("duplicate mixed WAL decision")
@@ -760,7 +766,52 @@ func (m *mixedHAGate) inspectClosedWALs(t *testing.T) {
 		if err != nil || len(groups) != len(m.originals) || m.backupCuts[node] == 0 || tip <= m.backupCuts[node] {
 			t.Fatal("closed WAL or snapshot-tail evidence", node, len(groups), tip, m.backupCuts[node], err)
 		}
+		if m.walOrigins == nil {
+			m.walOrigins = origins
+		} else if !reflect.DeepEqual(m.walOrigins, origins) {
+			t.Fatal("replicas disagree on the complete origin prefixes", node, origins, m.walOrigins)
+		}
 		t.Logf("node=%d closed WAL tip=%d selected snapshot=%d positive tail=%d", node+1, tip, m.backupCuts[node], tip-m.backupCuts[node])
+	}
+}
+
+func mixedHAReceiptPolicy() mutationreceipt.Config {
+	var epoch mutationreceipt.Epoch
+	for i := range epoch {
+		epoch[i] = 0x42
+	}
+	return mutationreceipt.Config{Epoch: epoch, Retention: time.Hour, MaxEntries: 128, MaxBytes: 1048576}
+}
+
+func (m *mixedHAGate) checkRestoredOrigins(t *testing.T) {
+	t.Helper()
+	if len(m.walOrigins) != 3 {
+		t.Fatal("missing pre-restart three-origin prefix evidence", m.walOrigins)
+	}
+	for node := range m.sdks {
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			evidence, err := backup.LoadLatestReceiptBackupSet(fmt.Sprintf("/restore-%d", node+1), fmt.Sprintf("mixed-node-%d", node+1))
+			if err == nil && evidence.WALCut.Seq > m.backupCuts[node] {
+				restored, e := backup.PrepareRestartReceiptStartupRestore(evidence, mixedHAReceiptPolicy())
+				if e != nil {
+					t.Fatal("invalid post-restart backup", e)
+				}
+				origins := make(map[string]uint64)
+				for _, origin := range restored.Capture.Origins {
+					origins[fmt.Sprintf("%x", origin.Origin)] = origin.LastSeq
+				}
+				if !reflect.DeepEqual(origins, m.walOrigins) || len(restored.Capture.Receipts.Receipts) != 3*len(m.originals) {
+					t.Fatal("restarted origin prefixes or receipt bundle count changed", node, origins, m.walOrigins)
+				}
+				t.Logf("node=%d restored origin prefixes=%v receipts=%d cut=%d", node+1, origins, len(restored.Capture.Receipts.Receipts), evidence.WALCut.Seq)
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("no post-restart backup to verify replayed prefixes", node, err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 }
 
