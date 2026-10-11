@@ -15,9 +15,7 @@ import (
 
 func startPeerPlaneRequest(t *testing.T, handler http.Handler) (context.CancelFunc, <-chan error, <-chan struct{}) {
 	t.Helper()
-	seed := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	seed.EnableHTTP2 = true
-	seed.StartTLS()
+	seed := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	tlsConfig, client := seed.TLS.Clone(), seed.Client()
 	seed.Close()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -44,7 +42,7 @@ func startPeerPlaneRequest(t *testing.T, handler http.Handler) (context.CancelFu
 	return cancel, done, requestDone
 }
 
-func TestPeerPlaneRunCancelsCooperativeHTTP2StreamAndJoins(t *testing.T) {
+func TestPeerPlaneRunCancelsCooperativeStreamAndJoins(t *testing.T) {
 	for _, holdAfterCancellation := range []bool{false, true} {
 		name := "idle_subscription"
 		if holdAfterCancellation {
@@ -72,8 +70,8 @@ func TestPeerPlaneRunCancelsCooperativeHTTP2StreamAndJoins(t *testing.T) {
 			}))
 			select {
 			case major := <-entered:
-				if major != 2 {
-					t.Fatal("private stream did not use HTTP/2", major)
+				if major != 1 {
+					t.Fatal("stream did not use the private client's HTTP/1.1 protocol", major)
 				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("private stream did not enter")

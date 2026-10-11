@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -43,6 +44,7 @@ type peerOperatorDomain struct {
 	SecurityGeneration [16]byte `json:"security_generation"`
 	WriterPublicKey    [32]byte `json:"writer_public_key"`
 	TrustDigest        [32]byte `json:"trust_digest"`
+	CurrentProfile     string   `json:"current_profile,omitempty"`
 }
 
 type peerOperatorMember struct {
@@ -72,9 +74,12 @@ type peerSecurityFixture struct {
 }
 
 type peerSecurityOptions struct {
-	Generation [16]byte
-	WriterKey  [32]byte
-	Mount      func(*peerSecurityFixture, int, *service.ServingRuntime, *http.ServeMux)
+	Generation     [16]byte
+	WriterKey      [32]byte
+	CurrentProfile string
+	Now            func() time.Time
+	TimeBounds     func() (time.Time, time.Time, error)
+	Mount          func(*peerSecurityFixture, int, *service.ServingRuntime, *http.ServeMux)
 }
 
 func peerSecurityPEM(t *testing.T, directory, name, kind string, raw []byte) string {
@@ -143,6 +148,7 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 		f.manifest.Domain.AuthMode = "oidc"
 		f.manifest.Domain.SecurityGeneration = options[0].Generation
 		f.manifest.Domain.WriterPublicKey = options[0].WriterKey
+		f.manifest.Domain.CurrentProfile = options[0].CurrentProfile
 	}
 	for i := range f.servers {
 		server := httptest.NewUnstartedServer(nil)
@@ -183,6 +189,10 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 		f.configs[i].AuthMode = f.manifest.Domain.AuthMode
 		f.configs[i].SecurityGeneration = f.manifest.Domain.SecurityGeneration
 		f.configs[i].WriterPublicKey = f.manifest.Domain.WriterPublicKey
+		f.configs[i].CurrentProfile = f.manifest.Domain.CurrentProfile
+		if len(options) != 0 {
+			f.configs[i].Now, f.configs[i].TimeBounds = options[0].Now, options[0].TimeBounds
+		}
 	}
 	raw := peerSecuritySign(t, f.manifest, f.key)
 	for i := range f.servers {
@@ -597,5 +607,75 @@ func TestPeerSecurityEdgeOnlyHistorySubscribeSnapshotAndTombstoneRealConnect(t *
 	stop()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCurrentDataPeerIntervalRecoveryOverPrivateTLS(t *testing.T) {
+	var mu sync.RWMutex
+	low := time.Now().UTC().Add(2 * time.Second)
+	high := low.Add(time.Second)
+	unavailable := false
+	bounds := func() (time.Time, time.Time, error) {
+		mu.RLock()
+		defer mu.RUnlock()
+		if unavailable {
+			return time.Time{}, time.Time{}, fmt.Errorf("no qualified interval")
+		}
+		return low, high, nil
+	}
+	now := func() time.Time {
+		_, high, err := bounds()
+		if err != nil {
+			return time.Unix(0, int64(^uint64(0)>>1)).UTC()
+		}
+		return high
+	}
+	f := newPeerSecurityFixture(t, peerSecurityOptions{Generation: [16]byte{7}, CurrentProfile: "current-v2:abababababababababababababababababababababababababababababababab", Now: now, TimeBounds: bounds})
+	client := graphv1connect.NewLanternReplicationServiceClient(f.runtimes[0].HTTPClient(), f.servers[1].URL)
+	check := func(want bool) {
+		t.Helper()
+		_, err := client.PeerStatus(t.Context(), connect.NewRequest(&pb.PeerStatusRequest{NamespaceFormat: "namespaced-v1"}))
+		if (err == nil) != want {
+			t.Fatal("current data TLS interval admission", want, err)
+		}
+	}
+	before := make([][]byte, len(f.configs))
+	for i, cfg := range f.configs {
+		var err error
+		before[i], err = os.ReadFile(cfg.StateFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.runtimes[i].TLSConfig().Time == nil {
+			t.Fatal("current TLS lost qualified verification clock")
+		}
+	}
+	check(true)
+	mu.Lock()
+	low = low.Add(time.Millisecond)
+	high = high.Add(-time.Millisecond)
+	mu.Unlock()
+	check(true)
+	mu.Lock()
+	unavailable = true
+	mu.Unlock()
+	check(false)
+	for _, r := range f.runtimes {
+		if _, err := r.ApprovedOrigins(); err == nil || r.ReloadMembership() == nil || r.CheckWorkload(t.Context()) == nil {
+			t.Fatal("source loss retained workload authority")
+		}
+	}
+	mu.Lock()
+	unavailable = false
+	mu.Unlock()
+	check(true)
+	for i, cfg := range f.configs {
+		if r := f.runtimes[i]; r.ReloadMembership() != nil || r.CheckWorkload(t.Context()) != nil {
+			t.Fatal("qualified interval did not recover data workload")
+		}
+		after, err := os.ReadFile(cfg.StateFile)
+		if err != nil || string(before[i]) != string(after) {
+			t.Fatal("interval recovery changed signed checkpoint", err)
+		}
 	}
 }

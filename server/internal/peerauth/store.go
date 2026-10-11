@@ -18,6 +18,9 @@ type StoreOptions struct {
 	Domain Domain
 	Self   Member
 	Now    func() time.Time
+	// Current data membership uses the same qualified interval as current
+	// authority. Now remains only its conservative verifier/deadline adapter.
+	TimeBounds func() (low, high time.Time, err error)
 }
 
 // Store owns one complete signed checkpoint under the existing native path
@@ -45,7 +48,8 @@ type membershipSnapshot struct {
 }
 
 func prepareStore(options StoreOptions) (*Store, error) {
-	if !filepath.IsAbs(options.Path) || len(options.Key) != ed25519.PublicKeySize || !options.Domain.valid() {
+	if !filepath.IsAbs(options.Path) || len(options.Key) != ed25519.PublicKeySize || !options.Domain.valid() ||
+		options.Domain.CurrentProfile != "" && (options.TimeBounds == nil || options.Now == nil) {
 		return nil, ErrMembership
 	}
 	options.Key = bytes.Clone(options.Key)
@@ -56,7 +60,11 @@ func prepareStore(options StoreOptions) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{options: options, lease: lease, lastWall: options.Now()}, nil
+	s := &Store{options: options, lease: lease, timeBounds: options.TimeBounds}
+	if s.timeBounds == nil {
+		s.lastWall = options.Now()
+	}
+	return s, nil
 }
 
 // CreateStore is explicit genesis and never overwrites a partial/existing cut.
@@ -70,7 +78,8 @@ func CreateStore(options StoreOptions, raw []byte) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !manifestLive(m, s.options.Now()) {
+	now, valid := s.nowLocked()
+	if !valid || !s.manifestLiveLocked(m, now) {
 		return nil, errors.Join(ErrMembership, s.Close())
 	}
 	if err := writeCheckpoint(options.Path, raw, true); err != nil {
@@ -170,7 +179,7 @@ func (s *Store) Apply(raw []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now, valid := s.nowLocked()
-	if !valid || !manifestLive(m, now) {
+	if !valid || !s.manifestLiveLocked(m, now) {
 		return ErrMembership
 	}
 	if m.Version == s.current.manifest.Version && bytes.Equal(raw, s.current.raw) {
