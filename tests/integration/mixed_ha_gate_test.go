@@ -133,12 +133,13 @@ type mixedHAOriginal struct {
 }
 
 type mixedHAGate struct {
-	g          *custodyProcessGate
-	proxy      *mixedHAProxy
-	sdks       []*client.Lantern
-	originals  []*mixedHAOriginal
-	backupCuts [3]uint64
-	cdcCursor  []byte
+	g             *custodyProcessGate
+	proxy         *mixedHAProxy
+	sdks          []*client.Lantern
+	originals     []*mixedHAOriginal
+	backupCuts    [3]uint64
+	cdcCursor     []byte
+	extraVertices int
 }
 
 func newMixedHAGate(t *testing.T, g *custodyProcessGate, hosts []string) *mixedHAGate {
@@ -309,7 +310,7 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 				}
 			}
 		}
-		m.snapshot(t, 2, "orders:", 2*len(m.originals), len(m.originals))
+		m.snapshot(t, 2, "orders:", 2*len(m.originals)+m.extraVertices, len(m.originals))
 	case "mixed-authorization":
 		m.authorization(t)
 		m.blind(t)
@@ -597,7 +598,12 @@ func (m *mixedHAGate) wireRequest(t *testing.T, original *mixedHAOriginal) *pb.M
 
 func (m *mixedHAGate) blind(t *testing.T) {
 	t.Helper()
-	original := m.newOriginal(t, 2, "blind", "orders:blind:", "undisclosed", 9)
+	original := m.newOriginal(t, 2, "blind", "orders:blind:tail:", "undisclosed", 9)
+	original.edges[0].Edge.Head = "orders:blind:head"
+	if _, err := m.g.data[2].PutVertex(t.Context(), securityWireRequest(m.g.machine, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: original.edges[0].Edge.Head, Value: &pb.Vertex_String_{String_: "hidden head"}}})); err != nil {
+		t.Fatal(err)
+	}
+	m.extraVertices++
 	token := m.g.issuer.token(t, "blind-writer", func(claims map[string]any) {
 		claims["iat"] = time.Now().Add(-time.Minute).Unix()
 		delete(claims, "auth_time")
@@ -612,14 +618,21 @@ func (m *mixedHAGate) blind(t *testing.T) {
 	m.originals = append(m.originals, original)
 	m.await(t, original, 2, 0, 1)
 	for node := range m.sdks {
+		request := &pb.GetReceiptStatusesRequest{}
 		for _, id := range original.identity.OperationIDs {
-			status, e := m.g.data[node].GetReceiptStatus(t.Context(), securityWireRequest(token, &pb.GetReceiptStatusRequest{OperationId: id[:]}))
-			if e != nil || status.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED || status.Msg.GetStatus().GetReceipt() != nil {
-				t.Fatal("blind receipt result disclosed", node, e)
+			request.OperationIds = append(request.OperationIds, append([]byte(nil), id[:]...))
+		}
+		status, e := m.g.data[node].GetReceiptStatuses(t.Context(), securityWireRequest(token, request))
+		if e != nil || len(status.Msg.GetStatuses()) != 3 {
+			t.Fatal("blind mixed status batch", node, e)
+		}
+		for _, item := range status.Msg.GetStatuses() {
+			if item.GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED || item.GetReceipt() != nil {
+				t.Fatal("blind receipt result disclosed", node)
 			}
 		}
 	}
-	t.Log("third-origin write-only mixed commit accepted with empty results; all three nodes preserve EFFECT_UNDISCLOSED without receipt payload")
+	t.Log("third-origin mixed commit with a write-only head accepted with empty results; all three nodes preserve whole-batch EFFECT_UNDISCLOSED without receipt payload")
 }
 
 func (c *mixedHACountTransport) RoundTrip(r *http.Request) (*http.Response, error) {
