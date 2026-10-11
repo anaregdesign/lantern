@@ -551,5 +551,19 @@ func TestCurrentCustodyLocalProbe(t *testing.T) {
 	if _, err = data.GetVertex(t.Context(), securityWireRequest(string(raw), &pb.GetVertexRequest{Key: "orders:custody-3"})); !custodyGateRefusal(err) {
 		t.Fatal("isolated protected data operation not refused", err)
 	}
+	if path := os.Getenv("LANTERN_MIXED_HA_ISOLATED_REQUEST"); path != "" {
+		body, e := os.ReadFile(path)
+		if e != nil {
+			t.Fatal(e)
+		}
+		var request pb.MutateGraphRequest
+		if e = protojson.Unmarshal(body, &request); e != nil {
+			t.Fatal(e)
+		}
+		if _, e = data.MutateGraph(t.Context(), securityWireRequest(string(raw), &request)); !custodyGateRefusal(e) {
+			t.Fatal("isolated valid mixed call not refused", e)
+		}
+		t.Log("isolated node refused the pre-isolation valid mixed envelope over local verified TLS")
+	}
 	t.Log("actual local public TLS refused control and protected data with the same durable machine credential checked before/after isolation; no peer/IdP lookup substituted for the refusal")
 }

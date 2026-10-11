@@ -138,7 +138,8 @@ def main():
             "--mount", f"type=bind,src={args.server.resolve()},dst=/server,readonly",
             "--mount", f"type=bind,src={args.driver.resolve()},dst=/probe,readonly"]
         if args.mixed_ha:
-            values += ["--mount", volume_mount(archives[node] if mode == "fresh" else restores[node], "/backup")]
+            values += ["--mount", volume_mount(archives[node] if mode == "fresh" else restores[node], "/backup"),
+                "--mount", volume_mount(control, "/control", readonly=True)]
         settings = {
             "LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_PROFILE": "current-v2",
             "LANTERN_SECURITY_CURRENT_CONFIG_FILE": f"/provision/node-{node}/node.json",
@@ -203,8 +204,9 @@ def main():
         docker("rm", name)
         containers.remove(name)
 
-    def local_probe(label):
-        result = docker("exec", nodes[3], "/probe", "-test.v", "-test.run=^TestCurrentCustodyLocalProbe$", "-test.timeout=90s", check=False, record=False, timeout=95)
+    def local_probe(label, mixed=False):
+        flags = ["--env", "LANTERN_MIXED_HA_ISOLATED_REQUEST=/control/isolated-mixed-request.json"] if mixed else []
+        result = docker("exec", *flags, nodes[3], "/probe", "-test.v", "-test.run=^TestCurrentCustodyLocalProbe$", "-test.timeout=90s", check=False, record=False, timeout=95)
         (args.evidence / (label + ".log")).write_text(result.stdout + result.stderr)
         if result.returncode or "--- PASS: TestCurrentCustodyLocalProbe" not in result.stdout or "--- SKIP:" in result.stdout:
             raise RuntimeError("isolated local TLS probe failed: " + label)
@@ -252,6 +254,13 @@ def main():
             nodes = {node: start_node(node, "fresh") for node in (1, 2, 3)}
             for selected in ("mixed-relay-cdc", "mixed-gap-conflict", "mixed-backup-cut", "mixed-lost-response", "mixed-authorization"):
                 phase(selected)
+            phase("mixed-partition-ready")
+            docker("network", "disconnect", cluster, nodes[3])
+            time.sleep(18)
+            local_probe("mixed-isolated-refusal", mixed=True)
+            phase("mixed-partition-write")
+            docker("network", "connect", "--ip", hosts[2], cluster, nodes[3])
+            phase("mixed-full-reconnected")
             for node in (1, 2, 3):
                 stop_node(node, 1, f"mixed-first-clean-{node}")
             phase("mixed-closed-wal")
@@ -262,7 +271,7 @@ def main():
             phase("finish")
             finish(controller)
             log = collect(controller, "controller")
-            if "--- PASS: TestCurrentCustodyProcessGate" not in log or "--- SKIP:" in log or sequence != 8:
+            if "--- PASS: TestCurrentCustodyProcessGate" not in log or "--- SKIP:" in log or sequence != 11:
                 raise RuntimeError("mixed HA controller did not execute every selected phase")
             receipt["status"], receipt["skips"] = "PASS", 0
             receipt["counts"] = {"mixed_phases": sequence, "orderly_checkpoints": 6, "independent_product_processes": 3}

@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,6 +28,7 @@ import (
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/backup"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -135,6 +138,7 @@ type mixedHAGate struct {
 	sdks       []*client.Lantern
 	originals  []*mixedHAOriginal
 	backupCuts [3]uint64
+	cdcCursor  []byte
 }
 
 func newMixedHAGate(t *testing.T, g *custodyProcessGate, hosts []string) *mixedHAGate {
@@ -160,7 +164,7 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 		defer cancel()
 		changes := graphv1connect.NewLanternChangeServiceClient(m.g.http, m.g.urls[2])
-		stream, err := changes.WatchChanges(ctx, securityWireRequest(m.g.machine, &pb.WatchChangesRequest{Prefix: "orders:relay:", Bootstrap: true, Projection: pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY}))
+		stream, err := changes.WatchChanges(ctx, securityWireRequest(m.g.machine, &pb.WatchChangesRequest{Prefix: "orders:", Bootstrap: true, Projection: pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY}))
 		if err != nil || !stream.Receive() || !stream.Msg().Bootstrap {
 			t.Fatal("CDC bootstrap", err)
 		}
@@ -190,6 +194,7 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 		if len(cursor) == 0 {
 			t.Fatal("mixed CDC not observed", stream.Err())
 		}
+		m.cdcCursor = cursor
 		_ = stream.Close()
 		m.snapshot(t, 2, "orders:relay:", 2, 1)
 		m.proxy.links(true)
@@ -202,6 +207,14 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 		m.await(t, original, 0, 1, 2)
 		t.Logf("relay: three immutable receipts, two vertices, one edge; final visible CDC cursor bytes=%d", len(cursor))
 	case "mixed-gap-conflict":
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		changes := graphv1connect.NewLanternChangeServiceClient(m.g.http, m.g.urls[2])
+		resumed, err := changes.WatchChanges(ctx, securityWireRequest(m.g.machine, &pb.WatchChangesRequest{Prefix: "orders:", Cursor: m.cdcCursor, Projection: pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY}))
+		if err != nil {
+			t.Fatal("resume prior complete mixed cursor", err)
+		}
+		defer func() { _ = resumed.Close() }()
 		m.proxy.links(false)
 		gap1 := m.write(t, 0, "gap-one", "orders:gap-one:", "one", 3, false)
 		gap2 := m.write(t, 0, "gap-two", "orders:gap-two:", "two", 4, false)
@@ -221,9 +234,36 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 		m.proxy.links(false, [2]int{0, 1}, [2]int{1, 2})
 		m.await(t, gap1, 2)
 		m.await(t, gap2, 2)
+		seen, frames := map[string]bool{}, 0
+		for resumed.Receive() {
+			frame := resumed.Msg()
+			for _, item := range frame.Invalidations {
+				key := item.GetVertexKey()
+				if edge := item.GetEdgeKey(); edge != nil {
+					key = edge.Tail + "->" + edge.Head
+				}
+				if !strings.HasPrefix(key, "orders:gap-") || seen[key] {
+					t.Fatal("CDC resume repeated or crossed its cut", key)
+				}
+				seen[key] = true
+			}
+			if len(frame.Invalidations) > 0 && len(frame.Cursor) > 0 {
+				frames++
+				if len(seen) != frames*3 {
+					t.Fatal("resumed cursor splits visible mixed group", len(seen), frames)
+				}
+				if frames == 2 {
+					break
+				}
+			}
+		}
+		if len(seen) != 6 || frames != 2 {
+			t.Fatal("resumed mixed CDC suffix", len(seen), frames, resumed.Err())
+		}
+		_ = resumed.Close()
 		m.proxy.links(false)
 		conflict := m.write(t, 1, "conflict", "orders:conflict:", "older-B", 5, false)
-		_, err := m.g.data[0].PutVertex(t.Context(), securityWireRequest(m.g.machine, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "orders:conflict:a", Value: &pb.Vertex_String_{String_: "newer-A"}}}))
+		_, err = m.g.data[0].PutVertex(t.Context(), securityWireRequest(m.g.machine, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "orders:conflict:a", Value: &pb.Vertex_String_{String_: "newer-A"}}}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -269,9 +309,36 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 				}
 			}
 		}
-		m.snapshot(t, 2, "orders:", 10, 5)
+		m.snapshot(t, 2, "orders:", 2*len(m.originals), len(m.originals))
 	case "mixed-authorization":
 		m.authorization(t)
+		m.blind(t)
+	case "mixed-partition-ready":
+		m.g.waitReady(0, 1, 2)
+		original := m.newOriginal(t, 2, "isolated-refusal", "orders:isolated:", "must not publish", 13)
+		raw, err := protojson.Marshal(m.wireRequest(t, original))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := createPrivateTestFile("/control/isolated-mixed-request.json", raw); err != nil {
+			t.Fatal(err)
+		}
+	case "mixed-partition-write":
+		m.g.waitReady(0, 1)
+		original := m.write(t, 0, "full-partition", "orders:partition:", "surviving quorum", 11, false)
+		m.await(t, original, 0, 1)
+	case "mixed-full-reconnected":
+		m.g.waitReady(0, 1, 2)
+		for _, original := range m.originals {
+			m.awaitReceipts(t, original, 0, 1, 2)
+		}
+		m.await(t, m.originals[len(m.originals)-1], 2)
+		for i := range m.sdks {
+			_, err := m.g.data[i].GetVertex(t.Context(), securityWireRequest(m.g.machine, &pb.GetVertexRequest{Key: "orders:isolated:a"}))
+			if connect.CodeOf(err) != connect.CodeNotFound {
+				t.Fatal("isolated refused mutation was published", i, err)
+			}
+		}
 	case "finish":
 		m.proxy.links(false)
 	default:
@@ -282,7 +349,7 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 	m.proxy.mu.Unlock()
 }
 
-func (m *mixedHAGate) write(t *testing.T, origin int, name, prefix, value string, weight float32, lose bool) *mixedHAOriginal {
+func (m *mixedHAGate) newOriginal(t *testing.T, origin int, name, prefix, value string, weight float32) *mixedHAOriginal {
 	t.Helper()
 	sdk := m.sdks[origin]
 	capability, err := sdk.GetReceiptCapability(t.Context())
@@ -298,6 +365,14 @@ func (m *mixedHAGate) write(t *testing.T, origin int, name, prefix, value string
 		t.Fatal(err)
 	}
 	original := &mixedHAOriginal{name: name, origin: origin, identity: identity, vertices: []client.VertexInput{{Key: prefix + "a", Value: value}, {Key: prefix + "b", Value: value}}, edges: []client.EdgeAddReceiptInput{{Edge: client.EdgeInput{Tail: prefix + "a", Head: prefix + "b", Weight: weight}, ContribID: id}}}
+	return original
+}
+
+func (m *mixedHAGate) write(t *testing.T, origin int, name, prefix, value string, weight float32, lose bool) *mixedHAOriginal {
+	t.Helper()
+	original := m.newOriginal(t, origin, name, prefix, value, weight)
+	sdk, identity := m.sdks[origin], original.identity
+	var err error
 	if lose {
 		drop := &dropFirstReceiptResponseTransport{inner: m.g.http.Transport, pathSuffix: "/MutateGraph"}
 		counter := &mixedHACountTransport{inner: drop}
@@ -438,7 +513,7 @@ func (m *mixedHAGate) authorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.ReceiptContext = mixedHAWireContext(t, m.g, identity)
+	request.ReceiptContext = mixedHAWireContext(t, m.g, 0, identity)
 	request.Items[1].GetAddEdge().ContribId[0] = 1
 	_, err = m.g.data[0].MutateGraph(t.Context(), securityWireRequest(m.g.token, request))
 	if connect.CodeOf(err) != connect.CodePermissionDenied {
@@ -506,6 +581,45 @@ func (m *mixedHAGate) authorization(t *testing.T) {
 type mixedHACountTransport struct {
 	inner http.RoundTripper
 	calls atomic.Int32
+}
+
+func (m *mixedHAGate) wireRequest(t *testing.T, original *mixedHAOriginal) *pb.MutateGraphRequest {
+	t.Helper()
+	request := &pb.MutateGraphRequest{ReceiptContext: mixedHAWireContext(t, m.g, original.origin, original.identity)}
+	for _, vertex := range original.vertices {
+		request.Items = append(request.Items, &pb.GraphMutationItem{Operation: &pb.GraphMutationItem_PutVertex{PutVertex: &pb.Vertex{Key: vertex.Key, Value: &pb.Vertex_String_{String_: vertex.Value.(string)}}}})
+	}
+	for _, edge := range original.edges {
+		request.Items = append(request.Items, &pb.GraphMutationItem{Operation: &pb.GraphMutationItem_AddEdge{AddEdge: &pb.GraphMutationEdgeAdd{Edge: &pb.Edge{Tail: edge.Edge.Tail, Head: edge.Edge.Head, Weight: edge.Edge.Weight}, ContribId: append([]byte(nil), edge.ContribID[:]...)}}})
+	}
+	return request
+}
+
+func (m *mixedHAGate) blind(t *testing.T) {
+	t.Helper()
+	original := m.newOriginal(t, 2, "blind", "orders:blind:", "undisclosed", 9)
+	token := m.g.issuer.token(t, "blind-writer", func(claims map[string]any) {
+		claims["iat"] = time.Now().Add(-time.Minute).Unix()
+		delete(claims, "auth_time")
+	})
+	if _, err := m.g.controls[2].GetCurrentPrincipal(t.Context(), securityWireRequest(token, &pb.GetCurrentPrincipalRequest{})); err != nil {
+		t.Fatal("blind writer authentication positive control", err)
+	}
+	response, err := m.g.data[2].MutateGraph(t.Context(), securityWireRequest(token, m.wireRequest(t, original)))
+	if err != nil || response.Msg.GetAcceptance() == nil || len(response.Msg.GetResults()) != 0 {
+		t.Fatal("whole mixed result disclosed to write-only principal", err)
+	}
+	m.originals = append(m.originals, original)
+	m.await(t, original, 2, 0, 1)
+	for node := range m.sdks {
+		for _, id := range original.identity.OperationIDs {
+			status, e := m.g.data[node].GetReceiptStatus(t.Context(), securityWireRequest(token, &pb.GetReceiptStatusRequest{OperationId: id[:]}))
+			if e != nil || status.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_EFFECT_UNDISCLOSED || status.Msg.GetStatus().GetReceipt() != nil {
+				t.Fatal("blind receipt result disclosed", node, e)
+			}
+		}
+	}
+	t.Log("third-origin write-only mixed commit accepted with empty results; all three nodes preserve EFFECT_UNDISCLOSED without receipt payload")
 }
 
 func (c *mixedHACountTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -643,7 +757,15 @@ func TestMixedHAClosedWALInspection(t *testing.T) {
 	if os.Getenv("LANTERN_MIXED_HA_INSPECT") != "1" {
 		t.Skip("explicit read-only inspection of stopped mixed HA volumes")
 	}
-	m := &mixedHAGate{sdks: make([]*client.Lantern, 3), originals: make([]*mixedHAOriginal, 5)}
+	groups := 5
+	if raw := os.Getenv("LANTERN_MIXED_HA_INSPECT_GROUPS"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 16 {
+			t.Fatal("bounded expected group count required")
+		}
+		groups = value
+	}
+	m := &mixedHAGate{sdks: make([]*client.Lantern, 3), originals: make([]*mixedHAOriginal, groups)}
 	for node := range m.sdks {
 		selected, err := backup.LoadLatestReceiptBackupSet(fmt.Sprintf("/restore-%d", node+1), fmt.Sprintf("mixed-node-%d", node+1))
 		if err != nil {
@@ -654,9 +776,9 @@ func TestMixedHAClosedWALInspection(t *testing.T) {
 	m.inspectClosedWALs(t)
 }
 
-func mixedHAWireContext(t *testing.T, g *custodyProcessGate, identity client.GraphMutationReceiptContext) *pb.MutationReceiptContext {
+func mixedHAWireContext(t *testing.T, g *custodyProcessGate, node int, identity client.GraphMutationReceiptContext) *pb.MutationReceiptContext {
 	t.Helper()
-	capability, err := g.data[0].GetReceiptCapability(t.Context(), securityWireRequest(g.machine, &pb.GetReceiptCapabilityRequest{}))
+	capability, err := g.data[node].GetReceiptCapability(t.Context(), securityWireRequest(g.machine, &pb.GetReceiptCapabilityRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -175,6 +175,12 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	for _, entry := range []struct{ subject, role string }{{"reader", reader.ID}, {"denied-manager", blocked.ID}} {
 		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuerURL, Subject: entry.subject}, State: Active, HumanIssuerConfigRevision: 1, Assignments: []RoleAssignment{{RoleID: entry.role}}})
 	}
+	if os.Getenv("LANTERN_CURRENT_DATA_HA") != "" {
+		blind := Role{ID: "wire_blind", Rules: []PermissionRule{dataRule(Allow, VertexWrite, "orders:blind:")}}
+		blind.Rules[0].ID = "write"
+		image.Roles = append(image.Roles, blind)
+		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuerURL, Subject: "blind-writer"}, State: Active, HumanIssuerConfigRevision: 1, Assignments: []RoleAssignment{{RoleID: blind.ID}}})
+	}
 	machineToken, err := NewMachineToken()
 	if err != nil {
 		t.Fatal(err)
