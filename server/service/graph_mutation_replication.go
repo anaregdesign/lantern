@@ -67,11 +67,10 @@ func (s *LanternService) commitReplicatedGraphMutation(ctx context.Context, orig
 	if err := s.clock.RestoreFloor(floor); err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
-	source, recorded := e, false
-	if prior, ok := pending.receiptWAL.(*graphMutationEnvelope); ok {
-		source, recorded = prior, true
-	}
-	vertices, vi, edges, ei := graphMutationEffects(source, recorded)
+	// A healthy retry has no durable local decision. Other origins may have
+	// advanced since a rejected preflight or definite WAL abort, so reconsider
+	// the immutable origin effects rather than the last provisional projection.
+	vertices, vi, edges, ei := graphMutationEffects(e, false)
 	graphTx, err := s.receiptVertexPutCoordinator.cache.BeginReplicatedGraphMutation(ctx, vertices, edges, ts, uint64(4*proto.Size(e.Mutation)))
 	if err != nil {
 		return graphMutationError(err)
@@ -81,18 +80,14 @@ func (s *LanternService) commitReplicatedGraphMutation(ctx context.Context, orig
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, err)
 	}
-	local := source
-	if recorded {
-		if !graphMutationReplayProjectionMatches(source.Mutation.GetOp().GetGraphMutation().GetProjection(), projection) {
-			return connect.NewError(connect.CodeInternal, errGraphMutation)
-		}
-	} else {
-		m := proto.Clone(e.Mutation).(*pb.Mutation)
-		m.GetOp().GetGraphMutation().Projection = projection
-		local, err = decodeGraphMutation(m)
-		if err != nil {
-			return connect.NewError(connect.CodeInternal, err)
-		}
+	m := proto.Clone(e.Mutation).(*pb.Mutation)
+	m.GetOp().GetGraphMutation().Projection = projection
+	local, err := decodeGraphMutation(m)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+	if prior, ok := pending.receiptWAL.(*graphMutationEnvelope); ok && proto.Equal(prior.Mutation, local.Mutation) {
+		local = prior
 	}
 	if err := s.validateReplicationFrame(local); err != nil {
 		return err
@@ -147,8 +142,8 @@ func maximalGraphMutationEnvelope(e *graphMutationEnvelope) (*graphMutationEnvel
 	return decodeGraphMutation(m)
 }
 
-// WAL replay and a definite append retry may expire a previously live Vertex,
-// but may neither re-admit effects nor change immutable origin decisions.
+// Committed WAL replay may expire a previously live Vertex, but may neither
+// re-admit effects nor change immutable origin decisions.
 func graphMutationReplayProjectionMatches(recorded, replayed []*pb.GraphMutationProjection) bool {
 	if len(recorded) != len(replayed) {
 		return false
