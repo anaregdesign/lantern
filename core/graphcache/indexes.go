@@ -127,12 +127,21 @@ func (c *GraphCache[S, T]) onEdgeAddedLocked(created bool, tailID, headID vertex
 	if !created || c.headByTail == nil {
 		return
 	}
+	c.onEdgeAddedProjectedLocked(tailID, headID, c.prefixExtract(head))
+}
+
+// onEdgeAddedProjectedLocked accepts a projection prepared before graph
+// ownership, so staged publication never invokes a user extractor.
+func (c *GraphCache[S, T]) onEdgeAddedProjectedLocked(tailID, headID vertexID, projected string) {
+	if c.headByTail == nil {
+		return
+	}
 	hi := c.headByTail[tailID]
 	if hi == nil {
 		hi = newHeadIndex()
 		c.headByTail[tailID] = hi
 	}
-	hi.insert(headID, c.prefixExtract(head))
+	hi.insert(headID, projected)
 }
 
 // onEdgeDeletedLocked maintains the per-tail head index after a successful

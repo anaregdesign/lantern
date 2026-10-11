@@ -183,9 +183,19 @@ func (s *stagedEdgeAdd[S, T]) applyEdgesLocked() {
 		c.edges.edgeCount++
 		c.edges.mu.Unlock()
 		plan.created = true
-		c.onEdgeAddedLocked(true, plan.tailID, plan.headID, plan.key.Head)
+		c.onEdgeAddedProjectedLocked(plan.tailID, plan.headID, plan.headProjected)
 	}
 	complete = true
+}
+
+// applyOnlyEdgesLocked is used after the composite has applied its one union
+// Vertex stage. Arm Edge undo before touching any bucket or dictionary cell.
+func (s *stagedEdgeAdd[S, T]) applyOnlyEdgesLocked() {
+	if s.applied {
+		panic("graphcache: staged Add applied twice")
+	}
+	s.applied = true
+	s.applyEdgesLocked()
 }
 
 func (s *stagedEdgeAdd[S, T]) rollbackEdgesLocked() {
