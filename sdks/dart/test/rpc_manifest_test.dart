@@ -58,6 +58,7 @@ const _appFacingRpcs = <String>{
   'GetVertex',
   'GetVertices',
   'Illuminate',
+  'MutateGraph',
   'PutEdge',
   'PutEdges',
   'PutVertex',
