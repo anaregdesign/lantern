@@ -20,4 +20,5 @@ type PeerIdentityConfig struct {
 	KeyFile            string
 	SelfIdentity       string
 	Now                func() time.Time
+	TimeBounds         func() (low, high time.Time, err error)
 }

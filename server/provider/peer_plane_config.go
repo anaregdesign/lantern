@@ -130,6 +130,7 @@ func NewCurrentConfiguredPeerIdentity(cfg PeerPlaneConfig, runtime *SecurityRunt
 			return nil, nil, errors.New("data workload belongs to a different current cohort")
 		}
 		cfg.Identity.Now = runtime.current.VerificationTime
+		cfg.Identity.TimeBounds = runtime.current.TimeBounds
 	}
 	return NewConfiguredPeerIdentity(cfg)
 }

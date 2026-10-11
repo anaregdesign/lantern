@@ -27,7 +27,8 @@ type PeerIdentityRuntime struct {
 }
 
 func NewPeerIdentityRuntime(config PeerIdentityConfig) (_ *PeerIdentityRuntime, cleanup func(), err error) {
-	if config.SelfIdentity == "" || config.StateMode != "fresh" && config.StateMode != "resume" {
+	if config.SelfIdentity == "" || config.StateMode != "fresh" && config.StateMode != "resume" ||
+		config.CurrentProfile != "" && (config.TimeBounds == nil || config.Now == nil) {
 		return nil, nil, peerauth.ErrMembership
 	}
 	if config.Now == nil {
@@ -114,7 +115,7 @@ func NewPeerIdentityRuntime(config PeerIdentityConfig) (_ *PeerIdentityRuntime, 
 	if err != nil || leaf.VerifyHostname(origin.Hostname()) != nil {
 		return nil, nil, peerauth.ErrMembership
 	}
-	options := peerauth.StoreOptions{Path: config.StateFile, Key: key, Domain: domain, Self: self, Now: config.Now}
+	options := peerauth.StoreOptions{Path: config.StateFile, Key: key, Domain: domain, Self: self, Now: config.Now, TimeBounds: config.TimeBounds}
 	var store *peerauth.Store
 	if config.StateMode == "fresh" {
 		store, err = peerauth.CreateStore(options, raw)
@@ -141,12 +142,16 @@ func NewPeerIdentityRuntime(config PeerIdentityConfig) (_ *PeerIdentityRuntime, 
 }
 
 func (r *PeerIdentityRuntime) TLSConfig() *tls.Config {
-	return &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{r.certificate},
+	config := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{r.certificate},
 		ClientCAs: r.roots.Clone(), ClientAuth: tls.RequireAndVerifyClientCert, NextProtos: []string{"h2", "http/1.1"},
 		SessionTicketsDisabled: true, VerifyConnection: func(state tls.ConnectionState) error {
 			_, err := r.store.Admit(&state, "")
 			return err
 		}}
+	if r.config.TimeBounds != nil {
+		config.Time = r.config.Now
+	}
+	return config
 }
 
 func (r *PeerIdentityRuntime) ProtectPeerHTTPHandler(next http.Handler, options ...connect.HandlerOption) http.Handler {

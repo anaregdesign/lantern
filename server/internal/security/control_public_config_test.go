@@ -175,6 +175,14 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	for _, entry := range []struct{ subject, role string }{{"reader", reader.ID}, {"denied-manager", blocked.ID}} {
 		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuerURL, Subject: entry.subject}, State: Active, HumanIssuerConfigRevision: 1, Assignments: []RoleAssignment{{RoleID: entry.role}}})
 	}
+	if os.Getenv("LANTERN_CURRENT_DATA_HA") != "" {
+		blind := Role{ID: "wire_blind", Rules: []PermissionRule{dataRule(Allow, VertexRead, "orders:blind:tail:"), dataRule(Allow, VertexWrite, "orders:blind:"), dataRule(Allow, ReceiptRead, "orders:blind:")}}
+		for i := range blind.Rules {
+			blind.Rules[i].ID = fmt.Sprintf("blind%d", i)
+		}
+		image.Roles = append(image.Roles, blind)
+		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuerURL, Subject: "blind-writer"}, State: Active, HumanIssuerConfigRevision: 1, Assignments: []RoleAssignment{{RoleID: blind.ID}}})
+	}
 	machineToken, err := NewMachineToken()
 	if err != nil {
 		t.Fatal(err)
@@ -277,6 +285,13 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	}
 	if queryRoles != "" {
 		doc(filepath.Join(dir, "query-provision.json"), map[string]any{"membership_expires_at": n.manifest.ExpiresAt, "nodes": queryNodes})
+	}
+	if driver := os.Getenv("LANTERN_CURRENT_DATA_HA"); driver != "" {
+		provisioned, err := LoadCurrentProvisioning(filepath.Join(dir, "node-1", "node.json"))
+		if err != nil || len(hosts) != 3 || net.ParseIP(driver) == nil {
+			t.Fatal("data HA requires the current three-container fixture", err)
+		}
+		exportCurrentDataHA(t, dir, hosts, driver, provisioned.Profile())
 	}
 }
 

@@ -1,7 +1,10 @@
 package peerauth
 
 import (
+	"bytes"
+	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -157,6 +160,165 @@ func TestStorePrivateFaultReasonIsLatchedAndReadOnly(t *testing.T) {
 			}
 			if store.FaultReason() != cause {
 				t.Fatal("cleanup overwrote the original fault")
+			}
+		})
+	}
+}
+
+func TestCurrentDataStoreUsesWholeTimeInterval(t *testing.T) {
+	m, key, options, now := membershipFixture(t)
+	m.Domain.AuthMode, m.Domain.SecurityGeneration = "oidc", [16]byte{1}
+	m.Domain.CurrentProfile = "current-v2:" + strings.Repeat("ab", 32)
+	options.Domain = m.Domain
+	low, high := *now, now.Add(time.Second)
+	var sourceErr error
+	options.TimeBounds = func() (time.Time, time.Time, error) { return low, high, sourceErr }
+	// This scalar port is for TLS/deadlines only; it must never seed rollback.
+	options.Now = func() time.Time {
+		if sourceErr != nil {
+			return time.Unix(0, int64(^uint64(0)>>1)).UTC()
+		}
+		return high
+	}
+	raw := signFixture(t, m, key)
+	for _, missing := range []string{"interval", "verification"} {
+		candidate := options
+		if missing == "interval" {
+			candidate.TimeBounds = nil
+		} else {
+			candidate.Now = nil
+		}
+		if s, err := CreateStore(candidate, raw); err == nil {
+			s.Close()
+			t.Fatal("current clock fell back", missing)
+		}
+	}
+	for _, invalid := range []string{"before_not_before", "expiry_equality", "zero_low", "zero_high", "inverted", "source_error"} {
+		t.Run("fresh_"+invalid, func(t *testing.T) {
+			low, high, sourceErr = *now, now.Add(time.Second), nil
+			switch invalid {
+			case "before_not_before":
+				low = now.Add(-time.Nanosecond)
+			case "expiry_equality":
+				high = m.ExpiresAt.Add(-ClockMargin)
+			case "zero_low":
+				low = time.Time{}
+			case "zero_high":
+				high = time.Time{}
+			case "inverted":
+				low = high.Add(time.Nanosecond)
+			case "source_error":
+				sourceErr = errors.New("no qualified sample")
+			}
+			if s, err := CreateStore(options, raw); err == nil {
+				s.Close()
+				t.Fatal("invalid interval created membership")
+			}
+			if _, err := os.Stat(options.Path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("declined creation published a checkpoint", err)
+			}
+		})
+	}
+	low, high, sourceErr = *now, now.Add(time.Second), nil
+	s, err := CreateStore(options, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	before, err := os.ReadFile(options.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(want bool) {
+		t.Helper()
+		_, _, memberErr := s.Member(m.Members[0].Identity)
+		_, _, originErr := s.MemberAtOrigin(m.Members[0].Origin)
+		_, originsErr := s.Origins()
+		if (memberErr == nil) != want || (originErr == nil) != want || (originsErr == nil) != want {
+			t.Fatal("interval admission", want, memberErr, originErr, originsErr)
+		}
+	}
+	check(true)
+	low, high = low.Add(time.Millisecond), high.Add(-time.Millisecond)
+	check(true)
+	sourceErr = errors.New("temporarily no qualified interval")
+	check(false)
+	if s.Apply(raw) == nil || s.FaultReason() != "none" {
+		t.Fatal("source loss ignored or latched")
+	}
+	sourceErr = nil
+	check(true)
+	for _, invalid := range []string{"before_not_before", "expiry_equality", "source_error"} {
+		low, high, sourceErr = *now, now.Add(time.Second), nil
+		next := m
+		next.Version++
+		switch invalid {
+		case "before_not_before":
+			next.IssuedAt = low.Add(time.Nanosecond)
+		case "expiry_equality":
+			high = next.ExpiresAt.Add(-ClockMargin)
+		case "source_error":
+			sourceErr = errors.New("no qualified interval")
+		}
+		if s.Apply(signFixture(t, next, key)) == nil {
+			t.Fatal("invalid Apply published", invalid)
+		}
+		after, err := os.ReadFile(options.Path)
+		if err != nil || !bytes.Equal(before, after) || s.current.manifest.Version != m.Version || s.FaultReason() != "none" {
+			t.Fatal("declined Apply changed checkpoint/floor", invalid, err)
+		}
+	}
+	low, high, sourceErr = *now, now.Add(time.Second), nil
+	check(true)
+	m.Version++
+	if s.Apply(signFixture(t, m, key)) != nil {
+		t.Fatal("valid higher revision refused after interval recovery")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	low, high = m.ExpiresAt, m.ExpiresAt.Add(time.Second)
+	resumed, err := ResumeStore(options)
+	if err != nil {
+		t.Fatal("expired checkpoint floor was lost", err)
+	}
+	defer resumed.Close()
+	if _, _, err := resumed.Member(m.Members[0].Identity); err == nil || resumed.current.manifest.Version != m.Version {
+		t.Fatal("expired resume authorized or lost its floor")
+	}
+}
+
+func TestCurrentDataIntervalCannotRepairPermanentStoreFault(t *testing.T) {
+	for _, fault := range []string{"checkpoint_failure", "closed"} {
+		t.Run(fault, func(t *testing.T) {
+			m, key, options, now := membershipFixture(t)
+			m.Domain.AuthMode, m.Domain.SecurityGeneration = "oidc", [16]byte{1}
+			m.Domain.CurrentProfile = "current-v2:" + strings.Repeat("ab", 32)
+			options.Domain = m.Domain
+			low, high := *now, now.Add(time.Second)
+			options.TimeBounds = func() (time.Time, time.Time, error) { return low, high, nil }
+			s, err := CreateStore(options, signFixture(t, m, key))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if fault == "closed" {
+				s.Close()
+			} else {
+				if err := os.Remove(options.Path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(options.Path, 0700); err != nil {
+					t.Fatal(err)
+				}
+				m.Version++
+				if s.Apply(signFixture(t, m, key)) == nil {
+					t.Fatal("failed checkpoint accepted")
+				}
+			}
+			low, high = low.Add(time.Millisecond), high.Add(-time.Millisecond)
+			if _, _, err := s.Member(m.Members[0].Identity); err == nil || s.FaultReason() != fault {
+				t.Fatal("valid interval cleared permanent fault", fault, err)
 			}
 		})
 	}

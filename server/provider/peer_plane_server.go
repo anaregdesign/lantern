@@ -66,6 +66,9 @@ func (p *PeerPlaneServer) Run(ctx context.Context) error {
 	}
 	owned, cancelOwned := context.WithCancel(ctx)
 	defer cancelOwned()
+	// App cancels this owner after its readiness drain. Wake long-lived
+	// subscriptions, then let Shutdown join their handlers before returning.
+	p.server.BaseContext = func(net.Listener) context.Context { return owned }
 	stopped := make(chan error, 1)
 	go func() {
 		<-owned.Done()

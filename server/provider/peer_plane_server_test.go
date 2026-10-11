@@ -13,7 +13,8 @@ import (
 	"time"
 )
 
-func TestPeerPlaneRunReturnsDrainTimeout(t *testing.T) {
+func startPeerPlaneRequest(t *testing.T, handler http.Handler) (context.CancelFunc, <-chan error, <-chan struct{}) {
+	t.Helper()
 	seed := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	tlsConfig, client := seed.TLS.Clone(), seed.Client()
 	seed.Close()
@@ -21,15 +22,11 @@ func TestPeerPlaneRunReturnsDrainTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entered := make(chan struct{})
-	server := &http.Server{TLSConfig: tlsConfig, Handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		close(entered)
-		<-r.Context().Done()
-	})}
+	server := &http.Server{TLSConfig: tlsConfig, Handler: handler}
 	t.Cleanup(func() { _ = server.Close() })
 	p := &PeerPlaneServer{server: server, listener: listener}
 	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()
 	requestDone := make(chan struct{})
@@ -37,9 +34,95 @@ func TestPeerPlaneRunReturnsDrainTimeout(t *testing.T) {
 		defer close(requestDone)
 		response, _ := client.Get("https://" + listener.Addr().String())
 		if response != nil {
+			_, _ = io.Copy(io.Discard, response.Body)
 			_ = response.Body.Close()
 		}
 	}()
+	t.Cleanup(client.CloseIdleConnections)
+	return cancel, done, requestDone
+}
+
+func TestPeerPlaneRunCancelsCooperativeStreamAndJoins(t *testing.T) {
+	for _, holdAfterCancellation := range []bool{false, true} {
+		name := "idle_subscription"
+		if holdAfterCancellation {
+			name = "entered_work_must_join"
+		}
+		t.Run(name, func(t *testing.T) {
+			entered := make(chan int, 1)
+			canceled, joined, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			released := false
+			defer func() {
+				if !released {
+					close(release)
+				}
+			}()
+			cancel, done, requestDone := startPeerPlaneRequest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(joined)
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				entered <- r.ProtoMajor
+				<-r.Context().Done()
+				close(canceled)
+				if holdAfterCancellation {
+					<-release
+				}
+			}))
+			select {
+			case major := <-entered:
+				if major != 1 {
+					t.Fatal("stream did not use the private client's HTTP/1.1 protocol", major)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("private stream did not enter")
+			}
+			// The client remains alive. Only the post-drain Run owner is canceled.
+			cancel()
+			select {
+			case <-canceled:
+			case <-time.After(time.Second):
+				t.Fatal("Run cancellation did not reach the active request")
+			}
+			if holdAfterCancellation {
+				select {
+				case err := <-done:
+					t.Fatal("Run returned before entered work joined", err)
+				case <-time.After(50 * time.Millisecond):
+				}
+			}
+			close(release)
+			released = true
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal("cooperative private stop failed", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("private worker did not join before its shutdown deadline")
+			}
+			select {
+			case <-joined:
+			default:
+				t.Fatal("Run returned without joining the request handler")
+			}
+			select {
+			case <-requestDone:
+			case <-time.After(time.Second):
+				t.Fatal("stream client did not observe completion")
+			}
+		})
+	}
+}
+
+func TestPeerPlaneRunReturnsDrainTimeout(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	cancel, done, requestDone := startPeerPlaneRequest(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		// Deliberately ignore request cancellation: a real failure must retain
+		// the shutdown deadline and forced-close error after cooperative repair.
+		<-release
+	}))
 	select {
 	case <-entered:
 	case <-time.After(3 * time.Second):

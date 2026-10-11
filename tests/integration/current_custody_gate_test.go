@@ -132,6 +132,10 @@ func TestCurrentCustodyProcessGate(t *testing.T) {
 		g.controls = append(g.controls, graphv1connect.NewLanternSecurityServiceClient(httpClient, endpoint))
 		g.data = append(g.data, graphv1connect.NewLanternServiceClient(httpClient, endpoint))
 	}
+	var mixed *mixedHAGate
+	if os.Getenv("LANTERN_CURRENT_DATA_HA") != "" {
+		mixed = newMixedHAGate(t, g, hosts)
+	}
 	custodyGateJSON(t, "/control/initialized.json", map[string]any{"issuer": issuer.URL, "hosts": hosts, "native_clock_injected": false})
 	previous := 0
 	for {
@@ -158,6 +162,10 @@ func TestCurrentCustodyProcessGate(t *testing.T) {
 		previous = command.Sequence
 		passed := t.Run(command.Phase, func(t *testing.T) {
 			g.t = t
+			if mixed != nil {
+				mixed.phase(t, command.Phase)
+				return
+			}
 			if !reflect.DeepEqual(provisioning, custodyGateProvisioning(t)) {
 				t.Fatal("original provisioning changed during intact lifecycle")
 			}
@@ -542,6 +550,20 @@ func TestCurrentCustodyLocalProbe(t *testing.T) {
 	}
 	if _, err = data.GetVertex(t.Context(), securityWireRequest(string(raw), &pb.GetVertexRequest{Key: "orders:custody-3"})); !custodyGateRefusal(err) {
 		t.Fatal("isolated protected data operation not refused", err)
+	}
+	if path := os.Getenv("LANTERN_MIXED_HA_ISOLATED_REQUEST"); path != "" {
+		body, e := os.ReadFile(path)
+		if e != nil {
+			t.Fatal(e)
+		}
+		var request pb.MutateGraphRequest
+		if e = protojson.Unmarshal(body, &request); e != nil {
+			t.Fatal(e)
+		}
+		if _, e = data.MutateGraph(t.Context(), securityWireRequest(string(raw), &request)); !custodyGateRefusal(e) {
+			t.Fatal("isolated valid mixed call not refused", e)
+		}
+		t.Log("isolated node refused the pre-isolation valid mixed envelope over local verified TLS")
 	}
 	t.Log("actual local public TLS refused control and protected data with the same durable machine credential checked before/after isolation; no peer/IdP lookup substituted for the refusal")
 }

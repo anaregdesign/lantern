@@ -5,42 +5,72 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestAdmissionChecksIntervalNotBeforeAndExpiry(t *testing.T) {
-	m, key, opts, now := controlFixture(t)
-	uri, _ := url.Parse(m.Profile.Voters[0].Workload.Identity)
-	leaf := &x509.Certificate{URIs: []*url.URL{uri}, RawSubjectPublicKeyInfo: []byte("interval workload"), NotBefore: *now, NotAfter: now.Add(20 * time.Second)}
-	m.Profile.Voters[0].Workload.SPKI = sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
-	opts.Profile, opts.Self = m.Profile, m.Profile.Voters[0].Workload
-	low, high := *now, now.Add(time.Second)
-	opts.TimeBounds = func() (time.Time, time.Time, error) { return low, high, nil }
-	s, err := CreateControlStore(opts, signControlFixture(t, m, key))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	state := &tls.ConnectionState{Version: tls.VersionTLS13, PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: [][]*x509.Certificate{{leaf}}}
-	a, err := s.Admit(state, opts.Self.Origin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leaf.NotBefore = now.Add(500 * time.Millisecond)
-	if _, err := s.Admit(state, opts.Self.Origin); err == nil {
-		t.Fatal("not-before checked against high only")
-	}
-	leaf.NotBefore = *now
-	low = now.Add(-time.Nanosecond)
-	if a.Check(t.Context()) == nil {
-		t.Fatal("captured admission forgot interval lower endpoint")
-	}
-	low = *now
-	high = leaf.NotAfter.Add(-ClockMargin)
-	if a.Check(t.Context()) == nil {
-		t.Fatal("certificate expiry equality accepted")
+	for _, profile := range []string{"control", "current_data"} {
+		t.Run(profile, func(t *testing.T) {
+			m, key, opts, now := controlFixture(t)
+			uri, _ := url.Parse(m.Profile.Voters[0].Workload.Identity)
+			leaf := &x509.Certificate{URIs: []*url.URL{uri}, RawSubjectPublicKeyInfo: []byte("interval workload"), NotBefore: *now, NotAfter: now.Add(20 * time.Second)}
+			m.Profile.Voters[0].Workload.SPKI = sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+			opts.Profile, opts.Self = m.Profile, m.Profile.Voters[0].Workload
+			low, high := *now, now.Add(time.Second)
+			var sourceErr error
+			opts.TimeBounds = func() (time.Time, time.Time, error) { return low, high, sourceErr }
+			var s *Store
+			var err error
+			if profile == "control" {
+				control, e := CreateControlStore(opts, signControlFixture(t, m, key))
+				err = e
+				if control != nil {
+					s = control.store
+				}
+			} else {
+				domain := Domain{Deployment: [16]byte{1}, NamespaceFormat: "namespaced-v1", AuthMode: "oidc", TrustDigest: [32]byte{2}, SecurityGeneration: [16]byte{1}, CurrentProfile: "current-v2:" + strings.Repeat("ab", 32)}
+				data := Manifest{Version: 1, Domain: domain, IssuedAt: m.IssuedAt, ExpiresAt: m.ExpiresAt, Members: []Member{opts.Self}}
+				s, err = CreateStore(StoreOptions{Path: opts.Path, Key: opts.Key, Domain: domain, Self: opts.Self, Now: opts.Now, TimeBounds: opts.TimeBounds}, signFixture(t, data, key))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			state := &tls.ConnectionState{Version: tls.VersionTLS13, PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: [][]*x509.Certificate{{leaf}}}
+			a, err := s.Admit(state, opts.Self.Origin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sourceErr = errors.New("no qualified interval")
+			if a.Check(t.Context()) == nil {
+				t.Fatal("admission retained authority without a current interval")
+			}
+			if _, err := s.Admit(state, opts.Self.Origin); err == nil {
+				t.Fatal("new admission ignored source error")
+			}
+			sourceErr = nil
+			if a.Check(t.Context()) != nil {
+				t.Fatal("unexpired admission did not recover before request cancellation")
+			}
+			leaf.NotBefore = now.Add(500 * time.Millisecond)
+			if _, err := s.Admit(state, opts.Self.Origin); err == nil {
+				t.Fatal("not-before checked against high only")
+			}
+			leaf.NotBefore = *now
+			low = now.Add(-time.Nanosecond)
+			if a.Check(t.Context()) == nil {
+				t.Fatal("captured admission forgot interval lower endpoint")
+			}
+			low = *now
+			high = leaf.NotAfter.Add(-ClockMargin)
+			if a.Check(t.Context()) == nil {
+				t.Fatal("certificate expiry equality accepted")
+			}
+		})
 	}
 }
 
