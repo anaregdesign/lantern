@@ -21,10 +21,11 @@ def main():
         parser.add_argument("--" + name, type=pathlib.Path, required=True)
     for name in ("image", "name", "head", "tree"):
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--mixed-ha", action="store_true", help="run the finite mixed data replication campaign instead of the custody matrix")
     args = parser.parse_args()
     if not args.image.startswith("sha256:") or len(args.image) != 71:
         parser.error("an immutable cached runtime image ID is required")
-    if not args.name.startswith("lantern-1727-") or not all(c.isalnum() or c == "-" for c in args.name):
+    if not args.name.startswith("lantern-1610-" if args.mixed_ha else "lantern-1727-") or not all(c.isalnum() or c == "-" for c in args.name):
         parser.error("a new task-owned resource prefix is required")
     for value in (args.head, args.tree):
         if len(value) != 40 or any(c not in "0123456789abcdef" for c in value):
@@ -36,6 +37,9 @@ def main():
         "binaries": {name: digest(getattr(args, name)) for name in ("server", "exporter", "driver")},
         "native_source_config_sha256": digest(args.config), "events": [], "phases": [], "volumes": {},
     }
+    if args.mixed_ha:
+        receipt["scope"] = "three current-v2 product containers with independent data WALs and real private replication; bounded functional mixed HA only"
+    label = "lantern.task=1610-mixed-ha" if args.mixed_ha else "lantern.task=1727-custody"
     containers, networks = [], []
     sequence = 0
 
@@ -93,7 +97,7 @@ def main():
         volume = args.name + "-" + suffix
         if docker("volume", "inspect", volume, check=False).returncode == 0:
             raise RuntimeError("refusing an existing volume: " + volume)
-        docker("volume", "create", "--label", "lantern.task=1727-custody", volume)
+        docker("volume", "create", "--label", label, volume)
         # Only this newly created empty volume is changed. Product workers run
         # unprivileged; neither host directories nor shared caches are touched.
         docker("run", "--rm", "--pull=never", "--network", "none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--mount", f"type=volume,src={volume},dst=/owned", args.image, "chmod", "1777", "/owned")
@@ -108,7 +112,7 @@ def main():
                 raise RuntimeError("frozen binary changed: " + key)
         if digest(args.config) != receipt["native_source_config_sha256"]:
             raise RuntimeError("selected native source config changed")
-        return ["run", "-d", "--pull=never", "--name", name, "--label", "lantern.task=1727-custody", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", "65534:65534", "--pids-limit", "256", "--memory", "768m", "--cpus", "2", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777", "--mount", f"type=bind,src={args.config.resolve()},dst=/etc/ntp.conf,readonly"]
+        return ["run", "-d", "--pull=never", "--name", name, "--label", label, "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", "65534:65534", "--pids-limit", "256", "--memory", "768m", "--cpus", "2", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m,mode=1777", "--mount", f"type=bind,src={args.config.resolve()},dst=/etc/ntp.conf,readonly"]
 
     def phase(name):
         nonlocal sequence
@@ -148,6 +152,22 @@ def main():
             "LANTERN_BACKUP_ENABLED": "false", "LANTERN_BACKUP_RESTORE_ON_START": "false", "LANTERN_DRAIN_DELAY_SECONDS": "1",
             "LANTERN_CURRENT_CUSTODY_GATE": "1", "LANTERN_CURRENT_CUSTODY_NODE_URL": f"https://{hosts[node-1]}:6380",
         }
+        if args.mixed_ha:
+            settings.update({
+                "LANTERN_PEER_LISTEN_ADDR": "0.0.0.0:17380",
+                "LANTERN_PEER_DEPLOYMENT": data_metadata["deployment"],
+                "LANTERN_PEER_MEMBERSHIP_MODE": mode,
+                "LANTERN_PEER_MEMBERSHIP_FILE": "/provision/data-membership.json",
+                "LANTERN_PEER_MEMBERSHIP_STATE_FILE": "/journal/data-membership.state",
+                "LANTERN_PEER_OPERATOR_PUBLIC_KEY_FILE": "/provision/data-operator.pub",
+                "LANTERN_PEER_WORKLOAD_ID": f"spiffe://lantern.fixture/data-{node}",
+                "LANTERN_PEER_CERT_FILE": f"/provision/node-{node}/data.pem",
+                "LANTERN_PEER_KEY_FILE": f"/provision/node-{node}/data.key",
+                "LANTERN_PEER_TRUST_CA_FILE": "/provision/data-ca.pem",
+                "LANTERN_PUMP_BACKOFF_MAX_MS": "1000",
+                "LANTERN_PEER_DISCOVERY_INTERVAL_MS": "500",
+                "LANTERN_ANTI_ENTROPY_INTERVAL_MS": "1000",
+            })
         for key, value in settings.items():
             values += ["--env", key + "=" + value]
         docker(*values, args.image, "/server")
@@ -190,7 +210,7 @@ def main():
         for network in (cluster, egress):
             if docker("network", "inspect", network, check=False).returncode == 0:
                 raise RuntimeError("refusing an existing network")
-            docker("network", "create", "--label", "lantern.task=1727-custody", network)
+            docker("network", "create", "--label", label, network)
             networks.append(network)
         network_info = json.loads(docker("network", "inspect", cluster, record=False).stdout)[0]
         subnet = ipaddress.ip_network(network_info["IPAM"]["Config"][0]["Subnet"])
@@ -206,82 +226,102 @@ def main():
             "--mount", f"type=bind,src={args.exporter.resolve()},dst=/exporter,readonly", "--mount", f"type=bind,src={args.driver.resolve()},dst=/driver,readonly",
             "--tmpfs", "/journal:rw,nosuid,nodev,size=1m,mode=1777", "--tmpfs", "/custody:rw,nosuid,nodev,size=1m,mode=1777",
             "--env", "LANTERN_CURRENT_CUSTODY_GATE=1", "--env", "LANTERN_CURRENT_FIXTURE_HOSTS=" + ",".join(hosts),
-            "--env", "LANTERN_CURRENT_CUSTODY_DRIVER=" + driver_ip]), args.image, "/driver", "-test.v", "-test.run=^TestCurrentCustodyProcessGate$", "-test.timeout=20m")
+            "--env", "LANTERN_CURRENT_CUSTODY_DRIVER=" + driver_ip] + (["--env", "LANTERN_CURRENT_DATA_HA=" + driver_ip] if args.mixed_ha else [])), args.image, "/driver", "-test.v", "-test.run=^TestCurrentCustodyProcessGate$", "-test.timeout=20m")
         containers.append(controller)
         initialized = marker(controller, "/control/initialized.json")
         issuer = initialized["issuer"]
         docker("cp", controller + ":/control/exporter.log", str(args.evidence / "exporter.log"))
         docker("cp", controller + ":/control/provision-manifest.json", str(args.evidence / "provision-manifest.json"))
-        # Native constructor failure proves RUNNING precedes even M resume/open
-        # ownership. Its separate disposable volumes are never repaired/reused.
-        barrier = args.name + "-running-barrier"
-        barrier_journal, barrier_custody = make_volume("barrier-journal"), make_volume("barrier-custody")
-        docker(*(common(barrier) + ["--network", cluster, "--ip", hosts[0],
-            "--mount", volume_mount(provision, "/provision", readonly=True), "--mount", volume_mount(barrier_journal, "/journal"), "--mount", volume_mount(barrier_custody, "/custody"),
-            "--mount", f"type=bind,src={args.exporter.resolve()},dst=/exporter,readonly",
-            "--env", "LANTERN_CURRENT_CUSTODY_GATE=1", "--env", "LANTERN_SECURITY_CURRENT_CONFIG_FILE=/provision/node-1/node.json"]), args.image, "/exporter", "-test.v", "-test.run=^TestCurrentCustodyRunningBarrierNativeGate$", "-test.timeout=70s")
-        containers.append(barrier)
-        finish(barrier, timeout=80)
-        if "--- PASS: TestCurrentCustodyRunningBarrierNativeGate" not in collect(barrier, "running-barrier"):
-            raise RuntimeError("native RUNNING barrier test not executed")
-        docker("rm", barrier)
-        containers.remove(barrier)
-        nodes = {1: start_node(1, "fresh")}
-        phase("single-before-quorum")
-        for node in (2, 3):
-            nodes[node] = start_node(node, "fresh")
-        phase("fresh")
-        for cycle in (1, 2):
+        if args.mixed_ha:
+            data_metadata = marker(controller, "/provision/data-metadata.json")
+            nodes = {node: start_node(node, "fresh") for node in (1, 2, 3)}
+            for selected in ("mixed-relay-cdc", "mixed-gap-conflict", "mixed-lost-response"):
+                phase(selected)
             for node in (1, 2, 3):
-                stop_node(node, cycle, f"cycle-{cycle}-node-{node}")
-            # First resumed node has intact CLEAN/floors but cannot reuse any
-            # prior serving permission while the other two processes are absent.
-            nodes[1] = start_node(1, "resume")
+                stop_node(node, 1, f"mixed-first-clean-{node}")
+            nodes = {node: start_node(node, "resume") for node in (1, 2, 3)}
+            phase("mixed-restarted")
+            phase("mixed-authorization")
+            for node in (1, 2, 3):
+                stop_node(node, 2, f"mixed-final-clean-{node}")
+            phase("finish")
+            finish(controller)
+            log = collect(controller, "controller")
+            if "--- PASS: TestCurrentCustodyProcessGate" not in log or "--- SKIP:" in log or sequence != 6:
+                raise RuntimeError("mixed HA controller did not execute every selected phase")
+            receipt["status"], receipt["skips"] = "PASS", 0
+            receipt["counts"] = {"mixed_phases": sequence, "orderly_checkpoints": 6, "independent_product_processes": 3}
+        else:
+            # Native constructor failure proves RUNNING precedes even M resume/open
+            # ownership. Its separate disposable volumes are never repaired/reused.
+            barrier = args.name + "-running-barrier"
+            barrier_journal, barrier_custody = make_volume("barrier-journal"), make_volume("barrier-custody")
+            docker(*(common(barrier) + ["--network", cluster, "--ip", hosts[0],
+                "--mount", volume_mount(provision, "/provision", readonly=True), "--mount", volume_mount(barrier_journal, "/journal"), "--mount", volume_mount(barrier_custody, "/custody"),
+                "--mount", f"type=bind,src={args.exporter.resolve()},dst=/exporter,readonly",
+                "--env", "LANTERN_CURRENT_CUSTODY_GATE=1", "--env", "LANTERN_SECURITY_CURRENT_CONFIG_FILE=/provision/node-1/node.json"]), args.image, "/exporter", "-test.v", "-test.run=^TestCurrentCustodyRunningBarrierNativeGate$", "-test.timeout=70s")
+            containers.append(barrier)
+            finish(barrier, timeout=80)
+            if "--- PASS: TestCurrentCustodyRunningBarrierNativeGate" not in collect(barrier, "running-barrier"):
+                raise RuntimeError("native RUNNING barrier test not executed")
+            docker("rm", barrier)
+            containers.remove(barrier)
+            nodes = {1: start_node(1, "fresh")}
             phase("single-before-quorum")
             for node in (2, 3):
-                nodes[node] = start_node(node, "resume")
-            phase("resume-one" if cycle == 1 else "resume-two")
-        docker("network", "disconnect", cluster, nodes[3])
-        before = time.monotonic_ns()
-        time.sleep(18)
-        receipt["first_partition_ns"] = time.monotonic_ns() - before
-        local_probe("partition-expiry-refusal")
-        phase("partition-change")
-        docker("network", "connect", "--ip", hosts[2], cluster, nodes[3])
-        phase("reconnected")
-        docker("network", "disconnect", cluster, nodes[3])
-        stop_node(3, 3, "isolated-orderly-node-3")
-        nodes[3] = start_node(3, "resume", isolated=True)
-        local_probe("isolated-resume-refusal")
-        state = marker(nodes[3], "/custody/floors.json.state")
-        if state["Phase"] != "RUNNING" or state["Cycle"] != 4:
-            raise RuntimeError("isolated resume did not consume CLEAN normally")
-        docker("network", "connect", "--ip", hosts[2], cluster, nodes[3])
-        phase("isolated-restart-reconnected")
-        docker("kill", "--signal", "KILL", nodes[3])
-        finish(nodes[3], expected=137)
-        collect(nodes[3], "pre-clean-kill")
-        docker("cp", nodes[3] + ":/custody/floors.json.state", str(args.evidence / "killed-state.json"))
-        if json.loads((args.evidence / "killed-state.json").read_text())["Phase"] != "RUNNING":
-            raise RuntimeError("kill did not precede CLEAN")
-        docker("rm", nodes[3])
-        containers.remove(nodes[3])
-        nodes[3] = start_node(3, "resume", "-refusal", isolated=True)
-        finish(nodes[3], expected=1)
-        log = collect(nodes[3], "killed-resume-refusal")
-        if "custody is not a valid orderly restart checkpoint" not in log or "server stopped cleanly" in log:
-            raise RuntimeError("killed resume failed for an unrelated reason")
-        for node in (1, 2):
-            stop_node(node, 3, f"final-normal-node-{node}")
-        phase("finish")
-        finish(controller)
-        log = collect(controller, "controller")
-        if "--- PASS: TestCurrentCustodyProcessGate" not in log or "--- SKIP:" in log:
-            raise RuntimeError("controller did not complete all required phases")
-        receipt["status"], receipt["skips"] = "PASS", 0
-        receipt["counts"] = {"controller_phases": sequence, "orderly_checkpoints": 9, "native_running_barrier": 1, "isolated_tls_probes": 2, "sigkill_exit_137": 1, "running_resume_exit_1": 1}
-        if sequence != 10:
-            raise RuntimeError("required controller phase count changed")
+                nodes[node] = start_node(node, "fresh")
+            phase("fresh")
+            for cycle in (1, 2):
+                for node in (1, 2, 3):
+                    stop_node(node, cycle, f"cycle-{cycle}-node-{node}")
+                # First resumed node has intact CLEAN/floors but cannot reuse any
+                # prior serving permission while the other two processes are absent.
+                nodes[1] = start_node(1, "resume")
+                phase("single-before-quorum")
+                for node in (2, 3):
+                    nodes[node] = start_node(node, "resume")
+                phase("resume-one" if cycle == 1 else "resume-two")
+            docker("network", "disconnect", cluster, nodes[3])
+            before = time.monotonic_ns()
+            time.sleep(18)
+            receipt["first_partition_ns"] = time.monotonic_ns() - before
+            local_probe("partition-expiry-refusal")
+            phase("partition-change")
+            docker("network", "connect", "--ip", hosts[2], cluster, nodes[3])
+            phase("reconnected")
+            docker("network", "disconnect", cluster, nodes[3])
+            stop_node(3, 3, "isolated-orderly-node-3")
+            nodes[3] = start_node(3, "resume", isolated=True)
+            local_probe("isolated-resume-refusal")
+            state = marker(nodes[3], "/custody/floors.json.state")
+            if state["Phase"] != "RUNNING" or state["Cycle"] != 4:
+                raise RuntimeError("isolated resume did not consume CLEAN normally")
+            docker("network", "connect", "--ip", hosts[2], cluster, nodes[3])
+            phase("isolated-restart-reconnected")
+            docker("kill", "--signal", "KILL", nodes[3])
+            finish(nodes[3], expected=137)
+            collect(nodes[3], "pre-clean-kill")
+            docker("cp", nodes[3] + ":/custody/floors.json.state", str(args.evidence / "killed-state.json"))
+            if json.loads((args.evidence / "killed-state.json").read_text())["Phase"] != "RUNNING":
+                raise RuntimeError("kill did not precede CLEAN")
+            docker("rm", nodes[3])
+            containers.remove(nodes[3])
+            nodes[3] = start_node(3, "resume", "-refusal", isolated=True)
+            finish(nodes[3], expected=1)
+            log = collect(nodes[3], "killed-resume-refusal")
+            if "custody is not a valid orderly restart checkpoint" not in log or "server stopped cleanly" in log:
+                raise RuntimeError("killed resume failed for an unrelated reason")
+            for node in (1, 2):
+                stop_node(node, 3, f"final-normal-node-{node}")
+            phase("finish")
+            finish(controller)
+            log = collect(controller, "controller")
+            if "--- PASS: TestCurrentCustodyProcessGate" not in log or "--- SKIP:" in log:
+                raise RuntimeError("controller did not complete all required phases")
+            receipt["status"], receipt["skips"] = "PASS", 0
+            receipt["counts"] = {"controller_phases": sequence, "orderly_checkpoints": 9, "native_running_barrier": 1, "isolated_tls_probes": 2, "sigkill_exit_137": 1, "running_resume_exit_1": 1}
+            if sequence != 10:
+                raise RuntimeError("required controller phase count changed")
     except BaseException as exc:
         receipt["status"], receipt["error"] = "FAIL", repr(exc)
         print("FAIL", repr(exc), flush=True)

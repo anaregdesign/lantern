@@ -278,6 +278,13 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	if queryRoles != "" {
 		doc(filepath.Join(dir, "query-provision.json"), map[string]any{"membership_expires_at": n.manifest.ExpiresAt, "nodes": queryNodes})
 	}
+	if driver := os.Getenv("LANTERN_CURRENT_DATA_HA"); driver != "" {
+		provisioned, err := LoadCurrentProvisioning(filepath.Join(dir, "node-1", "node.json"))
+		if err != nil || len(hosts) != 3 || net.ParseIP(driver) == nil {
+			t.Fatal("data HA requires the current three-container fixture", err)
+		}
+		exportCurrentDataHA(t, dir, hosts, driver, provisioned.Profile())
+	}
 }
 
 func currentFixtureContainerHosts(t *testing.T) []string {

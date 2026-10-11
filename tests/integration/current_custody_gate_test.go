@@ -132,6 +132,10 @@ func TestCurrentCustodyProcessGate(t *testing.T) {
 		g.controls = append(g.controls, graphv1connect.NewLanternSecurityServiceClient(httpClient, endpoint))
 		g.data = append(g.data, graphv1connect.NewLanternServiceClient(httpClient, endpoint))
 	}
+	var mixed *mixedHAGate
+	if os.Getenv("LANTERN_CURRENT_DATA_HA") != "" {
+		mixed = newMixedHAGate(t, g, hosts)
+	}
 	custodyGateJSON(t, "/control/initialized.json", map[string]any{"issuer": issuer.URL, "hosts": hosts, "native_clock_injected": false})
 	previous := 0
 	for {
@@ -158,6 +162,10 @@ func TestCurrentCustodyProcessGate(t *testing.T) {
 		previous = command.Sequence
 		passed := t.Run(command.Phase, func(t *testing.T) {
 			g.t = t
+			if mixed != nil {
+				mixed.phase(t, command.Phase)
+				return
+			}
 			if !reflect.DeepEqual(provisioning, custodyGateProvisioning(t)) {
 				t.Fatal("original provisioning changed during intact lifecycle")
 			}
