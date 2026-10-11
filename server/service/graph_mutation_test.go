@@ -182,20 +182,45 @@ func TestGraphMutationMaximumItemsAndPreflightBytes(t *testing.T) {
 		item.GetAddEdge().ContribId[0] = byte(i + 1)
 		request.Items = append(request.Items, item)
 	}
+	if vertices, err := validateGraphMutationItems(request.Items, ""); err != nil || vertices != 2 {
+		t.Fatal("64-item shape rejected", vertices, err)
+	}
+	before := runtime.graph.SnapshotReplication()
 	response, err := svc.MutateGraph(t.Context(), request)
-	if err != nil || len(response.GetResults()) != 64 || response.Results[63].GetAddEdgeEffectiveWeight() != 124 {
-		t.Fatal(response, err)
+	wantEntries, wantDecisions := 64, 1
+	if err != nil {
+		// The item limit is not a latency guarantee. Race/coverage overhead
+		// may exhaust the unchanged pre-WAL budget; that must abort everything.
+		if connect.CodeOf(err) != connect.CodeResourceExhausted || !errors.Is(err, graphcache.ErrGraphMutationBudget) || response != nil {
+			t.Fatal(response, err)
+		}
+		if !reflect.DeepEqual(before, runtime.graph.SnapshotReplication()) {
+			t.Fatal("budget rejection published graph state")
+		}
+		wantEntries, wantDecisions = 0, 0
+	} else if len(response.GetResults()) != 64 || response.Results[63].GetAddEdgeEffectiveWeight() != 124 {
+		t.Fatal(response)
 	}
-	request.Items = append(request.Items, proto.Clone(request.Items[2]).(*pb.GraphMutationItem))
-	if _, err := svc.MutateGraph(t.Context(), request); err == nil {
-		t.Fatal("65 items accepted")
+	if runtime.log.Len() != wantDecisions || runtime.receipt.store.Stats().Entries != wantEntries || svc.LocalSeq(svc.clock.NodeID()) != uint64(wantDecisions) {
+		t.Fatal("maximum-size call published an incomplete decision")
 	}
-	request = graphMutationTestRequest(t, runtime, 0x69)
+	t.Logf("64-item call: decisions=%d receipts=%d", wantDecisions, wantEntries)
+	extra := proto.Clone(request.Items[2]).(*pb.GraphMutationItem)
+	extra.GetAddEdge().ContribId[0] = 64
+	request.Items = append(request.Items, extra)
+	request.ReceiptContext = publicReceiptContext(t, runtime, 0x69, 65)
+	if _, err := validateGraphMutationItems(request.Items, ""); err == nil {
+		t.Fatal("65-item shape accepted")
+	}
+	if _, err := svc.MutateGraph(t.Context(), request); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatal("65 items not rejected during preflight", err)
+	}
+	request = graphMutationTestRequest(t, runtime, 0x6a)
 	request.Items[0].GetPutVertex().Value = &pb.Vertex_Bytes{Bytes: make([]byte, graphMutationMaxBytes)}
-	if _, err := svc.MutateGraph(t.Context(), request); err == nil {
-		t.Fatal("oversized request accepted")
+	if _, err := svc.MutateGraph(t.Context(), request); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatal("oversized request not rejected during preflight", err)
 	}
-	if runtime.log.Len() != 1 || runtime.receipt.store.Stats().Entries != 64 {
+	if runtime.log.Len() != wantDecisions || runtime.receipt.store.Stats().Entries != wantEntries {
 		t.Fatal("preflight rejection published")
 	}
 }
