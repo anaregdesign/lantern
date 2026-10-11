@@ -1,23 +1,31 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/core/mutationlog"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	"github.com/anaregdesign/lantern/server/backup"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -122,10 +130,11 @@ type mixedHAOriginal struct {
 }
 
 type mixedHAGate struct {
-	g         *custodyProcessGate
-	proxy     *mixedHAProxy
-	sdks      []*client.Lantern
-	originals []*mixedHAOriginal
+	g          *custodyProcessGate
+	proxy      *mixedHAProxy
+	sdks       []*client.Lantern
+	originals  []*mixedHAOriginal
+	backupCuts [3]uint64
 }
 
 func newMixedHAGate(t *testing.T, g *custodyProcessGate, hosts []string) *mixedHAGate {
@@ -198,8 +207,12 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 		gap2 := m.write(t, 0, "gap-two", "orders:gap-two:", "two", 4, false)
 		for _, original := range []*mixedHAOriginal{gap1, gap2} {
 			status, err := m.sdks[2].GetReceiptStatus(t.Context(), original.identity.OperationIDs[0])
-			if err != nil || status.State != client.ReceiptNotYetObserved {
+			if connect.CodeOf(err) != connect.CodePermissionDenied || status.Receipt != nil {
 				t.Fatal("partition negative control", status, err)
+			}
+			_, err = m.g.data[2].GetVertex(t.Context(), securityWireRequest(m.g.machine, &pb.GetVertexRequest{Key: original.vertices[0].Key}))
+			if connect.CodeOf(err) != connect.CodeNotFound {
+				t.Fatal("partition graph negative control", err)
 			}
 		}
 		m.proxy.links(false, [2]int{0, 1})
@@ -219,7 +232,7 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 		m.proxy.links(false, [2]int{0, 2})
 		m.awaitVertex(t, 2, "orders:conflict:a", "newer-A")
 		status, err := m.sdks[2].GetReceiptStatus(t.Context(), conflict.identity.OperationIDs[0])
-		if err != nil || status.State != client.ReceiptNotYetObserved {
+		if connect.CodeOf(err) != connect.CodePermissionDenied || status.Receipt != nil {
 			t.Fatal("C received B before deliberate reconnect", status, err)
 		}
 		m.proxy.links(true)
@@ -233,6 +246,10 @@ func (m *mixedHAGate) phase(t *testing.T, phase string) {
 			}
 		}
 		t.Log("gap/relay caught up; B-before-A and A-before-B converge per effect with immutable B result")
+	case "mixed-backup-cut":
+		m.captureBackups(t)
+	case "mixed-closed-wal":
+		m.inspectClosedWALs(t)
 	case "mixed-lost-response":
 		m.write(t, 0, "lost-response", "orders:lost:", "retained", 7, true)
 		for _, original := range m.originals {
@@ -283,13 +300,20 @@ func (m *mixedHAGate) write(t *testing.T, origin int, name, prefix, value string
 	original := &mixedHAOriginal{name: name, origin: origin, identity: identity, vertices: []client.VertexInput{{Key: prefix + "a", Value: value}, {Key: prefix + "b", Value: value}}, edges: []client.EdgeAddReceiptInput{{Edge: client.EdgeInput{Tail: prefix + "a", Head: prefix + "b", Weight: weight}, ContribID: id}}}
 	if lose {
 		drop := &dropFirstReceiptResponseTransport{inner: m.g.http.Transport, pathSuffix: "/MutateGraph"}
-		oneShot, e := client.NewLantern(m.g.urls[origin], client.WithHTTPClient(&http.Client{Transport: drop, Timeout: 6 * time.Second}), client.WithAuthToken(m.g.machine))
+		counter := &mixedHACountTransport{inner: drop}
+		oneShot, e := client.NewLantern(m.g.urls[origin], client.WithHTTPClient(&http.Client{Transport: counter, Timeout: 6 * time.Second}), client.WithAuthToken(m.g.machine))
 		if e != nil {
 			t.Fatal(e)
 		}
 		defer func() { _ = oneShot.Close() }()
 		if _, e = oneShot.MutateGraph(t.Context(), original.vertices, original.edges, identity); e == nil {
 			t.Fatal("lost response returned success")
+		}
+		if !drop.dropped.Load() {
+			t.Fatal("no committed response was actually discarded")
+		}
+		if counter.calls.Load() != 1 {
+			t.Fatal("uncertain mutation automatically resent", counter.calls.Load())
 		}
 		// No retry or replacement ID. Resolve all members first.
 		m.awaitReceipts(t, original, origin)
@@ -439,6 +463,12 @@ func (m *mixedHAGate) authorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This known receipt is disclosed before revocation under the same token.
+	before, err := m.g.data[2].GetReceiptStatus(t.Context(), securityWireRequest(m.g.token, &pb.GetReceiptStatusRequest{OperationId: id[:]}))
+	if err != nil || before.Msg.GetStatus().GetReceipt() == nil {
+		t.Fatal("revocation positive control", err)
+	}
+	request.Items[1].GetAddEdge().Edge.Head = "orders:relay:a"
 	change := &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: m.g.issuer.provider.URL, Subject: "admin"}, RoleId: "wire_data"}}}
 	prepared, err := m.g.controls[0].PrepareSecurityChanges(t.Context(), securityWireRequest(m.g.token, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: principal.Version.CurrentProfile, ExpectedCut: principal.Version.CurrentCut, Changes: []*pb.SecurityChange{change}}}))
 	if err != nil {
@@ -450,10 +480,153 @@ func (m *mixedHAGate) authorization(t *testing.T) {
 		if outcome.GetDisposition() != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
 			t.Fatal("revocation not applied")
 		}
+		cap, e := m.g.data[i].GetReceiptCapability(t.Context(), securityWireRequest(m.g.machine, &pb.GetReceiptCapabilityRequest{}))
+		if e != nil {
+			t.Fatal(e)
+		}
+		request.ReceiptContext.Endpoint = cap.Msg.Endpoint
 		_, err = m.g.data[i].MutateGraph(t.Context(), securityWireRequest(m.g.token, request))
 		if connect.CodeOf(err) != connect.CodePermissionDenied {
 			t.Fatal("revoked mixed mutation", i, err)
 		}
+		_, err = m.g.data[i].GetReceiptStatus(t.Context(), securityWireRequest(m.g.token, &pb.GetReceiptStatusRequest{OperationId: id[:]}))
+		if connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatal("revoked receipt disclosure", i, err)
+		}
+	}
+}
+
+type mixedHACountTransport struct {
+	inner http.RoundTripper
+	calls atomic.Int32
+}
+
+func (c *mixedHACountTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Path == graphv1connect.LanternServiceMutateGraphProcedure {
+		c.calls.Add(1)
+	}
+	return c.inner.RoundTrip(r)
+}
+
+// Select one already committed, validated backup before the final mutation.
+// Copies preserve its exact bytes; all original sets/WALs remain untouched.
+// Restart consumes this earlier cut plus its real, later WAL suffix.
+func (m *mixedHAGate) captureBackups(t *testing.T) {
+	t.Helper()
+	var epoch mutationreceipt.Epoch
+	for i := range epoch {
+		epoch[i] = 0x42
+	}
+	policy := mutationreceipt.Config{Epoch: epoch, Retention: time.Hour, MaxEntries: 128, MaxBytes: 1048576}
+	for node := range m.sdks {
+		source, target := fmt.Sprintf("/archive-%d", node+1), fmt.Sprintf("/restore-%d", node+1)
+		instance := fmt.Sprintf("mixed-node-%d", node+1)
+		deadline := time.Now().Add(20 * time.Second)
+		var selected backup.ReceiptBackupSetEvidence
+		for {
+			evidence, err := backup.LoadLatestReceiptBackupSet(source, instance)
+			if err == nil {
+				restore, e := backup.PrepareRestartReceiptStartupRestore(evidence, policy)
+				if e != nil {
+					t.Fatal("invalid produced backup", e)
+				}
+				if len(restore.Capture.Receipts.Receipts) == 3*len(m.originals) && len(restore.Capture.Origins) == 2 {
+					selected = evidence
+					break
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("complete mixed backup not produced", node, err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		paths, err := filepath.Glob(filepath.Join(source, "*.set.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		copied := false
+		for _, path := range paths {
+			raw, e := os.ReadFile(path)
+			if e != nil {
+				t.Fatal(e)
+			}
+			var manifest struct {
+				SetID   string `json:"set_id"`
+				Members []struct {
+					Name string `json:"name"`
+				} `json:"members"`
+			}
+			if json.Unmarshal(raw, &manifest) != nil {
+				t.Fatal("invalid produced manifest")
+			}
+			if manifest.SetID != fmt.Sprintf("%020d", selected.SetID) {
+				continue
+			}
+			for _, member := range manifest.Members {
+				if filepath.Base(member.Name) != member.Name {
+					t.Fatal("unsafe member")
+				}
+				memberRaw, e := os.ReadFile(filepath.Join(source, member.Name))
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = createPrivateTestFile(filepath.Join(target, member.Name), memberRaw); e != nil {
+					t.Fatal(e)
+				}
+			}
+			if e = createPrivateTestFile(filepath.Join(target, filepath.Base(path)), raw); e != nil {
+				t.Fatal(e)
+			}
+			copied = true
+		}
+		frozen, err := backup.LoadLatestReceiptBackupSet(target, instance)
+		if !copied || err != nil || frozen.WALCut != selected.WALCut || !bytes.Equal(frozen.Archive, selected.Archive) {
+			t.Fatal("selected backup changed", err)
+		}
+		m.backupCuts[node] = selected.WALCut.Seq
+		t.Logf("node=%d validated frozen backup cut=%d receipts=%d origins=2", node+1, selected.WALCut.Seq, 3*len(m.originals))
+	}
+}
+
+func (m *mixedHAGate) inspectClosedWALs(t *testing.T) {
+	t.Helper()
+	for node := range m.sdks {
+		groups := make(map[string]bool)
+		var tip uint64
+		err := mutationlog.ReplayFileWAL(fmt.Sprintf("/journal-%d/business.wal", node+1), func(raw []byte) (mutationlog.MutationOp, error) { return append([]byte(nil), raw...), nil }, func(entry mutationlog.Entry) error {
+			tip = entry.Seq
+			raw := entry.Op.([]byte)
+			if len(raw) < 16 || string(raw[:8]) != "LRWU\x0a\x00\x00\x00" || int(binary.BigEndian.Uint32(raw[12:16])) != len(raw)-16 {
+				return errors.New("unexpected WAL union")
+			}
+			if raw[8] != 11 {
+				return nil
+			}
+			var mutation pb.Mutation
+			if err := proto.Unmarshal(raw[16:], &mutation); err != nil {
+				return err
+			}
+			call := mutation.GetOp().GetGraphMutation()
+			if len(call.GetItems()) != 3 || mutation.Seq == 0 || len(mutation.Origin) != 16 {
+				return errors.New("incomplete mixed WAL bundle")
+			}
+			group := string(call.Items[0].Receipt.LogicalCallId)
+			if groups[group] {
+				return errors.New("duplicate mixed WAL decision")
+			}
+			groups[group] = true
+			for i, item := range call.Items {
+				if item.Receipt.ItemCount != 3 || item.Receipt.ItemIndex != uint32(i) || string(item.Receipt.LogicalCallId) != group {
+					return errors.New("split receipt/WAL group")
+				}
+			}
+			t.Logf("node=%d mixed WAL local=%d origin=%x origin_seq=%d items=3 projection=%d", node+1, entry.Seq, mutation.Origin, mutation.Seq, len(call.Projection))
+			return nil
+		})
+		if err != nil || len(groups) != len(m.originals) || m.backupCuts[node] == 0 || tip <= m.backupCuts[node] {
+			t.Fatal("closed WAL or snapshot-tail evidence", node, len(groups), tip, m.backupCuts[node], err)
+		}
+		t.Logf("node=%d closed WAL tip=%d selected snapshot=%d positive tail=%d", node+1, tip, m.backupCuts[node], tip-m.backupCuts[node])
 	}
 }
 

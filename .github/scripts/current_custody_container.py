@@ -137,6 +137,8 @@ def main():
             "--mount", volume_mount(custodies[node], "/custody"),
             "--mount", f"type=bind,src={args.server.resolve()},dst=/server,readonly",
             "--mount", f"type=bind,src={args.driver.resolve()},dst=/probe,readonly"]
+        if args.mixed_ha:
+            values += ["--mount", volume_mount(archives[node] if mode == "fresh" else restores[node], "/backup")]
         settings = {
             "LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_PROFILE": "current-v2",
             "LANTERN_SECURITY_CURRENT_CONFIG_FILE": f"/provision/node-{node}/node.json",
@@ -167,6 +169,11 @@ def main():
                 "LANTERN_PUMP_BACKOFF_MAX_MS": "1000",
                 "LANTERN_PEER_DISCOVERY_INTERVAL_MS": "500",
                 "LANTERN_ANTI_ENTROPY_INTERVAL_MS": "1000",
+                "LANTERN_BACKUP_ENABLED": "true", "LANTERN_BACKUP_DIR": "/backup",
+                "LANTERN_BACKUP_INTERVAL": "5s", "LANTERN_BACKUP_RETAIN": "3",
+                "LANTERN_BACKUP_INSTANCE_ID": f"mixed-node-{node}",
+                "LANTERN_BACKUP_RESTORE_ON_START": "true" if mode == "resume" else "false",
+                "LANTERN_BACKUP_RESTORE_REQUIRED": "true" if mode == "resume" else "false",
             })
         for key, value in settings.items():
             values += ["--env", key + "=" + value]
@@ -220,8 +227,16 @@ def main():
         provision, control = make_volume("provision"), make_volume("control")
         journals = {node: make_volume(f"node-{node}-journal") for node in (1, 2, 3)}
         custodies = {node: make_volume(f"node-{node}-custody") for node in (1, 2, 3)}
+        evidence_mounts = []
+        if args.mixed_ha:
+            archives = {node: make_volume(f"node-{node}-archive") for node in (1, 2, 3)}
+            restores = {node: make_volume(f"node-{node}-restore") for node in (1, 2, 3)}
+            for node in (1, 2, 3):
+                evidence_mounts += ["--mount", volume_mount(journals[node], f"/journal-{node}", readonly=True),
+                    "--mount", volume_mount(archives[node], f"/archive-{node}", readonly=True),
+                    "--mount", volume_mount(restores[node], f"/restore-{node}")]
         controller = args.name + "-controller"
-        docker(*(common(controller) + ["--network", cluster, "--ip", driver_ip,
+        docker(*(common(controller) + evidence_mounts + ["--network", cluster, "--ip", driver_ip,
             "--mount", volume_mount(provision, "/provision"), "--mount", volume_mount(control, "/control"),
             "--mount", f"type=bind,src={args.exporter.resolve()},dst=/exporter,readonly", "--mount", f"type=bind,src={args.driver.resolve()},dst=/driver,readonly",
             "--tmpfs", "/journal:rw,nosuid,nodev,size=1m,mode=1777", "--tmpfs", "/custody:rw,nosuid,nodev,size=1m,mode=1777",
@@ -235,10 +250,11 @@ def main():
         if args.mixed_ha:
             data_metadata = marker(controller, "/provision/data-metadata.json")
             nodes = {node: start_node(node, "fresh") for node in (1, 2, 3)}
-            for selected in ("mixed-relay-cdc", "mixed-gap-conflict", "mixed-lost-response"):
+            for selected in ("mixed-relay-cdc", "mixed-gap-conflict", "mixed-backup-cut", "mixed-lost-response"):
                 phase(selected)
             for node in (1, 2, 3):
                 stop_node(node, 1, f"mixed-first-clean-{node}")
+            phase("mixed-closed-wal")
             nodes = {node: start_node(node, "resume") for node in (1, 2, 3)}
             phase("mixed-restarted")
             phase("mixed-authorization")
@@ -247,7 +263,7 @@ def main():
             phase("finish")
             finish(controller)
             log = collect(controller, "controller")
-            if "--- PASS: TestCurrentCustodyProcessGate" not in log or "--- SKIP:" in log or sequence != 6:
+            if "--- PASS: TestCurrentCustodyProcessGate" not in log or "--- SKIP:" in log or sequence != 8:
                 raise RuntimeError("mixed HA controller did not execute every selected phase")
             receipt["status"], receipt["skips"] = "PASS", 0
             receipt["counts"] = {"mixed_phases": sequence, "orderly_checkpoints": 6, "independent_product_processes": 3}
