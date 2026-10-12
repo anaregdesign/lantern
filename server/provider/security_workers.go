@@ -67,8 +67,11 @@ func (w *SecurityWorkers) Run(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			count++
-			if w.peer != nil && count%4 == 0 {
-				if w.peer.ReloadMembership() != nil {
+			if count%4 == 0 {
+				if w.runtime != nil && w.runtime.current != nil && w.runtime.current.ReloadMembership(ctx) != nil {
+					w.logger.Warn("control membership reload rejected")
+				}
+				if w.peer != nil && w.peer.ReloadMembership() != nil {
 					w.logger.Warn("peer membership reload rejected", "reason", w.peer.store.FaultReason())
 				}
 			}

@@ -35,6 +35,7 @@ import (
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
 	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -65,12 +66,20 @@ func (w currentExportBoundaryWriter) Write(payload []byte) (int, error) {
 func (w currentExportBoundaryWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func TestCurrentSecurityPublicNativeGate(t *testing.T) {
-	if os.Getenv("LANTERN_CURRENT_PUBLIC_GATE") != "1" {
+	renewal := os.Getenv("LANTERN_CURRENT_MEMBERSHIP_GATE") == "1"
+	if os.Getenv("LANTERN_CURRENT_PUBLIC_GATE") != "1" && !renewal {
 		t.Skip("requires configured native time; explicit container gate")
 	}
 	f := newOIDCWireIssuer(t)
 	f.realClock = true
 	dir := t.TempDir()
+	if renewal {
+		var err error
+		dir, err = filepath.EvalSymlinks(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	var command *exec.Cmd
 	if binary := os.Getenv("LANTERN_CURRENT_FIXTURE_EXPORTER"); binary != "" {
 		command = exec.CommandContext(t.Context(), binary, "-test.run=^TestCurrentProvisioningExportPublicFixture$", "-test.v")
@@ -92,6 +101,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	var controls []graphv1connect.LanternSecurityServiceClient
 	var runtimes []*provider.SecurityRuntime
 	var stops []func()
+	var workerStops []func()
 	var exportBoundary atomic.Pointer[currentExportBoundary]
 	transport := &http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}
 	startNode := func(id int, mode string) {
@@ -117,6 +127,40 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		t.Cleanup(closeRuntime)
 		runtimes = append(runtimes, runtime)
 		stops = append(stops, closeRuntime)
+		var workload *provider.PeerIdentityRuntime
+		if renewal {
+			var config provider.PeerPlaneConfig
+			raw, e := os.ReadFile(filepath.Join(dir, fmt.Sprintf("node-%d/peer.json", id)))
+			if e != nil || json.Unmarshal(raw, &config) != nil {
+				t.Fatal("data workload input", e)
+			}
+			config.Identity.StateMode = mode
+			var closePeer func()
+			workload, closePeer, err = provider.NewCurrentConfiguredPeerIdentity(config, runtime)
+			if err != nil {
+				t.Fatal("native data workload", err)
+			}
+			t.Cleanup(closePeer)
+			if _, err = provider.NewConfiguredSecurityPeer(runtime, workload); err != nil {
+				t.Fatal(err)
+			}
+			worker := provider.NewSecurityWorkers(runtime, workload, nil, readiness.NewGate(100, false, nil), slog.New(slog.NewTextHandler(io.Discard, nil)))
+			workerCtx, stopWorker := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- worker.Run(workerCtx) }()
+			var once sync.Once
+			stop := func() {
+				once.Do(func() {
+					stopWorker()
+					if err := <-done; err != nil {
+						t.Error(err)
+					}
+					closePeer()
+				})
+			}
+			workerStops = append(workerStops, stop)
+			t.Cleanup(stop)
+		}
 		svc := data.NewLanternService(nil)
 		if id == 1 {
 			svc.WithTombstoneTTL(time.Hour)
@@ -142,7 +186,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		public, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, nil, nil, data, svc, certified)
+		public, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, workload, nil, data, svc, certified)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -193,6 +237,14 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			case <-time.After(100 * time.Millisecond):
 			}
 		}
+	}
+	if renewal {
+		runCurrentMembershipGate(t, f, dir, servers, runtimes, workerStops, func(id int) (*httptest.Server, *provider.SecurityRuntime, func()) {
+			startNode(id, "resume")
+			last := len(runtimes) - 1
+			return servers[last], runtimes[last], workerStops[last]
+		})
+		return
 	}
 	t.Log("production native constructor: independently provisioned three voters, two origins, observer; no injected clock or H")
 	token := f.token(t, "admin", func(c map[string]any) {

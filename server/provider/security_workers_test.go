@@ -6,9 +6,11 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
+	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/readiness"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -51,6 +53,63 @@ func TestSecurityWorkersDrivePermissionAndJoinOnShutdown(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("policy workers did not join")
+	}
+}
+
+func TestSecurityWorkersReloadDataDespiteControlFailureAndExpiredReadiness(t *testing.T) {
+	clock := &securityTestClock{now: time.Now()}
+	public, key, _ := ed25519.GenerateKey(rand.Reader)
+	m := peerauth.Manifest{Version: 1, Domain: peerauth.Domain{Deployment: [16]byte{1}, NamespaceFormat: "namespaced-v1", AuthMode: "off", TrustDigest: [32]byte{2}}, IssuedAt: clock.Now(), ExpiresAt: clock.Now().Add(time.Minute), Members: []peerauth.Member{{ID: [16]byte{3}, Identity: "spiffe://worker.test/self", SPKI: [32]byte{4}, Origin: "https://127.0.0.1:17443"}}}
+	raw, err := peerauth.SignManifest(m, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	store, err := peerauth.CreateStore(peerauth.StoreOptions{Path: filepath.Join(dir, "checkpoint"), Key: public, Domain: m.Domain, Now: clock.Now}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	input := filepath.Join(dir, "input")
+	peer := &PeerIdentityRuntime{store: store, config: PeerIdentityConfig{Now: clock.Now, SelfIdentity: m.Members[0].Identity, ManifestFile: input}, selfExpiry: clock.Now().Add(time.Hour)}
+	clock.advance(2 * time.Minute)
+	if peer.CheckWorkload(t.Context()) == nil {
+		t.Fatal("old membership still live")
+	}
+	m.Version++
+	m.IssuedAt = clock.Now()
+	m.ExpiresAt = clock.Now().Add(time.Minute)
+	raw, err = peerauth.SignManifest(m, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(input, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	gate := readiness.NewGate(100, false, nil)
+	worker := NewSecurityWorkers(&SecurityRuntime{mode: "oidc", current: &security.CurrentAuthority{}, peer: peer}, peer, nil, gate, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for peer.CheckWorkload(t.Context()) != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("control failure blocked expired data reload")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if gate.Ready() {
+		t.Fatal("reload success manufactured readiness")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker failed to join")
 	}
 }
 

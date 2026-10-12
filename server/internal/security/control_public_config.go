@@ -75,6 +75,7 @@ type CurrentProvisioning struct {
 	source    string
 	binding   [32]byte
 	paths     []string
+	manifest  string
 }
 
 func currentDocument(path string, limit int64, target any) ([]byte, error) {
@@ -198,7 +199,7 @@ func LoadCurrentProvisioning(path string) (*CurrentProvisioning, error) {
 	}{sha256.Sum256(nodeRaw), node.GenesisSHA256, paths, floorsPath})
 	return &CurrentProvisioning{config: c, originKey: node.OriginKeyFile, floors: floorsPath,
 		listen: node.ListenAddress, profile: profile, source: path,
-		binding: binding, paths: paths}, nil
+		binding: binding, paths: paths, manifest: paths[3]}, nil
 }
 
 func (p *CurrentProvisioning) Profile() CurrentProfile {
@@ -237,7 +238,35 @@ func OpenCurrentAuthority(ctx context.Context, p *CurrentProvisioning, mode, bro
 		return nil, errors.Join(err, listener.Close(), o.network.Close())
 	}
 	transferred = true
-	return &CurrentAuthority{origin: o, custody: custody}, nil
+	return &CurrentAuthority{origin: o, custody: custody, manifest: p.manifest}, nil
+}
+
+// ReloadMembership rereads only the fixed private manifest input. Readiness and
+// the previous interval are deliberately not preconditions: an expired owner
+// must still be able to receive a higher revision. Apply owns all acceptance,
+// persistence and permanent-fence decisions under the existing kernel gate.
+func (o *CurrentAuthority) ReloadMembership(ctx context.Context) error {
+	if o == nil || o.origin == nil || o.origin.network == nil || !o.origin.network.enterCall() {
+		return ErrAuthorityUnavailable
+	}
+	defer o.origin.network.calls.Done() // Join the file read as well as Refresh.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	path, err := currentCustodyPath(o.manifest)
+	if err != nil || path != o.manifest {
+		return errS3AConfig
+	}
+	raw, err := s3aReadProvisioned(path, peerauth.MaxManifestBytes)
+	if err != nil {
+		return err
+	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	// Refresh retains its own enterCall and gate. Close may refuse it after the
+	// read; an already-started checkpoint is never detached on cancellation.
+	return o.origin.network.Refresh(raw)
 }
 
 // Close aborts ownership without declaring a normal restart checkpoint. Wire

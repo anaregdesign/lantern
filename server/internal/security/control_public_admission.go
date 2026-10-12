@@ -35,6 +35,7 @@ func (p CurrentProfile) Binding() string {
 // signer, arbitrary clock, decoded H constructor, journal handle or ready bool.
 // Only the production constructor attaches an owned current origin to it.
 type CurrentAuthority struct {
+	manifest     string // Canonical input retained from custody-revalidated provisioning.
 	origin       *authorityOriginOwner
 	observations currentPublicObservations
 	custody      *currentCustody
