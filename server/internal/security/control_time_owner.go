@@ -6,8 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
 // This fixed profile is conditional on honest conservative source reporting,
@@ -36,6 +39,9 @@ type authorityCurrentTime struct {
 
 type authorityTimeOwner struct {
 	mu              sync.Mutex
+	traceID         uint64
+	installReason   string
+	traceState      decisiontrace.Transition
 	producer        *authorityTimeProducer
 	premises        authorityTimePremises
 	profile         [32]byte
@@ -50,18 +56,51 @@ type authorityTimeOwner struct {
 
 func startAuthorityTimeOwner(producer *authorityTimeProducer) *authorityTimeOwner {
 	ctx, cancel := context.WithCancel(context.Background())
-	o := &authorityTimeOwner{producer: producer, premises: authorityOperationalTimePremises(), profile: sha256.Sum256([]byte(authorityTimeProfileDescription)), cancel: cancel, done: make(chan struct{})}
+	o := &authorityTimeOwner{traceID: decisiontrace.NextID(), producer: producer, premises: authorityOperationalTimePremises(), profile: sha256.Sum256([]byte(authorityTimeProfileDescription)), cancel: cancel, done: make(chan struct{})}
 	go o.run(ctx, producer.measure)
 	return o
+}
+
+// Only a qualified installation replenishes this process-local budget. The
+// exponential state keeps advancing even when one of two waits is shortened.
+// Timers/credits are scheduling inputs only, never evidence of current time.
+type authorityTimeRetry struct {
+	backoff time.Duration
+	credits uint8
+}
+
+func (s *authorityTimeRetry) delay(err error, refresh time.Duration) time.Duration {
+	if err == nil {
+		s.backoff, s.credits = 0, 2
+		return refresh
+	}
+	if s.backoff == 0 {
+		s.backoff = 32 * time.Second
+	} else {
+		s.backoff = min(s.backoff*2, 1024*time.Second)
+	}
+	if errors.Is(err, errAuthorityTimeRate) {
+		s.backoff, s.credits = 1024*time.Second, 0
+		return s.backoff
+	}
+	var transport *authorityTimeTransportError
+	if !errors.As(err, &transport) {
+		s.credits = 0
+	} else if s.credits > 0 && (s.backoff == 64*time.Second || s.backoff == 128*time.Second) {
+		s.credits--
+		return 32 * time.Second
+	}
+	return s.backoff
 }
 
 // Timers schedule work only. Authorization expiry uses native elapsed bounds.
 // There is never a backlog or catch-up burst after a scheduler pause.
 func (o *authorityTimeOwner) run(ctx context.Context, measure func(context.Context) (authorityTimeMeasurement, error)) {
 	defer close(o.done)
-	backoff := time.Duration(0)
+	var retry authorityTimeRetry
 	for {
 		m, err := measure(ctx)
+		probe := o.producer.probeObservation()
 		o.mu.Lock()
 		if o.closed || o.failed || ctx.Err() != nil {
 			o.mu.Unlock()
@@ -69,6 +108,7 @@ func (o *authorityTimeOwner) run(ctx context.Context, measure func(context.Conte
 		}
 		if err == nil {
 			err = o.installLocked(m)
+			probe.Stage = o.installReason
 		}
 		o.lastError = err
 		if errors.Is(err, errAuthorityTimeDenied) {
@@ -79,29 +119,28 @@ func (o *authorityTimeOwner) run(ctx context.Context, measure func(context.Conte
 			o.anchor = nil
 		}
 		failed := o.failed
+		generation, hasAnchor := o.sequence, o.anchor != nil
+		probe.Kind, probe.Object, probe.Anchor, probe.HasAnchor = "time_probe", o.traceID, generation, hasAnchor
+		if err == nil {
+			probe.Reason = "installed"
+		} else if probe.Reason == "ok" {
+			probe.Reason = "install_rejected"
+		}
 		o.mu.Unlock()
 		if failed {
+			probe.Reason = "native_terminal"
+			decisiontrace.Emit(probe)
 			return
-		}
-		if err == nil {
-			backoff = 0
-		} else if backoff == 0 {
-			backoff = 32 * time.Second
-		} else {
-			backoff = min(backoff*2, 1024*time.Second)
-		}
-		if errors.Is(err, errAuthorityTimeRate) {
-			backoff = 1024 * time.Second
 		}
 		var random [8]byte
 		if _, err := rand.Read(random[:]); err != nil {
 			o.fail()
 			return
 		}
-		delay := 16*time.Second + time.Duration(binary.BigEndian.Uint64(random[:])%uint64(4*time.Second))
-		if backoff > delay {
-			delay = backoff
-		}
+		refresh := 16*time.Second + time.Duration(binary.BigEndian.Uint64(random[:])%uint64(4*time.Second))
+		delay := retry.delay(err, refresh)
+		probe.Delay = int64(delay)
+		decisiontrace.Emit(probe)
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -116,21 +155,25 @@ func (o *authorityTimeOwner) run(ctx context.Context, measure func(context.Conte
 // verified before publication. A new interval cannot silently recenter a live
 // contradictory anchor. Expired anchors never supply authority during repair.
 func (o *authorityTimeOwner) installLocked(m authorityTimeMeasurement) error {
+	o.installReason = "binding"
 	if o.closed || o.failed || m.source != o.producer.source || m.sequence <= o.sequence {
 		return errAuthorityTime
 	}
-	a, err := calculateAuthorityTime(m, o.premises)
+	a, reason, err := calculateAuthorityTimeObserved(m, o.premises)
+	o.installReason = reason
 	if err != nil {
 		o.anchor = nil
 		return errAuthorityTimeSourceFault
 	}
+	o.installReason = "native_install"
 	now, err := o.producer.sample()
 	if err != nil {
 		o.failed = true
 		o.anchor = nil
 		return err
 	}
-	if _, err := a.atSample(now); err != nil {
+	if _, check, err := a.atSampleObserved(now); err != nil {
+		o.installReason = check.Reason
 		return err
 	}
 	if o.anchor != nil {
@@ -138,32 +181,58 @@ func (o *authorityTimeOwner) installLocked(m authorityTimeMeasurement) error {
 		if err == nil && (old.high < a.utc.low || a.utc.high < old.low) {
 			o.failed = true
 			o.anchor = nil
+			o.installReason = "contradiction"
 			return errAuthorityTime
 		}
 	}
 	o.anchor = &a
 	o.lastObservation = &m
 	o.sequence = m.sequence
+	o.installReason = "installed"
 	return nil
 }
 
 func (o *authorityTimeOwner) current() (authorityCurrentTime, error) {
+	now, _, err := o.currentObserved()
+	return now, err
+}
+func (o *authorityTimeOwner) currentObserved() (result authorityCurrentTime, event decisiontrace.Event, resultErr error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.closed || o.failed || o.anchor == nil {
-		return authorityCurrentTime{}, errAuthorityTime
+	event = decisiontrace.Event{Kind: "time_current", Object: o.traceID, Check: decisiontrace.NextID(), Anchor: o.sequence, HasAnchor: o.anchor != nil}
+	defer func() {
+		event.Kind, event.Object, event.Anchor = "time_current", o.traceID, o.sequence
+		event.NativeReason = event.Reason
+		if decisiontrace.Enabled() {
+			o.traceState.Emit(fmt.Sprintf("%s/%d", event.Reason, event.Anchor), event)
+		}
+	}()
+	if o.closed {
+		event.Reason = "closed"
+		return result, event, errAuthorityTime
+	}
+	if o.failed {
+		event.Reason = "native_terminal"
+		return result, event, errAuthorityTime
+	}
+	if o.anchor == nil {
+		event.Reason = "no_anchor"
+		return result, event, errAuthorityTime
 	}
 	now, err := o.producer.sample()
 	if err != nil {
 		o.failed = true
 		o.anchor = nil
-		return authorityCurrentTime{}, err
+		event.Reason = "native_sample"
+		return result, event, err
 	}
-	r, err := o.anchor.atSample(now)
+	r, e, err := o.anchor.atSampleObserved(now)
+	e.Check = event.Check
+	event = e
 	if err != nil {
-		return authorityCurrentTime{}, err
+		return result, event, err
 	}
-	return authorityCurrentTime{o, now, r, o.profile, o.sequence}, nil
+	return authorityCurrentTime{o, now, r, o.profile, o.sequence}, event, nil
 }
 
 func (o *authorityTimeOwner) elapsed(a, b authorityCurrentTime) (authorityTimeRange, error) {

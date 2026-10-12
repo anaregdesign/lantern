@@ -5,18 +5,29 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
 var (
 	errAuthorityTimeBusy   = errors.New("time measurement already in progress")
 	errAuthorityTimeClosed = errors.New("time measurement producer closed")
 )
+
+// Only errors returned by DNS, dial, Write or Read get this private marker.
+// It identifies a boundary, not a claim that the failure is transient. Native,
+// packet, source and installation failures must never acquire retry credits.
+type authorityTimeTransportError struct{ cause error }
+
+func (e *authorityTimeTransportError) Error() string { return e.cause.Error() }
+func (e *authorityTimeTransportError) Unwrap() error { return e.cause }
 
 type authorityTimeSource struct {
 	host          string
@@ -78,6 +89,8 @@ type authorityTimeProducer struct {
 	workers      sync.WaitGroup
 	sequence     uint64
 	addressTurn  uint64
+	attempts     uint64
+	lastProbe    decisiontrace.Event
 	source       authorityTimeSource
 	sample       func() (authorityTimeStamp, error)
 }
@@ -89,6 +102,14 @@ func (p *authorityTimeProducer) measure(ctx context.Context) (authorityTimeMeasu
 // The address seam permits local UDP fault tests. Production composition, when
 // qualified, must use measure and the exact configured source, never this seam.
 func (p *authorityTimeProducer) exchange(ctx context.Context, address string) (authorityTimeMeasurement, error) {
+	return p.exchangeIO(ctx, address, net.DefaultResolver.LookupNetIP, (&net.Dialer{}).DialContext)
+}
+
+// Private deterministic boundary seam; production always uses exchange above.
+func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
+	lookup func(context.Context, string, string) ([]netip.Addr, error),
+	dial func(context.Context, string, string) (net.Conn, error),
+) (measurement authorityTimeMeasurement, resultErr error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -109,12 +130,33 @@ func (p *authorityTimeProducer) exchange(ctx context.Context, address string) (a
 	if address == "" {
 		p.addressTurn++
 	}
+	p.attempts++
+	probe := decisiontrace.Event{Attempt: p.attempts, Turn: addressTurn, Stage: "dns", Reason: "ok"}
+	started := time.Now()
 	p.workers.Add(1)
 	p.mu.Unlock()
 	defer func() {
 		cancel()
 		p.mu.Lock()
 		p.cancel, p.busy = nil, false
+		probe.Elapsed = int64(time.Since(started))
+		if resultErr != nil {
+			probe.Reason = probe.Stage
+			var ne net.Error
+			if probe.Stage == "read" && (errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.As(resultErr, &ne) && ne.Timeout()) {
+				probe.Reason = "read_timeout"
+			}
+			if errors.Is(resultErr, errAuthorityTimeRate) {
+				probe.Reason = "rate"
+			}
+			if errors.Is(resultErr, errAuthorityTimeDenied) {
+				probe.Reason = "deny"
+			}
+			if errors.Is(resultErr, errAuthorityTimeSourceFault) {
+				probe.Reason = "source_fault"
+			}
+		}
+		p.lastProbe = probe
 		p.mu.Unlock()
 		p.workers.Done()
 	}()
@@ -122,9 +164,19 @@ func (p *authorityTimeProducer) exchange(ctx context.Context, address string) (a
 		// UDP connect has no response-driven happy-eyeballs fallback. Keep one
 		// datagram per scheduled attempt, rotating the exact configured host's
 		// bounded DNS answers on normal backoff instead of pinning a silent one.
-		answers, err := net.DefaultResolver.LookupNetIP(ctx, "ip", p.source.host)
+		answers, err := lookup(ctx, "ip", p.source.host)
 		if err != nil {
-			return authorityTimeMeasurement{}, err
+			return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
+		}
+		if decisiontrace.Enabled() {
+			normalized := make([]string, 0, len(answers))
+			for _, a := range answers {
+				normalized = append(normalized, a.Unmap().String())
+			}
+			slices.Sort(normalized)
+			normalized = slices.Compact(normalized)
+			probe.DNSCount = len(normalized)
+			probe.DNSDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(normalized, "\n"))))
 		}
 		address, err = authorityTimeEndpoint(answers, addressTurn)
 		if err != nil {
@@ -132,6 +184,16 @@ func (p *authorityTimeProducer) exchange(ctx context.Context, address string) (a
 		}
 	}
 
+	if decisiontrace.Enabled() {
+		probe.EndpointDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(address)))
+		host, _, _ := net.SplitHostPort(address)
+		ip, _ := netip.ParseAddr(host)
+		probe.Family = "ipv6"
+		if ip.Is4() {
+			probe.Family = "ipv4"
+		}
+	}
+	probe.Stage = "random"
 	var request [48]byte
 	request[0] = 4<<3 | 3
 	if _, err := rand.Read(request[40:48]); err != nil {
@@ -143,9 +205,10 @@ func (p *authorityTimeProducer) exchange(ctx context.Context, address string) (a
 	}
 	// Connected UDP binds the response endpoint; the ephemeral local port is
 	// selected by the OS (RFC 9109). Correlation is not authentication.
-	conn, err := (&net.Dialer{}).DialContext(ctx, "udp", address)
+	probe.Stage = "dial"
+	conn, err := dial(ctx, "udp", address)
 	if err != nil {
-		return authorityTimeMeasurement{}, err
+		return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
 	}
 	defer conn.Close()
 	callbackDone := make(chan struct{})
@@ -159,31 +222,39 @@ func (p *authorityTimeProducer) exchange(ctx context.Context, address string) (a
 	if err := conn.SetDeadline(deadline); err != nil {
 		return authorityTimeMeasurement{}, err
 	}
+	probe.Stage = "native_send"
 	sent, err := p.sample()
 	if err != nil {
 		return authorityTimeMeasurement{}, err
 	}
+	probe.Native = sent.nanos
+	probe.Stage = "send"
 	n, err := conn.Write(request[:])
 	if err != nil {
-		return authorityTimeMeasurement{}, err
+		return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
 	}
 	if n != len(request) {
 		return authorityTimeMeasurement{}, errAuthorityTime
 	}
 	// One extra byte makes oversized/truncated datagrams rejectable.
 	var raw [49]byte
+	probe.Stage = "read"
 	n, err = conn.Read(raw[:])
 	if err != nil {
-		return authorityTimeMeasurement{}, err
+		return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
 	}
+	probe.Stage = "native_receive"
 	received, err := p.sample()
 	if err != nil {
 		return authorityTimeMeasurement{}, err
 	}
+	probe.Native = received.nanos
+	probe.Stage = "packet"
 	packet, err := parseAuthorityNTP(raw[:n], nonce)
 	if err != nil {
 		return authorityTimeMeasurement{}, err
 	}
+	probe.Stage = "native_binding"
 	if sent.boot == [32]byte{} || sent.process == [16]byte{} || sent.boot != received.boot || sent.process != received.process || received.nanos < sent.nanos {
 		return authorityTimeMeasurement{}, errAuthorityTime
 	}
@@ -196,6 +267,7 @@ func (p *authorityTimeProducer) exchange(ctx context.Context, address string) (a
 		return authorityTimeMeasurement{}, err
 	}
 	p.sequence = sequence
+	probe.Stage = "measured"
 	return authorityTimeMeasurement{p.source, conn.RemoteAddr().String(), sent, received, packet, request, [48]byte(raw[:48]), sequence}, nil
 }
 
@@ -224,4 +296,14 @@ func (p *authorityTimeProducer) close() {
 	}
 	p.mu.Unlock()
 	p.workers.Wait()
+}
+
+// This is only the completed attempt's copied diagnostic, never a time input.
+func (p *authorityTimeProducer) probeObservation() decisiontrace.Event {
+	if p == nil {
+		return decisiontrace.Event{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastProbe
 }

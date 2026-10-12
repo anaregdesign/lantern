@@ -63,13 +63,35 @@ operating profiles, not kernel or hardware certification.
 | Source error | Root dispersion + half nonnegative root delay + precision + 10 ms allowance, at most 1 second |
 | RTT | Conservative whole-flight upper strictly below 1 second; no path-symmetry or server-residence subtraction |
 | Anchor | Whole-RTT conservative UTC interval; fixed UTC domain 2020–2080; conflicting live anchors fail-stop |
-| Refresh/loss | 16–20 second refresh; 32–1024 second loss backoff; RATE 1024 seconds; DENY/RSTR fail-stop |
+| Refresh/loss | 16–20 second refresh; 32–1024 second loss backoff with two finite post-qualification transport-recovery credits; RATE 1024 seconds; DENY/RSTR fail-stop |
 | Holdover | Age upper strictly below 60 seconds and width strictly below 4 seconds; observed source fault clears the anchor |
 | Startup | At most 45 seconds, including one normal loss backoff; no anchor means no current owner |
 
 DNS supplies at most 16 answers for the exact configured host. Each scheduled
 attempt selects one sorted, deduplicated answer in rotation. A silent UDP
-endpoint does not trigger a query burst or reset the backoff. The bounded latest
+endpoint does not trigger a query burst or reset the backoff. Only a successfully
+installed qualified measurement arms two recovery credits. DNS lookup, dial,
+write or read errors still advance the underlying exponential backoff; the
+64- and 128-second waits may each consume one credit to wait 32 seconds instead.
+Thus consecutive transport failures after qualification wait
+32, 32, 32, 256, 512, 1024 seconds and then retain the 1024-second ceiling.
+Startup has no credits and retains its original 32, 64, 128, ... schedule.
+Any non-transport failure discards the credits. RATE discards them and retains
+1024-second waits until a qualified installation; DENY/RSTR still stops.
+Receiving a packet, an expired anchor, a DNS change or a readiness request cannot
+replenish the budget. Existing anchor retention/clearing and native fail-stop
+rules are independent of this scheduling budget.
+
+Each attempt retains its three-second context, one endpoint and at most one UDP
+request; the next timer starts after completion. No query backlog accumulates.
+The finite acceleration preserves the minimum 32-second failure spacing and
+the long-loss rate of one attempt per 1024 seconds per owner, but moves some
+attempts earlier. Healthy operation may reset the budget repeatedly; this is
+not a lifetime or fleet-wide quota. Once the credits are spent, a long outage
+can still leave a 1024-second wait. Earlier attempts need actual new qualified
+evidence: this neither extends the strict 60-second holdover nor guarantees
+continuous availability, recovery within 60 seconds or resolution of a network
+fault. The bounded latest
 observation/error is diagnostic evidence, not a cached TIME_OK capability.
 Every new use samples the native counter and propagates the interval locally;
 no per-output NTP request occurs. Source loss, uncertainty, overflow and unknown

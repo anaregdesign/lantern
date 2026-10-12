@@ -4,6 +4,8 @@ import (
 	"errors"
 	"math"
 	"math/bits"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
 var errAuthorityTime = errors.New("unusable current-authority time measurement")
@@ -104,37 +106,48 @@ type authorityTimeEstimate struct {
 }
 
 func calculateAuthorityTime(m authorityTimeMeasurement, p authorityTimePremises) (authorityTimeEstimate, error) {
+	a, _, err := calculateAuthorityTimeObserved(m, p)
+	return a, err
+}
+func calculateAuthorityTimeObserved(m authorityTimeMeasurement, p authorityTimePremises) (authorityTimeEstimate, string, error) {
+	stage := "rtt"
 	d, err := p.elapsed(m.sent, m.received)
 	if err != nil || d.high >= p.maxRTT {
-		return authorityTimeEstimate{}, errAuthorityTime
+		return authorityTimeEstimate{}, stage, errAuthorityTime
 	}
+	stage = "source_bound"
 	errorBound, err := p.sourceBound(m.packet)
 	if err != nil {
-		return authorityTimeEstimate{}, err
+		return authorityTimeEstimate{}, stage, err
 	}
+	stage = "transmit"
 	s, err := authorityNTPInRange(m.packet.transmit, p.validUTC)
 	if err != nil || s.low < errorBound || s.high > math.MaxUint64-errorBound {
-		return authorityTimeEstimate{}, errAuthorityTime
+		return authorityTimeEstimate{}, stage, errAuthorityTime
 	}
+	stage = "receive"
 	r, err := authorityNTPInRange(m.packet.receive, p.validUTC)
 	if err != nil || r.low > s.high {
-		return authorityTimeEstimate{}, errAuthorityTime
+		return authorityTimeEstimate{}, stage, errAuthorityTime
 	}
+	stage = "reference"
 	ref, err := authorityNTPInRange(m.packet.reference, p.validUTC)
 	if err != nil || ref.low > s.high {
-		return authorityTimeEstimate{}, errAuthorityTime
+		return authorityTimeEstimate{}, stage, errAuthorityTime
 	}
+	stage = "overflow"
 	hi := s.high + errorBound
 	if hi > math.MaxUint64-d.high {
-		return authorityTimeEstimate{}, errAuthorityTime
+		return authorityTimeEstimate{}, stage, errAuthorityTime
 	}
 	// A genuine causal response transmits between the local send and receive
 	// samples. Full RTT covers either direction, processing, and local pauses.
 	a := authorityTimeEstimate{m.received, authorityTimeRange{s.low - errorBound, hi + d.high}, p}
+	stage = "interval"
 	if !p.contains(a.utc) {
-		return authorityTimeEstimate{}, errAuthorityTime
+		return authorityTimeEstimate{}, stage, errAuthorityTime
 	}
-	return a, nil
+	return a, "ok", nil
 }
 
 func (p authorityTimePremises) contains(r authorityTimeRange) bool {
@@ -143,16 +156,42 @@ func (p authorityTimePremises) contains(r authorityTimeRange) bool {
 }
 
 func (a authorityTimeEstimate) atSample(now authorityTimeStamp) (authorityTimeRange, error) {
+	r, _, err := a.atSampleObserved(now)
+	return r, err
+}
+
+// Classify the comparisons already needed for this exact sample. No second
+// clock read or changed error is introduced for diagnostics.
+func (a authorityTimeEstimate) atSampleObserved(now authorityTimeStamp) (authorityTimeRange, decisiontrace.Event, error) {
+	e := decisiontrace.Event{Native: now.nanos, HasAnchor: true, Reason: "elapsed"}
 	d, err := a.premises.elapsed(a.at, now)
-	if err != nil || d.high >= a.premises.maxAge || !a.premises.contains(a.utc) ||
-		a.utc.high > math.MaxUint64-d.high {
-		return authorityTimeRange{}, errAuthorityTime
+	if err != nil {
+		return authorityTimeRange{}, e, errAuthorityTime
+	}
+	e.AgeUpper = d.high
+	if d.high >= a.premises.maxAge {
+		e.Reason = "age"
+		return authorityTimeRange{}, e, errAuthorityTime
+	}
+	if !a.premises.contains(a.utc) {
+		e.Reason = "anchor_interval"
+		return authorityTimeRange{}, e, errAuthorityTime
+	}
+	if a.utc.high > math.MaxUint64-d.high {
+		e.Reason = "overflow"
+		return authorityTimeRange{}, e, errAuthorityTime
 	}
 	r := authorityTimeRange{a.utc.low + d.low, a.utc.high + d.high}
+	e.Low, e.High, e.Width = r.low, r.high, r.high-r.low
 	if !a.premises.contains(r) {
-		return authorityTimeRange{}, errAuthorityTime
+		e.Reason = "utc_window"
+		if r.high-r.low >= a.premises.maxWidth {
+			e.Reason = "width"
+		}
+		return authorityTimeRange{}, e, errAuthorityTime
 	}
-	return r, nil
+	e.Reason = "ok"
+	return r, e, nil
 }
 
 func authorityNTPInRange(raw uint64, window authorityTimeRange) (authorityTimeRange, error) {
