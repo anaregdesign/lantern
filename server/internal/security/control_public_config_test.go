@@ -245,10 +245,11 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	}
 	n := s3aTestCluster(t, nil)
 	queryRoles := os.Getenv("LANTERN_CURRENT_FIXTURE_QUERY_ROLES_FILE")
-	renewal := os.Getenv("LANTERN_CURRENT_MEMBERSHIP_GATE") == "1"
+	containerRenewal := os.Getenv("LANTERN_CURRENT_MEMBERSHIP_CONTAINER") == "1"
+	renewal := os.Getenv("LANTERN_CURRENT_MEMBERSHIP_GATE") == "1" || containerRenewal
 	if renewal {
-		if len(hosts) != 0 || queryRoles != "" {
-			t.Fatal("renewal gate is a separate bounded local fixture")
+		if queryRoles != "" || containerRenewal && len(hosts) != 3 || !containerRenewal && len(hosts) != 0 {
+			t.Fatal("renewal gate requires its explicit local or three-container fixture")
 		}
 		// Native startup can legitimately include its existing 32-second loss
 		// backoff. Start the short transition interval only after qualification,
@@ -408,7 +409,7 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 		doc(filepath.Join(dir, "query-provision.json"), map[string]any{"membership_expires_at": n.manifest.ExpiresAt, "nodes": queryNodes})
 	}
 	if renewal {
-		exportCurrentRenewalFixture(t, dir, n, manifest)
+		exportCurrentRenewalFixture(t, dir, n, manifest, hosts)
 	}
 	if driver := os.Getenv("LANTERN_CURRENT_DATA_HA"); driver != "" {
 		provisioned, err := LoadCurrentProvisioning(filepath.Join(dir, "node-1", "node.json"))
@@ -419,7 +420,7 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	}
 }
 
-func exportCurrentRenewalFixture(t *testing.T, dir string, n *s3aTestNetwork, control []byte) {
+func exportCurrentRenewalFixture(t *testing.T, dir string, n *s3aTestNetwork, control []byte, hosts []string) {
 	t.Helper()
 	write := func(path string, raw []byte) {
 		t.Helper()
@@ -462,7 +463,11 @@ func exportCurrentRenewalFixture(t *testing.T, dir string, n *s3aTestNetwork, co
 		}
 		dataTargets = append(dataTargets, filepath.Join(input, "data.signed"))
 		certificates = append(certificates, filepath.Join(node, "cert.pem"))
-		m.Members = append(m.Members, n.manifest.Profile.Voters[id-1].Workload)
+		member := n.manifest.Profile.Voters[id-1].Workload
+		if len(hosts) != 0 {
+			member.Origin = "https://" + hosts[id-1] + ":17380"
+		}
+		m.Members = append(m.Members, member)
 	}
 	data, err := peerauth.SignManifest(m, key)
 	if err != nil {
@@ -472,6 +477,10 @@ func exportCurrentRenewalFixture(t *testing.T, dir string, n *s3aTestNetwork, co
 		write(path, data)
 		node := filepath.Dir(filepath.Dir(path))
 		peer := map[string]any{"ListenAddress": fmt.Sprintf("127.0.0.1:%d", 17441+i), "Identity": map[string]any{"AuthMode": "oidc", "Deployment": m.Domain.Deployment, "SecurityGeneration": m.Domain.SecurityGeneration, "CurrentProfile": m.Domain.CurrentProfile, "CAFile": filepath.Join(node, "roots.pem"), "OperatorKeyFile": publicPath, "ManifestFile": path, "StateFile": filepath.Join(node, "data-membership"), "StateMode": "fresh", "CertFile": certificates[i], "KeyFile": filepath.Join(node, "tls.key"), "SelfIdentity": m.Members[i].Identity}}
+		if len(hosts) != 0 {
+			peer["ListenAddress"] = "0.0.0.0:17380"
+			peer["Identity"].(map[string]any)["StateFile"] = "/journal/data-membership"
+		}
 		raw, err := json.Marshal(peer)
 		if err != nil {
 			t.Fatal(err)

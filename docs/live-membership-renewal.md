@@ -1,6 +1,6 @@
-# Finite control and data membership renewal
+# Supervised control and data membership renewal
 
-Tracks #1610. A long operator window consists of many short signed memberships.
+Tracks #1742 and #1610. A long operator window consists of many short signed memberships.
 Every signature remains at most ten minutes long. Renewal does not extend a
 session, token, Code transaction, purpose, private handshake, RPC or output unit.
 It does not change the cohort, voters, workload keys, Roles or time profile.
@@ -40,8 +40,12 @@ member's SPKI and URI; both client/server chains must verify now and beyond
 `CleanupBy` plus the existing clock margin. These checks do not replace the
 server's own certificate and native-time admission.
 
-For a two-hour window, choose `End` two hours after the planned start and a
-separate cleanup allowance before every chain expires. The tool does not start
+For ordinary unattended operation, choose `End` at the explicitly approved next
+maintenance date, for example a month away when the TLS chains cover it. There
+is no two-hour campaign cap. The supervised process automatically renews short
+memberships throughout that interval; do not build a cron that silently advances
+End or require repeated manual extensions of short experimental windows. Choose
+a separate cleanup allowance before every chain expires. The tool does not start
 or stop servers or modify OS trust. The orchestration owner must enforce the
 declared runtime/cleanup deadline. A short fixture transition test does not
 constitute a two-hour runtime qualification or real-provider data acceptance.
@@ -50,7 +54,10 @@ Keep the configuration immutable for this run. All target directories must
 support private temporary files, atomic same-directory rename and directory
 sync. Retain one operator state path and its stable sidecars for the cohort.
 Do not restore snapshots of only part of the state/targets or delete lease files.
-The journal is local durable evidence, not an external rollback witness.
+The journal is local durable evidence, not an external rollback witness. In
+particular, restoring the pre-transition journal binding while target bytes are
+unchanged cannot be detected from those files alone. Never restore a journal or
+partial snapshot to recover a failed transition.
 
 ## Start, observe and stop
 
@@ -82,12 +89,157 @@ after expiry in the control store. A future candidate can be refused initially
 and reevaluated on the next worker tick; never replace it with different bytes
 at the same revision. Control/data revisions need not be equal.
 
-At `End` the tool stops issuing/publishing and exits. An interrupt joins the
-current synchronous file operation, releases its leases and exits nonzero; keep
+At `End` the tool stops issuing/publishing and exits. SIGINT or SIGTERM joins the
+current synchronous file operation, releases its leases and exits zero on a
+successful normal stop; a flush, status-output or close failure exits nonzero. Keep
 the state. Membership expiry then closes protected operations. The orchestration
 owner stops/joins workers, listeners and native owners, checks the exact CLEAN
 floor hash and completes owned fixture cleanup by `CleanupBy`. Preserve reusable
 certificates/trust only under their existing separate authorization.
+
+## Continue at a planned maintenance boundary
+
+Stop the publisher and wait for lease release. Retain the old immutable config,
+journal, sidecars and every target. Prepare a **different private file** whose
+decoded configuration differs only in later `End` and `CleanupBy`; the cleanup
+allowance cannot shrink. Then explicitly run:
+
+```sh
+membershippublisher -mode advance-window \
+  -config /absolute/private/window-1.json \
+  -next-config /absolute/private/window-2.json \
+  -state /absolute/private/publisher-state.json
+membershippublisher -mode resume -config /absolute/private/window-2.json \
+  -state /absolute/private/publisher-state.json -maintenance-warning 168h
+```
+
+The operation holds all existing leases, authenticates the old journal against
+the **old** config and issuance End, checks the new period's currently valid TLS
+chains, and durably changes **only the journal config binding**. It signs no
+membership and changes no candidate, revision, predecessor, pending flag or
+target. It cannot issue from the transition owner; resume is a separate explicit
+operation. Do not edit a bound config in place. Leaving a supervisor on the old
+config fails closed after a successful transition.
+
+Expired but intact old state is eligible for this explicit transition. A renewed
+same-SPKI/URI leaf need not have been valid at the obsolete old CleanupBy; it must
+be valid now, with a selected complete client/server chain continuously covering
+the new CleanupBy plus clock margin. This preflight does not prove running nodes
+have loaded the staged certificate.
+
+After an uncertain transition, retain both configurations and inspect the
+canonical journal. If it matches the new config, explicitly resume that config
+after full validation and retained-byte sync. If it matches the old config and
+the old End has expired, ordinary resume is insufficient: explicitly repeat
+`advance-window` after revalidation, then resume the new config. If even the new
+End has expired, use it as the old config for the next approved period. Unknown,
+missing, noncanonical or inconsistent state stops recovery. Never promote a
+temporary file, infer from mtime, reset floors or fall back to init.
+
+Withhold a next-window authorization, or stop/disable the publisher, to withdraw
+further issuance. Already signed memberships retain their original short expiry;
+stop is not instant revocation. Journal-before-target preserves the exact bytes
+of durable/publishable revisions, not literally one invocation of the signing
+function across a crash before the candidate was first saved.
+
+## Status and action before expiry
+
+The running CLI emits bounded JSON to stdout every five seconds and on failure
+category changes. It uses stream names and target ordinals, never private paths,
+identities, key material or raw OS errors. `journal_version` is the last confirmed
+durable candidate, not an in-memory successor after an uncertain save. Each
+target reports its own observed revision/expiry and last completed durable
+delivery; null delivery dates after restart mean unknown historical timing.
+Matching readback alone is not a successful delivery: file and directory sync
+must both complete. A supervisor may retain prior records as historical evidence.
+
+`delivery_retry` means exact retained target publication can retry.
+`journal_uncertain` or `operator_recovery_required` requires stopped, intact-state
+operator recovery. `trust_capacity`, `budget_exhausted`, `clock_rollback` and
+`reporting_failure` distinguish other stop causes. Do not automatically restart
+forever or map these errors to init. Alert when status becomes stale as well as
+when its contents warn; the last green record does not prove a live process.
+
+For cadence I and the existing two-second margin M, delivery warns immediately
+on an error or when the observed target has at most `2I + 2M` signed validity
+remaining, and becomes urgent at `I + 2M`. With one-minute renewal and five-minute
+signatures, these leads are 124 and 64 seconds. They are warning budgets, not a
+recovery SLO. `-maintenance-warning` defaults to seven days and is clamped to at
+least the delivery warning plus cleanup allowance. Select a practical larger
+lead when certificate renewal or maintenance needs it. The maintenance warning
+covers the effective End and selected TLS chain capacity, including issuers.
+
+These are wall-clock operator diagnostics. They never replace the consumers'
+native-time, quorum, floor, credential or permanent-fault checks. File delivery
+does not establish node acceptance; use existing node reload/floor and
+readiness/health diagnostics separately. The internal floor export is not an
+HTTP endpoint. A readiness failure alone is not a specific RPC refusal, and
+repeated reload warning entries need not be distinct incidents.
+
+## One supported container distribution topology
+
+Use a publisher on one host with private per-node **directory** bind mounts
+into its serving containers. Individual-file bind mounts retain the old inode
+after atomic replacement and are unsupported for renewable inputs. Operator
+signing keys and journal stay outside all serving mounts. Each container sees
+only its own static/renewable inputs read-only, and its own writable durable
+state. Nodes still hold their own necessary TLS/voter keys, not the operator key.
+
+The systemd example below targets a native Linux host. The bounded container
+fixture also supports a macOS host publisher with Linux containers; its receipt
+records that host and immutable image explicitly. Shared filesystem durability
+and ownership remain deployment prerequisites; a Docker Desktop run does not
+certify native Linux storage or power-loss behavior.
+
+The existing HA Compose contract has a concrete overlay:
+
+```sh
+docker compose -f deploy/compose/docker-compose.yml \
+  -f deploy/compose/docker-compose.ha.yml \
+  -f deploy/compose/docker-compose.membership.yml config
+```
+
+Set existing HA env inputs and fixed image, plus `LANTERN_MEMBERSHIP_ROOT`
+(the example supervisor uses `/srv/lantern`) and the pre-provisioned
+`LANTERN_SERVICE_UID`/`LANTERN_SERVICE_GID`. Each `node-0`/`node-1`/`node-2` has
+`static`, `renewable` and `state` directories. The static node config points to
+`/run/lantern-renewal/control.signed` and `data.signed`, with all mutable
+checkpoints/WAL/custody under `/state`. The inherited node-0 backup directory is
+also under `/state/backup`. Private directories/files remain 0700/0600; align
+actual host/container ownership rather than broadening modes. Validate the
+rendered mounts: the overlay uses Compose 2.24.4+
+[`!override`](https://docs.docker.com/reference/compose-file/merge/#replace-value)
+so no broader inherited input mount remains. No missing host path is auto-created.
+
+`deploy/compose/membershippublisher.service` is the host supervisor example.
+Install the built binary at its configured path and supply the existing service
+identity, private layout and `/etc/lantern/membershippublisher.env` through the
+operator's normal provisioning. The unit creates no identity or key. Perform
+the first explicit `-mode init` once, observe publication, stop it normally, then
+start the unit's explicit resume command. The unit keeps state across stops,
+retries no terminal failure and has no SIGKILL fallback. It reports status to
+the existing supervisor journal, requiring no new backend. A stuck normal join
+is a retained-state failure, not permission to force termination.
+
+For maintenance, update the supervisor's selected immutable config only after
+the reviewed advance procedure. Do not use auto-init based on file existence.
+On a full service stop, drain/join serving workers/listeners/native owners while
+the publisher is still renewing; confirm every exact CLEAN floor hash, then
+stop/join the publisher. Retain persistent volumes and sidecars. Resume serving
+stores/WAL in their existing explicit intact modes and require native readiness
+again. No production deployment, independent-host delivery or seamless rotation
+is implied by these examples.
+
+## TLS and signing-key maintenance
+
+Plan certificate maintenance before the reported End/TLS capacity. Same-key leaf
+renewal must preserve pinned SPKI, URI, roots and profile. Staging a new leaf is
+not serving adoption: perform the planned normal serving restart and ordinary
+TLS/native admission checks. A safe maintenance stop is supported; TLS hot reload
+is not promised. Root/profile/cohort changes or operator/voter key replacement
+require a separately authorized stopped/fenced provisioning transition. Raw
+Ed25519 signing keys have no certificate-style NotAfter, and this tool neither
+rotates them nor creates new authority. Insufficient capacity stops continuation.
 
 ## Partial distribution and explicit resume
 

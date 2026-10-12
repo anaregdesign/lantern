@@ -1,0 +1,65 @@
+# Same-host directory publication. Apply after docker-compose.yml and .ha.yml.
+# Compose >=2.24.4: replace inherited volumes, never append a broader mount.
+# All directories, private inputs and intact resume modes are operator provisioned.
+x-renewing-node: &renewing-node
+  user: "${LANTERN_SERVICE_UID:?private input owner UID required}:${LANTERN_SERVICE_GID:?private input owner GID required}"
+  restart: "no"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp:rw,nosuid,nodev,size=64m,mode=1777]
+
+services:
+  lantern-0:
+    <<: *renewing-node
+    environment:
+      LANTERN_BACKUP_DIR: /state/backup
+    volumes: !override
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?private layout required}/node-0/static
+        target: /run/lantern-config
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-0/renewable
+        target: /run/lantern-renewal
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-0/state
+        target: /state
+        bind: {create_host_path: false}
+  lantern-1:
+    <<: *renewing-node
+    volumes: !override
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-1/static
+        target: /run/lantern-config
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-1/renewable
+        target: /run/lantern-renewal
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-1/state
+        target: /state
+        bind: {create_host_path: false}
+  lantern-2:
+    <<: *renewing-node
+    volumes: !override
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-2/static
+        target: /run/lantern-config
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-2/renewable
+        target: /run/lantern-renewal
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?}/node-2/state
+        target: /state
+        bind: {create_host_path: false}

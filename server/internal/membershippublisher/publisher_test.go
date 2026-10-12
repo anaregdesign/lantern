@@ -3,81 +3,13 @@ package membershippublisher
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
-	"math/big"
-	"net/url"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
-
-func publisherFixture(t *testing.T) (string, string, Config, time.Time) {
-	t.Helper()
-	dir, e := filepath.EvalSymlinks(t.TempDir())
-	if e != nil {
-		t.Fatal(e)
-	}
-	write := func(name string, raw []byte) string {
-		t.Helper()
-		path := filepath.Join(dir, name)
-		if e := os.WriteFile(path, raw, 0600); e != nil {
-			t.Fatal(e)
-		}
-		return path
-	}
-	now := time.Now().UTC().Truncate(time.Second)
-	var members []peerauth.Member
-	var voters []peerauth.ControlVoter
-	var certs []string
-	var rootPEM []byte
-	for i := 1; i <= 3; i++ {
-		pub, key, _ := ed25519.GenerateKey(rand.Reader)
-		uri, _ := url.Parse("spiffe://renew.test/node" + string(rune('0'+i)))
-		template := &x509.Certificate{SerialNumber: big.NewInt(int64(i)), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), URIs: []*url.URL{uri}, KeyUsage: x509.KeyUsageDigitalSignature}
-		der, e := x509.CreateCertificate(rand.Reader, template, template, pub, key)
-		if e != nil {
-			t.Fatal(e)
-		}
-		cert, _ := x509.ParseCertificate(der)
-		member := peerauth.Member{ID: [16]byte{byte(i)}, Identity: uri.String(), SPKI: sha256.Sum256(cert.RawSubjectPublicKeyInfo), Origin: "https://127.0.0.1:1700" + string(rune('0'+i))}
-		members = append(members, member)
-		vote, _, _ := ed25519.GenerateKey(rand.Reader)
-		voters = append(voters, peerauth.ControlVoter{Workload: member, Voter: uint32(i), Key: [32]byte(vote), Proposer: true})
-		rootPEM = append(rootPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
-		certs = append(certs, write("cert"+string(rune('0'+i))+".pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})))
-	}
-	rootPath := write("roots.pem", rootPEM)
-	trust := sha256.Sum256(rootPEM)
-	c := Config{Version: 1, End: now.Add(15 * time.Minute), CleanupBy: now.Add(16 * time.Minute), Interval: 5 * time.Second, Lifetime: 30 * time.Second}
-	for _, kind := range []string{"control", "data"} {
-		_, key, _ := ed25519.GenerateKey(rand.Reader)
-		der, _ := x509.MarshalPKCS8PrivateKey(key)
-		keyPath := write(kind+".key", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
-		var raw []byte
-		if kind == "control" {
-			m := peerauth.ControlManifest{Version: 1, Profile: peerauth.ControlProfile{Version: 1, Lineage: peerauth.ControlLineage{Deployment: [16]byte{1}, Instance: [16]byte{2}}, NamespaceFormat: "namespaced-v1", ProtocolScope: [32]byte{3}, TrustDigest: trust, Voters: voters}, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(-30 * time.Second)}
-			raw, e = peerauth.SignControlManifest(m, key)
-		} else {
-			m := peerauth.Manifest{Version: 1, Domain: peerauth.Domain{Deployment: [16]byte{1}, NamespaceFormat: "namespaced-v1", AuthMode: "off", TrustDigest: trust}, Members: members, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(-30 * time.Second)}
-			raw, e = peerauth.SignManifest(m, key)
-		}
-		if e != nil {
-			t.Fatal(e)
-		}
-		c.Streams = append(c.Streams, Stream{Kind: kind, KeyFile: keyPath, RootsFile: rootPath, Initial: raw, Certificates: certs, Targets: []string{write(kind+"-a", raw), write(kind+"-b", raw)}})
-	}
-	raw, _ := json.Marshal(c)
-	return write("config.json", raw), filepath.Join(dir, "state.json"), c, now
-}
 
 func TestPublisherPartialDistributionExactResumeAndBudget(t *testing.T) {
 	config, state, c, now := publisherFixture(t)
@@ -85,10 +17,10 @@ func TestPublisherPartialDistributionExactResumeAndBudget(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer p.Close()
+	defer closePublisher(t, p)
 	// A second journal cannot compete for the same publication targets.
 	if other, e := Open(config, state+".other", "init"); e == nil {
-		other.Close()
+		closePublisher(t, other)
 		t.Fatal("second publisher admitted")
 	}
 	base := p.files.rename
@@ -113,7 +45,7 @@ func TestPublisherPartialDistributionExactResumeAndBudget(t *testing.T) {
 			}
 		}
 		if b == c.Streams[0].Targets[1] {
-			return injected
+			return errInjected
 		}
 		return base(a, b)
 	}
@@ -131,7 +63,7 @@ func TestPublisherPartialDistributionExactResumeAndBudget(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer p.Close()
+	defer closePublisher(t, p)
 	// The saved pending control interval is expired here. Resume still sends
 	// those exact bytes first, then a later step may issue its next revision.
 	if e = p.Step(now.Add(time.Minute)); e != nil {
@@ -167,17 +99,17 @@ func TestPublisherUncertainJournalAndKnownStateLoss(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			defer p.Close()
+			defer closePublisher(t, p)
 			if fail == "rename" {
 				base := p.files.rename
 				p.files.rename = func(a, b string) error {
 					if b == state {
-						return injected
+						return errInjected
 					}
 					return base(a, b)
 				}
 			} else {
-				p.files.directory = func(string) error { return injected }
+				p.files.directory = func(string) error { return errInjected }
 			}
 			if !errors.Is(p.Step(now), ErrState) || !errors.Is(p.Step(now.Add(time.Second)), ErrState) {
 				t.Fatal("uncertain write did not latch")
@@ -190,22 +122,22 @@ func TestPublisherUncertainJournalAndKnownStateLoss(t *testing.T) {
 					}
 				}
 			}
-			p.Close()
+			closePublisher(t, p)
 			p, e = Open(config, state, "resume")
 			if e != nil {
 				t.Fatal("intact retained journal refused", e)
 			}
-			defer p.Close()
+			defer closePublisher(t, p)
 			if e = p.Step(now.Add(time.Second)); e != nil {
 				t.Fatal(e)
 			}
-			p.Close()
+			closePublisher(t, p)
 			if e = os.Remove(state); e != nil {
 				t.Fatal(e)
 			}
 			for _, mode := range []string{"init", "resume"} {
 				if q, e := Open(config, state, mode); e == nil {
-					q.Close()
+					closePublisher(t, q)
 					t.Fatal("lost state recreated", mode)
 				}
 			}
@@ -219,16 +151,16 @@ func TestPublisherRejectsDriftAndCertificateCapacity(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer p.Close()
+	defer closePublisher(t, p)
 	if e = p.Step(now); e != nil {
 		t.Fatal(e)
 	}
-	p.Close()
+	closePublisher(t, p)
 	if e = os.WriteFile(c.Streams[0].Targets[0], c.Streams[0].Initial, 0600); e != nil {
 		t.Fatal(e)
 	}
 	if q, e := Open(config, state, "resume"); e == nil {
-		q.Close()
+		closePublisher(t, q)
 		t.Fatal("rolled-back target accepted")
 	}
 	c.CleanupBy = now.Add(2 * time.Hour)
@@ -237,7 +169,7 @@ func TestPublisherRejectsDriftAndCertificateCapacity(t *testing.T) {
 		t.Fatal(e)
 	}
 	if q, e := Open(config, state+".new", "init"); e == nil {
-		q.Close()
+		closePublisher(t, q)
 		t.Fatal("insufficient certificate lifetime")
 	}
 }
@@ -251,7 +183,7 @@ func TestPublisherOverflowAliasAndNoncanonicalState(t *testing.T) {
 				if e != nil {
 					t.Fatal(e)
 				}
-				p.Close()
+				closePublisher(t, p)
 				raw, e := os.ReadFile(state)
 				if e != nil {
 					t.Fatal(e)
@@ -260,7 +192,7 @@ func TestPublisherOverflowAliasAndNoncanonicalState(t *testing.T) {
 					t.Fatal(e)
 				}
 				if p, e := Open(config, state, "resume"); e == nil {
-					p.Close()
+					closePublisher(t, p)
 					t.Fatal("noncanonical retained record accepted")
 				}
 				return
@@ -275,7 +207,7 @@ func TestPublisherOverflowAliasAndNoncanonicalState(t *testing.T) {
 				t.Fatal(e)
 			}
 			if p, e := Open(config, state, "init"); e == nil {
-				p.Close()
+				closePublisher(t, p)
 				t.Fatal("invalid immutable plan accepted")
 			}
 		})
@@ -288,14 +220,14 @@ func TestPublisherTargetDirectoryUncertaintyReusesExactCandidate(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer p.Close()
+	defer closePublisher(t, p)
 	base := p.files.rename
 	last := ""
 	p.files.rename = func(a, b string) error { last = b; return base(a, b) }
 	directory := p.files.directory
 	p.files.directory = func(path string) error {
 		if last == c.Streams[0].Targets[0] {
-			return injected
+			return errInjected
 		}
 		return directory(path)
 	}

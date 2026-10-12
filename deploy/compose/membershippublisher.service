@@ -1,0 +1,30 @@
+[Unit]
+Description=Lantern membership publication through an approved maintenance horizon
+After=local-fs.target
+
+[Service]
+Type=simple
+# Pre-provision this identity and private layout; installing this unit creates neither.
+User=lantern-publisher
+Group=lantern-publisher
+UMask=0077
+Environment=LANTERN_MAINTENANCE_WARNING=168h
+# Private file selects an existing immutable configuration, not signing material.
+# LANTERN_PUBLISHER_CONFIG=/srv/lantern/operator/configs/window-1.json
+EnvironmentFile=/etc/lantern/membershippublisher.env
+ExecStart=/usr/local/libexec/membershippublisher -mode resume -config ${LANTERN_PUBLISHER_CONFIG} -state /srv/lantern/operator/state/journal.json -maintenance-warning ${LANTERN_MAINTENANCE_WARNING}
+Restart=no
+KillSignal=SIGTERM
+TimeoutStopSec=infinity
+SendSIGKILL=no
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/lantern/operator/state /srv/lantern/node-0/renewable /srv/lantern/node-1/renewable /srv/lantern/node-2/renewable
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

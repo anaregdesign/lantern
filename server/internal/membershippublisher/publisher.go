@@ -27,11 +27,13 @@ var (
 	ErrState       = errors.New("membership publisher: invalid, missing or uncertain operator state")
 	ErrPublication = errors.New("membership publisher: incomplete publication; exact candidate retained")
 	ErrBudget      = errors.New("membership publisher: declared publication budget ended")
+	ErrCapacity    = errors.New("membership publisher: TLS chain capacity unavailable")
+	ErrJournal     = errors.New("membership publisher: journal durability uncertain")
 )
 
 const maxStateBytes = 1 << 20
 
-// Durations use Go's JSON integer nanoseconds. End bounds every new signature;
+// Config durations use Go's JSON integer nanoseconds. End bounds every new signature;
 // CleanupBy separately budgets orderly runtime shutdown before certificates end.
 type Config struct {
 	Version            uint32
@@ -40,7 +42,7 @@ type Config struct {
 	Streams            []Stream
 }
 
-// Initial is the exact signed initial manifest (JSON []byte uses base64).
+// Stream Initial is the exact signed initial manifest (JSON []byte uses base64).
 // Certificates must cover every pinned workload. KeyFile is private PKCS#8 PEM.
 // Targets are existing private manifest inputs, not server checkpoint files.
 type Stream struct {
@@ -79,8 +81,14 @@ type Publisher struct {
 	leases         []*mutationlog.FileWALLease
 	signers        []signer
 	files          fileOps
+	capacity       time.Time
 	last           time.Time
 	failed, closed bool
+	retainedOnly   bool
+	started        time.Time
+	clock          func() time.Time
+	targetStatus   [][]TargetStatus
+	failure        string
 }
 
 func decode(raw []byte, value any) error {
@@ -99,15 +107,24 @@ func decode(raw []byte, value any) error {
 // Open takes an explicit init/resume choice. init requires never-used journal
 // and publication leases plus exact initial inputs; resume requires all state.
 // A missing journal or sidecar is never repaired by guessing a fresh revision.
-func Open(configPath, statePath, mode string) (_ *Publisher, err error) {
-	if mode != "init" && mode != "resume" || !canonical(statePath) {
+func Open(configPath, statePath, mode string) (*Publisher, error) {
+	if mode != "init" && mode != "resume" {
+		return nil, ErrState
+	}
+	return openOwned(configPath, statePath, mode, time.Now().UTC(), nil)
+}
+
+// advance-window opens only authenticated retained state; it cannot issue.
+// New-period capacity is validated separately before its binding is committed.
+func openOwned(configPath, statePath, mode string, now time.Time, additionalInputs []string) (_ *Publisher, err error) {
+	if !canonical(statePath) {
 		return nil, ErrState
 	}
 	raw, err := readPrivate(configPath, maxStateBytes)
 	if err != nil {
 		return nil, ErrState
 	}
-	p := &Publisher{path: statePath, files: systemFiles()}
+	p := &Publisher{path: statePath, files: systemFiles(), retainedOnly: mode == "advance-window", started: now, clock: time.Now}
 	defer func() {
 		if err != nil {
 			_ = p.Close()
@@ -116,33 +133,35 @@ func Open(configPath, statePath, mode string) (_ *Publisher, err error) {
 	if decode(raw, &p.config) != nil {
 		return nil, ErrState
 	}
-	canonicalConfig, _ := json.Marshal(p.config)
+	canonicalConfig, marshalErr := json.Marshal(p.config)
+	if marshalErr != nil {
+		return nil, ErrState
+	}
 	p.state = journal{Version: 1, Binding: sha256.Sum256(canonicalConfig)}
-	if err = p.validateConfig(time.Now().UTC()); err != nil {
+	if err = p.loadSigners(); err != nil {
 		return nil, err
 	}
-	// Prevent target aliases of immutable inputs, journal or lock paths.
-	protected := []string{configPath, statePath, statePath + ".lease"}
-	var targets []string
-	for _, s := range p.config.Streams {
-		protected = append(protected, s.KeyFile, s.RootsFile)
-		protected = append(protected, s.Certificates...)
-		targets = append(targets, s.Targets...)
-		for _, target := range s.Targets {
-			protected = append(protected, target+".publisher.lease")
+	for _, stream := range p.config.Streams {
+		p.targetStatus = append(p.targetStatus, make([]TargetStatus, len(stream.Targets)))
+	}
+	if mode != "advance-window" {
+		if !now.Add(2 * peerauth.ClockMargin).Before(p.config.End) {
+			return nil, errors.Join(ErrState, ErrBudget)
+		}
+		if p.capacity, err = p.validateCapacity(now, p.config.CleanupBy); err != nil {
+			return nil, err
 		}
 	}
-	for i, path := range targets {
-		for _, other := range append(append([]string{}, protected...), targets[:i]...) {
-			if path == other {
-				return nil, ErrState
-			}
-			a, e1 := os.Stat(path)
-			b, e2 := os.Stat(other)
-			if e1 == nil && e2 == nil && os.SameFile(a, b) {
-				return nil, ErrState
-			}
-		}
+	var targets, inputs []string
+	inputs = append(inputs, configPath)
+	inputs = append(inputs, additionalInputs...)
+	for _, stream := range p.config.Streams {
+		targets = append(targets, stream.Targets...)
+		inputs = append(inputs, stream.KeyFile, stream.RootsFile)
+		inputs = append(inputs, stream.Certificates...)
+	}
+	if !safePaths(append([]string{configPath}, additionalInputs...), inputs, statePath, targets) {
+		return nil, ErrState
 	}
 	sort.Strings(targets)
 	lockPaths := []string{statePath}
@@ -155,7 +174,7 @@ func Open(configPath, statePath, mode string) (_ *Publisher, err error) {
 	}
 	for _, path := range required {
 		_, statErr := os.Lstat(path)
-		if mode == "init" && !errors.Is(statErr, os.ErrNotExist) || mode == "resume" && statErr != nil {
+		if mode == "init" && !errors.Is(statErr, os.ErrNotExist) || mode != "init" && statErr != nil {
 			return nil, ErrState
 		}
 	}
@@ -207,16 +226,15 @@ func Open(configPath, statePath, mode string) (_ *Publisher, err error) {
 				return nil, ErrState
 			}
 			if c.Pending {
-				previous, _, _, e := p.verify(i, c.Previous)
-				if e != nil || previous+1 != v {
+				previous, _, previousEnd, e := p.verify(i, c.Previous)
+				if e != nil || previous+1 != v || previous < initial ||
+					previous == initial && !bytes.Equal(c.Previous, p.config.Streams[i].Initial) ||
+					previous > initial && previousEnd.After(p.config.End) {
 					return nil, ErrState
 				}
 			} else if len(c.Previous) != 0 {
 				return nil, ErrState
 			}
-		}
-		if err = syncRetained(statePath); err != nil {
-			return nil, ErrState
 		}
 	}
 	// Intact resume permits only the current candidate or its immediate saved
@@ -224,12 +242,17 @@ func Open(configPath, statePath, mode string) (_ *Publisher, err error) {
 	if err = p.checkTargets(); err != nil {
 		return nil, err
 	}
+	if mode == "resume" && p.files.retained(statePath) != nil {
+		return nil, ErrState
+	}
 	return p, nil
 }
 
-func (p *Publisher) validateConfig(now time.Time) error {
+// loadSigners checks immutable structure and signing authenticity, including
+// for an expired old window. It does not validate TLS at an obsolete date.
+func (p *Publisher) loadSigners() error {
 	c := p.config
-	if c.Version != 1 || len(c.Streams) != 2 || c.Interval < time.Second || c.Lifetime > peerauth.MaxMembershipLifetime || c.Lifetime <= 2*peerauth.ClockMargin || c.Interval >= (c.Lifetime-2*peerauth.ClockMargin)/2 || !c.End.After(now) || !c.CleanupBy.After(c.End) {
+	if c.Version != 1 || len(c.Streams) != 2 || c.Interval < time.Second || c.Lifetime > peerauth.MaxMembershipLifetime || c.Lifetime <= 2*peerauth.ClockMargin || c.Interval >= (c.Lifetime-2*peerauth.ClockMargin)/2 || !validWindow(c) {
 		return ErrState
 	}
 	kinds := map[string]bool{}
@@ -276,62 +299,6 @@ func (p *Publisher) validateConfig(now time.Time) error {
 		if _, _, _, e = p.verify(i, s.Initial); e != nil {
 			return ErrState
 		}
-		members := p.signers[i].data.Members
-		trust := p.signers[i].data.Domain.TrustDigest
-		if s.Kind == "control" {
-			trust = p.signers[i].control.Profile.TrustDigest
-			for _, v := range p.signers[i].control.Profile.Voters {
-				members = append(members, v.Workload)
-			}
-		}
-		if len(s.Certificates) != len(members) {
-			return ErrState
-		}
-		rootPEM, e := readPrivate(s.RootsFile, 1<<20)
-		roots := x509.NewCertPool()
-		if e != nil || sha256.Sum256(rootPEM) != trust || !roots.AppendCertsFromPEM(rootPEM) {
-			return ErrState
-		}
-		covered := map[[32]byte]bool{}
-		for _, path := range s.Certificates {
-			raw, e := readPrivate(path, peerauth.MaxManifestBytes)
-			if e != nil {
-				return ErrState
-			}
-			block, rest := pem.Decode(raw)
-			if block == nil || block.Type != "CERTIFICATE" {
-				return ErrState
-			}
-			cert, e := x509.ParseCertificate(block.Bytes)
-			if e != nil || cert.NotBefore.After(now) || !cert.NotAfter.After(c.CleanupBy.Add(peerauth.ClockMargin)) {
-				return ErrState
-			}
-			intermediates := x509.NewCertPool()
-			if len(bytes.TrimSpace(rest)) != 0 && !intermediates.AppendCertsFromPEM(rest) {
-				return ErrState
-			}
-			for _, at := range []time.Time{now, c.CleanupBy.Add(peerauth.ClockMargin)} {
-				for _, usage := range []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth} {
-					if _, e := cert.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: at, KeyUsages: []x509.ExtKeyUsage{usage}}); e != nil {
-						return ErrState
-					}
-				}
-			}
-			digest := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
-			if covered[digest] || len(cert.URIs) != 1 {
-				return ErrState
-			}
-			found := false
-			for _, m := range members {
-				if m.SPKI == digest && m.Identity == cert.URIs[0].String() {
-					found = true
-				}
-			}
-			if !found {
-				return ErrState
-			}
-			covered[digest] = true
-		}
 		for _, path := range s.Targets {
 			if !canonical(path) {
 				return ErrState
@@ -362,11 +329,13 @@ func (p *Publisher) save() error {
 	raw, err := json.Marshal(p.state)
 	if err != nil || len(raw) > maxStateBytes {
 		p.failed = true
-		return ErrState
+		p.failure = "journal_uncertain"
+		return errors.Join(ErrState, ErrJournal)
 	}
 	if err = p.files.replace(p.path, raw); err != nil {
 		p.failed = true
-		return ErrState
+		p.failure = "journal_uncertain"
+		return errors.Join(ErrState, ErrJournal)
 	}
 	p.raw = raw
 	return nil
@@ -374,12 +343,14 @@ func (p *Publisher) save() error {
 
 func (p *Publisher) checkTargets() error {
 	for i, s := range p.config.Streams {
-		for _, path := range s.Targets {
+		for j, path := range s.Targets {
 			raw, err := readPrivate(path, peerauth.MaxManifestBytes)
 			c := p.state.Streams[i]
-			if err != nil || !bytes.Equal(raw, c.Current) && !(c.Pending && bytes.Equal(raw, c.Previous)) {
+			if err != nil || !bytes.Equal(raw, c.Current) && (!c.Pending || !bytes.Equal(raw, c.Previous)) {
+				p.observeTarget(i, j, nil, "operator_recovery_required")
 				return ErrState
 			}
+			p.observeTarget(i, j, raw, "")
 		}
 	}
 	return nil
@@ -389,14 +360,20 @@ func (p *Publisher) checkTargets() error {
 // the other stream. An ambiguous journal write permanently stops this owner;
 // only explicit intact resume may inspect its durable bytes. Old expiry alone
 // does not prevent renewal. The operator's wall clock is never server authority.
-func (p *Publisher) Step(now time.Time) error {
+func (p *Publisher) Step(now time.Time) (result error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || p.failed {
+	defer func() {
+		if !p.failed {
+			p.failure = FailureCategory(result)
+		}
+	}()
+	if p.closed || p.failed || p.retainedOnly {
 		return ErrState
 	}
 	if !p.last.IsZero() && now.Before(p.last) {
 		p.failed = true
+		p.failure = "clock_rollback"
 		return ErrState
 	}
 	p.last = now
@@ -406,6 +383,7 @@ func (p *Publisher) Step(now time.Time) error {
 	raw, err := readPrivate(p.path, maxStateBytes)
 	if err != nil || !bytes.Equal(raw, p.raw) {
 		p.failed = true
+		p.failure = "operator_recovery_required"
 		return ErrState
 	}
 	if p.checkTargets() != nil {
@@ -447,21 +425,28 @@ func (p *Publisher) Step(now time.Time) error {
 			continue
 		}
 		complete := true
-		for _, path := range s.Targets {
+		for j, path := range s.Targets {
 			observed, e := readPrivate(path, peerauth.MaxManifestBytes)
 			if e != nil || !bytes.Equal(observed, c.Current) && !bytes.Equal(observed, c.Previous) {
+				p.observeTarget(i, j, nil, "operator_recovery_required")
 				complete = false
 				continue
 			}
 			if bytes.Equal(observed, c.Current) {
 				// Includes retry after a target rename succeeded but dir sync
 				// failed. Readback alone must not count as durable delivery.
-				e = syncRetained(path)
+				e = p.files.retained(path)
 			} else {
 				e = p.files.replace(path, c.Current)
 			}
 			if e != nil {
+				p.targetStatus[i][j].Failure = "delivery_retry"
 				complete = false
+			} else {
+				p.observeTarget(i, j, c.Current, "")
+				at := p.clock().UTC()
+				p.targetStatus[i][j].LastDurableAt = &at
+				p.targetStatus[i][j].LastDurableVersion = c.Version
 			}
 		}
 		if complete {
@@ -484,13 +469,45 @@ func (p *Publisher) Step(now time.Time) error {
 // Cancellation waits for any synchronous file operation; it never reports a
 // partially flushed record as success or leaves detached publication goroutines.
 func (p *Publisher) Run(ctx context.Context) error {
+	return p.RunWithStatus(ctx, nil, 0)
+}
+
+// RunWithStatus reports bounded, nonsecret observations every five seconds and
+// on failure-category changes. The synchronous observer owns no authority.
+// Its failure stops publication; it cannot silently disable expiry monitoring.
+func (p *Publisher) RunWithStatus(ctx context.Context, observe func(Status) error, maintenanceLead time.Duration) error {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	var reported time.Time
+	previous := ""
+	report := func(now time.Time, force bool) error {
+		if observe == nil {
+			return nil
+		}
+		snapshot := p.Status(now, maintenanceLead)
+		if force || snapshot.Failure != previous || reported.IsZero() || now.Sub(reported) >= 5*time.Second {
+			if err := observe(snapshot); err != nil {
+				return ErrReporting
+			}
+			reported, previous = now, snapshot.Failure
+		}
+		return nil
+	}
 	for {
 		if err := ctx.Err(); err != nil {
+			p.mu.Lock()
+			p.failure = "stopped"
+			p.mu.Unlock()
+			if e := report(p.clock().UTC(), true); e != nil {
+				return e
+			}
 			return err
 		}
-		err := p.Step(time.Now().UTC())
+		now := p.clock().UTC()
+		err := p.Step(now)
+		if e := report(p.clock().UTC(), false); e != nil {
+			return e
+		}
 		if errors.Is(err, ErrBudget) {
 			return nil
 		}
@@ -499,7 +516,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			// Report termination at the top of the next iteration.
 		case <-ticker.C:
 		}
 	}
