@@ -176,7 +176,7 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 			cookies = append(cookies, cookie)
 		}
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	if len(cookies) != 2 {
 		t.Fatal("synthetic session cookies")
 	}
@@ -184,7 +184,7 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 		t.Helper()
 		waitReady()
 		response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, ""))
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		if response.StatusCode != http.StatusOK || len(response.Cookies()) != 0 {
 			t.Fatal("same session lost or rewritten by renewal", response.StatusCode)
 		}
@@ -203,7 +203,7 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 	if completion.StatusCode != http.StatusSeeOther {
 		t.Fatal("Code attempt did not cross initial membership deadline", completion.StatusCode)
 	}
-	completion.Body.Close()
+	_ = completion.Body.Close()
 	for _, cookie := range cookies {
 		if !time.Now().Before(cookie.Expires) {
 			t.Fatal("fixture exceeded original session lifetime")
