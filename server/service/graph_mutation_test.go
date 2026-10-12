@@ -14,6 +14,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -251,6 +252,7 @@ func TestGraphMutationPublicRejectsBeforePublication(t *testing.T) {
 }
 
 func TestGraphMutationDefiniteAbort(t *testing.T) {
+	capture := captureGraphMutationForTest(t)
 	var attempts []mutationlog.Entry
 	f := newReceiptEdgeDeleteFixture(t, receiptEdgeDeleteWALFunc(func(e mutationlog.Entry) error {
 		attempts = append(attempts, e)
@@ -272,9 +274,14 @@ func TestGraphMutationDefiniteAbort(t *testing.T) {
 	if _, ok := attempts[0].Op.(*graphMutationEnvelope); !ok {
 		t.Fatalf("WAL type %T", attempts[0].Op)
 	}
+	stages := graphMutationDiagnosticStages(t, capture)
+	if stages["publication_enter"].Object == 0 || stages["publication_complete"].Object != 0 {
+		t.Fatal("failed publication incorrectly reported as complete", stages)
+	}
 }
 
 func TestGraphMutationCancellationDuringWALCannotAbortCommit(t *testing.T) {
+	capture := captureGraphMutationForTest(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	f := newReceiptEdgeDeleteFixture(t, receiptEdgeDeleteWALFunc(func(mutationlog.Entry) error {
@@ -290,6 +297,57 @@ func TestGraphMutationCancellationDuringWALCannotAbortCommit(t *testing.T) {
 	if weight, live := f.cache.GetWeight("a", "b"); !live || weight != 2 {
 		t.Fatal("committed graph incomplete", weight, live)
 	}
+	stages := graphMutationDiagnosticStages(t, capture)
+	if stages["publication_complete"].Object == 0 {
+		t.Fatal("completed WAL misclassified after caller cancellation", stages)
+	}
+}
+
+func TestGraphMutationExpiredCallerAbortObservation(t *testing.T) {
+	capture := captureGraphMutationForTest(t)
+	runtime, svc, _ := newActivatedReceiptService(t, 16)
+	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancel()
+	response, err := svc.MutateGraph(ctx, graphMutationTestRequest(t, runtime, 0x75))
+	if response != nil || connect.CodeOf(err) != connect.CodeDeadlineExceeded || runtime.graph.VertexCount() != 0 || runtime.log.Len() != 0 || runtime.receipt.store.Stats().Entries != 0 {
+		t.Fatal("expired call changed state", response, err)
+	}
+	stages := graphMutationDiagnosticStages(t, capture)
+	if !stages["admission"].HasDeadline || stages["admission"].DeadlineLeft >= 0 || stages["publication_enter"].Object != 0 || stages["graph_begin"].Object == 0 {
+		t.Fatal("pre-publication deadline evidence missing", stages)
+	}
+}
+
+func captureGraphMutationForTest(t *testing.T) *decisiontrace.Capture {
+	t.Helper()
+	capture := decisiontrace.Start(64)
+	if capture == nil {
+		t.Fatal("diagnostic capture already owned")
+	}
+	t.Cleanup(capture.Stop)
+	return capture
+}
+
+func graphMutationDiagnosticStages(t *testing.T, capture *decisiontrace.Capture) map[string]decisiontrace.Event {
+	t.Helper()
+	events, dropped := capture.Drain()
+	if dropped != 0 {
+		t.Fatal("unexpected diagnostic loss", dropped)
+	}
+	stages := make(map[string]decisiontrace.Event)
+	var prior int64
+	for _, event := range events {
+		if event.Kind != "graph_mutation" || event.Object == 0 || event.Elapsed < prior {
+			t.Fatal("invalid bounded mutation diagnostic", event)
+		}
+		prior = event.Elapsed
+		stages[event.Stage] = event
+	}
+	budget := stages["operation_budget"]
+	if !budget.HasDeadline || budget.DeadlineLeft > int64(time.Second) {
+		t.Fatal("operation budget changed", budget)
+	}
+	return stages
 }
 
 func TestGraphMutationAuthorizationNamespaceBlindAndLifecycle(t *testing.T) {
