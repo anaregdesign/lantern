@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -161,23 +163,23 @@ func TestAuthorityTimeProducerNoCachedSuccess(t *testing.T) {
 
 func TestAuthorityTimeEndpointUsesBoundedConfiguredAnswers(t *testing.T) {
 	answers := []netip.Addr{netip.MustParseAddr("2001:db8::2"), netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.1")}
-	a, err := authorityTimeEndpoint(answers, 0)
-	if err != nil || a != "192.0.2.1:123" {
+	a, err := authorityTimeEndpoints(answers, 0)
+	if err != nil || !slices.Equal(a, []string{"192.0.2.1:123", "[2001:db8::2]:123"}) {
 		t.Fatal(a, err)
 	}
-	b, err := authorityTimeEndpoint(answers, 1)
-	if err != nil || b != "[2001:db8::2]:123" {
+	b, err := authorityTimeEndpoints(answers, 1)
+	if err != nil || !slices.Equal(b, []string{"[2001:db8::2]:123", "192.0.2.1:123"}) {
 		t.Fatal(b, err)
 	}
-	c, err := authorityTimeEndpoint(answers, 2)
-	if err != nil || c != a {
+	c, err := authorityTimeEndpoints(answers, 2)
+	if err != nil || !slices.Equal(c, a) {
 		t.Fatal("no scheduled rotation", c, err)
 	}
 	if answers[0].String() != "2001:db8::2" {
 		t.Fatal("mutated resolver result")
 	}
 	for _, bad := range [][]netip.Addr{nil, make([]netip.Addr, 17), {netip.Addr{}}, {netip.MustParseAddr("::")}, {netip.MustParseAddr("ff02::1")}} {
-		if _, err := authorityTimeEndpoint(bad, 0); err == nil {
+		if _, err := authorityTimeEndpoints(bad, 0); err == nil {
 			t.Fatal("bad DNS answer scope")
 		}
 	}
@@ -205,7 +207,7 @@ func TestAuthorityTimeTransportClassification(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			cause := &net.OpError{Op: "boundary", Net: "udp", Err: context.DeadlineExceeded}
 			source, _ := parseAuthorityTimeSource([]byte("server fixture.invalid"))
-			samples, writes, reads := 0, 0, 0
+			samples, writes, reads, dials := 0, 0, 0, 0
 			p := &authorityTimeProducer{source: source, sample: func() (authorityTimeStamp, error) {
 				samples++
 				if mode == "native send" || mode == "native receive" && samples == 2 {
@@ -259,9 +261,10 @@ func TestAuthorityTimeTransportClassification(t *testing.T) {
 				if mode == "dns answers" {
 					return nil, nil
 				}
-				return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+				return []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("127.0.0.2"), netip.MustParseAddr("2001:db8::2")}, nil
 			}
 			dial := func(context.Context, string, string) (net.Conn, error) {
+				dials++
 				if mode == "dial" {
 					return nil, cause
 				}
@@ -282,8 +285,126 @@ func TestAuthorityTimeTransportClassification(t *testing.T) {
 			if mode == "RATE" && !errors.Is(err, errAuthorityTimeRate) || (mode == "DENY" || mode == "RSTR") && !errors.Is(err, errAuthorityTimeDenied) {
 				t.Fatal("lost source response priority")
 			}
-			if writes > 1 || reads > 1 {
+			if writes > 1 || reads > 1 || dials > 1 {
 				t.Fatal("retried within one attempt")
+			}
+		})
+	}
+}
+
+func TestAuthorityTimeProducerSkipsOnlyUnreachableBeforeSend(t *testing.T) {
+	capture := decisiontrace.Start(64)
+	if capture == nil {
+		t.Fatal("capture unavailable")
+	}
+	defer capture.Stop()
+	for _, mode := range []string{"network", "host", "family", "all unreachable", "limit", "permission", "other", "canceled", "deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			source, _ := parseAuthorityTimeSource([]byte("server fixture.invalid"))
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if mode == "deadline" {
+				var deadlineCancel context.CancelFunc
+				ctx, deadlineCancel = context.WithTimeout(ctx, 20*time.Millisecond)
+				defer deadlineCancel()
+			}
+			var deadline time.Time
+			lookups, samples, writes, reads := 0, 0, 0, 0
+			var dialed []string
+			p := &authorityTimeProducer{source: source, addressTurn: 1, sample: func() (authorityTimeStamp, error) {
+				samples++
+				return fakeAuthorityTimeStamp(uint64(samples) * 10_000_000), nil
+			}}
+			defer p.close()
+			lookup := func(ctx context.Context, network, host string) ([]netip.Addr, error) {
+				lookups++
+				var ok bool
+				deadline, ok = ctx.Deadline()
+				if !ok || time.Until(deadline) > 3*time.Second || network != "ip" || host != source.host {
+					t.Fatal("source or original deadline changed")
+				}
+				if mode == "limit" {
+					answers := make([]netip.Addr, 16)
+					for i := range answers {
+						answers[i] = netip.AddrFrom4([4]byte{192, 0, 2, byte(i + 1)})
+					}
+					return answers, nil
+				}
+				return []netip.Addr{netip.MustParseAddr("2001:db8::2"), netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("2001:db8::2")}, nil
+			}
+			var nonce [8]byte
+			conn := &timeProducerConn{
+				write: func(b []byte) (int, error) { writes++; copy(nonce[:], b[40:48]); return len(b), nil },
+				read: func(b []byte) (int, error) {
+					reads++
+					reply := fakeAuthorityNTPResponse(nonce)
+					return copy(b, reply[:]), nil
+				},
+			}
+			cause := &net.OpError{Op: "dial", Net: "udp", Err: syscall.ENETUNREACH}
+			switch mode {
+			case "host":
+				cause.Err = syscall.EHOSTUNREACH
+			case "family":
+				cause.Err = syscall.EAFNOSUPPORT
+			case "permission":
+				cause.Err = syscall.EACCES
+			case "other":
+				cause.Err = context.DeadlineExceeded
+			}
+			dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+				actual, _ := ctx.Deadline()
+				if network != "udp" || actual != deadline {
+					t.Fatal("fallback changed transport or renewed deadline")
+				}
+				dialed = append(dialed, address)
+				if mode == "canceled" {
+					cancel()
+				}
+				if mode == "deadline" {
+					<-ctx.Done()
+				}
+				if address != "127.0.0.1:123" || mode == "all unreachable" {
+					return nil, cause
+				}
+				return conn, nil
+			}
+			m, err := p.exchangeIO(ctx, "", lookup, dial)
+			success := mode == "network" || mode == "host" || mode == "family"
+			if success {
+				if err != nil || samples != 2 || writes != 1 || reads != 1 || m.sequence != 1 || m.source != source || m.endpoint != "127.0.0.1:123" {
+					t.Fatal("fallback changed the single bound measurement", err, samples, writes, reads)
+				}
+				if !slices.Equal(dialed, []string{"[2001:db8::1]:123", "[2001:db8::2]:123", "127.0.0.1:123"}) {
+					t.Fatal("configured rotation or no-repeat bound changed", dialed)
+				}
+			} else {
+				var transport *authorityTimeTransportError
+				if !errors.As(err, &transport) || m != (authorityTimeMeasurement{}) || samples != 0 || writes != 0 || reads != 0 {
+					t.Fatal("failed connection created time authority or sent a datagram", err)
+				}
+				want := 1
+				if mode == "all unreachable" {
+					want = 3
+				}
+				if mode == "limit" {
+					want = 16
+					unique := slices.Clone(dialed)
+					slices.Sort(unique)
+					if len(slices.Compact(unique)) != want {
+						t.Fatal("repeated configured address")
+					}
+				}
+				if len(dialed) != want {
+					t.Fatal("unexpected connection retry", dialed)
+				}
+				if !errors.Is(err, cause) {
+					t.Fatal("lost original connection error", err)
+				}
+			}
+			probe := p.probeObservation()
+			if lookups != 1 || p.attempts != 1 || p.addressTurn != 2 || probe.DialAttempts != len(dialed) {
+				t.Fatal("retried DNS/scheduled attempt or lost diagnostic")
 			}
 		})
 	}

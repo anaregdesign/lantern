@@ -30,6 +30,7 @@ type Event struct {
 	Attempt        uint64    `json:"attempt,omitempty"`
 	Turn           uint64    `json:"turn,omitempty"`
 	DNSCount       int       `json:"dns_count,omitempty"`
+	DialAttempts   int       `json:"dial_attempts,omitempty"`
 	DNSDigest      string    `json:"dns_digest,omitempty"`
 	EndpointDigest string    `json:"endpoint_digest,omitempty"`
 	Family         string    `json:"family,omitempty"`

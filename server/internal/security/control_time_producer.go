@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/anaregdesign/lantern/server/decisiontrace"
@@ -80,7 +81,7 @@ type authorityTimeMeasurement struct {
 }
 
 // Private, unwired fact producer. One bounded datagram exchange at a time, no
-// retries, no background goroutine, no cached success after loss, no OS writes.
+// packet retries, no background goroutine, no cached success after loss, no OS writes.
 // The time owner owns refresh/backoff and qualified invalidation.
 type authorityTimeProducer struct {
 	mu           sync.Mutex
@@ -160,10 +161,11 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 		p.mu.Unlock()
 		p.workers.Done()
 	}()
+	addresses := []string{address}
 	if address == "" {
-		// UDP connect has no response-driven happy-eyeballs fallback. Keep one
-		// datagram per scheduled attempt, rotating the exact configured host's
-		// bounded DNS answers on normal backoff instead of pinning a silent one.
+		// Rotate the exact source's bounded answers. Only local route/family
+		// failures before any packet may advance within this same deadline;
+		// response loss still waits for the owner's next scheduled attempt.
 		answers, err := lookup(ctx, "ip", p.source.host)
 		if err != nil {
 			return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
@@ -178,21 +180,12 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 			probe.DNSCount = len(normalized)
 			probe.DNSDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(normalized, "\n"))))
 		}
-		address, err = authorityTimeEndpoint(answers, addressTurn)
+		addresses, err = authorityTimeEndpoints(answers, addressTurn)
 		if err != nil {
 			return authorityTimeMeasurement{}, err
 		}
 	}
 
-	if decisiontrace.Enabled() {
-		probe.EndpointDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(address)))
-		host, _, _ := net.SplitHostPort(address)
-		ip, _ := netip.ParseAddr(host)
-		probe.Family = "ipv6"
-		if ip.Is4() {
-			probe.Family = "ipv4"
-		}
-	}
 	probe.Stage = "random"
 	var request [48]byte
 	request[0] = 4<<3 | 3
@@ -206,7 +199,25 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	// Connected UDP binds the response endpoint; the ephemeral local port is
 	// selected by the OS (RFC 9109). Correlation is not authentication.
 	probe.Stage = "dial"
-	conn, err := dial(ctx, "udp", address)
+	var conn net.Conn
+	var err error
+	for i, candidate := range addresses {
+		probe.DialAttempts = i + 1
+		if decisiontrace.Enabled() {
+			probe.EndpointDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(candidate)))
+			host, _, _ := net.SplitHostPort(candidate)
+			ip, _ := netip.ParseAddr(host)
+			probe.Family = "ipv6"
+			if ip.Is4() {
+				probe.Family = "ipv4"
+			}
+		}
+		conn, err = dial(ctx, "udp", candidate)
+		unreachable := errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.EAFNOSUPPORT)
+		if err == nil || ctx.Err() != nil || !unreachable {
+			break
+		}
+	}
 	if err != nil {
 		return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
 	}
@@ -271,21 +282,26 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	return authorityTimeMeasurement{p.source, conn.RemoteAddr().String(), sent, received, packet, request, [48]byte(raw[:48]), sequence}, nil
 }
 
-func authorityTimeEndpoint(answers []netip.Addr, turn uint64) (string, error) {
+func authorityTimeEndpoints(answers []netip.Addr, turn uint64) ([]string, error) {
 	if len(answers) == 0 || len(answers) > 16 {
-		return "", errAuthorityTime
+		return nil, errAuthorityTime
 	}
 	answers = slices.Clone(answers)
 	for i, a := range answers {
 		a = a.Unmap()
 		if !a.IsValid() || a.IsUnspecified() || a.IsMulticast() || a.Zone() != "" {
-			return "", errAuthorityTime
+			return nil, errAuthorityTime
 		}
 		answers[i] = a
 	}
 	slices.SortFunc(answers, func(a, b netip.Addr) int { return a.Compare(b) })
 	answers = slices.Compact(answers)
-	return net.JoinHostPort(answers[turn%uint64(len(answers))].String(), "123"), nil
+	start := int(turn % uint64(len(answers)))
+	result := make([]string, len(answers))
+	for i := range answers {
+		result[i] = net.JoinHostPort(answers[(start+i)%len(answers)].String(), "123")
+	}
+	return result, nil
 }
 
 func (p *authorityTimeProducer) close() {

@@ -191,6 +191,18 @@ records that host and immutable image explicitly. Shared filesystem durability
 and ownership remain deployment prerequisites; a Docker Desktop run does not
 certify native Linux storage or power-loss behavior.
 
+The selected time source must be reachable from each container. The native
+producer rotates the configured hostname's bounded DNS answers. Before sending,
+local `ENETUNREACH`, `EHOSTUNREACH` or `EAFNOSUPPORT` dial failures can advance to
+the next answer within the original three-second attempt. This permits a usable
+address family when another has no route. Each scheduled attempt still sends at
+most one NTP datagram; it never switches after a write/read failure or source
+response. IPv6 assignment or successful UDP dial alone does not prove reply
+reachability. Packet loss can still exhaust the unchanged 60-second holdover
+and withdraw readiness even while membership publication succeeds. Diagnose
+transport and native admission separately; do not extend time bounds to repair
+a network failure.
+
 The existing HA Compose contract has a concrete overlay:
 
 ```sh
