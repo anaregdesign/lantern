@@ -11,6 +11,7 @@ import (
 func TestAuthorityRenewalNetwork(t *testing.T) {
 	clocks := map[uint32]*authorityTimeOwner{}
 	ticks := map[uint32]*atomic.Uint64{}
+	releaseChosen := make(chan struct{})
 	n := s3aTestCluster(t, func(id uint32, c *s3aConfig) {
 		clock, counter := fakeAuthorityTimeOwnerAt(t, c.Membership.Now())
 		clocks[id], ticks[id] = clock, counter
@@ -18,6 +19,16 @@ func TestAuthorityRenewalNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		c.hooks = &s3aHooks{beforeRenewal: func(ctx context.Context) { <-ctx.Done() }}
+		c.hooks.beforeSend = func(ctx context.Context, to uint32, raw []byte) error {
+			if to == 2 && raw[len(s2cMessageMagic)] == s2cChosen {
+				select {
+				case <-releaseChosen:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			return nil
+		}
 		if id == 3 {
 			c.hooks.beforeResponse = func(ctx context.Context) { <-ctx.Done() }
 		}
@@ -52,7 +63,8 @@ func TestAuthorityRenewalNetwork(t *testing.T) {
 	}
 	// Consensus retains its reserved FIFO and outbox capacity while the
 	// separate renewal queue exists. A NOOP invalidates the captured prefix.
-	if _, err := o.Drive(ctx, [32]byte{}); err != nil {
+	receipt, err := o.Drive(ctx, [32]byte{})
+	if err != nil {
 		t.Fatal("renewal traffic blocked consensus", err)
 	}
 	o.kernel.gate.Lock()
@@ -60,6 +72,16 @@ func TestAuthorityRenewalNetwork(t *testing.T) {
 	o.kernel.gate.Unlock()
 	if err == nil {
 		t.Fatal("old-prefix capability survived NOOP")
+	}
+	// Drive proves local installation, not a drained peer majority. Keep
+	// CHOSEN delivery to node 2 behind a barrier to exercise that legal gap.
+	if err = o.renewAuthority(ctx); err == nil {
+		t.Fatal("renewed without a matching drained majority")
+	}
+	close(releaseChosen)
+	peer := n.waitCut(2, receipt.ControlSlot)
+	if peer.ControlSlot != receipt.ControlSlot || peer.ControlPrefix != receipt.ControlPrefix {
+		t.Fatal("peer did not install the exact chosen prefix")
 	}
 	if err = o.renewAuthority(ctx); err != nil {
 		t.Fatal("renew new drained prefix", err)
