@@ -2,13 +2,17 @@ package security
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
 func TestAuthorityTimeSource(t *testing.T) {
@@ -24,6 +28,8 @@ func TestAuthorityTimeSource(t *testing.T) {
 }
 
 func TestAuthorityTimeProducer(t *testing.T) {
+	capture := decisiontrace.Start(64)
+	defer capture.Stop()
 	for _, mode := range []string{"success", "bad nonce", "oversize", "cancel", "close", "sample failure", "sample regression", "sample epoch"} {
 		t.Run(mode, func(t *testing.T) {
 			server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -106,7 +112,20 @@ func TestAuthorityTimeProducer(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				t.Fatal("measurement did not join")
 			}
+			probe := p.probeObservation()
+			if probe.Attempt != 1 || probe.EndpointDigest != fmt.Sprintf("%x", sha256.Sum256([]byte(server.LocalAddr().String()))) || probe.Family != "ipv4" || probe.Elapsed <= 0 {
+				t.Fatal("probe diagnostic is not the completed attempt")
+			}
+			if mode == "bad nonce" && probe.Stage != "packet" {
+				t.Fatal("packet refusal classification")
+			}
+			if mode == "sample failure" && probe.Stage != "native_receive" {
+				t.Fatal("sample failure classification")
+			}
 			if mode == "success" {
+				if probe.Reason != "ok" || probe.Native != 20_000_000 || samples.Load() != 2 {
+					t.Fatal("diagnostic sampled again or altered success")
+				}
 				if result.err != nil {
 					t.Fatal(result.err)
 				}
@@ -161,5 +180,111 @@ func TestAuthorityTimeEndpointUsesBoundedConfiguredAnswers(t *testing.T) {
 		if _, err := authorityTimeEndpoint(bad, 0); err == nil {
 			t.Fatal("bad DNS answer scope")
 		}
+	}
+}
+
+type timeProducerConn struct {
+	write       func([]byte) (int, error)
+	read        func([]byte) (int, error)
+	deadlineErr error
+}
+
+func (c *timeProducerConn) Write(p []byte) (int, error) { return c.write(p) }
+func (c *timeProducerConn) Read(p []byte) (int, error)  { return c.read(p) }
+func (*timeProducerConn) Close() error                  { return nil }
+func (*timeProducerConn) LocalAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 123}
+}
+func (c *timeProducerConn) RemoteAddr() net.Addr           { return c.LocalAddr() }
+func (c *timeProducerConn) SetDeadline(time.Time) error    { return c.deadlineErr }
+func (*timeProducerConn) SetReadDeadline(time.Time) error  { return nil }
+func (*timeProducerConn) SetWriteDeadline(time.Time) error { return nil }
+
+func TestAuthorityTimeTransportClassification(t *testing.T) {
+	for _, mode := range []string{"dns", "dial", "write", "read", "deadline", "short write", "native send", "native receive", "dns answers", "packet", "source fault", "RATE", "DENY", "RSTR"} {
+		t.Run(mode, func(t *testing.T) {
+			cause := &net.OpError{Op: "boundary", Net: "udp", Err: context.DeadlineExceeded}
+			source, _ := parseAuthorityTimeSource([]byte("server fixture.invalid"))
+			samples, writes, reads := 0, 0, 0
+			p := &authorityTimeProducer{source: source, sample: func() (authorityTimeStamp, error) {
+				samples++
+				if mode == "native send" || mode == "native receive" && samples == 2 {
+					return authorityTimeStamp{}, cause // net.Error is NOT sufficient classification
+				}
+				return fakeAuthorityTimeStamp(uint64(samples) * 10_000_000), nil
+			}}
+			defer p.close()
+			var nonce [8]byte
+			conn := &timeProducerConn{
+				write: func(b []byte) (int, error) {
+					writes++
+					copy(nonce[:], b[40:48])
+					if mode == "write" {
+						return 0, cause
+					}
+					if mode == "short write" {
+						return len(b) - 1, nil
+					}
+					return len(b), nil
+				},
+				read: func(b []byte) (int, error) {
+					reads++
+					if mode == "read" {
+						return 0, cause
+					}
+					response := fakeAuthorityNTPResponse(nonce)
+					switch mode {
+					case "packet":
+						response[24] ^= 1
+					case "source fault":
+						response[0] |= 1 << 6
+					case "RATE", "DENY", "RSTR":
+						response[1] = 0
+						copy(response[12:16], mode)
+					}
+					return copy(b, response[:]), nil
+				},
+			}
+			if mode == "deadline" {
+				conn.deadlineErr = cause
+			}
+			lookup := func(ctx context.Context, network, host string) ([]netip.Addr, error) {
+				deadline, ok := ctx.Deadline()
+				if !ok || time.Until(deadline) > 3*time.Second || network != "ip" || host != source.host {
+					t.Fatal("changed source or measurement budget")
+				}
+				if mode == "dns" {
+					return nil, cause
+				}
+				if mode == "dns answers" {
+					return nil, nil
+				}
+				return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+			}
+			dial := func(context.Context, string, string) (net.Conn, error) {
+				if mode == "dial" {
+					return nil, cause
+				}
+				return conn, nil
+			}
+			m, err := p.exchangeIO(t.Context(), "", lookup, dial)
+			var marked *authorityTimeTransportError
+			want := mode == "dns" || mode == "dial" || mode == "write" || mode == "read"
+			if err == nil || errors.As(err, &marked) != want || m != (authorityTimeMeasurement{}) {
+				t.Fatal("incorrect transport classification or published failed measurement")
+			}
+			if want || mode == "deadline" || mode == "native send" || mode == "native receive" {
+				var original *net.OpError
+				if !errors.Is(err, cause) || !errors.As(err, &original) || original != cause || !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatal("lost original error identity")
+				}
+			}
+			if mode == "RATE" && !errors.Is(err, errAuthorityTimeRate) || (mode == "DENY" || mode == "RSTR") && !errors.Is(err, errAuthorityTimeDenied) {
+				t.Fatal("lost source response priority")
+			}
+			if writes > 1 || reads > 1 {
+				t.Fatal("retried within one attempt")
+			}
+		})
 	}
 }
