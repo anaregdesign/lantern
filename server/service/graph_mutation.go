@@ -11,18 +11,22 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"google.golang.org/protobuf/proto"
 )
 
 // MutateGraph publishes one receipt group with one origin sequence and WAL
 // decision. It never falls back to independently publishing either family.
 func (s *LanternService) MutateGraph(ctx context.Context, request *pb.MutateGraphRequest) (*pb.MutateGraphResponse, error) {
+	observation := newGraphMutationObservation()
+	observation.mark(ctx, "admission")
 	if !s.graphMutationAdmission.TryLock() {
 		return nil, connect.NewError(connect.CodeResourceExhausted, graphcache.ErrGraphMutationBudget)
 	}
 	defer s.graphMutationAdmission.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
+	observation.mark(ctx, "operation_budget")
 	if request == nil || request.GetReceiptContext() == nil || proto.Size(request) > graphMutationMaxBytes || rejectProtoUnknownFields(request.ProtoReflect()) != nil {
 		return nil, invalidReceiptRequest(errGraphMutation)
 	}
@@ -39,11 +43,13 @@ func (s *LanternService) MutateGraph(ctx context.Context, request *pb.MutateGrap
 	if worst > graphMutationMaxBytes {
 		return nil, connect.NewError(connect.CodeResourceExhausted, errGraphMutation)
 	}
+	observation.mark(ctx, "receipt_runtime")
 	runtime, release, err := s.acquirePublicReceiptRuntime()
 	if err != nil {
 		return nil, err
 	}
 	defer release()
+	observation.mark(ctx, "receipt_context")
 	group, ids, err := s.validatePublicReceiptContext(runtime, request.GetReceiptContext(), len(request.GetItems()), "items")
 	if err != nil {
 		return nil, err
@@ -60,6 +66,7 @@ func (s *LanternService) MutateGraph(ctx context.Context, request *pb.MutateGrap
 			ec.Items[i-vertexCount] = receiptEdgeAddItem{ID: ids[i], Edge: add.GetEdge(), ContribID: id}
 		}
 	}
+	observation.mark(ctx, "prepare_items")
 	ov, vertices, iv, err := prepareVertexPutReceiptCall(s, vc)
 	if err != nil {
 		return nil, err
@@ -84,10 +91,13 @@ func (s *LanternService) MutateGraph(ctx context.Context, request *pb.MutateGrap
 			return nil, invalidReceiptRequest(err)
 		}
 	}
+	observation.mark(ctx, "replication_lock_wait")
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
+	observation.mark(ctx, "origin_lock_wait")
 	s.receiptOriginCutMu.Lock()
 	defer s.receiptOriginCutMu.Unlock()
+	observation.mark(ctx, "receipt_begin")
 	publication := stagedPublication{service: s}
 	defer publication.failClosedOnPanic()
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
@@ -103,6 +113,7 @@ func (s *LanternService) MutateGraph(ctx context.Context, request *pb.MutateGrap
 		return nil, receiptStoreError(err)
 	}
 	if classification == mutationreceipt.Duplicate {
+		observation.mark(ctx, "duplicate_rows")
 		if err := s.authorizeReceiptRows(ctx, prior); err != nil {
 			return nil, err
 		}
@@ -116,9 +127,11 @@ func (s *LanternService) MutateGraph(ctx context.Context, request *pb.MutateGrap
 			results[i] = make([]byte, 4)
 		}
 	}
+	observation.mark(ctx, "receipt_reserve")
 	if err := storeTx.Reserve(results); err != nil {
 		return nil, receiptStoreError(err)
 	}
+	observation.mark(ctx, "prepare_local_mutation")
 	if err := s.prepareLocalMutationLocked(); err != nil {
 		return nil, err
 	}
@@ -128,6 +141,7 @@ func (s *LanternService) MutateGraph(ctx context.Context, request *pb.MutateGrap
 	if err := s.checkEdgeCapacity(len(edges)); err != nil {
 		return nil, err
 	}
+	observation.mark(ctx, "clock_floor")
 	floor, err := receiptClockFloor(storeTx)
 	if err != nil {
 		return nil, receiptStoreError(err)
@@ -138,11 +152,13 @@ func (s *LanternService) MutateGraph(ctx context.Context, request *pb.MutateGrap
 	ts := s.clock.Now()
 	origin := s.clock.NodeID()
 	seq := s.origins.LocalSeq(origin) + 1
+	observation.mark(ctx, "graph_begin")
 	graphTx, err := s.receiptVertexPutCoordinator.cache.BeginGraphMutation(ctx, vertices, edges, ts, uint64(4*worst))
 	if err != nil {
 		return nil, graphMutationError(err)
 	}
 	defer graphTx.Abort()
+	observation.mark(ctx, "graph_staged")
 	result := graphTx.Result()
 	outcomes, err := putOutcomes(result.Vertices.Outcomes, len(vertices))
 	if err != nil {
@@ -191,12 +207,14 @@ func (s *LanternService) MutateGraph(ctx context.Context, request *pb.MutateGrap
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	observation.mark(ctx, "validate_envelope")
 	if err := s.validateReplicationFrame(envelope); err != nil {
 		return nil, err
 	}
 	if err := s.validateReplicationRelayFrame(envelope); err != nil {
 		return nil, err
 	}
+	observation.mark(ctx, "stage_origin")
 	originTx, ok := s.origins.stageNext(origin, seq, ts)
 	if !ok {
 		return nil, connect.NewError(connect.CodeInternal, errGraphMutation)
@@ -205,16 +223,52 @@ func (s *LanternService) MutateGraph(ctx context.Context, request *pb.MutateGrap
 	if err := ctx.Err(); err != nil {
 		return nil, ctxToConnect(err)
 	}
+	observation.mark(ctx, "stage_receipt")
 	if err := storeTx.Stage(); err != nil {
 		return nil, receiptStoreError(err)
 	}
+	observation.mark(ctx, "check_before_wal")
 	if err := graphTx.CheckBeforeWAL(); err != nil {
 		return nil, graphMutationError(err)
 	}
+	// Entering this boundary is not proof of either commit or nonexecution.
+	observation.mark(ctx, "publication_enter")
 	if err := publication.commit(envelope, ts, storeTx, graphTx.Commit, originTx); err != nil {
 		return nil, graphMutationPublicationError(err)
 	}
+	observation.mark(ctx, "publication_complete")
 	return graphMutationResponse(receipts)
+}
+
+// These process-local observations never supply a deadline or authority input.
+// Emit is bounded and nonblocking even while a publication lock is held. Only
+// fixed stage names, a local serial and timing leave this seam; request/receipt/
+// identity bytes and arbitrary errors are excluded. A missing later event never
+// proves nonexecution; the fixture retains the public RPC result separately.
+type graphMutationObservation struct {
+	id      uint64
+	started time.Time
+}
+
+func newGraphMutationObservation() graphMutationObservation {
+	if !decisiontrace.Enabled() {
+		return graphMutationObservation{}
+	}
+	return graphMutationObservation{id: decisiontrace.NextID(), started: time.Now()}
+}
+
+func (o *graphMutationObservation) mark(ctx context.Context, stage string) {
+	if o.id == 0 {
+		return
+	}
+	deadline, hasDeadline := ctx.Deadline()
+	var remaining int64
+	if hasDeadline {
+		remaining = int64(time.Until(deadline))
+	}
+	decisiontrace.Emit(decisiontrace.Event{Kind: "graph_mutation", Object: o.id,
+		Stage: stage, Reason: "progress", Elapsed: int64(time.Since(o.started)),
+		HasDeadline: hasDeadline, DeadlineLeft: remaining})
 }
 
 func graphMutationResponse(receipts []mutationreceipt.Receipt) (*pb.MutateGraphResponse, error) {

@@ -30,10 +30,14 @@ type Event struct {
 	Attempt        uint64    `json:"attempt,omitempty"`
 	Turn           uint64    `json:"turn,omitempty"`
 	DNSCount       int       `json:"dns_count,omitempty"`
+	DialAttempts   int       `json:"dial_attempts,omitempty"`
 	DNSDigest      string    `json:"dns_digest,omitempty"`
 	EndpointDigest string    `json:"endpoint_digest,omitempty"`
 	Family         string    `json:"family,omitempty"`
 	Elapsed        int64     `json:"elapsed,omitempty"`
+	HasDeadline    bool      `json:"has_deadline,omitempty"`
+	DeadlineLeft   int64     `json:"deadline_left,omitempty"`
+	HTTPStatus     int       `json:"http_status,omitempty"`
 	Delay          int64     `json:"delay,omitempty"`
 	Repeats        uint64    `json:"previous_repeats,omitempty"`
 }

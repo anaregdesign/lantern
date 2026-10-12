@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -34,6 +35,7 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	client "github.com/anaregdesign/lantern/sdks/go"
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/service"
@@ -1049,7 +1051,29 @@ func runCurrentPublicSDK4(t *testing.T, s *httptest.Server, token, ca string) {
 	}
 
 	t.Run("go", func(t *testing.T) {
-		sdk, err := client.NewLantern(s.URL, client.WithHTTPClient(s.Client()), client.WithAuthToken(token))
+		capture := decisiontrace.Start(512)
+		if capture == nil {
+			t.Fatal("native SDK4 diagnostic capture already owned")
+		}
+		defer func() {
+			capture.Stop()
+			events, dropped := capture.Drain()
+			if !t.Failed() {
+				return
+			}
+			t.Logf("native SDK4 diagnostic events=%d dropped=%d; missing events do not prove nonexecution; pre-capture native owners may have object=0", len(events), dropped)
+			for _, event := range events {
+				raw, err := json.Marshal(event)
+				if err != nil {
+					t.Log("native SDK4 diagnostic encoding failed")
+					continue
+				}
+				t.Logf("native_sdk4_observation=%s", raw)
+			}
+		}()
+		httpClient := *s.Client()
+		httpClient.Transport = currentSDK4RoundTripper{next: httpClient.Transport}
+		sdk, err := client.NewLantern(s.URL, client.WithHTTPClient(&httpClient), client.WithAuthToken(token))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1145,6 +1169,101 @@ console.log("Node/Admin current native wire: PASS");process.exit(0);
 				t.Fatalf("%s required current wire case missing, skipped or unsuccessful\n%s", language, out)
 			}
 			t.Logf("%s native public current wire: PASS", language)
+		})
+	}
+}
+
+// Only this diagnostic fixture wraps transport. It retains the exact caller
+// context, body, TLS transport and response; no retry or timeout is introduced.
+type currentSDK4RoundTripper struct{ next http.RoundTripper }
+
+func (r currentSDK4RoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	stage := "other"
+	switch request.URL.Path {
+	case graphv1connect.LanternSecurityServiceGetCurrentPrincipalProcedure:
+		stage = "principal"
+	case graphv1connect.LanternServiceGetReceiptCapabilityProcedure:
+		stage = "receipt_capability"
+	case graphv1connect.LanternServiceMutateGraphProcedure:
+		stage = "mutate_graph"
+	}
+	deadline, hasDeadline := request.Context().Deadline()
+	var remaining int64
+	if hasDeadline {
+		remaining = int64(time.Until(deadline))
+	}
+	event := decisiontrace.Event{Kind: "sdk4_rpc", Object: decisiontrace.NextID(),
+		Stage: stage, Reason: "start", HasDeadline: hasDeadline, DeadlineLeft: remaining}
+	decisiontrace.Emit(event)
+	started := time.Now()
+	response, err := r.next.RoundTrip(request)
+	event.Elapsed = int64(time.Since(started))
+	event.Reason = "transport_error"
+	if response != nil {
+		event.HTTPStatus = response.StatusCode
+		event.Reason = "headers"
+	}
+	decisiontrace.Emit(event)
+	return response, err
+}
+
+func (r currentSDK4RoundTripper) CloseIdleConnections() {
+	if closer, ok := r.next.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
+type currentSDK4TransportFunc struct {
+	roundTrip func(*http.Request) (*http.Response, error)
+	closeIdle func()
+}
+
+func (f currentSDK4TransportFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f.roundTrip(request)
+}
+
+func (f currentSDK4TransportFunc) CloseIdleConnections() { f.closeIdle() }
+
+func TestCurrentSDK4DiagnosticTransportPreservesRequest(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprint(failed), func(t *testing.T) {
+			capture := decisiontrace.Start(4)
+			if capture == nil {
+				t.Fatal("diagnostic capture already owned")
+			}
+			defer capture.Stop()
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			request := httptest.NewRequest(http.MethodPost, "https://private.invalid"+graphv1connect.LanternServiceMutateGraphProcedure+"?code=private_code", strings.NewReader("private_payload")).WithContext(ctx)
+			request.Header.Set("Authorization", "private_credential")
+			request.Header.Set("Cookie", "private_cookie")
+			response := &http.Response{StatusCode: http.StatusOK}
+			var failure error
+			if failed {
+				response = nil
+				failure = errors.New("private_transport_error")
+			}
+			calls, closes := 0, 0
+			transport := currentSDK4RoundTripper{next: currentSDK4TransportFunc{roundTrip: func(got *http.Request) (*http.Response, error) {
+				calls++
+				if got != request || got.Context() != ctx {
+					t.Fatal("diagnostic changed request or caller context")
+				}
+				return response, failure
+			}, closeIdle: func() { closes++ }}}
+			got, err := transport.RoundTrip(request)
+			(&http.Client{Transport: transport}).CloseIdleConnections()
+			if calls != 1 || closes != 1 || got != response || err != failure {
+				t.Fatal("diagnostic retried or changed response", calls)
+			}
+			events, dropped := capture.Drain()
+			if dropped != 0 || len(events) != 2 || events[0].Object != events[1].Object || events[0].Stage != "mutate_graph" || !events[0].HasDeadline || events[0].DeadlineLeft <= 0 || events[0].DeadlineLeft > int64(3*time.Second) {
+				t.Fatal("invalid caller deadline evidence", events, dropped)
+			}
+			raw, err := json.Marshal(events)
+			if err != nil || strings.Contains(string(raw), "private_") || strings.Contains(string(raw), "private.invalid") {
+				t.Fatal("diagnostic disclosed request or arbitrary error data")
+			}
 		})
 	}
 }

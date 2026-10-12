@@ -85,7 +85,10 @@ func TestS3ADeliverySaturatedPeerSelfCreditAndEventualQuorum(t *testing.T) {
 		c.Limits.Attempts = 1
 		c.Limits.Rounds = 64
 		c.Limits.Backoff = 20 * time.Millisecond
-		c.hooks = &s3aHooks{beforeSend: func(ctx context.Context, to uint32, _ []byte) error {
+		c.hooks = &s3aHooks{beforeSend: func(ctx context.Context, to uint32, raw []byte) error {
+			if err := s3aTestDropRelaySourceChosen(c, to, raw); err != nil {
+				return err
+			}
 			if to == 3 {
 				blocked.Add(1)
 				<-ctx.Done()
@@ -126,7 +129,7 @@ func TestS3ADeliverySaturatedPeerSelfCreditAndEventualQuorum(t *testing.T) {
 	}
 	// All three transports remain authenticated, but only the reachable quorum
 	// received voting traffic; intact laggard catches up a QC from another peer.
-	n.waitCut(2, 1)
+	s3aTestInstallRelaySource(t, ctx, n)
 	relay := s3aTestPrepareRelay(t, n)
 	count, err := n.nodes[3].CatchUp(ctx, 2)
 	t.Logf("single authenticated QC relay observation: count=%d err=%v", count, err)
@@ -139,6 +142,52 @@ type s3aTestRelayProof struct {
 	prefix           [32]byte
 	chosen           []byte
 	entered, drained chan struct{}
+}
+
+// Drive proves only the proposer's local cut. Deliberately discard CHOSEN
+// delivery to the non-proposer source so its preparation cannot depend on
+// scheduling of the disposable delivery cache. Voting traffic is unchanged.
+func s3aTestDropRelaySourceChosen(c *s3aConfig, to uint32, raw []byte) error {
+	if to == 2 {
+		m, err := s2cDecodeMessage(c.Participant.Trust, raw)
+		if err == nil && m.kind == s2cChosen {
+			return errors.New("test-only relay source CHOSEN delivery drop")
+		}
+	}
+	return nil
+}
+
+func s3aTestInstallRelaySource(t *testing.T, ctx context.Context, n *s3aTestNetwork) {
+	t.Helper()
+	proof := s3aTestPrepareRelayBetween(t, n.nodes[1], n.nodes[2])
+	// This is fixture initialization, not another RPC under test. Install the
+	// real quorum's signed certificate through the ordinary owner transition;
+	// do not synthesize history, copy floors, or require an extra transport ACK.
+	if err := n.nodes[2].receive(ctx, 1, proof.chosen, nil); err != nil {
+		t.Fatal("initialize relay source from real CHOSEN certificate", err)
+	}
+	select {
+	case <-proof.entered:
+	default:
+		t.Fatal("relay source lacks CHOSEN witness")
+	}
+	select {
+	case <-proof.drained:
+	default:
+		t.Fatal("relay source lacks DRAINED witness")
+	}
+	_, cut, err := n.nodes[2].kernel.ReadLocalCut()
+	if err != nil || cut.ControlSlot != 1 || cut.ControlPrefix != proof.prefix {
+		t.Fatal("relay source differs from chosen slot/prefix", cut, err)
+	}
+	chosen, err := n.nodes[2].kernel.ExportChosen(1, 1, n.nodes[2].limits.RangeBytes)
+	if err != nil || len(chosen) != 1 || !bytes.Equal(chosen[0], proof.chosen) {
+		t.Fatal("relay source retained QC differs", len(chosen), err)
+	}
+	if err := n.nodes[2].check(ctx); err != nil {
+		t.Fatal("relay source is not eligible", err)
+	}
+	t.Log("relay source initialized from real CHOSEN with exact DRAINED slot/prefix/QC")
 }
 
 // Synchronize cancellation after reconciliation's first live-context check;
@@ -157,26 +206,31 @@ func (c *s3aTestRelayContext) Err() error {
 
 func s3aTestPrepareRelay(t *testing.T, n *s3aTestNetwork) s3aTestRelayProof {
 	t.Helper()
-	_, before, err := n.nodes[3].kernel.ReadLocalCut()
+	return s3aTestPrepareRelayBetween(t, n.nodes[2], n.nodes[3])
+}
+
+func s3aTestPrepareRelayBetween(t *testing.T, source, laggard *s3aOwner) s3aTestRelayProof {
+	t.Helper()
+	_, before, err := laggard.kernel.ReadLocalCut()
 	if err != nil || before.ControlSlot != 0 {
 		t.Fatal("relay requires a healthy empty laggard", before, err)
 	}
-	_, source, err := n.nodes[2].kernel.ReadLocalCut()
-	if err != nil || source.ControlSlot != 1 {
-		t.Fatal("relay source requires exactly slot 1", source, err)
+	_, cut, err := source.kernel.ReadLocalCut()
+	if err != nil || cut.ControlSlot != 1 {
+		t.Fatal("relay source requires exactly slot 1", cut, err)
 	}
-	chosen, err := n.nodes[2].kernel.ExportChosen(1, 1, n.nodes[2].limits.RangeBytes)
+	chosen, err := source.kernel.ExportChosen(1, 1, source.limits.RangeBytes)
 	if err != nil || len(chosen) != 1 {
 		t.Fatal("relay source QC missing", len(chosen), err)
 	}
-	proof := s3aTestRelayProof{source.ControlPrefix, bytes.Clone(chosen[0]), make(chan struct{}), make(chan struct{})}
+	proof := s3aTestRelayProof{cut.ControlPrefix, bytes.Clone(chosen[0]), make(chan struct{}), make(chan struct{})}
 	var entered, drained sync.Once
-	n.nodes[3].kernel.gate.Lock()
-	n.nodes[3].kernel.hooks = &s2cParticipantHooks{
+	laggard.kernel.gate.Lock()
+	laggard.kernel.hooks = &s2cParticipantHooks{
 		afterChosen:  func() { entered.Do(func() { close(proof.entered) }) },
 		afterDrained: func() { drained.Do(func() { close(proof.drained) }) },
 	}
-	n.nodes[3].kernel.gate.Unlock()
+	laggard.kernel.gate.Unlock()
 	return proof
 }
 
@@ -252,7 +306,10 @@ func TestS3ADeliveryRelayDeadlineRequiresExactDrainedEvidence(t *testing.T) {
 		c.Limits.Attempts = 1
 		c.Limits.Rounds = 64
 		c.Limits.Backoff = 20 * time.Millisecond
-		c.hooks = &s3aHooks{beforeSend: func(ctx context.Context, to uint32, _ []byte) error {
+		c.hooks = &s3aHooks{beforeSend: func(ctx context.Context, to uint32, raw []byte) error {
+			if err := s3aTestDropRelaySourceChosen(c, to, raw); err != nil {
+				return err
+			}
 			if to == 3 {
 				<-ctx.Done()
 				return ctx.Err()
@@ -265,7 +322,7 @@ func TestS3ADeliveryRelayDeadlineRequiresExactDrainedEvidence(t *testing.T) {
 	if receipt, err := n.nodes[1].Drive(ctx, [32]byte{}); err != nil || receipt.ControlSlot != 1 {
 		t.Fatal("produce real chosen history", receipt, err)
 	}
-	n.waitCut(2, 1)
+	s3aTestInstallRelaySource(t, ctx, n)
 	proof := s3aTestPrepareRelay(t, n)
 	beforeEntry, err := n.nodes[3].Floors()
 	if err != nil {

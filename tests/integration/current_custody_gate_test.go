@@ -133,6 +133,7 @@ func TestCurrentCustodyProcessGate(t *testing.T) {
 		g.data = append(g.data, graphv1connect.NewLanternServiceClient(httpClient, endpoint))
 	}
 	var mixed *mixedHAGate
+	renewal := os.Getenv("LANTERN_CURRENT_MEMBERSHIP_CONTAINER") == "1"
 	if os.Getenv("LANTERN_CURRENT_DATA_HA") != "" {
 		mixed = newMixedHAGate(t, g, hosts)
 	}
@@ -162,6 +163,10 @@ func TestCurrentCustodyProcessGate(t *testing.T) {
 		previous = command.Sequence
 		passed := t.Run(command.Phase, func(t *testing.T) {
 			g.t = t
+			if renewal {
+				g.membershipPhase(command.Phase)
+				return
+			}
 			if mixed != nil {
 				mixed.phase(t, command.Phase)
 				return

@@ -30,7 +30,7 @@ func readPrivate(path string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, ErrState
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	opened, err := f.Stat()
 	if err != nil || !os.SameFile(before, opened) || privatefile.Check(f) != nil {
 		return nil, ErrState
@@ -52,12 +52,13 @@ type fileOps struct {
 	temp      func(string, string) (durableFile, error)
 	rename    func(string, string) error
 	directory func(string) error
+	retained  func(string) error
 }
 
 func systemFiles() fileOps {
 	return fileOps{
 		temp:   func(dir, prefix string) (durableFile, error) { return privatefile.CreateTemp(dir, prefix) },
-		rename: os.Rename, directory: privatefile.SyncDirectory,
+		rename: os.Rename, directory: privatefile.SyncDirectory, retained: syncRetained,
 	}
 }
 
@@ -109,7 +110,7 @@ func syncRetained(path string) error {
 	if err != nil {
 		return ErrState
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if privatefile.Check(f) != nil {
 		return ErrState
 	}
@@ -117,4 +118,39 @@ func syncRetained(path string) error {
 		return err
 	}
 	return privatefile.SyncDirectory(filepath.Dir(path))
+}
+
+// Immutable material may be shared between streams, but configs must be
+// distinct from every other role and each mutable path must be unaliased.
+func safePaths(configs, inputs []string, state string, targets []string) bool {
+	alias := func(a, b string) bool {
+		if a == b {
+			return true
+		}
+		x, e1 := os.Stat(a)
+		y, e2 := os.Stat(b)
+		return e1 == nil && e2 == nil && os.SameFile(x, y)
+	}
+	for i, path := range configs {
+		for j, other := range inputs {
+			if i != j && alias(path, other) {
+				return false
+			}
+		}
+	}
+	writable := []string{state, state + ".lease"}
+	for _, target := range targets {
+		writable = append(writable, target, target+".publisher.lease")
+	}
+	for i, path := range writable {
+		if !canonical(path) {
+			return false
+		}
+		for _, other := range append(append([]string{}, inputs...), writable[:i]...) {
+			if alias(path, other) {
+				return false
+			}
+		}
+	}
+	return true
 }
