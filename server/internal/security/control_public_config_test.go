@@ -3,6 +3,7 @@ package security
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
@@ -19,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/server/internal/membershippublisher"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
 
@@ -61,6 +63,10 @@ func TestCurrentProvisioningIndependentGenesisAndStrictProfile(t *testing.T) {
 	if provisioned.config.timeOwner != nil || len(provisioned.config.Participant.Key) != 0 || provisioned.config.Membership.Now != nil {
 		t.Fatal("provisioning manufactured runtime clock or signer")
 	}
+	canonical, err := currentCustodyPath(manifestPath)
+	if err != nil || provisioned.manifest != canonical {
+		t.Fatal("manifest path was not retained from validated provisioning", err)
+	}
 	for name, edit := range map[string]func(*currentNodeDocument){
 		"legacy version":      func(d *currentNodeDocument) { d.Version = 1 },
 		"wrong genesis":       func(d *currentNodeDocument) { d.GenesisSHA256[0] ^= 1 },
@@ -100,6 +106,112 @@ func TestCurrentProvisioningIndependentGenesisAndStrictProfile(t *testing.T) {
 	}
 }
 
+func TestCurrentAuthorityReloadMembershipBoundaries(t *testing.T) {
+	n := s3aTestCluster(t, nil)
+	o := n.start(1) // No quorum and no public readiness.
+	path, err := currentCustodyPath(filepath.Join(n.dir, "reload.signed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &CurrentAuthority{origin: &authorityOriginOwner{network: o}, manifest: path}
+	install := func(raw []byte) {
+		t.Helper()
+		tmp := path + ".new"
+		if err := os.WriteFile(tmp, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initial, _ := o.membership.Floor()
+	for name, raw := range map[string][]byte{"partial": []byte(`{"payload":`), "oversize": bytes.Repeat([]byte("x"), peerauth.MaxManifestBytes+1)} {
+		t.Run(name, func(t *testing.T) {
+			install(raw)
+			if a.ReloadMembership(t.Context()) == nil {
+				t.Fatal("invalid file accepted")
+			}
+			floor, _ := o.membership.Floor()
+			if floor != initial {
+				t.Fatal("rejected file changed checkpoint")
+			}
+		})
+	}
+	install(n.configs[1].Manifest)
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if a.ReloadMembership(t.Context()) == nil {
+		t.Fatal("non-private file accepted")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(n.configs[1].Identity.Roots, path); err != nil {
+		t.Fatal(err)
+	}
+	if a.ReloadMembership(t.Context()) == nil {
+		t.Fatal("symlink accepted")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	// Exact replay may return nil after expiry. It cannot renew the interval.
+	n.clock.Store(n.manifest.ExpiresAt.Add(time.Second).UnixNano())
+	install(n.configs[1].Manifest)
+	if err := a.ReloadMembership(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := o.membership.CurrentValidity(t.Context()); err == nil {
+		t.Fatal("exact replay renewed expiry")
+	}
+	next := n.manifest
+	next.Version++
+	next.IssuedAt = time.Unix(0, n.clock.Load()).UTC().Add(10 * time.Second)
+	next.ExpiresAt = next.IssuedAt.Add(time.Minute)
+	install(n.sign(next))
+	if a.ReloadMembership(t.Context()) == nil {
+		t.Fatal("future interval accepted")
+	}
+	n.clock.Store(next.IssuedAt.Add(time.Second).UnixNano())
+	if err := a.ReloadMembership(t.Context()); err != nil {
+		t.Fatal("same bytes were not retried after qualification", err)
+	}
+	good, _ := o.membership.Floor()
+	if good.Version != next.Version {
+		t.Fatal("higher expired-owner update not applied", good)
+	}
+	for _, raw := range [][]byte{n.configs[1].Manifest, n.sign(func() peerauth.ControlManifest { m := next; m.ExpiresAt = m.ExpiresAt.Add(time.Second); return m }()), n.sign(func() peerauth.ControlManifest { m := next; m.Version++; m.Profile.Lineage.Instance[0] ^= 1; return m }())} {
+		install(raw)
+		if a.ReloadMembership(t.Context()) == nil {
+			t.Fatal("stale/equivocation/foreign accepted")
+		}
+		floor, _ := o.membership.Floor()
+		if floor != good {
+			t.Fatal("rejection changed checkpoint")
+		}
+	}
+	// A valid higher changed profile must reach the terminal fence even if its
+	// interval is future; the facade must not prefilter or reparse provisioning.
+	next.Version++
+	next.Profile.ProtocolScope[0] ^= 1
+	next.IssuedAt = next.ExpiresAt.Add(time.Minute)
+	next.ExpiresAt = next.IssuedAt.Add(time.Minute)
+	install(n.sign(next))
+	if a.ReloadMembership(t.Context()) == nil || o.membership.FaultReason() != "control_binding_changed" {
+		t.Fatal("changed profile did not fence owner")
+	}
+	if a.ReloadMembership(t.Context()) == nil {
+		t.Fatal("faulted owner recovered")
+	}
+	if err := o.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if a.ReloadMembership(t.Context()) == nil {
+		t.Fatal("closed owner accepted reload")
+	}
+}
+
 func TestCurrentProvisioningRefusesMissingResumeBeforeNativeIO(t *testing.T) {
 	for _, p := range []*CurrentProvisioning{nil, {}} {
 		if _, err := OpenCurrentAuthority(context.Background(), p, "resume", "https://admin.example"); err == nil {
@@ -133,6 +245,15 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	}
 	n := s3aTestCluster(t, nil)
 	queryRoles := os.Getenv("LANTERN_CURRENT_FIXTURE_QUERY_ROLES_FILE")
+	renewal := os.Getenv("LANTERN_CURRENT_MEMBERSHIP_GATE") == "1"
+	if renewal {
+		if len(hosts) != 0 || queryRoles != "" {
+			t.Fatal("renewal gate is a separate bounded local fixture")
+		}
+		// Native startup can legitimately include its existing 32-second loss
+		// backoff. Start the short transition interval only after qualification,
+		// using the publisher's first 30-second successor; retain normal bootstrap.
+	}
 	if queryRoles != "" && len(hosts) != 0 {
 		t.Fatal("query fixture is local and cannot select the container campaign")
 	}
@@ -286,6 +407,9 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	if queryRoles != "" {
 		doc(filepath.Join(dir, "query-provision.json"), map[string]any{"membership_expires_at": n.manifest.ExpiresAt, "nodes": queryNodes})
 	}
+	if renewal {
+		exportCurrentRenewalFixture(t, dir, n, manifest)
+	}
 	if driver := os.Getenv("LANTERN_CURRENT_DATA_HA"); driver != "" {
 		provisioned, err := LoadCurrentProvisioning(filepath.Join(dir, "node-1", "node.json"))
 		if err != nil || len(hosts) != 3 || net.ParseIP(driver) == nil {
@@ -293,6 +417,77 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 		}
 		exportCurrentDataHA(t, dir, hosts, driver, provisioned.Profile())
 	}
+}
+
+func exportCurrentRenewalFixture(t *testing.T, dir string, n *s3aTestNetwork, control []byte) {
+	t.Helper()
+	write := func(path string, raw []byte) {
+		t.Helper()
+		if err := os.WriteFile(path, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeKey := func(name string, key ed25519.PrivateKey) string {
+		t.Helper()
+		der, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, name)
+		write(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+		return path
+	}
+	p, err := LoadCurrentProvisioning(filepath.Join(dir, "node-1", "node.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicDER, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicPath := filepath.Join(dir, "data-operator.pub")
+	write(publicPath, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}))
+	m := peerauth.Manifest{Version: 1, Domain: peerauth.Domain{Deployment: [16]byte{99}, NamespaceFormat: "namespaced-v1", AuthMode: "oidc", SecurityGeneration: p.profile.Generation, CurrentProfile: p.profile.Binding(), TrustDigest: n.manifest.Profile.TrustDigest}, IssuedAt: n.manifest.IssuedAt, ExpiresAt: n.manifest.ExpiresAt}
+	var controlTargets, dataTargets, certificates []string
+	for id := 1; id <= 3; id++ {
+		node := filepath.Join(dir, fmt.Sprintf("node-%d", id))
+		controlTargets = append(controlTargets, filepath.Join(node, "membership.signed"))
+		input := filepath.Join(node, "data-input")
+		if err := os.Mkdir(input, 0700); err != nil {
+			t.Fatal(err)
+		}
+		dataTargets = append(dataTargets, filepath.Join(input, "data.signed"))
+		certificates = append(certificates, filepath.Join(node, "cert.pem"))
+		m.Members = append(m.Members, n.manifest.Profile.Voters[id-1].Workload)
+	}
+	data, err := peerauth.SignManifest(m, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, path := range dataTargets {
+		write(path, data)
+		node := filepath.Dir(filepath.Dir(path))
+		peer := map[string]any{"ListenAddress": fmt.Sprintf("127.0.0.1:%d", 17441+i), "Identity": map[string]any{"AuthMode": "oidc", "Deployment": m.Domain.Deployment, "SecurityGeneration": m.Domain.SecurityGeneration, "CurrentProfile": m.Domain.CurrentProfile, "CAFile": filepath.Join(node, "roots.pem"), "OperatorKeyFile": publicPath, "ManifestFile": path, "StateFile": filepath.Join(node, "data-membership"), "StateMode": "fresh", "CertFile": certificates[i], "KeyFile": filepath.Join(node, "tls.key"), "SelfIdentity": m.Members[i].Identity}}
+		raw, err := json.Marshal(peer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(filepath.Join(node, "peer.json"), raw)
+	}
+	roots := filepath.Join(dir, "node-1", "roots.pem")
+	c := membershippublisher.Config{Version: 1, End: time.Now().UTC().Add(3 * time.Minute), CleanupBy: time.Now().UTC().Add(4 * time.Minute), Interval: 8 * time.Second, Lifetime: 30 * time.Second, Streams: []membershippublisher.Stream{
+		{Kind: "control", KeyFile: writeKey("control-operator.key", n.operator), RootsFile: roots, Initial: control, Targets: controlTargets, Certificates: certificates},
+		{Kind: "data", KeyFile: writeKey("data-operator.key", key), RootsFile: roots, Initial: data, Targets: dataTargets, Certificates: certificates},
+	}}
+	raw, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(dir, "publisher.json"), raw)
 }
 
 func currentFixtureContainerHosts(t *testing.T) []string {
