@@ -456,7 +456,7 @@ show **F PASS / Q NOT_RUN**, which is code acceptance, not release or environmen
 qualification. Any executed Q failure remains FAIL and cannot be hidden as
 NOT_RUN; required Q failure blocks integration.
 
-The 76-step full local plan conservatively keeps Q and adds separate F execution
+The 77-step full local plan conservatively keeps Q and adds separate F execution
 inside `rust-oidc-scoped-wire` using `--with-mechanism`; scoped Rust and every
 other existing component remain mandatory. Each invocation writes fresh F and Q
 receipts, with no receipt import or carry. This policy introduction uses the
@@ -509,7 +509,7 @@ not authorize publishing during SDK development.
 ## Local validation carry
 
 The optional [live runner](.github/scripts/local_gate_session.py) owns a reviewed
-[76-step command plan](.github/scripts/local_gate_plan.py). It installs dependencies
+[77-step command plan](.github/scripts/local_gate_plan.py). It installs dependencies
 serially before Go traverses the workspace and executes the complete plan on its
 first candidate. It accepts no manifest, receipt, digest or success JSON as input.
 The external historical full-gate runner is not modified by this mechanism.
@@ -527,7 +527,7 @@ The initial eligible set is deliberately small: `go-test-core`, `go-test-mcp`,
 all Go workspace source/manifests, proto/generated inputs, shared fixtures under
 `tests/`, `testdata/` and `testbed/`, relevant root inputs, gate commands and
 configuration. Cross-module Go changes therefore invalidate these receipts
-conservatively. At most **6 of 76 steps** can carry; the other **70 steps execute
+conservatively. At most **6 of 77 steps** can carry; the other **71 steps execute
 again**. A useful case is a reviewed follow-up changing only `admin/app/` or
 `sdks/node/src/`, with locks, configuration, Go/shared inputs and the execution
 context unchanged while the original runner process remains alive. This saves
@@ -542,7 +542,7 @@ checkout bytes, hardlinks, symlinks, ignored fixtures and untracked files never
 enter it. A developer source edit followed by restoration cannot change these
 execution inputs. A required fixture outside this namespace fails qualification;
 nondefault GOFLAGS/overlays and external local module/workspace replacements have
-no support. The remaining 70 fresh steps keep the existing owner-frozen checkout
+no support. The remaining 71 fresh steps keep the existing owner-frozen checkout
 contract. Toolchain binary/source/tool files, actual Go version/settings,
 downloaded dependency integrity and effective environment are checked as well.
 The Go-generated decimal work-directory suffix in `GOGCCFLAGS` prefix maps is

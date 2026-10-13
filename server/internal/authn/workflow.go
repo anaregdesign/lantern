@@ -19,12 +19,13 @@ var (
 
 // OIDCResources are borrowed from trusted composition; no resource is closed here.
 type OIDCResources struct {
-	Fetcher     *oidc.Fetcher
-	Secrets     *oidc.SecretRegistry
-	Verifier    *oidc.Verifier
-	Credentials *Credentials
-	Logins      *oidc.LoginTransactions
-	Now         func() time.Time
+	Fetcher      *oidc.Fetcher
+	Secrets      *oidc.SecretRegistry
+	Verifier     *oidc.Verifier
+	Credentials  *Credentials
+	Logins       *oidc.LoginTransactions
+	NativeLogins *oidc.NativeTransactions
+	Now          func() time.Time
 }
 
 type LegacyAuthority struct {

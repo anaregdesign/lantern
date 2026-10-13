@@ -385,12 +385,12 @@ class SessionTest(unittest.TestCase):
             synthetic_prefix.append(step.name)
             log.write_text("Synthetic test prefix; no production qualification\n")
             return 0, True
-        # 73 mock prefix commands followed by real subprocesses for 74–76.
+        # 74 mock prefix commands followed by real subprocesses for 75–77.
         # The temporary fixture report is only a regression test artifact.
         with patch.object(self.session, "run", side_effect=run):
             result = self.qualify()
-        self.assertEqual(len(synthetic_prefix), 73)
-        self.assertEqual((result["executed"], result["carried"]), (76, 0))
+        self.assertEqual(len(synthetic_prefix), 74)
+        self.assertEqual((result["executed"], result["carried"]), (77, 0))
         self.assertEqual([r["name"] for r in result["steps"][-3:]],
                          ["docs-tests", "final-diff", "final-clean"])
         log = Path(result["steps"][-3]["log"])
@@ -440,7 +440,7 @@ class PlanTest(unittest.TestCase):
             with self.subTest(indexes=indexes), self.assertRaises(ValueError):
                 Step("invalid", ".", ("fixture", "*.py"), glob_args=indexes)
 
-    def test_all_76_executor_calls_preserve_declared_argv_cwd_and_environment(self):
+    def test_all_77_executor_calls_preserve_declared_argv_cwd_and_environment(self):
         with tempfile.TemporaryDirectory(prefix="gate argv with spaces ") as directory:
             root = Path(directory) / "repo with spaces"
             root.mkdir()
@@ -461,7 +461,7 @@ class PlanTest(unittest.TestCase):
                     patch.object(session, "check_go_inputs") as check_inputs:
                 for index, step in enumerate(session.plan):
                     self.assertEqual(session.run(step, session.evidence / f"mock-{index}.log"), (0, True))
-            self.assertEqual(len(captured), 76)
+            self.assertEqual(len(captured), 77)
             self.assertEqual(check_inputs.call_count, 6)
             for step, (command, kwargs) in zip(session.plan, captured):
                 with self.subTest(step=step.name):
@@ -486,8 +486,8 @@ class PlanTest(unittest.TestCase):
 
     def test_complete_plan_keeps_install_order_generation_and_unsupported_qualification(self):
         plan = steps(Path("/tmp/fixture-evidence"))
-        self.assertEqual(len(plan), 76)
-        self.assertEqual(len({s.name for s in plan}), 76)
+        self.assertEqual(len(plan), 77)
+        self.assertEqual(len({s.name for s in plan}), 77)
         self.assertEqual([s.name for s in plan[:5]], ["node-frozen-install", "node-prebuild",
                          "admin-frozen-install", "example-frozen-preflight", "gofmt"])
         names = {s.name for s in plan}

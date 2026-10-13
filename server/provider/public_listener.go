@@ -52,6 +52,7 @@ func NewPublicLanternListener(lis net.Listener, netCfg NetConfig, tlsCfg TLSConf
 	}
 	mux.Handle(path, handler)
 	mux.Handle(runtime.PublicControlHTTPHandler(publicOptions...))
+	mux.Handle(runtime.NativeAuthHTTPHandler(publicOptions...))
 	mux.Handle(runtime.BrowserControlHTTPHandler(browserOptions...))
 	mux.Handle("/auth/", runtime.AuthHTTPHandler())
 	if changes.Enabled {
@@ -70,7 +71,7 @@ func NewPublicLanternListener(lis net.Listener, netCfg NetConfig, tlsCfg TLSConf
 		return grpchealth.NewHandler(publicHealthChecker{hc.Inner(), runtime}, options...)
 	}, browserOptions...))
 	if obs.EnableReflection {
-		names := []string{graphv1connect.LanternServiceName, graphv1connect.LanternSecurityServiceName, grpchealth.HealthV1ServiceName}
+		names := []string{graphv1connect.LanternServiceName, graphv1connect.LanternSecurityServiceName, graphv1connect.LanternNativeAuthServiceName, grpchealth.HealthV1ServiceName}
 		if changes.Enabled {
 			names = append(names, graphv1connect.LanternChangeServiceName)
 		}

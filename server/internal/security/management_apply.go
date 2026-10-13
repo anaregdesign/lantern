@@ -36,11 +36,11 @@ func applyManagementChanges(image *Image, changes []Change) error {
 			}
 			if change.Kind == PutIssuer {
 				issuer := *change.Issuer
-				if change.PreserveSecret && index >= 0 {
-					issuer.SecretRef = image.Issuers[index].SecretRef
+				if index >= 0 {
+					issuer = change.ResolveIssuerSecrets(image.Issuers[index])
 				}
 				issuer.ConfigRevision = revision
-				issuer.Algorithms = append([]string(nil), issuer.Algorithms...)
+				issuer = issuer.clone()
 				if index < 0 {
 					image.Issuers = append(image.Issuers, issuer)
 				} else {

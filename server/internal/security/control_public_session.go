@@ -22,7 +22,7 @@ func (o *CurrentAuthority) PublicLoginIssuers(ctx context.Context) ([]string, er
 	}
 	var issuers []string
 	for url, issuer := range k.replayState.projection.snapshot.issuers {
-		if issuer.Enabled && !issuer.Deleted {
+		if issuer.Enabled && !issuer.Deleted && issuer.BrowserEnabled() {
 			issuers = append(issuers, url)
 		}
 	}
@@ -70,7 +70,7 @@ func (o *CurrentAuthority) PrepareSession(ctx context.Context, a *Admission, pro
 		return CurrentReview{}, Session{}, err
 	}
 	e := a.current.credential.claim.Token
-	if e == nil || e.Mode != "code" || e.Code.Flow != "login" || !o.OriginEnabled() {
+	if e == nil || !sessionIssuanceEvent(*e) || !o.OriginEnabled() {
 		return CurrentReview{}, Session{}, ErrPermissionDenied
 	}
 	low, high, err := o.TimeBounds()
@@ -78,10 +78,20 @@ func (o *CurrentAuthority) PrepareSession(ctx context.Context, a *Admission, pro
 		return CurrentReview{}, Session{}, err
 	}
 	expires := low.Add(MaxSessionLifetime)
-	if low.Before(e.Code.ConsumedAt) || !high.Before(expires) {
+	consumed := e.Code.ConsumedAt
+	if e.Mode == "native-login" {
+		consumed = e.Native.ConsumedAt
+	}
+	if low.Before(consumed) || !high.Before(expires) {
 		return CurrentReview{}, Session{}, ErrPermissionDenied
 	}
 	s := Session{CSRFDigest: csrf, IssuerConfigRevision: e.ConfigRevision, Digest: digest, Identity: a.Identity(), CreatedAt: low, ExpiresAt: expires, AuthTime: e.AuthTime.Time()}
+	if e.Mode == "native-login" {
+		if csrf != "" || replaces != "" {
+			return CurrentReview{}, Session{}, ErrPermissionDenied
+		}
+		s.Profile, s.ClientProfileID, s.ServiceOrigin = NativeEndUserProfile, e.Native.ClientProfileID, e.Native.ServiceOrigin
+	}
 	command := S1Command{Kind: S1IssueSession, Session: &s, SessionLineage: a.current.credential.lineage, ReplacesDigest: replaces}
 	review, _, err := o.Prepare(ctx, a, producer, o.Profile(), a.current.credential.cut, command)
 	return review, s, err
@@ -93,10 +103,21 @@ func (o *CurrentAuthority) ConfirmIssuedSession(ctx context.Context, a *Admissio
 	}
 	e := a.current.credential.claim.Token
 	installed, known := a.Snapshot().Session(s.Digest)
-	if e == nil || e.Mode != "code" || e.Code.Flow != "login" || !known || installed != s || s.Revoked || s.Identity != a.Identity() || s.IssuerConfigRevision != e.ConfigRevision {
+	if e == nil || !sessionIssuanceEvent(*e) || !known || installed != s || s.Revoked || s.Identity != a.Identity() || s.IssuerConfigRevision != e.ConfigRevision {
+		return ErrPermissionDenied
+	}
+	if e.Mode == "native-login" {
+		if s.CredentialProfile() != NativeEndUserProfile || s.ClientProfileID != e.Native.ClientProfileID || s.ServiceOrigin != e.Native.ServiceOrigin {
+			return ErrPermissionDenied
+		}
+	} else if s.CredentialProfile() != BrowserCookieProfile {
 		return ErrPermissionDenied
 	}
 	return nil
+}
+
+func sessionIssuanceEvent(e TokenAuthenticationEvidence) bool {
+	return e.Mode == "code" && e.Code.Flow == "login" || e.Mode == "native-login"
 }
 
 func (o *CurrentAuthority) PrepareSessionRevocation(ctx context.Context, a *Admission, producer CurrentCredentialProducer) (CurrentReview, error) {

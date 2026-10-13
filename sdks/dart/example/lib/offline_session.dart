@@ -37,12 +37,25 @@ final class OfflineDemoSession {
     required LanternClient client,
     required Uri endpoint,
     required String partitionId,
+    bool invalidateConfirmed = false,
   }) async {
     final filename = offlineDatabaseFileName(endpoint, partitionId);
     final directory = await sqflite.getDatabasesPath();
     final store = await SqliteOfflineStore.open(
       path: path.join(directory, filename),
     );
+    if (invalidateConfirmed) {
+      try {
+        // A new native session/cut invalidates granting cache views only.
+        // The stable account partition retains outbox IDs and dispatch evidence.
+        await store.transaction(
+          (tx) => tx.resetScopedChangeCursor(partitionId, null),
+        );
+      } catch (_) {
+        await store.close();
+        rethrow;
+      }
+    }
     return OfflineDemoSession._(
       store,
       OfflineLanternRepository(

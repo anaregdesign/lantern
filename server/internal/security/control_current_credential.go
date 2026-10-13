@@ -170,23 +170,43 @@ func captureAuthorityUseCredential(view CurrentCredentialView, facts CurrentCred
 				return result, ErrPermissionDenied
 			}
 			c.Kind, auth.Provenance = "code", BrowserCode
+		case "native-login":
+			if !e.NativeBindingMatches(issuer) || low.Before(e.Native.ConsumedAt) || !nativeExchangeTimesValid(e.Native, low) {
+				return result, ErrPermissionDenied
+			}
+			c.Kind, auth.Provenance = "native-login", NativeProviderLogin
 		default:
 			return result, ErrPermissionDenied
 		}
 		expiry = e.ExpiresAt.Time()
+		if e.Mode == "native-login" {
+			expiry = nativeEvidenceExpiry(e)
+		}
 	} else {
 		s := *facts.Session
 		c.Session = &s
 		actor = s.Identity
 		native, known := view.projection.snapshot.Session(s.Digest)
-		if !known || native != s || s.Revoked || view.browserOrigin == "" || c.Origin != sha256.Sum256([]byte("lantern/authentication/browser-origin/v1\x00"+view.browserOrigin)) || c.CSRF == [32]byte{} {
+		if !known || native != s || s.Revoked || !s.valid() {
 			return result, ErrPermissionDenied
 		}
-		c.Kind, c.Verification = "session", s2cHash("current-native-session-v2", s)
-		auth = Authentication{Provenance: BrowserCode, Class: EndUser, IssuerConfigRevision: s.IssuerConfigRevision, SessionDigest: s.Digest}
+		auth = Authentication{Class: EndUser, IssuerConfigRevision: s.IssuerConfigRevision, SessionDigest: s.Digest}
+		if s.CredentialProfile() == NativeEndUserProfile {
+			issuer, known := view.projection.snapshot.Issuer(s.Identity.Issuer)
+			client, registered := issuer.NativeClient(s.ClientProfileID)
+			if facts.BrowserReadOnly || c.Origin != [32]byte{} || c.CSRF != [32]byte{} || !known || !issuer.Enabled || issuer.Deleted || issuer.ConfigRevision != s.IssuerConfigRevision || !registered || client.ServiceOrigin != s.ServiceOrigin {
+				return result, ErrPermissionDenied
+			}
+			c.Kind, c.Verification, auth.Provenance = "native-session", s2cHash("current-native-end-user-session-v1", s), NativeEndUserSession
+		} else {
+			if view.browserOrigin == "" || c.Origin != sha256.Sum256([]byte("lantern/authentication/browser-origin/v1\x00"+view.browserOrigin)) || c.CSRF == [32]byte{} {
+				return result, ErrPermissionDenied
+			}
+			c.Kind, c.Verification, auth.Provenance = "session", s2cHash("current-native-session-v2", s), BrowserCode
+		}
 		expiry = s.ExpiresAt
 	}
-	if actor.Kind != OIDCPrincipal || (auth.Class == EndUser && view.projection.snapshot.checkHumanAuthentication(actor, auth, high) != nil) {
+	if actor.Kind != OIDCPrincipal || (auth.Class == EndUser && auth.Provenance != NativeProviderLogin && auth.Provenance != NativeEndUserSession && view.projection.snapshot.checkHumanAuthentication(actor, auth, high) != nil) {
 		return result, ErrPermissionDenied
 	}
 	if _, active := view.projection.snapshot.AccessFor(actor); !active {

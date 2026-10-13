@@ -290,6 +290,18 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	}
 	image.Roles = append(image.Roles, role)
 	image.Principals[0].Assignments = append(image.Principals[0].Assignments, RoleAssignment{RoleID: role.ID})
+	if os.Getenv("LANTERN_NATIVE_LOGIN_GATE") == "1" {
+		nativeRole := role
+		nativeRole.ID = "wire_native"
+		image.Roles = append(image.Roles, nativeRole)
+		image.Issuers = append(image.Issuers,
+			Issuer{URL: GoogleIssuer, Enabled: true, ConfigRevision: 1, Algorithms: []string{"RS256"}, NativeClients: []NativeClient{{ID: "google", Kind: GoogleIDToken, ClientID: "fixture.apps.googleusercontent.com", Presenters: []string{"fixture-android", "fixture-ios"}, ServiceOrigin: "https://native.example"}}},
+			Issuer{URL: AppleIssuer, Enabled: true, ConfigRevision: 1, Algorithms: []string{"RS256"}, NativeClients: []NativeClient{{ID: "apple_ios", Kind: AppleNative, ClientID: "com.example.native", ServiceOrigin: "https://native.example", SecretRef: "apple_ios"}, {ID: "apple_web", Kind: AppleAndroidWeb, ClientID: "com.example.web", ServiceOrigin: "https://native.example", SecretRef: "apple_web", RedirectURI: "https://native.example/auth/native/apple/callback/apple_web", AndroidPackage: "com.example.native"}}},
+		)
+		for _, issuer := range []string{GoogleIssuer, AppleIssuer} {
+			image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuer, Subject: "native-user"}, State: Active, Assignments: []RoleAssignment{{RoleID: nativeRole.ID}}})
+		}
+	}
 	reader := Role{ID: "wire_reader", Rules: []PermissionRule{dataRule(Allow, VertexRead, "orders:"), dataRule(Deny, VertexRead, "orders:private:")}}
 	reader.Rules[0].ID, reader.Rules[1].ID = "read", "deny"
 	blocked := Role{ID: "blocked_admin", Rules: []PermissionRule{{ID: "allow", Effect: Allow, Action: SecurityManage, Resource: GlobalResource}, {ID: "deny", Effect: Deny, Action: SecurityManage, Resource: GlobalResource}}}

@@ -12,11 +12,14 @@ import (
 // never sent to discovery/JWKS, returned to the caller or stored in sys:.
 func (f *Fetcher) ValidateIssuer(ctx context.Context, issuer security.Issuer, secrets *SecretRegistry) error {
 	issuer.Enabled = true
+	if security.ValidateIssuerConfiguration(issuer) != nil {
+		return ErrInvalidDocument
+	}
 	discovery, err := f.Discover(ctx, issuer)
 	if err != nil {
 		return err
 	}
-	if !slices.Contains(discovery.ResponseTypes, "code") || !slices.Contains(discovery.CodeChallengeMethods, "S256") {
+	if issuer.BrowserEnabled() && (!slices.Contains(discovery.ResponseTypes, "code") || !slices.Contains(discovery.CodeChallengeMethods, "S256")) {
 		return ErrInvalidDocument
 	}
 	var document struct {
@@ -31,6 +34,13 @@ func (f *Fetcher) ValidateIssuer(ctx context.Context, issuer security.Issuer, se
 	if issuer.SecretRef != "" {
 		if _, err := secrets.load(issuer, discovery.TokenEndpoint); err != nil {
 			return err
+		}
+	}
+	for _, client := range issuer.NativeClients {
+		if client.SecretRef != "" {
+			if _, err := secrets.loadClient(issuer.URL, client.ClientID, client.SecretRef, discovery.TokenEndpoint); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -179,6 +179,35 @@ class SecurityEffect extends $pb.ProtobufEnum {
   const SecurityEffect._(super.value, super.name);
 }
 
+class NativeClientKind extends $pb.ProtobufEnum {
+  static const NativeClientKind NATIVE_CLIENT_KIND_UNSPECIFIED =
+      NativeClientKind._(
+          0, _omitEnumNames ? '' : 'NATIVE_CLIENT_KIND_UNSPECIFIED');
+  static const NativeClientKind NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN =
+      NativeClientKind._(
+          1, _omitEnumNames ? '' : 'NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN');
+  static const NativeClientKind NATIVE_CLIENT_KIND_APPLE_NATIVE =
+      NativeClientKind._(
+          2, _omitEnumNames ? '' : 'NATIVE_CLIENT_KIND_APPLE_NATIVE');
+  static const NativeClientKind NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB =
+      NativeClientKind._(
+          3, _omitEnumNames ? '' : 'NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB');
+
+  static const $core.List<NativeClientKind> values = <NativeClientKind>[
+    NATIVE_CLIENT_KIND_UNSPECIFIED,
+    NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN,
+    NATIVE_CLIENT_KIND_APPLE_NATIVE,
+    NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB,
+  ];
+
+  static final $core.List<NativeClientKind?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
+  static NativeClientKind? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const NativeClientKind._(super.value, super.name);
+}
+
 class SecurityEnforcementState extends $pb.ProtobufEnum {
   static const SecurityEnforcementState SECURITY_ENFORCEMENT_STATE_UNSPECIFIED =
       SecurityEnforcementState._(

@@ -106,7 +106,7 @@ func (p currentBrowserCredential) VerifyCurrentCredential(ctx context.Context, v
 	}
 	s, known := snapshot.Session(browserDigest(p.cookie))
 	_, _, active := snapshot.SessionAccess(s.Digest, high)
-	if !known || !active || low.Before(s.CreatedAt) || subtle.ConstantTimeCompare([]byte(s.CSRFDigest), []byte(browserDigest(p.csrf))) != 1 {
+	if !known || s.CredentialProfile() != security.BrowserCookieProfile || !active || low.Before(s.CreatedAt) || subtle.ConstantTimeCompare([]byte(s.CSRFDigest), []byte(browserDigest(p.csrf))) != 1 {
 		return security.CurrentCredentialFacts{}, errBrowserBoundary
 	}
 	return security.CurrentCredentialFacts{Session: &s, Origin: requestCredentialCommitment("browser-origin", p.origin), CSRF: sha256.Sum256([]byte("lantern/current-CSRF/v2\x00" + s.Digest + "\x00" + p.csrf)), BrowserReadOnly: p.browserReadOnly}, nil

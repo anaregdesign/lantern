@@ -73,6 +73,54 @@ first and reports `conditionNotMet` without overwriting it. Unknown,
 unspecified, or length-misaligned wire outcomes fail closed as
 `LanternInternalException`.
 
+## Native Google and Apple sessions (current source)
+
+The pure-Dart facade supports the Server's OIDC/current-v2 native profile.
+Provider plugins and secure storage belong to the app. The maintained
+[Flutter example](example/README.md#native-google-and-apple-login) owns both;
+the SDK adds no Flutter, Keychain or Android Keystore dependency. These source
+APIs do not assert publication or real-provider/device qualification.
+
+```dart
+final endpoint = Uri.parse('https://lantern.example.com');
+final bootstrap = LanternClient.connect(endpoint);
+final attempt = await bootstrap.beginNativeLogin(
+  issuer: 'https://accounts.google.com',
+  clientProfileId: 'google_mobile',
+);
+// App-owned adapter calls the registered plugin using attempt.configuration.
+final providerInput = await appProviders.authenticate(attempt.configuration);
+final issued = await bootstrap.completeNativeLogin(attempt, providerInput);
+await bootstrap.close();
+final client = LanternClient.connect(
+  endpoint,
+  tokenProvider: () => issued.credential,
+);
+final current = await client.getNativeSession();
+```
+
+Only an existing exact `(issuer, subject)` Principal can sign in. The session
+has fixed eight-hour expiry and is subject to current Role/Deny, suspension,
+issuer configuration and revocation checks on ordinary RPCs. `authTime == null`
+means unknown; successful login never fabricates recent authentication.
+`GoogleNativeCredential` and `AppleNativeCredential` carry provider inputs only
+to Complete; never put a provider ID token into `TokenProvider`.
+
+Begin/Complete suppress any old TokenProvider. Every native call is a single
+transport attempt, respects cancellation/deadline, and redacts server error
+metadata. A lost completion response can leave an undisclosed fixed-expiry
+session. Start a new login; do not replay the old attempt or Apple code.
+
+For logout, call `prepareNativeLogout()`, durably retain `review.toBytes()` in
+app-owned storage, then call `applyNativeLogout(review)`. If the result is
+uncertain, retain that exact review and call `getNativeLogoutStatus(review)`
+under a later session for the same Principal. It is a status read, not a replay
+queue. Local account teardown is independent of a confirmed Server outcome.
+Close/cancel the old client before switching accounts, partition cache/outbox
+by exact account and endpoint, and preserve possibly dispatched mutations for
+their original status-first recovery. See the
+[Server contract](../../docs/native-login-sessions.md) for provider limitations.
+
 ## Mobile retries and additive safety (current source)
 
 Retries are opt-in and bounded. The default `RetryPolicy()` makes three total

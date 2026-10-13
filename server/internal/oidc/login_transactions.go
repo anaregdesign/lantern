@@ -62,7 +62,7 @@ type LoginCompletion struct {
 func (LoginCompletion) String() string { return "[redacted OIDC login completion]" }
 func (c LoginCompletion) Trust() Trust {
 	trust := c.transaction.trust
-	trust.Issuer.Algorithms = slices.Clone(trust.Issuer.Algorithms)
+	trust = trust.detached()
 	return trust
 }
 func (c LoginCompletion) Discovery() Discovery {
@@ -115,13 +115,7 @@ func NewLoginTransactionsWithClock(origin string, returnPaths []string, clock fu
 // prefix. The hint is not authentication: Consume still requires its stored
 // unpredictable state and cookie. A different process cannot reconstruct it.
 func NewLoginTransactionsWithBounds(origin string, returnPaths []string, bounds func() (time.Time, time.Time, error), affinityPrefix string) (*LoginTransactions, error) {
-	parts := strings.Split(affinityPrefix, ".")
-	if bounds == nil || len(parts) != 3 || parts[0] != "v2" {
-		return nil, ErrLoginTransaction
-	}
-	n, err := strconv.ParseUint(parts[1], 10, 32)
-	process, e := base64.RawURLEncoding.Strict().DecodeString(parts[2])
-	if err != nil || n == 0 || strconv.FormatUint(n, 10) != parts[1] || e != nil || len(process) != 32 || len(parts[2]) != 43 {
+	if bounds == nil || !validLoginAffinity(affinityPrefix) {
 		return nil, ErrLoginTransaction
 	}
 	m, err := NewLoginTransactionsWithClock(origin, returnPaths, func() time.Time { return time.Time{} })
@@ -130,6 +124,16 @@ func NewLoginTransactionsWithBounds(origin string, returnPaths []string, bounds 
 	}
 	m.bounds, m.affinityPrefix = bounds, affinityPrefix
 	return m, nil
+}
+
+func validLoginAffinity(prefix string) bool {
+	parts := strings.Split(prefix, ".")
+	if len(parts) != 3 || parts[0] != "v2" {
+		return false
+	}
+	n, err := strconv.ParseUint(parts[1], 10, 32)
+	process, e := base64.RawURLEncoding.Strict().DecodeString(parts[2])
+	return err == nil && n != 0 && strconv.FormatUint(n, 10) == parts[1] && e == nil && len(process) == 32 && len(parts[2]) == 43
 }
 
 func (m *LoginTransactions) timeBounds() (time.Time, time.Time, error) {
@@ -248,7 +252,7 @@ func (m *LoginTransactions) begin(trust Trust, discovery Discovery, returnPath, 
 	}
 	transaction := loginTransaction{trust: trust, discovery: discovery, cookieDigest: sha256.Sum256([]byte(cookie)), nonce: nonce, verifier: verifier, returnPath: returnPath, replacesDigest: replacesDigest, createdAt: now, expiresAt: now.Add(LoginTransactionLifetime), stepUp: stepUp, authorizationID: authorizationID}
 	// Detach every mutable configuration slice retained across the redirect.
-	transaction.trust.Issuer.Algorithms = append([]string(nil), trust.Issuer.Algorithms...)
+	transaction.trust = trust.detached()
 	transaction.discovery.ResponseTypes = append([]string(nil), discovery.ResponseTypes...)
 	transaction.discovery.CodeChallengeMethods = append([]string(nil), discovery.CodeChallengeMethods...)
 	m.pending[sha256.Sum256([]byte(state))] = transaction

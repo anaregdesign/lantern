@@ -19,6 +19,16 @@ func (r *SecurityRuntime) PublicControlHTTPHandler(extra ...connect.HandlerOptio
 	}, options...)
 }
 
+func (r *SecurityRuntime) NativeAuthHTTPHandler(extra ...connect.HandlerOption) (string, http.Handler) {
+	options := append([]connect.HandlerOption{}, extra...)
+	options = append(options, service.NativeHandlerOptions()...)
+	options = append(options, connect.WithInterceptors(r.PublicAuthenticationInterceptor()))
+	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternNativeAuthServiceName+"/", func(options ...connect.HandlerOption) (string, http.Handler) {
+		return graphv1connect.NewLanternNativeAuthServiceHandler(r.authentication, options...)
+	}, options...)
+	return path, r.authentication.NativeRPCHandler(handler)
+}
+
 func (r *SecurityRuntime) BrowserControlHTTPHandler(extra ...connect.HandlerOption) (string, http.Handler) {
 	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternSecurityServiceName+"/", func(options ...connect.HandlerOption) (string, http.Handler) {
 		return graphv1connect.NewLanternSecurityServiceHandler(r.control, options...)

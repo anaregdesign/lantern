@@ -10,9 +10,11 @@ import (
 type CredentialProvenance string
 
 const (
-	BrowserCode   CredentialProvenance = "browser_code"
-	RFC9068Bearer CredentialProvenance = "rfc9068_bearer"
-	NativeMachine CredentialProvenance = "native_machine"
+	BrowserCode          CredentialProvenance = "browser_code"
+	RFC9068Bearer        CredentialProvenance = "rfc9068_bearer"
+	NativeMachine        CredentialProvenance = "native_machine"
+	NativeProviderLogin  CredentialProvenance = "native_provider_login"
+	NativeEndUserSession CredentialProvenance = "native_end_user_session"
 )
 
 type ActorClass string

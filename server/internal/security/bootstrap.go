@@ -31,7 +31,7 @@ func (b Bootstrap) canonical() (Bootstrap, string, error) {
 	}
 	b.Issuer.EnvOwned = true
 	b.Issuer.ConfigRevision = 0
-	b.Issuer.Algorithms = append([]string(nil), b.Issuer.Algorithms...)
+	b.Issuer = b.Issuer.clone()
 	sort.Strings(b.Issuer.Algorithms)
 	b.AdminSubjects = append([]string(nil), b.AdminSubjects...)
 	sort.Strings(b.AdminSubjects)

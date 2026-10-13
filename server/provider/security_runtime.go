@@ -34,6 +34,7 @@ type SecurityRuntime struct {
 	keys           *oidc.KeyCache
 	verifier       *oidc.Verifier
 	logins         *oidc.LoginTransactions
+	nativeLogins   *oidc.NativeTransactions
 	authorizations *security.ManagementAuthorizations
 	control        *service.SecurityConnectHandler
 	data           *service.ServingRuntime
@@ -192,6 +193,9 @@ func (r *SecurityRuntime) finish(orderly bool) error {
 			r.closeErr = errors.Join(r.closeErr, close())
 		}
 		closeOne(func() error { r.authorizations.Close(); return nil })
+		if r.nativeLogins != nil {
+			closeOne(func() error { r.nativeLogins.Close(); return nil })
+		}
 		if r.fetcher != nil {
 			closeOne(func() error { r.fetcher.CloseIdleConnections(); return nil })
 		}

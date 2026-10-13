@@ -6,6 +6,85 @@ against the parent package by path, so CI catches example/API drift.
 The maintained example app targets iOS 15.0 or later; this app setting does not
 define a minimum OS for the pure-Dart SDK.
 
+## Native Google and Apple login
+
+Current source has an opt-in native login screen using exact app dependencies
+`google_sign_in 7.2.0`, `sign_in_with_apple 8.2.0` and
+`flutter_secure_storage 11.2.0`. Server current-v2 and an existing exact
+`(issuer, subject)` Principal with explicit Roles are required. There is no
+signup, email linking, BFF, provider API scope request or background refresh.
+
+```bash
+flutter run \
+  --dart-define=LANTERN_ENDPOINT=https://lantern.example.com \
+  --dart-define=LANTERN_NATIVE_LOGIN=true \
+  --dart-define=LANTERN_GOOGLE_PROFILE=google_mobile \
+  --dart-define=LANTERN_APPLE_PROFILE=apple_ios
+```
+
+Use the registered Android web profile (for example `apple_android`) on Android.
+Omit a provider profile to hide its button. Do not combine native mode with
+`LANTERN_TOKEN_ENDPOINT` or `LANTERN_ALLOW_INSECURE`. The account partition comes
+from the verified endpoint, issuer, subject and client profile; it does not use
+the manually entered offline scope. The Server's `service_origin` must equal the
+HTTPS endpoint origin. See [Server setup](../../../docs/oidc-operations.md#native-client-profiles).
+
+Provider registration remains operator-owned and is not performed by this app:
+
+- Google: use a backend **Web** client ID as the Server profile's `client_id`
+  (`serverClientId`); register the actual Android package/signing certificate and
+  iOS Bundle ID clients. On iOS supply the registered iOS client ID with
+  `LANTERN_GOOGLE_IOS_CLIENT_ID`, and add its `REVERSED_CLIENT_ID` as a URL scheme
+  in Runner's Info.plist (`CFBundleURLTypes` / `CFBundleURLSchemes`). These are
+  public identifiers, never client secrets. The app initializes the singleton
+  once with `nonce: null`, supports explicit lightweight/restored sign-in, and
+  reuses valid Google ID tokens only according to the Server's exact audience/
+  optional `azp` policy. Changing the backend client requires an app restart.
+- Apple iOS: use the registered Bundle/App ID as `client_id`. Enable Sign in
+  with Apple for that registered App ID and its signing profile; select
+  `Runner/NativeLogin.entitlements` in Runner's `CODE_SIGN_ENTITLEMENTS` for the
+  provider-enabled build. The file is supplied but is not activated for ordinary
+  unsigned example builds. No web redirect URI belongs to this native profile.
+- Apple Android: use a registered **Services ID**, associated website domain,
+  and exactly `https://<service>/auth/native/apple/callback/<profile-id>` as the
+  return URL. The Server profile's Android package must match this build's
+  `applicationId`. The manifest includes the pinned plugin's
+  `SignInWithAppleCallback` activity and `signinwithapple` scheme. Route Begin,
+  callback and Complete to the same Server member/process; the signed-in Server
+  state is durable, but the pending login transaction is process-local. The
+  callback's `state` starts with the returned affinity hint; validate it on the
+  Server rather than treating routing information as authentication.
+
+Apple's raw Server nonce is passed unchanged to the plugin. The Server validates
+the ID token and callback state, stages Android's callback once, then performs
+one private authorization-code exchange. Apple client-secret JWTs/signing keys
+are Server-private and never appear in Dart defines or the app bundle. The
+Android callback returns only the validated provider result to a fixed package;
+it never returns a Lantern credential or the app's completion secret. A custom
+scheme callback alone cannot authorize completion. Cancel abandons ownership;
+late plugin callbacks cannot replace the newer account.
+
+Only the opaque Lantern credential is stored in device-only Keychain/Keystore.
+Android cloud backup and transfer are disabled for the credential/database;
+Google/Apple inputs and pending completion secrets stay in process memory.
+The fixed eight-hour session requires explicit login after expiry; it does not
+slide or refresh. The app verifies saved sessions on launch and current policy
+on resume. An iOS Apple state other than `authorized` closes local access.
+Provider disconnect/consent withdrawal is not guaranteed to revoke a Lantern
+session immediately; use Lantern revocation for that purpose.
+
+Account change closes old HTTP/CDC/replay work before opening a new partition.
+Confirmed views are invalidated for the new authority binding; pending outbox
+records and possibly dispatched mutations are retained under their original
+account. Ordinary sign-out does **not** call `wipeOnLogout()`. Before submitting
+logout the app durably records its review; a lost response is recovered by
+status only after that same account signs in again. Local teardown is distinct
+from confirmed Server revocation and from provider consent removal.
+
+The deterministic provider wire fixture and app lifecycle tests are source
+evidence. Real Google/Apple on Android/iOS remain four separate qualification
+exits; no provider credentials or registrations are bundled here.
+
 ## Runtime configuration
 
 No credential is stored in source or passed through `--dart-define`. Configure
@@ -22,9 +101,10 @@ flutter run \
 The token endpoint is called asynchronously for each transport attempt
 (including retries) and must return JSON shaped as
 `{"access_token":"short-lived-user-or-device-token"}`.
-The example never embeds a shared `LANTERN_AUTH_TOKENS` value. A public app
-should obtain user/device-scoped, short-lived credentials through a BFF or
-gateway; the server's static token list is an operator-side deployment input.
+The example never embeds a shared `LANTERN_AUTH_TOKENS` value. This alternate
+transport demo accepts user/device-scoped short-lived credentials from an
+app-owned token endpoint. Native mode above obtains its credential directly
+from Lantern; the server's static token list is an operator-side deployment input.
 `LANTERN_OFFLINE_SCOPE` is required with a token endpoint and must identify
 the user/tenant whose state is stored locally. It is never an access token.
 Anonymous local development uses an `anonymous` scope.
@@ -89,7 +169,7 @@ placeholder byte variables shown above.
 | Android emulator refuses host loopback | Use `10.0.2.2`, not `127.0.0.1`, for the host service. |
 | iOS physical device cannot see the LAN server | Confirm the privacy prompt/Settings permission, same network, listener bind address, firewall, and certificate SAN. |
 | `LanternInvalidArgumentException` before I/O | HTTPS is required unless the explicit debug-only insecure flag is true; also check TTL and query option domains. |
-| `LanternUnauthenticatedException` | Refresh the user/device credential at the BFF; never fall back to a compiled shared token. |
+| `LanternUnauthenticatedException` | Native mode requires a new explicit sign-in; the alternate token-endpoint mode must obtain a valid user/device credential. Never fall back to a compiled shared token. |
 | `LanternUnavailableException` / retry exhausted | Check the actual endpoint, DNS/gateway, radio state, and server health. Network-type reachability alone is not proof. |
 | TTL appears early or late | Relative TTL is converted using the device clock once per logical call; inspect clock synchronization or use an absolute server-agreed instant. |
 | Results grow memory | Consume bounded pages, prefer keys-only scans, cancel on navigation, and cap the visible model as this example does. |
@@ -131,9 +211,10 @@ their original absolute TTL survive close/reopen and process termination.
 Shutdown awaits Repository disposal before closing SQLite, then closes the
 client. No database is closed during transient `inactive` or background states.
 
-For logout, await `OfflineDemoSession.wipeOnLogout()` before discarding that
-session's credentials; a later session must use its own scope. Closing a session
-alone preserves its offline work. This fixture uses normal sqflite storage,
+The explicit `OfflineDemoSession.wipeOnLogout()` demonstration is destructive:
+use it only for a separately authorized local-data erase after resolving any
+uncertain operations. Native sign-out closes the session and preserves its
+account-owned outbox for status-first recovery. This fixture uses normal sqflite storage,
 which is **not encrypted**. Production applications own encryption, secure key
 storage, OS backup/file-protection policy, account binding, and logout triggers.
 

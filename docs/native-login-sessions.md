@@ -1,7 +1,8 @@
 # Native Google/Apple login — #1750 design checkpoint
 
 Status: selected design, recorded before implementation and consumers on
-2026-10-13. This is not implementation or provider/device acceptance evidence.
+2026-10-13; the current candidate implements this contract. This document alone
+is not implementation or provider/device acceptance evidence.
 The authoritative scope is [#1750](https://github.com/anaregdesign/lantern/issues/1750),
 including its three comments read at this checkpoint. The inspected main is
 `4a4fa11cc3f74affcedc7b9bb6ece029c5cc73ef`; its six applicable push workflows
@@ -70,6 +71,13 @@ per Issuer, 16 exact Google presenter IDs per entry, and 512 bytes per client ID
 Duplicate IDs, unknown kinds/fields, invalid field combinations, wildcards and
 empty trust values fail validation. Disabled/missing entries cannot be selected.
 Empty `NativeClients` disables native login for that Issuer.
+
+`service_origin` is a committed logical service/client binding. The SDK requires
+it to equal its configured HTTPS endpoint origin, and current admission requires
+the stored session to match its committed profile. It is not a separate HTTP
+Host-based tenant boundary: aliases reaching the same configured authority do
+not create independent credential namespaces. Use the existing certified TLS/
+trusted-proxy ingress and separate authorities for independent trust domains.
 
 This collection participates in `Issuer.ConfigRevision`, trust commitments,
 image validation, copy/detach, canonical operations and policy changes. Adding
@@ -167,7 +175,12 @@ It has no journal, listener, goroutine or independent authorization decision.
 Use a 10-minute absolute transaction lifetime and at most 1024 pending native
 entries, with bounded expiry cleanup on access and existing public rate limits.
 Generate independent 256-bit attempt, completion-secret, Apple state and Apple
-nonce values. The native completion secret is returned only over Begin's TLS
+nonce values. Encode Apple state as the existing `v2.member.process.random`
+affinity syntax (at most 101 bytes); only the last component is the independent
+random state. The public prefix is a routing hint, never authentication. A
+gateway serving multiple members must route the Android form POST by this
+bounded state hint to the Begin owner, just as browser callbacks retain their
+owner affinity. Foreign-process state still fails exact owner validation. The native completion secret is returned only over Begin's TLS
 response; it never goes to a provider, redirect, log or persistent app storage.
 Store its digest. Bind the transaction to member/process incarnation, authority
 domain/cohort/generation, Issuer configuration revision, selected client profile,
@@ -242,8 +255,10 @@ the exact configured public HTTPS URI. Accept only bounded
 mixed query/body credentials, other methods and unsupported encodings. Verify
 the profile, pending state, time/configuration and token nonce/signature before
 staging the callback. Save only code/token commitments and atomically change
-`pending -> callback_staged`; duplicate callbacks fail. A callback error ends
-that attempt without replacing the current session.
+`pending -> callback_staged`; duplicate callbacks fail. Invalid or unverified
+callbacks cannot stage an attempt or replace the current session. The pending
+attempt remains bounded by its original expiry; an unauthenticated callback
+cannot cancel another application's pending attempt.
 
 Return only the validated, URL-encoded `code`, `id_token`, and `state` through
 the stock plugin's fixed `signinwithapple://callback` Android intent, with the
@@ -384,9 +399,11 @@ local state; Google `disconnect` revokes its authorization; Apple consent revoke
 and account deletion are separate provider operations. The baseline promises
 no immediate provider-disconnect convergence. Previously issued Lantern
 credentials can remain valid for their remaining eight hours unless current
-Lantern revocation/policy acts sooner. On iOS an app-observed Apple revoked or
-transferred credential state triggers local teardown and best-effort Lantern
-logout, but is not trusted Server evidence. No Android equivalent is invented.
+Lantern revocation/policy acts sooner. On iOS any app-observed Apple state other
+than `authorized` triggers local teardown and best-effort Lantern logout, but is
+not trusted Server evidence. The pinned plugin exposes `authorized`, `revoked`,
+and `notFound`; unsupported states or plugin errors also close local access.
+No Android equivalent is invented.
 After expiry the provider must authorize a new login.
 
 Apple warns that acquiring ID tokens more often than daily can be throttled.
@@ -489,7 +506,7 @@ is not acceptance. Existing deterministic provider fixtures prove source
 contracts only. Use controlled-source **F** and normal configured-source **Q**
 as separate evidence. This changes a credential/proof/composition boundary,
 so Q is required before and after merge. Keep the current simplified CI and
-local 76-step gate from `CONTRIBUTING.md`; do not restore removed OS/toolchain
+local 77-step gate from `CONTRIBUTING.md`; do not restore removed OS/toolchain
 matrices, manual transport comparisons, physical sleeps or redundant soaks.
 This design document is outside the narrow README-only prose eligibility;
 keep it in the implementation PR and qualify that candidate before any push.

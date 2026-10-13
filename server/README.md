@@ -87,10 +87,13 @@ requires Apply, `RefreshRequest` and `BindIssuedSessionOutput` in that order.
 Provider composes these adapters and retains certification, resource ownership
 and cleanup. See the [design and trust boundary](../docs/login-session-workflows.md).
 
-The subsequent [native Google/Apple design checkpoint](../docs/native-login-sessions.md)
-selects the dedicated native wire/profile contract before SDK consumers. It
-extends these same owners; it is not yet implemented or provider/device-qualified
-at the inspected main `4a4fa11`.
+The [native Google/Apple contract](../docs/native-login-sessions.md) extends these
+same owners with dedicated native Connect methods, exact registered client
+profiles and opaque eight-hour end-user credentials. Provider code exchange,
+committed state, transport and composition keep their existing package owners.
+See [operator setup](../docs/oidc-operations.md#native-client-profiles) and the
+separate provider/device acceptance requirements; source fixtures do not qualify
+actual Google/Apple sign-in.
 
 Operation approvals retain one detached envelope of at most 16 KiB under the
 existing owner lock and 1024-record/ten-minute bounds, shortened by credential

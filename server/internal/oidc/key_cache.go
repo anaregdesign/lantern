@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/sha256"
 	"encoding/json"
+	"slices"
 	"sync"
 	"time"
 
@@ -20,6 +21,15 @@ type Trust struct {
 	ConfigRevision uint64
 }
 
+func (t Trust) detached() Trust {
+	t.Issuer.Algorithms = slices.Clone(t.Issuer.Algorithms)
+	t.Issuer.NativeClients = slices.Clone(t.Issuer.NativeClients)
+	for n := range t.Issuer.NativeClients {
+		t.Issuer.NativeClients[n].Presenters = slices.Clone(t.Issuer.NativeClients[n].Presenters)
+	}
+	return t
+}
+
 type cachedKeys struct {
 	keys         map[keyID]crypto.PublicKey
 	discovery    Discovery
@@ -27,6 +37,7 @@ type cachedKeys struct {
 	refreshAfter time.Time
 	used         uint64
 	pending      chan struct{}
+	fetchFailed  bool
 }
 
 // KeyCache coalesces refreshes per exact trust configuration and limits both
@@ -114,7 +125,11 @@ func (c *KeyCache) Key(ctx context.Context, trust Trust, kid, algorithm string) 
 			}
 		}
 		if now.Before(entry.refreshAfter) {
+			failed := entry.fetchFailed
 			c.mu.Unlock()
+			if failed {
+				return nil, ErrFetch
+			}
 			return nil, ErrInvalidToken
 		}
 		entry.pending = make(chan struct{})
@@ -123,6 +138,7 @@ func (c *KeyCache) Key(ctx context.Context, trust Trust, kid, algorithm string) 
 
 		discovery, keys, fetchErr := c.refresh(ctx, trust)
 		c.mu.Lock()
+		entry.fetchFailed = fetchErr != nil
 		if fetchErr == nil {
 			entry.keys, entry.discovery, entry.expires = keys, discovery, c.now().Add(keyCacheTTL)
 		}
@@ -132,6 +148,9 @@ func (c *KeyCache) Key(ctx context.Context, trust Trust, kid, algorithm string) 
 		usable := fetchErr == nil && key != nil && c.now().Before(entry.expires)
 		c.mu.Unlock()
 		if !usable {
+			if fetchErr != nil {
+				return nil, ErrFetch
+			}
 			return nil, ErrInvalidToken
 		}
 		return key, nil

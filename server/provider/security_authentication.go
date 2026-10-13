@@ -12,7 +12,7 @@ import (
 )
 
 func (r *SecurityRuntime) loginResources() authn.OIDCResources {
-	return authn.OIDCResources{Fetcher: r.fetcher, Secrets: r.secrets, Verifier: r.verifier, Credentials: r.credentials, Logins: r.logins, Now: r.now}
+	return authn.OIDCResources{Fetcher: r.fetcher, Secrets: r.secrets, Verifier: r.verifier, Credentials: r.credentials, Logins: r.logins, NativeLogins: r.nativeLogins, Now: r.now}
 }
 func (r *SecurityRuntime) composeAuthentication(store *security.Store) {
 	r.authentication = service.NewAuthenticationAdapter(service.AuthenticationOptions{

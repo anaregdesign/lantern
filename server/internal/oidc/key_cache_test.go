@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -66,8 +67,11 @@ func TestKeyCacheRotationExpiryAndTrustEpoch(t *testing.T) {
 	p.mu.Lock()
 	p.fail = true
 	p.mu.Unlock()
-	if _, err := cache.Key(context.Background(), p.trust, "rotated", "EdDSA"); err == nil {
-		t.Fatal("expired keys used after refresh failure")
+	if _, err := cache.Key(context.Background(), p.trust, "rotated", "EdDSA"); !errors.Is(err, ErrFetch) {
+		t.Fatal("expired-key refresh failure must remain unavailable", err)
+	}
+	if _, err := cache.Key(context.Background(), p.trust, "rotated", "EdDSA"); !errors.Is(err, ErrFetch) {
+		t.Fatal("bounded refresh floor lost the unavailable classification", err)
 	}
 	newTrust := p.trust
 	newTrust.ConfigRevision++

@@ -42,12 +42,16 @@ func NewSecretRegistry(bindings map[string]SecretBinding) (*SecretRegistry, erro
 }
 
 func (r *SecretRegistry) load(issuer security.Issuer, tokenEndpoint string) (string, error) {
+	return r.loadClient(issuer.URL, issuer.ClientID, issuer.SecretRef, tokenEndpoint)
+}
+
+func (r *SecretRegistry) loadClient(issuer, clientID, secretRef, tokenEndpoint string) (string, error) {
 	if r == nil {
 		return "", ErrFetch
 	}
 	endpoint, err := endpointURL(tokenEndpoint)
-	binding, known := r.bindings[issuer.SecretRef]
-	if err != nil || !known || binding.Issuer != issuer.URL || binding.ClientID != issuer.ClientID ||
+	binding, known := r.bindings[secretRef]
+	if err != nil || !known || binding.Issuer != issuer || binding.ClientID != clientID ||
 		binding.TokenOrigin != endpointOrigin(endpoint) {
 		return "", ErrFetch
 	}

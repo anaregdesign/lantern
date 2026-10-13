@@ -46,8 +46,9 @@ String _currentAuthorityBinding($security.SecurityVersion version) {
     ),
   );
   String bytes(List<int> value, int size, {bool zero = false}) {
-    if (value.length != size || !zero && !value.any((byte) => byte != 0))
+    if (value.length != size || !zero && !value.any((byte) => byte != 0)) {
       invalid();
+    }
     return value.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
   }
 
@@ -57,15 +58,17 @@ String _currentAuthorityBinding($security.SecurityVersion version) {
       version.generation.isNotEmpty ||
       p.version != 2 ||
       c.version != 1 ||
-      c.sequence == Int64.ZERO)
+      c.sequence == Int64.ZERO) {
     invalid();
+  }
   final domain = bytes(p.domain, 32),
       cohort = bytes(p.cohort, 32),
       generation = bytes(p.generation, 16);
   if (bytes(c.domain, 32) != domain ||
       bytes(c.cohort, 32) != cohort ||
-      bytes(c.generation, 16) != generation)
+      bytes(c.generation, 16) != generation) {
     invalid();
+  }
   final profile = [
     'current-v2',
     domain,

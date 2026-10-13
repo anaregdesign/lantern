@@ -153,6 +153,28 @@ message SecurityIssuer {
   // Trusted issuance contract: OAuth client subjects cannot collide with or
   // impersonate exact enrolled end-users. Qualify before enabling.
   bool human_subject_namespace_qualified = 12;
+  // Canonically ordered by id; native-only Issuers omit browser/API fields.
+  repeated SecurityNativeClient native_clients = 13;
+}
+
+enum NativeClientKind {
+  NATIVE_CLIENT_KIND_UNSPECIFIED = 0;
+  NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN = 1;
+  NATIVE_CLIENT_KIND_APPLE_NATIVE = 2;
+  NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB = 3;
+}
+message SecurityNativeClient {
+  string id = 1;
+  NativeClientKind kind = 2;
+  string client_id = 3;
+  string service_origin = 4;
+  repeated string presenters = 5;
+  string redirect_uri = 6;
+  string android_package = 7;
+  // Write-only operator binding handle. Omission preserves the exact existing
+  // profile's binding; a new Apple profile requires an explicit handle.
+  optional string secret_ref = 8;
+  bool has_secret_binding = 9;
 }
 message SecurityVersion {
   uint64 revision = 1;

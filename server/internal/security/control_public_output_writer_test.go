@@ -11,6 +11,10 @@ import (
 )
 
 func currentPublicTestWriter(t *testing.T, o *CurrentAuthority, p *CurrentOutput) (*currentOutputWriter, *httptest.ResponseRecorder, *Admission) {
+	return currentPublicCredentialWriter(t, o, p, authorityFakeCredentialProducer{expiry: 5 * time.Second})
+}
+
+func currentPublicCredentialWriter(t *testing.T, o *CurrentAuthority, p *CurrentOutput, producer CurrentCredentialProducer) (*currentOutputWriter, *httptest.ResponseRecorder, *Admission) {
 	t.Helper()
 	left, right := net.Pipe()
 	t.Cleanup(func() { _ = left.Close(); _ = right.Close(); p.connState(left, http.StateClosed) })
@@ -22,7 +26,7 @@ func currentPublicTestWriter(t *testing.T, o *CurrentAuthority, p *CurrentOutput
 	}
 	t.Cleanup(func() { p.release(r) })
 	ctx = context.WithValue(ctx, currentOutputRequestKey{}, r)
-	ctx, a, err := o.WithRequestCredential(ctx, authorityFakeCredentialProducer{expiry: 5 * time.Second})
+	ctx, a, err := o.WithRequestCredential(ctx, producer)
 	if err != nil || a.BindCurrentSelfOutput(ctx) != nil {
 		t.Fatal("bind current output", err)
 	}

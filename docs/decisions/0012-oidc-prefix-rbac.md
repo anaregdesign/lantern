@@ -582,8 +582,8 @@ ID-token bearer-input policy; Apple requires an exact raw transaction nonce,
 one Server-owned code exchange with client_secret_post, and a separate validated
 Android Services-ID callback. Original signed authentication time is preserved.
 
-This extension is selected design, not implemented or qualified behavior at
-main `4a4fa11`. The document defines the evidence/profile fingerprint change,
+This extension was selected before implementation at main `4a4fa11`; the current
+candidate implements it. The document defines the evidence/profile fingerprint change,
 Apply/current-output sequence, app-owned account isolation and bounded tests.
 Browser PKCE/CSRF, RFC9068 human qualification, machine separation and existing
 operation-bound approval remain independent. Source/CI, final-source functional

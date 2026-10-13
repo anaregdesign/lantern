@@ -2,6 +2,7 @@ package security
 
 import (
 	"bytes"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -12,6 +13,36 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func TestCurrentRequestValidationPreservesBoundsAndDecoder(t *testing.T) {
+	calls := 0
+	rejected := errors.New("service validation rejection")
+	codec := currentOutputCodec{name: "proto", read: 1024, send: 1024, validate: func(_ []byte, message proto.Message, binary bool) error {
+		calls++
+		if !binary || message.(*pb.BeginNativeLoginRequest).Issuer != "" {
+			t.Fatal("service validation ran after allocation/decoding")
+		}
+		return rejected
+	}}
+	if codec.Unmarshal(bytes.Repeat([]byte{1}, 1025), &pb.BeginNativeLoginRequest{}) == nil || calls != 0 {
+		t.Fatal("service validator bypassed byte bound")
+	}
+	if codec.Unmarshal([]byte{0xff}, &pb.BeginNativeLoginRequest{}) == nil || calls != 0 {
+		t.Fatal("service validator bypassed structural preflight")
+	}
+	raw, _ := proto.Marshal(&pb.BeginNativeLoginRequest{Issuer: "provider"})
+	var message pb.BeginNativeLoginRequest
+	if !errors.Is(codec.Unmarshal(raw, &message), rejected) || calls != 1 || message.Issuer != "" {
+		t.Fatal("service rejection was ignored")
+	}
+	codec.validate = func([]byte, proto.Message, bool) error { return nil }
+	if codec.Unmarshal(raw, &message) != nil || message.Issuer != "provider" {
+		t.Fatal("additional validation replaced the normal decoder")
+	}
+	if _, err := codec.Marshal(&pb.BeginNativeLoginRequest{Issuer: strings.Repeat("x", 1025)}); err == nil {
+		t.Fatal("additional request validation changed output limits")
+	}
+}
 
 func TestCurrentPublicOutputCodecBoundsBeforeMarshal(t *testing.T) {
 	values := []proto.Message{

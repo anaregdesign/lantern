@@ -9,6 +9,32 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
+func TestSecurityNativeClientSecretReadAndUpdateBoundary(t *testing.T) {
+	prior := security.Issuer{URL: security.AppleIssuer, Enabled: true, ConfigRevision: 3, Algorithms: []string{"RS256"}, NativeClients: []security.NativeClient{{ID: "ios", Kind: security.AppleNative, ClientID: "com.example.app", ServiceOrigin: "https://lantern.example", SecretRef: "private-operator-binding"}}}
+	read := encodeSecurityIssuer(prior)
+	if len(read.NativeClients) != 1 || !read.NativeClients[0].HasSecretBinding || read.NativeClients[0].SecretRef != nil {
+		t.Fatal("native secret binding leaked")
+	}
+	read.ConfigRevision = 0
+	read.NativeClients[0].HasSecretBinding = false
+	change, err := decodeSecurityChange(&pb.SecurityChange{Operation: &pb.SecurityChange_PutIssuer{PutIssuer: read}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := change.ResolveIssuerSecrets(prior)
+	if resolved.NativeClients[0].SecretRef != "private-operator-binding" || security.ValidateIssuerConfiguration(resolved) != nil {
+		t.Fatal("omitted exact binding not preserved")
+	}
+	change.Issuer.NativeClients[0].ClientID = "com.example.other"
+	if change.ResolveIssuerSecrets(prior).NativeClients[0].SecretRef != "" {
+		t.Fatal("secret rebound to another client")
+	}
+	read.NativeClients[0].Kind = pb.NativeClientKind(999)
+	if _, err := decodeSecurityIssuer(read); err == nil {
+		t.Fatal("unknown native profile accepted")
+	}
+}
+
 func TestSecurityCodecStrictContract(t *testing.T) {
 	role := &pb.SecurityRole{Id: "reader", Rules: []*pb.SecurityRule{{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"}}}}
 	decoded, err := decodeSecurityRole(role)

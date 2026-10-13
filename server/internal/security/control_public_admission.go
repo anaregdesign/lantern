@@ -122,7 +122,7 @@ func (o *CurrentAuthority) Admit(ctx context.Context, producer CurrentCredential
 		authTime = c.claim.Session.AuthTime
 	}
 	return &Admission{identity: c.actor, authTime: authTime, expiresAt: c.claim.AdmissionDeadline,
-		browser: c.claim.Session != nil, access: access, authentication: c.authentication, current: current}, nil
+		browser: c.claim.Session != nil && c.claim.Session.CredentialProfile() == BrowserCookieProfile, access: access, authentication: c.authentication, current: current}, nil
 }
 
 func (a *currentPublicAdmission) check(ctx context.Context) error {

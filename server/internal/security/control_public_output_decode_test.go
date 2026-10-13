@@ -20,7 +20,7 @@ import (
 
 func TestCurrentPublicDecodeAllPublicSchemasCertified(t *testing.T) {
 	methods := 0
-	for _, path := range []string{"graph/v1/graph.proto", "graph/v1/security.proto", "graph/v1/changes.proto", "connectext/grpc/health/v1/health.proto", "connectext/grpc/reflection/v1/reflection.proto"} {
+	for _, path := range []string{"graph/v1/graph.proto", "graph/v1/security.proto", "graph/v1/native_auth.proto", "graph/v1/changes.proto", "connectext/grpc/health/v1/health.proto", "connectext/grpc/reflection/v1/reflection.proto"} {
 		file, err := protoregistry.GlobalFiles.FindFileByPath(path)
 		if err != nil {
 			t.Fatal(err)
