@@ -36,6 +36,11 @@ on:
       - "!server/*.md"
   workflow_dispatch:
 
+# Retire superseded PR work; main, manual and release runs remain independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 defaults:
   run:
     working-directory: sdks/node

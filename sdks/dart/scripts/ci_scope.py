@@ -33,8 +33,6 @@ MOBILE_EXACT = {
     "buf.yaml",
     "buf.gen.yaml",
     "generate.go",
-    "docs/decisions/0001-dart-mobile-transport.md",
-    "docs/decisions/0002-dart-offline-repository-contract.md",
     ".github/workflows/dart-sdk.yml",
     ".github/scripts/ci_docs.py",
     ".github/scripts/test_ci_docs.py",
@@ -54,7 +52,7 @@ def is_go_toolchain_file(path: str) -> bool:
 def is_dart_mobile_path(path: str) -> bool:
     if not path.startswith("sdks/dart/"):
         return False
-    if path.endswith((".md", ".mdx", ".rst", ".txt")) or "/evidence/" in path:
+    if ci_docs.is_document(path) or "/evidence/" in path:
         return False
     if path in {
         "sdks/dart/.pubignore",

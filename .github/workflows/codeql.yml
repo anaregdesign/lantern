@@ -35,11 +35,7 @@ on:
       - "!testbed/*.md"
       - "!testbed/bench/*.md"
       - "!testbed/dart-transport-probe/*.md"
-      - "docs/decisions/0001-dart-mobile-transport.md"
-      - "docs/decisions/0002-dart-offline-repository-contract.md"
-      - "docs/decisions/0011-native-rust-sdk.md"
       - "docs/env.md"
-      - "docs/rust-sdk-v0.1-contract.md"
       - "!sdks/dart/example/evidence/offline-release/*.json"
   pull_request:
     branches: ["main"]
@@ -70,11 +66,7 @@ on:
       - "!testbed/*.md"
       - "!testbed/bench/*.md"
       - "!testbed/dart-transport-probe/*.md"
-      - "docs/decisions/0001-dart-mobile-transport.md"
-      - "docs/decisions/0002-dart-offline-repository-contract.md"
-      - "docs/decisions/0011-native-rust-sdk.md"
       - "docs/env.md"
-      - "docs/rust-sdk-v0.1-contract.md"
       - "!sdks/dart/example/evidence/offline-release/*.json"
   schedule:
     # Weekly Monday 06:00 UTC sweep so a stale main still gets a fresh

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -53,7 +54,11 @@ class DocumentationTest(unittest.TestCase):
     def test_conservative_allowlist(self):
         for path in ("README.md", "CONTRIBUTING.md", "docs/ha-runbook.md",
                      "docs/new-guide.md", "sdks/dart/offline/README.md",
-                     "admin/README.md", "sdks/rust/CHANGELOG.md"):
+                     "admin/README.md", "sdks/rust/CHANGELOG.md",
+                     "docs/decisions/0001-dart-mobile-transport.md",
+                     "docs/decisions/0002-dart-offline-repository-contract.md",
+                     "docs/decisions/0011-native-rust-sdk.md",
+                     "docs/rust-sdk-v0.1-contract.md"):
             with self.subTest(path=path):
                 self.assertTrue(ci_docs.documentation_only([path]))
         for path in (*ci_docs.CONTRACT_DOCS, "server/service/service.go",
@@ -136,6 +141,37 @@ class DocumentationTest(unittest.TestCase):
             with self.assertRaises(UnicodeError):
                 ci_docs.main()
 
+    def test_changed_local_links_require_committed_targets(self):
+        with patch.object(ci_docs.evidence_only_pr, "git", return_value="100644 blob object\ttarget.md") as git:
+            ci_docs.validate_links("docs/guide.md", "", "[target](../target.md#part)", "head")
+            git.assert_called_once_with("ls-tree", "head", "--", "target.md")
+        with patch.object(ci_docs.evidence_only_pr, "git", return_value=""):
+            with self.assertRaisesRegex(ValueError, "missing committed link"):
+                ci_docs.validate_links("docs/guide.md", "", "[missing](missing.md)", "head")
+            with self.assertRaisesRegex(ValueError, "outside repository"):
+                ci_docs.validate_links("README.md", "", "[escape](../outside.md)", "head")
+            # Existing links and external/fragment URLs do not trigger network work.
+            ci_docs.validate_links("README.md", "[old](missing.md)",
+                                   "[old](missing.md) [web](https://example.test) [part](#part)", "head")
+
+    def test_documented_sdk_toolchains_match_executable_inputs(self):
+        manifest = tomllib.loads((ROOT / "sdks/rust/Cargo.toml").read_text())
+        adr = (ROOT / "docs/decisions/0011-native-rust-sdk.md").read_text()
+        sketch = (ROOT / "docs/rust-sdk-v0.1-contract.md").read_text()
+        floor = manifest["package"]["rust-version"]
+        self.assertIn(f'rust-version = "{floor}"', adr)
+        self.assertIn(f"Rust {floor}", sketch)
+        self.assertIn(f"edition {manifest['package']['edition']}", sketch)
+        dart = (ROOT / "docs/decisions/0001-dart-mobile-transport.md").read_text()
+        dart_floor = re.search(r"Dart floor: ([0-9.]+)", dart)[1]
+        pubspec = (ROOT / "sdks/dart/pubspec.yaml").read_text()
+        self.assertIn(f'sdk: ">={dart_floor} ', pubspec)
+        flutter = re.search(r"validated Flutter toolchain: Flutter ([0-9.]+)", dart)[1]
+        for name in ("dart-sdk", "dart-transport-probe"):
+            pins = re.findall(r"flutter-version: ([0-9.]+)", (ROOT / f".github/workflows/{name}.yml").read_text())
+            self.assertTrue(pins)
+            self.assertEqual(set(pins), {flutter})
+
 
 class WorkflowRoutingTest(unittest.TestCase):
     def test_nonrequired_workflows_do_not_start_for_ordinary_prose(self):
@@ -145,11 +181,9 @@ class WorkflowRoutingTest(unittest.TestCase):
             "node-sdk": (["sdks/node/README.md", "server/README.md"], ["sdks/node/src/client.ts"]),
             "rust-sdk": (["sdks/rust/RELEASING.md", "core/README.md"], ["sdks/rust/src/lib.rs"]),
             "admin": (["admin/README.md", "sdks/node/README.md"], ["admin/app/root.tsx"]),
-            "dart-transport-probe": (["testbed/dart-transport-probe/README.md"], ["testbed/dart-transport-probe/connect/lib/probe.dart"]),
         }
         for name, (docs, source) in cases.items():
-            events = ["pull_request"] if name == "dart-transport-probe" else ["push", "pull_request"]
-            for event in events:
+            for event in ["push", "pull_request"]:
                 patterns = workflow_paths(name, event)
                 with self.subTest(name=name, event=event):
                     self.assertFalse(triggers(patterns, docs))
@@ -157,11 +191,24 @@ class WorkflowRoutingTest(unittest.TestCase):
                     self.assertTrue(triggers(patterns, [f".github/workflows/{name}.yml"]))
         for name, paths in {
             "dart-sdk": [".github/scripts/ci_docs.py", "docs/decisions/0001-dart-mobile-transport.md", "docs/decisions/0002-dart-offline-repository-contract.md", "sdks/dart/test/fixture.md", "sdks/dart/offline/pubspec.yaml"],
-            "rust-sdk": ["docs/decisions/0011-native-rust-sdk.md", "docs/rust-sdk-v0.1-contract.md"],
+            "rust-sdk": ["sdks/rust/Cargo.toml"],
             "codeql": list(ci_docs.CONTRACT_DOCS),
         }.items():
             for path in paths:
                 self.assertTrue(triggers(workflow_paths(name, "pull_request"), [path]), (name, path))
+
+    def test_sdk_design_prose_uses_lightweight_go_and_dart_contracts(self):
+        rust_docs = ["docs/decisions/0011-native-rust-sdk.md", "docs/rust-sdk-v0.1-contract.md"]
+        dart_docs = ["docs/decisions/0001-dart-mobile-transport.md", "docs/decisions/0002-dart-offline-repository-contract.md"]
+        for event in ("pull_request", "push"):
+            for path in rust_docs + dart_docs:
+                self.assertTrue(ci_docs.documentation_only([path]))
+                self.assertFalse(triggers(workflow_paths("codeql", event), [path]))
+                self.assertFalse(triggers(workflow_paths("rust-sdk", event), [path]))
+            for path in dart_docs:
+                self.assertTrue(triggers(workflow_paths("dart-sdk", event), [path]))
+            self.assertTrue(triggers(workflow_paths("rust-sdk", event), rust_docs + ["sdks/rust/src/lib.rs"]))
+            self.assertTrue(triggers(workflow_paths("codeql", event), dart_docs + ["server/service/service.go"]))
 
     def test_required_workflow_is_unfiltered_and_failure_remains_blocking(self):
         text = (ROOT / ".github/workflows/go.yml").read_text()

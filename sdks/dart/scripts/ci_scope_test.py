@@ -226,10 +226,10 @@ class ScopeTest(unittest.TestCase):
                 False,
                 (True, True),
             ),
-            "mobile contract": (
+            "mobile contract prose": (
                 ["docs/decisions/0001-dart-mobile-transport.md"],
                 False,
-                (True, True),
+                (False, False),
             ),
             "workflow": ([".github/workflows/dart-sdk.yml"], False, (True, True)),
             "host integration test": (
@@ -267,7 +267,13 @@ class ScopeTest(unittest.TestCase):
                          (True, True))
         self.assertEqual(ci_scope.classify([".github/scripts/ci_docs.py"]), (True, True))
         self.assertEqual(ci_scope.classify(["docs/decisions/0002-dart-offline-repository-contract.md"]),
-                         (True, True))
+                         (False, False))
+        for path in ("sdks/dart/test/fixture.md", "sdks/dart/example/lib/help.md", "sdks/dart/lib/prompt.txt"):
+            self.assertEqual(ci_scope.classify([path]), (True, True))
+
+    def test_backend_with_design_prose_does_not_gain_native_matrix(self):
+        self.assertEqual(ci_scope.classify(["server/service/service.go",
+            "docs/decisions/0001-dart-mobile-transport.md"]), (False, False))
 
     def test_documentation_gate_checks_actual_results_and_classification_failure(self):
         workflow = Path(__file__).resolve().parents[3] / '.github/workflows/dart-sdk.yml'

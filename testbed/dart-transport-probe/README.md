@@ -104,9 +104,11 @@ a harness-level comparison, not a production release-size forecast.
 The GitHub-hosted iOS 18.5 Simulator app bundles measured 98,116 KiB (Connect)
 and 100,500 KiB (gRPC).
 
-The pull-request workflow reruns generator drift, Dart analysis/tests, and the
-full iOS simulator matrix. CI builds and launches a disposable app directly
-with `simctl`, then observes a success marker over the real Lantern wire path;
+The manual `dart-transport-probe.yml` workflow reruns generator drift, Dart
+analysis/tests, and the full iOS simulator matrix. Dispatch it when changing
+this comparison or evaluating a transport fallback; ordinary Server/SDK PRs
+use the maintained production checks in `dart-sdk.yml`. CI builds and launches
+a disposable app directly with `simctl`, then observes a success marker over the real Lantern wire path;
 this avoids coupling the gate to Flutter's integration-test VM service. See
 the decision record in
 `docs/decisions/0001-dart-mobile-transport.md`.

@@ -68,10 +68,11 @@ and [generator manifest](https://github.com/grpc/grpc-rust/blob/6cb6056b5a748bc5
 manifests. The vendored protoc version and platform packages are in its
 [changelog](https://github.com/stepancheg/rust-protoc-bin-vendored/blob/master/CHANGELOG.md)
 and [manifest](https://github.com/stepancheg/rust-protoc-bin-vendored/blob/master/Cargo.toml).
-**Unresolved upstream guarantee:** `protoc-bin-vendored` 3.2.0 declares
-**no `rust-version`**. #1379 must build/run codegen on Rust 1.88 on the
-native OS lanes before calling the complete toolchain MSRV proven; do
-not infer it from a missing manifest field. A reproducible gRPC
+`protoc-bin-vendored` 3.2.0 declares **no `rust-version`**; a missing manifest
+field is not MSRV evidence. The representative CI policy (#1753) builds/runs
+codegen and tests on Rust 1.88 on Linux, and on stable on each supported native
+OS. It retains a compiler/dependency floor and native-platform coverage without
+claiming exhaustive MSRV × OS qualification. A reproducible gRPC
 interop failure is required to replace this stack.
 
 ### Transport security and lifecycle
