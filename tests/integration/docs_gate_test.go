@@ -328,9 +328,9 @@ func TestDartPublishingContractGate(t *testing.T) {
 		contracts   []string
 	}{
 		"release-preflight": {
-			needs:       []string{"gate"},
+			needs:       []string{"gate", "configured-source"},
 			permissions: map[string]string{"contents": "read"},
-			condition:   "${{ !cancelled() && needs.gate.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v') }}",
+			condition:   "${{ !cancelled() && needs.gate.result == 'success' && needs.configured-source.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v') }}",
 			contracts: []string{
 				`[[ "$TAG" =~ ^sdks/dart/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`,
 				`test "$(git rev-parse HEAD)" = "$GITHUB_SHA"`,
@@ -393,9 +393,9 @@ func TestDartPublishingContractGate(t *testing.T) {
 			},
 		},
 		"offline-release-preflight": {
-			needs:       []string{"gate", "offline-hosted"},
+			needs:       []string{"gate", "offline-hosted", "configured-source"},
 			permissions: map[string]string{"contents": "read"},
-			condition:   "${{ !cancelled() && needs.gate.result == 'success' && needs.offline-hosted.result == 'success' && needs.offline-hosted.outputs.qualified == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}",
+			condition:   "${{ !cancelled() && needs.gate.result == 'success' && needs.offline-hosted.result == 'success' && needs.configured-source.result == 'success' && needs.offline-hosted.outputs.qualified == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}",
 			contracts: []string{
 				`[[ "$TAG" =~ ^sdks/dart/offline/v[0-9]+\.[0-9]+\.[0-9]+$ ]]`,
 				`test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$GITHUB_SHA"`,
@@ -583,8 +583,8 @@ func TestSDKManualDispatchGate(t *testing.T) {
 			file: ".github/workflows/dart-sdk.yml",
 			tags: []string{"sdks/dart/v*.*.*", "sdks/dart/offline/v*.*.*"},
 			releaseGuards: map[string]string{
-				"release-preflight":         "${{ !cancelled() && needs.gate.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v') }}",
-				"offline-release-preflight": "${{ !cancelled() && needs.gate.result == 'success' && needs.offline-hosted.result == 'success' && needs.offline-hosted.outputs.qualified == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}",
+				"release-preflight":         "${{ !cancelled() && needs.gate.result == 'success' && needs.configured-source.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v') }}",
+				"offline-release-preflight": "${{ !cancelled() && needs.gate.result == 'success' && needs.offline-hosted.result == 'success' && needs.configured-source.result == 'success' && needs.offline-hosted.outputs.qualified == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}",
 			},
 		},
 		{
@@ -632,8 +632,13 @@ func TestSDKManualDispatchGate(t *testing.T) {
 				}
 			}
 			if test.file == ".github/workflows/node-sdk.yml" {
-				if workflow.Jobs["publish"].Needs.Value != "test" || !strings.Contains(string(content), "bun run verify:package") {
-					t.Error("npm publish must depend on tested and verified package contents")
+				var needs []string
+				node := workflow.Jobs["publish"].Needs
+				if err := node.Decode(&needs); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(needs, []string{"test", "configured-source"}) || !strings.Contains(string(content), "bun run verify:package") {
+					t.Error("npm publish must depend on tested package contents and configured-source Q")
 				}
 			}
 		})
@@ -740,7 +745,7 @@ func TestDartWorkflowGate(t *testing.T) {
 		"if [[ \"$MOBILE\" == true ]]; then",
 		"require_result android \"$ANDROID_RESULT\" skipped",
 		"require_result ios \"$IOS_RESULT\" skipped",
-		"needs: [gate]",
+		"needs: [gate, configured-source]",
 	} {
 		if !strings.Contains(text, contract) {
 			t.Errorf("Dart SDK workflow is missing scoped-gate contract %q", contract)
