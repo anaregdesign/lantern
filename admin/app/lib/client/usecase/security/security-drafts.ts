@@ -49,6 +49,8 @@ export interface IssuerDraft {
   locked: boolean;
   existing: boolean;
   humanSubjectNamespaceQualified: boolean;
+  // The browser editor preserves profiles managed through operator tools.
+  nativeClients: SecurityIssuer["nativeClients"];
 }
 export interface RuleDraft {
   id: string;
@@ -98,7 +100,14 @@ export function issuerDraft(value?: SecurityIssuer): IssuerDraft {
     existing: !!value,
     humanSubjectNamespaceQualified:
       value?.humanSubjectNamespaceQualified ?? false,
+    nativeClients: copyNativeClients(value?.nativeClients ?? []),
   };
+}
+function copyNativeClients(clients: SecurityIssuer["nativeClients"]) {
+  return clients.map((client) => ({
+    ...client,
+    presenters: [...client.presenters],
+  }));
 }
 export function roleDraft(value?: SecurityRole): RoleDraft {
   if (
@@ -234,6 +243,7 @@ export function buildIssuer(draft: IssuerDraft): SecurityIssuer {
     envOwned: false,
     deleted: false,
     hasSecretBinding: false,
+    nativeClients: copyNativeClients(draft.nativeClients),
   };
 }
 export function buildRole(draft: RoleDraft): SecurityRole {
