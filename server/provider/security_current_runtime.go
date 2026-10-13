@@ -4,9 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
 	"strconv"
 
+	"github.com/anaregdesign/lantern/server/internal/authn"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/service"
@@ -45,12 +45,18 @@ func (r *SecurityRuntime) openCurrent() error {
 	if err != nil {
 		return err
 	}
+	r.credentials = authn.NewCredentials(r.keys)
+	r.workflow, err = authn.NewCurrentWorkflow(r.current, r.loginResources(), r.currentAttemptPrefix())
+	if err != nil {
+		return err
+	}
+	r.composeAuthentication(nil)
 	r.control, err = service.NewSecurityConnectHandler(service.SecurityServiceOptions{Current: r.current, Now: r.now, ValidateIssuer: func(ctx context.Context, i security.Issuer) error {
 		if i.RedirectURI != r.config.BrowserOrigin+oidc.CallbackPath(i.URL) {
 			return oidc.ErrInvalidDocument
 		}
 		return r.fetcher.ValidateIssuer(ctx, i, r.secrets)
-	}, CurrentBeginAuthorization: r.beginCurrentManagementAuthorization, CurrentReadAuthorization: r.readCurrentManagementAuthorization})
+	}, CurrentBeginAuthorization: r.authentication.BeginCurrentManagementAuthorization, CurrentReadAuthorization: r.authentication.ReadCurrentManagementAuthorization})
 	return err
 }
 
@@ -66,29 +72,6 @@ func (r *SecurityRuntime) currentAttemptPrefix() string {
 		return ""
 	}
 	return "v2." + strconv.FormatUint(uint64(r.current.MemberID()), 10) + "." + base64.RawURLEncoding.EncodeToString(r.attemptProcess[:])
-}
-
-func (r *SecurityRuntime) beginCurrentManagementAuthorization(ctx context.Context, a *security.Admission, review security.CurrentReview) (security.AuthorizationStart, string, string, error) {
-	p, err := r.current.RequestCredential(ctx)
-	if err != nil {
-		return security.AuthorizationStart{}, "", "", err
-	}
-	if a.CheckManagement(ctx, nil, r.now()) != nil {
-		return security.AuthorizationStart{}, "", "", security.ErrPermissionDenied
-	}
-	start, err := r.current.BeginPurpose(ctx, review, p)
-	if err != nil {
-		return security.AuthorizationStart{}, "", "", err
-	}
-	affinity := r.currentAttemptAffinity(start.ID)
-	return start, r.config.BrowserOrigin + "/auth/management-authorization/" + base64.RawURLEncoding.EncodeToString(start.Ticket[:]) + "?affinity=" + affinity, affinity, nil
-}
-
-func (r *SecurityRuntime) readCurrentManagementAuthorization(ctx context.Context, a *security.Admission, id [32]byte, affinity string) (security.AuthorizationStatus, error) {
-	if affinity == "" || affinity != r.currentAttemptAffinity(id) {
-		return security.AuthorizationStatus{}, errors.New("operation attempt belongs to a different process")
-	}
-	return r.current.ReadPurpose(ctx, a, id)
 }
 
 // ExportCurrentAuthorityFloors returns the owner's minimum-cut document for

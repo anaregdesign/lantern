@@ -2,165 +2,41 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
-	"github.com/anaregdesign/lantern/server/internal/oidc"
+	"github.com/anaregdesign/lantern/server/internal/authn"
 	"github.com/anaregdesign/lantern/server/internal/security"
+	"github.com/anaregdesign/lantern/server/service"
 )
 
-// AuthenticateBearer ignores browser cookies and identity/Role headers. A
-// bounded unverified Issuer is only a selector into current registered state.
-type verifiedRuntimeKey struct{}
-
+func (r *SecurityRuntime) loginResources() authn.OIDCResources {
+	return authn.OIDCResources{Fetcher: r.fetcher, Secrets: r.secrets, Verifier: r.verifier, Credentials: r.credentials, Logins: r.logins, Now: r.now}
+}
+func (r *SecurityRuntime) composeAuthentication(store *security.Store) {
+	r.authentication = service.NewAuthenticationAdapter(service.AuthenticationOptions{
+		Credentials: service.NewCredentialAdapter(r.mode, service.BrowserConfig{BrowserOrigin: r.config.BrowserOrigin, TrustedProxyIPs: r.config.TrustedProxyIPs}, r.credentials),
+		Workflow:    r.workflow, Store: store, Current: r.current, Verifier: r.verifier, Now: r.now, AuthorityCheck: r.authorityCheck,
+		LeaseExpiry: func() (time.Time, bool) {
+			if r.receiver == nil {
+				return time.Time{}, false
+			}
+			return r.receiver.Expiry(), true
+		},
+		WriterEnabled: func() bool { return r.authority != nil }, Ready: r.Ready, Output: func() *security.CurrentOutput { return r.output }, AttemptPrefix: r.currentAttemptPrefix(),
+	})
+}
 func (r *SecurityRuntime) AuthenticateBearer(ctx context.Context, headers http.Header) (context.Context, error) {
 	if r == nil {
 		return ctx, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
 	}
-	if r.mode == "off" {
-		return ctx, nil
-	}
-	if ctx.Value(verifiedRuntimeKey{}) == r {
-		admission, known := security.AdmissionFromContext(ctx)
-		if !known || admission.Check(ctx, r.now()) != nil {
-			return ctx, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
-		}
-		return ctx, nil
-	}
-	if r.current != nil {
-		p, err := r.CurrentBearerProducer(headers)
-		if err != nil {
-			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
-		}
-		verified, _, err := r.current.WithRequestCredential(ctx, p)
-		if err != nil {
-			code := connect.CodeUnauthenticated
-			if errors.Is(err, security.ErrAuthorityUnavailable) {
-				code = connect.CodeUnavailable
-			}
-			return ctx, connect.NewError(code, errors.New("current authentication unavailable"))
-		}
-		return context.WithValue(verified, verifiedRuntimeKey{}, r), nil
-	}
-	values := headers.Values("Authorization")
-	if len(values) != 1 || len(values[0]) > 16<<10+7 {
-		return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
-	}
-	scheme, raw, ok := strings.Cut(values[0], " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") || raw == "" || strings.ContainsAny(raw, " \t\r\n") {
-		return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
-	}
-	revision, known := r.native.Store().Current()
-	if !known {
-		return ctx, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
-	}
-	if err := r.authorityCheck(ctx, revision); err != nil {
-		return ctx, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
-	}
-	evidence := requestEvidenceCut(revision, time.Time{})
-	var identity security.Identity
-	var authTime, credentialExpiry time.Time
-	authentication := security.Authentication{Provenance: security.NativeMachine, Class: security.MachineActor}
-	if strings.HasPrefix(raw, security.MachineTokenPrefix) {
-		var valid bool
-		identity, credentialExpiry, valid = revision.Snapshot().MachineAccess(raw, r.now())
-		if !valid {
-			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
-		}
-		evidence.kind = "machine"
-		evidence.machineIdentity, evidence.machineExpiry = identity, credentialExpiry
-		evidence.machineCredential = requestCredentialCommitment("native-machine", raw)
-		// Machines cannot claim an interactive recent-authentication event.
-	} else {
-		issuerURL, err := oidc.TokenIssuer(raw)
-		if err != nil {
-			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
-		}
-		issuer, registered := revision.Snapshot().Issuer(issuerURL)
-		if !registered || !issuer.Enabled || issuer.ConfigRevision == 0 {
-			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
-		}
-		verified, err := r.verifier.VerifyAccess(ctx, raw, oidc.Trust{Issuer: issuer, Generation: revision.Generation(), ConfigRevision: issuer.ConfigRevision})
-		if err != nil {
-			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
-		}
-		identity, authTime, credentialExpiry = verified.Identity(), verified.AuthTime(), verified.ExpiresAt()
-		authentication = security.Authentication{Provenance: security.RFC9068Bearer, Class: revision.Snapshot().BearerActor(identity), IssuerConfigRevision: issuer.ConfigRevision}
-		evidence.kind, evidence.token = "token", verified
-		evidence.humanNamespaceQualified = issuer.HumanSubjectNamespaceQualified
-		if revision.Snapshot().HumanIdentity(identity) {
-			evidence.enrolledIdentity = identity
-		}
-		evidence.issuerConfigRevision = issuer.ConfigRevision
-		evidence.issuerConfiguration = verified.Evidence().Configuration
-	}
-	expiry := minSecurityTime(credentialExpiry, r.now().Add(28*time.Second))
-	if r.receiver != nil {
-		expiry = minSecurityTime(expiry, r.receiver.Expiry())
-	}
-	admission, err := security.NewAdmission(identity, authTime, expiry, revision, r.authorityCheck)
-	if err != nil {
-		return ctx, connect.NewError(connect.CodePermissionDenied, security.ErrPermissionDenied)
-	}
-	if err := admission.Check(ctx, r.now()); err != nil {
-		return ctx, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
-	}
-	admission = admission.WithAuthentication(authentication)
-	evidence.admissionExpiry, evidence.classification = expiry, authentication.Class
-	ctx = withRequestAuthenticationEvidence(ctx, evidence)
-	return context.WithValue(security.WithAdmission(ctx, admission), verifiedRuntimeKey{}, r), nil
+	return r.authentication.AuthenticateBearer(ctx, headers)
 }
-func minSecurityTime(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
-}
-
-// PublicAuthenticationInterceptor is solely for the public bearer surface.
-// Private peers use separate workload admission; browser mounts use the opaque
-// session boundary. Only the declared capability method is anonymous here.
 func (r *SecurityRuntime) PublicAuthenticationInterceptor() connect.Interceptor {
-	return securityAuthenticationInterceptor{runtime: r}
+	return r.authentication.PublicAuthenticationInterceptor()
 }
-
-type securityAuthenticationInterceptor struct{ runtime *SecurityRuntime }
-
-func (i securityAuthenticationInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if req.Spec().Procedure == graphv1connect.LanternSecurityServiceGetAuthCapabilitiesProcedure {
-			return next(ctx, req)
-		}
-		if !strings.HasPrefix(req.Spec().Procedure, "/graph.v1.LanternService/") && !strings.HasPrefix(req.Spec().Procedure, "/graph.v1.LanternSecurityService/") {
-			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("private service requires workload admission"))
-		}
-		verified, err := i.runtime.AuthenticateBearer(ctx, req.Header())
-		if err != nil {
-			return nil, err
-		}
-		return next(verified, req)
-	}
-}
-func (i securityAuthenticationInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-func (i securityAuthenticationInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		verified, err := i.runtime.AuthenticateBearer(ctx, conn.RequestHeader())
-		if err != nil {
-			return err
-		}
-		if !strings.HasPrefix(conn.Spec().Procedure, "/graph.v1.LanternService/") {
-			return connect.NewError(connect.CodePermissionDenied, errors.New("private service requires workload admission"))
-		}
-		verified, err = i.runtime.boundSnapshotAdmission(verified)
-		if err != nil {
-			return connect.NewError(connect.CodeUnavailable, err)
-		}
-		return next(verified, conn)
-	}
+func (r *SecurityRuntime) AuthHTTPHandler() http.Handler { return r.authentication.AuthHTTPHandler() }
+func (r *SecurityRuntime) BrowserRPCHandler(path string, handler http.Handler) http.Handler {
+	return r.authentication.BrowserRPCHandler(path, handler)
 }

@@ -63,7 +63,7 @@ func (r *SecurityRuntime) protectedIngress(req *http.Request) bool {
 	}
 	for _, trusted := range r.config.TrustedProxyIPs {
 		if trusted.Unmap() == ip.Unmap() {
-			return exactBrowserHeader(req.Header, "X-Forwarded-Proto", "https") && exactBrowserHeader(req.Header, "X-Forwarded-Host", req.Host)
+			return len(req.Header.Values("X-Forwarded-Proto")) == 1 && req.Header.Get("X-Forwarded-Proto") == "https" && len(req.Header.Values("X-Forwarded-Host")) == 1 && req.Header.Get("X-Forwarded-Host") == req.Host
 		}
 	}
 	return false

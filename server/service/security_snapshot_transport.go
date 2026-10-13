@@ -1,12 +1,13 @@
-package provider
+package service
 
 import (
 	"context"
-	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
-	"github.com/anaregdesign/lantern/server/internal/security"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
 type snapshotTransportKey struct{}
@@ -19,7 +20,7 @@ type snapshotTransport struct {
 
 // Only protected streaming exports allocate a transport authority watcher.
 // Ordinary data RPCs retain the existing local-admission hot path.
-func (r *SecurityRuntime) boundSnapshotHTTPHandler(handler http.Handler) http.Handler {
+func (r *AuthenticationAdapter) BoundSnapshotHTTPHandler(handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		path := strings.TrimPrefix(req.URL.Path, "/browser")
 		if r.mode != "oidc" || r.current != nil || path != graphv1connect.LanternServiceBackupSnapshotProcedure {
@@ -38,7 +39,7 @@ func (r *SecurityRuntime) boundSnapshotHTTPHandler(handler http.Handler) http.Ha
 		handler.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), snapshotTransportKey{}, boundary)))
 	})
 }
-func (r *SecurityRuntime) boundSnapshotAdmission(ctx context.Context) (context.Context, error) {
+func (r *AuthenticationAdapter) boundSnapshotAdmission(ctx context.Context) (context.Context, error) {
 	boundary, found := ctx.Value(snapshotTransportKey{}).(*snapshotTransport)
 	if !found {
 		return ctx, nil

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -18,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/server/internal/authn"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/provider"
@@ -35,6 +37,8 @@ func TestCurrentAuthorityGenuineProducerGate(t *testing.T) {
 	}
 	var mu sync.Mutex
 	idToken := ""
+	var afterExchange func()
+	exchanges := 0
 	var server *httptest.Server
 	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -51,7 +55,12 @@ func TestCurrentAuthorityGenuineProducerGate(t *testing.T) {
 			}
 			mu.Lock()
 			token := idToken
+			after := afterExchange
+			exchanges++
 			mu.Unlock()
+			if after != nil {
+				after()
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"token_type": "Bearer", "id_token": token})
 		default:
 			http.NotFound(w, r)
@@ -238,6 +247,50 @@ func TestCurrentAuthorityGenuineProducerGate(t *testing.T) {
 		t.Fatal("purpose replay")
 	}
 	g.Apply(ph)
+	t.Run("applied callback cannot publish without current output recipient", func(t *testing.T) {
+		g.Renew()
+		start, err := login.Begin(trust, discovery, "/", "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, _ := url.Parse(start.AuthorizationURL)
+		mu.Lock()
+		beforeExchanges := exchanges
+		idToken = sign(jwt.MapClaims{"iss": issuer.URL, "sub": "admin", "aud": "admin-client", "iat": g.Now().Unix(), "exp": g.Now().Add(time.Hour).Unix(), "nonce": u.Query().Get("nonce")}, "JWT")
+		// Advance the fixture clock after Consume, exactly as the existing
+		// Code gate does, so signed/consumed starts precede the lower bound.
+		afterExchange = func() { g.Advance(time.Second) }
+		mu.Unlock()
+		defer func() { mu.Lock(); afterExchange = nil; mu.Unlock() }()
+		keys := oidc.NewKeyCacheWithClock(fetcher, g.Now)
+		secrets, err := oidc.NewSecretRegistry(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		workflow, err := authn.NewCurrentWorkflow(g.PublicAuthority(), authn.OIDCResources{Fetcher: fetcher, Secrets: secrets, Verifier: oidc.NewVerifierWithClock(keys, g.Now), Credentials: authn.NewCredentials(keys), Logins: login, Now: g.Now}, "member.process")
+		if err != nil {
+			t.Fatal(err)
+		}
+		beforeSessions := g.SessionCount()
+		input := authn.CallbackInput{State: u.Query().Get("state"), Transaction: start.TransactionCookie, Path: oidc.CallbackPath(issuer.URL), Issuer: issuer.URL, Code: "actual-exchange"}
+		result, err := workflow.CompleteCallback(t.Context(), input)
+		if !errors.Is(err, authn.ErrUnauthenticated) || !result.Consumed || result.Session != "" || result.CSRF != "" || result.Context != nil || result.ReturnPath != "" || !result.ExpiresAt.IsZero() {
+			t.Fatal("failed output binding exposed session material", err, result)
+		}
+		if got := g.SessionCount(); got != beforeSessions+1 {
+			t.Fatal("test must reach original session Apply before refusal", got, beforeSessions)
+		}
+		replay, err := workflow.CompleteCallback(t.Context(), input)
+		if err == nil || replay.Consumed || g.SessionCount() != beforeSessions+1 {
+			t.Fatal("failed publication retried session issuance", err, replay)
+		}
+		mu.Lock()
+		gotExchanges := exchanges
+		mu.Unlock()
+		if gotExchanges != beforeExchanges+1 {
+			t.Fatal("callback re-exchanged the consumed Code", gotExchanges, beforeExchanges)
+		}
+	})
 	g.RestartAndRecover(h)
 	g.LogEvidence(native)
 	g.ExpiredOriginalAfterOriginLoss(shortH)

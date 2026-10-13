@@ -49,12 +49,15 @@ Both ports are configurable via environment variables (see below).
 | Path | Description |
 | --- | --- |
 | `cmd/` | `main`, the `App` composition root, and `wire`-generated graph (`wire.go` / `wire_gen.go`). |
-| `service/` | RPC handlers: `LanternService`, `LanternReplicationService`, `LanternServer` (http.Server lifecycle + GC + graceful shutdown), apply path, cursor pagination, prefix scans, Connect adapter. |
+| `service/` | RPC handlers: `LanternService`, `LanternReplicationService`, `LanternServer` (http.Server lifecycle + GC + graceful shutdown), apply path, cursor pagination, prefix scans, Connect and browser authentication adapters. |
 | `provider/` | Wire providers — `Config` aggregation, `LanternListener` (the h2c http.Server wired with the Connect mux + grpchealth + grpcreflect + CORS + otelhttp), Connect interceptors (logging, metrics, slow-rpc, validation, rate-limit), TLS loader, Prometheus registry, metrics HTTP server, OTel tracing, readiness gate, replication pump, anti-entropy driver. |
 | `metrics/` | `DomainMetrics` — the `lantern_*` Prometheus collectors and the gauge sampler. |
 | `readiness/` | The `Gate` that publishes the overall (`""`) `grpc.health.v1` status and gates HTTP `/readyz` on replication lag bounds. |
 | `replication/` | Peer discovery, pump (Subscribe consumer), anti-entropy driver. |
 | `internal/envconfig/` | Env-var parsing helpers used by `provider/`. |
+| `internal/authn/` | Login/session and purpose-callback workflows; genuine Code/Bearer producers. Borrows existing OIDC and security owners without opening state or owning transport. |
+| `internal/oidc/` | Configured IdP discovery, Code exchange, token verification and one-use login transactions. |
+| `internal/security/` | Native policy/session state, current authority, admission, Prepare/Apply and finite output ownership. |
 
 ## Current authority profile
 
@@ -71,11 +74,18 @@ profile. Only a consumed login transaction joined to its successful Code
 exchange and completed token checks produces Code-complete evidence. Ordinary
 login, session step-up and operation approval remain distinct.
 
-The provider carries the opaque result in request/callback context. Bearer
+The service authentication adapter carries opaque request evidence; the authn
+workflow accepts only genuine opaque Code completion/verifier results. Bearer
 classification records exact human enrollment and qualified issuer configuration
 at the captured native revision. Cookie requests retain the native Session and
 which origin/CSRF checks actually ran; they do not reconstruct a login JWT.
 Credential, Session, admission and purpose deadlines remain independent.
+
+Browser HTTP and Connect share `authn.InspectSession`; service alone maps DTOs,
+headers, cookies, Origin/CSRF checks and public errors. Current callback output
+requires Apply, `RefreshRequest` and `BindIssuedSessionOutput` in that order.
+Provider composes these adapters and retains certification, resource ownership
+and cleanup. See the [design and trust boundary](../docs/login-session-workflows.md).
 
 Operation approvals retain one detached envelope of at most 16 KiB under the
 existing owner lock and 1024-record/ten-minute bounds, shortened by credential
@@ -324,8 +334,9 @@ standing up a metrics stack:
 - If a server-side test needs the client (e.g. a full-stack `bufconn`
   round-trip), put it under [`tests/integration/`](../tests/integration/),
   not in `server/.../_test.go`.
-- `service/` has zero imports from `provider/` — interceptor wiring lives
-  exclusively in `provider/`.
+- `service/` has zero imports from `provider/`; provider composes its concrete
+  transport adapters. `internal/authn -> internal/oidc -> internal/security`
+  remains acyclic, with no transport imports in authn or upward imports in security.
 
 See [AGENTS.md](../AGENTS.md) for the full dependency graph and release
 contract. The server module is **never tagged independently** — it ships

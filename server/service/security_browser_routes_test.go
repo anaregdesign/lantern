@@ -1,4 +1,4 @@
-package provider
+package service
 
 import (
 	"crypto/sha256"
@@ -6,9 +6,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/anaregdesign/lantern/server/internal/oidc"
-	"github.com/anaregdesign/lantern/server/internal/security"
-	"github.com/golang-jwt/jwt/v5"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +14,9 @@ import (
 	"time"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/oidc"
+	"github.com/anaregdesign/lantern/server/internal/security"
+	"github.com/golang-jwt/jwt/v5"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -49,7 +49,7 @@ func TestSecurityBrowserRoutesSessionLogout(t *testing.T) {
 	}
 }
 func TestSecurityBrowserRoutesOffAndInvalidQuery(t *testing.T) {
-	runtime, cleanup, err := NewSecurityRuntime(SecurityConfig{Mode: "off"}, nil)
+	runtime, cleanup, err := newAuthenticationFixture(t, authenticationConfig{Mode: "off"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,9 +71,9 @@ func TestSecurityBrowserRoutesOffAndInvalidQuery(t *testing.T) {
 func TestSecurityBrowserRoutesRetainsGenuinePurposeEvent(t *testing.T) {
 	for _, failure := range []string{"", "wrong nonce", "missing auth_time", "wrong actor", "wrong at_hash", "exchange failure"} {
 		t.Run(map[string]string{"": "approved"}[failure]+failure, func(t *testing.T) {
-			config, data, clock := securityRuntimeFixture(t)
+			config, clock := authenticationConfigFixture(t)
 			idp := newSecurityProviderFixture(t, &config, clock)
-			runtime, cleanup, err := NewSecurityRuntime(config, data)
+			runtime, cleanup, err := newAuthenticationFixture(t, config)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -169,10 +169,17 @@ func TestSecurityBrowserRoutesRetainsGenuinePurposeEvent(t *testing.T) {
 			if after.Digest() != current.Digest() {
 				t.Fatal("purpose callback changed reviewed native cut")
 			}
+			clearedTransaction := false
 			for _, cookie := range w.Result().Cookies() {
+				if cookie.Name == transactionCookieName && cookie.MaxAge < 0 {
+					clearedTransaction = true
+				}
 				if cookie.Name == sessionCookieName || cookie.Name == csrfCookieName {
 					t.Fatal("purpose callback changed ordinary session")
 				}
+			}
+			if !clearedTransaction {
+				t.Fatal("consumed callback retained transaction cookie", failure)
 			}
 			for _, secret := range []string{raw, access, "private-code", nonce, login.TransactionCookie} {
 				if strings.Contains(w.Body.String(), secret) {

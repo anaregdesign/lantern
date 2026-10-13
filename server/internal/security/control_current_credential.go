@@ -52,7 +52,7 @@ func (v CurrentCredentialView) VerificationTime() time.Time {
 }
 
 // CurrentCredentialFacts are detached producer output, not an authorization
-// capability. The provider adapter must obtain Token from opaque verifier/Code
+// capability. The authn producer must obtain Token from opaque verifier/Code
 // completion results, or Session through the exact native cookie/CSRF path.
 type CurrentCredentialFacts struct {
 	Token         *TokenAuthenticationEvidence
@@ -66,7 +66,8 @@ type CurrentCredentialFacts struct {
 
 // CurrentCredentialProducer is trusted private composition, never a request
 // parameter, decoder, plugin callback or public RPC constructor. Production
-// implementations live in provider to preserve oidc -> security dependencies.
+// implementations live in internal/authn (Code/Bearer) and service (browser
+// Origin/CSRF). Provider composes them; oidc -> security remains acyclic.
 type CurrentCredentialProducer interface {
 	VerifyCurrentCredential(context.Context, CurrentCredentialView) (CurrentCredentialFacts, error)
 }

@@ -30,6 +30,18 @@ type CurrentAuthorityGate struct {
 }
 type CurrentAuthorityGateRequest struct{ request *authorityOriginRequest }
 
+// PublicAuthority borrows the same concrete test owner for upper workflow
+// tests. It supplies no output recipient or alternate authority implementation.
+func (g *CurrentAuthorityGate) PublicAuthority() *CurrentAuthority {
+	return &CurrentAuthority{origin: g.owners[1]}
+}
+func (g *CurrentAuthorityGate) SessionCount() int {
+	k := g.owners[1].network.kernel
+	k.gate.Lock()
+	defer k.gate.Unlock()
+	return len(k.replayState.projection.snapshot.Image().Sessions)
+}
+
 func NewCurrentAuthorityGate(t *testing.T, issuer Issuer, sessions []Session, native bool) *CurrentAuthorityGate {
 	t.Helper()
 	n := s3aTestCluster(t, nil)
