@@ -83,3 +83,35 @@ func TestNativeProviderTrustRejections(t *testing.T) {
 		t.Fatal("zero completion accepted")
 	}
 }
+
+func TestNativePresenterPresence(t *testing.T) {
+	for _, kind := range []string{security.GoogleIDToken, security.AppleNative, security.AppleAndroidWeb} {
+		t.Run(kind, func(t *testing.T) {
+			p := newNativeProviderFixture(t, kind)
+			start, a := p.begin(t)
+			for _, tc := range []struct {
+				name    string
+				present bool
+				value   any
+				valid   bool
+			}{
+				{"absent", false, nil, true}, {"empty", true, "", false}, {"null", true, nil, false}, {"other", true, "other", false},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					claims := p.claims(start)
+					if tc.present {
+						claims["azp"] = tc.value
+					}
+					input := NativeInput{Provider: "google", IDToken: p.sign(t, claims)}
+					if kind != security.GoogleIDToken {
+						input.Provider, input.AuthorizationCode, input.State = "apple", "code", start.State
+					}
+					_, err := p.verifier.VerifyNativeCredential(t.Context(), a, input)
+					if (err == nil) != tc.valid {
+						t.Fatal("presenter presence contract", err)
+					}
+				})
+			}
+		})
+	}
+}

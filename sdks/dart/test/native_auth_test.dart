@@ -70,6 +70,31 @@ security.CurrentSessionRevocationReview review() {
 }
 
 void main() {
+  test('Begin rejects noncanonical or destination-shaped affinity', () async {
+    for (final hint in [
+      'v2.01.${random(3)}',
+      'v2.0.${random(3)}',
+      'v2.4294967296.${random(3)}',
+      'v2.1.bad',
+      'https://attacker.test',
+    ]) {
+      final client = LanternClient.connect(
+        endpoint,
+        transport: FakeTransportBuilder()
+            .unary(
+              LanternNativeAuthService.beginNativeLogin,
+              (wire.BeginNativeLoginRequest req, ctx) =>
+                  start()..affinity = hint,
+            )
+            .build(),
+      );
+      await expectLater(
+        client.beginNativeLogin(issuer: google, clientProfileId: 'mobile'),
+        throwsA(isA<LanternFailedPreconditionException>()),
+      );
+      await client.close();
+    }
+  });
   test(
     'bootstrap suppresses old bearer; session uses TokenProvider and original auth time',
     () async {
@@ -96,6 +121,10 @@ void main() {
               completes++;
               expect(ctx.requestHeaders['authorization'], isNull);
               expect(req.google.idToken, 'provider-secret');
+              expect(
+                ctx.requestHeaders['Lantern-Native-Affinity'],
+                'v2.1.${random(3)}',
+              );
               return wire.CompleteNativeLoginResponse(
                 credential: 'lnu1_${random(7)}',
                 session: session(),

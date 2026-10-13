@@ -146,3 +146,66 @@ func TestAppleExchangeResponseLossIsNotRetried(t *testing.T) {
 		t.Fatal("provider received code twice", p.exchanges.Load())
 	}
 }
+
+// The original and exchanged tokens must name the exact same client, subject
+// and raw nonce. All tokens here carry valid fixture signatures.
+func TestAppleExchangeIdentityAndProfileMixups(t *testing.T) {
+	for _, kind := range []string{security.AppleNative, security.AppleAndroidWeb} {
+		t.Run(kind, func(t *testing.T) {
+			p := newNativeProviderFixture(t, kind)
+			other := p.trust.Issuer.NativeClients[0]
+			other.ID, other.ClientID = "other", "com.example.other-profile"
+			if kind == security.AppleNative {
+				other.Kind, other.AndroidPackage = security.AppleAndroidWeb, "com.example.app"
+				other.RedirectURI = other.ServiceOrigin + "/auth/native/apple/callback/other"
+			} else {
+				other.Kind, other.AndroidPackage, other.RedirectURI = security.AppleNative, "", ""
+			}
+			p.trust.Issuer.NativeClients = append(p.trust.Issuer.NativeClients, other)
+			for _, claim := range []string{"sub", "aud", "nonce"} {
+				t.Run(claim, func(t *testing.T) {
+					start, a := p.begin(t)
+					c, err := p.verifier.VerifyNativeCredential(t.Context(), a, NativeInput{Provider: "apple", IDToken: p.sign(t, p.claims(start)), AuthorizationCode: "one-code", State: start.State})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if kind == security.AppleAndroidWeb {
+						if _, err := p.transactions.StageCallback(a, c); err != nil {
+							t.Fatal(err)
+						}
+					}
+					completion, err := p.transactions.Consume(a, c)
+					if err != nil {
+						t.Fatal(err)
+					}
+					changed := p.claims(start)
+					changed[claim] = "another-" + claim
+					raw := p.sign(t, changed)
+					p.mu.Lock()
+					p.exchange = func(w http.ResponseWriter, _ *http.Request) {
+						_ = json.NewEncoder(w).Encode(map[string]any{"id_token": raw, "access_token": "access", "token_type": "Bearer"})
+					}
+					p.mu.Unlock()
+					before := p.exchanges.Load()
+					tokens, err := p.fetcher.ExchangeApple(t.Context(), completion, p.secrets)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := p.verifier.VerifyNativeCompletion(t.Context(), completion, tokens); err == nil {
+						t.Fatal("exchange mixup accepted")
+					}
+					if _, err := p.fetcher.ExchangeApple(t.Context(), completion, p.secrets); err == nil || p.exchanges.Load() != before+1 {
+						t.Fatal("rejected exchange retried", err)
+					}
+				})
+			}
+			start, a := p.begin(t)
+			claims := p.claims(start)
+			// Distinct registered Bundle and Services IDs are never interchangeable.
+			claims["aud"] = "com.example.other-profile"
+			if _, err := p.verifier.VerifyNativeCredential(t.Context(), a, NativeInput{Provider: "apple", IDToken: p.sign(t, claims), AuthorizationCode: "code", State: start.State}); err == nil {
+				t.Fatal("Bundle/Services ID mixup accepted")
+			}
+		})
+	}
+}

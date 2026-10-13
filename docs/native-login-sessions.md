@@ -188,7 +188,14 @@ trusted service origin and the original start/expiry. There is no caller-provide
 replacement-session digest.
 
 Foreign node, restart, missing proof, changed configuration and expired attempt
-fail closed. Clients keep the Begin affinity for Complete; no redirect/failover
+fail closed. The Dart facade sends Begin's affinity in the single
+`Lantern-Native-Affinity` header on Complete, to the same configured HTTPS
+endpoint. Its canonical syntax is `v2.<nonzero uint32 member>.<43-character
+canonical base64url process>` (at most 57 ASCII bytes). The gateway uses it only
+as a routing hint; the destination owner still requires its live transaction
+and private completion proof. Duplicate, empty, malformed or foreign-process
+hints are rejected. Direct RPC clients with a fixed backend may omit the header;
+an omitted hint never substitutes for transaction ownership. No redirect/failover
 replays credentials to arbitrary nodes. In-memory transaction loss requires a
 new user login attempt. The opaque transaction completion is usable only by
 the trusted workflow, not as a decoded public evidence object.

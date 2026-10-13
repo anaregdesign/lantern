@@ -21,6 +21,10 @@ var _ graphv1connect.LanternNativeAuthServiceHandler = (*AuthenticationAdapter)(
 
 const NativeAuthMaxBytes = 64 << 10
 
+// NativeAffinityHeader selects a process behind the configured endpoint. It is
+// never an authentication credential or a destination URL.
+const NativeAffinityHeader = "Lantern-Native-Affinity"
+
 func nativeAuthProcedure(path string) bool {
 	return strings.HasPrefix(path, "/"+graphv1connect.LanternNativeAuthServiceName+"/")
 }
@@ -74,7 +78,11 @@ func (r *AuthenticationAdapter) CompleteNativeLogin(ctx context.Context, req *co
 	if err := r.nativeRequest(req.Msg, req.Header(), true); err != nil {
 		return nil, err
 	}
-	input := authn.NativeCompletionInput{AttemptID: req.Msg.AttemptId, CompletionSecret: req.Msg.CompletionSecret}
+	hints := req.Header().Values(NativeAffinityHeader)
+	if len(hints) > 1 || len(hints) == 1 && (hints[0] == "" || len(hints[0]) > 57) {
+		return nil, nativeError(authn.ErrInvalidInput)
+	}
+	input := authn.NativeCompletionInput{AttemptID: req.Msg.AttemptId, CompletionSecret: req.Msg.CompletionSecret, Affinity: req.Header().Get(NativeAffinityHeader)}
 	switch provider := req.Msg.Provider.(type) {
 	case *pb.CompleteNativeLoginRequest_Google:
 		if provider.Google == nil {

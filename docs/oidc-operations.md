@@ -63,8 +63,12 @@ operation-bound reauthentication; native login alone cannot satisfy it.
 
 The configured `service_origin` is a logical client/session binding, not a
 separate Host-based tenant boundary. Keep the existing TLS/trusted-proxy ingress.
-Route Begin and Complete to the returned member/process affinity; route Apple's
-form callback by the affinity prefix in `state`. The callback verifies the full
+Route Complete using the `Lantern-Native-Affinity` header returned by Begin and
+sent by the Dart facade. This bounded canonical `v2.member.process` value is only
+a routing hint inside the configured endpoint; the owner validates the complete
+transaction and proof. Clients that omit it require a fixed backend. Do not
+redirect or retry Complete across backend owners. Route Apple's form callback
+by the affinity prefix in `state`. The callback verifies the full
 transaction and returns only to the configured Android package. A restart loses
 pending transactions; existing committed sessions retain their fixed expiry.
 

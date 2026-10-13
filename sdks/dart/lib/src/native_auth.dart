@@ -54,8 +54,7 @@ extension LanternNativeAuth on LanternClient {
     if (!_nativeRandom(result.attemptId) ||
         !_nativeRandom(result.completionSecret) ||
         !result.hasExpiresAt() ||
-        result.affinity.isEmpty ||
-        result.affinity.length > 57 ||
+        !_nativeAffinity(result.affinity) ||
         c.clientProfileId != clientProfileId ||
         c.clientId.isEmpty ||
         c.clientId.length > 512 ||
@@ -150,7 +149,7 @@ extension LanternNativeAuth on LanternClient {
             required onTrailer,
           }) => raw.completeNativeLogin(
             request,
-            headers: headers,
+            headers: headers..['Lantern-Native-Affinity'] = attempt.affinity,
             signal: signal,
             onHeader: onHeader,
             onTrailer: onTrailer,
@@ -316,6 +315,18 @@ bool _nativeProfileId(String value) =>
     RegExp(r'^[a-z0-9][a-z0-9_-]{0,63}$').hasMatch(value);
 bool _nativeToken(String value) =>
     value.isNotEmpty && utf8.encode(value).length <= 16 << 10;
+bool _nativeAffinity(String value) {
+  if (value.length > 57) return false;
+  final parts = value.split('.');
+  if (parts.length != 3 || parts[0] != 'v2') return false;
+  final member = int.tryParse(parts[1]);
+  return member != null &&
+      member > 0 &&
+      member <= 0xffffffff &&
+      member.toString() == parts[1] &&
+      _nativeRandom(parts[2]);
+}
+
 bool _nativeRandom(String value) {
   if (!RegExp(r'^[A-Za-z0-9_-]{43}$').hasMatch(value)) return false;
   try {

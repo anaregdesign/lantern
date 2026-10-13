@@ -167,8 +167,10 @@ func (m *NativeTransactions) Begin(trust Trust, profile security.CurrentProfile,
 	return start, nil
 }
 
-func (m *NativeTransactions) Lookup(id, proof string) (NativeAttempt, error) {
-	if m == nil || !nativeRandomValue(id) || !nativeRandomValue(proof) {
+// Lookup accepts only this process's optional routing hint. The hint grants no
+// authority: the live transaction and private completion proof remain required.
+func (m *NativeTransactions) Lookup(id, proof, affinity string) (NativeAttempt, error) {
+	if m == nil || affinity != "" && affinity != m.affinity || !nativeRandomValue(id) || !nativeRandomValue(proof) {
 		return NativeAttempt{}, ErrLoginTransaction
 	}
 	key, secret := sha256.Sum256([]byte(id)), sha256.Sum256([]byte(proof))

@@ -80,7 +80,9 @@ func runNativeLoginWireGate(t *testing.T, ctx context.Context, f *nativeLoginWir
 	complete := func(start *pb.BeginNativeLoginResponse, request *pb.CompleteNativeLoginRequest) *pb.CompleteNativeLoginResponse {
 		t.Helper()
 		request.AttemptId, request.CompletionSecret = start.AttemptId, start.CompletionSecret
-		got, err := native.CompleteNativeLogin(ctx, connect.NewRequest(request))
+		req := connect.NewRequest(request)
+		req.Header().Set("Lantern-Native-Affinity", start.Affinity)
+		got, err := native.CompleteNativeLogin(ctx, req)
 		if err != nil {
 			t.Fatal("native complete", err)
 		}
@@ -268,6 +270,42 @@ func runNativeLoginWireGate(t *testing.T, ctx context.Context, f *nativeLoginWir
 			t.Fatal("lost issuance resurrected transaction", err)
 		}
 	})
+	t.Run("concurrent Apple completion issues once", func(t *testing.T) {
+		start := begin(nativeAppleIssuer, "apple_ios")
+		apple := f.apple(t, start, false)
+		before := f.exchanges.Load()
+		type completionResult struct {
+			response *connect.Response[pb.CompleteNativeLoginResponse]
+			err      error
+		}
+		results := make(chan completionResult, 2)
+		release := make(chan struct{})
+		for range 2 {
+			go func() {
+				<-release
+				req := connect.NewRequest(&pb.CompleteNativeLoginRequest{AttemptId: start.AttemptId, CompletionSecret: start.CompletionSecret, Provider: &pb.CompleteNativeLoginRequest_Apple{Apple: proto.Clone(apple).(*pb.AppleNativeCredential)}})
+				req.Header().Set("Lantern-Native-Affinity", start.Affinity)
+				r, e := native.CompleteNativeLogin(ctx, req)
+				results <- completionResult{r, e}
+			}()
+		}
+		close(release)
+		successes := 0
+		for range 2 {
+			result := <-results
+			if result.err == nil {
+				successes++
+				if result.response.Msg.Credential == "" {
+					t.Fatal("success without credential")
+				}
+			} else if connect.CodeOf(result.err) != connect.CodeUnauthenticated {
+				t.Fatal("unexpected concurrent failure", result.err)
+			}
+		}
+		if successes != 1 || f.exchanges.Load() != before+1 {
+			t.Fatal("completion or provider exchange repeated", successes)
+		}
+	})
 	t.Run("native logout retained status", func(t *testing.T) {
 		start := begin(nativeGoogleIssuer, "google")
 		got := complete(start, &pb.CompleteNativeLoginRequest{Provider: &pb.CompleteNativeLoginRequest_Google{Google: &pb.GoogleNativeCredential{IdToken: f.token(t, nativeGoogleIssuer, "fixture.apps.googleusercontent.com", "native-user", "", nil)}}})
@@ -280,9 +318,24 @@ func runNativeLoginWireGate(t *testing.T, ctx context.Context, f *nativeLoginWir
 		if review == nil || review.ChangeId == nil || len(review.IntentDigest) != 32 {
 			t.Fatal("logout recovery identity absent")
 		}
-		result, err := native.ApplyNativeLogout(ctx, securityWireRequest(got.Credential, &pb.ApplyNativeLogoutRequest{Review: review}))
-		if err != nil || !result.Msg.ClearLocalSession {
-			t.Fatal("native logout", err)
+		calls := 0
+		loss := &http.Client{Transport: currentWireTransport{closeIdle: func() {}, roundTrip: func(r *http.Request) (*http.Response, error) {
+			calls++
+			response, err := transport.Transport.RoundTrip(r)
+			if err != nil {
+				return nil, err
+			}
+			raw, err := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			var applied pb.ApplyNativeLogoutResponse
+			if err != nil || response.StatusCode != http.StatusOK || proto.Unmarshal(raw, &applied) != nil || !applied.ClearLocalSession {
+				t.Error("loss must occur after actual logout output")
+			}
+			return nil, io.ErrUnexpectedEOF
+		}}}
+		lossy := graphv1connect.NewLanternNativeAuthServiceClient(loss, servers[0].URL)
+		if _, err := lossy.ApplyNativeLogout(ctx, securityWireRequest(got.Credential, &pb.ApplyNativeLogoutRequest{Review: review})); err == nil || calls != 1 {
+			t.Fatal("lost logout response retried or claimed success", calls)
 		}
 		nativeWireAwait(t, ctx, func() error {
 			_, err := native.GetNativeSession(ctx, securityWireRequest(got.Credential, &pb.GetNativeSessionRequest{}))
@@ -291,16 +344,24 @@ func runNativeLoginWireGate(t *testing.T, ctx context.Context, f *nativeLoginWir
 			}
 			return errors.New("revoked native credential still usable")
 		})
+		replacement := googleLogin()
+		_ = inspect(replacement.Credential)
 		nativeWireAwait(t, ctx, func() error {
-			status, err := controls[0].GetSecurityChangeStatus(ctx, securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{CurrentProfile: review.Profile, CurrentChangeId: review.ChangeId, CurrentIntentDigest: review.IntentDigest}))
+			status, err := controls[0].GetSecurityChangeStatus(ctx, securityWireRequest(replacement.Credential, &pb.GetSecurityChangeStatusRequest{CurrentProfile: review.Profile, CurrentChangeId: review.ChangeId, CurrentIntentDigest: review.IntentDigest}))
 			if err != nil {
 				return err
+			}
+			if !proto.Equal(status.Msg.GetCurrentResult().GetChangeId(), review.ChangeId) || !bytes.Equal(status.Msg.GetCurrentResult().GetIntentDigest(), review.IntentDigest) {
+				return errors.New("status identity changed")
 			}
 			if status.Msg.GetCurrentResult().GetOriginal().GetDisposition() != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
 				return errors.New("logout outcome unavailable")
 			}
 			return nil
 		})
+		if calls != 1 {
+			t.Fatal("status recovery replayed logout")
+		}
 	})
 	t.Run("current Deny suspension and active stream withdrawal", func(t *testing.T) {
 		got := googleLogin()

@@ -243,7 +243,10 @@ export function buildIssuer(draft: IssuerDraft): SecurityIssuer {
     envOwned: false,
     deleted: false,
     hasSecretBinding: false,
-    nativeClients: copyNativeClients(draft.nativeClients),
+    nativeClients: copyNativeClients(draft.nativeClients).map((client) => ({
+      ...client,
+      hasSecretBinding: false,
+    })),
   };
 }
 export function buildRole(draft: RoleDraft): SecurityRole {

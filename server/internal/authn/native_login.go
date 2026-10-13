@@ -45,8 +45,8 @@ func (w *Workflow) BeginNativeLogin(ctx context.Context, issuerURL, clientProfil
 }
 
 type NativeCompletionInput struct {
-	AttemptID, CompletionSecret string
-	Provider                    oidc.NativeInput
+	AttemptID, CompletionSecret, Affinity string
+	Provider                              oidc.NativeInput
 }
 
 func (NativeCompletionInput) String() string   { return "[redacted native completion input]" }
@@ -74,7 +74,7 @@ func (w *Workflow) CompleteNativeLogin(ctx context.Context, input NativeCompleti
 	if !w.NativeEnabled() {
 		return NativeSessionResult{}, ErrUnavailable
 	}
-	attempt, err := w.oidc.NativeLogins.Lookup(input.AttemptID, input.CompletionSecret)
+	attempt, err := w.oidc.NativeLogins.Lookup(input.AttemptID, input.CompletionSecret, input.Affinity)
 	if err != nil || w.checkNativeAttempt(ctx, attempt) != nil {
 		return NativeSessionResult{}, ErrUnauthenticated
 	}

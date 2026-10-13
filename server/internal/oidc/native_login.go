@@ -65,6 +65,16 @@ func (v *Verifier) verifyNativeID(ctx context.Context, a NativeAttempt, raw, cod
 	if err != nil || header.Algorithm != "RS256" || header.Type != "" && header.Type != "JWT" || len(claims.Audience) != 1 || claims.Audience[0] != t.client.ClientID {
 		return VerifiedIdentity{}, false, ErrInvalidToken
 	}
+	claimBytes, _ := base64.RawURLEncoding.Strict().DecodeString(strings.Split(raw, ".")[1])
+	var members map[string]json.RawMessage
+	if json.Unmarshal(claimBytes, &members) != nil {
+		return VerifiedIdentity{}, false, ErrInvalidToken
+	}
+	// An omitted presenter is allowed by these provider profiles. An explicit
+	// empty or null presenter is not an omission and cannot satisfy either one.
+	if _, present := members["azp"]; present && claims.AZP == "" {
+		return VerifiedIdentity{}, false, ErrInvalidToken
+	}
 	switch t.client.Kind {
 	case security.GoogleIDToken:
 		if claims.Issuer != security.GoogleIssuer || exchange || claims.AZP != "" && !slices.Contains(t.client.Presenters, claims.AZP) {
@@ -82,11 +92,6 @@ func (v *Verifier) verifyNativeID(ctx context.Context, a NativeAttempt, raw, cod
 		return VerifiedIdentity{}, false, err
 	}
 	if claims.AuthTime != nil && (claims.AuthTime.Time.After(v.now()) || claims.AuthTime.Time.After(claims.IssuedAt.Time)) {
-		return VerifiedIdentity{}, false, ErrInvalidToken
-	}
-	claimBytes, _ := base64.RawURLEncoding.Strict().DecodeString(strings.Split(raw, ".")[1])
-	var members map[string]json.RawMessage
-	if json.Unmarshal(claimBytes, &members) != nil {
 		return VerifiedIdentity{}, false, ErrInvalidToken
 	}
 	_, codeHash := members["c_hash"]

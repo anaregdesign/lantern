@@ -32,6 +32,7 @@ CASES = (
     "Apple_native_and_Android_callback/apple_web",
     "Apple_response_loss_never_retries_code",
     "issued_response_loss_leaves_no_replay_or_credential_recovery",
+    "concurrent_Apple_completion_issues_once",
     "native_logout_retained_status",
     "current_Deny_suspension_and_active_stream_withdrawal",
 )

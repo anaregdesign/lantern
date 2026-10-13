@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:lantern_client/lantern_client.dart';
@@ -20,13 +20,15 @@ final class PlatformNativeProviders implements NativeProviders {
   static final instance = PlatformNativeProviders._();
   Future<void>? _googleInitialization;
   String? _googleBackend;
+  bool get _isIOS => defaultTargetPlatform == TargetPlatform.iOS;
+  bool get _isAndroid => defaultTargetPlatform == TargetPlatform.android;
 
   @override
   Future<NativeProviderCredential> authenticate(
     NativePluginConfiguration configuration, {
     bool lightweight = false,
   }) async {
-    if (!Platform.isAndroid && !Platform.isIOS) {
+    if (kIsWeb || (!_isAndroid && !_isIOS)) {
       throw StateError('Native sign-in requires Android or iOS.');
     }
     if (configuration.kind == NativeProviderKind.google) {
@@ -38,7 +40,7 @@ final class PlatformNativeProviders implements NativeProviders {
       _googleBackend = configuration.clientId;
       const clientId = String.fromEnvironment('LANTERN_GOOGLE_IOS_CLIENT_ID');
       _googleInitialization ??= GoogleSignIn.instance.initialize(
-        clientId: Platform.isIOS && clientId.isNotEmpty ? clientId : null,
+        clientId: _isIOS && clientId.isNotEmpty ? clientId : null,
         serverClientId: configuration.clientId,
         nonce: null,
       );
@@ -53,7 +55,7 @@ final class PlatformNativeProviders implements NativeProviders {
       return GoogleNativeCredential(idToken: token);
     }
     final web = configuration.kind == NativeProviderKind.appleAndroidWeb;
-    if (web != Platform.isAndroid || lightweight) {
+    if (web != _isAndroid || lightweight) {
       throw StateError('Apple profile does not match this platform.');
     }
     final value = await SignInWithApple.getAppleIDCredential(
@@ -89,7 +91,7 @@ final class PlatformNativeProviders implements NativeProviders {
 
   @override
   Future<bool> appleCredentialUsable(String subject) async =>
-      !Platform.isIOS ||
+      !_isIOS ||
       await SignInWithApple.getCredentialState(subject) ==
           CredentialState.authorized;
 }

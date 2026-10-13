@@ -143,7 +143,7 @@ func (p *nativeProviderFixture) begin(t *testing.T) (NativeStart, NativeAttempt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := p.transactions.Lookup(start.AttemptID, start.CompletionSecret)
+	a, err := p.transactions.Lookup(start.AttemptID, start.CompletionSecret, start.Affinity)
 	if err != nil {
 		t.Fatal(err)
 	}
