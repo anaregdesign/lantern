@@ -14,6 +14,14 @@ below. The separate `current-v2` startup/API contract is documented in
 [current authority](security-current-authority.md#public-current-v2-composition).
 There is no implicit profile fallback or online state conversion.
 
+The selected [native Google/Apple session contract](native-login-sessions.md)
+for #1750 is a pre-implementation checkpoint. It records exact native client
+profiles, Server-private Apple secret handling, eight-hour fixed sessions,
+provider-disconnect limitations and Android callback ownership. These are not
+available settings on the inspected main `4a4fa11`; use its implementation and
+separate provider/device qualification before enabling native login. No provider
+credentials, existing cohort state or deployment are changed by the checkpoint.
+
 ## Public mode and bootstrap
 
 No authentication environment variables means OFF. Configure OIDC explicitly

@@ -570,6 +570,25 @@ independent of JWT expiry. Passwords, MFA and account enrollment stay with the
 IdP; no password store, email linking, implicit group grants, SCIM or opaque
 token introspection is introduced.
 
+### Selected native provider/session extension (#1750)
+
+The [native login design checkpoint](../native-login-sessions.md) fixes the
+Server contract before consumer implementation. It selects a dedicated Connect
+boundary, trusted Google/Apple client profiles and a distinct opaque native
+end-user Bearer session under the existing current-v2 authority. Initial sessions
+have fixed eight-hour expiry followed by explicit re-login, without refresh.
+Google's plugin initialization nonce limitation is handled as an explicit
+ID-token bearer-input policy; Apple requires an exact raw transaction nonce,
+one Server-owned code exchange with client_secret_post, and a separate validated
+Android Services-ID callback. Original signed authentication time is preserved.
+
+This extension is selected design, not implemented or qualified behavior at
+main `4a4fa11`. The document defines the evidence/profile fingerprint change,
+Apply/current-output sequence, app-owned account isolation and bounded tests.
+Browser PKCE/CSRF, RFC9068 human qualification, machine separation and existing
+operation-bound approval remain independent. Source/CI, final-source functional
+acceptance, four real-provider/platform exits and publication stay separate.
+
 Admin displays effective Server permissions. It assigns users to Roles and
 edits Role rules; it has no direct-user-permission UI. Issuer registration
 grants no data access. CAS conflicts require a deliberate reload/review; no
