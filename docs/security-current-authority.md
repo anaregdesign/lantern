@@ -15,6 +15,34 @@ TLS Connect, three M/P/B owners, signing keys and intact reopen. Fake-time unit
 fixtures are explicitly separate. Neither a historical H nor an output permit
 can be decoded into current authority.
 
+## Mechanism evidence and configured-source qualification
+
+F/Q qualification is specified in [CONTRIBUTING](../CONTRIBUTING.md). F uses a
+compile-time test-only source factory; normal production binaries retain the
+fixed configured-source factory, with no runtime switch. Both factories join the
+same private constructor after time-owner creation. Binding, 45-second anchor
+wait, custody, store, origin, quorum, listener/provider, codec, admission/output
+and shutdown remain common. F additionally owns and joins its loopback responder.
+Its UTC base is synthetic; native sampling, UDP and owner refresh/backoff are real.
+
+| Boundary | F | Q |
+| --- | --- | --- |
+| Fixed `/etc/ntp.conf`, hostname, DNS and external UDP path | Excluded; explicit fixture source/address | Normal production factory and source |
+| UTC facts | One synthetic base plus actual native elapsed counter | Configured source observations under existing honesty/path premises |
+| Native profile, interval, owner loop, expiry/refusal | Unchanged; finite loss and fresh-recovery test | Unchanged production path |
+| Shared private composition and public SDK4/export assertions | All required, dedicated test-build marker | All required, production constructor marker |
+| Build provenance | `lantern_test_time`, Go test binary only | Normal build, no fixture tag or injected owner |
+
+The same profile digest does not make F configured-source evidence. Receipts bind
+proof/source/build kinds and reject interchange. Each constructor emits its own
+bounded acquisition observations and result; missing observations cannot prove
+nonexecution. Setup failure means the body did not run, not that it passed.
+Q is mandatory for boundary changes before/after merge, exact release candidates,
+and the selected environment (including material native/source/network changes).
+Other classified code can merge with F and Q NOT_RUN, with a documented risk of
+later discovery of real-source integration defects. Each actual production owner
+still needs fresh native evidence, independently of any past receipt.
+
 ## Renewal and time
 
 A renewal uses the existing participant gate that owns ACCEPT, CHOSEN and

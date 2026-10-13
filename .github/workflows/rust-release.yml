@@ -95,6 +95,8 @@ jobs:
   current-sdk4:
     needs: tag
     uses: ./.github/workflows/current-sdk4.yml
+    with:
+      proof_kind: Q
 
   conformance:
     name: Conformance (${{ matrix.os }}, Rust ${{ matrix.rust }})
@@ -185,7 +187,7 @@ jobs:
         working-directory: .
         env:
           SDK4_RECEIPT_SHA256: ${{ needs.current-sdk4.outputs.receipt_sha256 }}
-        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --trusted-receipt-sha256 "$SDK4_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4"
+        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind Q --trusted-receipt-sha256 "$SDK4_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable action
         with:
           toolchain: '1.97.1'

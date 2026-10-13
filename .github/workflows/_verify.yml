@@ -23,6 +23,8 @@ permissions:
   contents: read
 
 jobs:
+  configured-source:
+    uses: ./.github/workflows/current-source-release.yml
   verify:
     name: Verify
     runs-on: ubuntu-latest

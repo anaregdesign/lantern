@@ -71,7 +71,7 @@ def steps(evidence: Path) -> tuple[Step, ...]:
     add("rust-real-wire", "sdks/rust", "cargo", "test", "--locked", "--all-features", "--", "--ignored", "--test-threads=1", "--skip", "scoped_changes::tests::real_public_scoped_wire", "--skip", "security::tests::real_public_current_wire")
     # Preserve the scoped Rust case and require all current SDK4 cases in the
     # same fresh step. No optional environment, imported receipt or carry.
-    add("rust-oidc-scoped-wire", ".", "python3", "-B", ".github/scripts/current_sdk4_gate.py", "run", "--include-scoped", "--fresh-child", "--evidence", str(evidence / "current-sdk4"))
+    add("rust-oidc-scoped-wire", ".", "python3", "-B", ".github/scripts/current_sdk4_gate.py", "run", "--include-scoped", "--with-mechanism", "--fresh-child", "--evidence", str(evidence / "current-sdk4"))
     add("rust-audit", "sdks/rust", "cargo", "audit", "--deny", "warnings", "--file", "Cargo.lock")
     for script in ["format:check", "lint", "typecheck", "test", "build"]:
         add("admin-" + script.replace(":", "-"), "admin", "bun", "run", script)

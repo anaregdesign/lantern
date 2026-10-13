@@ -231,6 +231,13 @@ The load-bearing always-on essentials:
   preflight required family boundaries and reuse one immutable image/setup.
   Repeat only after relevant changes, invalid evidence or predeclared stability
   checks; never choose a pass or change workload, GC or thresholds to obtain one.
+- **Keep F/Q evidence distinct** (#1748): hosted code CI always requires controlled-source
+  mechanism/application F and module/coverage. Time/configuration/dependency/proof
+  boundary changes and unknown classification require normal-build configured-source Q
+  before and after merge. Every exact release candidate/selected environment requires Q.
+  F PASS / Q NOT_RUN is not release qualification; executed Q failure stays FAIL.
+  Production fresh-anchor/expiry guards never change. The full local gate retains Q
+  and adds F; introduction uses the prior full contract plus F.
 - **Before every push**, satisfy the local quality gate in CONTRIBUTING.md:
   only its explicit pure-prose eligibility may select text/docs-contract checks.
   Otherwise `gofmt -l` must be empty; root and every Go submodule, Dart/Flutter and Rust

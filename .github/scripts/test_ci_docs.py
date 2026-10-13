@@ -172,7 +172,7 @@ class WorkflowRoutingTest(unittest.TestCase):
             self.assertIn(f"name: {name}\n", text)
         build = text.split("  build:\n")[1].split("  receipt-backup-windows:")[0]
         self.assertIn("    if: always()\n", build)
-        self.assertIn('test "$SCOPE_RESULT" = success', build)
+        self.assertIn("run: python3 -B .github/scripts/current_qualification_result.py", build)
         for job in ("lint", "proto", "govulncheck", "receipt-backup-windows", "fuzz"):
             body = re.search(rf"(?ms)^  {job}:\n(.*?)(?=^  [\w-]+:\n|\Z)", text).group(1)
             condition = next(line for line in body.splitlines() if line.startswith("    if:"))

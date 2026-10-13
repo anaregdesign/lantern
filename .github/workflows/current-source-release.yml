@@ -1,0 +1,29 @@
+name: Configured-source release preflight
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    uses: ./.github/workflows/current-sdk4.yml
+    with:
+      proof_kind: Q
+  verify:
+    needs: qualify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.qualify.outputs.artifact_id }}
+          path: ${{ runner.temp }}/current-sdk4-Q
+      - name: Require exact release source and normal-build Q receipt
+        env:
+          RECEIPT_SHA256: ${{ needs.qualify.outputs.receipt_sha256 }}
+        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind Q --trusted-receipt-sha256 "$RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4-Q"

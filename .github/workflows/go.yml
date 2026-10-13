@@ -24,6 +24,7 @@ jobs:
     outputs:
       evidence_only: ${{ steps.evidence.outputs.evidence_only }}
       docs_only: ${{ steps.docs.outputs.docs_only }}
+      q_required: ${{ steps.qualification.outputs.q_required }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -37,6 +38,13 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: python3 -B .github/scripts/ci_docs.py
+      - name: Classify configured-source obligation
+        id: qualification
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: python3 -B .github/scripts/current_qualification_scope.py
       - name: Classify PR
         id: evidence
         env:
@@ -44,14 +52,23 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 -B .github/scripts/evidence_only_pr.py classify
 
-  current-sdk4:
+  mechanism:
     needs: scope
     if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
     uses: ./.github/workflows/current-sdk4.yml
+    with:
+      proof_kind: F
 
-  build:
-    name: Build & Test
-    needs: [scope, current-sdk4]
+  current-sdk4:
+    needs: scope
+    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.q_required != 'false'
+    uses: ./.github/workflows/current-sdk4.yml
+    with:
+      proof_kind: Q
+
+  modules:
+    name: Modules and coverage
+    needs: scope
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -64,22 +81,6 @@ jobs:
         env:
           SCOPE_RESULT: ${{ needs.scope.result }}
         run: test "$SCOPE_RESULT" = success
-
-      - name: Require native SDK4 qualification
-        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
-        env:
-          NATIVE_RESULT: ${{ needs.current-sdk4.result }}
-        run: test "$NATIVE_RESULT" = success
-      - uses: actions/download-artifact@v8
-        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
-        with:
-          artifact-ids: ${{ needs.current-sdk4.outputs.artifact_id }}
-          path: ${{ runner.temp }}/current-sdk4
-      - name: Verify native SDK4 receipt against this merge candidate
-        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
-        env:
-          SDK4_RECEIPT_SHA256: ${{ needs.current-sdk4.outputs.receipt_sha256 }}
-        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --trusted-receipt-sha256 "$SDK4_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4"
 
       - name: Validate documentation CI contracts
         if: needs.scope.outputs.docs_only == 'true'
@@ -112,8 +113,8 @@ jobs:
             exit 1
           fi
 
-      # Keep one required Build & Test check; every phase/module runs even
-      # after another phase fails, and the collector returns a blocking exit.
+      # Independent of F/Q: collect every phase/module even after a failure.
+      # The final required Build & Test aggregates this blocking result.
       - name: Vet, build and test (all modules)
         id: modules
         if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
@@ -185,6 +186,46 @@ jobs:
             coverage.out
             coverage/
           if-no-files-found: warn
+
+  build:
+    name: Build & Test
+    needs: [scope, modules, mechanism, current-sdk4]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Aggregate mandatory results without hiding Q failure
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          MODULE_RESULT: ${{ needs.modules.result }}
+          F_RESULT: ${{ needs.mechanism.result }}
+          Q_RESULT: ${{ needs.current-sdk4.result }}
+          Q_REQUIRED: ${{ needs.scope.outputs.q_required }}
+          DOCS_ONLY: ${{ needs.scope.outputs.docs_only }}
+          EVIDENCE_ONLY: ${{ needs.scope.outputs.evidence_only }}
+        run: python3 -B .github/scripts/current_qualification_result.py
+      - uses: actions/download-artifact@v8
+        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        with:
+          artifact-ids: ${{ needs.mechanism.outputs.artifact_id }}
+          path: ${{ runner.temp }}/current-sdk4-F
+      - name: Verify same-run F receipt
+        if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+        env:
+          F_RECEIPT_SHA256: ${{ needs.mechanism.outputs.receipt_sha256 }}
+        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind F --trusted-receipt-sha256 "$F_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4-F"
+      - uses: actions/download-artifact@v8
+        if: needs.current-sdk4.result == 'success'
+        with:
+          artifact-ids: ${{ needs.current-sdk4.outputs.artifact_id }}
+          path: ${{ runner.temp }}/current-sdk4-Q
+      - name: Verify same-run Q receipt
+        if: needs.current-sdk4.result == 'success'
+        env:
+          SDK4_RECEIPT_SHA256: ${{ needs.current-sdk4.outputs.receipt_sha256 }}
+        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind Q --trusted-receipt-sha256 "$SDK4_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4-Q"
 
   receipt-backup-windows:
     name: Receipt backup (Windows)

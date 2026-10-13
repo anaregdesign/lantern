@@ -2,6 +2,10 @@ name: Current authority SDK4
 
 on:
   workflow_call:
+    inputs:
+      proof_kind:
+        type: string
+        default: Q
     outputs:
       receipt_sha256:
         value: ${{ jobs.native.outputs.receipt_sha256 }}
@@ -13,7 +17,7 @@ permissions:
 
 jobs:
   native:
-    name: Native current SDK4
+    name: Current authority ${{ inputs.proof_kind }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # The native Linux profile uses the real raw counter/zero-offset namespace.
@@ -66,12 +70,14 @@ jobs:
       - name: Require exact candidate native SDK4 execution
         id: qualify
         shell: bash
-        run: python3 -B .github/scripts/current_sdk4_gate.py run --expected-head "$GITHUB_SHA" --evidence "$RUNNER_TEMP/current-sdk4"
+        env:
+          PROOF_KIND: ${{ inputs.proof_kind }}
+        run: python3 -B .github/scripts/current_sdk4_gate.py run --expected-head "$GITHUB_SHA" --proof-kind "$PROOF_KIND" --evidence "$RUNNER_TEMP/current-sdk4"
       - name: Retain native execution evidence
         id: evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: current-sdk4-${{ github.run_id }}-${{ github.run_attempt }}
+          name: current-sdk4-${{ inputs.proof_kind }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/current-sdk4/
           if-no-files-found: error

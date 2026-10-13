@@ -49,6 +49,9 @@ permissions:
   contents: read
 
 jobs:
+  configured-source:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/node/v')
+    uses: ./.github/workflows/current-source-release.yml
   test:
     name: Test (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
@@ -191,7 +194,7 @@ jobs:
 
   publish:
     name: Publish to npm
-    needs: test
+    needs: [test, configured-source]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/node/v')
     runs-on: ubuntu-latest
     environment:

@@ -399,44 +399,87 @@ time and a current quorum, passes the private fixture inputs, and requires the
 exact Rust test to execute successfully. Standalone-suite success does not
 qualify that native current-authority case.
 
-The [mandatory SDK4 runner](.github/scripts/current_sdk4_gate.py) selects the
-exact root gate with both native/SDK4 flags and `-count=1`, then requires the
-root, Go, Node/Admin, Dart and Rust subtests to run and pass. Child-language
-evidence also rejects zero selected tests and skips. Native constructor,
-readiness, source/path and counter assumptions remain unchanged. Unsupported
-native environments, missing tools/configuration, unreachable time sources,
-missing executions and skips fail qualification; they never become success.
-The runner neither changes host configuration nor installs tools.
+The [current-authority runner](.github/scripts/current_sdk4_gate.py) records two
+separate obligations (#1748): **F** is mechanism/application evidence using a
+controlled synthetic UTC source; **Q** is configured-source qualification using
+the normal production build. Both require the exact root, all four public SDKs,
+and the separate `active_export_grant_revocation` execution to run and pass,
+with no missing, skipped, duplicate or failed tests. Export retains its positive
+multi-record control, grant withdrawal APPLIED, immutable authorized prefix,
+next-body final-Write refusal and handler/stream shutdown.
 
-The same runner also executes only `active_export_grant_revocation` with the
-native flag enabled and SDK4 disabled, because the SDK4 branch returns before
-that functional case. Its separate raw logs, exact command and environment,
-root/subtest execution, PASS and zero skips are mandatory receipt inputs.
+F selects `lantern_test_time` only at compile time in a Go test binary. It uses
+actual native sampling, loopback UDP and the same owner loop, binding, custody,
+store, origin, quorum, provider/listener and public wire paths. Its finite
+native loss/expiry/fresh-recovery and worker-join test is mandatory. Its one
+initial wall reading is a synthetic fixture fact, never a fallback after a Q
+failure. F does not qualify real UTC, external DNS/UDP reachability, the fixed
+source factory or source configuration. Normal builds have no fixture flag,
+environment selector, mutable factory or injected time owner. Even a tagged
+non-test server binary refuses fixture construction.
 
-The 76-step local plan now runs this gate together with the existing scoped
-Rust case in `rust-oidc-scoped-wire`. Every invocation creates a fresh receipt;
-no SDK4 receipt is imported or carried. The historical full76 plan without this
-mandatory execution is insufficient for current-authority pre-push acceptance.
-For a focused run after acquiring the native host slot and preparing the pinned
-tools/frozen dependencies:
+Q uses the unchanged fixed configured source and normal constructor. Each fresh
+owner must acquire its own native anchor, with per-owner construction results
+and bounded startup observations retained even on failure. Startup remains 45
+seconds, exchange 3 seconds; source/native/RTT/age/width, retry credits/backoff,
+15-second quorum and credential/output expiry rules are unchanged. Missing
+configuration/tools, source acquisition failures and incomplete bodies fail Q.
+The runner never changes host configuration or installs tools.
+
+PR/main F and module/coverage jobs run independently of Q. The stable required
+`Build & Test` aggregates their results and verifies distinct F/Q artifacts
+against the exact merge/main source and successful same-run producer digests.
+Q is mandatory for time, native, production composition, dependency/toolchain,
+deployment, fixture bridge and proof/CI boundary changes. The conservative
+[classifier](.github/scripts/current_qualification_scope.py) exempts only regular
+modified application sources in its explicit small allowlist; unknown paths,
+base failures, additions/deletions/renames and mixed changes require Q. Existing
+docs/evidence-only classifications are unchanged. A non-boundary candidate may
+show **F PASS / Q NOT_RUN**, which is code acceptance, not release or environment
+qualification. Any executed Q failure remains FAIL and cannot be hidden as
+NOT_RUN; required Q failure blocks integration.
+
+The 76-step full local plan conservatively keeps Q and adds separate F execution
+inside `rust-oidc-scoped-wire` using `--with-mechanism`; scoped Rust and every
+other existing component remain mandatory. Each invocation writes fresh F and Q
+receipts, with no receipt import or carry. This policy introduction uses the
+previous full gate plus F and cannot exempt its own Q. For separate focused
+qualification of a clean frozen candidate with pinned tools and dependencies:
 
 ```sh
-python3 -B .github/scripts/current_sdk4_gate.py run --include-scoped \
-  --evidence ../native-sdk4-new
+python3 -B .github/scripts/current_sdk4_gate.py run --proof-kind F \
+  --evidence ../current-F-new
+python3 -B .github/scripts/current_sdk4_gate.py run --proof-kind Q \
+  --include-scoped --evidence ../current-Q-new
 ```
 
-PR/main `Build & Test` requires the native SDK4 job and verifies its artifact
-against that exact merge/main checkout. Rust release preflight and publication
-depend on the same lane for the exact immutable tag; preflight verifies it
-before inspecting the archive from that source. The lane uses one disposable
-Linux container with an explicit read-only selected source file; failure of
-the existing native profile remains blocking. It does not repeat the full
-clock/recovery campaign or claim physical-host qualification.
-Receipts bind HEAD/tree, all tracked input hashes, runner/configuration,
-actual toolchain identities, required executions and raw log hashes. Artifact
-verification requires the digest output of the successful same-run producer
-job, not a status or digest taken from the artifact itself. Changed candidates,
-missing receipts, altered logs and skipped SDKs are refused.
+Exact release candidates require Q before publication. Rust retains its native
+lane; root/Go/MCP use `_verify.yml`, and Node, Dart parent/offline and Admin
+publication depend on `current-source-release.yml`. These preflights qualify
+the exact source in the selected Linux container; existing archive/image
+fingerprint and publication equality gates remain necessary. A source receipt
+alone never qualifies a substituted artifact. Tags exposed by a module proxy
+cannot be withheld by CI; complete release-candidate Q before creating tags.
+
+Selected deployment/environment acceptance also requires Q on the exact source
+and actual chosen supported native environment. Requalify after material host,
+kernel/VM, namespace/capability, image, source/configuration or DNS/UDP path
+changes. Preserve source/artifact equality and environment evidence in the
+acceptance ledger. A CI Linux result does not qualify another platform/host.
+Every production startup still obtains a fresh anchor; a Q receipt is neither a
+startup permit nor a time capability. No release/deployment is performed by
+these checks. Release-candidate Q should start when selecting the candidate.
+
+Receipts bind proof/source/build kind, synthetic UTC, HEAD/tree/tracked inputs,
+runner, actual toolchains, native environment, configuration, commands, required
+executions and raw hashes. The verifier refuses F/Q interchange. Qualification
+is conditional on the source/path and native counter premises, never physical
+clock certification. Run a declared finite attempt; preserve any failure and
+record a relevant repair or invalid-evidence reason before another attempt.
+This split reduces real-source coupling on ordinary hosted CI: an unclassified
+integration defect can be detected later, at release qualification. The old
+post-main `228df0aa` failure remains a failure; this contract does not turn its
+unexecuted export/module/coverage bodies into passes.
 
 Audit locked runtime and codegen dependencies with
 `(cd sdks/rust && cargo audit --deny warnings --file Cargo.lock)`; an
