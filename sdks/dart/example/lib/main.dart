@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:lantern_client/lantern_client.dart';
 
 import 'offline_demo.dart';
+import 'native_sign_in.dart';
 import 'offline_session.dart';
 import 'scoped_change_source.dart';
 
@@ -52,11 +53,16 @@ final class DemoConfiguration {
     required this.allowInsecure,
     this.offlineScope,
     this.offlineCdcPinnedResponder = false,
+    this.nativeLogin = false,
+    this.googleProfile = '',
+    this.appleProfile = '',
   });
 
   final Uri endpoint;
   final Uri? tokenEndpoint;
   final bool allowInsecure;
+  final bool nativeLogin;
+  final String googleProfile, appleProfile;
   final String? offlineScope;
 
   /// Enables foreground CDC only when [endpoint] is pinned to one responder.
@@ -85,6 +91,9 @@ final class DemoConfiguration {
           ? null
           : Uri.parse(rawTokenEndpoint),
       allowInsecure: const bool.fromEnvironment('LANTERN_ALLOW_INSECURE'),
+      nativeLogin: const bool.fromEnvironment('LANTERN_NATIVE_LOGIN'),
+      googleProfile: const String.fromEnvironment('LANTERN_GOOGLE_PROFILE'),
+      appleProfile: const String.fromEnvironment('LANTERN_APPLE_PROFILE'),
       offlineScope: rawOfflineScope.isEmpty ? null : rawOfflineScope,
       offlineCdcPinnedResponder: const bool.fromEnvironment(
         'LANTERN_OFFLINE_CDC_PINNED_RESPONDER',
@@ -106,6 +115,24 @@ class LanternExampleApp extends StatelessWidget {
       theme: ThemeData(colorSchemeSeed: Colors.amber, useMaterial3: true),
       home: configuration == null
           ? const _ConfigurationHelp()
+          : configuration!.nativeLogin &&
+                (configuration!.endpoint.scheme != 'https' ||
+                    configuration!.tokenEndpoint != null ||
+                    configuration!.allowInsecure)
+          ? const _ConfigurationHelp()
+          : configuration!.nativeLogin
+          ? NativeSignInScreen(
+              endpoint: configuration!.endpoint,
+              googleProfile: configuration!.googleProfile,
+              appleProfile: configuration!.appleProfile,
+              builder: (context, account) => _DiscoveryScreen(
+                client: account.client,
+                offlineSession: account.offline!,
+                offlineCdcPinnedResponder:
+                    configuration!.offlineCdcPinnedResponder,
+                currentAuthorityBinding: () => account.session.authorityBinding,
+              ),
+            )
           : _ClientOwner(
               key: ValueKey(configuration),
               configuration: configuration!,
@@ -269,11 +296,13 @@ final class _DiscoveryScreen extends StatefulWidget {
     required this.client,
     required this.offlineSession,
     required this.offlineCdcPinnedResponder,
+    this.currentAuthorityBinding,
   });
 
   final LanternClient client;
   final OfflineDemoSession offlineSession;
   final bool offlineCdcPinnedResponder;
+  final String Function()? currentAuthorityBinding;
 
   @override
   State<_DiscoveryScreen> createState() => _DiscoveryScreenState();
@@ -670,6 +699,8 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
                           ? LanternScopedChangeSource(
                               client: widget.client,
                               responderId: widget.client.endpoint.toString(),
+                              currentAuthorityBinding:
+                                  widget.currentAuthorityBinding,
                             )
                           : null,
                       identityAllowed: () => !widget.offlineSession.isLoggedOut,
@@ -712,6 +743,9 @@ final class _ConfigurationHelp extends StatelessWidget {
           padding: EdgeInsets.all(24),
           child: Text(
             'Set LANTERN_ENDPOINT with --dart-define. '
+            'Native login uses HTTPS with LANTERN_NATIVE_LOGIN=true and '
+            'registered Google/Apple profile IDs; omit token endpoint and '
+            'insecure transport options. '
             'Use LANTERN_TOKEN_ENDPOINT for a runtime short-lived-token BFF. '
             'Authenticated sessions also require LANTERN_OFFLINE_SCOPE. '
             'Plaintext also requires LANTERN_ALLOW_INSECURE=true and is for '

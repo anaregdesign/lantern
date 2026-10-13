@@ -19,10 +19,17 @@ import (
 // encoded, pre-compression bound. The outer interceptor also bounds errors and
 // trailers, which Connect encodes outside the message codec.
 func (p *CurrentOutput) Options(options ...connect.HandlerOption) []connect.HandlerOption {
+	return p.OptionsWithRequestValidation(nil, options...)
+}
+
+// OptionsWithRequestValidation adds a service-owned rejection check after the
+// certified structural/byte preflight and before allocation by protobuf. It
+// cannot replace the bounded decoder, encoder, error or final-Write checks.
+func (p *CurrentOutput) OptionsWithRequestValidation(validate func([]byte, proto.Message, bool) error, options ...connect.HandlerOption) []connect.HandlerOption {
 	result := []connect.HandlerOption{connect.WithInterceptors(currentOutputInterceptor{p})}
 	result = append(result, options...)
 	for _, name := range []string{"proto", "json", "json; charset=utf-8"} {
-		result = append(result, connect.WithCodec(currentOutputCodec{name: name, read: p.limits.ReadBytes, send: p.limits.SendBytes}))
+		result = append(result, connect.WithCodec(currentOutputCodec{name: name, read: p.limits.ReadBytes, send: p.limits.SendBytes, validate: validate}))
 	}
 	return result
 }
@@ -42,6 +49,7 @@ func (p *CurrentOutput) MarshalBrowserJSON(ctx context.Context, message proto.Me
 type currentOutputCodec struct {
 	name       string
 	read, send int
+	validate   func([]byte, proto.Message, bool) error
 }
 
 func (c currentOutputCodec) Name() string   { return c.name }
@@ -93,6 +101,11 @@ func (c currentOutputCodec) Unmarshal(raw []byte, value any) error {
 	}
 	if err := currentCheckDecode(raw, m, c.IsBinary(), currentDecodeNodes(c.read)); err != nil {
 		return err
+	}
+	if c.validate != nil {
+		if err := c.validate(raw, m, c.IsBinary()); err != nil {
+			return err
+		}
 	}
 	if c.IsBinary() {
 		return (proto.UnmarshalOptions{RecursionLimit: currentDecodeDepth}).Unmarshal(raw, m)

@@ -89,11 +89,56 @@ func decodeSecurityIssuer(issuer *pb.SecurityIssuer) (security.Issuer, error) {
 	if issuer == nil || issuer.ConfigRevision != 0 || issuer.EnvOwned || issuer.Deleted || issuer.HasSecretBinding {
 		return security.Issuer{}, security.ErrInvalidImage
 	}
-	return security.Issuer{URL: issuer.Issuer, Enabled: issuer.Enabled, ClientID: issuer.ClientId, APIAudience: issuer.ApiAudience, RedirectURI: issuer.RedirectUri, Algorithms: append([]string(nil), issuer.Algorithms...), SecretRef: issuer.GetSecretRef(), HumanSubjectNamespaceQualified: issuer.HumanSubjectNamespaceQualified}, nil
+	result := security.Issuer{URL: issuer.Issuer, Enabled: issuer.Enabled, ClientID: issuer.ClientId, APIAudience: issuer.ApiAudience, RedirectURI: issuer.RedirectUri, Algorithms: append([]string(nil), issuer.Algorithms...), SecretRef: issuer.GetSecretRef(), HumanSubjectNamespaceQualified: issuer.HumanSubjectNamespaceQualified}
+	if len(issuer.NativeClients) > security.MaxNativeClients {
+		return security.Issuer{}, security.ErrInvalidImage
+	}
+	for _, c := range issuer.NativeClients {
+		if c == nil || c.HasSecretBinding || len(c.Presenters) > security.MaxNativePresenters {
+			return security.Issuer{}, security.ErrInvalidImage
+		}
+		kind, ok := nativeClientKinds[c.Kind]
+		if !ok {
+			return security.Issuer{}, security.ErrInvalidImage
+		}
+		result.NativeClients = append(result.NativeClients, security.NativeClient{ID: c.Id, Kind: kind, ClientID: c.ClientId, ServiceOrigin: c.ServiceOrigin, Presenters: append([]string(nil), c.Presenters...), RedirectURI: c.RedirectUri, AndroidPackage: c.AndroidPackage, SecretRef: c.GetSecretRef()})
+	}
+	return result, nil
+}
+
+var nativeClientKinds = map[pb.NativeClientKind]string{
+	pb.NativeClientKind_NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN:   security.GoogleIDToken,
+	pb.NativeClientKind_NATIVE_CLIENT_KIND_APPLE_NATIVE:      security.AppleNative,
+	pb.NativeClientKind_NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB: security.AppleAndroidWeb,
+}
+
+func encodeNativeKind(kind string) pb.NativeClientKind {
+	for encoded, value := range nativeClientKinds {
+		if kind == value {
+			return encoded
+		}
+	}
+	return pb.NativeClientKind_NATIVE_CLIENT_KIND_UNSPECIFIED
+}
+
+func issuerPreservation(wire *pb.SecurityIssuer, issuer security.Issuer) security.Change {
+	change := security.Change{Kind: security.PutIssuer, Issuer: &issuer, PreserveSecret: wire != nil && wire.SecretRef == nil}
+	if wire != nil {
+		for _, client := range wire.NativeClients {
+			if client != nil && client.SecretRef == nil && (client.Kind == pb.NativeClientKind_NATIVE_CLIENT_KIND_APPLE_NATIVE || client.Kind == pb.NativeClientKind_NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB) {
+				change.PreserveNativeSecrets = append(change.PreserveNativeSecrets, client.Id)
+			}
+		}
+	}
+	return change
 }
 func encodeSecurityIssuer(issuer security.Issuer) *pb.SecurityIssuer {
 	// SecretRef is deliberately write-only, including for security administrators.
-	return &pb.SecurityIssuer{Issuer: issuer.URL, Enabled: issuer.Enabled, ClientId: issuer.ClientID, ApiAudience: issuer.APIAudience, RedirectUri: issuer.RedirectURI, Algorithms: append([]string(nil), issuer.Algorithms...), ConfigRevision: issuer.ConfigRevision, EnvOwned: issuer.EnvOwned, Deleted: issuer.Deleted, HasSecretBinding: issuer.SecretRef != "", HumanSubjectNamespaceQualified: issuer.HumanSubjectNamespaceQualified}
+	result := &pb.SecurityIssuer{Issuer: issuer.URL, Enabled: issuer.Enabled, ClientId: issuer.ClientID, ApiAudience: issuer.APIAudience, RedirectUri: issuer.RedirectURI, Algorithms: append([]string(nil), issuer.Algorithms...), ConfigRevision: issuer.ConfigRevision, EnvOwned: issuer.EnvOwned, Deleted: issuer.Deleted, HasSecretBinding: issuer.SecretRef != "", HumanSubjectNamespaceQualified: issuer.HumanSubjectNamespaceQualified}
+	for _, c := range issuer.NativeClients {
+		result.NativeClients = append(result.NativeClients, &pb.SecurityNativeClient{Id: c.ID, Kind: encodeNativeKind(c.Kind), ClientId: c.ClientID, ServiceOrigin: c.ServiceOrigin, Presenters: append([]string(nil), c.Presenters...), RedirectUri: c.RedirectURI, AndroidPackage: c.AndroidPackage, HasSecretBinding: c.SecretRef != ""})
+	}
+	return result
 }
 func decodeSecurityRole(role *pb.SecurityRole) (security.Role, error) {
 	if role == nil || role.EnvOwned || len(role.Rules) > security.DefaultPolicyLimits().MaxRules {
@@ -213,8 +258,7 @@ func decodeSecurityChange(change *pb.SecurityChange) (security.Change, error) {
 		result.Kind = security.PutIssuer
 		var issuer security.Issuer
 		issuer, err = decodeSecurityIssuer(op.PutIssuer)
-		result.Issuer = &issuer
-		result.PreserveSecret = op.PutIssuer != nil && op.PutIssuer.SecretRef == nil
+		result = issuerPreservation(op.PutIssuer, issuer)
 	case *pb.SecurityChange_DisableIssuer:
 		result.Kind = security.DisableIssuer
 		result.IssuerURL = op.DisableIssuer

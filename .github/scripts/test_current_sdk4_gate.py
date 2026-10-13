@@ -393,7 +393,7 @@ class SDK4WiringTest(unittest.TestCase):
 
     def test_local_acceptance_runs_sdk4_and_scoped_without_receipt_import(self):
         plan = steps(Path("/tmp/qualification"))
-        self.assertEqual(len(plan), 76)
+        self.assertEqual(len(plan), 77)
         step = next(step for step in plan if step.name == "rust-oidc-scoped-wire")
         self.assertIn(".github/scripts/current_sdk4_gate.py", step.command)
         for flag in ("run", "--include-scoped", "--with-mechanism", "--fresh-child"):

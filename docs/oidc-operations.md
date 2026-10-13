@@ -14,6 +14,72 @@ below. The separate `current-v2` startup/API contract is documented in
 [current authority](security-current-authority.md#public-current-v2-composition).
 There is no implicit profile fallback or online state conversion.
 
+The [native Google/Apple session contract](native-login-sessions.md) for #1750
+records exact native client profiles, Server-private Apple secret handling,
+eight-hour fixed sessions, provider-disconnect limitations and Android callback
+ownership. Its current-source implementation and deterministic fixtures do not
+complete the separate real-provider/device qualification exits.
+
+## Native client profiles
+
+Only OIDC/current-v2 can serve native login. Provision the existing certified
+authority and use its committed Issuer `native_clients` collection. Native-only
+Issuers leave browser `client_id`, `api_audience`, `redirect_uri`, `secret_ref`
+empty and human-subject API qualification false. Enable RS256. Profiles must be
+sorted by ID; Google presenters must also be sorted, with no duplicates.
+
+Example profile records inside their respective Issuers (public identifiers are
+illustrative; substitute actual registered IDs):
+
+```json
+{"id":"google_mobile","kind":"google_id_token","client_id":"BACKEND_WEB_CLIENT_ID","service_origin":"https://lantern.example.com","presenters":["ANDROID_CLIENT_ID","IOS_CLIENT_ID"]}
+{"id":"apple_android","kind":"apple_android_web","client_id":"REGISTERED_SERVICES_ID","service_origin":"https://lantern.example.com","redirect_uri":"https://lantern.example.com/auth/native/apple/callback/apple_android","android_package":"com.example.application","secret_ref":"apple_android"}
+{"id":"apple_ios","kind":"apple_native","client_id":"REGISTERED_BUNDLE_ID","service_origin":"https://lantern.example.com","secret_ref":"apple_ios"}
+```
+
+Google's exact Issuer is `https://accounts.google.com`; the bare spelling is
+deliberately rejected. Its single audience must be the backend Web client ID.
+Every present `azp` must match the explicit allowlist; absent `azp` with that
+single audience is allowed and does not attest an installed app. Apple's exact
+Issuer is `https://appleid.apple.com`; native Bundle ID and Android Services ID
+are separate audience profiles. No email or caller-provided account mapping is
+used: enroll each existing `(iss, sub)` Principal and explicit Role assignments.
+
+Install each Apple handle through the existing `LANTERN_OIDC_SECRET_BINDINGS`
+map with exact `issuer`, `client_id`, `token_origin` (`https://appleid.apple.com`)
+and an operator-private absolute `path`. The file contains Apple's signed ES256
+client-secret JWT, no newline; private-file checks and the 4096-byte bound apply.
+The exchange uses `client_secret_post` at the pinned `/auth/token`, once, with
+no HTTP retry. The operator creates/rotates the signing key/JWT; neither Server
+nor app generates provider credentials. Atomic file replacement is read on the
+next exchange. Invalid/expired secrets fail at Apple; they are not refreshed by
+Lantern. Do not expose that map, file path, JWT or signing key in public metadata.
+
+Management Issuer responses expose `has_secret_binding`, never secret handles
+or file contents. Omit each Apple profile's `secret_ref` to preserve an existing
+binding only when ID, kind and client ID are unchanged. New or changed bindings
+must be supplied explicitly. Adding/widening trust still requires the existing
+operation-bound reauthentication; native login alone cannot satisfy it.
+
+The configured `service_origin` is a logical client/session binding, not a
+separate Host-based tenant boundary. Keep the existing TLS/trusted-proxy ingress.
+Route Complete using the `Lantern-Native-Affinity` header returned by Begin and
+sent by the Dart facade. This bounded canonical `v2.member.process` value is only
+a routing hint inside the configured endpoint; the owner validates the complete
+transaction and proof. Clients that omit it require a fixed backend. Do not
+redirect or retry Complete across backend owners. Route Apple's form callback
+by the affinity prefix in `state`. The callback verifies the full
+transaction and returns only to the configured Android package. A restart loses
+pending transactions; existing committed sessions retain their fixed expiry.
+
+This change updates the credential contract fingerprint of current provisioning.
+Do not mix old and new peer profiles or treat a profile mismatch as permission
+to reset journals. Apply the existing coordinated provisioning/generation and
+custody procedure; there is no automatic state conversion or deployment here.
+The [Flutter setup](../sdks/dart/example/README.md#native-google-and-apple-login)
+lists required platform registration. Four real-provider/platform exits and
+package publication remain separate from merged source and F/Q evidence.
+
 ## Public mode and bootstrap
 
 No authentication environment variables means OFF. Configure OIDC explicitly

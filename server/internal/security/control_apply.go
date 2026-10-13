@@ -346,9 +346,19 @@ func s1CurrentAuthority(p *S1Projection, h *S1Handoff, c S1Command) bool {
 	case BrowserCode:
 		if digest := a.authentication.SessionDigest; digest != "" {
 			session, exists := p.snapshot.Session(digest)
-			if !exists || session.Revoked || session.Identity != actor || session.IssuerConfigRevision != issuer.ConfigRevision {
+			if !exists || session.CredentialProfile() != BrowserCookieProfile || session.Revoked || session.Identity != actor || session.IssuerConfigRevision != issuer.ConfigRevision {
 				return false
 			}
+		}
+	case NativeProviderLogin:
+		if a.authentication.SessionDigest != "" || c.Kind != S1IssueSession || c.Session == nil || c.Session.CredentialProfile() != NativeEndUserProfile {
+			return false
+		}
+	case NativeEndUserSession:
+		session, exists := p.snapshot.Session(a.authentication.SessionDigest)
+		client, registered := issuer.NativeClient(session.ClientProfileID)
+		if !exists || session.CredentialProfile() != NativeEndUserProfile || session.Revoked || session.Identity != actor || session.IssuerConfigRevision != issuer.ConfigRevision || !registered || session.ServiceOrigin != client.ServiceOrigin || c.Kind == S1IssueSession {
+			return false
 		}
 	default:
 		return false

@@ -148,6 +148,14 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 		if _, active := p.snapshot.AccessFor(session.Identity); !active {
 			return S1Assessment{}, ErrPermissionDenied
 		}
+		if session.CredentialProfile() == NativeEndUserProfile {
+			client, registered := issuer.NativeClient(session.ClientProfileID)
+			if !registered || session.ServiceOrigin != client.ServiceOrigin || command.ReplacesDigest != "" {
+				return S1Assessment{}, ErrPermissionDenied
+			}
+		} else if !issuer.BrowserEnabled() {
+			return S1Assessment{}, ErrPermissionDenied
+		}
 		if _, exists := p.snapshot.Session(session.Digest); exists {
 			return S1Assessment{}, ErrChangeConflict
 		}
@@ -155,7 +163,7 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 		for i := range image.Sessions {
 			old := &image.Sessions[i]
 			if old.Digest == command.ReplacesDigest {
-				if old.Identity != session.Identity || old.Revoked || old.IssuerConfigRevision != issuer.ConfigRevision || session.CreatedAt.Before(old.CreatedAt) || !session.CreatedAt.Before(old.ExpiresAt) {
+				if old.CredentialProfile() != session.CredentialProfile() || old.Identity != session.Identity || old.Revoked || old.IssuerConfigRevision != issuer.ConfigRevision || session.CreatedAt.Before(old.CreatedAt) || !session.CreatedAt.Before(old.ExpiresAt) {
 					return S1Assessment{}, ErrPermissionDenied
 				}
 				old.Revoked, found = true, true

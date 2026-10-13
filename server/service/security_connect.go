@@ -434,10 +434,8 @@ func (h *SecurityConnectHandler) ValidateIssuer(ctx context.Context, req *connec
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	if req.Msg.Issuer.SecretRef == nil {
-		if existing, known := admission.Snapshot().Issuer(issuer.URL); known {
-			issuer.SecretRef = existing.SecretRef
-		}
+	if existing, known := admission.Snapshot().Issuer(issuer.URL); known {
+		issuer = issuerPreservation(req.Msg.Issuer, issuer).ResolveIssuerSecrets(existing)
 	}
 	if err = h.validateIssuer(ctx, issuer); err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("issuer validation failed"))
@@ -501,10 +499,8 @@ func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *
 		for _, change := range changes {
 			if change.Issuer != nil && change.Issuer.Enabled {
 				issuer := *change.Issuer
-				if change.PreserveSecret {
-					if existing, known := admission.Snapshot().Issuer(issuer.URL); known {
-						issuer.SecretRef = existing.SecretRef
-					}
+				if existing, known := admission.Snapshot().Issuer(issuer.URL); known {
+					issuer = change.ResolveIssuerSecrets(existing)
 				}
 				if err = h.validateIssuer(ctx, issuer); err != nil {
 					return nil, h.precommitRejectionError(errors.New("issuer validation failed"), pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_ISSUER_VALIDATION, req.Msg.ChangeId, req.Msg.ExpectedRevision)

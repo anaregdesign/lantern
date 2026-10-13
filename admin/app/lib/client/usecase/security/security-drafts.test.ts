@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { SecurityAction, SecurityEffect } from "lantern-sdk/web";
+import {
+  SecurityAction,
+  SecurityEffect,
+  type SecurityIssuer,
+} from "lantern-sdk/web";
 import {
   assignmentChange,
   buildIssuer,
@@ -106,6 +110,68 @@ describe("explicit security drafts", () => {
         true,
       ),
     ).toThrow("locked");
+  });
+  test("Apple read-only secret flag is omitted from updates while its profile survives", () => {
+    const prior = buildIssuer({
+      ...issuerDraft(),
+      issuer: "https://appleid.apple.com",
+      clientId: "browser-client",
+      apiAudience: "lantern",
+      redirectUri: "https://admin.example/auth/callback",
+    });
+    prior.nativeClients = [
+      {
+        $typeName: "graph.v1.SecurityNativeClient",
+        id: "ios",
+        kind: 2,
+        clientId: "com.example.app",
+        serviceOrigin: "https://lantern.example",
+        presenters: [],
+        redirectUri: "",
+        androidPackage: "",
+        hasSecretBinding: true,
+      },
+    ];
+    const draft = issuerDraft(prior);
+    const changed = buildIssuer({ ...draft, enabled: false });
+    expect(draft.nativeClients[0].hasSecretBinding).toBe(true);
+    expect(changed.nativeClients).toEqual([
+      { ...prior.nativeClients[0], hasSecretBinding: false },
+    ]);
+    expect(changed.nativeClients[0]).not.toHaveProperty("secretRef");
+    changed.nativeClients[0].presenters.push("detached");
+    expect(draft.nativeClients[0].presenters).toEqual([]);
+  });
+  test("browser Issuer edits retain detached operator native profiles", () => {
+    const value: SecurityIssuer = {
+      ...buildIssuer({
+        ...issuerDraft(),
+        issuer: "https://accounts.google.com",
+        clientId: "browser-client",
+        apiAudience: "lantern",
+        redirectUri: "https://admin.example/auth/callback",
+      }),
+      nativeClients: [
+        {
+          $typeName: "graph.v1.SecurityNativeClient",
+          id: "mobile",
+          kind: 1, // Google ID-token profile on the public wire.
+          clientId: "backend.apps.googleusercontent.com",
+          serviceOrigin: "https://lantern.example",
+          presenters: ["android-client"],
+          redirectUri: "",
+          androidPackage: "",
+          hasSecretBinding: false,
+        },
+      ],
+    };
+    const draft = issuerDraft(value);
+    const changed = buildIssuer({ ...draft, enabled: false });
+    expect(changed.nativeClients).toEqual(value.nativeClients);
+    value.nativeClients[0].presenters[0] = "changed-source";
+    changed.nativeClients[0].presenters.push("changed-output");
+    expect(draft.nativeClients[0].presenters).toEqual(["android-client"]);
+    expect(issuerDraft().nativeClients).toEqual([]);
   });
 });
 

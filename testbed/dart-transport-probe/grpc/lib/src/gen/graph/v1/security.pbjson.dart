@@ -117,6 +117,24 @@ final $typed_data.Uint8List securityEffectDescriptor = $convert.base64Decode(
     'Cg5TZWN1cml0eUVmZmVjdBIfChtTRUNVUklUWV9FRkZFQ1RfVU5TUEVDSUZJRUQQABIZChVTRU'
     'NVUklUWV9FRkZFQ1RfQUxMT1cQARIYChRTRUNVUklUWV9FRkZFQ1RfREVOWRAC');
 
+@$core.Deprecated('Use nativeClientKindDescriptor instead')
+const NativeClientKind$json = {
+  '1': 'NativeClientKind',
+  '2': [
+    {'1': 'NATIVE_CLIENT_KIND_UNSPECIFIED', '2': 0},
+    {'1': 'NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN', '2': 1},
+    {'1': 'NATIVE_CLIENT_KIND_APPLE_NATIVE', '2': 2},
+    {'1': 'NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB', '2': 3},
+  ],
+};
+
+/// Descriptor for `NativeClientKind`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List nativeClientKindDescriptor = $convert.base64Decode(
+    'ChBOYXRpdmVDbGllbnRLaW5kEiIKHk5BVElWRV9DTElFTlRfS0lORF9VTlNQRUNJRklFRBAAEi'
+    'YKIk5BVElWRV9DTElFTlRfS0lORF9HT09HTEVfSURfVE9LRU4QARIjCh9OQVRJVkVfQ0xJRU5U'
+    'X0tJTkRfQVBQTEVfTkFUSVZFEAISKAokTkFUSVZFX0NMSUVOVF9LSU5EX0FQUExFX0FORFJPSU'
+    'RfV0VCEAM=');
+
 @$core.Deprecated('Use securityEnforcementStateDescriptor instead')
 const SecurityEnforcementState$json = {
   '1': 'SecurityEnforcementState',
@@ -545,6 +563,14 @@ const SecurityIssuer$json = {
       '5': 8,
       '10': 'humanSubjectNamespaceQualified'
     },
+    {
+      '1': 'native_clients',
+      '3': 13,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.SecurityNativeClient',
+      '10': 'nativeClients'
+    },
   ],
   '8': [
     {'1': '_secret_ref'},
@@ -561,7 +587,58 @@ final $typed_data.Uint8List securityIssuerDescriptor = $convert.base64Decode(
     'llbnZfb3duZWQYCSABKAhSCGVudk93bmVkEhgKB2RlbGV0ZWQYCiABKAhSB2RlbGV0ZWQSLAoS'
     'aGFzX3NlY3JldF9iaW5kaW5nGAsgASgIUhBoYXNTZWNyZXRCaW5kaW5nEkkKIWh1bWFuX3N1Ym'
     'plY3RfbmFtZXNwYWNlX3F1YWxpZmllZBgMIAEoCFIeaHVtYW5TdWJqZWN0TmFtZXNwYWNlUXVh'
-    'bGlmaWVkQg0KC19zZWNyZXRfcmVm');
+    'bGlmaWVkEkUKDm5hdGl2ZV9jbGllbnRzGA0gAygLMh4uZ3JhcGgudjEuU2VjdXJpdHlOYXRpdm'
+    'VDbGllbnRSDW5hdGl2ZUNsaWVudHNCDQoLX3NlY3JldF9yZWY=');
+
+@$core.Deprecated('Use securityNativeClientDescriptor instead')
+const SecurityNativeClient$json = {
+  '1': 'SecurityNativeClient',
+  '2': [
+    {'1': 'id', '3': 1, '4': 1, '5': 9, '10': 'id'},
+    {
+      '1': 'kind',
+      '3': 2,
+      '4': 1,
+      '5': 14,
+      '6': '.graph.v1.NativeClientKind',
+      '10': 'kind'
+    },
+    {'1': 'client_id', '3': 3, '4': 1, '5': 9, '10': 'clientId'},
+    {'1': 'service_origin', '3': 4, '4': 1, '5': 9, '10': 'serviceOrigin'},
+    {'1': 'presenters', '3': 5, '4': 3, '5': 9, '10': 'presenters'},
+    {'1': 'redirect_uri', '3': 6, '4': 1, '5': 9, '10': 'redirectUri'},
+    {'1': 'android_package', '3': 7, '4': 1, '5': 9, '10': 'androidPackage'},
+    {
+      '1': 'secret_ref',
+      '3': 8,
+      '4': 1,
+      '5': 9,
+      '9': 0,
+      '10': 'secretRef',
+      '17': true
+    },
+    {
+      '1': 'has_secret_binding',
+      '3': 9,
+      '4': 1,
+      '5': 8,
+      '10': 'hasSecretBinding'
+    },
+  ],
+  '8': [
+    {'1': '_secret_ref'},
+  ],
+};
+
+/// Descriptor for `SecurityNativeClient`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List securityNativeClientDescriptor = $convert.base64Decode(
+    'ChRTZWN1cml0eU5hdGl2ZUNsaWVudBIOCgJpZBgBIAEoCVICaWQSLgoEa2luZBgCIAEoDjIaLm'
+    'dyYXBoLnYxLk5hdGl2ZUNsaWVudEtpbmRSBGtpbmQSGwoJY2xpZW50X2lkGAMgASgJUghjbGll'
+    'bnRJZBIlCg5zZXJ2aWNlX29yaWdpbhgEIAEoCVINc2VydmljZU9yaWdpbhIeCgpwcmVzZW50ZX'
+    'JzGAUgAygJUgpwcmVzZW50ZXJzEiEKDHJlZGlyZWN0X3VyaRgGIAEoCVILcmVkaXJlY3RVcmkS'
+    'JwoPYW5kcm9pZF9wYWNrYWdlGAcgASgJUg5hbmRyb2lkUGFja2FnZRIiCgpzZWNyZXRfcmVmGA'
+    'ggASgJSABSCXNlY3JldFJlZogBARIsChJoYXNfc2VjcmV0X2JpbmRpbmcYCSABKAhSEGhhc1Nl'
+    'Y3JldEJpbmRpbmdCDQoLX3NlY3JldF9yZWY=');
 
 @$core.Deprecated('Use securityVersionDescriptor instead')
 const SecurityVersion$json = {

@@ -57,7 +57,7 @@ func (s *Snapshot) Issuer(exactURL string) (Issuer, bool) {
 		return Issuer{}, false
 	}
 	issuer, known := s.issuers[exactURL]
-	issuer.Algorithms = append([]string(nil), issuer.Algorithms...)
+	issuer = issuer.clone()
 	return issuer, known
 }
 

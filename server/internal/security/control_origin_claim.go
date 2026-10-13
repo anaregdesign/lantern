@@ -48,6 +48,14 @@ func authorityCredentialStart(c authorityCredentialClaim) AuthenticationTime {
 		if nbf := c.Token.NotBefore; nbf.Numeric && nbf.Time().After(start.Time()) {
 			start = nbf
 		}
+		if c.Token.Mode == "native-login" {
+			n := c.Token.Native
+			for _, candidate := range []AuthenticationTime{authorityNumericTime(n.ConsumedAt), n.ExchangeIssuedAt, n.ExchangeNotBefore} {
+				if candidate.Numeric && candidate.Time().After(start.Time()) {
+					start = candidate
+				}
+			}
+		}
 		return start
 	}
 	if c.Session != nil {
@@ -84,12 +92,26 @@ func verifyAuthorityCredential(h authorityHistoricalHeader, operation OperationI
 	}
 	var expires time.Time
 	if command.Kind == S1IssueSession {
-		if c.Kind != "code" || c.Token == nil || command.Session == nil || !command.Session.AuthTime.Equal(c.Token.AuthTime.Time()) || command.Session.CreatedAt.Before(c.Token.Code.ConsumedAt) || low.Before(command.Session.CreatedAt) {
+		if c.Token == nil || command.Session == nil || !command.Session.AuthTime.Equal(c.Token.AuthTime.Time()) || low.Before(command.Session.CreatedAt) {
+			return false
+		}
+		s := command.Session
+		switch c.Kind {
+		case "code":
+			if s.CredentialProfile() != BrowserCookieProfile || s.CreatedAt.Before(c.Token.Code.ConsumedAt) {
+				return false
+			}
+		case "native-login":
+			n := c.Token.Native
+			if s.CredentialProfile() != NativeEndUserProfile || s.ClientProfileID != n.ClientProfileID || s.ServiceOrigin != n.ServiceOrigin || s.CreatedAt.Before(n.ConsumedAt) || command.ReplacesDigest != "" {
+				return false
+			}
+		default:
 			return false
 		}
 	}
 	switch c.Kind {
-	case "access", "code":
+	case "access", "code", "native-login":
 		if c.Token == nil || c.Session != nil || c.Origin != [32]byte{} || c.CSRF != [32]byte{} || a.SessionDigest != "" {
 			return false
 		}
@@ -105,7 +127,7 @@ func verifyAuthorityCredential(h authorityHistoricalHeader, operation OperationI
 			if e.Mode != "access" || a.Provenance != RFC9068Bearer || command.Kind != S1Management || c.Enrollment == [32]byte{} || c.HumanNamespace == [32]byte{} {
 				return false
 			}
-		} else {
+		} else if c.Kind == "code" {
 			if e.Mode != "code" || e.Code.Flow != "login" || a.Provenance != BrowserCode || c.Enrollment != [32]byte{} || c.HumanNamespace != [32]byte{} {
 				return false
 			}
@@ -117,16 +139,30 @@ func verifyAuthorityCredential(h authorityHistoricalHeader, operation OperationI
 			if e.Code.ConsumedAt.Before(e.Code.CreatedAt) || !e.Code.ConsumedAt.Before(e.Code.ExpiresAt) || low.Before(e.Code.ConsumedAt) {
 				return false
 			}
+		} else {
+			if e.Mode != "native-login" || a.Provenance != NativeProviderLogin || command.Kind != S1IssueSession || c.Enrollment != [32]byte{} || c.HumanNamespace != [32]byte{} || low.Before(e.Native.ConsumedAt) || !nativeExchangeTimesValid(e.Native, low) {
+				return false
+			}
 		}
 		expires = e.ExpiresAt.Time()
-	case "session":
-		if c.Token != nil || c.Session == nil || c.Enrollment != [32]byte{} || c.HumanNamespace != [32]byte{} || c.Origin == [32]byte{} || c.CSRF == [32]byte{} || a.Provenance != BrowserCode {
+		if c.Kind == "native-login" {
+			expires = nativeEvidenceExpiry(e)
+		}
+	case "session", "native-session":
+		if c.Token != nil || c.Session == nil || c.Enrollment != [32]byte{} || c.HumanNamespace != [32]byte{} {
 			return false
 		}
 		s := *c.Session
-		if s.Revoked || s.Identity != operation.actor || s.IssuerConfigRevision != a.IssuerConfigRevision || s.Digest != a.SessionDigest || !validHexDigest(s.Digest) || !validHexDigest(s.CSRFDigest) ||
+		if !s.valid() || s.Revoked || s.Identity != operation.actor || s.IssuerConfigRevision != a.IssuerConfigRevision || s.Digest != a.SessionDigest ||
 			!s2cCanonicalTime(s.CreatedAt, false) || !s2cCanonicalTime(s.ExpiresAt, false) || !s2cCanonicalTime(s.AuthTime, true) ||
-			!s.CreatedAt.Before(s.ExpiresAt) || c.Verification != s2cHash("current-native-session-v2", s) {
+			!s.CreatedAt.Before(s.ExpiresAt) {
+			return false
+		}
+		if c.Kind == "native-session" {
+			if s.CredentialProfile() != NativeEndUserProfile || c.Origin != [32]byte{} || c.CSRF != [32]byte{} || a.Provenance != NativeEndUserSession || c.Verification != s2cHash("current-native-end-user-session-v1", s) {
+				return false
+			}
+		} else if s.CredentialProfile() != BrowserCookieProfile || !validHexDigest(s.CSRFDigest) || c.Origin == [32]byte{} || c.CSRF == [32]byte{} || a.Provenance != BrowserCode || c.Verification != s2cHash("current-native-session-v2", s) {
 			return false
 		}
 		expires = s.ExpiresAt

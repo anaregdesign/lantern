@@ -866,6 +866,7 @@ class SecurityIssuer extends $pb.GeneratedMessage {
     $core.bool? deleted,
     $core.bool? hasSecretBinding,
     $core.bool? humanSubjectNamespaceQualified,
+    $core.Iterable<SecurityNativeClient>? nativeClients,
   }) {
     final result = create();
     if (issuer != null) result.issuer = issuer;
@@ -881,6 +882,7 @@ class SecurityIssuer extends $pb.GeneratedMessage {
     if (hasSecretBinding != null) result.hasSecretBinding = hasSecretBinding;
     if (humanSubjectNamespaceQualified != null)
       result.humanSubjectNamespaceQualified = humanSubjectNamespaceQualified;
+    if (nativeClients != null) result.nativeClients.addAll(nativeClients);
     return result;
   }
 
@@ -911,6 +913,9 @@ class SecurityIssuer extends $pb.GeneratedMessage {
     ..aOB(10, _omitFieldNames ? '' : 'deleted')
     ..aOB(11, _omitFieldNames ? '' : 'hasSecretBinding')
     ..aOB(12, _omitFieldNames ? '' : 'humanSubjectNamespaceQualified')
+    ..pc<SecurityNativeClient>(
+        13, _omitFieldNames ? '' : 'nativeClients', $pb.PbFieldType.PM,
+        subBuilder: SecurityNativeClient.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1038,6 +1043,162 @@ class SecurityIssuer extends $pb.GeneratedMessage {
   $core.bool hasHumanSubjectNamespaceQualified() => $_has(11);
   @$pb.TagNumber(12)
   void clearHumanSubjectNamespaceQualified() => $_clearField(12);
+
+  /// Canonically ordered by id; native-only Issuers omit browser/API fields.
+  @$pb.TagNumber(13)
+  $pb.PbList<SecurityNativeClient> get nativeClients => $_getList(12);
+}
+
+class SecurityNativeClient extends $pb.GeneratedMessage {
+  factory SecurityNativeClient({
+    $core.String? id,
+    NativeClientKind? kind,
+    $core.String? clientId,
+    $core.String? serviceOrigin,
+    $core.Iterable<$core.String>? presenters,
+    $core.String? redirectUri,
+    $core.String? androidPackage,
+    $core.String? secretRef,
+    $core.bool? hasSecretBinding,
+  }) {
+    final result = create();
+    if (id != null) result.id = id;
+    if (kind != null) result.kind = kind;
+    if (clientId != null) result.clientId = clientId;
+    if (serviceOrigin != null) result.serviceOrigin = serviceOrigin;
+    if (presenters != null) result.presenters.addAll(presenters);
+    if (redirectUri != null) result.redirectUri = redirectUri;
+    if (androidPackage != null) result.androidPackage = androidPackage;
+    if (secretRef != null) result.secretRef = secretRef;
+    if (hasSecretBinding != null) result.hasSecretBinding = hasSecretBinding;
+    return result;
+  }
+
+  SecurityNativeClient._();
+
+  factory SecurityNativeClient.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SecurityNativeClient.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SecurityNativeClient',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'id')
+    ..e<NativeClientKind>(2, _omitFieldNames ? '' : 'kind', $pb.PbFieldType.OE,
+        defaultOrMaker: NativeClientKind.NATIVE_CLIENT_KIND_UNSPECIFIED,
+        valueOf: NativeClientKind.valueOf,
+        enumValues: NativeClientKind.values)
+    ..aOS(3, _omitFieldNames ? '' : 'clientId')
+    ..aOS(4, _omitFieldNames ? '' : 'serviceOrigin')
+    ..pPS(5, _omitFieldNames ? '' : 'presenters')
+    ..aOS(6, _omitFieldNames ? '' : 'redirectUri')
+    ..aOS(7, _omitFieldNames ? '' : 'androidPackage')
+    ..aOS(8, _omitFieldNames ? '' : 'secretRef')
+    ..aOB(9, _omitFieldNames ? '' : 'hasSecretBinding')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityNativeClient clone() =>
+      SecurityNativeClient()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityNativeClient copyWith(void Function(SecurityNativeClient) updates) =>
+      super.copyWith((message) => updates(message as SecurityNativeClient))
+          as SecurityNativeClient;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SecurityNativeClient create() => SecurityNativeClient._();
+  @$core.override
+  SecurityNativeClient createEmptyInstance() => create();
+  static $pb.PbList<SecurityNativeClient> createRepeated() =>
+      $pb.PbList<SecurityNativeClient>();
+  @$core.pragma('dart2js:noInline')
+  static SecurityNativeClient getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SecurityNativeClient>(create);
+  static SecurityNativeClient? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get id => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set id($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  NativeClientKind get kind => $_getN(1);
+  @$pb.TagNumber(2)
+  set kind(NativeClientKind value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasKind() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearKind() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get clientId => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set clientId($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasClientId() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearClientId() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.String get serviceOrigin => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set serviceOrigin($core.String value) => $_setString(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasServiceOrigin() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearServiceOrigin() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $pb.PbList<$core.String> get presenters => $_getList(4);
+
+  @$pb.TagNumber(6)
+  $core.String get redirectUri => $_getSZ(5);
+  @$pb.TagNumber(6)
+  set redirectUri($core.String value) => $_setString(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasRedirectUri() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearRedirectUri() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.String get androidPackage => $_getSZ(6);
+  @$pb.TagNumber(7)
+  set androidPackage($core.String value) => $_setString(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasAndroidPackage() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearAndroidPackage() => $_clearField(7);
+
+  /// Write-only operator binding handle. Omission preserves the exact existing
+  /// profile's binding; a new Apple profile requires an explicit handle.
+  @$pb.TagNumber(8)
+  $core.String get secretRef => $_getSZ(7);
+  @$pb.TagNumber(8)
+  set secretRef($core.String value) => $_setString(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasSecretRef() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearSecretRef() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $core.bool get hasSecretBinding => $_getBF(8);
+  @$pb.TagNumber(9)
+  set hasSecretBinding($core.bool value) => $_setBool(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasHasSecretBinding() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearHasSecretBinding() => $_clearField(9);
 }
 
 class SecurityVersion extends $pb.GeneratedMessage {

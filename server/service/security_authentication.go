@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/authn"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/security"
 )
@@ -133,7 +134,13 @@ func (i securityAuthenticationInterceptor) WrapUnary(next connect.UnaryFunc) con
 		if req.Spec().Procedure == graphv1connect.LanternSecurityServiceGetAuthCapabilitiesProcedure {
 			return next(ctx, req)
 		}
-		if !strings.HasPrefix(req.Spec().Procedure, "/graph.v1.LanternService/") && !strings.HasPrefix(req.Spec().Procedure, "/graph.v1.LanternSecurityService/") {
+		if nativeBootstrapProcedure(req.Spec().Procedure) {
+			return next(ctx, req)
+		}
+		if nativeAuthProcedure(req.Spec().Procedure) && (len(req.Header().Values("Origin")) != 0 || len(req.Header().Values("Cookie")) != 0) {
+			return nil, nativeError(authn.ErrUnauthenticated)
+		}
+		if !strings.HasPrefix(req.Spec().Procedure, "/graph.v1.LanternService/") && !strings.HasPrefix(req.Spec().Procedure, "/graph.v1.LanternSecurityService/") && !nativeAuthProcedure(req.Spec().Procedure) {
 			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("private service requires workload admission"))
 		}
 		verified, err := i.runtime.AuthenticateBearer(ctx, req.Header())

@@ -31,14 +31,20 @@ dependencies:
   crypto: 3.0.7
   flutter:
     sdk: flutter
+  flutter_secure_storage: 11.2.0
+  google_sign_in: 7.2.0
   lantern_client: ^0.5.0
   lantern_client_offline: ^0.6.0
   lantern_client_offline_sqlite:
     path: ../offline_sqlite
   path: 1.9.1
   sqflite: 2.4.4
+  sign_in_with_apple: 8.2.0
 
 dev_dependencies:
+  google_sign_in_platform_interface: 3.1.0
+  sign_in_with_apple_platform_interface: 2.0.0
+  sqflite_common_ffi: ^2.4.0
   connectrpc: 1.0.0
   flutter_test:
     sdk: flutter
@@ -101,3 +107,10 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+# Host-only SQLite evidence uses the installed system library, as the adapter's
+# own conformance tests do. Device builds keep the ordinary sqflite plugin.
+hooks:
+  user_defines:
+    sqlite3:
+      source: system

@@ -4,7 +4,9 @@ import (
 	"net/http"
 
 	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/internal/security"
+	"github.com/anaregdesign/lantern/server/service"
 )
 
 // Only generated codecs/pools are request-owned; the typed service and its
@@ -19,7 +21,11 @@ func (r *SecurityRuntime) publicRPCHandler(path string, create func(...connect.H
 			panic(http.ErrAbortHandler)
 		}
 		r.output.Handler(func() http.Handler {
-			_, handler := create(r.output.Options(options...)...)
+			bounded := r.output.Options(options...)
+			if path == "/"+graphv1connect.LanternNativeAuthServiceName+"/" {
+				bounded = r.output.OptionsWithRequestValidation(service.ValidateNativeRequest, options...)
+			}
+			_, handler := create(bounded...)
 			return handler
 		}).ServeHTTP(w, req)
 	})

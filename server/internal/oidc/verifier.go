@@ -33,6 +33,7 @@ type tokenClaims struct {
 	AZP        string           `json:"azp"`
 	AuthTime   *jwt.NumericDate `json:"auth_time"`
 	AccessHash string           `json:"at_hash"`
+	CodeHash   string           `json:"c_hash"`
 }
 
 type Verifier struct {
@@ -204,6 +205,9 @@ func (v *Verifier) verify(ctx context.Context, raw string, trust Trust, header t
 	}
 	key, err := v.keys.Key(ctx, trust, header.KeyID, header.Algorithm)
 	if err != nil {
+		if errors.Is(err, ErrFetch) {
+			return VerifiedIdentity{}, ErrFetch
+		}
 		return VerifiedIdentity{}, ErrInvalidToken
 	}
 	var validated tokenClaims

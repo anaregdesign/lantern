@@ -86,33 +86,13 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 	snapshot.roleBytes = roleBytes
 	snapshot.limits = limits
 	for _, issuer := range image.Issuers {
-		if issuer.Deleted && issuer.Enabled {
-			return nil, ErrInvalidImage
-		}
-		if !validIssuerURL(issuer.URL) || !boundedText(issuer.ClientID, 512) ||
-			!boundedText(issuer.APIAudience, 512) || len(issuer.Algorithms) == 0 || len(issuer.Algorithms) > 4 ||
-			len(issuer.SecretRef) > 64 || (issuer.SecretRef != "" && !validRoleID(issuer.SecretRef)) {
-			return nil, fmt.Errorf("%w: Issuer", ErrInvalidImage)
-		}
-		if _, valid := validHTTPSURL(issuer.RedirectURI); !valid {
-			return nil, fmt.Errorf("%w: redirect URI", ErrInvalidImage)
-		}
-		seen := make(map[string]bool, len(issuer.Algorithms))
-		for _, algorithm := range issuer.Algorithms {
-			if seen[algorithm] {
-				return nil, fmt.Errorf("%w: duplicate algorithm", ErrInvalidImage)
-			}
-			switch algorithm {
-			case "RS256", "PS256", "ES256", "EdDSA":
-			default:
-				return nil, fmt.Errorf("%w: algorithm", ErrInvalidImage)
-			}
-			seen[algorithm] = true
+		if err := ValidateIssuerConfiguration(issuer); err != nil {
+			return nil, fmt.Errorf("%w: Issuer", err)
 		}
 		if _, exists := snapshot.issuers[issuer.URL]; exists {
 			return nil, fmt.Errorf("%w: duplicate Issuer", ErrInvalidImage)
 		}
-		issuer.Algorithms = append([]string(nil), issuer.Algorithms...)
+		issuer = issuer.clone()
 		snapshot.issuers[issuer.URL] = issuer
 	}
 	for _, principal := range image.Principals {
@@ -168,9 +148,7 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 		return nil, err
 	}
 	for _, session := range image.Sessions {
-		if !validHexDigest(session.Digest) || (session.CSRFDigest != "" && !validHexDigest(session.CSRFDigest)) || session.Identity.Kind != OIDCPrincipal ||
-			session.CreatedAt.IsZero() || !session.ExpiresAt.After(session.CreatedAt) ||
-			session.ExpiresAt.Sub(session.CreatedAt) > MaxSessionLifetime || session.AuthTime.After(session.CreatedAt) {
+		if !session.valid() {
 			return nil, fmt.Errorf("%w: Session", ErrInvalidImage)
 		}
 		if _, exists := snapshot.principals[session.Identity]; !exists {

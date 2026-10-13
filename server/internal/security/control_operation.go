@@ -139,7 +139,10 @@ func validateS1Command(c S1Command, limits PolicyLimits) error {
 		}
 		return validateRoleBounds(roles, limits)
 	case S1IssueSession:
-		if len(c.Changes) != 0 || c.Session == nil || c.SessionDigest != "" || c.SessionLineage == 0 || c.Session.Revoked || c.Session.IssuerConfigRevision == 0 || !validHexDigest(c.Session.Digest) || !validHexDigest(c.Session.CSRFDigest) || c.Session.Identity.Kind != OIDCPrincipal || !c.Session.Identity.valid() || c.Session.CreatedAt.IsZero() || !c.Session.ExpiresAt.After(c.Session.CreatedAt) || c.Session.ExpiresAt.Sub(c.Session.CreatedAt) > MaxSessionLifetime || c.Session.AuthTime.After(c.Session.CreatedAt) || c.ReplacesDigest != "" && (!validHexDigest(c.ReplacesDigest) || c.ReplacesDigest == c.Session.Digest) {
+		if len(c.Changes) != 0 || c.Session == nil || c.SessionDigest != "" || c.SessionLineage == 0 || c.Session.Revoked || c.Session.IssuerConfigRevision == 0 || !c.Session.valid() ||
+			c.Session.CredentialProfile() == BrowserCookieProfile && !validHexDigest(c.Session.CSRFDigest) ||
+			c.Session.CredentialProfile() == NativeEndUserProfile && c.ReplacesDigest != "" ||
+			c.ReplacesDigest != "" && (!validHexDigest(c.ReplacesDigest) || c.ReplacesDigest == c.Session.Digest) {
 			return ErrS1Contract
 		}
 	case S1RevokeSession:

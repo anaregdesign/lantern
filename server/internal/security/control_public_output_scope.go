@@ -204,6 +204,7 @@ const (
 	CurrentLocalCookieClear
 	CurrentGenericFailure
 	CurrentPurposeReturn
+	CurrentLocalNativeClear
 )
 
 // These fixed schemas contain no principal, issuer list, cookie issuance or
@@ -224,6 +225,8 @@ func (o *CurrentAuthority) BindPublicMetadata(ctx context.Context, kind CurrentP
 		valid = r.method == http.MethodOptions
 	case CurrentLocalCookieClear:
 		valid = path == "/auth/logout"
+	case CurrentLocalNativeClear:
+		valid = path == "/graph.v1.LanternNativeAuthService/ApplyNativeLogout"
 	case CurrentGenericFailure:
 		valid = true
 	case CurrentPurposeReturn:

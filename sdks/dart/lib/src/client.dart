@@ -18,13 +18,16 @@ import 'gen/graph/v1/changes.connect.client.dart' as $changes_client;
 import 'gen/graph/v1/changes.pb.dart' as $changes;
 import 'gen/graph/v1/graph.connect.client.dart' as $client;
 import 'gen/graph/v1/graph.pb.dart' as $graph;
+import 'gen/graph/v1/native_auth.connect.client.dart' as $native_client;
+import 'gen/graph/v1/native_auth.pb.dart' as $native;
 import 'gen/graph/v1/replication.connect.client.dart' as $replication_client;
 import 'gen/graph/v1/replication.pb.dart' as $replication;
-
 import 'gen/graph/v1/security.connect.client.dart' as $security_client;
 import 'gen/graph/v1/security.pb.dart' as $security;
 
 part 'security.dart';
+part 'native_auth.dart';
+part 'native_auth_models.dart';
 part 'changes.dart';
 part 'scoped_changes.dart';
 part 'crud.dart';
@@ -768,10 +771,18 @@ final class LanternInvoker {
     required LanternUnaryCall<T> call,
     LanternCallOptions? options,
     void Function()? onRequestStarted,
+    bool authenticated = true,
+    bool redactResponse = false,
   }) async {
-    final context = _InvocationContext(options, _defaultTimeout);
+    final context = _InvocationContext(
+      options,
+      _defaultTimeout,
+      redactResponse: redactResponse,
+    );
     try {
-      final headers = await _requestHeaders(context);
+      final headers = authenticated
+          ? await _requestHeaders(context)
+          : connect.Headers();
       onRequestStarted?.call();
       return await call(
         headers: headers,
@@ -965,19 +976,23 @@ typedef LanternStreamCall<T> =
     });
 
 final class _InvocationContext {
-  _InvocationContext(LanternCallOptions? options, Duration? defaultTimeout)
-    : signal = _CallSignal(
-        timeout:
-            options?.timeout ??
-            (options?.deadline == null &&
-                    !(options?.disableDefaultTimeout ?? false)
-                ? defaultTimeout
-                : null),
-        deadline: options?.deadline,
-        cancellation: options?.cancellation,
-      );
+  _InvocationContext(
+    LanternCallOptions? options,
+    Duration? defaultTimeout, {
+    this.redactResponse = false,
+  }) : signal = _CallSignal(
+         timeout:
+             options?.timeout ??
+             (options?.deadline == null &&
+                     !(options?.disableDefaultTimeout ?? false)
+                 ? defaultTimeout
+                 : null),
+         deadline: options?.deadline,
+         cancellation: options?.cancellation,
+       );
 
   final _CallSignal signal;
+  final bool redactResponse;
   connect.Headers headers = connect.Headers();
   connect.Headers trailers = connect.Headers();
   String? token;
@@ -1158,11 +1173,19 @@ LanternException _mapConnectException(
   final data = _ErrorData(
     transportCode: error.code.value,
     transportCodeName: error.code.name,
-    message: _redactSecret(error.message, context.token),
-    cause: error.cause,
-    headers: _headersToMap(context.headers, context.token),
-    trailers: _headersToMap(context.trailers, context.token),
-    metadata: _headersToMap(error.metadata, context.token),
+    message: context.redactResponse
+        ? 'native authentication request failed'
+        : _redactSecret(error.message, context.token),
+    cause: context.redactResponse ? null : error.cause,
+    headers: context.redactResponse
+        ? const {}
+        : _headersToMap(context.headers, context.token),
+    trailers: context.redactResponse
+        ? const {}
+        : _headersToMap(context.trailers, context.token),
+    metadata: context.redactResponse
+        ? const {}
+        : _headersToMap(error.metadata, context.token),
     searchReason: searchError.reason,
     searchWorkKind: searchError.workKind,
   );
@@ -1233,9 +1256,13 @@ LanternException _mapUnknownException(
     transportCode: code.value,
     transportCodeName: code.name,
     message: 'transport failed',
-    cause: error,
-    headers: _headersToMap(context.headers, context.token),
-    trailers: _headersToMap(context.trailers, context.token),
+    cause: context.redactResponse ? null : error,
+    headers: context.redactResponse
+        ? const {}
+        : _headersToMap(context.headers, context.token),
+    trailers: context.redactResponse
+        ? const {}
+        : _headersToMap(context.trailers, context.token),
     metadata: const {},
   );
   return unavailable

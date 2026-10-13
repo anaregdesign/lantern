@@ -31,7 +31,9 @@ func (r *AuthenticationAdapter) AuthHTTPHandler() http.Handler {
 		case "/auth/logout":
 			r.browserLogout(w, req)
 		default:
-			if strings.HasPrefix(req.URL.Path, "/auth/management-authorization/") {
+			if strings.HasPrefix(req.URL.Path, nativeAppleCallbackPrefix) {
+				r.nativeAppleCallback(w, req)
+			} else if strings.HasPrefix(req.URL.Path, "/auth/management-authorization/") {
 				r.browserManagementAuthorization(w, req)
 			} else if strings.HasPrefix(req.URL.Path, "/auth/callback/") {
 				r.browserCallback(w, req)

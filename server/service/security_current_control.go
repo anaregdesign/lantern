@@ -50,10 +50,8 @@ func (h *SecurityConnectHandler) validateCurrentIssuers(ctx context.Context, a *
 			continue
 		}
 		i := *c.Issuer
-		if c.PreserveSecret {
-			if prior, known := a.Snapshot().Issuer(i.URL); known {
-				i.SecretRef = prior.SecretRef
-			}
+		if prior, known := a.Snapshot().Issuer(i.URL); known {
+			i = c.ResolveIssuerSecrets(prior)
 		}
 		if h.validateIssuer(ctx, i) != nil {
 			return connect.NewError(connect.CodeFailedPrecondition, errors.New("issuer validation failed"))

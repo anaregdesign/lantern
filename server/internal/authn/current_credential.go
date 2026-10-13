@@ -16,10 +16,12 @@ type Credentials struct{ keys *oidc.KeyCache }
 func NewCredentials(keys *oidc.KeyCache) *Credentials { return &Credentials{keys: keys} }
 
 type currentCredentialProducer struct {
-	keys         *oidc.KeyCache
-	kind, bearer string
-	completion   oidc.LoginCompletion
-	tokens       oidc.CodeTokens
+	keys             *oidc.KeyCache
+	kind, bearer     string
+	completion       oidc.LoginCompletion
+	tokens           oidc.CodeTokens
+	nativeCompletion oidc.NativeCompletion
+	nativeTokens     oidc.NativeTokens
 }
 
 func (currentCredentialProducer) String() string   { return "[redacted current credential producer]" }
@@ -29,13 +31,25 @@ func (c *Credentials) Bearer(raw string) (security.CurrentCredentialProducer, er
 		return nil, oidc.ErrInvalidToken
 	}
 	kind := "access"
-	if strings.HasPrefix(raw, security.MachineTokenPrefix) {
+	if strings.HasPrefix(raw, security.NativeCredentialPrefix) {
+		if _, valid := security.NativeCredentialDigest(raw); !valid {
+			return nil, oidc.ErrInvalidToken
+		}
+		kind = "native-session"
+	} else if strings.HasPrefix(raw, security.MachineTokenPrefix) {
 		if _, valid := security.MachineTokenDigest(raw); !valid {
 			return nil, oidc.ErrInvalidToken
 		}
 		kind = "machine"
 	}
 	return currentCredentialProducer{keys: c.keys, kind: kind, bearer: raw}, nil
+}
+
+func (c *Credentials) Native(completion oidc.NativeCompletion, tokens oidc.NativeTokens) (security.CurrentCredentialProducer, error) {
+	if c == nil || c.keys == nil {
+		return nil, oidc.ErrInvalidToken
+	}
+	return currentCredentialProducer{keys: c.keys, kind: "native-login", nativeCompletion: completion, nativeTokens: tokens}, nil
 }
 func (c *Credentials) Code(completion oidc.LoginCompletion, tokens oidc.CodeTokens) (security.CurrentCredentialProducer, error) {
 	if c == nil || c.keys == nil {
@@ -52,6 +66,17 @@ func (p currentCredentialProducer) VerifyCurrentCredential(ctx context.Context, 
 		return security.CurrentCredentialFacts{}, security.ErrAuthorityUnavailable
 	}
 	snapshot := view.Snapshot()
+	if p.kind == "native-session" {
+		digest, valid := security.NativeCredentialDigest(p.bearer)
+		session, known := snapshot.Session(digest)
+		if !valid || !known || session.CredentialProfile() != security.NativeEndUserProfile {
+			return security.CurrentCredentialFacts{}, oidc.ErrInvalidToken
+		}
+		if _, _, active := snapshot.SessionAccess(digest, high); !active {
+			return security.CurrentCredentialFacts{}, oidc.ErrInvalidToken
+		}
+		return security.CurrentCredentialFacts{Session: &session}, nil
+	}
 	if p.kind == "machine" {
 		if _, _, active := snapshot.MachineAccess(p.bearer, high); !active {
 			return security.CurrentCredentialFacts{}, oidc.ErrInvalidToken
@@ -82,6 +107,11 @@ func (p currentCredentialProducer) VerifyCurrentCredential(ctx context.Context, 
 		if err != nil {
 			return security.CurrentCredentialFacts{}, err
 		}
+	} else if p.kind == "native-login" {
+		verified, err = verifier.VerifyNativeCompletion(ctx, p.nativeCompletion, p.nativeTokens)
+		if err != nil {
+			return security.CurrentCredentialFacts{}, err
+		}
 	} else {
 		return security.CurrentCredentialFacts{}, oidc.ErrInvalidToken
 	}
@@ -89,20 +119,32 @@ func (p currentCredentialProducer) VerifyCurrentCredential(ctx context.Context, 
 		return security.CurrentCredentialFacts{}, err
 	}
 	event := verified.Evidence()
-	if p.kind == "code" {
+	if p.kind == "code" || p.kind == "native-login" {
 		// A newly issued Code token can be valid at the qualified upper
 		// endpoint while its signed start is still ahead of the lower one.
 		// Keep this one exchange; pace locally until the exact original facts
 		// are usable. Capture/consume still recheck the full current view.
 		start := event.IssuedAt.Time()
-		for _, candidate := range []time.Time{event.NotBefore.Time(), event.AuthTime.Time(), event.Code.ConsumedAt} {
+		starts := []time.Time{event.NotBefore.Time(), event.AuthTime.Time(), event.Code.ConsumedAt}
+		if p.kind == "native-login" {
+			starts = append(starts, event.Native.ConsumedAt, event.Native.ExchangeIssuedAt.Time(), event.Native.ExchangeNotBefore.Time(), event.Native.ExchangeAuthTime.Time())
+		}
+		for _, candidate := range starts {
 			if candidate.After(start) {
 				start = candidate
 			}
 		}
 		expires := event.ExpiresAt.Time()
-		if event.Code.ExpiresAt.Before(expires) {
+		if p.kind == "code" && event.Code.ExpiresAt.Before(expires) {
 			expires = event.Code.ExpiresAt
+		}
+		if p.kind == "native-login" {
+			if event.Native.ExpiresAt.Before(expires) {
+				expires = event.Native.ExpiresAt
+			}
+			if event.Native.ExchangeExpiresAt.Numeric && event.Native.ExchangeExpiresAt.Time().Before(expires) {
+				expires = event.Native.ExchangeExpiresAt.Time()
+			}
 		}
 		if err := waitCurrentCodeStart(ctx, view.TimeBounds, start, expires); err != nil {
 			return security.CurrentCredentialFacts{}, err

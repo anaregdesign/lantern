@@ -92,7 +92,32 @@ func TestCurrentPublicAdmissionDoesNotRelabelAfterApply(t *testing.T) {
 }
 
 func TestCurrentWarmAdmissionUsesNoPeerJournalOrTimeRefresh(t *testing.T) {
-	_, origins, _ := authorityTestComposite(t)
+	for _, native := range []bool{false, true} {
+		t.Run(map[bool]string{false: "external-api", true: "native-session"}[native], func(t *testing.T) {
+			currentWarmAdmissionNoIO(t, native)
+		})
+	}
+}
+
+type currentNativeSessionTestProducer struct{ digest string }
+
+func (p currentNativeSessionTestProducer) VerifyCurrentCredential(_ context.Context, view CurrentCredentialView) (CurrentCredentialFacts, error) {
+	s, ok := view.Snapshot().Session(p.digest)
+	if !ok {
+		return CurrentCredentialFacts{}, ErrPermissionDenied
+	}
+	return CurrentCredentialFacts{Session: &s}, nil
+}
+
+func currentWarmAdmissionNoIO(t *testing.T, native bool) {
+	var image *Image
+	var producer CurrentCredentialProducer = authorityFakeCredentialProducer{}
+	if native {
+		i, s, _ := nativeSessionBenchmarkImage()
+		image = &i
+		producer = currentNativeSessionTestProducer{s.Digest}
+	}
+	_, origins, _ := authorityTestCompositeImage(t, 3, image)
 	o := &CurrentAuthority{origin: origins[1]}
 	ctx := s3aTestContext(t)
 	if err := o.origin.network.renewAuthority(ctx); err != nil {
@@ -103,7 +128,7 @@ func TestCurrentWarmAdmissionUsesNoPeerJournalOrTimeRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writer, _, _ := currentPublicTestWriter(t, o, output)
+	writer, _, _ := currentPublicCredentialWriter(t, o, output, producer)
 	before, err := o.ExportFloors()
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +140,7 @@ func TestCurrentWarmAdmissionUsesNoPeerJournalOrTimeRefresh(t *testing.T) {
 	sequence := n.timeOwner.producer.sequence
 	n.timeOwner.producer.mu.Unlock()
 	for range 1000 {
-		a, err := o.Admit(ctx, authorityFakeCredentialProducer{})
+		a, err := o.Admit(ctx, producer)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -6,4 +6,4 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$REPO_ROOT"
 go test ./server/internal/security \
   -run '^TestCurrentWarmAdmissionUsesNoPeerJournalOrTimeRefresh$' \
-  -bench '^BenchmarkCurrentPublicOutputCodec$' -benchtime=100x -count=1
+  -bench '^(BenchmarkCurrentPublicOutputCodec|BenchmarkNativeSessionLookup)$' -benchtime=100x -count=1

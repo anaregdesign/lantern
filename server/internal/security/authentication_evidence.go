@@ -53,15 +53,26 @@ type TokenAuthenticationEvidence struct {
 	Nonce                                          [32]byte
 	AccessHashPresent, AccessHashChecked           bool
 	Code                                           CodeAuthenticationEvidence
+	// omitzero preserves every existing v1 transcript byte. Native completion
+	// uses its own version and commitment domain, never a synthetic Code flow.
+	Native NativeAuthenticationEvidence `json:",omitzero"`
 }
 
 // Commitment is a versioned factual commitment, not a signature or an assertion
 // of current authorization. It also rejects unrepresentable/unbounded envelopes.
 func (e TokenAuthenticationEvidence) Commitment() ([32]byte, error) {
-	if e.Version != 1 || e.Policy != "lantern-oidc-v1" || !e.Identity.valid() || e.Identity.Kind != OIDCPrincipal ||
+	native := e.Version == 2 && e.Policy == "lantern-native-login-v1"
+	if (!native && (e.Version != 1 || e.Policy != "lantern-oidc-v1")) || !e.Identity.valid() || e.Identity.Kind != OIDCPrincipal ||
 		len(e.KeyID) == 0 || len(e.KeyID) > 256 || e.Generation == [16]byte{} || e.ConfigRevision == 0 ||
 		e.Credential == [32]byte{} || e.Key == [32]byte{} || e.Configuration == [32]byte{} || e.AudienceClient == [32]byte{} ||
 		!e.IssuedAt.Present || !e.IssuedAt.Numeric || !e.ExpiresAt.Present || !e.ExpiresAt.Numeric {
+		return [32]byte{}, ErrOperationAuthorization
+	}
+	if native {
+		if !e.Native.valid(e) {
+			return [32]byte{}, ErrOperationAuthorization
+		}
+	} else if e.Native != (NativeAuthenticationEvidence{}) {
 		return [32]byte{}, ErrOperationAuthorization
 	}
 	for _, claim := range []AuthenticationTime{e.IssuedAt, e.NotBefore, e.ExpiresAt, e.AuthTime} {
@@ -78,6 +89,10 @@ func (e TokenAuthenticationEvidence) Commitment() ([32]byte, error) {
 		return [32]byte{}, ErrOperationAuthorization
 	}
 	switch e.Mode {
+	case "native-login":
+		if !native {
+			return [32]byte{}, ErrOperationAuthorization
+		}
 	case "access":
 		if e.Profile != "rfc9068" || e.Code != (CodeAuthenticationEvidence{}) {
 			return [32]byte{}, ErrOperationAuthorization
@@ -108,11 +123,18 @@ func (e TokenAuthenticationEvidence) Commitment() ([32]byte, error) {
 	default:
 		return [32]byte{}, ErrOperationAuthorization
 	}
+	if native && e.Mode != "native-login" {
+		return [32]byte{}, ErrOperationAuthorization
+	}
 	raw, err := authenticationEvidenceBytes(e)
 	if err != nil || len(raw) > MaxAuthenticationEvidenceBytes {
 		return [32]byte{}, ErrOperationAuthorization
 	}
-	return sha256.Sum256(append([]byte("lantern/authentication/token/v1\x00"), raw...)), nil
+	domain := "lantern/authentication/token/v1\x00"
+	if native {
+		domain = "lantern/authentication/native-token/v1\x00"
+	}
+	return sha256.Sum256(append([]byte(domain), raw...)), nil
 }
 
 func authenticationEvidenceBytes(value any) ([]byte, error) {

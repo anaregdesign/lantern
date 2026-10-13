@@ -67,9 +67,16 @@ func authorityTestComposite(t *testing.T) (*s3aTestNetwork, map[uint32]*authorit
 }
 
 func authorityTestCompositeOrigins(t *testing.T, originCount int) (*s3aTestNetwork, map[uint32]*authorityOriginOwner, map[uint32]*atomic.Uint64) {
+	return authorityTestCompositeImage(t, originCount, nil)
+}
+
+func authorityTestCompositeImage(t *testing.T, originCount int, image *Image) (*s3aTestNetwork, map[uint32]*authorityOriginOwner, map[uint32]*atomic.Uint64) {
 	t.Helper()
 	n := s3aTestCluster(t, nil)
 	f := s2cTestCluster(t, 3)
+	if image != nil {
+		f = s2cTestClusterState(t, 3, s1Fixture(t, *image))
+	}
 	f.origins = f.origins[:originCount]
 	f, originKeys := authorityTestFixtureState(t, f)
 	n.f = f
@@ -77,6 +84,9 @@ func authorityTestCompositeOrigins(t *testing.T, originCount int) (*s3aTestNetwo
 	raw := n.sign(n.manifest)
 	owners, ticks := make(map[uint32]*authorityOriginOwner), make(map[uint32]*atomic.Uint64)
 	for id, c := range n.configs {
+		if image != nil {
+			c.Participant.BScope = s2cTestConfig(t, f, id, filepath.Dir(c.Identity.VotingKey)).BScope
+		}
 		c.Participant.Trust = f.trust
 		if int(id) > originCount {
 			c.Participant.OwnedOrigin = 0

@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package graph.v1;
+
+import "google/protobuf/timestamp.proto";
+import "graph/v1/security.proto";
+
+// Native provider inputs are accepted only here. Ordinary RPC authentication
+// uses the returned opaque native credential through the existing Bearer path.
+// These unary methods are never automatically retried after possible dispatch.
+service LanternNativeAuthService {
+  rpc BeginNativeLogin(BeginNativeLoginRequest) returns (BeginNativeLoginResponse);
+  rpc CompleteNativeLogin(CompleteNativeLoginRequest) returns (CompleteNativeLoginResponse);
+  rpc GetNativeSession(GetNativeSessionRequest) returns (GetNativeSessionResponse);
+  rpc PrepareNativeLogout(PrepareNativeLogoutRequest) returns (PrepareNativeLogoutResponse);
+  rpc ApplyNativeLogout(ApplyNativeLogoutRequest) returns (ApplyNativeLogoutResponse);
+}
+
+message BeginNativeLoginRequest {
+  string issuer = 1;
+  string client_profile_id = 2;
+}
+message NativePluginConfiguration {
+  NativeClientKind kind = 1;
+  string client_profile_id = 2;
+  string client_id = 3;
+  string service_origin = 4;
+  string redirect_uri = 5;
+  // Apple forwards the raw nonce unchanged. Google initialize uses no nonce.
+  string nonce = 6;
+  string state = 7;
+}
+message BeginNativeLoginResponse {
+  string attempt_id = 1;
+  // Ephemeral app proof. Never send to a provider or persist in app storage.
+  string completion_secret = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  string affinity = 4;
+  NativePluginConfiguration configuration = 5;
+}
+message GoogleNativeCredential {
+  string id_token = 1;
+}
+message AppleNativeCredential {
+  string identity_token = 1;
+  string authorization_code = 2;
+  string state = 3;
+}
+message CompleteNativeLoginRequest {
+  string attempt_id = 1;
+  string completion_secret = 2;
+  oneof provider {
+    GoogleNativeCredential google = 3;
+    AppleNativeCredential apple = 4;
+  }
+}
+message NativeSession {
+  string credential_profile = 1;
+  string client_profile_id = 2;
+  string service_origin = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  // Absent means unknown. Session creation or token iat never fills this field.
+  google.protobuf.Timestamp auth_time = 6;
+  SecurityIdentity identity = 7;
+  SecurityVersion version = 8;
+}
+message CompleteNativeLoginResponse {
+  // Disclosed only after durable Apply and current revalidation/output fencing.
+  string credential = 1;
+  NativeSession session = 2;
+}
+message GetNativeSessionRequest {}
+message GetNativeSessionResponse {
+  NativeSession session = 1;
+  repeated SecurityRole roles = 2;
+}
+message PrepareNativeLogoutRequest {}
+message PrepareNativeLogoutResponse {
+  // Retain before Apply. Status recovery uses GetSecurityChangeStatus and the
+  // same ID/intent, potentially under a later session for this exact Principal.
+  CurrentSessionRevocationReview review = 1;
+}
+message ApplyNativeLogoutRequest {
+  CurrentSessionRevocationReview review = 1;
+}
+message ApplyNativeLogoutResponse {
+  // Local app teardown is independent of the durable original outcome.
+  bool clear_local_session = 1;
+  // Absence means unknown/unavailable for disclosure, never rollback.
+  CurrentSecurityChangeResult current_result = 2;
+}
