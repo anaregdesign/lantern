@@ -206,8 +206,9 @@ Existing exact acceptance to retain:
 During edits run those affected paired tests and the three legacy real-wire tests;
 inspect that selected tests actually execute. The current native public gate can
 skip under a plain `go test`: use the existing qualification runner, not a skipped
-test as acceptance. The repository's full local plan already runs current SDK4
-F/Q and scoped Rust in `rust-oidc-scoped-wire`; do not duplicate it as a new campaign.
+test as acceptance. The repository's full local plan already runs configured-source
+SDK4 Q and scoped Rust in `rust-oidc-scoped-wire`; required hosted CI separately
+runs F and Q. Do not duplicate these as a new campaign.
 
 Before each source push use CONTRIBUTING's full component gate, with frozen
 Node/Admin installs completed before root Go traversal. The existing 76-step
