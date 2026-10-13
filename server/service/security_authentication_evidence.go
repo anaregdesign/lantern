@@ -1,4 +1,4 @@
-package provider
+package service
 
 import (
 	"context"
@@ -48,18 +48,4 @@ func authenticationEvidenceFromContext(ctx context.Context) (requestAuthenticati
 }
 func requestCredentialCommitment(domain, raw string) [32]byte {
 	return sha256.Sum256([]byte("lantern/authentication/" + domain + "/v1\x00" + raw))
-}
-
-// completeOperationAuthentication is the sole production adapter into the
-// purpose owner. Arbitrary factual structs must never substitute this producer.
-func (r *SecurityRuntime) completeOperationAuthentication(ctx context.Context, id [32]byte, current *security.Revision, now time.Time) error {
-	evidence, ok := authenticationEvidenceFromContext(ctx)
-	if !ok || evidence.kind != "token" {
-		return security.ErrOperationAuthorization
-	}
-	event := evidence.token.Evidence()
-	if event.Mode != "code" || event.Code.Flow != "operation" || event.Code.AuthorizationID != id {
-		return security.ErrOperationAuthorization
-	}
-	return r.authorizations.Complete(id, event, current, now)
 }

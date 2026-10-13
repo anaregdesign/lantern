@@ -1,4 +1,4 @@
-package provider
+package service
 
 import (
 	"crypto/tls"
@@ -13,11 +13,11 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
-func browserSessionFixture(t *testing.T) (*SecurityRuntime, *securityTestClock, string, string) {
+func browserSessionFixture(t *testing.T) (*authenticationFixture, *securityTestClock, string, string) {
 	t.Helper()
-	config, data, clock := securityRuntimeFixture(t)
+	config, clock := authenticationConfigFixture(t)
 	config.TrustedProxyIPs = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
-	runtime, cleanup, err := NewSecurityRuntime(config, data)
+	runtime, cleanup, err := newAuthenticationFixture(t, config)
 	if err != nil {
 		t.Fatal(err)
 	}

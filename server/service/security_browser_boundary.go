@@ -1,4 +1,4 @@
-package provider
+package service
 
 import (
 	"context"
@@ -27,7 +27,7 @@ var errBrowserBoundary = errors.New("browser session boundary rejected request")
 
 // browserOrigin accepts direct TLS or one explicitly pinned gateway hop.
 // Forwarded headers from any other source can never establish HTTPS or Host.
-func (r *SecurityRuntime) browserOrigin(req *http.Request, requireOrigin bool) error {
+func (r *CredentialAdapter) browserOrigin(req *http.Request, requireOrigin bool) error {
 	if r == nil || r.mode != "oidc" || req.URL.RawPath != "" || len(req.URL.RawQuery) > 16<<10 {
 		return errBrowserBoundary
 	}
@@ -94,7 +94,7 @@ func browserDigest(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
 }
-func (r *SecurityRuntime) authenticateBrowser(req *http.Request, requireCSRF bool) (context.Context, string, error) {
+func (r *AuthenticationAdapter) authenticateBrowser(req *http.Request, requireCSRF bool) (context.Context, string, error) {
 	ctx := req.Context()
 	if err := r.browserOrigin(req, requireCSRF); err != nil {
 		return ctx, "", connect.NewError(connect.CodePermissionDenied, errBrowserBoundary)
@@ -130,7 +130,7 @@ func (r *SecurityRuntime) authenticateBrowser(req *http.Request, requireCSRF boo
 		}
 		return security.WithAdmission(verified, a.WithBrowserProof(csrf)), browserDigest(value), nil
 	}
-	revision, known := r.native.Store().Current()
+	revision, known := r.store.Current()
 	if !known || r.authorityCheck(ctx, revision) != nil {
 		return ctx, "", connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
 	}
@@ -145,8 +145,10 @@ func (r *SecurityRuntime) authenticateBrowser(req *http.Request, requireCSRF boo
 		return ctx, "", connect.NewError(connect.CodePermissionDenied, errBrowserBoundary)
 	}
 	expiry := minSecurityTime(session.ExpiresAt, r.now().Add(28*time.Second))
-	if r.receiver != nil {
-		expiry = minSecurityTime(expiry, r.receiver.Expiry())
+	if r.leaseExpiry != nil {
+		if lease, known := r.leaseExpiry(); known {
+			expiry = minSecurityTime(expiry, lease)
+		}
 	}
 	admission, err := security.NewAdmission(session.Identity, authTime, expiry, revision, r.authorityCheck)
 	if err != nil || admission.Check(ctx, r.now()) != nil {
@@ -165,11 +167,11 @@ func (r *SecurityRuntime) authenticateBrowser(req *http.Request, requireCSRF boo
 
 // BrowserRPCHandler is a distinct same-origin session surface. StripPrefix
 // preserves the generated Connect procedure and its cursor binding internally.
-func (r *SecurityRuntime) BrowserRPCHandler(path string, handler http.Handler) http.Handler {
+func (r *AuthenticationAdapter) BrowserRPCHandler(path string, handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if req.Method != http.MethodPost || !strings.HasPrefix(req.URL.Path, "/browser"+path) {
-			publicRPCError(w, req, connect.CodePermissionDenied)
+			WritePublicAdmissionError(w, req, connect.CodePermissionDenied)
 			return
 		}
 		if r.mode == "off" {
@@ -178,12 +180,12 @@ func (r *SecurityRuntime) BrowserRPCHandler(path string, handler http.Handler) h
 		}
 		ctx, _, err := r.authenticateBrowser(req, true)
 		if err != nil {
-			publicRPCError(w, req, connect.CodeOf(err))
+			WritePublicAdmissionError(w, req, connect.CodeOf(err))
 			return
 		}
 		ctx, err = r.boundSnapshotAdmission(ctx)
 		if err != nil {
-			publicRPCError(w, req, connect.CodeUnavailable)
+			WritePublicAdmissionError(w, req, connect.CodeUnavailable)
 			return
 		}
 		http.StripPrefix("/browser", handler).ServeHTTP(w, req.WithContext(ctx))

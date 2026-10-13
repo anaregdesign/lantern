@@ -15,6 +15,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/authn"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -184,28 +185,11 @@ func (h *SecurityConnectHandler) GetCurrentPrincipal(ctx context.Context, req *c
 	if err = securityRequestError(req.Msg); err != nil {
 		return nil, err
 	}
-	response := &pb.GetCurrentPrincipalResponse{Identity: encodeSecurityIdentity(admission.Identity()), Version: SecurityVersionForAdmission(admission), ExpiresAt: timestamppb.New(admission.ExpiresAt()), RecentAuthentication: !admission.AuthTime().IsZero() && !admission.AuthTime().After(h.now()) && h.now().Sub(admission.AuthTime()) <= security.RecentAuthenticationLifetime}
-	image := admission.Snapshot().Image()
-	roles := make(map[string]bool)
-	for _, user := range image.Principals {
-		if user.Identity == admission.Identity() {
-			for _, assignment := range user.Assignments {
-				roles[assignment.RoleID] = true
-			}
-		}
+	view, err := authn.InspectSession(ctx, admission, h.store, h.current, h.now)
+	if err != nil {
+		return nil, connect.NewError(sessionErrorCode(err), err)
 	}
-	for _, role := range image.Roles {
-		if roles[role.ID] {
-			response.Roles = append(response.Roles, encodeSecurityManagedRole(role, image))
-		}
-	}
-	if admission.Browser() {
-		response.CsrfToken = admission.CSRFToken()
-	}
-	if err = admission.Check(ctx, h.now()); err != nil {
-		return nil, connect.NewError(securityErrorCode(err), err)
-	}
-	result := connect.NewResponse(response)
+	result := connect.NewResponse(encodeSessionView(view))
 	result.Header().Set("Cache-Control", "no-store")
 	return result, nil
 }

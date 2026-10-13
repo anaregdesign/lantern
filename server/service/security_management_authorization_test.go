@@ -1,4 +1,4 @@
-package provider
+package service
 
 import (
 	"net/http"
@@ -25,11 +25,11 @@ func TestSecurityManagementAuthorizationAdmissionAndNavigationBoundary(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	start, startURL, err := runtime.beginManagementAuthorization(ctx, admission, prepared.Binding)
+	start, startURL, err := runtime.BeginManagementAuthorization(ctx, admission, prepared.Binding)
 	if err != nil || startURL == "" {
 		t.Fatal(err)
 	}
-	status, err := runtime.readManagementAuthorization(ctx, admission, start.ID)
+	status, err := runtime.ReadManagementAuthorization(ctx, admission, start.ID)
 	if err != nil || status.State != security.AuthorizationPending {
 		t.Fatal(status, err)
 	}

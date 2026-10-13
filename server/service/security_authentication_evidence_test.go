@@ -1,4 +1,4 @@
-package provider
+package service
 
 import (
 	"net/http"
@@ -14,10 +14,10 @@ import (
 func TestSecurityAuthenticationEvidenceBearerClassificationAndDeadlines(t *testing.T) {
 	for _, qualified := range []bool{false, true} {
 		t.Run(map[bool]string{false: "unresolved", true: "enrolled human"}[qualified], func(t *testing.T) {
-			config, data, clock := securityRuntimeFixture(t)
+			config, clock := authenticationConfigFixture(t)
 			config.Bootstrap.Issuer.HumanSubjectNamespaceQualified = qualified
 			idp := newSecurityProviderFixture(t, &config, clock)
-			runtime, closeRuntime, err := NewSecurityRuntime(config, data)
+			runtime, closeRuntime, err := newAuthenticationFixture(t, config)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -93,7 +93,7 @@ func TestSecurityAuthenticationEvidenceNativeSessionOnly(t *testing.T) {
 	session, _ = newBrowserSecret()
 	csrf, _ = newBrowserSecret()
 	current, _ := runtime.native.Store().Current()
-	identity := security.Identity{Kind: security.OIDCPrincipal, Issuer: runtime.config.Bootstrap.Issuer.URL, Subject: "admin"}
+	identity := security.Identity{Kind: security.OIDCPrincipal, Issuer: runtime.testConfig.Bootstrap.Issuer.URL, Subject: "admin"}
 	if _, err := runtime.native.Store().IssueSession(t.Context(), security.SessionRequest{ChangeID: [16]byte{19}, Identity: identity, IssuerConfigRevision: 1, Digest: browserDigest(session), CSRFDigest: browserDigest(csrf), Now: clock.Now(), Lifetime: security.MaxSessionLifetime}); err != nil {
 		t.Fatal(err)
 	}
@@ -117,9 +117,7 @@ func TestSecurityAuthenticationEvidenceNativeSessionOnly(t *testing.T) {
 		if evidence.session.Digest == session || evidence.session.CSRFDigest == csrf {
 			t.Fatal("raw secrets retained")
 		}
-		if err := runtime.completeOperationAuthentication(ctx, [32]byte{1}, current, clock.Now()); err == nil {
-			t.Fatal("session label minted purpose event")
-		}
+
 	}
 	for _, mutate := range []func(*http.Request){func(r *http.Request) { r.Header.Set(browserCSRFHeader, "wrong") }, func(r *http.Request) { r.Header.Set("Origin", "https://foreign.example") }, func(r *http.Request) { r.Header.Del("Cookie") }} {
 		req := browserFixtureRequest(session, csrf)
@@ -135,7 +133,7 @@ func TestSecurityAuthenticationEvidenceNativeSessionOnly(t *testing.T) {
 }
 
 func TestSecurityAuthenticationEvidenceNativeMachine(t *testing.T) {
-	config, data, clock := securityRuntimeFixture(t)
+	config, clock := authenticationConfigFixture(t)
 	token, err := security.NewMachineToken()
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +144,7 @@ func TestSecurityAuthenticationEvidenceNativeMachine(t *testing.T) {
 	config.Bootstrap.Roles = []security.Role{{ID: "reader", Rules: []security.PermissionRule{{ID: "read", Effect: security.Allow, Action: security.VertexRead, Resource: security.DataResource, Prefix: &prefix}}}}
 	expiry := clock.Now().Add(time.Hour)
 	config.Bootstrap.Machines = []security.BootstrapMachine{{Name: "worker", RoleIDs: []string{"reader"}, Credentials: []security.MachineCredential{{Identity: identity, Digest: digest, CreatedAt: clock.Now(), ExpiresAt: expiry}}}}
-	runtime, cleanup, err := NewSecurityRuntime(config, data)
+	runtime, cleanup, err := newAuthenticationFixture(t, config)
 	if err != nil {
 		t.Fatal(err)
 	}

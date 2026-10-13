@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anaregdesign/lantern/server/internal/authn"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/security"
@@ -18,6 +19,9 @@ import (
 // its role/query/CDC/peer/browser boundaries before accepting requests.
 type SecurityRuntime struct {
 	mode           string
+	authentication *service.AuthenticationAdapter
+	workflow       *authn.Workflow
+	credentials    *authn.Credentials
 	current        *security.CurrentAuthority
 	output         *security.CurrentOutput
 	attemptProcess [32]byte
@@ -69,6 +73,7 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (re
 		}
 	}()
 	if config.Mode == "off" {
+		runtime.composeAuthentication(nil)
 		runtime.control, err = service.NewSecurityConnectHandler(service.SecurityServiceOptions{Ready: func(ctx context.Context, _ *security.Revision) bool { return runtime.Ready(ctx) }})
 		if err != nil {
 			return nil, nil, err
@@ -136,6 +141,14 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (re
 	}
 	// Replica receiver identity is installed by approved workload composition,
 	// never inferred from the graph's ephemeral origin. Until then it cannot serve.
+	runtime.credentials = authn.NewCredentials(runtime.keys)
+	runtime.workflow, err = authn.NewLegacyWorkflow(authn.LegacyAuthority{Store: runtime.native.Store(), Authorizations: runtime.authorizations, Check: runtime.authorityCheck, Enforced: func(result security.ChangeResult) bool {
+		return runtime.authority != nil && runtime.authority.Enforced(result)
+	}}, runtime.loginResources())
+	if err != nil {
+		return nil, nil, err
+	}
+	runtime.composeAuthentication(runtime.native.Store())
 	runtime.control, err = service.NewSecurityConnectHandler(service.SecurityServiceOptions{Store: runtime.native.Store(), Now: runtime.now, ValidateIssuer: func(ctx context.Context, issuer security.Issuer) error {
 		if issuer.RedirectURI != config.BrowserOrigin+oidc.CallbackPath(issuer.URL) {
 			return oidc.ErrInvalidDocument
@@ -145,7 +158,7 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (re
 		return runtime.authorityCheck(ctx, revision) == nil
 	}, Enforced: func(result security.ChangeResult) bool {
 		return runtime.authority != nil && runtime.authority.Enforced(result)
-	}, BeginAuthorization: runtime.beginManagementAuthorization, ReadAuthorization: runtime.readManagementAuthorization, VerifyAuthorization: runtime.authorizations.Verify})
+	}, BeginAuthorization: runtime.authentication.BeginManagementAuthorization, ReadAuthorization: runtime.authentication.ReadManagementAuthorization, VerifyAuthorization: runtime.authorizations.Verify})
 	if err != nil {
 		return nil, nil, err
 	}

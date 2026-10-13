@@ -1,4 +1,4 @@
-package provider
+package service
 
 import (
 	"context"
@@ -12,9 +12,9 @@ import (
 )
 
 func TestSecurityAuthenticationVerifiedCurrentCut(t *testing.T) {
-	config, data, clock := securityRuntimeFixture(t)
+	config, clock := authenticationConfigFixture(t)
 	idp := newSecurityProviderFixture(t, &config, clock)
-	runtime, closeRuntime, err := NewSecurityRuntime(config, data)
+	runtime, closeRuntime, err := newAuthenticationFixture(t, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,9 +66,9 @@ func TestSecurityAuthenticationVerifiedCurrentCut(t *testing.T) {
 }
 
 func TestSecurityAuthenticationUnavailableAndOff(t *testing.T) {
-	config, data, clock := securityRuntimeFixture(t)
+	config, clock := authenticationConfigFixture(t)
 	idp := newSecurityProviderFixture(t, &config, clock)
-	runtime, closeRuntime, err := NewSecurityRuntime(config, data)
+	runtime, closeRuntime, err := newAuthenticationFixture(t, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestSecurityAuthenticationUnavailableAndOff(t *testing.T) {
 	if _, err := runtime.AuthenticateBearer(t.Context(), http.Header{"Authorization": {"Bearer " + raw}}); connect.CodeOf(err) != connect.CodeUnavailable || idp.fetches.Load() != 0 {
 		t.Fatal("unready writer performed credential fetch", err)
 	}
-	off, closeOff, err := NewSecurityRuntime(SecurityConfig{Mode: "off"}, nil)
+	off, closeOff, err := newAuthenticationFixture(t, authenticationConfig{Mode: "off"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestSecurityAuthenticationUnavailableAndOff(t *testing.T) {
 	} else if _, known := security.AdmissionFromContext(ctx); known {
 		t.Fatal("OFF invented authenticated authority")
 	}
-	var absent *SecurityRuntime
+	var absent *AuthenticationAdapter
 	if _, err := absent.AuthenticateBearer(t.Context(), nil); connect.CodeOf(err) != connect.CodeUnavailable {
 		t.Fatal(err)
 	}

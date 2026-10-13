@@ -292,6 +292,11 @@ The operation-purpose proof contract is:
   executes a new mutation. Current recovery/disclosure checks and original
   commit evidence still apply.
 
+Login/session orchestration lives in Server `internal/authn`; browser/Connect
+transport stays in `service`, and provider retains construction, certification
+and lifecycle ownership. See [the extraction design](../login-session-workflows.md)
+for concrete APIs and the unchanged opaque-evidence/output ordering.
+
 The purpose callback branches before ordinary session issuance or cookie writes;
 generic session step-up cannot authorize an operation. A typed, fully bound
 pre-persistence authorization refusal permits same-ID proof reacquisition only

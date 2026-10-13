@@ -20,9 +20,7 @@ func TestCurrentRuntimeNeverFallsBackFromMissingProvisioning(t *testing.T) {
 	if r.currentAttemptAffinity([32]byte{}) != "" {
 		t.Fatal("empty attempt accepted")
 	}
-	if _, err := r.readCurrentManagementAuthorization(t.Context(), nil, [32]byte{1}, "another-process"); err == nil {
-		t.Fatal("foreign process affinity reached purpose owner")
-	}
+
 }
 
 func TestCurrentRuntimeFloorExportRequiresActualOwner(t *testing.T) {

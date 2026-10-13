@@ -1,14 +1,15 @@
-package provider
+package service
 
 import (
 	"context"
-	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
-	"github.com/anaregdesign/lantern/server/internal/security"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
 type snapshotDeadlineWriter struct {
@@ -24,8 +25,8 @@ func (w *snapshotDeadlineWriter) SetWriteDeadline(deadline time.Time) error {
 	return nil
 }
 func TestSnapshotAdmissionStopsTransportWhenAuthorityIsWithdrawn(t *testing.T) {
-	cfg, data, clock := securityRuntimeFixture(t)
-	runtime, cleanup, err := NewSecurityRuntime(cfg, data)
+	cfg, clock := authenticationConfigFixture(t)
+	runtime, cleanup, err := newAuthenticationFixture(t, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +41,7 @@ func TestSnapshotAdmissionStopsTransportWhenAuthorityIsWithdrawn(t *testing.T) {
 		t.Fatal(err)
 	}
 	entered, done := make(chan struct{}), make(chan struct{})
-	handler := runtime.boundSnapshotHTTPHandler(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+	handler := runtime.BoundSnapshotHTTPHandler(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
 		ctx, err := runtime.boundSnapshotAdmission(req.Context())
 		if err != nil {
 			t.Error(err)

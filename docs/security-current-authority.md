@@ -535,6 +535,14 @@ review once. Local cookie clearing and cluster revocation remain separate; a
 self-revoked cookie cannot disclose protected original outcomes using its old
 admission. Use another currently authorized credential for status recovery.
 
+The Server's `internal/authn` workflow owns login/callback/session orchestration
+and the genuine Code/Bearer producer. `service` owns the private browser producer,
+Origin/CSRF/cookie rules and HTTP/Connect encoding; both session inspection
+transports call the same workflow. `provider` retains composition, exact-instance
+certification and lifecycle ownership. The [extraction design](login-session-workflows.md)
+preserves the opaque evidence and Apply → current revalidation → output sequence;
+it does not add a native login profile or a second session store.
+
 Node/Admin consume v2 reviews, exact refusal details and immutable original
 outcomes. Go `GetCurrentPrincipal`/`CurrentSecurityVersionBinding`, Dart
 `getCurrentAuthorityBinding`, and Rust `current_authority_binding` use the normal
