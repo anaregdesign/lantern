@@ -119,7 +119,7 @@ queue. Local account teardown is independent of a confirmed Server outcome.
 Close/cancel the old client before switching accounts, partition cache/outbox
 by exact account and endpoint, and preserve possibly dispatched mutations for
 their original status-first recovery. See the
-[Server contract](../../docs/native-login-sessions.md) for provider limitations.
+[Server contract](https://github.com/anaregdesign/lantern/blob/main/docs/native-login-sessions.md) for provider limitations.
 
 ## Mobile retries and additive safety (current source)
 
