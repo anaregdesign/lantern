@@ -46,9 +46,11 @@ on pushed `sdks/rust/v*.*.*` tags and rejects any tag that is not exactly
 `sdks/rust/vX.Y.Z`. There is no PR, `workflow_run`, or manual-dispatch release
 path. Its tag job compares the peeled commit and remote tag object with the
 checked-out commit, package metadata, license, and exact changelog heading.
-Its conformance matrix has **six native lanes**: Linux, macOS, and Windows,
-each on the declared Rust MSRV (`1.88.0`) and stable. Every lane checks
-generated-binding drift, formatting, all-target/all-feature Clippy, default
+Its conformance matrix has **four representative lanes**: the declared Rust
+MSRV (`1.88.0`) on Linux, plus stable on Linux, macOS, and Windows.
+The MSRV compiler/dependency contract is represented on Linux; native-platform
+behavior is qualified on stable without repeating MSRV on macOS/Windows. Every
+lane checks generated-binding drift, formatting, all-target/all-feature Clippy, default
 TLS roots, all-feature tests, and warning-free rustdoc; the stable lane on
 **each OS** also builds the production Go server and runs the ignored real-wire
 h2c/TLS/auth/CRUD/query failure tests. A path-filtered green PR workflow
@@ -67,7 +69,7 @@ logs. An older/manual receipt or a status field alone cannot authorize release.
 Publication depends on both that lane and successful archive preflight, whose
 existing byte comparison binds the `.crate` to the same tag checkout.
 
-Only after all six conformance lanes and native SDK4 pass, preflight audits
+Only after all four conformance lanes and native SDK4 pass, preflight audits
 locked dependencies with
 warnings denied (including unmaintained crates), builds the tagged `.crate`
 with `cargo package --locked`, checks its license, version, source and
@@ -105,7 +107,7 @@ bootstrap for audit; **do not repeat them for later versions**. Never move
 the old tag, republish a version, or manually publish a subsequent release.
 
 1. With the authorized tag pushed, inspect its **Rust SDK Release** run. All
-   six conformance lanes, the advisory audit, packaging, archive inspection,
+   four conformance lanes, the advisory audit, packaging, archive inspection,
    isolated archive tests, publish dry-run, and independent archive
    comparison must have succeeded. For an absent crate, the first run
    **intentionally fails only at preflight's registry lookup after uploading
@@ -174,7 +176,7 @@ the old tag, republish a version, or manually publish a subsequent release.
 For later approved versions, retain the protected `crates.io` Environment,
 trusted-publisher binding, immutable tag rules, and owner variable. After
 candidate qualification, push only the exact authorized tag. The tag,
-six-lane conformance, audit, and isolated candidate gates run again. If that
+four-lane conformance, audit, and isolated candidate gates run again. If that
 version does not exist, only the protected `publish` job can request
 `id-token: write`; it has `contents: read`, uses a short-lived crates.io OIDC
 credential, and publishes without a long-lived registry secret. A missing or

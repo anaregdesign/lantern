@@ -1,18 +1,7 @@
 name: Dart transport probe
 
+# Historical Connect/gRPC comparison; production coverage lives in dart-sdk.yml.
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/dart-transport-probe.yml"
-      - "docs/decisions/0001-dart-mobile-transport.md"
-      - "proto/**"
-      - "server/**"
-      - "core/privatefile/**"
-      - "testbed/scripts/dart_transport_fixture.sh"
-      - "testbed/dart-transport-probe/**"
-      - "!testbed/dart-transport-probe/*.md"
-      - "docs/decisions/0001-dart-mobile-transport.md"
   workflow_dispatch:
 
 concurrency:

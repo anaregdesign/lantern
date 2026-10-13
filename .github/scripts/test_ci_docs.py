@@ -145,11 +145,9 @@ class WorkflowRoutingTest(unittest.TestCase):
             "node-sdk": (["sdks/node/README.md", "server/README.md"], ["sdks/node/src/client.ts"]),
             "rust-sdk": (["sdks/rust/RELEASING.md", "core/README.md"], ["sdks/rust/src/lib.rs"]),
             "admin": (["admin/README.md", "sdks/node/README.md"], ["admin/app/root.tsx"]),
-            "dart-transport-probe": (["testbed/dart-transport-probe/README.md"], ["testbed/dart-transport-probe/connect/lib/probe.dart"]),
         }
         for name, (docs, source) in cases.items():
-            events = ["pull_request"] if name == "dart-transport-probe" else ["push", "pull_request"]
-            for event in events:
+            for event in ["push", "pull_request"]:
                 patterns = workflow_paths(name, event)
                 with self.subTest(name=name, event=event):
                     self.assertFalse(triggers(patterns, docs))

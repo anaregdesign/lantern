@@ -76,3 +76,9 @@ tested escape hatch, but it will not be shipped as a second production backend
 unless a fallback trigger fires. Connect's thinner dependency set and smaller
 Android/iOS debug artifacts reinforce the protocol fit, but correctness and
 maintainability—not the harness size delta—are the deciding criteria.
+
+The historical two-candidate comparison workflow is manual-only (#1753).
+Dispatch it when evaluating a fallback trigger or changing the probe. Routine
+PR/main and release coverage belongs to the maintained production SDK in
+`dart-sdk.yml`, including its scoped Android/iOS conformance. Historical gRPC
+probe results do not promise continuous qualification of an unshipped backend.

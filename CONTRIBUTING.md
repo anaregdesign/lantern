@@ -311,7 +311,7 @@ directories. `Build & Test` validates text/whitespace and runs the inexpensive
 CI/release-contract tests; Lint, Proto, vulnerability, Windows and Fuzz jobs
 skip before a runner starts. A failed classifier still fails `Build & Test`.
 
-Dart, Node, Rust, Admin, the transport probe and CodeQL use conservative ordered
+Dart, Node, Rust, Admin and CodeQL use conservative ordered
 path exclusions to avoid starting for ordinary README/CHANGELOG changes.
 Dart instruction/process-doc changes use a cheap contract check and `Gate`.
 Mixed source changes, fixtures, unknown paths, workflow/config changes,
@@ -326,6 +326,14 @@ language-specific Lint/static-analysis gates remain enabled. The repository's
 required contexts stay `Build & Test`, `Lint`, `Proto (buf)` and `govulncheck`;
 job-level skips satisfy GitHub's required-check contract. This hosted routing
 does not itself select local eligibility; the explicit local path below is narrower.
+
+The historical Connect/gRPC transport comparison is manual-only. Production
+Dart SDK, offline/SQLite and native Android/iOS conformance remain in
+`dart-sdk.yml`; dispatch the comparison when evaluating a fallback or changing
+the probe itself. Rust, Node and Admin cancel only superseded PR runs. Main
+qualification and release runs remain independent. See the
+[CI inventory and reduction rationale](docs/ci-inventory.md). These reductions
+add no local test obligation; the existing full local gate is unchanged.
 
 ## Local prose eligibility
 
@@ -377,7 +385,10 @@ codegen with bundled `protoc`). Commit `Cargo.lock` for repository CI; the
 library archive builds without the Go workspace, root `proto/`, Buf, a system
 `protoc`, or a generator build script. `.github/workflows/rust-sdk.yml` checks
 codegen drift, formatting, warnings-denied Clippy, tests, example compilation,
-and warning-free docs with Rust 1.88/stable on Linux, macOS, and Windows.
+and warning-free docs on four representative lanes: Rust 1.88 on Linux,
+plus stable on Linux, macOS, and Windows. MSRV compatibility is checked on
+Linux; each native platform is qualified on stable, without an OS × MSRV
+Cartesian product.
 Each stable lane builds the production Go server and runs the full opt-in
 real-wire h2c/TLS/auth/CRUD/query suite, including failure paths. Locally,
 build the server from the root and run that suite from the crate:
@@ -700,8 +711,10 @@ Commit regenerated stubs under `pb/`, `sdks/dart/lib/src/gen/`,
 `testbed/dart-transport-probe/{connect,grpc}/lib/src/gen/`
 when they change. Never hand-edit generated files. CI reruns these generators and
 checks for drift in `go.yml`, `dart-sdk.yml`, `node-sdk.yml`,
-`rust-sdk.yml`, and `dart-transport-probe.yml`; even a comment-only proto
-edit can change generated docs.
+`rust-sdk.yml`; even a comment-only proto edit can change generated docs.
+The historical transport comparison checks its generated sources when manually
+dispatching `dart-transport-probe.yml`; regenerate its stubs with schema changes
+as above. It is not a routine PR or release prerequisite.
 Never pass `--clean` to buf — its output root is `pb/`, so `--clean` would delete
 `pb/go.mod` and `pb/doc.go` alongside the stubs.
 If the wire shape consumed or shipped by `lantern_client` changes, cut an independent
@@ -885,7 +898,7 @@ number rather than force-moving the tag.
 - `sdks/rust/vX.Y.Z` must match the `sdks/rust/Cargo.toml` package version and
   an exact `## X.Y.Z` heading in `sdks/rust/CHANGELOG.md`. The prepared
   `0.1.0` heading is not evidence of publication. `rust-release.yml` verifies
-  the exact immutable tag, six native OS/MSRV/stable conformance lanes,
+  the exact immutable tag, four representative MSRV/native conformance lanes,
   warning-free dependency audit, and a license-checked, independently tested
   crate archive; the publish dry-run must pass and a fresh repackage must
   reproduce the tested bytes. The **first** crates.io publication (the only
