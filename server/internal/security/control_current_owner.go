@@ -35,7 +35,7 @@ func openCurrentAuthorityOwnerWithCustody(ctx context.Context, c s3aConfig, orig
 			clear(key)
 		}
 	}()
-	clock, err := newNativeAuthorityTimeOwner()
+	clock, err := newCurrentAuthorityTimeOwner()
 	if err != nil {
 		return nil, err
 	}

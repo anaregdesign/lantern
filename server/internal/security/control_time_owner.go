@@ -97,6 +97,12 @@ func (s *authorityTimeRetry) delay(err error, refresh time.Duration) time.Durati
 // There is never a backlog or catch-up burst after a scheduler pause.
 func (o *authorityTimeOwner) run(ctx context.Context, measure func(context.Context) (authorityTimeMeasurement, error)) {
 	defer close(o.done)
+	o.runLoop(ctx, measure)
+}
+
+// The test-build composition owns additional UDP responder workers and joins
+// them before closing done. Both compositions execute this unchanged loop.
+func (o *authorityTimeOwner) runLoop(ctx context.Context, measure func(context.Context) (authorityTimeMeasurement, error)) {
 	var retry authorityTimeRetry
 	for {
 		m, err := measure(ctx)

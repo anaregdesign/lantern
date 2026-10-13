@@ -17,9 +17,11 @@ from local_gate_plan import steps
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def events(tests=gate.SDK_TESTS):
+def events(tests=gate.SDK_TESTS, kind="Q"):
     result = [{"Action": "run", "Test": gate.ROOT_TEST},
-              {"Action": "output", "Test": gate.ROOT_TEST, "Output": gate.NATIVE_MARKER}]
+              {"Action": "output", "Test": gate.ROOT_TEST, "Output": gate.NATIVE_MARKER if kind == "Q" else gate.FIXTURE_MARKER}]
+    result += [{"Action": "output", "Test": gate.ROOT_TEST,
+                "Output": f"current_constructor node={i} mode=fresh passed=true"} for i in (1, 2, 3)]
     for name in tests:
         result += [{"Action": "run", "Test": name}, {"Action": "pass", "Test": name}]
     result += [{"Action": "pass", "Test": gate.ROOT_TEST}, {"Action": "pass"}]
@@ -49,14 +51,14 @@ class SDK4ReceiptTest(unittest.TestCase):
         self.git("add", ".")
         self.git("commit", "-qm", "fixture")
         self.source = gate.snapshot(self.root)
-        self.runtime = {"environment": gate.ENVIRONMENT.copy(), "source_config_sha256": "a" * 64,
+        self.runtime = {"proof": gate.proof_contract("Q"), "native_environment": {"system": "synthetic-test"}, "environment": gate.ENVIRONMENT.copy(), "source_config_sha256": "a" * 64,
                         "tools": {name: {"version": "synthetic", "selected_sha256": "b" * 64}
                                   for name in ("go", "bun", "dart", "cargo", "rustc")}}
         self.write_events(events())
         (self.evidence / "stderr.log").write_bytes(b"")
         self.write_events(events((gate.EXPORT_TEST,)), "export-events.jsonl")
         (self.evidence / "export-stderr.log").write_bytes(b"")
-        self.receipt = {"schema": 1, "status": "PASS", "exit": 0, "source": self.source,
+        self.receipt = {"schema": 2, "proof": gate.proof_contract("Q"), "status": "PASS", "exit": 0, "source": self.source,
                         "runner_sha256": gate.sha(script.read_bytes()), "runtime": self.runtime,
                         "include_scoped": False, "command": gate.command(False),
                         "executed_tests": [gate.ROOT_TEST, *gate.SDK_TESTS],
@@ -71,6 +73,7 @@ class SDK4ReceiptTest(unittest.TestCase):
         (self.evidence / name).write_text("".join(json.dumps(record) + "\n" for record in records))
 
     def save(self):
+        self.receipt["observed"] = gate.observed_execution(self.evidence)
         self.receipt["logs"] = {name: gate.sha((self.evidence / name).read_bytes())
                                 for name in gate.LOG_NAMES}
         data = gate.encoded(self.receipt)
@@ -83,6 +86,62 @@ class SDK4ReceiptTest(unittest.TestCase):
     def test_complete_execution_and_exact_source(self):
         self.assertEqual(self.verify()["executed_tests"], [gate.ROOT_TEST, *gate.SDK_TESTS])
         self.assertEqual(self.verify()["export"]["executed_tests"], [gate.ROOT_TEST, gate.EXPORT_TEST])
+
+    def test_constructor_failure_reports_body_not_run_without_inventing_success(self):
+        self.write_events([{"Package": gate.PACKAGE, "Test": gate.ROOT_TEST, "Action": "run"},
+                           {"Package": gate.PACKAGE, "Test": gate.ROOT_TEST, "Action": "output",
+                            "Output": "current_constructor node=1 mode=fresh passed=false"},
+                           {"Package": gate.PACKAGE, "Test": gate.ROOT_TEST, "Action": "fail"}], "export-events.jsonl")
+        observed = gate.observed_execution(self.evidence)["export-events.jsonl"]
+        self.assertEqual(observed["tests"][gate.ROOT_TEST], "FAIL")
+        self.assertEqual(observed["tests"][gate.EXPORT_TEST], "NOT_RUN")
+        self.assertEqual(observed["constructors"], [["1", "fresh", "false"]])
+
+    def test_proof_build_source_and_fresh_owner_mismatch_refuse(self):
+        for proof in ({}, gate.proof_contract("F"), {**gate.proof_contract("Q"), "synthetic_utc": True},
+                      {**gate.proof_contract("Q"), "build_tags": [gate.FIXTURE_TAG]}):
+            self.receipt["proof"] = proof
+            self.save()
+            with self.assertRaisesRegex(ValueError, "proof kind"):
+                self.verify()
+        self.receipt["proof"] = gate.proof_contract("Q")
+        for variant in (events(kind="F"),
+                        [r for r in events() if "node=2" not in r.get("Output", "")],
+                        [{**r, "Output": r.get("Output", "").replace("node=2 mode=fresh passed=true", "node=2 mode=fresh passed=false")}
+                         if "Output" in r else r for r in events()]):
+            self.write_events(variant)
+            self.save()
+            with self.assertRaises(ValueError):
+                self.verify()
+
+    def test_f_requires_native_loss_recovery_and_cannot_be_reused_as_q(self):
+        self.receipt["proof"] = self.runtime["proof"] = gate.proof_contract("F")
+        self.receipt["command"] = gate.command(False, "F")
+        self.receipt["export"]["command"] = gate.export_command("F")
+        self.write_events(events(kind="F"))
+        self.write_events(events((gate.EXPORT_TEST,), "F"), "export-events.jsonl")
+        mechanism_events = [{"Package": gate.MECHANISM_PACKAGE, "Action": action, "Test": test}
+                            for test in gate.MECHANISM_TESTS for action in ("run", "pass")]
+        mechanism_events.append({"Package": gate.MECHANISM_PACKAGE, "Action": "pass"})
+        self.write_events(mechanism_events, "mechanism-events.jsonl")
+        (self.evidence / "mechanism-stderr.log").write_bytes(b"")
+        self.receipt["mechanism"] = {"command": gate.mechanism_command(), "exit": 0,
+                                     "executed_tests": list(gate.MECHANISM_TESTS)}
+        self.save()
+        self.receipt["logs"].update({n: gate.sha((self.evidence / n).read_bytes())
+                                    for n in gate.log_names("F")})
+        def save_f():
+            data = gate.encoded(self.receipt)
+            (self.evidence / "receipt.json").write_bytes(data)
+            self.trusted_digest = gate.sha(data)
+        save_f()
+        gate.verify(self.root, self.evidence, self.source["head"], self.trusted_digest, "F")
+        with self.assertRaisesRegex(ValueError, "proof kind"):
+            self.verify()
+        self.receipt.pop("mechanism")
+        save_f()
+        with self.assertRaisesRegex(ValueError, "loss/recovery"):
+            gate.verify(self.root, self.evidence, self.source["head"], self.trusted_digest, "F")
 
     def test_export_missing_skip_fail_duplicate_or_sdk4_only_refuses(self):
         complete = events((gate.EXPORT_TEST,))
@@ -295,19 +354,56 @@ class SDK4ReceiptTest(unittest.TestCase):
 
 
 class SDK4WiringTest(unittest.TestCase):
+    def test_normal_and_fixture_builds_have_no_runtime_clock_selector(self):
+        normal = (ROOT / "server/internal/security/control_time_composition.go").read_text()
+        fixture = (ROOT / "server/internal/security/control_time_fixture.go").read_text()
+        composition = (ROOT / "server/internal/security/control_current_owner.go").read_text()
+        self.assertTrue(normal.startswith("//go:build !lantern_test_time"))
+        self.assertTrue(fixture.startswith("//go:build lantern_test_time && (darwin || linux)"))
+        self.assertIn("return newNativeAuthorityTimeOwner()", normal)
+        self.assertIn("if !testing.Testing()", fixture)
+        self.assertNotIn("os.Getenv", normal + fixture)
+        self.assertIn("if c.timeOwner != nil", composition)
+        for boundary in ("newCurrentAuthorityTimeOwner()", "bindAuthorityNetworkTime(&c, clock)",
+                         "custody.running()", "openS3AOwner(c, fresh, floors)", "attachAuthorityOrigin(n, key, browserOrigin)"):
+            self.assertIn(boundary, composition)
+
+    def test_f_and_modules_run_independently_of_q_but_required_result_binds_both(self):
+        for job in ("mechanism", "modules", "current-sdk4"):
+            self.assertIn("needs: scope\n", workflow_job("go", job))
+        self.assertIn("proof_kind: F", workflow_job("go", "mechanism"))
+        self.assertIn("proof_kind: Q", workflow_job("go", "current-sdk4"))
+        self.assertIn("q_required != 'false'", workflow_job("go", "current-sdk4"))
+        build = workflow_job("go", "build")
+        for obligation in ("current_qualification_result.py", "--proof-kind F", "--proof-kind Q"):
+            self.assertIn(obligation, build)
+        self.assertIn("go_modules.py", workflow_job("go", "modules"))
+
+    def test_publication_paths_require_exact_normal_build_q(self):
+        wrapper = (ROOT / ".github/workflows/current-source-release.yml").read_text()
+        self.assertIn("proof_kind: Q", wrapper)
+        self.assertIn('verify --expected-head "$GITHUB_SHA" --proof-kind Q', wrapper)
+        self.assertIn("needs.qualify.outputs.receipt_sha256", wrapper)
+        for workflow in ("_verify", "admin-publish", "node-sdk", "dart-sdk"):
+            self.assertIn("uses: ./.github/workflows/current-source-release.yml", workflow_job(workflow, "configured-source"))
+        for workflow, job in (("admin-publish", "build"), ("node-sdk", "publish"),
+                              ("dart-sdk", "release-preflight"), ("dart-sdk", "offline-release-preflight")):
+            needs = next(line for line in workflow_job(workflow, job).splitlines() if line.strip().startswith("needs:"))
+            self.assertIn("configured-source", needs)
+
     def test_local_acceptance_runs_sdk4_and_scoped_without_receipt_import(self):
         plan = steps(Path("/tmp/qualification"))
         self.assertEqual(len(plan), 76)
         step = next(step for step in plan if step.name == "rust-oidc-scoped-wire")
         self.assertIn(".github/scripts/current_sdk4_gate.py", step.command)
-        for flag in ("run", "--include-scoped", "--fresh-child"):
+        for flag in ("run", "--include-scoped", "--with-mechanism", "--fresh-child"):
             self.assertIn(flag, step.command)
         self.assertNotIn("verify", step.command)
 
     def test_required_pr_main_build_checks_same_run_native_receipt(self):
         build = workflow_job("go", "build")
-        self.assertIn("needs: [scope, current-sdk4]", build)
-        self.assertIn('run: test "$NATIVE_RESULT" = success', build)
+        self.assertIn("needs: [scope, modules, mechanism, current-sdk4]", build)
+        self.assertIn("run: python3 -B .github/scripts/current_qualification_result.py", build)
         self.assertIn("needs.current-sdk4.outputs.artifact_id", build)
         self.assertIn("needs.current-sdk4.outputs.receipt_sha256", build)
         self.assertIn('verify --expected-head "$GITHUB_SHA"', build)

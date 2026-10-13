@@ -87,10 +87,20 @@ class ReleaseConditionsTest(unittest.TestCase):
                 ('success', 'push', other + '0.4.1', False, False),
             ):
                 with self.subTest(job=job, result=result, event=event, ref=ref, canceled=canceled):
-                    context = {'needs': {'gate': {'result': result},
+                    context = {'needs': {'configured-source': {'result': 'success'}, 'gate': {'result': result},
                                         'offline-hosted': {'result': 'success', 'outputs': {'qualified': 'true'}}},
                                'github': {'event_name': event, 'ref': ref}}
                     self.assertEqual(release_job_runs(expression, context, canceled=canceled), expected)
+
+    def test_parent_and_offline_release_refuse_failed_or_missing_q(self):
+        for job, tag in (("release-preflight", "sdks/dart/v0.5.0"),
+                         ("offline-release-preflight", "sdks/dart/offline/v0.6.0")):
+            for q in ("failure", "cancelled", "skipped", ""):
+                context = {"needs": {"gate": {"result": "success"},
+                                     "configured-source": {"result": q},
+                                     "offline-hosted": {"result": "success", "outputs": {"qualified": "true"}}},
+                           "github": {"event_name": "push", "ref": "refs/tags/" + tag}}
+                self.assertFalse(release_job_runs(release_condition(job), context))
 
     def test_hosted_qualification_waits_for_parent_equality_and_survives_expected_skips(self):
         expression = release_condition('offline-hosted')
@@ -123,7 +133,7 @@ class ReleaseConditionsTest(unittest.TestCase):
                                   ('skipped', 'true'), ('success', 'false'), ('success', None)):
             with self.subTest(result=result, qualified=qualified):
                 context = {'github': {'event_name': 'push', 'ref': 'refs/tags/sdks/dart/offline/v0.6.0'},
-                           'needs': {'gate': {'result': 'success'}, 'offline-hosted': {
+                           'needs': {'configured-source': {'result': 'success'}, 'gate': {'result': 'success'}, 'offline-hosted': {
                                'result': result, 'outputs': {'qualified': qualified}}}}
                 self.assertFalse(release_job_runs(expression, context))
 

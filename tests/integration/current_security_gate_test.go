@@ -122,9 +122,23 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = data.Close() })
+		capture := decisiontrace.Start(64)
+		if capture == nil {
+			t.Fatal("startup diagnostic capture already owned")
+		}
 		runtime, closeRuntime, err := provider.NewSecurityRuntime(provider.SecurityConfig{Mode: "oidc", Profile: "current-v2", CurrentConfigFile: filepath.Join(dir, fmt.Sprintf("node-%d/node.json", id)), StoreMode: mode, BrowserOrigin: "https://admin.example", RootCAFile: roots, PrivateOrigins: map[string][]netip.Prefix{f.provider.URL: {netip.MustParsePrefix("127.0.0.1/32")}}, TrustedProxyIPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}, data)
+		capture.Stop()
+		observations, dropped := capture.Drain()
+		for _, observation := range observations {
+			raw, encodeErr := json.Marshal(observation)
+			if encodeErr != nil {
+				t.Fatal(encodeErr)
+			}
+			t.Logf("current_startup_observation node=%d mode=%s dropped=%d event=%s", id, mode, dropped, raw)
+		}
+		t.Logf("current_constructor node=%d mode=%s passed=%t", id, mode, err == nil)
 		if err != nil {
-			t.Fatal("production current constructor", id, err)
+			t.Fatal("current constructor", id, err)
 		}
 		t.Cleanup(closeRuntime)
 		runtimes = append(runtimes, runtime)
@@ -248,7 +262,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		})
 		return
 	}
-	t.Log("production native constructor: independently provisioned three voters, two origins, observer; no injected clock or H")
+	t.Log(currentSourceMarker)
 	token := f.token(t, "admin", func(c map[string]any) {
 		c["iat"] = time.Now().Add(-time.Minute).Unix()
 		c["auth_time"] = time.Now().Add(-time.Hour).Unix()
