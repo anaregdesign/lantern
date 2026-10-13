@@ -10,7 +10,7 @@ jobs; it is not elapsed PR latency or a billed-cost calculation.
 | Workflow | Trigger and jobs | Decision |
 | --- | --- | --- |
 | `go.yml` | Every main push/PR: scope → module/coverage, F and classified Q → `Build & Test`; independent Lint, Proto, govulncheck, Windows receipt backup, fuzz and native deployment/private-file checks. | Keep. Distinct functional, coverage, native security and configured-source contracts. |
-| `rust-sdk.yml` | Path-filtered main/PR. Six OS × MSRV/stable lanes, native wire tests on stable, archive inspection on Linux stable. | Reduce to four: Linux MSRV plus all three stable platforms. Retain every step in each retained lane. |
+| `rust-sdk.yml` | Path-filtered main/PR. Six OS × MSRV/stable lanes, native wire tests on stable, archive inspection on Linux stable. | Reduce to four: Linux MSRV plus all three stable platforms. Retain every step; design prose uses Go documentation checks. |
 | `dart-sdk.yml` | Path-filtered main/PR, manual and SDK tags. Classification selects source, minimum Dart, offline, SQLite, Android/iOS or documentation/evidence jobs; `Gate` aggregates them. Hosted archive readiness follows separately. | Keep existing scope routing and aggregate. Native jobs already skip backend-only changes. |
 | `node-sdk.yml` | Path-filtered main/PR, manual and Node tags. Node 20/22 real-wire tests; tag publication depends on tests and configured-source qualification. | Keep both supported runtimes; cancel superseded PR runs. |
 | `admin.yml` | Path-filtered main/PR. Container route/security contracts, SDK build, SPA lint/type/test/build and browser tests. | Keep; cancel superseded PR runs. |
@@ -40,6 +40,31 @@ hosted readiness and physical evidence remain independent prerequisites.
 No workflow is deleted merely to reduce the file count: release-only and
 reusable files have live consumers, and optional diagnostics impose no
 routine execution cost.
+
+## Documentation-only routing
+
+The first #1754 candidate changed five workflow YAML files, two Python tests
+and six Markdown files; its seven runs were all automatic `pull_request`
+events, with no manual dispatch. It was not a documentation-only diff.
+`sdks/rust/RELEASING.md` alone was already excluded by the Rust path filter.
+
+The audit found a separate unnecessary expansion: ADR 0001/0002/0011 and
+`docs/rust-sdk-v0.1-contract.md` were exceptions that treated design prose as
+code. They now use the Go documentation checks and, for Dart ADRs, the cheap
+Dart documentation job/Gate. Changed local links must resolve to committed
+files; documented Dart/Flutter/Rust toolchains are checked against executable
+package/workflow inputs, and existing release-contract tests remain blocking.
+The Rust/CodeQL positive path exceptions are removed. Product builds do not
+compile/embed these four design documents; the Rust API sketch is explicitly
+illustrative rather than compilable Rust.
+
+This is an allowlist of documentation locations, not a blanket Markdown
+extension skip. Generated `docs/env.md`, source/fixture Markdown, unknown paths,
+workflow/classifier edits and mixed source changes keep their owning checks.
+Dart no longer suppresses native coverage merely because an unknown fixture
+ends in `.md`, `.mdx`, `.rst` or `.txt`. Tags/manual full qualification is
+unchanged. Failure to classify or validate documentation still fails the
+required aggregate rather than leaving it pending or reporting a false pass.
 
 ## Support and required checks
 

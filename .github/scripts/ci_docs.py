@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Conservative prose-only CI scope; source, fixtures and contracts fail closed."""
+"""Documentation CI scope; generated, embedded, fixture and unknown inputs stay full."""
 
 from __future__ import annotations
 
 import os
+import posixpath
+import re
 from pathlib import Path, PurePosixPath
 import subprocess
+from urllib.parse import unquote, urlsplit
 
 import evidence_only_pr
 
@@ -18,15 +21,10 @@ DOC_DIRS = {
     "testbed", "testbed/bench", "testbed/dart-transport-probe",
     "deploy/compose", "deploy/helm/lantern",
 }
-# Generated output and the canonical native-toolchain/SDK contracts still
-# exercise their owning gates even though their extension is Markdown.
-CONTRACT_DOCS = {
-    "docs/env.md",
-    "docs/decisions/0001-dart-mobile-transport.md",
-    "docs/decisions/0002-dart-offline-repository-contract.md",
-    "docs/decisions/0011-native-rust-sdk.md",
-    "docs/rust-sdk-v0.1-contract.md",
-}
+# Generated environment reference must still reproduce the source registry.
+# SDK design/decision prose is not executed or embedded by the product; validate
+# its links and toolchain/release consistency without rebuilding every platform.
+CONTRACT_DOCS = {"docs/env.md"}
 
 
 def is_document(path: str) -> bool:
@@ -81,7 +79,25 @@ def validate(revisions: tuple[str, str]) -> None:
         content = subprocess.check_output(["git", "show", f"{revisions[1]}:{path}"])
         if b"\0" in content:
             raise ValueError(f"NUL in documentation: {path}")
-        content.decode("utf-8")
+        after = content.decode("utf-8")
+        before = "" if status == "A" else subprocess.check_output(
+            ["git", "show", f"{revisions[0]}:{path}"]).decode("utf-8")
+        validate_links(path, before, after, revisions[1])
+
+
+def validate_links(path: str, before: str, after: str, head: str) -> None:
+    """Check newly introduced local file links in the committed tree, offline."""
+    def links(text):
+        return set(re.findall(r"\]\(([^\s)]+)(?:\s+[^)]*)?\)|^\s*\[[^]]+\]:\s*(\S+)", text, re.M))
+    for pair in links(after) - links(before):
+        url = urlsplit((pair[0] or pair[1]).strip("<>"))
+        if url.scheme or url.netloc or not url.path:
+            continue
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(path), unquote(url.path)))
+        if target.startswith("/") or target == ".." or target.startswith("../"):
+            raise ValueError(f"link target outside repository: {path}")
+        if not evidence_only_pr.git("ls-tree", head, "--", target):
+            raise ValueError(f"missing committed link target: {path} -> {target}")
 
 
 def main() -> None:

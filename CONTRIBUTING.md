@@ -220,10 +220,10 @@ truth is `docs/decisions/0001-dart-mobile-transport.md`; the workflow pins mirro
 decision and also runs the package at its declared minimum Dart floor. The workflow
 routes backend/search-only changes through the current-Dart unit and real-wire gates.
 The separately tested `full` scope adds minimum Dart and package-quality checks for
-Dart SDK, proto, codegen/toolchain, workflow, release-tag, root Go dependency, and
-canonical native-toolchain/SDK-contract documentation changes. The `mobile` scope requires Android and iOS
-for Dart/Flutter, proto/codegen, mobile transport/release-contract, workflow,
-release-tag, and Go language/toolchain directive changes; ordinary Go dependency
+Dart SDK, proto, codegen/toolchain, workflow, release-tag and root Go dependency
+changes. The `mobile` scope requires Android and iOS for Dart/Flutter source
+and fixtures, proto/codegen and workflow inputs, release tags, and Go
+language/toolchain directive changes; ordinary Go dependency
 changes skip native jobs. Ordinary prose-only changes skip package and native jobs. The stable `Gate` job checks
 both decisions independently. The experimental
 `sdks/dart/offline/` child runs from its own working directory at minimum/current
@@ -315,9 +315,15 @@ Dart, Node, Rust, Admin and CodeQL use conservative ordered
 path exclusions to avoid starting for ordinary README/CHANGELOG changes.
 Dart instruction/process-doc changes use a cheap contract check and `Gate`.
 Mixed source changes, fixtures, unknown paths, workflow/config changes,
-generated `docs/env.md`, and the canonical Dart/Rust SDK/toolchain contracts
-retain their owning checks. Tags ignore path filters; release qualification,
-manual full sweeps and weekly CodeQL analysis are unchanged. The exact eight-file
+and generated `docs/env.md` retain their owning checks. The four canonical
+Dart/Rust design and SDK contract Markdown files use lightweight text, newly
+introduced local-link, SDK toolchain-document and release-contract checks.
+They are design prose, not compiled or embedded inputs. Rust and CodeQL do
+not start for those documents alone; Dart uses its documentation job and Gate.
+Markdown under source/fixture directories and unknown paths remains executable
+input for routing purposes, including native Dart fixture checks. Adding design
+prose to backend changes does not add a mobile matrix. Tags ignore path filters;
+release qualification, manual full sweeps and weekly CodeQL analysis are unchanged. The exact eight-file
 physical-evidence PR validation remains separate from prose classification.
 
 GitHub-managed Code Quality has no path-filter setting. Its automatic analysis
