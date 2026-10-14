@@ -1111,7 +1111,8 @@ void main() {
               .length +
           ((19 - 1) + ((6 * maxDiagnosticBytes) - 2)) +
           ((20 - 3) + (20 - 4)) +
-          receiptResultGrowth;
+          receiptResultGrowth +
+          32;
       OfflineStoreLimits limits(int bytes) => OfflineStoreLimits(
         maxOperationBytes: bytes,
         maxOperationBytesPerPartition: bytes,
@@ -1852,6 +1853,8 @@ void main() {
         ..remove('operations')
         ..remove('replayPausedForAuth')
         ..remove('changeProgress')
+        ..remove('timeHighWater')
+        ..remove('authorityBinding')
         ..remove('scopedCursor')
         ..remove('changeEpoch')
         ..remove('unknownResidents');
@@ -2205,6 +2208,8 @@ void main() {
         ..remove('operations')
         ..remove('replayPausedForAuth')
         ..remove('changeProgress')
+        ..remove('timeHighWater')
+        ..remove('authorityBinding')
         ..remove('scopedCursor')
         ..remove('changeEpoch')
         ..remove('unknownResidents');
@@ -2282,6 +2287,8 @@ void main() {
           ..remove('operations')
           ..remove('replayPausedForAuth')
           ..remove('changeProgress')
+          ..remove('timeHighWater')
+          ..remove('authorityBinding')
           ..remove('scopedCursor')
           ..remove('changeEpoch')
           ..remove('unknownResidents');
@@ -2369,6 +2376,8 @@ void main() {
                 as Map<String, Object?>;
         partition.remove('changeProgress');
         partition.remove('scopedCursor');
+        partition.remove('timeHighWater');
+        partition.remove('authorityBinding');
         partition.remove('changeEpoch');
         partition.remove('unknownResidents');
         if (schema < 5) partition.remove('replayPausedForAuth');
@@ -2969,6 +2978,22 @@ final class _BrokenContractStore implements OfflineStore {
 }
 
 final class _BrokenContractTransaction implements OfflineStoreTransaction {
+  @override
+  FutureOr<String?> authorityBinding(String partitionId) =>
+      inner.authorityBinding(partitionId);
+  @override
+  FutureOr<void> bindAuthority(String partitionId, String binding) =>
+      inner.bindAuthority(partitionId, binding);
+  @override
+  FutureOr<void> invalidateMutationCache(
+    String partitionId,
+    OfflineEntityKey key,
+  ) => inner.invalidateMutationCache(partitionId, key);
+
+  @override
+  FutureOr<DateTime> effectiveTime(String partitionId, DateTime observedAt) =>
+      inner.effectiveTime(partitionId, observedAt);
+
   const _BrokenContractTransaction(this.store, this.inner);
 
   final _BrokenContractStore store;

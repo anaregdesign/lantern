@@ -1,6 +1,6 @@
 part of '../lantern_client_offline_sqlite.dart';
 
-const _schemaVersion = 5;
+const _schemaVersion = 6;
 const _applicationId = 0x4c4e544f;
 const _legacyPartitions = '''CREATE TABLE partitions (
     partition_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
@@ -36,7 +36,9 @@ const _tables = <String>[
     partition_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
     next_ordinal INTEGER NOT NULL, version INTEGER NOT NULL,
     auth_paused INTEGER NOT NULL CHECK(auth_paused IN (0,1)),
-    change_epoch INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID''',
+    change_epoch INTEGER NOT NULL DEFAULT 0,
+    time_high_water INTEGER NOT NULL DEFAULT 0,
+    authority_binding TEXT) WITHOUT ROWID''',
   '''CREATE TABLE cache (
     partition_id TEXT NOT NULL, entity_key TEXT NOT NULL,
     generation INTEGER NOT NULL, accessed_at INTEGER NOT NULL, vertex_key BLOB,
@@ -62,6 +64,7 @@ const _tables = <String>[
     partition_id TEXT NOT NULL, operation_id TEXT NOT NULL,
     generation INTEGER NOT NULL, updated_at INTEGER NOT NULL,
     terminal_at INTEGER, reserved_bytes INTEGER NOT NULL, payload BLOB NOT NULL,
+    guard_until INTEGER,
     PRIMARY KEY(partition_id, operation_id),
     FOREIGN KEY(partition_id) REFERENCES partitions(partition_id)) WITHOUT ROWID''',
   '''CREATE TABLE operation_items (
@@ -72,6 +75,17 @@ const _tables = <String>[
     FOREIGN KEY(partition_id, operation_id)
       REFERENCES operations(partition_id, operation_id) ON DELETE CASCADE) WITHOUT ROWID''',
 ];
+
+const _dependencyTable = '''CREATE TABLE operation_dependencies (
+    partition_id TEXT NOT NULL, record_id TEXT NOT NULL,
+    prerequisite_operation_id TEXT NOT NULL, prerequisite_item INTEGER NOT NULL,
+    predicate TEXT NOT NULL,
+    PRIMARY KEY(partition_id,record_id,prerequisite_operation_id,prerequisite_item,predicate),
+    FOREIGN KEY(partition_id,record_id) REFERENCES outbox(partition_id,record_id) ON DELETE CASCADE,
+    FOREIGN KEY(partition_id,prerequisite_operation_id) REFERENCES operations(partition_id,operation_id)
+      DEFERRABLE INITIALLY DEFERRED) WITHOUT ROWID''';
+const _dependencyIndex =
+    'CREATE INDEX dependency_prerequisite ON operation_dependencies(partition_id,prerequisite_operation_id)';
 
 final _indexes = <String, String>{
   'cache_vertex_prefix': 'cache(partition_id, vertex_key)',
@@ -106,6 +120,8 @@ Future<void> _createSchema(Database db, int version) async {
   for (final entry in _indexes.entries) {
     await db.execute('CREATE INDEX ${entry.key} ON ${entry.value}');
   }
+  await db.execute(_dependencyTable);
+  await db.execute(_dependencyIndex);
   await db.insert('store_metadata', {
     'key': 'format',
     'value': 'lantern-offline-$_schemaVersion',
@@ -122,7 +138,8 @@ Future<void> _upgradeSchema(
   if ((oldVersion != 1 &&
           oldVersion != 2 &&
           oldVersion != 3 &&
-          oldVersion != 4) ||
+          oldVersion != 4 &&
+          oldVersion != 5) ||
       newVersion != _schemaVersion ||
       (await db.rawQuery('PRAGMA application_id')).single.values.single !=
           _applicationId) {
@@ -144,7 +161,7 @@ Future<void> _upgradeSchema(
               .firstMatch(statement)!
               .group(1)!: statement.startsWith('CREATE TABLE partitions')
               ? _legacyPartitions
-              : statement,
+              : _legacyDefinition(statement),
       for (final entry in _indexes.entries)
         entry.key: 'CREATE INDEX ${entry.key} ON ${entry.value}',
     });
@@ -157,16 +174,27 @@ Future<void> _upgradeSchema(
   } else {
     await _checkDefinitions(db, <String, String>{
       for (final statement in _tables)
-        if (!statement.startsWith('CREATE TABLE cdc_scoped'))
+        if (oldVersion >= 5 || !statement.startsWith('CREATE TABLE cdc_scoped'))
           RegExp(r'CREATE TABLE (\w+)').firstMatch(statement)!.group(1)!:
-              statement,
+              _legacyDefinition(statement),
       for (final entry in _indexes.entries)
         entry.key: 'CREATE INDEX ${entry.key} ON ${entry.value}',
     });
   }
+  if (oldVersion < 5) {
+    await db.execute(
+      _tables.firstWhere(
+        (table) => table.startsWith('CREATE TABLE cdc_scoped'),
+      ),
+    );
+  }
   await db.execute(
-    _tables.firstWhere((table) => table.startsWith('CREATE TABLE cdc_scoped')),
+    'ALTER TABLE partitions ADD COLUMN time_high_water INTEGER NOT NULL DEFAULT 0',
   );
+  await db.execute('ALTER TABLE operations ADD COLUMN guard_until INTEGER');
+  await db.execute(_dependencyTable);
+  await db.execute(_dependencyIndex);
+  await db.execute('ALTER TABLE partitions ADD COLUMN authority_binding TEXT');
   await _rewritePayloads(db, 'outbox', 'record_id', (row) {
     final record = _outbox(row);
     return _outboxColumns(record, limits);
@@ -189,7 +217,20 @@ Future<void> _upgradeSchema(
     if (rows.isEmpty) break;
     for (final row in rows) {
       final id = row['partition_id']! as String;
-      await transaction.resetScopedChangeCursor(id, null);
+      final times = await db.rawQuery(
+        'SELECT MAX(t) AS t FROM (SELECT accessed_at AS t FROM cache WHERE partition_id=? UNION ALL SELECT updated_at AS t FROM operations WHERE partition_id=? UNION ALL SELECT enqueued_at AS t FROM outbox WHERE partition_id=?)',
+        [id, id, id],
+      );
+      final high = times.single['t'];
+      if (high is int && high > 0) {
+        await db.update(
+          'partitions',
+          {'time_high_water': high},
+          where: 'partition_id=?',
+          whereArgs: [id],
+        );
+      }
+      if (oldVersion < 5) await transaction.resetScopedChangeCursor(id, null);
       afterPartition = id;
     }
   }
@@ -290,6 +331,8 @@ Future<void> _checkSchema(Database db) async {
       throw const OfflineSchemaException();
     }
     final definitions = <String, String>{
+      'operation_dependencies': _dependencyTable,
+      'dependency_prerequisite': _dependencyIndex,
       for (final statement in _tables)
         RegExp(r'CREATE TABLE (\w+)').firstMatch(statement)!.group(1)!:
             statement,
@@ -336,3 +379,12 @@ Future<void> _checkDefinitions(
     }
   }
 }
+
+String _legacyDefinition(String statement) => statement
+    .replaceAll(
+      RegExp(
+        r',\s*time_high_water INTEGER NOT NULL DEFAULT 0,\s*authority_binding TEXT',
+      ),
+      '',
+    )
+    .replaceAll(RegExp(r',\s*guard_until INTEGER'), '');

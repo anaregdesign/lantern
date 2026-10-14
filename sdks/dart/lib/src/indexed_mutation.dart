@@ -110,8 +110,9 @@ extension _IndexedMutationAttempts on LanternClient {
     int start,
     int end,
     LanternCallOptions options,
-    void Function() dispatched,
-  ) async {
+    void Function() dispatched, [
+    ReceiptContext? receiptContext,
+  ]) async {
     _ensureOpen();
     final chunk = work.wire.sublist(start, end);
     final raw = $client.LanternServiceClient(_invoker.transport);
@@ -131,6 +132,9 @@ extension _IndexedMutationAttempts on LanternClient {
                 $graph.PutVerticesRequest(
                   vertices: chunk.cast<$graph.Vertex>(),
                   ifAbsent: work.kind == MutationKind.putVerticesIfAbsent,
+                  receiptContext: receiptContext == null
+                      ? null
+                      : _receiptContextToProto(receiptContext),
                 ),
                 headers: headers,
                 signal: signal,
@@ -149,6 +153,9 @@ extension _IndexedMutationAttempts on LanternClient {
                   edges: chunk.cast<$graph.AddEdgesRequest>().expand(
                     (r) => r.edges,
                   ),
+                  receiptContext: receiptContext == null
+                      ? null
+                      : _receiptContextToProto(receiptContext),
                   contribIds: chunk.cast<$graph.AddEdgesRequest>().expand(
                     (r) => r.contribIds,
                   ),
@@ -161,6 +168,9 @@ extension _IndexedMutationAttempts on LanternClient {
               MutationKind.deleteVertices => raw.deleteVertices(
                 $graph.DeleteVerticesRequest(
                   keys: chunk.cast<$graph.Vertex>().map((v) => v.key),
+                  receiptContext: receiptContext == null
+                      ? null
+                      : _receiptContextToProto(receiptContext),
                 ),
                 headers: headers,
                 signal: signal,
@@ -168,7 +178,12 @@ extension _IndexedMutationAttempts on LanternClient {
                 onTrailer: onTrailer,
               ),
               MutationKind.deleteEdges => raw.deleteEdges(
-                $graph.DeleteEdgesRequest(edges: chunk.cast<$graph.EdgeKey>()),
+                $graph.DeleteEdgesRequest(
+                  edges: chunk.cast<$graph.EdgeKey>(),
+                  receiptContext: receiptContext == null
+                      ? null
+                      : _receiptContextToProto(receiptContext),
+                ),
                 headers: headers,
                 signal: signal,
                 onHeader: onHeader,
@@ -178,6 +193,9 @@ extension _IndexedMutationAttempts on LanternClient {
                 raw.deleteEdgeContributions(
                   $graph.DeleteEdgeContributionsRequest(
                     contributions: chunk.cast<$graph.EdgeContributionKey>(),
+                    receiptContext: receiptContext == null
+                        ? null
+                        : _receiptContextToProto(receiptContext),
                   ),
                   headers: headers,
                   signal: signal,
@@ -294,6 +312,7 @@ extension LanternIndexedMutations on LanternClient {
     int start = 0,
     int? count,
     LanternCallOptions? options,
+    ReceiptContext? receiptContext,
     void Function()? beforeDispatch,
     void Function()? beforePublication,
   }) async {
@@ -305,6 +324,23 @@ extension LanternIndexedMutations on LanternClient {
       throw _invalidArgumentException('invalid indexed attempt range');
     }
     if (end == start) return MutationBatchReply<T>(const []);
+    if (receiptContext != null) {
+      final expected = switch (intent._work.kind) {
+        MutationKind.putVerticesIfAbsent => ReceiptMutationKind.vertexPut,
+        MutationKind.addEdges => ReceiptMutationKind.edgeAdd,
+        MutationKind.deleteVertices => ReceiptMutationKind.vertexDelete,
+        MutationKind.deleteEdges => ReceiptMutationKind.edgeDelete,
+        MutationKind.deleteEdgeContributions =>
+          ReceiptMutationKind.edgeContributionDelete,
+        _ => throw _invalidArgumentException('receipt family unsupported'),
+      };
+      _validateReceiptMutationCall(
+        context: receiptContext,
+        expectedMutation: expected,
+        itemCount: end - start,
+        label: 'indexed mutation',
+      );
+    }
     var dispatched = false;
     try {
       final items = await _attemptIndexed(
@@ -316,6 +352,7 @@ extension LanternIndexedMutations on LanternClient {
           beforeDispatch?.call();
           dispatched = true;
         },
+        receiptContext,
       );
       beforePublication?.call();
       return MutationBatchReply(items);

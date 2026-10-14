@@ -125,6 +125,18 @@ enum DataFailure {
   /// Only the completion waiter reached its timeout.
   waitTimeout,
 
+  /// The original handling cannot be proved.
+  outcomeUnknown,
+
+  /// Legacy retained metadata has no exact result available for reobservation.
+  resultUnavailable,
+
+  /// The request was terminally rejected without known handling.
+  rejected,
+
+  /// Persistent confirmation failed; dispatch is held for recovery.
+  storageBlocked,
+
   /// The immutable source TTL expired before dispatch.
   expiredBeforeDispatch,
 }

@@ -38,6 +38,7 @@ Future<void> main(List<String> arguments) async {
   }
   if (arguments.length == 1 && arguments.single == '--receipt') {
     await _runReceiptCrash();
+    if (exitCode == 0) await _runBoundReceiptCrash();
     return;
   }
   if (arguments.isNotEmpty) {
@@ -456,5 +457,57 @@ final class _ResponseDroppingProxy {
         target.set(name, values);
       }
     });
+  }
+}
+
+Future<void> _runBoundReceiptCrash() async {
+  final endpoint = Uri.parse(
+    Platform.environment['LANTERN_DART_RECEIPT_ENDPOINT']!,
+  );
+  final directory = await Directory.systemTemp.createTemp(
+    'lantern-bound-receipt-crash-',
+  );
+  final proxy = await _ResponseDroppingProxy.bind(
+    endpoint,
+    drops: {for (final rpc in _receiptMutations) rpc: 1},
+  );
+  try {
+    final path = '${directory.path}/bound.db';
+    await _crash(
+      'bound-receipt',
+      'after',
+      path,
+      proxyEndpoint: proxy.endpoint,
+      timeout: _receiptTimeout,
+    );
+    _requireReceiptCounts(proxy);
+    final initialStatus = proxy.forwarded('GetReceiptStatuses');
+    if (initialStatus < 5) throw StateError('bound_initial_status_first');
+    await _verify(
+      'bound-receipt',
+      'after',
+      path,
+      proxyEndpoint: proxy.endpoint,
+      timeout: _receiptTimeout,
+    );
+    _requireReceiptCounts(proxy);
+    if (proxy.forwarded('GetReceiptStatuses') < initialStatus + 5) {
+      throw StateError('bound_reopened_status_first');
+    }
+    stdout.writeln(
+      jsonEncode({
+        'bound_receipt_scenarios': 1,
+        'sigkill': 1,
+        'fresh_process_verified': 1,
+        'response_drops': 5,
+        'status_first_reconciled': 5,
+      }),
+    );
+  } catch (error) {
+    stderr.writeln('bound_receipt_crash_probe_failed:${_failureCode(error)}');
+    exitCode = 1;
+  } finally {
+    await proxy.close();
+    await directory.delete(recursive: true);
   }
 }

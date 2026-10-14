@@ -83,55 +83,59 @@ void main() {
       ]);
     },
   );
-  for (final publication in [false, true]) {
-    test(
-      'qualified owner fence rejects ${publication ? 'late publication with possible dispatch' : 'after token before dispatch'}',
-      () async {
-        final entered = Completer<void>(), token = Completer<String?>();
-        var calls = 0;
-        var eligible = true;
-        final client = LanternClient.connect(
-          Uri.parse('http://localhost:6380'),
-          allowInsecure: true,
-          tokenProvider: () {
-            entered.complete();
-            return token.future;
-          },
-          transport: FakeTransportBuilder()
-              .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
-                LanternService.deleteVertices,
-                (r, _) {
+  for (final receipt in [false, true]) {
+    for (final publication in [false, true]) {
+      test(
+        'qualified owner fence rejects ${publication ? 'late publication with possible dispatch' : 'after token before dispatch'} (receipt: $receipt)',
+        () async {
+          final entered = Completer<void>(), token = Completer<String?>();
+          var calls = 0;
+          var eligible = true;
+          final client = LanternClient.connect(
+            Uri.parse('http://localhost:6380'),
+            allowInsecure: true,
+            tokenProvider: () {
+              entered.complete();
+              return token.future;
+            },
+            transport: FakeTransportBuilder()
+                .unary<
+                  graph.DeleteVerticesRequest,
+                  graph.DeleteVerticesResponse
+                >(LanternService.deleteVertices, (r, _) {
                   calls++;
+                  expect(r.hasReceiptContext(), receipt);
                   eligible = false;
                   return graph.DeleteVerticesResponse(existed: [false]);
-                },
-              )
-              .build(),
-        );
-        addTearDown(client.close);
-        final intent = client.freezeIndexedMutation(
-          MutationRequest.deleteVertices(['a']),
-        );
-        void fence() {
-          if (!eligible) throw const LanternDataException(DataFailure.closed);
-        }
+                })
+                .build(),
+          );
+          addTearDown(client.close);
+          final intent = client.freezeIndexedMutation(
+            MutationRequest.deleteVertices(['a']),
+          );
+          void fence() {
+            if (!eligible) throw const LanternDataException(DataFailure.closed);
+          }
 
-        final outcome = client
-            .attemptIndexedMutation(
-              intent,
-              beforeDispatch: fence,
-              beforePublication: fence,
-            )
-            .then<Object>((r) => r, onError: (Object error) => error);
-        await entered.future;
-        if (!publication) eligible = false;
-        token.complete(null);
-        final failure = await outcome as IndexedMutationAttemptException;
-        expect(failure.mayHaveDispatched, publication);
-        expect(failure.cause, isA<LanternDataException>());
-        expect(calls, publication ? 1 : 0);
-      },
-    );
+          final outcome = client
+              .attemptIndexedMutation(
+                intent,
+                beforeDispatch: fence,
+                beforePublication: fence,
+                receiptContext: receipt ? _deleteReceiptContext() : null,
+              )
+              .then<Object>((r) => r, onError: (Object error) => error);
+          await entered.future;
+          if (!publication) eligible = false;
+          token.complete(null);
+          final failure = await outcome as IndexedMutationAttemptException;
+          expect(failure.mayHaveDispatched, publication);
+          expect(failure.cause, isA<LanternDataException>());
+          expect(calls, publication ? 1 : 0);
+        },
+      );
+    }
   }
   test('adapter byte ceiling is checked before payload amplification', () {
     final client = LanternClient.connect(
@@ -158,4 +162,21 @@ void main() {
       ),
     );
   });
+}
+
+ReceiptContext _deleteReceiptContext() {
+  final bytes = Uint8List(49)..[0] = 1;
+  bytes.fillRange(1, 17, 1);
+  bytes[23] = 3;
+  bytes[24] = 232;
+  bytes.fillRange(25, 49, 2);
+  return ReceiptContext(
+    operationIds: [ReceiptOperationId(bytes)],
+    groupId: ReceiptGroupId(Uint8List.fromList(List.filled(16, 3))),
+    endpoint: ReceiptEndpoint(
+      nodeId: Uint8List.fromList(List.filled(16, 4)),
+      generation: Uint8List.fromList(List.filled(16, 5)),
+    ),
+    mutation: ReceiptMutationKind.vertexDelete,
+  );
 }

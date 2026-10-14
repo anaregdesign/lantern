@@ -136,6 +136,10 @@ final class SqliteOfflineStore implements OfflineStore {
                 partitionId: partition,
                 version: version,
                 generation: metadata['generation']! as int,
+                authorityBinding: metadata['authority_binding'] as String?,
+                observationInvalidated: tx.observationInvalidated.contains(
+                  partition,
+                ),
               ),
             );
           }

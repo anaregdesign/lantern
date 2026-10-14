@@ -42,6 +42,21 @@ abstract interface class OfflineStoreTransaction {
   /// Returns the current partition generation, creating it at zero if needed.
   FutureOr<int> generation(String partitionId);
 
+  /// Atomically advances the persisted clock high-water; rollback cannot reopen TTL/ID windows.
+  FutureOr<DateTime> effectiveTime(String partitionId, DateTime observedAt);
+
+  /// Current nonsecret authority generation of this stable account scope.
+  FutureOr<String?> authorityBinding(String partitionId);
+
+  /// Binds a verified generation, invalidating old confirmed evidence on change.
+  FutureOr<void> bindAuthority(String partitionId, String authorityBinding);
+
+  /// Invalidates an affected exact cache row and advances the read publication epoch.
+  FutureOr<void> invalidateMutationCache(
+    String partitionId,
+    OfflineEntityKey key,
+  );
+
   /// Whether replay is durably paused until explicit credential rotation.
   FutureOr<bool> replayPausedForAuth(String partitionId);
 
@@ -349,6 +364,8 @@ final class OfflineStoreChange {
     required this.partitionId,
     required this.version,
     required this.generation,
+    this.authorityBinding,
+    this.observationInvalidated = true,
   });
 
   /// Partition whose data changed.
@@ -359,4 +376,10 @@ final class OfflineStoreChange {
 
   /// Partition generation after the commit.
   final int generation;
+
+  /// Nonsecret bound authority generation after commit, if installed.
+  final String? authorityBinding;
+
+  /// Mutation, authority, or CDC invalidation; cache population alone is false.
+  final bool observationInvalidated;
 }

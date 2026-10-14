@@ -7,6 +7,7 @@ import 'package:lantern_client/lantern_client.dart';
 import 'change_store.dart';
 import 'errors.dart';
 import 'identity_consumer.dart';
+import 'mutation_send_marker.dart';
 import 'remote.dart';
 import 'scoped_change_consumer.dart';
 import 'store.dart';
@@ -2627,6 +2628,15 @@ final class OfflineLanternRepository {
       );
       return const _ReplayOutcome(deadLetter: true);
     }
+    final marked = await markOfflineReceiptlessDispatch(
+      store: store,
+      claimed: claimed,
+      owner: owner,
+      clock: config.clock,
+      fence: _ensureActive,
+    );
+    if (marked == null) return const _ReplayOutcome();
+    claimed = marked;
     try {
       final remoteResult = switch (claimed.intent) {
         OfflinePutVertexIntent(:final vertex) => await _putVertexRemote(
@@ -4685,6 +4695,9 @@ final class OfflineLanternRepository {
         terminalAt: status.isTerminal
             ? operation.terminalAt ?? transitionAt
             : null,
+        kind: operation.kind,
+        guardUntil: operation.guardUntil,
+        groupId: operation.groupId,
       ),
     );
   }

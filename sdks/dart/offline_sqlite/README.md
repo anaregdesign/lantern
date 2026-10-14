@@ -5,6 +5,26 @@ SQLite engine supplied by Android and iOS. Neither the online SDK nor the pure
 Dart offline core imports this Flutter package. This initial adapter is not yet
 published; the repository uses path dependencies during development.
 
+The #1768 source candidate also implements the common bound client:
+
+```dart
+final store = await SqliteOfflineStore.open(path: applicationDatabasePath);
+final data = await OfflineLanternDataClient.open(
+  client: transport,
+  binding: sessionBinding,
+  store: store,
+  durability: AdmissionDurability.durable,
+);
+final ticket = await data.mutations.submit(MutationRequest.deleteVertices([
+  'note:42',
+])); // Durable admission without capability, credentials or network.
+```
+
+Ordinary CRUD Futures await Server handling. The automatic session owner is
+composed by #1769 and the maintained factories by #1772; applications do not
+schedule delivery or expose a manual Sync action. The legacy explicit Repository
+example below remains for published clients and qualification tools.
+
 ```dart
 final store = await SqliteOfflineStore.open(path: applicationDatabasePath);
 final repository = OfflineLanternRepository(
@@ -59,7 +79,7 @@ rotating an account's credentials, as required by the offline core contract.
   quarantined. Reopening preserves absolute expiration and retry deadlines;
   replay never extends TTL.
 - The offline 0.6.0 / parent 0.5.0 source candidates persist terminal
-  `acceptedUndisclosed` operation metadata through codec v3. The owned outbox and
+  `acceptedUndisclosed` operation metadata through operation codec v4 (historical v3 is migrated). The owned outbox and
   overlay are retired atomically with cache invalidation, without an invented
   result or mutation resend after reopen. This requires no SQLite table-schema
   change. Host tests do not qualify hosted archives or physical devices.
@@ -69,7 +89,11 @@ rotating an account's credentials, as required by the offline core contract.
   schema 4 atomically rewrites schema 1/2/3 outbox payloads and reservations,
   treating absent dispatch markers as possibly sent before validating the full
   graph and configured capacities. An unsupported version never resets the
-  database.
+  database. Schema 6 adds persistent clock/authority metadata, structured-ID guard
+  deadlines and indexed prerequisite references, and atomically rewrites outbox
+  v5/operation v4 reservations. Migration validates the entire graph and preserves
+  IDs/TTL/dispatch proof before any network work. An interrupted migration rolls
+  back; insufficient capacity fails open rather than dropping accepted state.
 
 Use one store owner per database in the application. Separate connections in
 the same isolate share a transaction lane and post-commit notifications.

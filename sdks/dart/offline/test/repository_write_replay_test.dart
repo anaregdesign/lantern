@@ -1808,6 +1808,9 @@ void main() {
       final record =
           jsonDecode(outbox.single! as String) as Map<String, Object?>;
       record['schema'] = 3;
+      record.remove('preparation');
+      record.remove('dependencies');
+      record.remove('mayHaveDispatched');
       (record['receipt']! as Map<String, Object?>).remove('mayHaveDispatched');
       outbox[0] = jsonEncode(record);
       await repository.dispose();
@@ -5577,6 +5580,22 @@ final class _InspectingStore implements OfflineStore {
 }
 
 final class _InspectingTransaction implements OfflineStoreTransaction {
+  @override
+  FutureOr<String?> authorityBinding(String partitionId) =>
+      inner.authorityBinding(partitionId);
+  @override
+  FutureOr<void> bindAuthority(String partitionId, String binding) =>
+      inner.bindAuthority(partitionId, binding);
+  @override
+  FutureOr<void> invalidateMutationCache(
+    String partitionId,
+    OfflineEntityKey key,
+  ) => inner.invalidateMutationCache(partitionId, key);
+
+  @override
+  FutureOr<DateTime> effectiveTime(String partitionId, DateTime observedAt) =>
+      inner.effectiveTime(partitionId, observedAt);
+
   const _InspectingTransaction(this.store, this.inner);
 
   final _InspectingStore store;

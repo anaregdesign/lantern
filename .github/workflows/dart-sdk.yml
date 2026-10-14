@@ -664,9 +664,13 @@ jobs:
       - name: Test SQLite replay over the real wire
         env:
           LANTERN_DART_REAL_WIRE_ENDPOINT: http://127.0.0.1:6397
-        run: >-
-          flutter test --no-pub
-          ../../../tests/integration/dart_offline_sqlite_test.dart
+          LANTERN_DART_RECEIPT_ENDPOINT: https://localhost:6396
+          LANTERN_DART_RECEIPT_CA_FILE: ${{ runner.temp }}/lantern-sqlite-receipt/trust/ca.pem
+        run: |
+          receipt_token="$(cat "$RUNNER_TEMP/lantern-sqlite-receipt/token")"
+          echo "::add-mask::$receipt_token"
+          LANTERN_DART_RECEIPT_TOKEN="$receipt_token" flutter test --no-pub \
+            ../../../tests/integration/dart_offline_sqlite_test.dart
 
       - name: Resolve maintained offline application composition
         working-directory: sdks/dart/example

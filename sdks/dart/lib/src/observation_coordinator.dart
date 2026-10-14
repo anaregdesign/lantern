@@ -322,3 +322,47 @@ final class _ObservationSubscriber<T> {
     scheduleMicrotask(() => unawaited(controller.close()));
   }
 }
+
+/// Qualified storage-owner seam for the common bounded observation coordinator.
+/// Retains only event delivery and in-flight work; adapters own evidence storage.
+final class LanternObservationCoordinator {
+  /// Reserves finite query/subscriber resources and eight-event mailboxes.
+  LanternObservationCoordinator({
+    int maxQueries = 64,
+    int maxSubscribers = 64,
+    int mailboxSize = 8,
+  }) : _owner = _ObservationCoordinator(
+         maxQueries: maxQueries,
+         maxSubscribers: maxSubscribers,
+         mailboxSize: mailboxSize,
+         maxTraversalQueries: maxQueries,
+       ) {
+    if (maxQueries < 1 || maxSubscribers < 1 || mailboxSize < 1) {
+      throw _invalidArgumentException('observation bounds must be positive');
+    }
+  }
+  final _ObservationCoordinator _owner;
+
+  /// Registers shared, bounded observation delivery.
+  Stream<T> observe<T>(
+    String key, {
+    required T Function(bool) initial,
+    required Future<T> Function(LanternCancellationToken) load,
+    required T Function(T, bool) markLost,
+    Duration? interval,
+    bool Function(T)? pauseAfter,
+  }) => _owner.observe(
+    key,
+    initial: initial,
+    load: load,
+    markLost: markLost,
+    interval: interval,
+    pauseAfter: pauseAfter,
+  );
+
+  /// Coalesces invalidations into one follow-up load per registered identity.
+  void invalidate() => _owner.invalidate();
+
+  /// Cancels and joins every owned observation.
+  Future<void> close() => _owner.close();
+}

@@ -28,6 +28,31 @@ places local/remote coordination in an application Repository. The core SDK
 must not imply that network-type reachability, lifecycle callbacks, or a token
 stored beside a mutation can make delivery durable.
 
+## #1768 bound Offline admission and persistent handling
+
+The source candidate adds `OfflineLanternDataClient` using the parent's common
+interface and `MemoryOfflineStore` as a bounded volatile profile. Receipt-capable
+intent enters `awaitingPreparation` without token acquisition or RPC. Admission
+atomically reserves full lifecycle state, freezes wire values/TTL/Add IDs, persists
+structured-ID guards and bounded dependencies, and exposes ordered pending views.
+Ordinary Futures await exact Server handling; advanced tickets report admission.
+Results and confirmed reads remain independent. A valid fenced reply may settle a
+live waiter when confirmation commit fails, while storageBlocked preserves the
+pre-send marker and prevents further dispatch. Receipt-less and receipt-backed
+attempts share the qualified parent's post-token and pre-publication fences.
+
+Outbox5/operation4/memory9/SQL6 migrate this state together. Unknown or damaged
+schemas, incompatible downgrade and insufficient migration capacity fail closed.
+Older IDs/TTL/possible dispatch and exact receipts remain immutable; old terminal
+Put results without retained evidence are unavailable. Explicit group predicates
+require historical handling, never imply Server atomicity or live endpoints at a
+later Edge operation. Current Server endpoint/authorization checks still apply.
+
+The qualified adapter supplies a bounded one-pass delivery engine and exclusive
+owner capability contract. #1769 owns automatic runtime/locking and #1772 owns
+factory composition. No ordinary application manual Sync requirement is added.
+Physical tests remain stopped and hosted/publication exits remain independent.
+
 ## Decision
 
 Keep `lantern_client` free of an implicit read cache and mutation outbox. Ship

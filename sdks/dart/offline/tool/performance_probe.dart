@@ -163,8 +163,10 @@ Future<void> main(List<String> arguments) async {
   disposeWatch.stop();
 
   final contributionCodec = _contributionDeleteCodec(now, limits);
+  final boundAdmission = await _boundAdmissionBaseline(now, limits);
   final metrics = <String, Object?>{
     'contributionDeleteCodec': contributionCodec,
+    'boundAdmission': boundAdmission,
     'schema': 1,
     'scenario': baseline['scenario'],
     'sampleCount': readMicros.length,
@@ -457,4 +459,102 @@ final class _ImmediateRemote implements OfflineRemote {
     putVertexCalls += 1;
     return _send();
   }
+}
+
+Future<Map<String, Object?>> _boundAdmissionBaseline(
+  DateTime now,
+  Map<String, Object?> limits,
+) async {
+  var tokenCalls = 0;
+  final rss = ProcessInfo.currentRss;
+  final store = MemoryOfflineStore(
+    limits: const OfflineStoreLimits(
+      maxOutboxRecords: 1100,
+      maxOutboxRecordsPerPartition: 1100,
+    ),
+  );
+  final endpoint = Uri.parse('http://127.0.0.1:1');
+  final data = await OfflineLanternDataClient.open(
+    client: LanternClient.connect(
+      endpoint,
+      allowInsecure: true,
+      tokenProvider: () {
+        tokenCalls++;
+        throw StateError('bound admission acquired a token');
+      },
+    ),
+    store: store,
+    binding: LanternSessionBinding.application(
+      serviceOrigin: endpoint,
+      securityDomain: 'performance',
+      accountIdentity: 'one',
+      authorityBinding: 'a',
+    ),
+    durability: AdmissionDurability.memory,
+    clock: () => now,
+  );
+  final admission = Stopwatch()..start();
+  final ticket = await data.mutations.submit(
+    MutationRequest.putVertices(
+      List.generate(
+        1001,
+        (i) => VertexInput(
+          key: 'bound-$i',
+          value: VertexValue.int32(i),
+          expiresIn: const Duration(hours: 1),
+        ),
+      ),
+    ),
+  );
+  admission.stop();
+  final reads = <int>[];
+  for (var i = 0; i < 50; i++) {
+    final watch = Stopwatch()..start();
+    final value = await data.getVertex(
+      'bound-$i',
+      options: const GetOptions(source: ReadSource.cacheOnly),
+    );
+    reads.add(watch.elapsedMicroseconds);
+    _require(
+      value.pending.count == 1 &&
+          value.projection == PendingProjection.exactPendingPut,
+      'bound pending projection',
+    );
+  }
+  reads.sort();
+  final status = await data.mutations.getStatus(ticket.reference.operationId);
+  _require(
+    status.items.length == 1001 && !status.terminal && tokenCalls == 0,
+    'bound admission status',
+  );
+  final close = Stopwatch()..start();
+  await data.close();
+  close.stop();
+  final rssDelta = ProcessInfo.currentRss - rss;
+  _require(
+    admission.elapsedMilliseconds <= (limits['enqueueMillis']! as int),
+    'bound enqueue latency',
+  );
+  _require(
+    _percentile(reads, .99) <= (limits['cacheReadP99Micros']! as int),
+    'bound pending read latency',
+  );
+  _require(
+    close.elapsedMilliseconds <= (limits['disposeMillis']! as int),
+    'bound close latency',
+  );
+  _require(
+    rssDelta <= (limits['rssDeltaBytes']! as int),
+    'bound memory resource',
+  );
+  return {
+    'itemCount': 1001,
+    'sampleCount': 50,
+    'enqueueMillis': admission.elapsedMilliseconds,
+    'pendingReadP99Micros': _percentile(reads, .99),
+    'disposeMillis': close.elapsedMilliseconds,
+    'rssDeltaBytes': rssDelta,
+    'tokenCalls': tokenCalls,
+    'durability': 'memory',
+  };
 }
