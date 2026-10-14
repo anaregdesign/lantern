@@ -375,13 +375,17 @@ final class LanternSyncStatus {
     this.lifecycle = SyncLifecycle.foreground,
     this.terminalAttentionItems = 0,
     this.observationLost = false,
+    this.deferred = false,
   });
 
-  /// In-memory attempts which have not settled.
+  /// Accepted outstanding mutations, including durable work awaiting a start.
   final int activeMutations;
 
   /// Whether this lifetime has ended.
   final bool closed;
+
+  /// Eligible network work awaits a deadline or a fair permit.
+  final bool deferred;
 
   /// Last bounded endpoint progress.
   final SyncReachability reachability;

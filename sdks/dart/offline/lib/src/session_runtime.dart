@@ -2,11 +2,16 @@ import 'dart:async';
 import 'dart:collection';
 
 import 'package:lantern_client/lantern_client.dart';
+import 'package:lantern_client/lantern_client_adapter.dart';
 
 import 'automatic_owner.dart';
+import 'errors.dart';
 
 /// Work classes shared by push, incoming recovery and active observations.
 enum OfflineSessionLane {
+  /// Local expiry/status maintenance; never acquires a network permit.
+  local,
+
   /// Original receipt status recovery; reserves both read and send capacity.
   reconcile,
 
@@ -31,14 +36,23 @@ typedef OfflineSessionSchedule =
     OfflineSessionAlarm Function(Duration delay, void Function() callback);
 
 /// A bounded job may publish only after checking its captured lifetime.
-final class OfflineSessionWork {
-  OfflineSessionWork._(this.cancellation, this._check);
+final class OfflineSessionWork implements LanternObservationWork {
+  OfflineSessionWork._(
+    this.cancellation,
+    this._check,
+    this.credentialGeneration,
+  );
+
+  /// Runtime-assigned generation, advanced only after verified credential events.
+  final int credentialGeneration;
 
   /// Attempt cancellation, independent of an application's completion waiter.
+  @override
   final LanternCancellationToken cancellation;
   final void Function() _check;
 
   /// Checks owner/work epoch after awaits and immediately before publication.
+  @override
   void checkCurrent() => _check();
 }
 
@@ -54,6 +68,7 @@ final class OfflineSessionBudget {
     this.maxSendJobs = 128,
     this.maxReadJobs = 128,
     this.maxTraversalJobs = 64,
+    this.maxLocalJobs = 128,
   }) {
     if (maxSends < 1 ||
         maxReads < 2 ||
@@ -62,7 +77,8 @@ final class OfflineSessionBudget {
         maxRuntimes < 1 ||
         maxSendJobs < 1 ||
         maxReadJobs < 1 ||
-        maxTraversalJobs < 1) {
+        maxTraversalJobs < 1 ||
+        maxLocalJobs < 1) {
       throw const LanternDataException(DataFailure.capacity);
     }
   }
@@ -71,8 +87,8 @@ final class OfflineSessionBudget {
   final int maxSends, maxReads, maxTraversals, maxRuntimes;
 
   /// Registered slots, including in-flight and dirty work, have global caps.
-  final int maxSendJobs, maxReadJobs, maxTraversalJobs;
-  final List<int> _jobCounts = [0, 0, 0];
+  final int maxSendJobs, maxReadJobs, maxTraversalJobs, maxLocalJobs;
+  final List<int> _jobCounts = [0, 0, 0, 0];
   final Set<OfflineSessionRuntime> _owners = {};
   final Queue<OfflineSessionRuntime> _waiting = Queue();
   int _sends = 0, _reads = 0, _traversals = 0;
@@ -80,7 +96,12 @@ final class OfflineSessionBudget {
 
   void _reserve(OfflineSessionLane lane) {
     final category = _category(lane);
-    final cap = [maxSendJobs, maxReadJobs, maxTraversalJobs][category];
+    final cap = [
+      maxSendJobs,
+      maxReadJobs,
+      maxTraversalJobs,
+      maxLocalJobs,
+    ][category];
     if (_jobCounts[category] == cap) {
       throw const LanternDataException(DataFailure.capacity);
     }
@@ -143,6 +164,7 @@ final class OfflineSessionRuntime {
     required DateTime Function() clock,
     required this.fence,
     required this.onError,
+    this.onNetworkActivity,
     OfflineSessionSchedule? schedule,
     this.debounce = const Duration(milliseconds: 50),
     this.maximumWait = const Duration(milliseconds: 250),
@@ -150,6 +172,7 @@ final class OfflineSessionRuntime {
     this.maxSendJobs = 32,
     this.maxReadJobs = 32,
     this.maxTraversalJobs = 16,
+    this.maxLocalJobs = 16,
     this.maxSends = 2,
     this.maxReads = 4,
     this.maxTraversals = 1,
@@ -162,6 +185,7 @@ final class OfflineSessionRuntime {
         maxSendJobs < 1 ||
         maxReadJobs < 1 ||
         maxTraversalJobs < 1 ||
+        maxLocalJobs < 1 ||
         maxSends < 1 ||
         maxReads < 2 ||
         maxTraversals < 1 ||
@@ -187,11 +211,14 @@ final class OfflineSessionRuntime {
   /// Reports a job failure once, without inventing a retry or clearing a pause.
   final void Function(Object error, StackTrace stack) onError;
 
+  /// Content-free network activity notification; shares the runtime timer.
+  final void Function()? onNetworkActivity;
+
   /// Fixed debounce for repeated dirty events.
   final Duration debounce, maximumWait;
 
   /// Retained job capacities for all work and each category in this scope.
-  final int maxJobs, maxSendJobs, maxReadJobs, maxTraversalJobs;
+  final int maxJobs, maxSendJobs, maxReadJobs, maxTraversalJobs, maxLocalJobs;
 
   /// Concurrent scoped permits, also charged to the shared global budget.
   final int maxSends, maxReads, maxTraversals;
@@ -204,11 +231,37 @@ final class OfflineSessionRuntime {
     for (final lane in OfflineSessionLane.values) lane: Queue(),
   };
   OfflineSessionAlarm? _alarm;
-  DateTime? _highWater;
+  DateTime? _highWater, _networkNotBefore;
   int _workEpoch = 0, _alarmEpoch = 0, _laneCursor = 0;
-  int _sends = 0, _reads = 0, _traversals = 0;
+  int _credentialGeneration = 0, _oneShot = 0;
+  static final _currentWork = Object();
+
+  /// Current generation is evidence for correlating errors, never resume proof.
+  int get credentialGeneration => _credentialGeneration;
+
+  /// Called only after old network work has joined and a verified event has been
+  /// accepted by the controller. Does not itself clear any durable hold.
+  void advanceCredentialGeneration() {
+    _credentialGeneration++;
+  }
+
+  int _sends = 0, _reads = 0, _traversals = 0, _locals = 0;
+  bool _networkPaused = false;
+  Future<void>? _networkJoining;
   bool _closed = false, _suspended = false, _pumping = false;
   Future<void>? _closing, _suspending;
+
+  /// Shared endpoint delay; existing local maintenance and owned attempts remain live.
+  void deferNetworkUntil(DateTime due) {
+    _checkOwner();
+    if (_networkNotBefore == null || due.isAfter(_networkNotBefore!)) {
+      _networkNotBefore = due;
+    }
+    _arm();
+  }
+
+  /// Concurrent network work, excluding local status/expiry maintenance.
+  int get networkInFlightCount => _flights.length - _locals;
 
   /// Retained job slots include in-flight work and its one dirty follow-up.
   int get jobCount => _jobs.length;
@@ -218,6 +271,10 @@ final class OfflineSessionRuntime {
 
   /// Includes waiting for a fair permit, coalescing and in-flight dirty work.
   bool get deferred => _jobs.values.any((j) => j.pending);
+
+  /// Network work waiting for a deadline, coalescing or a fair permit.
+  bool get networkDeferred =>
+      _jobs.values.any((j) => j.pending && j.lane != OfflineSessionLane.local);
 
   /// At most one regardless of outbox size or active observation count.
   bool get hasWakeup => _alarm != null;
@@ -244,6 +301,7 @@ final class OfflineSessionRuntime {
     OfflineSessionLane lane,
     Future<void> Function(OfflineSessionWork work) run, {
     DateTime? dueAt,
+    bool retain = false,
   }) {
     _checkOwner();
     if (key.isEmpty || key.length > 1024) {
@@ -260,7 +318,9 @@ final class OfflineSessionRuntime {
       final category = _jobs.values
           .where((j) => _category(j.lane) == _category(lane))
           .length;
-      final bound = _usesSend(lane)
+      final bound = lane == OfflineSessionLane.local
+          ? maxLocalJobs
+          : _usesSend(lane)
           ? maxSendJobs
           : lane == OfflineSessionLane.traversal
           ? maxTraversalJobs
@@ -277,6 +337,7 @@ final class OfflineSessionRuntime {
       _queues[lane]!.add(job);
     }
     job.run = run;
+    job.retained |= retain;
     if (dueAt != null) {
       // An explicit deadline is a scheduling constraint, never a network proof.
       final requested = dueAt.toUtc();
@@ -301,6 +362,90 @@ final class OfflineSessionRuntime {
     _arm();
   }
 
+  /// Retains one idle slot for an active observation. An existing identity is
+  /// never replaced by a second registration; allocation failures are atomic.
+  void retain(
+    String key,
+    OfflineSessionLane lane,
+    Future<void> Function(OfflineSessionWork) run,
+  ) {
+    if (_jobs.containsKey(key)) {
+      throw const LanternDataException(DataFailure.capacity);
+    }
+    enqueue(key, lane, run, retain: true);
+    final job = _jobs[key]!;
+    job.pending = false;
+    job.firstDirty = null;
+    job.due = null;
+    _arm();
+  }
+
+  /// Clears a retained local alarm without releasing its bounded registration.
+  void clearPending(String key) {
+    final job = _jobs[key];
+    if (job == null || !job.retained || job.lane != OfflineSessionLane.local) {
+      return;
+    }
+    job.pending = false;
+    job.firstDirty = null;
+    job.due = null;
+    _arm();
+  }
+
+  /// Cache-neutral observation adapter sharing this runtime's exact queue,
+  /// retained-slot caps, one alarm and network cancellation lifetime.
+  LanternObservationScheduler get observationScheduler =>
+      _RuntimeObservations(this);
+
+  /// Runs one bounded read, or shares the attempt already granted to this
+  /// runtime's observation callback. This avoids reacquiring its own permit.
+  Future<T> readOnce<T>(
+    Future<T> Function(OfflineSessionWork) read, {
+    bool traversal = false,
+    LanternCancellationToken? cancellation,
+  }) async {
+    final current = Zone.current[_currentWork];
+    if (current is (OfflineSessionRuntime, OfflineSessionWork) &&
+        identical(current.$1, this)) {
+      current.$2.checkCurrent();
+      return read(current.$2);
+    }
+    _checkOwner();
+    if (_suspended || _networkPaused || (cancellation?.isCanceled ?? false)) {
+      throw const OfflineWorkInterruptedException();
+    }
+    final result = Completer<T>();
+    final key = 'one-shot:${++_oneShot}';
+    void interrupted() {
+      if (!result.isCompleted) {
+        result.completeError(const OfflineWorkInterruptedException());
+      }
+      unawaited(remove(key));
+    }
+
+    enqueue(
+      key,
+      traversal ? OfflineSessionLane.traversal : OfflineSessionLane.read,
+      (work) async {
+        try {
+          final value = await read(work);
+          work.checkCurrent();
+          if (!result.isCompleted) result.complete(value);
+        } catch (error, stack) {
+          if (!result.isCompleted) result.completeError(error, stack);
+        }
+      },
+      dueAt: _now(),
+    );
+    _jobs[key]!.onStop = interrupted;
+    final detach = cancellation?.listen((_) => interrupted());
+    try {
+      return await result.future;
+    } finally {
+      detach?.call();
+    }
+  }
+
   /// Unregisters queued work and cancels/joins its current callback. Admitted
   /// durable mutations are separate; removing a job never withdraws an intent.
   Future<void> remove(String key) async {
@@ -319,6 +464,10 @@ final class OfflineSessionRuntime {
   }
 
   bool _scopePermit(OfflineSessionLane lane) =>
+      (lane == OfflineSessionLane.local
+          ? _locals == 0
+          : !_networkPaused &&
+                !(_networkNotBefore?.isAfter(_now()) ?? false)) &&
       (!_usesSend(lane) || _sends < maxSends) &&
       (!_usesRead(lane) || _reads < maxReads) &&
       (lane != OfflineSessionLane.traversal ||
@@ -362,6 +511,7 @@ final class OfflineSessionRuntime {
       _workEpoch++;
       for (final job in _jobs.values) {
         job.token?.cancel();
+        job.onStop?.call();
       }
       onError(error, stack);
     } finally {
@@ -371,31 +521,37 @@ final class OfflineSessionRuntime {
   }
 
   void _start(_Job job) {
+    if (job.lane == OfflineSessionLane.local) _locals++;
     if (_usesSend(job.lane)) _sends++;
     if (_usesRead(job.lane)) _reads++;
     if (job.lane == OfflineSessionLane.traversal) _traversals++;
     final epoch = _workEpoch;
-    final token = LanternCancellationToken();
+    late final OfflineSessionWork work;
+    final token = LanternAdapterCancellation.guarded(() => work.checkCurrent());
     job.token = token;
     job.pending = false;
     job.firstDirty = null;
     job.explicitDeadline = false;
     final run = job.run;
-    final work = OfflineSessionWork._(token, () {
+    work = OfflineSessionWork._(token, () {
       _checkOwner();
       if (_suspended ||
-          epoch != _workEpoch ||
+          (job.lane != OfflineSessionLane.local &&
+              (_networkPaused || epoch != _workEpoch)) ||
           token.isCanceled ||
           !identical(_jobs[job.key], job)) {
-        throw const LanternDataException(DataFailure.closed);
+        throw const OfflineWorkInterruptedException();
       }
-    });
+    }, _credentialGeneration);
     late final Future<void> flight;
     flight =
         Future<void>(() async {
           try {
             work.checkCurrent();
-            await run(work);
+            await runZoned(
+              () => run(work),
+              zoneValues: {_currentWork: (this, work)},
+            );
           } catch (error, stack) {
             if (!token.isCanceled && !_closed && !_suspended) {
               onError(error, stack);
@@ -405,11 +561,16 @@ final class OfflineSessionRuntime {
           job.flight = null;
           job.token = null;
           _flights.remove(flight);
+          if (job.lane == OfflineSessionLane.local) _locals--;
           if (_usesSend(job.lane)) _sends--;
           if (_usesRead(job.lane)) _reads--;
           if (job.lane == OfflineSessionLane.traversal) _traversals--;
           budget._release(job.lane);
-          if (identical(_jobs[job.key], job) && !job.pending && !job.removing) {
+          if (job.lane != OfflineSessionLane.local) onNetworkActivity?.call();
+          if (identical(_jobs[job.key], job) &&
+              !job.pending &&
+              !job.removing &&
+              !job.retained) {
             _jobs.remove(job.key);
             _queues[job.lane]!.remove(job);
             budget._retire(job.lane);
@@ -424,6 +585,7 @@ final class OfflineSessionRuntime {
         });
     job.flight = flight;
     _flights.add(flight);
+    if (job.lane != OfflineSessionLane.local) onNetworkActivity?.call();
   }
 
   void _arm({bool wakeDue = true}) {
@@ -434,15 +596,24 @@ final class OfflineSessionRuntime {
     final now = _now();
     DateTime? first;
     for (final job in _jobs.values) {
-      if (!job.pending || job.flight != null) continue;
+      if (!job.pending ||
+          job.flight != null ||
+          (_networkPaused && job.lane != OfflineSessionLane.local)) {
+        continue;
+      }
       // Due work waiting for permits is woken by permit release, not a zero
       // timer loop. A new enqueue still gets one immediate fair turn.
-      if (!job.due!.isAfter(now)) {
+      final due =
+          job.lane != OfflineSessionLane.local &&
+              (_networkNotBefore?.isAfter(job.due!) ?? false)
+          ? _networkNotBefore!
+          : job.due!;
+      if (!due.isAfter(now)) {
         budget._wait(this);
         if (wakeDue) first = now;
         continue;
       }
-      if (first == null || job.due!.isBefore(first)) first = job.due;
+      if (first == null || due.isBefore(first)) first = due;
     }
     if (first == null) return;
     _alarm = _schedule(first.difference(now), () {
@@ -450,6 +621,39 @@ final class OfflineSessionRuntime {
       _alarm = null;
       _pump();
     });
+  }
+
+  /// Pauses network work synchronously; local maintenance keeps its one timer.
+  /// The callback requesting this must return before awaiting the join future.
+  Future<void> pauseNetwork() {
+    if (_closed) return _closing ?? Future.value();
+    if (_networkJoining != null) return _networkJoining!;
+    _networkPaused = true;
+    _workEpoch++;
+    final flights = <Future<void>>[];
+    for (final job in _jobs.values) {
+      if (job.lane == OfflineSessionLane.local) continue;
+      job.onStop?.call();
+      if (job.removing) continue;
+      if (job.flight != null) {
+        job.pending = true;
+        job.due = _now();
+        flights.add(job.flight!);
+      }
+      job.token?.cancel();
+    }
+    _arm();
+    return _networkJoining = Future.wait(flights).then((_) {});
+  }
+
+  /// Opens the network gate after its stopped flights have joined. Pause policy
+  /// and verified credential acceptance remain the session controller's job.
+  Future<void> resumeNetwork() async {
+    await _networkJoining;
+    _checkOwner();
+    _networkJoining = null;
+    _networkPaused = false;
+    _pump();
   }
 
   /// Cancels and joins work before credential/authority rotation. Retained
@@ -463,6 +667,8 @@ final class OfflineSessionRuntime {
     _alarm = null;
     _alarmEpoch++;
     for (final job in _jobs.values) {
+      job.onStop?.call();
+      if (job.removing) continue;
       if (job.flight != null) {
         job.pending = true;
         job.due = _now();
@@ -494,6 +700,7 @@ final class OfflineSessionRuntime {
     _alarm?.cancel();
     _alarm = null;
     for (final job in _jobs.values) {
+      job.onStop?.call();
       job.token?.cancel();
     }
     budget._waiting.remove(this);
@@ -512,6 +719,7 @@ final class OfflineSessionRuntime {
 }
 
 const _weights = [
+  OfflineSessionLane.local,
   OfflineSessionLane.reconcile,
   OfflineSessionLane.reconcile,
   OfflineSessionLane.send,
@@ -522,8 +730,13 @@ const _weights = [
 ];
 bool _usesSend(OfflineSessionLane lane) =>
     lane == OfflineSessionLane.send || lane == OfflineSessionLane.reconcile;
-bool _usesRead(OfflineSessionLane lane) => lane != OfflineSessionLane.send;
-int _category(OfflineSessionLane lane) => _usesSend(lane)
+bool _usesRead(OfflineSessionLane lane) =>
+    lane == OfflineSessionLane.read ||
+    lane == OfflineSessionLane.reconcile ||
+    lane == OfflineSessionLane.traversal;
+int _category(OfflineSessionLane lane) => lane == OfflineSessionLane.local
+    ? 3
+    : _usesSend(lane)
     ? 0
     : lane == OfflineSessionLane.traversal
     ? 2
@@ -535,9 +748,56 @@ final class _Job {
   final OfflineSessionLane lane;
   Future<void> Function(OfflineSessionWork) run;
   DateTime? firstDirty, due;
-  bool pending = false, explicitDeadline = false, removing = false;
+  bool pending = false,
+      explicitDeadline = false,
+      removing = false,
+      retained = false;
   LanternCancellationToken? token;
   Future<void>? flight;
+  void Function()? onStop;
+}
+
+final class _RuntimeObservations implements LanternObservationScheduler {
+  _RuntimeObservations(this.runtime);
+  final OfflineSessionRuntime runtime;
+  @override
+  DateTime get now => runtime._now();
+  @override
+  LanternObservationRegistration register(
+    String key, {
+    required LanternObservationKind kind,
+    required Future<void> Function(LanternObservationWork) run,
+  }) {
+    final lane = switch (kind) {
+      LanternObservationKind.local => OfflineSessionLane.local,
+      LanternObservationKind.read => OfflineSessionLane.read,
+      LanternObservationKind.traversal => OfflineSessionLane.traversal,
+    };
+    final identity = 'observation:$key';
+    runtime.retain(identity, lane, run);
+    return _RuntimeRegistration(runtime, identity, lane, run);
+  }
+}
+
+final class _RuntimeRegistration implements LanternObservationRegistration {
+  _RuntimeRegistration(this.runtime, this.key, this.lane, this.run);
+  final OfflineSessionRuntime runtime;
+  final String key;
+  final OfflineSessionLane lane;
+  final Future<void> Function(LanternObservationWork) run;
+  bool closed = false;
+  Future<void>? closing;
+  @override
+  void request({DateTime? dueAt}) {
+    if (closed) return;
+    runtime.enqueue(key, lane, run, dueAt: dueAt, retain: true);
+  }
+
+  @override
+  Future<void> cancelAndJoin() {
+    closed = true;
+    return closing ??= runtime.remove(key);
+  }
 }
 
 final class _TimerAlarm implements OfflineSessionAlarm {

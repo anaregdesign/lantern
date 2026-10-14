@@ -5,24 +5,23 @@ SQLite engine supplied by Android and iOS. Neither the online SDK nor the pure
 Dart offline core imports this Flutter package. This initial adapter is not yet
 published; the repository uses path dependencies during development.
 
-The #1768 source candidate also implements the common bound client:
+The source candidate implements the common bound client with automatic foreground delivery:
 
 ```dart
-final store = await SqliteOfflineStore.open(path: applicationDatabasePath);
-final data = await OfflineLanternDataClient.open(
+final data = await SqliteOfflineStore.openSession(
+  path: applicationDatabasePath,
   client: transport,
   binding: sessionBinding,
-  store: store,
-  durability: AdmissionDurability.durable,
 );
 final ticket = await data.mutations.submit(MutationRequest.deleteVertices([
   'note:42',
 ])); // Durable admission without capability, credentials or network.
 ```
 
-Ordinary CRUD Futures await Server handling. The automatic session owner is
-composed by #1769 and the maintained factories by #1772; applications do not
-schedule delivery or expose a manual Sync action. The legacy explicit Repository
+Ordinary CRUD Futures await Server handling. The bounded session owner handles
+preparation, original-receipt recovery and retries. The application/native bridge
+provides foreground and verified credential events; maintained app integration is
+#1772. Applications do not schedule delivery or expose a manual Sync action. The legacy explicit Repository
 example below remains for published clients and qualification tools.
 
 ```dart
@@ -68,7 +67,7 @@ execute again. Wipe is not automatic retry, storage-error recovery or cache clea
 - Common delivery's bounded claim fences observe committed lease/generation,
   authority and high-water changes before notifications or transaction completion,
   including quiet clock advances. They cover this adapter's same-isolate lane;
-  automatic cross-process ownership still requires the later runtime protocol.
+  the automatic factory additionally acquires a native exclusive lifetime guard.
   Legacy schema5 and earlier have no persisted authority proof: migration hides
   old cache/cursors and retains bounded revalidation identities. Same-authority
   current-format reopen preserves eligible history and immutable outbox evidence.
@@ -105,12 +104,25 @@ execute again. Wipe is not automatic retry, storage-error recovery or cache clea
   v5/operation v4 reservations. Migration validates the entire graph and preserves
   IDs/TTL/dispatch proof before any network work. An interrupted migration rolls
   back; insufficient capacity fails open rather than dropping accepted state.
+  Provisional schema 7 adds monotone owner epoch/token history and persisted
+  credential-generation/policy pauses. Schema 6 migrates without clearing auth;
+  its number is rechecked against the final #1768 base before integration.
 
-Use one store owner per database in the application. Separate connections in
-the same isolate share a transaction lane and post-commit notifications.
-SQLite arbitrates cross-process writes, but cross-isolate/process live change
-delivery is not provided: those owners must be coordinated by the application.
-Database paths are application-owned and should have a single canonical spelling.
+Automatic opens use a dedicated native `flock` sidecar, acquired before SQLite
+open/migration. The shared C Code Asset supports Android/iOS and host VM tests;
+mobile SQLite remains the OS engine through sqflite. Same-isolate matching handles
+share; other isolate/process opens conflict before work. Canonical paths resolve
+symlinks, pin file identity and reject DB/sidecar hardlinks. Sidecars are not removed
+on close. The 16-entry opaque guard table has no finalizer: isolate abandonment
+remains locked until process exit. A new process can acquire a new epoch and
+reconcile original receipts after process death. No PID or wall-clock takeover.
+
+See [runtime boundaries](../offline/docs/session-runtime-development.md) for
+acquisition/release failure ordering, credential/work fences, transfer/restore
+holds and host-only evidence. Manual store connections still share a same-isolate
+transaction lane, but do not supply an automatic capability. Cross-process live
+change delivery, external file replacement and network filesystems are outside
+this owner contract. Installation/backup continuity must be supplied independently.
 
 ## CDC storage boundary
 
@@ -153,6 +165,7 @@ From this package directory:
 flutter pub get --enforce-lockfile
 flutter analyze --no-pub
 flutter test --no-pub
+dart run tool/automatic_owner_probe.dart
 dart run tool/crash_probe.dart
 LANTERN_DART_RECEIPT_ENDPOINT=https://localhost:6396 \
 LANTERN_DART_RECEIPT_CA_FILE="$RECEIPT_CA_FILE" \

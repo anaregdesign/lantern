@@ -48,7 +48,11 @@ final class LanternBoundMutationRemote implements OfflineBoundMutationRemote {
       return (await client.attemptIndexedMutation(
         intent,
         receiptContext: record.receipt?.context,
-        options: LanternCallOptions(cancellation: cancellation, retry: false),
+        options: LanternCallOptions(
+          timeout: const Duration(seconds: 15),
+          cancellation: cancellation,
+          retry: false,
+        ),
         beforeDispatch: () => guard(beforeDispatch),
         beforePublication: () => guard(beforePublication),
       )).items.single;

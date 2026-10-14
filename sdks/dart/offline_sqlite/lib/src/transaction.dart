@@ -185,7 +185,7 @@ final class _SqlTransaction
         if (unqualified) await resetScopedChangeCursor(partitionId, null);
         await sql.update(
           'partitions',
-          {'authority_binding': authorityBinding},
+          {'authority_binding': authorityBinding, 'policy_paused': 0},
           where: 'partition_id=?',
           whereArgs: [partitionId],
         );
@@ -215,13 +215,86 @@ final class _SqlTransaction
       _run(() async => (await _partition(partitionId))['auth_paused'] == 1);
 
   @override
-  Future<void> setReplayPausedForAuth(String partitionId, bool paused) =>
+  Future<void> setReplayPausedForAuth(
+    String partitionId,
+    bool paused, {
+    int? credentialGeneration,
+  }) => _run(() async {
+    final metadata = await _partition(partitionId);
+    if (credentialGeneration != null && credentialGeneration < 0) {
+      throw const OfflineArgumentException();
+    }
+    final next = paused
+        ? credentialGeneration ?? metadata['paused_credential_generation']
+        : null;
+    if (metadata['auth_paused'] == (paused ? 1 : 0) &&
+        metadata['paused_credential_generation'] == next) {
+      return;
+    }
+    await sql.update(
+      'partitions',
+      {'auth_paused': paused ? 1 : 0, 'paused_credential_generation': next},
+      where: 'partition_id=?',
+      whereArgs: [partitionId],
+    );
+    changed.add(partitionId);
+    observationInvalidated.add(partitionId);
+  });
+
+  @override
+  Future<OfflineAutomaticSchedule> automaticSchedule(
+    String partitionId, {
+    required DateTime now,
+    required Duration maxAge,
+  }) => _run(() async {
+    await _partition(partitionId);
+    final row = (await sql.rawQuery(
+      """
+      SELECT MIN(CASE WHEN state='sending' THEN lease_until
+          ELSE COALESCE(next_attempt_at,?) END) AS attempt,
+        MIN(CASE WHEN expiration>? THEN expiration END) AS expiration,
+        MIN(CASE WHEN enqueued_at+?>? THEN enqueued_at+? END) AS age
+      FROM outbox WHERE partition_id=? AND state IN ('enqueued','sending')
+      """,
+      [
+        now.millisecondsSinceEpoch,
+        now.millisecondsSinceEpoch,
+        maxAge.inMilliseconds,
+        now.millisecondsSinceEpoch,
+        maxAge.inMilliseconds,
+        partitionId,
+      ],
+    )).single;
+    DateTime? time(String key) => row[key] == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(row[key]! as int, isUtc: true);
+    final expiration = time('expiration'), age = time('age');
+    return OfflineAutomaticSchedule(
+      nextAttemptAt: time('attempt'),
+      nextLocalExpiry: expiration == null
+          ? age
+          : age == null || expiration.isBefore(age)
+          ? expiration
+          : age,
+    );
+  });
+
+  @override
+  Future<int?> pausedCredentialGeneration(String partitionId) => _run(
+    () async =>
+        (await _partition(partitionId))['paused_credential_generation'] as int?,
+  );
+  @override
+  Future<bool> replayPausedForPolicy(String partitionId) =>
+      _run(() async => (await _partition(partitionId))['policy_paused'] == 1);
+  @override
+  Future<void> setReplayPausedForPolicy(String partitionId, bool paused) =>
       _run(() async {
         final metadata = await _partition(partitionId);
-        if (metadata['auth_paused'] == (paused ? 1 : 0)) return;
+        if (metadata['policy_paused'] == (paused ? 1 : 0)) return;
         await sql.update(
           'partitions',
-          {'auth_paused': paused ? 1 : 0},
+          {'policy_paused': paused ? 1 : 0},
           where: 'partition_id=?',
           whereArgs: [partitionId],
         );
@@ -836,7 +909,8 @@ final class _SqlTransaction
       throw const OfflineArgumentException();
     }
     _validateLeaseOwnerCapacity(owner, limits);
-    if (await replayPausedForAuth(partitionId)) {
+    if (await replayPausedForAuth(partitionId) ||
+        await replayPausedForPolicy(partitionId)) {
       return const <OfflineOutboxRecord>[];
     }
     // Recover only expired leases; aggregate status is updated by the caller
@@ -1532,6 +1606,11 @@ final class _SqlTransaction
                     4096) ||
         metadata['change_epoch'] is! int ||
         (metadata['change_epoch']! as int) < 0 ||
+        (metadata['policy_paused'] != 0 && metadata['policy_paused'] != 1) ||
+        (metadata['paused_credential_generation'] != null &&
+            (metadata['paused_credential_generation'] is! int ||
+                (metadata['paused_credential_generation']! as int) < 0 ||
+                metadata['auth_paused'] != 1)) ||
         (metadata['auth_paused'] != 0 && metadata['auth_paused'] != 1)) {
       throw const OfflineCodecException();
     }

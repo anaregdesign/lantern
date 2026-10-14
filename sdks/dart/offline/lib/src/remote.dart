@@ -355,7 +355,10 @@ abstract interface class OfflineRecoveryRemote {
 final class LanternClientOfflineRemote
     implements OfflineRemote, OfflineReceiptRemote, OfflineRecoveryRemote {
   /// Wraps one online Lantern client.
-  const LanternClientOfflineRemote(this.client);
+  const LanternClientOfflineRemote(this.client, {this.attemptTimeout});
+
+  /// Optional finite deadline supplied by an automatic runtime.
+  final Duration? attemptTimeout;
 
   /// Underlying online client.
   final LanternClient client;
@@ -372,7 +375,11 @@ final class LanternClientOfflineRemote
     late final ReceiptCapability capability;
     try {
       capability = await client.getReceiptCapability(
-        options: LanternCallOptions(cancellation: cancellation, retry: false),
+        options: LanternCallOptions(
+          timeout: attemptTimeout,
+          cancellation: cancellation,
+          retry: false,
+        ),
       );
     } catch (error) {
       throw mapLanternClientFailure(error);
@@ -436,7 +443,11 @@ final class LanternClientOfflineRemote
   }) async {
     try {
       final capability = await client.getReceiptCapability(
-        options: LanternCallOptions(cancellation: cancellation, retry: false),
+        options: LanternCallOptions(
+          timeout: attemptTimeout,
+          cancellation: cancellation,
+          retry: false,
+        ),
       );
       return switch (capability) {
         ReceiptCapabilityDisabled() => const OfflineReceiptCapabilityDisabled(),
@@ -475,7 +486,11 @@ final class LanternClientOfflineRemote
     try {
       final status = await client.getReceiptStatus(
         operationId,
-        options: LanternCallOptions(cancellation: cancellation, retry: false),
+        options: LanternCallOptions(
+          timeout: attemptTimeout,
+          cancellation: cancellation,
+          retry: false,
+        ),
       );
       final receipt = status.receipt;
       OfflineReceiptResult? result;
@@ -584,7 +599,11 @@ final class LanternClientOfflineRemote
   Future<void> probe({LanternCancellationToken? cancellation}) async {
     try {
       await client.ping(
-        options: LanternCallOptions(cancellation: cancellation, retry: false),
+        options: LanternCallOptions(
+          timeout: attemptTimeout,
+          cancellation: cancellation,
+          retry: false,
+        ),
       );
     } catch (error) {
       throw mapLanternClientFailure(error);
@@ -600,7 +619,11 @@ final class LanternClientOfflineRemote
       return OfflineRemotePresent<Edge>(
         await client.getEdge(
           edge,
-          options: LanternCallOptions(cancellation: cancellation, retry: false),
+          options: LanternCallOptions(
+            timeout: attemptTimeout,
+            cancellation: cancellation,
+            retry: false,
+          ),
         ),
       );
     } on LanternNotFoundException {
@@ -621,7 +644,11 @@ final class LanternClientOfflineRemote
     try {
       final result = await client.getEdges(
         edges,
-        options: LanternCallOptions(cancellation: cancellation, retry: false),
+        options: LanternCallOptions(
+          timeout: attemptTimeout,
+          cancellation: cancellation,
+          retry: false,
+        ),
       );
       final present = {
         for (final edge in result.edges)
@@ -659,7 +686,11 @@ final class LanternClientOfflineRemote
       return OfflineRemotePresent<Vertex>(
         await client.getVertex(
           key,
-          options: LanternCallOptions(cancellation: cancellation, retry: false),
+          options: LanternCallOptions(
+            timeout: attemptTimeout,
+            cancellation: cancellation,
+            retry: false,
+          ),
         ),
       );
     } on LanternNotFoundException {
@@ -680,7 +711,11 @@ final class LanternClientOfflineRemote
     try {
       final result = await client.getVertices(
         keys,
-        options: LanternCallOptions(cancellation: cancellation, retry: false),
+        options: LanternCallOptions(
+          timeout: attemptTimeout,
+          cancellation: cancellation,
+          retry: false,
+        ),
       );
       final present = {
         for (final vertex in result.vertices) vertex.key: vertex,
@@ -719,7 +754,11 @@ final class LanternClientOfflineRemote
           weight: edge.weight,
           expiresAt: edge.expiration,
         ),
-        options: LanternCallOptions(cancellation: cancellation, retry: false),
+        options: LanternCallOptions(
+          timeout: attemptTimeout,
+          cancellation: cancellation,
+          retry: false,
+        ),
       );
     } catch (error) {
       throw mapLanternClientFailure(error);
@@ -738,7 +777,11 @@ final class LanternClientOfflineRemote
           value: vertex.value,
           expiresAt: vertex.expiration,
         ),
-        options: LanternCallOptions(cancellation: cancellation, retry: false),
+        options: LanternCallOptions(
+          timeout: attemptTimeout,
+          cancellation: cancellation,
+          retry: false,
+        ),
       );
     } catch (error) {
       throw mapLanternClientFailure(error);

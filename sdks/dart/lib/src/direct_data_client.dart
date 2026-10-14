@@ -64,6 +64,9 @@ final class DirectLanternDataClient implements LanternDataClient {
     _traversalPermits = _BoundedPermits(1, maxQueuedReads);
   }
   final LanternClient _client;
+  void Function()? _adapterAuthority;
+  void Function(LanternException? failure)? _adapterEndpoint;
+  bool _adapterRead = false;
   @override
   final LanternSessionBinding binding;
 
@@ -130,6 +133,10 @@ final class DirectLanternDataClient implements LanternDataClient {
   }
 
   void _ensureAuthority() {
+    if (_adapterAuthority != null) {
+      _adapterAuthority!();
+      return;
+    }
     final expiresAt = binding.expiresAt;
     if (expiresAt != null && !expiresAt.isAfter(_mutations._now())) {
       throw LanternUnauthenticatedException._(
@@ -154,7 +161,9 @@ final class DirectLanternDataClient implements LanternDataClient {
     _validateReadOptions(options?.timeout);
     _throwIfCanceled(options?.cancellation);
     _ensureAuthority();
-    final token = LanternCancellationToken();
+    final token = LanternCancellationToken._guarded(
+      () => options?.cancellation?._checkCurrent(),
+    );
     final detachLifetime = _lifetime.listen((_) => token.cancel());
     final detachCaller = options?.cancellation?.listen((_) => token.cancel());
     final work = Future<T>(() async {
@@ -167,10 +176,10 @@ final class DirectLanternDataClient implements LanternDataClient {
       });
       void Function()? release, releaseTraversal;
       try {
-        if (traversal) {
+        if (traversal && !_adapterRead) {
           releaseTraversal = await _traversalPermits.acquire(token);
         }
-        release = await _readPermits.acquire(token);
+        if (!_adapterRead) release = await _readPermits.acquire(token);
         final remaining = timeout - started.elapsed;
         if (remaining <= Duration.zero) {
           timedOut = true;
@@ -185,11 +194,15 @@ final class DirectLanternDataClient implements LanternDataClient {
           ),
         );
         _throwIfCanceled(token);
+        options?.cancellation?._checkCurrent();
+        _adapterEndpoint?.call(null);
         _reachability = SyncReachability.idle;
         _pause = SyncPause.none;
         _observations.invalidateKey('sync');
         return result;
       } on LanternException catch (error) {
+        options?.cancellation?._checkCurrent();
+        _adapterEndpoint?.call(timedOut ? _boundedReadDeadline() : error);
         if (timedOut) {
           final deadline = _boundedReadDeadline();
           _recordEndpointFailure(deadline);
@@ -489,7 +502,7 @@ final class DirectLanternDataClient implements LanternDataClient {
         (f) => f.then<void>((_) {}, onError: (Object _, StackTrace _) {}),
       ),
     );
-    await _client.close();
+    if (!_adapterRead) await _client.close();
   }
 }
 

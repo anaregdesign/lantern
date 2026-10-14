@@ -5581,6 +5581,22 @@ final class _InspectingStore implements OfflineStore {
 
 final class _InspectingTransaction implements OfflineStoreTransaction {
   @override
+  FutureOr<int?> pausedCredentialGeneration(String id) =>
+      inner.pausedCredentialGeneration(id);
+  @override
+  FutureOr<bool> replayPausedForPolicy(String id) =>
+      inner.replayPausedForPolicy(id);
+  @override
+  FutureOr<void> setReplayPausedForPolicy(String id, bool paused) =>
+      inner.setReplayPausedForPolicy(id, paused);
+  @override
+  FutureOr<OfflineAutomaticSchedule> automaticSchedule(
+    String id, {
+    required DateTime now,
+    required Duration maxAge,
+  }) => inner.automaticSchedule(id, now: now, maxAge: maxAge);
+
+  @override
   FutureOr<String?> authorityBinding(String partitionId) =>
       inner.authorityBinding(partitionId);
   @override
@@ -5725,8 +5741,15 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
       await inner.replayPausedForAuth(partitionId);
 
   @override
-  Future<void> setReplayPausedForAuth(String partitionId, bool paused) async =>
-      await inner.setReplayPausedForAuth(partitionId, paused);
+  Future<void> setReplayPausedForAuth(
+    String partitionId,
+    bool paused, {
+    int? credentialGeneration,
+  }) async => await inner.setReplayPausedForAuth(
+    partitionId,
+    paused,
+    credentialGeneration: credentialGeneration,
+  );
 
   @override
   Future<bool> hasOutboxForOperation(

@@ -90,6 +90,19 @@ final class LanternCancellationToken {
   /// Creates a caller-controlled cancellation token.
   LanternCancellationToken();
 
+  LanternCancellationToken._guarded(this._guard);
+  void Function()? _guard;
+
+  void _checkCurrent() {
+    _guard?.call();
+    if (_isCanceled) {
+      throw connect.ConnectException(
+        connect.Code.canceled,
+        'operation canceled',
+      );
+    }
+  }
+
   final Set<void Function(Object?)> _listeners = {};
   bool _isCanceled = false;
   Object? _reason;
@@ -793,16 +806,20 @@ final class LanternInvoker {
       redactResponse: redactResponse,
     );
     try {
+      options?.cancellation?._checkCurrent();
       final headers = authenticated
           ? await _requestHeaders(context)
           : connect.Headers();
+      options?.cancellation?._checkCurrent();
       onRequestStarted?.call();
-      return await call(
+      final value = await call(
         headers: headers,
         signal: context.signal,
         onHeader: context.onHeader,
         onTrailer: context.onTrailer,
       );
+      options?.cancellation?._checkCurrent();
+      return value;
     } on connect.ConnectException catch (error) {
       throw _mapConnectException(error, context);
     } on LanternDataException {
@@ -862,8 +879,10 @@ final class LanternInvoker {
 
     Future<void> start(_InvocationContext invocation) async {
       try {
+        options?.cancellation?._checkCurrent();
         final headers = await _requestHeaders(invocation);
         if (stopped) return;
+        options?.cancellation?._checkCurrent();
         final source = call(
           headers: headers,
           signal: invocation.signal,
@@ -872,7 +891,14 @@ final class LanternInvoker {
         );
         final active = source.listen(
           (value) {
-            if (!stopped) controller.add(value);
+            if (!stopped) {
+              try {
+                options?.cancellation?._checkCurrent();
+                controller.add(value);
+              } catch (error, stack) {
+                fail(error, stack);
+              }
+            }
           },
           onError: fail,
           onDone: finish,

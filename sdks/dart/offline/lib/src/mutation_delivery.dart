@@ -6,6 +6,7 @@ import 'claim_fence.dart';
 import 'errors.dart';
 import 'mutation_state.dart';
 import 'remote.dart';
+import 'session_runtime.dart';
 import 'store.dart';
 import 'types.dart';
 
@@ -25,6 +26,10 @@ final class OfflineMutationDelivery {
     required this.onStorageBlocked,
     required this.authorityBinding,
     required this.onDurable,
+    this.onAuthPause,
+    this.onPolicyPause,
+    this.retryDeadline,
+    this.onEndpointSuccess,
     this.maxAge = const Duration(days: 7),
     this.maxAttempts = 8,
     this.leaseDuration = const Duration(minutes: 2),
@@ -69,26 +74,57 @@ final class OfflineMutationDelivery {
 
   /// Maximum persisted possibly-dispatched attempts per item.
   final int maxAttempts;
+
+  /// Synchronous current-work auth stop signal. Never await a join here: this
+  /// callback is itself one of the runtime's flights. Durable pause follows under
+  /// the owner/account fence, independently of the canceled work epoch.
+  final void Function()? onAuthPause;
+
+  /// Current-work permission denial closes the network gate without self-join.
+  final void Function()? onPolicyPause;
+
+  /// Shared endpoint retry policy; returns the absolute deadline to persist.
+  final DateTime Function(Object? failure)? retryDeadline;
+
+  /// A current valid endpoint reply, separate from durable confirmation.
+  final void Function()? onEndpointSuccess;
   bool _blocked = false, _running = false;
-  final LanternCancellationToken _cancellation = LanternCancellationToken();
+  bool _closed = false;
+  OfflineSessionWork? _work;
+  LanternCancellationToken? _activeToken;
+  LanternCancellationToken get _cancellation => _activeToken!;
+  void _checkWork() {
+    fence();
+    if (_closed || (_activeToken?.isCanceled ?? false)) {
+      throw const OfflineWorkInterruptedException();
+    }
+    _work?.checkCurrent();
+  }
+
   Future<void>? _flight;
 
   /// Storage failure is monotone for this lifetime; reopen must reconcile evidence.
   bool get storageBlocked => _blocked;
 
   /// Performs one finite owner pass. Repeated orchestration belongs to #1769.
-  Future<int> dispatchPass({int limit = 16}) async {
+  Future<int> dispatchPass({int limit = 16, OfflineSessionWork? work}) async {
+    if (_closed) throw const OfflineDisposedException();
     if (limit < 1 || limit > 64) throw const OfflineArgumentException();
     if (_blocked) return 0;
     if (_running) throw const OfflineArgumentException();
     _running = true;
+    _work = work;
+    _activeToken =
+        work?.cancellation ?? LanternAdapterCancellation.guarded(_checkWork);
+    final claimedIds = <String>[];
+    final claimOwner = OperationId.generate(issuedAt: clock()).encoded;
     final done = Completer<void>();
     _flight = done.future;
     try {
-      fence();
-      final owner = OperationId.generate(issuedAt: clock()).encoded;
+      _checkWork();
+      final owner = claimOwner;
       final claimed = await _transaction((tx) async {
-        fence();
+        _checkWork();
         if (await tx.generation(partitionId) != generation) {
           throw const LanternDataException(DataFailure.closed);
         }
@@ -161,26 +197,36 @@ final class OfflineMutationDelivery {
             );
           }
         }
-        fence();
+        claimedIds.addAll(records.map((r) => r.recordId));
+        _checkWork();
         return records;
       });
       var handled = 0;
       for (final r in claimed) {
         if (_blocked) break;
-        fence();
+        _checkWork();
         if (await _deliver(r, owner)) handled++;
       }
       return handled;
     } finally {
-      _running = false;
-      done.complete();
-      _flight = null;
+      try {
+        if (_cancellation.isCanceled && !_blocked) {
+          await _returnClaims(claimOwner, claimedIds);
+        }
+      } finally {
+        _work = null;
+        _activeToken = null;
+        _running = false;
+        done.complete();
+        _flight = null;
+      }
     }
   }
 
   /// Cancels and joins the active pass; immutable pre-send evidence is retained.
   Future<void> close() async {
-    _cancellation.cancel();
+    _closed = true;
+    _activeToken?.cancel();
     await _flight;
   }
 
@@ -188,12 +234,170 @@ final class OfflineMutationDelivery {
     Future<T> Function(OfflineStoreTransaction) action,
   ) async {
     try {
-      return await store.transaction(action);
+      _checkWork();
+      final result = await store.transaction((tx) async {
+        _checkWork();
+        final result = await action(tx);
+        _checkWork();
+        return result;
+      });
+      _checkWork();
+      return result;
     } on LanternDataException {
+      rethrow;
+    } on OfflineWorkInterruptedException {
+      rethrow;
+    } on OfflineClaimLostException {
       rethrow;
     } on OfflineCanceledException {
       rethrow;
     } on Object {
+      _blocked = true;
+      onStorageBlocked();
+      rethrow;
+    }
+  }
+
+  Future<void> _pauseForAuth(OfflineOutboxRecord record, String owner) async {
+    _checkWork();
+    if (onAuthPause == null) {
+      await _retry(record, owner, 'unauthenticated');
+      return;
+    }
+    onAuthPause!();
+    try {
+      fence();
+      await store.transaction((tx) async {
+        fence();
+        if (await tx.generation(partitionId) != generation ||
+            await tx.authorityBinding(partitionId) != authorityBinding) {
+          throw const OfflineDisposedException();
+        }
+        await tx.setReplayPausedForAuth(
+          partitionId,
+          true,
+          credentialGeneration: _work?.credentialGeneration,
+        );
+        fence();
+      });
+    } catch (_) {
+      _blocked = true;
+      onStorageBlocked();
+      rethrow;
+    }
+  }
+
+  Future<void> _pauseForPolicy() async {
+    _checkWork();
+    onPolicyPause!();
+    try {
+      fence();
+      await store.transaction((tx) async {
+        fence();
+        if (await tx.generation(partitionId) != generation ||
+            await tx.authorityBinding(partitionId) != authorityBinding) {
+          throw const OfflineDisposedException();
+        }
+        await tx.setReplayPausedForPolicy(partitionId, true);
+        fence();
+      });
+    } catch (_) {
+      _blocked = true;
+      onStorageBlocked();
+      rethrow;
+    }
+  }
+
+  /// Expires only never-dispatched work locally, including during auth/policy
+  /// pause. Receipt-bearing uncertainty always waits for network reconciliation.
+  OfflineOutboxCursor? _expiryCursor;
+
+  /// Whether a bounded maintenance scan has a continuation. This prevents
+  /// possibly-sent expired rows from starving later never-sent local expiry.
+  bool moreLocalExpiry = false;
+
+  /// Processes one bounded local expiry page without a network permit.
+  Future<int> expireLocally({int limit = 32}) async {
+    fence();
+    return store.transaction((tx) async {
+      fence();
+      final now = await tx.effectiveTime(partitionId, clock().toUtc());
+      final page = await tx.scanOutbox(
+        partitionId,
+        after: _expiryCursor,
+        limit: limit,
+      );
+      var count = 0;
+      for (final r in page.records) {
+        if (r.state != OfflineOutboxState.enqueued || r.mayHaveDispatched) {
+          continue;
+        }
+        if ((r.intent.expiration == null ||
+                now.isBefore(r.intent.expiration!)) &&
+            now.difference(r.enqueuedAt) < maxAge) {
+          continue;
+        }
+        await advanceOfflineMutation(
+          tx,
+          r,
+          OfflineWriteState.expired,
+          now,
+          diagnostic: 'expired',
+        );
+        await tx.deleteOutbox(partitionId, r.recordId);
+        count++;
+      }
+      fence();
+      moreLocalExpiry = page.hasMore;
+      _expiryCursor = page.hasMore ? page.nextCursor : null;
+      return count;
+    });
+  }
+
+  Future<void> _returnClaims(String owner, List<String> ids) async {
+    // Control plane, after every remote/transaction in this pass has joined.
+    // Account loss leaves conservative leases for the next qualified lifetime.
+    try {
+      fence();
+    } catch (_) {
+      return;
+    }
+    try {
+      await store.transaction((tx) async {
+        fence();
+        if (await tx.generation(partitionId) != generation ||
+            await tx.authorityBinding(partitionId) != authorityBinding) {
+          return;
+        }
+        final paused = await tx.replayPausedForAuth(partitionId);
+        final now = await tx.effectiveTime(partitionId, clock().toUtc());
+        for (final id in ids) {
+          final current = await tx.getOutbox(partitionId, id);
+          if (current == null ||
+              current.state != OfflineOutboxState.sending ||
+              current.leaseOwner != owner) {
+            continue;
+          }
+          final returned = current.copyWith(
+            state: OfflineOutboxState.enqueued,
+            clearLeaseOwner: true,
+            clearLeaseUntil: true,
+            diagnosticCode: paused ? 'unauthenticated' : current.diagnosticCode,
+          );
+          await tx.updateOutbox(returned);
+          await advanceOfflineMutation(
+            tx,
+            returned,
+            paused
+                ? OfflineWriteState.pausedForAuth
+                : OfflineWriteState.locallyCommitted,
+            now,
+            diagnostic: paused ? 'unauthenticated' : null,
+          );
+        }
+        fence();
+      });
+    } catch (_) {
       _blocked = true;
       onStorageBlocked();
       rethrow;
@@ -229,7 +433,7 @@ final class OfflineMutationDelivery {
             return -1;
           }
         }
-        fence();
+        _checkWork();
         return pending ? 0 : 1;
       });
       if (dependencies < 0 && !r.mayHaveDispatched) {
@@ -262,7 +466,7 @@ final class OfflineMutationDelivery {
           itemCount: 1,
           cancellation: _cancellation,
         );
-        fence();
+        _checkWork();
         if (preparation.evidence.length != 1 ||
             preparation.mutation != offlineReceiptKind(r.intent)) {
           throw const OfflineRemoteProtocolException();
@@ -284,10 +488,10 @@ final class OfflineMutationDelivery {
             preparation: OfflinePrepared(preparation.evidence.single),
           );
           await tx.updateOutbox(updated);
-          fence();
+          _checkWork();
           return updated;
         });
-        fence();
+        _checkWork();
       }
       OfflineReceiptCapabilityEnabled? capability;
       Stopwatch? age;
@@ -298,7 +502,7 @@ final class OfflineMutationDelivery {
           evidence.operationId,
           cancellation: _cancellation,
         );
-        fence();
+        _checkWork();
         if (status.operationId != evidence.operationId) {
           throw const OfflineRemoteProtocolException();
         }
@@ -330,7 +534,7 @@ final class OfflineMutationDelivery {
         final observed = await remote.getReceiptCapability(
           cancellation: _cancellation,
         );
-        fence();
+        _checkWork();
         if (observed is! OfflineReceiptCapabilityEnabled ||
             !_sameCapability(evidence, observed)) {
           await _terminal(
@@ -367,7 +571,7 @@ final class OfflineMutationDelivery {
             itemCount: 1,
             cancellation: _cancellation,
           );
-          fence();
+          _checkWork();
           if (!_sameCapability(evidence, refresh.capability) ||
               refresh.evidence.length != 1) {
             throw const OfflineRemoteProtocolException();
@@ -376,7 +580,7 @@ final class OfflineMutationDelivery {
             final current = await _claim(tx, r, owner);
             final updated = current.copyWith(receipt: refresh.evidence.single);
             await tx.updateOutbox(updated);
-            fence();
+            _checkWork();
             return updated;
           });
           // Status-first remains mandatory after refreshed evidence commits.
@@ -419,15 +623,15 @@ final class OfflineMutationDelivery {
           OfflineWriteState.sending,
           await tx.effectiveTime(partitionId, clock().toUtc()),
         );
-        fence();
+        _checkWork();
         return updated;
       });
-      fence();
+      _checkWork();
       final reply = await mutationRemote.sendBoundMutation(
         r,
         cancellation: _cancellation,
         beforeDispatch: () {
-          fence();
+          _checkWork();
           final sendAt = claimFence!.checkCurrent(clock().toUtc());
           if (r.intent.expiration != null &&
               !sendAt.isBefore(r.intent.expiration!)) {
@@ -446,11 +650,11 @@ final class OfflineMutationDelivery {
           }
         },
         beforePublication: () {
-          fence();
+          _checkWork();
           claimFence!.checkCurrent(clock().toUtc());
         },
       );
-      fence();
+      _checkWork();
       await _handled(
         r,
         owner,
@@ -461,14 +665,19 @@ final class OfflineMutationDelivery {
       );
       return true;
     } on IndexedMutationAttemptException catch (e) {
+      _checkWork();
       if (e.cause is OfflineClaimLostException) {
-        fence();
+        _checkWork();
         return false;
       }
       // The durable pre-send marker is conservative even when the adapter proves this attempt unsent.
       if (e.cause is LanternUnauthenticatedException) {
-        await _retry(r, owner, 'unauthenticated');
+        await _pauseForAuth(r, owner);
       } else if (e.cause is LanternPermissionDeniedException) {
+        if (onPolicyPause != null) {
+          await _pauseForPolicy();
+          return false;
+        }
         await _terminal(
           r,
           owner,
@@ -489,12 +698,16 @@ final class OfflineMutationDelivery {
           'rejected',
         );
       } else {
-        await _retry(r, owner, 'unavailable');
+        await _retry(r, owner, 'unavailable', failure: e.cause);
       }
       return false;
     } on OfflineRemoteFailure catch (e) {
+      _checkWork();
       if (e.kind == OfflineRemoteErrorKind.unauthenticated) {
-        await _retry(r, owner, 'unauthenticated');
+        await _pauseForAuth(r, owner);
+      } else if (e.kind == OfflineRemoteErrorKind.permanent &&
+          onPolicyPause != null) {
+        await _pauseForPolicy();
       } else if (e.kind == OfflineRemoteErrorKind.invalidArgument ||
           e.kind == OfflineRemoteErrorKind.permanent) {
         await _terminal(
@@ -506,10 +719,11 @@ final class OfflineMutationDelivery {
           'permission_denied',
         );
       } else {
-        await _retry(r, owner, 'unavailable');
+        await _retry(r, owner, 'unavailable', failure: e);
       }
       return false;
     } on OfflineReceiptCapabilityException {
+      _checkWork();
       await _terminal(
         r,
         owner,
@@ -518,6 +732,7 @@ final class OfflineMutationDelivery {
       );
       return false;
     } on OfflineRemoteProtocolException {
+      _checkWork();
       await _terminal(
         r,
         owner,
@@ -528,13 +743,13 @@ final class OfflineMutationDelivery {
       );
       return false;
     } on OfflineClaimLostException {
-      fence();
+      _checkWork();
       return false;
     } on LanternDataException catch (error) {
       if (error.reason == DataFailure.closed) {
         // An expired/stolen item lease discards its late callback. A changed
         // owner/account/authority still fails this synchronous lifetime fence.
-        fence();
+        _checkWork();
         return false;
       }
       rethrow;
@@ -548,7 +763,7 @@ final class OfflineMutationDelivery {
     OfflineOutboxRecord r,
     String owner,
   ) async {
-    fence();
+    _checkWork();
     final now = await tx.effectiveTime(partitionId, clock().toUtc());
     final current = await tx.getOutbox(partitionId, r.recordId);
     if (await tx.authorityBinding(partitionId) != authorityBinding) {
@@ -563,7 +778,7 @@ final class OfflineMutationDelivery {
         !now.isBefore(current.leaseUntil!)) {
       throw const LanternDataException(DataFailure.closed);
     }
-    fence();
+    _checkWork();
     return current;
   }
 
@@ -592,9 +807,10 @@ final class OfflineMutationDelivery {
         offlineMutationReply<Object?>(item)! as MutationKnownEffect<Object?>,
       );
     }
-    fence();
+    _checkWork();
     claimFence.checkCurrent(clock().toUtc());
-    fence();
+    _checkWork();
+    onEndpointSuccess?.call();
     onHandling(r, item);
     await _transaction((tx) async {
       var current = await _claim(tx, r, owner);
@@ -614,9 +830,9 @@ final class OfflineMutationDelivery {
         result: result,
       );
       await tx.deleteOutbox(partitionId, r.recordId);
-      fence();
+      _checkWork();
     });
-    fence();
+    _checkWork();
     onDurable(r.operationId);
   }
 
@@ -654,19 +870,24 @@ final class OfflineMutationDelivery {
     } else {
       await tx.deleteOutbox(partitionId, r.recordId);
     }
-    fence();
+    _checkWork();
   });
   Future<void> _retry(
     OfflineOutboxRecord r,
     String owner,
-    String? diagnostic,
-  ) => _transaction((tx) async {
+    String? diagnostic, {
+    Object? failure,
+  }) => _transaction((tx) async {
     final current = await _claim(tx, r, owner);
     final now = await tx.effectiveTime(partitionId, clock().toUtc());
     final auth = diagnostic == 'unauthenticated';
     final updated = current.copyWith(
       state: OfflineOutboxState.enqueued,
-      nextAttemptAt: auth ? null : now.add(retryDelay),
+      nextAttemptAt: auth
+          ? null
+          : diagnostic == 'unavailable'
+          ? retryDeadline?.call(failure) ?? now.add(retryDelay)
+          : now.add(retryDelay),
       clearNextAttemptAt: auth,
       clearLeaseOwner: true,
       clearLeaseUntil: true,
@@ -682,7 +903,7 @@ final class OfflineMutationDelivery {
       now,
       diagnostic: diagnostic,
     );
-    fence();
+    _checkWork();
   });
 }
 

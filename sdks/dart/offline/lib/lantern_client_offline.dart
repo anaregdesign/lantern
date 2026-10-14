@@ -9,7 +9,11 @@
 /// authorized inspection.
 library;
 
-export 'src/bound_data_client.dart' show OfflineLanternDataClient;
+export 'src/bound_data_client.dart'
+    show
+        OfflineLanternDataClient,
+        OfflineLanternSession,
+        OfflineVerifiedCredentials;
 export 'src/change_conformance.dart';
 export 'src/change_store.dart';
 export 'src/claim_fence.dart';

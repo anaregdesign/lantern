@@ -8,12 +8,9 @@ import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
-import 'package:lantern_client_offline/lantern_client_offline_adapter.dart';
-import 'package:lantern_client_offline/src/session_runtime.dart';
 import 'package:test/test.dart';
 
 import 'helpers.dart';
-import 'support/session_owner.dart';
 
 void main() {
   final sessionEndpoint =
@@ -1771,12 +1768,12 @@ void main() {
   );
 }
 
-/// Finite scheduler/delivery wire qualification. Uses an explicit fixture owner;
-/// it does not prove platform ownership or the automatic application factory.
+/// Finite production automatic-factory qualification through real Connect calls.
+/// Memory durability here; native SQLite ownership has its own finite probe.
 void runSessionRuntimeWireTests(Uri endpoint) {
   for (final responseLoss in [false, true]) {
     test(
-      'session scheduler ${responseLoss ? 'committed response loss' : 'same foreground outage'} retries without another application call',
+      'automatic session ${responseLoss ? 'committed response loss' : 'same foreground outage'} retries without another application call',
       () async {
         final online = LanternClient.connect(
           endpoint,
@@ -1814,7 +1811,7 @@ void runSessionRuntimeWireTests(Uri endpoint) {
           accountIdentity: 'one',
           authorityBinding: 'a',
         );
-        final client = await OfflineLanternDataClient.open(
+        final client = await OfflineLanternSession.open(
           client: LanternClient.connect(proxy.endpoint, allowInsecure: true),
           store: store,
           binding: binding,
@@ -1822,19 +1819,6 @@ void runSessionRuntimeWireTests(Uri endpoint) {
           cacheReads: false,
         );
         addTearDown(client.close);
-        final errors = <Object>[];
-        final owner = TestOwner();
-        final runtime = OfflineSessionRuntime(
-          owner: owner,
-          budget: OfflineSessionBudget(),
-          clock: () => DateTime.now().toUtc(),
-          fence: () {},
-          onError: (e, _) => errors.add(e),
-        );
-        addTearDown(() async {
-          await runtime.close();
-          await owner.release();
-        });
         final key = 'session-wire:${DateTime.now().microsecondsSinceEpoch}';
         final ticket = await client.mutations.submit(
           MutationRequest.putVertices([
@@ -1851,36 +1835,25 @@ void runSessionRuntimeWireTests(Uri endpoint) {
         final admitted = (await store.transaction(
           (tx) => tx.outbox(binding.stableIdentity),
         )).single;
-        final firstRetry = Completer<OfflineOutboxRecord>();
-        var passes = 0;
-        Future<void> push(OfflineSessionWork work) async {
-          work.checkCurrent();
-          passes++;
-          await client.mutationDelivery.dispatchPass(limit: 1);
-          work.checkCurrent();
-          final pending = await store.transaction(
+        // Only observe durable state while the fixture controls connectivity.
+        // The production factory owns every delivery wake and retry.
+        OfflineOutboxRecord? retry;
+        final elapsed = Stopwatch()..start();
+        while (elapsed.elapsed < const Duration(seconds: 3)) {
+          final rows = await store.transaction(
             (tx) => tx.outbox(binding.stableIdentity),
           );
-          if (pending.isNotEmpty) {
-            final row = pending.single;
-            if (!firstRetry.isCompleted) firstRetry.complete(row);
-            expect(row.recordId, admitted.recordId);
-            expect(row.intent.expiration, admitted.intent.expiration);
-            runtime.enqueue(
-              'push',
-              OfflineSessionLane.send,
-              push,
-              dueAt: row.nextAttemptAt!,
-            );
+          if (rows.isNotEmpty &&
+              rows.single.attemptCount == 1 &&
+              rows.single.state == OfflineOutboxState.enqueued) {
+            retry = rows.single;
+            break;
           }
+          await Future<void>.delayed(const Duration(milliseconds: 10));
         }
-
-        // One initial registration stands in for the future factory's post-commit
-        // hook. There is no Get, lifecycle transition or second scheduling call.
-        runtime.enqueue('push', OfflineSessionLane.send, push);
-        final retry = await firstRetry.future.timeout(
-          const Duration(seconds: 3),
-        );
+        expect(retry, isNotNull);
+        expect(retry!.recordId, admitted.recordId);
+        expect(retry.intent.expiration, admitted.intent.expiration);
         expect(retry.attemptCount, 1);
         expect(retry.mayHaveDispatched, isTrue);
         if (responseLoss) {
@@ -1905,13 +1878,7 @@ void runSessionRuntimeWireTests(Uri endpoint) {
               .effect,
           PutOutcome.appliedAndLive,
         );
-        await runtime.close();
-        expect(passes, 2);
         expect(proxy.forwarded('PutVertices'), 2);
-        expect(runtime.jobCount, 0);
-        expect(runtime.inFlightCount, 0);
-        expect(runtime.hasWakeup, isFalse);
-        expect(errors, isEmpty);
         expect(
           ((await online.getVertex(key)).value as StringValue).value,
           'automatic',
