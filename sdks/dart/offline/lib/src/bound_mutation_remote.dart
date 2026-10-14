@@ -1,5 +1,6 @@
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client/lantern_client_adapter.dart';
+import 'errors.dart';
 import 'types.dart';
 
 /// Qualified one-attempt mutation port, with owner fences around token acquisition.
@@ -31,13 +32,30 @@ final class LanternBoundMutationRemote implements OfflineBoundMutationRemote {
       offlineRequest(record.intent),
       admittedAt: record.enqueuedAt,
     );
-    return (await client.attemptIndexedMutation(
-      intent,
-      receiptContext: record.receipt?.context,
-      options: LanternCallOptions(cancellation: cancellation, retry: false),
-      beforeDispatch: beforeDispatch,
-      beforePublication: beforePublication,
-    )).items.single;
+    OfflineClaimLostException? claimLost;
+    void guard(void Function() check) {
+      try {
+        check();
+      } on OfflineClaimLostException catch (error) {
+        // The parent sanitizes unknown transport errors. Preserve only this
+        // local, content-free guard signal across that conversion boundary.
+        claimLost = error;
+        rethrow;
+      }
+    }
+
+    try {
+      return (await client.attemptIndexedMutation(
+        intent,
+        receiptContext: record.receipt?.context,
+        options: LanternCallOptions(cancellation: cancellation, retry: false),
+        beforeDispatch: () => guard(beforeDispatch),
+        beforePublication: () => guard(beforePublication),
+      )).items.single;
+    } on IndexedMutationAttemptException {
+      if (claimLost != null) throw claimLost!;
+      rethrow;
+    }
   }
 }
 

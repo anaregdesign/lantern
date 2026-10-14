@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:connectrpc/test.dart';
 import 'package:lantern_client/lantern_client.dart';
+import 'package:lantern_client/src/gen/graph/v1/graph.connect.spec.dart';
+import 'package:lantern_client/src/gen/graph/v1/graph.pb.dart' as graph;
 import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline/lantern_client_offline_adapter.dart';
 import 'package:test/test.dart';
@@ -73,6 +75,108 @@ final class MutationRemote implements OfflineBoundMutationRemote {
 void main() {
   late MutableClock clock;
   setUp(() => clock = MutableClock(DateTime.utc(2026, 7, 22)));
+  for (final authorityLost in [false, true]) {
+    test(
+      'standard parent adapter token-gap ${authorityLost ? 'authority close' : 'claim expiry'} classification',
+      () async {
+        final store = InMemoryOfflineStore();
+        final entered = Completer<void>(), token = Completer<String?>();
+        var calls = 0, current = true;
+        final client = await OfflineLanternDataClient.open(
+          client: LanternClient.connect(
+            endpoint,
+            allowInsecure: true,
+            clock: clock.call,
+            tokenProvider: () {
+              entered.complete();
+              return token.future;
+            },
+            transport: FakeTransportBuilder()
+                .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+                  LanternService.putVertices,
+                  (request, _) {
+                    calls++;
+                    return graph.PutVerticesResponse(
+                      outcomes: [graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE],
+                    );
+                  },
+                )
+                .build(),
+          ),
+          store: store,
+          binding: binding(),
+          durability: AdmissionDurability.memory,
+          clock: clock.call,
+          authorityCurrent: () => current,
+        );
+        addTearDown(client.close);
+        final ticket = await client.mutations.submit(
+          MutationRequest.putVertices([vertex('v')]),
+        );
+        final pass = client.mutationDelivery.dispatchPass().then<Object>(
+          (v) => v,
+          onError: (Object e) => e,
+        );
+        await entered.future;
+        if (authorityLost) {
+          current = false;
+        } else {
+          clock.advance(const Duration(minutes: 3));
+        }
+        token.complete(null);
+        final result = await pass;
+        expect(calls, 0);
+        final row = (await store.transaction(
+          (tx) => tx.outbox(binding().stableIdentity),
+        )).single;
+        expect(row.mayHaveDispatched, isTrue);
+        expect(row.attemptCount, 1);
+        expect(row.state, OfflineOutboxState.sending);
+        expect(row.nextAttemptAt, isNull);
+        if (authorityLost) {
+          expect(
+            result,
+            isA<LanternDataException>().having(
+              (e) => e.reason,
+              'reason',
+              DataFailure.closed,
+            ),
+          );
+          await expectLater(
+            client.getVertex(
+              'v',
+              options: const GetOptions(source: ReadSource.cacheOnly),
+            ),
+            throwsA(
+              isA<LanternDataException>().having(
+                (e) => e.reason,
+                'reason',
+                DataFailure.closed,
+              ),
+            ),
+          );
+        } else {
+          expect(result, 0);
+          final status = await client.mutations.getStatus(
+            ticket.reference.operationId,
+          );
+          expect(status.items.single.reply, isNull);
+          expect(status.items.single.state, MutationItemState.stillPending);
+          expect(
+            status.items.single.dispatchCertainty,
+            MutationDispatchCertainty.mayHaveDispatched,
+          );
+          expect(
+            (await client.getVertex(
+              'v',
+              options: const GetOptions(source: ReadSource.cacheOnly),
+            )).pending.count,
+            1,
+          );
+        }
+      },
+    );
+  }
   test(
     'memory8 migration hides unbound cache and preserves receipt evidence across authority/reopen',
     () async {
