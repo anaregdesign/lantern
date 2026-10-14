@@ -84,6 +84,8 @@ void main() {
     decoded['schema'] = 5;
     for (final partition in decoded['partitions'] as List<dynamic>) {
       (partition as Map<String, dynamic>)
+        ..remove('timeHighWater')
+        ..remove('authorityBinding')
         ..remove('changeProgress')
         ..remove('scopedCursor')
         ..remove('changeEpoch')
@@ -121,6 +123,8 @@ void main() {
       decoded['schema'] = 6;
       for (final partition in decoded['partitions'] as List<dynamic>) {
         (partition as Map<String, dynamic>)
+          ..remove('timeHighWater')
+          ..remove('authorityBinding')
           ..remove('scopedCursor')
           ..remove('changeEpoch')
           ..remove('unknownResidents');
