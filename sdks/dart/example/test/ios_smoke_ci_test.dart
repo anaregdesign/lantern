@@ -87,6 +87,19 @@ echo 'All tests passed!'
       expect(boot, greaterThan(build));
       expect(ready, greaterThan(boot));
       expect(install, greaterThan(ready));
+      expect(
+        calls.indexOf(
+          'xcrun simctl launch --terminate-running-process '
+          'SOURCE-DEVICE com.anaregdesign.lanternExample '
+          '--enable-dart-profiling --disable-vm-service-publication '
+          '--enable-checked-mode --verify-entry-points',
+        ),
+        greaterThan(install),
+      );
+      expect(
+        calls.any((line) => line.startsWith('xcrun simctl terminate ')),
+        isFalse,
+      );
     },
   );
 
@@ -1136,6 +1149,7 @@ case "${2:-}" in
     ;;
   terminate|install) exit 0 ;;
   launch)
+    [[ "${3:-}" == --terminate-running-process ]] || exit 2
     if [[ '_CLOSED_PIPE_LAUNCH_' == true ]]; then
       exec >/dev/null 2>&1
       sleep 30

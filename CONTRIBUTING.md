@@ -293,9 +293,11 @@ exited Runner, build failure, assertion or RPC failure, and post-body stall fail
 the blocking `Gate` directly. Bounded, redacted process/simulator/app
 diagnostics are always uploaded; the temporary retry simulator is always
 deleted. Denied or uncompleted primary-command cleanup records `cleanup_failure`
-and fails without retry. An incomplete pre-launch stop also fails before
-installation; diagnostic capture errors cannot erase the original failure
-classification. Each attempt builds the integration-test app and installs it on its
+and fails without retry. Native launch uses `--terminate-running-process` after
+installation so the returned PID identifies the new run, without a separate
+stop request for an application that may not be installed yet. Diagnostic
+capture errors cannot erase the original failure classification. Each attempt
+builds the integration-test app and installs it on its
 own simulator before native launch. The simulator build compiles the native host
 and platform SQLite plugin. Ordinary PR/main runs analyze the production Dart app
 and compile `main.dart` through widget tests; the separate production/device iOS

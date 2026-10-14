@@ -363,15 +363,6 @@ def run_attempt(device, attempt, root):
                 return 72
         record_phase(phases, "boot_done")
 
-        # Clear any preceding app process so the returned PID identifies this run.
-        _, _, timed_out, exceeded = read_process(
-            [xcrun, "simctl", "terminate", device, BUNDLE_ID],
-            15, 4096, merge_stderr=True,
-        )
-        if timed_out or exceeded:
-            # A missing/not-running app can return nonzero normally, but an
-            # incomplete stop command cannot establish a fresh launch boundary.
-            return 72
         status, _, timed_out, exceeded = read_process(
             [xcrun, "simctl", "install", device, "build/ios/iphonesimulator/Runner.app"],
             remaining(deadline, 90), 65536, merge_stderr=True,
@@ -382,8 +373,11 @@ def run_attempt(device, attempt, root):
         if exceeded or status:
             classification = "launch_failure"
             return 72
+        # Let native launch replace any old process after installation. A
+        # separate terminate before install can hang for an absent application.
+        # The returned PID must identify the new run whose logs we inspect.
         status, timed_out, output = run_logged(
-            [xcrun, "simctl", "launch", device, BUNDLE_ID,
+            [xcrun, "simctl", "launch", "--terminate-running-process", device, BUNDLE_ID,
              "--enable-dart-profiling", "--disable-vm-service-publication",
              "--enable-checked-mode", "--verify-entry-points"],
             flutter_log, remaining(deadline, launch_limit), console_budget, collect_pid=True,

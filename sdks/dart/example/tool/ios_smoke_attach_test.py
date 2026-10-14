@@ -53,29 +53,29 @@ class CleanupTests(unittest.TestCase):
         process.wait.assert_called_once_with(timeout=2)
         process.send_signal.assert_not_called()
 
-    def test_incomplete_prelaunch_stop_does_not_install_or_launch(self):
-        for timed_out, exceeded in [(True, False), (False, True)]:
-            with self.subTest(timed_out=timed_out, exceeded=exceeded):
+    def test_failed_or_incomplete_install_does_not_launch(self):
+        for code, timed_out, exceeded in [(1, False, False), (-15, True, False), (0, False, True)]:
+            with self.subTest(code=code, timed_out=timed_out, exceeded=exceeded):
                 with tempfile.TemporaryDirectory() as temporary:
                     root = Path(temporary)
                     with (
                         patch.object(smoke, "run_logged", return_value=(0, False, b"")) as logged,
                         patch.object(
                             smoke, "read_process",
-                            return_value=(-15, b"", timed_out, exceeded),
+                            return_value=(code, b"", timed_out, exceeded),
                         ) as read,
                         patch.object(smoke, "capture_diagnostics"),
                         patch.dict(os.environ, {"GITHUB_OUTPUT": str(root / "output")}),
                     ):
                         status = smoke.run_attempt("SOURCE-DEVICE", "initial", root)
-                    self.assertEqual(status, 72)
+                    self.assertNotEqual(status, 0)
                     self.assertEqual(
                         (root / "initial/classification.txt").read_text().strip(),
-                        "pre_body_failure",
+                        "launch_stall" if timed_out else "launch_failure",
                     )
                     commands = [c.args[0] for c in logged.call_args_list + read.call_args_list]
-                    self.assertTrue(any("terminate" in c for c in commands))
-                    self.assertFalse(any("install" in c or "launch" in c for c in commands))
+                    self.assertTrue(any("install" in c for c in commands))
+                    self.assertFalse(any("terminate" in c or "launch" in c for c in commands))
 
     def test_failure_classification_survives_failed_diagnostics(self):
         cases = [
