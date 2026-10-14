@@ -818,7 +818,10 @@ final class LanternInvoker {
         onHeader: context.onHeader,
         onTrailer: context.onTrailer,
       );
-      options?.cancellation?._checkCurrent();
+      // A received ordinary reply remains known batch progress even if the
+      // caller cancels between chunks. Adapter lifetime/publication fences are
+      // stronger and must still reject replies from stopped work.
+      options?.cancellation?._guard?.call();
       return value;
     } on connect.ConnectException catch (error) {
       throw _mapConnectException(error, context);
