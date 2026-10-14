@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
+import 'package:lantern_client_offline/lantern_client_offline_adapter.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -38,14 +39,18 @@ Future<void> main(List<String> arguments) async {
           'scoped-reset',
           'wipe',
           'receipt',
+          'bound-receipt',
         ].contains(scenario) ||
         !['before', 'after'].contains(boundary) ||
-        (scenario == 'receipt' && boundary != 'after')) {
+        ((scenario == 'receipt' || scenario == 'bound-receipt') &&
+            boundary != 'after')) {
       throw StateError('arguments');
     }
     _stage = ProbeStage.open;
     sqfliteFfiInit();
-    if (scenario == 'receipt' && mode == 'crash') {
+    if (scenario == 'bound-receipt') {
+      await _boundReceipt(path, crash: mode == 'crash');
+    } else if (scenario == 'receipt' && mode == 'crash') {
       await _crashReceipt(path);
     } else if (scenario == 'receipt') {
       await _verifyReceipt(path);
@@ -114,7 +119,7 @@ Future<void> _verify(String path, String scenario, String boundary) async {
       _require(
         boundary == 'before'
             ? tables.isEmpty && version == 0
-            : tables.isNotEmpty && version == 5,
+            : tables.isNotEmpty && version == 6,
       );
     } finally {
       await raw.close();
@@ -834,4 +839,188 @@ Uint8List _newContribId() {
   );
   if (id.every((value) => value == 0)) return _newContribId();
   return id;
+}
+
+Future<void> _boundReceipt(String path, {required bool crash}) async {
+  final endpoint = _receiptEndpoint('LANTERN_DART_RECEIPT_PROXY_ENDPOINT');
+  final direct = _receiptClient(
+    _receiptEndpoint('LANTERN_DART_RECEIPT_ENDPOINT'),
+    _receiptToken(),
+  );
+  final store = await SqliteOfflineStore.open(
+    path: path,
+    databaseFactory: databaseFactoryFfi,
+  );
+  final binding = LanternSessionBinding.application(
+    serviceOrigin: endpoint,
+    securityDomain: 'receipt-crash',
+    accountIdentity: 'fixture',
+    authorityBinding: 'a',
+  );
+  final client = await OfflineLanternDataClient.open(
+    client: _receiptClient(endpoint, _receiptToken()),
+    store: store,
+    binding: binding,
+    durability: AdmissionDurability.durable,
+    clock: () => DateTime.now().toUtc().add(
+      crash ? Duration.zero : const Duration(seconds: 2),
+    ),
+  );
+  try {
+    if (crash) {
+      final prefix =
+          'bound-crash:${DateTime.now().microsecondsSinceEpoch}:$pid:';
+      final keys = [
+        for (final key in [
+          'condition',
+          'delete',
+          'dt',
+          'dh',
+          'at',
+          'ah',
+          'ct',
+          'ch',
+        ])
+          '$prefix$key',
+      ];
+      await direct.putVertices([
+        for (final key in keys)
+          VertexInput(key: key, value: VertexValue.string('original')),
+      ]);
+      await direct.putEdges([
+        EdgeInput(tail: keys[2], head: keys[3], weight: 2),
+        EdgeInput(tail: keys[4], head: keys[5], weight: 3),
+        EdgeInput(tail: keys[6], head: keys[7], weight: 2),
+      ]);
+      final contribution = Uint8List(24)..[23] = 2;
+      await direct.addEdge(
+        EdgeInput(
+          tail: keys[6],
+          head: keys[7],
+          weight: 1,
+          contribId: contribution,
+        ),
+      );
+      final requests = <MutationRequest<Object?>>[
+        MutationRequest.putVerticesIfAbsent([
+          VertexInput(key: keys[0], value: VertexValue.string('replacement')),
+        ]),
+        MutationRequest.deleteVertices([keys[1]]),
+        MutationRequest.deleteEdges([EdgeRef(keys[2], keys[3])]),
+        MutationRequest.addEdges([
+          EdgeInput(tail: keys[4], head: keys[5], weight: 1),
+        ]),
+        MutationRequest.deleteEdgeContributions([
+          EdgeContributionRef(
+            tail: keys[6],
+            head: keys[7],
+            contribId: contribution,
+          ),
+        ]),
+      ];
+      for (final request in requests) {
+        await client.mutations.submit(request);
+      }
+      final admitted = await store.transaction(
+        (tx) => tx.outbox(binding.stableIdentity),
+      );
+      _require(
+        admitted.length == 5 &&
+            admitted.every(
+              (r) =>
+                  r.preparation is OfflineAwaitingPreparation &&
+                  !r.mayHaveDispatched,
+            ),
+      );
+      _stage = ProbeStage.reconcile;
+      _require(await client.mutationDelivery.dispatchPass() == 0);
+      final pending = await store.transaction(
+        (tx) => tx.outbox(binding.stableIdentity),
+      );
+      _require(
+        pending.length == 5 &&
+            pending.every(
+              (r) =>
+                  r.receipt != null &&
+                  r.mayHaveDispatched &&
+                  r.attemptCount == 1,
+            ),
+      );
+      await _readyAndHold();
+    } else {
+      _stage = ProbeStage.reopen;
+      final pending = await store.transaction(
+        (tx) => tx.outbox(binding.stableIdentity),
+      );
+      _require(
+        pending.length == 5 &&
+            pending.every(
+              (r) =>
+                  r.receipt != null &&
+                  r.mayHaveDispatched &&
+                  r.attemptCount == 1,
+            ),
+      );
+      _stage = ProbeStage.reconcile;
+      _require(await client.mutationDelivery.dispatchPass() == 5);
+      for (final r in pending) {
+        final op = await store.transaction(
+          (tx) => tx.getOperation(binding.stableIdentity, r.operationId),
+        );
+        _require(
+          op != null &&
+              op.items.single.state == OfflineWriteState.confirmed &&
+              op.items.single.mayHaveDispatched &&
+              op.items.single.attemptCount == 1,
+        );
+        _require(switch ((r.intent, op!.items.single.receiptResult)) {
+          (
+            OfflinePutVertexIfAbsentIntent(),
+            OfflineVertexPutReceiptResult(outcome: PutOutcome.conditionNotMet),
+          ) =>
+            true,
+          (
+            OfflineDeleteVertexIntent(),
+            OfflineVertexDeleteReceiptResult(existed: true),
+          ) =>
+            true,
+          (
+            OfflineDeleteEdgeIntent(),
+            OfflineEdgeDeleteReceiptResult(existed: true),
+          ) =>
+            true,
+          (
+            OfflineReceiptAddEdgeIntent(),
+            OfflineEdgeAddReceiptResult(effectiveWeight: 4.0),
+          ) =>
+            true,
+          (
+            OfflineDeleteEdgeContributionIntent(),
+            OfflineEdgeContributionDeleteReceiptResult(existed: true),
+          ) =>
+            true,
+          _ => false,
+        });
+      }
+      _require(
+        (await store.transaction(
+          (tx) => tx.outbox(binding.stableIdentity),
+        )).isEmpty,
+      );
+      final add =
+          pending
+                  .where((r) => r.intent is OfflineReceiptAddEdgeIntent)
+                  .single
+                  .intent
+              as OfflineReceiptAddEdgeIntent;
+      _require(
+        (await direct.getEdge(EdgeRef(add.edge.tail, add.edge.head))).weight ==
+            4,
+      );
+    }
+  } finally {
+    await client.close();
+    await direct.close();
+    await store.close();
+  }
 }

@@ -333,7 +333,7 @@ void main() {
             ),
             encoded,
           );
-          expect(encoded, contains('"schema":4'));
+          expect(encoded, contains('"schema":5'));
           expect(encoded, contains('"deadLetteredAt":null'));
           expect(encoded, contains('"receipt":null'));
         }
@@ -347,7 +347,7 @@ void main() {
       final decoded = OfflineCodec.decodeOutboxRecord(fixture);
       final encoded = OfflineCodec.encodeOutboxRecord(decoded);
 
-      expect(encoded, contains('"schema":4'));
+      expect(encoded, contains('"schema":5'));
       expect(encoded, contains('"receipt":null'));
       expect(
         OfflineCodec.encodeOutboxRecord(
@@ -381,7 +381,7 @@ void main() {
           terminalAt: time,
         );
         final encoded = OfflineCodec.encodeOperationRecord(record);
-        expect(encoded, contains('"schema":3'));
+        expect(encoded, contains('"schema":4'));
         final decoded = OfflineCodec.decodeOperationRecord(encoded);
         expect(decoded.status.isTerminal, isTrue);
         expect(decoded.status.acceptedUndisclosedCount, 1);
@@ -390,7 +390,7 @@ void main() {
         for (final version in [1, 2]) {
           expect(
             () => OfflineCodec.decodeOperationRecord(
-              encoded.replaceFirst('"schema":3', '"schema":$version'),
+              encoded.replaceFirst('"schema":4', '"schema":$version'),
             ),
             throwsA(isA<OfflineCodecException>()),
           );
@@ -565,6 +565,9 @@ void main() {
         throwsA(isA<OfflineCodecException>()),
       );
       old['schema'] = 3;
+      old.remove('preparation');
+      old.remove('dependencies');
+      old.remove('mayHaveDispatched');
       final migrated = OfflineCodec.decodeOutboxRecord(jsonEncode(old));
       expect(migrated.receipt!.mayHaveDispatched, isTrue);
       expect(migrated.receipt!.operationId, record.receipt!.operationId);
@@ -878,15 +881,19 @@ void main() {
           jsonDecode(OfflineCodec.encodeOperationRecord(current))
               as Map<String, Object?>;
       map['schema'] = 1;
+      map.remove('kind');
+      map.remove('guardUntil');
+      map.remove('groupId');
       final item =
           (map['items']! as List<Object?>).single as Map<String, Object?>;
       item.remove('receiptResult');
+      item.remove('mayHaveDispatched');
 
       final decoded = OfflineCodec.decodeOperationRecord(jsonEncode(map));
       expect(decoded.items.single.receiptResult, isNull);
       expect(
         OfflineCodec.encodeOperationRecord(decoded),
-        contains('"schema":3'),
+        contains('"schema":4'),
       );
     });
   });

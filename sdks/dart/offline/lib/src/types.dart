@@ -744,6 +744,65 @@ enum OfflineOutboxState {
 }
 
 /// Exact durable metadata for one mutation item.
+/// Checked preparation state, separate from monotone dispatch proof.
+sealed class OfflinePreparation {
+  const OfflinePreparation();
+}
+
+/// Receipt-less unconditional Put.
+final class OfflinePreparationNotRequired extends OfflinePreparation {
+  /// Creates the receipt-less unconditional-Put state.
+  const OfflinePreparationNotRequired();
+}
+
+/// Receipt intent admitted without acquiring credentials or capability.
+final class OfflineAwaitingPreparation extends OfflinePreparation {
+  /// Creates unprepared intent with zero receipt or dispatch evidence.
+  const OfflineAwaitingPreparation();
+}
+
+/// Complete qualified receipt evidence, durably committed before sending.
+final class OfflinePrepared extends OfflinePreparation {
+  /// Owns complete validated preparation evidence.
+  OfflinePrepared(OfflineReceiptEvidence evidence)
+    : evidence = copyOfflineReceiptEvidence(evidence);
+
+  /// Complete defensive receipt evidence, immutable after possible dispatch.
+  final OfflineReceiptEvidence evidence;
+}
+
+/// Bounded explicit prerequisite within one locally admitted group.
+final class OfflineDependency {
+  /// Creates one immutable item reference and exact result predicate.
+  const OfflineDependency({
+    required this.operationId,
+    required this.itemIndex,
+    required this.predicate,
+  });
+
+  /// Original prerequisite invocation; never a replacement or a resubmission.
+  final String operationId;
+
+  /// Original zero-based prerequisite input position.
+  final int itemIndex;
+
+  /// Exact Server-handling evidence required before dependent dispatch.
+  final MutationDependencyPredicate predicate;
+}
+
+/// Required receipt family; unconditional Put and quarantined legacy Add are distinct.
+ReceiptMutationKind? offlineReceiptKind(OfflineIntent intent) =>
+    switch (intent) {
+      OfflinePutVertexIfAbsentIntent() => ReceiptMutationKind.vertexPut,
+      OfflineDeleteVertexIntent() => ReceiptMutationKind.vertexDelete,
+      OfflineDeleteEdgeIntent() => ReceiptMutationKind.edgeDelete,
+      OfflineDeleteEdgeContributionIntent() =>
+        ReceiptMutationKind.edgeContributionDelete,
+      OfflineReceiptAddEdgeIntent() => ReceiptMutationKind.edgeAdd,
+      _ => null,
+    };
+
+/// One immutable durable intent, checked preparation and dispatch proof.
 final class OfflineOutboxRecord {
   /// Creates a durable mutation item.
   OfflineOutboxRecord({
@@ -758,13 +817,25 @@ final class OfflineOutboxRecord {
     required this.attemptCount,
     required this.generation,
     OfflineReceiptEvidence? receipt,
+    OfflinePreparation? preparation,
+    bool? mayHaveDispatched,
+    List<OfflineDependency> dependencies = const [],
     this.nextAttemptAt,
     this.leaseOwner,
     this.leaseUntil,
     this.deadLetteredAt,
     this.diagnosticCode,
   }) : intent = copyOfflineIntent(intent),
-       receipt = receipt == null ? null : copyOfflineReceiptEvidence(receipt) {
+       preparation =
+           preparation ??
+           (receipt != null
+               ? OfflinePrepared(receipt)
+               : offlineReceiptKind(intent) != null
+               ? const OfflineAwaitingPreparation()
+               : const OfflinePreparationNotRequired()),
+       mayHaveDispatched =
+           mayHaveDispatched ?? receipt?.mayHaveDispatched ?? false,
+       dependencies = List.unmodifiable(dependencies) {
     final hasLease = leaseOwner != null && leaseUntil != null;
     final expectedReceiptMutation = switch (this.intent) {
       OfflinePutVertexIfAbsentIntent() => ReceiptMutationKind.vertexPut,
@@ -800,13 +871,20 @@ final class OfflineOutboxRecord {
         (deadLetteredAt != null && deadLetteredAt!.isBefore(enqueuedAt)) ||
         (state == OfflineOutboxState.deadLetter) != (deadLetteredAt != null) ||
         diagnosticCode?.isEmpty == true ||
-        (expectedReceiptMutation == null) != (this.receipt == null) ||
+        (expectedReceiptMutation == null) !=
+            (this.preparation is OfflinePreparationNotRequired) ||
+        (this.preparation is OfflineAwaitingPreparation &&
+            (attemptCount != 0 || this.mayHaveDispatched)) ||
+        dependencies.length > 256 ||
+        dependencies.any((d) => d.operationId.isEmpty || d.itemIndex < 0) ||
+        (this.receipt != null &&
+            this.receipt!.mayHaveDispatched != this.mayHaveDispatched) ||
         (this.receipt != null && state == OfflineOutboxState.expired) ||
         (this.receipt?.mayHaveDispatched == false && attemptCount != 0) ||
         (this.receipt?.state ==
                 OfflineReceiptReconciliationState.noLongerProvable &&
             state != OfflineOutboxState.deadLetter) ||
-        (expectedReceiptMutation != null &&
+        (this.receipt != null &&
             this.receipt!.mutation != expectedReceiptMutation)) {
       throw const OfflineArgumentException();
     }
@@ -843,7 +921,19 @@ final class OfflineOutboxRecord {
   final int generation;
 
   /// Persisted receipt context and reconciliation evidence, when required.
-  final OfflineReceiptEvidence? receipt;
+  final OfflinePreparation preparation;
+
+  /// Independently persisted, monotone for every mutation family.
+  final bool mayHaveDispatched;
+
+  /// Immutable explicit prerequisites; ordinary FIFO is validated separately.
+  final List<OfflineDependency> dependencies;
+
+  /// Prepared evidence only; awaiting preparation has no guessed context.
+  OfflineReceiptEvidence? get receipt => switch (preparation) {
+    OfflinePrepared(:final evidence) => evidence,
+    _ => null,
+  };
 
   /// Earliest next retry time.
   final DateTime? nextAttemptAt;
@@ -880,6 +970,8 @@ final class OfflineOutboxRecord {
     DateTime? deadLetteredAt,
     bool clearDeadLetteredAt = false,
     OfflineReceiptEvidence? receipt,
+    OfflinePreparation? preparation,
+    bool? mayHaveDispatched,
     String? diagnosticCode,
     bool clearDiagnosticCode = false,
   }) => OfflineOutboxRecord(
@@ -893,7 +985,14 @@ final class OfflineOutboxRecord {
     state: state ?? this.state,
     attemptCount: attemptCount ?? this.attemptCount,
     generation: generation,
-    receipt: receipt ?? this.receipt,
+    preparation:
+        preparation ??
+        (receipt != null ? OfflinePrepared(receipt) : this.preparation),
+    mayHaveDispatched:
+        mayHaveDispatched ??
+        receipt?.mayHaveDispatched ??
+        this.mayHaveDispatched,
+    dependencies: dependencies,
     nextAttemptAt: clearNextAttemptAt
         ? null
         : nextAttemptAt ?? this.nextAttemptAt,
@@ -1001,6 +1100,15 @@ final class OfflineVertexPutReceiptResult extends OfflineReceiptResult {
   final PutOutcome outcome;
 }
 
+/// Exact unconditional Edge Put handling, including non-applied outcomes.
+final class OfflineEdgePutResult extends OfflineReceiptResult {
+  /// Retains exact unconditional Edge Put handling.
+  const OfflineEdgePutResult(this.outcome);
+
+  /// Original Server Put outcome; input TTL never rewrites this result.
+  final PutOutcome outcome;
+}
+
 /// Original result of a receipt-bearing exact Vertex Delete.
 final class OfflineVertexDeleteReceiptResult extends OfflineReceiptResult {
   /// Creates an exact Vertex Delete result.
@@ -1089,6 +1197,7 @@ final class OfflineWriteStatus {
     required this.state,
     required this.attemptCount,
     this.receiptResult,
+    this.mayHaveDispatched = true,
     this.diagnosticCode,
   }) {
     if (recordId.isEmpty ||
@@ -1120,6 +1229,9 @@ final class OfflineWriteStatus {
 
   /// Exact original result for a confirmed receipt-bearing mutation.
   final OfflineReceiptResult? receiptResult;
+
+  /// Retained dispatch proof, including after outbox retirement.
+  final bool mayHaveDispatched;
 
   /// Content-free bounded diagnostic code.
   final String? diagnosticCode;
@@ -1188,6 +1300,9 @@ final class OfflineOperationRecord {
     required List<OfflineWriteStatus> items,
     required this.updatedAt,
     this.terminalAt,
+    this.kind,
+    this.guardUntil,
+    this.groupId,
   }) : items = List<OfflineWriteStatus>.unmodifiable(items) {
     final status = OfflineOperationStatus(
       operationId: operationId,
@@ -1198,6 +1313,10 @@ final class OfflineOperationRecord {
         generation > _maxDurableInt ||
         !_isDurableTimestamp(updatedAt) ||
         !_isOptionalDurableTimestamp(terminalAt) ||
+        !_isOptionalDurableTimestamp(guardUntil) ||
+        (kind == null) != (guardUntil == null) ||
+        (kind == null) != (groupId == null) ||
+        groupId?.isEmpty == true ||
         (terminalAt != null && terminalAt!.isAfter(updatedAt)) ||
         (terminalAt != null) != status.isTerminal) {
       throw const OfflineArgumentException();
@@ -1221,6 +1340,15 @@ final class OfflineOperationRecord {
 
   /// First time all items became terminal.
   final DateTime? terminalAt;
+
+  /// New common-facade type and collision guard; null for legacy history.
+  final MutationKind? kind;
+
+  /// Collision guard pinned through the complete structured-ID admission window.
+  final DateTime? guardUntil;
+
+  /// Immutable local group identity; legacy history has none.
+  final String? groupId;
 
   /// Public aggregate view.
   OfflineOperationStatus get status =>

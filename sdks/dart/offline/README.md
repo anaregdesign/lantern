@@ -1,5 +1,89 @@
 # lantern_client_offline
 
+## Common bound data contract (#1768 source candidate)
+
+`OfflineLanternDataClient` implements the parent `LanternDataClient` contract.
+Bind one verified `LanternSessionBinding` and `OfflineStore` once; ordinary CRUD
+has no partition argument. Normal mutation Futures report exact Server handling,
+including condition-not-met/expired Put outcomes, false Delete results and
+undisclosed handling. They do not report local admission as remote success.
+`mutations.submit` returns a local admission ticket; `reobserve` and status never
+send or acquire tokens. Canceling a completion waiter leaves accepted work intact.
+
+```dart
+final data = await OfflineLanternDataClient.open(
+  client: transport,
+  binding: sessionBinding,
+  store: MemoryOfflineStore(),
+  durability: AdmissionDurability.memory,
+);
+final ticket = await data.mutations.submit(MutationRequest.putVertices([
+  VertexInput(key: 'note:42', value: VertexValue.string('Draft')),
+])); // Atomic local admission; no token or RPC.
+final snapshot = await data.getVertex('note:42',
+  options: const GetOptions(source: ReadSource.cacheOnly));
+// snapshot.confirmed remains independent from its exact pending Put view.
+```
+
+The source slice supplies bounded automatic-owner ports in
+`lantern_client_offline_adapter.dart`; #1769 installs the coordinated automatic
+runtime, and #1772 composes lifecycle/account factories. These ports are SDK
+infrastructure, not an application Sync/retry API. Ordinary applications must not
+schedule delivery passes. No physical, hosted-archive or publication qualification
+is implied by this source candidate.
+
+Admission freezes TTL/wire values and generated Add contribution IDs in one
+transaction. Receipt families enter a checked `awaitingPreparation` state;
+qualified capability preparation occurs later under a claim, outside SQL. Complete
+evidence commits before the monotone pre-send marker. Possibly sent receipts
+retain their original IDs and recover status-first. All exact results are historical
+Server handling, not current graph values; settlement invalidates affected cache
+and removes only the owned overlay. Later Put/Delete/conditional/Add effects are
+reprojected in order. Conditional/Add/contribution-Delete do not guess numeric or
+condition success from a cache. Explicit dependency groups are bounded at 64 nodes
+and 256 arcs, include implicit FIFO in cycle checks, and pin prerequisite results.
+
+Common caller operation IDs have a five-minute admission window and 30-second
+future skew. Collision guards, absolute TTL and clock high-water survive reopen;
+capacity fails atomically instead of evicting guards inside that window. Every
+family retains dispatch certainty separately from terminal result certainty.
+A fenced live reply can settle despite confirmation commit failure; `storageBlocked`
+then stops dispatch and retains pre-send evidence for reopen. Legacy terminal Put
+metadata lacking exact results remains unavailable, never fabricated.
+
+Qualified delivery requires the adapter's `OfflineStoreClaimTransaction` capability.
+Its bounded claim fence reads committed generation, authority, lease and clock
+high-water synchronously at the final send and publication boundaries. Expired or
+replaced claims cannot publish live success. An eligible claim can still settle a
+valid reply when subsequent storage reads or confirmation fail. These fences cover
+the adapter's supported commit coordination; exclusive runtime ownership remains
+#1769's responsibility. Possibly sent Put intent retains pending uncertainty after
+its TTL, but never keeps its expired Vertex/Edge visible as an exact live value.
+
+An explicit destructive `wipePartition` erases queued work, results, receipts and
+local invocation-ID collision history for the old generation. Close and join the
+old lifetime first and discard its tickets/references. Wipe cannot undo Server
+work or prove an uncertain mutation never ran. A later explicit submission can
+execute again even if it reuses a still-fresh caller ID; Add can add twice. Wipe
+does not reset clock high-water. Use cache invalidation to clear displayed values;
+never use wipe as automatic retry, storage-error recovery or credential refresh.
+
+State versions are outbox **5**, operation **4**, reference snapshot **9**, and
+SQLite **6**. Old IDs, TTL and conservative dispatch proof are preserved; unknown
+or damaged state, incompatible downgrade and insufficient migration capacity fail
+closed. `MemoryOfflineStore` is the bounded volatile profile over the shared
+conformance engine; it has no crash-durability or snapshot/restore promise.
+`InMemoryOfflineStore` remains reference/snapshot test infrastructure. Durable
+backup/installation continuity and exclusive automatic ownership are separate
+factory/runtime responsibilities, not proven by a filename or copied snapshot.
+Older caches lack persisted authority proof: migration/first binding hides their
+values and retains bounded resident identities for revalidation. Current-format
+reopen with unchanged authority preserves eligible historical evidence; a changed
+authority hides old cache without altering pending IDs, TTL or receipt proof.
+
+## Historical explicit Repository surface
+
+
 Experimental, storage-neutral offline Repository support for
 [`lantern_client`](https://pub.dev/packages/lantern_client). It provides a strict
 versioned cache/outbox codec, a deterministic non-production in-memory reference
@@ -274,7 +358,7 @@ outbox/operation capacity rejection. Configure the adapter's test limits below
 the default probe bounds or raise `maxCapacityProbeRecords` and
 `maxNotificationControllerProbe` explicitly. `exportSnapshot` and
 `InMemoryOfflineStore.fromSnapshot` exist
-only for deterministic fresh-process conformance tests; snapshot schema v8
+only for deterministic fresh-process conformance tests; snapshot schema v9
 persists operation aggregates, exact dead-letter transition time, durable
 auth pause, an independent opaque public CDC cursor, legacy private chunk
 progress, the change epoch, and key-only Unknown residents. Migrating legacy
@@ -371,7 +455,7 @@ await repository.consumeScopedChanges(
 
 Adapters run `runScopedChangeStoreConformanceSuite` across their real persistence
 boundary. Memory snapshots add independent opaque state in schema 8; SQLite
-schema 5 keeps one indexed BLOB cursor per partition. Legacy origin cursors do
+schema 6 keeps one indexed BLOB cursor per partition. Legacy origin cursors do
 not establish scoped freshness. Migration/rebootstrap hides old confirmed rows
 as Unknown, preserves outbox records and requires authorized plural reads.
 The legacy `changeCursor`/`applyChangeChunk` and `LanternClientIdentitySource`

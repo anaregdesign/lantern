@@ -8,4 +8,5 @@ export 'src/client.dart'
     show
         IndexedMutationIntent,
         IndexedMutationAttemptException,
-        LanternIndexedMutations;
+        LanternIndexedMutations,
+        LanternObservationCoordinator;

@@ -428,6 +428,22 @@ final class DelayedOfflineStore implements OfflineStore {
 }
 
 final class _DelayedTransaction implements OfflineStoreTransaction {
+  @override
+  FutureOr<String?> authorityBinding(String partitionId) =>
+      inner.authorityBinding(partitionId);
+  @override
+  FutureOr<void> bindAuthority(String partitionId, String binding) =>
+      inner.bindAuthority(partitionId, binding);
+  @override
+  FutureOr<void> invalidateMutationCache(
+    String partitionId,
+    OfflineEntityKey key,
+  ) => inner.invalidateMutationCache(partitionId, key);
+
+  @override
+  FutureOr<DateTime> effectiveTime(String partitionId, DateTime observedAt) =>
+      inner.effectiveTime(partitionId, observedAt);
+
   const _DelayedTransaction(this.inner, this.afterUpdateOutbox);
 
   final OfflineStoreTransaction inner;

@@ -1,7 +1,12 @@
 part of '../lantern_client_offline_sqlite.dart';
 
-final class _SqlTransaction implements OfflineStoreTransaction {
-  _SqlTransaction(this.sql, this.limits);
+final class _SqlTransaction
+    implements OfflineStoreTransaction, OfflineStoreClaimTransaction {
+  _SqlTransaction(this.sql, this.limits, [this.claimLane, this.storeOpen]);
+  final _SqlLane? claimLane;
+  final bool Function()? storeOpen;
+  final List<_SqlClaimGuard> pendingFences = [];
+  final Set<String> observationInvalidated = {};
   final DatabaseExecutor sql;
   final OfflineStoreLimits limits;
   final Set<String> changed = {};
@@ -110,6 +115,102 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       _run(() async => (await _partition(partitionId))['generation']! as int);
 
   @override
+  Future<DateTime> effectiveTime(String partitionId, DateTime observedAt) =>
+      _run(() async {
+        if (!_isDurableTime(observedAt)) throw const OfflineArgumentException();
+        final metadata = await _partition(partitionId);
+        final prior = metadata['time_high_water']! as int;
+        final next = observedAt.microsecondsSinceEpoch > prior
+            ? observedAt.microsecondsSinceEpoch
+            : prior;
+        if (next != prior) {
+          await sql.update(
+            'partitions',
+            {'time_high_water': next},
+            where: 'partition_id=?',
+            whereArgs: [partitionId],
+          );
+          mutated.add(partitionId);
+        }
+        return DateTime.fromMicrosecondsSinceEpoch(next, isUtc: true);
+      });
+
+  @override
+  Future<String?> authorityBinding(String partitionId) => _run(
+    () async => (await _partition(partitionId))['authority_binding'] as String?,
+  );
+
+  @override
+  Future<OfflineClaimFence> captureClaimFence(
+    OfflineOutboxRecord claim, {
+    required String authorityBinding,
+  }) => _run(() async {
+    final lane = claimLane;
+    if (lane == null || storeOpen == null) {
+      throw const OfflineUnsupportedOperationException();
+    }
+    if (lane.fences.length + pendingFences.length >= limits.maxOutboxRecords) {
+      throw const OfflineCapacityException();
+    }
+    final guard = _SqlClaimGuard(claim, authorityBinding, storeOpen!, lane);
+    pendingFences.add(guard);
+    return guard.fence;
+  });
+
+  @override
+  Future<void> bindAuthority(String partitionId, String authorityBinding) =>
+      _run(() async {
+        if (authorityBinding.isEmpty ||
+            utf8.encode(authorityBinding).length > 4096) {
+          throw const OfflineArgumentException();
+        }
+        final p = await _partition(partitionId);
+        if (p['authority_binding'] == authorityBinding) return;
+        var unqualified = p['authority_binding'] != null;
+        for (final table in [
+          'cache',
+          'recovery',
+          'cdc_scoped',
+          'cdc_origins',
+        ]) {
+          if (unqualified) break;
+          unqualified = (await sql.query(
+            table,
+            columns: ['partition_id'],
+            where: 'partition_id=?',
+            whereArgs: [partitionId],
+            limit: 1,
+          )).isNotEmpty;
+        }
+        if (unqualified) await resetScopedChangeCursor(partitionId, null);
+        await sql.update(
+          'partitions',
+          {'authority_binding': authorityBinding},
+          where: 'partition_id=?',
+          whereArgs: [partitionId],
+        );
+        changed.add(partitionId);
+        observationInvalidated.add(partitionId);
+      });
+
+  @override
+  Future<void> invalidateMutationCache(
+    String partitionId,
+    OfflineEntityKey key,
+  ) => _run(() async {
+    await deleteCache(partitionId, key);
+    final p = await _partition(partitionId);
+    await sql.update(
+      'partitions',
+      {'change_epoch': _checkedIncrement(p['change_epoch']! as int)},
+      where: 'partition_id=?',
+      whereArgs: [partitionId],
+    );
+    changed.add(partitionId);
+    observationInvalidated.add(partitionId);
+  });
+
+  @override
   Future<bool> replayPausedForAuth(String partitionId) =>
       _run(() async => (await _partition(partitionId))['auth_paused'] == 1);
 
@@ -125,6 +226,7 @@ final class _SqlTransaction implements OfflineStoreTransaction {
           whereArgs: [partitionId],
         );
         changed.add(partitionId);
+        observationInvalidated.add(partitionId);
       });
 
   @override
@@ -431,7 +533,9 @@ final class _SqlTransaction implements OfflineStoreTransaction {
             state: record.state,
             attemptCount: record.attemptCount,
             generation: record.generation,
-            receipt: record.receipt,
+            preparation: record.preparation,
+            mayHaveDispatched: record.mayHaveDispatched,
+            dependencies: record.dependencies,
             nextAttemptAt: record.nextAttemptAt,
             leaseOwner: record.leaseOwner,
             leaseUntil: record.leaseUntil,
@@ -443,6 +547,15 @@ final class _SqlTransaction implements OfflineStoreTransaction {
     for (final record in assigned) {
       if (record.state != OfflineOutboxState.expired) {
         await sql.insert('outbox', _outboxColumns(record, limits));
+        for (final d in record.dependencies) {
+          await sql.insert('operation_dependencies', {
+            'partition_id': record.partitionId,
+            'record_id': record.recordId,
+            'prerequisite_operation_id': d.operationId,
+            'prerequisite_item': d.itemIndex,
+            'predicate': d.predicate.name,
+          });
+        }
       }
     }
     if (await _over(
@@ -467,6 +580,7 @@ final class _SqlTransaction implements OfflineStoreTransaction {
     );
     (enqueued[id] ??= {})[operationId] = assigned;
     changed.add(id);
+    observationInvalidated.add(id);
     return assigned
         .map(
           (record) => OfflineCodec.decodeOutboxRecord(
@@ -491,6 +605,7 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       whereArgs: [record.partitionId, record.recordId],
     );
     changed.add(record.partitionId);
+    observationInvalidated.add(record.partitionId);
   });
 
   @override
@@ -509,6 +624,7 @@ final class _SqlTransaction implements OfflineStoreTransaction {
           whereArgs: [partitionId, recordId],
         );
         changed.add(partitionId);
+        observationInvalidated.add(partitionId);
       });
 
   @override
@@ -587,12 +703,16 @@ final class _SqlTransaction implements OfflineStoreTransaction {
     }
     final rows = await sql.rawQuery(
       '''SELECT * FROM operations AS op
-      WHERE partition_id=? AND terminal_at<=? AND NOT EXISTS
+      WHERE partition_id=? AND terminal_at<=?
+      AND (guard_until IS NULL OR guard_until<=?)
+      AND NOT EXISTS (SELECT 1 FROM operation_dependencies d WHERE d.partition_id=op.partition_id AND d.prerequisite_operation_id=op.operation_id)
+      AND NOT EXISTS
       (SELECT 1 FROM outbox AS ob WHERE ob.partition_id=op.partition_id AND ob.operation_id=op.operation_id)
       ORDER BY terminal_at, operation_id LIMIT ?''',
       [
         partitionId,
         now.microsecondsSinceEpoch - retention.inMicroseconds,
+        now.microsecondsSinceEpoch,
         limit,
       ],
     );
@@ -606,7 +726,9 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       throw const OfflineArgumentException();
     }
     final previous = await getOperation(id, record.operationId);
-    if (previous != null && !_sameOperationTopology(previous, record)) {
+    if (previous != null &&
+        (!_sameOperationTopology(previous, record) ||
+            !OfflineCodec.monotoneOperationProgress(previous, record))) {
       throw const OfflineIdentityConflictException(
         OfflineIdentityKind.operation,
       );
@@ -671,20 +793,31 @@ final class _SqlTransaction implements OfflineStoreTransaction {
   });
 
   @override
-  Future<void> deleteOperation(String partitionId, String operationId) =>
-      _run(() async {
-        if (await hasOutboxForOperation(partitionId, operationId)) {
-          throw const OfflineArgumentException();
-        }
-        if (await sql.delete(
-              'operations',
-              where: 'partition_id=? AND operation_id=?',
-              whereArgs: [partitionId, operationId],
-            ) !=
-            0) {
-          changed.add(partitionId);
-        }
-      });
+  Future<void> deleteOperation(String partitionId, String operationId) => _run(
+    () async {
+      final op = await getOperation(partitionId, operationId);
+      final clock = (await _partition(partitionId))['time_high_water']! as int;
+      if (await hasOutboxForOperation(partitionId, operationId) ||
+          (op?.guardUntil?.microsecondsSinceEpoch ?? 0) > clock ||
+          (await sql.query(
+            'operation_dependencies',
+            columns: ['record_id'],
+            where: 'partition_id=? AND prerequisite_operation_id=?',
+            whereArgs: [partitionId, operationId],
+            limit: 1,
+          )).isNotEmpty) {
+        throw const OfflineArgumentException();
+      }
+      if (await sql.delete(
+            'operations',
+            where: 'partition_id=? AND operation_id=?',
+            whereArgs: [partitionId, operationId],
+          ) !=
+          0) {
+        changed.add(partitionId);
+      }
+    },
+  );
 
   @override
   Future<List<OfflineOutboxRecord>> claim(
@@ -823,6 +956,7 @@ final class _SqlTransaction implements OfflineStoreTransaction {
     );
     enqueued.remove(partitionId);
     changed.add(partitionId);
+    observationInvalidated.add(partitionId);
   });
 
   Future<bool> _over(
@@ -927,6 +1061,8 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       final rows = await sql.rawQuery(
         '''SELECT partition_id,operation_id FROM operations AS op
         WHERE terminal_at IS NOT NULL AND NOT(partition_id=? AND operation_id=?)
+        AND (guard_until IS NULL OR guard_until <= (SELECT time_high_water FROM partitions p WHERE p.partition_id=op.partition_id))
+        AND NOT EXISTS (SELECT 1 FROM operation_dependencies d WHERE d.partition_id=op.partition_id AND d.prerequisite_operation_id=op.operation_id)
         ${local ? ' AND partition_id=?' : ''}
         AND NOT EXISTS (SELECT 1 FROM outbox AS ob WHERE ob.partition_id=op.partition_id AND ob.operation_id=op.operation_id)
         ORDER BY terminal_at,partition_id,operation_id LIMIT 1''',
@@ -992,6 +1128,7 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       whereArgs: [partitionId],
     );
     changed.add(partitionId);
+    observationInvalidated.add(partitionId);
   });
 
   @override
@@ -1173,6 +1310,7 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       whereArgs: [partitionId],
     );
     changed.add(partitionId);
+    observationInvalidated.add(partitionId);
   });
 
   @override
@@ -1233,6 +1371,7 @@ final class _SqlTransaction implements OfflineStoreTransaction {
       whereArgs: [partitionId],
     );
     changed.add(partitionId);
+    observationInvalidated.add(partitionId);
   });
 
   Future<void> validateAll() async {
@@ -1360,6 +1499,18 @@ final class _SqlTransaction implements OfflineStoreTransaction {
   }
 
   Future<void> _validatePartitionGraph(String id) async {
+    validateOfflineDependencies(
+      (await sql.query(
+        'outbox',
+        where: 'partition_id=?',
+        whereArgs: [id],
+      )).map(_outbox).toList(),
+      (await sql.query(
+        'operations',
+        where: 'partition_id=?',
+        whereArgs: [id],
+      )).map(_operation).toList(),
+    );
     final metadata = (await sql.query(
       'partitions',
       where: 'partition_id=?',
@@ -1372,6 +1523,13 @@ final class _SqlTransaction implements OfflineStoreTransaction {
         generation < 0 ||
         ordinal < 0 ||
         version < 0 ||
+        metadata['time_high_water'] is! int ||
+        (metadata['time_high_water']! as int) < 0 ||
+        metadata['authority_binding'] != null &&
+            (metadata['authority_binding'] is! String ||
+                (metadata['authority_binding']! as String).isEmpty ||
+                utf8.encode(metadata['authority_binding']! as String).length >
+                    4096) ||
         metadata['change_epoch'] is! int ||
         (metadata['change_epoch']! as int) < 0 ||
         (metadata['auth_paused'] != 0 && metadata['auth_paused'] != 1)) {
@@ -1431,6 +1589,24 @@ final class _SqlTransaction implements OfflineStoreTransaction {
     });
     await _eachRow('outbox', 'record_id', id, (row) async {
       final record = _outbox(row);
+      final deps = await sql.query(
+        'operation_dependencies',
+        where: 'partition_id=? AND record_id=?',
+        whereArgs: [id, record.recordId],
+      );
+      final expected = {
+        for (final d in record.dependencies)
+          '${d.operationId}:${d.itemIndex}:${d.predicate.name}',
+      };
+      if (deps.length != expected.length ||
+          deps.any(
+            (d) => !expected.contains(
+              '${d['prerequisite_operation_id']}:${d['prerequisite_item']}:${d['predicate']}',
+            ),
+          )) {
+        throw const OfflineCodecException();
+      }
+
       if (record.partitionId != id ||
           record.generation != generation ||
           record.ordinal < 1 ||
@@ -1456,6 +1632,11 @@ final class _SqlTransaction implements OfflineStoreTransaction {
           (record.deadLetteredAt != null &&
               operation.terminalAt != null &&
               record.deadLetteredAt!.isAfter(operation.terminalAt!))) {
+        throw const OfflineCodecException();
+      }
+      if (operation.kind != null &&
+          record.mayHaveDispatched !=
+              operation.items[record.itemIndex].mayHaveDispatched) {
         throw const OfflineCodecException();
       }
       if (record.state == OfflineOutboxState.enqueued &&
@@ -1569,6 +1750,7 @@ Map<String, Object?> _operationColumns(
   'generation': record.generation,
   'updated_at': record.updatedAt.microsecondsSinceEpoch,
   'terminal_at': record.terminalAt?.microsecondsSinceEpoch,
+  'guard_until': record.guardUntil?.microsecondsSinceEpoch,
   'reserved_bytes': _operationAdmissionBytesFor(record, limits),
   'payload': _encode(OfflineCodec.encodeOperationRecord(record)),
 };

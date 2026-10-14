@@ -2,6 +2,8 @@
 
 ## 0.6.0 candidate
 
+- Add the common Offline admission/result contract with checked preparation, full pending projection, bounded dependency groups, exact durable results and memory/SQLite migrations; automatic runtime and factories follow in #1769/#1772.
+
 - Require the typed acceptance API in parent `lantern_client ^0.5.0`.
 - Persist terminal `acceptedUndisclosed` acknowledgements in operation schema
   v3, retaining strict v1/v2 decoding. Retire the owned outbox and overlay,

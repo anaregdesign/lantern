@@ -3,8 +3,10 @@ import 'dart:collection';
 import 'dart:convert';
 
 import 'change_store.dart';
+import 'claim_fence.dart';
 import 'codec.dart';
 import 'errors.dart';
+import 'mutation_state.dart';
 import 'scoped_change_store.dart';
 import 'store.dart';
 import 'types.dart';
@@ -17,7 +19,7 @@ import 'types.dart';
 /// not be used as a production persistence adapter.
 final class InMemoryOfflineStore implements OfflineStore {
   /// Current canonical reference-store snapshot schema.
-  static const int snapshotSchemaVersion = 8;
+  static const int snapshotSchemaVersion = 9;
 
   /// Creates an empty reference store with explicit capacity bounds.
   InMemoryOfflineStore({this.limits = const OfflineStoreLimits()}) {
@@ -100,7 +102,7 @@ final class InMemoryOfflineStore implements OfflineStore {
   ) {
     final result = _tail.then((_) async {
       final state = _state.copy();
-      final transaction = _MemoryTransaction(state, limits);
+      final transaction = _MemoryTransaction(state, limits, () => _state);
       late final T value;
       try {
         value = await action(transaction);
@@ -122,6 +124,7 @@ final class InMemoryOfflineStore implements OfflineStore {
         final partition = state.partition(partitionId);
         partition.version = _checkedIncrement(partition.version);
       }
+      transaction._commitMarker.committed = true;
       _state = state;
       for (final partitionId in transaction._changedPartitions) {
         final partition = _state.partition(partitionId);
@@ -130,6 +133,10 @@ final class InMemoryOfflineStore implements OfflineStore {
             partitionId: partitionId,
             version: partition.version,
             generation: partition.generation,
+            authorityBinding: partition.authorityBinding,
+            observationInvalidated: transaction.observationInvalidated.contains(
+              partitionId,
+            ),
           ),
         );
       }
@@ -150,11 +157,19 @@ final class InMemoryOfflineStore implements OfflineStore {
   }
 }
 
-final class _MemoryTransaction implements OfflineStoreTransaction {
-  _MemoryTransaction(this._state, this._limits);
+final class _MemoryCommitMarker {
+  bool committed = false;
+}
 
+final class _MemoryTransaction
+    implements OfflineStoreTransaction, OfflineStoreClaimTransaction {
+  _MemoryTransaction(this._state, this._limits, this._committed);
+
+  final Set<String> observationInvalidated = {};
   final _MemoryState _state;
   final OfflineStoreLimits _limits;
+  final _MemoryState Function() _committed;
+  final _MemoryCommitMarker _commitMarker = _MemoryCommitMarker();
   final Set<String> _changedPartitions = <String>{};
   final Set<String> _mutatedPartitions = <String>{};
   final Map<String, Map<String, List<OfflineOutboxRecord>>>
@@ -162,6 +177,39 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
   var _sealed = false;
 
   void _seal() => _sealed = true;
+
+  @override
+  OfflineClaimFence captureClaimFence(
+    OfflineOutboxRecord claim, {
+    required String authorityBinding,
+  }) {
+    _ensureOpen();
+    final marker = _commitMarker;
+    final committed = _committed;
+    return OfflineClaimFence(
+      checkCurrent: (observedAt) {
+        final state = committed();
+        // A fence obtained from an aborted callback must never become eligible.
+        if (!marker.committed) {
+          throw const OfflineClaimLostException();
+        }
+        final p = state.partitions[claim.partitionId];
+        if (p == null) throw const OfflineClaimLostException();
+        return checkOfflineClaim(
+          expected: claim,
+          current: p.outbox[claim.recordId],
+          generation: p.generation,
+          authorityBinding: p.authorityBinding,
+          expectedAuthority: authorityBinding,
+          highWater: DateTime.fromMicrosecondsSinceEpoch(
+            p.timeHighWater,
+            isUtc: true,
+          ),
+          observedAt: observedAt,
+        );
+      },
+    );
+  }
 
   void _ensureOpen() {
     if (_sealed) throw const OfflineTransactionClosedException();
@@ -172,6 +220,56 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     _ensureOpen();
     _validatePartition(partitionId);
     return _state.partition(partitionId).generation;
+  }
+
+  @override
+  DateTime effectiveTime(String partitionId, DateTime observedAt) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    if (!_isDurableTime(observedAt)) throw const OfflineArgumentException();
+    final p = _state.partition(partitionId);
+    final micros = observedAt.microsecondsSinceEpoch;
+    if (micros > p.timeHighWater) {
+      p.timeHighWater = micros;
+      _mutatedPartitions.add(partitionId);
+    }
+    return DateTime.fromMicrosecondsSinceEpoch(p.timeHighWater, isUtc: true);
+  }
+
+  @override
+  String? authorityBinding(String partitionId) {
+    _ensureOpen();
+    return _state.partition(partitionId).authorityBinding;
+  }
+
+  @override
+  void bindAuthority(String partitionId, String authorityBinding) {
+    _ensureOpen();
+    if (authorityBinding.isEmpty ||
+        utf8.encode(authorityBinding).length > 4096) {
+      throw const OfflineArgumentException();
+    }
+    final p = _state.partition(partitionId);
+    if (p.authorityBinding == authorityBinding) return;
+    if (p.authorityBinding != null ||
+        p.cache.isNotEmpty ||
+        p.unknownResidents.isNotEmpty ||
+        p.scopedCursor != null ||
+        p.changeProgress.isNotEmpty) {
+      resetScopedChangeCursor(partitionId, null);
+    }
+    p.authorityBinding = authorityBinding;
+    _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
+  }
+
+  @override
+  void invalidateMutationCache(String partitionId, OfflineEntityKey key) {
+    deleteCache(partitionId, key);
+    final p = _state.partition(partitionId);
+    p.changeEpoch = _checkedIncrement(p.changeEpoch);
+    _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
   }
 
   @override
@@ -189,6 +287,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     if (partition.replayPausedForAuth == paused) return;
     partition.replayPausedForAuth = paused;
     _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
   }
 
   @override
@@ -215,6 +314,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     if (frame.cursor != null) partition.scopedCursor = frame.cursor;
     partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
     _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
   }
 
   @override
@@ -240,6 +340,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     partition.scopedCursor = checkpoint;
     partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
     _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
   }
 
   @override
@@ -333,6 +434,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     partition.changeProgress[chunk.origin] = advanced;
     partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
     _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
   }
 
   @override
@@ -360,6 +462,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
       });
     partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
     _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
   }
 
   @override
@@ -637,7 +740,9 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
             state: record.state,
             attemptCount: record.attemptCount,
             generation: record.generation,
-            receipt: record.receipt,
+            preparation: record.preparation,
+            mayHaveDispatched: record.mayHaveDispatched,
+            dependencies: record.dependencies,
             nextAttemptAt: record.nextAttemptAt,
             leaseOwner: record.leaseOwner,
             leaseUntil: record.leaseUntil,
@@ -672,6 +777,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
         .map(_copyOutboxRecord)
         .toList(growable: false);
     _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
     return assigned.map(_copyOutboxRecord).toList(growable: false);
   }
 
@@ -689,6 +795,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     _validateOutboxLifecycleCapacity(replacement, _limits);
     partition.putOutbox(replacement);
     _changedPartitions.add(record.partitionId);
+    observationInvalidated.add(record.partitionId);
   }
 
   @override
@@ -707,6 +814,7 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     }
     if (partition.removeOutbox(recordId) != null) {
       _changedPartitions.add(partitionId);
+      observationInvalidated.add(partitionId);
     }
   }
 
@@ -785,7 +893,15 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
       if (operation == null) {
         throw StateError('operation retention index is inconsistent');
       }
-      result.add(_copyOperationRecord(operation));
+      if ((operation.guardUntil == null ||
+              !now.isBefore(operation.guardUntil!)) &&
+          !partition.outbox.values.any(
+            (r) => r.dependencies.any(
+              (d) => d.operationId == operation.operationId,
+            ),
+          )) {
+        result.add(_copyOperationRecord(operation));
+      }
       cursor = partition.operationRetentionOrder.firstKeyAfter(cursor);
     }
     return List<OfflineOperationRecord>.unmodifiable(result);
@@ -801,7 +917,9 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
         throw const OfflineArgumentException();
       }
       final previous = partition.operations[record.operationId];
-      if (previous != null && !_sameOperationTopology(previous, record)) {
+      if (previous != null &&
+          (!_sameOperationTopology(previous, record) ||
+              !OfflineCodec.monotoneOperationProgress(previous, record))) {
         throw const OfflineIdentityConflictException(
           OfflineIdentityKind.operation,
         );
@@ -885,7 +1003,16 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     _ensureOpen();
     _validatePartition(partitionId);
     final partition = _state.partition(partitionId);
-    if (partition.outboxByOperation[operationId]?.isNotEmpty ?? false) {
+    if ((partition.outboxByOperation[operationId]?.isNotEmpty ?? false) ||
+        (partition
+                    .operations[operationId]
+                    ?.guardUntil
+                    ?.microsecondsSinceEpoch ??
+                0) >
+            partition.timeHighWater ||
+        partition.outbox.values.any(
+          (r) => r.dependencies.any((d) => d.operationId == operationId),
+        )) {
       throw const OfflineArgumentException();
     }
     if (partition.removeOperation(operationId) != null) {
@@ -1029,9 +1156,12 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     _state.partitions[partitionId] =
         _MemoryPartition(generation: _checkedIncrement(previous.generation))
           ..version = previous.version
+          ..timeHighWater = previous.timeHighWater
+          ..authorityBinding = previous.authorityBinding
           ..nextOrdinal = previous.nextOrdinal;
     _enqueuedOperations.remove(partitionId);
     _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
   }
 
   void _evictCache(String partitionId, {required String protectedKey}) {
@@ -1083,7 +1213,15 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
             continue;
           }
           final terminalAt = operation.terminalAt;
-          if (terminalAt != null) {
+          if (terminalAt != null &&
+              (operation.guardUntil == null ||
+                  entry.value.timeHighWater >=
+                      operation.guardUntil!.microsecondsSinceEpoch) &&
+              !entry.value.outbox.values.any(
+                (r) => r.dependencies.any(
+                  (d) => d.operationId == operation.operationId,
+                ),
+              )) {
             candidates.add((
               partitionId: entry.key,
               operationId: operation.operationId,
@@ -1166,7 +1304,10 @@ bool _sameOperationTopology(
   if (left.partitionId != right.partitionId ||
       left.generation != right.generation ||
       left.operationId != right.operationId ||
-      left.items.length != right.items.length) {
+      left.items.length != right.items.length ||
+      left.kind != right.kind ||
+      left.guardUntil != right.guardUntil ||
+      left.groupId != right.groupId) {
     return false;
   }
   for (var index = 0; index < left.items.length; index++) {
@@ -1208,6 +1349,10 @@ final class _MemoryPartition {
       <String, OfflineOutboxRecord>{};
   final Map<String, OfflineOperationRecord> operations =
       <String, OfflineOperationRecord>{};
+  // Derived lifecycle-envelope bytes, bounded by retained operations. The
+  // topology is immutable across progress; mutable diagnostics are still checked
+  // on every capacity calculation. This cache is never snapshot evidence.
+  final Map<String, int> operationAdmissionBytes = <String, int>{};
   final Map<String, String> operationByRecordId = <String, String>{};
   final SplayTreeMap<OfflineOutboxCursor, String> outboxOrder =
       SplayTreeMap<OfflineOutboxCursor, String>(_compareOutboxCursor);
@@ -1242,6 +1387,8 @@ final class _MemoryPartition {
   final Map<String, _OperationRetentionCursor> operationRetentionById =
       <String, _OperationRetentionCursor>{};
   int generation;
+  String? authorityBinding;
+  int timeHighWater = 0;
   int changeEpoch = 0;
   int version = 0;
   int nextOrdinal = 0;
@@ -1294,6 +1441,9 @@ final class _MemoryPartition {
   void putOperation(OfflineOperationRecord operation) {
     _removeOperationRetention(operation.operationId);
     final previous = operations[operation.operationId];
+    if (previous == null || !_sameOperationTopology(previous, operation)) {
+      operationAdmissionBytes.remove(operation.operationId);
+    }
     if (previous != null) {
       for (final item in previous.items) {
         operationByRecordId.remove(item.recordId);
@@ -1308,6 +1458,7 @@ final class _MemoryPartition {
   }
 
   OfflineOperationRecord? removeOperation(String operationId) {
+    operationAdmissionBytes.remove(operationId);
     _removeOperationRetention(operationId);
     operationOrder.remove(operationId);
     final removed = operations.remove(operationId);
@@ -1445,6 +1596,8 @@ final class _MemoryPartition {
       ..scopedCursor = scopedCursor
       ..changeProgress.addAll(changeProgress)
       ..unknownResidents.addAll(unknownResidents)
+      ..authorityBinding = authorityBinding
+      ..timeHighWater = timeHighWater
       ..changeEpoch = changeEpoch
       ..version = version
       ..nextOrdinal = nextOrdinal
@@ -1458,6 +1611,7 @@ final class _MemoryPartition {
     for (final operation in operations.values) {
       result.putOperation(_copyOperationRecord(operation));
     }
+    result.operationAdmissionBytes.addAll(operationAdmissionBytes);
     return result;
   }
 }
@@ -1582,7 +1736,9 @@ OfflineOutboxRecord _copyOutboxRecord(OfflineOutboxRecord record) =>
       state: record.state,
       attemptCount: record.attemptCount,
       generation: record.generation,
-      receipt: record.receipt,
+      preparation: record.preparation,
+      mayHaveDispatched: record.mayHaveDispatched,
+      dependencies: record.dependencies,
       nextAttemptAt: record.nextAttemptAt?.toUtc(),
       leaseOwner: record.leaseOwner,
       leaseUntil: record.leaseUntil?.toUtc(),
@@ -1604,12 +1760,16 @@ OfflineOperationRecord _copyOperationRecord(OfflineOperationRecord record) =>
               state: item.state,
               attemptCount: item.attemptCount,
               receiptResult: item.receiptResult,
+              mayHaveDispatched: item.mayHaveDispatched,
               diagnosticCode: item.diagnosticCode,
             ),
           )
           .toList(growable: false),
       updatedAt: record.updatedAt.toUtc(),
       terminalAt: record.terminalAt?.toUtc(),
+      kind: record.kind,
+      guardUntil: record.guardUntil,
+      groupId: record.groupId,
     );
 
 int _cacheRecordBytes(OfflineCacheRecord record) =>
@@ -1702,6 +1862,11 @@ int _outboxAdmissionBytesFor(
     state: OfflineOutboxState.enqueued,
     attemptCount: 0,
     generation: record.generation,
+    dependencies: record.dependencies,
+    preparation: record.preparation is OfflineAwaitingPreparation
+        ? record.preparation
+        : null,
+    mayHaveDispatched: record.mayHaveDispatched,
     receipt: record.receipt?.copyWith(
       state: OfflineReceiptReconciliationState.statusRequired,
       reconciliationAttemptCount: 0,
@@ -1726,7 +1891,8 @@ int _outboxAdmissionBytesFor(
   }
   return _outboxBytesFor(base) +
       _outboxLifecycleReservationBytes(limits) +
-      receiptGrowth;
+      receiptGrowth +
+      (record.preparation is OfflineAwaitingPreparation ? 4096 : 0);
 }
 
 // This is a mechanical upper bound over every mutable field in the canonical
@@ -1784,15 +1950,14 @@ void _validateLeaseOwnerCapacity(String owner, OfflineStoreLimits limits) {
 }
 
 int _operationBytes(_MemoryPartition partition, OfflineStoreLimits limits) =>
-    _operationRecordsBytes(partition.operations.values, limits);
-
-int _operationRecordsBytes(
-  Iterable<OfflineOperationRecord> records,
-  OfflineStoreLimits limits,
-) => records.fold(
-  0,
-  (total, record) => total + _operationAdmissionBytesFor(record, limits),
-);
+    partition.operations.values.fold(0, (total, record) {
+      _validateOperationLifecycleCapacity(record, limits);
+      return total +
+          partition.operationAdmissionBytes.putIfAbsent(
+            record.operationId,
+            () => _operationAdmissionBytesFor(record, limits),
+          );
+    });
 
 int _operationRecordBytes(OfflineOperationRecord record) =>
     utf8.encode(OfflineCodec.encodeOperationRecord(record)).length;
@@ -1818,11 +1983,15 @@ int _operationAdmissionBytesFor(
         )
         .toList(growable: false),
     updatedAt: _unixEpoch,
+    kind: record.kind,
+    guardUntil: record.guardUntil,
+    groupId: record.groupId,
   );
   final perItemGrowth =
       (_maxSignedInt64JsonBytes - _zeroJsonBytes) +
       _optionalJsonStringGrowth(limits.maxDiagnosticCodeBytes) +
-      _receiptResultReservationBytes;
+      _receiptResultReservationBytes +
+      32;
   final timestampGrowth =
       (_maxQuotedUtcTimestampJsonBytes - _quotedUnixEpochJsonBytes) +
       (_maxQuotedUtcTimestampJsonBytes - _nullJsonBytes);
@@ -1906,6 +2075,8 @@ String _encodeMemoryState(_MemoryState state) {
           return <String, Object?>{
             'partitionId': partitionId,
             'generation': partition.generation,
+            'timeHighWater': partition.timeHighWater,
+            'authorityBinding': partition.authorityBinding,
             'changeEpoch': partition.changeEpoch,
             'scopedCursor': partition.scopedCursor?.toJson(),
             'version': partition.version,
@@ -1950,6 +2121,7 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
         schema != 5 &&
         schema != 6 &&
         schema != 7 &&
+        schema != 8 &&
         schema != InMemoryOfflineStore.snapshotSchemaVersion) {
       throw const OfflineSchemaException();
     }
@@ -1977,6 +2149,8 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
                 'generation',
                 if (schema >= 7) 'changeEpoch',
                 if (schema >= 8) 'scopedCursor',
+                if (schema >= 9) 'timeHighWater',
+                if (schema >= 9) 'authorityBinding',
                 'version',
                 'nextOrdinal',
                 'replayPausedForAuth',
@@ -2002,6 +2176,12 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
       }
       final generation = _snapshotNonNegativeInt(encoded['generation']);
       final partition = _MemoryPartition(generation: generation)
+        ..authorityBinding = schema >= 9
+            ? encoded['authorityBinding'] as String?
+            : null
+        ..timeHighWater = schema >= 9
+            ? _snapshotNonNegativeInt(encoded['timeHighWater'])
+            : 0
         ..scopedCursor = schema >= 8 && encoded['scopedCursor'] != null
             ? OfflineScopedChangeCursor.fromJson(encoded['scopedCursor'])
             : null
@@ -2107,6 +2287,24 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
       if (schema < 5) {
         _migrateReplayAuthPause(partition);
       }
+      if (partition.timeHighWater >
+              _maximumDurableTime.microsecondsSinceEpoch ||
+          partition.authorityBinding != null &&
+              (partition.authorityBinding!.isEmpty ||
+                  utf8.encode(partition.authorityBinding!).length > 4096)) {
+        throw const OfflineCodecException();
+      }
+      if (schema < 9) {
+        for (final time in [
+          for (final c in partition.cache.values) c.lastAccessAt,
+          for (final o in partition.operations.values) o.updatedAt,
+          for (final r in partition.outbox.values) r.enqueuedAt,
+        ]) {
+          if (time.microsecondsSinceEpoch > partition.timeHighWater) {
+            partition.timeHighWater = time.microsecondsSinceEpoch;
+          }
+        }
+      }
       _validateCacheGraph(partitionId, partition);
       _validateCurrentPartitionIdentity(partitionId, partition);
       _validatePartitionGraph(partition, legacySnapshot: schema < 4);
@@ -2117,12 +2315,16 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
       }
       partition.rebuildIndexes();
       state.partitions[partitionId] = partition;
-      if (schema < 8 && partition.changeProgress.isNotEmpty) {
+      if (schema < 9 &&
+          (partition.cache.isNotEmpty ||
+              partition.changeProgress.isNotEmpty ||
+              partition.scopedCursor != null)) {
         for (final record in partition.cache.values) {
           partition.unknownResidents[record.key.canonical] = record.key;
         }
         partition.cache.clear();
         partition.changeProgress.clear();
+        partition.scopedCursor = null;
         partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
         _trimUnknownResidents(state, partitionId, limits);
       }
@@ -2196,6 +2398,11 @@ void _validatePartitionGraph(
         !_outboxStatusMatches(record, operation.items[record.itemIndex])) {
       throw const OfflineCodecException();
     }
+    if (operation.kind != null &&
+        record.mayHaveDispatched !=
+            operation.items[record.itemIndex].mayHaveDispatched) {
+      throw const OfflineCodecException();
+    }
     final ordinalOperation = ordinalOperations.putIfAbsent(
       record.ordinal,
       () => record.operationId,
@@ -2246,6 +2453,10 @@ void _validatePartitionGraph(
       }
     }
   }
+  validateOfflineDependencies(
+    partition.outbox.values.toList(),
+    partition.operations.values.toList(),
+  );
   for (final recordId in expired) {
     partition.outbox.remove(recordId);
   }

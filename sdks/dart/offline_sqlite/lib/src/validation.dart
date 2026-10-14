@@ -8,7 +8,10 @@ bool _sameOperationTopology(
   if (left.partitionId != right.partitionId ||
       left.generation != right.generation ||
       left.operationId != right.operationId ||
-      left.items.length != right.items.length) {
+      left.items.length != right.items.length ||
+      left.kind != right.kind ||
+      left.guardUntil != right.guardUntil ||
+      left.groupId != right.groupId) {
     return false;
   }
   for (var index = 0; index < left.items.length; index++) {
@@ -51,6 +54,11 @@ int _outboxAdmissionBytesFor(
     state: OfflineOutboxState.enqueued,
     attemptCount: 0,
     generation: record.generation,
+    dependencies: record.dependencies,
+    preparation: record.preparation is OfflineAwaitingPreparation
+        ? record.preparation
+        : null,
+    mayHaveDispatched: record.mayHaveDispatched,
     receipt: record.receipt?.copyWith(
       state: OfflineReceiptReconciliationState.statusRequired,
       reconciliationAttemptCount: 0,
@@ -75,7 +83,8 @@ int _outboxAdmissionBytesFor(
   }
   return _outboxBytesFor(base) +
       _outboxLifecycleReservationBytes(limits) +
-      receiptGrowth;
+      receiptGrowth +
+      (record.preparation is OfflineAwaitingPreparation ? 4096 : 0);
 }
 
 // This is a mechanical upper bound over every mutable field in the canonical
@@ -156,11 +165,15 @@ int _operationAdmissionBytesFor(
         )
         .toList(growable: false),
     updatedAt: _unixEpoch,
+    kind: record.kind,
+    guardUntil: record.guardUntil,
+    groupId: record.groupId,
   );
   final perItemGrowth =
       (_maxSignedInt64JsonBytes - _zeroJsonBytes) +
       _optionalJsonStringGrowth(limits.maxDiagnosticCodeBytes) +
-      _receiptResultReservationBytes;
+      _receiptResultReservationBytes +
+      32;
   final timestampGrowth =
       (_maxQuotedUtcTimestampJsonBytes - _quotedUnixEpochJsonBytes) +
       (_maxQuotedUtcTimestampJsonBytes - _nullJsonBytes);

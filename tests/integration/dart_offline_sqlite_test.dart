@@ -6,11 +6,183 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
+import 'package:lantern_client_offline/lantern_client_offline_adapter.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
   sqfliteFfiInit();
+  test(
+    'bound Offline accepts without tokens and recovers exact indexed receipt results after SQLite reopen',
+    () async {
+      final endpointValue =
+          Platform.environment['LANTERN_DART_RECEIPT_ENDPOINT'];
+      final token = Platform.environment['LANTERN_DART_RECEIPT_TOKEN'];
+      final ca = Platform.environment['LANTERN_DART_RECEIPT_CA_FILE'];
+      if (endpointValue == null || token == null || ca == null)
+        throw StateError(
+          'receipt fixture is required for bound Offline qualification',
+        );
+      final endpoint = Uri.parse(endpointValue);
+      HttpClient trusted() => HttpClient(
+        context: SecurityContext(withTrustedRoots: false)
+          ..setTrustedCertificates(ca),
+      );
+      final server = LanternClient.connect(
+        endpoint,
+        token: token,
+        httpClientFactory: trusted,
+      );
+      addTearDown(server.close);
+      final prefix = 'bound-sql-wire:${DateTime.now().microsecondsSinceEpoch}:';
+      final conditional = '${prefix}conditional',
+          deleted = '${prefix}deleted',
+          tail = '${prefix}tail',
+          head = '${prefix}head';
+      await server.putVertices([
+        for (final key in [conditional, deleted, tail, head])
+          VertexInput(key: key, value: VertexValue.string('original')),
+      ]);
+      await server.putEdge(EdgeInput(tail: tail, head: head, weight: 1));
+      final proxy = await _ResponseDroppingProxy.bind(
+        endpoint,
+        drops: const {'PutVertices': 1, 'DeleteVertices': 1, 'AddEdges': 1},
+        upstreamClient: trusted(),
+      );
+      addTearDown(proxy.close);
+      final directory = await Directory.systemTemp.createTemp(
+        'bound-sql-wire-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final path = '${directory.path}/state.db';
+      var store = await SqliteOfflineStore.open(
+        path: path,
+        databaseFactory: databaseFactoryFfi,
+      );
+      addTearDown(() => store.close());
+      var now = DateTime.now().toUtc();
+      var tokens = 0;
+      final binding = LanternSessionBinding.application(
+        serviceOrigin: proxy.endpoint,
+        securityDomain: 'test',
+        accountIdentity: 'one',
+        authorityBinding: 'a',
+      );
+      Future<OfflineLanternDataClient> open() => OfflineLanternDataClient.open(
+        client: LanternClient.connect(
+          proxy.endpoint,
+          allowInsecure: true,
+          tokenProvider: () {
+            tokens++;
+            return token;
+          },
+        ),
+        store: store,
+        binding: binding,
+        durability: AdmissionDurability.durable,
+        clock: () => now,
+      );
+      var client = await open();
+      final condition = await client.mutations.submit(
+        MutationRequest.putVerticesIfAbsent([
+          VertexInput(
+            key: conditional,
+            value: VertexValue.string('replacement'),
+          ),
+        ]),
+      );
+      final deletion = await client.mutations.submit(
+        MutationRequest.deleteVertices([deleted, deleted, '${prefix}missing']),
+      );
+      final add = await client.mutations.submit(
+        MutationRequest.addEdges([
+          EdgeInput(tail: tail, head: head, weight: .5),
+        ]),
+      );
+      expect(tokens, 0);
+      final before = await store.transaction(
+        (tx) => tx.outbox(binding.stableIdentity),
+      );
+      expect(
+        before.every(
+          (r) =>
+              r.preparation is OfflineAwaitingPreparation &&
+              !r.mayHaveDispatched,
+        ),
+        isTrue,
+      );
+      await client.mutationDelivery.dispatchPass();
+      for (final rpc in ['PutVertices', 'DeleteVertices', 'AddEdges'])
+        expect(proxy.dropped(rpc), 1);
+      final sent = await store.transaction(
+        (tx) => tx.outbox(binding.stableIdentity),
+      );
+      final ids = {
+        for (final r in sent.where((r) => r.mayHaveDispatched))
+          r.recordId: r.receipt!.operationId,
+      };
+      final addId =
+          (sent
+                      .firstWhere(
+                        (r) => r.intent is OfflineReceiptAddEdgeIntent,
+                      )
+                      .intent
+                  as OfflineReceiptAddEdgeIntent)
+              .contributionId;
+      await client.close();
+      await store.close();
+      now = now.add(const Duration(seconds: 2));
+      store = await SqliteOfflineStore.open(
+        path: path,
+        databaseFactory: databaseFactoryFfi,
+      );
+      client = await open();
+      addTearDown(client.close);
+      final recovered = await store.transaction(
+        (tx) => tx.outbox(binding.stableIdentity),
+      );
+      for (final r in recovered.where((r) => r.mayHaveDispatched))
+        expect(r.receipt!.operationId, ids[r.recordId]);
+      expect(
+        (recovered
+                    .firstWhere((r) => r.intent is OfflineReceiptAddEdgeIntent)
+                    .intent
+                as OfflineReceiptAddEdgeIntent)
+            .contributionId,
+        addId,
+      );
+      final c = client.mutations.reobserve(condition.reference),
+          d = client.mutations.reobserve(deletion.reference),
+          a = client.mutations.reobserve(add.reference);
+      for (var pass = 0; pass < 4; pass++) {
+        await client.mutationDelivery.dispatchPass();
+        now = now.add(const Duration(seconds: 2));
+      }
+      expect(
+        ((await c).reply!.items.single as MutationKnownEffect<PutOutcome>)
+            .effect,
+        PutOutcome.conditionNotMet,
+      );
+      expect(
+        (await d).reply!.items.map(
+          (r) => (r as MutationKnownEffect<bool>).effect,
+        ),
+        [true, false, false],
+      );
+      expect(
+        ((await a).reply!.items.single as MutationKnownEffect<double>).effect,
+        1.5,
+      );
+      expect(proxy.forwarded('PutVertices'), 1);
+      expect(proxy.forwarded('AddEdges'), 1);
+      expect(proxy.forwarded('DeleteVertices'), 3);
+      expect((await server.getEdge(EdgeRef(tail, head))).weight, 1.5);
+      expect(
+        await store.transaction((tx) => tx.outbox(binding.stableIdentity)),
+        isEmpty,
+      );
+    },
+  );
   test(
     'response-dropping proxy loses committed PutVertex and PutEdge responses',
     () async {
@@ -272,7 +444,9 @@ final class _ResponseDroppingProxy {
     this._server,
     this._upstreamEndpoint,
     Map<String, int> drops,
+    HttpClient? upstreamClient,
   ) : _remainingDrops = Map<String, int>.of(drops) {
+    _upstream = upstreamClient ?? HttpClient();
     _upstream.autoUncompress = false;
     _server.listen((request) => unawaited(_forward(request)));
   }
@@ -280,14 +454,20 @@ final class _ResponseDroppingProxy {
   static Future<_ResponseDroppingProxy> bind(
     Uri upstreamEndpoint, {
     required Map<String, int> drops,
+    HttpClient? upstreamClient,
   }) async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    return _ResponseDroppingProxy._(server, upstreamEndpoint, drops);
+    return _ResponseDroppingProxy._(
+      server,
+      upstreamEndpoint,
+      drops,
+      upstreamClient,
+    );
   }
 
   final HttpServer _server;
   final Uri _upstreamEndpoint;
-  final HttpClient _upstream = HttpClient();
+  late final HttpClient _upstream;
   final Map<String, int> _remainingDrops;
   final Map<String, int> _forwarded = <String, int>{};
   final Map<String, int> _dropped = <String, int>{};

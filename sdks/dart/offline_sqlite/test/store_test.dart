@@ -57,6 +57,56 @@ void main() {
   }
 
   test(
+    'common Offline admission contract and identities survive actual SQLite reopen',
+    () async {
+      await runOfflineDataClientConformance(
+        createStore: () => open(),
+        reopenStore: (previous) async {
+          final sql = previous as SqliteOfflineStore;
+          final path = sql.path;
+          await sql.close();
+          return open(path: path);
+        },
+        durability: AdmissionDurability.durable,
+      );
+    },
+  );
+  test(
+    'actual SQLite claim expiry/reclaim, pending TTL and eligible storage fault counterexamples',
+    () async {
+      await runOfflineMutationBoundaryConformance(
+        createStore: () => open(),
+        durability: AdmissionDurability.durable,
+      );
+    },
+  );
+  test(
+    'SQL5 migration hides unbound cache and preserves receipt evidence across authority/reopen',
+    () async {
+      await runOfflineAuthorityBoundaryConformance(
+        createStore: () => open(),
+        migrateLegacy: (input) async {
+          final oldStore = input as SqliteOfflineStore;
+          final path = oldStore.path;
+          await oldStore.close();
+          final old = await factory.openDatabase(path);
+          await _downgradeCommonSchema(old);
+          await old.update(
+            'store_metadata',
+            {'value': 'lantern-offline-5'},
+            where: 'key=?',
+            whereArgs: ['format'],
+          );
+          await old.setVersion(5);
+          await old.close();
+          return open(path: path);
+        },
+        reopenStore: reopen,
+        durability: AdmissionDurability.durable,
+      );
+    },
+  );
+  test(
     'complete storage-neutral conformance across real SQLite reopen',
     () async {
       await runStoreConformanceSuite(
@@ -1022,6 +1072,7 @@ void main() {
         where: 'key=?',
         whereArgs: ['format'],
       );
+      await _downgradeCommonSchema(old);
       await old.execute('DROP TABLE cdc_scoped');
       await old.setVersion(1);
       await old.execute('DROP INDEX cache_lru');
@@ -1102,14 +1153,22 @@ void main() {
         jsonDecode(utf8.decode(outboxRow['payload']! as List<int>))
             as Map<String, Object?>;
     outbox['schema'] = 2;
+    outbox.remove('preparation');
+    outbox.remove('dependencies');
+    outbox.remove('mayHaveDispatched');
     outbox.remove('receipt');
     final operationRow = (await old.query('operations')).single;
     final operation =
         jsonDecode(utf8.decode(operationRow['payload']! as List<int>))
             as Map<String, Object?>;
     operation['schema'] = 1;
+    operation.remove('kind');
+    operation.remove('guardUntil');
+    operation.remove('groupId');
     for (final item in operation['items']! as List<Object?>) {
-      (item! as Map<String, Object?>).remove('receiptResult');
+      (item! as Map<String, Object?>)
+        ..remove('receiptResult')
+        ..remove('mayHaveDispatched');
     }
     await old.update('outbox', {
       'payload': Uint8List.fromList(utf8.encode(jsonEncode(outbox))),
@@ -1123,6 +1182,7 @@ void main() {
       where: 'key=?',
       whereArgs: ['format'],
     );
+    await _downgradeCommonSchema(old);
     await old.execute('DROP TABLE cdc_scoped');
     await old.setVersion(2);
     await old.close();
@@ -1160,22 +1220,22 @@ void main() {
       'legacy-payload',
     );
     final check = await factory.openDatabase(path);
-    expect(await check.getVersion(), 5);
+    expect(await check.getVersion(), 6);
     expect(
       (await check.query('store_metadata')).single['value'],
-      'lantern-offline-5',
+      'lantern-offline-6',
     );
     expect(
       utf8.decode(
         (await check.query('outbox')).single['payload']! as List<int>,
       ),
-      contains('"schema":4'),
+      contains('"schema":5'),
     );
     expect(
       utf8.decode(
         (await check.query('operations')).single['payload']! as List<int>,
       ),
-      contains('"schema":3'),
+      contains('"schema":4'),
     );
     await check.close();
   });
@@ -1229,6 +1289,9 @@ void main() {
         jsonDecode(utf8.decode(row['payload']! as List<int>))
             as Map<String, Object?>;
     payload['schema'] = 3;
+    payload.remove('preparation');
+    payload.remove('dependencies');
+    payload.remove('mayHaveDispatched');
     (payload['receipt']! as Map<String, Object?>).remove('mayHaveDispatched');
     final priorBytes = utf8.encode(jsonEncode(payload));
     await old.update('outbox', {
@@ -1244,6 +1307,7 @@ void main() {
       where: 'key=?',
       whereArgs: ['format'],
     );
+    await _downgradeCommonSchema(old);
     await old.execute('DROP TABLE cdc_scoped');
     await old.setVersion(3);
     await old.close();
@@ -1256,10 +1320,10 @@ void main() {
     expect(restored.receipt!.operationId, receipt.operationId);
     expect(restored.attemptCount, 0);
     final check = await factory.openDatabase(path);
-    expect(await check.getVersion(), 5);
+    expect(await check.getVersion(), 6);
     expect(
       (await check.query('store_metadata')).single['value'],
-      'lantern-offline-5',
+      'lantern-offline-6',
     );
     expect(
       utf8.decode(
@@ -1334,6 +1398,7 @@ void main() {
       final path = store.path;
       await store.close();
       final old = await factory.openDatabase(path);
+      await _downgradeCommonSchema(old);
       await old.execute('DROP TABLE cdc_scoped');
       await old.update(
         'store_metadata',
@@ -1628,4 +1693,48 @@ final class _UndisclosedRemote implements OfflineRemote {
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw StateError('unexpected remote call');
+}
+
+Future<void> _downgradeCommonSchema(Database db) async {
+  for (final row in await db.query('outbox')) {
+    final data =
+        jsonDecode(utf8.decode(row['payload']! as List<int>))
+            as Map<String, Object?>;
+    if (data['schema'] == 5) {
+      data['schema'] = 4;
+      data.remove('preparation');
+      data.remove('dependencies');
+      data.remove('mayHaveDispatched');
+      await db.update(
+        'outbox',
+        {'payload': Uint8List.fromList(utf8.encode(jsonEncode(data)))},
+        where: 'partition_id=? AND record_id=?',
+        whereArgs: [row['partition_id'], row['record_id']],
+      );
+    }
+  }
+  for (final row in await db.query('operations')) {
+    final data =
+        jsonDecode(utf8.decode(row['payload']! as List<int>))
+            as Map<String, Object?>;
+    if (data['schema'] == 4) {
+      data['schema'] = 3;
+      data.remove('kind');
+      data.remove('guardUntil');
+      data.remove('groupId');
+      for (final item in data['items']! as List<Object?>) {
+        (item! as Map<String, Object?>).remove('mayHaveDispatched');
+      }
+      await db.update(
+        'operations',
+        {'payload': Uint8List.fromList(utf8.encode(jsonEncode(data)))},
+        where: 'partition_id=? AND operation_id=?',
+        whereArgs: [row['partition_id'], row['operation_id']],
+      );
+    }
+  }
+  await db.execute('DROP TABLE operation_dependencies');
+  await db.execute('ALTER TABLE partitions DROP COLUMN time_high_water');
+  await db.execute('ALTER TABLE partitions DROP COLUMN authority_binding');
+  await db.execute('ALTER TABLE operations DROP COLUMN guard_until');
 }

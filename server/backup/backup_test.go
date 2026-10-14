@@ -110,13 +110,15 @@ func TestBackupper_RoundTrip(t *testing.T) {
 }
 
 func TestBackupper_PeriodicTickEmitsCorrelatableStages(t *testing.T) {
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	// Completion, rather than a short wall-clock window, defines the sample.
+	// The timeout only bounds failure if the real periodic loop stops progressing.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	logs := &periodicCompletionLog{cancel: cancel}
+	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	cfg := testConfig(t.TempDir())
 	cfg.Interval = 20 * time.Millisecond
 	b := New(&fakeService{frames: []*pb.BackupSnapshotResponse{vFrame("synthetic")}}, cfg, nil, logger)
-	ctx, cancel := context.WithTimeout(context.Background(), 160*time.Millisecond)
-	defer cancel()
 	if err := b.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +157,35 @@ func TestBackupper_PeriodicTickEmitsCorrelatableStages(t *testing.T) {
 	if completed < 3 {
 		t.Fatalf("completed periodic ticks = %d, want >=3", completed)
 	}
+}
+
+// JSONHandler serializes Write calls; Run has returned before the test reads
+// the buffer. Only successful periodic completions count, never shutdown dumps.
+type periodicCompletionLog struct {
+	bytes.Buffer
+	completed int
+	cancel    context.CancelFunc
+}
+
+func (w *periodicCompletionLog) Write(p []byte) (int, error) {
+	n, err := w.Buffer.Write(p)
+	if err != nil {
+		return n, err
+	}
+	var record struct {
+		Message string `json:"msg"`
+		Source  string `json:"source"`
+	}
+	if err := json.Unmarshal(p, &record); err != nil {
+		return n, err
+	}
+	if record.Message == "backup: wrote dump" && record.Source == "periodic" {
+		w.completed++
+		if w.completed == 3 {
+			w.cancel()
+		}
+	}
+	return n, nil
 }
 
 func TestBackupper_RestoreCountsActualWrites(t *testing.T) {

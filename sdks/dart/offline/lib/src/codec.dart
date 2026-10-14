@@ -20,10 +20,10 @@ final class OfflineCodec {
   static const int schemaVersion = 1;
 
   /// Current outbox record schema version.
-  static const int outboxSchemaVersion = 4;
+  static const int outboxSchemaVersion = 5;
 
   /// Current operation aggregate schema version.
-  static const int operationSchemaVersion = 3;
+  static const int operationSchemaVersion = 4;
 
   /// Encodes one exact confirmed cache record to canonical JSON.
   static String encodeCacheRecord(OfflineCacheRecord record) =>
@@ -74,11 +74,12 @@ final class OfflineCodec {
     final schema = _recordSchema(
       value,
       'outbox',
-      supported: const <int>{1, 2, 3, 4},
+      supported: const <int>{1, 2, 3, 4, 5},
     );
     _expectKeys(value, switch (schema) {
       1 => _outboxKeysV1,
       2 => _outboxKeysV2,
+      3 || 4 => _outboxKeysV4,
       _ => _outboxKeys,
     });
     final state = _outboxState(_string(value['state']));
@@ -101,6 +102,17 @@ final class OfflineCodec {
                 _object(value['receipt']),
                 legacy: schema == 3,
               ),
+        preparation: schema < 5 ? null : _preparationFromMap(value),
+        mayHaveDispatched: schema < 5
+            ? (value['receipt'] == null
+                  ? true
+                  : _bool(
+                      _object(value['receipt'])['mayHaveDispatched'] ?? true,
+                    ))
+            : _bool(value['mayHaveDispatched']),
+        dependencies: schema < 5
+            ? const []
+            : _dependenciesFromMap(value['dependencies']),
         nextAttemptAt: _nullableTime(value['nextAttemptAt']),
         leaseOwner: _nullableString(value['leaseOwner']),
         leaseUntil: _nullableTime(value['leaseUntil']),
@@ -136,6 +148,21 @@ final class OfflineCodec {
         newReceipt != null &&
         (oldReceipt.operationId != newReceipt.operationId ||
             oldReceipt.groupId != newReceipt.groupId);
+    if (previous.mayHaveDispatched && !next.mayHaveDispatched) return false;
+    final preparing =
+        previous.preparation is OfflineAwaitingPreparation &&
+        next.preparation is OfflinePrepared;
+    if (preparing &&
+        (previous.state != OfflineOutboxState.sending ||
+            next.state != OfflineOutboxState.sending ||
+            previous.leaseOwner != next.leaseOwner ||
+            previous.leaseUntil != next.leaseUntil)) {
+      return false;
+    }
+    if (previous.preparation is OfflinePrepared &&
+        next.preparation is! OfflinePrepared) {
+      return false;
+    }
     if (oldReceipt?.mayHaveDispatched == true &&
         newReceipt?.mayHaveDispatched == false) {
       return false;
@@ -166,11 +193,16 @@ final class OfflineCodec {
         record.copyWith(
           state: OfflineOutboxState.enqueued,
           attemptCount: 0,
+          mayHaveDispatched:
+              preparing || record.preparation is OfflineAwaitingPreparation
+              ? false
+              : true,
+          preparation: preparing ? next.preparation : null,
           receipt: record.receipt?.copyWith(
             operationId: replaced ? newReceipt.operationId : null,
             groupId: replaced ? newReceipt.groupId : null,
             state: OfflineReceiptReconciliationState.statusRequired,
-            mayHaveDispatched: true,
+            mayHaveDispatched: preparing ? false : true,
             reconciliationAttemptCount: 0,
           ),
           clearNextAttemptAt: true,
@@ -184,15 +216,55 @@ final class OfflineCodec {
         encodeOutboxRecord(normalized(next));
   }
 
+  /// Common-facade progress cannot regress dispatch proof or rewrite terminal handling.
+  static bool monotoneOperationProgress(
+    OfflineOperationRecord previous,
+    OfflineOperationRecord next,
+  ) {
+    if (previous.kind == null) return true;
+    if (previous.kind != next.kind ||
+        previous.guardUntil != next.guardUntil ||
+        previous.groupId != next.groupId ||
+        previous.items.length != next.items.length) {
+      return false;
+    }
+    for (var i = 0; i < previous.items.length; i++) {
+      final a = previous.items[i], b = next.items[i];
+      if (a.mayHaveDispatched && !b.mayHaveDispatched) return false;
+      if (a.state == OfflineWriteState.confirmed ||
+          a.state == OfflineWriteState.acceptedUndisclosed ||
+          a.state == OfflineWriteState.deadLetter ||
+          a.state == OfflineWriteState.expired ||
+          a.state == OfflineWriteState.outcomeUnknown) {
+        if (a.state != b.state ||
+            a.attemptCount != b.attemptCount ||
+            a.diagnosticCode != b.diagnosticCode ||
+            jsonEncode(
+                  a.receiptResult == null
+                      ? null
+                      : _receiptResultToMap(a.receiptResult!),
+                ) !=
+                jsonEncode(
+                  b.receiptResult == null
+                      ? null
+                      : _receiptResultToMap(b.receiptResult!),
+                )) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
   /// Decodes one strict durable operation aggregate.
   static OfflineOperationRecord decodeOperationRecord(String source) {
     final value = _decodeObject(source);
     final schema = _recordSchema(
       value,
       'operation',
-      supported: const <int>{1, 2, 3},
+      supported: const <int>{1, 2, 3, 4},
     );
-    _expectKeys(value, schema == 1 ? _operationKeysV1 : _operationKeys);
+    _expectKeys(value, schema < 4 ? _operationKeysV1 : _operationKeys);
     final operationId = _nonEmpty(value['operationId']);
     final rawItems = value['items'];
     if (rawItems is! List<Object?> || rawItems.isEmpty) {
@@ -204,7 +276,11 @@ final class OfflineCodec {
         final item = _object(rawItem);
         _expectKeys(
           item,
-          schema == 1 ? _operationItemKeysV1 : _operationItemKeys,
+          schema == 1
+              ? _operationItemKeysV1
+              : schema < 4
+              ? _operationItemKeysV3
+              : _operationItemKeys,
         );
         if (schema < 3 && item['state'] == 'acceptedUndisclosed') {
           throw const OfflineCodecException();
@@ -219,6 +295,9 @@ final class OfflineCodec {
             receiptResult: schema == 1 || item['receiptResult'] == null
                 ? null
                 : _receiptResultFromMap(_object(item['receiptResult'])),
+            mayHaveDispatched: schema < 4
+                ? true
+                : _bool(item['mayHaveDispatched']),
             diagnosticCode: _nullableString(item['diagnosticCode']),
           ),
         );
@@ -230,6 +309,11 @@ final class OfflineCodec {
         items: items,
         updatedAt: _timeFromString(value['updatedAt']),
         terminalAt: _nullableTime(value['terminalAt']),
+        kind: schema < 4 || value['kind'] == null
+            ? null
+            : _mutationKind(value['kind']),
+        guardUntil: schema < 4 ? null : _nullableTime(value['guardUntil']),
+        groupId: schema < 4 ? null : _nullableString(value['groupId']),
       );
     } on OfflineArgumentException {
       throw const OfflineCodecException();
@@ -272,7 +356,13 @@ const Set<String> _outboxKeysV1 = <String>{
 
 const Set<String> _outboxKeysV2 = <String>{..._outboxKeysV1, 'deadLetteredAt'};
 
-const Set<String> _outboxKeys = <String>{..._outboxKeysV2, 'receipt'};
+const Set<String> _outboxKeysV4 = <String>{..._outboxKeysV2, 'receipt'};
+const Set<String> _outboxKeys = <String>{
+  ..._outboxKeysV4,
+  'preparation',
+  'mayHaveDispatched',
+  'dependencies',
+};
 
 const Set<String> _operationKeysV1 = <String>{
   'schema',
@@ -285,7 +375,12 @@ const Set<String> _operationKeysV1 = <String>{
   'terminalAt',
 };
 
-const Set<String> _operationKeys = _operationKeysV1;
+const Set<String> _operationKeys = <String>{
+  ..._operationKeysV1,
+  'kind',
+  'guardUntil',
+  'groupId',
+};
 
 const Set<String> _operationItemKeysV1 = <String>{
   'recordId',
@@ -295,9 +390,14 @@ const Set<String> _operationItemKeysV1 = <String>{
   'diagnosticCode',
 };
 
-const Set<String> _operationItemKeys = <String>{
+const Set<String> _operationItemKeysV3 = <String>{
   ..._operationItemKeysV1,
   'receiptResult',
+};
+
+const Set<String> _operationItemKeys = <String>{
+  ..._operationItemKeysV3,
+  'mayHaveDispatched',
 };
 
 Map<String, Object?> _cacheToMap(OfflineCacheRecord record) =>
@@ -331,6 +431,21 @@ Map<String, Object?> _outboxToMap(OfflineOutboxRecord record) =>
       'state': record.state.name,
       'attemptCount': record.attemptCount,
       'generation': record.generation,
+      'preparation': switch (record.preparation) {
+        OfflinePreparationNotRequired() => 'notRequired',
+        OfflineAwaitingPreparation() => 'awaitingPreparation',
+        OfflinePrepared() => 'prepared',
+      },
+      'mayHaveDispatched': record.mayHaveDispatched,
+      'dependencies': record.dependencies
+          .map(
+            (d) => <String, Object?>{
+              'operationId': d.operationId,
+              'itemIndex': d.itemIndex,
+              'predicate': d.predicate.name,
+            },
+          )
+          .toList(growable: false),
       'receipt': record.receipt == null
           ? null
           : _receiptEvidenceToMap(record.receipt!),
@@ -354,6 +469,11 @@ Map<String, Object?> _operationToMap(OfflineOperationRecord record) =>
       'partitionId': record.partitionId,
       'generation': record.generation,
       'operationId': record.operationId,
+      'kind': record.kind?.name,
+      'groupId': record.groupId,
+      'guardUntil': record.guardUntil == null
+          ? null
+          : _timeToString(record.guardUntil!),
       'items': record.items
           .map(
             (item) => <String, Object?>{
@@ -361,6 +481,7 @@ Map<String, Object?> _operationToMap(OfflineOperationRecord record) =>
               'itemIndex': item.itemIndex,
               'state': item.state.name,
               'attemptCount': item.attemptCount,
+              'mayHaveDispatched': item.mayHaveDispatched,
               'receiptResult': item.receiptResult == null
                   ? null
                   : _receiptResultToMap(item.receiptResult!),
@@ -734,6 +855,12 @@ Map<String, Object?> _receiptResultToMap(OfflineReceiptResult result) =>
         'existed': null,
         'effectiveWeight': null,
       },
+      OfflineEdgePutResult(:final outcome) => <String, Object?>{
+        'kind': 'edgePut',
+        'outcome': outcome.name,
+        'existed': null,
+        'effectiveWeight': null,
+      },
       OfflineVertexDeleteReceiptResult(:final existed) => <String, Object?>{
         'kind': 'vertexDelete',
         'outcome': null,
@@ -772,6 +899,9 @@ OfflineReceiptResult _receiptResultFromMap(Map<String, Object?> value) {
     'vertexPut'
         when value['existed'] == null && value['effectiveWeight'] == null =>
       OfflineVertexPutReceiptResult(_putOutcome(_string(value['outcome']))),
+    'edgePut'
+        when value['existed'] == null && value['effectiveWeight'] == null =>
+      OfflineEdgePutResult(_putOutcome(_string(value['outcome']))),
     'vertexDelete'
         when value['outcome'] == null && value['effectiveWeight'] == null =>
       OfflineVertexDeleteReceiptResult(_bool(value['existed'])),
@@ -1095,3 +1225,43 @@ PutOutcome _putOutcome(String value) => switch (value) {
   'superseded' => PutOutcome.superseded,
   _ => throw const OfflineCodecException(),
 };
+
+OfflinePreparation _preparationFromMap(Map<String, Object?> value) {
+  return switch (_string(value['preparation'])) {
+    'notRequired' when value['receipt'] == null =>
+      const OfflinePreparationNotRequired(),
+    'awaitingPreparation' when value['receipt'] == null =>
+      const OfflineAwaitingPreparation(),
+    'prepared' when value['receipt'] != null => OfflinePrepared(
+      _receiptEvidenceFromMap(_object(value['receipt']), legacy: false),
+    ),
+    _ => throw const OfflineCodecException(),
+  };
+}
+
+List<OfflineDependency> _dependenciesFromMap(Object? value) {
+  if (value is! List<Object?> || value.length > 256) {
+    throw const OfflineCodecException();
+  }
+  return value
+      .map((raw) {
+        final d = _object(raw);
+        _expectKeys(d, const {'operationId', 'itemIndex', 'predicate'});
+        final predicate = MutationDependencyPredicate.values
+            .where((v) => v.name == d['predicate'])
+            .toList();
+        if (predicate.length != 1) throw const OfflineCodecException();
+        return OfflineDependency(
+          operationId: _nonEmpty(d['operationId']),
+          itemIndex: _nonNegativeInt(d['itemIndex']),
+          predicate: predicate.single,
+        );
+      })
+      .toList(growable: false);
+}
+
+MutationKind _mutationKind(Object? value) {
+  final values = MutationKind.values.where((v) => v.name == value).toList();
+  if (values.length != 1) throw const OfflineCodecException();
+  return values.single;
+}
