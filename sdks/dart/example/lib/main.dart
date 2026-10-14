@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:lantern_client/lantern_client.dart';
 
+import 'data_demo.dart';
 import 'offline_demo.dart';
 import 'native_sign_in.dart';
 import 'offline_session.dart';
@@ -28,18 +29,6 @@ String formatVertexValue(VertexValue value) => switch (value) {
   NilValue() => 'nil',
   UnsetValue() => 'unset',
 };
-
-void requireAppliedPut(String identity, PutOutcome outcome) {
-  if (outcome != PutOutcome.appliedAndLive) {
-    throw StateError('$identity was not live after Put: $outcome');
-  }
-}
-
-void requireAppliedVertexPuts(List<VertexPutResult> results) {
-  for (final result in results) {
-    requireAppliedPut('vertex ${result.key}', result.outcome);
-  }
-}
 
 void main() {
   runApp(LanternExampleApp(configuration: DemoConfiguration.fromEnvironment()));
@@ -423,128 +412,6 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
     }
   }
 
-  Future<void> _seedCrud() async {
-    _setPhase(_UiPhase.loading, 'Writing TTL-aware sample data');
-    try {
-      final vertexResults = await widget.client.putVertices([
-        VertexInput(
-          key: '${_prefix}alice',
-          value: VertexValue.string('quiet cafe graph'),
-          expiresIn: const Duration(minutes: 30),
-        ),
-        VertexInput(
-          key: '${_prefix}bob',
-          value: VertexValue.uint64((BigInt.one << 63) + BigInt.one),
-        ),
-      ], options: _callOptions);
-      requireAppliedVertexPuts(vertexResults);
-      await widget.client.getVertex('${_prefix}alice', options: _callOptions);
-      final edgeOutcome = await widget.client.putEdge(
-        EdgeInput(
-          tail: '${_prefix}alice',
-          head: '${_prefix}bob',
-          weight: 1,
-          expiresIn: const Duration(minutes: 10),
-        ),
-        options: _callOptions,
-      );
-      requireAppliedPut('edge ${_prefix}alice -> ${_prefix}bob', edgeOutcome);
-      await widget.client.addEdge(
-        EdgeInput(
-          tail: '${_prefix}alice',
-          head: '${_prefix}bob',
-          weight: 0.5,
-          expiresIn: const Duration(minutes: 5),
-        ),
-        options: _callOptions,
-      );
-      await widget.client.getEdge(
-        EdgeRef('${_prefix}alice', '${_prefix}bob'),
-        options: _callOptions,
-      );
-      await _runSearchContractExamples();
-      final temporaryOutcome = await widget.client.putVertex(
-        VertexInput(key: '${_prefix}temporary', value: VertexValue.nil()),
-        options: _callOptions,
-      );
-      requireAppliedPut('vertex ${_prefix}temporary', temporaryOutcome);
-      await widget.client.deleteVertex(
-        '${_prefix}temporary',
-        options: _callOptions,
-      );
-      await _refresh();
-    } catch (error) {
-      _showFailure(error);
-    }
-  }
-
-  /// Maintained one-shot counterpart to the screen-owned incremental search
-  /// created in [initState]. Flutter analyze/test compile both paths.
-  Future<void> _runSearchContractExamples() async {
-    final status = await widget.client.getServerStatus(options: _callOptions);
-    final capability = status.search;
-    _appendRows([
-      'search enabled=${capability.enabled} '
-          'positions=${capability.positionsEnabled} '
-          'analyzer=${capability.analyzerVersion} '
-          'projection=${capability.projectionVersion} '
-          'fingerprint=${capability.configFingerprint}',
-    ]);
-
-    final oneShot = await widget.client.searchVertices(
-      'quiet cafe',
-      searchOptions: const SearchOptions(
-        prefix: _prefix,
-        matchMode: SearchMatchMode.all,
-        limit: 10,
-      ),
-      options: _callOptions,
-    );
-    switch (oneShot) {
-      case SearchDisabled():
-        _appendRows(['Search is disabled on this endpoint']);
-        return;
-      case SearchEnabled(:final hits):
-        _appendRows(hits.map((hit) => 'one-shot ${hit.key} ${hit.score}'));
-    }
-
-    if (capability.positionsEnabled) {
-      await widget.client.searchVertices(
-        'quiet cafe',
-        searchOptions: const SearchOptions(prefix: _prefix, phrase: true),
-        options: _callOptions,
-      );
-    }
-    await widget.client.searchVertices(
-      'serach',
-      searchOptions: const SearchOptions(prefix: _prefix, fuzziness: 1),
-      options: _callOptions,
-    );
-
-    await for (final hit in widget.client.searchVerticesStream(
-      'quiet cafe',
-      searchOptions: const SearchOptions(
-        prefix: _prefix,
-        limit: 2,
-        projection: SearchProjection.fullVertex,
-      ),
-      options: _callOptions,
-    )) {
-      _appendRows(['paged ${hit.key} ${hit.vertex?.expiration}']);
-    }
-
-    final cancellation = LanternCancellationToken()..cancel('example');
-    try {
-      await widget.client.searchVerticesPage(
-        'quiet cafe',
-        searchOptions: const SearchOptions(prefix: _prefix),
-        options: LanternCallOptions(cancellation: cancellation),
-      );
-    } on LanternCanceledException {
-      _appendRows(['search cancelled without a partial page']);
-    }
-  }
-
   void _onSearchUpdate(SearchUpdate update) {
     switch (update.phase) {
       case SearchUpdatePhase.idle:
@@ -667,13 +534,15 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
               ),
             ),
           ),
+          DataDemoPanel(
+            client: widget.client,
+            prefix: _prefix,
+            callOptions: () => _callOptions,
+            onDataChanged: _refresh,
+          ),
           Wrap(
             spacing: 8,
             children: [
-              FilledButton(
-                onPressed: _seedCrud,
-                child: const Text('Seed CRUD'),
-              ),
               OutlinedButton(
                 onPressed: () =>
                     _traverse(const BfsOptions(step: 2, fanOut: 10)),

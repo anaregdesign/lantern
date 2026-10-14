@@ -6,6 +6,15 @@ against the parent package by path, so CI catches example/API drift.
 The maintained example app targets iOS 15.0 or later; this app setting does not
 define a minimum OS for the pure-Dart SDK.
 
+`Seed CRUD` runs once per discovery screen session and keeps a separate list of
+confirmed steps, including when a later data/search request fails or the visible
+data is refreshed. A failed write can have an uncertain outcome; inspect it
+before starting a new screen session and replaying additive operations.
+The sample prefix is `flutter-demo:` and uses the Principal's existing data and
+query permissions. `Server search info` is a separate optional operation requiring
+`operations.read`; it also demonstrates phrase search when positions are enabled.
+Its failure never grants permissions or changes the recorded CRUD result.
+
 ## Native Google and Apple login
 
 Current source has an opt-in native login screen using exact app dependencies

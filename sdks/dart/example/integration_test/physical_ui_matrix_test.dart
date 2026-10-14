@@ -127,6 +127,7 @@ void main() {
     tester.printToConsole('UI_MATRIX exact values visible');
 
     await tester.tap(find.text('Seed CRUD'));
+    await _pumpUntilState(tester, 'Seed CRUD completed');
     await _pumpUntilState(tester, 'ready: Visible page data');
     tester.printToConsole('UI_MATRIX CRUD ready');
     await tester.enterText(find.byKey(const Key('search-field')), 'quiet cafe');
