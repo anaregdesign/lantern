@@ -218,7 +218,7 @@ run_attempt() {
 
 create_retry_device() {
   local source_device=$1 output_file=$2 diagnostics_root=$3
-  local record runtime device_type retry_device name boot_status=0 boot_log
+  local record runtime device_type retry_device name
   mkdir -p "$diagnostics_root"
   record=$(
     "$xcrun_bin" simctl list devices available -j | jq -er \
@@ -236,16 +236,7 @@ create_retry_device() {
   [[ "$retry_device" =~ ^[0-9A-Fa-f-]{8,}$ ]]
   [[ "$retry_device" != "$source_device" ]]
   printf '%s\n' "$retry_device" > "$output_file"
-  boot_log=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/lantern-ios-retry-boot.XXXXXX")
-  "$xcrun_bin" simctl boot "$retry_device" \
-    > "$boot_log" 2>&1 || boot_status=$?
-  if (( boot_status == 0 )); then
-    "$xcrun_bin" simctl bootstatus "$retry_device" -b \
-      >> "$boot_log" 2>&1 || boot_status=$?
-  fi
-  sanitize_bounded_file "$boot_log"
-  mv "$boot_log" "$diagnostics_root/retry-device-boot.log"
-  (( boot_status == 0 )) || return "$boot_status"
+  # The attached attempt owns boot/readiness after its native build.
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     printf 'device_id=%s\n' "$retry_device" >> "$GITHUB_OUTPUT"
   fi

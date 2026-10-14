@@ -897,25 +897,13 @@ jobs:
           flutter-version: 3.44.6
           cache: true
 
-      - name: Start iOS simulator boot
+      - name: Select unbooted iOS simulator
         run: |
-          boot_simulator() {
-            set -euo pipefail
-            device=$(xcrun simctl list devices available -j | \
-              jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid')
-            test -n "$device"
-            echo "$device" > "$RUNNER_TEMP/ios-device-id"
-            xcrun simctl boot "$device" || true
-            xcrun simctl bootstatus "$device" -b
-          }
-          (
-            if boot_simulator; then
-              touch "$RUNNER_TEMP/ios-simulator-ready"
-            else
-              touch "$RUNNER_TEMP/ios-simulator-failed"
-            fi
-          ) > "$RUNNER_TEMP/ios-simulator-boot.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/ios-simulator-boot.pid"
+          set -euo pipefail
+          device=$(xcrun simctl list devices available -j | \
+            jq -er '[.devices[][] | select((.name | startswith("iPhone")) and .state == "Shutdown")][0].udid')
+          test -n "$device"
+          echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
 
       - name: Start Lantern
         run: |
@@ -939,29 +927,6 @@ jobs:
         run: |
           flutter build ios --debug --no-codesign --no-pub
 
-      - name: Wait for iOS simulator
-        timeout-minutes: 5
-        run: |
-          for attempt in $(seq 1 300); do
-            if [[ -f "$RUNNER_TEMP/ios-simulator-ready" ]]; then
-              break
-            fi
-            if [[ -f "$RUNNER_TEMP/ios-simulator-failed" ]]; then
-              cat "$RUNNER_TEMP/ios-simulator-boot.log"
-              exit 1
-            fi
-            sleep 1
-          done
-          if [[ ! -f "$RUNNER_TEMP/ios-simulator-ready" ]]; then
-            cat "$RUNNER_TEMP/ios-simulator-boot.log"
-            echo "::error::iOS simulator did not become ready"
-            exit 1
-          fi
-          device=$(cat "$RUNNER_TEMP/ios-device-id")
-          test -n "$device"
-          echo "DEVICE_ID=$device" >> "$GITHUB_ENV"
-          cat "$RUNNER_TEMP/ios-simulator-boot.log"
-
       - name: Run attached iOS native smoke
         id: ios_smoke_initial
         if: success()
@@ -972,6 +937,7 @@ jobs:
           # Without the separate production build, this integration target
           # performs the first native compile on a cold macOS runner.
           IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360
+          IOS_SMOKE_BOOT_TIMEOUT_SECONDS: 180
           IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180
           IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 720
         run: >-
@@ -1008,6 +974,7 @@ jobs:
         working-directory: sdks/dart/example
         env:
           IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360
+          IOS_SMOKE_BOOT_TIMEOUT_SECONDS: 180
           IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180
           IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 720
         run: >-
@@ -1156,13 +1123,7 @@ jobs:
         run: |
           cat "$RUNNER_TEMP/ios-server.log" 2>/dev/null || true
           kill "$(cat "$RUNNER_TEMP/ios-server.pid")" 2>/dev/null || true
-          if [[ -f "$RUNNER_TEMP/ios-simulator-boot.pid" ]]; then
-            kill "$(cat "$RUNNER_TEMP/ios-simulator-boot.pid")" 2>/dev/null || true
-          fi
           device=${DEVICE_ID:-}
-          if [[ -z "$device" && -f "$RUNNER_TEMP/ios-device-id" ]]; then
-            device=$(cat "$RUNNER_TEMP/ios-device-id")
-          fi
           if [[ -n "$device" ]]; then
             xcrun simctl shutdown "$device" || true
           fi

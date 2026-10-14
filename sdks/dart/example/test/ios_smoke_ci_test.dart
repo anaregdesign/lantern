@@ -66,8 +66,137 @@ echo 'All tests passed!'
       expect(logs, contains('<redacted-url>'));
       expect(logs, isNot(contains('private-vm-code')));
       await _expectPhases(sandbox, _allPhases);
+      final calls = await File('${sandbox.path}/attached-calls').readAsLines();
+      final build = calls.indexWhere(
+        (line) => line.startsWith('flutter build'),
+      );
+      final boot = calls.indexOf('xcrun simctl boot SOURCE-DEVICE');
+      final ready = calls.indexOf('xcrun simctl bootstatus SOURCE-DEVICE -b');
+      final install = calls.indexWhere(
+        (line) => line.startsWith('xcrun simctl install'),
+      );
+      expect(build, greaterThanOrEqualTo(0));
+      expect(boot, greaterThan(build));
+      expect(ready, greaterThan(boot));
+      expect(install, greaterThan(ready));
     },
   );
+
+  test('attached build failure never boots the simulator', () async {
+    await _writeAttachedFakes(sandbox, fakeFlutter, fakeXcrun, buildExit: 1);
+    final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
+    expect(result.exitCode, isNonZero);
+    expect(await _classification(sandbox), 'build_failure');
+    final calls = await File('${sandbox.path}/attached-calls').readAsString();
+    expect(calls, isNot(contains('simctl boot ')));
+  });
+
+  for (final stalls in [false, true]) {
+    test(
+      'attached boot ${stalls ? 'stall' : 'failure'} is not retryable',
+      () async {
+        await _writeAttachedFakes(
+          sandbox,
+          fakeFlutter,
+          fakeXcrun,
+          bootExit: stalls ? 0 : 1,
+          bootStall: stalls,
+        );
+        final result = await _runAttachedAttempt(
+          sandbox,
+          fakeFlutter,
+          fakeXcrun,
+        );
+        expect(result.exitCode, isNonZero);
+        expect(
+          await _classification(sandbox),
+          stalls ? 'boot_stall' : 'boot_failure',
+        );
+        final calls = await File(
+          '${sandbox.path}/attached-calls',
+        ).readAsString();
+        expect(calls, isNot(contains('simctl install')));
+        expect(calls, isNot(contains('simctl launch')));
+      },
+    );
+  }
+
+  for (final closedPipe in [false, true]) {
+    test(
+      'build timeout captures live process before stopping (closed=$closedPipe)',
+      () async {
+        await _writeAttachedFakes(sandbox, fakeFlutter, fakeXcrun);
+        final fakePs = File('${sandbox.path}/ps');
+        final buildPid = File('${sandbox.path}/build-pid');
+        await _writeExecutable(fakeFlutter, '''#!/usr/bin/env bash
+echo \$\$ > '${buildPid.path}'
+${closedPipe ? 'exec >/dev/null 2>&1' : ''}
+sleep 30
+''');
+        await _writeExecutable(fakePs, '''#!/usr/bin/env bash
+if kill -0 "\$(cat '${buildPid.path}')" 2>/dev/null; then
+  echo 'live build before stop Authorization: Bearer diagnostic-secret'
+else
+  echo 'build already stopped'
+fi
+''');
+        final result = await _runAttachedAttempt(
+          sandbox,
+          fakeFlutter,
+          fakeXcrun,
+          extraEnvironment: {'IOS_SMOKE_PS_BIN': fakePs.path},
+        );
+        expect(result.exitCode, 71);
+        expect(await _classification(sandbox), 'build_stall');
+        final snapshot = await File(
+          '${sandbox.path}/diagnostics/initial/diagnostics/process-tree-before-stop.txt',
+        ).readAsString();
+        expect(snapshot, contains('live build before stop'));
+        expect(snapshot, isNot(contains('diagnostic-secret')));
+        final probe = await Process.run('kill', [
+          '-0',
+          (await buildPid.readAsString()).trim(),
+        ]);
+        expect(
+          probe.exitCode,
+          isNonZero,
+          reason: 'timed-out build must be stopped',
+        );
+      },
+    );
+  }
+
+  test('late build completion during diagnostics remains a timeout', () async {
+    await _writeAttachedFakes(sandbox, fakeFlutter, fakeXcrun);
+    final fakePs = File('${sandbox.path}/ps');
+    final release = File('${sandbox.path}/release-build');
+    await _writeExecutable(fakeFlutter, '''#!/usr/bin/env bash
+while [[ ! -f '${release.path}' ]]; do sleep 0.05; done
+echo 'Xcode build done. 2.0s'
+exit 0
+''');
+    await _writeExecutable(fakePs, '''#!/usr/bin/env bash
+touch '${release.path}'
+sleep 0.2
+echo 'build completed during diagnostics'
+''');
+    final result = await _runAttachedAttempt(
+      sandbox,
+      fakeFlutter,
+      fakeXcrun,
+      extraEnvironment: {'IOS_SMOKE_PS_BIN': fakePs.path},
+    );
+    expect(result.exitCode, 71, reason: '${result.stderr}\n${result.stdout}');
+    expect(await _classification(sandbox), 'build_stall');
+    expect(
+      File(
+        '${sandbox.path}/diagnostics/initial/phases/build_done',
+      ).existsSync(),
+      isFalse,
+    );
+    final calls = await File('${sandbox.path}/attached-calls').readAsString();
+    expect(calls, isNot(contains('simctl boot ')));
+  });
 
   test('attached iOS smoke preserves an assertion failure', () async {
     await _writeAttachedFakes(sandbox, fakeFlutter, fakeXcrun, driverExit: 1);
@@ -262,11 +391,7 @@ echo 'bounded process snapshot'
         'com.apple.CoreSimulator.SimRuntime.iOS-18-6',
       ),
     );
-    expect(calls, contains('simctl boot A1B2C3D4-E5F6-47A8-90AB-CDEF12345678'));
-    expect(
-      calls,
-      contains('simctl bootstatus A1B2C3D4-E5F6-47A8-90AB-CDEF12345678 -b'),
-    );
+    expect(calls, isNot(contains('simctl boot')));
   });
 
   test('finalizes an interrupted raw log before artifact upload', () async {
@@ -903,8 +1028,9 @@ Future<ProcessResult> _runAttempt(
 Future<ProcessResult> _runAttachedAttempt(
   Directory sandbox,
   File flutter,
-  File xcrun,
-) => Process.run(
+  File xcrun, {
+  Map<String, String> extraEnvironment = const {},
+}) => Process.run(
   'bash',
   [
     _scriptPath,
@@ -921,8 +1047,10 @@ Future<ProcessResult> _runAttachedAttempt(
     'IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS': '1',
     'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '4',
     'IOS_SMOKE_BUILD_TIMEOUT_SECONDS': '2',
+    'IOS_SMOKE_BOOT_TIMEOUT_SECONDS': '1',
     'IOS_SMOKE_ATTACH_TIMEOUT_SECONDS': '2',
     'IOS_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS': '1',
+    ...extraEnvironment,
   },
 );
 
@@ -931,6 +1059,9 @@ Future<void> _writeAttachedFakes(
   File flutter,
   File xcrun, {
   int driverExit = 0,
+  int buildExit = 0,
+  int bootExit = 0,
+  bool bootStall = false,
   bool closedPipeLaunch = false,
   bool appFailed = false,
   bool omitVmUrl = false,
@@ -960,11 +1091,13 @@ Future<void> _writeAttachedFakes(
     flutter,
     r'''#!/usr/bin/env bash
 set -euo pipefail
+printf 'flutter %s\n' "$*" >> '_CALLS_'
 case "$1" in
   build)
     [[ " $* " == *'--dart-define=LANTERN_IOS_DIRECT_LAUNCH=true'* ]]
     echo 'Running Xcode build...'
     echo 'Xcode build done. 1.0s'
+    exit _BUILD_EXIT_
     ;;
   drive)
     echo 'VMServiceFlutterDriver: Connected to Flutter application.'
@@ -979,13 +1112,20 @@ case "$1" in
   *) exit 2 ;;
 esac
 '''
-        .replaceAll('_DRIVER_EXIT_', '$driverExit'),
+        .replaceAll('_DRIVER_EXIT_', '$driverExit')
+        .replaceAll('_BUILD_EXIT_', '$buildExit')
+        .replaceAll('_CALLS_', '${sandbox.path}/attached-calls'),
   );
   await _writeExecutable(
     xcrun,
     r'''#!/usr/bin/env bash
 set -euo pipefail
+printf 'xcrun %s\n' "$*" >> '_CALLS_'
 case "${2:-}" in
+  boot) exit _BOOT_EXIT_ ;;
+  bootstatus)
+    if [[ '_BOOT_STALL_' == true ]]; then sleep 30; fi
+    ;;
   terminate|install) exit 0 ;;
   launch)
     if [[ '_CLOSED_PIPE_LAUNCH_' == true ]]; then
@@ -1012,6 +1152,9 @@ case "${2:-}" in
 esac
 '''
         .replaceAll('_CLOSED_PIPE_LAUNCH_', '$closedPipeLaunch')
+        .replaceAll('_BOOT_EXIT_', '$bootExit')
+        .replaceAll('_BOOT_STALL_', '$bootStall')
+        .replaceAll('_CALLS_', '${sandbox.path}/attached-calls')
         .replaceAll('_RUNNER_EXITED_', '$runnerExited')
         .replaceAll('_APP_LOG_', appLog.path),
   );

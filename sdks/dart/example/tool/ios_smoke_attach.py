@@ -31,7 +31,16 @@ def positive_env(name, default):
     return int(raw)
 
 
-def stop_process(process):
+def stop_process(process, before_stop=None):
+    if before_stop:
+        try:
+            before_stop()
+        except Exception:
+            # Diagnostics must never prevent owned subprocess cleanup.
+            print("[ios smoke] pre-stop diagnostics unavailable", flush=True)
+    # Reap a leader that exited during diagnostics before addressing its group.
+    # A surviving descendant group still receives the signals below.
+    process.poll()
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -47,11 +56,11 @@ def stop_process(process):
     process.wait()
 
 
-def wait_bounded(process, deadline):
+def wait_bounded(process, deadline, before_stop=None):
     try:
         return process.wait(timeout=max(0, deadline - time.monotonic())), False
     except subprocess.TimeoutExpired:
-        stop_process(process)
+        stop_process(process, before_stop)
         return process.wait(), True
 
 
@@ -99,7 +108,9 @@ def read_process(command, timeout, limit, *, merge_stderr=False):
             stream.close()
 
 
-def run_logged(command, path, timeout, console_budget, *, collect_pid=False):
+def run_logged(
+    command, path, timeout, console_budget, *, collect_pid=False, before_stop=None,
+):
     """Stream redacted output without retaining an unbounded raw log."""
     process = subprocess.Popen(
         command,
@@ -119,7 +130,7 @@ def run_logged(command, path, timeout, console_budget, *, collect_pid=False):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
-                stop_process(process)
+                stop_process(process, before_stop)
                 break
             for key, _ in selector.select(min(remaining, 0.25)):
                 chunk = os.read(key.fileobj.fileno(), 65536)
@@ -136,7 +147,7 @@ def run_logged(command, path, timeout, console_budget, *, collect_pid=False):
                         sys.stdout.buffer.write(visible)
                         sys.stdout.buffer.flush()
                         console_budget[0] -= len(visible)
-        status, wait_timed_out = wait_bounded(process, deadline)
+        status, wait_timed_out = wait_bounded(process, deadline, before_stop)
         return status, timed_out or wait_timed_out, bytes(pid_output)
     finally:
         selector.close()
@@ -246,6 +257,20 @@ def capture_diagnostics(script, device, destination):
         print("[ios smoke] diagnostic capture timed out", flush=True)
 
 
+def capture_build_processes(destination):
+    """Retain the still-running build tree before timeout cleanup removes it."""
+    destination.mkdir(parents=True, exist_ok=True)
+    _, output, _, _ = read_process(
+        [os.environ.get("IOS_SMOKE_PS_BIN", "ps"),
+         "-axo", "pid,ppid,state,%cpu,%mem,etime,command"],
+        positive_env("IOS_SMOKE_DIAGNOSTIC_TIMEOUT_SECONDS", 10),
+        MAX_FILE_BYTES, merge_stderr=True,
+    )
+    (destination / "process-tree-before-stop.txt").write_bytes(
+        text_tail(Redactor.redact(output), MAX_FILE_BYTES)
+    )
+
+
 def print_driver_summary(path):
     retained = path.read_bytes()
     marker = retained.find(b"VMServiceFlutterDriver:")
@@ -265,8 +290,8 @@ def run_attempt(device, attempt, root):
     phases = destination / "phases"
     phases.mkdir(parents=True, exist_ok=True)
     for phase in (
-        "build_started", "build_done", "body_started", "smoke_pass",
-        "tests_passed", "tests_failed",
+        "build_started", "build_done", "boot_started", "boot_done",
+        "body_started", "smoke_pass", "tests_passed", "tests_failed",
     ):
         (phases / phase).unlink(missing_ok=True)
     flutter_log = destination / "flutter.log"
@@ -278,6 +303,7 @@ def run_attempt(device, attempt, root):
     total = positive_env("IOS_SMOKE_TOTAL_TIMEOUT_SECONDS", 480)
     launch_limit = positive_env("IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS", 180)
     build_limit = positive_env("IOS_SMOKE_BUILD_TIMEOUT_SECONDS", 180)
+    boot_limit = positive_env("IOS_SMOKE_BOOT_TIMEOUT_SECONDS", 180)
     attach_limit = positive_env("IOS_SMOKE_ATTACH_TIMEOUT_SECONDS", 120)
     deadline = time.monotonic() + total
     classification = "pre_body_failure"
@@ -289,6 +315,7 @@ def run_attempt(device, attempt, root):
              "--dart-define=LANTERN_ALLOW_INSECURE=true",
              "--dart-define=LANTERN_IOS_DIRECT_LAUNCH=true"],
             flutter_log, remaining(deadline, build_limit), console_budget,
+            before_stop=lambda: capture_build_processes(destination / "diagnostics"),
         )
         if timed_out:
             classification = "build_stall"
@@ -297,6 +324,30 @@ def run_attempt(device, attempt, root):
             classification = "build_failure"
             return 72
         record_phase(phases, "build_done")
+
+        # Compile before first-boot services compete for the hosted runner.
+        # Both the selected initial device and a freshly created retry device
+        # are unbooted. Boot/readiness share one bound inside the total attempt.
+        record_phase(phases, "boot_started")
+        boot_deadline = min(deadline, time.monotonic() + boot_limit)
+        for command in (
+            [xcrun, "simctl", "boot", device],
+            [xcrun, "simctl", "bootstatus", device, "-b"],
+        ):
+            if time.monotonic() >= boot_deadline:
+                classification = "boot_stall"
+                return 71
+            status, timed_out, _ = run_logged(
+                command, flutter_log, remaining(boot_deadline, boot_limit),
+                console_budget,
+            )
+            if timed_out or time.monotonic() >= boot_deadline:
+                classification = "boot_stall"
+                return 71
+            if status:
+                classification = "boot_failure"
+                return 72
+        record_phase(phases, "boot_done")
 
         # Clear any preceding app process so the returned PID identifies this run.
         read_process([xcrun, "simctl", "terminate", device, BUNDLE_ID], 15, 4096, merge_stderr=True)

@@ -707,8 +707,7 @@ func TestDartWorkflowGate(t *testing.T) {
 		"dart pub global run pana --json",
 		"name: Check Flutter example",
 		"flutter test --no-pub integration_test/mobile_smoke_test.dart -d emulator-5554",
-		"name: Start iOS simulator boot",
-		"name: Wait for iOS simulator",
+		"name: Select unbooted iOS simulator",
 		"name: Build production iOS example for release",
 		"flutter build ios --debug --no-codesign --no-pub",
 		"name: Run attached iOS native smoke",
@@ -814,11 +813,10 @@ func TestDartWorkflowGate(t *testing.T) {
 	ios := text[iosStart : iosStart+gateOffset]
 	last := -1
 	for _, step := range []string{
-		"name: Start iOS simulator boot",
+		"name: Select unbooted iOS simulator",
 		"name: Start Lantern",
 		"name: Check iOS example",
 		"name: Build production iOS example for release",
-		"name: Wait for iOS simulator",
 		"name: Run attached iOS native smoke",
 		"name: Create independently clean retry simulator",
 		"name: Retry attached iOS native smoke on fresh simulator",
@@ -862,6 +860,7 @@ func TestDartWorkflowGate(t *testing.T) {
 	}
 	for _, contract := range []string{
 		"IOS_SMOKE_BUILD_TIMEOUT_SECONDS: 360",
+		"IOS_SMOKE_BOOT_TIMEOUT_SECONDS: 180",
 		"IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS: 180",
 		"IOS_SMOKE_TOTAL_TIMEOUT_SECONDS: 720",
 		"timeout-minutes: 14",

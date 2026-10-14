@@ -276,6 +276,13 @@ as retryable infrastructure. On CI, it gives the full attempt 720 seconds. It
 gives the cold test-app build 360 seconds, the native launch 180 seconds, and
 the install 90 seconds. The longer build budget is necessary when the
 separate production build is skipped and the integration target compiles first.
+The attached helper builds before booting its selected Simulator, so first-boot
+services do not compete with compilation. Boot and readiness share 180 seconds
+within the same total attempt; boot failures/stalls fail directly. A fresh retry
+device follows the same order. Build timeout captures a bounded, redacted process
+snapshot before termination; later completion cannot turn the deadline failure
+into success. Use the explicit classification and final Gate, not the smoke
+step's `continue-on-error` conclusion, to determine the test result.
 After `simctl` returns the Runner PID, it reads that process's
 retrospective Simulator log for the VM Service URL, test-body marker, and
 terminal result, then runs `flutter drive --use-existing-app` to verify the
