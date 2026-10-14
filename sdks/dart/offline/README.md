@@ -73,7 +73,7 @@ does not reset clock high-water. Use cache invalidation to clear displayed value
 never use wipe as automatic retry, storage-error recovery or credential refresh.
 
 State versions are outbox **5**, operation **4**, reference snapshot **10**, and
-SQLite **7** (provisional until the final #1768 base is integrated). Old IDs, TTL and conservative dispatch proof are preserved; unknown
+SQLite **7** (following schema 6 in merged #1768). Old IDs, TTL and conservative dispatch proof are preserved; unknown
 or damaged state, incompatible downgrade and insufficient migration capacity fail
 closed. `MemoryOfflineStore` is the bounded volatile profile over the shared
 conformance engine; it has no crash-durability or snapshot/restore promise.

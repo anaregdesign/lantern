@@ -126,8 +126,15 @@ same-foreground outage and a committed response lost at the proxy boundary.
 Native crash receipt reconciliation is a finite host fixture, distinct from those
 real-wire cases; neither proves mobile device behavior.
 
-This candidate depends on provisional WP2 source, not final merged main. Reconnect
-to the final #1768 base, recheck changed contacts/schema numbers, obtain the
-existing designer's review and run the ordinary full gate once. Publication, CI,
-archive equality, physical Android/iPhone and OS-sleep evidence remain separate.
-Physical-device work remains stopped.
+This candidate is based on #1768 merged main
+`3e4ff3696cd6f8362c5f377348ed6f145111a84f`. Its additional memory reservation
+memoization changes no public API or schema: the memo is transaction-local
+copyable derived state, invalidated on topology replacement/removal and recomputed
+on snapshot restore. Automatic progress, auth pause and local expiry retain the
+same immutable operation topology and capacity checks. SQLite schema 7 follows
+that base's schema 6; reference snapshots advance from 9 to 10.
+
+The existing designer's limited R1/R2/R3 review passed before this base connection.
+Final source still requires the ordinary full gate and exact submitted-source CI.
+Publication, archive equality, physical Android/iPhone and OS-sleep evidence remain
+separate. Physical-device work remains stopped.

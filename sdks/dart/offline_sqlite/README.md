@@ -104,9 +104,9 @@ execute again. Wipe is not automatic retry, storage-error recovery or cache clea
   v5/operation v4 reservations. Migration validates the entire graph and preserves
   IDs/TTL/dispatch proof before any network work. An interrupted migration rolls
   back; insufficient capacity fails open rather than dropping accepted state.
-  Provisional schema 7 adds monotone owner epoch/token history and persisted
-  credential-generation/policy pauses. Schema 6 migrates without clearing auth;
-  its number is rechecked against the final #1768 base before integration.
+  Schema 7 adds monotone owner epoch/token history and persisted
+  credential-generation/policy pauses. It follows schema 6 in merged #1768;
+  migration preserves the existing auth pause.
 
 Automatic opens use a dedicated native `flock` sidecar, acquired before SQLite
 open/migration. The shared C Code Asset supports Android/iOS and host VM tests;
