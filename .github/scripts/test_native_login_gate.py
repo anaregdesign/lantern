@@ -1,6 +1,8 @@
 """Exercise fixture isolation, finite required cases and source/evidence binding."""
 
 import json
+from contextlib import redirect_stdout
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -56,18 +58,38 @@ elif args[0] == 'run':
                 path.chmod(0o755)
             with patch.dict(os.environ, {"PATH": str(binaries) + os.pathsep + os.environ["PATH"],
                                          "CALLS": str(base / "calls"), "MODE": mode, "CASE_LOG": log}):
-                if mode == "pass":
+                destinations = [base / "evidence"]
+                if mode == "repeat":
+                    destinations = []
+                    saved = {}
+                    for _ in range(2):
+                        output = io.StringIO()
+                        with patch.object(gate, "__file__", str(root / ".github/scripts/native_login_gate.py")), redirect_stdout(output):
+                            gate.main(["--fresh-child", "--evidence", str(base / "evidence")])
+                        receipt_path = Path(json.loads(output.getvalue())["receipt"])
+                        destinations.append(receipt_path.parent)
+                        saved[receipt_path] = receipt_path.read_bytes()
+                    self.assertEqual(len(set(destinations)), 2)
+                    self.assertTrue(all(p.parent == base / "evidence" for p in destinations))
+                    for path, original in saved.items():
+                        self.assertEqual(path.read_bytes(), original)
+                    # Explicit single-run destinations still refuse replacement.
+                    with self.assertRaises(FileExistsError):
+                        gate.run(root, destinations[0])
+                    self.assertEqual(next(iter(saved)).read_bytes(), next(iter(saved.values())))
+                elif mode == "pass":
                     gate.run(root, base / "evidence")
                 else:
                     with self.assertRaises(RuntimeError):
                         gate.run(root, base / "evidence")
-            receipt = json.loads((base / "evidence/receipt.json").read_text())
-            self.assertEqual(receipt["status"], "PASS" if mode == "pass" else "FAIL")
+            receipt = json.loads((destinations[-1] / "receipt.json").read_text())
+            self.assertEqual(receipt["status"], "PASS" if mode in ("pass", "repeat") else "FAIL")
             calls = [json.loads(row) for row in (base / "calls").read_text().splitlines()]
             self.assertEqual([c[1] for c in calls if c[0] == "go"], [
-                ["test", "-c", "-tags=lantern_test_time", "-o", str(base / "evidence/build" / binary), package]
+                ["test", "-c", "-tags=lantern_test_time", "-o", str(destination / "build" / binary), package]
+                for destination in destinations
                 for package, binary in (("./server/internal/security", "security.test"), ("./tests/integration", "integration.test"))])
-            run = next(args for name, args in calls if name == "docker" and args[0] == "run")
+            run = next(args for name, args in reversed(calls) if name == "docker" and args[0] == "run")
             for flag in ("--network=none", "--read-only", "--cap-drop=ALL", "--pull=never",
                          "--security-opt=no-new-privileges", "--memory=2g", "--cpus=4", "--pids-limit=256"):
                 self.assertIn(flag, run)
@@ -87,11 +109,14 @@ elif args[0] == 'run':
             with self.subTest(mode=mode):
                 self.execute(mode)
 
+    def test_repeated_local_invocations_preserve_distinct_evidence(self):
+        self.execute("repeat")
+
     def test_native_fixture_is_fresh_and_required_by_local_and_hosted_gates(self):
         plan = steps(Path("/tmp/evidence"))
         native = [step for step in plan if step.name == "native-login-wire"]
         self.assertEqual(len(native), 1)
-        self.assertEqual(native[0].command, ("python3", "-B", ".github/scripts/native_login_gate.py", "--evidence", "/tmp/evidence/native-login"))
+        self.assertEqual(native[0].command, ("python3", "-B", ".github/scripts/native_login_gate.py", "--fresh-child", "--evidence", "/tmp/evidence/native-login"))
         workflow = (Path(__file__).resolve().parents[1] / "workflows/go.yml").read_text()
         body = workflow.split("      - name: Native provider session wire fixture\n", 1)[1].split("      - name:", 1)[0]
         self.assertIn("steps.toolchain.outcome == 'success'", body)

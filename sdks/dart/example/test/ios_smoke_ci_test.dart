@@ -5,6 +5,14 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('native helper preserves bounded cleanup failures', () async {
+    final result = await Process.run('python3', [
+      '-B',
+      'tool/ios_smoke_attach_test.py',
+    ]);
+    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+  });
+
   late Directory sandbox;
   late File fakeFlutter;
   late File fakeXcrun;

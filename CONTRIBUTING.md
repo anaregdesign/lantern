@@ -292,7 +292,10 @@ created simulator with the same runtime/device type and a different UDID. An
 exited Runner, build failure, assertion or RPC failure, and post-body stall fail
 the blocking `Gate` directly. Bounded, redacted process/simulator/app
 diagnostics are always uploaded; the temporary retry simulator is always
-deleted. Each attempt builds the integration-test app and installs it on its
+deleted. Denied or uncompleted primary-command cleanup records `cleanup_failure`
+and fails without retry. An incomplete pre-launch stop also fails before
+installation; diagnostic capture errors cannot erase the original failure
+classification. Each attempt builds the integration-test app and installs it on its
 own simulator before native launch. The simulator build compiles the native host
 and platform SQLite plugin. Ordinary PR/main runs analyze the production Dart app
 and compile `main.dart` through widget tests; the separate production/device iOS
@@ -564,8 +567,12 @@ backend-only edits cannot retain SDK real-wire success. Do not reinterpret a
 missing/unsupported result as a skip or a pass.
 
 **Evidence trust boundary.** The live reviewed Python process creates a receipt
-only after its fixed subprocess command returns zero and any empty-output contract
-passes. It retains the input fingerprint, source head/tree and raw-log SHA-256 in
+only after its fixed subprocess command returns zero and its output checks pass.
+Empty-output checks remain mandatory where declared; Dart and offline dartdoc
+steps also reject warning lines even when the command returns zero. Each native
+provider wire execution allocates a fresh child evidence directory, preserving
+earlier results without importing them. The runner retains the input fingerprint,
+source head/tree and raw-log SHA-256 in
 memory; it verifies every raw log establishing the complete current baseline,
 including unsupported/fresh steps, and its output manifest against retained values
 before reuse. Altering an output JSON or log cannot create a receipt.

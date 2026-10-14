@@ -330,7 +330,10 @@ class Session:
         with log.open("xb") as output:
             code = subprocess.run(command, cwd=root / step.cwd, env=env,
                                   stdout=output, stderr=subprocess.STDOUT, check=False).returncode
-        return code, code == 0 and (not step.empty or not log.read_bytes().strip())
+        data = log.read_bytes() if step.empty or step.reject_line_prefixes else b""
+        rejected = tuple(prefix.encode("utf-8") for prefix in step.reject_line_prefixes)
+        return code, (code == 0 and (not step.empty or not data.strip())
+                      and not any(line.startswith(rejected) for line in data.splitlines()))
 
     def check_go_inputs(self, root: Path, env: dict[str, str]) -> None:
         # Overlay flags and external local module/workspace paths can bypass the

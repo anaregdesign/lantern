@@ -129,10 +129,18 @@ def run(root, evidence):
     return receipt
 
 
-if __name__ == "__main__":
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence", type=Path, required=True)
-    args = parser.parse_args()
+    parser.add_argument("--fresh-child", action="store_true",
+                        help="retain a new child directory for this execution")
+    args = parser.parse_args(argv)
+    if args.fresh_child:
+        args.evidence = args.evidence / str(uuid.uuid4())
     root = Path(__file__).resolve().parents[2]
     result = run(root, args.evidence.resolve())
     print(json.dumps({"status": result["status"], "receipt": str(args.evidence / "receipt.json"), "development_changes": result["development_changes"]}))
+
+
+if __name__ == "__main__":
+    main()
