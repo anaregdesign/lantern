@@ -15,6 +15,7 @@ import (
 // only the methods it exercises. It mirrors the fake used by the MCP
 // failover tests before the logic moved into the SDK (#592).
 type fakeNode struct {
+	getCurrentUserIDFn        func(context.Context) (*string, error)
 	getVertexFn               func(ctx context.Context, key string) (*Vertex, error)
 	putVertexAtFn             func(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error)
 	putVertexIfAbsentAtFn     func(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error)
@@ -46,6 +47,13 @@ type fakeNode struct {
 	addEdgesWithReceiptFn                func(ctx context.Context, inputs []EdgeAddReceiptInput, receiptContext ReceiptContext) ([]EdgeAddReceiptResult, error)
 	pingErr                              error
 	closed                               int
+}
+
+func (f *fakeNode) GetCurrentUserID(ctx context.Context) (*string, error) {
+	if f.getCurrentUserIDFn != nil {
+		return f.getCurrentUserIDFn(ctx)
+	}
+	return nil, nil
 }
 
 func (f *fakeNode) PutVertex(context.Context, string, any, time.Duration) (PutOutcome, error) {

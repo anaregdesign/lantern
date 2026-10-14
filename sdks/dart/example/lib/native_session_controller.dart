@@ -7,6 +7,8 @@ import 'native_credential_store.dart';
 import 'native_providers.dart';
 import 'offline_session.dart';
 
+part 'native_registration_controller.dart';
+
 /// One immutable credential/client generation and its account's durable outbox.
 final class NativeAccount {
   NativeAccount(
@@ -71,8 +73,9 @@ final class NativeSessionController extends ChangeNotifier {
   final Future<OfflineDemoSession?> Function(LanternClient, String)
   _openOffline;
   NativeAccount? account;
+  List<NativeRegistrationReview> registrationReviews = const [];
   bool busy = false;
-  String message = 'Sign in with an existing Lantern account.';
+  String message = 'Sign in or explicitly register a Lantern account.';
   int _generation = 0;
   bool _closed = false;
   LanternCancellationToken? _pending;
@@ -173,10 +176,11 @@ final class NativeSessionController extends ChangeNotifier {
     if (account != null || _closed) return;
     final generation = _transition();
     try {
+      await _loadRegistrationReviews();
       final saved = await _exclusive(store.read);
       if (!_current(generation)) return;
       if (saved == null) {
-        message = 'Sign in with an existing Lantern account.';
+        message = 'Sign in or explicitly register a Lantern account.';
         return;
       }
       if (!saved.expiresAt.isAfter(DateTime.now())) {

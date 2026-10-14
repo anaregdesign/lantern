@@ -43,7 +43,9 @@ Every present `azp` must match the explicit allowlist; absent `azp` with that
 single audience is allowed and does not attest an installed app. Apple's exact
 Issuer is `https://appleid.apple.com`; native Bundle ID and Android Services ID
 are separate audience profiles. No email or caller-provided account mapping is
-used: enroll each existing `(iss, sub)` Principal and explicit Role assignments.
+used: ordinary login requires an existing `(iss, sub)` Principal and explicit
+Role assignments. Explicit self-registration is a separate, default-disabled
+operator policy described below.
 
 Install each Apple handle through the existing `LANTERN_OIDC_SECRET_BINDINGS`
 map with exact `issuer`, `client_id`, `token_origin` (`https://appleid.apple.com`)
@@ -79,6 +81,43 @@ custody procedure; there is no automatic state conversion or deployment here.
 The [Flutter setup](../sdks/dart/example/README.md#native-google-and-apple-login)
 lists required platform registration. Four real-provider/platform exits and
 package publication remain separate from merged source and F/Q evidence.
+
+## Native user registration policy
+
+The [registration contract](native-user-registration.md) adds an explicit signup
+operation to current-v2. An absent policy disables signup; startup and ordinary
+login do not assign UIDs or create Roles. Before enabling it, review existing
+`users:` data and broad grants for collisions, choose the exact permitted native
+profiles, and install the reviewed `personal_user` Role. Its seven initial Allow
+rules use the typed `PrincipalUIDPrefix` with `literal_before: "users:"` and
+`literal_after: ":"`. Existing Denies still restrict access. Never substitute an
+empty literal prefix or Global resource for a selector an editor does not support.
+The current Admin editor refuses unsupported UID-bound Role editing.
+
+An authorized operator reads `GetRegistrationPolicy` and changes it through the
+existing Prepare/Apply security workflow using `put_registration_policy`.
+Version 1 selects Role `personal_user` and at most 32 exact issuer/profile pairs;
+the list is sorted by issuer, then client profile ID. Opening or expanding it
+requires operation-bound reauthentication. Closing or reducing it is restrictive
+and does not bump Issuer revisions or revoke existing sessions. Suspension,
+deletion, assignment withdrawal, Denies and explicit session revocation retain
+their existing meanings. Actual enablement is a separate deployment decision.
+
+Clients use Begin/Prepare/Apply registration and save the exact review before
+Apply. Recovery authenticates the same identity under a distinct purpose and
+inspects only the original status; an unknown outcome is not permission to retry.
+UID/enrollment/initial assignment commit together. Session issuance and personal
+data writes are separate operations. A lost session output requires ordinary
+login. Registration does not provide fresh `auth_time` or extend the fixed session
+lifetime. The installed UID and logical `users:<uid>:` prefix are returned in
+registration/login/restored-session metadata; legacy UID-less users have neither.
+The physical `data:` namespace is never part of the client key.
+
+The registration proof and UID selector contract changes current provisioning's
+admission fingerprint. Use the coordinated generation/custody procedure for a
+homogeneous cohort; do not reinterpret old journals, silently mix profiles or
+reset retained state. The implementation and isolated fixtures do not enable
+signup, migrate existing data or qualify real provider/device behavior.
 
 ## Public mode and bootstrap
 

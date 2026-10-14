@@ -49,7 +49,8 @@ func (o *CurrentAuthority) CheckOriginalDisclosure(ctx context.Context, a *Admis
 		}
 	}
 	command, err := op.command()
-	if err != nil || op.digest != intent || op.actor != a.Identity() || a.Authentication().Class != EndUser || (command.Kind != S1IssueSession && command.Kind != S1RevokeSession) {
+	selfOperation := command.Kind == S1IssueSession || command.Kind == S1RevokeSession || command.Kind == S1RegisterPrincipal && a.Authentication().Provenance == NativeEndUserSession
+	if err != nil || op.digest != intent || op.actor != a.Identity() || a.Authentication().Class != EndUser || !selfOperation {
 		return ErrPermissionDenied
 	}
 	return nil

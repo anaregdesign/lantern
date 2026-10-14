@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -38,6 +39,7 @@ type nativeTransaction struct {
 	createdAt, expiresAt    time.Time
 	staged                  bool
 	stagedToken, stagedCode [32]byte
+	registration            security.NativeRegistrationPurpose
 }
 
 // NativeStart is app-owned ephemeral plugin/delivery configuration. Only the
@@ -81,6 +83,17 @@ func (a NativeAttempt) ClientProfileID() string {
 	return a.transaction.client.ID
 }
 
+func (a NativeAttempt) IsLogin() bool {
+	return a.owner != nil && a.transaction != nil && a.transaction.registration == (security.NativeRegistrationPurpose{})
+}
+
+func (a NativeAttempt) RegistrationPurpose() security.NativeRegistrationPurpose {
+	if a.owner == nil || a.transaction == nil {
+		return security.NativeRegistrationPurpose{}
+	}
+	return a.transaction.registration
+}
+
 type NativeCompletion struct {
 	attempt         NativeAttempt
 	credential      NativeProviderCredential
@@ -90,6 +103,37 @@ type NativeCompletion struct {
 
 func (NativeCompletion) String() string   { return "[redacted native login completion]" }
 func (NativeCompletion) GoString() string { return "[redacted native login completion]" }
+
+func (c NativeCompletion) IsLogin() bool {
+	return c.credential.matches(c.attempt) && !c.consumedAt.IsZero() && c.attempt.IsLogin()
+}
+
+func (c NativeCompletion) RegistrationPurpose() security.NativeRegistrationPurpose {
+	if !c.credential.matches(c.attempt) || c.consumedAt.IsZero() {
+		return security.NativeRegistrationPurpose{}
+	}
+	return c.attempt.RegistrationPurpose()
+}
+
+// RetainedBytes conservatively charges one retained completion plus tokens.
+// It reports sizes only; raw provider data and private trust never escape.
+func (c NativeCompletion) RetainedBytes(tokens NativeTokens) (uint64, error) {
+	if !c.credential.matches(c.attempt) || c.consumedAt.IsZero() {
+		return 0, ErrInvalidToken
+	}
+	t := c.attempt.transaction
+	raw, err := json.Marshal(struct {
+		Trust     Trust
+		Client    security.NativeClient
+		Discovery Discovery
+	}{t.trust, t.client, t.discovery})
+	if err != nil {
+		return 0, err
+	}
+	// Encoded trust dominates its bounded strings/slices. Evidence and all
+	// fixed transaction/producer bookkeeping receive a separate upper charge.
+	return uint64(2*len(raw) + len(c.credential.idToken) + len(c.credential.code) + len(t.nonce) + len(tokens.idToken) + len(tokens.accessToken) + 2*security.MaxAuthenticationEvidenceBytes + 8192), nil
+}
 
 func NewNativeTransactions(bounds func() (time.Time, time.Time, error), affinity string) (*NativeTransactions, error) {
 	if bounds == nil || !validLoginAffinity(affinity) {
@@ -127,6 +171,19 @@ func (m *NativeTransactions) currentLocked() (time.Time, time.Time, error) {
 }
 
 func (m *NativeTransactions) Begin(trust Trust, profile security.CurrentProfile, clientID string, discovery Discovery) (NativeStart, error) {
+	return m.begin(trust, profile, clientID, discovery, security.NativeRegistrationPurpose{})
+}
+
+// BeginRegistration binds the closed use to this transaction before provider
+// input exists. Recovery requires a commitment to the original review.
+func (m *NativeTransactions) BeginRegistration(trust Trust, profile security.CurrentProfile, clientID string, discovery Discovery, purpose security.NativeRegistrationPurpose) (NativeStart, error) {
+	if !purpose.Valid() {
+		return NativeStart{}, ErrLoginTransaction
+	}
+	return m.begin(trust, profile, clientID, discovery, purpose)
+}
+
+func (m *NativeTransactions) begin(trust Trust, profile security.CurrentProfile, clientID string, discovery Discovery, purpose security.NativeRegistrationPurpose) (NativeStart, error) {
 	if m == nil || !trust.Issuer.Enabled || trust.ConfigRevision == 0 || trust.ConfigRevision != trust.Issuer.ConfigRevision || profile.Binding() == "" || profile.Generation != trust.Generation ||
 		security.ValidateIssuerConfiguration(trust.Issuer) != nil || discovery.Issuer != trust.Issuer.URL || validateNativeDiscovery(discovery) != nil {
 		return NativeStart{}, ErrLoginTransaction
@@ -163,7 +220,7 @@ func (m *NativeTransactions) Begin(trust Trust, profile security.CurrentProfile,
 		return NativeStart{}, ErrLoginTransaction
 	}
 	start.ExpiresAt = now.Add(security.NativeLoginLifetime)
-	m.pending[id] = &nativeTransaction{trust: trust.detached(), profile: profile, client: client, discovery: discovery, proof: sha256.Sum256([]byte(start.CompletionSecret)), state: sha256.Sum256([]byte(start.State)), nonce: start.Nonce, createdAt: now, expiresAt: start.ExpiresAt}
+	m.pending[id] = &nativeTransaction{trust: trust.detached(), profile: profile, client: client, discovery: discovery, proof: sha256.Sum256([]byte(start.CompletionSecret)), state: sha256.Sum256([]byte(start.State)), nonce: start.Nonce, createdAt: now, expiresAt: start.ExpiresAt, registration: purpose}
 	return start, nil
 }
 

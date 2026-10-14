@@ -46,10 +46,17 @@ func (c *Credentials) Bearer(raw string) (security.CurrentCredentialProducer, er
 }
 
 func (c *Credentials) Native(completion oidc.NativeCompletion, tokens oidc.NativeTokens) (security.CurrentCredentialProducer, error) {
-	if c == nil || c.keys == nil {
+	if c == nil || c.keys == nil || !completion.IsLogin() {
 		return nil, oidc.ErrInvalidToken
 	}
 	return currentCredentialProducer{keys: c.keys, kind: "native-login", nativeCompletion: completion, nativeTokens: tokens}, nil
+}
+
+func (c *Credentials) NativeRegistration(completion oidc.NativeCompletion, tokens oidc.NativeTokens) (security.CurrentCredentialProducer, error) {
+	if c == nil || c.keys == nil || !completion.RegistrationPurpose().Valid() {
+		return nil, oidc.ErrInvalidToken
+	}
+	return currentCredentialProducer{keys: c.keys, kind: "native-registration", nativeCompletion: completion, nativeTokens: tokens}, nil
 }
 func (c *Credentials) Code(completion oidc.LoginCompletion, tokens oidc.CodeTokens) (security.CurrentCredentialProducer, error) {
 	if c == nil || c.keys == nil {
@@ -112,6 +119,11 @@ func (p currentCredentialProducer) VerifyCurrentCredential(ctx context.Context, 
 		if err != nil {
 			return security.CurrentCredentialFacts{}, err
 		}
+	} else if p.kind == "native-registration" {
+		verified, err = verifier.VerifyNativeRegistrationCompletion(ctx, p.nativeCompletion, p.nativeTokens)
+		if err != nil {
+			return security.CurrentCredentialFacts{}, err
+		}
 	} else {
 		return security.CurrentCredentialFacts{}, oidc.ErrInvalidToken
 	}
@@ -119,14 +131,15 @@ func (p currentCredentialProducer) VerifyCurrentCredential(ctx context.Context, 
 		return security.CurrentCredentialFacts{}, err
 	}
 	event := verified.Evidence()
-	if p.kind == "code" || p.kind == "native-login" {
+	native := p.kind == "native-login" || p.kind == "native-registration"
+	if p.kind == "code" || native {
 		// A newly issued Code token can be valid at the qualified upper
 		// endpoint while its signed start is still ahead of the lower one.
 		// Keep this one exchange; pace locally until the exact original facts
 		// are usable. Capture/consume still recheck the full current view.
 		start := event.IssuedAt.Time()
 		starts := []time.Time{event.NotBefore.Time(), event.AuthTime.Time(), event.Code.ConsumedAt}
-		if p.kind == "native-login" {
+		if native {
 			starts = append(starts, event.Native.ConsumedAt, event.Native.ExchangeIssuedAt.Time(), event.Native.ExchangeNotBefore.Time(), event.Native.ExchangeAuthTime.Time())
 		}
 		for _, candidate := range starts {
@@ -138,7 +151,7 @@ func (p currentCredentialProducer) VerifyCurrentCredential(ctx context.Context, 
 		if p.kind == "code" && event.Code.ExpiresAt.Before(expires) {
 			expires = event.Code.ExpiresAt
 		}
-		if p.kind == "native-login" {
+		if native {
 			if event.Native.ExpiresAt.Before(expires) {
 				expires = event.Native.ExpiresAt
 			}

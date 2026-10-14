@@ -266,7 +266,10 @@ func encodeSecurityUser(user security.Principal) *pb.SecurityUser {
 	if user.State == security.Deleted {
 		state = pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_DELETED
 	}
-	result := &pb.SecurityUser{Identity: encodeSecurityIdentity(user.Identity), State: state, UserUid: user.UserUID}
+	result := &pb.SecurityUser{Identity: encodeSecurityIdentity(user.Identity), State: state}
+	if user.UserUID != "" {
+		result.UserId = &user.UserUID
+	}
 	for _, assignment := range user.Assignments {
 		result.Assignments = append(result.Assignments, &pb.SecurityRoleAssignment{Identity: encodeSecurityIdentity(user.Identity), RoleId: assignment.RoleID, EnvOwned: assignment.EnvOwned})
 	}
@@ -279,6 +282,9 @@ func decodeSecurityChange(change *pb.SecurityChange) (security.Change, error) {
 	result := security.Change{}
 	var err error
 	switch op := change.Operation.(type) {
+	case *pb.SecurityChange_PutRegistrationPolicy:
+		result.Kind = security.PutRegistrationPolicy
+		result.RegistrationPolicy, err = decodeRegistrationPolicy(op.PutRegistrationPolicy)
 	case *pb.SecurityChange_PutIssuer:
 		result.Kind = security.PutIssuer
 		var issuer security.Issuer

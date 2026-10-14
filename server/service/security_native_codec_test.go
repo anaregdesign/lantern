@@ -25,8 +25,10 @@ func TestNativeProtoRejectsAmbiguousCredentials(t *testing.T) {
 		"truncated":        {0x1a, 0xff},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if codec.Unmarshal(data, new(pb.CompleteNativeLoginRequest)) == nil {
-				t.Fatal("ambiguous native credential reached typed decoding")
+			for _, message := range []proto.Message{new(pb.CompleteNativeLoginRequest), new(pb.PrepareNativeRegistrationRequest)} {
+				if codec.Unmarshal(data, message) == nil {
+					t.Fatal("ambiguous native credential reached typed decoding")
+				}
 			}
 		})
 	}

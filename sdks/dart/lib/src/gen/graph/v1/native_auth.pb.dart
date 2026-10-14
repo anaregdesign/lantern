@@ -13,6 +13,7 @@
 import 'dart:async' as $async;
 import 'dart:core' as $core;
 
+import 'package:fixnum/fixnum.dart' as $fixnum;
 import 'package:protobuf/protobuf.dart' as $pb;
 
 import '../../google/protobuf/timestamp.pb.dart' as $0;
@@ -602,7 +603,7 @@ class NativeSession extends $pb.GeneratedMessage {
     $0.Timestamp? authTime,
     $1.SecurityIdentity? identity,
     $1.SecurityVersion? version,
-    $core.String? userUid,
+    $core.String? userId,
     $core.String? personalPrefix,
   }) {
     final result = create();
@@ -614,7 +615,7 @@ class NativeSession extends $pb.GeneratedMessage {
     if (authTime != null) result.authTime = authTime;
     if (identity != null) result.identity = identity;
     if (version != null) result.version = version;
-    if (userUid != null) result.userUid = userUid;
+    if (userId != null) result.userId = userId;
     if (personalPrefix != null) result.personalPrefix = personalPrefix;
     return result;
   }
@@ -645,7 +646,7 @@ class NativeSession extends $pb.GeneratedMessage {
         subBuilder: $1.SecurityIdentity.create)
     ..aOM<$1.SecurityVersion>(8, _omitFieldNames ? '' : 'version',
         subBuilder: $1.SecurityVersion.create)
-    ..aOS(9, _omitFieldNames ? '' : 'userUid')
+    ..aOS(9, _omitFieldNames ? '' : 'userId')
     ..aOS(10, _omitFieldNames ? '' : 'personalPrefix')
     ..hasRequiredFields = false;
 
@@ -755,13 +756,13 @@ class NativeSession extends $pb.GeneratedMessage {
 
   /// Trusted installed Principal metadata, absent for a UID-less legacy user.
   @$pb.TagNumber(9)
-  $core.String get userUid => $_getSZ(8);
+  $core.String get userId => $_getSZ(8);
   @$pb.TagNumber(9)
-  set userUid($core.String value) => $_setString(8, value);
+  set userId($core.String value) => $_setString(8, value);
   @$pb.TagNumber(9)
-  $core.bool hasUserUid() => $_has(8);
+  $core.bool hasUserId() => $_has(8);
   @$pb.TagNumber(9)
-  void clearUserUid() => $_clearField(9);
+  void clearUserId() => $_clearField(9);
 
   /// Logical prefix; callers must not prepend the internal physical 'data:'.
   @$pb.TagNumber(10)
@@ -1206,6 +1207,818 @@ class ApplyNativeLogoutResponse extends $pb.GeneratedMessage {
   $1.CurrentSecurityChangeResult ensureCurrentResult() => $_ensure(1);
 }
 
+/// Exact Server-minted business review. Persist before Apply. Possession alone
+/// grants no authority; unknown status never permits restamping or a new intent.
+class NativeRegistrationReview extends $pb.GeneratedMessage {
+  factory NativeRegistrationReview({
+    $1.CurrentAuthorityProfile? profile,
+    $1.CurrentSemanticCut? expectedCut,
+    $1.CurrentSecurityChangeID? changeId,
+    $1.SecurityIdentity? actor,
+    $core.List<$core.int>? intentDigest,
+    $core.String? userId,
+    $core.String? clientProfileId,
+    $fixnum.Int64? issuerConfigRevision,
+  }) {
+    final result = create();
+    if (profile != null) result.profile = profile;
+    if (expectedCut != null) result.expectedCut = expectedCut;
+    if (changeId != null) result.changeId = changeId;
+    if (actor != null) result.actor = actor;
+    if (intentDigest != null) result.intentDigest = intentDigest;
+    if (userId != null) result.userId = userId;
+    if (clientProfileId != null) result.clientProfileId = clientProfileId;
+    if (issuerConfigRevision != null)
+      result.issuerConfigRevision = issuerConfigRevision;
+    return result;
+  }
+
+  NativeRegistrationReview._();
+
+  factory NativeRegistrationReview.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory NativeRegistrationReview.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'NativeRegistrationReview',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<$1.CurrentAuthorityProfile>(1, _omitFieldNames ? '' : 'profile',
+        subBuilder: $1.CurrentAuthorityProfile.create)
+    ..aOM<$1.CurrentSemanticCut>(2, _omitFieldNames ? '' : 'expectedCut',
+        subBuilder: $1.CurrentSemanticCut.create)
+    ..aOM<$1.CurrentSecurityChangeID>(3, _omitFieldNames ? '' : 'changeId',
+        subBuilder: $1.CurrentSecurityChangeID.create)
+    ..aOM<$1.SecurityIdentity>(4, _omitFieldNames ? '' : 'actor',
+        subBuilder: $1.SecurityIdentity.create)
+    ..a<$core.List<$core.int>>(
+        5, _omitFieldNames ? '' : 'intentDigest', $pb.PbFieldType.OY)
+    ..aOS(6, _omitFieldNames ? '' : 'userId')
+    ..aOS(7, _omitFieldNames ? '' : 'clientProfileId')
+    ..a<$fixnum.Int64>(
+        8, _omitFieldNames ? '' : 'issuerConfigRevision', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  NativeRegistrationReview clone() =>
+      NativeRegistrationReview()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  NativeRegistrationReview copyWith(
+          void Function(NativeRegistrationReview) updates) =>
+      super.copyWith((message) => updates(message as NativeRegistrationReview))
+          as NativeRegistrationReview;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static NativeRegistrationReview create() => NativeRegistrationReview._();
+  @$core.override
+  NativeRegistrationReview createEmptyInstance() => create();
+  static $pb.PbList<NativeRegistrationReview> createRepeated() =>
+      $pb.PbList<NativeRegistrationReview>();
+  @$core.pragma('dart2js:noInline')
+  static NativeRegistrationReview getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<NativeRegistrationReview>(create);
+  static NativeRegistrationReview? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $1.CurrentAuthorityProfile get profile => $_getN(0);
+  @$pb.TagNumber(1)
+  set profile($1.CurrentAuthorityProfile value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasProfile() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearProfile() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $1.CurrentAuthorityProfile ensureProfile() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $1.CurrentSemanticCut get expectedCut => $_getN(1);
+  @$pb.TagNumber(2)
+  set expectedCut($1.CurrentSemanticCut value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasExpectedCut() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearExpectedCut() => $_clearField(2);
+  @$pb.TagNumber(2)
+  $1.CurrentSemanticCut ensureExpectedCut() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $1.CurrentSecurityChangeID get changeId => $_getN(2);
+  @$pb.TagNumber(3)
+  set changeId($1.CurrentSecurityChangeID value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasChangeId() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearChangeId() => $_clearField(3);
+  @$pb.TagNumber(3)
+  $1.CurrentSecurityChangeID ensureChangeId() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  $1.SecurityIdentity get actor => $_getN(3);
+  @$pb.TagNumber(4)
+  set actor($1.SecurityIdentity value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasActor() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearActor() => $_clearField(4);
+  @$pb.TagNumber(4)
+  $1.SecurityIdentity ensureActor() => $_ensure(3);
+
+  @$pb.TagNumber(5)
+  $core.List<$core.int> get intentDigest => $_getN(4);
+  @$pb.TagNumber(5)
+  set intentDigest($core.List<$core.int> value) => $_setBytes(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasIntentDigest() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearIntentDigest() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.String get userId => $_getSZ(5);
+  @$pb.TagNumber(6)
+  set userId($core.String value) => $_setString(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasUserId() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearUserId() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.String get clientProfileId => $_getSZ(6);
+  @$pb.TagNumber(7)
+  set clientProfileId($core.String value) => $_setString(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasClientProfileId() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearClientProfileId() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $fixnum.Int64 get issuerConfigRevision => $_getI64(7);
+  @$pb.TagNumber(8)
+  set issuerConfigRevision($fixnum.Int64 value) => $_setInt64(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasIssuerConfigRevision() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearIssuerConfigRevision() => $_clearField(8);
+}
+
+class BeginNativeRegistrationRequest extends $pb.GeneratedMessage {
+  factory BeginNativeRegistrationRequest({
+    $core.String? issuer,
+    $core.String? clientProfileId,
+    NativeRegistrationReview? recoveryReview,
+  }) {
+    final result = create();
+    if (issuer != null) result.issuer = issuer;
+    if (clientProfileId != null) result.clientProfileId = clientProfileId;
+    if (recoveryReview != null) result.recoveryReview = recoveryReview;
+    return result;
+  }
+
+  BeginNativeRegistrationRequest._();
+
+  factory BeginNativeRegistrationRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory BeginNativeRegistrationRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'BeginNativeRegistrationRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'issuer')
+    ..aOS(2, _omitFieldNames ? '' : 'clientProfileId')
+    ..aOM<NativeRegistrationReview>(3, _omitFieldNames ? '' : 'recoveryReview',
+        subBuilder: NativeRegistrationReview.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  BeginNativeRegistrationRequest clone() =>
+      BeginNativeRegistrationRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  BeginNativeRegistrationRequest copyWith(
+          void Function(BeginNativeRegistrationRequest) updates) =>
+      super.copyWith(
+              (message) => updates(message as BeginNativeRegistrationRequest))
+          as BeginNativeRegistrationRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static BeginNativeRegistrationRequest create() =>
+      BeginNativeRegistrationRequest._();
+  @$core.override
+  BeginNativeRegistrationRequest createEmptyInstance() => create();
+  static $pb.PbList<BeginNativeRegistrationRequest> createRepeated() =>
+      $pb.PbList<BeginNativeRegistrationRequest>();
+  @$core.pragma('dart2js:noInline')
+  static BeginNativeRegistrationRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<BeginNativeRegistrationRequest>(create);
+  static BeginNativeRegistrationRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get issuer => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set issuer($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasIssuer() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearIssuer() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get clientProfileId => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set clientProfileId($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasClientProfileId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearClientProfileId() => $_clearField(2);
+
+  /// Presence selects recovery-only authentication for this original review.
+  @$pb.TagNumber(3)
+  NativeRegistrationReview get recoveryReview => $_getN(2);
+  @$pb.TagNumber(3)
+  set recoveryReview(NativeRegistrationReview value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasRecoveryReview() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearRecoveryReview() => $_clearField(3);
+  @$pb.TagNumber(3)
+  NativeRegistrationReview ensureRecoveryReview() => $_ensure(2);
+}
+
+enum PrepareNativeRegistrationRequest_Provider { google, apple, notSet }
+
+class PrepareNativeRegistrationRequest extends $pb.GeneratedMessage {
+  factory PrepareNativeRegistrationRequest({
+    $core.String? attemptId,
+    $core.String? completionSecret,
+    GoogleNativeCredential? google,
+    AppleNativeCredential? apple,
+    NativeRegistrationReview? recoveryReview,
+  }) {
+    final result = create();
+    if (attemptId != null) result.attemptId = attemptId;
+    if (completionSecret != null) result.completionSecret = completionSecret;
+    if (google != null) result.google = google;
+    if (apple != null) result.apple = apple;
+    if (recoveryReview != null) result.recoveryReview = recoveryReview;
+    return result;
+  }
+
+  PrepareNativeRegistrationRequest._();
+
+  factory PrepareNativeRegistrationRequest.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory PrepareNativeRegistrationRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static const $core.Map<$core.int, PrepareNativeRegistrationRequest_Provider>
+      _PrepareNativeRegistrationRequest_ProviderByTag = {
+    3: PrepareNativeRegistrationRequest_Provider.google,
+    4: PrepareNativeRegistrationRequest_Provider.apple,
+    0: PrepareNativeRegistrationRequest_Provider.notSet
+  };
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'PrepareNativeRegistrationRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..oo(0, [3, 4])
+    ..aOS(1, _omitFieldNames ? '' : 'attemptId')
+    ..aOS(2, _omitFieldNames ? '' : 'completionSecret')
+    ..aOM<GoogleNativeCredential>(3, _omitFieldNames ? '' : 'google',
+        subBuilder: GoogleNativeCredential.create)
+    ..aOM<AppleNativeCredential>(4, _omitFieldNames ? '' : 'apple',
+        subBuilder: AppleNativeCredential.create)
+    ..aOM<NativeRegistrationReview>(5, _omitFieldNames ? '' : 'recoveryReview',
+        subBuilder: NativeRegistrationReview.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PrepareNativeRegistrationRequest clone() =>
+      PrepareNativeRegistrationRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PrepareNativeRegistrationRequest copyWith(
+          void Function(PrepareNativeRegistrationRequest) updates) =>
+      super.copyWith(
+              (message) => updates(message as PrepareNativeRegistrationRequest))
+          as PrepareNativeRegistrationRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static PrepareNativeRegistrationRequest create() =>
+      PrepareNativeRegistrationRequest._();
+  @$core.override
+  PrepareNativeRegistrationRequest createEmptyInstance() => create();
+  static $pb.PbList<PrepareNativeRegistrationRequest> createRepeated() =>
+      $pb.PbList<PrepareNativeRegistrationRequest>();
+  @$core.pragma('dart2js:noInline')
+  static PrepareNativeRegistrationRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<PrepareNativeRegistrationRequest>(
+          create);
+  static PrepareNativeRegistrationRequest? _defaultInstance;
+
+  PrepareNativeRegistrationRequest_Provider whichProvider() =>
+      _PrepareNativeRegistrationRequest_ProviderByTag[$_whichOneof(0)]!;
+  void clearProvider() => $_clearField($_whichOneof(0));
+
+  @$pb.TagNumber(1)
+  $core.String get attemptId => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set attemptId($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasAttemptId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearAttemptId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get completionSecret => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set completionSecret($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasCompletionSecret() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearCompletionSecret() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  GoogleNativeCredential get google => $_getN(2);
+  @$pb.TagNumber(3)
+  set google(GoogleNativeCredential value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasGoogle() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearGoogle() => $_clearField(3);
+  @$pb.TagNumber(3)
+  GoogleNativeCredential ensureGoogle() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  AppleNativeCredential get apple => $_getN(3);
+  @$pb.TagNumber(4)
+  set apple(AppleNativeCredential value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasApple() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearApple() => $_clearField(4);
+  @$pb.TagNumber(4)
+  AppleNativeCredential ensureApple() => $_ensure(3);
+
+  /// Must match Begin exactly; absent for a new registration.
+  @$pb.TagNumber(5)
+  NativeRegistrationReview get recoveryReview => $_getN(4);
+  @$pb.TagNumber(5)
+  set recoveryReview(NativeRegistrationReview value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasRecoveryReview() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearRecoveryReview() => $_clearField(5);
+  @$pb.TagNumber(5)
+  NativeRegistrationReview ensureRecoveryReview() => $_ensure(4);
+}
+
+class PrepareNativeRegistrationResponse extends $pb.GeneratedMessage {
+  factory PrepareNativeRegistrationResponse({
+    NativeRegistrationReview? review,
+    $core.String? proof,
+    $0.Timestamp? expiresAt,
+    $core.String? affinity,
+  }) {
+    final result = create();
+    if (review != null) result.review = review;
+    if (proof != null) result.proof = proof;
+    if (expiresAt != null) result.expiresAt = expiresAt;
+    if (affinity != null) result.affinity = affinity;
+    return result;
+  }
+
+  PrepareNativeRegistrationResponse._();
+
+  factory PrepareNativeRegistrationResponse.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory PrepareNativeRegistrationResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'PrepareNativeRegistrationResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<NativeRegistrationReview>(1, _omitFieldNames ? '' : 'review',
+        subBuilder: NativeRegistrationReview.create)
+    ..aOS(2, _omitFieldNames ? '' : 'proof')
+    ..aOM<$0.Timestamp>(3, _omitFieldNames ? '' : 'expiresAt',
+        subBuilder: $0.Timestamp.create)
+    ..aOS(4, _omitFieldNames ? '' : 'affinity')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PrepareNativeRegistrationResponse clone() =>
+      PrepareNativeRegistrationResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PrepareNativeRegistrationResponse copyWith(
+          void Function(PrepareNativeRegistrationResponse) updates) =>
+      super.copyWith((message) =>
+              updates(message as PrepareNativeRegistrationResponse))
+          as PrepareNativeRegistrationResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static PrepareNativeRegistrationResponse create() =>
+      PrepareNativeRegistrationResponse._();
+  @$core.override
+  PrepareNativeRegistrationResponse createEmptyInstance() => create();
+  static $pb.PbList<PrepareNativeRegistrationResponse> createRepeated() =>
+      $pb.PbList<PrepareNativeRegistrationResponse>();
+  @$core.pragma('dart2js:noInline')
+  static PrepareNativeRegistrationResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<PrepareNativeRegistrationResponse>(
+          create);
+  static PrepareNativeRegistrationResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  NativeRegistrationReview get review => $_getN(0);
+  @$pb.TagNumber(1)
+  set review(NativeRegistrationReview value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasReview() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearReview() => $_clearField(1);
+  @$pb.TagNumber(1)
+  NativeRegistrationReview ensureReview() => $_ensure(0);
+
+  /// Volatile process-bound proof; never persist or send to a provider.
+  @$pb.TagNumber(2)
+  $core.String get proof => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set proof($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasProof() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearProof() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $0.Timestamp get expiresAt => $_getN(2);
+  @$pb.TagNumber(3)
+  set expiresAt($0.Timestamp value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasExpiresAt() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearExpiresAt() => $_clearField(3);
+  @$pb.TagNumber(3)
+  $0.Timestamp ensureExpiresAt() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  $core.String get affinity => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set affinity($core.String value) => $_setString(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasAffinity() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearAffinity() => $_clearField(4);
+}
+
+class ApplyNativeRegistrationRequest extends $pb.GeneratedMessage {
+  factory ApplyNativeRegistrationRequest({
+    NativeRegistrationReview? review,
+    $core.String? proof,
+  }) {
+    final result = create();
+    if (review != null) result.review = review;
+    if (proof != null) result.proof = proof;
+    return result;
+  }
+
+  ApplyNativeRegistrationRequest._();
+
+  factory ApplyNativeRegistrationRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ApplyNativeRegistrationRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ApplyNativeRegistrationRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<NativeRegistrationReview>(1, _omitFieldNames ? '' : 'review',
+        subBuilder: NativeRegistrationReview.create)
+    ..aOS(2, _omitFieldNames ? '' : 'proof')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ApplyNativeRegistrationRequest clone() =>
+      ApplyNativeRegistrationRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ApplyNativeRegistrationRequest copyWith(
+          void Function(ApplyNativeRegistrationRequest) updates) =>
+      super.copyWith(
+              (message) => updates(message as ApplyNativeRegistrationRequest))
+          as ApplyNativeRegistrationRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ApplyNativeRegistrationRequest create() =>
+      ApplyNativeRegistrationRequest._();
+  @$core.override
+  ApplyNativeRegistrationRequest createEmptyInstance() => create();
+  static $pb.PbList<ApplyNativeRegistrationRequest> createRepeated() =>
+      $pb.PbList<ApplyNativeRegistrationRequest>();
+  @$core.pragma('dart2js:noInline')
+  static ApplyNativeRegistrationRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ApplyNativeRegistrationRequest>(create);
+  static ApplyNativeRegistrationRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  NativeRegistrationReview get review => $_getN(0);
+  @$pb.TagNumber(1)
+  set review(NativeRegistrationReview value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasReview() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearReview() => $_clearField(1);
+  @$pb.TagNumber(1)
+  NativeRegistrationReview ensureReview() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.String get proof => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set proof($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasProof() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearProof() => $_clearField(2);
+}
+
+class ApplyNativeRegistrationResponse extends $pb.GeneratedMessage {
+  factory ApplyNativeRegistrationResponse({
+    $1.CurrentSecurityChangeResult? currentResult,
+    $core.String? credential,
+    NativeSession? session,
+    $core.bool? signInRequired,
+  }) {
+    final result = create();
+    if (currentResult != null) result.currentResult = currentResult;
+    if (credential != null) result.credential = credential;
+    if (session != null) result.session = session;
+    if (signInRequired != null) result.signInRequired = signInRequired;
+    return result;
+  }
+
+  ApplyNativeRegistrationResponse._();
+
+  factory ApplyNativeRegistrationResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ApplyNativeRegistrationResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ApplyNativeRegistrationResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<$1.CurrentSecurityChangeResult>(
+        1, _omitFieldNames ? '' : 'currentResult',
+        subBuilder: $1.CurrentSecurityChangeResult.create)
+    ..aOS(2, _omitFieldNames ? '' : 'credential')
+    ..aOM<NativeSession>(3, _omitFieldNames ? '' : 'session',
+        subBuilder: NativeSession.create)
+    ..aOB(4, _omitFieldNames ? '' : 'signInRequired')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ApplyNativeRegistrationResponse clone() =>
+      ApplyNativeRegistrationResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ApplyNativeRegistrationResponse copyWith(
+          void Function(ApplyNativeRegistrationResponse) updates) =>
+      super.copyWith(
+              (message) => updates(message as ApplyNativeRegistrationResponse))
+          as ApplyNativeRegistrationResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ApplyNativeRegistrationResponse create() =>
+      ApplyNativeRegistrationResponse._();
+  @$core.override
+  ApplyNativeRegistrationResponse createEmptyInstance() => create();
+  static $pb.PbList<ApplyNativeRegistrationResponse> createRepeated() =>
+      $pb.PbList<ApplyNativeRegistrationResponse>();
+  @$core.pragma('dart2js:noInline')
+  static ApplyNativeRegistrationResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ApplyNativeRegistrationResponse>(
+          create);
+  static ApplyNativeRegistrationResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $1.CurrentSecurityChangeResult get currentResult => $_getN(0);
+  @$pb.TagNumber(1)
+  set currentResult($1.CurrentSecurityChangeResult value) =>
+      $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasCurrentResult() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearCurrentResult() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $1.CurrentSecurityChangeResult ensureCurrentResult() => $_ensure(0);
+
+  /// Only the first Apply invocation can disclose a newly issued credential.
+  @$pb.TagNumber(2)
+  $core.String get credential => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set credential($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasCredential() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearCredential() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  NativeSession get session => $_getN(2);
+  @$pb.TagNumber(3)
+  set session(NativeSession value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasSession() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearSession() => $_clearField(3);
+  @$pb.TagNumber(3)
+  NativeSession ensureSession() => $_ensure(2);
+
+  /// Registration Applied, but this invocation has no new session credential.
+  @$pb.TagNumber(4)
+  $core.bool get signInRequired => $_getBF(3);
+  @$pb.TagNumber(4)
+  set signInRequired($core.bool value) => $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasSignInRequired() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearSignInRequired() => $_clearField(4);
+}
+
+class GetNativeRegistrationStatusRequest extends $pb.GeneratedMessage {
+  factory GetNativeRegistrationStatusRequest({
+    NativeRegistrationReview? review,
+    $core.String? proof,
+  }) {
+    final result = create();
+    if (review != null) result.review = review;
+    if (proof != null) result.proof = proof;
+    return result;
+  }
+
+  GetNativeRegistrationStatusRequest._();
+
+  factory GetNativeRegistrationStatusRequest.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetNativeRegistrationStatusRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetNativeRegistrationStatusRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<NativeRegistrationReview>(1, _omitFieldNames ? '' : 'review',
+        subBuilder: NativeRegistrationReview.create)
+    ..aOS(2, _omitFieldNames ? '' : 'proof')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetNativeRegistrationStatusRequest clone() =>
+      GetNativeRegistrationStatusRequest()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetNativeRegistrationStatusRequest copyWith(
+          void Function(GetNativeRegistrationStatusRequest) updates) =>
+      super.copyWith((message) =>
+              updates(message as GetNativeRegistrationStatusRequest))
+          as GetNativeRegistrationStatusRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetNativeRegistrationStatusRequest create() =>
+      GetNativeRegistrationStatusRequest._();
+  @$core.override
+  GetNativeRegistrationStatusRequest createEmptyInstance() => create();
+  static $pb.PbList<GetNativeRegistrationStatusRequest> createRepeated() =>
+      $pb.PbList<GetNativeRegistrationStatusRequest>();
+  @$core.pragma('dart2js:noInline')
+  static GetNativeRegistrationStatusRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetNativeRegistrationStatusRequest>(
+          create);
+  static GetNativeRegistrationStatusRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  NativeRegistrationReview get review => $_getN(0);
+  @$pb.TagNumber(1)
+  set review(NativeRegistrationReview value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasReview() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearReview() => $_clearField(1);
+  @$pb.TagNumber(1)
+  NativeRegistrationReview ensureReview() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.String get proof => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set proof($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasProof() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearProof() => $_clearField(2);
+}
+
+class GetNativeRegistrationStatusResponse extends $pb.GeneratedMessage {
+  factory GetNativeRegistrationStatusResponse({
+    $1.CurrentSecurityChangeResult? currentResult,
+  }) {
+    final result = create();
+    if (currentResult != null) result.currentResult = currentResult;
+    return result;
+  }
+
+  GetNativeRegistrationStatusResponse._();
+
+  factory GetNativeRegistrationStatusResponse.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetNativeRegistrationStatusResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetNativeRegistrationStatusResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<$1.CurrentSecurityChangeResult>(
+        1, _omitFieldNames ? '' : 'currentResult',
+        subBuilder: $1.CurrentSecurityChangeResult.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetNativeRegistrationStatusResponse clone() =>
+      GetNativeRegistrationStatusResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetNativeRegistrationStatusResponse copyWith(
+          void Function(GetNativeRegistrationStatusResponse) updates) =>
+      super.copyWith((message) =>
+              updates(message as GetNativeRegistrationStatusResponse))
+          as GetNativeRegistrationStatusResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetNativeRegistrationStatusResponse create() =>
+      GetNativeRegistrationStatusResponse._();
+  @$core.override
+  GetNativeRegistrationStatusResponse createEmptyInstance() => create();
+  static $pb.PbList<GetNativeRegistrationStatusResponse> createRepeated() =>
+      $pb.PbList<GetNativeRegistrationStatusResponse>();
+  @$core.pragma('dart2js:noInline')
+  static GetNativeRegistrationStatusResponse getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<
+          GetNativeRegistrationStatusResponse>(create);
+  static GetNativeRegistrationStatusResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $1.CurrentSecurityChangeResult get currentResult => $_getN(0);
+  @$pb.TagNumber(1)
+  set currentResult($1.CurrentSecurityChangeResult value) =>
+      $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasCurrentResult() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearCurrentResult() => $_clearField(1);
+  @$pb.TagNumber(1)
+  $1.CurrentSecurityChangeResult ensureCurrentResult() => $_ensure(0);
+}
+
 /// Native provider inputs are accepted only here. Ordinary RPC authentication
 /// uses the returned opaque native credential through the existing Bearer path.
 /// These unary methods are never automatically retried after possible dispatch.
@@ -1242,6 +2055,35 @@ class LanternNativeAuthServiceApi {
           $pb.ClientContext? ctx, ApplyNativeLogoutRequest request) =>
       _client.invoke<ApplyNativeLogoutResponse>(ctx, 'LanternNativeAuthService',
           'ApplyNativeLogout', request, ApplyNativeLogoutResponse());
+  $async.Future<BeginNativeLoginResponse> beginNativeRegistration(
+          $pb.ClientContext? ctx, BeginNativeRegistrationRequest request) =>
+      _client.invoke<BeginNativeLoginResponse>(ctx, 'LanternNativeAuthService',
+          'BeginNativeRegistration', request, BeginNativeLoginResponse());
+  $async.Future<PrepareNativeRegistrationResponse> prepareNativeRegistration(
+          $pb.ClientContext? ctx, PrepareNativeRegistrationRequest request) =>
+      _client.invoke<PrepareNativeRegistrationResponse>(
+          ctx,
+          'LanternNativeAuthService',
+          'PrepareNativeRegistration',
+          request,
+          PrepareNativeRegistrationResponse());
+  $async.Future<ApplyNativeRegistrationResponse> applyNativeRegistration(
+          $pb.ClientContext? ctx, ApplyNativeRegistrationRequest request) =>
+      _client.invoke<ApplyNativeRegistrationResponse>(
+          ctx,
+          'LanternNativeAuthService',
+          'ApplyNativeRegistration',
+          request,
+          ApplyNativeRegistrationResponse());
+  $async.Future<GetNativeRegistrationStatusResponse>
+      getNativeRegistrationStatus($pb.ClientContext? ctx,
+              GetNativeRegistrationStatusRequest request) =>
+          _client.invoke<GetNativeRegistrationStatusResponse>(
+              ctx,
+              'LanternNativeAuthService',
+              'GetNativeRegistrationStatus',
+              request,
+              GetNativeRegistrationStatusResponse());
 }
 
 const $core.bool _omitFieldNames =

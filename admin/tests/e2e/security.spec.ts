@@ -837,3 +837,31 @@ test("generic committed-ID conflict remains status-only across route remount", a
     fixture.calls.filter((call) => call.method === "ApplySecurityChanges"),
   ).toHaveLength(1);
 });
+
+for (const width of [1280, 390]) {
+  test(`UID-bound Role editing fails closed at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    const fixture = await securityUI(page, { uidRole: true });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${fixture.primary}/security/roles`);
+    await page
+      .getByRole("button", { name: "Personal user (personal_user) · 1 rules" })
+      .click();
+    await expect(
+      page.getByText(
+        "This Role uses an unsupported action or selector. Ask the operator to edit it with a compatible policy client.",
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("textbox", { name: "Role ID", exact: true }),
+    ).toHaveValue("");
+    expect(
+      fixture.calls.some((call) => call.method === "PrepareSecurityChanges"),
+    ).toBe(false);
+    await page.screenshot({
+      path: testInfo.outputPath(`uid-role-${width}.png`),
+      fullPage: true,
+    });
+  });
+}

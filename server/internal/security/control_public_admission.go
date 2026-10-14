@@ -195,6 +195,19 @@ func (o *CurrentAuthority) RefreshRequest(ctx context.Context) (context.Context,
 	if err != nil {
 		return ctx, nil, err
 	}
+	if err := o.waitCurrentRenewal(ctx); err != nil {
+		return ctx, nil, err
+	}
+
+	return o.WithRequestCredential(ctx, p)
+}
+
+// Shared only by explicit control/session/registration post-Apply disclosure.
+// It renews the existing owner; ordinary Admit/data/output still perform no I/O.
+func (o *CurrentAuthority) waitCurrentRenewal(ctx context.Context) error {
+	if o == nil || o.origin == nil {
+		return ErrAuthorityUnavailable
+	}
 	// Only the explicit control/session post-Apply path may request a new
 	// renewal here. Ordinary Admit/Check/data/output never makes peer calls.
 	if !o.Ready(ctx) {
@@ -205,10 +218,10 @@ func (o *CurrentAuthority) RefreshRequest(ctx context.Context) (context.Context,
 		defer cancel()
 		for !o.Ready(wait) {
 			if wait.Err() != nil || o.origin.network.ctx.Err() != nil {
-				return ctx, nil, ErrAuthorityUnavailable
+				return ErrAuthorityUnavailable
 			}
 			if _, _, err := o.TimeBounds(); err != nil {
-				return ctx, nil, ErrAuthorityUnavailable
+				return ErrAuthorityUnavailable
 			}
 			_ = o.origin.network.renewAuthority(wait)
 			if o.Ready(wait) {
@@ -218,10 +231,10 @@ func (o *CurrentAuthority) RefreshRequest(ctx context.Context) (context.Context,
 			select {
 			case <-wait.Done():
 				timer.Stop()
-				return ctx, nil, ErrAuthorityUnavailable
+				return ErrAuthorityUnavailable
 			case <-timer.C:
 			}
 		}
 	}
-	return o.WithRequestCredential(ctx, p)
+	return nil
 }

@@ -155,7 +155,7 @@ func TestSecurityCodecUIDSelector(t *testing.T) {
 		t.Fatal("missing data selector became Global")
 	}
 	read := encodeSecurityUser(security.Principal{UserUID: "11111111111111111111111111111111"})
-	if read.UserUid == "" {
+	if read.GetUserId() == "" {
 		t.Fatal("read-only UID omitted")
 	}
 }

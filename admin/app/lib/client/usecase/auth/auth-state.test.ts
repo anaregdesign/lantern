@@ -122,6 +122,27 @@ function fixture(
     recovery,
   );
 }
+
+test("restored self ID follows authenticated account and is absent after sign-out", async () => {
+  let current: BrowserSession | null = session();
+  const controller = fixture({ session: async () => current });
+  for (const id of ["1".repeat(32), undefined, "2".repeat(32)]) {
+    current = session();
+    current.principal!.userId = id;
+    await controller.refresh(true);
+    const state = controller.getSnapshot();
+    expect(state.kind).toBe("ready");
+    if (state.kind === "ready") expect(state.principal.userId).toBe(id);
+  }
+  current = null;
+  await controller.refresh(true);
+  expect(controller.getSnapshot().kind).toBe("login");
+  current = session();
+  current.principal!.userId = "";
+  await controller.refresh(true);
+  expect(controller.getSnapshot().kind).toBe("error");
+  controller.dispose();
+});
 describe("Admin authority lifetime", () => {
   test("scope changes abort the old display generation without extending its authority", async () => {
     let reads = 0;

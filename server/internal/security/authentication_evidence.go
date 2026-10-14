@@ -61,7 +61,9 @@ type TokenAuthenticationEvidence struct {
 // Commitment is a versioned factual commitment, not a signature or an assertion
 // of current authorization. It also rejects unrepresentable/unbounded envelopes.
 func (e TokenAuthenticationEvidence) Commitment() ([32]byte, error) {
-	native := e.Version == 2 && e.Policy == "lantern-native-login-v1"
+	nativeLogin := e.Version == 2 && e.Policy == "lantern-native-login-v1" && e.Mode == "native-login"
+	nativeRegistration := e.Version == 3 && e.Policy == "lantern-native-registration-v1" && e.Mode == "native-registration"
+	native := nativeLogin || nativeRegistration
 	if (!native && (e.Version != 1 || e.Policy != "lantern-oidc-v1")) || !e.Identity.valid() || e.Identity.Kind != OIDCPrincipal ||
 		len(e.KeyID) == 0 || len(e.KeyID) > 256 || e.Generation == [16]byte{} || e.ConfigRevision == 0 ||
 		e.Credential == [32]byte{} || e.Key == [32]byte{} || e.Configuration == [32]byte{} || e.AudienceClient == [32]byte{} ||
@@ -89,7 +91,7 @@ func (e TokenAuthenticationEvidence) Commitment() ([32]byte, error) {
 		return [32]byte{}, ErrOperationAuthorization
 	}
 	switch e.Mode {
-	case "native-login":
+	case "native-login", "native-registration":
 		if !native {
 			return [32]byte{}, ErrOperationAuthorization
 		}
@@ -123,9 +125,6 @@ func (e TokenAuthenticationEvidence) Commitment() ([32]byte, error) {
 	default:
 		return [32]byte{}, ErrOperationAuthorization
 	}
-	if native && e.Mode != "native-login" {
-		return [32]byte{}, ErrOperationAuthorization
-	}
 	raw, err := authenticationEvidenceBytes(e)
 	if err != nil || len(raw) > MaxAuthenticationEvidenceBytes {
 		return [32]byte{}, ErrOperationAuthorization
@@ -133,6 +132,9 @@ func (e TokenAuthenticationEvidence) Commitment() ([32]byte, error) {
 	domain := "lantern/authentication/token/v1\x00"
 	if native {
 		domain = "lantern/authentication/native-token/v1\x00"
+	}
+	if nativeRegistration {
+		domain = "lantern/authentication/native-registration/v1\x00"
 	}
 	return sha256.Sum256(append([]byte(domain), raw...)), nil
 }

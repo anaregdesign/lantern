@@ -17,6 +17,15 @@ String bytes(int n, [int size = 32]) => base64Encode(List.filled(size, n));
 final class MemoryCredentials implements NativeCredentialStore {
   StoredNativeCredential? saved;
   final records = <String, List<NativeLogoutReview>>{};
+  List<NativeRegistrationReview> registrationRecords = [];
+  @override
+  Future<List<NativeRegistrationReview>> registrations() async =>
+      List.of(registrationRecords);
+  @override
+  Future<void> saveRegistrations(List<NativeRegistrationReview> reviews) async {
+    registrationRecords = List.of(reviews);
+  }
+
   @override
   Future<StoredNativeCredential?> read() async => saved;
   @override
@@ -79,6 +88,15 @@ final class NativeWire implements connect.Transport {
   final now = DateTime.now().toUtc().subtract(const Duration(minutes: 1));
   final subjects = <String, String>{};
   int completions = 0, applies = 0, statuses = 0;
+  int registrationPrepares = 0,
+      registrationApplies = 0,
+      registrationStatuses = 0;
+  bool loseRegistrationResponse = false, registrationUnknown = false;
+  final registered = <String>{};
+  Map<String, dynamic>? recoveryReview;
+  String uid(String subject) => subject == 'a'
+      ? 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+      : 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
   int authorityBinding = 13;
   int sessionReads = 0, holdSessionRead = 0;
   final sessionBlocked = Completer<void>(), releaseSession = Completer<void>();
@@ -114,6 +132,9 @@ final class NativeWire implements connect.Transport {
   };
   Map<String, Object> session(String subject) => {
     'credentialProfile': 'native_end_user',
+    if (registered.contains(subject)) 'userId': uid(subject),
+    if (registered.contains(subject))
+      'personalPrefix': 'users:${uid(subject)}:',
     'clientProfileId': 'mobile',
     'serviceOrigin': endpoint.origin,
     'identity': identity(subject),
@@ -141,6 +162,8 @@ final class NativeWire implements connect.Transport {
     Map<String, Object?> response;
     switch (spec.procedure.split('/').last) {
       case 'BeginNativeLogin':
+      case 'BeginNativeRegistration':
+        recoveryReview = req['recoveryReview'] as Map<String, dynamic>?;
         expect(authorization, isNull);
         response = {
           'attemptId': random(1),
@@ -168,6 +191,82 @@ final class NativeWire implements connect.Transport {
         final issued = 'lnu1_${random(20 + completions)}';
         subjects[issued] = subject;
         response = {'credential': issued, 'session': session(subject)};
+      case 'PrepareNativeRegistration':
+        expect(authorization, isNull);
+        registrationPrepares++;
+        final registering =
+            (providerIssuer == issuer
+                    ? (req['google'] as Map<String, dynamic>)['idToken']
+                    : (req['apple'] as Map<String, dynamic>)['identityToken'])
+                as String;
+        Map<String, dynamic> review;
+        if (recoveryReview case final original?) {
+          expect(req['recoveryReview'], original);
+          if ((original['actor'] as Map<String, dynamic>)['subject'] !=
+              registering) {
+            throw connect.ConnectException(
+              connect.Code.permissionDenied,
+              'another account',
+            );
+          }
+          review = original;
+        } else {
+          review = {
+            'profile': profile,
+            'expectedCut': cut,
+            'changeId': {
+              'version': 1,
+              'domain': bytes(1),
+              'cohort': bytes(2),
+              'namespace': '1',
+              'nonce': bytes(70 + registrationPrepares, 16),
+            },
+            'actor': identity(registering),
+            'intentDigest': bytes(72),
+            'userId': uid(registering),
+            'clientProfileId': 'mobile',
+            'issuerConfigRevision': '1',
+          };
+        }
+        response = {
+          'review': review,
+          'proof': random(71),
+          'affinity': 'v2.1.${random(3)}',
+          'expiresAt': now.add(const Duration(minutes: 10)).toIso8601String(),
+        };
+      case 'ApplyNativeRegistration':
+        expect(authorization, isNull);
+        expect(
+          store.registrationRecords,
+          isNotEmpty,
+          reason: 'review must be durable before Apply',
+        );
+        registrationApplies++;
+        final review = req['review'] as Map<String, dynamic>;
+        final registering =
+            (review['actor'] as Map<String, dynamic>)['subject'] as String;
+        registered.add(registering);
+        final issued = 'lnu1_${random(100 + registrationApplies)}';
+        subjects[issued] = registering;
+        if (loseRegistrationResponse) {
+          throw connect.ConnectException(
+            connect.Code.unavailable,
+            'lost registration response',
+          );
+        }
+        response = {
+          'currentResult': registrationStatus(review),
+          'credential': issued,
+          'session': session(registering),
+        };
+      case 'GetNativeRegistrationStatus':
+        expect(authorization, isNull);
+        registrationStatuses++;
+        response = {
+          'currentResult': registrationStatus(
+            req['review'] as Map<String, dynamic>,
+          ),
+        };
       case 'GetNativeSession':
         if (++sessionReads == holdSessionRead) {
           sessionBlocked.complete();
@@ -245,6 +344,18 @@ final class NativeWire implements connect.Transport {
       connect.Headers(),
     );
   }
+
+  Map<String, Object?> registrationStatus(Map<String, dynamic> review) => {
+    'profile': review['profile'],
+    'changeId': review['changeId'],
+    'intentDigest': review['intentDigest'],
+    if (!registrationUnknown)
+      'original': {
+        'changeId': review['changeId'],
+        'intentDigest': review['intentDigest'],
+        'disposition': 1,
+      },
+  };
 
   @override
   Future<connect.StreamResponse<I, O>>

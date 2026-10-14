@@ -436,6 +436,13 @@ points at the new `pb` tag.
 
 ## Authentication
 
+`GetCurrentUserID(ctx)` reads the authenticated Principal's optional immutable
+Server-assigned ID through self-inspection, without a data/admin Role. Both
+`Lantern` and `Failover` make one attempt; `nil` means an authenticated UID-less
+legacy or machine Principal. Missing authentication is an error. See the
+[current-source ID contract](../../docs/native-user-registration.md#client-use-and-installation-boundary).
+
+
 TLS / mTLS is plumbed through `WithHTTPClient` — see the [Transport](#transport)
 section. Per-RPC authentication (bearer tokens, OAuth) is supplied by
 wrapping the `http.Client`'s `Transport` with a custom `http.RoundTripper`

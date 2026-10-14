@@ -3,6 +3,7 @@ import {
   AuthMode,
   SecurityPrincipalKind,
   currentSecurityVersionBinding,
+  currentUserId,
   currentProfileBinding,
   currentCutBinding,
   validateCurrentSessionReview,
@@ -53,6 +54,7 @@ export type AuthState =
 export function principalPartition(
   principal: GetCurrentPrincipalResponse,
 ): string {
+  currentUserId(principal);
   const { identity, version, expiresAt } = principal;
   if (
     !identity ||

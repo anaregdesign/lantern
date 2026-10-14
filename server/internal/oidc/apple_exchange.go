@@ -30,7 +30,8 @@ func nativeExchangeBinding(c NativeCompletion) [32]byte {
 		Trust                Trust
 		Profile              security.CurrentProfile
 		Attempt, Code, Nonce [32]byte
-	}{t.trust, t.profile, c.attempt.id, evidenceDigest("authorization-code", c.credential.code), evidenceDigest("nonce", t.nonce)})
+		Registration         security.NativeRegistrationPurpose `json:",omitzero"`
+	}{t.trust, t.profile, c.attempt.id, evidenceDigest("authorization-code", c.credential.code), evidenceDigest("nonce", t.nonce), t.registration})
 }
 
 // ExchangeApple accepts only an opaque consumed Apple completion. It sends the

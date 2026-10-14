@@ -77,6 +77,7 @@ COMMAND LAYOUT
   bulk        stream NDJSON from a file or stdin (bulk load)
   repl        interactive prompt
   version     print client version
+  whoami      read the current authenticated user's optional user_id
   completion  generate shell completions (bash, zsh, fish, powershell)
 
 GLOBAL CONNECTION FLAGS

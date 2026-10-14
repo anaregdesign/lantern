@@ -102,6 +102,8 @@ Unknown users must not gain ordinary Admission through `skipActive`, provisional
 
 `S1RegisterPrincipal` commits UID, Principal, initial assignment and verified human enrollment together in one sys operation. Session issuance is a separate existing `S1IssueSession`; profile data is a third independent operation. Do not describe them as one atomic transaction. A trusted registration-to-session transition must verify the original Applied and installed identity/UID/lineage, preserving original evidence and current validity; never fabricate native-login-v2 evidence or repeat Apple exchange.
 
+The registration-to-session implementation confines the separate session transition to the registration original's exact resulting cut. Any intervening semantic policy or lineage change requires ordinary login; control NOOPs do not change the cut. This conservative check proves the original installed UID/lineage without introducing a second historical state owner. The final session response checks both the original registration verification and the installed session at one output-time sample.
+
 The authn flow owner retains only bounded volatile proof material: random opaque 256-bit proof (digest comparison), process/identity/review/purpose binding, expiry at the earlier of the original absolute 10-minute attempt or evidence expiry, maximum 128 verified pending entries and 8 MiB, also subject to current-owner pending bounds. Use existing lifecycle/request cleanup; no new worker or durable credential store. Expiry/cancel/Close discards token/code/producer references without promising physical string zeroization. Atomic Apply ownership starts session issuance at most once; duplicate Apply converges to original status. Preserve no-store, bounded decoding, redaction and output fencing.
 
 - Save the original review before Apply dispatch. An uncertain dispatch remains status-first; not-found is unresolved, never rollback or permission to restamp/replay.
@@ -131,3 +133,61 @@ The remaining product/activation decision is **which exact provider profiles, if
 5. Freeze the cohesive candidate; run required repository gates/F/Q, targeted safety-boundary review when warranted, PR CI, normal merge and exact-main checks. Resume selected provider/device checks only afterward against actual personal prefixes.
 
 Finite cases cover: sequential/concurrent signup and UID collision; legacy active/suspended/deleted users; no assignment resurrection; closed policy/capacity/restart; A/B Role/cache/Snapshot isolation and churn; delimiter/missing UID/unknown selector/Deny/Explain/non-expansion; personal-root arbitrary-subkey CRUD/TTL/query/mixed denied batches/Edges/CDC/cursors/receipts; login/register/recovery mix-up and invalid provider/proof/current evidence; Apple exchange once; every described response-loss boundary and output fence; real-wire signup/session/self data/other-user denial; SQLite A→B→A retaining uncertain IDs; Admin round trips; a focused hot-path binding/auth benchmark. Integrate finite r2.1 controls for static public read/self write/other-user refusal, UID/literal Denies, suffix and byte boundaries, UID-less users, cache/CDC separation, Edge direction, unknown wire/Admin variants and unchanged old canonical bytes. These are rule-evaluator fixtures, not a public-feature or provider/device campaign. Extend existing harnesses with bounded positive/negative cases, without an unbounded load/soak or duplicate reviewer campaign.
+
+## Client use and installation boundary
+
+All clients can read the authenticated Principal's installed ID through the
+existing `GetCurrentPrincipal` self-inspection RPC, without a data or management
+Role. The wire field is optional `user_id`; it is the same immutable ID after
+registration, ordinary login and restoration. It is not a provider subject,
+email, client-generated key, access grant or a new authentication factor.
+
+| Consumer | Current-source API | ID absent |
+|---|---|---|
+| Go | `GetCurrentUserID(ctx)` on `Lantern` or `Failover` | `nil` |
+| Node / browser | `SecurityClient.getCurrentUserId()`; `currentUserId(principal)` for a browser session | `undefined` |
+| Dart | `LanternClient.getCurrentUserId()`; `NativeSession.userId` | `null` |
+| Rust | `LanternClient::current_user_id(CallOptions)` | `None` |
+| Admin | Ready auth state's `principal.userId` | `undefined` |
+| CLI | `lantern-cli whoami` | JSON `{"user_id":null}` |
+| MCP | `current_user` | Structured `{"user_id":null}` |
+
+Authenticated UID-less legacy and machine Principals have no ID. Missing or
+expired authentication returns the existing authentication error; clients do not
+return a prior account's cached ID. Malformed present IDs and machine IDs are
+refused. Self-inspection makes one attempt and does not register, change Roles,
+refresh credentials or resurrect assignments. Session metadata belongs to that
+session; account changes clear the app's active session before new work starts.
+MCP reports only its configured Lantern backend credential's Principal, never
+the conversation user or announced agent. These APIs are current source and
+require compatible Server/SDK builds; package publication remains separate.
+
+
+The Dart public `NativeSession` exposes nullable `userId` and `personalPrefix`.
+A successful registration with a disclosed session returns them through
+`NativeRegistrationResult.sessionCredential.session`. Ordinary
+`completeNativeLogin().session` and `getNativeSession().session` return the same
+installed values after re-login or app restoration. Legacy Principals without a
+UID return null for both until explicit registration. `NativePrincipal.subject`
+remains the exact OIDC subject and is not the Lantern UID. A prepared review's UID
+is only a proposal; consumers use session metadata after installation, and every
+operation is authorized against the Server's current Principal binding.
+
+The app calls Begin → provider plugin → Prepare, saves `prepared.review.toBytes()`
+before Apply, and stores a disclosed session credential through its own secure
+store. After uncertain Apply, restore `NativeRegistrationReview.fromBytes`, begin
+registration with `recoveryReview`, authenticate the same provider identity and
+Prepare a recovery proof, then call `getNativeRegistrationStatus`. Unknown stays
+unresolved. Applied without a session requires ordinary sign-in. Recovery proofs
+cannot Apply; neither session credentials nor provider tokens appear in review
+bytes. The example uses the returned personal prefix for data keys while retaining
+its existing endpoint/identity/profile SQLite partition.
+
+The current-v2 transport version remains 2, but its credential and purpose
+contracts now include registration evidence v3 and the trusted UID selector/bound
+scope semantics. Their admission profile digest feeds the origin descriptor,
+protocol scope, signed membership/provisioning and existing custody checks. Old
+provisioning profiles are rejected; this change does not claim mixed-version
+rollout or rewrite old journals. Operator rollout requires the existing coordinated
+provisioning/custody procedure for the new exact contract. Retained development
+journals and OAuth clients are not reset by implementation or tests.

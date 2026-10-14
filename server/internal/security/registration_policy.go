@@ -47,6 +47,13 @@ func (p *RegistrationPolicy) valid() bool {
 	return true
 }
 
+func ValidateRegistrationPolicyConfiguration(p *RegistrationPolicy) error {
+	if p == nil || !p.valid() {
+		return ErrInvalidImage
+	}
+	return nil
+}
+
 func (p *RegistrationPolicy) clone() *RegistrationPolicy {
 	if p == nil {
 		return nil

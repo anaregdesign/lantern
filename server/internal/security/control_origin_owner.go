@@ -37,7 +37,8 @@ type authorityOriginRequest struct {
 	owner      *authorityOriginOwner
 	id         FullChangeID
 	operation  OperationIdentity
-	credential authorityCredential
+	credential authorityOriginCredential
+	use        authorityOriginUse
 }
 
 // Private origin acknowledgement only: these bytes are available for the
@@ -158,7 +159,11 @@ func (o *authorityOriginOwner) authenticate(ctx context.Context, producer Curren
 }
 
 func (o *authorityOriginOwner) prepare(ctx context.Context, producer CurrentCredentialProducer, reviewed SemanticCut, command S1Command) (*authorityOriginRequest, error) {
-	if !ordinaryS1Command(command.Kind) {
+	return o.prepareUse(ctx, producer, reviewed, command, authorityOriginUse{})
+}
+
+func (o *authorityOriginOwner) prepareUse(ctx context.Context, producer CurrentCredentialProducer, reviewed SemanticCut, command S1Command, use authorityOriginUse) (*authorityOriginRequest, error) {
+	if !use.accepts(command) {
 		return nil, ErrPermissionDenied
 	}
 	if o == nil || o.descriptor.Namespace == 0 || !o.network.enterCall() {
@@ -171,7 +176,7 @@ func (o *authorityOriginOwner) prepare(ctx context.Context, producer CurrentCred
 		return nil, errS3ACredit
 	}
 	defer func() { <-o.assemblies }()
-	credential, err := o.authenticate(ctx, producer)
+	credential, err := o.authenticateUse(ctx, producer, use)
 	if err != nil {
 		return nil, err
 	}
@@ -186,13 +191,13 @@ func (o *authorityOriginOwner) prepare(ctx context.Context, producer CurrentCred
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nil, err
 	}
-	r := &authorityOriginRequest{o, FullChangeID{S1Version, reviewed.Domain, reviewed.Cohort, o.descriptor.Namespace, nonce}, op, credential}
+	r := &authorityOriginRequest{owner: o, id: FullChangeID{S1Version, reviewed.Domain, reviewed.Cohort, o.descriptor.Namespace, nonce}, operation: op, credential: credential, use: use}
 	charge := uint64(2*(len(op.canonical)+MaxAuthenticationEvidenceBytes) + 4096)
 	k := o.network.kernel
 	k.gate.Lock()
 	defer k.gate.Unlock()
 	defer k.poisonPanic()
-	if o.closed || k.readyLocked() != nil || !credential.matches(k.replayState.projection) || !r.id.valid() || r.id.Namespace <= k.replayState.retiredThrough {
+	if o.closed || k.readyLocked() != nil || !credential.matches(k.replayState) || !r.id.valid() || r.id.Namespace <= k.replayState.retiredThrough {
 		return nil, ErrAuthorityUnavailable
 	}
 	limit := min(k.config.PendingBytes, uint64(16<<20))
@@ -284,7 +289,10 @@ func (o *authorityOriginOwner) consume(ctx context.Context, r *authorityOriginRe
 	if err != nil {
 		return result, err
 	}
-	credential, err := o.authenticate(ctx, producer)
+	if r == nil || r.owner != o {
+		return result, ErrPermissionDenied
+	}
+	credential, err := o.authenticateUse(ctx, producer, r.use)
 	if err != nil {
 		return result, err
 	}
@@ -297,12 +305,15 @@ func (o *authorityOriginOwner) consume(ctx context.Context, r *authorityOriginRe
 	if knownResult, known, lookupErr := o.knownLocked(r); known || lookupErr != nil {
 		return knownResult, lookupErr
 	}
-	if o.closed || o.requests[r] == 0 || k.chosen != nil || !credential.matches(k.replayState.projection) || credential.actor != r.operation.actor || credential.cut != r.operation.reviewed {
+	if o.closed || o.requests[r] == 0 || k.chosen != nil || !credential.matches(k.replayState) || credential.actor != r.operation.actor || credential.cut != r.operation.reviewed {
 		return result, ErrAuthorityUnavailable
 	}
 	command, err := r.operation.command()
 	if err != nil {
 		return result, err
+	}
+	if !r.use.accepts(command) || r.use.kind != "" && (credential.claim.Verification != r.credential.claim.Verification || proof != [32]byte{}) {
+		return result, ErrPermissionDenied
 	}
 	assessment, err := AssessS1(k.replayState.projection, r.operation)
 	if err != nil {
@@ -388,7 +399,7 @@ func (o *authorityOriginOwner) consume(ctx context.Context, r *authorityOriginRe
 		o.hooks.afterConsume()
 	}
 	h.CredentialEvidence = authorityCredentialEvidence(h)
-	a := &s1VerifiedAuthorization{h.Authentication, h.Lineage, h.CredentialEvidence, h.PurposeEvidence, h.PurposeBinding, h.ConsumeUpper, h.CredentialDeadline, h.PurposeDeadline}
+	a := &s1VerifiedAuthorization{h.Authentication, h.Lineage, h.CredentialEvidence, h.PurposeEvidence, h.PurposeBinding, h.ConsumeUpper, h.CredentialDeadline, h.PurposeDeadline, h.Credential.Registration}
 	h.Value = (&S1Handoff{h.ID, r.operation, h.OriginDigest, h.Serial, a}).digest()
 	body, err := authorityHistoricalBody(h, r.operation.Encode(), k.trust.bounds)
 	if err != nil || uint64(len(body)+64) > hBound {

@@ -1,12 +1,113 @@
 package oidc
 
 import (
+	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/golang-jwt/jwt/v5"
 )
+
+func TestNativeRegistrationPurposeIsolation(t *testing.T) {
+	for _, kind := range []string{security.GoogleIDToken, security.AppleNative, security.AppleAndroidWeb} {
+		t.Run(kind, func(t *testing.T) {
+			p := newNativeProviderFixture(t, kind)
+			for _, purpose := range []security.NativeRegistrationPurpose{{Kind: "registration"}, {Kind: "registration-recovery", Original: [32]byte{9}}} {
+				t.Run(purpose.Kind, func(t *testing.T) {
+					start, err := p.transactions.BeginRegistration(p.trust, p.profile, "mobile", p.discovery, purpose)
+					if err != nil {
+						t.Fatal(err)
+					}
+					a, err := p.transactions.Lookup(start.AttemptID, start.CompletionSecret, start.Affinity)
+					if err != nil || a.IsLogin() || a.RegistrationPurpose() != purpose {
+						t.Fatal("attempt purpose lost", err)
+					}
+					claims := p.claims(start)
+					claims["auth_time"] = p.now().Add(-48 * time.Hour).Unix()
+					raw := p.sign(t, claims)
+					input := NativeInput{Provider: "google", IDToken: raw}
+					if kind != security.GoogleIDToken {
+						input.Provider, input.State, input.AuthorizationCode = "apple", start.State, "single-code"
+					}
+					credential, err := p.verifier.VerifyNativeCredential(t.Context(), a, input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if kind == security.AppleAndroidWeb {
+						callback, err := p.transactions.CallbackAttempt("mobile", start.State)
+						if err != nil || callback != a || callback.RegistrationPurpose() != purpose {
+							t.Fatal("callback lost purpose", err)
+						}
+						if _, err := p.transactions.StageCallback(callback, credential); err != nil {
+							t.Fatal(err)
+						}
+					}
+					completion, err := p.transactions.Consume(a, credential)
+					if err != nil || completion.IsLogin() || completion.RegistrationPurpose() != purpose {
+						t.Fatal("completion lost purpose", err)
+					}
+					var tokens NativeTokens
+					if kind != security.GoogleIDToken {
+						p.mu.Lock()
+						p.exchange = func(w http.ResponseWriter, _ *http.Request) {
+							_ = json.NewEncoder(w).Encode(map[string]any{"id_token": raw, "token_type": "Bearer"})
+						}
+						p.mu.Unlock()
+						tokens, err = p.fetcher.ExchangeApple(t.Context(), completion, p.secrets)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					if _, err := p.verifier.VerifyNativeCompletion(t.Context(), completion, tokens); err == nil {
+						t.Fatal("registration completion entered ordinary login")
+					}
+					for range 2 {
+						verified, err := p.verifier.VerifyNativeRegistrationCompletion(t.Context(), completion, tokens)
+						if err != nil {
+							t.Fatal(err)
+						}
+						e := verified.Evidence()
+						if e.Version != 3 || e.Mode != "native-registration" || e.Native.Registration != purpose || e.AuthTime.Time() != p.now().Add(-48*time.Hour) {
+							t.Fatal("purpose or signed facts were relabeled")
+						}
+					}
+					if kind != security.GoogleIDToken {
+						before := p.exchanges.Load()
+						if _, err := p.fetcher.ExchangeApple(t.Context(), completion, p.secrets); err == nil || p.exchanges.Load() != before {
+							t.Fatal("registration code exchanged twice", err)
+						}
+					}
+					if _, err := p.transactions.Consume(a, credential); err == nil {
+						t.Fatal("registration completion consumed twice")
+					}
+				})
+			}
+			start, a := p.begin(t)
+			input := NativeInput{Provider: "google", IDToken: p.sign(t, p.claims(start))}
+			if kind != security.GoogleIDToken {
+				input.Provider, input.State, input.AuthorizationCode = "apple", start.State, "code"
+			}
+			credential, err := p.verifier.VerifyNativeCredential(t.Context(), a, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind == security.AppleAndroidWeb {
+				if _, err := p.transactions.StageCallback(a, credential); err != nil {
+					t.Fatal(err)
+				}
+			}
+			completion, err := p.transactions.Consume(a, credential)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.verifier.VerifyNativeRegistrationCompletion(t.Context(), completion, NativeTokens{}); err == nil {
+				t.Fatal("ordinary login became registration")
+			}
+		})
+	}
+}
 
 func TestNativeGoogleRepeatedAndRestoredAuthentication(t *testing.T) {
 	p := newNativeProviderFixture(t, security.GoogleIDToken)

@@ -48,6 +48,18 @@ const (
 	// LanternNativeAuthServiceApplyNativeLogoutProcedure is the fully-qualified name of the
 	// LanternNativeAuthService's ApplyNativeLogout RPC.
 	LanternNativeAuthServiceApplyNativeLogoutProcedure = "/graph.v1.LanternNativeAuthService/ApplyNativeLogout"
+	// LanternNativeAuthServiceBeginNativeRegistrationProcedure is the fully-qualified name of the
+	// LanternNativeAuthService's BeginNativeRegistration RPC.
+	LanternNativeAuthServiceBeginNativeRegistrationProcedure = "/graph.v1.LanternNativeAuthService/BeginNativeRegistration"
+	// LanternNativeAuthServicePrepareNativeRegistrationProcedure is the fully-qualified name of the
+	// LanternNativeAuthService's PrepareNativeRegistration RPC.
+	LanternNativeAuthServicePrepareNativeRegistrationProcedure = "/graph.v1.LanternNativeAuthService/PrepareNativeRegistration"
+	// LanternNativeAuthServiceApplyNativeRegistrationProcedure is the fully-qualified name of the
+	// LanternNativeAuthService's ApplyNativeRegistration RPC.
+	LanternNativeAuthServiceApplyNativeRegistrationProcedure = "/graph.v1.LanternNativeAuthService/ApplyNativeRegistration"
+	// LanternNativeAuthServiceGetNativeRegistrationStatusProcedure is the fully-qualified name of the
+	// LanternNativeAuthService's GetNativeRegistrationStatus RPC.
+	LanternNativeAuthServiceGetNativeRegistrationStatusProcedure = "/graph.v1.LanternNativeAuthService/GetNativeRegistrationStatus"
 )
 
 // LanternNativeAuthServiceClient is a client for the graph.v1.LanternNativeAuthService service.
@@ -57,6 +69,10 @@ type LanternNativeAuthServiceClient interface {
 	GetNativeSession(context.Context, *connect.Request[v1.GetNativeSessionRequest]) (*connect.Response[v1.GetNativeSessionResponse], error)
 	PrepareNativeLogout(context.Context, *connect.Request[v1.PrepareNativeLogoutRequest]) (*connect.Response[v1.PrepareNativeLogoutResponse], error)
 	ApplyNativeLogout(context.Context, *connect.Request[v1.ApplyNativeLogoutRequest]) (*connect.Response[v1.ApplyNativeLogoutResponse], error)
+	BeginNativeRegistration(context.Context, *connect.Request[v1.BeginNativeRegistrationRequest]) (*connect.Response[v1.BeginNativeLoginResponse], error)
+	PrepareNativeRegistration(context.Context, *connect.Request[v1.PrepareNativeRegistrationRequest]) (*connect.Response[v1.PrepareNativeRegistrationResponse], error)
+	ApplyNativeRegistration(context.Context, *connect.Request[v1.ApplyNativeRegistrationRequest]) (*connect.Response[v1.ApplyNativeRegistrationResponse], error)
+	GetNativeRegistrationStatus(context.Context, *connect.Request[v1.GetNativeRegistrationStatusRequest]) (*connect.Response[v1.GetNativeRegistrationStatusResponse], error)
 }
 
 // NewLanternNativeAuthServiceClient constructs a client for the graph.v1.LanternNativeAuthService
@@ -100,16 +116,44 @@ func NewLanternNativeAuthServiceClient(httpClient connect.HTTPClient, baseURL st
 			connect.WithSchema(lanternNativeAuthServiceMethods.ByName("ApplyNativeLogout")),
 			connect.WithClientOptions(opts...),
 		),
+		beginNativeRegistration: connect.NewClient[v1.BeginNativeRegistrationRequest, v1.BeginNativeLoginResponse](
+			httpClient,
+			baseURL+LanternNativeAuthServiceBeginNativeRegistrationProcedure,
+			connect.WithSchema(lanternNativeAuthServiceMethods.ByName("BeginNativeRegistration")),
+			connect.WithClientOptions(opts...),
+		),
+		prepareNativeRegistration: connect.NewClient[v1.PrepareNativeRegistrationRequest, v1.PrepareNativeRegistrationResponse](
+			httpClient,
+			baseURL+LanternNativeAuthServicePrepareNativeRegistrationProcedure,
+			connect.WithSchema(lanternNativeAuthServiceMethods.ByName("PrepareNativeRegistration")),
+			connect.WithClientOptions(opts...),
+		),
+		applyNativeRegistration: connect.NewClient[v1.ApplyNativeRegistrationRequest, v1.ApplyNativeRegistrationResponse](
+			httpClient,
+			baseURL+LanternNativeAuthServiceApplyNativeRegistrationProcedure,
+			connect.WithSchema(lanternNativeAuthServiceMethods.ByName("ApplyNativeRegistration")),
+			connect.WithClientOptions(opts...),
+		),
+		getNativeRegistrationStatus: connect.NewClient[v1.GetNativeRegistrationStatusRequest, v1.GetNativeRegistrationStatusResponse](
+			httpClient,
+			baseURL+LanternNativeAuthServiceGetNativeRegistrationStatusProcedure,
+			connect.WithSchema(lanternNativeAuthServiceMethods.ByName("GetNativeRegistrationStatus")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // lanternNativeAuthServiceClient implements LanternNativeAuthServiceClient.
 type lanternNativeAuthServiceClient struct {
-	beginNativeLogin    *connect.Client[v1.BeginNativeLoginRequest, v1.BeginNativeLoginResponse]
-	completeNativeLogin *connect.Client[v1.CompleteNativeLoginRequest, v1.CompleteNativeLoginResponse]
-	getNativeSession    *connect.Client[v1.GetNativeSessionRequest, v1.GetNativeSessionResponse]
-	prepareNativeLogout *connect.Client[v1.PrepareNativeLogoutRequest, v1.PrepareNativeLogoutResponse]
-	applyNativeLogout   *connect.Client[v1.ApplyNativeLogoutRequest, v1.ApplyNativeLogoutResponse]
+	beginNativeLogin            *connect.Client[v1.BeginNativeLoginRequest, v1.BeginNativeLoginResponse]
+	completeNativeLogin         *connect.Client[v1.CompleteNativeLoginRequest, v1.CompleteNativeLoginResponse]
+	getNativeSession            *connect.Client[v1.GetNativeSessionRequest, v1.GetNativeSessionResponse]
+	prepareNativeLogout         *connect.Client[v1.PrepareNativeLogoutRequest, v1.PrepareNativeLogoutResponse]
+	applyNativeLogout           *connect.Client[v1.ApplyNativeLogoutRequest, v1.ApplyNativeLogoutResponse]
+	beginNativeRegistration     *connect.Client[v1.BeginNativeRegistrationRequest, v1.BeginNativeLoginResponse]
+	prepareNativeRegistration   *connect.Client[v1.PrepareNativeRegistrationRequest, v1.PrepareNativeRegistrationResponse]
+	applyNativeRegistration     *connect.Client[v1.ApplyNativeRegistrationRequest, v1.ApplyNativeRegistrationResponse]
+	getNativeRegistrationStatus *connect.Client[v1.GetNativeRegistrationStatusRequest, v1.GetNativeRegistrationStatusResponse]
 }
 
 // BeginNativeLogin calls graph.v1.LanternNativeAuthService.BeginNativeLogin.
@@ -137,6 +181,26 @@ func (c *lanternNativeAuthServiceClient) ApplyNativeLogout(ctx context.Context, 
 	return c.applyNativeLogout.CallUnary(ctx, req)
 }
 
+// BeginNativeRegistration calls graph.v1.LanternNativeAuthService.BeginNativeRegistration.
+func (c *lanternNativeAuthServiceClient) BeginNativeRegistration(ctx context.Context, req *connect.Request[v1.BeginNativeRegistrationRequest]) (*connect.Response[v1.BeginNativeLoginResponse], error) {
+	return c.beginNativeRegistration.CallUnary(ctx, req)
+}
+
+// PrepareNativeRegistration calls graph.v1.LanternNativeAuthService.PrepareNativeRegistration.
+func (c *lanternNativeAuthServiceClient) PrepareNativeRegistration(ctx context.Context, req *connect.Request[v1.PrepareNativeRegistrationRequest]) (*connect.Response[v1.PrepareNativeRegistrationResponse], error) {
+	return c.prepareNativeRegistration.CallUnary(ctx, req)
+}
+
+// ApplyNativeRegistration calls graph.v1.LanternNativeAuthService.ApplyNativeRegistration.
+func (c *lanternNativeAuthServiceClient) ApplyNativeRegistration(ctx context.Context, req *connect.Request[v1.ApplyNativeRegistrationRequest]) (*connect.Response[v1.ApplyNativeRegistrationResponse], error) {
+	return c.applyNativeRegistration.CallUnary(ctx, req)
+}
+
+// GetNativeRegistrationStatus calls graph.v1.LanternNativeAuthService.GetNativeRegistrationStatus.
+func (c *lanternNativeAuthServiceClient) GetNativeRegistrationStatus(ctx context.Context, req *connect.Request[v1.GetNativeRegistrationStatusRequest]) (*connect.Response[v1.GetNativeRegistrationStatusResponse], error) {
+	return c.getNativeRegistrationStatus.CallUnary(ctx, req)
+}
+
 // LanternNativeAuthServiceHandler is an implementation of the graph.v1.LanternNativeAuthService
 // service.
 type LanternNativeAuthServiceHandler interface {
@@ -145,6 +209,10 @@ type LanternNativeAuthServiceHandler interface {
 	GetNativeSession(context.Context, *connect.Request[v1.GetNativeSessionRequest]) (*connect.Response[v1.GetNativeSessionResponse], error)
 	PrepareNativeLogout(context.Context, *connect.Request[v1.PrepareNativeLogoutRequest]) (*connect.Response[v1.PrepareNativeLogoutResponse], error)
 	ApplyNativeLogout(context.Context, *connect.Request[v1.ApplyNativeLogoutRequest]) (*connect.Response[v1.ApplyNativeLogoutResponse], error)
+	BeginNativeRegistration(context.Context, *connect.Request[v1.BeginNativeRegistrationRequest]) (*connect.Response[v1.BeginNativeLoginResponse], error)
+	PrepareNativeRegistration(context.Context, *connect.Request[v1.PrepareNativeRegistrationRequest]) (*connect.Response[v1.PrepareNativeRegistrationResponse], error)
+	ApplyNativeRegistration(context.Context, *connect.Request[v1.ApplyNativeRegistrationRequest]) (*connect.Response[v1.ApplyNativeRegistrationResponse], error)
+	GetNativeRegistrationStatus(context.Context, *connect.Request[v1.GetNativeRegistrationStatusRequest]) (*connect.Response[v1.GetNativeRegistrationStatusResponse], error)
 }
 
 // NewLanternNativeAuthServiceHandler builds an HTTP handler from the service implementation. It
@@ -184,6 +252,30 @@ func NewLanternNativeAuthServiceHandler(svc LanternNativeAuthServiceHandler, opt
 		connect.WithSchema(lanternNativeAuthServiceMethods.ByName("ApplyNativeLogout")),
 		connect.WithHandlerOptions(opts...),
 	)
+	lanternNativeAuthServiceBeginNativeRegistrationHandler := connect.NewUnaryHandler(
+		LanternNativeAuthServiceBeginNativeRegistrationProcedure,
+		svc.BeginNativeRegistration,
+		connect.WithSchema(lanternNativeAuthServiceMethods.ByName("BeginNativeRegistration")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternNativeAuthServicePrepareNativeRegistrationHandler := connect.NewUnaryHandler(
+		LanternNativeAuthServicePrepareNativeRegistrationProcedure,
+		svc.PrepareNativeRegistration,
+		connect.WithSchema(lanternNativeAuthServiceMethods.ByName("PrepareNativeRegistration")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternNativeAuthServiceApplyNativeRegistrationHandler := connect.NewUnaryHandler(
+		LanternNativeAuthServiceApplyNativeRegistrationProcedure,
+		svc.ApplyNativeRegistration,
+		connect.WithSchema(lanternNativeAuthServiceMethods.ByName("ApplyNativeRegistration")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternNativeAuthServiceGetNativeRegistrationStatusHandler := connect.NewUnaryHandler(
+		LanternNativeAuthServiceGetNativeRegistrationStatusProcedure,
+		svc.GetNativeRegistrationStatus,
+		connect.WithSchema(lanternNativeAuthServiceMethods.ByName("GetNativeRegistrationStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/graph.v1.LanternNativeAuthService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case LanternNativeAuthServiceBeginNativeLoginProcedure:
@@ -196,6 +288,14 @@ func NewLanternNativeAuthServiceHandler(svc LanternNativeAuthServiceHandler, opt
 			lanternNativeAuthServicePrepareNativeLogoutHandler.ServeHTTP(w, r)
 		case LanternNativeAuthServiceApplyNativeLogoutProcedure:
 			lanternNativeAuthServiceApplyNativeLogoutHandler.ServeHTTP(w, r)
+		case LanternNativeAuthServiceBeginNativeRegistrationProcedure:
+			lanternNativeAuthServiceBeginNativeRegistrationHandler.ServeHTTP(w, r)
+		case LanternNativeAuthServicePrepareNativeRegistrationProcedure:
+			lanternNativeAuthServicePrepareNativeRegistrationHandler.ServeHTTP(w, r)
+		case LanternNativeAuthServiceApplyNativeRegistrationProcedure:
+			lanternNativeAuthServiceApplyNativeRegistrationHandler.ServeHTTP(w, r)
+		case LanternNativeAuthServiceGetNativeRegistrationStatusProcedure:
+			lanternNativeAuthServiceGetNativeRegistrationStatusHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -223,4 +323,20 @@ func (UnimplementedLanternNativeAuthServiceHandler) PrepareNativeLogout(context.
 
 func (UnimplementedLanternNativeAuthServiceHandler) ApplyNativeLogout(context.Context, *connect.Request[v1.ApplyNativeLogoutRequest]) (*connect.Response[v1.ApplyNativeLogoutResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternNativeAuthService.ApplyNativeLogout is not implemented"))
+}
+
+func (UnimplementedLanternNativeAuthServiceHandler) BeginNativeRegistration(context.Context, *connect.Request[v1.BeginNativeRegistrationRequest]) (*connect.Response[v1.BeginNativeLoginResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternNativeAuthService.BeginNativeRegistration is not implemented"))
+}
+
+func (UnimplementedLanternNativeAuthServiceHandler) PrepareNativeRegistration(context.Context, *connect.Request[v1.PrepareNativeRegistrationRequest]) (*connect.Response[v1.PrepareNativeRegistrationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternNativeAuthService.PrepareNativeRegistration is not implemented"))
+}
+
+func (UnimplementedLanternNativeAuthServiceHandler) ApplyNativeRegistration(context.Context, *connect.Request[v1.ApplyNativeRegistrationRequest]) (*connect.Response[v1.ApplyNativeRegistrationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternNativeAuthService.ApplyNativeRegistration is not implemented"))
+}
+
+func (UnimplementedLanternNativeAuthServiceHandler) GetNativeRegistrationStatus(context.Context, *connect.Request[v1.GetNativeRegistrationStatusRequest]) (*connect.Response[v1.GetNativeRegistrationStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternNativeAuthService.GetNativeRegistrationStatus is not implemented"))
 }

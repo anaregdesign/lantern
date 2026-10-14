@@ -95,4 +95,72 @@ extension type LanternNativeAuthServiceClient (connect.Transport _transport) {
       onTrailer: onTrailer,
     );
   }
+
+  Future<graphv1native_auth.BeginNativeLoginResponse> beginNativeRegistration(
+    graphv1native_auth.BeginNativeRegistrationRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternNativeAuthService.beginNativeRegistration,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
+  Future<graphv1native_auth.PrepareNativeRegistrationResponse> prepareNativeRegistration(
+    graphv1native_auth.PrepareNativeRegistrationRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternNativeAuthService.prepareNativeRegistration,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
+  Future<graphv1native_auth.ApplyNativeRegistrationResponse> applyNativeRegistration(
+    graphv1native_auth.ApplyNativeRegistrationRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternNativeAuthService.applyNativeRegistration,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
+  Future<graphv1native_auth.GetNativeRegistrationStatusResponse> getNativeRegistrationStatus(
+    graphv1native_auth.GetNativeRegistrationStatusRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternNativeAuthService.getNativeRegistrationStatus,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
 }

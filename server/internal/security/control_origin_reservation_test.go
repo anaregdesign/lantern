@@ -7,6 +7,16 @@ import (
 	"testing"
 )
 
+func TestRegistrationContractRejectsPriorCurrentProfile(t *testing.T) {
+	current := authorityAdmissionProfile()
+	prior := current
+	prior.CredentialContract = s2cHash("current-credential-v2", "original token v1/browser cookie or native-login v2/opaque native-end-user v1; exact issuer client profile; authentic installed S1")
+	prior.PurposeContract = s2cHash("current-purpose-v2", "full S1 cut, original event, exclusive origin serial consume")
+	if !current.valid() || prior.valid() || prior == current {
+		t.Fatal("old current peer silently accepted the new selector/registration contract")
+	}
+}
+
 func TestAuthorityOriginReservationIntactRestart(t *testing.T) {
 	n, _ := authorityTestNativeCluster(t, 3)
 	o := n.nodes[1]

@@ -40,6 +40,7 @@ type Workflow struct {
 	legacy        LegacyAuthority
 	current       *security.CurrentAuthority
 	attemptPrefix string
+	registrations *nativeRegistrationProofs
 }
 
 func validResources(r OIDCResources) bool {
@@ -49,7 +50,15 @@ func NewCurrentWorkflow(owner *security.CurrentAuthority, resources OIDCResource
 	if owner == nil || owner.Profile().Binding() == "" || !validResources(resources) || attemptPrefix == "" {
 		return nil, ErrUnavailable
 	}
-	return &Workflow{current: owner, oidc: resources, attemptPrefix: attemptPrefix}, nil
+	return &Workflow{current: owner, oidc: resources, attemptPrefix: attemptPrefix, registrations: newNativeRegistrationProofs(owner.TimeBounds, owner.DiscardRegistration)}, nil
+}
+
+// Close joins only Workflow-owned registration calls/proofs. Borrowed OIDC and
+// durable authority resources keep their existing composition-owned lifecycle.
+func (w *Workflow) Close() {
+	if w != nil {
+		w.registrations.close()
+	}
 }
 func NewLegacyWorkflow(owner LegacyAuthority, resources OIDCResources) (*Workflow, error) {
 	if owner.Store == nil || owner.Authorizations == nil || owner.Check == nil || owner.Enforced == nil || !validResources(resources) {

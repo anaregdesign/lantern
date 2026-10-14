@@ -31,6 +31,7 @@ type lanternClient interface {
 	ScanEdges(ctx context.Context, opts ...client.EdgeScanOption) (edges []*client.Edge, nextCursor []byte, err error)
 	Illuminate(ctx context.Context, seed string, opts ...client.IlluminateOption) (*client.Graph, error)
 	Ping(ctx context.Context) error
+	GetCurrentUserID(ctx context.Context) (*string, error)
 }
 
 // mapSDKError translates Lantern SDK sentinel errors into a stable,

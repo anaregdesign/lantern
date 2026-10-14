@@ -2,6 +2,7 @@ package security
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -110,5 +111,21 @@ func TestPrincipalRegistrationRequiresSeparateAuthority(t *testing.T) {
 	var origin *authorityOriginOwner
 	if _, err := origin.prepare(t.Context(), nil, projection.cut, command); !errors.Is(err, ErrPermissionDenied) {
 		t.Fatal("ordinary origin reached registration", err)
+	}
+}
+
+func TestPrincipalRegistrationPrincipalCapacityIsAtomic(t *testing.T) {
+	image := registrationImage()
+	for len(image.Principals) < MaxPrincipals {
+		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: GoogleIssuer, Subject: fmt.Sprintf("retained-%d", len(image.Principals))}, State: Deleted})
+	}
+	before := s1Fixture(t, image).projection
+	actor := Identity{Kind: OIDCPrincipal, Issuer: GoogleIssuer, Subject: "over-capacity"}
+	command := S1Command{Kind: S1RegisterPrincipal, Registration: &PrincipalRegistration{UserUID: "11111111111111111111111111111111", ClientProfileID: "android", IssuerConfigRevision: 1}}
+	if next, err := AssessS1(before, s1Operation(t, before, actor, command)); err == nil || next.Next != nil {
+		t.Fatal("registration exceeded retained Principal capacity")
+	}
+	if _, exists := before.snapshot.principals[actor]; exists || len(before.Image().Principals) != MaxPrincipals {
+		t.Fatal("failed registration partially allocated a Principal")
 	}
 }

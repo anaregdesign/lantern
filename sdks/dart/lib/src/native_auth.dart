@@ -10,13 +10,7 @@ extension LanternNativeAuth on LanternClient {
     LanternCallOptions? options,
   }) async {
     _nativeEndpoint(this);
-    if (!{
-          'https://accounts.google.com',
-          'https://appleid.apple.com',
-        }.contains(issuer) ||
-        !_nativeProfileId(clientProfileId)) {
-      throw _invalidArgumentException('invalid native issuer/profile');
-    }
+    _validateNativeProfile(issuer, clientProfileId);
     final raw = $native_client.LanternNativeAuthServiceClient(
       _invoker.transport,
     );
@@ -41,57 +35,7 @@ extension LanternNativeAuth on LanternClient {
             onTrailer: onTrailer,
           ),
     );
-    final c = result.configuration;
-    final kind = switch (c.kind) {
-      $security.NativeClientKind.NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN =>
-        NativeProviderKind.google,
-      $security.NativeClientKind.NATIVE_CLIENT_KIND_APPLE_NATIVE =>
-        NativeProviderKind.appleNative,
-      $security.NativeClientKind.NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB =>
-        NativeProviderKind.appleAndroidWeb,
-      _ => throw _nativeContractError(),
-    };
-    if (!_nativeRandom(result.attemptId) ||
-        !_nativeRandom(result.completionSecret) ||
-        !result.hasExpiresAt() ||
-        !_nativeAffinity(result.affinity) ||
-        c.clientProfileId != clientProfileId ||
-        c.clientId.isEmpty ||
-        c.clientId.length > 512 ||
-        c.serviceOrigin != endpoint.origin ||
-        (kind == NativeProviderKind.google) !=
-            (issuer == 'https://accounts.google.com')) {
-      throw _nativeContractError();
-    }
-    if (kind == NativeProviderKind.google
-        ? c.nonce.isNotEmpty || c.state.isNotEmpty || c.redirectUri.isNotEmpty
-        : !_nativeRandom(c.nonce) ||
-              !c.state.startsWith('${result.affinity}.') ||
-              c.state.length > 101) {
-      throw _nativeContractError();
-    }
-    if (kind == NativeProviderKind.appleAndroidWeb
-        ? c.redirectUri !=
-              '${endpoint.origin}/auth/native/apple/callback/$clientProfileId'
-        : c.redirectUri.isNotEmpty) {
-      throw _nativeContractError();
-    }
-    return NativeLoginAttempt._(
-      endpoint,
-      result.attemptId,
-      result.completionSecret,
-      _timestampFromProto(result.expiresAt),
-      result.affinity,
-      NativePluginConfiguration._(
-        kind,
-        c.clientProfileId,
-        c.clientId,
-        Uri.parse(c.serviceOrigin),
-        c.redirectUri.isEmpty ? null : Uri.parse(c.redirectUri),
-        c.nonce.isEmpty ? null : c.nonce,
-        c.state.isEmpty ? null : c.state,
-      ),
-    );
+    return _nativeAttempt(result, endpoint, issuer, clientProfileId);
   }
 
   /// Exchanges plugin inputs once. A timeout may leave an undisclosed session
@@ -111,29 +55,9 @@ extension LanternNativeAuth on LanternClient {
       attemptId: attempt._attempt,
       completionSecret: attempt._secret,
     );
-    switch (credential) {
-      case GoogleNativeCredential():
-        if (attempt.configuration.kind != NativeProviderKind.google ||
-            !_nativeToken(credential._idToken)) {
-          throw _invalidArgumentException('invalid Google native input');
-        }
-        request.google = $native.GoogleNativeCredential(
-          idToken: credential._idToken,
-        );
-      case AppleNativeCredential():
-        if (attempt.configuration.kind == NativeProviderKind.google ||
-            !_nativeToken(credential._identityToken) ||
-            credential._code.isEmpty ||
-            credential._code.length > 4096 ||
-            credential._state != attempt.configuration.state) {
-          throw _invalidArgumentException('invalid Apple native input');
-        }
-        request.apple = $native.AppleNativeCredential(
-          identityToken: credential._identityToken,
-          authorizationCode: credential._code,
-          state: credential._state,
-        );
-    }
+    final provider = _nativeProvider(attempt.configuration, credential);
+    if (provider.google case final google?) request.google = google;
+    if (provider.apple case final apple?) request.apple = apple;
     final raw = $native_client.LanternNativeAuthServiceClient(
       _invoker.transport,
     );
@@ -155,18 +79,12 @@ extension LanternNativeAuth on LanternClient {
             onTrailer: onTrailer,
           ),
     );
-    if (!result.credential.startsWith('lnu1_') ||
-        !_nativeRandom(result.credential.substring(5))) {
-      throw _nativeContractError();
-    }
-    final session = _nativeSession(result.session, endpoint);
-    if (session.clientProfileId != attempt.configuration.clientProfileId ||
-        (attempt.configuration.kind == NativeProviderKind.google
-            ? session.principal.issuer != 'https://accounts.google.com'
-            : session.principal.issuer != 'https://appleid.apple.com')) {
-      throw _nativeContractError();
-    }
-    return NativeSessionCredential._(result.credential, session);
+    return _nativeIssuedSession(
+      result.credential,
+      result.session,
+      endpoint,
+      attempt.configuration,
+    );
   }
 
   /// Inspects the native session using the existing TokenProvider.
@@ -371,6 +289,11 @@ NativeSession _nativeSession($native.NativeSession s, Uri endpoint) {
       expires.difference(created) > const Duration(hours: 8)) {
     throw _nativeContractError();
   }
+  final hasPersonalArea = s.hasUserId() || s.hasPersonalPrefix();
+  if (hasPersonalArea &&
+      (!_validUserId(s.userId) || s.personalPrefix != 'users:${s.userId}:')) {
+    throw _nativeContractError();
+  }
   return NativeSession._(
     NativePrincipal._(s.identity.issuer, s.identity.subject),
     s.clientProfileId,
@@ -379,6 +302,8 @@ NativeSession _nativeSession($native.NativeSession s, Uri endpoint) {
     expires,
     s.hasAuthTime() ? _timestampFromProto(s.authTime) : null,
     _currentAuthorityBinding(s.version),
+    hasPersonalArea ? s.userId : null,
+    hasPersonalArea ? s.personalPrefix : null,
   );
 }
 
@@ -391,26 +316,46 @@ void _nativeReviewEndpoint(NativeLogoutReview review, Uri endpoint) {
 }
 
 void _validateNativeReview($security.CurrentSessionRevocationReview r) {
+  _validateNativeOperationReview(
+    r.profile,
+    r.expectedCut,
+    r.changeId,
+    r.actor,
+    r.intentDigest,
+    r.writeToBuffer().length,
+  );
+  if (r.sessionLineage == Int64.ZERO ||
+      !RegExp(r'^[0-9a-f]{64}$').hasMatch(r.sessionDigest)) {
+    throw _nativeContractError();
+  }
+}
+
+void _validateNativeOperationReview(
+  $security.CurrentAuthorityProfile p,
+  $security.CurrentSemanticCut c,
+  $security.CurrentSecurityChangeID id,
+  $security.SecurityIdentity actor,
+  List<int> intent,
+  int byteLength,
+) {
   bool bytes(List<int> b, int n) => b.length == n && b.any((v) => v != 0);
   bool equal(List<int> a, List<int> b) => base64Encode(a) == base64Encode(b);
-  final p = r.profile, c = r.expectedCut, id = r.changeId;
-  if (r.writeToBuffer().length > 16 << 10 ||
+  if (byteLength > 16 << 10 ||
       p.version != 2 ||
       c.version != 1 ||
       c.sequence == Int64.ZERO ||
       id.version != 1 ||
       id.namespace == Int64.ZERO ||
       !bytes(id.nonce, 16) ||
-      !bytes(r.intentDigest, 32) ||
-      r.sessionLineage == Int64.ZERO ||
-      !RegExp(r'^[0-9a-f]{64}$').hasMatch(r.sessionDigest) ||
-      r.actor.kind !=
+      !bytes(intent, 32) ||
+      actor.kind !=
           $security.SecurityPrincipalKind.SECURITY_PRINCIPAL_KIND_OIDC ||
-      r.actor.subject.isEmpty ||
+      actor.subject.isEmpty ||
+      actor.machineName.isNotEmpty ||
       !{
         'https://accounts.google.com',
         'https://appleid.apple.com',
-      }.contains(r.actor.issuer)) {
+      }.contains(actor.issuer)) {
     throw _nativeContractError();
   }
   for (final b in [
@@ -447,20 +392,29 @@ NativeLogoutOutcome _nativeLogoutOutcome(
   NativeLogoutReview review,
 ) {
   final w = review._wire;
-  if (result.profile != w.profile ||
-      result.changeId != w.changeId ||
-      base64Encode(result.intentDigest) != base64Encode(w.intentDigest)) {
+  return _nativeOperationOutcome(result, w.profile, w.changeId, w.intentDigest);
+}
+
+NativeOperationOutcome _nativeOperationOutcome(
+  $security.CurrentSecurityChangeResult result,
+  $security.CurrentAuthorityProfile profile,
+  $security.CurrentSecurityChangeID id,
+  List<int> intent,
+) {
+  if (result.profile != profile ||
+      result.changeId != id ||
+      base64Encode(result.intentDigest) != base64Encode(intent)) {
     throw _nativeContractError();
   }
-  if (!result.hasOriginal()) return NativeLogoutOutcome.unresolved;
+  if (!result.hasOriginal()) return NativeOperationOutcome.unresolved;
   final original = result.original;
-  if (original.changeId != w.changeId ||
-      base64Encode(original.intentDigest) != base64Encode(w.intentDigest)) {
+  if (original.changeId != id ||
+      base64Encode(original.intentDigest) != base64Encode(intent)) {
     throw _nativeContractError();
   }
   return switch (original.disposition) {
     $security.CurrentSecurityDisposition.CURRENT_SECURITY_DISPOSITION_APPLIED =>
-      NativeLogoutOutcome.applied,
+      NativeOperationOutcome.applied,
     $security
         .CurrentSecurityDisposition
         .CURRENT_SECURITY_DISPOSITION_REJECTED_CAS ||
@@ -479,7 +433,130 @@ NativeLogoutOutcome _nativeLogoutOutcome(
     $security
         .CurrentSecurityDisposition
         .CURRENT_SECURITY_DISPOSITION_REJECTED_INVARIANT =>
-      NativeLogoutOutcome.rejected,
+      NativeOperationOutcome.rejected,
     _ => throw _nativeContractError(),
   };
+}
+
+void _validateNativeProfile(String issuer, String profile) {
+  if (!{
+        'https://accounts.google.com',
+        'https://appleid.apple.com',
+      }.contains(issuer) ||
+      !_nativeProfileId(profile)) {
+    throw _invalidArgumentException('invalid native issuer/profile');
+  }
+}
+
+NativeLoginAttempt _nativeAttempt(
+  $native.BeginNativeLoginResponse result,
+  Uri endpoint,
+  String issuer,
+  String clientProfileId,
+) {
+  final c = result.configuration;
+  final kind = switch (c.kind) {
+    $security.NativeClientKind.NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN =>
+      NativeProviderKind.google,
+    $security.NativeClientKind.NATIVE_CLIENT_KIND_APPLE_NATIVE =>
+      NativeProviderKind.appleNative,
+    $security.NativeClientKind.NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB =>
+      NativeProviderKind.appleAndroidWeb,
+    _ => throw _nativeContractError(),
+  };
+  if (!_nativeRandom(result.attemptId) ||
+      !_nativeRandom(result.completionSecret) ||
+      !result.hasExpiresAt() ||
+      !_nativeAffinity(result.affinity) ||
+      c.clientProfileId != clientProfileId ||
+      c.clientId.isEmpty ||
+      c.clientId.length > 512 ||
+      c.serviceOrigin != endpoint.origin ||
+      (kind == NativeProviderKind.google) !=
+          (issuer == 'https://accounts.google.com')) {
+    throw _nativeContractError();
+  }
+  if (kind == NativeProviderKind.google
+      ? c.nonce.isNotEmpty || c.state.isNotEmpty || c.redirectUri.isNotEmpty
+      : !_nativeRandom(c.nonce) ||
+            !c.state.startsWith('${result.affinity}.') ||
+            c.state.length > 101) {
+    throw _nativeContractError();
+  }
+  if (kind == NativeProviderKind.appleAndroidWeb
+      ? c.redirectUri !=
+            '${endpoint.origin}/auth/native/apple/callback/$clientProfileId'
+      : c.redirectUri.isNotEmpty) {
+    throw _nativeContractError();
+  }
+  return NativeLoginAttempt._(
+    endpoint,
+    result.attemptId,
+    result.completionSecret,
+    _timestampFromProto(result.expiresAt),
+    result.affinity,
+    NativePluginConfiguration._(
+      kind,
+      c.clientProfileId,
+      c.clientId,
+      Uri.parse(c.serviceOrigin),
+      c.redirectUri.isEmpty ? null : Uri.parse(c.redirectUri),
+      c.nonce.isEmpty ? null : c.nonce,
+      c.state.isEmpty ? null : c.state,
+    ),
+  );
+}
+
+({$native.GoogleNativeCredential? google, $native.AppleNativeCredential? apple})
+_nativeProvider(
+  NativePluginConfiguration configuration,
+  NativeProviderCredential credential,
+) {
+  switch (credential) {
+    case GoogleNativeCredential():
+      if (configuration.kind != NativeProviderKind.google ||
+          !_nativeToken(credential._idToken)) {
+        throw _invalidArgumentException('invalid Google native input');
+      }
+      return (
+        google: $native.GoogleNativeCredential(idToken: credential._idToken),
+        apple: null,
+      );
+    case AppleNativeCredential():
+      if (configuration.kind == NativeProviderKind.google ||
+          !_nativeToken(credential._identityToken) ||
+          credential._code.isEmpty ||
+          credential._code.length > 4096 ||
+          credential._state != configuration.state) {
+        throw _invalidArgumentException('invalid Apple native input');
+      }
+      return (
+        google: null,
+        apple: $native.AppleNativeCredential(
+          identityToken: credential._identityToken,
+          authorizationCode: credential._code,
+          state: credential._state,
+        ),
+      );
+  }
+}
+
+NativeSessionCredential _nativeIssuedSession(
+  String credential,
+  $native.NativeSession wire,
+  Uri endpoint,
+  NativePluginConfiguration configuration,
+) {
+  if (!credential.startsWith('lnu1_') ||
+      !_nativeRandom(credential.substring(5))) {
+    throw _nativeContractError();
+  }
+  final session = _nativeSession(wire, endpoint);
+  if (session.clientProfileId != configuration.clientProfileId ||
+      (configuration.kind == NativeProviderKind.google
+          ? session.principal.issuer != 'https://accounts.google.com'
+          : session.principal.issuer != 'https://appleid.apple.com')) {
+    throw _nativeContractError();
+  }
+  return NativeSessionCredential._(credential, session);
 }

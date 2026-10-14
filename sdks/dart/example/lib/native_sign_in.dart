@@ -56,6 +56,7 @@ final class _NativeSignInScreenState extends State<NativeSignInScreen> {
   @override
   Widget build(BuildContext context) {
     final account = _controller.account;
+    final hasPersonalArea = account?.session.personalPrefix != null;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Lantern native sign-in'),
@@ -121,11 +122,69 @@ final class _NativeSignInScreenState extends State<NativeSignInScreen> {
             const Padding(
               padding: EdgeInsets.all(16),
               child: Text(
-                'An existing registered Principal is required. Sessions expire after eight hours. Sign-out does not revoke provider consent.',
+                'Sessions expire after eight hours. Sign-out does not revoke provider consent.',
               ),
             ),
           ],
-          if (account != null && !_controller.busy)
+          if (!_controller.busy && !hasPersonalArea) ...[
+            if (account != null)
+              const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text(
+                  'This account has no personal area yet. Register explicitly to create it.',
+                ),
+              ),
+            if (widget.googleProfile.isNotEmpty)
+              OutlinedButton(
+                onPressed: () => unawaited(
+                  _controller.register(
+                    'https://accounts.google.com',
+                    widget.googleProfile,
+                  ),
+                ),
+                child: const Text('Register with Google'),
+              ),
+            if (widget.appleProfile.isNotEmpty &&
+                (Platform.isIOS || Platform.isAndroid))
+              OutlinedButton(
+                onPressed: () => unawaited(
+                  _controller.register(
+                    'https://appleid.apple.com',
+                    widget.appleProfile,
+                  ),
+                ),
+                child: const Text('Register with Apple'),
+              ),
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text(
+                'Registration must be enabled by the server operator. It creates a private personal area.',
+              ),
+            ),
+          ],
+          if (!_controller.busy && _controller.registrationReviews.isNotEmpty)
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 160),
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final original in _controller.registrationReviews)
+                    ListTile(
+                      title: const Text('Check original registration'),
+                      subtitle: Text(
+                        '${original.principal.issuer} · ${original.principal.subject}',
+                      ),
+                      trailing: TextButton(
+                        onPressed: () => unawaited(
+                          _controller.recoverRegistration(original),
+                        ),
+                        child: const Text('Check with same account'),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          if (account != null && hasPersonalArea && !_controller.busy)
             Expanded(
               child: Navigator(
                 // Pushed offline screens belong to this account too. Replacing the

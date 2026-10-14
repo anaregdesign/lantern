@@ -235,7 +235,7 @@ func verifyHistoricalH(t *s2cTrust, encoded []byte) (*s2cHistoricalH, error) {
 	if !s2cVerifyCredential(h, o, op.Command) || !s2cVerifyPurpose(h, operation) {
 		return nil, errS2CHistorical
 	}
-	a := &s1VerifiedAuthorization{h.Authentication, h.Lineage, h.CredentialEvidence, h.PurposeEvidence, h.PurposeBinding, h.Consume, h.CredentialDeadline, h.PurposeDeadline}
+	a := &s1VerifiedAuthorization{h.Authentication, h.Lineage, h.CredentialEvidence, h.PurposeEvidence, h.PurposeBinding, h.Consume, h.CredentialDeadline, h.PurposeDeadline, nil}
 	handoff := &S1Handoff{h.ID, operation, h.OriginDigest, h.Serial, a}
 	if !handoff.valid(t.genesis.state.projection.cut) || handoff.digest() != h.Value {
 		return nil, errS2CHistorical

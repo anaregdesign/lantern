@@ -723,6 +723,13 @@ const client = connect("https://lantern.example.com:6380", {
 
 ## Browser entrypoint (`lantern-sdk/web`)
 
+`SecurityClient.getCurrentUserId()` reads the current authenticated Principal's
+optional immutable Server-assigned ID, without a data/admin Role. Browser session
+consumers can use `currentUserId(session.principal)`. `undefined` means an
+authenticated UID-less legacy or machine Principal; missing authentication is an
+error. Reads make one attempt and never return a previous account's cached ID.
+See the [current-source ID contract](../../docs/native-user-registration.md#client-use-and-installation-boundary).
+
 The package also exports a browser-flavoured entrypoint that swaps the
 Node `http2` transport for a `fetch`-based one from
 `@connectrpc/connect-web`. Bundlers that follow the `package.json#exports`

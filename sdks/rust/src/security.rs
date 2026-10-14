@@ -1,6 +1,25 @@
 //! Complete current-authority cache partitions; no cached client-side grants.
 use crate::{LanternError, generated::graph::v1::SecurityVersion};
 
+pub(crate) fn validate_user_id(
+    principal: &crate::generated::graph::v1::GetCurrentPrincipalResponse,
+) -> Result<(), LanternError> {
+    use crate::generated::graph::v1::SecurityPrincipalKind;
+    let Some(id) = &principal.user_id else {
+        return Ok(());
+    };
+    if id.len() != 32
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || id.bytes().all(|b| b == b'0')
+        || principal.identity.as_ref().map(|v| v.kind) != Some(SecurityPrincipalKind::Oidc as i32)
+    {
+        return Err(LanternError::Protocol("invalid current user ID"));
+    }
+    Ok(())
+}
+
 /// Profile, complete cut, and credential/lineage commitment from one read.
 /// Cancel old work and discard granting views/cursors when it changes. Retain
 /// possibly dispatched mutation identities for status-only recovery.
@@ -68,6 +87,37 @@ impl CurrentAuthorityBinding {
 mod tests {
     use super::*;
     use crate::generated::graph::v1::{CurrentAuthorityProfile, CurrentSemanticCut};
+    #[test]
+    fn self_user_id_presence_and_invalid_machine_or_empty_values() {
+        use crate::generated::graph::v1::{
+            GetCurrentPrincipalResponse, SecurityIdentity, SecurityPrincipalKind,
+        };
+        let mut principal = GetCurrentPrincipalResponse {
+            identity: Some(SecurityIdentity {
+                kind: SecurityPrincipalKind::Oidc as i32,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for id in [Some("1".repeat(32)), None, Some("2".repeat(32))] {
+            principal.user_id = id;
+            assert!(validate_user_id(&principal).is_ok());
+        }
+        for id in [
+            String::new(),
+            "short".into(),
+            "0".repeat(32),
+            "A".repeat(32),
+        ] {
+            principal.user_id = Some(id);
+            assert!(validate_user_id(&principal).is_err());
+        }
+        principal.identity.as_mut().unwrap().kind = SecurityPrincipalKind::Machine as i32;
+        principal.user_id = None;
+        assert!(validate_user_id(&principal).is_ok());
+        principal.user_id = Some("1".repeat(32));
+        assert!(validate_user_id(&principal).is_err());
+    }
     fn version() -> SecurityVersion {
         SecurityVersion {
             current_profile: Some(CurrentAuthorityProfile {
@@ -144,6 +194,12 @@ mod tests {
         let first = sdk
             .current_authority_binding(CallOptions::default())
             .await?;
+        assert_eq!(
+            sdk.current_user_id(CallOptions::default())
+                .await?
+                .as_deref(),
+            Some("11111111111111111111111111111111")
+        );
         assert!(first.as_str().starts_with("current-v2:"));
         assert!(first.as_str().contains("/cut-v1:"));
         assert_eq!(

@@ -37,6 +37,7 @@ import (
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/service"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -275,6 +276,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	})
 	if native != nil {
 		runNativeLoginWireGate(t, ctx, native, servers, controls, token, transport, &exportBoundary)
+		runNativeRegistrationWireGate(t, ctx, native, servers, controls, token, transport)
 		return
 	}
 	if os.Getenv("LANTERN_CURRENT_PUBLIC_SDK4") == "1" {
@@ -967,6 +969,9 @@ func runCurrentPublicSDK4(t *testing.T, s *httptest.Server, token, ca string) {
 		if _, err := sdk.GetCurrentPrincipal(t.Context()); err != nil {
 			t.Fatal(err)
 		}
+		if id, err := sdk.GetCurrentUserID(t.Context()); err != nil || id == nil || *id != "11111111111111111111111111111111" {
+			t.Fatal("Go current user_id", err)
+		}
 		ctx := t.Context()
 		capability, err := sdk.GetReceiptCapability(ctx)
 		if err != nil {
@@ -991,6 +996,52 @@ func runCurrentPublicSDK4(t *testing.T, s *httptest.Server, token, ca string) {
 			t.Fatal(repeated, err)
 		}
 	})
+	t.Run("CLI self ID and authentication failure", func(t *testing.T) {
+		binary := buildLanternCLI(t)
+		for _, credential := range []string{token, "invalid-fixture-credential"} {
+			t.Setenv("LANTERN_TOKEN", credential)
+			stdout, stderr, code := runLanternCLI(t, binary, strings.TrimPrefix(s.URL, "https://"), "--tls", "--tls-ca", ca, "whoami")
+			if credential != token {
+				if code != 2 || stdout != "" {
+					t.Fatal("CLI authentication failure disclosed ID", code)
+				}
+				continue
+			}
+			var response struct {
+				UserID *string `json:"user_id"`
+			}
+			if code != 0 || json.Unmarshal([]byte(stdout), &response) != nil || response.UserID == nil || *response.UserID != "11111111111111111111111111111111" {
+				t.Fatal("CLI current user_id", code, stderr)
+			}
+		}
+	})
+	t.Run("MCP backend self ID and authentication failure", func(t *testing.T) {
+		for _, credential := range []string{token, "invalid-fixture-credential"} {
+			sdk, err := client.NewLantern(s.URL, client.WithHTTPClient(s.Client()), client.WithAuthToken(credential))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = sdk.Close() })
+			session, ctx := newMCPClientSession(t, sdk)
+			response, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "current_user", Arguments: map[string]any{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if credential != token {
+				if !response.IsError {
+					t.Fatal("MCP authentication failure disclosed ID")
+				}
+				continue
+			}
+			var value struct {
+				UserID *string `json:"user_id"`
+			}
+			decodeMCP(t, response, &value)
+			if response.IsError || value.UserID == nil || *value.UserID != "11111111111111111111111111111111" {
+				t.Fatal("MCP backend current user_id")
+			}
+		}
+	})
 	module := func(path string) string { raw, _ := json.Marshal(filepath.Join(root, path)); return string(raw) }
 	script := `import {readFileSync} from "node:fs";
 import {connectSecurity,currentSecurityVersionBinding,CurrentSecurityProgress} from ` + module("sdks/node/src/index.ts") + `;
@@ -998,6 +1049,7 @@ import {SecurityManagementController,SecurityChangeRecovery} from ` + module("ad
 import {securityRecoveryOwner} from ` + module("admin/app/lib/client/usecase/security/security-change-recovery.ts") + `;
 const c=connectSecurity(process.env.LANTERN_CURRENT_WIRE_URL,{token:process.env.LANTERN_CURRENT_WIRE_CREDENTIAL,transportOptions:{nodeOptions:{ca:readFileSync(process.env.LANTERN_CURRENT_WIRE_CA)}}});
 const principal=await c.getCurrentPrincipal({});currentSecurityVersionBinding(principal.version);
+if(principal.userId!=="11111111111111111111111111111111" || await c.getCurrentUserId()!==principal.userId)throw new Error("Node/Admin current user_id mismatch");
 let dispatches=0,preparations=0,statuses=0;
 const port={roles:(cursor,signal)=>c.listRoles({cursor},{signal}),prepare:(currentReview,signal)=>{preparations++;return c.prepareSecurityChanges({currentReview},{signal});},apply:async(request,signal)=>{dispatches++;await c.applySecurityChanges(request,{signal});throw new Error("fixture response lost after actual Apply");},status:async(review,signal)=>{statuses++;return (await c.getSecurityChangeStatus({currentProfile:review.profile,currentChangeId:review.changeId,currentIntentDigest:review.intentDigest},{signal})).currentResult;},invocationRejected:()=>undefined,failure:()=>"unavailable"};
 let retainedBytes=null;const storage={read:()=>retainedBytes,replace:value=>{retainedBytes=value;}};

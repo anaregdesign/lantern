@@ -1,4 +1,5 @@
 import { create, type MessageInitShape } from "@bufbuild/protobuf";
+import { currentUserId } from "./security-types.js";
 import {
   copySecurityContract,
   currentOriginalBinding,
@@ -28,6 +29,7 @@ import {
   ExplainAccessRequestSchema,
   GetAuthCapabilitiesRequestSchema,
   GetCurrentPrincipalRequestSchema,
+  GetRegistrationPolicyRequestSchema,
   GetIssuerRequestSchema,
   GetRoleRequestSchema,
   GetRoleTemplatesRequestSchema,
@@ -179,7 +181,22 @@ export class SecurityClient {
     request: MessageInitShape<typeof GetCurrentPrincipalRequestSchema> = {},
     options?: CallOptions,
   ) {
-    return this.invoke(() => this.client.getCurrentPrincipal(request, options));
+    return this.invoke(async () => {
+      const principal = await this.client.getCurrentPrincipal(request, options);
+      currentUserId(principal);
+      return principal;
+    });
+  }
+  /** One authenticated self-read; undefined means an authenticated principal has
+   * no user ID. Signed-out requests retain their authentication error. */
+  async getCurrentUserId(options?: CallOptions): Promise<string | undefined> {
+    return currentUserId(await this.getCurrentPrincipal({}, options));
+  }
+  getRegistrationPolicy(
+    request: MessageInitShape<typeof GetRegistrationPolicyRequestSchema> = {},
+    options?: CallOptions,
+  ) {
+    return this.invoke(() => this.client.getRegistrationPolicy(request, options));
   }
   listIssuers(
     request: MessageInitShape<typeof ListIssuersRequestSchema> = {},

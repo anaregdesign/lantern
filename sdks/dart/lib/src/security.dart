@@ -10,6 +10,22 @@ extension LanternCurrentAuthority on LanternClient {
   Future<String> getCurrentAuthorityBinding({
     LanternCallOptions? options,
   }) async {
+    final response = await _getCurrentPrincipal(options);
+    return _currentAuthorityBinding(response.version);
+  }
+
+  /// Reads the immutable Server-installed user ID without an extra Role.
+  /// Returns null for an authenticated UID-less or machine Principal. Signed-out
+  /// calls throw their authentication error; no cached ID or empty string is used.
+  Future<String?> getCurrentUserId({LanternCallOptions? options}) async {
+    final response = await _getCurrentPrincipal(options);
+    _currentAuthorityBinding(response.version);
+    return response.hasUserId() ? response.userId : null;
+  }
+
+  Future<$security.GetCurrentPrincipalResponse> _getCurrentPrincipal(
+    LanternCallOptions? options,
+  ) async {
     _ensureOpen();
     final raw = $security_client.LanternSecurityServiceClient(
       _invoker.transport,
@@ -30,9 +46,30 @@ extension LanternCurrentAuthority on LanternClient {
             onTrailer: onTrailer,
           ),
     );
-    return _currentAuthorityBinding(response.version);
+    if (response.hasUserId() &&
+        (!_validUserId(response.userId) ||
+            response.identity.kind !=
+                $security.SecurityPrincipalKind.SECURITY_PRINCIPAL_KIND_OIDC)) {
+      throw _userIdContractError();
+    }
+    return response;
   }
 }
+
+bool _validUserId(String id) =>
+    RegExp(r'^[0-9a-f]{32}$').hasMatch(id) && id != '0' * 32;
+
+LanternFailedPreconditionException _userIdContractError() =>
+    LanternFailedPreconditionException._(
+      _ErrorData(
+        transportCode: connect.Code.failedPrecondition.value,
+        transportCodeName: connect.Code.failedPrecondition.name,
+        message: 'invalid current user ID',
+        headers: const {},
+        trailers: const {},
+        metadata: const {},
+      ),
+    );
 
 String _currentAuthorityBinding($security.SecurityVersion version) {
   Never invalid() => throw LanternFailedPreconditionException._(

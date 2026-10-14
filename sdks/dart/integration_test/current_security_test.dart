@@ -20,6 +20,10 @@ void main() {
       );
       addTearDown(client.close);
       final first = await client.getCurrentAuthorityBinding();
+      expect(
+        await client.getCurrentUserId(),
+        '11111111111111111111111111111111',
+      );
       expect(first, startsWith('current-v2:'));
       expect(first, contains('/cut-v1:'));
       expect(await client.getCurrentAuthorityBinding(), first);

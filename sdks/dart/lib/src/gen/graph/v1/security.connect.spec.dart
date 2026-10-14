@@ -68,6 +68,13 @@ abstract final class LanternSecurityService {
     graphv1security.GetUserResponse.new,
   );
 
+  static const getRegistrationPolicy = connect.Spec(
+    '/$name/GetRegistrationPolicy',
+    connect.StreamType.unary,
+    graphv1security.GetRegistrationPolicyRequest.new,
+    graphv1security.GetRegistrationPolicyResponse.new,
+  );
+
   static const listRoleAssignments = connect.Spec(
     '/$name/ListRoleAssignments',
     connect.StreamType.unary,

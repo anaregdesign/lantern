@@ -78,6 +78,14 @@ rich details remain inspectable but cannot masquerade as known reasons.
 
 ## Exact values and CRUD
 
+`client.current_user_id(CallOptions::default()).await` reads the authenticated
+Principal's immutable Server-assigned ID as `Result<Option<String>, LanternError>`
+without a data/admin Role. `None` means an authenticated UID-less legacy or machine
+Principal. Missing authentication is an error. It makes one attempt, using the
+current TokenProvider credential, and does not cache another account's ID.
+See the [current-source ID contract](../../docs/native-user-registration.md#client-use-and-installation-boundary).
+
+
 ```rust
 use std::time::Duration;
 use lantern_client::{

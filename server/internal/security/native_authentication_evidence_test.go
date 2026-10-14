@@ -28,6 +28,36 @@ func TestNativeEvidenceDomainAndLegacyEncoding(t *testing.T) {
 	if err != nil || digest == old {
 		t.Fatal("native domain", err)
 	}
+	raw, err = authenticationEvidenceBytes(native)
+	if err != nil || bytes.Contains(raw, []byte(`"Registration"`)) {
+		t.Fatal("historical native transcript changed", err)
+	}
+	for _, purpose := range []NativeRegistrationPurpose{{Kind: "registration"}, {Kind: "registration-recovery", Original: [32]byte{7}}} {
+		e := native
+		e.Version, e.Policy, e.Mode, e.Native.Registration = 3, "lantern-native-registration-v1", "native-registration", purpose
+		registered, err := e.Commitment()
+		if err != nil || registered == digest {
+			t.Fatal("registration purpose domain", err)
+		}
+		for _, mutate := range []func(*TokenAuthenticationEvidence){
+			func(e *TokenAuthenticationEvidence) { e.Version = 2 },
+			func(e *TokenAuthenticationEvidence) { e.Policy = "lantern-native-login-v1" },
+			func(e *TokenAuthenticationEvidence) { e.Mode = "native-login" },
+			func(e *TokenAuthenticationEvidence) { e.Native.Registration = NativeRegistrationPurpose{} },
+			func(e *TokenAuthenticationEvidence) { e.Native.Registration.Kind = "operation" },
+		} {
+			bad := e
+			mutate(&bad)
+			if _, err := bad.Commitment(); err == nil {
+				t.Fatal("purpose/version confusion accepted")
+			}
+		}
+		bad := native
+		bad.Native.Registration = purpose
+		if _, err := bad.Commitment(); err == nil {
+			t.Fatal("ordinary native evidence accepted a registration purpose")
+		}
+	}
 	for _, mutate := range []func(*TokenAuthenticationEvidence){
 		func(e *TokenAuthenticationEvidence) { e.Version = 1 }, func(e *TokenAuthenticationEvidence) { e.Native.NonceChecked = true },
 		func(e *TokenAuthenticationEvidence) { e.Native.Transaction = [32]byte{} }, func(e *TokenAuthenticationEvidence) { e.Code.Flow = "login" },
@@ -42,5 +72,15 @@ func TestNativeEvidenceDomainAndLegacyEncoding(t *testing.T) {
 	legacy.Native = native.Native
 	if _, err := legacy.Commitment(); err == nil {
 		t.Fatal("native evidence relabeled as legacy")
+	}
+}
+
+func TestNativeRegistrationPurposeClosedShape(t *testing.T) {
+	for _, purpose := range []NativeRegistrationPurpose{
+		{}, {Kind: "login"}, {Kind: "registration", Original: [32]byte{1}}, {Kind: "registration-recovery"},
+	} {
+		if purpose.Valid() {
+			t.Fatal("invalid purpose accepted", purpose.Kind)
+		}
 	}
 }

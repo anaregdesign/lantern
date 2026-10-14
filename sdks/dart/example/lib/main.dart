@@ -120,6 +120,7 @@ class LanternExampleApp extends StatelessWidget {
                 offlineCdcPinnedResponder:
                     configuration!.offlineCdcPinnedResponder,
                 currentAuthorityBinding: () => account.session.authorityBinding,
+                personalPrefix: account.session.personalPrefix!,
               ),
             )
           : _ClientOwner(
@@ -286,19 +287,21 @@ final class _DiscoveryScreen extends StatefulWidget {
     required this.offlineSession,
     required this.offlineCdcPinnedResponder,
     this.currentAuthorityBinding,
+    this.personalPrefix,
   });
 
   final LanternClient client;
   final OfflineDemoSession offlineSession;
   final bool offlineCdcPinnedResponder;
   final String Function()? currentAuthorityBinding;
+  final String? personalPrefix;
 
   @override
   State<_DiscoveryScreen> createState() => _DiscoveryScreenState();
 }
 
 final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
-  static const _prefix = 'flutter-demo:';
+  String get _prefix => widget.personalPrefix ?? 'flutter-demo:';
   static const _maxVisibleRows = 200;
 
   late final AppLifecycleListener _lifecycle;
@@ -317,9 +320,7 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
   void initState() {
     super.initState();
     _search = widget.client.incrementalSearch(
-      options: const IncrementalSearchOptions(
-        search: SearchOptions(prefix: _prefix),
-      ),
+      options: IncrementalSearchOptions(search: SearchOptions(prefix: _prefix)),
     );
     _searchSubscription = _search.updates.listen(_onSearchUpdate);
     _scroll = ScrollController()..addListener(_onScroll);
@@ -564,9 +565,16 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
                     builder: (_) => OfflineDemoScreen(
                       repository: widget.offlineSession.repository,
                       partitionId: widget.offlineSession.partitionId,
+                      vertexKey:
+                          '${widget.personalPrefix ?? 'flutter-offline:'}profile',
+                      edgeTail:
+                          '${widget.personalPrefix ?? 'flutter-offline:'}profile',
+                      edgeHead:
+                          '${widget.personalPrefix ?? 'flutter-offline:'}counter',
                       identitySource: widget.offlineCdcPinnedResponder
                           ? LanternScopedChangeSource(
                               client: widget.client,
+                              prefix: widget.personalPrefix ?? '',
                               responderId: widget.client.endpoint.toString(),
                               currentAuthorityBinding:
                                   widget.currentAuthorityBinding,

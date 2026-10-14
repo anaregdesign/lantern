@@ -90,6 +90,9 @@ func runNativeLoginWireGate(t *testing.T, ctx context.Context, f *nativeLoginWir
 			t.Fatal("native issued metadata")
 		}
 		s := got.Msg.Session
+		if s.UserId != nil || s.PersonalPrefix != nil {
+			t.Fatal("ordinary login implicitly allocated a legacy user ID")
+		}
 		if duration := s.ExpiresAt.AsTime().Sub(s.CreatedAt.AsTime()); duration != 8*time.Hour {
 			t.Fatal("native absolute lifetime", duration)
 		}
@@ -112,31 +115,9 @@ func runNativeLoginWireGate(t *testing.T, ctx context.Context, f *nativeLoginWir
 		return complete(begin(nativeGoogleIssuer, "google"), &pb.CompleteNativeLoginRequest{Provider: &pb.CompleteNativeLoginRequest_Google{Google: &pb.GoogleNativeCredential{IdToken: f.token(t, nativeGoogleIssuer, "fixture.apps.googleusercontent.com", "native-user", "", nil)}}})
 	}
 	apply := func(change *pb.SecurityChange) {
-		t.Helper()
-		var current *pb.GetCurrentPrincipalResponse
-		nativeWireAwait(t, ctx, func() error {
-			v, err := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
-			if err == nil {
-				current = v.Msg
-			}
-			return err
-		})
-		prepared, err := controls[0].PrepareSecurityChanges(ctx, securityWireRequest(admin, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: current.Version.CurrentProfile, ExpectedCut: current.Version.CurrentCut, Changes: []*pb.SecurityChange{change}}}))
-		if err != nil {
-			t.Fatal("native policy prepare", err)
-		}
-		result, err := controls[0].ApplySecurityChanges(ctx, securityWireRequest(admin, &pb.ApplySecurityChangesRequest{CurrentReview: prepared.Msg.CurrentReview}))
-		var original *pb.CurrentSecurityOriginalOutcome
-		if err == nil {
-			original = result.Msg.GetCurrentResult().GetOriginal()
-		}
-		if original == nil {
-			original = awaitCurrentPublicOriginal(t, ctx, controls[0], admin, prepared.Msg.CurrentReview)
-		}
-		if original.GetDisposition() != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
-			t.Fatal("native policy mutation not applied")
-		}
+		nativeWireApply(t, ctx, controls[0], admin, change)
 	}
+
 	t.Run("google repeated restored and native RPC", func(t *testing.T) {
 		token := f.token(t, nativeGoogleIssuer, "fixture.apps.googleusercontent.com", "native-user", "", nil)
 		for range 3 {

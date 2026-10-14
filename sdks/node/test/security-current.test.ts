@@ -312,3 +312,60 @@ test("recovery JSON codecs reject unknown fields, invalid bytes/uint64 and neste
     parseCurrentSecurityChangeResult(JSON.stringify({ ...outcome, progress: 999 })),
   ).toThrow();
 });
+
+test("retained policy and UID selectors round-trip without weakening or dropping fields", () => {
+  const { review } = fixture();
+  review.changes = [
+    {
+      $typeName: "graph.v1.SecurityChange",
+      operation: {
+        case: "putRegistrationPolicy",
+        value: {
+          $typeName: "graph.v1.SecurityRegistrationPolicy",
+          version: 1,
+          enabled: true,
+          roleId: "personal_user",
+          profiles: [
+            {
+              $typeName: "graph.v1.SecurityRegistrationProfile",
+              issuer: "https://accounts.google.com",
+              clientProfileId: "mobile",
+            },
+          ],
+        },
+      },
+    },
+    {
+      $typeName: "graph.v1.SecurityChange",
+      operation: {
+        case: "putRole",
+        value: {
+          $typeName: "graph.v1.SecurityRole",
+          id: "personal_user",
+          name: "Personal user",
+          envOwned: false,
+          rules: [
+            {
+              $typeName: "graph.v1.SecurityRule",
+              id: "read",
+              action: 1,
+              effect: 1,
+              resource: {
+                case: "principalUidPrefix",
+                value: {
+                  $typeName: "graph.v1.SecurityPrincipalUIDPrefix",
+                  literalBefore: "users:",
+                  literalAfter: ":",
+                },
+              },
+            },
+          ],
+        },
+      },
+    },
+  ];
+  expect(parseCurrentSecurityReview(encodeCurrentSecurityReview(review))).toEqual(review);
+  const raw = JSON.parse(encodeCurrentSecurityReview(review));
+  raw.changes[0].putRegistrationPolicy.profiles[0].unknownClaim = "sub";
+  expect(() => parseCurrentSecurityReview(JSON.stringify(raw))).toThrow();
+});
