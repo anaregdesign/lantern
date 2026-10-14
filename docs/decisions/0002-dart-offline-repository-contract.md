@@ -43,6 +43,72 @@ secure storage, connectivity, Flutter, or a state-management library.
 Caller-supplied contribution IDs remain part of the direct-online SDK; they do
 not make Add part of the durable offline contract.
 
+### Bound application data contract (#1766 / #1767)
+
+The application contract now lives in the pure-Dart parent as
+`LanternDataClient`, with `DirectLanternDataClient` as the first profile.
+This supersedes the local-commit meaning of ordinary application Write Futures
+below. The historical Repository/admin APIs retain their explicit names while
+#1768–#1772 introduce the bound offline facade, migrations, automatic owner and
+maintained Flutter factories. They must not be aliased behind incompatible
+Future meanings. Existing releases and their qualification remain historical.
+
+All ordinary singular/plural CRUD, conditional Vertex Put, targeted contribution
+Delete, typed `illuminate` and watches use positional inputs and named `options`.
+The session binds endpoint, dataset/account and authority once; no per-call
+partition is present. Native issuer/subject/profile/service origin determine
+account identity; UID/personalPrefix remain metadata. Existing native account
+partition derivation must survive UID assignment when the later factory adopts
+this binding. Explicit application bindings are permitted; token decoding never
+establishes trusted identity. Parent runtime dependencies exclude offline,
+SQLite and Flutter.
+
+Ordinary writes report known Server handling through the existing
+`MutationReply<T>` union. Indexed plural replies and partial exceptions preserve
+all original positions, mixed disclosed/undisclosed handling, false Delete
+results, ambiguous dispatched chunks and definitely unsent suffixes. The shared
+parent-owned qualified `lantern_client_adapter.dart` seam freezes
+inputs/absolute TTL/contribution IDs, exposes normalized immutable intent for
+store codecs, and
+executes raw no-retry attempts; it never applies response-time Put TTL rewriting
+or reduces `existed[]` to a count. Existing low-level born-expired behavior is
+separate; new facades reject already-expired Put before admission/RPC.
+
+Confirmed present/Missing/Expired/Unknown evidence, pending summary and local
+view are separate. Explicit cacheOnly never acquires tokens; Direct has no
+hidden read/result cache. Availability/auth/policy failure becomes sanitized
+Unknown, while invalid input, cancellation, capacity, corruption, closed lifetime
+or explicitly unsupported capability is typed failure. ServerOnly returns only
+Server evidence. Traversal keeps typed family/default/float32/prefix semantics,
+uses the canonical public query encoder, and never populates exact entity caches.
+Known included-source expiry invalidates the entire derived result.
+
+`client.mutations` separates admission tickets, typed references, reobserve/status
+certainty and bounded dependency groups from Server-completion waiters. Direct
+admission/history is memory only and performs at most one attempt per chunk,
+without durable outbox or automatic replay. Structured five-minute operation IDs
+have bounded reuse eligibility, 30-second future skew, retained collision guards
+and an in-memory monotone time high-water mark. Cancellation before admission
+aborts it; after admission waiter cancellation/timeout does not cancel work.
+All operation/item/byte/waiter and active/queued lane limits are reserved before
+admission. Explicit plus same-identity FIFO dependency cycles fail atomically;
+undisclosed handling satisfies only an explicit handled predicate.
+
+Direct watches share query ownership and a bounded eight-event subscriber
+mailbox, publish metadata transitions, revalidate after observationLost and use
+finite freshness polling. Last unsubscribe stops its read/timer ownership.
+Authority denial pauses the registration; it is never treated as an unsupported
+CDC capability. The initial strictLive mode is unsupported because public CDC
+cannot certify hidden corpus statistics, pruned inputs or all natural TTLs.
+Close fences late callbacks and joins owned attempts before closing transport.
+
+#1767 supplies shared contracts, exact attempts, Direct unit/conformance and
+real Connect cases plus bounded bookkeeping performance coverage. #1768 owns
+network-free durable admission, projections and migrations; later children own
+receipts, automatic retry, CDC, result retention and factories. No source merge
+alone qualifies publication, installed platforms, final-source performance or
+physical devices; those exits stay in #1766/#1610.
+
 ### Reference-core implementation
 
 The accepted contract now has an experimental pure-Dart reference core at

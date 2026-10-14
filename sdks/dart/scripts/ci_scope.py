@@ -23,6 +23,7 @@ PACKAGE_ONLY = {
     "tests/integration/dart_offline_sqlite_test.dart",
     "tests/integration/dart_identity_offline_sqlite_test.dart",
     "tests/integration/dart_contribution_delete_test.dart",
+    "tests/integration/dart_data_client_test.dart",
     "testbed/scripts/dart_identity_fixture.sh",
     "testbed/scripts/native_head_fixture.sh",
     "AGENTS.md",

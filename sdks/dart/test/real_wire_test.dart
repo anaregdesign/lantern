@@ -21,6 +21,7 @@ void main() {
   }
 
   final endpoint = Uri.parse(configured);
+  runDataClientWireTests(endpoint);
   final receiptConfigured =
       io.Platform.environment['LANTERN_DART_RECEIPT_ENDPOINT'];
   final receiptToken = io.Platform.environment['LANTERN_DART_RECEIPT_TOKEN'];
@@ -1481,7 +1482,9 @@ final class _CommittedResponseLossTransport implements connect.Transport {
     Uri endpoint, {
     required String loseProcedure,
     Future<void> Function()? onCommittedResponse,
-  }) : _loseProcedure = loseProcedure,
+    bool loseResponse = true,
+  }) : _loseResponse = loseResponse,
+       _loseProcedure = loseProcedure,
        _onCommittedResponse = onCommittedResponse {
     _httpClient = endpoint.scheme == 'https'
         ? _receiptHttpClient()
@@ -1495,6 +1498,7 @@ final class _CommittedResponseLossTransport implements connect.Transport {
 
   late final io.HttpClient _httpClient;
   late final connect.Transport _inner;
+  final bool _loseResponse;
   final String _loseProcedure;
   final Future<void> Function()? _onCommittedResponse;
   final Map<String, int> _requests = {};
@@ -1517,10 +1521,12 @@ final class _CommittedResponseLossTransport implements connect.Transport {
     if (_lossPending && spec.procedure == _loseProcedure) {
       _lossPending = false;
       await _onCommittedResponse?.call();
-      throw connect.ConnectException(
-        connect.Code.unavailable,
-        'simulated committed response loss',
-      );
+      if (_loseResponse) {
+        throw connect.ConnectException(
+          connect.Code.unavailable,
+          'simulated committed response loss',
+        );
+      }
     }
     return response;
   }
@@ -1616,4 +1622,289 @@ Uint8List _randomContribId() {
   final id = Uint8List.fromList(List.generate(24, (_) => random.nextInt(256)));
   if (id.every((value) => value == 0)) id[0] = 1;
   return id;
+}
+
+/// Shared parent/root real Connect acceptance for the bound application facade.
+void runDataClientWireTests(Uri endpoint) {
+  DirectLanternDataClient bound({
+    int batchSize = 1000,
+    LanternTransport? transport,
+    LanternCloseCallback? onClose,
+  }) => DirectLanternDataClient(
+    LanternClient.connect(
+      endpoint,
+      allowInsecure: endpoint.scheme == 'http',
+      transport: transport,
+      onClose: onClose,
+    ),
+    binding: LanternSessionBinding.application(
+      serviceOrigin: endpoint,
+      securityDomain: 'real-wire-fixture',
+      accountIdentity: 'explicit-no-auth',
+      authorityBinding: 'real-wire-lifetime',
+    ),
+    batchSize: batchSize,
+  );
+  String prefix() => 'data-client-${DateTime.now().microsecondsSinceEpoch}:';
+  test(
+    'data client real Connect exact CRUD duplicates and partial Missing',
+    () async {
+      final client = bound();
+      addTearDown(client.close);
+      final p = prefix(), key = '${p}vertex';
+      expect(
+        (await client.putVertex(VertexInput(key: key, value: const NilValue()))
+                as MutationKnownEffect<PutOutcome>)
+            .effect,
+        PutOutcome.appliedAndLive,
+      );
+      expect(
+        (await client.putVertexIfAbsent(
+                  VertexInput(key: key, value: const NilValue()),
+                )
+                as MutationKnownEffect<PutOutcome>)
+            .effect,
+        PutOutcome.conditionNotMet,
+      );
+      final read = await client.getVertices([key, '${p}missing', key]);
+      expect(read.map((s) => s.confirmed.state), [
+        ConfirmedState.present,
+        ConfirmedState.missing,
+        ConfirmedState.present,
+      ]);
+      final deleted = await client.deleteVertices([key, key, '${p}missing']);
+      expect(
+        deleted.items.map((r) => (r as MutationKnownEffect<bool>).effect),
+        [true, false, false],
+      );
+      final edge = EdgeRef('${p}tail', '${p}head');
+      await client.putVertices([
+        for (final k in [edge.tail, edge.head])
+          VertexInput(key: k, value: const NilValue()),
+      ]);
+      await client.putEdge(
+        EdgeInput(tail: edge.tail, head: edge.head, weight: 1),
+      );
+      final id = Uint8List(24)..[23] = 1;
+      expect(
+        (await client.addEdge(
+                  EdgeInput(
+                    tail: edge.tail,
+                    head: edge.head,
+                    weight: 2,
+                    contribId: id,
+                  ),
+                )
+                as MutationKnownEffect<double>)
+            .effect,
+        3,
+      );
+      final ref = EdgeContributionRef(
+        tail: edge.tail,
+        head: edge.head,
+        contribId: id,
+      );
+      final removed = await client.deleteEdgeContributions([ref, ref]);
+      expect(
+        removed.items.map((r) => (r as MutationKnownEffect<bool>).effect),
+        [true, false],
+      );
+      expect((await client.getEdge(edge)).view!.weight, 1);
+      expect(
+        (await client.deleteEdges([
+          edge,
+          edge,
+        ])).items.map((r) => (r as MutationKnownEffect<bool>).effect),
+        [true, false],
+      );
+    },
+  );
+  test(
+    'data client real Connect partial chunk failure retains failed and unsent positions',
+    () async {
+      final client = bound(batchSize: 1);
+      addTearDown(client.close);
+      final p = prefix();
+      try {
+        await client.putVertices([
+          VertexInput(key: '${p}good', value: const NilValue()),
+          VertexInput(
+            key: List.filled(2048, 'x').join(),
+            value: const NilValue(),
+          ),
+          VertexInput(key: '${p}unsent', value: const NilValue()),
+        ]);
+        fail('expected wire validation failure');
+      } on MutationBatchException<PutOutcome> catch (error) {
+        expect(error.items.map((i) => i.state), [
+          MutationItemState.handled,
+          MutationItemState.unknown,
+          MutationItemState.notAttempted,
+        ]);
+        expect(error.cause, isA<LanternInvalidArgumentException>());
+      }
+      expect(
+        (await client.getVertex('${p}good')).confirmed.state,
+        ConfirmedState.present,
+      );
+      expect(
+        (await client.getVertex('${p}unsent')).confirmed.state,
+        ConfirmedState.missing,
+      );
+    },
+  );
+  test(
+    'data client real Connect Put handling survives response-time local expiry',
+    () async {
+      var now = DateTime.now().toUtc();
+      final expiration = now.add(const Duration(minutes: 5));
+      final fault = _CommittedResponseLossTransport(
+        endpoint,
+        loseProcedure: '/graph.v1.LanternService/PutVertices',
+        loseResponse: false,
+        onCommittedResponse: () async {
+          now = expiration.add(const Duration(seconds: 1));
+        },
+      );
+      final low = LanternClient.connect(
+        endpoint,
+        allowInsecure: endpoint.scheme == 'http',
+        transport: fault,
+        onClose: fault.close,
+        clock: () => now,
+      );
+      final client = DirectLanternDataClient(
+        low,
+        binding: LanternSessionBinding.application(
+          serviceOrigin: endpoint,
+          securityDomain: 'real-wire-fixture',
+          accountIdentity: 'no-auth',
+          authorityBinding: 'fixture',
+        ),
+      );
+      addTearDown(client.close);
+      final key = '${prefix()}expiry';
+      final reply = await client.putVertex(
+        VertexInput(key: key, value: const NilValue(), expiresAt: expiration),
+      );
+      expect(
+        (reply as MutationKnownEffect<PutOutcome>).effect,
+        PutOutcome.appliedAndLive,
+      );
+      expect(
+        (await client.getVertex(key)).confirmed.state,
+        ConfirmedState.expired,
+      );
+      expect(fault.requestsFor('/graph.v1.LanternService/PutVertices'), 1);
+    },
+  );
+  test(
+    'data client real Connect committed Add response loss never replays',
+    () async {
+      final p = prefix();
+      final reference = LanternClient.connect(
+        endpoint,
+        allowInsecure: endpoint.scheme == 'http',
+      );
+      addTearDown(reference.close);
+      final edge = EdgeRef('${p}tail', '${p}head');
+      await _seedEdgeEndpoints(reference, edge);
+      const procedure = '/graph.v1.LanternService/AddEdges';
+      final fault = _CommittedResponseLossTransport(
+        endpoint,
+        loseProcedure: procedure,
+      );
+      final client = bound(transport: fault, onClose: fault.close);
+      addTearDown(client.close);
+      await expectLater(
+        client.addEdge(EdgeInput(tail: edge.tail, head: edge.head, weight: 2)),
+        throwsA(
+          isA<MutationBatchException<double>>().having(
+            (e) => e.items.single.state,
+            'certainty',
+            MutationItemState.unknown,
+          ),
+        ),
+      );
+      expect((await reference.getEdge(edge)).weight, 2);
+      expect(fault.requestsFor(procedure), 1);
+    },
+  );
+  test(
+    'data client real Connect typed traversal covering matrix matches Server',
+    () async {
+      final p = prefix();
+      final client = bound();
+      addTearDown(client.close);
+      final reference = LanternClient.connect(
+        endpoint,
+        allowInsecure: endpoint.scheme == 'http',
+      );
+      addTearDown(reference.close);
+      final seed = '${p}seed', a = '${p}a', b = '${p}b';
+      final expiration = DateTime.now().toUtc().add(const Duration(minutes: 5));
+      await client.putVertices([
+        for (final key in [seed, a, b])
+          VertexInput(key: key, value: const NilValue(), expiresAt: expiration),
+      ]);
+      await client.putEdges([
+        EdgeInput(tail: seed, head: a, weight: 3, expiresAt: expiration),
+        EdgeInput(tail: seed, head: b, weight: 2, expiresAt: expiration),
+        EdgeInput(tail: a, head: b, weight: 1, expiresAt: expiration),
+      ]);
+      final families = <TraversalOptions>[
+        for (final objective in [
+          TraversalObjective.minimize,
+          TraversalObjective.maximize,
+        ])
+          for (final reduction in TraversalReduction.values)
+            BfsOptions(
+              step: 2,
+              fanOut: 3,
+              objective: objective,
+              reduction: reduction,
+            ),
+        const PprOptions(),
+        const PprOptions(topN: 2, restartProbability: 0.25, epsilon: 1e-4),
+        for (final objective in [
+          TraversalObjective.minimize,
+          TraversalObjective.maximize,
+        ])
+          for (final reduction in TraversalReduction.values)
+            LocalCommunityOptions(
+              maxSize: 3,
+              objective: objective,
+              reduction: reduction,
+            ),
+      ];
+      for (final family in families) {
+        for (final weighting in TraversalWeighting.values) {
+          final expected = await reference.illuminate(
+            seed,
+            traversal: family,
+            weighting: weighting,
+            vertexPrefix: p,
+          );
+          final observed = await client.illuminate(
+            seed,
+            traversal: family,
+            weighting: weighting,
+            vertexPrefix: p,
+          );
+          expect(observed.confirmed.state, ConfirmedState.present);
+          final graph = observed.confirmed.value!;
+          expect(graph.vertices.keys, expected.vertices.keys);
+          expect(graph.edgeWeights, expected.edgeWeights);
+          expect(
+            graph.allEdges.map((e) => e.expiration),
+            expected.allEdges.map((e) => e.expiration),
+          );
+          expect(
+            graph.vertices.values.map((v) => v.expiration),
+            expected.vertices.values.map((v) => v.expiration),
+          );
+        }
+      }
+    },
+  );
 }

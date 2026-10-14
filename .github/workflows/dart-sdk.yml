@@ -31,6 +31,7 @@ on:
       - "tests/integration/dart_offline_sqlite_test.dart"
       - "tests/integration/dart_identity_offline_sqlite_test.dart"
       - "tests/integration/dart_contribution_delete_test.dart"
+      - "tests/integration/dart_data_client_test.dart"
       - "testbed/scripts/dart_identity_fixture.sh"
       - "testbed/scripts/native_receipt_fixture.sh"
       - "testbed/scripts/native_head_fixture.sh"
@@ -78,6 +79,7 @@ on:
       - "tests/integration/dart_offline_sqlite_test.dart"
       - "tests/integration/dart_identity_offline_sqlite_test.dart"
       - "tests/integration/dart_contribution_delete_test.dart"
+      - "tests/integration/dart_data_client_test.dart"
       - "testbed/scripts/dart_identity_fixture.sh"
       - "testbed/scripts/native_receipt_fixture.sh"
       - "testbed/scripts/native_head_fixture.sh"
@@ -268,6 +270,7 @@ jobs:
         run: |
           dart test test/real_wire_test.dart
           dart test ../../tests/integration/dart_contribution_delete_test.dart
+          dart test ../../tests/integration/dart_data_client_test.dart
 
       - name: Receipt real-wire test
         timeout-minutes: 5

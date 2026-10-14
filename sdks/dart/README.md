@@ -20,22 +20,85 @@ The public import is:
 ```dart
 import 'package:lantern_client/lantern_client.dart';
 
-final client = LanternClient.connect(
-  Uri.parse('https://lantern.example.com'),
-  tokenProvider: () async => session.accessToken,
+final endpoint = Uri.parse('https://lantern.example.com');
+final LanternDataClient client = DirectLanternDataClient(
+  LanternClient.connect(endpoint, tokenProvider: () => issued.credential),
+  binding: LanternSessionBinding.native(issued.session,
+    securityDomain: 'my-dataset'),
 );
-final outcome = await client.putVertex(
-  VertexInput(
-    key: 'user:42',
-    value: VertexValue.string('alice'),
-    expiresIn: const Duration(minutes: 30),
-  ),
-);
-if (outcome != PutOutcome.appliedAndLive) {
-  throw StateError('user:42 was not live after Put: $outcome');
-}
-final vertex = await client.getVertex('user:42');
+final reply = await client.putVertex(VertexInput(
+  key: 'user:42', value: VertexValue.string('alice'),
+  expiresIn: const Duration(minutes: 30),
+));
+final snapshot = await client.getVertex('user:42');
+await client.close();
 ```
+
+
+`issued` is the verified native login result described below. Other auth/no-auth
+applications supply an explicit `LanternSessionBinding.application` and certify
+that its endpoint, dataset, account and authority lifetime match their transport.
+The SDK never infers identity from an opaque token. UID is metadata; adding it
+does not change the existing native account's storage identity.
+
+Ordinary application CRUD and traversal use the bound `LanternDataClient`.
+Write Futures complete with `MutationKnownEffect<T>` or
+`MutationAcceptedUndisclosed<T>` only after known Server handling. The reply
+preserves the original Put outcome even if its TTL expires before observation;
+reads expire independently. Already-expired Put input is rejected before RPC.
+Plural `MutationBatchReply<T>.items` retains every request position, including
+duplicate and false Delete results and mixed undisclosed chunks. A
+`MutationBatchException<T>` retains handled, failed, unknown, notAttempted and
+stillPending positions. A failed dispatched chunk is uncertain; its unsent
+suffix is explicit. Direct never automatically replays a mutation.
+
+Reads distinguish present, confirmed Missing, Expired and typed Unknown.
+`cacheOnly` performs no token/RPC and is Unknown in Direct; `serverOnly` has no
+cache/overlay fallback. Snapshots separate confirmed evidence, pending metadata
+and local view. Direct has no reusable confirmed-read or traversal cache.
+Typed `illuminate` keeps all existing families/defaults/weightings and absolute
+source TTLs. `LanternTraversalQuery` shares the normalized canonical encoder
+with the wire path; derived Graphs never hydrate exact CRUD state.
+
+`watchVertex(s)`, `watchEdge(s)` and `watchIlluminate` share matching active
+queries, emit initial Unknown and metadata transitions, and periodically refetch
+(default 30 seconds). Paused subscriptions keep at most eight events; overflow
+emits `observationLost` and revalidates on resume. Last unsubscribe releases its
+read/timer ownership. Auth/policy denial pauses that registration rather than
+activating another polling path. `strictLive` is typed unsupported in Direct,
+including traversal: current public CDC lacks a complete hidden/pruned input
+and TTL dependency certificate.
+
+Advanced `client.mutations.submit` returns a memory admission ticket separately
+from Server completion. `reobserve`, `getStatus`, and `watchStatus` never submit. Submit may request a
+bounded live ticket completion observer through `MutationOptions.wait`.
+A waiter timeout/cancellation after admission detaches only that observer.
+Fresh structured operation IDs use a five-minute admission window and 30-second
+future skew; retained collisions and aged/evicted reuse fail without dispatch.
+The effective clock has an in-memory high-water mark. The Direct history caps
+are 128 operations, 65,536 items and 32 MiB reservation bytes; history remains
+pinned through the admission window. Active send/read lanes default to 2/4 with
+32 queued items each, 64 observation subscribers and 128 completion waiters.
+Traversal responses are capped at 4,096 vertices/16,384 edges/1 MiB encoded
+payload with 16 active traversal identities and one concurrent traversal per
+scope. Over-limit results fail as typed capacity without truncation. Capacity fails explicitly.
+Dependency groups admit at most 64 nodes/256 arcs within configured session
+caps, reject explicit plus same-identity FIFO cycles atomically, and dispatch
+only after the requested prerequisite evidence. They are not Server transactions.
+Close cancels and joins this lifetime's networking/observations.
+
+Qualified coordination adapters import `lantern_client_adapter.dart` for the
+parent-owned exact no-retry attempt seam. `IndexedMutationIntent.normalizedRequest`
+exposes immutable public inputs with absolute TTLs and fixed Add contribution IDs;
+store codecs need neither private generated classes nor duplicated wire logic.
+`OperationIdPolicy` supplies the same bounded freshness/retention rules to later
+profiles. These seams do not introduce offline storage or receipt preparation.
+
+## Explicit low-level wire primitives
+
+`LanternClient` remains available for receipt diagnostics, scans, auth and other
+explicit wire operations. The following historical primitive return contracts
+apply to it; they do not implement `LanternDataClient`.
 
 `VertexValue` has named factories for every wire oneof kind; bare Dart numbers
 are never guessed into a Protobuf numeric kind. `VertexValue.nil()` and
