@@ -29,7 +29,14 @@ func nativeAuthProcedure(path string) bool {
 	return strings.HasPrefix(path, "/"+graphv1connect.LanternNativeAuthServiceName+"/")
 }
 func nativeBootstrapProcedure(path string) bool {
-	return path == graphv1connect.LanternNativeAuthServiceBeginNativeLoginProcedure || path == graphv1connect.LanternNativeAuthServiceCompleteNativeLoginProcedure
+	switch path {
+	case graphv1connect.LanternNativeAuthServiceBeginNativeLoginProcedure, graphv1connect.LanternNativeAuthServiceCompleteNativeLoginProcedure,
+		graphv1connect.LanternNativeAuthServiceBeginNativeRegistrationProcedure, graphv1connect.LanternNativeAuthServicePrepareNativeRegistrationProcedure,
+		graphv1connect.LanternNativeAuthServiceApplyNativeRegistrationProcedure, graphv1connect.LanternNativeAuthServiceGetNativeRegistrationStatusProcedure:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *AuthenticationAdapter) nativeRequest(message proto.Message, headers http.Header, bootstrap bool) error {
@@ -71,18 +78,18 @@ func (r *AuthenticationAdapter) BeginNativeLogin(ctx context.Context, req *conne
 	if err != nil {
 		return nil, nativeError(err)
 	}
-	return connect.NewResponse(&pb.BeginNativeLoginResponse{AttemptId: start.AttemptID, CompletionSecret: start.CompletionSecret, Affinity: start.Affinity, ExpiresAt: timestamppb.New(start.ExpiresAt), Configuration: &pb.NativePluginConfiguration{Kind: encodeNativeKind(start.Kind), ClientProfileId: start.ClientProfileID, ClientId: start.ClientID, ServiceOrigin: start.ServiceOrigin, RedirectUri: start.RedirectURI, State: start.State, Nonce: start.Nonce}}), nil
+	return connect.NewResponse(encodeNativeStart(start)), nil
 }
 
 func (r *AuthenticationAdapter) CompleteNativeLogin(ctx context.Context, req *connect.Request[pb.CompleteNativeLoginRequest]) (*connect.Response[pb.CompleteNativeLoginResponse], error) {
 	if err := r.nativeRequest(req.Msg, req.Header(), true); err != nil {
 		return nil, err
 	}
-	hints := req.Header().Values(NativeAffinityHeader)
-	if len(hints) > 1 || len(hints) == 1 && (hints[0] == "" || len(hints[0]) > 57) {
+	affinity, err := nativeAffinity(req.Header())
+	if err != nil {
 		return nil, nativeError(authn.ErrInvalidInput)
 	}
-	input := authn.NativeCompletionInput{AttemptID: req.Msg.AttemptId, CompletionSecret: req.Msg.CompletionSecret, Affinity: req.Header().Get(NativeAffinityHeader)}
+	input := authn.NativeCompletionInput{AttemptID: req.Msg.AttemptId, CompletionSecret: req.Msg.CompletionSecret, Affinity: affinity}
 	switch provider := req.Msg.Provider.(type) {
 	case *pb.CompleteNativeLoginRequest_Google:
 		if provider.Google == nil {
@@ -97,7 +104,7 @@ func (r *AuthenticationAdapter) CompleteNativeLogin(ctx context.Context, req *co
 	default:
 		return nil, nativeError(authn.ErrInvalidInput)
 	}
-	if len(input.AttemptID) != 43 || len(input.CompletionSecret) != 43 || input.Provider.IDToken == "" || len(input.Provider.IDToken) > 16<<10 || len(input.Provider.AuthorizationCode) > 4096 || len(input.Provider.State) > oidc.MaxNativeStateBytes {
+	if !validNativeCompletionInput(input) {
 		return nil, nativeError(authn.ErrInvalidInput)
 	}
 	result, err := r.workflow.CompleteNativeLogin(ctx, input)
@@ -109,6 +116,10 @@ func (r *AuthenticationAdapter) CompleteNativeLogin(ctx context.Context, req *co
 		return nil, nativeError(authn.ErrUnavailable)
 	}
 	return connect.NewResponse(&pb.CompleteNativeLoginResponse{Credential: result.Credential, Session: encodeNativeSession(result.Session, a)}), nil
+}
+
+func validNativeCompletionInput(input authn.NativeCompletionInput) bool {
+	return len(input.AttemptID) == 43 && len(input.CompletionSecret) == 43 && input.Provider.IDToken != "" && len(input.Provider.IDToken) <= 16<<10 && len(input.Provider.AuthorizationCode) <= 4096 && len(input.Provider.State) <= oidc.MaxNativeStateBytes
 }
 
 func (r *AuthenticationAdapter) nativeAdmission(ctx context.Context) (*security.Admission, security.Session, error) {
@@ -128,6 +139,11 @@ func (r *AuthenticationAdapter) nativeAdmission(ctx context.Context) (*security.
 
 func encodeNativeSession(s security.Session, a *security.Admission) *pb.NativeSession {
 	result := &pb.NativeSession{CredentialProfile: s.CredentialProfile(), ClientProfileId: s.ClientProfileID, ServiceOrigin: s.ServiceOrigin, CreatedAt: timestamppb.New(s.CreatedAt), ExpiresAt: timestamppb.New(s.ExpiresAt), Identity: encodeSecurityIdentity(s.Identity), Version: SecurityVersionForAdmission(a)}
+	if a != nil && a.Identity() == s.Identity {
+		if id, prefix, present := a.Snapshot().PersonalArea(s.Identity); present {
+			result.UserId, result.PersonalPrefix = &id, &prefix
+		}
+	}
 	if !s.AuthTime.IsZero() {
 		result.AuthTime = timestamppb.New(s.AuthTime)
 	}
@@ -202,4 +218,17 @@ func nativeError(err error) error {
 		code = connect.CodeUnavailable
 	}
 	return connect.NewError(code, errors.New("native authentication request rejected"))
+}
+
+func nativeAffinity(headers http.Header) (string, error) {
+	hints := headers.Values(NativeAffinityHeader)
+	if len(hints) > 1 || len(hints) == 1 && (hints[0] == "" || len(hints[0]) > 57) {
+		return "", authn.ErrInvalidInput
+	}
+	return headers.Get(NativeAffinityHeader), nil
+}
+
+func encodeNativeStart(start oidc.NativeStart) *pb.BeginNativeLoginResponse {
+	return &pb.BeginNativeLoginResponse{AttemptId: start.AttemptID, CompletionSecret: start.CompletionSecret, Affinity: start.Affinity, ExpiresAt: timestamppb.New(start.ExpiresAt),
+		Configuration: &pb.NativePluginConfiguration{Kind: encodeNativeKind(start.Kind), ClientProfileId: start.ClientProfileID, ClientId: start.ClientID, ServiceOrigin: start.ServiceOrigin, RedirectUri: start.RedirectURI, State: start.State, Nonce: start.Nonce}}
 }

@@ -280,6 +280,7 @@ func newServer(lc lanternClient, resolver *ttl.Resolver, logger *slog.Logger) *m
 	registerListClaims(srv, lc)
 	registerPostNote(srv, lc, resolver)
 	registerContextStats(srv, lc)
+	registerCurrentUser(srv, lc)
 
 	return srv
 }

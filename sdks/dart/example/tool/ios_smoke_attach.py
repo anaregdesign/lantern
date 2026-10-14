@@ -31,6 +31,10 @@ def positive_env(name, default):
     return int(raw)
 
 
+class CleanupError(RuntimeError):
+    """Owned command cleanup could not be proven complete within its bound."""
+
+
 def stop_process(process, before_stop=None):
     if before_stop:
         try:
@@ -38,22 +42,32 @@ def stop_process(process, before_stop=None):
         except Exception:
             # Diagnostics must never prevent owned subprocess cleanup.
             print("[ios smoke] pre-stop diagnostics unavailable", flush=True)
-    # Reap a leader that exited during diagnostics before addressing its group.
-    # A surviving descendant group still receives the signals below.
     process.poll()
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
+    denied = False
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            break
+        except PermissionError:
+            denied = True
+            # Still try to stop our direct child, without claiming the rest of
+            # its group was cleaned up or broadening which processes we signal.
+            try:
+                process.send_signal(sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if sig == signal.SIGTERM:
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
     try:
         process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
+    except subprocess.TimeoutExpired as error:
+        raise CleanupError("subprocess did not exit after bounded cleanup") from error
+    if denied:
+        raise CleanupError("subprocess group cleanup was denied")
 
 
 def wait_bounded(process, deadline, before_stop=None):
@@ -349,8 +363,6 @@ def run_attempt(device, attempt, root):
                 return 72
         record_phase(phases, "boot_done")
 
-        # Clear any preceding app process so the returned PID identifies this run.
-        read_process([xcrun, "simctl", "terminate", device, BUNDLE_ID], 15, 4096, merge_stderr=True)
         status, _, timed_out, exceeded = read_process(
             [xcrun, "simctl", "install", device, "build/ios/iphonesimulator/Runner.app"],
             remaining(deadline, 90), 65536, merge_stderr=True,
@@ -361,8 +373,11 @@ def run_attempt(device, attempt, root):
         if exceeded or status:
             classification = "launch_failure"
             return 72
+        # Let native launch replace any old process after installation. A
+        # separate terminate before install can hang for an absent application.
+        # The returned PID must identify the new run whose logs we inspect.
         status, timed_out, output = run_logged(
-            [xcrun, "simctl", "launch", device, BUNDLE_ID,
+            [xcrun, "simctl", "launch", "--terminate-running-process", device, BUNDLE_ID,
              "--enable-dart-profiling", "--disable-vm-service-publication",
              "--enable-checked-mode", "--verify-entry-points"],
             flutter_log, remaining(deadline, launch_limit), console_budget, collect_pid=True,
@@ -437,13 +452,21 @@ def run_attempt(device, attempt, root):
             return 0
         classification = "test_failure"
         return 72
+    except CleanupError:
+        classification = "cleanup_failure"
+        return 72
     finally:
-        if classification != "success":
-            capture_diagnostics(
-                Path(__file__).with_name("ios_smoke_ci.sh"),
-                device, destination / "diagnostics",
-            )
-        record_classification(destination, classification)
+        try:
+            if classification != "success":
+                capture_diagnostics(
+                    Path(__file__).with_name("ios_smoke_ci.sh"),
+                    device, destination / "diagnostics",
+                )
+        except Exception:
+            # Secondary diagnostic failures cannot erase the primary failure.
+            print("[ios smoke] diagnostic capture unavailable", flush=True)
+        finally:
+            record_classification(destination, classification)
 
 
 def main():

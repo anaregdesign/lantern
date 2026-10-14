@@ -37,6 +37,8 @@ abstract class LanternSecurityServiceBase extends $pb.GeneratedService {
       $pb.ServerContext ctx, $1.ListUsersRequest request);
   $async.Future<$1.GetUserResponse> getUser(
       $pb.ServerContext ctx, $1.GetUserRequest request);
+  $async.Future<$1.GetRegistrationPolicyResponse> getRegistrationPolicy(
+      $pb.ServerContext ctx, $1.GetRegistrationPolicyRequest request);
   $async.Future<$1.ListRoleAssignmentsResponse> listRoleAssignments(
       $pb.ServerContext ctx, $1.ListRoleAssignmentsRequest request);
   $async.Future<$1.ListSecurityAuditResponse> listSecurityAudit(
@@ -80,6 +82,8 @@ abstract class LanternSecurityServiceBase extends $pb.GeneratedService {
         return $1.ListUsersRequest();
       case 'GetUser':
         return $1.GetUserRequest();
+      case 'GetRegistrationPolicy':
+        return $1.GetRegistrationPolicyRequest();
       case 'ListRoleAssignments':
         return $1.ListRoleAssignmentsRequest();
       case 'ListSecurityAudit':
@@ -128,6 +132,9 @@ abstract class LanternSecurityServiceBase extends $pb.GeneratedService {
         return listUsers(ctx, request as $1.ListUsersRequest);
       case 'GetUser':
         return getUser(ctx, request as $1.GetUserRequest);
+      case 'GetRegistrationPolicy':
+        return getRegistrationPolicy(
+            ctx, request as $1.GetRegistrationPolicyRequest);
       case 'ListRoleAssignments':
         return listRoleAssignments(
             ctx, request as $1.ListRoleAssignmentsRequest);

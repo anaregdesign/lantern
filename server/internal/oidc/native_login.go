@@ -132,6 +132,22 @@ func nativeTokenHash(claim, value string) bool {
 // without repeating the code exchange. Raw tokens live only with this request's
 // producer; the security owner receives detached commitments and original dates.
 func (v *Verifier) VerifyNativeCompletion(ctx context.Context, c NativeCompletion, tokens NativeTokens) (VerifiedIdentity, error) {
+	if !c.IsLogin() {
+		return VerifiedIdentity{}, ErrInvalidToken
+	}
+	return v.verifyNativeCompletion(ctx, c, tokens)
+}
+
+// VerifyNativeRegistrationCompletion preserves the actual purpose and signed
+// dates. It cannot turn registration or recovery into ordinary login evidence.
+func (v *Verifier) VerifyNativeRegistrationCompletion(ctx context.Context, c NativeCompletion, tokens NativeTokens) (VerifiedIdentity, error) {
+	if !c.RegistrationPurpose().Valid() {
+		return VerifiedIdentity{}, ErrInvalidToken
+	}
+	return v.verifyNativeCompletion(ctx, c, tokens)
+}
+
+func (v *Verifier) verifyNativeCompletion(ctx context.Context, c NativeCompletion, tokens NativeTokens) (VerifiedIdentity, error) {
 	a := c.attempt
 	if !c.credential.matches(a) || c.consumedAt.IsZero() {
 		return VerifiedIdentity{}, ErrInvalidToken
@@ -147,8 +163,9 @@ func (v *Verifier) VerifyNativeCompletion(ctx context.Context, c NativeCompletio
 			Profile          security.CurrentProfile
 			Trust            [32]byte
 			Affinity         string
-		}{a.id, t.proof, t.state, t.profile, verified.evidence.Configuration, a.owner.affinity}),
-		CreatedAt: t.createdAt, ExpiresAt: t.expiresAt, ConsumedAt: c.consumedAt, CodeHashPresent: codeHash, CodeHashChecked: codeHash, NoncePolicy: "google-initialize-unbound"}
+			Registration     security.NativeRegistrationPurpose `json:",omitzero"`
+		}{a.id, t.proof, t.state, t.profile, verified.evidence.Configuration, a.owner.affinity, t.registration}),
+		CreatedAt: t.createdAt, ExpiresAt: t.expiresAt, ConsumedAt: c.consumedAt, CodeHashPresent: codeHash, CodeHashChecked: codeHash, NoncePolicy: "google-initialize-unbound", Registration: t.registration}
 	if t.client.Kind != security.GoogleIDToken {
 		if tokens.binding == [32]byte{} || tokens.binding != nativeExchangeBinding(c) || tokens.exchange == [32]byte{} {
 			return VerifiedIdentity{}, ErrInvalidToken
@@ -171,5 +188,9 @@ func (v *Verifier) VerifyNativeCompletion(ctx context.Context, c NativeCompletio
 		return VerifiedIdentity{}, ErrInvalidToken
 	}
 	verified.evidence.Version, verified.evidence.Policy, verified.evidence.Native = 2, "lantern-native-login-v1", native
+	if t.registration.Valid() {
+		verified.evidence.Version, verified.evidence.Policy = 3, "lantern-native-registration-v1"
+		return finishEvidence(verified, "native-registration", security.NativeEndUserProfile)
+	}
 	return finishEvidence(verified, "native-login", security.NativeEndUserProfile)
 }

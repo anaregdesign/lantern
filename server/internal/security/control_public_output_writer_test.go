@@ -15,25 +15,31 @@ func currentPublicTestWriter(t *testing.T, o *CurrentAuthority, p *CurrentOutput
 }
 
 func currentPublicCredentialWriter(t *testing.T, o *CurrentAuthority, p *CurrentOutput, producer CurrentCredentialProducer) (*currentOutputWriter, *httptest.ResponseRecorder, *Admission) {
+	w, recorder := currentPublicRequestWriter(t, p, "/auth/session")
+	ctx, a, err := o.WithRequestCredential(w.ctx, producer)
+	if err != nil || a.BindCurrentSelfOutput(ctx) != nil {
+		t.Fatal("bind current output", err)
+	}
+	w.ctx = ctx
+	return w, recorder, a
+}
+
+func currentPublicRequestWriter(t *testing.T, p *CurrentOutput, path string) (*currentOutputWriter, *httptest.ResponseRecorder) {
 	t.Helper()
 	left, right := net.Pipe()
 	t.Cleanup(func() { _ = left.Close(); _ = right.Close(); p.connState(left, http.StateClosed) })
 	ctx := p.connContext(context.Background(), left)
 	c := ctx.Value(currentOutputConnectionKey{}).(*currentOutputConnection)
-	r, err := p.reserve(c, httptest.NewRequest(http.MethodGet, "/auth/session", nil))
+	r, err := p.reserve(c, httptest.NewRequest(http.MethodGet, path, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { p.release(r) })
 	ctx = context.WithValue(ctx, currentOutputRequestKey{}, r)
-	ctx, a, err := o.WithRequestCredential(ctx, producer)
-	if err != nil || a.BindCurrentSelfOutput(ctx) != nil {
-		t.Fatal("bind current output", err)
-	}
 	recorder := httptest.NewRecorder()
 	w := &currentOutputWriter{request: r, destination: recorder, ctx: ctx, headers: make(http.Header), status: 200, hooks: &authorityOutputHooks{}}
 	r.writer = w
-	return w, recorder, a
+	return w, recorder
 }
 
 func TestCurrentPublicOutputWriterImmutableUnit(t *testing.T) {

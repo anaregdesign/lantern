@@ -1,4 +1,4 @@
-package security
+package authz
 
 import (
 	"errors"
@@ -171,4 +171,147 @@ func TestAccessHeadManagedEdges(t *testing.T) {
 	if !reader.AllowsEdge(EdgeRead, "tails:public", "heads:public") || reader.AllowsEdge(EdgeDelete, "tails:public", "heads:public") {
 		t.Fatal("both endpoint reads did not define independent base visibility")
 	}
+}
+
+func TestAccessUIDBinding(t *testing.T) {
+	roles := []Role{{ID: "personal", Rules: []PermissionRule{
+		uidRule(Allow, VertexRead, "users:", ":"), uidRule(Allow, VertexWrite, "users:", ":"),
+		uidRule(Allow, Query, "users:", ":"), uidRule(Allow, CDCIdentity, "users:", ":"),
+		uidRule(Deny, VertexRead, "users:", ":private:"),
+		dataRule(Deny, VertexRead, "users:"+testUIDA+":blocked:"),
+	}}, {ID: "literal", Rules: []PermissionRule{dataRule(Allow, VertexRead, "users:<uid>:"), dataRule(Allow, VertexRead, "users:{uid}:*")}}}
+	policy, err := CompileRoles(roles, DefaultPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []string{"", "bad", "00000000000000000000000000000000"} {
+		if _, err := policy.BindRoles([]string{"personal"}, SubjectBindings{uid}); err == nil {
+			t.Fatal("missing/invalid UID admitted")
+		}
+	}
+	if _, err := policy.ForRoles([]string{"literal"}); err != nil {
+		t.Fatal("legacy literal Role requires UID", err)
+	}
+	a, err := policy.BindRoles([]string{"personal", "literal"}, SubjectBindings{testUIDA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := policy.BindRoles([]string{"literal", "personal"}, SubjectBindings{testUIDB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.roles[0] != b.roles[0] || a.setKey == b.setKey || a.BindingDigest() == b.BindingDigest() {
+		t.Fatal("roles copied or subject binding collapsed")
+	}
+	for _, tc := range []struct {
+		key          string
+		wantA, wantB bool
+	}{
+		{"users:" + testUIDA + ":profile:name", true, false},
+		{"users:" + testUIDB + ":notes:1", false, true},
+		{"users:" + testUIDA + "x:item", false, false},
+		{"users:" + testUIDA, false, false},
+		{"users:" + testUIDA + ":private:secret", false, false},
+		{"users:" + testUIDA + ":blocked:1", false, false},
+		{"users:<uid>:literal", true, true},
+		{"users:{uid}:*literal", true, true},
+	} {
+		for _, actor := range []struct {
+			access *Access
+			want   bool
+		}{{a, tc.wantA}, {b, tc.wantB}} {
+			if got := actor.access.Allows(VertexRead, tc.key); got != actor.want {
+				t.Fatal("Allow", tc, got)
+			}
+			if got := actor.access.Scope(VertexRead).Contains(tc.key); got != actor.want {
+				t.Fatal("Scope", tc, got)
+			}
+			got, _, err := actor.access.Explain(VertexRead, &tc.key)
+			if err != nil || got != actor.want {
+				t.Fatal("Explain", tc, got, err)
+			}
+		}
+	}
+	if a.AllowsAll(VertexRead) || b.AllowsAll(VertexWrite) || a.Scope(VertexRead).IsSubsetOf(b.Scope(VertexRead)) {
+		t.Fatal("personal access broadened or different subjects considered equivalent")
+	}
+	if a.Scope(VertexRead, Query, CDCIdentity).Contains("users:" + testUIDB + ":x") {
+		t.Fatal("CDC intersection leaked another user")
+	}
+}
+
+func TestAccessUIDPublicReadSelfWriteFixture(t *testing.T) {
+	policy, err := CompileRoles([]Role{{ID: "public_read", Rules: []PermissionRule{dataRule(Allow, VertexRead, "public:users:")}},
+		{ID: "self_write", Rules: []PermissionRule{uidRule(Allow, VertexWrite, "public:users:", ":profile:"), uidRule(Deny, VertexWrite, "public:users:", ":profile:locked:")}},
+		{ID: "all", Rules: []PermissionRule{dataRule(Allow, VertexWrite, "")}},
+	}, DefaultPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := policy.BindRoles([]string{"public_read", "self_write"}, SubjectBindings{testUIDA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := "public:users:" + testUIDA + ":profile:entry"
+	other := "public:users:" + testUIDB + ":profile:entry"
+	if !a.Allows(VertexRead, other) || !a.Allows(VertexWrite, own) || a.Allows(VertexWrite, other) || a.Allows(VertexWrite, "public:users:"+testUIDA+":notes:1") {
+		t.Fatal("static read/self write mismatch")
+	}
+	if !a.AllowsEdge(EdgeWrite, other, own) || a.AllowsEdge(EdgeWrite, own, other) {
+		t.Fatal("head-managed direction changed")
+	}
+	if !a.EdgeCandidateScope(EdgeWrite).Contains(other) {
+		t.Fatal("candidate superset lost readable tail")
+	}
+	allowed, matches, err := a.ExplainEdge(EdgeWrite, other, own)
+	if err != nil || !allowed || len(matches) != 2 {
+		t.Fatal(allowed, matches, err)
+	}
+	all, err := policy.BindRoles([]string{"all", "self_write"}, SubjectBindings{testUIDA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.AllowsAll(VertexWrite) || all.Allows(VertexWrite, "public:users:"+testUIDA+":profile:locked:1") {
+		t.Fatal("UID Deny lost to literal all-data Allow")
+	}
+	if _, err := policy.ForRoles([]string{"public_read"}); err != nil {
+		t.Fatal("UID-less read-only fixture failed", err)
+	}
+}
+
+func BenchmarkAccessUIDBinding(b *testing.B) {
+	policy, err := CompileRoles([]Role{{ID: "personal", Rules: []PermissionRule{uidRule(Allow, VertexRead, "users:", ":"), uidRule(Deny, VertexRead, "users:", ":private:")}}}, DefaultPolicyLimits())
+	if err != nil {
+		b.Fatal(err)
+	}
+	access, err := policy.BindRoles([]string{"personal"}, SubjectBindings{testUIDA})
+	if err != nil {
+		b.Fatal(err)
+	}
+	key := "users:" + testUIDA + ":profile:name"
+	b.Run("bind", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := policy.BindRoles([]string{"personal"}, SubjectBindings{testUIDA}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("allows", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if !access.Allows(VertexRead, key) {
+				b.Fatal("denied")
+			}
+		}
+	})
+	b.Run("scope_warm", func(b *testing.B) {
+		access.Scope(VertexRead)
+		b.ReportAllocs()
+		for b.Loop() {
+			if !access.Scope(VertexRead).Contains(key) {
+				b.Fatal("scope denied")
+			}
+		}
+	})
 }

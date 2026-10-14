@@ -396,6 +396,21 @@ final $typed_data.Uint8List securityPrefixPairDescriptor = $convert.base64Decode
     'ChJTZWN1cml0eVByZWZpeFBhaXISHwoLdGFpbF9wcmVmaXgYASABKAlSCnRhaWxQcmVmaXgSHw'
     'oLaGVhZF9wcmVmaXgYAiABKAlSCmhlYWRQcmVmaXg=');
 
+@$core.Deprecated('Use securityPrincipalUIDPrefixDescriptor instead')
+const SecurityPrincipalUIDPrefix$json = {
+  '1': 'SecurityPrincipalUIDPrefix',
+  '2': [
+    {'1': 'literal_before', '3': 1, '4': 1, '5': 9, '10': 'literalBefore'},
+    {'1': 'literal_after', '3': 2, '4': 1, '5': 9, '10': 'literalAfter'},
+  ],
+};
+
+/// Descriptor for `SecurityPrincipalUIDPrefix`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List securityPrincipalUIDPrefixDescriptor =
+    $convert.base64Decode(
+        'ChpTZWN1cml0eVByaW5jaXBhbFVJRFByZWZpeBIlCg5saXRlcmFsX2JlZm9yZRgBIAEoCVINbG'
+        'l0ZXJhbEJlZm9yZRIjCg1saXRlcmFsX2FmdGVyGAIgASgJUgxsaXRlcmFsQWZ0ZXI=');
+
 @$core.Deprecated('Use securityRuleDescriptor instead')
 const SecurityRule$json = {
   '1': 'SecurityRule',
@@ -428,6 +443,15 @@ const SecurityRule$json = {
       '9': 0,
       '10': 'pair'
     },
+    {
+      '1': 'principal_uid_prefix',
+      '3': 7,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityPrincipalUIDPrefix',
+      '9': 0,
+      '10': 'principalUidPrefix'
+    },
   ],
   '8': [
     {'1': 'resource'},
@@ -440,7 +464,9 @@ final $typed_data.Uint8List securityRuleDescriptor = $convert.base64Decode(
     'YxLlNlY3VyaXR5RWZmZWN0UgZlZmZlY3QSMAoGYWN0aW9uGAMgASgOMhguZ3JhcGgudjEuU2Vj'
     'dXJpdHlBY3Rpb25SBmFjdGlvbhIYCgZwcmVmaXgYBCABKAlIAFIGcHJlZml4EhgKBmdsb2JhbB'
     'gFIAEoCEgAUgZnbG9iYWwSMgoEcGFpchgGIAEoCzIcLmdyYXBoLnYxLlNlY3VyaXR5UHJlZml4'
-    'UGFpckgAUgRwYWlyQgoKCHJlc291cmNl');
+    'UGFpckgAUgRwYWlyElgKFHByaW5jaXBhbF91aWRfcHJlZml4GAcgASgLMiQuZ3JhcGgudjEuU2'
+    'VjdXJpdHlQcmluY2lwYWxVSURQcmVmaXhIAFIScHJpbmNpcGFsVWlkUHJlZml4QgoKCHJlc291'
+    'cmNl');
 
 @$core.Deprecated('Use securityRoleDescriptor instead')
 const SecurityRole$json = {
@@ -517,6 +543,18 @@ const SecurityUser$json = {
       '6': '.graph.v1.SecurityRoleAssignment',
       '10': 'assignments'
     },
+    {
+      '1': 'user_id',
+      '3': 4,
+      '4': 1,
+      '5': 9,
+      '9': 0,
+      '10': 'userId',
+      '17': true
+    },
+  ],
+  '8': [
+    {'1': '_user_id'},
   ],
 };
 
@@ -525,7 +563,8 @@ final $typed_data.Uint8List securityUserDescriptor = $convert.base64Decode(
     'CgxTZWN1cml0eVVzZXISNgoIaWRlbnRpdHkYASABKAsyGi5ncmFwaC52MS5TZWN1cml0eUlkZW'
     '50aXR5UghpZGVudGl0eRI2CgVzdGF0ZRgCIAEoDjIgLmdyYXBoLnYxLlNlY3VyaXR5UHJpbmNp'
     'cGFsU3RhdGVSBXN0YXRlEkIKC2Fzc2lnbm1lbnRzGAMgAygLMiAuZ3JhcGgudjEuU2VjdXJpdH'
-    'lSb2xlQXNzaWdubWVudFILYXNzaWdubWVudHM=');
+    'lSb2xlQXNzaWdubWVudFILYXNzaWdubWVudHMSHAoHdXNlcl9pZBgEIAEoCUgAUgZ1c2VySWSI'
+    'AQFCCgoIX3VzZXJfaWQ=');
 
 @$core.Deprecated('Use securityIssuerDescriptor instead')
 const SecurityIssuer$json = {
@@ -735,6 +774,18 @@ const GetCurrentPrincipalResponse$json = {
       '10': 'recentAuthentication'
     },
     {'1': 'csrf_token', '3': 6, '4': 1, '5': 9, '10': 'csrfToken'},
+    {
+      '1': 'user_id',
+      '3': 7,
+      '4': 1,
+      '5': 9,
+      '9': 0,
+      '10': 'userId',
+      '17': true
+    },
+  ],
+  '8': [
+    {'1': '_user_id'},
   ],
 };
 
@@ -745,7 +796,8 @@ final $typed_data.Uint8List getCurrentPrincipalResponseDescriptor = $convert.bas
     'LlNlY3VyaXR5Um9sZVIFcm9sZXMSMwoHdmVyc2lvbhgDIAEoCzIZLmdyYXBoLnYxLlNlY3VyaX'
     'R5VmVyc2lvblIHdmVyc2lvbhI5CgpleHBpcmVzX2F0GAQgASgLMhouZ29vZ2xlLnByb3RvYnVm'
     'LlRpbWVzdGFtcFIJZXhwaXJlc0F0EjMKFXJlY2VudF9hdXRoZW50aWNhdGlvbhgFIAEoCFIUcm'
-    'VjZW50QXV0aGVudGljYXRpb24SHQoKY3NyZl90b2tlbhgGIAEoCVIJY3NyZlRva2Vu');
+    'VjZW50QXV0aGVudGljYXRpb24SHQoKY3NyZl90b2tlbhgGIAEoCVIJY3NyZlRva2VuEhwKB3Vz'
+    'ZXJfaWQYByABKAlIAFIGdXNlcklkiAEBQgoKCF91c2VyX2lk');
 
 @$core.Deprecated('Use browserSessionDescriptor instead')
 const BrowserSession$json = {
@@ -1570,6 +1622,85 @@ final $typed_data.Uint8List securityUserStateChangeDescriptor = $convert.base64D
     'NlY3VyaXR5SWRlbnRpdHlSCGlkZW50aXR5EjYKBXN0YXRlGAIgASgOMiAuZ3JhcGgudjEuU2Vj'
     'dXJpdHlQcmluY2lwYWxTdGF0ZVIFc3RhdGU=');
 
+@$core.Deprecated('Use securityRegistrationProfileDescriptor instead')
+const SecurityRegistrationProfile$json = {
+  '1': 'SecurityRegistrationProfile',
+  '2': [
+    {'1': 'issuer', '3': 1, '4': 1, '5': 9, '10': 'issuer'},
+    {'1': 'client_profile_id', '3': 2, '4': 1, '5': 9, '10': 'clientProfileId'},
+  ],
+};
+
+/// Descriptor for `SecurityRegistrationProfile`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List securityRegistrationProfileDescriptor =
+    $convert.base64Decode(
+        'ChtTZWN1cml0eVJlZ2lzdHJhdGlvblByb2ZpbGUSFgoGaXNzdWVyGAEgASgJUgZpc3N1ZXISKg'
+        'oRY2xpZW50X3Byb2ZpbGVfaWQYAiABKAlSD2NsaWVudFByb2ZpbGVJZA==');
+
+@$core.Deprecated('Use securityRegistrationPolicyDescriptor instead')
+const SecurityRegistrationPolicy$json = {
+  '1': 'SecurityRegistrationPolicy',
+  '2': [
+    {'1': 'version', '3': 1, '4': 1, '5': 13, '10': 'version'},
+    {'1': 'enabled', '3': 2, '4': 1, '5': 8, '10': 'enabled'},
+    {'1': 'role_id', '3': 3, '4': 1, '5': 9, '10': 'roleId'},
+    {
+      '1': 'profiles',
+      '3': 4,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.SecurityRegistrationProfile',
+      '10': 'profiles'
+    },
+  ],
+};
+
+/// Descriptor for `SecurityRegistrationPolicy`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List securityRegistrationPolicyDescriptor = $convert.base64Decode(
+    'ChpTZWN1cml0eVJlZ2lzdHJhdGlvblBvbGljeRIYCgd2ZXJzaW9uGAEgASgNUgd2ZXJzaW9uEh'
+    'gKB2VuYWJsZWQYAiABKAhSB2VuYWJsZWQSFwoHcm9sZV9pZBgDIAEoCVIGcm9sZUlkEkEKCHBy'
+    'b2ZpbGVzGAQgAygLMiUuZ3JhcGgudjEuU2VjdXJpdHlSZWdpc3RyYXRpb25Qcm9maWxlUghwcm'
+    '9maWxlcw==');
+
+@$core.Deprecated('Use getRegistrationPolicyRequestDescriptor instead')
+const GetRegistrationPolicyRequest$json = {
+  '1': 'GetRegistrationPolicyRequest',
+};
+
+/// Descriptor for `GetRegistrationPolicyRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getRegistrationPolicyRequestDescriptor =
+    $convert.base64Decode('ChxHZXRSZWdpc3RyYXRpb25Qb2xpY3lSZXF1ZXN0');
+
+@$core.Deprecated('Use getRegistrationPolicyResponseDescriptor instead')
+const GetRegistrationPolicyResponse$json = {
+  '1': 'GetRegistrationPolicyResponse',
+  '2': [
+    {
+      '1': 'policy',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityRegistrationPolicy',
+      '10': 'policy'
+    },
+    {
+      '1': 'version',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityVersion',
+      '10': 'version'
+    },
+  ],
+};
+
+/// Descriptor for `GetRegistrationPolicyResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getRegistrationPolicyResponseDescriptor =
+    $convert.base64Decode(
+        'Ch1HZXRSZWdpc3RyYXRpb25Qb2xpY3lSZXNwb25zZRI8CgZwb2xpY3kYASABKAsyJC5ncmFwaC'
+        '52MS5TZWN1cml0eVJlZ2lzdHJhdGlvblBvbGljeVIGcG9saWN5EjMKB3ZlcnNpb24YAiABKAsy'
+        'GS5ncmFwaC52MS5TZWN1cml0eVZlcnNpb25SB3ZlcnNpb24=');
+
 @$core.Deprecated('Use securityChangeDescriptor instead')
 const SecurityChange$json = {
   '1': 'SecurityChange',
@@ -1654,6 +1785,15 @@ const SecurityChange$json = {
       '9': 0,
       '10': 'revokeUserSessions'
     },
+    {
+      '1': 'put_registration_policy',
+      '3': 11,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityRegistrationPolicy',
+      '9': 0,
+      '10': 'putRegistrationPolicy'
+    },
   ],
   '8': [
     {'1': 'operation'},
@@ -1672,8 +1812,9 @@ final $typed_data.Uint8List securityChangeDescriptor = $convert.base64Decode(
     'gIIAEoCzIgLmdyYXBoLnYxLlNlY3VyaXR5Um9sZUFzc2lnbm1lbnRIAFINcHV0QXNzaWdubWVu'
     'dBJPChFkZWxldGVfYXNzaWdubWVudBgJIAEoCzIgLmdyYXBoLnYxLlNlY3VyaXR5Um9sZUFzc2'
     'lnbm1lbnRIAFIQZGVsZXRlQXNzaWdubWVudBJOChRyZXZva2VfdXNlcl9zZXNzaW9ucxgKIAEo'
-    'CzIaLmdyYXBoLnYxLlNlY3VyaXR5SWRlbnRpdHlIAFIScmV2b2tlVXNlclNlc3Npb25zQgsKCW'
-    '9wZXJhdGlvbg==');
+    'CzIaLmdyYXBoLnYxLlNlY3VyaXR5SWRlbnRpdHlIAFIScmV2b2tlVXNlclNlc3Npb25zEl4KF3'
+    'B1dF9yZWdpc3RyYXRpb25fcG9saWN5GAsgASgLMiQuZ3JhcGgudjEuU2VjdXJpdHlSZWdpc3Ry'
+    'YXRpb25Qb2xpY3lIAFIVcHV0UmVnaXN0cmF0aW9uUG9saWN5QgsKCW9wZXJhdGlvbg==');
 
 @$core.Deprecated('Use applySecurityChangesRequestDescriptor instead')
 const ApplySecurityChangesRequest$json = {

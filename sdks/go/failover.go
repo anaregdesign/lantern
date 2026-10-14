@@ -83,6 +83,7 @@ type Failover struct {
 // server. It mirrors the full unary surface of *Lantern that Failover
 // re-exports.
 type failoverNode interface {
+	GetCurrentUserID(context.Context) (*string, error)
 	PutVertex(ctx context.Context, key string, value any, ttl time.Duration) (PutOutcome, error)
 	PutVertexAt(ctx context.Context, key string, value any, expiration time.Time) (PutOutcome, error)
 	PutVertices(ctx context.Context, inputs []VertexInput) ([]VertexPutResult, error)

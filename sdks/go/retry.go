@@ -200,6 +200,7 @@ const (
 // row here fails TestRetryEligibilityMatrix_CoversEveryRPC.
 var methodRetryClasses = map[string]methodRetryClass{
 	"GetCurrentPrincipal":                retryNever, // current binding refresh is explicitly caller-owned
+	"GetCurrentUserID":                   retryNever, // self inspection follows the same one-attempt contract
 	"MutateGraph":                        retryNever, // mixed receipt delivery is one-shot and caller-owned
 	"CreateEdge":                         retryNever,
 	"CreateEdges":                        retryNever,

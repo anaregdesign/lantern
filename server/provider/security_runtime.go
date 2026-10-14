@@ -192,6 +192,9 @@ func (r *SecurityRuntime) finish(orderly bool) error {
 			}()
 			r.closeErr = errors.Join(r.closeErr, close())
 		}
+		if r.workflow != nil {
+			closeOne(func() error { r.workflow.Close(); return nil })
+		}
 		closeOne(func() error { r.authorizations.Close(); return nil })
 		if r.nativeLogins != nil {
 			closeOne(func() error { r.nativeLogins.Close(); return nil })

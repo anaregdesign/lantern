@@ -47,4 +47,32 @@ abstract final class LanternNativeAuthService {
     graphv1native_auth.ApplyNativeLogoutRequest.new,
     graphv1native_auth.ApplyNativeLogoutResponse.new,
   );
+
+  static const beginNativeRegistration = connect.Spec(
+    '/$name/BeginNativeRegistration',
+    connect.StreamType.unary,
+    graphv1native_auth.BeginNativeRegistrationRequest.new,
+    graphv1native_auth.BeginNativeRegistrationResponse.new,
+  );
+
+  static const prepareNativeRegistration = connect.Spec(
+    '/$name/PrepareNativeRegistration',
+    connect.StreamType.unary,
+    graphv1native_auth.PrepareNativeRegistrationRequest.new,
+    graphv1native_auth.PrepareNativeRegistrationResponse.new,
+  );
+
+  static const applyNativeRegistration = connect.Spec(
+    '/$name/ApplyNativeRegistration',
+    connect.StreamType.unary,
+    graphv1native_auth.ApplyNativeRegistrationRequest.new,
+    graphv1native_auth.ApplyNativeRegistrationResponse.new,
+  );
+
+  static const getNativeRegistrationStatus = connect.Spec(
+    '/$name/GetNativeRegistrationStatus',
+    connect.StreamType.unary,
+    graphv1native_auth.GetNativeRegistrationStatusRequest.new,
+    graphv1native_auth.GetNativeRegistrationStatusResponse.new,
+  );
 }

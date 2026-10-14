@@ -10,7 +10,7 @@ type S1ExecutionConfig struct {
 }
 
 func (c S1ExecutionConfig) valid() bool {
-	return c.Version == S1Version && c.Policy.valid() && c.Capacity.valid()
+	return c.Version == S1Version && c.Policy.Valid() && c.Capacity.valid()
 }
 
 func (c S1ExecutionConfig) Digest() [32]byte {
@@ -21,7 +21,7 @@ func (c S1ExecutionConfig) Digest() [32]byte {
 }
 
 func s1PolicyConfiguration(limits PolicyLimits) [32]byte {
-	if !limits.valid() {
+	if !limits.Valid() {
 		return [32]byte{}
 	}
 	return s1Digest("policy-configuration", struct {

@@ -64,6 +64,23 @@ class SessionTest(unittest.TestCase):
     def modes(self, result):
         return {r["name"]: r["mode"] for r in result["steps"]}
 
+    def test_dart_documentation_rejects_zero_exit_warnings(self):
+        for name in ("dart-doc", "offline-doc"):
+            configured = next(s for s in steps(self.session.evidence) if s.name == name)
+            for index, (output, accepted) in enumerate((
+                ("Found 0 warnings and 0 errors.", True),
+                ("  warning: broken link", False),
+                ("warning: broken link", False),
+            )):
+                with self.subTest(step=name, output=output):
+                    step = Step(name, ".", (sys.executable, "-c", f"print({output!r})"),
+                                reject_line_prefixes=configured.reject_line_prefixes)
+                    log = self.base / f"{name}-{index}.log"
+                    code, passed = self.session.run(step, log)
+                    self.assertEqual(code, 0)
+                    self.assertEqual(passed, accepted)
+                    self.assertEqual(log.read_text().strip(), output.strip())
+
     @contextmanager
     def mutable_inputs_control(self, head, tree, selected=None):
         # Negative control for the reviewed old execution boundary. Production

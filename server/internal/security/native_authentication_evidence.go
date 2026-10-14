@@ -8,6 +8,25 @@ import (
 
 const NativeLoginLifetime = 10 * time.Minute
 
+// NativeRegistrationPurpose binds the exceptional authentication use before
+// provider verification. The zero value denotes ordinary native login. Original
+// commits a complete original review for recovery; it never authorizes replay.
+type NativeRegistrationPurpose struct {
+	Kind     string
+	Original [32]byte
+}
+
+func (p NativeRegistrationPurpose) Valid() bool {
+	switch p.Kind {
+	case "registration":
+		return p.Original == [32]byte{}
+	case "registration-recovery":
+		return p.Original != [32]byte{}
+	default:
+		return false
+	}
+}
+
 // NativeAuthenticationEvidence describes a consumed app transaction. Provider
 // tokens, completion secrets, state, nonce and authorization codes never appear
 // in this detached record. It is factual input, not a verifier capability.
@@ -22,6 +41,8 @@ type NativeAuthenticationEvidence struct {
 	ExchangeIssuedAt, ExchangeNotBefore, ExchangeExpiresAt, ExchangeAuthTime AuthenticationTime
 	ExchangeCodeHashPresent, ExchangeCodeHashChecked                         bool
 	ExchangeAccessHashPresent, ExchangeAccessHashChecked                     bool
+	// Absent on every historical native-login transcript.
+	Registration NativeRegistrationPurpose `json:",omitzero"`
 }
 
 // NativeClientCommitment binds every committed profile field, including the
@@ -35,10 +56,17 @@ func NativeClientCommitment(c NativeClient) [32]byte {
 }
 
 func (n NativeAuthenticationEvidence) valid(e TokenAuthenticationEvidence) bool {
-	if e.Mode != "native-login" || e.Profile != NativeEndUserProfile || e.Algorithm != "RS256" || e.Code != (CodeAuthenticationEvidence{}) || e.AccessHashChecked ||
+	if e.Profile != NativeEndUserProfile || e.Algorithm != "RS256" || e.Code != (CodeAuthenticationEvidence{}) || e.AccessHashChecked ||
 		!validRoleID(n.ClientProfileID) || !nativeServiceOrigin(n.ServiceOrigin) || n.Client == [32]byte{} || n.Transaction == [32]byte{} ||
 		n.CreatedAt.IsZero() || n.ConsumedAt.Before(n.CreatedAt) || !n.ConsumedAt.Before(n.ExpiresAt) || n.ExpiresAt.Sub(n.CreatedAt) > NativeLoginLifetime ||
 		n.CodeHashPresent != n.CodeHashChecked {
+		return false
+	}
+	if e.Mode == "native-login" {
+		if n.Registration != (NativeRegistrationPurpose{}) {
+			return false
+		}
+	} else if e.Mode != "native-registration" || !n.Registration.Valid() {
 		return false
 	}
 	switch n.Kind {

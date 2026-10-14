@@ -63,5 +63,43 @@ func (l *Lantern) GetCurrentPrincipal(ctx context.Context) (*pb.GetCurrentPrinci
 	if _, err = CurrentSecurityVersionBinding(response.Version); err != nil {
 		return nil, err
 	}
+	if err = validateCurrentUserID(response); err != nil {
+		return nil, err
+	}
 	return response, nil
+}
+
+// GetCurrentUserID reads the immutable Server-installed ID of the authenticated
+// Principal. A nil ID means a legacy UID-less or machine Principal, not an empty
+// ID. Unauthenticated calls return their authentication error. No extra Role is
+// required and no cached value is returned after an account or policy change.
+func (l *Lantern) GetCurrentUserID(ctx context.Context) (*string, error) {
+	principal, err := l.GetCurrentPrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return principal.UserId, nil
+}
+
+// GetCurrentUserID reads the current endpoint once, without retries or rotation.
+// Presence and authentication failures follow Lantern.GetCurrentUserID.
+func (f *Failover) GetCurrentUserID(ctx context.Context) (id *string, err error) {
+	err = f.callCurrent(ctx, "GetCurrentUserID", func(node failoverNode) error {
+		var callErr error
+		id, callErr = node.GetCurrentUserID(ctx)
+		return callErr
+	})
+	return id, err
+}
+
+func validateCurrentUserID(principal *pb.GetCurrentPrincipalResponse) error {
+	if principal.UserId == nil {
+		return nil
+	}
+	id := *principal.UserId
+	decoded, err := hex.DecodeString(id)
+	if err != nil || len(decoded) != 16 || id != strings.ToLower(id) || bytes.Equal(decoded, make([]byte, 16)) || principal.GetIdentity().GetKind() != pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC {
+		return fmt.Errorf("%w: invalid current user ID", ErrFailedPrecondition)
+	}
+	return nil
 }

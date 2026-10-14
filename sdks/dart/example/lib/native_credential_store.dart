@@ -4,18 +4,32 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:lantern_client/lantern_client.dart';
 
-String nativeAccountPartition(Uri endpoint, NativeSession session) => sha256
+String nativeIdentityPartition(
+  Uri endpoint,
+  String issuer,
+  String subject,
+  String profile,
+) => sha256
     .convert(
-      utf8.encode(
-        jsonEncode([
-          endpoint.toString(),
-          session.principal.issuer,
-          session.principal.subject,
-          session.clientProfileId,
-        ]),
-      ),
+      utf8.encode(jsonEncode([endpoint.toString(), issuer, subject, profile])),
     )
     .toString();
+
+String nativeAccountPartition(Uri endpoint, NativeSession session) =>
+    nativeIdentityPartition(
+      endpoint,
+      session.principal.issuer,
+      session.principal.subject,
+      session.clientProfileId,
+    );
+
+String nativeRegistrationPartition(NativeRegistrationReview review) =>
+    nativeIdentityPartition(
+      review.endpoint,
+      review.principal.issuer,
+      review.principal.subject,
+      review.clientProfileId,
+    );
 
 /// App-owned secure record. No provider token, pending login proof or Role cache.
 final class StoredNativeCredential {
@@ -53,6 +67,8 @@ abstract interface class NativeCredentialStore {
   Future<void> clear();
   Future<List<NativeLogoutReview>> pending(String partition);
   Future<void> savePending(String partition, List<NativeLogoutReview> reviews);
+  Future<List<NativeRegistrationReview>> registrations();
+  Future<void> saveRegistrations(List<NativeRegistrationReview> reviews);
 }
 
 /// Device-local Keychain / Android Keystore; Android backup is disabled in the app.
@@ -135,6 +151,40 @@ final class SecureNativeCredentialStore implements NativeCredentialStore {
       throw StateError('Logout recovery capacity reached.');
     }
     final key = '$_key.logout.$partition';
+    return reviews.isEmpty
+        ? _storage.delete(key: key)
+        : _storage.write(
+            key: key,
+            value: jsonEncode(
+              reviews.map((r) => base64Encode(r.toBytes())).toList(),
+            ),
+          );
+  }
+
+  @override
+  Future<List<NativeRegistrationReview>> registrations() async {
+    final raw = await _storage.read(key: '$_key.registration');
+    if (raw == null) return [];
+    if (raw.length > 768 << 10) {
+      throw const FormatException('Invalid registration recovery records.');
+    }
+    final values = jsonDecode(raw) as List<dynamic>;
+    if (values.length > 16) {
+      throw const FormatException('Too many registration recovery records.');
+    }
+    return values
+        .map(
+          (v) => NativeRegistrationReview.fromBytes(base64Decode(v as String)),
+        )
+        .toList();
+  }
+
+  @override
+  Future<void> saveRegistrations(List<NativeRegistrationReview> reviews) {
+    if (reviews.length > 16) {
+      throw StateError('Registration recovery capacity reached.');
+    }
+    final key = '$_key.registration';
     return reviews.isEmpty
         ? _storage.delete(key: key)
         : _storage.write(

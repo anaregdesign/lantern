@@ -1,4 +1,4 @@
-package security
+package authz
 
 // PolicyLimits cap compilation/admission, rather than work on each data RPC.
 type PolicyLimits struct {
@@ -15,7 +15,7 @@ func DefaultPolicyLimits() PolicyLimits {
 }
 
 // Operators may lower admission limits, but cannot remove the hard bounds.
-func (l PolicyLimits) valid() bool {
+func (l PolicyLimits) Valid() bool {
 	max := DefaultPolicyLimits()
 	return l.MaxRoles > 0 && l.MaxRoles <= max.MaxRoles && l.MaxRules > 0 && l.MaxRules <= max.MaxRules &&
 		l.MaxPrefixBytes > 0 && l.MaxPrefixBytes <= max.MaxPrefixBytes && l.MaxTotalBytes > 0 &&

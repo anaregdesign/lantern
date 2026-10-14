@@ -8,6 +8,8 @@ import {
   CurrentSecurityChangeResultSchema,
   type CurrentSecurityReview,
   type CurrentSecurityChangeResult,
+  type GetCurrentPrincipalResponse,
+  SecurityPrincipalKind,
 } from "./gen/graph/v1/security_pb.js";
 export {
   AuthMode,
@@ -35,6 +37,10 @@ export type {
   SecurityRole,
   SecurityRule,
   SecurityPrefixPair,
+  SecurityPrincipalUIDPrefix,
+  SecurityRegistrationPolicy,
+  SecurityRegistrationProfile,
+  GetRegistrationPolicyResponse,
   SecurityEdgeIdentity,
   SecurityUser,
   SecurityIssuer,
@@ -66,7 +72,25 @@ export type {
   CurrentLogoutRequest,
 } from "./gen/graph/v1/security_pb.js";
 export function parseBrowserSession(json: string) {
-  return fromJsonString(BrowserSessionSchema, json);
+  const session = fromJsonString(BrowserSessionSchema, json);
+  currentUserId(session.principal);
+  return session;
+}
+
+/** Server-installed self ID; absent for signed-out, UID-less or machine state.
+ * This metadata grants no permissions. Never infer it from subject or email. */
+export function currentUserId(
+  principal: Pick<GetCurrentPrincipalResponse, "identity" | "userId"> | undefined,
+): string | undefined {
+  const id = principal?.userId;
+  if (id === undefined) return undefined;
+  if (
+    !/^[0-9a-f]{32}$/.test(id) ||
+    /^0{32}$/.test(id) ||
+    principal?.identity?.kind !== SecurityPrincipalKind.OIDC
+  )
+    throw new Error("Invalid current user ID.");
+  return id;
 }
 export function parseSessionRevocation(json: string) {
   return fromJsonString(SessionRevocationSchema, json);

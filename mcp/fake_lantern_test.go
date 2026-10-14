@@ -12,6 +12,9 @@ import (
 // assert both that a handler invoked the correct SDK method and that it
 // propagated the response shape into the MCP tool result.
 type fakeLantern struct {
+	userID      *string
+	userIDErr   error
+	userIDCalls int
 	// PutVertex
 	putVertexErr     error
 	putVertexOutcome client.PutOutcome
@@ -73,6 +76,11 @@ type fakeLantern struct {
 
 	// Ping
 	pingErr error
+}
+
+func (f *fakeLantern) GetCurrentUserID(context.Context) (*string, error) {
+	f.userIDCalls++
+	return f.userID, f.userIDErr
 }
 
 func (f *fakeLantern) PutVertex(_ context.Context, key string, value any, ttl time.Duration) (client.PutOutcome, error) {

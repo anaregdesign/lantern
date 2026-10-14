@@ -12,6 +12,7 @@ class Step:
     empty: bool = False
     # Argument indexes are pathname operands; every other argv value is literal.
     glob_args: tuple[int, ...] = ()
+    reject_line_prefixes: tuple[str, ...] = ()
 
     def __post_init__(self):
         if (len(set(self.glob_args)) != len(self.glob_args)
@@ -21,8 +22,8 @@ class Step:
 
 def steps(evidence: Path) -> tuple[Step, ...]:
     plan = []
-    def add(name, directory, *cmd, empty=False, glob_args=()):
-        plan.append(Step(name, directory, tuple(cmd), empty, glob_args))
+    def add(name, directory, *cmd, empty=False, glob_args=(), reject_line_prefixes=()):
+        plan.append(Step(name, directory, tuple(cmd), empty, glob_args, reject_line_prefixes))
     add("node-frozen-install", "sdks/node", "bun", "install", "--frozen-lockfile")
     add("node-prebuild", "sdks/node", "bun", "run", "build")
     add("admin-frozen-install", "admin", "bun", "install", "--frozen-lockfile", "--force")
@@ -50,10 +51,12 @@ def steps(evidence: Path) -> tuple[Step, ...]:
         add("node-" + script.replace(":", "-"), "sdks/node", "bun", "run", script)
     add("dart-format", "sdks/dart", "dart", "format", "--output=none", "--set-exit-if-changed", "lib/lantern_client.dart", "lib/src/*.dart", "test", glob_args=(5,))
     for name, cmd in [("get", ["pub", "get", "--enforce-lockfile"]), ("analyze", ["analyze", "lib", "test"]), ("test", ["test"]), ("doc", ["doc", "--output", str(evidence / "dartdoc"), "--validate-links"]), ("publish-dry-run", ["pub", "publish", "--dry-run"])]:
-        add("dart-" + name, "sdks/dart", "dart", *cmd)
+        add("dart-" + name, "sdks/dart", "dart", *cmd,
+            reject_line_prefixes=("  warning:", "warning:") if name == "doc" else ())
     add("offline-format", "sdks/dart/offline", "dart", "format", "--output=none", "--set-exit-if-changed", "lib", "test", "tool")
     for name, cmd in [("get", ["dart", "pub", "get", "--enforce-lockfile"]), ("analyze", ["dart", "analyze"]), ("test", ["dart", "test"]), ("doc", ["dart", "doc", "--output", str(evidence / "offline-dartdoc"), "--validate-links"])]:
-        add("offline-" + name, "sdks/dart/offline", "python3", "-B", "tool/paired_source_gate.py", "--", *cmd)
+        add("offline-" + name, "sdks/dart/offline", "python3", "-B", "tool/paired_source_gate.py", "--", *cmd,
+            reject_line_prefixes=("  warning:", "warning:") if name == "doc" else ())
     add("example-format", "sdks/dart/example", "dart", "format", "--output=none", "--set-exit-if-changed", "lib", "test", "integration_test")
     for name, cmd in [("analyze", ["analyze"]), ("test", ["test"])]:
         add("example-" + name, "sdks/dart/example", "flutter", *cmd)
@@ -72,7 +75,7 @@ def steps(evidence: Path) -> tuple[Step, ...]:
     # Preserve the scoped Rust case and require all current SDK4 cases in the
     # same fresh step. No optional environment, imported receipt or carry.
     add("rust-oidc-scoped-wire", ".", "python3", "-B", ".github/scripts/current_sdk4_gate.py", "run", "--include-scoped", "--with-mechanism", "--fresh-child", "--evidence", str(evidence / "current-sdk4"))
-    add("native-login-wire", ".", "python3", "-B", ".github/scripts/native_login_gate.py", "--evidence", str(evidence / "native-login"))
+    add("native-login-wire", ".", "python3", "-B", ".github/scripts/native_login_gate.py", "--fresh-child", "--evidence", str(evidence / "native-login"))
     add("rust-audit", "sdks/rust", "cargo", "audit", "--deny", "warnings", "--file", "Cargo.lock")
     for script in ["format:check", "lint", "typecheck", "test", "build"]:
         add("admin-" + script.replace(":", "-"), "admin", "bun", "run", script)

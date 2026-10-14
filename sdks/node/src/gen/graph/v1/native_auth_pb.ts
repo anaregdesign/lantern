@@ -6,7 +6,7 @@ import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegen
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Timestamp } from "@bufbuild/protobuf/wkt";
 import { file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
-import type { CurrentSecurityChangeResult, CurrentSessionRevocationReview, NativeClientKind, SecurityIdentity, SecurityRole, SecurityVersion } from "./security_pb.js";
+import type { CurrentAuthorityProfile, CurrentSecurityChangeID, CurrentSecurityChangeResult, CurrentSemanticCut, CurrentSessionRevocationReview, NativeClientKind, SecurityIdentity, SecurityRole, SecurityVersion } from "./security_pb.js";
 import { file_graph_v1_security } from "./security_pb.js";
 import type { Message } from "@bufbuild/protobuf";
 
@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file graph/v1/native_auth.proto.
  */
 export const file_graph_v1_native_auth: GenFile = /*@__PURE__*/
-  fileDesc("ChpncmFwaC92MS9uYXRpdmVfYXV0aC5wcm90bxIIZ3JhcGgudjEiRAoXQmVnaW5OYXRpdmVMb2dpblJlcXVlc3QSDgoGaXNzdWVyGAEgASgJEhkKEWNsaWVudF9wcm9maWxlX2lkGAIgASgJIr8BChlOYXRpdmVQbHVnaW5Db25maWd1cmF0aW9uEigKBGtpbmQYASABKA4yGi5ncmFwaC52MS5OYXRpdmVDbGllbnRLaW5kEhkKEWNsaWVudF9wcm9maWxlX2lkGAIgASgJEhEKCWNsaWVudF9pZBgDIAEoCRIWCg5zZXJ2aWNlX29yaWdpbhgEIAEoCRIUCgxyZWRpcmVjdF91cmkYBSABKAkSDQoFbm9uY2UYBiABKAkSDQoFc3RhdGUYByABKAkixwEKGEJlZ2luTmF0aXZlTG9naW5SZXNwb25zZRISCgphdHRlbXB0X2lkGAEgASgJEhkKEWNvbXBsZXRpb25fc2VjcmV0GAIgASgJEi4KCmV4cGlyZXNfYXQYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhAKCGFmZmluaXR5GAQgASgJEjoKDWNvbmZpZ3VyYXRpb24YBSABKAsyIy5ncmFwaC52MS5OYXRpdmVQbHVnaW5Db25maWd1cmF0aW9uIioKFkdvb2dsZU5hdGl2ZUNyZWRlbnRpYWwSEAoIaWRfdG9rZW4YASABKAkiWgoVQXBwbGVOYXRpdmVDcmVkZW50aWFsEhYKDmlkZW50aXR5X3Rva2VuGAEgASgJEhoKEmF1dGhvcml6YXRpb25fY29kZRgCIAEoCRINCgVzdGF0ZRgDIAEoCSK9AQoaQ29tcGxldGVOYXRpdmVMb2dpblJlcXVlc3QSEgoKYXR0ZW1wdF9pZBgBIAEoCRIZChFjb21wbGV0aW9uX3NlY3JldBgCIAEoCRIyCgZnb29nbGUYAyABKAsyIC5ncmFwaC52MS5Hb29nbGVOYXRpdmVDcmVkZW50aWFsSAASMAoFYXBwbGUYBCABKAsyHy5ncmFwaC52MS5BcHBsZU5hdGl2ZUNyZWRlbnRpYWxIAEIKCghwcm92aWRlciLHAgoNTmF0aXZlU2Vzc2lvbhIaChJjcmVkZW50aWFsX3Byb2ZpbGUYASABKAkSGQoRY2xpZW50X3Byb2ZpbGVfaWQYAiABKAkSFgoOc2VydmljZV9vcmlnaW4YAyABKAkSLgoKY3JlYXRlZF9hdBgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLgoKZXhwaXJlc19hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLQoJYXV0aF90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIsCghpZGVudGl0eRgHIAEoCzIaLmdyYXBoLnYxLlNlY3VyaXR5SWRlbnRpdHkSKgoHdmVyc2lvbhgIIAEoCzIZLmdyYXBoLnYxLlNlY3VyaXR5VmVyc2lvbiJbChtDb21wbGV0ZU5hdGl2ZUxvZ2luUmVzcG9uc2USEgoKY3JlZGVudGlhbBgBIAEoCRIoCgdzZXNzaW9uGAIgASgLMhcuZ3JhcGgudjEuTmF0aXZlU2Vzc2lvbiIZChdHZXROYXRpdmVTZXNzaW9uUmVxdWVzdCJrChhHZXROYXRpdmVTZXNzaW9uUmVzcG9uc2USKAoHc2Vzc2lvbhgBIAEoCzIXLmdyYXBoLnYxLk5hdGl2ZVNlc3Npb24SJQoFcm9sZXMYAiADKAsyFi5ncmFwaC52MS5TZWN1cml0eVJvbGUiHAoaUHJlcGFyZU5hdGl2ZUxvZ291dFJlcXVlc3QiVwobUHJlcGFyZU5hdGl2ZUxvZ291dFJlc3BvbnNlEjgKBnJldmlldxgBIAEoCzIoLmdyYXBoLnYxLkN1cnJlbnRTZXNzaW9uUmV2b2NhdGlvblJldmlldyJUChhBcHBseU5hdGl2ZUxvZ291dFJlcXVlc3QSOAoGcmV2aWV3GAEgASgLMiguZ3JhcGgudjEuQ3VycmVudFNlc3Npb25SZXZvY2F0aW9uUmV2aWV3IncKGUFwcGx5TmF0aXZlTG9nb3V0UmVzcG9uc2USGwoTY2xlYXJfbG9jYWxfc2Vzc2lvbhgBIAEoCBI9Cg5jdXJyZW50X3Jlc3VsdBgCIAEoCzIlLmdyYXBoLnYxLkN1cnJlbnRTZWN1cml0eUNoYW5nZVJlc3VsdDL2AwoYTGFudGVybk5hdGl2ZUF1dGhTZXJ2aWNlElkKEEJlZ2luTmF0aXZlTG9naW4SIS5ncmFwaC52MS5CZWdpbk5hdGl2ZUxvZ2luUmVxdWVzdBoiLmdyYXBoLnYxLkJlZ2luTmF0aXZlTG9naW5SZXNwb25zZRJiChNDb21wbGV0ZU5hdGl2ZUxvZ2luEiQuZ3JhcGgudjEuQ29tcGxldGVOYXRpdmVMb2dpblJlcXVlc3QaJS5ncmFwaC52MS5Db21wbGV0ZU5hdGl2ZUxvZ2luUmVzcG9uc2USWQoQR2V0TmF0aXZlU2Vzc2lvbhIhLmdyYXBoLnYxLkdldE5hdGl2ZVNlc3Npb25SZXF1ZXN0GiIuZ3JhcGgudjEuR2V0TmF0aXZlU2Vzc2lvblJlc3BvbnNlEmIKE1ByZXBhcmVOYXRpdmVMb2dvdXQSJC5ncmFwaC52MS5QcmVwYXJlTmF0aXZlTG9nb3V0UmVxdWVzdBolLmdyYXBoLnYxLlByZXBhcmVOYXRpdmVMb2dvdXRSZXNwb25zZRJcChFBcHBseU5hdGl2ZUxvZ291dBIiLmdyYXBoLnYxLkFwcGx5TmF0aXZlTG9nb3V0UmVxdWVzdBojLmdyYXBoLnYxLkFwcGx5TmF0aXZlTG9nb3V0UmVzcG9uc2VCYAoMY29tLmdyYXBoLnYxQg9OYXRpdmVBdXRoUHJvdG9QAaICA0dYWKoCCEdyYXBoLlYxygIIR3JhcGhcVjHiAhRHcmFwaFxWMVxHUEJNZXRhZGF0YeoCCUdyYXBoOjpWMWIGcHJvdG8z", [file_google_protobuf_timestamp, file_graph_v1_security]);
+  fileDesc("ChpncmFwaC92MS9uYXRpdmVfYXV0aC5wcm90bxIIZ3JhcGgudjEiRAoXQmVnaW5OYXRpdmVMb2dpblJlcXVlc3QSDgoGaXNzdWVyGAEgASgJEhkKEWNsaWVudF9wcm9maWxlX2lkGAIgASgJIr8BChlOYXRpdmVQbHVnaW5Db25maWd1cmF0aW9uEigKBGtpbmQYASABKA4yGi5ncmFwaC52MS5OYXRpdmVDbGllbnRLaW5kEhkKEWNsaWVudF9wcm9maWxlX2lkGAIgASgJEhEKCWNsaWVudF9pZBgDIAEoCRIWCg5zZXJ2aWNlX29yaWdpbhgEIAEoCRIUCgxyZWRpcmVjdF91cmkYBSABKAkSDQoFbm9uY2UYBiABKAkSDQoFc3RhdGUYByABKAkixwEKGEJlZ2luTmF0aXZlTG9naW5SZXNwb25zZRISCgphdHRlbXB0X2lkGAEgASgJEhkKEWNvbXBsZXRpb25fc2VjcmV0GAIgASgJEi4KCmV4cGlyZXNfYXQYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhAKCGFmZmluaXR5GAQgASgJEjoKDWNvbmZpZ3VyYXRpb24YBSABKAsyIy5ncmFwaC52MS5OYXRpdmVQbHVnaW5Db25maWd1cmF0aW9uIioKFkdvb2dsZU5hdGl2ZUNyZWRlbnRpYWwSEAoIaWRfdG9rZW4YASABKAkiWgoVQXBwbGVOYXRpdmVDcmVkZW50aWFsEhYKDmlkZW50aXR5X3Rva2VuGAEgASgJEhoKEmF1dGhvcml6YXRpb25fY29kZRgCIAEoCRINCgVzdGF0ZRgDIAEoCSK9AQoaQ29tcGxldGVOYXRpdmVMb2dpblJlcXVlc3QSEgoKYXR0ZW1wdF9pZBgBIAEoCRIZChFjb21wbGV0aW9uX3NlY3JldBgCIAEoCRIyCgZnb29nbGUYAyABKAsyIC5ncmFwaC52MS5Hb29nbGVOYXRpdmVDcmVkZW50aWFsSAASMAoFYXBwbGUYBCABKAsyHy5ncmFwaC52MS5BcHBsZU5hdGl2ZUNyZWRlbnRpYWxIAEIKCghwcm92aWRlciKbAwoNTmF0aXZlU2Vzc2lvbhIaChJjcmVkZW50aWFsX3Byb2ZpbGUYASABKAkSGQoRY2xpZW50X3Byb2ZpbGVfaWQYAiABKAkSFgoOc2VydmljZV9vcmlnaW4YAyABKAkSLgoKY3JlYXRlZF9hdBgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLgoKZXhwaXJlc19hdBgFIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLQoJYXV0aF90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIsCghpZGVudGl0eRgHIAEoCzIaLmdyYXBoLnYxLlNlY3VyaXR5SWRlbnRpdHkSKgoHdmVyc2lvbhgIIAEoCzIZLmdyYXBoLnYxLlNlY3VyaXR5VmVyc2lvbhIUCgd1c2VyX2lkGAkgASgJSACIAQESHAoPcGVyc29uYWxfcHJlZml4GAogASgJSAGIAQFCCgoIX3VzZXJfaWRCEgoQX3BlcnNvbmFsX3ByZWZpeCJbChtDb21wbGV0ZU5hdGl2ZUxvZ2luUmVzcG9uc2USEgoKY3JlZGVudGlhbBgBIAEoCRIoCgdzZXNzaW9uGAIgASgLMhcuZ3JhcGgudjEuTmF0aXZlU2Vzc2lvbiIZChdHZXROYXRpdmVTZXNzaW9uUmVxdWVzdCJrChhHZXROYXRpdmVTZXNzaW9uUmVzcG9uc2USKAoHc2Vzc2lvbhgBIAEoCzIXLmdyYXBoLnYxLk5hdGl2ZVNlc3Npb24SJQoFcm9sZXMYAiADKAsyFi5ncmFwaC52MS5TZWN1cml0eVJvbGUiHAoaUHJlcGFyZU5hdGl2ZUxvZ291dFJlcXVlc3QiVwobUHJlcGFyZU5hdGl2ZUxvZ291dFJlc3BvbnNlEjgKBnJldmlldxgBIAEoCzIoLmdyYXBoLnYxLkN1cnJlbnRTZXNzaW9uUmV2b2NhdGlvblJldmlldyJUChhBcHBseU5hdGl2ZUxvZ291dFJlcXVlc3QSOAoGcmV2aWV3GAEgASgLMiguZ3JhcGgudjEuQ3VycmVudFNlc3Npb25SZXZvY2F0aW9uUmV2aWV3IncKGUFwcGx5TmF0aXZlTG9nb3V0UmVzcG9uc2USGwoTY2xlYXJfbG9jYWxfc2Vzc2lvbhgBIAEoCBI9Cg5jdXJyZW50X3Jlc3VsdBgCIAEoCzIlLmdyYXBoLnYxLkN1cnJlbnRTZWN1cml0eUNoYW5nZVJlc3VsdCLGAgoYTmF0aXZlUmVnaXN0cmF0aW9uUmV2aWV3EjIKB3Byb2ZpbGUYASABKAsyIS5ncmFwaC52MS5DdXJyZW50QXV0aG9yaXR5UHJvZmlsZRIyCgxleHBlY3RlZF9jdXQYAiABKAsyHC5ncmFwaC52MS5DdXJyZW50U2VtYW50aWNDdXQSNAoJY2hhbmdlX2lkGAMgASgLMiEuZ3JhcGgudjEuQ3VycmVudFNlY3VyaXR5Q2hhbmdlSUQSKQoFYWN0b3IYBCABKAsyGi5ncmFwaC52MS5TZWN1cml0eUlkZW50aXR5EhUKDWludGVudF9kaWdlc3QYBSABKAwSDwoHdXNlcl9pZBgGIAEoCRIZChFjbGllbnRfcHJvZmlsZV9pZBgHIAEoCRIeChZpc3N1ZXJfY29uZmlnX3JldmlzaW9uGAggASgEIogBCh5CZWdpbk5hdGl2ZVJlZ2lzdHJhdGlvblJlcXVlc3QSDgoGaXNzdWVyGAEgASgJEhkKEWNsaWVudF9wcm9maWxlX2lkGAIgASgJEjsKD3JlY292ZXJ5X3JldmlldxgDIAEoCzIiLmdyYXBoLnYxLk5hdGl2ZVJlZ2lzdHJhdGlvblJldmlldyJWCh9CZWdpbk5hdGl2ZVJlZ2lzdHJhdGlvblJlc3BvbnNlEjMKB2F0dGVtcHQYASABKAsyIi5ncmFwaC52MS5CZWdpbk5hdGl2ZUxvZ2luUmVzcG9uc2UigAIKIFByZXBhcmVOYXRpdmVSZWdpc3RyYXRpb25SZXF1ZXN0EhIKCmF0dGVtcHRfaWQYASABKAkSGQoRY29tcGxldGlvbl9zZWNyZXQYAiABKAkSMgoGZ29vZ2xlGAMgASgLMiAuZ3JhcGgudjEuR29vZ2xlTmF0aXZlQ3JlZGVudGlhbEgAEjAKBWFwcGxlGAQgASgLMh8uZ3JhcGgudjEuQXBwbGVOYXRpdmVDcmVkZW50aWFsSAASOwoPcmVjb3ZlcnlfcmV2aWV3GAUgASgLMiIuZ3JhcGgudjEuTmF0aXZlUmVnaXN0cmF0aW9uUmV2aWV3QgoKCHByb3ZpZGVyIqgBCiFQcmVwYXJlTmF0aXZlUmVnaXN0cmF0aW9uUmVzcG9uc2USMgoGcmV2aWV3GAEgASgLMiIuZ3JhcGgudjEuTmF0aXZlUmVnaXN0cmF0aW9uUmV2aWV3Eg0KBXByb29mGAIgASgJEi4KCmV4cGlyZXNfYXQYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhAKCGFmZmluaXR5GAQgASgJImMKHkFwcGx5TmF0aXZlUmVnaXN0cmF0aW9uUmVxdWVzdBIyCgZyZXZpZXcYASABKAsyIi5ncmFwaC52MS5OYXRpdmVSZWdpc3RyYXRpb25SZXZpZXcSDQoFcHJvb2YYAiABKAkiuAEKH0FwcGx5TmF0aXZlUmVnaXN0cmF0aW9uUmVzcG9uc2USPQoOY3VycmVudF9yZXN1bHQYASABKAsyJS5ncmFwaC52MS5DdXJyZW50U2VjdXJpdHlDaGFuZ2VSZXN1bHQSEgoKY3JlZGVudGlhbBgCIAEoCRIoCgdzZXNzaW9uGAMgASgLMhcuZ3JhcGgudjEuTmF0aXZlU2Vzc2lvbhIYChBzaWduX2luX3JlcXVpcmVkGAQgASgIImcKIkdldE5hdGl2ZVJlZ2lzdHJhdGlvblN0YXR1c1JlcXVlc3QSMgoGcmV2aWV3GAEgASgLMiIuZ3JhcGgudjEuTmF0aXZlUmVnaXN0cmF0aW9uUmV2aWV3Eg0KBXByb29mGAIgASgJImQKI0dldE5hdGl2ZVJlZ2lzdHJhdGlvblN0YXR1c1Jlc3BvbnNlEj0KDmN1cnJlbnRfcmVzdWx0GAEgASgLMiUuZ3JhcGgudjEuQ3VycmVudFNlY3VyaXR5Q2hhbmdlUmVzdWx0MsgHChhMYW50ZXJuTmF0aXZlQXV0aFNlcnZpY2USWQoQQmVnaW5OYXRpdmVMb2dpbhIhLmdyYXBoLnYxLkJlZ2luTmF0aXZlTG9naW5SZXF1ZXN0GiIuZ3JhcGgudjEuQmVnaW5OYXRpdmVMb2dpblJlc3BvbnNlEmIKE0NvbXBsZXRlTmF0aXZlTG9naW4SJC5ncmFwaC52MS5Db21wbGV0ZU5hdGl2ZUxvZ2luUmVxdWVzdBolLmdyYXBoLnYxLkNvbXBsZXRlTmF0aXZlTG9naW5SZXNwb25zZRJZChBHZXROYXRpdmVTZXNzaW9uEiEuZ3JhcGgudjEuR2V0TmF0aXZlU2Vzc2lvblJlcXVlc3QaIi5ncmFwaC52MS5HZXROYXRpdmVTZXNzaW9uUmVzcG9uc2USYgoTUHJlcGFyZU5hdGl2ZUxvZ291dBIkLmdyYXBoLnYxLlByZXBhcmVOYXRpdmVMb2dvdXRSZXF1ZXN0GiUuZ3JhcGgudjEuUHJlcGFyZU5hdGl2ZUxvZ291dFJlc3BvbnNlElwKEUFwcGx5TmF0aXZlTG9nb3V0EiIuZ3JhcGgudjEuQXBwbHlOYXRpdmVMb2dvdXRSZXF1ZXN0GiMuZ3JhcGgudjEuQXBwbHlOYXRpdmVMb2dvdXRSZXNwb25zZRJuChdCZWdpbk5hdGl2ZVJlZ2lzdHJhdGlvbhIoLmdyYXBoLnYxLkJlZ2luTmF0aXZlUmVnaXN0cmF0aW9uUmVxdWVzdBopLmdyYXBoLnYxLkJlZ2luTmF0aXZlUmVnaXN0cmF0aW9uUmVzcG9uc2USdAoZUHJlcGFyZU5hdGl2ZVJlZ2lzdHJhdGlvbhIqLmdyYXBoLnYxLlByZXBhcmVOYXRpdmVSZWdpc3RyYXRpb25SZXF1ZXN0GisuZ3JhcGgudjEuUHJlcGFyZU5hdGl2ZVJlZ2lzdHJhdGlvblJlc3BvbnNlEm4KF0FwcGx5TmF0aXZlUmVnaXN0cmF0aW9uEiguZ3JhcGgudjEuQXBwbHlOYXRpdmVSZWdpc3RyYXRpb25SZXF1ZXN0GikuZ3JhcGgudjEuQXBwbHlOYXRpdmVSZWdpc3RyYXRpb25SZXNwb25zZRJ6ChtHZXROYXRpdmVSZWdpc3RyYXRpb25TdGF0dXMSLC5ncmFwaC52MS5HZXROYXRpdmVSZWdpc3RyYXRpb25TdGF0dXNSZXF1ZXN0Gi0uZ3JhcGgudjEuR2V0TmF0aXZlUmVnaXN0cmF0aW9uU3RhdHVzUmVzcG9uc2VCYAoMY29tLmdyYXBoLnYxQg9OYXRpdmVBdXRoUHJvdG9QAaICA0dYWKoCCEdyYXBoLlYxygIIR3JhcGhcVjHiAhRHcmFwaFxWMVxHUEJNZXRhZGF0YeoCCUdyYXBoOjpWMWIGcHJvdG8z", [file_google_protobuf_timestamp, file_graph_v1_security]);
 
 /**
  * @generated from message graph.v1.BeginNativeLoginRequest
@@ -254,6 +254,20 @@ export type NativeSession = Message<"graph.v1.NativeSession"> & {
    * @generated from field: graph.v1.SecurityVersion version = 8;
    */
   version?: SecurityVersion | undefined;
+
+  /**
+   * Trusted installed Principal metadata, absent for a UID-less legacy user.
+   *
+   * @generated from field: optional string user_id = 9;
+   */
+  userId?: string | undefined;
+
+  /**
+   * Logical prefix; callers must not prepend the internal physical 'data:'.
+   *
+   * @generated from field: optional string personal_prefix = 10;
+   */
+  personalPrefix?: string | undefined;
 };
 
 /**
@@ -399,6 +413,286 @@ export const ApplyNativeLogoutResponseSchema: GenMessage<ApplyNativeLogoutRespon
   messageDesc(file_graph_v1_native_auth, 13);
 
 /**
+ * Exact Server-minted business review. Persist before Apply. Possession alone
+ * grants no authority; unknown status never permits restamping or a new intent.
+ *
+ * @generated from message graph.v1.NativeRegistrationReview
+ */
+export type NativeRegistrationReview = Message<"graph.v1.NativeRegistrationReview"> & {
+  /**
+   * @generated from field: graph.v1.CurrentAuthorityProfile profile = 1;
+   */
+  profile?: CurrentAuthorityProfile | undefined;
+
+  /**
+   * @generated from field: graph.v1.CurrentSemanticCut expected_cut = 2;
+   */
+  expectedCut?: CurrentSemanticCut | undefined;
+
+  /**
+   * @generated from field: graph.v1.CurrentSecurityChangeID change_id = 3;
+   */
+  changeId?: CurrentSecurityChangeID | undefined;
+
+  /**
+   * @generated from field: graph.v1.SecurityIdentity actor = 4;
+   */
+  actor?: SecurityIdentity | undefined;
+
+  /**
+   * @generated from field: bytes intent_digest = 5;
+   */
+  intentDigest: Uint8Array;
+
+  /**
+   * @generated from field: string user_id = 6;
+   */
+  userId: string;
+
+  /**
+   * @generated from field: string client_profile_id = 7;
+   */
+  clientProfileId: string;
+
+  /**
+   * @generated from field: uint64 issuer_config_revision = 8;
+   */
+  issuerConfigRevision: bigint;
+};
+
+/**
+ * Describes the message graph.v1.NativeRegistrationReview.
+ * Use `create(NativeRegistrationReviewSchema)` to create a new message.
+ */
+export const NativeRegistrationReviewSchema: GenMessage<NativeRegistrationReview> = /*@__PURE__*/
+  messageDesc(file_graph_v1_native_auth, 14);
+
+/**
+ * @generated from message graph.v1.BeginNativeRegistrationRequest
+ */
+export type BeginNativeRegistrationRequest = Message<"graph.v1.BeginNativeRegistrationRequest"> & {
+  /**
+   * @generated from field: string issuer = 1;
+   */
+  issuer: string;
+
+  /**
+   * @generated from field: string client_profile_id = 2;
+   */
+  clientProfileId: string;
+
+  /**
+   * Presence selects recovery-only authentication for this original review.
+   *
+   * @generated from field: graph.v1.NativeRegistrationReview recovery_review = 3;
+   */
+  recoveryReview?: NativeRegistrationReview | undefined;
+};
+
+/**
+ * Describes the message graph.v1.BeginNativeRegistrationRequest.
+ * Use `create(BeginNativeRegistrationRequestSchema)` to create a new message.
+ */
+export const BeginNativeRegistrationRequestSchema: GenMessage<BeginNativeRegistrationRequest> = /*@__PURE__*/
+  messageDesc(file_graph_v1_native_auth, 15);
+
+/**
+ * @generated from message graph.v1.BeginNativeRegistrationResponse
+ */
+export type BeginNativeRegistrationResponse = Message<"graph.v1.BeginNativeRegistrationResponse"> & {
+  /**
+   * Share the provider challenge shape; registration purpose stays Server-owned.
+   *
+   * @generated from field: graph.v1.BeginNativeLoginResponse attempt = 1;
+   */
+  attempt?: BeginNativeLoginResponse | undefined;
+};
+
+/**
+ * Describes the message graph.v1.BeginNativeRegistrationResponse.
+ * Use `create(BeginNativeRegistrationResponseSchema)` to create a new message.
+ */
+export const BeginNativeRegistrationResponseSchema: GenMessage<BeginNativeRegistrationResponse> = /*@__PURE__*/
+  messageDesc(file_graph_v1_native_auth, 16);
+
+/**
+ * @generated from message graph.v1.PrepareNativeRegistrationRequest
+ */
+export type PrepareNativeRegistrationRequest = Message<"graph.v1.PrepareNativeRegistrationRequest"> & {
+  /**
+   * @generated from field: string attempt_id = 1;
+   */
+  attemptId: string;
+
+  /**
+   * @generated from field: string completion_secret = 2;
+   */
+  completionSecret: string;
+
+  /**
+   * @generated from oneof graph.v1.PrepareNativeRegistrationRequest.provider
+   */
+  provider: {
+    /**
+     * @generated from field: graph.v1.GoogleNativeCredential google = 3;
+     */
+    value: GoogleNativeCredential;
+    case: "google";
+  } | {
+    /**
+     * @generated from field: graph.v1.AppleNativeCredential apple = 4;
+     */
+    value: AppleNativeCredential;
+    case: "apple";
+  } | { case: undefined; value?: undefined };
+
+  /**
+   * Must match Begin exactly; absent for a new registration.
+   *
+   * @generated from field: graph.v1.NativeRegistrationReview recovery_review = 5;
+   */
+  recoveryReview?: NativeRegistrationReview | undefined;
+};
+
+/**
+ * Describes the message graph.v1.PrepareNativeRegistrationRequest.
+ * Use `create(PrepareNativeRegistrationRequestSchema)` to create a new message.
+ */
+export const PrepareNativeRegistrationRequestSchema: GenMessage<PrepareNativeRegistrationRequest> = /*@__PURE__*/
+  messageDesc(file_graph_v1_native_auth, 17);
+
+/**
+ * @generated from message graph.v1.PrepareNativeRegistrationResponse
+ */
+export type PrepareNativeRegistrationResponse = Message<"graph.v1.PrepareNativeRegistrationResponse"> & {
+  /**
+   * @generated from field: graph.v1.NativeRegistrationReview review = 1;
+   */
+  review?: NativeRegistrationReview | undefined;
+
+  /**
+   * Volatile process-bound proof; never persist or send to a provider.
+   *
+   * @generated from field: string proof = 2;
+   */
+  proof: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp expires_at = 3;
+   */
+  expiresAt?: Timestamp | undefined;
+
+  /**
+   * @generated from field: string affinity = 4;
+   */
+  affinity: string;
+};
+
+/**
+ * Describes the message graph.v1.PrepareNativeRegistrationResponse.
+ * Use `create(PrepareNativeRegistrationResponseSchema)` to create a new message.
+ */
+export const PrepareNativeRegistrationResponseSchema: GenMessage<PrepareNativeRegistrationResponse> = /*@__PURE__*/
+  messageDesc(file_graph_v1_native_auth, 18);
+
+/**
+ * @generated from message graph.v1.ApplyNativeRegistrationRequest
+ */
+export type ApplyNativeRegistrationRequest = Message<"graph.v1.ApplyNativeRegistrationRequest"> & {
+  /**
+   * @generated from field: graph.v1.NativeRegistrationReview review = 1;
+   */
+  review?: NativeRegistrationReview | undefined;
+
+  /**
+   * @generated from field: string proof = 2;
+   */
+  proof: string;
+};
+
+/**
+ * Describes the message graph.v1.ApplyNativeRegistrationRequest.
+ * Use `create(ApplyNativeRegistrationRequestSchema)` to create a new message.
+ */
+export const ApplyNativeRegistrationRequestSchema: GenMessage<ApplyNativeRegistrationRequest> = /*@__PURE__*/
+  messageDesc(file_graph_v1_native_auth, 19);
+
+/**
+ * @generated from message graph.v1.ApplyNativeRegistrationResponse
+ */
+export type ApplyNativeRegistrationResponse = Message<"graph.v1.ApplyNativeRegistrationResponse"> & {
+  /**
+   * @generated from field: graph.v1.CurrentSecurityChangeResult current_result = 1;
+   */
+  currentResult?: CurrentSecurityChangeResult | undefined;
+
+  /**
+   * Only the first Apply invocation can disclose a newly issued credential.
+   *
+   * @generated from field: string credential = 2;
+   */
+  credential: string;
+
+  /**
+   * @generated from field: graph.v1.NativeSession session = 3;
+   */
+  session?: NativeSession | undefined;
+
+  /**
+   * Registration Applied, but this invocation has no new session credential.
+   *
+   * @generated from field: bool sign_in_required = 4;
+   */
+  signInRequired: boolean;
+};
+
+/**
+ * Describes the message graph.v1.ApplyNativeRegistrationResponse.
+ * Use `create(ApplyNativeRegistrationResponseSchema)` to create a new message.
+ */
+export const ApplyNativeRegistrationResponseSchema: GenMessage<ApplyNativeRegistrationResponse> = /*@__PURE__*/
+  messageDesc(file_graph_v1_native_auth, 20);
+
+/**
+ * @generated from message graph.v1.GetNativeRegistrationStatusRequest
+ */
+export type GetNativeRegistrationStatusRequest = Message<"graph.v1.GetNativeRegistrationStatusRequest"> & {
+  /**
+   * @generated from field: graph.v1.NativeRegistrationReview review = 1;
+   */
+  review?: NativeRegistrationReview | undefined;
+
+  /**
+   * @generated from field: string proof = 2;
+   */
+  proof: string;
+};
+
+/**
+ * Describes the message graph.v1.GetNativeRegistrationStatusRequest.
+ * Use `create(GetNativeRegistrationStatusRequestSchema)` to create a new message.
+ */
+export const GetNativeRegistrationStatusRequestSchema: GenMessage<GetNativeRegistrationStatusRequest> = /*@__PURE__*/
+  messageDesc(file_graph_v1_native_auth, 21);
+
+/**
+ * @generated from message graph.v1.GetNativeRegistrationStatusResponse
+ */
+export type GetNativeRegistrationStatusResponse = Message<"graph.v1.GetNativeRegistrationStatusResponse"> & {
+  /**
+   * @generated from field: graph.v1.CurrentSecurityChangeResult current_result = 1;
+   */
+  currentResult?: CurrentSecurityChangeResult | undefined;
+};
+
+/**
+ * Describes the message graph.v1.GetNativeRegistrationStatusResponse.
+ * Use `create(GetNativeRegistrationStatusResponseSchema)` to create a new message.
+ */
+export const GetNativeRegistrationStatusResponseSchema: GenMessage<GetNativeRegistrationStatusResponse> = /*@__PURE__*/
+  messageDesc(file_graph_v1_native_auth, 22);
+
+/**
  * Native provider inputs are accepted only here. Ordinary RPC authentication
  * uses the returned opaque native credential through the existing Bearer path.
  * These unary methods are never automatically retried after possible dispatch.
@@ -445,6 +739,38 @@ export const LanternNativeAuthService: GenService<{
     methodKind: "unary";
     input: typeof ApplyNativeLogoutRequestSchema;
     output: typeof ApplyNativeLogoutResponseSchema;
+  },
+  /**
+   * @generated from rpc graph.v1.LanternNativeAuthService.BeginNativeRegistration
+   */
+  beginNativeRegistration: {
+    methodKind: "unary";
+    input: typeof BeginNativeRegistrationRequestSchema;
+    output: typeof BeginNativeRegistrationResponseSchema;
+  },
+  /**
+   * @generated from rpc graph.v1.LanternNativeAuthService.PrepareNativeRegistration
+   */
+  prepareNativeRegistration: {
+    methodKind: "unary";
+    input: typeof PrepareNativeRegistrationRequestSchema;
+    output: typeof PrepareNativeRegistrationResponseSchema;
+  },
+  /**
+   * @generated from rpc graph.v1.LanternNativeAuthService.ApplyNativeRegistration
+   */
+  applyNativeRegistration: {
+    methodKind: "unary";
+    input: typeof ApplyNativeRegistrationRequestSchema;
+    output: typeof ApplyNativeRegistrationResponseSchema;
+  },
+  /**
+   * @generated from rpc graph.v1.LanternNativeAuthService.GetNativeRegistrationStatus
+   */
+  getNativeRegistrationStatus: {
+    methodKind: "unary";
+    input: typeof GetNativeRegistrationStatusRequestSchema;
+    output: typeof GetNativeRegistrationStatusResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_graph_v1_native_auth, 0);

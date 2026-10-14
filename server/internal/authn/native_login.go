@@ -13,6 +13,10 @@ func (w *Workflow) NativeEnabled() bool {
 }
 
 func (w *Workflow) BeginNativeLogin(ctx context.Context, issuerURL, clientProfileID string) (oidc.NativeStart, error) {
+	return w.beginNative(ctx, issuerURL, clientProfileID, security.NativeRegistrationPurpose{})
+}
+
+func (w *Workflow) beginNative(ctx context.Context, issuerURL, clientProfileID string, purpose security.NativeRegistrationPurpose) (oidc.NativeStart, error) {
 	if !w.NativeEnabled() {
 		return oidc.NativeStart{}, ErrUnavailable
 	}
@@ -34,7 +38,13 @@ func (w *Workflow) BeginNativeLogin(ctx context.Context, issuerURL, clientProfil
 	if err != nil || after != cut {
 		return oidc.NativeStart{}, ErrUnavailable
 	}
-	start, err := w.oidc.NativeLogins.Begin(oidc.Trust{Issuer: issuer, Generation: cut.Generation, ConfigRevision: issuer.ConfigRevision}, w.current.Profile(), clientProfileID, discovery)
+	trust := oidc.Trust{Issuer: issuer, Generation: cut.Generation, ConfigRevision: issuer.ConfigRevision}
+	var start oidc.NativeStart
+	if purpose == (security.NativeRegistrationPurpose{}) {
+		start, err = w.oidc.NativeLogins.Begin(trust, w.current.Profile(), clientProfileID, discovery)
+	} else {
+		start, err = w.oidc.NativeLogins.BeginRegistration(trust, w.current.Profile(), clientProfileID, discovery, purpose)
+	}
 	if err != nil {
 		return oidc.NativeStart{}, err
 	}
@@ -75,23 +85,12 @@ func (w *Workflow) CompleteNativeLogin(ctx context.Context, input NativeCompleti
 		return NativeSessionResult{}, ErrUnavailable
 	}
 	attempt, err := w.oidc.NativeLogins.Lookup(input.AttemptID, input.CompletionSecret, input.Affinity)
-	if err != nil || w.checkNativeAttempt(ctx, attempt) != nil {
+	if err != nil || !attempt.IsLogin() || w.checkNativeAttempt(ctx, attempt) != nil {
 		return NativeSessionResult{}, ErrUnauthenticated
 	}
-	credential, err := w.oidc.Verifier.VerifyNativeCredential(ctx, attempt, input.Provider)
+	completion, tokens, err := w.completeNativeProvider(ctx, attempt, input.Provider)
 	if err != nil {
-		return NativeSessionResult{}, nativeVerificationError(err)
-	}
-	completion, err := w.oidc.NativeLogins.Consume(attempt, credential)
-	if err != nil {
-		return NativeSessionResult{}, ErrUnauthenticated
-	}
-	var tokens oidc.NativeTokens
-	if input.Provider.Provider == "apple" {
-		tokens, err = w.oidc.Fetcher.ExchangeApple(ctx, completion, w.oidc.Secrets)
-		if err != nil {
-			return NativeSessionResult{}, nativeVerificationError(err)
-		}
+		return NativeSessionResult{}, err
 	}
 	producer, err := w.oidc.Credentials.Native(completion, tokens)
 	if err != nil {
@@ -114,6 +113,25 @@ func (w *Workflow) CompleteNativeLogin(ctx context.Context, input NativeCompleti
 		return NativeSessionResult{}, err
 	}
 	return NativeSessionResult{Credential: value, Session: session, Context: ctx}, nil
+}
+
+func (w *Workflow) completeNativeProvider(ctx context.Context, attempt oidc.NativeAttempt, input oidc.NativeInput) (oidc.NativeCompletion, oidc.NativeTokens, error) {
+	credential, err := w.oidc.Verifier.VerifyNativeCredential(ctx, attempt, input)
+	if err != nil {
+		return oidc.NativeCompletion{}, oidc.NativeTokens{}, nativeVerificationError(err)
+	}
+	completion, err := w.oidc.NativeLogins.Consume(attempt, credential)
+	if err != nil {
+		return oidc.NativeCompletion{}, oidc.NativeTokens{}, ErrUnauthenticated
+	}
+	var tokens oidc.NativeTokens
+	if input.Provider == "apple" {
+		tokens, err = w.oidc.Fetcher.ExchangeApple(ctx, completion, w.oidc.Secrets)
+		if err != nil {
+			return oidc.NativeCompletion{}, oidc.NativeTokens{}, nativeVerificationError(err)
+		}
+	}
+	return completion, tokens, nil
 }
 
 // StageAppleCallback verifies provider output before returning the registered

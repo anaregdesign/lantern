@@ -66,6 +66,7 @@ type s1VerifiedAuthorization struct {
 	lineage                                             uint64
 	credentialEvidence, purposeEvidence, purposeBinding [32]byte
 	consume, credentialDeadline, purposeDeadline        time.Time
+	registration                                        *authorityRegistrationAuthorization
 }
 
 type S1Handoff struct {
@@ -90,19 +91,34 @@ func (h *S1Handoff) digest() [32]byte {
 		Lineage                                      uint64
 		Credential, Purpose, Binding                 [32]byte
 		Consume, CredentialDeadline, PurposeDeadline time.Time
-	}{h.id, h.operation.canonical, h.origin, h.serial, a.authentication, a.lineage, a.credentialEvidence, a.purposeEvidence, a.purposeBinding, a.consume.UTC(), a.credentialDeadline.UTC(), a.purposeDeadline.UTC()})
+		Registration                                 *authorityRegistrationAuthorization `json:",omitempty"`
+	}{h.id, h.operation.canonical, h.origin, h.serial, a.authentication, a.lineage, a.credentialEvidence, a.purposeEvidence, a.purposeBinding, a.consume.UTC(), a.credentialDeadline.UTC(), a.purposeDeadline.UTC(), a.registration})
 }
 
 func (h *S1Handoff) valid(scope SemanticCut) bool {
 	if h == nil || h.authorization == nil || !h.id.valid() || h.id.Domain != scope.Domain || h.id.Cohort != scope.Cohort || h.origin == [32]byte{} || h.serial == 0 || !h.operation.reviewed.valid() || h.operation.reviewed.Domain != scope.Domain || h.operation.reviewed.Cohort != scope.Cohort {
 		return false
 	}
-	if _, err := h.operation.command(); err != nil {
+	command, err := h.operation.command()
+	if err != nil {
 		return false
 	}
 	a := h.authorization
-	if a.credentialEvidence == [32]byte{} || a.consume.IsZero() || !a.consume.Before(a.credentialDeadline) || a.authentication.Class != EndUser || h.operation.actor.Kind != OIDCPrincipal || a.lineage == 0 {
+	if a.credentialEvidence == [32]byte{} || a.consume.IsZero() || !a.consume.Before(a.credentialDeadline) || a.authentication.Class != EndUser || h.operation.actor.Kind != OIDCPrincipal {
 		return false
+	}
+	if a.registration == nil {
+		if a.lineage == 0 || a.authentication.Provenance == NativeProviderRegistration || !ordinaryS1Command(command.Kind) {
+			return false
+		}
+	} else {
+		r := a.registration
+		if r.Version != 1 || a.authentication.Provenance != NativeProviderRegistration || a.authentication.SessionDigest != "" ||
+			r.State.Present != (a.lineage != 0) || !r.State.Present && r.State.UserUID != "" ||
+			(command.Kind != S1RegisterPrincipal || r.Original != nil) && (command.Kind != S1IssueSession || r.Original == nil || a.lineage == 0) ||
+			a.purposeEvidence != [32]byte{} || a.purposeBinding != [32]byte{} || !a.purposeDeadline.IsZero() {
+			return false
+		}
 	}
 	if a.purposeEvidence != [32]byte{} && (a.purposeBinding != s1PurposeBinding(h.id, h.operation) || !a.consume.Before(a.purposeDeadline)) {
 		return false
@@ -284,6 +300,12 @@ func evaluateS1Candidate(s *S1ApplyState, h *S1Handoff, commit CommitRef, previo
 	var err error
 	if h.operation.reviewed != cut {
 		err = ErrRevisionConflict
+	} else if h.authorization.registration != nil {
+		if !registrationAuthorizationMatches(s.projection, h, command) || h.authorization.registration.Original != nil && !registrationOriginalMatches(s, h.operation.actor, h.authorization.registration.Original) {
+			err = ErrPermissionDenied
+		} else {
+			assessment, err = AssessS1(s.projection, h.operation)
+		}
 	} else if !s1CurrentAuthority(s.projection, h, command) {
 		err = ErrPermissionDenied
 	} else {
@@ -329,6 +351,9 @@ func evaluateS1Candidate(s *S1ApplyState, h *S1Handoff, commit CommitRef, previo
 }
 
 func s1CurrentAuthority(p *S1Projection, h *S1Handoff, c S1Command) bool {
+	if !ordinaryS1Command(c.Kind) || h.authorization.registration != nil {
+		return false
+	}
 	actor, a := h.operation.actor, h.authorization
 	issuer, known := p.snapshot.Issuer(actor.Issuer)
 	if !known || !issuer.Enabled || issuer.Deleted || issuer.ConfigRevision != a.authentication.IssuerConfigRevision || a.lineage != p.lineage[actor] {

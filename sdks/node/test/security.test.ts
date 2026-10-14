@@ -12,6 +12,8 @@ import {
   SecurityAuthorizationRequirement,
   SecurityAuthorizationState,
   parseBrowserSession,
+  currentUserId,
+  SecurityPrincipalKind,
 } from "../src/security-types.js";
 import {
   LanternSecurityService,
@@ -48,6 +50,49 @@ test("browser JSON decoding rejects unknown enum and malformed fields", () => {
   expect(() => parseBrowserSession('{"mode":"invented"}')).toThrow();
   expect(() => parseBrowserSession('{"principal":{"expiresAt":"not-a-time"}}')).toThrow();
   expect(parseBrowserSession('{"mode":"AUTH_MODE_OFF"}').mode).toBe(AuthMode.OFF);
+});
+
+test("self user ID is optional, validated and never cached across accounts", async () => {
+  let id: string | undefined;
+  let kind = SecurityPrincipalKind.OIDC;
+  let signedOut = false,
+    calls = 0;
+  const client = SecurityClient.withTransport(
+    createRouterTransport(({ service }) =>
+      service(LanternSecurityService, {
+        getCurrentPrincipal: () => {
+          calls++;
+          if (signedOut) throw new ConnectError("signed out", Code.Unauthenticated);
+          return { userId: id, identity: { kind } };
+        },
+      }),
+    ),
+  );
+  for (const value of ["1".repeat(32), undefined, "2".repeat(32)]) {
+    id = value;
+    expect(await client.getCurrentUserId()).toBe(value);
+  }
+  for (const value of ["", "short", "0".repeat(32), "A".repeat(32)]) {
+    id = value;
+    await expect(client.getCurrentUserId()).rejects.toThrow();
+  }
+  kind = SecurityPrincipalKind.MACHINE;
+  id = undefined;
+  expect(await client.getCurrentUserId()).toBeUndefined();
+  id = "1".repeat(32);
+  await expect(client.getCurrentUserId()).rejects.toThrow();
+  signedOut = true;
+  await expect(client.getCurrentUserId()).rejects.toThrow();
+  expect(calls).toBe(10);
+  expect(currentUserId(undefined)).toBeUndefined();
+  const session = parseBrowserSession(
+    JSON.stringify({
+      mode: "AUTH_MODE_OIDC",
+      principal: { identity: { kind: "SECURITY_PRINCIPAL_KIND_OIDC" }, userId: "1".repeat(32) },
+    }),
+  );
+  expect(currentUserId(session.principal)).toBe("1".repeat(32));
+  expect(() => parseBrowserSession('{"principal":{"userId":""}}')).toThrow();
 });
 
 test("Security status facade returns original retained proof without Apply outcomes", async () => {

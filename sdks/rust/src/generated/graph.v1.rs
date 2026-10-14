@@ -3427,6 +3427,16 @@ pub struct SecurityPrefixPair {
     #[prost(string, tag = "2")]
     pub head_prefix: ::prost::alloc::string::String,
 }
+/// Inserts the installed Principal's Server-owned UID between byte literals.
+/// Before must end with ':' and after must start with ':'. Neither is empty.
+/// This is one typed UID slot, not a template language or client-supplied UID.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityPrincipalUidPrefix {
+    #[prost(string, tag = "1")]
+    pub literal_before: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub literal_after: ::prost::alloc::string::String,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SecurityRule {
     #[prost(string, tag = "1")]
@@ -3435,7 +3445,7 @@ pub struct SecurityRule {
     pub effect: i32,
     #[prost(enumeration = "SecurityAction", tag = "3")]
     pub action: i32,
-    #[prost(oneof = "security_rule::Resource", tags = "4, 5, 6")]
+    #[prost(oneof = "security_rule::Resource", tags = "4, 5, 6, 7")]
     pub resource: ::core::option::Option<security_rule::Resource>,
 }
 /// Nested message and enum types in `SecurityRule`.
@@ -3448,6 +3458,8 @@ pub mod security_rule {
         Global(bool),
         #[prost(message, tag = "6")]
         Pair(super::SecurityPrefixPair),
+        #[prost(message, tag = "7")]
+        PrincipalUidPrefix(super::SecurityPrincipalUidPrefix),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3479,6 +3491,10 @@ pub struct SecurityUser {
     pub state: i32,
     #[prost(message, repeated, tag = "3")]
     pub assignments: ::prost::alloc::vec::Vec<SecurityRoleAssignment>,
+    /// Read-only, allocated once by explicit verified registration. Ordinary user
+    /// management never accepts this value as input; deleted tombstones retain it.
+    #[prost(string, optional, tag = "4")]
+    pub user_id: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SecurityIssuer {
@@ -3570,6 +3586,10 @@ pub struct GetCurrentPrincipalResponse {
     /// Opaque browser CSRF proof, returned only on the browser session surface.
     #[prost(string, tag = "6")]
     pub csrf_token: ::prost::alloc::string::String,
+    /// Immutable Server-installed user ID; absent for UID-less or machine Principals.
+    /// This self metadata requires no additional Role and never grants data access.
+    #[prost(string, optional, tag = "7")]
+    pub user_id: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Same-origin /auth/session and /auth/logout HTTP responses. OIDC tokens never
 /// cross this boundary; principal is absent only when mode is explicitly OFF.
@@ -3845,11 +3865,39 @@ pub struct SecurityUserStateChange {
     #[prost(enumeration = "SecurityPrincipalState", tag = "2")]
     pub state: i32,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityRegistrationProfile {
+    #[prost(string, tag = "1")]
+    pub issuer: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub client_profile_id: ::prost::alloc::string::String,
+}
+/// Default absent/disabled. Expansion requires operation-bound reauthentication.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SecurityRegistrationPolicy {
+    #[prost(uint32, tag = "1")]
+    pub version: u32,
+    #[prost(bool, tag = "2")]
+    pub enabled: bool,
+    #[prost(string, tag = "3")]
+    pub role_id: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "4")]
+    pub profiles: ::prost::alloc::vec::Vec<SecurityRegistrationProfile>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetRegistrationPolicyRequest {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetRegistrationPolicyResponse {
+    #[prost(message, optional, tag = "1")]
+    pub policy: ::core::option::Option<SecurityRegistrationPolicy>,
+    #[prost(message, optional, tag = "2")]
+    pub version: ::core::option::Option<SecurityVersion>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SecurityChange {
     #[prost(
         oneof = "security_change::Operation",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11"
     )]
     pub operation: ::core::option::Option<security_change::Operation>,
 }
@@ -3877,6 +3925,8 @@ pub mod security_change {
         DeleteAssignment(super::SecurityRoleAssignment),
         #[prost(message, tag = "10")]
         RevokeUserSessions(super::SecurityIdentity),
+        #[prost(message, tag = "11")]
+        PutRegistrationPolicy(super::SecurityRegistrationPolicy),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -5020,6 +5070,35 @@ pub mod lantern_security_service_client {
                 .insert(GrpcMethod::new("graph.v1.LanternSecurityService", "GetUser"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn get_registration_policy(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetRegistrationPolicyRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetRegistrationPolicyResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternSecurityService/GetRegistrationPolicy",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternSecurityService",
+                        "GetRegistrationPolicy",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn list_role_assignments(
             &mut self,
             request: impl tonic::IntoRequest<super::ListRoleAssignmentsRequest>,
@@ -5433,6 +5512,12 @@ pub struct NativeSession {
     pub identity: ::core::option::Option<SecurityIdentity>,
     #[prost(message, optional, tag = "8")]
     pub version: ::core::option::Option<SecurityVersion>,
+    /// Trusted installed Principal metadata, absent for a UID-less legacy user.
+    #[prost(string, optional, tag = "9")]
+    pub user_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// Logical prefix; callers must not prepend the internal physical 'data:'.
+    #[prost(string, optional, tag = "10")]
+    pub personal_prefix: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CompleteNativeLoginResponse {
@@ -5472,6 +5557,109 @@ pub struct ApplyNativeLogoutResponse {
     pub clear_local_session: bool,
     /// Absence means unknown/unavailable for disclosure, never rollback.
     #[prost(message, optional, tag = "2")]
+    pub current_result: ::core::option::Option<CurrentSecurityChangeResult>,
+}
+/// Exact Server-minted business review. Persist before Apply. Possession alone
+/// grants no authority; unknown status never permits restamping or a new intent.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NativeRegistrationReview {
+    #[prost(message, optional, tag = "1")]
+    pub profile: ::core::option::Option<CurrentAuthorityProfile>,
+    #[prost(message, optional, tag = "2")]
+    pub expected_cut: ::core::option::Option<CurrentSemanticCut>,
+    #[prost(message, optional, tag = "3")]
+    pub change_id: ::core::option::Option<CurrentSecurityChangeId>,
+    #[prost(message, optional, tag = "4")]
+    pub actor: ::core::option::Option<SecurityIdentity>,
+    #[prost(bytes = "vec", tag = "5")]
+    pub intent_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "6")]
+    pub user_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "7")]
+    pub client_profile_id: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "8")]
+    pub issuer_config_revision: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BeginNativeRegistrationRequest {
+    #[prost(string, tag = "1")]
+    pub issuer: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub client_profile_id: ::prost::alloc::string::String,
+    /// Presence selects recovery-only authentication for this original review.
+    #[prost(message, optional, tag = "3")]
+    pub recovery_review: ::core::option::Option<NativeRegistrationReview>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BeginNativeRegistrationResponse {
+    /// Share the provider challenge shape; registration purpose stays Server-owned.
+    #[prost(message, optional, tag = "1")]
+    pub attempt: ::core::option::Option<BeginNativeLoginResponse>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PrepareNativeRegistrationRequest {
+    #[prost(string, tag = "1")]
+    pub attempt_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub completion_secret: ::prost::alloc::string::String,
+    /// Must match Begin exactly; absent for a new registration.
+    #[prost(message, optional, tag = "5")]
+    pub recovery_review: ::core::option::Option<NativeRegistrationReview>,
+    #[prost(oneof = "prepare_native_registration_request::Provider", tags = "3, 4")]
+    pub provider: ::core::option::Option<prepare_native_registration_request::Provider>,
+}
+/// Nested message and enum types in `PrepareNativeRegistrationRequest`.
+pub mod prepare_native_registration_request {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Provider {
+        #[prost(message, tag = "3")]
+        Google(super::GoogleNativeCredential),
+        #[prost(message, tag = "4")]
+        Apple(super::AppleNativeCredential),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PrepareNativeRegistrationResponse {
+    #[prost(message, optional, tag = "1")]
+    pub review: ::core::option::Option<NativeRegistrationReview>,
+    /// Volatile process-bound proof; never persist or send to a provider.
+    #[prost(string, tag = "2")]
+    pub proof: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "3")]
+    pub expires_at: ::core::option::Option<::prost_types::Timestamp>,
+    #[prost(string, tag = "4")]
+    pub affinity: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplyNativeRegistrationRequest {
+    #[prost(message, optional, tag = "1")]
+    pub review: ::core::option::Option<NativeRegistrationReview>,
+    #[prost(string, tag = "2")]
+    pub proof: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApplyNativeRegistrationResponse {
+    #[prost(message, optional, tag = "1")]
+    pub current_result: ::core::option::Option<CurrentSecurityChangeResult>,
+    /// Only the first Apply invocation can disclose a newly issued credential.
+    #[prost(string, tag = "2")]
+    pub credential: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "3")]
+    pub session: ::core::option::Option<NativeSession>,
+    /// Registration Applied, but this invocation has no new session credential.
+    #[prost(bool, tag = "4")]
+    pub sign_in_required: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetNativeRegistrationStatusRequest {
+    #[prost(message, optional, tag = "1")]
+    pub review: ::core::option::Option<NativeRegistrationReview>,
+    #[prost(string, tag = "2")]
+    pub proof: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetNativeRegistrationStatusResponse {
+    #[prost(message, optional, tag = "1")]
     pub current_result: ::core::option::Option<CurrentSecurityChangeResult>,
 }
 /// Generated client implementations.
@@ -5711,6 +5899,122 @@ pub mod lantern_native_auth_service_client {
                     GrpcMethod::new(
                         "graph.v1.LanternNativeAuthService",
                         "ApplyNativeLogout",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn begin_native_registration(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BeginNativeRegistrationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BeginNativeRegistrationResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternNativeAuthService/BeginNativeRegistration",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternNativeAuthService",
+                        "BeginNativeRegistration",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn prepare_native_registration(
+            &mut self,
+            request: impl tonic::IntoRequest<super::PrepareNativeRegistrationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::PrepareNativeRegistrationResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternNativeAuthService/PrepareNativeRegistration",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternNativeAuthService",
+                        "PrepareNativeRegistration",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn apply_native_registration(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ApplyNativeRegistrationRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::ApplyNativeRegistrationResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternNativeAuthService/ApplyNativeRegistration",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternNativeAuthService",
+                        "ApplyNativeRegistration",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_native_registration_status(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetNativeRegistrationStatusRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetNativeRegistrationStatusResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/graph.v1.LanternNativeAuthService/GetNativeRegistrationStatus",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "graph.v1.LanternNativeAuthService",
+                        "GetNativeRegistrationStatus",
                     ),
                 );
             self.inner.unary(req, path, codec).await

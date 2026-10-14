@@ -103,7 +103,8 @@ func TestVertexPutTransactionLifecycleEvidenceUsesOriginalApplicationCut(t *test
 	c := NewGraphCacheWithStaging[string, string](time.Hour)
 	now := time.Now()
 	c.applicationClock = func() time.Time { return now }
-	if err := c.PutVertex("permanent", "before"); err != nil {
+	// PutVertex uses the cache's finite default TTL; this case needs permanence.
+	if err := c.PutVertexWithExpiration("permanent", "before", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	items := []VertexItem[string, string]{

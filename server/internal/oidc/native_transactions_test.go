@@ -69,3 +69,15 @@ func TestNativeTransactionCapacityAndDetachedTrust(t *testing.T) {
 		t.Fatal("expired capacity not reclaimed", err)
 	}
 }
+
+func TestNativeTransactionRegistrationPurpose(t *testing.T) {
+	p := newNativeProviderFixture(t, security.GoogleIDToken)
+	for _, invalid := range []security.NativeRegistrationPurpose{{}, {Kind: "registration", Original: [32]byte{1}}, {Kind: "registration-recovery"}} {
+		if _, err := p.transactions.BeginRegistration(p.trust, p.profile, "mobile", p.discovery, invalid); err == nil {
+			t.Fatal("invalid registration purpose accepted")
+		}
+	}
+	if (NativeAttempt{}).IsLogin() || (NativeCompletion{}).IsLogin() || (NativeCompletion{}).RegistrationPurpose().Valid() {
+		t.Fatal("zero opaque completion acquired a purpose")
+	}
+}

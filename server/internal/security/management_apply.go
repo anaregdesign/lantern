@@ -8,6 +8,8 @@ import "math"
 func applyManagementChanges(image *Image, changes []Change) error {
 	for _, change := range changes {
 		switch change.Kind {
+		case PutRegistrationPolicy:
+			image.RegistrationPolicy = change.RegistrationPolicy.clone()
 		case PutIssuer, DisableIssuer, DeleteIssuer:
 			url := change.IssuerURL
 			if change.Kind == PutIssuer {

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/authz"
 )
 
 func TestAdmissionBindsCutIdentityAndExpiry(t *testing.T) {
@@ -64,5 +66,31 @@ func BenchmarkAdmissionLocalCheck(b *testing.B) {
 		if err := admission.Check(b.Context(), clock.Now()); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestAdmissionSubjectScopeBinding(t *testing.T) {
+	policy, err := CompileRoles([]Role{{ID: "reader", Rules: []PermissionRule{dataRule(Allow, VertexRead, "users:")}}}, DefaultPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := policy.BindRoles([]string{"reader"}, authz.SubjectBindings{PersonalUID: "11111111111111111111111111111111"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := policy.BindRoles([]string{"reader"}, authz.SubjectBindings{PersonalUID: "22222222222222222222222222222222"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := policy.ForRoles([]string{"reader"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := [32]byte{1}
+	if bindSubjectScope(base, legacy) != base || bindSubjectScope(base, nil) != base {
+		t.Fatal("legacy binding changed")
+	}
+	if bindSubjectScope(base, a) == base || bindSubjectScope(base, a) == bindSubjectScope(base, b) || bindSubjectScope(base, a) == bindSubjectScope([32]byte{2}, a) {
+		t.Fatal("subject/cut binding collapsed")
 	}
 }

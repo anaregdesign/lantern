@@ -10,8 +10,10 @@ define a minimum OS for the pure-Dart SDK.
 confirmed steps, including when a later data/search request fails or the visible
 data is refreshed. A failed write can have an uncertain outcome; inspect it
 before starting a new screen session and replaying additive operations.
-The sample prefix is `flutter-demo:` and uses the Principal's existing data and
-query permissions. `Server search info` is a separate optional operation requiring
+Native mode uses the Server-returned `users:<uid>:` personal prefix for data,
+search and offline keys. The alternate token-endpoint demo uses `flutter-demo:`
+and the Principal's existing data and query permissions.
+`Server search info` is a separate optional operation requiring
 `operations.read`; it also demonstrates phrase search when positions are enabled.
 Its failure never grants permissions or changes the recorded CRUD result.
 
@@ -19,9 +21,11 @@ Its failure never grants permissions or changes the recorded CRUD result.
 
 Current source has an opt-in native login screen using exact app dependencies
 `google_sign_in 7.2.0`, `sign_in_with_apple 8.2.0` and
-`flutter_secure_storage 11.2.0`. Server current-v2 and an existing exact
-`(issuer, subject)` Principal with explicit Roles are required. There is no
-signup, email linking, BFF, provider API scope request or background refresh.
+`flutter_secure_storage 11.2.0`. Server current-v2 is required. Sign-in uses an
+existing exact `(issuer, subject)` Principal and its explicit Roles. The separate
+Register action requests a UID and personal Role only when the operator has
+enabled that exact provider profile in the default-disabled registration policy.
+There is no email linking, BFF, provider API scope request or background refresh.
 
 ```bash
 flutter run \
@@ -73,7 +77,8 @@ it never returns a Lantern credential or the app's completion secret. A custom
 scheme callback alone cannot authorize completion. Cancel abandons ownership;
 late plugin callbacks cannot replace the newer account.
 
-Only the opaque Lantern credential is stored in device-only Keychain/Keystore.
+The opaque Lantern credential and bounded pending operation reviews are stored
+in device-only Keychain/Keystore.
 Android cloud backup and transfer are disabled for the credential/database;
 Google/Apple inputs and pending completion secrets stay in process memory.
 The fixed eight-hour session requires explicit login after expiry; it does not
@@ -89,6 +94,21 @@ account. Ordinary sign-out does **not** call `wipeOnLogout()`. Before submitting
 logout the app durably records its review; a lost response is recovered by
 status only after that same account signs in again. Local teardown is distinct
 from confirmed Server revocation and from provider consent removal.
+
+Registration saves the exact Server review before dispatching Apply. After a
+lost response or restart, use the saved Check registration action and authenticate
+the same account to inspect that original operation. Unknown status stays pending;
+the app never retries Apply or allocates a replacement operation. An applied
+registration without a delivered session requires ordinary sign-in. Status does
+not return a lost credential. Reviews are partitioned by endpoint, verified
+issuer/subject and client profile; another account cannot recover them.
+
+`NativeSession.userId` and `personalPrefix` are available after registration,
+ordinary sign-in and session restoration. An existing UID-less Principal keeps
+both fields null until explicit registration; the app offers registration and
+does not guess a prefix or open the native data demo. UID creation does not
+rename existing offline partitions or discard uncertain mutations. Registering
+again preserves the UID and never restores a withdrawn Role assignment.
 
 The deterministic provider wire fixture and app lifecycle tests are source
 evidence. Real Google/Apple on Android/iOS remain four separate qualification

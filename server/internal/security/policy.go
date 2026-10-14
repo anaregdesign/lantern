@@ -1,161 +1,59 @@
+// Package security owns immutable security state, durable changes and current
+// authentication/admission. Pure permission evaluation belongs to authz.
 package security
 
-import (
-	"errors"
-	"fmt"
-	"sort"
-	"strings"
-	"unicode/utf8"
+import "github.com/anaregdesign/lantern/server/internal/authz"
+
+// Domain state and existing internal consumers share authz's exact types.
+// These aliases preserve the transition without a second policy model.
+type Action = authz.Action
+type ResourceKind = authz.ResourceKind
+type Effect = authz.Effect
+type PermissionRule = authz.PermissionRule
+type PrefixPair = authz.PrefixPair
+type Role = authz.Role
+type PolicyLimits = authz.PolicyLimits
+type CompiledPolicy = authz.CompiledPolicy
+type Access = authz.Access
+type Scope = authz.Scope
+type Range = authz.Range
+
+const (
+	VertexRead     = authz.VertexRead
+	VertexWrite    = authz.VertexWrite
+	VertexDelete   = authz.VertexDelete
+	EdgeRead       = authz.EdgeRead
+	EdgeCreate     = authz.EdgeCreate
+	EdgeAdd        = authz.EdgeAdd
+	EdgeWrite      = authz.EdgeWrite
+	EdgeDelete     = authz.EdgeDelete
+	Query          = authz.Query
+	CDCIdentity    = authz.CDCIdentity
+	CDCValue       = authz.CDCValue
+	Export         = authz.Export
+	ReceiptRead    = authz.ReceiptRead
+	OperationsRead = authz.OperationsRead
+	SchemaRead     = authz.SchemaRead
+	SecurityManage = authz.SecurityManage
+	DataResource   = authz.DataResource
+	GlobalResource = authz.GlobalResource
+	Allow          = authz.Allow
+	Deny           = authz.Deny
 )
 
 var (
-	ErrInvalidPolicy = errors.New("invalid Role policy")
-	ErrUnknownRole   = errors.New("unknown assigned Role")
+	ErrInvalidPolicy = authz.ErrInvalidPolicy
+	ErrUnknownRole   = authz.ErrUnknownRole
 )
 
-type prefixRules struct {
-	allow []string
-	deny  []string
-}
-
-type compiledRole struct {
-	data   map[Action]prefixRules
-	global map[Action]struct{ allow, deny bool }
-}
-
-// CompiledPolicy owns no mutable input references. Ranges and Role tables are
-// shared by all Principals observing this immutable revision.
-type CompiledPolicy struct {
-	roles          map[string]*compiledRole
-	maxAssignments int
-	scopeCache     *scopeCache
-}
-
 func CompileRoles(roles []Role, limits PolicyLimits) (*CompiledPolicy, error) {
-	if err := validateRoleBounds(roles, limits); err != nil {
-		return nil, ErrInvalidPolicy
-	}
-	policy := &CompiledPolicy{roles: make(map[string]*compiledRole, len(roles)),
-		maxAssignments: limits.MaxAssignments, scopeCache: newScopeCache()}
-	totalBytes := 0
-	for _, role := range roles {
-		if !validRoleID(role.ID) || role.ID == "cluster_replica" ||
-			!utf8.ValidString(role.Name) || len(role.Name) > 256 || len(role.Rules) > limits.MaxRules {
-			return nil, fmt.Errorf("%w: Role identity or limit", ErrInvalidPolicy)
-		}
-		if _, exists := policy.roles[role.ID]; exists {
-			return nil, fmt.Errorf("%w: duplicate Role", ErrInvalidPolicy)
-		}
-		compiled := &compiledRole{data: make(map[Action]prefixRules),
-			global: make(map[Action]struct{ allow, deny bool })}
-		ruleIDs := make(map[string]bool, len(role.Rules))
-		for _, rule := range role.Rules {
-			// Do not reinterpret obsolete Edge grants or pair selectors as
-			// broader Vertex authority when loading an older signed image.
-			if !grantableAction(rule.Action) || rule.Pair != nil {
-				return nil, fmt.Errorf("%w: obsolete Edge grant or pair selector", ErrInvalidPolicy)
-			}
-			if rule.ID != "" {
-				if !validRoleID(rule.ID) || ruleIDs[rule.ID] {
-					return nil, ErrInvalidPolicy
-				}
-				ruleIDs[rule.ID] = true
-			}
-			kind, known := actionResource(rule.Action)
-			if !known || rule.Resource != kind || (rule.Effect != Allow && rule.Effect != Deny) {
-				return nil, fmt.Errorf("%w: action, resource or effect", ErrInvalidPolicy)
-			}
-			if kind == GlobalResource {
-				if rule.Prefix != nil || rule.Pair != nil {
-					return nil, fmt.Errorf("%w: global selector", ErrInvalidPolicy)
-				}
-				flags := compiled.global[rule.Action]
-				if rule.Effect == Deny {
-					flags.deny = true
-				} else {
-					flags.allow = true
-				}
-				compiled.global[rule.Action] = flags
-				continue
-			}
-			if rule.Prefix == nil || !utf8.ValidString(*rule.Prefix) || len(*rule.Prefix) > limits.MaxPrefixBytes {
-				return nil, fmt.Errorf("%w: data prefix", ErrInvalidPolicy)
-			}
-			// Subtract before adding, so an adversarial bound cannot overflow.
-			if len(*rule.Prefix) > limits.MaxTotalBytes-totalBytes {
-				return nil, fmt.Errorf("%w: total prefix limit", ErrInvalidPolicy)
-			}
-			totalBytes += len(*rule.Prefix)
-			prefixes := compiled.data[rule.Action]
-			if rule.Effect == Deny {
-				prefixes.deny = append(prefixes.deny, *rule.Prefix)
-			} else {
-				prefixes.allow = append(prefixes.allow, *rule.Prefix)
-			}
-			compiled.data[rule.Action] = prefixes
-		}
-		for action, prefixes := range compiled.data {
-			prefixes.allow = disjointPrefixes(prefixes.allow)
-			prefixes.deny = disjointPrefixes(prefixes.deny)
-			compiled.data[action] = prefixes
-		}
-		policy.roles[role.ID] = compiled
-	}
-	return policy, nil
+	return authz.CompileRoles(roles, limits)
 }
-
-// Check allocation bounds before encoding any input or building a cache key.
+func DefaultPolicyLimits() PolicyLimits { return authz.DefaultPolicyLimits() }
 func validateRoleBounds(roles []Role, limits PolicyLimits) error {
-	if !limits.valid() || len(roles) > limits.MaxRoles {
-		return ErrInvalidPolicy
-	}
-	total := 0
-	for _, role := range roles {
-		if len(role.ID) > 64 || len(role.Name) > 256 || !utf8.ValidString(role.Name) || len(role.Rules) > limits.MaxRules {
-			return ErrInvalidPolicy
-		}
-		for _, rule := range role.Rules {
-			if len(rule.ID) > 64 || len(rule.Action) > 64 || len(rule.Resource) > 16 || len(rule.Effect) > 16 {
-				return ErrInvalidPolicy
-			}
-			if rule.Pair != nil {
-				for _, prefix := range []string{rule.Pair.Tail, rule.Pair.Head} {
-					if !utf8.ValidString(prefix) || len(prefix) > limits.MaxPrefixBytes || len(prefix) > limits.MaxTotalBytes-total {
-						return ErrInvalidPolicy
-					}
-					total += len(prefix)
-				}
-			}
-			if rule.Prefix != nil {
-				if !utf8.ValidString(*rule.Prefix) || len(*rule.Prefix) > limits.MaxPrefixBytes || len(*rule.Prefix) > limits.MaxTotalBytes-total {
-					return ErrInvalidPolicy
-				}
-				total += len(*rule.Prefix)
-			}
-		}
-	}
-	return nil
+	return authz.ValidateRoleBounds(roles, limits)
 }
-
-// Each effect is a union of prefix intervals. Sorting and removing covered
-// descendants makes a predecessor lookup sufficient, including empty prefix.
-func disjointPrefixes(prefixes []string) []string {
-	sort.Strings(prefixes)
-	n := 0
-	for _, prefix := range prefixes {
-		if n != 0 && strings.HasPrefix(prefix, prefixes[n-1]) {
-			continue
-		}
-		prefixes[n] = prefix
-		n++
-	}
-	return prefixes[:n:n]
-}
-
-func matchesPrefix(prefixes []string, key string) bool {
-	i := sort.SearchStrings(prefixes, key)
-	if i < len(prefixes) && prefixes[i] == key {
-		return true
-	}
-	return i > 0 && strings.HasPrefix(key, prefixes[i-1])
-}
+func validRoleID(id string) bool                        { return authz.ValidRoleID(id) }
+func grantableAction(action Action) bool                { return authz.GrantableAction(action) }
+func actionResource(action Action) (ResourceKind, bool) { return authz.ActionResource(action) }
+func edgeSelectorAction(action Action) bool             { return authz.EdgeSelectorAction(action) }

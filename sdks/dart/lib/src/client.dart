@@ -28,6 +28,8 @@ import 'gen/graph/v1/security.pb.dart' as $security;
 part 'security.dart';
 part 'native_auth.dart';
 part 'native_auth_models.dart';
+part 'native_registration.dart';
+part 'native_registration_models.dart';
 part 'changes.dart';
 part 'scoped_changes.dart';
 part 'crud.dart';

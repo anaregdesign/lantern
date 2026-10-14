@@ -31,6 +31,15 @@ abstract class LanternNativeAuthServiceBase extends $pb.GeneratedService {
       $pb.ServerContext ctx, $2.PrepareNativeLogoutRequest request);
   $async.Future<$2.ApplyNativeLogoutResponse> applyNativeLogout(
       $pb.ServerContext ctx, $2.ApplyNativeLogoutRequest request);
+  $async.Future<$2.BeginNativeRegistrationResponse> beginNativeRegistration(
+      $pb.ServerContext ctx, $2.BeginNativeRegistrationRequest request);
+  $async.Future<$2.PrepareNativeRegistrationResponse> prepareNativeRegistration(
+      $pb.ServerContext ctx, $2.PrepareNativeRegistrationRequest request);
+  $async.Future<$2.ApplyNativeRegistrationResponse> applyNativeRegistration(
+      $pb.ServerContext ctx, $2.ApplyNativeRegistrationRequest request);
+  $async.Future<$2.GetNativeRegistrationStatusResponse>
+      getNativeRegistrationStatus(
+          $pb.ServerContext ctx, $2.GetNativeRegistrationStatusRequest request);
 
   $pb.GeneratedMessage createRequest($core.String methodName) {
     switch (methodName) {
@@ -44,6 +53,14 @@ abstract class LanternNativeAuthServiceBase extends $pb.GeneratedService {
         return $2.PrepareNativeLogoutRequest();
       case 'ApplyNativeLogout':
         return $2.ApplyNativeLogoutRequest();
+      case 'BeginNativeRegistration':
+        return $2.BeginNativeRegistrationRequest();
+      case 'PrepareNativeRegistration':
+        return $2.PrepareNativeRegistrationRequest();
+      case 'ApplyNativeRegistration':
+        return $2.ApplyNativeRegistrationRequest();
+      case 'GetNativeRegistrationStatus':
+        return $2.GetNativeRegistrationStatusRequest();
       default:
         throw $core.ArgumentError('Unknown method: $methodName');
     }
@@ -64,6 +81,18 @@ abstract class LanternNativeAuthServiceBase extends $pb.GeneratedService {
             ctx, request as $2.PrepareNativeLogoutRequest);
       case 'ApplyNativeLogout':
         return applyNativeLogout(ctx, request as $2.ApplyNativeLogoutRequest);
+      case 'BeginNativeRegistration':
+        return beginNativeRegistration(
+            ctx, request as $2.BeginNativeRegistrationRequest);
+      case 'PrepareNativeRegistration':
+        return prepareNativeRegistration(
+            ctx, request as $2.PrepareNativeRegistrationRequest);
+      case 'ApplyNativeRegistration':
+        return applyNativeRegistration(
+            ctx, request as $2.ApplyNativeRegistrationRequest);
+      case 'GetNativeRegistrationStatus':
+        return getNativeRegistrationStatus(
+            ctx, request as $2.GetNativeRegistrationStatusRequest);
       default:
         throw $core.ArgumentError('Unknown method: $methodName');
     }

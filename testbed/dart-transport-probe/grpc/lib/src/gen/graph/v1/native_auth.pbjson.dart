@@ -231,6 +231,28 @@ const NativeSession$json = {
       '6': '.graph.v1.SecurityVersion',
       '10': 'version'
     },
+    {
+      '1': 'user_id',
+      '3': 9,
+      '4': 1,
+      '5': 9,
+      '9': 0,
+      '10': 'userId',
+      '17': true
+    },
+    {
+      '1': 'personal_prefix',
+      '3': 10,
+      '4': 1,
+      '5': 9,
+      '9': 1,
+      '10': 'personalPrefix',
+      '17': true
+    },
+  ],
+  '8': [
+    {'1': '_user_id'},
+    {'1': '_personal_prefix'},
   ],
 };
 
@@ -243,7 +265,9 @@ final $typed_data.Uint8List nativeSessionDescriptor = $convert.base64Decode(
     'KAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUglleHBpcmVzQXQSNwoJYXV0aF90aW1lGA'
     'YgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIIYXV0aFRpbWUSNgoIaWRlbnRpdHkY'
     'ByABKAsyGi5ncmFwaC52MS5TZWN1cml0eUlkZW50aXR5UghpZGVudGl0eRIzCgd2ZXJzaW9uGA'
-    'ggASgLMhkuZ3JhcGgudjEuU2VjdXJpdHlWZXJzaW9uUgd2ZXJzaW9u');
+    'ggASgLMhkuZ3JhcGgudjEuU2VjdXJpdHlWZXJzaW9uUgd2ZXJzaW9uEhwKB3VzZXJfaWQYCSAB'
+    'KAlIAFIGdXNlcklkiAEBEiwKD3BlcnNvbmFsX3ByZWZpeBgKIAEoCUgBUg5wZXJzb25hbFByZW'
+    'ZpeIgBAUIKCghfdXNlcl9pZEISChBfcGVyc29uYWxfcHJlZml4');
 
 @$core.Deprecated('Use completeNativeLoginResponseDescriptor instead')
 const CompleteNativeLoginResponse$json = {
@@ -384,3 +408,296 @@ final $typed_data.Uint8List applyNativeLogoutResponseDescriptor = $convert.base6
     'ChlBcHBseU5hdGl2ZUxvZ291dFJlc3BvbnNlEi4KE2NsZWFyX2xvY2FsX3Nlc3Npb24YASABKA'
     'hSEWNsZWFyTG9jYWxTZXNzaW9uEkwKDmN1cnJlbnRfcmVzdWx0GAIgASgLMiUuZ3JhcGgudjEu'
     'Q3VycmVudFNlY3VyaXR5Q2hhbmdlUmVzdWx0Ug1jdXJyZW50UmVzdWx0');
+
+@$core.Deprecated('Use nativeRegistrationReviewDescriptor instead')
+const NativeRegistrationReview$json = {
+  '1': 'NativeRegistrationReview',
+  '2': [
+    {
+      '1': 'profile',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.CurrentAuthorityProfile',
+      '10': 'profile'
+    },
+    {
+      '1': 'expected_cut',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.CurrentSemanticCut',
+      '10': 'expectedCut'
+    },
+    {
+      '1': 'change_id',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.CurrentSecurityChangeID',
+      '10': 'changeId'
+    },
+    {
+      '1': 'actor',
+      '3': 4,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityIdentity',
+      '10': 'actor'
+    },
+    {'1': 'intent_digest', '3': 5, '4': 1, '5': 12, '10': 'intentDigest'},
+    {'1': 'user_id', '3': 6, '4': 1, '5': 9, '10': 'userId'},
+    {'1': 'client_profile_id', '3': 7, '4': 1, '5': 9, '10': 'clientProfileId'},
+    {
+      '1': 'issuer_config_revision',
+      '3': 8,
+      '4': 1,
+      '5': 4,
+      '10': 'issuerConfigRevision'
+    },
+  ],
+};
+
+/// Descriptor for `NativeRegistrationReview`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List nativeRegistrationReviewDescriptor = $convert.base64Decode(
+    'ChhOYXRpdmVSZWdpc3RyYXRpb25SZXZpZXcSOwoHcHJvZmlsZRgBIAEoCzIhLmdyYXBoLnYxLk'
+    'N1cnJlbnRBdXRob3JpdHlQcm9maWxlUgdwcm9maWxlEj8KDGV4cGVjdGVkX2N1dBgCIAEoCzIc'
+    'LmdyYXBoLnYxLkN1cnJlbnRTZW1hbnRpY0N1dFILZXhwZWN0ZWRDdXQSPgoJY2hhbmdlX2lkGA'
+    'MgASgLMiEuZ3JhcGgudjEuQ3VycmVudFNlY3VyaXR5Q2hhbmdlSURSCGNoYW5nZUlkEjAKBWFj'
+    'dG9yGAQgASgLMhouZ3JhcGgudjEuU2VjdXJpdHlJZGVudGl0eVIFYWN0b3ISIwoNaW50ZW50X2'
+    'RpZ2VzdBgFIAEoDFIMaW50ZW50RGlnZXN0EhcKB3VzZXJfaWQYBiABKAlSBnVzZXJJZBIqChFj'
+    'bGllbnRfcHJvZmlsZV9pZBgHIAEoCVIPY2xpZW50UHJvZmlsZUlkEjQKFmlzc3Vlcl9jb25maW'
+    'dfcmV2aXNpb24YCCABKARSFGlzc3VlckNvbmZpZ1JldmlzaW9u');
+
+@$core.Deprecated('Use beginNativeRegistrationRequestDescriptor instead')
+const BeginNativeRegistrationRequest$json = {
+  '1': 'BeginNativeRegistrationRequest',
+  '2': [
+    {'1': 'issuer', '3': 1, '4': 1, '5': 9, '10': 'issuer'},
+    {'1': 'client_profile_id', '3': 2, '4': 1, '5': 9, '10': 'clientProfileId'},
+    {
+      '1': 'recovery_review',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.NativeRegistrationReview',
+      '10': 'recoveryReview'
+    },
+  ],
+};
+
+/// Descriptor for `BeginNativeRegistrationRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List beginNativeRegistrationRequestDescriptor =
+    $convert.base64Decode(
+        'Ch5CZWdpbk5hdGl2ZVJlZ2lzdHJhdGlvblJlcXVlc3QSFgoGaXNzdWVyGAEgASgJUgZpc3N1ZX'
+        'ISKgoRY2xpZW50X3Byb2ZpbGVfaWQYAiABKAlSD2NsaWVudFByb2ZpbGVJZBJLCg9yZWNvdmVy'
+        'eV9yZXZpZXcYAyABKAsyIi5ncmFwaC52MS5OYXRpdmVSZWdpc3RyYXRpb25SZXZpZXdSDnJlY2'
+        '92ZXJ5UmV2aWV3');
+
+@$core.Deprecated('Use beginNativeRegistrationResponseDescriptor instead')
+const BeginNativeRegistrationResponse$json = {
+  '1': 'BeginNativeRegistrationResponse',
+  '2': [
+    {
+      '1': 'attempt',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.BeginNativeLoginResponse',
+      '10': 'attempt'
+    },
+  ],
+};
+
+/// Descriptor for `BeginNativeRegistrationResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List beginNativeRegistrationResponseDescriptor =
+    $convert.base64Decode(
+        'Ch9CZWdpbk5hdGl2ZVJlZ2lzdHJhdGlvblJlc3BvbnNlEjwKB2F0dGVtcHQYASABKAsyIi5ncm'
+        'FwaC52MS5CZWdpbk5hdGl2ZUxvZ2luUmVzcG9uc2VSB2F0dGVtcHQ=');
+
+@$core.Deprecated('Use prepareNativeRegistrationRequestDescriptor instead')
+const PrepareNativeRegistrationRequest$json = {
+  '1': 'PrepareNativeRegistrationRequest',
+  '2': [
+    {'1': 'attempt_id', '3': 1, '4': 1, '5': 9, '10': 'attemptId'},
+    {
+      '1': 'completion_secret',
+      '3': 2,
+      '4': 1,
+      '5': 9,
+      '10': 'completionSecret'
+    },
+    {
+      '1': 'google',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.GoogleNativeCredential',
+      '9': 0,
+      '10': 'google'
+    },
+    {
+      '1': 'apple',
+      '3': 4,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.AppleNativeCredential',
+      '9': 0,
+      '10': 'apple'
+    },
+    {
+      '1': 'recovery_review',
+      '3': 5,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.NativeRegistrationReview',
+      '10': 'recoveryReview'
+    },
+  ],
+  '8': [
+    {'1': 'provider'},
+  ],
+};
+
+/// Descriptor for `PrepareNativeRegistrationRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List prepareNativeRegistrationRequestDescriptor = $convert.base64Decode(
+    'CiBQcmVwYXJlTmF0aXZlUmVnaXN0cmF0aW9uUmVxdWVzdBIdCgphdHRlbXB0X2lkGAEgASgJUg'
+    'lhdHRlbXB0SWQSKwoRY29tcGxldGlvbl9zZWNyZXQYAiABKAlSEGNvbXBsZXRpb25TZWNyZXQS'
+    'OgoGZ29vZ2xlGAMgASgLMiAuZ3JhcGgudjEuR29vZ2xlTmF0aXZlQ3JlZGVudGlhbEgAUgZnb2'
+    '9nbGUSNwoFYXBwbGUYBCABKAsyHy5ncmFwaC52MS5BcHBsZU5hdGl2ZUNyZWRlbnRpYWxIAFIF'
+    'YXBwbGUSSwoPcmVjb3ZlcnlfcmV2aWV3GAUgASgLMiIuZ3JhcGgudjEuTmF0aXZlUmVnaXN0cm'
+    'F0aW9uUmV2aWV3Ug5yZWNvdmVyeVJldmlld0IKCghwcm92aWRlcg==');
+
+@$core.Deprecated('Use prepareNativeRegistrationResponseDescriptor instead')
+const PrepareNativeRegistrationResponse$json = {
+  '1': 'PrepareNativeRegistrationResponse',
+  '2': [
+    {
+      '1': 'review',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.NativeRegistrationReview',
+      '10': 'review'
+    },
+    {'1': 'proof', '3': 2, '4': 1, '5': 9, '10': 'proof'},
+    {
+      '1': 'expires_at',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'expiresAt'
+    },
+    {'1': 'affinity', '3': 4, '4': 1, '5': 9, '10': 'affinity'},
+  ],
+};
+
+/// Descriptor for `PrepareNativeRegistrationResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List prepareNativeRegistrationResponseDescriptor =
+    $convert.base64Decode(
+        'CiFQcmVwYXJlTmF0aXZlUmVnaXN0cmF0aW9uUmVzcG9uc2USOgoGcmV2aWV3GAEgASgLMiIuZ3'
+        'JhcGgudjEuTmF0aXZlUmVnaXN0cmF0aW9uUmV2aWV3UgZyZXZpZXcSFAoFcHJvb2YYAiABKAlS'
+        'BXByb29mEjkKCmV4cGlyZXNfYXQYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUg'
+        'lleHBpcmVzQXQSGgoIYWZmaW5pdHkYBCABKAlSCGFmZmluaXR5');
+
+@$core.Deprecated('Use applyNativeRegistrationRequestDescriptor instead')
+const ApplyNativeRegistrationRequest$json = {
+  '1': 'ApplyNativeRegistrationRequest',
+  '2': [
+    {
+      '1': 'review',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.NativeRegistrationReview',
+      '10': 'review'
+    },
+    {'1': 'proof', '3': 2, '4': 1, '5': 9, '10': 'proof'},
+  ],
+};
+
+/// Descriptor for `ApplyNativeRegistrationRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List applyNativeRegistrationRequestDescriptor =
+    $convert.base64Decode(
+        'Ch5BcHBseU5hdGl2ZVJlZ2lzdHJhdGlvblJlcXVlc3QSOgoGcmV2aWV3GAEgASgLMiIuZ3JhcG'
+        'gudjEuTmF0aXZlUmVnaXN0cmF0aW9uUmV2aWV3UgZyZXZpZXcSFAoFcHJvb2YYAiABKAlSBXBy'
+        'b29m');
+
+@$core.Deprecated('Use applyNativeRegistrationResponseDescriptor instead')
+const ApplyNativeRegistrationResponse$json = {
+  '1': 'ApplyNativeRegistrationResponse',
+  '2': [
+    {
+      '1': 'current_result',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.CurrentSecurityChangeResult',
+      '10': 'currentResult'
+    },
+    {'1': 'credential', '3': 2, '4': 1, '5': 9, '10': 'credential'},
+    {
+      '1': 'session',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.NativeSession',
+      '10': 'session'
+    },
+    {'1': 'sign_in_required', '3': 4, '4': 1, '5': 8, '10': 'signInRequired'},
+  ],
+};
+
+/// Descriptor for `ApplyNativeRegistrationResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List applyNativeRegistrationResponseDescriptor = $convert.base64Decode(
+    'Ch9BcHBseU5hdGl2ZVJlZ2lzdHJhdGlvblJlc3BvbnNlEkwKDmN1cnJlbnRfcmVzdWx0GAEgAS'
+    'gLMiUuZ3JhcGgudjEuQ3VycmVudFNlY3VyaXR5Q2hhbmdlUmVzdWx0Ug1jdXJyZW50UmVzdWx0'
+    'Eh4KCmNyZWRlbnRpYWwYAiABKAlSCmNyZWRlbnRpYWwSMQoHc2Vzc2lvbhgDIAEoCzIXLmdyYX'
+    'BoLnYxLk5hdGl2ZVNlc3Npb25SB3Nlc3Npb24SKAoQc2lnbl9pbl9yZXF1aXJlZBgEIAEoCFIO'
+    'c2lnbkluUmVxdWlyZWQ=');
+
+@$core.Deprecated('Use getNativeRegistrationStatusRequestDescriptor instead')
+const GetNativeRegistrationStatusRequest$json = {
+  '1': 'GetNativeRegistrationStatusRequest',
+  '2': [
+    {
+      '1': 'review',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.NativeRegistrationReview',
+      '10': 'review'
+    },
+    {'1': 'proof', '3': 2, '4': 1, '5': 9, '10': 'proof'},
+  ],
+};
+
+/// Descriptor for `GetNativeRegistrationStatusRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getNativeRegistrationStatusRequestDescriptor =
+    $convert.base64Decode(
+        'CiJHZXROYXRpdmVSZWdpc3RyYXRpb25TdGF0dXNSZXF1ZXN0EjoKBnJldmlldxgBIAEoCzIiLm'
+        'dyYXBoLnYxLk5hdGl2ZVJlZ2lzdHJhdGlvblJldmlld1IGcmV2aWV3EhQKBXByb29mGAIgASgJ'
+        'UgVwcm9vZg==');
+
+@$core.Deprecated('Use getNativeRegistrationStatusResponseDescriptor instead')
+const GetNativeRegistrationStatusResponse$json = {
+  '1': 'GetNativeRegistrationStatusResponse',
+  '2': [
+    {
+      '1': 'current_result',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.CurrentSecurityChangeResult',
+      '10': 'currentResult'
+    },
+  ],
+};
+
+/// Descriptor for `GetNativeRegistrationStatusResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getNativeRegistrationStatusResponseDescriptor =
+    $convert.base64Decode(
+        'CiNHZXROYXRpdmVSZWdpc3RyYXRpb25TdGF0dXNSZXNwb25zZRJMCg5jdXJyZW50X3Jlc3VsdB'
+        'gBIAEoCzIlLmdyYXBoLnYxLkN1cnJlbnRTZWN1cml0eUNoYW5nZVJlc3VsdFINY3VycmVudFJl'
+        'c3VsdA==');

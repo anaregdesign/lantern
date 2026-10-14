@@ -57,6 +57,9 @@ const (
 	// LanternSecurityServiceGetUserProcedure is the fully-qualified name of the
 	// LanternSecurityService's GetUser RPC.
 	LanternSecurityServiceGetUserProcedure = "/graph.v1.LanternSecurityService/GetUser"
+	// LanternSecurityServiceGetRegistrationPolicyProcedure is the fully-qualified name of the
+	// LanternSecurityService's GetRegistrationPolicy RPC.
+	LanternSecurityServiceGetRegistrationPolicyProcedure = "/graph.v1.LanternSecurityService/GetRegistrationPolicy"
 	// LanternSecurityServiceListRoleAssignmentsProcedure is the fully-qualified name of the
 	// LanternSecurityService's ListRoleAssignments RPC.
 	LanternSecurityServiceListRoleAssignmentsProcedure = "/graph.v1.LanternSecurityService/ListRoleAssignments"
@@ -102,6 +105,7 @@ type LanternSecurityServiceClient interface {
 	GetRole(context.Context, *connect.Request[v1.GetRoleRequest]) (*connect.Response[v1.GetRoleResponse], error)
 	ListUsers(context.Context, *connect.Request[v1.ListUsersRequest]) (*connect.Response[v1.ListUsersResponse], error)
 	GetUser(context.Context, *connect.Request[v1.GetUserRequest]) (*connect.Response[v1.GetUserResponse], error)
+	GetRegistrationPolicy(context.Context, *connect.Request[v1.GetRegistrationPolicyRequest]) (*connect.Response[v1.GetRegistrationPolicyResponse], error)
 	ListRoleAssignments(context.Context, *connect.Request[v1.ListRoleAssignmentsRequest]) (*connect.Response[v1.ListRoleAssignmentsResponse], error)
 	ListSecurityAudit(context.Context, *connect.Request[v1.ListSecurityAuditRequest]) (*connect.Response[v1.ListSecurityAuditResponse], error)
 	GetRoleTemplates(context.Context, *connect.Request[v1.GetRoleTemplatesRequest]) (*connect.Response[v1.GetRoleTemplatesResponse], error)
@@ -175,6 +179,12 @@ func NewLanternSecurityServiceClient(httpClient connect.HTTPClient, baseURL stri
 			httpClient,
 			baseURL+LanternSecurityServiceGetUserProcedure,
 			connect.WithSchema(lanternSecurityServiceMethods.ByName("GetUser")),
+			connect.WithClientOptions(opts...),
+		),
+		getRegistrationPolicy: connect.NewClient[v1.GetRegistrationPolicyRequest, v1.GetRegistrationPolicyResponse](
+			httpClient,
+			baseURL+LanternSecurityServiceGetRegistrationPolicyProcedure,
+			connect.WithSchema(lanternSecurityServiceMethods.ByName("GetRegistrationPolicy")),
 			connect.WithClientOptions(opts...),
 		),
 		listRoleAssignments: connect.NewClient[v1.ListRoleAssignmentsRequest, v1.ListRoleAssignmentsResponse](
@@ -256,6 +266,7 @@ type lanternSecurityServiceClient struct {
 	getRole                          *connect.Client[v1.GetRoleRequest, v1.GetRoleResponse]
 	listUsers                        *connect.Client[v1.ListUsersRequest, v1.ListUsersResponse]
 	getUser                          *connect.Client[v1.GetUserRequest, v1.GetUserResponse]
+	getRegistrationPolicy            *connect.Client[v1.GetRegistrationPolicyRequest, v1.GetRegistrationPolicyResponse]
 	listRoleAssignments              *connect.Client[v1.ListRoleAssignmentsRequest, v1.ListRoleAssignmentsResponse]
 	listSecurityAudit                *connect.Client[v1.ListSecurityAuditRequest, v1.ListSecurityAuditResponse]
 	getRoleTemplates                 *connect.Client[v1.GetRoleTemplatesRequest, v1.GetRoleTemplatesResponse]
@@ -307,6 +318,11 @@ func (c *lanternSecurityServiceClient) ListUsers(ctx context.Context, req *conne
 // GetUser calls graph.v1.LanternSecurityService.GetUser.
 func (c *lanternSecurityServiceClient) GetUser(ctx context.Context, req *connect.Request[v1.GetUserRequest]) (*connect.Response[v1.GetUserResponse], error) {
 	return c.getUser.CallUnary(ctx, req)
+}
+
+// GetRegistrationPolicy calls graph.v1.LanternSecurityService.GetRegistrationPolicy.
+func (c *lanternSecurityServiceClient) GetRegistrationPolicy(ctx context.Context, req *connect.Request[v1.GetRegistrationPolicyRequest]) (*connect.Response[v1.GetRegistrationPolicyResponse], error) {
+	return c.getRegistrationPolicy.CallUnary(ctx, req)
 }
 
 // ListRoleAssignments calls graph.v1.LanternSecurityService.ListRoleAssignments.
@@ -377,6 +393,7 @@ type LanternSecurityServiceHandler interface {
 	GetRole(context.Context, *connect.Request[v1.GetRoleRequest]) (*connect.Response[v1.GetRoleResponse], error)
 	ListUsers(context.Context, *connect.Request[v1.ListUsersRequest]) (*connect.Response[v1.ListUsersResponse], error)
 	GetUser(context.Context, *connect.Request[v1.GetUserRequest]) (*connect.Response[v1.GetUserResponse], error)
+	GetRegistrationPolicy(context.Context, *connect.Request[v1.GetRegistrationPolicyRequest]) (*connect.Response[v1.GetRegistrationPolicyResponse], error)
 	ListRoleAssignments(context.Context, *connect.Request[v1.ListRoleAssignmentsRequest]) (*connect.Response[v1.ListRoleAssignmentsResponse], error)
 	ListSecurityAudit(context.Context, *connect.Request[v1.ListSecurityAuditRequest]) (*connect.Response[v1.ListSecurityAuditResponse], error)
 	GetRoleTemplates(context.Context, *connect.Request[v1.GetRoleTemplatesRequest]) (*connect.Response[v1.GetRoleTemplatesResponse], error)
@@ -446,6 +463,12 @@ func NewLanternSecurityServiceHandler(svc LanternSecurityServiceHandler, opts ..
 		LanternSecurityServiceGetUserProcedure,
 		svc.GetUser,
 		connect.WithSchema(lanternSecurityServiceMethods.ByName("GetUser")),
+		connect.WithHandlerOptions(opts...),
+	)
+	lanternSecurityServiceGetRegistrationPolicyHandler := connect.NewUnaryHandler(
+		LanternSecurityServiceGetRegistrationPolicyProcedure,
+		svc.GetRegistrationPolicy,
+		connect.WithSchema(lanternSecurityServiceMethods.ByName("GetRegistrationPolicy")),
 		connect.WithHandlerOptions(opts...),
 	)
 	lanternSecurityServiceListRoleAssignmentsHandler := connect.NewUnaryHandler(
@@ -532,6 +555,8 @@ func NewLanternSecurityServiceHandler(svc LanternSecurityServiceHandler, opts ..
 			lanternSecurityServiceListUsersHandler.ServeHTTP(w, r)
 		case LanternSecurityServiceGetUserProcedure:
 			lanternSecurityServiceGetUserHandler.ServeHTTP(w, r)
+		case LanternSecurityServiceGetRegistrationPolicyProcedure:
+			lanternSecurityServiceGetRegistrationPolicyHandler.ServeHTTP(w, r)
 		case LanternSecurityServiceListRoleAssignmentsProcedure:
 			lanternSecurityServiceListRoleAssignmentsHandler.ServeHTTP(w, r)
 		case LanternSecurityServiceListSecurityAuditProcedure:
@@ -593,6 +618,10 @@ func (UnimplementedLanternSecurityServiceHandler) ListUsers(context.Context, *co
 
 func (UnimplementedLanternSecurityServiceHandler) GetUser(context.Context, *connect.Request[v1.GetUserRequest]) (*connect.Response[v1.GetUserResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternSecurityService.GetUser is not implemented"))
+}
+
+func (UnimplementedLanternSecurityServiceHandler) GetRegistrationPolicy(context.Context, *connect.Request[v1.GetRegistrationPolicyRequest]) (*connect.Response[v1.GetRegistrationPolicyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("graph.v1.LanternSecurityService.GetRegistrationPolicy is not implemented"))
 }
 
 func (UnimplementedLanternSecurityServiceHandler) ListRoleAssignments(context.Context, *connect.Request[v1.ListRoleAssignmentsRequest]) (*connect.Response[v1.ListRoleAssignmentsResponse], error) {

@@ -91,6 +91,13 @@ class LanternSecurityServiceClient extends $grpc.Client {
     return $createUnaryCall(_$getUser, request, options: options);
   }
 
+  $grpc.ResponseFuture<$0.GetRegistrationPolicyResponse> getRegistrationPolicy(
+    $0.GetRegistrationPolicyRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getRegistrationPolicy, request, options: options);
+  }
+
   $grpc.ResponseFuture<$0.ListRoleAssignmentsResponse> listRoleAssignments(
     $0.ListRoleAssignmentsRequest request, {
     $grpc.CallOptions? options,
@@ -221,6 +228,11 @@ class LanternSecurityServiceClient extends $grpc.Client {
           '/graph.v1.LanternSecurityService/GetUser',
           ($0.GetUserRequest value) => value.writeToBuffer(),
           $0.GetUserResponse.fromBuffer);
+  static final _$getRegistrationPolicy = $grpc.ClientMethod<
+          $0.GetRegistrationPolicyRequest, $0.GetRegistrationPolicyResponse>(
+      '/graph.v1.LanternSecurityService/GetRegistrationPolicy',
+      ($0.GetRegistrationPolicyRequest value) => value.writeToBuffer(),
+      $0.GetRegistrationPolicyResponse.fromBuffer);
   static final _$listRoleAssignments = $grpc.ClientMethod<
           $0.ListRoleAssignmentsRequest, $0.ListRoleAssignmentsResponse>(
       '/graph.v1.LanternSecurityService/ListRoleAssignments',
@@ -349,6 +361,15 @@ abstract class LanternSecurityServiceBase extends $grpc.Service {
         false,
         ($core.List<$core.int> value) => $0.GetUserRequest.fromBuffer(value),
         ($0.GetUserResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.GetRegistrationPolicyRequest,
+            $0.GetRegistrationPolicyResponse>(
+        'GetRegistrationPolicy',
+        getRegistrationPolicy_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.GetRegistrationPolicyRequest.fromBuffer(value),
+        ($0.GetRegistrationPolicyResponse value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.ListRoleAssignmentsRequest,
             $0.ListRoleAssignmentsResponse>(
         'ListRoleAssignments',
@@ -517,6 +538,15 @@ abstract class LanternSecurityServiceBase extends $grpc.Service {
 
   $async.Future<$0.GetUserResponse> getUser(
       $grpc.ServiceCall call, $0.GetUserRequest request);
+
+  $async.Future<$0.GetRegistrationPolicyResponse> getRegistrationPolicy_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.GetRegistrationPolicyRequest> $request) async {
+    return getRegistrationPolicy($call, await $request);
+  }
+
+  $async.Future<$0.GetRegistrationPolicyResponse> getRegistrationPolicy(
+      $grpc.ServiceCall call, $0.GetRegistrationPolicyRequest request);
 
   $async.Future<$0.ListRoleAssignmentsResponse> listRoleAssignments_Pre(
       $grpc.ServiceCall $call,

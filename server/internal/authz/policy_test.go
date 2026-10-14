@@ -1,4 +1,4 @@
-package security
+package authz
 
 import (
 	"errors"
@@ -90,6 +90,77 @@ func FuzzPrefixPolicy(f *testing.F) {
 		want := referenceAllows(roles, VertexRead, key)
 		if got := access.Allows(VertexRead, key); got != want {
 			t.Fatalf("key %q: compiled=%v literal=%v", key, got, want)
+		}
+	})
+}
+
+func TestCompileRolesUIDSelectorValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		rule  PermissionRule
+		limit func(*PolicyLimits)
+	}{
+		{"empty before", uidRule(Allow, VertexRead, "", ":"), nil},
+		{"empty after", uidRule(Allow, VertexRead, "users:", ""), nil},
+		{"before delimiter", uidRule(Allow, VertexRead, "users", ":"), nil},
+		{"after delimiter", uidRule(Allow, VertexRead, "users:", "suffix"), nil},
+		{"before UTF8", uidRule(Allow, VertexRead, "\xff:", ":"), nil},
+		{"after UTF8", uidRule(Allow, VertexRead, "users:", ":\xff"), nil},
+		{"expanded length", uidRule(Allow, VertexRead, strings.Repeat("x", 991)+":", ":"), nil},
+		{"operator prefix cap", uidRule(Allow, VertexRead, "users:", ":"), func(l *PolicyLimits) { l.MaxPrefixBytes = 38 }},
+		{"operator total cap", uidRule(Allow, VertexRead, "users:", ":"), func(l *PolicyLimits) { l.MaxTotalBytes = 38 }},
+		{"global UID selector", func() PermissionRule {
+			r := uidRule(Allow, SecurityManage, "users:", ":")
+			r.Resource = GlobalResource
+			return r
+		}(), nil},
+		{"competing literal", func() PermissionRule {
+			r := uidRule(Allow, VertexRead, "users:", ":")
+			s := ""
+			r.Prefix = &s
+			return r
+		}(), nil},
+		{"retired pair", func() PermissionRule {
+			r := uidRule(Allow, VertexRead, "users:", ":")
+			r.Pair = &PrefixPair{}
+			return r
+		}(), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			limits := DefaultPolicyLimits()
+			if tc.limit != nil {
+				tc.limit(&limits)
+			}
+			if _, err := CompileRoles([]Role{{ID: "r", Rules: []PermissionRule{tc.rule}}}, limits); !errors.Is(err, ErrInvalidPolicy) {
+				t.Fatal("invalid selector admitted", err)
+			}
+		})
+	}
+	t.Run("expanded total across rules", func(t *testing.T) {
+		limits := DefaultPolicyLimits()
+		limits.MaxTotalBytes = 77
+		if _, err := CompileRoles([]Role{{ID: "r", Rules: []PermissionRule{uidRule(Allow, VertexRead, "users:", ":"), uidRule(Allow, VertexWrite, "users:", ":")}}}, limits); !errors.Is(err, ErrInvalidPolicy) {
+			t.Fatal(err)
+		}
+	})
+	t.Run("exact byte bound and detached input", func(t *testing.T) {
+		rule := uidRule(Allow, VertexRead, strings.Repeat("x", 990)+":", ":")
+		policy, err := CompileRoles([]Role{{ID: "r", Rules: []PermissionRule{rule}}}, DefaultPolicyLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		access, err := policy.BindRoles([]string{"r"}, SubjectBindings{testUIDA})
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := rule.PrincipalUIDPrefix.bind(SubjectBindings{testUIDA}) + "a"
+		rule.PrincipalUIDPrefix.LiteralBefore = "evil:"
+		if !access.Allows(VertexRead, key) || !access.Scope(VertexRead).Contains(key) {
+			t.Fatal("caller selector mutation escaped")
+		}
+		allowed, matches, err := access.Explain(VertexRead, &key)
+		if err != nil || !allowed || len(matches) != 1 {
+			t.Fatal("explain retained caller input", err)
 		}
 	})
 }

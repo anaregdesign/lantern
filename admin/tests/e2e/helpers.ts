@@ -114,6 +114,7 @@ export async function securityUI(
     denied?: boolean;
     reauthentication?: boolean;
     roles?: Array<Record<string, unknown>>;
+    uidRole?: boolean;
   } = {},
 ) {
   const calls: Array<{
@@ -242,26 +243,44 @@ export async function securityUI(
       if (method === "ListRoles")
         return json({
           version,
-          roles: [
-            {
-              id: "security_admin",
-              name: "Security administrator",
-              envOwned: true,
-              rules: [],
-            },
-            {
-              id: "reader",
-              name: "Reader",
-              rules: [
+          roles: options.uidRole
+            ? [
                 {
-                  id: "read",
-                  action: "SECURITY_ACTION_VERTEX_READ",
-                  effect: "SECURITY_EFFECT_ALLOW",
-                  prefix: "tenant:",
+                  id: "personal_user",
+                  name: "Personal user",
+                  rules: [
+                    {
+                      id: "read",
+                      action: "SECURITY_ACTION_VERTEX_READ",
+                      effect: "SECURITY_EFFECT_ALLOW",
+                      principalUidPrefix: {
+                        literalBefore: "users:",
+                        literalAfter: ":",
+                      },
+                    },
+                  ],
+                },
+              ]
+            : [
+                {
+                  id: "security_admin",
+                  name: "Security administrator",
+                  envOwned: true,
+                  rules: [],
+                },
+                {
+                  id: "reader",
+                  name: "Reader",
+                  rules: [
+                    {
+                      id: "read",
+                      action: "SECURITY_ACTION_VERTEX_READ",
+                      effect: "SECURITY_EFFECT_ALLOW",
+                      prefix: "tenant:",
+                    },
+                  ],
                 },
               ],
-            },
-          ],
         });
       if (method === "ListUsers")
         return json({

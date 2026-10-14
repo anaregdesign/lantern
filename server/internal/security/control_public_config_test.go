@@ -290,6 +290,11 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	}
 	image.Roles = append(image.Roles, role)
 	image.Principals[0].Assignments = append(image.Principals[0].Assignments, RoleAssignment{RoleID: role.ID})
+	if os.Getenv("LANTERN_CURRENT_PUBLIC_SDK4") == "1" {
+		// Explicit installed-ID fixture for public SDK self inspection; signup
+		// itself is qualified separately by the native registration wire gate.
+		image.Principals[0].UserUID = "11111111111111111111111111111111"
+	}
 	if os.Getenv("LANTERN_NATIVE_LOGIN_GATE") == "1" {
 		nativeRole := role
 		nativeRole.ID = "wire_native"
@@ -298,6 +303,13 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 			Issuer{URL: GoogleIssuer, Enabled: true, ConfigRevision: 1, Algorithms: []string{"RS256"}, NativeClients: []NativeClient{{ID: "google", Kind: GoogleIDToken, ClientID: "fixture.apps.googleusercontent.com", Presenters: []string{"fixture-android", "fixture-ios"}, ServiceOrigin: "https://native.example"}}},
 			Issuer{URL: AppleIssuer, Enabled: true, ConfigRevision: 1, Algorithms: []string{"RS256"}, NativeClients: []NativeClient{{ID: "apple_ios", Kind: AppleNative, ClientID: "com.example.native", ServiceOrigin: "https://native.example", SecretRef: "apple_ios"}, {ID: "apple_web", Kind: AppleAndroidWeb, ClientID: "com.example.web", ServiceOrigin: "https://native.example", SecretRef: "apple_web", RedirectURI: "https://native.example/auth/native/apple/callback/apple_web", AndroidPackage: "com.example.native"}}},
 		)
+		// Explicit fixture-only signup configuration. Production remains absent/disabled.
+		image.Roles = append(image.Roles, PersonalUserRole())
+		image.RegistrationPolicy = &RegistrationPolicy{Version: RegistrationPolicyVersion, Enabled: true, RoleID: PersonalUserRoleID, Profiles: []RegistrationProfile{
+			{GoogleIssuer, "google"}, {AppleIssuer, "apple_ios"}, {AppleIssuer, "apple_web"},
+		}}
+		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: GoogleIssuer, Subject: "registration-legacy"}, State: Active, Assignments: []RoleAssignment{{RoleID: nativeRole.ID}}})
+
 		for _, issuer := range []string{GoogleIssuer, AppleIssuer} {
 			image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuer, Subject: "native-user"}, State: Active, Assignments: []RoleAssignment{{RoleID: nativeRole.ID}}})
 		}

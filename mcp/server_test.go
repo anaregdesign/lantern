@@ -274,7 +274,7 @@ func TestToolSurface(t *testing.T) {
 	t.Setenv("LANTERN_MCP_PROFILE", "memory")
 	want := []string{
 		"ping", "announce", "list_agents", "track", "whats_happening",
-		"claim", "release", "list_claims", "post_note", "context_stats",
+		"claim", "release", "list_claims", "post_note", "context_stats", "current_user",
 	}
 	fake := &fakeLantern{}
 	r := mustDefaultResolver(t)

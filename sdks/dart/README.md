@@ -543,3 +543,34 @@ Normal Create never automatically retries an uncertain response.
 original operation ID's issuance time; status preserves `EdgeCreateReceipt`.
 Keep original IDs/inputs for reconciliation. HA rejects this new family pending
 a cluster-wide conditional-creation guarantee.
+
+### Explicit registration and personal data
+
+`await client.getCurrentUserId()` reads the authenticated Principal's immutable
+Server-assigned ID without a data/admin Role. `null` means an authenticated UID-less
+legacy or machine Principal; missing authentication is an error. The read makes
+one attempt with the current TokenProvider credential and never returns a cached
+prior account's ID. `NativeSession.userId` carries the same installed value after
+ordinary login or session restoration. See the [shared client contract](https://github.com/anaregdesign/lantern/blob/main/docs/native-user-registration.md#client-use-and-installation-boundary).
+
+
+For an operator-enabled native profile, call `beginNativeRegistration`, pass its
+configuration to the application-owned Google/Apple plugin, and call
+`prepareNativeRegistration`. Persist `prepared.review.toBytes()` **before**
+`applyNativeRegistration(prepared)`. Keep the proof and provider inputs in memory
+only. The returned `sessionCredential`, when present, uses the existing
+`TokenProvider` and app-owned secure storage.
+
+`NativeSession.userId` and `personalPrefix` come from the installed Principal.
+They are available in login/registration session results and `getNativeSession()`
+after restoration. They are null for UID-less legacy users. Use, for example,
+`${session.personalPrefix}profile:name` as a logical data key; do not add `data:`.
+The OIDC `principal.subject` is a separate identifier. Returned metadata does not
+replace current server authorization.
+
+After uncertain registration, retain the original review and authenticate the
+same account with `beginNativeRegistration(recoveryReview: original, ...)`.
+Prepare the recovery proof and call `getNativeRegistrationStatus`; it never
+replays registration or recovers a raw session. Unknown remains unresolved;
+confirmed registration without a session requires ordinary sign-in. See
+[`docs/native-user-registration.md`](https://github.com/anaregdesign/lantern/blob/main/docs/native-user-registration.md).

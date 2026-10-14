@@ -5,6 +5,14 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('native helper preserves bounded cleanup failures', () async {
+    final result = await Process.run('python3', [
+      '-B',
+      'tool/ios_smoke_attach_test.py',
+    ]);
+    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+  });
+
   late Directory sandbox;
   late File fakeFlutter;
   late File fakeXcrun;
@@ -79,6 +87,19 @@ echo 'All tests passed!'
       expect(boot, greaterThan(build));
       expect(ready, greaterThan(boot));
       expect(install, greaterThan(ready));
+      expect(
+        calls.indexOf(
+          'xcrun simctl launch --terminate-running-process '
+          'SOURCE-DEVICE com.anaregdesign.lanternExample '
+          '--enable-dart-profiling --disable-vm-service-publication '
+          '--enable-checked-mode --verify-entry-points',
+        ),
+        greaterThan(install),
+      );
+      expect(
+        calls.any((line) => line.startsWith('xcrun simctl terminate ')),
+        isFalse,
+      );
     },
   );
 
@@ -225,8 +246,12 @@ echo 'build completed during diagnostics'
     final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
 
     stopwatch.stop();
-    expect(result.exitCode, isNonZero);
-    expect(await _classification(sandbox), 'launch_stall');
+    expect(result.exitCode, 70, reason: '${result.stdout}\n${result.stderr}');
+    expect(
+      await _classification(sandbox),
+      'launch_stall',
+      reason: '${result.stdout}\n${result.stderr}',
+    );
     expect(stopwatch.elapsed, lessThan(const Duration(seconds: 12)));
   });
 
@@ -1128,9 +1153,13 @@ case "${2:-}" in
     ;;
   terminate|install) exit 0 ;;
   launch)
+    [[ "${3:-}" == --terminate-running-process ]] || exit 2
     if [[ '_CLOSED_PIPE_LAUNCH_' == true ]]; then
       exec >/dev/null 2>&1
-      sleep 30
+      # Model one live native command. An extra shell-owned child can leave
+      # a zombie group whose signal is denied on macOS; that is a distinct
+      # cleanup failure covered by the Python failure-path checks.
+      exec sleep 30
     fi
     if [[ '_RUNNER_EXITED_' == true ]]; then
       sleep 0.01 &

@@ -121,6 +121,8 @@ final class NativeSession {
     this.expiresAt,
     this.authTime,
     this.authorityBinding,
+    this.userId,
+    this.personalPrefix,
   );
 
   /// Existing registered Principal selected by the Server.
@@ -143,6 +145,13 @@ final class NativeSession {
 
   /// Current profile/cut/credential binding for active cache ownership only.
   final String authorityBinding;
+
+  /// Immutable installed UID; null for a legacy user who has not registered.
+  final String? userId;
+
+  /// Logical personal root, including its trailing colon. Never prepend data:.
+  /// This is metadata; each data operation still requires current authorization.
+  final String? personalPrefix;
 }
 
 /// Login result. Store its credential only in application-owned secure storage.
@@ -231,11 +240,11 @@ final class NativeLogoutReview {
 }
 
 /// Original durable outcome, independent of local app teardown.
-enum NativeLogoutOutcome {
+enum NativeOperationOutcome {
   /// Missing/unknown/retired result. This never proves nonexecution or rollback.
   unresolved,
 
-  /// The original revocation was applied.
+  /// The original operation was applied.
   applied,
 
   /// The original operation was durably rejected. A new session is not implied.
@@ -252,3 +261,9 @@ final class NativeLogoutResult {
   /// Original durable outcome, when currently disclosable.
   final NativeLogoutOutcome outcome;
 }
+
+/// Original logout outcome, independent of local app teardown.
+typedef NativeLogoutOutcome = NativeOperationOutcome;
+
+/// Original registration outcome; unknown never authorizes another dispatch.
+typedef NativeRegistrationOutcome = NativeOperationOutcome;

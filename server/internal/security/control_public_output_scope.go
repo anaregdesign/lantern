@@ -36,6 +36,7 @@ type currentOutputGrant struct {
 	cut            SemanticCut
 	issuer         string
 	issuerRevision uint64
+	registration   *authorityRegistrationCredential
 }
 
 func bindCurrentGrant(ctx context.Context, o *CurrentAuthority, g currentOutputGrant) error {
@@ -252,6 +253,25 @@ func (r *currentOutputRequest) authorize(ctx context.Context, g currentOutputGra
 	defer k.poisonPanic()
 	if k.readyLocked() != nil || k.chosen != nil {
 		return authorityCurrentTime{}, ErrAuthorityUnavailable
+	}
+	if g.kind == "registration" || g.kind == "registration-session" {
+		if g.registration == nil {
+			return authorityCurrentTime{}, ErrPermissionDenied
+		}
+		now, err := o.authorizeRegistrationLocked(ctx, *g.registration)
+		if err != nil || g.kind == "registration" {
+			return now, err
+		}
+		if g.admission == nil || g.admission.owner != r.owner.owner || g.admission.credential.actor != g.registration.actor || g.projection != k.replayState.projection.snapshot {
+			return authorityCurrentTime{}, ErrPermissionDenied
+		}
+		// Both credentials authorize the same final sample. A second sample
+		// must not let the first credential expire between the two decisions.
+		c := g.admission.credential
+		if !c.matches(k.replayState.projection) || time.Unix(0, int64(now.utc.low)).Before(c.claim.DerivedStart.Time()) || !time.Unix(0, int64(now.utc.high)).Before(c.claim.AdmissionDeadline) {
+			return authorityCurrentTime{}, ErrPermissionDenied
+		}
+		return now, nil
 	}
 	if g.kind == "login" || g.kind == "login-catalog" {
 		if k.replayState.projection.cut != g.cut {

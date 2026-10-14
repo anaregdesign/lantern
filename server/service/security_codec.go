@@ -6,6 +6,7 @@ import (
 	"reflect"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/authz"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -179,6 +180,12 @@ func decodeSecurityRole(role *pb.SecurityRole) (security.Role, error) {
 				return security.Role{}, security.ErrInvalidPolicy
 			}
 			target.Resource = security.GlobalResource
+		case *pb.SecurityRule_PrincipalUidPrefix:
+			if resource == nil || resource.PrincipalUidPrefix == nil {
+				return security.Role{}, security.ErrInvalidPolicy
+			}
+			target.Resource = security.DataResource
+			target.PrincipalUIDPrefix = &authz.PrincipalUIDPrefix{LiteralBefore: resource.PrincipalUidPrefix.LiteralBefore, LiteralAfter: resource.PrincipalUidPrefix.LiteralAfter}
 		case *pb.SecurityRule_Pair:
 			return security.Role{}, security.ErrInvalidPolicy
 		default:
@@ -194,11 +201,26 @@ func encodeSecurityRole(role security.Role) *pb.SecurityRole {
 		target := &pb.SecurityRule{Id: rule.ID, Effect: encodeSecurityEffect(rule.Effect)}
 		target.Action = encodeSecurityAction(rule.Action)
 		if rule.Pair != nil {
+			if rule.Prefix != nil || rule.PrincipalUIDPrefix != nil {
+				return nil
+			}
 			target.Resource = &pb.SecurityRule_Pair{Pair: &pb.SecurityPrefixPair{TailPrefix: rule.Pair.Tail, HeadPrefix: rule.Pair.Head}}
+		} else if rule.PrincipalUIDPrefix != nil {
+			if rule.Prefix != nil || rule.Resource != security.DataResource {
+				return nil
+			}
+			target.Resource = &pb.SecurityRule_PrincipalUidPrefix{PrincipalUidPrefix: &pb.SecurityPrincipalUIDPrefix{LiteralBefore: rule.PrincipalUIDPrefix.LiteralBefore, LiteralAfter: rule.PrincipalUIDPrefix.LiteralAfter}}
 		} else if rule.Prefix != nil {
+			if rule.Resource != security.DataResource {
+				return nil
+			}
 			target.Resource = &pb.SecurityRule_Prefix{Prefix: *rule.Prefix}
-		} else {
+		} else if rule.Resource == security.GlobalResource {
 			target.Resource = &pb.SecurityRule_Global{Global: true}
+		} else {
+			// An absent/unknown data selector is never a Global grant. Stored
+			// Roles have already passed compilation; fail closed on misuse.
+			return nil
 		}
 		result.Rules[i] = target
 	}
@@ -217,6 +239,9 @@ func encodeSecurityAction(action security.Action) pb.SecurityAction {
 // Environment policy locks are response metadata, never client-owned grants.
 func encodeSecurityManagedRole(role security.Role, image security.Image) *pb.SecurityRole {
 	result := encodeSecurityRole(role)
+	if result == nil {
+		return nil
+	}
 	for _, principal := range image.Principals {
 		for _, assignment := range principal.Assignments {
 			if assignment.RoleID == role.ID && assignment.EnvOwned {
@@ -242,6 +267,9 @@ func encodeSecurityUser(user security.Principal) *pb.SecurityUser {
 		state = pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_DELETED
 	}
 	result := &pb.SecurityUser{Identity: encodeSecurityIdentity(user.Identity), State: state}
+	if user.UserUID != "" {
+		result.UserId = &user.UserUID
+	}
 	for _, assignment := range user.Assignments {
 		result.Assignments = append(result.Assignments, &pb.SecurityRoleAssignment{Identity: encodeSecurityIdentity(user.Identity), RoleId: assignment.RoleID, EnvOwned: assignment.EnvOwned})
 	}
@@ -254,6 +282,9 @@ func decodeSecurityChange(change *pb.SecurityChange) (security.Change, error) {
 	result := security.Change{}
 	var err error
 	switch op := change.Operation.(type) {
+	case *pb.SecurityChange_PutRegistrationPolicy:
+		result.Kind = security.PutRegistrationPolicy
+		result.RegistrationPolicy, err = decodeRegistrationPolicy(op.PutRegistrationPolicy)
 	case *pb.SecurityChange_PutIssuer:
 		result.Kind = security.PutIssuer
 		var issuer security.Issuer

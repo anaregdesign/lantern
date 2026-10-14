@@ -69,6 +69,7 @@ requests for up to five seconds.
 | `list_claims` | List live leases, optionally under a resource-key prefix. |
 | `post_note` | Post a TTL-bound info/warn/blocker signal linked to resource keys. |
 | `context_stats` | Return live agent, claim, note, and tracked-resource counts. |
+| `current_user` | Read the configured Lantern backend credential's `user_id`, or explicit null for an authenticated UID-less/machine Principal. No data/admin Role required. |
 | `ping` | Verify both the MCP process and upstream Lantern connection. |
 
 ### Typed traversal in `whats_happening`
@@ -95,6 +96,13 @@ The structured result includes the selected `family`. Multiple family arms,
 unknown enum values, and invalid rank domains are rejected before an RPC.
 
 ### Identity and keys
+
+`current_user` reports the authenticated Lantern backend Principal, not the MCP
+caller, conversation user or announced agent. Missing authentication is an error;
+no ID is inferred or retained from another account. This inspection does not grant
+access, register a user or add an authentication mechanism. See the
+[current-source ID contract](../docs/native-user-registration.md#client-use-and-installation-boundary).
+
 
 Every call is attributed to `LANTERN_MCP_AGENT_ID`, or a stable per-process
 fallback `<hostname>-<pid>-<rand4>`. Fleet operators own uniqueness.

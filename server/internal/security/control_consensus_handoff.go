@@ -114,6 +114,9 @@ func s2cCredentialEvidence(h s2cHistoricalHeader) [32]byte {
 }
 
 func s2cVerifyCredential(h s2cHistoricalHeader, origin s2cOriginDescriptor, command S1Command) bool {
+	if !ordinaryS1Command(command.Kind) {
+		return false
+	}
 	c, a := h.Credential, h.Authentication
 	if c.Profile != origin.Profile || c.CredentialDigest == [32]byte{} || c.VerificationDigest == [32]byte{} || c.ConsumeID == [32]byte{} || h.Lineage == 0 || a.Class != EndUser || a.IssuerConfigRevision == 0 || !s2cCanonicalTime(h.Consume, false) || !s2cCanonicalTime(h.CredentialDeadline, false) {
 		return false
@@ -232,7 +235,7 @@ func verifyHistoricalH(t *s2cTrust, encoded []byte) (*s2cHistoricalH, error) {
 	if !s2cVerifyCredential(h, o, op.Command) || !s2cVerifyPurpose(h, operation) {
 		return nil, errS2CHistorical
 	}
-	a := &s1VerifiedAuthorization{h.Authentication, h.Lineage, h.CredentialEvidence, h.PurposeEvidence, h.PurposeBinding, h.Consume, h.CredentialDeadline, h.PurposeDeadline}
+	a := &s1VerifiedAuthorization{h.Authentication, h.Lineage, h.CredentialEvidence, h.PurposeEvidence, h.PurposeBinding, h.Consume, h.CredentialDeadline, h.PurposeDeadline, nil}
 	handoff := &S1Handoff{h.ID, operation, h.OriginDigest, h.Serial, a}
 	if !handoff.valid(t.genesis.state.projection.cut) || handoff.digest() != h.Value {
 		return nil, errS2CHistorical

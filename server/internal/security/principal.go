@@ -22,4 +22,7 @@ type Principal struct {
 	// Set only by exact operator human enrollment or verified Code login, not
 	// by public Principal/assignment changes. It survives session expiry.
 	HumanIssuerConfigRevision uint64 `json:"human_issuer_config_revision,omitempty"`
+	// UserUID is allocated once by verified registration. It survives deletion
+	// as a tombstone and is never accepted by ordinary Principal mutations.
+	UserUID string `json:"user_uid,omitempty"`
 }

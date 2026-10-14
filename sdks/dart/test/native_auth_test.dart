@@ -70,6 +70,58 @@ security.CurrentSessionRevocationReview review() {
 }
 
 void main() {
+  test(
+    'session inspection returns only complete canonical UID and personal prefix pairs',
+    () async {
+      const uid = '0123456789abcdef0123456789abcdef';
+      for (final (userId, prefix, valid) in [
+        (null, null, true),
+        ('', '', false),
+        (uid, 'users:$uid:', true),
+        ('', 'users:$uid:', false),
+        (uid, '', false),
+        (uid, 'data:users:$uid:', false),
+        (uid, 'users:$uid', false),
+        (uid.toUpperCase(), 'users:${uid.toUpperCase()}:', false),
+      ]) {
+        final client = LanternClient.connect(
+          endpoint,
+          tokenProvider: () => 'credential',
+          transport: FakeTransportBuilder()
+              .unary(
+                LanternNativeAuthService.getNativeSession,
+                (wire.GetNativeSessionRequest req, ctx) =>
+                    wire.GetNativeSessionResponse(
+                      session: (() {
+                        final value = session();
+                        if (userId != null) value.userId = userId;
+                        if (prefix != null) value.personalPrefix = prefix;
+                        return value;
+                      })(),
+                    ),
+              )
+              .build(),
+        );
+        if (valid) {
+          final result = (await client.getNativeSession()).session;
+          expect(result.userId, userId);
+          expect(result.personalPrefix, prefix);
+          expect(
+            result.principal.subject,
+            'exact-subject',
+            reason: 'OIDC subject is not Lantern UID',
+          );
+        } else {
+          await expectLater(
+            client.getNativeSession(),
+            throwsA(isA<LanternFailedPreconditionException>()),
+          );
+        }
+        await client.close();
+      }
+    },
+  );
+
   test('Begin rejects noncanonical or destination-shaped affinity', () async {
     for (final hint in [
       'v2.01.${random(3)}',

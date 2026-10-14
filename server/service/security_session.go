@@ -18,6 +18,9 @@ func sessionErrorCode(err error) connect.Code {
 func encodeSessionView(view authn.SessionView) *pb.GetCurrentPrincipalResponse {
 	a := view.Admission
 	response := &pb.GetCurrentPrincipalResponse{Identity: encodeSecurityIdentity(a.Identity()), Version: SecurityVersionForAdmission(a), ExpiresAt: timestamppb.New(a.ExpiresAt()), RecentAuthentication: view.RecentAuthentication}
+	if id, _, present := a.Snapshot().PersonalArea(a.Identity()); present {
+		response.UserId = &id
+	}
 	for _, role := range view.Roles {
 		encoded := encodeSecurityRole(role.Role)
 		encoded.EnvOwned = role.EnvOwned

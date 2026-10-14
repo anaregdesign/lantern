@@ -47,9 +47,10 @@ func (c SemanticCut) valid() bool {
 }
 
 const (
-	S1Management    = "management"
-	S1IssueSession  = "session.issue"
-	S1RevokeSession = "session.revoke"
+	S1Management        = "management"
+	S1IssueSession      = "session.issue"
+	S1RevokeSession     = "session.revoke"
+	S1RegisterPrincipal = "principal.register"
 )
 
 // S1Command contains only business meaning. Session times fix original expiry;
@@ -62,6 +63,19 @@ type S1Command struct {
 	ReplacesDigest string
 	SessionDigest  string
 	SessionLineage uint64
+	// Presence is versioned. Omission preserves every older canonical command.
+	Registration *PrincipalRegistration `json:",omitempty"`
+}
+
+// New commands do not inherit ordinary credential authority merely because
+// they are not management mutations. Registration has its own closed proof.
+func ordinaryS1Command(kind string) bool {
+	switch kind {
+	case S1Management, S1IssueSession, S1RevokeSession:
+		return true
+	default:
+		return false
+	}
 }
 
 // OperationIdentity owns exact canonical bytes, rather than mutable request
@@ -117,7 +131,14 @@ func (o OperationIdentity) command() (S1Command, error) {
 }
 
 func validateS1Command(c S1Command, limits PolicyLimits) error {
+	if c.Registration != nil && c.Kind != S1RegisterPrincipal {
+		return ErrS1Contract
+	}
 	switch c.Kind {
+	case S1RegisterPrincipal:
+		if !c.Registration.valid() || len(c.Changes) != 0 || c.Session != nil || c.ReplacesDigest != "" || c.SessionDigest != "" || c.SessionLineage != 0 {
+			return ErrS1Contract
+		}
 	case S1Management:
 		if len(c.Changes) == 0 || len(c.Changes) > MaxTransactionChanges || c.Session != nil || c.ReplacesDigest != "" || c.SessionDigest != "" || c.SessionLineage != 0 {
 			return ErrS1Contract

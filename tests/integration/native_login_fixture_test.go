@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"math/big"
 	"net"
 	"net/http"
@@ -172,13 +173,18 @@ func (f *nativeLoginWireFixture) token(t *testing.T, issuer, client, subject, no
 
 func (f *nativeLoginWireFixture) apple(t *testing.T, begin *pb.BeginNativeLoginResponse, lose bool) *pb.AppleNativeCredential {
 	t.Helper()
+	return f.appleSubject(t, begin, "native-user", lose)
+}
+
+func (f *nativeLoginWireFixture) appleSubject(t *testing.T, begin *pb.BeginNativeLoginResponse, subject string, lose bool) *pb.AppleNativeCredential {
+	t.Helper()
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		t.Fatal(err)
 	}
 	code := base64.RawURLEncoding.EncodeToString(raw[:])
 	c := begin.Configuration
-	token := f.token(t, nativeAppleIssuer, c.ClientId, "native-user", c.Nonce, func(c map[string]any) { c["auth_time"] = time.Now().Add(-time.Hour).Unix() })
+	token := f.token(t, nativeAppleIssuer, c.ClientId, subject, c.Nonce, func(c map[string]any) { c["auth_time"] = time.Now().Add(-time.Hour).Unix() })
 	f.mu.Lock()
 	f.codes[code] = nativeLoginWireCode{token: token, client: c.ClientId, redirect: c.RedirectUri, loseResponse: lose}
 	f.mu.Unlock()
@@ -202,5 +208,32 @@ func nativeWireAwait(t *testing.T, ctx context.Context, check func() error) {
 			t.Fatal("current native read did not become ready")
 		case <-time.After(50 * time.Millisecond):
 		}
+	}
+}
+
+func nativeWireApply(t *testing.T, ctx context.Context, control graphv1connect.LanternSecurityServiceClient, admin string, change *pb.SecurityChange) {
+	t.Helper()
+	var current *pb.GetCurrentPrincipalResponse
+	nativeWireAwait(t, ctx, func() error {
+		v, err := control.GetCurrentPrincipal(ctx, securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+		if err == nil {
+			current = v.Msg
+		}
+		return err
+	})
+	prepared, err := control.PrepareSecurityChanges(ctx, securityWireRequest(admin, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: current.Version.CurrentProfile, ExpectedCut: current.Version.CurrentCut, Changes: []*pb.SecurityChange{change}}}))
+	if err != nil {
+		t.Fatal("native policy prepare", err)
+	}
+	result, err := control.ApplySecurityChanges(ctx, securityWireRequest(admin, &pb.ApplySecurityChangesRequest{CurrentReview: prepared.Msg.CurrentReview}))
+	var original *pb.CurrentSecurityOriginalOutcome
+	if err == nil {
+		original = result.Msg.GetCurrentResult().GetOriginal()
+	}
+	if original == nil {
+		original = awaitCurrentPublicOriginal(t, ctx, control, admin, prepared.Msg.CurrentReview)
+	}
+	if original.GetDisposition() != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
+		t.Fatal("native policy mutation not applied")
 	}
 }

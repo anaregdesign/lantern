@@ -104,7 +104,18 @@ func (a *Admission) ScopeBinding() [32]byte {
 		Revision   uint64
 		Digest     [32]byte
 	}{a.identity, a.revision.generation, a.revision.sequence, a.revision.digest})
-	return sha256.Sum256(encoded)
+	return bindSubjectScope(sha256.Sum256(encoded), a.access)
+}
+
+// Keep legacy cursor bytes when there is no subject binding; UID-aware views
+// additionally bind the exact canonical selector subject into every cursor/CDC
+// scope. This is not fresh authority; normal current checks remain mandatory.
+func bindSubjectScope(base [32]byte, access *Access) [32]byte {
+	uid := access.BindingDigest()
+	if uid == [32]byte{} {
+		return base
+	}
+	return s2cHash("public-subject-scope-v1", struct{ Base, Subject [32]byte }{base, uid})
 }
 
 type admissionContextKey struct{}

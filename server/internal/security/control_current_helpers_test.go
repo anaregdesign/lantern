@@ -256,7 +256,7 @@ func authorityTestSealHeader(t *testing.T, f *s2cTestFixture, key ed25519.Privat
 		h.PurposeEvidence = s2cHash("current-purpose-evidence-v2", h.Purpose)
 		h.PurposeBinding = s1PurposeBinding(h.ID, op)
 	}
-	a := &s1VerifiedAuthorization{h.Authentication, h.Lineage, h.CredentialEvidence, h.PurposeEvidence, h.PurposeBinding, h.ConsumeUpper, h.CredentialDeadline, h.PurposeDeadline}
+	a := &s1VerifiedAuthorization{h.Authentication, h.Lineage, h.CredentialEvidence, h.PurposeEvidence, h.PurposeBinding, h.ConsumeUpper, h.CredentialDeadline, h.PurposeDeadline, h.Credential.Registration}
 	h.Value = (&S1Handoff{h.ID, op, h.OriginDigest, h.Serial, a}).digest()
 	body, err := authorityHistoricalBody(h, op.Encode(), f.trust.bounds)
 	if err != nil {

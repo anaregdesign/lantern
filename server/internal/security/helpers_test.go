@@ -8,7 +8,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -78,24 +77,6 @@ func globalRule(effect Effect, action Action) PermissionRule {
 	return PermissionRule{Effect: effect, Action: action, Resource: GlobalResource}
 }
 
-func referenceAllows(roles []Role, action Action, key string) bool {
-	if key == "" || !utf8.ValidString(key) {
-		return false
-	}
-	allow := false
-	for _, role := range roles {
-		for _, rule := range role.Rules {
-			if rule.Action == action && rule.Resource == DataResource && strings.HasPrefix(key, *rule.Prefix) {
-				if rule.Effect == Deny {
-					return false
-				}
-				allow = true
-			}
-		}
-	}
-	return allow
-}
-
 type fakeCommitter struct {
 	calls int
 	err   error
@@ -125,4 +106,14 @@ func newAuthorityTestStore(t *testing.T) (*Store, *fakeAuthorityClock) {
 		t.Fatal(err)
 	}
 	return store, &fakeAuthorityClock{now: time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)}
+}
+
+// registrationImage supplies only deterministic policy data. It is not provider
+// authentication evidence and never qualifies a real Google/Apple registration.
+func registrationImage() Image {
+	image := s1Image()
+	image.Issuers = append(image.Issuers, Issuer{URL: GoogleIssuer, Enabled: true, ConfigRevision: 1, Algorithms: []string{"RS256"}, NativeClients: []NativeClient{{ID: "android", Kind: GoogleIDToken, ClientID: "fixture-web-client", ServiceOrigin: "https://lantern.example"}, {ID: "ios", Kind: GoogleIDToken, ClientID: "fixture-web-client", ServiceOrigin: "https://lantern.example"}}})
+	image.Roles = append(image.Roles, PersonalUserRole())
+	image.RegistrationPolicy = &RegistrationPolicy{Version: RegistrationPolicyVersion, Enabled: true, RoleID: PersonalUserRoleID, Profiles: []RegistrationProfile{{Issuer: GoogleIssuer, ClientProfileID: "android"}}}
+	return image
 }

@@ -1,4 +1,4 @@
-package security
+package authz
 
 import (
 	"fmt"
@@ -11,7 +11,7 @@ func TestScopeCacheBounds(t *testing.T) {
 	var retained *Scope
 	for i := 0; i < 50; i++ {
 		prefix := fmt.Sprintf("visible:%d:", i)
-		scope := cache.get(fmt.Sprint(i), func() *Scope { return &Scope{ranges: []Range{{prefix, prefixEnd(prefix)}}} })
+		scope := cache.get(scopeCacheKey{setKey: fmt.Sprint(i)}, func() *Scope { return &Scope{ranges: []Range{{prefix, prefixEnd(prefix)}}} })
 		if i == 0 {
 			retained = scope
 		}
@@ -23,8 +23,8 @@ func TestScopeCacheBounds(t *testing.T) {
 		t.Fatal("eviction mutated active query scope")
 	}
 	builds := 0
-	one := cache.get("warm", func() *Scope { builds++; return &Scope{} })
-	two := cache.get("warm", func() *Scope { builds++; return &Scope{} })
+	one := cache.get(scopeCacheKey{setKey: "warm"}, func() *Scope { builds++; return &Scope{} })
+	two := cache.get(scopeCacheKey{setKey: "warm"}, func() *Scope { builds++; return &Scope{} })
 	if one != two || builds != 1 {
 		t.Fatal("warm scope was recompiled")
 	}
@@ -58,4 +58,34 @@ func BenchmarkScopeCache(b *testing.B) {
 			}
 		}
 	})
+}
+
+func TestScopeCacheUIDChurn(t *testing.T) {
+	policy, err := CompileRoles([]Role{{ID: "personal", Rules: []PermissionRule{uidRule(Allow, VertexRead, "users:", ":"), uidRule(Allow, VertexWrite, "users:", ":")}}}, DefaultPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first *Scope
+	for i := 1; i <= 300; i++ {
+		uid := fmt.Sprintf("%032x", i)
+		access, err := policy.BindRoles([]string{"personal"}, SubjectBindings{uid})
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := access.Scope(VertexRead)
+		edge := access.EdgeCandidateScope(EdgeWrite)
+		key := "users:" + uid + ":item"
+		if !scope.Contains(key) || !edge.Contains(key) || scope.Contains("users:"+fmt.Sprintf("%032x", i+1)+":item") {
+			t.Fatal("cache subject leaked", i)
+		}
+		if i == 1 {
+			first = scope
+		}
+		if len(policy.scopeCache.entries) > scopeCacheEntries || policy.scopeCache.bytes > scopeCacheBytes {
+			t.Fatal("cache grew without bound")
+		}
+	}
+	if !first.Contains("users:" + fmt.Sprintf("%032x", 1) + ":item") {
+		t.Fatal("cache eviction mutated retained view")
+	}
 }

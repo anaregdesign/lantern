@@ -360,6 +360,7 @@ func TestRetryableMethod(t *testing.T) {
 		want   bool
 	}{
 		{"GetVertex", true},
+		{"GetCurrentUserID", false},
 		{"PutVertices", true},
 		{"PutEdge", true},
 		{"PutVerticesWithReceipt", true},             // pinned endpoint

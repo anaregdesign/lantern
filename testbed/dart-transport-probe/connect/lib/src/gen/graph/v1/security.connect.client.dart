@@ -146,6 +146,23 @@ extension type LanternSecurityServiceClient (connect.Transport _transport) {
     );
   }
 
+  Future<graphv1security.GetRegistrationPolicyResponse> getRegistrationPolicy(
+    graphv1security.GetRegistrationPolicyRequest input, {
+    connect.Headers? headers,
+    connect.AbortSignal? signal,
+    Function(connect.Headers)? onHeader,
+    Function(connect.Headers)? onTrailer,
+  }) {
+    return connect.Client(_transport).unary(
+      specs.LanternSecurityService.getRegistrationPolicy,
+      input,
+      signal: signal,
+      headers: headers,
+      onHeader: onHeader,
+      onTrailer: onTrailer,
+    );
+  }
+
   Future<graphv1security.ListRoleAssignmentsResponse> listRoleAssignments(
     graphv1security.ListRoleAssignmentsRequest input, {
     connect.Headers? headers,

@@ -438,7 +438,78 @@ class SecurityPrefixPair extends $pb.GeneratedMessage {
   void clearHeadPrefix() => $_clearField(2);
 }
 
-enum SecurityRule_Resource { prefix, global, pair, notSet }
+/// Inserts the installed Principal's Server-owned UID between byte literals.
+/// Before must end with ':' and after must start with ':'. Neither is empty.
+/// This is one typed UID slot, not a template language or client-supplied UID.
+class SecurityPrincipalUIDPrefix extends $pb.GeneratedMessage {
+  factory SecurityPrincipalUIDPrefix({
+    $core.String? literalBefore,
+    $core.String? literalAfter,
+  }) {
+    final result = create();
+    if (literalBefore != null) result.literalBefore = literalBefore;
+    if (literalAfter != null) result.literalAfter = literalAfter;
+    return result;
+  }
+
+  SecurityPrincipalUIDPrefix._();
+
+  factory SecurityPrincipalUIDPrefix.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SecurityPrincipalUIDPrefix.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SecurityPrincipalUIDPrefix',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'literalBefore')
+    ..aOS(2, _omitFieldNames ? '' : 'literalAfter')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityPrincipalUIDPrefix clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityPrincipalUIDPrefix copyWith(
+          void Function(SecurityPrincipalUIDPrefix) updates) =>
+      super.copyWith(
+              (message) => updates(message as SecurityPrincipalUIDPrefix))
+          as SecurityPrincipalUIDPrefix;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SecurityPrincipalUIDPrefix create() => SecurityPrincipalUIDPrefix._();
+  @$core.override
+  SecurityPrincipalUIDPrefix createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static SecurityPrincipalUIDPrefix getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SecurityPrincipalUIDPrefix>(create);
+  static SecurityPrincipalUIDPrefix? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get literalBefore => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set literalBefore($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasLiteralBefore() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearLiteralBefore() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get literalAfter => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set literalAfter($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasLiteralAfter() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearLiteralAfter() => $_clearField(2);
+}
+
+enum SecurityRule_Resource { prefix, global, pair, principalUidPrefix, notSet }
 
 class SecurityRule extends $pb.GeneratedMessage {
   factory SecurityRule({
@@ -448,6 +519,7 @@ class SecurityRule extends $pb.GeneratedMessage {
     $core.String? prefix,
     $core.bool? global,
     SecurityPrefixPair? pair,
+    SecurityPrincipalUIDPrefix? principalUidPrefix,
   }) {
     final result = create();
     if (id != null) result.id = id;
@@ -456,6 +528,8 @@ class SecurityRule extends $pb.GeneratedMessage {
     if (prefix != null) result.prefix = prefix;
     if (global != null) result.global = global;
     if (pair != null) result.pair = pair;
+    if (principalUidPrefix != null)
+      result.principalUidPrefix = principalUidPrefix;
     return result;
   }
 
@@ -473,13 +547,14 @@ class SecurityRule extends $pb.GeneratedMessage {
     4: SecurityRule_Resource.prefix,
     5: SecurityRule_Resource.global,
     6: SecurityRule_Resource.pair,
+    7: SecurityRule_Resource.principalUidPrefix,
     0: SecurityRule_Resource.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'SecurityRule',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [4, 5, 6])
+    ..oo(0, [4, 5, 6, 7])
     ..aOS(1, _omitFieldNames ? '' : 'id')
     ..aE<SecurityEffect>(2, _omitFieldNames ? '' : 'effect',
         enumValues: SecurityEffect.values)
@@ -489,6 +564,9 @@ class SecurityRule extends $pb.GeneratedMessage {
     ..aOB(5, _omitFieldNames ? '' : 'global')
     ..aOM<SecurityPrefixPair>(6, _omitFieldNames ? '' : 'pair',
         subBuilder: SecurityPrefixPair.create)
+    ..aOM<SecurityPrincipalUIDPrefix>(
+        7, _omitFieldNames ? '' : 'principalUidPrefix',
+        subBuilder: SecurityPrincipalUIDPrefix.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -513,11 +591,13 @@ class SecurityRule extends $pb.GeneratedMessage {
   @$pb.TagNumber(4)
   @$pb.TagNumber(5)
   @$pb.TagNumber(6)
+  @$pb.TagNumber(7)
   SecurityRule_Resource whichResource() =>
       _SecurityRule_ResourceByTag[$_whichOneof(0)]!;
   @$pb.TagNumber(4)
   @$pb.TagNumber(5)
   @$pb.TagNumber(6)
+  @$pb.TagNumber(7)
   void clearResource() => $_clearField($_whichOneof(0));
 
   @$pb.TagNumber(1)
@@ -575,6 +655,18 @@ class SecurityRule extends $pb.GeneratedMessage {
   void clearPair() => $_clearField(6);
   @$pb.TagNumber(6)
   SecurityPrefixPair ensurePair() => $_ensure(5);
+
+  @$pb.TagNumber(7)
+  SecurityPrincipalUIDPrefix get principalUidPrefix => $_getN(6);
+  @$pb.TagNumber(7)
+  set principalUidPrefix(SecurityPrincipalUIDPrefix value) =>
+      $_setField(7, value);
+  @$pb.TagNumber(7)
+  $core.bool hasPrincipalUidPrefix() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearPrincipalUidPrefix() => $_clearField(7);
+  @$pb.TagNumber(7)
+  SecurityPrincipalUIDPrefix ensurePrincipalUidPrefix() => $_ensure(6);
 }
 
 class SecurityRole extends $pb.GeneratedMessage {
@@ -750,11 +842,13 @@ class SecurityUser extends $pb.GeneratedMessage {
     SecurityIdentity? identity,
     SecurityPrincipalState? state,
     $core.Iterable<SecurityRoleAssignment>? assignments,
+    $core.String? userId,
   }) {
     final result = create();
     if (identity != null) result.identity = identity;
     if (state != null) result.state = state;
     if (assignments != null) result.assignments.addAll(assignments);
+    if (userId != null) result.userId = userId;
     return result;
   }
 
@@ -777,6 +871,7 @@ class SecurityUser extends $pb.GeneratedMessage {
         enumValues: SecurityPrincipalState.values)
     ..pPM<SecurityRoleAssignment>(3, _omitFieldNames ? '' : 'assignments',
         subBuilder: SecurityRoleAssignment.create)
+    ..aOS(4, _omitFieldNames ? '' : 'userId')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -820,6 +915,17 @@ class SecurityUser extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(3)
   $pb.PbList<SecurityRoleAssignment> get assignments => $_getList(2);
+
+  /// Read-only, allocated once by explicit verified registration. Ordinary user
+  /// management never accepts this value as input; deleted tombstones retain it.
+  @$pb.TagNumber(4)
+  $core.String get userId => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set userId($core.String value) => $_setString(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasUserId() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearUserId() => $_clearField(4);
 }
 
 class SecurityIssuer extends $pb.GeneratedMessage {
@@ -1338,6 +1444,7 @@ class GetCurrentPrincipalResponse extends $pb.GeneratedMessage {
     $1.Timestamp? expiresAt,
     $core.bool? recentAuthentication,
     $core.String? csrfToken,
+    $core.String? userId,
   }) {
     final result = create();
     if (identity != null) result.identity = identity;
@@ -1347,6 +1454,7 @@ class GetCurrentPrincipalResponse extends $pb.GeneratedMessage {
     if (recentAuthentication != null)
       result.recentAuthentication = recentAuthentication;
     if (csrfToken != null) result.csrfToken = csrfToken;
+    if (userId != null) result.userId = userId;
     return result;
   }
 
@@ -1373,6 +1481,7 @@ class GetCurrentPrincipalResponse extends $pb.GeneratedMessage {
         subBuilder: $1.Timestamp.create)
     ..aOB(5, _omitFieldNames ? '' : 'recentAuthentication')
     ..aOS(6, _omitFieldNames ? '' : 'csrfToken')
+    ..aOS(7, _omitFieldNames ? '' : 'userId')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1451,6 +1560,17 @@ class GetCurrentPrincipalResponse extends $pb.GeneratedMessage {
   $core.bool hasCsrfToken() => $_has(5);
   @$pb.TagNumber(6)
   void clearCsrfToken() => $_clearField(6);
+
+  /// Immutable Server-installed user ID; absent for UID-less or machine Principals.
+  /// This self metadata requires no additional Role and never grants data access.
+  @$pb.TagNumber(7)
+  $core.String get userId => $_getSZ(6);
+  @$pb.TagNumber(7)
+  set userId($core.String value) => $_setString(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasUserId() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearUserId() => $_clearField(7);
 }
 
 /// Same-origin /auth/session and /auth/logout HTTP responses. OIDC tokens never
@@ -3837,6 +3957,279 @@ class SecurityUserStateChange extends $pb.GeneratedMessage {
   void clearState() => $_clearField(2);
 }
 
+class SecurityRegistrationProfile extends $pb.GeneratedMessage {
+  factory SecurityRegistrationProfile({
+    $core.String? issuer,
+    $core.String? clientProfileId,
+  }) {
+    final result = create();
+    if (issuer != null) result.issuer = issuer;
+    if (clientProfileId != null) result.clientProfileId = clientProfileId;
+    return result;
+  }
+
+  SecurityRegistrationProfile._();
+
+  factory SecurityRegistrationProfile.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SecurityRegistrationProfile.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SecurityRegistrationProfile',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'issuer')
+    ..aOS(2, _omitFieldNames ? '' : 'clientProfileId')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityRegistrationProfile clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityRegistrationProfile copyWith(
+          void Function(SecurityRegistrationProfile) updates) =>
+      super.copyWith(
+              (message) => updates(message as SecurityRegistrationProfile))
+          as SecurityRegistrationProfile;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SecurityRegistrationProfile create() =>
+      SecurityRegistrationProfile._();
+  @$core.override
+  SecurityRegistrationProfile createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static SecurityRegistrationProfile getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SecurityRegistrationProfile>(create);
+  static SecurityRegistrationProfile? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get issuer => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set issuer($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasIssuer() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearIssuer() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get clientProfileId => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set clientProfileId($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasClientProfileId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearClientProfileId() => $_clearField(2);
+}
+
+/// Default absent/disabled. Expansion requires operation-bound reauthentication.
+class SecurityRegistrationPolicy extends $pb.GeneratedMessage {
+  factory SecurityRegistrationPolicy({
+    $core.int? version,
+    $core.bool? enabled,
+    $core.String? roleId,
+    $core.Iterable<SecurityRegistrationProfile>? profiles,
+  }) {
+    final result = create();
+    if (version != null) result.version = version;
+    if (enabled != null) result.enabled = enabled;
+    if (roleId != null) result.roleId = roleId;
+    if (profiles != null) result.profiles.addAll(profiles);
+    return result;
+  }
+
+  SecurityRegistrationPolicy._();
+
+  factory SecurityRegistrationPolicy.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory SecurityRegistrationPolicy.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SecurityRegistrationPolicy',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aI(1, _omitFieldNames ? '' : 'version', fieldType: $pb.PbFieldType.OU3)
+    ..aOB(2, _omitFieldNames ? '' : 'enabled')
+    ..aOS(3, _omitFieldNames ? '' : 'roleId')
+    ..pPM<SecurityRegistrationProfile>(4, _omitFieldNames ? '' : 'profiles',
+        subBuilder: SecurityRegistrationProfile.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityRegistrationPolicy clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SecurityRegistrationPolicy copyWith(
+          void Function(SecurityRegistrationPolicy) updates) =>
+      super.copyWith(
+              (message) => updates(message as SecurityRegistrationPolicy))
+          as SecurityRegistrationPolicy;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SecurityRegistrationPolicy create() => SecurityRegistrationPolicy._();
+  @$core.override
+  SecurityRegistrationPolicy createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static SecurityRegistrationPolicy getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SecurityRegistrationPolicy>(create);
+  static SecurityRegistrationPolicy? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get version => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set version($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasVersion() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearVersion() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.bool get enabled => $_getBF(1);
+  @$pb.TagNumber(2)
+  set enabled($core.bool value) => $_setBool(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasEnabled() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearEnabled() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get roleId => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set roleId($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasRoleId() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearRoleId() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $pb.PbList<SecurityRegistrationProfile> get profiles => $_getList(3);
+}
+
+class GetRegistrationPolicyRequest extends $pb.GeneratedMessage {
+  factory GetRegistrationPolicyRequest() => create();
+
+  GetRegistrationPolicyRequest._();
+
+  factory GetRegistrationPolicyRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetRegistrationPolicyRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetRegistrationPolicyRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetRegistrationPolicyRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetRegistrationPolicyRequest copyWith(
+          void Function(GetRegistrationPolicyRequest) updates) =>
+      super.copyWith(
+              (message) => updates(message as GetRegistrationPolicyRequest))
+          as GetRegistrationPolicyRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetRegistrationPolicyRequest create() =>
+      GetRegistrationPolicyRequest._();
+  @$core.override
+  GetRegistrationPolicyRequest createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static GetRegistrationPolicyRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetRegistrationPolicyRequest>(create);
+  static GetRegistrationPolicyRequest? _defaultInstance;
+}
+
+class GetRegistrationPolicyResponse extends $pb.GeneratedMessage {
+  factory GetRegistrationPolicyResponse({
+    SecurityRegistrationPolicy? policy,
+    SecurityVersion? version,
+  }) {
+    final result = create();
+    if (policy != null) result.policy = policy;
+    if (version != null) result.version = version;
+    return result;
+  }
+
+  GetRegistrationPolicyResponse._();
+
+  factory GetRegistrationPolicyResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory GetRegistrationPolicyResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetRegistrationPolicyResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<SecurityRegistrationPolicy>(1, _omitFieldNames ? '' : 'policy',
+        subBuilder: SecurityRegistrationPolicy.create)
+    ..aOM<SecurityVersion>(2, _omitFieldNames ? '' : 'version',
+        subBuilder: SecurityVersion.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetRegistrationPolicyResponse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetRegistrationPolicyResponse copyWith(
+          void Function(GetRegistrationPolicyResponse) updates) =>
+      super.copyWith(
+              (message) => updates(message as GetRegistrationPolicyResponse))
+          as GetRegistrationPolicyResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static GetRegistrationPolicyResponse create() =>
+      GetRegistrationPolicyResponse._();
+  @$core.override
+  GetRegistrationPolicyResponse createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static GetRegistrationPolicyResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetRegistrationPolicyResponse>(create);
+  static GetRegistrationPolicyResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  SecurityRegistrationPolicy get policy => $_getN(0);
+  @$pb.TagNumber(1)
+  set policy(SecurityRegistrationPolicy value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasPolicy() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearPolicy() => $_clearField(1);
+  @$pb.TagNumber(1)
+  SecurityRegistrationPolicy ensurePolicy() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  SecurityVersion get version => $_getN(1);
+  @$pb.TagNumber(2)
+  set version(SecurityVersion value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasVersion() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearVersion() => $_clearField(2);
+  @$pb.TagNumber(2)
+  SecurityVersion ensureVersion() => $_ensure(1);
+}
+
 enum SecurityChange_Operation {
   putIssuer,
   disableIssuer,
@@ -3848,6 +4241,7 @@ enum SecurityChange_Operation {
   putAssignment,
   deleteAssignment,
   revokeUserSessions,
+  putRegistrationPolicy,
   notSet
 }
 
@@ -3863,6 +4257,7 @@ class SecurityChange extends $pb.GeneratedMessage {
     SecurityRoleAssignment? putAssignment,
     SecurityRoleAssignment? deleteAssignment,
     SecurityIdentity? revokeUserSessions,
+    SecurityRegistrationPolicy? putRegistrationPolicy,
   }) {
     final result = create();
     if (putIssuer != null) result.putIssuer = putIssuer;
@@ -3876,6 +4271,8 @@ class SecurityChange extends $pb.GeneratedMessage {
     if (deleteAssignment != null) result.deleteAssignment = deleteAssignment;
     if (revokeUserSessions != null)
       result.revokeUserSessions = revokeUserSessions;
+    if (putRegistrationPolicy != null)
+      result.putRegistrationPolicy = putRegistrationPolicy;
     return result;
   }
 
@@ -3900,13 +4297,14 @@ class SecurityChange extends $pb.GeneratedMessage {
     8: SecurityChange_Operation.putAssignment,
     9: SecurityChange_Operation.deleteAssignment,
     10: SecurityChange_Operation.revokeUserSessions,
+    11: SecurityChange_Operation.putRegistrationPolicy,
     0: SecurityChange_Operation.notSet
   };
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'SecurityChange',
       package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
       createEmptyInstance: create)
-    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    ..oo(0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
     ..aOM<SecurityIssuer>(1, _omitFieldNames ? '' : 'putIssuer',
         subBuilder: SecurityIssuer.create)
     ..aOS(2, _omitFieldNames ? '' : 'disableIssuer')
@@ -3924,6 +4322,9 @@ class SecurityChange extends $pb.GeneratedMessage {
         subBuilder: SecurityRoleAssignment.create)
     ..aOM<SecurityIdentity>(10, _omitFieldNames ? '' : 'revokeUserSessions',
         subBuilder: SecurityIdentity.create)
+    ..aOM<SecurityRegistrationPolicy>(
+        11, _omitFieldNames ? '' : 'putRegistrationPolicy',
+        subBuilder: SecurityRegistrationPolicy.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -3955,6 +4356,7 @@ class SecurityChange extends $pb.GeneratedMessage {
   @$pb.TagNumber(8)
   @$pb.TagNumber(9)
   @$pb.TagNumber(10)
+  @$pb.TagNumber(11)
   SecurityChange_Operation whichOperation() =>
       _SecurityChange_OperationByTag[$_whichOneof(0)]!;
   @$pb.TagNumber(1)
@@ -3967,6 +4369,7 @@ class SecurityChange extends $pb.GeneratedMessage {
   @$pb.TagNumber(8)
   @$pb.TagNumber(9)
   @$pb.TagNumber(10)
+  @$pb.TagNumber(11)
   void clearOperation() => $_clearField($_whichOneof(0));
 
   @$pb.TagNumber(1)
@@ -4072,6 +4475,18 @@ class SecurityChange extends $pb.GeneratedMessage {
   void clearRevokeUserSessions() => $_clearField(10);
   @$pb.TagNumber(10)
   SecurityIdentity ensureRevokeUserSessions() => $_ensure(9);
+
+  @$pb.TagNumber(11)
+  SecurityRegistrationPolicy get putRegistrationPolicy => $_getN(10);
+  @$pb.TagNumber(11)
+  set putRegistrationPolicy(SecurityRegistrationPolicy value) =>
+      $_setField(11, value);
+  @$pb.TagNumber(11)
+  $core.bool hasPutRegistrationPolicy() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearPutRegistrationPolicy() => $_clearField(11);
+  @$pb.TagNumber(11)
+  SecurityRegistrationPolicy ensurePutRegistrationPolicy() => $_ensure(10);
 }
 
 class ApplySecurityChangesRequest extends $pb.GeneratedMessage {

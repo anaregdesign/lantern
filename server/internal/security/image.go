@@ -7,10 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
-	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/anaregdesign/lantern/server/internal/authz"
 )
 
 const (
@@ -37,6 +37,7 @@ type Image struct {
 	Sessions           []Session           `json:"sessions"`
 	MachineCredentials []MachineCredential `json:"machine_credentials,omitempty"`
 	Audit              []AuditRecord       `json:"audit,omitempty"`
+	RegistrationPolicy *RegistrationPolicy `json:"registration_policy,omitempty"`
 }
 
 // CompileImage validates the complete image before any durable commit. A
@@ -59,6 +60,9 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 	}
 	if err := validateAudit(image.Audit); err != nil {
 		return nil, err
+	}
+	if !image.RegistrationPolicy.valid() {
+		return nil, ErrInvalidImage
 	}
 	// Validate coarse lengths before marshaling untrusted input.
 	if err := validateRoleBounds(image.Roles, limits); err != nil {
@@ -95,7 +99,20 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 		issuer = issuer.clone()
 		snapshot.issuers[issuer.URL] = issuer
 	}
+	if err := validateRegistrationPolicy(image.RegistrationPolicy, snapshot); err != nil {
+		return nil, err
+	}
+	uids := make(map[string]Identity)
 	for _, principal := range image.Principals {
+		if principal.UserUID != "" {
+			if principal.Identity.Kind != OIDCPrincipal || !authz.ValidPersonalUID(principal.UserUID) {
+				return nil, fmt.Errorf("%w: Principal UID", ErrInvalidImage)
+			}
+			if _, exists := uids[principal.UserUID]; exists {
+				return nil, fmt.Errorf("%w: duplicate Principal UID", ErrInvalidImage)
+			}
+			uids[principal.UserUID] = principal.Identity
+		}
 		if principal.HumanIssuerConfigRevision != 0 && principal.Identity.Kind != OIDCPrincipal {
 			return nil, ErrInvalidImage
 		}
@@ -118,21 +135,20 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 		for i, assignment := range principal.Assignments {
 			ids[i] = assignment.RoleID
 		}
-		sort.Strings(ids)
-		for i := 1; i < len(ids); i++ {
-			if ids[i] == ids[i-1] {
-				return nil, ErrInvalidPolicy
-			}
-		}
 		// Only the current and previous bounded Principal membership sets
-		// retain views; membership churn cannot grow a policy-global cache.
-		setKey := strings.Join(ids, "\x00")
+		// retain views. Both role membership and trusted UID bind reuse; users
+		// with the same Role must never share each other's personal ranges.
+		bindings := authz.SubjectBindings{PersonalUID: principal.UserUID}
+		setKey, err := policy.AccessKey(ids, bindings)
+		if err != nil {
+			return nil, err
+		}
 		access := snapshot.accessSets[setKey]
 		if access == nil && previous != nil && policy == previous.policy {
 			access = previous.accessSets[setKey]
 		}
 		if access == nil {
-			access, err = policy.ForRoles(ids)
+			access, err = policy.BindRoles(ids, bindings)
 			if err != nil {
 				return nil, err
 			}
@@ -142,7 +158,7 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 		for _, assignment := range principal.Assignments {
 			bootstrapHuman = bootstrapHuman || image.BootstrapRevision != 0 && assignment.EnvOwned && assignment.RoleID == "security_admin"
 		}
-		snapshot.principals[principal.Identity] = principalAccess{state: principal.State, access: access, humanIssuerConfigRevision: principal.HumanIssuerConfigRevision, bootstrapHuman: bootstrapHuman}
+		snapshot.principals[principal.Identity] = principalAccess{state: principal.State, access: access, humanIssuerConfigRevision: principal.HumanIssuerConfigRevision, bootstrapHuman: bootstrapHuman, userUID: principal.UserUID}
 	}
 	if err := snapshot.compileMachines(image.MachineCredentials); err != nil {
 		return nil, err

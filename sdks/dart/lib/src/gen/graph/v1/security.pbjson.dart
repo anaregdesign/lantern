@@ -397,6 +397,21 @@ final $typed_data.Uint8List securityPrefixPairDescriptor = $convert.base64Decode
     'ChJTZWN1cml0eVByZWZpeFBhaXISHwoLdGFpbF9wcmVmaXgYASABKAlSCnRhaWxQcmVmaXgSHw'
     'oLaGVhZF9wcmVmaXgYAiABKAlSCmhlYWRQcmVmaXg=');
 
+@$core.Deprecated('Use securityPrincipalUIDPrefixDescriptor instead')
+const SecurityPrincipalUIDPrefix$json = {
+  '1': 'SecurityPrincipalUIDPrefix',
+  '2': [
+    {'1': 'literal_before', '3': 1, '4': 1, '5': 9, '10': 'literalBefore'},
+    {'1': 'literal_after', '3': 2, '4': 1, '5': 9, '10': 'literalAfter'},
+  ],
+};
+
+/// Descriptor for `SecurityPrincipalUIDPrefix`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List securityPrincipalUIDPrefixDescriptor =
+    $convert.base64Decode(
+        'ChpTZWN1cml0eVByaW5jaXBhbFVJRFByZWZpeBIlCg5saXRlcmFsX2JlZm9yZRgBIAEoCVINbG'
+        'l0ZXJhbEJlZm9yZRIjCg1saXRlcmFsX2FmdGVyGAIgASgJUgxsaXRlcmFsQWZ0ZXI=');
+
 @$core.Deprecated('Use securityRuleDescriptor instead')
 const SecurityRule$json = {
   '1': 'SecurityRule',
@@ -429,6 +444,15 @@ const SecurityRule$json = {
       '9': 0,
       '10': 'pair'
     },
+    {
+      '1': 'principal_uid_prefix',
+      '3': 7,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityPrincipalUIDPrefix',
+      '9': 0,
+      '10': 'principalUidPrefix'
+    },
   ],
   '8': [
     {'1': 'resource'},
@@ -441,7 +465,9 @@ final $typed_data.Uint8List securityRuleDescriptor = $convert.base64Decode(
     'YxLlNlY3VyaXR5RWZmZWN0UgZlZmZlY3QSMAoGYWN0aW9uGAMgASgOMhguZ3JhcGgudjEuU2Vj'
     'dXJpdHlBY3Rpb25SBmFjdGlvbhIYCgZwcmVmaXgYBCABKAlIAFIGcHJlZml4EhgKBmdsb2JhbB'
     'gFIAEoCEgAUgZnbG9iYWwSMgoEcGFpchgGIAEoCzIcLmdyYXBoLnYxLlNlY3VyaXR5UHJlZml4'
-    'UGFpckgAUgRwYWlyQgoKCHJlc291cmNl');
+    'UGFpckgAUgRwYWlyElgKFHByaW5jaXBhbF91aWRfcHJlZml4GAcgASgLMiQuZ3JhcGgudjEuU2'
+    'VjdXJpdHlQcmluY2lwYWxVSURQcmVmaXhIAFIScHJpbmNpcGFsVWlkUHJlZml4QgoKCHJlc291'
+    'cmNl');
 
 @$core.Deprecated('Use securityRoleDescriptor instead')
 const SecurityRole$json = {
@@ -518,6 +544,18 @@ const SecurityUser$json = {
       '6': '.graph.v1.SecurityRoleAssignment',
       '10': 'assignments'
     },
+    {
+      '1': 'user_id',
+      '3': 4,
+      '4': 1,
+      '5': 9,
+      '9': 0,
+      '10': 'userId',
+      '17': true
+    },
+  ],
+  '8': [
+    {'1': '_user_id'},
   ],
 };
 
@@ -526,7 +564,8 @@ final $typed_data.Uint8List securityUserDescriptor = $convert.base64Decode(
     'CgxTZWN1cml0eVVzZXISNgoIaWRlbnRpdHkYASABKAsyGi5ncmFwaC52MS5TZWN1cml0eUlkZW'
     '50aXR5UghpZGVudGl0eRI2CgVzdGF0ZRgCIAEoDjIgLmdyYXBoLnYxLlNlY3VyaXR5UHJpbmNp'
     'cGFsU3RhdGVSBXN0YXRlEkIKC2Fzc2lnbm1lbnRzGAMgAygLMiAuZ3JhcGgudjEuU2VjdXJpdH'
-    'lSb2xlQXNzaWdubWVudFILYXNzaWdubWVudHM=');
+    'lSb2xlQXNzaWdubWVudFILYXNzaWdubWVudHMSHAoHdXNlcl9pZBgEIAEoCUgAUgZ1c2VySWSI'
+    'AQFCCgoIX3VzZXJfaWQ=');
 
 @$core.Deprecated('Use securityIssuerDescriptor instead')
 const SecurityIssuer$json = {
@@ -736,6 +775,18 @@ const GetCurrentPrincipalResponse$json = {
       '10': 'recentAuthentication'
     },
     {'1': 'csrf_token', '3': 6, '4': 1, '5': 9, '10': 'csrfToken'},
+    {
+      '1': 'user_id',
+      '3': 7,
+      '4': 1,
+      '5': 9,
+      '9': 0,
+      '10': 'userId',
+      '17': true
+    },
+  ],
+  '8': [
+    {'1': '_user_id'},
   ],
 };
 
@@ -746,7 +797,8 @@ final $typed_data.Uint8List getCurrentPrincipalResponseDescriptor = $convert.bas
     'LlNlY3VyaXR5Um9sZVIFcm9sZXMSMwoHdmVyc2lvbhgDIAEoCzIZLmdyYXBoLnYxLlNlY3VyaX'
     'R5VmVyc2lvblIHdmVyc2lvbhI5CgpleHBpcmVzX2F0GAQgASgLMhouZ29vZ2xlLnByb3RvYnVm'
     'LlRpbWVzdGFtcFIJZXhwaXJlc0F0EjMKFXJlY2VudF9hdXRoZW50aWNhdGlvbhgFIAEoCFIUcm'
-    'VjZW50QXV0aGVudGljYXRpb24SHQoKY3NyZl90b2tlbhgGIAEoCVIJY3NyZlRva2Vu');
+    'VjZW50QXV0aGVudGljYXRpb24SHQoKY3NyZl90b2tlbhgGIAEoCVIJY3NyZlRva2VuEhwKB3Vz'
+    'ZXJfaWQYByABKAlIAFIGdXNlcklkiAEBQgoKCF91c2VyX2lk');
 
 @$core.Deprecated('Use browserSessionDescriptor instead')
 const BrowserSession$json = {
@@ -1571,6 +1623,85 @@ final $typed_data.Uint8List securityUserStateChangeDescriptor = $convert.base64D
     'NlY3VyaXR5SWRlbnRpdHlSCGlkZW50aXR5EjYKBXN0YXRlGAIgASgOMiAuZ3JhcGgudjEuU2Vj'
     'dXJpdHlQcmluY2lwYWxTdGF0ZVIFc3RhdGU=');
 
+@$core.Deprecated('Use securityRegistrationProfileDescriptor instead')
+const SecurityRegistrationProfile$json = {
+  '1': 'SecurityRegistrationProfile',
+  '2': [
+    {'1': 'issuer', '3': 1, '4': 1, '5': 9, '10': 'issuer'},
+    {'1': 'client_profile_id', '3': 2, '4': 1, '5': 9, '10': 'clientProfileId'},
+  ],
+};
+
+/// Descriptor for `SecurityRegistrationProfile`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List securityRegistrationProfileDescriptor =
+    $convert.base64Decode(
+        'ChtTZWN1cml0eVJlZ2lzdHJhdGlvblByb2ZpbGUSFgoGaXNzdWVyGAEgASgJUgZpc3N1ZXISKg'
+        'oRY2xpZW50X3Byb2ZpbGVfaWQYAiABKAlSD2NsaWVudFByb2ZpbGVJZA==');
+
+@$core.Deprecated('Use securityRegistrationPolicyDescriptor instead')
+const SecurityRegistrationPolicy$json = {
+  '1': 'SecurityRegistrationPolicy',
+  '2': [
+    {'1': 'version', '3': 1, '4': 1, '5': 13, '10': 'version'},
+    {'1': 'enabled', '3': 2, '4': 1, '5': 8, '10': 'enabled'},
+    {'1': 'role_id', '3': 3, '4': 1, '5': 9, '10': 'roleId'},
+    {
+      '1': 'profiles',
+      '3': 4,
+      '4': 3,
+      '5': 11,
+      '6': '.graph.v1.SecurityRegistrationProfile',
+      '10': 'profiles'
+    },
+  ],
+};
+
+/// Descriptor for `SecurityRegistrationPolicy`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List securityRegistrationPolicyDescriptor = $convert.base64Decode(
+    'ChpTZWN1cml0eVJlZ2lzdHJhdGlvblBvbGljeRIYCgd2ZXJzaW9uGAEgASgNUgd2ZXJzaW9uEh'
+    'gKB2VuYWJsZWQYAiABKAhSB2VuYWJsZWQSFwoHcm9sZV9pZBgDIAEoCVIGcm9sZUlkEkEKCHBy'
+    'b2ZpbGVzGAQgAygLMiUuZ3JhcGgudjEuU2VjdXJpdHlSZWdpc3RyYXRpb25Qcm9maWxlUghwcm'
+    '9maWxlcw==');
+
+@$core.Deprecated('Use getRegistrationPolicyRequestDescriptor instead')
+const GetRegistrationPolicyRequest$json = {
+  '1': 'GetRegistrationPolicyRequest',
+};
+
+/// Descriptor for `GetRegistrationPolicyRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getRegistrationPolicyRequestDescriptor =
+    $convert.base64Decode('ChxHZXRSZWdpc3RyYXRpb25Qb2xpY3lSZXF1ZXN0');
+
+@$core.Deprecated('Use getRegistrationPolicyResponseDescriptor instead')
+const GetRegistrationPolicyResponse$json = {
+  '1': 'GetRegistrationPolicyResponse',
+  '2': [
+    {
+      '1': 'policy',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityRegistrationPolicy',
+      '10': 'policy'
+    },
+    {
+      '1': 'version',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityVersion',
+      '10': 'version'
+    },
+  ],
+};
+
+/// Descriptor for `GetRegistrationPolicyResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getRegistrationPolicyResponseDescriptor =
+    $convert.base64Decode(
+        'Ch1HZXRSZWdpc3RyYXRpb25Qb2xpY3lSZXNwb25zZRI8CgZwb2xpY3kYASABKAsyJC5ncmFwaC'
+        '52MS5TZWN1cml0eVJlZ2lzdHJhdGlvblBvbGljeVIGcG9saWN5EjMKB3ZlcnNpb24YAiABKAsy'
+        'GS5ncmFwaC52MS5TZWN1cml0eVZlcnNpb25SB3ZlcnNpb24=');
+
 @$core.Deprecated('Use securityChangeDescriptor instead')
 const SecurityChange$json = {
   '1': 'SecurityChange',
@@ -1655,6 +1786,15 @@ const SecurityChange$json = {
       '9': 0,
       '10': 'revokeUserSessions'
     },
+    {
+      '1': 'put_registration_policy',
+      '3': 11,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityRegistrationPolicy',
+      '9': 0,
+      '10': 'putRegistrationPolicy'
+    },
   ],
   '8': [
     {'1': 'operation'},
@@ -1673,8 +1813,9 @@ final $typed_data.Uint8List securityChangeDescriptor = $convert.base64Decode(
     'gIIAEoCzIgLmdyYXBoLnYxLlNlY3VyaXR5Um9sZUFzc2lnbm1lbnRIAFINcHV0QXNzaWdubWVu'
     'dBJPChFkZWxldGVfYXNzaWdubWVudBgJIAEoCzIgLmdyYXBoLnYxLlNlY3VyaXR5Um9sZUFzc2'
     'lnbm1lbnRIAFIQZGVsZXRlQXNzaWdubWVudBJOChRyZXZva2VfdXNlcl9zZXNzaW9ucxgKIAEo'
-    'CzIaLmdyYXBoLnYxLlNlY3VyaXR5SWRlbnRpdHlIAFIScmV2b2tlVXNlclNlc3Npb25zQgsKCW'
-    '9wZXJhdGlvbg==');
+    'CzIaLmdyYXBoLnYxLlNlY3VyaXR5SWRlbnRpdHlIAFIScmV2b2tlVXNlclNlc3Npb25zEl4KF3'
+    'B1dF9yZWdpc3RyYXRpb25fcG9saWN5GAsgASgLMiQuZ3JhcGgudjEuU2VjdXJpdHlSZWdpc3Ry'
+    'YXRpb25Qb2xpY3lIAFIVcHV0UmVnaXN0cmF0aW9uUG9saWN5QgsKCW9wZXJhdGlvbg==');
 
 @$core.Deprecated('Use applySecurityChangesRequestDescriptor instead')
 const ApplySecurityChangesRequest$json = {
@@ -2653,6 +2794,11 @@ const $core.Map<$core.String, $core.dynamic> LanternSecurityServiceBase$json = {
       '3': '.graph.v1.GetUserResponse'
     },
     {
+      '1': 'GetRegistrationPolicy',
+      '2': '.graph.v1.GetRegistrationPolicyRequest',
+      '3': '.graph.v1.GetRegistrationPolicyResponse'
+    },
+    {
       '1': 'ListRoleAssignments',
       '2': '.graph.v1.ListRoleAssignmentsRequest',
       '3': '.graph.v1.ListRoleAssignmentsResponse'
@@ -2723,6 +2869,7 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.SecurityRole': SecurityRole$json,
   '.graph.v1.SecurityRule': SecurityRule$json,
   '.graph.v1.SecurityPrefixPair': SecurityPrefixPair$json,
+  '.graph.v1.SecurityPrincipalUIDPrefix': SecurityPrincipalUIDPrefix$json,
   '.graph.v1.SecurityVersion': SecurityVersion$json,
   '.graph.v1.CurrentSemanticCut': CurrentSemanticCut$json,
   '.google.protobuf.Timestamp': $0.Timestamp$json,
@@ -2742,6 +2889,10 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.SecurityRoleAssignment': SecurityRoleAssignment$json,
   '.graph.v1.GetUserRequest': GetUserRequest$json,
   '.graph.v1.GetUserResponse': GetUserResponse$json,
+  '.graph.v1.GetRegistrationPolicyRequest': GetRegistrationPolicyRequest$json,
+  '.graph.v1.GetRegistrationPolicyResponse': GetRegistrationPolicyResponse$json,
+  '.graph.v1.SecurityRegistrationPolicy': SecurityRegistrationPolicy$json,
+  '.graph.v1.SecurityRegistrationProfile': SecurityRegistrationProfile$json,
   '.graph.v1.ListRoleAssignmentsRequest': ListRoleAssignmentsRequest$json,
   '.graph.v1.ListRoleAssignmentsResponse': ListRoleAssignmentsResponse$json,
   '.graph.v1.ListSecurityAuditRequest': ListSecurityAuditRequest$json,
@@ -2800,25 +2951,27 @@ final $typed_data.Uint8List lanternSecurityServiceDescriptor = $convert.base64De
     'R2V0Um9sZRIYLmdyYXBoLnYxLkdldFJvbGVSZXF1ZXN0GhkuZ3JhcGgudjEuR2V0Um9sZVJlc3'
     'BvbnNlEkQKCUxpc3RVc2VycxIaLmdyYXBoLnYxLkxpc3RVc2Vyc1JlcXVlc3QaGy5ncmFwaC52'
     'MS5MaXN0VXNlcnNSZXNwb25zZRI+CgdHZXRVc2VyEhguZ3JhcGgudjEuR2V0VXNlclJlcXVlc3'
-    'QaGS5ncmFwaC52MS5HZXRVc2VyUmVzcG9uc2USYgoTTGlzdFJvbGVBc3NpZ25tZW50cxIkLmdy'
-    'YXBoLnYxLkxpc3RSb2xlQXNzaWdubWVudHNSZXF1ZXN0GiUuZ3JhcGgudjEuTGlzdFJvbGVBc3'
-    'NpZ25tZW50c1Jlc3BvbnNlElwKEUxpc3RTZWN1cml0eUF1ZGl0EiIuZ3JhcGgudjEuTGlzdFNl'
-    'Y3VyaXR5QXVkaXRSZXF1ZXN0GiMuZ3JhcGgudjEuTGlzdFNlY3VyaXR5QXVkaXRSZXNwb25zZR'
-    'JZChBHZXRSb2xlVGVtcGxhdGVzEiEuZ3JhcGgudjEuR2V0Um9sZVRlbXBsYXRlc1JlcXVlc3Qa'
-    'Ii5ncmFwaC52MS5HZXRSb2xlVGVtcGxhdGVzUmVzcG9uc2USUAoNRXhwbGFpbkFjY2VzcxIeLm'
-    'dyYXBoLnYxLkV4cGxhaW5BY2Nlc3NSZXF1ZXN0Gh8uZ3JhcGgudjEuRXhwbGFpbkFjY2Vzc1Jl'
-    'c3BvbnNlElMKDlZhbGlkYXRlSXNzdWVyEh8uZ3JhcGgudjEuVmFsaWRhdGVJc3N1ZXJSZXF1ZX'
-    'N0GiAuZ3JhcGgudjEuVmFsaWRhdGVJc3N1ZXJSZXNwb25zZRJrChZQcmVwYXJlU2VjdXJpdHlD'
-    'aGFuZ2VzEicuZ3JhcGgudjEuUHJlcGFyZVNlY3VyaXR5Q2hhbmdlc1JlcXVlc3QaKC5ncmFwaC'
-    '52MS5QcmVwYXJlU2VjdXJpdHlDaGFuZ2VzUmVzcG9uc2USiQEKIEJlZ2luU2VjdXJpdHlDaGFu'
-    'Z2VBdXRob3JpemF0aW9uEjEuZ3JhcGgudjEuQmVnaW5TZWN1cml0eUNoYW5nZUF1dGhvcml6YX'
-    'Rpb25SZXF1ZXN0GjIuZ3JhcGgudjEuQmVnaW5TZWN1cml0eUNoYW5nZUF1dGhvcml6YXRpb25S'
-    'ZXNwb25zZRKDAQoeR2V0U2VjdXJpdHlDaGFuZ2VBdXRob3JpemF0aW9uEi8uZ3JhcGgudjEuR2'
-    'V0U2VjdXJpdHlDaGFuZ2VBdXRob3JpemF0aW9uUmVxdWVzdBowLmdyYXBoLnYxLkdldFNlY3Vy'
-    'aXR5Q2hhbmdlQXV0aG9yaXphdGlvblJlc3BvbnNlEmUKFEFwcGx5U2VjdXJpdHlDaGFuZ2VzEi'
-    'UuZ3JhcGgudjEuQXBwbHlTZWN1cml0eUNoYW5nZXNSZXF1ZXN0GiYuZ3JhcGgudjEuQXBwbHlT'
-    'ZWN1cml0eUNoYW5nZXNSZXNwb25zZRJiChNBcHBseVNlY3VyaXR5Q2hhbmdlEiQuZ3JhcGgudj'
-    'EuQXBwbHlTZWN1cml0eUNoYW5nZVJlcXVlc3QaJS5ncmFwaC52MS5BcHBseVNlY3VyaXR5Q2hh'
-    'bmdlUmVzcG9uc2USbgoXR2V0U2VjdXJpdHlDaGFuZ2VTdGF0dXMSKC5ncmFwaC52MS5HZXRTZW'
-    'N1cml0eUNoYW5nZVN0YXR1c1JlcXVlc3QaKS5ncmFwaC52MS5HZXRTZWN1cml0eUNoYW5nZVN0'
-    'YXR1c1Jlc3BvbnNl');
+    'QaGS5ncmFwaC52MS5HZXRVc2VyUmVzcG9uc2USaAoVR2V0UmVnaXN0cmF0aW9uUG9saWN5EiYu'
+    'Z3JhcGgudjEuR2V0UmVnaXN0cmF0aW9uUG9saWN5UmVxdWVzdBonLmdyYXBoLnYxLkdldFJlZ2'
+    'lzdHJhdGlvblBvbGljeVJlc3BvbnNlEmIKE0xpc3RSb2xlQXNzaWdubWVudHMSJC5ncmFwaC52'
+    'MS5MaXN0Um9sZUFzc2lnbm1lbnRzUmVxdWVzdBolLmdyYXBoLnYxLkxpc3RSb2xlQXNzaWdubW'
+    'VudHNSZXNwb25zZRJcChFMaXN0U2VjdXJpdHlBdWRpdBIiLmdyYXBoLnYxLkxpc3RTZWN1cml0'
+    'eUF1ZGl0UmVxdWVzdBojLmdyYXBoLnYxLkxpc3RTZWN1cml0eUF1ZGl0UmVzcG9uc2USWQoQR2'
+    'V0Um9sZVRlbXBsYXRlcxIhLmdyYXBoLnYxLkdldFJvbGVUZW1wbGF0ZXNSZXF1ZXN0GiIuZ3Jh'
+    'cGgudjEuR2V0Um9sZVRlbXBsYXRlc1Jlc3BvbnNlElAKDUV4cGxhaW5BY2Nlc3MSHi5ncmFwaC'
+    '52MS5FeHBsYWluQWNjZXNzUmVxdWVzdBofLmdyYXBoLnYxLkV4cGxhaW5BY2Nlc3NSZXNwb25z'
+    'ZRJTCg5WYWxpZGF0ZUlzc3VlchIfLmdyYXBoLnYxLlZhbGlkYXRlSXNzdWVyUmVxdWVzdBogLm'
+    'dyYXBoLnYxLlZhbGlkYXRlSXNzdWVyUmVzcG9uc2USawoWUHJlcGFyZVNlY3VyaXR5Q2hhbmdl'
+    'cxInLmdyYXBoLnYxLlByZXBhcmVTZWN1cml0eUNoYW5nZXNSZXF1ZXN0GiguZ3JhcGgudjEuUH'
+    'JlcGFyZVNlY3VyaXR5Q2hhbmdlc1Jlc3BvbnNlEokBCiBCZWdpblNlY3VyaXR5Q2hhbmdlQXV0'
+    'aG9yaXphdGlvbhIxLmdyYXBoLnYxLkJlZ2luU2VjdXJpdHlDaGFuZ2VBdXRob3JpemF0aW9uUm'
+    'VxdWVzdBoyLmdyYXBoLnYxLkJlZ2luU2VjdXJpdHlDaGFuZ2VBdXRob3JpemF0aW9uUmVzcG9u'
+    'c2USgwEKHkdldFNlY3VyaXR5Q2hhbmdlQXV0aG9yaXphdGlvbhIvLmdyYXBoLnYxLkdldFNlY3'
+    'VyaXR5Q2hhbmdlQXV0aG9yaXphdGlvblJlcXVlc3QaMC5ncmFwaC52MS5HZXRTZWN1cml0eUNo'
+    'YW5nZUF1dGhvcml6YXRpb25SZXNwb25zZRJlChRBcHBseVNlY3VyaXR5Q2hhbmdlcxIlLmdyYX'
+    'BoLnYxLkFwcGx5U2VjdXJpdHlDaGFuZ2VzUmVxdWVzdBomLmdyYXBoLnYxLkFwcGx5U2VjdXJp'
+    'dHlDaGFuZ2VzUmVzcG9uc2USYgoTQXBwbHlTZWN1cml0eUNoYW5nZRIkLmdyYXBoLnYxLkFwcG'
+    'x5U2VjdXJpdHlDaGFuZ2VSZXF1ZXN0GiUuZ3JhcGgudjEuQXBwbHlTZWN1cml0eUNoYW5nZVJl'
+    'c3BvbnNlEm4KF0dldFNlY3VyaXR5Q2hhbmdlU3RhdHVzEiguZ3JhcGgudjEuR2V0U2VjdXJpdH'
+    'lDaGFuZ2VTdGF0dXNSZXF1ZXN0GikuZ3JhcGgudjEuR2V0U2VjdXJpdHlDaGFuZ2VTdGF0dXNS'
+    'ZXNwb25zZQ==');

@@ -16,6 +16,7 @@ type authorityCredentialClaim struct {
 	Origin, CSRF      [32]byte
 	DerivedStart      AuthenticationTime
 	AdmissionDeadline time.Time
+	Registration      *authorityRegistrationAuthorization `json:",omitempty"`
 }
 
 type authorityPurposeBinding struct {
@@ -48,7 +49,7 @@ func authorityCredentialStart(c authorityCredentialClaim) AuthenticationTime {
 		if nbf := c.Token.NotBefore; nbf.Numeric && nbf.Time().After(start.Time()) {
 			start = nbf
 		}
-		if c.Token.Mode == "native-login" {
+		if c.Token.Mode == "native-login" || c.Token.Mode == "native-registration" {
 			n := c.Token.Native
 			for _, candidate := range []AuthenticationTime{authorityNumericTime(n.ConsumedAt), n.ExchangeIssuedAt, n.ExchangeNotBefore} {
 				if candidate.Numeric && candidate.Time().After(start.Time()) {
@@ -83,6 +84,12 @@ func authorityOriginalTime(t time.Time) bool {
 }
 
 func verifyAuthorityCredential(h authorityHistoricalHeader, operation OperationIdentity, command S1Command) bool {
+	if h.Credential.Registration != nil {
+		return verifyRegistrationCredential(h, operation, command)
+	}
+	if !ordinaryS1Command(command.Kind) {
+		return false
+	}
 	c, a := h.Credential, h.Authentication
 	low, high := h.Time.utcTimes()
 	if a.Class != EndUser || a.IssuerConfigRevision == 0 || h.Lineage == 0 || c.Verification == [32]byte{} ||

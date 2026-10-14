@@ -218,6 +218,35 @@ impl LanternClient {
         &self,
         options: CallOptions,
     ) -> Result<crate::CurrentAuthorityBinding, LanternError> {
+        let response = self.current_principal(options).await?;
+        crate::CurrentAuthorityBinding::from_wire(
+            response
+                .version
+                .ok_or(LanternError::Protocol("missing current authority version"))?,
+        )
+    }
+
+    /// Read the authenticated user's immutable Server-installed ID without an
+    /// extra Role. `None` means a UID-less or machine Principal; signed-out calls
+    /// return their authentication error. No cached or client-generated ID is used.
+    pub async fn current_user_id(
+        &self,
+        options: CallOptions,
+    ) -> Result<Option<String>, LanternError> {
+        let response = self.current_principal(options).await?;
+        crate::CurrentAuthorityBinding::from_wire(
+            response
+                .version
+                .clone()
+                .ok_or(LanternError::Protocol("missing current authority version"))?,
+        )?;
+        Ok(response.user_id)
+    }
+
+    async fn current_principal(
+        &self,
+        options: CallOptions,
+    ) -> Result<crate::generated::graph::v1::GetCurrentPrincipalResponse, LanternError> {
         use crate::generated::graph::v1::{
             GetCurrentPrincipalRequest,
             lantern_security_service_client::LanternSecurityServiceClient,
@@ -236,11 +265,8 @@ impl LanternClient {
                 |client, request| Box::pin(client.get_current_principal(request)),
             )
             .await?;
-        crate::CurrentAuthorityBinding::from_wire(
-            response
-                .version
-                .ok_or(LanternError::Protocol("missing current authority version"))?,
-        )
+        crate::security::validate_user_id(&response)?;
+        Ok(response)
     }
 
     /// Open exactly one data-plane server stream. Keep the raw protobuf frame

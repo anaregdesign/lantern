@@ -14,6 +14,10 @@ service LanternNativeAuthService {
   rpc GetNativeSession(GetNativeSessionRequest) returns (GetNativeSessionResponse);
   rpc PrepareNativeLogout(PrepareNativeLogoutRequest) returns (PrepareNativeLogoutResponse);
   rpc ApplyNativeLogout(ApplyNativeLogoutRequest) returns (ApplyNativeLogoutResponse);
+  rpc BeginNativeRegistration(BeginNativeRegistrationRequest) returns (BeginNativeRegistrationResponse);
+  rpc PrepareNativeRegistration(PrepareNativeRegistrationRequest) returns (PrepareNativeRegistrationResponse);
+  rpc ApplyNativeRegistration(ApplyNativeRegistrationRequest) returns (ApplyNativeRegistrationResponse);
+  rpc GetNativeRegistrationStatus(GetNativeRegistrationStatusRequest) returns (GetNativeRegistrationStatusResponse);
 }
 
 message BeginNativeLoginRequest {
@@ -64,6 +68,10 @@ message NativeSession {
   google.protobuf.Timestamp auth_time = 6;
   SecurityIdentity identity = 7;
   SecurityVersion version = 8;
+  // Trusted installed Principal metadata, absent for a UID-less legacy user.
+  optional string user_id = 9;
+  // Logical prefix; callers must not prepend the internal physical 'data:'.
+  optional string personal_prefix = 10;
 }
 message CompleteNativeLoginResponse {
   // Disclosed only after durable Apply and current revalidation/output fencing.
@@ -89,4 +97,63 @@ message ApplyNativeLogoutResponse {
   bool clear_local_session = 1;
   // Absence means unknown/unavailable for disclosure, never rollback.
   CurrentSecurityChangeResult current_result = 2;
+}
+
+// Exact Server-minted business review. Persist before Apply. Possession alone
+// grants no authority; unknown status never permits restamping or a new intent.
+message NativeRegistrationReview {
+  CurrentAuthorityProfile profile = 1;
+  CurrentSemanticCut expected_cut = 2;
+  CurrentSecurityChangeID change_id = 3;
+  SecurityIdentity actor = 4;
+  bytes intent_digest = 5;
+  string user_id = 6;
+  string client_profile_id = 7;
+  uint64 issuer_config_revision = 8;
+}
+message BeginNativeRegistrationRequest {
+  string issuer = 1;
+  string client_profile_id = 2;
+  // Presence selects recovery-only authentication for this original review.
+  NativeRegistrationReview recovery_review = 3;
+}
+message BeginNativeRegistrationResponse {
+  // Share the provider challenge shape; registration purpose stays Server-owned.
+  BeginNativeLoginResponse attempt = 1;
+}
+message PrepareNativeRegistrationRequest {
+  string attempt_id = 1;
+  string completion_secret = 2;
+  oneof provider {
+    GoogleNativeCredential google = 3;
+    AppleNativeCredential apple = 4;
+  }
+  // Must match Begin exactly; absent for a new registration.
+  NativeRegistrationReview recovery_review = 5;
+}
+message PrepareNativeRegistrationResponse {
+  NativeRegistrationReview review = 1;
+  // Volatile process-bound proof; never persist or send to a provider.
+  string proof = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  string affinity = 4;
+}
+message ApplyNativeRegistrationRequest {
+  NativeRegistrationReview review = 1;
+  string proof = 2;
+}
+message ApplyNativeRegistrationResponse {
+  CurrentSecurityChangeResult current_result = 1;
+  // Only the first Apply invocation can disclose a newly issued credential.
+  string credential = 2;
+  NativeSession session = 3;
+  // Registration Applied, but this invocation has no new session credential.
+  bool sign_in_required = 4;
+}
+message GetNativeRegistrationStatusRequest {
+  NativeRegistrationReview review = 1;
+  string proof = 2;
+}
+message GetNativeRegistrationStatusResponse {
+  CurrentSecurityChangeResult current_result = 1;
 }

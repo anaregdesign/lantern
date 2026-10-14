@@ -1,3 +1,4 @@
+import 'package:connectrpc/connect.dart' as connect;
 import 'package:connectrpc/test.dart';
 import 'package:fixnum/fixnum.dart';
 import 'package:lantern_client/lantern_client.dart';
@@ -35,6 +36,63 @@ wire.SecurityVersion version() {
 }
 
 void main() {
+  test(
+    'self user ID has explicit presence and follows the current account',
+    () async {
+      String? id;
+      var kind = wire.SecurityPrincipalKind.SECURITY_PRINCIPAL_KIND_OIDC;
+      var signedOut = false, calls = 0;
+      final client = LanternClient.connect(
+        Uri.parse('https://example.test'),
+        tokenProvider: () => 'current-fixture',
+        transport: FakeTransportBuilder()
+            .unary<
+              wire.GetCurrentPrincipalRequest,
+              wire.GetCurrentPrincipalResponse
+            >(LanternSecurityService.getCurrentPrincipal, (request, context) {
+              calls++;
+              if (signedOut) {
+                throw connect.ConnectException(
+                  connect.Code.unauthenticated,
+                  'signed out',
+                );
+              }
+              return wire.GetCurrentPrincipalResponse(
+                version: version(),
+                userId: id,
+                identity: wire.SecurityIdentity(kind: kind),
+              );
+            })
+            .build(),
+      );
+      addTearDown(client.close);
+      for (final value in <String?>['1' * 32, null, '2' * 32]) {
+        id = value;
+        expect(await client.getCurrentUserId(), value);
+      }
+      for (final value in ['', 'short', '0' * 32, 'A' * 32]) {
+        id = value;
+        await expectLater(
+          client.getCurrentUserId(),
+          throwsA(isA<LanternFailedPreconditionException>()),
+        );
+      }
+      kind = wire.SecurityPrincipalKind.SECURITY_PRINCIPAL_KIND_MACHINE;
+      id = null;
+      expect(await client.getCurrentUserId(), isNull);
+      id = '1' * 32;
+      await expectLater(
+        client.getCurrentUserId(),
+        throwsA(isA<LanternFailedPreconditionException>()),
+      );
+      signedOut = true;
+      await expectLater(
+        client.getCurrentUserId(),
+        throwsA(isA<LanternUnauthenticatedException>()),
+      );
+      expect(calls, 10);
+    },
+  );
   test(
     'current inspection preserves full cache binding and refuses scalar or malformed versions',
     () async {
