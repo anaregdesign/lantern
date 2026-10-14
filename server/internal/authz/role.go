@@ -1,4 +1,4 @@
-package security
+package authz
 
 type Effect string
 
@@ -30,7 +30,7 @@ type Role struct {
 	Rules []PermissionRule `json:"rules"`
 }
 
-func validRoleID(id string) bool {
+func ValidRoleID(id string) bool {
 	if len(id) == 0 || len(id) > 64 {
 		return false
 	}

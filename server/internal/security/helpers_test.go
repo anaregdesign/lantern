@@ -8,7 +8,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -76,24 +75,6 @@ func testSession() Session {
 
 func globalRule(effect Effect, action Action) PermissionRule {
 	return PermissionRule{Effect: effect, Action: action, Resource: GlobalResource}
-}
-
-func referenceAllows(roles []Role, action Action, key string) bool {
-	if key == "" || !utf8.ValidString(key) {
-		return false
-	}
-	allow := false
-	for _, role := range roles {
-		for _, rule := range role.Rules {
-			if rule.Action == action && rule.Resource == DataResource && strings.HasPrefix(key, *rule.Prefix) {
-				if rule.Effect == Deny {
-					return false
-				}
-				allow = true
-			}
-		}
-	}
-	return allow
 }
 
 type fakeCommitter struct {

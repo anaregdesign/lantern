@@ -96,3 +96,35 @@ func TestImageUnknownAuthenticationTimeAndOldReaderBoundary(t *testing.T) {
 		t.Fatal("old image silently migrated", err)
 	}
 }
+
+func TestImageMembershipReuse(t *testing.T) {
+	image := testImage()
+	image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: MachinePrincipal, MachineName: "other_admin"}, State: Active, Assignments: []RoleAssignment{{RoleID: "security_admin"}}})
+	first, err := CompileImage(image, DefaultPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, _ := first.AccessFor(testIdentity())
+	other, _ := first.AccessFor(image.Principals[1].Identity)
+	if admin != other {
+		t.Fatal("identical Role sets did not share a view")
+	}
+	image.Principals[1].State = Suspended
+	next, err := compileImage(image, DefaultPolicyLimits(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _ := next.AccessFor(testIdentity())
+	if current != admin {
+		t.Fatal("account-only revision rebuilt the Role view")
+	}
+	image.Roles[0].Rules = append(image.Roles[0].Rules, dataRule(Allow, VertexRead, "public:"))
+	changed, err := compileImage(image, DefaultPolicyLimits(), next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _ = changed.AccessFor(testIdentity())
+	if current == admin || !current.Scope(VertexRead).Contains("public:1") || admin.Scope(VertexRead).Contains("public:1") {
+		t.Fatal("Role revision reused stale permission")
+	}
+}

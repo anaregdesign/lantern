@@ -1,4 +1,4 @@
-package security
+package authz
 
 // AllowsEdgeAction composes an Edge operation or independent capability from
 // the endpoint prefix grants. Callers also enforce the operation's base access.

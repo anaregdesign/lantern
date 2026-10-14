@@ -1,4 +1,4 @@
-package security
+package authz
 
 import (
 	"fmt"
@@ -39,7 +39,7 @@ func (p *CompiledPolicy) ForRoles(ids []string) (*Access, error) {
 }
 
 func (a *Access) Allows(action Action, logicalKey string) bool {
-	kind, known := actionResource(action)
+	kind, known := ActionResource(action)
 	if a == nil || !known || kind != DataResource || logicalKey == "" || !utf8.ValidString(logicalKey) {
 		return false
 	}
@@ -55,7 +55,7 @@ func (a *Access) Allows(action Action, logicalKey string) bool {
 }
 
 func (a *Access) AllowsGlobal(action Action) bool {
-	kind, known := actionResource(action)
+	kind, known := ActionResource(action)
 	if a == nil || !known || kind != GlobalResource {
 		return false
 	}
@@ -79,7 +79,7 @@ func (a *Access) AllowsAll(action Action) bool {
 	case EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete:
 		return a.AllowsAll(VertexRead) && a.AllowsAll(VertexWrite)
 	}
-	kind, known := actionResource(action)
+	kind, known := ActionResource(action)
 	if a == nil || !known || kind != DataResource {
 		return false
 	}

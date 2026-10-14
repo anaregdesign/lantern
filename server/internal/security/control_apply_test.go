@@ -2,7 +2,6 @@ package security
 
 import (
 	"errors"
-	"maps"
 	"math"
 	"reflect"
 	"testing"
@@ -54,53 +53,100 @@ func TestS1CandidateRequiresExactLogicalPositionWithoutCertification(t *testing.
 	}
 }
 
-// Compare every result/state field, including the full outcome and ledger,
-// compiled policy/indexes, canonical image, cut and lineage. Only derived Scope
-// caches are excluded: their LRU history can differ after equivalent evaluation.
-// Copy the reference-bearing path so comparison never changes either result.
-func s1ApplyResultWithoutScopeCaches(result S1ApplyResult) S1ApplyResult {
-	if result.State == nil {
-		return result
-	}
-	state := *result.State
-	result.State = &state
-	if state.projection == nil {
-		return result
-	}
-	projection := *state.projection
-	state.projection = &projection
-	if projection.snapshot == nil {
-		return result
-	}
-	snapshot := *projection.snapshot
-	projection.snapshot = &snapshot
-	if snapshot.policy != nil {
-		policy := *snapshot.policy
-		snapshot.policy = &policy
-		policy.scopeCache = nil
-	}
-	withoutCache := func(access *Access) *Access {
-		if access == nil {
-			return nil
-		}
-		copy := *access
-		copy.cache = nil
-		return &copy
-	}
-	snapshot.accessSets = maps.Clone(snapshot.accessSets)
-	for key, access := range snapshot.accessSets {
-		snapshot.accessSets[key] = withoutCache(access)
-	}
-	snapshot.principals = maps.Clone(snapshot.principals)
-	for identity, principal := range snapshot.principals {
-		principal.access = withoutCache(principal.access)
-		snapshot.principals[identity] = principal
-	}
-	return result
-}
-
+// Compare every result/state field, including private compiled authz data.
+// Ignore only the exact derived Scope cache type; never replace compiled policy
+// comparison with canonical Image equality. Reflection reads across the package
+// boundary without exporting mutation/testing hooks or changing either result.
 func s1ApplyResultsEqual(a, b S1ApplyResult) bool {
-	return reflect.DeepEqual(s1ApplyResultWithoutScopeCaches(a), s1ApplyResultWithoutScopeCaches(b))
+	cacheField, ok := reflect.TypeFor[CompiledPolicy]().FieldByName("scopeCache")
+	if !ok {
+		panic("compiled policy cache boundary changed")
+	}
+	type visit struct {
+		a, b uintptr
+		kind reflect.Type
+	}
+	seen := make(map[visit]bool)
+	var equal func(reflect.Value, reflect.Value) bool
+	equal = func(a, b reflect.Value) bool {
+		if !a.IsValid() || !b.IsValid() {
+			return a.IsValid() == b.IsValid()
+		}
+		if a.Type() != b.Type() {
+			return false
+		}
+		if a.Type() == cacheField.Type {
+			return true
+		}
+		switch a.Kind() {
+		case reflect.Pointer:
+			if a.IsNil() || b.IsNil() {
+				return a.IsNil() == b.IsNil()
+			}
+			pair := visit{a.Pointer(), b.Pointer(), a.Type()}
+			if seen[pair] {
+				return true
+			}
+			seen[pair] = true
+			return equal(a.Elem(), b.Elem())
+		case reflect.Interface:
+			if a.IsNil() || b.IsNil() {
+				return a.IsNil() == b.IsNil()
+			}
+			return equal(a.Elem(), b.Elem())
+		case reflect.Struct:
+			for i := 0; i < a.NumField(); i++ {
+				if !equal(a.Field(i), b.Field(i)) {
+					return false
+				}
+			}
+			return true
+		case reflect.Slice:
+			if a.IsNil() != b.IsNil() {
+				return false
+			}
+			fallthrough
+		case reflect.Array:
+			if a.Len() != b.Len() {
+				return false
+			}
+			for i := 0; i < a.Len(); i++ {
+				if !equal(a.Index(i), b.Index(i)) {
+					return false
+				}
+			}
+			return true
+		case reflect.Map:
+			if a.IsNil() != b.IsNil() || a.Len() != b.Len() {
+				return false
+			}
+			for _, key := range a.MapKeys() {
+				if !equal(a.MapIndex(key), b.MapIndex(key)) {
+					return false
+				}
+			}
+			return true
+		case reflect.Bool:
+			return a.Bool() == b.Bool()
+		case reflect.String:
+			return a.String() == b.String()
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return a.Int() == b.Int()
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return a.Uint() == b.Uint()
+		case reflect.Float32, reflect.Float64:
+			return a.Float() == b.Float()
+		case reflect.Complex64, reflect.Complex128:
+			return a.Complex() == b.Complex()
+		case reflect.Chan, reflect.UnsafePointer:
+			return a.Pointer() == b.Pointer()
+		case reflect.Func:
+			return a.IsNil() && b.IsNil()
+		default:
+			panic("unhandled state comparison kind: " + a.Kind().String())
+		}
+	}
+	return equal(reflect.ValueOf(a), reflect.ValueOf(b))
 }
 
 func TestS1ApplySemanticComparisonIgnoresScopeCacheHistory(t *testing.T) {
@@ -135,7 +181,9 @@ func TestS1ApplySemanticComparisonIgnoresScopeCacheHistory(t *testing.T) {
 		snapshot := result.State.projection.snapshot
 		for _, identity := range []Identity{testIdentity(), s1Bob()} {
 			access, _ := snapshot.AccessFor(identity)
-			if snapshot.policy.scopeCache == nil || access.cache != snapshot.policy.scopeCache {
+			policyCache := reflect.ValueOf(snapshot.policy).Elem().FieldByName("scopeCache").Pointer()
+			accessCache := reflect.ValueOf(access).Elem().FieldByName("cache").Pointer()
+			if policyCache == 0 || accessCache != policyCache {
 				t.Fatal("comparison mutated an original Scope cache reference")
 			}
 		}
@@ -179,15 +227,47 @@ func TestS1ApplySemanticComparisonRejectsStateChanges(t *testing.T) {
 		{"canonical image", func(r *S1ApplyResult) { r.State.projection.snapshot.image[0]++ }},
 		{"Role bytes", func(r *S1ApplyResult) { r.State.projection.snapshot.roleBytes[0]++ }},
 		{"policy limits", func(r *S1ApplyResult) { r.State.projection.snapshot.limits.MaxAssignments++ }},
-		{"compiled policy", func(r *S1ApplyResult) { r.State.projection.snapshot.policy.maxAssignments++ }},
-		{"compiled Role", func(r *S1ApplyResult) { delete(r.State.projection.snapshot.policy.roles, "new_reader") }},
+		{"compiled policy", func(r *S1ApplyResult) {
+			snapshot := r.State.projection.snapshot
+			limits := snapshot.limits
+			limits.MaxAssignments--
+			policy, err := CompileRoles(snapshot.Image().Roles, limits)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot.policy = policy
+		}},
+		{"compiled Role", func(r *S1ApplyResult) {
+			snapshot := r.State.projection.snapshot
+			roles := snapshot.Image().Roles
+			for i, role := range roles {
+				if role.ID == "new_reader" {
+					roles = append(roles[:i], roles[i+1:]...)
+					break
+				}
+			}
+			policy, err := CompileRoles(roles, snapshot.limits)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot.policy = policy
+		}},
 		{"access set", func(r *S1ApplyResult) { delete(r.State.projection.snapshot.accessSets, "security_admin") }},
 		{"principal", func(r *S1ApplyResult) {
 			principal := r.State.projection.snapshot.principals[s1Bob()]
 			principal.state = Suspended
 			r.State.projection.snapshot.principals[s1Bob()] = principal
 		}},
-		{"principal access", func(r *S1ApplyResult) { r.State.projection.snapshot.principals[s1Bob()].access.setKey = "changed" }},
+		{"principal access", func(r *S1ApplyResult) {
+			snapshot := r.State.projection.snapshot
+			access, err := snapshot.policy.ForRoles([]string{"new_reader"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			principal := snapshot.principals[s1Bob()]
+			principal.access = access
+			snapshot.principals[s1Bob()] = principal
+		}},
 		{"issuer", func(r *S1ApplyResult) { delete(r.State.projection.snapshot.issuers, testIdentity().Issuer) }},
 		{"session", func(r *S1ApplyResult) { r.State.projection.snapshot.sessions["changed"] = Session{} }},
 		{"machine credential", func(r *S1ApplyResult) {

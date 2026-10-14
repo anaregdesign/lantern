@@ -1,6 +1,6 @@
-// Package security implements immutable Server security state. It is separate
-// from transport authentication and never imports a client SDK.
-package security
+// Package authz compiles and binds immutable permission policies. It performs
+// no I/O and owns neither authentication nor durable security state.
+package authz
 
 // Action identifies a grantable capability or a derived Edge operation.
 // Edge operations are explained/evaluated from Vertex Roles, never granted.
@@ -25,7 +25,7 @@ const (
 	SecurityManage Action = "security.manage"
 )
 
-func grantableAction(action Action) bool {
+func GrantableAction(action Action) bool {
 	switch action {
 	case VertexRead, VertexWrite, VertexDelete, Query, CDCIdentity, CDCValue,
 		Export, ReceiptRead, OperationsRead, SchemaRead, SecurityManage:
@@ -43,7 +43,7 @@ const (
 	GlobalResource ResourceKind = "global"
 )
 
-func actionResource(action Action) (ResourceKind, bool) {
+func ActionResource(action Action) (ResourceKind, bool) {
 	switch action {
 	case VertexRead, VertexWrite, VertexDelete, EdgeRead, EdgeCreate, EdgeAdd, EdgeWrite,
 		EdgeDelete, Query, CDCIdentity, CDCValue, Export, ReceiptRead:
@@ -58,7 +58,7 @@ func actionResource(action Action) (ResourceKind, bool) {
 
 // Edge operations and independent capabilities that accept endpoint selectors.
 // These selectors explain an operation; they are not configurable Role pairs.
-func edgeSelectorAction(action Action) bool {
+func EdgeSelectorAction(action Action) bool {
 	switch action {
 	case EdgeRead, EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete, CDCIdentity, CDCValue, Export, ReceiptRead:
 		return true
