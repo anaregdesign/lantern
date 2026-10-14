@@ -256,7 +256,8 @@ disabled handling, cancellation, and incremental latest-query-wins search:
 
 - [Go search example](../sdks/go/example/search.go)
 - [Node search example](../sdks/node/example/search.ts)
-- [Dart/Flutter search example](../sdks/dart/example/lib/main.dart)
+- Dart/Flutter: [incremental search screen](../sdks/dart/example/lib/main.dart)
+  and [data/search demo with optional Server information](../sdks/dart/example/lib/data_demo.dart)
 
 CLI and Admin `/cli` use the same grammar. The standalone command uses flags
 with the same meanings (`--mode`, `--min-should`, `--phrase`, `--fuzziness`,

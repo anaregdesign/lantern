@@ -3211,6 +3211,57 @@ func TestAuth_PublicChangesBenchmarkConsumerRealWire(t *testing.T) {
 	}
 }
 
+func TestAuth_FlutterDataDemoRealConnect(t *testing.T) {
+	flutter, err := exec.LookPath("flutter")
+	if err != nil {
+		t.Skip("Flutter is required for the maintained data demo gate")
+	}
+	f := newOIDCControlWireFixtureOptions(t, nil, true)
+	admin := f.token(t, "admin", nil)
+	current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var changes []*pb.SecurityChange
+	for _, subject := range []string{"demo", "query-denied", "data-denied"} {
+		var rules []*pb.SecurityRule
+		for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_QUERY} {
+			if subject == "query-denied" && action == pb.SecurityAction_SECURITY_ACTION_QUERY {
+				continue
+			}
+			effect := pb.SecurityEffect_SECURITY_EFFECT_ALLOW
+			if subject == "data-denied" {
+				effect = pb.SecurityEffect_SECURITY_EFFECT_DENY
+			}
+			rules = append(rules, &pb.SecurityRule{Id: fmt.Sprintf("rule-%d", i), Action: action, Effect: effect, Resource: &pb.SecurityRule_Prefix{Prefix: "flutter-demo:"}})
+		}
+		identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: subject}
+		changes = append(changes,
+			&pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: subject, Rules: rules}}},
+			&pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
+			&pb.SecurityChange{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: subject}}})
+	}
+	if _, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{74}, 16), Changes: changes})); err != nil {
+		t.Fatal(err)
+	}
+	server, ca := scopedSDKTLSServer(t, f)
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, flutter, "test", "--no-pub", "test/data_demo_test.dart")
+	cmd.Dir = filepath.Join(root, "sdks/dart/example")
+	cmd.Env = append(os.Environ(), "LANTERN_DEMO_WIRE_URL="+server.URL, "LANTERN_DEMO_WIRE_CA="+ca)
+	for _, subject := range []string{"demo", "query-denied", "data-denied"} {
+		cmd.Env = append(cmd.Env, "LANTERN_DEMO_WIRE_"+subject+"="+f.token(t, subject, nil))
+	}
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Flutter data demo real Connect: %v\n%s", err, output)
+	}
+}
+
 func TestAuth_DartOfflineScopedChangesRealConnect(t *testing.T) {
 	flutter, err := exec.LookPath("flutter")
 	if err != nil {

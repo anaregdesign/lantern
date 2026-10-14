@@ -685,9 +685,9 @@ jobs:
             flutter test --no-pub test/head_edge_fixture_test.dart --reporter expanded
           cd ../../..
 
-      - name: Test offline scoped CDC over authenticated Connect
+      - name: Test app data permissions and offline scoped CDC over authenticated Connect
         working-directory: .
-        run: go test ./tests/integration -run '^TestAuth_DartOfflineScopedChangesRealConnect$' -count=1
+        run: go test ./tests/integration -run '^TestAuth_(FlutterDataDemo|DartOfflineScopedChanges)RealConnect$' -count=1
 
       - name: Start identity CDC fixtures
         working-directory: .

@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_example/main.dart';
+import 'package:lantern_example/data_demo.dart';
 
 void main() {
   test('Put example helpers reject non-live outcomes', () {

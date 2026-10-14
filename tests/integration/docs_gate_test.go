@@ -1024,9 +1024,10 @@ func TestSearchDocumentationGate(t *testing.T) {
 	}
 
 	examples := map[string][]string{
-		"sdks/go/example/search.go":       {"SearchVertices(", "NewIncrementalSearch("},
-		"sdks/node/example/search.ts":     {"searchVertices(", "incrementalSearch("},
-		"sdks/dart/example/lib/main.dart": {"searchVertices(", "incrementalSearch("},
+		"sdks/go/example/search.go":            {"SearchVertices(", "NewIncrementalSearch("},
+		"sdks/node/example/search.ts":          {"searchVertices(", "incrementalSearch("},
+		"sdks/dart/example/lib/main.dart":      {"DataDemoPanel(", "incrementalSearch("},
+		"sdks/dart/example/lib/data_demo.dart": {"searchVertices(", "searchVerticesStream("},
 	}
 	for path, required := range examples {
 		contents := read(path)
