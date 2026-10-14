@@ -291,16 +291,32 @@ final class OfflineLanternDataClient
     return result;
   }
 
+  Future<LanternSnapshot<T>> _localForSource<T>(
+    OfflineEntityKey key,
+    ReadSource? source,
+  ) => _local<T>(
+    key,
+    serverOnly: source == ReadSource.serverOnly,
+    evidence: source == ReadSource.serverOnly
+        ? ConfirmedEvidence<T>(
+            state: ConfirmedState.unknown,
+            origin: ObservationOrigin.none,
+            observedAt: clock().toUtc(),
+            freshness: ObservationFreshness.unavailable,
+            cause: _session?._hiddenCause ?? ObservationCause.unavailable,
+          )
+        : null,
+  );
+
   Future<LanternSnapshot<T>> _get<T>(
     OfflineEntityKey key,
     GetOptions? options,
     Future<LanternSnapshot<T>> Function(LanternCancellationToken?) fetch,
   ) async {
     final o = options ?? const GetOptions();
-    if (o.cancellation?.isCanceled ?? false) {
-      throw const OfflineCanceledException();
-    }
-    final local = await _local<T>(key);
+    LanternAdapterCancellation.checkCanceled(o.cancellation);
+    final local = await _localForSource<T>(key, o.source);
+    LanternAdapterCancellation.checkCanceled(o.cancellation);
     if (o.source == ReadSource.cacheOnly ||
         o.source == ReadSource.automatic &&
             (local.projection == PendingProjection.exactPendingPut ||
@@ -308,21 +324,7 @@ final class OfflineLanternDataClient
       return local;
     }
     final session = _session;
-    if (session != null && !session._networkAllowed) {
-      return o.source == ReadSource.serverOnly
-          ? _local<T>(
-              key,
-              serverOnly: true,
-              evidence: ConfirmedEvidence<T>(
-                state: ConfirmedState.unknown,
-                origin: ObservationOrigin.none,
-                observedAt: clock(),
-                freshness: ObservationFreshness.unavailable,
-                cause: session._hiddenCause ?? ObservationCause.unavailable,
-              ),
-            )
-          : local;
-    }
+    if (session != null && !session._networkAllowed) return local;
     Future<LanternSnapshot<T>> attempt(OfflineSessionWork? work) async {
       final epoch = await store.transaction(
         (tx) => tx.changeEpoch(partitionId),
@@ -334,7 +336,7 @@ final class OfflineLanternDataClient
           (server.confirmed.cause == ObservationCause.unauthenticated ||
               server.confirmed.cause == ObservationCause.permissionDenied)) {
         await session._pauseFromRead(server.confirmed.cause!);
-        return _local<T>(key);
+        return _localForSource<T>(key, o.source);
       }
       _fence();
       if (server.confirmed.state == ConfirmedState.unknown) {
@@ -423,7 +425,10 @@ final class OfflineLanternDataClient
       );
     } on OfflineWorkInterruptedException {
       _fence();
-      return _local<T>(key);
+      LanternAdapterCancellation.checkCanceled(o.cancellation);
+      final fallback = await _localForSource<T>(key, o.source);
+      LanternAdapterCancellation.checkCanceled(o.cancellation);
+      return fallback;
     }
   }
 
@@ -621,7 +626,8 @@ final class OfflineLanternDataClient
     ),
     _lost,
     options,
-    captureLocal: () => _local<Vertex>(OfflineEntityKey.vertex(key)),
+    captureLocal: () =>
+        _localForSource<Vertex>(OfflineEntityKey.vertex(key), options?.source),
   );
   @override
   Stream<LanternSnapshot<Edge>> watchEdge(
@@ -639,8 +645,10 @@ final class OfflineLanternDataClient
     ),
     _lost,
     options,
-    captureLocal: () =>
-        _local<Edge>(OfflineEntityKey.edge(edge.tail, edge.head)),
+    captureLocal: () => _localForSource<Edge>(
+      OfflineEntityKey.edge(edge.tail, edge.head),
+      options?.source,
+    ),
   );
   @override
   Stream<List<LanternSnapshot<Vertex>>> watchVertices(
@@ -667,7 +675,10 @@ final class OfflineLanternDataClient
       options,
       captureLocal: () async => [
         for (final key in input)
-          await _local<Vertex>(OfflineEntityKey.vertex(key)),
+          await _localForSource<Vertex>(
+            OfflineEntityKey.vertex(key),
+            options?.source,
+          ),
       ],
     );
   }
@@ -697,7 +708,10 @@ final class OfflineLanternDataClient
       options,
       captureLocal: () async => [
         for (final edge in input)
-          await _local<Edge>(OfflineEntityKey.edge(edge.tail, edge.head)),
+          await _localForSource<Edge>(
+            OfflineEntityKey.edge(edge.tail, edge.head),
+            options?.source,
+          ),
       ],
     );
   }

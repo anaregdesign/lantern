@@ -4,6 +4,10 @@ part of 'client.dart';
 /// acquiring a token, after token acquisition and before publishing a reply.
 /// A callback must be synchronous, content-free and must never perform I/O.
 abstract final class LanternAdapterCancellation {
+  /// Preserves the common typed caller cancellation at an adapter boundary.
+  static void checkCanceled(LanternCancellationToken? cancellation) =>
+      _throwIfCanceled(cancellation);
+
   /// Creates a token that composes attempt cancellation with a lifetime fence.
   static LanternCancellationToken guarded(void Function() checkCurrent) =>
       LanternCancellationToken._guarded(checkCurrent);

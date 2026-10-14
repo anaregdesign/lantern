@@ -1015,6 +1015,248 @@ void main() {
       },
     );
   }
+
+  for (final lifecycle in [false, true]) {
+    test(
+      'R1 install hold survives ${lifecycle ? 'lifecycle' : 'transfer'} resume and joins old publication',
+      () async {
+        final h = Harness();
+        addTearDown(h.close);
+        final oldReply = Completer<void>(),
+            install = Completer<void>(),
+            installing = Completer<void>();
+        var installed = false;
+        final dispatchedWithNewCredentials = <bool>[];
+        h.remote.after = (_) {
+          dispatchedWithNewCredentials.add(installed);
+          return h.remote.calls == 1 ? oldReply.future : Future.value();
+        };
+        final client = await h.open();
+        final old = await client.mutations.submit(
+          MutationRequest.putVertices([vertex('old')]),
+        );
+        await h.tick();
+        final refresh = client.acceptVerifiedCredentials(
+          OfflineVerifiedCredentials(
+            binding: h.identity,
+            install: () async {
+              installing.complete();
+              await install.future;
+              installed = true;
+            },
+          ),
+        );
+        await flush();
+        expect(installing.isCompleted, false);
+        oldReply.complete();
+        await installing.future;
+        expect(
+          (await client.mutations.getStatus(
+            old.reference.operationId,
+          )).items.single.state,
+          MutationItemState.stillPending,
+        );
+        if (lifecycle) {
+          await client.suspend();
+          await client.resume();
+        }
+        await client.setTransferAllowed(true);
+        await client.mutations.submit(
+          MutationRequest.putVertices([vertex('new')]),
+        );
+        await h.tick();
+        expect(h.remote.calls, 1);
+        expect((await h.rows()).every((r) => r.leaseOwner == null), true);
+        install.complete();
+        expect(await refresh, true);
+        await h.tick();
+        expect(dispatchedWithNewCredentials, [false, true, true]);
+        expect(await h.rows(), isEmpty);
+      },
+    );
+  }
+
+  for (final cached in [false, true]) {
+    test(
+      'R2 serverOnly entity captures hide ${cached ? 'cache' : 'pending Put'} and preserve pending metadata',
+      () async {
+        final h = Harness();
+        addTearDown(h.close);
+        final client = await h.open(transferAllowed: false);
+        if (cached) {
+          await h.store.transaction((tx) async {
+            for (final (key, entity) in <(OfflineEntityKey, Object)>[
+              (
+                OfflineEntityKey.vertex('v'),
+                Vertex(
+                  key: 'v',
+                  value: VertexValue.string('cached'),
+                  expiration: null,
+                ),
+              ),
+              (
+                OfflineEntityKey.edge('v', 'w'),
+                const Edge(tail: 'v', head: 'w', weight: 1, expiration: null),
+              ),
+            ]) {
+              await tx.putCache(
+                h.identity.stableIdentity,
+                OfflineCacheRecord.value(
+                  partitionId: h.identity.stableIdentity,
+                  generation: 0,
+                  key: key,
+                  entity: entity,
+                  validatedAt: h.clock.now,
+                  lastAccessAt: h.clock.now,
+                ),
+              );
+            }
+          });
+        } else {
+          await client.mutations.submit(
+            MutationRequest.putVertices([vertex('v')]),
+          );
+          await client.mutations.submit(
+            MutationRequest.putEdges([
+              EdgeInput(tail: 'v', head: 'w', weight: 2),
+            ]),
+          );
+        }
+        const options = WatchOptions(source: ReadSource.serverOnly);
+        final values = List.generate(4, (_) => <LanternSnapshot<Object>>[]);
+        final subscriptions = <StreamSubscription<Object?>>[
+          client.watchVertex('v', options: options).listen(values[0].add),
+          client
+              .watchVertices(['v'], options: options)
+              .listen(values[1].addAll),
+          client
+              .watchEdge(const EdgeRef('v', 'w'), options: options)
+              .listen(values[2].add),
+          client
+              .watchEdges([const EdgeRef('v', 'w')], options: options)
+              .listen(values[3].addAll),
+        ];
+        await flush();
+        for (final events in values) {
+          expect(events.length, greaterThanOrEqualTo(2));
+          for (final event in events) {
+            expect(event.view, isNull);
+            expect(event.confirmed.state, ConfirmedState.unknown);
+            expect(event.confirmed.value, isNull);
+            expect(event.projection, PendingProjection.none);
+          }
+          expect(events.last.pending.count, cached ? 0 : 1);
+        }
+        for (final sub in subscriptions) {
+          await sub.cancel();
+        }
+        expect(h.remote.calls, 0);
+      },
+    );
+  }
+
+  test(
+    'R2 internally interrupted serverOnly Get keeps Unknown over cached value',
+    () async {
+      final reply = Completer<graph.GetVerticesResponse>();
+      final h = Harness(
+        transport: FakeTransportBuilder()
+            .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
+              LanternService.getVertices,
+              (_, _) => reply.future,
+            )
+            .build(),
+      );
+      addTearDown(h.close);
+      final client = await h.open();
+      await h.store.transaction(
+        (tx) => tx.putCache(
+          h.identity.stableIdentity,
+          OfflineCacheRecord.value(
+            partitionId: h.identity.stableIdentity,
+            generation: 0,
+            key: OfflineEntityKey.vertex('v'),
+            entity: Vertex(
+              key: 'v',
+              value: VertexValue.string('cached'),
+              expiration: null,
+            ),
+            validatedAt: h.clock.now,
+            lastAccessAt: h.clock.now,
+          ),
+        ),
+      );
+      final read = client.getVertex(
+        'v',
+        options: const GetOptions(source: ReadSource.serverOnly),
+      );
+      await h.tick();
+      final stopping = client.suspend();
+      final value = await read;
+      expect(value.confirmed.state, ConfirmedState.unknown);
+      expect(value.view, isNull);
+      reply.complete(graph.GetVerticesResponse(missing: ['v']));
+      await stopping;
+    },
+  );
+
+  for (final inFlight in [false, true]) {
+    test(
+      'R3 ${inFlight ? 'in-flight' : 'queued'} Get cancellation is typed and frees its read slot',
+      () async {
+        final reply = Completer<graph.GetVerticesResponse>();
+        var calls = 0;
+        final h = Harness(
+          transport: FakeTransportBuilder()
+              .unary<graph.GetVerticesRequest, graph.GetVerticesResponse>(
+                LanternService.getVertices,
+                (request, _) {
+                  calls++;
+                  return request.keys.single == 'v'
+                      ? reply.future
+                      : Future.value(
+                          graph.GetVerticesResponse(missing: request.keys),
+                        );
+                },
+              )
+              .build(),
+        );
+        addTearDown(h.close);
+        final client = await h.open();
+        final token = LanternCancellationToken();
+        final read = client.getVertex(
+          'v',
+          options: GetOptions(cancellation: token),
+        );
+        final canceled = expectLater(
+          read,
+          throwsA(isA<LanternCanceledException>()),
+        );
+        if (inFlight) {
+          await h.tick();
+        } else {
+          await flush();
+        }
+        expect(calls, inFlight ? 1 : 0);
+        token.cancel();
+        await canceled;
+        reply.complete(graph.GetVerticesResponse(missing: ['v']));
+        await flush();
+        final next = client.getVertex('next');
+        await h.tick();
+        expect((await next).confirmed.state, ConfirmedState.missing);
+        expect(calls, inFlight ? 2 : 1);
+        final local = await client.getVertex(
+          'v',
+          options: const GetOptions(source: ReadSource.cacheOnly),
+        );
+        expect(local.confirmed.state, ConfirmedState.unknown);
+        await h.tick();
+        expect(calls, inFlight ? 2 : 1);
+        expect(h.clock.active, 0);
+      },
+    );
+  }
 }
 
 final class ConfirmationFaultStore

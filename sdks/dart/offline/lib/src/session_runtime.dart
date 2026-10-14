@@ -242,6 +242,10 @@ final class OfflineSessionRuntime {
   /// Called only after old network work has joined and a verified event has been
   /// accepted by the controller. Does not itself clear any durable hold.
   void advanceCredentialGeneration() {
+    _checkOwner();
+    if (networkInFlightCount != 0) {
+      throw const OfflineWorkInterruptedException();
+    }
     _credentialGeneration++;
   }
 
@@ -404,22 +408,24 @@ final class OfflineSessionRuntime {
     bool traversal = false,
     LanternCancellationToken? cancellation,
   }) async {
+    LanternAdapterCancellation.checkCanceled(cancellation);
     final current = Zone.current[_currentWork];
     if (current is (OfflineSessionRuntime, OfflineSessionWork) &&
         identical(current.$1, this)) {
       current.$2.checkCurrent();
-      return read(current.$2);
+      final value = await read(current.$2);
+      LanternAdapterCancellation.checkCanceled(cancellation);
+      current.$2.checkCurrent();
+      return value;
     }
     _checkOwner();
-    if (_suspended || _networkPaused || (cancellation?.isCanceled ?? false)) {
+    if (_suspended || _networkPaused) {
       throw const OfflineWorkInterruptedException();
     }
     final result = Completer<T>();
     final key = 'one-shot:${++_oneShot}';
-    void interrupted() {
-      if (!result.isCompleted) {
-        result.completeError(const OfflineWorkInterruptedException());
-      }
+    void interrupted(Object error) {
+      if (!result.isCompleted) result.completeError(error);
       unawaited(remove(key));
     }
 
@@ -437,10 +443,19 @@ final class OfflineSessionRuntime {
       },
       dueAt: _now(),
     );
-    _jobs[key]!.onStop = interrupted;
-    final detach = cancellation?.listen((_) => interrupted());
+    _jobs[key]!.onStop = () =>
+        interrupted(const OfflineWorkInterruptedException());
+    final detach = cancellation?.listen((_) {
+      try {
+        LanternAdapterCancellation.checkCanceled(cancellation);
+      } on LanternCanceledException catch (error) {
+        interrupted(error);
+      }
+    });
     try {
-      return await result.future;
+      final value = await result.future;
+      LanternAdapterCancellation.checkCanceled(cancellation);
+      return value;
     } finally {
       detach?.call();
     }
@@ -526,6 +541,7 @@ final class OfflineSessionRuntime {
     if (_usesRead(job.lane)) _reads++;
     if (job.lane == OfflineSessionLane.traversal) _traversals++;
     final epoch = _workEpoch;
+    final credentialGeneration = _credentialGeneration;
     late final OfflineSessionWork work;
     final token = LanternAdapterCancellation.guarded(() => work.checkCurrent());
     job.token = token;
@@ -537,12 +553,14 @@ final class OfflineSessionRuntime {
       _checkOwner();
       if (_suspended ||
           (job.lane != OfflineSessionLane.local &&
-              (_networkPaused || epoch != _workEpoch)) ||
+              (_networkPaused ||
+                  epoch != _workEpoch ||
+                  credentialGeneration != _credentialGeneration)) ||
           token.isCanceled ||
           !identical(_jobs[job.key], job)) {
         throw const OfflineWorkInterruptedException();
       }
-    }, _credentialGeneration);
+    }, credentialGeneration);
     late final Future<void> flight;
     flight =
         Future<void>(() async {
@@ -633,12 +651,14 @@ final class OfflineSessionRuntime {
     final flights = <Future<void>>[];
     for (final job in _jobs.values) {
       if (job.lane == OfflineSessionLane.local) continue;
+      // onStop may start removing a one-shot read. Its callback still belongs
+      // to this join until cancellation has unwound and released the permit.
+      if (job.flight != null) flights.add(job.flight!);
       job.onStop?.call();
       if (job.removing) continue;
       if (job.flight != null) {
         job.pending = true;
         job.due = _now();
-        flights.add(job.flight!);
       }
       job.token?.cancel();
     }
@@ -648,9 +668,13 @@ final class OfflineSessionRuntime {
 
   /// Opens the network gate after its stopped flights have joined. Pause policy
   /// and verified credential acceptance remain the session controller's job.
-  Future<void> resumeNetwork() async {
-    await _networkJoining;
+  Future<void> resumeNetwork({bool Function()? when}) async {
+    final joining = _networkJoining;
+    await joining;
     _checkOwner();
+    // A new hold may have arrived while the old flights were joining. The
+    // controller's current policy, including credential installation, wins.
+    if (!identical(joining, _networkJoining) || !(when?.call() ?? true)) return;
     _networkJoining = null;
     _networkPaused = false;
     _pump();

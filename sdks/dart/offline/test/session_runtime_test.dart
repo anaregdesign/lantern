@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:lantern_client/lantern_client.dart';
+import 'package:lantern_client_offline/src/errors.dart';
 import 'package:lantern_client_offline/src/session_runtime.dart';
 import 'package:test/test.dart';
 
@@ -493,4 +494,118 @@ void main() {
       expect(errors, isEmpty);
     },
   );
+
+  test(
+    'R1 resume rechecks policy after joining and credentials fence retained work',
+    () async {
+      final held = Completer<void>();
+      late OfflineSessionWork old;
+      runtime.enqueue('old', OfflineSessionLane.send, (work) async {
+        old = work;
+        await held.future;
+      }, retain: true);
+      await clock.advance(const Duration(milliseconds: 50));
+      expect(
+        runtime.advanceCredentialGeneration,
+        throwsA(isA<OfflineWorkInterruptedException>()),
+      );
+      final pausing = runtime.pauseNetwork();
+      var allowed = true;
+      final resuming = runtime.resumeNetwork(when: () => allowed);
+      allowed = false;
+      held.complete();
+      await pausing;
+      await resuming;
+      var runs = 0;
+      runtime.enqueue('new', OfflineSessionLane.read, (_) async => runs++);
+      await clock.advance(const Duration(milliseconds: 50));
+      expect(runs, 0);
+      runtime.advanceCredentialGeneration();
+      expect(old.checkCurrent, throwsA(isA<OfflineWorkInterruptedException>()));
+      allowed = true;
+      await runtime.resumeNetwork(when: () => allowed);
+      await flush();
+      expect(runs, 1);
+      await runtime.remove('old');
+    },
+  );
+
+  test(
+    'R1 credential generation rejects a retained old work capability',
+    () async {
+      late OfflineSessionWork old;
+      runtime.enqueue(
+        'retained',
+        OfflineSessionLane.read,
+        (work) async => old = work,
+        retain: true,
+      );
+      await clock.advance(const Duration(milliseconds: 50));
+      old.checkCurrent();
+      runtime.advanceCredentialGeneration();
+      expect(old.checkCurrent, throwsA(isA<OfflineWorkInterruptedException>()));
+      await runtime.remove('retained');
+    },
+  );
+
+  test(
+    'R1 network pause joins a one-shot already removing after cancellation',
+    () async {
+      final held = Completer<void>();
+      final read = runtime.readOnce((work) async {
+        await held.future;
+        work.checkCurrent();
+        return 1;
+      });
+      final stopped = expectLater(
+        read,
+        throwsA(isA<OfflineWorkInterruptedException>()),
+      );
+      await clock.advance(Duration.zero);
+      var joined = false;
+      final pause = runtime.pauseNetwork().then((_) => joined = true);
+      await stopped;
+      await flush();
+      expect(joined, false);
+      expect(runtime.networkInFlightCount, 1);
+      held.complete();
+      await pause;
+      expect(runtime.networkInFlightCount, 0);
+      expect(runtime.jobCount, 0);
+    },
+  );
+
+  for (final inFlight in [false, true]) {
+    test(
+      'R3 ${inFlight ? 'in-flight' : 'queued'} read cancellation retires only its slot after join',
+      () async {
+        final token = LanternCancellationToken();
+        final held = Completer<void>();
+        LanternCancellationToken? workToken;
+        final read = runtime.readOnce((work) async {
+          workToken = work.cancellation;
+          await held.future;
+          work.checkCurrent();
+          return 1;
+        }, cancellation: token);
+        final canceled = expectLater(
+          read,
+          throwsA(isA<LanternCanceledException>()),
+        );
+        if (inFlight) await clock.advance(Duration.zero);
+        token.cancel();
+        await canceled;
+        expect(workToken?.isCanceled, inFlight ? true : isNull);
+        if (inFlight) expect(runtime.networkInFlightCount, 1);
+        held.complete();
+        await flush();
+        expect(runtime.jobCount, 0);
+        expect(runtime.networkInFlightCount, 0);
+        expect(errors, isEmpty);
+        final next = runtime.readOnce((_) async => 2);
+        await clock.advance(Duration.zero);
+        expect(await next, 2);
+      },
+    );
+  }
 }

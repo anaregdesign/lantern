@@ -508,8 +508,10 @@ final class _SessionShared {
   bool get _credentialLive =>
       credentialExpires == null || dataOrClock().isBefore(credentialExpires!);
   DateTime dataOrClock() => ready ? data.clock() : clock().toUtc();
+  bool _credentialInstalling = false;
   bool get _policyAllowsNetwork =>
       !ended &&
+      !_credentialInstalling &&
       !suspended &&
       !auth &&
       !policy &&
@@ -607,8 +609,8 @@ final class _SessionShared {
     if (!allowed) {
       _networkJoin = runtime.pauseNetwork();
       await _networkJoin;
-    } else if (!auth && !policy && !storage && !restoreHeld) {
-      await runtime.resumeNetwork();
+    } else {
+      await runtime.resumeNetwork(when: () => _policyAllowsNetwork);
     }
     _checkLifetime();
     _healthChanged();
@@ -831,6 +833,8 @@ final class _SessionShared {
     suspended = false;
     _healthChanged();
     data._observations.resume();
+    await runtime.resumeNetwork(when: () => _policyAllowsNetwork);
+    _checkLifetime();
     runtime.resume();
     _changed();
   }
@@ -851,6 +855,7 @@ final class _SessionShared {
     event._accepted = true;
     final done = Completer<void>();
     _credentialChange = done.future;
+    _credentialInstalling = true;
     try {
       _networkJoin = runtime.pauseNetwork();
       await _networkJoin;
@@ -891,10 +896,9 @@ final class _SessionShared {
         _checkLifetime();
       });
       auth = false;
+      _credentialInstalling = false;
       data._observations.resume();
-      if (!policy && !storage && transferAllowed && !restoreHeld) {
-        await runtime.resumeNetwork();
-      }
+      await runtime.resumeNetwork(when: () => _policyAllowsNetwork);
       await _maintain();
       _changed();
       return true;
@@ -902,6 +906,7 @@ final class _SessionShared {
       _requestStoragePause();
       rethrow;
     } finally {
+      _credentialInstalling = false;
       _credentialChange = null;
       done.complete();
     }
