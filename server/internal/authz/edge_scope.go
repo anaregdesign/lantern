@@ -27,7 +27,7 @@ func (a *Access) EdgeCandidateScope(actions ...Action) *Scope {
 		case EdgeRead:
 			compiled = a.Scope(VertexRead)
 		case EdgeCreate, EdgeAdd, EdgeWrite, EdgeDelete:
-			compiled = a.cache.get("head-modification:"+a.setKey, func() *Scope {
+			compiled = a.cache.get(scopeCacheKey{action: EdgeWrite, setKey: a.setKey, edge: true}, func() *Scope {
 				// The builder owns the cache lock; compile without recursively
 				// entering that lock through Scope.
 				read, write := a.compileScope(VertexRead), a.compileScope(VertexWrite)

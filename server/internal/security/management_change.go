@@ -6,15 +6,16 @@ import "slices"
 // the fields required by its Kind must be present. No Principal operation can
 // contain permissions; assignment operations refer only to registered Roles.
 type Change struct {
-	Kind                  string         `json:"kind"`
-	Issuer                *Issuer        `json:"issuer,omitempty"`
-	IssuerURL             string         `json:"issuer_url,omitempty"`
-	Role                  *Role          `json:"role,omitempty"`
-	RoleID                string         `json:"role_id,omitempty"`
-	Identity              *Identity      `json:"identity,omitempty"`
-	State                 PrincipalState `json:"state,omitempty"`
-	PreserveSecret        bool           `json:"preserve_secret,omitempty"`
-	PreserveNativeSecrets []string       `json:"preserve_native_secrets,omitempty"`
+	Kind                  string              `json:"kind"`
+	Issuer                *Issuer             `json:"issuer,omitempty"`
+	IssuerURL             string              `json:"issuer_url,omitempty"`
+	Role                  *Role               `json:"role,omitempty"`
+	RoleID                string              `json:"role_id,omitempty"`
+	Identity              *Identity           `json:"identity,omitempty"`
+	State                 PrincipalState      `json:"state,omitempty"`
+	PreserveSecret        bool                `json:"preserve_secret,omitempty"`
+	PreserveNativeSecrets []string            `json:"preserve_native_secrets,omitempty"`
+	RegistrationPolicy    *RegistrationPolicy `json:"registration_policy,omitempty"`
 }
 
 const (
@@ -28,10 +29,14 @@ const (
 	PutAssignment         = "assignment.put"
 	DeleteAssignment      = "assignment.delete"
 	RevokeSessions        = "session.revoke_user"
+	PutRegistrationPolicy = "registration_policy.put"
 	MaxTransactionChanges = 100
 )
 
 func (c Change) validate() error {
+	if c.RegistrationPolicy != nil && c.Kind != PutRegistrationPolicy {
+		return ErrInvalidImage
+	}
 	if c.PreserveSecret && (c.Kind != PutIssuer || c.Issuer == nil || c.Issuer.SecretRef != "") {
 		return ErrInvalidImage
 	}
@@ -46,6 +51,10 @@ func (c Change) validate() error {
 	}
 	issuer, role, identity := c.Issuer != nil, c.Role != nil, c.Identity != nil
 	switch c.Kind {
+	case PutRegistrationPolicy:
+		if c.RegistrationPolicy == nil || !c.RegistrationPolicy.valid() || issuer || role || identity || c.IssuerURL != "" || c.RoleID != "" || c.State != "" {
+			return ErrInvalidImage
+		}
 	case PutIssuer:
 		if c.Issuer != nil && validateIssuerConfiguration(*c.Issuer, c.PreserveNativeSecrets) != nil {
 			return ErrInvalidImage
@@ -117,6 +126,8 @@ func (c Change) ResolveIssuerSecrets(prior Issuer) Issuer {
 
 func (c Change) target() string {
 	switch c.Kind {
+	case PutRegistrationPolicy:
+		return "registration_policy"
 	case PutIssuer:
 		return "issuer:" + c.Issuer.URL
 	case DisableIssuer, DeleteIssuer:

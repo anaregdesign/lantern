@@ -115,6 +115,7 @@ func (o *CurrentAuthority) Admit(ctx context.Context, producer CurrentCredential
 		Evidence        [32]byte
 		BrowserReadOnly bool
 	}{current.profile, c.cut, c.actor, c.lineage, c.authentication, c.claim.Verification, c.browserReadOnly})
+	current.binding = bindSubjectScope(current.binding, access)
 	authTime := time.Time{}
 	if c.claim.Token != nil && c.claim.Token.AuthTime.Numeric {
 		authTime = c.claim.Token.AuthTime.Time()

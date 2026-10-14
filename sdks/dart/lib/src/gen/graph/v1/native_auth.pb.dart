@@ -602,6 +602,8 @@ class NativeSession extends $pb.GeneratedMessage {
     $0.Timestamp? authTime,
     $1.SecurityIdentity? identity,
     $1.SecurityVersion? version,
+    $core.String? userUid,
+    $core.String? personalPrefix,
   }) {
     final result = create();
     if (credentialProfile != null) result.credentialProfile = credentialProfile;
@@ -612,6 +614,8 @@ class NativeSession extends $pb.GeneratedMessage {
     if (authTime != null) result.authTime = authTime;
     if (identity != null) result.identity = identity;
     if (version != null) result.version = version;
+    if (userUid != null) result.userUid = userUid;
+    if (personalPrefix != null) result.personalPrefix = personalPrefix;
     return result;
   }
 
@@ -641,6 +645,8 @@ class NativeSession extends $pb.GeneratedMessage {
         subBuilder: $1.SecurityIdentity.create)
     ..aOM<$1.SecurityVersion>(8, _omitFieldNames ? '' : 'version',
         subBuilder: $1.SecurityVersion.create)
+    ..aOS(9, _omitFieldNames ? '' : 'userUid')
+    ..aOS(10, _omitFieldNames ? '' : 'personalPrefix')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -746,6 +752,26 @@ class NativeSession extends $pb.GeneratedMessage {
   void clearVersion() => $_clearField(8);
   @$pb.TagNumber(8)
   $1.SecurityVersion ensureVersion() => $_ensure(7);
+
+  /// Trusted installed Principal metadata, absent for a UID-less legacy user.
+  @$pb.TagNumber(9)
+  $core.String get userUid => $_getSZ(8);
+  @$pb.TagNumber(9)
+  set userUid($core.String value) => $_setString(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasUserUid() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearUserUid() => $_clearField(9);
+
+  /// Logical prefix; callers must not prepend the internal physical 'data:'.
+  @$pb.TagNumber(10)
+  $core.String get personalPrefix => $_getSZ(9);
+  @$pb.TagNumber(10)
+  set personalPrefix($core.String value) => $_setString(9, value);
+  @$pb.TagNumber(10)
+  $core.bool hasPersonalPrefix() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearPersonalPrefix() => $_clearField(10);
 }
 
 class CompleteNativeLoginResponse extends $pb.GeneratedMessage {

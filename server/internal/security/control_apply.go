@@ -329,6 +329,9 @@ func evaluateS1Candidate(s *S1ApplyState, h *S1Handoff, commit CommitRef, previo
 }
 
 func s1CurrentAuthority(p *S1Projection, h *S1Handoff, c S1Command) bool {
+	if !ordinaryS1Command(c.Kind) {
+		return false
+	}
 	actor, a := h.operation.actor, h.authorization
 	issuer, known := p.snapshot.Issuer(actor.Issuer)
 	if !known || !issuer.Enabled || issuer.Deleted || issuer.ConfigRevision != a.authentication.IssuerConfigRevision || a.lineage != p.lineage[actor] {

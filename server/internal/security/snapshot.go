@@ -3,6 +3,8 @@ package security
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/authz"
 )
 
 type principalAccess struct {
@@ -10,6 +12,7 @@ type principalAccess struct {
 	access                    *Access
 	humanIssuerConfigRevision uint64
 	bootstrapHuman            bool
+	userUID                   string
 }
 
 // Snapshot owns a validated image and its compiled indexes. All fields are
@@ -38,6 +41,20 @@ func (s *Snapshot) AccessFor(identity Identity) (*Access, bool) {
 		return nil, false
 	}
 	return principal.access, true
+}
+
+// PersonalArea reads trusted self metadata from the installed active Principal.
+// User-editable data values named uid or roles never participate in this lookup.
+func (s *Snapshot) PersonalArea(identity Identity) (uid, prefix string, registered bool) {
+	if _, active := s.AccessFor(identity); !active {
+		return "", "", false
+	}
+	uid = s.principals[identity].userUID
+	prefix, err := authz.PersonalPrefix(uid)
+	if err != nil {
+		return "", "", false
+	}
+	return uid, prefix, true
 }
 
 // HumanIdentity is durable exact enrollment, independent of live sessions.

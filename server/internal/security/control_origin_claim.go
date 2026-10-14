@@ -83,6 +83,9 @@ func authorityOriginalTime(t time.Time) bool {
 }
 
 func verifyAuthorityCredential(h authorityHistoricalHeader, operation OperationIdentity, command S1Command) bool {
+	if !ordinaryS1Command(command.Kind) {
+		return false
+	}
 	c, a := h.Credential, h.Authentication
 	low, high := h.Time.utcTimes()
 	if a.Class != EndUser || a.IssuerConfigRevision == 0 || h.Lineage == 0 || c.Verification == [32]byte{} ||

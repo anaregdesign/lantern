@@ -98,6 +98,13 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 		return nil
 	}
 	switch command.Kind {
+	case S1RegisterPrincipal:
+		if err = applyPrincipalRegistration(&image, operation.actor, command.Registration); err != nil {
+			return S1Assessment{}, err
+		}
+		if _, known := next.lineage[operation.actor]; !known {
+			next.lineage[operation.actor] = 1
+		}
 	case S1Management:
 		if err = applyManagementChanges(&image, command.Changes); err != nil {
 			return S1Assessment{}, err
@@ -107,6 +114,10 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 		}
 		for _, change := range command.Changes {
 			switch change.Kind {
+			case PutRegistrationPolicy:
+				expands := registrationPolicyExpands(p.Image().RegistrationPolicy, image.RegistrationPolicy)
+				needsPurpose = needsPurpose || expands
+				trustMayExpand = trustMayExpand || expands
 			case PutIssuer, DisableIssuer, DeleteIssuer:
 				needsPurpose = true
 				trustMayExpand = trustMayExpand || change.Kind == PutIssuer
@@ -218,7 +229,7 @@ func AssessS1(p *S1Projection, operation OperationIdentity) (S1Assessment, error
 		Previous  [32]byte
 		Operation string
 	}{p.cut.Frontier, operation.canonical})
-	nonexpanding := !trustMayExpand && command.Kind != S1IssueSession && s1PermissionsSubset(p.snapshot, next.snapshot)
+	nonexpanding := !trustMayExpand && command.Kind != S1IssueSession && command.Kind != S1RegisterPrincipal && s1PermissionsSubset(p.snapshot, next.snapshot)
 	return S1Assessment{next, needsPurpose, nonexpanding}, nil
 }
 

@@ -107,3 +107,13 @@ func newAuthorityTestStore(t *testing.T) (*Store, *fakeAuthorityClock) {
 	}
 	return store, &fakeAuthorityClock{now: time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)}
 }
+
+// registrationImage supplies only deterministic policy data. It is not provider
+// authentication evidence and never qualifies a real Google/Apple registration.
+func registrationImage() Image {
+	image := s1Image()
+	image.Issuers = append(image.Issuers, Issuer{URL: GoogleIssuer, Enabled: true, ConfigRevision: 1, Algorithms: []string{"RS256"}, NativeClients: []NativeClient{{ID: "android", Kind: GoogleIDToken, ClientID: "fixture-web-client", ServiceOrigin: "https://lantern.example"}, {ID: "ios", Kind: GoogleIDToken, ClientID: "fixture-web-client", ServiceOrigin: "https://lantern.example"}}})
+	image.Roles = append(image.Roles, PersonalUserRole())
+	image.RegistrationPolicy = &RegistrationPolicy{Version: RegistrationPolicyVersion, Enabled: true, RoleID: PersonalUserRoleID, Profiles: []RegistrationProfile{{Issuer: GoogleIssuer, ClientProfileID: "android"}}}
+	return image
+}

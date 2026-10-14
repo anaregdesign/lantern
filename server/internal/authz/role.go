@@ -10,12 +10,13 @@ const (
 // PermissionRule belongs exclusively to a Role. A pointer distinguishes an
 // explicit all-data prefix ("") from an omitted prefix on a global rule.
 type PermissionRule struct {
-	ID       string       `json:"id,omitempty"`
-	Effect   Effect       `json:"effect"`
-	Action   Action       `json:"action"`
-	Resource ResourceKind `json:"resource"`
-	Prefix   *string      `json:"prefix,omitempty"`
-	Pair     *PrefixPair  `json:"pair,omitempty"`
+	ID                 string              `json:"id,omitempty"`
+	Effect             Effect              `json:"effect"`
+	Action             Action              `json:"action"`
+	Resource           ResourceKind        `json:"resource"`
+	Prefix             *string             `json:"prefix,omitempty"`
+	Pair               *PrefixPair         `json:"pair,omitempty"`
+	PrincipalUIDPrefix *PrincipalUIDPrefix `json:"principal_uid_prefix,omitempty"`
 }
 
 // PrefixPair is one directed selector. Both literals belong to the same rule.

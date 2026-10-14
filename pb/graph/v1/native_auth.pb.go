@@ -454,11 +454,15 @@ type NativeSession struct {
 	CreatedAt         *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	ExpiresAt         *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	// Absent means unknown. Session creation or token iat never fills this field.
-	AuthTime      *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=auth_time,json=authTime,proto3" json:"auth_time,omitempty"`
-	Identity      *SecurityIdentity      `protobuf:"bytes,7,opt,name=identity,proto3" json:"identity,omitempty"`
-	Version       *SecurityVersion       `protobuf:"bytes,8,opt,name=version,proto3" json:"version,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AuthTime *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=auth_time,json=authTime,proto3" json:"auth_time,omitempty"`
+	Identity *SecurityIdentity      `protobuf:"bytes,7,opt,name=identity,proto3" json:"identity,omitempty"`
+	Version  *SecurityVersion       `protobuf:"bytes,8,opt,name=version,proto3" json:"version,omitempty"`
+	// Trusted installed Principal metadata, absent for a UID-less legacy user.
+	UserUid string `protobuf:"bytes,9,opt,name=user_uid,json=userUid,proto3" json:"user_uid,omitempty"`
+	// Logical prefix; callers must not prepend the internal physical 'data:'.
+	PersonalPrefix string `protobuf:"bytes,10,opt,name=personal_prefix,json=personalPrefix,proto3" json:"personal_prefix,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *NativeSession) Reset() {
@@ -545,6 +549,20 @@ func (x *NativeSession) GetVersion() *SecurityVersion {
 		return x.Version
 	}
 	return nil
+}
+
+func (x *NativeSession) GetUserUid() string {
+	if x != nil {
+		return x.UserUid
+	}
+	return ""
+}
+
+func (x *NativeSession) GetPersonalPrefix() string {
+	if x != nil {
+		return x.PersonalPrefix
+	}
+	return ""
 }
 
 type CompleteNativeLoginResponse struct {
@@ -905,7 +923,7 @@ const file_graph_v1_native_auth_proto_rawDesc = "" +
 	"\x06google\x18\x03 \x01(\v2 .graph.v1.GoogleNativeCredentialH\x00R\x06google\x127\n" +
 	"\x05apple\x18\x04 \x01(\v2\x1f.graph.v1.AppleNativeCredentialH\x00R\x05appleB\n" +
 	"\n" +
-	"\bprovider\"\xad\x03\n" +
+	"\bprovider\"\xf1\x03\n" +
 	"\rNativeSession\x12-\n" +
 	"\x12credential_profile\x18\x01 \x01(\tR\x11credentialProfile\x12*\n" +
 	"\x11client_profile_id\x18\x02 \x01(\tR\x0fclientProfileId\x12%\n" +
@@ -916,7 +934,10 @@ const file_graph_v1_native_auth_proto_rawDesc = "" +
 	"expires_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\texpiresAt\x127\n" +
 	"\tauth_time\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\bauthTime\x126\n" +
 	"\bidentity\x18\a \x01(\v2\x1a.graph.v1.SecurityIdentityR\bidentity\x123\n" +
-	"\aversion\x18\b \x01(\v2\x19.graph.v1.SecurityVersionR\aversion\"p\n" +
+	"\aversion\x18\b \x01(\v2\x19.graph.v1.SecurityVersionR\aversion\x12\x19\n" +
+	"\buser_uid\x18\t \x01(\tR\auserUid\x12'\n" +
+	"\x0fpersonal_prefix\x18\n" +
+	" \x01(\tR\x0epersonalPrefix\"p\n" +
 	"\x1bCompleteNativeLoginResponse\x12\x1e\n" +
 	"\n" +
 	"credential\x18\x01 \x01(\tR\n" +

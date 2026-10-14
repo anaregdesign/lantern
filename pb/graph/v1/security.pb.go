@@ -1066,6 +1066,61 @@ func (x *SecurityPrefixPair) GetHeadPrefix() string {
 	return ""
 }
 
+// Inserts the installed Principal's Server-owned UID between byte literals.
+// Before must end with ':' and after must start with ':'. Neither is empty.
+// This is one typed UID slot, not a template language or client-supplied UID.
+type SecurityPrincipalUIDPrefix struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	LiteralBefore string                 `protobuf:"bytes,1,opt,name=literal_before,json=literalBefore,proto3" json:"literal_before,omitempty"`
+	LiteralAfter  string                 `protobuf:"bytes,2,opt,name=literal_after,json=literalAfter,proto3" json:"literal_after,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SecurityPrincipalUIDPrefix) Reset() {
+	*x = SecurityPrincipalUIDPrefix{}
+	mi := &file_graph_v1_security_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SecurityPrincipalUIDPrefix) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SecurityPrincipalUIDPrefix) ProtoMessage() {}
+
+func (x *SecurityPrincipalUIDPrefix) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_security_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SecurityPrincipalUIDPrefix.ProtoReflect.Descriptor instead.
+func (*SecurityPrincipalUIDPrefix) Descriptor() ([]byte, []int) {
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SecurityPrincipalUIDPrefix) GetLiteralBefore() string {
+	if x != nil {
+		return x.LiteralBefore
+	}
+	return ""
+}
+
+func (x *SecurityPrincipalUIDPrefix) GetLiteralAfter() string {
+	if x != nil {
+		return x.LiteralAfter
+	}
+	return ""
+}
+
 type SecurityRule struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Id     string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -1076,6 +1131,7 @@ type SecurityRule struct {
 	//	*SecurityRule_Prefix
 	//	*SecurityRule_Global
 	//	*SecurityRule_Pair
+	//	*SecurityRule_PrincipalUidPrefix
 	Resource      isSecurityRule_Resource `protobuf_oneof:"resource"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1083,7 +1139,7 @@ type SecurityRule struct {
 
 func (x *SecurityRule) Reset() {
 	*x = SecurityRule{}
-	mi := &file_graph_v1_security_proto_msgTypes[5]
+	mi := &file_graph_v1_security_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1095,7 +1151,7 @@ func (x *SecurityRule) String() string {
 func (*SecurityRule) ProtoMessage() {}
 
 func (x *SecurityRule) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[5]
+	mi := &file_graph_v1_security_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1108,7 +1164,7 @@ func (x *SecurityRule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityRule.ProtoReflect.Descriptor instead.
 func (*SecurityRule) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{5}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *SecurityRule) GetId() string {
@@ -1166,6 +1222,15 @@ func (x *SecurityRule) GetPair() *SecurityPrefixPair {
 	return nil
 }
 
+func (x *SecurityRule) GetPrincipalUidPrefix() *SecurityPrincipalUIDPrefix {
+	if x != nil {
+		if x, ok := x.Resource.(*SecurityRule_PrincipalUidPrefix); ok {
+			return x.PrincipalUidPrefix
+		}
+	}
+	return nil
+}
+
 type isSecurityRule_Resource interface {
 	isSecurityRule_Resource()
 }
@@ -1182,11 +1247,17 @@ type SecurityRule_Pair struct {
 	Pair *SecurityPrefixPair `protobuf:"bytes,6,opt,name=pair,proto3,oneof"`
 }
 
+type SecurityRule_PrincipalUidPrefix struct {
+	PrincipalUidPrefix *SecurityPrincipalUIDPrefix `protobuf:"bytes,7,opt,name=principal_uid_prefix,json=principalUidPrefix,proto3,oneof"`
+}
+
 func (*SecurityRule_Prefix) isSecurityRule_Resource() {}
 
 func (*SecurityRule_Global) isSecurityRule_Resource() {}
 
 func (*SecurityRule_Pair) isSecurityRule_Resource() {}
+
+func (*SecurityRule_PrincipalUidPrefix) isSecurityRule_Resource() {}
 
 type SecurityRole struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1201,7 +1272,7 @@ type SecurityRole struct {
 
 func (x *SecurityRole) Reset() {
 	*x = SecurityRole{}
-	mi := &file_graph_v1_security_proto_msgTypes[6]
+	mi := &file_graph_v1_security_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1213,7 +1284,7 @@ func (x *SecurityRole) String() string {
 func (*SecurityRole) ProtoMessage() {}
 
 func (x *SecurityRole) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[6]
+	mi := &file_graph_v1_security_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1226,7 +1297,7 @@ func (x *SecurityRole) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityRole.ProtoReflect.Descriptor instead.
 func (*SecurityRole) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{6}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SecurityRole) GetId() string {
@@ -1268,7 +1339,7 @@ type SecurityRoleAssignment struct {
 
 func (x *SecurityRoleAssignment) Reset() {
 	*x = SecurityRoleAssignment{}
-	mi := &file_graph_v1_security_proto_msgTypes[7]
+	mi := &file_graph_v1_security_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1280,7 +1351,7 @@ func (x *SecurityRoleAssignment) String() string {
 func (*SecurityRoleAssignment) ProtoMessage() {}
 
 func (x *SecurityRoleAssignment) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[7]
+	mi := &file_graph_v1_security_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1293,7 +1364,7 @@ func (x *SecurityRoleAssignment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityRoleAssignment.ProtoReflect.Descriptor instead.
 func (*SecurityRoleAssignment) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{7}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SecurityRoleAssignment) GetIdentity() *SecurityIdentity {
@@ -1318,17 +1389,20 @@ func (x *SecurityRoleAssignment) GetEnvOwned() bool {
 }
 
 type SecurityUser struct {
-	state         protoimpl.MessageState    `protogen:"open.v1"`
-	Identity      *SecurityIdentity         `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
-	State         SecurityPrincipalState    `protobuf:"varint,2,opt,name=state,proto3,enum=graph.v1.SecurityPrincipalState" json:"state,omitempty"`
-	Assignments   []*SecurityRoleAssignment `protobuf:"bytes,3,rep,name=assignments,proto3" json:"assignments,omitempty"`
+	state       protoimpl.MessageState    `protogen:"open.v1"`
+	Identity    *SecurityIdentity         `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
+	State       SecurityPrincipalState    `protobuf:"varint,2,opt,name=state,proto3,enum=graph.v1.SecurityPrincipalState" json:"state,omitempty"`
+	Assignments []*SecurityRoleAssignment `protobuf:"bytes,3,rep,name=assignments,proto3" json:"assignments,omitempty"`
+	// Read-only, allocated once by explicit verified registration. Ordinary user
+	// management never accepts this value as input; deleted tombstones retain it.
+	UserUid       string `protobuf:"bytes,4,opt,name=user_uid,json=userUid,proto3" json:"user_uid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SecurityUser) Reset() {
 	*x = SecurityUser{}
-	mi := &file_graph_v1_security_proto_msgTypes[8]
+	mi := &file_graph_v1_security_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1340,7 +1414,7 @@ func (x *SecurityUser) String() string {
 func (*SecurityUser) ProtoMessage() {}
 
 func (x *SecurityUser) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[8]
+	mi := &file_graph_v1_security_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1353,7 +1427,7 @@ func (x *SecurityUser) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityUser.ProtoReflect.Descriptor instead.
 func (*SecurityUser) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{8}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SecurityUser) GetIdentity() *SecurityIdentity {
@@ -1375,6 +1449,13 @@ func (x *SecurityUser) GetAssignments() []*SecurityRoleAssignment {
 		return x.Assignments
 	}
 	return nil
+}
+
+func (x *SecurityUser) GetUserUid() string {
+	if x != nil {
+		return x.UserUid
+	}
+	return ""
 }
 
 type SecurityIssuer struct {
@@ -1402,7 +1483,7 @@ type SecurityIssuer struct {
 
 func (x *SecurityIssuer) Reset() {
 	*x = SecurityIssuer{}
-	mi := &file_graph_v1_security_proto_msgTypes[9]
+	mi := &file_graph_v1_security_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1414,7 +1495,7 @@ func (x *SecurityIssuer) String() string {
 func (*SecurityIssuer) ProtoMessage() {}
 
 func (x *SecurityIssuer) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[9]
+	mi := &file_graph_v1_security_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1427,7 +1508,7 @@ func (x *SecurityIssuer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityIssuer.ProtoReflect.Descriptor instead.
 func (*SecurityIssuer) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{9}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *SecurityIssuer) GetIssuer() string {
@@ -1540,7 +1621,7 @@ type SecurityNativeClient struct {
 
 func (x *SecurityNativeClient) Reset() {
 	*x = SecurityNativeClient{}
-	mi := &file_graph_v1_security_proto_msgTypes[10]
+	mi := &file_graph_v1_security_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1552,7 +1633,7 @@ func (x *SecurityNativeClient) String() string {
 func (*SecurityNativeClient) ProtoMessage() {}
 
 func (x *SecurityNativeClient) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[10]
+	mi := &file_graph_v1_security_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1565,7 +1646,7 @@ func (x *SecurityNativeClient) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityNativeClient.ProtoReflect.Descriptor instead.
 func (*SecurityNativeClient) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{10}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *SecurityNativeClient) GetId() string {
@@ -1647,7 +1728,7 @@ type SecurityVersion struct {
 
 func (x *SecurityVersion) Reset() {
 	*x = SecurityVersion{}
-	mi := &file_graph_v1_security_proto_msgTypes[11]
+	mi := &file_graph_v1_security_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1659,7 +1740,7 @@ func (x *SecurityVersion) String() string {
 func (*SecurityVersion) ProtoMessage() {}
 
 func (x *SecurityVersion) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[11]
+	mi := &file_graph_v1_security_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1672,7 +1753,7 @@ func (x *SecurityVersion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityVersion.ProtoReflect.Descriptor instead.
 func (*SecurityVersion) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{11}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SecurityVersion) GetRevision() uint64 {
@@ -1725,7 +1806,7 @@ type GetCurrentPrincipalRequest struct {
 
 func (x *GetCurrentPrincipalRequest) Reset() {
 	*x = GetCurrentPrincipalRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[12]
+	mi := &file_graph_v1_security_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1737,7 +1818,7 @@ func (x *GetCurrentPrincipalRequest) String() string {
 func (*GetCurrentPrincipalRequest) ProtoMessage() {}
 
 func (x *GetCurrentPrincipalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[12]
+	mi := &file_graph_v1_security_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1750,7 +1831,7 @@ func (x *GetCurrentPrincipalRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCurrentPrincipalRequest.ProtoReflect.Descriptor instead.
 func (*GetCurrentPrincipalRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{12}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{13}
 }
 
 type GetCurrentPrincipalResponse struct {
@@ -1768,7 +1849,7 @@ type GetCurrentPrincipalResponse struct {
 
 func (x *GetCurrentPrincipalResponse) Reset() {
 	*x = GetCurrentPrincipalResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[13]
+	mi := &file_graph_v1_security_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1780,7 +1861,7 @@ func (x *GetCurrentPrincipalResponse) String() string {
 func (*GetCurrentPrincipalResponse) ProtoMessage() {}
 
 func (x *GetCurrentPrincipalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[13]
+	mi := &file_graph_v1_security_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1793,7 +1874,7 @@ func (x *GetCurrentPrincipalResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCurrentPrincipalResponse.ProtoReflect.Descriptor instead.
 func (*GetCurrentPrincipalResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{13}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *GetCurrentPrincipalResponse) GetIdentity() *SecurityIdentity {
@@ -1851,7 +1932,7 @@ type BrowserSession struct {
 
 func (x *BrowserSession) Reset() {
 	*x = BrowserSession{}
-	mi := &file_graph_v1_security_proto_msgTypes[14]
+	mi := &file_graph_v1_security_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1863,7 +1944,7 @@ func (x *BrowserSession) String() string {
 func (*BrowserSession) ProtoMessage() {}
 
 func (x *BrowserSession) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[14]
+	mi := &file_graph_v1_security_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1876,7 +1957,7 @@ func (x *BrowserSession) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BrowserSession.ProtoReflect.Descriptor instead.
 func (*BrowserSession) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{14}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *BrowserSession) GetMode() AuthMode {
@@ -1915,7 +1996,7 @@ type SessionRevocation struct {
 
 func (x *SessionRevocation) Reset() {
 	*x = SessionRevocation{}
-	mi := &file_graph_v1_security_proto_msgTypes[15]
+	mi := &file_graph_v1_security_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1927,7 +2008,7 @@ func (x *SessionRevocation) String() string {
 func (*SessionRevocation) ProtoMessage() {}
 
 func (x *SessionRevocation) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[15]
+	mi := &file_graph_v1_security_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1940,7 +2021,7 @@ func (x *SessionRevocation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionRevocation.ProtoReflect.Descriptor instead.
 func (*SessionRevocation) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{15}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SessionRevocation) GetVersion() *SecurityVersion {
@@ -1993,7 +2074,7 @@ type CurrentSessionRevocationReview struct {
 
 func (x *CurrentSessionRevocationReview) Reset() {
 	*x = CurrentSessionRevocationReview{}
-	mi := &file_graph_v1_security_proto_msgTypes[16]
+	mi := &file_graph_v1_security_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2005,7 +2086,7 @@ func (x *CurrentSessionRevocationReview) String() string {
 func (*CurrentSessionRevocationReview) ProtoMessage() {}
 
 func (x *CurrentSessionRevocationReview) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[16]
+	mi := &file_graph_v1_security_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2018,7 +2099,7 @@ func (x *CurrentSessionRevocationReview) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSessionRevocationReview.ProtoReflect.Descriptor instead.
 func (*CurrentSessionRevocationReview) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{16}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CurrentSessionRevocationReview) GetProfile() *CurrentAuthorityProfile {
@@ -2083,7 +2164,7 @@ type CurrentLogoutRequest struct {
 
 func (x *CurrentLogoutRequest) Reset() {
 	*x = CurrentLogoutRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[17]
+	mi := &file_graph_v1_security_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2095,7 +2176,7 @@ func (x *CurrentLogoutRequest) String() string {
 func (*CurrentLogoutRequest) ProtoMessage() {}
 
 func (x *CurrentLogoutRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[17]
+	mi := &file_graph_v1_security_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2108,7 +2189,7 @@ func (x *CurrentLogoutRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentLogoutRequest.ProtoReflect.Descriptor instead.
 func (*CurrentLogoutRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{17}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CurrentLogoutRequest) GetProfile() *CurrentAuthorityProfile {
@@ -2151,7 +2232,7 @@ type ListIssuersRequest struct {
 
 func (x *ListIssuersRequest) Reset() {
 	*x = ListIssuersRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[18]
+	mi := &file_graph_v1_security_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2163,7 +2244,7 @@ func (x *ListIssuersRequest) String() string {
 func (*ListIssuersRequest) ProtoMessage() {}
 
 func (x *ListIssuersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[18]
+	mi := &file_graph_v1_security_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2176,7 +2257,7 @@ func (x *ListIssuersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIssuersRequest.ProtoReflect.Descriptor instead.
 func (*ListIssuersRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{18}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ListIssuersRequest) GetLimit() uint32 {
@@ -2212,7 +2293,7 @@ type ListRolesRequest struct {
 
 func (x *ListRolesRequest) Reset() {
 	*x = ListRolesRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[19]
+	mi := &file_graph_v1_security_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2224,7 +2305,7 @@ func (x *ListRolesRequest) String() string {
 func (*ListRolesRequest) ProtoMessage() {}
 
 func (x *ListRolesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[19]
+	mi := &file_graph_v1_security_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2237,7 +2318,7 @@ func (x *ListRolesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRolesRequest.ProtoReflect.Descriptor instead.
 func (*ListRolesRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{19}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ListRolesRequest) GetLimit() uint32 {
@@ -2273,7 +2354,7 @@ type ListUsersRequest struct {
 
 func (x *ListUsersRequest) Reset() {
 	*x = ListUsersRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[20]
+	mi := &file_graph_v1_security_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2285,7 +2366,7 @@ func (x *ListUsersRequest) String() string {
 func (*ListUsersRequest) ProtoMessage() {}
 
 func (x *ListUsersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[20]
+	mi := &file_graph_v1_security_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2298,7 +2379,7 @@ func (x *ListUsersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListUsersRequest.ProtoReflect.Descriptor instead.
 func (*ListUsersRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{20}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ListUsersRequest) GetLimit() uint32 {
@@ -2334,7 +2415,7 @@ type ListSecurityAuditRequest struct {
 
 func (x *ListSecurityAuditRequest) Reset() {
 	*x = ListSecurityAuditRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[21]
+	mi := &file_graph_v1_security_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2346,7 +2427,7 @@ func (x *ListSecurityAuditRequest) String() string {
 func (*ListSecurityAuditRequest) ProtoMessage() {}
 
 func (x *ListSecurityAuditRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[21]
+	mi := &file_graph_v1_security_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2359,7 +2440,7 @@ func (x *ListSecurityAuditRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecurityAuditRequest.ProtoReflect.Descriptor instead.
 func (*ListSecurityAuditRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{21}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ListSecurityAuditRequest) GetLimit() uint32 {
@@ -2392,7 +2473,7 @@ type GetIssuerRequest struct {
 
 func (x *GetIssuerRequest) Reset() {
 	*x = GetIssuerRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[22]
+	mi := &file_graph_v1_security_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2404,7 +2485,7 @@ func (x *GetIssuerRequest) String() string {
 func (*GetIssuerRequest) ProtoMessage() {}
 
 func (x *GetIssuerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[22]
+	mi := &file_graph_v1_security_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2417,7 +2498,7 @@ func (x *GetIssuerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetIssuerRequest.ProtoReflect.Descriptor instead.
 func (*GetIssuerRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{22}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *GetIssuerRequest) GetIssuer() string {
@@ -2437,7 +2518,7 @@ type GetIssuerResponse struct {
 
 func (x *GetIssuerResponse) Reset() {
 	*x = GetIssuerResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[23]
+	mi := &file_graph_v1_security_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2449,7 +2530,7 @@ func (x *GetIssuerResponse) String() string {
 func (*GetIssuerResponse) ProtoMessage() {}
 
 func (x *GetIssuerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[23]
+	mi := &file_graph_v1_security_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2462,7 +2543,7 @@ func (x *GetIssuerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetIssuerResponse.ProtoReflect.Descriptor instead.
 func (*GetIssuerResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{23}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetIssuerResponse) GetIssuer() *SecurityIssuer {
@@ -2488,7 +2569,7 @@ type GetRoleRequest struct {
 
 func (x *GetRoleRequest) Reset() {
 	*x = GetRoleRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[24]
+	mi := &file_graph_v1_security_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2500,7 +2581,7 @@ func (x *GetRoleRequest) String() string {
 func (*GetRoleRequest) ProtoMessage() {}
 
 func (x *GetRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[24]
+	mi := &file_graph_v1_security_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2513,7 +2594,7 @@ func (x *GetRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRoleRequest.ProtoReflect.Descriptor instead.
 func (*GetRoleRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{24}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetRoleRequest) GetId() string {
@@ -2533,7 +2614,7 @@ type GetRoleResponse struct {
 
 func (x *GetRoleResponse) Reset() {
 	*x = GetRoleResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[25]
+	mi := &file_graph_v1_security_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2545,7 +2626,7 @@ func (x *GetRoleResponse) String() string {
 func (*GetRoleResponse) ProtoMessage() {}
 
 func (x *GetRoleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[25]
+	mi := &file_graph_v1_security_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2558,7 +2639,7 @@ func (x *GetRoleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRoleResponse.ProtoReflect.Descriptor instead.
 func (*GetRoleResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{25}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *GetRoleResponse) GetRole() *SecurityRole {
@@ -2584,7 +2665,7 @@ type GetUserRequest struct {
 
 func (x *GetUserRequest) Reset() {
 	*x = GetUserRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[26]
+	mi := &file_graph_v1_security_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2596,7 +2677,7 @@ func (x *GetUserRequest) String() string {
 func (*GetUserRequest) ProtoMessage() {}
 
 func (x *GetUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[26]
+	mi := &file_graph_v1_security_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2609,7 +2690,7 @@ func (x *GetUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetUserRequest.ProtoReflect.Descriptor instead.
 func (*GetUserRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{26}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetUserRequest) GetIdentity() *SecurityIdentity {
@@ -2629,7 +2710,7 @@ type GetUserResponse struct {
 
 func (x *GetUserResponse) Reset() {
 	*x = GetUserResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[27]
+	mi := &file_graph_v1_security_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2641,7 +2722,7 @@ func (x *GetUserResponse) String() string {
 func (*GetUserResponse) ProtoMessage() {}
 
 func (x *GetUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[27]
+	mi := &file_graph_v1_security_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2654,7 +2735,7 @@ func (x *GetUserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetUserResponse.ProtoReflect.Descriptor instead.
 func (*GetUserResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{27}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetUserResponse) GetUser() *SecurityUser {
@@ -2682,7 +2763,7 @@ type ListIssuersResponse struct {
 
 func (x *ListIssuersResponse) Reset() {
 	*x = ListIssuersResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[28]
+	mi := &file_graph_v1_security_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2694,7 +2775,7 @@ func (x *ListIssuersResponse) String() string {
 func (*ListIssuersResponse) ProtoMessage() {}
 
 func (x *ListIssuersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[28]
+	mi := &file_graph_v1_security_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2707,7 +2788,7 @@ func (x *ListIssuersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIssuersResponse.ProtoReflect.Descriptor instead.
 func (*ListIssuersResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{28}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListIssuersResponse) GetIssuers() []*SecurityIssuer {
@@ -2742,7 +2823,7 @@ type ListRolesResponse struct {
 
 func (x *ListRolesResponse) Reset() {
 	*x = ListRolesResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[29]
+	mi := &file_graph_v1_security_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2754,7 +2835,7 @@ func (x *ListRolesResponse) String() string {
 func (*ListRolesResponse) ProtoMessage() {}
 
 func (x *ListRolesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[29]
+	mi := &file_graph_v1_security_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2767,7 +2848,7 @@ func (x *ListRolesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRolesResponse.ProtoReflect.Descriptor instead.
 func (*ListRolesResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{29}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListRolesResponse) GetRoles() []*SecurityRole {
@@ -2802,7 +2883,7 @@ type ListUsersResponse struct {
 
 func (x *ListUsersResponse) Reset() {
 	*x = ListUsersResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[30]
+	mi := &file_graph_v1_security_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2814,7 +2895,7 @@ func (x *ListUsersResponse) String() string {
 func (*ListUsersResponse) ProtoMessage() {}
 
 func (x *ListUsersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[30]
+	mi := &file_graph_v1_security_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2827,7 +2908,7 @@ func (x *ListUsersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListUsersResponse.ProtoReflect.Descriptor instead.
 func (*ListUsersResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{30}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListUsersResponse) GetUsers() []*SecurityUser {
@@ -2860,7 +2941,7 @@ type ListRoleAssignmentsRequest struct {
 
 func (x *ListRoleAssignmentsRequest) Reset() {
 	*x = ListRoleAssignmentsRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[31]
+	mi := &file_graph_v1_security_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2872,7 +2953,7 @@ func (x *ListRoleAssignmentsRequest) String() string {
 func (*ListRoleAssignmentsRequest) ProtoMessage() {}
 
 func (x *ListRoleAssignmentsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[31]
+	mi := &file_graph_v1_security_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2885,7 +2966,7 @@ func (x *ListRoleAssignmentsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRoleAssignmentsRequest.ProtoReflect.Descriptor instead.
 func (*ListRoleAssignmentsRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{31}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListRoleAssignmentsRequest) GetIdentity() *SecurityIdentity {
@@ -2905,7 +2986,7 @@ type ListRoleAssignmentsResponse struct {
 
 func (x *ListRoleAssignmentsResponse) Reset() {
 	*x = ListRoleAssignmentsResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[32]
+	mi := &file_graph_v1_security_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2917,7 +2998,7 @@ func (x *ListRoleAssignmentsResponse) String() string {
 func (*ListRoleAssignmentsResponse) ProtoMessage() {}
 
 func (x *ListRoleAssignmentsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[32]
+	mi := &file_graph_v1_security_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2930,7 +3011,7 @@ func (x *ListRoleAssignmentsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRoleAssignmentsResponse.ProtoReflect.Descriptor instead.
 func (*ListRoleAssignmentsResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{32}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ListRoleAssignmentsResponse) GetAssignments() []*SecurityRoleAssignment {
@@ -2964,7 +3045,7 @@ type SecurityAuditRecord struct {
 
 func (x *SecurityAuditRecord) Reset() {
 	*x = SecurityAuditRecord{}
-	mi := &file_graph_v1_security_proto_msgTypes[33]
+	mi := &file_graph_v1_security_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2976,7 +3057,7 @@ func (x *SecurityAuditRecord) String() string {
 func (*SecurityAuditRecord) ProtoMessage() {}
 
 func (x *SecurityAuditRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[33]
+	mi := &file_graph_v1_security_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2989,7 +3070,7 @@ func (x *SecurityAuditRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityAuditRecord.ProtoReflect.Descriptor instead.
 func (*SecurityAuditRecord) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{33}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *SecurityAuditRecord) GetRevision() uint64 {
@@ -3067,7 +3148,7 @@ type ListSecurityAuditResponse struct {
 
 func (x *ListSecurityAuditResponse) Reset() {
 	*x = ListSecurityAuditResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[34]
+	mi := &file_graph_v1_security_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3079,7 +3160,7 @@ func (x *ListSecurityAuditResponse) String() string {
 func (*ListSecurityAuditResponse) ProtoMessage() {}
 
 func (x *ListSecurityAuditResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[34]
+	mi := &file_graph_v1_security_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3092,7 +3173,7 @@ func (x *ListSecurityAuditResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecurityAuditResponse.ProtoReflect.Descriptor instead.
 func (*ListSecurityAuditResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{34}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ListSecurityAuditResponse) GetRecords() []*SecurityAuditRecord {
@@ -3132,7 +3213,7 @@ type GetRoleTemplatesRequest struct {
 
 func (x *GetRoleTemplatesRequest) Reset() {
 	*x = GetRoleTemplatesRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[35]
+	mi := &file_graph_v1_security_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3144,7 +3225,7 @@ func (x *GetRoleTemplatesRequest) String() string {
 func (*GetRoleTemplatesRequest) ProtoMessage() {}
 
 func (x *GetRoleTemplatesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[35]
+	mi := &file_graph_v1_security_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3157,7 +3238,7 @@ func (x *GetRoleTemplatesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRoleTemplatesRequest.ProtoReflect.Descriptor instead.
 func (*GetRoleTemplatesRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{35}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *GetRoleTemplatesRequest) GetPrefix() string {
@@ -3177,7 +3258,7 @@ type GetRoleTemplatesResponse struct {
 
 func (x *GetRoleTemplatesResponse) Reset() {
 	*x = GetRoleTemplatesResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[36]
+	mi := &file_graph_v1_security_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3189,7 +3270,7 @@ func (x *GetRoleTemplatesResponse) String() string {
 func (*GetRoleTemplatesResponse) ProtoMessage() {}
 
 func (x *GetRoleTemplatesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[36]
+	mi := &file_graph_v1_security_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3202,7 +3283,7 @@ func (x *GetRoleTemplatesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRoleTemplatesResponse.ProtoReflect.Descriptor instead.
 func (*GetRoleTemplatesResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{36}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *GetRoleTemplatesResponse) GetRoles() []*SecurityRole {
@@ -3229,7 +3310,7 @@ type SecurityEdgeIdentity struct {
 
 func (x *SecurityEdgeIdentity) Reset() {
 	*x = SecurityEdgeIdentity{}
-	mi := &file_graph_v1_security_proto_msgTypes[37]
+	mi := &file_graph_v1_security_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3241,7 +3322,7 @@ func (x *SecurityEdgeIdentity) String() string {
 func (*SecurityEdgeIdentity) ProtoMessage() {}
 
 func (x *SecurityEdgeIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[37]
+	mi := &file_graph_v1_security_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3254,7 +3335,7 @@ func (x *SecurityEdgeIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityEdgeIdentity.ProtoReflect.Descriptor instead.
 func (*SecurityEdgeIdentity) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{37}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *SecurityEdgeIdentity) GetTail() string {
@@ -3284,7 +3365,7 @@ type ExplainAccessRequest struct {
 
 func (x *ExplainAccessRequest) Reset() {
 	*x = ExplainAccessRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[38]
+	mi := &file_graph_v1_security_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3296,7 +3377,7 @@ func (x *ExplainAccessRequest) String() string {
 func (*ExplainAccessRequest) ProtoMessage() {}
 
 func (x *ExplainAccessRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[38]
+	mi := &file_graph_v1_security_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3309,7 +3390,7 @@ func (x *ExplainAccessRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExplainAccessRequest.ProtoReflect.Descriptor instead.
 func (*ExplainAccessRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{38}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ExplainAccessRequest) GetIdentity() *SecurityIdentity {
@@ -3355,7 +3436,7 @@ type SecurityRuleMatch struct {
 
 func (x *SecurityRuleMatch) Reset() {
 	*x = SecurityRuleMatch{}
-	mi := &file_graph_v1_security_proto_msgTypes[39]
+	mi := &file_graph_v1_security_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3367,7 +3448,7 @@ func (x *SecurityRuleMatch) String() string {
 func (*SecurityRuleMatch) ProtoMessage() {}
 
 func (x *SecurityRuleMatch) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[39]
+	mi := &file_graph_v1_security_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3380,7 +3461,7 @@ func (x *SecurityRuleMatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityRuleMatch.ProtoReflect.Descriptor instead.
 func (*SecurityRuleMatch) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{39}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *SecurityRuleMatch) GetRoleId() string {
@@ -3429,7 +3510,7 @@ type ExplainAccessResponse struct {
 
 func (x *ExplainAccessResponse) Reset() {
 	*x = ExplainAccessResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[40]
+	mi := &file_graph_v1_security_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3441,7 +3522,7 @@ func (x *ExplainAccessResponse) String() string {
 func (*ExplainAccessResponse) ProtoMessage() {}
 
 func (x *ExplainAccessResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[40]
+	mi := &file_graph_v1_security_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3454,7 +3535,7 @@ func (x *ExplainAccessResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExplainAccessResponse.ProtoReflect.Descriptor instead.
 func (*ExplainAccessResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{40}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ExplainAccessResponse) GetAllowed() bool {
@@ -3487,7 +3568,7 @@ type ValidateIssuerRequest struct {
 
 func (x *ValidateIssuerRequest) Reset() {
 	*x = ValidateIssuerRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[41]
+	mi := &file_graph_v1_security_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3499,7 +3580,7 @@ func (x *ValidateIssuerRequest) String() string {
 func (*ValidateIssuerRequest) ProtoMessage() {}
 
 func (x *ValidateIssuerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[41]
+	mi := &file_graph_v1_security_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3512,7 +3593,7 @@ func (x *ValidateIssuerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateIssuerRequest.ProtoReflect.Descriptor instead.
 func (*ValidateIssuerRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{41}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ValidateIssuerRequest) GetIssuer() *SecurityIssuer {
@@ -3531,7 +3612,7 @@ type ValidateIssuerResponse struct {
 
 func (x *ValidateIssuerResponse) Reset() {
 	*x = ValidateIssuerResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[42]
+	mi := &file_graph_v1_security_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3543,7 +3624,7 @@ func (x *ValidateIssuerResponse) String() string {
 func (*ValidateIssuerResponse) ProtoMessage() {}
 
 func (x *ValidateIssuerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[42]
+	mi := &file_graph_v1_security_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3556,7 +3637,7 @@ func (x *ValidateIssuerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateIssuerResponse.ProtoReflect.Descriptor instead.
 func (*ValidateIssuerResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{42}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *ValidateIssuerResponse) GetValid() bool {
@@ -3576,7 +3657,7 @@ type SecurityUserStateChange struct {
 
 func (x *SecurityUserStateChange) Reset() {
 	*x = SecurityUserStateChange{}
-	mi := &file_graph_v1_security_proto_msgTypes[43]
+	mi := &file_graph_v1_security_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3588,7 +3669,7 @@ func (x *SecurityUserStateChange) String() string {
 func (*SecurityUserStateChange) ProtoMessage() {}
 
 func (x *SecurityUserStateChange) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[43]
+	mi := &file_graph_v1_security_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3601,7 +3682,7 @@ func (x *SecurityUserStateChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityUserStateChange.ProtoReflect.Descriptor instead.
 func (*SecurityUserStateChange) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{43}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *SecurityUserStateChange) GetIdentity() *SecurityIdentity {
@@ -3639,7 +3720,7 @@ type SecurityChange struct {
 
 func (x *SecurityChange) Reset() {
 	*x = SecurityChange{}
-	mi := &file_graph_v1_security_proto_msgTypes[44]
+	mi := &file_graph_v1_security_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3651,7 +3732,7 @@ func (x *SecurityChange) String() string {
 func (*SecurityChange) ProtoMessage() {}
 
 func (x *SecurityChange) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[44]
+	mi := &file_graph_v1_security_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3664,7 +3745,7 @@ func (x *SecurityChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityChange.ProtoReflect.Descriptor instead.
 func (*SecurityChange) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{44}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *SecurityChange) GetOperation() isSecurityChange_Operation {
@@ -3843,7 +3924,7 @@ type ApplySecurityChangesRequest struct {
 
 func (x *ApplySecurityChangesRequest) Reset() {
 	*x = ApplySecurityChangesRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[45]
+	mi := &file_graph_v1_security_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3855,7 +3936,7 @@ func (x *ApplySecurityChangesRequest) String() string {
 func (*ApplySecurityChangesRequest) ProtoMessage() {}
 
 func (x *ApplySecurityChangesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[45]
+	mi := &file_graph_v1_security_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3868,7 +3949,7 @@ func (x *ApplySecurityChangesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplySecurityChangesRequest.ProtoReflect.Descriptor instead.
 func (*ApplySecurityChangesRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{45}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ApplySecurityChangesRequest) GetExpectedRevision() uint64 {
@@ -3919,7 +4000,7 @@ type ApplySecurityChangesResponse struct {
 
 func (x *ApplySecurityChangesResponse) Reset() {
 	*x = ApplySecurityChangesResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[46]
+	mi := &file_graph_v1_security_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3931,7 +4012,7 @@ func (x *ApplySecurityChangesResponse) String() string {
 func (*ApplySecurityChangesResponse) ProtoMessage() {}
 
 func (x *ApplySecurityChangesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[46]
+	mi := &file_graph_v1_security_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3944,7 +4025,7 @@ func (x *ApplySecurityChangesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplySecurityChangesResponse.ProtoReflect.Descriptor instead.
 func (*ApplySecurityChangesResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{46}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ApplySecurityChangesResponse) GetVersion() *SecurityVersion {
@@ -3996,7 +4077,7 @@ type ApplySecurityChangeRequest struct {
 
 func (x *ApplySecurityChangeRequest) Reset() {
 	*x = ApplySecurityChangeRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[47]
+	mi := &file_graph_v1_security_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4008,7 +4089,7 @@ func (x *ApplySecurityChangeRequest) String() string {
 func (*ApplySecurityChangeRequest) ProtoMessage() {}
 
 func (x *ApplySecurityChangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[47]
+	mi := &file_graph_v1_security_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4021,7 +4102,7 @@ func (x *ApplySecurityChangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplySecurityChangeRequest.ProtoReflect.Descriptor instead.
 func (*ApplySecurityChangeRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{47}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ApplySecurityChangeRequest) GetExpectedRevision() uint64 {
@@ -4070,7 +4151,7 @@ type SecurityChangeReview struct {
 
 func (x *SecurityChangeReview) Reset() {
 	*x = SecurityChangeReview{}
-	mi := &file_graph_v1_security_proto_msgTypes[48]
+	mi := &file_graph_v1_security_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4082,7 +4163,7 @@ func (x *SecurityChangeReview) String() string {
 func (*SecurityChangeReview) ProtoMessage() {}
 
 func (x *SecurityChangeReview) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[48]
+	mi := &file_graph_v1_security_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4095,7 +4176,7 @@ func (x *SecurityChangeReview) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityChangeReview.ProtoReflect.Descriptor instead.
 func (*SecurityChangeReview) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{48}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *SecurityChangeReview) GetExpectedVersion() *SecurityVersion {
@@ -4133,7 +4214,7 @@ type SecurityOperationAuthorizationRequired struct {
 
 func (x *SecurityOperationAuthorizationRequired) Reset() {
 	*x = SecurityOperationAuthorizationRequired{}
-	mi := &file_graph_v1_security_proto_msgTypes[49]
+	mi := &file_graph_v1_security_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4145,7 +4226,7 @@ func (x *SecurityOperationAuthorizationRequired) String() string {
 func (*SecurityOperationAuthorizationRequired) ProtoMessage() {}
 
 func (x *SecurityOperationAuthorizationRequired) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[49]
+	mi := &file_graph_v1_security_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4158,7 +4239,7 @@ func (x *SecurityOperationAuthorizationRequired) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use SecurityOperationAuthorizationRequired.ProtoReflect.Descriptor instead.
 func (*SecurityOperationAuthorizationRequired) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{49}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *SecurityOperationAuthorizationRequired) GetChangeId() []byte {
@@ -4195,7 +4276,7 @@ type SecurityChangePrecommitRejected struct {
 
 func (x *SecurityChangePrecommitRejected) Reset() {
 	*x = SecurityChangePrecommitRejected{}
-	mi := &file_graph_v1_security_proto_msgTypes[50]
+	mi := &file_graph_v1_security_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4207,7 +4288,7 @@ func (x *SecurityChangePrecommitRejected) String() string {
 func (*SecurityChangePrecommitRejected) ProtoMessage() {}
 
 func (x *SecurityChangePrecommitRejected) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[50]
+	mi := &file_graph_v1_security_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4220,7 +4301,7 @@ func (x *SecurityChangePrecommitRejected) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityChangePrecommitRejected.ProtoReflect.Descriptor instead.
 func (*SecurityChangePrecommitRejected) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{50}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *SecurityChangePrecommitRejected) GetChangeId() []byte {
@@ -4256,7 +4337,7 @@ type PrepareSecurityChangesRequest struct {
 
 func (x *PrepareSecurityChangesRequest) Reset() {
 	*x = PrepareSecurityChangesRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[51]
+	mi := &file_graph_v1_security_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4268,7 +4349,7 @@ func (x *PrepareSecurityChangesRequest) String() string {
 func (*PrepareSecurityChangesRequest) ProtoMessage() {}
 
 func (x *PrepareSecurityChangesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[51]
+	mi := &file_graph_v1_security_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4281,7 +4362,7 @@ func (x *PrepareSecurityChangesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareSecurityChangesRequest.ProtoReflect.Descriptor instead.
 func (*PrepareSecurityChangesRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{51}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *PrepareSecurityChangesRequest) GetReview() *SecurityChangeReview {
@@ -4314,7 +4395,7 @@ type PrepareSecurityChangesResponse struct {
 
 func (x *PrepareSecurityChangesResponse) Reset() {
 	*x = PrepareSecurityChangesResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[52]
+	mi := &file_graph_v1_security_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4326,7 +4407,7 @@ func (x *PrepareSecurityChangesResponse) String() string {
 func (*PrepareSecurityChangesResponse) ProtoMessage() {}
 
 func (x *PrepareSecurityChangesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[52]
+	mi := &file_graph_v1_security_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4339,7 +4420,7 @@ func (x *PrepareSecurityChangesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareSecurityChangesResponse.ProtoReflect.Descriptor instead.
 func (*PrepareSecurityChangesResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{52}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *PrepareSecurityChangesResponse) GetExpectedVersion() *SecurityVersion {
@@ -4401,7 +4482,7 @@ type BeginSecurityChangeAuthorizationRequest struct {
 
 func (x *BeginSecurityChangeAuthorizationRequest) Reset() {
 	*x = BeginSecurityChangeAuthorizationRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[53]
+	mi := &file_graph_v1_security_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4413,7 +4494,7 @@ func (x *BeginSecurityChangeAuthorizationRequest) String() string {
 func (*BeginSecurityChangeAuthorizationRequest) ProtoMessage() {}
 
 func (x *BeginSecurityChangeAuthorizationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[53]
+	mi := &file_graph_v1_security_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4426,7 +4507,7 @@ func (x *BeginSecurityChangeAuthorizationRequest) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use BeginSecurityChangeAuthorizationRequest.ProtoReflect.Descriptor instead.
 func (*BeginSecurityChangeAuthorizationRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{53}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *BeginSecurityChangeAuthorizationRequest) GetReview() *SecurityChangeReview {
@@ -4457,7 +4538,7 @@ type BeginSecurityChangeAuthorizationResponse struct {
 
 func (x *BeginSecurityChangeAuthorizationResponse) Reset() {
 	*x = BeginSecurityChangeAuthorizationResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[54]
+	mi := &file_graph_v1_security_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4469,7 +4550,7 @@ func (x *BeginSecurityChangeAuthorizationResponse) String() string {
 func (*BeginSecurityChangeAuthorizationResponse) ProtoMessage() {}
 
 func (x *BeginSecurityChangeAuthorizationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[54]
+	mi := &file_graph_v1_security_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4482,7 +4563,7 @@ func (x *BeginSecurityChangeAuthorizationResponse) ProtoReflect() protoreflect.M
 
 // Deprecated: Use BeginSecurityChangeAuthorizationResponse.ProtoReflect.Descriptor instead.
 func (*BeginSecurityChangeAuthorizationResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{54}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *BeginSecurityChangeAuthorizationResponse) GetAuthorizationId() []byte {
@@ -4531,7 +4612,7 @@ type GetSecurityChangeAuthorizationRequest struct {
 
 func (x *GetSecurityChangeAuthorizationRequest) Reset() {
 	*x = GetSecurityChangeAuthorizationRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[55]
+	mi := &file_graph_v1_security_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4543,7 +4624,7 @@ func (x *GetSecurityChangeAuthorizationRequest) String() string {
 func (*GetSecurityChangeAuthorizationRequest) ProtoMessage() {}
 
 func (x *GetSecurityChangeAuthorizationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[55]
+	mi := &file_graph_v1_security_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4556,7 +4637,7 @@ func (x *GetSecurityChangeAuthorizationRequest) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use GetSecurityChangeAuthorizationRequest.ProtoReflect.Descriptor instead.
 func (*GetSecurityChangeAuthorizationRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{55}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *GetSecurityChangeAuthorizationRequest) GetAuthorizationId() []byte {
@@ -4593,7 +4674,7 @@ type GetSecurityChangeAuthorizationResponse struct {
 
 func (x *GetSecurityChangeAuthorizationResponse) Reset() {
 	*x = GetSecurityChangeAuthorizationResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[56]
+	mi := &file_graph_v1_security_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4605,7 +4686,7 @@ func (x *GetSecurityChangeAuthorizationResponse) String() string {
 func (*GetSecurityChangeAuthorizationResponse) ProtoMessage() {}
 
 func (x *GetSecurityChangeAuthorizationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[56]
+	mi := &file_graph_v1_security_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4618,7 +4699,7 @@ func (x *GetSecurityChangeAuthorizationResponse) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use GetSecurityChangeAuthorizationResponse.ProtoReflect.Descriptor instead.
 func (*GetSecurityChangeAuthorizationResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{56}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *GetSecurityChangeAuthorizationResponse) GetAuthorizationId() []byte {
@@ -4669,7 +4750,7 @@ type ApplySecurityChangeResponse struct {
 
 func (x *ApplySecurityChangeResponse) Reset() {
 	*x = ApplySecurityChangeResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[57]
+	mi := &file_graph_v1_security_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4681,7 +4762,7 @@ func (x *ApplySecurityChangeResponse) String() string {
 func (*ApplySecurityChangeResponse) ProtoMessage() {}
 
 func (x *ApplySecurityChangeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[57]
+	mi := &file_graph_v1_security_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4694,7 +4775,7 @@ func (x *ApplySecurityChangeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplySecurityChangeResponse.ProtoReflect.Descriptor instead.
 func (*ApplySecurityChangeResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{57}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *ApplySecurityChangeResponse) GetVersion() *SecurityVersion {
@@ -4744,7 +4825,7 @@ type GetSecurityChangeStatusRequest struct {
 
 func (x *GetSecurityChangeStatusRequest) Reset() {
 	*x = GetSecurityChangeStatusRequest{}
-	mi := &file_graph_v1_security_proto_msgTypes[58]
+	mi := &file_graph_v1_security_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4756,7 +4837,7 @@ func (x *GetSecurityChangeStatusRequest) String() string {
 func (*GetSecurityChangeStatusRequest) ProtoMessage() {}
 
 func (x *GetSecurityChangeStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[58]
+	mi := &file_graph_v1_security_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4769,7 +4850,7 @@ func (x *GetSecurityChangeStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSecurityChangeStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetSecurityChangeStatusRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{58}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *GetSecurityChangeStatusRequest) GetChangeId() []byte {
@@ -4814,7 +4895,7 @@ type GetSecurityChangeStatusResponse struct {
 
 func (x *GetSecurityChangeStatusResponse) Reset() {
 	*x = GetSecurityChangeStatusResponse{}
-	mi := &file_graph_v1_security_proto_msgTypes[59]
+	mi := &file_graph_v1_security_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4826,7 +4907,7 @@ func (x *GetSecurityChangeStatusResponse) String() string {
 func (*GetSecurityChangeStatusResponse) ProtoMessage() {}
 
 func (x *GetSecurityChangeStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[59]
+	mi := &file_graph_v1_security_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4839,7 +4920,7 @@ func (x *GetSecurityChangeStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSecurityChangeStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetSecurityChangeStatusResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{59}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *GetSecurityChangeStatusResponse) GetVersion() *SecurityVersion {
@@ -4888,7 +4969,7 @@ type CurrentAuthorityProfile struct {
 
 func (x *CurrentAuthorityProfile) Reset() {
 	*x = CurrentAuthorityProfile{}
-	mi := &file_graph_v1_security_proto_msgTypes[60]
+	mi := &file_graph_v1_security_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4900,7 +4981,7 @@ func (x *CurrentAuthorityProfile) String() string {
 func (*CurrentAuthorityProfile) ProtoMessage() {}
 
 func (x *CurrentAuthorityProfile) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[60]
+	mi := &file_graph_v1_security_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4913,7 +4994,7 @@ func (x *CurrentAuthorityProfile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentAuthorityProfile.ProtoReflect.Descriptor instead.
 func (*CurrentAuthorityProfile) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{60}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *CurrentAuthorityProfile) GetVersion() uint32 {
@@ -4990,7 +5071,7 @@ type CurrentSemanticCut struct {
 
 func (x *CurrentSemanticCut) Reset() {
 	*x = CurrentSemanticCut{}
-	mi := &file_graph_v1_security_proto_msgTypes[61]
+	mi := &file_graph_v1_security_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5002,7 +5083,7 @@ func (x *CurrentSemanticCut) String() string {
 func (*CurrentSemanticCut) ProtoMessage() {}
 
 func (x *CurrentSemanticCut) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[61]
+	mi := &file_graph_v1_security_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5015,7 +5096,7 @@ func (x *CurrentSemanticCut) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSemanticCut.ProtoReflect.Descriptor instead.
 func (*CurrentSemanticCut) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{61}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *CurrentSemanticCut) GetVersion() uint32 {
@@ -5101,7 +5182,7 @@ type CurrentSecurityChangeID struct {
 
 func (x *CurrentSecurityChangeID) Reset() {
 	*x = CurrentSecurityChangeID{}
-	mi := &file_graph_v1_security_proto_msgTypes[62]
+	mi := &file_graph_v1_security_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5113,7 +5194,7 @@ func (x *CurrentSecurityChangeID) String() string {
 func (*CurrentSecurityChangeID) ProtoMessage() {}
 
 func (x *CurrentSecurityChangeID) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[62]
+	mi := &file_graph_v1_security_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5126,7 +5207,7 @@ func (x *CurrentSecurityChangeID) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSecurityChangeID.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityChangeID) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{62}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *CurrentSecurityChangeID) GetVersion() uint32 {
@@ -5178,7 +5259,7 @@ type CurrentSecurityReview struct {
 
 func (x *CurrentSecurityReview) Reset() {
 	*x = CurrentSecurityReview{}
-	mi := &file_graph_v1_security_proto_msgTypes[63]
+	mi := &file_graph_v1_security_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5190,7 +5271,7 @@ func (x *CurrentSecurityReview) String() string {
 func (*CurrentSecurityReview) ProtoMessage() {}
 
 func (x *CurrentSecurityReview) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[63]
+	mi := &file_graph_v1_security_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5203,7 +5284,7 @@ func (x *CurrentSecurityReview) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSecurityReview.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityReview) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{63}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *CurrentSecurityReview) GetProfile() *CurrentAuthorityProfile {
@@ -5263,7 +5344,7 @@ type CurrentControlCommit struct {
 
 func (x *CurrentControlCommit) Reset() {
 	*x = CurrentControlCommit{}
-	mi := &file_graph_v1_security_proto_msgTypes[64]
+	mi := &file_graph_v1_security_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5275,7 +5356,7 @@ func (x *CurrentControlCommit) String() string {
 func (*CurrentControlCommit) ProtoMessage() {}
 
 func (x *CurrentControlCommit) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[64]
+	mi := &file_graph_v1_security_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5288,7 +5369,7 @@ func (x *CurrentControlCommit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentControlCommit.ProtoReflect.Descriptor instead.
 func (*CurrentControlCommit) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{64}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *CurrentControlCommit) GetVersion() uint32 {
@@ -5351,7 +5432,7 @@ type CurrentSecurityItemOutcome struct {
 
 func (x *CurrentSecurityItemOutcome) Reset() {
 	*x = CurrentSecurityItemOutcome{}
-	mi := &file_graph_v1_security_proto_msgTypes[65]
+	mi := &file_graph_v1_security_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5363,7 +5444,7 @@ func (x *CurrentSecurityItemOutcome) String() string {
 func (*CurrentSecurityItemOutcome) ProtoMessage() {}
 
 func (x *CurrentSecurityItemOutcome) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[65]
+	mi := &file_graph_v1_security_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5376,7 +5457,7 @@ func (x *CurrentSecurityItemOutcome) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSecurityItemOutcome.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityItemOutcome) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{65}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *CurrentSecurityItemOutcome) GetIndex() uint32 {
@@ -5416,7 +5497,7 @@ type CurrentSecurityOriginalOutcome struct {
 
 func (x *CurrentSecurityOriginalOutcome) Reset() {
 	*x = CurrentSecurityOriginalOutcome{}
-	mi := &file_graph_v1_security_proto_msgTypes[66]
+	mi := &file_graph_v1_security_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5428,7 +5509,7 @@ func (x *CurrentSecurityOriginalOutcome) String() string {
 func (*CurrentSecurityOriginalOutcome) ProtoMessage() {}
 
 func (x *CurrentSecurityOriginalOutcome) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[66]
+	mi := &file_graph_v1_security_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5441,7 +5522,7 @@ func (x *CurrentSecurityOriginalOutcome) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSecurityOriginalOutcome.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityOriginalOutcome) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{66}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *CurrentSecurityOriginalOutcome) GetChangeId() *CurrentSecurityChangeID {
@@ -5514,7 +5595,7 @@ type CurrentSecurityChangeResult struct {
 
 func (x *CurrentSecurityChangeResult) Reset() {
 	*x = CurrentSecurityChangeResult{}
-	mi := &file_graph_v1_security_proto_msgTypes[67]
+	mi := &file_graph_v1_security_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5526,7 +5607,7 @@ func (x *CurrentSecurityChangeResult) String() string {
 func (*CurrentSecurityChangeResult) ProtoMessage() {}
 
 func (x *CurrentSecurityChangeResult) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[67]
+	mi := &file_graph_v1_security_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5539,7 +5620,7 @@ func (x *CurrentSecurityChangeResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSecurityChangeResult.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityChangeResult) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{67}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *CurrentSecurityChangeResult) GetProfile() *CurrentAuthorityProfile {
@@ -5595,7 +5676,7 @@ type CurrentSecurityAuditRecord struct {
 
 func (x *CurrentSecurityAuditRecord) Reset() {
 	*x = CurrentSecurityAuditRecord{}
-	mi := &file_graph_v1_security_proto_msgTypes[68]
+	mi := &file_graph_v1_security_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5607,7 +5688,7 @@ func (x *CurrentSecurityAuditRecord) String() string {
 func (*CurrentSecurityAuditRecord) ProtoMessage() {}
 
 func (x *CurrentSecurityAuditRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[68]
+	mi := &file_graph_v1_security_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5620,7 +5701,7 @@ func (x *CurrentSecurityAuditRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentSecurityAuditRecord.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityAuditRecord) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{68}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *CurrentSecurityAuditRecord) GetResult() *CurrentSecurityChangeResult {
@@ -5658,7 +5739,7 @@ type CurrentSecurityInvocationRejected struct {
 
 func (x *CurrentSecurityInvocationRejected) Reset() {
 	*x = CurrentSecurityInvocationRejected{}
-	mi := &file_graph_v1_security_proto_msgTypes[69]
+	mi := &file_graph_v1_security_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5670,7 +5751,7 @@ func (x *CurrentSecurityInvocationRejected) String() string {
 func (*CurrentSecurityInvocationRejected) ProtoMessage() {}
 
 func (x *CurrentSecurityInvocationRejected) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_security_proto_msgTypes[69]
+	mi := &file_graph_v1_security_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5683,7 +5764,7 @@ func (x *CurrentSecurityInvocationRejected) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CurrentSecurityInvocationRejected.ProtoReflect.Descriptor instead.
 func (*CurrentSecurityInvocationRejected) Descriptor() ([]byte, []int) {
-	return file_graph_v1_security_proto_rawDescGZIP(), []int{69}
+	return file_graph_v1_security_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *CurrentSecurityInvocationRejected) GetProfile() *CurrentAuthorityProfile {
@@ -5742,14 +5823,18 @@ const file_graph_v1_security_proto_rawDesc = "" +
 	"\vtail_prefix\x18\x01 \x01(\tR\n" +
 	"tailPrefix\x12\x1f\n" +
 	"\vhead_prefix\x18\x02 \x01(\tR\n" +
-	"headPrefix\"\xf6\x01\n" +
+	"headPrefix\"h\n" +
+	"\x1aSecurityPrincipalUIDPrefix\x12%\n" +
+	"\x0eliteral_before\x18\x01 \x01(\tR\rliteralBefore\x12#\n" +
+	"\rliteral_after\x18\x02 \x01(\tR\fliteralAfter\"\xd0\x02\n" +
 	"\fSecurityRule\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x120\n" +
 	"\x06effect\x18\x02 \x01(\x0e2\x18.graph.v1.SecurityEffectR\x06effect\x120\n" +
 	"\x06action\x18\x03 \x01(\x0e2\x18.graph.v1.SecurityActionR\x06action\x12\x18\n" +
 	"\x06prefix\x18\x04 \x01(\tH\x00R\x06prefix\x12\x18\n" +
 	"\x06global\x18\x05 \x01(\bH\x00R\x06global\x122\n" +
-	"\x04pair\x18\x06 \x01(\v2\x1c.graph.v1.SecurityPrefixPairH\x00R\x04pairB\n" +
+	"\x04pair\x18\x06 \x01(\v2\x1c.graph.v1.SecurityPrefixPairH\x00R\x04pair\x12X\n" +
+	"\x14principal_uid_prefix\x18\a \x01(\v2$.graph.v1.SecurityPrincipalUIDPrefixH\x00R\x12principalUidPrefixB\n" +
 	"\n" +
 	"\bresource\"}\n" +
 	"\fSecurityRole\x12\x0e\n" +
@@ -5760,11 +5845,12 @@ const file_graph_v1_security_proto_rawDesc = "" +
 	"\x16SecurityRoleAssignment\x126\n" +
 	"\bidentity\x18\x01 \x01(\v2\x1a.graph.v1.SecurityIdentityR\bidentity\x12\x17\n" +
 	"\arole_id\x18\x02 \x01(\tR\x06roleId\x12\x1b\n" +
-	"\tenv_owned\x18\x03 \x01(\bR\benvOwned\"\xc2\x01\n" +
+	"\tenv_owned\x18\x03 \x01(\bR\benvOwned\"\xdd\x01\n" +
 	"\fSecurityUser\x126\n" +
 	"\bidentity\x18\x01 \x01(\v2\x1a.graph.v1.SecurityIdentityR\bidentity\x126\n" +
 	"\x05state\x18\x02 \x01(\x0e2 .graph.v1.SecurityPrincipalStateR\x05state\x12B\n" +
-	"\vassignments\x18\x03 \x03(\v2 .graph.v1.SecurityRoleAssignmentR\vassignments\"\x98\x04\n" +
+	"\vassignments\x18\x03 \x03(\v2 .graph.v1.SecurityRoleAssignmentR\vassignments\x12\x19\n" +
+	"\buser_uid\x18\x04 \x01(\tR\auserUid\"\x98\x04\n" +
 	"\x0eSecurityIssuer\x12\x16\n" +
 	"\x06issuer\x18\x01 \x01(\tR\x06issuer\x12\x18\n" +
 	"\aenabled\x18\x02 \x01(\bR\aenabled\x12\x1b\n" +
@@ -6234,7 +6320,7 @@ func file_graph_v1_security_proto_rawDescGZIP() []byte {
 }
 
 var file_graph_v1_security_proto_enumTypes = make([]protoimpl.EnumInfo, 13)
-var file_graph_v1_security_proto_msgTypes = make([]protoimpl.MessageInfo, 70)
+var file_graph_v1_security_proto_msgTypes = make([]protoimpl.MessageInfo, 71)
 var file_graph_v1_security_proto_goTypes = []any{
 	(AuthMode)(0),                                    // 0: graph.v1.AuthMode
 	(SecurityPrincipalKind)(0),                       // 1: graph.v1.SecurityPrincipalKind
@@ -6254,243 +6340,245 @@ var file_graph_v1_security_proto_goTypes = []any{
 	(*GetAuthCapabilitiesResponse)(nil),              // 15: graph.v1.GetAuthCapabilitiesResponse
 	(*SecurityIdentity)(nil),                         // 16: graph.v1.SecurityIdentity
 	(*SecurityPrefixPair)(nil),                       // 17: graph.v1.SecurityPrefixPair
-	(*SecurityRule)(nil),                             // 18: graph.v1.SecurityRule
-	(*SecurityRole)(nil),                             // 19: graph.v1.SecurityRole
-	(*SecurityRoleAssignment)(nil),                   // 20: graph.v1.SecurityRoleAssignment
-	(*SecurityUser)(nil),                             // 21: graph.v1.SecurityUser
-	(*SecurityIssuer)(nil),                           // 22: graph.v1.SecurityIssuer
-	(*SecurityNativeClient)(nil),                     // 23: graph.v1.SecurityNativeClient
-	(*SecurityVersion)(nil),                          // 24: graph.v1.SecurityVersion
-	(*GetCurrentPrincipalRequest)(nil),               // 25: graph.v1.GetCurrentPrincipalRequest
-	(*GetCurrentPrincipalResponse)(nil),              // 26: graph.v1.GetCurrentPrincipalResponse
-	(*BrowserSession)(nil),                           // 27: graph.v1.BrowserSession
-	(*SessionRevocation)(nil),                        // 28: graph.v1.SessionRevocation
-	(*CurrentSessionRevocationReview)(nil),           // 29: graph.v1.CurrentSessionRevocationReview
-	(*CurrentLogoutRequest)(nil),                     // 30: graph.v1.CurrentLogoutRequest
-	(*ListIssuersRequest)(nil),                       // 31: graph.v1.ListIssuersRequest
-	(*ListRolesRequest)(nil),                         // 32: graph.v1.ListRolesRequest
-	(*ListUsersRequest)(nil),                         // 33: graph.v1.ListUsersRequest
-	(*ListSecurityAuditRequest)(nil),                 // 34: graph.v1.ListSecurityAuditRequest
-	(*GetIssuerRequest)(nil),                         // 35: graph.v1.GetIssuerRequest
-	(*GetIssuerResponse)(nil),                        // 36: graph.v1.GetIssuerResponse
-	(*GetRoleRequest)(nil),                           // 37: graph.v1.GetRoleRequest
-	(*GetRoleResponse)(nil),                          // 38: graph.v1.GetRoleResponse
-	(*GetUserRequest)(nil),                           // 39: graph.v1.GetUserRequest
-	(*GetUserResponse)(nil),                          // 40: graph.v1.GetUserResponse
-	(*ListIssuersResponse)(nil),                      // 41: graph.v1.ListIssuersResponse
-	(*ListRolesResponse)(nil),                        // 42: graph.v1.ListRolesResponse
-	(*ListUsersResponse)(nil),                        // 43: graph.v1.ListUsersResponse
-	(*ListRoleAssignmentsRequest)(nil),               // 44: graph.v1.ListRoleAssignmentsRequest
-	(*ListRoleAssignmentsResponse)(nil),              // 45: graph.v1.ListRoleAssignmentsResponse
-	(*SecurityAuditRecord)(nil),                      // 46: graph.v1.SecurityAuditRecord
-	(*ListSecurityAuditResponse)(nil),                // 47: graph.v1.ListSecurityAuditResponse
-	(*GetRoleTemplatesRequest)(nil),                  // 48: graph.v1.GetRoleTemplatesRequest
-	(*GetRoleTemplatesResponse)(nil),                 // 49: graph.v1.GetRoleTemplatesResponse
-	(*SecurityEdgeIdentity)(nil),                     // 50: graph.v1.SecurityEdgeIdentity
-	(*ExplainAccessRequest)(nil),                     // 51: graph.v1.ExplainAccessRequest
-	(*SecurityRuleMatch)(nil),                        // 52: graph.v1.SecurityRuleMatch
-	(*ExplainAccessResponse)(nil),                    // 53: graph.v1.ExplainAccessResponse
-	(*ValidateIssuerRequest)(nil),                    // 54: graph.v1.ValidateIssuerRequest
-	(*ValidateIssuerResponse)(nil),                   // 55: graph.v1.ValidateIssuerResponse
-	(*SecurityUserStateChange)(nil),                  // 56: graph.v1.SecurityUserStateChange
-	(*SecurityChange)(nil),                           // 57: graph.v1.SecurityChange
-	(*ApplySecurityChangesRequest)(nil),              // 58: graph.v1.ApplySecurityChangesRequest
-	(*ApplySecurityChangesResponse)(nil),             // 59: graph.v1.ApplySecurityChangesResponse
-	(*ApplySecurityChangeRequest)(nil),               // 60: graph.v1.ApplySecurityChangeRequest
-	(*SecurityChangeReview)(nil),                     // 61: graph.v1.SecurityChangeReview
-	(*SecurityOperationAuthorizationRequired)(nil),   // 62: graph.v1.SecurityOperationAuthorizationRequired
-	(*SecurityChangePrecommitRejected)(nil),          // 63: graph.v1.SecurityChangePrecommitRejected
-	(*PrepareSecurityChangesRequest)(nil),            // 64: graph.v1.PrepareSecurityChangesRequest
-	(*PrepareSecurityChangesResponse)(nil),           // 65: graph.v1.PrepareSecurityChangesResponse
-	(*BeginSecurityChangeAuthorizationRequest)(nil),  // 66: graph.v1.BeginSecurityChangeAuthorizationRequest
-	(*BeginSecurityChangeAuthorizationResponse)(nil), // 67: graph.v1.BeginSecurityChangeAuthorizationResponse
-	(*GetSecurityChangeAuthorizationRequest)(nil),    // 68: graph.v1.GetSecurityChangeAuthorizationRequest
-	(*GetSecurityChangeAuthorizationResponse)(nil),   // 69: graph.v1.GetSecurityChangeAuthorizationResponse
-	(*ApplySecurityChangeResponse)(nil),              // 70: graph.v1.ApplySecurityChangeResponse
-	(*GetSecurityChangeStatusRequest)(nil),           // 71: graph.v1.GetSecurityChangeStatusRequest
-	(*GetSecurityChangeStatusResponse)(nil),          // 72: graph.v1.GetSecurityChangeStatusResponse
-	(*CurrentAuthorityProfile)(nil),                  // 73: graph.v1.CurrentAuthorityProfile
-	(*CurrentSemanticCut)(nil),                       // 74: graph.v1.CurrentSemanticCut
-	(*CurrentSecurityChangeID)(nil),                  // 75: graph.v1.CurrentSecurityChangeID
-	(*CurrentSecurityReview)(nil),                    // 76: graph.v1.CurrentSecurityReview
-	(*CurrentControlCommit)(nil),                     // 77: graph.v1.CurrentControlCommit
-	(*CurrentSecurityItemOutcome)(nil),               // 78: graph.v1.CurrentSecurityItemOutcome
-	(*CurrentSecurityOriginalOutcome)(nil),           // 79: graph.v1.CurrentSecurityOriginalOutcome
-	(*CurrentSecurityChangeResult)(nil),              // 80: graph.v1.CurrentSecurityChangeResult
-	(*CurrentSecurityAuditRecord)(nil),               // 81: graph.v1.CurrentSecurityAuditRecord
-	(*CurrentSecurityInvocationRejected)(nil),        // 82: graph.v1.CurrentSecurityInvocationRejected
-	(*timestamppb.Timestamp)(nil),                    // 83: google.protobuf.Timestamp
+	(*SecurityPrincipalUIDPrefix)(nil),               // 18: graph.v1.SecurityPrincipalUIDPrefix
+	(*SecurityRule)(nil),                             // 19: graph.v1.SecurityRule
+	(*SecurityRole)(nil),                             // 20: graph.v1.SecurityRole
+	(*SecurityRoleAssignment)(nil),                   // 21: graph.v1.SecurityRoleAssignment
+	(*SecurityUser)(nil),                             // 22: graph.v1.SecurityUser
+	(*SecurityIssuer)(nil),                           // 23: graph.v1.SecurityIssuer
+	(*SecurityNativeClient)(nil),                     // 24: graph.v1.SecurityNativeClient
+	(*SecurityVersion)(nil),                          // 25: graph.v1.SecurityVersion
+	(*GetCurrentPrincipalRequest)(nil),               // 26: graph.v1.GetCurrentPrincipalRequest
+	(*GetCurrentPrincipalResponse)(nil),              // 27: graph.v1.GetCurrentPrincipalResponse
+	(*BrowserSession)(nil),                           // 28: graph.v1.BrowserSession
+	(*SessionRevocation)(nil),                        // 29: graph.v1.SessionRevocation
+	(*CurrentSessionRevocationReview)(nil),           // 30: graph.v1.CurrentSessionRevocationReview
+	(*CurrentLogoutRequest)(nil),                     // 31: graph.v1.CurrentLogoutRequest
+	(*ListIssuersRequest)(nil),                       // 32: graph.v1.ListIssuersRequest
+	(*ListRolesRequest)(nil),                         // 33: graph.v1.ListRolesRequest
+	(*ListUsersRequest)(nil),                         // 34: graph.v1.ListUsersRequest
+	(*ListSecurityAuditRequest)(nil),                 // 35: graph.v1.ListSecurityAuditRequest
+	(*GetIssuerRequest)(nil),                         // 36: graph.v1.GetIssuerRequest
+	(*GetIssuerResponse)(nil),                        // 37: graph.v1.GetIssuerResponse
+	(*GetRoleRequest)(nil),                           // 38: graph.v1.GetRoleRequest
+	(*GetRoleResponse)(nil),                          // 39: graph.v1.GetRoleResponse
+	(*GetUserRequest)(nil),                           // 40: graph.v1.GetUserRequest
+	(*GetUserResponse)(nil),                          // 41: graph.v1.GetUserResponse
+	(*ListIssuersResponse)(nil),                      // 42: graph.v1.ListIssuersResponse
+	(*ListRolesResponse)(nil),                        // 43: graph.v1.ListRolesResponse
+	(*ListUsersResponse)(nil),                        // 44: graph.v1.ListUsersResponse
+	(*ListRoleAssignmentsRequest)(nil),               // 45: graph.v1.ListRoleAssignmentsRequest
+	(*ListRoleAssignmentsResponse)(nil),              // 46: graph.v1.ListRoleAssignmentsResponse
+	(*SecurityAuditRecord)(nil),                      // 47: graph.v1.SecurityAuditRecord
+	(*ListSecurityAuditResponse)(nil),                // 48: graph.v1.ListSecurityAuditResponse
+	(*GetRoleTemplatesRequest)(nil),                  // 49: graph.v1.GetRoleTemplatesRequest
+	(*GetRoleTemplatesResponse)(nil),                 // 50: graph.v1.GetRoleTemplatesResponse
+	(*SecurityEdgeIdentity)(nil),                     // 51: graph.v1.SecurityEdgeIdentity
+	(*ExplainAccessRequest)(nil),                     // 52: graph.v1.ExplainAccessRequest
+	(*SecurityRuleMatch)(nil),                        // 53: graph.v1.SecurityRuleMatch
+	(*ExplainAccessResponse)(nil),                    // 54: graph.v1.ExplainAccessResponse
+	(*ValidateIssuerRequest)(nil),                    // 55: graph.v1.ValidateIssuerRequest
+	(*ValidateIssuerResponse)(nil),                   // 56: graph.v1.ValidateIssuerResponse
+	(*SecurityUserStateChange)(nil),                  // 57: graph.v1.SecurityUserStateChange
+	(*SecurityChange)(nil),                           // 58: graph.v1.SecurityChange
+	(*ApplySecurityChangesRequest)(nil),              // 59: graph.v1.ApplySecurityChangesRequest
+	(*ApplySecurityChangesResponse)(nil),             // 60: graph.v1.ApplySecurityChangesResponse
+	(*ApplySecurityChangeRequest)(nil),               // 61: graph.v1.ApplySecurityChangeRequest
+	(*SecurityChangeReview)(nil),                     // 62: graph.v1.SecurityChangeReview
+	(*SecurityOperationAuthorizationRequired)(nil),   // 63: graph.v1.SecurityOperationAuthorizationRequired
+	(*SecurityChangePrecommitRejected)(nil),          // 64: graph.v1.SecurityChangePrecommitRejected
+	(*PrepareSecurityChangesRequest)(nil),            // 65: graph.v1.PrepareSecurityChangesRequest
+	(*PrepareSecurityChangesResponse)(nil),           // 66: graph.v1.PrepareSecurityChangesResponse
+	(*BeginSecurityChangeAuthorizationRequest)(nil),  // 67: graph.v1.BeginSecurityChangeAuthorizationRequest
+	(*BeginSecurityChangeAuthorizationResponse)(nil), // 68: graph.v1.BeginSecurityChangeAuthorizationResponse
+	(*GetSecurityChangeAuthorizationRequest)(nil),    // 69: graph.v1.GetSecurityChangeAuthorizationRequest
+	(*GetSecurityChangeAuthorizationResponse)(nil),   // 70: graph.v1.GetSecurityChangeAuthorizationResponse
+	(*ApplySecurityChangeResponse)(nil),              // 71: graph.v1.ApplySecurityChangeResponse
+	(*GetSecurityChangeStatusRequest)(nil),           // 72: graph.v1.GetSecurityChangeStatusRequest
+	(*GetSecurityChangeStatusResponse)(nil),          // 73: graph.v1.GetSecurityChangeStatusResponse
+	(*CurrentAuthorityProfile)(nil),                  // 74: graph.v1.CurrentAuthorityProfile
+	(*CurrentSemanticCut)(nil),                       // 75: graph.v1.CurrentSemanticCut
+	(*CurrentSecurityChangeID)(nil),                  // 76: graph.v1.CurrentSecurityChangeID
+	(*CurrentSecurityReview)(nil),                    // 77: graph.v1.CurrentSecurityReview
+	(*CurrentControlCommit)(nil),                     // 78: graph.v1.CurrentControlCommit
+	(*CurrentSecurityItemOutcome)(nil),               // 79: graph.v1.CurrentSecurityItemOutcome
+	(*CurrentSecurityOriginalOutcome)(nil),           // 80: graph.v1.CurrentSecurityOriginalOutcome
+	(*CurrentSecurityChangeResult)(nil),              // 81: graph.v1.CurrentSecurityChangeResult
+	(*CurrentSecurityAuditRecord)(nil),               // 82: graph.v1.CurrentSecurityAuditRecord
+	(*CurrentSecurityInvocationRejected)(nil),        // 83: graph.v1.CurrentSecurityInvocationRejected
+	(*timestamppb.Timestamp)(nil),                    // 84: google.protobuf.Timestamp
 }
 var file_graph_v1_security_proto_depIdxs = []int32{
 	0,   // 0: graph.v1.GetAuthCapabilitiesResponse.mode:type_name -> graph.v1.AuthMode
 	14,  // 1: graph.v1.GetAuthCapabilitiesResponse.login_issuers:type_name -> graph.v1.LoginIssuer
-	73,  // 2: graph.v1.GetAuthCapabilitiesResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	74,  // 2: graph.v1.GetAuthCapabilitiesResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
 	1,   // 3: graph.v1.SecurityIdentity.kind:type_name -> graph.v1.SecurityPrincipalKind
 	4,   // 4: graph.v1.SecurityRule.effect:type_name -> graph.v1.SecurityEffect
 	3,   // 5: graph.v1.SecurityRule.action:type_name -> graph.v1.SecurityAction
 	17,  // 6: graph.v1.SecurityRule.pair:type_name -> graph.v1.SecurityPrefixPair
-	18,  // 7: graph.v1.SecurityRole.rules:type_name -> graph.v1.SecurityRule
-	16,  // 8: graph.v1.SecurityRoleAssignment.identity:type_name -> graph.v1.SecurityIdentity
-	16,  // 9: graph.v1.SecurityUser.identity:type_name -> graph.v1.SecurityIdentity
-	2,   // 10: graph.v1.SecurityUser.state:type_name -> graph.v1.SecurityPrincipalState
-	20,  // 11: graph.v1.SecurityUser.assignments:type_name -> graph.v1.SecurityRoleAssignment
-	23,  // 12: graph.v1.SecurityIssuer.native_clients:type_name -> graph.v1.SecurityNativeClient
-	5,   // 13: graph.v1.SecurityNativeClient.kind:type_name -> graph.v1.NativeClientKind
-	73,  // 14: graph.v1.SecurityVersion.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	74,  // 15: graph.v1.SecurityVersion.current_cut:type_name -> graph.v1.CurrentSemanticCut
-	16,  // 16: graph.v1.GetCurrentPrincipalResponse.identity:type_name -> graph.v1.SecurityIdentity
-	19,  // 17: graph.v1.GetCurrentPrincipalResponse.roles:type_name -> graph.v1.SecurityRole
-	24,  // 18: graph.v1.GetCurrentPrincipalResponse.version:type_name -> graph.v1.SecurityVersion
-	83,  // 19: graph.v1.GetCurrentPrincipalResponse.expires_at:type_name -> google.protobuf.Timestamp
-	0,   // 20: graph.v1.BrowserSession.mode:type_name -> graph.v1.AuthMode
-	26,  // 21: graph.v1.BrowserSession.principal:type_name -> graph.v1.GetCurrentPrincipalResponse
-	73,  // 22: graph.v1.BrowserSession.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	24,  // 23: graph.v1.SessionRevocation.version:type_name -> graph.v1.SecurityVersion
-	6,   // 24: graph.v1.SessionRevocation.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	80,  // 25: graph.v1.SessionRevocation.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	29,  // 26: graph.v1.SessionRevocation.current_review:type_name -> graph.v1.CurrentSessionRevocationReview
-	73,  // 27: graph.v1.CurrentSessionRevocationReview.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	74,  // 28: graph.v1.CurrentSessionRevocationReview.expected_cut:type_name -> graph.v1.CurrentSemanticCut
-	75,  // 29: graph.v1.CurrentSessionRevocationReview.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	16,  // 30: graph.v1.CurrentSessionRevocationReview.actor:type_name -> graph.v1.SecurityIdentity
-	73,  // 31: graph.v1.CurrentLogoutRequest.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	29,  // 32: graph.v1.CurrentLogoutRequest.review:type_name -> graph.v1.CurrentSessionRevocationReview
-	22,  // 33: graph.v1.GetIssuerResponse.issuer:type_name -> graph.v1.SecurityIssuer
-	24,  // 34: graph.v1.GetIssuerResponse.version:type_name -> graph.v1.SecurityVersion
-	19,  // 35: graph.v1.GetRoleResponse.role:type_name -> graph.v1.SecurityRole
-	24,  // 36: graph.v1.GetRoleResponse.version:type_name -> graph.v1.SecurityVersion
-	16,  // 37: graph.v1.GetUserRequest.identity:type_name -> graph.v1.SecurityIdentity
-	21,  // 38: graph.v1.GetUserResponse.user:type_name -> graph.v1.SecurityUser
-	24,  // 39: graph.v1.GetUserResponse.version:type_name -> graph.v1.SecurityVersion
-	22,  // 40: graph.v1.ListIssuersResponse.issuers:type_name -> graph.v1.SecurityIssuer
-	24,  // 41: graph.v1.ListIssuersResponse.version:type_name -> graph.v1.SecurityVersion
-	19,  // 42: graph.v1.ListRolesResponse.roles:type_name -> graph.v1.SecurityRole
-	24,  // 43: graph.v1.ListRolesResponse.version:type_name -> graph.v1.SecurityVersion
-	21,  // 44: graph.v1.ListUsersResponse.users:type_name -> graph.v1.SecurityUser
-	24,  // 45: graph.v1.ListUsersResponse.version:type_name -> graph.v1.SecurityVersion
-	16,  // 46: graph.v1.ListRoleAssignmentsRequest.identity:type_name -> graph.v1.SecurityIdentity
-	20,  // 47: graph.v1.ListRoleAssignmentsResponse.assignments:type_name -> graph.v1.SecurityRoleAssignment
-	24,  // 48: graph.v1.ListRoleAssignmentsResponse.version:type_name -> graph.v1.SecurityVersion
-	83,  // 49: graph.v1.SecurityAuditRecord.occurred_at:type_name -> google.protobuf.Timestamp
-	46,  // 50: graph.v1.ListSecurityAuditResponse.records:type_name -> graph.v1.SecurityAuditRecord
-	24,  // 51: graph.v1.ListSecurityAuditResponse.version:type_name -> graph.v1.SecurityVersion
-	81,  // 52: graph.v1.ListSecurityAuditResponse.current_records:type_name -> graph.v1.CurrentSecurityAuditRecord
-	19,  // 53: graph.v1.GetRoleTemplatesResponse.roles:type_name -> graph.v1.SecurityRole
-	24,  // 54: graph.v1.GetRoleTemplatesResponse.version:type_name -> graph.v1.SecurityVersion
-	16,  // 55: graph.v1.ExplainAccessRequest.identity:type_name -> graph.v1.SecurityIdentity
-	3,   // 56: graph.v1.ExplainAccessRequest.action:type_name -> graph.v1.SecurityAction
-	50,  // 57: graph.v1.ExplainAccessRequest.edge:type_name -> graph.v1.SecurityEdgeIdentity
-	4,   // 58: graph.v1.SecurityRuleMatch.effect:type_name -> graph.v1.SecurityEffect
-	3,   // 59: graph.v1.SecurityRuleMatch.action:type_name -> graph.v1.SecurityAction
-	52,  // 60: graph.v1.ExplainAccessResponse.matches:type_name -> graph.v1.SecurityRuleMatch
-	24,  // 61: graph.v1.ExplainAccessResponse.version:type_name -> graph.v1.SecurityVersion
-	22,  // 62: graph.v1.ValidateIssuerRequest.issuer:type_name -> graph.v1.SecurityIssuer
-	16,  // 63: graph.v1.SecurityUserStateChange.identity:type_name -> graph.v1.SecurityIdentity
-	2,   // 64: graph.v1.SecurityUserStateChange.state:type_name -> graph.v1.SecurityPrincipalState
-	22,  // 65: graph.v1.SecurityChange.put_issuer:type_name -> graph.v1.SecurityIssuer
-	19,  // 66: graph.v1.SecurityChange.put_role:type_name -> graph.v1.SecurityRole
-	56,  // 67: graph.v1.SecurityChange.put_user:type_name -> graph.v1.SecurityUserStateChange
-	16,  // 68: graph.v1.SecurityChange.delete_user:type_name -> graph.v1.SecurityIdentity
-	20,  // 69: graph.v1.SecurityChange.put_assignment:type_name -> graph.v1.SecurityRoleAssignment
-	20,  // 70: graph.v1.SecurityChange.delete_assignment:type_name -> graph.v1.SecurityRoleAssignment
-	16,  // 71: graph.v1.SecurityChange.revoke_user_sessions:type_name -> graph.v1.SecurityIdentity
-	57,  // 72: graph.v1.ApplySecurityChangesRequest.changes:type_name -> graph.v1.SecurityChange
-	76,  // 73: graph.v1.ApplySecurityChangesRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
-	24,  // 74: graph.v1.ApplySecurityChangesResponse.version:type_name -> graph.v1.SecurityVersion
-	6,   // 75: graph.v1.ApplySecurityChangesResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	80,  // 76: graph.v1.ApplySecurityChangesResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	57,  // 77: graph.v1.ApplySecurityChangeRequest.change:type_name -> graph.v1.SecurityChange
-	76,  // 78: graph.v1.ApplySecurityChangeRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
-	24,  // 79: graph.v1.SecurityChangeReview.expected_version:type_name -> graph.v1.SecurityVersion
-	57,  // 80: graph.v1.SecurityChangeReview.changes:type_name -> graph.v1.SecurityChange
-	24,  // 81: graph.v1.SecurityOperationAuthorizationRequired.expected_version:type_name -> graph.v1.SecurityVersion
-	7,   // 82: graph.v1.SecurityChangePrecommitRejected.reason:type_name -> graph.v1.SecurityChangeRejectionReason
-	61,  // 83: graph.v1.PrepareSecurityChangesRequest.review:type_name -> graph.v1.SecurityChangeReview
-	76,  // 84: graph.v1.PrepareSecurityChangesRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
-	24,  // 85: graph.v1.PrepareSecurityChangesResponse.expected_version:type_name -> graph.v1.SecurityVersion
-	8,   // 86: graph.v1.PrepareSecurityChangesResponse.requirement:type_name -> graph.v1.SecurityAuthorizationRequirement
-	72,  // 87: graph.v1.PrepareSecurityChangesResponse.retained_commit:type_name -> graph.v1.GetSecurityChangeStatusResponse
-	76,  // 88: graph.v1.PrepareSecurityChangesResponse.current_review:type_name -> graph.v1.CurrentSecurityReview
-	80,  // 89: graph.v1.PrepareSecurityChangesResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	61,  // 90: graph.v1.BeginSecurityChangeAuthorizationRequest.review:type_name -> graph.v1.SecurityChangeReview
-	76,  // 91: graph.v1.BeginSecurityChangeAuthorizationRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
-	83,  // 92: graph.v1.BeginSecurityChangeAuthorizationResponse.expires_at:type_name -> google.protobuf.Timestamp
-	73,  // 93: graph.v1.BeginSecurityChangeAuthorizationResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	73,  // 94: graph.v1.GetSecurityChangeAuthorizationRequest.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	9,   // 95: graph.v1.GetSecurityChangeAuthorizationResponse.state:type_name -> graph.v1.SecurityAuthorizationState
-	83,  // 96: graph.v1.GetSecurityChangeAuthorizationResponse.expires_at:type_name -> google.protobuf.Timestamp
-	73,  // 97: graph.v1.GetSecurityChangeAuthorizationResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	24,  // 98: graph.v1.ApplySecurityChangeResponse.version:type_name -> graph.v1.SecurityVersion
-	6,   // 99: graph.v1.ApplySecurityChangeResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	80,  // 100: graph.v1.ApplySecurityChangeResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	75,  // 101: graph.v1.GetSecurityChangeStatusRequest.current_change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	73,  // 102: graph.v1.GetSecurityChangeStatusRequest.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
-	24,  // 103: graph.v1.GetSecurityChangeStatusResponse.version:type_name -> graph.v1.SecurityVersion
-	6,   // 104: graph.v1.GetSecurityChangeStatusResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
-	80,  // 105: graph.v1.GetSecurityChangeStatusResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	73,  // 106: graph.v1.CurrentSecurityReview.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	74,  // 107: graph.v1.CurrentSecurityReview.expected_cut:type_name -> graph.v1.CurrentSemanticCut
-	75,  // 108: graph.v1.CurrentSecurityReview.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	16,  // 109: graph.v1.CurrentSecurityReview.actor:type_name -> graph.v1.SecurityIdentity
-	57,  // 110: graph.v1.CurrentSecurityReview.changes:type_name -> graph.v1.SecurityChange
-	10,  // 111: graph.v1.CurrentSecurityItemOutcome.disposition:type_name -> graph.v1.CurrentSecurityDisposition
-	75,  // 112: graph.v1.CurrentSecurityOriginalOutcome.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	77,  // 113: graph.v1.CurrentSecurityOriginalOutcome.commit:type_name -> graph.v1.CurrentControlCommit
-	10,  // 114: graph.v1.CurrentSecurityOriginalOutcome.disposition:type_name -> graph.v1.CurrentSecurityDisposition
-	78,  // 115: graph.v1.CurrentSecurityOriginalOutcome.items:type_name -> graph.v1.CurrentSecurityItemOutcome
-	74,  // 116: graph.v1.CurrentSecurityOriginalOutcome.observed_cut:type_name -> graph.v1.CurrentSemanticCut
-	74,  // 117: graph.v1.CurrentSecurityOriginalOutcome.resulting_cut:type_name -> graph.v1.CurrentSemanticCut
-	73,  // 118: graph.v1.CurrentSecurityChangeResult.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	75,  // 119: graph.v1.CurrentSecurityChangeResult.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	11,  // 120: graph.v1.CurrentSecurityChangeResult.progress:type_name -> graph.v1.CurrentSecurityProgress
-	79,  // 121: graph.v1.CurrentSecurityChangeResult.original:type_name -> graph.v1.CurrentSecurityOriginalOutcome
-	12,  // 122: graph.v1.CurrentSecurityChangeResult.stop_observation:type_name -> graph.v1.CurrentAuthorizationStopObservation
-	80,  // 123: graph.v1.CurrentSecurityAuditRecord.result:type_name -> graph.v1.CurrentSecurityChangeResult
-	73,  // 124: graph.v1.CurrentSecurityInvocationRejected.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	75,  // 125: graph.v1.CurrentSecurityInvocationRejected.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	13,  // 126: graph.v1.LanternSecurityService.GetAuthCapabilities:input_type -> graph.v1.GetAuthCapabilitiesRequest
-	25,  // 127: graph.v1.LanternSecurityService.GetCurrentPrincipal:input_type -> graph.v1.GetCurrentPrincipalRequest
-	31,  // 128: graph.v1.LanternSecurityService.ListIssuers:input_type -> graph.v1.ListIssuersRequest
-	35,  // 129: graph.v1.LanternSecurityService.GetIssuer:input_type -> graph.v1.GetIssuerRequest
-	32,  // 130: graph.v1.LanternSecurityService.ListRoles:input_type -> graph.v1.ListRolesRequest
-	37,  // 131: graph.v1.LanternSecurityService.GetRole:input_type -> graph.v1.GetRoleRequest
-	33,  // 132: graph.v1.LanternSecurityService.ListUsers:input_type -> graph.v1.ListUsersRequest
-	39,  // 133: graph.v1.LanternSecurityService.GetUser:input_type -> graph.v1.GetUserRequest
-	44,  // 134: graph.v1.LanternSecurityService.ListRoleAssignments:input_type -> graph.v1.ListRoleAssignmentsRequest
-	34,  // 135: graph.v1.LanternSecurityService.ListSecurityAudit:input_type -> graph.v1.ListSecurityAuditRequest
-	48,  // 136: graph.v1.LanternSecurityService.GetRoleTemplates:input_type -> graph.v1.GetRoleTemplatesRequest
-	51,  // 137: graph.v1.LanternSecurityService.ExplainAccess:input_type -> graph.v1.ExplainAccessRequest
-	54,  // 138: graph.v1.LanternSecurityService.ValidateIssuer:input_type -> graph.v1.ValidateIssuerRequest
-	64,  // 139: graph.v1.LanternSecurityService.PrepareSecurityChanges:input_type -> graph.v1.PrepareSecurityChangesRequest
-	66,  // 140: graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization:input_type -> graph.v1.BeginSecurityChangeAuthorizationRequest
-	68,  // 141: graph.v1.LanternSecurityService.GetSecurityChangeAuthorization:input_type -> graph.v1.GetSecurityChangeAuthorizationRequest
-	58,  // 142: graph.v1.LanternSecurityService.ApplySecurityChanges:input_type -> graph.v1.ApplySecurityChangesRequest
-	60,  // 143: graph.v1.LanternSecurityService.ApplySecurityChange:input_type -> graph.v1.ApplySecurityChangeRequest
-	71,  // 144: graph.v1.LanternSecurityService.GetSecurityChangeStatus:input_type -> graph.v1.GetSecurityChangeStatusRequest
-	15,  // 145: graph.v1.LanternSecurityService.GetAuthCapabilities:output_type -> graph.v1.GetAuthCapabilitiesResponse
-	26,  // 146: graph.v1.LanternSecurityService.GetCurrentPrincipal:output_type -> graph.v1.GetCurrentPrincipalResponse
-	41,  // 147: graph.v1.LanternSecurityService.ListIssuers:output_type -> graph.v1.ListIssuersResponse
-	36,  // 148: graph.v1.LanternSecurityService.GetIssuer:output_type -> graph.v1.GetIssuerResponse
-	42,  // 149: graph.v1.LanternSecurityService.ListRoles:output_type -> graph.v1.ListRolesResponse
-	38,  // 150: graph.v1.LanternSecurityService.GetRole:output_type -> graph.v1.GetRoleResponse
-	43,  // 151: graph.v1.LanternSecurityService.ListUsers:output_type -> graph.v1.ListUsersResponse
-	40,  // 152: graph.v1.LanternSecurityService.GetUser:output_type -> graph.v1.GetUserResponse
-	45,  // 153: graph.v1.LanternSecurityService.ListRoleAssignments:output_type -> graph.v1.ListRoleAssignmentsResponse
-	47,  // 154: graph.v1.LanternSecurityService.ListSecurityAudit:output_type -> graph.v1.ListSecurityAuditResponse
-	49,  // 155: graph.v1.LanternSecurityService.GetRoleTemplates:output_type -> graph.v1.GetRoleTemplatesResponse
-	53,  // 156: graph.v1.LanternSecurityService.ExplainAccess:output_type -> graph.v1.ExplainAccessResponse
-	55,  // 157: graph.v1.LanternSecurityService.ValidateIssuer:output_type -> graph.v1.ValidateIssuerResponse
-	65,  // 158: graph.v1.LanternSecurityService.PrepareSecurityChanges:output_type -> graph.v1.PrepareSecurityChangesResponse
-	67,  // 159: graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization:output_type -> graph.v1.BeginSecurityChangeAuthorizationResponse
-	69,  // 160: graph.v1.LanternSecurityService.GetSecurityChangeAuthorization:output_type -> graph.v1.GetSecurityChangeAuthorizationResponse
-	59,  // 161: graph.v1.LanternSecurityService.ApplySecurityChanges:output_type -> graph.v1.ApplySecurityChangesResponse
-	70,  // 162: graph.v1.LanternSecurityService.ApplySecurityChange:output_type -> graph.v1.ApplySecurityChangeResponse
-	72,  // 163: graph.v1.LanternSecurityService.GetSecurityChangeStatus:output_type -> graph.v1.GetSecurityChangeStatusResponse
-	145, // [145:164] is the sub-list for method output_type
-	126, // [126:145] is the sub-list for method input_type
-	126, // [126:126] is the sub-list for extension type_name
-	126, // [126:126] is the sub-list for extension extendee
-	0,   // [0:126] is the sub-list for field type_name
+	18,  // 7: graph.v1.SecurityRule.principal_uid_prefix:type_name -> graph.v1.SecurityPrincipalUIDPrefix
+	19,  // 8: graph.v1.SecurityRole.rules:type_name -> graph.v1.SecurityRule
+	16,  // 9: graph.v1.SecurityRoleAssignment.identity:type_name -> graph.v1.SecurityIdentity
+	16,  // 10: graph.v1.SecurityUser.identity:type_name -> graph.v1.SecurityIdentity
+	2,   // 11: graph.v1.SecurityUser.state:type_name -> graph.v1.SecurityPrincipalState
+	21,  // 12: graph.v1.SecurityUser.assignments:type_name -> graph.v1.SecurityRoleAssignment
+	24,  // 13: graph.v1.SecurityIssuer.native_clients:type_name -> graph.v1.SecurityNativeClient
+	5,   // 14: graph.v1.SecurityNativeClient.kind:type_name -> graph.v1.NativeClientKind
+	74,  // 15: graph.v1.SecurityVersion.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	75,  // 16: graph.v1.SecurityVersion.current_cut:type_name -> graph.v1.CurrentSemanticCut
+	16,  // 17: graph.v1.GetCurrentPrincipalResponse.identity:type_name -> graph.v1.SecurityIdentity
+	20,  // 18: graph.v1.GetCurrentPrincipalResponse.roles:type_name -> graph.v1.SecurityRole
+	25,  // 19: graph.v1.GetCurrentPrincipalResponse.version:type_name -> graph.v1.SecurityVersion
+	84,  // 20: graph.v1.GetCurrentPrincipalResponse.expires_at:type_name -> google.protobuf.Timestamp
+	0,   // 21: graph.v1.BrowserSession.mode:type_name -> graph.v1.AuthMode
+	27,  // 22: graph.v1.BrowserSession.principal:type_name -> graph.v1.GetCurrentPrincipalResponse
+	74,  // 23: graph.v1.BrowserSession.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	25,  // 24: graph.v1.SessionRevocation.version:type_name -> graph.v1.SecurityVersion
+	6,   // 25: graph.v1.SessionRevocation.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	81,  // 26: graph.v1.SessionRevocation.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	30,  // 27: graph.v1.SessionRevocation.current_review:type_name -> graph.v1.CurrentSessionRevocationReview
+	74,  // 28: graph.v1.CurrentSessionRevocationReview.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	75,  // 29: graph.v1.CurrentSessionRevocationReview.expected_cut:type_name -> graph.v1.CurrentSemanticCut
+	76,  // 30: graph.v1.CurrentSessionRevocationReview.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	16,  // 31: graph.v1.CurrentSessionRevocationReview.actor:type_name -> graph.v1.SecurityIdentity
+	74,  // 32: graph.v1.CurrentLogoutRequest.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	30,  // 33: graph.v1.CurrentLogoutRequest.review:type_name -> graph.v1.CurrentSessionRevocationReview
+	23,  // 34: graph.v1.GetIssuerResponse.issuer:type_name -> graph.v1.SecurityIssuer
+	25,  // 35: graph.v1.GetIssuerResponse.version:type_name -> graph.v1.SecurityVersion
+	20,  // 36: graph.v1.GetRoleResponse.role:type_name -> graph.v1.SecurityRole
+	25,  // 37: graph.v1.GetRoleResponse.version:type_name -> graph.v1.SecurityVersion
+	16,  // 38: graph.v1.GetUserRequest.identity:type_name -> graph.v1.SecurityIdentity
+	22,  // 39: graph.v1.GetUserResponse.user:type_name -> graph.v1.SecurityUser
+	25,  // 40: graph.v1.GetUserResponse.version:type_name -> graph.v1.SecurityVersion
+	23,  // 41: graph.v1.ListIssuersResponse.issuers:type_name -> graph.v1.SecurityIssuer
+	25,  // 42: graph.v1.ListIssuersResponse.version:type_name -> graph.v1.SecurityVersion
+	20,  // 43: graph.v1.ListRolesResponse.roles:type_name -> graph.v1.SecurityRole
+	25,  // 44: graph.v1.ListRolesResponse.version:type_name -> graph.v1.SecurityVersion
+	22,  // 45: graph.v1.ListUsersResponse.users:type_name -> graph.v1.SecurityUser
+	25,  // 46: graph.v1.ListUsersResponse.version:type_name -> graph.v1.SecurityVersion
+	16,  // 47: graph.v1.ListRoleAssignmentsRequest.identity:type_name -> graph.v1.SecurityIdentity
+	21,  // 48: graph.v1.ListRoleAssignmentsResponse.assignments:type_name -> graph.v1.SecurityRoleAssignment
+	25,  // 49: graph.v1.ListRoleAssignmentsResponse.version:type_name -> graph.v1.SecurityVersion
+	84,  // 50: graph.v1.SecurityAuditRecord.occurred_at:type_name -> google.protobuf.Timestamp
+	47,  // 51: graph.v1.ListSecurityAuditResponse.records:type_name -> graph.v1.SecurityAuditRecord
+	25,  // 52: graph.v1.ListSecurityAuditResponse.version:type_name -> graph.v1.SecurityVersion
+	82,  // 53: graph.v1.ListSecurityAuditResponse.current_records:type_name -> graph.v1.CurrentSecurityAuditRecord
+	20,  // 54: graph.v1.GetRoleTemplatesResponse.roles:type_name -> graph.v1.SecurityRole
+	25,  // 55: graph.v1.GetRoleTemplatesResponse.version:type_name -> graph.v1.SecurityVersion
+	16,  // 56: graph.v1.ExplainAccessRequest.identity:type_name -> graph.v1.SecurityIdentity
+	3,   // 57: graph.v1.ExplainAccessRequest.action:type_name -> graph.v1.SecurityAction
+	51,  // 58: graph.v1.ExplainAccessRequest.edge:type_name -> graph.v1.SecurityEdgeIdentity
+	4,   // 59: graph.v1.SecurityRuleMatch.effect:type_name -> graph.v1.SecurityEffect
+	3,   // 60: graph.v1.SecurityRuleMatch.action:type_name -> graph.v1.SecurityAction
+	53,  // 61: graph.v1.ExplainAccessResponse.matches:type_name -> graph.v1.SecurityRuleMatch
+	25,  // 62: graph.v1.ExplainAccessResponse.version:type_name -> graph.v1.SecurityVersion
+	23,  // 63: graph.v1.ValidateIssuerRequest.issuer:type_name -> graph.v1.SecurityIssuer
+	16,  // 64: graph.v1.SecurityUserStateChange.identity:type_name -> graph.v1.SecurityIdentity
+	2,   // 65: graph.v1.SecurityUserStateChange.state:type_name -> graph.v1.SecurityPrincipalState
+	23,  // 66: graph.v1.SecurityChange.put_issuer:type_name -> graph.v1.SecurityIssuer
+	20,  // 67: graph.v1.SecurityChange.put_role:type_name -> graph.v1.SecurityRole
+	57,  // 68: graph.v1.SecurityChange.put_user:type_name -> graph.v1.SecurityUserStateChange
+	16,  // 69: graph.v1.SecurityChange.delete_user:type_name -> graph.v1.SecurityIdentity
+	21,  // 70: graph.v1.SecurityChange.put_assignment:type_name -> graph.v1.SecurityRoleAssignment
+	21,  // 71: graph.v1.SecurityChange.delete_assignment:type_name -> graph.v1.SecurityRoleAssignment
+	16,  // 72: graph.v1.SecurityChange.revoke_user_sessions:type_name -> graph.v1.SecurityIdentity
+	58,  // 73: graph.v1.ApplySecurityChangesRequest.changes:type_name -> graph.v1.SecurityChange
+	77,  // 74: graph.v1.ApplySecurityChangesRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
+	25,  // 75: graph.v1.ApplySecurityChangesResponse.version:type_name -> graph.v1.SecurityVersion
+	6,   // 76: graph.v1.ApplySecurityChangesResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	81,  // 77: graph.v1.ApplySecurityChangesResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	58,  // 78: graph.v1.ApplySecurityChangeRequest.change:type_name -> graph.v1.SecurityChange
+	77,  // 79: graph.v1.ApplySecurityChangeRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
+	25,  // 80: graph.v1.SecurityChangeReview.expected_version:type_name -> graph.v1.SecurityVersion
+	58,  // 81: graph.v1.SecurityChangeReview.changes:type_name -> graph.v1.SecurityChange
+	25,  // 82: graph.v1.SecurityOperationAuthorizationRequired.expected_version:type_name -> graph.v1.SecurityVersion
+	7,   // 83: graph.v1.SecurityChangePrecommitRejected.reason:type_name -> graph.v1.SecurityChangeRejectionReason
+	62,  // 84: graph.v1.PrepareSecurityChangesRequest.review:type_name -> graph.v1.SecurityChangeReview
+	77,  // 85: graph.v1.PrepareSecurityChangesRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
+	25,  // 86: graph.v1.PrepareSecurityChangesResponse.expected_version:type_name -> graph.v1.SecurityVersion
+	8,   // 87: graph.v1.PrepareSecurityChangesResponse.requirement:type_name -> graph.v1.SecurityAuthorizationRequirement
+	73,  // 88: graph.v1.PrepareSecurityChangesResponse.retained_commit:type_name -> graph.v1.GetSecurityChangeStatusResponse
+	77,  // 89: graph.v1.PrepareSecurityChangesResponse.current_review:type_name -> graph.v1.CurrentSecurityReview
+	81,  // 90: graph.v1.PrepareSecurityChangesResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	62,  // 91: graph.v1.BeginSecurityChangeAuthorizationRequest.review:type_name -> graph.v1.SecurityChangeReview
+	77,  // 92: graph.v1.BeginSecurityChangeAuthorizationRequest.current_review:type_name -> graph.v1.CurrentSecurityReview
+	84,  // 93: graph.v1.BeginSecurityChangeAuthorizationResponse.expires_at:type_name -> google.protobuf.Timestamp
+	74,  // 94: graph.v1.BeginSecurityChangeAuthorizationResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	74,  // 95: graph.v1.GetSecurityChangeAuthorizationRequest.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	9,   // 96: graph.v1.GetSecurityChangeAuthorizationResponse.state:type_name -> graph.v1.SecurityAuthorizationState
+	84,  // 97: graph.v1.GetSecurityChangeAuthorizationResponse.expires_at:type_name -> google.protobuf.Timestamp
+	74,  // 98: graph.v1.GetSecurityChangeAuthorizationResponse.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	25,  // 99: graph.v1.ApplySecurityChangeResponse.version:type_name -> graph.v1.SecurityVersion
+	6,   // 100: graph.v1.ApplySecurityChangeResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	81,  // 101: graph.v1.ApplySecurityChangeResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	76,  // 102: graph.v1.GetSecurityChangeStatusRequest.current_change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	74,  // 103: graph.v1.GetSecurityChangeStatusRequest.current_profile:type_name -> graph.v1.CurrentAuthorityProfile
+	25,  // 104: graph.v1.GetSecurityChangeStatusResponse.version:type_name -> graph.v1.SecurityVersion
+	6,   // 105: graph.v1.GetSecurityChangeStatusResponse.enforcement:type_name -> graph.v1.SecurityEnforcementState
+	81,  // 106: graph.v1.GetSecurityChangeStatusResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	74,  // 107: graph.v1.CurrentSecurityReview.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	75,  // 108: graph.v1.CurrentSecurityReview.expected_cut:type_name -> graph.v1.CurrentSemanticCut
+	76,  // 109: graph.v1.CurrentSecurityReview.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	16,  // 110: graph.v1.CurrentSecurityReview.actor:type_name -> graph.v1.SecurityIdentity
+	58,  // 111: graph.v1.CurrentSecurityReview.changes:type_name -> graph.v1.SecurityChange
+	10,  // 112: graph.v1.CurrentSecurityItemOutcome.disposition:type_name -> graph.v1.CurrentSecurityDisposition
+	76,  // 113: graph.v1.CurrentSecurityOriginalOutcome.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	78,  // 114: graph.v1.CurrentSecurityOriginalOutcome.commit:type_name -> graph.v1.CurrentControlCommit
+	10,  // 115: graph.v1.CurrentSecurityOriginalOutcome.disposition:type_name -> graph.v1.CurrentSecurityDisposition
+	79,  // 116: graph.v1.CurrentSecurityOriginalOutcome.items:type_name -> graph.v1.CurrentSecurityItemOutcome
+	75,  // 117: graph.v1.CurrentSecurityOriginalOutcome.observed_cut:type_name -> graph.v1.CurrentSemanticCut
+	75,  // 118: graph.v1.CurrentSecurityOriginalOutcome.resulting_cut:type_name -> graph.v1.CurrentSemanticCut
+	74,  // 119: graph.v1.CurrentSecurityChangeResult.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	76,  // 120: graph.v1.CurrentSecurityChangeResult.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	11,  // 121: graph.v1.CurrentSecurityChangeResult.progress:type_name -> graph.v1.CurrentSecurityProgress
+	80,  // 122: graph.v1.CurrentSecurityChangeResult.original:type_name -> graph.v1.CurrentSecurityOriginalOutcome
+	12,  // 123: graph.v1.CurrentSecurityChangeResult.stop_observation:type_name -> graph.v1.CurrentAuthorizationStopObservation
+	81,  // 124: graph.v1.CurrentSecurityAuditRecord.result:type_name -> graph.v1.CurrentSecurityChangeResult
+	74,  // 125: graph.v1.CurrentSecurityInvocationRejected.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	76,  // 126: graph.v1.CurrentSecurityInvocationRejected.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	13,  // 127: graph.v1.LanternSecurityService.GetAuthCapabilities:input_type -> graph.v1.GetAuthCapabilitiesRequest
+	26,  // 128: graph.v1.LanternSecurityService.GetCurrentPrincipal:input_type -> graph.v1.GetCurrentPrincipalRequest
+	32,  // 129: graph.v1.LanternSecurityService.ListIssuers:input_type -> graph.v1.ListIssuersRequest
+	36,  // 130: graph.v1.LanternSecurityService.GetIssuer:input_type -> graph.v1.GetIssuerRequest
+	33,  // 131: graph.v1.LanternSecurityService.ListRoles:input_type -> graph.v1.ListRolesRequest
+	38,  // 132: graph.v1.LanternSecurityService.GetRole:input_type -> graph.v1.GetRoleRequest
+	34,  // 133: graph.v1.LanternSecurityService.ListUsers:input_type -> graph.v1.ListUsersRequest
+	40,  // 134: graph.v1.LanternSecurityService.GetUser:input_type -> graph.v1.GetUserRequest
+	45,  // 135: graph.v1.LanternSecurityService.ListRoleAssignments:input_type -> graph.v1.ListRoleAssignmentsRequest
+	35,  // 136: graph.v1.LanternSecurityService.ListSecurityAudit:input_type -> graph.v1.ListSecurityAuditRequest
+	49,  // 137: graph.v1.LanternSecurityService.GetRoleTemplates:input_type -> graph.v1.GetRoleTemplatesRequest
+	52,  // 138: graph.v1.LanternSecurityService.ExplainAccess:input_type -> graph.v1.ExplainAccessRequest
+	55,  // 139: graph.v1.LanternSecurityService.ValidateIssuer:input_type -> graph.v1.ValidateIssuerRequest
+	65,  // 140: graph.v1.LanternSecurityService.PrepareSecurityChanges:input_type -> graph.v1.PrepareSecurityChangesRequest
+	67,  // 141: graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization:input_type -> graph.v1.BeginSecurityChangeAuthorizationRequest
+	69,  // 142: graph.v1.LanternSecurityService.GetSecurityChangeAuthorization:input_type -> graph.v1.GetSecurityChangeAuthorizationRequest
+	59,  // 143: graph.v1.LanternSecurityService.ApplySecurityChanges:input_type -> graph.v1.ApplySecurityChangesRequest
+	61,  // 144: graph.v1.LanternSecurityService.ApplySecurityChange:input_type -> graph.v1.ApplySecurityChangeRequest
+	72,  // 145: graph.v1.LanternSecurityService.GetSecurityChangeStatus:input_type -> graph.v1.GetSecurityChangeStatusRequest
+	15,  // 146: graph.v1.LanternSecurityService.GetAuthCapabilities:output_type -> graph.v1.GetAuthCapabilitiesResponse
+	27,  // 147: graph.v1.LanternSecurityService.GetCurrentPrincipal:output_type -> graph.v1.GetCurrentPrincipalResponse
+	42,  // 148: graph.v1.LanternSecurityService.ListIssuers:output_type -> graph.v1.ListIssuersResponse
+	37,  // 149: graph.v1.LanternSecurityService.GetIssuer:output_type -> graph.v1.GetIssuerResponse
+	43,  // 150: graph.v1.LanternSecurityService.ListRoles:output_type -> graph.v1.ListRolesResponse
+	39,  // 151: graph.v1.LanternSecurityService.GetRole:output_type -> graph.v1.GetRoleResponse
+	44,  // 152: graph.v1.LanternSecurityService.ListUsers:output_type -> graph.v1.ListUsersResponse
+	41,  // 153: graph.v1.LanternSecurityService.GetUser:output_type -> graph.v1.GetUserResponse
+	46,  // 154: graph.v1.LanternSecurityService.ListRoleAssignments:output_type -> graph.v1.ListRoleAssignmentsResponse
+	48,  // 155: graph.v1.LanternSecurityService.ListSecurityAudit:output_type -> graph.v1.ListSecurityAuditResponse
+	50,  // 156: graph.v1.LanternSecurityService.GetRoleTemplates:output_type -> graph.v1.GetRoleTemplatesResponse
+	54,  // 157: graph.v1.LanternSecurityService.ExplainAccess:output_type -> graph.v1.ExplainAccessResponse
+	56,  // 158: graph.v1.LanternSecurityService.ValidateIssuer:output_type -> graph.v1.ValidateIssuerResponse
+	66,  // 159: graph.v1.LanternSecurityService.PrepareSecurityChanges:output_type -> graph.v1.PrepareSecurityChangesResponse
+	68,  // 160: graph.v1.LanternSecurityService.BeginSecurityChangeAuthorization:output_type -> graph.v1.BeginSecurityChangeAuthorizationResponse
+	70,  // 161: graph.v1.LanternSecurityService.GetSecurityChangeAuthorization:output_type -> graph.v1.GetSecurityChangeAuthorizationResponse
+	60,  // 162: graph.v1.LanternSecurityService.ApplySecurityChanges:output_type -> graph.v1.ApplySecurityChangesResponse
+	71,  // 163: graph.v1.LanternSecurityService.ApplySecurityChange:output_type -> graph.v1.ApplySecurityChangeResponse
+	73,  // 164: graph.v1.LanternSecurityService.GetSecurityChangeStatus:output_type -> graph.v1.GetSecurityChangeStatusResponse
+	146, // [146:165] is the sub-list for method output_type
+	127, // [127:146] is the sub-list for method input_type
+	127, // [127:127] is the sub-list for extension type_name
+	127, // [127:127] is the sub-list for extension extendee
+	0,   // [0:127] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_security_proto_init() }
@@ -6498,15 +6586,16 @@ func file_graph_v1_security_proto_init() {
 	if File_graph_v1_security_proto != nil {
 		return
 	}
-	file_graph_v1_security_proto_msgTypes[5].OneofWrappers = []any{
+	file_graph_v1_security_proto_msgTypes[6].OneofWrappers = []any{
 		(*SecurityRule_Prefix)(nil),
 		(*SecurityRule_Global)(nil),
 		(*SecurityRule_Pair)(nil),
+		(*SecurityRule_PrincipalUidPrefix)(nil),
 	}
-	file_graph_v1_security_proto_msgTypes[9].OneofWrappers = []any{}
 	file_graph_v1_security_proto_msgTypes[10].OneofWrappers = []any{}
-	file_graph_v1_security_proto_msgTypes[38].OneofWrappers = []any{}
-	file_graph_v1_security_proto_msgTypes[44].OneofWrappers = []any{
+	file_graph_v1_security_proto_msgTypes[11].OneofWrappers = []any{}
+	file_graph_v1_security_proto_msgTypes[39].OneofWrappers = []any{}
+	file_graph_v1_security_proto_msgTypes[45].OneofWrappers = []any{
 		(*SecurityChange_PutIssuer)(nil),
 		(*SecurityChange_DisableIssuer)(nil),
 		(*SecurityChange_DeleteIssuer)(nil),
@@ -6524,7 +6613,7 @@ func file_graph_v1_security_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graph_v1_security_proto_rawDesc), len(file_graph_v1_security_proto_rawDesc)),
 			NumEnums:      13,
-			NumMessages:   70,
+			NumMessages:   71,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -56,6 +56,10 @@ func (b Bootstrap) canonical() (Bootstrap, string, error) {
 				value := *b.Roles[i].Rules[j].Prefix
 				b.Roles[i].Rules[j].Prefix = &value
 			}
+			if b.Roles[i].Rules[j].PrincipalUIDPrefix != nil {
+				value := *b.Roles[i].Rules[j].PrincipalUIDPrefix
+				b.Roles[i].Rules[j].PrincipalUIDPrefix = &value
+			}
 		}
 		sort.Slice(b.Roles[i].Rules, func(a, c int) bool { return b.Roles[i].Rules[a].ID < b.Roles[i].Rules[c].ID })
 		if err := (Change{Kind: PutRole, Role: &b.Roles[i]}).validate(); err != nil {

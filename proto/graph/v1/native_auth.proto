@@ -64,6 +64,10 @@ message NativeSession {
   google.protobuf.Timestamp auth_time = 6;
   SecurityIdentity identity = 7;
   SecurityVersion version = 8;
+  // Trusted installed Principal metadata, absent for a UID-less legacy user.
+  string user_uid = 9;
+  // Logical prefix; callers must not prepend the internal physical 'data:'.
+  string personal_prefix = 10;
 }
 message CompleteNativeLoginResponse {
   // Disclosed only after durable Apply and current revalidation/output fencing.

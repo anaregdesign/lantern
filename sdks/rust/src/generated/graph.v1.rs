@@ -3427,6 +3427,16 @@ pub struct SecurityPrefixPair {
     #[prost(string, tag = "2")]
     pub head_prefix: ::prost::alloc::string::String,
 }
+/// Inserts the installed Principal's Server-owned UID between byte literals.
+/// Before must end with ':' and after must start with ':'. Neither is empty.
+/// This is one typed UID slot, not a template language or client-supplied UID.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SecurityPrincipalUidPrefix {
+    #[prost(string, tag = "1")]
+    pub literal_before: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub literal_after: ::prost::alloc::string::String,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SecurityRule {
     #[prost(string, tag = "1")]
@@ -3435,7 +3445,7 @@ pub struct SecurityRule {
     pub effect: i32,
     #[prost(enumeration = "SecurityAction", tag = "3")]
     pub action: i32,
-    #[prost(oneof = "security_rule::Resource", tags = "4, 5, 6")]
+    #[prost(oneof = "security_rule::Resource", tags = "4, 5, 6, 7")]
     pub resource: ::core::option::Option<security_rule::Resource>,
 }
 /// Nested message and enum types in `SecurityRule`.
@@ -3448,6 +3458,8 @@ pub mod security_rule {
         Global(bool),
         #[prost(message, tag = "6")]
         Pair(super::SecurityPrefixPair),
+        #[prost(message, tag = "7")]
+        PrincipalUidPrefix(super::SecurityPrincipalUidPrefix),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -3479,6 +3491,10 @@ pub struct SecurityUser {
     pub state: i32,
     #[prost(message, repeated, tag = "3")]
     pub assignments: ::prost::alloc::vec::Vec<SecurityRoleAssignment>,
+    /// Read-only, allocated once by explicit verified registration. Ordinary user
+    /// management never accepts this value as input; deleted tombstones retain it.
+    #[prost(string, tag = "4")]
+    pub user_uid: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SecurityIssuer {
@@ -5433,6 +5449,12 @@ pub struct NativeSession {
     pub identity: ::core::option::Option<SecurityIdentity>,
     #[prost(message, optional, tag = "8")]
     pub version: ::core::option::Option<SecurityVersion>,
+    /// Trusted installed Principal metadata, absent for a UID-less legacy user.
+    #[prost(string, tag = "9")]
+    pub user_uid: ::prost::alloc::string::String,
+    /// Logical prefix; callers must not prepend the internal physical 'data:'.
+    #[prost(string, tag = "10")]
+    pub personal_prefix: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CompleteNativeLoginResponse {

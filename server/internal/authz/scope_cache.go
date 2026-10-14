@@ -8,8 +8,16 @@ import (
 const scopeCacheBytes = 8 << 20
 const scopeCacheEntries = 256
 
+// Separate fields avoid allocating concatenated UID-bearing keys on every
+// query, and distinguish oriented Edge candidates from a data-action scope.
+type scopeCacheKey struct {
+	action Action
+	setKey string
+	edge   bool
+}
+
 type scopeCacheEntry struct {
-	key   string
+	key   scopeCacheKey
 	scope *Scope
 	bytes int
 }
@@ -19,7 +27,7 @@ type scopeCacheEntry struct {
 // churn. Active queries may safely retain an evicted immutable scope.
 type scopeCache struct {
 	mu         sync.Mutex
-	entries    map[string]*list.Element
+	entries    map[scopeCacheKey]*list.Element
 	order      list.List
 	bytes      int
 	maxBytes   int
@@ -27,10 +35,10 @@ type scopeCache struct {
 }
 
 func newScopeCache() *scopeCache {
-	return &scopeCache{entries: make(map[string]*list.Element), maxBytes: scopeCacheBytes, maxEntries: scopeCacheEntries}
+	return &scopeCache{entries: make(map[scopeCacheKey]*list.Element), maxBytes: scopeCacheBytes, maxEntries: scopeCacheEntries}
 }
 
-func (c *scopeCache) get(key string, build func() *Scope) *Scope {
+func (c *scopeCache) get(key scopeCacheKey, build func() *Scope) *Scope {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if element := c.entries[key]; element != nil {
@@ -40,7 +48,7 @@ func (c *scopeCache) get(key string, build func() *Scope) *Scope {
 	// Coalesce bounded compilation while holding only this derived-cache lock.
 	// No Store/graph lock, network call, or I/O occurs inside build.
 	scope := build()
-	bytes := 128 + len(key) + 32*len(scope.ranges)
+	bytes := 160 + len(key.setKey) + len(key.action) + 32*len(scope.ranges)
 	for _, r := range scope.ranges {
 		bytes += len(r.Lower) + len(r.Upper)
 	}

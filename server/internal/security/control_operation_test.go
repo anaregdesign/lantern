@@ -2,6 +2,7 @@ package security
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 )
 
@@ -64,5 +65,36 @@ func TestS1FullIDAndSemanticABA(t *testing.T) {
 	other := s1Fixture(t, image)
 	if other.projection.cut.Sequence != base.Sequence || other.projection.cut == base {
 		t.Fatal("equal generation/sequence confused state")
+	}
+}
+
+func TestS1RegistrationClosedVariantAndCanonicalOmission(t *testing.T) {
+	legacy, err := json.Marshal(S1Command{Kind: S1RevokeSession, SessionDigest: "digest", SessionLineage: 1})
+	want := `{"Kind":"session.revoke","Changes":null,"Session":null,"ReplacesDigest":"","SessionDigest":"digest","SessionLineage":1}`
+	if err != nil || string(legacy) != want {
+		t.Fatal("older command transcript changed", string(legacy), err)
+	}
+	registration := &PrincipalRegistration{UserUID: "11111111111111111111111111111111", ClientProfileID: "android", IssuerConfigRevision: 1}
+	for _, kind := range []string{S1Management, S1IssueSession, S1RevokeSession, "unknown"} {
+		if validateS1Command(S1Command{Kind: kind, Registration: registration}, DefaultPolicyLimits()) == nil {
+			t.Fatal("registration field crossed command boundary")
+		}
+	}
+	if validateS1Command(S1Command{Kind: S1RegisterPrincipal, Registration: registration}, DefaultPolicyLimits()) != nil || ordinaryS1Command(S1RegisterPrincipal) {
+		t.Fatal("registration command contract")
+	}
+	for _, change := range []func(*S1Command){
+		func(c *S1Command) { c.Registration = nil },
+		func(c *S1Command) { c.Changes = []Change{{Kind: RevokeSessions}} },
+		func(c *S1Command) { c.Session = &Session{} },
+		func(c *S1Command) { c.SessionLineage = 1 },
+		func(c *S1Command) { c.SessionDigest = "extra" },
+		func(c *S1Command) { c.ReplacesDigest = "extra" },
+	} {
+		c := S1Command{Kind: S1RegisterPrincipal, Registration: registration}
+		change(&c)
+		if validateS1Command(c, DefaultPolicyLimits()) == nil {
+			t.Fatal("competing command payload accepted")
+		}
 	}
 }

@@ -128,6 +128,9 @@ func (r *AuthenticationAdapter) nativeAdmission(ctx context.Context) (*security.
 
 func encodeNativeSession(s security.Session, a *security.Admission) *pb.NativeSession {
 	result := &pb.NativeSession{CredentialProfile: s.CredentialProfile(), ClientProfileId: s.ClientProfileID, ServiceOrigin: s.ServiceOrigin, CreatedAt: timestamppb.New(s.CreatedAt), ExpiresAt: timestamppb.New(s.ExpiresAt), Identity: encodeSecurityIdentity(s.Identity), Version: SecurityVersionForAdmission(a)}
+	if a != nil && a.Identity() == s.Identity {
+		result.UserUid, result.PersonalPrefix, _ = a.Snapshot().PersonalArea(s.Identity)
+	}
 	if !s.AuthTime.IsZero() {
 		result.AuthTime = timestamppb.New(s.AuthTime)
 	}

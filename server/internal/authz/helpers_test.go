@@ -5,6 +5,14 @@ import (
 	"unicode/utf8"
 )
 
+const testUIDA = "11111111111111111111111111111111"
+const testUIDB = "22222222222222222222222222222222"
+
+func uidRule(effect Effect, action Action, before, after string) PermissionRule {
+	return PermissionRule{Effect: effect, Action: action, Resource: DataResource,
+		PrincipalUIDPrefix: &PrincipalUIDPrefix{LiteralBefore: before, LiteralAfter: after}}
+}
+
 func dataRule(effect Effect, action Action, prefix string) PermissionRule {
 	return PermissionRule{Effect: effect, Action: action, Resource: DataResource, Prefix: &prefix}
 }

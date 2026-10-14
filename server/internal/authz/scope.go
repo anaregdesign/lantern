@@ -85,7 +85,7 @@ func (a *Access) Scope(actions ...Action) *Scope {
 		if i < 0 {
 			return &Scope{}
 		}
-		compiled := a.cache.get(string(rune(i+1))+a.setKey, func() *Scope { return a.compileScope(action) })
+		compiled := a.cache.get(scopeCacheKey{action: action, setKey: a.setKey}, func() *Scope { return a.compileScope(action) })
 		if result == nil {
 			result = compiled
 		} else {
@@ -147,6 +147,12 @@ func (a *Access) compileScope(action Action) *Scope {
 	for _, role := range a.roles {
 		allow = append(allow, role.data[action].allow...)
 		deny = append(deny, role.data[action].deny...)
+		for _, prefix := range role.data[action].uidAllow {
+			allow = append(allow, prefix.bind(a.bindings))
+		}
+		for _, prefix := range role.data[action].uidDeny {
+			deny = append(deny, prefix.bind(a.bindings))
+		}
 	}
 	return prefixScope(allow, deny)
 }

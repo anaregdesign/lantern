@@ -397,6 +397,21 @@ final $typed_data.Uint8List securityPrefixPairDescriptor = $convert.base64Decode
     'ChJTZWN1cml0eVByZWZpeFBhaXISHwoLdGFpbF9wcmVmaXgYASABKAlSCnRhaWxQcmVmaXgSHw'
     'oLaGVhZF9wcmVmaXgYAiABKAlSCmhlYWRQcmVmaXg=');
 
+@$core.Deprecated('Use securityPrincipalUIDPrefixDescriptor instead')
+const SecurityPrincipalUIDPrefix$json = {
+  '1': 'SecurityPrincipalUIDPrefix',
+  '2': [
+    {'1': 'literal_before', '3': 1, '4': 1, '5': 9, '10': 'literalBefore'},
+    {'1': 'literal_after', '3': 2, '4': 1, '5': 9, '10': 'literalAfter'},
+  ],
+};
+
+/// Descriptor for `SecurityPrincipalUIDPrefix`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List securityPrincipalUIDPrefixDescriptor =
+    $convert.base64Decode(
+        'ChpTZWN1cml0eVByaW5jaXBhbFVJRFByZWZpeBIlCg5saXRlcmFsX2JlZm9yZRgBIAEoCVINbG'
+        'l0ZXJhbEJlZm9yZRIjCg1saXRlcmFsX2FmdGVyGAIgASgJUgxsaXRlcmFsQWZ0ZXI=');
+
 @$core.Deprecated('Use securityRuleDescriptor instead')
 const SecurityRule$json = {
   '1': 'SecurityRule',
@@ -429,6 +444,15 @@ const SecurityRule$json = {
       '9': 0,
       '10': 'pair'
     },
+    {
+      '1': 'principal_uid_prefix',
+      '3': 7,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.SecurityPrincipalUIDPrefix',
+      '9': 0,
+      '10': 'principalUidPrefix'
+    },
   ],
   '8': [
     {'1': 'resource'},
@@ -441,7 +465,9 @@ final $typed_data.Uint8List securityRuleDescriptor = $convert.base64Decode(
     'YxLlNlY3VyaXR5RWZmZWN0UgZlZmZlY3QSMAoGYWN0aW9uGAMgASgOMhguZ3JhcGgudjEuU2Vj'
     'dXJpdHlBY3Rpb25SBmFjdGlvbhIYCgZwcmVmaXgYBCABKAlIAFIGcHJlZml4EhgKBmdsb2JhbB'
     'gFIAEoCEgAUgZnbG9iYWwSMgoEcGFpchgGIAEoCzIcLmdyYXBoLnYxLlNlY3VyaXR5UHJlZml4'
-    'UGFpckgAUgRwYWlyQgoKCHJlc291cmNl');
+    'UGFpckgAUgRwYWlyElgKFHByaW5jaXBhbF91aWRfcHJlZml4GAcgASgLMiQuZ3JhcGgudjEuU2'
+    'VjdXJpdHlQcmluY2lwYWxVSURQcmVmaXhIAFIScHJpbmNpcGFsVWlkUHJlZml4QgoKCHJlc291'
+    'cmNl');
 
 @$core.Deprecated('Use securityRoleDescriptor instead')
 const SecurityRole$json = {
@@ -518,6 +544,7 @@ const SecurityUser$json = {
       '6': '.graph.v1.SecurityRoleAssignment',
       '10': 'assignments'
     },
+    {'1': 'user_uid', '3': 4, '4': 1, '5': 9, '10': 'userUid'},
   ],
 };
 
@@ -526,7 +553,7 @@ final $typed_data.Uint8List securityUserDescriptor = $convert.base64Decode(
     'CgxTZWN1cml0eVVzZXISNgoIaWRlbnRpdHkYASABKAsyGi5ncmFwaC52MS5TZWN1cml0eUlkZW'
     '50aXR5UghpZGVudGl0eRI2CgVzdGF0ZRgCIAEoDjIgLmdyYXBoLnYxLlNlY3VyaXR5UHJpbmNp'
     'cGFsU3RhdGVSBXN0YXRlEkIKC2Fzc2lnbm1lbnRzGAMgAygLMiAuZ3JhcGgudjEuU2VjdXJpdH'
-    'lSb2xlQXNzaWdubWVudFILYXNzaWdubWVudHM=');
+    'lSb2xlQXNzaWdubWVudFILYXNzaWdubWVudHMSGQoIdXNlcl91aWQYBCABKAlSB3VzZXJVaWQ=');
 
 @$core.Deprecated('Use securityIssuerDescriptor instead')
 const SecurityIssuer$json = {
@@ -2723,6 +2750,7 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.SecurityRole': SecurityRole$json,
   '.graph.v1.SecurityRule': SecurityRule$json,
   '.graph.v1.SecurityPrefixPair': SecurityPrefixPair$json,
+  '.graph.v1.SecurityPrincipalUIDPrefix': SecurityPrincipalUIDPrefix$json,
   '.graph.v1.SecurityVersion': SecurityVersion$json,
   '.graph.v1.CurrentSemanticCut': CurrentSemanticCut$json,
   '.google.protobuf.Timestamp': $0.Timestamp$json,

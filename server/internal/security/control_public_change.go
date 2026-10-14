@@ -102,6 +102,9 @@ func (o *CurrentAuthority) currentAdmission(ctx context.Context, a *Admission, m
 // Prepare binds one server-minted namespace/nonce to the exact reviewed cut,
 // actor and canonical command. It makes no durability or Apply claim.
 func (o *CurrentAuthority) Prepare(ctx context.Context, a *Admission, producer CurrentCredentialProducer, profile CurrentProfile, cut SemanticCut, command S1Command) (CurrentReview, bool, error) {
+	if !ordinaryS1Command(command.Kind) {
+		return CurrentReview{}, false, ErrPermissionDenied
+	}
 	if o == nil || profile != o.Profile() || o.currentAdmission(ctx, a, command.Kind == S1Management) != nil || a.BrowserReadOnly() || a.Authentication().Class != EndUser {
 		return CurrentReview{}, false, ErrPermissionDenied
 	}

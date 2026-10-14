@@ -5,6 +5,8 @@ import (
 	"math"
 	"reflect"
 	"testing"
+
+	"github.com/anaregdesign/lantern/server/internal/authz"
 )
 
 func TestS1CandidateRequiresExactLogicalPositionWithoutCertification(t *testing.T) {
@@ -266,6 +268,22 @@ func TestS1ApplySemanticComparisonRejectsStateChanges(t *testing.T) {
 			}
 			principal := snapshot.principals[s1Bob()]
 			principal.access = access
+			snapshot.principals[s1Bob()] = principal
+		}},
+		{"compiled subject binding", func(r *S1ApplyResult) {
+			snapshot := r.State.projection.snapshot
+			principal := snapshot.principals[s1Bob()]
+			access, err := snapshot.policy.BindRoles(nil, authz.SubjectBindings{PersonalUID: "11111111111111111111111111111111"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			principal.access = access
+			snapshot.principals[s1Bob()] = principal
+		}},
+		{"installed UID", func(r *S1ApplyResult) {
+			snapshot := r.State.projection.snapshot
+			principal := snapshot.principals[s1Bob()]
+			principal.userUID = "11111111111111111111111111111111"
 			snapshot.principals[s1Bob()] = principal
 		}},
 		{"issuer", func(r *S1ApplyResult) { delete(r.State.projection.snapshot.issuers, testIdentity().Issuer) }},

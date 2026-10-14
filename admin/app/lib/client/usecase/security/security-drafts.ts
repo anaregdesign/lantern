@@ -113,12 +113,13 @@ export function roleDraft(value?: SecurityRole): RoleDraft {
   if (
     value?.rules.some(
       (rule) =>
-        rule.resource.case === "pair" ||
+        (rule.resource.case !== "prefix" &&
+          !(rule.resource.case === "global" && rule.resource.value)) ||
         !ACTIONS.some(([action]) => action === rule.action),
     )
   )
     throw new Error(
-      "This Role uses obsolete Edge grants or pair selectors. Ask the operator to migrate its policy.",
+      "This Role uses an unsupported action or selector. Ask the operator to edit it with a compatible policy client.",
     );
   return {
     id: value?.id ?? "",

@@ -60,6 +60,11 @@ func (s *Store) managementIntent(request ManagementRequest) ([32]byte, bool, err
 	}
 	roles := make([]Role, 0, len(request.Changes))
 	for _, change := range request.Changes {
+		// Registration belongs to current-v2. Legacy mutation/history paths
+		// cannot activate the new registration authority contract.
+		if change.Kind == PutRegistrationPolicy {
+			return [32]byte{}, false, ErrInvalidImage
+		}
 		if change.Role != nil {
 			roles = append(roles, *change.Role)
 		}

@@ -188,6 +188,29 @@ test("Server-owned Role locks are not client-owned policy metadata", () => {
   expect(buildRole(mutable).envOwned).toBe(false);
 });
 
+test("UID and unknown selectors cannot become an empty literal draft", () => {
+  const role = buildRole({
+    ...roleDraft(),
+    id: "personal",
+    name: "Personal",
+    rules: [{ ...newRule(1), prefix: "users:" }],
+  });
+  role.rules[0].resource = {
+    case: "principalUidPrefix",
+    value: {
+      $typeName: "graph.v1.SecurityPrincipalUIDPrefix",
+      literalBefore: "users:",
+      literalAfter: ":",
+    },
+  };
+  expect(() => roleDraft(role)).toThrow("unsupported");
+  expect(role.rules[0].resource.case).toBe("principalUidPrefix");
+  role.rules[0].resource = { case: undefined };
+  expect(() => roleDraft(role)).toThrow("unsupported");
+  role.rules[0].resource = { case: "global", value: false };
+  expect(() => roleDraft(role)).toThrow("unsupported");
+});
+
 test("Head-managed Roles contain Vertex prefix grants, not derived Edge operations", () => {
   const draft = {
     ...roleDraft(),

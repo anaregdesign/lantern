@@ -110,6 +110,14 @@ message SecurityPrefixPair {
   string tail_prefix = 1;
   string head_prefix = 2;
 }
+
+// Inserts the installed Principal's Server-owned UID between byte literals.
+// Before must end with ':' and after must start with ':'. Neither is empty.
+// This is one typed UID slot, not a template language or client-supplied UID.
+message SecurityPrincipalUIDPrefix {
+  string literal_before = 1;
+  string literal_after = 2;
+}
 message SecurityRule {
   string id = 1;
   SecurityEffect effect = 2;
@@ -118,6 +126,7 @@ message SecurityRule {
     string prefix = 4;
     bool global = 5;
     SecurityPrefixPair pair = 6;
+    SecurityPrincipalUIDPrefix principal_uid_prefix = 7;
   }
 }
 message SecurityRole {
@@ -136,6 +145,9 @@ message SecurityUser {
   SecurityIdentity identity = 1;
   SecurityPrincipalState state = 2;
   repeated SecurityRoleAssignment assignments = 3;
+  // Read-only, allocated once by explicit verified registration. Ordinary user
+  // management never accepts this value as input; deleted tombstones retain it.
+  string user_uid = 4;
 }
 message SecurityIssuer {
   string issuer = 1;

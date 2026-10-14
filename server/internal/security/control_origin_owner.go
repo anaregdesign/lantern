@@ -158,6 +158,9 @@ func (o *authorityOriginOwner) authenticate(ctx context.Context, producer Curren
 }
 
 func (o *authorityOriginOwner) prepare(ctx context.Context, producer CurrentCredentialProducer, reviewed SemanticCut, command S1Command) (*authorityOriginRequest, error) {
+	if !ordinaryS1Command(command.Kind) {
+		return nil, ErrPermissionDenied
+	}
 	if o == nil || o.descriptor.Namespace == 0 || !o.network.enterCall() {
 		return nil, errS3AClosed
 	}

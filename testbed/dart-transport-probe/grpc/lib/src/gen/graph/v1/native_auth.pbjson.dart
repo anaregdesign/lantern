@@ -231,6 +231,8 @@ const NativeSession$json = {
       '6': '.graph.v1.SecurityVersion',
       '10': 'version'
     },
+    {'1': 'user_uid', '3': 9, '4': 1, '5': 9, '10': 'userUid'},
+    {'1': 'personal_prefix', '3': 10, '4': 1, '5': 9, '10': 'personalPrefix'},
   ],
 };
 
@@ -243,7 +245,8 @@ final $typed_data.Uint8List nativeSessionDescriptor = $convert.base64Decode(
     'KAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUglleHBpcmVzQXQSNwoJYXV0aF90aW1lGA'
     'YgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIIYXV0aFRpbWUSNgoIaWRlbnRpdHkY'
     'ByABKAsyGi5ncmFwaC52MS5TZWN1cml0eUlkZW50aXR5UghpZGVudGl0eRIzCgd2ZXJzaW9uGA'
-    'ggASgLMhkuZ3JhcGgudjEuU2VjdXJpdHlWZXJzaW9uUgd2ZXJzaW9u');
+    'ggASgLMhkuZ3JhcGgudjEuU2VjdXJpdHlWZXJzaW9uUgd2ZXJzaW9uEhkKCHVzZXJfdWlkGAkg'
+    'ASgJUgd1c2VyVWlkEicKD3BlcnNvbmFsX3ByZWZpeBgKIAEoCVIOcGVyc29uYWxQcmVmaXg=');
 
 @$core.Deprecated('Use completeNativeLoginResponseDescriptor instead')
 const CompleteNativeLoginResponse$json = {

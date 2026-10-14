@@ -14,13 +14,19 @@ var (
 )
 
 type prefixRules struct {
-	allow []string
-	deny  []string
+	allow    []string
+	deny     []string
+	uidAllow []PrincipalUIDPrefix
+	uidDeny  []PrincipalUIDPrefix
 }
 
 type compiledRole struct {
-	data   map[Action]prefixRules
-	global map[Action]struct{ allow, deny bool }
+	data        map[Action]prefixRules
+	global      map[Action]struct{ allow, deny bool }
+	id          string
+	order       int
+	requiresUID bool
+	rules       []compiledRule
 }
 
 // CompiledPolicy owns no mutable input references. Ranges and Role tables are
@@ -37,8 +43,7 @@ func CompileRoles(roles []Role, limits PolicyLimits) (*CompiledPolicy, error) {
 	}
 	policy := &CompiledPolicy{roles: make(map[string]*compiledRole, len(roles)),
 		maxAssignments: limits.MaxAssignments, scopeCache: newScopeCache()}
-	totalBytes := 0
-	for _, role := range roles {
+	for order, role := range roles {
 		if !ValidRoleID(role.ID) || role.ID == "cluster_replica" ||
 			!utf8.ValidString(role.Name) || len(role.Name) > 256 || len(role.Rules) > limits.MaxRules {
 			return nil, fmt.Errorf("%w: Role identity or limit", ErrInvalidPolicy)
@@ -46,7 +51,7 @@ func CompileRoles(roles []Role, limits PolicyLimits) (*CompiledPolicy, error) {
 		if _, exists := policy.roles[role.ID]; exists {
 			return nil, fmt.Errorf("%w: duplicate Role", ErrInvalidPolicy)
 		}
-		compiled := &compiledRole{data: make(map[Action]prefixRules),
+		compiled := &compiledRole{id: role.ID, order: order, data: make(map[Action]prefixRules),
 			global: make(map[Action]struct{ allow, deny bool })}
 		ruleIDs := make(map[string]bool, len(role.Rules))
 		for _, rule := range role.Rules {
@@ -66,7 +71,7 @@ func CompileRoles(roles []Role, limits PolicyLimits) (*CompiledPolicy, error) {
 				return nil, fmt.Errorf("%w: action, resource or effect", ErrInvalidPolicy)
 			}
 			if kind == GlobalResource {
-				if rule.Prefix != nil || rule.Pair != nil {
+				if rule.Prefix != nil || rule.Pair != nil || rule.PrincipalUIDPrefix != nil {
 					return nil, fmt.Errorf("%w: global selector", ErrInvalidPolicy)
 				}
 				flags := compiled.global[rule.Action]
@@ -76,23 +81,27 @@ func CompileRoles(roles []Role, limits PolicyLimits) (*CompiledPolicy, error) {
 					flags.allow = true
 				}
 				compiled.global[rule.Action] = flags
+				compiled.rules = append(compiled.rules, compileRule(rule))
 				continue
 			}
-			if rule.Prefix == nil || !utf8.ValidString(*rule.Prefix) || len(*rule.Prefix) > limits.MaxPrefixBytes {
+			if (rule.Prefix == nil) == (rule.PrincipalUIDPrefix == nil) {
 				return nil, fmt.Errorf("%w: data prefix", ErrInvalidPolicy)
 			}
-			// Subtract before adding, so an adversarial bound cannot overflow.
-			if len(*rule.Prefix) > limits.MaxTotalBytes-totalBytes {
-				return nil, fmt.Errorf("%w: total prefix limit", ErrInvalidPolicy)
-			}
-			totalBytes += len(*rule.Prefix)
 			prefixes := compiled.data[rule.Action]
-			if rule.Effect == Deny {
+			if rule.PrincipalUIDPrefix != nil {
+				compiled.requiresUID = true
+				if rule.Effect == Deny {
+					prefixes.uidDeny = append(prefixes.uidDeny, *rule.PrincipalUIDPrefix)
+				} else {
+					prefixes.uidAllow = append(prefixes.uidAllow, *rule.PrincipalUIDPrefix)
+				}
+			} else if rule.Effect == Deny {
 				prefixes.deny = append(prefixes.deny, *rule.Prefix)
 			} else {
 				prefixes.allow = append(prefixes.allow, *rule.Prefix)
 			}
 			compiled.data[rule.Action] = prefixes
+			compiled.rules = append(compiled.rules, compileRule(rule))
 		}
 		for action, prefixes := range compiled.data {
 			prefixes.allow = disjointPrefixes(prefixes.allow)
@@ -131,6 +140,12 @@ func ValidateRoleBounds(roles []Role, limits PolicyLimits) error {
 					return ErrInvalidPolicy
 				}
 				total += len(*rule.Prefix)
+			}
+			if prefix := rule.PrincipalUIDPrefix; prefix != nil {
+				if !prefix.valid(limits.MaxPrefixBytes) || prefix.expandedBytes() > limits.MaxTotalBytes-total {
+					return ErrInvalidPolicy
+				}
+				total += prefix.expandedBytes()
 			}
 		}
 	}
