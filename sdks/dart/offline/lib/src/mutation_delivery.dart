@@ -30,6 +30,7 @@ final class OfflineMutationDelivery {
     this.onPolicyPause,
     this.retryDeadline,
     this.onEndpointSuccess,
+    this.controlFence,
     this.maxAge = const Duration(days: 7),
     this.maxAttempts = 8,
     this.leaseDuration = const Duration(minutes: 2),
@@ -88,6 +89,10 @@ final class OfflineMutationDelivery {
 
   /// A current valid endpoint reply, separate from durable confirmation.
   final void Function()? onEndpointSuccess;
+
+  /// Owner/account fence used only to return owned claims after dispatch stops.
+  /// The lifetime still holds its native guard while graceful close joins work.
+  final void Function()? controlFence;
   bool _blocked = false, _running = false;
   bool _closed = false;
   OfflineSessionWork? _work;
@@ -358,13 +363,13 @@ final class OfflineMutationDelivery {
     // Control plane, after every remote/transaction in this pass has joined.
     // Account loss leaves conservative leases for the next qualified lifetime.
     try {
-      fence();
+      (controlFence ?? fence)();
     } catch (_) {
       return;
     }
     try {
       await store.transaction((tx) async {
-        fence();
+        (controlFence ?? fence)();
         if (await tx.generation(partitionId) != generation ||
             await tx.authorityBinding(partitionId) != authorityBinding) {
           return;
@@ -382,7 +387,8 @@ final class OfflineMutationDelivery {
             state: OfflineOutboxState.enqueued,
             clearLeaseOwner: true,
             clearLeaseUntil: true,
-            diagnosticCode: paused ? 'unauthenticated' : current.diagnosticCode,
+            diagnosticCode: paused ? 'unauthenticated' : null,
+            clearDiagnosticCode: !paused,
           );
           await tx.updateOutbox(returned);
           await advanceOfflineMutation(
@@ -395,7 +401,7 @@ final class OfflineMutationDelivery {
             diagnostic: paused ? 'unauthenticated' : null,
           );
         }
-        fence();
+        (controlFence ?? fence)();
       });
     } catch (_) {
       _blocked = true;

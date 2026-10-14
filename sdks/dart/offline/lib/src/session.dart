@@ -456,6 +456,7 @@ final class _SessionShared {
           onPolicyPause: _requestPolicyPause,
           retryDeadline: _retryDeadline,
           onEndpointSuccess: _endpointSuccess,
+          controlFence: _checkControlLifetime,
         ),
       );
       final pause = await store.transaction(
@@ -493,10 +494,12 @@ final class _SessionShared {
   }
 
   void _checkLifetime() {
-    if (ended ||
-        !authorityCurrent() ||
-        client.isClosed ||
-        (ready && data._invalid)) {
+    if (ended) throw const OfflineDisposedException();
+    _checkControlLifetime();
+  }
+
+  void _checkControlLifetime() {
+    if (!authorityCurrent() || client.isClosed || (ready && data._invalid)) {
       throw const OfflineDisposedException();
     }
     owner.checkCurrent();

@@ -167,6 +167,35 @@ void main() {
   );
 
   test(
+    'O3 graceful last close joins a late reply and returns only its own lease',
+    () async {
+      final h = Harness();
+      addTearDown(h.close);
+      final gate = Completer<void>();
+      h.remote.after = (_) => gate.future;
+      final client = await h.open();
+      await client.mutations.submit(MutationRequest.putVertices([vertex('v')]));
+      await h.tick();
+      final before = (await h.rows()).single;
+      expect(before.leaseOwner, isNotNull);
+      expect(before.mayHaveDispatched, true);
+      final closing = client.close();
+      await flush();
+      expect(h.client.isClosed, false);
+      gate.complete();
+      await closing;
+      final after = (await h.rows()).single;
+      expect(after.recordId, before.recordId);
+      expect(after.mayHaveDispatched, true);
+      expect(after.leaseOwner, isNull);
+      expect(after.leaseUntil, isNull);
+      expect(after.state, OfflineOutboxState.enqueued);
+      expect(h.client.isClosed, true);
+      expect(h.clock.active, 0);
+    },
+  );
+
+  test(
     'automatic retry progresses foreground outage without Get or Sync',
     () async {
       final h = Harness();

@@ -89,6 +89,7 @@ final class OfflineLanternDataClient
       onPolicyPause: _session?._requestPolicyPause,
       retryDeadline: _session?._retryDeadline,
       onEndpointSuccess: _session?._endpointSuccess,
+      controlFence: _session?._checkControlLifetime,
       onStorageBlocked: () {
         _session?._requestStoragePause();
         _storageBlocked = true;
