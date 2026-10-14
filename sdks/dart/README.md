@@ -551,7 +551,7 @@ Server-assigned ID without a data/admin Role. `null` means an authenticated UID-
 legacy or machine Principal; missing authentication is an error. The read makes
 one attempt with the current TokenProvider credential and never returns a cached
 prior account's ID. `NativeSession.userId` carries the same installed value after
-ordinary login or session restoration. See the [shared client contract](../../docs/native-user-registration.md#client-use-and-installation-boundary).
+ordinary login or session restoration. See the [shared client contract](https://github.com/anaregdesign/lantern/blob/main/docs/native-user-registration.md#client-use-and-installation-boundary).
 
 
 For an operator-enabled native profile, call `beginNativeRegistration`, pass its
@@ -573,4 +573,4 @@ same account with `beginNativeRegistration(recoveryReview: original, ...)`.
 Prepare the recovery proof and call `getNativeRegistrationStatus`; it never
 replays registration or recovers a raw session. Unknown remains unresolved;
 confirmed registration without a session requires ordinary sign-in. See
-[`docs/native-user-registration.md`](../../docs/native-user-registration.md).
+[`docs/native-user-registration.md`](https://github.com/anaregdesign/lantern/blob/main/docs/native-user-registration.md).
