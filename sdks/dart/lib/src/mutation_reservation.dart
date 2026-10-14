@@ -30,8 +30,9 @@ int _minimumMutationReservation(MutationRequest<Object?> request, int budget) {
 /// transport headers, messages, or arbitrary provider exception payloads.
 Exception _boundedMutationFailure(Exception cause) {
   if (cause is LanternDataException) return cause;
-  if (cause is! LanternException)
+  if (cause is! LanternException) {
     return _internalSdkException('mutation failed');
+  }
   final data = _ErrorData(
     transportCode: cause.transportCode,
     transportCodeName: cause.transportCodeName,

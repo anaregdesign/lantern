@@ -92,8 +92,9 @@ _FrozenMutation<T> _freezeMutation<T>(
     List.unmodifiable(expiration),
     List.unmodifiable(identities),
   );
-  if (frozen.bytes > maxReservedBytes)
+  if (frozen.bytes > maxReservedBytes) {
     throw const LanternDataException(DataFailure.capacity);
+  }
   return frozen;
 }
 
