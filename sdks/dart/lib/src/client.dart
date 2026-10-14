@@ -38,6 +38,17 @@ part 'decay.dart';
 part 'receipt.dart';
 part 'mutation_acceptance.dart';
 part 'mutation_reply.dart';
+part 'data_client.dart';
+part 'data_snapshot.dart';
+part 'mutation_control.dart';
+part 'mutation_reservation.dart';
+part 'indexed_mutation.dart';
+part 'direct_data_client.dart';
+part 'direct_reads.dart';
+part 'direct_watch.dart';
+part 'direct_mutations.dart';
+part 'observation_coordinator.dart';
+part 'bounded_executor.dart';
 part 'retry.dart';
 part 'scan.dart';
 part 'search.dart';
@@ -794,6 +805,9 @@ final class LanternInvoker {
       );
     } on connect.ConnectException catch (error) {
       throw _mapConnectException(error, context);
+    } on LanternDataException {
+      // Parent-owned synchronous dispatch fences are local typed failures.
+      rethrow;
     } on LanternException {
       rethrow;
     } catch (error) {

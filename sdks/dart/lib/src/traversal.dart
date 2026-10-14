@@ -172,60 +172,7 @@ extension LanternTraversal on LanternClient {
     LanternCallOptions? options,
   }) async {
     _ensureOpen();
-    final request = $graph.IlluminateRequest(
-      seed: seed,
-      weighting: _weightingToProto(weighting),
-      vertexPrefix: vertexPrefix,
-    );
-    switch (traversal) {
-      case BfsOptions(
-        :final step,
-        :final fanOut,
-        :final objective,
-        :final reduction,
-      ):
-        if (step <= 0 || fanOut <= 0) {
-          throw _invalidArgumentException(
-            'BFS step and fanOut must both be positive',
-          );
-        }
-        _validateUint32(step, 'step');
-        _validateUint32(fanOut, 'fanOut');
-        request.bfs = $graph.BfsParams(
-          step: step,
-          fanOut: fanOut,
-          objective: _objectiveToProto(objective),
-          reduction: _reductionToProto(reduction),
-        );
-      case PprOptions(:final topN, :final restartProbability, :final epsilon):
-        _validateUint32(topN, 'topN');
-        _validateProbabilityAndEpsilon(restartProbability, epsilon);
-        request.ppr = $graph.PprParams(
-          topN: topN,
-          restartProb: restartProbability == null
-              ? null
-              : _normalizeFloat32(restartProbability),
-          epsilon: epsilon == null ? null : _normalizeFloat32(epsilon),
-        );
-      case LocalCommunityOptions(
-        :final maxSize,
-        :final restartProbability,
-        :final epsilon,
-        :final objective,
-        :final reduction,
-      ):
-        _validateUint32(maxSize, 'maxSize');
-        _validateProbabilityAndEpsilon(restartProbability, epsilon);
-        request.community = $graph.LocalCommunityParams(
-          maxSize: maxSize,
-          restartProb: restartProbability == null
-              ? null
-              : _normalizeFloat32(restartProbability),
-          epsilon: epsilon == null ? null : _normalizeFloat32(epsilon),
-          objective: _objectiveToProto(objective),
-          reduction: _reductionToProto(reduction),
-        );
-    }
+    final request = _traversalRequest(seed, traversal, weighting, vertexPrefix);
     final response = await _invoke(
       'Illuminate',
       _freezeCallOptions(options),
@@ -304,3 +251,67 @@ $graph.Weighting _weightingToProto(TraversalWeighting weighting) =>
       TraversalWeighting.tfidf => $graph.Weighting.WEIGHTING_TFIDF,
       TraversalWeighting.bm25 => $graph.Weighting.WEIGHTING_BM25,
     };
+
+$graph.IlluminateRequest _traversalRequest(
+  String seed,
+  TraversalOptions traversal,
+  TraversalWeighting weighting,
+  String vertexPrefix,
+) {
+  _requireEntityKey(seed);
+  final request = $graph.IlluminateRequest(
+    seed: seed,
+    weighting: _weightingToProto(weighting),
+    vertexPrefix: vertexPrefix,
+  );
+  switch (traversal) {
+    case BfsOptions(
+      :final step,
+      :final fanOut,
+      :final objective,
+      :final reduction,
+    ):
+      if (step <= 0 || fanOut <= 0) {
+        throw _invalidArgumentException(
+          'BFS step and fanOut must both be positive',
+        );
+      }
+      _validateUint32(step, 'step');
+      _validateUint32(fanOut, 'fanOut');
+      request.bfs = $graph.BfsParams(
+        step: step,
+        fanOut: fanOut,
+        objective: _objectiveToProto(objective),
+        reduction: _reductionToProto(reduction),
+      );
+    case PprOptions(:final topN, :final restartProbability, :final epsilon):
+      _validateUint32(topN, 'topN');
+      _validateProbabilityAndEpsilon(restartProbability, epsilon);
+      request.ppr = $graph.PprParams(
+        topN: topN,
+        restartProb: restartProbability == null
+            ? null
+            : _normalizeFloat32(restartProbability),
+        epsilon: epsilon == null ? null : _normalizeFloat32(epsilon),
+      );
+    case LocalCommunityOptions(
+      :final maxSize,
+      :final restartProbability,
+      :final epsilon,
+      :final objective,
+      :final reduction,
+    ):
+      _validateUint32(maxSize, 'maxSize');
+      _validateProbabilityAndEpsilon(restartProbability, epsilon);
+      request.community = $graph.LocalCommunityParams(
+        maxSize: maxSize,
+        restartProb: restartProbability == null
+            ? null
+            : _normalizeFloat32(restartProbability),
+        epsilon: epsilon == null ? null : _normalizeFloat32(epsilon),
+        objective: _objectiveToProto(objective),
+        reduction: _reductionToProto(reduction),
+      );
+  }
+  return request..freeze();
+}

@@ -232,6 +232,11 @@ class ScopeTest(unittest.TestCase):
                 (False, False),
             ),
             "workflow": ([".github/workflows/dart-sdk.yml"], False, (True, True)),
+            "data client host integration": (
+                ["tests/integration/dart_data_client_test.dart"],
+                False,
+                (True, False),
+            ),
             "host integration test": (
                 ["tests/integration/dart_offline_sqlite_test.dart"],
                 False,
