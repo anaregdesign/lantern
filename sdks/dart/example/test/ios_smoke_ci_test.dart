@@ -246,8 +246,12 @@ echo 'build completed during diagnostics'
     final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
 
     stopwatch.stop();
-    expect(result.exitCode, isNonZero);
-    expect(await _classification(sandbox), 'launch_stall');
+    expect(result.exitCode, 70, reason: '${result.stdout}\n${result.stderr}');
+    expect(
+      await _classification(sandbox),
+      'launch_stall',
+      reason: '${result.stdout}\n${result.stderr}',
+    );
     expect(stopwatch.elapsed, lessThan(const Duration(seconds: 12)));
   });
 
@@ -1152,7 +1156,10 @@ case "${2:-}" in
     [[ "${3:-}" == --terminate-running-process ]] || exit 2
     if [[ '_CLOSED_PIPE_LAUNCH_' == true ]]; then
       exec >/dev/null 2>&1
-      sleep 30
+      # Model one live native command. An extra shell-owned child can leave
+      # a zombie group whose signal is denied on macOS; that is a distinct
+      # cleanup failure covered by the Python failure-path checks.
+      exec sleep 30
     fi
     if [[ '_RUNNER_EXITED_' == true ]]; then
       sleep 0.01 &
