@@ -15,7 +15,7 @@ final class SqliteOfflineStore implements OfflineStore {
     this.limits,
   );
 
-  /// Opens an application-owned path, creating schema version four if empty.
+  /// Opens an application-owned path, creating schema version six if empty.
   ///
   /// Unknown schemas and invalid durable records fail closed. [databaseFactory]
   /// defaults to the mobile OS SQLite plugin. Tests may inject an FFI factory;
@@ -107,8 +107,13 @@ final class SqliteOfflineStore implements OfflineStore {
     return _databaseCall(
       () => _lane.run(() async {
         final changes = <OfflineStoreChange>[];
+        final fenceUpdates =
+            <
+              _SqlClaimGuard,
+              ({Map<String, Object?>? metadata, OfflineOutboxRecord? current})
+            >{};
         final value = await _db.transaction<T>((sql) async {
-          final tx = _SqlTransaction(sql, limits);
+          final tx = _SqlTransaction(sql, limits, _lane, () => !_closed);
           late final T result;
           var callbackCompleted = false;
           try {
@@ -143,8 +148,57 @@ final class SqliteOfflineStore implements OfflineStore {
               ),
             );
           }
+          // Snapshot only bounded active guards, including quiet high-water
+          // changes. Install them synchronously after commit, before any event
+          // or transaction completion can expose the replacement claim.
+          final scopes = <String, List<_SqlClaimGuard>>{};
+          for (final guard in {
+            ..._lane.fences.where(
+              (g) =>
+                  tx.changed.contains(g.claim.partitionId) ||
+                  tx.mutated.contains(g.claim.partitionId),
+            ),
+            ...tx.pendingFences,
+          }) {
+            (scopes[guard.claim.partitionId] ??= []).add(guard);
+          }
+          for (final entry in scopes.entries) {
+            final metadataRows = await sql.query(
+              'partitions',
+              where: 'partition_id=?',
+              whereArgs: [entry.key],
+            );
+            final metadata = metadataRows.isEmpty ? null : metadataRows.single;
+            final ids = entry.value
+                .map((g) => g.claim.recordId)
+                .toSet()
+                .toList();
+            final records = <String, OfflineOutboxRecord>{};
+            for (var start = 0; start < ids.length; start += 64) {
+              final end = start + 64 < ids.length ? start + 64 : ids.length;
+              final chunk = ids.sublist(start, end);
+              for (final row in await sql.query(
+                'outbox',
+                where:
+                    'partition_id=? AND record_id IN (${List.filled(chunk.length, '?').join(',')})',
+                whereArgs: [entry.key, ...chunk],
+              )) {
+                final record = _outbox(row);
+                records[record.recordId] = record;
+              }
+            }
+            for (final guard in entry.value) {
+              fenceUpdates[guard] = (
+                metadata: metadata,
+                current: records[guard.claim.recordId],
+              );
+            }
+          }
           return result;
         }, exclusive: true);
+        for (final entry in fenceUpdates.entries) {
+          entry.key.committed(entry.value.metadata, entry.value.current);
+        }
         for (final owner in List<SqliteOfflineStore>.of(_lane.owners)) {
           for (final change in changes) {
             owner._changes[change.partitionId]?.add(change);
@@ -242,11 +296,58 @@ final class SqliteOfflineStore implements OfflineStore {
 final class _SqlLane {
   Future<void> _tail = Future<void>.value();
   final Set<SqliteOfflineStore> owners = {};
+  final Set<_SqlClaimGuard> fences = {};
   int references = 0;
 
   Future<T> run<T>(Future<T> Function() action) {
     final result = _tail.then((_) => action());
     _tail = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return result;
+  }
+}
+
+/// Ephemeral guard for this lane's supported same-isolate commit coordination.
+/// Other processes still require WP3's exclusive runtime-owner protocol.
+final class _SqlClaimGuard {
+  _SqlClaimGuard(this.claim, this.authority, this.storeOpen, this.lane);
+  final OfflineOutboxRecord claim;
+  final String authority;
+  final bool Function() storeOpen;
+  final _SqlLane lane;
+  bool _active = false, _retired = false;
+  Map<String, Object?>? _metadata;
+  OfflineOutboxRecord? _current;
+  late final OfflineClaimFence fence = OfflineClaimFence(
+    checkCurrent: (observedAt) {
+      final metadata = _metadata;
+      if (!_active || _retired || !storeOpen() || metadata == null) {
+        throw const OfflineClaimLostException();
+      }
+      return checkOfflineClaim(
+        expected: claim,
+        current: _current,
+        generation: metadata['generation']! as int,
+        authorityBinding: metadata['authority_binding'] as String?,
+        expectedAuthority: authority,
+        highWater: DateTime.fromMicrosecondsSinceEpoch(
+          metadata['time_high_water']! as int,
+          isUtc: true,
+        ),
+        observedAt: observedAt,
+      );
+    },
+    onRelease: () {
+      _retired = true;
+      _active = false;
+      lane.fences.remove(this);
+    },
+  );
+
+  void committed(Map<String, Object?>? metadata, OfflineOutboxRecord? current) {
+    if (_retired) return;
+    _metadata = metadata;
+    _current = current;
+    _active = true;
+    lane.fences.add(this);
   }
 }

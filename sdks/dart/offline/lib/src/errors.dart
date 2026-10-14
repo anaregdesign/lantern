@@ -29,6 +29,12 @@ final class OfflineArgumentException extends OfflineException {
   const OfflineArgumentException() : super('invalid_argument');
 }
 
+/// An expired/replaced item claim cannot dispatch or publish a late callback.
+final class OfflineClaimLostException extends OfflineException {
+  /// Creates a content-free claim-lifetime failure.
+  const OfflineClaimLostException() : super('claim_lost');
+}
+
 /// A mutation is intentionally unavailable in the durable offline contract.
 final class OfflineUnsupportedOperationException extends OfflineException {
   /// Creates an unsupported-operation failure.

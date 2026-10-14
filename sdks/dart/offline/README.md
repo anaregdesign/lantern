@@ -51,6 +51,23 @@ A fenced live reply can settle despite confirmation commit failure; `storageBloc
 then stops dispatch and retains pre-send evidence for reopen. Legacy terminal Put
 metadata lacking exact results remains unavailable, never fabricated.
 
+Qualified delivery requires the adapter's `OfflineStoreClaimTransaction` capability.
+Its bounded claim fence reads committed generation, authority, lease and clock
+high-water synchronously at the final send and publication boundaries. Expired or
+replaced claims cannot publish live success. An eligible claim can still settle a
+valid reply when subsequent storage reads or confirmation fail. These fences cover
+the adapter's supported commit coordination; exclusive runtime ownership remains
+#1769's responsibility. Possibly sent Put intent retains pending uncertainty after
+its TTL, but never keeps its expired Vertex/Edge visible as an exact live value.
+
+An explicit destructive `wipePartition` erases queued work, results, receipts and
+local invocation-ID collision history for the old generation. Close and join the
+old lifetime first and discard its tickets/references. Wipe cannot undo Server
+work or prove an uncertain mutation never ran. A later explicit submission can
+execute again even if it reuses a still-fresh caller ID; Add can add twice. Wipe
+does not reset clock high-water. Use cache invalidation to clear displayed values;
+never use wipe as automatic retry, storage-error recovery or credential refresh.
+
 State versions are outbox **5**, operation **4**, reference snapshot **9**, and
 SQLite **6**. Old IDs, TTL and conservative dispatch proof are preserved; unknown
 or damaged state, incompatible downgrade and insufficient migration capacity fail
@@ -59,6 +76,10 @@ conformance engine; it has no crash-durability or snapshot/restore promise.
 `InMemoryOfflineStore` remains reference/snapshot test infrastructure. Durable
 backup/installation continuity and exclusive automatic ownership are separate
 factory/runtime responsibilities, not proven by a filename or copied snapshot.
+Older caches lack persisted authority proof: migration/first binding hides their
+values and retains bounded resident identities for revalidation. Current-format
+reopen with unchanged authority preserves eligible historical evidence; a changed
+authority hides old cache without altering pending IDs, TTL or receipt proof.
 
 ## Historical explicit Repository surface
 

@@ -1,7 +1,11 @@
 part of '../lantern_client_offline_sqlite.dart';
 
-final class _SqlTransaction implements OfflineStoreTransaction {
-  _SqlTransaction(this.sql, this.limits);
+final class _SqlTransaction
+    implements OfflineStoreTransaction, OfflineStoreClaimTransaction {
+  _SqlTransaction(this.sql, this.limits, [this.claimLane, this.storeOpen]);
+  final _SqlLane? claimLane;
+  final bool Function()? storeOpen;
+  final List<_SqlClaimGuard> pendingFences = [];
   final Set<String> observationInvalidated = {};
   final DatabaseExecutor sql;
   final OfflineStoreLimits limits;
@@ -137,6 +141,23 @@ final class _SqlTransaction implements OfflineStoreTransaction {
   );
 
   @override
+  Future<OfflineClaimFence> captureClaimFence(
+    OfflineOutboxRecord claim, {
+    required String authorityBinding,
+  }) => _run(() async {
+    final lane = claimLane;
+    if (lane == null || storeOpen == null) {
+      throw const OfflineUnsupportedOperationException();
+    }
+    if (lane.fences.length + pendingFences.length >= limits.maxOutboxRecords) {
+      throw const OfflineCapacityException();
+    }
+    final guard = _SqlClaimGuard(claim, authorityBinding, storeOpen!, lane);
+    pendingFences.add(guard);
+    return guard.fence;
+  });
+
+  @override
   Future<void> bindAuthority(String partitionId, String authorityBinding) =>
       _run(() async {
         if (authorityBinding.isEmpty ||
@@ -145,9 +166,23 @@ final class _SqlTransaction implements OfflineStoreTransaction {
         }
         final p = await _partition(partitionId);
         if (p['authority_binding'] == authorityBinding) return;
-        if (p['authority_binding'] != null) {
-          await resetScopedChangeCursor(partitionId, null);
+        var unqualified = p['authority_binding'] != null;
+        for (final table in [
+          'cache',
+          'recovery',
+          'cdc_scoped',
+          'cdc_origins',
+        ]) {
+          if (unqualified) break;
+          unqualified = (await sql.query(
+            table,
+            columns: ['partition_id'],
+            where: 'partition_id=?',
+            whereArgs: [partitionId],
+            limit: 1,
+          )).isNotEmpty;
         }
+        if (unqualified) await resetScopedChangeCursor(partitionId, null);
         await sql.update(
           'partitions',
           {'authority_binding': authorityBinding},

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:connectrpc/test.dart';
 import 'package:lantern_client/lantern_client.dart';
@@ -72,6 +73,63 @@ final class MutationRemote implements OfflineBoundMutationRemote {
 void main() {
   late MutableClock clock;
   setUp(() => clock = MutableClock(DateTime.utc(2026, 7, 22)));
+  test(
+    'memory8 migration hides unbound cache and preserves receipt evidence across authority/reopen',
+    () async {
+      await runOfflineAuthorityBoundaryConformance(
+        createStore: () async => InMemoryOfflineStore(),
+        migrateLegacy: (store) async {
+          final data =
+              jsonDecode(await (store as InMemoryOfflineStore).exportSnapshot())
+                  as Map<String, dynamic>;
+          data['schema'] = 8;
+          for (final p in data['partitions'] as List) {
+            p.remove('authorityBinding');
+            p.remove('timeHighWater');
+            p['outbox'] = [
+              for (final raw in p['outbox'] as List)
+                (() {
+                  final r = jsonDecode(raw as String) as Map<String, dynamic>;
+                  r['schema'] = 4;
+                  r.remove('preparation');
+                  r.remove('mayHaveDispatched');
+                  r.remove('dependencies');
+                  return jsonEncode(r);
+                })(),
+            ];
+            p['operations'] = [
+              for (final raw in p['operations'] as List)
+                (() {
+                  final r = jsonDecode(raw as String) as Map<String, dynamic>;
+                  r['schema'] = 3;
+                  r.remove('kind');
+                  r.remove('guardUntil');
+                  r.remove('groupId');
+                  for (final item in r['items'] as List) {
+                    item.remove('mayHaveDispatched');
+                  }
+                  return jsonEncode(r);
+                })(),
+            ];
+          }
+          return InMemoryOfflineStore.fromSnapshot(jsonEncode(data));
+        },
+        reopenStore: (store) async => InMemoryOfflineStore.fromSnapshot(
+          await (store as InMemoryOfflineStore).exportSnapshot(),
+        ),
+        durability: AdmissionDurability.memory,
+      );
+    },
+  );
+  test(
+    'memory claim expiry/reclaim, pending TTL and eligible storage fault counterexamples',
+    () async {
+      await runOfflineMutationBoundaryConformance(
+        createStore: () async => MemoryOfflineStore(),
+        durability: AdmissionDurability.memory,
+      );
+    },
+  );
   test(
     'supported bounded memory profile passes the paired common conformance',
     () async {

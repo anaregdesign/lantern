@@ -230,7 +230,8 @@ Future<void> _upgradeSchema(
           whereArgs: [id],
         );
       }
-      if (oldVersion < 5) await transaction.resetScopedChangeCursor(id, null);
+      // Every older schema lacks authority proof, including scoped-cursor v5.
+      await transaction.resetScopedChangeCursor(id, null);
       afterPartition = id;
     }
   }

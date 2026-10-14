@@ -21,6 +21,23 @@ LanternSnapshot<T> projectOfflinePending<T>(
       continue;
     }
     count++;
+    if (r.mayHaveDispatched &&
+        r.intent.expiration != null &&
+        !now.isBefore(r.intent.expiration!) &&
+        (r.intent is OfflinePutVertexIntent ||
+            r.intent is OfflinePutEdgeIntent)) {
+      // Possible handling never extends a speculative entity's original TTL.
+      // Retain pending proof, without reviving an expired value or inventing Missing.
+      view = confirmed.value;
+      projection = PendingProjection.unresolvedPending;
+      unresolved++;
+      mask |=
+          1 <<
+          (r.intent is OfflinePutVertexIntent
+              ? MutationKind.putVertices.index
+              : MutationKind.putEdges.index);
+      continue;
+    }
     switch (r.intent) {
       case OfflinePutVertexIntent(:final vertex):
         view = vertex as T;

@@ -279,6 +279,11 @@ abstract interface class OfflineStoreTransaction {
   /// Transactionally deletes every partition record and increments generation.
   /// This is an explicit barrier that cancels enqueue-topology obligations
   /// created earlier in the same transaction.
+  /// Wipe also erases old invocation-ID guards/results/receipts. Close and join
+  /// the old lifetime and discard its tickets first. It does not undo Server
+  /// work or prove an uncertain mutation never ran; an explicit fresh-ID reuse
+  /// in the new generation may execute again. It must not be automatic retry,
+  /// storage-fault recovery, credential refresh, or merely cache invalidation.
   FutureOr<void> wipePartition(String partitionId);
 }
 

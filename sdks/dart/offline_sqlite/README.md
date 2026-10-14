@@ -55,12 +55,23 @@ can be injected through `databaseFactory`; no token, credential, encryption key,
 or key acquisition callback is persisted by this package. A local `partitionId`
 is a namespace, not server-side authorization. Await `wipePartition` before
 rotating an account's credentials, as required by the offline core contract.
+Close/join the old lifetime and discard its tickets first. Explicit wipe erases
+the old generation's invocation-ID guards and receipts; it cannot undo Server
+work. A new explicit submission, including a still-fresh reused caller ID, can
+execute again. Wipe is not automatic retry, storage-error recovery or cache clearing.
 
 ## Storage behavior
 
 - Indexed SQL tables hold canonical cache, outbox, operation, and CDC metadata.
   The adapter does not mirror the entire database in memory.
 - Successful transactions are committed before change notifications are sent.
+- Common delivery's bounded claim fences observe committed lease/generation,
+  authority and high-water changes before notifications or transaction completion,
+  including quiet clock advances. They cover this adapter's same-isolate lane;
+  automatic cross-process ownership still requires the later runtime protocol.
+  Legacy schema5 and earlier have no persisted authority proof: migration hides
+  old cache/cursors and retains bounded revalidation identities. Same-authority
+  current-format reopen preserves eligible history and immutable outbox evidence.
   SQL transaction rollback includes capacity checks, FIFO ordinals, claims,
   renewable leases, and operation status. Network calls stay outside database
   transactions.

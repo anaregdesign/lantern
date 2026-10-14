@@ -12,6 +12,7 @@ library;
 export 'src/bound_data_client.dart' show OfflineLanternDataClient;
 export 'src/change_conformance.dart';
 export 'src/change_store.dart';
+export 'src/claim_fence.dart';
 export 'src/codec.dart';
 export 'src/conformance.dart';
 export 'src/data_client_conformance.dart';
@@ -27,6 +28,7 @@ export 'src/identity_consumer.dart'
 export 'src/lantern_identity_source.dart' show LanternClientIdentitySource;
 export 'src/memory_profile.dart';
 export 'src/memory_store.dart';
+export 'src/mutation_boundary_conformance.dart';
 export 'src/mutation_state.dart';
 export 'src/remote.dart';
 export 'src/repository.dart';

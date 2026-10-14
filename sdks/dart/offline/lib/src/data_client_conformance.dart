@@ -21,23 +21,25 @@ Future<void> runOfflineDataClientConformance({
     accountIdentity: 'one',
     authorityBinding: 'a',
   );
-  Future<OfflineLanternDataClient> open(OfflineStore s, {bool cacheReads = true}) =>
-      OfflineLanternDataClient.open(
-        client: LanternClient.connect(
-          endpoint,
-          allowInsecure: true,
-          clock: () => now,
-          tokenProvider: () {
-            tokens++;
-            throw StateError('unexpected token acquisition');
-          },
-        ),
-        store: s,
-        binding: binding,
-        durability: durability,
-        clock: () => now,
-        cacheReads: cacheReads,
-      );
+  Future<OfflineLanternDataClient> open(
+    OfflineStore s, {
+    bool cacheReads = true,
+  }) => OfflineLanternDataClient.open(
+    client: LanternClient.connect(
+      endpoint,
+      allowInsecure: true,
+      clock: () => now,
+      tokenProvider: () {
+        tokens++;
+        throw StateError('unexpected token acquisition');
+      },
+    ),
+    store: s,
+    binding: binding,
+    durability: durability,
+    clock: () => now,
+    cacheReads: cacheReads,
+  );
   var store = await createStore();
   var client = await open(store);
   final ids = <OperationId>[];
@@ -180,44 +182,104 @@ Future<void> runOfflineDataClientConformance({
     }
     now = client.clock();
     await store.transaction((tx) async {
-      await tx.putCache(binding.stableIdentity, OfflineCacheRecord.value(
-        partitionId: binding.stableIdentity, generation: 0,
-        key: OfflineEntityKey.edge('t', 'h'),
-        entity: Edge(tail: 't', head: 'h', weight: 5, expiration: now.add(const Duration(seconds: 2))),
-        validatedAt: now, lastAccessAt: now,
-      ));
-      await tx.putCache(binding.stableIdentity, OfflineCacheRecord.missing(
-        partitionId: binding.stableIdentity, generation: 0,
-        key: OfflineEntityKey.vertex('negative'), validatedAt: now, lastAccessAt: now,
-        missingUntil: now.add(const Duration(seconds: 2)),
-      ));
+      await tx.putCache(
+        binding.stableIdentity,
+        OfflineCacheRecord.value(
+          partitionId: binding.stableIdentity,
+          generation: 0,
+          key: OfflineEntityKey.edge('t', 'h'),
+          entity: Edge(
+            tail: 't',
+            head: 'h',
+            weight: 5,
+            expiration: now.add(const Duration(seconds: 2)),
+          ),
+          validatedAt: now,
+          lastAccessAt: now,
+        ),
+      );
+      await tx.putCache(
+        binding.stableIdentity,
+        OfflineCacheRecord.missing(
+          partitionId: binding.stableIdentity,
+          generation: 0,
+          key: OfflineEntityKey.vertex('negative'),
+          validatedAt: now,
+          lastAccessAt: now,
+          missingUntil: now.add(const Duration(seconds: 2)),
+        ),
+      );
     });
-    final edge = await client.getEdge(const EdgeRef('t', 'h'),
-      options: const GetOptions(source: ReadSource.cacheOnly));
-    _require(edge.confirmed.state == ConfirmedState.present && edge.view?.weight == 5 &&
-      edge.projection == PendingProjection.unresolvedPending && edge.pending.unresolvedCount == 1,
-      'ordered Put Add Delete contribution Delete keeps eligible confirmed base');
-    final missing = await client.getVertex('negative', options: const GetOptions(source: ReadSource.cacheOnly));
-    final unknown = await client.getVertex('new', options: const GetOptions(source: ReadSource.cacheOnly));
-    _require(missing.confirmed.state == ConfirmedState.missing && unknown.confirmed.state == ConfirmedState.unknown,
-      'missing and unknown remain distinct');
+    final edge = await client.getEdge(
+      const EdgeRef('t', 'h'),
+      options: const GetOptions(source: ReadSource.cacheOnly),
+    );
+    _require(
+      edge.confirmed.state == ConfirmedState.present &&
+          edge.view?.weight == 5 &&
+          edge.projection == PendingProjection.unresolvedPending &&
+          edge.pending.unresolvedCount == 1,
+      'ordered Put Add Delete contribution Delete keeps eligible confirmed base',
+    );
+    final missing = await client.getVertex(
+      'negative',
+      options: const GetOptions(source: ReadSource.cacheOnly),
+    );
+    final unknown = await client.getVertex(
+      'new',
+      options: const GetOptions(source: ReadSource.cacheOnly),
+    );
+    _require(
+      missing.confirmed.state == ConfirmedState.missing &&
+          unknown.confirmed.state == ConfirmedState.unknown,
+      'missing and unknown remain distinct',
+    );
     final disabled = await open(store, cacheReads: false);
     try {
-      final withoutCache = await disabled.getEdge(const EdgeRef('t', 'h'), options: const GetOptions(source: ReadSource.cacheOnly));
-      _require(withoutCache.confirmed.state == ConfirmedState.unknown && withoutCache.view == null,
-        'cache-disabled profile cannot use retained base');
-    } finally { await disabled.close(); }
+      final withoutCache = await disabled.getEdge(
+        const EdgeRef('t', 'h'),
+        options: const GetOptions(source: ReadSource.cacheOnly),
+      );
+      _require(
+        withoutCache.confirmed.state == ConfirmedState.unknown &&
+            withoutCache.view == null,
+        'cache-disabled profile cannot use retained base',
+      );
+    } finally {
+      await disabled.close();
+    }
     now = now.add(const Duration(seconds: 3));
-    final expiredEdge = await client.getEdge(const EdgeRef('t', 'h'), options: const GetOptions(source: ReadSource.cacheOnly));
-    final expiredMissing = await client.getVertex('negative', options: const GetOptions(source: ReadSource.cacheOnly));
-    _require(expiredEdge.confirmed.state == ConfirmedState.expired && expiredEdge.view == null &&
-      expiredMissing.confirmed.state == ConfirmedState.expired, 'positive and negative TTL are never extended');
-    await client.mutations.submit(MutationRequest.putEdges([EdgeInput(tail: 't', head: 'h', weight: 2)]));
-    final overwrite = await client.getEdge(const EdgeRef('t', 'h'), options: const GetOptions(source: ReadSource.cacheOnly));
-    _require(overwrite.view?.weight == 2 && overwrite.projection == PendingProjection.exactPendingPut &&
-      overwrite.pending.unresolvedCount == 0 && overwrite.pending.wholeSequenceExact,
-      'later exact Put resolves prior uncertainty without numeric estimate');
-    final count = (await store.transaction((tx) => tx.outbox(binding.stableIdentity))).length;
+    final expiredEdge = await client.getEdge(
+      const EdgeRef('t', 'h'),
+      options: const GetOptions(source: ReadSource.cacheOnly),
+    );
+    final expiredMissing = await client.getVertex(
+      'negative',
+      options: const GetOptions(source: ReadSource.cacheOnly),
+    );
+    _require(
+      expiredEdge.confirmed.state == ConfirmedState.expired &&
+          expiredEdge.view == null &&
+          expiredMissing.confirmed.state == ConfirmedState.expired,
+      'positive and negative TTL are never extended',
+    );
+    await client.mutations.submit(
+      MutationRequest.putEdges([EdgeInput(tail: 't', head: 'h', weight: 2)]),
+    );
+    final overwrite = await client.getEdge(
+      const EdgeRef('t', 'h'),
+      options: const GetOptions(source: ReadSource.cacheOnly),
+    );
+    _require(
+      overwrite.view?.weight == 2 &&
+          overwrite.projection == PendingProjection.exactPendingPut &&
+          overwrite.pending.unresolvedCount == 0 &&
+          overwrite.pending.wholeSequenceExact,
+      'later exact Put resolves prior uncertainty without numeric estimate',
+    );
+    final count = (await store.transaction(
+      (tx) => tx.outbox(binding.stableIdentity),
+    )).length;
     try {
       await client.mutations.submitGroup(
         MutationGroup([
@@ -247,6 +309,83 @@ Future<void> runOfflineDataClientConformance({
         'retained pending status',
       );
     }
+    final resetId = OperationId.generate(issuedAt: now);
+    await client.mutations.submit(
+      MutationRequest.deleteVertices(['reset']),
+      options: MutationOptions(operationId: resetId),
+    );
+    await client.close();
+    store = await reopenStore(store);
+    client = await open(store);
+    await _fails(
+      () => client.mutations.submit(
+        MutationRequest.deleteVertices(['reset']),
+        options: MutationOptions(operationId: resetId),
+      ),
+      DataFailure.operationIdCollision,
+    );
+    await client.close();
+    await store.transaction(
+      (tx) => tx.bindAuthority(binding.stableIdentity, 'refreshed-authority'),
+    );
+    client = await open(store);
+    await _fails(
+      () => client.mutations.submit(
+        MutationRequest.deleteVertices(['reset']),
+        options: MutationOptions(operationId: resetId),
+      ),
+      DataFailure.operationIdCollision,
+    );
+    final old = client;
+    final generation = client.generation;
+    // Explicit destructive reset: quiesce first; no Server cancellation is claimed.
+    await client.close();
+    await store.transaction((tx) => tx.wipePartition(binding.stableIdentity));
+    client = await open(store);
+    _require(
+      client.generation == generation + 1 &&
+          (await client.mutations.getStatus(resetId)).retention ==
+              MutationRetention.unknown &&
+          (await store.transaction(
+            (tx) => tx.outbox(binding.stableIdentity),
+          )).isEmpty,
+      'wipe ends old generation and local collision history',
+    );
+    await _fails(
+      () => old.getVertex(
+        'reset',
+        options: const GetOptions(source: ReadSource.cacheOnly),
+      ),
+      DataFailure.closed,
+    );
+    final resubmitted = await client.mutations.submit(
+      MutationRequest.deleteVertices(['reset']),
+      options: MutationOptions(operationId: resetId),
+    );
+    _require(
+      resubmitted.reference.operationId == resetId,
+      'explicit fresh-ID reuse after wipe is a new invocation',
+    );
+    now = now.add(const Duration(minutes: 6));
+    await client.getVertex(
+      'reset',
+      options: const GetOptions(source: ReadSource.cacheOnly),
+    );
+    await client.close();
+    await store.transaction((tx) => tx.wipePartition(binding.stableIdentity));
+    now = now.subtract(const Duration(minutes: 6));
+    client = await open(store);
+    await _fails(
+      () => client.mutations.submit(
+        MutationRequest.deleteVertices(['reset']),
+        options: MutationOptions(operationId: resetId),
+      ),
+      DataFailure.operationIdExpired,
+    );
+    _require(
+      tokens == 0,
+      'reset fixture performs no automatic replay/resubmission',
+    );
   } finally {
     await client.close();
   }

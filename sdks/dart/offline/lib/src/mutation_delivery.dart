@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client/lantern_client_adapter.dart';
 import 'bound_mutation_remote.dart';
+import 'claim_fence.dart';
 import 'errors.dart';
 import 'mutation_state.dart';
 import 'remote.dart';
@@ -200,6 +201,7 @@ final class OfflineMutationDelivery {
   }
 
   Future<bool> _deliver(OfflineOutboxRecord r, String owner) async {
+    OfflineClaimFence? claimFence;
     try {
       if (!r.mayHaveDispatched &&
           r.intent.expiration != null &&
@@ -208,7 +210,12 @@ final class OfflineMutationDelivery {
         return false;
       }
       final dependencies = await _transaction((tx) async {
-        await _claim(tx, r, owner);
+        final current = await _claim(tx, r, owner);
+        if (tx is! OfflineStoreClaimTransaction) {
+          throw const OfflineUnsupportedOperationException();
+        }
+        claimFence = await (tx as OfflineStoreClaimTransaction)
+            .captureClaimFence(current, authorityBinding: authorityBinding);
         var pending = false;
         for (final d in r.dependencies) {
           final op = await tx.getOperation(partitionId, d.operationId);
@@ -296,7 +303,7 @@ final class OfflineMutationDelivery {
           throw const OfflineRemoteProtocolException();
         }
         if (status.state == ReceiptStatusState.effectUndisclosed) {
-          await _handled(r, owner, null);
+          await _handled(r, owner, null, claimFence!);
           return true;
         }
         if (status.state == ReceiptStatusState.confirmed) {
@@ -306,7 +313,7 @@ final class OfflineMutationDelivery {
               status.itemCount != 1) {
             throw const OfflineRemoteProtocolException();
           }
-          await _handled(r, owner, status.result!);
+          await _handled(r, owner, status.result!, claimFence!);
           return true;
         }
         if (status.state == ReceiptStatusState.noLongerProvable) {
@@ -421,8 +428,7 @@ final class OfflineMutationDelivery {
         cancellation: _cancellation,
         beforeDispatch: () {
           fence();
-          final sampled = clock().toUtc();
-          final sendAt = sampled.isBefore(now) ? now : sampled;
+          final sendAt = claimFence!.checkCurrent(clock().toUtc());
           if (r.intent.expiration != null &&
               !sendAt.isBefore(r.intent.expiration!)) {
             throw const LanternDataException(DataFailure.expiredBeforeDispatch);
@@ -439,7 +445,10 @@ final class OfflineMutationDelivery {
             throw const OfflineRemoteProtocolException();
           }
         },
-        beforePublication: fence,
+        beforePublication: () {
+          fence();
+          claimFence!.checkCurrent(clock().toUtc());
+        },
       );
       fence();
       await _handled(
@@ -448,9 +457,14 @@ final class OfflineMutationDelivery {
         reply is MutationKnownEffect<Object?>
             ? offlineResult(r.intent, reply)
             : null,
+        claimFence!,
       );
       return true;
     } on IndexedMutationAttemptException catch (e) {
+      if (e.cause is OfflineClaimLostException) {
+        fence();
+        return false;
+      }
       // The durable pre-send marker is conservative even when the adapter proves this attempt unsent.
       if (e.cause is LanternUnauthenticatedException) {
         await _retry(r, owner, 'unauthenticated');
@@ -513,6 +527,9 @@ final class OfflineMutationDelivery {
         'receipt_protocol',
       );
       return false;
+    } on OfflineClaimLostException {
+      fence();
+      return false;
     } on LanternDataException catch (error) {
       if (error.reason == DataFailure.closed) {
         // An expired/stolen item lease discards its late callback. A changed
@@ -521,6 +538,8 @@ final class OfflineMutationDelivery {
         return false;
       }
       rethrow;
+    } finally {
+      claimFence?.release();
     }
   }
 
@@ -552,6 +571,7 @@ final class OfflineMutationDelivery {
     OfflineOutboxRecord r,
     String owner,
     OfflineReceiptResult? result,
+    OfflineClaimFence claimFence,
   ) async {
     // Validate against the admitted family before either live or durable publication.
     final state = result == null
@@ -573,9 +593,7 @@ final class OfflineMutationDelivery {
       );
     }
     fence();
-    if (r.leaseUntil == null || !clock().toUtc().isBefore(r.leaseUntil!)) {
-      throw const LanternDataException(DataFailure.closed);
-    }
+    claimFence.checkCurrent(clock().toUtc());
     fence();
     onHandling(r, item);
     await _transaction((tx) async {

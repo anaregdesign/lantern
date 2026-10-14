@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'dart:convert';
 
 import 'change_store.dart';
+import 'claim_fence.dart';
 import 'codec.dart';
 import 'errors.dart';
 import 'mutation_state.dart';
@@ -101,7 +102,7 @@ final class InMemoryOfflineStore implements OfflineStore {
   ) {
     final result = _tail.then((_) async {
       final state = _state.copy();
-      final transaction = _MemoryTransaction(state, limits);
+      final transaction = _MemoryTransaction(state, limits, () => _state);
       late final T value;
       try {
         value = await action(transaction);
@@ -123,6 +124,7 @@ final class InMemoryOfflineStore implements OfflineStore {
         final partition = state.partition(partitionId);
         partition.version = _checkedIncrement(partition.version);
       }
+      transaction._commitMarker.committed = true;
       _state = state;
       for (final partitionId in transaction._changedPartitions) {
         final partition = _state.partition(partitionId);
@@ -155,12 +157,19 @@ final class InMemoryOfflineStore implements OfflineStore {
   }
 }
 
-final class _MemoryTransaction implements OfflineStoreTransaction {
-  _MemoryTransaction(this._state, this._limits);
+final class _MemoryCommitMarker {
+  bool committed = false;
+}
+
+final class _MemoryTransaction
+    implements OfflineStoreTransaction, OfflineStoreClaimTransaction {
+  _MemoryTransaction(this._state, this._limits, this._committed);
 
   final Set<String> observationInvalidated = {};
   final _MemoryState _state;
   final OfflineStoreLimits _limits;
+  final _MemoryState Function() _committed;
+  final _MemoryCommitMarker _commitMarker = _MemoryCommitMarker();
   final Set<String> _changedPartitions = <String>{};
   final Set<String> _mutatedPartitions = <String>{};
   final Map<String, Map<String, List<OfflineOutboxRecord>>>
@@ -168,6 +177,39 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
   var _sealed = false;
 
   void _seal() => _sealed = true;
+
+  @override
+  OfflineClaimFence captureClaimFence(
+    OfflineOutboxRecord claim, {
+    required String authorityBinding,
+  }) {
+    _ensureOpen();
+    final marker = _commitMarker;
+    final committed = _committed;
+    return OfflineClaimFence(
+      checkCurrent: (observedAt) {
+        final state = committed();
+        // A fence obtained from an aborted callback must never become eligible.
+        if (!marker.committed) {
+          throw const OfflineClaimLostException();
+        }
+        final p = state.partitions[claim.partitionId];
+        if (p == null) throw const OfflineClaimLostException();
+        return checkOfflineClaim(
+          expected: claim,
+          current: p.outbox[claim.recordId],
+          generation: p.generation,
+          authorityBinding: p.authorityBinding,
+          expectedAuthority: authorityBinding,
+          highWater: DateTime.fromMicrosecondsSinceEpoch(
+            p.timeHighWater,
+            isUtc: true,
+          ),
+          observedAt: observedAt,
+        );
+      },
+    );
+  }
 
   void _ensureOpen() {
     if (_sealed) throw const OfflineTransactionClosedException();
@@ -209,7 +251,13 @@ final class _MemoryTransaction implements OfflineStoreTransaction {
     }
     final p = _state.partition(partitionId);
     if (p.authorityBinding == authorityBinding) return;
-    if (p.authorityBinding != null) resetScopedChangeCursor(partitionId, null);
+    if (p.authorityBinding != null ||
+        p.cache.isNotEmpty ||
+        p.unknownResidents.isNotEmpty ||
+        p.scopedCursor != null ||
+        p.changeProgress.isNotEmpty) {
+      resetScopedChangeCursor(partitionId, null);
+    }
     p.authorityBinding = authorityBinding;
     _changedPartitions.add(partitionId);
     observationInvalidated.add(partitionId);
@@ -2259,12 +2307,16 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
       }
       partition.rebuildIndexes();
       state.partitions[partitionId] = partition;
-      if (schema < 8 && partition.changeProgress.isNotEmpty) {
+      if (schema < 9 &&
+          (partition.cache.isNotEmpty ||
+              partition.changeProgress.isNotEmpty ||
+              partition.scopedCursor != null)) {
         for (final record in partition.cache.values) {
           partition.unknownResidents[record.key.canonical] = record.key;
         }
         partition.cache.clear();
         partition.changeProgress.clear();
+        partition.scopedCursor = null;
         partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
         _trimUnknownResidents(state, partitionId, limits);
       }

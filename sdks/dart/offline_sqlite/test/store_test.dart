@@ -72,6 +72,41 @@ void main() {
     },
   );
   test(
+    'actual SQLite claim expiry/reclaim, pending TTL and eligible storage fault counterexamples',
+    () async {
+      await runOfflineMutationBoundaryConformance(
+        createStore: () => open(),
+        durability: AdmissionDurability.durable,
+      );
+    },
+  );
+  test(
+    'SQL5 migration hides unbound cache and preserves receipt evidence across authority/reopen',
+    () async {
+      await runOfflineAuthorityBoundaryConformance(
+        createStore: () => open(),
+        migrateLegacy: (input) async {
+          final oldStore = input as SqliteOfflineStore;
+          final path = oldStore.path;
+          await oldStore.close();
+          final old = await factory.openDatabase(path);
+          await _downgradeCommonSchema(old);
+          await old.update(
+            'store_metadata',
+            {'value': 'lantern-offline-5'},
+            where: 'key=?',
+            whereArgs: ['format'],
+          );
+          await old.setVersion(5);
+          await old.close();
+          return open(path: path);
+        },
+        reopenStore: reopen,
+        durability: AdmissionDurability.durable,
+      );
+    },
+  );
+  test(
     'complete storage-neutral conformance across real SQLite reopen',
     () async {
       await runStoreConformanceSuite(
