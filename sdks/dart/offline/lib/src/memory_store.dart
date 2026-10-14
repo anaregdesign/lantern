@@ -1349,6 +1349,10 @@ final class _MemoryPartition {
       <String, OfflineOutboxRecord>{};
   final Map<String, OfflineOperationRecord> operations =
       <String, OfflineOperationRecord>{};
+  // Derived lifecycle-envelope bytes, bounded by retained operations. The
+  // topology is immutable across progress; mutable diagnostics are still checked
+  // on every capacity calculation. This cache is never snapshot evidence.
+  final Map<String, int> operationAdmissionBytes = <String, int>{};
   final Map<String, String> operationByRecordId = <String, String>{};
   final SplayTreeMap<OfflineOutboxCursor, String> outboxOrder =
       SplayTreeMap<OfflineOutboxCursor, String>(_compareOutboxCursor);
@@ -1437,6 +1441,9 @@ final class _MemoryPartition {
   void putOperation(OfflineOperationRecord operation) {
     _removeOperationRetention(operation.operationId);
     final previous = operations[operation.operationId];
+    if (previous == null || !_sameOperationTopology(previous, operation)) {
+      operationAdmissionBytes.remove(operation.operationId);
+    }
     if (previous != null) {
       for (final item in previous.items) {
         operationByRecordId.remove(item.recordId);
@@ -1451,6 +1458,7 @@ final class _MemoryPartition {
   }
 
   OfflineOperationRecord? removeOperation(String operationId) {
+    operationAdmissionBytes.remove(operationId);
     _removeOperationRetention(operationId);
     operationOrder.remove(operationId);
     final removed = operations.remove(operationId);
@@ -1603,6 +1611,7 @@ final class _MemoryPartition {
     for (final operation in operations.values) {
       result.putOperation(_copyOperationRecord(operation));
     }
+    result.operationAdmissionBytes.addAll(operationAdmissionBytes);
     return result;
   }
 }
@@ -1941,15 +1950,14 @@ void _validateLeaseOwnerCapacity(String owner, OfflineStoreLimits limits) {
 }
 
 int _operationBytes(_MemoryPartition partition, OfflineStoreLimits limits) =>
-    _operationRecordsBytes(partition.operations.values, limits);
-
-int _operationRecordsBytes(
-  Iterable<OfflineOperationRecord> records,
-  OfflineStoreLimits limits,
-) => records.fold(
-  0,
-  (total, record) => total + _operationAdmissionBytesFor(record, limits),
-);
+    partition.operations.values.fold(0, (total, record) {
+      _validateOperationLifecycleCapacity(record, limits);
+      return total +
+          partition.operationAdmissionBytes.putIfAbsent(
+            record.operationId,
+            () => _operationAdmissionBytesFor(record, limits),
+          );
+    });
 
 int _operationRecordBytes(OfflineOperationRecord record) =>
     utf8.encode(OfflineCodec.encodeOperationRecord(record)).length;

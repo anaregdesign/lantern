@@ -1140,6 +1140,117 @@ void main() {
         ),
         throwsA(isA<OfflineCapacityException>()),
       );
+      // Restoration recomputes the reservation with the receiving store's
+      // limits; the warmed admission cache is not snapshot authority.
+      for (final restoredLimits in <OfflineStoreLimits>[
+        limits(exactBytes - 1),
+        OfflineStoreLimits(
+          maxOperationBytes: exactBytes,
+          maxOperationBytesPerPartition: exactBytes,
+          maxDiagnosticCodeBytes: maxDiagnosticBytes + 1,
+        ),
+      ]) {
+        expect(
+          () => InMemoryOfflineStore.fromSnapshot(
+            snapshot,
+            limits: restoredLimits,
+          ),
+          throwsA(isA<OfflineCapacityException>()),
+        );
+      }
+
+      OfflineOperationRecord replacement({
+        String recordId = 'escaped-record',
+        String? diagnosticCode,
+        int generation = 0,
+      }) => OfflineOperationRecord(
+        partitionId: 'p',
+        generation: generation,
+        operationId: operation.operationId,
+        items: <OfflineWriteStatus>[
+          OfflineWriteStatus(
+            recordId: recordId,
+            operationId: operation.operationId,
+            itemIndex: 0,
+            state: OfflineWriteState.confirmed,
+            attemptCount: 1,
+            receiptResult: const OfflineVertexPutReceiptResult(
+              PutOutcome.conditionNotMet,
+            ),
+            diagnosticCode: diagnosticCode ?? diagnostic,
+          ),
+        ],
+        updatedAt: now,
+        terminalAt: now,
+      );
+
+      // Progress with unchanged identity must still check mutable diagnostics.
+      await expectLater(
+        store.transaction<void>(
+          (tx) =>
+              tx.putOperation(replacement(diagnosticCode: '$diagnostic\u0000')),
+        ),
+        throwsA(isA<OfflineCapacityException>()),
+      );
+      expect(await store.exportSnapshot(), snapshot);
+
+      // Removal/reuse must discard the old size. An aborted callback must not
+      // leak a newly calculated, larger size into a queued transaction.
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      final oversized = replacement(recordId: 'escaped-record-larger');
+      final aborted = store.transaction<void>((tx) async {
+        await tx.deleteOperation('p', operation.operationId);
+        entered.complete();
+        await release.future;
+        await tx.putOperation(oversized);
+      });
+      final rejected = expectLater(
+        aborted,
+        throwsA(isA<OfflineCapacityException>()),
+      );
+      await entered.future;
+      final queued = store.transaction<void>(
+        (tx) => tx.putOperation(resultMaximum),
+      );
+      release.complete();
+      await rejected;
+      await queued;
+      expect(
+        OfflineCodec.encodeOperationRecord(
+          (await store.transaction(
+            (tx) => tx.getOperation('p', operation.operationId),
+          ))!,
+        ),
+        OfflineCodec.encodeOperationRecord(resultMaximum),
+      );
+
+      // Catching a failed mutation inside a transaction restores its savepoint;
+      // the original identity can then be admitted at the exact byte boundary.
+      await store.transaction<void>((tx) async {
+        await tx.deleteOperation('p', operation.operationId);
+        await expectLater(
+          Future<void>.sync(() => tx.putOperation(oversized)),
+          throwsA(isA<OfflineCapacityException>()),
+        );
+        expect(await tx.getOperation('p', operation.operationId), isNull);
+        await tx.putOperation(resultMaximum);
+      });
+      await store.transaction<void>((tx) async {
+        await tx.wipePartition('p');
+        await expectLater(
+          Future<void>.sync(
+            () => tx.putOperation(
+              replacement(
+                recordId: oversized.items.single.recordId,
+                generation: 1,
+              ),
+            ),
+          ),
+          throwsA(isA<OfflineCapacityException>()),
+        );
+        await tx.putOperation(replacement(generation: 1));
+      });
     },
   );
 
