@@ -312,6 +312,26 @@ final class _DirectMutationControl implements LanternMutationControl {
     _running.add(future);
   }
 
+  void _ensureDispatchEligible<T>(
+    _DirectOperation<T> operation,
+    int start,
+    int end,
+  ) {
+    owner._ensureOpen();
+    owner._ensureAuthority();
+    final now = _now();
+    if (operation.work.expirations
+        .skip(start)
+        .take(end - start)
+        .any((e) => e != null && !e.isAfter(now))) {
+      throw LanternDataException(
+        DataFailure.expiredBeforeDispatch,
+        reference: operation.id,
+        dispatchCertainty: operation.dispatchCertainty,
+      );
+    }
+  }
+
   Future<void> _deliver<T>(_DirectOperation<T> operation) async {
     final work = operation.work;
     final replies = <MutationReply<T>>[];
@@ -319,33 +339,11 @@ final class _DirectMutationControl implements LanternMutationControl {
       final end = _chunkEnd(start, owner.batchSize, work.length);
       var dispatched = false;
       try {
-        owner._ensureOpen();
-        final now = _now();
-        if (work.expirations
-            .skip(start)
-            .take(end - start)
-            .any((e) => e != null && !e.isAfter(now))) {
-          throw LanternDataException(
-            DataFailure.expiredBeforeDispatch,
-            reference: operation.id,
-            dispatchCertainty: operation.dispatchCertainty,
-          );
-        }
+        _ensureDispatchEligible(operation, start, end);
         final release = await owner._sendPermits.acquire(owner._lifetime);
         late final List<MutationReply<T>> result;
         try {
-          owner._ensureOpen();
-          owner._ensureAuthority();
-          if (work.expirations
-              .skip(start)
-              .take(end - start)
-              .any((e) => e != null && !e.isAfter(_now()))) {
-            throw LanternDataException(
-              DataFailure.expiredBeforeDispatch,
-              reference: operation.id,
-              dispatchCertainty: operation.dispatchCertainty,
-            );
-          }
+          _ensureDispatchEligible(operation, start, end);
           result = await owner._client._attemptIndexed<T>(
             work,
             start,
@@ -356,6 +354,9 @@ final class _DirectMutationControl implements LanternMutationControl {
               cancellation: owner._lifetime,
             ),
             () {
+              // The invoker has acquired the token. Fence the final synchronous
+              // boundary before recording dispatch or entering the raw RPC.
+              _ensureDispatchEligible(operation, start, end);
               dispatched = true;
               operation.markDispatched(start, end);
               owner._observations.invalidateKey(
@@ -363,6 +364,10 @@ final class _DirectMutationControl implements LanternMutationControl {
               );
             },
           );
+          // Authority eligibility is separate from entity TTL. A late authority
+          // failure fences this sent chunk without rewriting Server Put effects.
+          owner._ensureOpen();
+          owner._ensureAuthority();
         } finally {
           release();
         }

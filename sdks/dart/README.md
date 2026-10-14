@@ -96,6 +96,11 @@ Qualified coordination adapters import `lantern_client_adapter.dart` for the
 parent-owned exact no-retry attempt seam. `IndexedMutationIntent.normalizedRequest`
 exposes immutable public inputs with absolute TTLs and fixed Add contribution IDs;
 store codecs need neither private generated classes nor duplicated wire logic.
+The synchronous `beforeDispatch` and `beforePublication` hooks let the qualified
+owner fence lifetime/account/authority after token acquisition and before result
+publication. Direct rechecks bound authority and frozen expiry at that final
+send boundary. A late authority failure retains possible dispatch and earlier
+indexed replies; entity expiry after an eligible send preserves the Server reply.
 `OperationIdPolicy` supplies the same bounded freshness/retention rules to later
 profiles. These seams do not introduce offline storage or receipt preparation.
 

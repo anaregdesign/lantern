@@ -11,14 +11,18 @@ import 'package:lantern_client/src/gen/graph/v1/graph.pb.dart' as graph;
 import 'package:test/test.dart';
 
 final _endpoint = Uri.parse('http://localhost:6380');
-LanternSessionBinding binding({String account = 'test', String? uid}) =>
-    LanternSessionBinding.application(
-      serviceOrigin: _endpoint,
-      securityDomain: 'test-dataset',
-      accountIdentity: account,
-      authorityBinding: 'test-generation',
-      userId: uid,
-    );
+LanternSessionBinding binding({
+  String account = 'test',
+  String? uid,
+  DateTime? expiresAt,
+}) => LanternSessionBinding.application(
+  serviceOrigin: _endpoint,
+  securityDomain: 'test-dataset',
+  accountIdentity: account,
+  authorityBinding: 'test-generation',
+  userId: uid,
+  expiresAt: expiresAt,
+);
 DirectLanternDataClient direct(
   LanternTransport transport, {
   LanternClock? clock,
@@ -26,6 +30,7 @@ DirectLanternDataClient direct(
   int batchSize = 1000,
   int maxOperations = 128,
   int maxWaiters = 128,
+  LanternSessionBinding? sessionBinding,
 }) => DirectLanternDataClient(
   LanternClient.connect(
     _endpoint,
@@ -35,7 +40,7 @@ DirectLanternDataClient direct(
     tokenProvider: token,
     retryPolicy: const RetryPolicy(maxAttempts: 3),
   ),
-  binding: binding(),
+  binding: sessionBinding ?? binding(),
   batchSize: batchSize,
   maxOperations: maxOperations,
   maxWaiters: maxWaiters,
@@ -993,6 +998,135 @@ void main() {
       await sub.cancel();
     },
   );
+  for (final authority in [true, false]) {
+    test(
+      '${authority ? 'authority' : 'Put TTL'} expiry during token acquisition fences dispatch',
+      () async {
+        var now = DateTime.utc(2026);
+        final expiry = now.add(const Duration(seconds: 1));
+        final entered = Completer<void>(), token = Completer<String?>();
+        var calls = 0;
+        final client = direct(
+          FakeTransportBuilder()
+              .unary<graph.PutVerticesRequest, graph.PutVerticesResponse>(
+                LanternService.putVertices,
+                (r, _) {
+                  calls++;
+                  return graph.PutVerticesResponse(
+                    outcomes: [graph.PutOutcome.PUT_OUTCOME_APPLIED_AND_LIVE],
+                  );
+                },
+              )
+              .build(),
+          clock: () => now,
+          sessionBinding: binding(expiresAt: authority ? expiry : null),
+          token: () {
+            entered.complete();
+            return token.future;
+          },
+        );
+        addTearDown(client.close);
+        final outcome = client
+            .putVertex(vertex('a', expiresAt: authority ? null : expiry))
+            .then<Object>((r) => r, onError: (Object error) => error);
+        await entered.future;
+        now = expiry;
+        token.complete(null);
+        final failure = await outcome as MutationBatchException<PutOutcome>;
+        expect(calls, 0);
+        expect(failure.items.single.state, MutationItemState.failed);
+        expect(
+          failure.items.single.dispatchCertainty,
+          MutationDispatchCertainty.neverDispatched,
+        );
+        expect(
+          failure.cause,
+          authority
+              ? isA<LanternUnauthenticatedException>()
+              : isA<LanternDataException>().having(
+                  (e) => e.reason,
+                  'reason',
+                  DataFailure.expiredBeforeDispatch,
+                ),
+        );
+        final status = await client.mutations.getStatus(failure.reference!);
+        expect(status.terminal, isTrue);
+        expect(status.items.single.state, MutationItemState.failed);
+        expect(
+          status.items.single.dispatchCertainty,
+          MutationDispatchCertainty.neverDispatched,
+        );
+      },
+    );
+  }
+  for (final precedingChunk in [false, true]) {
+    test(
+      'late authority expiry fences publication${precedingChunk ? ' preserving earlier indexed handling' : ''}',
+      () async {
+        var now = DateTime.utc(2026);
+        final expiry = now.add(const Duration(seconds: 1));
+        var calls = 0;
+        final client = direct(
+          FakeTransportBuilder()
+              .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
+                LanternService.deleteVertices,
+                (r, _) {
+                  calls++;
+                  if (calls == (precedingChunk ? 2 : 1)) now = expiry;
+                  return graph.DeleteVerticesResponse(existed: [false]);
+                },
+              )
+              .build(),
+          clock: () => now,
+          sessionBinding: binding(expiresAt: expiry),
+          batchSize: 1,
+        );
+        addTearDown(client.close);
+        final ticket = await client.mutations.submit(
+          MutationRequest.deleteVertices([
+            if (precedingChunk) 'prior',
+            'affected',
+            'suffix',
+          ]),
+        );
+        final failure =
+            await client.mutations
+                    .reobserve(ticket.reference)
+                    .then<Object>((r) => r, onError: (Object error) => error)
+                as MutationBatchException<bool>;
+        expect(failure.cause, isA<LanternUnauthenticatedException>());
+        expect(failure.items.map((i) => i.state), [
+          if (precedingChunk) MutationItemState.handled,
+          MutationItemState.unknown,
+          MutationItemState.notAttempted,
+        ]);
+        expect(failure.items.map((i) => i.dispatchCertainty), [
+          if (precedingChunk) MutationDispatchCertainty.mayHaveDispatched,
+          MutationDispatchCertainty.mayHaveDispatched,
+          MutationDispatchCertainty.neverDispatched,
+        ]);
+        if (precedingChunk) {
+          expect(
+            (failure.items.first.reply as MutationKnownEffect<bool>).effect,
+            isFalse,
+          );
+        }
+        final status = await client.mutations.getStatus(
+          ticket.reference.operationId,
+        );
+        expect(status.terminal, isTrue);
+        expect(
+          status.items.map((i) => i.state),
+          failure.items.map((i) => i.state),
+        );
+        await expectLater(
+          client.mutations.reobserve(ticket.reference),
+          throwsA(isA<MutationBatchException<bool>>()),
+        );
+        expect(calls, precedingChunk ? 2 : 1);
+      },
+    );
+  }
   test(
     'expired verified session hides reads and rejects dispatch before token',
     () async {

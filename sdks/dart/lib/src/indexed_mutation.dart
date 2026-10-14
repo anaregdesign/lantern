@@ -285,11 +285,17 @@ extension LanternIndexedMutations on LanternClient {
   );
 
   /// Executes one indexed chunk without retry, TTL rewriting or count reduction.
+  /// [beforeDispatch] runs synchronously after token acquisition, before any
+  /// possible send. [beforePublication] runs after the response, before yielding
+  /// its result. Qualified owners supply lifetime/account/authority/TTL fences;
+  /// they must not await, change frozen intent, retry or perform cache work here.
   Future<MutationBatchReply<T>> attemptIndexedMutation<T>(
     IndexedMutationIntent<T> intent, {
     int start = 0,
     int? count,
     LanternCallOptions? options,
+    void Function()? beforeDispatch,
+    void Function()? beforePublication,
   }) async {
     final end = start + (count ?? intent.length - start);
     if (start < 0 ||
@@ -301,15 +307,18 @@ extension LanternIndexedMutations on LanternClient {
     if (end == start) return MutationBatchReply<T>(const []);
     var dispatched = false;
     try {
-      return MutationBatchReply(
-        await _attemptIndexed(
-          intent._work,
-          start,
-          end,
-          options ?? LanternCallOptions(retry: false),
-          () => dispatched = true,
-        ),
+      final items = await _attemptIndexed(
+        intent._work,
+        start,
+        end,
+        options ?? LanternCallOptions(retry: false),
+        () {
+          beforeDispatch?.call();
+          dispatched = true;
+        },
       );
+      beforePublication?.call();
+      return MutationBatchReply(items);
     } on Exception catch (cause) {
       throw IndexedMutationAttemptException(
         cause: cause,

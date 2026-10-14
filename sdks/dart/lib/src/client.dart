@@ -805,6 +805,9 @@ final class LanternInvoker {
       );
     } on connect.ConnectException catch (error) {
       throw _mapConnectException(error, context);
+    } on LanternDataException {
+      // Parent-owned synchronous dispatch fences are local typed failures.
+      rethrow;
     } on LanternException {
       rethrow;
     } catch (error) {

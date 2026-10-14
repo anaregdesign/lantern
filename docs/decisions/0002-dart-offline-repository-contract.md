@@ -73,6 +73,14 @@ store codecs, and
 executes raw no-retry attempts; it never applies response-time Put TTL rewriting
 or reduces `existed[]` to a count. Existing low-level born-expired behavior is
 separate; new facades reject already-expired Put before admission/RPC.
+Synchronous qualified-owner fences run after asynchronous token acquisition and
+before marking possible dispatch, then after response and before publication.
+Direct rechecks lifetime/bound authority and frozen absolute expiry at the send
+boundary, and lifetime/authority at publication. Late authority loss fences the
+sent chunk as unknown/mayHaveDispatched, preserving earlier indexed handling
+and an unsent suffix. This does not rewrite original Server handling when only
+the entity TTL expires after an eligible send. The later offline runtime supplies
+its own owner/account/authority fences through the same cache-neutral hooks.
 
 Confirmed present/Missing/Expired/Unknown evidence, pending summary and local
 view are separate. Explicit cacheOnly never acquires tokens; Direct has no

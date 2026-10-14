@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:connectrpc/test.dart';
@@ -82,6 +83,56 @@ void main() {
       ]);
     },
   );
+  for (final publication in [false, true]) {
+    test(
+      'qualified owner fence rejects ${publication ? 'late publication with possible dispatch' : 'after token before dispatch'}',
+      () async {
+        final entered = Completer<void>(), token = Completer<String?>();
+        var calls = 0;
+        var eligible = true;
+        final client = LanternClient.connect(
+          Uri.parse('http://localhost:6380'),
+          allowInsecure: true,
+          tokenProvider: () {
+            entered.complete();
+            return token.future;
+          },
+          transport: FakeTransportBuilder()
+              .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
+                LanternService.deleteVertices,
+                (r, _) {
+                  calls++;
+                  eligible = false;
+                  return graph.DeleteVerticesResponse(existed: [false]);
+                },
+              )
+              .build(),
+        );
+        addTearDown(client.close);
+        final intent = client.freezeIndexedMutation(
+          MutationRequest.deleteVertices(['a']),
+        );
+        void fence() {
+          if (!eligible) throw const LanternDataException(DataFailure.closed);
+        }
+
+        final outcome = client
+            .attemptIndexedMutation(
+              intent,
+              beforeDispatch: fence,
+              beforePublication: fence,
+            )
+            .then<Object>((r) => r, onError: (Object error) => error);
+        await entered.future;
+        if (!publication) eligible = false;
+        token.complete(null);
+        final failure = await outcome as IndexedMutationAttemptException;
+        expect(failure.mayHaveDispatched, publication);
+        expect(failure.cause, isA<LanternDataException>());
+        expect(calls, publication ? 1 : 0);
+      },
+    );
+  }
   test('adapter byte ceiling is checked before payload amplification', () {
     final client = LanternClient.connect(
       Uri.parse('http://localhost:6380'),
