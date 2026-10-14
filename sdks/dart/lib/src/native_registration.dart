@@ -47,7 +47,7 @@ extension LanternNativeRegistration on LanternClient {
           ),
     );
     return NativeRegistrationAttempt._(
-      _nativeAttempt(result, endpoint, issuer, clientProfileId),
+      _nativeAttempt(result.attempt, endpoint, issuer, clientProfileId),
       recoveryReview,
     );
   }

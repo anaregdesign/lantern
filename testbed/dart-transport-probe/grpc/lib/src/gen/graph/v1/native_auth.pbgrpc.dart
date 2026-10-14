@@ -71,7 +71,8 @@ class LanternNativeAuthServiceClient extends $grpc.Client {
     return $createUnaryCall(_$applyNativeLogout, request, options: options);
   }
 
-  $grpc.ResponseFuture<$0.BeginNativeLoginResponse> beginNativeRegistration(
+  $grpc.ResponseFuture<$0.BeginNativeRegistrationResponse>
+      beginNativeRegistration(
     $0.BeginNativeRegistrationRequest request, {
     $grpc.CallOptions? options,
   }) {
@@ -134,10 +135,11 @@ class LanternNativeAuthServiceClient extends $grpc.Client {
       ($0.ApplyNativeLogoutRequest value) => value.writeToBuffer(),
       $0.ApplyNativeLogoutResponse.fromBuffer);
   static final _$beginNativeRegistration = $grpc.ClientMethod<
-          $0.BeginNativeRegistrationRequest, $0.BeginNativeLoginResponse>(
+          $0.BeginNativeRegistrationRequest,
+          $0.BeginNativeRegistrationResponse>(
       '/graph.v1.LanternNativeAuthService/BeginNativeRegistration',
       ($0.BeginNativeRegistrationRequest value) => value.writeToBuffer(),
-      $0.BeginNativeLoginResponse.fromBuffer);
+      $0.BeginNativeRegistrationResponse.fromBuffer);
   static final _$prepareNativeRegistration = $grpc.ClientMethod<
           $0.PrepareNativeRegistrationRequest,
           $0.PrepareNativeRegistrationResponse>(
@@ -209,14 +211,14 @@ abstract class LanternNativeAuthServiceBase extends $grpc.Service {
             $0.ApplyNativeLogoutRequest.fromBuffer(value),
         ($0.ApplyNativeLogoutResponse value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.BeginNativeRegistrationRequest,
-            $0.BeginNativeLoginResponse>(
+            $0.BeginNativeRegistrationResponse>(
         'BeginNativeRegistration',
         beginNativeRegistration_Pre,
         false,
         false,
         ($core.List<$core.int> value) =>
             $0.BeginNativeRegistrationRequest.fromBuffer(value),
-        ($0.BeginNativeLoginResponse value) => value.writeToBuffer()));
+        ($0.BeginNativeRegistrationResponse value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.PrepareNativeRegistrationRequest,
             $0.PrepareNativeRegistrationResponse>(
         'PrepareNativeRegistration',
@@ -292,13 +294,13 @@ abstract class LanternNativeAuthServiceBase extends $grpc.Service {
   $async.Future<$0.ApplyNativeLogoutResponse> applyNativeLogout(
       $grpc.ServiceCall call, $0.ApplyNativeLogoutRequest request);
 
-  $async.Future<$0.BeginNativeLoginResponse> beginNativeRegistration_Pre(
+  $async.Future<$0.BeginNativeRegistrationResponse> beginNativeRegistration_Pre(
       $grpc.ServiceCall $call,
       $async.Future<$0.BeginNativeRegistrationRequest> $request) async {
     return beginNativeRegistration($call, await $request);
   }
 
-  $async.Future<$0.BeginNativeLoginResponse> beginNativeRegistration(
+  $async.Future<$0.BeginNativeRegistrationResponse> beginNativeRegistration(
       $grpc.ServiceCall call, $0.BeginNativeRegistrationRequest request);
 
   $async.Future<$0.PrepareNativeRegistrationResponse>

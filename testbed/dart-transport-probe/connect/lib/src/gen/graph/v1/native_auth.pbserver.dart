@@ -31,7 +31,7 @@ abstract class LanternNativeAuthServiceBase extends $pb.GeneratedService {
       $pb.ServerContext ctx, $2.PrepareNativeLogoutRequest request);
   $async.Future<$2.ApplyNativeLogoutResponse> applyNativeLogout(
       $pb.ServerContext ctx, $2.ApplyNativeLogoutRequest request);
-  $async.Future<$2.BeginNativeLoginResponse> beginNativeRegistration(
+  $async.Future<$2.BeginNativeRegistrationResponse> beginNativeRegistration(
       $pb.ServerContext ctx, $2.BeginNativeRegistrationRequest request);
   $async.Future<$2.PrepareNativeRegistrationResponse> prepareNativeRegistration(
       $pb.ServerContext ctx, $2.PrepareNativeRegistrationRequest request);

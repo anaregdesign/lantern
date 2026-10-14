@@ -1455,6 +1455,71 @@ class BeginNativeRegistrationRequest extends $pb.GeneratedMessage {
   NativeRegistrationReview ensureRecoveryReview() => $_ensure(2);
 }
 
+class BeginNativeRegistrationResponse extends $pb.GeneratedMessage {
+  factory BeginNativeRegistrationResponse({
+    BeginNativeLoginResponse? attempt,
+  }) {
+    final result = create();
+    if (attempt != null) result.attempt = attempt;
+    return result;
+  }
+
+  BeginNativeRegistrationResponse._();
+
+  factory BeginNativeRegistrationResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory BeginNativeRegistrationResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'BeginNativeRegistrationResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'graph.v1'),
+      createEmptyInstance: create)
+    ..aOM<BeginNativeLoginResponse>(1, _omitFieldNames ? '' : 'attempt',
+        subBuilder: BeginNativeLoginResponse.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  BeginNativeRegistrationResponse clone() =>
+      BeginNativeRegistrationResponse()..mergeFromMessage(this);
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  BeginNativeRegistrationResponse copyWith(
+          void Function(BeginNativeRegistrationResponse) updates) =>
+      super.copyWith(
+              (message) => updates(message as BeginNativeRegistrationResponse))
+          as BeginNativeRegistrationResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static BeginNativeRegistrationResponse create() =>
+      BeginNativeRegistrationResponse._();
+  @$core.override
+  BeginNativeRegistrationResponse createEmptyInstance() => create();
+  static $pb.PbList<BeginNativeRegistrationResponse> createRepeated() =>
+      $pb.PbList<BeginNativeRegistrationResponse>();
+  @$core.pragma('dart2js:noInline')
+  static BeginNativeRegistrationResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<BeginNativeRegistrationResponse>(
+          create);
+  static BeginNativeRegistrationResponse? _defaultInstance;
+
+  /// Share the provider challenge shape; registration purpose stays Server-owned.
+  @$pb.TagNumber(1)
+  BeginNativeLoginResponse get attempt => $_getN(0);
+  @$pb.TagNumber(1)
+  set attempt(BeginNativeLoginResponse value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasAttempt() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearAttempt() => $_clearField(1);
+  @$pb.TagNumber(1)
+  BeginNativeLoginResponse ensureAttempt() => $_ensure(0);
+}
+
 enum PrepareNativeRegistrationRequest_Provider { google, apple, notSet }
 
 class PrepareNativeRegistrationRequest extends $pb.GeneratedMessage {
@@ -2055,10 +2120,14 @@ class LanternNativeAuthServiceApi {
           $pb.ClientContext? ctx, ApplyNativeLogoutRequest request) =>
       _client.invoke<ApplyNativeLogoutResponse>(ctx, 'LanternNativeAuthService',
           'ApplyNativeLogout', request, ApplyNativeLogoutResponse());
-  $async.Future<BeginNativeLoginResponse> beginNativeRegistration(
+  $async.Future<BeginNativeRegistrationResponse> beginNativeRegistration(
           $pb.ClientContext? ctx, BeginNativeRegistrationRequest request) =>
-      _client.invoke<BeginNativeLoginResponse>(ctx, 'LanternNativeAuthService',
-          'BeginNativeRegistration', request, BeginNativeLoginResponse());
+      _client.invoke<BeginNativeRegistrationResponse>(
+          ctx,
+          'LanternNativeAuthService',
+          'BeginNativeRegistration',
+          request,
+          BeginNativeRegistrationResponse());
   $async.Future<PrepareNativeRegistrationResponse> prepareNativeRegistration(
           $pb.ClientContext? ctx, PrepareNativeRegistrationRequest request) =>
       _client.invoke<PrepareNativeRegistrationResponse>(

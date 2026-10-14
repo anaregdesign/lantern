@@ -39,7 +39,10 @@ func runNativeRegistrationWireGate(t *testing.T, ctx context.Context, f *nativeL
 		if e != nil {
 			t.Fatal("registration begin", e)
 		}
-		return r.Msg
+		if r.Msg.Attempt == nil {
+			t.Fatal("registration begin omitted provider attempt")
+		}
+		return r.Msg.Attempt
 	}
 	googleRequest := func(t *testing.T, start *pb.BeginNativeLoginResponse, subject string, original *pb.NativeRegistrationReview) *connect.Request[pb.PrepareNativeRegistrationRequest] {
 		req := connect.NewRequest(&pb.PrepareNativeRegistrationRequest{AttemptId: start.AttemptId, CompletionSecret: start.CompletionSecret, RecoveryReview: original, Provider: &pb.PrepareNativeRegistrationRequest_Google{Google: &pb.GoogleNativeCredential{IdToken: f.token(t, nativeGoogleIssuer, "fixture.apps.googleusercontent.com", subject, "", nil)}}})

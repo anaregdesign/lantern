@@ -180,6 +180,9 @@ final class NativeWire implements connect.Transport {
             'serviceOrigin': endpoint.origin,
           },
         };
+        if (spec.procedure.endsWith('/BeginNativeRegistration')) {
+          response = {'attempt': response};
+        }
       case 'CompleteNativeLogin':
         expect(authorization, isNull);
         completions++;

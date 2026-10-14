@@ -1049,6 +1049,51 @@ func (x *BeginNativeRegistrationRequest) GetRecoveryReview() *NativeRegistration
 	return nil
 }
 
+type BeginNativeRegistrationResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Share the provider challenge shape; registration purpose stays Server-owned.
+	Attempt       *BeginNativeLoginResponse `protobuf:"bytes,1,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BeginNativeRegistrationResponse) Reset() {
+	*x = BeginNativeRegistrationResponse{}
+	mi := &file_graph_v1_native_auth_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BeginNativeRegistrationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BeginNativeRegistrationResponse) ProtoMessage() {}
+
+func (x *BeginNativeRegistrationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_graph_v1_native_auth_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BeginNativeRegistrationResponse.ProtoReflect.Descriptor instead.
+func (*BeginNativeRegistrationResponse) Descriptor() ([]byte, []int) {
+	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *BeginNativeRegistrationResponse) GetAttempt() *BeginNativeLoginResponse {
+	if x != nil {
+		return x.Attempt
+	}
+	return nil
+}
+
 type PrepareNativeRegistrationRequest struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	AttemptId        string                 `protobuf:"bytes,1,opt,name=attempt_id,json=attemptId,proto3" json:"attempt_id,omitempty"`
@@ -1066,7 +1111,7 @@ type PrepareNativeRegistrationRequest struct {
 
 func (x *PrepareNativeRegistrationRequest) Reset() {
 	*x = PrepareNativeRegistrationRequest{}
-	mi := &file_graph_v1_native_auth_proto_msgTypes[16]
+	mi := &file_graph_v1_native_auth_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1078,7 +1123,7 @@ func (x *PrepareNativeRegistrationRequest) String() string {
 func (*PrepareNativeRegistrationRequest) ProtoMessage() {}
 
 func (x *PrepareNativeRegistrationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_native_auth_proto_msgTypes[16]
+	mi := &file_graph_v1_native_auth_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1091,7 +1136,7 @@ func (x *PrepareNativeRegistrationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrepareNativeRegistrationRequest.ProtoReflect.Descriptor instead.
 func (*PrepareNativeRegistrationRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{16}
+	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *PrepareNativeRegistrationRequest) GetAttemptId() string {
@@ -1169,7 +1214,7 @@ type PrepareNativeRegistrationResponse struct {
 
 func (x *PrepareNativeRegistrationResponse) Reset() {
 	*x = PrepareNativeRegistrationResponse{}
-	mi := &file_graph_v1_native_auth_proto_msgTypes[17]
+	mi := &file_graph_v1_native_auth_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1181,7 +1226,7 @@ func (x *PrepareNativeRegistrationResponse) String() string {
 func (*PrepareNativeRegistrationResponse) ProtoMessage() {}
 
 func (x *PrepareNativeRegistrationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_native_auth_proto_msgTypes[17]
+	mi := &file_graph_v1_native_auth_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1194,7 +1239,7 @@ func (x *PrepareNativeRegistrationResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use PrepareNativeRegistrationResponse.ProtoReflect.Descriptor instead.
 func (*PrepareNativeRegistrationResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{17}
+	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *PrepareNativeRegistrationResponse) GetReview() *NativeRegistrationReview {
@@ -1235,7 +1280,7 @@ type ApplyNativeRegistrationRequest struct {
 
 func (x *ApplyNativeRegistrationRequest) Reset() {
 	*x = ApplyNativeRegistrationRequest{}
-	mi := &file_graph_v1_native_auth_proto_msgTypes[18]
+	mi := &file_graph_v1_native_auth_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1247,7 +1292,7 @@ func (x *ApplyNativeRegistrationRequest) String() string {
 func (*ApplyNativeRegistrationRequest) ProtoMessage() {}
 
 func (x *ApplyNativeRegistrationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_native_auth_proto_msgTypes[18]
+	mi := &file_graph_v1_native_auth_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1260,7 +1305,7 @@ func (x *ApplyNativeRegistrationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyNativeRegistrationRequest.ProtoReflect.Descriptor instead.
 func (*ApplyNativeRegistrationRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{18}
+	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ApplyNativeRegistrationRequest) GetReview() *NativeRegistrationReview {
@@ -1291,7 +1336,7 @@ type ApplyNativeRegistrationResponse struct {
 
 func (x *ApplyNativeRegistrationResponse) Reset() {
 	*x = ApplyNativeRegistrationResponse{}
-	mi := &file_graph_v1_native_auth_proto_msgTypes[19]
+	mi := &file_graph_v1_native_auth_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1303,7 +1348,7 @@ func (x *ApplyNativeRegistrationResponse) String() string {
 func (*ApplyNativeRegistrationResponse) ProtoMessage() {}
 
 func (x *ApplyNativeRegistrationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_native_auth_proto_msgTypes[19]
+	mi := &file_graph_v1_native_auth_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1316,7 +1361,7 @@ func (x *ApplyNativeRegistrationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyNativeRegistrationResponse.ProtoReflect.Descriptor instead.
 func (*ApplyNativeRegistrationResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{19}
+	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ApplyNativeRegistrationResponse) GetCurrentResult() *CurrentSecurityChangeResult {
@@ -1357,7 +1402,7 @@ type GetNativeRegistrationStatusRequest struct {
 
 func (x *GetNativeRegistrationStatusRequest) Reset() {
 	*x = GetNativeRegistrationStatusRequest{}
-	mi := &file_graph_v1_native_auth_proto_msgTypes[20]
+	mi := &file_graph_v1_native_auth_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1369,7 +1414,7 @@ func (x *GetNativeRegistrationStatusRequest) String() string {
 func (*GetNativeRegistrationStatusRequest) ProtoMessage() {}
 
 func (x *GetNativeRegistrationStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_native_auth_proto_msgTypes[20]
+	mi := &file_graph_v1_native_auth_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1382,7 +1427,7 @@ func (x *GetNativeRegistrationStatusRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use GetNativeRegistrationStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetNativeRegistrationStatusRequest) Descriptor() ([]byte, []int) {
-	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{20}
+	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *GetNativeRegistrationStatusRequest) GetReview() *NativeRegistrationReview {
@@ -1408,7 +1453,7 @@ type GetNativeRegistrationStatusResponse struct {
 
 func (x *GetNativeRegistrationStatusResponse) Reset() {
 	*x = GetNativeRegistrationStatusResponse{}
-	mi := &file_graph_v1_native_auth_proto_msgTypes[21]
+	mi := &file_graph_v1_native_auth_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1420,7 +1465,7 @@ func (x *GetNativeRegistrationStatusResponse) String() string {
 func (*GetNativeRegistrationStatusResponse) ProtoMessage() {}
 
 func (x *GetNativeRegistrationStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_graph_v1_native_auth_proto_msgTypes[21]
+	mi := &file_graph_v1_native_auth_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1433,7 +1478,7 @@ func (x *GetNativeRegistrationStatusResponse) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use GetNativeRegistrationStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetNativeRegistrationStatusResponse) Descriptor() ([]byte, []int) {
-	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{21}
+	return file_graph_v1_native_auth_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetNativeRegistrationStatusResponse) GetCurrentResult() *CurrentSecurityChangeResult {
@@ -1527,7 +1572,9 @@ const file_graph_v1_native_auth_proto_rawDesc = "" +
 	"\x1eBeginNativeRegistrationRequest\x12\x16\n" +
 	"\x06issuer\x18\x01 \x01(\tR\x06issuer\x12*\n" +
 	"\x11client_profile_id\x18\x02 \x01(\tR\x0fclientProfileId\x12K\n" +
-	"\x0frecovery_review\x18\x03 \x01(\v2\".graph.v1.NativeRegistrationReviewR\x0erecoveryReview\"\xbc\x02\n" +
+	"\x0frecovery_review\x18\x03 \x01(\v2\".graph.v1.NativeRegistrationReviewR\x0erecoveryReview\"_\n" +
+	"\x1fBeginNativeRegistrationResponse\x12<\n" +
+	"\aattempt\x18\x01 \x01(\v2\".graph.v1.BeginNativeLoginResponseR\aattempt\"\xbc\x02\n" +
 	" PrepareNativeRegistrationRequest\x12\x1d\n" +
 	"\n" +
 	"attempt_id\x18\x01 \x01(\tR\tattemptId\x12+\n" +
@@ -1557,14 +1604,14 @@ const file_graph_v1_native_auth_proto_rawDesc = "" +
 	"\x06review\x18\x01 \x01(\v2\".graph.v1.NativeRegistrationReviewR\x06review\x12\x14\n" +
 	"\x05proof\x18\x02 \x01(\tR\x05proof\"s\n" +
 	"#GetNativeRegistrationStatusResponse\x12L\n" +
-	"\x0ecurrent_result\x18\x01 \x01(\v2%.graph.v1.CurrentSecurityChangeResultR\rcurrentResult2\xc1\a\n" +
+	"\x0ecurrent_result\x18\x01 \x01(\v2%.graph.v1.CurrentSecurityChangeResultR\rcurrentResult2\xc8\a\n" +
 	"\x18LanternNativeAuthService\x12Y\n" +
 	"\x10BeginNativeLogin\x12!.graph.v1.BeginNativeLoginRequest\x1a\".graph.v1.BeginNativeLoginResponse\x12b\n" +
 	"\x13CompleteNativeLogin\x12$.graph.v1.CompleteNativeLoginRequest\x1a%.graph.v1.CompleteNativeLoginResponse\x12Y\n" +
 	"\x10GetNativeSession\x12!.graph.v1.GetNativeSessionRequest\x1a\".graph.v1.GetNativeSessionResponse\x12b\n" +
 	"\x13PrepareNativeLogout\x12$.graph.v1.PrepareNativeLogoutRequest\x1a%.graph.v1.PrepareNativeLogoutResponse\x12\\\n" +
-	"\x11ApplyNativeLogout\x12\".graph.v1.ApplyNativeLogoutRequest\x1a#.graph.v1.ApplyNativeLogoutResponse\x12g\n" +
-	"\x17BeginNativeRegistration\x12(.graph.v1.BeginNativeRegistrationRequest\x1a\".graph.v1.BeginNativeLoginResponse\x12t\n" +
+	"\x11ApplyNativeLogout\x12\".graph.v1.ApplyNativeLogoutRequest\x1a#.graph.v1.ApplyNativeLogoutResponse\x12n\n" +
+	"\x17BeginNativeRegistration\x12(.graph.v1.BeginNativeRegistrationRequest\x1a).graph.v1.BeginNativeRegistrationResponse\x12t\n" +
 	"\x19PrepareNativeRegistration\x12*.graph.v1.PrepareNativeRegistrationRequest\x1a+.graph.v1.PrepareNativeRegistrationResponse\x12n\n" +
 	"\x17ApplyNativeRegistration\x12(.graph.v1.ApplyNativeRegistrationRequest\x1a).graph.v1.ApplyNativeRegistrationResponse\x12z\n" +
 	"\x1bGetNativeRegistrationStatus\x12,.graph.v1.GetNativeRegistrationStatusRequest\x1a-.graph.v1.GetNativeRegistrationStatusResponseB\x95\x01\n" +
@@ -1582,7 +1629,7 @@ func file_graph_v1_native_auth_proto_rawDescGZIP() []byte {
 	return file_graph_v1_native_auth_proto_rawDescData
 }
 
-var file_graph_v1_native_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_graph_v1_native_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_graph_v1_native_auth_proto_goTypes = []any{
 	(*BeginNativeLoginRequest)(nil),             // 0: graph.v1.BeginNativeLoginRequest
 	(*NativePluginConfiguration)(nil),           // 1: graph.v1.NativePluginConfiguration
@@ -1600,78 +1647,80 @@ var file_graph_v1_native_auth_proto_goTypes = []any{
 	(*ApplyNativeLogoutResponse)(nil),           // 13: graph.v1.ApplyNativeLogoutResponse
 	(*NativeRegistrationReview)(nil),            // 14: graph.v1.NativeRegistrationReview
 	(*BeginNativeRegistrationRequest)(nil),      // 15: graph.v1.BeginNativeRegistrationRequest
-	(*PrepareNativeRegistrationRequest)(nil),    // 16: graph.v1.PrepareNativeRegistrationRequest
-	(*PrepareNativeRegistrationResponse)(nil),   // 17: graph.v1.PrepareNativeRegistrationResponse
-	(*ApplyNativeRegistrationRequest)(nil),      // 18: graph.v1.ApplyNativeRegistrationRequest
-	(*ApplyNativeRegistrationResponse)(nil),     // 19: graph.v1.ApplyNativeRegistrationResponse
-	(*GetNativeRegistrationStatusRequest)(nil),  // 20: graph.v1.GetNativeRegistrationStatusRequest
-	(*GetNativeRegistrationStatusResponse)(nil), // 21: graph.v1.GetNativeRegistrationStatusResponse
-	(NativeClientKind)(0),                       // 22: graph.v1.NativeClientKind
-	(*timestamppb.Timestamp)(nil),               // 23: google.protobuf.Timestamp
-	(*SecurityIdentity)(nil),                    // 24: graph.v1.SecurityIdentity
-	(*SecurityVersion)(nil),                     // 25: graph.v1.SecurityVersion
-	(*SecurityRole)(nil),                        // 26: graph.v1.SecurityRole
-	(*CurrentSessionRevocationReview)(nil),      // 27: graph.v1.CurrentSessionRevocationReview
-	(*CurrentSecurityChangeResult)(nil),         // 28: graph.v1.CurrentSecurityChangeResult
-	(*CurrentAuthorityProfile)(nil),             // 29: graph.v1.CurrentAuthorityProfile
-	(*CurrentSemanticCut)(nil),                  // 30: graph.v1.CurrentSemanticCut
-	(*CurrentSecurityChangeID)(nil),             // 31: graph.v1.CurrentSecurityChangeID
+	(*BeginNativeRegistrationResponse)(nil),     // 16: graph.v1.BeginNativeRegistrationResponse
+	(*PrepareNativeRegistrationRequest)(nil),    // 17: graph.v1.PrepareNativeRegistrationRequest
+	(*PrepareNativeRegistrationResponse)(nil),   // 18: graph.v1.PrepareNativeRegistrationResponse
+	(*ApplyNativeRegistrationRequest)(nil),      // 19: graph.v1.ApplyNativeRegistrationRequest
+	(*ApplyNativeRegistrationResponse)(nil),     // 20: graph.v1.ApplyNativeRegistrationResponse
+	(*GetNativeRegistrationStatusRequest)(nil),  // 21: graph.v1.GetNativeRegistrationStatusRequest
+	(*GetNativeRegistrationStatusResponse)(nil), // 22: graph.v1.GetNativeRegistrationStatusResponse
+	(NativeClientKind)(0),                       // 23: graph.v1.NativeClientKind
+	(*timestamppb.Timestamp)(nil),               // 24: google.protobuf.Timestamp
+	(*SecurityIdentity)(nil),                    // 25: graph.v1.SecurityIdentity
+	(*SecurityVersion)(nil),                     // 26: graph.v1.SecurityVersion
+	(*SecurityRole)(nil),                        // 27: graph.v1.SecurityRole
+	(*CurrentSessionRevocationReview)(nil),      // 28: graph.v1.CurrentSessionRevocationReview
+	(*CurrentSecurityChangeResult)(nil),         // 29: graph.v1.CurrentSecurityChangeResult
+	(*CurrentAuthorityProfile)(nil),             // 30: graph.v1.CurrentAuthorityProfile
+	(*CurrentSemanticCut)(nil),                  // 31: graph.v1.CurrentSemanticCut
+	(*CurrentSecurityChangeID)(nil),             // 32: graph.v1.CurrentSecurityChangeID
 }
 var file_graph_v1_native_auth_proto_depIdxs = []int32{
-	22, // 0: graph.v1.NativePluginConfiguration.kind:type_name -> graph.v1.NativeClientKind
-	23, // 1: graph.v1.BeginNativeLoginResponse.expires_at:type_name -> google.protobuf.Timestamp
+	23, // 0: graph.v1.NativePluginConfiguration.kind:type_name -> graph.v1.NativeClientKind
+	24, // 1: graph.v1.BeginNativeLoginResponse.expires_at:type_name -> google.protobuf.Timestamp
 	1,  // 2: graph.v1.BeginNativeLoginResponse.configuration:type_name -> graph.v1.NativePluginConfiguration
 	3,  // 3: graph.v1.CompleteNativeLoginRequest.google:type_name -> graph.v1.GoogleNativeCredential
 	4,  // 4: graph.v1.CompleteNativeLoginRequest.apple:type_name -> graph.v1.AppleNativeCredential
-	23, // 5: graph.v1.NativeSession.created_at:type_name -> google.protobuf.Timestamp
-	23, // 6: graph.v1.NativeSession.expires_at:type_name -> google.protobuf.Timestamp
-	23, // 7: graph.v1.NativeSession.auth_time:type_name -> google.protobuf.Timestamp
-	24, // 8: graph.v1.NativeSession.identity:type_name -> graph.v1.SecurityIdentity
-	25, // 9: graph.v1.NativeSession.version:type_name -> graph.v1.SecurityVersion
+	24, // 5: graph.v1.NativeSession.created_at:type_name -> google.protobuf.Timestamp
+	24, // 6: graph.v1.NativeSession.expires_at:type_name -> google.protobuf.Timestamp
+	24, // 7: graph.v1.NativeSession.auth_time:type_name -> google.protobuf.Timestamp
+	25, // 8: graph.v1.NativeSession.identity:type_name -> graph.v1.SecurityIdentity
+	26, // 9: graph.v1.NativeSession.version:type_name -> graph.v1.SecurityVersion
 	6,  // 10: graph.v1.CompleteNativeLoginResponse.session:type_name -> graph.v1.NativeSession
 	6,  // 11: graph.v1.GetNativeSessionResponse.session:type_name -> graph.v1.NativeSession
-	26, // 12: graph.v1.GetNativeSessionResponse.roles:type_name -> graph.v1.SecurityRole
-	27, // 13: graph.v1.PrepareNativeLogoutResponse.review:type_name -> graph.v1.CurrentSessionRevocationReview
-	27, // 14: graph.v1.ApplyNativeLogoutRequest.review:type_name -> graph.v1.CurrentSessionRevocationReview
-	28, // 15: graph.v1.ApplyNativeLogoutResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	29, // 16: graph.v1.NativeRegistrationReview.profile:type_name -> graph.v1.CurrentAuthorityProfile
-	30, // 17: graph.v1.NativeRegistrationReview.expected_cut:type_name -> graph.v1.CurrentSemanticCut
-	31, // 18: graph.v1.NativeRegistrationReview.change_id:type_name -> graph.v1.CurrentSecurityChangeID
-	24, // 19: graph.v1.NativeRegistrationReview.actor:type_name -> graph.v1.SecurityIdentity
+	27, // 12: graph.v1.GetNativeSessionResponse.roles:type_name -> graph.v1.SecurityRole
+	28, // 13: graph.v1.PrepareNativeLogoutResponse.review:type_name -> graph.v1.CurrentSessionRevocationReview
+	28, // 14: graph.v1.ApplyNativeLogoutRequest.review:type_name -> graph.v1.CurrentSessionRevocationReview
+	29, // 15: graph.v1.ApplyNativeLogoutResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	30, // 16: graph.v1.NativeRegistrationReview.profile:type_name -> graph.v1.CurrentAuthorityProfile
+	31, // 17: graph.v1.NativeRegistrationReview.expected_cut:type_name -> graph.v1.CurrentSemanticCut
+	32, // 18: graph.v1.NativeRegistrationReview.change_id:type_name -> graph.v1.CurrentSecurityChangeID
+	25, // 19: graph.v1.NativeRegistrationReview.actor:type_name -> graph.v1.SecurityIdentity
 	14, // 20: graph.v1.BeginNativeRegistrationRequest.recovery_review:type_name -> graph.v1.NativeRegistrationReview
-	3,  // 21: graph.v1.PrepareNativeRegistrationRequest.google:type_name -> graph.v1.GoogleNativeCredential
-	4,  // 22: graph.v1.PrepareNativeRegistrationRequest.apple:type_name -> graph.v1.AppleNativeCredential
-	14, // 23: graph.v1.PrepareNativeRegistrationRequest.recovery_review:type_name -> graph.v1.NativeRegistrationReview
-	14, // 24: graph.v1.PrepareNativeRegistrationResponse.review:type_name -> graph.v1.NativeRegistrationReview
-	23, // 25: graph.v1.PrepareNativeRegistrationResponse.expires_at:type_name -> google.protobuf.Timestamp
-	14, // 26: graph.v1.ApplyNativeRegistrationRequest.review:type_name -> graph.v1.NativeRegistrationReview
-	28, // 27: graph.v1.ApplyNativeRegistrationResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	6,  // 28: graph.v1.ApplyNativeRegistrationResponse.session:type_name -> graph.v1.NativeSession
-	14, // 29: graph.v1.GetNativeRegistrationStatusRequest.review:type_name -> graph.v1.NativeRegistrationReview
-	28, // 30: graph.v1.GetNativeRegistrationStatusResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
-	0,  // 31: graph.v1.LanternNativeAuthService.BeginNativeLogin:input_type -> graph.v1.BeginNativeLoginRequest
-	5,  // 32: graph.v1.LanternNativeAuthService.CompleteNativeLogin:input_type -> graph.v1.CompleteNativeLoginRequest
-	8,  // 33: graph.v1.LanternNativeAuthService.GetNativeSession:input_type -> graph.v1.GetNativeSessionRequest
-	10, // 34: graph.v1.LanternNativeAuthService.PrepareNativeLogout:input_type -> graph.v1.PrepareNativeLogoutRequest
-	12, // 35: graph.v1.LanternNativeAuthService.ApplyNativeLogout:input_type -> graph.v1.ApplyNativeLogoutRequest
-	15, // 36: graph.v1.LanternNativeAuthService.BeginNativeRegistration:input_type -> graph.v1.BeginNativeRegistrationRequest
-	16, // 37: graph.v1.LanternNativeAuthService.PrepareNativeRegistration:input_type -> graph.v1.PrepareNativeRegistrationRequest
-	18, // 38: graph.v1.LanternNativeAuthService.ApplyNativeRegistration:input_type -> graph.v1.ApplyNativeRegistrationRequest
-	20, // 39: graph.v1.LanternNativeAuthService.GetNativeRegistrationStatus:input_type -> graph.v1.GetNativeRegistrationStatusRequest
-	2,  // 40: graph.v1.LanternNativeAuthService.BeginNativeLogin:output_type -> graph.v1.BeginNativeLoginResponse
-	7,  // 41: graph.v1.LanternNativeAuthService.CompleteNativeLogin:output_type -> graph.v1.CompleteNativeLoginResponse
-	9,  // 42: graph.v1.LanternNativeAuthService.GetNativeSession:output_type -> graph.v1.GetNativeSessionResponse
-	11, // 43: graph.v1.LanternNativeAuthService.PrepareNativeLogout:output_type -> graph.v1.PrepareNativeLogoutResponse
-	13, // 44: graph.v1.LanternNativeAuthService.ApplyNativeLogout:output_type -> graph.v1.ApplyNativeLogoutResponse
-	2,  // 45: graph.v1.LanternNativeAuthService.BeginNativeRegistration:output_type -> graph.v1.BeginNativeLoginResponse
-	17, // 46: graph.v1.LanternNativeAuthService.PrepareNativeRegistration:output_type -> graph.v1.PrepareNativeRegistrationResponse
-	19, // 47: graph.v1.LanternNativeAuthService.ApplyNativeRegistration:output_type -> graph.v1.ApplyNativeRegistrationResponse
-	21, // 48: graph.v1.LanternNativeAuthService.GetNativeRegistrationStatus:output_type -> graph.v1.GetNativeRegistrationStatusResponse
-	40, // [40:49] is the sub-list for method output_type
-	31, // [31:40] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	2,  // 21: graph.v1.BeginNativeRegistrationResponse.attempt:type_name -> graph.v1.BeginNativeLoginResponse
+	3,  // 22: graph.v1.PrepareNativeRegistrationRequest.google:type_name -> graph.v1.GoogleNativeCredential
+	4,  // 23: graph.v1.PrepareNativeRegistrationRequest.apple:type_name -> graph.v1.AppleNativeCredential
+	14, // 24: graph.v1.PrepareNativeRegistrationRequest.recovery_review:type_name -> graph.v1.NativeRegistrationReview
+	14, // 25: graph.v1.PrepareNativeRegistrationResponse.review:type_name -> graph.v1.NativeRegistrationReview
+	24, // 26: graph.v1.PrepareNativeRegistrationResponse.expires_at:type_name -> google.protobuf.Timestamp
+	14, // 27: graph.v1.ApplyNativeRegistrationRequest.review:type_name -> graph.v1.NativeRegistrationReview
+	29, // 28: graph.v1.ApplyNativeRegistrationResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	6,  // 29: graph.v1.ApplyNativeRegistrationResponse.session:type_name -> graph.v1.NativeSession
+	14, // 30: graph.v1.GetNativeRegistrationStatusRequest.review:type_name -> graph.v1.NativeRegistrationReview
+	29, // 31: graph.v1.GetNativeRegistrationStatusResponse.current_result:type_name -> graph.v1.CurrentSecurityChangeResult
+	0,  // 32: graph.v1.LanternNativeAuthService.BeginNativeLogin:input_type -> graph.v1.BeginNativeLoginRequest
+	5,  // 33: graph.v1.LanternNativeAuthService.CompleteNativeLogin:input_type -> graph.v1.CompleteNativeLoginRequest
+	8,  // 34: graph.v1.LanternNativeAuthService.GetNativeSession:input_type -> graph.v1.GetNativeSessionRequest
+	10, // 35: graph.v1.LanternNativeAuthService.PrepareNativeLogout:input_type -> graph.v1.PrepareNativeLogoutRequest
+	12, // 36: graph.v1.LanternNativeAuthService.ApplyNativeLogout:input_type -> graph.v1.ApplyNativeLogoutRequest
+	15, // 37: graph.v1.LanternNativeAuthService.BeginNativeRegistration:input_type -> graph.v1.BeginNativeRegistrationRequest
+	17, // 38: graph.v1.LanternNativeAuthService.PrepareNativeRegistration:input_type -> graph.v1.PrepareNativeRegistrationRequest
+	19, // 39: graph.v1.LanternNativeAuthService.ApplyNativeRegistration:input_type -> graph.v1.ApplyNativeRegistrationRequest
+	21, // 40: graph.v1.LanternNativeAuthService.GetNativeRegistrationStatus:input_type -> graph.v1.GetNativeRegistrationStatusRequest
+	2,  // 41: graph.v1.LanternNativeAuthService.BeginNativeLogin:output_type -> graph.v1.BeginNativeLoginResponse
+	7,  // 42: graph.v1.LanternNativeAuthService.CompleteNativeLogin:output_type -> graph.v1.CompleteNativeLoginResponse
+	9,  // 43: graph.v1.LanternNativeAuthService.GetNativeSession:output_type -> graph.v1.GetNativeSessionResponse
+	11, // 44: graph.v1.LanternNativeAuthService.PrepareNativeLogout:output_type -> graph.v1.PrepareNativeLogoutResponse
+	13, // 45: graph.v1.LanternNativeAuthService.ApplyNativeLogout:output_type -> graph.v1.ApplyNativeLogoutResponse
+	16, // 46: graph.v1.LanternNativeAuthService.BeginNativeRegistration:output_type -> graph.v1.BeginNativeRegistrationResponse
+	18, // 47: graph.v1.LanternNativeAuthService.PrepareNativeRegistration:output_type -> graph.v1.PrepareNativeRegistrationResponse
+	20, // 48: graph.v1.LanternNativeAuthService.ApplyNativeRegistration:output_type -> graph.v1.ApplyNativeRegistrationResponse
+	22, // 49: graph.v1.LanternNativeAuthService.GetNativeRegistrationStatus:output_type -> graph.v1.GetNativeRegistrationStatusResponse
+	41, // [41:50] is the sub-list for method output_type
+	32, // [32:41] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_graph_v1_native_auth_proto_init() }
@@ -1685,7 +1734,7 @@ func file_graph_v1_native_auth_proto_init() {
 		(*CompleteNativeLoginRequest_Apple)(nil),
 	}
 	file_graph_v1_native_auth_proto_msgTypes[6].OneofWrappers = []any{}
-	file_graph_v1_native_auth_proto_msgTypes[16].OneofWrappers = []any{
+	file_graph_v1_native_auth_proto_msgTypes[17].OneofWrappers = []any{
 		(*PrepareNativeRegistrationRequest_Google)(nil),
 		(*PrepareNativeRegistrationRequest_Apple)(nil),
 	}
@@ -1695,7 +1744,7 @@ func file_graph_v1_native_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_graph_v1_native_auth_proto_rawDesc), len(file_graph_v1_native_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   22,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

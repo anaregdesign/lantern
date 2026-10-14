@@ -14,7 +14,7 @@ service LanternNativeAuthService {
   rpc GetNativeSession(GetNativeSessionRequest) returns (GetNativeSessionResponse);
   rpc PrepareNativeLogout(PrepareNativeLogoutRequest) returns (PrepareNativeLogoutResponse);
   rpc ApplyNativeLogout(ApplyNativeLogoutRequest) returns (ApplyNativeLogoutResponse);
-  rpc BeginNativeRegistration(BeginNativeRegistrationRequest) returns (BeginNativeLoginResponse);
+  rpc BeginNativeRegistration(BeginNativeRegistrationRequest) returns (BeginNativeRegistrationResponse);
   rpc PrepareNativeRegistration(PrepareNativeRegistrationRequest) returns (PrepareNativeRegistrationResponse);
   rpc ApplyNativeRegistration(ApplyNativeRegistrationRequest) returns (ApplyNativeRegistrationResponse);
   rpc GetNativeRegistrationStatus(GetNativeRegistrationStatusRequest) returns (GetNativeRegistrationStatusResponse);
@@ -116,6 +116,10 @@ message BeginNativeRegistrationRequest {
   string client_profile_id = 2;
   // Presence selects recovery-only authentication for this original review.
   NativeRegistrationReview recovery_review = 3;
+}
+message BeginNativeRegistrationResponse {
+  // Share the provider challenge shape; registration purpose stays Server-owned.
+  BeginNativeLoginResponse attempt = 1;
 }
 message PrepareNativeRegistrationRequest {
   string attempt_id = 1;

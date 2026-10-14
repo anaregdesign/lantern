@@ -96,7 +96,7 @@ extension type LanternNativeAuthServiceClient (connect.Transport _transport) {
     );
   }
 
-  Future<graphv1native_auth.BeginNativeLoginResponse> beginNativeRegistration(
+  Future<graphv1native_auth.BeginNativeRegistrationResponse> beginNativeRegistration(
     graphv1native_auth.BeginNativeRegistrationRequest input, {
     connect.Headers? headers,
     connect.AbortSignal? signal,

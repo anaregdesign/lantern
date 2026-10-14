@@ -494,6 +494,27 @@ final $typed_data.Uint8List beginNativeRegistrationRequestDescriptor =
         'eV9yZXZpZXcYAyABKAsyIi5ncmFwaC52MS5OYXRpdmVSZWdpc3RyYXRpb25SZXZpZXdSDnJlY2'
         '92ZXJ5UmV2aWV3');
 
+@$core.Deprecated('Use beginNativeRegistrationResponseDescriptor instead')
+const BeginNativeRegistrationResponse$json = {
+  '1': 'BeginNativeRegistrationResponse',
+  '2': [
+    {
+      '1': 'attempt',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.BeginNativeLoginResponse',
+      '10': 'attempt'
+    },
+  ],
+};
+
+/// Descriptor for `BeginNativeRegistrationResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List beginNativeRegistrationResponseDescriptor =
+    $convert.base64Decode(
+        'Ch9CZWdpbk5hdGl2ZVJlZ2lzdHJhdGlvblJlc3BvbnNlEjwKB2F0dGVtcHQYASABKAsyIi5ncm'
+        'FwaC52MS5CZWdpbk5hdGl2ZUxvZ2luUmVzcG9uc2VSB2F0dGVtcHQ=');
+
 @$core.Deprecated('Use prepareNativeRegistrationRequestDescriptor instead')
 const PrepareNativeRegistrationRequest$json = {
   '1': 'PrepareNativeRegistrationRequest',

@@ -496,6 +496,27 @@ final $typed_data.Uint8List beginNativeRegistrationRequestDescriptor =
         'eV9yZXZpZXcYAyABKAsyIi5ncmFwaC52MS5OYXRpdmVSZWdpc3RyYXRpb25SZXZpZXdSDnJlY2'
         '92ZXJ5UmV2aWV3');
 
+@$core.Deprecated('Use beginNativeRegistrationResponseDescriptor instead')
+const BeginNativeRegistrationResponse$json = {
+  '1': 'BeginNativeRegistrationResponse',
+  '2': [
+    {
+      '1': 'attempt',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.graph.v1.BeginNativeLoginResponse',
+      '10': 'attempt'
+    },
+  ],
+};
+
+/// Descriptor for `BeginNativeRegistrationResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List beginNativeRegistrationResponseDescriptor =
+    $convert.base64Decode(
+        'Ch9CZWdpbk5hdGl2ZVJlZ2lzdHJhdGlvblJlc3BvbnNlEjwKB2F0dGVtcHQYASABKAsyIi5ncm'
+        'FwaC52MS5CZWdpbk5hdGl2ZUxvZ2luUmVzcG9uc2VSB2F0dGVtcHQ=');
+
 @$core.Deprecated('Use prepareNativeRegistrationRequestDescriptor instead')
 const PrepareNativeRegistrationRequest$json = {
   '1': 'PrepareNativeRegistrationRequest',
@@ -715,7 +736,7 @@ const $core.Map<$core.String, $core.dynamic> LanternNativeAuthServiceBase$json =
     {
       '1': 'BeginNativeRegistration',
       '2': '.graph.v1.BeginNativeRegistrationRequest',
-      '3': '.graph.v1.BeginNativeLoginResponse'
+      '3': '.graph.v1.BeginNativeRegistrationResponse'
     },
     {
       '1': 'PrepareNativeRegistration',
@@ -772,6 +793,8 @@ const $core.Map<$core.String, $core.Map<$core.String, $core.dynamic>>
   '.graph.v1.BeginNativeRegistrationRequest':
       BeginNativeRegistrationRequest$json,
   '.graph.v1.NativeRegistrationReview': NativeRegistrationReview$json,
+  '.graph.v1.BeginNativeRegistrationResponse':
+      BeginNativeRegistrationResponse$json,
   '.graph.v1.PrepareNativeRegistrationRequest':
       PrepareNativeRegistrationRequest$json,
   '.graph.v1.PrepareNativeRegistrationResponse':
@@ -797,12 +820,12 @@ final $typed_data.Uint8List lanternNativeAuthServiceDescriptor = $convert.base64
     'LmdyYXBoLnYxLlByZXBhcmVOYXRpdmVMb2dvdXRSZXF1ZXN0GiUuZ3JhcGgudjEuUHJlcGFyZU'
     '5hdGl2ZUxvZ291dFJlc3BvbnNlElwKEUFwcGx5TmF0aXZlTG9nb3V0EiIuZ3JhcGgudjEuQXBw'
     'bHlOYXRpdmVMb2dvdXRSZXF1ZXN0GiMuZ3JhcGgudjEuQXBwbHlOYXRpdmVMb2dvdXRSZXNwb2'
-    '5zZRJnChdCZWdpbk5hdGl2ZVJlZ2lzdHJhdGlvbhIoLmdyYXBoLnYxLkJlZ2luTmF0aXZlUmVn'
-    'aXN0cmF0aW9uUmVxdWVzdBoiLmdyYXBoLnYxLkJlZ2luTmF0aXZlTG9naW5SZXNwb25zZRJ0Ch'
-    'lQcmVwYXJlTmF0aXZlUmVnaXN0cmF0aW9uEiouZ3JhcGgudjEuUHJlcGFyZU5hdGl2ZVJlZ2lz'
-    'dHJhdGlvblJlcXVlc3QaKy5ncmFwaC52MS5QcmVwYXJlTmF0aXZlUmVnaXN0cmF0aW9uUmVzcG'
-    '9uc2USbgoXQXBwbHlOYXRpdmVSZWdpc3RyYXRpb24SKC5ncmFwaC52MS5BcHBseU5hdGl2ZVJl'
-    'Z2lzdHJhdGlvblJlcXVlc3QaKS5ncmFwaC52MS5BcHBseU5hdGl2ZVJlZ2lzdHJhdGlvblJlc3'
-    'BvbnNlEnoKG0dldE5hdGl2ZVJlZ2lzdHJhdGlvblN0YXR1cxIsLmdyYXBoLnYxLkdldE5hdGl2'
-    'ZVJlZ2lzdHJhdGlvblN0YXR1c1JlcXVlc3QaLS5ncmFwaC52MS5HZXROYXRpdmVSZWdpc3RyYX'
-    'Rpb25TdGF0dXNSZXNwb25zZQ==');
+    '5zZRJuChdCZWdpbk5hdGl2ZVJlZ2lzdHJhdGlvbhIoLmdyYXBoLnYxLkJlZ2luTmF0aXZlUmVn'
+    'aXN0cmF0aW9uUmVxdWVzdBopLmdyYXBoLnYxLkJlZ2luTmF0aXZlUmVnaXN0cmF0aW9uUmVzcG'
+    '9uc2USdAoZUHJlcGFyZU5hdGl2ZVJlZ2lzdHJhdGlvbhIqLmdyYXBoLnYxLlByZXBhcmVOYXRp'
+    'dmVSZWdpc3RyYXRpb25SZXF1ZXN0GisuZ3JhcGgudjEuUHJlcGFyZU5hdGl2ZVJlZ2lzdHJhdG'
+    'lvblJlc3BvbnNlEm4KF0FwcGx5TmF0aXZlUmVnaXN0cmF0aW9uEiguZ3JhcGgudjEuQXBwbHlO'
+    'YXRpdmVSZWdpc3RyYXRpb25SZXF1ZXN0GikuZ3JhcGgudjEuQXBwbHlOYXRpdmVSZWdpc3RyYX'
+    'Rpb25SZXNwb25zZRJ6ChtHZXROYXRpdmVSZWdpc3RyYXRpb25TdGF0dXMSLC5ncmFwaC52MS5H'
+    'ZXROYXRpdmVSZWdpc3RyYXRpb25TdGF0dXNSZXF1ZXN0Gi0uZ3JhcGgudjEuR2V0TmF0aXZlUm'
+    'VnaXN0cmF0aW9uU3RhdHVzUmVzcG9uc2U=');

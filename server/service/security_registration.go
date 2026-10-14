@@ -23,7 +23,7 @@ func (r *AuthenticationAdapter) registrationRecovery(review *pb.NativeRegistrati
 	return &decoded, nil
 }
 
-func (r *AuthenticationAdapter) BeginNativeRegistration(ctx context.Context, req *connect.Request[pb.BeginNativeRegistrationRequest]) (*connect.Response[pb.BeginNativeLoginResponse], error) {
+func (r *AuthenticationAdapter) BeginNativeRegistration(ctx context.Context, req *connect.Request[pb.BeginNativeRegistrationRequest]) (*connect.Response[pb.BeginNativeRegistrationResponse], error) {
 	if err := r.nativeRequest(req.Msg, req.Header(), true); err != nil {
 		return nil, err
 	}
@@ -35,7 +35,7 @@ func (r *AuthenticationAdapter) BeginNativeRegistration(ctx context.Context, req
 	if err != nil {
 		return nil, nativeError(err)
 	}
-	return connect.NewResponse(encodeNativeStart(start)), nil
+	return connect.NewResponse(&pb.BeginNativeRegistrationResponse{Attempt: encodeNativeStart(start)}), nil
 }
 
 func (r *AuthenticationAdapter) PrepareNativeRegistration(ctx context.Context, req *connect.Request[pb.PrepareNativeRegistrationRequest]) (*connect.Response[pb.PrepareNativeRegistrationResponse], error) {

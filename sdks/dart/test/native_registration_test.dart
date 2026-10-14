@@ -45,6 +45,26 @@ security.CurrentSecurityChangeResult status(
 );
 
 void main() {
+  test('registration begin rejects an absent provider attempt', () async {
+    final client = LanternClient.connect(
+      fixtures.endpoint,
+      transport: FakeTransportBuilder()
+          .unary(
+            LanternNativeAuthService.beginNativeRegistration,
+            (wire.BeginNativeRegistrationRequest req, ctx) =>
+                wire.BeginNativeRegistrationResponse(),
+          )
+          .build(),
+    );
+    addTearDown(client.close);
+    await expectLater(
+      client.beginNativeRegistration(
+        issuer: fixtures.google,
+        clientProfileId: 'mobile',
+      ),
+      throwsA(isA<LanternFailedPreconditionException>()),
+    );
+  });
   test(
     'signup suppresses old bearer, preserves exact review and returns installed personal area',
     () async {
@@ -60,7 +80,7 @@ void main() {
             ) {
               expect(req.hasRecoveryReview(), isFalse);
               expect(ctx.requestHeaders['authorization'], isNull);
-              return start;
+              return wire.BeginNativeRegistrationResponse(attempt: start);
             })
             .unary(LanternNativeAuthService.prepareNativeRegistration, (
               wire.PrepareNativeRegistrationRequest req,
@@ -133,7 +153,7 @@ void main() {
               ctx,
             ) {
               if (prepares != 0) expect(req.recoveryReview, review);
-              return start;
+              return wire.BeginNativeRegistrationResponse(attempt: start);
             })
             .unary(LanternNativeAuthService.prepareNativeRegistration, (
               wire.PrepareNativeRegistrationRequest req,
@@ -223,7 +243,8 @@ void main() {
         transport: FakeTransportBuilder()
             .unary(
               LanternNativeAuthService.beginNativeRegistration,
-              (wire.BeginNativeRegistrationRequest req, ctx) => start,
+              (wire.BeginNativeRegistrationRequest req, ctx) =>
+                  wire.BeginNativeRegistrationResponse(attempt: start),
             )
             .unary(
               LanternNativeAuthService.prepareNativeRegistration,

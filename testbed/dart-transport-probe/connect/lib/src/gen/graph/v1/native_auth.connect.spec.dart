@@ -52,7 +52,7 @@ abstract final class LanternNativeAuthService {
     '/$name/BeginNativeRegistration',
     connect.StreamType.unary,
     graphv1native_auth.BeginNativeRegistrationRequest.new,
-    graphv1native_auth.BeginNativeLoginResponse.new,
+    graphv1native_auth.BeginNativeRegistrationResponse.new,
   );
 
   static const prepareNativeRegistration = connect.Spec(

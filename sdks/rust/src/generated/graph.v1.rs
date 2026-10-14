@@ -5591,6 +5591,12 @@ pub struct BeginNativeRegistrationRequest {
     pub recovery_review: ::core::option::Option<NativeRegistrationReview>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BeginNativeRegistrationResponse {
+    /// Share the provider challenge shape; registration purpose stays Server-owned.
+    #[prost(message, optional, tag = "1")]
+    pub attempt: ::core::option::Option<BeginNativeLoginResponse>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PrepareNativeRegistrationRequest {
     #[prost(string, tag = "1")]
     pub attempt_id: ::prost::alloc::string::String,
@@ -5901,7 +5907,7 @@ pub mod lantern_native_auth_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::BeginNativeRegistrationRequest>,
         ) -> std::result::Result<
-            tonic::Response<super::BeginNativeLoginResponse>,
+            tonic::Response<super::BeginNativeRegistrationResponse>,
             tonic::Status,
         > {
             self.inner
