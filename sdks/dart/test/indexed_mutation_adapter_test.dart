@@ -82,4 +82,29 @@ void main() {
       ]);
     },
   );
+  test('adapter byte ceiling is checked before payload amplification', () {
+    final client = LanternClient.connect(
+      Uri.parse('http://localhost:6380'),
+      allowInsecure: true,
+      transport: FakeTransportBuilder().build(),
+    );
+    addTearDown(client.close);
+    final input = VertexInput(
+      key: 'a',
+      value: VertexValue.bytes(Uint8List(1 << 20)),
+    );
+    expect(
+      () => client.freezeIndexedMutation(
+        MutationRequest.putVertices([input]),
+        maxReservedBytes: 512,
+      ),
+      throwsA(
+        isA<LanternDataException>().having(
+          (e) => e.reason,
+          'reason',
+          DataFailure.capacity,
+        ),
+      ),
+    );
+  });
 }

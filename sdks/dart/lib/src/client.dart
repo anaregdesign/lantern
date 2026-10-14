@@ -41,6 +41,7 @@ part 'mutation_reply.dart';
 part 'data_client.dart';
 part 'data_snapshot.dart';
 part 'mutation_control.dart';
+part 'mutation_reservation.dart';
 part 'indexed_mutation.dart';
 part 'direct_data_client.dart';
 part 'direct_reads.dart';

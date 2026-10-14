@@ -73,6 +73,11 @@ Advanced `client.mutations.submit` returns a memory admission ticket separately
 from Server completion. `reobserve`, `getStatus`, and `watchStatus` never submit. Submit may request a
 bounded live ticket completion observer through `MutationOptions.wait`.
 A waiter timeout/cancellation after admission detaches only that observer.
+Pending status records and detached waiter errors retain explicit monotone
+`neverDispatched`/`mayHaveDispatched` certainty; stillPending alone never proves
+nonexecution. Retained failures preserve typed codes with bounded sanitized
+metadata. Capacity preflight rejects aggregate item/byte amplification before
+protobuf payload copies and preserves previously admitted work.
 Fresh structured operation IDs use a five-minute admission window and 30-second
 future skew; retained collisions and aged/evicted reuse fail without dispatch.
 The effective clock has an in-memory high-water mark. The Direct history caps

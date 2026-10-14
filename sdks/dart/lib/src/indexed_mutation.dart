@@ -4,7 +4,10 @@ part of 'client.dart';
 /// No transport retry is nested inside an indexed attempt.
 final class _FrozenMutation<T> {
   _FrozenMutation(this.kind, this.wire, this.expirations, this.identities)
-    : bytes = wire.fold(0, (n, item) => n + item.writeToBuffer().length + 128);
+    : bytes = wire.fold(
+        256,
+        (n, item) => n + item.writeToBuffer().length + 128,
+      );
   final MutationKind kind;
   final List<$protobuf.GeneratedMessage> wire;
   final List<DateTime?> expirations;
@@ -16,8 +19,10 @@ final class _FrozenMutation<T> {
 _FrozenMutation<T> _freezeMutation<T>(
   MutationRequest<T> request,
   DateTime now,
-  _ContribIdGenerator ids,
-) {
+  _ContribIdGenerator ids, {
+  int maxReservedBytes = 32 << 20,
+}) {
+  _minimumMutationReservation(request, maxReservedBytes);
   final input = (request as _MutationRequest<T>).inputs;
   final wire = <$protobuf.GeneratedMessage>[];
   final identities = <String>[];
@@ -81,12 +86,15 @@ _FrozenMutation<T> _freezeMutation<T>(
       expiration.any((instant) => instant != null && !instant.isAfter(now))) {
     throw _invalidArgumentException('Put expiration must be after admission');
   }
-  return _FrozenMutation(
+  final frozen = _FrozenMutation<T>(
     request.kind,
     List.unmodifiable(wire),
     List.unmodifiable(expiration),
     List.unmodifiable(identities),
   );
+  if (frozen.bytes > maxReservedBytes)
+    throw const LanternDataException(DataFailure.capacity);
+  return frozen;
 }
 
 void _requireEntityKey(String key) {
@@ -265,8 +273,14 @@ extension LanternIndexedMutations on LanternClient {
   IndexedMutationIntent<T> freezeIndexedMutation<T>(
     MutationRequest<T> request, {
     DateTime? admittedAt,
+    int maxReservedBytes = 32 << 20,
   }) => IndexedMutationIntent._(
-    _freezeMutation(request, admittedAt ?? _clock().toUtc(), _contribIds),
+    _freezeMutation(
+      request,
+      admittedAt ?? _clock().toUtc(),
+      _contribIds,
+      maxReservedBytes: maxReservedBytes,
+    ),
   );
 
   /// Executes one indexed chunk without retry, TTL rewriting or count reduction.

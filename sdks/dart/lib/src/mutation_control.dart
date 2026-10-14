@@ -36,6 +36,7 @@ final class MutationItemStatus<T> {
     required this.state,
     this.reply,
     this.failure,
+    this.dispatchCertainty = MutationDispatchCertainty.mayHaveDispatched,
   });
 
   /// Original input index, including duplicate identities.
@@ -49,6 +50,9 @@ final class MutationItemStatus<T> {
 
   /// Typed local or transport failure.
   final Exception? failure;
+
+  /// Monotone dispatch proof, independent of pending/terminal result certainty.
+  final MutationDispatchCertainty dispatchCertainty;
 }
 
 /// A partial failure retaining every input position.
@@ -442,4 +446,13 @@ final class OperationIdPolicy {
   bool isFreshAt(OperationId id, DateTime effectiveNow) =>
       retentionDeadline(id).isAfter(effectiveNow) &&
       !id.issuedAt.isAfter(effectiveNow.add(futureSkew));
+}
+
+/// Dispatch proof is independent of observed Server handling and never regresses.
+enum MutationDispatchCertainty {
+  /// This item is proven not to have reached the dispatch boundary.
+  neverDispatched,
+
+  /// Dispatch was possible; absence of a result never proves nonexecution.
+  mayHaveDispatched,
 }

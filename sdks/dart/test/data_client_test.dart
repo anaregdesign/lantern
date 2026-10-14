@@ -1211,4 +1211,147 @@ void main() {
       await sub.cancel();
     },
   );
+  test(
+    'capacity rejects amplified bytes and oversized groups before freeze/RPC',
+    () async {
+      var calls = 0;
+      final reply = Completer<graph.DeleteVerticesResponse>();
+      final client = direct(
+        FakeTransportBuilder()
+            .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
+              LanternService.deleteVertices,
+              (r, _) {
+                calls++;
+                return reply.future;
+              },
+            )
+            .build(),
+      );
+      addTearDown(client.close);
+      final original = await client.mutations.submit(
+        MutationRequest.deleteVertices(['keep']),
+      );
+      final payload = VertexValue.bytes(Uint8List(1 << 20));
+      final repeated = VertexInput(key: 'large', value: payload);
+      // A small caller-owned input aliases one buffer; freezing it must not copy 65 GB.
+      await expectLater(
+        client.putVertices(List.filled(65000, repeated)),
+        throwsA(
+          isA<LanternDataException>().having(
+            (e) => e.reason,
+            'reason',
+            DataFailure.capacity,
+          ),
+        ),
+      );
+      await expectLater(
+        client.mutations.submitGroup(
+          MutationGroup([
+            MutationGroupNode(
+              MutationRequest.putVertices(List.filled(40000, vertex('a'))),
+            ),
+            MutationGroupNode(
+              MutationRequest.putVertices(List.filled(40000, vertex('b'))),
+            ),
+          ]),
+        ),
+        throwsA(
+          isA<LanternDataException>().having(
+            (e) => e.reason,
+            'reason',
+            DataFailure.capacity,
+          ),
+        ),
+      );
+      await settle();
+      expect(calls, 1);
+      expect(
+        (await client.mutations.getStatus(
+          original.reference.operationId,
+        )).terminal,
+        isFalse,
+      );
+      reply.complete(graph.DeleteVerticesResponse(existed: [false]));
+      await client.mutations.reobserve(original.reference);
+    },
+  );
+  test(
+    'pending status and detached waiter carry monotone dispatch certainty',
+    () async {
+      final reply = Completer<graph.DeleteVerticesResponse>();
+      final client = direct(
+        FakeTransportBuilder()
+            .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
+              LanternService.deleteVertices,
+              (r, _) => reply.future,
+            )
+            .build(),
+      );
+      addTearDown(client.close);
+      final cancel = LanternCancellationToken();
+      final ticket = await client.mutations.submit(
+        MutationRequest.deleteVertices(['a']),
+        options: MutationOptions(wait: WaitOptions(cancellation: cancel)),
+      );
+      expect(
+        (await client.mutations.getStatus(
+          ticket.reference.operationId,
+        )).items.single.dispatchCertainty,
+        MutationDispatchCertainty.neverDispatched,
+      );
+      await settle();
+      expect(
+        (await client.mutations.getStatus(
+          ticket.reference.operationId,
+        )).items.single.dispatchCertainty,
+        MutationDispatchCertainty.mayHaveDispatched,
+      );
+      cancel.cancel();
+      await expectLater(
+        ticket.completion!,
+        throwsA(
+          isA<LanternDataException>().having(
+            (e) => e.dispatchCertainty,
+            'dispatch certainty',
+            MutationDispatchCertainty.mayHaveDispatched,
+          ),
+        ),
+      );
+      reply.complete(graph.DeleteVerticesResponse(existed: [false]));
+      await client.mutations.reobserve(ticket.reference);
+    },
+  );
+  test(
+    'retained mutation failures keep typed codes without private diagnostics',
+    () async {
+      final client = direct(
+        FakeTransportBuilder()
+            .unary<graph.DeleteVerticesRequest, graph.DeleteVerticesResponse>(
+              LanternService.deleteVertices,
+              (r, _) => throw connect.ConnectException(
+                connect.Code.unavailable,
+                'private provider details',
+              ),
+            )
+            .build(),
+      );
+      addTearDown(client.close);
+      final ticket = await client.mutations.submit(
+        MutationRequest.deleteVertices(['a']),
+      );
+      await expectLater(
+        client.mutations.reobserve(ticket.reference),
+        throwsA(isA<MutationBatchException<bool>>()),
+      );
+      final failure =
+          (await client.mutations.getStatus(
+                ticket.reference.operationId,
+              )).items.single.failure
+              as LanternUnavailableException;
+      expect(failure.message, 'mutation failed');
+      expect(failure.cause, isNull);
+      expect(failure.headers, isEmpty);
+      expect(failure.metadata, isEmpty);
+    },
+  );
 }

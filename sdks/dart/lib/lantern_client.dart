@@ -232,4 +232,5 @@ export 'src/client.dart'
         SyncPause,
         SyncLifecycle,
         ObservationMode,
-        OperationIdPolicy;
+        OperationIdPolicy,
+        MutationDispatchCertainty;

@@ -132,13 +132,20 @@ enum DataFailure {
 /// A failure of the local contract, with optional admitted-operation identity.
 final class LanternDataException implements Exception {
   /// Creates a content-free typed failure.
-  const LanternDataException(this.reason, {this.reference});
+  const LanternDataException(
+    this.reason, {
+    this.reference,
+    this.dispatchCertainty = MutationDispatchCertainty.mayHaveDispatched,
+  });
 
   /// Stable failure category.
   final DataFailure reason;
 
   /// Admitted work is never resubmitted by detaching this waiter.
   final OperationId? reference;
+
+  /// Last known aggregate dispatch certainty when an admitted waiter detached.
+  final MutationDispatchCertainty dispatchCertainty;
   @override
   String toString() => 'LanternDataException(${reason.name})';
 }

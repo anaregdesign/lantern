@@ -1,7 +1,8 @@
 part of 'client.dart';
 
 final class _DirectOperation<T> {
-  _DirectOperation(this.id, this.admittedAt, this.work) {
+  _DirectOperation(this.id, this.admittedAt, this.work)
+    : _dispatched = Uint8List(work.length) {
     // Advanced admission need not attach a waiter. Keep rejected work observable
     // through status without an unhandled Future error.
     unawaited(
@@ -17,6 +18,16 @@ final class _DirectOperation<T> {
   final Completer<MutationBatchReply<T>> completion = Completer();
   final List<MutationItemStatus<T>> progress = [];
   bool terminal = false;
+  final Uint8List _dispatched;
+  bool _everDispatched = false;
+  MutationDispatchCertainty get dispatchCertainty => _everDispatched
+      ? MutationDispatchCertainty.mayHaveDispatched
+      : MutationDispatchCertainty.neverDispatched;
+  void markDispatched(int start, int end) {
+    _everDispatched = true;
+    _dispatched.fillRange(start, end, 1);
+  }
+
   MutationBatchReply<T>? _reply;
   MutationBatchException<T>? _failure;
   final Map<Object, Completer<MutationBatchReply<T>>> _observers = {};
@@ -46,7 +57,13 @@ final class _DirectOperation<T> {
     void fail(DataFailure reason) {
       _observers.remove(key);
       if (!observer.isCompleted) {
-        observer.completeError(LanternDataException(reason, reference: id));
+        observer.completeError(
+          LanternDataException(
+            reason,
+            reference: id,
+            dispatchCertainty: dispatchCertainty,
+          ),
+        );
       }
     }
 
@@ -83,6 +100,9 @@ final class _DirectOperation<T> {
             : MutationItemStatus<T>(
                 index: i,
                 state: MutationItemState.stillPending,
+                dispatchCertainty: _dispatched[i] == 0
+                    ? MutationDispatchCertainty.neverDispatched
+                    : MutationDispatchCertainty.mayHaveDispatched,
               ),
     ],
     terminal: terminal,
@@ -146,6 +166,20 @@ final class _DirectMutationControl implements LanternMutationControl {
     }
   }
 
+  void _preflight(List<MutationRequest<Object?>> requests) {
+    if (active + requests.length >
+            owner.maxConcurrentMutations + owner.maxQueuedMutations ||
+        _operations.length + requests.length > owner.maxOperations ||
+        _items + requests.fold(0, (n, r) => n + r.inputs.length) >
+            owner.maxMutationItems) {
+      throw const LanternDataException(DataFailure.capacity);
+    }
+    var remaining = owner.maxMutationBytes - _bytes;
+    for (final request in requests) {
+      remaining -= _minimumMutationReservation(request, remaining);
+    }
+  }
+
   void _reserve(List<_DirectOperation<Object?>> values) {
     if (active + values.length >
             owner.maxConcurrentMutations + owner.maxQueuedMutations ||
@@ -193,7 +227,13 @@ final class _DirectMutationControl implements LanternMutationControl {
       _prune(now);
       final id = options?.operationId ?? OperationId.generate(issuedAt: now);
       _checkId(id, now, {});
-      final work = _freezeMutation(request, now, owner._client._contribIds);
+      _preflight([request]);
+      final work = _freezeMutation(
+        request,
+        now,
+        owner._client._contribIds,
+        maxReservedBytes: owner.maxMutationBytes - _bytes,
+      );
       _throwIfCanceled(options?.admissionCancellation);
       final operation = _DirectOperation<T>(id, now, work);
       _reserve([operation]);
@@ -288,6 +328,7 @@ final class _DirectMutationControl implements LanternMutationControl {
           throw LanternDataException(
             DataFailure.expiredBeforeDispatch,
             reference: operation.id,
+            dispatchCertainty: operation.dispatchCertainty,
           );
         }
         final release = await owner._sendPermits.acquire(owner._lifetime);
@@ -302,6 +343,7 @@ final class _DirectMutationControl implements LanternMutationControl {
             throw LanternDataException(
               DataFailure.expiredBeforeDispatch,
               reference: operation.id,
+              dispatchCertainty: operation.dispatchCertainty,
             );
           }
           result = await owner._client._attemptIndexed<T>(
@@ -313,7 +355,13 @@ final class _DirectMutationControl implements LanternMutationControl {
               retry: false,
               cancellation: owner._lifetime,
             ),
-            () => dispatched = true,
+            () {
+              dispatched = true;
+              operation.markDispatched(start, end);
+              owner._observations.invalidateKey(
+                'status:${operation.id.encoded}',
+              );
+            },
           );
         } finally {
           release();
@@ -332,6 +380,7 @@ final class _DirectMutationControl implements LanternMutationControl {
         owner._observations.invalidate();
       } on Exception catch (cause) {
         if (cause is LanternException) owner._recordEndpointFailure(cause);
+        final boundedCause = _boundedMutationFailure(cause);
         _adjustPending(work, start, work.length, -1);
         for (var i = start; i < work.length; i++) {
           operation.progress.add(
@@ -342,14 +391,17 @@ final class _DirectMutationControl implements LanternMutationControl {
                         ? MutationItemState.unknown
                         : MutationItemState.failed)
                   : MutationItemState.notAttempted,
-              failure: i < end ? cause : null,
+              failure: i < end ? boundedCause : null,
+              dispatchCertainty: i < end && dispatched
+                  ? MutationDispatchCertainty.mayHaveDispatched
+                  : MutationDispatchCertainty.neverDispatched,
             ),
           );
         }
         operation.finishError(
           MutationBatchException<T>(
             items: operation.progress,
-            cause: cause,
+            cause: boundedCause,
             reference: operation.id,
           ),
         );
@@ -374,14 +426,15 @@ final class _DirectMutationControl implements LanternMutationControl {
         MutationItemStatus<T>(
           index: i,
           state: MutationItemState.notAttempted,
-          failure: cause,
+          failure: _boundedMutationFailure(cause),
+          dispatchCertainty: MutationDispatchCertainty.neverDispatched,
         ),
       );
     }
     operation.finishError(
       MutationBatchException<T>(
         items: operation.progress,
-        cause: cause,
+        cause: _boundedMutationFailure(cause),
         reference: operation.id,
       ),
     );
@@ -490,6 +543,8 @@ final class _DirectMutationControl implements LanternMutationControl {
     }
     final now = _now();
     _prune(now);
+    _preflight(group.nodes.map((n) => n.request).toList());
+    var remainingBytes = owner.maxMutationBytes - _bytes;
     final ids = <OperationId>{};
     final values = <_DirectOperation<Object?>>[];
     for (final node in group.nodes) {
@@ -505,6 +560,7 @@ final class _DirectMutationControl implements LanternMutationControl {
             node.request as MutationRequest<PutOutcome>,
             now,
             owner._client._contribIds,
+            maxReservedBytes: remainingBytes,
           ),
         ),
         MutationKind.addEdges => _DirectOperation<double>(
@@ -514,6 +570,7 @@ final class _DirectMutationControl implements LanternMutationControl {
             node.request as MutationRequest<double>,
             now,
             owner._client._contribIds,
+            maxReservedBytes: remainingBytes,
           ),
         ),
         _ => _DirectOperation<bool>(
@@ -523,9 +580,11 @@ final class _DirectMutationControl implements LanternMutationControl {
             node.request as MutationRequest<bool>,
             now,
             owner._client._contribIds,
+            maxReservedBytes: remainingBytes,
           ),
         ),
       });
+      remainingBytes -= values.last.work.bytes;
     }
     final prerequisites = List.generate(values.length, (_) => <int>{});
     final previous = <String, int>{};
