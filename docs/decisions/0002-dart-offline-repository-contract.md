@@ -650,9 +650,11 @@ whole-graph snapshots belong to the private peer plane. The historical
 private protocol fixtures; they do not qualify the public offline route.
 
 The storage-neutral `OfflineScopedChangeSource` port takes one explicit
-bootstrap or immutable opaque cursor. A typed application bridge composes the
-new online API with the offline package without a dynamic API probe or a
-runtime path dependency. The offline archive retains its hosted parent floor;
+bootstrap or immutable opaque cursor. The maintained parent `LanternChangeSource`
+and Offline `LanternScopedChangeSource` adapter compose this port without a dynamic
+API probe or a runtime path dependency. They require the full immutable binding
+and an application-certified single actual responder, checked across token,
+frame and read boundaries. The offline archive retains its hosted parent floor;
 new online SDK publication precedes application adoption of that bridge.
 
 `consumeScopedChanges` owns one foreground session per partition. The application
@@ -678,15 +680,34 @@ returns Unknown if its epoch changed. No value, weight, raw origin or sequence
 is stored as identity CDC progress. Private chunks cannot apply while an opaque
 checkpoint is installed; changing protocols requires an explicit reset.
 
-EOF, malformed frames, retention/policy gaps and remote cancellation hide
-confirmed rows and clear the checkpoint before at most one fresh bootstrap per
-invocation. Authorization and availability failures stop after hiding cache and
-never retry automatically. Caller cancellation leaves the last committed frame
+The legacy explicit consumer handles EOF, malformed frames, retention/policy gaps
+and remote cancellation by hiding confirmed rows and clearing the checkpoint
+before at most one fresh bootstrap per invocation. Authorization hides cache;
+ordinary availability loss instead advances the read epoch and preserves eligible
+historical evidence within its original TTL/security retention. Both failures
+stop that explicit invocation. Caller cancellation leaves the last committed frame
 and cursor intact. Wipe/logout cancel and await owned transport before clearing
 all partition state. Stream pause/resume provides backpressure without an eager
 subscription, unbounded queue or background reconnect.
 
-The memory snapshot is schema v8 and SQLite is schema v5 with an indexed opaque
+With #1770, `OfflineLanternSession` optionally owns incoming observation in the
+same bounded foreground runtime as outgoing work. Every new runtime bootstraps;
+only an uninterrupted certified responder/authority lifetime may resume its
+completed cursor after availability loss. Its incoming slot does not occupy a
+finite read permit; a separate retained job performs 32-identity resident reads.
+Endpoint dependencies of Edge reads use the same per-RPC bound. Frame application,
+epoch advancement and cursor installation remain atomic. Failed commit pauses
+storage; current auth/policy denial pauses network work rather than polling around
+it. Changed authority/route and known gaps hide evidence before bootstrap.
+
+Default active entity watches share bounded polling and CDC acceleration through
+the common coordinator. Vertex invalidation/settlement conservatively invalidates
+Edge cache; Edge evidence requires both live endpoints and cannot outlive either,
+without rewriting the Edge payload's expiration. Strict-live remains unsupported.
+Disabled cache retains no reusable endpoint/entity payload. Parent dependencies
+remain free of Offline, SQLite and Flutter.
+
+The original #1637 memory snapshot was schema v8 and SQLite schema v5 with an indexed opaque
 BLOB. Migration clears legacy private progress, hides confirmed residents, and
 preserves pending outbox/operations, immutable receipt IDs and dispatch evidence.
 The same rollback/partial/final/reopen conformance runs on both stores. Store

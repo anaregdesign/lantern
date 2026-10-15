@@ -268,6 +268,11 @@ final class _MemoryTransaction
   void invalidateMutationCache(String partitionId, OfflineEntityKey key) {
     deleteCache(partitionId, key);
     final p = _state.partition(partitionId);
+    if (key.kind == OfflineEntityKind.vertex) {
+      p.cache.removeWhere(
+        (_, record) => record.key.kind == OfflineEntityKind.edge,
+      );
+    }
     p.changeEpoch = _checkedIncrement(p.changeEpoch);
     _changedPartitions.add(partitionId);
     observationInvalidated.add(partitionId);
@@ -382,6 +387,11 @@ final class _MemoryTransaction
     }
     for (final key in frame.keys) {
       partition.cache.remove(key.canonical);
+      if (key.kind == OfflineEntityKind.vertex) {
+        partition.cache.removeWhere(
+          (_, record) => record.key.kind == OfflineEntityKind.edge,
+        );
+      }
     }
     if (frame.cursor != null) partition.scopedCursor = frame.cursor;
     partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
@@ -431,6 +441,16 @@ final class _MemoryTransaction
     _ensureOpen();
     _validatePartition(partitionId);
     return _state.partition(partitionId).changeEpoch;
+  }
+
+  @override
+  void advanceReadEpoch(String partitionId) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final p = _state.partition(partitionId);
+    p.changeEpoch = _checkedIncrement(p.changeEpoch);
+    _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
   }
 
   @override

@@ -263,6 +263,10 @@ abstract interface class OfflineStoreTransaction {
   /// reset advances this value in the same transaction as cache invalidation.
   FutureOr<int> changeEpoch(String partitionId);
 
+  /// Fences reads and notifies active entities/derived queries without erasing
+  /// eligible history or a completed cursor on ordinary availability loss.
+  FutureOr<void> advanceReadEpoch(String partitionId);
+
   /// Whether [key] still needs checkpoint-authoritative revalidation.
   /// Ordinary singular Get responses must not complete this marker.
   FutureOr<bool> hasUnknownResident(String partitionId, OfflineEntityKey key);

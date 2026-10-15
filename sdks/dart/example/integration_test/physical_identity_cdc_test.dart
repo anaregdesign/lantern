@@ -9,7 +9,6 @@ import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
 
-import 'package:lantern_example/scoped_change_source.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 
 import 'support/head_edge_fixture.dart';
@@ -196,9 +195,22 @@ void main() {
       });
       await result.recordPhase('checkpoint_revalidation');
 
+      final binding = LanternSessionBinding.application(
+        serviceOrigin: client.endpoint,
+        securityDomain: 'physical-identity-fixture',
+        accountIdentity: partition,
+        authorityBinding: 'explicit-fixture-authority',
+      );
       final source = LanternScopedChangeSource(
-        client: client,
-        responderId: responder,
+        source: LanternChangeSource(
+          route: LanternSingleResponderRoute.certified(
+            client: client,
+            responderId: responder,
+            isCurrent: () => !client.isClosed,
+          ),
+          binding: binding,
+          currentBinding: () => binding,
+        ),
       );
       final foreground = LanternCancellationToken();
       final firstRun = repository.consumeScopedChanges(

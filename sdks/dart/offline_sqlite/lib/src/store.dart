@@ -95,6 +95,7 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
     bool cacheReads = true,
     bool transferAllowed = true,
     bool restoreHeld = false,
+    LanternChangeSource? incomingChanges,
   }) => OfflineLanternSession.openStore(
     client: client,
     storeKey: canonicalAutomaticPath(path),
@@ -109,6 +110,7 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
     cacheReads: cacheReads,
     transferAllowed: transferAllowed,
     restoreHeld: restoreHeld,
+    incomingChanges: incomingChanges,
     adapterConfiguration: (databaseFactory, limits),
   );
 

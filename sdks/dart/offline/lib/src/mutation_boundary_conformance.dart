@@ -209,8 +209,27 @@ Future<void> runOfflineMutationBoundaryConformance({
               value: VertexValue.string('independent-base'),
               expiration: f.now.add(const Duration(minutes: 1)),
             );
-      await f.store.transaction(
-        (tx) => tx.putCache(
+      await f.store.transaction((tx) async {
+        if (edge) {
+          for (final endpoint in ['t', 'h']) {
+            await tx.putCache(
+              f.client.partitionId,
+              OfflineCacheRecord.value(
+                partitionId: f.client.partitionId,
+                generation: f.client.generation,
+                key: OfflineEntityKey.vertex(endpoint),
+                entity: Vertex(
+                  key: endpoint,
+                  value: VertexValue.nil(),
+                  expiration: f.now.add(const Duration(minutes: 1)),
+                ),
+                validatedAt: f.now,
+                lastAccessAt: f.now,
+              ),
+            );
+          }
+        }
+        await tx.putCache(
           f.client.partitionId,
           OfflineCacheRecord.value(
             partitionId: f.client.partitionId,
@@ -220,8 +239,8 @@ Future<void> runOfflineMutationBoundaryConformance({
             validatedAt: f.now,
             lastAccessAt: f.now,
           ),
-        ),
-      );
+        );
+      });
       final based = await view();
       _require(
         based.confirmed.state == ConfirmedState.present &&

@@ -69,6 +69,21 @@ activating another polling path. `strictLive` is typed unsupported in Direct,
 including traversal: current public CDC lacks a complete hidden/pruned input
 and TTL dependency certificate.
 
+`LanternChangeSource` is the maintained public identity-CDC bridge for adapters.
+It takes the full verified `LanternSessionBinding`, a current-binding callback,
+and `LanternSingleResponderRoute.certified`. The deployment must guarantee that
+the exact client, tail and recovery reads reach one actual responder; neither a
+URL nor a responder label establishes affinity. The certificate's `isCurrent`
+callback must become false before that route changes. Token acquisition, frames,
+reads and publication recheck authority and route continuity.
+
+`source.open(bootstrap: true, cancellation: token)` returns one
+`LanternChangeSession` with identity-only `frames`, request-aligned plural reads
+and joined `close`. Frames outside the literal prefix (including either Edge
+endpoint), value projections and stale authority fail closed. Closing the session
+does not close its shared transport. This parent primitive has no reconnect loop
+or reusable cache; the optional Offline package composes it into its owned runtime.
+
 Advanced `client.mutations.submit` returns a memory admission ticket separately
 from Server completion. `reobserve`, `getStatus`, and `watchStatus` never submit. Submit may request a
 bounded live ticket completion observer through `MutationOptions.wait`.

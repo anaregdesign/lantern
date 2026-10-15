@@ -242,6 +242,110 @@ Future<void> runScopedChangeStoreConformanceSuite(
   } on OfflineChangeGapException {
     /* required fail-closed response */
   }
+
+  // Availability advances publication fences without renewing retained history.
+  await store.transaction((tx) => tx.resetScopedChangeCursor(partition, first));
+  await cache('tail');
+  await cache('head');
+  await cache('unrelated');
+  const edgeKey = OfflineEntityKey.edge('tail', 'head');
+  Future<void> cacheEdge() => store.transaction((tx) async {
+    await tx.putCache(
+      partition,
+      OfflineCacheRecord.value(
+        partitionId: partition,
+        generation: await tx.generation(partition),
+        key: edgeKey,
+        entity: Edge(
+          tail: 'tail',
+          head: 'head',
+          weight: 3,
+          expiration: now.add(const Duration(hours: 1)),
+        ),
+        validatedAt: now,
+        lastAccessAt: now,
+      ),
+    );
+  });
+  Future<OfflineCacheRecord?> retainedEdge() =>
+      store.transaction((tx) => tx.getCache(partition, edgeKey));
+  await cacheEdge();
+  final beforeHistory = await retainedEdge();
+  final beforeAvailability = await store.transaction(
+    (tx) => tx.changeEpoch(partition),
+  );
+  await store.transaction((tx) => tx.advanceReadEpoch(partition));
+  store = await reopen(store);
+  final afterHistory = await retainedEdge();
+  _require(
+    afterHistory != null &&
+        beforeHistory != null &&
+        afterHistory.validatedAt == beforeHistory.validatedAt &&
+        afterHistory.expiration == beforeHistory.expiration &&
+        afterHistory.edge?.weight == beforeHistory.edge?.weight &&
+        await cached('tail') &&
+        await cached('head') &&
+        _equal(await cursor(), first.toBytes()) &&
+        await store.transaction((tx) => tx.changeEpoch(partition)) ==
+            beforeAvailability + 1,
+    'availability retains original history/cursor and advances epoch across reopen',
+  );
+  try {
+    await store.transaction((tx) async {
+      await tx.advanceReadEpoch(partition);
+      await tx.applyScopedChangeFrame(
+        partition,
+        OfflineScopedChangeFrame(
+          keys: const [OfflineEntityKey.vertex('tail')],
+          cursor: last,
+        ),
+      );
+      throw const OfflineCanceledException();
+    });
+  } on OfflineCanceledException {
+    /* epoch, dependencies and cursor are one transaction */
+  }
+  _require(
+    await retainedEdge() != null &&
+        await cached('tail') &&
+        _equal(await cursor(), first.toBytes()) &&
+        await store.transaction((tx) => tx.changeEpoch(partition)) ==
+            beforeAvailability + 1,
+    'rollback preserves epoch, endpoint, Edge and completion cursor',
+  );
+  await store.transaction(
+    (tx) => tx.applyScopedChangeFrame(
+      partition,
+      OfflineScopedChangeFrame(
+        keys: const [OfflineEntityKey.vertex('tail')],
+        cursor: last,
+      ),
+    ),
+  );
+  store = await reopen(store);
+  _require(
+    await retainedEdge() == null &&
+        !await cached('tail') &&
+        await cached('head') &&
+        await cached('unrelated') &&
+        _equal(await cursor(), last.toBytes()),
+    'Vertex invalidation hides dependent Edge without evicting unrelated Vertices',
+  );
+  await cache('tail');
+  await cacheEdge();
+  await store.transaction(
+    (tx) => tx.invalidateMutationCache(
+      partition,
+      const OfflineEntityKey.vertex('head'),
+    ),
+  );
+  _require(
+    await retainedEdge() == null &&
+        !await cached('head') &&
+        await cached('tail') &&
+        await cached('unrelated'),
+    'Vertex settlement invalidates dependent Edge evidence',
+  );
 }
 
 bool _equal(List<int>? a, List<int> b) =>

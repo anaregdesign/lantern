@@ -45,6 +45,7 @@ final class OfflineLanternSession
     bool Function()? authorityCurrent,
     OfflineReceiptRemote? receiptRemote,
     OfflineBoundMutationRemote? mutationRemote,
+    LanternChangeSource? incomingChanges,
   }) {
     if (store is! OfflineAutomaticStore) {
       throw const OfflineUnsupportedOperationException();
@@ -63,6 +64,7 @@ final class OfflineLanternSession
       authorityCurrent: authorityCurrent,
       receiptRemote: receiptRemote,
       mutationRemote: mutationRemote,
+      incomingChanges: incomingChanges,
     );
   }
 
@@ -84,9 +86,18 @@ final class OfflineLanternSession
     bool Function()? authorityCurrent,
     OfflineReceiptRemote? receiptRemote,
     OfflineBoundMutationRemote? mutationRemote,
+    LanternChangeSource? incomingChanges,
     OfflineSessionSchedule? schedule,
     Object? adapterConfiguration,
   }) async {
+    if (incomingChanges != null &&
+        (!identical(incomingChanges.route.client, client) ||
+            incomingChanges.binding.stableIdentity != binding.stableIdentity ||
+            incomingChanges.binding.authorityBinding !=
+                binding.authorityBinding)) {
+      throw const OfflineArgumentException();
+    }
+    incomingChanges?.checkCurrent();
     final fingerprint = jsonEncode([
       binding.stableIdentity,
       binding.authorityBinding,
@@ -105,6 +116,7 @@ final class OfflineLanternSession
       authorityCurrent,
       receiptRemote,
       mutationRemote,
+      incomingChanges,
       schedule,
       adapterConfiguration,
     );
@@ -143,6 +155,7 @@ final class OfflineLanternSession
         mutationRemote: mutationRemote,
         schedule: schedule,
         fingerprint: fingerprint,
+        incomingChanges: incomingChanges,
       );
     }
     try {
@@ -388,6 +401,7 @@ final class _SessionShared {
   Future<void>? _closing, _credentialChange;
   Future<void> _networkJoin = Future.value();
   final List<OfflineMutationDelivery> deliveries = [];
+  _AutomaticIncoming? incoming;
   late void Function() onReleased;
 
   Future<_SessionShared> open(
@@ -398,6 +412,7 @@ final class _SessionShared {
     OfflineReceiptRemote? receiptRemote,
     OfflineBoundMutationRemote? mutationRemote,
     OfflineSessionSchedule? schedule,
+    LanternChangeSource? incomingChanges,
   }) async {
     store = await createStore();
     OfflineAutomaticOwner? acquired;
@@ -468,6 +483,10 @@ final class _SessionShared {
       auth = pause.$1;
       policy = pause.$2;
       ready = true;
+      if (incomingChanges != null) {
+        incoming = _AutomaticIncoming(this, incomingChanges);
+        incoming!.register();
+      }
       runtime.retain(
         'watch-expiry',
         OfflineSessionLane.local,
@@ -527,6 +546,8 @@ final class _SessionShared {
       ? ObservationCause.permissionDenied
       : auth || !_credentialLive
       ? ObservationCause.unauthenticated
+      : incoming?.discontinuous == true
+      ? ObservationCause.unavailable
       : null;
   void _checkNetwork() {
     _checkLifetime();
@@ -553,7 +574,7 @@ final class _SessionShared {
   SyncReachability get reachability =>
       (_backoffUntil?.isAfter(dataOrClock()) ?? false)
       ? SyncReachability.backoff
-      : runtime.networkInFlightCount > 0
+      : runtime.finiteNetworkInFlightCount > 0
       ? (_failures > 0
             ? SyncReachability.recovering
             : SyncReachability.synchronizing)
@@ -649,6 +670,7 @@ final class _SessionShared {
   }
 
   Future<void> _pauseFromRead(ObservationCause cause) async {
+    incoming?.requireBootstrap();
     if (cause == ObservationCause.unauthenticated) {
       _requestAuthPause();
     } else {
@@ -657,6 +679,7 @@ final class _SessionShared {
     try {
       await store.transaction((tx) async {
         _checkLifetime();
+        await tx.resetScopedChangeCursor(data.partitionId, null);
         if (cause == ObservationCause.unauthenticated) {
           await tx.setReplayPausedForAuth(
             data.partitionId,
@@ -735,6 +758,7 @@ final class _SessionShared {
 
   void _changed() {
     if (!ready || ended) return;
+    incoming?.wake();
     if (!_policyAllowsNetwork) {
       runtime.enqueue(
         'maintenance',

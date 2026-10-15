@@ -12,6 +12,9 @@ enum OfflineSessionLane {
   /// Local expiry/status maintenance; never acquires a network permit.
   local,
 
+  /// One owned public tail, without monopolizing a finite read permit.
+  incoming,
+
   /// Original receipt status recovery; reserves both read and send capacity.
   reconcile,
 
@@ -69,6 +72,7 @@ final class OfflineSessionBudget {
     this.maxReadJobs = 128,
     this.maxTraversalJobs = 64,
     this.maxLocalJobs = 128,
+    this.maxIncomingJobs = 16,
   }) {
     if (maxSends < 1 ||
         maxReads < 2 ||
@@ -78,7 +82,8 @@ final class OfflineSessionBudget {
         maxSendJobs < 1 ||
         maxReadJobs < 1 ||
         maxTraversalJobs < 1 ||
-        maxLocalJobs < 1) {
+        maxLocalJobs < 1 ||
+        maxIncomingJobs < 1) {
       throw const LanternDataException(DataFailure.capacity);
     }
   }
@@ -87,8 +92,12 @@ final class OfflineSessionBudget {
   final int maxSends, maxReads, maxTraversals, maxRuntimes;
 
   /// Registered slots, including in-flight and dirty work, have global caps.
-  final int maxSendJobs, maxReadJobs, maxTraversalJobs, maxLocalJobs;
-  final List<int> _jobCounts = [0, 0, 0, 0];
+  final int maxSendJobs,
+      maxReadJobs,
+      maxTraversalJobs,
+      maxLocalJobs,
+      maxIncomingJobs;
+  final List<int> _jobCounts = [0, 0, 0, 0, 0];
   final Set<OfflineSessionRuntime> _owners = {};
   final Queue<OfflineSessionRuntime> _waiting = Queue();
   int _sends = 0, _reads = 0, _traversals = 0;
@@ -101,6 +110,7 @@ final class OfflineSessionBudget {
       maxReadJobs,
       maxTraversalJobs,
       maxLocalJobs,
+      maxIncomingJobs,
     ][category];
     if (_jobCounts[category] == cap) {
       throw const LanternDataException(DataFailure.capacity);
@@ -267,6 +277,16 @@ final class OfflineSessionRuntime {
   /// Concurrent network work, excluding local status/expiry maintenance.
   int get networkInFlightCount => _flights.length - _locals;
 
+  /// Finite network work; an idle connected CDC tail is not synchronization.
+  int get finiteNetworkInFlightCount =>
+      networkInFlightCount -
+      _jobs.values
+          .where(
+            (job) =>
+                job.lane == OfflineSessionLane.incoming && job.flight != null,
+          )
+          .length;
+
   /// Retained job slots include in-flight work and its one dirty follow-up.
   int get jobCount => _jobs.length;
 
@@ -322,7 +342,9 @@ final class OfflineSessionRuntime {
       final category = _jobs.values
           .where((j) => _category(j.lane) == _category(lane))
           .length;
-      final bound = lane == OfflineSessionLane.local
+      final bound = lane == OfflineSessionLane.incoming
+          ? 1
+          : lane == OfflineSessionLane.local
           ? maxLocalJobs
           : _usesSend(lane)
           ? maxSendJobs
@@ -410,8 +432,14 @@ final class OfflineSessionRuntime {
   }) async {
     LanternAdapterCancellation.checkCanceled(cancellation);
     final current = Zone.current[_currentWork];
-    if (current is (OfflineSessionRuntime, OfflineSessionWork) &&
-        identical(current.$1, this)) {
+    if (current
+            is (
+              OfflineSessionRuntime,
+              OfflineSessionWork,
+              OfflineSessionLane,
+            ) &&
+        identical(current.$1, this) &&
+        _usesRead(current.$3)) {
       current.$2.checkCurrent();
       final value = await read(current.$2);
       LanternAdapterCancellation.checkCanceled(cancellation);
@@ -568,7 +596,7 @@ final class OfflineSessionRuntime {
             work.checkCurrent();
             await runZoned(
               () => run(work),
-              zoneValues: {_currentWork: (this, work)},
+              zoneValues: {_currentWork: (this, work, job.lane)},
             );
           } catch (error, stack) {
             if (!token.isCanceled && !_closed && !_suspended) {
@@ -744,6 +772,7 @@ final class OfflineSessionRuntime {
 
 const _weights = [
   OfflineSessionLane.local,
+  OfflineSessionLane.incoming,
   OfflineSessionLane.reconcile,
   OfflineSessionLane.reconcile,
   OfflineSessionLane.send,
@@ -758,7 +787,9 @@ bool _usesRead(OfflineSessionLane lane) =>
     lane == OfflineSessionLane.read ||
     lane == OfflineSessionLane.reconcile ||
     lane == OfflineSessionLane.traversal;
-int _category(OfflineSessionLane lane) => lane == OfflineSessionLane.local
+int _category(OfflineSessionLane lane) => lane == OfflineSessionLane.incoming
+    ? 4
+    : lane == OfflineSessionLane.local
     ? 3
     : _usesSend(lane)
     ? 0

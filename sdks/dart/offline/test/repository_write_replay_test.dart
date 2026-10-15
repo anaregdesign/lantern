@@ -5857,6 +5857,10 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
   ) async => await inner.applyScopedChangeFrame(partitionId, frame);
 
   @override
+  Future<void> advanceReadEpoch(String partitionId) async =>
+      await inner.advanceReadEpoch(partitionId);
+
+  @override
   Future<void> resetScopedChangeCursor(
     String partitionId,
     OfflineScopedChangeCursor? checkpoint,

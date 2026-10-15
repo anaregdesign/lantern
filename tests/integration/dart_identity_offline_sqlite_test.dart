@@ -10,8 +10,6 @@ import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-import '../../sdks/dart/example/lib/scoped_change_source.dart';
-
 void main() {
   sqfliteFfiInit();
 
@@ -209,10 +207,7 @@ void main() {
       final cancellation = LanternCancellationToken();
       final run = repository.consumeScopedChanges(
         'wire',
-        source: LanternScopedChangeSource(
-          client: client,
-          responderId: client.endpoint.toString(),
-        ),
+        source: LanternScopedChangeSource(source: _certifiedSource(client)),
         cancellation: cancellation,
       );
       final stopped = expectLater(
@@ -306,10 +301,7 @@ void main() {
       final cancellation = LanternCancellationToken();
       final run = repository.consumeScopedChanges(
         'wire',
-        source: LanternScopedChangeSource(
-          client: client,
-          responderId: client.endpoint.toString(),
-        ),
+        source: LanternScopedChangeSource(source: _certifiedSource(client)),
         cancellation: cancellation,
       );
       final stopped = expectLater(
@@ -447,10 +439,7 @@ void main() {
       final cancellation = LanternCancellationToken();
       final run = repository.consumeScopedChanges(
         'wire',
-        source: LanternScopedChangeSource(
-          client: client,
-          responderId: client.endpoint.toString(),
-        ),
+        source: LanternScopedChangeSource(source: _certifiedSource(client)),
         cancellation: cancellation,
       );
       final stopped = expectLater(
@@ -753,6 +742,24 @@ final class _WireOpen {
 }
 
 // Instrument the maintained application bridge, preserving its single tail.
+LanternChangeSource _certifiedSource(LanternClient client) {
+  final binding = LanternSessionBinding.application(
+    serviceOrigin: client.endpoint,
+    securityDomain: 'identity-wire-fixture',
+    accountIdentity: 'wire-account',
+    authorityBinding: 'wire-current-authority',
+  );
+  return LanternChangeSource(
+    route: LanternSingleResponderRoute.certified(
+      client: client,
+      responderId: 'fixture-direct-node',
+      isCurrent: () => !client.isClosed,
+    ),
+    binding: binding,
+    currentBinding: () => binding,
+  );
+}
+
 final class _WireSource implements OfflineScopedChangeSource {
   _WireSource(this.client);
   final LanternClient client;
@@ -767,8 +774,7 @@ final class _WireSource implements OfflineScopedChangeSource {
   }) async {
     opens.add(_WireOpen(bootstrap, cursor));
     final session = await LanternScopedChangeSource(
-      client: client,
-      responderId: client.endpoint.toString(),
+      source: _certifiedSource(client),
     ).open(bootstrap: bootstrap, cursor: cursor, cancellation: cancellation);
     return _WireSession(this, session);
   }

@@ -13,10 +13,13 @@ import 'mutation_state.dart';
 import 'operation_completion.dart';
 import 'pending_projection.dart';
 import 'remote.dart';
+import 'scoped_change_store.dart';
 import 'session_runtime.dart';
 import 'store.dart';
 import 'types.dart';
 
+part 'bound_reads.dart';
+part 'incoming_changes.dart';
 part 'session.dart';
 
 /// Common bound Offline facade. Admission never acquires tokens or performs RPC.
@@ -236,13 +239,34 @@ final class OfflineLanternDataClient
     bool serverOnly = false,
   }) async {
     _fence();
+    await _session?.incoming?.verifyContinuity();
     final result = await store.transaction((tx) async {
       if (await tx.generation(partitionId) != generation ||
           await tx.authorityBinding(partitionId) != binding.authorityBinding) {
         throw const LanternDataException(DataFailure.closed);
       }
       final now = await tx.effectiveTime(partitionId, clock().toUtc());
-      final record = cacheReads ? await tx.getCache(partitionId, key) : null;
+      var record = cacheReads ? await tx.getCache(partitionId, key) : null;
+      DateTime? dependencyExpiry;
+      if (record?.edge != null) {
+        for (final endpoint in [key.tail!, key.head!]) {
+          final dependency = await tx.getCache(
+            partitionId,
+            OfflineEntityKey.vertex(endpoint),
+          );
+          final confirmed = offlineConfirmed<Vertex>(dependency, now);
+          if (confirmed.state != ConfirmedState.present) {
+            record = null;
+            break;
+          }
+          final expiration = confirmed.expiration;
+          if (expiration != null &&
+              (dependencyExpiry == null ||
+                  expiration.isBefore(dependencyExpiry))) {
+            dependencyExpiry = expiration;
+          }
+        }
+      }
       final pause = _session?._hiddenCause;
       if (pause != null) {
         evidence = ConfirmedEvidence<T>(
@@ -257,7 +281,11 @@ final class OfflineLanternDataClient
       _fence();
       final projected = projectOfflinePending<T>(
         evidence == null
-            ? offlineConfirmed<T>(record, now)
+            ? _capEvidence(
+                offlineConfirmed<T>(record, now),
+                dependencyExpiry,
+                now,
+              )
             : offlineEvidenceAt(evidence!, now),
         pending,
         now,
@@ -275,6 +303,8 @@ final class OfflineLanternDataClient
 
       consider(record?.expiration);
       consider(record?.missingUntil);
+      consider(dependencyExpiry);
+      consider(evidence?.expiration);
       for (final row in pending) {
         consider(row.intent.expiration);
       }
@@ -308,194 +338,27 @@ final class OfflineLanternDataClient
         : null,
   );
 
-  Future<LanternSnapshot<T>> _get<T>(
-    OfflineEntityKey key,
-    GetOptions? options,
-    Future<LanternSnapshot<T>> Function(LanternCancellationToken?) fetch,
-  ) async {
-    final o = options ?? const GetOptions();
-    LanternAdapterCancellation.checkCanceled(o.cancellation);
-    final local = await _localForSource<T>(key, o.source);
-    LanternAdapterCancellation.checkCanceled(o.cancellation);
-    if (o.source == ReadSource.cacheOnly ||
-        o.source == ReadSource.automatic &&
-            (local.projection == PendingProjection.exactPendingPut ||
-                local.projection == PendingProjection.pendingDelete)) {
-      return local;
-    }
-    final session = _session;
-    if (session != null && !session._networkAllowed) return local;
-    Future<LanternSnapshot<T>> attempt(OfflineSessionWork? work) async {
-      final epoch = await store.transaction(
-        (tx) => tx.changeEpoch(partitionId),
-      );
-      work?.checkCurrent();
-      final server = await fetch(work?.cancellation ?? o.cancellation);
-      work?.checkCurrent();
-      if (session != null &&
-          (server.confirmed.cause == ObservationCause.unauthenticated ||
-              server.confirmed.cause == ObservationCause.permissionDenied)) {
-        await session._pauseFromRead(server.confirmed.cause!);
-        return _localForSource<T>(key, o.source);
-      }
-      _fence();
-      if (server.confirmed.state == ConfirmedState.unknown) {
-        if (server.confirmed.cause == ObservationCause.permissionDenied ||
-            server.confirmed.cause == ObservationCause.unauthenticated ||
-            o.source == ReadSource.serverOnly) {
-          if (server.confirmed.cause == ObservationCause.permissionDenied ||
-              server.confirmed.cause == ObservationCause.unauthenticated) {
-            await store.transaction((tx) async {
-              await tx.invalidateMutationCache(partitionId, key);
-              _fence();
-            });
-          }
-          return _local<T>(key, evidence: server.confirmed, serverOnly: true);
-        }
-        final fallback = await _local<T>(key);
-        if (fallback.confirmed.state == ConfirmedState.unknown) {
-          return _local<T>(key, evidence: server.confirmed);
-        }
-        return fallback;
-      }
-      if (cacheReads) {
-        await store.transaction((tx) async {
-          work?.checkCurrent();
-          if (await tx.generation(partitionId) != generation ||
-              await tx.changeEpoch(partitionId) != epoch) {
-            return;
-          }
-          final c = server.confirmed;
-          if (c.state == ConfirmedState.present) {
-            await tx.putCache(
-              partitionId,
-              OfflineCacheRecord.value(
-                partitionId: partitionId,
-                generation: generation,
-                key: key,
-                entity: c.value as Object,
-                validatedAt: c.observedAt,
-                lastAccessAt: clock().toUtc(),
-              ),
-            );
-          } else if (c.state == ConfirmedState.missing) {
-            await tx.putCache(
-              partitionId,
-              OfflineCacheRecord.missing(
-                partitionId: partitionId,
-                generation: generation,
-                key: key,
-                validatedAt: c.observedAt,
-                lastAccessAt: clock().toUtc(),
-                missingUntil: c.observedAt.add(const Duration(seconds: 30)),
-              ),
-            );
-          }
-          work?.checkCurrent();
-          _fence();
-        });
-      }
-      work?.checkCurrent();
-      _fence();
-      if (await store.transaction((tx) => tx.changeEpoch(partitionId)) !=
-          epoch) {
-        return _local<T>(
-          key,
-          evidence: ConfirmedEvidence<T>(
-            state: ConfirmedState.unknown,
-            origin: ObservationOrigin.none,
-            observedAt: clock().toUtc(),
-            freshness: ObservationFreshness.invalidated,
-          ),
-          serverOnly: o.source == ReadSource.serverOnly,
-        );
-      }
-      return _local<T>(
-        key,
-        evidence: server.confirmed,
-        serverOnly: o.source == ReadSource.serverOnly,
-      );
-    }
-
-    if (session == null) return attempt(null);
-    try {
-      return await session.runtime.readOnce(
-        attempt,
-        cancellation: o.cancellation,
-      );
-    } on OfflineWorkInterruptedException {
-      _fence();
-      LanternAdapterCancellation.checkCanceled(o.cancellation);
-      final fallback = await _localForSource<T>(key, o.source);
-      LanternAdapterCancellation.checkCanceled(o.cancellation);
-      return fallback;
-    }
-  }
-
   @override
   Future<LanternSnapshot<Vertex>> getVertex(
     String key, {
     GetOptions? options,
-  }) => _get(
-    OfflineEntityKey.vertex(key),
-    options,
-    (token) => _direct.getVertex(
-      key,
-      options: GetOptions(
-        source: ReadSource.serverOnly,
-        timeout: options?.timeout,
-        cancellation: token,
-      ),
-    ),
-  );
+  }) async => (await getVertices([key], options: options)).single;
   @override
   Future<List<LanternSnapshot<Vertex>>> getVertices(
     Iterable<String> keys, {
     GetOptions? options,
-  }) async {
-    final input = keys.take(LanternCrud.maxBatchSize + 1).toList();
-    if (input.length > LanternCrud.maxBatchSize) {
-      throw const OfflineArgumentException();
-    }
-    final observed = <String, LanternSnapshot<Vertex>>{};
-    final result = <LanternSnapshot<Vertex>>[];
-    for (final key in input) {
-      result.add(observed[key] ??= await getVertex(key, options: options));
-    }
-    return result;
-  }
+  }) => _readVertices(keys, options: options);
 
   @override
-  Future<LanternSnapshot<Edge>> getEdge(EdgeRef edge, {GetOptions? options}) =>
-      _get(
-        OfflineEntityKey.edge(edge.tail, edge.head),
-        options,
-        (token) => _direct.getEdge(
-          edge,
-          options: GetOptions(
-            source: ReadSource.serverOnly,
-            timeout: options?.timeout,
-            cancellation: token,
-          ),
-        ),
-      );
+  Future<LanternSnapshot<Edge>> getEdge(
+    EdgeRef edge, {
+    GetOptions? options,
+  }) async => (await getEdges([edge], options: options)).single;
   @override
   Future<List<LanternSnapshot<Edge>>> getEdges(
     Iterable<EdgeRef> edges, {
     GetOptions? options,
-  }) async {
-    final input = edges.take(LanternCrud.maxBatchSize + 1).toList();
-    if (input.length > LanternCrud.maxBatchSize) {
-      throw const OfflineArgumentException();
-    }
-    final observed = <OfflineEntityKey, LanternSnapshot<Edge>>{};
-    final result = <LanternSnapshot<Edge>>[];
-    for (final edge in input) {
-      final key = OfflineEntityKey.edge(edge.tail, edge.head);
-      result.add(observed[key] ??= await getEdge(edge, options: options));
-    }
-    return result;
-  }
+  }) => _readEdges(edges, options: options);
 
   @override
   Future<LanternTraversalSnapshot> illuminate(
@@ -614,42 +477,12 @@ final class OfflineLanternDataClient
   Stream<LanternSnapshot<Vertex>> watchVertex(
     String key, {
     WatchOptions? options,
-  }) => _watch(
-    'v:$key:${options?.source}',
-    _unknown<Vertex>,
-    (cancellation) => getVertex(
-      key,
-      options: GetOptions(
-        source: options?.source ?? ReadSource.automatic,
-        cancellation: cancellation,
-      ),
-    ),
-    _lost,
-    options,
-    captureLocal: () =>
-        _localForSource<Vertex>(OfflineEntityKey.vertex(key), options?.source),
-  );
+  }) => watchVertices([key], options: options).map((values) => values.single);
   @override
   Stream<LanternSnapshot<Edge>> watchEdge(
     EdgeRef edge, {
     WatchOptions? options,
-  }) => _watch(
-    'e:${edge.tail.length}:${edge.tail}:${edge.head}:${options?.source}',
-    _unknown<Edge>,
-    (cancellation) => getEdge(
-      edge,
-      options: GetOptions(
-        source: options?.source ?? ReadSource.automatic,
-        cancellation: cancellation,
-      ),
-    ),
-    _lost,
-    options,
-    captureLocal: () => _localForSource<Edge>(
-      OfflineEntityKey.edge(edge.tail, edge.head),
-      options?.source,
-    ),
-  );
+  }) => watchEdges([edge], options: options).map((values) => values.single);
   @override
   Stream<List<LanternSnapshot<Vertex>>> watchVertices(
     Iterable<String> keys, {
