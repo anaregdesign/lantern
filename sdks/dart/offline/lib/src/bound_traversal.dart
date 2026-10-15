@@ -46,10 +46,13 @@ extension _BoundTraversal on OfflineLanternDataClient {
         await tx.invalidateTraversals(partitionId);
       });
 
-  Future<void> _flushTraversalClock() =>
-      _clockFlush ??= _traversalTransaction<void>(
-        (_) async {},
-      ).whenComplete(() => _clockFlush = null);
+  Future<void> _flushTraversalClock() => _clockFlush ??=
+      _traversalTransaction<void>((_) async {}).whenComplete(() {
+        // Final owner close joins the runtime before the facade. Retain an
+        // in-flight failure through that join instead of masking it with a
+        // later closing-only transaction which happens to succeed.
+        if (!_closed && _session?.ended != true) _clockFlush = null;
+      });
 
   // Subtracts only derived eligibility under retained local control. This does
   // not reopen the ordinary read fence or require network/route credentials.

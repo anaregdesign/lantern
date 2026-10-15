@@ -174,6 +174,67 @@ void traversalCloseContract({
       });
     }
 
+    for (final automatic in [false, true]) {
+      test(
+        'C2 running flush storage failure stays failed: automatic=$automatic',
+        () async {
+          await prepare(automatic: automatic);
+          final LanternDataClient data = automatic
+              ? await openHandle()
+              : h.data!;
+          await read(data);
+          final epoch = (await h.record())!.validityEpoch;
+          final entered = Completer<void>(), release = Completer<void>();
+          addTearDown(() {
+            if (!release.isCompleted) release.complete();
+          });
+          store.beforeCommit = () async {
+            store.beforeCommit = null;
+            entered.complete();
+            await release.future;
+            throw StateError('failed running flush');
+          };
+          h.now = h.now.subtract(const Duration(hours: 1));
+          if (automatic) {
+            await data.mutations.submit(MutationRequest.putVertices([]));
+            await settleEvents();
+            // Advance the effective scheduling floor after installing the job;
+            // pending invalidation remains owed even when raw time catches up.
+            h.now = h.now.add(const Duration(hours: 1, seconds: 1));
+            await data.mutations.submit(MutationRequest.putVertices([]));
+          } else {
+            h.data!.clock();
+          }
+          await entered.future;
+          final close = data.close();
+          final outcome = close.then<Object?>(
+            (_) => null,
+            onError: (Object error) => error,
+          );
+          await settleEvents();
+          release.complete();
+          expect(
+            await outcome,
+            isA<LanternDataException>().having(
+              (error) => error.reason,
+              'reason',
+              DataFailure.storageBlocked,
+            ),
+          );
+          expect(store.invalidationAttempts, 1);
+          expect(
+            await store.inner.transaction(
+              (tx) => tx.traversalValidityEpoch(h.scope),
+            ),
+            epoch,
+          );
+          expect(identical(close, data.close()), isTrue);
+          expect(storeCloses, 0);
+          expect(store.owner?.releases ?? 0, 0);
+        },
+      );
+    }
+
     test('C3 final handle settles debt before one owner release', () async {
       await prepare(automatic: true);
       final one = await openHandle(), two = await openHandle();
