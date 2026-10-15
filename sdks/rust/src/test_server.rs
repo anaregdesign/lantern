@@ -172,6 +172,128 @@ enum ReadinessServerLog {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum HealthObservation {
+    NotProbed,
+    TransportFailure,
+    HttpFailure,
+    DecodeFailure,
+    Missing,
+    Serving,
+    NotServing,
+    Unknown,
+    ServiceUnknown,
+    Unrecognized,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CapabilityObservation {
+    NotProbed,
+    TransportFailure,
+    HttpFailure,
+    DecodeFailure,
+    Missing,
+    Ready,
+    NotReady,
+    Uncertified,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ObservationStatus {
+    NotObserved,
+    FirstObserved,
+    Observed,
+    Unavailable,
+    Truncated,
+    Incomplete,
+    Invalid,
+    Stale,
+    Exhausted,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum InternalReadinessReason {
+    NotEvaluated,
+    Ready,
+    RestartWait,
+    ClockFault,
+    NativeRevisionUnavailable,
+    StoreRevisionRefusal,
+    Context,
+    Unavailable,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WorkerObservation {
+    NeverStarted,
+    InProgress,
+    Completed,
+    Published,
+    StoppedCanceled,
+    Stopped,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum HealthBranch {
+    NotObserved,
+    StaticRejection,
+    RuntimeRejection,
+    Serving,
+    Error,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct InternalReadinessObservation {
+    version: u8,
+    sequence: u64,
+    worker_started: u64,
+    worker_done: u64,
+    worker_publish: u64,
+    worker_state: WorkerObservation,
+    worker_reason: InternalReadinessReason,
+    worker_age_ms: u64,
+    health_count: u64,
+    health_branch: HealthBranch,
+    health_reason: InternalReadinessReason,
+    exhausted: bool,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PassiveReadinessObservation {
+    status: ObservationStatus,
+    age_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<InternalReadinessObservation>,
+}
+impl PassiveReadinessObservation {
+    fn valid(&self) -> bool {
+        match (&self.status, &self.state) {
+            (
+                ObservationStatus::FirstObserved
+                | ObservationStatus::Observed
+                | ObservationStatus::Stale
+                | ObservationStatus::Exhausted,
+                Some(s),
+            ) => {
+                s.version == 1
+                    && (1..=64).contains(&s.sequence)
+                    && s.worker_publish <= s.worker_done
+                    && s.worker_done <= s.worker_started
+            }
+            (
+                ObservationStatus::NotObserved
+                | ObservationStatus::Unavailable
+                | ObservationStatus::Truncated
+                | ObservationStatus::Incomplete
+                | ObservationStatus::Invalid,
+                None,
+            ) => true,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReadinessDiagnostic {
     reason: ReadinessReason,
@@ -183,6 +305,11 @@ struct ReadinessDiagnostic {
     child_exited: bool,
     child_exit_code: i64,
     server_log: ReadinessServerLog,
+    last_health: HealthObservation,
+    last_capability: CapabilityObservation,
+    health_probes: u32,
+    capability_probes: u32,
+    observation: PassiveReadinessObservation,
 }
 
 fn native_startup_failure(path: &std::path::Path) -> String {
@@ -201,6 +328,7 @@ fn native_startup_failure(path: &std::path::Path) -> String {
                 if let Ok(diagnostic) = serde_json::from_str::<ReadinessDiagnostic>(raw)
                     && diagnostic.node < 8
                     && diagnostic.http_status <= 599
+                    && diagnostic.observation.valid()
                     && let Ok(safe) = serde_json::to_string(&diagnostic)
                 {
                     message.push(' ');
@@ -478,7 +606,15 @@ mod diagnostic_tests {
             "reason": "child_exit", "node": 0, "port": 12345,
             "elapsed_ms": 37, "probe": "dial", "http_status": 0,
             "child_exited": true, "child_exit_code": 23,
-            "server_log": "bind_address_in_use"
+            "server_log": "bind_address_in_use",
+            "last_health": "not_serving", "last_capability": "not_probed",
+            "health_probes": 1, "capability_probes": 0,
+            "observation": {"status":"first_observed", "age_ms":0, "state": {
+                "version":1, "sequence":1, "worker_started":1, "worker_done":1,
+                "worker_publish":1, "worker_state":"published", "worker_reason":"clock_fault",
+                "worker_age_ms":5, "health_count":1, "health_branch":"static_rejection",
+                "health_reason":"not_evaluated", "exhausted":false
+            }}
         });
         fs::write(&path, format!("private-token-key-body\nauthfixture_failure:readiness\nauthfixture_readiness:{record}\n")).unwrap();
         let retained = native_startup_failure(&path);
@@ -488,6 +624,10 @@ mod diagnostic_tests {
         assert!(retained.contains(r#""child_exit_code":23"#));
         assert!(retained.contains(r#""port":12345"#));
         assert!(retained.contains(r#""elapsed_ms":37"#));
+        assert!(retained.contains(r#""last_capability":"not_probed""#));
+        assert!(retained.contains(r#""worker_reason":"clock_fault""#));
+        assert!(retained.contains(r#""health_reason":"not_evaluated""#));
+        assert!(retained.len() < 4096);
         assert!(!retained.contains("private-token-key-body"));
 
         let dir = tempfile::tempdir().unwrap();
@@ -501,9 +641,36 @@ mod diagnostic_tests {
             ("port", serde_json::json!(65536)),
             ("elapsed_ms", serde_json::json!(-1)),
             ("http_status", serde_json::json!(600)),
+            ("last_health", serde_json::json!("private-token-key-body")),
+            (
+                "last_capability",
+                serde_json::json!("private-token-key-body"),
+            ),
+            ("health_probes", serde_json::json!(-1)),
         ] {
             let mut invalid = record.clone();
             invalid[field] = value;
+            fs::write(
+                &path,
+                format!("authfixture_failure:readiness\nauthfixture_readiness:{invalid}\n"),
+            )
+            .unwrap();
+            assert_eq!(
+                native_startup_failure(&path),
+                "native fixture failed certified readiness: readiness"
+            );
+        }
+        for (field, value) in [
+            ("version", serde_json::json!(2)),
+            ("sequence", serde_json::json!(65)),
+            ("worker_publish", serde_json::json!(2)),
+            ("worker_reason", serde_json::json!("private-token-key-body")),
+            ("health_reason", serde_json::json!("private-token-key-body")),
+            ("worker_age_ms", serde_json::json!(-1)),
+            ("body", serde_json::json!("private-token-key-body")),
+        ] {
+            let mut invalid = record.clone();
+            invalid["observation"]["state"][field] = value;
             fs::write(
                 &path,
                 format!("authfixture_failure:readiness\nauthfixture_readiness:{invalid}\n"),

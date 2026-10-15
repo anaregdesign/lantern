@@ -357,8 +357,25 @@ void main() {
       final client = await open(store, clock);
       addTearDown(client.close);
       final key = OfflineEntityKey.edge('t', 'h');
-      await store.transaction(
-        (tx) async => tx.putCache(
+      await store.transaction((tx) async {
+        for (final endpoint in ['t', 'h']) {
+          await tx.putCache(
+            binding().stableIdentity,
+            OfflineCacheRecord.value(
+              partitionId: binding().stableIdentity,
+              generation: 0,
+              key: OfflineEntityKey.vertex(endpoint),
+              entity: Vertex(
+                key: endpoint,
+                value: VertexValue.nil(),
+                expiration: null,
+              ),
+              validatedAt: clock.now,
+              lastAccessAt: clock.now,
+            ),
+          );
+        }
+        await tx.putCache(
           binding().stableIdentity,
           OfflineCacheRecord.value(
             partitionId: binding().stableIdentity,
@@ -368,8 +385,8 @@ void main() {
             validatedAt: clock.now,
             lastAccessAt: clock.now,
           ),
-        ),
-      );
+        );
+      });
       await client.mutations.submit(
         MutationRequest.putEdges([EdgeInput(tail: 't', head: 'h', weight: 2)]),
       );

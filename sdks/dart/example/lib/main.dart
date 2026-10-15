@@ -119,7 +119,10 @@ class LanternExampleApp extends StatelessWidget {
                 offlineSession: account.offline!,
                 offlineCdcPinnedResponder:
                     configuration!.offlineCdcPinnedResponder,
-                currentAuthorityBinding: () => account.session.authorityBinding,
+                currentBinding: () => LanternSessionBinding.native(
+                  account.session,
+                  securityDomain: 'lantern-example',
+                ),
                 personalPrefix: account.session.personalPrefix!,
               ),
             )
@@ -286,14 +289,14 @@ final class _DiscoveryScreen extends StatefulWidget {
     required this.client,
     required this.offlineSession,
     required this.offlineCdcPinnedResponder,
-    this.currentAuthorityBinding,
+    this.currentBinding,
     this.personalPrefix,
   });
 
   final LanternClient client;
   final OfflineDemoSession offlineSession;
   final bool offlineCdcPinnedResponder;
-  final String Function()? currentAuthorityBinding;
+  final LanternSessionBinding Function()? currentBinding;
   final String? personalPrefix;
 
   @override
@@ -302,6 +305,14 @@ final class _DiscoveryScreen extends StatefulWidget {
 
 final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
   String get _prefix => widget.personalPrefix ?? 'flutter-demo:';
+  LanternSessionBinding _changeBinding() =>
+      widget.currentBinding?.call() ??
+      LanternSessionBinding.application(
+        serviceOrigin: widget.client.endpoint,
+        securityDomain: 'lantern-example-manual',
+        accountIdentity: widget.offlineSession.partitionId,
+        authorityBinding: 'immutable-manual-session',
+      );
   static const _maxVisibleRows = 200;
 
   late final AppLifecycleListener _lifecycle;
@@ -573,11 +584,18 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
                           '${widget.personalPrefix ?? 'flutter-offline:'}counter',
                       identitySource: widget.offlineCdcPinnedResponder
                           ? LanternScopedChangeSource(
-                              client: widget.client,
-                              prefix: widget.personalPrefix ?? '',
-                              responderId: widget.client.endpoint.toString(),
-                              currentAuthorityBinding:
-                                  widget.currentAuthorityBinding,
+                              source: LanternChangeSource(
+                                route: LanternSingleResponderRoute.certified(
+                                  client: widget.client,
+                                  responderId: widget.client.endpoint
+                                      .toString(),
+                                  isCurrent: () =>
+                                      !widget.offlineSession.isLoggedOut,
+                                ),
+                                binding: _changeBinding(),
+                                currentBinding: _changeBinding,
+                                prefix: widget.personalPrefix ?? '',
+                              ),
                             )
                           : null,
                       identityAllowed: () => !widget.offlineSession.isLoggedOut,

@@ -268,6 +268,11 @@ final class _MemoryTransaction
   void invalidateMutationCache(String partitionId, OfflineEntityKey key) {
     deleteCache(partitionId, key);
     final p = _state.partition(partitionId);
+    if (key.kind == OfflineEntityKind.vertex) {
+      p.cache.removeWhere(
+        (_, record) => record.key.kind == OfflineEntityKind.edge,
+      );
+    }
     p.changeEpoch = _checkedIncrement(p.changeEpoch);
     _changedPartitions.add(partitionId);
     observationInvalidated.add(partitionId);
@@ -382,6 +387,11 @@ final class _MemoryTransaction
     }
     for (final key in frame.keys) {
       partition.cache.remove(key.canonical);
+      if (key.kind == OfflineEntityKind.vertex) {
+        partition.cache.removeWhere(
+          (_, record) => record.key.kind == OfflineEntityKind.edge,
+        );
+      }
     }
     if (frame.cursor != null) partition.scopedCursor = frame.cursor;
     partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
@@ -434,6 +444,16 @@ final class _MemoryTransaction
   }
 
   @override
+  void advanceReadEpoch(String partitionId) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final p = _state.partition(partitionId);
+    p.changeEpoch = _checkedIncrement(p.changeEpoch);
+    _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
+  }
+
+  @override
   bool hasUnknownResident(String partitionId, OfflineEntityKey key) {
     _ensureOpen();
     _validatePartition(partitionId);
@@ -447,15 +467,21 @@ final class _MemoryTransaction
   List<OfflineEntityKey> unknownResidents(
     String partitionId, {
     required int limit,
+    String? after,
   }) {
     _ensureOpen();
     _validatePartition(partitionId);
     if (limit < 1 || limit > offlineMaxResidentRevalidationBatch) {
       throw const OfflineArgumentException();
     }
-    return List<OfflineEntityKey>.unmodifiable(
-      _state.partition(partitionId).unknownResidents.values.take(limit),
-    );
+    final index = _state.partition(partitionId).unknownResidents;
+    final result = <OfflineEntityKey>[];
+    var key = after == null ? index.firstKey() : index.firstKeyAfter(after);
+    while (key != null && result.length < limit) {
+      result.add(index[key]!);
+      key = index.firstKeyAfter(key);
+    }
+    return List.unmodifiable(result);
   }
 
   @override

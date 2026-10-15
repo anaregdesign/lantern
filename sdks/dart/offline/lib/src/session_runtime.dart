@@ -12,6 +12,9 @@ enum OfflineSessionLane {
   /// Local expiry/status maintenance; never acquires a network permit.
   local,
 
+  /// One owned public tail, without monopolizing a finite read permit.
+  incoming,
+
   /// Original receipt status recovery; reserves both read and send capacity.
   reconcile,
 
@@ -69,6 +72,7 @@ final class OfflineSessionBudget {
     this.maxReadJobs = 128,
     this.maxTraversalJobs = 64,
     this.maxLocalJobs = 128,
+    this.maxIncomingJobs = 16,
   }) {
     if (maxSends < 1 ||
         maxReads < 2 ||
@@ -78,7 +82,8 @@ final class OfflineSessionBudget {
         maxSendJobs < 1 ||
         maxReadJobs < 1 ||
         maxTraversalJobs < 1 ||
-        maxLocalJobs < 1) {
+        maxLocalJobs < 1 ||
+        maxIncomingJobs < 1) {
       throw const LanternDataException(DataFailure.capacity);
     }
   }
@@ -87,8 +92,12 @@ final class OfflineSessionBudget {
   final int maxSends, maxReads, maxTraversals, maxRuntimes;
 
   /// Registered slots, including in-flight and dirty work, have global caps.
-  final int maxSendJobs, maxReadJobs, maxTraversalJobs, maxLocalJobs;
-  final List<int> _jobCounts = [0, 0, 0, 0];
+  final int maxSendJobs,
+      maxReadJobs,
+      maxTraversalJobs,
+      maxLocalJobs,
+      maxIncomingJobs;
+  final List<int> _jobCounts = [0, 0, 0, 0, 0];
   final Set<OfflineSessionRuntime> _owners = {};
   final Queue<OfflineSessionRuntime> _waiting = Queue();
   int _sends = 0, _reads = 0, _traversals = 0;
@@ -101,6 +110,7 @@ final class OfflineSessionBudget {
       maxReadJobs,
       maxTraversalJobs,
       maxLocalJobs,
+      maxIncomingJobs,
     ][category];
     if (_jobCounts[category] == cap) {
       throw const LanternDataException(DataFailure.capacity);
@@ -267,6 +277,16 @@ final class OfflineSessionRuntime {
   /// Concurrent network work, excluding local status/expiry maintenance.
   int get networkInFlightCount => _flights.length - _locals;
 
+  /// Finite network work; an idle connected CDC tail is not synchronization.
+  int get finiteNetworkInFlightCount =>
+      networkInFlightCount -
+      _jobs.values
+          .where(
+            (job) =>
+                job.lane == OfflineSessionLane.incoming && job.flight != null,
+          )
+          .length;
+
   /// Retained job slots include in-flight work and its one dirty follow-up.
   int get jobCount => _jobs.length;
 
@@ -322,7 +342,9 @@ final class OfflineSessionRuntime {
       final category = _jobs.values
           .where((j) => _category(j.lane) == _category(lane))
           .length;
-      final bound = lane == OfflineSessionLane.local
+      final bound = lane == OfflineSessionLane.incoming
+          ? 1
+          : lane == OfflineSessionLane.local
           ? maxLocalJobs
           : _usesSend(lane)
           ? maxSendJobs
@@ -410,8 +432,14 @@ final class OfflineSessionRuntime {
   }) async {
     LanternAdapterCancellation.checkCanceled(cancellation);
     final current = Zone.current[_currentWork];
-    if (current is (OfflineSessionRuntime, OfflineSessionWork) &&
-        identical(current.$1, this)) {
+    if (current
+            is (
+              OfflineSessionRuntime,
+              OfflineSessionWork,
+              OfflineSessionLane,
+            ) &&
+        identical(current.$1, this) &&
+        _usesRead(current.$3)) {
       current.$2.checkCurrent();
       final value = await read(current.$2);
       LanternAdapterCancellation.checkCanceled(cancellation);
@@ -478,11 +506,11 @@ final class OfflineSessionRuntime {
     }
   }
 
-  bool _scopePermit(OfflineSessionLane lane) =>
+  bool _scopePermit(OfflineSessionLane lane, DateTime cutoff) =>
       (lane == OfflineSessionLane.local
           ? _locals == 0
           : !_networkPaused &&
-                !(_networkNotBefore?.isAfter(_now()) ?? false)) &&
+                !(_networkNotBefore?.isAfter(cutoff) ?? false)) &&
       (!_usesSend(lane) || _sends < maxSends) &&
       (!_usesRead(lane) || _reads < maxReads) &&
       (lane != OfflineSessionLane.traversal ||
@@ -491,16 +519,17 @@ final class OfflineSessionRuntime {
   void _pump() {
     if (_closed || _suspended || _pumping) return;
     _pumping = true;
+    DateTime? examinedThrough;
     try {
       _checkOwner();
-      final now = _now();
+      final now = examinedThrough = _now();
       while (true) {
         _Job? selected;
         // Weighted RR 2/2/2/1 with FIFO rotation within each finite lane.
         for (var turn = 0; turn < _weights.length; turn++) {
           final lane = _weights[_laneCursor];
           _laneCursor = (_laneCursor + 1) % _weights.length;
-          if (!_scopePermit(lane)) continue;
+          if (!_scopePermit(lane, now)) continue;
           final queue = _queues[lane]!;
           for (var i = 0, count = queue.length; i < count; i++) {
             final job = queue.removeFirst();
@@ -531,7 +560,7 @@ final class OfflineSessionRuntime {
       onError(error, stack);
     } finally {
       _pumping = false;
-      _arm(wakeDue: false);
+      _arm(wakeDue: false, examinedThrough: examinedThrough);
     }
   }
 
@@ -568,7 +597,7 @@ final class OfflineSessionRuntime {
             work.checkCurrent();
             await runZoned(
               () => run(work),
-              zoneValues: {_currentWork: (this, work)},
+              zoneValues: {_currentWork: (this, work, job.lane)},
             );
           } catch (error, stack) {
             if (!token.isCanceled && !_closed && !_suspended) {
@@ -606,7 +635,7 @@ final class OfflineSessionRuntime {
     if (job.lane != OfflineSessionLane.local) onNetworkActivity?.call();
   }
 
-  void _arm({bool wakeDue = true}) {
+  void _arm({bool wakeDue = true, DateTime? examinedThrough}) {
     _alarm?.cancel();
     _alarm = null;
     final epoch = ++_alarmEpoch;
@@ -628,7 +657,12 @@ final class OfflineSessionRuntime {
           : job.due!;
       if (!due.isAfter(now)) {
         budget._wait(this);
-        if (wakeDue) first = now;
+        // A deadline crossed during the pump has not been examined yet.
+        // Wake once; the next pump leaves permit-blocked work to release events.
+        if (wakeDue ||
+            (examinedThrough != null && due.isAfter(examinedThrough))) {
+          first = now;
+        }
         continue;
       }
       if (first == null || due.isBefore(first)) first = due;
@@ -744,6 +778,7 @@ final class OfflineSessionRuntime {
 
 const _weights = [
   OfflineSessionLane.local,
+  OfflineSessionLane.incoming,
   OfflineSessionLane.reconcile,
   OfflineSessionLane.reconcile,
   OfflineSessionLane.send,
@@ -758,7 +793,9 @@ bool _usesRead(OfflineSessionLane lane) =>
     lane == OfflineSessionLane.read ||
     lane == OfflineSessionLane.reconcile ||
     lane == OfflineSessionLane.traversal;
-int _category(OfflineSessionLane lane) => lane == OfflineSessionLane.local
+int _category(OfflineSessionLane lane) => lane == OfflineSessionLane.incoming
+    ? 4
+    : lane == OfflineSessionLane.local
     ? 3
     : _usesSend(lane)
     ? 0

@@ -32,6 +32,7 @@ part 'native_registration.dart';
 part 'native_registration_models.dart';
 part 'changes.dart';
 part 'scoped_changes.dart';
+part 'change_source.dart';
 part 'crud.dart';
 part 'data.dart';
 part 'decay.dart';

@@ -168,7 +168,7 @@ void main() {
     );
   });
   test(
-    'authorization and availability errors hide cache without retry',
+    'authorization hides cache but availability preserves history without retry',
     () async {
       for (final error in [
         const OfflineRemoteFailure(
@@ -197,7 +197,8 @@ void main() {
         s.fail(error);
         await stopped;
         expect(source.opens.length, before + 1);
-        expect(await cursor(), isNull);
+        final available = error.kind == OfflineRemoteErrorKind.unavailable;
+        expect(await cursor(), available ? [1] : isNull);
         expect(
           await store.transaction(
             (tx) => tx.hasUnknownResident(
@@ -205,7 +206,7 @@ void main() {
               const OfflineEntityKey.vertex('resident'),
             ),
           ),
-          isTrue,
+          !available,
         );
       }
     },

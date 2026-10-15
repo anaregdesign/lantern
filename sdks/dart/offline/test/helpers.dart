@@ -479,7 +479,9 @@ final class _DelayedTransaction implements OfflineStoreTransaction {
   Future<List<OfflineEntityKey>> unknownResidents(
     String partitionId, {
     required int limit,
-  }) async => await inner.unknownResidents(partitionId, limit: limit);
+    String? after,
+  }) async =>
+      await inner.unknownResidents(partitionId, limit: limit, after: after);
 
   @override
   Future<bool> completeUnknownResident(
@@ -756,6 +758,10 @@ final class _DelayedTransaction implements OfflineStoreTransaction {
     String partitionId,
     OfflineScopedChangeFrame frame,
   ) async => await inner.applyScopedChangeFrame(partitionId, frame);
+
+  @override
+  Future<void> advanceReadEpoch(String partitionId) async =>
+      await inner.advanceReadEpoch(partitionId);
 
   @override
   Future<void> resetScopedChangeCursor(

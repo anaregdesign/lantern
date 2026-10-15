@@ -38,6 +38,7 @@ export 'src/remote.dart';
 export 'src/repository.dart';
 export 'src/scoped_change_conformance.dart';
 export 'src/scoped_change_consumer.dart';
+export 'src/scoped_change_source.dart';
 export 'src/scoped_change_store.dart';
 export 'src/store.dart';
 export 'src/types.dart';

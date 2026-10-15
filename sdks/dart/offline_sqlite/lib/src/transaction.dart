@@ -199,6 +199,13 @@ final class _SqlTransaction
     OfflineEntityKey key,
   ) => _run(() async {
     await deleteCache(partitionId, key);
+    if (key.kind == OfflineEntityKind.vertex) {
+      await sql.delete(
+        'cache',
+        where: 'partition_id=? AND entity_key>=? AND entity_key<?',
+        whereArgs: [partitionId, 'e:', 'e;'],
+      );
+    }
     final p = await _partition(partitionId);
     await sql.update(
       'partitions',
@@ -1186,6 +1193,13 @@ final class _SqlTransaction
         where: 'partition_id=? AND entity_key=?',
         whereArgs: [partitionId, key.canonical],
       );
+      if (key.kind == OfflineEntityKind.vertex) {
+        await sql.delete(
+          'cache',
+          where: 'partition_id=? AND entity_key>=? AND entity_key<?',
+          whereArgs: [partitionId, 'e:', 'e;'],
+        );
+      }
     }
     if (frame.cursor != null) {
       await sql.update(
@@ -1257,6 +1271,19 @@ final class _SqlTransaction
       _run(() async => (await _partition(partitionId))['change_epoch']! as int);
 
   @override
+  Future<void> advanceReadEpoch(String partitionId) => _atomic(() async {
+    final p = await _partition(partitionId);
+    await sql.update(
+      'partitions',
+      {'change_epoch': _checkedIncrement(p['change_epoch']! as int)},
+      where: 'partition_id=?',
+      whereArgs: [partitionId],
+    );
+    changed.add(partitionId);
+    observationInvalidated.add(partitionId);
+  });
+
+  @override
   Future<bool> hasUnknownResident(String partitionId, OfflineEntityKey key) =>
       _run(() async {
         _ensureOpen();
@@ -1275,6 +1302,7 @@ final class _SqlTransaction
   Future<List<OfflineEntityKey>> unknownResidents(
     String partitionId, {
     required int limit,
+    String? after,
   }) => _run(() async {
     _ensureOpen();
     _validatePartition(partitionId);
@@ -1284,8 +1312,10 @@ final class _SqlTransaction
     final rows = await sql.query(
       'recovery',
       columns: ['entity_key'],
-      where: 'partition_id=?',
-      whereArgs: [partitionId],
+      where: after == null
+          ? 'partition_id=?'
+          : 'partition_id=? AND entity_key>?',
+      whereArgs: [partitionId, ?after],
       orderBy: 'entity_key',
       limit: limit,
     );

@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"github.com/anaregdesign/lantern/server/internal/readinessdiag"
 	"github.com/anaregdesign/lantern/server/readiness"
+	"io"
 	"log/slog"
 	"time"
 )
@@ -20,25 +22,66 @@ func NewSecurityWorkers(runtime *SecurityRuntime, peer *PeerIdentityRuntime, pol
 	return &SecurityWorkers{runtime, peer, policy, gate, logger}
 }
 func (r *SecurityRuntime) Ready(ctx context.Context) bool {
+	ready, _ := r.readyObserved(ctx)
+	return ready
+}
+func (r *SecurityRuntime) readyObserved(ctx context.Context) (bool, string) {
 	if r == nil {
-		return false
+		return false, "unavailable"
 	}
 	if r.peer != nil && r.peer.CheckWorkload(ctx) != nil {
-		return false
+		return false, "unavailable"
 	}
 	if r.mode == "off" {
-		return true
+		return true, "ready"
 	}
 	if r.current != nil {
-		return r.current.Ready(ctx)
+		ready := r.current.Ready(ctx)
+		if ready {
+			return true, "ready"
+		}
+		return false, "unavailable"
 	}
 	if r.native == nil {
-		return false
+		return false, "unavailable"
 	}
 	current, ok := r.native.Store().Current()
-	return ok && r.authorityCheck(ctx, current) == nil
+	if !ok {
+		return false, "native_revision_unavailable"
+	}
+	reason, err := r.authorityCheckObserved(ctx, current)
+	return err == nil, reason
+}
+
+// ObserveReadiness is a native fixture composition hook, called before Run or
+// listener serving. It changes only passive observation, never configuration.
+func (w *SecurityWorkers) ObserveReadiness(out io.Writer) {
+	if w != nil && w.runtime != nil {
+		w.runtime.readinessObservation = readinessdiag.New(out)
+	}
+}
+
+func (w *SecurityWorkers) updateReadiness(ctx context.Context) {
+	var observation *readinessdiag.Observer
+	if w.runtime != nil {
+		observation = w.runtime.readinessObservation
+	}
+	observation.WorkerStart()
+	ready, reason := w.runtime.readyObserved(ctx)
+	if w.peer != nil {
+		ready = ready && w.peer.CheckWorkload(ctx) == nil
+		if !ready && reason == "ready" {
+			reason = "unavailable"
+		}
+	}
+	observation.WorkerDone(reason)
+	w.gate.SetServingPermission(ready)
+	observation.WorkerPublished()
 }
 func (w *SecurityWorkers) Run(ctx context.Context) error {
+	if w.runtime != nil {
+		defer func() { w.runtime.readinessObservation.WorkerStopped(ctx.Err() != nil) }()
+	}
 	workerCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	renewed := make(chan struct{})
@@ -51,14 +94,7 @@ func (w *SecurityWorkers) Run(ctx context.Context) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	count := 0
-	update := func() {
-		ready := w.runtime.Ready(ctx)
-		if w.peer != nil {
-			ready = ready && w.peer.CheckWorkload(ctx) == nil
-		}
-		w.gate.SetServingPermission(ready)
-	}
-	update()
+	w.updateReadiness(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -75,7 +111,7 @@ func (w *SecurityWorkers) Run(ctx context.Context) error {
 					w.logger.Warn("peer membership reload rejected", "reason", w.peer.store.FaultReason())
 				}
 			}
-			update()
+			w.updateReadiness(ctx)
 		}
 	}
 }

@@ -242,6 +242,206 @@ Future<void> runScopedChangeStoreConformanceSuite(
   } on OfflineChangeGapException {
     /* required fail-closed response */
   }
+
+  // Availability advances publication fences without renewing retained history.
+  await store.transaction((tx) => tx.resetScopedChangeCursor(partition, first));
+  await cache('tail');
+  await cache('head');
+  await cache('unrelated');
+  const edgeKey = OfflineEntityKey.edge('tail', 'head');
+  Future<void> cacheEdge() => store.transaction((tx) async {
+    await tx.putCache(
+      partition,
+      OfflineCacheRecord.value(
+        partitionId: partition,
+        generation: await tx.generation(partition),
+        key: edgeKey,
+        entity: Edge(
+          tail: 'tail',
+          head: 'head',
+          weight: 3,
+          expiration: now.add(const Duration(hours: 1)),
+        ),
+        validatedAt: now,
+        lastAccessAt: now,
+      ),
+    );
+  });
+  Future<OfflineCacheRecord?> retainedEdge() =>
+      store.transaction((tx) => tx.getCache(partition, edgeKey));
+  await cacheEdge();
+  final beforeHistory = await retainedEdge();
+  final beforeAvailability = await store.transaction(
+    (tx) => tx.changeEpoch(partition),
+  );
+  await store.transaction((tx) => tx.advanceReadEpoch(partition));
+  store = await reopen(store);
+  final afterHistory = await retainedEdge();
+  _require(
+    afterHistory != null &&
+        beforeHistory != null &&
+        afterHistory.validatedAt == beforeHistory.validatedAt &&
+        afterHistory.expiration == beforeHistory.expiration &&
+        afterHistory.edge?.weight == beforeHistory.edge?.weight &&
+        await cached('tail') &&
+        await cached('head') &&
+        _equal(await cursor(), first.toBytes()) &&
+        await store.transaction((tx) => tx.changeEpoch(partition)) ==
+            beforeAvailability + 1,
+    'availability retains original history/cursor and advances epoch across reopen',
+  );
+  try {
+    await store.transaction((tx) async {
+      await tx.advanceReadEpoch(partition);
+      await tx.applyScopedChangeFrame(
+        partition,
+        OfflineScopedChangeFrame(
+          keys: const [OfflineEntityKey.vertex('tail')],
+          cursor: last,
+        ),
+      );
+      throw const OfflineCanceledException();
+    });
+  } on OfflineCanceledException {
+    /* epoch, dependencies and cursor are one transaction */
+  }
+  _require(
+    await retainedEdge() != null &&
+        await cached('tail') &&
+        _equal(await cursor(), first.toBytes()) &&
+        await store.transaction((tx) => tx.changeEpoch(partition)) ==
+            beforeAvailability + 1,
+    'rollback preserves epoch, endpoint, Edge and completion cursor',
+  );
+  await store.transaction(
+    (tx) => tx.applyScopedChangeFrame(
+      partition,
+      OfflineScopedChangeFrame(
+        keys: const [OfflineEntityKey.vertex('tail')],
+        cursor: last,
+      ),
+    ),
+  );
+  store = await reopen(store);
+  _require(
+    await retainedEdge() == null &&
+        !await cached('tail') &&
+        await cached('head') &&
+        await cached('unrelated') &&
+        _equal(await cursor(), last.toBytes()),
+    'Vertex invalidation hides dependent Edge without evicting unrelated Vertices',
+  );
+  await cache('tail');
+  await cacheEdge();
+  await store.transaction(
+    (tx) => tx.invalidateMutationCache(
+      partition,
+      const OfflineEntityKey.vertex('head'),
+    ),
+  );
+  _require(
+    await retainedEdge() == null &&
+        !await cached('head') &&
+        await cached('tail') &&
+        await cached('unrelated'),
+    'Vertex settlement invalidates dependent Edge evidence',
+  );
+
+  const range = 'scoped-resident-range';
+  final identities = [
+    for (var i = 0; i < 8; i++) OfflineEntityKey.vertex('key:$i'),
+  ];
+  await store.transaction((tx) async {
+    for (final key in identities) {
+      await tx.putCache(
+        range,
+        OfflineCacheRecord.missing(
+          partitionId: range,
+          generation: await tx.generation(range),
+          key: key,
+          validatedAt: now,
+          lastAccessAt: now,
+          missingUntil: now.add(const Duration(minutes: 1)),
+        ),
+      );
+    }
+    await tx.resetScopedChangeCursor(range, first);
+  });
+  Future<List<OfflineEntityKey>> page({String? after}) => store.transaction(
+    (tx) => tx.unknownResidents(range, limit: 3, after: after),
+  );
+  final firstPage = await page();
+  _require(firstPage.length == 3, 'bounded first resident range');
+  final boundary = firstPage.last.canonical;
+  await store.transaction((tx) async {
+    final epoch = await tx.changeEpoch(range);
+    for (final key in firstPage) {
+      await tx.putCache(
+        range,
+        OfflineCacheRecord.missing(
+          partitionId: range,
+          generation: await tx.generation(range),
+          key: key,
+          validatedAt: now,
+          lastAccessAt: now,
+          missingUntil: now.add(const Duration(minutes: 1)),
+        ),
+      );
+      _require(
+        await tx.completeUnknownResident(range, key, expectedEpoch: epoch),
+        'current completion removes page identity',
+      );
+      await tx.deleteCache(range, key);
+    }
+    // Reintroduce one identity behind the boundary, without recreating the
+    // removed boundary itself. Scheduling position is not durable completion.
+    await tx.putCache(
+      range,
+      OfflineCacheRecord.missing(
+        partitionId: range,
+        generation: await tx.generation(range),
+        key: firstPage.first,
+        validatedAt: now,
+        lastAccessAt: now,
+        missingUntil: now.add(const Duration(minutes: 1)),
+      ),
+    );
+    await tx.resetScopedChangeCursor(range, first);
+  });
+  final secondPage = await page(after: boundary);
+  final thirdPage = await page(after: secondPage.last.canonical);
+  final later = [...secondPage, ...thirdPage];
+  _require(
+    secondPage.length == 3 &&
+        thirdPage.length == 2 &&
+        later.toSet().length == 5 &&
+        later.every((key) => !firstPage.contains(key)),
+    'exclusive range continues past removed boundary without skips or duplicates',
+  );
+  _require(
+    (await page(after: thirdPage.last.canonical)).isEmpty &&
+        (await page()).first == firstPage.first,
+    'range exhaustion wraps to reintroduced earlier Unknown identity',
+  );
+  store = await reopen(store);
+  final reopened = await page();
+  _require(
+    reopened.first == firstPage.first && reopened.length == 3,
+    'new ephemeral cursor reaches unresolved residents after actual reopen',
+  );
+  await store.transaction((tx) async {
+    for (final key in [firstPage.first, ...later]) {
+      _require(
+        await tx.hasUnknownResident(range, key) &&
+            await tx.getCache(range, key) == null,
+        'pagination/reopen never resolves Unknown or publishes a cached value',
+      );
+    }
+    _require(
+      !await tx.hasUnknownResident(range, firstPage.last),
+      'removed boundary stays removed across reopen',
+    );
+  });
 }
 
 bool _equal(List<int>? a, List<int> b) =>

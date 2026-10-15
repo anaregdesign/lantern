@@ -182,6 +182,24 @@ Future<void> runOfflineDataClientConformance({
     }
     now = client.clock();
     await store.transaction((tx) async {
+      // Independently confirmed Edge evidence requires live endpoint evidence.
+      for (final key in ['t', 'h']) {
+        await tx.putCache(
+          binding.stableIdentity,
+          OfflineCacheRecord.value(
+            partitionId: binding.stableIdentity,
+            generation: 0,
+            key: OfflineEntityKey.vertex(key),
+            entity: Vertex(
+              key: key,
+              value: VertexValue.nil(),
+              expiration: now.add(const Duration(minutes: 1)),
+            ),
+            validatedAt: now,
+            lastAccessAt: now,
+          ),
+        );
+      }
       await tx.putCache(
         binding.stableIdentity,
         OfflineCacheRecord.value(

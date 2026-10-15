@@ -173,19 +173,33 @@ func (a *LeaseAuthority) issue(ctx context.Context, request LeaseRequest) ([]byt
 	return lease.encode(a.store.privateKey), current, nil
 }
 func (a *LeaseAuthority) Check(ctx context.Context, revision *Revision) error {
+	_, err := a.CheckObserved(ctx, revision)
+	return err
+}
+
+// CheckObserved returns the reason from this same check. It adds no clock
+// samples and preserves Check's predicate order and sticky clock fault.
+// Only fixed categories leave this internal authority boundary.
+func (a *LeaseAuthority) CheckObserved(ctx context.Context, revision *Revision) (string, error) {
 	if a == nil || revision == nil {
-		return ErrAuthorityUnavailable
+		return "unavailable", ErrAuthorityUnavailable
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return "context", err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	current := a.store.current.Load()
-	if !a.validClockLocked(a.clock.Now()) || a.store.faulted.Load() || current == nil || current.digest != revision.digest {
-		return ErrAuthorityUnavailable
+	if !a.validClockLocked(a.clock.Now()) {
+		if a.clockFault {
+			return "clock_fault", ErrAuthorityUnavailable
+		}
+		return "restart_wait", ErrAuthorityUnavailable
 	}
-	return nil
+	if a.store.faulted.Load() || current == nil || current.digest != revision.digest {
+		return "store_revision_refusal", ErrAuthorityUnavailable
+	}
+	return "ready", nil
 }
 
 // Enforced is conservative. It requires expiry of every pre-change holder;

@@ -33,15 +33,20 @@ func fixtureFailureCategory(err error) string {
 // These fields contain only local numbers and fixed categories. Never attach
 // error strings, paths, response bodies, credentials or raw child logs here.
 type fixtureReadinessDiagnostic struct {
-	Reason        string `json:"reason"`
-	Node          int    `json:"node"`
-	Port          uint16 `json:"port"`
-	ElapsedMillis int64  `json:"elapsed_ms"`
-	Probe         string `json:"probe"`
-	HTTPStatus    int    `json:"http_status"`
-	ChildExited   bool   `json:"child_exited"`
-	ChildExitCode int    `json:"child_exit_code"`
-	ServerLog     string `json:"server_log"`
+	Reason           string             `json:"reason"`
+	Node             int                `json:"node"`
+	Port             uint16             `json:"port"`
+	ElapsedMillis    int64              `json:"elapsed_ms"`
+	Probe            string             `json:"probe"`
+	HTTPStatus       int                `json:"http_status"`
+	ChildExited      bool               `json:"child_exited"`
+	ChildExitCode    int                `json:"child_exit_code"`
+	ServerLog        string             `json:"server_log"`
+	LastHealth       string             `json:"last_health"`
+	LastCapability   string             `json:"last_capability"`
+	HealthProbes     uint32             `json:"health_probes"`
+	CapabilityProbes uint32             `json:"capability_probes"`
+	Observation      fixtureObservation `json:"observation"`
 }
 
 type fixtureReadinessError struct {

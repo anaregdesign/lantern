@@ -1,4 +1,4 @@
-# Automatic foreground session runtime (#1769)
+# Automatic foreground session runtime (#1769, #1770)
 
 `OfflineLanternSession.open` supplies automatic memory sessions;
 `SqliteOfflineStore.openSession` reserves native ownership before opening SQLite.
@@ -83,6 +83,27 @@ Global registered send/read/traversal/local slots are 128/128/64/128; scoped lim
 are 32/32/16/16 and 64 total. No later CDC or Traversal component starts its own
 scheduler.
 
+The incoming lane reserves one tail per owner and at most 16 globally, without
+holding an ordinary read/send permit. Cancellation and credential joins include
+that tail; synchronization metadata excludes its idle connection. Its one retained
+resident-recovery job uses the existing read permits and 32-identity pages.
+Edge endpoint dependencies are also read in pages of at most 32. A callback may
+reuse a runtime read permit only when its current lane already owns one.
+
+Resident recovery advances an ephemeral exclusive keyset cursor after selecting
+each page, even when a racing invalidation prevents its commit. Unknown markers
+still require the original epoch-valid evidence. One invocation examines one
+page; reaching the end with Unknown remaining wraps the cursor and imposes a
+one-second resident-only floor. Every 32 selected pages impose the same floor
+while keeping the cursor, including when the last page is interrupted. CDC wakes
+cannot shorten it. The entry check re-arms an earlier queued turn without scanning
+or RPC, then normal debounce resumes when the floor expires. Endpoint backoff
+still applies, while unrelated watches and outgoing work retain their permits.
+This uses one cursor, a bounded page counter and one deadline in the existing job;
+there is no durable pagination state, new schema or second timer. Bootstrap resets
+them; certified availability/lifecycle resume preserves them. Stale tail responses
+cannot overwrite a reset or pause replacement recovery.
+
 Two finite delivery workers claim eligible FIFO heads transactionally, allowing
 an unrelated identity to progress while one receipt is slow. SQLite computes
 aggregate wake deadlines without decoding payload lists; local expiry and auth
@@ -112,6 +133,39 @@ checks reject a stale local capture or network result; pauseAfter is applied onl
 after current query/work checks. Weak snapshot deadline metadata feeds one bounded
 watch-expiry slot. Last unsubscribe removes only its query work. One-shot reads
 leave no poll registration and scheduler callbacks reuse their existing permit.
+
+## Automatic public incoming observation
+
+The optional `incomingChanges` source is a parent `LanternChangeSource` bound to
+the same exact client and complete immutable authority. It owns no scheduler.
+The common runtime opens one identity-only public `WatchChanges` tail under an
+application-certified actual-responder lifetime. Private Subscribe, status and
+origin vectors are never substitutes. `LanternScopedChangeSource` is the public
+Offline adapter for the older explicit consumer; the example reexports it.
+
+A new owner bootstraps rather than treating a persisted URL/cursor as route proof.
+Installing bootstrap hides resident values and retains bounded key-only Unknown
+markers. Partial and complete frames transactionally invalidate entities, advance
+the read epoch and optionally install the completion cursor. A failed transaction
+publishes no new evidence or cursor and pauses storage work. Reads check account,
+authority, work, route and read epoch before commit and publication, including
+between plural pages. Incoming recovery does not wait for all outgoing delivery.
+
+Ordinary availability loss advances the read epoch without deleting eligible
+historical cache or the last completed cursor. It reconnects through shared
+backoff; only the same certified lifetime can resume. EOF, malformed/gap frames
+and authority/route discontinuity hide old evidence and require bootstrap. Auth
+and policy rejection persist a pause and require the existing verified lifecycle
+transition. An unimplemented source may fall back to active freshness polling;
+denial cannot. Strict-live remains unsupported because a connected identity tail
+does not certify complete dependency or natural-expiry coverage.
+
+Vertex invalidation/settlement conservatively evicts Edge cache in the partition.
+Positive Edge reads also verify both endpoint Vertices and cap evidence lifetime
+by their expirations, preserving the Edge payload's own expiration. The shared
+expiry alarm invalidates active views even while network transfer is paused.
+No-read-cache sessions retain neither entity nor endpoint payloads after delivery.
+This work changes no SQLite/reference snapshot/outbox/operation schema version.
 
 ## Focused evidence and remaining exits
 

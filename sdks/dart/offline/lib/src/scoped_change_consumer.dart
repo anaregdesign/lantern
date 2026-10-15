@@ -118,10 +118,15 @@ Future<void> runOfflineScopedChangeConsumer({
       }
     } catch (error, stack) {
       if (cancellation.isCanceled) throw const OfflineCanceledException();
-      // A broken tail hides confirmed data before reporting its error. Only
-      // one declared gap may open a fresh bootstrap during this invocation.
+      final availability =
+          error is OfflineRemoteFailure &&
+          (error.kind == OfflineRemoteErrorKind.unavailable ||
+              error.kind == OfflineRemoteErrorKind.deadlineExceeded ||
+              error.kind == OfflineRemoteErrorKind.resourceExhausted);
       await repository.store.transaction(
-        (tx) => tx.resetScopedChangeCursor(partitionId, null),
+        (tx) => availability
+            ? tx.advanceReadEpoch(partitionId)
+            : tx.resetScopedChangeCursor(partitionId, null),
       );
       if (error is OfflineChangeGapException && recoveries++ == 0) continue;
       Error.throwWithStackTrace(error, stack);

@@ -3,8 +3,8 @@ import 'dart:io' as io;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
-
-import 'package:lantern_example/scoped_change_source.dart';
+import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
   final url = io.Platform.environment['LANTERN_SCOPED_WIRE_URL'];
@@ -35,11 +35,7 @@ void main() {
         VertexInput(key: 'orders:resident', value: VertexValue.string('old')),
       );
       await repository.readVertex('account', 'orders:resident');
-      final source = LanternScopedChangeSource(
-        client: sdk,
-        responderId: sdk.endpoint.toString(),
-        prefix: 'orders:',
-      );
+      final source = LanternScopedChangeSource(source: _source(sdk));
       final cancellation = LanternCancellationToken();
       final consuming = repository.consumeScopedChanges(
         'account',
@@ -125,11 +121,7 @@ void main() {
       await expectLater(
         repository.consumeScopedChanges(
           'account',
-          source: LanternScopedChangeSource(
-            client: denied,
-            responderId: denied.endpoint.toString(),
-            prefix: 'orders:',
-          ),
+          source: LanternScopedChangeSource(source: _source(denied)),
         ),
         throwsA(isA<OfflineRemoteFailure>()),
       );
@@ -151,6 +143,153 @@ void main() {
         ? 'Run through the real OIDC tests/integration fixture.'
         : false,
     timeout: const Timeout(Duration(seconds: 30)),
+  );
+
+  for (final sqlite in [false, true]) {
+    test(
+      'automatic ${sqlite ? 'SQLite' : 'memory'} session observes and resumes authenticated public CDC',
+      () async {
+        final writer = _wireClient();
+        addTearDown(writer.close);
+        final client = _wireClient();
+        addTearDown(client.close);
+        final source = _source(client);
+        final key = 'orders:auto:${sqlite ? 'sqlite' : 'memory'}:resident';
+        await writer.putVertex(
+          VertexInput(key: key, value: const StringValue('initial')),
+        );
+        final directory = await io.Directory.systemTemp.createTemp(
+          'lantern-cdc-wire-',
+        );
+        addTearDown(() => directory.delete(recursive: true));
+        if (sqlite) sqfliteFfiInit();
+        final session = sqlite
+            ? await SqliteOfflineStore.openSession(
+                path: '${directory.path}/cache.db',
+                client: client,
+                binding: source.binding,
+                incomingChanges: source,
+                databaseFactory: databaseFactoryFfi,
+              )
+            : await OfflineLanternSession.open(
+                client: client,
+                store: MemoryOfflineStore(),
+                binding: source.binding,
+                incomingChanges: source,
+                durability: AdmissionDurability.memory,
+              );
+        addTearDown(session.close);
+        final values = <LanternSnapshot<Vertex>>[];
+        final watch = session
+            .watchVertex(
+              key,
+              options: const WatchOptions(pollInterval: Duration(minutes: 10)),
+            )
+            .listen(values.add);
+        addTearDown(watch.cancel);
+        String? current() => values.isEmpty
+            ? null
+            : (values.last.confirmed.value?.value as StringValue?)?.value;
+        await _wait(() async => current() == 'initial');
+        await writer.putVertex(
+          VertexInput(key: key, value: const StringValue('external')),
+        );
+        // The ten-minute polling deadline cannot explain this finite refresh.
+        // The application never calls Get, Sync, consumeScopedChanges or drain.
+        await _wait(() async => current() == 'external');
+        expect(values.last.observationMode, ObservationMode.pollingObservation);
+        final ticket = await session.mutations.submit(
+          MutationRequest.putVertices([
+            VertexInput(key: key, value: const StringValue('local')),
+          ]),
+        );
+        await _wait(() async => current() == 'local');
+        await _wait(
+          () async =>
+              (await session.mutations.getStatus(
+                ticket.reference.operationId,
+              )).items.single.state ==
+              MutationItemState.handled,
+        );
+        await session.suspend();
+        await writer.putVertex(
+          VertexInput(key: key, value: const StringValue('while-suspended')),
+        );
+        await session.resume();
+        await _wait(() async => current() == 'while-suspended');
+      },
+      skip: url == null
+          ? 'Run through the real OIDC tests/integration fixture.'
+          : false,
+      timeout: const Timeout(Duration(seconds: 30)),
+    );
+  }
+
+  test(
+    'automatic public CDC permission denial pauses without polling fallback',
+    () async {
+      final client = _wireClient(denied: true);
+      addTearDown(client.close);
+      final source = _source(client);
+      final session = await OfflineLanternSession.open(
+        client: client,
+        store: MemoryOfflineStore(),
+        binding: source.binding,
+        incomingChanges: source,
+        durability: AdmissionDurability.memory,
+      );
+      addTearDown(session.close);
+      final statuses = <LanternSyncStatus>[];
+      final status = session.syncStatus.listen(statuses.add);
+      addTearDown(status.cancel);
+      await _wait(
+        () async => statuses.any((value) => value.pause == SyncPause.policy),
+      );
+      final value = await session.getVertex('orders:auto:denied');
+      expect(value.confirmed.state, ConfirmedState.unknown);
+      expect(value.confirmed.cause, ObservationCause.permissionDenied);
+      await session.suspend();
+      await session.resume();
+      expect((await session.syncStatus.first).pause, SyncPause.policy);
+    },
+    skip: url == null
+        ? 'Run through the real OIDC tests/integration fixture.'
+        : false,
+    timeout: const Timeout(Duration(seconds: 30)),
+  );
+}
+
+LanternClient _wireClient({bool denied = false}) {
+  final context = io.SecurityContext(
+    withTrustedRoots: false,
+  )..setTrustedCertificates(io.Platform.environment['LANTERN_SCOPED_WIRE_CA']!);
+  return LanternClient.connect(
+    Uri.parse(io.Platform.environment['LANTERN_SCOPED_WIRE_URL']!),
+    httpClientFactory: () => io.HttpClient(context: context),
+    tokenProvider: () =>
+        io.Platform.environment[denied
+            ? 'LANTERN_SCOPED_WIRE_DENIED_CREDENTIAL'
+            : 'LANTERN_SCOPED_WIRE_CREDENTIAL'],
+    defaultTimeout: const Duration(seconds: 5),
+  );
+}
+
+LanternChangeSource _source(LanternClient client) {
+  final binding = LanternSessionBinding.application(
+    serviceOrigin: client.endpoint,
+    securityDomain: 'authenticated-scoped-wire',
+    accountIdentity: 'fixture-account',
+    authorityBinding: 'fixture-current-authority',
+  );
+  return LanternChangeSource(
+    route: LanternSingleResponderRoute.certified(
+      client: client,
+      responderId: 'fixture-direct-node',
+      isCurrent: () => !client.isClosed,
+    ),
+    binding: binding,
+    currentBinding: () => binding,
+    prefix: 'orders:',
   );
 }
 

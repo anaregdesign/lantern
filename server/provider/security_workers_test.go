@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"bytes"
+	"connectrpc.com/grpchealth"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -12,9 +14,117 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type pausedReadinessPublication struct {
+	entered, release chan struct{}
+	once             sync.Once
+}
+
+func (p *pausedReadinessPublication) SetServingStatus(_ string, status grpchealth.Status) {
+	if status == grpchealth.StatusNotServing {
+		p.once.Do(func() { close(p.entered); <-p.release })
+	}
+}
+
+func TestSecurityWorkerObservationSeparatesCompletedAndPublished(t *testing.T) {
+	cfg, data, clock := securityRuntimeFixture(t)
+	r, cleanup, err := NewSecurityRuntime(cfg, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	publication := &pausedReadinessPublication{entered: make(chan struct{}), release: make(chan struct{})}
+	gate := readiness.NewGate(100, false, publication)
+	worker := NewSecurityWorkers(r, nil, nil, gate, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var output bytes.Buffer
+	worker.ObserveReadiness(&output)
+	if s := r.readinessObservation.Snapshot(); s.WorkerState != "never_started" {
+		t.Fatal(s)
+	}
+	done := make(chan struct{})
+	go func() { worker.updateReadiness(t.Context()); close(done) }()
+	select {
+	case <-publication.entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not reach publication")
+	}
+	s := r.readinessObservation.Snapshot()
+	close(publication.release)
+	<-done
+	if s.WorkerStarted != 1 || s.WorkerDone != 1 || s.WorkerPublish != 0 || s.WorkerState != "completed" || s.WorkerReason != "restart_wait" {
+		t.Fatal(s)
+	}
+	if s := r.readinessObservation.Snapshot(); s.WorkerPublish != 1 || s.WorkerState != "published" {
+		t.Fatal(s)
+	}
+	clock.advance(35 * time.Second)
+	worker.updateReadiness(t.Context())
+	if s := r.readinessObservation.Snapshot(); s.WorkerPublish != 2 || s.WorkerReason != "ready" || !gate.Ready() {
+		t.Fatal(s)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := worker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.readinessObservation.Snapshot(); s.WorkerState != "stopped_canceled" || s.WorkerReason != "context" {
+		t.Fatal(s)
+	}
+}
+
+func TestSecurityWorkerObservationShowsBlockedExistingEvaluation(t *testing.T) {
+	cfg, data, clock := securityRuntimeFixture(t)
+	var block atomic.Bool
+	entered, release := make(chan struct{}), make(chan struct{})
+	var enter, unblock sync.Once
+	cfg.Clock = func() time.Time {
+		if block.Load() {
+			enter.Do(func() { close(entered) })
+			<-release
+		}
+		return clock.Now()
+	}
+	r, cleanup, err := NewSecurityRuntime(cfg, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	defer unblock.Do(func() { close(release) })
+	worker := NewSecurityWorkers(r, nil, nil, readiness.NewGate(100, false, nil), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	worker.ObserveReadiness(io.Discard)
+	block.Store(true)
+	done := make(chan struct{})
+	go func() { worker.updateReadiness(t.Context()); close(done) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("existing evaluation did not start")
+	}
+	hc := NewHealthChecker()
+	hc.SetServingStatus("", grpchealth.StatusNotServing)
+	healthDone := make(chan struct{})
+	go func() {
+		_, _ = (publicHealthChecker{hc.Inner(), r}).Check(t.Context(), &grpchealth.CheckRequest{})
+		close(healthDone)
+	}()
+	select {
+	case <-healthDone:
+	case <-time.After(time.Second):
+		t.Fatal("diagnostics reevaluated blocked authority")
+	}
+	s := r.readinessObservation.Snapshot()
+	if s.WorkerState != "in_progress" || s.WorkerStarted != 1 || s.WorkerDone != 0 || s.WorkerPublish != 0 || s.WorkerReason != "not_evaluated" || s.HealthBranch != "static_rejection" || s.HealthReason != "not_evaluated" {
+		t.Fatal(s)
+	}
+	block.Store(false)
+	unblock.Do(func() { close(release) })
+	<-done
+}
 
 func TestSecurityWorkersDrivePermissionAndJoinOnShutdown(t *testing.T) {
 	config, data, clock := securityRuntimeFixture(t)

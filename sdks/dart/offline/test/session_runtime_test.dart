@@ -149,7 +149,7 @@ void main() {
   );
 
   test(
-    'weighted round robin progresses every lane across 100 fixed jobs',
+    'weighted round robin progresses every lane across 125 fixed jobs',
     () async {
       final order = <OfflineSessionLane>[];
       for (var round = 0; round < 25; round++) {
@@ -163,7 +163,7 @@ void main() {
         }
         await clock.advance(const Duration(milliseconds: 50));
       }
-      expect(order.length, 100);
+      expect(order.length, 125);
       for (final lane in OfflineSessionLane.values.where(
         (lane) => lane != OfflineSessionLane.local,
       )) {

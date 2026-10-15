@@ -128,13 +128,19 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 	started := time.Now()
 	lastNode := 0
 	probes, statuses := make([]string, len(result.Nodes)), make([]int, len(result.Nodes))
+	health, capabilities := make([]string, len(result.Nodes)), make([]string, len(result.Nodes))
+	healthCount, capabilityCount := make([]uint32, len(result.Nodes)), make([]uint32, len(result.Nodes))
+	observations := make([]fixtureObservationReader, len(result.Nodes))
 	for i := range probes {
 		probes[i] = "none"
+		health[i], capabilities[i] = "not_probed", "not_probed"
 	}
 	fail := func(reason string, cause error) error {
-		diagnostic := fixtureReadinessDiagnostic{Reason: reason, Node: lastNode, ElapsedMillis: time.Since(started).Milliseconds(), Probe: "none", ServerLog: "unavailable"}
+		diagnostic := fixtureReadinessDiagnostic{Reason: reason, Node: lastNode, ElapsedMillis: time.Since(started).Milliseconds(), Probe: "none", ServerLog: "unavailable", LastHealth: "not_probed", LastCapability: "not_probed", Observation: fixtureObservation{Status: "unavailable"}}
 		if lastNode < len(result.Nodes) {
 			diagnostic.Probe, diagnostic.HTTPStatus = probes[lastNode], statuses[lastNode]
+			diagnostic.LastHealth, diagnostic.LastCapability = health[lastNode], capabilities[lastNode]
+			diagnostic.HealthProbes, diagnostic.CapabilityProbes = healthCount[lastNode], capabilityCount[lastNode]
 			if origin, err := url.Parse(result.Nodes[lastNode].PublicOrigin); err == nil {
 				port, _ := strconv.ParseUint(origin.Port(), 10, 16)
 				diagnostic.Port = uint16(port)
@@ -154,6 +160,7 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 			}
 			if child.log != nil {
 				diagnostic.ServerLog = fixtureServerLogCategory(child.log.Name())
+				diagnostic.Observation = observations[lastNode].read(child.log.Name(), time.Now())
 			}
 		}
 		return &fixtureReadinessError{cause: cause, diagnostic: diagnostic}
@@ -187,6 +194,11 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 		ready := true
 		for i, node := range result.Nodes {
 			lastNode = i
+			if children[i].log != nil {
+				// Read only existing passive evidence; never call an extra RPC or
+				// authority predicate to diagnose a failed Health response.
+				_ = observations[i].read(children[i].log.Name(), time.Now())
+			}
 			select {
 			case <-children[i].done:
 				return fail("child_exit", fmt.Errorf("fixture node %d exited before readiness", i))
@@ -199,15 +211,24 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 				}
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("Connect-Protocol-Version", "1")
+				isHealth := path == "/grpc.health.v1.Health/Check"
+				category := &capabilities[i]
+				if isHealth {
+					category = &health[i]
+					healthCount[i]++
+				} else {
+					capabilityCount[i]++
+				}
 				response, err := client.Do(req)
 				if err != nil {
+					*category = "transport_failure"
 					probes[i], statuses[i] = fixtureProbeErrorCategory(err), 0
 					ready = false
 					break
 				}
 				var body struct {
 					Status   string          `json:"status"`
-					Ready    bool            `json:"ready"`
+					Ready    *bool           `json:"ready"`
 					Mode     string          `json:"mode"`
 					Protocol uint32          `json:"protocolVersion"`
 					Member   uint32          `json:"currentMember"`
@@ -215,19 +236,32 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 				}
 				decodeErr := json.NewDecoder(io.LimitReader(response.Body, 8192)).Decode(&body)
 				_ = response.Body.Close()
-				last[i] = fmt.Sprintf("node-%d %s HTTP=%d Health=%s ready=%t mode=%s version=%d", i, path, response.StatusCode, body.Status, body.Ready, body.Mode, body.Protocol)
+				last[i] = fmt.Sprintf("node-%d %s HTTP=%d Health=%s mode=%s version=%d", i, path, response.StatusCode, body.Status, body.Mode, body.Protocol)
 				statuses[i] = response.StatusCode
 				switch {
 				case response.StatusCode != 200:
 					probes[i] = "http"
+					*category = "http_failure"
 				case decodeErr != nil:
 					probes[i] = "json"
-				case path == "/grpc.health.v1.Health/Check":
+					*category = "decode_failure"
+				case isHealth:
 					probes[i] = "health"
+					*category = fixtureHealthCategory(body.Status)
 				default:
 					probes[i] = "capabilities"
+					switch {
+					case body.Ready == nil:
+						*category = "missing"
+					case !*body.Ready:
+						*category = "not_ready"
+					case !queryCapabilitiesReady(result.Query, i, body.Mode, body.Protocol, body.Member, body.Profile):
+						*category = "uncertified"
+					default:
+						*category = "ready"
+					}
 				}
-				if response.StatusCode != 200 || decodeErr != nil || path == "/grpc.health.v1.Health/Check" && body.Status != "SERVING_STATUS_SERVING" || path != "/grpc.health.v1.Health/Check" && (!body.Ready || !queryCapabilitiesReady(result.Query, i, body.Mode, body.Protocol, body.Member, body.Profile)) {
+				if response.StatusCode != 200 || decodeErr != nil || isHealth && body.Status != "SERVING_STATUS_SERVING" || !isHealth && *category != "ready" {
 					ready = false
 					break
 				}

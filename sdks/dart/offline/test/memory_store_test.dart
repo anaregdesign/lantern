@@ -3146,7 +3146,8 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
   FutureOr<List<OfflineEntityKey>> unknownResidents(
     String partitionId, {
     required int limit,
-  }) => inner.unknownResidents(partitionId, limit: limit);
+    String? after,
+  }) => inner.unknownResidents(partitionId, limit: limit, after: after);
 
   @override
   FutureOr<bool> completeUnknownResident(
@@ -3375,6 +3376,10 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
     String partitionId,
     OfflineScopedChangeFrame frame,
   ) async => await inner.applyScopedChangeFrame(partitionId, frame);
+
+  @override
+  Future<void> advanceReadEpoch(String partitionId) async =>
+      await inner.advanceReadEpoch(partitionId);
 
   @override
   Future<void> resetScopedChangeCursor(

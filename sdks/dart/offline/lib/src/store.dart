@@ -263,17 +263,23 @@ abstract interface class OfflineStoreTransaction {
   /// reset advances this value in the same transaction as cache invalidation.
   FutureOr<int> changeEpoch(String partitionId);
 
+  /// Fences reads and notifies active entities/derived queries without erasing
+  /// eligible history or a completed cursor on ordinary availability loss.
+  FutureOr<void> advanceReadEpoch(String partitionId);
+
   /// Whether [key] still needs checkpoint-authoritative revalidation.
   /// Ordinary singular Get responses must not complete this marker.
   FutureOr<bool> hasUnknownResident(String partitionId, OfflineEntityKey key);
 
   /// Returns up to [limit] Unknown resident identities in stable key order.
   ///
-  /// Repeated calls start at the first unfinished identity; resolving a key
-  /// removes it durably. No graph values are loaded or returned.
+  /// With [after], starts strictly after that canonical key, even if it was
+  /// removed. Null starts at the first unfinished identity. An empty page only
+  /// ends this range; earlier Unknown identities may remain. No values are read.
   FutureOr<List<OfflineEntityKey>> unknownResidents(
     String partitionId, {
     required int limit,
+    String? after,
   });
 
   /// Completes one resident revalidation only if [expectedEpoch] is current.

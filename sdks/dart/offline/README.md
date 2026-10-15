@@ -36,6 +36,36 @@ sessions. See [runtime boundaries](https://github.com/anaregdesign/lantern/blob/
 refresh never clears a restore, policy or storage hold. Physical, hosted-archive
 and publication qualification are separate from this source candidate.
 
+For automatic incoming updates, pass an `incomingChanges: LanternChangeSource(...)`
+using that same client and full binding to either session factory. Its certified
+single-responder route must cover the actual transport lifetime. The shared
+runtime owns one public `WatchChanges` tail, reconnect and resident recovery;
+applications do not start `consumeScopedChanges` beside it. Each new runtime
+bootstraps even when storage contains cursor bytes. Only a continuously certified
+runtime can resume its completed cursor after ordinary availability loss.
+
+Accepted frames atomically invalidate cache, advance the read epoch and install
+an optional completion cursor. Partial frames preserve the previous cursor.
+Bootstrap recovery uses bounded plural reads and proceeds independently of
+outgoing mutations. Ordinary disconnection preserves eligible historical evidence
+within its original TTL; known gaps, malformed frames or authority/route changes
+hide it and require bootstrap. Authentication and permission failures pause work;
+permission denial never activates polling around the rejected operation.
+
+Recovery advances through resident pages even when a hot page cannot commit.
+After a complete pass or 32 pages, a one-second resident-only delay bounds retry
+work without postponing outgoing mutations. Pagination never clears an Unknown
+marker without current evidence.
+
+Active Vertex/Edge watches coalesce invalidations and settlement with the existing
+bounded coordinator. Edge evidence also requires both live endpoint Vertices:
+its evidence deadline is capped by their deadlines while the exact Edge payload
+keeps its own expiration. A Vertex invalidation or settlement conservatively
+invalidates retained Edge evidence in that partition. Active watches remain
+`pollingObservation`, with bounded polling covering unavailable/incomplete CDC
+coverage; `strictLive` remains typed unsupported. With read caching disabled,
+previously delivered values never become a reusable Offline cache.
+
 Admission freezes TTL/wire values and generated Add contribution IDs in one
 transaction. Receipt families enter a checked `awaitingPreparation` state;
 qualified capability preparation occurs later under a claim, outside SQL. Complete
@@ -429,16 +459,17 @@ Bootstrap holds its registered tail open while revalidating resident keys.
 Unknown markers complete only with epoch-checked plural-read commits; racing
 invalidations cannot restore old data. EOF, malformed frames, retention or
 policy gaps hide confirmed rows as durable Unknown and permit one fresh
-bootstrap per invocation. Authorization and availability errors hide cache and
-stop without automatic reconnect. Pending outbox writes and immutable receipt
+bootstrap per invocation. Authorization hides cache; ordinary availability loss
+advances the read epoch while preserving eligible history within original TTL.
+Both stop this explicit consumer without automatic reconnect. Pending outbox writes and immutable receipt
 dispatch evidence survive. Account logout and dispose cancel owned stream/read
 work; no background subscription starts at construction.
 
-The maintained [Flutter composition bridge](https://github.com/anaregdesign/lantern/blob/main/sdks/dart/example/lib/scoped_change_source.dart)
-uses the online SDK's typed `watchChanges` with identity projection. It requires
-an explicitly pinned client: an ordinary load-balancing endpoint is unsupported
-for resident revalidation. Its endpoint label grants no access or proof of
-server identity. Credentials remain application-owned and are acquired at RPC
+The maintained [Offline adapter](https://github.com/anaregdesign/lantern/blob/main/sdks/dart/offline/lib/src/scoped_change_source.dart)
+wraps the parent's public `LanternChangeSource`; the example now reexports it.
+It requires an explicitly certified actual responder and full binding: an ordinary
+load-balancing endpoint is unsupported for resident revalidation. An endpoint
+label grants no access or proof of affinity. Credentials remain application-owned and are acquired at RPC
 time; the Server validates policy-bound, encrypted cursors. No status/peer RPC,
 fake origin vector, dynamic API probe or offline runtime path dependency is
 used. This composition needs a parent SDK release containing WatchChanges;
@@ -448,8 +479,15 @@ candidate is validated against its paired parent until that version is hosted.
 ```dart
 // Application composition; online/offline release versions must expose these APIs.
 final source = LanternScopedChangeSource(
-  client: pinnedClient,
-  responderId: pinnedClient.endpoint.toString(),
+  source: LanternChangeSource(
+    route: LanternSingleResponderRoute.certified(
+      client: pinnedClient,
+      responderId: deploymentResponderId,
+      isCurrent: routeIsCurrent,
+    ),
+    binding: sessionBinding,
+    currentBinding: currentVerifiedBinding,
+  ),
 );
 final cancellation = LanternCancellationToken();
 await repository.consumeScopedChanges(
