@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'app_data_session.dart';
 import 'native_credential_store.dart';
 import 'native_providers.dart';
 import 'native_session_controller.dart';
@@ -16,7 +17,13 @@ final class NativeSignInScreen extends StatefulWidget {
     required this.googleProfile,
     required this.appleProfile,
     required this.builder,
+    this.profile = AppDataProfile.durable,
+    this.pinnedResponder = false,
+    this.securityDomain = 'lantern-example',
   });
+  final AppDataProfile profile;
+  final bool pinnedResponder;
+  final String securityDomain;
   final Uri endpoint;
   final String googleProfile, appleProfile;
   final Widget Function(BuildContext, NativeAccount) builder;
@@ -32,6 +39,9 @@ final class _NativeSignInScreenState extends State<NativeSignInScreen> {
     super.initState();
     _controller = NativeSessionController(
       endpoint: widget.endpoint,
+      profile: widget.profile,
+      pinnedResponder: widget.pinnedResponder,
+      securityDomain: widget.securityDomain,
       providers: PlatformNativeProviders.instance,
       store: SecureNativeCredentialStore(widget.endpoint),
     )..addListener(_changed);

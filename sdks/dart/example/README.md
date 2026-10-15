@@ -138,15 +138,18 @@ from Lantern; the server's static token list is an operator-side deployment inpu
 the user/tenant whose state is stored locally. It is never an access token.
 Anonymous local development uses an `anonymous` scope.
 
-The Offline screen starts foreground identity CDC only when
-`--dart-define=LANTERN_OFFLINE_CDC_PINNED_RESPONDER=true` is set. Set it only
-when `LANTERN_ENDPOINT` routes every Subscribe, status, and plural read to one
-real Lantern responder for the session. An ordinary load-balancing URL is not
-sufficient. The example never infers responder pinning from a URL or starts CDC
-in the background. Opening the Offline screen starts one session; hide/pause or
-navigation cancels it, and resume starts a new session only while the account
-remains active. `wipeOnLogout()` blocks new sessions before quiescing and wiping
-the old partition.
+`LANTERN_DATA_PROFILE` selects `direct`, `memory`, `durable` (default), or
+`durableWithoutReadCache`. `LANTERN_SECURITY_DOMAIN` identifies the application
+dataset (default `lantern-example`); changing it requires an explicit verified
+migration rather than silently reassigning existing work.
+
+Foreground identity CDC is optional through
+`--dart-define=LANTERN_OFFLINE_CDC_PINNED_RESPONDER=true`. Set it only when the
+endpoint guarantees that public WatchChanges, receipt/status and reads reach one
+actual responder for the immutable account lifetime. The scope is the verified
+native personal prefix, or `flutter-demo:` in the alternate demo. A native account
+without a personal prefix does not start CDC. A URL alone does not prove affinity.
+The existing session runtime owns its tail, reconnect and observation scheduling.
 
 Plaintext requires both the SDK opt-in and a debug/trusted-LAN build:
 
@@ -203,49 +206,87 @@ placeholder byte variables shown above.
 | TTL appears early or late | Relative TTL is converted using the device clock once per logical call; inspect clock synchronization or use an absolute server-agreed instant. |
 | Results grow memory | Consume bounded pages, prefer keys-only scans, cancel on navigation, and cap the visible model as this example does. |
 
-## What the screen demonstrates
+## Common data, ownership and migration
 
-- app/signed-in-session ownership of one `LanternClient`;
-- async runtime token refresh, bounded read/Put retry, and contribution-ID
-  live deduplication without plain Add replay;
-- Vertex/Edge Put, Get, Add, Delete, relative TTL, and exact uint64 values;
-- keys-only and value cursor pages with a 200-row visible-memory ceiling;
-- latest-query-wins incremental search and cold-start degree ranking;
-- BFS, PPR, and local-community navigation with complete Edge expiration;
-- typed loading, empty, unauthenticated, unavailable, timeout,
-  retry-exhausted, and unexpected-error UI states;
-- `AppLifecycleListener` cancellation on hide/pause and explicit refresh on
-  resume;
-- an opt-in `lantern_client_offline` screen with immediate cached snapshots,
-  locally committed Put pending state, explicit probe/replay, and authorized
-  dead-letter inspect/retry/delete controls, plus an independently opt-in
-  foreground identity CDC session. This screen remains Put-only: hosted
-  offline 0.3.0 has no receipt outbox, and merged offline 0.4.0 source
-  implements receipt-backed conditional Put, exact Delete, and explicit-ID
-  Add separately. It does not add those flows to this UI or qualify their
-  physical release gates (#1399); #1449's generic capture preparation is
-  not receipt-specific device evidence.
+`AppDataSessionFactory` binds one immutable client, verified identity, profile and
+installation policy. Reuse its startup Future across widgets. Ready sessions
+expose the same `LanternDataClient`; the restore-held screen has no ready client.
+Search, metadata and other discovery controls keep their explicit online API.
+The shared CRUD, typed BFS/PPR/community and Live data screens use the common API.
 
-The app deliberately does not close its app-scoped client on `inactive`, which
-can be caused by a phone call or system dialog. It cancels screen work on
-hide/pause, re-fetches freshness-sensitive data on resume, and closes the
-client only when its owner is disposed. Do not rely on a termination callback:
-iOS may suspend shortly after backgrounding, and Android Doze can stop network
-access. The standard `lantern_client` provides no implicit offline cache,
-background sync, or delivery guarantee. The example's opt-in offline Repository
-uses `SqliteOfflineStore` from the experimental `lantern_client_offline_sqlite`
-package. It opens a database in the platform app database directory, with a
-filename derived from the endpoint and account scope. Pending Put mutations and
-their original absolute TTL survive close/reopen and process termination.
-Shutdown awaits Repository disposal before closing SQLite, then closes the
-client. No database is closed during transient `inactive` or background states.
+| Profile | Local admission | Reusable confirmed reads | Outage behavior |
+| --- | --- | --- | --- |
+| `direct` | Process memory for the current attempt | None | Unavailable, no automatic mutation queue |
+| `memory` | Bounded memory | Bounded eligible cache | Automatic foreground delivery while this owner lives |
+| `durable` | SQLite transaction | Bounded eligible cache | Original persisted work resumes under qualified ownership |
+| `durableWithoutReadCache` | SQLite transaction | None, including Traversal | Same durable outgoing delivery |
 
-The explicit `OfflineDemoSession.wipeOnLogout()` demonstration is destructive:
-use it only for a separately authorized local-data erase after resolving any
-uncertain operations. Native sign-out closes the session and preserves its
-account-owned outbox for status-first recovery. This fixture uses normal sqflite storage,
-which is **not encrypted**. Production applications own encryption, secure key
-storage, OS backup/file-protection policy, account binding, and logout triggers.
+Ordinary Put/Delete/Add Futures await Server handling, including exact false or
+condition-not-met results and typed undisclosed acceptance. The Live data screen's
+Submit locally action instead reports admission durability and pending status.
+Ending a waiter does not cancel an admitted mutation. Keep its reference for
+`mutations.reobserve`; retained result/status reads do not send. Pending projection
+is separate from confirmed freshness and never invents conditional/Add results.
+Vertex, Edge and Traversal watches update through the existing runtime after
+transport recovery while the screen remains foreground. No Get, Sync, app drain
+or reconnect loop triggers delivery. Two listeners can cancel independently.
+
+Hide/pause cancels screen observations and joins session attempts; resume reopens
+eligible work after expiry checks. Transient `inactive` does not close the owner.
+Account retirement joins data, SQLite and transport before successor activation.
+Repeated close returns the same Future, including failure; a failed retirement or
+failed initialization cleanup blocks replacement. A late old read cannot publish
+into the next account. Native absolute expiry ends access without provider login.
+Only a newly completed verified login/registration supplies the credential event
+that can clear a persisted auth pause. Restore, UID addition, Health and lifecycle
+resume do not. Policy, storage and restore holds have separate requirements.
+
+The durable default is Android/iOS only. New databases and the separate
+installation sentinel use Android no-backup storage or backup-excluded iOS
+Application Support. The iOS policy also compares a non-synchronizing
+ThisDeviceOnly Keychain marker using the existing secure-storage facility.
+Exclusion is checked before write-open/migration under the canonical native guard.
+The policy atomically compares/creates installation metadata across account stores;
+it never replaces a mismatch. Host tests inject an explicitly isolated policy.
+There is no implicit desktop/web policy or physical backup/restore qualification.
+
+An existing database remains at its exact old location, including its WAL and
+companions. The app checks only the known old/new paths and rejects a conflict;
+it does not copy, rename or silently start an empty replacement. Schema 9 adds
+installation and bounded adoption metadata. A verified scope adoption rewrites
+both SQL and embedded identities in one transaction and preserves operation,
+receipt, Add and group IDs, FIFO/dependencies, leases, original TTL/high-water,
+results and dispatch uncertainty. It recomputes byte reservations, invalidates
+old granting cache/Traversal/CDC evidence, and fails atomically on corruption or
+insufficient capacity. A retry validates the adoption ledger without re-admission.
+UID metadata does not change the stable account scope.
+
+**Markerless legacy databases require independent trusted upgrade provenance.**
+Integrators can supply `MobileInstallationPolicy(assertLegacyInstallation: ...)`
+through the factory's location resolver. The callback must establish actual
+current-installation continuity; login, the old filename, a fresh UUID or newly
+enabled exclusion cannot prove it. The maintained default holds these stores.
+Missing/mismatched markers, explicit restore uncertainty and incomplete SQLite
+files produce attention before any automatic session, migration, local expiry,
+admission or data/receipt traffic. Matching markers support ordinary reopen under
+this declared policy, not arbitrary rollback detection.
+
+`storageBlocked` means accepted intent or known handling may remain, but later
+dispatch is stopped. Preserve the database and original references, retire/join
+the owner, resolve the storage fault and reopen through the same qualified policy.
+Never erase a database/lock, renew TTL or mint replacement IDs to make a hold
+vanish. `OfflineLanternSession.inspectLegacyOperation` is a bounded, read-only
+lookup for an existing opaque legacy ID under the active authorized scope; it
+neither creates a modern operation reference nor sends. Old unavailable results
+remain unavailable, and legacy receipt-less Add stays quarantined.
+
+Native sign-out preserves the account outbox for A→B→A recovery. Destructive wipe
+requires a separate explicit choice and cannot undo uncertain Server effects.
+`offline_demo.dart` / `OfflineDemoSession` remain legacy explicit qualification
+fixtures, outside the ordinary app routes. They do not add a second scheduler to
+the integrated app. SQLite is not encrypted by this adapter; application-owned
+encryption and key management remain separate. No OS-background, killed-process
+delivery deadline, arbitrary HA, publication or physical-device guarantee is made.
 
 ## Checks
 

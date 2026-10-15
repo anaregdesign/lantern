@@ -51,7 +51,7 @@ final class _SqlAutomaticOwner implements OfflineAutomaticOwner {
       } finally {
         // Row cleanup failure is not an ownership proof. A new OS guard may
         // adopt that stale row; never leave the old work capability usable.
-        guard.release();
+        if (!store._qualifiedInstallation) guard.release();
       }
     });
   }

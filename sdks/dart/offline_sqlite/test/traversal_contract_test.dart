@@ -97,6 +97,8 @@ void main() {
       await initial.close();
       final old = await databaseFactoryFfi.openDatabase(path);
       final before = (await old.query('outbox')).single['payload'] as List<int>;
+      await old.execute('DROP TABLE scope_adoptions');
+      await old.execute('DROP TABLE installation_binding');
       await old.execute('DROP TABLE traversals');
       await old.execute('ALTER TABLE partitions DROP COLUMN traversal_epoch');
       await old.update(
@@ -135,10 +137,10 @@ void main() {
       stores.add(migrated);
       await migrated.close();
       final check = await databaseFactoryFfi.openDatabase(path);
-      expect(await check.getVersion(), 8);
+      expect(await check.getVersion(), 9);
       expect((await check.query('outbox')).single['payload'], before);
       expect(await check.query('traversals'), isEmpty);
-      await check.setVersion(9);
+      await check.setVersion(10);
       await check.close();
       await expectLater(
         SqliteOfflineStore.open(

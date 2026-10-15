@@ -1,8 +1,10 @@
-# Automatic foreground session runtime (#1769, #1770)
+# Automatic foreground session runtime (#1769–#1772)
 
 `OfflineLanternSession.open` supplies automatic memory sessions;
 `SqliteOfflineStore.openSession` reserves native ownership before opening SQLite.
-Both return the common `LanternDataClient` CRUD/watch contract. Post-commit
+Memory returns the common `LanternDataClient` CRUD/watch contract. The qualified
+SQLite factory requires installation policy and returns a ready session or typed
+restore-held startup with no client. Post-commit
 admission, open, verified credentials, foreground resume and persisted deadlines
 wake delivery. A reachability hint only coalesces eligible work; no Get, drain or
 Sync button is required after an endpoint recovers. The earlier explicit
@@ -16,9 +18,12 @@ fail before automatic work. Last close closes the synchronous lifetime gate,
 joins network/local callbacks and accepted transactions, conditionally releases
 the owner row/guard, then closes owned store and transport. Each handle cancels
 its own subscriptions and completion waiters; admitted work belongs to the shared
-runtime. A failed join keeps ownership. A row-cleanup failure after a successful
-join invalidates the old capability and releases the guard, then reports the
-error. Close is idempotent.
+runtime. A failed join keeps ownership. Qualified SQLite retains the native guard through
+database close; a failed database close never reports successful release. Cleanup
+attempts the remaining owned resources while preserving the first failure, and
+the core reservation stays blocked on any teardown failure. Legacy low-level
+owner primitives retain their explicit release protocol. App/account close
+memoizes the same Future and blocks replacement after failed retirement.
 
 SQLite uses a small C Code Asset on Android/iOS and the same primitive on the
 host: nonblocking exclusive `flock` on a dedicated sidecar, with at most 16 opaque
@@ -33,7 +38,8 @@ The sidecar is never unlinked during production close. This contract assumes an
 application-owned local directory; it does not coordinate external rename/delete,
 network filesystems or copied/rolled-back databases.
 
-The acquisition order is native provisional guard, SQLite migration/validation,
+The acquisition order is core reservation, native provisional guard, application
+installation policy and bounded read-only preflight, atomic SQLite migration/adoption/validation,
 transactional monotone owner epoch plus random token, capability publication,
 then work. OS ownership is the exclusion proof; the row is fence/history, never a
 PID/time-based liveness test. Process death permits a new guard to adopt a stale
@@ -57,11 +63,14 @@ application/native auth provider. Install occurs after old work joins; only then
 does the runtime advance generation and clear auth. Reused events, counters,
 token-string changes, lifecycle hints and Health cannot clear auth. Policy,
 storage and restore holds survive auth refresh. A different full identity ends
-the old immutable lifetime. Native account/installation integration remains WP6.
+the old immutable lifetime. The maintained app supplies this verified event only for a new completed native
+login/registration; restored credentials do not supply it.
 
 `transferAllowed` defaults true; platform policy may change it through
-`setTransferAllowed`. `restoreHeld` is a factory input from the installation/backup
-continuity decision, hides old confirmed data and blocks preparation/send. It is
+`setTransferAllowed`. The core runtime input `restoreHeld` hides old confirmed
+data and blocks preparation/send, but is not a pre-initialization restore check.
+The qualified SQLite factory returns `SqliteRestoreHeld` before write-open when
+application installation continuity is uncertain, without creating a runtime. It is
 immutable for the lifetime and cannot be cleared by hints or auth. A newly opened
 unheld lifetime requires the external continuity decision; the SDK does not infer
 safety from a copied file or local counter.
@@ -165,7 +174,9 @@ Positive Edge reads also verify both endpoint Vertices and cap evidence lifetime
 by their expirations, preserving the Edge payload's own expiration. The shared
 expiry alarm invalidates active views even while network transfer is paused.
 No-read-cache sessions retain neither entity nor endpoint payloads after delivery.
-This work changes no SQLite/reference snapshot/outbox/operation schema version.
+The incoming algorithm itself changes no persistence version. The subsequent
+SQLite integration uses schema 9 for installation/adoption metadata; reference
+snapshot 11, outbox 5 and operation 4 retain their existing contracts.
 
 ## Focused evidence and remaining exits
 
@@ -180,15 +191,19 @@ same-foreground outage and a committed response lost at the proxy boundary.
 Native crash receipt reconciliation is a finite host fixture, distinct from those
 real-wire cases; neither proves mobile device behavior.
 
-This candidate is based on #1768 merged main
-`3e4ff3696cd6f8362c5f377348ed6f145111a84f`. Its additional memory reservation
-memoization changes no public API or schema: the memo is transaction-local
-copyable derived state, invalidated on topology replacement/removal and recomputed
-on snapshot restore. Automatic progress, auth pause and local expiry retain the
-same immutable operation topology and capacity checks. SQLite schema 7 follows
-that base's schema 6; reference snapshots advance from 9 to 10.
+The maintained app integration adds the I1–I8 fixture families: common consumers
+across four profiles, schema8/oldest supported adoption, pre-/post-commit faults,
+A→B→A original receipts, installation holds with unchanged durable intent,
+provisional-owner/close failures, same-screen transport recovery and old-reply/
+absolute-expiry fences. The integrated SQLite actual-wire case restores only the
+transport and observes mutation settlement plus Vertex/Edge/Traversal updates;
+independent subscriptions retain their own lifetimes. Platform policy channel
+checks and Android/iOS builds are source/host/build evidence, not device restore
+attestation. Markerless legacy adoption remains conditional on independent
+trusted installation provenance.
 
-The existing designer's limited R1/R2/R3 review passed before this base connection.
-Final source still requires the ordinary full gate and exact submitted-source CI.
-Publication, archive equality, physical Android/iPhone and OS-sleep evidence remain
-separate. Physical-device work remains stopped.
+The same existing design decision governs the changed integration boundaries.
+Each immutable candidate still requires the ordinary review, full source gate and
+exact submitted/merged-source CI. Publication, archive equality, physical
+Android/iPhone and OS-sleep evidence remain separate. Physical-device work remains
+stopped.

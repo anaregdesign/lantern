@@ -94,6 +94,7 @@ extension NativeRegistrationActions on NativeSessionController {
         await _inspectAndInstall(
           generation,
           StoredNativeCredential.fromSession(issued.credential, issued.session),
+          freshlyVerified: true,
         );
       } else {
         message = _registrationMessage(result.outcome);

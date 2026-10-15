@@ -5,6 +5,11 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
+import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
+import 'package:lantern_example/app_data_session.dart';
+import 'package:lantern_example/installation_policy.dart';
+import 'package:lantern_example/native_credential_store.dart';
+import 'package:lantern_example/offline_session.dart';
 import 'package:lantern_example/native_session_controller.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -25,10 +30,52 @@ void main() {
       await databaseFactoryFfi.setDatabasesPath(directory.path);
       final store = MemoryCredentials(), providers = Providers();
       final wire = NativeWire(store);
+      var offset = Duration.zero;
+      DateTime clock() => DateTime.now().toUtc().add(offset);
+      final paths = <String, String>{};
+      final scopes = <String, String>{};
+      final credentialEvents = <String>[];
+      final policy = SqliteInstallationPolicy(
+        identity: 'isolated-host-fixture',
+        version: 1,
+        evaluate: (_) async => SqliteInstallationEvidence.verified(
+          installationId: 'native-account-host-test',
+          legacyAdoptionVerified: true,
+        ),
+      );
       final controller = NativeSessionController(
         endpoint: endpoint,
         providers: providers,
         store: store,
+        openData: (client, session, fresh) async {
+          final partition = nativeAccountPartition(endpoint, session);
+          final binding = LanternSessionBinding.native(
+            session,
+            securityDomain: 'native-account-test',
+          );
+          final path =
+              '${directory.path}/${offlineDatabaseFileName(endpoint, partition)}';
+          paths[partition] = path;
+          scopes[partition] = binding.stableIdentity;
+          return AppDataSessionFactory(
+            client: client,
+            binding: binding,
+            profile: AppDataProfile.durable,
+            legacyPartition: partition,
+            databaseFactory: databaseFactoryFfi,
+            clock: clock,
+            resolveLocation: () async => AppSqliteLocation(path, policy, null),
+          ).open(
+            freshCredentials: fresh
+                ? OfflineVerifiedCredentials(
+                    binding: binding,
+                    install: () {
+                      credentialEvents.add(session.principal.subject);
+                    },
+                  )
+                : null,
+          );
+        },
         createClient: (credential) => LanternClient.connect(
           endpoint,
           tokenProvider: () => credential,
@@ -41,7 +88,12 @@ void main() {
       });
       await controller.login(issuer, 'mobile');
       final a = controller.account!;
-      final offline = a.offline!;
+      await a.dataSession!.suspend();
+      final offline = await SqliteOfflineStore.open(
+        path: paths[a.partition]!,
+        databaseFactory: databaseFactoryFfi,
+      );
+      final scope = scopes[a.partition]!;
       final now = DateTime.now().toUtc().subtract(const Duration(minutes: 1));
       Uint8List filled(int n, int value) =>
           Uint8List.fromList(List.filled(n, value));
@@ -72,13 +124,13 @@ void main() {
       );
       // A concrete durable unknown-outcome fixture: dispatch happened in account
       // A, its response was lost. Account transitions must preserve these facts.
-      await offline.store.transaction((tx) async {
+      await offline.transaction((tx) async {
         final pending = await tx.enqueue(
           OfflineOutboxRecord(
             recordId: 'old-delete',
             operationId: 'old-operation',
             itemIndex: 0,
-            partitionId: a.partition,
+            partitionId: scope,
             intent: OfflineDeleteEdgeIntent(
               const EdgeRef('orders:a', 'orders:b'),
             ),
@@ -86,14 +138,14 @@ void main() {
             ordinal: 0,
             state: OfflineOutboxState.enqueued,
             attemptCount: 1,
-            nextAttemptAt: now.add(const Duration(seconds: 1)),
+            nextAttemptAt: clock().add(const Duration(minutes: 1)),
             generation: 0,
             receipt: receipt,
           ),
         );
         await tx.putOperation(
           OfflineOperationRecord(
-            partitionId: a.partition,
+            partitionId: scope,
             generation: 0,
             operationId: pending.operationId,
             items: [
@@ -109,9 +161,9 @@ void main() {
           ),
         );
         await tx.putCache(
-          a.partition,
+          scope,
           OfflineCacheRecord.value(
-            partitionId: a.partition,
+            partitionId: scope,
             generation: 0,
             key: const OfflineEntityKey.vertex('private-a'),
             entity: Vertex(
@@ -124,44 +176,74 @@ void main() {
           ),
         );
       });
+      await offline.close();
       providers.subject = 'b';
       await controller.login(issuer, 'mobile');
       final b = controller.account!;
       expect(a.client.isClosed, isTrue);
       expect(a.cancellation.isCanceled, isTrue);
       expect(b.partition, isNot(a.partition));
-      expect(await b.offline!.repository.listPending(b.partition), isEmpty);
-      expect(await b.offline!.repository.drain(b.partition), 0);
+      final bStore = await SqliteOfflineStore.open(
+        path: paths[b.partition]!,
+        databaseFactory: databaseFactoryFfi,
+      );
+      expect(
+        await bStore.transaction(
+          (tx) async =>
+              (await tx.scanOutbox(scopes[b.partition]!, limit: 10)).records,
+        ),
+        isEmpty,
+      );
+      await bStore.close();
       expect(wire.receiptStatuses, isEmpty);
       expect(wire.dataDispatches, isEmpty);
+      offset = const Duration(minutes: 1);
+      wire.authorityBinding++;
+      wire.registered.add(
+        'a',
+      ); // UID assignment does not move the account store.
       providers.subject = 'a';
       await controller.login(issuer, 'mobile');
       final again = controller.account!;
       expect(again.partition, a.partition);
       expect(b.client.isClosed, isTrue);
-      final pending = await again.offline!.store.transaction(
-        (tx) => tx.getOutbox(a.partition, 'old-delete'),
+      // No Get, drain or connectivity hint triggers delivery. The existing
+      // runtime sees the original due time while opening the qualified owner.
+      await wire.receiptSeen.future.timeout(const Duration(seconds: 5));
+      await again.dataSession!.suspend();
+      final reopened = await SqliteOfflineStore.open(
+        path: paths[a.partition]!,
+        databaseFactory: databaseFactoryFfi,
+      );
+      final pending = await reopened.transaction(
+        (tx) => tx.getOutbox(scope, 'old-delete'),
       );
       expect(pending!.operationId, 'old-operation');
+      final inspected =
+          await (again.dataSession!.data! as OfflineLanternSession)
+              .inspectLegacyOperation('old-operation');
+      expect(inspected!.operationId, 'old-operation');
+      expect(inspected.items.single.mayHaveDispatched, true);
       expect(pending.receipt!.operationId, id);
       expect(pending.receipt!.mayHaveDispatched, isTrue);
-      final cache = await again.offline!.repository.readVertex(
-        a.partition,
+      final cache = await again.dataSession!.data!.getVertex(
         'private-a',
-        policy: OfflineReadPolicy.cacheOnly,
+        options: const GetOptions(source: ReadSource.cacheOnly),
       );
-      expect(cache.state, OfflineReadState.unknown);
-      expect(cache.value, isNull);
-      await again.offline!.repository.drain(a.partition);
+      expect(cache.confirmed.state, ConfirmedState.unknown);
+      expect(cache.view, isNull);
       expect(wire.receiptStatuses, hasLength(1));
       expect(wire.receiptStatuses.single.$1, 'a');
       expect(wire.receiptStatuses.single.$2, [base64Encode(id.bytes)]);
       expect(wire.dataDispatches, isEmpty);
-      final retained = await again.offline!.store.transaction(
-        (tx) => tx.getOutbox(a.partition, 'old-delete'),
+      final retained = await reopened.transaction(
+        (tx) => tx.getOutbox(scope, 'old-delete'),
       );
+      expect(credentialEvents, ['a', 'b', 'a']);
       expect(retained!.receipt!.operationId, id);
       expect(retained.receipt!.mayHaveDispatched, isTrue);
+      expect(retained.enqueuedAt, now);
+      await reopened.close();
     },
   );
 }

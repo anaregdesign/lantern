@@ -109,6 +109,45 @@ final class Harness {
 
 void main() {
   test(
+    'I6 failed store close retains first failure and prevents replacement',
+    () async {
+      final store = MemoryOfflineStore();
+      final first = StateError('store close');
+      var stores = 0, transports = 0, creates = 0;
+      final client = LanternClient.connect(
+        endpoint,
+        allowInsecure: true,
+        transport: FakeTransportBuilder().build(),
+        onClose: () async {
+          transports++;
+          throw StateError('transport close');
+        },
+      );
+      Future<OfflineLanternSession> open() => OfflineLanternSession.openStore(
+        client: client,
+        storeKey: store,
+        binding: binding(),
+        createStore: () async {
+          creates++;
+          return store;
+        },
+        closeStore: (_) async {
+          stores++;
+          throw first;
+        },
+        durability: AdmissionDurability.memory,
+        transferAllowed: false,
+      );
+      final session = await open();
+      final closed = session.close();
+      expect(identical(closed, session.close()), isTrue);
+      await expectLater(closed, throwsA(same(first)));
+      await expectLater(session.close(), throwsA(same(first)));
+      await expectLater(open(), throwsA(isA<OfflineOwnerConflictException>()));
+      expect((creates, stores, transports), (1, 1, 1));
+    },
+  );
+  test(
     'O1 matching handles share delivery; one close continues, last closes transport',
     () async {
       final h = Harness();

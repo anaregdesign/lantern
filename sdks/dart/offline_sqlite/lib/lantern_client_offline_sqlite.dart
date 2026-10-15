@@ -7,6 +7,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -21,6 +22,8 @@ import 'src/owner_native.dart';
 
 part 'src/errors.dart';
 part 'src/automatic_owner.dart';
+part 'src/installation.dart';
+part 'src/adoption.dart';
 part 'src/schema.dart';
 part 'src/store.dart';
 part 'src/transaction.dart';

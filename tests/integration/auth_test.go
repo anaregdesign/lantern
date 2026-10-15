@@ -2547,7 +2547,7 @@ catch (error) { if (!(error instanceof FailedPreconditionError)) throw error; }
 
 // SDK facades exercise the production public authorization boundary, rather
 // than the private per-origin replication protocol.
-func newScopedSDKFixture(t *testing.T) *oidcControlWireFixture {
+func newScopedSDKFixture(t *testing.T, extraRules ...*pb.SecurityRule) *oidcControlWireFixture {
 	t.Helper()
 	f := newOIDCControlWireFixtureOptions(t, nil, true)
 	admin := f.token(t, "admin", nil)
@@ -2560,6 +2560,7 @@ func newScopedSDKFixture(t *testing.T) *oidcControlWireFixture {
 	}
 	rules := []*pb.SecurityRule{rule("cdc", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"), rule("private", pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityEffect_SECURITY_EFFECT_DENY, "orders:private:"), rule("write", pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:"), rule("read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:")}
 	rules = append(rules, rule("receipt", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:create:"))
+	rules = append(rules, extraRules...)
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "sdk"}
 	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{73}, 16), Changes: []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "sdk", Rules: rules}}},
@@ -3267,7 +3268,17 @@ func TestAuth_DartOfflineScopedChangesRealConnect(t *testing.T) {
 	if err != nil {
 		t.Skip("Flutter is required for the offline public CDC composition gate")
 	}
-	f := newScopedSDKFixture(t)
+	f := newScopedSDKFixture(t, &pb.SecurityRule{
+		Id: "app-query", Action: pb.SecurityAction_SECURITY_ACTION_QUERY,
+		Effect:   pb.SecurityEffect_SECURITY_EFFECT_ALLOW,
+		Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"},
+	}, &pb.SecurityRule{
+		// The app replaces a previously unbounded Vertex with a finite TTL.
+		// That lifecycle reduction requires Delete authority as well as Write.
+		Id: "app-lifecycle", Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE,
+		Effect:   pb.SecurityEffect_SECURITY_EFFECT_ALLOW,
+		Resource: &pb.SecurityRule_Prefix{Prefix: "orders:create:app-"},
+	})
 	server, ca := scopedSDKTLSServer(t, f)
 	root, err := filepath.Abs("../..")
 	if err != nil {

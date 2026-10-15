@@ -32,6 +32,15 @@ void main() {
         home: Scaffold(
           body: DataDemoPanel(
             client: client,
+            data: DirectLanternDataClient(
+              client,
+              binding: LanternSessionBinding.application(
+                serviceOrigin: client.endpoint,
+                securityDomain: 'demo-test',
+                accountIdentity: 'test',
+                authorityBinding: 'test',
+              ),
+            ),
             prefix: 'flutter-demo:',
             callOptions: () =>
                 LanternCallOptions(timeout: const Duration(seconds: 5)),

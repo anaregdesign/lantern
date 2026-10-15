@@ -25,6 +25,19 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
     required String path,
     DatabaseFactory? databaseFactory,
     OfflineStoreLimits limits = const OfflineStoreLimits(),
+  }) => _open(
+    path: path,
+    databaseFactory: databaseFactory,
+    limits: limits,
+    attempt: _SqlOpenAttempt(),
+  );
+
+  static Future<SqliteOfflineStore> _open({
+    required String path,
+    DatabaseFactory? databaseFactory,
+    required OfflineStoreLimits limits,
+    required _SqlOpenAttempt attempt,
+    _SqlInitialization? initialization,
   }) async {
     if (path.isEmpty || path == inMemoryDatabasePath) {
       throw const OfflineArgumentException();
@@ -48,22 +61,31 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
               version: _schemaVersion,
               singleInstance: false,
               onConfigure: (db) => _databaseCall(() async {
+                attempt.openingConnection = db;
                 await db.execute('PRAGMA foreign_keys = ON');
                 await db.rawQuery('PRAGMA busy_timeout = 5000');
                 await db.execute('PRAGMA synchronous = FULL');
               }),
-              onCreate: (db, version) =>
-                  _databaseCall(() => _createSchema(db, version)),
-              onUpgrade: (db, oldVersion, newVersion) => _databaseCall(
-                () => _upgradeSchema(db, oldVersion, newVersion, limits),
-              ),
+              onCreate: (db, version) => _databaseCall(() async {
+                await _createSchema(db, version);
+                await initialization?.initialize(db, limits, created: true);
+              }),
+              onUpgrade: (db, oldVersion, newVersion) =>
+                  _databaseCall(() async {
+                    await _upgradeSchema(db, oldVersion, newVersion, limits);
+                    await initialization?.initialize(db, limits);
+                  }),
               onDowngrade: (_, _, _) async =>
                   throw const OfflineSchemaException(),
             ),
           );
+          attempt.openReturned = true;
           try {
             await _checkSchema(db);
             await db.transaction((sql) async {
+              if (initialization != null && !initialization.initialized) {
+                await initialization.initialize(sql, limits);
+              }
               final tx = _SqlTransaction(sql, limits);
               await tx.validateAll();
               await tx.finish();
@@ -72,13 +94,28 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
             lane.owners.add(store);
             return store;
           } catch (_) {
-            await db.close();
+            try {
+              await db.close();
+            } catch (_) {
+              attempt.cleanupFailed = true;
+              rethrow;
+            }
             rethrow;
           }
         }),
       );
     } catch (_) {
       if (--lane.references == 0) lanes.remove(key);
+      // A failed create/upgrade can throw before openDatabase returns. Join the
+      // connection's close as well; never assume plugin cleanup released it.
+      if (!attempt.openReturned && attempt.openingConnection != null) {
+        try {
+          await attempt.openingConnection!.close();
+        } catch (_) {
+          attempt.cleanupFailed = true;
+          rethrow;
+        }
+      }
       rethrow;
     }
   }
@@ -86,39 +123,112 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
   /// Opens refcounted foreground CRUD/watch handles with native ownership before
   /// SQLite migration. Matching same-isolate handles share one bounded runtime;
   /// another isolate/process fails before any network work.
-  static Future<OfflineLanternSession> openSession({
+  static Future<SqliteSessionStartup> openSession({
     required String path,
     required LanternClient client,
     required LanternSessionBinding binding,
+    required SqliteInstallationPolicy installationPolicy,
+    SqliteScopeAdoption? adoption,
     DatabaseFactory? databaseFactory,
     OfflineStoreLimits limits = const OfflineStoreLimits(),
     bool cacheReads = true,
     bool transferAllowed = true,
     bool restoreHeld = false,
+    OfflineClock? clock,
+    OfflineSessionSchedule? schedule,
     LanternChangeSource? incomingChanges,
     LanternSingleResponderRoute? readRoute,
-  }) => OfflineLanternSession.openStore(
-    client: client,
-    storeKey: canonicalAutomaticPath(path),
-    createStore: () => openAutomatic(
-      path: path,
-      databaseFactory: databaseFactory,
-      limits: limits,
-    ),
-    closeStore: (store) => (store as SqliteOfflineStore).close(),
-    binding: binding,
-    durability: AdmissionDurability.durable,
-    cacheReads: cacheReads,
-    transferAllowed: transferAllowed,
-    restoreHeld: restoreHeld,
-    incomingChanges: incomingChanges,
-    readRoute: readRoute,
-    adapterConfiguration: (databaseFactory, limits),
-  );
+  }) async {
+    try {
+      return SqliteSessionReady(
+        await OfflineLanternSession.openStore(
+          client: client,
+          storeKey: canonicalAutomaticPath(path),
+          createStore: () => _openQualified(
+            path: path,
+            policy: installationPolicy,
+            binding: binding,
+            adoption: adoption,
+            databaseFactory: databaseFactory,
+            limits: limits,
+          ),
+          closeStore: (store) => (store as SqliteOfflineStore).close(),
+          binding: binding,
+          durability: AdmissionDurability.durable,
+          cacheReads: cacheReads,
+          transferAllowed: transferAllowed,
+          restoreHeld: restoreHeld,
+          clock: clock,
+          schedule: schedule,
+          incomingChanges: incomingChanges,
+          readRoute: readRoute,
+          adapterConfiguration: (
+            databaseFactory,
+            limits,
+            installationPolicy,
+            installationPolicy.identity,
+            installationPolicy.version,
+            adoption,
+          ),
+        ),
+      );
+    } on _RestoreHold catch (hold) {
+      return SqliteRestoreHeld(hold.reason);
+    }
+  }
 
   static final _lanes = Expando<Map<String, _SqlLane>>();
   NativeOfflineOwner? _reservation;
   _SqlAutomaticOwner? _automaticOwner;
+  bool _qualifiedInstallation = false;
+  NativeOfflineOwner? _qualifiedGuard;
+
+  static Future<SqliteOfflineStore> _openQualified({
+    required String path,
+    required SqliteInstallationPolicy policy,
+    required LanternSessionBinding binding,
+    required SqliteScopeAdoption? adoption,
+    DatabaseFactory? databaseFactory,
+    required OfflineStoreLimits limits,
+  }) async {
+    final guard = NativeOfflineOwner.acquire(path);
+    final attempt = _SqlOpenAttempt();
+    SqliteOfflineStore? store;
+    try {
+      final initialization = _SqlInitialization(
+        policy,
+        binding,
+        adoption,
+        guard,
+      );
+      await _databaseCall(
+        () => initialization.inspect(
+          databaseFactory ?? defaultDatabaseFactory(),
+          attempt,
+        ),
+      );
+      store = await _open(
+        path: guard.path,
+        databaseFactory: databaseFactory,
+        limits: limits,
+        attempt: attempt,
+        initialization: initialization,
+      );
+      store._qualifiedInstallation = true;
+      store._qualifiedGuard = guard;
+      store._reservation = guard;
+      guard.check();
+      return store;
+    } catch (_) {
+      if (store != null) {
+        // close owns the retained capability; a failed close does not unlock.
+        await store.close();
+      } else if (!attempt.cleanupFailed) {
+        guard.release();
+      }
+      rethrow;
+    }
+  }
 
   /// Resolves an application-owned DB name before the same-isolate runtime
   /// registry matches handles. This alone does not acquire ownership.
@@ -225,7 +335,7 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
           );
         }
       } finally {
-        guard.release();
+        if (!_qualifiedInstallation) guard.release();
       }
       rethrow;
     }
@@ -426,7 +536,7 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
       StackTrace? releaseStack;
       try {
         await owner?.release();
-        reservation?.release();
+        if (!_qualifiedInstallation) reservation?.release();
       } catch (error, stack) {
         releaseError = error;
         releaseStack = stack;
@@ -448,6 +558,9 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
       if (releaseError != null) {
         Error.throwWithStackTrace(releaseError, releaseStack!);
       }
+      // A qualified owner keeps its native guard through connection shutdown.
+      // Any failed cleanup above retains it and the memoized close failure.
+      _qualifiedGuard?.release();
     })();
   }
 

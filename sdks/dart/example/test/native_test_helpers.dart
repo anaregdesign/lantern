@@ -101,6 +101,9 @@ final class NativeWire implements connect.Transport {
   int sessionReads = 0, holdSessionRead = 0;
   final sessionBlocked = Completer<void>(), releaseSession = Completer<void>();
   final sent = <String?>[];
+  final receiptSeen = Completer<void>();
+  bool holdDataRead = false;
+  final dataReadSeen = Completer<void>(), releaseDataRead = Completer<void>();
   final receiptStatuses = <(String, Object?)>[];
   final dataDispatches = <String>[];
   final profile = <String, Object>{
@@ -161,10 +164,23 @@ final class NativeWire implements connect.Transport {
     final subject = subjects[credential] ?? '';
     Map<String, Object?> response;
     switch (spec.procedure.split('/').last) {
+      case 'GetVertices':
+        response = {
+          'vertices': [
+            for (final key in req['keys'] as List)
+              {'key': key, 'string': 'private-$subject'},
+          ],
+        };
+        if (holdDataRead) {
+          if (!dataReadSeen.isCompleted) dataReadSeen.complete();
+          await releaseDataRead.future;
+        }
+      case 'GetEdges':
+        response = {'missing': req['edges']};
       case 'BeginNativeLogin':
       case 'BeginNativeRegistration':
         recoveryReview = req['recoveryReview'] as Map<String, dynamic>?;
-        expect(authorization, isNull);
+        expectSync(authorization, isNull);
         response = {
           'attemptId': random(1),
           'completionSecret': random(2),
@@ -184,7 +200,7 @@ final class NativeWire implements connect.Transport {
           response = {'attempt': response};
         }
       case 'CompleteNativeLogin':
-        expect(authorization, isNull);
+        expectSync(authorization, isNull);
         completions++;
         final subject =
             (providerIssuer == issuer
@@ -195,7 +211,7 @@ final class NativeWire implements connect.Transport {
         subjects[issued] = subject;
         response = {'credential': issued, 'session': session(subject)};
       case 'PrepareNativeRegistration':
-        expect(authorization, isNull);
+        expectSync(authorization, isNull);
         registrationPrepares++;
         final registering =
             (providerIssuer == issuer
@@ -204,7 +220,7 @@ final class NativeWire implements connect.Transport {
                 as String;
         Map<String, dynamic> review;
         if (recoveryReview case final original?) {
-          expect(req['recoveryReview'], original);
+          expectSync(req['recoveryReview'], original);
           if ((original['actor'] as Map<String, dynamic>)['subject'] !=
               registering) {
             throw connect.ConnectException(
@@ -238,8 +254,8 @@ final class NativeWire implements connect.Transport {
           'expiresAt': now.add(const Duration(minutes: 10)).toIso8601String(),
         };
       case 'ApplyNativeRegistration':
-        expect(authorization, isNull);
-        expect(
+        expectSync(authorization, isNull);
+        expectSync(
           store.registrationRecords,
           isNotEmpty,
           reason: 'review must be durable before Apply',
@@ -263,7 +279,7 @@ final class NativeWire implements connect.Transport {
           'session': session(registering),
         };
       case 'GetNativeRegistrationStatus':
-        expect(authorization, isNull);
+        expectSync(authorization, isNull);
         registrationStatuses++;
         response = {
           'currentResult': registrationStatus(
@@ -301,7 +317,7 @@ final class NativeWire implements connect.Transport {
           },
         };
       case 'ApplyNativeLogout':
-        expect(
+        expectSync(
           store.records.values.expand((r) => r),
           isNotEmpty,
           reason: 'retain review before dispatch',
@@ -313,6 +329,7 @@ final class NativeWire implements connect.Transport {
         );
       case 'GetReceiptStatuses':
         receiptStatuses.add((subject, req['operationIds']));
+        if (!receiptSeen.isCompleted) receiptSeen.complete();
         throw connect.ConnectException(
           connect.Code.unavailable,
           'original receipt status unavailable',

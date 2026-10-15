@@ -32,8 +32,11 @@ events; applications use the same CRUD vocabulary and do not schedule passes.
 `SqliteOfflineStore.openSession` supplies the native exclusive owner for durable
 sessions. See [runtime boundaries](https://github.com/anaregdesign/lantern/blob/main/sdks/dart/offline/docs/session-runtime-development.md).
 `transferAllowed` defaults true and can be changed by platform policy;
-`restoreHeld` must reflect the installation/backup continuity decision. Auth
-refresh never clears a restore, policy or storage hold. Physical, hosted-archive
+`restoreHeld` is a qualified runtime hold; it does not prevent store initialization
+or local maintenance. The SQLite automatic factory instead requires a stable
+application installation policy before write-open and returns typed
+`SqliteSessionReady` or `SqliteRestoreHeld` without a data session on uncertainty.
+Auth refresh never clears a restore, policy or storage hold. Physical, hosted-archive
 and publication qualification are separate from this source candidate.
 
 For automatic incoming updates, pass an `incomingChanges: LanternChangeSource(...)`
@@ -86,6 +89,9 @@ family retains dispatch certainty separately from terminal result certainty.
 A fenced live reply can settle despite confirmation commit failure; `storageBlocked`
 then stops dispatch and retains pre-send evidence for reopen. Legacy terminal Put
 metadata lacking exact results remains unavailable, never fabricated.
+`OfflineLanternSession.inspectLegacyOperation` performs one bounded read-only
+lookup of an existing opaque legacy ID under the active verified scope; it does
+not remint a common `OperationId`, expire, prepare or send work.
 
 Qualified delivery requires the adapter's `OfflineStoreClaimTransaction` capability.
 Its bounded claim fence reads committed generation, authority, lease and clock
@@ -105,7 +111,7 @@ does not reset clock high-water. Use cache invalidation to clear displayed value
 never use wipe as automatic retry, storage-error recovery or credential refresh.
 
 State versions are outbox **5**, operation **4**, reference snapshot **11**, and
-SQLite **8** (following schema 6 in merged #1768). Old IDs, TTL and conservative dispatch proof are preserved; unknown
+SQLite **9** (schema 8 added Traversal; schema 9 adds guarded installation/adoption metadata). Old IDs, TTL and conservative dispatch proof are preserved; unknown
 or damaged state, incompatible downgrade and insufficient migration capacity fail
 closed. `MemoryOfflineStore` is the bounded volatile profile over the shared
 conformance engine; it has no crash-durability or snapshot/restore promise.
@@ -120,7 +126,8 @@ authority hides old cache without altering pending IDs, TTL or receipt proof.
 ## Bounded Traversal history
 
 `illuminate` and `watchIlluminate` retain complete Server Graph observations in
-an independent derived-result lane (codec1, Memory11, SQLite8). Exact CRUD cache
+an independent derived-result lane (codec1, Memory11, introduced in SQLite8 and
+retained by SQLite9). Exact CRUD cache
 rows and mutation intents never receive synthetic/transformed/reduced edges.
 Canonical identity uses the parent's wire-normalized query bytes, stable scope,
 full authority, generation and certified responder. Pending mutations contribute
@@ -566,7 +573,7 @@ await repository.consumeScopedChanges(
 
 Adapters run `runScopedChangeStoreConformanceSuite` across their real persistence
 boundary. Memory snapshots add independent opaque state in schema 8; SQLite
-schema 8 keeps one indexed BLOB cursor per partition. Legacy origin cursors do
+schema 9 keeps one indexed BLOB cursor per partition. Legacy origin cursors do
 not establish scoped freshness. Migration/rebootstrap hides old confirmed rows
 as Unknown, preserves outbox records and requires authorized plural reads.
 The legacy `changeCursor`/`applyChangeChunk` and `LanternClientIdentitySource`

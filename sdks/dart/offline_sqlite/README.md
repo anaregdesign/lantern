@@ -8,11 +8,17 @@ published; the repository uses path dependencies during development.
 The source candidate implements the common bound client with automatic foreground delivery:
 
 ```dart
-final data = await SqliteOfflineStore.openSession(
+final startup = await SqliteOfflineStore.openSession(
   path: applicationDatabasePath,
   client: transport,
   binding: sessionBinding,
+  installationPolicy: applicationInstallationPolicy,
 );
+if (startup case SqliteRestoreHeld(:final reason)) {
+  // Keep the original database and show attention without a data client.
+  return showRestoreHold(reason);
+}
+final data = (startup as SqliteSessionReady).session;
 final ticket = await data.mutations.submit(MutationRequest.deleteVertices([
   'note:42',
 ])); // Durable admission without capability, credentials or network.
@@ -20,9 +26,47 @@ final ticket = await data.mutations.submit(MutationRequest.deleteVertices([
 
 Ordinary CRUD Futures await Server handling. The bounded session owner handles
 preparation, original-receipt recovery and retries. The application/native bridge
-provides foreground and verified credential events; maintained app integration is
-#1772. Applications do not schedule delivery or expose a manual Sync action. The legacy explicit Repository
+provides foreground and verified credential events. The maintained
+[Flutter app](../example/README.md#common-data-ownership-and-migration) composes
+Direct, Memory, Durable and durable-outbox without read cache. Applications do
+not schedule delivery or expose a manual Sync action. The legacy explicit Repository
 example below remains for published clients and qualification tools.
+
+`installationPolicy` is required and must be one stable application-owned object
+for matching handles. It verifies backup/transfer exclusion and an independent
+installation signal under the core reservation and native guard, before SQLite
+write-open, migration or automatic work. A held result exposes no admission or
+network capability and performs no expiry, authority binding or schema upgrade.
+The application still owns the transport when startup is held or fails.
+
+Schema9 adds a singleton installation binding and a bounded per-partition adoption
+record. A markerless legacy database requires both an exact
+`SqliteScopeAdoption.verified` account mapping and an independently trusted
+`legacyAdoptionVerified` policy assertion. Login, a new UUID, an existing filename
+or newly configured backup exclusion do not establish that assertion. Without it,
+the maintained integration holds the store. Missing/mismatched installation
+evidence is never replaced to make a database pass. Matching evidence permits
+ordinary current-store reopen under the declared policy; it does not establish
+arbitrary unreported copy/rollback detection.
+
+Adoption stays at the original canonical database path. It rewrites relational
+and embedded scope identities in one transaction, including any schema upgrade;
+the runtime uses only the destination binding's stable identity. Original
+operation/receipt/group/contribution IDs, values, TTL, retention, dispatch
+certainty, leases, FIFO and dependencies are retained. Destination byte budgets
+are recomputed before commit; conflict, corruption or insufficient space rolls
+back the entire change. Old granting cache/traversal/CDC views are invalidated.
+An uncertain commit is resolved by reopening the adoption record, not by admitting
+the same application write again. Plain reopen does not clear an authentication
+pause; legacy null-authority adoption also preserves policy pause. Old opaque
+operation strings remain diagnostic identities, not newly minted `OperationId`s.
+
+The qualified factory holds native ownership through database close. A failed
+close is memoized and retains the guard; do not delete the lock file, reset the
+database or start a replacement owner. The application account controller must
+retain retirement failure and prevent successor activation. The low-level
+`open`/`openAutomatic` adapter primitives do not establish installation policy;
+manual tools and host fixtures remain responsible for their explicit scope.
 
 ```dart
 final store = await SqliteOfflineStore.open(path: applicationDatabasePath);
@@ -52,9 +96,11 @@ backup policy, and any additional encryption. The default OS SQLite factory does
 not provide application-level database encryption. A different audited factory
 can be injected through `databaseFactory`; no token, credential, encryption key,
 or key acquisition callback is persisted by this package. A local `partitionId`
-is a namespace, not server-side authorization. Await `wipePartition` before
-rotating an account's credentials, as required by the offline core contract.
-Close/join the old lifetime and discard its tickets first. Explicit wipe erases
+is a namespace, not server-side authorization. A shared mutable remote requires
+`wipePartition` before swapping to another account. The maintained native app
+instead closes/joins independently bound immutable account transports and retains
+each account's original intent for A→B→A recovery. Before an explicitly chosen wipe,
+close/join the old lifetime and discard its tickets first. Explicit wipe erases
 the old generation's invocation-ID guards and receipts; it cannot undo Server
 work. A new explicit submission, including a still-fresh reused caller ID, can
 execute again. Wipe is not automatic retry, storage-error recovery or cache clearing.
@@ -108,7 +154,12 @@ execute again. Wipe is not automatic retry, storage-error recovery or cache clea
   credential-generation/policy pauses. It follows schema 6 in merged #1768;
   migration preserves the existing auth pause. Schema 8 adds the independent
   indexed Traversal result lane and semantic validity epoch; older schemas start
-  with no derived results and retain their existing mutation bytes.
+  with no derived results and retain their existing mutation bytes. Schema 9 adds
+  one installation binding and bounded per-partition adoption records. Qualified
+  migration and adoption commit together; unknown continuity returns a held
+  startup before write-open. Markerless legacy stores require independent trusted
+  installation provenance and an exact verified scope mapping. The maintained
+  mobile default holds them until an integrator can supply that evidence.
 
 Automatic opens use a dedicated native `flock` sidecar, acquired before SQLite
 open/migration. The shared C Code Asset supports Android/iOS and host VM tests;

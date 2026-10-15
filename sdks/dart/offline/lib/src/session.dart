@@ -42,6 +42,7 @@ final class OfflineLanternSession
     bool transferAllowed = true,
     bool restoreHeld = false,
     OfflineClock? clock,
+    OfflineSessionSchedule? schedule,
     bool Function()? authorityCurrent,
     OfflineReceiptRemote? receiptRemote,
     OfflineBoundMutationRemote? mutationRemote,
@@ -62,6 +63,7 @@ final class OfflineLanternSession
       transferAllowed: transferAllowed,
       restoreHeld: restoreHeld,
       clock: clock,
+      schedule: schedule,
       authorityCurrent: authorityCurrent,
       receiptRemote: receiptRemote,
       mutationRemote: mutationRemote,
@@ -203,6 +205,45 @@ final class OfflineLanternSession
 
   @override
   LanternSessionBinding get binding => _shared.binding;
+
+  /// Read-only bounded lookup of an existing opaque legacy operation identity.
+  /// This preserves the offline diagnostic type; it never constructs a modern
+  /// OperationId, re-admits, expires, prepares or sends work. Requires a current
+  /// verified scope without an auth, policy or restore hold.
+  Future<OfflineOperationStatus?> inspectLegacyOperation(
+    String operationId,
+  ) async {
+    if (operationId.isEmpty || utf8.encode(operationId).length > 4096) {
+      throw const OfflineArgumentException();
+    }
+    void check() {
+      _check();
+      if (_shared.auth ||
+          _shared.policy ||
+          _shared.restoreHeld ||
+          !_shared._credentialLive) {
+        throw const OfflineWorkInterruptedException();
+      }
+    }
+
+    check();
+    final result = await _shared.store.transaction((tx) async {
+      check();
+      if (await tx.generation(binding.stableIdentity) !=
+              _shared.data.generation ||
+          await tx.authorityBinding(binding.stableIdentity) !=
+              binding.authorityBinding) {
+        throw const OfflineDisposedException();
+      }
+      return (await tx.getOperation(
+        binding.stableIdentity,
+        operationId,
+      ))?.status;
+    });
+    check();
+    return result;
+  }
+
   @override
   LanternMutationControl get mutations {
     _check();
@@ -970,21 +1011,26 @@ final class _SessionShared {
       await data.close();
       // Join admissions/local captures accepted before the lifetime gate closed.
       await store.transaction((_) async {});
-      // A failed join never reaches unlock. Row cleanup errors are reported by
-      // the owner, but its guard has been invalidated before store/transport close.
-      try {
-        await owner.release();
-      } finally {
+      // A failed join never reaches release. Qualified adapters retain native
+      // ownership through store close even after invalidating the owner row.
+      Object? failure;
+      StackTrace? trace;
+      Future<void> join(Future<void> Function() close) async {
         try {
-          await closeStore(store);
-        } finally {
-          try {
-            await client.close();
-          } finally {
-            onReleased();
-          }
+          await close();
+        } catch (error, stack) {
+          failure ??= error;
+          trace ??= stack;
         }
       }
+
+      await join(owner.release);
+      await join(() => closeStore(store));
+      await join(client.close);
+      if (failure != null) Error.throwWithStackTrace(failure!, trace!);
+      // Retain the bounded registry reservation on any failed teardown. A
+      // transport cleanup error cannot erase a preceding durable-store error.
+      onReleased();
     })();
   }
 }

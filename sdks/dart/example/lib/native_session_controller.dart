@@ -5,7 +5,8 @@ import 'package:lantern_client/lantern_client.dart';
 
 import 'native_credential_store.dart';
 import 'native_providers.dart';
-import 'offline_session.dart';
+import 'app_data_session.dart';
+import 'package:lantern_client_offline/lantern_client_offline.dart';
 
 part 'native_registration_controller.dart';
 
@@ -16,21 +17,18 @@ final class NativeAccount {
     this.client,
     this.session,
     this.partition,
-    this.offline,
+    this.dataSession,
   );
   final String credential;
   final LanternClient client;
   final NativeSession session;
   final String partition;
-  final OfflineDemoSession? offline;
+  final AppDataSession? dataSession;
   final cancellation = LanternCancellationToken();
-  Future<void> close() async {
+  Future<void>? _closing;
+  Future<void> close() {
     cancellation.cancel();
-    try {
-      await offline?.close();
-    } finally {
-      await client.close();
-    }
+    return _closing ??= closeAccountData(dataSession, client);
   }
 
   @override
@@ -46,11 +44,15 @@ final class NativeSessionController extends ChangeNotifier {
     required this.providers,
     required this.store,
     LanternClient Function(String? credential)? createClient,
-    Future<OfflineDemoSession?> Function(
+    Future<AppDataSession?> Function(
       LanternClient client,
-      String partition,
+      NativeSession session,
+      bool freshlyVerified,
     )?
-    openOffline,
+    openData,
+    AppDataProfile profile = AppDataProfile.durable,
+    bool pinnedResponder = false,
+    String securityDomain = 'lantern-example',
   }) : _createClient =
            createClient ??
            ((credential) => LanternClient.connect(
@@ -58,20 +60,39 @@ final class NativeSessionController extends ChangeNotifier {
              tokenProvider: () => credential,
              defaultTimeout: const Duration(seconds: 15),
            )),
-       _openOffline =
-           openOffline ??
-           ((client, partition) => OfflineDemoSession.open(
-             client: client,
-             endpoint: endpoint,
-             partitionId: partition,
-             invalidateConfirmed: true,
-           ));
+       _openData =
+           openData ??
+           ((client, session, fresh) {
+             final binding = LanternSessionBinding.native(
+               session,
+               securityDomain: securityDomain,
+             );
+             return AppDataSessionFactory(
+               client: client,
+               binding: binding,
+               profile: profile,
+               legacyPartition: nativeAccountPartition(endpoint, session),
+               pinnedResponder:
+                   pinnedResponder && session.personalPrefix != null,
+               changePrefix: session.personalPrefix ?? '',
+             ).open(
+               freshCredentials: fresh
+                   ? OfflineVerifiedCredentials(
+                       binding: binding,
+                       // A newly completed provider login issued this immutable transport's
+                       // credential. The previous account was joined before this factory;
+                       // data transfer stays disabled until this one event is accepted.
+                       install: () {},
+                     )
+                   : null,
+             );
+           });
   final Uri endpoint;
   final NativeProviders providers;
   final NativeCredentialStore store;
   final LanternClient Function(String?) _createClient;
-  final Future<OfflineDemoSession?> Function(LanternClient, String)
-  _openOffline;
+  final Future<AppDataSession?> Function(LanternClient, NativeSession, bool)
+  _openData;
   NativeAccount? account;
   List<NativeRegistrationReview> registrationReviews = const [];
   bool busy = false;
@@ -81,9 +102,27 @@ final class NativeSessionController extends ChangeNotifier {
   LanternCancellationToken? _pending;
   Future<void> _serial = Future.value();
   Timer? _expiry;
+  Object? _retirementFailure;
+  StackTrace? _retirementTrace;
+  Future<void>? _closing;
+
+  Future<void> _closeAccount(NativeAccount? value) async {
+    try {
+      await value?.close();
+    } catch (error, stack) {
+      _retirementFailure ??= error;
+      _retirementTrace ??= stack;
+      rethrow;
+    }
+  }
 
   Future<T> _exclusive<T>(Future<T> Function() work) {
-    final result = _serial.then((_) => work());
+    final result = _serial.then((_) {
+      if (_retirementFailure != null) {
+        Error.throwWithStackTrace(_retirementFailure!, _retirementTrace!);
+      }
+      return work();
+    });
     _serial = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return result;
   }
@@ -115,7 +154,7 @@ final class NativeSessionController extends ChangeNotifier {
     if (old != null) {
       unawaited(
         _exclusive(() async {
-          await old.close();
+          await _closeAccount(old);
           if (_current(generation)) await store.clear();
         }).catchError((Object _) {
           // Local access is already closed; never restore it after storage failure.
@@ -156,6 +195,7 @@ final class NativeSessionController extends ChangeNotifier {
       await _inspectAndInstall(
         generation,
         StoredNativeCredential.fromSession(issued.credential, issued.session),
+        freshlyVerified: true,
       );
     } on Object {
       if (_current(generation)) {
@@ -203,11 +243,13 @@ final class NativeSessionController extends ChangeNotifier {
 
   Future<void> _inspectAndInstall(
     int generation,
-    StoredNativeCredential saved,
-  ) async {
+    StoredNativeCredential saved, {
+    bool freshlyVerified = false,
+  }) async {
     final client = _createClient(saved.credential);
-    OfflineDemoSession? offline;
+    AppDataSession? dataSession;
     var installed = false;
+    Object? startupFailure;
     try {
       final view = await client.getNativeSession(
         options: LanternCallOptions(cancellation: _pending),
@@ -223,10 +265,16 @@ final class NativeSessionController extends ChangeNotifier {
         final old = account;
         account = null;
         _changed();
-        await old?.close();
+        await _closeAccount(old);
       });
       if (!_current(generation)) return;
-      offline = await _openOffline(client, partition);
+      try {
+        dataSession = await _openData(client, view.session, freshlyVerified);
+      } on AppDataStartupFailure catch (error) {
+        _retirementFailure ??= error;
+        _retirementTrace ??= error.startupTrace;
+        rethrow;
+      }
       if (!_current(generation)) return;
       await _exclusive(() async {
         if (!_current(generation)) return;
@@ -240,7 +288,7 @@ final class NativeSessionController extends ChangeNotifier {
           client,
           view.session,
           partition,
-          offline,
+          dataSession,
         );
         installed = true;
         _expiry = Timer(
@@ -280,12 +328,17 @@ final class NativeSessionController extends ChangeNotifier {
           /* Retain recovery records when secure storage is unavailable. */
         }
       });
+    } catch (error) {
+      startupFailure = error;
+      rethrow;
     } finally {
       if (!installed) {
         try {
-          await offline?.close();
-        } finally {
-          await client.close();
+          await closeAccountData(dataSession, client);
+        } catch (error, stack) {
+          _retirementFailure ??= error;
+          _retirementTrace ??= stack;
+          if (startupFailure == null) rethrow;
         }
       }
     }
@@ -361,8 +414,9 @@ final class NativeSessionController extends ChangeNotifier {
     account = null;
     _changed();
     if (old != null) {
-      await old
-          .close(); // Cancels old work; preserves its cache/outbox partition.
+      await _closeAccount(
+        old,
+      ); // Joins old work, preserving its durable intent.
       if (revoke) {
         final revoker = _createClient(old.credential);
         try {
@@ -388,8 +442,9 @@ final class NativeSessionController extends ChangeNotifier {
     await store.clear();
   }
 
-  Future<void> close() async {
-    if (_closed) return;
+  Future<void> close() => _closing ??= _close();
+
+  Future<void> _close() async {
     _closed = true;
     ++_generation;
     _pending?.cancel();
@@ -397,7 +452,7 @@ final class NativeSessionController extends ChangeNotifier {
     await _exclusive(() async {
       final old = account;
       account = null;
-      await old?.close();
+      await _closeAccount(old);
     });
   }
 
