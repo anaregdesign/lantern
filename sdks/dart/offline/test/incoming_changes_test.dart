@@ -35,7 +35,9 @@ final class _Tail {
 }
 
 final class _Store implements OfflineStore, OfflineAutomaticStore {
-  final inner = MemoryOfflineStore();
+  _Store({OfflineStoreLimits limits = const OfflineStoreLimits()})
+    : inner = MemoryOfflineStore(limits: limits);
+  final MemoryOfflineStore inner;
   String partition = '';
   bool failCursor = false;
   @override
@@ -89,7 +91,8 @@ final class _Writes implements OfflineBoundMutationRemote {
 }
 
 final class _Fixture {
-  final clock = Clock(), store = _Store(), writes = _Writes();
+  final clock = Clock(), writes = _Writes();
+  final _Store store;
   final endpoint = Uri.parse('http://localhost:6380');
   final tails = <_Tail>[], vertexReads = <List<String>>[];
   final vertices = <String, graph.Vertex>{};
@@ -105,7 +108,8 @@ final class _Fixture {
   late final LanternChangeSource source;
   OfflineLanternSession? session;
   final subscriptions = <StreamSubscription<Object?>>[];
-  _Fixture() {
+  _Fixture({OfflineStoreLimits limits = const OfflineStoreLimits()})
+    : store = _Store(limits: limits) {
     binding = current = LanternSessionBinding.application(
       serviceOrigin: endpoint,
       securityDomain: 'fixture',
@@ -332,7 +336,7 @@ void main() {
   test(
     'T08 ordinary loss preserves historical evidence and resumes completed cursor',
     () async {
-      await f.seed(1);
+      await f.seed(65);
       await f.open();
       await f.tick();
       f.tails.single.bootstrap(7);
@@ -355,6 +359,12 @@ void main() {
       f.tails.last.frames.add(wire.WatchChangesResponse(cursor: [8]));
       await flush();
       expect(await f.cursor(), [8]);
+      final reads = f.vertexReads.length;
+      await f.tick(49);
+      expect(f.vertexReads, hasLength(reads));
+      await f.tick(1);
+      expect(f.vertexReads, hasLength(reads + 1));
+      expect(_text(await f.cached(f.vertexReads.last.first)), 'new');
     },
   );
 
@@ -842,4 +852,217 @@ void main() {
       expect(f.vertexReads.length, lessThanOrEqualTo(6));
     },
   );
+
+  for (final interruptWindow in [false, true]) {
+    test(
+      'R1 ${interruptWindow ? 'interrupted' : 'completed'} window and wrap floors survive CDC wakes and continuous resume',
+      () async {
+        await f.close();
+        f = _Fixture(
+          limits: const OfflineStoreLimits(
+            maxCacheRecords: 2048,
+            maxCacheRecordsPerPartition: 2048,
+          ),
+        );
+        await f.seed(
+          1056,
+        ); // 33 full pages: the production 32-page window is unchanged.
+        await f.open();
+        await f.tick();
+        f.tails.single.bootstrap();
+        await flush();
+        var cursor = 1;
+        final lastPage = Completer<void>();
+        addTearDown(() {
+          if (!lastPage.isCompleted) lastPage.complete();
+        });
+        f.beforeRead = () async {
+          f.tails.last.invalidate(f.vertexReads.last.first, cursor: ++cursor);
+          await flush(); // Reject every response under the real read-epoch fence.
+          if (interruptWindow && f.vertexReads.length == 32) {
+            await lastPage.future;
+          }
+        };
+        for (var i = 0; i < 32; i++) {
+          await f.tick();
+        }
+        expect(f.vertexReads, hasLength(32));
+        final visited = f.vertexReads.expand((keys) => keys).toSet();
+        expect(visited, hasLength(1024));
+        expect(f.vertexReads.every((keys) => keys.length == 32), isTrue);
+        if (interruptWindow) {
+          final stopping = f.session!.suspend();
+          await flush();
+          lastPage.complete();
+          await stopping;
+          await f.session!.resume();
+          await f.tick();
+          f.tails.last.frames.add(
+            wire.WatchChangesResponse(cursor: [++cursor]),
+          );
+          await flush();
+          await f.tick();
+          expect(f.vertexReads, hasLength(32));
+        }
+        final windowEnd = f.clock.now;
+        final ticket = await f.session!.mutations.submit(
+          MutationRequest.putVertices([
+            const VertexInput(
+              key: 'outgoing',
+              value: StringValue('independent'),
+            ),
+          ]),
+        );
+        for (var i = 0; i < 5; i++) {
+          f.tails.last.invalidate('resident:0', cursor: ++cursor);
+          await flush();
+          await f.tick(100);
+          expect(f.vertexReads, hasLength(32));
+        }
+        expect(f.writes.calls, 1);
+        expect(
+          (await f.session!.mutations.getStatus(
+            ticket.reference.operationId,
+          )).items.single.state,
+          MutationItemState.handled,
+        );
+        expect(
+          (await f.session!.syncStatus.first).reachability,
+          SyncReachability.idle,
+        );
+        await f.session!.suspend();
+        await f.session!.resume();
+        await f.tick();
+        expect(f.tails.last.request.bootstrap, isFalse);
+        f.tails.last.frames.add(wire.WatchChangesResponse(cursor: [++cursor]));
+        await flush();
+        await f.clock.advance(
+          windowEnd
+              .add(const Duration(milliseconds: 999))
+              .difference(f.clock.now),
+        );
+        expect(f.vertexReads, hasLength(32));
+        await f.tick(1);
+        expect(f.vertexReads, hasLength(33));
+        expect(f.vertexReads.last.any(visited.contains), isFalse);
+        expect(
+          (await f.cached('resident:0')).confirmed.state,
+          ConfirmedState.unknown,
+        );
+        expect(
+          await f.store.transaction(
+            (tx) => tx.hasUnknownResident(
+              f.store.partition,
+              const OfflineEntityKey.vertex('resident:0'),
+            ),
+          ),
+          isTrue,
+        );
+        // The end-of-range floor also survives hot events and wraps only on expiry.
+        for (var i = 0; i < 9; i++) {
+          f.tails.last.invalidate('resident:0', cursor: ++cursor);
+          await flush();
+          await f.tick(100);
+          expect(f.vertexReads, hasLength(33));
+        }
+        await f.tick(99);
+        expect(f.vertexReads, hasLength(33));
+        await f.tick(1);
+        expect(f.vertexReads, hasLength(34));
+        expect(f.vertexReads.last, f.vertexReads.first);
+        expect(
+          (await f.cached('resident:0')).confirmed.state,
+          ConfirmedState.unknown,
+        );
+        f.beforeRead = null;
+        await f.tick();
+        expect(f.vertexReads, hasLength(35));
+        expect(_text(await f.cached(f.vertexReads.last.first)), 'new');
+        expect(f.clock.active, lessThanOrEqualTo(1));
+      },
+    );
+  }
+
+  for (final boundary in ['gap', 'auth', 'close']) {
+    test(
+      'R1 $boundary fences held recovery and its pagination state',
+      () async {
+        await f.seed(65);
+        await f.open();
+        await f.tick();
+        f.tails.single.bootstrap();
+        await flush();
+        await f.tick();
+        final firstPage = f.vertexReads.single.toList();
+        final held = Completer<void>(), entered = Completer<void>();
+        f.beforeRead = () {
+          entered.complete();
+          return held.future;
+        };
+        await f.tick();
+        await entered.future;
+        final oldPage = f.vertexReads.last.toList();
+        f.beforeRead = null;
+        if (boundary == 'close') {
+          final closing = f.session!.close();
+          await flush();
+          held.complete();
+          await closing;
+          expect(f.clock.active, 0);
+          expect(
+            await f.store.transaction(
+              (tx) => tx.hasUnknownResident(
+                f.store.partition,
+                OfflineEntityKey.vertex(oldPage.first),
+              ),
+            ),
+            isTrue,
+          );
+          await f.tick(30000);
+          expect(f.vertexReads, hasLength(2));
+          return;
+        }
+        f.tails.single.fail(
+          boundary == 'gap'
+              ? connect.Code.failedPrecondition
+              : connect.Code.unauthenticated,
+        );
+        await flush();
+        expect(await f.cursor(), isNull);
+        held.complete();
+        await flush();
+        expect(
+          (await f.session!.syncStatus.first).pause,
+          boundary == 'auth' ? SyncPause.auth : SyncPause.none,
+        );
+        expect(
+          (await f.cached(oldPage.first)).confirmed.state,
+          ConfirmedState.unknown,
+        );
+        if (boundary == 'auth') {
+          expect((await f.session!.syncStatus.first).pause, SyncPause.auth);
+          expect(
+            await f.session!.acceptVerifiedCredentials(
+              OfflineVerifiedCredentials(binding: f.binding, install: () {}),
+            ),
+            isTrue,
+          );
+        }
+        await f.tick(30000);
+        expect(f.tails.last.request.bootstrap, isTrue);
+        f.tails.last.bootstrap(9);
+        await flush();
+        await f.tick();
+        expect(
+          f.vertexReads[2],
+          firstPage,
+        ); // Old completion cannot reset/advance it.
+        for (var i = 0; i < 2; i++) {
+          await f.tick();
+        }
+        expect(f.vertexReads.skip(2).map((keys) => keys.length), [32, 32, 1]);
+        expect(_text(await f.cached('resident:64')), 'new');
+      },
+    );
+  }
 }

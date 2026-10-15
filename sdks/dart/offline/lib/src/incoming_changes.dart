@@ -12,6 +12,9 @@ final class _AutomaticIncoming {
       _boundary = false,
       discontinuous = false;
   int revision = 0;
+  String? _residentAfter;
+  int _residentPages = 0;
+  DateTime? _residentNotBefore;
   OfflineLanternDataClient get data => owner.data;
   bool get allowReads => !discontinuous && (_disabled || _boundary);
 
@@ -40,6 +43,26 @@ final class _AutomaticIncoming {
     _boundary = false;
     discontinuous = true;
     revision++;
+    _resetRecovery();
+  }
+
+  void _resetRecovery() {
+    _residentAfter = null;
+    _residentPages = 0;
+    _residentNotBefore = null;
+  }
+
+  DateTime? _recoveryDue(DateTime? requested) {
+    var due = requested;
+    final now = data.clock();
+    for (final floor in [_residentNotBefore, owner._backoffUntil]) {
+      if (floor != null &&
+          floor.isAfter(now) &&
+          (due == null || floor.isAfter(due))) {
+        due = floor;
+      }
+    }
+    return due;
   }
 
   Future<void> verifyContinuity() async {
@@ -70,12 +93,12 @@ final class _AutomaticIncoming {
   }
 
   void _queueRecovery({DateTime? dueAt}) {
-    if (!_boundary || _tail == null) return;
+    if (!_boundary || _tail == null || !owner._policyAllowsNetwork) return;
     owner.runtime.enqueue(
       'incoming-residents',
       OfflineSessionLane.read,
       _recover,
-      dueAt: dueAt,
+      dueAt: _recoveryDue(dueAt),
       retain: true,
     );
   }
@@ -99,6 +122,7 @@ final class _AutomaticIncoming {
             );
       work.checkCurrent();
       final bootstrap = _bootstrap || cursor == null;
+      if (bootstrap) _resetRecovery();
       session = source.open(
         bootstrap: bootstrap,
         cursor: cursor == null || bootstrap
@@ -232,22 +256,50 @@ final class _AutomaticIncoming {
   }
 
   Future<void> _recover(OfflineSessionWork work) async {
-    final tail = _tail;
+    final tail = _tail, startedRevision = revision;
     if (tail == null || !_boundary) return;
     void check() {
       work.checkCurrent();
       source.checkCurrent();
-      if (!identical(tail, _tail) || !_boundary) {
+      if (!identical(tail, _tail) ||
+          !_boundary ||
+          revision != startedRevision) {
         throw const OfflineWorkInterruptedException();
       }
     }
 
     try {
       check();
+      // A stop can interrupt the 32nd selected page before its epilogue. Its
+      // replacement still owes the window floor before selecting page 33.
+      if (_residentPages == 32) {
+        _residentPages = 0;
+        _residentNotBefore = data.clock().add(const Duration(seconds: 1));
+      }
+      final due = _recoveryDue(null);
+      if (due != null && due.isAfter(data.clock())) {
+        // enqueue preserves an earlier pending deadline. One already queued
+        // turn may enter early, but only re-arms this job without scanning/RPC.
+        _queueRecovery(dueAt: due);
+        return;
+      }
+      // An elapsed floor must not turn later CDC wakes into immediate work;
+      // ordinary forward pages still use the runtime debounce.
+      _residentNotBefore = null;
       final keys = await owner.store.transaction(
-        (tx) => tx.unknownResidents(data.partitionId, limit: 32),
+        (tx) => tx.unknownResidents(
+          data.partitionId,
+          limit: 32,
+          after: _residentAfter,
+        ),
       );
       check();
+      if (keys.isNotEmpty) {
+        // Selection progress is independent of a successful epoch-valid commit.
+        // A stale page stays Unknown, but must not monopolize the next turn.
+        _residentAfter = keys.last.canonical;
+        _residentPages++;
+      }
       final vertices = keys
           .where((key) => key.kind == OfflineEntityKind.vertex)
           .toList();
@@ -288,19 +340,47 @@ final class _AutomaticIncoming {
         );
       }
       check();
-      final remains = await owner.store.transaction(
-        (tx) => tx.unknownResidents(data.partitionId, limit: 1),
-      );
-      if (remains.isNotEmpty) {
-        _queueRecovery(
-          dueAt:
-              owner._backoffUntil ?? data.clock().add(owner.runtime.debounce),
+      final later = keys.isEmpty
+          ? <OfflineEntityKey>[]
+          : await owner.store.transaction(
+              (tx) => tx.unknownResidents(
+                data.partitionId,
+                limit: 1,
+                after: _residentAfter,
+              ),
+            );
+      check();
+      if (later.isEmpty) {
+        final head = await owner.store.transaction(
+          (tx) => tx.unknownResidents(data.partitionId, limit: 1),
         );
+        check();
+        if (head.isEmpty) {
+          _resetRecovery();
+          return;
+        }
+        _residentAfter = null;
       }
-    } on OfflineWorkInterruptedException {
-      // The tail/work lifetime changed; its replacement owns recovery.
-    } on LanternChangeDiscontinuity {
-      await discontinue();
+      if (later.isEmpty || _residentPages == 32) {
+        _residentPages = 0;
+        _residentNotBefore = data.clock().add(const Duration(seconds: 1));
+      }
+      _queueRecovery(dueAt: data.clock().add(owner.runtime.debounce));
+    } catch (error, stack) {
+      // Closing a replaced tail may surface a typed closed-read error rather
+      // than work cancellation. It cannot pause/reset the replacement runtime.
+      if (work.cancellation.isCanceled ||
+          !identical(tail, _tail) ||
+          !_boundary ||
+          revision != startedRevision ||
+          error is OfflineWorkInterruptedException) {
+        return;
+      }
+      if (error is LanternChangeDiscontinuity) {
+        await discontinue();
+      } else {
+        Error.throwWithStackTrace(error, stack);
+      }
     }
   }
 }

@@ -467,15 +467,21 @@ final class _MemoryTransaction
   List<OfflineEntityKey> unknownResidents(
     String partitionId, {
     required int limit,
+    String? after,
   }) {
     _ensureOpen();
     _validatePartition(partitionId);
     if (limit < 1 || limit > offlineMaxResidentRevalidationBatch) {
       throw const OfflineArgumentException();
     }
-    return List<OfflineEntityKey>.unmodifiable(
-      _state.partition(partitionId).unknownResidents.values.take(limit),
-    );
+    final index = _state.partition(partitionId).unknownResidents;
+    final result = <OfflineEntityKey>[];
+    var key = after == null ? index.firstKey() : index.firstKeyAfter(after);
+    while (key != null && result.length < limit) {
+      result.add(index[key]!);
+      key = index.firstKeyAfter(key);
+    }
+    return List.unmodifiable(result);
   }
 
   @override

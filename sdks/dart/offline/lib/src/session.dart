@@ -939,6 +939,7 @@ final class _SessionShared {
   Future<void> close() {
     if (_closing != null) return _closing!;
     ended = true;
+    incoming?._resetRecovery();
     return _closing = (() async {
       await runtime.close();
       await _credentialChange;

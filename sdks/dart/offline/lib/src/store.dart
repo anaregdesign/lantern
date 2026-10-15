@@ -273,11 +273,13 @@ abstract interface class OfflineStoreTransaction {
 
   /// Returns up to [limit] Unknown resident identities in stable key order.
   ///
-  /// Repeated calls start at the first unfinished identity; resolving a key
-  /// removes it durably. No graph values are loaded or returned.
+  /// With [after], starts strictly after that canonical key, even if it was
+  /// removed. Null starts at the first unfinished identity. An empty page only
+  /// ends this range; earlier Unknown identities may remain. No values are read.
   FutureOr<List<OfflineEntityKey>> unknownResidents(
     String partitionId, {
     required int limit,
+    String? after,
   });
 
   /// Completes one resident revalidation only if [expectedEpoch] is current.

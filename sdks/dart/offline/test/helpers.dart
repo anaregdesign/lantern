@@ -479,7 +479,9 @@ final class _DelayedTransaction implements OfflineStoreTransaction {
   Future<List<OfflineEntityKey>> unknownResidents(
     String partitionId, {
     required int limit,
-  }) async => await inner.unknownResidents(partitionId, limit: limit);
+    String? after,
+  }) async =>
+      await inner.unknownResidents(partitionId, limit: limit, after: after);
 
   @override
   Future<bool> completeUnknownResident(

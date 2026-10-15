@@ -1302,6 +1302,7 @@ final class _SqlTransaction
   Future<List<OfflineEntityKey>> unknownResidents(
     String partitionId, {
     required int limit,
+    String? after,
   }) => _run(() async {
     _ensureOpen();
     _validatePartition(partitionId);
@@ -1311,8 +1312,10 @@ final class _SqlTransaction
     final rows = await sql.query(
       'recovery',
       columns: ['entity_key'],
-      where: 'partition_id=?',
-      whereArgs: [partitionId],
+      where: after == null
+          ? 'partition_id=?'
+          : 'partition_id=? AND entity_key>?',
+      whereArgs: [partitionId, ?after],
       orderBy: 'entity_key',
       limit: limit,
     );

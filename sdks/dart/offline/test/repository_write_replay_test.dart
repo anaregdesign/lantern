@@ -5629,7 +5629,8 @@ final class _InspectingTransaction implements OfflineStoreTransaction {
   FutureOr<List<OfflineEntityKey>> unknownResidents(
     String partitionId, {
     required int limit,
-  }) => inner.unknownResidents(partitionId, limit: limit);
+    String? after,
+  }) => inner.unknownResidents(partitionId, limit: limit, after: after);
 
   @override
   FutureOr<bool> completeUnknownResident(

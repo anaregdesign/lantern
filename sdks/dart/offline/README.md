@@ -52,6 +52,11 @@ within its original TTL; known gaps, malformed frames or authority/route changes
 hide it and require bootstrap. Authentication and permission failures pause work;
 permission denial never activates polling around the rejected operation.
 
+Recovery advances through resident pages even when a hot page cannot commit.
+After a complete pass or 32 pages, a one-second resident-only delay bounds retry
+work without postponing outgoing mutations. Pagination never clears an Unknown
+marker without current evidence.
+
 Active Vertex/Edge watches coalesce invalidations and settlement with the existing
 bounded coordinator. Edge evidence also requires both live endpoint Vertices:
 its evidence deadline is capped by their deadlines while the exact Edge payload

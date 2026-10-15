@@ -346,6 +346,102 @@ Future<void> runScopedChangeStoreConformanceSuite(
         await cached('unrelated'),
     'Vertex settlement invalidates dependent Edge evidence',
   );
+
+  const range = 'scoped-resident-range';
+  final identities = [
+    for (var i = 0; i < 8; i++) OfflineEntityKey.vertex('key:$i'),
+  ];
+  await store.transaction((tx) async {
+    for (final key in identities) {
+      await tx.putCache(
+        range,
+        OfflineCacheRecord.missing(
+          partitionId: range,
+          generation: await tx.generation(range),
+          key: key,
+          validatedAt: now,
+          lastAccessAt: now,
+          missingUntil: now.add(const Duration(minutes: 1)),
+        ),
+      );
+    }
+    await tx.resetScopedChangeCursor(range, first);
+  });
+  Future<List<OfflineEntityKey>> page({String? after}) => store.transaction(
+    (tx) => tx.unknownResidents(range, limit: 3, after: after),
+  );
+  final firstPage = await page();
+  _require(firstPage.length == 3, 'bounded first resident range');
+  final boundary = firstPage.last.canonical;
+  await store.transaction((tx) async {
+    final epoch = await tx.changeEpoch(range);
+    for (final key in firstPage) {
+      await tx.putCache(
+        range,
+        OfflineCacheRecord.missing(
+          partitionId: range,
+          generation: await tx.generation(range),
+          key: key,
+          validatedAt: now,
+          lastAccessAt: now,
+          missingUntil: now.add(const Duration(minutes: 1)),
+        ),
+      );
+      _require(
+        await tx.completeUnknownResident(range, key, expectedEpoch: epoch),
+        'current completion removes page identity',
+      );
+      await tx.deleteCache(range, key);
+    }
+    // Reintroduce one identity behind the boundary, without recreating the
+    // removed boundary itself. Scheduling position is not durable completion.
+    await tx.putCache(
+      range,
+      OfflineCacheRecord.missing(
+        partitionId: range,
+        generation: await tx.generation(range),
+        key: firstPage.first,
+        validatedAt: now,
+        lastAccessAt: now,
+        missingUntil: now.add(const Duration(minutes: 1)),
+      ),
+    );
+    await tx.resetScopedChangeCursor(range, first);
+  });
+  final secondPage = await page(after: boundary);
+  final thirdPage = await page(after: secondPage.last.canonical);
+  final later = [...secondPage, ...thirdPage];
+  _require(
+    secondPage.length == 3 &&
+        thirdPage.length == 2 &&
+        later.toSet().length == 5 &&
+        later.every((key) => !firstPage.contains(key)),
+    'exclusive range continues past removed boundary without skips or duplicates',
+  );
+  _require(
+    (await page(after: thirdPage.last.canonical)).isEmpty &&
+        (await page()).first == firstPage.first,
+    'range exhaustion wraps to reintroduced earlier Unknown identity',
+  );
+  store = await reopen(store);
+  final reopened = await page();
+  _require(
+    reopened.first == firstPage.first && reopened.length == 3,
+    'new ephemeral cursor reaches unresolved residents after actual reopen',
+  );
+  await store.transaction((tx) async {
+    for (final key in [firstPage.first, ...later]) {
+      _require(
+        await tx.hasUnknownResident(range, key) &&
+            await tx.getCache(range, key) == null,
+        'pagination/reopen never resolves Unknown or publishes a cached value',
+      );
+    }
+    _require(
+      !await tx.hasUnknownResident(range, firstPage.last),
+      'removed boundary stays removed across reopen',
+    );
+  });
 }
 
 bool _equal(List<int>? a, List<int> b) =>

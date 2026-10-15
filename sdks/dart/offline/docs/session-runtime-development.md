@@ -90,6 +90,20 @@ resident-recovery job uses the existing read permits and 32-identity pages.
 Edge endpoint dependencies are also read in pages of at most 32. A callback may
 reuse a runtime read permit only when its current lane already owns one.
 
+Resident recovery advances an ephemeral exclusive keyset cursor after selecting
+each page, even when a racing invalidation prevents its commit. Unknown markers
+still require the original epoch-valid evidence. One invocation examines one
+page; reaching the end with Unknown remaining wraps the cursor and imposes a
+one-second resident-only floor. Every 32 selected pages impose the same floor
+while keeping the cursor, including when the last page is interrupted. CDC wakes
+cannot shorten it. The entry check re-arms an earlier queued turn without scanning
+or RPC, then normal debounce resumes when the floor expires. Endpoint backoff
+still applies, while unrelated watches and outgoing work retain their permits.
+This uses one cursor, a bounded page counter and one deadline in the existing job;
+there is no durable pagination state, new schema or second timer. Bootstrap resets
+them; certified availability/lifecycle resume preserves them. Stale tail responses
+cannot overwrite a reset or pause replacement recovery.
+
 Two finite delivery workers claim eligible FIFO heads transactionally, allowing
 an unrelated identity to progress while one receipt is slow. SQLite computes
 aggregate wake deadlines without decoding payload lists; local expiry and auth
