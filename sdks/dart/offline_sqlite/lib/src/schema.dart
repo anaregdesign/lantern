@@ -1,6 +1,12 @@
 part of '../lantern_client_offline_sqlite.dart';
 
-const _schemaVersion = 6;
+const _schemaVersion = 7;
+// Reserved against the local WP2 schema; recheck when its repaired main lands.
+const _ownerTable = '''CREATE TABLE automatic_owner (
+  id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL CHECK(epoch>0),
+  token TEXT NOT NULL CHECK(length(token)=64),
+  active INTEGER NOT NULL CHECK(active IN (0,1)),
+  scope TEXT NOT NULL, binding TEXT NOT NULL, configuration TEXT NOT NULL)''';
 const _applicationId = 0x4c4e544f;
 const _legacyPartitions = '''CREATE TABLE partitions (
     partition_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
@@ -38,7 +44,9 @@ const _tables = <String>[
     auth_paused INTEGER NOT NULL CHECK(auth_paused IN (0,1)),
     change_epoch INTEGER NOT NULL DEFAULT 0,
     time_high_water INTEGER NOT NULL DEFAULT 0,
-    authority_binding TEXT) WITHOUT ROWID''',
+    authority_binding TEXT,
+    paused_credential_generation INTEGER CHECK(paused_credential_generation>=0),
+    policy_paused INTEGER NOT NULL DEFAULT 0 CHECK(policy_paused IN (0,1))) WITHOUT ROWID''',
   '''CREATE TABLE cache (
     partition_id TEXT NOT NULL, entity_key TEXT NOT NULL,
     generation INTEGER NOT NULL, accessed_at INTEGER NOT NULL, vertex_key BLOB,
@@ -120,6 +128,7 @@ Future<void> _createSchema(Database db, int version) async {
   for (final entry in _indexes.entries) {
     await db.execute('CREATE INDEX ${entry.key} ON ${entry.value}');
   }
+  await db.execute(_ownerTable);
   await db.execute(_dependencyTable);
   await db.execute(_dependencyIndex);
   await db.insert('store_metadata', {
@@ -139,7 +148,8 @@ Future<void> _upgradeSchema(
           oldVersion != 2 &&
           oldVersion != 3 &&
           oldVersion != 4 &&
-          oldVersion != 5) ||
+          oldVersion != 5 &&
+          oldVersion != 6) ||
       newVersion != _schemaVersion ||
       (await db.rawQuery('PRAGMA application_id')).single.values.single !=
           _applicationId) {
@@ -151,6 +161,26 @@ Future<void> _upgradeSchema(
       marker.single['key'] != 'format' ||
       marker.single['value'] != expectedMarker) {
     throw const OfflineSchemaException();
+  }
+  if (oldVersion == 6) {
+    await _checkDefinitions(db, {
+      for (final statement in _tables)
+        RegExp(r'CREATE TABLE (\w+)').firstMatch(statement)!.group(1)!:
+            _versionSixDefinition(statement),
+      for (final entry in _indexes.entries)
+        entry.key: 'CREATE INDEX ${entry.key} ON ${entry.value}',
+      'operation_dependencies': _dependencyTable,
+      'dependency_prerequisite': _dependencyIndex,
+    });
+    await _addSessionColumns(db);
+    await db.execute(_ownerTable);
+    await db.update(
+      'store_metadata',
+      {'value': 'lantern-offline-$_schemaVersion'},
+      where: 'key=?',
+      whereArgs: ['format'],
+    );
+    return;
   }
   if (oldVersion == 1) {
     await _checkDefinitions(db, <String, String>{
@@ -235,6 +265,8 @@ Future<void> _upgradeSchema(
       afterPartition = id;
     }
   }
+  await _addSessionColumns(db);
+  await db.execute(_ownerTable);
   await transaction.validateAll();
   await transaction.finish();
   await db.update(
@@ -322,7 +354,9 @@ Future<void> _checkSchema(Database db) async {
     final id = (await db.rawQuery(
       'PRAGMA application_id',
     )).single.values.single;
-    final version = await db.getVersion();
+    final version = (await db.rawQuery(
+      'PRAGMA user_version',
+    )).single.values.single;
     final marker = await db.query('store_metadata');
     if (id != _applicationId ||
         version != _schemaVersion ||
@@ -332,6 +366,7 @@ Future<void> _checkSchema(Database db) async {
       throw const OfflineSchemaException();
     }
     final definitions = <String, String>{
+      'automatic_owner': _ownerTable,
       'operation_dependencies': _dependencyTable,
       'dependency_prerequisite': _dependencyIndex,
       for (final statement in _tables)
@@ -381,7 +416,22 @@ Future<void> _checkDefinitions(
   }
 }
 
-String _legacyDefinition(String statement) => statement
+Future<void> _addSessionColumns(Database db) async {
+  await db.execute(
+    'ALTER TABLE partitions ADD COLUMN paused_credential_generation INTEGER CHECK(paused_credential_generation>=0)',
+  );
+  await db.execute(
+    'ALTER TABLE partitions ADD COLUMN policy_paused INTEGER NOT NULL DEFAULT 0 CHECK(policy_paused IN (0,1))',
+  );
+}
+
+String _versionSixDefinition(String statement) => statement.replaceAll(
+  RegExp(
+    r',\s*paused_credential_generation INTEGER CHECK\(paused_credential_generation>=0\),\s*policy_paused INTEGER NOT NULL DEFAULT 0 CHECK\(policy_paused IN \(0,1\)\)',
+  ),
+  '',
+);
+String _legacyDefinition(String statement) => _versionSixDefinition(statement)
     .replaceAll(
       RegExp(
         r',\s*time_high_water INTEGER NOT NULL DEFAULT 0,\s*authority_binding TEXT',

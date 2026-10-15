@@ -61,7 +61,30 @@ abstract interface class OfflineStoreTransaction {
   FutureOr<bool> replayPausedForAuth(String partitionId);
 
   /// Sets the durable partition replay pause atomically with write state.
-  FutureOr<void> setReplayPausedForAuth(String partitionId, bool paused);
+  FutureOr<void> setReplayPausedForAuth(
+    String partitionId,
+    bool paused, {
+    int? credentialGeneration,
+  });
+
+  /// Credential generation recorded with a durable auth hold; never itself a
+  /// proof permitting resume. Legacy holds may have no recorded generation.
+  FutureOr<int?> pausedCredentialGeneration(String partitionId);
+
+  /// A policy denial holds automatic network work until verified authority changes.
+  FutureOr<bool> replayPausedForPolicy(String partitionId);
+
+  /// Persists a policy hold without clearing auth, restore or transfer state.
+  FutureOr<void> setReplayPausedForPolicy(String partitionId, bool paused);
+
+  /// Fixed-size scheduling hints without loading durable payloads or allocating
+  /// a timer per item. Only future local deadlines are returned; due expiry is
+  /// processed separately through the bounded deadline index.
+  FutureOr<OfflineAutomaticSchedule> automaticSchedule(
+    String partitionId, {
+    required DateTime now,
+    required Duration maxAge,
+  });
 
   /// Reads one confirmed cache record.
   FutureOr<OfflineCacheRecord?> getCache(
@@ -285,6 +308,18 @@ abstract interface class OfflineStoreTransaction {
   /// in the new generation may execute again. It must not be automatic retry,
   /// storage-fault recovery, credential refresh, or merely cache invalidation.
   FutureOr<void> wipePartition(String partitionId);
+}
+
+/// Absolute durable queue deadlines for one bounded foreground runtime.
+final class OfflineAutomaticSchedule {
+  /// Captures no payloads, credentials or new operation/receipt identities.
+  const OfflineAutomaticSchedule({this.nextAttemptAt, this.nextLocalExpiry});
+
+  /// Earliest retry/lease deadline, or now for immediately eligible work.
+  final DateTime? nextAttemptAt;
+
+  /// Earliest future TTL/maximum-age deadline; past deadlines are handled now.
+  final DateTime? nextLocalExpiry;
 }
 
 /// Stable FIFO position used by bounded outbox maintenance scans.

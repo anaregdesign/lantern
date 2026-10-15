@@ -628,11 +628,15 @@ jobs:
       - name: Check SQLite adapter
         run: |
           flutter pub get --enforce-lockfile
-          dart format --output=none --set-exit-if-changed lib test tool
+          dart format --output=none --set-exit-if-changed lib test tool hook
           flutter analyze --no-pub
 
       - name: Test durable SQLite contracts
         run: flutter test --no-pub
+
+      - name: Verify native automatic owner boundaries
+        timeout-minutes: 3
+        run: dart run tool/automatic_owner_probe.dart
 
       - name: Verify process-crash recovery
         run: dart run tool/crash_probe.dart

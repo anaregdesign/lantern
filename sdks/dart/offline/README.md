@@ -1,6 +1,6 @@
 # lantern_client_offline
 
-## Common bound data contract (#1768 source candidate)
+## Common bound data contract and automatic foreground session
 
 `OfflineLanternDataClient` implements the parent `LanternDataClient` contract.
 Bind one verified `LanternSessionBinding` and `OfflineStore` once; ordinary CRUD
@@ -11,7 +11,7 @@ undisclosed handling. They do not report local admission as remote success.
 send or acquire tokens. Canceling a completion waiter leaves accepted work intact.
 
 ```dart
-final data = await OfflineLanternDataClient.open(
+final data = await OfflineLanternSession.open(
   client: transport,
   binding: sessionBinding,
   store: MemoryOfflineStore(),
@@ -25,12 +25,16 @@ final snapshot = await data.getVertex('note:42',
 // snapshot.confirmed remains independent from its exact pending Put view.
 ```
 
-The source slice supplies bounded automatic-owner ports in
-`lantern_client_offline_adapter.dart`; #1769 installs the coordinated automatic
-runtime, and #1772 composes lifecycle/account factories. These ports are SDK
-infrastructure, not an application Sync/retry API. Ordinary applications must not
-schedule delivery passes. No physical, hosted-archive or publication qualification
-is implied by this source candidate.
+`OfflineLanternSession` owns bounded preparation, status-first delivery, retries,
+expiry and watches while foreground. Matching handles share by refcount. The
+platform bridge calls `suspend`/`resume` and supplies newly verified credential
+events; applications use the same CRUD vocabulary and do not schedule passes.
+`SqliteOfflineStore.openSession` supplies the native exclusive owner for durable
+sessions. See [runtime boundaries](https://github.com/anaregdesign/lantern/blob/main/sdks/dart/offline/docs/session-runtime-development.md).
+`transferAllowed` defaults true and can be changed by platform policy;
+`restoreHeld` must reflect the installation/backup continuity decision. Auth
+refresh never clears a restore, policy or storage hold. Physical, hosted-archive
+and publication qualification are separate from this source candidate.
 
 Admission freezes TTL/wire values and generated Add contribution IDs in one
 transaction. Receipt families enter a checked `awaitingPreparation` state;
@@ -68,8 +72,8 @@ execute again even if it reuses a still-fresh caller ID; Add can add twice. Wipe
 does not reset clock high-water. Use cache invalidation to clear displayed values;
 never use wipe as automatic retry, storage-error recovery or credential refresh.
 
-State versions are outbox **5**, operation **4**, reference snapshot **9**, and
-SQLite **6**. Old IDs, TTL and conservative dispatch proof are preserved; unknown
+State versions are outbox **5**, operation **4**, reference snapshot **10**, and
+SQLite **7** (following schema 6 in merged #1768). Old IDs, TTL and conservative dispatch proof are preserved; unknown
 or damaged state, incompatible downgrade and insufficient migration capacity fail
 closed. `MemoryOfflineStore` is the bounded volatile profile over the shared
 conformance engine; it has no crash-durability or snapshot/restore promise.
@@ -358,7 +362,7 @@ outbox/operation capacity rejection. Configure the adapter's test limits below
 the default probe bounds or raise `maxCapacityProbeRecords` and
 `maxNotificationControllerProbe` explicitly. `exportSnapshot` and
 `InMemoryOfflineStore.fromSnapshot` exist
-only for deterministic fresh-process conformance tests; snapshot schema v9
+only for deterministic fresh-process conformance tests; snapshot schema v10
 persists operation aggregates, exact dead-letter transition time, durable
 auth pause, an independent opaque public CDC cursor, legacy private chunk
 progress, the change epoch, and key-only Unknown residents. Migrating legacy
@@ -455,7 +459,7 @@ await repository.consumeScopedChanges(
 
 Adapters run `runScopedChangeStoreConformanceSuite` across their real persistence
 boundary. Memory snapshots add independent opaque state in schema 8; SQLite
-schema 6 keeps one indexed BLOB cursor per partition. Legacy origin cursors do
+schema 7 keeps one indexed BLOB cursor per partition. Legacy origin cursors do
 not establish scoped freshness. Migration/rebootstrap hides old confirmed rows
 as Unknown, preserves outbox records and requires authorized plural reads.
 The legacy `changeCursor`/`applyChangeChunk` and `LanternClientIdentitySource`

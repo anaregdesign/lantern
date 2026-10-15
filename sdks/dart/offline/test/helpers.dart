@@ -429,6 +429,22 @@ final class DelayedOfflineStore implements OfflineStore {
 
 final class _DelayedTransaction implements OfflineStoreTransaction {
   @override
+  FutureOr<int?> pausedCredentialGeneration(String id) =>
+      inner.pausedCredentialGeneration(id);
+  @override
+  FutureOr<bool> replayPausedForPolicy(String id) =>
+      inner.replayPausedForPolicy(id);
+  @override
+  FutureOr<void> setReplayPausedForPolicy(String id, bool paused) =>
+      inner.setReplayPausedForPolicy(id, paused);
+  @override
+  FutureOr<OfflineAutomaticSchedule> automaticSchedule(
+    String id, {
+    required DateTime now,
+    required Duration maxAge,
+  }) => inner.automaticSchedule(id, now: now, maxAge: maxAge);
+
+  @override
   FutureOr<String?> authorityBinding(String partitionId) =>
       inner.authorityBinding(partitionId);
   @override
@@ -489,9 +505,17 @@ final class _DelayedTransaction implements OfflineStoreTransaction {
   }
 
   @override
-  Future<void> setReplayPausedForAuth(String partitionId, bool paused) async {
+  Future<void> setReplayPausedForAuth(
+    String partitionId,
+    bool paused, {
+    int? credentialGeneration,
+  }) async {
     await Future<void>.delayed(Duration.zero);
-    return await inner.setReplayPausedForAuth(partitionId, paused);
+    return await inner.setReplayPausedForAuth(
+      partitionId,
+      paused,
+      credentialGeneration: credentialGeneration,
+    );
   }
 
   @override

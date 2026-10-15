@@ -6,7 +6,7 @@ part of '../lantern_client_offline_sqlite.dart';
 /// same factory are supported: SQLite arbitrates writes and committed changes
 /// are forwarded between live owners in this isolate. Other processes must
 /// arrange their own invalidation notifications.
-final class SqliteOfflineStore implements OfflineStore {
+final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
   SqliteOfflineStore._(
     this._db,
     this._factory,
@@ -15,7 +15,7 @@ final class SqliteOfflineStore implements OfflineStore {
     this.limits,
   );
 
-  /// Opens an application-owned path, creating schema version six if empty.
+  /// Opens an application-owned path, creating the current schema if empty.
   ///
   /// Unknown schemas and invalid durable records fail closed. [databaseFactory]
   /// defaults to the mobile OS SQLite plugin. Tests may inject an FFI factory;
@@ -43,7 +43,7 @@ final class SqliteOfflineStore implements OfflineStore {
       return await _databaseCall(
         () => lane.run(() async {
           final db = await factory.openDatabase(
-            path,
+            key,
             options: OpenDatabaseOptions(
               version: _schemaVersion,
               singleInstance: false,
@@ -83,7 +83,150 @@ final class SqliteOfflineStore implements OfflineStore {
     }
   }
 
+  /// Opens refcounted foreground CRUD/watch handles with native ownership before
+  /// SQLite migration. Matching same-isolate handles share one bounded runtime;
+  /// another isolate/process fails before any network work.
+  static Future<OfflineLanternSession> openSession({
+    required String path,
+    required LanternClient client,
+    required LanternSessionBinding binding,
+    DatabaseFactory? databaseFactory,
+    OfflineStoreLimits limits = const OfflineStoreLimits(),
+    bool cacheReads = true,
+    bool transferAllowed = true,
+    bool restoreHeld = false,
+  }) => OfflineLanternSession.openStore(
+    client: client,
+    storeKey: canonicalAutomaticPath(path),
+    createStore: () => openAutomatic(
+      path: path,
+      databaseFactory: databaseFactory,
+      limits: limits,
+    ),
+    closeStore: (store) => (store as SqliteOfflineStore).close(),
+    binding: binding,
+    durability: AdmissionDurability.durable,
+    cacheReads: cacheReads,
+    transferAllowed: transferAllowed,
+    restoreHeld: restoreHeld,
+    adapterConfiguration: (databaseFactory, limits),
+  );
+
   static final _lanes = Expando<Map<String, _SqlLane>>();
+  NativeOfflineOwner? _reservation;
+  _SqlAutomaticOwner? _automaticOwner;
+
+  /// Resolves an application-owned DB name before the same-isolate runtime
+  /// registry matches handles. This alone does not acquire ownership.
+  static String canonicalAutomaticPath(String path) =>
+      NativeOfflineOwner.canonicalPath(path);
+
+  /// Reserves native ownership before opening or migrating SQLite. Only a store
+  /// opened this way may furnish an automatic runtime owner. The default mobile
+  /// engine is still sqflite; host tests may inject their OS SQLite factory.
+  static Future<SqliteOfflineStore> openAutomatic({
+    required String path,
+    DatabaseFactory? databaseFactory,
+    OfflineStoreLimits limits = const OfflineStoreLimits(),
+  }) async {
+    final guard = NativeOfflineOwner.acquire(path);
+    SqliteOfflineStore? store;
+    try {
+      store = await open(
+        path: guard.path,
+        databaseFactory: databaseFactory,
+        limits: limits,
+      );
+      guard.check();
+      store._reservation = guard;
+      return store;
+    } catch (_) {
+      try {
+        await store?.close();
+      } finally {
+        guard.release();
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  Object get canonicalOwnerKey => _laneKey;
+
+  @override
+  Future<OfflineAutomaticOwner> acquireAutomaticOwner({
+    required String scope,
+    required String bindingFingerprint,
+    required String configurationFingerprint,
+  }) async {
+    final guard = _reservation;
+    if (_closed || guard == null || _automaticOwner != null) {
+      throw const OfflineOwnerConflictException();
+    }
+    for (final value in [scope, bindingFingerprint, configurationFingerprint]) {
+      if (value.isEmpty || value.length > 4096) {
+        throw const OfflineArgumentException();
+      }
+    }
+    // Remove the provisional capability synchronously so concurrent acquisition
+    // cannot publish two lifetimes, even within the same isolate.
+    _reservation = null;
+    String? acquiredToken;
+    try {
+      final random = Random.secure();
+      final token = acquiredToken = List.generate(
+        32,
+        (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+      ).join();
+      return await _databaseCall(
+        () => _lane.run(() async {
+          guard.check();
+          final epoch = await _db.transaction((sql) async {
+            final rows = await sql.query('automatic_owner', where: 'id=1');
+            final previous = rows.isEmpty ? 0 : rows.single['epoch'];
+            if (previous is! int || previous < 0) {
+              throw const OfflineSchemaException();
+            }
+            final next = _checkedIncrement(previous);
+            await sql.insert('automatic_owner', {
+              'id': 1,
+              'epoch': next,
+              'token': token,
+              'active': 1,
+              'scope': scope,
+              'binding': bindingFingerprint,
+              'configuration': configurationFingerprint,
+            }, conflictAlgorithm: ConflictAlgorithm.replace);
+            guard.check();
+            return next;
+          }, exclusive: true);
+          guard.check();
+          final owner = _SqlAutomaticOwner(this, guard, epoch, token);
+          _automaticOwner = owner;
+          return owner;
+        }),
+      );
+    } catch (_) {
+      // Network has not been exposed. Cleanup is conditional even when the
+      // outcome of the acquisition commit is uncertain.
+      try {
+        if (acquiredToken != null) {
+          await _lane.run(
+            () => _db.update(
+              'automatic_owner',
+              {'active': 0},
+              where: 'id=1 AND token=?',
+              whereArgs: [acquiredToken],
+            ),
+          );
+        }
+      } finally {
+        guard.release();
+      }
+      rethrow;
+    }
+  }
+
   final Database _db;
   final DatabaseFactory _factory;
   final _SqlLane _lane;
@@ -113,6 +256,7 @@ final class SqliteOfflineStore implements OfflineStore {
               ({Map<String, Object?>? metadata, OfflineOutboxRecord? current})
             >{};
         final value = await _db.transaction<T>((sql) async {
+          await _automaticOwner?.checkTransaction(sql);
           final tx = _SqlTransaction(sql, limits, _lane, () => !_closed);
           late final T result;
           var callbackCompleted = false;
@@ -123,6 +267,7 @@ final class SqliteOfflineStore implements OfflineStore {
             await tx.finish(rejectPending: callbackCompleted);
           }
           await tx.validateCommit();
+          await _automaticOwner?.checkTransaction(sql);
           for (final partition in tx.changed) {
             final metadata = (await sql.query(
               'partitions',
@@ -269,20 +414,37 @@ final class SqliteOfflineStore implements OfflineStore {
   Future<void> close() {
     if (_closing != null) return _closing!;
     _closed = true;
-    return _closing = _databaseCall(
-      () => _lane.run(() async {
-        _lane.owners.remove(this);
-        for (final controller in _changes.values.toList()) {
-          unawaited(controller.close());
-        }
-        _changes.clear();
-        try {
-          await _db.close();
-        } finally {
-          if (--_lane.references == 0) _lanes[_factory]?.remove(_laneKey);
-        }
-      }),
-    );
+    final owner = _automaticOwner;
+    final reservation = _reservation;
+    _reservation = null;
+    return _closing = (() async {
+      Object? releaseError;
+      StackTrace? releaseStack;
+      try {
+        await owner?.release();
+        reservation?.release();
+      } catch (error, stack) {
+        releaseError = error;
+        releaseStack = stack;
+      }
+      await _databaseCall(
+        () => _lane.run(() async {
+          _lane.owners.remove(this);
+          for (final controller in _changes.values.toList()) {
+            unawaited(controller.close());
+          }
+          _changes.clear();
+          try {
+            await _db.close();
+          } finally {
+            if (--_lane.references == 0) _lanes[_factory]?.remove(_laneKey);
+          }
+        }),
+      );
+      if (releaseError != null) {
+        Error.throwWithStackTrace(releaseError, releaseStack!);
+      }
+    })();
   }
 
   /// Releases this store; equivalent to [close].

@@ -9,4 +9,10 @@ export 'src/client.dart'
         IndexedMutationIntent,
         IndexedMutationAttemptException,
         LanternIndexedMutations,
+        LanternAdapterCancellation,
+        LanternAdapterReads,
+        LanternObservationKind,
+        LanternObservationWork,
+        LanternObservationRegistration,
+        LanternObservationScheduler,
         LanternObservationCoordinator;

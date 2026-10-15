@@ -12,6 +12,53 @@ import 'package:lantern_client/src/gen/graph/v1/graph.pb.dart';
 import 'package:test/test.dart';
 
 void main() {
+  for (final canceled in [false, true]) {
+    test(
+      'adapter publication guard rejects a ${canceled ? 'canceled' : 'revoked'} reply',
+      () async {
+        var valid = true, calls = 0;
+        late LanternCancellationToken cancellation;
+        cancellation = LanternAdapterCancellation.guarded(() {
+          if (!valid || cancellation.isCanceled) {
+            throw const LanternDataException(DataFailure.closed);
+          }
+        });
+        final client = LanternClient.connect(
+          Uri.parse('http://localhost:6380'),
+          allowInsecure: true,
+          transport: FakeTransportBuilder()
+              .unary<GetServerStatusRequest, GetServerStatusResponse>(
+                LanternService.getServerStatus,
+                (_, _) {
+                  calls++;
+                  if (canceled) {
+                    cancellation.cancel();
+                  } else {
+                    valid = false;
+                  }
+                  return GetServerStatusResponse(version: 'late');
+                },
+              )
+              .build(),
+        );
+        addTearDown(client.close);
+        await expectLater(
+          client.getServerStatus(
+            options: LanternCallOptions(cancellation: cancellation),
+          ),
+          throwsA(
+            isA<LanternDataException>().having(
+              (e) => e.reason,
+              'reason',
+              DataFailure.closed,
+            ),
+          ),
+        );
+        expect(calls, 1);
+      },
+    );
+  }
+
   test('cancellation listeners fire once and detach idempotently', () {
     final cancellation = LanternCancellationToken();
     final retainedReason = Object();

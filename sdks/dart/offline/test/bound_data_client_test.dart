@@ -188,6 +188,8 @@ void main() {
                   as Map<String, dynamic>;
           data['schema'] = 8;
           for (final p in data['partitions'] as List) {
+            p.remove('pausedCredentialGeneration');
+            p.remove('replayPausedForPolicy');
             p.remove('authorityBinding');
             p.remove('timeHighWater');
             p['outbox'] = [

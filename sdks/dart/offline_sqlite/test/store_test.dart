@@ -1220,10 +1220,10 @@ void main() {
       'legacy-payload',
     );
     final check = await factory.openDatabase(path);
-    expect(await check.getVersion(), 6);
+    expect(await check.getVersion(), 7);
     expect(
       (await check.query('store_metadata')).single['value'],
-      'lantern-offline-6',
+      'lantern-offline-7',
     );
     expect(
       utf8.decode(
@@ -1320,10 +1320,10 @@ void main() {
     expect(restored.receipt!.operationId, receipt.operationId);
     expect(restored.attemptCount, 0);
     final check = await factory.openDatabase(path);
-    expect(await check.getVersion(), 6);
+    expect(await check.getVersion(), 7);
     expect(
       (await check.query('store_metadata')).single['value'],
-      'lantern-offline-6',
+      'lantern-offline-7',
     );
     expect(
       utf8.decode(
@@ -1696,6 +1696,11 @@ final class _UndisclosedRemote implements OfflineRemote {
 }
 
 Future<void> _downgradeCommonSchema(Database db) async {
+  await db.execute('DROP TABLE automatic_owner');
+  await db.execute(
+    'ALTER TABLE partitions DROP COLUMN paused_credential_generation',
+  );
+  await db.execute('ALTER TABLE partitions DROP COLUMN policy_paused');
   for (final row in await db.query('outbox')) {
     final data =
         jsonDecode(utf8.decode(row['payload']! as List<int>))

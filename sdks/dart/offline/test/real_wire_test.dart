@@ -13,6 +13,11 @@ import 'package:test/test.dart';
 import 'helpers.dart';
 
 void main() {
+  final sessionEndpoint =
+      Platform.environment['LANTERN_DART_REAL_WIRE_ENDPOINT'];
+  if (sessionEndpoint != null && sessionEndpoint.isNotEmpty) {
+    runSessionRuntimeWireTests(Uri.parse(sessionEndpoint));
+  }
   test('online adapter preserves typed transport cancellation', () async {
     final requestStarted = Completer<void>();
     final releaseResponse = Completer<void>();
@@ -1761,6 +1766,138 @@ void main() {
     },
     timeout: const Timeout(Duration(minutes: 3)),
   );
+}
+
+/// Finite production automatic-factory qualification through real Connect calls.
+/// Memory durability here; native SQLite ownership has its own finite probe.
+void runSessionRuntimeWireTests(Uri endpoint) {
+  for (final responseLoss in [false, true]) {
+    test(
+      'automatic session ${responseLoss ? 'committed response loss' : 'same foreground outage'} retries without another application call',
+      () async {
+        final online = LanternClient.connect(
+          endpoint,
+          allowInsecure: endpoint.scheme == 'http',
+        );
+        addTearDown(online.close);
+        await online.ping();
+        final unavailable = await HttpServer.bind(
+          InternetAddress.loopbackIPv4,
+          0,
+        );
+        final failed = Completer<void>();
+        unavailable.listen((request) async {
+          request.response
+            ..statusCode = HttpStatus.serviceUnavailable
+            ..headers.contentType = ContentType.json
+            ..write('{"code":"unavailable","message":"fixture unavailable"}');
+          await request.response.close();
+          if (!failed.isCompleted) failed.complete();
+        });
+        addTearDown(() => unavailable.close(force: true));
+        final proxy = await _ResponseDroppingProxy.bind(
+          responseLoss
+              ? endpoint
+              : Uri.parse(
+                  'http://${unavailable.address.host}:${unavailable.port}',
+                ),
+          drops: responseLoss ? const {'PutVertices': 1} : const {},
+        );
+        addTearDown(proxy.close);
+        final store = MemoryOfflineStore();
+        final binding = LanternSessionBinding.application(
+          serviceOrigin: proxy.endpoint,
+          securityDomain: 'wire-fixture',
+          accountIdentity: 'one',
+          authorityBinding: 'a',
+        );
+        final client = await OfflineLanternSession.open(
+          client: LanternClient.connect(proxy.endpoint, allowInsecure: true),
+          store: store,
+          binding: binding,
+          durability: AdmissionDurability.memory,
+          cacheReads: false,
+        );
+        addTearDown(client.close);
+        final key = 'session-wire:${DateTime.now().microsecondsSinceEpoch}';
+        final ticket = await client.mutations.submit(
+          MutationRequest.putVertices([
+            VertexInput(
+              key: key,
+              value: VertexValue.string('automatic'),
+              expiresIn: const Duration(minutes: 1),
+            ),
+          ]),
+          options: const MutationOptions(
+            wait: WaitOptions(timeout: Duration(seconds: 5)),
+          ),
+        );
+        final admitted = (await store.transaction(
+          (tx) => tx.outbox(binding.stableIdentity),
+        )).single;
+        // Only observe durable state while the fixture controls connectivity.
+        // The production factory owns every delivery wake and retry.
+        OfflineOutboxRecord? retry;
+        final elapsed = Stopwatch()..start();
+        while (elapsed.elapsed < const Duration(seconds: 3)) {
+          final rows = await store.transaction(
+            (tx) => tx.outbox(binding.stableIdentity),
+          );
+          if (rows.isNotEmpty &&
+              rows.single.attemptCount == 1 &&
+              rows.single.state == OfflineOutboxState.enqueued) {
+            retry = rows.single;
+            break;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        expect(retry, isNotNull);
+        expect(retry!.recordId, admitted.recordId);
+        expect(retry.intent.expiration, admitted.intent.expiration);
+        expect(retry.attemptCount, 1);
+        expect(retry.mayHaveDispatched, isTrue);
+        if (responseLoss) {
+          expect(proxy.dropped('PutVertices'), 1);
+          expect(
+            ((await online.getVertex(key)).value as StringValue).value,
+            'automatic',
+          );
+        } else {
+          await failed.future;
+          proxy.routeTo(endpoint);
+        }
+        final result = await ticket.completion!.timeout(
+          const Duration(seconds: 5),
+        );
+        expect(
+          result.reply!.items.single,
+          isA<MutationKnownEffect<PutOutcome>>(),
+        );
+        expect(
+          (result.reply!.items.single as MutationKnownEffect<PutOutcome>)
+              .effect,
+          PutOutcome.appliedAndLive,
+        );
+        expect(proxy.forwarded('PutVertices'), 2);
+        expect(
+          ((await online.getVertex(key)).value as StringValue).value,
+          'automatic',
+        );
+        final status = await client.mutations.getStatus(
+          ticket.reference.operationId,
+        );
+        final durable = await store.transaction(
+          (tx) => tx.getOperation(
+            binding.stableIdentity,
+            ticket.reference.operationId.encoded,
+          ),
+        );
+        expect(durable!.items.single.attemptCount, 2);
+        expect(status.items.single.reply, isA<MutationKnownEffect<Object?>>());
+      },
+      timeout: const Timeout(Duration(seconds: 15)),
+    );
+  }
 }
 
 Future<List<ReceiptStatus>> _awaitReceiptConfirmation(

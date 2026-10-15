@@ -10,6 +10,24 @@ sealed class OfflineException implements Exception {
   String toString() => 'OfflineException($code)';
 }
 
+/// Another automatic lifetime owns this backing store.
+final class OfflineOwnerConflictException extends OfflineException {
+  /// Creates a content-free ownership conflict.
+  const OfflineOwnerConflictException() : super('owner_conflict');
+}
+
+/// The native owner reservation could not be safely acquired or released.
+final class OfflineOwnerStorageException extends OfflineException {
+  /// Creates a content-free native storage failure.
+  const OfflineOwnerStorageException() : super('owner_storage');
+}
+
+/// A renewable network attempt ended; the local account lifetime may continue.
+final class OfflineWorkInterruptedException extends OfflineException {
+  /// Creates a content-free work-epoch failure, never a retryable wire failure.
+  const OfflineWorkInterruptedException() : super('work_interrupted');
+}
+
 /// A complete mutation was handled without disclosing its effect.
 ///
 /// This acknowledgement is neither an RPC failure nor an authoritative result.

@@ -19,7 +19,7 @@ import 'types.dart';
 /// not be used as a production persistence adapter.
 final class InMemoryOfflineStore implements OfflineStore {
   /// Current canonical reference-store snapshot schema.
-  static const int snapshotSchemaVersion = 9;
+  static const int snapshotSchemaVersion = 10;
 
   /// Creates an empty reference store with explicit capacity bounds.
   InMemoryOfflineStore({this.limits = const OfflineStoreLimits()}) {
@@ -259,6 +259,7 @@ final class _MemoryTransaction
       resetScopedChangeCursor(partitionId, null);
     }
     p.authorityBinding = authorityBinding;
+    p.replayPausedForPolicy = false;
     _changedPartitions.add(partitionId);
     observationInvalidated.add(partitionId);
   }
@@ -280,12 +281,83 @@ final class _MemoryTransaction
   }
 
   @override
-  void setReplayPausedForAuth(String partitionId, bool paused) {
+  void setReplayPausedForAuth(
+    String partitionId,
+    bool paused, {
+    int? credentialGeneration,
+  }) {
+    if (credentialGeneration != null && credentialGeneration < 0) {
+      throw const OfflineArgumentException();
+    }
     _ensureOpen();
     _validatePartition(partitionId);
     final partition = _state.partition(partitionId);
-    if (partition.replayPausedForAuth == paused) return;
+    final next = paused
+        ? credentialGeneration ?? partition.pausedCredentialGeneration
+        : null;
+    if (partition.replayPausedForAuth == paused &&
+        partition.pausedCredentialGeneration == next) {
+      return;
+    }
     partition.replayPausedForAuth = paused;
+    partition.pausedCredentialGeneration = next;
+    _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
+  }
+
+  @override
+  OfflineAutomaticSchedule automaticSchedule(
+    String partitionId, {
+    required DateTime now,
+    required Duration maxAge,
+  }) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    DateTime? attempt, expiry;
+    for (final r in _state.partition(partitionId).outbox.values) {
+      if (r.state != OfflineOutboxState.enqueued &&
+          r.state != OfflineOutboxState.sending) {
+        continue;
+      }
+      final next = r.state == OfflineOutboxState.sending
+          ? r.leaseUntil!
+          : r.nextAttemptAt ?? now;
+      if (attempt == null || next.isBefore(attempt)) attempt = next;
+      for (final time in [r.intent.expiration, r.enqueuedAt.add(maxAge)]) {
+        if (time != null &&
+            time.isAfter(now) &&
+            (expiry == null || time.isBefore(expiry))) {
+          expiry = time;
+        }
+      }
+    }
+    return OfflineAutomaticSchedule(
+      nextAttemptAt: attempt,
+      nextLocalExpiry: expiry,
+    );
+  }
+
+  @override
+  int? pausedCredentialGeneration(String partitionId) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    return _state.partition(partitionId).pausedCredentialGeneration;
+  }
+
+  @override
+  bool replayPausedForPolicy(String partitionId) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    return _state.partition(partitionId).replayPausedForPolicy;
+  }
+
+  @override
+  void setReplayPausedForPolicy(String partitionId, bool paused) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final partition = _state.partition(partitionId);
+    if (partition.replayPausedForPolicy == paused) return;
+    partition.replayPausedForPolicy = paused;
     _changedPartitions.add(partitionId);
     observationInvalidated.add(partitionId);
   }
@@ -1041,7 +1113,7 @@ final class _MemoryTransaction
     final leaseUntil = _durableDeadline(now, leaseDuration);
     _validateLeaseOwnerCapacity(owner, _limits);
     final partition = _state.partition(partitionId);
-    if (partition.replayPausedForAuth) {
+    if (partition.replayPausedForAuth || partition.replayPausedForPolicy) {
       return const <OfflineOutboxRecord>[];
     }
     final all = partition.outbox.values.toList()..sort(_compareOutbox);
@@ -1393,6 +1465,8 @@ final class _MemoryPartition {
   int version = 0;
   int nextOrdinal = 0;
   bool replayPausedForAuth = false;
+  int? pausedCredentialGeneration;
+  bool replayPausedForPolicy = false;
   final Map<String, OfflineChangeProgress> changeProgress = {};
   OfflineScopedChangeCursor? scopedCursor;
 
@@ -1601,7 +1675,9 @@ final class _MemoryPartition {
       ..changeEpoch = changeEpoch
       ..version = version
       ..nextOrdinal = nextOrdinal
-      ..replayPausedForAuth = replayPausedForAuth;
+      ..replayPausedForAuth = replayPausedForAuth
+      ..pausedCredentialGeneration = pausedCredentialGeneration
+      ..replayPausedForPolicy = replayPausedForPolicy;
     result.cache.addAll(
       cache.map((key, value) => MapEntry(key, _copyCacheRecord(value))),
     );
@@ -2082,6 +2158,8 @@ String _encodeMemoryState(_MemoryState state) {
             'version': partition.version,
             'nextOrdinal': partition.nextOrdinal,
             'replayPausedForAuth': partition.replayPausedForAuth,
+            'pausedCredentialGeneration': partition.pausedCredentialGeneration,
+            'replayPausedForPolicy': partition.replayPausedForPolicy,
             'changeProgress': {
               for (final origin
                   in (partition.changeProgress.keys.toList()..sort()))
@@ -2122,6 +2200,7 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
         schema != 6 &&
         schema != 7 &&
         schema != 8 &&
+        schema != 9 &&
         schema != InMemoryOfflineStore.snapshotSchemaVersion) {
       throw const OfflineSchemaException();
     }
@@ -2154,6 +2233,8 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
                 'version',
                 'nextOrdinal',
                 'replayPausedForAuth',
+                if (schema >= 10) 'pausedCredentialGeneration',
+                if (schema >= 10) 'replayPausedForPolicy',
                 if (schema >= 6) 'changeProgress',
                 if (schema >= 7) 'unknownResidents',
                 'cache',
@@ -2193,6 +2274,17 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
         ..replayPausedForAuth = schema >= 5
             ? _snapshotBool(encoded['replayPausedForAuth'])
             : false;
+      partition.pausedCredentialGeneration =
+          schema >= 10 && encoded['pausedCredentialGeneration'] != null
+          ? _snapshotNonNegativeInt(encoded['pausedCredentialGeneration'])
+          : null;
+      partition.replayPausedForPolicy = schema >= 10
+          ? _snapshotBool(encoded['replayPausedForPolicy'])
+          : false;
+      if (!partition.replayPausedForAuth &&
+          partition.pausedCredentialGeneration != null) {
+        throw const OfflineSchemaException();
+      }
       if (schema >= 6) {
         final progress = _snapshotObject(encoded['changeProgress']);
         // The cursor validates origin shape and capacity before any restore.

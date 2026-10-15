@@ -1964,6 +1964,8 @@ void main() {
         ..remove('operations')
         ..remove('replayPausedForAuth')
         ..remove('changeProgress')
+        ..remove('pausedCredentialGeneration')
+        ..remove('replayPausedForPolicy')
         ..remove('timeHighWater')
         ..remove('authorityBinding')
         ..remove('scopedCursor')
@@ -2319,6 +2321,8 @@ void main() {
         ..remove('operations')
         ..remove('replayPausedForAuth')
         ..remove('changeProgress')
+        ..remove('pausedCredentialGeneration')
+        ..remove('replayPausedForPolicy')
         ..remove('timeHighWater')
         ..remove('authorityBinding')
         ..remove('scopedCursor')
@@ -2398,6 +2402,8 @@ void main() {
           ..remove('operations')
           ..remove('replayPausedForAuth')
           ..remove('changeProgress')
+          ..remove('pausedCredentialGeneration')
+          ..remove('replayPausedForPolicy')
           ..remove('timeHighWater')
           ..remove('authorityBinding')
           ..remove('scopedCursor')
@@ -2487,6 +2493,8 @@ void main() {
                 as Map<String, Object?>;
         partition.remove('changeProgress');
         partition.remove('scopedCursor');
+        partition.remove('pausedCredentialGeneration');
+        partition.remove('replayPausedForPolicy');
         partition.remove('timeHighWater');
         partition.remove('authorityBinding');
         partition.remove('changeEpoch');
@@ -3090,6 +3098,22 @@ final class _BrokenContractStore implements OfflineStore {
 
 final class _BrokenContractTransaction implements OfflineStoreTransaction {
   @override
+  FutureOr<int?> pausedCredentialGeneration(String id) =>
+      inner.pausedCredentialGeneration(id);
+  @override
+  FutureOr<bool> replayPausedForPolicy(String id) =>
+      inner.replayPausedForPolicy(id);
+  @override
+  FutureOr<void> setReplayPausedForPolicy(String id, bool paused) =>
+      inner.setReplayPausedForPolicy(id, paused);
+  @override
+  FutureOr<OfflineAutomaticSchedule> automaticSchedule(
+    String id, {
+    required DateTime now,
+    required Duration maxAge,
+  }) => inner.automaticSchedule(id, now: now, maxAge: maxAge);
+
+  @override
   FutureOr<String?> authorityBinding(String partitionId) =>
       inner.authorityBinding(partitionId);
   @override
@@ -3320,8 +3344,15 @@ final class _BrokenContractTransaction implements OfflineStoreTransaction {
   );
 
   @override
-  Future<void> setReplayPausedForAuth(String partitionId, bool paused) async =>
-      await inner.setReplayPausedForAuth(partitionId, paused);
+  Future<void> setReplayPausedForAuth(
+    String partitionId,
+    bool paused, {
+    int? credentialGeneration,
+  }) async => await inner.setReplayPausedForAuth(
+    partitionId,
+    paused,
+    credentialGeneration: credentialGeneration,
+  );
 
   @override
   Future<void> touchCache(
