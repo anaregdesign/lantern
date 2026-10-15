@@ -188,6 +188,8 @@ void main() {
                   as Map<String, dynamic>;
           data['schema'] = 8;
           for (final p in data['partitions'] as List) {
+            p.remove('traversalEpoch');
+            p.remove('traversals');
             p.remove('pausedCredentialGeneration');
             p.remove('replayPausedForPolicy');
             p.remove('authorityBinding');
@@ -757,7 +759,24 @@ void main() {
           remote: remote,
           mutationRemote: sender,
         );
-        addTearDown(client.close);
+        addTearDown(() async {
+          final closing = client.close();
+          if (failAllReads) {
+            await expectLater(
+              closing,
+              throwsA(
+                isA<LanternDataException>().having(
+                  (e) => e.reason,
+                  'reason',
+                  DataFailure.storageBlocked,
+                ),
+              ),
+            );
+            expect(identical(closing, client.close()), isTrue);
+          } else {
+            await closing;
+          }
+        });
         final ticket = await client.mutations.submit(
           MutationRequest.putVerticesIfAbsent([vertex('v')]),
           options: const MutationOptions(wait: WaitOptions()),

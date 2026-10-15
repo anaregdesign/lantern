@@ -1505,6 +1505,10 @@ final class OfflineStoreLimits {
     this.maxLeaseOwnerBytes = 256,
     this.maxDiagnosticCodeBytes = 128,
     this.maxChangeControllers = 256,
+    this.maxTraversalRecords = 128,
+    this.maxTraversalBytes = 32 * 1024 * 1024,
+    this.maxTraversalRecordsPerPartition = 32,
+    this.maxTraversalBytesPerPartition = 8 * 1024 * 1024,
   });
 
   /// Maximum confirmed cache records across the store.
@@ -1568,6 +1572,18 @@ final class OfflineStoreLimits {
 
   /// Maximum partitions with an active reference-store change controller.
   final int maxChangeControllers;
+
+  /// Maximum independently retained derived results across all scopes (<=128).
+  final int maxTraversalRecords;
+
+  /// Maximum reserved derived bytes across all scopes (<=32MiB).
+  final int maxTraversalBytes;
+
+  /// Maximum independently retained derived results per scope (<=32).
+  final int maxTraversalRecordsPerPartition;
+
+  /// Maximum reserved derived bytes per scope (<=8MiB).
+  final int maxTraversalBytesPerPartition;
 }
 
 /// Repository behavior, retry, and cache bounds.

@@ -345,7 +345,24 @@ Future<void> runOfflineMutationBoundaryConformance({
         'fault retains pre-send evidence',
       );
     } finally {
-      await f.client.close();
+      final closing = f.client.close();
+      Object? closeFailure;
+      try {
+        await closing;
+      } catch (error) {
+        closeFailure = error;
+      }
+      _require(
+        failReads
+            ? closeFailure is LanternDataException &&
+                  closeFailure.reason == DataFailure.storageBlocked
+            : closeFailure == null,
+        'failed store join cannot report successful close',
+      );
+      _require(
+        identical(closing, f.client.close()),
+        'close result remains memoized',
+      );
     }
   }
 }

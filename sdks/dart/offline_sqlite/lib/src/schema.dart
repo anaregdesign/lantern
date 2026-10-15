@@ -1,6 +1,6 @@
 part of '../lantern_client_offline_sqlite.dart';
 
-const _schemaVersion = 7;
+const _schemaVersion = 8;
 // Reserved against the local WP2 schema; recheck when its repaired main lands.
 const _ownerTable = '''CREATE TABLE automatic_owner (
   id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL CHECK(epoch>0),
@@ -46,7 +46,8 @@ const _tables = <String>[
     time_high_water INTEGER NOT NULL DEFAULT 0,
     authority_binding TEXT,
     paused_credential_generation INTEGER CHECK(paused_credential_generation>=0),
-    policy_paused INTEGER NOT NULL DEFAULT 0 CHECK(policy_paused IN (0,1))) WITHOUT ROWID''',
+    policy_paused INTEGER NOT NULL DEFAULT 0 CHECK(policy_paused IN (0,1)),
+    traversal_epoch INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID''',
   '''CREATE TABLE cache (
     partition_id TEXT NOT NULL, entity_key TEXT NOT NULL,
     generation INTEGER NOT NULL, accessed_at INTEGER NOT NULL, vertex_key BLOB,
@@ -128,6 +129,7 @@ Future<void> _createSchema(Database db, int version) async {
   for (final entry in _indexes.entries) {
     await db.execute('CREATE INDEX ${entry.key} ON ${entry.value}');
   }
+  await _addTraversalTables(db);
   await db.execute(_ownerTable);
   await db.execute(_dependencyTable);
   await db.execute(_dependencyIndex);
@@ -149,7 +151,8 @@ Future<void> _upgradeSchema(
           oldVersion != 3 &&
           oldVersion != 4 &&
           oldVersion != 5 &&
-          oldVersion != 6) ||
+          oldVersion != 6 &&
+          oldVersion != 7) ||
       newVersion != _schemaVersion ||
       (await db.rawQuery('PRAGMA application_id')).single.values.single !=
           _applicationId) {
@@ -162,6 +165,26 @@ Future<void> _upgradeSchema(
       marker.single['value'] != expectedMarker) {
     throw const OfflineSchemaException();
   }
+  if (oldVersion == 7) {
+    await _checkDefinitions(db, {
+      for (final statement in _tables)
+        RegExp(r'CREATE TABLE (\w+)').firstMatch(statement)!.group(1)!:
+            _versionSevenDefinition(statement),
+      for (final entry in _indexes.entries)
+        entry.key: 'CREATE INDEX ${entry.key} ON ${entry.value}',
+      'automatic_owner': _ownerTable,
+      'operation_dependencies': _dependencyTable,
+      'dependency_prerequisite': _dependencyIndex,
+    });
+    await _addTraversalSchema(db);
+    await db.update(
+      'store_metadata',
+      {'value': 'lantern-offline-$_schemaVersion'},
+      where: 'key=?',
+      whereArgs: ['format'],
+    );
+    return;
+  }
   if (oldVersion == 6) {
     await _checkDefinitions(db, {
       for (final statement in _tables)
@@ -173,6 +196,7 @@ Future<void> _upgradeSchema(
       'dependency_prerequisite': _dependencyIndex,
     });
     await _addSessionColumns(db);
+    await _addTraversalSchema(db);
     await db.execute(_ownerTable);
     await db.update(
       'store_metadata',
@@ -233,6 +257,8 @@ Future<void> _upgradeSchema(
     final record = _operation(row);
     return _operationColumns(record, limits);
   });
+  await _addSessionColumns(db);
+  await _addTraversalSchema(db);
   final transaction = _SqlTransaction(db, limits);
   String? afterPartition;
   while (true) {
@@ -265,7 +291,6 @@ Future<void> _upgradeSchema(
       afterPartition = id;
     }
   }
-  await _addSessionColumns(db);
   await db.execute(_ownerTable);
   await transaction.validateAll();
   await transaction.finish();
@@ -366,6 +391,8 @@ Future<void> _checkSchema(Database db) async {
       throw const OfflineSchemaException();
     }
     final definitions = <String, String>{
+      'traversals': _traversalTable,
+      ..._traversalIndexes,
       'automatic_owner': _ownerTable,
       'operation_dependencies': _dependencyTable,
       'dependency_prerequisite': _dependencyIndex,
@@ -425,7 +452,9 @@ Future<void> _addSessionColumns(Database db) async {
   );
 }
 
-String _versionSixDefinition(String statement) => statement.replaceAll(
+String _versionSixDefinition(
+  String statement,
+) => _versionSevenDefinition(statement).replaceAll(
   RegExp(
     r',\s*paused_credential_generation INTEGER CHECK\(paused_credential_generation>=0\),\s*policy_paused INTEGER NOT NULL DEFAULT 0 CHECK\(policy_paused IN \(0,1\)\)',
   ),
@@ -439,3 +468,34 @@ String _legacyDefinition(String statement) => _versionSixDefinition(statement)
       '',
     )
     .replaceAll(RegExp(r',\s*guard_until INTEGER'), '');
+
+String _versionSevenDefinition(String statement) => statement.replaceAll(
+  RegExp(r',\s*traversal_epoch INTEGER NOT NULL DEFAULT 0'),
+  '',
+);
+
+const _traversalTable = '''CREATE TABLE traversals (
+  partition_id TEXT NOT NULL, query_key TEXT NOT NULL,
+  generation INTEGER NOT NULL, validity_epoch INTEGER NOT NULL,
+  accessed_at INTEGER NOT NULL, reserved_bytes INTEGER NOT NULL, payload BLOB NOT NULL,
+  PRIMARY KEY(partition_id, query_key),
+  FOREIGN KEY(partition_id) REFERENCES partitions(partition_id)) WITHOUT ROWID''';
+const _traversalIndexes = {
+  'traversal_lru':
+      'CREATE INDEX traversal_lru ON traversals(accessed_at,partition_id,query_key)',
+  'traversal_partition_lru':
+      'CREATE INDEX traversal_partition_lru ON traversals(partition_id,accessed_at,query_key)',
+};
+Future<void> _addTraversalTables(Database db) async {
+  await db.execute(_traversalTable);
+  for (final sql in _traversalIndexes.values) {
+    await db.execute(sql);
+  }
+}
+
+Future<void> _addTraversalSchema(Database db) async {
+  await db.execute(
+    'ALTER TABLE partitions ADD COLUMN traversal_epoch INTEGER NOT NULL DEFAULT 0',
+  );
+  await _addTraversalTables(db);
+}

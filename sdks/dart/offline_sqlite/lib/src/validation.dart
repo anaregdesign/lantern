@@ -269,7 +269,15 @@ bool _outboxStatusMatches(
 }
 
 void _validateLimits(OfflineStoreLimits limits) {
-  if (limits.maxCacheRecords < 0 ||
+  if (limits.maxTraversalRecords < 0 ||
+      limits.maxTraversalRecords > 128 ||
+      limits.maxTraversalBytes < 0 ||
+      limits.maxTraversalBytes > 32 * 1024 * 1024 ||
+      limits.maxTraversalRecordsPerPartition < 0 ||
+      limits.maxTraversalRecordsPerPartition > 32 ||
+      limits.maxTraversalBytesPerPartition < 0 ||
+      limits.maxTraversalBytesPerPartition > 8 * 1024 * 1024 ||
+      limits.maxCacheRecords < 0 ||
       limits.maxCacheBytes < 0 ||
       limits.maxOutboxRecords < 0 ||
       limits.maxOutboxBytes < 0 ||

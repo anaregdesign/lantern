@@ -5581,6 +5581,22 @@ final class _InspectingStore implements OfflineStore {
 
 final class _InspectingTransaction implements OfflineStoreTransaction {
   @override
+  FutureOr<int> traversalValidityEpoch(String id) =>
+      inner.traversalValidityEpoch(id);
+  @override
+  FutureOr<void> invalidateTraversals(String id) =>
+      inner.invalidateTraversals(id);
+  @override
+  FutureOr<OfflineTraversalRecord?> getTraversal(String id, String query) =>
+      inner.getTraversal(id, query);
+  @override
+  FutureOr<void> putTraversal(String id, OfflineTraversalRecord record) =>
+      inner.putTraversal(id, record);
+  @override
+  FutureOr<void> touchTraversal(String id, String query, DateTime at) =>
+      inner.touchTraversal(id, query, at);
+
+  @override
   FutureOr<int?> pausedCredentialGeneration(String id) =>
       inner.pausedCredentialGeneration(id);
   @override

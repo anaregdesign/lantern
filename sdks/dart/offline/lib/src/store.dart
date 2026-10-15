@@ -3,6 +3,7 @@ import 'dart:async';
 import 'change_store.dart';
 import 'errors.dart';
 import 'scoped_change_store.dart';
+import 'traversal_result.dart';
 import 'types.dart';
 
 /// Storage-neutral transaction port used by [OfflineLanternRepository].
@@ -39,6 +40,31 @@ abstract interface class OfflineStore {
 /// may complete asynchronously; callers must await each result before continuing
 /// dependent work or finishing the transaction callback.
 abstract interface class OfflineStoreTransaction {
+  /// Corpus semantic epoch for derived results, separate from read races.
+  FutureOr<int> traversalValidityEpoch(String partitionId);
+
+  /// Invalidates all derived results atomically, without scanning retained rows.
+  FutureOr<void> invalidateTraversals(String partitionId);
+
+  /// Reads an exact canonical query from the independent derived result lane.
+  FutureOr<OfflineTraversalRecord?> getTraversal(
+    String partitionId,
+    String queryKey,
+  );
+
+  /// Stores one bounded result with independent per-scope/global LRU eviction.
+  FutureOr<void> putTraversal(
+    String partitionId,
+    OfflineTraversalRecord record,
+  );
+
+  /// Touches local LRU metadata without extending evidence or notifying reads.
+  FutureOr<void> touchTraversal(
+    String partitionId,
+    String queryKey,
+    DateTime accessedAt,
+  );
+
   /// Returns the current partition generation, creating it at zero if needed.
   FutureOr<int> generation(String partitionId);
 

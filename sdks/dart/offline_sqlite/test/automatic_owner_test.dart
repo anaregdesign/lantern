@@ -167,6 +167,8 @@ void main() {
       );
       await initial.close();
       final old = await databaseFactoryFfiNoIsolate.openDatabase(path);
+      await old.execute('DROP TABLE traversals');
+      await old.execute('ALTER TABLE partitions DROP COLUMN traversal_epoch');
       await old.execute('DROP TABLE automatic_owner');
       await old.execute('ALTER TABLE partitions DROP COLUMN policy_paused');
       await old.execute(

@@ -84,6 +84,8 @@ void main() {
     decoded['schema'] = 5;
     for (final partition in decoded['partitions'] as List<dynamic>) {
       (partition as Map<String, dynamic>)
+        ..remove('traversalEpoch')
+        ..remove('traversals')
         ..remove('pausedCredentialGeneration')
         ..remove('replayPausedForPolicy')
         ..remove('timeHighWater')
@@ -125,6 +127,8 @@ void main() {
       decoded['schema'] = 6;
       for (final partition in decoded['partitions'] as List<dynamic>) {
         (partition as Map<String, dynamic>)
+          ..remove('traversalEpoch')
+          ..remove('traversals')
           ..remove('pausedCredentialGeneration')
           ..remove('replayPausedForPolicy')
           ..remove('timeHighWater')

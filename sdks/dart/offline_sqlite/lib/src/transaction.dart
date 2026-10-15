@@ -169,6 +169,7 @@ final class _SqlTransaction
         var unqualified = p['authority_binding'] != null;
         for (final table in [
           'cache',
+          'traversals',
           'recovery',
           'cdc_scoped',
           'cdc_origins',
@@ -213,6 +214,7 @@ final class _SqlTransaction
       where: 'partition_id=?',
       whereArgs: [partitionId],
     );
+    await invalidateTraversals(partitionId);
     changed.add(partitionId);
     observationInvalidated.add(partitionId);
   });
@@ -1017,6 +1019,7 @@ final class _SqlTransaction
     );
     for (final table in [
       'cache',
+      'traversals',
       'recovery',
       'outbox',
       'operations',
@@ -1031,7 +1034,12 @@ final class _SqlTransaction
     }
     await sql.update(
       'partitions',
-      {'generation': generation, 'auth_paused': 0, 'change_epoch': 0},
+      {
+        'generation': generation,
+        'auth_paused': 0,
+        'change_epoch': 0,
+        'traversal_epoch': 0,
+      },
       where: 'partition_id=?',
       whereArgs: [partitionId],
     );
@@ -1215,6 +1223,7 @@ final class _SqlTransaction
       where: 'partition_id=?',
       whereArgs: [partitionId],
     );
+    if (frame.keys.isNotEmpty) await invalidateTraversals(partitionId);
     changed.add(partitionId);
     observationInvalidated.add(partitionId);
   });
@@ -1265,6 +1274,113 @@ final class _SqlTransaction
             row['origin']! as String: _progress(row).completedSequence,
         });
       });
+
+  @override
+  Future<int> traversalValidityEpoch(String partitionId) => _run(
+    () async => (await _partition(partitionId))['traversal_epoch']! as int,
+  );
+
+  @override
+  Future<void> invalidateTraversals(String partitionId) => _atomic(() async {
+    final p = await _partition(partitionId);
+    await sql.update(
+      'partitions',
+      {'traversal_epoch': _checkedIncrement(p['traversal_epoch']! as int)},
+      where: 'partition_id=?',
+      whereArgs: [partitionId],
+    );
+    changed.add(partitionId);
+    observationInvalidated.add(partitionId);
+  });
+
+  @override
+  Future<OfflineTraversalRecord?> getTraversal(
+    String partitionId,
+    String queryKey,
+  ) => _run(() async {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final rows = await sql.query(
+      'traversals',
+      where: 'partition_id=? AND query_key=?',
+      whereArgs: [partitionId, queryKey],
+    );
+    return rows.isEmpty ? null : _traversal(rows.single);
+  });
+
+  @override
+  Future<void> putTraversal(
+    String partitionId,
+    OfflineTraversalRecord record,
+  ) => _atomic(() async {
+    final p = await _partition(partitionId);
+    if (record.partitionId != partitionId ||
+        record.generation != p['generation'] ||
+        record.validityEpoch != p['traversal_epoch'] ||
+        record.authorityBinding != p['authority_binding']) {
+      throw const OfflineArgumentException();
+    }
+    final bytes = OfflineTraversalCodec.reservedBytes(record);
+    if (bytes > limits.maxTraversalBytes ||
+        bytes > limits.maxTraversalBytesPerPartition ||
+        limits.maxTraversalRecords == 0 ||
+        limits.maxTraversalRecordsPerPartition == 0) {
+      throw const OfflineCapacityException();
+    }
+    await sql.insert(
+      'traversals',
+      _traversalColumns(record),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    while (true) {
+      final local = await _over(
+        'traversals',
+        partitionId,
+        limits.maxTraversalRecordsPerPartition,
+        limits.maxTraversalBytesPerPartition,
+      );
+      if (!local &&
+          !await _over(
+            'traversals',
+            null,
+            limits.maxTraversalRecords,
+            limits.maxTraversalBytes,
+          )) {
+        break;
+      }
+      final victims = await sql.rawQuery(
+        'SELECT partition_id,query_key FROM traversals WHERE NOT(partition_id=? AND query_key=?)'
+        "${local ? ' AND partition_id=?' : ''} ORDER BY accessed_at,partition_id,query_key LIMIT 1",
+        [partitionId, record.queryKey, if (local) partitionId],
+      );
+      if (victims.isEmpty) throw const OfflineCapacityException();
+      final victim = victims.single;
+      await sql.delete(
+        'traversals',
+        where: 'partition_id=? AND query_key=?',
+        whereArgs: [victim['partition_id'], victim['query_key']],
+      );
+      changed.add(victim['partition_id']! as String);
+    }
+    changed.add(partitionId);
+  });
+
+  @override
+  Future<void> touchTraversal(
+    String partitionId,
+    String queryKey,
+    DateTime accessedAt,
+  ) => _run(() async {
+    final record = await getTraversal(partitionId, queryKey);
+    if (record == null) return;
+    await sql.update(
+      'traversals',
+      _traversalColumns(record.accessedAt(accessedAt)),
+      where: 'partition_id=? AND query_key=?',
+      whereArgs: [partitionId, queryKey],
+    );
+    mutated.add(partitionId);
+  });
 
   @override
   Future<int> changeEpoch(String partitionId) =>
@@ -1363,6 +1479,9 @@ final class _SqlTransaction
         : _progress(rows.single);
     final next = previous.accept(chunk);
     if (next == null) return;
+    if (chunk.keys.isNotEmpty || chunk.vertexPrefixes.isNotEmpty) {
+      await invalidateTraversals(partitionId);
+    }
     if (rows.isEmpty) {
       final count =
           (await sql.rawQuery(
@@ -1433,6 +1552,7 @@ final class _SqlTransaction
         offlineMaxChangeOriginsPerStore) {
       throw const OfflineCapacityException();
     }
+    await invalidateTraversals(partitionId);
     await sql.rawInsert(
       'INSERT OR IGNORE INTO recovery(partition_id,entity_key,reserved_bytes) '
       'SELECT partition_id,entity_key,length(CAST(entity_key AS BLOB))+32 '
@@ -1564,6 +1684,13 @@ final class _SqlTransaction
     }
     for (final item in <(String, int, int, int, int)>[
       (
+        'traversals',
+        limits.maxTraversalRecords,
+        limits.maxTraversalBytes,
+        limits.maxTraversalRecordsPerPartition,
+        limits.maxTraversalBytesPerPartition,
+      ),
+      (
         'cache',
         limits.maxCacheRecords,
         limits.maxCacheBytes,
@@ -1634,6 +1761,8 @@ final class _SqlTransaction
                 (metadata['authority_binding']! as String).isEmpty ||
                 utf8.encode(metadata['authority_binding']! as String).length >
                     4096) ||
+        metadata['traversal_epoch'] is! int ||
+        (metadata['traversal_epoch']! as int) < 0 ||
         metadata['change_epoch'] is! int ||
         (metadata['change_epoch']! as int) < 0 ||
         (metadata['policy_paused'] != 0 && metadata['policy_paused'] != 1) ||
@@ -1644,6 +1773,15 @@ final class _SqlTransaction
         (metadata['auth_paused'] != 0 && metadata['auth_paused'] != 1)) {
       throw const OfflineCodecException();
     }
+    await _eachRow('traversals', 'query_key', id, (row) async {
+      final record = _traversal(row);
+      if (record.partitionId != id ||
+          record.generation != generation ||
+          record.validityEpoch > (metadata['traversal_epoch']! as int) ||
+          !_columnsMatch(row, _traversalColumns(record))) {
+        throw const OfflineCodecException();
+      }
+    });
     await _eachRow('cache', 'entity_key', id, (row) async {
       final record = _cache(row);
       _validateCacheIdentity(record);
@@ -1894,3 +2032,15 @@ bool _columnsMatch(Map<String, Object?> row, Map<String, Object?> expected) =>
       }
       return actual == value;
     });
+
+OfflineTraversalRecord _traversal(Map<String, Object?> row) =>
+    OfflineTraversalCodec.decode(_decode(row['payload']));
+Map<String, Object?> _traversalColumns(OfflineTraversalRecord r) => {
+  'partition_id': r.partitionId,
+  'query_key': r.queryKey,
+  'generation': r.generation,
+  'validity_epoch': r.validityEpoch,
+  'accessed_at': r.lastAccessAt.microsecondsSinceEpoch,
+  'reserved_bytes': OfflineTraversalCodec.reservedBytes(r),
+  'payload': _encode(OfflineTraversalCodec.encode(r)),
+};

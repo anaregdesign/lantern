@@ -4,7 +4,10 @@ import 'dart:typed_data';
 import 'package:lantern_client/lantern_client.dart';
 
 import 'errors.dart';
+import 'traversal_result.dart';
 import 'types.dart';
+
+part 'traversal_codec.dart';
 
 /// Canonical strict JSON codec for offline cache and outbox records.
 ///

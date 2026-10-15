@@ -41,4 +41,5 @@ export 'src/scoped_change_consumer.dart';
 export 'src/scoped_change_source.dart';
 export 'src/scoped_change_store.dart';
 export 'src/store.dart';
+export 'src/traversal_result.dart';
 export 'src/types.dart';

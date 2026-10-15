@@ -25,13 +25,7 @@ final class DirectLanternDataClient implements LanternDataClient {
     int maxWatchSubscribers = 64,
     int watchMailboxSize = 8,
   }) {
-    if (_client.endpoint !=
-        _normalizeEndpoint(
-          binding.serviceOrigin,
-          allowInsecure: binding.serviceOrigin.scheme == 'http',
-        )) {
-      throw _invalidArgumentException('session binding endpoint mismatch');
-    }
+    LanternAdapterReads.checkBinding(_client, binding);
     _validateBatch(0, batchSize);
     operationIdPolicy._validate();
     if (rpcTimeout <= Duration.zero ||
@@ -67,6 +61,7 @@ final class DirectLanternDataClient implements LanternDataClient {
   void Function()? _adapterAuthority;
   void Function(LanternException? failure)? _adapterEndpoint;
   bool _adapterRead = false;
+  bool _schedulerOwnsReadPermits = false;
   @override
   final LanternSessionBinding binding;
 
@@ -161,9 +156,10 @@ final class DirectLanternDataClient implements LanternDataClient {
     _validateReadOptions(options?.timeout);
     _throwIfCanceled(options?.cancellation);
     _ensureAuthority();
-    final token = LanternCancellationToken._guarded(
-      () => options?.cancellation?._checkCurrent(),
-    );
+    final token = LanternCancellationToken._guarded(() {
+      _adapterAuthority?.call();
+      options?.cancellation?._checkCurrent();
+    });
     final detachLifetime = _lifetime.listen((_) => token.cancel());
     final detachCaller = options?.cancellation?.listen((_) => token.cancel());
     final work = Future<T>(() async {
@@ -176,10 +172,12 @@ final class DirectLanternDataClient implements LanternDataClient {
       });
       void Function()? release, releaseTraversal;
       try {
-        if (traversal && !_adapterRead) {
+        if (traversal && !_schedulerOwnsReadPermits) {
           releaseTraversal = await _traversalPermits.acquire(token);
         }
-        if (!_adapterRead) release = await _readPermits.acquire(token);
+        if (!_schedulerOwnsReadPermits) {
+          release = await _readPermits.acquire(token);
+        }
         final remaining = timeout - started.elapsed;
         if (remaining <= Duration.zero) {
           timedOut = true;

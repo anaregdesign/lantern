@@ -17,6 +17,20 @@ abstract final class LanternAdapterCancellation {
 /// credential deadlines. Its close joins reads but leaves the transport to its
 /// owning adapter. Ordinary Direct construction keeps all existing defaults.
 abstract final class LanternAdapterReads {
+  /// Validates the bound endpoint before an adapter opens or changes storage.
+  static void checkBinding(
+    LanternClient client,
+    LanternSessionBinding binding,
+  ) {
+    if (client.endpoint !=
+        _normalizeEndpoint(
+          binding.serviceOrigin,
+          allowInsecure: binding.serviceOrigin.scheme == 'http',
+        )) {
+      throw _invalidArgumentException('session binding endpoint mismatch');
+    }
+  }
+
   /// The adapter must reserve a finite permit before each network read and pass
   /// its checked work token. This facade supplies normalization and snapshots.
   static DirectLanternDataClient bound(
@@ -24,10 +38,12 @@ abstract final class LanternAdapterReads {
     required LanternSessionBinding binding,
     required void Function() checkAuthority,
     void Function(LanternException? failure)? onEndpoint,
+    bool schedulerOwnsPermits = true,
   }) => DirectLanternDataClient(client, binding: binding)
     .._adapterEndpoint = onEndpoint
     .._adapterAuthority = checkAuthority
-    .._adapterRead = true;
+    .._adapterRead = true
+    .._schedulerOwnsReadPermits = schedulerOwnsPermits;
 }
 
 /// Resource class of a cache-neutral observation load.
