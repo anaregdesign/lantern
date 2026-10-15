@@ -7,6 +7,54 @@ import (
 	"time"
 )
 
+type countedAuthorityClock struct {
+	clock *fakeAuthorityClock
+	calls int
+}
+
+func (c *countedAuthorityClock) Now() time.Time { c.calls++; return c.clock.Now() }
+
+func TestAuthorityCheckObservationUsesExactlyItsExistingClockSample(t *testing.T) {
+	store, clock := newAuthorityTestStore(t)
+	counted := &countedAuthorityClock{clock: clock}
+	a, err := NewLeaseAuthority(store, LeaseAuthorityOptions{Clock: counted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, _ := store.Current()
+	check := func(ctx context.Context, rev *Revision, reason string, samples int) {
+		t.Helper()
+		before := counted.calls
+		got, err := a.CheckObserved(ctx, rev)
+		if got != reason || (err == nil) != (reason == "ready") || counted.calls-before != samples {
+			t.Fatalf("reason=%s error=%v samples=%d", got, err, counted.calls-before)
+		}
+	}
+	check(t.Context(), revision, "restart_wait", 1)
+	clock.advance(35*time.Second - time.Nanosecond)
+	check(t.Context(), revision, "restart_wait", 1)
+	clock.advance(time.Nanosecond)
+	check(t.Context(), revision, "ready", 1)
+	before := counted.calls
+	if a.Check(t.Context(), revision) != nil || counted.calls-before != 1 {
+		t.Fatal("ordinary Check changed samples")
+	}
+	foreign := *revision
+	foreign.digest[0] ^= 1
+	check(t.Context(), &foreign, "store_revision_refusal", 1)
+	store.faulted.Store(true)
+	check(t.Context(), revision, "store_revision_refusal", 1)
+	store.faulted.Store(false)
+	clock.advance(-time.Nanosecond)
+	check(t.Context(), revision, "clock_fault", 1)
+	clock.advance(time.Hour)
+	check(t.Context(), revision, "clock_fault", 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	check(ctx, revision, "context", 0)
+	check(t.Context(), nil, "unavailable", 0)
+}
+
 func TestAuthorityWriterRestartAndUnseenHolders(t *testing.T) {
 	store, clock := newAuthorityTestStore(t)
 	authority, err := NewLeaseAuthority(store, LeaseAuthorityOptions{Clock: clock})

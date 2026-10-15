@@ -417,6 +417,9 @@ func runMain() error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if launch.owner != nil {
+		app.securityWorkers.ObserveReadiness(os.Stderr)
+	}
 	if err := launch.acknowledge(); err != nil {
 		return fmt.Errorf("native listener adoption: %w", err)
 	}

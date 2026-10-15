@@ -10,6 +10,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/authn"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
+	"github.com/anaregdesign/lantern/server/internal/readinessdiag"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/service"
 )
@@ -43,6 +44,8 @@ type SecurityRuntime struct {
 	closeOnce      sync.Once
 	closeErr       error
 	closeOrderly   bool
+
+	readinessObservation *readinessdiag.Observer
 }
 
 type securityRuntimeClock struct{ now func() time.Time }
@@ -225,17 +228,25 @@ func (r *SecurityRuntime) finish(orderly bool) error {
 func (r *SecurityRuntime) Mode() string                                    { return r.mode }
 func (r *SecurityRuntime) ControlHandler() *service.SecurityConnectHandler { return r.control }
 func (r *SecurityRuntime) authorityCheck(ctx context.Context, revision *security.Revision) error {
+	_, err := r.authorityCheckObserved(ctx, revision)
+	return err
+}
+func (r *SecurityRuntime) authorityCheckObserved(ctx context.Context, revision *security.Revision) (string, error) {
 	if r.current != nil {
-		return security.ErrAuthorityUnavailable
+		return "unavailable", security.ErrAuthorityUnavailable
 	} // Legacy Revision never certifies current.
 	if r.peer != nil && r.peer.CheckWorkload(ctx) != nil {
-		return security.ErrAuthorityUnavailable
+		return "unavailable", security.ErrAuthorityUnavailable
 	}
 	if r.authority != nil {
-		return r.authority.Check(ctx, revision)
+		return r.authority.CheckObserved(ctx, revision)
 	}
 	if r.receiver != nil {
-		return r.receiver.Check(ctx, revision)
+		err := r.receiver.Check(ctx, revision)
+		if err == nil {
+			return "ready", nil
+		}
+		return "unavailable", err
 	}
-	return security.ErrAuthorityUnavailable
+	return "unavailable", security.ErrAuthorityUnavailable
 }

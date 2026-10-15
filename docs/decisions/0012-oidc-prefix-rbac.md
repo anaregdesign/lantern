@@ -819,4 +819,22 @@ Private creation installs the owner and protected DACL in `CreateFile` before an
 
 The maintained native fixture exposes bounded stdin-only `-private-input` creation for Rust test inputs. Credentials/configuration never enter argv or a broadly created temporary file. Public startup failures contain only fixed categories and bounded typed readiness diagnostics: node/port, elapsed wait, probe category/HTTP status, child exit code, and a fixed classification of a bounded child log. The Rust fixture retains this diagnostic before removing private temporary state; arbitrary child log/exception contents stay private. Native Windows CI executes positive/negative DACL tests and the existing authenticated Rust wire cases; cross-compilation alone does not qualify Windows.
 
+Native listener fixtures also retain passive readiness observations (#1791).
+The authority reason comes from the same executed check and clock sample;
+worker evaluation/completion/publication sequences distinguish pending work
+from a completed refusal. Health records its actual static or runtime branch.
+A static rejection leaves runtime explicitly unevaluated and only correlates
+with the separately observed worker state. No diagnostic capabilities RPC or
+extra authority check occurs. The existing 60-second default startup budget, 35-second
+writer restart hold and all serving predicates remain unchanged.
+Only this fixture composition installs the observer before serving. It writes
+fixed enum/numeric records directly to the existing private child log, outside
+authority/gate locks and independently of the configured logging level, at most
+once per 5 seconds and 64 records of at most 1024 bytes. The fixture's 64 KiB reader
+and Rust's 4 KiB startup record retain explicit missing, first-observed, invalid,
+incomplete, truncated, exhausted and stale states. Observation age measures time
+since the fixture first read that sequence; worker age uses the observer's
+monotonic clock, never the authority clock. These are separate observations,
+not an atomic security/health cut or proof of a historical timeout's cause.
+
 The Rust authenticated fixture uses `authfixture -allocated-nodes` instead of releasing reserved ports before startup. Each supervised production child reserves its actual wildcard public TCP listener and, for a cohort, its IPv4-loopback private listener at port zero. A nonce-bound, bounded local pipe exchange returns only allocation metadata so the supervisor can generate the exact HTTPS origins and signed membership. The child retains the same Go listeners and poller throughout; no descriptor import, cross-process socket duplication, second bind, or fallback bind occurs. Configuration then passes through the ordinary providers: public runtime/receipt/frame certification and private exact-runtime/replication/policy/workload checks precede adoption. Adoption acknowledgment precedes serving and does not replace verified-TLS Health/capabilities readiness. The supervisor publishes fixture metadata only after that existing readiness gate and reaps the entire cohort on failure. Its stdin pipe is also the child's lifetime signal, including on Windows. Without the explicit local launch argument, ordinary server startup still binds through the existing providers. Native platform lifecycle/conflicting-bind tests accompany the existing real authenticated Rust receipt and HA paths; the local launch capability supplies no current-authority or durability proof.

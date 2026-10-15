@@ -185,4 +185,52 @@ func TestFixtureReadinessDiagnosticDoesNotExposeResponse(t *testing.T) {
 	if !strings.Contains(output.String(), `"probe":"health"`) || strings.Contains(output.String(), "private-token-key-body") {
 		t.Fatal("response escaped fixed diagnostic categories")
 	}
+	if !strings.Contains(output.String(), `"last_health":"unrecognized"`) || !strings.Contains(output.String(), `"last_capability":"not_probed"`) {
+		t.Fatal("unrecognized response or unobserved capabilities misrepresented")
+	}
+}
+
+func TestFixtureReadinessProbeCategories(t *testing.T) {
+	for _, tc := range []struct {
+		name, health, capability, wantHealth, wantCapability string
+		healthStatus, capabilityStatus                       int
+	}{
+		{"missing health", `{}`, `{}`, "missing", "not_probed", 200, 200},
+		{"unknown health", `{"status":"SERVING_STATUS_UNKNOWN"}`, `{}`, "unknown", "not_probed", 200, 200},
+		{"decode health", `{"status":3}`, `{}`, "decode_failure", "not_probed", 200, 200},
+		{"http health", `{}`, `{}`, "http_failure", "not_probed", 503, 200},
+		{"missing capability", `{"status":"SERVING_STATUS_SERVING"}`, `{}`, "serving", "missing", 200, 200},
+		{"decode capability", `{"status":"SERVING_STATUS_SERVING"}`, `{"ready":"bad"}`, "serving", "decode_failure", 200, 200},
+		{"http capability", `{"status":"SERVING_STATUS_SERVING"}`, `{}`, "serving", "http_failure", 200, 503},
+		{"not ready", `{"status":"SERVING_STATUS_SERVING"}`, `{"ready":false}`, "serving", "not_ready", 200, 200},
+		{"uncertified", `{"status":"SERVING_STATUS_SERVING"}`, `{"ready":true,"mode":"AUTH_MODE_OIDC","protocolVersion":2}`, "serving", "uncertified", 200, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/grpc.health.v1.Health/Check" {
+					w.WriteHeader(tc.healthStatus)
+					_, _ = w.Write([]byte(tc.health))
+				} else {
+					w.WriteHeader(tc.capabilityStatus)
+					_, _ = w.Write([]byte(tc.capability))
+				}
+			}))
+			defer server.Close()
+			ca := filepath.Join(t.TempDir(), "ca.pem")
+			if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			defer cancel()
+			err := waitFixtureReady(ctx, fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}, []*fixtureProcess{{done: make(chan struct{})}})
+			var failure *fixtureReadinessError
+			if !errors.As(err, &failure) {
+				t.Fatal("missing typed diagnostic", err)
+			}
+			d := failure.diagnostic
+			if d.LastHealth != tc.wantHealth || d.LastCapability != tc.wantCapability || d.HealthProbes != 1 || (d.CapabilityProbes == 0) != (tc.wantCapability == "not_probed") {
+				t.Fatal(d)
+			}
+		})
+	}
 }
