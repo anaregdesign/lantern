@@ -220,6 +220,7 @@ final class OfflineLanternDataClient
   ).join();
   int _readRevision = 0;
   bool _routeDiscontinuous = false;
+  bool _routeInvalidated = false;
   ObservationCause? _standaloneReadCause;
   bool _clockQueued = false;
   Future<void>? _clockFlush, _routeInvalidation;
@@ -671,7 +672,7 @@ final class OfflineLanternDataClient
     ),
   );
   @override
-  /// Joins this lifetime and persists detected clock invalidation before success.
+  /// Joins this lifetime and persists detected traversal invalidation before success.
   /// A failed close stays failed; caller-owned storage must not be treated as
   /// safely reopened merely because the public lifetime is already closed.
   Future<void> close() {
@@ -693,19 +694,21 @@ final class OfflineLanternDataClient
     await _observations.close();
     await _changes.cancel();
     await _direct.close();
-    try {
-      await _clockFlush;
-    } on OfflineDisposedException {
-      // Ordinary lifetime cancellation cannot acknowledge the clock debt.
-    } on OfflineWorkInterruptedException {
-      // The closing-only transaction below settles any uncommitted revision.
-    } on LanternDataException catch (error) {
-      if (error.reason != DataFailure.closed) rethrow;
+    for (final pending in [_clockFlush, _routeInvalidation]) {
+      try {
+        await pending;
+      } on OfflineDisposedException {
+        // Ordinary lifetime cancellation cannot acknowledge invalidation.
+      } on OfflineWorkInterruptedException {
+        // The closing-only transaction below settles the remaining obligation.
+      } on LanternDataException catch (error) {
+        if (error.reason != DataFailure.closed) rethrow;
+      }
     }
     // Join accepted local transactions. Their post-commit continuations check
     // the closed lifetime before sampling raw time or admitting further work.
     await store.transaction((_) async {});
-    await _settleTraversalClockOnClose();
+    await _settleTraversalInvalidationOnClose();
   }
 }
 

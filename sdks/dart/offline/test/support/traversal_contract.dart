@@ -68,6 +68,127 @@ void traversalContract({
   });
 
   group('T02 route fences', () {
+    for (final boundary in ['local lookup', 'local publication']) {
+      test('R2 revocation at $boundary cannot revive retained Graph', () async {
+        final inner = h.store;
+        final store = TraversalBoundaryStore(inner, h.scope);
+        h.store = store;
+        await h.open(continues: true);
+        await h.read();
+        final record = (await h.record())!;
+        final calls = h.calls, tokens = h.tokens;
+        if (boundary == 'local lookup') {
+          store.beforeBegin = () async {
+            store.beforeBegin = null;
+            h.current = false;
+          };
+          store.afterCommit = () async {
+            store.afterCommit = null;
+            h.current = true;
+          };
+        } else {
+          store.afterCommit = () async {
+            store.afterCommit = null;
+            h.current = false;
+          };
+        }
+        final during = await h.read(ReadSource.cacheOnly);
+        final epoch = await inner.transaction(
+          (tx) => tx.traversalValidityEpoch(h.scope),
+        );
+        h.current = true;
+        final retry = await h.read(ReadSource.cacheOnly);
+        await h.close();
+        h.store = await reopen(inner);
+        await h.open(continues: true);
+        final reopened = await h.read(ReadSource.cacheOnly);
+        expect([
+          during.confirmed.state,
+          retry.confirmed.state,
+          reopened.confirmed.state,
+        ], List.filled(3, ConfirmedState.unknown));
+        expect(epoch, greaterThan(record.validityEpoch));
+        expect(h.calls, calls);
+        expect(h.tokens, tokens);
+      });
+    }
+    for (final code in [
+      connect.Code.unauthenticated,
+      connect.Code.permissionDenied,
+    ]) {
+      test('R1 current $code still pauses its own scope', () async {
+        await h.open();
+        await h.read();
+        final record = (await h.record())!;
+        h.beforeResponse = () async {
+          throw connect.ConnectException(code, 'finite denied response');
+        };
+        final denied = await h.read();
+        expect(denied.confirmed.state, ConfirmedState.unknown);
+        expect(
+          denied.confirmed.cause,
+          code == connect.Code.unauthenticated
+              ? ObservationCause.unauthenticated
+              : ObservationCause.permissionDenied,
+        );
+        await h.store.transaction((tx) async {
+          expect(
+            await tx.replayPausedForAuth(h.scope),
+            code == connect.Code.unauthenticated,
+          );
+          expect(
+            await tx.replayPausedForPolicy(h.scope),
+            code == connect.Code.permissionDenied,
+          );
+          expect(
+            await tx.traversalValidityEpoch(h.scope),
+            greaterThan(record.validityEpoch),
+          );
+        });
+        h.beforeResponse = null;
+        final calls = h.calls, tokens = h.tokens;
+        expect((await h.read()).confirmed.state, ConfirmedState.unknown);
+        expect(h.calls, calls);
+        expect(h.tokens, tokens);
+      });
+      test('R1 delayed $code cannot pause or invalidate a successor', () async {
+        final inner = h.store;
+        final store = TraversalBoundaryStore(inner, h.scope);
+        h.store = store;
+        await h.open();
+        Future<Map<String, Object?>> state(OfflineStoreTransaction tx) async =>
+            {
+              'generation': await tx.generation(h.scope),
+              'authority': await tx.authorityBinding(h.scope),
+              'authPaused': await tx.replayPausedForAuth(h.scope),
+              'policyPaused': await tx.replayPausedForPolicy(h.scope),
+              'epoch': await tx.traversalValidityEpoch(h.scope),
+            };
+        late Map<String, Object?> successor;
+        h.beforeResponse = () async {
+          store.beforeBegin = () async {
+            store.beforeBegin = null;
+            await inner.transaction((tx) async {
+              await tx.wipePartition(h.scope);
+              await tx.bindAuthority(h.scope, 'successor-authority');
+              successor = await state(tx);
+            });
+          };
+          throw connect.ConnectException(code, 'finite denied response');
+        };
+        await expectLater(
+          h.read(),
+          throwsA(
+            isA<LanternDataException>().having(
+              (e) => e.reason,
+              'reason',
+              DataFailure.closed,
+            ),
+          ),
+        );
+        expect(await inner.transaction(state), successor);
+      });
+    }
     for (final boundary in ['token', 'response']) {
       test('revocation at $boundary prevents retention/publication', () async {
         await h.open();
@@ -806,6 +927,7 @@ final class TraversalBoundaryStore implements OfflineStore {
   TraversalBoundaryStore(this.inner, this.scope);
   final OfflineStore inner;
   final String scope;
+  Future<void> Function()? beforeBegin;
   Future<void> Function(OfflineStoreTransaction?)? beforeCommit;
   Future<void> Function()? afterCommit;
   @override
@@ -814,6 +936,7 @@ final class TraversalBoundaryStore implements OfflineStore {
   Future<T> transaction<T>(
     FutureOr<T> Function(OfflineStoreTransaction) action,
   ) async {
+    await beforeBegin?.call();
     final result = await inner.transaction((tx) async {
       final result = await action(tx);
       await beforeCommit?.call(tx);

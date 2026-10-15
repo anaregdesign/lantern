@@ -148,7 +148,9 @@ Public corpus invalidation, possible mutation dispatch/settlement, reset and
 known authority/route discontinuity invalidate the derived epoch; a mere
 availability read-epoch change preserves eligible history. Active queries share
 the existing foreground runtime and finite polling; inactive retained rows have
-no refresh job.
+no refresh job. A route revocation observed during local lookup or publication
+remains latched for that owner lifetime and commits invalidation before returning
+Unknown. Restoring the route flag cannot revive the old Graph.
 
 Raw wall-clock rollback is detected before the existing effective clock clamps
 it. A hold immediately hides retained Graphs and commits semantic invalidation.
@@ -159,7 +161,7 @@ failure stays explicit and blocked. This does not detect an unobserved rollback
 across process death or establish backup/installation continuity.
 
 Normal last-owner `close()` first stops admission and joins active work, then
-persists any already-detected rollback under the retained local control fence
+persists any already-detected rollback or route invalidation under the retained local control fence
 before releasing ownership. Parallel and repeated closes share the same result.
 A failed or uncertain commit fails close and retains the automatic owner; it
 cannot be treated as a successful cleanup or safe reopen. Standalone close also

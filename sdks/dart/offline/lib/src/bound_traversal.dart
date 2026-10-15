@@ -1,6 +1,16 @@
 part of 'bound_data_client.dart';
 
 extension _BoundTraversal on OfflineLanternDataClient {
+  bool _observeTraversalRoute() {
+    _fence();
+    // Revocation is an observed lifetime discontinuity, even if the route's
+    // external flag becomes true again before the next asynchronous boundary.
+    if (!_routeDiscontinuous && readRoute?.isCurrent() == false) {
+      _routeDiscontinuous = true;
+    }
+    return !_routeDiscontinuous;
+  }
+
   void _checkReadAuthority() {
     _fence();
     _session?._checkNetwork();
@@ -8,8 +18,7 @@ extension _BoundTraversal on OfflineLanternDataClient {
     if (_standaloneReadCause != null || _storageBlocked) {
       throw const OfflineWorkInterruptedException();
     }
-    if (_routeDiscontinuous || readRoute != null && !readRoute!.isCurrent()) {
-      _routeDiscontinuous = true;
+    if (!_observeTraversalRoute()) {
       throw const LanternChangeDiscontinuity();
     }
     _traversalClock.sample();
@@ -41,9 +50,11 @@ extension _BoundTraversal on OfflineLanternDataClient {
     });
   }
 
-  Future<void> _invalidateTraversalRoute() =>
-      _routeInvalidation ??= _traversalTransaction<void>((tx) async {
+  Future<void> _invalidateTraversalRoute() => _routeInvalidation ??=
+      _traversalTransaction<void>((tx) async {
         await tx.invalidateTraversals(partitionId);
+      }).then((_) {
+        _routeInvalidated = true;
       });
 
   Future<void> _flushTraversalClock() => _clockFlush ??=
@@ -56,8 +67,9 @@ extension _BoundTraversal on OfflineLanternDataClient {
 
   // Subtracts only derived eligibility under retained local control. This does
   // not reopen the ordinary read fence or require network/route credentials.
-  Future<void> _settleTraversalClockOnClose() async {
-    if (!_traversalClock.invalidationPending) return;
+  Future<void> _settleTraversalInvalidationOnClose() async {
+    final routePending = _routeDiscontinuous && !_routeInvalidated;
+    if (!_traversalClock.invalidationPending && !routePending) return;
     final revision = _traversalClock.rollbackRevision;
     final highWater = _traversalClock.highWater;
     void control() {
@@ -95,6 +107,7 @@ extension _BoundTraversal on OfflineLanternDataClient {
       });
       control();
       _traversalClock.committed(revision);
+      if (routePending) _routeInvalidated = true;
     } on OfflineException {
       // The shared owner's ended gate deliberately suppresses scheduling. Keep
       // failure here; failed close must not reach owner/resource release.
@@ -177,11 +190,12 @@ extension _BoundTraversal on OfflineLanternDataClient {
       : _standaloneReadCause ?? _session?._hiddenCause;
 
   bool _canReuseTraversal(OfflineTraversalRecord r, int epoch) {
+    final currentRoute = _observeTraversalRoute();
     final now = clock();
     final route = readRoute;
     return cacheReads &&
         route != null &&
-        route.isCurrent() &&
+        currentRoute &&
         _traversalHidden == null &&
         r.generation == generation &&
         r.partitionId == partitionId &&
@@ -224,10 +238,7 @@ extension _BoundTraversal on OfflineLanternDataClient {
     ObservationCause? cause,
   }) async {
     _fence();
-    if (readRoute != null && !readRoute!.isCurrent()) {
-      _routeDiscontinuous = true;
-    }
-    if (_routeDiscontinuous) await _invalidateTraversalRoute();
+    if (!_observeTraversalRoute()) await _invalidateTraversalRoute();
     await _session?.incoming?.verifyContinuity();
     final revision = _readRevision;
     final captured = await _traversalTransaction((tx) async {
@@ -269,6 +280,10 @@ extension _BoundTraversal on OfflineLanternDataClient {
             : record.historyUntil,
       );
     }
+    // Reuse checks can observe revocation after entry, including after the
+    // store transaction commits. Settle outside the transaction before the
+    // Unknown result completes; close retains this obligation if interrupted.
+    if (_routeDiscontinuous) await _invalidateTraversalRoute();
     return _traversalSnapshot(
       query,
       captured.pending,
@@ -344,12 +359,14 @@ extension _BoundTraversal on OfflineLanternDataClient {
           if (session != null) {
             await session._pauseFromRead(cause!);
           } else {
-            await store.transaction((tx) async {
+            await _traversalTransaction<void>((tx) async {
+              _fence();
               if (cause == ObservationCause.unauthenticated) {
                 await tx.setReplayPausedForAuth(partitionId, true);
               } else {
                 await tx.setReplayPausedForPolicy(partitionId, true);
               }
+              _fence();
               await tx.invalidateTraversals(partitionId);
             });
           }

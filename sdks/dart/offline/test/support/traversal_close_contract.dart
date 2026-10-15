@@ -175,6 +175,97 @@ void traversalCloseContract({
     }
 
     for (final automatic in [false, true]) {
+      for (final storageFailure in [false, true]) {
+        test(
+          'R2 route settlement joins close: automatic=$automatic, failure=$storageFailure',
+          () async {
+            await prepare(automatic: automatic);
+            final LanternDataClient data = automatic
+                ? await openHandle()
+                : h.data!;
+            await read(data);
+            final record = (await h.record())!;
+            final calls = h.calls, tokens = h.tokens;
+            final entered = Completer<void>(), release = Completer<void>();
+            addTearDown(() {
+              if (!release.isCompleted) release.complete();
+            });
+            store.beforeBegin = () async {
+              store.beforeBegin = null;
+              entered.complete();
+              await release.future;
+              if (storageFailure) throw StateError('failed route settlement');
+            };
+            h.current = false;
+            final result = data
+                .illuminate(
+                  'seed',
+                  traversal: const PprOptions(),
+                  options: const TraversalReadOptions(
+                    source: ReadSource.cacheOnly,
+                  ),
+                )
+                .then<Object?>((_) => null, onError: (Object error) => error);
+            await entered.future;
+            var done = false;
+            final close = data.close();
+            final outcome = close.then<Object?>(
+              (_) {
+                done = true;
+                return null;
+              },
+              onError: (Object error) {
+                done = true;
+                return error;
+              },
+            );
+            await settleEvents();
+            expect(done, isFalse);
+            expect(store.owner?.releases ?? 0, 0);
+            release.complete();
+            expect(await result, isNotNull);
+            final error = await outcome;
+            expect(identical(close, data.close()), isTrue);
+            expect(h.calls, calls);
+            expect(h.tokens, tokens);
+            if (storageFailure) {
+              expect(
+                error,
+                isA<LanternDataException>().having(
+                  (e) => e.reason,
+                  'reason',
+                  DataFailure.storageBlocked,
+                ),
+              );
+              expect(storeCloses, 0);
+              expect(store.owner?.releases ?? 0, 0);
+              expect(
+                await store.inner.transaction(
+                  (tx) => tx.traversalValidityEpoch(h.scope),
+                ),
+                record.validityEpoch,
+              );
+            } else {
+              expect(error, isNull);
+              expect(storeCloses, automatic ? 1 : 0);
+              expect(store.owner?.releases ?? 0, automatic ? 1 : 0);
+              h.store = await reopen(store.inner);
+              expect(
+                await h.store.transaction(
+                  (tx) => tx.traversalValidityEpoch(h.scope),
+                ),
+                greaterThan(record.validityEpoch),
+              );
+              h.current = true;
+              await h.open(continues: true);
+              expect(
+                (await h.read(ReadSource.cacheOnly)).confirmed.state,
+                ConfirmedState.unknown,
+              );
+            }
+          },
+        );
+      }
       test(
         'C2 running flush storage failure stays failed: automatic=$automatic',
         () async {
