@@ -44,8 +44,10 @@ applications do not start `consumeScopedChanges` beside it. Each new runtime
 bootstraps even when storage contains cursor bytes. Only a continuously certified
 runtime can resume its completed cursor after ordinary availability loss.
 
-Accepted frames atomically invalidate cache, advance the read epoch and install
+Key-bearing frames atomically invalidate cache, advance the read epoch and install
 an optional completion cursor. Partial frames preserve the previous cursor.
+Empty progress persists its cursor without invalidating active reads or renewing
+cached evidence. The first accepted frame after reconnect still wakes watches.
 Bootstrap recovery uses bounded plural reads and proceeds independently of
 outgoing mutations. Ordinary disconnection preserves eligible historical evidence
 within its original TTL; known gaps, malformed frames or authority/route changes
@@ -511,8 +513,12 @@ Transaction operations return `FutureOr<T>`; await each operation inside its
 transaction callback. Public scoped CDC uses `scopedChangeCursor`,
 `applyScopedChangeFrame` and `resetScopedChangeCursor`. Invalidation and an
 optional opaque completion cursor commit atomically; an intermediate frame
-invalidates immediately and preserves the last completed cursor. Every frame
-advances the durable read epoch. The Store never interprets Role, Principal,
+invalidates immediately and preserves the last completed cursor. Key-bearing
+frames advance the durable read epoch. Empty progress commits its opaque cursor
+and ordinary Store notification without invalidating reads or renewing retained
+evidence. The first accepted frame of a resumed tail still wakes active watches;
+steady progress retains the bounded resident-recovery kick and its existing
+fairness floors. The Store never interprets Role, Principal,
 policy, raw origin progress or cursor contents.
 
 `consumeScopedChanges(partitionId, source: ...)` owns one explicit foreground

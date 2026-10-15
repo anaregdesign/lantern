@@ -182,13 +182,17 @@ final class _AutomaticIncoming {
         });
         work.checkCurrent();
         source.checkCurrent();
+        final invalidate =
+            first || frame.bootstrap || frame.invalidations.isNotEmpty;
         first = false;
         _bootstrap = false;
         discontinuous = false;
         _boundary = true;
         owner._endpointSuccess();
         _queueRecovery();
-        data._observations.invalidate();
+        // Resume readiness needs one wake even without identities. Later opaque
+        // progress must not discard an otherwise valid in-flight observation.
+        if (invalidate) data._observations.invalidate();
       }
       work.checkCurrent();
       throw const LanternChangeDiscontinuity();

@@ -1217,15 +1217,17 @@ final class _SqlTransaction
         whereArgs: [partitionId],
       );
     }
-    await sql.update(
-      'partitions',
-      {'change_epoch': _checkedIncrement(metadata['change_epoch']! as int)},
-      where: 'partition_id=?',
-      whereArgs: [partitionId],
-    );
-    if (frame.keys.isNotEmpty) await invalidateTraversals(partitionId);
+    if (frame.keys.isNotEmpty) {
+      await sql.update(
+        'partitions',
+        {'change_epoch': _checkedIncrement(metadata['change_epoch']! as int)},
+        where: 'partition_id=?',
+        whereArgs: [partitionId],
+      );
+      await invalidateTraversals(partitionId);
+      observationInvalidated.add(partitionId);
+    }
     changed.add(partitionId);
-    observationInvalidated.add(partitionId);
   });
 
   @override

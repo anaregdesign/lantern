@@ -266,7 +266,10 @@ abstract interface class OfflineStoreTransaction {
 
   /// Atomically invalidates a public frame and commits its optional cursor.
   /// Requires an installed bootstrap checkpoint; partial frames preserve it.
-  /// Each accepted frame advances the read epoch, including partial frames.
+  /// Key-bearing frames advance the read and derived epochs, including partial
+  /// frames. Checkpoint-only progress commits and notifies without advancing
+  /// either epoch or adding observation invalidation; it preserves any earlier
+  /// invalidation in the same transaction.
   FutureOr<void> applyScopedChangeFrame(
     String partitionId,
     OfflineScopedChangeFrame frame,
@@ -285,8 +288,9 @@ abstract interface class OfflineStoreTransaction {
 
   /// Durable partition-wide invalidation epoch for remote read barriers.
   ///
-  /// Every accepted CDC chunk, including a partial chunk, and every checkpoint
-  /// reset advances this value in the same transaction as cache invalidation.
+  /// Every key-bearing public frame, legacy CDC chunk (including partials), and
+  /// checkpoint reset advances this with cache invalidation. Empty public
+  /// progress does not. Availability loss can advance it via [advanceReadEpoch].
   FutureOr<int> changeEpoch(String partitionId);
 
   /// Fences reads and notifies active entities/derived queries without erasing
@@ -452,6 +456,7 @@ final class OfflineStoreChange {
   /// Nonsecret bound authority generation after commit, if installed.
   final String? authorityBinding;
 
-  /// Mutation, authority, or CDC invalidation; cache population alone is false.
+  /// Mutation, authority, or CDC invalidation. Cache population and checkpoint-
+  /// only public progress do not add this flag to the transaction's notification.
   final bool observationInvalidated;
 }

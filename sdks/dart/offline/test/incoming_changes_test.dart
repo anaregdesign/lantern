@@ -40,6 +40,7 @@ final class _Store implements OfflineStore, OfflineAutomaticStore {
   final MemoryOfflineStore inner;
   String partition = '';
   bool failCursor = false;
+  Future<void> Function()? beforeTransaction, afterCursorCommit;
   @override
   Object get canonicalOwnerKey => inner.canonicalOwnerKey;
   @override
@@ -58,16 +59,23 @@ final class _Store implements OfflineStore, OfflineAutomaticStore {
   @override
   Future<T> transaction<T>(
     FutureOr<T> Function(OfflineStoreTransaction) action,
-  ) => inner.transaction((tx) async {
-    final before = (await tx.scopedChangeCursor(partition))?.toJson();
-    final result = await action(tx);
-    if (failCursor &&
-        before != (await tx.scopedChangeCursor(partition))?.toJson()) {
-      failCursor = false;
-      throw StateError('injected commit failure');
-    }
+  ) async {
+    await beforeTransaction?.call();
+    var cursorChanged = false;
+    final result = await inner.transaction((tx) async {
+      final before = (await tx.scopedChangeCursor(partition))?.toJson();
+      final result = await action(tx);
+      cursorChanged =
+          before != (await tx.scopedChangeCursor(partition))?.toJson();
+      if (failCursor && cursorChanged) {
+        failCursor = false;
+        throw StateError('injected commit failure');
+      }
+      return result;
+    });
+    if (cursorChanged) await afterCursorCommit?.call();
     return result;
-  });
+  }
 }
 
 final class _Writes implements OfflineBoundMutationRemote {
@@ -333,6 +341,172 @@ void main() {
     },
   );
 
+  for (final event in ['control', 'cursor-only progress', 'identity change']) {
+    test(
+      'R1794 $event fences only semantically invalidated observations',
+      () async {
+        f.value('one', 'initial');
+        await f.open();
+        final values = <LanternSnapshot<Vertex>>[];
+        f.subscriptions.add(
+          f.session!.watchVertex('one', options: watching).listen(values.add),
+        );
+        await f.tick();
+        f.tails.single.bootstrap();
+        await flush();
+        final release = Completer<void>();
+        addTearDown(() {
+          if (!release.isCompleted) release.complete();
+        });
+        f.beforeRead = () => release.future;
+        await f.tick();
+        expect(f.vertexReads, [
+          ['one'],
+        ]);
+        if (event == 'cursor-only progress') {
+          // The authenticated wire fixture sends these progress frames every
+          // 100 ms. No identity, authority or route changed during this read.
+          f.tails.single.frames.add(wire.WatchChangesResponse(cursor: [2]));
+          await flush();
+          expect(await f.cursor(), [2]);
+        } else if (event == 'identity change') {
+          f.tails.single.invalidate('one', cursor: 2);
+          await flush();
+        }
+        release.complete();
+        await flush();
+        // Do not advance the scheduler or poll again to hide a discarded reply.
+        expect(
+          values.map(_text),
+          event == 'identity change'
+              ? isNot(contains('initial'))
+              : contains('initial'),
+        );
+        expect(f.vertexReads, hasLength(1));
+        if (event == 'identity change') {
+          f.value('one', 'updated');
+          await f.tick();
+          expect(_text(values.last), 'updated');
+          expect(f.vertexReads, hasLength(2));
+        }
+      },
+    );
+  }
+
+  test(
+    'R1794 first resumed progress wakes a blocked long-poll watch',
+    () async {
+      f.value('one', 'initial');
+      await f.open(cache: false);
+      final values = <LanternSnapshot<Vertex>>[];
+      f.subscriptions.add(
+        f.session!
+            .watchVertex(
+              'one',
+              options: const WatchOptions(pollInterval: Duration(minutes: 10)),
+            )
+            .listen(values.add),
+      );
+      await f.tick();
+      f.tails.single.bootstrap();
+      await flush();
+      await f.tick();
+      expect(_text(values.last), 'initial');
+      await f.session!.suspend();
+      await f.session!.resume();
+      await f.tick();
+      expect(f.tails, hasLength(2));
+      expect(f.tails.last.request.bootstrap, isFalse);
+      expect(values.last.confirmed.state, ConfirmedState.unknown);
+      expect(f.vertexReads, hasLength(1));
+
+      final release = Completer<void>();
+      addTearDown(() {
+        if (!release.isCompleted) release.complete();
+      });
+      f.beforeRead = () => release.future;
+      f.value('one', 'resumed');
+      f.tails.last.frames.add(wire.WatchChangesResponse(cursor: [2]));
+      await flush();
+      await f.tick();
+      expect(f.vertexReads, hasLength(2));
+      f.tails.last.frames.add(wire.WatchChangesResponse(cursor: [3]));
+      await flush();
+      release.complete();
+      await flush();
+      expect(_text(values.last), 'resumed');
+      expect(f.vertexReads, hasLength(2));
+    },
+  );
+
+  for (final boundary in [
+    'cancel before',
+    'route before',
+    'cancel after',
+    'route after',
+  ]) {
+    test(
+      'R1794 $boundary empty commit cannot establish late readiness',
+      () async {
+        f.value('one', 'initial');
+        await f.open(cache: false);
+        final values = <LanternSnapshot<Vertex>>[];
+        f.subscriptions.add(
+          f.session!.watchVertex('one', options: watching).listen(values.add),
+        );
+        await f.tick();
+        f.tails.single.bootstrap();
+        await flush();
+        await f.tick();
+        expect(_text(values.last), 'initial');
+        await f.session!.suspend();
+        await f.session!.resume();
+        await f.tick();
+        expect(values.last.confirmed.state, ConfirmedState.unknown);
+        final entered = Completer<void>(), release = Completer<void>();
+        addTearDown(() {
+          if (!release.isCompleted) release.complete();
+        });
+        Future<void> hold() async {
+          f.store.beforeTransaction = null;
+          f.store.afterCursorCommit = null;
+          entered.complete();
+          await release.future;
+        }
+
+        if (boundary.endsWith('before')) {
+          f.store.beforeTransaction = hold;
+        } else {
+          f.store.afterCursorCommit = hold;
+        }
+        values.clear();
+        f.value('one', 'late');
+        f.tails.last.frames.add(wire.WatchChangesResponse(cursor: [2]));
+        await entered.future;
+        Future<void>? stopping;
+        if (boundary.startsWith('cancel')) {
+          stopping = f.session!.suspend();
+        } else {
+          f.affinity = false;
+        }
+        await flush();
+        release.complete();
+        await stopping;
+        await flush();
+        expect(f.vertexReads, hasLength(1));
+        expect(values.map(_text), isNot(contains('late')));
+        expect(
+          await f.cursor(),
+          boundary.startsWith('route')
+              ? isNull
+              : boundary.endsWith('after')
+              ? [2]
+              : [1],
+        );
+      },
+    );
+  }
+
   test(
     'T08 ordinary loss preserves historical evidence and resumes completed cursor',
     () async {
@@ -395,25 +569,31 @@ void main() {
     });
   }
 
-  test(
-    'T10 cursor transaction failure publishes neither invalidation nor completion',
-    () async {
-      await f.seed(1);
-      await f.open();
-      await f.tick();
-      f.tails.single.bootstrap();
-      await flush();
-      await f.tick();
-      f.store.failCursor = true;
-      f.tails.single.invalidate('resident:0', cursor: 2);
-      await flush();
-      expect(await f.cursor(), [1]);
-      expect((await f.session!.syncStatus.first).pause, SyncPause.storage);
-      expect(_text(await f.cached('resident:0')), 'new');
-      await f.tick(30000);
-      expect(f.tails.length, 1);
-    },
-  );
+  for (final empty in [false, true]) {
+    test(
+      'T10 ${empty ? 'empty' : 'key-bearing'} cursor transaction failure publishes neither invalidation nor completion',
+      () async {
+        await f.seed(1);
+        await f.open();
+        await f.tick();
+        f.tails.single.bootstrap();
+        await flush();
+        await f.tick();
+        f.store.failCursor = true;
+        if (empty) {
+          f.tails.single.frames.add(wire.WatchChangesResponse(cursor: [2]));
+        } else {
+          f.tails.single.invalidate('resident:0', cursor: 2);
+        }
+        await flush();
+        expect(await f.cursor(), [1]);
+        expect((await f.session!.syncStatus.first).pause, SyncPause.storage);
+        expect(_text(await f.cached('resident:0')), 'new');
+        await f.tick(30000);
+        expect(f.tails.length, 1);
+      },
+    );
+  }
 
   test(
     'T11 absent source polls boundedly; strict-live remains unsupported',
@@ -914,7 +1094,13 @@ void main() {
           ]),
         );
         for (var i = 0; i < 5; i++) {
-          f.tails.last.invalidate('resident:0', cursor: ++cursor);
+          if (i.isEven) {
+            f.tails.last.frames.add(
+              wire.WatchChangesResponse(cursor: [++cursor]),
+            );
+          } else {
+            f.tails.last.invalidate('resident:0', cursor: ++cursor);
+          }
           await flush();
           await f.tick(100);
           expect(f.vertexReads, hasLength(32));
@@ -960,7 +1146,13 @@ void main() {
         );
         // The end-of-range floor also survives hot events and wraps only on expiry.
         for (var i = 0; i < 9; i++) {
-          f.tails.last.invalidate('resident:0', cursor: ++cursor);
+          if (i.isEven) {
+            f.tails.last.frames.add(
+              wire.WatchChangesResponse(cursor: [++cursor]),
+            );
+          } else {
+            f.tails.last.invalidate('resident:0', cursor: ++cursor);
+          }
           await flush();
           await f.tick(100);
           expect(f.vertexReads, hasLength(33));

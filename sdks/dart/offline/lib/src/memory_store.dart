@@ -401,10 +401,12 @@ final class _MemoryTransaction
       }
     }
     if (frame.cursor != null) partition.scopedCursor = frame.cursor;
-    if (frame.keys.isNotEmpty) invalidateTraversals(partitionId);
-    partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
+    if (frame.keys.isNotEmpty) {
+      invalidateTraversals(partitionId);
+      partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
+      observationInvalidated.add(partitionId);
+    }
     _changedPartitions.add(partitionId);
-    observationInvalidated.add(partitionId);
   }
 
   @override

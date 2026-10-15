@@ -131,8 +131,10 @@ this owner contract. Installation/backup continuity must be supplied independent
 Public scoped CDC uses `scopedChangeCursor`, `applyScopedChangeFrame` and
 `resetScopedChangeCursor`. Schema 5 stores one bounded opaque BLOB checkpoint
 in an indexed row per partition. Frame invalidation and optional completion
-cursor commit together; partial frames advance the read epoch but preserve the
-prior checkpoint. A gap/bootstrap hides confirmed values as bounded key-only
+cursor commit together; key-bearing partial frames advance the read epoch but
+preserve the prior checkpoint. Empty progress persists its cursor and ordinary
+commit notification without advancing read/derived epochs or renewing cache.
+A gap/bootstrap hides confirmed values as bounded key-only
 Unknown work, with indexed scans and epoch-checked plural completion. Outbox
 records and receipt dispatch evidence survive unchanged; wipe removes both CDC
 protocols and recovery state.
