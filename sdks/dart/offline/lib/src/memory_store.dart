@@ -622,6 +622,10 @@ final class _MemoryTransaction
         existing ?? OfflineChangeProgress(completedSequence: BigInt.zero);
     final advanced = progress.accept(chunk);
     if (advanced == null) return;
+    final nextTraversalEpoch =
+        chunk.keys.isNotEmpty || chunk.vertexPrefixes.isNotEmpty
+        ? _checkedIncrement(partition.traversalEpoch)
+        : partition.traversalEpoch;
     for (final key in chunk.keys) {
       partition.cache.remove(key.canonical);
     }
@@ -632,6 +636,7 @@ final class _MemoryTransaction
             chunk.vertexPrefixes.any(record.key.vertexKey!.startsWith),
       );
     }
+    partition.traversalEpoch = nextTraversalEpoch;
     partition.changeProgress[chunk.origin] = advanced;
     partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
     _changedPartitions.add(partitionId);
@@ -649,9 +654,11 @@ final class _MemoryTransaction
         offlineMaxChangeOriginsPerStore) {
       throw const OfflineCapacityException();
     }
+    final nextTraversalEpoch = _checkedIncrement(partition.traversalEpoch);
     for (final record in partition.cache.values) {
       partition.unknownResidents[record.key.canonical] = record.key;
     }
+    partition.traversalEpoch = nextTraversalEpoch;
     partition.cache.clear();
     _trimUnknownResidents(_state, partitionId, _limits);
     partition.scopedCursor = null;

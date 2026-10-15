@@ -235,6 +235,41 @@ void traversalContract({
     });
   });
 
+  for (final event in ['empty', 'key', 'prefix', 'reset']) {
+    test('T04 legacy store semantic invalidation: $event', () async {
+      await h.open();
+      await h.read();
+      final epoch = (await h.record())!.validityEpoch;
+      await h.store.transaction((tx) async {
+        if (event == 'reset') {
+          await tx.resetChangeCursor(h.scope, OfflineChangeCursor(const {}));
+        } else {
+          await tx.applyChangeChunk(
+            h.scope,
+            OfflineChangeChunk(
+              origin: '0123456789abcdef0123456789abcdef',
+              sequence: BigInt.one,
+              chunkIndex: 0,
+              isLast: true,
+              keys: event == 'key'
+                  ? [OfflineEntityKey.vertex('unreturned')]
+                  : [],
+              vertexPrefixes: event == 'prefix' ? ['unreturned:'] : [],
+            ),
+          );
+        }
+      });
+      expect(
+        await h.store.transaction((tx) => tx.traversalValidityEpoch(h.scope)),
+        epoch + (event == 'empty' ? 0 : 1),
+      );
+      expect(
+        (await h.read(ReadSource.cacheOnly)).confirmed.state,
+        event == 'empty' ? ConfirmedState.present : ConfirmedState.unknown,
+      );
+    });
+  }
+
   group('T05 original deadlines and whole Graph expiry', () {
     for (final age in [30, 59, 60]) {
       test('historical boundary $age seconds', () async {
@@ -501,6 +536,113 @@ void traversalContract({
   });
 
   group('T09 codec and independent storage bounds', () {
+    test(
+      'persisted query keys use parent binary32 equivalence and family identity',
+      () async {
+        await h.open();
+        final queries = [
+          const PprOptions(restartProbability: 0.1),
+          const PprOptions(restartProbability: 0.10000000149011612),
+          const PprOptions(restartProbability: 0.10000002),
+          const BfsOptions(step: 1, fanOut: 2),
+          const LocalCommunityOptions(),
+        ];
+        final keys = <String>[];
+        for (final options in queries) {
+          final query = LanternTraversalQuery('seed', traversal: options);
+          await h.data!.illuminate('seed', traversal: options);
+          final row = await h.store.transaction(
+            (tx) => tx.getTraversal(h.scope, query.canonicalKey),
+          );
+          expect(row!.queryKey, query.canonicalKey);
+          keys.add(row.queryKey);
+        }
+        expect(keys[0], keys[1]);
+        expect(keys.toSet(), hasLength(4));
+      },
+    );
+    for (final size in ['vertices', 'encoded-bytes']) {
+      test('result $size capacity fails typed and untruncated', () async {
+        h.graph = size == 'vertices'
+            ? wire.Graph(
+                vertices: List.generate(4097, (i) => wire.Vertex(key: 'v$i')),
+              )
+            : wire.Graph(
+                vertices: [
+                  wire.Vertex(key: 'seed', bytes: List.filled(800000, 7)),
+                ],
+              );
+        await h.open();
+        await expectLater(
+          h.read(),
+          throwsA(
+            isA<LanternDataException>().having(
+              (error) => error.reason,
+              'reason',
+              DataFailure.capacity,
+            ),
+          ),
+        );
+        expect(await h.record(), isNull);
+      });
+    }
+    test(
+      'retained codec preserves exact Graph values and synthetic edge TTL',
+      () async {
+        h.graph = wire.Graph(
+          vertices: [
+            wire.Vertex(key: 'nil', nil: true),
+            wire.Vertex(key: 'unset'),
+            wire.Vertex(key: 'bytes', bytes: [0, 255, 7]),
+            wire.Vertex(key: 'float', float32: 0.1),
+          ],
+          edges: [
+            wire.Edge(
+              tail: 'nil',
+              head: 'bytes',
+              weight: 0.1,
+              expiration: Timestamp.fromDateTime(
+                h.now.add(const Duration(seconds: 20)),
+              ),
+            ),
+          ],
+        );
+        await h.open();
+        final server = await h.read();
+        final local = await h.read(ReadSource.cacheOnly);
+        // A synthetic Graph pair cannot satisfy an exact entity-cache read.
+        expect(
+          (await h.data!.getEdge(
+            const EdgeRef('nil', 'bytes'),
+            options: const GetOptions(source: ReadSource.cacheOnly),
+          )).confirmed.state,
+          ConfirmedState.unknown,
+        );
+        expect(local.confirmed.value!.vertices['nil']!.value, isA<NilValue>());
+        expect(
+          local.confirmed.value!.vertices['unset']!.value,
+          isA<UnsetValue>(),
+        );
+        expect(
+          (local.confirmed.value!.vertices['bytes']!.value as BytesValue).value,
+          [0, 255, 7],
+        );
+        expect(
+          local.confirmed.value!.allEdges.single.weight,
+          server.confirmed.value!.allEdges.single.weight,
+        );
+        expect(
+          local.confirmed.value!.allEdges.single.expiration,
+          server.confirmed.value!.allEdges.single.expiration,
+        );
+        final original = OfflineTraversalCodec.encode((await h.record())!);
+        expect(
+          OfflineTraversalCodec.encode(OfflineTraversalCodec.decode(original)),
+          original,
+        );
+      },
+    );
+
     test(
       'strict result codec rejects duplicate identities, fields and rewritten deadlines',
       () async {

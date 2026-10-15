@@ -323,4 +323,62 @@ void main() {
       await direct.close();
     },
   );
+  test(
+    'S4 hot and slow Traversal queries progress over 100 fixed turns',
+    () async {
+      final held = Completer<int>();
+      var slow = 0, hot = 0, ordinary = 0, reconciled = 0;
+      final subscriptions = <StreamSubscription<int>>[];
+      for (final key in ['slow', 'hot', 'ordinary']) {
+        subscriptions.add(
+          coordinator
+              .observe<int>(
+                key,
+                initial: (_) => 0,
+                traversal: key != 'ordinary',
+                load: (_) {
+                  if (key == 'slow') {
+                    slow++;
+                    if (slow == 1) return held.future;
+                  } else if (key == 'hot') {
+                    hot++;
+                  } else {
+                    ordinary++;
+                  }
+                  return Future.value(1);
+                },
+                markLost: (value, _) => value,
+                interval: const Duration(seconds: 1),
+              )
+              .listen((_) {}),
+        );
+      }
+      for (var turn = 0; turn < 100; turn++) {
+        coordinator.invalidateKey('hot');
+        if (turn == 10) {
+          runtime.enqueue('receipt-progress', OfflineSessionLane.reconcile, (
+            _,
+          ) async {
+            reconciled++;
+          });
+        }
+        if (turn == 25) {
+          expect(ordinary, greaterThan(0));
+          expect(reconciled, 1);
+          held.complete(1);
+        }
+        await clock.advance(const Duration(milliseconds: 50));
+        expect(clock.active, lessThanOrEqualTo(1));
+        expect(runtime.jobCount, lessThanOrEqualTo(4));
+      }
+      expect(slow, greaterThan(1));
+      expect(hot, greaterThan(1));
+      expect(hot, lessThanOrEqualTo(101));
+      for (final sub in subscriptions) {
+        await sub.cancel();
+      }
+      expect(runtime.jobCount, 0);
+      expect(clock.active, 0);
+    },
+  );
 }

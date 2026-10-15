@@ -13,12 +13,27 @@ import 'package:lantern_client/src/gen/google/protobuf/timestamp.pb.dart';
 import 'package:lantern_client/src/gen/graph/v1/graph.connect.spec.dart';
 import 'package:lantern_client/src/gen/graph/v1/graph.pb.dart' as wire;
 import 'package:lantern_client_offline/lantern_client_offline.dart';
+import 'package:lantern_client_offline/lantern_client_offline_adapter.dart';
 
 import 'package:test/test.dart';
 
 part 'support/traversal_contract.dart';
+part 'support/traversal_close_contract.dart';
+part 'support/traversal_limits_contract.dart';
 
 void main() {
+  traversalLimitsContract(
+    (limits) async => InMemoryOfflineStore(limits: limits),
+  );
+  traversalCloseContract(
+    create: (automatic) async =>
+        automatic ? MemoryOfflineStore() : InMemoryOfflineStore(),
+    reopen: (store) async => store is MemoryOfflineStore
+        ? store
+        : InMemoryOfflineStore.fromSnapshot(
+            await (store as InMemoryOfflineStore).exportSnapshot(),
+          ),
+  );
   traversalContract(
     create: () async => InMemoryOfflineStore(),
     reopen: (store) async => InMemoryOfflineStore.fromSnapshot(

@@ -61,6 +61,7 @@ final class DirectLanternDataClient implements LanternDataClient {
   void Function()? _adapterAuthority;
   void Function(LanternException? failure)? _adapterEndpoint;
   bool _adapterRead = false;
+  bool _schedulerOwnsReadPermits = false;
   @override
   final LanternSessionBinding binding;
 
@@ -171,10 +172,12 @@ final class DirectLanternDataClient implements LanternDataClient {
       });
       void Function()? release, releaseTraversal;
       try {
-        if (traversal && !_adapterRead) {
+        if (traversal && !_schedulerOwnsReadPermits) {
           releaseTraversal = await _traversalPermits.acquire(token);
         }
-        if (!_adapterRead) release = await _readPermits.acquire(token);
+        if (!_schedulerOwnsReadPermits) {
+          release = await _readPermits.acquire(token);
+        }
         final remaining = timeout - started.elapsed;
         if (remaining <= Duration.zero) {
           timedOut = true;

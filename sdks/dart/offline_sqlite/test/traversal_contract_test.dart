@@ -15,10 +15,13 @@ import 'package:lantern_client/src/gen/google/protobuf/timestamp.pb.dart';
 import 'package:lantern_client/src/gen/graph/v1/graph.connect.spec.dart';
 import 'package:lantern_client/src/gen/graph/v1/graph.pb.dart' as wire;
 import 'package:lantern_client_offline/lantern_client_offline.dart';
+import 'package:lantern_client_offline/lantern_client_offline_adapter.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 part '../../offline/test/support/traversal_contract.dart';
+part '../../offline/test/support/traversal_close_contract.dart';
+part '../../offline/test/support/traversal_limits_contract.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -36,6 +39,43 @@ void main() {
     }
     await directory.delete(recursive: true);
   });
+
+  traversalLimitsContract((limits) async {
+    final store = await SqliteOfflineStore.open(
+      path: '${directory.path}/limits-${stores.length}.db',
+      databaseFactory: databaseFactoryFfi,
+      limits: limits,
+    );
+    stores.add(store);
+    return store;
+  });
+
+  traversalCloseContract(
+    create: (automatic) async {
+      final path = '${directory.path}/close-${stores.length}.db';
+      final store = automatic
+          ? await SqliteOfflineStore.openAutomatic(
+              path: path,
+              databaseFactory: databaseFactoryFfi,
+            )
+          : await SqliteOfflineStore.open(
+              path: path,
+              databaseFactory: databaseFactoryFfi,
+            );
+      stores.add(store);
+      return store;
+    },
+    reopen: (previous) async {
+      final old = previous as SqliteOfflineStore;
+      await old.close();
+      final store = await SqliteOfflineStore.open(
+        path: old.path,
+        databaseFactory: databaseFactoryFfi,
+      );
+      stores.add(store);
+      return store;
+    },
+  );
 
   test(
     'SQLite7 migration is atomic and preserves pending bytes; downgrade fails',

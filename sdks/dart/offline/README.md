@@ -158,6 +158,16 @@ attempt to retain; it never revives old rows or rewrites their deadlines. Storag
 failure stays explicit and blocked. This does not detect an unobserved rollback
 across process death or establish backup/installation continuity.
 
+Normal last-owner `close()` first stops admission and joins active work, then
+persists any already-detected rollback under the retained local control fence
+before releasing ownership. Parallel and repeated closes share the same result.
+A failed or uncertain commit fails close and retains the automatic owner; it
+cannot be treated as a successful cleanup or safe reopen. Standalone close also
+reports that failure and leaves its caller-owned Store and transport to the
+caller. Discarding a failed object or forcibly losing the process does not prove
+that its in-memory invalidation was persisted. Cleanup does not acquire tokens,
+require an available read route, renew deadlines, or retry in the background.
+
 The derived lane has independent LRU bounds:32 results/8MiB per scope and128
 results/32MiB globally. `OfflineStoreLimits` may lower these ceilings. Each
 encoded record, including timestamp headroom, is at most1MiB with4096 vertices

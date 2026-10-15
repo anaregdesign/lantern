@@ -256,6 +256,7 @@ final class OfflineLanternDataClient
   /// Qualified automatic-owner delivery port, excluded from ordinary CRUD semantics.
   late final OfflineMutationDelivery _delivery;
   bool _closed = false, _invalid = false, _storageBlocked = false;
+  Future<void>? _closing;
   int _sequence = 0;
   // Weak metadata travels with an immutable snapshot until the coordinator
   // accepts it. Rejected captures cannot update the active query's deadline.
@@ -670,16 +671,41 @@ final class OfflineLanternDataClient
     ),
   );
   @override
-  /// Settles this lifetime's process-local observers and releases bounded registrations.
-  Future<void> close() async {
-    if (_closed) return;
+  /// Joins this lifetime and persists detected clock invalidation before success.
+  /// A failed close stays failed; caller-owned storage must not be treated as
+  /// safely reopened merely because the public lifetime is already closed.
+  Future<void> close() {
+    if (_closing != null) return _closing!;
     _closed = true;
+    _traversalClock.onChanged = null;
+    return _closing = _close().catchError((Object error, StackTrace stack) {
+      _storageBlocked = true;
+      if (error is OfflineException || error is LanternDataException) {
+        Error.throwWithStackTrace(error, stack);
+      }
+      throw const LanternDataException(DataFailure.storageBlocked);
+    });
+  }
+
+  Future<void> _close() async {
     await _delivery.close();
     await _completion.close();
     await _observations.close();
     await _changes.cancel();
     await _direct.close();
-    await _clockFlush;
+    try {
+      await _clockFlush;
+    } on OfflineDisposedException {
+      // Ordinary lifetime cancellation cannot acknowledge the clock debt.
+    } on OfflineWorkInterruptedException {
+      // The closing-only transaction below settles any uncommitted revision.
+    } on LanternDataException catch (error) {
+      if (error.reason != DataFailure.closed) rethrow;
+    }
+    // Join accepted local transactions. Their post-commit continuations check
+    // the closed lifetime before sampling raw time or admitting further work.
+    await store.transaction((_) async {});
+    await _settleTraversalClockOnClose();
   }
 }
 

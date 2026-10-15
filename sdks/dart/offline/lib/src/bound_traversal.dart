@@ -16,13 +16,13 @@ extension _BoundTraversal on OfflineLanternDataClient {
   }
 
   void _traversalClockChanged() {
-    if (_closed || _clockQueued) return;
+    if (_closed || _session?.ended == true || _clockQueued) return;
     _clockQueued = true;
     // The raw clock is also sampled by the runtime's central alarm before it
     // can rearm a clamped deadline. Defer all I/O outside that clock callback.
     scheduleMicrotask(() {
       _clockQueued = false;
-      if (_closed) return;
+      if (_closed || _session?.ended == true) return;
       _observations.invalidate();
       final session = _session;
       if (session != null) {
@@ -50,6 +50,61 @@ extension _BoundTraversal on OfflineLanternDataClient {
       _clockFlush ??= _traversalTransaction<void>(
         (_) async {},
       ).whenComplete(() => _clockFlush = null);
+
+  // Subtracts only derived eligibility under retained local control. This does
+  // not reopen the ordinary read fence or require network/route credentials.
+  Future<void> _settleTraversalClockOnClose() async {
+    if (!_traversalClock.invalidationPending) return;
+    final revision = _traversalClock.rollbackRevision;
+    final highWater = _traversalClock.highWater;
+    void control() {
+      _session?._checkControlLifetime();
+      if (_invalid || _client.isClosed || !authorityCurrent()) {
+        throw const LanternDataException(DataFailure.closed);
+      }
+      if (_session == null &&
+          binding.expiresAt != null &&
+          !highWater.isBefore(binding.expiresAt!)) {
+        throw const LanternDataException(DataFailure.closed);
+      }
+    }
+
+    try {
+      control();
+      await store.transaction((tx) async {
+        Future<void> scope() async {
+          control();
+          final currentGeneration = await tx.generation(partitionId);
+          control();
+          final currentAuthority = await tx.authorityBinding(partitionId);
+          control();
+          if (currentGeneration != generation ||
+              currentAuthority != binding.authorityBinding) {
+            throw const LanternDataException(DataFailure.closed);
+          }
+        }
+
+        await scope();
+        await tx.effectiveTime(partitionId, highWater);
+        control();
+        await tx.invalidateTraversals(partitionId);
+        await scope();
+      });
+      control();
+      _traversalClock.committed(revision);
+    } on OfflineException {
+      // The shared owner's ended gate deliberately suppresses scheduling. Keep
+      // failure here; failed close must not reach owner/resource release.
+      _storageBlocked = true;
+      rethrow;
+    } on LanternDataException {
+      _storageBlocked = true;
+      rethrow;
+    } catch (_) {
+      _storageBlocked = true;
+      throw const LanternDataException(DataFailure.storageBlocked);
+    }
+  }
 
   Future<T> _traversalTransaction<T>(
     Future<T> Function(OfflineStoreTransaction) action,
@@ -88,8 +143,8 @@ extension _BoundTraversal on OfflineLanternDataClient {
         return result;
       });
       _traversalClock.committed(invalidated);
-      _traversalClock.sample();
       _fence();
+      _traversalClock.sample();
       return value;
     } on OfflineCapacityException {
       rethrow;

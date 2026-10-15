@@ -1244,7 +1244,6 @@ final class _SqlTransaction
         throw const OfflineCapacityException();
       }
     }
-    await invalidateTraversals(partitionId);
     await resetChangeCursor(partitionId, OfflineChangeCursor(const {}));
     await sql.delete(
       'cdc_scoped',
@@ -1480,6 +1479,9 @@ final class _SqlTransaction
         : _progress(rows.single);
     final next = previous.accept(chunk);
     if (next == null) return;
+    if (chunk.keys.isNotEmpty || chunk.vertexPrefixes.isNotEmpty) {
+      await invalidateTraversals(partitionId);
+    }
     if (rows.isEmpty) {
       final count =
           (await sql.rawQuery(
@@ -1550,6 +1552,7 @@ final class _SqlTransaction
         offlineMaxChangeOriginsPerStore) {
       throw const OfflineCapacityException();
     }
+    await invalidateTraversals(partitionId);
     await sql.rawInsert(
       'INSERT OR IGNORE INTO recovery(partition_id,entity_key,reserved_bytes) '
       'SELECT partition_id,entity_key,length(CAST(entity_key AS BLOB))+32 '

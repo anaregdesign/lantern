@@ -42,7 +42,8 @@ abstract final class LanternAdapterReads {
   }) => DirectLanternDataClient(client, binding: binding)
     .._adapterEndpoint = onEndpoint
     .._adapterAuthority = checkAuthority
-    .._adapterRead = schedulerOwnsPermits;
+    .._adapterRead = true
+    .._schedulerOwnsReadPermits = schedulerOwnsPermits;
 }
 
 /// Resource class of a cache-neutral observation load.
