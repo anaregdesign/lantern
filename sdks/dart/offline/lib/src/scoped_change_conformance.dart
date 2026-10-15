@@ -7,6 +7,7 @@ import 'codec.dart';
 import 'conformance.dart';
 import 'errors.dart';
 import 'scoped_change_store.dart';
+import 'store.dart';
 import 'types.dart';
 
 /// Verifies opaque public CDC transactions across the real reopen boundary.
@@ -17,6 +18,8 @@ Future<void> runScopedChangeStoreConformanceSuite(
   var store = await factory();
   const partition = 'scoped-change-conformance';
   final first = OfflineScopedChangeCursor([1, 0, 255]);
+  final progress = OfflineScopedChangeCursor([2, 0, 254]);
+  final terminal = OfflineScopedChangeCursor([3, 0, 253]);
   final last = OfflineScopedChangeCursor([9, 8, 7]);
   final now = DateTime.utc(2026);
   Future<void> cache(String key) => store.transaction((tx) async {
@@ -43,6 +46,30 @@ Future<void> runScopedChangeStoreConformanceSuite(
   Future<List<int>?> cursor() => store.transaction(
     (tx) async => (await tx.scopedChangeCursor(partition))?.toBytes(),
   );
+  Future<(int, int)> epochs() => store.transaction(
+    (tx) async => (
+      await tx.changeEpoch(partition),
+      await tx.traversalValidityEpoch(partition),
+    ),
+  );
+  Future<void> notified(
+    Future<void> Function() action, {
+    required bool invalidated,
+  }) async {
+    final changes = <OfflineStoreChange>[];
+    final subscription = store.changes(partition).listen(changes.add);
+    try {
+      await action();
+      _require(
+        changes.length == 1 &&
+            changes.single.observationInvalidated == invalidated,
+        'public frame retains one commit notification with the correct invalidation',
+      );
+    } finally {
+      await subscription.cancel();
+    }
+  }
+
   final receiptEpoch = ReceiptEpoch(Uint8List.fromList(List.filled(16, 1)));
   final receiptPolicy = OfflineReceiptPolicy(
     deploymentEpoch: receiptEpoch,
@@ -74,6 +101,7 @@ Future<void> runScopedChangeStoreConformanceSuite(
   );
   await cache('first');
   await cache('last');
+  await cache('unresolved');
   final retained = await store.transaction((tx) async {
     final record = await tx.enqueue(
       OfflineOutboxRecord(
@@ -112,7 +140,16 @@ Future<void> runScopedChangeStoreConformanceSuite(
     );
     return OfflineCodec.encodeOutboxRecord(record);
   });
-  await store.transaction((tx) => tx.resetScopedChangeCursor(partition, first));
+  final beforeReset = await epochs();
+  await notified(
+    () =>
+        store.transaction((tx) => tx.resetScopedChangeCursor(partition, first)),
+    invalidated: true,
+  );
+  _require(
+    await epochs() == (beforeReset.$1 + 1, beforeReset.$2 + 1),
+    'empty bootstrap reset advances both invalidation epochs',
+  );
   try {
     await store.transaction(
       (tx) => tx.applyChangeChunk(
@@ -150,21 +187,81 @@ Future<void> runScopedChangeStoreConformanceSuite(
       'revalidation completes',
     );
   }
+  final beforeProgress = await epochs();
+  Future<String> lastCacheBytes() => store.transaction(
+    (tx) async => OfflineCodec.encodeCacheRecord(
+      (await tx.getCache(partition, const OfflineEntityKey.vertex('last')))!,
+    ),
+  );
+  final history = await lastCacheBytes();
+  await notified(
+    () => store.transaction(
+      (tx) => tx.applyScopedChangeFrame(
+        partition,
+        OfflineScopedChangeFrame(cursor: progress),
+      ),
+    ),
+    invalidated: false,
+  );
+  store = await reopen(store);
+  _require(
+    _equal(await cursor(), progress.toBytes()) &&
+        await epochs() == beforeProgress &&
+        await lastCacheBytes() == history &&
+        await cached('first') &&
+        await store.transaction(
+          (tx) => tx.hasUnknownResident(
+            partition,
+            const OfflineEntityKey.vertex('unresolved'),
+          ),
+        ) &&
+        await store.transaction(
+              (tx) async => OfflineCodec.encodeOutboxRecord(
+                (await tx.getOutbox(partition, 'pending-record'))!,
+              ),
+            ) ==
+            retained,
+    'empty progress persists without changing epochs, history, Unknown or pending bytes',
+  );
   final partial = OfflineScopedChangeFrame(
     keys: const [OfflineEntityKey.vertex('first')],
   );
-  await store.transaction(
-    (tx) => tx.applyScopedChangeFrame(partition, partial),
+  await notified(
+    () => store.transaction(
+      (tx) => tx.applyScopedChangeFrame(partition, partial),
+    ),
+    invalidated: true,
   );
   _require(
     !await cached('first') && await cached('last'),
     'partial invalidates exact key',
   );
-  _require(_equal(await cursor(), first.toBytes()), 'partial keeps cursor');
+  _require(_equal(await cursor(), progress.toBytes()), 'partial keeps cursor');
+  _require(
+    await epochs() == (beforeProgress.$1 + 1, beforeProgress.$2 + 1),
+    'nonempty partial advances both epochs',
+  );
   store = await reopen(store);
   _require(
-    !await cached('first') && _equal(await cursor(), first.toBytes()),
+    !await cached('first') && _equal(await cursor(), progress.toBytes()),
     'partial survives reopen',
+  );
+  final afterPartial = await epochs();
+  await notified(
+    () => store.transaction(
+      (tx) => tx.applyScopedChangeFrame(
+        partition,
+        OfflineScopedChangeFrame(cursor: terminal),
+      ),
+    ),
+    invalidated: false,
+  );
+  store = await reopen(store);
+  _require(
+    _equal(await cursor(), terminal.toBytes()) &&
+        await epochs() == afterPartial &&
+        await lastCacheBytes() == history,
+    'empty terminal checkpoint does not repeat partial invalidation or renew history',
   );
   final finalFrame = OfflineScopedChangeFrame(
     keys: const [OfflineEntityKey.vertex('last')],
@@ -179,11 +276,24 @@ Future<void> runScopedChangeStoreConformanceSuite(
     /* deliberate transaction rollback */
   }
   _require(
-    await cached('last') && _equal(await cursor(), first.toBytes()),
+    await cached('last') &&
+        _equal(await cursor(), terminal.toBytes()) &&
+        await epochs() == afterPartial,
     'rollback includes cache and cursor',
   );
-  await store.transaction(
-    (tx) => tx.applyScopedChangeFrame(partition, finalFrame),
+  await notified(
+    () => store.transaction((tx) async {
+      await tx.applyScopedChangeFrame(partition, finalFrame);
+      await tx.applyScopedChangeFrame(
+        partition,
+        OfflineScopedChangeFrame(cursor: last),
+      );
+    }),
+    invalidated: true,
+  );
+  _require(
+    await epochs() == (afterPartial.$1 + 1, afterPartial.$2 + 1),
+    'empty progress preserves accumulated invalidation in the same transaction',
   );
   store = await reopen(store);
   _require(

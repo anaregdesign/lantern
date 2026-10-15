@@ -340,6 +340,10 @@ void traversalContract({
             tx.resetScopedChangeCursor(h.scope, OfflineScopedChangeCursor([1])),
       );
       await h.read();
+      final record = (await h.record())!;
+      h.now = h.now.add(const Duration(seconds: 35));
+      final before = await h.read(ReadSource.cacheOnly);
+      expect(before.confirmed.freshness, ObservationFreshness.historical);
       await h.store.transaction(
         (tx) => tx.applyScopedChangeFrame(
           h.scope,
@@ -349,10 +353,16 @@ void traversalContract({
           ),
         ),
       );
-      expect(
-        (await h.read(ReadSource.cacheOnly)).confirmed.state,
-        ConfirmedState.present,
-      );
+      final after = await h.read(ReadSource.cacheOnly);
+      final retained = (await h.record())!;
+      expect(after.confirmed.state, ConfirmedState.present);
+      expect(after.confirmed.freshness, ObservationFreshness.historical);
+      expect(after.confirmed.observedAt, before.confirmed.observedAt);
+      expect(after.observationMode, before.observationMode);
+      expect(retained.validityEpoch, record.validityEpoch);
+      expect(retained.freshUntil, record.freshUntil);
+      expect(retained.historyUntil, record.historyUntil);
+      expect(h.calls, 1);
     });
   });
 

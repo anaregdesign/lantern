@@ -47,6 +47,7 @@ void main() {
         throwsA(isA<OfflineCanceledException>()),
       );
       await _wait(
+        'legacy checkpoint established',
         () async => await store.transaction(
           (tx) async =>
               await tx.scopedChangeCursor('account') != null &&
@@ -67,6 +68,7 @@ void main() {
         VertexInput(key: 'orders:resident', value: VertexValue.string('new')),
       ]);
       await _wait(
+        'legacy resident invalidated',
         () async =>
             (await repository.readVertex(
               'account',
@@ -76,6 +78,7 @@ void main() {
             OfflineReadState.unknown,
       );
       await _wait(
+        'legacy cursor advanced',
         () async =>
             (await store.transaction(
               (tx) => tx.scopedChangeCursor('account'),
@@ -190,21 +193,28 @@ void main() {
         String? current() => values.isEmpty
             ? null
             : (values.last.confirmed.value?.value as StringValue?)?.value;
-        await _wait(() async => current() == 'initial');
+        await _wait('initial observation', () async => current() == 'initial');
         await writer.putVertex(
           VertexInput(key: key, value: const StringValue('external')),
         );
         // The ten-minute polling deadline cannot explain this finite refresh.
         // The application never calls Get, Sync, consumeScopedChanges or drain.
-        await _wait(() async => current() == 'external');
+        await _wait(
+          'external CDC refresh',
+          () async => current() == 'external',
+        );
         expect(values.last.observationMode, ObservationMode.pollingObservation);
         final ticket = await session.mutations.submit(
           MutationRequest.putVertices([
             VertexInput(key: key, value: const StringValue('local')),
           ]),
         );
-        await _wait(() async => current() == 'local');
         await _wait(
+          'local mutation observation',
+          () async => current() == 'local',
+        );
+        await _wait(
+          'local mutation handled',
           () async =>
               (await session.mutations.getStatus(
                 ticket.reference.operationId,
@@ -216,7 +226,10 @@ void main() {
           VertexInput(key: key, value: const StringValue('while-suspended')),
         );
         await session.resume();
-        await _wait(() async => current() == 'while-suspended');
+        await _wait(
+          'resumed CDC refresh',
+          () async => current() == 'while-suspended',
+        );
       },
       skip: url == null
           ? 'Run through the real OIDC tests/integration fixture.'
@@ -243,6 +256,7 @@ void main() {
       final status = session.syncStatus.listen(statuses.add);
       addTearDown(status.cancel);
       await _wait(
+        'permission pause',
         () async => statuses.any((value) => value.pause == SyncPause.policy),
       );
       final value = await session.getVertex('orders:auto:denied');
@@ -293,10 +307,10 @@ LanternChangeSource _source(LanternClient client) {
   );
 }
 
-Future<void> _wait(Future<bool> Function() ready) async {
+Future<void> _wait(String phase, Future<bool> Function() ready) async {
   for (var i = 0; i < 400; i++) {
     if (await ready()) return;
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
-  fail('public CDC state did not become ready');
+  fail('public CDC phase $phase did not become ready');
 }
