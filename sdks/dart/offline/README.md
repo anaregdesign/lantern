@@ -30,7 +30,7 @@ expiry and watches while foreground. Matching handles share by refcount. The
 platform bridge calls `suspend`/`resume` and supplies newly verified credential
 events; applications use the same CRUD vocabulary and do not schedule passes.
 `SqliteOfflineStore.openSession` supplies the native exclusive owner for durable
-sessions. See [runtime boundaries](docs/session-runtime-development.md).
+sessions. See [runtime boundaries](https://github.com/anaregdesign/lantern/blob/main/sdks/dart/offline/docs/session-runtime-development.md).
 `transferAllowed` defaults true and can be changed by platform policy;
 `restoreHeld` must reflect the installation/backup continuity decision. Auth
 refresh never clears a restore, policy or storage hold. Physical, hosted-archive
