@@ -506,11 +506,11 @@ final class OfflineSessionRuntime {
     }
   }
 
-  bool _scopePermit(OfflineSessionLane lane) =>
+  bool _scopePermit(OfflineSessionLane lane, DateTime cutoff) =>
       (lane == OfflineSessionLane.local
           ? _locals == 0
           : !_networkPaused &&
-                !(_networkNotBefore?.isAfter(_now()) ?? false)) &&
+                !(_networkNotBefore?.isAfter(cutoff) ?? false)) &&
       (!_usesSend(lane) || _sends < maxSends) &&
       (!_usesRead(lane) || _reads < maxReads) &&
       (lane != OfflineSessionLane.traversal ||
@@ -519,16 +519,17 @@ final class OfflineSessionRuntime {
   void _pump() {
     if (_closed || _suspended || _pumping) return;
     _pumping = true;
+    DateTime? examinedThrough;
     try {
       _checkOwner();
-      final now = _now();
+      final now = examinedThrough = _now();
       while (true) {
         _Job? selected;
         // Weighted RR 2/2/2/1 with FIFO rotation within each finite lane.
         for (var turn = 0; turn < _weights.length; turn++) {
           final lane = _weights[_laneCursor];
           _laneCursor = (_laneCursor + 1) % _weights.length;
-          if (!_scopePermit(lane)) continue;
+          if (!_scopePermit(lane, now)) continue;
           final queue = _queues[lane]!;
           for (var i = 0, count = queue.length; i < count; i++) {
             final job = queue.removeFirst();
@@ -559,7 +560,7 @@ final class OfflineSessionRuntime {
       onError(error, stack);
     } finally {
       _pumping = false;
-      _arm(wakeDue: false);
+      _arm(wakeDue: false, examinedThrough: examinedThrough);
     }
   }
 
@@ -634,7 +635,7 @@ final class OfflineSessionRuntime {
     if (job.lane != OfflineSessionLane.local) onNetworkActivity?.call();
   }
 
-  void _arm({bool wakeDue = true}) {
+  void _arm({bool wakeDue = true, DateTime? examinedThrough}) {
     _alarm?.cancel();
     _alarm = null;
     final epoch = ++_alarmEpoch;
@@ -656,7 +657,12 @@ final class OfflineSessionRuntime {
           : job.due!;
       if (!due.isAfter(now)) {
         budget._wait(this);
-        if (wakeDue) first = now;
+        // A deadline crossed during the pump has not been examined yet.
+        // Wake once; the next pump leaves permit-blocked work to release events.
+        if (wakeDue ||
+            (examinedThrough != null && due.isAfter(examinedThrough))) {
+          first = now;
+        }
         continue;
       }
       if (first == null || due.isBefore(first)) first = due;
