@@ -1964,6 +1964,8 @@ void main() {
         ..remove('operations')
         ..remove('replayPausedForAuth')
         ..remove('changeProgress')
+        ..remove('traversalEpoch')
+        ..remove('traversals')
         ..remove('pausedCredentialGeneration')
         ..remove('replayPausedForPolicy')
         ..remove('timeHighWater')
@@ -2321,6 +2323,8 @@ void main() {
         ..remove('operations')
         ..remove('replayPausedForAuth')
         ..remove('changeProgress')
+        ..remove('traversalEpoch')
+        ..remove('traversals')
         ..remove('pausedCredentialGeneration')
         ..remove('replayPausedForPolicy')
         ..remove('timeHighWater')
@@ -2402,6 +2406,8 @@ void main() {
           ..remove('operations')
           ..remove('replayPausedForAuth')
           ..remove('changeProgress')
+          ..remove('traversalEpoch')
+          ..remove('traversals')
           ..remove('pausedCredentialGeneration')
           ..remove('replayPausedForPolicy')
           ..remove('timeHighWater')
@@ -2493,6 +2499,8 @@ void main() {
                 as Map<String, Object?>;
         partition.remove('changeProgress');
         partition.remove('scopedCursor');
+        partition.remove('traversalEpoch');
+        partition.remove('traversals');
         partition.remove('pausedCredentialGeneration');
         partition.remove('replayPausedForPolicy');
         partition.remove('timeHighWater');
@@ -3097,6 +3105,22 @@ final class _BrokenContractStore implements OfflineStore {
 }
 
 final class _BrokenContractTransaction implements OfflineStoreTransaction {
+  @override
+  FutureOr<int> traversalValidityEpoch(String id) =>
+      inner.traversalValidityEpoch(id);
+  @override
+  FutureOr<void> invalidateTraversals(String id) =>
+      inner.invalidateTraversals(id);
+  @override
+  FutureOr<OfflineTraversalRecord?> getTraversal(String id, String query) =>
+      inner.getTraversal(id, query);
+  @override
+  FutureOr<void> putTraversal(String id, OfflineTraversalRecord record) =>
+      inner.putTraversal(id, record);
+  @override
+  FutureOr<void> touchTraversal(String id, String query, DateTime at) =>
+      inner.touchTraversal(id, query, at);
+
   @override
   FutureOr<int?> pausedCredentialGeneration(String id) =>
       inner.pausedCredentialGeneration(id);

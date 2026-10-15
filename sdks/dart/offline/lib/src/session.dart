@@ -46,6 +46,7 @@ final class OfflineLanternSession
     OfflineReceiptRemote? receiptRemote,
     OfflineBoundMutationRemote? mutationRemote,
     LanternChangeSource? incomingChanges,
+    LanternSingleResponderRoute? readRoute,
   }) {
     if (store is! OfflineAutomaticStore) {
       throw const OfflineUnsupportedOperationException();
@@ -65,6 +66,7 @@ final class OfflineLanternSession
       receiptRemote: receiptRemote,
       mutationRemote: mutationRemote,
       incomingChanges: incomingChanges,
+      readRoute: readRoute,
     );
   }
 
@@ -87,14 +89,25 @@ final class OfflineLanternSession
     OfflineReceiptRemote? receiptRemote,
     OfflineBoundMutationRemote? mutationRemote,
     LanternChangeSource? incomingChanges,
+    LanternSingleResponderRoute? readRoute,
     OfflineSessionSchedule? schedule,
     Object? adapterConfiguration,
   }) async {
+    LanternAdapterReads.checkBinding(client, binding);
     if (incomingChanges != null &&
         (!identical(incomingChanges.route.client, client) ||
             incomingChanges.binding.stableIdentity != binding.stableIdentity ||
             incomingChanges.binding.authorityBinding !=
                 binding.authorityBinding)) {
+      throw const OfflineArgumentException();
+    }
+    if (readRoute != null &&
+        incomingChanges != null &&
+        !identical(readRoute, incomingChanges.route)) {
+      throw const OfflineArgumentException();
+    }
+    final effectiveRoute = readRoute ?? incomingChanges?.route;
+    if (effectiveRoute != null && !identical(effectiveRoute.client, client)) {
       throw const OfflineArgumentException();
     }
     incomingChanges?.checkCurrent();
@@ -117,6 +130,7 @@ final class OfflineLanternSession
       receiptRemote,
       mutationRemote,
       incomingChanges,
+      effectiveRoute,
       schedule,
       adapterConfiguration,
     );
@@ -156,6 +170,7 @@ final class OfflineLanternSession
         schedule: schedule,
         fingerprint: fingerprint,
         incomingChanges: incomingChanges,
+        readRoute: effectiveRoute,
       );
     }
     try {
@@ -413,6 +428,7 @@ final class _SessionShared {
     OfflineBoundMutationRemote? mutationRemote,
     OfflineSessionSchedule? schedule,
     LanternChangeSource? incomingChanges,
+    LanternSingleResponderRoute? readRoute,
   }) async {
     store = await createStore();
     OfflineAutomaticOwner? acquired;
@@ -450,6 +466,8 @@ final class _SessionShared {
         receiptRemote: receiptRemote,
         mutationRemote: mutationRemote,
         session: this,
+        readRoute: readRoute,
+        bootstrapRequired: incomingChanges != null,
       );
       deliveries.add(data._delivery);
       // Two finite workers claim different eligible FIFO heads transactionally;
@@ -718,6 +736,9 @@ final class _SessionShared {
     }
 
     void snapshot(Object? object) {
+      if (object is LanternTraversalSnapshot) {
+        consider(data._localExpiries[object]);
+      }
       if (object is LanternSnapshot<Object?>) {
         consider(data._localExpiries[object]);
         final confirmed = object.confirmed.value;

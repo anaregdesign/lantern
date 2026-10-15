@@ -106,7 +106,9 @@ execute again. Wipe is not automatic retry, storage-error recovery or cache clea
   back; insufficient capacity fails open rather than dropping accepted state.
   Schema 7 adds monotone owner epoch/token history and persisted
   credential-generation/policy pauses. It follows schema 6 in merged #1768;
-  migration preserves the existing auth pause.
+  migration preserves the existing auth pause. Schema 8 adds the independent
+  indexed Traversal result lane and semantic validity epoch; older schemas start
+  with no derived results and retain their existing mutation bytes.
 
 Automatic opens use a dedicated native `flock` sidecar, acquired before SQLite
 open/migration. The shared C Code Asset supports Android/iOS and host VM tests;
@@ -231,3 +233,10 @@ The [2026-09-24 physical records](../example/evidence/2026-09-24-sqlite/README.m
 verify process-kill restart, original TTL, logout wipe and local user isolation
 on both Android and iOS. They explicitly retain the tested commit and do not
 claim the complete transport/privacy/publication matrix.
+
+`SqliteOfflineStore.openSession` also accepts optional `readRoute`; when an
+incoming source exists both must use the same certified capability. Polling-only
+Traversal retention and explicit cross-lifetime continuation follow the
+[Offline contract](../offline/README.md#bounded-traversal-history). Result LRU
+and byte budgets are independent of the exact cache and durable outbox. Host
+SQLite conformance does not replace the stopped Android/iPhone qualification.

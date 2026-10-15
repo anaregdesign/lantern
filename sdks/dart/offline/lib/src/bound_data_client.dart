@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client/lantern_client_adapter.dart';
+
 import 'automatic_owner.dart';
 import 'bound_mutation_remote.dart';
 import 'bound_writes.dart';
+import 'codec.dart';
 import 'errors.dart';
 import 'mutation_admission.dart';
 import 'mutation_delivery.dart';
@@ -16,9 +19,12 @@ import 'remote.dart';
 import 'scoped_change_store.dart';
 import 'session_runtime.dart';
 import 'store.dart';
+import 'traversal_clock.dart';
+import 'traversal_result.dart';
 import 'types.dart';
 
 part 'bound_reads.dart';
+part 'bound_traversal.dart';
 part 'incoming_changes.dart';
 part 'session.dart';
 
@@ -40,18 +46,19 @@ final class OfflineLanternDataClient
     OfflineReceiptRemote? receiptRemote,
     OfflineBoundMutationRemote? mutationRemote,
     this._session,
+    this.readRoute,
+    this._traversalClock,
   ) {
     _observations = LanternObservationCoordinator(
       scheduler: _session?.runtime.observationScheduler,
     );
-    _direct = _session == null
-        ? DirectLanternDataClient(_client, binding: binding)
-        : LanternAdapterReads.bound(
-            _client,
-            binding: binding,
-            checkAuthority: _session._checkNetwork,
-            onEndpoint: _session._readEndpoint,
-          );
+    _direct = LanternAdapterReads.bound(
+      _client,
+      binding: binding,
+      checkAuthority: _checkReadAuthority,
+      onEndpoint: _session?._readEndpoint,
+      schedulerOwnsPermits: _session != null,
+    );
     _completion = OfflineOperationCompletion(
       store: store,
       partitionId: partitionId,
@@ -107,8 +114,12 @@ final class OfflineLanternDataClient
       }
       _session?._changed();
       _completion.invalidate();
-      if (c.observationInvalidated) _observations.invalidate();
+      if (c.observationInvalidated) {
+        _readRevision++;
+        _observations.invalidate();
+      }
     });
+    _traversalClock.onChanged = _traversalClockChanged;
   }
 
   /// Opens validated storage before any remote work. Scope derives from verified identity.
@@ -118,6 +129,7 @@ final class OfflineLanternDataClient
     required LanternSessionBinding binding,
     required AdmissionDurability durability,
     bool cacheReads = true,
+    LanternSingleResponderRoute? readRoute,
     OfflineClock? clock,
     bool Function()? authorityCurrent,
     OfflineReceiptRemote? receiptRemote,
@@ -128,6 +140,7 @@ final class OfflineLanternDataClient
     binding: binding,
     durability: durability,
     cacheReads: cacheReads,
+    readRoute: readRoute,
     clock: clock,
     authorityCurrent: authorityCurrent,
     receiptRemote: receiptRemote,
@@ -140,27 +153,41 @@ final class OfflineLanternDataClient
     required LanternSessionBinding binding,
     required AdmissionDurability durability,
     bool cacheReads = true,
+    LanternSingleResponderRoute? readRoute,
     OfflineClock? clock,
     bool Function()? authorityCurrent,
     OfflineReceiptRemote? receiptRemote,
     OfflineBoundMutationRemote? mutationRemote,
     _SessionShared? session,
+    bool bootstrapRequired = false,
   }) async {
+    LanternAdapterReads.checkBinding(client, binding);
     if (durability == AdmissionDurability.none) {
       throw const OfflineArgumentException();
     }
+    if (readRoute != null && !identical(readRoute.client, client)) {
+      throw const OfflineArgumentException();
+    }
     final now = clock ?? () => DateTime.now().toUtc();
+    final timing = OfflineTraversalClock(now);
     final scope = binding.stableIdentity;
     final opened = await store.transaction((tx) async {
-      final at = await tx.effectiveTime(scope, now().toUtc());
+      final raw = timing.sample();
+      final at = await tx.effectiveTime(scope, raw);
+      timing.observe(raw, at);
       await tx.bindAuthority(scope, binding.authorityBinding);
-      return (generation: await tx.generation(scope), at: at);
+      if (timing.invalidationPending || bootstrapRequired) {
+        await tx.invalidateTraversals(scope);
+      }
+      return (
+        generation: await tx.generation(scope),
+        revision: timing.rollbackRevision,
+      );
     });
-    var floor = opened.at;
+    timing.committed(opened.revision);
     DateTime effectiveClock() {
-      final sample = now().toUtc();
-      if (sample.isAfter(floor)) floor = sample;
-      return floor;
+      timing.sample();
+      return timing.highWater;
     }
 
     return OfflineLanternDataClient._(
@@ -176,11 +203,26 @@ final class OfflineLanternDataClient
       receiptRemote,
       mutationRemote,
       session,
+      readRoute,
+      timing,
     );
   }
 
   final LanternClient _client;
   final _SessionShared? _session;
+
+  /// Optional certified actual responder shared by reads and incoming changes.
+  final LanternSingleResponderRoute? readRoute;
+  final OfflineTraversalClock _traversalClock;
+  final String _traversalOwner = List.generate(
+    16,
+    (_) => Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  int _readRevision = 0;
+  bool _routeDiscontinuous = false;
+  ObservationCause? _standaloneReadCause;
+  bool _clockQueued = false;
+  Future<void>? _clockFlush, _routeInvalidation;
 
   /// Transactional local state; partition is not a Server authorization claim.
   final OfflineStore store;
@@ -222,7 +264,7 @@ final class OfflineLanternDataClient
   LanternMutationControl get mutations => _mutations;
   void _fence() {
     _session?._checkLifetime();
-    if (_closed || _invalid) {
+    if (_closed || _invalid || _client.isClosed) {
       throw const LanternDataException(DataFailure.closed);
     }
     if (!authorityCurrent() ||
@@ -367,58 +409,13 @@ final class OfflineLanternDataClient
     TraversalWeighting weighting = TraversalWeighting.serverDefault,
     String vertexPrefix = '',
     TraversalReadOptions? options,
-  }) async {
-    _fence();
-    Future<LanternTraversalSnapshot> attempt(OfflineSessionWork? work) async {
-      final result = await _direct.illuminate(
-        seed,
-        traversal: traversal,
-        weighting: weighting,
-        vertexPrefix: vertexPrefix,
-        options: TraversalReadOptions(
-          source: options?.source ?? ReadSource.automatic,
-          timeout: options?.timeout,
-          cancellation: work?.cancellation ?? options?.cancellation,
-        ),
-      );
-      work?.checkCurrent();
-      _fence();
-      final pending = await store.transaction((tx) => tx.outbox(partitionId));
-      work?.checkCurrent();
-      _fence();
-      return LanternTraversalSnapshot(
-        confirmed: result.confirmed,
-        query: result.query,
-        pending: offlinePendingSummary(pending),
-        sequence: ++_sequence,
-      );
-    }
-
-    final session = _session;
-    if (session == null || options?.source == ReadSource.cacheOnly) {
-      return attempt(null);
-    }
-    if (!session._networkAllowed) {
-      return LanternTraversalSnapshot(
-        confirmed: _unknown<Graph>(false).confirmed,
-        query: LanternTraversalQuery(
-          seed,
-          traversal: traversal,
-          weighting: weighting,
-          vertexPrefix: vertexPrefix,
-        ),
-        pending: offlinePendingSummary(
-          await store.transaction((tx) => tx.outbox(partitionId)),
-        ),
-        sequence: ++_sequence,
-      );
-    }
-    return session.runtime.readOnce(
-      attempt,
-      traversal: true,
-      cancellation: options?.cancellation,
-    );
-  }
+  }) => _readTraversal(
+    seed,
+    traversal: traversal,
+    weighting: weighting,
+    vertexPrefix: vertexPrefix,
+    options: options,
+  );
 
   Stream<T> _watch<T>(
     String key,
@@ -589,6 +586,10 @@ final class OfflineLanternDataClient
         observationMode: ObservationMode.pollingObservation,
       ),
       options,
+      captureLocal: () => _localTraversal(
+        query,
+        serverOnly: options?.source == ReadSource.serverOnly,
+      ),
     );
   }
 
@@ -678,6 +679,7 @@ final class OfflineLanternDataClient
     await _observations.close();
     await _changes.cancel();
     await _direct.close();
+    await _clockFlush;
   }
 }
 

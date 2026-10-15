@@ -77,6 +77,12 @@ URL nor a responder label establishes affinity. The certificate's `isCurrent`
 callback must become false before that route changes. Token acquisition, frames,
 reads and publication recheck authority and route continuity.
 
+Offline adapters can use the same route for polling-only Traversal retention.
+The optional `continuesRetainedResponder` callback is an application-owned,
+synchronous assertion of actual responder continuity across owner lifetimes.
+An equal ID or URL alone cannot supply it; all retained-result authority, epoch,
+clock and deadline fences still apply. Direct itself retains no result cache.
+
 `source.open(bootstrap: true, cancellation: token)` returns one
 `LanternChangeSession` with identity-only `frames`, request-aligned plural reads
 and joined `close`. Frames outside the literal prefix (including either Edge

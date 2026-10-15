@@ -18,6 +18,7 @@ final class LanternSingleResponderRoute {
     required this.client,
     required this.responderId,
     required this.isCurrent,
+    this.continuesRetainedResponder,
   }) {
     if (responderId.isEmpty || utf8.encode(responderId).length > 512) {
       throw _invalidArgumentException('invalid certified responder');
@@ -32,6 +33,13 @@ final class LanternSingleResponderRoute {
 
   /// Synchronous deployment-owned continuity fence.
   final bool Function() isCurrent;
+
+  /// Optional application-owned proof of actual responder continuity across
+  /// owner lifetimes. Synchronous and side-effect-free; may be available offline.
+  /// An ID/URL match, copied row, local UUID or successful Health check alone is
+  /// insufficient. The adapter separately checks the exact ID, binding, epochs
+  /// and original deadlines. Omit when independently trusted continuity is unknown.
+  final bool Function(String retainedResponderId)? continuesRetainedResponder;
 }
 
 /// Maintained public identity observation and same-responder plural reads.

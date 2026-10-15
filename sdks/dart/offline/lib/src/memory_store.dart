@@ -9,6 +9,7 @@ import 'errors.dart';
 import 'mutation_state.dart';
 import 'scoped_change_store.dart';
 import 'store.dart';
+import 'traversal_result.dart';
 import 'types.dart';
 
 /// Deterministic, non-production reference implementation of [OfflineStore].
@@ -19,7 +20,7 @@ import 'types.dart';
 /// not be used as a production persistence adapter.
 final class InMemoryOfflineStore implements OfflineStore {
   /// Current canonical reference-store snapshot schema.
-  static const int snapshotSchemaVersion = 10;
+  static const int snapshotSchemaVersion = 11;
 
   /// Creates an empty reference store with explicit capacity bounds.
   InMemoryOfflineStore({this.limits = const OfflineStoreLimits()}) {
@@ -253,6 +254,7 @@ final class _MemoryTransaction
     if (p.authorityBinding == authorityBinding) return;
     if (p.authorityBinding != null ||
         p.cache.isNotEmpty ||
+        p.traversals.isNotEmpty ||
         p.unknownResidents.isNotEmpty ||
         p.scopedCursor != null ||
         p.changeProgress.isNotEmpty) {
@@ -266,14 +268,19 @@ final class _MemoryTransaction
 
   @override
   void invalidateMutationCache(String partitionId, OfflineEntityKey key) {
-    deleteCache(partitionId, key);
+    _ensureOpen();
+    _validatePartition(partitionId);
     final p = _state.partition(partitionId);
+    final readEpoch = _checkedIncrement(p.changeEpoch);
+    final derivedEpoch = _checkedIncrement(p.traversalEpoch);
+    deleteCache(partitionId, key);
     if (key.kind == OfflineEntityKind.vertex) {
       p.cache.removeWhere(
         (_, record) => record.key.kind == OfflineEntityKind.edge,
       );
     }
-    p.changeEpoch = _checkedIncrement(p.changeEpoch);
+    p.traversalEpoch = derivedEpoch;
+    p.changeEpoch = readEpoch;
     _changedPartitions.add(partitionId);
     observationInvalidated.add(partitionId);
   }
@@ -394,6 +401,7 @@ final class _MemoryTransaction
       }
     }
     if (frame.cursor != null) partition.scopedCursor = frame.cursor;
+    if (frame.keys.isNotEmpty) invalidateTraversals(partitionId);
     partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
     _changedPartitions.add(partitionId);
     observationInvalidated.add(partitionId);
@@ -420,6 +428,7 @@ final class _MemoryTransaction
     _trimUnknownResidents(_state, partitionId, _limits);
     partition.changeProgress.clear();
     partition.scopedCursor = checkpoint;
+    invalidateTraversals(partitionId);
     partition.changeEpoch = _checkedIncrement(partition.changeEpoch);
     _changedPartitions.add(partitionId);
     observationInvalidated.add(partitionId);
@@ -434,6 +443,100 @@ final class _MemoryTransaction
       for (final entry in progress.entries)
         entry.key: entry.value.completedSequence,
     });
+  }
+
+  @override
+  int traversalValidityEpoch(String partitionId) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    return _state.partition(partitionId).traversalEpoch;
+  }
+
+  @override
+  void invalidateTraversals(String partitionId) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final p = _state.partition(partitionId);
+    p.traversalEpoch = _checkedIncrement(p.traversalEpoch);
+    _changedPartitions.add(partitionId);
+    observationInvalidated.add(partitionId);
+  }
+
+  @override
+  OfflineTraversalRecord? getTraversal(String partitionId, String queryKey) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final record = _state.partition(partitionId).traversals[queryKey];
+    return record == null
+        ? null
+        : OfflineTraversalCodec.decode(OfflineTraversalCodec.encode(record));
+  }
+
+  @override
+  void putTraversal(String partitionId, OfflineTraversalRecord record) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final p = _state.partition(partitionId);
+    if (record.partitionId != partitionId ||
+        record.generation != p.generation ||
+        record.validityEpoch != p.traversalEpoch ||
+        record.authorityBinding != p.authorityBinding) {
+      throw const OfflineArgumentException();
+    }
+    final bytes = OfflineTraversalCodec.reservedBytes(record);
+    if (bytes > _limits.maxTraversalBytes ||
+        bytes > _limits.maxTraversalBytesPerPartition ||
+        _limits.maxTraversalRecords == 0 ||
+        _limits.maxTraversalRecordsPerPartition == 0) {
+      throw const OfflineCapacityException();
+    }
+    p.traversals[record.queryKey] = OfflineTraversalCodec.decode(
+      OfflineTraversalCodec.encode(record),
+    );
+    while (true) {
+      final local =
+          p.traversals.length > _limits.maxTraversalRecordsPerPartition ||
+          _traversalBytes(p.traversals.values) >
+              _limits.maxTraversalBytesPerPartition;
+      final all = _state.partitions.values.expand((p) => p.traversals.values);
+      if (!local &&
+          all.length <= _limits.maxTraversalRecords &&
+          _traversalBytes(all) <= _limits.maxTraversalBytes) {
+        break;
+      }
+      final victims =
+          (local ? p.traversals.values : all)
+              .where(
+                (r) =>
+                    r.partitionId != partitionId ||
+                    r.queryKey != record.queryKey,
+              )
+              .toList()
+            ..sort((a, b) {
+              var order = a.lastAccessAt.compareTo(b.lastAccessAt);
+              if (order == 0) order = a.partitionId.compareTo(b.partitionId);
+              return order == 0 ? a.queryKey.compareTo(b.queryKey) : order;
+            });
+      final victim = victims.first;
+      _state.partition(victim.partitionId).traversals.remove(victim.queryKey);
+      _changedPartitions.add(victim.partitionId);
+    }
+    _changedPartitions.add(partitionId);
+  }
+
+  @override
+  void touchTraversal(
+    String partitionId,
+    String queryKey,
+    DateTime accessedAt,
+  ) {
+    _ensureOpen();
+    _validatePartition(partitionId);
+    final p = _state.partition(partitionId);
+    final prior = p.traversals[queryKey];
+    if (prior == null) return;
+    p.traversals[queryKey] = prior.accessedAt(accessedAt);
+    _mutatedPartitions.add(partitionId);
   }
 
   @override
@@ -1488,6 +1591,8 @@ final class _MemoryPartition {
   String? authorityBinding;
   int timeHighWater = 0;
   int changeEpoch = 0;
+  int traversalEpoch = 0;
+  final Map<String, OfflineTraversalRecord> traversals = {};
   int version = 0;
   int nextOrdinal = 0;
   bool replayPausedForAuth = false;
@@ -1699,6 +1804,15 @@ final class _MemoryPartition {
       ..authorityBinding = authorityBinding
       ..timeHighWater = timeHighWater
       ..changeEpoch = changeEpoch
+      ..traversalEpoch = traversalEpoch
+      ..traversals.addAll(
+        traversals.map(
+          (key, value) => MapEntry(
+            key,
+            OfflineTraversalCodec.decode(OfflineTraversalCodec.encode(value)),
+          ),
+        ),
+      )
       ..version = version
       ..nextOrdinal = nextOrdinal
       ..replayPausedForAuth = replayPausedForAuth
@@ -2180,6 +2294,13 @@ String _encodeMemoryState(_MemoryState state) {
             'timeHighWater': partition.timeHighWater,
             'authorityBinding': partition.authorityBinding,
             'changeEpoch': partition.changeEpoch,
+            'traversalEpoch': partition.traversalEpoch,
+            'traversals': (partition.traversals.keys.toList()..sort())
+                .map(
+                  (key) =>
+                      OfflineTraversalCodec.encode(partition.traversals[key]!),
+                )
+                .toList(),
             'scopedCursor': partition.scopedCursor?.toJson(),
             'version': partition.version,
             'nextOrdinal': partition.nextOrdinal,
@@ -2227,6 +2348,7 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
         schema != 7 &&
         schema != 8 &&
         schema != 9 &&
+        schema != 10 &&
         schema != InMemoryOfflineStore.snapshotSchemaVersion) {
       throw const OfflineSchemaException();
     }
@@ -2253,6 +2375,8 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
                 'partitionId',
                 'generation',
                 if (schema >= 7) 'changeEpoch',
+                if (schema >= 11) 'traversalEpoch',
+                if (schema >= 11) 'traversals',
                 if (schema >= 8) 'scopedCursor',
                 if (schema >= 9) 'timeHighWater',
                 if (schema >= 9) 'authorityBinding',
@@ -2300,6 +2424,21 @@ _MemoryState _decodeMemoryState(String source, OfflineStoreLimits limits) {
         ..replayPausedForAuth = schema >= 5
             ? _snapshotBool(encoded['replayPausedForAuth'])
             : false;
+      partition.traversalEpoch = schema >= 11
+          ? _snapshotNonNegativeInt(encoded['traversalEpoch'])
+          : 0;
+      if (schema >= 11) {
+        for (final bytes in _snapshotStrings(encoded['traversals'])) {
+          final record = OfflineTraversalCodec.decode(bytes);
+          if (record.partitionId != partitionId ||
+              record.generation != generation ||
+              record.validityEpoch > partition.traversalEpoch ||
+              partition.traversals.containsKey(record.queryKey)) {
+            throw const OfflineCodecException();
+          }
+          partition.traversals[record.queryKey] = record;
+        }
+      }
       partition.pausedCredentialGeneration =
           schema >= 10 && encoded['pausedCredentialGeneration'] != null
           ? _snapshotNonNegativeInt(encoded['pausedCredentialGeneration'])
@@ -2961,7 +3100,10 @@ String _allocateV1UnknownRecordId(
 }
 
 void _validateSnapshotCapacity(_MemoryState state, OfflineStoreLimits limits) {
-  if (_cacheRecordCount(state) > limits.maxCacheRecords ||
+  final traversals = state.partitions.values.expand((p) => p.traversals.values);
+  if (traversals.length > limits.maxTraversalRecords ||
+      _traversalBytes(traversals) > limits.maxTraversalBytes ||
+      _cacheRecordCount(state) > limits.maxCacheRecords ||
       _cacheStateBytes(state) > limits.maxCacheBytes ||
       _unknownResidentCount(state) > limits.maxCacheRecords ||
       _unknownStateBytes(state) > limits.maxCacheBytes ||
@@ -2972,7 +3114,10 @@ void _validateSnapshotCapacity(_MemoryState state, OfflineStoreLimits limits) {
     throw const OfflineCapacityException();
   }
   for (final partition in state.partitions.values) {
-    if (partition.cache.length > limits.maxCacheRecordsPerPartition ||
+    if (partition.traversals.length > limits.maxTraversalRecordsPerPartition ||
+        _traversalBytes(partition.traversals.values) >
+            limits.maxTraversalBytesPerPartition ||
+        partition.cache.length > limits.maxCacheRecordsPerPartition ||
         _cacheRecordsBytes(partition.cache.values) >
             limits.maxCacheBytesPerPartition ||
         partition.unknownResidents.length >
@@ -3034,7 +3179,15 @@ bool _snapshotBool(Object? value) {
 }
 
 void _validateLimits(OfflineStoreLimits limits) {
-  if (limits.maxCacheRecords < 0 ||
+  if (limits.maxTraversalRecords < 0 ||
+      limits.maxTraversalRecords > 128 ||
+      limits.maxTraversalBytes < 0 ||
+      limits.maxTraversalBytes > 32 * 1024 * 1024 ||
+      limits.maxTraversalRecordsPerPartition < 0 ||
+      limits.maxTraversalRecordsPerPartition > 32 ||
+      limits.maxTraversalBytesPerPartition < 0 ||
+      limits.maxTraversalBytesPerPartition > 8 * 1024 * 1024 ||
+      limits.maxCacheRecords < 0 ||
       limits.maxCacheBytes < 0 ||
       limits.maxOutboxRecords < 0 ||
       limits.maxOutboxBytes < 0 ||
@@ -3074,3 +3227,8 @@ const int _maxDurableInt = 0x7fffffffffffffff;
 // allocator behavior before the exact post-migration byte check runs.
 const int _minimumOperationItemBytes = 96;
 const int _maxLegacyMigrationItems = 4096;
+
+int _traversalBytes(Iterable<OfflineTraversalRecord> records) => records.fold(
+  0,
+  (total, record) => total + OfflineTraversalCodec.reservedBytes(record),
+);

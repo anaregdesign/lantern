@@ -22,6 +22,7 @@ dependencies:
   sqflite_common: 2.5.11
 
 dev_dependencies:
+  connectrpc: 1.0.0
   flutter_test:
     sdk: flutter
   lints: 6.1.0

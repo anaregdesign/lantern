@@ -102,8 +102,8 @@ execute again even if it reuses a still-fresh caller ID; Add can add twice. Wipe
 does not reset clock high-water. Use cache invalidation to clear displayed values;
 never use wipe as automatic retry, storage-error recovery or credential refresh.
 
-State versions are outbox **5**, operation **4**, reference snapshot **10**, and
-SQLite **7** (following schema 6 in merged #1768). Old IDs, TTL and conservative dispatch proof are preserved; unknown
+State versions are outbox **5**, operation **4**, reference snapshot **11**, and
+SQLite **8** (following schema 6 in merged #1768). Old IDs, TTL and conservative dispatch proof are preserved; unknown
 or damaged state, incompatible downgrade and insufficient migration capacity fail
 closed. `MemoryOfflineStore` is the bounded volatile profile over the shared
 conformance engine; it has no crash-durability or snapshot/restore promise.
@@ -114,6 +114,57 @@ Older caches lack persisted authority proof: migration/first binding hides their
 values and retains bounded resident identities for revalidation. Current-format
 reopen with unchanged authority preserves eligible historical evidence; a changed
 authority hides old cache without altering pending IDs, TTL or receipt proof.
+
+## Bounded Traversal history
+
+`illuminate` and `watchIlluminate` retain complete Server Graph observations in
+an independent derived-result lane (codec1, Memory11, SQLite8). Exact CRUD cache
+rows and mutation intents never receive synthetic/transformed/reduced edges.
+Canonical identity uses the parent's wire-normalized query bytes, stable scope,
+full authority, generation and certified responder. Pending mutations contribute
+dirty metadata; they never splice an optimistic graph or local relevance result.
+
+Pass optional `readRoute: LanternSingleResponderRoute.certified(...)` to the
+standalone Offline factory, automatic session or SQLite session factory. An
+incoming source supplies its route by default; an explicit route must be the
+identical capability object. Deployment-owned `isCurrent` must certify this
+exact transport's actual responder and become false before it changes. Without
+a route, current Server reads work, but no reusable traversal history is stored.
+`cacheOnly` uses no token or RPC; `serverOnly` never falls back. Empty Graph is a
+known result. Traversal `strictLive` remains typed unsupported.
+
+Across owner lifetimes, matching a responder ID is insufficient. Optional
+`continuesRetainedResponder` must independently assert the current actual
+responder continues the retained observation's context. Omit it when unknown;
+never infer it from a URL, label, local UUID, copied row or Health success. Full
+binding, current authority, generation, store/installation continuity, original
+deadlines and semantic epoch must also remain valid. A required CDC bootstrap,
+known gap or discontinuity overrides this assertion before local publication.
+
+Results have original 30-second fresh and 60-second historical ceilings, capped
+by the earliest included Vertex/Edge TTL and security deadline. Cache evidence
+is explicitly historical. Any included source expiry expires the entire Graph.
+Public corpus invalidation, possible mutation dispatch/settlement, reset and
+known authority/route discontinuity invalidate the derived epoch; a mere
+availability read-epoch change preserves eligible history. Active queries share
+the existing foreground runtime and finite polling; inactive retained rows have
+no refresh job.
+
+Raw wall-clock rollback is detected before the existing effective clock clamps
+it. A hold immediately hides retained Graphs and commits semantic invalidation.
+While held, current fenced Server responses may be delivered, but cannot be
+retained or replayed as fallback. Raw catch-up permits only a new eligible
+attempt to retain; it never revives old rows or rewrites their deadlines. Storage
+failure stays explicit and blocked. This does not detect an unobserved rollback
+across process death or establish backup/installation continuity.
+
+The derived lane has independent LRU bounds:32 results/8MiB per scope and128
+results/32MiB globally. `OfflineStoreLimits` may lower these ceilings. Each
+encoded record, including timestamp headroom, is at most1MiB with4096 vertices
+and16384 edges. Capacity fails without truncation or eviction of outbox/status
+history. Existing16/64 active and1/2 concurrent traversal limits remain with
+the shared runtime. Migrations start older schemas with an empty derived lane
+and preserve mutation bytes, IDs, TTL and receipt evidence.
 
 ## Historical explicit Repository surface
 
@@ -392,7 +443,7 @@ outbox/operation capacity rejection. Configure the adapter's test limits below
 the default probe bounds or raise `maxCapacityProbeRecords` and
 `maxNotificationControllerProbe` explicitly. `exportSnapshot` and
 `InMemoryOfflineStore.fromSnapshot` exist
-only for deterministic fresh-process conformance tests; snapshot schema v10
+only for deterministic fresh-process conformance tests; snapshot schema v11
 persists operation aggregates, exact dead-letter transition time, durable
 auth pause, an independent opaque public CDC cursor, legacy private chunk
 progress, the change epoch, and key-only Unknown residents. Migrating legacy
@@ -497,7 +548,7 @@ await repository.consumeScopedChanges(
 
 Adapters run `runScopedChangeStoreConformanceSuite` across their real persistence
 boundary. Memory snapshots add independent opaque state in schema 8; SQLite
-schema 7 keeps one indexed BLOB cursor per partition. Legacy origin cursors do
+schema 8 keeps one indexed BLOB cursor per partition. Legacy origin cursors do
 not establish scoped freshness. Migration/rebootstrap hides old confirmed rows
 as Unknown, preserves outbox records and requires authorized plural reads.
 The legacy `changeCursor`/`applyChangeChunk` and `LanternClientIdentitySource`

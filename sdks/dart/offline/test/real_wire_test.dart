@@ -1771,6 +1771,131 @@ void main() {
 /// Finite production automatic-factory qualification through real Connect calls.
 /// Memory durability here; native SQLite ownership has its own finite probe.
 void runSessionRuntimeWireTests(Uri endpoint) {
+  test(
+    'certified polling traversal retains outage history and refreshes without Get or Sync',
+    () async {
+      final online = LanternClient.connect(
+        endpoint,
+        allowInsecure: endpoint.scheme == 'http',
+      );
+      addTearDown(online.close);
+      final prefix = 'traversal-wire:${DateTime.now().microsecondsSinceEpoch}:';
+      final seed = '${prefix}seed', child = '${prefix}child';
+      await online.putVertices([
+        VertexInput(
+          key: seed,
+          value: VertexValue.string('seed'),
+          expiresIn: const Duration(minutes: 2),
+        ),
+        VertexInput(
+          key: child,
+          value: VertexValue.string('before'),
+          expiresIn: const Duration(minutes: 2),
+        ),
+      ]);
+      await online.putEdge(
+        EdgeInput(
+          tail: seed,
+          head: child,
+          weight: .75,
+          expiresIn: const Duration(minutes: 2),
+        ),
+      );
+      addTearDown(() => online.deleteVertices([seed, child]));
+      final outage = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => outage.close(force: true));
+      outage.listen((request) async {
+        request.response
+          ..statusCode = HttpStatus.serviceUnavailable
+          ..headers.contentType = ContentType.json
+          ..write('{"code":"unavailable","message":"fixture outage"}');
+        await request.response.close();
+      });
+      final proxy = await _ResponseDroppingProxy.bind(
+        endpoint,
+        drops: const {},
+      );
+      addTearDown(proxy.close);
+      final low = LanternClient.connect(proxy.endpoint, allowInsecure: true);
+      // The owned fixture keeps this exact upstream process throughout the test;
+      // its temporary 503 gate is availability loss, not a responder substitution.
+      final route = LanternSingleResponderRoute.certified(
+        client: low,
+        responderId: 'owned-wire-process',
+        isCurrent: () => true,
+      );
+      final store = MemoryOfflineStore();
+      final session = await OfflineLanternSession.open(
+        client: low,
+        store: store,
+        binding: LanternSessionBinding.application(
+          serviceOrigin: proxy.endpoint,
+          securityDomain: 'wire-fixture',
+          accountIdentity: 'traversal',
+          authorityBinding: 'a',
+        ),
+        durability: AdmissionDurability.memory,
+        readRoute: route,
+      );
+      addTearDown(session.close);
+      final first = Completer<void>(),
+          historical = Completer<void>(),
+          recovered = Completer<void>();
+      var phase = 0, events = 0;
+      final subscription = session
+          .watchIlluminate(
+            seed,
+            traversal: const BfsOptions(step: 1, fanOut: 2),
+            vertexPrefix: prefix,
+            options: const WatchOptions(
+              pollInterval: Duration(milliseconds: 100),
+            ),
+          )
+          .listen((snapshot) {
+            events++;
+            final value = snapshot.confirmed.value?.vertices[child]?.value;
+            if (value is! StringValue) return;
+            if (phase == 0 &&
+                snapshot.confirmed.origin == ObservationOrigin.server &&
+                value.value == 'before' &&
+                !first.isCompleted) {
+              first.complete();
+            }
+            if (phase == 1 &&
+                snapshot.confirmed.origin == ObservationOrigin.retainedCache &&
+                value.value == 'before' &&
+                !historical.isCompleted) {
+              historical.complete();
+            }
+            if (phase == 2 &&
+                snapshot.confirmed.origin == ObservationOrigin.server &&
+                value.value == 'after' &&
+                !recovered.isCompleted) {
+              recovered.complete();
+            }
+          });
+      addTearDown(subscription.cancel);
+      await first.future.timeout(const Duration(seconds: 5));
+      phase = 1;
+      proxy.routeTo(Uri.parse('http://${outage.address.host}:${outage.port}'));
+      await historical.future.timeout(const Duration(seconds: 5));
+      await online.putVertex(
+        VertexInput(
+          key: child,
+          value: VertexValue.string('after'),
+          expiresIn: const Duration(minutes: 2),
+        ),
+      );
+      phase = 2;
+      proxy.routeTo(endpoint);
+      await recovered.future.timeout(const Duration(seconds: 5));
+      expect(proxy.forwarded('WatchChanges'), 0);
+      expect(events, lessThan(100));
+      await subscription.cancel();
+    },
+    timeout: const Timeout(Duration(seconds: 20)),
+  );
+
   for (final responseLoss in [false, true]) {
     test(
       'automatic session ${responseLoss ? 'committed response loss' : 'same foreground outage'} retries without another application call',
