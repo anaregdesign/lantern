@@ -314,9 +314,15 @@ void main() {
         tester,
         () async => await repository.store.transaction((t) async {
           final epoch = await t.changeEpoch(partition);
+          final cursor = await t.scopedChangeCursor(partition);
           final unknown = await t.unknownResidents(partition, limit: 1);
-          return epoch > 0 && unknown.isEmpty;
+          return epoch > 0 &&
+              cursor?.toJson() == OfflineScopedChangeCursor([1]).toJson() &&
+              unknown.isEmpty;
         }),
+      );
+      final bootstrapEpoch = await repository.store.transaction(
+        (t) => t.changeEpoch(partition),
       );
 
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
@@ -332,19 +338,26 @@ void main() {
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await _pumpUntil(tester, () => source.sessions.length == 2);
       expect(source.sessions.last.listening, isTrue);
+      expect(source.sessions.last.bootstrap, isFalse);
       source.sessions.last.add(
         OfflineScopedChangeFrame(
           bootstrap: source.sessions.last.bootstrap,
-          cursor: OfflineScopedChangeCursor([1]),
+          cursor: OfflineScopedChangeCursor([2]),
         ),
       );
       await _pumpUntilAsync(
         tester,
         () async => await repository.store.transaction((t) async {
-          final epoch = await t.changeEpoch(partition);
+          final cursor = await t.scopedChangeCursor(partition);
           final unknown = await t.unknownResidents(partition, limit: 1);
-          return epoch > 1 && unknown.isEmpty;
+          return cursor?.toJson() == OfflineScopedChangeCursor([2]).toJson() &&
+              unknown.isEmpty;
         }),
+      );
+      expect(
+        await repository.store.transaction((t) => t.changeEpoch(partition)),
+        bootstrapEpoch,
+        reason: 'empty resume progress persists without invalidating reads',
       );
 
       signedIn = false;
