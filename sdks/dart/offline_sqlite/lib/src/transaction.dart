@@ -1732,18 +1732,35 @@ final class _SqlTransaction
   }
 
   Future<void> _validatePartitionGraph(String id) async {
-    validateOfflineDependencies(
-      (await sql.query(
-        'outbox',
-        where: 'partition_id=?',
-        whereArgs: [id],
-      )).map(_outbox).toList(),
-      (await sql.query(
-        'operations',
-        where: 'partition_id=?',
-        whereArgs: [id],
-      )).map(_operation).toList(),
+    // All writes/pending calls have joined before commit validation. Reuse this
+    // transaction's immutable rows; never carry decoded aggregates across a
+    // write, savepoint rollback, validation invocation or native transaction.
+    final outboxRows = await sql.query(
+      'outbox',
+      where: 'partition_id=?',
+      whereArgs: [id],
     );
+    final operationRows = await sql.query(
+      'operations',
+      where: 'partition_id=?',
+      whereArgs: [id],
+    );
+    final outbox = outboxRows.map(_outbox).toList(growable: false);
+    final operations = operationRows.map(_operation).toList(growable: false);
+    validateOfflineDependencies(outbox, operations);
+    final outboxIds = {for (final row in outboxRows) row['record_id']};
+    final operationsById = {
+      for (var i = 0; i < operationRows.length; i++)
+        operationRows[i]['operation_id']: operations[i],
+    };
+    final dependenciesByRecord = <Object?, List<Map<String, Object?>>>{};
+    for (final row in await sql.query(
+      'operation_dependencies',
+      where: 'partition_id=?',
+      whereArgs: [id],
+    )) {
+      (dependenciesByRecord[row['record_id']] ??= []).add(row);
+    }
     final metadata = (await sql.query(
       'partitions',
       where: 'partition_id=?',
@@ -1804,8 +1821,9 @@ final class _SqlTransaction
       }
       OfflineEntityKey.fromCanonical(encoded);
     });
-    await _eachRow('operations', 'operation_id', id, (row) async {
-      final operation = _operation(row);
+    for (var index = 0; index < operationRows.length; index++) {
+      final row = operationRows[index];
+      final operation = operations[index];
       if (operation.partitionId != id ||
           operation.generation != generation ||
           !_columnsMatch(row, _operationColumns(operation, limits))) {
@@ -1826,23 +1844,16 @@ final class _SqlTransaction
             indexedItems[i]['item_index'] != i) {
           throw const OfflineCodecException();
         }
-        final records = await sql.query(
-          'outbox',
-          where: 'partition_id=? AND record_id=?',
-          whereArgs: [id, item.recordId],
-        );
-        if (records.isEmpty && !_terminalWriteState(item.state)) {
+        if (!outboxIds.contains(item.recordId) &&
+            !_terminalWriteState(item.state)) {
           throw const OfflineCodecException();
         }
       }
-    });
-    await _eachRow('outbox', 'record_id', id, (row) async {
-      final record = _outbox(row);
-      final deps = await sql.query(
-        'operation_dependencies',
-        where: 'partition_id=? AND record_id=?',
-        whereArgs: [id, record.recordId],
-      );
+    }
+    for (var index = 0; index < outboxRows.length; index++) {
+      final row = outboxRows[index];
+      final record = outbox[index];
+      final deps = dependenciesByRecord[record.recordId] ?? const [];
       final expected = {
         for (final d in record.dependencies)
           '${d.operationId}:${d.itemIndex}:${d.predicate.name}',
@@ -1866,13 +1877,8 @@ final class _SqlTransaction
               !_isQuarantinedLegacyAdd(record))) {
         throw const OfflineCodecException();
       }
-      final rows = await sql.query(
-        'operations',
-        where: 'partition_id=? AND operation_id=?',
-        whereArgs: [id, record.operationId],
-      );
-      if (rows.isEmpty) throw const OfflineCodecException();
-      final operation = _operation(rows.single);
+      final operation = operationsById[record.operationId];
+      if (operation == null) throw const OfflineCodecException();
       if (record.itemIndex >= operation.items.length ||
           !_outboxStatusMatches(record, operation.items[record.itemIndex]) ||
           operation.updatedAt.isBefore(record.enqueuedAt) ||
@@ -1895,7 +1901,7 @@ final class _SqlTransaction
                   OfflineWriteState.pausedForAuth)) {
         throw const OfflineCodecException();
       }
-    });
+    }
     if ((await sql.rawQuery(
           'SELECT 1 FROM outbox WHERE partition_id=? GROUP BY ordinal HAVING COUNT(DISTINCT operation_id)>1 LIMIT 1',
           [id],
