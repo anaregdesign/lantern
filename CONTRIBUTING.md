@@ -708,8 +708,15 @@ test.
 - Wait for **all required checks** green. Never use `--admin` or `--no-verify`.
   A cohesive PR from clean `main` may close multiple related Issues when their
   outcomes and verification remain independently reviewable.
-- Merge with `gh pr merge <n> --squash --delete-branch`, then
-  `git checkout main && git pull --rebase`.
+- Before merging, inspect the exact final squash subject and body, including
+  any text copied from historical commit messages. Reject GitHub CI-skip markers
+  (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`) and
+  a true `skip-checks` trailer. Passing PR checks do not validate this message.
+- Supply the reviewed subject and body explicitly with
+  `gh pr merge <n> --squash --delete-branch --match-head-commit <sha>`
+  plus `--subject <subject> --body-file <file>`, then
+  `git checkout main && git pull --rebase`. Verify the resulting main SHA and
+  ordinary CI runs before recording final-source acceptance.
 - **Multi-issue `Closes` syntax:** GitHub only auto-links the *first* issue on a
   comma-separated line. Use one keyword per issue (`Closes #1, closes #2, closes #3`)
   or one keyword per line; otherwise the later issues are left open after merge.
