@@ -189,6 +189,8 @@ String _failureCode(Object error) {
         'initial_status_order',
         'initial_mutation_count',
         'reopened_status_first',
+        'bound_initial_status_query',
+        'bound_reopened_status_first',
         'proxy_transport_failure',
         'mutation_resent_or_not_committed',
         'marker',
@@ -482,7 +484,9 @@ Future<void> _runBoundReceiptCrash() async {
     );
     _requireReceiptCounts(proxy);
     final initialStatus = proxy.forwarded('GetReceiptStatuses');
-    if (initialStatus < 5) throw StateError('bound_initial_status_first');
+    // Durable unsent proof permits the first send without an absence lookup.
+    // After the committed response is lost, every reopen must reconcile first.
+    if (initialStatus != 0) throw StateError('bound_initial_status_query');
     await _verify(
       'bound-receipt',
       'after',
