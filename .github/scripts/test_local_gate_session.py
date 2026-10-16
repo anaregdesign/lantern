@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import local_gate_session as gate
 from local_gate_plan import Step, steps
+from git_test_fixture import synchronous_git_maintenance
 
 
 class SessionTest(unittest.TestCase):
@@ -21,6 +22,7 @@ class SessionTest(unittest.TestCase):
         self.root = self.base / "repo"
         self.root.mkdir()
         self.git("init", "-b", "feature")
+        synchronous_git_maintenance(self.root)
         self.git("config", "user.email", "gate-fixture@example.invalid")
         self.git("config", "user.name", "Gate fixture")
         for path in ("core/source.go", "pb/generated.go", "server/source.go", "proto/api.proto",

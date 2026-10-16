@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import current_sdk4_gate as gate
+from git_test_fixture import synchronous_git_maintenance
 from local_gate_plan import steps
 
 
@@ -46,6 +47,7 @@ class SDK4ReceiptTest(unittest.TestCase):
         script.write_bytes(Path(gate.__file__).read_bytes())
         (self.root / "go.work").write_text("go 1.27.2\n")
         self.git("init", "-q")
+        synchronous_git_maintenance(self.root)
         self.git("config", "user.name", "Fixture")
         self.git("config", "user.email", "fixture@example.test")
         self.git("add", ".")

@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 import ci_docs
+from git_test_fixture import synchronous_git_maintenance
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -92,6 +93,7 @@ class DocumentationTest(unittest.TestCase):
                 return subprocess.check_output(["git", "-C", directory, *args],
                                                text=True).strip()
             git("init", "-q")
+            synchronous_git_maintenance(root)
             git("config", "user.name", "CI")
             git("config", "user.email", "ci@example.test")
             (root / "README.md").write_text("original\n")

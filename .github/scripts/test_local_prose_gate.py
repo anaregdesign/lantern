@@ -12,6 +12,7 @@ from unittest.mock import patch
 import local_gate_session as gate
 import local_prose_gate as prose
 from local_gate_plan import Step
+from git_test_fixture import synchronous_git_maintenance
 
 
 class ProseTest(unittest.TestCase):
@@ -21,6 +22,7 @@ class ProseTest(unittest.TestCase):
         self.root = Path(self.temp.name) / "repo"
         self.root.mkdir()
         self.git("init", "-qb", "feature")
+        synchronous_git_maintenance(self.root)
         self.git("config", "user.email", "prose@example.invalid")
         self.git("config", "user.name", "Prose fixture")
         for name in ("local_prose_gate.py", "local_gate_plan.py", "ci_docs.py", "evidence_only_pr.py"):

@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import verify_go_sdk_release as gate
+from git_test_fixture import synchronous_git_maintenance
 
 
 class GoSDKReleaseTest(unittest.TestCase):
@@ -39,6 +40,7 @@ class GoSDKReleaseTest(unittest.TestCase):
         (self.sdk / "client.go").write_text("package client\n")
         (self.sdk / "client_test.go").write_text("package client\n")
         self.git("init", "-q")
+        synchronous_git_maintenance(self.repo)
         self.commit()
         self.git("tag", f"pb/{self.pb_version}")
         self.git("tag", self.sdk_tag)
