@@ -245,10 +245,12 @@ final class _ClientOwnerState extends State<_ClientOwner> {
       StackTrace? trace;
       try {
         session = await _offlineSession;
-      } catch (error, stack) {
-        // Startup attempted cleanup; preserve any incomplete-retirement result.
+      } on AppDataStartupFailure catch (error, stack) {
+        // Incomplete retirement must stay failed after the startup UI handles it.
         failure = error;
         trace = stack;
+      } catch (_) {
+        // The startup UI already handles ordinary configuration/open failures.
       }
       try {
         await closeAccountData(session, _client);
