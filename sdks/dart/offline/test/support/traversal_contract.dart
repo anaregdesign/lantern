@@ -692,6 +692,100 @@ void traversalContract({
         expect(keys.toSet(), hasLength(4));
       },
     );
+    test(
+      'G5 edge member boundary and byte rejection preserve the valid row',
+      () async {
+        String key(int i) => i.toRadixString(36);
+        h.graph = wire.Graph(vertices: [wire.Vertex(key: 'seed')]);
+        await h.open();
+        await h.read(ReadSource.serverOnly);
+        final before = (await h.record())!;
+        final bytes = OfflineTraversalCodec.encode(before);
+        expect(
+          OfflineTraversalCodec.reservedBytes(before),
+          lessThan(OfflineTraversalRecord.maxBytes),
+        );
+        final large = wire.Graph(
+          vertices: [for (var i = 0; i < 129; i++) wire.Vertex(key: key(i))],
+          edges: [
+            for (var tail = 0; tail < 128; tail++)
+              for (var head = 0; head < 128; head++)
+                wire.Edge(tail: key(tail), head: key(head), weight: 1),
+          ],
+        );
+        OfflineTraversalRecord memberRecord() => OfflineTraversalRecord(
+          partitionId: before.partitionId,
+          generation: before.generation,
+          authorityBinding: before.authorityBinding,
+          responderId: before.responderId,
+          ownerTag: before.ownerTag,
+          queryKey: before.queryKey,
+          validityEpoch: before.validityEpoch,
+          graph: Graph(
+            vertices: [
+              for (final v in large.vertices)
+                Vertex(key: v.key, value: const NilValue(), expiration: null),
+            ],
+            edges: [
+              for (final e in large.edges)
+                Edge(
+                  tail: e.tail,
+                  head: e.head,
+                  weight: e.weight,
+                  expiration: null,
+                ),
+            ],
+          ),
+          observedAt: before.observedAt,
+          freshUntil: before.freshUntil,
+          historyUntil: before.historyUntil,
+          sourceExpiration: null,
+          securityUntil: before.securityUntil,
+          lastAccessAt: before.lastAccessAt,
+        );
+        // Construction isolates membership from strict encoded retention bytes.
+        expect(memberRecord().graph.allEdges, hasLength(16384));
+        for (final count in [16384, 16385]) {
+          if (count == 16385) {
+            large.edges.add(wire.Edge(tail: key(128), head: key(0), weight: 1));
+            expect(memberRecord, throwsA(isA<OfflineArgumentException>()));
+          }
+          expect(
+            large.edges.map((e) => '${e.tail}/${e.head}').toSet(),
+            hasLength(count),
+          );
+          // Match the parent's protobuf bytes plus per-member envelope bound,
+          // so the second rejection isolates its response member limit.
+          final parentBytes =
+              large.vertices.fold<int>(
+                0,
+                (n, v) => n + v.writeToBuffer().length + 16,
+              ) +
+              large.edges.fold<int>(
+                0,
+                (n, e) => n + e.writeToBuffer().length + 16,
+              );
+          expect(parentBytes, lessThan(1 << 20));
+          h.graph = large;
+          await expectLater(
+            h.read(ReadSource.serverOnly),
+            throwsA(
+              isA<LanternDataException>().having(
+                (e) => e.reason,
+                'reason',
+                DataFailure.capacity,
+              ),
+            ),
+          );
+          expect(OfflineTraversalCodec.encode((await h.record())!), bytes);
+          final cached = await h.read(ReadSource.cacheOnly);
+          expect(cached.confirmed.observedAt, before.observedAt);
+          expect(cached.confirmed.value!.vertices.keys, ['seed']);
+          expect(cached.confirmed.value!.allEdges, isEmpty);
+          expect(OfflineTraversalCodec.encode((await h.record())!), bytes);
+        }
+      },
+    );
     for (final size in ['vertices', 'encoded-bytes']) {
       test('result $size capacity fails typed and untruncated', () async {
         h.graph = size == 'vertices'

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
@@ -161,6 +163,89 @@ void main() {
     },
   );
   for (final profile in AppDataProfile.values) {
+    test(
+      'G6 equal-value pending and settled metadata: ${profile.name}',
+      () async {
+        final h = AppHarness(profile);
+        await h.open();
+        addTearDown(h.close);
+        const key = 'app:equal';
+        h.wire.vertices[key] = {'key': key, 'string': 'X'};
+        final events = <LanternSnapshot<Vertex>>[];
+        final watch = h.data.watchVertex(key).listen(events.add);
+        addTearDown(watch.cancel);
+        final traversals = <LanternTraversalSnapshot>[];
+        final traversalWatch = h.data
+            .watchIlluminate(key, traversal: const PprOptions())
+            .listen(traversals.add);
+        addTearDown(traversalWatch.cancel);
+        Future<void> until(bool Function() condition) async {
+          for (var i = 0; i < 200 && !condition(); i++) {
+            await h.clock.advance(const Duration(milliseconds: 25));
+          }
+          expect(condition(), true, reason: 'bounded metadata transition');
+        }
+
+        bool isX(LanternSnapshot<Vertex> value) =>
+            value.view?.value is StringValue &&
+            (value.view!.value as StringValue).value == 'X';
+        await until(() => events.any((e) => isX(e) && e.pending.count == 0));
+        await until(
+          () => traversals.any(
+            (e) => e.confirmed.state == ConfirmedState.present,
+          ),
+        );
+        final initial = events.lastWhere(isX);
+        final hold = Completer<void>();
+        h.wire.holdWrite = hold;
+        addTearDown(() {
+          if (!hold.isCompleted) hold.complete();
+        });
+        var completed = false;
+        final writing = h.data
+            .putVertex(VertexInput(key: key, value: const StringValue('X')))
+            .then((value) {
+              completed = true;
+              return value;
+            });
+        await until(() => events.any((e) => isX(e) && e.pending.count == 1));
+        final pending = events.lastWhere((e) => isX(e) && e.pending.count == 1);
+        expect(completed, false);
+        expect(pending.sequence, greaterThan(initial.sequence));
+        hold.complete();
+        await h.clock.settle(writing);
+        await until(
+          () => events.any(
+            (e) =>
+                isX(e) && e.pending.count == 0 && e.sequence > pending.sequence,
+          ),
+        );
+        final settled = events.lastWhere((e) => isX(e) && e.pending.count == 0);
+        expect(settled.sequence, greaterThan(pending.sequence));
+        expect(
+          events.map((e) => e.sequence),
+          orderedEquals(events.map((e) => e.sequence).toList()..sort()),
+        );
+        expect(
+          traversals.map((e) => e.sequence),
+          orderedEquals(traversals.map((e) => e.sequence).toList()..sort()),
+        );
+        await watch.cancel();
+        await traversalWatch.cancel();
+        if (profile == AppDataProfile.direct ||
+            profile == AppDataProfile.durableWithoutReadCache) {
+          final calls = h.wire.calls.length;
+          expect(
+            (await h.data.getVertex(
+              key,
+              options: const GetOptions(source: ReadSource.cacheOnly),
+            )).confirmed.state,
+            ConfirmedState.unknown,
+          );
+          expect(h.wire.calls.length, calls);
+        }
+      },
+    );
     test(
       'I1 common consumer ${profile.name}: CRUD/traversal/watch/duplicate results',
       () async {

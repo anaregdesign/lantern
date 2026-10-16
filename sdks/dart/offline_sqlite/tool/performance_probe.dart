@@ -6,6 +6,8 @@ import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import '../../offline/tool/automatic_baseline.dart';
+
 /// Content-free host baseline, including logical WAL write amplification.
 Future<void> main() async {
   sqfliteFfiInit();
@@ -108,6 +110,9 @@ Future<void> main() async {
       'lifecycle_wal_growth_bytes': lifecycleWalBytes,
       'rss_bytes': ProcessInfo.currentRss,
     };
+    result['automatic'] = await _automaticBaseline(
+      '${directory.path}/automatic.db',
+    );
     stdout.writeln(jsonEncode(result));
     // Broad host regression budgets, fixed before the initial measurement.
     if (writes.any((us) => us > 1000000) ||
@@ -170,17 +175,106 @@ Future<int> _size(String path) async =>
 final class _WalFactory implements DatabaseFactory {
   _WalFactory(this.delegate);
   final DatabaseFactory delegate;
+  late Database database;
   @override
   Future<Database> openDatabase(
     String path, {
     OpenDatabaseOptions? options,
   }) async {
     final database = await delegate.openDatabase(path, options: options);
+    if (options?.readOnly == true) return database;
     await database.rawQuery('PRAGMA journal_mode = WAL');
     await database.rawQuery('PRAGMA wal_autocheckpoint = 0');
-    return database;
+    return this.database = database;
   }
 
   @override
+  Future<bool> databaseExists(String path) => delegate.databaseExists(path);
+  @override
+  Future<String> getDatabasesPath() => delegate.getDatabasesPath();
+
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+Future<Map<String, Object?>> _automaticBaseline(String path) async {
+  final factory = _WalFactory(databaseFactoryFfi);
+  final policy = SqliteInstallationPolicy(
+    identity: 'automatic-host-baseline',
+    version: 1,
+    evaluate: (_) async => SqliteInstallationEvidence.verified(
+      installationId: 'isolated-host-baseline',
+    ),
+  );
+  int? settledWal;
+  var peakWal = 0, retainedBytes = 0;
+  final result = await automaticBaseline(
+    itemsPerScope: [100],
+    open: (_, client, binding, schedule) async {
+      final session =
+          (await SqliteOfflineStore.openSession(
+                    path: path,
+                    client: client,
+                    binding: binding,
+                    installationPolicy: policy,
+                    databaseFactory: factory,
+                    transferAllowed: false,
+                    schedule: schedule,
+                    readRoute: LanternSingleResponderRoute.certified(
+                      client: client,
+                      responderId: 'baseline',
+                      isCurrent: () => true,
+                    ),
+                  )
+                  as SqliteSessionReady)
+              .session;
+      Future<BaselineCounts> inspect() async {
+        final values = await factory.database.rawQuery('''
+          SELECT (SELECT COUNT(*) FROM outbox) AS outbox,
+            (SELECT COUNT(*) FROM outbox WHERE lease_until IS NOT NULL) AS claims,
+            (SELECT COUNT(*) FROM operations) AS operations,
+            (SELECT COALESCE(SUM(reserved_bytes),0) FROM cache) +
+            (SELECT COALESCE(SUM(reserved_bytes),0) FROM traversals) +
+            (SELECT COALESCE(SUM(reserved_bytes),0) FROM operations) AS retained
+        ''');
+        final row = values.single;
+        retainedBytes = row['retained']! as int;
+        final wal = await _size('$path-wal');
+        if (wal > peakWal) peakWal = wal;
+        if (row['outbox'] == 0) settledWal ??= wal;
+        return (
+          outbox: row['outbox']! as int,
+          claims: row['claims']! as int,
+          operations: row['operations']! as int,
+          memoryBytes: 0,
+        );
+      }
+
+      return (session: session, inspect: inspect);
+    },
+  );
+  final bytes = await _size(path);
+  final reopen = Stopwatch()..start();
+  final store = await SqliteOfflineStore.open(
+    path: path,
+    databaseFactory: factory,
+  );
+  await store.close();
+  reopen.stop();
+  final cacheWal = peakWal - settledWal!;
+  baselineRequire(bytes <= 8 * 1024 * 1024, 'database_bytes');
+  baselineRequire(cacheWal <= 64 * 1024 * 1024, 'cache_wal_bytes');
+  baselineRequire(settledWal! <= 128 * 1024 * 1024, 'lifecycle_wal_bytes');
+  baselineRequire(reopen.elapsedMilliseconds <= 5000, 'reopen_budget');
+  return {
+    ...result,
+    'journal': 'wal',
+    'synchronous': 'full',
+    'databaseBytes': bytes,
+    'retainedBytes': retainedBytes,
+    'cacheWalGrowthBytes': cacheWal,
+    'lifecycleWalBytes': settledWal,
+    'peakWalBytes': peakWal,
+    'reopenMillis': reopen.elapsedMilliseconds,
+  };
 }

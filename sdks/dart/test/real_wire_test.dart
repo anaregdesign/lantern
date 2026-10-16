@@ -11,6 +11,8 @@ import 'package:connectrpc/protocol/connect.dart' as connect_protocol;
 import 'package:lantern_client/lantern_client.dart';
 import 'package:test/test.dart';
 
+import 'support/traversal_wire_matrix.dart';
+
 void main() {
   final configured = io.Platform.environment['LANTERN_DART_REAL_WIRE_ENDPOINT'];
   if (configured == null || configured.isEmpty) {
@@ -1852,58 +1854,33 @@ void runDataClientWireTests(Uri endpoint) {
         EdgeInput(tail: seed, head: b, weight: 2, expiresAt: expiration),
         EdgeInput(tail: a, head: b, weight: 1, expiresAt: expiration),
       ]);
-      final families = <TraversalOptions>[
-        for (final objective in [
-          TraversalObjective.minimize,
-          TraversalObjective.maximize,
-        ])
-          for (final reduction in TraversalReduction.values)
-            BfsOptions(
-              step: 2,
-              fanOut: 3,
-              objective: objective,
-              reduction: reduction,
-            ),
-        const PprOptions(),
-        const PprOptions(topN: 2, restartProbability: 0.25, epsilon: 1e-4),
-        for (final objective in [
-          TraversalObjective.minimize,
-          TraversalObjective.maximize,
-        ])
-          for (final reduction in TraversalReduction.values)
-            LocalCommunityOptions(
-              maxSize: 3,
-              objective: objective,
-              reduction: reduction,
-            ),
-      ];
-      for (final family in families) {
-        for (final weighting in TraversalWeighting.values) {
-          final expected = await reference.illuminate(
-            seed,
-            traversal: family,
-            weighting: weighting,
-            vertexPrefix: p,
-          );
-          final observed = await client.illuminate(
-            seed,
-            traversal: family,
-            weighting: weighting,
-            vertexPrefix: p,
-          );
-          expect(observed.confirmed.state, ConfirmedState.present);
-          final graph = observed.confirmed.value!;
-          expect(graph.vertices.keys, expected.vertices.keys);
-          expect(graph.edgeWeights, expected.edgeWeights);
-          expect(
-            graph.allEdges.map((e) => e.expiration),
-            expected.allEdges.map((e) => e.expiration),
-          );
-          expect(
-            graph.vertices.values.map((v) => v.expiration),
-            expected.vertices.values.map((v) => v.expiration),
-          );
-        }
+      final matrix = traversalWireMatrix();
+      expect(matrix, hasLength(56));
+      for (final row in matrix) {
+        final expected = await reference.illuminate(
+          seed,
+          traversal: row.traversal,
+          weighting: row.weighting,
+          vertexPrefix: p,
+        );
+        final observed = await client.illuminate(
+          seed,
+          traversal: row.traversal,
+          weighting: row.weighting,
+          vertexPrefix: p,
+        );
+        expect(observed.confirmed.state, ConfirmedState.present);
+        final graph = observed.confirmed.value!;
+        expect(graph.vertices.keys, expected.vertices.keys);
+        expect(graph.edgeWeights, expected.edgeWeights);
+        expect(
+          graph.allEdges.map((e) => e.expiration),
+          expected.allEdges.map((e) => e.expiration),
+        );
+        expect(
+          graph.vertices.values.map((v) => v.expiration),
+          expected.vertices.values.map((v) => v.expiration),
+        );
       }
     },
   );

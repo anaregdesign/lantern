@@ -460,6 +460,7 @@ final class OfflineLanternDataClient
       observedAt: clock().toUtc(),
       freshness: ObservationFreshness.unavailable,
     ),
+    sequence: ++_sequence,
     observationLost: lost,
   );
   LanternSnapshot<T> _lost<T>(LanternSnapshot<T> s, bool lost) =>
@@ -566,6 +567,7 @@ final class OfflineLanternDataClient
       't:${query.canonicalKey}:${options?.source}',
       (lost) => LanternTraversalSnapshot(
         confirmed: _unknown<Graph>(lost).confirmed,
+        sequence: _sequence,
         observationLost: lost,
         query: query,
       ),

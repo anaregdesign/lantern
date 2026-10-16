@@ -514,12 +514,15 @@ final class OfflineReceiptAddEdgeIntent extends OfflineIntent {
   DateTime? get expiration => edge.expiration;
 }
 
-/// Last durable receipt-reconciliation observation for one outbox item.
+/// Durable reconciliation progress, separate from dispatch certainty.
 enum OfflineReceiptReconciliationState {
-  /// Receipt status must be checked before any mutation send.
+  /// Receipt status is required before possible replay.
+  /// Proven never-dispatched work may make its first send without a lookup.
   statusRequired,
 
-  /// Status reported that the operation has not yet been observed.
+  /// Eligible for an attempt after preparation or authorized absent status.
+  /// The pre-send transaction also sets this value; it does not itself prove
+  /// an authoritative absence observation or that no send has occurred.
   notYetObserved,
 
   /// The latest status lookup failed without authoritative evidence.

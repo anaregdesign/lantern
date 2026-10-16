@@ -266,17 +266,17 @@ final class _SqlTransaction
       FROM outbox WHERE partition_id=? AND state IN ('enqueued','sending')
       """,
       [
-        now.millisecondsSinceEpoch,
-        now.millisecondsSinceEpoch,
-        maxAge.inMilliseconds,
-        now.millisecondsSinceEpoch,
-        maxAge.inMilliseconds,
+        now.microsecondsSinceEpoch,
+        now.microsecondsSinceEpoch,
+        maxAge.inMicroseconds,
+        now.microsecondsSinceEpoch,
+        maxAge.inMicroseconds,
         partitionId,
       ],
     )).single;
     DateTime? time(String key) => row[key] == null
         ? null
-        : DateTime.fromMillisecondsSinceEpoch(row[key]! as int, isUtc: true);
+        : DateTime.fromMicrosecondsSinceEpoch(row[key]! as int, isUtc: true);
     final expiration = time('expiration'), age = time('age');
     return OfflineAutomaticSchedule(
       nextAttemptAt: time('attempt'),

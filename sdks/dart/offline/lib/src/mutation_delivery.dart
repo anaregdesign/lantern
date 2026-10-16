@@ -421,6 +421,7 @@ final class OfflineMutationDelivery {
       }
       final dependencies = await _transaction((tx) async {
         final current = await _claim(tx, r, owner);
+        r = current;
         if (tx is! OfflineStoreClaimTransaction) {
           throw const OfflineUnsupportedOperationException();
         }
@@ -504,36 +505,41 @@ final class OfflineMutationDelivery {
       DateTime? capabilityRequestedAt;
       if (r.receipt != null) {
         final evidence = r.receipt!;
-        final status = await remote.getReceiptStatus(
-          evidence.operationId,
-          cancellation: _cancellation,
-        );
-        _checkWork();
-        if (status.operationId != evidence.operationId) {
-          throw const OfflineRemoteProtocolException();
-        }
-        if (status.state == ReceiptStatusState.effectUndisclosed) {
-          await _handled(r, owner, null, claimFence!);
-          return true;
-        }
-        if (status.state == ReceiptStatusState.confirmed) {
-          if (status.groupId != evidence.groupId ||
-              status.mutation != evidence.mutation ||
-              status.itemIndex != 0 ||
-              status.itemCount != 1) {
+        // Validated durable markers agree, and false requires attemptCount=0.
+        // Only the current owned claim can prove a first send. A committed
+        // marker requires original-ID status even if no RPC was observed.
+        if (r.mayHaveDispatched) {
+          final status = await remote.getReceiptStatus(
+            evidence.operationId,
+            cancellation: _cancellation,
+          );
+          _checkWork();
+          if (status.operationId != evidence.operationId) {
             throw const OfflineRemoteProtocolException();
           }
-          await _handled(r, owner, status.result!, claimFence!);
-          return true;
-        }
-        if (status.state == ReceiptStatusState.noLongerProvable) {
-          await _terminal(
-            r,
-            owner,
-            OfflineWriteState.outcomeUnknown,
-            'receipt_no_longer_provable',
-          );
-          return false;
+          if (status.state == ReceiptStatusState.effectUndisclosed) {
+            await _handled(r, owner, null, claimFence!);
+            return true;
+          }
+          if (status.state == ReceiptStatusState.confirmed) {
+            if (status.groupId != evidence.groupId ||
+                status.mutation != evidence.mutation ||
+                status.itemIndex != 0 ||
+                status.itemCount != 1) {
+              throw const OfflineRemoteProtocolException();
+            }
+            await _handled(r, owner, status.result!, claimFence!);
+            return true;
+          }
+          if (status.state == ReceiptStatusState.noLongerProvable) {
+            await _terminal(
+              r,
+              owner,
+              OfflineWriteState.outcomeUnknown,
+              'receipt_no_longer_provable',
+            );
+            return false;
+          }
         }
         capabilityRequestedAt = clock().toUtc();
         age = Stopwatch()..start();
@@ -589,7 +595,8 @@ final class OfflineMutationDelivery {
             _checkWork();
             return updated;
           });
-          // Status-first remains mandatory after refreshed evidence commits.
+          // Keep the bounded retry turn; committed false markers still prove
+          // a first send after this provisional evidence refresh.
           await _retry(r, owner, null);
           return false;
         }
