@@ -47,7 +47,7 @@ void main() {
         endpoint: endpoint,
         providers: providers,
         store: store,
-        openData: (client, session, fresh) async {
+        openData: (client, session, fresh, lifetime) async {
           final partition = nativeAccountPartition(endpoint, session);
           final binding = LanternSessionBinding.native(
             session,
@@ -58,6 +58,7 @@ void main() {
           paths[partition] = path;
           scopes[partition] = binding.stableIdentity;
           return AppDataSessionFactory(
+            lifetime: lifetime,
             client: client,
             binding: binding,
             profile: AppDataProfile.durable,
@@ -66,6 +67,7 @@ void main() {
             clock: clock,
             resolveLocation: () async => AppSqliteLocation(path, policy, null),
           ).open(
+            activate: false,
             freshCredentials: fresh
                 ? OfflineVerifiedCredentials(
                     binding: binding,

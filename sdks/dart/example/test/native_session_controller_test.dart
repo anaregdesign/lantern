@@ -8,8 +8,134 @@ import 'package:lantern_example/native_credential_store.dart';
 import 'package:lantern_example/native_session_controller.dart';
 
 import 'native_test_helpers.dart';
+import 'app_data_test_support.dart' show AppClock;
 
 void main() {
+  for (final phase in ['open', 'write']) {
+    for (final transition in ['cancel', 'switch', 'close']) {
+      test(
+        'R1 $transition joins held $phase and fences provisional work',
+        () async {
+          final clock = AppClock()..now = DateTime.now().toUtc();
+          final store = MemoryCredentials(), providers = Providers();
+          final wire = NativeWire(store);
+          final held = Completer<void>(), reached = Completer<void>();
+          final cleanup = Completer<void>(), cleanupSeen = Completer<void>();
+          if (phase == 'write') store.holdWrite = held;
+          final opened = <String>[];
+          AppDataSession? provisional;
+          LanternClient? firstClient;
+          final c = NativeSessionController(
+            endpoint: endpoint,
+            providers: providers,
+            store: store,
+            createClient: (credential) {
+              final client = LanternClient.connect(
+                endpoint,
+                transport: wire,
+                tokenProvider: () => credential,
+                onClose: () async {
+                  if (credential != null && !cleanupSeen.isCompleted) {
+                    cleanupSeen.complete();
+                    await cleanup.future;
+                  }
+                },
+              );
+              if (credential != null) firstClient ??= client;
+              return client;
+            },
+            openData: (client, session, fresh, lifetime) async {
+              opened.add(session.principal.subject);
+              final data = await AppDataSessionFactory(
+                client: client,
+                binding: LanternSessionBinding.native(
+                  session,
+                  securityDomain: 'provisional-lifetime',
+                ),
+                profile: AppDataProfile.memory,
+                legacyPartition: 'unused',
+                lifetime: lifetime,
+                clock: clock.call,
+                schedule: clock.schedule,
+              ).open(activate: false);
+              if (session.principal.subject == 'a') {
+                provisional = data;
+                // Existing local intent is eligible, but startup cannot send it.
+                await data.data!.mutations.submit(
+                  MutationRequest.putVertices([
+                    VertexInput(
+                      key: 'private:pending',
+                      value: const StringValue('a'),
+                    ),
+                  ]),
+                );
+                reached.complete();
+                if (phase == 'open') await held.future;
+              }
+              return data;
+            },
+          );
+          addTearDown(() async {
+            if (!held.isCompleted) held.complete();
+            if (!cleanup.isCompleted) cleanup.complete();
+            await c.close();
+          });
+          final login = c.login(issuer, 'mobile');
+          await clock.settle(reached.future);
+          if (phase == 'write') await clock.settle(store.writeSeen.future);
+          await clock.advance(const Duration(seconds: 1));
+          expect(wire.dataDispatches, isEmpty);
+          expect(wire.receiptStatuses, isEmpty);
+          Future<void>? successor;
+          var completed = false;
+          switch (transition) {
+            case 'cancel':
+              c.cancelLogin();
+            case 'switch':
+              providers.subject = 'b';
+              successor = c.login(issuer, 'mobile');
+            case 'close':
+              successor = c.close();
+          }
+          successor?.then((_) => completed = true);
+          await clock.advance(const Duration(seconds: 1));
+          expect(completed, false);
+          expect(opened, ['a']);
+          expect(providers.authentications, 1);
+          expect(c.account, isNull);
+          await expectLater(
+            () => provisional!.data!.getVertex('private'),
+            throwsA(isA<OfflineDisposedException>()),
+          );
+          expect(wire.dataDispatches, isEmpty);
+          expect(wire.receiptStatuses, isEmpty);
+          held.complete();
+          await clock.settle(cleanupSeen.future);
+          await clock.advance(const Duration(seconds: 1));
+          expect(
+            completed,
+            false,
+            reason: 'Retirement must also join transport close',
+          );
+          expect(opened, ['a']);
+          expect(c.account, isNull);
+          cleanup.complete();
+          await clock.settle(login);
+          if (successor != null) await clock.settle(successor);
+          expect(firstClient!.isClosed, true);
+          if (transition == 'switch') {
+            expect(opened, ['a', 'b']);
+            expect(c.account!.session.principal.subject, 'b');
+          } else {
+            expect(c.account, isNull);
+            expect(store.saved, isNull);
+          }
+          expect(wire.dataDispatches, isEmpty);
+          expect(wire.receiptStatuses, isEmpty);
+        },
+      );
+    }
+  }
   test(
     'I6 incomplete startup retirement prevents successor activation',
     () async {
@@ -32,7 +158,7 @@ void main() {
           tokenProvider: () => credential,
           transport: wire,
         ),
-        openData: (_, _, _) async {
+        openData: (_, _, _, _) async {
           opens++;
           throw failure;
         },
@@ -80,7 +206,7 @@ void main() {
           tokenProvider: () => credential,
           transport: wire,
         ),
-        openData: (_, _, _) async => null,
+        openData: (_, _, _, _) async => null,
       );
       addTearDown(() => finish(controller.close()));
       await finish(controller.login(issuer, 'mobile'));
@@ -113,9 +239,10 @@ void main() {
           tokenProvider: () => credential,
           transport: wire,
         ),
-        openData: (client, session, fresh) {
+        openData: (client, session, fresh, lifetime) {
           opened.add(session.principal.subject);
           return AppDataSessionFactory(
+            lifetime: lifetime,
             client: client,
             binding: LanternSessionBinding.native(
               session,
@@ -123,7 +250,7 @@ void main() {
             ),
             profile: AppDataProfile.memory,
             legacyPartition: 'unused',
-          ).open();
+          ).open(activate: false);
         },
       );
       addTearDown(controller.close);
@@ -179,7 +306,7 @@ void main() {
             }
           },
         ),
-        openData: (_, _, _) async {
+        openData: (_, _, _, _) async {
           opens++;
           return null;
         },
@@ -220,7 +347,7 @@ void main() {
             tokenProvider: () => credential,
             transport: wire,
           ),
-          openData: (_, _, _) async => null,
+          openData: (_, _, _, _) async => null,
         );
         addTearDown(c.close);
         await c.login('https://appleid.apple.com', 'mobile');
@@ -249,7 +376,7 @@ void main() {
       tokenProvider: () => credential,
       transport: wire,
     ),
-    openData: (client, session, fresh) async {
+    openData: (client, session, fresh, lifetime) async {
       opened.add(nativeAccountPartition(endpoint, session));
       return null;
     },
@@ -356,7 +483,7 @@ void main() {
           tokenProvider: () => credential,
           transport: wire,
         ),
-        openData: (client, session, fresh) async {
+        openData: (client, session, fresh, lifetime) async {
           if (++opens == 2) throw StateError('Storage unavailable');
           return null;
         },

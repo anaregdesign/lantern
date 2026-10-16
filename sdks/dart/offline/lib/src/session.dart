@@ -177,8 +177,13 @@ final class OfflineLanternSession
     }
     try {
       return OfflineLanternSession._(entry, await entry.future);
-    } catch (_) {
-      if (identical(_sessions[storeKey], entry)) _sessions.remove(storeKey);
+    } catch (error) {
+      if (error is OfflineStartupRetirementException) {
+        // A failed provisional retirement is still an owned reservation.
+        entry.closing = true;
+      } else if (identical(_sessions[storeKey], entry)) {
+        _sessions.remove(storeKey);
+      }
       rethrow;
     }
   }
@@ -558,16 +563,38 @@ final class _SessionShared {
       await _maintain();
       _changed();
       return this;
-    } catch (_) {
-      // No capability escapes before validation/owner establishment completes.
-      await createdRuntime?.close();
-      await createdData?.close();
-      try {
-        await acquired?.release();
-      } finally {
-        await closeStore(store);
+    } catch (error, stack) {
+      // Join every safe cleanup, preserving the startup cause and the first
+      // retirement failure. An incomplete retirement retains the registry slot.
+      ended = true;
+      Object? retirement;
+      StackTrace? retirementTrace;
+      Future<void> join(Future<void> Function() cleanup) async {
+        try {
+          await cleanup();
+        } catch (failure, trace) {
+          retirement ??= failure;
+          retirementTrace ??= trace;
+        }
       }
-      rethrow;
+
+      if (createdRuntime != null) await join(createdRuntime.close);
+      if (createdData != null) await join(createdData.close);
+      // A failed work/transaction join cannot authorize releasing its owner or
+      // closing the backing store. Remaining transport cleanup is caller-owned.
+      if (retirement == null) {
+        if (acquired != null) await join(acquired.release);
+        await join(() => closeStore(store));
+      }
+      if (retirement != null) {
+        throw OfflineStartupRetirementException(
+          error,
+          stack,
+          retirement!,
+          retirementTrace!,
+        );
+      }
+      Error.throwWithStackTrace(error, stack);
     }
   }
 

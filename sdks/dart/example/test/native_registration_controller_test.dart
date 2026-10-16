@@ -19,7 +19,7 @@ void main() {
       transport: wire,
       tokenProvider: () => credential,
     ),
-    openData: (_, _, _) async => null,
+    openData: (_, _, _, _) async => null,
   );
 
   test(

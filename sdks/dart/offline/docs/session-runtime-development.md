@@ -24,6 +24,15 @@ attempts the remaining owned resources while preserving the first failure, and
 the core reservation stays blocked on any teardown failure. Legacy low-level
 owner primitives retain their explicit release protocol. App/account close
 memoizes the same Future and blocks replacement after failed retirement.
+Before a session returns, `OfflineStartupRetirementException` preserves the
+startup cause and the first cleanup cause with content-free formatting; the core
+reservation and any unsafe native guard remain held. Successful startup cleanup
+releases the reservation and keeps the ordinary original error. The app factory
+carries incomplete cleanup to the account owner, which blocks even a different
+account/path. Provisional data startup, credential persistence, activation and
+failure cleanup share the controller's replacement barrier. Its captured
+lifetime is invalidated synchronously and is also the automatic runtime's
+authority predicate; transfer is enabled only after the current credential write.
 
 SQLite uses a small C Code Asset on Android/iOS and the same primitive on the
 host: nonblocking exclusive `flock` on a dedicated sidecar, with at most 16 opaque

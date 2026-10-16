@@ -210,6 +210,24 @@ final class _SqlOpenAttempt {
   bool cleanupFailed = false;
   Database? openingConnection;
   bool openReturned = false;
+  Future<void> cleanup(
+    Database db,
+    Object? startup,
+    StackTrace? startupTrace,
+  ) async {
+    try {
+      await db.close();
+    } catch (retirement, trace) {
+      cleanupFailed = true;
+      final safe = _safeDatabaseError(retirement);
+      throw OfflineStartupRetirementException(
+        startup == null ? safe : _safeDatabaseError(startup),
+        startupTrace ?? trace,
+        safe,
+        trace,
+      );
+    }
+  }
 }
 
 final class _SqlInitialization {
@@ -274,6 +292,8 @@ final class _SqlInitialization {
       guard.path,
       options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
     );
+    Object? startup;
+    StackTrace? startupTrace;
     try {
       final version = await db.getVersion();
       final id = (await db.rawQuery(
@@ -311,13 +331,12 @@ final class _SqlInitialization {
         throw const _RestoreHold(SqliteRestoreReason.legacyAssertionMissing);
       }
       guard.check();
+    } catch (error, stack) {
+      startup = error;
+      startupTrace = stack;
+      rethrow;
     } finally {
-      try {
-        await db.close();
-      } catch (_) {
-        attempt.cleanupFailed = true;
-        rethrow;
-      }
+      await attempt.cleanup(db, startup, startupTrace);
     }
   }
 

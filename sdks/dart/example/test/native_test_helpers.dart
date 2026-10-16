@@ -16,6 +16,8 @@ String bytes(int n, [int size = 32]) => base64Encode(List.filled(size, n));
 
 final class MemoryCredentials implements NativeCredentialStore {
   StoredNativeCredential? saved;
+  Completer<void>? holdWrite;
+  final writeSeen = Completer<void>();
   final records = <String, List<NativeLogoutReview>>{};
   List<NativeRegistrationReview> registrationRecords = [];
   @override
@@ -30,6 +32,8 @@ final class MemoryCredentials implements NativeCredentialStore {
   Future<StoredNativeCredential?> read() async => saved;
   @override
   Future<void> write(StoredNativeCredential value) async {
+    if (!writeSeen.isCompleted) writeSeen.complete();
+    await holdWrite?.future;
     saved = value;
   }
 

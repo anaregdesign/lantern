@@ -93,28 +93,18 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
             final store = SqliteOfflineStore._(db, factory, lane, key, limits);
             lane.owners.add(store);
             return store;
-          } catch (_) {
-            try {
-              await db.close();
-            } catch (_) {
-              attempt.cleanupFailed = true;
-              rethrow;
-            }
+          } catch (error, stack) {
+            await attempt.cleanup(db, error, stack);
             rethrow;
           }
         }),
       );
-    } catch (_) {
+    } catch (error, stack) {
       if (--lane.references == 0) lanes.remove(key);
       // A failed create/upgrade can throw before openDatabase returns. Join the
       // connection's close as well; never assume plugin cleanup released it.
       if (!attempt.openReturned && attempt.openingConnection != null) {
-        try {
-          await attempt.openingConnection!.close();
-        } catch (_) {
-          attempt.cleanupFailed = true;
-          rethrow;
-        }
+        await attempt.cleanup(attempt.openingConnection!, error, stack);
       }
       rethrow;
     }
@@ -136,6 +126,7 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
     bool restoreHeld = false,
     OfflineClock? clock,
     OfflineSessionSchedule? schedule,
+    bool Function()? authorityCurrent,
     LanternChangeSource? incomingChanges,
     LanternSingleResponderRoute? readRoute,
   }) async {
@@ -160,6 +151,7 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
           restoreHeld: restoreHeld,
           clock: clock,
           schedule: schedule,
+          authorityCurrent: authorityCurrent,
           incomingChanges: incomingChanges,
           readRoute: readRoute,
           adapterConfiguration: (
@@ -219,12 +211,21 @@ final class SqliteOfflineStore implements OfflineStore, OfflineAutomaticStore {
       store._reservation = guard;
       guard.check();
       return store;
-    } catch (_) {
-      if (store != null) {
-        // close owns the retained capability; a failed close does not unlock.
-        await store.close();
-      } else if (!attempt.cleanupFailed) {
-        guard.release();
+    } catch (error, stack) {
+      try {
+        if (store != null) {
+          // close owns the retained capability; a failed close does not unlock.
+          await store.close();
+        } else if (!attempt.cleanupFailed) {
+          guard.release();
+        }
+      } catch (retirement, trace) {
+        throw OfflineStartupRetirementException(
+          _safeDatabaseError(error),
+          stack,
+          _safeDatabaseError(retirement),
+          trace,
+        );
       }
       rethrow;
     }

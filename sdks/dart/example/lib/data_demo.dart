@@ -85,6 +85,7 @@ final class _DataDemoPanelState extends State<DataDemoPanel> {
             value: VertexValue.uint64((BigInt.one << 63) + BigInt.one),
           ),
         ], options: writes);
+        StateError? unsuitable;
         for (var index = 0; index < results.items.length; index++) {
           final reply = results.items[index];
           if (reply case MutationKnownEffect<PutOutcome>(
@@ -98,9 +99,10 @@ final class _DataDemoPanelState extends State<DataDemoPanel> {
               );
             }
           } else {
-            throw StateError('Put position $index: ${_effect(reply)}');
+            unsuitable ??= StateError('Put position $index: ${_effect(reply)}');
           }
         }
+        if (unsuitable != null) throw unsuitable;
       });
       await _runStep(
         'Read sample vertex',

@@ -234,6 +234,10 @@ or reconnect loop triggers delivery. Two listeners can cancel independently.
 Hide/pause cancels screen observations and joins session attempts; resume reopens
 eligible work after expiry checks. Transient `inactive` does not close the owner.
 Account retirement joins data, SQLite and transport before successor activation.
+This includes provisional startup: a captured generation fences data work as soon
+as cancel, switch or close begins. Native data transfer remains disabled through
+credential storage and is enabled only at the current lifetime's commit boundary.
+Startup and its failed cleanup stay inside the same serialized replacement join.
 Repeated close returns the same Future, including failure; a failed retirement or
 failed initialization cleanup blocks replacement. A late old read cannot publish
 into the next account. Native absolute expiry ends access without provider login.

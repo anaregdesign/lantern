@@ -198,6 +198,7 @@ final class _ClientOwnerState extends State<_ClientOwner> {
   late final _RuntimeTokenProvider _tokens;
   late final LanternClient _client;
   late final Future<AppDataSession> _offlineSession;
+  final _dataLifetime = AppDataLifetime();
 
   @override
   void initState() {
@@ -220,6 +221,7 @@ final class _ClientOwnerState extends State<_ClientOwner> {
     final configuration = widget.configuration;
     final scope = configuration.offlinePartitionId;
     return AppDataSessionFactory(
+      lifetime: _dataLifetime,
       client: _client,
       binding: LanternSessionBinding.application(
         serviceOrigin: _client.endpoint,
@@ -235,19 +237,30 @@ final class _ClientOwnerState extends State<_ClientOwner> {
   }
 
   Future<void>? _closing;
-  Future<void> _closeSession() => _closing ??= (() async {
-    AppDataSession? session;
-    try {
-      session = await _offlineSession;
-    } catch (_) {
-      /* Startup owns cleanup. */
-    }
-    try {
-      await closeAccountData(session, _client);
-    } finally {
-      _tokens.close();
-    }
-  })();
+  Future<void> _closeSession() {
+    _dataLifetime.invalidate();
+    return _closing ??= (() async {
+      AppDataSession? session;
+      Object? failure;
+      StackTrace? trace;
+      try {
+        session = await _offlineSession;
+      } catch (error, stack) {
+        // Startup attempted cleanup; preserve any incomplete-retirement result.
+        failure = error;
+        trace = stack;
+      }
+      try {
+        await closeAccountData(session, _client);
+      } catch (error, stack) {
+        failure ??= error;
+        trace ??= stack;
+      } finally {
+        _tokens.close();
+      }
+      if (failure != null) Error.throwWithStackTrace(failure, trace!);
+    })();
+  }
 
   @override
   void dispose() {

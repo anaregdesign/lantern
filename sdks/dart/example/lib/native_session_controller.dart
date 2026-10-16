@@ -48,6 +48,7 @@ final class NativeSessionController extends ChangeNotifier {
       LanternClient client,
       NativeSession session,
       bool freshlyVerified,
+      AppDataLifetime lifetime,
     )?
     openData,
     AppDataProfile profile = AppDataProfile.durable,
@@ -62,13 +63,14 @@ final class NativeSessionController extends ChangeNotifier {
            )),
        _openData =
            openData ??
-           ((client, session, fresh) {
+           ((client, session, fresh, lifetime) {
              final binding = LanternSessionBinding.native(
                session,
                securityDomain: securityDomain,
              );
              return AppDataSessionFactory(
                client: client,
+               lifetime: lifetime,
                binding: binding,
                profile: profile,
                legacyPartition: nativeAccountPartition(endpoint, session),
@@ -76,6 +78,7 @@ final class NativeSessionController extends ChangeNotifier {
                    pinnedResponder && session.personalPrefix != null,
                changePrefix: session.personalPrefix ?? '',
              ).open(
+               activate: false,
                freshCredentials: fresh
                    ? OfflineVerifiedCredentials(
                        binding: binding,
@@ -91,7 +94,12 @@ final class NativeSessionController extends ChangeNotifier {
   final NativeProviders providers;
   final NativeCredentialStore store;
   final LanternClient Function(String?) _createClient;
-  final Future<AppDataSession?> Function(LanternClient, NativeSession, bool)
+  final Future<AppDataSession?> Function(
+    LanternClient,
+    NativeSession,
+    bool,
+    AppDataLifetime,
+  )
   _openData;
   NativeAccount? account;
   List<NativeRegistrationReview> registrationReviews = const [];
@@ -105,6 +113,7 @@ final class NativeSessionController extends ChangeNotifier {
   Object? _retirementFailure;
   StackTrace? _retirementTrace;
   Future<void>? _closing;
+  AppDataLifetime? _dataLifetime;
 
   Future<void> _closeAccount(NativeAccount? value) async {
     try {
@@ -134,6 +143,7 @@ final class NativeSessionController extends ChangeNotifier {
 
   int _transition() {
     final generation = ++_generation;
+    _dataLifetime?.invalidate();
     _pending?.cancel();
     _pending = LanternCancellationToken();
     account?.cancellation.cancel();
@@ -146,6 +156,7 @@ final class NativeSessionController extends ChangeNotifier {
   /// Cancels UI/HTTP ownership even when the platform dialog cannot be dismissed.
   void cancelLogin() {
     final generation = ++_generation;
+    _dataLifetime?.invalidate();
     _pending?.cancel();
     final old = account;
     account = null;
@@ -248,7 +259,7 @@ final class NativeSessionController extends ChangeNotifier {
   }) async {
     final client = _createClient(saved.credential);
     AppDataSession? dataSession;
-    var installed = false;
+    var installed = false, cleanupJoined = false;
     Object? startupFailure;
     try {
       final view = await client.getNativeSession(
@@ -266,73 +277,97 @@ final class NativeSessionController extends ChangeNotifier {
         account = null;
         _changed();
         await _closeAccount(old);
-      });
-      if (!_current(generation)) return;
-      try {
-        dataSession = await _openData(client, view.session, freshlyVerified);
-      } on AppDataStartupFailure catch (error) {
-        _retirementFailure ??= error;
-        _retirementTrace ??= error.startupTrace;
-        rethrow;
-      }
-      if (!_current(generation)) return;
-      await _exclusive(() async {
         if (!_current(generation)) return;
-        await store.write(saved);
-        if (!_current(generation)) {
-          await store.clear();
-          return;
-        }
-        account = NativeAccount(
-          saved.credential,
-          client,
-          view.session,
-          partition,
-          dataSession,
+        final lifetime = _dataLifetime = AppDataLifetime(
+          current: () => _current(generation),
         );
-        installed = true;
-        _expiry = Timer(
-          view.session.expiresAt.difference(DateTime.now()),
-          () => unawaited(signOut(revoke: false)),
-        );
-        message =
-            'Signed in. Session expires at ${view.session.expiresAt.toLocal()}.';
-        _changed();
-        // Resolve old revocation identities under the same exact account only.
-        // A status read can fail; retained records never become a replay queue.
+        // This serialized interval owns startup and its cleanup, even before a
+        // session exists. A successor and close must join the entire interval.
         try {
-          final pending = await store.pending(partition),
-              keep = <NativeLogoutReview>[];
-          for (final review in pending) {
-            if (!_current(generation)) {
-              keep.add(review);
-              continue;
-            }
-            try {
-              if (await client.getNativeLogoutStatus(
-                    review,
-                    options: LanternCallOptions(
-                      cancellation: _pending,
-                      timeout: const Duration(seconds: 5),
-                    ),
-                  ) ==
-                  NativeLogoutOutcome.unresolved) {
+          dataSession = await _openData(
+            client,
+            view.session,
+            freshlyVerified,
+            lifetime,
+          );
+          lifetime.check();
+          await store.write(saved);
+          if (!lifetime.isCurrent) {
+            await store.clear();
+            lifetime.check();
+          }
+          await dataSession?.activate();
+          lifetime.check();
+          account = NativeAccount(
+            saved.credential,
+            client,
+            view.session,
+            partition,
+            dataSession,
+          );
+          installed = true;
+          _expiry = Timer(
+            view.session.expiresAt.difference(DateTime.now()),
+            () => unawaited(signOut(revoke: false)),
+          );
+          message =
+              'Signed in. Session expires at ${view.session.expiresAt.toLocal()}.';
+          _changed();
+          // Resolve old revocation identities under the same exact account only.
+          // A status read can fail; retained records never become a replay queue.
+          try {
+            final pending = await store.pending(partition),
+                keep = <NativeLogoutReview>[];
+            for (final review in pending) {
+              if (!_current(generation)) {
+                keep.add(review);
+                continue;
+              }
+              try {
+                if (await client.getNativeLogoutStatus(
+                      review,
+                      options: LanternCallOptions(
+                        cancellation: _pending,
+                        timeout: const Duration(seconds: 5),
+                      ),
+                    ) ==
+                    NativeLogoutOutcome.unresolved) {
+                  keep.add(review);
+                }
+              } on Object {
                 keep.add(review);
               }
-            } on Object {
-              keep.add(review);
+            }
+            await store.savePending(partition, keep);
+          } on Object {
+            /* Retain recovery records when secure storage is unavailable. */
+          }
+        } catch (error) {
+          startupFailure = error;
+          if (error is AppDataStartupFailure) {
+            _retirementFailure ??= error;
+            _retirementTrace ??= error.startupTrace;
+          }
+          rethrow;
+        } finally {
+          if (!installed) {
+            lifetime.invalidate();
+            cleanupJoined = true;
+            try {
+              await closeAccountData(dataSession, client);
+            } catch (error, stack) {
+              _retirementFailure ??= error;
+              _retirementTrace ??= stack;
+              if (startupFailure == null) rethrow;
             }
           }
-          await store.savePending(partition, keep);
-        } on Object {
-          /* Retain recovery records when secure storage is unavailable. */
         }
       });
     } catch (error) {
       startupFailure = error;
       rethrow;
     } finally {
-      if (!installed) {
+      if (!installed && !cleanupJoined) {
         try {
           await closeAccountData(dataSession, client);
         } catch (error, stack) {
@@ -447,6 +482,7 @@ final class NativeSessionController extends ChangeNotifier {
   Future<void> _close() async {
     _closed = true;
     ++_generation;
+    _dataLifetime?.invalidate();
     _pending?.cancel();
     _expiry?.cancel();
     await _exclusive(() async {

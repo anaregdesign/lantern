@@ -144,23 +144,30 @@ void main() {
     );
   }
 
-  testWidgets('mixed Put results retain confirmed items without continuing', (
-    tester,
-  ) async {
-    final wire = _DemoWire()..mixedPut = true;
-    await show(tester, wire.client());
-    await tester.tap(find.text('Seed CRUD'));
-    await tester.pumpAndSettle();
-    expect(
-      find.textContaining('Stopped at Put sample vertices:'),
-      findsOneWidget,
-    );
-    expect(
-      find.text('Confirmed: Put vertex flutter-demo:alice'),
-      findsOneWidget,
-    );
-    expect(wire.calls, ['PutVertices']);
-  });
+  for (final outcomes in [
+    [1, 4],
+    [4, 1],
+    [2, 1],
+  ]) {
+    testWidgets('mixed Put $outcomes retains every confirmed position', (
+      tester,
+    ) async {
+      final wire = _DemoWire()..mixedPut = outcomes;
+      await show(tester, wire.client());
+      await tester.tap(find.text('Seed CRUD'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Stopped at Put sample vertices:'),
+        findsOneWidget,
+      );
+      final name = outcomes.first == 1 ? 'alice' : 'bob';
+      expect(
+        find.text('Confirmed: Put vertex flutter-demo:$name'),
+        findsOneWidget,
+      );
+      expect(wire.calls, ['PutVertices']);
+    });
+  }
 
   for (final positions in [false, true]) {
     testWidgets('metadata-capable path respects positions=$positions', (
@@ -288,7 +295,8 @@ Future<void> _waitFor(WidgetTester tester, String text) async {
 // Explicit public Connect JSON fixtures; generated SDK classes stay private.
 final class _DemoWire implements connect.Transport {
   final calls = <String>[], phrases = <bool>[];
-  bool statusAllowed = false, positions = false, mixedPut = false;
+  bool statusAllowed = false, positions = false;
+  List<int>? mixedPut;
   String? failure;
   Completer<void>? heldAdd;
   LanternClient client() =>
@@ -327,7 +335,7 @@ final class _DemoWire implements connect.Transport {
     }
     final Map<String, Object?> response = switch (method) {
       'PutVertices' => {
-        'outcomes': mixedPut ? [1, 4] : [for (final _ in req['vertices']) 1],
+        'outcomes': mixedPut ?? [for (final _ in req['vertices']) 1],
       },
       'GetVertices' => {
         'vertices': [
