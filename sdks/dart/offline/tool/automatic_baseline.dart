@@ -10,9 +10,13 @@ import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline/lantern_client_offline_adapter.dart';
 
+import 'automatic_diagnostics.dart';
+
 /// Adds one fixed automatic-session mode to the existing resource probes.
 /// Immediate deterministic wire replies measure client work, not Server speed.
 Future<Map<String, Object?>> automaticBaseline({
+  AutomaticDiagnostics? diagnostics,
+  Future<Map<String, Object?>> Function()? stoppedSnapshot,
   required List<int> itemsPerScope,
   required Future<
     ({OfflineLanternSession session, Future<BaselineCounts> Function() inspect})
@@ -32,11 +36,22 @@ Future<Map<String, Object?>> automaticBaseline({
   final clients = <LanternClient>[];
   final wires = <BaselineWire>[];
   final subscriptions = <StreamSubscription<Object?>>[];
-  final alarms = BaselineAlarms();
-  final traffic = BaselineTraffic();
+  final alarms = BaselineAlarms(diagnostics);
+  final traffic = BaselineTraffic(diagnostics);
+  diagnostics?.passive = () => {
+    'transport': traffic.snapshot(),
+    'alarms': alarms.snapshot(),
+    'process': probeProcessCounters(),
+  };
   final now = DateTime.now().toUtc();
   final expiry = now.add(const Duration(hours: 1));
-  var closed = false;
+  var closed = false, failed = false, mayClose = true;
+  Future<void> closeSessions() async {
+    for (final session in sessions.reversed) {
+      await session.close();
+    }
+  }
+
   try {
     for (var i = 0; i < itemsPerScope.length; i++) {
       final wire = BaselineWire(expiry, traffic);
@@ -59,6 +74,7 @@ Future<Map<String, Object?>> automaticBaseline({
       sessions.add(opened.session);
       inspectors.add(opened.inspect);
     }
+    diagnostics?.phase = 'enqueue';
     final tickets = <MutationTicket<PutOutcome>>[];
     final enqueue = Stopwatch()..start();
     for (var i = 0; i < sessions.length; i++) {
@@ -77,13 +93,21 @@ Future<Map<String, Object?>> automaticBaseline({
     }
     enqueue.stop();
     final settle = Stopwatch()..start();
+    diagnostics?.phase = 'settlement';
+    diagnostics?.settlementStartedAt = diagnostics.micros();
+    diagnostics?.emit('settlementStart', diagnostics.snapshot());
     for (final session in sessions) {
       await session.setTransferAllowed(true);
     }
-    await Future.wait([
+    final ticket = Future.wait([
       for (var i = 0; i < sessions.length; i++)
         sessions[i].mutations.reobserve(tickets[i].reference),
-    ]).timeout(const Duration(seconds: 30));
+    ]);
+    if (diagnostics == null) {
+      await ticket.timeout(const Duration(seconds: 30));
+    } else {
+      await diagnostics.waitTicket(ticket);
+    }
     for (var turn = 0; turn < 500; turn++) {
       final counts = await Future.wait(inspectors.map((inspect) => inspect()));
       if (counts.every((c) => c.outbox == 0)) break;
@@ -93,6 +117,8 @@ Future<Map<String, Object?>> automaticBaseline({
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
     settle.stop();
+    diagnostics?.emit('settled', diagnostics.snapshot());
+    diagnostics?.phase = 'traversal';
     final data = sessions.first;
     final options = <TraversalOptions>[
       const BfsOptions(step: 2, fanOut: 2),
@@ -172,8 +198,11 @@ Future<Map<String, Object?>> automaticBaseline({
       await subscription.cancel();
     }
     subscriptions.clear();
-    for (final session in sessions.reversed) {
-      await session.close();
+    diagnostics?.phase = 'close';
+    if (diagnostics == null) {
+      await closeSessions();
+    } else {
+      await diagnostics.close(closeSessions);
     }
     close.stop();
     closed = true;
@@ -267,18 +296,58 @@ Future<Map<String, Object?>> automaticBaseline({
           traffic.active == 0,
       'joined',
     );
+    diagnostics?.emit('completed', {
+      'measurements': result,
+      ...diagnostics.snapshot(),
+    });
     return result;
+  } catch (_) {
+    failed = true;
+    if (diagnostics != null) {
+      diagnostics.emit('failure', diagnostics.snapshot());
+      mayClose = await diagnostics.inspectStopped(
+        suspend: () async {
+          for (final session in sessions) {
+            await session.suspend();
+          }
+        },
+        snapshot: () async => {
+          'durable': await stoppedSnapshot?.call(),
+          'healthAfterDiagnosticSuspension': [
+            for (final session in sessions)
+              await session.syncStatus.first.then(
+                (s) => {
+                  'activeMutations': s.activeMutations,
+                  'pause': s.pause.name,
+                  'lifecycle': s.lifecycle.name,
+                  'reachability': s.reachability.name,
+                  'deferred': s.deferred,
+                },
+              ),
+          ],
+        },
+      );
+    }
+    rethrow;
   } finally {
     for (final sub in subscriptions) {
       await sub.cancel();
     }
-    if (!closed) {
-      for (final session in sessions.reversed) {
-        await session.close();
+    if (!closed && mayClose) {
+      if (diagnostics == null) {
+        await closeSessions();
+      } else {
+        try {
+          await diagnostics.close(closeSessions);
+        } catch (_) {
+          if (!failed) rethrow;
+        }
       }
     }
-    for (final client in clients) {
-      await client.close();
+    if (mayClose && (diagnostics?.cleanupConfirmed ?? true)) {
+      for (final client in clients) {
+        await client.close();
+      }
     }
   }
 }
@@ -303,11 +372,38 @@ Map<String, int> baselinePercentiles(List<int> values) {
 }
 
 final class BaselineAlarms {
-  int active = 0, peak = 0;
+  BaselineAlarms([this.diagnostics]);
+  final AutomaticDiagnostics? diagnostics;
+  int active = 0, peak = 0, scheduled = 0, fired = 0, canceled = 0;
+  int? lastFire;
+  final Map<_Alarm, int> _deadlines = {};
+  Map<String, Object?> snapshot() => {
+    'scheduled': scheduled,
+    'fired': fired,
+    'canceled': canceled,
+    'active': active,
+    'lastFireMicros': lastFire,
+    'outstandingDeadlineMicros': _deadlines.values.toList()..sort(),
+  };
   OfflineSessionAlarm schedule(Duration delay, void Function() callback) {
     active++;
+    scheduled++;
     peak = max(peak, active);
-    return _Alarm(delay, callback, () => active--);
+    late _Alarm alarm;
+    alarm = _Alarm(delay, callback, (didFire) {
+      active--;
+      _deadlines.remove(alarm);
+      if (didFire) {
+        fired++;
+        lastFire = diagnostics?.micros();
+      } else {
+        canceled++;
+      }
+    });
+    if (diagnostics != null) {
+      _deadlines[alarm] = diagnostics!.micros() + delay.inMicroseconds;
+    }
+    return alarm;
   }
 }
 
@@ -316,12 +412,12 @@ final class _Alarm implements OfflineSessionAlarm {
     timer = Timer(delay, () {
       if (live) {
         live = false;
-        finished();
+        finished(true);
         callback();
       }
     });
   }
-  final void Function() finished;
+  final void Function(bool) finished;
   late Timer timer;
   bool live = true;
   @override
@@ -329,15 +425,40 @@ final class _Alarm implements OfflineSessionAlarm {
     if (live) {
       live = false;
       timer.cancel();
-      finished();
+      finished(false);
     }
   }
 }
 
 final class BaselineTraffic {
+  BaselineTraffic([this.diagnostics]);
+  final AutomaticDiagnostics? diagnostics;
   int sends = 0, reads = 0, traversals = 0;
   int peakSends = 0, peakReads = 0, peakTraversals = 0;
+  int started = 0, replies = 0;
+  int? firstProgress, lastProgress;
+  final List<Map<String, int>> milestones = [];
   int get active => sends + reads;
+  void reply() {
+    replies++;
+    final now = diagnostics?.micros();
+    firstProgress ??= now;
+    lastProgress = now;
+    if (now != null && replies % 10 == 0 && milestones.length < 10) {
+      milestones.add({'replies': replies, 'elapsedMicros': now});
+    }
+  }
+
+  Map<String, Object?> snapshot() => {
+    'sendsStarted': started,
+    'repliesReturned': replies,
+    'inFlight': active,
+    'firstProgressMicros': firstProgress,
+    'lastProgressMicros': lastProgress,
+    'replyMilestones': [
+      for (final row in milestones) {...row},
+    ],
+  };
 }
 
 final class BaselineWire implements connect.Transport {
@@ -366,6 +487,7 @@ final class BaselineWire implements connect.Transport {
       sends++;
       activeSends++;
       traffic.sends++;
+      traffic.started++;
       peakSends = max(peakSends, activeSends);
       traffic.peakSends = max(traffic.peakSends, traffic.sends);
     } else {
@@ -420,6 +542,7 @@ final class BaselineWire implements connect.Transport {
         Uint8List.fromList(utf8.encode(jsonEncode(response))),
         output,
       );
+      if (send) traffic.reply();
       return connect.UnaryResponse(
         spec,
         connect.Headers(),
