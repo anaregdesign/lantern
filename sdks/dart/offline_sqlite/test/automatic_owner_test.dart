@@ -109,7 +109,7 @@ void main() {
         accountIdentity: 'account',
         authorityBinding: 'authority',
       );
-      final one = await SqliteOfflineStore.openSession(
+      final one = await _hostSession(
         path: path,
         client: client,
         binding: binding,
@@ -117,7 +117,7 @@ void main() {
       );
       final alias = '${root.path}/alias';
       await Link(alias).create(path);
-      final two = await SqliteOfflineStore.openSession(
+      final two = await _hostSession(
         path: alias,
         client: client,
         binding: binding,
@@ -126,7 +126,7 @@ void main() {
       OfflineLanternSession? caseAlias;
       final lower = '${root.path}/shared.db';
       if (await File(lower).exists()) {
-        caseAlias = await SqliteOfflineStore.openSession(
+        caseAlias = await _hostSession(
           path: lower,
           client: client,
           binding: binding,
@@ -167,6 +167,8 @@ void main() {
       );
       await initial.close();
       final old = await databaseFactoryFfiNoIsolate.openDatabase(path);
+      await old.execute('DROP TABLE scope_adoptions');
+      await old.execute('DROP TABLE installation_binding');
       await old.execute('DROP TABLE traversals');
       await old.execute('ALTER TABLE partitions DROP COLUMN traversal_epoch');
       await old.execute('DROP TABLE automatic_owner');
@@ -312,3 +314,26 @@ final class _FaultDatabase implements Database {
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
+
+// This test owns an isolated host fixture, not mobile installation evidence.
+final _hostPolicy = SqliteInstallationPolicy(
+  identity: 'isolated-owner-host-fixture',
+  version: 1,
+  evaluate: (_) async =>
+      SqliteInstallationEvidence.verified(installationId: 'host-installation'),
+);
+Future<OfflineLanternSession> _hostSession({
+  required String path,
+  required LanternClient client,
+  required LanternSessionBinding binding,
+  required DatabaseFactory databaseFactory,
+}) async =>
+    (await SqliteOfflineStore.openSession(
+              path: path,
+              client: client,
+              binding: binding,
+              installationPolicy: _hostPolicy,
+              databaseFactory: databaseFactory,
+            )
+            as SqliteSessionReady)
+        .session;

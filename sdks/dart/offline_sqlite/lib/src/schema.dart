@@ -1,6 +1,6 @@
 part of '../lantern_client_offline_sqlite.dart';
 
-const _schemaVersion = 8;
+const _schemaVersion = 9;
 // Reserved against the local WP2 schema; recheck when its repaired main lands.
 const _ownerTable = '''CREATE TABLE automatic_owner (
   id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL CHECK(epoch>0),
@@ -133,6 +133,7 @@ Future<void> _createSchema(Database db, int version) async {
   await db.execute(_ownerTable);
   await db.execute(_dependencyTable);
   await db.execute(_dependencyIndex);
+  await _addInstallationSchema(db);
   await db.insert('store_metadata', {
     'key': 'format',
     'value': 'lantern-offline-$_schemaVersion',
@@ -152,7 +153,8 @@ Future<void> _upgradeSchema(
           oldVersion != 4 &&
           oldVersion != 5 &&
           oldVersion != 6 &&
-          oldVersion != 7) ||
+          oldVersion != 7 &&
+          oldVersion != 8) ||
       newVersion != _schemaVersion ||
       (await db.rawQuery('PRAGMA application_id')).single.values.single !=
           _applicationId) {
@@ -164,6 +166,28 @@ Future<void> _upgradeSchema(
       marker.single['key'] != 'format' ||
       marker.single['value'] != expectedMarker) {
     throw const OfflineSchemaException();
+  }
+  if (oldVersion == 8) {
+    await _checkDefinitions(db, {
+      for (final statement in _tables)
+        RegExp(r'CREATE TABLE (\w+)').firstMatch(statement)!.group(1)!:
+            statement,
+      for (final entry in _indexes.entries)
+        entry.key: 'CREATE INDEX ${entry.key} ON ${entry.value}',
+      'traversals': _traversalTable,
+      ..._traversalIndexes,
+      'automatic_owner': _ownerTable,
+      'operation_dependencies': _dependencyTable,
+      'dependency_prerequisite': _dependencyIndex,
+    });
+    await _addInstallationSchema(db);
+    await db.update(
+      'store_metadata',
+      {'value': 'lantern-offline-$_schemaVersion'},
+      where: 'key=?',
+      whereArgs: ['format'],
+    );
+    return;
   }
   if (oldVersion == 7) {
     await _checkDefinitions(db, {
@@ -177,6 +201,7 @@ Future<void> _upgradeSchema(
       'dependency_prerequisite': _dependencyIndex,
     });
     await _addTraversalSchema(db);
+    await _addInstallationSchema(db);
     await db.update(
       'store_metadata',
       {'value': 'lantern-offline-$_schemaVersion'},
@@ -198,6 +223,7 @@ Future<void> _upgradeSchema(
     await _addSessionColumns(db);
     await _addTraversalSchema(db);
     await db.execute(_ownerTable);
+    await _addInstallationSchema(db);
     await db.update(
       'store_metadata',
       {'value': 'lantern-offline-$_schemaVersion'},
@@ -292,6 +318,7 @@ Future<void> _upgradeSchema(
     }
   }
   await db.execute(_ownerTable);
+  await _addInstallationSchema(db);
   await transaction.validateAll();
   await transaction.finish();
   await db.update(
@@ -391,6 +418,8 @@ Future<void> _checkSchema(Database db) async {
       throw const OfflineSchemaException();
     }
     final definitions = <String, String>{
+      'installation_binding': _installationTable,
+      'scope_adoptions': _adoptionTable,
       'traversals': _traversalTable,
       ..._traversalIndexes,
       'automatic_owner': _ownerTable,
@@ -403,6 +432,7 @@ Future<void> _checkSchema(Database db) async {
         entry.key: 'CREATE INDEX ${entry.key} ON ${entry.value}',
     };
     await _checkDefinitions(db, definitions);
+    await _validateInstallation(db);
     final integrity = await db.rawQuery('PRAGMA quick_check(1)');
     if (integrity.length != 1 ||
         integrity.single.values.single != 'ok' ||

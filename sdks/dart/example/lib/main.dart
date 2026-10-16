@@ -6,10 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:lantern_client/lantern_client.dart';
 
 import 'data_demo.dart';
-import 'offline_demo.dart';
+import 'app_data_session.dart';
+import 'data_observations.dart';
 import 'native_sign_in.dart';
-import 'offline_session.dart';
-import 'scoped_change_source.dart';
 
 /// Lossless, type-labelled text used by the example's value list.
 String formatVertexValue(VertexValue value) => switch (value) {
@@ -45,8 +44,12 @@ final class DemoConfiguration {
     this.nativeLogin = false,
     this.googleProfile = '',
     this.appleProfile = '',
+    this.dataProfile = AppDataProfile.durable,
+    this.securityDomain = 'lantern-example',
   });
 
+  final AppDataProfile dataProfile;
+  final String securityDomain;
   final Uri endpoint;
   final Uri? tokenEndpoint;
   final bool allowInsecure;
@@ -76,6 +79,16 @@ final class DemoConfiguration {
     const rawOfflineScope = String.fromEnvironment('LANTERN_OFFLINE_SCOPE');
     return DemoConfiguration(
       endpoint: Uri.parse(rawEndpoint),
+      dataProfile: AppDataProfile.values.byName(
+        const String.fromEnvironment(
+          'LANTERN_DATA_PROFILE',
+          defaultValue: 'durable',
+        ),
+      ),
+      securityDomain: const String.fromEnvironment(
+        'LANTERN_SECURITY_DOMAIN',
+        defaultValue: 'lantern-example',
+      ),
       tokenEndpoint: rawTokenEndpoint.isEmpty
           ? null
           : Uri.parse(rawTokenEndpoint),
@@ -114,17 +127,17 @@ class LanternExampleApp extends StatelessWidget {
               endpoint: configuration!.endpoint,
               googleProfile: configuration!.googleProfile,
               appleProfile: configuration!.appleProfile,
-              builder: (context, account) => _DiscoveryScreen(
-                client: account.client,
-                offlineSession: account.offline!,
-                offlineCdcPinnedResponder:
-                    configuration!.offlineCdcPinnedResponder,
-                currentBinding: () => LanternSessionBinding.native(
-                  account.session,
-                  securityDomain: 'lantern-example',
-                ),
-                personalPrefix: account.session.personalPrefix!,
-              ),
+              profile: configuration!.dataProfile,
+              securityDomain: configuration!.securityDomain,
+              pinnedResponder: configuration!.offlineCdcPinnedResponder,
+              builder: (context, account) => account.dataSession?.data == null
+                  ? const RestoreHeldScreen()
+                  : _DiscoveryScreen(
+                      key: ObjectKey(account),
+                      client: account.client,
+                      dataSession: account.dataSession!,
+                      personalPrefix: account.session.personalPrefix!,
+                    ),
             )
           : _ClientOwner(
               key: ValueKey(configuration),
@@ -184,7 +197,8 @@ final class _ClientOwner extends StatefulWidget {
 final class _ClientOwnerState extends State<_ClientOwner> {
   late final _RuntimeTokenProvider _tokens;
   late final LanternClient _client;
-  late final Future<OfflineDemoSession> _offlineSession;
+  late final Future<AppDataSession> _offlineSession;
+  final _dataLifetime = AppDataLifetime();
 
   @override
   void initState() {
@@ -203,31 +217,51 @@ final class _ClientOwnerState extends State<_ClientOwner> {
     _offlineSession = _openOfflineSession();
   }
 
-  Future<OfflineDemoSession> _openOfflineSession() async =>
-      OfflineDemoSession.open(
-        client: _client,
-        endpoint: widget.configuration.endpoint,
-        partitionId: widget.configuration.offlinePartitionId,
-      );
+  Future<AppDataSession> _openOfflineSession() async {
+    final configuration = widget.configuration;
+    final scope = configuration.offlinePartitionId;
+    return AppDataSessionFactory(
+      lifetime: _dataLifetime,
+      client: _client,
+      binding: LanternSessionBinding.application(
+        serviceOrigin: _client.endpoint,
+        securityDomain: configuration.securityDomain,
+        accountIdentity: scope,
+        authorityBinding: 'immutable-application-session',
+      ),
+      profile: configuration.dataProfile,
+      legacyPartition: scope,
+      pinnedResponder: configuration.offlineCdcPinnedResponder,
+      changePrefix: 'flutter-demo:',
+    ).open();
+  }
 
-  Future<void> _closeSession() async {
-    OfflineDemoSession? session;
-    try {
-      // Opening may still be in flight when this widget is removed. An open
-      // failure is already displayed by FutureBuilder and owns no store.
-      session = await _offlineSession;
-    } catch (_) {
-      // Still release the client and token provider below.
-    }
-    try {
-      await session?.close();
-    } finally {
+  Future<void>? _closing;
+  Future<void> _closeSession() {
+    _dataLifetime.invalidate();
+    return _closing ??= (() async {
+      AppDataSession? session;
+      Object? failure;
+      StackTrace? trace;
       try {
-        await _client.close();
+        session = await _offlineSession;
+      } on AppDataStartupFailure catch (error, stack) {
+        // Incomplete retirement must stay failed after the startup UI handles it.
+        failure = error;
+        trace = stack;
+      } catch (_) {
+        // The startup UI already handles ordinary configuration/open failures.
+      }
+      try {
+        await closeAccountData(session, _client);
+      } catch (error, stack) {
+        failure ??= error;
+        trace ??= stack;
       } finally {
         _tokens.close();
       }
-    }
+      if (failure != null) Error.throwWithStackTrace(failure, trace!);
+    })();
   }
 
   @override
@@ -245,7 +279,7 @@ final class _ClientOwnerState extends State<_ClientOwner> {
   }
 
   @override
-  Widget build(BuildContext context) => FutureBuilder<OfflineDemoSession>(
+  Widget build(BuildContext context) => FutureBuilder<AppDataSession>(
     future: _offlineSession,
     builder: (context, snapshot) {
       if (snapshot.hasError) {
@@ -263,12 +297,8 @@ final class _ClientOwnerState extends State<_ClientOwner> {
       if (session == null) {
         return const Scaffold(body: Center(child: CircularProgressIndicator()));
       }
-      return _DiscoveryScreen(
-        client: _client,
-        offlineSession: session,
-        offlineCdcPinnedResponder:
-            widget.configuration.offlineCdcPinnedResponder,
-      );
+      if (session.data == null) return const RestoreHeldScreen();
+      return _DiscoveryScreen(client: _client, dataSession: session);
     },
   );
 }
@@ -286,17 +316,14 @@ enum _UiPhase {
 
 final class _DiscoveryScreen extends StatefulWidget {
   const _DiscoveryScreen({
+    super.key,
     required this.client,
-    required this.offlineSession,
-    required this.offlineCdcPinnedResponder,
-    this.currentBinding,
+    required this.dataSession,
     this.personalPrefix,
   });
 
   final LanternClient client;
-  final OfflineDemoSession offlineSession;
-  final bool offlineCdcPinnedResponder;
-  final LanternSessionBinding Function()? currentBinding;
+  final AppDataSession dataSession;
   final String? personalPrefix;
 
   @override
@@ -305,14 +332,6 @@ final class _DiscoveryScreen extends StatefulWidget {
 
 final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
   String get _prefix => widget.personalPrefix ?? 'flutter-demo:';
-  LanternSessionBinding _changeBinding() =>
-      widget.currentBinding?.call() ??
-      LanternSessionBinding.application(
-        serviceOrigin: widget.client.endpoint,
-        securityDomain: 'lantern-example-manual',
-        accountIdentity: widget.offlineSession.partitionId,
-        authorityBinding: 'immutable-manual-session',
-      );
   static const _maxVisibleRows = 200;
 
   late final AppLifecycleListener _lifecycle;
@@ -347,12 +366,20 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
 
   void _pauseScreenWork() {
     _screenCancellation.cancel('screen hidden');
+    unawaited(widget.dataSession.suspend().catchError(_showFailure));
     _search.search('');
   }
 
   void _resumeAndRefetch() {
     _screenCancellation = LanternCancellationToken();
-    unawaited(_refresh());
+    unawaited(
+      widget.dataSession
+          .resume()
+          .then((_) {
+            if (mounted) return _refresh();
+          })
+          .catchError(_showFailure),
+    );
   }
 
   Future<void> _refresh() async {
@@ -446,13 +473,24 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
   Future<void> _traverse(TraversalOptions traversal) async {
     _setPhase(_UiPhase.loading, 'Loading graph navigation');
     try {
-      final graph = await widget.client.illuminate(
+      final snapshot = await widget.dataSession.data!.illuminate(
         '${_prefix}alice',
         traversal: traversal,
         weighting: TraversalWeighting.raw,
         vertexPrefix: _prefix,
-        options: _callOptions,
+        options: TraversalReadOptions(
+          timeout: _callOptions.timeout,
+          cancellation: _screenCancellation,
+        ),
       );
+      final graph = snapshot.confirmed.value;
+      if (graph == null) {
+        _setPhase(
+          _UiPhase.unavailable,
+          'Traversal ${snapshot.confirmed.state.name}',
+        );
+        return;
+      }
       _replaceRows(
         graph.allEdges.map(
           (edge) =>
@@ -548,6 +586,7 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
           ),
           DataDemoPanel(
             client: widget.client,
+            data: widget.dataSession.data!,
             prefix: _prefix,
             callOptions: () => _callOptions,
             onDataChanged: _refresh,
@@ -570,39 +609,16 @@ final class _DiscoveryScreenState extends State<_DiscoveryScreen> {
                 child: const Text('Community'),
               ),
               OutlinedButton(
-                key: const Key('open-offline-demo'),
+                key: const Key('open-observations'),
                 onPressed: () => Navigator.of(context).push(
                   MaterialPageRoute<void>(
-                    builder: (_) => OfflineDemoScreen(
-                      repository: widget.offlineSession.repository,
-                      partitionId: widget.offlineSession.partitionId,
-                      vertexKey:
-                          '${widget.personalPrefix ?? 'flutter-offline:'}profile',
-                      edgeTail:
-                          '${widget.personalPrefix ?? 'flutter-offline:'}profile',
-                      edgeHead:
-                          '${widget.personalPrefix ?? 'flutter-offline:'}counter',
-                      identitySource: widget.offlineCdcPinnedResponder
-                          ? LanternScopedChangeSource(
-                              source: LanternChangeSource(
-                                route: LanternSingleResponderRoute.certified(
-                                  client: widget.client,
-                                  responderId: widget.client.endpoint
-                                      .toString(),
-                                  isCurrent: () =>
-                                      !widget.offlineSession.isLoggedOut,
-                                ),
-                                binding: _changeBinding(),
-                                currentBinding: _changeBinding,
-                                prefix: widget.personalPrefix ?? '',
-                              ),
-                            )
-                          : null,
-                      identityAllowed: () => !widget.offlineSession.isLoggedOut,
+                    builder: (_) => DataObservationsScreen(
+                      session: widget.dataSession,
+                      prefix: _prefix,
                     ),
                   ),
                 ),
-                child: const Text('Offline'),
+                child: const Text('Live data'),
               ),
             ],
           ),
@@ -638,6 +654,7 @@ final class _ConfigurationHelp extends StatelessWidget {
           padding: EdgeInsets.all(24),
           child: Text(
             'Set LANTERN_ENDPOINT with --dart-define. '
+            'LANTERN_DATA_PROFILE selects direct, memory, durable or durableWithoutReadCache. '
             'Native login uses HTTPS with LANTERN_NATIVE_LOGIN=true and '
             'registered Google/Apple profile IDs; omit token endpoint and '
             'insecure transport options. '
@@ -651,4 +668,22 @@ final class _ConfigurationHelp extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Uncertain installation data remains unopened; this view has no data client.
+final class RestoreHeldScreen extends StatelessWidget {
+  const RestoreHeldScreen({super.key});
+  @override
+  Widget build(BuildContext context) => const Scaffold(
+    body: Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Text(
+          'Saved data is preserved. This installation could not be verified. '
+          'Automatic data access is paused; contact the application integrator.',
+          key: Key('restore-held'),
+        ),
+      ),
+    ),
+  );
 }

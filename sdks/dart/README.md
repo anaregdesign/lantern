@@ -41,6 +41,11 @@ that its endpoint, dataset, account and authority lifetime match their transport
 The SDK never infers identity from an opaque token. UID is metadata; adding it
 does not change the existing native account's storage identity.
 
+The maintained [Flutter app](https://github.com/anaregdesign/lantern/blob/main/sdks/dart/example/README.md#common-data-ownership-and-migration)
+uses one consumer with Direct, Memory, SQLite and durable-outbox without read
+cache. The optional packages own persistence and automatic foreground delivery;
+this parent package keeps its platform/storage dependency boundary.
+
 Ordinary application CRUD and traversal use the bound `LanternDataClient`.
 Write Futures complete with `MutationKnownEffect<T>` or
 `MutationAcceptedUndisclosed<T>` only after known Server handling. The reply

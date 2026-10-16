@@ -19,12 +19,14 @@ final class DataDemoPanel extends StatefulWidget {
   const DataDemoPanel({
     super.key,
     required this.client,
+    required this.data,
     required this.prefix,
     required this.callOptions,
     required this.onDataChanged,
   });
 
   final LanternClient client;
+  final LanternDataClient data;
   final String prefix;
   final LanternCallOptions Function() callOptions;
   final Future<void> Function() onDataChanged;
@@ -58,10 +60,21 @@ final class _DataDemoPanelState extends State<DataDemoPanel> {
     // Capture this run's cancellation token. A later lifecycle resume must not
     // give an interrupted mutation sequence a fresh token and continue it.
     final options = widget.callOptions();
+    final writes = MutationOptions(
+      admissionCancellation: options.cancellation,
+      wait: WaitOptions(
+        timeout: options.timeout,
+        cancellation: options.cancellation,
+      ),
+    );
+    final reads = GetOptions(
+      timeout: options.timeout,
+      cancellation: options.cancellation,
+    );
     final prefix = widget.prefix;
     try {
       await _runStep('Put sample vertices', () async {
-        final results = await widget.client.putVertices([
+        final results = await widget.data.putVertices([
           VertexInput(
             key: '${prefix}alice',
             value: VertexValue.string('quiet cafe graph'),
@@ -71,56 +84,63 @@ final class _DataDemoPanelState extends State<DataDemoPanel> {
             key: '${prefix}bob',
             value: VertexValue.uint64((BigInt.one << 63) + BigInt.one),
           ),
-        ], options: options);
-        // A mixed outcome must retain each confirmed write even though the
-        // overall step cannot complete.
-        if (mounted &&
-            results.any((r) => r.outcome != PutOutcome.appliedAndLive)) {
-          setState(
-            () => _confirmed.addAll(
-              results
-                  .where((r) => r.outcome == PutOutcome.appliedAndLive)
-                  .map((r) => 'Put vertex ${r.key}'),
-            ),
-          );
+        ], options: writes);
+        StateError? unsuitable;
+        for (var index = 0; index < results.items.length; index++) {
+          final reply = results.items[index];
+          if (reply case MutationKnownEffect<PutOutcome>(
+            effect: PutOutcome.appliedAndLive,
+          )) {
+            if (mounted) {
+              setState(
+                () => _confirmed.add(
+                  'Put vertex ${index == 0 ? '${prefix}alice' : '${prefix}bob'}',
+                ),
+              );
+            }
+          } else {
+            unsuitable ??= StateError('Put position $index: ${_effect(reply)}');
+          }
         }
-        requireAppliedVertexPuts(results);
+        if (unsuitable != null) throw unsuitable;
       });
       await _runStep(
         'Read sample vertex',
-        () => widget.client.getVertex('${prefix}alice', options: options),
+        () => widget.data.getVertex('${prefix}alice', options: reads),
       );
       await _runStep('Put sample edge', () async {
         requireAppliedPut(
           'sample edge',
-          await widget.client.putEdge(
-            EdgeInput(
-              tail: '${prefix}alice',
-              head: '${prefix}bob',
-              weight: 1,
-              expiresIn: const Duration(minutes: 10),
+          _knownPut(
+            await widget.data.putEdge(
+              EdgeInput(
+                tail: '${prefix}alice',
+                head: '${prefix}bob',
+                weight: 1,
+                expiresIn: const Duration(minutes: 10),
+              ),
+              options: writes,
             ),
-            options: options,
           ),
         );
       });
       await _runStep(
         'Add sample edge',
-        () => widget.client.addEdge(
+        () => widget.data.addEdge(
           EdgeInput(
             tail: '${prefix}alice',
             head: '${prefix}bob',
             weight: 0.5,
             expiresIn: const Duration(minutes: 5),
           ),
-          options: options,
+          options: writes,
         ),
       );
       await _runStep(
         'Read sample edge',
-        () => widget.client.getEdge(
+        () => widget.data.getEdge(
           EdgeRef('${prefix}alice', '${prefix}bob'),
-          options: options,
+          options: reads,
         ),
       );
       final search = await _runStep(
@@ -179,16 +199,17 @@ final class _DataDemoPanelState extends State<DataDemoPanel> {
       await _runStep('Put temporary vertex', () async {
         requireAppliedPut(
           'temporary vertex',
-          await widget.client.putVertex(
-            VertexInput(key: '${prefix}temporary', value: VertexValue.nil()),
-            options: options,
+          _knownPut(
+            await widget.data.putVertex(
+              VertexInput(key: '${prefix}temporary', value: VertexValue.nil()),
+              options: writes,
+            ),
           ),
         );
       });
       await _runStep(
         'Delete temporary vertex',
-        () =>
-            widget.client.deleteVertex('${prefix}temporary', options: options),
+        () => widget.data.deleteVertex('${prefix}temporary', options: writes),
       );
       if (mounted) setState(() => _result = 'Seed CRUD completed');
     } catch (error) {
@@ -309,3 +330,14 @@ final class _DataDemoPanelState extends State<DataDemoPanel> {
     ],
   );
 }
+
+String _effect(MutationReply<PutOutcome> reply) => switch (reply) {
+  MutationKnownEffect(:final effect) => effect.name,
+  MutationAcceptedUndisclosed() => 'accepted; effect undisclosed',
+};
+PutOutcome _knownPut(MutationReply<PutOutcome> reply) => switch (reply) {
+  MutationKnownEffect(:final effect) => effect,
+  MutationAcceptedUndisclosed() => throw StateError(
+    'Accepted; effect undisclosed. No dependent demo step started.',
+  ),
+};

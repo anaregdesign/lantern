@@ -10,6 +10,31 @@ sealed class OfflineException implements Exception {
   String toString() => 'OfflineException($code)';
 }
 
+/// Startup failed and its provisional ownership could not be safely retired.
+/// The reservation stays blocked. Causes are available for private diagnostics;
+/// formatting this exception never includes their contents.
+final class OfflineStartupRetirementException extends OfflineException {
+  /// Preserves the original startup cause and the first failed cleanup cause.
+  const OfflineStartupRetirementException(
+    this.startupError,
+    this.startupTrace,
+    this.retirementError,
+    this.retirementTrace,
+  ) : super('startup_retirement_blocked');
+
+  /// Original startup failure; do not log private exception contents.
+  final Object startupError;
+
+  /// Original startup stack, for private diagnostics only.
+  final StackTrace startupTrace;
+
+  /// First cleanup failure, for private diagnostics only.
+  final Object retirementError;
+
+  /// Cleanup stack, for private diagnostics only.
+  final StackTrace retirementTrace;
+}
+
 /// Another automatic lifetime owns this backing store.
 final class OfflineOwnerConflictException extends OfflineException {
   /// Creates a content-free ownership conflict.

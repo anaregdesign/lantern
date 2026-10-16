@@ -109,6 +109,139 @@ final class Harness {
 
 void main() {
   test(
+    'R2 startup data-join failure never releases the provisional owner',
+    () async {
+      final store = _StartupJoinFaultStore();
+      final client = LanternClient.connect(
+        endpoint,
+        allowInsecure: true,
+        transport: FakeTransportBuilder().build(),
+      );
+      addTearDown(client.close);
+      var closes = 0;
+      Future<OfflineLanternSession> open() => OfflineLanternSession.openStore(
+        client: client,
+        storeKey: store,
+        binding: binding(),
+        createStore: () async => store,
+        closeStore: (_) async {
+          closes++;
+        },
+        durability: AdmissionDurability.memory,
+        transferAllowed: false,
+      );
+      await expectLater(
+        open(),
+        throwsA(
+          isA<OfflineStartupRetirementException>()
+              .having((e) => e.startupError, 'startup', same(store.startup))
+              .having((e) => e.retirementError, 'join', same(store.retirement)),
+        ),
+      );
+      expect(store.transactions, 3);
+      expect(closes, 0);
+      // Independently query the backing owner as well as the core registry.
+      await expectLater(
+        store.inner.acquireAutomaticOwner(
+          scope: binding().stableIdentity,
+          bindingFingerprint: 'authority',
+          configurationFingerprint: 'replacement',
+        ),
+        throwsA(isA<OfflineOwnerConflictException>()),
+      );
+      await expectLater(open(), throwsA(isA<OfflineOwnerConflictException>()));
+    },
+  );
+  for (final failCleanup in [true, false]) {
+    test(
+      'R2 core pre-return cleanup failure=$failCleanup retains causes and reservation',
+      () async {
+        final store = MemoryOfflineStore();
+        final failure = StateError('startup store close');
+        final client = LanternClient.connect(
+          endpoint,
+          allowInsecure: true,
+          transport: FakeTransportBuilder().build(),
+        );
+        addTearDown(client.close);
+        var creates = 0, closes = 0;
+        Future<OfflineLanternSession> open() => OfflineLanternSession.openStore(
+          client: client,
+          storeKey: store,
+          binding: binding(),
+          createStore: () async {
+            creates++;
+            return store;
+          },
+          closeStore: (_) async {
+            closes++;
+            if (failCleanup) throw failure;
+          },
+          durability: AdmissionDurability.memory,
+          transferAllowed: false,
+          authorityCurrent: () => false,
+        );
+        final expected = failCleanup
+            ? isA<OfflineStartupRetirementException>()
+                  .having(
+                    (e) => e.startupError,
+                    'original',
+                    isA<OfflineDisposedException>(),
+                  )
+                  .having((e) => e.retirementError, 'cleanup', same(failure))
+            : isA<OfflineDisposedException>();
+        await expectLater(open(), throwsA(expected));
+        await expectLater(
+          open(),
+          throwsA(
+            failCleanup ? isA<OfflineOwnerConflictException>() : expected,
+          ),
+        );
+        expect(creates, failCleanup ? 1 : 2);
+        expect(closes, failCleanup ? 1 : 2);
+      },
+    );
+  }
+  test(
+    'I6 failed store close retains first failure and prevents replacement',
+    () async {
+      final store = MemoryOfflineStore();
+      final first = StateError('store close');
+      var stores = 0, transports = 0, creates = 0;
+      final client = LanternClient.connect(
+        endpoint,
+        allowInsecure: true,
+        transport: FakeTransportBuilder().build(),
+        onClose: () async {
+          transports++;
+          throw StateError('transport close');
+        },
+      );
+      Future<OfflineLanternSession> open() => OfflineLanternSession.openStore(
+        client: client,
+        storeKey: store,
+        binding: binding(),
+        createStore: () async {
+          creates++;
+          return store;
+        },
+        closeStore: (_) async {
+          stores++;
+          throw first;
+        },
+        durability: AdmissionDurability.memory,
+        transferAllowed: false,
+      );
+      final session = await open();
+      final closed = session.close();
+      expect(identical(closed, session.close()), isTrue);
+      await expectLater(closed, throwsA(same(first)));
+      await expectLater(session.close(), throwsA(same(first)));
+      await expectLater(open(), throwsA(isA<OfflineOwnerConflictException>()));
+      expect((creates, stores, transports), (1, 1, 1));
+    },
+  );
+  test(
     'O1 matching handles share delivery; one close continues, last closes transport',
     () async {
       final h = Harness();
@@ -1289,6 +1422,38 @@ final class ConfirmationFaultStore
     }
     return result;
   });
+  @override
+  Stream<OfflineStoreChange> changes(String scope) => inner.changes(scope);
+}
+
+final class _StartupJoinFaultStore
+    implements OfflineStore, OfflineAutomaticStore {
+  final inner = MemoryOfflineStore();
+  final startup = const OfflineSchemaException();
+  final retirement = const OfflineOwnerStorageException();
+  int transactions = 0;
+  @override
+  Object get canonicalOwnerKey => inner.canonicalOwnerKey;
+  @override
+  Future<OfflineAutomaticOwner> acquireAutomaticOwner({
+    required String scope,
+    required String bindingFingerprint,
+    required String configurationFingerprint,
+  }) => inner.acquireAutomaticOwner(
+    scope: scope,
+    bindingFingerprint: bindingFingerprint,
+    configurationFingerprint: configurationFingerprint,
+  );
+  @override
+  Future<T> transaction<T>(
+    FutureOr<T> Function(OfflineStoreTransaction) action,
+  ) async {
+    transactions++;
+    if (transactions == 2) throw startup;
+    if (transactions > 2) throw retirement;
+    return inner.transaction(action);
+  }
+
   @override
   Stream<OfflineStoreChange> changes(String scope) => inner.changes(scope);
 }

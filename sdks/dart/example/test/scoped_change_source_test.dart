@@ -1,9 +1,13 @@
 import 'dart:io' as io;
 
+import 'package:connectrpc/connect.dart' as connect;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
+import 'package:lantern_example/app_data_session.dart';
+import 'package:lantern_example/installation_policy.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {
@@ -166,22 +170,28 @@ void main() {
         );
         addTearDown(() => directory.delete(recursive: true));
         if (sqlite) sqfliteFfiInit();
-        final session = sqlite
-            ? await SqliteOfflineStore.openSession(
-                path: '${directory.path}/cache.db',
-                client: client,
-                binding: source.binding,
-                incomingChanges: source,
-                databaseFactory: databaseFactoryFfi,
-              )
-            : await OfflineLanternSession.open(
-                client: client,
-                store: MemoryOfflineStore(),
-                binding: source.binding,
-                incomingChanges: source,
-                durability: AdmissionDurability.memory,
-              );
-        addTearDown(session.close);
+        final app = await AppDataSessionFactory(
+          client: client,
+          binding: source.binding,
+          profile: sqlite ? AppDataProfile.durable : AppDataProfile.memory,
+          legacyPartition: 'fixture-account',
+          pinnedResponder: true,
+          changePrefix: 'orders:',
+          databaseFactory: databaseFactoryFfi,
+          resolveLocation: () async => AppSqliteLocation(
+            '${directory.path}/cache.db',
+            SqliteInstallationPolicy(
+              identity: 'isolated-cdc-wire-host-fixture',
+              version: 1,
+              evaluate: (_) async => SqliteInstallationEvidence.verified(
+                installationId: 'host-installation',
+              ),
+            ),
+            null,
+          ),
+        ).open();
+        addTearDown(app.close);
+        final session = app.data!;
         final values = <LanternSnapshot<Vertex>>[];
         final watch = session
             .watchVertex(
@@ -221,11 +231,11 @@ void main() {
               )).items.single.state ==
               MutationItemState.handled,
         );
-        await session.suspend();
+        await app.suspend();
         await writer.putVertex(
           VertexInput(key: key, value: const StringValue('while-suspended')),
         );
-        await session.resume();
+        await app.resume();
         await _wait(
           'resumed CDC refresh',
           () async => current() == 'while-suspended',
@@ -237,6 +247,148 @@ void main() {
       timeout: const Timeout(Duration(seconds: 30)),
     );
   }
+
+  test(
+    'I7 app factory resumes on transport recovery only with active vertex edge and traversal watches',
+    () async {
+      final writer = _wireClient();
+      addTearDown(writer.close);
+      const tail = 'orders:create:app-tail', head = 'orders:create:app-head';
+      await writer.putVertices([
+        VertexInput(key: tail, value: const StringValue('before')),
+        VertexInput(key: head, value: const StringValue('head')),
+      ]);
+      await writer.putEdge(EdgeInput(tail: tail, head: head, weight: 2));
+      final availability = _WireAvailability()..available = false;
+      final client = _wireClient(availability: availability);
+      addTearDown(client.close);
+      final source = _source(client);
+      final directory = await io.Directory.systemTemp.createTemp(
+        'lantern-app-recovery-wire-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      sqfliteFfiInit();
+      final app = await AppDataSessionFactory(
+        client: client,
+        binding: source.binding,
+        profile: AppDataProfile.durable,
+        legacyPartition: 'fixture-account',
+        pinnedResponder: true,
+        changePrefix: 'orders:',
+        databaseFactory: databaseFactoryFfi,
+        resolveLocation: () async => AppSqliteLocation(
+          '${directory.path}/app.db',
+          SqliteInstallationPolicy(
+            identity: 'app-wire-host-fixture',
+            version: 1,
+            evaluate: (_) async => SqliteInstallationEvidence.verified(
+              installationId: 'host-installation',
+            ),
+          ),
+          null,
+        ),
+      ).open();
+      addTearDown(app.close);
+      final data = app.data!;
+      final vertices = <LanternSnapshot<Vertex>>[],
+          second = <LanternSnapshot<Vertex>>[];
+      final edges = <LanternSnapshot<Edge>>[],
+          graphs = <LanternTraversalSnapshot>[];
+      const options = WatchOptions(pollInterval: Duration(seconds: 1));
+      final first = data
+          .watchVertex(tail, options: options)
+          .listen(vertices.add);
+      final duplicate = data
+          .watchVertex(tail, options: options)
+          .listen(second.add);
+      final edge = data
+          .watchEdge(const EdgeRef(tail, head), options: options)
+          .listen(edges.add);
+      final graph = data
+          .watchIlluminate(
+            tail,
+            traversal: const BfsOptions(step: 1, fanOut: 10),
+            vertexPrefix: 'orders:',
+            options: options,
+          )
+          .listen(graphs.add);
+      addTearDown(first.cancel);
+      addTearDown(duplicate.cancel);
+      addTearDown(edge.cancel);
+      addTearDown(graph.cancel);
+      final ticket = await data.mutations.submit(
+        MutationRequest.putVertices([
+          VertexInput(
+            key: tail,
+            value: const StringValue('restored'),
+            expiresIn: const Duration(minutes: 5),
+          ),
+        ]),
+      );
+      await _wait('blocked transport', () async => availability.blocked > 0);
+      expect(
+        (await data.mutations.getStatus(ticket.reference.operationId)).terminal,
+        false,
+      );
+      availability.available = true;
+      // No Get/resume/Sync/drain/notifyReachability or application retry timer.
+      try {
+        await _wait(
+          'automatic write and vertex',
+          () async =>
+              vertices.isNotEmpty &&
+              (vertices.last.confirmed.value?.value as StringValue?)?.value ==
+                  'restored',
+        );
+      } catch (_) {
+        final status = await data.mutations.getStatus(
+          ticket.reference.operationId,
+        );
+        fail(
+          'Automatic recovery: item=${status.items.map((i) => '${i.state.name}/${i.failure}').join(',')}; '
+          'vertex=${vertices.isEmpty ? 'none' : vertices.last.confirmed.state.name}; '
+          'wire=${availability.failures}',
+        );
+      }
+      await _wait(
+        'edge and traversal',
+        () async =>
+            edges.isNotEmpty &&
+            edges.last.confirmed.value?.weight == 2 &&
+            graphs.isNotEmpty &&
+            graphs.last.confirmed.value?.allEdges.isNotEmpty == true,
+      );
+      expect(
+        (await data.mutations.getStatus(
+          ticket.reference.operationId,
+        )).items.single.state,
+        MutationItemState.handled,
+      );
+      await first.cancel();
+      final count = vertices.length;
+      await writer.putVertex(
+        VertexInput(key: tail, value: const StringValue('second-listener')),
+      );
+      await _wait(
+        'independent second listener',
+        () async =>
+            second.isNotEmpty &&
+            (second.last.confirmed.value?.value as StringValue?)?.value ==
+                'second-listener',
+      );
+      expect(vertices.length, count);
+      expect(client.isClosed, false);
+      await duplicate.cancel();
+      await edge.cancel();
+      await graph.cancel();
+      await app.close();
+      expect(client.isClosed, true);
+    },
+    skip: url == null
+        ? 'Run through the real OIDC tests/integration fixture.'
+        : false,
+    timeout: const Timeout(Duration(seconds: 30)),
+  );
 
   test(
     'automatic public CDC permission denial pauses without polling fallback',
@@ -273,13 +425,17 @@ void main() {
   );
 }
 
-LanternClient _wireClient({bool denied = false}) {
+LanternClient _wireClient({
+  bool denied = false,
+  _WireAvailability? availability,
+}) {
   final context = io.SecurityContext(
     withTrustedRoots: false,
   )..setTrustedCertificates(io.Platform.environment['LANTERN_SCOPED_WIRE_CA']!);
   return LanternClient.connect(
     Uri.parse(io.Platform.environment['LANTERN_SCOPED_WIRE_URL']!),
     httpClientFactory: () => io.HttpClient(context: context),
+    interceptors: [if (availability != null) availability.intercept],
     tokenProvider: () =>
         io.Platform.environment[denied
             ? 'LANTERN_SCOPED_WIRE_DENIED_CREDENTIAL'
@@ -313,4 +469,31 @@ Future<void> _wait(String phase, Future<bool> Function() ready) async {
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
   fail('public CDC phase $phase did not become ready');
+}
+
+final class _WireAvailability {
+  bool available = true;
+  int blocked = 0;
+  final failures = <String>[];
+  connect.AnyFn<I, O> intercept<I extends Object, O extends Object>(
+    connect.AnyFn<I, O> next,
+  ) => (request) async {
+    if (!available) {
+      blocked++;
+      throw connect.ConnectException(
+        connect.Code.unavailable,
+        'finite transport interruption',
+      );
+    }
+    try {
+      return await next(request);
+    } on connect.ConnectException catch (error) {
+      if (failures.length < 8) {
+        failures.add(
+          '${request.spec.procedure.split('/').last}:${error.code.name}',
+        );
+      }
+      rethrow;
+    }
+  };
 }
