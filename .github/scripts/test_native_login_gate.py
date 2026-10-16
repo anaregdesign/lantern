@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import native_login_gate as gate
 from local_gate_plan import steps
+from git_test_fixture import synchronous_git_maintenance
 
 
 class NativeLoginGateTest(unittest.TestCase):
@@ -23,7 +24,9 @@ class NativeLoginGateTest(unittest.TestCase):
             root.mkdir()
             binaries.mkdir()
             (root / "source").write_text("original")
-            for command in (["git", "init", "-q"], ["git", "add", "source"],
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            synchronous_git_maintenance(root)
+            for command in (["git", "add", "source"],
                             ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]):
                 subprocess.run(command, cwd=root, check=True)
             log = "\n".join(f"--- PASS: {gate.ROOT_TEST}/{case} (0.01s)" for case in gate.CASES)
