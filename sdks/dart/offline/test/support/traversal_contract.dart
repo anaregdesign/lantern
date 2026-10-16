@@ -493,6 +493,110 @@ void traversalContract({
   });
 
   group('T07 mid-attempt clock phases', () {
+    for (final advanced in [false, true]) {
+      test(
+        'C1 awaited durable sample preserves graph, advanced=$advanced',
+        () async {
+          final wrapped = TraversalBoundaryStore(h.store, h.scope);
+          final boundary = _ClockBoundary();
+          wrapped.wrap = (tx) => _ClockBoundaryTransaction(tx, boundary);
+          h.store = wrapped;
+          h.graph = wire.Graph(vertices: [wire.Vertex(key: 'seed')]);
+          await h.open();
+          final epoch = await h.store.transaction(
+            (tx) => tx.traversalValidityEpoch(h.scope),
+          );
+          final entered = Completer<void>(), release = Completer<void>();
+          addTearDown(() {
+            if (!release.isCompleted) release.complete();
+          });
+          h.beforeResponse = () async {
+            boundary.afterTime = () async {
+              boundary.afterTime = null;
+              entered.complete();
+              await release.future;
+            };
+          };
+          final reading = h.read(ReadSource.serverOnly);
+          await entered.future.timeout(const Duration(seconds: 5));
+          if (advanced) h.now = h.now.add(const Duration(microseconds: 1));
+          h.data!.clock();
+          release.complete();
+          expect((await reading).confirmed.state, ConfirmedState.present);
+          expect(h.calls, 1);
+          expect(boundary.invalidations, 0);
+          expect((await h.record())!.validityEpoch, epoch);
+          expect(
+            (await h.read(ReadSource.cacheOnly)).confirmed.state,
+            ConfirmedState.present,
+          );
+        },
+      );
+    }
+
+    test(
+      'C5 rollback during invalidation return requires a later commit',
+      () async {
+        final wrapped = TraversalBoundaryStore(h.store, h.scope);
+        final boundary = _ClockBoundary();
+        wrapped.wrap = (tx) => _ClockBoundaryTransaction(tx, boundary);
+        h.store = wrapped;
+        await h.open();
+        await h.read();
+        final original = (await h.record())!;
+        final entered = Completer<void>(), release = Completer<void>();
+        final followup = Completer<void>(), committedSecond = Completer<void>();
+        addTearDown(() {
+          if (!release.isCompleted) release.complete();
+          if (!followup.isCompleted) followup.complete();
+        });
+        boundary.afterRead = () async {
+          boundary.afterRead = null;
+          // Observe the original transaction's acknowledgement before allowing
+          // any follow-up to inspect or cover the second revision.
+          wrapped.beforeBegin = () => followup.future;
+          h.now = original.observedAt.subtract(const Duration(hours: 1));
+          h.data!.clock();
+        };
+        boundary.afterInvalidate = () async {
+          if (boundary.invalidations == 1) {
+            entered.complete();
+            await release.future;
+          }
+        };
+        final reading = h.read(ReadSource.cacheOnly);
+        await entered.future.timeout(const Duration(seconds: 5));
+        h.now = original.observedAt;
+        h.data!.clock();
+        h.now = h.now.subtract(const Duration(hours: 1));
+        h.data!.clock();
+        release.complete();
+        expect((await reading).confirmed.state, ConfirmedState.unknown);
+        wrapped.afterCommit = () async {
+          if (boundary.invalidations == 2 && !committedSecond.isCompleted) {
+            committedSecond.complete();
+          }
+        };
+        followup.complete();
+        await committedSecond.future.timeout(const Duration(seconds: 5));
+        await h.close();
+        expect(boundary.invalidations, 2);
+        expect(
+          await wrapped.inner.transaction(
+            (tx) => tx.traversalValidityEpoch(h.scope),
+          ),
+          original.validityEpoch + 2,
+        );
+        h.store = await reopen(wrapped.inner);
+        h.now = original.observedAt;
+        await h.open(continues: true);
+        expect(
+          (await h.read(ReadSource.cacheOnly)).confirmed.state,
+          ConfirmedState.unknown,
+        );
+      },
+    );
+
     test(
       'detected rollback followed by immediate close never revives history',
       () async {
@@ -610,6 +714,66 @@ void traversalContract({
   }
 
   group('T08 atomic storage boundaries', () {
+    test(
+      'C6 failed invalidation commit retains debt through close and reopen',
+      () async {
+        final inner = h.store;
+        final wrapped = TraversalBoundaryStore(inner, h.scope);
+        final boundary = _ClockBoundary();
+        wrapped.wrap = (tx) => _ClockBoundaryTransaction(tx, boundary);
+        h.store = wrapped;
+        await h.open();
+        await h.read();
+        final original = (await h.record())!;
+        final bytes = OfflineTraversalCodec.encode(original);
+        final followup = Completer<void>();
+        addTearDown(() {
+          if (!followup.isCompleted) followup.complete();
+        });
+        boundary.afterRead = () async {
+          boundary.afterRead = null;
+          wrapped.beforeBegin = () => followup.future;
+          h.now = h.now.subtract(const Duration(hours: 1));
+          h.data!.clock();
+        };
+        wrapped.beforeCommit = (tx) async {
+          if (await tx!.traversalValidityEpoch(h.scope) >
+              original.validityEpoch) {
+            wrapped.beforeCommit = null;
+            throw StateError('injected invalidation native rollback');
+          }
+        };
+        await expectLater(h.read(ReadSource.cacheOnly), throwsStateError);
+        final rolledBack = await inner.transaction(
+          (tx) async => (
+            record: await tx.getTraversal(h.scope, original.queryKey),
+            epoch: await tx.traversalValidityEpoch(h.scope),
+          ),
+        );
+        expect(OfflineTraversalCodec.encode(rolledBack.record!), bytes);
+        expect(rolledBack.epoch, original.validityEpoch);
+        expect(boundary.invalidations, 1);
+        // Recovery alone does not acknowledge the failed invalidation. Close joins
+        // the queued successful follow-up, which must stage that debt again.
+        h.now = original.observedAt;
+        h.data!.clock();
+        followup.complete();
+        await h.close();
+        expect(boundary.invalidations, 2);
+        expect(
+          await inner.transaction((tx) => tx.traversalValidityEpoch(h.scope)),
+          original.validityEpoch + 1,
+        );
+        h.store = await reopen(inner);
+        h.now = original.observedAt;
+        await h.open(continues: true);
+        expect(
+          (await h.read(ReadSource.cacheOnly)).confirmed.state,
+          ConfirmedState.unknown,
+        );
+      },
+    );
+
     test(
       'result commit failure blocks storage and never becomes a cache miss',
       () async {
@@ -1034,6 +1198,7 @@ final class TraversalBoundaryStore implements OfflineStore {
   Future<void> Function()? beforeBegin;
   Future<void> Function(OfflineStoreTransaction?)? beforeCommit;
   Future<void> Function()? afterCommit;
+  OfflineStoreTransaction Function(OfflineStoreTransaction)? wrap;
   @override
   Stream<OfflineStoreChange> changes(String id) => inner.changes(id);
   @override
@@ -1042,11 +1207,74 @@ final class TraversalBoundaryStore implements OfflineStore {
   ) async {
     await beforeBegin?.call();
     final result = await inner.transaction((tx) async {
-      final result = await action(tx);
+      final result = await action(wrap?.call(tx) ?? tx);
       await beforeCommit?.call(tx);
       return result;
     });
     await afterCommit?.call();
     return result;
   }
+}
+
+final class _ClockBoundary {
+  Future<void> Function()? afterTime, afterRead, afterInvalidate;
+  int invalidations = 0;
+}
+
+// Only the traversal seam is forwarded; unexpected mutation work fails loudly.
+final class _ClockBoundaryTransaction implements OfflineStoreTransaction {
+  _ClockBoundaryTransaction(this.inner, this.boundary);
+  final OfflineStoreTransaction inner;
+  final _ClockBoundary boundary;
+  @override
+  Future<DateTime> effectiveTime(String scope, DateTime raw) async {
+    final value = await inner.effectiveTime(scope, raw);
+    await boundary.afterTime?.call();
+    return value;
+  }
+
+  @override
+  Future<void> invalidateTraversals(String scope) async {
+    await inner.invalidateTraversals(scope);
+    boundary.invalidations++;
+    await boundary.afterInvalidate?.call();
+  }
+
+  @override
+  Future<OfflineTraversalRecord?> getTraversal(String scope, String key) async {
+    final value = await inner.getTraversal(scope, key);
+    await boundary.afterRead?.call();
+    return value;
+  }
+
+  @override
+  FutureOr<int> generation(String scope) => inner.generation(scope);
+  @override
+  FutureOr<String?> authorityBinding(String scope) =>
+      inner.authorityBinding(scope);
+  @override
+  FutureOr<void> bindAuthority(String scope, String binding) =>
+      inner.bindAuthority(scope, binding);
+  @override
+  FutureOr<bool> replayPausedForAuth(String scope) =>
+      inner.replayPausedForAuth(scope);
+  @override
+  FutureOr<bool> replayPausedForPolicy(String scope) =>
+      inner.replayPausedForPolicy(scope);
+  @override
+  FutureOr<int> changeEpoch(String scope) => inner.changeEpoch(scope);
+  @override
+  FutureOr<int> traversalValidityEpoch(String scope) =>
+      inner.traversalValidityEpoch(scope);
+  @override
+  FutureOr<List<OfflineOutboxRecord>> outbox(String scope) =>
+      inner.outbox(scope);
+  @override
+  FutureOr<void> putTraversal(String scope, OfflineTraversalRecord record) =>
+      inner.putTraversal(scope, record);
+  @override
+  FutureOr<void> touchTraversal(String scope, String key, DateTime at) =>
+      inner.touchTraversal(scope, key, at);
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

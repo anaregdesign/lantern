@@ -22,7 +22,11 @@ Future<void> verifyConfirmationRollback({
   sqfliteFfiInit();
   final calls = <String>[];
   final statusIds = <List<int>>[];
-  final factory = _ConfirmationFactory();
+  final factory = _ConfirmationFactory(
+    undisclosed
+        ? OfflineWriteState.acceptedUndisclosed
+        : OfflineWriteState.confirmed,
+  );
   var observedCommittedMarker = false;
   connect.AnyFn<I, O> intercept<I extends Object, O extends Object>(
     connect.AnyFn<I, O> next,
@@ -107,6 +111,7 @@ Future<void> verifyConfirmationRollback({
     options: const MutationOptions(wait: WaitOptions()),
   );
   factory.operation = ticket.reference.operationId.encoded;
+  factory.partition = binding.stableIdentity;
   await session.setTransferAllowed(true);
   final live = await ticket.completion!.timeout(
     const Duration(seconds: 5),
@@ -137,6 +142,7 @@ Future<void> verifyConfirmationRollback({
   );
   expect(factory.rollbacks, 1);
   final before = factory.before!;
+  expect(factory.confirmed.isCompleted, isFalse);
   expect(before.mayHaveDispatched, isTrue);
   expect(before.receipt, isNotNull);
   final retained = await factory.outbox();
@@ -201,6 +207,7 @@ Future<void> verifyConfirmationRollback({
         },
       );
   expectReply(recovered);
+  await factory.confirmed.future.timeout(const Duration(seconds: 5));
   final recoveryCalls = calls.skip(offset).toList();
   expect(recoveryCalls.first, 'GetReceiptStatuses');
   expect(statusIds, [before.receipt!.operationId.bytes]);
@@ -216,8 +223,11 @@ Future<void> verifyConfirmationRollback({
 }
 
 final class _ConfirmationFactory implements DatabaseFactory {
+  _ConfirmationFactory(this.expectedState);
+  final OfflineWriteState expectedState;
   final failed = Completer<void>();
-  String? operation;
+  final confirmed = Completer<void>();
+  String? operation, partition;
   int rollbacks = 0;
   OfflineOutboxRecord? before;
   late _ConfirmationDatabase database;
@@ -312,47 +322,78 @@ final class _ConfirmationDatabase implements Database {
     Future<T> Function(Transaction) action, {
     bool? exclusive,
   }) async {
+    var injected = false, stagedSuccess = false;
     try {
-      return await delegate.transaction((tx) async {
-        final id = fault.operation;
-        final before = id == null
+      final committed = await delegate.transaction((tx) async {
+        final id = fault.operation, scope = fault.partition;
+        final before = id == null || scope == null
             ? <Map<String, Object?>>[]
             : await tx.query(
                 'outbox',
-                where: 'operation_id=?',
-                whereArgs: [id],
+                where: 'partition_id=? AND operation_id=?',
+                whereArgs: [scope, id],
+              );
+        final previous = before.isEmpty
+            ? null
+            : OfflineCodec.decodeOperationRecord(
+                utf8.decode(
+                  (await tx.query(
+                        'operations',
+                        where: 'partition_id=? AND operation_id=?',
+                        whereArgs: [scope, id],
+                      )).single['payload']!
+                      as Uint8List,
+                ),
               );
         final result = await action(tx);
-        if (id != null && before.isNotEmpty && fault.rollbacks == 0) {
+        if (previous != null && previous.terminalAt == null) {
           final rows = await tx.query(
             'operations',
-            where: 'operation_id=? AND terminal_at IS NOT NULL',
-            whereArgs: [id],
+            where:
+                'partition_id=? AND operation_id=? AND terminal_at IS NOT NULL',
+            whereArgs: [scope, id],
           );
           if (rows.isNotEmpty) {
             final staged = OfflineCodec.decodeOperationRecord(
               utf8.decode(rows.single['payload']! as Uint8List),
             );
-            expect(
-              staged.items.single.state,
-              anyOf(
-                OfflineWriteState.confirmed,
-                OfflineWriteState.acceptedUndisclosed,
-              ),
-            );
-            fault.before = OfflineCodec.decodeOutboxRecord(
+            final retained = OfflineCodec.decodeOutboxRecord(
               utf8.decode(before.single['payload']! as Uint8List),
             );
-            fault.rollbacks++;
-            throw StateError(
-              'injected confirmation rollback before SQLite commit',
+            expect(staged.partitionId, scope);
+            expect(staged.operationId, id);
+            expect(staged.items.single.state, fault.expectedState);
+            expect(staged.items.single.itemIndex, 0);
+            expect(staged.items.single.recordId, retained.recordId);
+            expect(previous.items.single.recordId, retained.recordId);
+            expect(
+              await tx.query(
+                'outbox',
+                where: 'partition_id=? AND operation_id=?',
+                whereArgs: [scope, id],
+              ),
+              isEmpty,
             );
+            stagedSuccess = true;
+            if (fault.rollbacks == 0) {
+              fault.before = retained;
+              fault.rollbacks++;
+              injected = true;
+              throw StateError(
+                'injected confirmation rollback before SQLite commit',
+              );
+            }
           }
         }
         return result;
       }, exclusive: exclusive);
+      // A callback return is only staged success. Join the native commit first.
+      if (stagedSuccess && !fault.confirmed.isCompleted) {
+        fault.confirmed.complete();
+      }
+      return committed;
     } catch (_) {
-      if (fault.rollbacks == 1 && !fault.failed.isCompleted) {
+      if (injected && !fault.failed.isCompleted) {
         fault.failed.complete();
       }
       rethrow;

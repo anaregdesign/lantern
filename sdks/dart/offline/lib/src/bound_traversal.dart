@@ -129,13 +129,14 @@ extension _BoundTraversal on OfflineLanternDataClient {
     try {
       final value = await store.transaction((tx) async {
         Future<void> sample() async {
-          final raw = _traversalClock.sample();
-          final effective = await tx.effectiveTime(partitionId, raw);
-          _traversalClock.observe(raw, effective);
+          final capture = _traversalClock.capture();
+          final effective = await tx.effectiveTime(partitionId, capture.raw);
+          _traversalClock.reconcile(capture, effective);
           if (_traversalClock.invalidationPending &&
               invalidated != _traversalClock.rollbackRevision) {
+            final required = _traversalClock.rollbackRevision;
             await tx.invalidateTraversals(partitionId);
-            invalidated = _traversalClock.rollbackRevision;
+            invalidated = required;
           }
         }
 

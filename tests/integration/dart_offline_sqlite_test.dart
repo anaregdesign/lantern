@@ -352,7 +352,11 @@ void main() {
           expect(
             snapshot.confirmed.state,
             ConfirmedState.present,
-            reason: '$profile row $i',
+            reason:
+                '$profile row $i; cause=${snapshot.confirmed.cause}, '
+                'origin=${snapshot.confirmed.origin}, '
+                'freshness=${snapshot.confirmed.freshness}, '
+                'requests=${calls.methods.length}',
           );
           final graph = snapshot.confirmed.value!, oracle = expected[i];
           expect(graph.vertices.keys, orderedEquals(oracle.vertices.keys));
