@@ -34,7 +34,8 @@ class GitFixtureTest(unittest.TestCase):
                 for key, value in {
                     "user.name": "Fixture", "user.email": "fixture@example.invalid",
                     "core.hooksPath": str(root / ".git/hooks"),
-                    "maintenance.strategy": "gc", "gc.auto": "1", "gc.autoPackLimit": "1",
+                    "maintenance.auto": "true", "maintenance.strategy": "gc",
+                    "gc.auto": "1", "gc.autoPackLimit": "1",
                     "maintenance.autoDetach": "true", "gc.autoDetach": "true",
                 }.items():
                     git("config", "--local", key, value)
@@ -74,7 +75,9 @@ if count == 2:
                     try:
                         self.wait_until(lambda: (base / "entered").exists())
                         if synchronous:
-                            self.assertIsNone(process.poll(), "commit returned before its writer")
+                            # A single poll could race the detached parent's exit.
+                            with self.assertRaises(subprocess.TimeoutExpired):
+                                process.wait(timeout=1)
                         else:
                             self.assertEqual(process.wait(timeout=15), 0)
                         self.assertFalse((base / "finished").exists())
