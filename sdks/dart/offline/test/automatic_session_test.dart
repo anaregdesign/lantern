@@ -12,6 +12,8 @@ import 'package:test/test.dart';
 import 'helpers.dart' show FakeOfflineRemote, offlineReceiptCapability;
 import 'support/session_clock.dart';
 
+part 'support/first_send_contract.dart';
+
 final endpoint = Uri.parse('http://localhost:6380');
 LanternSessionBinding binding({
   String account = 'account',
@@ -33,6 +35,9 @@ final class MutationRemote implements OfflineBoundMutationRemote {
   int calls = 0;
   Future<void> Function(OfflineOutboxRecord)? before, after;
   final List<OfflineOutboxRecord> sent = [];
+  MutationReply<Object?> reply = const MutationKnownEffect(
+    PutOutcome.appliedAndLive,
+  );
   @override
   Future<MutationReply<Object?>> sendBoundMutation(
     OfflineOutboxRecord record, {
@@ -46,7 +51,7 @@ final class MutationRemote implements OfflineBoundMutationRemote {
     sent.add(record);
     await after?.call(record);
     beforePublication();
-    return const MutationKnownEffect(PutOutcome.appliedAndLive);
+    return reply;
   }
 }
 
@@ -55,7 +60,7 @@ final class Harness {
   final store = MemoryOfflineStore();
   final remote = MutationRemote();
   final receipt = FakeOfflineRemote();
-  late final LanternClient client;
+  late LanternClient client;
   late final LanternSessionBinding identity;
   final handles = <OfflineLanternSession>[];
   Harness({
@@ -108,6 +113,7 @@ final class Harness {
 }
 
 void main() {
+  firstSendContract();
   test(
     'R2 startup data-join failure never releases the provisional owner',
     () async {
@@ -510,7 +516,7 @@ void main() {
   );
   for (final stage in ['preparation', 'status', 'marker', 'publication']) {
     test(
-      'C1 $stage stop joins and resumes original durable evidence status-first',
+      'C1 $stage stop joins and resumes according to durable dispatch proof',
       () async {
         final h = Harness();
         addTearDown(h.close);
@@ -525,6 +531,16 @@ void main() {
           h.receipt.beforeReceiptPreparationReturn = hold;
         }
         if (stage == 'status') {
+          // First produce genuinely possibly-dispatched work; a proven first
+          // send no longer enters the status hook.
+          h.remote.after = (_) async {
+            if (h.remote.calls == 1) {
+              throw const OfflineRemoteFailure(
+                OfflineRemoteErrorKind.unavailable,
+                'lost reply',
+              );
+            }
+          };
           h.receipt.beforeReceiptStatusReturn = (_) => hold();
         }
         if (stage == 'marker') h.remote.before = (_) => hold();
@@ -537,6 +553,7 @@ void main() {
           ]),
         );
         await h.tick();
+        if (stage == 'status') await h.tick(1000);
         expect(entered, true);
         final original = (await h.rows()).single;
         final stopped = client.suspend();
@@ -558,7 +575,10 @@ void main() {
         await client.resume();
         await h.tick();
         expect(await h.rows(), isEmpty);
-        expect(h.receipt.receiptStatusCalls, greaterThan(statusBefore));
+        expect(
+          h.receipt.receiptStatusCalls,
+          original.mayHaveDispatched ? greaterThan(statusBefore) : statusBefore,
+        );
         expect(h.receipt.receiptPrepareCalls, stage == 'preparation' ? 2 : 1);
         if (original.receipt != null) {
           expect(

@@ -25,6 +25,75 @@ void main() {
   tearDown(() => root.delete(recursive: true));
 
   test(
+    'automatic schedule preserves stored microsecond retry and expiry deadlines',
+    () async {
+      final store = await SqliteOfflineStore.open(
+        path: '${root.path}/schedule.db',
+        databaseFactory: databaseFactoryFfiNoIsolate,
+      );
+      addTearDown(store.close);
+      final endpoint = Uri.parse('http://localhost:6380');
+      final binding = LanternSessionBinding.application(
+        serviceOrigin: endpoint,
+        securityDomain: 'schedule',
+        accountIdentity: 'one',
+        authorityBinding: 'a',
+      );
+      final now = DateTime.utc(2026, 10, 16, 0, 0, 0, 0, 123);
+      final expiration = now.add(const Duration(seconds: 7));
+      final retry = now.add(const Duration(seconds: 1, microseconds: 456));
+      final client = await OfflineLanternDataClient.open(
+        client: LanternClient.connect(endpoint, allowInsecure: true),
+        store: store,
+        binding: binding,
+        durability: AdmissionDurability.durable,
+        clock: () => now,
+      );
+      addTearDown(client.close);
+      await client.mutations.submit(
+        MutationRequest.putVertices([
+          VertexInput(
+            key: 'deadline',
+            value: const NilValue(),
+            expiresAt: expiration,
+          ),
+        ]),
+      );
+      await store.transaction((tx) async {
+        final initial = await tx.automaticSchedule(
+          binding.stableIdentity,
+          now: now,
+          maxAge: const Duration(hours: 1),
+        );
+        expect(initial.nextAttemptAt, now);
+        expect(initial.nextLocalExpiry, expiration);
+        final row = (await tx.outbox(binding.stableIdentity)).single;
+        final retried = row.copyWith(nextAttemptAt: retry);
+        await tx.updateOutbox(retried);
+        await advanceOfflineMutation(
+          tx,
+          retried,
+          OfflineWriteState.retryScheduled,
+          now,
+        );
+        final scheduled = await tx.automaticSchedule(
+          binding.stableIdentity,
+          now: now,
+          maxAge: const Duration(hours: 1),
+        );
+        expect(scheduled.nextAttemptAt, retry);
+        expect(scheduled.nextLocalExpiry, expiration);
+        final ageLimited = await tx.automaticSchedule(
+          binding.stableIdentity,
+          now: now,
+          maxAge: const Duration(seconds: 2),
+        );
+        expect(ageLimited.nextLocalExpiry, now.add(const Duration(seconds: 2)));
+      });
+    },
+  );
+
+  test(
     'O3 failure after native reservation releases before any SQLite work',
     () async {
       final factory = _FaultFactory()..failOpen = true;

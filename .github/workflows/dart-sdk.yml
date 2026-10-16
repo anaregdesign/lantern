@@ -102,6 +102,11 @@ on:
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
   workflow_dispatch:
+    inputs:
+      sqlite_diagnostic:
+        description: Run one bounded SQLite resource diagnostic (never qualifies Gate)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -115,6 +120,7 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/')
     uses: ./.github/workflows/current-source-release.yml
   changes:
+    if: ${{ !inputs.sqlite_diagnostic }}
     name: Classify changes
     runs-on: ubuntu-latest
     outputs:
@@ -575,6 +581,45 @@ jobs:
           trap 'python3 tool/paired_source_gate.py --cleanup' EXIT
           dart analyze lib test tool
           dart test
+
+  sqlite-diagnostic:
+    name: SQLite resource diagnostic (non-qualifying)
+    if: github.event_name == 'workflow_dispatch' && inputs.sqlite_diagnostic
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdks/dart/offline_sqlite
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: 3.44.6
+          cache: true
+      - name: Resolve locked SQLite fixture dependencies
+        run: flutter pub get --enforce-lockfile
+      - name: Run one bounded resource diagnostic
+        run: |
+          mkdir -p "$RUNNER_TEMP/sqlite-diagnostic"
+          set +e
+          timeout --signal=KILL 120s dart run tool/performance_probe.dart \
+            --diagnostic "$RUNNER_TEMP/sqlite-diagnostic/events.jsonl" \
+            > "$RUNNER_TEMP/sqlite-diagnostic/result.json" \
+            2> "$RUNNER_TEMP/sqlite-diagnostic/stderr.log"
+          probe_status=$?
+          printf '{"qualifies":false,"exitCode":%s}\n' "$probe_status" \
+            > "$RUNNER_TEMP/sqlite-diagnostic/process.json"
+          exit "$probe_status"
+      - name: Preserve content-free diagnostic including failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lantern-sqlite-diagnostic-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sqlite-diagnostic
+          if-no-files-found: error
+          retention-days: 7
 
   offline-sqlite:
     name: SQLite adapter persistence and real-wire replay
@@ -1151,7 +1196,7 @@ jobs:
 
   gate:
     name: Gate
-    if: always()
+    if: ${{ always() && !inputs.sqlite_diagnostic }}
     needs: [changes, documentation, evidence-only, test, minimum-dart, offline-test, offline-minimum-dart, offline-sqlite, android, ios]
     runs-on: ubuntu-latest
     steps:

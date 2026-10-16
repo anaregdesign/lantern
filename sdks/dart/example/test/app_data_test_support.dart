@@ -149,6 +149,7 @@ final class AppWire implements connect.Transport {
   bool available = true;
   int blocked = 0;
   Completer<void>? holdRead;
+  Completer<void>? holdWrite;
   String _edge(Map<String, dynamic> value) =>
       '${value['tail']}\u0000${value['head']}';
   @override
@@ -198,6 +199,7 @@ final class AppWire implements connect.Transport {
           }
         }
         response = {'outcomes': outcomes};
+        await holdWrite?.future;
       case 'GetVertices':
         // Capture before a held old reply; returning it must still be fenced.
         response = {

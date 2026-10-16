@@ -172,17 +172,17 @@ final class OfflineLanternDataClient
     final timing = OfflineTraversalClock(now);
     final scope = binding.stableIdentity;
     final opened = await store.transaction((tx) async {
-      final raw = timing.sample();
-      final at = await tx.effectiveTime(scope, raw);
-      timing.observe(raw, at);
+      final capture = timing.capture();
+      final at = await tx.effectiveTime(scope, capture.raw);
+      timing.reconcile(capture, at);
       await tx.bindAuthority(scope, binding.authorityBinding);
+      var invalidated = 0;
       if (timing.invalidationPending || bootstrapRequired) {
+        final required = timing.rollbackRevision;
         await tx.invalidateTraversals(scope);
+        invalidated = required;
       }
-      return (
-        generation: await tx.generation(scope),
-        revision: timing.rollbackRevision,
-      );
+      return (generation: await tx.generation(scope), revision: invalidated);
     });
     timing.committed(opened.revision);
     DateTime effectiveClock() {
@@ -460,6 +460,7 @@ final class OfflineLanternDataClient
       observedAt: clock().toUtc(),
       freshness: ObservationFreshness.unavailable,
     ),
+    sequence: ++_sequence,
     observationLost: lost,
   );
   LanternSnapshot<T> _lost<T>(LanternSnapshot<T> s, bool lost) =>
@@ -566,6 +567,7 @@ final class OfflineLanternDataClient
       't:${query.canonicalKey}:${options?.source}',
       (lost) => LanternTraversalSnapshot(
         confirmed: _unknown<Graph>(lost).confirmed,
+        sequence: _sequence,
         observationLost: lost,
         query: query,
       ),

@@ -715,6 +715,98 @@ void main() {
     },
   );
 
+  test(
+    'commit validation keeps both item updates and discards rollback snapshots',
+    () async {
+      var store = await open();
+      final now = DateTime.utc(2026, 10, 16);
+      final repository = OfflineLanternRepository(
+        store: store,
+        remote: _NoRemote(),
+        config: OfflineConfig(clock: () => now),
+      );
+      final handle = await repository.putVertices(
+        partitionId: 'p',
+        operationId: 'two-items',
+        inputs: [
+          for (final key in ['a', 'b'])
+            VertexInput(key: key, value: VertexValue.int32(1)),
+        ],
+      );
+      await repository.dispose();
+      Future<(List<String>, String)> snapshot() => store.transaction(
+        (tx) async => (
+          (await tx.outbox('p')).map(OfflineCodec.encodeOutboxRecord).toList(),
+          OfflineCodec.encodeOperationRecord(
+            (await tx.getOperation('p', handle.operationId))!,
+          ),
+        ),
+      );
+      final before = await snapshot();
+      Future<void> markSending(OfflineStoreTransaction tx, int index) async {
+        final operation = (await tx.getOperation('p', handle.operationId))!;
+        final old = operation.items[index];
+        final record = (await tx.getOutbox('p', old.recordId))!;
+        await tx.updateOutbox(
+          record.copyWith(
+            state: OfflineOutboxState.sending,
+            leaseOwner: 'owner',
+            leaseUntil: now.add(const Duration(minutes: 1)),
+          ),
+        );
+        final items = operation.items.toList();
+        items[index] = OfflineWriteStatus(
+          recordId: old.recordId,
+          operationId: old.operationId,
+          itemIndex: index,
+          state: OfflineWriteState.sending,
+          attemptCount: old.attemptCount,
+          mayHaveDispatched: old.mayHaveDispatched,
+        );
+        await tx.putOperation(
+          OfflineOperationRecord(
+            partitionId: 'p',
+            generation: operation.generation,
+            operationId: operation.operationId,
+            items: items,
+            updatedAt: now,
+          ),
+        );
+      }
+
+      final abort = StateError('between-item-updates');
+      await expectLater(
+        store.transaction<void>((tx) async {
+          await markSending(tx, 0);
+          throw abort;
+        }),
+        throwsA(same(abort)),
+      );
+      final rolledBack = await snapshot();
+      expect(rolledBack.$1, before.$1);
+      expect(rolledBack.$2, before.$2);
+      await store.transaction((tx) async {
+        await markSending(tx, 0);
+        await markSending(tx, 1);
+      });
+      store = await reopen(store) as SqliteOfflineStore;
+      final operation = await store.transaction(
+        (tx) => tx.getOperation('p', handle.operationId),
+      );
+      expect(
+        operation!.items.map((item) => item.state),
+        everyElement(OfflineWriteState.sending),
+      );
+      final records = await store.transaction((tx) => tx.outbox('p'));
+      expect(records, hasLength(2));
+      expect(
+        records.map((record) => record.state),
+        everyElement(OfflineOutboxState.sending),
+      );
+      expect(records.map((record) => record.leaseOwner), everyElement('owner'));
+    },
+  );
+
   test('awaited parallel operations serialize their savepoints', () async {
     var store = await open();
     final events = <OfflineStoreChange>[];

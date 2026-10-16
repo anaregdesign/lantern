@@ -25,7 +25,7 @@ final snapshot = await data.getVertex('note:42',
 // snapshot.confirmed remains independent from its exact pending Put view.
 ```
 
-`OfflineLanternSession` owns bounded preparation, status-first delivery, retries,
+`OfflineLanternSession` owns bounded preparation, status-first recovery, retries,
 expiry and watches while foreground. Matching handles share by refcount. The
 platform bridge calls `suspend`/`resume` and supplies newly verified credential
 events; applications use the same CRUD vocabulary and do not schedule passes.
@@ -74,9 +74,22 @@ previously delivered values never become a reusable Offline cache.
 Admission freezes TTL/wire values and generated Add contribution IDs in one
 transaction. Receipt families enter a checked `awaitingPreparation` state;
 qualified capability preparation occurs later under a claim, outside SQL. Complete
-evidence commits before the monotone pre-send marker. Possibly sent receipts
-retain their original IDs and recover status-first. All exact results are historical
-Server handling, not current graph values; settlement invalidates affected cache
+evidence commits before the monotone pre-send marker. Under the current qualified
+claim, validated false outer/receipt markers and zero attempts prove a first send:
+only that case skips the initial receipt-status lookup, including a trusted reopen.
+Capability continuity, latency-inclusive freshness and pre-dispatch checks still
+apply, and both markers commit true before transport. Possibly sent receipts
+retain their original IDs and recover status-first, even when a committed marker
+was followed by zero observed wire calls.
+
+A prefix-authorized writer can receive a confirmed content-free receipt by its
+original resource. It cannot necessarily obtain an absent-receipt assertion after
+an ambiguous attempt. A denied lookup keeps the original IDs unresolved under
+`SyncPause.policy`; connectivity recovery or credential refresh does not authorize
+blind resend, rekeying or invented acceptance. Automatic progress requires the
+current authorization and continuity needed for that operation.
+
+All exact results are historical Server handling, not current graph values; settlement invalidates affected cache
 and removes only the owned overlay. Later Put/Delete/conditional/Add effects are
 reprojected in order. Conditional/Add/contribution-Delete do not guess numeric or
 condition success from a cache. Explicit dependency groups are bounded at 64 nodes
@@ -305,7 +318,8 @@ its operation ID, one-item logical receipt group, endpoint NodeID/generation,
 policy fingerprint, and exact `itemIndex=0`/`itemCount=1` receipt topology
 before its first mutation send.
 
-Receipt replay checks status before every mutation send, including after an
+The legacy explicit repository replay checks status before every mutation send,
+including after an
 ambiguous response, lease recovery, or process restart. A freshly enqueued
 receipt also retains a never-dispatched marker. If the server clock shows its
 provisional ID nearing the five-minute admission limit, replay may replace

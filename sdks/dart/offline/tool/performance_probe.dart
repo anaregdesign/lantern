@@ -6,6 +6,8 @@ import 'dart:typed_data';
 import 'package:lantern_client/lantern_client.dart';
 import 'package:lantern_client_offline/lantern_client_offline.dart';
 
+import 'automatic_baseline.dart';
+
 Future<void> main(List<String> arguments) async {
   final outputPath = _outputPath(arguments);
   final baseline =
@@ -164,7 +166,87 @@ Future<void> main(List<String> arguments) async {
 
   final contributionCodec = _contributionDeleteCodec(now, limits);
   final boundAdmission = await _boundAdmissionBaseline(now, limits);
+  final automatic = await automaticBaseline(
+    itemsPerScope: [500, 501],
+    open: (index, client, binding, schedule) async {
+      final store = MemoryOfflineStore(
+        limits: const OfflineStoreLimits(
+          maxOutboxRecords: 1100,
+          maxOutboxRecordsPerPartition: 1100,
+        ),
+      );
+      final session = await OfflineLanternSession.openStore(
+        client: client,
+        storeKey: store,
+        createStore: () async => store,
+        closeStore: (_) async {},
+        binding: binding,
+        durability: AdmissionDurability.memory,
+        transferAllowed: false,
+        schedule: schedule,
+        readRoute: LanternSingleResponderRoute.certified(
+          client: client,
+          responderId: 'baseline',
+          isCurrent: () => true,
+        ),
+      );
+      Future<BaselineCounts> inspect() async {
+        final counts = await store.transaction((tx) async {
+          final rows = await tx.outbox(binding.stableIdentity);
+          final operations = await tx.operations(binding.stableIdentity);
+          // Diagnostic snapshot of all fixture-owned retained records through
+          // the public store port; MemoryOfflineStore offers no restore export.
+          final snapshot = <String>[
+            for (final op in operations) OfflineCodec.encodeOperationRecord(op),
+            for (final row in rows) OfflineCodec.encodeOutboxRecord(row),
+          ];
+          if (rows.isEmpty) {
+            for (final key in [
+              for (var i = 0; i < (index == 0 ? 500 : 501); i++) 'put-$i',
+              for (var i = 0; i < 64; i++) 'v$i',
+            ]) {
+              final row = await tx.getCache(
+                binding.stableIdentity,
+                OfflineEntityKey.vertex(key),
+              );
+              if (row != null) {
+                snapshot.add(OfflineCodec.encodeCacheRecord(row));
+              }
+            }
+            for (final option in <TraversalOptions>[
+              const BfsOptions(step: 2, fanOut: 2),
+              const PprOptions(),
+              const LocalCommunityOptions(),
+            ]) {
+              final row = await tx.getTraversal(
+                binding.stableIdentity,
+                LanternTraversalQuery('v0', traversal: option).canonicalKey,
+              );
+              if (row != null) snapshot.add(OfflineTraversalCodec.encode(row));
+            }
+          }
+          return (
+            outbox: rows.length,
+            claims: rows
+                .where((r) => r.leaseOwner != null || r.leaseUntil != null)
+                .length,
+            operations: operations.length,
+            bytes: utf8.encode(jsonEncode(snapshot)).length,
+          );
+        });
+        return (
+          outbox: counts.outbox,
+          claims: counts.claims,
+          operations: counts.operations,
+          memoryBytes: counts.bytes,
+        );
+      }
+
+      return (session: session, inspect: inspect);
+    },
+  );
   final metrics = <String, Object?>{
+    'automatic': automatic,
     'contributionDeleteCodec': contributionCodec,
     'boundAdmission': boundAdmission,
     'schema': 1,

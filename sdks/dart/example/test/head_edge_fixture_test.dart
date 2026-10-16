@@ -1,5 +1,6 @@
 import 'dart:io' as io;
 
+import 'package:connectrpc/connect.dart' as connect;
 import 'package:connectrpc/io.dart' as connect_io;
 import 'package:connectrpc/protobuf.dart';
 import 'package:connectrpc/protocol/connect.dart' as connect_protocol;
@@ -8,6 +9,7 @@ import 'package:lantern_client/lantern_client.dart';
 
 import '../integration_test/support/head_edge_fixture.dart';
 import '../integration_test/support/head_edge_wire.dart';
+import '../../offline_sqlite/test/support/confirmation_wire.dart';
 
 void main() {
   test('contribution identity survives restart but isolates new intents', () {
@@ -39,39 +41,59 @@ void main() {
   });
 
   final endpointValue = io.Platform.environment['LANTERN_HEAD_WIRE_ENDPOINT'];
+  LanternClient open(String? credential, [connect.Interceptor? intercept]) {
+    final endpoint = Uri.parse(endpointValue!);
+    final tokenPath = credential == null
+        ? null
+        : io.Platform.environment[credential]!;
+    final caPath = io.Platform.environment['LANTERN_HEAD_WIRE_CA_FILE'];
+    final context = caPath == null
+        ? io.SecurityContext.defaultContext
+        : (io.SecurityContext(withTrustedRoots: false)
+            ..setTrustedCertificates(caPath));
+    final http = io.HttpClient(context: context);
+    final transport = connect_protocol.Transport(
+      baseUrl: endpoint.toString(),
+      codec: const ProtoCodec(),
+      httpClient: connect_io.createHttpClient(http),
+      interceptors: [?intercept],
+    );
+    return LanternClient.connect(
+      endpoint,
+      token: tokenPath == null
+          ? null
+          : io.File(tokenPath).readAsStringSync().trim(),
+      allowInsecure: false,
+      transport: transport,
+      onClose: () => http.close(force: true),
+      retryPolicy: const RetryPolicy(maxAttempts: 1),
+    );
+  }
+
+  test(
+    'G3 undisclosed reply survives SQLite confirmation rollback',
+    () async {
+      final observer = open('LANTERN_HEAD_WIRE_OBSERVER_TOKEN_FILE');
+      addTearDown(observer.close);
+      final id = DateTime.now().microsecondsSinceEpoch;
+      await verifyConfirmationRollback(
+        observer: observer,
+        openWriter: (intercept) =>
+            open('LANTERN_HEAD_WIRE_WRITER_TOKEN_FILE', intercept),
+        pair: EdgeRef(
+          'physical-head:tails:g3:$id',
+          'physical-head:heads:g3:$id',
+        ),
+        undisclosed: true,
+      );
+    },
+    skip: endpointValue == null || endpointValue.isEmpty,
+  );
   test(
     'physical Head assertions execute on the production Server wire',
     () async {
-      final endpoint = Uri.parse(endpointValue!);
-      LanternClient connect(String? credential) {
-        final tokenPath = credential == null
-            ? null
-            : io.Platform.environment[credential]!;
-        final caPath = io.Platform.environment['LANTERN_HEAD_WIRE_CA_FILE'];
-        final context = caPath == null
-            ? io.SecurityContext.defaultContext
-            : (io.SecurityContext(withTrustedRoots: false)
-                ..setTrustedCertificates(caPath));
-        final http = io.HttpClient(context: context);
-        final transport = connect_protocol.Transport(
-          baseUrl: endpoint.toString(),
-          codec: const ProtoCodec(),
-          httpClient: connect_io.createHttpClient(http),
-        );
-        return LanternClient.connect(
-          endpoint,
-          token: tokenPath == null
-              ? null
-              : io.File(tokenPath).readAsStringSync().trim(),
-          allowInsecure: false,
-          transport: transport,
-          onClose: () => http.close(force: true),
-          retryPolicy: const RetryPolicy(maxAttempts: 1),
-        );
-      }
-
-      final observer = connect('LANTERN_HEAD_WIRE_OBSERVER_TOKEN_FILE');
-      final writer = connect('LANTERN_HEAD_WIRE_WRITER_TOKEN_FILE');
+      final observer = open('LANTERN_HEAD_WIRE_OBSERVER_TOKEN_FILE');
+      final writer = open('LANTERN_HEAD_WIRE_WRITER_TOKEN_FILE');
       addTearDown(observer.close);
       addTearDown(writer.close);
       await verifyHeadEdgeWire(
@@ -79,7 +101,7 @@ void main() {
         writer: writer,
         runId: DateTime.now().microsecondsSinceEpoch.toString(),
         allowInsecure: false,
-        anonymousClient: connect(null),
+        anonymousClient: open(null),
         recordPhase: (_) async {},
         registerCleanup: addTearDown,
       );
