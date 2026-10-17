@@ -49,13 +49,14 @@ var nativeFixtureHosts = []string{"accounts.google.com", "oauth2.googleapis.com"
 
 type nativeFixtureServingOptions struct {
 	Origin, Prefix, ExportDir string
+	Profile                   string
 	ListenPort                int
 	Lifetime                  time.Duration
 	MembershipExpires         time.Time
 }
 
 func nativeFixtureServingFromEnv(getenv func(string) string) (*nativeFixtureServingOptions, error) {
-	keys := []string{"ORIGIN", "PREFIX", "EXPORT_DIR", "LISTEN_PORT", "LIFETIME_SECONDS"}
+	keys := []string{"ORIGIN", "PREFIX", "EXPORT_DIR", "LISTEN_PORT", "LIFETIME_SECONDS", "PROFILE"}
 	if getenv("LANTERN_NATIVE_FIXTURE_SERVE") == "" {
 		for _, key := range keys {
 			if getenv("LANTERN_NATIVE_FIXTURE_"+key) != "" {
@@ -74,6 +75,13 @@ func nativeFixtureServingFromEnv(getenv func(string) string) (*nativeFixtureServ
 		}
 	}
 	o := &nativeFixtureServingOptions{Origin: getenv("LANTERN_NATIVE_FIXTURE_ORIGIN"), Prefix: getenv("LANTERN_NATIVE_FIXTURE_PREFIX"), ExportDir: getenv("LANTERN_NATIVE_FIXTURE_EXPORT_DIR")}
+	o.Profile = getenv("LANTERN_NATIVE_FIXTURE_PROFILE")
+	if o.Profile == "" {
+		o.Profile = "native"
+	}
+	if o.Profile != "native" && o.Profile != "physical" || o.Profile == "physical" && o.Prefix != "orders:" {
+		return nil, errors.New("explicit native or fixed-scope physical serving profile required")
+	}
 	u, err := url.Parse(o.Origin)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Opaque != "" || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.String() != o.Origin || strings.ToLower(u.Host) != u.Host {
 		return nil, errors.New("canonical HTTPS native service origin required")
@@ -213,6 +221,9 @@ func waitNativeFixtureServing(ctx context.Context, release string, lifetime time
 func TestNativeFixtureServing(t *testing.T) {
 	t.Run("configuration", func(t *testing.T) {
 		dir := t.TempDir()
+		if err := os.Chmod(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
 		base := map[string]string{"LANTERN_NATIVE_FIXTURE_SERVE": "1", "LANTERN_NATIVE_LOGIN_GATE": "1", "LANTERN_CURRENT_PUBLIC_GATE": "1", "LANTERN_NATIVE_FIXTURE_ORIGIN": "https://installed.example:16443", "LANTERN_NATIVE_FIXTURE_PREFIX": "orders:installed:", "LANTERN_NATIVE_FIXTURE_EXPORT_DIR": dir, "LANTERN_NATIVE_FIXTURE_LISTEN_PORT": "16443", "LANTERN_NATIVE_FIXTURE_LIFETIME_SECONDS": "540"}
 		if got, err := nativeFixtureServingFromEnv(func(string) string { return "" }); err != nil || got != nil {
 			t.Fatal("ordinary fixture changed", err)
@@ -226,7 +237,19 @@ func TestNativeFixtureServing(t *testing.T) {
 		if got, err := nativeFixtureServingFromEnv(func(k string) string { return base[k] }); err != nil || got.Lifetime != 540*time.Second {
 			t.Fatal("valid serving configuration refused", err)
 		}
-		for key, value := range map[string]string{"LANTERN_NATIVE_FIXTURE_SERVE": "", "LANTERN_NATIVE_LOGIN_GATE": "", "LANTERN_NATIVE_FIXTURE_ORIGIN": "https://installed.example/", "LANTERN_NATIVE_FIXTURE_PREFIX": "other:", "LANTERN_NATIVE_FIXTURE_LISTEN_PORT": "443", "LANTERN_NATIVE_FIXTURE_LIFETIME_SECONDS": "541", "LANTERN_CURRENT_PUBLIC_SDK4": "1", "LANTERN_CURRENT_MEMBERSHIP_GATE": "1"} {
+		if got, err := nativeFixtureServingFromEnv(func(k string) string {
+			switch k {
+			case "LANTERN_NATIVE_FIXTURE_PROFILE":
+				return "physical"
+			case "LANTERN_NATIVE_FIXTURE_PREFIX":
+				return "orders:"
+			default:
+				return base[k]
+			}
+		}); err != nil || got.Profile != "physical" {
+			t.Fatal("fixed-scope physical serving profile refused", err)
+		}
+		for key, value := range map[string]string{"LANTERN_NATIVE_FIXTURE_SERVE": "", "LANTERN_NATIVE_LOGIN_GATE": "", "LANTERN_NATIVE_FIXTURE_PROFILE": "unknown", "LANTERN_NATIVE_FIXTURE_ORIGIN": "https://installed.example/", "LANTERN_NATIVE_FIXTURE_PREFIX": "other:", "LANTERN_NATIVE_FIXTURE_LISTEN_PORT": "443", "LANTERN_NATIVE_FIXTURE_LIFETIME_SECONDS": "541", "LANTERN_CURRENT_PUBLIC_SDK4": "1", "LANTERN_CURRENT_MEMBERSHIP_GATE": "1"} {
 			t.Run(key, func(t *testing.T) {
 				_, err := nativeFixtureServingFromEnv(func(k string) string {
 					if k == key {

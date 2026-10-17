@@ -76,7 +76,55 @@ The coordinator owns the container/tunnel/BFF lifecycle. Wait for
 | `private/fixture.json` | Mode 0600; `schema: 1`, `kind: synthetic-native-serving`, exact `endpoint`/`prefix`, `ca_file: ca.pem`, finite RFC3339 `serving_until`, and `accounts.a`/`accounts.b`, each with original `access_token` and verified fixed `expires_at`. |
 | `private/ready` | Created last, only after registered identities, original session verification and real orders read/write/delete, receipt capability, Query and scoped WatchChanges checks. It is removed at shutdown. |
 
-The ordinary fixture Principals are registered through public
+### Separate physical receipt/Head profile
+
+For the existing smoke/CDC/contribution/receipt/Head targets, select
+`--serve-profile physical` on the same normal-build `--serve` command.
+This is the independent [#1811](https://github.com/anaregdesign/lantern/issues/1811)
+machine fixture, **not** a substitute for registered native A/B or T18.
+The default native profile remains unchanged, including its one-hour/32-entry/
+1-MiB receipt policy. Do not use `authfixture -receipt -head-edge`'s legacy-v1
+profile to claim current-authority physical qualification.
+
+The physical profile has two independently generated, simultaneously accepted
+`lnt_m1_` credentials for the same `public-worker` identity, plus a distinct
+Head writer. Return the observer tokens in alternating runtime BFF responses
+for CDC renewal; use a separate fixed-token BFF/control token for the two-launch
+receipt proxy. No credential belongs in compile-time defines or public evidence.
+The observer has explicit data/Query/ReceiptRead/WatchChanges grants only for
+`mobile-smoke:`, `physical-api:`, `physical-cdc:`, `physical-contribution:`,
+`physical-receipt:`, `physical-head:` and `flutter-demo:`. It has no management
+grant. The Head writer has only tail read, head write, the denied head
+subprefix and receipt read specified in `physical-device-smoke.md`.
+
+Before creating `private/ready`, this profile verifies both rotating credentials
+with `GetCurrentPrincipal`, every synthetic prefix's CRUD/Query, a real scoped
+WatchChanges bootstrap, denial outside scope, minimal Head write-only behavior
+and independent observation. It also reads the certified receipt capability:
+retention is exactly **six hours**, maximum entries **1,024**, and maximum bytes
+**32 MiB**, with all five required mutation families. Search is enabled.
+These policy values do not extend signed membership or the finite serving
+window. A timeout or authority failure never completes a phone test.
+
+`private/fixture.json` instead has `kind: current-physical-serving`,
+`endpoint`, `ca_file`, `serving_until`, `credentials` containing
+`observer_tokens` (exactly two), `writer_token` and `expires_at`, plus
+`receipt_retention_ms`, `receipt_max_entries` and `receipt_max_bytes` from the
+actual capability. It contains no native account/session claim. Both kinds
+use the same production-guarded runtime and cleanup protocol. The selected
+profile is recorded separately in the private runner receipt and its exact
+lifecycle case is required; native and machine lifecycle logs cannot substitute
+for one another.
+
+Prebuild/sign all consuming targets. Budget a fresh authority lifetime per
+declared family/platform, preserve one immutable same-source image and unchanged
+clock/trust setup, and never restart a responder between a receipt target's
+two launches. The actual phone actions, final markers and signed-byte capture
+remain mandatory. Restore device settings after each family.
+
+### Shared bounded serving lifecycle
+
+The native profile's fixture Principals are registered through public
 Begin/Prepare/Apply against the existing PersonalUserRole before new native
 login credentials are exported. The actual serving mode is a synthetic
 prerequisite, not full configured-source Q, real-provider or physical

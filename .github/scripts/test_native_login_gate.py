@@ -17,7 +17,7 @@ from git_test_fixture import synchronous_git_maintenance
 
 
 class NativeLoginGateTest(unittest.TestCase):
-    def execute(self, mode):
+    def execute(self, mode, profile="native"):
         serving = mode.startswith("serve_")
         outcome = mode.removeprefix("serve_")
         with tempfile.TemporaryDirectory() as directory:
@@ -34,9 +34,12 @@ class NativeLoginGateTest(unittest.TestCase):
             log = "\n".join(f"--- PASS: {gate.ROOT_TEST}/{case} (0.01s)" for case in gate.CASES)
             log += f"\n--- PASS: {gate.ROOT_TEST} (0.1s)\nPASS\n"
             if serving:
+                case = gate.SERVING_CASE if profile == "native" else gate.ROOT_TEST + "/physical_fixture_serving_export"
+                marker = "native" if profile == "native" else "physical"
+                ready = "accounts=2" if profile == "native" else "observer_credentials=2 writer_credentials=1"
                 log = gate.NORMAL_SOURCE_MARKER + "\n"
                 log += "\n".join(f"current_constructor node={i} mode=fresh passed=true" for i in (1, 2, 3))
-                log += f"\nnative_fixture_ready schema=1 accounts=2\nnative_fixture_stopped reason=released\n--- PASS: {gate.SERVING_CASE} (0.01s)\n--- PASS: {gate.ROOT_TEST} (0.1s)\nPASS\n"
+                log += f"\n{marker}_fixture_ready schema=1 {ready}\n{marker}_fixture_stopped reason=released\n--- PASS: {case} (0.01s)\n--- PASS: {gate.ROOT_TEST} (0.1s)\nPASS\n"
             script = f"#!{sys.executable}\n" + '''\
 import json, os
 from pathlib import Path
@@ -69,7 +72,7 @@ elif args[0] == 'run':
             with patch.dict(os.environ, {"PATH": str(binaries) + os.pathsep + os.environ["PATH"],
                                          "CALLS": str(base / "calls"), "MODE": mode, "CASE_LOG": log,
                                          "GOFLAGS": ""}):
-                options = gate.ServingOptions("https://installed.example", 16443, 18443) if serving else None
+                options = gate.ServingOptions("https://installed.example", 16443, 18443, profile=profile) if serving else None
                 destinations = [base / "evidence"]
                 if mode == "repeat":
                     destinations = []
@@ -120,6 +123,8 @@ elif args[0] == 'run':
                 self.assertEqual(environment["LANTERN_NATIVE_FIXTURE_EXPORT_DIR"], "/native-fixture")
                 self.assertEqual(environment["LANTERN_NATIVE_FIXTURE_LIFETIME_SECONDS"], "540")
                 self.assertEqual(environment["TMPDIR"], "/work")
+                self.assertEqual(environment.get("LANTERN_NATIVE_FIXTURE_PROFILE", "native"), profile)
+                self.assertEqual(receipt["serving_profile"], profile)
                 self.assertEqual(receipt["build_tags"], [])
                 self.assertFalse(receipt["synthetic_utc"])
                 self.assertIn("full Q/real provider/device acceptance NOT_RUN", receipt["proof"])
@@ -153,6 +158,11 @@ elif args[0] == 'run':
             with self.subTest(mode=mode):
                 self.execute("serve_" + mode)
 
+    def test_physical_serving_preserves_current_profile_isolation_and_failure_evidence(self):
+        for mode in ("pass", "missing", "skip", "changed", "failure"):
+            with self.subTest(mode=mode):
+                self.execute("serve_" + mode, profile="physical")
+
     def test_serving_options_are_explicit_canonical_and_bounded(self):
         valid = {"origin": "https://installed.example:18443", "listen_port": 16443, "publish_port": 18443}
         gate.ServingOptions(**valid).validate()
@@ -160,7 +170,8 @@ elif args[0] == 'run':
                        {"origin": "https://installed.example?"}, {"origin": "https://user@installed.example"},
                        {"origin": "https://Installed.example"}, {"origin": "https://installed.example:0"},
                        {"prefix": "other:"}, {"prefix": "orders:bad\n:"}, {"prefix": "orders:" + "x" * 128 + ":"},
-                       {"listen_port": 443}, {"publish_port": 0}, {"lifetime_seconds": 0}, {"lifetime_seconds": 541}):
+                       {"listen_port": 443}, {"publish_port": 0}, {"lifetime_seconds": 0}, {"lifetime_seconds": 541},
+                       {"profile": "unknown"}, {"profile": "physical", "prefix": "orders:custom:"}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 gate.ServingOptions(**(valid | change)).validate()
         for args in (["--service-origin", valid["origin"]], ["--serve"], ["--serve", "--service-origin", valid["origin"], "--listen-port", "16443"]):
@@ -171,12 +182,22 @@ elif args[0] == 'run':
                        "--listen-port", "16443", "--publish-port", "18443", "--prefix", "orders:installed:",
                        "--lifetime-seconds", "180"])
             self.assertEqual(run.call_args.args[2], gate.ServingOptions(valid["origin"], 16443, 18443, 180, "orders:installed:"))
+        with patch.object(gate, "run", return_value={"status": "PASS", "development_changes": False}) as run, redirect_stdout(io.StringIO()):
+            gate.main(["--evidence", "unused", "--serve", "--serve-profile", "physical",
+                       "--service-origin", valid["origin"], "--listen-port", "16443", "--publish-port", "18443"])
+            self.assertEqual(run.call_args.args[2].profile, "physical")
 
     def test_serving_refuses_controlled_missing_or_destructive_evidence(self):
         log = gate.NORMAL_SOURCE_MARKER + "\n"
         log += "\n".join(f"current_constructor node={i} mode=fresh passed=true" for i in (1, 2, 3))
         log += f"\nnative_fixture_ready schema=1 accounts=2\nnative_fixture_stopped reason=timeout\n--- PASS: {gate.SERVING_CASE} (0.1s)\n--- PASS: {gate.ROOT_TEST} (0.1s)\n"
         gate.require_serving(log)
+        physical = log.replace("native_fixture", "physical_fixture").replace("accounts=2", "observer_credentials=2 writer_credentials=1")
+        gate.require_serving(physical, "physical")
+        with self.assertRaises(RuntimeError):
+            gate.require_serving(log, "physical")
+        with self.assertRaises(RuntimeError):
+            gate.require_serving(physical)
         for invalid in (log.replace(gate.NORMAL_SOURCE_MARKER, "test-build controlled source: fixture"),
                         log.replace("node=2", "node=1"), log.replace("reason=timeout", "reason=unknown"),
                         log + f"--- PASS: {gate.ROOT_TEST}/{gate.CASES[0]} (0.1s)\n",

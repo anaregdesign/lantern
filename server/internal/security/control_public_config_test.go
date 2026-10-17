@@ -246,6 +246,11 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	n := s3aTestCluster(t, nil)
 	queryRoles := os.Getenv("LANTERN_CURRENT_FIXTURE_QUERY_ROLES_FILE")
 	nativeServing := os.Getenv("LANTERN_NATIVE_FIXTURE_SERVE") == "1"
+	servingProfile := os.Getenv("LANTERN_NATIVE_FIXTURE_PROFILE")
+	if servingProfile != "" && (!nativeServing || servingProfile != "native" && servingProfile != "physical") {
+		t.Fatal("serving profile requires an explicit native or physical serving opt-in")
+	}
+	physicalServing := nativeServing && servingProfile == "physical"
 	if nativeServing && (os.Getenv("LANTERN_NATIVE_LOGIN_GATE") != "1" || queryRoles != "" || len(hosts) != 0) {
 		t.Fatal("native serving requires its local native-login fixture")
 	}
@@ -299,7 +304,7 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 		// itself is qualified separately by the native registration wire gate.
 		image.Principals[0].UserUID = "11111111111111111111111111111111"
 	}
-	if os.Getenv("LANTERN_NATIVE_LOGIN_GATE") == "1" {
+	if os.Getenv("LANTERN_NATIVE_LOGIN_GATE") == "1" && !physicalServing {
 		image, err = currentNativeFixtureImage(image, role, nativeServing, os.Getenv("LANTERN_NATIVE_FIXTURE_ORIGIN"), os.Getenv("LANTERN_NATIVE_FIXTURE_PREFIX"))
 		if err != nil {
 			t.Fatal(err)
@@ -330,6 +335,20 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	image.MachineCredentials = []MachineCredential{{Identity: machine, Digest: digest, CreatedAt: time.Now().Add(-time.Minute).UTC(), ExpiresAt: time.Now().Add(time.Hour).UTC()}}
 	if err := os.WriteFile(filepath.Join(dir, "machine.token"), []byte(machineToken), 0600); err != nil {
 		t.Fatal(err)
+	}
+	if physicalServing {
+		var credentials currentPhysicalCredentialExport
+		image, credentials, err = currentPhysicalFixtureImage(image, machine, machineToken, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(credentials)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "physical-credentials.json"), raw, 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if queryRoles != "" {
 		image = currentQueryFixtureImage(t, queryRoles, issuerURL, machineToken)
@@ -435,6 +454,100 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 			t.Fatal("data HA requires the current three-container fixture", err)
 		}
 		exportCurrentDataHA(t, dir, hosts, driver, provisioned.Profile())
+	}
+}
+
+type currentPhysicalCredentialExport struct {
+	ObserverTokens []string  `json:"observer_tokens"`
+	WriterToken    string    `json:"writer_token"`
+	ExpiresAt      time.Time `json:"expires_at"`
+}
+
+func currentPhysicalFixtureImage(image Image, observer Identity, primary string, now time.Time) (Image, currentPhysicalCredentialExport, error) {
+	export := currentPhysicalCredentialExport{ObserverTokens: []string{primary}, ExpiresAt: now.Add(time.Hour)}
+	for range 2 {
+		token, err := NewMachineToken()
+		if err != nil {
+			return Image{}, currentPhysicalCredentialExport{}, err
+		}
+		if len(export.ObserverTokens) == 1 {
+			export.ObserverTokens = append(export.ObserverTokens, token)
+		} else {
+			export.WriterToken = token
+		}
+	}
+	reader := Role{ID: "physical_observer"}
+	for _, prefix := range []string{"mobile-smoke:", "physical-api:", "physical-cdc:", "physical-contribution:", "physical-receipt:", "physical-head:", "flutter-demo:"} {
+		for _, action := range []Action{VertexRead, VertexWrite, VertexDelete, ReceiptRead, CDCIdentity, CDCValue, Query} {
+			rule := dataRule(Allow, action, prefix)
+			rule.ID = fmt.Sprintf("physical%d", len(reader.Rules))
+			reader.Rules = append(reader.Rules, rule)
+		}
+	}
+	writer := Role{ID: "physical_head_writer", Rules: []PermissionRule{
+		dataRule(Allow, VertexRead, "physical-head:tails:"),
+		dataRule(Allow, VertexWrite, "physical-head:heads:"),
+		dataRule(Deny, VertexWrite, "physical-head:heads:denied:"),
+		dataRule(Allow, ReceiptRead, "physical-head:"),
+	}}
+	for i := range writer.Rules {
+		writer.Rules[i].ID = fmt.Sprintf("head%d", i)
+	}
+	image.Roles = append(image.Roles, reader, writer)
+	for i := range image.Principals {
+		if image.Principals[i].Identity == observer {
+			image.Principals[i].Assignments = []RoleAssignment{{RoleID: reader.ID}}
+		}
+	}
+	writerIdentity := Identity{Kind: MachinePrincipal, MachineName: "physical-head-writer"}
+	image.Principals = append(image.Principals, Principal{Identity: writerIdentity, State: Active, Assignments: []RoleAssignment{{RoleID: writer.ID}}})
+	image.MachineCredentials = nil
+	for i, token := range append(append([]string(nil), export.ObserverTokens...), export.WriterToken) {
+		digest, valid := MachineTokenDigest(token)
+		if !valid {
+			return Image{}, currentPhysicalCredentialExport{}, fmt.Errorf("canonical physical machine credential required")
+		}
+		identity := observer
+		if i == 2 {
+			identity = writerIdentity
+		}
+		image.MachineCredentials = append(image.MachineCredentials, MachineCredential{Identity: identity, Digest: digest, CreatedAt: now.Add(-time.Minute), ExpiresAt: export.ExpiresAt})
+	}
+	return image, export, nil
+}
+
+func TestCurrentPhysicalFixtureImage(t *testing.T) {
+	observer := Identity{Kind: MachinePrincipal, MachineName: "public-worker"}
+	image := s1Image()
+	image.Principals = append(image.Principals, Principal{Identity: observer, State: Active, Assignments: []RoleAssignment{{RoleID: "security_admin"}}})
+	token, err := NewMachineToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, exported, err := currentPhysicalFixtureImage(image, observer, token, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s1Fixture(t, image)
+	if len(exported.ObserverTokens) != 2 || exported.ObserverTokens[0] != token || exported.ObserverTokens[0] == exported.ObserverTokens[1] || exported.WriterToken == exported.ObserverTokens[1] {
+		t.Fatal("independent original rotating credentials required")
+	}
+	if len(image.MachineCredentials) != 3 || image.MachineCredentials[0].Identity != image.MachineCredentials[1].Identity || image.MachineCredentials[1].Identity == image.MachineCredentials[2].Identity {
+		t.Fatal("rotation changed the observer or collapsed the Head writer")
+	}
+	for _, principal := range image.Principals {
+		if principal.Identity == observer && (len(principal.Assignments) != 1 || principal.Assignments[0].RoleID != "physical_observer") {
+			t.Fatal("physical machine retained management authority")
+		}
+	}
+	reader, writer := image.Roles[len(image.Roles)-2], image.Roles[len(image.Roles)-1]
+	if len(reader.Rules) != 49 || len(writer.Rules) != 4 || writer.Rules[2].Effect != Deny || writer.Rules[0].Action != VertexRead || writer.Rules[1].Action != VertexWrite || writer.Rules[3].Action != ReceiptRead {
+		t.Fatal("physical scopes or minimal Head authority drifted")
+	}
+	for _, rule := range reader.Rules {
+		if rule.Resource != DataResource || rule.Prefix == nil || *rule.Prefix == "" || strings.HasPrefix(*rule.Prefix, "sys:") {
+			t.Fatal("physical observer escaped explicit synthetic prefixes")
+		}
 	}
 }
 

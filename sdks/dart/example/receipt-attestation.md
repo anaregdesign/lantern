@@ -100,6 +100,13 @@ device-reachable over platform-trusted HTTPS. Provide a separately reachable
 hostname-mismatched or untrusted HTTPS listener (certificate verification
 failure, **not** connection refusal), and a private LAN HTTPS route for
 iOS permission denial.
+The current-v2
+[physical machine profile](installed-factory-acceptance.md#separate-physical-receipthead-profile)
+provides the fixed test prefixes, actual six-hour certified receipt policy,
+rotating observer and separate Head writer. Its short signed-membership/serving
+window is independent of retention; prebuild and finish both launches in one
+declared window. The default native A/B profile and legacy-v1
+`authfixture -receipt/-head-edge` do not satisfy this receipt fixture contract.
 Start `tool/physical_receipt_proxy.dart` with
 `LANTERN_RECEIPT_PROXY_CONFIG` pointing to a mode-600 private JSON file
 outside the repository. Its six keys are `listenHost`, `listenPort`,

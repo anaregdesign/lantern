@@ -304,6 +304,13 @@ resend; cache-only reads remain Unknown without synthesized confirmation.
 Receipt status and data effects are checked through the independently
 authorized observer, never inferred from blind acknowledgement.
 
+The explicit legacy-v1 fixture below is host conformance, not current-authority
+physical qualification. For a current-source phone run use the
+[current-v2 physical profile](installed-factory-acceptance.md#separate-physical-receipthead-profile),
+including its separate minimal Head writer, verified capability and bounded
+unchanged-responder lifetime. Do not substitute the native A/B personal-prefix
+profile or relabel either kind of credential.
+
 The shared Server/SDK assertions also execute on host CI with the owned
 `authfixture -receipt -head-edge` and `test/head_edge_fixture_test.dart`:
 

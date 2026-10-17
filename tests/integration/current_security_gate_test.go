@@ -115,7 +115,8 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	var native *nativeLoginWireFixture
-	if os.Getenv("LANTERN_NATIVE_LOGIN_GATE") == "1" {
+	physicalServing := serving != nil && serving.Profile == "physical"
+	if os.Getenv("LANTERN_NATIVE_LOGIN_GATE") == "1" && !physicalServing {
 		native = newNativeLoginWireFixture(t, dir, roots)
 	}
 	var servers []*httptest.Server
@@ -134,6 +135,15 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if id == 1 {
 			config := durableReceiptWireConfig(filepath.Join(dir, "data-receipts.wal"), hlc.NodeID{byte(id)})
 			config.NamespaceFormat = "namespaced-v1"
+			if physicalServing {
+				config.Receipt.Retention = 6 * time.Hour
+				config.Receipt.MaxEntries, config.Receipt.MaxBytes = 1024, 32<<20
+				config.Log = mutationlog.Options{Capacity: 1024, SubscriberBuffer: 128}
+				config.ConfigureGraph = func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
+					provider.ConfigureGraphCache(graph, provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{Enabled: true})
+					return nil
+				}
+			}
 			data, err = service.CreateDurableReceiptWALServingRuntime(config)
 		} else {
 			data, err = service.NewGraphOnlyServingRuntime(graph, mutationlog.New(mutationlog.Options{Capacity: 64}), hlc.New(hlc.NodeID{byte(id)}, hlc.Options{}), "namespaced-v1")
@@ -316,6 +326,12 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		return
 	}
 	t.Log(currentSourceMarker)
+	if physicalServing {
+		t.Run("physical fixture serving export", func(t *testing.T) {
+			runPhysicalFixtureServing(t, ctx, dir, servers[0].URL, controls[0], transport, serving)
+		})
+		return
+	}
 	token := f.token(t, "admin", func(c map[string]any) {
 		c["iat"] = time.Now().Add(-time.Minute).Unix()
 		c["auth_time"] = time.Now().Add(-time.Hour).Unix()

@@ -14,6 +14,11 @@ prefix, ca_file, serving_until, accounts.{a,b}.{access_token,expires_at}). Wait 
 private/ready before reading it. BFF routes return each original access_token.
 Create private/release as a mode-0600 regular file to join all owners early;
 otherwise --lifetime-seconds stops serving. No destructive gate cases run here.
+
+--serve-profile physical uses the same normal-build, finite current runtime but
+exports rotating same-identity machine credentials and a separate minimal Head
+writer with a certified six-hour receipt policy. It performs no native login and
+cannot substitute for the default registered native A/B controller evidence.
 """
 
 import argparse
@@ -65,8 +70,11 @@ class ServingOptions:
     publish_port: int
     lifetime_seconds: int = 540
     prefix: str = "orders:"
+    profile: str = "native"
 
     def validate(self):
+        if self.profile not in ("native", "physical") or self.profile == "physical" and self.prefix != "orders:":
+            raise ValueError("explicit native or fixed-scope physical serving profile required")
         origin = urlsplit(self.origin)
         if (origin.scheme != "https" or not origin.hostname or origin.username is not None or
                 origin.password is not None or origin.path or origin.query or origin.fragment or
@@ -106,14 +114,21 @@ def require_cases(log):
         raise RuntimeError("native wire cases did not all execute successfully")
 
 
-def require_serving(log):
-    for name in (ROOT_TEST, SERVING_CASE):
+def require_serving(log, profile="native"):
+    if profile not in ("native", "physical"):
+        raise ValueError("unknown serving profile")
+    case = SERVING_CASE if profile == "native" else ROOT_TEST + "/physical_fixture_serving_export"
+    marker = "native" if profile == "native" else "physical"
+    ready = "accounts=2" if profile == "native" else "observer_credentials=2 writer_credentials=1"
+    other = "physical" if profile == "native" else "native"
+    for name in (ROOT_TEST, case):
         if len(re.findall(r"(?m)^\s*--- PASS: " + re.escape(name) + r" \(", log)) != 1:
             raise RuntimeError("native serving lifecycle did not complete")
     if ("--- SKIP:" in log or "--- FAIL:" in log or
             log.count(NORMAL_SOURCE_MARKER) != 1 or "test-build controlled source:" in log or
-            log.count("native_fixture_ready schema=1 accounts=2") != 1 or
-            len(re.findall(r"native_fixture_stopped reason=(released|timeout)\b", log)) != 1 or
+            log.count(f"{marker}_fixture_ready schema=1 {ready}") != 1 or
+            len(re.findall(marker + r"_fixture_stopped reason=(released|timeout)\b", log)) != 1 or
+            f"{other}_fixture_ready" in log or f"/{other}_fixture_serving_export" in log or
             re.findall(r"current_constructor node=(\d+) mode=(\w+) passed=(\w+)", log) !=
             [(str(i), "fresh", "true") for i in (1, 2, 3)] or
             any(ROOT_TEST + "/" + case in log for case in CASES)):
@@ -144,7 +159,8 @@ def run(root, evidence, serving=None):
     receipt = {"schema": 1, "status": "RUNNING", "proof": "controlled-source deterministic provider fixture; no real provider/device/UTC qualification", "started": time.time(), "commands": []}
     if serving is not None:
         receipt.update({"mode": "serving", "build_tags": [], "synthetic_utc": False,
-                        "proof": "normal-build configured-source synthetic-provider serving lifecycle only; ordinary native gate/full Q/real provider/device acceptance NOT_RUN"})
+                        "serving_profile": serving.profile,
+                        "proof": "normal-build configured-source " + serving.profile + " fixture serving lifecycle only; ordinary native gate/full Q/real provider/device acceptance NOT_RUN"})
 
     def save():
         write_private(evidence / "receipt.json", json.dumps(receipt, indent=2) + "\n")
@@ -207,16 +223,21 @@ def run(root, evidence, serving=None):
                                 "LANTERN_NATIVE_FIXTURE_LISTEN_PORT": str(serving.listen_port),
                                 "LANTERN_NATIVE_FIXTURE_LIFETIME_SECONDS": str(serving.lifetime_seconds),
                                 "LANTERN_NATIVE_FIXTURE_EXPORT_DIR": "/native-fixture"})
+            if serving.profile == "physical":
+                environment["LANTERN_NATIVE_FIXTURE_PROFILE"] = "physical"
         for key, value in environment.items():
             args += ["--env", key + "=" + value]
         timeout = serving.lifetime_seconds + 300 if serving else 240
         args += [receipt["image"], "-test.v", "-test.run=^" + ROOT_TEST + "$", f"-test.timeout={timeout}s" if serving else "-test.timeout=4m"]
         command(args, timeout=timeout + 20)
         last_log = evidence / receipt["commands"][-1]["log"]
-        (require_serving if serving else require_cases)(last_log.read_text())
+        if serving is not None:
+            require_serving(last_log.read_text(), serving.profile)
+        else:
+            require_cases(last_log.read_text())
         if source_identity(root) != receipt["source_sha256"] or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip() != receipt["head"]:
             raise RuntimeError("source changed during native wire execution")
-        receipt["cases"] = [SERVING_CASE] if serving else list(CASES)
+        receipt["cases"] = [SERVING_CASE if serving.profile == "native" else ROOT_TEST + "/physical_fixture_serving_export"] if serving else list(CASES)
         receipt["status"] = "PASS"
     except BaseException as error:
         receipt["status"], receipt["error"] = "FAIL", repr(error).replace(serving.origin, "<private-service-origin>") if serving else repr(error)
@@ -244,6 +265,8 @@ def main(argv=None):
     parser.add_argument("--publish-port", type=int, help="publish only on this host loopback port")
     parser.add_argument("--lifetime-seconds", type=int, help="finite 15..540 second serving window (default 540; signed membership must cover it)")
     parser.add_argument("--prefix", help="explicit orders: test prefix (default orders:)")
+    parser.add_argument("--serve-profile", choices=("native", "physical"),
+                        help="native registered A/B (default), or scoped rotating machine/Head receipt fixture")
     args = parser.parse_args(argv)
     serving = None
     if args.serve:
@@ -251,12 +274,13 @@ def main(argv=None):
             parser.error("--serve requires --service-origin, --listen-port and --publish-port")
         serving = ServingOptions(args.service_origin, args.listen_port, args.publish_port,
                                  args.lifetime_seconds if args.lifetime_seconds is not None else 540,
-                                 args.prefix if args.prefix is not None else "orders:")
+                                 args.prefix if args.prefix is not None else "orders:",
+                                 args.serve_profile if args.serve_profile is not None else "native")
         try:
             serving.validate()
         except ValueError as error:
             parser.error(str(error))
-    elif any(value is not None for value in (args.service_origin, args.listen_port, args.publish_port, args.lifetime_seconds, args.prefix)):
+    elif any(value is not None for value in (args.service_origin, args.listen_port, args.publish_port, args.lifetime_seconds, args.prefix, args.serve_profile)):
         parser.error("serving options require --serve")
     if args.fresh_child:
         args.evidence = args.evidence / str(uuid.uuid4())
