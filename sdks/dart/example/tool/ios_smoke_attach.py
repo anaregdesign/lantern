@@ -12,7 +12,7 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-from ios_smoke_log import MAX_FILE_BYTES, MAX_LINE_BYTES, Redactor, text_tail
+from ios_smoke_log import MAX_FILE_BYTES, MAX_LINE_BYTES, PHASE_FILES, Redactor, text_tail
 
 
 BUNDLE_ID = "com.anaregdesign.lanternExample"
@@ -132,6 +132,20 @@ def read_process(command, timeout, limit, *, merge_stderr=False):
             stream.close()
 
 
+def append_log(path, retained, safe, console_budget):
+    """Retain already-redacted output within the existing disk and console caps."""
+    if not safe:
+        return retained
+    retained = text_tail(retained + safe, MAX_FILE_BYTES)
+    path.write_bytes(retained)
+    visible = safe[:max(0, console_budget[0])]
+    if visible:
+        sys.stdout.buffer.write(visible)
+        sys.stdout.buffer.flush()
+        console_budget[0] -= len(visible)
+    return retained
+
+
 def run_logged(
     command, path, timeout, console_budget, *, collect_pid=False, before_stop=None,
 ):
@@ -164,13 +178,7 @@ def run_logged(
                     pid_output.extend(chunk[: max(0, 4096 - len(pid_output))])
                 safe = redactor.feed(chunk, final=not chunk)
                 if safe:
-                    retained = text_tail(retained + safe, MAX_FILE_BYTES)
-                    path.write_bytes(retained)
-                    visible = safe[: max(0, console_budget[0])]
-                    if visible:
-                        sys.stdout.buffer.write(visible)
-                        sys.stdout.buffer.flush()
-                        console_budget[0] -= len(visible)
+                    retained = append_log(path, retained, safe, console_budget)
         status, wait_timed_out = wait_bounded(process, deadline, before_stop)
         return status, timed_out or wait_timed_out, bytes(pid_output)
     finally:
@@ -180,6 +188,17 @@ def run_logged(
 
 def record_phase(phases, name):
     (phases / name).write_text("seen\n")
+
+
+def record_operation(phases, name, outcome):
+    try:
+        with (phases / name).open("a", encoding="utf-8") as output:
+            output.write(outcome + "\n")
+    except OSError as error:
+        print(
+            f"[ios smoke] {name} evidence unavailable ({type(error).__name__})",
+            file=sys.stderr, flush=True,
+        )
 
 
 def record_classification(destination, classification):
@@ -313,10 +332,7 @@ def run_attempt(device, attempt, root):
     destination = root / attempt
     phases = destination / "phases"
     phases.mkdir(parents=True, exist_ok=True)
-    for phase in (
-        "build_started", "build_done", "boot_started", "boot_done",
-        "body_started", "smoke_pass", "tests_passed", "tests_failed",
-    ):
+    for phase in PHASE_FILES:
         (phases / phase).unlink(missing_ok=True)
     flutter_log = destination / "flutter.log"
     flutter_log.write_bytes(b"")
@@ -376,10 +392,26 @@ def run_attempt(device, attempt, root):
         record_phase(phases, "boot_done")
 
         operation = "install"
-        status, _, timed_out, exceeded = read_process(
+        record_operation(phases, "install_operation", "started")
+        status, output, timed_out, exceeded = read_process(
             [xcrun, "simctl", "install", device, "build/ios/iphonesimulator/Runner.app"],
             remaining(deadline, 90), 65536, merge_stderr=True,
         )
+        outcome = "timed_out" if timed_out else "returned"
+        record_operation(
+            phases, "install_operation",
+            f"{outcome} exit_code={status} output_limit={int(exceeded)}",
+        )
+        try:
+            append_log(
+                flutter_log, flutter_log.read_bytes(),
+                Redactor().feed(output, final=True), console_budget,
+            )
+        except OSError as error:
+            print(
+                f"[ios smoke] install output unavailable ({type(error).__name__})",
+                file=sys.stderr, flush=True,
+            )
         if timed_out:
             classification = "launch_stall"
             return 70
@@ -390,6 +422,7 @@ def run_attempt(device, attempt, root):
         # separate terminate before install can hang for an absent application.
         # The returned PID must identify the new run whose logs we inspect.
         operation = "native launch"
+        record_operation(phases, "native_launch_operation", "started")
         status, timed_out, output = run_logged(
             [xcrun, "simctl", "launch", "--terminate-running-process", device, BUNDLE_ID,
              "--enable-dart-profiling", "--disable-vm-service-publication",
@@ -397,14 +430,23 @@ def run_attempt(device, attempt, root):
             flutter_log, remaining(deadline, launch_limit), console_budget, collect_pid=True,
         )
         if timed_out:
+            record_operation(
+                phases, "native_launch_operation", f"timed_out exit_code={status}",
+            )
             classification = "launch_stall"
             return 70
         match = PID.search(output.decode("utf-8", errors="replace"))
         if status or match is None:
+            record_operation(
+                phases, "native_launch_operation", f"returned exit_code={status}",
+            )
             classification = "launch_failure"
             return 72
         pid = int(match.group(1))
         launch_started = time.monotonic()
+        record_operation(
+            phases, "native_launch_operation", f"returned exit_code={status}",
+        )
         vm_url = None
         terminal = None
         while time.monotonic() < deadline:
@@ -480,12 +522,7 @@ def run_attempt(device, attempt, root):
             f"[ios smoke] cleanup failure during {operation}: ".encode("utf-8")
             + detail + b"\n"
         )
-        flutter_log.write_bytes(text_tail(flutter_log.read_bytes() + safe, MAX_FILE_BYTES))
-        visible = safe[:max(0, console_budget[0])]
-        if visible:
-            sys.stdout.buffer.write(visible)
-            sys.stdout.buffer.flush()
-            console_budget[0] -= len(visible)
+        append_log(flutter_log, flutter_log.read_bytes(), safe, console_budget)
         return 72
     finally:
         try:

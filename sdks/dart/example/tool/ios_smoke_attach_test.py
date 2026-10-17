@@ -2,6 +2,7 @@
 """Finite failure-path checks for the native iOS smoke subprocess owner."""
 
 import errno
+import io
 import os
 from pathlib import Path
 import signal
@@ -13,6 +14,7 @@ import unittest
 from unittest.mock import Mock, call, patch
 
 import ios_smoke_attach as smoke
+import ios_smoke_log as smoke_log
 
 
 class CleanupTests(unittest.TestCase):
@@ -148,10 +150,14 @@ class CleanupTests(unittest.TestCase):
                         patch.object(smoke, "run_logged", return_value=(0, False, b"")) as logged,
                         patch.object(
                             smoke, "read_process",
-                            return_value=(code, b"", timed_out, exceeded),
+                            return_value=(code, b"install detail\n", timed_out, exceeded),
                         ) as read,
                         patch.object(smoke, "capture_diagnostics"),
-                        patch.dict(os.environ, {"GITHUB_OUTPUT": str(root / "output")}),
+                        patch.object(smoke.time, "monotonic", return_value=100),
+                        patch.dict(os.environ, {
+                            "GITHUB_OUTPUT": str(root / "output"),
+                            "IOS_SMOKE_TOTAL_TIMEOUT_SECONDS": "720",
+                        }),
                     ):
                         status = smoke.run_attempt("SOURCE-DEVICE", "initial", root)
                     self.assertNotEqual(status, 0)
@@ -162,6 +168,251 @@ class CleanupTests(unittest.TestCase):
                     commands = [c.args[0] for c in logged.call_args_list + read.call_args_list]
                     self.assertTrue(any("install" in c for c in commands))
                     self.assertFalse(any("terminate" in c or "launch" in c for c in commands))
+                    self.assertEqual(read.call_args.args[1:3], (90, 65536))
+                    operation = root / "initial/phases/install_operation"
+                    self.assertTrue(operation.is_file(), "install evidence must be retained")
+                    outcome = "timed_out" if timed_out else "returned"
+                    self.assertEqual(
+                        operation.read_text(),
+                        f"started\n{outcome} exit_code={code} output_limit={int(exceeded)}\n",
+                    )
+                    self.assertFalse(
+                        (root / "initial/phases/native_launch_operation").exists(),
+                    )
+                    self.assertIn(
+                        "install detail", (root / "initial/flutter.log").read_text(),
+                    )
+
+    def test_native_launch_operation_outcomes(self):
+        for code, timed_out in [(-15, True), (1, False), (0, False)]:
+            with self.subTest(code=code, timed_out=timed_out):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    with (
+                        patch.object(
+                            smoke, "run_logged",
+                            side_effect=[(0, False, b"")] * 3 + [(code, timed_out, b"")],
+                        ) as logged,
+                        patch.object(smoke, "read_process", return_value=(0, b"", False, False)),
+                        patch.object(
+                            smoke, "capture_diagnostics",
+                            side_effect=PermissionError("diagnostics unavailable"),
+                        ),
+                        patch.object(smoke.time, "monotonic", return_value=100),
+                        patch.dict(os.environ, {
+                            "GITHUB_OUTPUT": str(root / "output"),
+                            "IOS_SMOKE_TOTAL_TIMEOUT_SECONDS": "720",
+                            "IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS": "180",
+                        }),
+                    ):
+                        status = smoke.run_attempt("SOURCE-DEVICE", "initial", root)
+                    self.assertEqual(status, 70 if timed_out else 72)
+                    self.assertEqual(
+                        (root / "initial/classification.txt").read_text().strip(),
+                        "launch_stall" if timed_out else "launch_failure",
+                    )
+                    operation = root / "initial/phases/native_launch_operation"
+                    self.assertTrue(operation.is_file(), "native launch evidence must be retained")
+                    outcome = "timed_out" if timed_out else "returned"
+                    self.assertEqual(
+                        operation.read_text(), f"started\n{outcome} exit_code={code}\n",
+                    )
+                    self.assertEqual(
+                        (root / "initial/phases/install_operation").read_text(),
+                        "started\nreturned exit_code=0 output_limit=0\n",
+                    )
+                    self.assertEqual(logged.call_args.args[2], 180)
+                    self.assertTrue(logged.call_args.kwargs["collect_pid"])
+
+    def test_install_output_is_redacted_and_bounded(self):
+        payload = (
+            b"https://private.example.test/install\n"
+            b"Authorization: Bearer private-bearer\n"
+            b"token=private-token\nmobile-smoke:private-key\n"
+        ) * 200 + b"z" * (smoke.MAX_LINE_BYTES + 1) + b"\ninstall detail retained\n"
+        self.assertLessEqual(len(payload), 65536)
+        for console_bytes in (0, 23):
+            with self.subTest(console_bytes=console_bytes):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+
+                    def logged(command, path, timeout, budget, **kwargs):
+                        path.write_bytes(b"x" * (smoke.MAX_FILE_BYTES - 1) + b"\n")
+                        budget[0] = console_bytes
+                        return 0, False, b""
+
+                    with (
+                        patch.object(smoke, "run_logged", side_effect=logged),
+                        patch.object(
+                            smoke, "read_process", return_value=(1, payload, False, False),
+                        ),
+                        patch.object(smoke, "capture_diagnostics"),
+                        patch.object(smoke.sys, "stdout") as output,
+                        patch.dict(os.environ, {"GITHUB_OUTPUT": str(root / "output")}),
+                    ):
+                        output.buffer = io.BytesIO()
+                        status = smoke.run_attempt("SOURCE-DEVICE", "initial", root)
+                        visible = output.buffer.getvalue()
+                    self.assertEqual(status, 72)
+                    retained = (root / "initial/flutter.log").read_bytes()
+                    self.assertLessEqual(len(retained), smoke.MAX_FILE_BYTES)
+                    self.assertTrue(retained.endswith(b"install detail retained\n"))
+                    self.assertIn(b"<redacted-url>", retained)
+                    self.assertIn(b"oversized log line omitted", retained)
+                    self.assertEqual(len(visible), console_bytes)
+                    for secret in (
+                        b"private.example", b"private-bearer", b"private-token", b"private-key",
+                    ):
+                        self.assertNotIn(secret, retained)
+                        self.assertNotIn(secret, visible)
+
+    def test_operation_evidence_does_not_reset_shared_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            now = [100]
+            budgets = []
+
+            def logged(command, path, timeout, budget, **kwargs):
+                stage = command[1] if command[0] == "flutter" else command[2]
+                budgets.append((stage, timeout))
+                if stage == "launch":
+                    return -15, True, b""
+                now[0] += {"build": 340, "boot": 90, "bootstatus": 70}[stage]
+                return 0, False, b""
+
+            def installed(command, timeout, limit, **kwargs):
+                self.assertEqual((timeout, limit), (90, 65536))
+                now[0] += 85
+                return 0, b"", False, False
+
+            with (
+                patch.object(smoke, "run_logged", side_effect=logged),
+                patch.object(smoke, "read_process", side_effect=installed),
+                patch.object(smoke, "capture_diagnostics"),
+                patch.object(smoke.time, "monotonic", side_effect=lambda: now[0]),
+                patch.dict(os.environ, {
+                    "GITHUB_OUTPUT": str(root / "output"),
+                    "IOS_SMOKE_FLUTTER_BIN": "flutter",
+                    "IOS_SMOKE_XCRUN_BIN": "xcrun",
+                    "IOS_SMOKE_TOTAL_TIMEOUT_SECONDS": "720",
+                    "IOS_SMOKE_BUILD_TIMEOUT_SECONDS": "360",
+                    "IOS_SMOKE_BOOT_TIMEOUT_SECONDS": "180",
+                    "IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS": "180",
+                }),
+            ):
+                status = smoke.run_attempt("SOURCE-DEVICE", "initial", root)
+            self.assertEqual(status, 70)
+            self.assertEqual(
+                budgets, [("build", 360), ("boot", 180), ("bootstatus", 90), ("launch", 135)],
+            )
+
+    def test_operation_metadata_is_closed_and_reset_before_failed_build(self):
+        for name in (
+            "install_operation", "native_launch_operation",
+            "boot_started", "boot_done", "tests_failed",
+        ):
+            self.assertEqual(smoke_log.priority(Path("initial/phases") / name), 1)
+        self.assertNotEqual(smoke_log.priority(Path("initial/phases/unknown_operation")), 1)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            phases = root / "initial/phases"
+            phases.mkdir(parents=True)
+            for name in ("install_operation", "native_launch_operation"):
+                (phases / name).write_text("started\nreturned exit_code=0\n")
+            with (
+                patch.object(smoke, "run_logged", return_value=(1, False, b"")),
+                patch.object(smoke, "read_process") as read,
+                patch.object(smoke, "capture_diagnostics"),
+                patch.dict(os.environ, {"GITHUB_OUTPUT": str(root / "output")}),
+            ):
+                self.assertEqual(smoke.run_attempt("SOURCE-DEVICE", "initial", root), 72)
+            read.assert_not_called()
+            self.assertFalse((phases / "install_operation").exists())
+            self.assertFalse((phases / "native_launch_operation").exists())
+
+    def test_cleanup_failure_keeps_started_operation_without_claiming_completion(self):
+        for operation in ("install", "native launch"):
+            with self.subTest(operation=operation):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+
+                    def logged(command, *args, **kwargs):
+                        if "launch" in command:
+                            raise smoke.CleanupError("owned group absence unknown")
+                        return 0, False, b""
+
+                    with (
+                        patch.object(smoke, "run_logged", side_effect=logged),
+                        patch.object(
+                            smoke, "read_process",
+                            **(
+                                {"side_effect": smoke.CleanupError("owned group absence unknown")}
+                                if operation == "install"
+                                else {"return_value": (0, b"", False, False)}
+                            ),
+                        ),
+                        patch.object(
+                            smoke, "capture_diagnostics",
+                            side_effect=PermissionError("diagnostics unavailable"),
+                        ),
+                        patch.dict(os.environ, {"GITHUB_OUTPUT": str(root / "output")}),
+                    ):
+                        self.assertEqual(smoke.run_attempt("SOURCE-DEVICE", "initial", root), 72)
+                    phase = "install_operation" if operation == "install" else "native_launch_operation"
+                    evidence = root / "initial/phases" / phase
+                    self.assertTrue(evidence.is_file())
+                    self.assertEqual(evidence.read_text(), "started\n")
+                    self.assertEqual(
+                        (root / "initial/classification.txt").read_text(), "cleanup_failure\n",
+                    )
+                    self.assertIn(
+                        f"cleanup failure during {operation}: owned group absence unknown",
+                        (root / "initial/flutter.log").read_text(),
+                    )
+
+    def test_observation_io_failure_preserves_primary_timeout(self):
+        real_open = Path.open
+        for failing in ("metadata", "install output"):
+            with self.subTest(failing=failing):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+
+                    def opened(path, *args, **kwargs):
+                        if path.name in ("install_operation", "native_launch_operation"):
+                            raise PermissionError("private-owner-value")
+                        return real_open(path, *args, **kwargs)
+
+                    failure = (
+                        patch.object(Path, "open", opened)
+                        if failing == "metadata"
+                        else patch.object(
+                            smoke, "append_log", side_effect=PermissionError("private-owner-value"),
+                        )
+                    )
+                    with (
+                        failure,
+                        patch.object(smoke, "run_logged", return_value=(0, False, b"")),
+                        patch.object(
+                            smoke, "read_process", return_value=(-15, b"install detail\n", True, False),
+                        ) as read,
+                        patch.object(
+                            smoke, "capture_diagnostics",
+                            side_effect=PermissionError("diagnostics unavailable"),
+                        ),
+                        patch.object(smoke.sys, "stdout") as output,
+                        patch.object(smoke.sys, "stderr") as warnings,
+                        patch.dict(os.environ, {"GITHUB_OUTPUT": str(root / "output")}),
+                    ):
+                        output.buffer = io.BytesIO()
+                        status = smoke.run_attempt("SOURCE-DEVICE", "initial", root)
+                    self.assertEqual(status, 70)
+                    read.assert_called_once()
+                    self.assertEqual(
+                        (root / "initial/classification.txt").read_text(), "launch_stall\n",
+                    )
+                    warning = "".join(c.args[0] for c in warnings.write.call_args_list)
+                    self.assertIn("unavailable (PermissionError)", warning)
+                    self.assertNotIn("private-owner-value", warning)
 
     def test_failure_classification_survives_failed_diagnostics(self):
         cases = [

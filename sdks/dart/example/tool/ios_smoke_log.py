@@ -18,6 +18,10 @@ MARKERS = {
     b"MOBILE_SMOKE_PASS ": "smoke_pass",
     b"All tests passed!": "tests_passed",
 }
+PHASE_FILES = (
+    *MARKERS.values(), "boot_started", "boot_done", "tests_failed",
+    "install_operation", "native_launch_operation",
+)
 REDACTIONS = (
     (re.compile(rb"https?://[^\s<>]+"), b"<redacted-url>"),
     (
@@ -83,7 +87,7 @@ def stream(destination, phases=None):
     overlap_bytes = max(map(len, MARKERS)) - 1
     if phases is not None:
         phases.mkdir(parents=True, exist_ok=True)
-        for phase in MARKERS.values():
+        for phase in PHASE_FILES:
             (phases / phase).unlink(missing_ok=True)
     with destination.open("wb", buffering=0) as output:
         while True:
@@ -134,7 +138,7 @@ def sanitize(path):
 def priority(path):
     if path.name == "classification.txt":
         return 0
-    if path.parent.name == "phases" and path.name in (*MARKERS.values(), "tests_failed"):
+    if path.parent.name == "phases" and path.name in PHASE_FILES:
         return 1
     return {
         "flutter.log": 2,
