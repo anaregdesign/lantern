@@ -1,5 +1,6 @@
 """Exercise fixture isolation, finite required cases and source/evidence binding."""
 
+import hashlib
 import json
 from contextlib import redirect_stderr, redirect_stdout
 import io
@@ -20,6 +21,12 @@ class NativeLoginGateTest(unittest.TestCase):
     def execute(self, mode, profile="native"):
         serving = mode.startswith("serve_")
         outcome = mode.removeprefix("serve_")
+        source_config = b"server unit-fixture.invalid\n"
+        original_read_bytes = Path.read_bytes
+
+        def fixture_read_bytes(path):
+            return source_config if path == Path("/etc/ntp.conf") else original_read_bytes(path)
+
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory).resolve()
             root, binaries = base / "repo", base / "bin"
@@ -69,7 +76,7 @@ elif args[0] == 'run':
                 path = binaries / name
                 path.write_text(script)
                 path.chmod(0o755)
-            with patch.dict(os.environ, {"PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+            with patch.object(Path, "read_bytes", fixture_read_bytes), patch.dict(os.environ, {"PATH": str(binaries) + os.pathsep + os.environ["PATH"],
                                          "CALLS": str(base / "calls"), "MODE": mode, "CASE_LOG": log,
                                          "GOFLAGS": ""}):
                 options = gate.ServingOptions("https://installed.example", 16443, 18443, profile=profile) if serving else None
@@ -127,6 +134,7 @@ elif args[0] == 'run':
                 self.assertEqual(receipt["serving_profile"], profile)
                 self.assertEqual(receipt["build_tags"], [])
                 self.assertFalse(receipt["synthetic_utc"])
+                self.assertEqual(receipt["source_config_sha256"], hashlib.sha256(source_config).hexdigest())
                 self.assertIn("full Q/real provider/device acceptance NOT_RUN", receipt["proof"])
                 self.assertNotIn(options.origin, (destinations[-1] / "receipt.json").read_text())
             else:
@@ -231,6 +239,21 @@ elif args[0] == 'run':
         self.assertIn("steps.toolchain.outcome == 'success'", body)
         self.assertIn('native_login_gate.py --evidence "$RUNNER_TEMP/native-login"', body)
         self.assertNotIn("continue-on-error", body)
+
+    def test_serving_requires_existing_bounded_source_config(self):
+        options = gate.ServingOptions("https://installed.example", 16443, 18443)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            for index, config in enumerate((None, b"", b"x" * 4097)):
+                evidence = Path(directory) / f"evidence-{index}"
+                reader = {"side_effect": FileNotFoundError("/etc/ntp.conf")} if config is None else {"return_value": config}
+                with self.subTest(config=index), patch.object(gate.os, "getuid", return_value=501), patch.dict(os.environ, {"GOFLAGS": ""}), patch.object(gate.subprocess, "check_output", side_effect=lambda args, **kwargs: "" if kwargs.get("text") else b""), patch.object(Path, "read_bytes", **reader), self.assertRaises(FileNotFoundError if config is None else ValueError):
+                    gate.run(root, evidence, options)
+                receipt = json.loads((evidence / "receipt.json").read_text())
+                self.assertEqual(receipt["status"], "FAIL")
+                self.assertEqual(receipt["commands"], [])
+                self.assertEqual(list((evidence / "build").iterdir()), [])
 
 
 if __name__ == "__main__":
