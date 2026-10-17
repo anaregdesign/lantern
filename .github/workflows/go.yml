@@ -272,7 +272,7 @@ jobs:
       - name: Test selected native filesystem, ACL, TLS and process boundaries
         env:
           RUST_REQUIRED: ${{ needs.scope.outputs.windows_rust_required }}
-        run: python3 -B .github/scripts/windows_native.py --rust "$env:RUST_REQUIRED" --evidence "$env:RUNNER_TEMP/native-windows"
+        run: python -B .github/scripts/windows_native.py --rust "$env:RUST_REQUIRED" --evidence "$env:RUNNER_TEMP/native-windows"
       - uses: actions/upload-artifact@v7
         if: always()
         with:

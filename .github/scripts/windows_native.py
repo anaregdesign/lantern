@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 
 GO_TESTS = (
@@ -22,7 +23,7 @@ GO_TESTS = (
 RUST_TESTS = (
     "transport::tests::real_wire_https_roots_and_invalid_certificates",
     "transport::tests::real_wire_mtls_and_bearer_rotation",
-    "test_server::tests::real_wire_fixture_owns_ephemeral_listener_on_return",
+    "test_server::diagnostic_tests::real_wire_fixture_owns_ephemeral_listener_on_return",
 )
 
 
@@ -47,6 +48,7 @@ def main():
     args = parser.parse_args()
     if os.name != "nt":
         parser.error("native Windows execution required")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     args.evidence.mkdir(parents=True, exist_ok=False)
     root = Path.cwd()
     env = os.environ.copy()
@@ -56,13 +58,14 @@ def main():
                LANTERN_RUST_TEST_AUTH_FIXTURE=str(fixture))
 
     def run(name, command, directory=root):
-        result = subprocess.run(command, cwd=directory, env=env, text=True,
+        result = subprocess.run(command, cwd=directory, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
-        (args.evidence / (name + ".log")).write_text(result.stdout)
-        print(result.stdout, end="", flush=True)
+        (args.evidence / (name + ".log")).write_bytes(result.stdout)
+        output = result.stdout.decode("utf-8", errors="replace")
+        print(output, end="", flush=True)
         if result.returncode:
             raise ValueError(f"{name} failed ({result.returncode})")
-        return result.stdout
+        return output
 
     run("server-build", ["go", "build", "-o", str(server), "./server/cmd"])
     run("fixture-build", ["go", "build", "-o", str(fixture), "./server/cmd/authfixture"])

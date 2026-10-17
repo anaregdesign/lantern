@@ -72,6 +72,15 @@ class ValidationScopeTest(unittest.TestCase):
         self.assertTrue(result["windows_required"])
         self.assertTrue(scope.affected({"core/privatefile/file.go": "D", "docs/a.md": "A"})["windows_required"])
 
+    def test_exact_rust_native_selectors_match_existing_module_and_function(self):
+        root = Path(__file__).resolve().parents[2] / "sdks/rust/src"
+        for name in RUST_TESTS:
+            file, module, function = name.split("::")
+            owner = (root / (file + ".rs")).read_text()
+            self.assertIn("mod " + module, owner)
+            body = owner if file == "test_server" else (root / file / "tests.rs").read_text()
+            self.assertIn("async fn " + function + "(", body)
+
     def test_native_verifiers_refuse_empty_skipped_and_failed_tests(self):
         events = "\n".join(json.dumps(dict(Action="pass", Test=name)) for name in GO_TESTS)
         require_go(events, GO_TESTS)
