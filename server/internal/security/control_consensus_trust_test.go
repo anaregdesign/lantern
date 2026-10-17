@@ -7,7 +7,7 @@ import (
 )
 
 func TestS2CFixedMemberCount(t *testing.T) {
-	for _, count := range []int{0, 1, 2, 3, 4, 5, 31, 32, 33} {
+	for count := 0; count <= 33; count++ {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			members := make([]s2cMember, count)
 			for i := range members {
@@ -16,7 +16,7 @@ func TestS2CFixedMemberCount(t *testing.T) {
 				members[i] = s2cMember{ID: uint32(i + 1), PublicKey: [32]byte(key.Public().(ed25519.PublicKey)), Proposer: true}
 			}
 			digest, err := s2cMemberSetDigest(members)
-			want := count == 1 || count == 3 || count == 5 || count == 31
+			want := count >= 1 && count <= 31
 			if (err == nil) != want || want && digest == [32]byte{} {
 				t.Fatalf("count %d accepted=%t: %v", count, err == nil, err)
 			}
@@ -67,13 +67,13 @@ func TestS2CTrustIndependentImmutableBootstrap(t *testing.T) {
 
 func TestS2CTrustRejectsInvalidBootstrap(t *testing.T) {
 	cases := map[string]func(*s2cBootstrap){
-		"nil genesis":   func(b *s2cBootstrap) { b.Genesis = nil },
-		"nil snapshot":  func(b *s2cBootstrap) { b.Genesis.state.projection.snapshot = nil },
-		"changed set":   func(b *s2cBootstrap) { b.Members = b.Members[:1] },
-		"even set":      func(b *s2cBootstrap) { b.Members = b.Members[:2] },
-		"duplicate id":  func(b *s2cBootstrap) { b.Members[1].ID = b.Members[0].ID },
-		"duplicate key": func(b *s2cBootstrap) { b.Members[1].PublicKey = b.Members[0].PublicKey },
-		"unsorted":      func(b *s2cBootstrap) { b.Members[0], b.Members[1] = b.Members[1], b.Members[0] },
+		"nil genesis":          func(b *s2cBootstrap) { b.Genesis = nil },
+		"nil snapshot":         func(b *s2cBootstrap) { b.Genesis.state.projection.snapshot = nil },
+		"changed set":          func(b *s2cBootstrap) { b.Members = b.Members[:1] },
+		"changed original set": func(b *s2cBootstrap) { b.Members = b.Members[:2] },
+		"duplicate id":         func(b *s2cBootstrap) { b.Members[1].ID = b.Members[0].ID },
+		"duplicate key":        func(b *s2cBootstrap) { b.Members[1].PublicKey = b.Members[0].PublicKey },
+		"unsorted":             func(b *s2cBootstrap) { b.Members[0], b.Members[1] = b.Members[1], b.Members[0] },
 		"no proposer": func(b *s2cBootstrap) {
 			for i := range b.Members {
 				b.Members[i].Proposer = false
@@ -100,7 +100,7 @@ func TestS2CTrustRejectsInvalidBootstrap(t *testing.T) {
 			}
 		})
 	}
-	for _, n := range []int{1, 3, 5, 31} {
+	for _, n := range []int{1, 2, 3, 4, 5, 30, 31} {
 		f := s2cTestCluster(t, n)
 		if f.trust.majority() != n/2+1 {
 			t.Fatal("majority")

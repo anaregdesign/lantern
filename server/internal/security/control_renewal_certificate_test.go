@@ -3,7 +3,7 @@ package security
 import "testing"
 
 func TestAuthorityRenewalCertificate(t *testing.T) {
-	for _, count := range []int{1, 3, 31} {
+	for _, count := range []int{1, 2, 3, 4, 30, 31} {
 		n := s2cTestNativeCluster(t, count, nil)
 		workloads := [32]byte{7}
 		raw := testAuthorityRenewalRequest(t, n, 1, workloads)

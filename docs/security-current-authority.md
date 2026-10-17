@@ -55,6 +55,18 @@ A compact certificate contains that request once and sorted distinct voter
 signatures (at most 31 voters). Quorum intersection therefore prevents an old
 head renewal after an intersecting voter retains a restrictive acceptance.
 
+Provision the original fixed set of **1–31 voters**. Consensus and renewal both
+require `floor(N/2)+1` distinct voters from that set. One/two voters require
+one/two votes and tolerate no unavailable voter; three/four require two/three
+votes and tolerate one unavailable voter. Odd counts achieve the same voter
+failure tolerance as the next even count with one fewer voter. A 1+1 or 2+2
+partition cannot form a new quorum. Existing renewal authority retains only its
+original finite window. Progress also requires an eligible proposer, current
+membership/time and adequate storage/queue capacity. Reachability never changes
+membership or the quorum threshold; automatic shrink and live expansion are not
+supported. Voter count is independent of data-ring membership or public endpoint
+count. An originless observer remains an enrolled voter, not a nonvoting server.
+
 The receiver window is **15 seconds measured from its native challenge sample**.
 Neither arrival, catch-up nor certificate assembly resets it. Every prefix
 change, including NOOP, invalidates the active window. A separate bounded mTLS

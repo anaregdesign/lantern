@@ -566,7 +566,7 @@ func s2cChosenBytesBound(t *s2cTrust, h *s2cHistoricalH) uint64 {
 }
 
 func s2cChosenSizeBound(t *s2cTrust, historicalBytes uint64) uint64 {
-	if t == nil || len(t.members) < 1 || len(t.members) > 31 || len(t.members)%2 == 0 || uint64(s2cMessageOverhead) > t.bounds.HeaderBytes {
+	if t == nil || len(t.members) < 1 || len(t.members) > 31 || uint64(s2cMessageOverhead) > t.bounds.HeaderBytes {
 		return 0
 	}
 	base := uint64(s2cMessageOverhead)

@@ -42,7 +42,7 @@ type ControlProfile struct {
 func (p ControlProfile) Valid() bool {
 	if p.Version != 1 || p.Lineage.Deployment == [16]byte{} || p.Lineage.Instance == [16]byte{} ||
 		p.NamespaceFormat != keyspace.Version || p.ProtocolScope == [32]byte{} || p.TrustDigest == [32]byte{} ||
-		len(p.Voters) < 1 || len(p.Voters) > 31 || len(p.Voters)%2 == 0 {
+		len(p.Voters) < 1 || len(p.Voters) > 31 {
 		return false
 	}
 	ids, keys, workloads, spkis, origins := map[uint32]bool{}, map[[32]byte]bool{}, map[[16]byte]bool{}, map[[32]byte]bool{}, map[string]bool{}

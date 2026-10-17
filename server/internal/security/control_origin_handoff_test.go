@@ -9,7 +9,7 @@ import (
 )
 
 func TestAuthorityHistoricalVersionAndBounds(t *testing.T) {
-	for _, count := range []int{3, 31} {
+	for _, count := range []int{1, 2, 3, 4, 30, 31} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			f, keys := authorityTestFixture(t, count)
 			h, op := authorityTestHeader(t, f)

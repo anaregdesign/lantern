@@ -74,6 +74,9 @@ func s3aTestClusterMembers(t *testing.T, count int, change func(uint32, *s3aConf
 		id := m.ID
 		dir := filepath.Join(n.dir, fmt.Sprintf("node-%d", id))
 		c := s2cTestConfig(t, n.f, id, dir)
+		// Reserve one maximum representable broadcast for the original set.
+		maxFrame := min(c.Trust.bounds.PayloadBytes, uint64(s2cMessageOverhead)+c.Trust.bounds.ProofBytes+c.Trust.bounds.HistoricalBytes)
+		c.OutboxBytes = max(c.OutboxBytes, uint64(count)*maxFrame)
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
@@ -83,7 +86,7 @@ func s3aTestClusterMembers(t *testing.T, count int, change func(uint32, *s3aConf
 		if err != nil {
 			t.Fatal(err)
 		}
-		identity, _ := url.Parse(fmt.Sprintf("spiffe://s3a.test/node-%d", id))
+		identity, _ := url.Parse(fmt.Sprintf("spiffe://s3a.test/node-%02d", id))
 		template := &x509.Certificate{SerialNumber: big.NewInt(int64(id) + 10), Subject: pkix.Name{CommonName: fmt.Sprintf("workload-%d", id)}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(30 * time.Minute), IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, URIs: []*url.URL{identity}, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}}
 		der, err := x509.CreateCertificate(rand.Reader, template, ca, pub, caKey)
 		if err != nil {
@@ -111,6 +114,9 @@ func s3aTestClusterMembers(t *testing.T, count int, change func(uint32, *s3aConf
 	n.manifest = peerauth.ControlManifest{Version: 1, Profile: profile, IssuedAt: now.Add(-time.Second), ExpiresAt: now.Add(5 * time.Minute)}
 	raw := n.sign(n.manifest)
 	for id, c := range n.configs {
+		c.Limits.QueueBytes = max(c.Limits.QueueBytes, c.Participant.OutboxBytes+uint64(count)*s3aQueueOverhead)
+		c.Limits.TransitionCount = max(c.Limits.TransitionCount, count+1)
+		c.Limits.MaxConnections = max(c.Limits.MaxConnections, 2*count+1)
 		c.Membership.Profile = profile
 		c.Manifest = raw
 		if change != nil {

@@ -9,7 +9,7 @@ import (
 )
 
 func TestS2CMessageQuorums(t *testing.T) {
-	for _, n := range []int{1, 3, 5, 31} {
+	for _, n := range []int{1, 2, 3, 4, 5, 30, 31} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
 			f := s2cTestCluster(t, n)
 			prepare, err := s2cSignPrepare(f.trust, f.keys[1], 1, 1, f.genesis.state.prefix, s2cBallot{1, 1})
@@ -72,8 +72,23 @@ func TestS2CMessageQuorums(t *testing.T) {
 				t.Fatal(err)
 			}
 			other, err := s2cVerifyChosen(f.trust, minimal)
-			if err != nil || next.certificate.commit != other.certificate.commit || (next.certificate.witness == other.certificate.witness) != (n == 1) {
+			if err != nil || next.certificate.commit != other.certificate.commit || (next.certificate.witness == other.certificate.witness) != (n == f.trust.majority()) {
 				t.Fatal("replaceable witnesses changed logical commit", err)
+			}
+			limited := *f.trust
+			limited.bounds.ProofBytes = uint64(len(minimal.proof))
+			if got := s2cChosenBytesBound(&limited, nil); got != uint64(len(minimal.raw)) {
+				t.Fatal("exact minimum quorum bound", got, len(minimal.raw))
+			}
+			limited.bounds.ProofBytes--
+			if s2cChosenBytesBound(&limited, nil) != 0 {
+				t.Fatal("one-byte-short minimum quorum remains representable")
+			}
+			if n == 4 {
+				limited.bounds.ProofBytes = uint64(len(chosen.proof) - 1)
+				if got := s2cChosenBytesBound(&limited, nil); got != uint64(len(minimal.raw)) {
+					t.Fatal("four-voter bound did not retain a three-signature witness", got)
+				}
 			}
 			if _, err = s2cVerifyChosen(f.trust, accept); err == nil {
 				t.Fatal("accept became choice")
