@@ -99,7 +99,9 @@ func s2cHash(label string, value any) [32]byte {
 }
 
 func s2cMemberSetDigest(members []s2cMember) ([32]byte, error) {
-	if len(members) < 3 || len(members) > 31 || len(members)%2 == 0 {
+	// This is the original fixed topology, never a quorum inferred from the
+	// currently reachable members. A singleton has no voter redundancy.
+	if len(members) < 1 || len(members) > 31 || len(members)%2 == 0 {
 		return [32]byte{}, errS2CTrust
 	}
 	keys := make(map[[32]byte]bool, len(members))
