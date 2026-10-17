@@ -286,6 +286,11 @@ remain unavailable, and legacy receipt-less Add stays quarantined.
 
 Native sign-out preserves the account outbox for A→B→A recovery. Destructive wipe
 requires a separate explicit choice and cannot undo uncertain Server effects.
+The dedicated [installed-factory T18 target](installed-factory-acceptance.md)
+qualifies all four profiles, immutable native A→B→A, the separate shared-remote
+wipe barrier and real installation/adoption/owner policy. Its two native
+credentials, runtime defines and fresh installed-byte evidence are explicit
+prerequisites; existing smoke/CDC/receipt records do not cover it.
 `offline_demo.dart` / `OfflineDemoSession` remain legacy explicit qualification
 fixtures, outside the ordinary app routes. They do not add a second scheduler to
 the integrated app. SQLite is not encrypted by this adapter; application-owned

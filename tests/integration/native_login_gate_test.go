@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,10 +25,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func runNativeLoginWireGate(t *testing.T, ctx context.Context, f *nativeLoginWireFixture, servers []*httptest.Server, controls []graphv1connect.LanternSecurityServiceClient, admin string, transport *http.Client, exportBoundary *atomic.Pointer[currentExportBoundary]) {
+func runNativeLoginWireGate(t *testing.T, ctx context.Context, f *nativeLoginWireFixture, servers []*httptest.Server, controls []graphv1connect.LanternSecurityServiceClient, admin string, transport *http.Client, exportBoundary *atomic.Pointer[currentExportBoundary], serving *nativeFixtureServingOptions) {
 	t.Helper()
 	native := graphv1connect.NewLanternNativeAuthServiceClient(transport, servers[0].URL)
 	data := graphv1connect.NewLanternServiceClient(transport, servers[0].URL)
+	if serving != nil {
+		t.Run("native fixture serving export", func(t *testing.T) {
+			runNativeFixtureServing(t, ctx, f, native, data, controls[0], admin, transport, servers[0].URL, serving)
+		})
+		return
+	}
 	t.Run("ambiguous native wire rejected before provider work", func(t *testing.T) {
 		field := func(n protowire.Number, value string) []byte {
 			return protowire.AppendString(protowire.AppendTag(nil, n, protowire.BytesType), value)
@@ -165,6 +172,7 @@ func runNativeLoginWireGate(t *testing.T, ctx context.Context, f *nativeLoginWir
 				}
 			})
 		}
+
 		if _, err := data.GetVertex(ctx, securityWireRequest(f.token(t, nativeGoogleIssuer, "fixture.apps.googleusercontent.com", "native-user", "", nil), &pb.GetVertexRequest{Key: "orders:native"})); connect.CodeOf(err) != connect.CodeUnauthenticated {
 			t.Fatal("provider token became API token", err)
 		}
@@ -379,4 +387,116 @@ func runNativeLoginWireGate(t *testing.T, ctx context.Context, f *nativeLoginWir
 			t.Fatal("withdrawn native assignment remained usable", err)
 		}
 	})
+}
+
+func runNativeFixtureServing(t *testing.T, ctx context.Context, f *nativeLoginWireFixture, native graphv1connect.LanternNativeAuthServiceClient, data graphv1connect.LanternServiceClient, control graphv1connect.LanternSecurityServiceClient, admin string, transport *http.Client, endpoint string, options *nativeFixtureServingOptions) {
+	t.Helper()
+	ready := func() {
+		nativeWireAwait(t, ctx, func() error {
+			_, err := control.GetCurrentPrincipal(ctx, securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+			return err
+		})
+	}
+	var issued [2]*pb.CompleteNativeLoginResponse
+	var verified [2]*pb.GetNativeSessionResponse
+	for i, subject := range []string{"native-user", "registration-legacy"} {
+		// Same public Begin/Prepare/Apply path as the registration gate, not
+		// preassigned UIDs or relabeled machine bindings.
+		ready()
+		start, err := native.BeginNativeRegistration(ctx, connect.NewRequest(&pb.BeginNativeRegistrationRequest{Issuer: nativeGoogleIssuer, ClientProfileId: "google"}))
+		if err != nil || start.Msg.GetAttempt().GetConfiguration().GetServiceOrigin() != options.Origin {
+			t.Fatal("native fixture registration begin/origin", err)
+		}
+		attempt := start.Msg.Attempt
+		request := connect.NewRequest(&pb.PrepareNativeRegistrationRequest{AttemptId: attempt.AttemptId, CompletionSecret: attempt.CompletionSecret, Provider: &pb.PrepareNativeRegistrationRequest_Google{Google: &pb.GoogleNativeCredential{IdToken: f.token(t, nativeGoogleIssuer, "fixture.apps.googleusercontent.com", subject, "", nil)}}})
+		request.Header().Set("Lantern-Native-Affinity", attempt.Affinity)
+		prepared, err := native.PrepareNativeRegistration(ctx, request)
+		if err != nil || len(prepared.Msg.GetProof()) != 43 || len(prepared.Msg.GetReview().GetUserId()) != 32 || prepared.Msg.GetReview().GetActor().GetSubject() != subject {
+			t.Fatal("native fixture public registration prepare", err)
+		}
+		apply := connect.NewRequest(&pb.ApplyNativeRegistrationRequest{Review: prepared.Msg.Review, Proof: prepared.Msg.Proof})
+		apply.Header().Set("Lantern-Native-Affinity", prepared.Msg.Affinity)
+		enrolled, err := native.ApplyNativeRegistration(ctx, apply)
+		if err != nil || enrolled.Msg.GetCurrentResult().GetOriginal().GetDisposition() != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED || enrolled.Msg.GetSession().GetUserId() != prepared.Msg.Review.UserId {
+			t.Fatal("native fixture public registration not applied", err)
+		}
+		ready()
+		login, err := native.BeginNativeLogin(ctx, connect.NewRequest(&pb.BeginNativeLoginRequest{Issuer: nativeGoogleIssuer, ClientProfileId: "google"}))
+		if err != nil || login.Msg.GetConfiguration().GetServiceOrigin() != options.Origin {
+			t.Fatal("native fixture login begin/origin", err)
+		}
+		completion := connect.NewRequest(&pb.CompleteNativeLoginRequest{AttemptId: login.Msg.AttemptId, CompletionSecret: login.Msg.CompletionSecret, Provider: &pb.CompleteNativeLoginRequest_Google{Google: &pb.GoogleNativeCredential{IdToken: f.token(t, nativeGoogleIssuer, "fixture.apps.googleusercontent.com", subject, "", nil)}}})
+		completion.Header().Set("Lantern-Native-Affinity", login.Msg.Affinity)
+		result, err := native.CompleteNativeLogin(ctx, completion)
+		if err != nil || !strings.HasPrefix(result.Msg.GetCredential(), "lnu1_") || result.Msg.GetSession().GetUserId() != prepared.Msg.Review.UserId {
+			t.Fatal("native fixture registered login credential unavailable", err)
+		}
+		issued[i] = result.Msg
+		nativeWireAwait(t, ctx, func() error {
+			view, err := native.GetNativeSession(ctx, securityWireRequest(result.Msg.Credential, &pb.GetNativeSessionRequest{}))
+			if err == nil {
+				verified[i] = view.Msg
+			}
+			return err
+		})
+		session := verified[i].GetSession()
+		if session.GetIdentity().GetIssuer() != nativeGoogleIssuer || session.GetIdentity().GetSubject() != subject || session.GetUserId() != prepared.Msg.Review.UserId || session.GetPersonalPrefix() != "users:"+session.GetUserId()+":" {
+			t.Fatal("native fixture installed identity mismatch")
+		}
+		key := options.Prefix + "native-fixture-check"
+		if _, err := data.PutVertex(ctx, securityWireRequest(result.Msg.Credential, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key, Value: &pb.Vertex_String_{String_: "synthetic fixture"}}})); err != nil {
+			t.Fatal("native fixture orders write", err)
+		}
+		if _, err := data.GetVertex(ctx, securityWireRequest(result.Msg.Credential, &pb.GetVertexRequest{Key: key})); err != nil {
+			t.Fatal("native fixture orders read", err)
+		}
+		if _, err := data.Illuminate(ctx, securityWireRequest(result.Msg.Credential, &pb.IlluminateRequest{Seed: key, VertexPrefix: options.Prefix, Params: &pb.IlluminateRequest_Bfs{Bfs: &pb.BfsParams{Step: 1, FanOut: 2}}})); err != nil {
+			t.Fatal("native fixture scoped Query", err)
+		}
+		capability, err := data.GetReceiptCapability(ctx, securityWireRequest(result.Msg.Credential, &pb.GetReceiptCapabilityRequest{}))
+		if err != nil || !capability.Msg.GetEnabled() {
+			t.Fatal("native fixture receipt capability unavailable", err)
+		}
+		streamCtx, stopStream := context.WithTimeout(ctx, 5*time.Second)
+		stream, err := graphv1connect.NewLanternChangeServiceClient(transport, endpoint).WatchChanges(streamCtx, securityWireRequest(result.Msg.Credential, &pb.WatchChangesRequest{Prefix: options.Prefix, Bootstrap: true, Projection: pb.ChangeProjection_CHANGE_PROJECTION_VALUE}))
+		if err != nil {
+			stopStream()
+			t.Fatal("native fixture scoped WatchChanges", err)
+		}
+		if !stream.Receive() || !stream.Msg().Bootstrap || len(stream.Msg().Cursor) == 0 {
+			stopStream()
+			_ = stream.Close()
+			t.Fatal("native fixture scoped WatchChanges bootstrap unavailable")
+		}
+		stopStream()
+		_ = stream.Close()
+		if _, err := data.DeleteVertex(ctx, securityWireRequest(result.Msg.Credential, &pb.DeleteVertexRequest{Key: key})); err != nil {
+			t.Fatal("native fixture orders delete", err)
+		}
+		if _, err := data.GetVertex(ctx, securityWireRequest(result.Msg.Credential, &pb.GetVertexRequest{Key: "other:native-fixture-denied"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatal("native fixture escaped orders/personal grants", err)
+		}
+	}
+	if err := writeNativeFixtureServingExport(options, issued, verified); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("native_fixture_ready schema=1 accounts=2")
+	reason, err := waitNativeFixtureServing(ctx, filepath.Join(options.ExportDir, "release"), options.Lifetime, func() error {
+		healthCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		for i := range issued {
+			view, err := native.GetNativeSession(healthCtx, securityWireRequest(issued[i].Credential, &pb.GetNativeSessionRequest{}))
+			if err != nil {
+				return errors.Join(errors.New("native fixture current session guard failed while serving"), err)
+			}
+			if !proto.Equal(view.Msg.GetSession().GetIdentity(), verified[i].Session.Identity) || view.Msg.GetSession().GetUserId() != verified[i].Session.GetUserId() || view.Msg.GetSession().GetPersonalPrefix() != verified[i].Session.GetPersonalPrefix() {
+				return errors.New("native fixture registered identity changed while serving")
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal("native serving owner lifetime", err)
+	}
+	t.Log("native_fixture_stopped reason=" + reason)
 }

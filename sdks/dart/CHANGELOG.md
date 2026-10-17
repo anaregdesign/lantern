@@ -1,17 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
-### 0.5.0 candidate
-
-- Extend the qualified indexed adapter with receipt contexts and synchronous dispatch/publication fences; expose the shared bounded observation coordinator for storage owners, preserving the parent runtime dependency boundary.
+- Add common CRUD/traversal, read-source, mutation-result and observation
+  contracts for cached and uncached consumers without an offline storage
+  dependency in the online parent.
+- Extend the qualified indexed adapter with receipt contexts and synchronous
+  dispatch/publication fences; expose the shared bounded observation coordinator
+  for storage owners, preserving the parent runtime dependency boundary.
 
 - Derive Head-managed Edge access on the Server and decode typed complete-call
   mutation acceptance without exposing private effects. Primitive facades use
   `MutationAcceptance`; `captureMutationReply` returns an explicit known-effect
   or accepted-undisclosed reply. Partial batches retain their failure contract.
 - Decode known receipt `effectUndisclosed` status without original result bytes.
-  These source changes have not been published or qualified on physical devices.
+- Require separate exact-source physical qualification, protected publication
+  and hosted-archive equality; source preparation alone does not complete them.
 
 ## 0.4.1
 

@@ -324,6 +324,20 @@ verifies the private fixture CA and does not qualify device trust or a real
 OIDC provider. The phone target may use explicit insecure transport only for
 separately labeled development conformance, never HTTPS release qualification.
 
+## Installed factory T18
+
+Use [installed-factory-acceptance.md](installed-factory-acceptance.md) for the
+bounded `physical_installed_factory_test.dart` target, two actual synthetic
+registered native credentials, four profile/common-UI scenarios, immutable
+A→B→A and native installation/ownership checks. It uses real socket loss and
+requires automatic foreground recovery without a manual drain/Sync.
+
+Its dedicated `lantern-installed-factory-result.json` and the reused
+`lantern-receipt-attestation.json` must both be fresh, complete and bound to the
+installed signed binary after cleanup. Retain/cite T18 proof separately or in
+the optional evidence README; do not add JSON files to the legacy eight-record
+Offline release child or claim that historical suites already cover T18.
+
 ## Native SQLite process restart probe
 
 `integration_test/sqlite_restart_probe.dart` is an opt-in application entrypoint

@@ -245,6 +245,10 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	}
 	n := s3aTestCluster(t, nil)
 	queryRoles := os.Getenv("LANTERN_CURRENT_FIXTURE_QUERY_ROLES_FILE")
+	nativeServing := os.Getenv("LANTERN_NATIVE_FIXTURE_SERVE") == "1"
+	if nativeServing && (os.Getenv("LANTERN_NATIVE_LOGIN_GATE") != "1" || queryRoles != "" || len(hosts) != 0) {
+		t.Fatal("native serving requires its local native-login fixture")
+	}
 	containerRenewal := os.Getenv("LANTERN_CURRENT_MEMBERSHIP_CONTAINER") == "1"
 	renewal := os.Getenv("LANTERN_CURRENT_MEMBERSHIP_GATE") == "1" || containerRenewal
 	if renewal {
@@ -258,7 +262,7 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	if queryRoles != "" && len(hosts) != 0 {
 		t.Fatal("query fixture is local and cannot select the container campaign")
 	}
-	if len(hosts) != 0 || queryRoles != "" {
+	if len(hosts) != 0 || queryRoles != "" || nativeServing {
 		// One independently provisioned lifetime covers the bounded campaign;
 		// restart never rewrites or extends this signed membership.
 		n.manifest.IssuedAt = time.Now().UTC().Add(-5 * time.Second)
@@ -296,22 +300,9 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 		image.Principals[0].UserUID = "11111111111111111111111111111111"
 	}
 	if os.Getenv("LANTERN_NATIVE_LOGIN_GATE") == "1" {
-		nativeRole := role
-		nativeRole.ID = "wire_native"
-		image.Roles = append(image.Roles, nativeRole)
-		image.Issuers = append(image.Issuers,
-			Issuer{URL: GoogleIssuer, Enabled: true, ConfigRevision: 1, Algorithms: []string{"RS256"}, NativeClients: []NativeClient{{ID: "google", Kind: GoogleIDToken, ClientID: "fixture.apps.googleusercontent.com", Presenters: []string{"fixture-android", "fixture-ios"}, ServiceOrigin: "https://native.example"}}},
-			Issuer{URL: AppleIssuer, Enabled: true, ConfigRevision: 1, Algorithms: []string{"RS256"}, NativeClients: []NativeClient{{ID: "apple_ios", Kind: AppleNative, ClientID: "com.example.native", ServiceOrigin: "https://native.example", SecretRef: "apple_ios"}, {ID: "apple_web", Kind: AppleAndroidWeb, ClientID: "com.example.web", ServiceOrigin: "https://native.example", SecretRef: "apple_web", RedirectURI: "https://native.example/auth/native/apple/callback/apple_web", AndroidPackage: "com.example.native"}}},
-		)
-		// Explicit fixture-only signup configuration. Production remains absent/disabled.
-		image.Roles = append(image.Roles, PersonalUserRole())
-		image.RegistrationPolicy = &RegistrationPolicy{Version: RegistrationPolicyVersion, Enabled: true, RoleID: PersonalUserRoleID, Profiles: []RegistrationProfile{
-			{GoogleIssuer, "google"}, {AppleIssuer, "apple_ios"}, {AppleIssuer, "apple_web"},
-		}}
-		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: GoogleIssuer, Subject: "registration-legacy"}, State: Active, Assignments: []RoleAssignment{{RoleID: nativeRole.ID}}})
-
-		for _, issuer := range []string{GoogleIssuer, AppleIssuer} {
-			image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuer, Subject: "native-user"}, State: Active, Assignments: []RoleAssignment{{RoleID: nativeRole.ID}}})
+		image, err = currentNativeFixtureImage(image, role, nativeServing, os.Getenv("LANTERN_NATIVE_FIXTURE_ORIGIN"), os.Getenv("LANTERN_NATIVE_FIXTURE_PREFIX"))
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
 	reader := Role{ID: "wire_reader", Rules: []PermissionRule{dataRule(Allow, VertexRead, "orders:"), dataRule(Deny, VertexRead, "orders:private:")}}
@@ -432,6 +423,9 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	if queryRoles != "" {
 		doc(filepath.Join(dir, "query-provision.json"), map[string]any{"membership_expires_at": n.manifest.ExpiresAt, "nodes": queryNodes})
 	}
+	if nativeServing {
+		doc(filepath.Join(dir, "native-serving-provision.json"), map[string]any{"membership_expires_at": n.manifest.ExpiresAt})
+	}
 	if renewal {
 		exportCurrentRenewalFixture(t, dir, n, manifest, hosts)
 	}
@@ -441,6 +435,145 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 			t.Fatal("data HA requires the current three-container fixture", err)
 		}
 		exportCurrentDataHA(t, dir, hosts, driver, provisioned.Profile())
+	}
+}
+
+func currentNativeFixtureImage(image Image, role Role, serving bool, origin, prefix string) (Image, error) {
+	if !serving {
+		if origin != "" || prefix != "" {
+			return Image{}, fmt.Errorf("native origin/prefix override requires serving opt-in")
+		}
+		origin, prefix = "https://native.example", "orders:"
+	} else if !nativeServiceOrigin(origin) || !strings.HasPrefix(prefix, "orders:") || !strings.HasSuffix(prefix, ":") || len(prefix) > 128 || strings.ContainsAny(prefix, " \t\r\n\x00") {
+		return Image{}, fmt.Errorf("canonical HTTPS native origin and bounded orders: prefix required")
+	}
+	nativeRole := Role{ID: "wire_native", Rules: append([]PermissionRule(nil), role.Rules...)}
+	if serving {
+		for i := range nativeRole.Rules {
+			nativeRole.Rules[i].Prefix = &prefix
+		}
+		query := dataRule(Allow, Query, prefix)
+		query.ID = "native-fixture-query"
+		nativeRole.Rules = append(nativeRole.Rules, query)
+	}
+	image.Roles = append(image.Roles, nativeRole)
+	image.Issuers = append(image.Issuers,
+		Issuer{URL: GoogleIssuer, Enabled: true, ConfigRevision: 1, Algorithms: []string{"RS256"}, NativeClients: []NativeClient{{ID: "google", Kind: GoogleIDToken, ClientID: "fixture.apps.googleusercontent.com", Presenters: []string{"fixture-android", "fixture-ios"}, ServiceOrigin: origin}}},
+		Issuer{URL: AppleIssuer, Enabled: true, ConfigRevision: 1, Algorithms: []string{"RS256"}, NativeClients: []NativeClient{{ID: "apple_ios", Kind: AppleNative, ClientID: "com.example.native", ServiceOrigin: origin, SecretRef: "apple_ios"}, {ID: "apple_web", Kind: AppleAndroidWeb, ClientID: "com.example.web", ServiceOrigin: origin, SecretRef: "apple_web", RedirectURI: origin + "/auth/native/apple/callback/apple_web", AndroidPackage: "com.example.native"}}},
+	)
+	// Fixture-only policy; enrollment itself still crosses public Prepare/Apply.
+	image.Roles = append(image.Roles, PersonalUserRole())
+	image.RegistrationPolicy = &RegistrationPolicy{Version: RegistrationPolicyVersion, Enabled: true, RoleID: PersonalUserRoleID, Profiles: []RegistrationProfile{
+		{GoogleIssuer, "google"}, {AppleIssuer, "apple_ios"}, {AppleIssuer, "apple_web"},
+	}}
+	image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: GoogleIssuer, Subject: "registration-legacy"}, State: Active, Assignments: []RoleAssignment{{RoleID: nativeRole.ID}}})
+	for _, issuer := range []string{GoogleIssuer, AppleIssuer} {
+		image.Principals = append(image.Principals, Principal{Identity: Identity{Kind: OIDCPrincipal, Issuer: issuer, Subject: "native-user"}, State: Active, Assignments: []RoleAssignment{{RoleID: nativeRole.ID}}})
+	}
+	return image, nil
+}
+
+func TestCurrentNativeFixtureImage(t *testing.T) {
+	role := Role{ID: "wire_data"}
+	for i, action := range []Action{VertexRead, VertexWrite, VertexDelete, ReceiptRead, Export, CDCIdentity, CDCValue} {
+		rule := dataRule(Allow, action, "orders:")
+		rule.ID = fmt.Sprintf("data%d", i)
+		role.Rules = append(role.Rules, rule)
+	}
+	for _, serving := range []bool{false, true} {
+		t.Run(fmt.Sprintf("serving=%t", serving), func(t *testing.T) {
+			origin, prefix := "", ""
+			if serving {
+				origin, prefix = "https://installed.example:16443", "orders:installed:"
+			}
+			image, err := currentNativeFixtureImage(s1Image(), role, serving, origin, prefix)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = s1Fixture(t, image)
+			if !serving {
+				origin, prefix = "https://native.example", "orders:"
+			}
+			nativeRole := image.Roles[len(image.Roles)-2]
+			want := len(role.Rules)
+			if serving {
+				want++
+			}
+			if nativeRole.ID != "wire_native" || len(nativeRole.Rules) != want {
+				t.Fatal("native grants changed")
+			}
+			for i, rule := range nativeRole.Rules {
+				if rule.Prefix == nil || *rule.Prefix != prefix || rule.Effect != Allow || rule.Resource != DataResource || i < len(role.Rules) && rule.Action != role.Rules[i].Action || i == len(role.Rules) && rule.Action != Query {
+					t.Fatal("native fixture rule escaped explicit scope")
+				}
+			}
+			for _, issuer := range image.Issuers[1:] {
+				for _, client := range issuer.NativeClients {
+					if client.ServiceOrigin != origin || !client.valid(issuer.URL) {
+						t.Fatal("native origin/callback invalid")
+					}
+				}
+			}
+			for _, principal := range image.Principals[1:] {
+				if principal.UserUID != "" {
+					t.Fatal("fixture bypassed public registration")
+				}
+			}
+			for _, rule := range role.Rules {
+				if *rule.Prefix != "orders:" {
+					t.Fatal("serving mutated ordinary wire_data grants")
+				}
+			}
+		})
+	}
+	for _, tc := range []struct {
+		serving        bool
+		origin, prefix string
+	}{{false, "https://installed.example", "orders:"}, {true, "http://installed.example", "orders:"}, {true, "https://installed.example/", "orders:"}, {true, "https://installed.example", ""}, {true, "https://installed.example", "other:"}, {true, "https://installed.example", "orders:bad\n:"}} {
+		if _, err := currentNativeFixtureImage(s1Image(), role, tc.serving, tc.origin, tc.prefix); err == nil {
+			t.Fatal("invalid native serving configuration accepted")
+		}
+	}
+}
+
+func TestCurrentNativeFixtureExport(t *testing.T) {
+	for _, serving := range []bool{false, true} {
+		t.Run(fmt.Sprintf("serving=%t", serving), func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("LANTERN_CURRENT_FIXTURE_DIR", dir)
+			t.Setenv("LANTERN_CURRENT_FIXTURE_ISSUER", "https://127.0.0.1:12345")
+			t.Setenv("LANTERN_CURRENT_FIXTURE_HOSTS", "")
+			t.Setenv("LANTERN_CURRENT_FIXTURE_QUERY_ROLES_FILE", "")
+			t.Setenv("LANTERN_NATIVE_LOGIN_GATE", "1")
+			t.Setenv("LANTERN_NATIVE_FIXTURE_SERVE", "")
+			t.Setenv("LANTERN_NATIVE_FIXTURE_ORIGIN", "")
+			t.Setenv("LANTERN_NATIVE_FIXTURE_PREFIX", "")
+			if serving {
+				t.Setenv("LANTERN_NATIVE_FIXTURE_SERVE", "1")
+				t.Setenv("LANTERN_NATIVE_FIXTURE_ORIGIN", "https://installed.example")
+				t.Setenv("LANTERN_NATIVE_FIXTURE_PREFIX", "orders:installed:")
+			}
+			TestCurrentProvisioningExportPublicFixture(t)
+			raw, err := os.ReadFile(filepath.Join(dir, "native-serving-provision.json"))
+			if !serving {
+				if !os.IsNotExist(err) {
+					t.Fatal("ordinary native export gained serving state")
+				}
+				return
+			}
+			var provision struct {
+				ExpiresAt time.Time `json:"membership_expires_at"`
+			}
+			if err != nil || json.Unmarshal(raw, &provision) != nil || time.Until(provision.ExpiresAt) < 9*time.Minute || time.Until(provision.ExpiresAt) > peerauth.MaxMembershipLifetime {
+				t.Fatal("native serving expiry escaped the signed membership maximum")
+			}
+			for id := 1; id <= 3; id++ {
+				p, err := LoadCurrentProvisioning(filepath.Join(dir, fmt.Sprintf("node-%d/node.json", id)))
+				if err != nil || p.Profile().Binding() == "" {
+					t.Fatal("invalid native current-v2 provisioning", err)
+				}
+			}
+		})
 	}
 }
 

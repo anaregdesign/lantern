@@ -6,12 +6,15 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -67,6 +70,10 @@ func (w currentExportBoundaryWriter) Write(payload []byte) (int, error) {
 func (w currentExportBoundaryWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func TestCurrentSecurityPublicNativeGate(t *testing.T) {
+	serving, servingErr := nativeFixtureServingFromEnv(os.Getenv)
+	if servingErr != nil {
+		t.Fatal(servingErr)
+	}
 	renewal := os.Getenv("LANTERN_CURRENT_MEMBERSHIP_GATE") == "1"
 	if os.Getenv("LANTERN_CURRENT_PUBLIC_GATE") != "1" && !renewal {
 		t.Skip("requires configured native time; explicit container gate")
@@ -92,6 +99,16 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	out, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("independent provisioning export: %v\n%s", err, out)
+	}
+	if serving != nil {
+		var provision struct {
+			MembershipExpires time.Time `json:"membership_expires_at"`
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, "native-serving-provision.json"))
+		if err != nil || json.Unmarshal(raw, &provision) != nil || provision.MembershipExpires.IsZero() {
+			t.Fatal("native serving signed membership expiry unavailable")
+		}
+		serving.MembershipExpires = provision.MembershipExpires
 	}
 	roots := filepath.Join(dir, "oidc.pem")
 	if err := createPrivateTestFile(roots, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.provider.Certificate().Raw})); err != nil {
@@ -214,6 +231,15 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := httptest.NewUnstartedServer(nil)
+		if serving != nil && id == 1 {
+			if err := s.Listener.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s.Listener, err = net.Listen("tcp4", fmt.Sprintf("0.0.0.0:%d", serving.ListenPort))
+			if err != nil {
+				t.Fatal("selected native TLS listener unavailable", err)
+			}
+		}
 		listener, err := provider.NewPublicLanternListener(s.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{}, provider.CORSConfig{}, svc, runtime, provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}}, nil, nil, nil, nil, nil, provider.NewHealthChecker(), slog.New(slog.NewTextHandler(io.Discard, nil)), public)
 		if err != nil {
 			t.Fatal(err)
@@ -231,7 +257,20 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				next.ServeHTTP(w, req)
 			})
 		}
-		if os.Getenv("LANTERN_CURRENT_PUBLIC_SDK4") == "1" {
+		if serving != nil && id == 1 {
+			s.EnableHTTP2 = true
+			publicCA = configureNativeFixtureServingTLS(t, s, serving)
+			raw, err := os.ReadFile(publicCA)
+			roots := x509.NewCertPool()
+			if err != nil || !roots.AppendCertsFromPEM(raw) {
+				t.Fatal("native serving public trust unavailable")
+			}
+			tlsTransport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true}
+			t.Cleanup(tlsTransport.CloseIdleConnections)
+			transport.Transport = authIngressRoundTripper{tlsTransport}
+			s.StartTLS()
+			s.URL = fmt.Sprintf("https://127.0.0.1:%d", serving.ListenPort)
+		} else if os.Getenv("LANTERN_CURRENT_PUBLIC_SDK4") == "1" {
 			s.EnableHTTP2 = true
 			ca := configureSDKServerTLS(t, s)
 			if id == 1 {
@@ -242,13 +281,20 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			s.Start()
 		}
 		t.Cleanup(s.Close)
+		if serving != nil {
+			t.Cleanup(s.CloseClientConnections)
+		}
 		servers = append(servers, s)
 		controls = append(controls, graphv1connect.NewLanternSecurityServiceClient(transport, s.URL))
 	}
 	for id := 1; id <= 3; id++ {
 		startNode(id, "fresh")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 180*time.Second)
+	timeout := 180 * time.Second
+	if serving != nil {
+		timeout += serving.Lifetime
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 	for i, runtime := range runtimes {
 		for !runtime.Ready(ctx) {
@@ -275,8 +321,10 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		c["auth_time"] = time.Now().Add(-time.Hour).Unix()
 	})
 	if native != nil {
-		runNativeLoginWireGate(t, ctx, native, servers, controls, token, transport, &exportBoundary)
-		runNativeRegistrationWireGate(t, ctx, native, servers, controls, token, transport)
+		runNativeLoginWireGate(t, ctx, native, servers, controls, token, transport, &exportBoundary, serving)
+		if serving == nil {
+			runNativeRegistrationWireGate(t, ctx, native, servers, controls, token, transport)
+		}
 		return
 	}
 	if os.Getenv("LANTERN_CURRENT_PUBLIC_SDK4") == "1" {

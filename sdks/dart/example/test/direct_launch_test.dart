@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -24,4 +25,30 @@ void main() {
       expect(binding.inTest, isTrue);
     });
   });
+
+  directLaunchIntegrationTest(
+    'direct launch pumps and interacts with the existing widget binding',
+    () async {
+      var taps = 0;
+      runApp(
+        MaterialApp(
+          home: Scaffold(
+            body: FilledButton(
+              onPressed: () => taps++,
+              child: const Text('Submit locally'),
+            ),
+          ),
+        ),
+      );
+      await binding.pump();
+      await DirectLaunchWidgetController(
+        binding,
+      ).tap(find.text('Submit locally'));
+      await binding.pump(const Duration(milliseconds: 150));
+      expect(taps, 1);
+      runApp(const SizedBox.shrink());
+      await binding.pump();
+    },
+    timeout: const Timeout(Duration(seconds: 10)),
+  );
 }
