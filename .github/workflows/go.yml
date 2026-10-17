@@ -26,6 +26,8 @@ jobs:
       evidence_only: ${{ steps.evidence.outputs.evidence_only }}
       docs_only: ${{ steps.docs.outputs.docs_only }}
       q_required: ${{ steps.qualification.outputs.q_required }}
+      windows_required: ${{ steps.native.outputs.windows_required }}
+      windows_rust_required: ${{ steps.native.outputs.windows_rust_required }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -46,6 +48,13 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: python3 -B .github/scripts/current_qualification_scope.py
+      - name: Select native Windows coverage
+        id: native
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: python3 -B .github/scripts/validation_scope.py
       - name: Classify PR
         id: evidence
         env:
@@ -204,7 +213,7 @@ jobs:
 
   build:
     name: Build & Test
-    needs: [scope, modules, mechanism, current-sdk4]
+    needs: [scope, modules, mechanism, current-sdk4, receipt-backup-windows]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -218,6 +227,8 @@ jobs:
           F_RESULT: ${{ needs.mechanism.result }}
           Q_RESULT: ${{ needs.current-sdk4.result }}
           Q_REQUIRED: ${{ needs.scope.outputs.q_required }}
+          WINDOWS_REQUIRED: ${{ needs.scope.outputs.windows_required }}
+          WINDOWS_RESULT: ${{ needs.receipt-backup-windows.result }}
           DOCS_ONLY: ${{ needs.scope.outputs.docs_only }}
           EVIDENCE_ONLY: ${{ needs.scope.outputs.evidence_only }}
         run: python3 -B .github/scripts/current_qualification_result.py
@@ -245,20 +256,29 @@ jobs:
   receipt-backup-windows:
     name: Receipt backup (Windows)
     needs: scope
-    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
+    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.windows_required != 'false'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version: '1.27.2'
           check-latest: true
-
-      - name: Test receipt backup durability
-        working-directory: server
-        run: go test -count=1 ./backup
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        if: needs.scope.outputs.windows_rust_required != 'false'
+        with:
+          toolchain: stable
+      - name: Test selected native filesystem, ACL, TLS and process boundaries
+        env:
+          RUST_REQUIRED: ${{ needs.scope.outputs.windows_rust_required }}
+        run: python3 -B .github/scripts/windows_native.py --rust "$env:RUST_REQUIRED" --evidence "$env:RUNNER_TEMP/native-windows"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-windows
+          path: ${{ runner.temp }}/native-windows/*.log
+          if-no-files-found: warn
 
   lint:
     name: Lint

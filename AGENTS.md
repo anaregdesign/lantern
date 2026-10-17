@@ -215,8 +215,9 @@ The load-bearing always-on essentials:
   findings within that PR. Epics and final acceptance owners keep separate exits.
 - **Iterate, review, then qualify**: run focused checks during edits, resolve review
   findings, freeze the coherent candidate and run the applicable local quality gate
-  before push. Explicitly eligible pure prose uses the fresh text/docs-contract
-  path in CONTRIBUTING; other changes require all components. Every push needs
+  before push. Use fresh `--affected-base origin/main` checks from the small dependency map;
+  unknown/policy/configuration inputs select full. Eligible pure prose uses the
+  existing text/docs-contract path. Omitted families are NOT_SELECTED, never PASS. Every push needs
   passing results for the applicable gate,
   recorded as newly executed or mechanically carried by the live local runner in
   [CONTRIBUTING.md](CONTRIBUTING.md#local-validation-carry). Unverified results and
@@ -240,13 +241,13 @@ The load-bearing always-on essentials:
   boundary changes and unknown classification require normal-build configured-source Q
   before and after merge. Every exact release candidate/selected environment requires Q.
   F PASS / Q NOT_RUN is not release qualification; executed Q failure stays FAIL.
-  Production fresh-anchor/expiry guards never change. The full local gate retains Q
-  and adds F; introduction uses the prior full contract plus F.
-- **Before every push**, satisfy the local quality gate in CONTRIBUTING.md:
-  only its explicit pure-prose eligibility may select text/docs-contract checks.
-  Otherwise `gofmt -l` must be empty; root and every Go submodule, Dart/Flutter and Rust
-  components must all have valid results. The policy-changing PR itself uses the
-  previously applicable full gate and cannot qualify itself with its relaxation.
+  Production fresh-anchor/expiry guards never change. Ordinary affected local checks defer exact integration F/Q to hosted CI; the
+  explicit full local gate retains both. Policy adoption uses the prior full contract.
+- **Before every push**, satisfy the affected local or explicit pure-prose gate in
+  CONTRIBUTING. Unknown inputs require full; policy changes use the previous full
+  contract on themselves. Hosted exact-merge/main, release/environment Q, archives
+  and physical evidence remain independent. Full Windows Rust compatibility moves
+  to manual/release; affected native ACL/filesystem/TLS/process checks still block.
 - **Never hand-edit generated code.** Regenerate `pb/**` with `go generate ./...` (buf,
   never `--clean`) and `server/cmd/wire_gen.go` from `server/` with `go tool wire ./cmd`.
 - **When your work surfaces a fact another open Issue needs, comment it on that Issue in

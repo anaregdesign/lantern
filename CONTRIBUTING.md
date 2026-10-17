@@ -127,11 +127,31 @@ window, or weaken load or thresholds.
 
 ## Before every `git push` — local quality gate
 
-The default is the complete component gate below. A reviewed, purely explanatory
-prose change may instead use the explicit [local prose eligibility](#local-prose-eligibility)
-path. This selects fresh checks appropriate to that diff; it carries no previous
-component result. Instructions, validation policy and canonical contracts remain
-subject to the full gate. This adoption PR itself uses the previous full gate.
+Lantern is a pre-production beta. During edits run focused tests, resolve meaningful
+review findings, then freeze one coherent candidate. Before pushing, use fresh
+**affected local checks** against the fetched target main:
+
+```sh
+python3 -B .github/scripts/local_gate_session.py "$PWD" ../affected-evidence-new --affected-base origin/main
+```
+
+The small [path/dependency map](.github/scripts/validation_scope.py) selects module
+owners and consumers. Mixed changes union obligations; unknown paths, unusable
+bases, policy/configuration/dependency changes and unsupported input types select
+the complete gate. Go source selects its module DAG and root integration; Node
+feeds Admin, Dart parent feeds Offline/SQLite/example, and native file/process/TLS
+inputs select their owning checks. Selected steps execute freshly; omitted steps
+are reported as **NOT_SELECTED**, never carried or passed. The affected mode
+accepts no prior receipts and does not require the carry session's toolchain
+fingerprinting. Its results describe the frozen local checkout, not hosted or
+release qualification. Use the existing explicit [pure-prose path](#local-prose-eligibility)
+for eligible explanation-only edits.
+
+The complete 77-step plan below remains available by omitting `--affected-base`.
+Policy-changing PRs must run the **previous full contract on their final source**,
+including F/Q and applicable native coverage; a relaxation cannot qualify itself.
+This policy's adoption PR follows that rule once before push. Later changes use
+the merged policy, with normal exact synthetic-merge/main checks still blocking.
 
 Complete frozen Bun dependency installation in Node and Admin before Go walks
 the root workspace. Installation can mutate dependency directories containing
@@ -188,8 +208,8 @@ parent has been published and the hosted lockfile regenerated. Do not publish a
 parent early merely to unblock source development.
 
 During edits, run the narrowest targeted checks for changed behavior. Resolve
-review findings, freeze the coherent candidate, then qualify all required
-components before push, unless the explicit prose path qualifies that candidate.
+review findings, freeze the coherent candidate, then qualify the selected local
+closure before push, or the explicit prose path when eligible.
 Every later push also needs passing results for its applicable gate, with fresh
 executions and mechanically verified component carries
 explicitly distinguished under the local carry contract below. Repair a CI
@@ -204,7 +224,7 @@ manifest SHA-256 and material blockers instead of hand-maintained checklists of
 successful command output. A policy-changing PR uses the previous full gate on
 its final source; it must not apply its proposed relaxation to itself.
 
-Per-module test runs are mandatory: the root `go test ./...` does **not** span
+All selected per-module test runs are mandatory: the root `go test ./...` does **not** span
 submodules. `make lint` runs the same linter as the `Lint` job. The `Proto (buf)` check
 uses the Buf version pinned in `generate.go`, `Makefile` and `.github/workflows/go.yml`.
 Run `go run github.com/bufbuild/buf/cmd/buf@v1.70.0 format -d --exit-code` and
@@ -409,11 +429,19 @@ codegen with bundled `protoc`). Commit `Cargo.lock` for repository CI; the
 library archive builds without the Go workspace, root `proto/`, Buf, a system
 `protoc`, or a generator build script. `.github/workflows/rust-sdk.yml` checks
 codegen drift, formatting, warnings-denied Clippy, tests, example compilation,
-and warning-free docs on four representative lanes: Rust 1.88 on Linux,
-plus stable on Linux, macOS, and Windows. MSRV compatibility is checked on
-Linux; each native platform is qualified on stable, without an OS × MSRV
-Cartesian product.
-Each stable lane builds the production Go server and runs the full opt-in
+and warning-free docs on three routine lanes: Rust 1.88 on Linux,
+plus stable on Linux and macOS for affected ordinary source changes. Full Windows
+Rust compatibility runs on explicit `workflow_dispatch` and exact release source;
+MSRV remains represented on Linux. This schedules beta development coverage and
+does not claim every ordinary build is qualified on every platform.
+
+Affected native Windows Go and Rust tests run in Go's existing Windows job and
+block `Build & Test`: owner/protected DACL, backup/WAL/receipt locking and sync,
+listener/process ownership, native TLS roots/rejection and native value behavior.
+Shared callers and generic native files count, not just `_windows` filenames.
+Selected tests must actually execute; empty/skipped selections fail. Unknown
+native impact selects coverage. Full native release conformance remains intact.
+Each selected full stable lane builds the production Go server/authfixture and runs the opt-in
 real-wire h2c/TLS/auth/CRUD/query suite, including failure paths. Locally,
 build the server from the root and run that suite from the crate:
 
@@ -467,13 +495,16 @@ against the exact merge/main source and successful same-run producer digests.
 Q is mandatory for time, native, production composition, dependency/toolchain,
 deployment, fixture bridge and proof/CI boundary changes. The conservative
 [classifier](.github/scripts/current_qualification_scope.py) exempts only regular
-modified application sources in its explicit small allowlist; unknown paths,
+modified application/computational sources and exact profiling handlers in its small allowlist; unknown paths,
 base failures, additions/deletions/renames and mixed changes require Q. Existing
 docs/evidence-only classifications are unchanged. A non-boundary candidate may
 show **F PASS / Q NOT_RUN**, which is code acceptance, not release or environment
 qualification. Any executed Q failure remains FAIL and cannot be hidden as
 NOT_RUN; required Q failure blocks integration.
 
+Ordinary affected local checks leave the authoritative F/required-Q integration
+to hosted exact-merge CI; they do not repeat external-source acquisition for an
+unrelated diagnostic. Runtime guards and executed Q failures are unchanged.
 The 77-step full local plan conservatively keeps Q and adds separate F execution
 inside `rust-oidc-scoped-wire` using `--with-mechanism`; scoped Rust and every
 other existing component remain mandatory. Each invocation writes fresh F and Q
@@ -526,7 +557,7 @@ not authorize publishing during SDK development.
 
 ## Local validation carry
 
-The optional [live runner](.github/scripts/local_gate_session.py) owns a reviewed
+The optional full-plan [live runner](.github/scripts/local_gate_session.py) owns a reviewed
 [77-step command plan](.github/scripts/local_gate_plan.py). It installs dependencies
 serially before Go traverses the workspace and executes the complete plan on its
 first candidate. It accepts no manifest, receipt, digest or success JSON as input.
@@ -567,7 +598,7 @@ The Go-generated decimal work-directory suffix in `GOGCCFLAGS` prefix maps is
 normalized; map kind/base/destination, other compiler flags and user CGO settings
 remain fingerprinted. Malformed or ambiguous flags fail qualification.
 
-All other components execute on every full component qualification. In particular, root Go
+All other components execute on every full component qualification; affected mode instead makes a fresh selection without carry. In particular, root Go
 integration, SDK real-wire, generation/drift, package/archive, Rust, Dart/Flutter,
 SQLite, Admin and documentation gates have no carry support. Their full-tree
 input closure includes backend, proto, shared fixtures and generated consumers;
@@ -615,7 +646,7 @@ original failures; an empty selection is not acceptance.
 
 The `Build & Test` job collects vet, build and race/coverage test outcomes for all
 six modules before returning a blocking aggregate exit. A root/module failure
-does not hide later module results. The existing single job avoids matrix setup
+does not hide later module results. Two independent module workers run vet/build/test sequentially within each module, with separate logs/profiles. The existing single job avoids matrix setup
 and new aggregation/check names. Its JSON outcomes and partial profiles survive
 failure in the coverage artifact. Coverage merging and floors still run after a
 collector failure; missing profiles or any lowered coverage fail the job.

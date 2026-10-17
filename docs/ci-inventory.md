@@ -1,4 +1,37 @@
-# CI inventory and representative coverage
+# Beta validation workflow — #1822
+
+Ordinary development uses fresh affected local checks from the small explicit
+`.github/scripts/validation_scope.py` map, then hosted exact synthetic-merge F,
+all-six-module coverage and classified Q. Unknown/policy/configuration inputs
+select full. The explicit old full77 remains available and is required once on
+the policy adoption candidate. No persistent evidence cache or new permissions
+are introduced; NOT_SELECTED never means PASS.
+
+Go retains all 18 vet/build/race-shuffle-coverage outcomes and every floor, using
+two module workers with separate logs/profiles. Required contexts stay Build &
+Test, Lint, Proto (buf), govulncheck. Selected native Windows Go and Rust commands
+run inside the existing Windows job and block Build & Test; missing, skipped or
+failed selected tests fail. Broad Windows Rust source compatibility moves to
+manual/release; ordinary Rust retains Linux MSRV and stable Linux/macOS. Existing
+Dart docs/backend-only mobile routing is reused, not replaced.
+
+Beta coverage emphasizes the server/SDK integration and current development/app
+surfaces. Every ordinary build does not promise all OS/device/distribution or
+long performance/stability qualification. Exact release/environment Q, archive
+identity and explicitly promised native/physical evidence remain at those actual
+milestones. Runtime authorization, revocation, quorum/custody and durability
+checks remain. Normal scoped main runs remain; no extra manual full-main campaign.
+
+The routing change also includes the exact #1821 backup tombstone fixture repair
+from `89e963a53895d4bd14110ad3e03d964864d8f889`: its baseline file is identical
+on main, and the prior Windows failure demonstrated the setup-speed assumption.
+No failing result is rewritten. Rust's scoped-wire fixture now routes its source
+workflow; full release lanes receive their authfixture and separate scoped gate.
+
+Measured timings for the new policy belong to #1822 after qualification. The
+historical inventory below records #1753's earlier change, not new savings.
+
+## Historical CI inventory and representative coverage
 
 Audit: 2026-10-13, main `f8db9d460e9ddac5cc9afcdf0870e485a4d2d0fa`,
 Issue #1753. The table covers all 18 workflow files. Runner time is the sum

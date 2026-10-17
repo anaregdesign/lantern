@@ -66,6 +66,38 @@ class SessionTest(unittest.TestCase):
     def modes(self, result):
         return {r["name"]: r["mode"] for r in result["steps"]}
 
+    def test_affected_checks_are_fresh_and_do_not_import_carry(self):
+        self.qualify()
+        self.write("admin/app/view.tsx", "changed UI\n")
+        self.commit()
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD^")
+        # This plan fixture supplies only final-clean for the selected Admin family.
+        with redirect_stdout(io.StringIO()):
+            result = self.session.qualify_affected("HEAD^")
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["carried"], 0)
+        self.assertEqual([r["name"] for r in result["steps"]], ["final-clean"])
+        self.assertIn("rust-real-wire", result["not_selected"])
+        self.assertFalse(self.session.receipts)
+
+    def test_affected_failure_and_source_drift_cannot_qualify(self):
+        self.write("admin/app/view.tsx", "changed UI\n")
+        self.commit()
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD^")
+        self.session.plan = (Step("admin-test", ".", (sys.executable, "-c", "raise SystemExit(1)")),)
+        with redirect_stdout(io.StringIO()):
+            result = self.session.qualify_affected("HEAD^")
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["steps"][0]["exit"], 1)
+        self.assertFalse(self.session.receipts)
+        self.session = self.new_session("drift-evidence")
+        self.session.plan = (Step("admin-test", ".", (sys.executable, "-c",
+            "from pathlib import Path; Path('admin/app/view.tsx').write_text('changed during test')")),)
+        with redirect_stdout(io.StringIO()):
+            result = self.session.qualify_affected("HEAD^")
+        self.assertFalse(result["passed"])
+        self.assertIn("clean committed", result["error"])
+
     def test_dart_documentation_rejects_zero_exit_warnings(self):
         for name in ("dart-doc", "offline-doc"):
             configured = next(s for s in steps(self.session.evidence) if s.name == name)

@@ -160,13 +160,19 @@ jobs:
           if [[ "$RUNNER_OS" == Windows ]]; then suffix='.exe'; fi
           mkdir -p sdks/rust/target
           go build -o "sdks/rust/target/lantern-smoke$suffix" ./server/cmd
+          go build -o "sdks/rust/target/lantern-authfixture$suffix" ./server/cmd/authfixture
       - name: Test real h2c, TLS, auth, CDC, backup, HA, and failure paths
         if: matrix.rust == 'stable'
         shell: bash
         env:
           LANTERN_RUST_TEST_SERVER: ${{ github.workspace }}/sdks/rust/target/lantern-smoke${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          LANTERN_RUST_TEST_AUTH_FIXTURE: ${{ github.workspace }}/sdks/rust/target/lantern-authfixture${{ matrix.os == 'windows-latest' && '.exe' || '' }}
         # Current authority is qualified by the native-time SDK4 root gate.
-        run: cargo test --locked --all-features -- --ignored --test-threads=1 --skip security::tests::real_public_current_wire
+        run: cargo test --locked --all-features -- --ignored --test-threads=1 --skip scoped_changes::tests::real_public_scoped_wire --skip security::tests::real_public_current_wire
+      - name: Test certified OIDC public scoped CDC over the native Rust wire
+        if: matrix.rust == 'stable'
+        working-directory: .
+        run: go test ./tests/integration -run '^TestAuth_OIDCRustScopedChangesFacadeRealConnect$' -count=1
 
   preflight:
     name: Audit and verify the tagged crate archive

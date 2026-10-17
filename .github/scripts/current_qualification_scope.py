@@ -13,9 +13,14 @@ import evidence_only_pr
 # Go composition/build inputs. F still exercises the public application path.
 # Additions/deletions/renames and any path outside this small reviewed set need
 # Q. In particular all CI, fixtures, policy, manifests/locks, native/deployment,
-# server, core, generated and public SDK source retain Q by default.
-APPLICATION_PATHS = ("admin/app/", "sdks/dart/offline/lib/", "sdks/dart/offline_sqlite/lib/")
-APPLICATION_SUFFIXES = {".ts", ".tsx", ".css", ".dart"}
+# native/runtime Server and Core, generated and public SDK source retain Q by default.
+# Exact profiling handlers do not include public_metrics.go: its certified-runtime
+# readiness checks are production composition and retain Q.
+APPLICATION_PATHS = ("admin/app/", "sdks/dart/offline/lib/", "sdks/dart/offline_sqlite/lib/",
+                     "core/collection/", "core/nlp/", "core/model/", "core/search/")
+DIAGNOSTICS = {"server/provider/pprof.go", "server/provider/pprof_test.go",
+               "server/provider/runtime_profiling.go", "server/provider/runtime_profiling_test.go"}
+APPLICATION_SUFFIXES = {".ts", ".tsx", ".css", ".dart", ".go"}
 
 
 def requires_qualification(changes):
@@ -24,7 +29,8 @@ def requires_qualification(changes):
     for path, status in changes.items():
         p = PurePosixPath(path)
         if (status != "M" or p.is_absolute() or ".." in p.parts or p.as_posix() != path
-                or not path.startswith(APPLICATION_PATHS) or p.suffix not in APPLICATION_SUFFIXES):
+                or not (path.startswith(APPLICATION_PATHS) or path in DIAGNOSTICS)
+                or p.suffix not in APPLICATION_SUFFIXES):
             return True
     return False
 

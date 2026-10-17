@@ -6,14 +6,18 @@ import current_qualification_scope as scope
 
 class QualificationScopeTest(unittest.TestCase):
     def test_only_reviewed_modified_application_sources_can_omit_q(self):
-        for path in ("admin/app/components/Card.tsx", "sdks/dart/offline/lib/store.dart", "sdks/dart/offline_sqlite/lib/store.dart"):
+        for path in ("admin/app/components/Card.tsx", "sdks/dart/offline/lib/store.dart", "sdks/dart/offline_sqlite/lib/store.dart",
+                     "core/collection/map.go", "core/nlp/tokenizer.go", "core/model/model.go", "core/search/index_test.go",
+                     "server/provider/pprof.go", "server/provider/runtime_profiling_test.go"):
             self.assertFalse(scope.requires_qualification({path: "M"}))
             for status in ("A", "D", "R100", "T", "U", ""):
                 self.assertTrue(scope.requires_qualification({path: status}))
 
     def test_unknown_production_dependency_and_proof_changes_require_q(self):
         for path in ("server/internal/security/control_time_owner.go", "server/provider/security_current_runtime.go",
-                     "core/cache/cache.go", "go.mod", "go.work", "sdks/node/bun.lock", "admin/package.json",
+                     "core/cache/cache.go", "server/provider/public_metrics.go", "server/provider/provider.go",
+                     "server/internal/authn/session.go", "core/hlc/clock.go", "core/mutationreceipt/clock_journal.go",
+                     "go.mod", "go.work", "sdks/node/bun.lock", "admin/package.json",
                      "admin/app/new.yaml", "admin/app/../../server/x.ts", "/admin/app/a.ts",
                      "tests/integration/current_security_gate_test.go", ".github/scripts/current_sdk4_gate.py",
                      ".github/scripts/current_qualification_scope.py", ".github/workflows/go.yml", "Dockerfile",

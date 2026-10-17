@@ -404,7 +404,7 @@ class SDK4WiringTest(unittest.TestCase):
 
     def test_required_pr_main_build_checks_same_run_native_receipt(self):
         build = workflow_job("go", "build")
-        self.assertIn("needs: [scope, modules, mechanism, current-sdk4]", build)
+        self.assertIn("needs: [scope, modules, mechanism, current-sdk4, receipt-backup-windows]", build)
         self.assertIn("run: python3 -B .github/scripts/current_qualification_result.py", build)
         self.assertIn("needs.current-sdk4.outputs.artifact_id", build)
         self.assertIn("needs.current-sdk4.outputs.receipt_sha256", build)
