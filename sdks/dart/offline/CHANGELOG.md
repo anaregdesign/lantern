@@ -1,8 +1,18 @@
 # Changelog
 
-## 0.6.0 candidate
+## 0.6.0
 
-- Add the common Offline admission/result contract with checked preparation, full pending projection, bounded dependency groups, exact durable results and memory/SQLite migrations; automatic runtime and factories follow in #1769/#1772.
+- Add the common Offline admission/result contract with checked preparation,
+  full pending projection, bounded dependency groups, exact durable results
+  and storage migrations.
+- Add automatic foreground scheduling, bounded recovery and joined session
+  ownership so admitted writes can reach the server without a manual Sync or
+  drain call. Suspend, resume, credential changes and account retirement retain
+  their explicit ownership and authorization boundaries.
+- Expose common client adapters for volatile storage and the separately
+  packaged SQLite factory, including durable writes with the read cache
+  disabled. SQLite and native installation policy remain outside this
+  storage-neutral package.
 
 - Require the typed acceptance API in parent `lantern_client ^0.5.0`.
 - Persist terminal `acceptedUndisclosed` acknowledgements in operation schema

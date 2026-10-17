@@ -304,6 +304,13 @@ resend; cache-only reads remain Unknown without synthesized confirmation.
 Receipt status and data effects are checked through the independently
 authorized observer, never inferred from blind acknowledgement.
 
+The explicit legacy-v1 fixture below is host conformance, not current-authority
+physical qualification. For a current-source phone run use the
+[current-v2 physical profile](installed-factory-acceptance.md#separate-physical-receipthead-profile),
+including its separate minimal Head writer, verified capability and bounded
+unchanged-responder lifetime. Do not substitute the native A/B personal-prefix
+profile or relabel either kind of credential.
+
 The shared Server/SDK assertions also execute on host CI with the owned
 `authfixture -receipt -head-edge` and `test/head_edge_fixture_test.dart`:
 
@@ -323,6 +330,20 @@ Use an EXIT cleanup trap when running the host commands. Host trust explicitly
 verifies the private fixture CA and does not qualify device trust or a real
 OIDC provider. The phone target may use explicit insecure transport only for
 separately labeled development conformance, never HTTPS release qualification.
+
+## Installed factory T18
+
+Use [installed-factory-acceptance.md](installed-factory-acceptance.md) for the
+bounded `physical_installed_factory_test.dart` target, two actual synthetic
+registered native credentials, four profile/common-UI scenarios, immutable
+A→B→A and native installation/ownership checks. It uses real socket loss and
+requires automatic foreground recovery without a manual drain/Sync.
+
+Its dedicated `lantern-installed-factory-result.json` and the reused
+`lantern-receipt-attestation.json` must both be fresh, complete and bound to the
+installed signed binary after cleanup. Retain/cite T18 proof separately or in
+the optional evidence README; do not add JSON files to the legacy eight-record
+Offline release child or claim that historical suites already cover T18.
 
 ## Native SQLite process restart probe
 

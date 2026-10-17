@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -5,12 +6,30 @@ import 'package:integration_test/integration_test.dart';
 /// while still reporting its result to the native and Flutter Driver bindings.
 void directLaunchIntegrationTest(
   String description,
-  Future<void> Function() body,
-) {
+  Future<void> Function() body, {
+  Timeout? timeout,
+}) {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   test(description, () async {
     // Registered before the body so its cleanup and result marker run first.
     addTearDown(binding.postTest);
     await binding.runTest(body, () {}, description: description);
-  });
+  }, timeout: timeout);
+}
+
+/// Routes synthetic gestures as test events without a WidgetTester owner.
+final class DirectLaunchWidgetController extends LiveWidgetController {
+  DirectLaunchWidgetController(TestWidgetsFlutterBinding super.binding)
+    : _testBinding = binding;
+  final TestWidgetsFlutterBinding _testBinding;
+
+  @override
+  Future<void> sendEventToBinding(PointerEvent event) {
+    return TestAsyncUtils.guard<void>(() async {
+      _testBinding.handlePointerEventForSource(
+        event,
+        source: TestBindingEventSource.test,
+      );
+    });
+  }
 }
