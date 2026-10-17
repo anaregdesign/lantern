@@ -292,8 +292,14 @@ created simulator with the same runtime/device type and a different UDID. An
 exited Runner, build failure, assertion or RPC failure, and post-body stall fail
 the blocking `Gate` directly. Bounded, redacted process/simulator/app
 diagnostics are always uploaded; the temporary retry simulator is always
-deleted. Denied or uncompleted primary-command cleanup records `cleanup_failure`
-and fails without retry. Native launch uses `--terminate-running-process` after
+deleted. Unproven or uncompleted primary-command cleanup records `cleanup_failure`
+and fails without retry. After the existing bounded child reaping, a prior group
+signal denial is resolved only when an independent check of that exact owned
+group returns `ESRCH`; child exit alone is insufficient. A still-existing group,
+denied or unknown group existence, or an unreaped child remains a failure.
+The primary operation and bounded, redacted cleanup reason are retained in
+`flutter.log` before secondary diagnostics, even if that capture fails.
+Native launch uses `--terminate-running-process` after
 installation so the returned PID identifies the new run, without a separate
 stop request for an application that may not be installed yet. Diagnostic
 capture errors cannot erase the original failure classification. Each attempt

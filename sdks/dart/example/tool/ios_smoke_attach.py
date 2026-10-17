@@ -67,7 +67,17 @@ def stop_process(process, before_stop=None):
     except subprocess.TimeoutExpired as error:
         raise CleanupError("subprocess did not exit after bounded cleanup") from error
     if denied:
-        raise CleanupError("subprocess group cleanup was denied")
+        # An exited, unreaped child can race the signal. Reaping alone does not
+        # prove that its owned group (including descendants) has disappeared.
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError as error:
+            raise CleanupError("subprocess group absence check was denied") from error
+        except OSError as error:
+            raise CleanupError("subprocess group absence check failed") from error
+        raise CleanupError("subprocess group cleanup was denied; group still exists")
 
 
 def wait_bounded(process, deadline, before_stop=None):
@@ -321,6 +331,7 @@ def run_attempt(device, attempt, root):
     attach_limit = positive_env("IOS_SMOKE_ATTACH_TIMEOUT_SECONDS", 120)
     deadline = time.monotonic() + total
     classification = "pre_body_failure"
+    operation = "build"
     try:
         record_phase(phases, "build_started")
         status, timed_out, _ = run_logged(
@@ -342,6 +353,7 @@ def run_attempt(device, attempt, root):
         # Compile before first-boot services compete for the hosted runner.
         # Both the selected initial device and a freshly created retry device
         # are unbooted. Boot/readiness share one bound inside the total attempt.
+        operation = "simulator boot/readiness"
         record_phase(phases, "boot_started")
         boot_deadline = min(deadline, time.monotonic() + boot_limit)
         for command in (
@@ -363,6 +375,7 @@ def run_attempt(device, attempt, root):
                 return 72
         record_phase(phases, "boot_done")
 
+        operation = "install"
         status, _, timed_out, exceeded = read_process(
             [xcrun, "simctl", "install", device, "build/ios/iphonesimulator/Runner.app"],
             remaining(deadline, 90), 65536, merge_stderr=True,
@@ -376,6 +389,7 @@ def run_attempt(device, attempt, root):
         # Let native launch replace any old process after installation. A
         # separate terminate before install can hang for an absent application.
         # The returned PID must identify the new run whose logs we inspect.
+        operation = "native launch"
         status, timed_out, output = run_logged(
             [xcrun, "simctl", "launch", "--terminate-running-process", device, BUNDLE_ID,
              "--enable-dart-profiling", "--disable-vm-service-publication",
@@ -394,6 +408,7 @@ def run_attempt(device, attempt, root):
         vm_url = None
         terminal = None
         while time.monotonic() < deadline:
+            operation = "app log read"
             found_url, found_terminal = read_app_log(
                 xcrun, device, pid, destination / "app.log", phases,
                 remaining(deadline, 12),
@@ -405,9 +420,11 @@ def run_attempt(device, attempt, root):
                 break
             if terminal == "passed" and vm_url:
                 break
+            operation = "runner liveness check"
             if not process_alive(pid):
                 # Unified logging can flush the final app messages just after
                 # the process exits. Give it one last bounded read first.
+                operation = "final app log read"
                 final_url, final_terminal = read_app_log(
                     xcrun, device, pid, destination / "app.log", phases,
                     remaining(deadline, 12),
@@ -438,6 +455,7 @@ def run_attempt(device, attempt, root):
             return 72
         driver_log = destination / "driver.log"
         driver_log.write_bytes(b"")
+        operation = "driver attachment"
         status, timed_out, _ = run_logged(
             [flutter, "drive", "--no-pub", f"--use-existing-app={vm_url}",
              f"--driver={DRIVER}", f"--target={TARGET}", "-d", device],
@@ -452,8 +470,22 @@ def run_attempt(device, attempt, root):
             return 0
         classification = "test_failure"
         return 72
-    except CleanupError:
+    except CleanupError as error:
         classification = "cleanup_failure"
+        detail = text_tail(
+            Redactor().feed(str(error).encode("utf-8", errors="replace"), final=True),
+            1024,
+        )
+        safe = (
+            f"[ios smoke] cleanup failure during {operation}: ".encode("utf-8")
+            + detail + b"\n"
+        )
+        flutter_log.write_bytes(text_tail(flutter_log.read_bytes() + safe, MAX_FILE_BYTES))
+        visible = safe[:max(0, console_budget[0])]
+        if visible:
+            sys.stdout.buffer.write(visible)
+            sys.stdout.buffer.flush()
+            console_budget[0] -= len(visible)
         return 72
     finally:
         try:
