@@ -83,8 +83,8 @@ For the existing smoke/CDC/contribution/receipt/Head targets, select
 This is the independent [#1811](https://github.com/anaregdesign/lantern/issues/1811)
 machine fixture, **not** a substitute for registered native A/B or T18.
 The default native profile remains unchanged, including its one-hour/32-entry/
-1-MiB receipt policy. Do not use `authfixture -receipt -head-edge`'s legacy-v1
-profile to claim current-authority physical qualification.
+1-MiB receipt policy. The local `authfixture -receipt -head-edge` profile does not
+qualify a physical device or supply this profile's receipt policy.
 
 The physical profile has two independently generated, simultaneously accepted
 `lnt_m1_` credentials for the same `public-worker` identity, plus a distinct

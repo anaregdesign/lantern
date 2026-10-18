@@ -14,6 +14,7 @@ import (
 
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 	"github.com/anaregdesign/lantern/server/internal/security"
+	"github.com/anaregdesign/lantern/server/service"
 )
 
 // These private host-side values are only independent original provisioning
@@ -124,6 +125,7 @@ func provisionFixtureAuthority(ctx context.Context, f *fixture, directory, expor
 			env["LANTERN_AUTH_MODE"], env["LANTERN_SECURITY_STORE_MODE"], env["LANTERN_SECURITY_CONFIG_FILE"] = "oidc", "fresh", path
 		}
 	}
+	f.authorityProfile = service.EncodeCurrentProfile(profile)
 	if len(f.dataMembership.Members) > 0 {
 		f.dataMembership.Domain.AuthMode = "oidc"
 		f.dataMembership.Domain.CurrentProfile = profile.Binding()

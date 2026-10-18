@@ -111,3 +111,7 @@ func (p currentBrowserCredential) VerifyCurrentCredential(ctx context.Context, v
 	}
 	return security.CurrentCredentialFacts{Session: &s, Origin: requestCredentialCommitment("browser-origin", p.origin), CSRF: sha256.Sum256([]byte("lantern/current-CSRF/v2\x00" + s.Digest + "\x00" + p.csrf)), BrowserReadOnly: p.browserReadOnly}, nil
 }
+
+func requestCredentialCommitment(domain, raw string) [32]byte {
+	return sha256.Sum256([]byte("lantern/authentication/" + domain + "/v1\x00" + raw))
+}

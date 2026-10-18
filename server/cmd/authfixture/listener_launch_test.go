@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"net"
 	"os"
 	"os/exec"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 )
 
 func TestNativeListenerLaunchLifecycle(t *testing.T) {

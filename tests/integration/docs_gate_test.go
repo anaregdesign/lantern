@@ -142,16 +142,16 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 				"`sdks/node/v*` release", "optionally proxies", "/auth/*", "/browser/*", "/graph.v1.*/*",
 				"OFF direct-Server example", "LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080",
 				"OIDC same-origin example", "LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example.com:8443",
-				"LANTERN_OIDC_REDIRECT_URI", "/auth/callback/<SHA-256>",
-				"LANTERN_ADMIN_SERVER_UPSTREAM=https://writer.internal.example:6380",
+				"original provisioned Issuer's redirect URI", "/auth/callback/<SHA-256>",
+				"LANTERN_ADMIN_SERVER_UPSTREAM=https://server.internal.example:6380",
 				"gateway picker never selects that upstream", "certificate against that upstream hostname",
 				"LANTERN_ADMIN_SERVER_CA_FILE", "LANTERN_OIDC_TRUSTED_PROXY_IPS", "public Host/scheme",
-				"explicitly trusted exact gateway IP", "current fixed-writer baseline", "remain #1608/#1609 S5 work",
+				"explicitly trusted exact gateway IP", "configured eligible authority origin", "#1608/#1609 S5 work",
 				"Missing upstream routes fail closed", "/auth/operations", "operations.read", "Only GET diagnostics",
 				"Prometheus never receives cookies or Authorization", "browser local storage and Vite env",
 				"docs/oidc-operations.md#browser-and-diagnostics-boundary", "docs/ha-runbook.md",
 			},
-			retired: []string{"does not reverse-proxy the Lantern listener"},
+			retired: []string{"does not reverse-proxy the Lantern listener", "LANTERN_OIDC_REDIRECT_URI", "current fixed-writer baseline"},
 		},
 		"admin/README.md": {
 			required: []string{
@@ -159,19 +159,19 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 				"select that exact public origin", "LANTERN_OIDC_BROWSER_ORIGIN", "/auth/callback/<SHA-256>",
 				"/auth/*", "/browser/*", "/graph.v1.*/*", "LANTERN_ADMIN_SERVER_UPSTREAM",
 				"gateway picker never selects that upstream", "verified HTTPS upstream", "exact trusted proxy",
-				"public Host/scheme", "current fixed-writer baseline", "#1608/#1609 S5 work",
+				"public Host/scheme", "configured eligible authority origin", "#1608/#1609 S5 work",
 				"/auth/operations", "each GET", "Prometheus never receives cookies or Authorization",
 				"#fixed-server-and-diagnostics-proxy", "docs/oidc-operations.md#browser-and-diagnostics-boundary",
 				"current explicit authority", "by a qualified human allows missing or older signed `auth_time`",
 				"credential/session expiry and current policy admission", "purpose-bound per-operation reauthentication",
 				"Machine management mutations are prohibited", "original change ID for status-only recovery",
 			},
-			retired: []string{"does **not** reverse-proxy the Lantern gateway", "require a reviewed revision and recent authentication"},
+			retired: []string{"does **not** reverse-proxy the Lantern gateway", "require a reviewed revision and recent authentication", "current fixed-writer baseline"},
 		},
 		"docs/oidc-operations.md": {
 			required: []string{"OFF can serve the static Admin separately", "same configured HTTPS public origin",
 				"LANTERN_ADMIN_SERVER_UPSTREAM", "LANTERN_ADMIN_SERVER_CA_FILE", "LANTERN_OIDC_TRUSTED_PROXY_IPS",
-				"Issuer-specific callback", "fixed writer", "#1609 S5 remains incomplete", "operations.read",
+				"Issuer-specific callback", "pinned eligible authority origin", "#1609 S5 remains incomplete", "operations.read",
 				"Subsequent bounded normal-TLS acceptance completed", "passed 4/4", "reached 8/8 at their recorded source revisions",
 				"Temporary trust, keys and owned fixture processes were cleaned up", "These historical results do not qualify a later final source",
 				"Historical, unexecuted DNS-01 proposal", "no DNS changes, ACME issuance or production setup were performed for it",
@@ -185,7 +185,8 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 		},
 		"docs/ha-runbook.md": {
 			required: []string{"Single-instance mode (no HA)", "independent signed private peer plane",
-				"either public mode", "fixed-writer baseline", "#1609 S5"},
+				"either public mode", "fixed original voter set has 1–31 members", "#1609 S5"},
+			retired: []string{"one fixed security writer", "separately configured replica release"},
 		},
 		"admin/docker-entrypoint.sh": {
 			required: []string{"LANTERN_ADMIN_SERVER_UPSTREAM", "LANTERN_ADMIN_SERVER_CA_FILE", "validate_origin",
@@ -196,8 +197,9 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 		},
 		"docs/env.md": {
 			required: []string{"LANTERN_PEER_LISTEN_ADDR", "LANTERN_PEER_MEMBERSHIP_FILE",
-				"LANTERN_PEER_TRUST_CA_FILE", "LANTERN_PEER_OPERATOR_PUBLIC_KEY_FILE", "LANTERN_OIDC_REDIRECT_URI",
-				"/auth/callback/<SHA-256>", "LANTERN_OIDC_TRUSTED_PROXY_IPS"},
+				"LANTERN_PEER_TRUST_CA_FILE", "LANTERN_PEER_OPERATOR_PUBLIC_KEY_FILE", "LANTERN_SECURITY_CONFIG_FILE",
+				"LANTERN_OIDC_BROWSER_ORIGIN", "LANTERN_OIDC_TRUSTED_PROXY_IPS"},
+			retired: []string{"LANTERN_OIDC_REDIRECT_URI", "LANTERN_SECURITY_NODE_ROLE"},
 		},
 	}
 	for path, checks := range files {
@@ -1243,7 +1245,7 @@ func TestHelmNativeSecurityModeMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer := []string{"peerPlane.enabled=true", "peerPlane.deployment=01000000000000000000000000000000", "peerPlane.workloadIDPrefix=spiffe://lantern.test/nodes", "peerPlane.membershipConfigMap=membership", "peerPlane.operatorKeySecret=operator-public", "peerPlane.identitySecret=workload-identities"}
-	oidc := []string{"auth.mode=oidc", "auth.configMap=oidc-config", "auth.existingSecret=security-files", "publicTLS.existingSecret=public-certificates"}
+	oidc := []string{"auth.mode=oidc", "auth.configMap=oidc-config", "auth.existingSecret=security-files", "auth.files[0]=node.json", "publicTLS.existingSecret=public-certificates"}
 	combine := func(groups ...[]string) []string {
 		var result []string
 		for _, group := range groups {
@@ -1259,8 +1261,8 @@ func TestHelmNativeSecurityModeMatrix(t *testing.T) {
 	}{
 		{"OFF default", nil, true, []string{"replicas: 1", "127.0.0.1:9090", "exec:"}, []string{"name: LANTERN_AUTH_MODE", "name: LANTERN_PEER_LISTEN_ADDR", "name: metrics"}},
 		{"OFF HA", combine(peer, []string{"replicaCount=3"}), true, []string{"replicas: 3", "name: LANTERN_PEER_LISTEN_ADDR", "membership.state", "/run/lantern-peers/$(POD_NAME).crt"}, []string{"name: LANTERN_AUTH_MODE", "name: LANTERN_PEERS"}},
-		{"OIDC writer", oidc, true, []string{"name: LANTERN_AUTH_MODE", "value: oidc", "sys.wal", "name: runtime-state"}, []string{"LANTERN_AUTH_TOKENS"}},
-		{"OIDC replicas", combine(peer, oidc, []string{"replicaCount=3", "auth.nodeRole=replica"}), true, []string{"replicas: 3", "value: \"replica\"", "manifest.json", "name: LANTERN_PEER_KEY_FILE"}, []string{"LANTERN_PEER_CA_FILE"}},
+		{"OIDC original authority", oidc, true, []string{"name: LANTERN_AUTH_MODE", "value: oidc", "LANTERN_SECURITY_CONFIG_FILE", "/run/lantern-security/node.json", "name: runtime-state"}, []string{"LANTERN_AUTH_TOKENS", "LANTERN_SECURITY_NODE_ROLE", "LANTERN_SECURITY_STORE_PATH"}},
+		{"OIDC data replicas", combine(peer, oidc, []string{"replicaCount=3"}), true, []string{"replicas: 3", "manifest.json", "name: LANTERN_PEER_KEY_FILE"}, []string{"LANTERN_PEER_CA_FILE", "LANTERN_SECURITY_NODE_ROLE"}},
 		{"OFF Admin", []string{"admin.enabled=true"}, true, []string{"name: LANTERN_ADMIN_SERVER_UPSTREAM", "h2c://matrix-lantern:6380", "name: caddy-conf-d"}, nil},
 		{"OIDC Admin", combine(oidc, []string{"admin.enabled=true", "admin.server.upstream=https://writer.example:6380", "admin.server.caSecret=writer-ca", "admin.prometheus.upstream=http://prometheus:9090"}), true, []string{"/run/lantern-admin-trust/ca.pem", "name: LANTERN_ADMIN_PROMETHEUS_UPSTREAM"}, nil},
 		{"unsafe workload UID", combine(oidc, []string{"securityContext.runAsUser=0"}), false, nil, nil},
@@ -1272,7 +1274,10 @@ func TestHelmNativeSecurityModeMatrix(t *testing.T) {
 		{"ignored peer material", []string{"peerPlane.identitySecret=unexpected"}, false, nil, nil},
 		{"ignored OIDC material", []string{"auth.configMap=unexpected"}, false, nil, nil},
 		{"partial OIDC", []string{"auth.mode=oidc"}, false, nil, nil},
-		{"multiple writers", combine(peer, oidc, []string{"replicaCount=2"}), false, nil, nil},
+		{"retired writer selector", combine(oidc, []string{"auth.nodeRole=writer"}), false, nil, nil},
+		{"retired empty role selector", combine(oidc, []string{"auth.nodeRole="}), false, nil, nil},
+		{"retired profile selector", combine(oidc, []string{"auth.profile=current-v2"}), false, nil, nil},
+		{"retired restart mode", combine(oidc, []string{"auth.storeMode=restart"}), false, nil, nil},
 		{"legacy discovery", []string{"replication.discovery.mode=dns"}, false, nil, nil},
 		{"public protected diagnostics", combine(oidc, []string{"metrics.expose=true"}), false, nil, nil},
 		{"unsafe protected Admin", combine(oidc, []string{"admin.enabled=true", "admin.server.upstream=http://writer:6380"}), false, nil, nil},
@@ -1437,9 +1442,17 @@ func TestHelmWorkloadSecretProjectionCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, role := range []string{"writer", "replica"} {
-		t.Run(role, func(t *testing.T) {
-			args := []string{"template", "matrix", filepath.Join(root, "deploy/helm/lantern"), "--set", "peerPlane.enabled=true", "--set-string", "peerPlane.deployment=01000000000000000000000000000000", "--set-string", "peerPlane.workloadIDPrefix=spiffe://lantern.test/nodes", "--set-string", "peerPlane.membershipConfigMap=membership", "--set-string", "peerPlane.operatorKeySecret=operator-public", "--set-string", "peerPlane.identitySecret=identities", "--set-string", "publicTLS.existingSecret=public", "--set-string", "auth.mode=oidc", "--set-string", "auth.configMap=config", "--set-string", "auth.existingSecret=security", "--set-string", "auth.nodeRole=" + role}
+	for _, origin := range []bool{false, true} {
+		t.Run(map[bool]string{false: "voter", true: "voter and origin"}[origin], func(t *testing.T) {
+			args := []string{"template", "matrix", filepath.Join(root, "deploy/helm/lantern"), "--set", "peerPlane.enabled=true", "--set-string", "peerPlane.deployment=01000000000000000000000000000000", "--set-string", "peerPlane.workloadIDPrefix=spiffe://lantern.test/nodes", "--set-string", "peerPlane.membershipConfigMap=membership", "--set-string", "peerPlane.operatorKeySecret=operator-public", "--set-string", "peerPlane.identitySecret=identities", "--set-string", "publicTLS.existingSecret=public", "--set-string", "auth.mode=oidc", "--set-string", "auth.configMap=config", "--set-string", "auth.existingSecret=security"}
+			authFiles := []string{"node.json", "genesis.json", "vote.key", "tls.key", "roots.pem", "cert.pem", "membership.pub", "membership.signed"}
+			if origin {
+				authFiles = append(authFiles, "origin.key")
+			}
+			for index, name := range authFiles {
+				args = append(args, "--set-string", fmt.Sprintf("auth.files[%d]=%s", index, name))
+			}
+
 			raw, err := exec.CommandContext(t.Context(), helm, args...).CombinedOutput()
 			if err != nil {
 				t.Fatalf("render: %v: %s", err, raw)
@@ -1506,7 +1519,18 @@ func TestHelmWorkloadSecretProjectionCopy(t *testing.T) {
 				}
 				return path
 			}
-			sources := map[string]string{"public": projected("public", []string{"matrix-lantern-0.crt", "matrix-lantern-0.key", "other-pod.key"}), "peers": projected("peers", []string{"matrix-lantern-0.crt", "matrix-lantern-0.key", "other-pod.key", "ca.pem"}), "security": projected("security", []string{"writer.pub", "writer.key", "cdc-keys.json", "machines.json", "operator.key"}), "operator": projected("operator", []string{"operator.pub", "operator.key"})}
+			securityFiles := []string{"operator.key", "writer.key", "matrix-lantern-0.origin.key", "matrix-lantern-1.vote.key"}
+			for _, name := range authFiles {
+				if name != "origin.key" {
+					securityFiles = append(securityFiles, "matrix-lantern-0."+name)
+				}
+			}
+			sources := map[string]string{
+				"public":   projected("public", []string{"matrix-lantern-0.crt", "matrix-lantern-0.key", "other-pod.key"}),
+				"peers":    projected("peers", []string{"matrix-lantern-0.crt", "matrix-lantern-0.key", "other-pod.key", "ca.pem"}),
+				"security": projected("security", securityFiles),
+				"operator": projected("operator", []string{"operator.pub", "operator.key"}),
+			}
 			script := set.Spec.Template.Spec.InitContainers[0].Args[0]
 			check := `test "$(id -u)" = 65532
 find /run/lantern-private -type l | test "$(cat | wc -l)" = 0
@@ -1517,11 +1541,16 @@ test ! -e /run/lantern-private/security/operator.key
 test ! -e /run/lantern-private/operator/operator.key
 test ! -e /run/lantern-private/security/machines.json
 `
-			if role == "writer" {
-				check += "test -f /run/lantern-private/security/writer.key\n"
+			check += "test -f /run/lantern-private/security/node.json\n"
+			check += "test -f /run/lantern-private/security/vote.key\n"
+			check += "test ! -e /run/lantern-private/security/matrix-lantern-1.vote.key\n"
+			check += "test ! -e /run/lantern-private/security/writer.key\n"
+			if origin {
+				check += "test -f /run/lantern-private/security/origin.key\n"
 			} else {
-				check += "test ! -e /run/lantern-private/security/writer.key\n"
+				check += "test ! -e /run/lantern-private/security/origin.key\n"
 			}
+
 			run := func(expectSuccess bool) {
 				t.Helper()
 				cmdArgs := []string{"run", "--rm", "--user", "65532:65532", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--tmpfs", "/run/lantern-private:rw,uid=65532,gid=65532,mode=0770,size=16m", "--env", "POD_NAME=matrix-lantern-0", "--env", "EXPECTED_UID=65532", "--entrypoint", "/bin/sh"}

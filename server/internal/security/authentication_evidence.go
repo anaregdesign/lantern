@@ -10,6 +10,8 @@ import (
 // MaxAuthenticationEvidenceBytes bounds one detached, process-owned envelope.
 const MaxAuthenticationEvidenceBytes = 16 << 10
 
+const RecentAuthenticationLifetime = 5 * time.Minute
+
 // AuthenticationTime preserves a claim's presence independently of its value.
 // Numeric=false with Present=true records an accepted JSON null (nbf only).
 // Seconds/nanoseconds retain the verifier's NumericDate interpretation without

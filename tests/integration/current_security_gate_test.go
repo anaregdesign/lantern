@@ -79,7 +79,6 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		t.Skip("requires configured native time; explicit container gate")
 	}
 	f := newOIDCWireIssuer(t)
-	f.realClock = true
 	dir := t.TempDir()
 	if renewal {
 		var err error

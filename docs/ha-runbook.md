@@ -45,8 +45,8 @@ receipt-WAL storage is an independent runtime choice in either topology.
 ### 2.1 Single-instance mode (no HA)
 
 No private peer settings means no pump or data-lag gate. No auth settings means
-OFF; explicit OIDC still requires native authority, a qualified fencing barrier
-and current policy. Public CDC uses Role-scoped `WatchChanges`. Raw peer
+OFF; explicit OIDC still requires original authority provisioning, qualified
+native time, current quorum admission and policy. Public CDC uses Role-scoped `WatchChanges`. Raw peer
 Subscribe/Snapshot is never mounted on this public listener.
 
 Graph-only cold start restores a configured graph backup or begins empty.
@@ -63,19 +63,20 @@ a lost renewal stops serving and peer work after bounded admission expires.
 
 The data pump obtains a certified Snapshot and tails each private Subscribe
 from the responder-local and per-origin cutoffs described in RFC §9. Data-lag
-and search-fingerprint readiness gates remain. OIDC adds current signed sys:
-revisions and bounded leases from one fixed security writer. A replicated sys:
-image by itself does not prove current authorization. Writer/lease loss may
-stop protected requests even while application replication is healthy.
+and search-fingerprint readiness gates remain. OIDC additionally requires the
+same original authority profile, qualified native UTC/elapsed intervals and
+current quorum admission. Its fixed original voter set has 1–31 members and
+requires a strict majority, including for even counts. A replicated sys: image
+by itself does not prove current authorization. Quorum or qualified-time loss
+stops protected processing under the existing finite bounds even while
+application replication is healthy. Neither data discovery nor a surviving
+minority can shrink the original voter set.
 
-That is the merged `93d53789` fixed-writer baseline. #1608's approved G1 Profile B
-target stops isolated/stale nodes' authorization-required processing within a
-proven bound; its numerical bound, clock/suspension proof and protocol remain
-pending. Eligible-node control routing, per-attempt login affinity, per-origin
-secret/key custody and stopped/fenced migration follow #1608 S2–S4 through
-[#1609 S5](oidc-operations.md#leaderless-s5--remaining-contracts-and-qualification).
-Current native/Compose conformance does not complete target topology or final
-#1610 acceptance. Helm/Kubernetes #1636 is deferred outside this task's gates.
+Follow the [authority contract](security-current-authority.md) for per-origin
+custody, immutable operation recovery and intact durable restart. Operational
+cutover and final #1610 acceptance remain separate
+[#1609 S5](oidc-operations.md#leaderless-s5--remaining-contracts-and-qualification)
+exits; local native/Compose conformance does not qualify a production deployment.
 
 ### 2.3 Opt-in durable receipt-WAL runtime
 
@@ -106,9 +107,11 @@ per-pod durable runtime-state PVCs. The private headless Service includes
 bootstrapping pods; the public Service remains readiness gated. More than one
 replica without signed membership fails rendering/startup.
 
-OIDC uses one fixed writer release and a separately configured replica release.
-Supply the complete bootstrap/domain ConfigMap, mounted security files and
-separate public TLS Secret. Changing public mode, security generation or
+OIDC requires each pod's independently provisioned authority files through
+`auth.files` and its node-specific `auth.nodeFile`, plus a separate public TLS
+Secret. Keep each pod's private keys and durable state exclusive to that pod;
+do not copy another voter's or origin's private material into its mount.
+Changing public mode, security generation or
 namespace requires a fenced homogeneous migration. No pod-ordinal election is
 provided. Protected diagnostics remain on loopback, with local exec probes;
 production scraping needs an operator-authenticated sidecar.
@@ -120,7 +123,7 @@ on loopback. `docker-compose.ha.yml` adds three explicitly configured private
 origins using per-node env/material directories and durable state volumes.
 The operator signing private key stays outside them. Public OFF does not
 weaken private membership. OIDC Admin needs an HTTPS public frontend and a
-verified pinned writer upstream; optional anonymous MCP/Prometheus examples
+verified pinned eligible-authority upstream; optional anonymous MCP/Prometheus examples
 are not protected deployment recipes.
 
 SDK failover remains opt-in over fixed known public endpoints. Dynamic pools
@@ -142,7 +145,7 @@ Use the same exact signed private origins and per-node mTLS identity contract.
 Omit the peer plane for one instance. Public OIDC clients need verified TLS,
 explicit machine/OIDC Roles and current policy; a peer credential is not a
 client credential. See [OIDC operations](oidc-operations.md) for renewal,
-operator fencing, native restore and fixed-writer availability.
+operator fencing, native restore and quorum availability.
 
 ## 4. What to watch (signals)
 
@@ -675,8 +678,8 @@ A short checklist to walk before opening an incident:
 
 - [ ] **Incomplete native peer plane:** private/public listeners have distinct
       ports and approved exact origins; every member has its own mTLS identity.
-- [ ] **Expired/stale membership or policy lease:** check renewal/distribution,
-      current revision/generation and fixed writer. Namespace isolation alone
+- [ ] **Expired/stale membership or current quorum:** check original cohort,
+      renewal/distribution, full authority profile and native time. Namespace isolation alone
       does not prove policy freshness.
 - [ ] **Retired static-auth/discovery config:** remove it and provision native
       Roles/signed membership. Empty retired settings are not valid OFF config.

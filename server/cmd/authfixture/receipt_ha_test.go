@@ -23,7 +23,7 @@ func TestReceiptHAControlPartitionsOnlyData(t *testing.T) {
 		allow          bool
 	}{
 		{1, 2, data, true}, {2, 1, data, true}, {1, 3, data, false}, {3, 2, data, false},
-		{0, 1, data, false}, {1, 0, data, false}, {3, 0, policy, true}, {1, 3, policy, true},
+		{0, 1, data, false}, {1, 0, data, false}, {3, 0, policy, false}, {1, 3, policy, false},
 		{1, 2, "/graph.v1.LanternService/GetVertex", false},
 	} {
 		if got := control.allowed(tc.caller, tc.target, tc.path); got != tc.allow {
@@ -32,7 +32,7 @@ func TestReceiptHAControlPartitionsOnlyData(t *testing.T) {
 	}
 	control.connected.Store(true)
 	if !control.allowed(3, 2, data) || control.allowed(1, 0, data) || control.allowed(0, 3, data) {
-		t.Fatal("relay broadened the policy writer's data plane")
+		t.Fatal("relay broadened the separate control participant's data plane")
 	}
 }
 
@@ -106,7 +106,7 @@ func TestReceiptHARelaysPreserveCertifiedIdentityAndTLS(t *testing.T) {
 			t.Fatal("upstream caller identity changed")
 		}
 	}
-	request("/graph.v1.LanternSecurityPeerService/GetPolicySnapshot", 200)
+	request("/graph.v1.LanternSecurityPeerService/GetPolicySnapshot", 503)
 	request("/graph.v1.LanternReplicationService/Subscribe", 503)
 	control.connected.Store(true)
 	request("/graph.v1.LanternReplicationService/Subscribe", 200)

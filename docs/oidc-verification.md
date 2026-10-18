@@ -3,7 +3,7 @@
 The verifier tracks #1602 and the login transaction primitives of #1604.
 The certified production public listener installs authentication, current native
 Role admission, browser sessions and bounded authorization leases. Private
-policy/replication uses a separate workload listener. The complete boundary and
+consensus and data replication use separately owned authenticated listeners. The complete boundary and
 configuration contract is [ADR 0012](decisions/0012-oidc-prefix-rbac.md).
 Source implementation and local conformance do not establish final real-provider,
 qualified production clock, device or publication acceptance (#1610).

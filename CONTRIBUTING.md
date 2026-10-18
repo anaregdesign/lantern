@@ -934,9 +934,9 @@ number rather than force-moving the tag.
   **OIDC same-origin example:** expose Admin at `https://admin.example.com:8443`
   and select that exact HTTPS public origin as the gateway. Set
   `LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example.com:8443` and register
-  `LANTERN_OIDC_REDIRECT_URI` with the same origin plus the exact
+  the original provisioned Issuer's redirect URI with the same origin plus the exact
   Issuer-specific `/auth/callback/<SHA-256>` path. Configure, for example,
-  `LANTERN_ADMIN_SERVER_UPSTREAM=https://writer.internal.example:6380`;
+  `LANTERN_ADMIN_SERVER_UPSTREAM=https://server.internal.example:6380`;
   verify its certificate against that upstream hostname and mount
   `LANTERN_ADMIN_SERVER_CA_FILE` for a private CA. Preserve the public
   Host/scheme through the proxy chain and configure exact
@@ -945,9 +945,11 @@ number rather than force-moving the tag.
   HTTPS/public Host headers. Keep credentials and private keys out of the SPA,
   browser local storage and Vite env.
 
-  The current fixed-writer baseline pins auth/browser and security/control
-  routes to that writer. Future eligible-node routing and per-attempt login
-  affinity remain #1608/#1609 S5 work. Missing upstream routes fail closed
+  Pin auth/browser and security/control routes to the configured eligible
+  authority origin, preserving per-attempt login affinity. OIDC requires its
+  original quorum provisioning and current native time; a pinned proxy is not
+  authority proof. Operational cutover and final qualification remain
+  #1608/#1609 S5 work. Missing upstream routes fail closed
   instead of returning the SPA shell. The optional Prometheus proxy checks
   `/auth/operations` first: OFF permits diagnostics; OIDC requires current
   `operations.read` authority. Only GET diagnostics pass, and Prometheus never

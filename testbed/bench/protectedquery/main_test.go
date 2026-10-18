@@ -1,12 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
-	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"google.golang.org/protobuf/proto"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestVerifiedQueryTransportRequiresCAHTTP2AndHostname(t *testing.T) {
@@ -65,24 +64,14 @@ func TestVerifiedQueryTransportRequiresCAHTTP2AndHostname(t *testing.T) {
 }
 
 func TestQueryFixtureRejectsPlaintextOtherProfilesAndExpiry(t *testing.T) {
-	const raw = `{"nodes":[{"public_origin":"https://localhost:6380"}],"ca_file":"local.pem","protected_query":{"mode":"oidc","security_profile":"legacy-v1","reader_role":"fixture_query_reader","reader_subject":"fixture-query-reader"}}`
-	var f fixtureInput
-	if err := json.Unmarshal([]byte(raw), &f); err != nil {
-		t.Fatal(err)
-	}
-	f.Query.ExpiresAt = time.Now().Add(5 * time.Minute)
-	if err := validateFixture(f); err != nil {
-		t.Fatal(err)
-	}
 	for _, mutate := range []func(*fixtureInput){
 		func(f *fixtureInput) { f.Nodes[0].PublicOrigin = "http://localhost:6380" },
 		func(f *fixtureInput) { f.Nodes[0].PeerOrigin = "https://peer:6380" },
 		func(f *fixtureInput) { f.Query.Mode = "machine" },
 		func(f *fixtureInput) { f.Query.ExpiresAt = time.Now() },
+		func(f *fixtureInput) { f.Nodes = f.Nodes[:1] },
 	} {
-		var invalid fixtureInput
-		_ = json.Unmarshal([]byte(raw), &invalid)
-		invalid.Query.ExpiresAt = f.Query.ExpiresAt
+		invalid := queryFixtureInput(t)
 		mutate(&invalid)
 		if validateFixture(invalid) == nil {
 			t.Fatal("invalid preparation input accepted")
@@ -91,15 +80,8 @@ func TestQueryFixtureRejectsPlaintextOtherProfilesAndExpiry(t *testing.T) {
 }
 
 func TestCurrentQueryCapabilitiesRejectFallbackAndMissingFullProfile(t *testing.T) {
-	profile := &pb.CurrentAuthorityProfile{Version: 2, Domain: bytes.Repeat([]byte{1}, 32), Cohort: bytes.Repeat([]byte{2}, 32), Generation: bytes.Repeat([]byte{3}, 16), Protocol: bytes.Repeat([]byte{4}, 32), TimeProfile: bytes.Repeat([]byte{5}, 32), Membership: bytes.Repeat([]byte{6}, 32), Configuration: bytes.Repeat([]byte{7}, 32)}
-	var f fixtureInput
-	raw := `{"nodes":[{"public_origin":"https://localhost:6380"},{"public_origin":"https://localhost:6381"},{"public_origin":"https://localhost:6382"}],"ca_file":"local.pem","protected_query":{"mode":"oidc","security_profile":"current-v2","fixture_id":"11111111111111111111111111111111","reader_role":"fixture_query_reader","reader_subject":"fixture-query-reader","server":{"revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"exporter":{"revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}`
-	if err := json.Unmarshal([]byte(raw), &f); err != nil {
-		t.Fatal(err)
-	}
-	f.Query.ExpiresAt = time.Now().Add(5 * time.Minute)
-	f.Query.CurrentProfile = profile
-	f.Query.CurrentBinding = "current-v2:" + strings.Repeat("a", 64)
+	f := queryFixtureInput(t)
+	profile := f.Query.CurrentProfile
 	if err := validateFixture(f); err != nil {
 		t.Fatal(err)
 	}

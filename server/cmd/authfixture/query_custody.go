@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/anaregdesign/lantern/core/privatefile"
 	"io"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
 type queryShutdownNode struct {

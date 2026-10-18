@@ -30,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
@@ -45,6 +46,8 @@ type fixtureNode struct {
 	Environment  map[string]string `json:"environment"`
 }
 type fixture struct {
+	authorityProfile *pb.CurrentAuthorityProfile
+
 	security       *fixtureAuthorityInput
 	dataMembership peerauth.Manifest
 	dataOperator   ed25519.PrivateKey
@@ -76,16 +79,15 @@ func main() {
 	serverBinary := flag.String("serve", "", "supervise the production Server binary until shutdown")
 	overridesFile := flag.String("overrides-file", "", "optional per-node JSON configuration overrides")
 	publicMTLS := flag.Bool("public-mtls", false, "require a separate local client certificate on public listeners")
-	receiptHA := flag.Bool("receipt-ha", false, "four-node native receipt HA with a separate policy writer and controlled data relay")
+	receiptHA := flag.Bool("receipt-ha", false, "four-node native receipt HA with a separate control participant and controlled data relay")
 	edgeCreate := flag.Bool("edge-create", false, "qualify standalone existing-endpoint Create under Vertex-derived Head authority")
 	headEdge := flag.Bool("head-edge", false, "qualify standalone Head write-only handling with a separate machine Role")
 	transportProbe := flag.Bool("transport-probe", false, "standalone scoped transport probe with a localhost-only certificate")
-	queryExporter := flag.String("authority-provisioner", "", "optional same-source security test binary for independent original provisioning; otherwise use this checkout")
+	authorityProvisioner := flag.String("authority-provisioner", "", "optional same-source security test binary for independent original provisioning; otherwise use this checkout")
 	protectedQuery := flag.Bool("protected-query", false, "opt-in standalone OFF/OIDC query preparation with matched verified TLS and a local JWT issuer")
 	receipt := flag.Bool("receipt", false, "enable native receipt WAL for each OIDC node")
 	readyTimeout := flag.Duration("ready-timeout", time.Minute, "bounded verified-TLS production readiness wait")
 	flag.Parse()
-	currentQuery := *protectedQuery
 	if *privateInput != "" {
 		valid := flag.NArg() == 0
 		flag.Visit(func(value *flag.Flag) {
@@ -155,7 +157,7 @@ func main() {
 			peer = []int{6381, 6382, 6383}
 		}
 	}
-	if err == nil && len(public) > 1 && len(peer) == 0 && *allocatedNodes == 0 && !currentQuery {
+	if err == nil && len(public) > 1 && len(peer) == 0 && *allocatedNodes == 0 && !*protectedQuery {
 		err = errors.New("multiple nodes require the private workload plane")
 	}
 	if err == nil && *receiptHA && (*compose || *mode != "oidc" || !*receipt || len(public) != 4 || len(peer) != 4 || *serverBinary == "" || *publicMTLS || *overridesFile != "") {
@@ -171,7 +173,7 @@ func main() {
 		err = errors.New("transport probe requires one supervised standalone OIDC node")
 	}
 	queryCount := 1
-	if currentQuery {
+	if *protectedQuery {
 		queryCount = 3
 	}
 	if err == nil && *protectedQuery && (*compose || len(public) != queryCount || len(peer) != 0 || *serverBinary == "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *tokensFile != "" || *overridesFile != "" || flag.NArg() != 0) {
@@ -182,8 +184,8 @@ func main() {
 		launches, public, peer, err = reserveFixtureCohort(launchCtx, *serverBinary, *directory, *allocatedNodes, *allocatedNodes > 1, *readyTimeout)
 	}
 	if err == nil {
-		if currentQuery {
-			result, err = generateCurrentQueryFixture(launchCtx, *directory, public, *mode, *serverBinary, *queryExporter)
+		if *protectedQuery {
+			result, err = generateQueryFixture(launchCtx, *directory, public, *mode, *serverBinary, *authorityProvisioner)
 		} else {
 			result, err = generateTopologyProfile(*directory, public, peer, *mode, *tokensFile, *compose, *transportProbe)
 		}
@@ -206,16 +208,8 @@ func main() {
 	if err == nil && *headEdge {
 		err = addFixtureHeadEdge(&result, *directory)
 	}
-	if err == nil && *protectedQuery && !currentQuery {
-		var stop func()
-		stop, err = addFixtureQuery(&result, *directory)
-		if err == nil {
-			defer stop()
-			result.Query.Server, err = queryBinaryProvenance(*serverBinary)
-		}
-	}
-	if err == nil && *mode == "oidc" && !currentQuery {
-		err = provisionFixtureAuthority(launchCtx, &result, *directory, *queryExporter)
+	if err == nil && *mode == "oidc" && !*protectedQuery {
+		err = provisionFixtureAuthority(launchCtx, &result, *directory, *authorityProvisioner)
 	}
 	if err == nil && *compose {
 		err = exportComposeFixture(&result, *directory)

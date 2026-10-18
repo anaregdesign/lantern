@@ -20,7 +20,7 @@ func TestCurrentQueryReadinessRejectsFallbackAndWrongOriginalProfile(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !queryCapabilitiesReady(q, 0, "AUTH_MODE_OIDC", 2, 1, raw) {
+	if !queryCapabilitiesReady(q, 0, "AUTH_MODE_OIDC", 2, 1, raw, nil) {
 		t.Fatal("current full profile rejected")
 	}
 	for _, tc := range []struct {
@@ -30,26 +30,26 @@ func TestCurrentQueryReadinessRejectsFallbackAndWrongOriginalProfile(t *testing.
 	}{
 		{"AUTH_MODE_OFF", 1, 0, nil}, {"AUTH_MODE_OIDC", 1, 1, raw}, {"AUTH_MODE_OIDC", 2, 0, raw}, {"AUTH_MODE_OIDC", 2, 2, raw}, {"AUTH_MODE_OIDC", 2, 1, nil}, {"AUTH_MODE_OIDC", 2, 1, []byte(`{}`)},
 	} {
-		if queryCapabilitiesReady(q, 0, tc.mode, tc.version, tc.member, tc.raw) {
+		if queryCapabilitiesReady(q, 0, tc.mode, tc.version, tc.member, tc.raw, nil) {
 			t.Fatal("current fallback accepted", tc.mode, tc.version, tc.member)
 		}
 	}
 	wrong := proto.Clone(profile).(*pb.CurrentAuthorityProfile)
 	wrong.TimeProfile[0] ^= 1
 	changed, _ := protojson.Marshal(wrong)
-	if queryCapabilitiesReady(q, 0, "AUTH_MODE_OIDC", 2, 1, changed) {
+	if queryCapabilitiesReady(q, 0, "AUTH_MODE_OIDC", 2, 1, changed, nil) {
 		t.Fatal("another native profile accepted")
 	}
 	q.CurrentBinding = "current-v2:" + strings.Repeat("0", 64)
-	if queryCapabilitiesReady(q, 0, "AUTH_MODE_OIDC", 2, 1, raw) {
+	if queryCapabilitiesReady(q, 0, "AUTH_MODE_OIDC", 2, 1, raw, nil) {
 		t.Fatal("wrong original binding accepted")
 	}
 	q.Mode, q.CurrentProfile, q.CurrentBinding = "off", nil, ""
-	if !queryCapabilitiesReady(q, 0, "AUTH_MODE_OFF", 1, 0, nil) || queryCapabilitiesReady(q, 0, "AUTH_MODE_OIDC", 2, 1, raw) {
+	if !queryCapabilitiesReady(q, 0, "AUTH_MODE_OFF", 1, 0, nil, nil) || queryCapabilitiesReady(q, 0, "AUTH_MODE_OIDC", 2, 1, raw, nil) {
 		t.Fatal("OFF selected current preparation claimed active current authority")
 	}
 	q.SecurityProfile = ""
-	if queryCapabilitiesReady(q, 0, "AUTH_MODE_OFF", 1, 0, nil) {
+	if queryCapabilitiesReady(q, 0, "AUTH_MODE_OFF", 1, 0, nil, nil) {
 		t.Fatal("missing explicit profile accepted")
 	}
 }
@@ -61,7 +61,7 @@ func TestCurrentQueryGenerationRefusesOtherProfilesAndUnpinnedBinaries(t *testin
 	}{
 		{[]int{1}, "oidc", "/server", "/exporter"}, {[]int{1, 2, 3}, "unknown", "/server", "/exporter"}, {[]int{1, 2, 3}, "off", "relative", "/exporter"}, {[]int{1, 2, 3}, "oidc", "/server", ""}, {[]int{1, 2, 3}, "oidc", "/missing/server", "/missing/exporter"},
 	} {
-		if _, err := generateCurrentQueryFixture(context.Background(), t.TempDir(), tc.ports, tc.mode, tc.binary, tc.exporter); err == nil {
+		if _, err := generateQueryFixture(context.Background(), t.TempDir(), tc.ports, tc.mode, tc.binary, tc.exporter); err == nil {
 			t.Fatal("unqualified current fixture accepted")
 		}
 	}

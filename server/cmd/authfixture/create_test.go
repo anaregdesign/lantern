@@ -1,9 +1,9 @@
 package main
 
 import (
-	"encoding/json"
-	"github.com/anaregdesign/lantern/server/internal/security"
 	"testing"
+
+	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
 func TestCreateFixturePreservesVertexRolesAndStandaloneGuard(t *testing.T) {
@@ -12,14 +12,11 @@ func TestCreateFixturePreservesVertexRolesAndStandaloneGuard(t *testing.T) {
 			t.Fatal("invalid Create fixture accepted")
 		}
 	}
-	result := fixture{Nodes: []fixtureNode{{Environment: map[string]string{"LANTERN_AUTH_MODE": "oidc"}}}}
+	result := fixture{security: &fixtureAuthorityInput{}, Nodes: []fixtureNode{{Environment: map[string]string{"LANTERN_AUTH_MODE": "oidc"}}}}
 	if err := addFixtureEdgeCreate(&result); err != nil {
 		t.Fatal(err)
 	}
-	var roles []security.Role
-	if err := json.Unmarshal([]byte(result.Nodes[0].Environment["LANTERN_SECURITY_BOOTSTRAP_ROLES"]), &roles); err != nil {
-		t.Fatal(err)
-	}
+	roles := result.security.Roles
 	if len(roles) != 1 || len(roles[0].Rules) != len(fixtureRoles()[0].Rules) {
 		t.Fatal("unexpected fixture grants")
 	}

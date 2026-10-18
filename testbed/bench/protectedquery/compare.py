@@ -17,7 +17,7 @@ def search_expectation(mode):
 
 def compare(off, on, off_shutdown=None, on_shutdown=None):
     profile = on.get("security_profile")
-    if profile not in ("legacy-v1", "current-v2") or off.get("security_profile") != profile:
+    if profile != "current-v2" or off.get("security_profile") != profile:
         raise ValueError("explicit matching security profile required")
     for report, mode, reader, writer in (
         (off, "off", "unauthenticated_off", "unauthenticated_off"),
@@ -35,14 +35,14 @@ def compare(off, on, off_shutdown=None, on_shutdown=None):
                 or report.get("search_required_ranking_keys") != ranking
                 or report.get("search_matching_candidates") != (36 if mode == "off" else 35)
                 or report.get("search_limit") != 20
-                or report.get("server_processes") != (3 if profile == "current-v2" else 1)):
+                or report.get("server_processes") != 3):
             raise ValueError("mode-specific result contract or process layout mismatch")
         binding = report.get("current_profile_binding", "")
-        if profile == "current-v2" and mode == "oidc":
+        if mode == "oidc":
             if not re.fullmatch(r"current-v2:[0-9a-f]{64}", binding):
                 raise ValueError("current ON requires full profile binding")
         elif binding:
-            raise ValueError("OFF/legacy cannot claim current authority")
+            raise ValueError("OFF cannot claim current authority")
         source, binary = report.get("driver_source", {}), report.get("server_binary", {})
         if (not re.fullmatch(r"[0-9a-f]{40}", source.get("revision", ""))
                 or source.get("modified") != "false" or binary.get("modified") != "false"
@@ -50,12 +50,11 @@ def compare(off, on, off_shutdown=None, on_shutdown=None):
                 or binary.get("revision") != source["revision"]
                 or not re.fullmatch(r"[0-9a-f]{64}", binary.get("sha256", ""))):
             raise ValueError("matching immutable source/binary provenance required")
-        if profile == "current-v2":
-            validate_shutdown(report, off_shutdown if mode == "off" else on_shutdown)
-            exporter = report.get("exporter_binary", {})
-            if (exporter.get("revision") != source["revision"] or exporter.get("modified") != "false"
-                    or not re.fullmatch(r"[0-9a-f]{64}", exporter.get("sha256", ""))):
-                raise ValueError("matching immutable current exporter provenance required")
+        validate_shutdown(report, off_shutdown if mode == "off" else on_shutdown)
+        exporter = report.get("exporter_binary", {})
+        if (exporter.get("revision") != source["revision"] or exporter.get("modified") != "false"
+                or not re.fullmatch(r"[0-9a-f]{64}", exporter.get("sha256", ""))):
+            raise ValueError("matching immutable current exporter provenance required")
         load = report.get("load", {})
         config = load.get("offered_load", {})
         if (config.get("family") not in ("search", "bfs", "ppr", "community")

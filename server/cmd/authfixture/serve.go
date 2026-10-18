@@ -255,7 +255,7 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 						*category = "missing"
 					case !*body.Ready:
 						*category = "not_ready"
-					case !queryCapabilitiesReady(result.Query, i, body.Mode, body.Protocol, body.Member, body.Profile):
+					case !queryCapabilitiesReady(result.Query, i, body.Mode, body.Protocol, body.Member, body.Profile, result.authorityProfile):
 						*category = "uncertified"
 					default:
 						*category = "ready"

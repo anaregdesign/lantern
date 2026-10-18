@@ -32,10 +32,7 @@ func TestTransportProbeScopeAndHostname(t *testing.T) {
 	if err != nil || cert.VerifyHostname("localhost") != nil || cert.VerifyHostname("127.0.0.1") == nil {
 		t.Fatal("probe must verify localhost and reject the wrong IP hostname", err)
 	}
-	var roles []security.Role
-	if err := json.Unmarshal([]byte(node.Environment["LANTERN_SECURITY_BOOTSTRAP_ROLES"]), &roles); err != nil {
-		t.Fatal(err)
-	}
+	roles := result.security.Roles
 	compiled, err := security.CompileRoles(roles, security.DefaultPolicyLimits())
 	if err != nil {
 		t.Fatal(err)

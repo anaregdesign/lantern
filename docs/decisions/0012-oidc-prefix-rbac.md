@@ -29,6 +29,12 @@ qualify this source. Provider, configured-source and physical-device evidence
 remain separate exits in #1610. HA Edge Create stays closed pending its own
 distributed absence/arbitration and endpoint/tombstone proof.
 
+The Head source and response/SDK implementation were merged in
+[#1661](https://github.com/anaregdesign/lantern/pull/1661) under
+[#1626](https://github.com/anaregdesign/lantern/issues/1626). Final exact-source,
+provider, device and HA qualification remain separate. HA Edge Create stays
+disabled pending distributed absence/arbitration and endpoint/tombstone proof.
+
 ## Context
 
 Lantern is the database. Security state belongs in Lantern's own storage,
@@ -249,10 +255,10 @@ The operation-purpose proof contract is:
   a proof. Navigation starts no earlier than the next whole NumericDate second
   after final review, and the signed event must meet that boundary. Purpose
   state uses the existing bounded ten-minute login lifetime.
-- Under the Store lock, recheck current authority, credential/proof expiry,
-  serving fence and CAS immediately before durable entry. Immutable original
-  ID plus fixed-writer CAS permits one effect; exact retained retries return
-  their original result before demanding a new proof. Outstanding purpose
+- Recheck current authority, credential/proof expiry and the exact reviewed
+  cut before durable consensus entry. The immutable original ID, canonical
+  intent and original consensus result permit one effect; exact retained
+  retries return their original result before demanding a new proof. Outstanding purpose
   capabilities are process-bound and restart invalidates them.
 - Preserve the old usable session after failed step-up. Recovery of an already
   committed same-ID operation needs no further reauthentication and never
@@ -598,7 +604,7 @@ work, with unsaturated latency percentiles and separate capacity measurements.
 Measure batches, shared statistics and constrained candidates, hidden-data ratios,
 first/reused scopes, mixed updates/deletes, allocations and retained memory,
 subscribers, TTL churn,
-policy compilation, caches, system WAL/compaction, lease expiry and revocation.
+policy compilation, caches, system durability, quorum/time expiry and revocation.
 Producer throughput alone does not prove CDC consumer latency. No performance
 percentage is claimed without measurements. Avoid per-data fsync/network calls
 and whole-graph copies on ordinary authorization paths.

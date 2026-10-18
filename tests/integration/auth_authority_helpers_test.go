@@ -46,8 +46,6 @@ type oidcControlWireFixture struct {
 	provider    *httptest.Server
 	private     ed25519.PrivateKey
 	mu          sync.Mutex
-	now         time.Time
-	realClock   bool
 	fetches     atomic.Int64
 	codes       map[string]oidcWireCode
 	graph       *graphcache.GraphCache[string, *pb.Vertex]
@@ -67,7 +65,7 @@ type oidcWireCode struct {
 // Shared local HTTPS issuer; native current tests use its real wall only for token issuance.
 func newOIDCWireIssuer(t *testing.T) *oidcControlWireFixture {
 	t.Helper()
-	f := &oidcControlWireFixture{now: time.Now(), codes: make(map[string]oidcWireCode)}
+	f := &oidcControlWireFixture{codes: make(map[string]oidcWireCode)}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +157,6 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 		t.Skip("current-authority wire case requires the coordinated F/Q campaign")
 	}
 	f := newOIDCWireIssuer(t)
-	f.realClock = true
 	root, resolveErr := filepath.EvalSymlinks(t.TempDir())
 	if resolveErr != nil {
 		t.Fatal(resolveErr)
@@ -285,19 +282,7 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	t.Log("authority fixture: original singleton voter and separate origin key; actual selected native time constructor")
 	return f
 }
-func (f *oidcControlWireFixture) clock() time.Time {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.realClock {
-		return time.Now().UTC()
-	}
-	return f.now
-}
-func (f *oidcControlWireFixture) advance(d time.Duration) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.now = f.now.Add(d)
-}
+func (f *oidcControlWireFixture) clock() time.Time { return time.Now().UTC() }
 func (f *oidcControlWireFixture) token(t *testing.T, subject string, mutate func(map[string]any)) string {
 	t.Helper()
 	now := f.clock()

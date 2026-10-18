@@ -3492,6 +3492,23 @@ func TestAuth_OIDCPurposeAuthorizationRealConnect(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The current owner may retain a pending genuine event until its
+			// qualified lower endpoint passes the original Code consumption time.
+			// Observe the same bounded status transition as the native gate.
+			if evidence == "fresh" {
+				deadline := time.Now().Add(5 * time.Second)
+				for status.Msg.State == pb.SecurityAuthorizationState_SECURITY_AUTHORIZATION_STATE_PENDING && time.Now().Before(deadline) {
+					select {
+					case <-t.Context().Done():
+						t.Fatal(t.Context().Err())
+					case <-time.After(25 * time.Millisecond):
+					}
+					status, err = client.GetSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.GetSecurityChangeAuthorizationRequest{AuthorizationId: begin.Msg.AuthorizationId, CurrentProfile: begin.Msg.CurrentProfile, AttemptAffinity: begin.Msg.AttemptAffinity}))
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			if evidence != "fresh" {
 				if callbackResponse.StatusCode != http.StatusUnauthorized || status.Msg.State != pb.SecurityAuthorizationState_SECURITY_AUTHORIZATION_STATE_DENIED || len(status.Msg.AuthorizationProof) != 0 {
 					t.Fatal("unqualified callback approved", callbackResponse.StatusCode, status.Msg)

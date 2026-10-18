@@ -26,7 +26,7 @@ type queryCurrentNode struct {
 	CustodyBinding [32]byte `json:"custody_binding"`
 }
 
-func generateCurrentQueryFixture(ctx context.Context, dir string, ports []int, mode, binary, exporter string) (_ fixture, err error) {
+func generateQueryFixture(ctx context.Context, dir string, ports []int, mode, binary, exporter string) (_ fixture, err error) {
 	if len(ports) != 3 || mode != "off" && mode != "oidc" || !filepath.IsAbs(binary) || !filepath.IsAbs(exporter) {
 		return fixture{}, errors.New("current query requires three public nodes, exact mode and absolute Server/exporter binaries")
 	}
@@ -38,13 +38,13 @@ func generateCurrentQueryFixture(ctx context.Context, dir string, ports []int, m
 	if err != nil || len(serverSource.Revision) != 40 || exporterSource.Revision != serverSource.Revision || exporterSource.Modified != serverSource.Modified {
 		return fixture{}, errors.New("current query requires same-source Server and original-input exporter")
 	}
-	// Begin with OFF inputs so no legacy writer/bootstrap/key is ever generated.
+	// Build transport inputs before installing the original OIDC authority.
 	f, err := generateTopologyProfile(dir, ports, nil, "off", "", false, false)
 	if err != nil {
 		return fixture{}, err
 	}
 	first := fixture{Nodes: f.Nodes[:1], CAFile: f.CAFile}
-	stop, err := addFixtureQueryProfile(&first, dir, "current-v2")
+	stop, err := addFixtureQuery(&first, dir)
 	if err != nil {
 		return fixture{}, err
 	}
@@ -143,31 +143,31 @@ func readQueryJSON(path string, target any) error {
 	return json.Unmarshal(raw, target)
 }
 
-func queryCapabilitiesReady(q *queryFixture, node int, mode string, version, member uint32, raw json.RawMessage) bool {
-	if q == nil {
-		return version == 1 && (mode == "AUTH_MODE_OFF" || mode == "AUTH_MODE_OIDC")
+func queryCapabilitiesReady(q *queryFixture, node int, mode string, version, member uint32, raw json.RawMessage, expected *pb.CurrentAuthorityProfile) bool {
+	if q != nil {
+		if q.SecurityProfile != "current-v2" {
+			return false
+		}
+		if q.Mode == "off" {
+			return mode == "AUTH_MODE_OFF" && version == 1 && len(raw) == 0 && member == 0
+		}
+		if q.Mode != "oidc" {
+			return false
+		}
+		expected = q.CurrentProfile
 	}
-	if q.SecurityProfile != "legacy-v1" && q.SecurityProfile != "current-v2" {
-		return false
+	if mode == "AUTH_MODE_OFF" {
+		return q == nil && expected == nil && version == 1 && len(raw) == 0 && member == 0
 	}
-	if q.Mode == "off" {
-		return mode == "AUTH_MODE_OFF" && version == 1 && len(raw) == 0 && member == 0
-	}
-	if mode != "AUTH_MODE_OIDC" {
-		return false
-	}
-	if q.SecurityProfile == "legacy-v1" {
-		return version == 1 && len(raw) == 0 && member == 0
-	}
-	if q.SecurityProfile != "current-v2" || version != 2 || member != uint32(node+1) {
+	if mode != "AUTH_MODE_OIDC" || version != 2 || member != uint32(node+1) || expected == nil {
 		return false
 	}
 	var profile pb.CurrentAuthorityProfile
-	if protojson.Unmarshal(raw, &profile) != nil || !proto.Equal(&profile, q.CurrentProfile) {
+	if protojson.Unmarshal(raw, &profile) != nil || !proto.Equal(&profile, expected) {
 		return false
 	}
-	p, err := service.DecodeCurrentProfile(&profile)
-	return err == nil && validQueryBinding(q.CurrentBinding) && p.Binding() == q.CurrentBinding
+	decoded, err := service.DecodeCurrentProfile(&profile)
+	return err == nil && (q == nil || decoded.Binding() == q.CurrentBinding)
 }
 
 func queryBindingHex(binding [32]byte) string { return hex.EncodeToString(binding[:]) }

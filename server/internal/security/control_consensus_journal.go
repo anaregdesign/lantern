@@ -15,6 +15,9 @@ import (
 )
 
 const (
+	DefaultSystemJournalMax = int64(64 << 20)
+	MaxSystemJournalBytes   = int64(512 << 20)
+
 	s2cJournalHeaderBytes = 85
 	s2cJournalFrameBytes  = 88
 	s2cJournalMaxPayload  = (32 << 20) - 36

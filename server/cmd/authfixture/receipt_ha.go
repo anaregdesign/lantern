@@ -24,8 +24,8 @@ import (
 	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
-// receiptHAControl isolates data replication without isolating policy leases.
-// Node zero is a separate policy writer; nodes one through three are A/B/C.
+// receiptHAControl isolates data replication. The quorum authority uses its
+// own independently admitted native listeners; nodes one through three are A/B/C.
 // This fixture is local conformance infrastructure, never a production proxy.
 type receiptHAControl struct {
 	connected    atomic.Bool
@@ -34,9 +34,6 @@ type receiptHAControl struct {
 }
 
 func (c *receiptHAControl) allowed(caller, recipient int, path string) bool {
-	if strings.HasPrefix(path, "/graph.v1.LanternSecurityPeerService/") {
-		return true
-	}
 	if !strings.HasPrefix(path, "/graph.v1.LanternReplicationService/") {
 		return false
 	}

@@ -351,10 +351,9 @@ authority and public API/client composition are merged in
 [#1723](https://github.com/anaregdesign/lantern/pull/1723),
 [#1724](https://github.com/anaregdesign/lantern/pull/1724) and
 [#1726](https://github.com/anaregdesign/lantern/pull/1726). The explicit
-`current-v2` profile uses current quorum renewal and native UTC/elapsed intervals
+OIDC authority uses current quorum renewal and native UTC/elapsed intervals
 under the selected source/path/rate assumptions and fail-closed bounds in
-[the current-authority contract](security-current-authority.md). Historical
-`legacy-v1` fixed-writer timings above do not select those bounds. Elapsed Go
+[the current-authority contract](security-current-authority.md). Elapsed Go
 monotonic time alone is not proof across suspension.
 
 #1609 S5 remains incomplete for operational cutover and final #1610 acceptance;
