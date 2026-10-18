@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"io"
+	"testing"
+	"time"
+)
 
 func TestReceiptHAControlPartitionsOnlyData(t *testing.T) {
 	control := &receiptHAControl{}
@@ -22,5 +27,28 @@ func TestReceiptHAControlPartitionsOnlyData(t *testing.T) {
 	control.connected.Store(true)
 	if !control.allowed(3, 2, data) || control.allowed(1, 0, data) || control.allowed(0, 3, data) {
 		t.Fatal("relay broadened the separate control participant's data plane")
+	}
+}
+
+func TestReceiptHAShutdownDoesNotWaitForCallerPipeEOF(t *testing.T) {
+	input, caller := io.Pipe()
+	defer input.Close()
+	defer caller.Close()
+	commands := make(chan string, 1)
+	done := make(chan struct{})
+	go func() { defer close(done); readReceiptHACommands(context.Background(), input, commands) }()
+	if _, err := io.WriteString(caller, "shutdown\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown waited for a second read or caller EOF")
+	}
+	if command := <-commands; command != "shutdown" {
+		t.Fatal("terminal shutdown frame lost")
+	}
+	if _, open := <-commands; open {
+		t.Fatal("command reader remained active after shutdown")
 	}
 }

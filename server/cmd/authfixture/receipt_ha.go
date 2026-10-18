@@ -96,19 +96,10 @@ func serveReceiptHAFixture(ctx context.Context, result fixture, binary, director
 	commands := make(chan string, 1)
 	commandCtx, stopCommands := context.WithCancel(ctx)
 	commandsDone := make(chan struct{})
-	defer func() { stopCommands(); _ = input.Close(); <-commandsDone }()
+	defer func() { stopCommands(); _ = input.Close() }()
 	go func() {
 		defer close(commandsDone)
-		scanner := bufio.NewScanner(input)
-		scanner.Buffer(make([]byte, 64), 1024)
-		for scanner.Scan() {
-			select {
-			case commands <- scanner.Text():
-			case <-commandCtx.Done():
-				return
-			}
-		}
-		close(commands)
+		readReceiptHACommands(commandCtx, input, commands)
 	}()
 	var stoppedA, relayedC bool
 	ticker := time.NewTicker(250 * time.Millisecond)
@@ -119,6 +110,7 @@ func serveReceiptHAFixture(ctx context.Context, result fixture, binary, director
 			return nil
 		case command, ok := <-commands:
 			if !ok || command == "shutdown" {
+				<-commandsDone
 				return nil
 			}
 			switch command {
@@ -156,6 +148,26 @@ func serveReceiptHAFixture(ctx context.Context, result fixture, binary, director
 				default:
 				}
 			}
+		}
+	}
+}
+
+// A shutdown frame is terminal: do not attempt another blocking stdin read
+// while its caller still owns the pipe. On abort, main owns the stdin reader's
+// process lifetime; socket workers and production children are joined by close.
+func readReceiptHACommands(ctx context.Context, input io.Reader, commands chan<- string) {
+	defer close(commands)
+	scanner := bufio.NewScanner(input)
+	scanner.Buffer(make([]byte, 64), 1024)
+	for scanner.Scan() {
+		command := scanner.Text()
+		select {
+		case commands <- command:
+		case <-ctx.Done():
+			return
+		}
+		if command == "shutdown" {
+			return
 		}
 	}
 }
