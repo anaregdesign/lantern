@@ -47,6 +47,7 @@ import (
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -1314,8 +1315,9 @@ func TestAuth_OIDCScopedChangesRealConnect(t *testing.T) {
 	}
 	for resumed.Receive() {
 	}
-	if connect.CodeOf(resumed.Err()) != connect.CodeUnavailable {
-		t.Fatal("established stream retained revoked cut", resumed.Err())
+	var revoked http2.StreamError
+	if !errors.As(resumed.Err(), &revoked) || revoked.Code != http2.ErrCodeInternal {
+		t.Fatal("established stream did not refuse the revoked final Write", resumed.Err())
 	}
 	if _, err := f.data.SearchVertices(ctx, securityWireRequest(readerToken, &pb.SearchVerticesRequest{Query: "visible", Prefix: "orders:"})); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("reader inherited Query", err)
@@ -2163,7 +2165,7 @@ func newScopedSDKFixtureTransport(t *testing.T, publicTLS bool, extraRules ...*p
 }
 
 func TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2(t *testing.T) {
-	verify := func(t *testing.T, changes graphv1connect.LanternChangeServiceClient, token, refreshed string, maxDuration time.Duration) {
+	verify := func(t *testing.T, changes graphv1connect.LanternChangeServiceClient, token, refreshed string, maxDuration time.Duration, current bool) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(t.Context(), maxDuration+5*time.Second)
 		defer cancel()
@@ -2180,14 +2182,38 @@ func TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2(t *testing.T) {
 				cursor = bytes.Clone(frame.Cursor)
 			}
 		}
-		if connect.CodeOf(stream.Err()) != connect.CodeDeadlineExceeded || len(cursor) == 0 || time.Since(started) > maxDuration+time.Second {
-			t.Fatal("bounded HTTP/2 stream lost terminal status or proven progress", stream.Err())
+		if len(cursor) == 0 || time.Since(started) > maxDuration+time.Second {
+			t.Fatal("bounded HTTP/2 stream lost proven progress or exceeded its bound", stream.Err())
+		}
+		if current {
+			// A protected terminal status cannot borrow expired credentials.
+			// Require the exact final-Write HTTP/2 refusal, not arbitrary errors.
+			var reset http2.StreamError
+			if !errors.As(stream.Err(), &reset) || reset.Code != http2.ErrCodeInternal {
+				t.Fatal("expired current output was not refused", stream.Err())
+			}
+		} else if connect.CodeOf(stream.Err()) != connect.CodeDeadlineExceeded {
+			t.Fatal("OFF stream lost its terminal deadline status", stream.Err())
 		}
 		resume, err := changes.WatchChanges(ctx, securityWireRequest(refreshed, &pb.WatchChangesRequest{Prefix: "orders:", Cursor: cursor, Projection: pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY}))
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = resume.Close() }()
+		if current {
+			if resume.Receive() || connect.CodeOf(resume.Err()) != connect.CodeFailedPrecondition {
+				t.Fatal("replacement credential reused the original evidence-bound cursor", resume.Err())
+			}
+			fresh, err := changes.WatchChanges(ctx, securityWireRequest(refreshed, &pb.WatchChangesRequest{Prefix: "orders:", Bootstrap: true, Projection: pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = fresh.Close() }()
+			if !fresh.Receive() || !fresh.Msg().Bootstrap || len(fresh.Msg().Cursor) == 0 {
+				t.Fatal("replacement credential could not rebootstrap", fresh.Err())
+			}
+			return
+		}
 		if !resume.Receive() || resume.Msg().Bootstrap || len(resume.Msg().Cursor) == 0 {
 			t.Fatal("same-endpoint opaque cursor could not resume", resume.Err())
 		}
@@ -2196,7 +2222,7 @@ func TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2(t *testing.T) {
 		f := newScopedSDKFixture(t)
 		changes := graphv1connect.NewLanternChangeServiceClient(&http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}, f.server.URL, connect.WithGRPC())
 		short := f.token(t, "sdk", func(claims map[string]any) { claims["exp"] = f.clock().Add(2 * time.Second).Unix() })
-		verify(t, changes, short, f.token(t, "sdk", nil), 2*time.Second)
+		verify(t, changes, short, f.token(t, "sdk", nil), 2*time.Second, true)
 	})
 	t.Run("OFF existing admission bound", func(t *testing.T) {
 		cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{})
@@ -2223,7 +2249,7 @@ func TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2(t *testing.T) {
 		srv.Config.Protocols = protocols
 		srv.Start()
 		t.Cleanup(srv.Close)
-		verify(t, graphv1connect.NewLanternChangeServiceClient(h2cClient(), srv.URL, connect.WithGRPC()), "", "", 28*time.Second)
+		verify(t, graphv1connect.NewLanternChangeServiceClient(h2cClient(), srv.URL, connect.WithGRPC()), "", "", 28*time.Second, false)
 	})
 }
 

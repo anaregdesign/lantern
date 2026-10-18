@@ -41,19 +41,20 @@ import (
 // This fixture exercises the certified production public handler composition
 // with independent original provisioning and the selected native time build.
 type oidcControlWireFixture struct {
-	client      graphv1connect.LanternSecurityServiceClient
-	server      *httptest.Server
-	provider    *httptest.Server
-	private     ed25519.PrivateKey
-	mu          sync.Mutex
-	fetches     atomic.Int64
-	codes       map[string]oidcWireCode
-	graph       *graphcache.GraphCache[string, *pb.Vertex]
-	data        graphv1connect.LanternServiceClient
-	changes     graphv1connect.LanternChangeServiceClient
-	dataRuntime *service.ServingRuntime
-	runtime     *provider.SecurityRuntime
-	publicCA    string
+	client         graphv1connect.LanternSecurityServiceClient
+	server         *httptest.Server
+	provider       *httptest.Server
+	private        ed25519.PrivateKey
+	mu             sync.Mutex
+	fetches        atomic.Int64
+	codes          map[string]oidcWireCode
+	graph          *graphcache.GraphCache[string, *pb.Vertex]
+	data           graphv1connect.LanternServiceClient
+	changes        graphv1connect.LanternChangeServiceClient
+	dataRuntime    *service.ServingRuntime
+	runtime        *provider.SecurityRuntime
+	publicCA       string
+	accessIssuedAt time.Time
 }
 
 type oidcWireCode struct {
@@ -65,7 +66,10 @@ type oidcWireCode struct {
 // Shared local HTTPS issuer; native current tests use its real wall only for token issuance.
 func newOIDCWireIssuer(t *testing.T) *oidcControlWireFixture {
 	t.Helper()
-	f := &oidcControlWireFixture{codes: make(map[string]oidcWireCode)}
+	// Model one already-issued access credential per subject. Its signed start
+	// predates the native interval, and repeated calls reuse its exact evidence.
+	// Code/reauthentication issuance below remains fresh and independently paced.
+	f := &oidcControlWireFixture{codes: make(map[string]oidcWireCode), accessIssuedAt: time.Now().UTC().Add(-time.Minute)}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +289,7 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 func (f *oidcControlWireFixture) clock() time.Time { return time.Now().UTC() }
 func (f *oidcControlWireFixture) token(t *testing.T, subject string, mutate func(map[string]any)) string {
 	t.Helper()
-	now := f.clock()
+	now := f.accessIssuedAt
 	claims := map[string]any{"iss": f.provider.URL, "sub": subject, "aud": "api", "client_id": "client", "jti": "wire", "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(), "auth_time": now.Unix()}
 	if mutate != nil {
 		mutate(claims)

@@ -248,7 +248,11 @@ maps, bookkeeping and TLS/http1 buffers. Protobuf is pre-sized before encoding;
 oversize unary output is rejected. Header and trailer inventories are checked
 before Connect encodes them. Service errors retain their status code with one
 fixed message; arbitrary error text, details and metadata are removed before
-encoding. A request owns a fresh Connect handler and
+encoding. Before the first unit, fixed streaming refusals retain only transport
+negotiation headers captured before application execution. After a unit starts,
+expiry or cut withdrawal refuses the final Write, including protected terminal
+status; the HTTP/2 stream aborts without a replacement public grant.
+A request owns a fresh Connect handler and
 its encoding pool, so no shared sync.Pool silently retains arbitrarily many
 historical buffers. Stable typed service functions are reused. Request ingress
 is also bounded by the private codec/read limit. The selected service remains
@@ -550,7 +554,9 @@ outcomes. Go `GetCurrentPrincipal`/`CurrentSecurityVersionBinding`, Dart
 `getCurrentAuthorityBinding`, and Rust `current_authority_binding` use the normal
 single-endpoint authenticated transport and reject scalar legacy versions. Their
 binding includes full profile/cut and credential lineage/evidence, and is a cache
-partition only. Opaque CDC cursors remain responder/profile/cut scoped. CLI and
+partition only. Opaque CDC cursors also bind that exact admitted credential
+evidence: unchanged credentials can resume within the same responder/profile/cut,
+while replacement credentials require a fresh bootstrap. CLI and
 MCP have no separate security mutation facade or granting policy cache: their
 existing data calls use the same per-request server admission. No management
 mutation is silently retried by the current facade.
