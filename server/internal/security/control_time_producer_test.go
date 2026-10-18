@@ -12,10 +12,75 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
+
+func TestAuthorityTimeProducerStartupContextObservation(t *testing.T) {
+	for _, mode := range []string{"own deadline", "upstream cancel", "upstream deadline", "immediate read error", "depleted pre-read budget"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				incoming, cancel := context.WithCancel(context.Background())
+				if mode == "upstream deadline" {
+					cancel()
+					incoming, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+				}
+				defer cancel()
+				source, _ := parseAuthorityTimeSource([]byte("server fixture.invalid"))
+				var samples int
+				p := &authorityTimeProducer{source: source, sample: func() (authorityTimeStamp, error) {
+					samples++
+					return fakeAuthorityTimeStamp(uint64(samples) * 10_000_000), nil
+				}}
+				defer p.close()
+				var flight context.Context
+				conn := &timeProducerConn{write: func(b []byte) (int, error) { return len(b), nil }, read: func([]byte) (int, error) {
+					if mode == "immediate read error" {
+						return 0, net.ErrClosed
+					}
+					if mode == "upstream cancel" {
+						cancel()
+					}
+					<-flight.Done()
+					return 0, net.ErrClosed
+				}}
+				_, err := p.exchangeIO(incoming, "", func(context.Context, string, string) ([]netip.Addr, error) {
+					if mode == "depleted pre-read budget" {
+						time.Sleep(2900 * time.Millisecond)
+					}
+					return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+				}, func(ctx context.Context, _, _ string) (net.Conn, error) { flight = ctx; return conn, nil })
+				if err == nil || samples != 1 {
+					t.Fatal("diagnostic changed the failed exchange or native sampling count")
+				}
+				_, observation := p.completedProbe()
+				if observation.Attempt != 1 || observation.Stage != "read" || !observation.HasReadBudget {
+					t.Fatal("observation does not describe the actual failed Read")
+				}
+				wantIncoming, wantExchange := decisiontrace.ContextLive, decisiontrace.ContextDeadlineExceeded
+				wantBudget := int64(3 * time.Second)
+				switch mode {
+				case "upstream cancel":
+					wantIncoming, wantExchange = decisiontrace.ContextCanceled, decisiontrace.ContextCanceled
+				case "upstream deadline":
+					wantIncoming, wantBudget = decisiontrace.ContextDeadlineExceeded, int64(100*time.Millisecond)
+				case "immediate read error":
+					wantExchange = decisiontrace.ContextLive
+				case "depleted pre-read budget":
+					wantBudget = int64(100 * time.Millisecond)
+				}
+				if observation.IncomingContext != wantIncoming || observation.ExchangeContext != wantExchange || observation.ReadRemainingNS != wantBudget {
+					t.Fatalf("pre-cleanup context/budget differs: %+v", observation)
+				}
+				if flight.Err() == nil {
+					t.Fatal("exchange cleanup did not cancel its child context")
+				}
+			})
+		})
+	}
+}
 
 func TestAuthorityTimeSource(t *testing.T) {
 	source, err := parseAuthorityTimeSource([]byte("# existing source\nserver time.asia.apple.com\n"))

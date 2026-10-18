@@ -92,6 +92,7 @@ type authorityTimeProducer struct {
 	addressTurn  uint64
 	attempts     uint64
 	lastProbe    decisiontrace.Event
+	lastAttempt  decisiontrace.StartupAttempt
 	source       authorityTimeSource
 	sample       func() (authorityTimeStamp, error)
 }
@@ -124,6 +125,7 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 		p.mu.Unlock()
 		return authorityTimeMeasurement{}, errAuthorityTime
 	}
+	incoming := ctx
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	p.cancel, p.busy = cancel, true
 	sequence := p.sequence + 1
@@ -137,6 +139,8 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	p.workers.Add(1)
 	p.mu.Unlock()
 	defer func() {
+		// Copy cancellation facts before our own cleanup cancel can change them.
+		exchangeState, incomingState := authorityTimeContextState(ctx), authorityTimeContextState(incoming)
 		cancel()
 		p.mu.Lock()
 		p.cancel, p.busy = nil, false
@@ -158,6 +162,9 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 			}
 		}
 		p.lastProbe = probe
+		p.lastAttempt = decisiontrace.StartupAttempt{Attempt: probe.Attempt, Stage: probe.Stage, Reason: probe.Reason,
+			HasReadBudget: probe.HasDeadline, ReadRemainingNS: probe.DeadlineLeft,
+			ExchangeContext: exchangeState, IncomingContext: incomingState}
 		p.mu.Unlock()
 		p.workers.Done()
 	}()
@@ -250,6 +257,7 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	// One extra byte makes oversized/truncated datagrams rejectable.
 	var raw [49]byte
 	probe.Stage = "read"
+	probe.HasDeadline, probe.DeadlineLeft = true, int64(time.Until(deadline))
 	n, err = conn.Read(raw[:])
 	if err != nil {
 		return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
@@ -316,10 +324,15 @@ func (p *authorityTimeProducer) close() {
 
 // This is only the completed attempt's copied diagnostic, never a time input.
 func (p *authorityTimeProducer) probeObservation() decisiontrace.Event {
+	probe, _ := p.completedProbe()
+	return probe
+}
+
+func (p *authorityTimeProducer) completedProbe() (decisiontrace.Event, decisiontrace.StartupAttempt) {
 	if p == nil {
-		return decisiontrace.Event{}
+		return decisiontrace.Event{}, decisiontrace.StartupAttempt{}
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.lastProbe
+	return p.lastProbe, p.lastAttempt
 }

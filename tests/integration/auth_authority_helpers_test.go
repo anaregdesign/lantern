@@ -34,6 +34,7 @@ import (
 	"github.com/anaregdesign/lantern/core/search"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 )
@@ -213,6 +214,7 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	f.graph = data.GraphCache()
 	runtime, closeRuntime, err := provider.NewSecurityRuntime(config, data)
 	if err != nil {
+		reportAuthorityStartupFailure(t, err)
 		t.Fatal(err)
 	}
 	t.Cleanup(closeRuntime)
@@ -287,6 +289,143 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	return f
 }
 func (f *oidcControlWireFixture) clock() time.Time { return time.Now().UTC() }
+
+type authorityStartupRecord struct {
+	Attempt          uint64                     `json:"attempt"`
+	Stage            string                     `json:"stage"`
+	Reason           string                     `json:"reason"`
+	RemainingNS      *int64                     `json:"remaining_ns,omitempty"`
+	ExchangeContext  decisiontrace.ContextState `json:"exchange_context,omitempty"`
+	IncomingContext  decisiontrace.ContextState `json:"incoming_context,omitempty"`
+	AnchoringContext decisiontrace.ContextState `json:"anchoring_context,omitempty"`
+	OwnerContext     decisiontrace.ContextState `json:"owner_context,omitempty"`
+}
+
+func authorityStartupLabel(value string) string {
+	switch value {
+	case "dns", "random", "dial", "native_send", "send", "read", "native_receive", "packet", "native_binding", "measured",
+		"binding", "rtt", "source_bound", "transmit", "receive", "reference", "overflow", "interval", "native_install",
+		"elapsed", "age", "anchor_interval", "utc_window", "width", "contradiction", "installed",
+		"ok", "read_timeout", "rate", "deny", "source_fault", "install_rejected", "native_terminal":
+		return value
+	default:
+		return "unclassified"
+	}
+}
+
+func authorityStartupContext(value decisiontrace.ContextState) decisiontrace.ContextState {
+	switch value {
+	case decisiontrace.ContextLive, decisiontrace.ContextCanceled, decisiontrace.ContextDeadlineExceeded, decisiontrace.ContextOtherError:
+		return value
+	default:
+		return decisiontrace.ContextUnobserved
+	}
+}
+
+func authorityStartupFailureRecords(err error) []authorityStartupRecord {
+	var diagnostic interface {
+		AuthorityTimeStartupSnapshot() decisiontrace.StartupSnapshot
+	}
+	if !errors.As(err, &diagnostic) {
+		return nil
+	}
+	snapshot := diagnostic.AuthorityTimeStartupSnapshot()
+	records := make([]authorityStartupRecord, 0, 9)
+	if int(snapshot.Count) > len(snapshot.Attempts) {
+		return []authorityStartupRecord{{Stage: "startup_history", Reason: "invalid_snapshot"}}
+	}
+	for _, attempt := range snapshot.Attempts[:snapshot.Count] {
+		record := authorityStartupRecord{Attempt: attempt.Attempt, Stage: authorityStartupLabel(attempt.Stage), Reason: authorityStartupLabel(attempt.Reason),
+			ExchangeContext: authorityStartupContext(attempt.ExchangeContext), IncomingContext: authorityStartupContext(attempt.IncomingContext)}
+		if attempt.HasReadBudget {
+			remaining := attempt.ReadRemainingNS
+			record.RemainingNS = &remaining
+		}
+		records = append(records, record)
+	}
+	status := func(reason string, attempt uint64) {
+		records = append(records, authorityStartupRecord{Attempt: attempt, Stage: "startup_history", Reason: reason})
+	}
+	if snapshot.Count == 0 {
+		status("no_completed_attempt", snapshot.StartedAttempt)
+	}
+	if snapshot.Overflow {
+		status("overflow", snapshot.PublishedAttempt)
+	}
+	if snapshot.CompletedAttempt != snapshot.PublishedAttempt {
+		status("publication_pending", snapshot.CompletedAttempt)
+	}
+	if snapshot.InFlight {
+		status("in_flight", snapshot.StartedAttempt)
+	}
+	if snapshot.OwnerFailed {
+		status("owner_failed", snapshot.PublishedAttempt)
+	}
+	if snapshot.OwnerClosed {
+		status("owner_closed", snapshot.PublishedAttempt)
+	}
+	records = append(records, authorityStartupRecord{Attempt: snapshot.PublishedAttempt, Stage: "startup_wait", Reason: string(authorityStartupContext(snapshot.AnchoringContext)),
+		RemainingNS: &snapshot.RemainingNS, AnchoringContext: authorityStartupContext(snapshot.AnchoringContext),
+		IncomingContext: authorityStartupContext(snapshot.IncomingContext), OwnerContext: authorityStartupContext(snapshot.OwnerContext)})
+	return records
+}
+
+func reportAuthorityStartupFailure(t *testing.T, err error) {
+	t.Helper()
+	if records := authorityStartupFailureRecords(err); len(records) != 0 {
+		raw, marshalErr := json.Marshal(records)
+		if marshalErr != nil {
+			t.Error("startup diagnostic serialization failed")
+			return
+		}
+		t.Log("AUTHORITY_TIME_STARTUP_DIAGNOSTIC " + string(raw))
+	}
+}
+
+type authorityStartupErrorFixture struct{ snapshot decisiontrace.StartupSnapshot }
+
+func (e authorityStartupErrorFixture) Error() string {
+	return "private endpoint and token must stay out of diagnostic objects"
+}
+func (e authorityStartupErrorFixture) AuthorityTimeStartupSnapshot() decisiontrace.StartupSnapshot {
+	return e.snapshot
+}
+
+func TestAuthorityStartupFailureRecordAllowlist(t *testing.T) {
+	snapshot := decisiontrace.StartupSnapshot{Count: 2, PublishedAttempt: 2, CompletedAttempt: 3, StartedAttempt: 4, InFlight: true, Overflow: true,
+		AnchoringContext: decisiontrace.ContextDeadlineExceeded, IncomingContext: decisiontrace.ContextLive, OwnerContext: decisiontrace.ContextLive}
+	snapshot.Attempts[0] = decisiontrace.StartupAttempt{Attempt: 1, Stage: "read", Reason: "read_timeout", HasReadBudget: true, ReadRemainingNS: 0,
+		ExchangeContext: decisiontrace.ContextDeadlineExceeded, IncomingContext: decisiontrace.ContextLive}
+	snapshot.Attempts[1] = decisiontrace.StartupAttempt{Attempt: 2, Stage: "private.endpoint", Reason: "private token", IncomingContext: "private"}
+	records := authorityStartupFailureRecords(fmt.Errorf("outer: %w", authorityStartupErrorFixture{snapshot}))
+	raw, err := json.Marshal(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "private") || strings.Contains(string(raw), "endpoint") || strings.Contains(string(raw), "token") {
+		t.Fatal("startup reporter forwarded arbitrary diagnostic text")
+	}
+	var decoded []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range decoded {
+		for key := range record {
+			switch key {
+			case "stage", "reason", "attempt", "remaining_ns", "exchange_context", "incoming_context", "anchoring_context", "owner_context":
+			default:
+				t.Fatal("startup reporter exceeded the public field allowlist")
+			}
+		}
+	}
+	if string(decoded[0]["remaining_ns"]) != "0" || records[1].Stage != "unclassified" || records[1].Reason != "unclassified" || records[1].IncomingContext != decisiontrace.ContextUnobserved {
+		t.Fatal("expired budget or unrecognized labels became misleading")
+	}
+	if len(authorityStartupFailureRecords(errors.New("ordinary startup failure"))) != 0 {
+		t.Fatal("ordinary failure acquired invented time observations")
+	}
+}
+
 func (f *oidcControlWireFixture) token(t *testing.T, subject string, mutate func(map[string]any)) string {
 	t.Helper()
 	now := f.accessIssuedAt

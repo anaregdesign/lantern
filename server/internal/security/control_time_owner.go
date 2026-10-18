@@ -50,13 +50,15 @@ type authorityTimeOwner struct {
 	failed, closed  bool
 	lastObservation *authorityTimeMeasurement
 	lastError       error // bounded latest source/qualification failure, for startup diagnosis
+	startupHistory  decisiontrace.StartupSnapshot
+	runContext      context.Context
 	cancel          context.CancelFunc
 	done            chan struct{}
 }
 
 func startAuthorityTimeOwner(producer *authorityTimeProducer) *authorityTimeOwner {
 	ctx, cancel := context.WithCancel(context.Background())
-	o := &authorityTimeOwner{traceID: decisiontrace.NextID(), producer: producer, premises: authorityOperationalTimePremises(), profile: sha256.Sum256([]byte(authorityTimeProfileDescription)), cancel: cancel, done: make(chan struct{})}
+	o := &authorityTimeOwner{traceID: decisiontrace.NextID(), producer: producer, premises: authorityOperationalTimePremises(), profile: sha256.Sum256([]byte(authorityTimeProfileDescription)), runContext: ctx, cancel: cancel, done: make(chan struct{})}
 	go o.run(ctx, producer.measure)
 	return o
 }
@@ -106,7 +108,7 @@ func (o *authorityTimeOwner) runLoop(ctx context.Context, measure func(context.C
 	var retry authorityTimeRetry
 	for {
 		m, err := measure(ctx)
-		probe := o.producer.probeObservation()
+		probe, attempt := o.producer.completedProbe()
 		o.mu.Lock()
 		if o.closed || o.failed || ctx.Err() != nil {
 			o.mu.Unlock()
@@ -132,6 +134,11 @@ func (o *authorityTimeOwner) runLoop(ctx context.Context, measure func(context.C
 		} else if probe.Reason == "ok" {
 			probe.Reason = "install_rejected"
 		}
+		attempt.Stage, attempt.Reason = probe.Stage, probe.Reason
+		if failed {
+			attempt.Reason = "native_terminal"
+		}
+		o.recordStartupLocked(attempt)
 		o.mu.Unlock()
 		if failed {
 			probe.Reason = "native_terminal"
