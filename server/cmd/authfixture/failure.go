@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
 // Only fixed categories cross a fixture's public startup boundary.
@@ -34,20 +37,26 @@ func fixtureFailureCategory(err error) string {
 // These fields contain only local numbers and fixed categories. Never attach
 // error strings, paths, response bodies, credentials or raw child logs here.
 type fixtureReadinessDiagnostic struct {
-	Reason           string             `json:"reason"`
-	Node             int                `json:"node"`
-	Port             uint16             `json:"port"`
-	ElapsedMillis    int64              `json:"elapsed_ms"`
-	Probe            string             `json:"probe"`
-	HTTPStatus       int                `json:"http_status"`
-	ChildExited      bool               `json:"child_exited"`
-	ChildExitCode    int                `json:"child_exit_code"`
-	ServerLog        string             `json:"server_log"`
-	LastHealth       string             `json:"last_health"`
-	LastCapability   string             `json:"last_capability"`
-	HealthProbes     uint32             `json:"health_probes"`
-	CapabilityProbes uint32             `json:"capability_probes"`
-	Observation      fixtureObservation `json:"observation"`
+	Reason           string                     `json:"reason"`
+	Node             int                        `json:"node"`
+	Port             uint16                     `json:"port"`
+	ElapsedMillis    int64                      `json:"elapsed_ms"`
+	Probe            string                     `json:"probe"`
+	HTTPStatus       int                        `json:"http_status"`
+	ChildExited      bool                       `json:"child_exited"`
+	ChildExitCode    int                        `json:"child_exit_code"`
+	ServerLog        string                     `json:"server_log"`
+	LastHealth       string                     `json:"last_health"`
+	LastCapability   string                     `json:"last_capability"`
+	HealthProbes     uint32                     `json:"health_probes"`
+	CapabilityProbes uint32                     `json:"capability_probes"`
+	Observation      fixtureObservation         `json:"observation"`
+	Startup          *fixtureStartupObservation `json:"startup,omitempty"`
+}
+
+type fixtureStartupObservation struct {
+	Status string                         `json:"status"`
+	State  *decisiontrace.StartupSnapshot `json:"state,omitempty"`
 }
 
 type fixtureReadinessError struct {
@@ -86,8 +95,56 @@ func fixtureAdoptionFailure(cause error, child *fixtureProcess, node, port int, 
 		diagnostic.ServerLog = fixtureServerLogCategory(child.log.Name())
 		var observation fixtureObservationReader
 		diagnostic.Observation = observation.read(child.log.Name(), time.Now())
+		diagnostic.Startup = fixtureStartupFailure(child.log.Name())
 	}
 	return &fixtureFailure{stage: "spawn", cause: &fixtureReadinessError{cause: cause, diagnostic: diagnostic}}
+}
+
+// Read one complete, typed failure record while private logs still exist. A
+// complete record survives unrelated trailing private output; incomplete or
+// oversized records never acquire diagnostic fields or imply readiness.
+func fixtureStartupFailure(path string) *fixtureStartupObservation {
+	result := &fixtureStartupObservation{Status: "not_observed"}
+	file, err := os.Open(path)
+	if err != nil {
+		result.Status = "unavailable"
+		return result
+	}
+	defer func() { _ = file.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(file, (64<<10)+1))
+	if err != nil {
+		result.Status = "unavailable"
+		return result
+	}
+	truncated := len(raw) > 64<<10
+	if truncated {
+		raw = raw[:64<<10]
+	}
+	for len(raw) > 0 {
+		line, rest, complete := bytes.Cut(raw, []byte{'\n'})
+		if !complete {
+			if result.State == nil {
+				result.Status = "incomplete"
+			}
+			break
+		}
+		raw = rest
+		var header struct {
+			Message string `json:"msg"`
+		}
+		if json.Unmarshal(line, &header) != nil || header.Message != decisiontrace.StartupMessage {
+			continue
+		}
+		state, valid := decisiontrace.DecodeStartupRecord(line)
+		if !valid || result.State != nil {
+			return &fixtureStartupObservation{Status: "invalid"}
+		}
+		result.Status, result.State = "observed", &state
+	}
+	if result.State == nil && truncated {
+		result.Status = "truncated"
+	}
+	return result
 }
 
 // Classify a bounded private log while it still exists. Only known structured

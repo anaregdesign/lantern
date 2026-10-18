@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
 func TestFixtureFailureCategory(t *testing.T) {
@@ -27,6 +30,54 @@ func TestFixtureFailureCategory(t *testing.T) {
 	}
 	if fixtureFailureCategory(private) != "configuration" {
 		t.Fatal("arbitrary error changed the category")
+	}
+}
+
+func TestFixtureStartupFailureRetainsValidatedRecord(t *testing.T) {
+	state := decisiontrace.StartupSnapshot{Count: 4, PublishedAttempt: 4, StartedAttempt: 4, CompletedAttempt: 4,
+		AnchoringContext: decisiontrace.ContextDeadlineExceeded, IncomingContext: decisiontrace.ContextLive, OwnerContext: decisiontrace.ContextLive}
+	for i := range state.Attempts {
+		state.Attempts[i] = decisiontrace.StartupAttempt{Attempt: uint64(i + 1), Stage: "read", Reason: "read_timeout", HasReadBudget: true,
+			ReadRemainingNS: 3_000_000_000, ExchangeContext: decisiontrace.ContextDeadlineExceeded, IncomingContext: decisiontrace.ContextLive,
+			ReadCount: 2, FirstReadError: "aborted", FinalReadError: "timeout"}
+	}
+	raw, err := json.Marshal(decisiontrace.StartupRecord{Message: decisiontrace.StartupMessage, Version: 1, State: state})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "child")
+	for _, tail := range []string{"", "private-token-body", strings.Repeat("x", 64<<10)} {
+		if err := os.WriteFile(path, append(append([]byte("private-token-body\n"), raw...), []byte("\n"+tail)...), 0600); err != nil {
+			t.Fatal(err)
+		}
+		observed := fixtureStartupFailure(path)
+		if observed.Status != "observed" || observed.State == nil || *observed.State != state {
+			t.Fatal("lost complete bounded snapshot", observed)
+		}
+		var output bytes.Buffer
+		writeFixtureFailure(&output, &fixtureFailure{stage: "spawn", cause: &fixtureReadinessError{cause: errors.New("private-token-body"), diagnostic: fixtureReadinessDiagnostic{Startup: observed}}})
+		if output.Len() > 4096 || strings.Contains(output.String(), "private-token-body") || !strings.Contains(output.String(), `"first_read_error":"aborted"`) {
+			t.Fatal("unsafe fixture record")
+		}
+	}
+	for _, tc := range []struct {
+		raw    []byte
+		status string
+	}{
+		{append(bytes.Replace(raw, []byte(`"first_read_error":"aborted"`), []byte(`"first_read_error":"private-token"`), 1), '\n'), "invalid"},
+		{append(bytes.Replace(raw, []byte(`"state":{`), []byte(`"body":"private-token","state":{`), 1), '\n'), "invalid"},
+		{append(append(append([]byte{}, raw...), '\n'), append(raw, '\n')...), "invalid"},
+		{raw[:len(raw)-1], "incomplete"},
+		{bytes.Repeat([]byte("x"), (64<<10)+1), "truncated"},
+		{[]byte("private-token-body\n"), "not_observed"},
+	} {
+		if err := os.WriteFile(path, tc.raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		got := fixtureStartupFailure(path)
+		if got.Status != tc.status || got.State != nil {
+			t.Fatal("invalid private record escaped", got.Status)
+		}
 	}
 }
 

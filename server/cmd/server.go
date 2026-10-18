@@ -14,6 +14,7 @@ import (
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/search"
 	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
 	"github.com/anaregdesign/lantern/server/provider"
@@ -393,6 +394,7 @@ func initializeApp() (*App, func(), error) { return initializeAppWithListeners(n
 
 func main() {
 	if err := runMain(); err != nil {
+		decisiontrace.WriteStartupFailure(os.Stderr, err)
 		slog.Error("server exited with error", slog.Any("err", err))
 		os.Exit(1)
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"connectrpc.com/connect"
 	"context"
+	"errors"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"io"
 	"net"
@@ -106,6 +107,89 @@ func TestCurrentPublicOutputConfigurationIsFinite(t *testing.T) {
 	s := &http.Server{ConnState: func(net.Conn, http.ConnState) {}}
 	if _, err := o.ConfigurePublicOutput(s, CurrentOutputLimits{1, 1, 1}); err == nil {
 		t.Fatal("foreign connection owner accepted")
+	}
+}
+
+func TestCurrentPublicOutputDefaultCapacityReleasesIdleConnection(t *testing.T) {
+	// Exercise only the real configuration/accounting boundary. No authority
+	// admission, network listener or external/native time source is constructed.
+	network := &s3aOwner{kernel: &s2cParticipant{}}
+	owner := &CurrentAuthority{origin: &authorityOriginOwner{network: network}}
+	// These are provider.NewConfig's ordinary public-listener defaults.
+	p, err := owner.ConfigurePublicOutput(&http.Server{}, CurrentOutputLimits{
+		ReadBytes: 16 << 20, SendBytes: 16 << 20, ConcurrentStreams: 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.requestCharge != 438304768 || p.connectionCharge != 88162304 {
+		t.Fatal("default output reservation changed; review the matrix topology")
+	}
+	connections := make([]*currentOutputConnection, 5)
+	for i := range connections {
+		left, right := net.Pipe()
+		t.Cleanup(func() { _ = left.Close(); _ = right.Close() })
+		ctx := p.connContext(context.Background(), left)
+		connections[i], _ = ctx.Value(currentOutputConnectionKey{}).(*currentOutputConnection)
+		if connections[i] == nil {
+			t.Fatal("five connection reservations must fit without active requests")
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, "/rpc", nil)
+	requests := make([]*currentOutputRequest, 0, 4)
+	for _, connection := range connections[:3] {
+		r, err := p.reserve(connection, request)
+		if err != nil {
+			t.Fatal("three default-size requests must fit with five connections", err)
+		}
+		requests = append(requests, r)
+	}
+	if p.active != 3 || len(p.connections) != 5 || p.bytes+p.requestCharge <= currentOutputPoolBytes || p.active >= currentOutputRequests || connections[3].active != 0 || connections[3].closed {
+		t.Fatal("unit no longer isolates the pool-capacity predicate")
+	}
+	if r, err := p.reserve(connections[3], request); r != nil || !errors.Is(err, ErrControlReserve) {
+		t.Fatal("fourth request bypassed the finite pool")
+	}
+	// Confirm the actual outer HTTP boundary aborts before entering the handler
+	// or writing any response headers, matching the observed header-stage EOF.
+	called := false
+	destination := httptest.NewRecorder()
+	func() {
+		defer func() {
+			if recover() != http.ErrAbortHandler {
+				t.Fatal("pool refusal did not take the pre-header abort path")
+			}
+		}()
+		ctx := context.WithValue(request.Context(), currentOutputConnectionKey{}, connections[3])
+		p.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })).ServeHTTP(destination, request.WithContext(ctx))
+	}()
+	if called || destination.Flushed || destination.Body.Len() != 0 || len(destination.Header()) != 0 || p.active != 3 {
+		t.Fatal("capacity refusal entered output or leaked a request reservation")
+	}
+	t.Logf(`current_output_capacity:{"reason":"pool","connections":%d,"active_requests":%d,"reserved_bytes":%d,"requested_bytes":%d,"pool_bytes":%d}`,
+		len(p.connections), p.active, p.bytes, p.requestCharge, currentOutputPoolBytes)
+
+	// Releasing only the unused seed connection makes the same fourth request
+	// admissible. Preserve all limits and the three already-active reservations.
+	p.connState(connections[4].conn, http.StateClosed)
+	fourth, err := p.reserve(connections[3], request)
+	if err != nil {
+		t.Fatal("four replay requests did not fit after seed connection release", err)
+	}
+	requests = append(requests, fourth)
+	if p.active != 4 || len(p.connections) != 4 || p.bytes > currentOutputPoolBytes {
+		t.Fatal("successful fourth reservation broke the unchanged pool bound")
+	}
+	t.Logf(`current_output_capacity:{"reason":"admitted_after_idle_close","connections":%d,"active_requests":%d,"reserved_bytes":%d,"pool_bytes":%d}`,
+		len(p.connections), p.active, p.bytes, currentOutputPoolBytes)
+	for _, r := range requests {
+		p.release(r)
+	}
+	for _, c := range connections[:4] {
+		p.connState(c.conn, http.StateClosed)
+	}
+	if p.active != 0 || p.bytes != 0 || len(p.connections) != 0 {
+		t.Fatal("request or connection reservation leaked")
 	}
 }
 

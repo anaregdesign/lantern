@@ -286,7 +286,7 @@ func TestAuthorityTimeProducerDarwinReadAbort(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("Darwin-only receive tolerance")
 	}
-	for _, mode := range []string{"recover", "repeated abort", "other errno", "closed", "timeout", "parent cancel", "deadline", "partial error", "bad nonce", "oversize", "source fault", "RATE", "DENY", "RSTR", "native epoch", "RTT before", "RTT equality", "RTT after", "cancel second"} {
+	for _, mode := range []string{"recover", "repeated abort", "abort then timeout", "other errno", "closed", "timeout", "parent cancel", "deadline", "partial error", "bad nonce", "oversize", "source fault", "RATE", "DENY", "RSTR", "native epoch", "RTT before", "RTT equality", "RTT after", "cancel second"} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
@@ -365,6 +365,10 @@ func TestAuthorityTimeProducerDarwinReadAbort(t *testing.T) {
 							cause = secondAbort
 							return 0, cause
 						}
+						if mode == "abort then timeout" {
+							cause = os.ErrDeadlineExceeded
+							return 0, cause
+						}
 						if mode == "cancel second" {
 							cancel()
 							<-closed
@@ -402,13 +406,23 @@ func TestAuthorityTimeProducerDarwinReadAbort(t *testing.T) {
 				if lookups != 1 || dials != 1 || writes != 1 || reads != wantReads || deadlines != 1 || p.attempts != 1 || p.addressTurn != 1 {
 					t.Fatalf("changed exchange/query bounds: lookup%d dial%d write%d read%d deadline%d attempt%d turn%d", lookups, dials, writes, reads, deadlines, p.attempts, p.addressTurn)
 				}
+				_, observed := p.completedProbe()
+				wantFirst, wantFinal := "aborted", "none"
+				if wantReads == 1 {
+					wantFirst, wantFinal = authorityTimeReadError(cause), authorityTimeReadError(cause)
+				} else if mode == "repeated abort" || mode == "cancel second" || mode == "abort then timeout" {
+					wantFinal = authorityTimeReadError(cause)
+				}
+				if int(observed.ReadCount) != wantReads || observed.FirstReadError != wantFirst || observed.FinalReadError != wantFinal {
+					t.Fatal("lost first/final bounded read classification", observed)
+				}
 				measured := mode == "recover" || strings.HasPrefix(mode, "RTT ")
 				if !measured {
 					if err == nil || m != (authorityTimeMeasurement{}) {
 						t.Fatal("failed receive created a measurement")
 					}
 					var transport *authorityTimeTransportError
-					wantTransport := wantReads == 1 || mode == "repeated abort" || mode == "cancel second"
+					wantTransport := wantReads == 1 || mode == "repeated abort" || mode == "cancel second" || mode == "abort then timeout"
 					if errors.As(err, &transport) != wantTransport || wantTransport && !errors.Is(err, cause) {
 						t.Fatal("lost error identity or source/native refusal priority")
 					}
@@ -435,6 +449,24 @@ func TestAuthorityTimeProducerDarwinReadAbort(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestAuthorityTimeReadErrorIsFixedClassification(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{nil, "none"},
+		{fmt.Errorf("private address: %w", syscall.ECONNABORTED), "aborted"},
+		{os.ErrDeadlineExceeded, "timeout"},
+		{context.Canceled, "canceled"},
+		{net.ErrClosed, "closed"},
+		{errors.New("private endpoint/body"), "other"},
+	} {
+		if got := authorityTimeReadError(tc.err); got != tc.want {
+			t.Fatal("wrong fixed read classification", got)
+		}
 	}
 }
 

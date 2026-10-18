@@ -161,6 +161,7 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 			if child.log != nil {
 				diagnostic.ServerLog = fixtureServerLogCategory(child.log.Name())
 				diagnostic.Observation = observations[lastNode].read(child.log.Name(), time.Now())
+				diagnostic.Startup = fixtureStartupFailure(child.log.Name())
 			}
 		}
 		return &fixtureReadinessError{cause: cause, diagnostic: diagnostic}
