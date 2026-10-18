@@ -90,9 +90,17 @@ class ValidationScopeTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             require_go(events + '\n{"Action":"fail"}', GO_TESTS)
         for name in RUST_TESTS:
-            require_rust("test " + name + " ... ok\n", name)
-            with self.assertRaises(ValueError):
-                require_rust("running 0 tests\n", name)
+            summary = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 110 filtered out; finished in 0.15s\n"
+            require_rust("test " + name + " ... ok\n" + summary, name)
+            # Exact observed Windows shape: inherited server output appears
+            # between libtest's test name and its success marker.
+            require_rust("\x1b[32mtest " + name + " ... \x1b[0m{\"msg\":\"started call\"}\r\nok\r\n" + summary, name)
+            for bad in ("running 0 tests\n", "test " + name + " ... ok\n",
+                        "test " + name + " ... ignored\n" + summary.replace("1 passed", "0 passed").replace("0 ignored", "1 ignored"),
+                        "test wrong::name ... ok\n" + summary,
+                        "test " + name + " ... FAILED\n" + summary.replace("ok. 1 passed; 0 failed", "FAILED. 0 passed; 1 failed")):
+                with self.subTest(name=name, bad=bad), self.assertRaises(ValueError):
+                    require_rust(bad, name)
 
 
 if __name__ == "__main__":

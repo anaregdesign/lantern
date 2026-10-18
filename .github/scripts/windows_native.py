@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -37,7 +38,13 @@ def require_go(output, expected=()):
 
 
 def require_rust(output, name):
-    if f"test {name} ... ok" not in output.splitlines():
+    # Child Go server output can interrupt libtest's name ... ok line.
+    # Require the exact selected name and the complete one-test result instead
+    # of treating an interleaved successful run as a missing test.
+    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+    names = re.findall(r"(?m)^test " + re.escape(name) + r" \.\.\.", clean)
+    summaries = re.findall(r"(?m)^test result: (\w+)\. (\d+) passed; (\d+) failed; (\d+) ignored;", clean)
+    if len(names) != 1 or summaries != [("ok", "1", "0", "0")]:
         raise ValueError("selected native Rust test did not pass: " + name)
 
 
@@ -76,6 +83,7 @@ def main():
     require_go(output, GO_TESTS)
     require_go(run("backup", ["go", "test", "-json", "-count=1", "./backup"], root / "server"))
     if args.rust == "true":
+        env.pop("LANTERN_TEST_LAUNCH_SERVER", None)
         directory = root / "sdks/rust"
         name = "smoke::native_tls_roots_are_available_by_default"
         require_rust(run("native-roots", ["cargo", "test", "--locked", "--no-default-features",
