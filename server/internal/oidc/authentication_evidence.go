@@ -18,8 +18,8 @@ import (
 // value is not evidence. Getters detach all facts; JSON cannot mint this type.
 type VerifiedIdentity struct {
 	evidence security.TokenAuthenticationEvidence
-	// Preserve the verifier's original time representation for existing callers:
-	// SessionRequest hashes its JSON before canonicalizing the durable Session.
+	// Getters retain the parsed signed-time representation; evidence records
+	// the corresponding numeric facts for durable authentication commitments.
 	expiresAt, authTime time.Time
 }
 
