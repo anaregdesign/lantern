@@ -20,7 +20,6 @@ import uuid
 
 
 ROOT_TEST = "TestCurrentSecurityPublicNativeGate"
-EXPORT_TEST = f"{ROOT_TEST}/active_export_grant_revocation"
 SCOPED_TEST = "TestAuth_OIDCRustScopedChangesFacadeRealConnect"
 PACKAGE = "github.com/anaregdesign/lantern/tests/integration"
 RETAINED_ROOT_TESTS = (
@@ -50,6 +49,34 @@ RETAINED_ROOT_TESTS = (
     "TestAuth_PublicChangesBenchmarkConsumerRealWire",
 )
 SDK_TESTS = tuple(f"{ROOT_TEST}/{sdk}" for sdk in ("go", "bun", "dart", "cargo"))
+F_CASES = tuple(
+    f"{ROOT_TEST}/{name}"
+    for name in (
+        "public_protocols_and_full_binding",
+        "ordinary_review_apply_foreign_status",
+        "full-cut_and_profile_mismatch_refuse_before_dispatch",
+        "sdk_and_typed_data_response",
+        "reader_explicit_Deny_and_no_write_grant",
+        "machine_data_grants_and_management_refusal",
+        "scoped_receipt_export_and_CDC_cut_invalidation",
+        "active_export_grant_revocation",
+        "operation-bound_real_Code_approval",
+        "browser_Code_one_exchange_and_CSRF_bootstrap",
+        "original_stop_observation_remains_separate_from_Apply",
+        "stale_administrator_cannot_consume_retained_new_work",
+        "public_authorization_stops_after_quorum_loss",
+    )
+)
+F_PROTOCOLS = tuple(
+    f"{F_CASES[0]}/{mode}"
+    for mode in (
+        "h2-connect-proto",
+        "h2-connect-json",
+        "h2-grpc",
+        "h2-grpc-web",
+        "http1-connect-json",
+    )
+)
 Q_CASES = tuple(
     f"{ROOT_TEST}/{name}"
     for name in (
@@ -74,8 +101,7 @@ ENVIRONMENT = {
     "LANTERN_CURRENT_PUBLIC_SDK4": "1",
     "LANTERN_CURRENT_SOURCE_QUALIFICATION": "0",
 }
-EXPORT_ENVIRONMENT = {**ENVIRONMENT, "LANTERN_CURRENT_PUBLIC_SDK4": "0"}
-LOG_NAMES = ("events.jsonl", "stderr.log", "export-events.jsonl", "export-stderr.log")
+LOG_NAMES = ("events.jsonl", "stderr.log")
 NATIVE_MARKER = "production native constructor: independently provisioned three voters, two origins, observer; no injected clock or H"
 FIXTURE_MARKER = "test-build controlled source: native sampler and loopback UDP; synthetic UTC; shared current composition, three voters, two origins, observer"
 FIXTURE_TAG = "lantern_test_time"
@@ -102,9 +128,7 @@ def build_flags(kind):
 
 def log_names(kind):
     return (
-        LOG_NAMES + ("mechanism-events.jsonl", "mechanism-stderr.log")
-        if kind == "F"
-        else LOG_NAMES[:2]
+        LOG_NAMES + ("mechanism-events.jsonl", "mechanism-stderr.log") if kind == "F" else LOG_NAMES
     )
 
 
@@ -115,7 +139,7 @@ def execution_environment(kind):
 
 def required_tests(kind):
     return (
-        (ROOT_TEST, *SDK_TESTS, *RETAINED_ROOT_TESTS, SCOPED_TEST)
+        (ROOT_TEST, *SDK_TESTS, *F_CASES, *F_PROTOCOLS, *RETAINED_ROOT_TESTS, SCOPED_TEST)
         if kind == "F"
         else (ROOT_TEST, *SDK_TESTS, *Q_CASES)
     )
@@ -161,8 +185,10 @@ def observed_execution(evidence):
     """Report partial execution honestly; this never authorizes a PASS."""
     result = {}
     for filename, names in (
-        ("events.jsonl", (ROOT_TEST, *SDK_TESTS, *RETAINED_ROOT_TESTS, SCOPED_TEST, *Q_CASES)),
-        ("export-events.jsonl", (ROOT_TEST, EXPORT_TEST)),
+        (
+            "events.jsonl",
+            tuple(dict.fromkeys((*required_tests("F"), *required_tests("Q")))),
+        ),
     ):
         actions = {name: [] for name in names}
         constructors = []
@@ -278,24 +304,6 @@ def execution_events(path, kind="Q"):
     return required_execution_events(path, required, kind)
 
 
-def export_command(kind="Q"):
-    return [
-        "go",
-        "test",
-        "-json",
-        *build_flags(kind),
-        "./tests/integration",
-        "-run",
-        f"^{ROOT_TEST}$/^active_export_grant_revocation$",
-        "-count=1",
-        "-timeout=4m",
-    ]
-
-
-def export_execution_events(path, kind="Q"):
-    return required_execution_events(path, (ROOT_TEST, EXPORT_TEST), kind)
-
-
 def required_execution_events(path, required, kind="Q", package=PACKAGE):
     proof_contract(kind)
     state = {name: [] for name in required}
@@ -330,8 +338,13 @@ def required_execution_events(path, required, kind="Q", package=PACKAGE):
         raise ValueError(f"required root/SDK execution absent, duplicated or incomplete: {state}")
     if package_passes != 1 or (package == PACKAGE and native_markers != 1):
         raise ValueError("native constructor or successful package completion missing")
-    if package == PACKAGE and constructors != [(str(i), "fresh", "true") for i in (1, 2, 3)]:
-        raise ValueError("fresh per-owner constructor acquisition evidence missing or failed")
+    expected_constructors = [(str(i), "fresh", "true") for i in (1, 2, 3)]
+    if kind == "F":
+        # Complete F also resumes member2 with its intact custody/state in the
+        # browser session case. Q never restarts a configured-source owner.
+        expected_constructors.append(("2", "resume", "true"))
+    if package == PACKAGE and constructors != expected_constructors:
+        raise ValueError("required per-owner constructor acquisition evidence missing or failed")
     return list(required)
 
 
@@ -500,21 +513,9 @@ def verify(root, evidence, expected_head, trusted_digest, kind="Q"):
         raise ValueError("SDK4 execution evidence mismatch")
     if receipt.get("observed") != observed_execution(evidence):
         raise ValueError("partial execution result mismatch")
-    if kind == "F":
-        export = receipt.get("export", {})
-        if (
-            export.get("command") != export_command(kind)
-            or export.get("environment") != EXPORT_ENVIRONMENT
-            or export.get("exit") != 0
-        ):
-            raise ValueError("mandatory active-export command/environment/success absent")
-        if export.get("executed_tests") != export_execution_events(
-            evidence / "export-events.jsonl", kind
-        ):
-            raise ValueError("active-export execution evidence mismatch")
-    elif "export" in receipt or receipt.get("acquisition") != acquisition_counts(
-        evidence / "events.jsonl"
-    ):
+    if "export" in receipt:
+        raise ValueError("separate export cohort is not part of the proof contract")
+    if kind == "Q" and receipt.get("acquisition") != acquisition_counts(evidence / "events.jsonl"):
         raise ValueError("single-cohort source acquisition evidence mismatch")
     if kind == "F":
         mechanism = receipt.get("mechanism", {})
@@ -589,30 +590,6 @@ def run(root, evidence, expected_head=None, kind="Q"):
         receipt["executed_tests"] = execution_events(evidence / "events.jsonl", kind)
         if kind == "Q":
             receipt["acquisition"] = acquisition_counts(evidence / "events.jsonl")
-        else:
-            # The SDK4 branch returns before the functional export case. Run only
-            # that case in the same native environment, without repeating SDKs.
-            receipt["stage"] = "active-export"
-            export = {"command": export_command(kind), "environment": EXPORT_ENVIRONMENT}
-            receipt["export"] = export
-            with (
-                (evidence / "export-events.jsonl").open("wb") as stdout,
-                (evidence / "export-stderr.log").open("wb") as stderr,
-            ):
-                result = subprocess.run(
-                    export_command(kind),
-                    cwd=root,
-                    env=env | EXPORT_ENVIRONMENT,
-                    stdout=stdout,
-                    stderr=stderr,
-                    timeout=300,
-                )
-            export["exit"] = result.returncode
-            if result.returncode:
-                raise ValueError(f"native active-export command failed: exit {result.returncode}")
-            export["executed_tests"] = export_execution_events(
-                evidence / "export-events.jsonl", kind
-            )
         if snapshot(root) != source or environment(root, env, kind) != runtime:
             raise ValueError("source/runtime configuration changed during SDK4 qualification")
         receipt["status"] = "PASS"

@@ -1364,9 +1364,12 @@ func (f *oidcControlWireFixture) browserRequest(t *testing.T, method, path strin
 	}
 	return req
 }
-func wireBrowserDo(t *testing.T, req *http.Request) *http.Response {
+func wireBrowserDo(t *testing.T, req *http.Request, transports ...http.RoundTripper) *http.Response {
 	t.Helper()
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if len(transports) > 0 {
+		client.Transport = transports[0]
+	}
 	response, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -1374,10 +1377,10 @@ func wireBrowserDo(t *testing.T, req *http.Request) *http.Response {
 	t.Cleanup(func() { _ = response.Body.Close() })
 	return response
 }
-func (f *oidcControlWireFixture) browserLoginStart(t *testing.T, cookies []*http.Cookie) *http.Response {
+func (f *oidcControlWireFixture) browserLoginStart(t *testing.T, cookies []*http.Cookie, transports ...http.RoundTripper) *http.Response {
 	t.Helper()
 	query := url.Values{"issuer": {f.provider.URL}, "return": {"/security/roles"}}
-	response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/login?"+query.Encode(), cookies, ""))
+	response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/login?"+query.Encode(), cookies, ""), transports...)
 	if response.StatusCode != http.StatusFound || len(response.Cookies()) != 1 {
 		t.Fatal("login start", response.StatusCode)
 	}

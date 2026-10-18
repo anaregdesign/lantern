@@ -350,9 +350,21 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	}
 	if os.Getenv("LANTERN_CURRENT_PUBLIC_SDK4") == "1" {
 		runCurrentPublicSDK4(t, servers[0], token, publicCA)
-		if !sourceQualification {
-			return
-		}
+	}
+	// HTTP/1 and browser cases use the same pinned cohort roots as SDK4,
+	// with a separate connection pool and HTTP/2 explicitly disabled.
+	http1Transport := http.DefaultTransport.(*http.Transport).Clone()
+	http1Transport.TLSClientConfig = &tls.Config{RootCAs: publicRoots, MinVersion: tls.VersionTLS12}
+	http1Transport.Protocols = new(http.Protocols)
+	http1Transport.Protocols.SetHTTP1(true)
+	t.Cleanup(http1Transport.CloseIdleConnections)
+	browserDo := func(t *testing.T, req *http.Request) *http.Response {
+		t.Helper()
+		return wireBrowserDo(t, req, http1Transport)
+	}
+	browserLoginStart := func(t *testing.T, cookies []*http.Cookie) *http.Response {
+		t.Helper()
+		return f.browserLoginStart(t, cookies, http1Transport)
 	}
 	var principal *pb.GetCurrentPrincipalResponse
 	var ordinaryReview *pb.CurrentSecurityReview
@@ -372,7 +384,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			name    string
 			options []connect.ClientOption
 			http    *http.Client
-		}{{"h2-connect-proto", nil, transport}, {"h2-connect-json", []connect.ClientOption{connect.WithProtoJSON()}, transport}, {"h2-grpc", []connect.ClientOption{connect.WithGRPC()}, transport}, {"h2-grpc-web", []connect.ClientOption{connect.WithGRPCWeb()}, transport}, {"http1-connect-json", []connect.ClientOption{connect.WithProtoJSON()}, &http.Client{Transport: authIngressRoundTripper{http.DefaultTransport}}}} {
+		}{{"h2-connect-proto", nil, transport}, {"h2-connect-json", []connect.ClientOption{connect.WithProtoJSON()}, transport}, {"h2-grpc", []connect.ClientOption{connect.WithGRPC()}, transport}, {"h2-grpc-web", []connect.ClientOption{connect.WithGRPCWeb()}, transport}, {"http1-connect-json", []connect.ClientOption{connect.WithProtoJSON()}, &http.Client{Transport: authIngressRoundTripper{http1Transport}}}} {
 			if sourceQualification && mode.name != "h2-connect-proto" {
 				continue
 			}
@@ -702,7 +714,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		start := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, target.RequestURI(), nil, ""))
+		start := browserDo(t, f.browserRequest(t, http.MethodGet, target.RequestURI(), nil, ""))
 		if start.StatusCode != http.StatusFound {
 			t.Fatal("purpose navigation", start.StatusCode)
 		}
@@ -712,7 +724,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal(ctx.Err())
 		case <-time.After(500 * time.Millisecond):
 		}
-		callback := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), ""))
+		callback := browserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), ""))
 		if callback.StatusCode != http.StatusOK {
 			t.Fatal("purpose Code completion", callback.StatusCode)
 		}
@@ -775,11 +787,11 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 	})
 	runCase("browser Code one exchange and CSRF bootstrap", func(t *testing.T) {
-		start := f.browserLoginStart(t, nil)
+		start := browserLoginStart(t, nil)
 		path := f.browserCallbackPath(t, start, "admin", false)
 		beforeWrongNode := f.fetches.Load()
 		f.server = servers[1]
-		wrongNode := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), ""))
+		wrongNode := browserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), ""))
 		_ = wrongNode.Body.Close()
 		if wrongNode.StatusCode == http.StatusSeeOther || f.fetches.Load() != beforeWrongNode {
 			t.Fatal("foreign attempt exchanged Code")
@@ -792,7 +804,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal(ctx.Err())
 		case <-time.After(500 * time.Millisecond):
 		}
-		callback := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), ""))
+		callback := browserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), ""))
 		if callback.StatusCode != http.StatusSeeOther {
 			body, _ := io.ReadAll(callback.Body)
 			t.Fatalf("native callback %d: %s", callback.StatusCode, body)
@@ -806,7 +818,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if len(cookies) != 2 {
 			t.Fatal("fresh session cookie missing", len(cookies))
 		}
-		session := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, ""))
+		session := browserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, ""))
 		if session.StatusCode != http.StatusOK {
 			t.Fatal("read-only CSRF bootstrap", session.StatusCode)
 		}
@@ -820,7 +832,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		f.server = servers[2]
 		deadline := time.Now().Add(15 * time.Second)
 		for {
-			observed := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, ""))
+			observed := browserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, ""))
 			if observed.StatusCode == http.StatusOK {
 				break
 			}
@@ -837,7 +849,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		// Orderly custody plus unchanged M/P/B volumes reopen the same member.
 		// Pending login transactions remain process-owned.
 		f.server = servers[1]
-		pending := f.browserLoginStart(t, nil)
+		pending := browserLoginStart(t, nil)
 		oldAttempt := f.browserCallbackPath(t, pending, "admin", false)
 		servers[1].Close()
 		if e := runtimes[1].Shutdown(); e != nil {
@@ -859,36 +871,36 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 		f.server = servers[1]
 		beforeRestartCallback := f.fetches.Load()
-		lostAttempt := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, oldAttempt, pending.Cookies(), ""))
+		lostAttempt := browserDo(t, f.browserRequest(t, http.MethodGet, oldAttempt, pending.Cookies(), ""))
 		_ = lostAttempt.Body.Close()
 		if lostAttempt.StatusCode == http.StatusSeeOther || f.fetches.Load() != beforeRestartCallback {
 			t.Fatal("restart revived old Code attempt")
 		}
-		resumed := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, ""))
+		resumed := browserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, ""))
 		_ = resumed.Body.Close()
 		if resumed.StatusCode != http.StatusOK {
 			t.Fatal("intact resume lost installed session", resumed.StatusCode)
 		}
 		f.server = servers[0]
 		before := f.fetches.Load()
-		replay := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), ""))
+		replay := browserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), ""))
 		if replay.StatusCode == http.StatusSeeOther || f.fetches.Load() != before {
 			t.Fatal("Code callback replay reached IdP")
 		}
 		// A new explicit login replaces only the session present at its start.
 		// The old cookies must not survive the fresh post-Apply publication.
-		replacementStart := f.browserLoginStart(t, cookies)
+		replacementStart := browserLoginStart(t, cookies)
 		replacementPath := f.browserCallbackPath(t, replacementStart, "admin", false)
 		select {
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		case <-time.After(500 * time.Millisecond):
 		}
-		replacement := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, replacementPath, replacementStart.Cookies(), ""))
+		replacement := browserDo(t, f.browserRequest(t, http.MethodGet, replacementPath, replacementStart.Cookies(), ""))
 		if replacement.StatusCode != http.StatusSeeOther {
 			t.Fatal("replacement callback", replacement.StatusCode)
 		}
-		oldSession := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, ""))
+		oldSession := browserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, ""))
 		_ = oldSession.Body.Close()
 		if oldSession.StatusCode == http.StatusOK {
 			t.Fatal("replaced session remained active")
@@ -899,7 +911,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				cookies = append(cookies, cookie)
 			}
 		}
-		freshSession := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, ""))
+		freshSession := browserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, ""))
 		freshBody, e := io.ReadAll(freshSession.Body)
 		_ = freshSession.Body.Close()
 		if e != nil || freshSession.StatusCode != http.StatusOK || protojson.Unmarshal(freshBody, &current) != nil {
@@ -914,7 +926,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			request.Body = io.NopCloser(bytes.NewReader(raw))
 			request.ContentLength = int64(len(raw))
 			request.Header.Set("Content-Type", "application/json")
-			response := wireBrowserDo(t, request)
+			response := browserDo(t, request)
 			body, e := io.ReadAll(response.Body)
 			if csrf == "" {
 				if response.StatusCode == http.StatusOK || len(response.Cookies()) != 0 {
@@ -940,7 +952,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if !revoked.LocalCookieCleared || revoked.CurrentResult != nil {
 			t.Fatal("self-revoked admission disclosed cluster original")
 		}
-		if after := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, "")); after.StatusCode == http.StatusOK {
+		if after := browserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, "")); after.StatusCode == http.StatusOK {
 			t.Fatal("revoked session retained current authorization")
 		}
 	})

@@ -165,13 +165,11 @@ func TestAuthorityTimeNativePauseChild(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		receiver, before := nativePauseRenewal(t, o)
 		if err = unix.Kill(os.Getpid(), unix.SIGSTOP); err != nil {
 			t.Fatal(err)
 		}
-		current, err = o.current()
-		if err == nil {
-			t.Fatal("pause extended holdover")
-		}
+		current = requireNativePauseHoldover(t, o, receiver, before)
 	default:
 		t.Fatal("unknown stage")
 	}
@@ -192,4 +190,58 @@ func TestAuthorityTimeNativePauseChild(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(os.Getenv("LANTERN_TIME_CHILD_DIR"), "receipt.json"), b, 0600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The controlled regression and explicit SIGSTOP child share the assertion:
+// UTC survives a sound61s holdover, while a pre-pause native15s permit expires.
+func TestAuthorityTimeNativePauseHoldover(t *testing.T) {
+	clock, ticks := fakeAuthorityTimeOwner(t)
+	receiver, before := nativePauseRenewal(t, clock)
+	ticks.Add(uint64(61 * time.Second))
+	requireNativePauseHoldover(t, clock, receiver, before)
+}
+
+func nativePauseRenewal(t *testing.T, clock *authorityTimeOwner) (*authorityRenewalReceiver, authorityCurrentTime) {
+	t.Helper()
+	n := s2cTestNativeCluster(t, 3, nil)
+	r := &authorityRenewalReceiver{kernel: n.nodes[1], clock: clock, workloads: [32]byte{7}}
+	raw, err := r.challenge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uint32{1, 2} {
+		vote, err := n.nodes[id].signAuthorityRenewal(raw, r.workloads, func() error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = r.receive(raw, vote); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.kernel.gate.Lock()
+	before, active, err := r.currentLocked()
+	r.kernel.gate.Unlock()
+	if err != nil || active == nil {
+		t.Fatal("pre-pause native permit unavailable", err)
+	}
+	return r, before
+}
+
+func requireNativePauseHoldover(t *testing.T, clock *authorityTimeOwner, receiver *authorityRenewalReceiver, before authorityCurrentTime) authorityCurrentTime {
+	t.Helper()
+	now, err := clock.current()
+	if err != nil {
+		t.Fatal("pause erased sound UTC holdover", err)
+	}
+	elapsed, err := clock.elapsed(before, now)
+	if err != nil || elapsed.low < uint64(60*time.Second) || now.sequence != before.sequence || now.utc.low <= before.utc.low || now.utc.high <= before.utc.high {
+		t.Fatal("pause reset the original anchor or native elapsed time", elapsed, err)
+	}
+	receiver.kernel.gate.Lock()
+	_, active, err := receiver.currentLocked()
+	receiver.kernel.gate.Unlock()
+	if err == nil || active != nil {
+		t.Fatal("pause extended the independent native15s permit")
+	}
+	return now
 }

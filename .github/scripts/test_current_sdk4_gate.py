@@ -39,6 +39,14 @@ def events(tests=None, kind="Q"):
     ]
     for name in tests:
         result += [{"Action": "run", "Test": name}, {"Action": "pass", "Test": name}]
+    if kind == "F":
+        result.append(
+            {
+                "Action": "output",
+                "Test": gate.ROOT_TEST,
+                "Output": "current_constructor node=2 mode=resume passed=true",
+            }
+        )
     if kind == "Q":
         result += [
             {
@@ -122,14 +130,7 @@ class SDK4ReceiptTest(unittest.TestCase):
         if kind == "Q":
             self.receipt["acquisition"] = gate.acquisition_counts(self.evidence / "events.jsonl")
         else:
-            self.write_events(events((gate.EXPORT_TEST,), "F"), "export-events.jsonl")
             self.write_events(mechanism_events(), "mechanism-events.jsonl")
-            self.receipt["export"] = {
-                "command": gate.export_command("F"),
-                "environment": gate.EXPORT_ENVIRONMENT,
-                "exit": 0,
-                "executed_tests": [gate.ROOT_TEST, gate.EXPORT_TEST],
-            }
             self.receipt["mechanism"] = {
                 "command": gate.mechanism_command(),
                 "exit": 0,
@@ -234,9 +235,32 @@ class SDK4ReceiptTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.verify()
 
+    def test_f_requires_all_public_bodies_after_sdk4_in_the_same_cohort(self):
+        self.configure("F")
+        complete = events(kind="F")
+        # Independent of the producer's inventory: reproduce the old SDK4-only
+        # receipt, even with a successful separate export cohort alongside it.
+        public = (ROOT / "tests/integration/current_security_gate_test.go").read_text()
+        names = re.findall(r'runCase\("([^"]+)"', public)
+        names += ["active export grant revocation"]
+        expected = {f"{gate.ROOT_TEST}/{name.replace(' ', '_')}" for name in names}
+        self.assertEqual(len(expected), 13)
+        self.assertEqual(set(gate.F_CASES), expected)
+        self.assertEqual(len(gate.F_PROTOCOLS), 5)
+        omitted = expected | set(gate.F_PROTOCOLS)
+        self.write_events([r for r in complete if r.get("Test") not in omitted])
+        self.write_events(
+            events((f"{gate.ROOT_TEST}/active_export_grant_revocation",), "F"),
+            "export-events.jsonl",
+        )
+        self.save()
+        with self.assertRaisesRegex(ValueError, "absent, duplicated or incomplete"):
+            self.verify()
+        self.assertNotIn("export-events.jsonl", gate.log_names("F"))
+
     def test_f_requires_actual_export_and_mechanism_bodies(self):
         for logfile, name in (
-            ("export-events.jsonl", gate.EXPORT_TEST),
+            ("events.jsonl", f"{gate.ROOT_TEST}/active_export_grant_revocation"),
             ("mechanism-events.jsonl", gate.MECHANISM_TESTS[0]),
         ):
             self.configure("F")
@@ -255,6 +279,28 @@ class SDK4ReceiptTest(unittest.TestCase):
         self.configure("F")
         with self.assertRaisesRegex(ValueError, "proof kind"):
             self.verify("Q")
+
+    def test_f_requires_the_intact_resume_and_q_forbids_an_extra_owner(self):
+        for kind in ("F", "Q"):
+            self.configure(kind)
+            complete = events(kind=kind)
+            constructors = [r for r in complete if "current_constructor" in r.get("Output", "")]
+            for row in constructors:
+                for replacement in (
+                    None,
+                    {**row, "Output": row["Output"].replace("true", "false")},
+                ):
+                    records = [r for r in complete if r is not row]
+                    if replacement is not None:
+                        records.append(replacement)
+                    self.write_events(records)
+                    self.save()
+                    with self.assertRaises(ValueError):
+                        self.verify()
+            self.write_events(complete + [constructors[-1]])
+            self.save()
+            with self.assertRaises(ValueError):
+                self.verify()
 
     def test_receipt_logs_exact_source_and_trusted_digest_are_bound(self):
         with self.assertRaisesRegex(ValueError, "untrusted"):
@@ -316,12 +362,9 @@ class SDK4ReceiptTest(unittest.TestCase):
             expected = (
                 gate.mechanism_command(),
                 gate.command("F"),
-                gate.export_command("F"),
             )[len(calls)]
             self.assertEqual(cmd, expected)
-            records = (mechanism_events(), events(kind="F"), events((gate.EXPORT_TEST,), "F"))[
-                len(calls)
-            ]
+            records = (mechanism_events(), events(kind="F"))[len(calls)]
             calls.append(cmd)
             for record in records:
                 kwargs["stdout"].write((json.dumps(record) + "\n").encode())
@@ -333,7 +376,8 @@ class SDK4ReceiptTest(unittest.TestCase):
             patch.object(gate.subprocess, "run", side_effect=execute),
         ):
             gate.run(self.root, evidence, kind="F")
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("export", json.loads((evidence / "receipt.json").read_text()))
 
     def test_ineligible_environment_never_starts_a_native_process(self):
         evidence = Path(self.temp.name) / "failed-environment"
