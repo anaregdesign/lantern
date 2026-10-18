@@ -282,9 +282,10 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	if queryRoles != "" && len(hosts) != 0 {
 		t.Fatal("query fixture is local and cannot select the container campaign")
 	}
-	if len(hosts) != 0 || queryRoles != "" || nativeServing || composeOriginal {
+	if len(hosts) != 0 || queryRoles != "" || nativeServing || composeOriginal || os.Getenv("LANTERN_CURRENT_FIXTURE_BOOTSTRAP_FILE") != "" {
 		// One independently provisioned lifetime covers the bounded campaign;
-		// restart never rewrites or extends this signed membership.
+		// ordinary SDK campaigns include setup/crash checks before first use.
+		// Restart never rewrites or extends this signed membership.
 		n.manifest.IssuedAt = time.Now().UTC().Add(-5 * time.Second)
 		n.manifest.ExpiresAt = n.manifest.IssuedAt.Add(peerauth.MaxMembershipLifetime)
 	}

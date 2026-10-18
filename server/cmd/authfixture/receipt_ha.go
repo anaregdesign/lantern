@@ -9,19 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net"
-	"net/http"
-	"net/http/httputil"
-	"net/url"
-	"os"
-	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/anaregdesign/lantern/core/privatefile"
 )
 
 // receiptHAControl isolates data replication. The quorum authority uses its
@@ -60,203 +54,57 @@ func receiptHACert(node fixtureNode) (tls.Certificate, error) {
 	return cert, err
 }
 
-// receiptHARelays preserve each admitted caller's workload certificate on the
-// upstream hop. No browser/machine token, TLS bypass or origin rewrite is used.
-func receiptHARelays(result fixture, control *receiptHAControl) (_ fixture, cleanup func(), err error) {
-	if len(result.Nodes) != 4 {
-		return result, nil, errors.New("four native nodes required")
-	}
-	raw, err := os.ReadFile(result.CAFile)
-	if err != nil {
-		return result, nil, err
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(raw) {
-		return result, nil, errors.New("invalid relay CA")
-	}
-	certs := make([]tls.Certificate, 4)
-	control.identities = map[string]int{}
-	control.fingerprints = map[string][32]byte{}
-	for i, node := range result.Nodes {
-		certs[i], err = receiptHACert(node)
-		if err != nil {
-			return result, nil, err
-		}
-		id := node.Environment["LANTERN_PEER_WORKLOAD_ID"]
-		control.identities[id] = i
-		control.fingerprints[id] = sha256.Sum256(certs[i].Leaf.RawSubjectPublicKeyInfo)
-	}
-	var servers []*http.Server
-	var listeners []net.Listener
-	var transports []*http.Transport
-	var once sync.Once
-	cleanup = func() {
-		once.Do(func() {
-			for _, server := range servers {
-				_ = server.Close()
-			}
-			for _, listener := range listeners {
-				_ = listener.Close()
-			}
-			for _, transport := range transports {
-				transport.CloseIdleConnections()
-			}
-		})
-	}
-	defer func() {
-		if err != nil {
-			cleanup()
-		}
-	}()
-	reservedPorts := map[string]bool{}
-	for _, node := range result.Nodes {
-		for _, rawOrigin := range []string{node.PublicOrigin, node.PeerOrigin} {
-			origin, parseErr := url.Parse(rawOrigin)
-			if parseErr != nil || origin.Port() == "" {
-				return result, cleanup, errors.New("invalid owned relay origin")
-			}
-			reservedPorts[origin.Port()] = true
-		}
-	}
-	for recipient := range result.Nodes {
-		node := &result.Nodes[recipient]
-		origin, parseErr := url.Parse(node.PeerOrigin)
-		if parseErr != nil {
-			return result, cleanup, parseErr
-		}
-		listener, listenErr := net.Listen("tcp", origin.Host)
-		if listenErr != nil {
-			return result, cleanup, listenErr
-		}
-		listeners = append(listeners, listener)
-		// Reserve a backend listener before releasing it for the production child.
-		var address string
-		for attempt := 0; attempt < 32; attempt++ {
-			backend, listenErr := net.Listen("tcp", "127.0.0.1:0")
-			if listenErr != nil {
-				return result, cleanup, listenErr
-			}
-			candidate := backend.Addr().String()
-			_, port, _ := net.SplitHostPort(candidate)
-			_ = backend.Close()
-			if !reservedPorts[port] {
-				address = candidate
-				reservedPorts[port] = true
-				break
-			}
-		}
-		if address == "" {
-			return result, cleanup, errors.New("cannot reserve distinct owned backend")
-		}
-
-		node.Environment["LANTERN_PEER_LISTEN_ADDR"] = address
-		target, _ := url.Parse("https://" + address)
-		proxies := make([]*httputil.ReverseProxy, 4)
-		for caller := range proxies {
-			transport := &http.Transport{ForceAttemptHTTP2: true, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{certs[caller]}}, MaxConnsPerHost: 16, MaxIdleConnsPerHost: 16, IdleConnTimeout: 10 * time.Second}
-			transports = append(transports, transport)
-			proxy := httputil.NewSingleHostReverseProxy(target)
-			proxy.Transport = transport
-			proxy.FlushInterval = -1
-			proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
-				http.Error(w, "owned relay unavailable", http.StatusServiceUnavailable)
-			}
-			proxies[caller] = proxy
-		}
-		slots := make(chan struct{}, 32)
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			caller, ok := control.caller(r.TLS)
-			if !ok || caller == recipient || r.Method != http.MethodPost || r.URL.RawQuery != "" || !control.allowed(caller, recipient, r.URL.Path) {
-				http.Error(w, "owned data partition", http.StatusServiceUnavailable)
-				return
-			}
-			select {
-			case slots <- struct{}{}:
-				defer func() { <-slots }()
-			default:
-				http.Error(w, "owned relay capacity", http.StatusServiceUnavailable)
-				return
-			}
-			proxies[caller].ServeHTTP(w, r)
-		})
-		server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 16 << 10, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certs[recipient]}, ClientCAs: roots, ClientAuth: tls.RequireAndVerifyClientCert, SessionTicketsDisabled: true, VerifyConnection: func(state tls.ConnectionState) error {
-			if _, ok := control.caller(&state); !ok {
-				return errors.New("unapproved relay workload")
-			}
-			return nil
-		}}}
-		servers = append(servers, server)
-		go func() { _ = server.ServeTLS(listener, "", "") }()
-	}
-	return result, cleanup, nil
+func receiptHASPKI(leaf *x509.Certificate) [32]byte {
+	return sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
 }
 
-func receiptHAStart(node fixtureNode, binary, directory, suffix string) (*fixtureProcess, error) {
-	env, err := fixtureEnvironment(node, nil)
-	if err != nil {
-		return nil, err
+func serveReceiptHAFixture(ctx context.Context, result fixture, binary, directory string, input io.ReadCloser, output io.Writer, readyTimeout time.Duration) error {
+	h := result.receiptLaunch
+	if h == nil || !filepath.IsAbs(binary) || readyTimeout < time.Second || readyTimeout > 5*time.Minute {
+		return errors.New("owned HA launch and bounded timeout required")
 	}
-	log, err := privatefile.Create(filepath.Join(directory, node.Name+suffix+"-server.log"), os.O_WRONLY)
-	if err != nil {
-		return nil, err
-	}
-	command := exec.Command(binary)
-	command.Env = env
-	command.Stdout = log
-	command.Stderr = log
-	if err := command.Start(); err != nil {
-		_ = log.Close()
-		return nil, err
-	}
-	child := &fixtureProcess{command: command, log: log, done: make(chan struct{})}
-	go func() { _ = command.Wait(); close(child.done) }()
-	return child, nil
-}
-
-func serveReceiptHAFixture(ctx context.Context, result fixture, binary, directory string, input io.Reader, output io.Writer, readyTimeout time.Duration) error {
-	if !filepath.IsAbs(binary) || readyTimeout < time.Second || readyTimeout > 5*time.Minute {
-		return errors.New("absolute Server and bounded timeout required")
-	}
+	defer h.close()
 	control := &receiptHAControl{}
-	result, closeRelays, err := receiptHARelays(result, control)
+	var err error
+	h.relays, err = receiptHARelays(result, control, h.peers)
 	if err != nil {
 		return err
 	}
-	defer closeRelays()
-	children := make([]*fixtureProcess, 4)
-	defer func() {
-		for i := len(children) - 1; i >= 0; i-- {
-			if children[i] != nil {
-				children[i].stop()
-			}
-		}
-	}()
-	for i, node := range result.Nodes {
+	for _, node := range result.Nodes {
 		for key, value := range map[string]string{"LANTERN_PUMP_BACKOFF_MIN_MS": "50", "LANTERN_PUMP_BACKOFF_MAX_MS": "200", "LANTERN_ANTI_ENTROPY_INTERVAL_MS": "250"} {
 			node.Environment[key] = value
 		}
-		children[i], err = receiptHAStart(node, binary, directory, "")
-		if err != nil {
-			return err
-		}
 	}
-	startup, cancel := context.WithTimeout(ctx, readyTimeout)
-	err = waitFixtureReady(startup, result, children)
+	if err = h.relays.resume(result); err != nil {
+		return err
+	}
+	if err = h.configure(ctx, result); err != nil {
+		return err
+	}
+	if err = h.public.resume(h.launches[3]); err != nil {
+		return err
+	}
+	startup, cancel := context.WithDeadline(ctx, h.deadline)
+	err = waitFixtureReady(startup, result, h.children())
 	cancel()
 	if err != nil {
 		return err
 	}
-	if err := json.NewEncoder(output).Encode(result); err != nil {
+	if err = json.NewEncoder(output).Encode(result); err != nil {
 		return err
 	}
 	commands := make(chan string, 1)
+	commandCtx, stopCommands := context.WithCancel(ctx)
+	commandsDone := make(chan struct{})
+	defer func() { stopCommands(); _ = input.Close(); <-commandsDone }()
 	go func() {
+		defer close(commandsDone)
 		scanner := bufio.NewScanner(input)
 		scanner.Buffer(make([]byte, 64), 1024)
 		for scanner.Scan() {
 			select {
 			case commands <- scanner.Text():
-			case <-ctx.Done():
+			case <-commandCtx.Done():
 				return
 			}
 		}
@@ -278,26 +126,14 @@ func serveReceiptHAFixture(ctx context.Context, result fixture, binary, director
 				if stoppedA {
 					return errors.New("origin already stopped")
 				}
-				children[1].stop()
-				children[1] = nil
+				h.launches[1].close()
 				stoppedA = true
 			case "relay-b-to-c":
 				if !stoppedA || relayedC {
 					return errors.New("relay requires one explicit origin shutdown")
 				}
-				children[3].stop()
-				children[3] = nil
-				node := result.Nodes[3]
-				node.Environment["LANTERN_PEER_MEMBERSHIP_MODE"] = "resume"
-				node.Environment["LANTERN_SECURITY_STORE_MODE"] = "restart"
-				node.Environment["LANTERN_RECEIPT_WAL_MODE"] = "restart"
-				control.connected.Store(true)
-				children[3], err = receiptHAStart(node, binary, directory, "-restart")
-				if err != nil {
-					return err
-				}
-				startup, cancel := context.WithTimeout(ctx, readyTimeout)
-				err = waitFixtureReady(startup, fixture{CAFile: result.CAFile, Nodes: []fixtureNode{node}}, []*fixtureProcess{children[3]})
+				restart, cancel := context.WithTimeout(ctx, readyTimeout)
+				err = restartReceiptHAC(restart, &result, binary, directory, control)
 				cancel()
 				if err != nil {
 					return err
@@ -306,19 +142,67 @@ func serveReceiptHAFixture(ctx context.Context, result fixture, binary, director
 			default:
 				return errors.New("unknown receipt HA command")
 			}
-			if err := json.NewEncoder(output).Encode(map[string]string{"completed": command}); err != nil {
+			if err = json.NewEncoder(output).Encode(map[string]string{"completed": command}); err != nil {
 				return err
 			}
 		case <-ticker.C:
-			for _, child := range children {
-				if child != nil {
-					select {
-					case <-child.done:
-						return errors.New("owned receipt HA node exited")
-					default:
-					}
+			for i, l := range h.launches {
+				if stoppedA && i == 1 {
+					continue
+				}
+				select {
+				case <-l.process.done:
+					return errors.New("owned receipt HA node exited")
+				default:
 				}
 			}
 		}
 	}
+}
+
+func restartReceiptHAC(ctx context.Context, result *fixture, binary, directory string, control *receiptHAControl) error {
+	h := result.receiptLaunch
+	h.public.pause()
+	h.relays.pause()
+	shutdown, cancel := context.WithTimeout(ctx, 10*time.Second)
+	err := h.launches[3].orderlyStop(shutdown)
+	cancel()
+	if err != nil {
+		return err
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return errors.New("bounded HA restart required")
+	}
+	launch, err := startFixtureLaunch(ctx, binary, directory, true, deadline)
+	if err != nil {
+		return err
+	}
+	h.launches[3] = launch // Register cleanup before configuring or retargeting.
+	node := result.Nodes[3]
+	node.Environment = maps.Clone(node.Environment)
+	node.Environment["LANTERN_PORT"] = strconv.Itoa(launch.public)
+	node.Environment["LANTERN_PEER_LISTEN_ADDR"] = net.JoinHostPort("127.0.0.1", strconv.Itoa(launch.peer))
+	node.Environment["LANTERN_PEER_MEMBERSHIP_MODE"] = "resume"
+	node.Environment["LANTERN_SECURITY_STORE_MODE"] = "resume"
+	node.Environment["LANTERN_RECEIPT_WAL_MODE"] = "restart"
+	if err = checkFixtureLaunchNode(launch, node); err != nil {
+		return err
+	}
+	env, err := fixtureEnvironment(node, nil)
+	if err != nil {
+		return err
+	}
+	if err = launch.configure(ctx, env); err != nil {
+		return fixtureAdoptionFailure(err, launch.process, 3, launch.public, 0)
+	}
+	result.Nodes[3] = node
+	if err = h.relays.resume(*result); err != nil {
+		return err
+	}
+	control.connected.Store(true)
+	if err = h.public.resume(launch); err != nil {
+		return err
+	}
+	return waitFixtureReady(ctx, fixture{CAFile: result.CAFile, Nodes: []fixtureNode{node}, authorityProfile: result.authorityProfile}, []*fixtureProcess{launch.process})
 }

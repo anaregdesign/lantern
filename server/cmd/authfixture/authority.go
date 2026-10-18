@@ -122,6 +122,7 @@ func provisionFixtureAuthority(ctx context.Context, f *fixture, directory, expor
 				return errors.New("original authority profile drift")
 			}
 			env := f.Nodes[i].Environment
+			f.Nodes[i].originalMember = uint32(i + 1)
 			env["LANTERN_AUTH_MODE"], env["LANTERN_SECURITY_STORE_MODE"], env["LANTERN_SECURITY_CONFIG_FILE"] = "oidc", "fresh", path
 		}
 	}

@@ -23,6 +23,14 @@ def job(text, name):
 
 
 class RepresentativeCoverageTest(unittest.TestCase):
+    def test_receipt_ha_pins_its_exporter_and_retains_environment_isolation(self):
+        body = job(workflow("dart-sdk"), "offline-test")
+        self.assertIn('go test -c -buildvcs=true -o "$RUNNER_TEMP/lantern-offline-authority-provisioner"', body)
+        self.assertIn('LANTERN_DART_RECEIPT_HA_PROVISIONER="$RUNNER_TEMP/lantern-offline-authority-provisioner"', body)
+        source = (ROOT / "sdks/dart/offline/test/real_wire_test.dart").read_text()
+        self.assertIn("'-authority-provisioner',\n      _authorityProvisioner,", source)
+        self.assertIn("includeParentEnvironment: false", source)
+
     def test_windows_retains_native_mtls_without_requesting_unsupported_oidc(self):
         import windows_native
         self.assertIn("TestAuthorityTimeUnsupportedNativeProfile", windows_native.GO_TESTS)

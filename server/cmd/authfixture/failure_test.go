@@ -33,12 +33,14 @@ func TestFixtureFailureCategory(t *testing.T) {
 func TestFixtureServerLogClassificationIsBounded(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "private.log")
 	for _, tc := range []struct{ raw, want string }{
-		{`{"msg":"failed to initialize app","err":"private-token-key-body"}`, "initialization"},
-		{`{"msg":"failed to initialize app","err":"open /etc/ntp.conf: no such file or directory; private-token"}`, "source_input_missing"},
-		{`{"msg":"failed to initialize app","err":"unusable current-authority time measurement; private-token"}`, "authority_time"},
 		{`{"msg":"server exited with error","err":"private-token-key-body"}`, "server_exit"},
+		{`{"msg":"server exited with error","err":"initialize app: private-token-key-body"}`, "initialization"},
+		{`{"msg":"server exited with error","err":"initialize app: open /etc/ntp.conf: no such file or directory; private-token"}`, "source_input_missing"},
+		{`{"msg":"server exited with error","err":"initialize app: unusable current-authority time measurement; private-token"}`, "authority_time"},
+		{`{"msg":"server exited with error","err":"initialize app: listen tcp :1234: bind: address already in use; private-token"}`, "bind_address_in_use"},
+		{`{"msg":"server exited with error","err":"run: unusable current-authority time measurement; private-token"}`, "server_exit"},
 		{"private-token-key-body", "none"},
-		{strings.Repeat("x", 64<<10) + "\n" + `{"msg":"failed to initialize app","err":"bind: address already in use"}`, "none"},
+		{strings.Repeat("x", 64<<10) + "\n" + `{"msg":"server exited with error","err":"initialize app: bind: address already in use"}`, "none"},
 	} {
 		if err := os.WriteFile(path, []byte(tc.raw), 0600); err != nil {
 			t.Fatal(err)
@@ -60,7 +62,7 @@ func TestFixtureAdoptionFailureRetainsOnlyBoundedPassiveEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = file.Close() }()
-	_, _ = file.WriteString("{\"msg\":\"failed to initialize app\",\"err\":\"open /etc/ntp.conf: no such file or directory; private-token\"}\n")
+	_, _ = file.WriteString("{\"msg\":\"server exited with error\",\"err\":\"initialize app: open /etc/ntp.conf: no such file or directory; private-token\"}\n")
 	done := make(chan struct{})
 	close(done)
 	private := errors.New("private-token-key-body")

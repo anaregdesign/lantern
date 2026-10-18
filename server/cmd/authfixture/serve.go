@@ -194,6 +194,10 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 		ready := true
 		for i, node := range result.Nodes {
 			lastNode = i
+			expectedMemberIndex := i
+			if node.originalMember != 0 {
+				expectedMemberIndex = int(node.originalMember) - 1
+			}
 			if children[i].log != nil {
 				// Read only existing passive evidence; never call an extra RPC or
 				// authority predicate to diagnose a failed Health response.
@@ -255,7 +259,7 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 						*category = "missing"
 					case !*body.Ready:
 						*category = "not_ready"
-					case !queryCapabilitiesReady(result.Query, i, body.Mode, body.Protocol, body.Member, body.Profile, result.authorityProfile):
+					case node.originalMember > 31 || node.originalMember != 0 && result.authorityProfile == nil && result.Query == nil || !queryCapabilitiesReady(result.Query, expectedMemberIndex, body.Mode, body.Protocol, body.Member, body.Profile, result.authorityProfile):
 						*category = "uncertified"
 					default:
 						*category = "ready"

@@ -40,10 +40,12 @@ import (
 )
 
 type fixtureNode struct {
-	Name         string            `json:"name"`
-	PublicOrigin string            `json:"public_origin"`
-	PeerOrigin   string            `json:"peer_origin"`
-	Environment  map[string]string `json:"environment"`
+	// Fixed by independent original provisioning, never by a peer response.
+	originalMember uint32
+	Name           string            `json:"name"`
+	PublicOrigin   string            `json:"public_origin"`
+	PeerOrigin     string            `json:"peer_origin"`
+	Environment    map[string]string `json:"environment"`
 }
 type fixture struct {
 	authorityProfile *pb.CurrentAuthorityProfile
@@ -54,6 +56,7 @@ type fixture struct {
 	compose        bool
 
 	launches            []*fixtureLaunch
+	receiptLaunch       *receiptHALaunch
 	queryStop           func()
 	Nodes               []fixtureNode `json:"nodes"`
 	CAFile              string        `json:"ca_file"`
@@ -127,12 +130,13 @@ func main() {
 	}
 	public, err := ports(*publicPorts)
 	var launches []*fixtureLaunch
+	var receiptLaunch *receiptHALaunch
 	launchCtx, launchCancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer launchCancel()
-	defer func() { closeFixtureLaunches(launches) }()
+	defer func() { closeFixtureLaunches(launches); receiptLaunch.close() }()
 	if *allocatedNodes != 0 {
-		if *allocatedNodes < 1 || *allocatedNodes > 8 || *publicPorts != "" || *peerPorts != "" || *serverBinary == "" || *compose || *renew || *restartNode != "" || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *protectedQuery || flag.NArg() != 0 {
-			err = errors.New("allocated-nodes requires ordinary supervised local fixtures and no explicit ports")
+		if *allocatedNodes < 1 || *allocatedNodes > 8 || *publicPorts != "" || *peerPorts != "" || *serverBinary == "" || *compose || *renew || *restartNode != "" || *edgeCreate || *headEdge || *transportProbe || *protectedQuery || flag.NArg() != 0 {
+			err = errors.New("allocated-nodes requires supervised local fixtures and no explicit ports")
 		} else {
 			public = make([]int, *allocatedNodes)
 		}
@@ -160,8 +164,8 @@ func main() {
 	if err == nil && len(public) > 1 && len(peer) == 0 && *allocatedNodes == 0 && !*protectedQuery {
 		err = errors.New("multiple nodes require the private workload plane")
 	}
-	if err == nil && *receiptHA && (*compose || *mode != "oidc" || !*receipt || len(public) != 4 || len(peer) != 4 || *serverBinary == "" || *publicMTLS || *overridesFile != "") {
-		err = errors.New("receipt-ha requires four OIDC public/private ports, receipts and production supervision")
+	if err == nil && *receiptHA && (*compose || *mode != "oidc" || !*receipt || *allocatedNodes != 4 || *serverBinary == "" || *publicMTLS || *overridesFile != "") {
+		err = errors.New("receipt-ha requires four allocated OIDC nodes, receipts and production supervision")
 	}
 	if err == nil && *edgeCreate && (*compose || *mode != "oidc" || len(public) != 1 || len(peer) != 0 || *serverBinary == "") {
 		err = errors.New("edge-create requires one supervised standalone OIDC node")
@@ -180,8 +184,20 @@ func main() {
 		err = errors.New("protected query requires its exact supervised OFF/OIDC node count and no other profile or overrides")
 	}
 	var result fixture
+	setupCtx := launchCtx
+	setupCancel := func() {}
+	if *receiptHA {
+		// Leave configuration-frame margin inside the production child's fixed
+		// one-minute preconfiguration lifetime. Never extend its watchdog.
+		setupCtx, setupCancel = context.WithTimeout(launchCtx, min(*readyTimeout, 50*time.Second))
+		defer setupCancel()
+	}
 	if err == nil && *allocatedNodes != 0 {
-		launches, public, peer, err = reserveFixtureCohort(launchCtx, *serverBinary, *directory, *allocatedNodes, *allocatedNodes > 1, *readyTimeout)
+		if *receiptHA {
+			receiptLaunch, public, peer, err = reserveReceiptHALaunch(setupCtx, *serverBinary, *directory, *readyTimeout)
+		} else {
+			launches, public, peer, err = reserveFixtureCohort(launchCtx, *serverBinary, *directory, *allocatedNodes, *allocatedNodes > 1, *readyTimeout)
+		}
 	}
 	if err == nil {
 		if *protectedQuery {
@@ -191,6 +207,10 @@ func main() {
 		}
 	}
 	result.launches = launches
+	result.receiptLaunch = receiptLaunch
+	if err == nil && receiptLaunch != nil {
+		err = receiptLaunch.bindNodes(&result)
+	}
 	if result.queryStop != nil {
 		defer result.queryStop()
 	}
@@ -209,8 +229,12 @@ func main() {
 		err = addFixtureHeadEdge(&result, *directory)
 	}
 	if err == nil && *mode == "oidc" && !*protectedQuery {
-		err = provisionFixtureAuthority(launchCtx, &result, *directory, *authorityProvisioner)
+		err = provisionFixtureAuthority(setupCtx, &result, *directory, *authorityProvisioner)
 	}
+	if err == nil {
+		err = setupCtx.Err()
+	}
+	setupCancel()
 	if err == nil && *compose {
 		err = exportComposeFixture(&result, *directory)
 	}
@@ -236,6 +260,7 @@ func main() {
 		}
 		closeFixtureLaunches(launches)
 		launches = nil
+		receiptLaunch.close()
 		if *serverBinary != "" {
 			writeFixtureFailure(os.Stderr, err)
 		} else {

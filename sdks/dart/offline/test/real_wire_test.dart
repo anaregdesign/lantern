@@ -810,7 +810,19 @@ void main() {
         throw StateError('LANTERN_DART_RECEIPT_HA_FIXTURE is required for HA');
       }
 
-      final cluster = await _ReceiptHaCluster.create(binary, token, helper);
+      final provisioner =
+          Platform.environment['LANTERN_DART_RECEIPT_HA_PROVISIONER'];
+      if (provisioner == null || provisioner.isEmpty) {
+        throw StateError(
+          'same-source authority provisioner is required for HA',
+        );
+      }
+      final cluster = await _ReceiptHaCluster.create(
+        binary,
+        token,
+        helper,
+        authorityProvisioner: provisioner,
+      );
       addTearDown(cluster.close);
       await cluster.start();
       LanternClient connect(Uri endpoint) => LanternClient.connect(
@@ -2057,22 +2069,30 @@ Future<void> _awaitEdgeGone(LanternClient client, EdgeRef edge) async {
 }
 
 final class _ReceiptHaCluster {
-  _ReceiptHaCluster._(this._binary, this._token, this._helper, this._directory);
+  _ReceiptHaCluster._(
+    this._binary,
+    this._token,
+    this._helper,
+    this._authorityProvisioner,
+    this._directory,
+  );
   static Future<_ReceiptHaCluster> create(
     String binary,
     String token,
-    String helper,
-  ) async => _ReceiptHaCluster._(
+    String helper, {
+    required String authorityProvisioner,
+  }) async => _ReceiptHaCluster._(
     binary,
     token,
     helper,
+    authorityProvisioner,
     await Directory.systemTemp.createTemp('lantern-offline-native-ha-'),
   );
   final String _binary;
   final String _token;
   final String _helper;
+  final String _authorityProvisioner;
   final Directory _directory;
-  final Set<int> _reservedPorts = <int>{};
   Process? _supervisor;
   StreamIterator<String>? _responses;
   late final SecurityContext trustedContext;
@@ -2086,8 +2106,6 @@ final class _ReceiptHaCluster {
     ..usePrivateKey(_originEnvironment['LANTERN_TLS_KEY_FILE'] as String);
 
   Future<void> start() async {
-    final public = [for (var i = 0; i < 4; i++) await _freePort()];
-    final private = [for (var i = 0; i < 4; i++) await _freePort()];
     final tokens = File('${_directory.path}/tokens.json');
     await tokens.writeAsString(jsonEncode([_token]));
     // Test credentials stay in a private local fixture, never in public logs.
@@ -2097,14 +2115,14 @@ final class _ReceiptHaCluster {
     final process = await Process.start(_helper, [
       '-directory',
       '${_directory.path}/trust',
-      '-public-ports',
-      public.join(','),
-      '-peer-ports',
-      private.join(','),
+      '-allocated-nodes',
+      '4',
       '-tokens-file',
       tokens.path,
       '-receipt',
       '-receipt-ha',
+      '-authority-provisioner',
+      _authorityProvisioner,
       '-serve',
       _binary,
       '-ready-timeout',
@@ -2173,16 +2191,6 @@ final class _ReceiptHaCluster {
       }
     }
     await _directory.delete(recursive: true);
-  }
-
-  Future<int> _freePort() async {
-    for (var attempt = 0; attempt < 16; attempt++) {
-      final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      final port = socket.port;
-      await socket.close();
-      if (_reservedPorts.add(port)) return port;
-    }
-    throw StateError('could not reserve distinct receipt fixture ports');
   }
 }
 

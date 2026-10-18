@@ -23,7 +23,7 @@ class ConfiguredTimeInputTest(unittest.TestCase):
             with self.subTest(workflow=name):
                 source = (root / f".github/workflows/{name}.yml").read_text()
                 self.assertEqual(source.count("run: python3 -B .github/scripts/configured_time_input.py"), expected)
-                self.assertEqual(source.count("LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}"), expected)
+                self.assertEqual(source.count("LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}"), expected + (name == "rust-sdk"))
                 self.assertNotIn("install -m 0444", source)
 
     def setUp(self):

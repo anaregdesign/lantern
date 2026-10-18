@@ -469,6 +469,7 @@ jobs:
         run: |
           go build -o "$RUNNER_TEMP/lantern-offline" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-offline-authfixture" ./server/cmd/authfixture
+          go test -c -buildvcs=true -o "$RUNNER_TEMP/lantern-offline-authority-provisioner" ./server/internal/security
           env LANTERN_PORT=6398 LANTERN_METRICS_ADDR=:9098 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern-offline" > "$RUNNER_TEMP/lantern-offline.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/lantern-offline.pid"
@@ -516,11 +517,13 @@ jobs:
           token_file="$RUNNER_TEMP/lantern-offline-receipt/token"
           test -s "$token_file"
           test -x "$RUNNER_TEMP/lantern-offline"
+          test -x "$RUNNER_TEMP/lantern-offline-authority-provisioner"
           receipt_token="$(cat "$token_file")"
           echo "::add-mask::$receipt_token"
           LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
             LANTERN_DART_RECEIPT_HA_BINARY="$RUNNER_TEMP/lantern-offline" \
             LANTERN_DART_RECEIPT_HA_FIXTURE="$RUNNER_TEMP/lantern-offline-authfixture" \
+            LANTERN_DART_RECEIPT_HA_PROVISIONER="$RUNNER_TEMP/lantern-offline-authority-provisioner" \
             dart test \
               --name '^receipt ambiguity stays status-first across three authenticated replicas$' \
               test/real_wire_test.dart

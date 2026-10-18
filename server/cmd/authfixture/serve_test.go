@@ -84,20 +84,25 @@ func TestFixtureReadinessRequiresHealthAndCertifiedCapabilities(t *testing.T) {
 		version, member, status int
 		expected, advertised    *pb.CurrentAuthorityProfile
 		accept                  bool
+		originalMember          uint32
 	}{
-		{"oidc original profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, true},
-		{"off", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, nil, nil, true},
-		{"wrong health spelling", "SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false},
-		{"not serving", "SERVING_STATUS_NOT_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false},
-		{"not certified", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", false, 2, 1, 200, profile, profile, false},
-		{"unknown mode", "SERVING_STATUS_SERVING", "AUTH_MODE_UNSPECIFIED", true, 2, 1, 200, profile, profile, false},
-		{"retired authenticated protocol", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 1, 0, 200, profile, nil, false},
-		{"missing member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 0, 200, profile, profile, false},
-		{"missing advertised profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, nil, false},
-		{"foreign advertised profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, other, false},
-		{"missing original expected profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, nil, profile, false},
-		{"oidc cannot downgrade", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, profile, nil, false},
-		{"transport error", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 503, profile, profile, false},
+		{"oidc original profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, true, 0},
+		{"off", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, nil, nil, true, 0},
+		{"wrong health spelling", "SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false, 0},
+		{"not serving", "SERVING_STATUS_NOT_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false, 0},
+		{"not certified", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", false, 2, 1, 200, profile, profile, false, 0},
+		{"unknown mode", "SERVING_STATUS_SERVING", "AUTH_MODE_UNSPECIFIED", true, 2, 1, 200, profile, profile, false, 0},
+		{"retired authenticated protocol", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 1, 0, 200, profile, nil, false, 0},
+		{"missing member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 0, 200, profile, profile, false, 0},
+		{"missing advertised profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, nil, false, 0},
+		{"foreign advertised profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, other, false, 0},
+		{"missing original expected profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, nil, profile, false, 0},
+		{"oidc cannot downgrade", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, profile, nil, false, 0},
+		{"transport error", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 503, profile, profile, false, 0},
+		{"original fourth member subset", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 4, 200, profile, profile, true, 4},
+		{"subset cannot rebind member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false, 4},
+		{"invalid original member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 32, 200, profile, profile, false, 32},
+		{"subset cannot lose its original profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, nil, nil, false, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +130,7 @@ func TestFixtureReadinessRequiresHealthAndCertifiedCapabilities(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
-			f := fixture{CAFile: ca, authorityProfile: tc.expected, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}
+			f := fixture{CAFile: ca, authorityProfile: tc.expected, Nodes: []fixtureNode{{PublicOrigin: server.URL, originalMember: tc.originalMember}}}
 			err := waitFixtureReady(ctx, f, []*fixtureProcess{{done: make(chan struct{})}})
 			if (err == nil) != tc.accept {
 				t.Fatalf("accept=%t error=%v", tc.accept, err)
@@ -145,7 +150,7 @@ func TestFixtureReadinessDiagnosticChild(t *testing.T) {
 		return
 	}
 	// Arbitrary private text must never be replayed into the public diagnostic.
-	_, _ = os.Stderr.WriteString("{\"msg\":\"failed to initialize app\",\"err\":\"listen tcp :12345: bind: address already in use private-token-key-body\"}\n")
+	_, _ = os.Stderr.WriteString("{\"msg\":\"server exited with error\",\"err\":\"initialize app: listen tcp :12345: bind: address already in use private-token-key-body\"}\n")
 	os.Exit(23)
 }
 

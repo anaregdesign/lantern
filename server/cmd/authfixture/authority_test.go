@@ -3,15 +3,27 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/anaregdesign/lantern/server/internal/peerauth"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/provider"
 )
+
+func TestOriginalProvisioningRequiresToolchainOrPinnedExporter(t *testing.T) {
+	t.Setenv("PATH", "")
+	err := runOriginalProvisioner(t.Context(), "", filepath.Join(t.TempDir(), "authority"), "https://fixture.invalid", "original.json", 4)
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatal("isolated fixture lost the missing original provisioner cause", err)
+	}
+}
 
 func TestLocalFixtureCreatesOwnedHomogeneousWorkloadConfig(t *testing.T) {
 	for _, mode := range []string{"off", "oidc"} {
@@ -77,6 +89,22 @@ func TestLocalFixtureCreatesOwnedHomogeneousWorkloadConfig(t *testing.T) {
 						}
 						if peer, _, err := provider.NewConfiguredPeerIdentity(config.PeerPlane); err == nil || peer != nil {
 							t.Fatal("OIDC workload started without the actual current time owner")
+						}
+						var input struct {
+							Membership struct {
+								KeyFile, ManifestFile string
+								Profile               peerauth.ControlProfile
+							}
+						}
+						raw, err := os.ReadFile(config.Security.ConfigFile)
+						if err != nil || json.Unmarshal(raw, &input) != nil {
+							t.Fatal("original fixture membership input missing", err)
+						}
+						key, keyErr := os.ReadFile(input.Membership.KeyFile)
+						signed, signedErr := os.ReadFile(input.Membership.ManifestFile)
+						manifest, verifyErr := peerauth.VerifyControlManifest(signed, ed25519.PublicKey(key), input.Membership.Profile.Lineage)
+						if keyErr != nil || signedErr != nil || verifyErr != nil || manifest.ExpiresAt.Sub(manifest.IssuedAt) != peerauth.MaxMembershipLifetime {
+							t.Fatal("original SDK campaign membership does not cover its declared bounded lifetime", keyErr, signedErr, verifyErr)
 						}
 						return
 					}

@@ -108,20 +108,22 @@ func fixtureServerLogCategory(path string) string {
 		if json.Unmarshal(scanner.Bytes(), &event) != nil {
 			continue
 		}
-		switch event.Message {
-		case "failed to initialize app":
-			category = "initialization"
-			if strings.Contains(event.Error, "open /etc/ntp.conf: no such file or directory") {
-				return "source_input_missing"
-			}
-			if strings.Contains(event.Error, "unusable current-authority time measurement") {
-				return "authority_time"
-			}
-			if strings.Contains(event.Error, "bind: address already in use") || strings.Contains(event.Error, "bind: Only one usage of each socket address") {
-				return "bind_address_in_use"
-			}
-		case "server exited with error":
-			category = "server_exit"
+		if event.Message != "server exited with error" {
+			continue
+		}
+		category = "server_exit"
+		if !strings.HasPrefix(event.Error, "initialize app: ") {
+			continue
+		}
+		category = "initialization"
+		if strings.Contains(event.Error, "open /etc/ntp.conf: no such file or directory") {
+			return "source_input_missing"
+		}
+		if strings.Contains(event.Error, "unusable current-authority time measurement") {
+			return "authority_time"
+		}
+		if strings.Contains(event.Error, "bind: address already in use") || strings.Contains(event.Error, "bind: Only one usage of each socket address") {
+			return "bind_address_in_use"
 		}
 	}
 	return category

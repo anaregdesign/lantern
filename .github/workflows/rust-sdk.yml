@@ -2,6 +2,11 @@ name: Rust SDK
 
 on:
   workflow_dispatch:
+    inputs:
+      native_time_diagnostic:
+        description: Run only the explicitly requested singleflight Darwin diagnostic
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -58,6 +63,7 @@ defaults:
 
 jobs:
   test:
+    if: ${{ !inputs.native_time_diagnostic }}
     name: Test (${{ matrix.os }}, Rust ${{ matrix.rust }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -180,3 +186,28 @@ jobs:
             PROTOC=/nonexistent/protoc CARGO_TARGET_DIR="$RUNNER_TEMP/lantern-rust-archive-target" \
               cargo build --frozen
           )
+
+  native-time-diagnostic:
+    if: github.event_name == 'workflow_dispatch' && inputs.native_time_diagnostic
+    runs-on: macos-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Observe one configured-source native acquisition
+        timeout-minutes: 4
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_diagnostic.py
+      - name: Preserve only the allowlisted diagnostic result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-time-singleflight-${{ github.sha }}
+          path: ${{ runner.temp }}/lantern-native-time-result.json
+          if-no-files-found: error
