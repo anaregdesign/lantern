@@ -162,6 +162,7 @@ jobs:
             src/error.rs src/lib.rs src/mutation.rs src/paging.rs src/paging/tests.rs \
             src/prefix.rs src/prefix/tests.rs src/scans.rs src/scans/tests.rs \
             src/search.rs src/search/tests.rs src/scoped_changes.rs src/security.rs src/smoke.rs src/test_server.rs \
+            src/test_server/startup.rs \
             src/transport.rs src/transport/tests.rs src/traversal.rs \
             src/traversal/tests.rs \
             src/value.rs src/value/tests.rs | sort)
