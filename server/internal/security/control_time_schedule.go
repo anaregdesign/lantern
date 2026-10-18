@@ -10,7 +10,10 @@ import (
 const authorityTimeRefreshGoal = uint64(5 * time.Second)
 const authorityTimeRefreshLead = 5 * time.Minute
 
-func authorityTimeRefreshDelay(a authorityTimeEstimate, random uint64) time.Duration {
+func authorityTimeRefreshDelay(a authorityTimeEstimate, now authorityTimeStamp, random uint64) time.Duration {
+	if _, err := a.premises.elapsed(a.at, now); err != nil {
+		return time.Minute
+	}
 	// With the admitted1000ppm envelope, the target is crossed within an
 	// hour even for a point anchor. The day cap bounds scheduling arithmetic
 	// for test hypotheses; it is never a semantic holdover limit.
@@ -30,7 +33,13 @@ func authorityTimeRefreshDelay(a authorityTimeEstimate, random uint64) time.Dura
 			lo = mid + 1
 		}
 	}
-	delay := time.Duration(lo) - authorityTimeRefreshLead
+	// Installation may have been delayed by a process pause. Forecasts are
+	// relative to the original receive sample, not to installation/completion.
+	remaining := uint64(0)
+	if lo > now.nanos-a.at.nanos {
+		remaining = lo - (now.nanos - a.at.nanos)
+	}
+	delay := time.Duration(remaining) - authorityTimeRefreshLead
 	delay = max(delay, time.Minute)
 	return max(time.Minute, delay-time.Duration(random%uint64(delay/10+1)))
 }

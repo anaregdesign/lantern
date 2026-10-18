@@ -34,6 +34,7 @@ type authorityTimeOwner struct {
 	anchor          *authorityTimeEstimate
 	sequence        uint64
 	installations   uint64
+	installedAt     authorityTimeStamp // scheduling only; never replaces anchor.at
 	denied          bool
 	failed, closed  bool
 	lastObservation *authorityTimeMeasurement
@@ -106,6 +107,7 @@ func (o *authorityTimeOwner) runLoopScheduled(ctx context.Context, measure func(
 		}
 		o.recordStartupLocked(attempt)
 		anchor := o.anchor
+		installedAt := o.installedAt
 		o.mu.Unlock()
 		if stopped {
 			probe.Reason = "association_denied"
@@ -124,7 +126,7 @@ func (o *authorityTimeOwner) runLoopScheduled(ctx context.Context, measure func(
 		}
 		refresh := time.Minute
 		if anchor != nil {
-			refresh = authorityTimeRefreshDelay(*anchor, entropy)
+			refresh = authorityTimeRefreshDelay(*anchor, installedAt, entropy)
 		}
 		delay := retry.delay(err, refresh)
 		if err != nil && retry.qualified && delay < 15*time.Minute {
@@ -187,6 +189,7 @@ func (o *authorityTimeOwner) installLocked(m authorityTimeMeasurement) error {
 	o.lastObservation = &m
 	o.sequence = m.sequence
 	o.installations++
+	o.installedAt = now
 	o.installReason = "installed"
 	return nil
 }
