@@ -20,14 +20,19 @@ go run ./server/cmd              # start the server (:6380)
 go run ./cli                     # start the CLI
 ```
 
-**Pre-push quality gate** (matches required CI checks):
+**Pre-push quality gate**: after fetching target main and freezing the candidate,
+run fresh affected local checks; unknown/policy/dependency inputs fall back to full:
 
-```bash
-gofmt -l .                       # must print nothing
-go test ./...                    # then repeat in EACH submodule:
-(cd core && go test ./...); (cd mcp && go test ./...); (cd pb && go test ./...)
-(cd sdks/go && go test ./...); (cd server && go vet ./... && go test ./...)
+```sh
+python3 -B .github/scripts/local_gate_session.py "$PWD" ../affected-evidence-new --affected-base origin/main
 ```
+
+The complete 77-step plan remains available without `--affected-base`; policy
+adoption must use the previous full contract on its own final source. Eligible
+pure prose retains its explicit path. Omitted families are NOT_SELECTED, never
+passed or carried. Hosted exact-merge F/module coverage/boundary Q remain blocking.
+Full Windows Rust compatibility is manual/release, with affected native
+ACL/filesystem/TLS/process tests blocking the existing Build & Test aggregate.
 
 CI additionally enforces **per-module coverage floors** (a ratchet — table in CONTRIBUTING.md "Coverage floor"; raise the floor in the same PR when coverage rises durably) and fails the `Proto (buf)` check on any uncommitted codegen diff — regenerate and commit before pushing.
 

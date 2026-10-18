@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protowire"
@@ -561,62 +562,67 @@ func TestReceiptBaselineCodecDurableRuntimeInstallRestartAndSuffixReplay(t *test
 }
 
 func TestReceiptBaselineCodecRestartReapsNaturallyExpiredTombstone(t *testing.T) {
-	issued := time.Now().Truncate(time.Millisecond)
-	expiration := issued.Add(time.Second)
-	archive := wholeStateArchiveFixtureAt(t, issued)
-	stamp := archive.Graph[0].GetHeader().GetCutoffHlc()
-	archive.Graph = append(
-		archive.Graph[:1],
-		append([]*pb.SnapshotResponse{{
-			Entry: &pb.SnapshotResponse_EdgeTombstone{
-				EdgeTombstone: &pb.SnapshotEdgeTombstone{
-					Tail: "expired", Head: "floor",
-					Hlc: stamp, Expiration: timestamppb.New(expiration),
+	// Keep the live interval independent of real baseline persistence speed.
+	// The same one-second TTL then expires on the bubble clock (#1821).
+	synctest.Test(t, func(t *testing.T) {
+		issued := time.Now().Truncate(time.Millisecond)
+		expiration := issued.Add(time.Second)
+		archive := wholeStateArchiveFixtureAt(t, issued)
+		stamp := archive.Graph[0].GetHeader().GetCutoffHlc()
+		archive.Graph = append(
+			archive.Graph[:1],
+			append([]*pb.SnapshotResponse{{
+				Entry: &pb.SnapshotResponse_EdgeTombstone{
+					EdgeTombstone: &pb.SnapshotEdgeTombstone{
+						Tail: "expired", Head: "floor",
+						Hlc: stamp, Expiration: timestamppb.New(expiration),
+					},
 				},
+			}}, archive.Graph[1:]...)...,
+		)
+		archive.Graph[len(archive.Graph)-1].GetFooter().EdgeTombstoneCount = 1
+
+		path := filepath.Join(t.TempDir(), "receipts.wal")
+		config := service.DurableReceiptWALRuntimeConfig{
+			Path: path, Receipt: archive.Policy,
+			Log:        mutationlog.Options{Capacity: 8, SubscriberBuffer: 2},
+			DefaultTTL: time.Hour,
+			ConfigureGraph: func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
+				graph.EnablePrefixIndex(func(key string) string { return key })
+				return nil
 			},
-		}}, archive.Graph[1:]...)...,
-	)
-	archive.Graph[len(archive.Graph)-1].GetFooter().EdgeTombstoneCount = 1
+			NodeID: hlc.NodeID{0x44}, Now: issued, BaselineCodec: ReceiptBaselineCodec{},
+		}
+		runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer runtime.Close()
+		primary := runtime.NewLanternService(nil)
+		if err := primary.InstallReceiptBaseline(context.Background(), producerCapture(archive)); err != nil {
+			t.Fatal(err)
+		}
+		if got := runtime.GraphCache().SnapshotReplication().Tombstones.Edges; len(got) != 1 {
+			t.Fatalf("live installed tombstone = %+v", got)
+		}
+		if err := runtime.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if wait := time.Until(expiration.Add(20 * time.Millisecond)); wait > 0 {
+			time.Sleep(wait)
+		}
 
-	path := filepath.Join(t.TempDir(), "receipts.wal")
-	config := service.DurableReceiptWALRuntimeConfig{
-		Path: path, Receipt: archive.Policy,
-		Log:        mutationlog.Options{Capacity: 8, SubscriberBuffer: 2},
-		DefaultTTL: time.Hour,
-		ConfigureGraph: func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
-			graph.EnablePrefixIndex(func(key string) string { return key })
-			return nil
-		},
-		NodeID: hlc.NodeID{0x44}, Now: issued, BaselineCodec: ReceiptBaselineCodec{},
-	}
-	runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	primary := runtime.NewLanternService(nil)
-	if err := primary.InstallReceiptBaseline(context.Background(), producerCapture(archive)); err != nil {
-		t.Fatal(err)
-	}
-	if got := runtime.GraphCache().SnapshotReplication().Tombstones.Edges; len(got) != 1 {
-		t.Fatalf("live installed tombstone = %+v", got)
-	}
-	if err := runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if wait := time.Until(expiration.Add(20 * time.Millisecond)); wait > 0 {
-		time.Sleep(wait)
-	}
-
-	config.Now = expiration.Add(time.Second)
-	restarted, err := service.OpenDurableReceiptWALServingRuntime(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer restarted.Close()
-	if got := restarted.GraphCache().SnapshotReplication().Tombstones.Edges; len(got) != 0 {
-		t.Fatalf("restart resurrected expired tombstone: %+v", got)
-	}
-	if _, _, ok := restarted.GraphCache().GetEdgeDetail("expired", "floor"); ok {
-		t.Fatal("restart resurrected an edge behind the expired tombstone")
-	}
+		config.Now = expiration.Add(time.Second)
+		restarted, err := service.OpenDurableReceiptWALServingRuntime(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer restarted.Close()
+		if got := restarted.GraphCache().SnapshotReplication().Tombstones.Edges; len(got) != 0 {
+			t.Fatalf("restart resurrected expired tombstone: %+v", got)
+		}
+		if _, _, ok := restarted.GraphCache().GetEdgeDetail("expired", "floor"); ok {
+			t.Fatal("restart resurrected an edge behind the expired tombstone")
+		}
+	})
 }

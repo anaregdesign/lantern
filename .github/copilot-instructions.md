@@ -84,11 +84,11 @@ they must not conflict.
   Continue within existing authorization and surface exact permission blockers.
 - **Iterate, review, then qualify**: focused tests during edits, review fixes before
   the final coherent candidate gate. Explicit pure-prose eligibility in CONTRIBUTING
-  selects fresh text/docs-contract checks; other changes require every component.
-  Every push requires valid applicable results, newly executed or mechanically
-  carried by the live local runner under CONTRIBUTING.md. Unknown/invalid evidence requires full execution;
-  unsupported gates run, and hosted merge/main/release/device/performance proof
-  remains independent. Policy changes use the previous full gate on themselves.
+  selects fresh text/docs-contract checks; otherwise use fresh affected local
+  `--affected-base origin/main` checks. The small dependency map unions mixed
+  changes and sends unknown/policy/config inputs to full. Omitted steps are
+  NOT_SELECTED, never passed or carried. Hosted merge/main/release/device/performance
+  proof remains independent. Policy changes use the previous full gate on themselves.
 - Review the immutable diff and affected boundaries, retain short generated
   head/tree/hash evidence and raw logs. Reserve Ultra for new safety/proof questions.
   Budget costly runs, pin final merged source and reuse one immutable image/setup;
@@ -96,8 +96,10 @@ they must not conflict.
 - **PR titles must be Conventional Commits** (`feat`/`fix`/`docs`/`chore`/`ci`/
   `refactor`/`perf`/`test`/`build`/`revert`); a required check rejects others.
 - **Before every push**, satisfy the applicable gate in CONTRIBUTING.md. Only
-  explicit pure-prose eligibility selects text/docs-contract checks; otherwise run
-  empty `gofmt -l`, root and every Go submodule, Dart/Flutter and Rust gates.
+  affected local closure or explicit pure-prose checks may be selected. Full77
+  remains the fallback and policy bootstrap; it cannot relax itself. Hosted F and
+  boundary Q remain blocking. Windows Rust full compatibility is manual/release;
+  selected native Go/Rust ACL/filesystem/TLS/process checks block Build & Test.
 - **Dart releases are independent.** `sdks/dart/vX.Y.Z` must match
   `sdks/dart/pubspec.yaml` and `CHANGELOG.md`; the tag workflow runs Dart plus
   Android/iOS gates, publishes `lantern_client` through pub.dev OIDC, and only then

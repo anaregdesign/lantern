@@ -1,6 +1,7 @@
 name: Rust SDK
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -13,6 +14,7 @@ on:
       - 'go.sum'
       - 'go.work'
       - 'go.work.sum'
+      - 'tests/integration/auth_test.go'
       - '.github/workflows/rust-sdk.yml'
       - '.github/workflows/rust-release.yml'
       - "!core/*.md"
@@ -30,6 +32,7 @@ on:
       - 'go.sum'
       - 'go.work'
       - 'go.work.sum'
+      - 'tests/integration/auth_test.go'
       - '.github/workflows/rust-sdk.yml'
       - '.github/workflows/rust-release.yml'
       - "!core/*.md"
@@ -56,12 +59,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # MSRV is represented on Linux; stable covers every supported native OS.
-        include:
-          - {os: ubuntu-latest, rust: '1.88.0'}
-          - {os: ubuntu-latest, rust: stable}
-          - {os: macos-latest, rust: stable}
-          - {os: windows-latest, rust: stable}
+        # Full Windows compatibility belongs to explicit manual/release sweeps.
+        # Affected native Windows boundaries block Build & Test in go.yml.
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"ubuntu-latest","rust":"1.88.0"},{"os":"ubuntu-latest","rust":"stable"},{"os":"macos-latest","rust":"stable"},{"os":"windows-latest","rust":"stable"}]' || '[{"os":"ubuntu-latest","rust":"1.88.0"},{"os":"ubuntu-latest","rust":"stable"},{"os":"macos-latest","rust":"stable"}]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable action

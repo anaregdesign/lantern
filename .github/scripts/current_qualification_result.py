@@ -9,6 +9,12 @@ def accepted(values):
     if values.get("SCOPE_RESULT") != "success" or values.get("MODULE_RESULT") != "success":
         return False
     exempt = values.get("DOCS_ONLY") == "true" or values.get("EVIDENCE_ONLY") == "true"
+    windows = values.get("WINDOWS_RESULT")
+    if exempt or values.get("WINDOWS_REQUIRED") == "false":
+        if windows != "skipped":
+            return False
+    elif values.get("WINDOWS_REQUIRED") != "true" or windows != "success":
+        return False
     if exempt:
         return values.get("F_RESULT") == "skipped" and values.get("Q_RESULT") == "skipped"
     if values.get("F_RESULT") != "success":
@@ -21,7 +27,7 @@ def main():
     values = dict(os.environ)
     result = accepted(values)
     statuses = {key: values.get(key, "UNKNOWN") for key in
-                ("SCOPE_RESULT", "MODULE_RESULT", "F_RESULT", "Q_RESULT", "Q_REQUIRED")}
+                ("SCOPE_RESULT", "MODULE_RESULT", "F_RESULT", "Q_RESULT", "Q_REQUIRED", "WINDOWS_REQUIRED", "WINDOWS_RESULT")}
     line = f"Current authority result: {statuses}; accepted={result}. Q skipped means NOT_RUN, never real-source qualification."
     print(line)
     if summary := values.get("GITHUB_STEP_SUMMARY"):

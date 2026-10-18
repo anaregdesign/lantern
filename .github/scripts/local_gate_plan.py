@@ -84,3 +84,39 @@ def steps(evidence: Path) -> tuple[Step, ...]:
     add("final-diff", ".", "git", "diff", "--check")
     add("final-clean", ".", "git", "status", "--porcelain", empty=True)
     return tuple(plan)
+
+
+def affected_steps(plan, scope):
+    """Select fresh development checks; full fallback retains the exact old plan."""
+    if scope["full"]:
+        return plan
+    families, modules = set(scope["families"]), set(scope["go_modules"])
+    names = {"final-diff", "final-clean"}
+    if modules:
+        # Go root integration consumes the built Node SDK. Complete installation
+        # before Go traverses node_modules; never mutate it concurrently (#1646).
+        names |= {"node-frozen-install", "node-prebuild", "admin-frozen-install",
+                  "example-frozen-preflight", "gofmt", "go-build", "go-lint"}
+        names |= {"go-test-" + module.replace("/", "-") for module in modules}
+        if "server" in modules:
+            names.add("server-vet")
+    prefixes = {"node": "node-", "admin": "admin-", "dart": "dart-",
+                "offline": "offline-", "sqlite": "sqlite-", "example": "example-",
+                "rust": "rust-"}
+    # Distribution/native wire/Q/performance are separate hosted/milestone gates.
+    deferred = {"node-verify-package", "dart-publish-dry-run", "sqlite-performance-probe",
+                "rust-server-build", "rust-authfixture-build", "rust-real-wire",
+                "rust-oidc-scoped-wire", "rust-audit"}
+    generation = {s.name for s in plan if s.name.endswith("-generate")} | {"go-generate", "generated-drift", "probe-generated-drift"}
+    for family, prefix in prefixes.items():
+        if family in families:
+            names |= {s.name for s in plan if s.name.startswith(prefix)} - deferred - generation
+    if "admin" in families:
+        names |= {"node-frozen-install", "node-prebuild"}
+    if "example" in families:
+        names.add("example-frozen-preflight")
+    if "docs" in families:
+        names.add("docs-tests")
+    if scope["generation"]:
+        names |= generation
+    return tuple(s for s in plan if s.name in names)

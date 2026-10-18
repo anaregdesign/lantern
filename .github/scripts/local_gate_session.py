@@ -23,7 +23,8 @@ import time
 
 import ci_docs
 import local_prose_gate
-from local_gate_plan import Step, steps
+import validation_scope
+from local_gate_plan import Step, steps, affected_steps
 
 
 GO_DIRS = ("core/", "pb/", "mcp/", "server/", "sdks/go/", "cli/")
@@ -136,7 +137,8 @@ class Session:
         self.attempt = 0
         self.runner_hashes = {p: digest(p.read_bytes()) for p in (
             Path(__file__).resolve(), Path(__file__).with_name("local_gate_plan.py").resolve(),
-            Path(ci_docs.__file__).resolve(), Path(local_prose_gate.__file__).resolve())}
+            Path(ci_docs.__file__).resolve(), Path(local_prose_gate.__file__).resolve(),
+            Path(validation_scope.__file__).resolve())}
 
     def git(self, *args: str) -> str:
         return subprocess.check_output(["git", *args], cwd=self.root, text=True).strip()
@@ -358,6 +360,50 @@ class Session:
                 if not target.get("Version") and not contained(directory, target["Path"]):
                     raise ValueError("external local replacement is unsupported")
 
+    def qualify_affected(self, base: str) -> dict:
+        self.receipts.clear()
+        self.baseline_logs.clear()
+        self.prior_tree = None
+        scope = validation_scope.local_scope(self.root, base)
+        if scope["full"]:
+            print("Full fallback: " + scope["reason"], flush=True)
+            return self.qualify()
+        selected = affected_steps(self.plan, scope)
+        omitted = [s.name for s in self.plan if s not in selected]
+        result = {"kind": "local-affected", "base": base, "scope": scope,
+                  "not_selected": omitted, "steps": [], "passed": False}
+        started = time.monotonic()
+        # This path creates no carry receipts and trusts no previous manifest.
+        # Like the existing fresh SDK steps, it executes in the frozen checkout.
+        try:
+            if any(digest(p.read_bytes()) != h for p, h in self.runner_hashes.items()):
+                raise ValueError("runner/classifier changed; restart")
+            head, tree, snapshot = self.snapshot()
+            result.update(head=head, tree=tree)
+            self.eligible_root = self.root
+            for index, step in enumerate(selected):
+                log = self.evidence / f"affected-{index + 1:02}-{step.name}.log"
+                print(f"EXECUTE {index + 1}/{len(selected)} {step.name}", flush=True)
+                code, passed = self.run(step, log)
+                result["steps"].append(dict(name=step.name, mode="executed", exit=code,
+                    passed=passed, log=str(log), sha256=digest(log.read_bytes())))
+                if not passed:
+                    raise ValueError("required step failed: " + step.name)
+            if self.snapshot() != (head, tree, snapshot):
+                raise ValueError("candidate changed during affected checks")
+            result["passed"] = True
+        except Exception as error:
+            result["error"] = str(error)
+        finally:
+            self.eligible_root = None
+            self.receipts.clear()
+        result.update(executed=len(result["steps"]), carried=0,
+                      seconds=round(time.monotonic() - started, 3))
+        (self.evidence / "affected-manifest.json").write_bytes(encoded(result))
+        print(f"{'PASS' if result['passed'] else 'FAIL'} executed={result['executed']} "
+              f"NOT_SELECTED={len(omitted)} seconds={result['seconds']}", flush=True)
+        return result
+
     def qualify(self) -> dict:
         self.attempt += 1
         records = []
@@ -452,10 +498,13 @@ def main() -> int:
     parser.add_argument("evidence", type=Path, help="new directory outside the checkout")
     parser.add_argument("--session", action="store_true", help="accept qualify/quit on stdin; no receipt import")
     parser.add_argument("--prose-base", help="try fresh prose-only eligibility against fetched origin/main; otherwise run full")
+    parser.add_argument("--affected-base", help="fresh affected development checks against fetched target main; unknown inputs run full")
     args = parser.parse_args()
-    if args.prose_base and args.session:
-        parser.error("prose eligibility is a one-shot path, separate from component carry")
+    if (args.prose_base and args.affected_base) or (args.session and (args.prose_base or args.affected_base)):
+        parser.error("prose/affected modes are one-shot paths, separate from component carry")
     session = Session(args.checkout, args.evidence)
+    if args.affected_base:
+        return int(not session.qualify_affected(args.affected_base)["passed"])
     if args.prose_base:
         result = local_prose_gate.qualify(session, args.prose_base)
         if result is not None:
