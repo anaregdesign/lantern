@@ -75,7 +75,6 @@ type peerSecurityFixture struct {
 
 type peerSecurityOptions struct {
 	Generation     [16]byte
-	WriterKey      [32]byte
 	CurrentProfile string
 	Now            func() time.Time
 	TimeBounds     func() (time.Time, time.Time, error)
@@ -144,10 +143,9 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 	f.roots = x509.NewCertPool()
 	f.roots.AddCert(ca)
 	f.manifest = peerOperatorManifest{Version: 1, Domain: peerOperatorDomain{Deployment: [16]byte{1}, NamespaceFormat: "namespaced-v1", AuthMode: "off", TrustDigest: sha256.Sum256(caPEM)}, IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute)}
-	if len(options) != 0 {
+	if len(options) != 0 && options[0].CurrentProfile != "" {
 		f.manifest.Domain.AuthMode = "oidc"
 		f.manifest.Domain.SecurityGeneration = options[0].Generation
-		f.manifest.Domain.WriterPublicKey = options[0].WriterKey
 		f.manifest.Domain.CurrentProfile = options[0].CurrentProfile
 	}
 	for i := range f.servers {
@@ -389,12 +387,12 @@ func TestPeerSecurityIdleSubscribeFlushesHeadersWithoutAnEvent(t *testing.T) {
 }
 
 // Origin authorization is covered by the OIDC Head-managed real-wire cases.
-// Here the same immutable accepted effects cross the operator mTLS peer plane,
+// Here the same immutable accepted effects cross the OFF operator mTLS peer plane,
 // including an actual Subscribe gap repaired by private Snapshot.
 func TestPeerSecurityEdgeOnlyHistorySubscribeSnapshotAndTombstoneRealConnect(t *testing.T) {
 	var graphs [2]*graphcache.GraphCache[string, *pb.Vertex]
 	var snapshots atomic.Int32
-	f := newPeerSecurityFixture(t, peerSecurityOptions{Generation: [16]byte{6}, CurrentProfile: "current-v2:abababababababababababababababababababababababababababababababab", Mount: func(f *peerSecurityFixture, index int, runtime *service.ServingRuntime, mux *http.ServeMux) {
+	f := newPeerSecurityFixture(t, peerSecurityOptions{Mount: func(f *peerSecurityFixture, index int, runtime *service.ServingRuntime, mux *http.ServeMux) {
 		graphs[index] = runtime.GraphCache()
 		graphs[index].RetainDanglingEdgeHistory()
 		f.primary[index].WithTombstoneTTL(time.Hour)
