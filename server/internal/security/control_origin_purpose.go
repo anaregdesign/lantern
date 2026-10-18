@@ -8,8 +8,7 @@ import (
 
 const authorizationConsumed AuthorizationState = 4
 
-// Shares the existing bounded purpose pool, with an explicit incompatible
-// binding tag. Legacy Start/Complete/Verify cannot consume these records.
+// Native current bindings remain attached to the exact original operation.
 type authorityPendingPurpose struct {
 	binding   authorityPurposeBinding
 	challenge [32]byte

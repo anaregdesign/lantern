@@ -7,7 +7,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
-	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -54,24 +53,18 @@ func (r *SecurityRuntime) BrowserChangeHTTPHandler(svc *service.LanternService, 
 }
 
 func (r *SecurityRuntime) serveBoundedChanges(w http.ResponseWriter, req *http.Request, handler http.Handler) {
-	if r.current != nil {
-		// Each immutable encoded unit is independently authorized by the
-		// native owner. A previously authorized unit may complete late (A).
+	if r.mode == "oidc" {
+		if r.current == nil {
+			publicRPCError(w, req, connect.CodeUnavailable)
+			return
+		}
+		// Each immutable unit has its own final authority check. An already
+		// authorized unit may complete late under the existing output contract.
 		handler.ServeHTTP(w, req)
 		return
 	}
 	wallStarted := time.Now()
 	lifetime := 28 * time.Second
-	if r.mode == "oidc" {
-		admission, known := security.AdmissionFromContext(req.Context())
-		if !known || admission.Check(req.Context(), r.now()) != nil {
-			publicRPCError(w, req, connect.CodeUnavailable)
-			return
-		}
-		if remaining := admission.ExpiresAt().Sub(r.now()); remaining < lifetime {
-			lifetime = remaining
-		}
-	}
 	if lifetime <= 0 {
 		publicRPCError(w, req, connect.CodeUnavailable)
 		return

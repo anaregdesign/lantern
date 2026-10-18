@@ -1,17 +1,18 @@
 package provider
 
 import (
-	"connectrpc.com/connect"
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/netip"
+
+	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"github.com/anaregdesign/lantern/server/readiness"
 	"github.com/anaregdesign/lantern/server/service"
-	"net"
-	"net/http"
-	"net/netip"
 )
 
 type publicSecurityCertified struct {
@@ -19,27 +20,18 @@ type publicSecurityCertified struct {
 	primary *service.LanternService
 }
 
-func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *PeerIdentityRuntime, policy *SecurityPeerRuntime, data *service.ServingRuntime, primary *service.LanternService, certified runtimeCertified) (publicSecurityCertified, error) {
+func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *PeerIdentityRuntime, data *service.ServingRuntime, primary *service.LanternService, certified runtimeCertified) (publicSecurityCertified, error) {
 	if !certified.valid || certified.runtime != data || certified.primary != primary || certified.replication == nil {
 		return publicSecurityCertified{}, errors.New("public security requires the exact installed data services")
 	}
 	if runtime == nil || data == nil || primary == nil || !primary.SharesServingRuntime(data) || data.DataNamespaceFormat() != keyspace.Version {
 		return publicSecurityCertified{}, errors.New("public serving requires the certified namespace and security runtime")
 	}
-	if runtime.peer != peer || policy != nil && (policy.runtime != runtime || policy.peer != peer) {
-		return publicSecurityCertified{}, errors.New("public security requires its owned workload and policy runtime")
+	if runtime.mode == "oidc" && (runtime.current == nil || runtime.data != data || tls.CertFile == "" && len(runtime.config.TrustedProxyIPs) == 0) {
+		return publicSecurityCertified{}, errors.New("OIDC requires its owned authority and TLS or an exact trusted HTTPS gateway")
 	}
-	if runtime.mode == "oidc" {
-		if runtime.native == nil && runtime.current == nil || runtime.data != data || (tls.CertFile == "" && len(runtime.config.TrustedProxyIPs) == 0) {
-			return publicSecurityCertified{}, errors.New("OIDC requires native authority and a TLS or exact trusted HTTPS gateway boundary")
-		}
-		if runtime.current != nil {
-			if runtime.native != nil || runtime.authority != nil || runtime.receiver != nil || policy != nil || runtime.config.Profile != "current-v2" {
-				return publicSecurityCertified{}, errors.New("current authority cannot fall back to legacy policy")
-			}
-		} else if peer != nil && policy == nil || runtime.config.NodeRole == "replica" && policy == nil {
-			return publicSecurityCertified{}, errors.New("OIDC peer serving requires policy-lease composition")
-		}
+	if err := runtime.bindWorkload(peer); err != nil {
+		return publicSecurityCertified{}, err
 	}
 	if peer != nil {
 		primary.WithEdgeCreateHA()

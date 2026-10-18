@@ -12,8 +12,8 @@ import (
 	"github.com/anaregdesign/lantern/server/service"
 )
 
-func (r *SecurityRuntime) openCurrent() error {
-	p, err := security.LoadCurrentProvisioning(r.config.CurrentConfigFile)
+func (r *SecurityRuntime) openAuthority() error {
+	p, err := security.LoadCurrentProvisioning(r.config.ConfigFile)
 	if err != nil {
 		return err
 	}
@@ -50,11 +50,11 @@ func (r *SecurityRuntime) openCurrent() error {
 	if err != nil {
 		return err
 	}
-	r.workflow, err = authn.NewCurrentWorkflow(r.current, r.loginResources(), r.currentAttemptPrefix())
+	r.workflow, err = authn.NewWorkflow(r.current, r.loginResources(), r.currentAttemptPrefix())
 	if err != nil {
 		return err
 	}
-	r.composeAuthentication(nil)
+	r.composeAuthentication()
 	r.control, err = service.NewSecurityConnectHandler(service.SecurityServiceOptions{Current: r.current, Now: r.now, ValidateIssuer: func(ctx context.Context, i security.Issuer) error {
 		if i.BrowserEnabled() && i.RedirectURI != r.config.BrowserOrigin+oidc.CallbackPath(i.URL) {
 			return oidc.ErrInvalidDocument

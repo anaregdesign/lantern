@@ -2,14 +2,10 @@ package provider
 
 import (
 	"bytes"
-	"connectrpc.com/grpchealth"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
-	"github.com/anaregdesign/lantern/server/internal/peerauth"
-	"github.com/anaregdesign/lantern/server/internal/security"
-	"github.com/anaregdesign/lantern/server/readiness"
 	"io"
 	"log/slog"
 	"os"
@@ -18,6 +14,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"connectrpc.com/grpchealth"
+	"github.com/anaregdesign/lantern/server/internal/peerauth"
+	"github.com/anaregdesign/lantern/server/internal/security"
+	"github.com/anaregdesign/lantern/server/readiness"
 )
 
 type pausedReadinessPublication struct {
@@ -32,15 +33,10 @@ func (p *pausedReadinessPublication) SetServingStatus(_ string, status grpchealt
 }
 
 func TestSecurityWorkerObservationSeparatesCompletedAndPublished(t *testing.T) {
-	cfg, data, clock := securityRuntimeFixture(t)
-	r, cleanup, err := NewSecurityRuntime(cfg, data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
+	r := &SecurityRuntime{mode: "oidc"}
 	publication := &pausedReadinessPublication{entered: make(chan struct{}), release: make(chan struct{})}
 	gate := readiness.NewGate(100, false, publication)
-	worker := NewSecurityWorkers(r, nil, nil, gate, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	worker := NewSecurityWorkers(r, nil, gate, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	var output bytes.Buffer
 	worker.ObserveReadiness(&output)
 	if s := r.readinessObservation.Snapshot(); s.WorkerState != "never_started" {
@@ -56,13 +52,13 @@ func TestSecurityWorkerObservationSeparatesCompletedAndPublished(t *testing.T) {
 	s := r.readinessObservation.Snapshot()
 	close(publication.release)
 	<-done
-	if s.WorkerStarted != 1 || s.WorkerDone != 1 || s.WorkerPublish != 0 || s.WorkerState != "completed" || s.WorkerReason != "restart_wait" {
+	if s.WorkerStarted != 1 || s.WorkerDone != 1 || s.WorkerPublish != 0 || s.WorkerState != "completed" || s.WorkerReason != "unavailable" {
 		t.Fatal(s)
 	}
 	if s := r.readinessObservation.Snapshot(); s.WorkerPublish != 1 || s.WorkerState != "published" {
 		t.Fatal(s)
 	}
-	clock.advance(35 * time.Second)
+	worker.runtime = &SecurityRuntime{mode: "off", readinessObservation: r.readinessObservation}
 	worker.updateReadiness(t.Context())
 	if s := r.readinessObservation.Snapshot(); s.WorkerPublish != 2 || s.WorkerReason != "ready" || !gate.Ready() {
 		t.Fatal(s)
@@ -78,24 +74,20 @@ func TestSecurityWorkerObservationSeparatesCompletedAndPublished(t *testing.T) {
 }
 
 func TestSecurityWorkerObservationShowsBlockedExistingEvaluation(t *testing.T) {
-	cfg, data, clock := securityRuntimeFixture(t)
+	clock := &securityTestClock{now: time.Now()}
 	var block atomic.Bool
 	entered, release := make(chan struct{}), make(chan struct{})
 	var enter, unblock sync.Once
-	cfg.Clock = func() time.Time {
+	peer := securityWorkloadFixture(t, func() time.Time {
 		if block.Load() {
 			enter.Do(func() { close(entered) })
 			<-release
 		}
 		return clock.Now()
-	}
-	r, cleanup, err := NewSecurityRuntime(cfg, data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
+	})
+	r := &SecurityRuntime{mode: "off", peer: peer}
 	defer unblock.Do(func() { close(release) })
-	worker := NewSecurityWorkers(r, nil, nil, readiness.NewGate(100, false, nil), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	worker := NewSecurityWorkers(r, nil, readiness.NewGate(100, false, nil), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	worker.ObserveReadiness(io.Discard)
 	block.Store(true)
 	done := make(chan struct{})
@@ -127,14 +119,11 @@ func TestSecurityWorkerObservationShowsBlockedExistingEvaluation(t *testing.T) {
 }
 
 func TestSecurityWorkersDrivePermissionAndJoinOnShutdown(t *testing.T) {
-	config, data, clock := securityRuntimeFixture(t)
-	runtime, cleanup, err := NewSecurityRuntime(config, data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
+	clock := &securityTestClock{now: time.Now()}
+	peer := securityWorkloadFixture(t, clock.Now)
+	runtime := &SecurityRuntime{mode: "off", peer: peer}
 	gate := readiness.NewGate(100, false, nil)
-	worker := NewSecurityWorkers(runtime, nil, nil, gate, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	worker := NewSecurityWorkers(runtime, peer, gate, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -150,10 +139,8 @@ func TestSecurityWorkersDrivePermissionAndJoinOnShutdown(t *testing.T) {
 		}
 		t.Fatal("readiness not synchronized", want)
 	}
-	wait(false)
-	clock.advance(35 * time.Second)
 	wait(true)
-	clock.advance(-time.Second)
+	clock.advance(2 * time.Minute)
 	wait(false)
 	cancel()
 	select {
@@ -197,7 +184,7 @@ func TestSecurityWorkersReloadDataDespiteControlFailureAndExpiredReadiness(t *te
 		t.Fatal(err)
 	}
 	gate := readiness.NewGate(100, false, nil)
-	worker := NewSecurityWorkers(&SecurityRuntime{mode: "oidc", current: &security.CurrentAuthority{}, peer: peer}, peer, nil, gate, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	worker := NewSecurityWorkers(&SecurityRuntime{mode: "oidc", current: &security.CurrentAuthority{}, peer: peer}, peer, gate, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
@@ -247,7 +234,7 @@ func TestSecurityWorkersLogOnlyFixedPrivateFaultCategory(t *testing.T) {
 	reader, writer := io.Pipe()
 	defer reader.Close()
 	defer writer.Close()
-	worker := NewSecurityWorkers(&SecurityRuntime{mode: "off", peer: peer}, peer, nil, readiness.NewGate(100, false, nil), slog.New(slog.NewJSONHandler(writer, nil)))
+	worker := NewSecurityWorkers(&SecurityRuntime{mode: "off", peer: peer}, peer, readiness.NewGate(100, false, nil), slog.New(slog.NewJSONHandler(writer, nil)))
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)

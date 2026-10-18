@@ -29,12 +29,10 @@ func TestAuthenticationEvidenceMaximumEnvelopeAndTimePresence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	envelope := PurposeAuthenticationEvidence{Version: 1, Kind: "operation-approval", Binding: ManagementBinding{Actor: identity, Generation: event.Generation, Writer: full, ExpectedDigest: full, IntentDigest: full, IssuerConfigRevision: math.MaxUint64, ExpectedRevision: math.MaxUint64, ChangeID: event.Generation}, AuthorizationID: event.Code.AuthorizationID, ReviewAt: now, NotBefore: now, ApprovedAt: now, ExpiresAt: now, Event: event, EventCommitment: commitment}
-	raw, err := authenticationEvidenceBytes(envelope)
-	if err != nil || len(raw) > MaxAuthenticationEvidenceBytes {
-		t.Fatal("maximum legal envelope does not fit", len(raw), err)
+	raw, err := authenticationEvidenceBytes(event)
+	if err != nil || len(raw) > MaxAuthenticationEvidenceBytes || commitment == [32]byte{} {
+		t.Fatal("maximum legal token event does not fit", len(raw), err)
 	}
-	t.Logf("maximum envelope: %d / %d bytes", len(raw), MaxAuthenticationEvidenceBytes)
 	for _, mutate := range []func(*TokenAuthenticationEvidence){func(e *TokenAuthenticationEvidence) { e.KeyID += "x" }, func(e *TokenAuthenticationEvidence) { e.Mode = "unknown" }, func(e *TokenAuthenticationEvidence) { e.Key = [32]byte{} }, func(e *TokenAuthenticationEvidence) { e.Code.Flow = "step-up" }, func(e *TokenAuthenticationEvidence) { e.AccessHashPresent = true }, func(e *TokenAuthenticationEvidence) { e.AuthTime.Numeric = false }, func(e *TokenAuthenticationEvidence) { e.IssuedAt.Nanoseconds = 1e9 }} {
 		e := event
 		mutate(&e)

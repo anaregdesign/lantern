@@ -173,12 +173,10 @@ spec:
             {{- if eq .Values.auth.mode "oidc" }}
             - name: LANTERN_AUTH_MODE
               value: oidc
-            - name: LANTERN_SECURITY_NODE_ROLE
-              value: {{ .Values.auth.nodeRole | quote }}
             - name: LANTERN_SECURITY_STORE_MODE
               value: {{ .Values.auth.storeMode | quote }}
-            - name: LANTERN_SECURITY_STORE_PATH
-              value: {{ printf "%s/sys.wal" .Values.runtimeState.dir | quote }}
+            - name: LANTERN_SECURITY_CONFIG_FILE
+              value: {{ printf "/run/lantern-security/%s" .Values.auth.nodeFile | quote }}
             {{- end }}
             {{- if .Values.peerPlane.enabled }}
             - name: LANTERN_PEER_LISTEN_ADDR

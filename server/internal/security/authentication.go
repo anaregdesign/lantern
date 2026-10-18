@@ -47,45 +47,24 @@ func (s *Snapshot) BearerActor(identity Identity) ActorClass {
 	return UnresolvedActor
 }
 
-func (a *Admission) WithAuthentication(authentication Authentication) *Admission {
-	if a.current != nil {
-		return a // Current facts are captured inside the owner and cannot be relabeled.
-	}
-	copy := *a
-	copy.authentication = authentication
-	return &copy
-}
 func (a *Admission) Authentication() Authentication { return a.authentication }
-
-// CheckManagement rechecks the captured credential at the commit boundary.
-// Fence callbacks must not perform I/O or reenter the Store; the writer's
-// current authority fence follows the Store -> authority lock order.
-func (a *Admission) CheckManagement(ctx context.Context, current *Revision, now time.Time) error {
-	return a.checkHumanAdmission(ctx, current, now)
+func (a *Admission) CheckManagement(ctx context.Context, now time.Time) error {
+	return a.checkHumanAdmission(ctx, now)
 }
 
-// CheckIssuerProbe is the conservative policy for a privileged outbound
-// metadata probe. Machine read/status eligibility does not qualify this probe.
-func (a *Admission) CheckIssuerProbe(ctx context.Context, current *Revision, now time.Time) error {
-	return a.checkHumanAdmission(ctx, current, now)
+// A privileged issuer probe requires the same captured human credential.
+func (a *Admission) CheckIssuerProbe(ctx context.Context, now time.Time) error {
+	return a.checkHumanAdmission(ctx, now)
 }
-
-func (a *Admission) checkHumanAdmission(ctx context.Context, current *Revision, now time.Time) error {
-	if a != nil && a.current != nil {
-		if current != nil || a.current.credential.browserReadOnly || a.current.credential.authentication.Class != EndUser {
-			return ErrPermissionDenied
-		}
-		return a.current.check(ctx)
-	}
-	if a == nil || current == nil || a.revision.digest != current.digest {
+func (a *Admission) checkHumanAdmission(ctx context.Context, _ time.Time) error {
+	if a == nil || a.current == nil {
 		return ErrAuthorityUnavailable
 	}
-	if err := a.Check(ctx, now); err != nil {
-		return err
+	if a.current.credential.browserReadOnly || a.current.credential.authentication.Class != EndUser {
+		return ErrPermissionDenied
 	}
-	return current.snapshot.checkHumanAuthentication(a.identity, a.authentication, now)
+	return a.current.check(ctx)
 }
-
 func (s *Snapshot) checkHumanAuthentication(identity Identity, authentication Authentication, now time.Time) error {
 	if identity.Kind != OIDCPrincipal || authentication.Class != EndUser {
 		return ErrPermissionDenied

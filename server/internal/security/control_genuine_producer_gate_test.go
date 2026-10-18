@@ -267,7 +267,7 @@ func TestCurrentAuthorityGenuineProducerGate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		workflow, err := authn.NewCurrentWorkflow(g.PublicAuthority(), authn.OIDCResources{Fetcher: fetcher, Secrets: secrets, Verifier: oidc.NewVerifierWithClock(keys, g.Now), Credentials: authn.NewCredentials(keys), Logins: login, Now: g.Now}, "member.process")
+		workflow, err := authn.NewWorkflow(g.PublicAuthority(), authn.OIDCResources{Fetcher: fetcher, Secrets: secrets, Verifier: oidc.NewVerifierWithClock(keys, g.Now), Credentials: authn.NewCredentials(keys), Logins: login, Now: g.Now}, "member.process")
 		if err != nil {
 			t.Fatal(err)
 		}

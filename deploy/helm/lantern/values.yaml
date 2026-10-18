@@ -108,16 +108,15 @@ metrics:
         sourceLabels: [__name__]
         regex: up|go_goroutines|go_memstats_heap_inuse_bytes|process_resident_memory_bytes|process_cpu_seconds_total|grpc_server_.*|lantern_(anti_entropy_.*|auth_rejected_total|backup_.*|build_info|capacity_limit|causal_metadata_.*|edge_contrib_deduped_total|edges|get_(edge|vertex)_(hits|misses)_total|gc_duration_seconds_.*|mutation_log_.*|mutationlog_subscriber_dropped_total|origin_states_count|peer_connected|rate_limit_rejected_total|replication_.*|restore_.*|search_calls_total|search_config_.*|search_index_.*|search_rejections_total|snapshot_.*|subscribe_.*|subscription_.*|tombstone_clamp_rejected_total|ttl_expirations_total|validation_rejected_total|vertex_hlc_.*|vertices)
 
-# Public auth and native sys: durability. OIDC configuration is an operator
-# ConfigMap; secret files are mounted, never included in browser/Vite config.
+# Public mode is OFF or OIDC. Each OIDC pod receives its own independently
+# provisioned node/genesis, keys and membership files; journals use runtimeState.
 auth:
-  mode: "off"                  # off | oidc; OFF emits no auth env variables
-  nodeRole: writer             # writer | replica; one fixed writer per domain
-  storeMode: restart           # fresh first initialization only | restart
-  configMap: ""               # complete OIDC/domain/bootstrap env contract
-  existingSecret: ""          # role-specific source Secret; never mounted in Server
-  files: ["writer.pub", "cdc-keys.json"] # explicit common allowlist
-  writerFiles: ["writer.key"] # writer-only; add machines.json when configured
+  mode: "off"
+  storeMode: resume             # fresh for initial state | resume for intact recovery
+  nodeFile: node.json           # basename included in files below
+  configMap: ""                # browser origin and optional OIDC fetch/secret settings
+  existingSecret: ""           # source keys are <pod-name>.<file>; init copies only this pod
+  files: []                    # explicit per-workload basenames referenced by nodeFile
 
 # Distinct public TLS certificates. keys: <pod-name>.crt / <pod-name>.key.
 publicTLS:
@@ -315,7 +314,7 @@ admin:
   # Leave empty to disable (Metrics page degrades gracefully; operators
   # can still point it at any reachable Prometheus from the browser).
   server:
-    upstream: ""   # fixed pinned writer origin for auth/browser/control
+    upstream: ""   # pinned HTTPS authority origin for auth/browser/control
     caSecret: ""   # ca.pem mounted at /run/lantern-admin-trust
   prometheus:
     upstream: ""   # e.g. "http://prometheus-server.monitoring.svc:80"

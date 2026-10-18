@@ -73,14 +73,7 @@ func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), err
 		cleanup()
 		return nil, nil, err
 	}
-	securityPeerRuntime, err := provider.NewConfiguredSecurityPeer(securityRuntime, peerIdentityRuntime)
-	if err != nil {
-		cleanup3()
-		cleanup2()
-		cleanup()
-		return nil, nil, err
-	}
-	publicSecurityCertified, err := provider.NewPublicSecurityCertified(securityRuntime, tlsConfig, peerIdentityRuntime, securityPeerRuntime, servingRuntime, lanternService, runtimeCertified)
+	publicSecurityCertified, err := provider.NewPublicSecurityCertified(securityRuntime, tlsConfig, peerIdentityRuntime, servingRuntime, lanternService, runtimeCertified)
 	if err != nil {
 		cleanup3()
 		cleanup2()
@@ -172,7 +165,7 @@ func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), err
 		cleanup()
 		return nil, nil, err
 	}
-	peerPlaneServer, cleanup5, err := provider.NewPeerPlaneServer(peerPlaneConfig, peerIdentityRuntime, securityPeerRuntime, lanternReplicationService, netConfig, logger, runtimeCertified, launch)
+	peerPlaneServer, cleanup5, err := provider.NewPeerPlaneServer(peerPlaneConfig, peerIdentityRuntime, lanternReplicationService, netConfig, logger, runtimeCertified, launch)
 	if err != nil {
 		cleanup4()
 		cleanup3()
@@ -180,7 +173,7 @@ func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), err
 		cleanup()
 		return nil, nil, err
 	}
-	securityWorkers := provider.NewSecurityWorkers(securityRuntime, peerIdentityRuntime, securityPeerRuntime, gate, logger)
+	securityWorkers := provider.NewSecurityWorkers(securityRuntime, peerIdentityRuntime, gate, logger)
 	domainMetricsWired := provider.WireDomainMetrics(graphCache, servingRuntime, domainMetrics)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
 	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, peerPlaneServer, securityWorkers, securityRuntime, peerPlaneConfig, domainMetricsWired, cacheGCHooksWired)

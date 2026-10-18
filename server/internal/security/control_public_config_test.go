@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -240,10 +241,24 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	}
 	hosts := currentFixtureContainerHosts(t)
 	issuerIP, addressErr := netip.ParseAddr(u.Hostname())
-	if u.Scheme != "https" || u.Hostname() != "127.0.0.1" && (len(hosts) != 3 || addressErr != nil || !issuerIP.IsPrivate()) {
+	if u.Scheme != "https" || u.Hostname() != "127.0.0.1" && !(issuerURL == "https://fixture-idp.invalid" && os.Getenv("LANTERN_CURRENT_FIXTURE_BOOTSTRAP_FILE") != "") && (len(hosts) != 3 || addressErr != nil || !issuerIP.IsPrivate()) {
 		t.Fatal("loopback or declared private container TLS fixture issuer required")
 	}
-	n := s3aTestCluster(t, nil)
+	count := 3
+	if raw := os.Getenv("LANTERN_CURRENT_FIXTURE_VOTERS"); raw != "" {
+		count, err = strconv.Atoi(raw)
+		if err != nil || count < 1 || count > 31 || strconv.Itoa(count) != raw {
+			t.Fatal("original fixed voter count must be 1–31")
+		}
+	}
+	if count != 3 && (len(hosts) != 0 || os.Getenv("LANTERN_NATIVE_FIXTURE_SERVE") == "1" || os.Getenv("LANTERN_CURRENT_MEMBERSHIP_GATE") == "1" || os.Getenv("LANTERN_CURRENT_MEMBERSHIP_CONTAINER") == "1" || os.Getenv("LANTERN_CURRENT_DATA_HA") != "") {
+		t.Fatal("the existing container/native campaigns retain their independently provisioned three voters")
+	}
+	composeOriginal := os.Getenv("LANTERN_AUTH_FIXTURE_COMPOSE") == "1"
+	if composeOriginal && (count != 3 || len(hosts) != 0 || os.Getenv("LANTERN_CURRENT_FIXTURE_BOOTSTRAP_FILE") == "") {
+		t.Fatal("exact ordinary three-workload Compose original input required")
+	}
+	n := s3aTestClusterMembers(t, count, nil)
 	queryRoles := os.Getenv("LANTERN_CURRENT_FIXTURE_QUERY_ROLES_FILE")
 	nativeServing := os.Getenv("LANTERN_NATIVE_FIXTURE_SERVE") == "1"
 	servingProfile := os.Getenv("LANTERN_NATIVE_FIXTURE_PROFILE")
@@ -267,7 +282,7 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	if queryRoles != "" && len(hosts) != 0 {
 		t.Fatal("query fixture is local and cannot select the container campaign")
 	}
-	if len(hosts) != 0 || queryRoles != "" || nativeServing {
+	if len(hosts) != 0 || queryRoles != "" || nativeServing || composeOriginal {
 		// One independently provisioned lifetime covers the bounded campaign;
 		// restart never rewrites or extends this signed membership.
 		n.manifest.IssuedAt = time.Now().UTC().Add(-5 * time.Second)
@@ -276,6 +291,17 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	if len(hosts) != 0 {
 		for id, c := range n.configs {
 			c.Membership.Self.Origin = "https://" + hosts[id-1] + ":16380"
+			n.configs[id] = c
+			for i := range n.manifest.Profile.Voters {
+				if n.manifest.Profile.Voters[i].Voter == id {
+					n.manifest.Profile.Voters[i].Workload = c.Membership.Self
+				}
+			}
+		}
+	}
+	if composeOriginal {
+		for id, c := range n.configs {
+			c.Membership.Self.Origin = fmt.Sprintf("https://lantern-%d:16380", id-1)
 			n.configs[id] = c
 			for i := range n.manifest.Profile.Voters {
 				if n.manifest.Profile.Voters[i].Voter == id {
@@ -353,8 +379,15 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	if queryRoles != "" {
 		image = currentQueryFixtureImage(t, queryRoles, issuerURL, machineToken)
 	}
-	f := s2cTestClusterState(t, 3, s1Fixture(t, image))
-	f.origins = f.origins[:2]
+	if path := os.Getenv("LANTERN_CURRENT_FIXTURE_BOOTSTRAP_FILE"); path != "" {
+		if queryRoles != "" || nativeServing || renewal || len(hosts) != 0 {
+			t.Fatal("ordinary bootstrap fixture cannot alter a separately qualified campaign")
+		}
+		image = currentOriginalFixtureImage(t, path, issuerURL)
+	}
+	f := s2cTestClusterState(t, count, s1Fixture(t, image))
+	originCount := min(2, count)
+	f.origins = f.origins[:originCount]
 	f, keys := authorityTestFixtureState(t, f)
 	n.manifest.Profile.ProtocolScope = f.trust.scope
 	manifest := n.sign(n.manifest)
@@ -385,20 +418,21 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	genesisPath := filepath.Join(dir, "genesis.json")
 	genesisRaw := doc(genesisPath, genesis)
 	var queryNodes []map[string]any
-	for id := uint32(1); id <= 3; id++ {
+	for id := uint32(1); id <= uint32(count); id++ {
 		old := n.configs[id]
 		nodeDir := filepath.Join(dir, fmt.Sprintf("node-%d", id))
 		if err := os.Mkdir(nodeDir, 0700); err != nil {
 			t.Fatal(err)
 		}
 		p := s2cTestConfig(t, f, id, nodeDir)
+		p.OutboxBytes = old.Participant.OutboxBytes
 		identity := s3aIdentityFiles{Roots: filepath.Join(nodeDir, "roots.pem"), Certificate: filepath.Join(nodeDir, "cert.pem"), TLSKey: filepath.Join(nodeDir, "tls.key"), VotingKey: filepath.Join(nodeDir, "vote.key")}
 		for from, to := range map[string]string{old.Identity.Roots: identity.Roots, old.Identity.Certificate: identity.Certificate, old.Identity.TLSKey: identity.TLSKey, old.Identity.VotingKey: identity.VotingKey} {
 			raw, e := os.ReadFile(from)
 			if e != nil {
 				t.Fatal(e)
 			}
-			if len(hosts) != 0 && from == old.Identity.Certificate {
+			if (len(hosts) != 0 || composeOriginal) && from == old.Identity.Certificate {
 				block, _ := pem.Decode(raw)
 				if block == nil {
 					t.Fatal("fixture workload certificate missing")
@@ -407,7 +441,12 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 				if e != nil {
 					t.Fatal(e)
 				}
-				leaf.IPAddresses, leaf.DNSNames = []net.IP{net.ParseIP(hosts[id-1])}, nil
+				if composeOriginal {
+					leaf.IPAddresses = nil
+					leaf.DNSNames = []string{fmt.Sprintf("lantern-%d", id-1)}
+				} else {
+					leaf.IPAddresses, leaf.DNSNames = []net.IP{net.ParseIP(hosts[id-1])}, nil
+				}
 				der, e := x509.CreateCertificate(rand.Reader, leaf, n.ca, leaf.PublicKey, n.caKey)
 				if e != nil {
 					t.Fatal(e)
@@ -420,7 +459,7 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 		write(keyPath, old.Membership.Key)
 		write(manifestPath, manifest)
 		originPath := ""
-		if id <= 2 {
+		if id <= uint32(originCount) {
 			originPath = filepath.Join(nodeDir, "origin.key")
 			write(originPath, keys[id])
 		} else {
@@ -431,13 +470,34 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 			node.Participant.PPath, node.Participant.BPath = "/journal/protocol.wal", "/journal/materialized.wal"
 			node.Membership.Path, node.FloorsFile, node.ListenAddress = "/journal/membership", "/custody/floors.json", "0.0.0.0:16380"
 		}
+		if composeOriginal {
+			node.GenesisFile = "/run/lantern-config/authority-genesis.json"
+			node.Participant.PPath, node.Participant.BPath = "/state/control-protocol.wal", "/state/control-materialized.wal"
+			node.Membership.Path, node.FloorsFile, node.ListenAddress = "/state/control-membership", "/state/control-floors.json", "0.0.0.0:16380"
+			node.Membership.KeyFile, node.Membership.ManifestFile = "/run/lantern-config/authority-membership.pub", "/run/lantern-config/authority-membership.signed"
+			node.Identity = s3aIdentityFiles{Roots: "/run/lantern-config/authority-roots.pem", Certificate: "/run/lantern-config/authority-cert.pem", TLSKey: "/run/lantern-config/authority-tls.key", VotingKey: "/run/lantern-config/authority-vote.key"}
+			if node.OriginKeyFile != "" {
+				node.OriginKeyFile = "/run/lantern-config/authority-origin.key"
+			}
+		}
 		path := filepath.Join(nodeDir, "node.json")
 		doc(path, node)
+		if composeOriginal {
+			continue
+		}
 		provisioned, err := LoadCurrentProvisioning(path)
 		if err != nil {
 			t.Fatal("export invalid", id, err)
 		}
 		queryNodes = append(queryNodes, map[string]any{"node_file": path, "floors_file": provisioned.floors, "custody_binding": provisioned.binding})
+	}
+	if composeOriginal {
+		der, e := x509.MarshalPKCS8PrivateKey(n.operator)
+		if e != nil {
+			t.Fatal(e)
+		}
+		write(filepath.Join(dir, "control-operator.key"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+		doc(filepath.Join(dir, "compose-provision.json"), map[string]any{"profile": CurrentProfile{CurrentPublicVersion, genesis.Domain, genesis.Cohort, genesis.Generation, f.trust.scope, genesis.TimeProfile, n.manifest.Profile.Digest(), g.configuration.Digest()}})
 	}
 	if queryRoles != "" {
 		doc(filepath.Join(dir, "query-provision.json"), map[string]any{"membership_expires_at": n.manifest.ExpiresAt, "nodes": queryNodes})

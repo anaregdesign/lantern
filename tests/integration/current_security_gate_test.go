@@ -156,7 +156,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if capture == nil {
 			t.Fatal("startup diagnostic capture already owned")
 		}
-		securityConfig := provider.SecurityConfig{Mode: "oidc", Profile: "current-v2", CurrentConfigFile: filepath.Join(dir, fmt.Sprintf("node-%d/node.json", id)), StoreMode: mode, BrowserOrigin: "https://admin.example", RootCAFile: roots, PrivateOrigins: map[string][]netip.Prefix{f.provider.URL: {netip.MustParsePrefix("127.0.0.1/32")}}, TrustedProxyIPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}
+		securityConfig := provider.SecurityConfig{Mode: "oidc", ConfigFile: filepath.Join(dir, fmt.Sprintf("node-%d/node.json", id)), StoreMode: mode, BrowserOrigin: "https://admin.example", RootCAFile: roots, PrivateOrigins: map[string][]netip.Prefix{f.provider.URL: {netip.MustParsePrefix("127.0.0.1/32")}}, TrustedProxyIPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}
 		if native != nil {
 			native.configure(t, &securityConfig)
 		}
@@ -191,10 +191,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal("native data workload", err)
 			}
 			t.Cleanup(closePeer)
-			if _, err = provider.NewConfiguredSecurityPeer(runtime, workload); err != nil {
-				t.Fatal(err)
-			}
-			worker := provider.NewSecurityWorkers(runtime, workload, nil, readiness.NewGate(100, false, nil), slog.New(slog.NewTextHandler(io.Discard, nil)))
+			worker := provider.NewSecurityWorkers(runtime, workload, readiness.NewGate(100, false, nil), slog.New(slog.NewTextHandler(io.Discard, nil)))
 			workerCtx, stopWorker := context.WithCancel(t.Context())
 			done := make(chan error, 1)
 			go func() { done <- worker.Run(workerCtx) }()
@@ -236,7 +233,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		public, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, workload, nil, data, svc, certified)
+		public, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, workload, data, svc, certified)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -748,7 +745,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 	})
 	t.Run("browser Code one exchange and CSRF bootstrap", func(t *testing.T) {
-		start := f.browserLoginStart(t, nil, false)
+		start := f.browserLoginStart(t, nil)
 		path := f.browserCallbackPath(t, start, "admin", false)
 		beforeWrongNode := f.fetches.Load()
 		f.server = servers[1]
@@ -810,7 +807,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		// Orderly custody plus unchanged M/P/B volumes reopen the same member.
 		// Pending login transactions remain process-owned.
 		f.server = servers[1]
-		pending := f.browserLoginStart(t, nil, false)
+		pending := f.browserLoginStart(t, nil)
 		oldAttempt := f.browserCallbackPath(t, pending, "admin", false)
 		servers[1].Close()
 		if e := runtimes[1].Shutdown(); e != nil {
@@ -850,7 +847,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 		// A new explicit login replaces only the session present at its start.
 		// The old cookies must not survive the fresh post-Apply publication.
-		replacementStart := f.browserLoginStart(t, cookies, false)
+		replacementStart := f.browserLoginStart(t, cookies)
 		replacementPath := f.browserCallbackPath(t, replacementStart, "admin", false)
 		select {
 		case <-ctx.Done():

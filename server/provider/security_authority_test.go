@@ -1,14 +1,15 @@
 package provider
 
 import (
-	"github.com/anaregdesign/lantern/server/internal/security"
 	"path/filepath"
 	"testing"
+
+	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
 func TestCurrentRuntimeNeverFallsBackFromMissingProvisioning(t *testing.T) {
-	_, data, _ := securityRuntimeFixture(t)
-	c := SecurityConfig{Mode: "oidc", Profile: "current-v2", StoreMode: "fresh", BrowserOrigin: "https://admin.example", CurrentConfigFile: filepath.Join(t.TempDir(), "absent.json")}
+	data := securityDataFixture(t)
+	c := SecurityConfig{Mode: "oidc", StoreMode: "fresh", BrowserOrigin: "https://admin.example", ConfigFile: filepath.Join(t.TempDir(), "absent.json")}
 	if runtime, cleanup, err := NewSecurityRuntime(c, data); err == nil || runtime != nil || cleanup != nil {
 		t.Fatal("missing independent inputs became public runtime")
 	}

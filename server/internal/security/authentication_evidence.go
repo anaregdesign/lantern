@@ -146,15 +146,3 @@ func authenticationEvidenceBytes(value any) ([]byte, error) {
 	err := encoder.Encode(value)
 	return b.Bytes(), err
 }
-
-// PurposeAuthenticationEvidence shares the authorization owner's lifetime. It
-// contains original facts, not a reusable verifier result or final consume.
-type PurposeAuthenticationEvidence struct {
-	Version                                    uint8
-	Kind                                       string
-	Binding                                    ManagementBinding
-	AuthorizationID                            [32]byte
-	ReviewAt, NotBefore, ApprovedAt, ExpiresAt time.Time
-	Event                                      TokenAuthenticationEvidence
-	EventCommitment                            [32]byte
-}

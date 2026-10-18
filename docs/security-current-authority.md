@@ -1,19 +1,11 @@
 # Current authority and public activation
 
-#1722 supplies the fixed-membership, intact-storage owner. #1725 connects that
-same owner to the public control/session/data APIs under the explicit
-`current-v2` profile. `legacy-v1` retains the prior fixed-writer meanings; the
-two profiles never share authority or import live state. #1609 owns deployment
-and cutover, and #1610 owns final target acceptance. The source and focused
-fixtures below do not claim either operational exit.
-
-The private path is actual credential verification → installed certified S1 →
-current quorum renewal and native time → exact operation/purpose consume →
-original H durable in P → existing quorum/contiguous Apply. A native focused
-fixture exercises the actual provider, HTTPS/JWKS/Code exchange, cookie/CSRF,
-TLS Connect, three M/P/B owners, signing keys and intact reopen. Fake-time unit
-fixtures are explicitly separate. Neither a historical H nor an output permit
-can be decoded into current authority.
+OIDC uses the fixed-membership quorum authority and full-cut public contract.
+OFF is an explicit unauthenticated mode. The obsolete fixed-writer/replica-lease
+runtime and its configuration selectors were retired in #1820 without migration.
+Schema, journal and protocol version numbers below identify actual encodings;
+they are not alternate runtime selections. Source and focused evidence do not
+complete configured-source, provider or physical-device qualification.
 
 ## Mechanism evidence and configured-source qualification
 
@@ -373,9 +365,9 @@ full local gate, CI and exact main receipt remain separate exits. These private 
 wire gate or final #1610 acceptance.
 
 
-## Public current-v2 composition
+## Public OIDC composition
 
-The production Wire graph selects `SecurityRuntime.openCurrent`, which calls
+The production Wire graph selects `SecurityRuntime.openAuthority`, which calls
 `LoadCurrentProvisioning` then `OpenCurrentAuthority`. The private listener and
 workers start before public readiness, so peers can acquire quorum without a
 public-ready startup cycle. The actual public `http.Server` owns output credit
@@ -383,21 +375,19 @@ through `ConnContext`/`ConnState`; copying only its Handler into another server
 is not equivalent composition. The private consensus, original-H lookup and
 renewal routes are never mounted on the public mux.
 
-No-env/OFF remains unchanged. OIDC requires `LANTERN_SECURITY_PROFILE` explicitly.
-A fresh current cohort uses:
+No-env/OFF needs no authentication material. A fresh OIDC cohort uses:
 
 ```text
 LANTERN_AUTH_MODE=oidc
-LANTERN_SECURITY_PROFILE=current-v2
-LANTERN_SECURITY_CURRENT_CONFIG_FILE=/operator/node.json
+LANTERN_SECURITY_CONFIG_FILE=/operator/node.json
 LANTERN_SECURITY_STORE_MODE=fresh
 LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example
 ```
 
 The existing exact TLS/trusted HTTPS gateway boundary remains required. Optional
 OIDC roots, private-origin allowlists and secret bindings keep their existing
-meanings. Current configuration rejects writer keys/endpoints, old bootstrap,
-legacy Store paths/generations, `CLOCK_QUALIFIED`, and injected clocks. It accepts
+meanings. OIDC configuration rejects retired profile selectors, writer keys/endpoints and bootstrap settings,
+old Store paths/generations, `CLOCK_QUALIFIED`, and injected clocks, including empty settings. It accepts
 only the already selected native time profile and existing source configuration;
 it does not configure the host or install trust roots.
 
@@ -659,13 +649,12 @@ these two bounded cases. It is not the final Server OFF/ON, HA/load or device ga
 
 ### Migration refusal
 
-Existing fixtures and fixed-writer installations select `legacy-v1` explicitly.
-Do not roll current and legacy authorities together, feed v1 scalar mutations to
-v2, import old sessions, or call a live writer image an intact current resume.
-S5 must stop/fence the old cohort, retain old status/data/receipt history, choose
-a new generation/cohort with independent keys/genesis, invalidate old sessions
-and cursors, install compatible clients and perform a separately approved
-cutover. This source change performs none of those environment actions.
+The retired fixed-writer implementation cannot start in this source. Old
+configuration, scalar mutations and old storage are refused; no journal, session,
+ID or result is relabeled. Preserve old state rather than initializing over it.
+An operator choosing a new cohort must separately fence the old deployment and
+provision independent original voter/origin identities, genesis and storage.
+This source change performs no deployment, credential or cutover actions.
 
 The local `SecurityRuntime.ExportCurrentAuthorityFloors` API remains a live
 minimum-cut observation. It is not the final quiescent cut and does not publish

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
@@ -47,77 +46,7 @@ func (r *AuthenticationAdapter) AuthenticateBearer(ctx context.Context, headers 
 		}
 		return context.WithValue(verified, verifiedRuntimeKey{}, r), nil
 	}
-	raw, err := bearerCredential(headers)
-	if err != nil {
-		return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
-	}
-	revision, known := r.store.Current()
-	if !known {
-		return ctx, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
-	}
-	if err := r.authorityCheck(ctx, revision); err != nil {
-		return ctx, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
-	}
-	evidence := requestEvidenceCut(revision, time.Time{})
-	var identity security.Identity
-	var authTime, credentialExpiry time.Time
-	authentication := security.Authentication{Provenance: security.NativeMachine, Class: security.MachineActor}
-	if strings.HasPrefix(raw, security.MachineTokenPrefix) {
-		var valid bool
-		identity, credentialExpiry, valid = revision.Snapshot().MachineAccess(raw, r.now())
-		if !valid {
-			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
-		}
-		evidence.kind = "machine"
-		evidence.machineIdentity, evidence.machineExpiry = identity, credentialExpiry
-		evidence.machineCredential = requestCredentialCommitment("native-machine", raw)
-		// Machines cannot claim an interactive recent-authentication event.
-	} else {
-		issuerURL, err := oidc.TokenIssuer(raw)
-		if err != nil {
-			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
-		}
-		issuer, registered := revision.Snapshot().Issuer(issuerURL)
-		if !registered || !issuer.Enabled || issuer.ConfigRevision == 0 {
-			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
-		}
-		verified, err := r.verifier.VerifyAccess(ctx, raw, oidc.Trust{Issuer: issuer, Generation: revision.Generation(), ConfigRevision: issuer.ConfigRevision})
-		if err != nil {
-			return ctx, connect.NewError(connect.CodeUnauthenticated, oidc.ErrInvalidToken)
-		}
-		identity, authTime, credentialExpiry = verified.Identity(), verified.AuthTime(), verified.ExpiresAt()
-		authentication = security.Authentication{Provenance: security.RFC9068Bearer, Class: revision.Snapshot().BearerActor(identity), IssuerConfigRevision: issuer.ConfigRevision}
-		evidence.kind, evidence.token = "token", verified
-		evidence.humanNamespaceQualified = issuer.HumanSubjectNamespaceQualified
-		if revision.Snapshot().HumanIdentity(identity) {
-			evidence.enrolledIdentity = identity
-		}
-		evidence.issuerConfigRevision = issuer.ConfigRevision
-		evidence.issuerConfiguration = verified.Evidence().Configuration
-	}
-	expiry := minSecurityTime(credentialExpiry, r.now().Add(28*time.Second))
-	if r.leaseExpiry != nil {
-		if lease, known := r.leaseExpiry(); known {
-			expiry = minSecurityTime(expiry, lease)
-		}
-	}
-	admission, err := security.NewAdmission(identity, authTime, expiry, revision, r.authorityCheck)
-	if err != nil {
-		return ctx, connect.NewError(connect.CodePermissionDenied, security.ErrPermissionDenied)
-	}
-	if err := admission.Check(ctx, r.now()); err != nil {
-		return ctx, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
-	}
-	admission = admission.WithAuthentication(authentication)
-	evidence.admissionExpiry, evidence.classification = expiry, authentication.Class
-	ctx = withRequestAuthenticationEvidence(ctx, evidence)
-	return context.WithValue(security.WithAdmission(ctx, admission), verifiedRuntimeKey{}, r), nil
-}
-func minSecurityTime(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
+	return ctx, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
 }
 
 // PublicAuthenticationInterceptor is solely for the public bearer surface.
@@ -161,10 +90,6 @@ func (i securityAuthenticationInterceptor) WrapStreamingHandler(next connect.Str
 		}
 		if !strings.HasPrefix(conn.Spec().Procedure, "/graph.v1.LanternService/") {
 			return connect.NewError(connect.CodePermissionDenied, errors.New("private service requires workload admission"))
-		}
-		verified, err = i.runtime.boundSnapshotAdmission(verified)
-		if err != nil {
-			return connect.NewError(connect.CodeUnavailable, err)
 		}
 		return next(verified, conn)
 	}

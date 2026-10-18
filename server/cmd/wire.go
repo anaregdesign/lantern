@@ -39,7 +39,6 @@ func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), err
 		provider.NewWorkloadPeerTransport,
 		provider.NewWorkloadPeerResolver,
 		provider.NewSecurityRuntime,
-		provider.NewConfiguredSecurityPeer,
 		provider.NewPeerPlaneServer,
 		provider.NewSecurityWorkers,
 		provider.NewPublicSecurityCertified,

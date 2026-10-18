@@ -87,18 +87,10 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER` | int | `512` | Per-subscriber outbound channel depth; a subscriber that falls further behind is gapped. |
 | `LANTERN_MUTEX_PROFILE_FRACTION` | int | `0` | runtime.SetMutexProfileFraction sampling rate (0 = disabled; has runtime cost). |
 | `LANTERN_NODE_ID` | string | (empty) | Stable nonzero 32-hex-char (16-byte) node identity for HLC/replication; random per boot when unset in graph-only mode, but explicitly required and immutable in durable receipt-WAL modes. |
-| `LANTERN_OIDC_ADMIN_ISSUER` | string | (empty) | Exact HTTPS bootstrap administrator Issuer, required in OIDC mode. |
-| `LANTERN_OIDC_ADMIN_SUBJECTS` | string | (empty) | Nonempty JSON array of exact administrator subjects. Creates protected environment-owned security_admin memberships, with no implicit data grants. |
-| `LANTERN_OIDC_ALGORITHMS` | string | `["RS256"]` | JSON array of allowed signing algorithms: RS256, ES256 and/or EdDSA. |
-| `LANTERN_OIDC_API_AUDIENCE` | string | (empty) | Required audience of API access tokens; ID tokens are not API credentials. |
 | `LANTERN_OIDC_BROWSER_ORIGIN` | string | (empty) | One exact HTTPS Admin origin. Browser sessions and login return paths are bound to it. |
-| `LANTERN_OIDC_CLIENT_ID` | string | (empty) | Registered browser client ID, required in OIDC mode. |
-| `LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED` | string | (empty) | Exact true/false operator qualification that OAuth clients cannot collide with or impersonate enrolled human subjects; empty defaults to false. Required for human Bearer management; RFC 9068/client_id/auth_time alone are insufficient. Qualify the actual issuer profile before enabling and raise bootstrap revision to attest its issuer while preserving reviewed AdminSubjects. Adding bootstrap subjects grants protected security_admin and is not generic human enrollment. |
 | `LANTERN_OIDC_PRIVATE_ORIGINS` | string | `{}` | Strict JSON map of exact metadata origins to explicit nonzero CIDRs for private IdP access; no broad SSRF exemption. |
-| `LANTERN_OIDC_REDIRECT_URI` | string | (empty) | Exact registered Admin origin plus Issuer-specific /auth/callback/<SHA-256> path. |
 | `LANTERN_OIDC_ROOT_CA_FILE` | string | (empty) | Optional absolute operator CA bundle for IdP HTTPS verification. |
 | `LANTERN_OIDC_SECRET_BINDINGS` | string | `{}` | Strict JSON map of installed secret handles to operator-owned private files and versions. Handles are write-only through management APIs. |
-| `LANTERN_OIDC_SECRET_REF` | string | (empty) | Optional operator-installed browser client secret binding handle; no raw secret is stored in security state. |
 | `LANTERN_OIDC_TRUSTED_PROXY_IPS` | string | `[]` | JSON array of exact proxy IPs permitted to attest HTTPS with a single matching forwarded host/protocol. Never trust arbitrary forwarded headers. |
 | `LANTERN_PEERS` | string | (empty) | Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected. |
 | `LANTERN_PEER_CA_FILE` | string | (empty) | Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected. |
@@ -111,7 +103,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_PEER_DISCOVERY_INTERVAL_MS` | int | `10000` | Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected. |
 | `LANTERN_PEER_DNS_NAME` | string | (empty) | Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected. |
 | `LANTERN_PEER_KEY_FILE` | string | (empty) | Absolute private workload key matching the admitted certificate. |
-| `LANTERN_PEER_LISTEN_ADDR` | string | (empty) | Dedicated private workload host:port. Enables only replication/policy peer APIs, with TLS 1.3 and mutual certificates. |
+| `LANTERN_PEER_LISTEN_ADDR` | string | (empty) | Dedicated private workload host:port. Enables only replication peer APIs, with TLS 1.3 and mutual certificates. |
 | `LANTERN_PEER_MEMBERSHIP_FILE` | string | (empty) | Absolute signed operator membership manifest; reloaded periodically. At most a ten-minute lifetime. |
 | `LANTERN_PEER_MEMBERSHIP_MODE` | string | (empty) | Private durable membership mode: fresh or resume. Retained floors prevent rollback. |
 | `LANTERN_PEER_MEMBERSHIP_STATE_FILE` | string | (empty) | Absolute owned membership floor/recovery path for this workload. |
@@ -159,20 +151,8 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_SEARCH_MAX_SESSION_HITS` | int | `10000` | Maximum ranked hits retained by one search session; must exceed LANTERN_SEARCH_MAX_LIMIT. |
 | `LANTERN_SEARCH_POSITIONS` | bool | `true` | Record positional postings so phrase queries verify adjacency and the proximity boost ranks tight matches higher. Off drops the position store: phrase=true fails closed with FAILED_PRECONDITION / SEARCH_POSITIONS_DISABLED instead of returning unordered matches. |
 | `LANTERN_SEARCH_TIMEOUT_MS` | int | `5000` | Server-side deadline applied to every SearchVertices attempt. |
-| `LANTERN_SECURITY_BOOTSTRAP_REVISION` | string | (empty) | Positive operator bootstrap revision; stale/reused incompatible configuration cannot recreate removed administrators. |
-| `LANTERN_SECURITY_BOOTSTRAP_ROLES` | string | `[]` | Strict JSON array of bootstrap Roles; rules own all permissions. Existing immutable environment memberships protect their policies. |
-| `LANTERN_SECURITY_CLOCK_QUALIFIED` | string | (empty) | Required exact true operator attestation that clock skew/drift meets the documented lease bounds; not a clock-check bypass or automatic qualification. |
-| `LANTERN_SECURITY_CURRENT_CONFIG_FILE` | string | (empty) | current-v2 only: absolute private canonical node JSON binding independent genesis, M/P/B identities, workload membership, origins, and native time profile. |
-| `LANTERN_SECURITY_GENERATION` | string | (empty) | Required nonzero generation, exactly 32 lowercase hexadecimal characters. Shared by the homogeneous protected cluster. |
-| `LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE` | string | (empty) | Writer-only absolute private JSON file of named machine credentials and existing Role IDs. Canonical lnt_m1_ tokens have at most a 90-day lifetime; only digests enter sys state. |
-| `LANTERN_SECURITY_MAX_JOURNAL_BYTES` | string | `67108864` | Hard security journal cap between 20 and 512 MiB. Capacity exhaustion fails closed; revocation has an independent image reserve. |
-| `LANTERN_SECURITY_NODE_ROLE` | string | (empty) | Security authority role: writer or replica. This does not impose a leader on graph data writes. |
-| `LANTERN_SECURITY_PROFILE` | string | (empty) | Required OIDC authority profile: legacy-v1 or current-v2; no implicit fallback or live import. |
-| `LANTERN_SECURITY_STORE_MODE` | string | (empty) | Required durable mode: legacy-v1 fresh/restart; current-v2 fresh/resume with independent minimum floors. Recovery never restores volatile serving authority. |
-| `LANTERN_SECURITY_STORE_PATH` | string | (empty) | Absolute private security journal path with owned recovery proof sidecars; system metadata is nonexpiring and separate from public data. |
-| `LANTERN_SECURITY_WRITER_ENDPOINT` | string | (empty) | Exact HTTPS private workload endpoint of the single pinned policy writer. |
-| `LANTERN_SECURITY_WRITER_KEY_FILE` | string | (empty) | Absolute private Ed25519 PKCS8 signing key; writer only. Replicas must not configure it. |
-| `LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE` | string | (empty) | Required absolute pinned Ed25519 SPKI public key, shared by writer and replicas. |
+| `LANTERN_SECURITY_CONFIG_FILE` | string | (empty) | OIDC: absolute private canonical node JSON binding independent genesis, M/P/B identities, workload membership, origins, and native time profile. |
+| `LANTERN_SECURITY_STORE_MODE` | string | (empty) | Required durable mode: fresh/resume with independent minimum floors. Recovery never restores volatile serving authority. |
 | `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | int | `30` | Graceful-shutdown drain budget for in-flight requests before a hard close. |
 | `LANTERN_SLOW_RPC_THRESHOLD_MS` | int | `500` | RPCs slower than this emit a warn-level "slow rpc" log line (0 disables). |
 | `LANTERN_STRICT_CONFIG` | bool | `false` | Refuse to boot when any LANTERN_* value is malformed or an unknown LANTERN_* variable is set. |

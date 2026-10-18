@@ -116,8 +116,8 @@ func generateCurrentQueryFixture(ctx context.Context, dir string, ports []int, m
 				return fixture{}, errors.New("current query cohort profiles differ")
 			}
 			env := f.Nodes[i].Environment
-			env["LANTERN_SECURITY_PROFILE"], env["LANTERN_SECURITY_STORE_MODE"] = "current-v2", "fresh"
-			env["LANTERN_SECURITY_CURRENT_CONFIG_FILE"] = node.NodeFile
+			env["LANTERN_SECURITY_STORE_MODE"] = "fresh"
+			env["LANTERN_SECURITY_CONFIG_FILE"] = node.NodeFile
 			env["LANTERN_OIDC_BROWSER_ORIGIN"], env["LANTERN_OIDC_ROOT_CA_FILE"] = "https://admin.example", f.CAFile
 			privateOrigins, _ := json.Marshal(map[string][]string{f.Query.Issuer: {"127.0.0.1/32"}})
 			env["LANTERN_OIDC_PRIVATE_ORIGINS"] = string(privateOrigins)

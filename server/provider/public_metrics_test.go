@@ -1,18 +1,19 @@
 package provider
 
 import (
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/common/expfmt"
-	"github.com/prometheus/common/model"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 )
 
 func TestProtectedMetricsRequiresLocalOperatorBoundary(t *testing.T) {
-	_, data, _ := securityRuntimeFixture(t)
+	data := securityDataFixture(t)
 	runtime := &SecurityRuntime{mode: "oidc", data: data}
 	cert := runtimeCertified{valid: true, runtime: data}
 	public := publicSecurityCertified{runtime: runtime}
@@ -33,7 +34,7 @@ func TestProtectedMetricsRequiresLocalOperatorBoundary(t *testing.T) {
 }
 
 func TestProtectedMetricsExposition(t *testing.T) {
-	_, data, _ := securityRuntimeFixture(t)
+	data := securityDataFixture(t)
 	runtime := &SecurityRuntime{mode: "oidc", data: data}
 	registry := prometheus.NewRegistry()
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "lantern_test_calls_total", Help: "test requests"}, []string{"result"})

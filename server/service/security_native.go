@@ -158,7 +158,7 @@ func (r *AuthenticationAdapter) GetNativeSession(ctx context.Context, req *conne
 	if err != nil {
 		return nil, err
 	}
-	view, err := authn.InspectSession(ctx, a, nil, r.current, r.now)
+	view, err := authn.InspectSession(ctx, a, r.current, r.now)
 	if err != nil {
 		return nil, nativeError(err)
 	}

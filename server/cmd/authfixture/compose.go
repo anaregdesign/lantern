@@ -44,7 +44,9 @@ func exportComposeFixture(result *fixture, dir string) error {
 		env["LANTERN_PEER_MEMBERSHIP_STATE_FILE"] = "/state/membership.state"
 		env["LANTERN_METRICS_ADDR"] = "127.0.0.1:9090"
 		if env["LANTERN_AUTH_MODE"] == "oidc" {
-			env["LANTERN_SECURITY_STORE_PATH"] = "/state/security.wal"
+			if err := copyComposeAuthority(dir, mount, i); err != nil {
+				return err
+			}
 		} else {
 			delete(env, "LANTERN_TLS_CERT_FILE")
 			delete(env, "LANTERN_TLS_KEY_FILE")
@@ -87,7 +89,7 @@ func exportComposeFixture(result *fixture, dir string) error {
 
 func copyMountedFixtureFile(source, destination string) error {
 	info, err := os.Lstat(source)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > (4<<20)+(256<<10) {
 		return errors.New("invalid fixture source file")
 	}
 	raw, err := os.ReadFile(source)
@@ -96,7 +98,7 @@ func copyMountedFixtureFile(source, destination string) error {
 	}
 	mode := os.FileMode(0644)
 	name := filepath.Base(source)
-	if strings.HasSuffix(name, ".key") || name == "machines.json" || name == "cdc-keys.json" {
+	if strings.HasPrefix(name, "authority-") || strings.HasSuffix(name, ".key") || name == "machines.json" || name == "cdc-keys.json" {
 		mode = 0600
 	}
 	if err := os.WriteFile(destination, raw, mode); err != nil {
@@ -149,6 +151,11 @@ func renewComposeMembership(dir string, now time.Time) error {
 		current, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("lantern-%d", i), "membership.json"))
 		if err != nil || !bytes.Equal(current, raw) {
 			return errors.New("mounted membership drift")
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "authority", "control-operator.key")); err == nil {
+		if err = renewComposeAuthority(dir, now); err != nil {
+			return err
 		}
 	}
 	manifest.Version++
@@ -265,7 +272,7 @@ func prepareComposeRestart(dir, service string) error {
 	}
 	env["LANTERN_PEER_MEMBERSHIP_MODE"] = "resume"
 	if env["LANTERN_AUTH_MODE"] == "oidc" {
-		env["LANTERN_SECURITY_STORE_MODE"] = "restart"
+		env["LANTERN_SECURITY_STORE_MODE"] = "resume"
 	}
 	if env["LANTERN_RECEIPT_WAL_MODE"] == "fresh" {
 		env["LANTERN_RECEIPT_WAL_MODE"] = "restart"

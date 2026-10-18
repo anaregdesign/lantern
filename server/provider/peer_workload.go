@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+
 	"github.com/anaregdesign/lantern/server/replication"
 )
 
@@ -37,35 +38,27 @@ func NewWorkloadPeerTransport(peer *PeerIdentityRuntime) (*replication.PeerTrans
 		return false
 	})
 }
-func NewConfiguredSecurityPeer(runtime *SecurityRuntime, peer *PeerIdentityRuntime) (*SecurityPeerRuntime, error) {
-	if runtime == nil {
-		return nil, errors.New("missing security runtime")
+
+// bindWorkload joins the exact independently authenticated data-plane profile
+// to the security owner before public certification. Consensus has its own owner.
+func (runtime *SecurityRuntime) bindWorkload(peer *PeerIdentityRuntime) error {
+	if runtime == nil || runtime.peer != nil {
+		return errors.New("missing or already-bound security runtime")
 	}
-	if runtime.mode == "off" {
-		if runtime.peer != nil {
-			return nil, errors.New("workload runtime is already bound")
-		}
-		runtime.peer = peer
-		return nil, nil
+	if peer != nil && peer.CheckWorkload(context.Background()) != nil {
+		return errors.New("public serving requires a current authenticated data workload")
 	}
-	if runtime.current != nil {
-		if runtime.native != nil || runtime.authority != nil || runtime.receiver != nil || runtime.peer != nil {
-			return nil, errors.New("current cohort cannot share a legacy policy authority")
+	if runtime.mode == "oidc" {
+		if runtime.current == nil {
+			return errors.New("OIDC requires its owned quorum authority")
 		}
 		if peer != nil {
 			d, p := peer.store.Domain(), runtime.current.Profile()
 			if d.AuthMode != "oidc" || d.CurrentProfile != p.Binding() || d.SecurityGeneration != p.Generation || d.WriterPublicKey != [32]byte{} {
-				return nil, errors.New("data workload current profile mismatch")
+				return errors.New("data workload authority profile mismatch")
 			}
 		}
-		runtime.peer = peer
-		return nil, nil // Current private consensus/renewal has its own listener.
 	}
-	if peer == nil {
-		if runtime.authority == nil {
-			return nil, errors.New("security replica requires workload membership")
-		}
-		return nil, nil
-	}
-	return NewSecurityPeerRuntime(runtime, peer)
+	runtime.peer = peer
+	return nil
 }

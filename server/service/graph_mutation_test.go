@@ -15,9 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/decisiontrace"
-	"github.com/anaregdesign/lantern/server/internal/security"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // A fixed-work diagnostic: 19 ordinary receipt RPCs per eight-item cycle,
@@ -348,62 +346,4 @@ func graphMutationDiagnosticStages(t *testing.T, capture *decisiontrace.Capture)
 		t.Fatal("operation budget changed", budget)
 	}
 	return stages
-}
-
-func TestGraphMutationAuthorizationNamespaceBlindAndLifecycle(t *testing.T) {
-	clock, contexts := dataAccessFixture(t, []security.PermissionRule{
-		dataAccessRule("read-tail", security.Allow, security.VertexRead, "tails:"),
-		dataAccessRule("write-tail", security.Allow, security.VertexWrite, "tails:"),
-		dataAccessRule("write-head", security.Allow, security.VertexWrite, "heads:"),
-		dataAccessRule("receipts", security.Allow, security.ReceiptRead, ""),
-	})
-	f := newReceiptEdgeDeleteFixture(t, nil)
-	now := clock()
-	f.service.WithDataNamespace().WithDataAuthorization(func() time.Time { return now })
-	runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
-	if err := f.cache.PutVertex("data:heads:b", &pb.Vertex{Key: "data:heads:b"}); err != nil {
-		t.Fatal(err)
-	}
-	id := graphcache.ContribID{9}
-	req := &pb.MutateGraphRequest{ReceiptContext: publicReceiptContext(t, runtime, 0x61, 2), Items: []*pb.GraphMutationItem{
-		{Operation: &pb.GraphMutationItem_PutVertex{PutVertex: &pb.Vertex{Key: "tails:a", Value: &pb.Vertex_String_{String_: "data:literal"}}}},
-		{Operation: &pb.GraphMutationItem_AddEdge{AddEdge: &pb.GraphMutationEdgeAdd{Edge: &pb.Edge{Tail: "tails:a", Head: "heads:b", Weight: 2}, ContribId: id[:]}}},
-	}}
-	handler := &lanternServiceConnect{svc: f.service}
-	ctx := contexts("reader", now)
-	denied := proto.Clone(req).(*pb.MutateGraphRequest)
-	denied.Items[0].GetPutVertex().Key = "outside:x"
-	if _, err := handler.MutateGraph(ctx, connect.NewRequest(denied)); connect.CodeOf(err) != connect.CodePermissionDenied || f.log.Len() != 0 || f.coordinator.store.Stats().Entries != 0 {
-		t.Fatal("unauthorized member observed/published", err)
-	}
-	response, err := handler.MutateGraph(ctx, connect.NewRequest(req))
-	if err != nil || response.Msg.GetAcceptance() == nil || len(response.Msg.GetResults()) != 0 {
-		t.Fatal("blind whole-call effect leaked", response, err)
-	}
-	if v, live := f.cache.GetVertex("data:tails:a"); !live || v.GetString_() != "data:literal" {
-		t.Fatal("mapped value/key drift", v, live)
-	}
-	if _, live := f.cache.GetVertex("tails:a"); live {
-		t.Fatal("logical key bypassed namespace")
-	}
-	e := f.log.RetainedEntries()[0].Op.(*graphMutationEnvelope)
-	if e.Receipts[0].Resource.Key != "tails:a" || e.Receipts[1].Resource.Head != "heads:b" {
-		t.Fatal("receipt provenance is not logical")
-	}
-	reduced := proto.Clone(req).(*pb.MutateGraphRequest)
-	reduced.ReceiptContext = publicReceiptContext(t, runtime, 0x71, 2)
-	reduced.Items[0].GetPutVertex().Expiration = timestamppb.New(time.Now().Add(time.Minute))
-	reduced.Items[1].GetAddEdge().ContribId[0]++
-	if _, err := handler.MutateGraph(ctx, connect.NewRequest(reduced)); connect.CodeOf(err) != connect.CodePermissionDenied || f.log.Len() != 1 {
-		t.Fatal("lifecycle reduction escaped", err)
-	}
-	// A stale admission cannot disclose even the same call's handled result.
-	_, err = dataUnary(ctx, connect.NewRequest(req), f.service, func(c context.Context, r *pb.MutateGraphRequest) (*pb.MutateGraphResponse, error) {
-		response, err := f.service.MutateGraph(c, r)
-		now = now.Add(2 * time.Hour)
-		return response, err
-	})
-	if connect.CodeOf(err) != connect.CodeUnavailable {
-		t.Fatal("expired output authority disclosed", err)
-	}
 }

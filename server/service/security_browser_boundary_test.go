@@ -8,30 +8,8 @@ import (
 	"net/netip"
 	"testing"
 	"time"
-
-	"connectrpc.com/connect"
-	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
-func browserSessionFixture(t *testing.T) (*authenticationFixture, *securityTestClock, string, string) {
-	t.Helper()
-	config, clock := authenticationConfigFixture(t)
-	config.TrustedProxyIPs = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
-	runtime, cleanup, err := newAuthenticationFixture(t, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(cleanup)
-	clock.advance(35 * time.Second)
-	session, csrf := base64.RawURLEncoding.EncodeToString(make([]byte, 32)), base64.RawURLEncoding.EncodeToString([]byte("12345678901234567890123456789012"))
-	identity := security.Identity{Kind: security.OIDCPrincipal, Issuer: config.Bootstrap.Issuer.URL, Subject: "admin"}
-	current, _ := runtime.native.Store().Current()
-	issuer, _ := current.Snapshot().Issuer(identity.Issuer)
-	if _, err := runtime.native.Store().IssueSession(t.Context(), security.SessionRequest{ChangeID: [16]byte{1}, Identity: identity, IssuerConfigRevision: issuer.ConfigRevision, Digest: browserDigest(session), CSRFDigest: browserDigest(csrf), AuthTime: clock.Now(), Now: clock.Now(), Lifetime: security.MaxSessionLifetime}); err != nil {
-		t.Fatal(err)
-	}
-	return runtime, clock, session, csrf
-}
 func browserFixtureRequest(session, csrf string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "https://admin.example/browser/graph.v1.LanternSecurityService/ListRoles", nil)
 	req.TLS = &tls.ConnectionState{}
@@ -42,14 +20,10 @@ func browserFixtureRequest(session, csrf string) *http.Request {
 	return req
 }
 func TestSecurityBrowserBoundarySessionOriginCSRF(t *testing.T) {
-	runtime, clock, session, csrf := browserSessionFixture(t)
-	ctx, digest, err := runtime.authenticateBrowser(browserFixtureRequest(session, csrf), true)
-	if err != nil || digest != browserDigest(session) {
+	r := NewCredentialAdapter("oidc", BrowserConfig{BrowserOrigin: "https://admin.example", TrustedProxyIPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}, nil)
+	session, csrf := base64.RawURLEncoding.EncodeToString(make([]byte, 32)), base64.RawURLEncoding.EncodeToString([]byte("12345678901234567890123456789012"))
+	if _, err := r.CurrentBrowserProducer(browserFixtureRequest(session, csrf)); err != nil {
 		t.Fatal(err)
-	}
-	admission, known := security.AdmissionFromContext(ctx)
-	if !known || !admission.Browser() || admission.CSRFToken() != csrf {
-		t.Fatal("verified browser proof missing")
 	}
 	for name, mutate := range map[string]func(*http.Request){
 		"missing csrf":      func(r *http.Request) { r.Header.Del(browserCSRFHeader) },
@@ -80,7 +54,7 @@ func TestSecurityBrowserBoundarySessionOriginCSRF(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			req := browserFixtureRequest(session, csrf)
 			mutate(req)
-			if _, _, err := runtime.authenticateBrowser(req, true); err == nil {
+			if _, err := r.CurrentBrowserProducer(req); err == nil {
 				t.Fatal("untrusted browser boundary accepted")
 			}
 		})
@@ -90,13 +64,10 @@ func TestSecurityBrowserBoundarySessionOriginCSRF(t *testing.T) {
 	proxy.RemoteAddr = "127.0.0.1:443"
 	proxy.Header.Set("X-Forwarded-Proto", "https")
 	proxy.Header.Set("X-Forwarded-Host", "admin.example")
-	if _, _, err := runtime.authenticateBrowser(proxy, true); err != nil {
+	if _, err := r.CurrentBrowserProducer(proxy); err != nil {
 		t.Fatal("pinned gateway rejected", err)
 	}
-	clock.advance(security.MaxSessionLifetime)
-	if _, _, err := runtime.authenticateBrowser(browserFixtureRequest(session, csrf), true); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatal("fixed session expiry bypassed", err)
-	}
+
 }
 
 func TestSecurityBrowserCookieFlags(t *testing.T) {

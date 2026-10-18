@@ -1,18 +1,12 @@
 # OIDC/RBAC and private peer operations
 
-This is the #1599/#1608/#1609 operational contract. The fixed-writer behavior
-below describes merged source `93d537892f3025d4a1666dcab36c5748d5cfb9f6`.
-The #1672 management implementation and #1608 leaderless target are identified
-separately; the latter remains outside this fixed-writer delivery. Source and local
-conformance do not complete final provider, production-clock or device
-qualification in #1610. Lantern is the database; no PostgreSQL, external policy
-Store, coordinator or additional runtime service is required. The approved
-Dart platform SQLite adapter remains a separate client option.
-
-Current source requires explicit `legacy-v1` for the fixed-writer instructions
-below. The separate `current-v2` startup/API contract is documented in
-[current authority](security-current-authority.md#public-current-v2-composition).
-There is no implicit profile fallback or online state conversion.
+Public authentication has two modes: OFF and OIDC. OIDC uses the sole
+[quorum authority](security-current-authority.md#public-oidc-composition), with
+independent original provisioning and intact recovery. The fixed-writer runtime,
+replica policy lease, profile selectors and environment bootstrap were retired
+in #1820. No backward compatibility or state conversion is supplied.
+Source and local conformance do not complete real-provider, configured-source
+or physical-device qualification. Lantern needs no external policy database.
 
 The [native Google/Apple session contract](native-login-sessions.md) for #1750
 records exact native client profiles, Server-private Apple secret handling,
@@ -128,10 +122,13 @@ settings are rejected, including empty values. Nonempty `LANTERN_PEERS` and
 legacy peer discovery/credentials cannot enable HA or accompany signed membership;
 configure the separate private workload plane below.
 
-OIDC requires administrator Issuer and subject IDs in environment configuration.
-Those bindings are environment-owned; changing the bootstrap configuration is
-an explicit revision-controlled operator action. Admin manages other registered
-Issuers, users and Role assignments via current authenticated Server APIs.
+OIDC requires `LANTERN_SECURITY_CONFIG_FILE`, `LANTERN_SECURITY_STORE_MODE`
+(`fresh` or `resume`) and one exact HTTPS browser origin. Independent genesis
+contains the exact administrator Issuer/subjects, Role-only machine credentials,
+issuer client/audience/algorithm policy and environment-owned assignments.
+Runtime environment variables no longer reconcile or recreate administrators.
+Admin manages mutable registered Issuers, users and assignments through current
+reviewed control APIs.
 Identity is the verified Issuer/subject pair, not email, display name or a client
 header. Machines use dedicated credentials bound only to Roles. The approved
 actor policy allows authorized management reference/status reads, but no
@@ -144,32 +141,21 @@ and approved ordinary management do not require recent `auth_time`. Google
 Security bundle, extra claims and their app publication/verification are
 optional and outside baseline gates.
 
-Provision fresh native sys: state only for a new generation. Use durable restart
-for existing state. Policy changes require expected revision, immutable change
-ID and original-status reconciliation after an uncertain response. Separate
-committed policy from cluster-enforced policy: a write acknowledgment alone is
-not evidence that every replica stopped serving the old revision.
+Provision fresh state only for a new original cohort. Resume uses the exact
+original documents, journals and independent custody/minimum floors. It cannot
+recover serving authority from persisted bytes alone. Prepare returns a server
+ID bound to the full profile, semantic cut, actor and exact intent; retain it for
+Apply and status reconciliation. APPLIED proves the original committed result;
+WAITING and STOPPED separately describe cessation of stale authorization.
 
 ## Security state version boundary
 
-The ordinary-login/recent-auth split (#1658) uses security image version 2,
-signed revision prefix `LNSEC03` and native journal binding v2. Missing
-`auth_time` is persisted as unknown; old signed times are retained exactly.
-Every current reader, replica and restart/restore path must preserve that
-meaning. At `93d53789`, Apply, Store management and non-mutating ValidateIssuer
-also require signed authentication within five minutes. #1672 removes that
-blanket requirement for ordinary management; the state format alone does not
-prove that the policy change or its high-impact protection is implemented.
-
-Image version 1, `LNSEC02` revisions and native binding v1 are incompatible.
-There is no automatic migration, implicit reset or mixed-cohort rolling
-upgrade. A v2 process rejects the old durable binding before replay or tip/floor
-advancement; old readers reject v2 images/revisions. Preserve existing bytes
-and stop serving an unproven cohort. An operator moving an experimental old
-cohort must fence it and explicitly choose a certified new generation/bootstrap
-or independently reviewed migration; this runbook does not perform that action.
-Graph namespace format, receipt-WAL V9 and receipt archive V4 are unchanged.
-Graph backups cannot substitute for certified security state.
+Security image version 2, protocol version 2, namespaced-v1 data and native
+journal/capsule encodings remain versioned contracts. Retiring the old runtime
+does not rename their bytes, synthesize new IDs or reinterpret an old result.
+Old fixed-writer signed revisions, sessions and journals cannot be imported.
+Graph backups and receipt-WAL V9 / archive V4 retain their separate contracts
+and cannot substitute for authority state or custody.
 
 ## Management operation and actor policy
 
@@ -186,15 +172,15 @@ Changes to accepted Issuer/credential trust and effective expansion of
 Deny, deleting a Role or removing an assignment may expand authority; assess
 the complete resulting policy. A general recent-session flag is insufficient
 for this operation. The [operation matrix and proof contract](decisions/0012-oidc-prefix-rbac.md#management-operation-and-actor-policy)
-binds actor, original ID, unchanged v1 intent and full policy cut to a signed
+binds actor, original full ID, immutable intent and full policy cut to a signed
 post-review event. The purpose callback preserves the ordinary session, CSRF,
-authentication evidence, expiry and policy revision. Generic session step-up
-retains its five-minute rule and cannot substitute for this proof. ValidateIssuer
+authentication evidence, expiry and policy cut. Broad session step-up is retired;
+only the reviewed operation can request this proof. ValidateIssuer
 uses separate conservative qualified-human probe admission with no age gate;
 machine reference/status authorization does not settle probe eligibility.
 
 Valid authentication, exact identity, token/session expiry, current Roles,
-revocation/suspension, CSRF/exact origin, expected revision/CAS, current
+revocation/suspension, CSRF/exact origin, expected full-cut/CAS, current
 session/policy admission, environment-owned locks and administrator invariants
 remain required. Signed evidence still rejects malformed, future or
 contradictory times. Ordinary login never turns unknown/old evidence into a
@@ -205,22 +191,18 @@ lifetime, subject to these independent checks; removing the five-minute gate
 does not extend that lifetime.
 
 
-When the first Apply returns a matching typed precommit rejection, reload the
-current policy, correct the draft, review a new Change-ID and apply explicitly.
-The refusal carries no committed effect, revision or audit entry. Keep the
-original ID and use status lookup after an ambiguous dispatch or a generic
-conflict, including one seen after route remount; a later refusal cannot settle
-that earlier call. A status outside retained history does not prove noncommit.
-For the separate operation-authorization refusal, reauthenticate the unchanged
-reviewed tuple rather than editing it or allocating a replacement ID.
+After an ambiguous Apply, retain the exact original ID/review and reconcile its
+original status. An unknown or evicted result does not prove nonexecution.
+Review a corrected command only after resolving the earlier operation's state.
+Per-operation authentication preserves the unchanged reviewed tuple.
 
 ## Workload membership and freshness
 
 HA, including public OFF, has a distinct private TLS 1.3/mTLS listener. Every
 member has its own workload URI identity and SPKI-pinned certificate. The
 operator-signed membership binds exact path-free HTTPS private origins,
-deployment, public auth mode, namespace format, security generation and writer
-public key. DNS supplies addresses only for approved origins. Never share a
+deployment, public auth mode, namespace format, security generation and full authority
+profile binding (the retired writer-key slot must be zero). DNS supplies addresses only for approved origins. Never share a
 private key, accept a browser/Bearer credential as membership or publish this
 listener through a public gateway.
 
@@ -231,21 +213,20 @@ budget. The operator signing private key is never mounted in Lantern. Use
 `fresh` only for first enrollment, then `resume`; copied or ambiguous enrollment
 state does not prove continuity.
 
-In the fixed-writer baseline, application data remains leaderless. Security
-revisions have one fixed writer;
-replicas acquire bounded signed serving leases over the private plane. Initial
-writer fencing takes 35 seconds. Public admission lasts at most 28 seconds;
-replica/writer checks may shorten it. Idle or blocked streams cannot retain
-unbounded authority. Membership expiry, unknown policy, lost renewal or stale
-generation stops protected serving. Replication of sys: bytes alone is
-insufficient evidence of current policy.
+Control consensus and renewal use the original fixed set of 1–31 voters and
+strict majority `floor(N/2)+1`, including even counts. Data ring replicas are a
+separate topology. Losing a majority prevents new commits and renewals; existing
+serving authority ends at its original finite native-time bound. No automatic
+voter shrink, live expansion, writer promotion, deadline extension or fallback
+to OFF is available. A distinct origin key owns each original H/serial; its
+custody cannot be recreated from a runtime label or old journal.
 
-Writer loss stops login and policy changes, then protected serving after lease
-expiry. Do not promote another writer automatically or configure a secondary
-as OFF. Replacement requires externally fencing the old writer, choosing the
-current certified native state and an explicit generation/restore decision.
-Graph-only backups or public data exports cannot restore authentication state.
-Receipt-WAL continuity and security continuity have separate certification gates.
+Every output unit is authorized by the actual current owner. Under approved A,
+an exactly authorized unit may finish late; the contract supplies no physical
+send deadline. New stale units remain closed after revocation/expiry. See the
+[output contract](security-current-authority.md#bounded-output-under-approved-a).
+Graph-only backups cannot restore authentication continuity, and receipt-WAL
+continuity has its own certification requirements.
 
 ## Browser and diagnostics boundary
 
@@ -260,7 +241,7 @@ HTTPS public origin. Select that exact HTTPS origin as the Admin gateway; the
 current `http://localhost:6380` connection default does not configure a proxied
 OIDC deployment. Match `LANTERN_OIDC_BROWSER_ORIGIN` and the exact registered
 Issuer-specific callback to that origin. Pin `/auth/*`,
-`/browser/*` and security/control APIs to the fixed writer. Verify TLS to the
+`/browser/*` and security/control APIs to a pinned eligible authority origin. Verify TLS to the
 Server; for private CAs mount `LANTERN_ADMIN_SERVER_CA_FILE`. A plaintext
 Server hop is allowed only behind its explicitly trusted exact gateway IP and
 validated HTTPS/public Host headers; never trust arbitrary forwarded headers.

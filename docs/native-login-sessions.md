@@ -17,7 +17,7 @@ landed through #1752 at `f8db9d460e9ddac5cc9afcdf0870e485a4d2d0fa`.
   authentication broker, BFF, `lantern_auth`, database, clock or authority cache.
 - Add a dedicated unary Connect native-auth service and an Apple Android HTTP
   callback on the existing certified public listener. Native auth is supported
-  only with OIDC/current-v2; OFF and legacy-v1 cannot issue or admit this profile.
+  only with OIDC; OFF cannot issue or admit authenticated sessions.
 - Issue a random opaque native end-user Bearer credential with **fixed eight-hour
   absolute expiry**, reusing `security.MaxSessionLifetime`. No sliding expiry,
   Lantern refresh token, provider refresh-token retention or background renewal.

@@ -17,7 +17,7 @@ import (
 
 // PeerIdentityRuntime is staged trusted composition. It certifies one
 // independently durable membership/certificate boundary; it does not certify
-// the security-policy lease or enable the production listener by itself.
+// current serving authority or enable the production listener by itself.
 type PeerIdentityRuntime struct {
 	config      PeerIdentityConfig
 	store       *peerauth.Store
@@ -42,7 +42,7 @@ func NewPeerIdentityRuntime(config PeerIdentityConfig) (_ *PeerIdentityRuntime, 
 	if !roots.AppendCertsFromPEM(ca) {
 		return nil, nil, peerauth.ErrMembership
 	}
-	key, err := loadSecurityWriterPublicKey(config.OperatorKeyFile)
+	key, err := loadOperatorPublicKey(config.OperatorKeyFile)
 	if err != nil {
 		return nil, nil, err
 	}
