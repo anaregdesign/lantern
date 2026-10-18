@@ -37,6 +37,7 @@ on:
       - "testbed/scripts/native_head_fixture.sh"
       - "testbed/scripts/dart_receipt_fixture.sh"
       - "tests/integration/auth_test.go"
+      - "tests/integration/auth_authority_helpers_test.go"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
       - "AGENTS.md"
@@ -85,6 +86,7 @@ on:
       - "testbed/scripts/native_head_fixture.sh"
       - "testbed/scripts/dart_receipt_fixture.sh"
       - "tests/integration/auth_test.go"
+      - "tests/integration/auth_authority_helpers_test.go"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
       - "AGENTS.md"
@@ -743,7 +745,30 @@ jobs:
 
       - name: Test app data permissions and offline scoped CDC over authenticated Connect
         working-directory: .
-        run: go test ./tests/integration -run '^TestAuth_(FlutterDataDemo|DartOfflineScopedChanges)RealConnect$' -count=1
+        env:
+          LANTERN_CURRENT_PUBLIC_GATE: "1"
+        run: |
+          set -o pipefail
+          events="$RUNNER_TEMP/lantern-app-current-events.jsonl"
+          go test -json -tags=lantern_test_time ./tests/integration -run '^TestAuth_(FlutterDataDemo|DartOfflineScopedChanges)RealConnect$' -count=1 | tee "$events"
+          python3 - "$events" <<'PYAPP'
+          import json, pathlib, sys
+          required = {name: [] for name in ("TestAuth_FlutterDataDemoRealConnect", "TestAuth_DartOfflineScopedChangesRealConnect")}
+          package_passes = 0
+          for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+              event = json.loads(line)
+              if event.get("Package") != "github.com/anaregdesign/lantern/tests/integration":
+                  continue
+              action, test = event.get("Action"), event.get("Test")
+              if action in ("fail", "skip"):
+                  raise SystemExit("selected app-wire execution failed or skipped")
+              if test in required and action in ("run", "pass"):
+                  required[test].append(action)
+              if action == "pass" and test is None:
+                  package_passes += 1
+          if package_passes != 1 or any(actions != ["run", "pass"] for actions in required.values()):
+              raise SystemExit("selected app-wire execution missing, duplicated or incomplete")
+          PYAPP
 
       - name: Start identity CDC fixtures
         working-directory: .

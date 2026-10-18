@@ -18,7 +18,7 @@ from local_gate_plan import steps
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def events(tests=gate.SDK_TESTS, kind="Q"):
+def events(tests=(*gate.SDK_TESTS, *gate.RETAINED_ROOT_TESTS), kind="Q"):
     result = [{"Action": "run", "Test": gate.ROOT_TEST},
               {"Action": "output", "Test": gate.ROOT_TEST, "Output": gate.NATIVE_MARKER if kind == "Q" else gate.FIXTURE_MARKER}]
     result += [{"Action": "output", "Test": gate.ROOT_TEST,
@@ -63,7 +63,7 @@ class SDK4ReceiptTest(unittest.TestCase):
         self.receipt = {"schema": 2, "proof": gate.proof_contract("Q"), "status": "PASS", "exit": 0, "source": self.source,
                         "runner_sha256": gate.sha(script.read_bytes()), "runtime": self.runtime,
                         "include_scoped": False, "command": gate.command(False),
-                        "executed_tests": [gate.ROOT_TEST, *gate.SDK_TESTS],
+                        "executed_tests": [gate.ROOT_TEST, *gate.SDK_TESTS, *gate.RETAINED_ROOT_TESTS],
                         "export": {"command": gate.export_command(), "environment": gate.EXPORT_ENVIRONMENT,
                                    "exit": 0, "executed_tests": [gate.ROOT_TEST, gate.EXPORT_TEST]}}
         self.save()
@@ -86,7 +86,7 @@ class SDK4ReceiptTest(unittest.TestCase):
         return gate.verify(self.root, self.evidence, self.source["head"], self.trusted_digest)
 
     def test_complete_execution_and_exact_source(self):
-        self.assertEqual(self.verify()["executed_tests"], [gate.ROOT_TEST, *gate.SDK_TESTS])
+        self.assertEqual(self.verify()["executed_tests"], [gate.ROOT_TEST, *gate.SDK_TESTS, *gate.RETAINED_ROOT_TESTS])
         self.assertEqual(self.verify()["export"]["executed_tests"], [gate.ROOT_TEST, gate.EXPORT_TEST])
 
     def test_constructor_failure_reports_body_not_run_without_inventing_success(self):
@@ -257,7 +257,7 @@ class SDK4ReceiptTest(unittest.TestCase):
     def test_skip_zero_or_missing_sdk_cannot_pass_even_with_rehashed_receipt(self):
         variants = {"zero": [], "root only": [record for record in events()
                                                 if record.get("Test") not in gate.SDK_TESTS]}
-        for sdk in (gate.ROOT_TEST, *gate.SDK_TESTS):
+        for sdk in (gate.ROOT_TEST, *gate.SDK_TESTS, *gate.RETAINED_ROOT_TESTS):
             variants[sdk + " missing"] = [record for record in events() if record.get("Test") != sdk]
             variants[sdk + " skip"] = [{**record, "Action": "skip"}
                                        if record.get("Test") == sdk and record["Action"] == "pass"

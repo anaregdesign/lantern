@@ -126,10 +126,8 @@ jobs:
         env:
           LANTERN_RUST_TEST_SERVER: ${{ github.workspace }}/sdks/rust/target/lantern-smoke${{ matrix.os == 'windows-latest' && '.exe' || '' }}
           LANTERN_RUST_TEST_AUTH_FIXTURE: ${{ github.workspace }}/sdks/rust/target/lantern-authfixture${{ matrix.os == 'windows-latest' && '.exe' || '' }}
-      - name: Test certified OIDC public scoped CDC over the real Rust wire
-        if: matrix.rust == 'stable'
-        working-directory: .
-        run: go test ./tests/integration -run '^TestAuth_OIDCRustScopedChangesFacadeRealConnect$' -count=1
+      # Retained OIDC scoped CDC executes once in the required shared F/Q
+      # owner (current-sdk4.yml --include-scoped), including tagged releases.
 
       - name: Inspect and build isolated library archive
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'

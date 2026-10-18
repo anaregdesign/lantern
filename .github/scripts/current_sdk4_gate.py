@@ -23,6 +23,32 @@ ROOT_TEST = "TestCurrentSecurityPublicNativeGate"
 EXPORT_TEST = f"{ROOT_TEST}/active_export_grant_revocation"
 SCOPED_TEST = "TestAuth_OIDCRustScopedChangesFacadeRealConnect"
 PACKAGE = "github.com/anaregdesign/lantern/tests/integration"
+RETAINED_ROOT_TESTS = (
+    'TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2',
+    'TestAuth_HeadManagedBlindCreateDeleteReceiptAndGoFacadeRealConnect',
+    'TestAuth_MachineRoleBearerRealConnect',
+    'TestAuth_OIDCAdminScopeAndAddRecoveryRealConnect',
+    'TestAuth_OIDCAdminVertexCountRealConnect',
+    'TestAuth_OIDCBrowserLoginFailuresRealConnect',
+    'TestAuth_OIDCBrowserSessionRealConnect',
+    'TestAuth_OIDCDartScopedChangesFacadeRealConnect',
+    'TestAuth_OIDCExactDataAndLifecycleRealConnect',
+    'TestAuth_OIDCGoScopedChangesFacadeRealConnect',
+    'TestAuth_OIDCHeadManagedEdgesRealConnect',
+    'TestAuth_OIDCManagementRealConnect',
+    'TestAuth_OIDCMixedBearerProfileCannotMutateRealConnect',
+    'TestAuth_OIDCNodeScopedChangesFacadeRealConnect',
+    'TestAuth_OIDCOrdinaryManagementQualifiedHumanRealConnect',
+    'TestAuth_OIDCPurposeAuthorizationRealConnect',
+    'TestAuth_OIDCScopedChangesRealConnect',
+    'TestAuth_OIDCScopedCollectionsRealConnect',
+    'TestAuth_OIDCScopedReceiptRealConnect',
+    'TestAuth_OIDCSecurityChangeCommitProofRealConnect',
+    'TestAuth_OIDCSecurityPrecommitRefusalsRealConnect',
+    'TestAuth_OIDCSharedRankingConstrainedQueriesRealConnect',
+    'TestAuth_PublicChangeRejectionPreservesRPCProtocol',
+    'TestAuth_PublicChangesBenchmarkConsumerRealWire',
+)
 SDK_TESTS = tuple(f"{ROOT_TEST}/{sdk}" for sdk in ("go", "bun", "dart", "cargo"))
 ENVIRONMENT = {"LANTERN_CURRENT_PUBLIC_GATE": "1", "LANTERN_CURRENT_PUBLIC_SDK4": "1"}
 EXPORT_ENVIRONMENT = {**ENVIRONMENT, "LANTERN_CURRENT_PUBLIC_SDK4": "0"}
@@ -53,7 +79,7 @@ def log_names(kind):
 def observed_execution(evidence):
     """Report partial execution honestly; this never authorizes a PASS."""
     result = {}
-    for filename, names in (("events.jsonl", (ROOT_TEST, *SDK_TESTS)),
+    for filename, names in (("events.jsonl", (ROOT_TEST, *SDK_TESTS, *RETAINED_ROOT_TESTS, SCOPED_TEST)),
                             ("export-events.jsonl", (ROOT_TEST, EXPORT_TEST))):
         actions = {name: [] for name in names}
         constructors = []
@@ -119,13 +145,13 @@ def snapshot(root):
 
 
 def command(include_scoped, kind="Q"):
-    names = [ROOT_TEST] + ([SCOPED_TEST] if include_scoped else [])
+    names = [ROOT_TEST, *RETAINED_ROOT_TESTS] + ([SCOPED_TEST] if include_scoped else [])
     return ["go", "test", "-json", *build_flags(kind), "./tests/integration", "-run",
             "^(" + "|".join(names) + ")$", "-count=1", "-timeout=6m"]
 
 
 def execution_events(path, include_scoped, kind="Q"):
-    required = (ROOT_TEST, *SDK_TESTS) + ((SCOPED_TEST,) if include_scoped else ())
+    required = (ROOT_TEST, *SDK_TESTS, *RETAINED_ROOT_TESTS) + ((SCOPED_TEST,) if include_scoped else ())
     return required_execution_events(path, required, kind)
 
 

@@ -169,10 +169,8 @@ jobs:
           LANTERN_RUST_TEST_AUTH_FIXTURE: ${{ github.workspace }}/sdks/rust/target/lantern-authfixture${{ matrix.os == 'windows-latest' && '.exe' || '' }}
         # Current authority is qualified by the native-time SDK4 root gate.
         run: cargo test --locked --all-features -- --ignored --test-threads=1 --skip scoped_changes::tests::real_public_scoped_wire --skip security::tests::real_public_current_wire
-      - name: Test certified OIDC public scoped CDC over the native Rust wire
-        if: matrix.rust == 'stable'
-        working-directory: .
-        run: go test ./tests/integration -run '^TestAuth_OIDCRustScopedChangesFacadeRealConnect$' -count=1
+      # Retained OIDC scoped CDC executes once in the required shared F/Q
+      # owner (current-sdk4.yml --include-scoped), including tagged releases.
 
   preflight:
     name: Audit and verify the tagged crate archive

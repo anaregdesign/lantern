@@ -181,9 +181,8 @@ jobs:
           LANTERN_NODE_NAN_FIXTURE_ENDPOINT: http://127.0.0.1:6386
           LANTERN_NODE_RECEIPT_TOKEN_FILE: ${{ runner.temp }}/lantern-node-receipt/token
           LANTERN_NODE_RECEIPT_CA_FILE: ${{ runner.temp }}/lantern-node-receipt/trust/ca.pem
-      - name: Certified OIDC scoped CDC facade
-        working-directory: .
-        run: go test ./tests/integration -run 'TestAuth_OIDCNodeScopedChangesFacadeRealConnect' -count=1
+      # Retained OIDC scoped CDC executes once in the required shared F/Q
+      # owner (current-sdk4.yml --include-scoped), including tagged releases.
 
       - name: Verify npm pack candidate
         run: bun run verify:package

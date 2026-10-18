@@ -1,10 +1,14 @@
 """Guard the representative coverage and event boundaries of the CI reduction."""
 
 import json
+import sys
+import tempfile
+import textwrap
 from pathlib import Path
 import re
 import tomllib
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -62,12 +66,43 @@ class RepresentativeCoverageTest(unittest.TestCase):
         self.assertIn("needs: [tag, verify-published]", job(release, "release"))
         self.assertIn('go build -o "sdks/rust/target/lantern-authfixture$suffix"', job(release, "conformance"))
         self.assertIn("--skip scoped_changes::tests::real_public_scoped_wire", job(release, "conformance"))
-        self.assertIn("^TestAuth_OIDCRustScopedChangesFacadeRealConnect$", job(release, "conformance"))
+        self.assertNotIn("go test ./tests/integration", job(release, "conformance"))
+        self.assertIn("--include-scoped", workflow("current-sdk4"))
         go = workflow("go")
         self.assertIn("receipt-backup-windows]", job(go, "build"))
         self.assertIn("WINDOWS_RESULT: ${{ needs.receipt-backup-windows.result }}", job(go, "build"))
         self.assertIn("windows_native.py", job(go, "receipt-backup-windows"))
         self.assertIn("windows_rust_required", job(go, "receipt-backup-windows"))
+
+    def test_retained_app_wire_rejects_missing_skipped_and_incomplete_execution(self):
+        body = job(workflow("dart-sdk"), "offline-sqlite")
+        step = next(part for part in body.split("      - name: ")
+                    if part.startswith("Test app data permissions"))
+        self.assertIn('LANTERN_CURRENT_PUBLIC_GATE: "1"', step)
+        self.assertIn("go test -json -tags=lantern_test_time", step)
+        source = textwrap.dedent(step.split("<<'PYAPP'\n", 1)[1].split("\n          PYAPP", 1)[0])
+        names = ("TestAuth_FlutterDataDemoRealConnect", "TestAuth_DartOfflineScopedChangesRealConnect")
+        package = "github.com/anaregdesign/lantern/tests/integration"
+        complete = [{"Package": package, "Test": name, "Action": action}
+                    for name in names for action in ("run", "pass")]
+        complete.append({"Package": package, "Action": "pass"})
+        variants = [[], complete[:-1], complete + [complete[1]],
+                    [event for event in complete if event.get("Test") != names[1]],
+                    [{**event, "Action": "skip"} if event.get("Test") == names[0]
+                     and event["Action"] == "pass" else event for event in complete]]
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "events.jsonl"
+            def verify(records):
+                events.write_text("".join(json.dumps(event) + "\n" for event in records))
+                with patch.object(sys, "argv", ["app-wire-events", str(events)]):
+                    exec(compile(source, "<app-wire-events>", "exec"), {})
+            verify(complete)
+            for records in variants:
+                with self.subTest(records=records), self.assertRaises(SystemExit):
+                    verify(records)
+        self.assertIn('"tests/integration/auth_authority_helpers_test.go"', workflow("dart-sdk"))
+        self.assertNotIn("TestAuth_OIDCNodeScopedChangesFacadeRealConnect", workflow("node-sdk"))
+        self.assertNotIn("TestAuth_OIDCRustScopedChangesFacadeRealConnect", workflow("rust-sdk"))
 
     def test_comparison_probe_is_manual_and_retains_both_candidates(self):
         text = workflow("dart-transport-probe")
