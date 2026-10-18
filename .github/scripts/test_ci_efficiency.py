@@ -1,5 +1,6 @@
 """Guard the representative coverage and event boundaries of the CI reduction."""
 
+import json
 from pathlib import Path
 import re
 import tomllib
@@ -29,9 +30,19 @@ class RepresentativeCoverageTest(unittest.TestCase):
             with self.subTest(workflow=name):
                 body = job(workflow(name), key)
                 matrix = body.split("      matrix:\n", 1)[1].split("    steps:\n", 1)[0]
-                lanes = re.findall(r"- \{os: ([\w-]+), rust: '?([\w.]+)'?\}", matrix)
-                self.assertEqual(set(lanes), expected)
-                self.assertEqual(len(lanes), len(expected))
+                if name == "rust-sdk":
+                    full, routine = [json.loads(value) for value in re.findall(r"'(\[.*?\])'", matrix)]
+                    lanes = [(item["os"], item["rust"]) for item in routine]
+                    self.assertEqual({(item["os"], item["rust"]) for item in full}, expected)
+                    selected = expected - {("windows-latest", "stable")}
+                    self.assertIn("github.event_name == 'workflow_dispatch'", matrix)
+                    self.assertIn("  workflow_dispatch:", workflow(name))
+                    self.assertIn("'tests/integration/auth_test.go'", workflow(name))
+                else:
+                    lanes = re.findall(r"- \{os: ([\w-]+), rust: '?([\w.]+)'?\}", matrix)
+                    selected = expected
+                self.assertEqual(set(lanes), selected)
+                self.assertEqual(len(lanes), len(selected))
                 self.assertNotRegex(matrix, r"(?m)^        (os|rust|exclude):")
                 self.assertIn("fail-fast: false", body)
                 for command in ("cargo xtask codegen", "cargo fmt --all -- --check",
@@ -49,6 +60,14 @@ class RepresentativeCoverageTest(unittest.TestCase):
         self.assertIn("needs: [tag, conformance, current-sdk4]", job(release, "preflight"))
         self.assertIn("--proof-kind Q", job(release, "preflight"))
         self.assertIn("needs: [tag, verify-published]", job(release, "release"))
+        self.assertIn('go build -o "sdks/rust/target/lantern-authfixture$suffix"', job(release, "conformance"))
+        self.assertIn("--skip scoped_changes::tests::real_public_scoped_wire", job(release, "conformance"))
+        self.assertIn("^TestAuth_OIDCRustScopedChangesFacadeRealConnect$", job(release, "conformance"))
+        go = workflow("go")
+        self.assertIn("receipt-backup-windows]", job(go, "build"))
+        self.assertIn("WINDOWS_RESULT: ${{ needs.receipt-backup-windows.result }}", job(go, "build"))
+        self.assertIn("windows_native.py", job(go, "receipt-backup-windows"))
+        self.assertIn("windows_rust_required", job(go, "receipt-backup-windows"))
 
     def test_comparison_probe_is_manual_and_retains_both_candidates(self):
         text = workflow("dart-transport-probe")

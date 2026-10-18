@@ -4,6 +4,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+from unittest.mock import patch
 import unittest
 
 import go_modules
@@ -60,6 +63,26 @@ sys.exit(1 if f"{module}:{args[0]}" in os.environ['FAILURES'].split(',') else 0)
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertTrue(any(r["exit"] for r in records))
                 self.assertIn("go test (server)", result.stdout)
+
+    def test_two_workers_overlap_and_remain_bounded(self):
+        active = maximum = 0
+        lock = threading.Lock()
+        def run(*args, **kwargs):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(active, maximum)
+            time.sleep(0.01)
+            with lock:
+                active -= 1
+            return subprocess.CompletedProcess(args[0], 0)
+        with tempfile.TemporaryDirectory() as directory, patch.object(go_modules.subprocess, "run", side_effect=run):
+            root = Path(directory)
+            for module in go_modules.MODULES:
+                (root / module).mkdir(parents=True, exist_ok=True)
+            records = go_modules.collect(root)
+        self.assertEqual(maximum, 2)
+        self.assertEqual(len(records), 18)
 
     def test_all_success(self):
         result, records = self.execute("")
