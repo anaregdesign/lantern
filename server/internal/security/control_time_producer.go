@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -259,6 +260,12 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	probe.Stage = "read"
 	probe.HasDeadline, probe.DeadlineLeft = true, int64(time.Until(deadline))
 	n, err = conn.Read(raw[:])
+	// Give a zero-byte Darwin receive abort one bounded chance on the same
+	// socket. Never resend, renew the deadline or replace the original send
+	// sample: any response still has to satisfy the original native RTT bound.
+	if runtime.GOOS == "darwin" && n == 0 && errors.Is(err, syscall.ECONNABORTED) && ctx.Err() == nil && time.Until(deadline) > 0 {
+		n, err = conn.Read(raw[:])
+	}
 	if err != nil {
 		return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
 	}
