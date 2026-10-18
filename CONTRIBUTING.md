@@ -150,6 +150,9 @@ for eligible explanation-only edits.
 The complete 77-step plan below remains available by omitting `--affected-base`.
 Policy-changing PRs must run the **previous full contract on their final source**,
 including F/Q and applicable native coverage; a relaxation cannot qualify itself.
+The explicit #1820 owner-approved time-contract migration below supersedes only
+the retired repeated-external-source full Q campaign; it retains complete F,
+bounded Q and every other applicable mandatory check.
 This policy's adoption PR follows that rule once before push. Later changes use
 the merged policy, with normal exact synthetic-merge/main checks still blocking.
 
@@ -447,7 +450,7 @@ build the server from the root and run that suite from the crate:
 
 ```sh
 mkdir -p sdks/rust/target
-go build -o sdks/rust/target/lantern-smoke ./server/cmd
+go test -c -tags=lantern_test_time -o sdks/rust/target/lantern-smoke ./server/cmd
 (cd sdks/rust && LANTERN_RUST_TEST_SERVER="$PWD/target/lantern-smoke" \
   cargo test --locked --all-features -- --ignored --test-threads=1 \
     --skip scoped_changes::tests::real_public_scoped_wire \
@@ -462,32 +465,48 @@ time and a current quorum, passes the private fixture inputs, and requires the
 exact Rust test to execute successfully. Standalone-suite success does not
 qualify that native current-authority case.
 
-The [current-authority runner](.github/scripts/current_sdk4_gate.py) records two
-separate obligations (#1748): **F** is mechanism/application evidence using a
-controlled synthetic UTC source; **Q** is configured-source qualification using
-the normal production build. Both require the exact root, all four public SDKs,
-and the separate `active_export_grant_revocation` execution to run and pass,
-with no missing, skipped, duplicate or failed tests. Export retains its positive
-multi-record control, grant withdrawal APPLIED, immutable authorized prefix,
-next-body final-Write refusal and handler/stream shutdown.
+The [current-authority runner](.github/scripts/current_sdk4_gate.py) records
+separate version 3 contracts (#1820). **F** owns complete mechanism/application
+behavior with controlled synthetic UTC: every retained functional root, all
+four public SDKs, the scoped Rust case and active export revocation. **Q** owns
+configured-source integration with the normal build, one independently
+provisioned three-member cohort reused for SDK4, basic success/refusal, ordinary
+Apply/foreign retained-original status, native 15-second old-cut observation and
+active export revocation. Export remains last and retains the positive
+multi-record control, APPLIED withdrawal, immutable accepted prefix, next-body
+final-Write refusal and handler/stream shutdown. Every required body must run
+once and pass, with no skipped, missing, duplicate or failed body.
 
-F selects `lantern_test_time` only at compile time in a Go test binary. It uses
-actual native sampling, loopback UDP and the same owner loop, binding, custody,
-store, origin, quorum, provider/listener and public wire paths. Its finite
-native loss/expiry/fresh-recovery and worker-join test is mandatory. Its one
-initial wall reading is a synthetic fixture fact, never a fallback after a Q
-failure. F does not qualify real UTC, external DNS/UDP reachability, the fixed
-source factory or source configuration. Normal builds have no fixture flag,
-environment selector, mutable factory or injected time owner. Even a tagged
-non-test server binary refuses fixture construction.
+Unit time math, retry/fault/expiry cases use injected observations/counters and
+deterministic time advancement, without external NTP/DNS or real holdover waits.
+F selects `lantern_test_time` only at compile time. The private serving harness
+is a `go test -c` executable running the real App/listener/certification paths;
+normal and tagged non-test server binaries still cannot mint fixture time.
+The controlled source uses local UDP; loss/recovery advances injected native
+time instead of sleeping through an arbitrary age cutoff. F never qualifies
+real UTC, the configured factory or external source/path reachability.
+Explicit standalone external-source diagnostic tests additionally require the
+`lantern_source_qualification` build tag; ordinary unit invocations cannot enable
+them just by inheriting an environment flag.
 
-Q uses the unchanged fixed configured source and normal constructor. Each fresh
-owner must acquire its own native anchor, with per-owner construction results
-and bounded startup observations retained even on failure. Startup remains 45
-seconds, exchange 3 seconds; source/native/RTT/age/width, retry credits/backoff,
-15-second quorum and credential/output expiry rules are unchanged. Missing
-configuration/tools, source acquisition failures and incomplete bodies fail Q.
-The runner never changes host configuration or installs tools.
+Q prebuilds SDK dependencies, then uses the fixed source and normal constructor.
+Each owner must acquire its own fresh anchor. Complete process-owned counters
+record attempts, actual UDP writes and installations separately after shutdown;
+the entire three-owner family permits at most 12 attempts and 12 writes. Missing,
+duplicate, zero, inconsistent or in-flight count evidence fails Q. Lossy trace
+records cannot substitute for these counters. No soak or retry-until-green is
+permitted. Startup remains 45 seconds with bounded 3-second flights. Runtime
+refresh aims for 5-second interval width with 5 minutes of lead; this is an
+operational target, never a login/consumption cutoff. Native 15-second quorum,
+whole-interval credential/certificate/membership expiry, revocation and final
+output refusal remain independent. Source failure or incomplete bodies fail Q;
+the runner changes no host settings and installs no tools.
+
+Receipt schema 2 does not qualify schema 3. The owner explicitly requested this
+scoped migration to remove repeated external queries from functional/unit loops;
+only the old repeated-full-Q obligation is superseded. All functional bodies,
+other mandatory gates and same-run exact-source verification remain required.
+Old failures, interruptions and NOT_RUN results retain their original meaning.
 
 PR/main F and module/coverage jobs run independently of Q. The stable required
 `Build & Test` aggregates their results and verifies distinct F/Q artifacts
@@ -508,15 +527,16 @@ unrelated diagnostic. Runtime guards and executed Q failures are unchanged.
 The 77-step full local plan conservatively keeps Q and adds separate F execution
 inside `rust-oidc-scoped-wire` using `--with-mechanism`; scoped Rust and every
 other existing component remain mandatory. Each invocation writes fresh F and Q
-receipts, with no receipt import or carry. This policy introduction uses the
-previous full gate plus F and cannot exempt its own Q. For separate focused
+receipts, with no receipt import or carry. The #1820 owner-approved time-contract migration uses the complete F and bounded
+Q contracts above; it must not repeat the retired external-source functional
+campaign or reinterpret an old receipt. For separate focused
 qualification of a clean frozen candidate with pinned tools and dependencies:
 
 ```sh
 python3 -B .github/scripts/current_sdk4_gate.py run --proof-kind F \
   --evidence ../current-F-new
 python3 -B .github/scripts/current_sdk4_gate.py run --proof-kind Q \
-  --include-scoped --evidence ../current-Q-new
+  --evidence ../current-Q-new
 ```
 
 Exact release candidates require Q before publication. Rust retains its native

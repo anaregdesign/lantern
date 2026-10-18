@@ -70,6 +70,7 @@ func (w currentExportBoundaryWriter) Write(payload []byte) (int, error) {
 func (w currentExportBoundaryWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func TestCurrentSecurityPublicNativeGate(t *testing.T) {
+	sourceQualification := os.Getenv("LANTERN_CURRENT_SOURCE_QUALIFICATION") == "1"
 	serving, servingErr := nativeFixtureServingFromEnv(os.Getenv)
 	if servingErr != nil {
 		t.Fatal(servingErr)
@@ -120,6 +121,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	}
 	var servers []*httptest.Server
 	var publicCA string
+	publicRoots := x509.NewCertPool()
 	var controls []graphv1connect.LanternSecurityServiceClient
 	var runtimes []*provider.SecurityRuntime
 	var stops []func()
@@ -279,8 +281,15 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		} else if os.Getenv("LANTERN_CURRENT_PUBLIC_SDK4") == "1" {
 			s.EnableHTTP2 = true
 			ca := configureSDKServerTLS(t, s)
+			raw, err := os.ReadFile(ca)
+			if err != nil || !publicRoots.AppendCertsFromPEM(raw) {
+				t.Fatal("cohort public trust unavailable")
+			}
 			if id == 1 {
 				publicCA = ca
+				tlsTransport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: publicRoots, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true}
+				transport.Transport = authIngressRoundTripper{tlsTransport}
+				t.Cleanup(tlsTransport.CloseIdleConnections)
 			}
 			s.StartTLS()
 		} else {
@@ -341,16 +350,32 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	}
 	if os.Getenv("LANTERN_CURRENT_PUBLIC_SDK4") == "1" {
 		runCurrentPublicSDK4(t, servers[0], token, publicCA)
-		return
+		if !sourceQualification {
+			return
+		}
 	}
 	var principal *pb.GetCurrentPrincipalResponse
 	var ordinaryReview *pb.CurrentSecurityReview
-	t.Run("public protocols and full binding", func(t *testing.T) {
+	runCase := func(name string, body func(*testing.T)) {
+		if sourceQualification {
+			switch name {
+			case "public protocols and full binding", "ordinary review apply foreign status", "sdk and typed data response", "reader explicit Deny and no write grant", "original stop observation remains separate from Apply":
+			default:
+				return
+			}
+		}
+		t.Run(name, body)
+	}
+
+	runCase("public protocols and full binding", func(t *testing.T) {
 		for _, mode := range []struct {
 			name    string
 			options []connect.ClientOption
 			http    *http.Client
 		}{{"h2-connect-proto", nil, transport}, {"h2-connect-json", []connect.ClientOption{connect.WithProtoJSON()}, transport}, {"h2-grpc", []connect.ClientOption{connect.WithGRPC()}, transport}, {"h2-grpc-web", []connect.ClientOption{connect.WithGRPCWeb()}, transport}, {"http1-connect-json", []connect.ClientOption{connect.WithProtoJSON()}, &http.Client{Transport: authIngressRoundTripper{http.DefaultTransport}}}} {
+			if sourceQualification && mode.name != "h2-connect-proto" {
+				continue
+			}
 			t.Run(mode.name, func(t *testing.T) {
 				c := graphv1connect.NewLanternSecurityServiceClient(mode.http, servers[0].URL, mode.options...)
 				result, e := c.GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
@@ -372,7 +397,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 		principal = current.Msg
 	}
-	t.Run("ordinary review apply foreign status", func(t *testing.T) {
+	runCase("ordinary review apply foreign status", func(t *testing.T) {
 		before := principal.Version
 		ordinaryToken := f.token(t, "admin", func(c map[string]any) { c["iat"] = time.Now().Add(-time.Minute).Unix(); delete(c, "auth_time") })
 		change := &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "wire_ordinary", Name: "Ordinary no recent-auth age gate"}}}
@@ -428,7 +453,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal("legacy scalar refusal", e)
 		}
 	})
-	t.Run("full-cut and profile mismatch refuse before dispatch", func(t *testing.T) {
+	runCase("full-cut and profile mismatch refuse before dispatch", func(t *testing.T) {
 		current, err := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
 		if err != nil {
 			t.Fatal(err)
@@ -468,7 +493,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal("refused preparation changed cut", err)
 		}
 	})
-	t.Run("sdk and typed data response", func(t *testing.T) {
+	runCase("sdk and typed data response", func(t *testing.T) {
 		sdk, e := client.NewLantern(servers[0].URL, client.WithHTTPClient(transport), client.WithAuthToken(token))
 		if e != nil {
 			t.Fatal(e)
@@ -489,7 +514,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal("whole batch authority", e)
 		}
 	})
-	t.Run("reader explicit Deny and no write grant", func(t *testing.T) {
+	runCase("reader explicit Deny and no write grant", func(t *testing.T) {
 		reader := f.token(t, "reader", func(c map[string]any) { c["iat"] = time.Now().Add(-time.Minute).Unix(); delete(c, "auth_time") })
 		c := graphv1connect.NewLanternServiceClient(transport, servers[0].URL)
 		if _, err := c.GetVertex(ctx, securityWireRequest(reader, &pb.GetVertexRequest{Key: "orders:a"})); err != nil {
@@ -504,7 +529,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal("reader gained write", err)
 		}
 	})
-	t.Run("machine data grants and management refusal", func(t *testing.T) {
+	runCase("machine data grants and management refusal", func(t *testing.T) {
 		raw, e := os.ReadFile(filepath.Join(dir, "machine.token"))
 		if e != nil {
 			t.Fatal(e)
@@ -523,7 +548,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal("machine management mutation", e)
 		}
 	})
-	t.Run("scoped receipt export and CDC cut invalidation", func(t *testing.T) {
+	runCase("scoped receipt export and CDC cut invalidation", func(t *testing.T) {
 		c := graphv1connect.NewLanternServiceClient(transport, servers[0].URL)
 		cap, e := c.GetReceiptCapability(ctx, securityWireRequest(token, &pb.GetReceiptCapabilityRequest{}))
 		if e != nil || !cap.Msg.GetEnabled() {
@@ -642,15 +667,21 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 	})
 	f.server = servers[0]
-	t.Run("active export grant revocation", func(t *testing.T) {
-		raw, err := os.ReadFile(filepath.Join(dir, "machine.token"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		change := &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_MACHINE, MachineName: "public-worker"}, RoleId: "wire_data"}}}
-		currentWireRevokeActiveExport(t, ctx, transport, servers[0].URL, controls[0], token, string(raw), change, &exportBoundary)
-	})
-	t.Run("operation-bound real Code approval", func(t *testing.T) {
+	runActiveExport := func() {
+		t.Run("active export grant revocation", func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(dir, "machine.token"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			change := &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_MACHINE, MachineName: "public-worker"}, RoleId: "wire_data"}}}
+			currentWireRevokeActiveExport(t, ctx, transport, servers[0].URL, controls[0], token, string(raw), change, &exportBoundary)
+		})
+	}
+	if !sourceQualification {
+		runActiveExport()
+	}
+
+	runCase("operation-bound real Code approval", func(t *testing.T) {
 		current, e := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
 		if e != nil {
 			t.Fatal(e)
@@ -743,7 +774,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal("security.manage implicitly granted data", e)
 		}
 	})
-	t.Run("browser Code one exchange and CSRF bootstrap", func(t *testing.T) {
+	runCase("browser Code one exchange and CSRF bootstrap", func(t *testing.T) {
 		start := f.browserLoginStart(t, nil)
 		path := f.browserCallbackPath(t, start, "admin", false)
 		beforeWrongNode := f.fetches.Load()
@@ -913,7 +944,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal("revoked session retained current authorization")
 		}
 	})
-	t.Run("original stop observation remains separate from Apply", func(t *testing.T) {
+	runCase("original stop observation remains separate from Apply", func(t *testing.T) {
 		if ordinaryReview == nil {
 			t.Fatal("missing original review")
 		}
@@ -936,7 +967,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			}
 		}
 	})
-	t.Run("stale administrator cannot consume retained new work", func(t *testing.T) {
+	runCase("stale administrator cannot consume retained new work", func(t *testing.T) {
 		current, err := controls[0].GetCurrentPrincipal(ctx, securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
 		if err != nil {
 			t.Fatal(err)
@@ -962,7 +993,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal("stale admin changed policy", err)
 		}
 	})
-	t.Run("public authorization stops after quorum loss", func(t *testing.T) {
+	runCase("public authorization stops after quorum loss", func(t *testing.T) {
 		stops[1]()
 		stops[2]()
 		deadline := time.Now().Add(20 * time.Second)
@@ -985,6 +1016,30 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal("unavailable current became OFF", e)
 		}
 	})
+
+	if sourceQualification {
+		runActiveExport()
+		t.Run("source acquisition budget", func(t *testing.T) {
+			// Stop all owners before recording counters. No lossy trace queue is
+			// used to infer writes and no normal owner is restarted for export.
+			for _, stop := range stops {
+				stop()
+			}
+			var attempts, writes uint64
+			for i, runtime := range runtimes {
+				c := runtime.TimeAcquisitionCounts()
+				t.Logf("source_acquisition node=%d attempts=%d writes=%d installations=%d in_flight=%t failed=%t denied=%t", i+1, c.Attempts, c.Writes, c.Installations, c.InFlight, c.Failed, c.Denied)
+				if c.Attempts == 0 || c.Writes == 0 || c.Installations == 0 || c.Installations > c.Writes || c.Writes > c.Attempts || c.InFlight || c.Failed || c.Denied {
+					t.Fatal("incomplete configured-source acquisition")
+				}
+				attempts += c.Attempts
+				writes += c.Writes
+			}
+			if len(runtimes) != 3 || attempts > 12 || writes > 12 {
+				t.Fatal("configured-source family exceeded frozen acquisition budget", attempts, writes)
+			}
+		})
+	}
 
 }
 

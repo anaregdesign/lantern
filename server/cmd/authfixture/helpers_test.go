@@ -18,9 +18,9 @@ func fixtureServerBinary(t *testing.T) string {
 		suffix = ".exe"
 	}
 	binary := filepath.Join(t.TempDir(), "server"+suffix)
-	command := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "..")
+	command := exec.CommandContext(t.Context(), "go", "test", "-c", "-tags=lantern_test_time", "-o", binary, "..")
 	if raw, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("build production child: %v\n%s", err, raw)
+		t.Fatalf("build controlled functional child: %v\n%s", err, raw)
 	}
 	return binary
 }

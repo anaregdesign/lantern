@@ -103,7 +103,7 @@ class RepresentativeCoverageTest(unittest.TestCase):
         self.assertIn('go build -o "sdks/rust/target/lantern-authfixture$suffix"', job(release, "conformance"))
         self.assertIn("../../.github/scripts/rust_wire.py", job(release, "conformance"))
         self.assertNotIn("go test ./tests/integration", job(release, "conformance"))
-        self.assertIn("--include-scoped", workflow("current-sdk4"))
+        self.assertNotIn("--include-scoped", workflow("current-sdk4"))
         go = workflow("go")
         self.assertIn("receipt-backup-windows]", job(go, "build"))
         self.assertIn("WINDOWS_RESULT: ${{ needs.receipt-backup-windows.result }}", job(go, "build"))

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/internal/authn"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
@@ -126,3 +127,11 @@ func (r *SecurityRuntime) finish(orderly bool) error {
 }
 func (r *SecurityRuntime) Mode() string                                    { return r.mode }
 func (r *SecurityRuntime) ControlHandler() *service.SecurityConnectHandler { return r.control }
+
+// TimeAcquisitionCounts is local diagnostic evidence; it does not grant time.
+func (r *SecurityRuntime) TimeAcquisitionCounts() decisiontrace.AcquisitionCounts {
+	if r == nil || r.current == nil {
+		return decisiontrace.AcquisitionCounts{}
+	}
+	return r.current.TimeAcquisitionCounts()
+}

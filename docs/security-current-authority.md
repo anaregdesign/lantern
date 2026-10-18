@@ -102,40 +102,58 @@ Linux/macOS hosts; Windows client support does not imply Windows authority suppo
 | Source error | Root dispersion + half nonnegative root delay + precision + 10 ms allowance, at most 1 second |
 | RTT | Conservative whole-flight upper strictly below 1 second; no path-symmetry or server-residence subtraction |
 | Anchor | Whole-RTT conservative UTC interval; fixed UTC domain 2020–2080; conflicting live anchors fail-stop |
-| Refresh/loss | 16–20 second refresh; 32–1024 second loss backoff with two finite post-qualification transport-recovery credits; RATE 1024 seconds; DENY/RSTR fail-stop |
-| Holdover | Age upper strictly below 60 seconds and width strictly below 4 seconds; observed source fault clears the anchor |
+| Refresh/loss | Predict5-second width goal; start5 minutes earlier with earlier-only jitter. Runtime loss backoff60/120/240/480/900 seconds; RATE at least1024 seconds; DENY/RSTR stops acquisition through that association |
+| Holdover | No global age/width cutoff. Propagate native uncertainty and possible month-end leap bounds; the whole interval must fit every actual start/expiry window. Explicit source trust faults invalidate UTC |
 | Startup | At most 45 seconds, including one normal loss backoff; no anchor means no current owner |
 
-DNS supplies at most 16 answers for the exact configured host. Each scheduled
-attempt selects one sorted, deduplicated answer in rotation. A silent UDP
-endpoint does not trigger a query burst or reset the backoff. Only a successfully
-installed qualified measurement arms two recovery credits. DNS lookup, dial,
-write or read errors still advance the underlying exponential backoff; the
-64- and 128-second waits may each consume one credit to wait 32 seconds instead.
-Thus consecutive transport failures after qualification wait
-32, 32, 32, 256, 512, 1024 seconds and then retain the 1024-second ceiling.
-Startup has no credits and retains its original 32, 64, 128, ... schedule.
-Any non-transport failure discards the credits. RATE discards them and retains
-1024-second waits until a qualified installation; DENY/RSTR still stops.
-Receiving a packet, an expired anchor, a DNS change or a readiness request cannot
-replenish the budget. Existing anchor retention/clearing and native fail-stop
-rules are independent of this scheduling budget.
+DNS supplies at most 16 answers for the fixed host. One scheduled attempt
+selects a sorted/deduplicated answer in rotation and sends at most one datagram
+within 3 seconds. There is one flight per owner, no request-triggered query and
+no catch-up backlog after a pause. The next timer begins after completion.
+Successful acquisition predicts when the measured initial interval reaches the
+5-second engineering refresh goal, then starts 5 minutes early with up to 10%
+earlier-only jitter. Initial widths 3s and 0.1s give latest refresh starts about
+11m40s and 35m50s. Neither 5s nor a timer grants/refuses an operation. Existing
+actual causal starts, expiry windows and deadlines decide availability.
 
-Each attempt retains its three-second context, one endpoint and at most one UDP
-request; the next timer starts after completion. No query backlog accumulates.
-The finite acceleration preserves the minimum 32-second failure spacing and
-the long-loss rate of one attempt per 1024 seconds per owner, but moves some
-attempts earlier. Healthy operation may reset the budget repeatedly; this is
-not a lifetime or fleet-wide quota. Once the credits are spent, a long outage
-can still leave a 1024-second wait. Earlier attempts need actual new qualified
-evidence: this neither extends the strict 60-second holdover nor guarantees
-continuous availability, recovery within 60 seconds or resolution of a network
-fault. The bounded latest
-observation/error is diagnostic evidence, not a cached TIME_OK capability.
-Every new use samples the native counter and propagates the interval locally;
-no per-output NTP request occurs. Source loss, uncertainty, overflow and unknown
-or changed epoch refuse new use. An unsupported native target has no Go wall-clock
-fallback. This does not change the existing product's platform support.
+The 1000ppm / 1000ns hypotheses widen an interval by about 3.600008s after 30min,
+7.200012s after 1h and 172.800177s after a day. A 3s anchor therefore has width
+about 10.2s after 1h. Operations with sufficient actual credential/certificate/
+membership margin may continue; their rotation, native 15-second quorum and
+revocation remain mandatory. Daily refresh does not meet the chosen seconds-scale
+interactive goal, and holdover does not promise an hour of usable membership.
+
+Runtime transport retries wait 60/120/240/480/900 seconds, with at most10% later
+jitter within the 900s cap. Bootstrap retains 32s first retry inside its finite 45s
+budget. RATE waits at least 1024s until fresh installation resets retry state.
+DNS/transport loss, RATE or a rejected over-budget/malformed candidate does not
+refresh or erase an already sound anchor. DENY/RSTR stops that association's
+queries without pretending it disproves a previously admitted interval. No
+silent alternative source is used. A validated time-bearing leap warning,
+unsynchronized source or explicit trust fault invalidates live UTC. Native
+faults and contradictory qualified bounds remain fail-closed. KoD handling
+precedes LI interpretation; malformed/unmatched packets are not evidence.
+
+NTP/Unix timestamps carry no leap phase. Under ordinary UTC with at most one
++/-1s leap at each month end, propagation widens both endpoints by 1s per possible
+boundary intersecting the path from the original anchor, including its 1s
+ambiguity region and a negative leap that could bring another boundary into
+reach. This is conservative uncertainty, **not a monthly stop**. Fresh evidence
+can tighten it. Unsupported smear and arbitrary unannounced source steps remain
+outside the admitted premise. Native lease durations do not include UTC leaps.
+See [RFC5905 section7.3](https://www.rfc-editor.org/rfc/rfc5905.html#section-7.3)
+and [RFC8633 section3.7](https://www.rfc-editor.org/rfc/rfc8633.html#section-3.7).
+
+Every use samples the native counter and propagates from the original anchor;
+repeated reads never reset its age/sequence. Overflow, invalid UTC range,
+unknown/changed boot/process or an actual credential boundary refuses use.
+Bounded diagnostics are evidence only, never a cached TIME_OK capability.
+
+The semantic time profile is now version2, bound transitively into genesis,
+ConsumeContract, origin/H, renewal, workload identity and custody. Scheduling
+numbers are operational policy, not that digest. Independently provision new
+validation cohorts; never rewrite old credentials/custody/H/WAL/data to satisfy
+the new digest. Existing-state continuation needs an explicit verified transition.
 
 Linux `CLOCK_MONOTONIC_RAW` follows the underlying clocksource without NTP
 frequency discipline and excludes host suspend. It continues while container
@@ -356,11 +374,15 @@ socket. Three separate real Linux samplers/producers feed the unchanged time
 owner run loop and private owners. The fixture supplies a fixed synthetic UTC
 base propagated by its native counter; it is not UTC accuracy evidence and does
 not replace the production source. Production clock injection remains rejected. The fixture records request/response nonces, each actual attempt and retry gap,
-last successful anchors and native elapsed bounds. Successful sequences remain
-unchanged during loss; after holdover each current sample, fresh renewal and
-new Consume refuses. Recovery keeps boot/process identity but requires a new
-measurement/anchor and quorum challenge before Consume/Apply. Native source
-refresh/backoff, credential validity, quorum and interval bounds are unchanged. Explicit test
+last successful anchors and native elapsed bounds. Explicit directed local probes
+exercise loss and fresh installation without waiting for or changing production
+polling; deterministic units own retry timing. Successful sequences remain
+unchanged during loss; sound UTC holdover continues with growing uncertainty.
+Actual credential/membership expiry and independently expired quorum still refuse
+new authorization. Recovery keeps boot/process identity and tightens uncertainty with a fresh
+measurement/anchor and quorum challenge. Sound holdover itself permits eligible
+Consume/Apply while the source is unavailable. Production interval propagation, credential validity and quorum checks remain
+shared; deterministic unit/F cases own long drift and retry boundaries. Explicit test
 hooks disable automatic renewal so an expired challenge cannot be replaced
 before its rejection assertion; successful recovery uses the ordinary real
 quorum path. No injected clock enters the production constructor.

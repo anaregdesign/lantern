@@ -79,7 +79,7 @@ jobs:
       - name: Start production conformance servers
         working-directory: .
         run: |
-          go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
           env LANTERN_PORT=6380 LANTERN_METRICS_ADDR=:9090 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-enabled.log" 2>&1 &
@@ -189,7 +189,7 @@ jobs:
           LANTERN_NODE_RECEIPT_TOKEN_FILE: ${{ runner.temp }}/lantern-node-receipt/token
           LANTERN_NODE_RECEIPT_CA_FILE: ${{ runner.temp }}/lantern-node-receipt/trust/ca.pem
       # Retained OIDC scoped CDC executes once in the required shared F/Q
-      # owner (current-sdk4.yml --include-scoped), including tagged releases.
+      # owner (current-sdk4.yml): full scoped CDC in F and the bounded SDK4 source cohort in Q, including tagged releases.
 
       - name: Verify npm pack candidate
         run: bun run verify:package

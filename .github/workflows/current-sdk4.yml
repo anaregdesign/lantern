@@ -46,6 +46,7 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git status --porcelain
       - name: Prepare declared read-only source input
+        if: inputs.proof_kind == 'Q'
         env:
           LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
         run: python3 -B .github/scripts/configured_time_input.py
@@ -74,7 +75,7 @@ jobs:
         shell: bash
         env:
           PROOF_KIND: ${{ inputs.proof_kind }}
-        run: python3 -B .github/scripts/current_sdk4_gate.py run --expected-head "$GITHUB_SHA" --proof-kind "$PROOF_KIND" --evidence "$RUNNER_TEMP/current-sdk4" --include-scoped
+        run: python3 -B .github/scripts/current_sdk4_gate.py run --expected-head "$GITHUB_SHA" --proof-kind "$PROOF_KIND" --evidence "$RUNNER_TEMP/current-sdk4"
       - name: Retain native execution evidence
         id: evidence
         if: always()

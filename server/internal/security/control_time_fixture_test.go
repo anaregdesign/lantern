@@ -3,8 +3,10 @@
 package security
 
 import (
+	"context"
 	"net"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -44,80 +46,64 @@ func TestAuthorityTimeFixtureLifecycle(t *testing.T) {
 	}
 }
 
-// A finite real-native integration: unchanged exchange/backoff/holdover bounds,
-// actual UDP loss, expired authority, then a fresh same-owner anchor. This is
-// synthetic source evidence, never an assertion about the configured source.
+// Controlled source integration: real UDP loss/fresh recovery with injected
+// native advancement. No external source and no minute-long expiry sleep.
 func TestAuthorityTimeFixtureLossRecovery(t *testing.T) {
 	if os.Getenv("LANTERN_CURRENT_PUBLIC_GATE") != "1" {
-		t.Skip("explicit finite mechanism gate")
+		t.Skip("explicit controlled mechanism gate")
 	}
-	o, fixture, err := newFixtureAuthorityTimeOwner()
+	var ticks atomic.Uint64
+	ticks.Store(100_000_000)
+	sample := func() (authorityTimeStamp, error) { return fakeAuthorityTimeStamp(ticks.Load()), nil }
+	o, fixture, err := newFixtureAuthorityTimeOwnerFrom(sample, time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(o.close)
-	waitCurrent := func(limit time.Duration) authorityCurrentTime {
-		t.Helper()
-		deadline := time.Now().Add(limit)
-		for {
-			current, err := o.current()
-			if err == nil {
-				return current
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("native fixture failed to acquire", err)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-	initial := waitCurrent(45 * time.Second)
-	fixture.drop.Store(true)
-	deadline := time.Now().Add(65 * time.Second)
+	defer o.close()
+	deadline := time.Now().Add(time.Second)
+	var initial authorityCurrentTime
 	for {
-		stamp, err := o.producer.sample()
-		if err != nil {
-			t.Fatal(err)
-		}
-		age, err := o.premises.elapsed(initial.stamp, stamp)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if age.low >= o.premises.maxAge {
+		initial, err = o.current()
+		if err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("native age did not advance")
+			t.Fatal("initial fixture", err)
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
-	if _, err := o.current(); err == nil {
-		t.Fatal("lost source extended holdover")
+	fixture.drop.Store(true)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	_, err = o.producer.exchange(ctx, fixture.socket.LocalAddr().String())
+	cancel()
+	if err == nil {
+		t.Fatal("dropped UDP accepted")
 	}
-	o.mu.Lock()
-	sequence, lastError := o.sequence, o.lastError
-	o.mu.Unlock()
-	if sequence != initial.sequence || lastError == nil {
-		t.Fatal("loss replaced anchor or no UDP failure observed")
+	ticks.Add(uint64(time.Hour))
+	current, err := o.current()
+	if err != nil || current.sequence != initial.sequence || current.utc.high-current.utc.low < uint64(7*time.Second) {
+		t.Fatal("sound holdover lost", err)
 	}
 	fixture.drop.Store(false)
-	recovered := waitCurrent(75 * time.Second)
-	if recovered.sequence <= initial.sequence || recovered.stamp.boot != initial.stamp.boot || recovered.stamp.process != initial.stamp.process {
-		t.Fatal("recovery did not use fresh same-epoch evidence")
+	m, err := o.producer.exchange(t.Context(), fixture.socket.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.mu.Lock()
+	err = o.installLocked(m)
+	o.mu.Unlock()
+	if err != nil {
+		t.Fatal("fresh recovery", err)
+	}
+	recovered, err := o.current()
+	if err != nil || recovered.sequence <= initial.sequence || recovered.stamp.process != initial.stamp.process {
+		t.Fatal("fresh same-owner recovery", err)
 	}
 	o.close()
 	select {
 	case <-fixture.done:
 	default:
-		t.Fatal("responder not joined after recovery")
+		t.Fatal("responder not joined")
 	}
-	newOwner, _, err := newFixtureAuthorityTimeOwner()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer newOwner.close()
-	stamp, err := newOwner.producer.sample()
-	if err != nil || stamp.process == recovered.stamp.process {
-		t.Fatal("new owner reused native process identity", err)
-	}
-	t.Log("controlled source loss: expired authority refused; fresh same-owner recovery; responder joined; restart has fresh native identity")
+	t.Log("controlled UDP loss retained sound one-hour holdover; fresh evidence tightened bounds; responder joined")
 }

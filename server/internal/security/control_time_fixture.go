@@ -36,6 +36,10 @@ func newFixtureAuthorityTimeOwner() (*authorityTimeOwner, *fixtureAuthorityTimeS
 	if err != nil {
 		return nil, nil, err
 	}
+	return newFixtureAuthorityTimeOwnerFrom(sample, time.Now().UTC())
+}
+
+func newFixtureAuthorityTimeOwnerFrom(sample func() (authorityTimeStamp, error), utc time.Time) (*authorityTimeOwner, *fixtureAuthorityTimeSource, error) {
 	base, err := sample()
 	if err != nil {
 		return nil, nil, err
@@ -46,7 +50,6 @@ func newFixtureAuthorityTimeOwner() (*authorityTimeOwner, *fixtureAuthorityTimeS
 	}
 	f := &fixtureAuthorityTimeSource{socket: socket, done: make(chan struct{})}
 	// One synthetic input, never a fallback after attempting the real source.
-	utc := time.Now().UTC()
 	go func() {
 		defer close(f.done)
 		for {

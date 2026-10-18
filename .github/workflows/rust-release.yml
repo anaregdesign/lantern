@@ -165,7 +165,7 @@ jobs:
           suffix=''
           if [[ "$RUNNER_OS" == Windows ]]; then suffix='.exe'; fi
           mkdir -p sdks/rust/target
-          go build -o "sdks/rust/target/lantern-smoke$suffix" ./server/cmd
+          go test -c -tags=lantern_test_time -o "sdks/rust/target/lantern-smoke$suffix" ./server/cmd
           go build -o "sdks/rust/target/lantern-authfixture$suffix" ./server/cmd/authfixture
       - name: Test real h2c, TLS, auth, CDC, backup, HA, and failure paths
         if: matrix.rust == 'stable'
@@ -176,7 +176,7 @@ jobs:
         # Current authority is qualified by the native-time SDK4 root gate.
         run: python -B ../../.github/scripts/rust_wire.py
       # Retained OIDC scoped CDC executes once in the required shared F/Q
-      # owner (current-sdk4.yml --include-scoped), including tagged releases.
+      # owner (current-sdk4.yml): full scoped CDC in F and the bounded SDK4 source cohort in Q, including tagged releases.
 
   preflight:
     name: Audit and verify the tagged crate archive

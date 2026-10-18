@@ -4,8 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
-	"fmt"
-	"net"
+
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -15,7 +14,7 @@ import (
 )
 
 func TestAuthorityTimeOwner(t *testing.T) {
-	for _, mode := range []string{"success", "age equality", "delayed installation", "old sequence", "wrong source", "contradiction", "epoch change", "counter failure", "recovery after holdover"} {
+	for _, mode := range []string{"success", "long holdover", "delayed installation", "old sequence", "wrong source", "contradiction", "epoch change", "counter failure", "recovery after holdover"} {
 		t.Run(mode, func(t *testing.T) {
 			var ticks atomic.Uint64
 			ticks.Store(100_000_000)
@@ -39,12 +38,6 @@ func TestAuthorityTimeOwner(t *testing.T) {
 				ticks.Store(61_000_000_000)
 			}
 			err = o.installLocked(m)
-			if mode == "delayed installation" {
-				if err == nil || o.anchor != nil {
-					t.Fatal("late installation refreshed source age")
-				}
-				return
-			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -53,12 +46,10 @@ func TestAuthorityTimeOwner(t *testing.T) {
 				t.Fatal(err)
 			}
 			switch mode {
-			case "age equality":
-				// Includes positive rate/read uncertainty, so exactly 60 counter
-				// seconds must already have expired conservatively.
-				ticks.Store(m.received.nanos + o.premises.maxAge)
-				if _, err = o.current(); err == nil {
-					t.Fatal("expired current sample")
+			case "long holdover":
+				ticks.Store(m.received.nanos + uint64(time.Hour))
+				if sample, err := o.current(); err != nil || sample.utc.high-sample.utc.low < uint64(7*time.Second) {
+					t.Fatal("sound holdover lost", err)
 				}
 			case "old sequence":
 				if err = o.installLocked(m); err == nil {
@@ -98,14 +89,14 @@ func TestAuthorityTimeOwner(t *testing.T) {
 				}
 			case "recovery after holdover":
 				ticks.Store(61_000_000_000)
-				if _, err = o.current(); err == nil {
-					t.Fatal("loss extended holdover")
+				if _, err = o.current(); err != nil {
+					t.Fatal("sound holdover refused", err)
 				}
 				m.sequence++
 				m.sent.nanos = 60_900_000_000
 				m.received.nanos = ticks.Load()
-				m.packet.receive += 61 << 32
-				m.packet.transmit += 61 << 32
+				m.packet.receive += 60<<32 | uint64(9)*(1<<32)/10
+				m.packet.transmit += 60<<32 | uint64(9)*(1<<32)/10
 				if err = o.installLocked(m); err != nil {
 					t.Fatal(err)
 				}
@@ -156,63 +147,6 @@ func TestAuthorityTimeOwnerStopsAndJoins(t *testing.T) {
 	o.close()
 }
 
-func TestAuthorityTimeOwnerObservedSourceFault(t *testing.T) {
-	for _, sourceErr := range []error{errAuthorityTimeSourceFault, errAuthorityTimeRate, errAuthorityTimeDenied} {
-		t.Run(sourceErr.Error(), func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
-			o := &authorityTimeOwner{producer: &authorityTimeProducer{}, anchor: &authorityTimeEstimate{}, cancel: cancel, done: make(chan struct{})}
-			go o.run(ctx, func(context.Context) (authorityTimeMeasurement, error) { return authorityTimeMeasurement{}, sourceErr })
-			defer o.close()
-			deadline := time.Now().Add(time.Second)
-			for {
-				o.mu.Lock()
-				cleared, failed := o.anchor == nil, o.failed
-				o.mu.Unlock()
-				if cleared {
-					if (sourceErr == errAuthorityTimeDenied) != failed {
-						t.Fatal("incorrect permanent failure state")
-					}
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("reported source fault retained old authority")
-				}
-				time.Sleep(time.Millisecond)
-			}
-			if _, err := o.current(); err == nil {
-				t.Fatal("reported source fault still authorizes")
-			}
-		})
-	}
-}
-
-func TestAuthorityTimeDecisionTraceSameSample(t *testing.T) {
-	capture := decisiontrace.Start(32)
-	if capture == nil {
-		t.Fatal("capture")
-	}
-	defer capture.Stop()
-	clock, ticks := fakeAuthorityTimeOwner(t)
-	original := clock.producer.sample
-	calls := 0
-	clock.producer.sample = func() (authorityTimeStamp, error) { calls++; return original() }
-	first, event, err := clock.currentObserved()
-	if err != nil || calls != 1 || event.Reason != "ok" || event.Check == 0 || event.Native != first.stamp.nanos {
-		t.Fatal("not same sample", calls, event.Reason, err)
-	}
-	ticks.Add(clock.premises.maxAge)
-	_, expired, err := clock.currentObserved()
-	if err != errAuthorityTime || !errors.Is(err, errAuthorityTime) || calls != 2 || expired.Reason != "age" || expired.AgeUpper < clock.premises.maxAge || !expired.HasAnchor || expired.Check == event.Check {
-		t.Fatal("age classification changed decision", calls, expired.Reason, err)
-	}
-	// Diagnostics cannot clear or revive an expired anchor, and reading them
-	// never calls the sampler again.
-	events, drops := capture.Drain()
-	if calls != 2 || drops != 0 || len(events) != 2 || events[1].Check != expired.Check || clock.anchor == nil || clock.failed {
-		t.Fatal("trace changed state or sampled again")
-	}
-}
-
 // The actual run loop owns its real timers inside synctest. Native ticks are
 // deliberately independent: timer progress never manufactures time evidence.
 type timeOwnerLoopResult struct {
@@ -237,15 +171,18 @@ func newTimeOwnerLoopFixture(t *testing.T) *timeOwnerLoopFixture {
 	ctx, cancel := context.WithCancel(context.Background())
 	o.cancel, o.done = cancel, make(chan struct{})
 	f := &timeOwnerLoopFixture{t: t, o: o, ticks: ticks, calls: make(chan time.Time, 16), results: make(chan timeOwnerLoopResult), base: base}
-	go o.run(ctx, func(ctx context.Context) (authorityTimeMeasurement, error) {
-		f.calls <- time.Now()
-		select {
-		case r := <-f.results:
-			return r.m, r.err
-		case <-ctx.Done():
-			return authorityTimeMeasurement{}, ctx.Err()
-		}
-	})
+	go func() {
+		defer close(o.done)
+		o.runLoopScheduled(ctx, func(ctx context.Context) (authorityTimeMeasurement, error) {
+			f.calls <- time.Now()
+			select {
+			case r := <-f.results:
+				return r.m, r.err
+			case <-ctx.Done():
+				return authorityTimeMeasurement{}, ctx.Err()
+			}
+		}, func() (uint64, error) { return 0, nil })
+	}()
 	synctest.Wait()
 	f.takeCall()
 	t.Cleanup(o.close)
@@ -297,7 +234,7 @@ func (f *timeOwnerLoopFixture) fresh() authorityTimeMeasurement {
 func (f *timeOwnerLoopFixture) healthy() time.Time {
 	f.t.Helper()
 	f.complete(f.fresh(), nil)
-	time.Sleep(16*time.Second - time.Nanosecond)
+	time.Sleep(10*time.Minute - time.Nanosecond)
 	synctest.Wait()
 	f.noCall()
 	var at time.Time
@@ -306,7 +243,7 @@ func (f *timeOwnerLoopFixture) healthy() time.Time {
 	case <-f.o.done:
 		f.t.Fatal("qualified installation stopped owner")
 	}
-	if d := at.Sub(f.completed); d < 16*time.Second || d >= 20*time.Second {
+	if d := at.Sub(f.completed); d < 10*time.Minute || d > 41*time.Minute {
 		f.t.Fatalf("healthy interval %v", d)
 	}
 	synctest.Wait()
@@ -329,204 +266,162 @@ func (f *timeOwnerLoopFixture) nextAfter(delay time.Duration) time.Time {
 	return at
 }
 
+func TestAuthorityTimeDecisionTraceSameSample(t *testing.T) {
+	capture := decisiontrace.Start(32)
+	if capture == nil {
+		t.Fatal("capture")
+	}
+	defer capture.Stop()
+	clock, ticks := fakeAuthorityTimeOwner(t)
+	original := clock.producer.sample
+	calls := 0
+	clock.producer.sample = func() (authorityTimeStamp, error) { calls++; return original() }
+	first, e, err := clock.currentObserved()
+	if err != nil || calls != 1 || e.Native != first.stamp.nanos {
+		t.Fatal("not same sample", err)
+	}
+	ticks.Add(uint64(time.Hour))
+	later, event, err := clock.currentObserved()
+	if err != nil || calls != 2 || event.AgeUpper < uint64(time.Hour) || event.Width < uint64(7*time.Second) || event.Check == e.Check || later.sequence != first.sequence {
+		t.Fatal("holdover trace changed evidence", err)
+	}
+	events, drops := capture.Drain()
+	if calls != 2 || drops != 0 || len(events) != 1 || clock.anchor == nil || clock.failed {
+		t.Fatal("trace changed state")
+	}
+}
+
 func TestAuthorityTimeRecoveryLoopBudget(t *testing.T) {
 	for _, qualified := range []bool{false, true} {
-		t.Run(fmt.Sprintf("qualified=%t", qualified), func(t *testing.T) {
+		t.Run(map[bool]string{false: "bootstrap", true: "holdover"}[qualified], func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newTimeOwnerLoopFixture(t)
-				first := time.Now()
-				waits := []int{32, 64, 128, 256, 512, 1024, 1024}
-				starts := []int{0, 32, 96, 224, 480, 992, 2016, 3040}
+				waits := []int{32, 64, 128, 256, 512, 900, 900}
 				if qualified {
-					first = f.healthy()
-					waits = []int{32, 32, 32, 256, 512, 1024, 1024}
-					starts = []int{0, 32, 64, 96, 352, 864, 1888, 2912}
+					f.healthy()
+					waits = []int{60, 120, 240, 480, 900, 900}
 				}
-				for i, seconds := range waits {
+				for _, seconds := range waits {
 					f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-					if !qualified && i == 1 {
-						time.Sleep(13 * time.Second) // 45-second startup window: only two calls
-						synctest.Wait()
-						f.noCall()
-					}
-					at := f.nextAfter(time.Duration(seconds) * time.Second)
-					if at.Sub(first) != time.Duration(starts[i+1])*time.Second {
-						t.Fatal("cumulative failure budget exceeded")
-					}
+					f.nextAfter(time.Duration(seconds) * time.Second)
 				}
-				// Only a fresh installation resets an exhausted budget and backoff.
 				f.healthy()
-				for range 3 {
-					f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-					f.nextAfter(32 * time.Second)
-				}
+				f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
+				f.nextAfter(time.Minute)
 			})
 		})
 	}
 }
 
 func TestAuthorityTimeRecoveryLoopFaultPriority(t *testing.T) {
-	for _, used := range []bool{false, true} {
-		t.Run(fmt.Sprintf("rate_after_credit=%t", used), func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				f := newTimeOwnerLoopFixture(t)
-				f.healthy()
-				if used {
-					for range 2 {
-						f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-						f.nextAfter(32 * time.Second)
-					}
-				}
-				// Even wrapping cannot make RATE eligible for acceleration.
-				f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{errAuthorityTimeRate})
-				if f.o.anchor != nil {
-					t.Fatal("RATE retained anchor")
-				}
-				f.nextAfter(1024 * time.Second)
-				f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-				f.nextAfter(1024 * time.Second)
-				f.healthy()
-				for range 2 {
-					f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-					f.nextAfter(32 * time.Second)
-				}
-			})
-		})
-	}
-	for _, fault := range []error{errAuthorityTime, errAuthorityTimeSourceFault, &net.OpError{Op: "native", Err: context.DeadlineExceeded}} {
+	for _, fault := range []error{errAuthorityTimeRate, errAuthorityTimeDenied, errAuthorityTimeSourceFault, errAuthorityTime} {
 		t.Run(fault.Error(), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				f := newTimeOwnerLoopFixture(t)
 				f.healthy()
-				f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-				f.nextAfter(32 * time.Second)
 				f.complete(authorityTimeMeasurement{}, fault)
-				if (f.o.anchor == nil) != errors.Is(fault, errAuthorityTimeSourceFault) || f.o.sequence != 1 {
-					t.Fatal("retry classification changed anchor handling")
+				if (f.o.anchor == nil) != errors.Is(fault, errAuthorityTimeSourceFault) || f.o.sequence != 1 || f.o.failed {
+					t.Fatal("fault changed evidence incorrectly")
 				}
-				f.nextAfter(64 * time.Second)
-				f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-				f.nextAfter(128 * time.Second)
-			})
-		})
-	}
-}
-
-func TestAuthorityTimeRecoveryLoopInstallation(t *testing.T) {
-	for _, mode := range []string{"stale", "source", "delayed", "qualification", "contradiction", "native", "deny"} {
-		t.Run(mode, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				f := newTimeOwnerLoopFixture(t)
-				f.healthy()
-				f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-				f.nextAfter(32 * time.Second)
-				m := f.fresh()
-				var err error
-				switch mode {
-				case "stale":
-					m.sequence = 1
-				case "source":
-					m.source.host = "foreign.invalid"
-				case "delayed":
-					f.ticks.Add(61_000_000_000)
-				case "qualification":
-					m.packet.reportedRootDispersion = ^uint32(0)
-				case "contradiction":
-					m.packet.receive += 10 << 32
-					m.packet.transmit += 10 << 32
-				case "native":
-					f.o.producer.sample = func() (authorityTimeStamp, error) { return authorityTimeStamp{}, errAuthorityTime }
-				case "deny":
-					err = errAuthorityTimeDenied
-				}
-				f.complete(m, err)
-				if f.o.sequence != 1 {
-					t.Fatal("unqualified measurement advanced generation")
-				}
-				terminal := mode == "contradiction" || mode == "native" || mode == "deny"
-				if (f.o.anchor == nil) != (terminal || mode == "qualification") {
-					t.Fatal("installation changed original anchor retention")
-				}
-				if terminal {
+				if fault == errAuthorityTimeDenied {
 					select {
 					case <-f.o.done:
 					default:
-						t.Fatal("terminal owner still running")
+						t.Fatal("denied association kept querying")
 					}
 					time.Sleep(24 * time.Hour)
 					synctest.Wait()
 					f.noCall()
+					if _, err := f.o.current(); err != nil {
+						t.Fatal("denial erased sound holdover", err)
+					}
 					return
 				}
-				f.nextAfter(64 * time.Second)
-				f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-				f.nextAfter(128 * time.Second)
+				delay := time.Minute
+				if fault == errAuthorityTimeRate {
+					delay = 1024 * time.Second
+				}
+				f.nextAfter(delay)
 			})
 		})
 	}
 }
 
 func TestAuthorityTimeRecoveryLoopExpiryAndOwnership(t *testing.T) {
-	t.Run("strict expiry independent of remaining credit", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			f := newTimeOwnerLoopFixture(t)
-			f.healthy()
-			for range 2 {
-				f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-				f.nextAfter(32 * time.Second)
+	synctest.Test(t, func(t *testing.T) {
+		f := newTimeOwnerLoopFixture(t)
+		f.healthy()
+		// Timer passage cannot manufacture native elapsed evidence or parallel flights.
+		time.Sleep(2 * time.Hour)
+		f.ticks.Add(uint64(2 * time.Hour))
+		synctest.Wait()
+		f.noCall()
+		for range 4 {
+			if _, err := f.o.current(); err != nil || f.o.sequence != 1 {
+				t.Fatal("sound holdover lost", err)
 			}
-			// One acceleration credit remains. Native elapsed alone neither
-			// schedules a flight nor refills it, even while a flight is blocked.
-			f.ticks.Store(f.base.received.nanos + 59_939_997_999)
-			if _, err := f.o.current(); err != nil {
-				t.Fatal("one nanosecond before age equality refused", err)
+		}
+		f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
+		f.nextAfter(time.Minute)
+		f.o.close()
+		time.Sleep(24 * time.Hour)
+		synctest.Wait()
+		f.noCall()
+	})
+}
+
+func TestAuthorityTimeRejectedCandidatePreservesAnchor(t *testing.T) {
+	for _, fault := range []string{"bound", "source", "sequence", "native", "contradiction"} {
+		t.Run(fault, func(t *testing.T) {
+			o, ticks := fakeAuthorityTimeOwner(t)
+			old := o.anchor
+			m := *o.lastObservation
+			m.sequence++
+			switch fault {
+			case "bound":
+				m.packet.reportedRootDispersion = ^uint32(0)
+			case "source":
+				m.source.host = "foreign.invalid"
+			case "sequence":
+				m.sequence--
+			case "native":
+				m.received.boot[0]++
+			case "contradiction":
+				m.packet.transmit += 10 << 32
+				m.packet.receive += 10 << 32
 			}
-			f.ticks.Add(1)
-			for range 4 {
-				_, e, err := f.o.currentObserved()
-				if err == nil || e.Reason != "age" || e.AgeUpper != 60_000_000_000 || f.o.sequence != 1 {
-					t.Fatal("age equality accepted or changed generation")
+			if err := o.installLocked(m); err == nil {
+				t.Fatal("invalid candidate accepted")
+			}
+			terminal := fault == "native" || fault == "contradiction"
+			if o.failed != terminal || (!terminal && o.anchor != old) || o.sequence != 1 {
+				t.Fatal("candidate changed retained evidence")
+			}
+			if !terminal {
+				ticks.Add(uint64(time.Hour))
+				if _, err := o.current(); err != nil {
+					t.Fatal("old anchor unavailable", err)
 				}
 			}
-			f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-			f.nextAfter(32 * time.Second)
-			f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-			f.nextAfter(256 * time.Second) // expiry did not replenish credits
-			f.healthy()
-			if _, err := f.o.current(); err != nil || f.o.sequence != 2 {
-				t.Fatal("fresh qualified measurement did not recover time")
-			}
-		})
-	})
-	t.Run("single flight and completion-relative wait", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			f := newTimeOwnerLoopFixture(t)
-			f.healthy()
-			// The measurement barrier, not Sleep alone, prevents the owner
-			// from making progress; no missed periodic ticks can accumulate.
-			time.Sleep(2 * time.Hour)
-			f.ticks.Add(uint64(2 * time.Hour))
-			synctest.Wait()
-			f.noCall()
-			f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-			f.nextAfter(32 * time.Second)
-		})
-	})
-	for _, phase := range []string{"flight", "accelerated wait"} {
-		t.Run("cancel "+phase, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				f := newTimeOwnerLoopFixture(t)
-				f.healthy()
-				if phase == "accelerated wait" {
-					f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-					f.nextAfter(32 * time.Second)
-					f.complete(authorityTimeMeasurement{}, &authorityTimeTransportError{context.DeadlineExceeded})
-				}
-				f.o.close()
-				time.Sleep(24 * time.Hour)
-				synctest.Wait()
-				f.noCall()
-			})
 		})
 	}
+}
+
+func TestAuthorityTimeRecoveryLoopNativeFaultStops(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newTimeOwnerLoopFixture(t)
+		f.healthy()
+		f.complete(authorityTimeMeasurement{}, errAuthorityTimeNative)
+		if !f.o.failed || f.o.anchor != nil {
+			t.Fatal("native acquisition fault kept authority")
+		}
+		select {
+		case <-f.o.done:
+		default:
+			t.Fatal("native fault kept acquisition running")
+		}
+		time.Sleep(24 * time.Hour)
+		synctest.Wait()
+		f.noCall()
+	})
 }

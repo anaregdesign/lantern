@@ -25,7 +25,7 @@ var (
 
 // Only errors returned by DNS, dial, Write or Read get this private marker.
 // It identifies a boundary, not a claim that the failure is transient. Native,
-// packet, source and installation failures must never acquire retry credits.
+// packet, source and installation failures remain separate classifications.
 type authorityTimeTransportError struct{ cause error }
 
 func (e *authorityTimeTransportError) Error() string { return e.cause.Error() }
@@ -92,6 +92,7 @@ type authorityTimeProducer struct {
 	sequence     uint64
 	addressTurn  uint64
 	attempts     uint64
+	writes       uint64
 	lastProbe    decisiontrace.Event
 	lastAttempt  decisiontrace.StartupAttempt
 	source       authorityTimeSource
@@ -122,7 +123,7 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 		p.mu.Unlock()
 		return authorityTimeMeasurement{}, errAuthorityTimeBusy
 	}
-	if ctx == nil || p.sample == nil || p.source.host == "" || p.source.configuration == [32]byte{} || p.sequence == ^uint64(0) || (address == "" && p.addressTurn == ^uint64(0)) {
+	if ctx == nil || p.sample == nil || p.source.host == "" || p.source.configuration == [32]byte{} || p.sequence == ^uint64(0) || p.attempts == ^uint64(0) || p.writes == ^uint64(0) || (address == "" && p.addressTurn == ^uint64(0)) {
 		p.mu.Unlock()
 		return authorityTimeMeasurement{}, errAuthorityTime
 	}
@@ -247,11 +248,16 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	probe.Stage = "native_send"
 	sent, err := p.sample()
 	if err != nil {
-		return authorityTimeMeasurement{}, err
+		return authorityTimeMeasurement{}, errors.Join(errAuthorityTimeNative, err)
 	}
 	probe.Native = sent.nanos
 	probe.Stage = "send"
 	n, err := conn.Write(request[:])
+	if n > 0 {
+		p.mu.Lock()
+		p.writes++
+		p.mu.Unlock()
+	}
 	if err != nil {
 		return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
 	}
@@ -278,17 +284,17 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	probe.Stage = "native_receive"
 	received, err := p.sample()
 	if err != nil {
-		return authorityTimeMeasurement{}, err
+		return authorityTimeMeasurement{}, errors.Join(errAuthorityTimeNative, err)
 	}
 	probe.Native = received.nanos
+	probe.Stage = "native_binding"
+	if sent.boot == [32]byte{} || sent.process == [16]byte{} || sent.boot != received.boot || sent.process != received.process || received.nanos < sent.nanos {
+		return authorityTimeMeasurement{}, errors.Join(errAuthorityTimeNative, errAuthorityTime)
+	}
 	probe.Stage = "packet"
 	packet, err := parseAuthorityNTP(raw[:n], nonce)
 	if err != nil {
 		return authorityTimeMeasurement{}, err
-	}
-	probe.Stage = "native_binding"
-	if sent.boot == [32]byte{} || sent.process == [16]byte{} || sent.boot != received.boot || sent.process != received.process || received.nanos < sent.nanos {
-		return authorityTimeMeasurement{}, errAuthorityTime
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()

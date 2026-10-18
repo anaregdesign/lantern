@@ -198,10 +198,11 @@ the next answer within the original three-second attempt. This permits a usable
 address family when another has no route. Each scheduled attempt still sends at
 most one NTP datagram; it never switches after a write/read failure or source
 response. IPv6 assignment or successful UDP dial alone does not prove reply
-reachability. Packet loss can still exhaust the unchanged 60-second holdover
-and withdraw readiness even while membership publication succeeds. Diagnose
-transport and native admission separately; do not extend time bounds to repair
-a network failure.
+reachability. Packet loss preserves a sound anchor while its uncertainty grows. Readiness can
+still be withdrawn when the full interval no longer fits actual certificate or
+membership windows, or the independent native quorum expires. Diagnose transport
+and native admission separately; never reset an anchor or narrow its bounds to
+hide a network failure.
 
 The existing HA Compose contract has a concrete overlay:
 

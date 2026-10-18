@@ -94,7 +94,7 @@ def campaign(directory, environment):
     result = {"version": 1, "qualification": "singleflight_only", "raw_retention": "runner_ephemeral", "phases": {}}
     commands = [
         ("prepare", [sys.executable, "-B", str(ROOT / ".github/scripts/configured_time_input.py")], 10),
-        ("compile", ["go", "test", "-c", "-buildvcs=true", "-o", str(directory / "security.test"), "./server/internal/security"], 180),
+        ("compile", ["go", "test", "-c", "-tags=lantern_source_qualification", "-buildvcs=true", "-o", str(directory / "security.test"), "./server/internal/security"], 180),
         ("test", [str(directory / "security.test"), "-test.run=^" + TEST + "$", "-test.count=1", "-test.v", "-test.timeout=10s"], 10),
     ]
     for name, command, timeout in commands:

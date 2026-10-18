@@ -215,7 +215,7 @@ jobs:
       - name: Start Lantern real-wire server
         working-directory: .
         run: |
-          go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
           env LANTERN_PORT=6380 LANTERN_METRICS_ADDR=:9090 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-enabled.log" 2>&1 &
@@ -467,7 +467,7 @@ jobs:
       - name: Start Lantern real-wire server
         working-directory: .
         run: |
-          go build -o "$RUNNER_TEMP/lantern-offline" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern-offline" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-offline-authfixture" ./server/cmd/authfixture
           go test -c -buildvcs=true -o "$RUNNER_TEMP/lantern-offline-authority-provisioner" ./server/internal/security
           env LANTERN_PORT=6398 LANTERN_METRICS_ADDR=:9098 LANTERN_LOG_LEVEL=warn \
@@ -670,7 +670,7 @@ jobs:
       - name: Start Lantern real-wire server
         working-directory: .
         run: |
-          go build -o "$RUNNER_TEMP/lantern-sqlite" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern-sqlite" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-sqlite-authfixture" ./server/cmd/authfixture
           env LANTERN_PORT=6397 LANTERN_METRICS_ADDR=:9097 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern-sqlite" > "$RUNNER_TEMP/lantern-sqlite.log" 2>&1 &
@@ -845,7 +845,7 @@ jobs:
 
       - name: Start Lantern
         run: |
-          go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
           env LANTERN_METRICS_ADDR=:9092 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/android-server.log" 2>&1 &
@@ -1008,7 +1008,7 @@ jobs:
 
       - name: Start Lantern
         run: |
-          go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
           env LANTERN_METRICS_ADDR=:9093 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/ios-server.log" 2>&1 &

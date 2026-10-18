@@ -58,6 +58,9 @@ func TestAuthorityTimeProducerStartupContextObservation(t *testing.T) {
 				if err == nil || samples != 1 {
 					t.Fatal("diagnostic changed the failed exchange or native sampling count")
 				}
+				if p.attempts != 1 || p.writes != 1 || p.busy {
+					t.Fatal("complete acquisition counters changed")
+				}
 				_, observation := p.completedProbe()
 				if observation.Attempt != 1 || observation.Stage != "read" || !observation.HasReadBudget {
 					t.Fatal("observation does not describe the actual failed Read")
@@ -181,6 +184,9 @@ func TestAuthorityTimeProducer(t *testing.T) {
 			case result = <-done:
 			case <-time.After(2 * time.Second):
 				t.Fatal("measurement did not join")
+			}
+			if (mode == "sample failure" || mode == "sample regression" || mode == "sample epoch") && !errors.Is(result.err, errAuthorityTimeNative) {
+				t.Fatal("native fault lost terminal classification")
 			}
 			probe := p.probeObservation()
 			if probe.Attempt != 1 || probe.EndpointDigest != fmt.Sprintf("%x", sha256.Sum256([]byte(server.LocalAddr().String()))) || probe.Family != "ipv4" || probe.Elapsed <= 0 {
