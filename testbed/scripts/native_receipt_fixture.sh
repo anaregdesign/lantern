@@ -28,6 +28,30 @@ PY
       sleep 1
     done
     echo 'native receipt fixture failed certified readiness; inspect private diagnostics' >&2
+    # The complete private diagnostics may contain credentials. Export only
+    # exact fixed categories from the supervisor's bounded failure records.
+    python3 - "$directory/supervisor.log" <<'PYDIAGNOSTIC' || true
+import json,pathlib,sys
+stages={'configuration','generation','spawn','readiness','publication','exit','private_input'}
+logs={'unavailable','none','initialization','bind_address_in_use','server_exit','source_input_missing','authority_time'}
+try:
+    with pathlib.Path(sys.argv[1]).open('rb') as source:
+        raw=source.read(65536).decode('utf-8',errors='replace')
+except OSError:
+    raw=''
+    print('authfixture_diagnostics:unavailable',file=sys.stderr)
+for line in raw.splitlines():
+    if line.startswith('authfixture_failure:') and line[20:] in stages:
+        print(line,file=sys.stderr)
+    if line.startswith('authfixture_readiness:'):
+        try:
+            record=json.loads(line[22:])
+        except (ValueError,TypeError,RecursionError):
+            continue
+        category=record.get('server_log') if isinstance(record,dict) else None
+        if isinstance(category,str) and category in logs:
+            print('authfixture_server_log:'+category,file=sys.stderr)
+PYDIAGNOSTIC
     "$0" stop "$directory"
     exit 1
     ;;

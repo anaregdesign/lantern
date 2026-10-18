@@ -13,6 +13,7 @@ on:
       - 'testdata/search/**'
       - '.github/workflows/node-sdk.yml'
       - 'testbed/scripts/native_receipt_fixture.sh'
+      - '.github/scripts/configured_time_input.py'
       - 'tests/integration/auth_test.go'
       - 'sdks/go/**'
       - "!sdks/node/*.md"
@@ -30,6 +31,7 @@ on:
       - 'testdata/search/**'
       - '.github/workflows/node-sdk.yml'
       - 'testbed/scripts/native_receipt_fixture.sh'
+      - '.github/scripts/configured_time_input.py'
       - 'tests/integration/auth_test.go'
       - 'sdks/go/**'
       - "!sdks/node/*.md"
@@ -69,6 +71,11 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: Prepare declared read-only source input
+        working-directory: .
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_input.py
       - name: Start production conformance servers
         working-directory: .
         run: |

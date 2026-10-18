@@ -52,8 +52,11 @@ The MSRV compiler/dependency contract is represented on Linux; native-platform
 behavior is qualified on stable without repeating MSRV on macOS/Windows. Every
 lane checks generated-binding drift, formatting, all-target/all-feature Clippy, default
 TLS roots, all-feature tests, and warning-free rustdoc; the stable lane on
-**each OS** also builds the production Go server and runs the ignored real-wire
-h2c/TLS/auth/CRUD/query failure tests. A path-filtered green PR workflow
+**each OS** also builds the production Go server and runs the applicable ignored
+real-wire h2c/TLS/CRUD/query failure tests. Linux/macOS additionally run the
+seven local OIDC authority cases with the declared read-only source input;
+Windows runs normal OFF+mTLS and retains native client boundaries because a
+local Windows OIDC authority is unsupported. A path-filtered green PR workflow
 does not substitute for this full tag matrix.
 
 An additional single [native SDK4 lane](../../.github/workflows/current-sdk4.yml)

@@ -83,6 +83,13 @@ snapshot/rollback/clone/live migration is supported. Container pause/unpause,
 scheduler delays and CPU throttling remain in scope. These are conditional
 operating profiles, not kernel or hardware certification.
 
+Windows can run OFF mode and native workload/public TLS, and the Windows SDK
+can connect to an OIDC Server on a supported host. Windows cannot host the
+native OIDC authority: the production factory refuses that unsupported profile.
+Native Windows CI covers OFF+mTLS, filesystem/ACL/process boundaries and that
+factory refusal. Actual OIDC bearer/HA/receipt wire cases run on the supported
+Linux/macOS hosts; Windows client support does not imply Windows authority support.
+
 | Input | Fixed conditional bound |
 | --- | --- |
 | Darwin counter/epoch | `CLOCK_MONOTONIC_RAW` / `mach_continuous_time`; `kern.bootsessionuuid` plus a fresh owner/process nonce |
@@ -156,6 +163,14 @@ no Darwin-to-Linux persistent-family migration or mixed-profile quorum. The
 source configuration is an explicit read-only `/etc/ntp.conf` deployment input,
 not an assumed container image feature. It retains the already selected single
 `time.asia.apple.com` upstream and the existing producer/interval bounds.
+
+Owned disposable hosted CI runners prepare that exact read-only input through
+`.github/scripts/configured_time_input.py`, shared by native SDK jobs and the
+dedicated Q container. The helper refuses local/self-hosted/unsupported execution,
+performs no clock/daemon/DNS/trust operation or upstream probe, and reports only
+fixed input-state categories. File preparation is not native acquisition or Q
+qualification. Operators supply the input independently; this CI helper is not
+a deployment command for a persistent host.
 
 Membership, workload TLS and current-profile OIDC HTTPS checks use both UTC
 endpoints. HTTPS response checks cover reused TLS connections too. Existing

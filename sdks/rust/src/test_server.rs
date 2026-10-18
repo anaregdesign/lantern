@@ -168,6 +168,8 @@ enum ReadinessServerLog {
     None,
     Initialization,
     BindAddressInUse,
+    SourceInputMissing,
+    AuthorityTime,
     ServerExit,
 }
 
@@ -618,6 +620,15 @@ mod diagnostic_tests {
         });
         fs::write(&path, format!("private-token-key-body\nauthfixture_failure:readiness\nauthfixture_readiness:{record}\n")).unwrap();
         let retained = native_startup_failure(&path);
+        for category in ["source_input_missing", "authority_time"] {
+            let mut adoption = record.clone();
+            adoption["server_log"] = serde_json::json!(category);
+            fs::write(&path, format!("private-token-key-body\nauthfixture_failure:spawn\nauthfixture_readiness:{adoption}\n")).unwrap();
+            let retained = native_startup_failure(&path);
+            assert!(retained.contains("native fixture failed certified readiness: spawn"));
+            assert!(retained.contains(category));
+            assert!(!retained.contains("private-token-key-body"));
+        }
         drop(dir);
         assert!(!path.exists());
         assert!(retained.contains(r#""reason":"child_exit""#));

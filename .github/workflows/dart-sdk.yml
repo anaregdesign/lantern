@@ -34,6 +34,7 @@ on:
       - "tests/integration/dart_data_client_test.dart"
       - "testbed/scripts/dart_identity_fixture.sh"
       - "testbed/scripts/native_receipt_fixture.sh"
+      - ".github/scripts/configured_time_input.py"
       - "testbed/scripts/native_head_fixture.sh"
       - "testbed/scripts/dart_receipt_fixture.sh"
       - "tests/integration/auth_test.go"
@@ -83,6 +84,7 @@ on:
       - "tests/integration/dart_data_client_test.dart"
       - "testbed/scripts/dart_identity_fixture.sh"
       - "testbed/scripts/native_receipt_fixture.sh"
+      - ".github/scripts/configured_time_input.py"
       - "testbed/scripts/native_head_fixture.sh"
       - "testbed/scripts/dart_receipt_fixture.sh"
       - "tests/integration/auth_test.go"
@@ -205,6 +207,11 @@ jobs:
           version: 1.71.0
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare declared read-only source input
+        working-directory: .
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_input.py
       - name: Start Lantern real-wire server
         working-directory: .
         run: |
@@ -452,6 +459,11 @@ jobs:
         with:
           sdk: 3.12.2
 
+      - name: Prepare declared read-only source input
+        working-directory: .
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_input.py
       - name: Start Lantern real-wire server
         working-directory: .
         run: |
@@ -647,6 +659,11 @@ jobs:
           flutter-version: 3.44.6
           cache: true
 
+      - name: Prepare declared read-only source input
+        working-directory: .
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_input.py
       - name: Start Lantern real-wire server
         working-directory: .
         run: |

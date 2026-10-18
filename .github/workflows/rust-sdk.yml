@@ -16,6 +16,8 @@ on:
       - 'go.work.sum'
       - 'tests/integration/auth_test.go'
       - '.github/workflows/rust-sdk.yml'
+      - '.github/scripts/configured_time_input.py'
+      - '.github/scripts/rust_wire.py'
       - '.github/workflows/rust-release.yml'
       - "!core/*.md"
       - "!pb/*.md"
@@ -34,6 +36,8 @@ on:
       - 'go.work.sum'
       - 'tests/integration/auth_test.go'
       - '.github/workflows/rust-sdk.yml'
+      - '.github/scripts/configured_time_input.py'
+      - '.github/scripts/rust_wire.py'
       - '.github/workflows/rust-release.yml'
       - "!core/*.md"
       - "!pb/*.md"
@@ -102,6 +106,12 @@ jobs:
         if: matrix.rust == 'stable'
         with:
           go-version-file: go.mod
+      - name: Prepare declared read-only source input
+        if: matrix.rust == 'stable' && matrix.os != 'windows-latest'
+        working-directory: .
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_input.py
       - name: Build production server for real-wire conformance
         if: matrix.rust == 'stable'
         working-directory: .
@@ -122,7 +132,7 @@ jobs:
         if: matrix.rust == 'stable'
         # The two public fixtures are provisioned by their root Go gates.
         # Current authority additionally requires the native-time SDK4 opt-in.
-        run: cargo test --locked --all-features -- --ignored --test-threads=1 --skip scoped_changes::tests::real_public_scoped_wire --skip security::tests::real_public_current_wire
+        run: python -B ../../.github/scripts/rust_wire.py
         env:
           LANTERN_RUST_TEST_SERVER: ${{ github.workspace }}/sdks/rust/target/lantern-smoke${{ matrix.os == 'windows-latest' && '.exe' || '' }}
           LANTERN_RUST_TEST_AUTH_FIXTURE: ${{ github.workspace }}/sdks/rust/target/lantern-authfixture${{ matrix.os == 'windows-latest' && '.exe' || '' }}

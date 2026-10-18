@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFixtureFailureCategory(t *testing.T) {
@@ -32,6 +34,8 @@ func TestFixtureServerLogClassificationIsBounded(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "private.log")
 	for _, tc := range []struct{ raw, want string }{
 		{`{"msg":"failed to initialize app","err":"private-token-key-body"}`, "initialization"},
+		{`{"msg":"failed to initialize app","err":"open /etc/ntp.conf: no such file or directory; private-token"}`, "source_input_missing"},
+		{`{"msg":"failed to initialize app","err":"unusable current-authority time measurement; private-token"}`, "authority_time"},
 		{`{"msg":"server exited with error","err":"private-token-key-body"}`, "server_exit"},
 		{"private-token-key-body", "none"},
 		{strings.Repeat("x", 64<<10) + "\n" + `{"msg":"failed to initialize app","err":"bind: address already in use"}`, "none"},
@@ -47,5 +51,28 @@ func TestFixtureServerLogClassificationIsBounded(t *testing.T) {
 	writeFixtureFailure(&output, &fixtureFailure{stage: "spawn", cause: errors.New("private-token-key-body")})
 	if output.String() != "authfixture_failure:spawn\n" {
 		t.Fatal("private failure escaped fixed category")
+	}
+}
+
+func TestFixtureAdoptionFailureRetainsOnlyBoundedPassiveEvidence(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	_, _ = file.WriteString("{\"msg\":\"failed to initialize app\",\"err\":\"open /etc/ntp.conf: no such file or directory; private-token\"}\n")
+	done := make(chan struct{})
+	close(done)
+	private := errors.New("private-token-key-body")
+	failure := fixtureAdoptionFailure(private, &fixtureProcess{done: done, command: &exec.Cmd{}, log: file}, 2, 12345, 37*time.Millisecond)
+	var output bytes.Buffer
+	writeFixtureFailure(&output, failure)
+	if !errors.Is(failure, private) || strings.Contains(output.String(), "private-token") || strings.Contains(output.String(), file.Name()) {
+		t.Fatal("lost cause or disclosed private child text")
+	}
+	for _, expected := range []string{"authfixture_failure:spawn", `"server_log":"source_input_missing"`, `"child_exited":true`, `"port":12345`, `"elapsed_ms":37`, `"health_probes":0`, `"observation":{"status":"not_observed"`} {
+		if !strings.Contains(output.String(), expected) {
+			t.Fatal("missing adoption evidence", expected)
+		}
 	}
 }

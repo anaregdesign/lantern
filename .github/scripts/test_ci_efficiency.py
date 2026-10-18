@@ -23,6 +23,34 @@ def job(text, name):
 
 
 class RepresentativeCoverageTest(unittest.TestCase):
+    def test_windows_retains_native_mtls_without_requesting_unsupported_oidc(self):
+        import windows_native
+        self.assertIn("TestAuthorityTimeUnsupportedNativeProfile", windows_native.GO_TESTS)
+        self.assertIn("transport::tests::real_wire_off_mtls_requires_client_identity", windows_native.RUST_TESTS)
+        self.assertNotIn("transport::tests::real_wire_mtls_and_bearer_rotation", windows_native.RUST_TESTS)
+        source = (ROOT / "sdks/rust/src/transport/tests.rs").read_text()
+        off = source.split("async fn real_wire_off_mtls_requires_client_identity()", 1)[1].split("#[tokio::test]", 1)[0]
+        self.assertIn("start_tls_server(&certs, true)", off)
+        self.assertIn("tls_client_identity", off)
+        self.assertIn("get_status", off)
+        self.assertNotIn("token_provider", off)
+
+    def test_receipt_startup_log_exports_only_fixed_categories(self):
+        source = (ROOT / "testbed/scripts/native_receipt_fixture.sh").read_text()
+        code = source.split("<<'PYDIAGNOSTIC' || true\n", 1)[1].split("\nPYDIAGNOSTIC", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private-log"
+            path.write_text('private-token-key-body\nauthfixture_failure:spawn\nauthfixture_failure:private-token\nauthfixture_readiness:{"server_log":"source_input_missing","err":"private-token"}\nauthfixture_readiness:{"server_log":[]}\nauthfixture_readiness:{"server_log":"private-token"}\n')
+            import contextlib
+            import io
+            with patch.object(sys, "argv", ["diagnostic", str(path)]), contextlib.redirect_stderr(io.StringIO()) as output:
+                exec(compile(code, "<receipt-startup-diagnostic>", "exec"), {})
+            self.assertEqual(output.getvalue(), "authfixture_failure:spawn\nauthfixture_server_log:source_input_missing\n")
+            path.unlink()
+            with patch.object(sys, "argv", ["diagnostic", str(path)]), contextlib.redirect_stderr(io.StringIO()) as output:
+                exec(compile(code, "<receipt-startup-diagnostic>", "exec"), {})
+            self.assertEqual(output.getvalue(), "authfixture_diagnostics:unavailable\n")
+
     def test_rust_source_and_release_cover_msrv_and_every_native_platform(self):
         manifest = tomllib.loads((ROOT / "sdks/rust/Cargo.toml").read_text())
         floor = manifest["package"]["rust-version"] + ".0"
@@ -57,7 +85,7 @@ class RepresentativeCoverageTest(unittest.TestCase):
                     self.assertIn(command, body)
                 # Every retained stable platform still executes the wire suite.
                 wire = next(step for step in body.split("      - ")
-                            if "--ignored --test-threads=1" in step)
+                            if "../../.github/scripts/rust_wire.py" in step)
                 self.assertIn("if: matrix.rust == 'stable'", wire)
                 self.assertNotIn("matrix.os == 'ubuntu-latest'", wire)
         release = workflow("rust-release")
@@ -65,7 +93,7 @@ class RepresentativeCoverageTest(unittest.TestCase):
         self.assertIn("--proof-kind Q", job(release, "preflight"))
         self.assertIn("needs: [tag, verify-published]", job(release, "release"))
         self.assertIn('go build -o "sdks/rust/target/lantern-authfixture$suffix"', job(release, "conformance"))
-        self.assertIn("--skip scoped_changes::tests::real_public_scoped_wire", job(release, "conformance"))
+        self.assertIn("../../.github/scripts/rust_wire.py", job(release, "conformance"))
         self.assertNotIn("go test ./tests/integration", job(release, "conformance"))
         self.assertIn("--include-scoped", workflow("current-sdk4"))
         go = workflow("go")

@@ -343,8 +343,9 @@ func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFil
 				return err
 			}
 			children = append(children, launch.process)
+			started := time.Now()
 			if err := launch.configure(ctx, env); err != nil {
-				return &fixtureFailure{stage: "spawn", cause: err}
+				return fixtureAdoptionFailure(err, launch.process, i, launch.public, time.Since(started))
 			}
 			continue
 		}
