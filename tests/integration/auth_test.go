@@ -839,6 +839,10 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 	if err != nil || principal.Msg.Identity.Subject != "admin" || len(principal.Msg.Roles) != 1 || !principal.Msg.RecentAuthentication || principal.Msg.CsrfToken != "" {
 		t.Fatal("verified principal", err)
 	}
+	registration, err := f.client.GetRegistrationPolicy(ctx, securityWireRequest(admin, &pb.GetRegistrationPolicyRequest{}))
+	if err != nil || registration.Msg.Policy != nil || registration.Msg.Version == nil || registration.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("absent registration policy read", err)
+	}
 	initial := proto.Clone(principal.Msg.Version).(*pb.SecurityVersion)
 	readerIdentity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "reader"}
 	readerToken := f.token(t, "reader", func(c map[string]any) { c["roles"] = []string{"security_admin"} })
@@ -876,10 +880,27 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 	if _, err := f.client.ListUsers(ctx, securityWireRequest(readerToken, &pb.ListUsersRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("reader token Role claim granted management", err)
 	}
+	if _, err := f.client.GetRegistrationPolicy(ctx, securityWireRequest(readerToken, &pb.GetRegistrationPolicyRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("reader disclosed registration policy", err)
+	}
 	for key, want := range map[string]bool{"tenant:public:1": true, "tenant:private:1": false, "other:1": false} {
 		result, err := f.client.ExplainAccess(ctx, securityWireRequest(admin, &pb.ExplainAccessRequest{Identity: readerIdentity, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, LogicalKey: &key}))
 		if err != nil || result.Msg.Allowed != want {
 			t.Fatal("prefix policy", key, err)
+		}
+		for _, match := range result.Msg.Matches {
+			if match.Action != pb.SecurityAction_SECURITY_ACTION_VERTEX_READ || match.Endpoint != "" {
+				t.Fatal("key explanation lost its constituent action", match)
+			}
+		}
+	}
+	edgeExplanation, err := f.client.ExplainAccess(ctx, securityWireRequest(admin, &pb.ExplainAccessRequest{Identity: readerIdentity, Action: pb.SecurityAction_SECURITY_ACTION_EDGE_READ, Edge: &pb.SecurityEdgeIdentity{Tail: "tenant:public:1", Head: "tenant:private:1"}}))
+	if err != nil || edgeExplanation.Msg.Allowed || len(edgeExplanation.Msg.Matches) != 3 {
+		t.Fatal("derived Edge explanation drift", edgeExplanation, err)
+	}
+	for _, match := range edgeExplanation.Msg.Matches {
+		if match.Action != pb.SecurityAction_SECURITY_ACTION_VERTEX_READ || match.Endpoint != "tail" && match.Endpoint != "head" {
+			t.Fatal("Edge explanation omitted its endpoint/action", match)
 		}
 	}
 	remove := []*pb.SecurityChange{{Operation: &pb.SecurityChange_DeleteRole{DeleteRole: "reader"}}}

@@ -25,8 +25,9 @@ var ErrFetch = errors.New("OIDC endpoint unavailable")
 type FetcherOptions struct {
 	PrivateOrigins map[string][]netip.Prefix
 	Roots          *x509.CertPool
-	// Private current-authority composition supplies its qualified UTC bounds.
-	// Nil preserves the ordinary fixed-writer path until its explicit migration.
+	// OIDC runtime composition supplies its actual qualified UTC bounds.
+	// Nil uses ordinary TLS time for standalone metadata fetches; it supplies no
+	// current-authority time qualification.
 	TimeBounds func() (time.Time, time.Time, error)
 }
 

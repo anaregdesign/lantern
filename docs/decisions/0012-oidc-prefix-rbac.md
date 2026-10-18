@@ -520,7 +520,7 @@ cookie-authenticated mutations. Ordinary login accepts provider SSO and missing
 Future or contradictory evidence is rejected; `iat`, callback time, consent and
 account selection never supply authentication time. A Server-owned transaction
 saves ordinary versus step-up intent independently from session replacement.
-Explicit session step-up and separate operation approval request fresh provider
+Operation approval requests fresh provider
 authentication and essential signed
 `auth_time`. Broad session step-up is retired. Ordinary qualified-human management has no
 age gate; high-impact changes use a separate purpose callback and signed
