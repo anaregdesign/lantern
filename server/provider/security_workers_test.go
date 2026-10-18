@@ -68,7 +68,9 @@ func TestSecurityWorkerObservationSeparatesCompletedAndPublished(t *testing.T) {
 	if err := worker.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if s := r.readinessObservation.Snapshot(); s.WorkerState != "stopped_canceled" || s.WorkerReason != "context" {
+	// Stopping is a separate observation. It must retain the last completed
+	// OFF evaluation rather than inventing a new authority failure reason.
+	if s := r.readinessObservation.Snapshot(); s.WorkerState != "stopped_canceled" || s.WorkerReason != "ready" || s.WorkerDone < 3 || s.WorkerStarted != s.WorkerDone || s.WorkerPublish != s.WorkerDone {
 		t.Fatal(s)
 	}
 }
