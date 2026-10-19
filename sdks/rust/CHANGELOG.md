@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## 0.4.0
+
+- Add `current_authority_binding` and `current_user_id` for validated,
+  authenticated Principal reads. Bindings partition caches rather
+  than authorize later calls; UID-less or machine Principals return no user ID.
+- Add public `watch_changes` with scope-bound opaque checkpoints, identity or
+  current-value projections, and checked bootstrap/resume frames. Streams stay
+  on one endpoint without automatic reconnect, cursor reset, or persistence.
+- Add plural-first `create_edges` / `create_edge` and their `_with_options`
+  variants with validated `CreateEdgeOutcome` results. The Server checks
+  existing live endpoints and authority; Create never retries automatically
+  and remains rejected in HA.
+- Distinguish accepted Edge mutations with undisclosed effects from RPC
+  failures through `LanternError::MutationAcceptedUndisclosed` and the
+  `MutationReply` adapters. Preserve real/partial failures and suppress restore
+  progress counts when effects are undisclosed instead of fabricating results.
+- Decode typed conditional Create effects and original results in legacy
+  full-mutation CDC. Accept ordered Vertex Put / Edge Add identity chunks, but
+  reject unsupported mixed full-mutation envelopes before advancing a cursor.
+- Refresh private bindings for current authority, registration/native sessions,
+  and mixed graph mutations without exposing generated service clients or
+  receipt-backed mutation write/replay APIs. Expand protocol and real-wire
+  conformance coverage for scoped CDC, current authority, UID reads, and
+  undisclosed effects.
+- Update the pinned rustls dependency to 0.23.46.
+
 ## 0.3.0
 
 - Add true, single-endpoint server-streaming `Subscribe`: checkpoint-first
