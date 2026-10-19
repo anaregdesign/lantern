@@ -47,6 +47,28 @@ jobs:
           node-version: '22'
       - name: Install current npm provenance verifier
         run: npm install -g npm@latest
+      - name: Setup pinned Bun candidate builder
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - name: Setup pinned code generator
+        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1.50.0
+        with:
+          version: '1.70.0'
+          github_token: ${{ github.token }}
+      - name: Rebuild and inspect the exact-tag candidate
+        working-directory: sdks/node
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run codegen
+          bun run build
+          GITHUB_REF="refs/tags/$RELEASE_TAG" bun run verify:package
+          dir="$RUNNER_TEMP/node-registry-audit"
+          mkdir -p "$dir/candidate"
+          npm pack --json --pack-destination "$dir/candidate" > "$dir/candidate-pack.json"
       - name: Download and verify actual registry archive
         env:
           PUBLISHED_SHASUM: ${{ inputs.published_shasum }}
@@ -88,6 +110,14 @@ jobs:
           assert.equal(`sha512-${sha512.toString('base64')}`, dist.integrity);
           console.log(`Registry archive matches tagged publish: ${manifest.name}@${manifest.version} SHA-1 ${sha1}`);
           NODE
+      - name: Compare every published file with the rebuilt tag candidate
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/node-registry-audit"
+          python3 -B .github/scripts/node_release_archive.py \
+            --candidate "$dir/candidate/lantern-sdk-$PACKAGE_VERSION.tgz" \
+            --published "$dir/lantern-sdk-$PACKAGE_VERSION.tgz" \
+            --version "$PACKAGE_VERSION" --out "$dir/archive-comparison.json"
       - name: Verify signed registry provenance and source
         env:
           RELEASE_TAG: ${{ inputs.tag }}
@@ -132,3 +162,17 @@ jobs:
           ), 'verified provenance does not bind this archive to the tagged repository workflow and commit');
           console.log(`Verified npm provenance for ${process.env.RELEASE_TAG} at ${process.env.TAG_SHA}`);
           NODE
+      - name: Retain verified source and registry archive evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: node-registry-audit-${{ env.PACKAGE_VERSION }}-${{ env.TAG_SHA }}
+          path: |
+            ${{ runner.temp }}/node-registry-audit/metadata.json
+            ${{ runner.temp }}/node-registry-audit/pack.json
+            ${{ runner.temp }}/node-registry-audit/candidate-pack.json
+            ${{ runner.temp }}/node-registry-audit/archive-comparison.json
+            ${{ runner.temp }}/node-registry-audit/signatures.json
+            ${{ runner.temp }}/node-registry-audit/*.tgz
+            ${{ runner.temp }}/node-registry-audit/candidate/*.tgz
+          if-no-files-found: error
+          retention-days: 14

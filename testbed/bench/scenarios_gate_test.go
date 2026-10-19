@@ -671,6 +671,7 @@ receipt_image_ref=lantern:local
 receipt_image_id=""
 receipt_image_commit=""
 receipt_container_ids=()
+runtime_owner=501:20
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 log() { :; }
 docker() {
@@ -813,6 +814,11 @@ func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
 		{name: "verified before and after load"},
 		{name: "missing own mount", wantErr: "no pinned, read-only"},
 		{name: "writable mount", wantErr: "no pinned, read-only"},
+		{name: "wrong runtime user", wantErr: "mismatched native runtime user"},
+		{name: "missing declared time source", wantErr: "no pinned, read-only declared time source"},
+		{name: "writable declared time source", wantErr: "no pinned, read-only declared time source"},
+		{name: "foreign declared time source", wantErr: "no pinned, read-only declared time source"},
+		{name: "changed declared time source", wantErr: "no pinned, read-only declared time source", postFailure: true},
 		{name: "wrong workload identity", wantErr: "missing or mismatched"},
 		{name: "retired bearer config", wantErr: "missing or mismatched"},
 		{name: "invalid live TLS identity", wantErr: "TLS identity/provenance verification failed"},
@@ -844,17 +850,28 @@ REPLICA_GRPC_PORTS=(6380 6381 6382)
 MEMBERSHIP_PID=$$
 DIAGNOSTICS_PID=$$
 receipt_driver=1
+runtime_owner=501:20
+postflight=0
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 docker() {
  if [[ "$1" == compose ]]; then printf 'container-%s\n' "$6"; return; fi
  [[ "$1" == inspect && "$2" == --format ]] || return 88
  local service="${4#container-}" index="${4##*-}"
  case "$3" in
+ '{{.Config.User}}')
+  if [[ "$CASE" == "wrong runtime user" && "$index" == 1 ]]; then echo 0:0; else echo "$runtime_owner"; fi
+  ;;
  '{{json .Mounts}}')
-  local source="$PEER_TLS_DIR/$service" rw=false
+  local source="$PEER_TLS_DIR/$service" rw=false time_source="$PEER_TLS_DIR/$service/ntp.conf" time_rw=false
   if [[ "$CASE" == "missing own mount" && "$index" == 1 ]]; then source="$PEER_TLS_DIR/lantern-0"; fi
   if [[ "$CASE" == "writable mount" && "$index" == 1 ]]; then rw=true; fi
-  jq -nc --arg source "$source" --argjson rw "$rw" '[{Type:"bind",Destination:"/run/lantern-config",RW:$rw,Source:$source}]'
+  if [[ "$CASE" == "missing declared time source" && "$index" == 1 ]]; then time_source=""; fi
+  if [[ "$CASE" == "writable declared time source" && "$index" == 1 ]]; then time_rw=true; fi
+  if [[ "$CASE" == "foreign declared time source" && "$index" == 1 ]]; then time_source="$PEER_TLS_DIR/lantern-0/ntp.conf"; fi
+  if [[ "$CASE" == "changed declared time source" && "$index" == 1 && "$postflight" == 1 ]]; then time_rw=true; fi
+  jq -nc --arg source "$source" --argjson rw "$rw" --arg time_source "$time_source" --argjson time_rw "$time_rw" '
+    [{Type:"bind",Destination:"/run/lantern-config",RW:$rw,Source:$source}] +
+    (if $time_source=="" then [] else [{Type:"bind",Destination:"/etc/ntp.conf",RW:$time_rw,Source:$time_source}] end)'
   ;;
  '{{json .Config.Env}}')
   local identity="spiffe://fixture/node-$index" legacy=""
@@ -874,6 +891,7 @@ go() {
 }
 ` + receiptTLSShellFunction(t) + `
 verify_receipt_peer_tls "$OUTDIR/tls_pre.json"
+postflight=1
 verify_receipt_peer_tls "$OUTDIR/tls_post.json" "$OUTDIR/tls_pre.json"
 `
 			command := exec.Command("bash", "-c", fixture)

@@ -57,6 +57,7 @@ prod_pids=()
 chaos_pid=""
 source "$HERE/owned_processes.sh"
 source "$HERE/owned_compose.sh"
+source "$HERE/compose_provisioner.sh"
 
 REPLICA_METRICS_PORTS=("${LANTERN_BENCH_METRICS_PORT_0:-9390}" "${LANTERN_BENCH_METRICS_PORT_1:-9391}" "${LANTERN_BENCH_METRICS_PORT_2:-9392}")
 REPLICA_GRPC_PORTS=("${LANTERN_BENCH_PUBLIC_PORT_0:-6380}" "${LANTERN_BENCH_PUBLIC_PORT_1:-6381}" "${LANTERN_BENCH_PUBLIC_PORT_2:-6382}")
@@ -155,6 +156,13 @@ need python3
 SCENARIO_NAME="$1"
 SCENARIO_FILE="$SCENARIO_DIR/${SCENARIO_NAME}.yaml"
 [[ -f "$SCENARIO_FILE" ]] || die "no such scenario: $SCENARIO_FILE"
+
+# Private authority inputs are replaced atomically by the host publisher.
+# Use the same explicitly non-root UID/GID for this local Compose cohort.
+runtime_owner="$(id -u):$(id -g)"
+[[ "$runtime_owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || die "native benchmark driver must be non-root"
+export LANTERN_BENCH_RUNTIME_UID="${runtime_owner%:*}"
+export LANTERN_BENCH_RUNTIME_GID="${runtime_owner#*:}"
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUTDIR="$HERE/out/${SCENARIO_NAME}/${TS}"
@@ -274,11 +282,18 @@ export LANTERN_BENCH_PEER_TLS_DIR="$PEER_TLS_DIR"
 go -C "$REPO_ROOT/server" build -o "$AUTHFIXTURE" ./cmd/authfixture || die "cannot build native fixture helper"
 native_public_ports="${REPLICA_GRPC_PORTS[0]},${REPLICA_GRPC_PORTS[1]},${REPLICA_GRPC_PORTS[2]}"
 fixture_args=(-compose -directory "$PEER_TLS_DIR" -public-ports "$native_public_ports" -mode off)
-if [[ "$receipt_driver" == "1" ]]; then fixture_args=(-compose -directory "$PEER_TLS_DIR" -public-ports "$native_public_ports" -mode oidc -receipt); fi
+authority_image_id=""
+if [[ "$receipt_driver" == "1" ]]; then
+  [[ -n "${LANTERN_IMAGE:-}" ]] || die "receipt driver requires an explicit LANTERN_IMAGE"
+  authority_image_id="$(docker image inspect --format '{{.Id}}' "$LANTERN_IMAGE")" || die "cannot pin original authority image"
+  authority_exporter="$(prepare_compose_authority_exporter "$REPO_ROOT" "$NATIVE_WORK_DIR" "$authority_image_id")" || die "cannot prepare Linux original authority exporter"
+  fixture_args=(-compose -directory "$PEER_TLS_DIR" -public-ports "$native_public_ports" -mode oidc -receipt -authority-provisioner "$authority_exporter")
+fi
 CHANGEPROBE="$NATIVE_WORK_DIR/changeprobe"
 go -C "$REPO_ROOT" build -o "$CHANGEPROBE" ./testbed/bench/changeprobe || die "cannot build public CDC consumer"
 "$AUTHFIXTURE" "${fixture_args[@]}" > "$NATIVE_WORK_DIR/generated.json" || die "cannot generate native benchmark workload trust"
 if [[ "$receipt_driver" == "1" ]]; then
+  write_compose_time_source "$PEER_TLS_DIR" || die "cannot prepare declared read-only time source"
   export LANTERN_BENCH_AUTH_TOKEN="$(jq -er '.[0]' "$PEER_TLS_DIR/tokens.json")"
   [[ "$LANTERN_BENCH_AUTH_TOKEN" =~ ^lnt_m1_[A-Za-z0-9_-]{43}$ ]] || die "invalid native machine Role credential"
 fi
@@ -354,23 +369,18 @@ verify_receipt_image_provenance() {
   done
   printf '%s\n' "${replicas[@]}" |
     jq -s --arg ref "$receipt_image_ref" --arg id "$receipt_image_id" \
-      --arg commit "$receipt_image_commit" \
-      '{image_ref:$ref, image_id:$id, source_commit:$commit, replicas:.}' > "$out" ||
+      --arg commit "$receipt_image_commit" --arg runtime_user "$runtime_owner" \
+      '{image_ref:$ref, image_id:$id, source_commit:$commit, runtime_user:$runtime_user, replicas:.}' > "$out" ||
     die "cannot write receipt image provenance to $out"
   log "verified receipt image $receipt_image_id from $receipt_image_commit on all three replicas"
 }
 
 pin_receipt_image
-# Preserve private-file permissions and provision only each workload's own
-# secret files to the actual non-root image user. No production guard is relaxed.
-runtime_owner="$(docker run --rm --entrypoint /bin/sh "$receipt_image_id" -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')" || die "cannot determine native workload file owner"
-[[ "$runtime_owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || die "native workload image must use a non-root user"
-for service in lantern-0 lantern-1 lantern-2; do
-  docker run --rm --user 0:0 --entrypoint /bin/sh \
-    --mount "type=bind,source=$PEER_TLS_DIR/$service,target=/owned" "$receipt_image_id" \
-    -c 'owner="$1"; for file in /owned/*.key /owned/machines.json /owned/cdc-keys.json; do if [ -f "$file" ]; then chown "$owner" "$file" && chmod 600 "$file" || exit 1; fi; done' \
-    fixture "$runtime_owner" || die "cannot provision private workload file ownership"
-done
+[[ "$receipt_driver" != "1" || "$authority_image_id" == "$receipt_image_id" ]] || die "workload image changed after original authority provisioning"
+# The release image retains its non-root default. This local fixture uses
+# the publisher's non-root identity, preserving owner-only replacement files.
+image_owner="$(docker run --rm --entrypoint /bin/sh "$receipt_image_id" -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')" || die "cannot determine native image file owner"
+[[ "$image_owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || die "native workload image must use a non-root user"
 
 verify_receipt_peer_tls() {
   local out="$1" baseline="${2:-}" service container mounts env
@@ -387,15 +397,23 @@ verify_receipt_peer_tls() {
 # Native provenance applies to OFF cohorts as well; public mode never disables
 # private peer authentication. Compare generated material without publishing it.
 verify_native_workload_settings() {
-  local service container mounts env
+  local service container mounts env actual_user
   kill -0 "$MEMBERSHIP_PID" 2>/dev/null || die "owned membership renewal exited"
   for service in lantern-0 lantern-1 lantern-2; do
     container="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")" || die "missing native workload"
+    actual_user="$(docker inspect --format '{{.Config.User}}' "$container")" || die "missing native runtime user"
+    [[ "$actual_user" == "$runtime_owner" ]] || die "$service has a mismatched native runtime user"
     mounts="$(docker inspect --format '{{json .Mounts}}' "$container")" || die "missing native mounts"
     jq -e --arg source "$PEER_TLS_DIR/$service" '
       [.[] | select(.Type == "bind" and .Destination == "/run/lantern-config" and
         (.RW == false) and (.Source | endswith($source)))] | length == 1
     ' <<<"$mounts" >/dev/null || die "$service has no pinned, read-only native mount"
+    if [[ "$receipt_driver" == "1" ]]; then
+      jq -e --arg source "$PEER_TLS_DIR/$service/ntp.conf" '
+        [.[] | select(.Type == "bind" and .Destination == "/etc/ntp.conf" and
+          (.RW == false) and (.Source | endswith($source)))] | length == 1
+      ' <<<"$mounts" >/dev/null || die "$service has no pinned, read-only declared time source"
+    fi
     env="$(docker inspect --format '{{json .Config.Env}}' "$container")" || die "missing native environment"
     jq -e --arg service "$service" --argjson actual "$env" --arg driver "$receipt_driver" '
       (.nodes[] | select(.name == ("node-" + ($service | split("-")[1]))) | .environment |
@@ -419,6 +437,10 @@ if [[ "${SKIP_UP:-0}" != "1" ]]; then
   # services with pinned host ports, so `--scale lantern=3` is no longer
   # needed (and would in fact fail — there is no `lantern` service).
   COMPOSE_STARTED=1
+  if ! initialize_owned_compose_volumes "$COMPOSE_PROJECT_NAME" "$receipt_image_id" "$runtime_owner" "${COMPOSE_FILES[@]}"; then
+    KEEP_UP=1
+    die "fresh volume initialization refused; named project and private inputs retained for review"
+  fi
   if [[ "$receipt_driver" == "1" ]]; then
     # Start only the protected replicas; metrics stay on their loopback plane.
     docker compose "${COMPOSE_FILES[@]}" up -d --wait \

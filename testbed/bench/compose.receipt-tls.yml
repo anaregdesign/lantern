@@ -14,11 +14,17 @@ services:
     environment:
       <<: *protected-env
     ports: !override ["127.0.0.1:${LANTERN_BENCH_PUBLIC_PORT_0:-6380}:6380"]
+    volumes:
+      - ${LANTERN_BENCH_PEER_TLS_DIR:?native benchmark fixture required}/lantern-0/ntp.conf:/etc/ntp.conf:ro
   lantern-1:
     environment:
       <<: *protected-env
     ports: !override ["127.0.0.1:${LANTERN_BENCH_PUBLIC_PORT_1:-6381}:6380"]
+    volumes:
+      - ${LANTERN_BENCH_PEER_TLS_DIR:?native benchmark fixture required}/lantern-1/ntp.conf:/etc/ntp.conf:ro
   lantern-2:
     environment:
       <<: *protected-env
     ports: !override ["127.0.0.1:${LANTERN_BENCH_PUBLIC_PORT_2:-6382}:6380"]
+    volumes:
+      - ${LANTERN_BENCH_PEER_TLS_DIR:?native benchmark fixture required}/lantern-2/ntp.conf:/etc/ntp.conf:ro

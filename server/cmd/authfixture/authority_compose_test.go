@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,7 +58,7 @@ func TestComposeFixtureIsolatesWorkloadSecretsAndRenewsSameCohort(t *testing.T) 
 					if err != nil || !info.Mode().IsRegular() {
 						t.Fatal("workload material must be a regular file", file.Name(), err)
 					}
-					private := strings.HasSuffix(file.Name(), ".key") || file.Name() == "machines.json" || file.Name() == "cdc-keys.json"
+					private := strings.HasPrefix(file.Name(), "authority-") || strings.HasSuffix(file.Name(), ".key") || file.Name() == "machines.json" || file.Name() == "cdc-keys.json"
 					if private && info.Mode().Perm() != 0600 {
 						t.Fatal("workload secret is not owner-only", file.Name(), info.Mode())
 					}
@@ -84,6 +85,14 @@ func TestComposeFixtureIsolatesWorkloadSecretsAndRenewsSameCohort(t *testing.T) 
 			after, err := os.ReadFile(filepath.Join(dir, "membership.json"))
 			if err != nil || bytes.Equal(before, after) {
 				t.Fatal("membership was not renewed")
+			}
+			if mode == "oidc" {
+				for i := range 3 {
+					info, err := os.Stat(filepath.Join(dir, fmt.Sprintf("lantern-%d", i), "authority-membership.signed"))
+					if err != nil || info.Mode().Perm() != 0600 {
+						t.Fatal("renewal changed private authority input permissions", err)
+					}
+				}
 			}
 			var previous, next struct {
 				Payload struct {
