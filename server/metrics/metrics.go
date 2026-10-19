@@ -91,6 +91,7 @@ type ReceiptSampler func() ReceiptSample
 // pass the returned callbacks to GraphCache.SetGCHooks plus Start to begin
 // gauge sampling.
 type DomainMetrics struct {
+	publication         *publicationMeasurements
 	vertices            prometheus.Gauge
 	edges               prometheus.Gauge
 	expirations         *prometheus.CounterVec
@@ -478,7 +479,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		}, []string{"version", "commit", "go_version"}),
 		mutationLogEntries: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "lantern_mutation_log_entries_total",
-			Help: "Total mutations appended to the in-memory mutation log since process start.",
+			Help: "Local mutation publications appended since process start; excludes remote relay appends.",
 		}),
 		mutationLogCapacity: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "lantern_mutation_log_capacity",
@@ -947,6 +948,7 @@ func New(reg prometheus.Registerer, opts Options) *DomainMetrics {
 		}
 	}
 	m.buildInfo.WithLabelValues(version, commit, runtime.Version()).Set(1)
+	m.publication = newPublicationMeasurements(reg)
 
 	return m
 }

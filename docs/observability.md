@@ -242,11 +242,14 @@ a leader. Grouped by concern:
   `lantern_anti_entropy_cycles_total` / `lantern_anti_entropy_gaps_found_total{peer,origin}`.
   A rising gap is *the* divergence alert.
 - **Mutation-log back-pressure (saturation — USE).** `lantern_mutation_log_capacity`,
-  `lantern_mutation_log_fill_ratio` (≥ 0.8 sustained ⇒ slow subscribers risk
-  `ErrGapped` and a forced `Snapshot` reseed), `lantern_mutation_log_entries_total`,
+  `lantern_mutation_log_fill_ratio` (≥ 0.8 sustained ⇒ retained history is at
+  risk), `lantern_mutation_log_entries_total` (local publications only; relay
+  appends are excluded),
   `lantern_mutation_log_evicted_total`, and the subscriber-drop counters
   `lantern_subscribe_dropped_total{reason}` /
-  `lantern_mutationlog_subscriber_dropped_total{cause}`.
+  `lantern_mutationlog_subscriber_dropped_total{cause}`. Live-buffer loss ends
+  delivery independently of queued entries. Revalidate the committed cursor:
+  overflow alone does not require Snapshot while its history is retained.
 - **Bootstrap / reseed (RCA).** `lantern_snapshot_replayed_total{peer}` and the
   `lantern_snapshot_{vertices,edges,duration_seconds}{peer}` histograms — how a
   fresh or gapped pod re-seeded, and how expensive it was. Replication Snapshot
@@ -264,6 +267,41 @@ a leader. Grouped by concern:
   (reasons: `self_echo`, `subscribe_failed`, `snapshot_failed`, `dial_failed`,
   `peerstatus_failed`, `catchup_failed`, `discovery_failed`, `ctx_cancel`, `clean`),
   `lantern_origin_states_count` (distinct writers ever seen ≈ peer-set size).
+
+Publication timing separates queueing from owner work. The histogram
+`lantern_publication_gate_seconds{category,phase}` records four monotonic
+samples: before acquisition, after acquisition, before Unlock and after
+Unlock. Its phases are `wait`, `body` and `unlock`; aggregate waiter delay from
+mutex profiles is not lock-hold time. The measured categories cover local
+Vertex Put/Delete and Edge Add graph paths, remote Apply, generation probes,
+locked read fallback, committed views, private source cuts and Snapshot
+publication boundaries. They do not imply coverage of every receipt-coordinator
+critical section. Snapshot timing excludes its outer admission-latch wait.
+Callbacks aggregate these records after releasing the publication gate.
+`lantern_publication_gate_waiters{category}` complements completed-acquisition
+timing with current waiters, including acquisitions still blocked at scrape
+time. It reads service-owned atomics without acquiring a service lock.
+
+`lantern_publication_read_capture_seconds{attempt,outcome}` counts actual
+captures for attempts 1–3 and `fallback`, separating generation conflicts from
+consistent results. Capture duration excludes generation-probe queueing; a
+fault before capture is not a captured attempt. Existing optimistic captures
+remain outside the publication gate, with the existing locked fallback.
+
+`lantern_replication_apply_attempts_total{delivery,outcome,stage}` distinguishes
+preflight rejection, a newly queued sequence, pending duplicates, committed
+duplicates and new commits. Preflight time has its own histogram.
+`lantern_replication_apply_committed_per_acquisition` counts contiguous events
+committed while one remote acquisition was held, including zero and multi-event
+pending drains. `lantern_replication_apply_pending_at_release` records pending
+depth at those cuts; it is a histogram, not a current-depth gauge. A new
+sequence with the same ContribID remains a new publication even when its local
+graph contribution is deduplicated. These counters do not equate that case
+with retransmitting the same `(origin,seq)`.
+
+All labels use bounded categories without keys, payloads or credentials.
+Compare deltas from the same observation window; Prometheus scrapes are not
+transactional snapshots, and completion records omit still-waiting calls.
 
 ### 5.5 In-process pub/sub (client CDC) — "are local subscribers keeping up?"
 

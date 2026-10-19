@@ -179,7 +179,7 @@ func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("Snapshot install already in progress"))
 	}
 	s.snapshotReadCutMu.Lock()
-	s.replicationCutMu.Lock()
+	gate := s.lockPublicationGate("snapshot", false)
 	if !s.snapshotInstallFaulted {
 		if s.publicationFaultCount == 0 {
 			close(s.publicationFaultCh)
@@ -187,18 +187,18 @@ func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
 		s.publicationFaultCount++
 		s.snapshotInstallFaulted = true
 	}
-	s.replicationCutMu.Unlock()
+	gate.Unlock()
 	s.snapshotReadCutMu.Unlock()
 	return func(verified bool) {
 		if verified {
 			s.snapshotReadCutMu.Lock()
-			s.replicationCutMu.Lock()
+			gate := s.lockPublicationGate("snapshot", false)
 			s.snapshotInstallFaulted = false
 			s.publicationFaultCount--
 			if s.publicationFaultCount == 0 {
 				s.publicationFaultCh = make(chan struct{})
 			}
-			s.replicationCutMu.Unlock()
+			gate.Unlock()
 			s.snapshotReadCutMu.Unlock()
 		}
 		s.snapshotInstallMu.Unlock()

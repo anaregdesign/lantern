@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	coregraph "github.com/anaregdesign/lantern/core/graph"
 	"github.com/anaregdesign/lantern/core/graphcache"
@@ -36,35 +37,55 @@ func (s *LanternService) withPublicGraphReadAttempts(ctx context.Context, attemp
 		if err != nil {
 			return err
 		}
+		started := s.publicationCaptureStart()
 		captureErr := capture()
+		finished := s.publicationCaptureStart()
 		after, err := s.graphReadGeneration()
 		if err != nil {
+			s.observePublicationRead(attempt+1, "fault", started, finished)
 			return err
 		}
 		if captureErr != nil {
+			s.observePublicationRead(attempt+1, "capture_error", started, finished)
 			return captureErr
 		}
 		if before == after {
+			s.observePublicationRead(attempt+1, "consistent", started, finished)
 			return nil
 		}
+		s.observePublicationRead(attempt+1, "conflict", started, finished)
 		if err := ctx.Err(); err != nil {
 			return ctxToConnect(err)
 		}
 	}
 	if attempts > 1 {
-		return s.withCommittedView(func() error {
+		var started, finished time.Time
+		captured := false
+		err := s.withCommittedViewNamed("read_fallback", func() error {
 			if err := ctx.Err(); err != nil {
 				return ctxToConnect(err)
 			}
-			return capture()
+			captured = true
+			started = s.publicationCaptureStart()
+			err := capture()
+			finished = s.publicationCaptureStart()
+			return err
 		})
+		if captured {
+			outcome := "consistent"
+			if err != nil {
+				outcome = "capture_error"
+			}
+			s.observePublicationRead(4, outcome, started, finished)
+		}
+		return err
 	}
 	return publicationChangedDuringReadError()
 }
 
 func (s *LanternService) graphReadGeneration() (uint64, error) {
-	s.replicationCutMu.RLock()
-	defer s.replicationCutMu.RUnlock()
+	gate := s.lockPublicationGate("generation_probe", true)
+	defer gate.Unlock()
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
 		return 0, publicationGapError()
 	}
@@ -104,8 +125,12 @@ func detachTraversalVertices(g *coregraph.Graph[string, *pb.Vertex]) {
 // releases their staged locks after the matching log entry is installed, but
 // these error-free Core reads cannot report an indeterminate WAL outcome.
 func (s *LanternService) withCommittedView(capture func() error) error {
-	s.replicationCutMu.RLock()
-	defer s.replicationCutMu.RUnlock()
+	return s.withCommittedViewNamed("committed_view", capture)
+}
+
+func (s *LanternService) withCommittedViewNamed(category string, capture func() error) error {
+	gate := s.lockPublicationGate(category, true)
+	defer gate.Unlock()
 	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
 		return publicationGapError()
 	}
