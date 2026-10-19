@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -19,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,6 +36,395 @@ import (
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 )
+
+type peerSocketWrite struct {
+	id         uint64
+	remote     string
+	start, end time.Time
+	failed     bool
+}
+
+type peerSocketProbe struct {
+	mu     sync.Mutex
+	next   uint64
+	active map[uint64]peerSocketWrite
+	writes []peerSocketWrite
+}
+
+// blockedWrite observes real socket backpressure before the test overflows the
+// subscription. No test barrier is inserted in Send or net.Conn.Write.
+func (p *peerSocketProbe) blockedWrite(ctx context.Context) (peerSocketWrite, error) {
+	stacks := make([]byte, 1<<20)
+	for ctx.Err() == nil {
+		p.mu.Lock()
+		if len(p.active) == 1 {
+			n := runtime.Stack(stacks, true)
+			for _, stack := range bytes.Split(stacks[:n], []byte("\n\n")) {
+				if bytes.Contains(stack, []byte("[IO wait]")) &&
+					bytes.Contains(stack, []byte("internal/poll.(*FD).Write(")) &&
+					bytes.Contains(stack, []byte("(*peerProbeConn).Write(")) {
+					for _, write := range p.active {
+						p.mu.Unlock()
+						return write, nil
+					}
+				}
+			}
+		}
+		p.mu.Unlock()
+		runtime.Gosched()
+	}
+	return peerSocketWrite{}, ctx.Err()
+}
+
+type peerProbeListener struct {
+	net.Listener
+	probe *peerSocketProbe
+}
+
+func (l peerProbeListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	// Bound only this owned socket's send buffer, never the host's settings.
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		if err := tcp.SetWriteBuffer(1024); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+	}
+	return &peerProbeConn{Conn: conn, probe: l.probe}, nil
+}
+
+type peerProbeConn struct {
+	net.Conn
+	probe *peerSocketProbe
+}
+
+func (c *peerProbeConn) Write(data []byte) (int, error) {
+	c.probe.mu.Lock()
+	c.probe.next++
+	write := peerSocketWrite{id: c.probe.next, remote: c.RemoteAddr().String(), start: time.Now()}
+	c.probe.active[write.id] = write
+	c.probe.mu.Unlock()
+	n, err := c.Conn.Write(data)
+	c.probe.mu.Lock()
+	delete(c.probe.active, write.id)
+	write.end, write.failed = time.Now(), err != nil
+	c.probe.writes = append(c.probe.writes, write)
+	c.probe.mu.Unlock()
+	return n, err
+}
+
+type peerStreamStarted struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (m *peerStreamStarted) OnSubscribeStarted()     { m.once.Do(func() { close(m.started) }) }
+func (*peerStreamStarted) OnSubscribeEnded()         {}
+func (*peerStreamStarted) OnSubscribeDropped(string) {}
+
+type peerStreamEnd struct {
+	remote    string
+	at        time.Time
+	cancelled bool
+	proto     int
+}
+
+type peerHeldApply struct {
+	*service.LanternService
+	entered                                        chan struct{}
+	release                                        <-chan struct{}
+	seed                                           chan struct{}
+	committed                                      chan uint64
+	installStarted, installFinished                chan struct{}
+	seedOnce, enteredOnce, installOnce, finishOnce sync.Once
+}
+
+func (a *peerHeldApply) ApplyMutation(ctx context.Context, mutation *pb.Mutation) error {
+	if mutation.GetSeq() == 2 {
+		a.enteredOnce.Do(func() { close(a.entered) })
+		select {
+		case <-a.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := a.LanternService.ApplyMutation(ctx, mutation); err != nil {
+		return err
+	}
+	if mutation.GetSeq() == 1 {
+		a.seedOnce.Do(func() { close(a.seed) })
+	}
+	select {
+	case a.committed <- mutation.GetSeq():
+	default:
+	}
+	return nil
+}
+
+func (a *peerHeldApply) BeginSnapshotInstall() (func(bool), error) {
+	finish, err := a.LanternService.BeginSnapshotInstall()
+	if err != nil {
+		return nil, err
+	}
+	a.installOnce.Do(func() { close(a.installStarted) })
+	return func(verified bool) {
+		finish(verified)
+		if verified {
+			a.finishOnce.Do(func() { close(a.installFinished) })
+		}
+	}, nil
+}
+
+type peerBarrierSnapshotHandler struct {
+	graphv1connect.LanternReplicationServiceHandler
+	peer    *service.LanternReplicationService
+	release <-chan struct{}
+	calls   *atomic.Int32
+}
+
+func (h peerBarrierSnapshotHandler) Snapshot(ctx context.Context, req *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
+	h.calls.Add(1)
+	return h.peer.Snapshot(ctx, req.Msg, peerBarrierSnapshotSender{ServerStream: stream, ctx: ctx, release: h.release})
+}
+
+type peerBarrierSnapshotSender struct {
+	*connect.ServerStream[pb.SnapshotResponse]
+	ctx     context.Context
+	release <-chan struct{}
+}
+
+func (s peerBarrierSnapshotSender) Send(frame *pb.SnapshotResponse) error {
+	if err := s.ServerStream.Send(frame); err != nil {
+		return err
+	}
+	if frame.GetHeader() != nil {
+		select {
+		case <-s.release:
+		case <-s.ctx.Done():
+			return s.ctx.Err()
+		}
+	}
+	return nil
+}
+
+func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testing.T) {
+	for _, evict := range []bool{false, true} {
+		name := "retained history"
+		if evict {
+			name = "evicted history"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			probe := &peerSocketProbe{active: make(map[uint64]peerSocketWrite)}
+			streamStarted := &peerStreamStarted{started: make(chan struct{})}
+			dropped := make(chan struct{})
+			ended := make(chan peerStreamEnd, 8)
+			applyRelease, snapshotRelease := make(chan struct{}), make(chan struct{})
+			var applyOnce, snapshotOnce, dropOnce sync.Once
+			releaseApply := func() { applyOnce.Do(func() { close(applyRelease) }) }
+			releaseSnapshot := func() { snapshotOnce.Do(func() { close(snapshotRelease) }) }
+			defer releaseApply()
+			defer releaseSnapshot()
+			var snapshotCalls atomic.Int32
+			var receiveGraph *graphcache.GraphCache[string, *pb.Vertex]
+			f := newPeerSecurityFixture(t, peerSecurityOptions{
+				Listener: func(i int, listener net.Listener) net.Listener {
+					if i == 0 {
+						return peerProbeListener{Listener: listener, probe: probe}
+					}
+					return listener
+				},
+				LogOptions: func(i int) mutationlog.Options {
+					options := mutationlog.Options{Capacity: 10000, SubscriberBuffer: 512}
+					if i == 0 {
+						options.OnDrop = func(cause string) {
+							if cause == mutationlog.DropCauseBufferFull {
+								dropOnce.Do(func() { close(dropped) })
+							}
+						}
+					}
+					return options
+				},
+				Mount: func(f *peerSecurityFixture, i int, runtime *service.ServingRuntime, mux *http.ServeMux) {
+					if i == 1 {
+						receiveGraph = runtime.GraphCache()
+						return
+					}
+					peer, err := runtime.NewLanternReplicationService(f.primary[i])
+					if err != nil {
+						t.Fatal(err)
+					}
+					peer.WithMetrics(streamStarted)
+					base := service.NewLanternReplicationServiceConnectHandler(peer)
+					wrapped := peerBarrierSnapshotHandler{LanternReplicationServiceHandler: base, peer: peer, release: snapshotRelease, calls: &snapshotCalls}
+					_, handler := graphv1connect.NewLanternReplicationServiceHandler(wrapped)
+					mux.Handle("/graph.v1.LanternReplicationService/Subscribe", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						handler.ServeHTTP(w, r)
+						select {
+						case ended <- peerStreamEnd{remote: r.RemoteAddr, at: time.Now(), cancelled: r.Context().Err() != nil, proto: r.ProtoMajor}:
+						default:
+						}
+					}))
+					mux.Handle("/graph.v1.LanternReplicationService/Snapshot", handler)
+				},
+			})
+			write := func(key string, value []byte) {
+				t.Helper()
+				if _, err := f.primary[0].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key, Value: &pb.Vertex_Bytes{Bytes: value}}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			apply := &peerHeldApply{LanternService: f.primary[1], entered: make(chan struct{}), release: applyRelease, seed: make(chan struct{}), committed: make(chan uint64, 2048), installStarted: make(chan struct{}), installFinished: make(chan struct{})}
+			transport, err := provider.NewWorkloadPeerTransport(f.runtimes[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			pump := replication.NewPump(replication.Config{NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{f.servers[0].URL}, PeerTransport: transport, BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond}, apply, receiveGraph)
+			pumpCtx, stopPump := context.WithCancel(ctx)
+			pumpDone := make(chan error, 1)
+			go func() { pumpDone <- pump.Run(pumpCtx) }()
+			t.Cleanup(func() {
+				stopPump()
+				releaseApply()
+				releaseSnapshot()
+				select {
+				case <-pumpDone:
+				case <-time.After(5 * time.Second):
+					t.Error("owned pump did not stop")
+				}
+			})
+			select {
+			case <-streamStarted.started:
+			case <-ctx.Done():
+				t.Fatal("pump did not open the initially empty live subscription", ctx.Err())
+			}
+			// An empty log registers its live subscriber synchronously, so the
+			// pressure below cannot be mistaken for an unbounded replay window.
+			write("data:seed", []byte("seed"))
+			select {
+			case <-apply.seed:
+			case <-ctx.Done():
+				t.Fatal("pump did not establish committed seed", ctx.Err())
+			}
+			payload := make([]byte, 64<<10)
+			if _, err := rand.Read(payload); err != nil {
+				t.Fatal(err)
+			}
+			write("data:pressure", payload)
+			select {
+			case <-apply.entered:
+			case <-ctx.Done():
+				t.Fatal("receiver did not hold second application", ctx.Err())
+			}
+			// At most 512 new entries fit without overflowing the normal live
+			// buffer. First prove an actual Write is blocked, then cause loss.
+			for range 511 {
+				write("data:pressure", payload)
+			}
+			blocked, err := probe.blockedWrite(ctx)
+			if err != nil {
+				t.Fatal("private socket did not enter actual I/O wait before loss", err)
+			}
+			select {
+			case <-dropped:
+				t.Fatal("subscription overflowed before the blocked socket observation")
+			default:
+			}
+		produce:
+			for i := 0; i < 1024; i++ {
+				select {
+				case <-dropped:
+					break produce
+				default:
+				}
+				write("data:pressure", payload)
+			}
+			select {
+			case <-dropped:
+			case <-ctx.Done():
+				t.Fatal("finite private stream did not overflow", ctx.Err())
+			}
+			var end peerStreamEnd
+			select {
+			case end = <-ended:
+			case <-ctx.Done():
+				t.Fatal("overflow did not interrupt the actual private handler", ctx.Err())
+			}
+			if end.proto != 1 || !end.cancelled || ctx.Err() != nil {
+				t.Fatalf("private stream end: HTTP%d cancelled=%t parent=%v", end.proto, end.cancelled, ctx.Err())
+			}
+			probe.mu.Lock()
+			interruptedWrite := false
+			for _, write := range probe.writes {
+				if write.id == blocked.id && write.remote == end.remote && write.failed && !write.end.After(end.at) {
+					interruptedWrite = true
+				}
+			}
+			probe.mu.Unlock()
+			if !interruptedWrite {
+				t.Fatal("the socket Write observed in I/O wait did not fail before handler return")
+			}
+			if f.primary[1].LocalSeq(hlc.NodeID{3}) != 1 {
+				t.Fatal("held receiver advanced its committed cursor")
+			}
+			if first, _ := f.logs[0].FirstSeq(); first != 1 {
+				t.Fatal("retention was lost before the intended branch")
+			}
+			if evict {
+				for i := 0; i < 10016; i++ {
+					write("data:pressure", []byte("later"))
+				}
+				if first, _ := f.logs[0].FirstSeq(); first <= 3 {
+					t.Fatal("finite fixture failed to evict the committed resume cursor")
+				}
+			}
+			last := f.primary[0].LocalSeq(hlc.NodeID{3})
+			releaseApply()
+			if evict {
+				select {
+				case <-apply.installStarted:
+				case <-ctx.Done():
+					t.Fatal("missing prefix did not trigger private Snapshot", ctx.Err())
+				}
+				if _, err := f.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed"}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("incomplete Snapshot exposed public data: %v", err)
+				}
+				releaseSnapshot()
+				select {
+				case <-apply.installFinished:
+				case <-ctx.Done():
+					t.Fatal("verified Snapshot did not reopen publication", ctx.Err())
+				}
+				if snapshotCalls.Load() == 0 {
+					t.Fatal("evicted branch skipped Snapshot")
+				}
+			} else {
+				for f.primary[1].LocalSeq(hlc.NodeID{3}) < last {
+					select {
+					case <-apply.committed:
+					case <-ctx.Done():
+						t.Fatal("retained prefix did not converge", ctx.Err())
+					}
+				}
+				if snapshotCalls.Load() != 0 {
+					t.Fatal("retained prefix unnecessarily used Snapshot")
+				}
+			}
+			if f.primary[1].LocalSeq(hlc.NodeID{3}) < last {
+				t.Fatal("recovery did not certify the expected origin frontier")
+			}
+			if _, err := f.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed"}); err != nil {
+				t.Fatal("verified recovery did not restore public read", err)
+			}
+			stopPump()
+			t.Logf("HTTP/1 private socket Write interrupted before handler return; evicted=%t SnapshotCalls=%d", evict, snapshotCalls.Load())
+		})
+	}
+}
 
 // Independent operator wire fixture: root tests do not import Server internals
 // or rely on their signing/serialization helpers to validate the same contract.
@@ -71,6 +462,7 @@ type peerSecurityFixture struct {
 	key      ed25519.PrivateKey
 	roots    *x509.CertPool
 	certs    [2]tls.Certificate
+	logs     [2]*mutationlog.Log
 }
 
 type peerSecurityOptions struct {
@@ -79,6 +471,8 @@ type peerSecurityOptions struct {
 	Now            func() time.Time
 	TimeBounds     func() (time.Time, time.Time, error)
 	Mount          func(*peerSecurityFixture, int, *service.ServingRuntime, *http.ServeMux)
+	LogOptions     func(int) mutationlog.Options
+	Listener       func(int, net.Listener) net.Listener
 }
 
 func peerSecurityPEM(t *testing.T, directory, name, kind string, raw []byte) string {
@@ -150,6 +544,9 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 	}
 	for i := range f.servers {
 		server := httptest.NewUnstartedServer(nil)
+		if len(options) != 0 && options[0].Listener != nil {
+			server.Listener = options[0].Listener(i, server.Listener)
+		}
 		f.servers[i] = server
 		identity := "spiffe://lantern.test/node-" + string(rune('a'+i))
 		uri, _ := url.Parse(identity)
@@ -204,7 +601,12 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 		f.runtimes[i] = runtime
 		t.Cleanup(cleanup)
 		graph := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{})
-		data, err := service.NewGraphOnlyServingRuntime(graph, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{byte(i + 3)}, hlc.Options{}), "namespaced-v1")
+		logOptions := mutationlog.Options{Capacity: 16}
+		if len(options) != 0 && options[0].LogOptions != nil {
+			logOptions = options[0].LogOptions(i)
+		}
+		f.logs[i] = mutationlog.New(logOptions)
+		data, err := service.NewGraphOnlyServingRuntime(graph, f.logs[i], hlc.New(hlc.NodeID{byte(i + 3)}, hlc.Options{}), "namespaced-v1")
 		if err != nil {
 			t.Fatal(err)
 		}

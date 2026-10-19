@@ -27,7 +27,6 @@ package mutationlog
 
 import (
 	"errors"
-	"math"
 	"sync"
 
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -41,6 +40,10 @@ var ErrGapped = errors.New("mutationlog: requested sequence has been evicted")
 // ErrClosed is returned by [Log.Append] and [Log.Subscribe] after [Log.Close]
 // has been called.
 var ErrClosed = errors.New("mutationlog: log is closed")
+
+// ErrSubscriptionLost reports overflow of a live subscriber. Required history
+// may still be retained; revalidate the committed cursor before taking Snapshot.
+var ErrSubscriptionLost = errors.New("mutationlog: subscriber fell behind; revalidate retained history")
 
 // MutationOp is an opaque payload carried by an [Entry]. The mutationlog
 // package never inspects it; callers (proto encoders, applicators, CDC
@@ -186,6 +189,7 @@ type subscription struct {
 	startSeq uint64
 	filter   func(Entry) bool
 	gapped   bool // set when a fan-out drop turned into a gap
+	stream   *Subscription
 }
 
 // New constructs a [Log] with the given options. It also starts a
@@ -424,6 +428,7 @@ func (l *Log) fanout(entry Entry) {
 		case sub.ch <- entry:
 		default:
 			sub.gapped = true
+			sub.stream.finish(ErrSubscriptionLost)
 			close(sub.ch)
 			delete(l.subscribers, sub)
 			if l.onDrop != nil {
@@ -463,137 +468,11 @@ func (l *Log) Subscribe(fromSeq uint64) (<-chan Entry, func() error, error) {
 // filtered entries advance the log-local replay position, and eviction still
 // closes a subscriber whose replay tail cannot be proven.
 func (l *Log) SubscribeFiltered(fromSeq uint64, filter func(Entry) bool) (<-chan Entry, func() error, error) {
-	l.mu.Lock()
-	if l.closed {
-		l.mu.Unlock()
-		return nil, nil, ErrClosed
+	stream, err := l.SubscribeStream(fromSeq, filter)
+	if err != nil {
+		return nil, nil, err
 	}
-	if l.unusableErr != nil {
-		l.mu.Unlock()
-		return nil, nil, l.unusableErr
-	}
-	if l.hasEntries && fromSeq < l.firstSeq {
-		l.mu.Unlock()
-		return nil, nil, ErrGapped
-	}
-	// Each replay window is copied under mu. A subsequent window may have
-	// been evicted while the previous one was delivered; detect that gap
-	// before sending any later entries.
-	replay := l.retainedFromLocked(fromSeq)
-	next := fromSeq
-	exhausted := false
-	if len(replay) != 0 {
-		last := replay[len(replay)-1].Seq
-		exhausted = last == math.MaxUint64
-		if !exhausted {
-			next = last + 1
-		}
-	}
-	live := &subscription{
-		ch:       make(chan Entry, l.subBuf),
-		startSeq: l.lastSeq + 1,
-		filter:   filter,
-	}
-	out := make(chan Entry)
-	done := make(chan struct{})
-	registered := len(replay) == 0
-	if registered {
-		// Lock order is mu → subsMu. Register before releasing mu so
-		// no new entry can slip between an empty replay and the live tail.
-		l.subsMu.Lock()
-		l.subscribers[live] = struct{}{}
-		l.subsMu.Unlock()
-	}
-	l.mu.Unlock()
-
-	go func() {
-		defer close(out)
-		for {
-			for _, e := range replay {
-				if filter != nil && !filter(e) {
-					continue
-				}
-				select {
-				case out <- e:
-				case <-done:
-					return
-				}
-			}
-			if registered {
-				for {
-					select {
-					case e, ok := <-live.ch:
-						if !ok {
-							return
-						}
-						select {
-						case out <- e:
-						case <-done:
-							return
-						}
-					case <-done:
-						return
-					}
-				}
-			}
-
-			l.mu.Lock()
-			if l.closed || l.unusableErr != nil || (!exhausted && l.hasEntries && next < l.firstSeq) {
-				l.mu.Unlock()
-				return
-			}
-			if exhausted {
-				l.mu.Unlock()
-				// No subsequent sequence is representable. Do not register
-				// a live subscriber that could redeliver the queued max entry.
-				select {
-				case <-done:
-				case <-l.dispatcherDone:
-				}
-				return
-			}
-			replay = l.retainedFromLocked(next)
-			if len(replay) != 0 {
-				last := replay[len(replay)-1].Seq
-				exhausted = last == math.MaxUint64
-				if !exhausted {
-					next = last + 1
-				}
-			} else {
-				l.subsMu.Lock()
-				select {
-				case <-done:
-					l.subsMu.Unlock()
-					l.mu.Unlock()
-					return
-				default:
-					live.startSeq = l.lastSeq + 1
-					l.subscribers[live] = struct{}{}
-					registered = true
-				}
-				l.subsMu.Unlock()
-			}
-			l.mu.Unlock()
-		}
-	}()
-
-	var cancelOnce sync.Once
-	cancel := func() error {
-		cancelOnce.Do(func() {
-			// Stop the forwarder even if it is blocked on out <- e, then
-			// unregister + close the live channel (guarded by membership so
-			// we never double-close against a concurrent dispatcher gap).
-			close(done)
-			l.subsMu.Lock()
-			defer l.subsMu.Unlock()
-			if _, ok := l.subscribers[live]; ok {
-				delete(l.subscribers, live)
-				close(live.ch)
-			}
-		})
-		return nil
-	}
-	return out, cancel, nil
+	return stream.Entries(), stream.Close, nil
 }
 
 // retainedFromLocked copies one bounded ring window in sequence order.

@@ -447,7 +447,7 @@ func TestCommitWithPostRingPublicationReleasesBeforeDispatchBackpressure(t *test
 	defer release()
 	// Register a raw live subscriber so the forwarder cannot drain its
 	// one-entry buffer into a caller-facing channel during this test.
-	live := &subscription{ch: make(chan Entry, 1), startSeq: 1}
+	live := &subscription{ch: make(chan Entry, 1), startSeq: 1, stream: newSubscription()}
 	l.subsMu.Lock()
 	l.subscribers[live] = struct{}{}
 	l.subsMu.Unlock()

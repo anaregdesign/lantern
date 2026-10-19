@@ -672,6 +672,16 @@ append failed. A publication fault rejects new Subscribe/Snapshot attempts
 until repair, and closes every stream from the previous generation even if
 repair completes quickly.
 
+Live subscriber loss is signaled independently of queued entries. The sender
+does not wait for the old buffer to drain before withdrawing a blocked private
+HTTP write. Its original HTTP owner cancels that request and applies the write
+deadline; the synchronous Send and its termination watcher finish before the
+handler returns and deadlines are reset. This can only shorten the existing
+membership, certificate and RPC admission, never renew it. A forced transport
+abort may prevent delivery of the typed terminal status. The Pump still uses
+its bounded reconnect path and committed cursor; the subsequent retained-origin
+proof decides whether Snapshot is required.
+
 The status carries a fixed `google.rpc.ErrorInfo` detail (domain
 `github.com/anaregdesign/lantern`) for two conditions that do **not** by
 themselves prove missing history: `SUBSCRIBER_STREAM_CLOSED` when the log
