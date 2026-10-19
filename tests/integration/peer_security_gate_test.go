@@ -211,14 +211,17 @@ func (s peerBarrierSnapshotSender) Send(frame *pb.SnapshotResponse) error {
 }
 
 func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testing.T) {
+	const phaseTimeout = 15 * time.Second
 	for _, evict := range []bool{false, true} {
 		name := "retained history"
 		if evict {
 			name = "evicted history"
 		}
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
+			pressureCtx, cancelPressure := context.WithTimeout(ctx, phaseTimeout)
+			defer cancelPressure()
 			probe := &peerSocketProbe{active: make(map[uint64]peerSocketWrite)}
 			streamStarted := &peerStreamStarted{started: make(chan struct{})}
 			dropped := make(chan struct{})
@@ -272,9 +275,9 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 					mux.Handle("/graph.v1.LanternReplicationService/Snapshot", handler)
 				},
 			})
-			write := func(key string, value []byte) {
+			write := func(writeCtx context.Context, key string, value []byte) {
 				t.Helper()
-				if _, err := f.primary[0].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key, Value: &pb.Vertex_Bytes{Bytes: value}}}); err != nil {
+				if _, err := f.primary[0].PutVertex(writeCtx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key, Value: &pb.Vertex_Bytes{Bytes: value}}}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -299,33 +302,33 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			})
 			select {
 			case <-streamStarted.started:
-			case <-ctx.Done():
-				t.Fatal("pump did not open the initially empty live subscription", ctx.Err())
+			case <-pressureCtx.Done():
+				t.Fatal("pump did not open the initially empty live subscription", pressureCtx.Err())
 			}
 			// An empty log registers its live subscriber synchronously, so the
 			// pressure below cannot be mistaken for an unbounded replay window.
-			write("data:seed", []byte("seed"))
+			write(pressureCtx, "data:seed", []byte("seed"))
 			select {
 			case <-apply.seed:
-			case <-ctx.Done():
-				t.Fatal("pump did not establish committed seed", ctx.Err())
+			case <-pressureCtx.Done():
+				t.Fatal("pump did not establish committed seed", pressureCtx.Err())
 			}
 			payload := make([]byte, 64<<10)
 			if _, err := rand.Read(payload); err != nil {
 				t.Fatal(err)
 			}
-			write("data:pressure", payload)
+			write(pressureCtx, "data:pressure", payload)
 			select {
 			case <-apply.entered:
-			case <-ctx.Done():
-				t.Fatal("receiver did not hold second application", ctx.Err())
+			case <-pressureCtx.Done():
+				t.Fatal("receiver did not hold second application", pressureCtx.Err())
 			}
 			// At most 512 new entries fit without overflowing the normal live
 			// buffer. First prove an actual Write is blocked, then cause loss.
 			for range 511 {
-				write("data:pressure", payload)
+				write(pressureCtx, "data:pressure", payload)
 			}
-			blocked, err := probe.blockedWrite(ctx)
+			blocked, err := probe.blockedWrite(pressureCtx)
 			if err != nil {
 				t.Fatal("private socket did not enter actual I/O wait before loss", err)
 			}
@@ -341,21 +344,21 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 					break produce
 				default:
 				}
-				write("data:pressure", payload)
+				write(pressureCtx, "data:pressure", payload)
 			}
 			select {
 			case <-dropped:
-			case <-ctx.Done():
-				t.Fatal("finite private stream did not overflow", ctx.Err())
+			case <-pressureCtx.Done():
+				t.Fatal("finite private stream did not overflow", pressureCtx.Err())
 			}
 			var end peerStreamEnd
 			select {
 			case end = <-ended:
-			case <-ctx.Done():
-				t.Fatal("overflow did not interrupt the actual private handler", ctx.Err())
+			case <-pressureCtx.Done():
+				t.Fatal("overflow did not interrupt the actual private handler", pressureCtx.Err())
 			}
-			if end.proto != 1 || !end.cancelled || ctx.Err() != nil {
-				t.Fatalf("private stream end: HTTP%d cancelled=%t parent=%v", end.proto, end.cancelled, ctx.Err())
+			if end.proto != 1 || !end.cancelled || pressureCtx.Err() != nil {
+				t.Fatalf("private stream end: HTTP%d cancelled=%t pressure=%v", end.proto, end.cancelled, pressureCtx.Err())
 			}
 			probe.mu.Lock()
 			interruptedWrite := false
@@ -374,30 +377,39 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			if first, _ := f.logs[0].FirstSeq(); first != 1 {
 				t.Fatal("retention was lost before the intended branch")
 			}
+			// The interruption proof is complete. Evicting a normal-size ring
+			// is finite fixture preparation, not part of its elapsed deadline.
+			// Cancel completed phases so later work cannot borrow their context.
+			cancelPressure()
 			if evict {
+				evictionCtx, cancelEviction := context.WithTimeout(ctx, phaseTimeout)
+				defer cancelEviction()
 				for i := 0; i < 10016; i++ {
-					write("data:pressure", []byte("later"))
+					write(evictionCtx, "data:pressure", []byte("later"))
 				}
 				if first, _ := f.logs[0].FirstSeq(); first <= 3 {
 					t.Fatal("finite fixture failed to evict the committed resume cursor")
 				}
+				cancelEviction()
 			}
+			recoveryCtx, cancelRecovery := context.WithTimeout(ctx, phaseTimeout)
+			defer cancelRecovery()
 			last := f.primary[0].LocalSeq(hlc.NodeID{3})
 			releaseApply()
 			if evict {
 				select {
 				case <-apply.installStarted:
-				case <-ctx.Done():
-					t.Fatal("missing prefix did not trigger private Snapshot", ctx.Err())
+				case <-recoveryCtx.Done():
+					t.Fatal("missing prefix did not trigger private Snapshot", recoveryCtx.Err())
 				}
-				if _, err := f.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed"}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				if _, err := f.primary[1].GetVertex(recoveryCtx, &pb.GetVertexRequest{Key: "data:seed"}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 					t.Fatalf("incomplete Snapshot exposed public data: %v", err)
 				}
 				releaseSnapshot()
 				select {
 				case <-apply.installFinished:
-				case <-ctx.Done():
-					t.Fatal("verified Snapshot did not reopen publication", ctx.Err())
+				case <-recoveryCtx.Done():
+					t.Fatal("verified Snapshot did not reopen publication", recoveryCtx.Err())
 				}
 				if snapshotCalls.Load() == 0 {
 					t.Fatal("evicted branch skipped Snapshot")
@@ -406,8 +418,8 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 				for f.primary[1].LocalSeq(hlc.NodeID{3}) < last {
 					select {
 					case <-apply.committed:
-					case <-ctx.Done():
-						t.Fatal("retained prefix did not converge", ctx.Err())
+					case <-recoveryCtx.Done():
+						t.Fatal("retained prefix did not converge", recoveryCtx.Err())
 					}
 				}
 				if snapshotCalls.Load() != 0 {
@@ -417,7 +429,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			if f.primary[1].LocalSeq(hlc.NodeID{3}) < last {
 				t.Fatal("recovery did not certify the expected origin frontier")
 			}
-			if _, err := f.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed"}); err != nil {
+			if _, err := f.primary[1].GetVertex(recoveryCtx, &pb.GetVertexRequest{Key: "data:seed"}); err != nil {
 				t.Fatal("verified recovery did not restore public read", err)
 			}
 			stopPump()
