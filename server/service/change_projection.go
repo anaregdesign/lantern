@@ -25,12 +25,12 @@ type changeProjection struct {
 	access          *security.Access
 }
 
-func newChangeProjection(svc *LanternService, req *pb.WatchChangesRequest, admission *security.Admission) *changeProjection {
+func newChangeProjection(svc *LanternService, req *pb.WatchChangesRequest, access *security.Access) *changeProjection {
 	p := &changeProjection{svc: svc, prefix: req.GetPrefix(), value: req.GetProjection() == pb.ChangeProjection_CHANGE_PROJECTION_VALUE}
-	if admission != nil {
-		p.access = admission.Access()
-		p.vertices = changeScope(admission.Access(), req.GetProjection(), false)
-		p.edges = changeScope(admission.Access(), req.GetProjection(), true)
+	if access != nil {
+		p.access = access
+		p.vertices = changeScope(access, req.GetProjection(), false)
+		p.edges = changeScope(access, req.GetProjection(), true)
 	}
 	return p
 }

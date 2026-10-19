@@ -1,9 +1,10 @@
 package provider
 
 import (
-	"github.com/anaregdesign/lantern/server/internal/security"
 	"strings"
 	"testing"
+
+	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
 func TestPeerPlaneCannotFallbackToPublicOrIgnoreTrust(t *testing.T) {
@@ -20,9 +21,6 @@ func TestPeerPlaneCannotFallbackToPublicOrIgnoreTrust(t *testing.T) {
 		if _, err := loadPeerPlaneConfig(off, legacy); err == nil {
 			t.Fatal("legacy anonymous/public peer configuration accepted")
 		}
-	}
-	if _, err := loadPeerPlaneConfig(SecurityConfig{Mode: "oidc", NodeRole: "replica"}, PeerConfig{Discovery: "static"}); err == nil {
-		t.Fatal("replica without independent workload boundary")
 	}
 	t.Setenv("LANTERN_PEER_LISTEN_ADDR", "")
 	if _, err := loadPeerPlaneConfig(off, PeerConfig{Discovery: "static"}); err == nil {

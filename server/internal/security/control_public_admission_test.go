@@ -23,7 +23,7 @@ func TestCurrentPublicAdmissionRequiresNativeRenewal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Revision() != nil || a.Snapshot() == nil || a.ScopeBinding() == [32]byte{} {
+	if a.Snapshot() == nil || a.ScopeBinding() == [32]byte{} {
 		t.Fatal("current admission forged a legacy revision or lost immutable policy")
 	}
 	cut, current := a.CurrentCut()
@@ -36,9 +36,7 @@ func TestCurrentPublicAdmissionRequiresNativeRenewal(t *testing.T) {
 			t.Fatal("host wall time became current authority", err)
 		}
 	}
-	if _, err := NewAdmission(a.Identity(), a.AuthTime(), a.ExpiresAt(), a.Revision(), func(_ context.Context, _ *Revision) error { return nil }); err == nil {
-		t.Fatal("current snapshot escaped through a legacy admission constructor")
-	}
+
 	counters[1].Add(uint64(20 * time.Second))
 	if err := a.Check(ctx, time.Time{}); err == nil {
 		t.Fatal("expired native renewal retained current authority")
@@ -83,9 +81,7 @@ func TestCurrentPublicAdmissionDoesNotRelabelAfterApply(t *testing.T) {
 	if oldCut, _ := before.CurrentCut(); oldCut != cut {
 		t.Fatal("prior immutable admission was rewritten")
 	}
-	if after.WithAuthentication(Authentication{Class: MachineActor}).Authentication() != after.Authentication() {
-		t.Fatal("trusted legacy adapter relabeled captured current facts")
-	}
+
 	if after.WithBrowserProof("unverified").Browser() {
 		t.Fatal("bearer admission promoted to cookie proof")
 	}

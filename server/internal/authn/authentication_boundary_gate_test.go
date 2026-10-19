@@ -57,7 +57,7 @@ func TestAuthenticationPackageBoundaries(t *testing.T) {
 		}
 	}
 	slices.Sort(producers)
-	want := []string{"internal/authn/current_credential.go", "service/security_current_credential.go"}
+	want := []string{"internal/authn/current_credential.go", "service/security_credential.go"}
 	if !slices.Equal(producers, want) {
 		t.Fatalf("production credential producer boundary changed: %v", producers)
 	}

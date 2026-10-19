@@ -165,7 +165,7 @@ func TestSecurityAndChangeWire(t *testing.T) {
 				t.Fatal("partial identity/value distinction lost")
 			}
 			// The generated public mounts do not implicitly expose the peer service.
-			response, err := server.Client().Post(server.URL+graphv1connect.LanternSecurityPeerServiceRenewPolicyLeaseProcedure, "application/json", bytes.NewBufferString("{}"))
+			response, err := server.Client().Post(server.URL+"/graph.v1.LanternSecurityPeerService/RenewPolicyLease", "application/json", bytes.NewBufferString("{}"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -288,65 +288,6 @@ func TestSecurityUnimplementedRouting(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown method was routed: %d", response.StatusCode)
-	}
-}
-
-type leaseWireHandler struct {
-	graphv1connect.UnimplementedLanternSecurityPeerServiceHandler
-	t        *testing.T
-	request  *pb.RenewPolicyLeaseRequest
-	response *pb.RenewPolicyLeaseResponse
-}
-
-func (h leaseWireHandler) RenewPolicyLease(_ context.Context, request *connect.Request[pb.RenewPolicyLeaseRequest]) (*connect.Response[pb.RenewPolicyLeaseResponse], error) {
-	if !proto.Equal(request.Msg, h.request) || len(request.Msg.GetReceiver()) != 16 || len(request.Msg.GetBootNonce()) != 16 || len(request.Msg.GetChallenge()) != 32 || len(request.Msg.GetKnownDigest()) != 32 {
-		h.t.Error("opaque challenge binding changed across wire")
-		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
-	}
-	return connect.NewResponse(h.response), nil
-}
-
-func TestPrivateLeaseWire(t *testing.T) {
-	request := &pb.RenewPolicyLeaseRequest{Receiver: bytes.Repeat([]byte{1}, 16), BootNonce: bytes.Repeat([]byte{2}, 16), Challenge: bytes.Repeat([]byte{3}, 32), KnownDigest: bytes.Repeat([]byte{4}, 32)}
-	want := &pb.RenewPolicyLeaseResponse{SignedLease: []byte{0, 255, 1, 0}, SignedCheckpoint: []byte{255, 0, 2, 3, 0}}
-	path, handler := graphv1connect.NewLanternSecurityPeerServiceHandler(leaseWireHandler{t: t, request: request, response: want})
-	if path != "/graph.v1.LanternSecurityPeerService/" {
-		t.Fatalf("peer mount = %q", path)
-	}
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	server := httptest.NewTLSServer(mux)
-	defer server.Close()
-	for _, profile := range []struct {
-		name string
-		opts []connect.ClientOption
-	}{{"protobuf", nil}, {"JSON", []connect.ClientOption{connect.WithProtoJSON()}}} {
-		t.Run(profile.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			client := graphv1connect.NewLanternSecurityPeerServiceClient(server.Client(), server.URL+"/", profile.opts...)
-			got, err := client.RenewPolicyLease(ctx, connect.NewRequest(request))
-			if err != nil || !bytes.Equal(got.Msg.GetSignedLease(), want.SignedLease) || !bytes.Equal(got.Msg.GetSignedCheckpoint(), want.SignedCheckpoint) {
-				t.Fatalf("opaque original bytes changed: response=%v error=%v", got, err)
-			}
-		})
-	}
-	// A peer-only generated mux has no public management surface either.
-	response, err := server.Client().Post(server.URL+graphv1connect.LanternSecurityServiceApplySecurityChangesProcedure, "application/json", bytes.NewBufferString("{}"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusNotFound {
-		t.Fatalf("public control route appeared on peer test mux: %d", response.StatusCode)
-	}
-
-	_, missing := graphv1connect.NewLanternSecurityPeerServiceHandler(graphv1connect.UnimplementedLanternSecurityPeerServiceHandler{})
-	unimplemented := httptest.NewServer(missing)
-	defer unimplemented.Close()
-	client := graphv1connect.NewLanternSecurityPeerServiceClient(unimplemented.Client(), unimplemented.URL)
-	if _, err := client.RenewPolicyLease(context.Background(), connect.NewRequest(request)); connect.CodeOf(err) != connect.CodeUnimplemented {
-		t.Fatalf("missing peer implementation did not fail explicitly: %v", err)
 	}
 }
 

@@ -1114,6 +1114,32 @@ async fn real_wire_https_roots_and_invalid_certificates() -> TestResult {
 
 #[tokio::test]
 #[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
+async fn real_wire_off_mtls_requires_client_identity() -> TestResult {
+    let certs = TestCertificates::generate()?;
+    let server = start_tls_server(&certs, true)?;
+    let endpoint = format!("https://localhost:{}", server.port());
+    let missing_identity = LanternClient::builder(&endpoint)
+        .tls_private_ca_pem(&certs.ca_pem)?
+        .connect()
+        .await;
+    match missing_identity {
+        Ok(client) => assert!(client.ping().await.is_err(), "mTLS accepted no identity"),
+        Err(LanternError::Transport(_)) => {}
+        Err(other) => return Err(format!("unexpected mTLS failure: {other}").into()),
+    }
+    let client = LanternClient::builder(&endpoint)
+        .tls_private_ca_pem(&certs.ca_pem)?
+        .tls_client_identity(&certs.client_cert_pem, &certs.client_key_pem)?
+        .connect()
+        .await?;
+    client.ping().await?;
+    // OFF remains usable without Bearer credentials after transport identity.
+    assert!(!get_status(&client).await?.go_version.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "set LANTERN_RUST_TEST_SERVER to the production Go server binary"]
 async fn real_wire_mtls_and_bearer_rotation() -> TestResult {
     let mut server = GoServer::start_authenticated(&[], true, false)?;
     server.wait_for_listener()?;

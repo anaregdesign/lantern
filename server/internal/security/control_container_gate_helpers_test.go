@@ -450,8 +450,8 @@ func (g *ContainerAuthorityGate) ExerciseContainerBoundary(p CurrentCredentialPr
 	// measurement that may legitimately arrive immediately after wake.
 	old := g.anchors[1]
 	_, oldErr := old.atSample(authorityTimeStamp{end.Boot, end.Process, end.Counter})
-	if oldErr == nil {
-		t.Fatal("old anchor survived beyond holdover")
+	if oldErr != nil {
+		t.Fatal("sound pre-pause UTC anchor was lost")
 	}
 	if phase == "pause-before" {
 		if callErr == nil || response != nil {
@@ -600,27 +600,35 @@ func (g *ContainerAuthorityGate) ExerciseNetwork(p CurrentCredentialProducer, ph
 	containerWrite(t, filepath.Join(g.dir, "ready.json"), map[string]any{"phase": phase, "pid": os.Getpid()})
 	containerWaitMarker(t, g.dir, "check.json")
 	if g.timeFixture != nil {
+		g.probeTimeFixture(false)
 		g.verifyTimeFixtureLoss()
 	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	err = o.network.renewAuthority(ctx)
 	cancel()
-	if err == nil {
-		t.Fatal("outage renewed authority")
+	if g.timeFixture != nil {
+		containerMust(t, err)
+	} else if err == nil {
+		t.Fatal("peer outage renewed authority")
 	}
 	if phase == "peer-loss" && g.peers[2].rejected.Load()+g.peers[3].rejected.Load() == 0 {
 		t.Fatal("no real peer socket was rejected")
 	}
-	if raw, err := g.Consume(r, p, [32]byte{}); err == nil || len(raw) > 0 {
-		t.Fatal("outage consumed new H")
+	raw, consumeErr := g.Consume(r, p, [32]byte{})
+	if g.timeFixture != nil {
+		containerMust(t, consumeErr)
+		g.Apply(raw)
+	} else if consumeErr == nil || len(raw) > 0 {
+		t.Fatal("peer outage consumed new H")
 	}
-	containerWrite(t, filepath.Join(g.dir, "fault-result.json"), map[string]any{"phase": phase, "new_H_refused": true, "fresh_renewal_refused": true, "rejected_peer_sockets": g.peers[2].rejected.Load() + g.peers[3].rejected.Load(), "stamp": containerObserve(t, o.network.timeOwner)})
+	containerWrite(t, filepath.Join(g.dir, "fault-result.json"), map[string]any{"phase": phase, "new_H_refused": g.timeFixture == nil, "fresh_renewal_refused": g.timeFixture == nil, "sound_UTC_holdover_continued": g.timeFixture != nil, "rejected_peer_sockets": g.peers[2].rejected.Load() + g.peers[3].rejected.Load(), "stamp": containerObserve(t, o.network.timeOwner)})
 	containerWaitMarker(t, g.dir, "release.json")
 	if g.timeFixture != nil {
 		g.timeFixture.mu.Lock()
 		g.timeFixture.drop = false
 		g.timeFixture.mu.Unlock()
+		g.probeTimeFixture(true)
 	}
 	g.peers[2].unavailable.Store(false)
 	g.peers[3].unavailable.Store(false)
@@ -646,7 +654,7 @@ func (g *ContainerAuthorityGate) ExerciseNetwork(p CurrentCredentialProducer, ph
 	}
 	r, err = g.Prepare(p, s1Changes(s1ReaderRole()))
 	containerMust(t, err)
-	raw, err := g.Consume(r, p, [32]byte{})
+	raw, err = g.Consume(r, p, [32]byte{})
 	containerMust(t, err)
 	g.Apply(raw)
 	containerWrite(t, filepath.Join(g.dir, "recovery-result.json"), map[string]any{"phase": phase, "fresh_native_time_and_quorum": true, "new_H_applied": true, "stamp": containerObserve(t, o.network.timeOwner)})

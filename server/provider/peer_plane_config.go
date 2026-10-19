@@ -43,7 +43,7 @@ func loadPeerPlaneConfig(auth SecurityConfig, legacy PeerConfig) (PeerPlaneConfi
 		}
 	}
 	if !configured {
-		if len(legacy.Peers) != 0 || legacy.Discovery != "static" || legacy.CAFile != "" || legacy.ClientCertFile != "" || legacy.ClientKeyFile != "" || auth.Mode == "oidc" && auth.NodeRole == "replica" {
+		if len(legacy.Peers) != 0 || legacy.Discovery != "static" || legacy.CAFile != "" || legacy.ClientCertFile != "" || legacy.ClientKeyFile != "" {
 			return PeerPlaneConfig{}, errors.New("HA requires the explicit workload peer plane")
 		}
 		return PeerPlaneConfig{}, nil
@@ -62,25 +62,19 @@ func loadPeerPlaneConfig(auth SecurityConfig, legacy PeerConfig) (PeerPlaneConfi
 		return PeerPlaneConfig{}, errors.New("peer deployment must be 32 lowercase hexadecimal characters")
 	}
 	cfg := PeerPlaneConfig{ListenAddress: values["LANTERN_PEER_LISTEN_ADDR"], Identity: PeerIdentityConfig{
-		AuthMode: auth.Mode, SecurityGeneration: auth.Generation,
+		AuthMode:  auth.Mode,
 		StateMode: values["LANTERN_PEER_MEMBERSHIP_MODE"], StateFile: values["LANTERN_PEER_MEMBERSHIP_STATE_FILE"],
 		ManifestFile: values["LANTERN_PEER_MEMBERSHIP_FILE"], OperatorKeyFile: values["LANTERN_PEER_OPERATOR_PUBLIC_KEY_FILE"],
 		SelfIdentity: values["LANTERN_PEER_WORKLOAD_ID"], CertFile: values["LANTERN_PEER_CERT_FILE"], KeyFile: values["LANTERN_PEER_KEY_FILE"], CAFile: values["LANTERN_PEER_TRUST_CA_FILE"],
 	}}
 	copy(cfg.Identity.Deployment[:], id)
-	if auth.Mode == "oidc" && auth.Profile == "current-v2" {
-		provisioned, err := security.LoadCurrentProvisioning(auth.CurrentConfigFile)
+	if auth.Mode == "oidc" {
+		provisioned, err := security.LoadCurrentProvisioning(auth.ConfigFile)
 		if err != nil {
 			return PeerPlaneConfig{}, err
 		}
 		profile := provisioned.Profile()
 		cfg.Identity.CurrentProfile, cfg.Identity.SecurityGeneration = profile.Binding(), profile.Generation
-	} else if auth.Mode == "oidc" {
-		key, err := loadSecurityWriterPublicKey(auth.WriterPublicKeyFile)
-		if err != nil {
-			return PeerPlaneConfig{}, err
-		}
-		copy(cfg.Identity.WriterPublicKey[:], key)
 	}
 	if err := validatePeerPlaneConfig(cfg); err != nil {
 		return PeerPlaneConfig{}, err

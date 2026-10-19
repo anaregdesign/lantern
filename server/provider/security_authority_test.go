@@ -1,0 +1,33 @@
+package provider
+
+import (
+	"path/filepath"
+	"testing"
+
+	"github.com/anaregdesign/lantern/server/internal/security"
+)
+
+func TestCurrentRuntimeNeverFallsBackFromMissingProvisioning(t *testing.T) {
+	data := securityDataFixture(t)
+	c := SecurityConfig{Mode: "oidc", StoreMode: "fresh", BrowserOrigin: "https://admin.example", ConfigFile: filepath.Join(t.TempDir(), "absent.json")}
+	if runtime, cleanup, err := NewSecurityRuntime(c, data); err == nil || runtime != nil || cleanup != nil {
+		t.Fatal("missing independent inputs became public runtime")
+	}
+	r := &SecurityRuntime{current: &security.CurrentAuthority{}}
+	if r.currentAttemptPrefix() != "" || r.currentAttemptAffinity([32]byte{1}) != "" {
+		t.Fatal("missing process incarnation invented callback affinity")
+	}
+	r.attemptProcess = [32]byte{1}
+	if r.currentAttemptAffinity([32]byte{}) != "" {
+		t.Fatal("empty attempt accepted")
+	}
+
+}
+
+func TestCurrentRuntimeFloorExportRequiresActualOwner(t *testing.T) {
+	for _, runtime := range []*SecurityRuntime{nil, {}, {current: &security.CurrentAuthority{}}} {
+		if raw, err := runtime.ExportCurrentAuthorityFloors(); err == nil || len(raw) != 0 {
+			t.Fatal("unopened owner manufactured resume floors")
+		}
+	}
+}

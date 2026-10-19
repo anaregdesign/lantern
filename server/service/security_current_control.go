@@ -18,7 +18,7 @@ func (h *SecurityConnectHandler) currentManagement(ctx context.Context) (*securi
 	if err != nil {
 		return nil, nil, err
 	}
-	if err = a.CheckManagement(ctx, nil, h.now()); err != nil {
+	if err = a.CheckManagement(ctx, h.now()); err != nil {
 		return nil, nil, currentControlError(err)
 	}
 	p, err := h.current.RequestCredential(ctx)

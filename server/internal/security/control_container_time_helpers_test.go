@@ -98,27 +98,7 @@ func (f *containerTimeFixture) owner(t *testing.T, id uint32) *authorityTimeOwne
 	p := &authorityTimeProducer{source: source, sample: sample}
 	ctx, cancel := context.WithCancel(context.Background())
 	o := &authorityTimeOwner{producer: p, premises: authorityOperationalTimePremises(), profile: sha256.Sum256([]byte(authorityTimeProfileDescription)), cancel: cancel, done: make(chan struct{})}
-	go o.run(ctx, func(ctx context.Context) (authorityTimeMeasurement, error) {
-		f.mu.Lock()
-		f.active[id] = true
-		f.mu.Unlock()
-		defer func() { f.mu.Lock(); f.active[id] = false; f.mu.Unlock() }()
-		start, err := sample()
-		if err != nil {
-			return authorityTimeMeasurement{}, err
-		}
-		m, err := p.exchange(ctx, f.socket.LocalAddr().String())
-		end, endErr := sample()
-		err = errors.Join(err, endErr)
-		a := containerTimeAttempt{Member: id, Start: containerStamp{Boot: start.boot, Process: start.process, Counter: start.nanos}, End: containerStamp{Boot: end.boot, Process: end.process, Counter: end.nanos}, Sequence: m.sequence, Request: m.request, Response: m.response}
-		if err != nil {
-			a.Error = err.Error()
-		}
-		f.mu.Lock()
-		f.attempts = append(f.attempts, a)
-		f.mu.Unlock()
-		return m, err
-	})
+	go o.run(ctx, func(ctx context.Context) (authorityTimeMeasurement, error) { return f.measure(ctx, id, p, sample) })
 	t.Cleanup(o.close)
 	deadline := time.Now().Add(45 * time.Second)
 	for {
@@ -129,6 +109,55 @@ func (f *containerTimeFixture) owner(t *testing.T, id uint32) *authorityTimeOwne
 			t.Fatal("fixture initial native anchor unavailable")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func (f *containerTimeFixture) measure(ctx context.Context, id uint32, p *authorityTimeProducer, sample func() (authorityTimeStamp, error)) (authorityTimeMeasurement, error) {
+	f.mu.Lock()
+	f.active[id] = true
+	f.mu.Unlock()
+	defer func() { f.mu.Lock(); f.active[id] = false; f.mu.Unlock() }()
+	start, err := sample()
+	if err != nil {
+		return authorityTimeMeasurement{}, err
+	}
+	m, err := p.exchange(ctx, f.socket.LocalAddr().String())
+	end, endErr := sample()
+	err = errors.Join(err, endErr)
+	a := containerTimeAttempt{Member: id, Start: containerStamp{Boot: start.boot, Process: start.process, Counter: start.nanos}, End: containerStamp{Boot: end.boot, Process: end.process, Counter: end.nanos}, Sequence: m.sequence, Request: m.request, Response: m.response}
+	if err != nil {
+		a.Error = err.Error()
+	}
+	f.mu.Lock()
+	f.attempts = append(f.attempts, a)
+	f.mu.Unlock()
+	return m, err
+}
+
+// Explicit local fault probes exercise real UDP and the shared installation
+// path without waiting for or changing the low-frequency production scheduler.
+// Deterministic owner/scheduler tests own retry timing and virtual long drift.
+func (g *ContainerAuthorityGate) probeTimeFixture(recovering bool) {
+	for id, origin := range g.owners {
+		o := origin.network.timeOwner
+		count := 2
+		if recovering {
+			count = 1
+		}
+		for range count {
+			ctx, cancel := context.WithTimeout(g.t.Context(), 100*time.Millisecond)
+			m, err := g.timeFixture.measure(ctx, id, o.producer, o.producer.sample)
+			cancel()
+			if recovering {
+				containerMust(g.t, err)
+				o.mu.Lock()
+				err = o.installLocked(m)
+				o.mu.Unlock()
+				containerMust(g.t, err)
+			} else if err == nil {
+				g.t.Fatal("controlled UDP loss not observed")
+			}
+		}
 	}
 }
 
@@ -192,11 +221,11 @@ func (g *ContainerAuthorityGate) verifyTimeFixtureLoss() {
 		old := g.anchors[id]
 		age, err := o.premises.elapsed(old.at, now)
 		containerMust(t, err)
-		if age.low < o.premises.maxAge {
-			t.Fatal("last successful anchor did not exceed holdover", id, age)
+		if age.low < uint64(60*time.Second) {
+			t.Fatal("native holdover observation did not reach60s", id, age)
 		}
-		if _, err := old.atSample(now); err == nil {
-			t.Fatal("retained anchor remained current")
+		if _, err := old.atSample(now); err != nil {
+			t.Fatal("sound retained anchor lost")
 		}
 		o.mu.Lock()
 		sequence := o.sequence
@@ -204,8 +233,8 @@ func (g *ContainerAuthorityGate) verifyTimeFixtureLoss() {
 		if sequence != g.checkpoint.Anchors[id].Sequence {
 			t.Fatal("failed flight refreshed successful sequence")
 		}
-		if _, err := o.current(); err == nil {
-			t.Fatal("source loss retained qualification")
+		if _, err := o.current(); err != nil {
+			t.Fatal("source loss erased sound holdover")
 		}
 		timeouts := 0
 		for _, a := range attempts {
@@ -245,8 +274,6 @@ func (g *ContainerAuthorityGate) verifyTimeFixtureRecovery() {
 		if challenge == f.oldChallenges[id] {
 			t.Fatal("recovery reused renewal challenge")
 		}
-		var previous *containerTimeAttempt
-		backoff := time.Duration(0)
 		nonces := map[[8]byte]bool{}
 		losses := 0
 		for i := range attempts {
@@ -254,39 +281,22 @@ func (g *ContainerAuthorityGate) verifyTimeFixtureRecovery() {
 			if a.Member != id {
 				continue
 			}
-			if previous != nil {
-				elapsed, err := o.premises.elapsed(authorityTimeStamp{previous.End.Boot, previous.End.Process, previous.End.Counter}, authorityTimeStamp{a.Start.Boot, a.Start.Process, a.Start.Counter})
-				containerMust(t, err)
-				minimum := 16 * time.Second
-				if backoff > minimum {
-					minimum = backoff
-				}
-				if elapsed.high < uint64(minimum) {
-					t.Fatal("owner retry bypassed unchanged schedule", id, elapsed, minimum)
-				}
-			}
 			if a.Error != "" {
 				losses++
-				if backoff == 0 {
-					backoff = 32 * time.Second
-				} else {
-					backoff = min(backoff*2, 1024*time.Second)
-				}
+
 			} else {
 				nonce := [8]byte(a.Request[40:48])
 				if nonces[nonce] || nonce == [8]byte{} || nonce != [8]byte(a.Response[24:32]) {
 					t.Fatal("successful measurement nonce replay/mismatch")
 				}
 				nonces[nonce] = true
-				backoff = 0
 			}
-			previous = a
 		}
 		if losses < 2 || len(nonces) < 2 {
 			t.Fatal("missing actual loss and fresh-response chain")
 		}
 	}
-	containerWrite(t, filepath.Join(g.dir, "fixture-result.json"), map[string]any{"source": "fixture.invalid", "actual_configured_source": false, "synthetic_UTC_not_accuracy_evidence": true, "same_socket": f.socket.LocalAddr().String(), "same_native_epochs": true, "fresh_sequence_anchor_challenge": true, "unchanged_backoff_observed": true, "attempts": attempts, "packets": packets})
+	containerWrite(t, filepath.Join(g.dir, "fixture-result.json"), map[string]any{"source": "fixture.invalid", "actual_configured_source": false, "synthetic_UTC_not_accuracy_evidence": true, "same_socket": f.socket.LocalAddr().String(), "same_native_epochs": true, "fresh_sequence_anchor_challenge": true, "directed_local_probes": true, "retry_timing_owned_by_deterministic_units": true, "attempts": attempts, "packets": packets})
 }
 
 // Marker waiting is test control only; authorization uses native elapsed bounds.

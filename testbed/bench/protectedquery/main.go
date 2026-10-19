@@ -119,12 +119,10 @@ func validateFixture(f fixtureInput) error {
 	if len(f.Nodes) == 0 || f.Query == nil || f.CAFile == "" || (f.Query.Mode != "off" && f.Query.Mode != "oidc") || f.Query.ReaderRole != "fixture_query_reader" || f.Query.ReaderSubject != "fixture-query-reader" || time.Until(f.Query.ExpiresAt) < time.Minute {
 		return errors.New("fresh standalone protected-query fixture required")
 	}
-	expectedNodes := 1
-	if f.Query.SecurityProfile == "current-v2" {
-		expectedNodes = 3
-	} else if f.Query.SecurityProfile != "legacy-v1" {
-		return errors.New("explicit supported query security profile required")
+	if f.Query.SecurityProfile != "current-v2" {
+		return errors.New("original quorum authority preparation required")
 	}
+	expectedNodes := 3
 	if len(f.Nodes) != expectedNodes {
 		return errors.New("query profile process layout mismatch")
 	}
@@ -136,23 +134,21 @@ func validateFixture(f fixtureInput) error {
 		}
 		seen[node.PublicOrigin] = true
 	}
-	if f.Query.SecurityProfile == "current-v2" {
-		if len(f.Query.FixtureID) != 32 {
-			return errors.New("current query requires its owned fixture identity")
-		}
-		if _, err := hex.DecodeString(f.Query.FixtureID); err != nil {
-			return err
-		}
-		if f.Query.Exporter == nil || (*f.Query.Exporter)["revision"] != f.Query.Server["revision"] || (*f.Query.Exporter)["modified"] != f.Query.Server["modified"] || len((*f.Query.Exporter)["sha256"]) != 64 {
-			return errors.New("current query requires matching original-input exporter provenance")
-		}
-		if f.Query.Mode == "oidc" && (!validCurrentProfile(f.Query.CurrentProfile) || !strings.HasPrefix(f.Query.CurrentBinding, "current-v2:") || len(f.Query.CurrentBinding) != 75) {
-			return errors.New("complete expected current profile/binding required")
-		}
+	if len(f.Query.FixtureID) != 32 {
+		return errors.New("current query requires its owned fixture identity")
 	}
-	if f.Query.Mode == "off" || f.Query.SecurityProfile == "legacy-v1" {
+	if _, err := hex.DecodeString(f.Query.FixtureID); err != nil {
+		return err
+	}
+	if f.Query.Exporter == nil || (*f.Query.Exporter)["revision"] != f.Query.Server["revision"] || (*f.Query.Exporter)["modified"] != f.Query.Server["modified"] || len((*f.Query.Exporter)["sha256"]) != 64 {
+		return errors.New("current query requires matching original-input exporter provenance")
+	}
+	if f.Query.Mode == "oidc" && (!validCurrentProfile(f.Query.CurrentProfile) || !strings.HasPrefix(f.Query.CurrentBinding, "current-v2:") || len(f.Query.CurrentBinding) != 75) {
+		return errors.New("complete expected current profile/binding required")
+	}
+	if f.Query.Mode == "off" {
 		if f.Query.CurrentProfile != nil || f.Query.CurrentBinding != "" {
-			return errors.New("OFF/legacy fixture cannot claim current authority")
+			return errors.New("OFF fixture cannot claim current authority")
 		}
 	}
 
@@ -180,22 +176,7 @@ func assignReader(ctx context.Context, f fixtureInput, httpClient *http.Client) 
 		}
 		return errors.New("original current reader Role missing")
 	}
-	changeID := sha256.Sum256([]byte("protected-query-reader-assignment-v1"))
-	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.Query.Issuer, Subject: f.Query.ReaderSubject}
-	response, err := client.ApplySecurityChanges(ctx, authenticated(token, &pb.ApplySecurityChangesRequest{
-		ExpectedRevision: status.Msg.Version.Revision, ChangeId: changeID[:16],
-		Changes: []*pb.SecurityChange{
-			{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
-			{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: f.Query.ReaderRole}}},
-		},
-	}))
-	if err != nil {
-		return fmt.Errorf("setup assignment: %w", err)
-	}
-	if len(response.Msg.Applied) != 2 || !response.Msg.Applied[0] || !response.Msg.Applied[1] || response.Msg.Enforcement != pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED {
-		return errors.New("reader assignment not enforced")
-	}
-	return nil
+	return errors.New("original reader Role/profile missing")
 }
 
 func execute(ctx context.Context, f fixtureInput, action string, cfg loadConfig) (map[string]any, error) {
@@ -386,10 +367,6 @@ func validateQueryCapabilities(f fixtureInput, node int, cap *pb.GetAuthCapabili
 	if f.Query.Mode == "off" {
 		if cap.Mode != pb.AuthMode_AUTH_MODE_OFF || cap.ProtocolVersion != 1 || cap.CurrentProfile != nil || cap.CurrentMember != 0 {
 			return errors.New("OFF mode/profile mismatch")
-		}
-	} else if f.Query.SecurityProfile == "legacy-v1" {
-		if cap.Mode != pb.AuthMode_AUTH_MODE_OIDC || cap.ProtocolVersion != 1 || cap.CurrentProfile != nil || cap.CurrentMember != 0 {
-			return errors.New("legacy mode/profile mismatch")
 		}
 	} else if f.Query.SecurityProfile != "current-v2" || cap.Mode != pb.AuthMode_AUTH_MODE_OIDC || cap.ProtocolVersion != 2 || cap.CurrentMember != uint32(node+1) || !validCurrentProfile(cap.CurrentProfile) || !proto.Equal(cap.CurrentProfile, f.Query.CurrentProfile) {
 		return errors.New("current query refused mode/protocol/member/full-profile fallback")

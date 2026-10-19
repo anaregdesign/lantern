@@ -127,6 +127,61 @@ func TestCurrentPublicOutputTLSProtocolMatrix(t *testing.T) {
 	}
 }
 
+func TestCurrentPublicOutputStreamingRefusalKeepsProtocolOnly(t *testing.T) {
+	_, p, server, _ := currentPublicOutputFixture(t)
+	const path = "/graph.v1.LanternChangeService/WatchChanges"
+	server.Config.Handler = p.Wrap(p.Handler(func() http.Handler {
+		return connect.NewServerStreamHandler(path, func(_ context.Context, _ *connect.Request[pb.WatchChangesRequest], stream *connect.ServerStream[pb.WatchChangesResponse]) error {
+			stream.ResponseHeader().Set("Content-Type", "protected-type")
+			stream.ResponseHeader().Set("Set-Cookie", "protected-cookie")
+			stream.ResponseHeader().Set("X-Protected-Header", "protected-header")
+			stream.ResponseTrailer().Set("X-Protected-Trailer", "protected-trailer")
+			failure := connect.NewError(connect.CodePermissionDenied, errors.New("protected-message"))
+			failure.Meta().Set("X-Protected-Error", "protected-error")
+			detail, err := connect.NewErrorDetail(&pb.SecurityIdentity{Subject: "protected-detail"})
+			if err != nil {
+				return err
+			}
+			failure.AddDetail(detail)
+			return failure
+		}, p.Options(connect.WithCompressMinBytes(1))...)
+	}))
+	server.StartTLS()
+	for _, protocol := range []string{"connect-proto", "connect-json", "grpc", "grpc-web"} {
+		t.Run(protocol, func(t *testing.T) {
+			options := []connect.ClientOption{connect.WithSendCompression("gzip"), connect.WithCompressMinBytes(1)}
+			switch protocol {
+			case "connect-json":
+				options = append(options, connect.WithProtoJSON())
+			case "grpc":
+				options = append(options, connect.WithGRPC())
+			case "grpc-web":
+				options = append(options, connect.WithGRPCWeb())
+			}
+			client := connect.NewClient[pb.WatchChangesRequest, pb.WatchChangesResponse](server.Client(), server.URL+path, options...)
+			stream, err := client.CallServerStream(t.Context(), connect.NewRequest(&pb.WatchChangesRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stream.Close()
+			if stream.Receive() || connect.CodeOf(stream.Err()) != connect.CodePermissionDenied {
+				t.Fatal("fixed refusal lost RPC protocol", stream.Err())
+			}
+			var failure *connect.Error
+			if !errors.As(stream.Err(), &failure) || failure.Message() != "public RPC request rejected" || len(failure.Details()) != 0 {
+				t.Fatal("fixed refusal disclosed protected error")
+			}
+			for _, headers := range []http.Header{stream.ResponseHeader(), stream.ResponseTrailer(), failure.Meta()} {
+				for key, values := range headers {
+					if strings.Contains(strings.ToLower(key), "protected") || key == "Set-Cookie" || strings.Contains(strings.Join(values, ""), "protected") {
+						t.Fatal("fixed refusal disclosed protected metadata")
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestCurrentPublicOutputHTTP2RequestsCannotShareFinalEvent(t *testing.T) {
 	o, p, server, ticks := currentPublicOutputFixture(t)
 	const path = "/graph.v1.LanternSecurityService/GetCurrentPrincipal"

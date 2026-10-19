@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"context"
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +11,8 @@ import (
 )
 
 func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testing.T) {
-	cfg, data, clock := securityRuntimeFixture(t)
+	data := securityDataFixture(t)
+	cfg := SecurityConfig{Mode: "off"}
 	runtime, closeRuntime, err := NewSecurityRuntime(cfg, data)
 	if err != nil {
 		t.Fatal(err)
@@ -31,33 +31,24 @@ func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, nil, data, primary, cert); err == nil {
-		t.Fatal("plaintext protected runtime certified")
-	}
-	runtime.config.TrustedProxyIPs = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, nil, data, primary, runtimeCertified{}); err == nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, runtimeCertified{}); err == nil {
 		t.Fatal("missing data certification accepted")
 	}
 	foreign := service.NewLanternService(data.GraphCache())
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, nil, data, foreign, cert); err == nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, foreign, cert); err == nil {
 		t.Fatal("foreign service certified")
 	}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, &SecurityPeerRuntime{runtime: &SecurityRuntime{}}, data, primary, cert); err == nil {
-		t.Fatal("foreign policy runtime certified")
-	}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, &PeerIdentityRuntime{}, nil, data, primary, cert); err == nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, &PeerIdentityRuntime{}, data, primary, cert); err == nil {
 		t.Fatal("unbound workload certified")
 	}
-	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, nil, data, primary, cert); err != nil {
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert); err != nil {
 		t.Fatal(err)
 	}
-	if runtime.Ready(context.Background()) {
-		t.Fatal("restart fence bypassed")
+	runtime.mode = "oidc"
+	if _, err := NewPublicSecurityCertified(runtime, TLSConfig{}, nil, data, primary, cert); err == nil {
+		t.Fatal("OIDC without its authority was certified")
 	}
-	clock.advance(35 * 1e9)
-	if !runtime.Ready(context.Background()) {
-		t.Fatal("qualified writer unavailable after barrier")
-	}
+
 }
 func TestPublicIngressRejectsSpoofedOrAmbiguousGateway(t *testing.T) {
 	runtime := &SecurityRuntime{mode: "oidc", config: SecurityConfig{TrustedProxyIPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}}

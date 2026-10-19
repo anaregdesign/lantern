@@ -36,41 +36,22 @@ func readSecurityOperatorFile(path string, private bool, maxBytes int64) ([]byte
 	}
 	return raw, nil
 }
-func loadSecurityWriterPublicKey(path string) (ed25519.PublicKey, error) {
+func loadOperatorPublicKey(path string) (ed25519.PublicKey, error) {
 	raw, err := readSecurityOperatorFile(path, false, 16<<10)
 	if err != nil {
 		return nil, err
 	}
 	block, trailing := pem.Decode(raw)
 	if block == nil || block.Type != "PUBLIC KEY" || len(bytes.TrimSpace(trailing)) != 0 {
-		return nil, errors.New("security writer public key requires one Ed25519 SPKI PEM")
+		return nil, errors.New("operator public key requires one Ed25519 SPKI PEM")
 	}
 	key, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		return nil, errors.New("invalid security writer public key")
+		return nil, errors.New("invalid operator public key")
 	}
 	typed, ok := key.(ed25519.PublicKey)
 	if !ok || len(typed) != ed25519.PublicKeySize {
-		return nil, errors.New("security writer key must be Ed25519")
-	}
-	return typed, nil
-}
-func loadSecurityWriterPrivateKey(path string) (ed25519.PrivateKey, error) {
-	raw, err := readSecurityOperatorFile(path, true, 16<<10)
-	if err != nil {
-		return nil, err
-	}
-	block, trailing := pem.Decode(raw)
-	if block == nil || block.Type != "PRIVATE KEY" || len(bytes.TrimSpace(trailing)) != 0 {
-		return nil, errors.New("security writer private key requires one Ed25519 PKCS8 PEM")
-	}
-	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, errors.New("invalid security writer private key")
-	}
-	typed, ok := key.(ed25519.PrivateKey)
-	if !ok || len(typed) != ed25519.PrivateKeySize {
-		return nil, errors.New("security writer key must be Ed25519")
+		return nil, errors.New("operator key must be Ed25519")
 	}
 	return typed, nil
 }

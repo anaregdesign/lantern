@@ -36,9 +36,7 @@ func TestAuthorityPurposeExclusiveConsume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Verify(approved.Proof[:], ManagementBinding{}, m.pending[id].approvedAt) == nil {
-		t.Fatal("legacy reusable proof accepted full-S1 purpose")
-	}
+
 	if _, err := m.completeCurrent(r, id, event); err == nil {
 		t.Fatal("completed twice")
 	}

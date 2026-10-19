@@ -168,6 +168,8 @@ enum ReadinessServerLog {
     None,
     Initialization,
     BindAddressInUse,
+    SourceInputMissing,
+    AuthorityTime,
     ServerExit,
 }
 
@@ -293,6 +295,9 @@ impl PassiveReadinessObservation {
     }
 }
 
+mod startup;
+use startup::StartupObservation;
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReadinessDiagnostic {
@@ -310,6 +315,8 @@ struct ReadinessDiagnostic {
     health_probes: u32,
     capability_probes: u32,
     observation: PassiveReadinessObservation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    startup: Option<StartupObservation>,
 }
 
 fn native_startup_failure(path: &std::path::Path) -> String {
@@ -329,6 +336,10 @@ fn native_startup_failure(path: &std::path::Path) -> String {
                     && diagnostic.node < 8
                     && diagnostic.http_status <= 599
                     && diagnostic.observation.valid()
+                    && diagnostic
+                        .startup
+                        .as_ref()
+                        .is_none_or(StartupObservation::valid)
                     && let Ok(safe) = serde_json::to_string(&diagnostic)
                 {
                     message.push(' ');
@@ -602,7 +613,7 @@ mod diagnostic_tests {
     fn readiness_detail_survives_cleanup_without_private_text() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("diagnostic");
-        let record = serde_json::json!({
+        let mut record = serde_json::json!({
             "reason": "child_exit", "node": 0, "port": 12345,
             "elapsed_ms": 37, "probe": "dial", "http_status": 0,
             "child_exited": true, "child_exit_code": 23,
@@ -616,8 +627,18 @@ mod diagnostic_tests {
                 "health_reason":"not_evaluated", "exhausted":false
             }}
         });
+        record["startup"] = startup::fixture_record();
         fs::write(&path, format!("private-token-key-body\nauthfixture_failure:readiness\nauthfixture_readiness:{record}\n")).unwrap();
         let retained = native_startup_failure(&path);
+        for category in ["source_input_missing", "authority_time"] {
+            let mut adoption = record.clone();
+            adoption["server_log"] = serde_json::json!(category);
+            fs::write(&path, format!("private-token-key-body\nauthfixture_failure:spawn\nauthfixture_readiness:{adoption}\n")).unwrap();
+            let retained = native_startup_failure(&path);
+            assert!(retained.contains("native fixture failed certified readiness: spawn"));
+            assert!(retained.contains(category));
+            assert!(!retained.contains("private-token-key-body"));
+        }
         drop(dir);
         assert!(!path.exists());
         assert!(retained.contains(r#""reason":"child_exit""#));
@@ -627,6 +648,9 @@ mod diagnostic_tests {
         assert!(retained.contains(r#""last_capability":"not_probed""#));
         assert!(retained.contains(r#""worker_reason":"clock_fault""#));
         assert!(retained.contains(r#""health_reason":"not_evaluated""#));
+        assert!(retained.contains(r#""first_read_error":"aborted""#));
+        assert!(retained.contains(r#""final_read_error":"timeout""#));
+        assert!(retained.contains(r#""read_count":2"#));
         assert!(retained.len() < 4096);
         assert!(!retained.contains("private-token-key-body"));
 

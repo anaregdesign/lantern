@@ -16,7 +16,6 @@ import (
 // browser adapter. Caller-supplied identity/digest facts are not accepted.
 type LoginRequest struct {
 	Issuer, ReturnPath string
-	StepUp             bool
 	Previous           *security.Admission
 }
 
@@ -25,31 +24,6 @@ func (w *Workflow) BeginLogin(ctx context.Context, request LoginRequest) (oidc.L
 	if request.Previous != nil {
 		replaces = request.Previous.Authentication().SessionDigest
 	}
-	if w.current != nil {
-		return w.beginCurrentLogin(ctx, request, replaces)
-	}
-	current, known := w.legacy.Store.Current()
-	if !known {
-		return oidc.LoginStart{}, ErrUnavailable
-	}
-	issuer, known := current.Snapshot().Issuer(request.Issuer)
-	if !known || !issuer.Enabled || issuer.Deleted {
-		return oidc.LoginStart{}, ErrUnauthenticated
-	}
-	if request.StepUp && request.Previous == nil {
-		return oidc.LoginStart{}, ErrUnauthenticated
-	}
-	discovery, err := w.oidc.Fetcher.Discover(ctx, issuer)
-	if err != nil || w.legacy.Check(ctx, current) != nil {
-		return oidc.LoginStart{}, ErrUnavailable
-	}
-	start, err := w.oidc.Logins.Begin(oidc.Trust{Issuer: issuer, Generation: current.Generation(), ConfigRevision: issuer.ConfigRevision}, discovery, request.ReturnPath, replaces, request.StepUp)
-	if err != nil {
-		return oidc.LoginStart{}, ErrInvalidInput
-	}
-	return start, nil
-}
-func (w *Workflow) beginCurrentLogin(ctx context.Context, request LoginRequest, replaces string) (oidc.LoginStart, error) {
 	i, cut, err := w.current.LoginIssuer(ctx, request.Issuer)
 	if err != nil {
 		return oidc.LoginStart{}, ErrUnauthenticated
@@ -103,11 +77,7 @@ func (w *Workflow) CompleteCallback(ctx context.Context, input CallbackInput) (r
 	if purpose {
 		defer func() {
 			if !approved {
-				if w.current != nil {
-					w.current.RejectPurpose(id)
-				} else {
-					w.legacy.Authorizations.Reject(id)
-				}
+				w.current.RejectPurpose(id)
 			}
 		}()
 	}
@@ -115,22 +85,9 @@ func (w *Workflow) CompleteCallback(ctx context.Context, input CallbackInput) (r
 		return result, ErrUnauthenticated
 	}
 	trust := completion.Trust()
-	var revision *security.Revision
-	if w.current != nil {
-		i, cut, e := w.current.LoginIssuer(ctx, trust.Issuer.URL)
-		if e != nil || cut.Generation != trust.Generation || i.ConfigRevision != trust.ConfigRevision {
-			return result, ErrUnauthenticated
-		}
-	} else {
-		var known bool
-		revision, known = w.legacy.Store.Current()
-		if !known || revision.Generation() != trust.Generation || w.legacy.Check(ctx, revision) != nil {
-			return result, ErrUnavailable
-		}
-		issuer, known := revision.Snapshot().Issuer(trust.Issuer.URL)
-		if !known || !issuer.Enabled || issuer.ConfigRevision != trust.ConfigRevision {
-			return result, ErrUnauthenticated
-		}
+	i, cut, e := w.current.LoginIssuer(ctx, trust.Issuer.URL)
+	if e != nil || cut.Generation != trust.Generation || i.ConfigRevision != trust.ConfigRevision {
+		return result, ErrUnauthenticated
 	}
 	// Consume is atomic and precedes this one exchange. Refresh after Apply uses
 	// this same detached Code event, never another request to the IdP.
@@ -138,58 +95,28 @@ func (w *Workflow) CompleteCallback(ctx context.Context, input CallbackInput) (r
 	if err != nil {
 		return result, ErrUnauthenticated
 	}
-	if w.current != nil {
-		producer, e := w.oidc.Credentials.Code(completion, tokens)
-		if e != nil {
+	producer, e := w.oidc.Credentials.Code(completion, tokens)
+	if e != nil {
+		return result, ErrUnauthenticated
+	}
+	if purpose {
+		if _, e = w.current.CompletePurpose(ctx, id, producer); e != nil {
 			return result, ErrUnauthenticated
 		}
-		if purpose {
-			if _, e = w.current.CompletePurpose(ctx, id, producer); e != nil {
-				return result, ErrUnauthenticated
-			}
-			approved = true
-			if w.current.BindPublicMetadata(ctx, security.CurrentPurposeReturn) != nil {
-				return result, ErrUnavailable
-			}
-		} else {
-			issued, e := w.establishCurrentSession(ctx, completion, producer)
-			if e != nil {
-				return result, e
-			}
-			issued.Consumed = true
-			return issued, nil
-		}
-	} else {
-		verified, e := w.oidc.Verifier.VerifyLoginCompletion(ctx, completion, tokens)
-		if e != nil {
-			return result, ErrUnauthenticated
-		}
-		if w.legacy.Check(ctx, revision) != nil {
+		approved = true
+		if w.current.BindPublicMetadata(ctx, security.CurrentPurposeReturn) != nil {
 			return result, ErrUnavailable
 		}
-		if purpose {
-			if w.completeOperationAuthentication(id, verified, revision) != nil {
-				return result, ErrUnauthenticated
-			}
-			approved = true
-		} else {
-			issued, e := w.establishLegacySession(ctx, completion, verified)
-			if e != nil {
-				return result, e
-			}
-			issued.Consumed = true
-			return issued, nil
+	} else {
+		issued, e := w.establishCurrentSession(ctx, completion, producer)
+		if e != nil {
+			return result, e
 		}
+		issued.Consumed = true
+		return issued, nil
 	}
 	result.Purpose, result.Context = true, ctx
 	return result, nil
-}
-func (w *Workflow) completeOperationAuthentication(id [32]byte, verified oidc.VerifiedIdentity, current *security.Revision) error {
-	event := verified.Evidence()
-	if event.Mode != "code" || event.Code.Flow != "operation" || event.Code.AuthorizationID != id {
-		return security.ErrOperationAuthorization
-	}
-	return w.legacy.Authorizations.Complete(id, event, current, w.oidc.Now())
 }
 func newSessionSecret() (string, error) {
 	var value [32]byte

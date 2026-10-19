@@ -13,6 +13,7 @@ on:
       - 'testdata/search/**'
       - '.github/workflows/node-sdk.yml'
       - 'testbed/scripts/native_receipt_fixture.sh'
+      - '.github/scripts/configured_time_input.py'
       - 'tests/integration/auth_test.go'
       - 'sdks/go/**'
       - "!sdks/node/*.md"
@@ -30,6 +31,7 @@ on:
       - 'testdata/search/**'
       - '.github/workflows/node-sdk.yml'
       - 'testbed/scripts/native_receipt_fixture.sh'
+      - '.github/scripts/configured_time_input.py'
       - 'tests/integration/auth_test.go'
       - 'sdks/go/**'
       - "!sdks/node/*.md"
@@ -69,10 +71,15 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: Prepare declared read-only source input
+        working-directory: .
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_input.py
       - name: Start production conformance servers
         working-directory: .
         run: |
-          go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
           env LANTERN_PORT=6380 LANTERN_METRICS_ADDR=:9090 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-node-enabled.log" 2>&1 &
@@ -181,9 +188,8 @@ jobs:
           LANTERN_NODE_NAN_FIXTURE_ENDPOINT: http://127.0.0.1:6386
           LANTERN_NODE_RECEIPT_TOKEN_FILE: ${{ runner.temp }}/lantern-node-receipt/token
           LANTERN_NODE_RECEIPT_CA_FILE: ${{ runner.temp }}/lantern-node-receipt/trust/ca.pem
-      - name: Certified OIDC scoped CDC facade
-        working-directory: .
-        run: go test ./tests/integration -run 'TestAuth_OIDCNodeScopedChangesFacadeRealConnect' -count=1
+      # Retained OIDC scoped CDC executes once in the required shared F/Q
+      # owner (current-sdk4.yml): full scoped CDC in F and the bounded SDK4 source cohort in Q, including tagged releases.
 
       - name: Verify npm pack candidate
         run: bun run verify:package

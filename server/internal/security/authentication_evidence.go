@@ -10,6 +10,8 @@ import (
 // MaxAuthenticationEvidenceBytes bounds one detached, process-owned envelope.
 const MaxAuthenticationEvidenceBytes = 16 << 10
 
+const RecentAuthenticationLifetime = 5 * time.Minute
+
 // AuthenticationTime preserves a claim's presence independently of its value.
 // Numeric=false with Present=true records an accepted JSON null (nbf only).
 // Seconds/nanoseconds retain the verifier's NumericDate interpretation without
@@ -145,16 +147,4 @@ func authenticationEvidenceBytes(value any) ([]byte, error) {
 	encoder.SetEscapeHTML(false)
 	err := encoder.Encode(value)
 	return b.Bytes(), err
-}
-
-// PurposeAuthenticationEvidence shares the authorization owner's lifetime. It
-// contains original facts, not a reusable verifier result or final consume.
-type PurposeAuthenticationEvidence struct {
-	Version                                    uint8
-	Kind                                       string
-	Binding                                    ManagementBinding
-	AuthorizationID                            [32]byte
-	ReviewAt, NotBefore, ApprovedAt, ExpiresAt time.Time
-	Event                                      TokenAuthenticationEvidence
-	EventCommitment                            [32]byte
 }

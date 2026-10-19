@@ -19,27 +19,21 @@ import (
 // This explicit short lane runs the actual production binary, local issuer,
 // fixture supervisor and driver. It seeds/preflights, and performs no load or
 // performance qualification. Build all three binaries from the same checkout.
-func TestProtectedQueryPreparation_ProductionWire(t *testing.T) {
-	testProtectedQueryPreparationWire(t, "legacy-v1")
-}
-
 // Native current readiness/custody is explicit and never replaced by fake time.
 func TestProtectedQueryPreparation_CurrentProductionWire(t *testing.T) {
 	if os.Getenv("LANTERN_PROTECTED_QUERY_CURRENT") != "1" {
 		t.Skip("explicit current native host slot required")
 	}
-	testProtectedQueryPreparationWire(t, "current-v2")
+	testProtectedQueryPreparationWire(t)
 }
 
-func testProtectedQueryPreparationWire(t *testing.T, profile string) {
+func testProtectedQueryPreparationWire(t *testing.T) {
+	const profile = "current-v2"
 	server := os.Getenv("LANTERN_PROTECTED_QUERY_SERVER")
 	fixture := os.Getenv("LANTERN_PROTECTED_QUERY_FIXTURE")
 	driver := os.Getenv("LANTERN_PROTECTED_QUERY_DRIVER")
 	if server == "" || fixture == "" || driver == "" {
-		if profile == "current-v2" {
-			t.Fatal("selected current wire gate requires all preparation binaries")
-		}
-		t.Skip("explicit protected-query preparation binaries required")
+		t.Fatal("selected current wire gate requires all preparation binaries")
 	}
 	for _, binary := range []string{server, fixture, driver} {
 		if !filepath.IsAbs(binary) {
@@ -47,32 +41,23 @@ func testProtectedQueryPreparationWire(t *testing.T, profile string) {
 		}
 	}
 	exporter := os.Getenv("LANTERN_PROTECTED_QUERY_EXPORTER")
-	if profile == "current-v2" && !filepath.IsAbs(exporter) {
+	if !filepath.IsAbs(exporter) {
 		t.Fatal("absolute same-source original-input exporter required")
 	}
-	evidenceDir := ""
-	if profile == "current-v2" {
-		evidenceDir = os.Getenv("LANTERN_PROTECTED_QUERY_EVIDENCE_DIR")
-		if !filepath.IsAbs(evidenceDir) {
-			t.Fatal("new absolute private current evidence directory required")
-		}
-		if err := os.Mkdir(evidenceDir, 0700); err != nil {
-			t.Fatal("current evidence directory must be new", err)
-		}
+	evidenceDir := os.Getenv("LANTERN_PROTECTED_QUERY_EVIDENCE_DIR")
+	if !filepath.IsAbs(evidenceDir) {
+		t.Fatal("new absolute private current evidence directory required")
+	}
+	if err := os.Mkdir(evidenceDir, 0700); err != nil {
+		t.Fatal("current evidence directory must be new", err)
 	}
 	var digest string
 	for _, mode := range []string{"off", "oidc"} {
 		t.Run(mode, func(t *testing.T) {
-			count := 1
-			readyTimeout := 60 * time.Second
-			stopTimeout := 10 * time.Second
-			totalTimeout := 90 * time.Second
-			if profile == "current-v2" {
-				count = 3
-				readyTimeout = 180 * time.Second
-				stopTimeout = 95 * time.Second
-				totalTimeout = 5 * time.Minute
-			}
+			const count = 3
+			readyTimeout := 180 * time.Second
+			stopTimeout := 95 * time.Second
+			totalTimeout := 5 * time.Minute
 			var ports []string
 			var reservations []net.Listener
 			for i := 0; i < count; i++ {
@@ -86,18 +71,10 @@ func testProtectedQueryPreparationWire(t *testing.T, profile string) {
 			for _, listener := range reservations {
 				_ = listener.Close()
 			}
-			dir := ""
-			if profile == "current-v2" {
-				dir = filepath.Join(evidenceDir, mode)
-			} else {
-				dir = filepath.Join(t.TempDir(), "owned")
-			}
+			dir := filepath.Join(evidenceDir, mode)
 			ctx, cancel := context.WithTimeout(t.Context(), totalTimeout)
 			defer cancel()
-			args := []string{"-protected-query", "-query-security-profile", profile, "-directory", dir, "-mode", mode, "-public-ports", strings.Join(ports, ","), "-serve", server, "-ready-timeout", readyTimeout.String()}
-			if profile == "current-v2" {
-				args = append(args, "-current-fixture-exporter", exporter)
-			}
+			args := []string{"-protected-query", "-directory", dir, "-mode", mode, "-public-ports", strings.Join(ports, ","), "-serve", server, "-ready-timeout", readyTimeout.String(), "-authority-provisioner", exporter}
 			command := exec.CommandContext(ctx, fixture, args...)
 
 			output, err := command.StdoutPipe()
@@ -129,26 +106,24 @@ func testProtectedQueryPreparationWire(t *testing.T, profile string) {
 					<-done
 					t.Error("owned fixture did not shut down")
 				}
-				if profile == "current-v2" {
-					var receipt struct {
-						Passed    bool   `json:"passed"`
-						Profile   string `json:"security_profile"`
-						FixtureID string `json:"fixture_id"`
-						Nodes     []struct {
-							Passed bool   `json:"passed"`
-							Exit   int    `json:"exit_code"`
-							Cycle  uint64 `json:"cycle"`
-							Floors string `json:"floors_sha256"`
-						} `json:"nodes"`
-					}
-					raw, err := os.ReadFile(filepath.Join(dir, "query-shutdown.json"))
-					if err != nil || json.Unmarshal(raw, &receipt) != nil || !receipt.Passed || receipt.Profile != "current-v2" || receipt.FixtureID != fixtureID || len(fixtureID) != 32 || len(receipt.Nodes) != 3 {
-						t.Errorf("missing successful current teardown receipt: %v", err)
-					} else {
-						for _, node := range receipt.Nodes {
-							if !node.Passed || node.Exit != 0 || mode == "oidc" && (node.Cycle != 1 || len(node.Floors) != 64) {
-								t.Error("current native child did not finish CLEAN")
-							}
+				var receipt struct {
+					Passed    bool   `json:"passed"`
+					Profile   string `json:"security_profile"`
+					FixtureID string `json:"fixture_id"`
+					Nodes     []struct {
+						Passed bool   `json:"passed"`
+						Exit   int    `json:"exit_code"`
+						Cycle  uint64 `json:"cycle"`
+						Floors string `json:"floors_sha256"`
+					} `json:"nodes"`
+				}
+				raw, err := os.ReadFile(filepath.Join(dir, "query-shutdown.json"))
+				if err != nil || json.Unmarshal(raw, &receipt) != nil || !receipt.Passed || receipt.Profile != "current-v2" || receipt.FixtureID != fixtureID || len(fixtureID) != 32 || len(receipt.Nodes) != 3 {
+					t.Errorf("missing successful current teardown receipt: %v", err)
+				} else {
+					for _, node := range receipt.Nodes {
+						if !node.Passed || node.Exit != 0 || mode == "oidc" && (node.Cycle != 1 || len(node.Floors) != 64) {
+							t.Error("current native child did not finish CLEAN")
 						}
 					}
 				}
@@ -209,7 +184,7 @@ func testProtectedQueryPreparationWire(t *testing.T, profile string) {
 					Axis          string            `json:"comparison_axis"`
 					Measurements  map[string]string `json:"measurements"`
 				}
-				if json.Unmarshal(raw, &result) != nil || !result.Passed || result.Transport != "verified_tls_http2" || result.Qualification != "preparation_only" || mode == "oidc" && !strings.Contains(result.Actor, "jwt_role_bound") || result.Profile != profile || result.Processes != count || profile == "current-v2" && result.FixtureID != fixtureID || result.Axis != "end_to_end_mode_specific_authorized_results" || !slices.Equal(result.Expected, wireExpectedQuerySearchKeys(mode)) || result.Candidates != map[string]int{"off": 36, "oidc": 35}[mode] || result.SearchLimit != 20 || !slices.Equal(result.Ranking, wireExpectedQuerySearchKeys(mode)[:map[string]int{"off": 3, "oidc": 2}[mode]]) {
+				if json.Unmarshal(raw, &result) != nil || !result.Passed || result.Transport != "verified_tls_http2" || result.Qualification != "preparation_only" || mode == "oidc" && !strings.Contains(result.Actor, "jwt_role_bound") || result.Profile != profile || result.Processes != count || result.FixtureID != fixtureID || result.Axis != "end_to_end_mode_specific_authorized_results" || !slices.Equal(result.Expected, wireExpectedQuerySearchKeys(mode)) || result.Candidates != map[string]int{"off": 36, "oidc": 35}[mode] || result.SearchLimit != 20 || !slices.Equal(result.Ranking, wireExpectedQuerySearchKeys(mode)[:map[string]int{"off": 3, "oidc": 2}[mode]]) {
 					t.Fatalf("wrong report contract: %s", raw)
 				}
 				for _, status := range result.Measurements {

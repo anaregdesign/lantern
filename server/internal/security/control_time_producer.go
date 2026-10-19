@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -24,7 +25,7 @@ var (
 
 // Only errors returned by DNS, dial, Write or Read get this private marker.
 // It identifies a boundary, not a claim that the failure is transient. Native,
-// packet, source and installation failures must never acquire retry credits.
+// packet, source and installation failures remain separate classifications.
 type authorityTimeTransportError struct{ cause error }
 
 func (e *authorityTimeTransportError) Error() string { return e.cause.Error() }
@@ -91,7 +92,9 @@ type authorityTimeProducer struct {
 	sequence     uint64
 	addressTurn  uint64
 	attempts     uint64
+	writes       uint64
 	lastProbe    decisiontrace.Event
+	lastAttempt  decisiontrace.StartupAttempt
 	source       authorityTimeSource
 	sample       func() (authorityTimeStamp, error)
 }
@@ -120,10 +123,11 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 		p.mu.Unlock()
 		return authorityTimeMeasurement{}, errAuthorityTimeBusy
 	}
-	if ctx == nil || p.sample == nil || p.source.host == "" || p.source.configuration == [32]byte{} || p.sequence == ^uint64(0) || (address == "" && p.addressTurn == ^uint64(0)) {
+	if ctx == nil || p.sample == nil || p.source.host == "" || p.source.configuration == [32]byte{} || p.sequence == ^uint64(0) || p.attempts == ^uint64(0) || p.writes == ^uint64(0) || (address == "" && p.addressTurn == ^uint64(0)) {
 		p.mu.Unlock()
 		return authorityTimeMeasurement{}, errAuthorityTime
 	}
+	incoming := ctx
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	p.cancel, p.busy = cancel, true
 	sequence := p.sequence + 1
@@ -133,10 +137,14 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	}
 	p.attempts++
 	probe := decisiontrace.Event{Attempt: p.attempts, Turn: addressTurn, Stage: "dns", Reason: "ok"}
+	var readCount uint8
+	var firstReadError, finalReadError string
 	started := time.Now()
 	p.workers.Add(1)
 	p.mu.Unlock()
 	defer func() {
+		// Copy cancellation facts before our own cleanup cancel can change them.
+		exchangeState, incomingState := authorityTimeContextState(ctx), authorityTimeContextState(incoming)
 		cancel()
 		p.mu.Lock()
 		p.cancel, p.busy = nil, false
@@ -158,6 +166,10 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 			}
 		}
 		p.lastProbe = probe
+		p.lastAttempt = decisiontrace.StartupAttempt{Attempt: probe.Attempt, Stage: probe.Stage, Reason: probe.Reason,
+			HasReadBudget: probe.HasDeadline, ReadRemainingNS: probe.DeadlineLeft,
+			ExchangeContext: exchangeState, IncomingContext: incomingState,
+			ReadCount: readCount, FirstReadError: firstReadError, FinalReadError: finalReadError}
 		p.mu.Unlock()
 		p.workers.Done()
 	}()
@@ -236,11 +248,16 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	probe.Stage = "native_send"
 	sent, err := p.sample()
 	if err != nil {
-		return authorityTimeMeasurement{}, err
+		return authorityTimeMeasurement{}, errors.Join(errAuthorityTimeNative, err)
 	}
 	probe.Native = sent.nanos
 	probe.Stage = "send"
 	n, err := conn.Write(request[:])
+	if n > 0 {
+		p.mu.Lock()
+		p.writes++
+		p.mu.Unlock()
+	}
 	if err != nil {
 		return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
 	}
@@ -250,24 +267,34 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	// One extra byte makes oversized/truncated datagrams rejectable.
 	var raw [49]byte
 	probe.Stage = "read"
+	probe.HasDeadline, probe.DeadlineLeft = true, int64(time.Until(deadline))
 	n, err = conn.Read(raw[:])
+	readCount, firstReadError = 1, authorityTimeReadError(err)
+	finalReadError = firstReadError
+	// Give a zero-byte Darwin receive abort one bounded chance on the same
+	// socket. Never resend, renew the deadline or replace the original send
+	// sample: any response still has to satisfy the original native RTT bound.
+	if runtime.GOOS == "darwin" && n == 0 && errors.Is(err, syscall.ECONNABORTED) && ctx.Err() == nil && time.Until(deadline) > 0 {
+		n, err = conn.Read(raw[:])
+		readCount, finalReadError = 2, authorityTimeReadError(err)
+	}
 	if err != nil {
 		return authorityTimeMeasurement{}, &authorityTimeTransportError{err}
 	}
 	probe.Stage = "native_receive"
 	received, err := p.sample()
 	if err != nil {
-		return authorityTimeMeasurement{}, err
+		return authorityTimeMeasurement{}, errors.Join(errAuthorityTimeNative, err)
 	}
 	probe.Native = received.nanos
+	probe.Stage = "native_binding"
+	if sent.boot == [32]byte{} || sent.process == [16]byte{} || sent.boot != received.boot || sent.process != received.process || received.nanos < sent.nanos {
+		return authorityTimeMeasurement{}, errors.Join(errAuthorityTimeNative, errAuthorityTime)
+	}
 	probe.Stage = "packet"
 	packet, err := parseAuthorityNTP(raw[:n], nonce)
 	if err != nil {
 		return authorityTimeMeasurement{}, err
-	}
-	probe.Stage = "native_binding"
-	if sent.boot == [32]byte{} || sent.process == [16]byte{} || sent.boot != received.boot || sent.process != received.process || received.nanos < sent.nanos {
-		return authorityTimeMeasurement{}, errAuthorityTime
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -280,6 +307,26 @@ func (p *authorityTimeProducer) exchangeIO(ctx context.Context, address string,
 	p.sequence = sequence
 	probe.Stage = "measured"
 	return authorityTimeMeasurement{p.source, conn.RemoteAddr().String(), sent, received, packet, request, [48]byte(raw[:48]), sequence}, nil
+}
+
+// Only copied classifications survive a Read; never expose net.OpError text,
+// addresses or syscall strings. These facts do not control the receive path.
+func authorityTimeReadError(err error) string {
+	var timed net.Error
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, syscall.ECONNABORTED):
+		return "aborted"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &timed) && timed.Timeout():
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, net.ErrClosed):
+		return "closed"
+	default:
+		return "other"
+	}
 }
 
 func authorityTimeEndpoints(answers []netip.Addr, turn uint64) ([]string, error) {
@@ -316,10 +363,15 @@ func (p *authorityTimeProducer) close() {
 
 // This is only the completed attempt's copied diagnostic, never a time input.
 func (p *authorityTimeProducer) probeObservation() decisiontrace.Event {
+	probe, _ := p.completedProbe()
+	return probe
+}
+
+func (p *authorityTimeProducer) completedProbe() (decisiontrace.Event, decisiontrace.StartupAttempt) {
 	if p == nil {
-		return decisiontrace.Event{}
+		return decisiontrace.Event{}, decisiontrace.StartupAttempt{}
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.lastProbe
+	return p.lastProbe, p.lastAttempt
 }

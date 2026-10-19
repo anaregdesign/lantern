@@ -169,8 +169,9 @@ selects that upstream. Use the verified HTTPS upstream, optional private CA,
 exact trusted proxy and preserved public Host/scheme configuration described in
 [Fixed Server and diagnostics proxy](#fixed-server-and-diagnostics-proxy) and the
 [operations guide](../docs/oidc-operations.md#browser-and-diagnostics-boundary).
-This is the current fixed-writer baseline; future eligible-node routing remains
-#1608/#1609 S5 work.
+Pin these routes to a configured eligible authority origin and preserve
+per-attempt login affinity. Original quorum provisioning and current native time
+remain mandatory; operational cutover and final qualification remain #1608/#1609 S5 work.
 
 The optional same-origin `/api/prom` proxy for Ops Metrics requires the Server
 upstream and checks `/auth/operations` admission before each GET. Prometheus

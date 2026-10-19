@@ -123,25 +123,21 @@ a complete production or HA configuration:
 
 ```text
 LANTERN_AUTH_MODE=oidc
-LANTERN_SECURITY_PROFILE=legacy-v1
-LANTERN_OIDC_ADMIN_ISSUER=https://accounts.google.com
-LANTERN_OIDC_ADMIN_SUBJECTS=["<verified exact Google sub>"]
-LANTERN_OIDC_CLIENT_ID=<Web client ID>
-LANTERN_OIDC_ALGORITHMS=["RS256"]
+LANTERN_SECURITY_CONFIG_FILE=<absolute private node document>
+LANTERN_SECURITY_STORE_MODE=fresh
 LANTERN_OIDC_BROWSER_ORIGIN=<exact HTTPS Admin origin>
-LANTERN_OIDC_REDIRECT_URI=<origin plus the Google callback path above>
-LANTERN_OIDC_SECRET_REF=google_web
-LANTERN_OIDC_SECRET_BINDINGS={"google_web":{"issuer":"https://accounts.google.com","client_id":"<same Web client ID>","token_origin":"https://oauth2.googleapis.com","path":"<absolute private raw secret file>"}}
+LANTERN_OIDC_SECRET_BINDINGS={"google_web":{"issuer":"https://accounts.google.com","client_id":"<Web client ID>","token_origin":"https://oauth2.googleapis.com","path":"<absolute private raw secret file>"}}
 ```
 
-Complete native durability, generation/writer keys, bootstrap revision, TLS,
-qualified clock and other mandatory settings through the existing
-[operations runbook](oidc-operations.md) and [ADR](decisions/0012-oidc-prefix-rbac.md).
-Do not use an unverified JWT decoder, a guessed subject, email bootstrap,
-anonymous enrollment or a fabricated privileged session to obtain first-admin
-access. Subject discovery must be an operator-owned verified code exchange
-before enabling that bootstrap binding; if that binding is not yet available,
-provider setup remains incomplete.
+The independent original genesis must contain the exact Google Issuer and
+verified administrator subjects, browser client ID, API audience, callback,
+allowed `RS256` algorithm and `secret_ref=google_web`. The node document binds
+the original voter/origin identities, native time, journal/custody paths and
+membership. See the [operations runbook](oidc-operations.md); old environment
+bootstrap and writer/profile settings are rejected. No provider, credential or
+host settings are changed by these instructions. Subject discovery requires an
+operator-owned verified Code exchange; email or unverified JWT decoding cannot
+supply first-admin authority.
 
 The required Lantern API audience is a distinct Server configuration. Google
 access tokens issued for Google APIs and Google ID tokens are not Lantern's
@@ -162,8 +158,7 @@ Verify scoped data-Role creation and exact self-assignment, allowed in-prefix
 CRUD and outside-prefix rejection without implicit grants. Retain historical
 five-minute rejections as source-specific evidence. Test invalid, future and
 contradictory evidence and machine restrictions separately. Test a signed
-post-review event separately if the provider supports it; retain the fixed-writer
-and Google reauthentication limitations. Synthetic wire and UI contract
+post-review event separately if the provider supports it; retain actual Google reauthentication limitations. Synthetic wire and UI contract
 fixtures do not prove actual provider/browser acceptance.
 The user performs the Google sign-in and any provider-owned MFA; an agent does
 not collect their password or MFA code.

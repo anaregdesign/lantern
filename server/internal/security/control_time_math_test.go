@@ -118,16 +118,12 @@ func TestAuthorityTimeEstimate(t *testing.T) {
 		t.Fatalf("holdover: %+v %v", got, err)
 	}
 	for i := 0; i < 3; i++ {
-		if _, err := a.atSample(fakeAuthorityTimeStamp(m.received.nanos + p.maxAge)); err == nil {
-			t.Fatal("equality expiry or repeated read reset accepted")
+		if _, err := a.atSample(fakeAuthorityTimeStamp(m.received.nanos + 3_600_000_000_000)); err != nil || a.at != m.received {
+			t.Fatal("long holdover refused or repeated read reset anchor", err)
 		}
-	}
-	if _, err := a.atSample(fakeAuthorityTimeStamp(m.received.nanos + p.maxAge - 1)); err != nil {
-		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*authorityTimePremises, *authorityTimeMeasurement){
 		"RTT equality":        func(p *authorityTimePremises, m *authorityTimeMeasurement) { p.maxRTT = m.received.nanos },
-		"too wide":            func(p *authorityTimePremises, _ *authorityTimeMeasurement) { p.maxWidth = 100 },
 		"UTC expiry equality": func(p *authorityTimePremises, _ *authorityTimeMeasurement) { p.validUTC.high = a.utc.high },
 		"unknown era": func(p *authorityTimePremises, _ *authorityTimeMeasurement) {
 			p.validUTC = authorityTimeRange{0, math.MaxUint64}
@@ -144,13 +140,13 @@ func TestAuthorityTimeEstimate(t *testing.T) {
 		})
 	}
 	t.Run("holdover rate widens uncertainty", func(t *testing.T) {
-		p.ratePPB, p.maxWidth = 100_000_000, 200_000_000
+		p.ratePPB = 100_000_000
 		a, err := calculateAuthorityTime(m, p)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := a.atSample(fakeAuthorityTimeStamp(1_100_000_000)); err == nil {
-			t.Fatal("excess holdover uncertainty accepted")
+		if r, err := a.atSample(fakeAuthorityTimeStamp(1_100_000_000)); err != nil || r.high-r.low <= a.utc.high-a.utc.low {
+			t.Fatal("holdover did not preserve growing uncertainty", err)
 		}
 	})
 }
@@ -220,7 +216,7 @@ func TestAuthorityTimeSourceBoundsAndEra(t *testing.T) {
 	if _, err := calculateAuthorityTime(m, p); err != nil {
 		t.Fatal("ordered exchange across era rollover", err)
 	}
-	if p.contains(authorityTimeRange{p.validUTC.low, p.validUTC.low + p.maxWidth}) {
-		t.Fatal("width equality accepted")
+	if !p.contains(authorityTimeRange{p.validUTC.low, p.validUTC.low + 10_000_000_000}) {
+		t.Fatal("arbitrary width cutoff")
 	}
 }

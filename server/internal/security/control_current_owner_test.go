@@ -22,7 +22,7 @@ func TestCurrentCustodyRunningBarrierNativeGate(t *testing.T) {
 	if os.Getenv("LANTERN_CURRENT_CUSTODY_GATE") != "1" {
 		t.Skip("explicit production native custody container gate")
 	}
-	p, err := LoadCurrentProvisioning(os.Getenv("LANTERN_SECURITY_CURRENT_CONFIG_FILE"))
+	p, err := LoadCurrentProvisioning(os.Getenv("LANTERN_SECURITY_CONFIG_FILE"))
 	if err != nil {
 		t.Fatal(err)
 	}

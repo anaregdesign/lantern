@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"errors"
-	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"io"
 	"log/slog"
 	"net"
@@ -11,6 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 )
 
 func startPeerPlaneRequest(t *testing.T, handler http.Handler) (context.CancelFunc, <-chan error, <-chan struct{}) {
@@ -141,13 +142,13 @@ func TestPeerPlaneRunReturnsDrainTimeout(t *testing.T) {
 }
 
 func TestPeerPlaneDisabledStillRequiresCertifiedServiceAndJoins(t *testing.T) {
-	_, data, _ := securityRuntimeFixture(t)
+	data := securityDataFixture(t)
 	svc := data.NewLanternService(nil)
 	rep, err := data.NewLanternReplicationService(svc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := NewPeerPlaneServer(PeerPlaneConfig{}, nil, nil, rep, NetConfig{}, nil, runtimeCertified{}, nil); err == nil {
+	if _, _, err := NewPeerPlaneServer(PeerPlaneConfig{}, nil, rep, NetConfig{}, nil, runtimeCertified{}, nil); err == nil {
 		t.Fatal("private surface ignored runtime identity")
 	}
 	restored, err := NewRuntimeRestored(data, svc)
@@ -158,7 +159,7 @@ func TestPeerPlaneDisabledStillRequiresCertifiedServiceAndJoins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, cleanup, err := NewPeerPlaneServer(PeerPlaneConfig{}, nil, nil, rep, NetConfig{}, slog.New(slog.NewTextHandler(io.Discard, nil)), cert, nil)
+	server, cleanup, err := NewPeerPlaneServer(PeerPlaneConfig{}, nil, rep, NetConfig{}, slog.New(slog.NewTextHandler(io.Discard, nil)), cert, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +179,7 @@ func TestPeerPlaneDisabledStillRequiresCertifiedServiceAndJoins(t *testing.T) {
 }
 
 func TestPeerListenerAdoptionRequiresExactRuntime(t *testing.T) {
-	_, data, _ := securityRuntimeFixture(t)
+	data := securityDataFixture(t)
 	svc := data.NewLanternService(nil)
 	rep, err := data.NewLanternReplicationService(svc)
 	if err != nil {
@@ -192,7 +193,7 @@ func TestPeerListenerAdoptionRequiresExactRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, phase := range []string{"foreign_replication", "frame", "missing_workload", "foreign_policy", "unexpected_private"} {
+	for _, phase := range []string{"foreign_replication", "frame", "missing_workload", "unexpected_private"} {
 		t.Run(phase, func(t *testing.T) {
 			owner, err := listenerlaunch.Reserve(t.Context(), true)
 			if err != nil {
@@ -202,18 +203,15 @@ func TestPeerListenerAdoptionRequiresExactRuntime(t *testing.T) {
 			_, address := owner.Addresses()
 			config := PeerPlaneConfig{ListenAddress: address}
 			certified := cert
-			var policy *SecurityPeerRuntime
 			switch phase {
 			case "foreign_replication":
 				certified.replication = nil
 			case "frame":
 				certified.replicationSendMaxBytes = 1
-			case "foreign_policy":
-				policy = &SecurityPeerRuntime{}
 			case "unexpected_private":
 				config.ListenAddress = ""
 			}
-			if _, cleanup, err := NewPeerPlaneServer(config, nil, policy, rep, NetConfig{}, nil, certified, owner); err == nil {
+			if _, cleanup, err := NewPeerPlaneServer(config, nil, rep, NetConfig{}, nil, certified, owner); err == nil {
 				cleanup()
 				t.Fatal("private guard bypassed")
 			}

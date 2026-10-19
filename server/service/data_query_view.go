@@ -19,6 +19,21 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 	if admission == nil {
 		return ctx, nil
 	}
+	planned, resources, err := planDataQuery(ctx, message, admission.Access())
+	if err != nil {
+		return nil, err
+	}
+	if resources == nil {
+		return planned, nil
+	}
+	if err = bindCurrentDataOutput(ctx, admission, message, resources); err != nil {
+		return nil, err
+	}
+	return planned, nil
+}
+
+// planDataQuery translates immutable policy into physical Core views.
+func planDataQuery(ctx context.Context, message proto.Message, access *security.Access) (context.Context, []security.PublicOutputResource, error) {
 	actions := []security.Action{security.VertexRead, security.Query}
 	var vertexPrefix, tailPrefix, headPrefix string
 	edgeCollection, needsEdges := false, false
@@ -55,20 +70,19 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 		needsEdges = true
 		actions, vertexPrefix = []security.Action{security.VertexRead, security.Export}, request.GetVertexPrefix()
 	default:
-		return ctx, nil
+		return ctx, nil, nil
 	}
-	access := admission.Access()
 	vertices := access.Scope(actions...)
 	if headModification {
 		vertices = access.EdgeCandidateScope(security.EdgeDelete)
 		// Collection authority is proved from policy alone, before scanning
 		// hidden state. Each final Edge keeps its tail/read, head/write cut.
 		if access.Scope(security.VertexRead).Within(tailPrefix).Empty() || access.Scope(security.VertexWrite).Within(headPrefix).Empty() {
-			return nil, dataPermissionError()
+			return nil, nil, dataPermissionError()
 		}
 	}
 	if vertices.Within(vertexPrefix).Empty() {
-		return nil, dataPermissionError()
+		return nil, nil, dataPermissionError()
 	}
 	edgeActions := append([]security.Action(nil), actions...)
 	var edges *security.Scope
@@ -81,7 +95,7 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 		edges = access.EdgeCandidateScope(edgeActions...)
 	}
 	if edgeCollection && (edges.Within(tailPrefix).Empty() || edges.Within(headPrefix).Empty()) {
-		return nil, dataPermissionError()
+		return nil, nil, dataPermissionError()
 	}
 	var resources []security.PublicOutputResource
 	if headModification {
@@ -94,15 +108,13 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 	if needsEdges && !edges.Empty() {
 		resources = append(resources, security.PublicOutputResource{Kind: security.OutputEdgeCollection, Prefix: tailPrefix, Actions: edgeActions}, security.PublicOutputResource{Kind: security.OutputEdgeCollection, Prefix: headPrefix, Actions: edgeActions})
 	}
-	if err := bindCurrentDataOutput(ctx, admission, message, resources); err != nil {
-		return nil, err
-	}
+
 	all := true
 	for _, action := range edgeActions {
 		all = all && access.AllowsAll(action)
 	}
 	if all {
-		return ctx, nil
+		return ctx, resources, nil
 	}
 	physicalRange := func(r security.Range) graphcache.KeyRange {
 		upper := "data;"
@@ -134,7 +146,7 @@ func (s *LanternService) dataQueryContext(ctx context.Context, message proto.Mes
 	}
 	view, err := graphcache.NewQueryViewWithEdgeFilters(physicalRanges(vertices.Ranges()), physicalRanges(edges.Ranges()), filters)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("invalid authorized view"))
+		return nil, nil, connect.NewError(connect.CodeInternal, errors.New("invalid authorized view"))
 	}
-	return graphcache.WithQueryView(ctx, view), nil
+	return graphcache.WithQueryView(ctx, view), resources, nil
 }

@@ -30,14 +30,12 @@ jobs:
       receipt_sha256: ${{ steps.qualify.outputs.receipt_sha256 }}
       artifact_id: ${{ steps.evidence.outputs.artifact-id }}
     steps:
-      - name: Prepare container tools and read-only source input
+      - name: Prepare container tools
         shell: bash
         run: |
           set -euo pipefail
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates curl git python3 unzip xz-utils build-essential pkg-config libssl-dev
-          printf 'server time.asia.apple.com\n' > /tmp/current-sdk4-ntp.conf
-          install -m 0444 /tmp/current-sdk4-ntp.conf /etc/ntp.conf
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
@@ -47,6 +45,11 @@ jobs:
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git status --porcelain
+      - name: Prepare declared read-only source input
+        if: inputs.proof_kind == 'Q'
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_input.py
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod

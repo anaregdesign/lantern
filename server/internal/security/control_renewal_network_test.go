@@ -101,6 +101,19 @@ func TestAuthorityRenewalNetwork(t *testing.T) {
 }
 
 func TestAuthorityRenewalNetworkConfiguration(t *testing.T) {
+	for _, count := range []int{1, 2, 4, 30, 31} {
+		// Constructor arithmetic only: no listeners or network owners are needed.
+		c := s3aConfig{Participant: s2cParticipantConfig{Trust: s2cTestCluster(t, count).trust}}
+		clock, _ := fakeAuthorityTimeOwner(t)
+		c.Limits.MaxConnections = 2 * count
+		if bindAuthorityNetworkTime(&c, clock) == nil {
+			t.Fatal("one-short current connection limit", count)
+		}
+		c.Limits.MaxConnections++
+		if err := bindAuthorityNetworkTime(&c, clock); err != nil {
+			t.Fatal("exact current connection limit", count, err)
+		}
+	}
 	n := s3aTestCluster(t, nil)
 	c := n.configs[1]
 	clock, _ := fakeAuthorityTimeOwnerAt(t, c.Membership.Now())

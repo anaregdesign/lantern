@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -133,36 +132,7 @@ func TestAuthorityTimeLinuxNativeSampler(t *testing.T) {
 	t.Logf("Linux native uid=%d boot=%x process=%x new_process=%x counter=%d; no host suspend/reboot claim", os.Getuid(), a.boot, a.process, c.process, c.nanos)
 }
 
-func TestAuthorityTimeLinuxConfiguredUpstream(t *testing.T) {
-	if os.Getenv("LANTERN_TEST_CONFIGURED_TIME_UPSTREAM") != "1" {
-		t.Skip("explicit bounded native campaign only")
-	}
-	o, err := newNativeAuthorityTimeOwner()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer o.close()
-	deadline := time.Now().Add(45 * time.Second)
-	for {
-		if now, err := o.current(); err == nil {
-			o.mu.Lock()
-			m := *o.lastObservation
-			o.mu.Unlock()
-			t.Logf("Linux configured profile=%x host=%s configuration=%x endpoint=%s sequence=%d boot=%x process=%x sent=%d received=%d current=%d UTC=[%d,%d] request=%x response=%x; conditional source/path/rate premises", now.profile, m.source.host, m.source.configuration, m.endpoint, m.sequence, now.stamp.boot, now.stamp.process, m.sent.nanos, m.received.nanos, now.stamp.nanos, now.utc.low, now.utc.high, m.request, m.response)
-			return
-		}
-		if time.Now().After(deadline) {
-			o.mu.Lock()
-			cause := o.lastError
-			o.mu.Unlock()
-			t.Fatal("bounded Linux source startup unavailable", cause)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// The opt-in test adds a restrictive seccomp filter only to its own locked
-// OS thread. Existing Docker restrictions remain in force. No procfs mount,
+// The opt-in test restricts only its own locked OS thread. No procfs mount,
 // host setting, added capability or production injection is involved.
 func TestAuthorityTimeLinuxUnavailableNativeIdentity(t *testing.T) {
 	if os.Getenv("LANTERN_TEST_NATIVE_IDENTITY_UNAVAILABLE") != "1" {

@@ -7,15 +7,86 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
+
+func TestAuthorityTimeProducerStartupContextObservation(t *testing.T) {
+	for _, mode := range []string{"own deadline", "upstream cancel", "upstream deadline", "immediate read error", "depleted pre-read budget"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				incoming, cancel := context.WithCancel(context.Background())
+				if mode == "upstream deadline" {
+					cancel()
+					incoming, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+				}
+				defer cancel()
+				source, _ := parseAuthorityTimeSource([]byte("server fixture.invalid"))
+				var samples int
+				p := &authorityTimeProducer{source: source, sample: func() (authorityTimeStamp, error) {
+					samples++
+					return fakeAuthorityTimeStamp(uint64(samples) * 10_000_000), nil
+				}}
+				defer p.close()
+				var flight context.Context
+				conn := &timeProducerConn{write: func(b []byte) (int, error) { return len(b), nil }, read: func([]byte) (int, error) {
+					if mode == "immediate read error" {
+						return 0, net.ErrClosed
+					}
+					if mode == "upstream cancel" {
+						cancel()
+					}
+					<-flight.Done()
+					return 0, net.ErrClosed
+				}}
+				_, err := p.exchangeIO(incoming, "", func(context.Context, string, string) ([]netip.Addr, error) {
+					if mode == "depleted pre-read budget" {
+						time.Sleep(2900 * time.Millisecond)
+					}
+					return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+				}, func(ctx context.Context, _, _ string) (net.Conn, error) { flight = ctx; return conn, nil })
+				if err == nil || samples != 1 {
+					t.Fatal("diagnostic changed the failed exchange or native sampling count")
+				}
+				if p.attempts != 1 || p.writes != 1 || p.busy {
+					t.Fatal("complete acquisition counters changed")
+				}
+				_, observation := p.completedProbe()
+				if observation.Attempt != 1 || observation.Stage != "read" || !observation.HasReadBudget {
+					t.Fatal("observation does not describe the actual failed Read")
+				}
+				wantIncoming, wantExchange := decisiontrace.ContextLive, decisiontrace.ContextDeadlineExceeded
+				wantBudget := int64(3 * time.Second)
+				switch mode {
+				case "upstream cancel":
+					wantIncoming, wantExchange = decisiontrace.ContextCanceled, decisiontrace.ContextCanceled
+				case "upstream deadline":
+					wantIncoming, wantBudget = decisiontrace.ContextDeadlineExceeded, int64(100*time.Millisecond)
+				case "immediate read error":
+					wantExchange = decisiontrace.ContextLive
+				case "depleted pre-read budget":
+					wantBudget = int64(100 * time.Millisecond)
+				}
+				if observation.IncomingContext != wantIncoming || observation.ExchangeContext != wantExchange || observation.ReadRemainingNS != wantBudget {
+					t.Fatalf("pre-cleanup context/budget differs: %+v", observation)
+				}
+				if flight.Err() == nil {
+					t.Fatal("exchange cleanup did not cancel its child context")
+				}
+			})
+		})
+	}
+}
 
 func TestAuthorityTimeSource(t *testing.T) {
 	source, err := parseAuthorityTimeSource([]byte("# existing source\nserver time.asia.apple.com\n"))
@@ -114,6 +185,9 @@ func TestAuthorityTimeProducer(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				t.Fatal("measurement did not join")
 			}
+			if (mode == "sample failure" || mode == "sample regression" || mode == "sample epoch") && !errors.Is(result.err, errAuthorityTimeNative) {
+				t.Fatal("native fault lost terminal classification")
+			}
 			probe := p.probeObservation()
 			if probe.Attempt != 1 || probe.EndpointDigest != fmt.Sprintf("%x", sha256.Sum256([]byte(server.LocalAddr().String()))) || probe.Family != "ipv4" || probe.Elapsed <= 0 {
 				t.Fatal("probe diagnostic is not the completed attempt")
@@ -188,19 +262,258 @@ func TestAuthorityTimeEndpointUsesBoundedConfiguredAnswers(t *testing.T) {
 type timeProducerConn struct {
 	write       func([]byte) (int, error)
 	read        func([]byte) (int, error)
+	deadline    func(time.Time) error
+	close       func() error
 	deadlineErr error
 }
 
 func (c *timeProducerConn) Write(p []byte) (int, error) { return c.write(p) }
 func (c *timeProducerConn) Read(p []byte) (int, error)  { return c.read(p) }
-func (*timeProducerConn) Close() error                  { return nil }
+func (c *timeProducerConn) Close() error {
+	if c.close != nil {
+		return c.close()
+	}
+	return nil
+}
 func (*timeProducerConn) LocalAddr() net.Addr {
 	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 123}
 }
-func (c *timeProducerConn) RemoteAddr() net.Addr           { return c.LocalAddr() }
-func (c *timeProducerConn) SetDeadline(time.Time) error    { return c.deadlineErr }
+func (c *timeProducerConn) RemoteAddr() net.Addr { return c.LocalAddr() }
+func (c *timeProducerConn) SetDeadline(at time.Time) error {
+	if c.deadline != nil {
+		return c.deadline(at)
+	}
+	return c.deadlineErr
+}
 func (*timeProducerConn) SetReadDeadline(time.Time) error  { return nil }
 func (*timeProducerConn) SetWriteDeadline(time.Time) error { return nil }
+
+func TestAuthorityTimeProducerDarwinReadAbort(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Darwin-only receive tolerance")
+	}
+	for _, mode := range []string{"recover", "repeated abort", "abort then timeout", "other errno", "closed", "timeout", "parent cancel", "deadline", "partial error", "bad nonce", "oversize", "source fault", "RATE", "DENY", "RSTR", "native epoch", "RTT before", "RTT equality", "RTT after", "cancel second"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				source, _ := parseAuthorityTimeSource([]byte("server fixture.invalid"))
+				lookups, dials, writes, reads, samples, deadlines := 0, 0, 0, 0, 0, 0
+				sent, received := uint64(10_000_000), uint64(20_000_000)
+				// Operational premises make this delta's conservative upper RTT
+				// exactly one second, including rate and read uncertainty.
+				switch mode {
+				case "RTT before":
+					received = sent + 998_997_999
+				case "RTT equality":
+					received = sent + 998_998_000
+				case "RTT after":
+					received = sent + 998_998_001
+				}
+				p := &authorityTimeProducer{source: source, sample: func() (authorityTimeStamp, error) {
+					samples++
+					at := received
+					if samples == 1 {
+						at = sent
+					}
+					stamp := fakeAuthorityTimeStamp(at)
+					if samples == 2 && mode == "native epoch" {
+						stamp.boot[0] ^= 1
+					}
+					return stamp, nil
+				}}
+				defer p.close()
+				abort := &net.OpError{Op: "read", Net: "udp", Err: os.NewSyscallError("read", syscall.ECONNABORTED)}
+				secondAbort := &net.OpError{Op: "read", Net: "udp", Err: os.NewSyscallError("read", syscall.ECONNABORTED)}
+				var cause error = abort
+				var nonce [8]byte
+				var deadline time.Time
+				closed := make(chan struct{})
+				var closeOnce sync.Once
+				conn := &timeProducerConn{
+					deadline: func(at time.Time) error {
+						deadlines++
+						if at != deadline {
+							t.Fatal("renewed the original deadline")
+						}
+						return nil
+					},
+					close: func() error { closeOnce.Do(func() { close(closed) }); return nil },
+					write: func(b []byte) (int, error) {
+						writes++
+						copy(nonce[:], b[40:48])
+						return len(b), nil
+					},
+					read: func(b []byte) (int, error) {
+						reads++
+						if samples != 1 || writes != 1 || reads > 2 {
+							t.Fatal("resampled, resent or exceeded the receive bound")
+						}
+						if reads == 1 {
+							time.Sleep(10 * time.Millisecond)
+							switch mode {
+							case "other errno":
+								cause = os.NewSyscallError("read", syscall.ECONNRESET)
+							case "closed":
+								cause = net.ErrClosed
+							case "timeout":
+								cause = os.ErrDeadlineExceeded
+							case "parent cancel":
+								cancel()
+							case "deadline":
+								time.Sleep(time.Until(deadline))
+							case "partial error":
+								return 1, cause
+							}
+							return 0, cause
+						}
+						if mode == "repeated abort" {
+							cause = secondAbort
+							return 0, cause
+						}
+						if mode == "abort then timeout" {
+							cause = os.ErrDeadlineExceeded
+							return 0, cause
+						}
+						if mode == "cancel second" {
+							cancel()
+							<-closed
+							cause = net.ErrClosed
+							return 0, cause
+						}
+						response := fakeAuthorityNTPResponse(nonce)
+						switch mode {
+						case "bad nonce":
+							response[24] ^= 1
+						case "source fault":
+							response[0] |= 1 << 6
+						case "RATE", "DENY", "RSTR":
+							response[1] = 0
+							copy(response[12:16], mode)
+						}
+						n := copy(b, response[:])
+						if mode == "oversize" {
+							b[n] = 1
+							n++
+						}
+						return n, nil
+					},
+				}
+				m, err := p.exchangeIO(ctx, "", func(ctx context.Context, _, _ string) ([]netip.Addr, error) {
+					lookups++
+					deadline, _ = ctx.Deadline()
+					return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+				}, func(context.Context, string, string) (net.Conn, error) { dials++; return conn, nil })
+				wantReads := 2
+				switch mode {
+				case "other errno", "closed", "timeout", "parent cancel", "deadline", "partial error":
+					wantReads = 1
+				}
+				if lookups != 1 || dials != 1 || writes != 1 || reads != wantReads || deadlines != 1 || p.attempts != 1 || p.addressTurn != 1 {
+					t.Fatalf("changed exchange/query bounds: lookup%d dial%d write%d read%d deadline%d attempt%d turn%d", lookups, dials, writes, reads, deadlines, p.attempts, p.addressTurn)
+				}
+				_, observed := p.completedProbe()
+				wantFirst, wantFinal := "aborted", "none"
+				if wantReads == 1 {
+					wantFirst, wantFinal = authorityTimeReadError(cause), authorityTimeReadError(cause)
+				} else if mode == "repeated abort" || mode == "cancel second" || mode == "abort then timeout" {
+					wantFinal = authorityTimeReadError(cause)
+				}
+				if int(observed.ReadCount) != wantReads || observed.FirstReadError != wantFirst || observed.FinalReadError != wantFinal {
+					t.Fatal("lost first/final bounded read classification", observed)
+				}
+				measured := mode == "recover" || strings.HasPrefix(mode, "RTT ")
+				if !measured {
+					if err == nil || m != (authorityTimeMeasurement{}) {
+						t.Fatal("failed receive created a measurement")
+					}
+					var transport *authorityTimeTransportError
+					wantTransport := wantReads == 1 || mode == "repeated abort" || mode == "cancel second" || mode == "abort then timeout"
+					if errors.As(err, &transport) != wantTransport || wantTransport && !errors.Is(err, cause) {
+						t.Fatal("lost error identity or source/native refusal priority")
+					}
+					if mode == "RATE" && !errors.Is(err, errAuthorityTimeRate) || (mode == "DENY" || mode == "RSTR") && !errors.Is(err, errAuthorityTimeDenied) {
+						t.Fatal("lost source response priority")
+					}
+					return
+				}
+				if err != nil || samples != 2 || m.sent.nanos != sent || m.received.nanos != received || m.sequence != 1 || [8]byte(m.request[40:48]) != nonce {
+					t.Fatal("changed the original send/receive binding", err)
+				}
+				owner := &authorityTimeOwner{producer: p, premises: authorityOperationalTimePremises()}
+				bound, boundErr := owner.premises.elapsed(m.sent, m.received)
+				if boundErr != nil || mode == "RTT equality" && bound.high != owner.premises.maxRTT {
+					t.Fatal("test no longer exercises conservative RTT equality")
+				}
+				err = owner.installLocked(m)
+				if mode == "RTT equality" || mode == "RTT after" {
+					if err == nil || owner.anchor != nil || owner.sequence != 0 || owner.installReason != "rtt" {
+						t.Fatal("receive retry bypassed the original RTT bound")
+					}
+				} else if err != nil || owner.anchor == nil || owner.sequence != 1 || samples != 3 {
+					t.Fatal("valid bounded response did not install", err)
+				}
+			})
+		})
+	}
+}
+
+func TestAuthorityTimeReadErrorIsFixedClassification(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{nil, "none"},
+		{fmt.Errorf("private address: %w", syscall.ECONNABORTED), "aborted"},
+		{os.ErrDeadlineExceeded, "timeout"},
+		{context.Canceled, "canceled"},
+		{net.ErrClosed, "closed"},
+		{errors.New("private endpoint/body"), "other"},
+	} {
+		if got := authorityTimeReadError(tc.err); got != tc.want {
+			t.Fatal("wrong fixed read classification", got)
+		}
+	}
+}
+
+func TestAuthorityTimeProducerDarwinReadAbortClose(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Darwin-only receive tolerance")
+	}
+	synctest.Test(t, func(t *testing.T) {
+		source, _ := parseAuthorityTimeSource([]byte("server fixture.invalid"))
+		p := &authorityTimeProducer{source: source, sample: func() (authorityTimeStamp, error) { return fakeAuthorityTimeStamp(1), nil }}
+		defer p.close()
+		entered, closed, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+		var once sync.Once
+		reads := 0
+		conn := &timeProducerConn{close: func() error { once.Do(func() { close(closed) }); return nil }, write: func(b []byte) (int, error) { return len(b), nil }, read: func([]byte) (int, error) {
+			reads++
+			if reads == 1 {
+				return 0, syscall.ECONNABORTED
+			}
+			close(entered)
+			<-closed
+			return 0, net.ErrClosed
+		}}
+		go func() {
+			_, err := p.exchangeIO(context.Background(), "127.0.0.1:123", nil, func(context.Context, string, string) (net.Conn, error) { return conn, nil })
+			done <- err
+		}()
+		select {
+		case <-entered:
+		case err := <-done:
+			t.Fatal("did not reach the bounded additional read", err)
+		}
+		if _, err := p.exchange(context.Background(), "127.0.0.1:123"); !errors.Is(err, errAuthorityTimeBusy) {
+			t.Fatal("additional read escaped single flight", err)
+		}
+		p.close()
+		if err := <-done; !errors.Is(err, net.ErrClosed) || reads != 2 {
+			t.Fatal("close did not cancel and join the additional read", err)
+		}
+	})
+}
 
 func TestAuthorityTimeTransportClassification(t *testing.T) {
 	for _, mode := range []string{"dns", "dial", "write", "read", "deadline", "short write", "native send", "native receive", "dns answers", "packet", "source fault", "RATE", "DENY", "RSTR"} {

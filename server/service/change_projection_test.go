@@ -15,24 +15,15 @@ import (
 )
 
 func TestChangeProjectionExactScopesAndCurrentImage(t *testing.T) {
-	handler, _, contexts := securityAPIFixture(t)
-	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: "https://idp.example", Subject: "reader"}
-	var rules []*pb.SecurityRule
-	for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, pb.SecurityAction_SECURITY_ACTION_CDC_VALUE, pb.SecurityAction_SECURITY_ACTION_VERTEX_READ} {
-		rules = append(rules, &pb.SecurityRule{Id: string(rune('a' + i)), Action: action, Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"}})
+	rules := []security.PermissionRule{}
+	for i, action := range []security.Action{security.CDCIdentity, security.CDCValue, security.VertexRead} {
+		rules = append(rules, dataAccessRule(string(rune('a'+i)), security.Allow, action, "orders:"))
 	}
-	rules = append(rules, &pb.SecurityRule{Id: "private", Action: pb.SecurityAction_SECURITY_ACTION_CDC_IDENTITY, Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:private:"}}, &pb.SecurityRule{Id: "unreadable", Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:unreadable:"}})
-	_, err := handler.ApplySecurityChanges(contexts("admin", handler.now()), connect.NewRequest(&pb.ApplySecurityChangesRequest{ExpectedRevision: 1, ChangeId: bytes.Repeat([]byte{31}, 16), Changes: []*pb.SecurityChange{
-		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "cdc", Rules: rules}}},
-		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "cdc"}}},
-	}}))
-	if err != nil {
-		t.Fatal(err)
-	}
+	rules = append(rules, dataAccessRule("private", security.Deny, security.CDCIdentity, "orders:private:"), dataAccessRule("unreadable", security.Deny, security.VertexRead, "orders:unreadable:"))
+	access := dataAccessFixture(t, rules)
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
-	svc := NewLanternService(cache).WithDataNamespace().WithDataAuthorization(handler.now)
-	ctx := contexts("reader", handler.now())
-	admission, _ := security.AdmissionFromContext(ctx)
+	svc := NewLanternService(cache).WithDataNamespace().WithDataAuthorization(time.Now)
+	ctx := t.Context()
 	for _, key := range []string{"orders:1", "orders:private:1", "orders:unreadable:1", "other:1"} {
 		if err := cache.PutVertex("data:"+key, &pb.Vertex{Key: "data:" + key, Value: &pb.Vertex_String_{String_: "current-" + key}}); err != nil {
 			t.Fatal(err)
@@ -40,7 +31,7 @@ func TestChangeProjectionExactScopesAndCurrentImage(t *testing.T) {
 	}
 	mutation := &pb.Mutation{Origin: bytes.Repeat([]byte{1}, 16), Seq: 1, Hlc: &pb.HLCTimestamp{NodeId: bytes.Repeat([]byte{1}, 16)}, Op: &pb.MutationOp{Op: &pb.MutationOp_PutVertices{PutVertices: &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "data:orders:1"}, {Key: "data:orders:private:1"}, {Key: "data:orders:unreadable:1"}, {Key: "data:other:1"}, {Key: "sys:control"}}}}}}
 	for _, projection := range []pb.ChangeProjection{pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY, pb.ChangeProjection_CHANGE_PROJECTION_VALUE} {
-		p := newChangeProjection(svc, &pb.WatchChangesRequest{Prefix: "orders:", Projection: projection}, admission)
+		p := newChangeProjection(svc, &pb.WatchChangesRequest{Prefix: "orders:", Projection: projection}, access)
 		var frames []*pb.WatchChangesResponse
 		advanced := 0
 		wantItems := 2
@@ -72,7 +63,7 @@ func TestChangeProjectionExactScopesAndCurrentImage(t *testing.T) {
 	// Both endpoints must qualify independently; hidden-only mutations still
 	// advance internal progress without an observable extra frame.
 	edges := &pb.Mutation{Origin: mutation.Origin, Seq: 2, Hlc: mutation.Hlc, Op: &pb.MutationOp{Op: &pb.MutationOp_DeleteEdges{DeleteEdges: &pb.DeleteEdgesRequest{Edges: []*pb.EdgeKey{{Tail: "data:orders:1", Head: "data:orders:private:1"}, {Tail: "data:orders:1", Head: "data:other:1"}}}}}}
-	p := newChangeProjection(svc, &pb.WatchChangesRequest{Projection: pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY}, admission)
+	p := newChangeProjection(svc, &pb.WatchChangesRequest{Projection: pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY}, access)
 	advanced := false
 	if err := p.project(ctx, edges, func(visible bool) ([]byte, error) {
 		if visible {
@@ -138,12 +129,11 @@ func TestChangeProjectionRequiresReadableEndpointsAndIndependentCapabilities(t *
 					dataAccessRule("value-users", security.Allow, security.CDCValue, "users:"),
 					dataAccessRule("value-targets", security.Allow, security.CDCValue, "targets:"))
 			}
-			clock, contexts := dataAccessFixture(t, rules)
+			access := dataAccessFixture(t, rules)
 			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
-			svc := NewLanternService(cache).WithDataNamespace().WithDataAuthorization(clock)
-			ctx := contexts("reader", clock())
-			admission, _ := security.AdmissionFromContext(ctx)
-			p := newChangeProjection(svc, &pb.WatchChangesRequest{Projection: projection}, admission)
+			svc := NewLanternService(cache).WithDataNamespace().WithDataAuthorization(time.Now)
+			ctx := t.Context()
+			p := newChangeProjection(svc, &pb.WatchChangesRequest{Projection: projection}, access)
 			for _, test := range []struct {
 				tail, head string
 				allowed    bool

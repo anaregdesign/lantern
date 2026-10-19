@@ -434,12 +434,23 @@ server at the repository root, then run:
 ```sh
 mkdir -p sdks/rust/target
 go build -o sdks/rust/target/lantern-smoke ./server/cmd
+go build -o sdks/rust/target/lantern-authfixture ./server/cmd/authfixture
 cd sdks/rust
 LANTERN_RUST_TEST_SERVER="$PWD/target/lantern-smoke" \
-  cargo test --locked --all-features -- --ignored --test-threads=1 \
-    --skip scoped_changes::tests::real_public_scoped_wire \
-    --skip security::tests::real_public_current_wire
+LANTERN_RUST_TEST_AUTH_FIXTURE="$PWD/target/lantern-authfixture" \
+  python -B ../../.github/scripts/rust_wire.py
 ```
+
+Local authenticated Server fixtures require the supported Darwin/arm64 or
+Linux/amd64/arm64 native authority profile and its declared read-only source
+input; see the [platform and time contract](../../docs/security-current-authority.md).
+Windows retains native roots, HTTPS, OFF+mTLS and ordinary wire cases, plus
+file/ACL/process checks and explicit unsupported-authority refusal. The seven
+local OIDC Server wire cases execute on Linux/macOS; all SDK tests still compile
+on Windows. A Windows SDK can use
+Bearer credentials with a supported remote OIDC Server; its client support does
+not grant a Windows Server authority profile. Hosted CI shares explicit source
+input preparation with Q and does not change the production factory or clocks.
 
 The public scoped-CDC and current-authority cases use separately provisioned
 root Go fixtures. `TestAuth_OIDCRustScopedChangesFacadeRealConnect` runs the

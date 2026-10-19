@@ -161,6 +161,7 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 			if child.log != nil {
 				diagnostic.ServerLog = fixtureServerLogCategory(child.log.Name())
 				diagnostic.Observation = observations[lastNode].read(child.log.Name(), time.Now())
+				diagnostic.Startup = fixtureStartupFailure(child.log.Name())
 			}
 		}
 		return &fixtureReadinessError{cause: cause, diagnostic: diagnostic}
@@ -194,6 +195,10 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 		ready := true
 		for i, node := range result.Nodes {
 			lastNode = i
+			expectedMemberIndex := i
+			if node.originalMember != 0 {
+				expectedMemberIndex = int(node.originalMember) - 1
+			}
 			if children[i].log != nil {
 				// Read only existing passive evidence; never call an extra RPC or
 				// authority predicate to diagnose a failed Health response.
@@ -255,7 +260,7 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 						*category = "missing"
 					case !*body.Ready:
 						*category = "not_ready"
-					case !queryCapabilitiesReady(result.Query, i, body.Mode, body.Protocol, body.Member, body.Profile):
+					case node.originalMember > 31 || node.originalMember != 0 && result.authorityProfile == nil && result.Query == nil || !queryCapabilitiesReady(result.Query, expectedMemberIndex, body.Mode, body.Protocol, body.Member, body.Profile, result.authorityProfile):
 						*category = "uncertified"
 					default:
 						*category = "ready"
@@ -343,8 +348,9 @@ func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFil
 				return err
 			}
 			children = append(children, launch.process)
+			started := time.Now()
 			if err := launch.configure(ctx, env); err != nil {
-				return &fixtureFailure{stage: "spawn", cause: err}
+				return fixtureAdoptionFailure(err, launch.process, i, launch.public, time.Since(started))
 			}
 			continue
 		}

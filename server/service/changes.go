@@ -101,7 +101,7 @@ func (h *ChangeConnectHandler) watch(ctx context.Context, req *pb.WatchChangesRe
 		}
 	}
 	requestBinding := changeRequestBinding(req)
-	projection := newChangeProjection(h.svc, req, admission)
+	projection := newChangeProjection(h.svc, req, admissionAccess(admission))
 	var next map[string]uint64
 	if !req.GetBootstrap() {
 		next, err = h.cursors.open(req.GetCursor(), binding, requestBinding, h.now())

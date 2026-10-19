@@ -3,23 +3,11 @@ package service
 import (
 	"net/http"
 	"testing"
-	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 )
-
-func TestRegistrationPolicyReadRequiresManagement(t *testing.T) {
-	h, _, ctx := securityAPIFixture(t)
-	if _, err := h.GetRegistrationPolicy(ctx("reader", time.Time{}), connect.NewRequest(&pb.GetRegistrationPolicyRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
-		t.Fatal("reader disclosed registration policy", err)
-	}
-	response, err := h.GetRegistrationPolicy(ctx("admin", time.Time{}), connect.NewRequest(&pb.GetRegistrationPolicyRequest{}))
-	if err != nil || response.Msg.Policy != nil || response.Msg.Version == nil || response.Header().Get("Cache-Control") != "no-store" {
-		t.Fatal("absent policy read", err)
-	}
-}
 
 func TestRegistrationRPCRequiresCurrentComposition(t *testing.T) {
 	r := &AuthenticationAdapter{}

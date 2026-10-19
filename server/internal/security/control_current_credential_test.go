@@ -28,6 +28,19 @@ func TestCurrentNativeSessionPolicyAndProfileBoundaries(t *testing.T) {
 	if c.claim.AdmissionDeadline != session.ExpiresAt || !session.AuthTime.IsZero() {
 		t.Fatal("sliding expiry or fabricated authentication time")
 	}
+
+	t.Run("wide interval fits actual credential window", func(t *testing.T) {
+		saved := clock.anchor.utc
+		defer func() { clock.anchor.utc = saved }()
+		clock.anchor.utc = authorityTimeRange{uint64(now.Add(-4 * time.Second).UnixNano()), uint64(now.Add(4 * time.Second).UnixNano())}
+		if _, err := captureAuthorityCredential(view, facts); err != nil {
+			t.Fatal("5s refresh goal became an admission gate", err)
+		}
+		clock.anchor.utc.high = uint64(session.ExpiresAt.UnixNano())
+		if _, err := captureAuthorityCredential(view, facts); err == nil {
+			t.Fatal("upper equality expiry accepted")
+		}
+	})
 	for _, expiredAt := range []time.Time{session.ExpiresAt, session.ExpiresAt.Add(time.Hour)} {
 		expired := view
 		expired.clock, _ = fakeAuthorityTimeOwnerAt(t, expiredAt)

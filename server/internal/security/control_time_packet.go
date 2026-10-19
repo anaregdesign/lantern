@@ -6,6 +6,7 @@ import (
 )
 
 var (
+	errAuthorityTimeNative      = errors.New("native time sampler failed")
 	errAuthorityTimeSourceFault = errors.New("time source reports unusable time")
 	errAuthorityTimeRate        = errors.New("time source requests backoff")
 	errAuthorityTimeDenied      = errors.New("time source denies this association")
@@ -37,7 +38,10 @@ func parseAuthorityNTP(raw []byte, nonce [8]byte) (authorityNTPPacket, error) {
 	if raw[1] == 0 && (string(raw[12:16]) == "DENY" || string(raw[12:16]) == "RSTR") {
 		return authorityNTPPacket{}, errAuthorityTimeDenied
 	}
-	if raw[0]>>6 != 0 || raw[1] == 0 || raw[1] > 15 {
+	if raw[1] == 0 {
+		return authorityNTPPacket{}, errAuthorityTime
+	}
+	if raw[0]>>6 != 0 || raw[1] > 15 {
 		return authorityNTPPacket{}, errAuthorityTimeSourceFault
 	}
 	p := authorityNTPPacket{
@@ -49,7 +53,7 @@ func parseAuthorityNTP(raw []byte, nonce [8]byte) (authorityNTPPacket, error) {
 		reportedPrecision: int8(raw[3]),
 	}
 	if p.reference == 0 || p.receive == 0 || p.transmit == 0 || p.reportedRootDelay < 0 {
-		return authorityNTPPacket{}, errAuthorityTimeSourceFault
+		return authorityNTPPacket{}, errAuthorityTime
 	}
 	return p, nil
 }

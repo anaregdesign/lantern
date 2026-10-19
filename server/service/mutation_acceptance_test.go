@@ -66,12 +66,11 @@ func TestMutationAcceptanceResponseDiscardsEveryEffectAndPreservesOriginal(t *te
 }
 
 func TestBlindMutationDisclosureUsesPolicyAndRequestOnly(t *testing.T) {
-	clock, contexts := dataAccessFixture(t, []security.PermissionRule{
+	access := dataAccessFixture(t, []security.PermissionRule{
 		dataAccessRule("tail-read", security.Allow, security.VertexRead, "tails:"),
 		dataAccessRule("public-head-read", security.Allow, security.VertexRead, "heads:public:"),
 		dataAccessRule("head-write", security.Allow, security.VertexWrite, "heads:"),
 	})
-	admission, _ := security.AdmissionFromContext(contexts("reader", clock()))
 	for _, tc := range []struct {
 		request proto.Message
 		want    bool
@@ -85,7 +84,7 @@ func TestBlindMutationDisclosureUsesPolicyAndRequestOnly(t *testing.T) {
 		{&pb.DeleteEdgesByPrefixRequest{TailPrefix: "tails:", HeadPrefix: "heads:public:"}, false},
 		{&pb.DeleteEdgesByPrefixRequest{TailPrefix: "tails:", HeadPrefix: "heads:"}, true},
 	} {
-		if got := blindMutationRequired(admission, tc.request); got != tc.want {
+		if got := blindMutationRequired(access, tc.request); got != tc.want {
 			t.Fatalf("%T disclosure = %v, want %v", tc.request, got, tc.want)
 		}
 		if blindMutationRequired(nil, tc.request) {

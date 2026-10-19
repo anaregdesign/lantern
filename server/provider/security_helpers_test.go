@@ -15,8 +15,7 @@ import (
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/internal/oidc"
-	"github.com/anaregdesign/lantern/server/internal/security"
+	"github.com/anaregdesign/lantern/server/internal/peerauth"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -45,7 +44,7 @@ func securityKeyFixture(t *testing.T, dir string) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	privatePath, publicPath := filepath.Join(dir, "writer.key"), filepath.Join(dir, "writer.pub")
+	privatePath, publicPath := filepath.Join(dir, "operator.key"), filepath.Join(dir, "operator.pub")
 	if err = os.WriteFile(privatePath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -54,20 +53,40 @@ func securityKeyFixture(t *testing.T, dir string) (string, string) {
 	}
 	return privatePath, publicPath
 }
-func securityRuntimeFixture(t *testing.T) (SecurityConfig, *service.ServingRuntime, *securityTestClock) {
+func securityDataFixture(t *testing.T) *service.ServingRuntime {
 	t.Helper()
-	dir := t.TempDir()
-	privatePath, publicPath := securityKeyFixture(t, dir)
-	clock := &securityTestClock{now: time.Now()}
-	issuer := security.Issuer{URL: "https://idp.example", Enabled: true, ClientID: "admin", APIAudience: "api", RedirectURI: "https://admin.example" + oidc.CallbackPath("https://idp.example"), Algorithms: []string{"EdDSA"}}
-	config := SecurityConfig{Mode: "oidc", Profile: "legacy-v1", StoreMode: "fresh", StorePath: filepath.Join(dir, "security.wal"), Generation: [16]byte{1}, WriterKeyFile: privatePath, WriterPublicKeyFile: publicPath, NodeRole: "writer", WriterEndpoint: "https://writer-peer.example", BrowserOrigin: "https://admin.example", Bootstrap: security.Bootstrap{Revision: 1, Issuer: issuer, AdminSubjects: []string{"admin", "other"}}, MaxJournalBytes: security.DefaultSystemJournalMax, ClockQualified: true, Clock: clock.Now}
 	graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
 	log := mutationlog.New(mutationlog.Options{Capacity: 16})
-	hlcClock := hlc.New(hlc.NodeID{7}, hlc.Options{})
-	data, err := service.NewGraphOnlyServingRuntime(graph, log, hlcClock, "namespaced-v1")
+	data, err := service.NewGraphOnlyServingRuntime(graph, log, hlc.New(hlc.NodeID{7}, hlc.Options{}), "namespaced-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = data.Close() })
-	return config, data, clock
+	return data
+}
+
+func securityWorkloadFixture(t *testing.T, now func() time.Time) *PeerIdentityRuntime {
+	t.Helper()
+	public, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instant := now()
+	member := peerauth.Member{ID: [16]byte{3}, Identity: "spiffe://worker.test/self", SPKI: [32]byte{4}, Origin: "https://127.0.0.1:17443"}
+	manifest := peerauth.Manifest{Version: 1, Domain: peerauth.Domain{Deployment: [16]byte{1}, NamespaceFormat: "namespaced-v1", AuthMode: "off", TrustDigest: [32]byte{2}}, IssuedAt: instant.Add(-time.Second * 3), ExpiresAt: instant.Add(time.Minute), Members: []peerauth.Member{member}}
+	raw, err := peerauth.SignManifest(manifest, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	store, err := peerauth.CreateStore(peerauth.StoreOptions{Path: filepath.Join(dir, "membership"), Key: public, Domain: manifest.Domain, Now: now}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	input := filepath.Join(dir, "membership.signed")
+	if err := os.WriteFile(input, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return &PeerIdentityRuntime{store: store, config: PeerIdentityConfig{Now: now, SelfIdentity: member.Identity, ManifestFile: input}, selfExpiry: instant.Add(time.Hour)}
 }

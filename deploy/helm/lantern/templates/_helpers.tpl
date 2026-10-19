@@ -133,26 +133,21 @@ app.kubernetes.io/part-of: {{ include "lantern.name" . }}
 {{- if or (le (int (include "lantern.workloadUID" .)) 0) (le (int .Values.podSecurityContext.fsGroup) 0) (not .Values.podSecurityContext.runAsNonRoot) -}}{{ fail "workload Secret provisioning requires a non-root UID and fsGroup" }}{{- end -}}
 {{- if or .Values.securityContext.allowPrivilegeEscalation .Values.securityContext.privileged -}}{{ fail "workload Secret provisioning requires an unprivileged container" }}{{- end -}}
 {{- end -}}
+{{- if or (hasKey .Values.auth "nodeRole") (hasKey .Values.auth "writerFiles") (hasKey .Values.auth "profile") -}}{{ fail "retired auth writer/profile selectors are unsupported" }}{{- end -}}
 {{- if eq .Values.auth.mode "oidc" -}}
-{{- if not .Values.auth.files -}}{{ fail "OIDC requires an explicit auth.files allowlist" }}{{- end -}}
-{{- if gt (len (concat .Values.auth.files .Values.auth.writerFiles)) 8 -}}{{ fail "auth file allowlists exceed the eight-file bound" }}{{- end -}}
+{{- if not .Values.auth.files -}}{{ fail "OIDC requires an explicit per-workload auth.files allowlist" }}{{- end -}}
+{{- if gt (len .Values.auth.files) 32 -}}{{ fail "auth.files exceeds the bounded per-workload file set" }}{{- end -}}
 {{- $seen := dict -}}
-{{- range $file := concat .Values.auth.files .Values.auth.writerFiles -}}
+{{- range $file := .Values.auth.files -}}
 {{- if or (not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$" $file)) (eq $file "..") (hasKey $seen $file) -}}{{ fail "auth file names must be unique simple basenames" }}{{- end -}}
+{{- if has $file (list "writer.key" "writer.pub" "machines.json" "operator.key") -}}{{ fail "retired writer/bootstrap and operator signing keys cannot be workload auth files" }}{{- end -}}
 {{- $_ := set $seen $file true -}}
 {{- end -}}
-{{- range $file := .Values.auth.files -}}
-{{- if has $file (list "writer.key" "machines.json" "operator.key") -}}{{ fail "writer/operator secrets cannot be common auth.files" }}{{- end -}}
-{{- end -}}
-{{- if has "operator.key" .Values.auth.writerFiles -}}{{ fail "operator signing key must never be mounted in a workload" }}{{- end -}}
-{{- end -}}
-{{- if eq .Values.auth.mode "oidc" -}}
+{{- if not (has .Values.auth.nodeFile .Values.auth.files) -}}{{ fail "auth.nodeFile must be explicitly included in auth.files" }}{{- end -}}
+{{- if not (has .Values.auth.storeMode (list "fresh" "resume")) -}}{{ fail "auth.storeMode must be fresh or resume" }}{{- end -}}
 {{- if not .Values.auth.configMap -}}{{ fail "OIDC requires auth.configMap" }}{{- end -}}
 {{- if not .Values.auth.existingSecret -}}{{ fail "OIDC requires auth.existingSecret" }}{{- end -}}
 {{- if not .Values.publicTLS.existingSecret -}}{{ fail "OIDC requires publicTLS.existingSecret" }}{{- end -}}
-{{- if not (has .Values.auth.nodeRole (list "writer" "replica")) -}}{{ fail "auth.nodeRole must be writer or replica" }}{{- end -}}
-{{- if and (eq .Values.auth.nodeRole "writer") (ne (int .Values.replicaCount) 1) -}}{{ fail "one fixed writer per security domain; deploy replicas separately" }}{{- end -}}
-{{- if and (eq .Values.auth.nodeRole "replica") (not .Values.peerPlane.enabled) -}}{{ fail "OIDC replicas require peerPlane" }}{{- end -}}
 {{- end -}}
 {{- if .Values.peerPlane.enabled -}}
 {{- range $name := list "deployment" "workloadIDPrefix" "membershipConfigMap" "operatorKeySecret" "identitySecret" -}}
@@ -165,7 +160,7 @@ app.kubernetes.io/part-of: {{ include "lantern.name" . }}
 {{- if or .Values.peerPlane.deployment .Values.peerPlane.workloadIDPrefix .Values.peerPlane.membershipConfigMap .Values.peerPlane.operatorKeySecret .Values.peerPlane.identitySecret -}}{{ fail "disabled peerPlane must not ignore operator material" }}{{- end -}}
 {{- end -}}
 {{- if and .Values.admin.enabled (eq .Values.auth.mode "oidc") -}}
-{{- if not (hasPrefix "https://" .Values.admin.server.upstream) -}}{{ fail "OIDC Admin requires a fixed HTTPS writer upstream" }}{{- end -}}
+{{- if not (hasPrefix "https://" .Values.admin.server.upstream) -}}{{ fail "OIDC Admin requires a pinned HTTPS authority upstream" }}{{- end -}}
 {{- if and .Values.admin.ingress.enabled (not .Values.admin.ingress.tls) -}}{{ fail "OIDC Admin ingress requires TLS" }}{{- end -}}
 {{- end -}}
 {{- end -}}
@@ -196,7 +191,7 @@ rm -rf /run/lantern-private/public /run/lantern-private/security /run/lantern-pr
 copy_file() {
   source="$1"; destination="$2"
   [ -f "$source" ] && [ -s "$source" ]
-  [ "$(wc -c < "$source")" -le 1048576 ]
+  [ "$(wc -c < "$source")" -le 4456448 ]
   rm -f "$destination.tmp"
   cp -L "$source" "$destination.tmp"
   chmod 600 "$destination.tmp"
@@ -212,12 +207,7 @@ copy_file "/run/lantern-source/public/$POD_NAME.key" "/run/lantern-private/publi
 mkdir -p /run/lantern-private/security
 chmod 700 /run/lantern-private/security
 {{- range $file := .Values.auth.files }}
-copy_file {{ printf "/run/lantern-source/security/%s" $file | quote }} {{ printf "/run/lantern-private/security/%s" $file | quote }}
-{{- end }}
-{{- if eq .Values.auth.nodeRole "writer" }}
-{{- range $file := .Values.auth.writerFiles }}
-copy_file {{ printf "/run/lantern-source/security/%s" $file | quote }} {{ printf "/run/lantern-private/security/%s" $file | quote }}
-{{- end }}
+copy_file "/run/lantern-source/security/$POD_NAME.{{ $file }}" {{ printf "/run/lantern-private/security/%s" $file | quote }}
 {{- end }}
 {{- end }}
 {{- if .Values.peerPlane.enabled }}

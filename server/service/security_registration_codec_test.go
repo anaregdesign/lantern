@@ -47,9 +47,7 @@ func TestRegistrationPolicyCodecClosedShape(t *testing.T) {
 }
 
 func TestRegistrationReviewCodecRequiresExactContract(t *testing.T) {
-	h, _, _ := securityAPIFixture(t)
-	revision, _ := h.store.Current()
-	p, err := security.NewS1Projection(revision.Snapshot().Image(), security.DefaultPolicyLimits(), [32]byte{1}, [32]byte{2}, [32]byte{3}, [16]byte{4})
+	p, err := security.NewS1Projection(securityImageFixture(), security.DefaultPolicyLimits(), [32]byte{1}, [32]byte{2}, [32]byte{3}, [16]byte{4})
 	if err != nil {
 		t.Fatal(err)
 	}

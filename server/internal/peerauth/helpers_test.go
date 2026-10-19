@@ -25,10 +25,15 @@ func membershipFixture(t testing.TB) (Manifest, ed25519.PrivateKey, StoreOptions
 
 func controlFixture(t testing.TB) (ControlManifest, ed25519.PrivateKey, ControlStoreOptions, *time.Time) {
 	t.Helper()
+	return controlFixtureMembers(t, 3)
+}
+
+func controlFixtureMembers(t testing.TB, count int) (ControlManifest, ed25519.PrivateKey, ControlStoreOptions, *time.Time) {
+	t.Helper()
 	m, key, old, now := membershipFixture(t)
 	p := ControlProfile{Version: 1, Lineage: ControlLineage{Deployment: [16]byte{1}, Instance: [16]byte{2}}, NamespaceFormat: keyspace.Version, ProtocolScope: [32]byte{3}, TrustDigest: [32]byte{4}}
-	for i := 1; i <= 3; i++ {
-		p.Voters = append(p.Voters, ControlVoter{Workload: Member{ID: [16]byte{byte(i)}, Identity: fmt.Sprintf("spiffe://lantern.test/node-%d", i), SPKI: [32]byte{byte(i)}, Origin: fmt.Sprintf("https://localhost:%d", 6380+i)}, Voter: uint32(i), Key: [32]byte{byte(i)}, Proposer: true})
+	for i := 1; i <= count; i++ {
+		p.Voters = append(p.Voters, ControlVoter{Workload: Member{ID: [16]byte{byte(i)}, Identity: fmt.Sprintf("spiffe://lantern.test/node-%02d", i), SPKI: [32]byte{byte(i)}, Origin: fmt.Sprintf("https://localhost:%d", 6380+i)}, Voter: uint32(i), Key: [32]byte{byte(i)}, Proposer: true})
 	}
 	return ControlManifest{Version: 1, Profile: p, IssuedAt: m.IssuedAt, ExpiresAt: m.ExpiresAt}, key, ControlStoreOptions{Path: old.Path, Key: old.Key, Profile: p, Self: p.Voters[0].Workload, Now: old.Now}, now
 }

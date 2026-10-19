@@ -20,10 +20,11 @@ GO_TESTS = (
     "TestNewListenerAdoptionRequiresCertification", "TestPeerListenerAdoptionRequiresExactRuntime",
     "TestListenerLaunchRejectsUnboundArguments", "TestNativeListenerLaunchLifecycle",
     "TestFixtureReservedEndpointValidation",
+    "TestAuthorityTimeUnsupportedNativeProfile",
 )
 RUST_TESTS = (
     "transport::tests::real_wire_https_roots_and_invalid_certificates",
-    "transport::tests::real_wire_mtls_and_bearer_rotation",
+    "transport::tests::real_wire_off_mtls_requires_client_identity",
     "test_server::diagnostic_tests::real_wire_fixture_owns_ephemeral_listener_on_return",
 )
 
@@ -79,7 +80,7 @@ def main():
     pattern = "^(" + "|".join(GO_TESTS) + ")$"
     output = run("native-go", ["go", "test", "-json", "-count=1", "./core/privatefile",
         "./core/mutationlog", "./core/mutationreceipt", "./server/service", "./server/provider",
-        "./server/internal/listenerlaunch", "./server/cmd", "./server/cmd/authfixture", "-run", pattern])
+        "./server/internal/listenerlaunch", "./server/internal/security", "./server/cmd", "./server/cmd/authfixture", "-run", pattern])
     require_go(output, GO_TESTS)
     require_go(run("backup", ["go", "test", "-json", "-count=1", "./backup"], root / "server"))
     if args.rust == "true":

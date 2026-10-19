@@ -8,6 +8,8 @@ import (
 	"io"
 )
 
+const retainedChanges = 256
+
 // This type carries untrusted data only. It has no state accessor, certificate,
 // authorization, verifier callback or serialized trust bit.
 type s2DecodedCandidate struct {

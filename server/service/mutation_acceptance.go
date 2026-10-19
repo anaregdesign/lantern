@@ -14,11 +14,10 @@ import (
 
 // Disclosure depends only on the admitted policy and public request, never on
 // whether an Edge exists or a conditional mutation would actually succeed.
-func blindMutationRequired(admission *security.Admission, request proto.Message) bool {
-	if admission == nil {
+func blindMutationRequired(access *security.Access, request proto.Message) bool {
+	if access == nil {
 		return false
 	}
-	access := admission.Access()
 	blind := func(tail, head string) bool { return !access.AllowsEdge(security.EdgeRead, tail, head) }
 	list := func(edges []*pb.Edge) bool {
 		for _, edge := range edges {

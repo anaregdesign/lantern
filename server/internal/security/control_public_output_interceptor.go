@@ -30,6 +30,19 @@ func (i currentOutputInterceptor) WrapStreamingClient(next connect.StreamingClie
 }
 func (i currentOutputInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		// Connect negotiates these before entering the interceptor. Freeze only
+		// its transport metadata before application code can stage any output.
+		protocol := make(http.Header)
+		request, _ := currentRequest(ctx, i.output.owner)
+		if request != nil {
+			request.writer.mu.Lock()
+			for _, key := range []string{"Content-Type", "Connect-Content-Encoding", "Connect-Accept-Encoding", "Grpc-Encoding", "Grpc-Accept-Encoding"} {
+				if values, ok := request.writer.headers[key]; ok {
+					protocol[key] = append([]string(nil), values...)
+				}
+			}
+			request.writer.mu.Unlock()
+		}
 		err := next(ctx, currentOutputStream{StreamingHandlerConn: conn})
 		if _, metadataErr := freezeCurrentHeaders(conn.ResponseTrailer()); metadataErr != nil {
 			err = metadataErr
@@ -42,6 +55,13 @@ func (i currentOutputInterceptor) WrapStreamingHandler(next connect.StreamingHan
 			if isCurrentPublicFailure(ctx) {
 				clear(conn.ResponseHeader())
 				clear(conn.ResponseTrailer())
+				if request != nil {
+					request.writer.mu.Lock()
+					for key, values := range protocol {
+						request.writer.headers[key] = values
+					}
+					request.writer.mu.Unlock()
+				}
 			}
 			return result
 		}
@@ -123,7 +143,7 @@ func isCurrentPublicFailure(ctx context.Context) bool {
 
 // BindCurrentFailure is for the fixed, content-free HTTP/RPC boundary error
 // schemas only. It clears staged protected metadata (notably cookie issuance).
-// Ordinary legacy writers are unchanged. Once a unit started, no replacement
+// OFF writers have no current output wrapper. Once a unit started, no replacement
 // permit is possible; the stream must finish under its original grant or abort.
 func BindCurrentFailure(w http.ResponseWriter) {
 	for depth := 0; depth < 16; depth++ {

@@ -3,7 +3,6 @@
 package authn
 
 import (
-	"context"
 	"errors"
 	"time"
 
@@ -28,16 +27,8 @@ type OIDCResources struct {
 	Now          func() time.Time
 }
 
-type LegacyAuthority struct {
-	Store          *security.Store
-	Authorizations *security.ManagementAuthorizations
-	Check          func(context.Context, *security.Revision) error
-	Enforced       func(security.ChangeResult) bool
-}
-
 type Workflow struct {
 	oidc          OIDCResources
-	legacy        LegacyAuthority
 	current       *security.CurrentAuthority
 	attemptPrefix string
 	registrations *nativeRegistrationProofs
@@ -46,7 +37,7 @@ type Workflow struct {
 func validResources(r OIDCResources) bool {
 	return r.Fetcher != nil && r.Secrets != nil && r.Verifier != nil && r.Credentials != nil && r.Logins != nil && r.Now != nil
 }
-func NewCurrentWorkflow(owner *security.CurrentAuthority, resources OIDCResources, attemptPrefix string) (*Workflow, error) {
+func NewWorkflow(owner *security.CurrentAuthority, resources OIDCResources, attemptPrefix string) (*Workflow, error) {
 	if owner == nil || owner.Profile().Binding() == "" || !validResources(resources) || attemptPrefix == "" {
 		return nil, ErrUnavailable
 	}
@@ -59,10 +50,4 @@ func (w *Workflow) Close() {
 	if w != nil {
 		w.registrations.close()
 	}
-}
-func NewLegacyWorkflow(owner LegacyAuthority, resources OIDCResources) (*Workflow, error) {
-	if owner.Store == nil || owner.Authorizations == nil || owner.Check == nil || owner.Enforced == nil || !validResources(resources) {
-		return nil, ErrUnavailable
-	}
-	return &Workflow{legacy: owner, oidc: resources}, nil
 }

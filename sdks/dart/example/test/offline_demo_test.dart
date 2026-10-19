@@ -543,7 +543,7 @@ final class _TrackingIdentitySession implements OfflineScopedChangeSession {
   String get responderId => 'test-responder';
 
   // ignore: annotate_overrides
-  String get authorityBinding => 'legacy-v1:test-responder';
+  String get authorityBinding => 'fixture-authority:test-responder';
 
   @override
   Stream<OfflineScopedChangeFrame> get frames => _frames.stream;

@@ -16,26 +16,12 @@ func (w *Workflow) AttemptAffinity(id [32]byte) string {
 	}
 	return w.attemptPrefix + "." + base64.RawURLEncoding.EncodeToString(id[:])
 }
-func (w *Workflow) BeginAuthorization(ctx context.Context, a *security.Admission, binding security.ManagementBinding) (security.AuthorizationStart, error) {
-	current, known := w.legacy.Store.Current()
-	if !known || a.CheckManagement(ctx, current, w.oidc.Now()) != nil || binding.Actor != a.Identity() {
-		return security.AuthorizationStart{}, security.ErrPermissionDenied
-	}
-	return w.legacy.Authorizations.Begin(binding, w.oidc.Now())
-}
-func (w *Workflow) ReadAuthorization(ctx context.Context, a *security.Admission, id [32]byte) (security.AuthorizationStatus, error) {
-	current, known := w.legacy.Store.Current()
-	if !known || a.CheckManagement(ctx, current, w.oidc.Now()) != nil {
-		return security.AuthorizationStatus{}, security.ErrPermissionDenied
-	}
-	return w.legacy.Authorizations.Status(id, a.Identity(), current, w.oidc.Now())
-}
 func (w *Workflow) BeginCurrentAuthorization(ctx context.Context, a *security.Admission, review security.CurrentReview) (security.AuthorizationStart, error) {
 	p, err := w.current.RequestCredential(ctx)
 	if err != nil {
 		return security.AuthorizationStart{}, err
 	}
-	if a.CheckManagement(ctx, nil, w.oidc.Now()) != nil {
+	if a.CheckManagement(ctx, w.oidc.Now()) != nil {
 		return security.AuthorizationStart{}, security.ErrPermissionDenied
 	}
 	return w.current.BeginPurpose(ctx, review, p)
@@ -47,54 +33,6 @@ func (w *Workflow) ReadCurrentAuthorization(ctx context.Context, a *security.Adm
 	return w.current.ReadPurpose(ctx, a, id)
 }
 func (w *Workflow) StartAuthorization(ctx context.Context, ticket [32]byte, affinity string) (oidc.LoginStart, error) {
-	if w.current != nil {
-		return w.startCurrentAuthorization(ctx, ticket, affinity)
-	}
-	current, known := w.legacy.Store.Current()
-	if !known {
-		return oidc.LoginStart{}, ErrUnavailable
-	}
-	notBefore, err := w.legacy.Authorizations.NavigationNotBefore(ticket, current, w.oidc.Now())
-	if err != nil {
-		return oidc.LoginStart{}, ErrUnauthenticated
-	}
-	if delay := notBefore.Sub(w.oidc.Now()); delay > 0 {
-		// At most the remainder of this NumericDate second. Cancellation leaves
-		// the ticket unconsumed, and no ordinary session/cookie is changed.
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return oidc.LoginStart{}, ctx.Err()
-		case <-timer.C:
-		}
-		current, known = w.legacy.Store.Current()
-		if !known {
-			return oidc.LoginStart{}, ErrUnavailable
-		}
-	}
-	id, binding, err := w.legacy.Authorizations.Start(ticket, current, w.oidc.Now())
-	if err != nil {
-		return oidc.LoginStart{}, ErrUnauthenticated
-	}
-	issuer, registered := current.Snapshot().Issuer(binding.Actor.Issuer)
-	if !registered || issuer.ConfigRevision != binding.IssuerConfigRevision {
-		return oidc.LoginStart{}, ErrUnauthenticated
-	}
-	discovery, err := w.oidc.Fetcher.Discover(ctx, issuer)
-	if err != nil || w.legacy.Check(ctx, current) != nil {
-		w.legacy.Authorizations.Reject(id)
-		return oidc.LoginStart{}, ErrUnavailable
-	}
-	start, err := w.oidc.Logins.BeginAuthorization(oidc.Trust{Issuer: issuer, Generation: current.Generation(), ConfigRevision: issuer.ConfigRevision}, discovery, id)
-	if err != nil {
-		w.legacy.Authorizations.Reject(id)
-		return oidc.LoginStart{}, ErrUnauthenticated
-	}
-	return start, nil
-
-}
-func (w *Workflow) startCurrentAuthorization(ctx context.Context, ticket [32]byte, affinity string) (oidc.LoginStart, error) {
 	notBefore, err := w.current.PurposeNotBefore(ctx, ticket)
 	if err != nil {
 		return oidc.LoginStart{}, ErrUnauthenticated

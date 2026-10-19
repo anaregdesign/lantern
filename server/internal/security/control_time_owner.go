@@ -13,20 +13,6 @@ import (
 	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
-// This fixed profile is conditional on honest conservative source reporting,
-// an intact DNS/UDP time path and a host counter within the admitted envelope.
-// It does not assert authenticated NTP or vendor-certified oscillator bounds.
-const authorityTimeProfileDescription = "lantern/current-authority/time/v1;" + authorityTimePlatformProfile + ";rate=1000ppm;sample=1000ns;source-host=time.asia.apple.com;source=root-dispersion+nonnegative-root-delay/2+precision+10ms;source-max=1s;rtt-max-exclusive=1s;age-max-exclusive=60s;width-max-exclusive=4s;UTC=[2020,2080);trusted-source-and-path;no-NTP-authentication"
-
-func authorityOperationalTimePremises() authorityTimePremises {
-	return authorityTimePremises{
-		ratePPB: 1_000_000, stampError: 1000, sourceAllowance: 10_000_000,
-		maxSourceError: 1_000_000_000, maxRTT: 1_000_000_000,
-		maxAge: 60_000_000_000, maxWidth: 4_000_000_000,
-		validUTC: authorityTimeRange{1_577_836_800_000_000_000, 3_471_292_800_000_000_000},
-	}
-}
-
 // Process-owned and non-serializable. A production caller cannot mint one from
 // a wall time, a serialized transcript or an asserted qualification boolean.
 type authorityCurrentTime struct {
@@ -47,50 +33,23 @@ type authorityTimeOwner struct {
 	profile         [32]byte
 	anchor          *authorityTimeEstimate
 	sequence        uint64
+	installations   uint64
+	installedAt     authorityTimeStamp // scheduling only; never replaces anchor.at
+	denied          bool
 	failed, closed  bool
 	lastObservation *authorityTimeMeasurement
 	lastError       error // bounded latest source/qualification failure, for startup diagnosis
+	startupHistory  decisiontrace.StartupSnapshot
+	runContext      context.Context
 	cancel          context.CancelFunc
 	done            chan struct{}
 }
 
 func startAuthorityTimeOwner(producer *authorityTimeProducer) *authorityTimeOwner {
 	ctx, cancel := context.WithCancel(context.Background())
-	o := &authorityTimeOwner{traceID: decisiontrace.NextID(), producer: producer, premises: authorityOperationalTimePremises(), profile: sha256.Sum256([]byte(authorityTimeProfileDescription)), cancel: cancel, done: make(chan struct{})}
+	o := &authorityTimeOwner{traceID: decisiontrace.NextID(), producer: producer, premises: authorityOperationalTimePremises(), profile: sha256.Sum256([]byte(authorityTimeProfileDescription)), runContext: ctx, cancel: cancel, done: make(chan struct{})}
 	go o.run(ctx, producer.measure)
 	return o
-}
-
-// Only a qualified installation replenishes this process-local budget. The
-// exponential state keeps advancing even when one of two waits is shortened.
-// Timers/credits are scheduling inputs only, never evidence of current time.
-type authorityTimeRetry struct {
-	backoff time.Duration
-	credits uint8
-}
-
-func (s *authorityTimeRetry) delay(err error, refresh time.Duration) time.Duration {
-	if err == nil {
-		s.backoff, s.credits = 0, 2
-		return refresh
-	}
-	if s.backoff == 0 {
-		s.backoff = 32 * time.Second
-	} else {
-		s.backoff = min(s.backoff*2, 1024*time.Second)
-	}
-	if errors.Is(err, errAuthorityTimeRate) {
-		s.backoff, s.credits = 1024*time.Second, 0
-		return s.backoff
-	}
-	var transport *authorityTimeTransportError
-	if !errors.As(err, &transport) {
-		s.credits = 0
-	} else if s.credits > 0 && (s.backoff == 64*time.Second || s.backoff == 128*time.Second) {
-		s.credits--
-		return 32 * time.Second
-	}
-	return s.backoff
 }
 
 // Timers schedule work only. Authorization expiry uses native elapsed bounds.
@@ -103,10 +62,19 @@ func (o *authorityTimeOwner) run(ctx context.Context, measure func(context.Conte
 // The test-build composition owns additional UDP responder workers and joins
 // them before closing done. Both compositions execute this unchanged loop.
 func (o *authorityTimeOwner) runLoop(ctx context.Context, measure func(context.Context) (authorityTimeMeasurement, error)) {
+	o.runLoopScheduled(ctx, measure, func() (uint64, error) {
+		var raw [8]byte
+		_, err := rand.Read(raw[:])
+		return binary.BigEndian.Uint64(raw[:]), err
+	})
+}
+
+// Private dependency seam, never a mutable factory or production selector.
+func (o *authorityTimeOwner) runLoopScheduled(ctx context.Context, measure func(context.Context) (authorityTimeMeasurement, error), random func() (uint64, error)) {
 	var retry authorityTimeRetry
 	for {
 		m, err := measure(ctx)
-		probe := o.producer.probeObservation()
+		probe, attempt := o.producer.completedProbe()
 		o.mu.Lock()
 		if o.closed || o.failed || ctx.Err() != nil {
 			o.mu.Unlock()
@@ -117,12 +85,13 @@ func (o *authorityTimeOwner) runLoop(ctx context.Context, measure func(context.C
 			probe.Stage = o.installReason
 		}
 		o.lastError = err
-		if errors.Is(err, errAuthorityTimeDenied) {
-			o.failed = true
+		stopped := errors.Is(err, errAuthorityTimeDenied)
+		o.denied = stopped
+		if errors.Is(err, errAuthorityTimeSourceFault) {
 			o.anchor = nil
 		}
-		if errors.Is(err, errAuthorityTimeSourceFault) || errors.Is(err, errAuthorityTimeRate) {
-			o.anchor = nil
+		if errors.Is(err, errAuthorityTimeNative) {
+			o.failed, o.anchor = true, nil
 		}
 		failed := o.failed
 		generation, hasAnchor := o.sequence, o.anchor != nil
@@ -132,19 +101,37 @@ func (o *authorityTimeOwner) runLoop(ctx context.Context, measure func(context.C
 		} else if probe.Reason == "ok" {
 			probe.Reason = "install_rejected"
 		}
+		attempt.Stage, attempt.Reason = probe.Stage, probe.Reason
+		if failed {
+			attempt.Reason = "native_terminal"
+		}
+		o.recordStartupLocked(attempt)
+		anchor := o.anchor
+		installedAt := o.installedAt
 		o.mu.Unlock()
+		if stopped {
+			probe.Reason = "association_denied"
+			decisiontrace.Emit(probe)
+			return
+		}
 		if failed {
 			probe.Reason = "native_terminal"
 			decisiontrace.Emit(probe)
 			return
 		}
-		var random [8]byte
-		if _, err := rand.Read(random[:]); err != nil {
+		entropy, randomErr := random()
+		if randomErr != nil {
 			o.fail()
 			return
 		}
-		refresh := 16*time.Second + time.Duration(binary.BigEndian.Uint64(random[:])%uint64(4*time.Second))
+		refresh := time.Minute
+		if anchor != nil {
+			refresh = authorityTimeRefreshDelay(*anchor, installedAt, entropy)
+		}
 		delay := retry.delay(err, refresh)
+		if err != nil && retry.qualified && delay < 15*time.Minute {
+			delay = min(15*time.Minute, delay+time.Duration(entropy%uint64(delay/10+1)))
+		}
 		probe.Delay = int64(delay)
 		decisiontrace.Emit(probe)
 		timer := time.NewTimer(delay)
@@ -165,11 +152,14 @@ func (o *authorityTimeOwner) installLocked(m authorityTimeMeasurement) error {
 	if o.closed || o.failed || m.source != o.producer.source || m.sequence <= o.sequence {
 		return errAuthorityTime
 	}
+	if _, err := o.premises.elapsed(m.sent, m.received); err != nil {
+		o.failed, o.anchor = true, nil
+		return err
+	}
 	a, reason, err := calculateAuthorityTimeObserved(m, o.premises)
 	o.installReason = reason
 	if err != nil {
-		o.anchor = nil
-		return errAuthorityTimeSourceFault
+		return errAuthorityTime
 	}
 	o.installReason = "native_install"
 	now, err := o.producer.sample()
@@ -183,6 +173,10 @@ func (o *authorityTimeOwner) installLocked(m authorityTimeMeasurement) error {
 		return err
 	}
 	if o.anchor != nil {
+		if _, err := o.premises.elapsed(o.anchor.at, m.received); err != nil {
+			o.failed, o.anchor = true, nil
+			return err
+		}
 		old, err := o.anchor.atSample(m.received)
 		if err == nil && (old.high < a.utc.low || a.utc.high < old.low) {
 			o.failed = true
@@ -194,6 +188,8 @@ func (o *authorityTimeOwner) installLocked(m authorityTimeMeasurement) error {
 	o.anchor = &a
 	o.lastObservation = &m
 	o.sequence = m.sequence
+	o.installations++
+	o.installedAt = now
 	o.installReason = "installed"
 	return nil
 }
@@ -236,6 +232,9 @@ func (o *authorityTimeOwner) currentObserved() (result authorityCurrentTime, eve
 	e.Check = event.Check
 	event = e
 	if err != nil {
+		if e.Reason == "elapsed" {
+			o.failed, o.anchor = true, nil
+		}
 		return result, event, err
 	}
 	return authorityCurrentTime{o, now, r, o.profile, o.sequence}, event, nil

@@ -3,7 +3,7 @@
 The verifier tracks #1602 and the login transaction primitives of #1604.
 The certified production public listener installs authentication, current native
 Role admission, browser sessions and bounded authorization leases. Private
-policy/replication uses a separate workload listener. The complete boundary and
+consensus and data replication use separately owned authenticated listeners. The complete boundary and
 configuration contract is [ADR 0012](decisions/0012-oidc-prefix-rbac.md).
 Source implementation and local conformance do not establish final real-provider,
 qualified production clock, device or publication acceptance (#1610).
@@ -39,8 +39,8 @@ older signed evidence; current Issuer configuration, Principal and Role checks
 still apply. Future or contradictory signed evidence is rejected. Ordinary
 login and replacement do not infer authentication time from `iat`, callback,
 consent or account selection, and do not request forced provider reauthentication.
-The Server-owned transaction saves an explicit step-up purpose independent of
-session replacement. Explicit session step-up and operation approval request
+The Server-owned transaction saves an explicit operation purpose independent of
+session replacement. Operation approval requests
 `max_age=0`, `prompt=login` and an
 essential signed `auth_time` through the OIDC `claims` parameter. Ordinary
 qualified-human management has no fixed age gate. Issuer trust and effective
@@ -49,8 +49,7 @@ to the final reviewed ID, canonical v1 intent, actor and full current cut.
 Its signed event must follow review under the qualified whole-second NumericDate
 boundary; a same-second event is ambiguous and cannot approve the operation.
 The purpose callback branches before session issuance and ordinary cookie writes.
-Generic session step-up remains separate; it cannot substitute for operation
-approval. Groups/email never grant Roles or link accounts. RFC 9068 Bearer
+Broad session step-up is retired. Groups/email never grant Roles or link accounts. RFC 9068 Bearer
 classification additionally requires exact durable human enrollment and a
 qualified Issuer noncollision/nonimpersonation contract; ambiguous and client
 actors cannot perform management mutations.

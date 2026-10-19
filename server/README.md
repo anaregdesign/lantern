@@ -59,12 +59,15 @@ Both ports are configurable via environment variables (see below).
 | `internal/oidc/` | Configured IdP discovery, Code exchange, token verification and one-use login transactions. |
 | `internal/security/` | Native policy/session state, current authority, admission, Prepare/Apply and finite output ownership. |
 
-## Current authority profile
+## Authentication modes
 
-OIDC selects `legacy-v1` or `current-v2` explicitly. The latter uses independent
-original provisioning, native time/quorum, full-cut public contracts and finite
-output ownership. See [current authority](../docs/security-current-authority.md#public-current-v2-composition)
-for required files, compatibility refusal, sessions and client recovery.
+No authentication settings, or `LANTERN_AUTH_MODE=off`, permit anonymous data
+operations. `LANTERN_AUTH_MODE=oidc` selects the sole quorum authority, with
+independent original provisioning, native time, full-cut public contracts and
+finite output ownership. Use `LANTERN_SECURITY_CONFIG_FILE` and
+`LANTERN_SECURITY_STORE_MODE=fresh|resume`. Retired profile, writer, replica-lease
+and environment-bootstrap settings are rejected, even when empty. See the
+[OIDC composition](../docs/security-current-authority.md#public-oidc-composition).
 
 ## Private authentication evidence
 

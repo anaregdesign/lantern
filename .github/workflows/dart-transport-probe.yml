@@ -90,7 +90,7 @@ jobs:
           set -euo pipefail
           probe_app="$RUNNER_TEMP/lantern"
           probe_fixture="$RUNNER_TEMP/lantern-authfixture"
-          go build -o "$probe_app" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$probe_app" ./server/cmd
           go build -o "$probe_fixture" ./server/cmd/authfixture
           echo "PROBE_APP=$probe_app" >> "$GITHUB_ENV"
           echo "PROBE_FIXTURE=$probe_fixture" >> "$GITHUB_ENV"
