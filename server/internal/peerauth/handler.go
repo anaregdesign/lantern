@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/server/internal/streamcancel"
 )
 
 const DomainHeader = "Lantern-Peer-Domain"
@@ -54,6 +55,10 @@ func (s *Store) ProtectHandler(next http.Handler, options ...connect.HandlerOpti
 			return
 		}
 		ctx, cancel := context.WithTimeout(WithAdmission(req.Context(), admission), remaining)
+		// The HTTP owner retains the write-deadline watcher and joins it below.
+		// A stream may withdraw this admission to interrupt an already blocked
+		// Send; it cannot replace or extend the original request's bounds.
+		ctx = streamcancel.WithInterrupt(ctx, cancel)
 		stop, stopped := make(chan struct{}), make(chan struct{})
 		go func() {
 			defer close(stopped)

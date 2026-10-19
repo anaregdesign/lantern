@@ -90,11 +90,12 @@ func (l *Log) classifyWALFailureLocked(err error) error {
 // existing subscriptions at their last proven prefix. The caller holds l.mu.
 func (l *Log) markUnusableLocked(cause error) {
 	l.unusableErr = cause
-	// Existing subscribers must stop at the last proven prefix. Their
-	// forwarders may drain already committed entries, then close. Future
-	// Subscribe calls fail with the same cause.
+	// Stop existing subscriptions independently of queued delivery. A
+	// consumer can reconnect only after recovery establishes a proven prefix.
+	// Future Subscribe calls fail with the same cause.
 	l.subsMu.Lock()
 	for sub := range l.subscribers {
+		sub.stream.finish(cause)
 		close(sub.ch)
 		delete(l.subscribers, sub)
 	}
@@ -242,6 +243,7 @@ func (l *Log) installBoundaryLocked(seq uint64) {
 	l.subsMu.Lock()
 	for sub := range l.subscribers {
 		sub.gapped = true
+		sub.stream.finish(ErrGapped)
 		close(sub.ch)
 		delete(l.subscribers, sub)
 	}

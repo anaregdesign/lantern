@@ -21,6 +21,7 @@ import (
 	"mime"
 
 	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/server/internal/streamcancel"
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -195,16 +196,19 @@ func (h *lanternReplicationServiceConnect) Subscribe(ctx context.Context, req *c
 		return connect.NewError(connect.CodeInvalidArgument,
 			errors.New("full-mutation Subscribe requires binary protobuf encoding; JSON and unknown codecs are unsupported"))
 	}
-	return h.svc.Subscribe(ctx, req.Msg, replicationHeaderSender{stream})
+	return h.svc.Subscribe(ctx, req.Msg, replicationHeaderSender{ServerStream: stream, ctx: ctx})
 }
 
 // A nil transport send flushes headers without serializing a protobuf frame.
 // The service invokes it only after accepting and registering a subscription.
 type replicationHeaderSender struct {
 	*connect.ServerStream[pb.SubscribeResponse]
+	ctx context.Context
 }
 
 func (s replicationHeaderSender) FlushHeaders() error { return s.Send(nil) }
+
+func (s replicationHeaderSender) Interrupt() { streamcancel.Interrupt(s.ctx) }
 
 func binaryProtobufContentType(contentType string) bool {
 	mediaType, _, err := mime.ParseMediaType(contentType)

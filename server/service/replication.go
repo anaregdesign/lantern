@@ -16,7 +16,6 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationlog"
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/internal/replicationstatus"
 )
 
 // Sender is the slim, transport-agnostic surface Subscribe and
@@ -287,9 +286,9 @@ func (s *LanternReplicationService) ConfigureReceiptSnapshot(source *ReceiptWhol
 //  3. A missing needed origin entry or ErrGapped from the local log surfaces
 //     as FailedPrecondition + reason "gapped" so the client knows to
 //     snapshot and resubscribe (RFC §8.2).
-//  4. If the channel is closed mid-stream the subscriber fell behind
-//     the per-subscriber buffer (Options.SubscriberBuffer). Surface
-//     this as FailedPrecondition + "gapped" — symmetric with case 3.
+//  4. Observe subscriber loss independently of queued entries and interrupt
+//     a blocked private Send through its original HTTP owner. Reconnect from
+//     the committed cursor; overflow alone does not prove missing history.
 //  5. Wait for the publication cut before forwarding a dispatched entry,
 //     then release it before Send so slow consumers do not stall writers.
 //     Honor ctx cancellation throughout.
@@ -332,10 +331,11 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 	}
 	cut, hasCut := s.origins.(subscribeCutProvider)
 	var (
-		faultCh <-chan struct{}
-		ch      <-chan mutationlog.Entry
-		cancel  func() error
-		openErr error
+		faultCh      <-chan struct{}
+		ch           <-chan mutationlog.Entry
+		cancel       func() error
+		openErr      error
+		subscription *mutationlog.Subscription
 	)
 	register := func(generation <-chan struct{}) {
 		faultCh = generation
@@ -362,7 +362,10 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 				}
 			}
 		}
-		ch, cancel, openErr = s.log.SubscribeFiltered(fromLocalSeq, s.cursorEntryFilter(cursor))
+		subscription, openErr = s.log.SubscribeStream(fromLocalSeq, s.cursorEntryFilter(cursor))
+		if openErr == nil {
+			ch, cancel = subscription.Entries(), subscription.Close
+		}
 	}
 	if hasCut {
 		if err := cut.withReplicationSubscribeCut(register); err != nil {
@@ -396,15 +399,15 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("subscribe failed: %w", openErr))
 	}
 	defer func() { _ = cancel() }()
+	delivery := newReplicationDelivery(ctx, stream, subscription, faultCh)
+	defer delivery.Close()
 
 	s.metrics.OnSubscribeStarted()
 	defer s.metrics.OnSubscribeEnded()
 	// Complete an accepted idle stream's transport handshake without an event,
 	// sequence advance or synthetic checkpoint. Keep all validation above it.
-	if headers, ok := stream.(interface{ FlushHeaders() error }); ok {
-		if err := headers.FlushHeaders(); err != nil {
-			return err
-		}
+	if err := delivery.FlushHeaders(); err != nil {
+		return err
 	}
 
 	for {
@@ -438,8 +441,7 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 				// tail evicted while forwarding. The next cursor validation
 				// determines whether Snapshot is actually required.
 				s.metrics.OnSubscribeDropped("gapped")
-				return replicationstatus.TransientGap(replicationstatus.ReasonSubscriberStreamClosed,
-					errors.New("gapped: subscriber stream closed; reconnect from committed cursor"))
+				return replicationStreamClosedError()
 			}
 			frame, err := subscribeMutationFrame(entry.Op)
 			if err != nil {
@@ -500,7 +502,7 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 			// the same (origin, origin_seq) tuple appear with a
 			// different Seq value on every hop, breaking the
 			// per-origin dedup gate in ApplyMutation.
-			if err := stream.Send(frame); err != nil {
+			if err := delivery.Send(frame); err != nil {
 				s.metrics.OnSubscribeDropped("send_failed")
 				return err
 			}
