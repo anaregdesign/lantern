@@ -671,6 +671,7 @@ receipt_image_ref=lantern:local
 receipt_image_id=""
 receipt_image_commit=""
 receipt_container_ids=()
+runtime_owner=501:20
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 log() { :; }
 docker() {
@@ -813,6 +814,7 @@ func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
 		{name: "verified before and after load"},
 		{name: "missing own mount", wantErr: "no pinned, read-only"},
 		{name: "writable mount", wantErr: "no pinned, read-only"},
+		{name: "wrong runtime user", wantErr: "mismatched native runtime user"},
 		{name: "missing declared time source", wantErr: "no pinned, read-only declared time source"},
 		{name: "writable declared time source", wantErr: "no pinned, read-only declared time source"},
 		{name: "foreign declared time source", wantErr: "no pinned, read-only declared time source"},
@@ -848,6 +850,7 @@ REPLICA_GRPC_PORTS=(6380 6381 6382)
 MEMBERSHIP_PID=$$
 DIAGNOSTICS_PID=$$
 receipt_driver=1
+runtime_owner=501:20
 postflight=0
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 docker() {
@@ -855,6 +858,9 @@ docker() {
  [[ "$1" == inspect && "$2" == --format ]] || return 88
  local service="${4#container-}" index="${4##*-}"
  case "$3" in
+ '{{.Config.User}}')
+  if [[ "$CASE" == "wrong runtime user" && "$index" == 1 ]]; then echo 0:0; else echo "$runtime_owner"; fi
+  ;;
  '{{json .Mounts}}')
   local source="$PEER_TLS_DIR/$service" rw=false time_source="$PEER_TLS_DIR/$service/ntp.conf" time_rw=false
   if [[ "$CASE" == "missing own mount" && "$index" == 1 ]]; then source="$PEER_TLS_DIR/lantern-0"; fi

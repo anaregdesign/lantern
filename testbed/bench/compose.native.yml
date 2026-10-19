@@ -2,6 +2,9 @@
 # even when public data APIs use OFF/h2c. run.sh owns all ephemeral trust/state.
 x-native: &native
   image: ${LANTERN_IMAGE:-ghcr.io/anaregdesign/lantern:latest}
+  # The host publisher atomically replaces owner-only authority inputs.
+  # Keep its non-root identity aligned with the local serving workloads.
+  user: "${LANTERN_BENCH_RUNTIME_UID:?non-root fixture UID required}:${LANTERN_BENCH_RUNTIME_GID:?fixture GID required}"
   stop_grace_period: 45s
   networks: [default]
   healthcheck:

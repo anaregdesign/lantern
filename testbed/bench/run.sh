@@ -157,6 +157,13 @@ SCENARIO_NAME="$1"
 SCENARIO_FILE="$SCENARIO_DIR/${SCENARIO_NAME}.yaml"
 [[ -f "$SCENARIO_FILE" ]] || die "no such scenario: $SCENARIO_FILE"
 
+# Private authority inputs are replaced atomically by the host publisher.
+# Use the same explicitly non-root UID/GID for this local Compose cohort.
+runtime_owner="$(id -u):$(id -g)"
+[[ "$runtime_owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || die "native benchmark driver must be non-root"
+export LANTERN_BENCH_RUNTIME_UID="${runtime_owner%:*}"
+export LANTERN_BENCH_RUNTIME_GID="${runtime_owner#*:}"
+
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUTDIR="$HERE/out/${SCENARIO_NAME}/${TS}"
 mkdir -p "$OUTDIR/prom" "$OUTDIR/pprof"
@@ -362,24 +369,18 @@ verify_receipt_image_provenance() {
   done
   printf '%s\n' "${replicas[@]}" |
     jq -s --arg ref "$receipt_image_ref" --arg id "$receipt_image_id" \
-      --arg commit "$receipt_image_commit" \
-      '{image_ref:$ref, image_id:$id, source_commit:$commit, replicas:.}' > "$out" ||
+      --arg commit "$receipt_image_commit" --arg runtime_user "$runtime_owner" \
+      '{image_ref:$ref, image_id:$id, source_commit:$commit, runtime_user:$runtime_user, replicas:.}' > "$out" ||
     die "cannot write receipt image provenance to $out"
   log "verified receipt image $receipt_image_id from $receipt_image_commit on all three replicas"
 }
 
 pin_receipt_image
 [[ "$receipt_driver" != "1" || "$authority_image_id" == "$receipt_image_id" ]] || die "workload image changed after original authority provisioning"
-# Preserve private-file permissions and provision only each workload's own
-# secret files to the actual non-root image user. No production guard is relaxed.
-runtime_owner="$(docker run --rm --entrypoint /bin/sh "$receipt_image_id" -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')" || die "cannot determine native workload file owner"
-[[ "$runtime_owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || die "native workload image must use a non-root user"
-for service in lantern-0 lantern-1 lantern-2; do
-  docker run --rm --user 0:0 --entrypoint /bin/sh \
-    --mount "type=bind,source=$PEER_TLS_DIR/$service,target=/owned" "$receipt_image_id" \
-    -c 'owner="$1"; for file in /owned/*.key /owned/machines.json /owned/cdc-keys.json; do if [ -f "$file" ]; then chown "$owner" "$file" && chmod 600 "$file" || exit 1; fi; done' \
-    fixture "$runtime_owner" || die "cannot provision private workload file ownership"
-done
+# The release image retains its non-root default. This local fixture uses
+# the publisher's non-root identity, preserving owner-only replacement files.
+image_owner="$(docker run --rm --entrypoint /bin/sh "$receipt_image_id" -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')" || die "cannot determine native image file owner"
+[[ "$image_owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || die "native workload image must use a non-root user"
 
 verify_receipt_peer_tls() {
   local out="$1" baseline="${2:-}" service container mounts env
@@ -396,10 +397,12 @@ verify_receipt_peer_tls() {
 # Native provenance applies to OFF cohorts as well; public mode never disables
 # private peer authentication. Compare generated material without publishing it.
 verify_native_workload_settings() {
-  local service container mounts env
+  local service container mounts env actual_user
   kill -0 "$MEMBERSHIP_PID" 2>/dev/null || die "owned membership renewal exited"
   for service in lantern-0 lantern-1 lantern-2; do
     container="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")" || die "missing native workload"
+    actual_user="$(docker inspect --format '{{.Config.User}}' "$container")" || die "missing native runtime user"
+    [[ "$actual_user" == "$runtime_owner" ]] || die "$service has a mismatched native runtime user"
     mounts="$(docker inspect --format '{{json .Mounts}}' "$container")" || die "missing native mounts"
     jq -e --arg source "$PEER_TLS_DIR/$service" '
       [.[] | select(.Type == "bind" and .Destination == "/run/lantern-config" and
@@ -434,6 +437,10 @@ if [[ "${SKIP_UP:-0}" != "1" ]]; then
   # services with pinned host ports, so `--scale lantern=3` is no longer
   # needed (and would in fact fail — there is no `lantern` service).
   COMPOSE_STARTED=1
+  if ! initialize_owned_compose_volumes "$COMPOSE_PROJECT_NAME" "$receipt_image_id" "$runtime_owner" "${COMPOSE_FILES[@]}"; then
+    KEEP_UP=1
+    die "fresh volume initialization refused; named project and private inputs retained for review"
+  fi
   if [[ "$receipt_driver" == "1" ]]; then
     # Start only the protected replicas; metrics stay on their loopback plane.
     docker compose "${COMPOSE_FILES[@]}" up -d --wait \

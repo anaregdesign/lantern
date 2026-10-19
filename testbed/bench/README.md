@@ -152,6 +152,18 @@ The normal production native counter and live upstream checks remain required;
 this file does not set OS time or qualify the upstream. Preparation refuses an
 unsupported image, unsafe/existing exporter workspace or changed image identity.
 
+The local cohort explicitly runs under the driver's non-root UID/GID so the
+host publisher and serving processes can read the same owner-only authority
+inputs after atomic renewal. Every original authority input remains mode 0600;
+operator signing keys stay outside Server mounts. After proving the named
+project absent, the driver creates its containers and validates all six distinct
+state/backup volumes against their project labels. One network-free initializer
+changes only those empty volume directories to the selected UID/GID and mode
+0700. Unexpected existing contents or identity/label drift refuses setup and
+retains the project for review. The runtime user is checked before/after traffic
+and recorded with image provenance. The released image's non-root default and
+all production file, time, quorum, durability and authorization checks remain.
+
 Choose one quiet local environment (ARM or x86) for the complete eight-plus-four
 qualification on the reviewed source. A second architecture is not a beta
 release gate; retain genuine failed gate results rather than switching hosts

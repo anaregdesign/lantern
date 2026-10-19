@@ -26,11 +26,21 @@ func copyComposeAuthority(directory, mount string, index int) error {
 		return err
 	}
 	for source, target := range files {
-		if err := copyMountedFixtureFile(filepath.Join(node, source), filepath.Join(mount, target)); err != nil {
+		destination := filepath.Join(mount, target)
+		if err := copyMountedFixtureFile(filepath.Join(node, source), destination); err != nil {
+			return err
+		}
+		// The production authority reader treats every provisioning input as
+		// private, including its signed manifests and public certificates.
+		if err := os.Chmod(destination, 0600); err != nil {
 			return err
 		}
 	}
-	return copyMountedFixtureFile(filepath.Join(directory, "authority", "genesis.json"), filepath.Join(mount, "authority-genesis.json"))
+	genesis := filepath.Join(mount, "authority-genesis.json")
+	if err := copyMountedFixtureFile(filepath.Join(directory, "authority", "genesis.json"), genesis); err != nil {
+		return err
+	}
+	return os.Chmod(genesis, 0600)
 }
 
 func renewComposeAuthority(directory string, now time.Time) error {
