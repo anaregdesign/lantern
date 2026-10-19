@@ -832,6 +832,12 @@ the OIDC npm publish, before claiming hosted receipt support. `node-sdk.yml`
 does not create a GitHub Release; if one is created manually, do so only
 after the hosted archive comparison passes.
 
+After publication, dispatch [Node SDK registry audit](../../.github/workflows/node-registry-audit.yml)
+with the immutable tag and the SHA-1 printed by that tag's npm publish job.
+The hosted audit independently rebuilds the tagged candidate, compares every
+published file and executable mode, and verifies registry checksums, signature
+and source provenance. Its artifact retains both archives and the file manifest.
+
 ## High availability
 
 Both `connect` and `connectWeb` dial a **single** endpoint. Unlike the Go
