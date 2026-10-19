@@ -37,6 +37,11 @@ on:
       - "!sdks/node/*.md"
       - "!server/*.md"
   workflow_dispatch:
+    inputs:
+      release_inventory:
+        description: 'Read the candidate version from npm before a release tag exists'
+        type: boolean
+        default: false
 
 # Retire superseded PR work; main, manual and release runs remain independent.
 concurrency:
@@ -56,6 +61,31 @@ permissions:
   contents: read
 
 jobs:
+  registry-inventory:
+    name: Registry inventory (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.release_inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Test inventory validation without network
+        run: node --test scripts/release-registry-inventory.test.mjs
+      - name: Record live registry inventory before a release tag exists
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: node scripts/release-registry-inventory.mjs "$(node -p 'require("./package.json").version')" "$SOURCE_SHA" "$RUNNER_TEMP/node-release-registry-inventory.json"
+      - uses: actions/upload-artifact@v8
+        if: always()
+        with:
+          name: node-release-registry-inventory
+          path: ${{ runner.temp }}/node-release-registry-inventory.json
+          if-no-files-found: warn
+
   configured-source-integration:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/node/v')
     uses: ./.github/workflows/current-source-release.yml
