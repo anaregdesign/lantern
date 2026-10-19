@@ -57,6 +57,7 @@ prod_pids=()
 chaos_pid=""
 source "$HERE/owned_processes.sh"
 source "$HERE/owned_compose.sh"
+source "$HERE/compose_provisioner.sh"
 
 REPLICA_METRICS_PORTS=("${LANTERN_BENCH_METRICS_PORT_0:-9390}" "${LANTERN_BENCH_METRICS_PORT_1:-9391}" "${LANTERN_BENCH_METRICS_PORT_2:-9392}")
 REPLICA_GRPC_PORTS=("${LANTERN_BENCH_PUBLIC_PORT_0:-6380}" "${LANTERN_BENCH_PUBLIC_PORT_1:-6381}" "${LANTERN_BENCH_PUBLIC_PORT_2:-6382}")
@@ -274,11 +275,18 @@ export LANTERN_BENCH_PEER_TLS_DIR="$PEER_TLS_DIR"
 go -C "$REPO_ROOT/server" build -o "$AUTHFIXTURE" ./cmd/authfixture || die "cannot build native fixture helper"
 native_public_ports="${REPLICA_GRPC_PORTS[0]},${REPLICA_GRPC_PORTS[1]},${REPLICA_GRPC_PORTS[2]}"
 fixture_args=(-compose -directory "$PEER_TLS_DIR" -public-ports "$native_public_ports" -mode off)
-if [[ "$receipt_driver" == "1" ]]; then fixture_args=(-compose -directory "$PEER_TLS_DIR" -public-ports "$native_public_ports" -mode oidc -receipt); fi
+authority_image_id=""
+if [[ "$receipt_driver" == "1" ]]; then
+  [[ -n "${LANTERN_IMAGE:-}" ]] || die "receipt driver requires an explicit LANTERN_IMAGE"
+  authority_image_id="$(docker image inspect --format '{{.Id}}' "$LANTERN_IMAGE")" || die "cannot pin original authority image"
+  authority_exporter="$(prepare_compose_authority_exporter "$REPO_ROOT" "$NATIVE_WORK_DIR" "$authority_image_id")" || die "cannot prepare Linux original authority exporter"
+  fixture_args=(-compose -directory "$PEER_TLS_DIR" -public-ports "$native_public_ports" -mode oidc -receipt -authority-provisioner "$authority_exporter")
+fi
 CHANGEPROBE="$NATIVE_WORK_DIR/changeprobe"
 go -C "$REPO_ROOT" build -o "$CHANGEPROBE" ./testbed/bench/changeprobe || die "cannot build public CDC consumer"
 "$AUTHFIXTURE" "${fixture_args[@]}" > "$NATIVE_WORK_DIR/generated.json" || die "cannot generate native benchmark workload trust"
 if [[ "$receipt_driver" == "1" ]]; then
+  write_compose_time_source "$PEER_TLS_DIR" || die "cannot prepare declared read-only time source"
   export LANTERN_BENCH_AUTH_TOKEN="$(jq -er '.[0]' "$PEER_TLS_DIR/tokens.json")"
   [[ "$LANTERN_BENCH_AUTH_TOKEN" =~ ^lnt_m1_[A-Za-z0-9_-]{43}$ ]] || die "invalid native machine Role credential"
 fi
@@ -361,6 +369,7 @@ verify_receipt_image_provenance() {
 }
 
 pin_receipt_image
+[[ "$receipt_driver" != "1" || "$authority_image_id" == "$receipt_image_id" ]] || die "workload image changed after original authority provisioning"
 # Preserve private-file permissions and provision only each workload's own
 # secret files to the actual non-root image user. No production guard is relaxed.
 runtime_owner="$(docker run --rm --entrypoint /bin/sh "$receipt_image_id" -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')" || die "cannot determine native workload file owner"

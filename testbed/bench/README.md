@@ -142,6 +142,16 @@ done
 
 ## Local pre-tag qualification
 
+Protected receipt preparation builds the same-source original-authority exporter
+for the pinned Linux image's architecture and runs it in a separate, network-free
+provisioning container. This preserves the Linux time-profile binding when the
+driver host is macOS. Only the new private fixture workspace is mounted there;
+operator signing keys never enter a serving container. Each protected Server
+receives `server time.asia.apple.com` as its declared read-only `/etc/ntp.conf`.
+The normal production native counter and live upstream checks remain required;
+this file does not set OS time or qualify the upstream. Preparation refuses an
+unsupported image, unsafe/existing exporter workspace or changed image identity.
+
 Choose one quiet local environment (ARM or x86) for the complete eight-plus-four
 qualification on the reviewed source. A second architecture is not a beta
 release gate; retain genuine failed gate results rather than switching hosts
