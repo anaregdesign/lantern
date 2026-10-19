@@ -49,8 +49,9 @@ FROM gcr.io/distroless/static:nonroot
 # and DNS-rebinding protection (see mcp/README.md). The TTL ladder is
 # loaded from LANTERN_MCP_TTL_<BUCKET>=<duration> env overrides; see
 # mcp/internal/ttl for the 12 bucket names.
-# Set LANTERN_MCP_AGENT_ID per replica for stable fleet identity, and
-# LANTERN_TOKEN when the upstream runs with LANTERN_AUTH_TOKENS (#850).
+# Set LANTERN_MCP_AGENT_ID per replica for stable fleet identity. In OIDC,
+# LANTERN_TOKEN carries an existing Server-accepted upstream Bearer credential;
+# use a verified HTTPS LANTERN_ADDR. OFF requires no upstream credential.
 ENV LANTERN_ADDR=http://localhost:6380 \
     LANTERN_MCP_PING_TIMEOUT=3s \
     LANTERN_MCP_HTTP_ADDR=0.0.0.0:6390
