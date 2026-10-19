@@ -6,9 +6,9 @@ require (
 	connectrpc.com/connect v1.21.0
 	connectrpc.com/grpchealth v1.5.0
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.3
-	github.com/anaregdesign/lantern/core v0.19.2
+	github.com/anaregdesign/lantern/core v0.20.0
 	github.com/anaregdesign/lantern/mcp v0.0.0-00010101000000-000000000000
-	github.com/anaregdesign/lantern/pb v0.14.0
+	github.com/anaregdesign/lantern/pb v0.15.0
 	github.com/anaregdesign/lantern/sdks/go v0.26.0
 	github.com/anaregdesign/lantern/server v0.0.0-00010101000000-000000000000
 	github.com/manifoldco/promptui v0.9.0

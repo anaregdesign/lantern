@@ -79,7 +79,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ github.sha }}
         run: node scripts/release-registry-inventory.mjs "$(node -p 'require("./package.json").version')" "$SOURCE_SHA" "$RUNNER_TEMP/node-release-registry-inventory.json"
-      - uses: actions/upload-artifact@v8
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: node-release-registry-inventory

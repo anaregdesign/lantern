@@ -8,8 +8,8 @@ require (
 	connectrpc.com/grpcreflect v1.3.1
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.3
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.1
-	github.com/anaregdesign/lantern/core v0.0.0-00010101000000-000000000000
-	github.com/anaregdesign/lantern/pb v0.0.0-00010101000000-000000000000
+	github.com/anaregdesign/lantern/core v0.20.0
+	github.com/anaregdesign/lantern/pb v0.15.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/wire v0.7.0
 	github.com/prometheus/client_golang v1.25.0
