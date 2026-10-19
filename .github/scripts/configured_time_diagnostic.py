@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One explicitly requested hosted Darwin observation; never a Q qualification."""
+"""One explicitly requested hosted Darwin observation; never a configured-source-integration qualification."""
 
 import hashlib
 import json

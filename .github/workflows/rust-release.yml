@@ -92,11 +92,11 @@ jobs:
             echo "tag_object_sha=$tag_object_sha"
           } >> "$GITHUB_OUTPUT"
 
-  current-sdk4:
+  configured-source-integration:
     needs: tag
     uses: ./.github/workflows/current-sdk4.yml
     with:
-      proof_kind: Q
+      proof_kind: configured-source-integration
 
   conformance:
     name: Conformance (${{ matrix.os }}, Rust ${{ matrix.rust }})
@@ -175,12 +175,13 @@ jobs:
           LANTERN_RUST_TEST_AUTH_FIXTURE: ${{ github.workspace }}/sdks/rust/target/lantern-authfixture${{ matrix.os == 'windows-latest' && '.exe' || '' }}
         # Current authority is qualified by the native-time SDK4 root gate.
         run: python -B ../../.github/scripts/rust_wire.py
-      # Retained OIDC scoped CDC executes once in the required shared F/Q
-      # owner (current-sdk4.yml): full scoped CDC in F and the bounded SDK4 source cohort in Q, including tagged releases.
+      # The shared validation owner (current-sdk4.yml) runs retained OIDC scoped
+      # CDC once in functional-validation; configured-source-integration retains
+      # the bounded SDK4 source cohort, including tagged releases.
 
   preflight:
     name: Audit and verify the tagged crate archive
-    needs: [tag, conformance, current-sdk4]
+    needs: [tag, conformance, configured-source-integration]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -195,13 +196,13 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
-          artifact-ids: ${{ needs.current-sdk4.outputs.artifact_id }}
+          artifact-ids: ${{ needs.configured-source-integration.outputs.artifact_id }}
           path: ${{ runner.temp }}/current-sdk4
       - name: Require native SDK4 receipt for the exact tagged archive source
         working-directory: .
         env:
-          SDK4_RECEIPT_SHA256: ${{ needs.current-sdk4.outputs.receipt_sha256 }}
-        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind Q --trusted-receipt-sha256 "$SDK4_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4"
+          CONFIGURED_SOURCE_INTEGRATION_RECEIPT_SHA256: ${{ needs.configured-source-integration.outputs.receipt_sha256 }}
+        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind configured-source-integration --trusted-receipt-sha256 "$CONFIGURED_SOURCE_INTEGRATION_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4"
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable action
         with:
           toolchain: '1.97.1'
@@ -412,7 +413,7 @@ jobs:
 
   publish:
     name: Authenticate trusted publisher and publish if missing
-    needs: [tag, preflight, current-sdk4]
+    needs: [tag, preflight, configured-source-integration]
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment:

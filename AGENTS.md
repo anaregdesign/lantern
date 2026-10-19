@@ -45,11 +45,11 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
   final exact-source runtime qualification is still pending. Namespace isolation does not prove policy
   freshness. The Dart SDK SQLite route, including `offline_sqlite`, is approved.
 
-- **Time qualification (#1820)**: units use injected time and deterministic advancement; full real-wire functional behavior uses test-only controlled UTC. Normal-build Q reuses one three-member cohort with schema 3 source counters (at most 12 attempts/writes), SDK4, Apply/H/native 15s and final export revocation. Old schema 2/full-Q receipts cannot qualify it. 5s is a refresh target only; no global 60s/4s or monthly stop. Preserve whole-interval expiry, native leases, OFF and existing-state bindings. The owner-approved scoped contract migration replaces only repeated external-source functional qualification; other mandatory gates remain.
+- **Time qualification (#1820)**: units use injected time and deterministic advancement; full real-wire functional behavior uses test-only controlled UTC. Normal-build configured-source-integration reuses one three-member cohort with schema 3 source counters (at most 12 attempts/writes), SDK4, Apply/H/native 15s and final export revocation. Old schema 2/repeated-source receipts cannot qualify it. 5s is a refresh target only; no global 60s/4s or monthly stop. Preserve whole-interval expiry, native leases, OFF and existing-state bindings. The owner-approved scoped contract migration replaces only repeated external-source functional qualification; other mandatory gates remain.
 - **Native validation fixtures (#1610/#1613/#1635)**: private workload TLS and signed membership apply in OFF and OIDC. Public SDK CDC uses opaque WatchChanges; legacy static-token/public Subscribe fixtures do not qualify current source. Operator diagnostics cannot weaken production guards.
   The opt-in registered native A/B and physical machine/Head profiles are distinct
   [preparation inputs](sdks/dart/example/installed-factory-acceptance.md)
-  (#1809/#1811/#1766/#1610); neither substitutes for final configured-source Q,
+  (#1809/#1811/#1766/#1610); neither substitutes for final configured-source-integration,
   real-provider or physical-device acceptance.
 - **iOS smoke operation evidence (#1818)**: `launch_stall` alone covers install, native-launch and later pre-body stalls; use retained operation records, not historical ENOENT or migration logs, to distinguish observed stages without claiming a platform cause.
 
@@ -238,20 +238,20 @@ The load-bearing always-on essentials:
   preflight required family boundaries and reuse one immutable image/setup.
   Repeat only after relevant changes, invalid evidence or predeclared stability
   checks; never choose a pass or change workload, GC or thresholds to obtain one.
-- **Keep F/Q evidence distinct** (#1748): hosted code CI always requires controlled-source
-  mechanism/application F and module/coverage. Time/configuration/dependency/proof
-  boundary changes and unknown classification require normal-build configured-source Q
-  before and after merge. Every exact release candidate/selected environment requires Q.
-  F PASS / Q NOT_RUN is not release qualification; executed Q failure stays FAIL.
+- **Keep functional-validation/configured-source-integration evidence distinct** (#1748): hosted code CI always requires controlled-source
+  mechanism/application functional-validation and module/coverage. Time/configuration/dependency/proof
+  boundary changes and unknown classification require normal-build configured-source-integration
+  before and after merge. Every exact release candidate/selected environment requires configured-source-integration.
+  functional-validation PASS / configured-source-integration NOT_RUN is not release qualification; executed configured-source-integration failure stays FAIL.
   Whole-interval expiry and native leases remain mandatory. Ordinary affected local
-  checks defer exact integration F/Q to hosted CI; the explicit full local gate
+  checks defer exact integration functional-validation/configured-source-integration to hosted CI; the explicit full local gate
   retains both. Policy adoption uses the prior contract subject to the scoped
   #1820 migration above.
 - **Before every push**, satisfy the affected local or explicit pure-prose gate in
   CONTRIBUTING. Unknown inputs require full. Policy changes use the previous full
-  contract, except the explicit #1820 migration substitutes complete F and bounded
-  Q while retaining every other mandatory check. Hosted exact-merge/main,
-  release/environment Q, archives
+  contract, except the explicit #1820 migration substitutes complete functional-validation and bounded
+  configured-source-integration while retaining every other mandatory check. Hosted exact-merge/main,
+  release/environment configured-source-integration, archives
   and physical evidence remain independent. Full Windows Rust compatibility moves
   to manual/release; affected native ACL/filesystem/TLS/process checks still block.
 - **Never hand-edit generated code.** Regenerate `pb/**` with `go generate ./...` (buf,

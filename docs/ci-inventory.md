@@ -1,8 +1,8 @@
 # Beta validation workflow — #1822
 
 Ordinary development uses fresh affected local checks from the small explicit
-`.github/scripts/validation_scope.py` map, then hosted exact synthetic-merge F,
-all-six-module coverage and classified Q. Unknown/policy/configuration inputs
+`.github/scripts/validation_scope.py` map, then hosted exact synthetic-merge functional-validation,
+all-six-module coverage and classified configured-source-integration. Unknown/policy/configuration inputs
 select full. The explicit old full77 remains available and is required once on
 the policy adoption candidate. No persistent evidence cache or new permissions
 are introduced; NOT_SELECTED never means PASS.
@@ -17,7 +17,7 @@ Dart docs/backend-only mobile routing is reused, not replaced.
 
 Beta coverage emphasizes the server/SDK integration and current development/app
 surfaces. Every ordinary build does not promise all OS/device/distribution or
-long performance/stability qualification. Exact release/environment Q, archive
+long performance/stability qualification. Exact release/environment configured-source-integration, archive
 identity and explicitly promised native/physical evidence remain at those actual
 milestones. Runtime authorization, revocation, quorum/custody and durability
 checks remain. Normal scoped main runs remain; no extra manual full-main campaign.
@@ -42,7 +42,7 @@ jobs; it is not elapsed PR latency or a billed-cost calculation.
 
 | Workflow | Trigger and jobs | Decision |
 | --- | --- | --- |
-| `go.yml` | Every main push/PR: scope → module/coverage, F and classified Q → `Build & Test`; independent Lint, Proto, govulncheck, Windows receipt backup, fuzz and native deployment/private-file checks. | Keep. Distinct functional, coverage, native security and configured-source contracts. |
+| `go.yml` | Every main push/PR: scope → module/coverage, functional-validation and classified configured-source-integration → `Build & Test`; independent Lint, Proto, govulncheck, Windows receipt backup, fuzz and native deployment/private-file checks. | Keep. Distinct functional, coverage, native security and configured-source contracts. |
 | `rust-sdk.yml` | Path-filtered main/PR. Six OS × MSRV/stable lanes, native wire tests on stable, archive inspection on Linux stable. | Reduce to four: Linux MSRV plus all three stable platforms. Retain every step; design prose uses Go documentation checks. |
 | `dart-sdk.yml` | Path-filtered main/PR, manual and SDK tags. Classification selects source, minimum Dart, offline, SQLite, Android/iOS or documentation/evidence jobs; `Gate` aggregates them. Hosted archive readiness follows separately. | Keep existing scope routing and aggregate. Native jobs already skip backend-only changes. |
 | `node-sdk.yml` | Path-filtered main/PR, manual and Node tags. Node 20/22 real-wire tests; tag publication depends on tests and configured-source qualification. | Keep both supported runtimes; cancel superseded PR runs. |
@@ -57,17 +57,17 @@ jobs; it is not elapsed PR latency or a billed-cost calculation.
 
 | Workflow | Dependency and gate | Decision |
 | --- | --- | --- |
-| `current-sdk4.yml` | Reusable F/Q native execution and same-run receipt. | Keep distinct proof kinds; no relaxation of Q classification or failure behavior. |
-| `current-source-release.yml` | Reusable Q → exact-source receipt verification. | Keep; shared by Node, Dart, Admin and `_verify.yml`. |
+| `current-sdk4.yml` | Reusable functional-validation/configured-source-integration native execution and same-run receipt. | Keep distinct proof kinds; no relaxation of configured-source-integration classification or failure behavior. |
+| `current-source-release.yml` | Reusable configured-source-integration → exact-source receipt verification. | Keep; shared by Node, Dart, Admin and `_verify.yml`. |
 | `_verify.yml` | Reusable workspace vet/build/test plus configured-source release gate. | Keep; shared by root, Go SDK and MCP publication. |
-| `rust-release.yml` | Exact tag → conformance + Q → audit/isolated archive → protected OIDC publication → registry equality → Release. | Same four representative Rust lanes; preserve all remaining dependencies/permissions. |
+| `rust-release.yml` | Exact tag → conformance + configured-source-integration → audit/isolated archive → protected OIDC publication → registry equality → Release. | Same four representative Rust lanes; preserve all remaining dependencies/permissions. |
 | `sdks-go-publish.yml` | Go SDK tag → `_verify` → isolated published-pb dependency check → Release. | Keep; workspace success does not prove the published dependency. |
 | `docker-publish.yml` | Root tag → `_verify` → Search qualification → multi-arch image/binaries → Release. | Keep; no ordinary PR cost. |
 | `mcp-publish.yml` | MCP tag → `_verify` → multi-arch image/signing → Release. | Keep; no ordinary PR cost. |
-| `admin-publish.yml` | Admin tag → SPA validation + Q → multi-arch image/signing → Release. | Keep; no ordinary PR cost. |
+| `admin-publish.yml` | Admin tag → SPA validation + configured-source-integration → multi-arch image/signing → Release. | Keep; no ordinary PR cost. |
 
 Dart parent/offline publication remains inside `dart-sdk.yml`: source Gate,
-configured-source Q, exact-tag archive preflight, restricted OIDC publisher,
+configured-source-integration, exact-tag archive preflight, restricted OIDC publisher,
 read-only public archive equality, then a separate Release writer. Offline
 hosted readiness and physical evidence remain independent prerequisites.
 No workflow is deleted merely to reduce the file count: release-only and
@@ -136,7 +136,7 @@ runner/cache variance and differing path scope prevent a causal whole-PR
 latency comparison.
 
 The unchanged 76-step local gate overlaps hosted language checks, generation,
-F/Q and static analysis. This change does not move the retired hosted work
+functional-validation/configured-source-integration and static analysis. This change does not move the retired hosted work
 locally or add local native matrices. Local gating can be evaluated separately
 with a component-dependency policy; it must not be bypassed for this policy
 change. Physical Android/iPhone, release archive/provenance and configured

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Required Build & Test aggregation; executed Q failure never becomes NOT_RUN."""
+"""Required Build & Test aggregation; executed configured-source-integration failure never becomes NOT_RUN."""
 
 import os
 from pathlib import Path
@@ -16,19 +16,32 @@ def accepted(values):
     elif values.get("WINDOWS_REQUIRED") != "true" or windows != "success":
         return False
     if exempt:
-        return values.get("F_RESULT") == "skipped" and values.get("Q_RESULT") == "skipped"
-    if values.get("F_RESULT") != "success":
+        return (
+            values.get("FUNCTIONAL_VALIDATION_RESULT") == "skipped"
+            and values.get("CONFIGURED_SOURCE_INTEGRATION_RESULT") == "skipped"
+        )
+    if values.get("FUNCTIONAL_VALIDATION_RESULT") != "success":
         return False
-    q = values.get("Q_RESULT")
-    return q == "success" or (values.get("Q_REQUIRED") == "false" and q == "skipped")
+    source_integration = values.get("CONFIGURED_SOURCE_INTEGRATION_RESULT")
+    return source_integration == "success" or (
+        values.get("CONFIGURED_SOURCE_INTEGRATION_REQUIRED") == "false"
+        and source_integration == "skipped"
+    )
 
 
 def main():
     values = dict(os.environ)
     result = accepted(values)
-    statuses = {key: values.get(key, "UNKNOWN") for key in
-                ("SCOPE_RESULT", "MODULE_RESULT", "F_RESULT", "Q_RESULT", "Q_REQUIRED", "WINDOWS_REQUIRED", "WINDOWS_RESULT")}
-    line = f"Current authority result: {statuses}; accepted={result}. Q skipped means NOT_RUN, never real-source qualification."
+    statuses = {key: values.get(key, "UNKNOWN") for key in (
+        "SCOPE_RESULT", "MODULE_RESULT", "FUNCTIONAL_VALIDATION_RESULT",
+        "CONFIGURED_SOURCE_INTEGRATION_RESULT", "CONFIGURED_SOURCE_INTEGRATION_REQUIRED",
+        "WINDOWS_REQUIRED", "WINDOWS_RESULT",
+    )}
+    line = (
+        f"Current authority result: {statuses}; accepted={result}. "
+        "configured-source-integration skipped means NOT_RUN; "
+        "it does not establish configured time-source integration."
+    )
     print(line)
     if summary := values.get("GITHUB_STEP_SUMMARY"):
         with Path(summary).open("a") as stream:

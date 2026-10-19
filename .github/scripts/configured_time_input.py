@@ -64,7 +64,7 @@ def main():
         prepare()
     except (OSError, ValueError, subprocess.SubprocessError):
         # Child errors and paths remain private. File preparation alone never
-        # claims native acquisition, a usable anchor or Q qualification.
+        # claims native acquisition, a usable anchor or configured-source-integration qualification.
         print("configured_source_input_preparation_failed", file=sys.stderr)
         return 1
     return 0

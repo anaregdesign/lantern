@@ -97,8 +97,8 @@ class RepresentativeCoverageTest(unittest.TestCase):
                 self.assertIn("if: matrix.rust == 'stable'", wire)
                 self.assertNotIn("matrix.os == 'ubuntu-latest'", wire)
         release = workflow("rust-release")
-        self.assertIn("needs: [tag, conformance, current-sdk4]", job(release, "preflight"))
-        self.assertIn("--proof-kind Q", job(release, "preflight"))
+        self.assertIn("needs: [tag, conformance, configured-source-integration]", job(release, "preflight"))
+        self.assertIn("--proof-kind configured-source-integration", job(release, "preflight"))
         self.assertIn("needs: [tag, verify-published]", job(release, "release"))
         self.assertIn('go build -o "sdks/rust/target/lantern-authfixture$suffix"', job(release, "conformance"))
         self.assertIn("../../.github/scripts/rust_wire.py", job(release, "conformance"))
@@ -160,7 +160,7 @@ class RepresentativeCoverageTest(unittest.TestCase):
                 self.assertEqual(group, "  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}")
                 self.assertIn("  cancel-in-progress: ${{ github.event_name == 'pull_request' }}", text)
         # A Node tag must still qualify both runtimes and source before publishing.
-        self.assertIn("needs: [test, configured-source]", job(workflow("node-sdk"), "publish"))
+        self.assertIn("needs: [test, configured-source-integration]", job(workflow("node-sdk"), "publish"))
 
 
 if __name__ == "__main__":

@@ -142,8 +142,9 @@ jobs:
         env:
           LANTERN_RUST_TEST_SERVER: ${{ github.workspace }}/sdks/rust/target/lantern-smoke${{ matrix.os == 'windows-latest' && '.exe' || '' }}
           LANTERN_RUST_TEST_AUTH_FIXTURE: ${{ github.workspace }}/sdks/rust/target/lantern-authfixture${{ matrix.os == 'windows-latest' && '.exe' || '' }}
-      # Retained OIDC scoped CDC executes once in the required shared F/Q
-      # owner (current-sdk4.yml): full scoped CDC in F and the bounded SDK4 source cohort in Q, including tagged releases.
+      # The shared validation owner (current-sdk4.yml) runs retained OIDC scoped
+      # CDC once in functional-validation; configured-source-integration retains
+      # the bounded SDK4 source cohort, including tagged releases.
 
       - name: Inspect and build isolated library archive
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Conservative configured-source obligation; unknown changes require Q."""
+"""Conservative configured-source obligation; unknown changes require configured-source-integration."""
 
 import json
 import os
@@ -10,12 +10,12 @@ import evidence_only_pr
 
 
 # These application-only paths cannot change native source acquisition or its
-# Go composition/build inputs. F still exercises the public application path.
+# Go composition/build inputs. functional-validation still exercises the public application path.
 # Additions/deletions/renames and any path outside this small reviewed set need
-# Q. In particular all CI, fixtures, policy, manifests/locks, native/deployment,
-# native/runtime Server and Core, generated and public SDK source retain Q by default.
+# configured-source-integration. In particular all CI, fixtures, policy, manifests/locks, native/deployment,
+# native/runtime Server and Core, generated and public SDK source retain configured-source-integration by default.
 # Exact profiling handlers do not include public_metrics.go: its certified-runtime
-# readiness checks are production composition and retain Q.
+# readiness checks are production composition and retain configured-source-integration.
 APPLICATION_PATHS = ("admin/app/", "sdks/dart/offline/lib/", "sdks/dart/offline_sqlite/lib/",
                      "core/collection/", "core/nlp/", "core/model/", "core/search/")
 DIAGNOSTICS = {"server/provider/pprof.go", "server/provider/pprof_test.go",
@@ -54,13 +54,13 @@ def classify(environ):
 
 def main():
     required, reason = classify(dict(os.environ))
-    result = f"q_required={str(required).lower()}\n"
-    print(json.dumps({"q_required": required, "reason": reason}))
+    result = f"configured_source_integration_required={str(required).lower()}\n"
+    print(json.dumps({"configured_source_integration_required": required, "reason": reason}))
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as stream:
         stream.write(result)
     if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
         with Path(summary).open("a") as stream:
-            stream.write(f"Configured-source Q required: {required} ({reason}). Q NOT_RUN is not release qualification.\n")
+            stream.write(f"Configured source integration required: {required} ({reason}). configured-source-integration NOT_RUN is not release qualification.\n")
 
 
 if __name__ == "__main__":

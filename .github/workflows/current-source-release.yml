@@ -1,4 +1,4 @@
-name: Configured-source release preflight
+name: Configured source integration release preflight
 
 on:
   workflow_call:
@@ -10,7 +10,7 @@ jobs:
   qualify:
     uses: ./.github/workflows/current-sdk4.yml
     with:
-      proof_kind: Q
+      proof_kind: configured-source-integration
   verify:
     needs: qualify
     runs-on: ubuntu-latest
@@ -22,8 +22,8 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.qualify.outputs.artifact_id }}
-          path: ${{ runner.temp }}/current-sdk4-Q
-      - name: Require exact release source and normal-build Q receipt
+          path: ${{ runner.temp }}/current-sdk4-configured-source-integration
+      - name: Require exact release source and normal-build configured-source-integration receipt
         env:
-          RECEIPT_SHA256: ${{ needs.qualify.outputs.receipt_sha256 }}
-        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind Q --trusted-receipt-sha256 "$RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4-Q"
+          CONFIGURED_SOURCE_INTEGRATION_RECEIPT_SHA256: ${{ needs.qualify.outputs.receipt_sha256 }}
+        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind configured-source-integration --trusted-receipt-sha256 "$CONFIGURED_SOURCE_INTEGRATION_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4-configured-source-integration"

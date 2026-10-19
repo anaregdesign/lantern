@@ -1,11 +1,11 @@
-name: Current authority SDK4
+name: Current authority validation
 
 on:
   workflow_call:
     inputs:
       proof_kind:
         type: string
-        default: Q
+        default: configured-source-integration
     outputs:
       receipt_sha256:
         value: ${{ jobs.native.outputs.receipt_sha256 }}
@@ -46,7 +46,7 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git status --porcelain
       - name: Prepare declared read-only source input
-        if: inputs.proof_kind == 'Q'
+        if: inputs.proof_kind == 'configured-source-integration'
         env:
           LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
         run: python3 -B .github/scripts/configured_time_input.py

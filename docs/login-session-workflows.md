@@ -98,7 +98,7 @@ Root browser/management/data/receipt cases use independent original provisioning
 and the same production public composition. The native SDK4 gate retains its
 three-voter/two-origin owner and genuine Code/purpose/credential cases.
 
-Controlled-source F and configured-source Q runs must record actual execution;
+Controlled-source functional-validation and configured-source-integration runs must record actual execution;
 a skipped plain `go test`, private-input export or parser-only fixture is not
 acceptance. Follow the then-current repository qualification policy on the frozen
 candidate and merged main. Real-provider, physical-device, publication and

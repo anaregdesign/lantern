@@ -7,17 +7,20 @@ Schema, journal and protocol version numbers below identify actual encodings;
 they are not alternate runtime selections. Source and focused evidence do not
 complete configured-source, provider or physical-device qualification.
 
-## Mechanism evidence and configured-source qualification
+## Functional validation and configured source integration
 
-F/Q qualification is specified in [CONTRIBUTING](../CONTRIBUTING.md). F uses a
+The two validation kinds are specified in [CONTRIBUTING](../CONTRIBUTING.md).
+`functional-validation` uses a
 compile-time test-only source factory; normal production binaries retain the
 fixed configured-source factory, with no runtime switch. Both factories join the
 same private constructor after time-owner creation. Binding, 45-second anchor
 wait, custody, store, origin, quorum, listener/provider, codec, admission/output
-and shutdown remain common. F additionally owns and joins its loopback responder.
+and shutdown remain common. Functional validation also owns and joins its loopback responder.
 Its UTC base is synthetic; native sampling, UDP and owner refresh/backoff are real.
+`configured-source-integration` checks the normal configured time-source path;
+neither kind certifies real identity providers or physical devices.
 
-| Boundary | F | Q |
+| Boundary | `functional-validation` | `configured-source-integration` |
 | --- | --- | --- |
 | Fixed `/etc/ntp.conf`, hostname, DNS and external UDP path | Excluded; explicit fixture source/address | Normal production factory and source |
 | UTC facts | One synthetic base plus actual native elapsed counter | Configured source observations under existing honesty/path premises |
@@ -25,13 +28,13 @@ Its UTC base is synthetic; native sampling, UDP and owner refresh/backoff are re
 | Shared private composition and public SDK4/export assertions | All required, dedicated test-build marker | All required, production constructor marker |
 | Build provenance | `lantern_test_time`, Go test binary only | Normal build, no fixture tag or injected owner |
 
-The same profile digest does not make F configured-source evidence. Receipts bind
+The same profile digest does not make functional validation configured-source evidence. Receipts bind
 proof/source/build kinds and reject interchange. Each constructor emits its own
 bounded acquisition observations and result; missing observations cannot prove
 nonexecution. Setup failure means the body did not run, not that it passed.
-Q is mandatory for boundary changes before/after merge, exact release candidates,
+Configured source integration is mandatory for boundary changes before/after merge, exact release candidates,
 and the selected environment (including material native/source/network changes).
-Other classified code can merge with F and Q NOT_RUN, with a documented risk of
+Other classified code can merge with functional validation and configured-source integration NOT_RUN, with a documented risk of
 later discovery of real-source integration defects. Each actual production owner
 still needs fresh native evidence, independently of any past receipt.
 
@@ -184,9 +187,9 @@ not an assumed container image feature. It retains the already selected single
 
 Owned disposable hosted CI runners prepare that exact read-only input through
 `.github/scripts/configured_time_input.py`, shared by native SDK jobs and the
-dedicated Q container. The helper refuses local/self-hosted/unsupported execution,
+dedicated configured-source-integration container. The helper refuses local/self-hosted/unsupported execution,
 performs no clock/daemon/DNS/trust operation or upstream probe, and reports only
-fixed input-state categories. File preparation is not native acquisition or Q
+fixed input-state categories. File preparation is not native acquisition or configured-source-integration
 qualification. Operators supply the input independently; this CI helper is not
 a deployment command for a persistent host.
 
@@ -382,7 +385,7 @@ Actual credential/membership expiry and independently expired quorum still refus
 new authorization. Recovery keeps boot/process identity and tightens uncertainty with a fresh
 measurement/anchor and quorum challenge. Sound holdover itself permits eligible
 Consume/Apply while the source is unavailable. Production interval propagation, credential validity and quorum checks remain
-shared; deterministic unit/F cases own long drift and retry boundaries. Explicit test
+shared; deterministic unit/functional-validation cases own long drift and retry boundaries. Explicit test
 hooks disable automatic renewal so an expired challenge cannot be replaced
 before its rejection assertion; successful recovery uses the ordinary real
 quorum path. No injected clock enters the production constructor.

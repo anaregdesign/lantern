@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  configured-source:
+  configured-source-integration:
     uses: ./.github/workflows/current-source-release.yml
   # Re-run the admin gates against the tagged commit. `_verify.yml` is
   # Go-only, so we inline the bun-flavoured equivalent of `admin.yml`'s
@@ -60,7 +60,7 @@ jobs:
         run: bun run build
 
   build:
-    needs: [verify, configured-source]
+    needs: [verify, configured-source-integration]
     runs-on: ubuntu-latest
     permissions:
       contents: read

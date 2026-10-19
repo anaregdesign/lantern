@@ -99,7 +99,7 @@ conflicts/replay, operator locks, human/machine classification, credential and
 session revocation, journal faults, original-H custody, quorum/time expiry,
 output ownership and intact restart. Root real-wire cases exercise production
 credential, management, browser, data, CDC and receipt adapters with independent
-original provisioning. Their coordinated controlled-source F and configured-source
-Q executions remain distinct; a skipped test or parser-only fixture is not a
+original provisioning. Their coordinated controlled-source functional-validation and configured-source
+configured-source-integration executions remain distinct; a skipped test or parser-only fixture is not a
 qualification result. Final SDK, provider, device, HA and performance evidence
 must name its actual frozen source and executed boundaries.
