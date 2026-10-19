@@ -2,6 +2,11 @@ name: Rust SDK
 
 on:
   workflow_dispatch:
+    inputs:
+      native_time_diagnostic:
+        description: Run only the explicitly requested singleflight Darwin diagnostic
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -16,6 +21,8 @@ on:
       - 'go.work.sum'
       - 'tests/integration/auth_test.go'
       - '.github/workflows/rust-sdk.yml'
+      - '.github/scripts/configured_time_input.py'
+      - '.github/scripts/rust_wire.py'
       - '.github/workflows/rust-release.yml'
       - "!core/*.md"
       - "!pb/*.md"
@@ -34,6 +41,8 @@ on:
       - 'go.work.sum'
       - 'tests/integration/auth_test.go'
       - '.github/workflows/rust-sdk.yml'
+      - '.github/scripts/configured_time_input.py'
+      - '.github/scripts/rust_wire.py'
       - '.github/workflows/rust-release.yml'
       - "!core/*.md"
       - "!pb/*.md"
@@ -54,6 +63,7 @@ defaults:
 
 jobs:
   test:
+    if: ${{ !inputs.native_time_diagnostic }}
     name: Test (${{ matrix.os }}, Rust ${{ matrix.rust }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -102,6 +112,12 @@ jobs:
         if: matrix.rust == 'stable'
         with:
           go-version-file: go.mod
+      - name: Prepare declared read-only source input
+        if: matrix.rust == 'stable' && matrix.os != 'windows-latest'
+        working-directory: .
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_input.py
       - name: Build production server for real-wire conformance
         if: matrix.rust == 'stable'
         working-directory: .
@@ -110,7 +126,7 @@ jobs:
           suffix=''
           if [[ "$RUNNER_OS" == Windows ]]; then suffix='.exe'; fi
           mkdir -p sdks/rust/target
-          go build -o "sdks/rust/target/lantern-smoke$suffix" ./server/cmd
+          go test -c -tags=lantern_test_time -o "sdks/rust/target/lantern-smoke$suffix" ./server/cmd
           go build -o "sdks/rust/target/lantern-authfixture$suffix" ./server/cmd/authfixture
       - name: Qualify native private-file and fixture input security
         if: matrix.rust == 'stable'
@@ -122,14 +138,12 @@ jobs:
         if: matrix.rust == 'stable'
         # The two public fixtures are provisioned by their root Go gates.
         # Current authority additionally requires the native-time SDK4 opt-in.
-        run: cargo test --locked --all-features -- --ignored --test-threads=1 --skip scoped_changes::tests::real_public_scoped_wire --skip security::tests::real_public_current_wire
+        run: python -B ../../.github/scripts/rust_wire.py
         env:
           LANTERN_RUST_TEST_SERVER: ${{ github.workspace }}/sdks/rust/target/lantern-smoke${{ matrix.os == 'windows-latest' && '.exe' || '' }}
           LANTERN_RUST_TEST_AUTH_FIXTURE: ${{ github.workspace }}/sdks/rust/target/lantern-authfixture${{ matrix.os == 'windows-latest' && '.exe' || '' }}
-      - name: Test certified OIDC public scoped CDC over the real Rust wire
-        if: matrix.rust == 'stable'
-        working-directory: .
-        run: go test ./tests/integration -run '^TestAuth_OIDCRustScopedChangesFacadeRealConnect$' -count=1
+      # Retained OIDC scoped CDC executes once in the required shared F/Q
+      # owner (current-sdk4.yml): full scoped CDC in F and the bounded SDK4 source cohort in Q, including tagged releases.
 
       - name: Inspect and build isolated library archive
         if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
@@ -148,6 +162,7 @@ jobs:
             src/error.rs src/lib.rs src/mutation.rs src/paging.rs src/paging/tests.rs \
             src/prefix.rs src/prefix/tests.rs src/scans.rs src/scans/tests.rs \
             src/search.rs src/search/tests.rs src/scoped_changes.rs src/security.rs src/smoke.rs src/test_server.rs \
+            src/test_server/startup.rs \
             src/transport.rs src/transport/tests.rs src/traversal.rs \
             src/traversal/tests.rs \
             src/value.rs src/value/tests.rs | sort)
@@ -172,3 +187,28 @@ jobs:
             PROTOC=/nonexistent/protoc CARGO_TARGET_DIR="$RUNNER_TEMP/lantern-rust-archive-target" \
               cargo build --frozen
           )
+
+  native-time-diagnostic:
+    if: github.event_name == 'workflow_dispatch' && inputs.native_time_diagnostic
+    runs-on: macos-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Observe one configured-source native acquisition
+        timeout-minutes: 4
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_diagnostic.py
+      - name: Preserve only the allowlisted diagnostic result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-time-singleflight-${{ github.sha }}
+          path: ${{ runner.temp }}/lantern-native-time-result.json
+          if-no-files-found: error

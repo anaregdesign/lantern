@@ -14,6 +14,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestFixtureEnvironmentPreservesOwnedTrust(t *testing.T) {
@@ -70,20 +74,35 @@ func TestFixtureReceiptCohortRetainsOneEpoch(t *testing.T) {
 }
 
 func TestFixtureReadinessRequiresHealthAndCertifiedCapabilities(t *testing.T) {
+	// These are untrusted probe response/expected-input fixtures, not authority.
+	profile := &pb.CurrentAuthorityProfile{Version: 2, Domain: bytes.Repeat([]byte{1}, 32), Cohort: bytes.Repeat([]byte{2}, 32), Generation: bytes.Repeat([]byte{3}, 16), Protocol: bytes.Repeat([]byte{4}, 32), TimeProfile: bytes.Repeat([]byte{5}, 32), Membership: bytes.Repeat([]byte{6}, 32), Configuration: bytes.Repeat([]byte{7}, 32)}
+	other := proto.Clone(profile).(*pb.CurrentAuthorityProfile)
+	other.TimeProfile[0] ^= 1
 	for _, tc := range []struct {
-		name, health, mode string
-		ready              bool
-		version, status    int
-		accept             bool
+		name, health, mode      string
+		ready                   bool
+		version, member, status int
+		expected, advertised    *pb.CurrentAuthorityProfile
+		accept                  bool
+		originalMember          uint32
 	}{
-		{"oidc", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 1, 200, true},
-		{"off", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 200, true},
-		{"wrong health spelling", "SERVING", "AUTH_MODE_OIDC", true, 1, 200, false},
-		{"not serving", "SERVING_STATUS_NOT_SERVING", "AUTH_MODE_OIDC", true, 1, 200, false},
-		{"not certified", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", false, 1, 200, false},
-		{"unknown mode", "SERVING_STATUS_SERVING", "AUTH_MODE_UNSPECIFIED", true, 1, 200, false},
-		{"protocol drift", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 200, false},
-		{"transport error", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 1, 503, false},
+		{"oidc original profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, true, 0},
+		{"off", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, nil, nil, true, 0},
+		{"wrong health spelling", "SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false, 0},
+		{"not serving", "SERVING_STATUS_NOT_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false, 0},
+		{"not certified", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", false, 2, 1, 200, profile, profile, false, 0},
+		{"unknown mode", "SERVING_STATUS_SERVING", "AUTH_MODE_UNSPECIFIED", true, 2, 1, 200, profile, profile, false, 0},
+		{"retired authenticated protocol", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 1, 0, 200, profile, nil, false, 0},
+		{"missing member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 0, 200, profile, profile, false, 0},
+		{"missing advertised profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, nil, false, 0},
+		{"foreign advertised profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, other, false, 0},
+		{"missing original expected profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, nil, profile, false, 0},
+		{"oidc cannot downgrade", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, profile, nil, false, 0},
+		{"transport error", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 503, profile, profile, false, 0},
+		{"original fourth member subset", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 4, 200, profile, profile, true, 4},
+		{"subset cannot rebind member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false, 4},
+		{"invalid original member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 32, 200, profile, profile, false, 32},
+		{"subset cannot lose its original profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, nil, nil, false, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +111,16 @@ func TestFixtureReadinessRequiresHealthAndCertifiedCapabilities(t *testing.T) {
 				if r.URL.Path == "/grpc.health.v1.Health/Check" {
 					_ = json.NewEncoder(w).Encode(map[string]any{"status": tc.health})
 				} else {
-					_ = json.NewEncoder(w).Encode(map[string]any{"mode": tc.mode, "ready": tc.ready, "protocolVersion": tc.version})
+					body := map[string]any{"mode": tc.mode, "ready": tc.ready, "protocolVersion": tc.version, "currentMember": tc.member}
+					if tc.advertised != nil {
+						raw, err := protojson.Marshal(tc.advertised)
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						body["currentProfile"] = json.RawMessage(raw)
+					}
+					_ = json.NewEncoder(w).Encode(body)
 				}
 			}))
 			defer server.Close()
@@ -102,7 +130,7 @@ func TestFixtureReadinessRequiresHealthAndCertifiedCapabilities(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
-			f := fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}
+			f := fixture{CAFile: ca, authorityProfile: tc.expected, Nodes: []fixtureNode{{PublicOrigin: server.URL, originalMember: tc.originalMember}}}
 			err := waitFixtureReady(ctx, f, []*fixtureProcess{{done: make(chan struct{})}})
 			if (err == nil) != tc.accept {
 				t.Fatalf("accept=%t error=%v", tc.accept, err)
@@ -122,7 +150,7 @@ func TestFixtureReadinessDiagnosticChild(t *testing.T) {
 		return
 	}
 	// Arbitrary private text must never be replayed into the public diagnostic.
-	_, _ = os.Stderr.WriteString("{\"msg\":\"failed to initialize app\",\"err\":\"listen tcp :12345: bind: address already in use private-token-key-body\"}\n")
+	_, _ = os.Stderr.WriteString("{\"msg\":\"server exited with error\",\"err\":\"initialize app: listen tcp :12345: bind: address already in use private-token-key-body\"}\n")
 	os.Exit(23)
 }
 

@@ -174,8 +174,8 @@ def main():
             values += bind(provision / filename, "/provision/" + filename, True)
         values += bind(journals[node], "/journal") + bind(custody[node], "/custody")
         peer = json.loads((provision / f"node-{node}" / "peer.json").read_text())["Identity"]
-        env = {"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_PROFILE": "current-v2", "LANTERN_SECURITY_STORE_MODE": mode,
-               "LANTERN_SECURITY_CURRENT_CONFIG_FILE": f"/provision/node-{node}/node.json", "LANTERN_OIDC_BROWSER_ORIGIN": "https://admin.example",
+        env = {"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_STORE_MODE": mode,
+               "LANTERN_SECURITY_CONFIG_FILE": f"/provision/node-{node}/node.json", "LANTERN_OIDC_BROWSER_ORIGIN": "https://admin.example",
                "LANTERN_OIDC_ROOT_CA_FILE": "/provision/oidc.pem", "LANTERN_OIDC_PRIVATE_ORIGINS": json.dumps({issuer: [driver_ip+"/32"]}),
                "LANTERN_TLS_CERT_FILE": "/provision/public.pem", "LANTERN_TLS_KEY_FILE": "/provision/public.key", "LANTERN_CDC_CURSOR_KEY_RING_FILE": "/provision/cursor-keys.json",
                "LANTERN_PORT": "6380", "LANTERN_METRICS_ADDR": "127.0.0.1:9090", "LANTERN_NODE_ID": f"{node:032x}",

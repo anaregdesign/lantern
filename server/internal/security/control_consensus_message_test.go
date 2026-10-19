@@ -9,7 +9,7 @@ import (
 )
 
 func TestS2CMessageQuorums(t *testing.T) {
-	for _, n := range []int{3, 5, 31} {
+	for _, n := range []int{1, 2, 3, 4, 5, 30, 31} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
 			f := s2cTestCluster(t, n)
 			prepare, err := s2cSignPrepare(f.trust, f.keys[1], 1, 1, f.genesis.state.prefix, s2cBallot{1, 1})
@@ -61,10 +61,10 @@ func TestS2CMessageQuorums(t *testing.T) {
 			if _, _, err = s2cSelectP1(f.trust, promises[:f.trust.majority()-1], nil); err == nil {
 				t.Fatal("minority P1")
 			}
-			if _, _, err = s2cSelectP1(f.trust, append(promises[:f.trust.majority()-1:f.trust.majority()-1], promises[0]), nil); err == nil {
+			if _, _, err = s2cSelectP1(f.trust, append(promises[:f.trust.majority():f.trust.majority()], promises[0]), nil); err == nil {
 				t.Fatal("duplicate promise signer")
 			}
-			if _, err = s2cBuildQC(f.trust, append(votes[:f.trust.majority()-1:f.trust.majority()-1], votes[0])); err == nil {
+			if _, err = s2cBuildQC(f.trust, append(votes[:f.trust.majority():f.trust.majority()], votes[0])); err == nil {
 				t.Fatal("duplicate QC signer")
 			}
 			minimal, err := s2cMakeChosen(f.trust, accept, votes[:f.trust.majority()])
@@ -72,18 +72,34 @@ func TestS2CMessageQuorums(t *testing.T) {
 				t.Fatal(err)
 			}
 			other, err := s2cVerifyChosen(f.trust, minimal)
-			if err != nil || next.certificate.commit != other.certificate.commit || next.certificate.witness == other.certificate.witness {
+			if err != nil || next.certificate.commit != other.certificate.commit || (next.certificate.witness == other.certificate.witness) != (n == f.trust.majority()) {
 				t.Fatal("replaceable witnesses changed logical commit", err)
+			}
+			limited := *f.trust
+			limited.bounds.ProofBytes = uint64(len(minimal.proof))
+			if got := s2cChosenBytesBound(&limited, nil); got != uint64(len(minimal.raw)) {
+				t.Fatal("exact minimum quorum bound", got, len(minimal.raw))
+			}
+			limited.bounds.ProofBytes--
+			if s2cChosenBytesBound(&limited, nil) != 0 {
+				t.Fatal("one-byte-short minimum quorum remains representable")
+			}
+			if n == 4 {
+				limited.bounds.ProofBytes = uint64(len(chosen.proof) - 1)
+				if got := s2cChosenBytesBound(&limited, nil); got != uint64(len(minimal.raw)) {
+					t.Fatal("four-voter bound did not retain a three-signature witness", got)
+				}
 			}
 			if _, err = s2cVerifyChosen(f.trust, accept); err == nil {
 				t.Fatal("accept became choice")
 			}
-			if _, err = s2cSignAccepted(f.trust, f.keys[2], 2, accept, [32]byte{0xae}); err == nil {
+			last := uint32(n)
+			if _, err = s2cSignAccepted(f.trust, f.keys[last], last, accept, [32]byte{0xae}); err == nil {
 				t.Fatal("local admission mismatch signed")
 			}
 			// ACCEPT durably retaining this snapshot is sufficient to reproduce
 			// a Promise on an equal Prepare without appending another record.
-			retained, err := s2cSignPromise(f.trust, f.keys[2], 2, accept, accept.ballot, nil, accept.admission)
+			retained, err := s2cSignPromise(f.trust, f.keys[last], last, accept, accept.ballot, nil, accept.admission)
 			if err != nil || retained.acceptedValue != f.trust.noopValue() {
 				t.Fatal("retained ACCEPT snapshot", err)
 			}

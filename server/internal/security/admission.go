@@ -3,7 +3,6 @@ package security
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"time"
 )
@@ -19,40 +18,17 @@ type Admission struct {
 	expiresAt      time.Time
 	csrfToken      string
 	browser        bool
-	revision       *Revision
 	access         *Access
-	fence          func(context.Context, *Revision) error
 	authentication Authentication
 	current        *currentPublicAdmission
 }
 
-func NewAdmission(identity Identity, authTime, expiresAt time.Time, revision *Revision,
-	fence func(context.Context, *Revision) error) (*Admission, error) {
-	if !identity.valid() || revision == nil || expiresAt.IsZero() || fence == nil {
-		return nil, ErrAuthorityUnavailable
-	}
-	access, known := revision.snapshot.AccessFor(identity)
-	if !known {
-		return nil, ErrPermissionDenied
-	}
-	return &Admission{identity: identity, authTime: authTime, expiresAt: expiresAt,
-		revision: revision, access: access, fence: fence}, nil
-}
-
-func (a *Admission) Check(ctx context.Context, now time.Time) error {
-	if a != nil && a.current != nil {
-		return a.current.check(ctx)
-	}
-	if a == nil || !now.Before(a.expiresAt) || a.fence == nil {
+func (a *Admission) Check(ctx context.Context, _ time.Time) error {
+	if a == nil || a.current == nil {
 		return ErrAuthorityUnavailable
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return a.fence(ctx, a.revision)
+	return a.current.check(ctx)
 }
-
-func (a *Admission) Revision() *Revision  { return a.revision }
 func (a *Admission) Access() *Access      { return a.access }
 func (a *Admission) Identity() Identity   { return a.identity }
 func (a *Admission) AuthTime() time.Time  { return a.authTime }
@@ -60,24 +36,20 @@ func (a *Admission) ExpiresAt() time.Time { return a.expiresAt }
 func (a *Admission) Browser() bool        { return a.browser }
 func (a *Admission) CSRFToken() string    { return a.csrfToken }
 
-// Snapshot is policy data captured by this admission, not fresh authority.
-// Current-profile admissions deliberately have no legacy signed Revision.
+// Snapshot is captured policy data; it does not grant serving authority.
 func (a *Admission) Snapshot() *Snapshot {
-	if a == nil {
+	if a == nil || a.current == nil {
 		return nil
 	}
-	if a.current != nil {
-		return a.current.snapshot
-	}
-	if a.revision == nil {
-		return nil
-	}
-	return a.revision.snapshot
+	return a.current.snapshot
 }
 
 // WithBrowserProof attaches the separately verified browser-session CSRF proof.
 // It cannot change the authenticated identity or captured policy cut.
 func (a *Admission) WithBrowserProof(csrf string) *Admission {
+	if a == nil || a.current == nil {
+		return a
+	}
 	if a.current != nil {
 		session := a.current.credential.claim.Session
 		if session == nil || sha256.Sum256([]byte("lantern/current-CSRF/v2\x00"+session.Digest+"\x00"+csrf)) != a.current.credential.claim.CSRF {
@@ -92,24 +64,13 @@ func (a *Admission) WithBrowserProof(csrf string) *Admission {
 // ScopeBinding is stable only within this exact Principal/policy/generation
 // cut. Public cursors and caches must include it, never a mutable Role lookup.
 func (a *Admission) ScopeBinding() [32]byte {
-	if a != nil && a.current != nil {
-		return a.current.binding
-	}
-	if a == nil || a.revision == nil {
+	if a == nil || a.current == nil {
 		return [32]byte{}
 	}
-	encoded, _ := json.Marshal(struct {
-		Identity   Identity
-		Generation [16]byte
-		Revision   uint64
-		Digest     [32]byte
-	}{a.identity, a.revision.generation, a.revision.sequence, a.revision.digest})
-	return bindSubjectScope(sha256.Sum256(encoded), a.access)
+	return a.current.binding
 }
 
-// Keep legacy cursor bytes when there is no subject binding; UID-aware views
-// additionally bind the exact canonical selector subject into every cursor/CDC
-// scope. This is not fresh authority; normal current checks remain mandatory.
+// UID-aware views bind the canonical selector subject into every cursor scope.
 func bindSubjectScope(base [32]byte, access *Access) [32]byte {
 	uid := access.BindingDigest()
 	if uid == [32]byte{} {

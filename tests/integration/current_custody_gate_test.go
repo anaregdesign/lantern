@@ -84,7 +84,6 @@ func TestCurrentCustodyProcessGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := newOIDCWireIssuer(t)
-	f.realClock = true
 	handler := f.provider.Config.Handler
 	f.provider.Close()
 	issuer := httptest.NewUnstartedServer(handler)

@@ -141,8 +141,8 @@ def main():
             values += ["--mount", volume_mount(archives[node] if mode == "fresh" else restores[node], "/backup"),
                 "--mount", volume_mount(control, "/control", readonly=True)]
         settings = {
-            "LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_PROFILE": "current-v2",
-            "LANTERN_SECURITY_CURRENT_CONFIG_FILE": f"/provision/node-{node}/node.json",
+            "LANTERN_AUTH_MODE": "oidc",
+            "LANTERN_SECURITY_CONFIG_FILE": f"/provision/node-{node}/node.json",
             "LANTERN_SECURITY_STORE_MODE": mode, "LANTERN_OIDC_BROWSER_ORIGIN": "https://admin.example",
             "LANTERN_OIDC_ROOT_CA_FILE": "/provision/oidc.pem",
             "LANTERN_OIDC_PRIVATE_ORIGINS": json.dumps({issuer: [driver_ip + "/32"]}, separators=(",", ":")),
@@ -283,7 +283,7 @@ def main():
             docker(*(common(barrier) + ["--network", cluster, "--ip", hosts[0],
                 "--mount", volume_mount(provision, "/provision", readonly=True), "--mount", volume_mount(barrier_journal, "/journal"), "--mount", volume_mount(barrier_custody, "/custody"),
                 "--mount", f"type=bind,src={args.exporter.resolve()},dst=/exporter,readonly",
-                "--env", "LANTERN_CURRENT_CUSTODY_GATE=1", "--env", "LANTERN_SECURITY_CURRENT_CONFIG_FILE=/provision/node-1/node.json"]), args.image, "/exporter", "-test.v", "-test.run=^TestCurrentCustodyRunningBarrierNativeGate$", "-test.timeout=70s")
+                "--env", "LANTERN_CURRENT_CUSTODY_GATE=1", "--env", "LANTERN_SECURITY_CONFIG_FILE=/provision/node-1/node.json"]), args.image, "/exporter", "-test.v", "-test.run=^TestCurrentCustodyRunningBarrierNativeGate$", "-test.timeout=70s")
             containers.append(barrier)
             finish(barrier, timeout=80)
             if "--- PASS: TestCurrentCustodyRunningBarrierNativeGate" not in collect(barrier, "running-barrier"):

@@ -42,6 +42,13 @@ type Event struct {
 	Repeats        uint64    `json:"previous_repeats,omitempty"`
 }
 
+// AcquisitionCounts are monotone process-owned counters, not lossy trace
+// events and never currentness permits. They contain no source/identity data.
+type AcquisitionCounts struct {
+	Attempts, Writes, Installations uint64
+	InFlight, Failed, Denied        bool
+}
+
 var active atomic.Pointer[Capture]
 var serial atomic.Uint64
 

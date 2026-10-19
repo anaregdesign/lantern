@@ -9,7 +9,7 @@ import (
 )
 
 func TestAuthorityHistoricalVersionAndBounds(t *testing.T) {
-	for _, count := range []int{3, 31} {
+	for _, count := range []int{1, 2, 3, 4, 30, 31} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			f, keys := authorityTestFixture(t, count)
 			h, op := authorityTestHeader(t, f)
@@ -59,8 +59,8 @@ func TestAuthorityHistoricalTimeAssociation(t *testing.T) {
 		"lifetime expired":    func(h *authorityHistoricalHeader) { h.Time.Counter += authorityRenewalLifetime },
 		"UTC range":           func(h *authorityHistoricalHeader) { h.Time.UTCLow = 0 },
 		"UTC inverted":        func(h *authorityHistoricalHeader) { h.Time.UTCLow = h.Time.UTCHigh + 1 },
-		"width equality": func(h *authorityHistoricalHeader) {
-			h.Time.UTCHigh = h.Time.UTCLow + authorityOperationalTimePremises().maxWidth
+		"UTC expiry equality": func(h *authorityHistoricalHeader) {
+			h.Time.UTCHigh = authorityOperationalTimePremises().validUTC.high
 		},
 		"fake scalar consume":   func(h *authorityHistoricalHeader) { h.ConsumeUpper = h.ConsumeUpper.Add(-1) },
 		"workload binding":      func(h *authorityHistoricalHeader) { h.Workloads[0] ^= 1 },
@@ -112,5 +112,14 @@ func TestAuthorityHistoricalNativeReservationRequired(t *testing.T) {
 	state, outcome, _, err := o.LookupOriginal(h.ID)
 	if err != nil || state != S1Known || outcome == nil {
 		t.Fatal(state, err)
+	}
+}
+
+func TestAuthorityHistoricalWideInterval(t *testing.T) {
+	f, keys := authorityTestFixture(t, 3)
+	h, op := authorityTestHeader(t, f)
+	h.Time.UTCLow = h.Time.UTCHigh - uint64(10_000_000_000)
+	if _, err := verifyHistoricalH(f.trust, authorityTestSealHeader(t, f, keys[1], h, op)); err != nil {
+		t.Fatal("wide historical interval refused despite valid deadlines", err)
 	}
 }

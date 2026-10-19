@@ -74,14 +74,14 @@ func decodeCurrentID(id *pb.CurrentSecurityChangeID) (security.FullChangeID, err
 	return security.FullChangeID{Version: uint16(id.Version), Domain: [32]byte(id.Domain), Cohort: [32]byte(id.Cohort), Namespace: id.Namespace, Nonce: [16]byte(id.Nonce)}, nil
 }
 
-// Current versions never forge legacy revision/digest/generation fields.
+// Public versions bind the exact authority profile and full semantic cut.
 func SecurityVersionForAdmission(a *security.Admission) *pb.SecurityVersion {
 	if p, current := a.CurrentProfile(); current {
 		c, _ := a.CurrentCut()
 		binding := a.ScopeBinding()
 		return &pb.SecurityVersion{CurrentProfile: EncodeCurrentProfile(p), CurrentCut: encodeCurrentCut(c), AdmissionBinding: binding[:]}
 	}
-	return securityVersion(a.Revision())
+	return nil
 }
 
 func decodeCurrentCommand(r *pb.CurrentSecurityReview) (security.CurrentProfile, security.SemanticCut, security.S1Command, error) {

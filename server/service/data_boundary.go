@@ -242,7 +242,7 @@ func dataUnary[Req, Resp any](ctx context.Context, req *connect.Request[Req], sv
 	if err != nil {
 		return nil, err
 	}
-	blind := blindMutationRequired(admission, any(req.Msg).(proto.Message))
+	blind := blindMutationRequired(admissionAccess(admission), any(req.Msg).(proto.Message))
 	if svc.namespaceFormat == "" && !blind {
 		return unary(ctx, req, fn)
 	}

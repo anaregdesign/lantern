@@ -13,11 +13,139 @@ import 'package:test/test.dart';
 import 'helpers.dart';
 
 void main() {
+  test('proxy diagnostic classifications contain only fixed values', () {
+    for (final (code, expected) in [
+      (199, _ProxyStatusClass.informational),
+      (204, _ProxyStatusClass.success),
+      (302, _ProxyStatusClass.redirect),
+      (403, _ProxyStatusClass.clientError),
+      (503, _ProxyStatusClass.serverError),
+      (600, _ProxyStatusClass.other),
+    ]) {
+      expect(_proxyStatusClass(code), expected);
+    }
+    for (final (error, expected) in <(Object, String)>[
+      (const SocketException('private-token-endpoint-body'), 'socket'),
+      (const HttpException('private-token-endpoint-body'), 'http'),
+      (const TlsException('private-token-endpoint-body'), 'tls'),
+      (StateError('private-token-endpoint-body'), 'state'),
+      (Exception('private-token-endpoint-body'), 'other'),
+    ]) {
+      expect(_proxyFailureKind(error), expected);
+    }
+  });
   final sessionEndpoint =
       Platform.environment['LANTERN_DART_REAL_WIRE_ENDPOINT'];
   if (sessionEndpoint != null && sessionEndpoint.isNotEmpty) {
     runSessionRuntimeWireTests(Uri.parse(sessionEndpoint));
   }
+  test(
+    'response-loss proxy separates upstream refusal and transport',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(() => server.close(force: true));
+      server.listen((request) async {
+        if (request.uri.pathSegments.last == 'GetReceiptStatuses') {
+          request.response.statusCode = HttpStatus.forbidden;
+          await request.response.close();
+        } else {
+          final socket = await request.response.detachSocket(
+            writeHeaders: false,
+          );
+          socket.destroy();
+        }
+      });
+      final proxy = await _ResponseDroppingProxy.bind(
+        Uri.parse('http://127.0.0.1:${server.port}'),
+        drops: const {},
+      );
+      addTearDown(proxy.close);
+      final client = HttpClient();
+      addTearDown(() => client.close(force: true));
+      for (final rpc in ['GetReceiptStatuses', 'GetReceiptCapability']) {
+        final request = await client.postUrl(proxy.endpoint.resolve('/$rpc'));
+        final response = await request.close();
+        expect(
+          response.statusCode,
+          rpc == 'GetReceiptStatuses'
+              ? HttpStatus.forbidden
+              : HttpStatus.badGateway,
+        );
+        await response.drain<void>();
+        expect(proxy.forwarded(rpc), 1);
+      }
+      expect(proxy.upstreamRefusals('GetReceiptStatuses'), 1);
+      expect(proxy.upstreamTransportFailures('GetReceiptStatuses'), 0);
+      expect(proxy.upstreamRefusals('GetReceiptCapability'), 0);
+      expect(proxy.upstreamTransportFailures('GetReceiptCapability'), 1);
+      expect(proxy.diagnostics('GetReceiptStatuses'), {
+        'headerStatusClasses': {
+          for (final status in _ProxyStatusClass.values)
+            status.name: status == _ProxyStatusClass.clientError ? 1 : 0,
+        },
+        'failures': <Object>[],
+      });
+      expect(proxy.diagnostics('GetReceiptCapability')['failures'], [
+        {
+          'stage': 'readHeaders',
+          'statusClass': 'notReceived',
+          'exception': 'http',
+          'count': 1,
+        },
+      ]);
+    },
+  );
+  test(
+    'proxy retains refusal headers when response body is truncated',
+    () async {
+      final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final sockets = <Socket>[];
+      addTearDown(() async {
+        for (final socket in sockets) {
+          socket.destroy();
+        }
+        await server.close();
+      });
+      server.listen((socket) {
+        sockets.add(socket);
+        var replied = false;
+        socket.listen((_) async {
+          if (replied) return;
+          replied = true;
+          socket.write(
+            'HTTP/1.1 403 Forbidden\r\n'
+            'Content-Length: 8\r\nConnection: close\r\n\r\nx',
+          );
+          await socket.flush();
+          await socket.close();
+        });
+      });
+      final proxy = await _ResponseDroppingProxy.bind(
+        Uri.parse('http://127.0.0.1:${server.port}'),
+        drops: const {},
+      );
+      addTearDown(proxy.close);
+      final client = HttpClient();
+      addTearDown(() => client.close(force: true));
+      final request = await client.postUrl(
+        proxy.endpoint.resolve('/GetReceiptCapability'),
+      );
+      final response = await request.close();
+      await response.drain<void>();
+      expect(response.statusCode, HttpStatus.badGateway);
+      expect(proxy.upstreamRefusals('GetReceiptCapability'), 1);
+      final diagnostic = proxy.diagnostics('GetReceiptCapability');
+      expect((diagnostic['headerStatusClasses']! as Map)['clientError'], 1);
+      expect(diagnostic['failures'], [
+        {
+          'stage': 'readBody',
+          'statusClass': 'clientError',
+          'exception': 'http',
+          'count': 1,
+        },
+      ]);
+    },
+  );
   test('online adapter preserves typed transport cancellation', () async {
     final requestStarted = Completer<void>();
     final releaseResponse = Completer<void>();
@@ -622,6 +750,10 @@ void main() {
         PutOutcome.appliedAndLive,
       );
 
+      // Setup no longer needs its direct connection. Release it before the
+      // four concurrent replay requests reserve the finite output pool.
+      await serverClient.close();
+
       final proxy = await _ResponseDroppingProxy.bind(
         endpoint,
         drops: const <String, int>{
@@ -681,13 +813,62 @@ void main() {
       );
 
       expect(await repository.drain('receipt-wire'), 0);
+      // Failure-only, bounded metadata: no keys, IDs, tokens or receipt bytes.
+      final dispatchStatuses = <String, Object?>{};
+      for (final entry in <String, String>{
+        'put': put.operationId,
+        'vertexDelete': vertexDelete.operationId,
+        'edgeDelete': edgeDelete.operationId,
+        'add': add.operationId,
+      }.entries) {
+        final status = await repository.getWriteStatus(
+          'receipt-wire',
+          entry.value,
+        );
+        dispatchStatuses[entry.key] = status?.items
+            .take(1)
+            .map(
+              (item) => <String, Object?>{
+                'state': item.state.name,
+                'attempt': item.attemptCount,
+                'mayHaveDispatched': item.mayHaveDispatched,
+                'diagnostic': item.diagnosticCode,
+              },
+            )
+            .toList();
+      }
+      final dispatchDiagnostic = jsonEncode(<String, Object?>{
+        'rpcCounts': <String, Object>{
+          for (final rpc in <String>[
+            'GetReceiptCapability',
+            'GetReceiptStatus',
+            'GetReceiptStatuses',
+            'PutVertices',
+            'DeleteVertices',
+            'DeleteEdges',
+            'AddEdges',
+          ])
+            rpc: <String, Object>{
+              'forwarded': proxy.forwarded(rpc),
+              'upstreamRefused': proxy.upstreamRefusals(rpc),
+              'upstreamTransportFailed': proxy.upstreamTransportFailures(rpc),
+              ...proxy.upstreamFailureKinds(rpc),
+              ...proxy.diagnostics(rpc),
+            },
+        },
+        'statuses': dispatchStatuses,
+      });
       for (final rpc in <String>[
         'PutVertices',
         'DeleteVertices',
         'DeleteEdges',
         'AddEdges',
       ]) {
-        expect(proxy.forwarded(rpc), 1, reason: rpc);
+        expect(
+          proxy.forwarded(rpc),
+          1,
+          reason: '$rpc dispatch: $dispatchDiagnostic',
+        );
         expect(proxy.dropped(rpc), 1, reason: rpc);
       }
       final pending = await store.transaction(
@@ -703,7 +884,19 @@ void main() {
             .mutation,
         ReceiptMutationKind.edgeAdd,
       );
-      expect((await serverClient.getEdge(addEdge)).weight, 4);
+      // Verify the committed graph through an independent direct client only
+      // after the four-request replay phase has finished.
+      final verificationClient = LanternClient.connect(
+        endpoint,
+        httpClientFactory: _receiptHttpClient,
+        allowInsecure: endpoint.scheme == 'http',
+        token: token,
+      );
+      try {
+        expect((await verificationClient.getEdge(addEdge)).weight, 4);
+      } finally {
+        await verificationClient.close();
+      }
 
       final snapshot = await store.exportSnapshot();
       await repository.dispose();
@@ -810,7 +1003,19 @@ void main() {
         throw StateError('LANTERN_DART_RECEIPT_HA_FIXTURE is required for HA');
       }
 
-      final cluster = await _ReceiptHaCluster.create(binary, token, helper);
+      final provisioner =
+          Platform.environment['LANTERN_DART_RECEIPT_HA_PROVISIONER'];
+      if (provisioner == null || provisioner.isEmpty) {
+        throw StateError(
+          'same-source authority provisioner is required for HA',
+        );
+      }
+      final cluster = await _ReceiptHaCluster.create(
+        binary,
+        token,
+        helper,
+        authorityProvisioner: provisioner,
+      );
       addTearDown(cluster.close);
       await cluster.start();
       LanternClient connect(Uri endpoint) => LanternClient.connect(
@@ -2057,22 +2262,30 @@ Future<void> _awaitEdgeGone(LanternClient client, EdgeRef edge) async {
 }
 
 final class _ReceiptHaCluster {
-  _ReceiptHaCluster._(this._binary, this._token, this._helper, this._directory);
+  _ReceiptHaCluster._(
+    this._binary,
+    this._token,
+    this._helper,
+    this._authorityProvisioner,
+    this._directory,
+  );
   static Future<_ReceiptHaCluster> create(
     String binary,
     String token,
-    String helper,
-  ) async => _ReceiptHaCluster._(
+    String helper, {
+    required String authorityProvisioner,
+  }) async => _ReceiptHaCluster._(
     binary,
     token,
     helper,
+    authorityProvisioner,
     await Directory.systemTemp.createTemp('lantern-offline-native-ha-'),
   );
   final String _binary;
   final String _token;
   final String _helper;
+  final String _authorityProvisioner;
   final Directory _directory;
-  final Set<int> _reservedPorts = <int>{};
   Process? _supervisor;
   StreamIterator<String>? _responses;
   late final SecurityContext trustedContext;
@@ -2086,8 +2299,6 @@ final class _ReceiptHaCluster {
     ..usePrivateKey(_originEnvironment['LANTERN_TLS_KEY_FILE'] as String);
 
   Future<void> start() async {
-    final public = [for (var i = 0; i < 4; i++) await _freePort()];
-    final private = [for (var i = 0; i < 4; i++) await _freePort()];
     final tokens = File('${_directory.path}/tokens.json');
     await tokens.writeAsString(jsonEncode([_token]));
     // Test credentials stay in a private local fixture, never in public logs.
@@ -2097,14 +2308,14 @@ final class _ReceiptHaCluster {
     final process = await Process.start(_helper, [
       '-directory',
       '${_directory.path}/trust',
-      '-public-ports',
-      public.join(','),
-      '-peer-ports',
-      private.join(','),
+      '-allocated-nodes',
+      '4',
       '-tokens-file',
       tokens.path,
       '-receipt',
       '-receipt-ha',
+      '-authority-provisioner',
+      _authorityProvisioner,
       '-serve',
       _binary,
       '-ready-timeout',
@@ -2174,16 +2385,6 @@ final class _ReceiptHaCluster {
     }
     await _directory.delete(recursive: true);
   }
-
-  Future<int> _freePort() async {
-    for (var attempt = 0; attempt < 16; attempt++) {
-      final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      final port = socket.port;
-      await socket.close();
-      if (_reservedPorts.add(port)) return port;
-    }
-    throw StateError('could not reserve distinct receipt fixture ports');
-  }
 }
 
 final class _RecordingRemote implements OfflineRemote {
@@ -2234,6 +2435,42 @@ final class _RecordingRemote implements OfflineRemote {
 /// This keeps response-loss evidence on the transport boundary: the Lantern
 /// server has completed the real Connect request while the SDK adapter sees
 /// only a disconnected downstream connection.
+enum _ProxyStage {
+  resolve,
+  open,
+  writeRequest,
+  readHeaders,
+  readBody,
+  downstream,
+}
+
+enum _ProxyStatusClass {
+  notReceived,
+  informational,
+  success,
+  redirect,
+  clientError,
+  serverError,
+  other,
+}
+
+_ProxyStatusClass _proxyStatusClass(int status) => switch (status ~/ 100) {
+  1 => _ProxyStatusClass.informational,
+  2 => _ProxyStatusClass.success,
+  3 => _ProxyStatusClass.redirect,
+  4 => _ProxyStatusClass.clientError,
+  5 => _ProxyStatusClass.serverError,
+  _ => _ProxyStatusClass.other,
+};
+
+String _proxyFailureKind(Object error) => switch (error) {
+  SocketException() => 'socket',
+  HttpException() => 'http',
+  TlsException() => 'tls',
+  StateError() => 'state',
+  _ => 'other',
+};
+
 final class _ResponseDroppingProxy {
   _ResponseDroppingProxy._(
     this._server,
@@ -2284,6 +2521,12 @@ final class _ResponseDroppingProxy {
   final Map<String, int> _remainingDrops;
   final Map<String, int> _forwarded = <String, int>{};
   final Map<String, int> _dropped = <String, int>{};
+  final Map<String, int> _upstreamRefusals = <String, int>{};
+  final Map<String, int> _upstreamTransportFailures = <String, int>{};
+  final Map<String, Map<String, int>> _upstreamFailureKinds = {};
+  final Map<String, Map<_ProxyStatusClass, int>> _headerStatusClasses = {};
+  final Map<String, Map<(_ProxyStage, _ProxyStatusClass, String), int>>
+  _failures = {};
   final List<String> _forwardedRpcs = <String>[];
 
   Uri get endpoint => Uri(
@@ -2303,6 +2546,37 @@ final class _ResponseDroppingProxy {
   int forwarded(String rpc) => _forwarded[rpc] ?? 0;
 
   int dropped(String rpc) => _dropped[rpc] ?? 0;
+
+  int upstreamRefusals(String rpc) => _upstreamRefusals[rpc] ?? 0;
+
+  int upstreamTransportFailures(String rpc) =>
+      _upstreamTransportFailures[rpc] ?? 0;
+
+  Map<String, int> upstreamFailureKinds(String rpc) => {
+    for (final kind in ['socket', 'http', 'tls', 'state', 'other'])
+      'upstream${kind}Failed': _upstreamFailureKinds[rpc]?[kind] ?? 0,
+  };
+
+  // Only fixed buckets cross the assertion boundary. Header status is sampled
+  // before reading the body, so a truncated refusal cannot look like no refusal.
+  Map<String, Object> diagnostics(String rpc) => {
+    'headerStatusClasses': {
+      for (final status in _ProxyStatusClass.values)
+        status.name: _headerStatusClasses[rpc]?[status] ?? 0,
+    },
+    'failures': [
+      for (final stage in _ProxyStage.values)
+        for (final status in _ProxyStatusClass.values)
+          for (final kind in ['socket', 'http', 'tls', 'state', 'other'])
+            if ((_failures[rpc]?[(stage, status, kind)] ?? 0) > 0)
+              {
+                'stage': stage.name,
+                'statusClass': status.name,
+                'exception': kind,
+                'count': _failures[rpc]![(stage, status, kind)]!,
+              },
+    ],
+  };
 
   List<String> get forwardedRpcs => List<String>.unmodifiable(_forwardedRpcs);
 
@@ -2328,19 +2602,32 @@ final class _ResponseDroppingProxy {
         : downstream.uri.pathSegments.last;
     _forwarded[rpc] = (_forwarded[rpc] ?? 0) + 1;
     _forwardedRpcs.add(rpc);
+    var upstreamComplete = false;
+    var stage = _ProxyStage.resolve;
+    var statusClass = _ProxyStatusClass.notReceived;
     try {
       final target = _upstreamEndpoint.resolveUri(downstream.uri);
       if (_secure && target.origin != _upstreamEndpoint.origin) {
         throw StateError('authenticated receipt proxy rejects other origins');
       }
+      stage = _ProxyStage.open;
       final upstreamRequest = await _upstream.openUrl(
         downstream.method,
         target,
       );
       if (_secure) upstreamRequest.followRedirects = false;
+      stage = _ProxyStage.writeRequest;
       _copyHeaders(downstream.headers, upstreamRequest.headers);
       await upstreamRequest.addStream(downstream);
+      stage = _ProxyStage.readHeaders;
       final upstreamResponse = await upstreamRequest.close();
+      statusClass = _proxyStatusClass(upstreamResponse.statusCode);
+      final classes = _headerStatusClasses.putIfAbsent(rpc, () => {});
+      classes[statusClass] = (classes[statusClass] ?? 0) + 1;
+      if (upstreamResponse.statusCode >= 300) {
+        _upstreamRefusals[rpc] = (_upstreamRefusals[rpc] ?? 0) + 1;
+      }
+      stage = _ProxyStage.readBody;
       if (_secure && upstreamResponse.isRedirect) {
         await upstreamResponse.drain<void>();
         throw StateError('authenticated receipt proxy rejects redirects');
@@ -2349,7 +2636,8 @@ final class _ResponseDroppingProxy {
         BytesBuilder(copy: false),
         (builder, bytes) => builder..add(bytes),
       );
-
+      upstreamComplete = true;
+      stage = _ProxyStage.downstream;
       final remaining = _remainingDrops[rpc] ?? 0;
       if (remaining > 0) {
         _remainingDrops[rpc] = remaining - 1;
@@ -2365,7 +2653,19 @@ final class _ResponseDroppingProxy {
       _copyHeaders(upstreamResponse.headers, downstream.response.headers);
       downstream.response.add(responseBytes.takeBytes());
       await downstream.response.close();
-    } on Object {
+    } on Object catch (error) {
+      final kind = _proxyFailureKind(error);
+      final failures = _failures.putIfAbsent(rpc, () => {});
+      final bucket = (stage, statusClass, kind);
+      failures[bucket] = (failures[bucket] ?? 0) + 1;
+      if (!upstreamComplete) {
+        final kinds = _upstreamFailureKinds.putIfAbsent(rpc, () => {});
+        kinds[kind] = (kinds[kind] ?? 0) + 1;
+        if (kind == 'socket' || kind == 'http' || kind == 'tls') {
+          _upstreamTransportFailures[rpc] =
+              (_upstreamTransportFailures[rpc] ?? 0) + 1;
+        }
+      }
       try {
         downstream.response.statusCode = HttpStatus.badGateway;
         await downstream.response.close();

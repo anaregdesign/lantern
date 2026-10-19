@@ -172,12 +172,8 @@ func createS2Local(path string, scope s2LocalScope, genesis *s2TrustedGenesis) (
 		if e := s2LocalLeaseEmpty(canonical); e != nil {
 			return e
 		}
-		for _, p := range []string{canonical, canonical + ".tip"} {
-			if _, e := os.Lstat(p); e == nil {
-				return os.ErrExist
-			} else if !errors.Is(e, os.ErrNotExist) {
-				return e
-			}
+		if e := requireFreshAuthorityStorage(canonical); e != nil {
+			return e
 		}
 		wal, e := mutationlog.CreateFileWAL(canonical, s2EncodeLocalPayload)
 		if e != nil {

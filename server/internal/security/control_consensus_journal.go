@@ -15,6 +15,9 @@ import (
 )
 
 const (
+	DefaultSystemJournalMax = int64(64 << 20)
+	MaxSystemJournalBytes   = int64(512 << 20)
+
 	s2cJournalHeaderBytes = 85
 	s2cJournalFrameBytes  = 88
 	s2cJournalMaxPayload  = (32 << 20) - 36
@@ -124,12 +127,8 @@ func createS2CJournal(path string, binding [32]byte, policy s2cJournalPolicy, ge
 		if e := s2LocalLeaseEmpty(canonical); e != nil {
 			return e
 		}
-		for _, name := range []string{canonical, canonical + ".tip"} {
-			if _, e := os.Lstat(name); e == nil {
-				return os.ErrExist
-			} else if !errors.Is(e, os.ErrNotExist) {
-				return e
-			}
+		if e := requireFreshAuthorityStorage(canonical); e != nil {
+			return e
 		}
 		wal, e := mutationlog.CreateFileWAL(canonical, s2cEncodeJournalPayload)
 		if e != nil {

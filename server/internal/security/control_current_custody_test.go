@@ -308,9 +308,20 @@ func TestCurrentCustodyRejectsFileAliasesAndUnsafeDescriptors(t *testing.T) {
 					return // Windows ACL validation belongs to core/privatefile.
 				}
 				err = os.WriteFile(p.floors, []byte("unsafe"), 0644)
+				if err == nil {
+					// Creation permissions are filtered by the process umask.
+					// Install the unsafe negative fixture explicitly.
+					err = os.Chmod(p.floors, 0644)
+				}
 			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if damage == "permissions" {
+				info, err := os.Stat(p.floors)
+				if err != nil || info.Mode().Perm() != 0644 {
+					t.Fatal("unsafe fixture mode was not installed", err)
+				}
 			}
 			if err := currentCustodyPaths(p); err == nil {
 				t.Fatal("path-only validation admitted an unsafe descriptor/alias")

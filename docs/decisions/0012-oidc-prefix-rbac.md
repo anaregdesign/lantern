@@ -19,23 +19,21 @@ directed prefix-pair Roles. The prior candidate and its measurements remain
 historical evidence; they do not qualify the new policy. Kubernetes/Helm is
 deferred from this task; Docker/Compose/native and Server HA/security remain.
 
-The preserved runtime candidate composes native signed sys state, short-lived
-policy authority, Role admission, logical data boundaries, public Security/
-Changes/browser APIs and a separate signed-membership workload plane in the
-production Wire graph. Source, CI, final exact-source acceptance and external
-provider/clock evidence remain separate exit buckets in #1599/#1610. The Head
-source and response/SDK implementation were merged in
+#1820 retires the pre-production fixed-writer/replica-lease implementation.
+Public configuration is OFF or OIDC. OIDC uses original fixed-membership
+quorum authority, separate origin signing custody, native interval time,
+full-cut review/original-result reconciliation and bounded immutable output.
+The [authority contract](../security-current-authority.md) owns its exact
+encoding and recovery rules. Historical fixed-writer measurements do not
+qualify this source. Provider, configured-source and physical-device evidence
+remain separate exits in #1610. HA Edge Create stays closed pending its own
+distributed absence/arbitration and endpoint/tombstone proof.
+
+The Head source and response/SDK implementation were merged in
 [#1661](https://github.com/anaregdesign/lantern/pull/1661) under
 [#1626](https://github.com/anaregdesign/lantern/issues/1626). Final exact-source,
 provider, device and HA qualification remain separate. HA Edge Create stays
 disabled pending distributed absence/arbitration and endpoint/tombstone proof.
-Prior local conformance does not complete deployment or provider qualification.
-
-The native Store reserves private nonexpiring GraphCache state and reuses
-FileWAL framing, ownership, sync, lower-bound tip proofs and bounded checkpoint
-rotation. Recovery verifies signed history before installing an image and
-never restores a serving lease. A fresh writer observes the full restart fence
-before public serving; replicas require a challenge-bound current writer proof.
 
 ## Context
 
@@ -60,40 +58,29 @@ contract before enabling that replacement on a listener.
 | Empty, unknown, partial or conflicting authentication settings | Startup fails; never fall back to OFF |
 | Invalid, stale, recovering or unavailable security authority | Protected operations fail closed; peer repair remains available |
 
-OIDC requires `LANTERN_OIDC_ADMIN_ISSUER` (an exact HTTPS Issuer),
-`LANTERN_OIDC_ADMIN_SUBJECTS` (a nonempty JSON array of exact `sub` strings),
-an API audience, a browser client ID and exact redirect URI, and native
-durable security storage. Presence of an OIDC setting without an explicit
-mode is an error. Empty configured values count as configuration, not absence.
+OIDC requires `LANTERN_SECURITY_CONFIG_FILE`, `LANTERN_SECURITY_STORE_MODE`
+(`fresh` or `resume`) and an exact HTTPS browser origin. Original canonical
+node/genesis documents bind exact Issuer/subject administrator assignments,
+Role-only machine credentials, client/audience/algorithm policy, original
+voters/origins, workload identities, resource bounds and native time profile.
 Unknown subjects are never inferred from email, display name or IdP groups.
+Runtime environment bootstrap, profile selectors and writer endpoints/keys
+are retired and rejected even when explicitly empty.
 
-Bootstrap creates env-owned assignments to the protected `security_admin`
-Role. Reconciliation is an atomic writer operation with an operator-declared
-bootstrap configuration revision; a replica or an old configuration must not
-recreate a removed administrator. Subsequent administrators use the same
-Role-assignment model. Bootstrap does not grant access to data.
+Environment-owned `security_admin` assignments grant no data rights. The full
+image preserves their locks, referential integrity and the last usable human
+administrator. A named machine uses canonical `lnt_m1_` credentials with a
+bounded positive lifetime at most 90 days. Only domain-separated token digests
+enter durable state; plaintext tokens stay private. Current Role loss and
+account suspension still deny requests. Machines may perform granted reads
+and status reconciliation, but cannot mutate security policy, prove a human
+reauthentication event or acquire workload membership.
 
-Legacy `LANTERN_AUTH_TOKENS` needs an explicit migration to named machine
-Principals and Role assignments. It must not silently become a security-admin
-credential. The retired static-token and reflection-exemption settings are rejected even
-when explicitly empty. Only absent authentication configuration selects OFF;
-no legacy bearer is automatically promoted to a machine or administrator. Health remains structurally auth-exempt. Schema
-reflection and global diagnostics have explicit capabilities.
-
-The writer may load `LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE`, an absolute
-regular private file (Unix owner-only mode such as `0600`/`0400`, or the Windows owner/DACL contract below; no symlinks). Its strict JSON array
-contains `name`, `role_ids`, and `credentials` with `token`, `created_at`, and
-`expires_at`. Role IDs refer to `LANTERN_SECURITY_BOOTSTRAP_ROLES`; permissions
-cannot be attached to a machine directly. At most 64 machines with four
-credentials each are admitted. Tokens use `lnt_m1_` followed by canonical
-unpadded base64url of 32 cryptographically random bytes; lifespan is positive
-and at most 90 days. Rotate/remove credentials by advancing the operator
-bootstrap revision; account suspension and current Role changes apply locally.
-Only domain-separated SHA-256 digests enter signed sys state and its native
-journal/replica recovery. Raw tokens are never management responses, graph
-records or audit fields. No last-seen write or IdP lookup runs for machine
-requests, and a machine credential does not prove interactive recent auth or
-create a browser session. This public credential route cannot admit a peer.
+Retired deployment-wide bearer/reflection-exemption settings cannot promote
+an old token to machine or administrator authority. Only absent auth settings
+select default OFF. Health remains structurally auth-exempt while readiness
+still checks the actual serving owner. Schema and diagnostics need explicit
+capabilities in OIDC.
 
 The capability endpoint returns a sanitized mode, readiness and supported
 features. Admin must not interpret a 401, network failure or malformed response
@@ -142,42 +129,28 @@ Principal is explicitly registered and also receives only Role assignments.
 Unknown Principal, disabled Issuer, suspended Principal or unknown assigned
 Role denies access. A verified JWT alone grants nothing.
 
-A native system transaction carries the complete affected security image,
-expected revision, unique change ID, audit record, generation, writer identity,
-contiguous revision and previous/current image digests. The original writer
-signs the bounded canonical envelope. Transport mTLS authenticates the relay,
-not the original transaction. Generic HLC/LWW merges must never independently
-merge grants, memberships, Issuers or session revocations.
+A reviewed control operation binds its actor, original full ID, immutable
+intent and full semantic cut. A genuine consumed credential and any required
+post-review Code event become an original H owned by its origin's durable
+serial reservation. Fixed-membership strict-majority consensus chooses the
+exact original value; deterministic Apply installs the complete image and
+retained original outcome. Generic HLC/LWW merging never combines security
+records independently. Singular management mutations use the plural canonical
+operation and retain request-index-aligned original results.
 
-The writer serializes transactions, validates referential integrity and the
-last usable administrator, synchronizes the native security WAL, installs
-the complete image in `sys:` in the same GraphCache, and atomically publishes
-one immutable compiled revision. A CAS conflict changes nothing. A repeated
-change ID with the same intent returns the original status; a different intent
-is rejected. Singular management mutations delegate to plural canonical
-operations, whose responses remain request-index-aligned.
+OIDC has a distinct typed durability lane even with graph-only application
+data. Original M/P/B families, lower-bound proofs and custody have separate
+identities, floors and ownership. Resume replays intact original state and
+never restores volatile serving authority. Unknown, corrupt, partial or copied
+state fails closed. Fresh initialization refuses retained or interrupted
+families without rewriting them. No old signed revision/session import or
+fixed-writer journal migration is provided.
 
-System persistence is mandatory for OIDC even when application data uses the
-graph-only runtime. Reuse the native FileWAL framing, integrity checks, lease,
-sync and recovery primitives through a separate typed system durability lane.
-It has its own sequence, checkpoint, bounded compaction and certification.
-Do not filter application frames out of an existing receipt WAL, reset its
-sequence under an old origin, or turn every data RPC into an fsync. Application
-receipt-WAL certification remains the owned graph/Store/origin/Log/HLC bundle
-from ADR 0010. Security-writer identity is independent of graph origin identity.
-
-Session issuance and revocation are durable control changes. Sessions use a
-fixed bounded expiry; data requests do not synchronously update `last_seen`
-or sliding idle expiry. Metadata bytes, records, audit retention, sessions,
-revisions and checkpoint size have explicit caps. Revocation reserves remain
-available when general admission is exhausted. Corrupt, incomplete, forked or
-unknown state stays unavailable until certified recovery.
-
-Local fsync proves local restart continuity, not survival of the sole volume's
-destruction. A stale backup cannot prove recent revocations. Restore enters
-management-only recovery, requires reconciliation of grants and revocations,
-fences the old writer, installs a new generation and invalidates old sessions
-and leases. A new generation alone does not repair stale grants.
+Session issuance and revocation are durable control changes with fixed expiry;
+data access does not update last_seen or sliding idle expiry. Capacity and
+revocation reserves remain bounded. Receipt-WAL continuity, graph backups and
+security custody qualify separate invariants. A stale backup or new generation
+alone cannot establish current grants/revocations or recover a lost origin key.
 
 ## Permission rules and evaluation
 
@@ -282,10 +255,10 @@ The operation-purpose proof contract is:
   a proof. Navigation starts no earlier than the next whole NumericDate second
   after final review, and the signed event must meet that boundary. Purpose
   state uses the existing bounded ten-minute login lifetime.
-- Under the Store lock, recheck current authority, credential/proof expiry,
-  serving fence and CAS immediately before durable entry. Immutable original
-  ID plus fixed-writer CAS permits one effect; exact retained retries return
-  their original result before demanding a new proof. Outstanding purpose
+- Recheck current authority, credential/proof expiry and the exact reviewed
+  cut before durable consensus entry. The immutable original ID, canonical
+  intent and original consensus result permit one effect; exact retained
+  retries return their original result before demanding a new proof. Outstanding purpose
   capabilities are process-bound and restart invalidates them.
 - Preserve the old usable session after failed step-up. Recovery of an already
   committed same-ID operation needs no further reauthentication and never
@@ -517,8 +490,8 @@ The separately constructed [current-authority/origin owner](../security-current-
 (#1722) extends the fixed-membership S1/S2/S3 components. It combines serialized
 challenge-start renewal, conditional native UTC/elapsed intervals, actual
 credential and one-use full-S1 purpose verification, durable serial/original H,
-and bounded immutable output authorization. Existing HLC/data and fixed-writer
-public meanings remain unchanged. Approved A permits an exact preexpiry output
+and bounded immutable output authorization. HLC/data semantics remain unchanged.
+Approved A permits an exact preexpiry output
 unit to finish arbitrarily late; it promises no physical-send deadline. The new
 private APPLIED wait concerns cessation of new stale authorization and does not
 reinterpret `globally_enforced`. Public S4 activation and final #1610 target,
@@ -538,8 +511,8 @@ operator network policy. Secret handles bind to exact Issuer/client/endpoint;
 Issuer management cannot redirect operator credentials.
 
 The Server is the browser relying party: Authorization Code plus PKCE, state,
-nonce, exact redirects and single-use bounded login transactions. A fixed
-same-origin gateway routes callbacks to the pinned security writer. Exchange
+nonce, exact redirects and single-use bounded login transactions. A pinned
+same-origin gateway routes each attempt to its eligible authority origin. Exchange
 and ID-token validation produce an opaque Secure/HttpOnly cookie; Admin does
 not persist IdP tokens in localStorage. CSRF and exact-origin checks protect
 cookie-authenticated mutations. Ordinary login accepts provider SSO and missing
@@ -547,18 +520,14 @@ cookie-authenticated mutations. Ordinary login accepts provider SSO and missing
 Future or contradictory evidence is rejected; `iat`, callback time, consent and
 account selection never supply authentication time. A Server-owned transaction
 saves ordinary versus step-up intent independently from session replacement.
-Explicit session step-up and separate operation approval request fresh provider
+Operation approval requests fresh provider
 authentication and essential signed
-`auth_time`. Generic session step-up requires a signed event
-within five minutes. This generic session step-up does not authorize a reviewed
-management operation. Under #1672 ordinary qualified-human management has no age
-gate; high-impact changes use a separate purpose callback and signed post-review
-event, preserving the ordinary session. A failed step-up retains the old session.
-Canonical state,
-replication and recovery preserve unknown/old evidence. This interpretation uses
-security image v2, `LNSEC03` and native binding v2; old cohorts fail closed before
-admission or durable-floor advancement, without automatic migration or mixed
-rolling acceptance. The graph namespace and receipt formats do not change.
+`auth_time`. Broad session step-up is retired. Ordinary qualified-human management has no
+age gate; high-impact changes use a separate purpose callback and signed
+post-review event, preserving the ordinary session and its fixed expiry.
+Canonical state and recovery preserve unknown/old signed authentication facts.
+Image and native protocol versions remain actual encoding contracts; the graph
+namespace and receipt formats retain their independent versions.
 Google Security bundle, extra Google claims and the associated app publication/
 verification are optional outside baseline implementation, acceptance and
 release gates. Ordinary Google login and actual provider-neutral ordinary
@@ -597,93 +566,31 @@ suggestion, cursor and metric cache is identity/scope/revision/generation-bound.
 Logout, Role changes, cross-tab events, resume and late callbacks invalidate
 old state. Already delivered data cannot be recalled.
 
-## Fixed-writer HA baseline: authority, leases and recovery
+## Fixed-membership authority and private replication
 
-This section records the merged `93d53789` implementation, including its
-timings. #1608's leaderless security target is not implemented by these leases.
-The selected G1 Profile B target requires isolated/stale nodes to stop
-authorization-required processing within a proven bound. Its numerical bound,
-protocol and clock/suspension proof remain pending; Go monotonic elapsed time
-alone does not certify suspension. #1609's [remaining S5 contracts](../oidc-operations.md#leaderless-s5--remaining-contracts-and-qualification)
-follow #1608 S2–S4, including eligible-node/per-attempt routing, per-origin key/
-secret custody and reviewed versioned migration. Preserve fixed-writer history
-without claiming target acceptance.
+The original provisioned control voter set contains 1–31 members, including
+even counts, and uses strict majority `floor(N/2)+1` for consensus and renewal.
+Data-ring replication has a separate signed membership. A non-proposer voter
+still votes and can read/apply chosen values; it cannot create/recover an
+unchosen original H without its original origin custody. No automatic shrink,
+live expansion, replacement writer or fallback to OFF is implemented.
 
-Application data remains leaderless and asynchronously replicated. In this
-baseline one operator-pinned internal security writer owns control changes. There is
-no automatic election, external coordinator or home-built consensus protocol.
-Replicas consume signed complete security transactions/checkpoints through
-the existing pipeline; they never LWW-merge independent security records.
+Every protected request and output unit checks its current installed cut,
+credential/session, workload eligibility and finite native renewal/time bound.
+A partition or lost majority blocks new commits and renewals. Already expired
+challenges, delayed signatures and process restart cannot extend the original
+authority window. APPLIED proves an original committed result; STOPPED has its
+separate conservative observation meaning. Approved A permits an exactly
+authorized unit to complete late without claiming a physical-send deadline.
 
-A protected replica serves only with one coherent locally installed security
-revision and a bounded renewable serving lease. A lease binds a fresh challenge,
-node, generation, writer incarnation, revision and digest. Renewal is serialized
-with writer publication. The validity deadline starts before the request is
-sent and subtracts elapsed network time; a delayed response cannot extend it.
-Activate a lease only after its exact state is installed. Renewal acknowledges
-the writer's committed cut at issuance, not an indefinitely moving target.
-
-Control results distinguish durable `committed`, cluster `pending` and
-`globally_enforced`. Restrictive changes stop old lease renewal and invalidate
-known holders. Globally enforced requires every outstanding holder's proof or
-conservative expiry; connected acknowledgements alone are insufficient. The
-enforcement bound includes clock-rate error, restart, suspension/VM pause and
-response publication. Restart never restores a live lease. Already admitted
-writes may finish; long queries and streams recheck before publishing further
-results. No lease renewal is performed per key or under graph locks.
-
-| Failure / transition | Required behavior |
-| --- | --- |
-| Graph replication lag | Existing data consistency contract; security authority must independently qualify |
-| Security transaction incomplete, forked or out of order | No protected serving until a contiguous certified image is installed |
-| Writer unreachable / partition | No new management/login; replicas stop protected serving when leases expire |
-| IdP unavailable | No new login; locally verified sessions/tokens may serve only within their own validity and current security lease |
-| Restrictive policy pending | Report pending and the enforcement deadline; do not claim global revocation from local durability |
-| Manual writer replacement | Fence old process/network/credentials, certify current state and outstanding leases, install a new writer incarnation |
-| Stale restore / sole-volume loss | Management-only reconciliation; no automatic promotion or grant continuity claim |
-| Unknown session on lagging node | Deny; no arbitrary node issues/accepts an unobserved session |
-| Mixed OFF/OIDC, namespace version or trust generation | Reject before bootstrap/full graph transfer; drain incompatible peers |
-
-The staged private implementation uses TLS 1.3 with normal chain/hostname
-verification plus one exact operator-approved SPIFFE URI SAN and SPKI digest.
-It uses certificate files directly; no SPIFFE controller or runtime dependency
-is introduced. A bounded, canonical Ed25519-signed membership manifest pins
-workload IDs, fixed HTTPS origins, deployment, namespace format, homogeneous
-public mode, CA digest and OIDC security generation/writer key. Versions never
-renew expiry in place. A synchronized native checkpoint under the existing
-FileWAL path lease retains the version floor through restart. Missing/damaged
-state fails closed; a complete trusted-volume rollback still requires operator
-fencing and cannot be detected merely by signing historical bytes.
-
-Every private request checks current membership and an exact domain digest,
-including reused inbound TLS connections. Original admission ends within
-30 seconds and at certificate/membership expiry; removal cancels active streams
-and bounds blocked writes. Public Bearer/cookie credentials, redirects, proxies
-and plaintext fallback are refused on outbound peer requests. The initial client
-uses one fresh TLS 1.3 handshake per bounded private RPC rather than pooling
-certificate authority across requests. The handshake cost belongs to peer
-renewal/catch-up, not each data RPC, and needs final #1610 measurement.
-
-`LanternSecurityPeerService.RenewPolicyLease` exists only on this private mux.
-Its receiver ID must match the authenticated workload. The writer serializes
-challenge-bound signing with policy publication and returns the original complete
-signed checkpoint only when the receiver's known digest differs. A known digest
-is a transfer optimization, never serving proof. The replica atomically persists
-and installs that exact cut before activating its process-local lease. Routine
-renewal runs every five seconds, with a five-second request deadline; no network
-call or system WAL write occurs in unchanged-policy data admission. Losing local
-workload membership also invalidates protected public serving even if its last
-policy lease has time remaining.
-
-Peer authentication is separate from public mode: dedicated mTLS and
-operator-managed versioned trust/membership, optionally an existing SPIFFE
-identity. The protected replica Role cannot be assigned to a human. A security
-domain cannot mix public OFF and OIDC replicas. Admitted peers replicate the
-complete graph, sys state and receipt history, including mutations by users
-whose Roles have since been revoked; public prefix filters never restrict peer
-repair. Login transactions are writer-local and single-use; ordinary sessions
-may serve on caught-up leased replicas. Graph failover does not imply seamless
-control-plane or callback failover.
+Private data replication retains TLS 1.3/mTLS, normal chain/hostname checking,
+exact workload URI/SPKI and homogeneous signed domain membership in both OFF
+and OIDC. The OIDC domain binds the full authority profile and generation;
+the signed wire's retired writer-key slot must be zero. Per-request membership
+and expiry checks remain active on reused connections and streams. Public
+user credentials never grant membership. The old RenewPolicyLease service and
+fixed-writer checkpoint transfer are removed; private consensus/original-H/
+renewal routes belong to the actual quorum owner and never the public mux.
 
 ## Validation and rollout
 
@@ -697,7 +604,7 @@ work, with unsaturated latency percentiles and separate capacity measurements.
 Measure batches, shared statistics and constrained candidates, hidden-data ratios,
 first/reused scopes, mixed updates/deletes, allocations and retained memory,
 subscribers, TTL churn,
-policy compilation, caches, system WAL/compaction, lease expiry and revocation.
+policy compilation, caches, system durability, quorum/time expiry and revocation.
 Producer throughput alone does not prove CDC consumer latency. No performance
 percentage is claimed without measurements. Avoid per-data fsync/network calls
 and whole-graph copies on ordinary authorization paths.
@@ -826,7 +733,7 @@ from a completed refusal. Health records its actual static or runtime branch.
 A static rejection leaves runtime explicitly unevaluated and only correlates
 with the separately observed worker state. No diagnostic capabilities RPC or
 extra authority check occurs. The existing 60-second default startup budget, 35-second
-writer restart hold and all serving predicates remain unchanged.
+native authority time, custody and all serving predicates remain mandatory.
 Only this fixture composition installs the observer before serving. It writes
 fixed enum/numeric records directly to the existing private child log, outside
 authority/gate locks and independently of the configured logging level, at most

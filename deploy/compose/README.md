@@ -40,10 +40,13 @@ Renew the signed membership manifest atomically before its expiry (at most
 ten minutes), including OFF HA. Lost renewal fails closed. Public credentials
 never authorize a private peer. The private port has no host publication.
 
-OIDC uses one fixed security writer and leased replicas. Configure the complete
-[env contract](../../docs/env.md), including required administrator Issuer and
-subjects, generation, writer trust, browser public HTTPS origin and callback.
-Pin `/auth/*`, `/browser/*` and control operations to that writer. The HA Admin
+OIDC uses independently provisioned fixed-membership quorum authority. Configure
+each node's original `LANTERN_SECURITY_CONFIG_FILE` and explicit fresh/resume
+mode through the [env contract](../../docs/env.md). Original provisioning binds
+Issuer/administrator subjects, machine Roles, the full authority profile,
+per-node custody and native time. Mount only that workload's private material.
+Pin `/auth/*`, `/browser/*` and control operations to a configured eligible
+origin and preserve per-attempt login affinity. The HA Admin
 HTTP service is private and requires an operator HTTPS frontend; the Server
 upstream uses verified TLS and `admin-trust/ca.pem`. Public listener certificates
 must cover the configured public origins; peer certificates are separate.

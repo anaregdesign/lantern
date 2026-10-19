@@ -22,8 +22,8 @@ type SessionView struct {
 
 // InspectSession is shared by browser bootstrap and Connect GetCurrentPrincipal.
 // The concrete state owners are supplied by the same certified composition.
-func InspectSession(ctx context.Context, a *security.Admission, store *security.Store, current *security.CurrentAuthority, now func() time.Time) (SessionView, error) {
-	if store == nil && current == nil {
+func InspectSession(ctx context.Context, a *security.Admission, current *security.CurrentAuthority, now func() time.Time) (SessionView, error) {
+	if current == nil {
 		return SessionView{}, security.ErrS1Contract
 	}
 	if a == nil {
@@ -32,22 +32,12 @@ func InspectSession(ctx context.Context, a *security.Admission, store *security.
 	if err := a.Check(ctx, now()); err != nil {
 		return SessionView{}, err
 	}
-	if current != nil {
-		profile, known := a.CurrentProfile()
-		if !known || profile != current.Profile() {
-			return SessionView{}, ErrUnauthenticated
-		}
-		if err := a.BindCurrentSelfOutput(ctx); err != nil {
-			return SessionView{}, err
-		}
-	} else {
-		if a.Revision() == nil {
-			return SessionView{}, ErrUnauthenticated
-		}
-		revision, known := store.Current()
-		if !known || revision.Digest() != a.Revision().Digest() {
-			return SessionView{}, security.ErrAuthorityUnavailable
-		}
+	profile, known := a.CurrentProfile()
+	if !known || profile != current.Profile() {
+		return SessionView{}, ErrUnauthenticated
+	}
+	if err := a.BindCurrentSelfOutput(ctx); err != nil {
+		return SessionView{}, err
 	}
 	result := SessionView{Admission: a, RecentAuthentication: !a.AuthTime().IsZero() && !a.AuthTime().After(now()) && now().Sub(a.AuthTime()) <= security.RecentAuthenticationLifetime}
 	image := a.Snapshot().Image()

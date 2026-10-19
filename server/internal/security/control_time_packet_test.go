@@ -34,6 +34,7 @@ func TestAuthorityNTPPacket(t *testing.T) {
 	for _, code := range []string{"RATE", "DENY", "RSTR"} {
 		raw := base
 		raw[1] = 0
+		raw[0] |= 3 << 6 // KoD control precedes LI, not a new time-bearing alarm.
 		copy(raw[12:16], code)
 		_, err := parseAuthorityNTP(raw[:], nonce)
 		want := errAuthorityTimeDenied

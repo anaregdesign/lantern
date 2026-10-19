@@ -4,8 +4,47 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/x509"
+	"fmt"
 	"testing"
 )
+
+func TestControlManifestSupportedFixedTopology(t *testing.T) {
+	for count := 1; count <= 31; count++ {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			m, key, opts, _ := controlFixtureMembers(t, count)
+			raw := signControlFixture(t, m, key)
+			verified, err := VerifyControlManifest(raw, opts.Key, opts.Profile.Lineage)
+			if err != nil || len(verified.Profile.Voters) != count || verified.Profile.Digest() != opts.Profile.Digest() {
+				t.Fatal("fixed topology changed on verification", err)
+			}
+		})
+	}
+	for _, count := range []int{0, 32, 33} {
+		t.Run(fmt.Sprintf("invalid-%d", count), func(t *testing.T) {
+			m, key, _, _ := controlFixture(t)
+			m.Profile.Voters = make([]ControlVoter, count)
+			if _, err := SignControlManifest(m, key); err == nil {
+				t.Fatal("unsupported voter count signed")
+			}
+		})
+	}
+	t.Run("singleton requires proposer and distinct voting key", func(t *testing.T) {
+		m, key, _, _ := controlFixtureMembers(t, 1)
+		m.Profile.Voters[0].Proposer = false
+		if _, err := SignControlManifest(m, key); err == nil {
+			t.Fatal("originless proposer set signed")
+		}
+		m.Profile.Voters[0].Proposer = true
+		spki, err := x509.MarshalPKIXPublicKey(ed25519.PublicKey(m.Profile.Voters[0].Key[:]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.Profile.Voters[0].Workload.SPKI = sha256.Sum256(spki)
+		if _, err := SignControlManifest(m, key); err == nil {
+			t.Fatal("singleton voting key reused as workload key")
+		}
+	})
+}
 
 func TestControlManifestCanonicalTypedLineage(t *testing.T) {
 	m, key, opts, _ := controlFixture(t)
@@ -45,7 +84,7 @@ func TestControlManifestCanonicalTypedLineage(t *testing.T) {
 		"duplicate key":      func(p *ControlProfile) { p.Voters[1].Key = p.Voters[0].Key },
 		"duplicate workload": func(p *ControlProfile) { p.Voters[1].Workload.ID = p.Voters[0].Workload.ID },
 		"duplicate spki":     func(p *ControlProfile) { p.Voters[1].Workload.SPKI = p.Voters[0].Workload.SPKI },
-		"missing voter":      func(p *ControlProfile) { p.Voters = p.Voters[:2] },
+		"missing voters":     func(p *ControlProfile) { p.Voters = nil },
 		"scope":              func(p *ControlProfile) { p.ProtocolScope = [32]byte{} },
 		"plaintext":          func(p *ControlProfile) { p.Voters[0].Workload.Origin = "http://localhost:6381" },
 	} {

@@ -1,16 +1,17 @@
 package provider
 
 import (
-	"connectrpc.com/connect"
 	"context"
 	"errors"
-	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
-	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
-	"github.com/anaregdesign/lantern/server/service"
 	"log/slog"
 	"net"
 	"net/http"
 	"time"
+
+	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
+	"github.com/anaregdesign/lantern/server/service"
 )
 
 // PeerPlaneServer owns only the dedicated workload listener. Public API and
@@ -20,7 +21,7 @@ type PeerPlaneServer struct {
 	listener net.Listener
 }
 
-func NewPeerPlaneServer(config PeerPlaneConfig, peer *PeerIdentityRuntime, policy *SecurityPeerRuntime, replication *service.LanternReplicationService, limits NetConfig, logger *slog.Logger, certified runtimeCertified, launch *listenerlaunch.Owner) (*PeerPlaneServer, func(), error) {
+func NewPeerPlaneServer(config PeerPlaneConfig, peer *PeerIdentityRuntime, replication *service.LanternReplicationService, limits NetConfig, logger *slog.Logger, certified runtimeCertified, launch *listenerlaunch.Owner) (*PeerPlaneServer, func(), error) {
 	if !certified.valid || certified.replication != replication || certified.replicationSendMaxBytes != limits.MaxSendMsgBytes {
 		return nil, nil, errors.New("private listener requires the exact certified replication service and frame limit")
 	}
@@ -28,13 +29,10 @@ func NewPeerPlaneServer(config PeerPlaneConfig, peer *PeerIdentityRuntime, polic
 		if err := launch.NoPeer(); err != nil {
 			return nil, nil, err
 		}
-		if peer != nil || policy != nil {
+		if peer != nil {
 			return nil, nil, errors.New("private runtime without a configured listener")
 		}
 		return &PeerPlaneServer{}, func() {}, nil
-	}
-	if policy != nil && (policy.peer != peer || policy.runtime == nil || policy.runtime.peer != peer || policy.runtime.data != certified.runtime) {
-		return nil, nil, errors.New("private policy service must own the certified workload and data runtime")
 	}
 	if peer == nil || replication == nil || peer.CheckWorkload(context.Background()) != nil {
 		return nil, nil, errors.New("private listener requires certified workload and replication runtime")
@@ -42,9 +40,6 @@ func NewPeerPlaneServer(config PeerPlaneConfig, peer *PeerIdentityRuntime, polic
 	options := []connect.HandlerOption{connect.WithReadMaxBytes(limits.MaxRecvMsgBytes), connect.WithSendMaxBytes(limits.MaxSendMsgBytes), service.StrictJSONHandlerOption()}
 	mux := http.NewServeMux()
 	mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(service.NewLanternReplicationServiceConnectHandler(replication), options...))
-	if policy != nil {
-		mux.Handle(policy.PrivateHTTPHandler())
-	}
 	var listener net.Listener
 	var err error
 	if launch != nil {

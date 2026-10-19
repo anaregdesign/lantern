@@ -2,21 +2,19 @@ package provider
 
 import (
 	"bytes"
-	"connectrpc.com/grpchealth"
-	"github.com/anaregdesign/lantern/server/internal/readinessdiag"
 	"testing"
 	"time"
+
+	"connectrpc.com/grpchealth"
+	"github.com/anaregdesign/lantern/server/internal/readinessdiag"
 )
 
 func TestPublicHealthObservationPreservesShortCircuitAndClockSamples(t *testing.T) {
-	cfg, data, clock := securityRuntimeFixture(t)
+	clock := &securityTestClock{now: time.Now()}
 	samples := 0
-	cfg.Clock = func() time.Time { samples++; return clock.Now() }
-	r, cleanup, err := NewSecurityRuntime(cfg, data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
+	peer := securityWorkloadFixture(t, func() time.Time { samples++; return clock.Now() })
+	peer.selfExpiry = clock.Now().Add(-time.Second)
+	r := &SecurityRuntime{mode: "off", peer: peer}
 	hc := NewHealthChecker()
 	hc.SetServingStatus("", grpchealth.StatusNotServing)
 	var output bytes.Buffer
@@ -35,32 +33,27 @@ func TestPublicHealthObservationPreservesShortCircuitAndClockSamples(t *testing.
 	if err != nil || response.Status != grpchealth.StatusNotServing || samples-before != 1 {
 		t.Fatal("runtime rejection changed authority samples")
 	}
-	if s := r.readinessObservation.Snapshot(); s.HealthBranch != "runtime_rejection" || s.HealthReason != "restart_wait" {
+	if s := r.readinessObservation.Snapshot(); s.HealthBranch != "runtime_rejection" || s.HealthReason != "unavailable" {
 		t.Fatal(s)
 	}
-	clock.advance(35 * time.Second)
+	peer.selfExpiry = clock.Now().Add(time.Hour)
 	response, err = check.Check(t.Context(), &grpchealth.CheckRequest{})
-	if err != nil || response.Status != grpchealth.StatusServing || samples-before != 2 {
+	if err != nil || response.Status != grpchealth.StatusServing || samples-before != 3 {
 		t.Fatal("ready check changed authority samples")
 	}
 	clock.advance(-time.Nanosecond)
 	_, _ = check.Check(t.Context(), &grpchealth.CheckRequest{})
-	if s := r.readinessObservation.Snapshot(); s.HealthReason != "clock_fault" || samples-before != 3 {
+	if s := r.readinessObservation.Snapshot(); s.HealthReason != "unavailable" || samples-before != 5 {
 		t.Fatal(s)
 	}
 	_, _ = check.Check(t.Context(), &grpchealth.CheckRequest{Service: "absent"})
-	if s := r.readinessObservation.Snapshot(); s.HealthBranch != "error" || s.HealthReason != "not_evaluated" || samples-before != 3 {
+	if s := r.readinessObservation.Snapshot(); s.HealthBranch != "error" || s.HealthReason != "not_evaluated" || samples-before != 5 {
 		t.Fatal(s)
 	}
 }
 
 func TestPublicHealthCannotBypassAuthorityWithNamedService(t *testing.T) {
-	cfg, data, clock := securityRuntimeFixture(t)
-	runtime, cleanup, err := NewSecurityRuntime(cfg, data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
+	runtime := &SecurityRuntime{mode: "oidc"}
 	hc := NewHealthChecker()
 	hc.SetServingStatus("", grpchealth.StatusServing)
 	hc.SetServingStatus("graph.v1.LanternService", grpchealth.StatusServing)
@@ -71,7 +64,7 @@ func TestPublicHealthCannotBypassAuthorityWithNamedService(t *testing.T) {
 			t.Fatal("named health bypassed authority", service, err)
 		}
 	}
-	clock.advance(35 * time.Second)
+	check.runtime = &SecurityRuntime{mode: "off"}
 	response, err := check.Check(t.Context(), &grpchealth.CheckRequest{Service: "graph.v1.LanternService"})
 	if err != nil || response.Status != grpchealth.StatusServing {
 		t.Fatal(err)

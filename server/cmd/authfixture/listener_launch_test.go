@@ -3,33 +3,18 @@ package main
 import (
 	"bytes"
 	"context"
-	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"net"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 )
 
 func TestNativeListenerLaunchLifecycle(t *testing.T) {
-	// Compile the actual production entry point once for this lifecycle matrix.
-	// CI may supply its already-built exact-source binary on each native OS.
-	binary := os.Getenv("LANTERN_TEST_LAUNCH_SERVER")
-	if binary == "" {
-		suffix := ""
-		if runtime.GOOS == "windows" {
-			suffix = ".exe"
-		}
-		binary = filepath.Join(t.TempDir(), "server"+suffix)
-		command := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "..")
-		if raw, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("build production child: %v\n%s", err, raw)
-		}
-	}
+	binary := fixtureServerBinary(t)
 	failRestore := func(env map[string]string, dir string) {
 		env["LANTERN_RECEIPT_WAL_MODE"] = "restart"
 		env["LANTERN_RECEIPT_WAL_PATH"] = filepath.Join(dir, "missing-receipts.wal")

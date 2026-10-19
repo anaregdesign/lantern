@@ -1,9 +1,10 @@
 package service
 
 import (
-	"connectrpc.com/connect"
 	"errors"
 	"reflect"
+
+	"connectrpc.com/connect"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/authz"
@@ -355,13 +356,13 @@ func securityErrorCode(err error) connect.Code {
 		return connect.CodeInvalidArgument
 	}
 	switch {
-	case errors.Is(err, security.ErrStoreUnavailable), errors.Is(err, security.ErrAuthorityUnavailable):
+	case errors.Is(err, security.ErrAuthorityUnavailable):
 		return connect.CodeUnavailable
 	case errors.Is(err, security.ErrRevisionConflict), errors.Is(err, security.ErrChangeConflict):
 		return connect.CodeAborted
 	case errors.Is(err, security.ErrPermissionDenied):
 		return connect.CodePermissionDenied
-	case errors.Is(err, security.ErrUnknownChange), errors.Is(err, security.ErrRecentAuthentication), errors.Is(err, security.ErrOperationAuthorization), errors.Is(err, security.ErrBootstrapLocked), errors.Is(err, security.ErrLastAdministrator), errors.Is(err, security.ErrReadOnlyWriter), errors.Is(err, security.ErrUnknownRole):
+	case errors.Is(err, security.ErrOperationAuthorization), errors.Is(err, security.ErrBootstrapLocked), errors.Is(err, security.ErrLastAdministrator), errors.Is(err, security.ErrUnknownRole):
 		return connect.CodeFailedPrecondition
 	case errors.Is(err, security.ErrControlReserve):
 		return connect.CodeResourceExhausted

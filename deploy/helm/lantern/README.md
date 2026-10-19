@@ -32,48 +32,36 @@ Never use an emptyDir or copied state file as proof of continuity.
 
 ## OIDC/RBAC
 
-Set `auth.mode=oidc`, `auth.configMap`, `auth.existingSecret` and
-`publicTLS.existingSecret`. The ConfigMap supplies the complete
-[Server contract](../../../docs/env.md). Provision a separate minimal source
-Secret for each writer/replica release. `auth.files` explicitly selects common
-files (default `writer.pub`, `cdc-keys.json`); `auth.writerFiles` selects files
-copied only for a writer (default `writer.key`; add `machines.json` when machine
-bootstrap is configured). Map ConfigMap file settings and Issuer secret handles
-to those selected basenames under `/run/lantern-security`. A replica's source
-Secret must exclude writer signing keys and machine bootstrap credentials.
+Set `auth.mode=oidc`, a verified public TLS Secret, and `auth.configMap` with
+`LANTERN_OIDC_BROWSER_ORIGIN` plus any required OIDC fetch/secret bindings.
+`auth.existingSecret` holds independent original provisioning inputs. List every
+required basename in `auth.files`, including `auth.nodeFile` (default `node.json`).
+The source Secret key for each file is `<pod-name>.<basename>`: for example,
+`lantern-0.node.json`. The trusted init step copies only that pod's files into
+owner-only regular files under `/run/lantern-security`. Reference those exact
+paths from the node document; persistent journal and custody paths belong under
+`runtimeState.dir`. An originless voter omits its origin signing file.
 
-The initContainer dereferences Kubernetes projections into regular mode-0600
-files owned by the Server UID. It uses the same Server image and securityContext;
-a non-root UID and fsGroup are required. Public TLS files are
-`<pod-name>.crt`/`<pod-name>.key` under `/run/lantern-public`, independently of
-private peer identity under `/run/lantern-peers`. Missing selected files fail
-before Server startup. Never place the operator private signing key in a Pod.
+The node/genesis documents bind the original voter set, separate origin keys,
+workload identities, resource bounds and native time profile. Provision a fixed
+set of 1 through 31 voters, with majority `floor(N/2)+1`; even counts are valid.
+Odd counts usually provide the same failure tolerance with one fewer voter.
+The chart's data replica count cannot add/remove control voters or provision
+identities. Every authenticated Server must have an original voter identity.
 
-Copied key/secret rotation requires an explicit Pod restart after provisioning
-and validating replacement material. Signed membership stays on its live
-ConfigMap projection and must be renewed independently before expiry; it is
-never frozen by the init copy. Keep restart/fencing and security continuity
-requirements intact. Kubernetes documents [initContainer volume sharing](https://kubernetes.io/docs/concepts/workloads/pods/init-containers/)
-and [memory-backed EmptyDir and Secret volumes](https://kubernetes.io/docs/concepts/storage/volumes/).
-
-Use `auth.nodeRole=writer` with exactly one pod for the fixed security writer.
-Deploy a separate replica release with `auth.nodeRole=replica` and private peer
-membership in the same domain. The chart does not infer the writer from pod
-ordinal or elect one. `auth.storeMode=fresh` initializes new state;
-`restart` validates existing sys: continuity. Required bootstrap administrator
-Issuer and subjects are environment-owned; Admin can manage additional Issuers,
-users and Role assignments through Server APIs.
-
-Public OFF/OIDC mode, generation, namespace version and trust must be homogeneous
-throughout approved membership. Changing them requires a fenced migration, not
-a mixed anonymous/protected rolling update. Replication of sys: data alone does
-not prove current policy: readiness also requires workload and security leases.
+Use `auth.storeMode=fresh` once for an empty state family and `resume` for intact
+recovery with its independent custody/minimum floors. Never initialize over
+retained state, relabel an old fixed-writer journal, or reuse one pod's keys for
+another. Existing `auth.nodeRole`, `auth.writerFiles`, profile selectors and old
+writer/bootstrap environment settings are rejected. No migration is provided.
+OFF remains the default and needs no authentication material; private data
+replication still requires its independent signed membership and mTLS material.
 
 ## Admin and diagnostics
 
 `admin.enabled=true` mounts a writable Caddy configuration directory. OFF derives
 a fixed public upstream; OIDC requires `admin.server.upstream` to name the pinned
-HTTPS writer. Set `admin.server.caSecret` (`ca.pem`) for a private CA. Browser
+HTTPS authority origin. Set `admin.server.caSecret` (`ca.pem`) for a private CA. Browser
 sessions use same-origin routes, HttpOnly cookies and CSRF; no tokens go in Vite
 configuration. An enabled OIDC Ingress requires TLS.
 

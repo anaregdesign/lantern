@@ -45,6 +45,7 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
   final exact-source runtime qualification is still pending. Namespace isolation does not prove policy
   freshness. The Dart SDK SQLite route, including `offline_sqlite`, is approved.
 
+- **Time qualification (#1820)**: units use injected time and deterministic advancement; full real-wire functional behavior uses test-only controlled UTC. Normal-build Q reuses one three-member cohort with schema 3 source counters (at most 12 attempts/writes), SDK4, Apply/H/native 15s and final export revocation. Old schema 2/full-Q receipts cannot qualify it. 5s is a refresh target only; no global 60s/4s or monthly stop. Preserve whole-interval expiry, native leases, OFF and existing-state bindings. The owner-approved scoped contract migration replaces only repeated external-source functional qualification; other mandatory gates remain.
 - **Native validation fixtures (#1610/#1613/#1635)**: private workload TLS and signed membership apply in OFF and OIDC. Public SDK CDC uses opaque WatchChanges; legacy static-token/public Subscribe fixtures do not qualify current source. Operator diagnostics cannot weaken production guards.
   The opt-in registered native A/B and physical machine/Head profiles are distinct
   [preparation inputs](sdks/dart/example/installed-factory-acceptance.md)
@@ -241,11 +242,15 @@ The load-bearing always-on essentials:
   boundary changes and unknown classification require normal-build configured-source Q
   before and after merge. Every exact release candidate/selected environment requires Q.
   F PASS / Q NOT_RUN is not release qualification; executed Q failure stays FAIL.
-  Production fresh-anchor/expiry guards never change. Ordinary affected local checks defer exact integration F/Q to hosted CI; the
-  explicit full local gate retains both. Policy adoption uses the prior full contract.
+  Whole-interval expiry and native leases remain mandatory. Ordinary affected local
+  checks defer exact integration F/Q to hosted CI; the explicit full local gate
+  retains both. Policy adoption uses the prior contract subject to the scoped
+  #1820 migration above.
 - **Before every push**, satisfy the affected local or explicit pure-prose gate in
-  CONTRIBUTING. Unknown inputs require full; policy changes use the previous full
-  contract on themselves. Hosted exact-merge/main, release/environment Q, archives
+  CONTRIBUTING. Unknown inputs require full. Policy changes use the previous full
+  contract, except the explicit #1820 migration substitutes complete F and bounded
+  Q while retaining every other mandatory check. Hosted exact-merge/main,
+  release/environment Q, archives
   and physical evidence remain independent. Full Windows Rust compatibility moves
   to manual/release; affected native ACL/filesystem/TLS/process checks still block.
 - **Never hand-edit generated code.** Regenerate `pb/**` with `go generate ./...` (buf,

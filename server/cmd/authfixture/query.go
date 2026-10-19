@@ -14,12 +14,9 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
@@ -93,16 +90,9 @@ func queryJWT(private ed25519.PrivateKey, issuer, subject string, now time.Time)
 }
 
 // addFixtureQuery retains the standalone public TLS transport in OFF as well as
-// OIDC. Only the existing operator bootstrap inputs and local issuer are set;
-// the driver assigns the reader through the normal management API before load.
+// OIDC. This helper prepares only the local issuer and private token files;
+// generateQueryFixture provisions the reader in the original genesis.
 func addFixtureQuery(result *fixture, directory string) (func(), error) {
-	return addFixtureQueryProfile(result, directory, "legacy-v1")
-}
-
-func addFixtureQueryProfile(result *fixture, directory, profile string) (func(), error) {
-	if profile != "legacy-v1" && profile != "current-v2" {
-		return nil, errors.New("explicit query profile required")
-	}
 	if result == nil || len(result.Nodes) != 1 || result.Nodes[0].PeerOrigin != "" || result.Query != nil {
 		return nil, errors.New("query fixture requires one standalone node")
 	}
@@ -156,10 +146,8 @@ func addFixtureQueryProfile(result *fixture, directory, profile string) (func(),
 	now := time.Now().UTC().Truncate(time.Second)
 	// Match the existing native public fixture: signed iat precedes the
 	// conservative current UTC lower endpoint; no verifier/time rule changes.
-	if profile == "current-v2" {
-		now = now.Add(-time.Minute)
-	}
-	query := &queryFixture{SecurityProfile: profile, Mode: mode, Issuer: issuer, ReaderSubject: "fixture-query-reader", ReaderRole: queryRole().ID, ExpiresAt: now.Add(15 * time.Minute)}
+	now = now.Add(-time.Minute)
+	query := &queryFixture{SecurityProfile: "current-v2", Mode: mode, Issuer: issuer, ReaderSubject: "fixture-query-reader", ReaderRole: queryRole().ID, ExpiresAt: now.Add(15 * time.Minute)}
 	_, wrongPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -180,24 +168,7 @@ func addFixtureQueryProfile(result *fixture, directory, profile string) (func(),
 	}
 	node.Environment["LANTERN_AUTH_MODE"] = mode
 	node.Environment["LANTERN_SEARCH_ENABLED"] = "true"
-	if mode == "oidc" {
-		roles, err := json.Marshal(append(fixtureRoles(), queryRole()))
-		if err != nil {
-			return nil, err
-		}
-		origins, _ := json.Marshal(map[string][]string{issuer: {"127.0.0.1/32"}})
-		node.Environment["LANTERN_SECURITY_BOOTSTRAP_ROLES"] = string(roles)
-		node.Environment["LANTERN_OIDC_ADMIN_ISSUER"] = issuer
-		node.Environment["LANTERN_OIDC_REDIRECT_URI"] = node.PublicOrigin + oidc.CallbackPath(issuer)
-		node.Environment["LANTERN_OIDC_ROOT_CA_FILE"] = result.CAFile
-		node.Environment["LANTERN_OIDC_PRIVATE_ORIGINS"] = string(origins)
-		// The local issuer reserves the two synthetic end-user subjects and
-		// serves no issuance endpoint, so no OAuth client can choose either.
-		node.Environment["LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED"] = strconv.FormatBool(true)
-	}
-	if !strings.HasPrefix(node.PublicOrigin, "https://") {
-		return nil, errors.New("query fixture requires HTTPS in both modes")
-	}
+
 	result.Query = query
 	success = true
 	return stop, nil

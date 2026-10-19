@@ -163,7 +163,7 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 		}
 	}
 	checkData()
-	start := f.browserLoginStart(t, nil, false)
+	start := f.browserLoginStart(t, nil)
 	callback := f.browserCallbackPath(t, start, "admin", false)
 	wait(time.Now().Add(500 * time.Millisecond))
 	response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback, start.Cookies(), ""))
@@ -194,7 +194,7 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 	// ends and consume it afterwards, within the original transaction deadline.
 	wait(initialEnd.Add(-time.Second))
 	waitReady()
-	pending := f.browserLoginStart(t, nil, false)
+	pending := f.browserLoginStart(t, nil)
 	pendingCallback := f.browserCallbackPath(t, pending, "admin", false)
 	wait(initialEnd.Add(time.Second))
 	checkSession()

@@ -308,6 +308,12 @@ flutter build apk --debug
 flutter build ios --debug --no-codesign
 ```
 
+The foreground observation widget tests drain unmount cancellations in the widget
+zone, then join account, client and temporary-directory cleanup in `runAsync`.
+Real filesystem completion is not bounded by a count of fake-time pumps. The
+teardown retains its nominal five-second budget and propagates cleanup failures
+with their original stack traces.
+
 The native real-wire smoke is in
 `integration_test/mobile_smoke_test.dart`; it uses the native sqflite plugin and
 covers close/reopen of pending Vertex and Edge Puts, original TTL preservation,

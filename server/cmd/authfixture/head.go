@@ -3,9 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"os"
 	"time"
 
 	"github.com/anaregdesign/lantern/server/internal/security"
@@ -25,10 +23,10 @@ func addFixtureHeadEdge(result *fixture, directory string) error {
 		{ID: "head_deny", Action: security.VertexWrite, Effect: security.Deny, Resource: security.DataResource, Prefix: &denied},
 		{ID: "receipt", Action: security.ReceiptRead, Effect: security.Allow, Resource: security.DataResource, Prefix: &receipt},
 	}}
-	roles, err := json.Marshal(append(fixtureRoles(), role))
-	if err != nil {
-		return err
+	if result.security == nil {
+		return errors.New("original OIDC input required")
 	}
+	result.security.Roles = append(fixtureRoles(), role)
 	var random [32]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		return err
@@ -38,22 +36,8 @@ func addFixtureHeadEdge(result *fixture, directory string) error {
 	if err != nil {
 		return err
 	}
-	raw, err := os.ReadFile(result.Nodes[0].Environment["LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE"])
-	if err != nil {
-		return err
-	}
-	var machines []map[string]any
-	if err := json.Unmarshal(raw, &machines); err != nil {
-		return err
-	}
 	now := time.Now().UTC()
-	machines = append(machines, map[string]any{"name": "fixture-head-writer", "role_ids": []string{role.ID}, "credentials": []any{map[string]any{"token": token, "created_at": now.Add(-time.Minute), "expires_at": now.Add(time.Hour)}}})
-	machineFile, err := writeJSON(directory, "head-machines.json", machines)
-	if err != nil {
-		return err
-	}
+	result.security.Machines = append(result.security.Machines, map[string]any{"name": "fixture-head-writer", "role_ids": []string{role.ID}, "credentials": []any{map[string]any{"token": token, "created_at": now.Add(-time.Minute), "expires_at": now.Add(time.Hour)}}})
 	result.HeadWriterTokenFile = tokenFile
-	result.Nodes[0].Environment["LANTERN_SECURITY_BOOTSTRAP_ROLES"] = string(roles)
-	result.Nodes[0].Environment["LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE"] = machineFile
 	return nil
 }

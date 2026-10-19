@@ -72,10 +72,15 @@ func authorityTestCompositeOrigins(t *testing.T, originCount int) (*s3aTestNetwo
 
 func authorityTestCompositeImage(t *testing.T, originCount int, image *Image) (*s3aTestNetwork, map[uint32]*authorityOriginOwner, map[uint32]*atomic.Uint64) {
 	t.Helper()
-	n := s3aTestCluster(t, nil)
-	f := s2cTestCluster(t, 3)
+	return authorityTestCompositeMembers(t, 3, originCount, image)
+}
+
+func authorityTestCompositeMembers(t *testing.T, count, originCount int, image *Image) (*s3aTestNetwork, map[uint32]*authorityOriginOwner, map[uint32]*atomic.Uint64) {
+	t.Helper()
+	n := s3aTestClusterMembers(t, count, nil)
+	f := s2cTestCluster(t, count)
 	if image != nil {
-		f = s2cTestClusterState(t, 3, s1Fixture(t, *image))
+		f = s2cTestClusterState(t, count, s1Fixture(t, *image))
 	}
 	f.origins = f.origins[:originCount]
 	f, originKeys := authorityTestFixtureState(t, f)

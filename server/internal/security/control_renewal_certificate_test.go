@@ -3,7 +3,7 @@ package security
 import "testing"
 
 func TestAuthorityRenewalCertificate(t *testing.T) {
-	for _, count := range []int{3, 31} {
+	for _, count := range []int{1, 2, 3, 4, 30, 31} {
 		n := s2cTestNativeCluster(t, count, nil)
 		workloads := [32]byte{7}
 		raw := testAuthorityRenewalRequest(t, n, 1, workloads)
@@ -39,8 +39,7 @@ func TestAuthorityRenewalCertificate(t *testing.T) {
 		if _, err := encodeAuthorityRenewalCertificate(raw, votes[:n.fixture.trust.majority()-1], n.fixture.trust, workloads); err == nil {
 			t.Fatal("minority certificate")
 		}
-		duplicate := append([]authorityRenewalVote(nil), votes...)
-		duplicate[0] = duplicate[1]
+		duplicate := append(append([]authorityRenewalVote(nil), votes...), votes[0])
 		if _, err := encodeAuthorityRenewalCertificate(raw, duplicate, n.fixture.trust, workloads); err == nil {
 			t.Fatal("duplicate certificate")
 		}

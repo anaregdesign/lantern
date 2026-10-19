@@ -15,8 +15,7 @@ x-node: &node
     - /tmp:rw,nosuid,nodev,size=64m,mode=1777
   environment: &environment
     LANTERN_AUTH_MODE: oidc
-    LANTERN_SECURITY_PROFILE: current-v2
-    LANTERN_SECURITY_CURRENT_CONFIG_FILE: /operator/node.json
+    LANTERN_SECURITY_CONFIG_FILE: /operator/node.json
     LANTERN_SECURITY_STORE_MODE: ${LANTERN_SYS_MODE:?use fresh initially or resume after CLEAN}
     LANTERN_OIDC_BROWSER_ORIGIN: ${LANTERN_BROWSER_ORIGIN:?supply the registered HTTPS browser origin}
     LANTERN_OIDC_ROOT_CA_FILE: /operator/oidc-roots.pem

@@ -67,7 +67,7 @@ func verifyAuthorityConsumeTime(h authorityHistoricalHeader, t *s2cTrust, operat
 	s := h.Time
 	p := authorityOperationalTimePremises()
 	if s.Profile != sha256.Sum256([]byte(authorityTimeProfileDescription)) || s.HostBoot == [32]byte{} || s.Process == [16]byte{} || s.SourceSequence == 0 ||
-		s.UTCLow < p.validUTC.low || s.UTCHigh >= p.validUTC.high || s.UTCLow > s.UTCHigh || s.UTCHigh-s.UTCLow >= p.maxWidth {
+		!p.contains(authorityTimeRange{s.UTCLow, s.UTCHigh}) {
 		return false
 	}
 	_, upper := s.utcTimes()

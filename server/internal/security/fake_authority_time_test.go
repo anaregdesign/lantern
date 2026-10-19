@@ -17,7 +17,7 @@ func fakeAuthorityTimeStamp(n uint64) authorityTimeStamp {
 func fakeAuthorityTimePremises() authorityTimePremises {
 	return authorityTimePremises{
 		ratePPB: 1_000_000, stampError: 1, sourceAllowance: 999, maxSourceError: 1_000_000_000,
-		maxRTT: 1_000_000_000, maxAge: 10_000_000_000, maxWidth: 2_000_000_000,
+		maxRTT:   1_000_000_000,
 		validUTC: authorityTimeRange{1_577_836_800_000_000_000, 3_471_292_800_000_000_000},
 	}
 }

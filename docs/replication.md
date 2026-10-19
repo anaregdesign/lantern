@@ -19,10 +19,11 @@ qualification remains in #1610. Public clients use OIDC/machine Role admission;
 workload peers use an independent private listener and signed membership.
 The leaderless invariants below apply to application data. Physical `data:`
 keys preserve public logical keys; physical `sys:` contains native metadata.
-System security changes use signed atomic revisions from one operator-pinned
-internal writer and bounded serving leases, not independent HLC/LWW merges.
-The existing log/Snapshot transport is reused with typed system envelopes.
-Replicas must validate public mode, storage version and peer trust before
+System security changes use original fixed-membership consensus, separate origin
+custody and qualified native time under the [authority contract](security-current-authority.md).
+They do not use application HLC/LWW merge as authorization proof. Private data
+log/Snapshot and control quorum transports retain distinct owners and typed
+envelopes. Peers must validate public mode, storage version and peer trust before
 bootstrap. Public scoped CDC is a separate authorized protocol; raw peer
 Subscribe/Snapshot remains complete internal synchronization.
 
@@ -109,7 +110,8 @@ requires the independent security authority described above.
 7. **Every HA peer has independent workload identity.** OFF and OIDC use a
    separate TLS 1.3/mTLS listener, operator-signed bounded membership and exact
    approved HTTPS origins. Membership binds deployment, public mode, namespace,
-   security generation, writer key, URI SAN and certificate SPKI. Public Bearer,
+   security generation, the full OIDC authority profile, URI SAN and certificate
+   SPKI; the signed wire's retired writer-key slot must be zero. Public Bearer,
    cookies and client Role headers never authorize a peer. DNS resolves approved
    origins only. No plaintext, redirect, arbitrary proxy, certificate-verification
    bypass or public/private-handler co-mount is permitted. An idle accepted
@@ -1311,8 +1313,9 @@ Retention and memory:
    local cutoff + 1. Reject a genuinely evicted tail and repair by certified
    Snapshot. Header-only flushing of an accepted idle stream consumes no event.
 4. Compare peer search configuration and data lag. OIDC independently installs
-   current signed security revisions and obtains a bounded serving lease from
-   the fixed writer. No data availability check substitutes for this lease.
+   the exact original authority profile and current quorum admission under
+   qualified native time. Data availability does not prove authorization
+   freshness, original-H custody or an immutable public output grant.
 5. `/readyz` becomes serving only when applicable data and workload/security
    gates are all satisfied. The public Health Check remains auth-exempt but
    reports current readiness; raw replication/diagnostics are not public probes.

@@ -8,8 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
-	"fmt"
-	"strconv"
 	"time"
 
 	"connectrpc.com/connect"
@@ -18,54 +16,42 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/authn"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // SecurityServiceOptions comes from certified Server composition, never clients.
-// A nil Store means explicitly OFF; enabled-but-unavailable never becomes OFF.
+// A nil authority means explicitly OFF; unavailable OIDC never becomes OFF.
 type SecurityServiceOptions struct {
-	Store                     *security.Store
 	Current                   *security.CurrentAuthority
 	CurrentBeginAuthorization func(context.Context, *security.Admission, security.CurrentReview) (security.AuthorizationStart, string, string, error)
 	CurrentReadAuthorization  func(context.Context, *security.Admission, [32]byte, string) (security.AuthorizationStatus, error)
 	ValidateIssuer            func(context.Context, security.Issuer) error
-	Enforced                  func(security.ChangeResult) bool
 	Now                       func() time.Time
-	Ready                     func(context.Context, *security.Revision) bool
-	BeginAuthorization        func(context.Context, *security.Admission, security.ManagementBinding) (security.AuthorizationStart, string, error)
-	ReadAuthorization         func(context.Context, *security.Admission, [32]byte) (security.AuthorizationStatus, error)
-	VerifyAuthorization       func([]byte, security.ManagementBinding, time.Time) error
+	Ready                     func(context.Context) bool
 }
 
 type SecurityConnectHandler struct {
-	store                     *security.Store
 	current                   *security.CurrentAuthority
 	currentBeginAuthorization func(context.Context, *security.Admission, security.CurrentReview) (security.AuthorizationStart, string, string, error)
 	currentReadAuthorization  func(context.Context, *security.Admission, [32]byte, string) (security.AuthorizationStatus, error)
 	validateIssuer            func(context.Context, security.Issuer) error
-	enforced                  func(security.ChangeResult) bool
 	cursors                   cipher.AEAD
 	now                       func() time.Time
-	ready                     func(context.Context, *security.Revision) bool
-	beginAuthorization        func(context.Context, *security.Admission, security.ManagementBinding) (security.AuthorizationStart, string, error)
-	readAuthorization         func(context.Context, *security.Admission, [32]byte) (security.AuthorizationStatus, error)
-	verifyAuthorization       func([]byte, security.ManagementBinding, time.Time) error
+	ready                     func(context.Context) bool
 }
 
 var _ graphv1connect.LanternSecurityServiceHandler = (*SecurityConnectHandler)(nil)
 
 func NewSecurityConnectHandler(options SecurityServiceOptions) (*SecurityConnectHandler, error) {
-	if options.Current != nil && (options.Store != nil || options.Current.Profile().Binding() == "") {
+	if options.Current != nil && options.Current.Profile().Binding() == "" {
 		return nil, security.ErrS1Contract
 	}
-	handler := &SecurityConnectHandler{store: options.Store, validateIssuer: options.ValidateIssuer, enforced: options.Enforced, ready: options.Ready, now: time.Now}
+	handler := &SecurityConnectHandler{validateIssuer: options.ValidateIssuer, ready: options.Ready, now: time.Now}
 	handler.current = options.Current
 	handler.currentBeginAuthorization, handler.currentReadAuthorization = options.CurrentBeginAuthorization, options.CurrentReadAuthorization
-	handler.beginAuthorization, handler.readAuthorization, handler.verifyAuthorization = options.BeginAuthorization, options.ReadAuthorization, options.VerifyAuthorization
 	if options.Now != nil {
 		handler.now = options.Now
 	}
-	if options.Store == nil && options.Current == nil {
+	if options.Current == nil {
 		return handler, nil
 	}
 	if options.ValidateIssuer == nil {
@@ -83,7 +69,7 @@ func NewSecurityConnectHandler(options SecurityServiceOptions) (*SecurityConnect
 	return handler, err
 }
 func (h *SecurityConnectHandler) admission(ctx context.Context, manage bool) (*security.Admission, error) {
-	if h.store == nil && h.current == nil {
+	if h.current == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("security management is disabled"))
 	}
 	admission, ok := security.AdmissionFromContext(ctx)
@@ -96,35 +82,22 @@ func (h *SecurityConnectHandler) admission(ctx context.Context, manage bool) (*s
 	if manage && !admission.Access().AllowsGlobal(security.SecurityManage) {
 		return nil, connect.NewError(connect.CodePermissionDenied, security.ErrPermissionDenied)
 	}
-	if h.current != nil {
-		profile, current := admission.CurrentProfile()
-		if !current || profile != h.current.Profile() {
-			return nil, connect.NewError(connect.CodeUnauthenticated, security.ErrPermissionDenied)
-		}
-		var bindErr error
-		if manage {
-			bindErr = admission.BindCurrentGlobalOutput(ctx, security.SecurityManage)
-		} else {
-			bindErr = admission.BindCurrentSelfOutput(ctx)
-		}
-		if bindErr != nil {
-			return nil, connect.NewError(securityErrorCode(bindErr), bindErr)
-		}
-		return admission, nil
-	}
-	if admission.Revision() == nil {
+	profile, current := admission.CurrentProfile()
+	if !current || profile != h.current.Profile() {
 		return nil, connect.NewError(connect.CodeUnauthenticated, security.ErrPermissionDenied)
 	}
-	current, ok := h.store.Current()
-	if !ok || current.Digest() != admission.Revision().Digest() {
-		return nil, connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
+	var bindErr error
+	if manage {
+		bindErr = admission.BindCurrentGlobalOutput(ctx, security.SecurityManage)
+	} else {
+		bindErr = admission.BindCurrentSelfOutput(ctx)
+	}
+	if bindErr != nil {
+		return nil, connect.NewError(securityErrorCode(bindErr), bindErr)
 	}
 	return admission, nil
 }
-func securityVersion(revision *security.Revision) *pb.SecurityVersion {
-	digest, generation := revision.Digest(), revision.Generation()
-	return &pb.SecurityVersion{Revision: revision.Sequence(), Digest: append([]byte(nil), digest[:]...), Generation: append([]byte(nil), generation[:]...)}
-}
+
 func securityRequestError(message proto.Message) error {
 	if err := strictSecurityMessage(message); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
@@ -157,21 +130,8 @@ func (h *SecurityConnectHandler) GetAuthCapabilities(ctx context.Context, req *c
 		result.Header().Set("Cache-Control", "no-store")
 		return result, nil
 	}
-	if h.store == nil && h.ready != nil {
-		response.Ready = h.ready(ctx, nil)
-	}
-	if h.store != nil {
-		response.Mode = pb.AuthMode_AUTH_MODE_OIDC
-		response.Ready = false
-		response.LoginPath = "/auth/login"
-		if current, ok := h.store.Current(); ok {
-			response.Ready = h.ready != nil && h.ready(ctx, current)
-			for _, issuer := range current.Snapshot().Image().Issuers {
-				if issuer.Enabled && !issuer.Deleted {
-					response.LoginIssuers = append(response.LoginIssuers, &pb.LoginIssuer{Issuer: issuer.URL, Label: issuer.URL})
-				}
-			}
-		}
+	if h.ready != nil {
+		response.Ready = h.ready(ctx)
 	}
 	result := connect.NewResponse(response)
 	result.Header().Set("Cache-Control", "no-store")
@@ -185,7 +145,7 @@ func (h *SecurityConnectHandler) GetCurrentPrincipal(ctx context.Context, req *c
 	if err = securityRequestError(req.Msg); err != nil {
 		return nil, err
 	}
-	view, err := authn.InspectSession(ctx, admission, h.store, h.current, h.now)
+	view, err := authn.InspectSession(ctx, admission, h.current, h.now)
 	if err != nil {
 		return nil, connect.NewError(sessionErrorCode(err), err)
 	}
@@ -329,43 +289,28 @@ func (h *SecurityConnectHandler) ListSecurityAudit(ctx context.Context, req *con
 	if err != nil {
 		return nil, err
 	}
-	if h.current != nil {
-		if err := securityRequestError(req.Msg); err != nil {
-			return nil, err
-		}
-		view, err := h.current.Audit(ctx, admission, req.Msg.Exact)
-		if err != nil {
-			return nil, currentControlError(err)
-		}
-		start, end, err := h.page(req.Msg, "current-audit", admission, view.Len())
-		if err != nil {
-			return nil, err
-		}
-		records, err := view.Page(start, end)
-		if err != nil {
-			return nil, currentControlError(err)
-		}
-		response := &pb.ListSecurityAuditResponse{Version: SecurityVersionForAdmission(admission), NextCursor: h.nextCursor(end, view.Len(), "current-audit", req.Msg.Exact, admission)}
-		for _, record := range records {
-			response.CurrentRecords = append(response.CurrentRecords, &pb.CurrentSecurityAuditRecord{Result: EncodeCurrentResult(record.Result), ActorDigest: record.Actor[:], Operation: record.Operation})
-		}
-		return securityReadResponse(ctx, admission, h.now(), response)
+	if err := securityRequestError(req.Msg); err != nil {
+		return nil, err
 	}
-	var items []*pb.SecurityAuditRecord
-	for _, record := range admission.Snapshot().Image().Audit {
-		if req.Msg.Exact == "" || req.Msg.Exact == record.ChangeID || req.Msg.Exact == strconv.FormatUint(record.Revision, 10) {
-			items = append(items, &pb.SecurityAuditRecord{Revision: record.Revision, ChangeId: record.ChangeID, IntentDigest: record.IntentDigest, ActorDigest: record.ActorDigest, OccurredAt: timestamppb.New(record.OccurredAt), Operation: record.Operation, TargetDigests: append([]string(nil), record.TargetDigests...), AdditionalTargets: uint32(record.AdditionalTargets), Outcome: record.Outcome})
-		}
+	view, err := h.current.Audit(ctx, admission, req.Msg.Exact)
+	if err != nil {
+		return nil, currentControlError(err)
 	}
-	start, end, err := h.page(req.Msg, "audit", admission, len(items))
+	start, end, err := h.page(req.Msg, "current-audit", admission, view.Len())
 	if err != nil {
 		return nil, err
 	}
-	if err = admission.Check(ctx, h.now()); err != nil {
-		return nil, connect.NewError(securityErrorCode(err), err)
+	records, err := view.Page(start, end)
+	if err != nil {
+		return nil, currentControlError(err)
 	}
-	return securityReadResponse(ctx, admission, h.now(), &pb.ListSecurityAuditResponse{Records: items[start:end], Version: SecurityVersionForAdmission(admission), NextCursor: h.nextCursor(end, len(items), "audit", req.Msg.Exact, admission)})
+	response := &pb.ListSecurityAuditResponse{Version: SecurityVersionForAdmission(admission), NextCursor: h.nextCursor(end, view.Len(), "current-audit", req.Msg.Exact, admission)}
+	for _, record := range records {
+		response.CurrentRecords = append(response.CurrentRecords, &pb.CurrentSecurityAuditRecord{Result: EncodeCurrentResult(record.Result), ActorDigest: record.Actor[:], Operation: record.Operation})
+	}
+	return securityReadResponse(ctx, admission, h.now(), response)
 }
+
 func (h *SecurityConnectHandler) GetRoleTemplates(ctx context.Context, req *connect.Request[pb.GetRoleTemplatesRequest]) (*connect.Response[pb.GetRoleTemplatesResponse], error) {
 	admission, err := h.admission(ctx, true)
 	if err != nil {
@@ -427,7 +372,7 @@ func (h *SecurityConnectHandler) ValidateIssuer(ctx context.Context, req *connec
 	if err = securityRequestError(req.Msg); err != nil {
 		return nil, err
 	}
-	if err = admission.CheckIssuerProbe(ctx, admission.Revision(), h.now()); err != nil {
+	if err = admission.CheckIssuerProbe(ctx, h.now()); err != nil {
 		return nil, connect.NewError(securityErrorCode(err), err)
 	}
 	issuer, err := decodeSecurityIssuer(req.Msg.Issuer)
@@ -446,116 +391,23 @@ func (h *SecurityConnectHandler) ValidateIssuer(ctx context.Context, req *connec
 	return connect.NewResponse(&pb.ValidateIssuerResponse{Valid: true}), nil
 }
 func (h *SecurityConnectHandler) ApplySecurityChanges(ctx context.Context, req *connect.Request[pb.ApplySecurityChangesRequest]) (*connect.Response[pb.ApplySecurityChangesResponse], error) {
-	if h.current != nil {
-		return h.applyCurrentChanges(ctx, req)
-	}
-	if req.Msg.CurrentReview != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrS1Contract)
-	}
-	admission, err := h.admission(ctx, true)
-	if err != nil {
-		return nil, err
-	}
-	if err = securityRequestError(req.Msg); err != nil {
-		return nil, h.precommitRejectionError(err, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
-	}
-	if len(req.Msg.ChangeId) != 16 || req.Msg.ExpectedRevision == 0 || len(req.Msg.Changes) == 0 || len(req.Msg.Changes) > security.MaxTransactionChanges {
-		return nil, h.precommitRejectionError(security.ErrInvalidImage, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
-	}
-	if len(req.Msg.AuthorizationProof) != 0 && len(req.Msg.AuthorizationProof) != 32 {
-		return nil, h.precommitRejectionError(security.ErrInvalidImage, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
-	}
-	var changeID [16]byte
-	copy(changeID[:], req.Msg.ChangeId)
-	changes := make([]security.Change, len(req.Msg.Changes))
-	for i, change := range req.Msg.Changes {
-		changes[i], err = decodeSecurityChange(change)
-		if err != nil {
-			return nil, h.precommitRejectionError(err, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
-		}
-	}
-	management := h.managementRequest(admission, req.Msg.ExpectedRevision, changeID, changes)
-	prepared, err := h.store.PrepareManagement(ctx, management)
-	if err != nil {
-		return nil, h.managementApplyError(err, security.ManagementBinding{}, req.Msg.ChangeId, req.Msg.ExpectedRevision)
-	}
-	if !prepared.Retained && prepared.AuthorizationRequired {
-		if h.verifyAuthorization == nil {
-			return nil, operationAuthorizationError(security.ErrOperationAuthorization, prepared.Binding)
-		}
-		if err := h.verifyAuthorization(req.Msg.AuthorizationProof, prepared.Binding, h.now()); err != nil {
-			return nil, operationAuthorizationError(err, prepared.Binding)
-		}
-		proof := append([]byte(nil), req.Msg.AuthorizationProof...)
-		management.Authorize = func(binding security.ManagementBinding, now time.Time) error {
-			return h.verifyAuthorization(proof, binding, now)
-		}
-	}
-	// No network fetch for a stale CAS, invalid or unauthenticated command.
-	// An older expected revision may be an exact retained retry. Manage checks
-	// its original intent before CAS; it cannot commit a new stale command.
-	stale := req.Msg.ExpectedRevision != admission.Revision().Sequence()
-	if !stale {
-		for _, change := range changes {
-			if change.Issuer != nil && change.Issuer.Enabled {
-				issuer := *change.Issuer
-				if existing, known := admission.Snapshot().Issuer(issuer.URL); known {
-					issuer = change.ResolveIssuerSecrets(existing)
-				}
-				if err = h.validateIssuer(ctx, issuer); err != nil {
-					return nil, h.precommitRejectionError(errors.New("issuer validation failed"), pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_ISSUER_VALIDATION, req.Msg.ChangeId, req.Msg.ExpectedRevision)
-				}
-			}
-		}
-	}
-	if err = admission.Check(ctx, h.now()); err != nil {
-		return nil, connect.NewError(securityErrorCode(err), err)
-	}
-	result, err := h.store.Manage(ctx, management)
-	if err != nil {
-		return nil, h.managementApplyError(err, prepared.Binding, req.Msg.ChangeId, req.Msg.ExpectedRevision)
-	}
-	digest, generation := result.Digest, admission.Revision().Generation()
-	response := &pb.ApplySecurityChangesResponse{Version: &pb.SecurityVersion{Revision: result.Revision, Digest: append([]byte(nil), digest[:]...), Generation: append([]byte(nil), generation[:]...)}, Applied: make([]bool, len(changes)), Replayed: result.Replayed, Enforcement: pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING}
-	for i := range response.Applied {
-		response.Applied[i] = true
-	}
-	if h.enforced != nil && h.enforced(result) {
-		response.Enforcement = pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED
-	}
-	return connect.NewResponse(response), nil
+	return h.applyCurrentChanges(ctx, req)
 }
 func (h *SecurityConnectHandler) ApplySecurityChange(ctx context.Context, req *connect.Request[pb.ApplySecurityChangeRequest]) (*connect.Response[pb.ApplySecurityChangeResponse], error) {
-	if h.current != nil {
-		if securityRequestError(req.Msg) != nil || req.Msg.CurrentReview == nil || len(req.Msg.CurrentReview.Changes) != 1 || req.Msg.Change != nil || req.Msg.ExpectedRevision != 0 || len(req.Msg.ChangeId) != 0 {
-			return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrS1Contract)
-		}
-		result, err := h.ApplySecurityChanges(ctx, connect.NewRequest(&pb.ApplySecurityChangesRequest{CurrentReview: req.Msg.CurrentReview, AuthorizationProof: req.Msg.AuthorizationProof}))
-		if err != nil {
-			return nil, err
-		}
-		response := connect.NewResponse(&pb.ApplySecurityChangeResponse{CurrentResult: result.Msg.CurrentResult})
-		response.Header().Set("Cache-Control", "no-store")
-		return response, nil
+	if h.current == nil {
+		_, err := h.admission(ctx, true)
+		return nil, err
 	}
-	if req.Msg.CurrentReview != nil {
+	if securityRequestError(req.Msg) != nil || req.Msg.CurrentReview == nil || len(req.Msg.CurrentReview.Changes) != 1 || req.Msg.Change != nil || req.Msg.ExpectedRevision != 0 || len(req.Msg.ChangeId) != 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrS1Contract)
 	}
-	if err := securityRequestError(req.Msg); err != nil {
-		if _, admissionErr := h.admission(ctx, true); admissionErr != nil {
-			return nil, admissionErr
-		}
-		return nil, h.precommitRejectionError(err, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, req.Msg.ChangeId, req.Msg.ExpectedRevision)
-	}
-	batch := connect.NewRequest(&pb.ApplySecurityChangesRequest{ExpectedRevision: req.Msg.ExpectedRevision, ChangeId: req.Msg.ChangeId, Changes: []*pb.SecurityChange{req.Msg.Change}, AuthorizationProof: req.Msg.AuthorizationProof})
-	result, err := h.ApplySecurityChanges(ctx, batch)
+	result, err := h.ApplySecurityChanges(ctx, connect.NewRequest(&pb.ApplySecurityChangesRequest{CurrentReview: req.Msg.CurrentReview, AuthorizationProof: req.Msg.AuthorizationProof}))
 	if err != nil {
 		return nil, err
 	}
-	if len(result.Msg.Applied) != 1 {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unaligned security outcome"))
-	}
-	return connect.NewResponse(&pb.ApplySecurityChangeResponse{Version: result.Msg.Version, Applied: result.Msg.Applied[0], Replayed: result.Msg.Replayed, Enforcement: result.Msg.Enforcement}), nil
+	response := connect.NewResponse(&pb.ApplySecurityChangeResponse{CurrentResult: result.Msg.CurrentResult})
+	response.Header().Set("Cache-Control", "no-store")
+	return response, nil
 }
 
 func securityReadResponse[T any](ctx context.Context, admission *security.Admission, now time.Time, message *T) (*connect.Response[T], error) {
@@ -621,34 +473,5 @@ func (h *SecurityConnectHandler) GetUser(ctx context.Context, req *connect.Reque
 	return nil, connect.NewError(connect.CodeNotFound, errors.New("user not registered"))
 }
 func (h *SecurityConnectHandler) GetSecurityChangeStatus(ctx context.Context, req *connect.Request[pb.GetSecurityChangeStatusRequest]) (*connect.Response[pb.GetSecurityChangeStatusResponse], error) {
-	if h.current != nil {
-		return h.currentChangeStatus(ctx, req)
-	}
-	if req.Msg.CurrentProfile != nil || req.Msg.CurrentChangeId != nil || len(req.Msg.CurrentIntentDigest) != 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrS1Contract)
-	}
-	admission, err := h.admission(ctx, true)
-	if err != nil {
-		return nil, err
-	}
-	if err = securityRequestError(req.Msg); err != nil {
-		return nil, err
-	}
-	if len(req.Msg.ChangeId) != 16 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, security.ErrInvalidImage)
-	}
-	var id [16]byte
-	copy(id[:], req.Msg.ChangeId)
-	result, err := h.store.ChangeStatus(id)
-	if err != nil {
-		return nil, connect.NewError(securityErrorCode(err), err)
-	}
-	digest, generation := result.Digest, admission.Revision().Generation()
-	// Retained history proves the original commit, not request-aligned item
-	// outcomes or the current policy. Keep those acknowledgements on Apply.
-	response := &pb.GetSecurityChangeStatusResponse{Version: &pb.SecurityVersion{Revision: result.Revision, Digest: append([]byte(nil), digest[:]...), Generation: append([]byte(nil), generation[:]...)}, ChangeId: append([]byte(nil), id[:]...), Enforcement: pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING}
-	if h.enforced != nil && h.enforced(result) {
-		response.Enforcement = pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED
-	}
-	return securityReadResponse(ctx, admission, h.now(), response)
+	return h.currentChangeStatus(ctx, req)
 }

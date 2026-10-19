@@ -56,10 +56,7 @@ func openCurrentAuthorityOwnerWithCustody(ctx context.Context, c s3aConfig, orig
 		}
 		select {
 		case <-anchoring.Done():
-			clock.mu.Lock()
-			cause := clock.lastError
-			clock.mu.Unlock()
-			return nil, errors.Join(anchoring.Err(), cause)
+			return nil, clock.startupFailure(anchoring, ctx)
 		case <-ticker.C:
 		}
 	}

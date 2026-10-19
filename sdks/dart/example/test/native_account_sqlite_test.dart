@@ -23,8 +23,18 @@ void main() {
   test(
     'actual app SQLite A-B-A retains unknown mutation identity and dispatch evidence',
     () async {
-      final directory = await Directory.systemTemp.createTemp(
+      final temporary = await Directory.systemTemp.createTemp(
         'lantern-native-accounts-',
+      );
+      // The automatic native owner resolves filesystem aliases before opening
+      // SQLite. Inspection connections must use that same serialization lane.
+      final directory = Directory(await temporary.resolveSymbolicLinks());
+      final probe = '${directory.path}/inspection.db';
+      expect(
+        SqliteOfflineStore.canonicalAutomaticPath(probe),
+        probe,
+        reason:
+            'inspection and automatic owner must share the canonical SQLite lane',
       );
       sqflite.databaseFactory = databaseFactoryFfi;
       await databaseFactoryFfi.setDatabasesPath(directory.path);
@@ -95,6 +105,7 @@ void main() {
         path: paths[a.partition]!,
         databaseFactory: databaseFactoryFfi,
       );
+      addTearDown(offline.close);
       final scope = scopes[a.partition]!;
       final now = DateTime.now().toUtc().subtract(const Duration(minutes: 1));
       Uint8List filled(int n, int value) =>
@@ -185,10 +196,12 @@ void main() {
       expect(a.client.isClosed, isTrue);
       expect(a.cancellation.isCanceled, isTrue);
       expect(b.partition, isNot(a.partition));
+      await b.dataSession!.suspend();
       final bStore = await SqliteOfflineStore.open(
         path: paths[b.partition]!,
         databaseFactory: databaseFactoryFfi,
       );
+      addTearDown(bStore.close);
       expect(
         await bStore.transaction(
           (tx) async =>
@@ -217,6 +230,7 @@ void main() {
         path: paths[a.partition]!,
         databaseFactory: databaseFactoryFfi,
       );
+      addTearDown(reopened.close);
       final pending = await reopened.transaction(
         (tx) => tx.getOutbox(scope, 'old-delete'),
       );

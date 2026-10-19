@@ -67,10 +67,12 @@ func browserQuery(req *http.Request, allowed ...string) (url.Values, error) {
 func (r *AuthenticationAdapter) writeBrowserProto(w http.ResponseWriter, ctx context.Context, message proto.Message) {
 	var raw []byte
 	var err error
-	if r.current != nil {
+	if r.mode == "off" {
+		raw, err = protojson.Marshal(message)
+	} else if r.current != nil && r.output != nil && r.output() != nil {
 		raw, err = r.output().MarshalBrowserJSON(ctx, message)
 	} else {
-		raw, err = protojson.Marshal(message)
+		err = security.ErrAuthorityUnavailable
 	}
 	if err != nil {
 		browserHTTPError(w, connect.CodeUnavailable)
@@ -121,26 +123,15 @@ func workflowCode(err error) connect.Code {
 	}
 }
 func (r *AuthenticationAdapter) browserWriter(req *http.Request) bool {
-	if r != nil && r.current != nil {
-		return r.current.OriginEnabled() && r.browserOrigin(req, false) == nil && r.ready(req.Context())
-	}
-	if r == nil || r.mode != "oidc" || r.writerEnabled == nil || !r.writerEnabled() || r.browserOrigin(req, false) != nil {
-		return false
-	}
-	current, known := r.store.Current()
-	return known && r.authorityCheck(req.Context(), current) == nil
+	return r != nil && r.current != nil && r.current.OriginEnabled() && r.browserOrigin(req, false) == nil && r.ready(req.Context())
 }
 func (r *AuthenticationAdapter) browserLogin(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet || !r.browserWriter(req) {
 		browserHTTPError(w, connect.CodeUnavailable)
 		return
 	}
-	allowed := []string{"issuer", "return"}
-	if r.current == nil {
-		allowed = append(allowed, "step_up")
-	}
-	q, err := browserQuery(req, allowed...)
-	if err != nil || q.Get("issuer") == "" || q.Get("step_up") != "" && q.Get("step_up") != "true" {
+	q, err := browserQuery(req, "issuer", "return")
+	if err != nil || q.Get("issuer") == "" {
 		browserHTTPError(w, connect.CodeInvalidArgument)
 		return
 	}
@@ -152,7 +143,7 @@ func (r *AuthenticationAdapter) browserLogin(w http.ResponseWriter, req *http.Re
 	if ctx, _, e := r.authenticateBrowser(req, false); e == nil {
 		previous, _ = security.AdmissionFromContext(ctx)
 	}
-	start, err := r.workflow.BeginLogin(req.Context(), authn.LoginRequest{Issuer: q.Get("issuer"), ReturnPath: path, StepUp: q.Get("step_up") == "true", Previous: previous})
+	start, err := r.workflow.BeginLogin(req.Context(), authn.LoginRequest{Issuer: q.Get("issuer"), ReturnPath: path, Previous: previous})
 	if err != nil {
 		browserHTTPError(w, workflowCode(err))
 		return
@@ -217,7 +208,7 @@ func (r *AuthenticationAdapter) browserSession(w http.ResponseWriter, req *http.
 		return
 	}
 	a, _ := security.AdmissionFromContext(ctx)
-	view, err := authn.InspectSession(ctx, a, r.store, r.current, r.now)
+	view, err := authn.InspectSession(ctx, a, r.current, r.now)
 	if err != nil {
 		browserHTTPError(w, sessionErrorCode(err))
 		return
@@ -230,31 +221,9 @@ func (r *AuthenticationAdapter) browserSession(w http.ResponseWriter, req *http.
 	r.writeBrowserProto(w, req.Context(), response)
 }
 func (r *AuthenticationAdapter) browserLogout(w http.ResponseWriter, req *http.Request) {
-	if r.current != nil {
-		r.currentBrowserLogout(w, req)
-		return
-	}
-	if req.Method != http.MethodPost || req.URL.RawQuery != "" || !r.browserWriter(req) {
+	if r.current == nil {
 		browserHTTPError(w, connect.CodeUnavailable)
 		return
 	}
-	ctx, _, err := r.authenticateBrowser(req, true)
-	if err != nil {
-		browserHTTPError(w, connect.CodeOf(err))
-		return
-	}
-	a, _ := security.AdmissionFromContext(ctx)
-	result, enforced, err := r.workflow.Logout(ctx, a)
-	if err != nil {
-		browserHTTPError(w, workflowCode(err))
-		return
-	}
-	browserClearCookie(w, sessionCookieName, http.SameSiteStrictMode)
-	browserClearCookie(w, csrfCookieName, http.SameSiteStrictMode)
-	generation := a.Revision().Generation()
-	response := &pb.SessionRevocation{Version: &pb.SecurityVersion{Revision: result.Revision, Digest: result.Digest[:], Generation: generation[:]}, Enforcement: pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_COMMITTED_PENDING}
-	if enforced {
-		response.Enforcement = pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED
-	}
-	r.writeBrowserProto(w, req.Context(), response)
+	r.currentBrowserLogout(w, req)
 }

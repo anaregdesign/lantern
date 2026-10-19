@@ -7,12 +7,11 @@ performance verdict, HA evidence or provider login evidence. Matching S4
 admission/disclosure integration is delivered through #1725/#1726; this fixture
 adaptation does not repeat that implementation or close #1612/#1610 acceptance.
 
-`authfixture -protected-query -query-security-profile legacy-v1` retains the
-original one-Server preparation. Explicit `-query-security-profile current-v2`
-uses three production Server processes and the existing fixed three-member sys
+`authfixture -protected-query` uses three production Server processes and the
+existing fixed three-member sys
 authority; the measured data and independent writer use only node 0. OFF uses
 the same three-process layout with authentication disabled. No data replication,
-receipt or HA workload is enabled. Both profiles use a short-lived
+receipt or HA workload is enabled. Both modes use a short-lived
 loopback HTTPS issuer. Both OFF and OIDC retain verified public TLS and HTTP/2;
 neither OS trust nor Keychain is changed. The issuer signs 15-minute Ed25519
 access JWTs, exposes discovery/JWKS, and serves no browser/login/token issuance
@@ -23,8 +22,7 @@ state. Only paths, public profile bindings, binary hashes and source metadata en
 output. Preserve private diagnostic logs after failure, excluding credentials.
 
 The measured OIDC reader is a synthetic local end-user Bearer JWT, bound through
-the existing assignment API for legacy, or the independently authored original
-current genesis for current-v2, to the same `fixture_query_reader`. That Role allows Vertex
+the independently authored original authority genesis to `fixture_query_reader`. That Role allows Vertex
 read under `bench:`, explicitly denies `bench:private:`, and independently allows
 Query. The issuer reserves these synthetic end-user subjects and issues no OAuth
 client tokens. This exercises actual production JWT validation and Role admission;
@@ -72,7 +70,7 @@ equality. Same-allowed-set authorization-overhead comparisons require a
 separately selected lane and are not added here.
 
 Build matching binaries from a frozen clean source, outside the checkout.
-Current also requires the original-input exporter test binary with VCS metadata:
+OIDC preparation also requires the original-input exporter test binary with VCS metadata:
 
 ```sh
 go -C server build -buildvcs=true -o ../../tools-1612/lantern ./cmd
@@ -81,24 +79,15 @@ go build -buildvcs=true -o ../tools-1612/protectedquery ./testbed/bench/protecte
 go -C server test -c -buildvcs=true -o ../../tools-1612/security.test ./internal/security
 ```
 
-For each mode, choose an unused public loopback port and a new absolute private
+For each mode, choose three unused public loopback ports and a new absolute private
 directory. Start the fixture with its stdin retained by the owner, and save its
 single readiness JSON privately. The issuer selects its own loopback port.
-The retained legacy profile still uses its writer fence and a bounded 60-second
-wait. Current requires actual native time, installed current quorum and data
+OIDC requires actual native time, installed current quorum and data
 readiness, then protocol 2, the expected member and complete original profile
-binding. An OFF or legacy response cannot satisfy current OIDC readiness. No
+binding. An OFF response cannot satisfy OIDC readiness. No
 clock/authority override or fallback is added.
 
-```sh
-../tools-1612/authfixture -protected-query -mode oidc \
-  -directory /absolute/new/private-directory -public-ports 16380 \
-  -serve /absolute/tools-1612/lantern -ready-timeout 60s
-../tools-1612/protectedquery -fixture /absolute/private/ready.json -action seed
-../tools-1612/protectedquery -fixture /absolute/private/ready.json -action preflight
-```
-
-For current, choose three distinct public ports and the existing qualified native
+Use the existing qualified native
 Darwin/arm64 or Linux/amd64/arm64 environment. Its read-only `/etc/ntp.conf`
 selected source and DNS/UDP path must already satisfy the existing native profile;
 this lane neither edits OS time/trust/network configuration nor manufactures a
@@ -106,10 +95,12 @@ qualification Boolean. The private authority endpoints/keys/genesis are authored
 by the existing test-only exporter, not borrowed from a live installation.
 
 ```sh
-../tools-1612/authfixture -protected-query -query-security-profile current-v2 \
+../tools-1612/authfixture -protected-query \
   -mode oidc -directory /absolute/new/private-current \
   -public-ports 16380,16381,16382 -serve /absolute/tools-1612/lantern \
-  -current-fixture-exporter /absolute/tools-1612/security.test -ready-timeout 180s
+  -authority-provisioner /absolute/tools-1612/security.test -ready-timeout 180s
+../tools-1612/protectedquery -fixture /absolute/private/ready.json -action seed
+../tools-1612/protectedquery -fixture /absolute/private/ready.json -action preflight
 ```
 
 Current fixture membership uses the existing ten-minute maximum, without renewal;
@@ -136,7 +127,7 @@ not intact-resume, backup/VM rollback or physical-host qualification.
 
 Repeat with `-mode off` on the same pinned binaries and a fresh owned directory.
 The fixture never reads real provider configuration or retained credentials.
-Unknown profiles, plaintext, wrong selected process count, data peers and expiring credentials
+Obsolete profile selectors, plaintext, wrong selected process count, data peers and expiring credentials
 fail closed. The seed and preflight actions perform no offered performance load.
 
 The explicit short real-wire regression uses absolute paths to these binaries:

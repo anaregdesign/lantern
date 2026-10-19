@@ -4,11 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/sha512"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -31,7 +28,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,10 +47,10 @@ import (
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"log/slog"
 )
 
 const testToken = "integration-s3cret"
@@ -750,548 +746,82 @@ func connectCode(err error) connect.Code {
 	return 0
 }
 
-// This fixture exercises the certified production public handler composition
-// with a trusted local HTTPS gateway and a deterministic authority clock.
-type oidcControlWireFixture struct {
-	client      graphv1connect.LanternSecurityServiceClient
-	server      *httptest.Server
-	provider    *httptest.Server
-	private     ed25519.PrivateKey
-	mu          sync.Mutex
-	now         time.Time
-	realClock   bool
-	fetches     atomic.Int64
-	codes       map[string]oidcWireCode
-	graph       *graphcache.GraphCache[string, *pb.Vertex]
-	data        graphv1connect.LanternServiceClient
-	changes     graphv1connect.LanternChangeServiceClient
-	dataRuntime *service.ServingRuntime
-}
-
-type oidcWireCode struct {
-	nonce, challenge, subject string
-	wrongNonce                bool
-	authTime                  string
-}
-
-// Shared local HTTPS issuer; native current tests use its real wall only for token issuance.
-func newOIDCWireIssuer(t *testing.T) *oidcControlWireFixture {
-	t.Helper()
-	f := &oidcControlWireFixture{now: time.Now(), codes: make(map[string]oidcWireCode)}
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.private = private
-	f.provider = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f.fetches.Add(1)
-		if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
-			t.Error("metadata fetch forwarded credentials")
-		}
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/.well-known/openid-configuration":
-			_ = json.NewEncoder(w).Encode(map[string]any{"issuer": f.provider.URL, "authorization_endpoint": f.provider.URL + "/authorize", "token_endpoint": f.provider.URL + "/token", "jwks_uri": f.provider.URL + "/jwks", "response_types_supported": []string{"code"}, "code_challenge_methods_supported": []string{"S256"}})
-		case "/jwks":
-			_ = json.NewEncoder(w).Encode(map[string]any{"keys": []any{map[string]string{"kty": "OKP", "kid": "key", "alg": "EdDSA", "crv": "Ed25519", "x": base64.RawURLEncoding.EncodeToString(public)}}})
-		case "/token":
-			if r.Method != http.MethodPost || r.ParseForm() != nil {
-				http.Error(w, "invalid", http.StatusBadRequest)
-				return
-			}
-			if r.Form.Get("grant_type") == "client_credentials" {
-				// Fixture issuance contract: this OAuth client cannot select or
-				// impersonate a human subject, and never receives an ID token.
-				if r.Form.Get("client_id") != "wire-worker" || r.Form.Get("requested_sub") != "" {
-					http.Error(w, "invalid client profile", http.StatusBadRequest)
-					return
-				}
-				now := f.clock()
-				claims := map[string]any{"iss": f.provider.URL, "sub": "oauth-client:wire-worker", "aud": "api", "client_id": "wire-worker", "jti": "client-wire", "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(), "auth_time": now.Unix()}
-				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": f.signedToken(claims, "at+jwt"), "token_type": "Bearer"})
-				return
-			}
-			f.mu.Lock()
-			code, known := f.codes[r.Form.Get("code")]
-			delete(f.codes, r.Form.Get("code"))
-			f.mu.Unlock()
-			challenge := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
-			callback := sha256.Sum256([]byte(f.provider.URL))
-			if !known || strings.HasPrefix(code.subject, "oauth-client:") || r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("client_id") != "admin" || r.Form.Get("redirect_uri") != fmt.Sprintf("https://admin.example/auth/callback/%x", callback) || base64.RawURLEncoding.EncodeToString(challenge[:]) != code.challenge {
-				http.Error(w, "invalid", http.StatusBadRequest)
-				return
-			}
-			now := f.clock()
-			nonce := code.nonce
-			if code.wrongNonce {
-				nonce = "wrong-nonce"
-			}
-			accessHash := sha512.Sum512([]byte("provider-private-access-token"))
-			claims := map[string]any{"iss": f.provider.URL, "sub": code.subject, "aud": "admin", "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(), "auth_time": now.Unix(), "nonce": nonce, "at_hash": base64.RawURLEncoding.EncodeToString(accessHash[:32])}
-			switch code.authTime {
-			case "missing":
-				delete(claims, "auth_time")
-			case "stale":
-				claims["auth_time"] = now.Add(-6 * time.Minute).Unix()
-			case "future":
-				claims["auth_time"] = now.Add(time.Second).Unix()
-			case "contradictory":
-				claims["iat"] = now.Add(-2 * time.Minute).Unix()
-				claims["auth_time"] = now.Add(-time.Minute).Unix()
-			case "null":
-				claims["auth_time"] = nil
-			}
-			id := f.signedToken(claims, "JWT")
-			_ = json.NewEncoder(w).Encode(map[string]any{"id_token": id, "access_token": "provider-private-access-token", "token_type": "Bearer"})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(f.provider.Close)
-	return f
-}
-
-func newOIDCControlWireFixture(t *testing.T, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
-	return newOIDCControlWireFixtureConfigured(t, nil, traversalLimits...)
-}
-
-func newOIDCControlWireFixtureConfigured(t *testing.T, configure func(*provider.SecurityConfig), traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
-	return newOIDCControlWireFixtureOptions(t, configure, false, traversalLimits...)
-}
-
-func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*provider.SecurityConfig), durableReceipts bool, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
-	t.Helper()
-	f := newOIDCWireIssuer(t)
-	dir := t.TempDir()
-	writerPublic, writerPrivate, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	privateDER, err := x509.MarshalPKCS8PrivateKey(writerPrivate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	publicDER, err := x509.MarshalPKIXPublicKey(writerPublic)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, block := range map[string]*pem.Block{"writer.key": {Type: "PRIVATE KEY", Bytes: privateDER}, "writer.pub": {Type: "PUBLIC KEY", Bytes: publicDER}, "provider.pem": {Type: "CERTIFICATE", Bytes: f.provider.Certificate().Raw}} {
-		if err := createPrivateTestFile(filepath.Join(dir, name), pem.EncodeToMemory(block)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, setting := range os.Environ() {
-		name, _, _ := strings.Cut(setting, "=")
-		upper := strings.ToUpper(name)
-		if strings.HasPrefix(upper, "LANTERN_AUTH_") || strings.HasPrefix(upper, "LANTERN_OIDC_") || strings.HasPrefix(upper, "LANTERN_SECURITY_") {
-			t.Setenv(name, "")
-			if err := os.Unsetenv(name); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	callback := sha256.Sum256([]byte(f.provider.URL))
-	origins, _ := json.Marshal(map[string][]string{f.provider.URL: {"127.0.0.1/32"}})
-	for name, value := range map[string]string{
-		"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_PROFILE": "legacy-v1", "LANTERN_OIDC_ADMIN_ISSUER": f.provider.URL, "LANTERN_OIDC_ADMIN_SUBJECTS": `["admin","other"]`,
-		"LANTERN_OIDC_CLIENT_ID": "admin", "LANTERN_OIDC_API_AUDIENCE": "api", "LANTERN_OIDC_ALGORITHMS": `["EdDSA"]`, "LANTERN_OIDC_BROWSER_ORIGIN": "https://admin.example",
-		// This deterministic issuer reserves enrolled human subjects; its
-		// client-credentials profile uses disjoint client subjects. Dedicated
-		// mixed-profile tests below revoke this qualification and fail closed.
-		"LANTERN_OIDC_HUMAN_SUBJECT_NAMESPACE_QUALIFIED": "true",
-		"LANTERN_OIDC_REDIRECT_URI":                      fmt.Sprintf("https://admin.example/auth/callback/%x", callback), "LANTERN_OIDC_ROOT_CA_FILE": filepath.Join(dir, "provider.pem"), "LANTERN_OIDC_PRIVATE_ORIGINS": string(origins),
-		"LANTERN_OIDC_TRUSTED_PROXY_IPS": `["127.0.0.1"]`,
-		"LANTERN_SECURITY_STORE_MODE":    "fresh", "LANTERN_SECURITY_STORE_PATH": filepath.Join(dir, "sys.wal"), "LANTERN_SECURITY_GENERATION": "01000000000000000000000000000000",
-		"LANTERN_SECURITY_NODE_ROLE": "writer", "LANTERN_SECURITY_WRITER_ENDPOINT": "https://peer.example", "LANTERN_SECURITY_WRITER_KEY_FILE": filepath.Join(dir, "writer.key"), "LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE": filepath.Join(dir, "writer.pub"),
-		"LANTERN_SECURITY_BOOTSTRAP_REVISION": "1", "LANTERN_SECURITY_CLOCK_QUALIFIED": "true",
-	} {
-		t.Setenv(name, value)
-	}
-	config, err := provider.LoadSecurityConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	config.Clock = f.clock
-	configureGraph := func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
-		graph.EnablePrefixIndex(func(key string) string { return key })
-		graph.EnableSearchIndex(func(key string, vertex *pb.Vertex) search.Document {
-			return search.Fields{{ID: search.FieldKey, Text: strings.TrimPrefix(key, "data:")}, {ID: search.FieldValue, Text: vertex.GetString_()}}
-		}, strings.Compare)
-		return nil
-	}
-	var data *service.ServingRuntime
-	if durableReceipts {
-		durable := durableReceiptWireConfig(filepath.Join(dir, "receipts.wal"), hlc.NodeID{8})
-		durable.NamespaceFormat = "namespaced-v1"
-		durable.ConfigureGraph = configureGraph
-		data, err = service.CreateDurableReceiptWALServingRuntime(durable)
-	} else {
-		graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
-		if err := configureGraph(graph); err != nil {
-			t.Fatal(err)
-		}
-		data, err = service.NewGraphOnlyServingRuntime(graph, mutationlog.New(mutationlog.Options{Capacity: 16}), hlc.New(hlc.NodeID{8}, hlc.Options{}), "namespaced-v1")
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = data.Close() })
-	f.dataRuntime = data
-	f.graph = data.GraphCache()
-	if configure != nil {
-		configure(&config)
-	}
-	runtime, closeRuntime, err := provider.NewSecurityRuntime(config, data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(closeRuntime)
-	f.advance(35 * time.Second)
-	dataService := data.NewLanternService(nil).WithSearchLimits(service.SearchLimits{Enabled: true, PositionsEnabled: true})
-	if durableReceipts {
-		dataService.WithTombstoneTTL(time.Hour)
-	}
-	if len(traversalLimits) > 0 {
-		dataService.WithTraversalLimits(traversalLimits[0])
-	}
-	peer, err := data.NewLanternReplicationService(dataService)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restored, err := provider.NewRuntimeRestored(data, dataService)
-	if err != nil {
-		t.Fatal(err)
-	}
-	limits := provider.NetConfig{MaxRecvMsgBytes: 8 << 20, MaxSendMsgBytes: 8 << 20}
-	certified, err := provider.NewRuntimeCertified(data, dataService, peer, restored, limits)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if durableReceipts {
-		if err := data.CertifyReceiptBackup(dataService, peer); err != nil {
-			t.Fatal(err)
-		}
-		if err := data.ActivatePublicReceipts(dataService, peer); err != nil {
-			t.Fatal(err)
-		}
-	}
-	publicCertified, err := provider.NewPublicSecurityCertified(runtime, provider.TLSConfig{}, nil, nil, data, dataService, certified)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.server = httptest.NewUnstartedServer(nil)
-	listener, err := provider.NewPublicLanternListener(f.server.Listener, limits, provider.TLSConfig{}, provider.ObservabilityConfig{EnableReflection: true}, provider.CORSConfig{}, dataService, runtime,
-		provider.ChangeConfig{Enabled: true, Options: service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{13}}}, CurrentKeyVersion: 1, Heartbeat: 100 * time.Millisecond}},
-		nil, nil, nil, nil, nil, provider.NewHealthChecker(), slog.New(slog.NewTextHandler(io.Discard, nil)), publicCertified)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.server.Config.Handler = listener.Server().Handler
-	protocols := new(http.Protocols)
-	protocols.SetHTTP1(true)
-	protocols.SetUnencryptedHTTP2(true)
-	f.server.Config.Protocols = protocols
-	f.server.Start()
-	t.Cleanup(f.server.Close)
-	f.client = graphv1connect.NewLanternSecurityServiceClient(&http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}, f.server.URL)
-	f.data = graphv1connect.NewLanternServiceClient(&http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}, f.server.URL)
-	f.changes = graphv1connect.NewLanternChangeServiceClient(&http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}, f.server.URL)
-	return f
-}
-func (f *oidcControlWireFixture) clock() time.Time {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.realClock {
-		return time.Now().UTC()
-	}
-	return f.now
-}
-func (f *oidcControlWireFixture) advance(d time.Duration) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.now = f.now.Add(d)
-}
-func (f *oidcControlWireFixture) token(t *testing.T, subject string, mutate func(map[string]any)) string {
-	t.Helper()
-	now := f.clock()
-	claims := map[string]any{"iss": f.provider.URL, "sub": subject, "aud": "api", "client_id": "client", "jti": "wire", "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(), "auth_time": now.Unix()}
-	if mutate != nil {
-		mutate(claims)
-	}
-	return f.signedToken(claims, "at+jwt")
-}
-func (f *oidcControlWireFixture) signedToken(claims map[string]any, typ string) string {
-	header, _ := json.Marshal(map[string]any{"alg": "EdDSA", "kid": "key", "typ": typ})
-	payload, _ := json.Marshal(claims)
-	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
-	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(f.private, []byte(input)))
-}
-func securityWireRequest[T any](token string, message *T) *connect.Request[T] {
-	req := connect.NewRequest(message)
-	if token != "" {
-		req.Header().Set("Authorization", "Bearer "+token)
-	}
-	return req
-}
-
-// Status proves only the retained original commit. It cannot reconstruct item
-// outcomes or certify that the policy introduced by that commit is still current.
+// Status names the immutable original outcome, independently of later policy.
 func TestAuth_OIDCSecurityChangeCommitProofRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixture(t)
 	admin := f.token(t, "admin", nil)
-	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	revision := principal.Msg.Version.Revision
-	var original *pb.SecurityVersion
-	var originalID []byte
+	var first *pb.CurrentSecurityReview
+	var original *pb.CurrentSecurityOriginalOutcome
 	for _, count := range []int{1, 2} {
-		t.Run(fmt.Sprintf("%d_changes", count), func(t *testing.T) {
-			id := bytes.Repeat([]byte{byte(70 + count)}, 16)
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+			if err != nil {
+				t.Fatal(err)
+			}
 			changes := make([]*pb.SecurityChange, count)
 			for i := range changes {
 				changes[i] = &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: fmt.Sprintf("proof_%d_%d", count, i), Name: "Original policy"}}}
 			}
-			var committed *pb.SecurityVersion
+			prepared, err := prepareAuthorityWireReview(t.Context(), f.client, admin, principal.Msg.Version, changes)
+			if err != nil || prepared.CurrentReview == nil {
+				t.Fatal("authoritative review", err)
+			}
+			review := prepared.CurrentReview
+			var result *pb.CurrentSecurityChangeResult
 			if count == 1 {
-				apply, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: revision, ChangeId: id, Change: changes[0]}))
-				if err != nil || !apply.Msg.Applied {
-					t.Fatal("single Apply", apply, err)
+				response, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{CurrentReview: review}))
+				if err != nil || response.Msg.Version != nil || response.Msg.Applied {
+					t.Fatal("singular current Apply aliased scalar success", err)
 				}
-				committed = apply.Msg.Version
+				result = response.Msg.CurrentResult
 			} else {
-				apply, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: revision, ChangeId: id, Changes: changes}))
-				if err != nil || len(apply.Msg.Applied) != count || !apply.Msg.Applied[0] || !apply.Msg.Applied[1] {
-					t.Fatal("multi Apply", apply, err)
+				response, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{CurrentReview: review}))
+				if err != nil || response.Msg.Version != nil || len(response.Msg.Applied) != 0 {
+					t.Fatal("plural current Apply aliased scalar outcomes", err)
 				}
-				committed = apply.Msg.Version
+				result = response.Msg.CurrentResult
 			}
-			if committed.Revision != revision+1 {
-				t.Fatal("fixed-writer CAS revision", committed)
+			if err := f.waitForAppliedAuthority(t, t.Context(), result); err != nil {
+				t.Fatal(err)
 			}
-			status, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: id}))
-			if err != nil || !proto.Equal(status.Msg.Version, committed) || !bytes.Equal(status.Msg.ChangeId, id) || status.Msg.Enforcement != pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED {
-				t.Fatal("retained commit proof", status, err)
+			if len(result.Original.Items) != count || !proto.Equal(result.ChangeId, review.ChangeId) || !bytes.Equal(result.IntentDigest, review.IntentDigest) || result.Original.ResultingCut.Sequence != review.ExpectedCut.Sequence+1 {
+				t.Fatal("original item/ID/full-cut binding changed")
 			}
-			fields := status.Msg.ProtoReflect().Descriptor().Fields()
-			if fields.ByName("applied") != nil || fields.ByName("replayed") != nil {
-				t.Fatal("Status claims unavailable Apply evidence")
+			for index, item := range result.Original.Items {
+				if item.Index != uint32(index) || item.Disposition != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED {
+					t.Fatal("unaligned original item")
+				}
 			}
-			if status.Header().Get("Cache-Control") != "no-store" {
-				t.Fatal("proof was cacheable")
+			request := &pb.GetSecurityChangeStatusRequest{CurrentProfile: review.Profile, CurrentChangeId: review.ChangeId, CurrentIntentDigest: review.IntentDigest}
+			status, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, request))
+			if err != nil || !proto.Equal(status.Msg.CurrentResult.Original, result.Original) || status.Header().Get("Cache-Control") != "no-store" {
+				t.Fatal("immutable retained proof", err)
 			}
-			revision = committed.Revision
+			retry, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{CurrentReview: review}))
+			if err != nil || !proto.Equal(retry.Msg.CurrentResult.Original, result.Original) {
+				t.Fatal("retry replaced original outcome", err)
+			}
 			if count == 1 {
-				original, originalID = proto.Clone(committed).(*pb.SecurityVersion), bytes.Clone(id)
+				first, original = proto.Clone(review).(*pb.CurrentSecurityReview), proto.Clone(result.Original).(*pb.CurrentSecurityOriginalOutcome)
 			}
 		})
 	}
-	// Change the original policy and show that status still names the original cut.
-	update, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: revision, ChangeId: bytes.Repeat([]byte{74}, 16), Change: &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteRole{DeleteRole: "proof_1_0"}}}))
-	if err != nil {
+	if _, err := f.applyChange(t, t.Context(), admin, &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteRole{DeleteRole: "proof_1_0"}}); err != nil {
 		t.Fatal(err)
 	}
-	revision = update.Msg.Version.Revision
-	status, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: originalID}))
-	if err != nil || !proto.Equal(status.Msg.Version, original) {
-		t.Fatal("current policy replaced original proof", status, err)
+	request := &pb.GetSecurityChangeStatusRequest{CurrentProfile: first.Profile, CurrentChangeId: first.ChangeId, CurrentIntentDigest: first.IntentDigest}
+	status, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, request))
+	if err != nil || !proto.Equal(status.Msg.CurrentResult.Original, original) {
+		t.Fatal("later policy replaced original proof", err)
 	}
-	if _, err := f.client.GetSecurityChangeStatus(t.Context(), connect.NewRequest(&pb.GetSecurityChangeStatusRequest{ChangeId: originalID})); connect.CodeOf(err) != connect.CodeUnauthenticated {
-		t.Fatal("anonymous proof", err)
+	if _, err := f.client.GetSecurityChangeStatus(t.Context(), connect.NewRequest(request)); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatal("anonymous original proof", err)
 	}
-	if _, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: []byte{1}})); connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatal("malformed ID", err)
-	}
-	if _, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: bytes.Repeat([]byte{99}, 16)})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatal("unknown ID proved rollback", err)
-	}
-	// Retained history is bounded. Retired IDs remain indeterminate, including
-	// after later accepted changes; status never creates a replacement mutation.
-	for i := 0; i < 256; i++ {
-		id := make([]byte, 16)
-		id[0], id[1], id[2] = byte(i), byte(i>>8), 200
-		apply, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: revision, ChangeId: id, Change: &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "history", Name: fmt.Sprint(i)}}}}))
-		if err != nil {
-			t.Fatal(i, err)
-		}
-		revision = apply.Msg.Version.Revision
-	}
-	if _, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, &pb.GetSecurityChangeStatusRequest{ChangeId: originalID})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		t.Fatal("retired ID proved rollback", err)
-	}
-	current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
-	if err != nil || current.Msg.Version.Revision != revision {
-		t.Fatal("status mutated state", err)
-	}
-}
-
-// The current Admin must refuse this explicitly legacy fixture. The thin
-// browser SDK retains the legacy original-proof/rejection wire contract for
-// existing callers; current Admin recovery is covered by the native SDK4 gate
-// and the source-paired v2 controller tests. This fixture uses the production
-// Server and a deterministic TLS-verified IdP through the trusted gateway hop.
-func TestAuth_OIDCLegacyAdminRefusalAndCommitProofRecoveryRealConnect(t *testing.T) {
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("Bun is required for the Admin recovery wire gate")
-	}
-	f := newOIDCControlWireFixture(t)
-	start := f.browserLoginStart(t, nil, false)
-	callback := f.browserCallbackPath(t, start, "admin", false)
-	response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback, start.Cookies(), ""))
-	if response.StatusCode != http.StatusSeeOther {
-		t.Fatal("browser login", response.StatusCode)
-	}
-	_ = response.Body.Close()
-	var cookies []string
-	for _, cookie := range response.Cookies() {
-		if cookie.Name == "__Host-lantern-session" || cookie.Name == "__Host-lantern-csrf" {
-			cookies = append(cookies, cookie.Name+"="+cookie.Value)
-		}
-	}
-	csrf := browserCookieValue(response.Cookies(), "__Host-lantern-csrf")
-	if len(cookies) != 2 || csrf == "" {
-		t.Fatal("browser session cookies missing")
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry := func(path string) string {
-		absolute, err := filepath.Abs(filepath.Join(cwd, "../../", path))
-		if err != nil {
-			t.Fatal(err)
-		}
-		encoded, err := json.Marshal(absolute)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(encoded)
-	}
-	script := `import { SecurityManagementController, SecurityChangeRecovery } from ` + entry("admin/app/lib/client/usecase/security/security-management.ts") + `;
-import { createSecurityManagementClient } from ` + entry("admin/app/lib/client/infrastructure/api/security-management-client.ts") + `;
-import { createSecurityClient } from ` + entry("admin/app/lib/client/infrastructure/api/security-client.ts") + `;
-const check = (value, message) => { if (!value) throw new Error(message); };
-const originalFetch = globalThis.fetch;
-let sent = 0, statusCalls = 0, ids = 0, dropApply = false, lostResponses = 0;
-const appliedIDs = [], statusIDs = [];
-globalThis.fetch = async (input, init) => {
- const request = new Request(input, init);
- request.headers.set("Cookie", process.env.LANTERN_RECOVERY_COOKIE);
- request.headers.set("Host", "admin.example");
- request.headers.set("X-Forwarded-Host", "admin.example");
- request.headers.set("X-Forwarded-Proto", "https");
- request.headers.set("Origin", "https://admin.example");
- request.headers.set("Sec-Fetch-Site", "same-origin");
- const method = new URL(request.url).pathname.split("/").at(-1);
- const body = await request.clone().json();
- if (method === "ApplySecurityChanges") { sent++; appliedIDs.push(body.changeId); }
- if (method === "GetSecurityChangeStatus") { statusCalls++; statusIDs.push(body.changeId); }
- const response = await originalFetch(request);
- if (method === "ApplySecurityChanges" && dropApply) {
-  check(response.ok, "Apply must actually commit before dropping its response");
-  await response.arrayBuffer();
-  lostResponses++;
-  throw new TypeError("committed Apply response dropped");
- }
- return response;
-};
-const scope = new AbortController();
-let retainedRecovery = null;
-const recovery = new SecurityChangeRecovery({read: () => retainedRecovery, replace: value => { retainedRecovery = value; }});
-const port = createSecurityManagementClient(process.env.LANTERN_RECOVERY_URL, scope.signal, process.env.LANTERN_RECOVERY_CSRF);
-const controller = new SecurityManagementController(port, "roles", scope.signal, recovery, "legacy-browser-session");
-const roleChange = (id, name) => [{ $typeName: "graph.v1.SecurityChange", operation: {case: "putRole", value: {$typeName: "graph.v1.SecurityRole", id, name, rules: [], envOwned: false}}}];
-await controller.load();
-check(controller.getSnapshot().phase === "error" && controller.getSnapshot().version === undefined, "current Admin must refuse legacy scalar authority");
-await controller.review("Unsupported legacy review", roleChange("never_from_current_admin", "Must refuse"));
-await controller.apply();
-check(sent === 0 && controller.changeId() === "" && recovery.read("legacy-browser-session") === undefined && retainedRecovery === null, "legacy refusal must not create, persist or dispatch current work");
-controller.dispose();
-
-// Retain v1 proof/rejection behavior on the actual legacy browser SDK wire,
-// independently of the current-only Admin's deliberate format refusal.
-const client = createSecurityClient(process.env.LANTERN_RECOVERY_URL, scope.signal, process.env.LANTERN_RECOVERY_CSRF);
-const newID = () => { ids++; return crypto.getRandomValues(new Uint8Array(16)); };
-const sameBytes = (a, b) => Buffer.from(a).equals(Buffer.from(b));
-const sameVersion = (a, b) => a.revision === b.revision && sameBytes(a.digest, b.digest) && sameBytes(a.generation, b.generation);
-for (const lost of [false, true]) {
- dropApply = lost;
- const page = await client.listRoles({});
- const changes = Array.from({length: lost ? 2 : 1}, (_, i) => roleChange("legacy_recovery_" + lost + "_" + i, "Reviewed role")[0]);
- const retained = {expectedVersion: page.version, changeId: newID(), changes};
- const prepared = await client.prepareSecurityChanges({review: retained});
- check(prepared.requirement === 1 && sameBytes(prepared.changeId, retained.changeId), "legacy ordinary preparation retained ID");
- let acknowledgement;
- try {
-  acknowledgement = await client.applySecurityChanges({expectedRevision: retained.expectedVersion.revision, changeId: retained.changeId, changes});
-  check(!lost, "lost response unexpectedly acknowledged");
- } catch (error) { if (!lost) throw error; }
- for (let poll = 0; poll < 2; poll++) {
-  const status = await client.getSecurityChangeStatus({changeId: retained.changeId});
-  check(sameBytes(status.changeId, retained.changeId) && status.enforcement === 2, "legacy original proof/status");
-  check(status.version.revision === page.version.revision + 1n, "original result revision");
-  check(status.applied === undefined && status.replayed === undefined, "status must not fabricate per-item or replay acknowledgement");
-  if (acknowledgement) check(sameVersion(status.version, acknowledgement.version) && acknowledgement.applied.length === changes.length && acknowledgement.applied.every(Boolean) && acknowledgement.replayed === false, "retained Apply acknowledgement changed");
- }
-}
-check(sent === 2 && ids === 2 && statusCalls === 4 && lostResponses === 1, "legacy status recovery allocated an ID or resent Apply");
-check(statusIDs[0] === appliedIDs[0] && statusIDs[1] === appliedIDs[0] && statusIDs[2] === appliedIDs[1] && statusIDs[3] === appliedIDs[1], "status used another change ID");
-
-// A real competing commit, not an RPC substitution, supplies typed first
-// refusal. Preserve no-effect/audit/proof checks and explicit new-ID correction.
-dropApply = false;
-const baseline = (await client.listRoles({})).version;
-const auditBefore = await client.listSecurityAudit({});
-const refusedReview = {expectedVersion: baseline, changeId: newID(), changes: roleChange("legacy_correction", "Original draft")};
-check((await client.prepareSecurityChanges({review: refusedReview})).requirement === 1, "ordinary review");
-await client.applySecurityChanges({expectedRevision: baseline.revision, changeId: newID(), changes: roleChange("competing_commit", "Competing ordinary change")});
-const afterCompeting = await client.listRoles({});
-check(afterCompeting.version.revision === baseline.revision + 1n, "competing revision");
-try {
- await client.applySecurityChanges({expectedRevision: baseline.revision, changeId: refusedReview.changeId, changes: refusedReview.changes});
- throw new Error("stale Apply accepted");
-} catch (error) {
- check(error.name === "SecurityChangePrecommitRejectedError" && error.detail.reason === 6 && error.detail.expectedRevision === baseline.revision && sameBytes(error.detail.changeId, refusedReview.changeId), "uncorrelated typed first refusal");
-}
-const afterRefusal = await client.listRoles({});
-const auditAfterRefusal = await client.listSecurityAudit({});
-check(sameVersion(afterRefusal.version, afterCompeting.version), "refusal changed signed revision/cut");
-check(!afterRefusal.roles.some(role => role.id === "legacy_correction"), "refused effect escaped");
-check(auditAfterRefusal.records.length === auditBefore.records.length + 1, "refusal appended audit");
-try { await client.getSecurityChangeStatus({changeId: refusedReview.changeId}); throw new Error("refused ID acquired proof"); }
-catch (error) {
- let statusError = error;
- for (let depth = 0; depth < 4 && statusError?.code === undefined; depth++) statusError = statusError?.cause;
- check(statusError?.code === 9 && statusError?.rawMessage === "security change is outside retained history", "unknown status contract");
- check(error.name !== "SecurityChangePrecommitRejectedError", "status supplied an Apply rejection marker");
-}
-const current = (await client.listRoles({})).version;
-const corrected = {expectedVersion: current, changeId: newID(), changes: roleChange("legacy_correction", "Corrected draft")};
-check(!sameBytes(corrected.changeId, refusedReview.changeId) && (await client.prepareSecurityChanges({review: corrected})).requirement === 1, "explicit new-ID review");
-await client.applySecurityChanges({expectedRevision: current.revision, changeId: corrected.changeId, changes: corrected.changes});
-const finalRoles = await client.listRoles({});
-const finalAudit = await client.listSecurityAudit({});
-check(sent === 5 && ids === 5 && statusCalls === 5, "unexpected extra command or ID");
-check(finalRoles.version.revision === afterCompeting.version.revision + 1n && finalRoles.roles.find(role => role.id === "legacy_correction")?.name === "Corrected draft", "corrected effect/version");
-check(finalAudit.records.length === auditBefore.records.length + 2, "corrected flow committed extra effects");
-const remount = new SecurityManagementController(port, "roles", scope.signal, recovery, "legacy-browser-session");
-await remount.load();
-check(remount.getSnapshot().phase === "error" && remount.getSnapshot().result === undefined && sent === 5, "Admin interpreted legacy ENFORCED as current authority");
-remount.dispose();
-console.log("Current Admin refuses legacy authority; legacy browser SDK original-proof recovery and typed first-refusal correction passed.");
-`
-	file := filepath.Join(t.TempDir(), "admin-recovery-wire.ts")
-	if err := os.WriteFile(file, []byte(script), 0600); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bun, "run", file)
-	cmd.Env = append(os.Environ(), "LANTERN_RECOVERY_URL="+f.server.URL, "LANTERN_RECOVERY_CSRF="+csrf, "LANTERN_RECOVERY_COOKIE="+strings.Join(cookies, "; "))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("Admin browser recovery wire: %v\n%s", err, output)
+	unknown := proto.Clone(request).(*pb.GetSecurityChangeStatusRequest)
+	unknown.CurrentChangeId.Nonce = bytes.Repeat([]byte{99}, 16)
+	unresolved, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(admin, unknown))
+	if err != nil || unresolved.Msg.CurrentResult.Progress != pb.CurrentSecurityProgress_CURRENT_SECURITY_PROGRESS_UNRESOLVED || unresolved.Msg.CurrentResult.Original != nil {
+		t.Fatal("absence became safe nonexecution", err)
 	}
 }
 
@@ -1310,28 +840,39 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 	if err != nil || principal.Msg.Identity.Subject != "admin" || len(principal.Msg.Roles) != 1 || !principal.Msg.RecentAuthentication || principal.Msg.CsrfToken != "" {
 		t.Fatal("verified principal", err)
 	}
-	initial := principal.Msg.Version.Revision
+	registration, err := f.client.GetRegistrationPolicy(ctx, securityWireRequest(admin, &pb.GetRegistrationPolicyRequest{}))
+	if err != nil || registration.Msg.Policy != nil || registration.Msg.Version == nil || registration.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("absent registration policy read", err)
+	}
+	initial := proto.Clone(principal.Msg.Version).(*pb.SecurityVersion)
 	readerIdentity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "reader"}
 	readerToken := f.token(t, "reader", func(c map[string]any) { c["roles"] = []string{"security_admin"} })
-	if _, err := f.client.GetCurrentPrincipal(ctx, securityWireRequest(readerToken, &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+	if _, err := f.client.GetCurrentPrincipal(ctx, securityWireRequest(readerToken, &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatal("unregistered token enrolled itself", err)
 	}
 	role := &pb.SecurityRole{Id: "reader", Name: "Tenant reader", Rules: []*pb.SecurityRule{
 		{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "tenant:"}},
 		{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "tenant:private:"}},
 	}}
-	command := &pb.ApplySecurityChangesRequest{ExpectedRevision: initial, ChangeId: bytes.Repeat([]byte{1}, 16), Changes: []*pb.SecurityChange{
+	prepared, err := prepareAuthorityWireReview(ctx, f.client, admin, initial, []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
 		{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: readerIdentity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
 		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: readerIdentity, RoleId: "reader"}}},
-	}}
+	})
+	if err != nil || prepared.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY {
+		t.Fatal("ordinary data review", err)
+	}
+	command := &pb.ApplySecurityChangesRequest{CurrentReview: prepared.CurrentReview}
 	commit, err := f.client.ApplySecurityChanges(ctx, securityWireRequest(admin, command))
-	if err != nil || len(commit.Msg.Applied) != 3 || commit.Msg.Version.Revision != initial+1 || commit.Msg.Enforcement != pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED {
+	if err != nil {
 		t.Fatal("atomic role command", err)
 	}
+	if err := f.waitForAppliedAuthority(t, ctx, commit.Msg.CurrentResult); err != nil || len(commit.Msg.CurrentResult.Original.Items) != 3 {
+		t.Fatal("atomic aligned current outcome", err)
+	}
 	retry, err := f.client.ApplySecurityChanges(ctx, securityWireRequest(admin, command))
-	if err != nil || !retry.Msg.Replayed || retry.Msg.Version.Revision != commit.Msg.Version.Revision {
-		t.Fatal("retained retry", err)
+	if err != nil || !proto.Equal(retry.Msg.CurrentResult.Original, commit.Msg.CurrentResult.Original) {
+		t.Fatal("retained original retry", err)
 	}
 	reader, err := f.client.GetCurrentPrincipal(ctx, securityWireRequest(readerToken, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil || len(reader.Msg.Roles) != 1 || reader.Msg.Roles[0].Id != "reader" {
@@ -1340,18 +881,38 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 	if _, err := f.client.ListUsers(ctx, securityWireRequest(readerToken, &pb.ListUsersRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("reader token Role claim granted management", err)
 	}
+	if _, err := f.client.GetRegistrationPolicy(ctx, securityWireRequest(readerToken, &pb.GetRegistrationPolicyRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatal("reader disclosed registration policy", err)
+	}
 	for key, want := range map[string]bool{"tenant:public:1": true, "tenant:private:1": false, "other:1": false} {
 		result, err := f.client.ExplainAccess(ctx, securityWireRequest(admin, &pb.ExplainAccessRequest{Identity: readerIdentity, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, LogicalKey: &key}))
 		if err != nil || result.Msg.Allowed != want {
 			t.Fatal("prefix policy", key, err)
 		}
+		for _, match := range result.Msg.Matches {
+			if match.Action != pb.SecurityAction_SECURITY_ACTION_VERTEX_READ || match.Endpoint != "" {
+				t.Fatal("key explanation lost its constituent action", match)
+			}
+		}
 	}
-	stale := &pb.ApplySecurityChangeRequest{ExpectedRevision: initial, ChangeId: bytes.Repeat([]byte{2}, 16), Change: &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteRole{DeleteRole: "reader"}}}
-	if _, err := f.client.ApplySecurityChange(ctx, securityWireRequest(admin, stale)); connect.CodeOf(err) != connect.CodeAborted {
-		t.Fatal("stale CAS", err)
+	edgeExplanation, err := f.client.ExplainAccess(ctx, securityWireRequest(admin, &pb.ExplainAccessRequest{Identity: readerIdentity, Action: pb.SecurityAction_SECURITY_ACTION_EDGE_READ, Edge: &pb.SecurityEdgeIdentity{Tail: "tenant:public:1", Head: "tenant:private:1"}}))
+	if err != nil || edgeExplanation.Msg.Allowed || len(edgeExplanation.Msg.Matches) != 3 {
+		t.Fatal("derived Edge explanation drift", edgeExplanation, err)
 	}
-	stale.ExpectedRevision = commit.Msg.Version.Revision
-	if _, err := f.client.ApplySecurityChange(ctx, securityWireRequest(admin, stale)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+	for _, match := range edgeExplanation.Msg.Matches {
+		if match.Action != pb.SecurityAction_SECURITY_ACTION_VERTEX_READ || match.Endpoint != "tail" && match.Endpoint != "head" {
+			t.Fatal("Edge explanation omitted its endpoint/action", match)
+		}
+	}
+	remove := []*pb.SecurityChange{{Operation: &pb.SecurityChange_DeleteRole{DeleteRole: "reader"}}}
+	if _, err := prepareAuthorityWireReview(ctx, f.client, admin, initial, remove); connect.CodeOf(err) != connect.CodeAborted {
+		t.Fatal("stale full-cut review", err)
+	}
+	fresh, err := f.client.GetCurrentPrincipal(ctx, securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareAuthorityWireReview(ctx, f.client, admin, fresh.Msg.Version, remove); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatal("in-use Role deleted", err)
 	}
 	page, err := f.client.ListUsers(ctx, securityWireRequest(admin, &pb.ListUsersRequest{Limit: 1}))
@@ -1361,7 +922,7 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 	if _, err := f.client.ListUsers(ctx, securityWireRequest(f.token(t, "other", nil), &pb.ListUsersRequest{Limit: 1, Cursor: page.Msg.NextCursor})); connect.CodeOf(err) != connect.CodeAborted {
 		t.Fatal("cursor changed Principal", err)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, f.server.URL+graphv1connect.LanternSecurityServiceApplySecurityChangesProcedure, strings.NewReader(`{"expectedRevision":"2","changeId":"AQEBAQEBAQEBAQEBAQEBAQ==","changes":[],"permissions":["manage"]}`))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, f.server.URL+graphv1connect.LanternSecurityServiceApplySecurityChangesProcedure, strings.NewReader(`{"currentReview":{},"permissions":["manage"]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1370,19 +931,24 @@ func TestAuth_OIDCManagementRealConnect(t *testing.T) {
 	request.Header.Set("X-Forwarded-Proto", "https")
 	request.Header.Set("X-Forwarded-Host", request.URL.Host)
 	request.Header.Set("Authorization", "Bearer "+admin)
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
+	response, requestErr := h2cClient().Do(request)
+	if requestErr == nil {
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatal("unknown direct-grant field accepted", response.StatusCode)
+		}
+	}
+	// The bounded current decoder may abort before acquiring an output grant.
+	// Prove the owner remains usable and no malformed input changed its cut.
+	unchanged, err := f.client.GetCurrentPrincipal(ctx, securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	if err != nil || !proto.Equal(unchanged.Msg.Version, page.Msg.Version) {
+		t.Fatal("malformed JSON changed authority or stopped the owner", err)
+	}
+
+	if _, err := f.applyChange(t, ctx, admin, &pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: readerIdentity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_SUSPENDED}}}); err != nil {
 		t.Fatal(err)
 	}
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusBadRequest {
-		t.Fatal("unknown direct-grant field accepted", response.StatusCode)
-	}
-	change := &pb.ApplySecurityChangeRequest{ExpectedRevision: commit.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{3}, 16), Change: &pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: readerIdentity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_SUSPENDED}}}}
-	if _, err := f.client.ApplySecurityChange(ctx, securityWireRequest(admin, change)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.client.GetCurrentPrincipal(ctx, securityWireRequest(readerToken, &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+	if _, err := f.client.GetCurrentPrincipal(ctx, securityWireRequest(readerToken, &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatal("current suspension bypassed", err)
 	}
 	if _, err := f.client.ListUsers(ctx, securityWireRequest(admin, &pb.ListUsersRequest{Limit: 1, Cursor: page.Msg.NextCursor})); connect.CodeOf(err) != connect.CodeAborted {
@@ -1401,19 +967,16 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	readerToken := "lnt_m1_" + base64.RawURLEncoding.EncodeToString(readerSecret)
-	f := newOIDCControlWireFixtureConfigured(t, func(config *provider.SecurityConfig) {
-		if err := json.Unmarshal([]byte(`[{"id":"machine_reader","rules":[{"id":"read","effect":"allow","action":"vertex.read","resource":"data","prefix":"orders:"},{"id":"private","effect":"deny","action":"vertex.read","resource":"data","prefix":"orders:private:"}]},{"id":"machine_exporter","rules":[{"id":"export","effect":"allow","action":"export","resource":"data","prefix":"orders:"}]}]`), &config.Bootstrap.Roles); err != nil {
+	f := newOIDCControlWireFixtureConfigured(t, func(config *oidcFixtureBootstrap) {
+		if err := json.Unmarshal([]byte(`[{"id":"machine_reader","rules":[{"id":"read","effect":"allow","action":"vertex.read","resource":"data","prefix":"orders:"},{"id":"private","effect":"deny","action":"vertex.read","resource":"data","prefix":"orders:private:"}]},{"id":"machine_exporter","rules":[{"id":"export","effect":"allow","action":"export","resource":"data","prefix":"orders:"}]}]`), &config.Roles); err != nil {
 			t.Fatal(err)
 		}
-		now := config.Clock()
+		now := time.Now().UTC()
 		raw, err := json.Marshal([]map[string]any{{"name": "worker", "role_ids": []string{"machine_reader", "machine_exporter"}, "credentials": []map[string]any{{"token": token, "created_at": now, "expires_at": now.Add(time.Hour)}}}, {"name": "readonly", "role_ids": []string{"machine_reader"}, "credentials": []map[string]any{{"token": readerToken, "created_at": now, "expires_at": now.Add(time.Hour)}}}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		config.MachineBootstrapFile = filepath.Join(t.TempDir(), "machines.json")
-		if err := createPrivateTestFile(config.MachineBootstrapFile, raw); err != nil {
-			t.Fatal(err)
-		}
+		config.Machines = json.RawMessage(raw)
 	})
 	for key, value := range map[string]string{"orders:1": "visible", "orders:private:1": "hidden"} {
 		physical := "data:" + key
@@ -1488,7 +1051,7 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 	}
 	admin := f.token(t, "admin", nil)
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_MACHINE, MachineName: "worker"}
-	if _, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: principal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{41}, 16), Change: &pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_SUSPENDED}}}})); err != nil {
+	if _, err := f.applyChange(t, t.Context(), admin, &pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_SUSPENDED}}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.data.GetVertex(t.Context(), securityWireRequest(token, &pb.GetVertexRequest{Key: "orders:1"})); connect.CodeOf(err) != connect.CodeUnauthenticated {
@@ -1499,7 +1062,7 @@ func TestAuth_MachineRoleBearerRealConnect(t *testing.T) {
 func TestAuth_OIDCScopedReceiptRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixtureOptions(t, nil, true)
 	admin := f.token(t, "admin", nil)
-	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	_, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1510,13 +1073,13 @@ func TestAuth_OIDCScopedReceiptRealConnect(t *testing.T) {
 	private := &pb.SecurityRule{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:private:"}}
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "receipt_writer"}
 	other := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "other"}
-	change, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: principal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{50}, 16), Changes: []*pb.SecurityChange{
+	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "receipt_writer", Rules: append(append([]*pb.SecurityRule(nil), rules...), private)}}},
 		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "receipt_other", Rules: rules}}},
 		{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
 		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "receipt_writer"}}},
 		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: other, RoleId: "receipt_other"}}},
-	}}))
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1589,7 +1152,7 @@ func TestAuth_OIDCScopedReceiptRealConnect(t *testing.T) {
 			withoutDelete = append(withoutDelete, rule)
 		}
 	}
-	changed, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: change.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{51}, 16), Change: &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "receipt_writer", Rules: withoutDelete}}}}))
+	_, err = f.applyChange(t, t.Context(), admin, &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "receipt_writer", Rules: withoutDelete}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1602,7 +1165,7 @@ func TestAuth_OIDCScopedReceiptRealConnect(t *testing.T) {
 	if _, err := f.data.PutVertex(t.Context(), securityWireRequest(token, short)); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("replay recomputed effect against shortened graph", err)
 	}
-	_, err = f.client.ApplySecurityChange(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: changed.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{52}, 16), Change: &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "receipt_writer"}}}}))
+	_, err = f.applyChange(t, t.Context(), admin, &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "receipt_writer"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1614,7 +1177,7 @@ func TestAuth_OIDCScopedReceiptRealConnect(t *testing.T) {
 func TestAuth_OIDCScopedChangesRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixture(t)
 	admin := f.token(t, "admin", nil)
-	current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	_, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1643,7 +1206,7 @@ func TestAuth_OIDCScopedChangesRealConnect(t *testing.T) {
 			&pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
 			&pb.SecurityChange{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: subject}}})
 	}
-	result, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{51}, 16), Changes: changes}))
+	_, err = f.applyChanges(t, t.Context(), admin, changes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1747,13 +1310,14 @@ func TestAuth_OIDCScopedChangesRealConnect(t *testing.T) {
 	}
 	// Any policy cut change terminates an established stream while idle and
 	// invalidates its encrypted cursor, including an unrelated grant expansion.
-	if _, err := f.client.ApplySecurityChange(ctx, securityWireRequest(admin, &pb.ApplySecurityChangeRequest{ExpectedRevision: result.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{52}, 16), Change: &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "identity"}, RoleId: "identity"}}}})); err != nil {
+	if _, err := f.applyChange(t, ctx, admin, &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "identity"}, RoleId: "identity"}}}); err != nil {
 		t.Fatal(err)
 	}
 	for resumed.Receive() {
 	}
-	if connect.CodeOf(resumed.Err()) != connect.CodeUnavailable {
-		t.Fatal("established stream retained revoked cut", resumed.Err())
+	var revoked http2.StreamError
+	if !errors.As(resumed.Err(), &revoked) || revoked.Code != http2.ErrCodeInternal {
+		t.Fatal("established stream did not refuse the revoked final Write", resumed.Err())
 	}
 	if _, err := f.data.SearchVertices(ctx, securityWireRequest(readerToken, &pb.SearchVerticesRequest{Query: "visible", Prefix: "orders:"})); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("reader inherited Query", err)
@@ -1800,9 +1364,12 @@ func (f *oidcControlWireFixture) browserRequest(t *testing.T, method, path strin
 	}
 	return req
 }
-func wireBrowserDo(t *testing.T, req *http.Request) *http.Response {
+func wireBrowserDo(t *testing.T, req *http.Request, transports ...http.RoundTripper) *http.Response {
 	t.Helper()
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if len(transports) > 0 {
+		client.Transport = transports[0]
+	}
 	response, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -1810,13 +1377,10 @@ func wireBrowserDo(t *testing.T, req *http.Request) *http.Response {
 	t.Cleanup(func() { _ = response.Body.Close() })
 	return response
 }
-func (f *oidcControlWireFixture) browserLoginStart(t *testing.T, cookies []*http.Cookie, stepUp bool) *http.Response {
+func (f *oidcControlWireFixture) browserLoginStart(t *testing.T, cookies []*http.Cookie, transports ...http.RoundTripper) *http.Response {
 	t.Helper()
 	query := url.Values{"issuer": {f.provider.URL}, "return": {"/security/roles"}}
-	if stepUp {
-		query.Set("step_up", "true")
-	}
-	response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/login?"+query.Encode(), cookies, ""))
+	response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/login?"+query.Encode(), cookies, ""), transports...)
 	if response.StatusCode != http.StatusFound || len(response.Cookies()) != 1 {
 		t.Fatal("login start", response.StatusCode)
 	}
@@ -1856,6 +1420,14 @@ func (f *oidcControlWireFixture) browserCallbackPath(t *testing.T, start *http.R
 		t.Fatal("exact registered callback", err)
 	}
 	callback.RawQuery = url.Values{"code": {code}, "state": {query.Get("state")}, "iss": {f.provider.URL}}.Encode()
+	// Model the redirected provider round trip before Consume: its qualified
+	// lower endpoint must pass the original start's upper endpoint. This is the
+	// same finite navigation pacing as the existing current native wire gate.
+	select {
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	case <-time.After(500 * time.Millisecond):
+	}
 	return callback.RequestURI()
 }
 func browserCookieValue(cookies []*http.Cookie, name string) string {
@@ -1903,7 +1475,7 @@ func (r authWireRoundTripper) RoundTrip(request *http.Request) (*http.Response, 
 
 func TestAuth_OIDCBrowserSessionRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixture(t)
-	start := f.browserLoginStart(t, nil, false)
+	start := f.browserLoginStart(t, nil)
 	callback := f.browserCallbackPath(t, start, "admin", false)
 	response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback, start.Cookies(), ""))
 	if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/security/roles" {
@@ -1936,10 +1508,23 @@ func TestAuth_OIDCBrowserSessionRealConnect(t *testing.T) {
 	if err != nil || len(roles.Msg.Roles) != 1 || roles.Msg.Roles[0].Id != "security_admin" || !roles.Msg.Roles[0].EnvOwned {
 		t.Fatal("session-authenticated Connect", err)
 	}
-	_, err = client.ApplySecurityChange(t.Context(), connect.NewRequest(&pb.ApplySecurityChangeRequest{ExpectedRevision: roles.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{79}, 16), Change: &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: roles.Msg.Roles[0]}}}))
+	_, err = client.PrepareSecurityChanges(t.Context(), connect.NewRequest(&pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: roles.Msg.Version.CurrentProfile, ExpectedCut: roles.Msg.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: roles.Msg.Roles[0]}}}}}))
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatal("read-only environment Role metadata accepted as a write", err)
 	}
+	logoutRequest := func(cookies []*http.Cookie, csrf string, message *pb.CurrentLogoutRequest) *http.Request {
+		t.Helper()
+		raw, err := protojson.Marshal(message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := f.browserRequest(t, http.MethodPost, "/auth/logout", cookies, csrf)
+		req.Header.Set("Content-Type", "application/json")
+		req.Body = io.NopCloser(bytes.NewReader(raw))
+		req.ContentLength = int64(len(raw))
+		return req
+	}
+
 	publicRequest := connect.NewRequest(&pb.GetCurrentPrincipalRequest{})
 	for _, cookie := range cookies {
 		publicRequest.Header().Add("Cookie", cookie.Name+"="+cookie.Value)
@@ -1954,7 +1539,7 @@ func TestAuth_OIDCBrowserSessionRealConnect(t *testing.T) {
 		"unqualified proxy": func(r *http.Request) { r.Header.Del("X-Forwarded-Proto") },
 	} {
 		t.Run(name, func(t *testing.T) {
-			req := f.browserRequest(t, http.MethodPost, "/auth/logout", cookies, csrf)
+			req := logoutRequest(cookies, csrf, &pb.CurrentLogoutRequest{Profile: session.CurrentProfile, PrepareOnly: true})
 			mutate(req)
 			if response := wireBrowserDo(t, req); response.StatusCode == http.StatusOK {
 				t.Fatal("untrusted logout accepted")
@@ -1964,14 +1549,10 @@ func TestAuth_OIDCBrowserSessionRealConnect(t *testing.T) {
 	if replay := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback, start.Cookies(), "")); replay.StatusCode != http.StatusUnauthorized {
 		t.Fatal("login state replay", replay.StatusCode)
 	}
-	stepUp := f.browserLoginStart(t, cookies, true)
-	authorize, _ := url.Parse(stepUp.Header.Get("Location"))
-	if authorize.Query().Get("max_age") != "0" || authorize.Query().Get("prompt") != "login" || authorize.Query().Get("claims") != `{"id_token":{"auth_time":{"essential":true}}}` {
-		t.Fatal("step-up omitted fresh authentication")
-	}
-	rotated := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, f.browserCallbackPath(t, stepUp, "admin", false), stepUp.Cookies(), ""))
+	replacement := f.browserLoginStart(t, cookies)
+	rotated := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, f.browserCallbackPath(t, replacement, "admin", false), append(replacement.Cookies(), cookies...), ""))
 	if rotated.StatusCode != http.StatusSeeOther {
-		t.Fatal("step-up callback", rotated.StatusCode)
+		t.Fatal("replacement login callback", rotated.StatusCode)
 	}
 	newCookies := make([]*http.Cookie, 0, 2)
 	for _, cookie := range rotated.Cookies() {
@@ -1980,17 +1561,31 @@ func TestAuth_OIDCBrowserSessionRealConnect(t *testing.T) {
 		}
 	}
 	if browserCookieValue(newCookies, "__Host-lantern-session") == browserCookieValue(cookies, "__Host-lantern-session") {
-		t.Fatal("step-up reused cookie")
+		t.Fatal("replacement login reused cookie")
 	}
 	if old := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, "")); old.StatusCode != http.StatusUnauthorized {
 		t.Fatal("replaced cookie remains live")
 	}
-	logout := wireBrowserDo(t, f.browserRequest(t, http.MethodPost, "/auth/logout", newCookies, browserCookieValue(newCookies, "__Host-lantern-csrf")))
+	preparedLogout := wireBrowserDo(t, logoutRequest(newCookies, browserCookieValue(newCookies, "__Host-lantern-csrf"), &pb.CurrentLogoutRequest{Profile: session.CurrentProfile, PrepareOnly: true}))
+	var retained pb.SessionRevocation
+	preparedBody, err := io.ReadAll(preparedLogout.Body)
+	if err != nil || preparedLogout.StatusCode != http.StatusOK || protojson.Unmarshal(preparedBody, &retained) != nil || retained.CurrentReview == nil || retained.LocalCookieCleared {
+		t.Fatal("logout prepare", preparedLogout.StatusCode, err)
+	}
+	logout := wireBrowserDo(t, logoutRequest(newCookies, browserCookieValue(newCookies, "__Host-lantern-csrf"), &pb.CurrentLogoutRequest{Profile: session.CurrentProfile, Review: retained.CurrentReview}))
 	var revoked pb.SessionRevocation
 	logoutBody, err := io.ReadAll(logout.Body)
-	if err != nil || logout.StatusCode != http.StatusOK || protojson.Unmarshal(logoutBody, &revoked) != nil || revoked.Enforcement != pb.SecurityEnforcementState_SECURITY_ENFORCEMENT_STATE_ENFORCED {
-		t.Fatal("logout commit", err)
+	if err != nil || logout.StatusCode != http.StatusOK || protojson.Unmarshal(logoutBody, &revoked) != nil || !revoked.LocalCookieCleared {
+		t.Fatal("logout local cookie clear", logout.StatusCode, err)
 	}
+
+	// Clearing a local cookie is not an original cluster result. Reconcile the
+	// retained full ID through independently valid authentication for this actor.
+	status, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(f.token(t, "admin", nil), &pb.GetSecurityChangeStatusRequest{CurrentProfile: retained.CurrentReview.Profile, CurrentChangeId: retained.CurrentReview.ChangeId, CurrentIntentDigest: retained.CurrentReview.IntentDigest}))
+	if err != nil || status.Msg.CurrentResult == nil || status.Msg.CurrentResult.Original == nil || status.Msg.CurrentResult.Original.Disposition != pb.CurrentSecurityDisposition_CURRENT_SECURITY_DISPOSITION_APPLIED || !proto.Equal(status.Msg.CurrentResult.ChangeId, retained.CurrentReview.ChangeId) || !bytes.Equal(status.Msg.CurrentResult.IntentDigest, retained.CurrentReview.IntentDigest) {
+		t.Fatal("original logout reconciliation", err)
+	}
+
 	if after := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", newCookies, "")); after.StatusCode != http.StatusUnauthorized {
 		t.Fatal("revoked session admitted")
 	}
@@ -2005,7 +1600,7 @@ func TestAuth_OIDCBrowserLoginFailuresRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixture(t)
 	for name, subject := range map[string]string{"wrong nonce": "admin", "unknown subject": "unknown"} {
 		t.Run(name, func(t *testing.T) {
-			start := f.browserLoginStart(t, nil, false)
+			start := f.browserLoginStart(t, nil)
 			path := f.browserCallbackPath(t, start, subject, name == "wrong nonce")
 			response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), ""))
 			if response.StatusCode != http.StatusUnauthorized || browserCookieValue(response.Cookies(), "__Host-lantern-session") != "" {
@@ -2015,7 +1610,7 @@ func TestAuth_OIDCBrowserLoginFailuresRealConnect(t *testing.T) {
 	}
 	for _, evidence := range []string{"future", "contradictory", "null"} {
 		t.Run(evidence+" signed auth_time", func(t *testing.T) {
-			start := f.browserLoginStart(t, nil, false)
+			start := f.browserLoginStart(t, nil)
 			path := f.browserCallbackPath(t, start, "admin", false)
 			callback, err := url.Parse(path)
 			if err != nil {
@@ -2037,21 +1632,18 @@ func TestAuth_OIDCBrowserLoginFailuresRealConnect(t *testing.T) {
 	if response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/login?"+query.Encode(), nil, "")); response.StatusCode != http.StatusBadRequest {
 		t.Fatal("open return redirect", response.StatusCode)
 	}
-	start := f.browserLoginStart(t, nil, false)
+	start := f.browserLoginStart(t, nil)
 	path := f.browserCallbackPath(t, start, "admin", false)
 	if response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, path, nil, "")); response.StatusCode != http.StatusUnauthorized {
 		t.Fatal("unbound callback admitted")
 	}
-	f.advance(11 * time.Minute)
-	if response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, path, start.Cookies(), "")); response.StatusCode != http.StatusUnauthorized {
-		t.Fatal("expired login state admitted")
-	}
+
 }
 
 func TestAuth_OIDCExactDataAndLifecycleRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixture(t)
 	admin := f.token(t, "admin", nil)
-	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	_, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2064,11 +1656,11 @@ func TestAuth_OIDCExactDataAndLifecycleRealConnect(t *testing.T) {
 	}
 	rules = append(rules, &pb.SecurityRule{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:private:"}})
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "writer"}
-	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: principal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{7}, 16), Changes: []*pb.SecurityChange{
+	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "writer", Rules: rules}}},
 		{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
 		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "writer"}}},
-	}}))
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2182,7 +1774,7 @@ func TestAuth_OIDCExactDataAndLifecycleRealConnect(t *testing.T) {
 func TestAuth_OIDCScopedCollectionsRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixture(t)
 	admin := f.token(t, "admin", nil)
-	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	_, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2193,11 +1785,11 @@ func TestAuth_OIDCScopedCollectionsRealConnect(t *testing.T) {
 	}
 	rules = append(rules, &pb.SecurityRule{Id: "private", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:private:"}})
 	rules = append(rules, &pb.SecurityRule{Id: "private-write", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, Resource: &pb.SecurityRule_Prefix{Prefix: "users:private:"}})
-	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: principal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{8}, 16), Changes: []*pb.SecurityChange{
+	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "scoped", Rules: rules}}},
 		{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
 		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "scoped"}}},
-	}}))
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2283,7 +1875,7 @@ func TestAuth_OIDCScopedCollectionsRealConnect(t *testing.T) {
 func TestAuth_OIDCSharedRankingConstrainedQueriesRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixture(t, service.TraversalLimits{WorkBudget: graphcache.PPRWorkBudget{MaxPushes: 10000, MaxTouchedEdges: 1000}})
 	admin := f.token(t, "admin", nil)
-	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	_, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2297,7 +1889,7 @@ func TestAuth_OIDCSharedRankingConstrainedQueriesRealConnect(t *testing.T) {
 		identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: subject}
 		changes = append(changes, &pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}}, &pb.SecurityChange{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "query"}}})
 	}
-	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: principal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{9}, 16), Changes: changes}))
+	_, err = f.applyChanges(t, t.Context(), admin, changes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2430,12 +2022,12 @@ func TestAuth_OIDCSharedRankingConstrainedQueriesRealConnect(t *testing.T) {
 	}
 	// Policy edits invalidate protected result continuations even though
 	// corpus ranking statistics are shared and have no policy cache.
-	current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	_, err = f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	rules = append(rules, &pb.SecurityRule{Id: "revoke-search", Effect: pb.SecurityEffect_SECURITY_EFFECT_DENY, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:search:"}})
-	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{10}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "query", Rules: rules}}}}}))
+	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "query", Rules: rules}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2460,15 +2052,12 @@ func TestAuth_OFFScopedCursorQualifiedClockOverConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = data.Close() })
-	runtime, cleanup, err := provider.NewSecurityRuntime(provider.SecurityConfig{Mode: "off", Clock: clock}, data)
+	changes, err := service.NewChangeConnectHandler(data.NewLanternService(nil), service.ChangeServiceOptions{Now: clock, CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{7}}}, CurrentKeyVersion: 1, Heartbeat: 10 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(cleanup)
-	path, handler, err := runtime.PublicChangeHTTPHandler(data.NewLanternService(nil), service.ChangeServiceOptions{CursorKeys: []service.ChangeCursorKey{{Version: 1, Key: [32]byte{7}}}, CurrentKeyVersion: 1, Heartbeat: 10 * time.Millisecond})
-	if err != nil {
-		t.Fatal(err)
-	}
+	path, handler := graphv1connect.NewLanternChangeServiceHandler(changes)
+
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	srv := httptest.NewServer(mux)
@@ -2549,9 +2138,14 @@ catch (error) { if (!(error instanceof FailedPreconditionError)) throw error; }
 // than the private per-origin replication protocol.
 func newScopedSDKFixture(t *testing.T, extraRules ...*pb.SecurityRule) *oidcControlWireFixture {
 	t.Helper()
-	f := newOIDCControlWireFixtureOptions(t, nil, true)
+	return newScopedSDKFixtureTransport(t, false, extraRules...)
+}
+
+func newScopedSDKFixtureTransport(t *testing.T, publicTLS bool, extraRules ...*pb.SecurityRule) *oidcControlWireFixture {
+	t.Helper()
+	f := newAuthorityWireFixture(t, nil, true, publicTLS)
 	admin := f.token(t, "admin", nil)
-	current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	_, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2562,11 +2156,11 @@ func newScopedSDKFixture(t *testing.T, extraRules ...*pb.SecurityRule) *oidcCont
 	rules = append(rules, rule("receipt", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, "orders:create:"))
 	rules = append(rules, extraRules...)
 	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "sdk"}
-	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{73}, 16), Changes: []*pb.SecurityChange{
+	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
 		{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "sdk", Rules: rules}}},
 		{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
 		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "sdk"}}},
-	}}))
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2574,7 +2168,7 @@ func newScopedSDKFixture(t *testing.T, extraRules ...*pb.SecurityRule) *oidcCont
 }
 
 func TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2(t *testing.T) {
-	verify := func(t *testing.T, changes graphv1connect.LanternChangeServiceClient, token, refreshed string, maxDuration time.Duration) {
+	verify := func(t *testing.T, changes graphv1connect.LanternChangeServiceClient, token, refreshed string, maxDuration time.Duration, current bool) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(t.Context(), maxDuration+5*time.Second)
 		defer cancel()
@@ -2591,14 +2185,38 @@ func TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2(t *testing.T) {
 				cursor = bytes.Clone(frame.Cursor)
 			}
 		}
-		if connect.CodeOf(stream.Err()) != connect.CodeDeadlineExceeded || len(cursor) == 0 || time.Since(started) > maxDuration+time.Second {
-			t.Fatal("bounded HTTP/2 stream lost terminal status or proven progress", stream.Err())
+		if len(cursor) == 0 || time.Since(started) > maxDuration+time.Second {
+			t.Fatal("bounded HTTP/2 stream lost proven progress or exceeded its bound", stream.Err())
+		}
+		if current {
+			// A protected terminal status cannot borrow expired credentials.
+			// Require the exact final-Write HTTP/2 refusal, not arbitrary errors.
+			var reset http2.StreamError
+			if !errors.As(stream.Err(), &reset) || reset.Code != http2.ErrCodeInternal {
+				t.Fatal("expired current output was not refused", stream.Err())
+			}
+		} else if connect.CodeOf(stream.Err()) != connect.CodeDeadlineExceeded {
+			t.Fatal("OFF stream lost its terminal deadline status", stream.Err())
 		}
 		resume, err := changes.WatchChanges(ctx, securityWireRequest(refreshed, &pb.WatchChangesRequest{Prefix: "orders:", Cursor: cursor, Projection: pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY}))
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = resume.Close() }()
+		if current {
+			if resume.Receive() || connect.CodeOf(resume.Err()) != connect.CodeFailedPrecondition {
+				t.Fatal("replacement credential reused the original evidence-bound cursor", resume.Err())
+			}
+			fresh, err := changes.WatchChanges(ctx, securityWireRequest(refreshed, &pb.WatchChangesRequest{Prefix: "orders:", Bootstrap: true, Projection: pb.ChangeProjection_CHANGE_PROJECTION_IDENTITY}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = fresh.Close() }()
+			if !fresh.Receive() || !fresh.Msg().Bootstrap || len(fresh.Msg().Cursor) == 0 {
+				t.Fatal("replacement credential could not rebootstrap", fresh.Err())
+			}
+			return
+		}
 		if !resume.Receive() || resume.Msg().Bootstrap || len(resume.Msg().Cursor) == 0 {
 			t.Fatal("same-endpoint opaque cursor could not resume", resume.Err())
 		}
@@ -2607,7 +2225,7 @@ func TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2(t *testing.T) {
 		f := newScopedSDKFixture(t)
 		changes := graphv1connect.NewLanternChangeServiceClient(&http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}, f.server.URL, connect.WithGRPC())
 		short := f.token(t, "sdk", func(claims map[string]any) { claims["exp"] = f.clock().Add(2 * time.Second).Unix() })
-		verify(t, changes, short, f.token(t, "sdk", nil), 2*time.Second)
+		verify(t, changes, short, f.token(t, "sdk", nil), 2*time.Second, true)
 	})
 	t.Run("OFF existing admission bound", func(t *testing.T) {
 		cache := provider.NewGraphCache(provider.CacheConfig{TTL: time.Hour}, provider.SearchConfig{})
@@ -2634,7 +2252,7 @@ func TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2(t *testing.T) {
 		srv.Config.Protocols = protocols
 		srv.Start()
 		t.Cleanup(srv.Close)
-		verify(t, graphv1connect.NewLanternChangeServiceClient(h2cClient(), srv.URL, connect.WithGRPC()), "", "", 28*time.Second)
+		verify(t, graphv1connect.NewLanternChangeServiceClient(h2cClient(), srv.URL, connect.WithGRPC()), "", "", 28*time.Second, false)
 	})
 }
 
@@ -2869,13 +2487,10 @@ try {
 	}
 	run("denied")
 	role := &pb.SecurityRole{Id: "data_reader", Rules: []*pb.SecurityRule{{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "tenant:"}}}}
-	_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{
-		ExpectedRevision: principal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{119}, 16),
-		Changes: []*pb.SecurityChange{
-			{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
-			{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: principal.Msg.Identity, RoleId: role.Id}}},
-		},
-	}))
+	_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
+		{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
+		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: principal.Msg.Identity, RoleId: role.Id}}},
+	})
 	if err != nil {
 		t.Fatal("explicit data Role assignment", err)
 	}
@@ -2915,10 +2530,10 @@ func TestAuth_OIDCAdminScopeAndAddRecoveryRealConnect(t *testing.T) {
 				}
 				role.Rules = append(role.Rules, rule("receipt", pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, pb.SecurityEffect_SECURITY_EFFECT_ALLOW, receiptPrefix))
 			}
-			_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{121}, 16), Changes: []*pb.SecurityChange{
+			_, err = f.applyChanges(t, t.Context(), admin, []*pb.SecurityChange{
 				{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
 				{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: current.Msg.Identity, RoleId: role.Id}}},
-			}}))
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3022,7 +2637,7 @@ func runScopedLanguageWire(t *testing.T, language string) {
 	if err != nil {
 		t.Skip(language + " is required for the public CDC wire gate")
 	}
-	f := newScopedSDKFixture(t)
+	f := newScopedSDKFixtureTransport(t, true)
 	tlsServer, caFile := scopedSDKTLSServer(t, f)
 	root, err := filepath.Abs("../..")
 	if err != nil {
@@ -3118,12 +2733,10 @@ func TestAuth_OFFPublicChangeLifecycleRealConnect(t *testing.T) {
 
 func scopedSDKTLSServer(t *testing.T, f *oidcControlWireFixture) (*httptest.Server, string) {
 	t.Helper()
-	tlsServer := httptest.NewUnstartedServer(f.server.Config.Handler)
-	tlsServer.EnableHTTP2 = true
-	caFile := configureSDKServerTLS(t, tlsServer)
-	tlsServer.StartTLS()
-	t.Cleanup(tlsServer.Close)
-	return tlsServer, caFile
+	if f.publicCA == "" || !strings.HasPrefix(f.server.URL, "https://") {
+		t.Fatal("SDK TLS must be selected before configuring the owned public output server")
+	}
+	return f.server, f.publicCA
 }
 
 func configureSDKServerTLS(t *testing.T, tlsServer *httptest.Server) string {
@@ -3164,7 +2777,7 @@ func configureSDKServerTLS(t *testing.T, tlsServer *httptest.Server) string {
 }
 
 func TestAuth_PublicChangesBenchmarkConsumerRealWire(t *testing.T) {
-	f := newScopedSDKFixture(t)
+	f := newScopedSDKFixtureTransport(t, true)
 	server, caFile := scopedSDKTLSServer(t, f)
 	root, err := filepath.Abs("../..")
 	if err != nil {
@@ -3217,9 +2830,9 @@ func TestAuth_FlutterDataDemoRealConnect(t *testing.T) {
 	if err != nil {
 		t.Skip("Flutter is required for the maintained data demo gate")
 	}
-	f := newOIDCControlWireFixtureOptions(t, nil, true)
+	f := newAuthorityWireFixture(t, nil, true, true)
 	admin := f.token(t, "admin", nil)
-	current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	_, err = f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3242,7 +2855,7 @@ func TestAuth_FlutterDataDemoRealConnect(t *testing.T) {
 			&pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
 			&pb.SecurityChange{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: subject}}})
 	}
-	if _, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{74}, 16), Changes: changes})); err != nil {
+	if _, err := f.applyChanges(t, t.Context(), admin, changes); err != nil {
 		t.Fatal(err)
 	}
 	server, ca := scopedSDKTLSServer(t, f)
@@ -3268,7 +2881,7 @@ func TestAuth_DartOfflineScopedChangesRealConnect(t *testing.T) {
 	if err != nil {
 		t.Skip("Flutter is required for the offline public CDC composition gate")
 	}
-	f := newScopedSDKFixture(t, &pb.SecurityRule{
+	f := newScopedSDKFixtureTransport(t, true, &pb.SecurityRule{
 		Id: "app-query", Action: pb.SecurityAction_SECURITY_ACTION_QUERY,
 		Effect:   pb.SecurityEffect_SECURITY_EFFECT_ALLOW,
 		Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"},
@@ -3297,7 +2910,7 @@ func TestAuth_DartOfflineScopedChangesRealConnect(t *testing.T) {
 func TestAuth_OIDCHeadManagedEdgesRealConnect(t *testing.T) {
 	f := newOIDCControlWireFixtureOptions(t, nil, true, service.TraversalLimits{WorkBudget: graphcache.PPRWorkBudget{MaxPushes: 10000, MaxTouchedEdges: 10000}})
 	admin := f.token(t, "admin", nil)
-	current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	_, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3347,7 +2960,7 @@ func TestAuth_OIDCHeadManagedEdgesRealConnect(t *testing.T) {
 			&pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
 			&pb.SecurityChange{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: role.Id}}})
 	}
-	if _, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{111}, 16), Changes: changes})); err != nil {
+	if _, err = f.applyChanges(t, t.Context(), admin, changes); err != nil {
 		t.Fatal(err)
 	}
 	reader, writer, identity := f.token(t, "head_reader", nil), f.token(t, "head_writer", nil), f.token(t, "head_identity", nil)
@@ -3596,7 +3209,7 @@ func TestAuth_HeadManagedBlindCreateDeleteReceiptAndGoFacadeRealConnect(t *testi
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	admin := f.token(t, "admin", nil)
-	current, err := f.client.GetCurrentPrincipal(ctx, securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
+	_, err := f.client.GetCurrentPrincipal(ctx, securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3621,7 +3234,7 @@ func TestAuth_HeadManagedBlindCreateDeleteReceiptAndGoFacadeRealConnect(t *testi
 			&pb.SecurityChange{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: role.Id}}},
 		)
 	}
-	committed, err := f.client.ApplySecurityChanges(ctx, securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: current.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{117}, 16), Changes: changes}))
+	_, err = f.applyChanges(t, ctx, admin, changes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3736,7 +3349,7 @@ func TestAuth_HeadManagedBlindCreateDeleteReceiptAndGoFacadeRealConnect(t *testi
 	// Current disclosure rights expose the original result only after they are
 	// granted; the private receipt bytes remain intact across blind handling.
 	blindRules = append(blindRules, prefix("head-read", pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, "heads:"))
-	_, err = f.client.ApplySecurityChanges(ctx, securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: committed.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{118}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "blind", Rules: blindRules}}}}}))
+	_, err = f.applyChanges(t, ctx, admin, []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "blind", Rules: blindRules}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3765,7 +3378,7 @@ func TestAuth_OIDCOrdinaryManagementQualifiedHumanRealConnect(t *testing.T) {
 				})
 				var cookies []*http.Cookie
 				if surface == "browser" {
-					start := f.browserLoginStart(t, nil, false)
+					start := f.browserLoginStart(t, nil)
 					callback := f.browserCallbackPath(t, start, "admin", false)
 					parsed, _ := url.Parse(callback)
 					f.mu.Lock()
@@ -3804,15 +3417,18 @@ func TestAuth_OIDCOrdinaryManagementQualifiedHumanRealConnect(t *testing.T) {
 				for i, action := range []pb.SecurityAction{pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, pb.SecurityAction_SECURITY_ACTION_VERTEX_DELETE, pb.SecurityAction_SECURITY_ACTION_QUERY} {
 					role.Rules = append(role.Rules, &pb.SecurityRule{Id: fmt.Sprintf("action_%d", i), Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: action, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}})
 				}
-				review := &pb.SecurityChangeReview{ExpectedVersion: principal.Msg.Version, ChangeId: bytes.Repeat([]byte{61}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: role}}, {Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: principal.Msg.Identity, RoleId: role.Id}}}}}
-				prepared, err := client.PrepareSecurityChanges(t.Context(), securityWireRequest(token, &pb.PrepareSecurityChangesRequest{Review: review}))
+				review := &pb.CurrentSecurityReview{Profile: principal.Msg.Version.CurrentProfile, ExpectedCut: principal.Msg.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: role}}, {Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: principal.Msg.Identity, RoleId: role.Id}}}}}
+				prepared, err := client.PrepareSecurityChanges(t.Context(), securityWireRequest(token, &pb.PrepareSecurityChangesRequest{CurrentReview: review}))
 				if err != nil || prepared.Msg.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_ORDINARY {
 					t.Fatal("data expansion required recent auth", err)
 				}
-				command := &pb.ApplySecurityChangesRequest{ExpectedRevision: review.ExpectedVersion.Revision, ChangeId: review.ChangeId, Changes: review.Changes}
+				command := &pb.ApplySecurityChangesRequest{CurrentReview: prepared.Msg.CurrentReview}
 				applied, err := client.ApplySecurityChanges(t.Context(), securityWireRequest(token, command))
 				if err != nil {
 					t.Fatal("ordinary change", err)
+				}
+				if err := f.waitForAppliedAuthority(t, t.Context(), applied.Msg.CurrentResult); err != nil {
+					t.Fatal(err)
 				}
 				for _, value := range []string{"first", "updated"} {
 					if _, err := data.PutVertex(t.Context(), securityWireRequest(token, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "users:owned", Value: &pb.Vertex_String_{String_: value}}})); err != nil {
@@ -3832,7 +3448,7 @@ func TestAuth_OIDCOrdinaryManagementQualifiedHumanRealConnect(t *testing.T) {
 					t.Fatal("permitted scoped delete", err)
 				}
 				replay, err := client.ApplySecurityChanges(t.Context(), securityWireRequest(token, command))
-				if err != nil || !replay.Msg.Replayed || !proto.Equal(replay.Msg.Version, applied.Msg.Version) {
+				if err != nil || !proto.Equal(replay.Msg.CurrentResult.Original, applied.Msg.CurrentResult.Original) {
 					t.Fatal("ordinary exact retry", err)
 				}
 			})
@@ -3844,7 +3460,7 @@ func TestAuth_OIDCPurposeAuthorizationRealConnect(t *testing.T) {
 	for _, evidence := range []string{"fresh", "missing", "stale", "future", "null", "contradictory", "other subject", "wrong nonce"} {
 		t.Run(evidence, func(t *testing.T) {
 			f := newOIDCControlWireFixture(t)
-			login := f.browserLoginStart(t, nil, false)
+			login := f.browserLoginStart(t, nil)
 			ordinaryCallback := f.browserCallbackPath(t, login, "admin", false)
 			parsed, _ := url.Parse(ordinaryCallback)
 			f.mu.Lock()
@@ -3869,25 +3485,24 @@ func TestAuth_OIDCPurposeAuthorizationRealConnect(t *testing.T) {
 				t.Fatal(err)
 			}
 			identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "oauth-client:wire-worker"}
-			review := &pb.SecurityChangeReview{ExpectedVersion: before.Msg.Version, ChangeId: bytes.Repeat([]byte{62}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}}, {Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "security_admin"}}}}}
-			prepared, err := client.PrepareSecurityChanges(t.Context(), connect.NewRequest(&pb.PrepareSecurityChangesRequest{Review: review}))
+			review := &pb.CurrentSecurityReview{Profile: before.Msg.Version.CurrentProfile, ExpectedCut: before.Msg.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}}, {Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "security_admin"}}}}}
+			prepared, err := client.PrepareSecurityChanges(t.Context(), connect.NewRequest(&pb.PrepareSecurityChangesRequest{CurrentReview: review}))
 			if err != nil || prepared.Msg.Requirement != pb.SecurityAuthorizationRequirement_SECURITY_AUTHORIZATION_REQUIREMENT_REAUTHENTICATION {
 				t.Fatal("latent client grant did not require proof", err)
 			}
-			command := &pb.ApplySecurityChangesRequest{ExpectedRevision: review.ExpectedVersion.Revision, ChangeId: review.ChangeId, Changes: review.Changes}
+			command := &pb.ApplySecurityChangesRequest{CurrentReview: prepared.Msg.CurrentReview}
 			if _, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(command)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 				t.Fatal("unapproved high impact", err)
 			}
-			begin, err := client.BeginSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.BeginSecurityChangeAuthorizationRequest{Review: review}))
+			begin, err := client.BeginSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.BeginSecurityChangeAuthorizationRequest{CurrentReview: prepared.Msg.CurrentReview}))
 			if err != nil {
 				t.Fatal(err)
 			}
-			pending, err := client.GetSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.GetSecurityChangeAuthorizationRequest{AuthorizationId: begin.Msg.AuthorizationId}))
+			pending, err := client.GetSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.GetSecurityChangeAuthorizationRequest{AuthorizationId: begin.Msg.AuthorizationId, CurrentProfile: begin.Msg.CurrentProfile, AttemptAffinity: begin.Msg.AttemptAffinity}))
 			if err != nil || pending.Msg.State != pb.SecurityAuthorizationState_SECURITY_AUTHORIZATION_STATE_PENDING || len(pending.Msg.AuthorizationProof) != 0 {
 				t.Fatal("pending approval", err)
 			}
-			// The challenge cannot begin until a whole NumericDate second after review.
-			f.advance(2 * time.Second)
+			// Navigation waits for the qualified lower endpoint after final review.
 			startURL, _ := url.Parse(begin.Msg.StartUrl)
 			start := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, startURL.RequestURI(), cookies, ""))
 			if start.StatusCode != http.StatusFound {
@@ -3923,9 +3538,26 @@ func TestAuth_OIDCPurposeAuthorizationRealConnect(t *testing.T) {
 			if err != nil || !proto.Equal(beforeCallback.Msg, afterCallback.Msg) || afterCallback.Msg.CsrfToken != csrf {
 				t.Fatal("purpose changed session/auth evidence/expiry/full cut", err)
 			}
-			status, err := client.GetSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.GetSecurityChangeAuthorizationRequest{AuthorizationId: begin.Msg.AuthorizationId}))
+			status, err := client.GetSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.GetSecurityChangeAuthorizationRequest{AuthorizationId: begin.Msg.AuthorizationId, CurrentProfile: begin.Msg.CurrentProfile, AttemptAffinity: begin.Msg.AttemptAffinity}))
 			if err != nil {
 				t.Fatal(err)
+			}
+			// The current owner may retain a pending genuine event until its
+			// qualified lower endpoint passes the original Code consumption time.
+			// Observe the same bounded status transition as the native gate.
+			if evidence == "fresh" {
+				deadline := time.Now().Add(5 * time.Second)
+				for status.Msg.State == pb.SecurityAuthorizationState_SECURITY_AUTHORIZATION_STATE_PENDING && time.Now().Before(deadline) {
+					select {
+					case <-t.Context().Done():
+						t.Fatal(t.Context().Err())
+					case <-time.After(25 * time.Millisecond):
+					}
+					status, err = client.GetSecurityChangeAuthorization(t.Context(), connect.NewRequest(&pb.GetSecurityChangeAuthorizationRequest{AuthorizationId: begin.Msg.AuthorizationId, CurrentProfile: begin.Msg.CurrentProfile, AttemptAffinity: begin.Msg.AttemptAffinity}))
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			if evidence != "fresh" {
 				if callbackResponse.StatusCode != http.StatusUnauthorized || status.Msg.State != pb.SecurityAuthorizationState_SECURITY_AUTHORIZATION_STATE_DENIED || len(status.Msg.AuthorizationProof) != 0 {
@@ -3938,12 +3570,12 @@ func TestAuth_OIDCPurposeAuthorizationRealConnect(t *testing.T) {
 			}
 			command.AuthorizationProof = status.Msg.AuthorizationProof
 			applied, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(command))
-			if err != nil || applied.Msg.Version.Revision != review.ExpectedVersion.Revision+1 {
+			if err != nil || applied.Msg.CurrentResult == nil || applied.Msg.CurrentResult.Original == nil || applied.Msg.CurrentResult.Original.ResultingCut.Sequence != review.ExpectedCut.Sequence+1 {
 				t.Fatal("approved exact command", err)
 			}
 			command.AuthorizationProof = nil
 			retry, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(command))
-			if err != nil || !retry.Msg.Replayed || !proto.Equal(retry.Msg.Version, applied.Msg.Version) {
+			if err != nil || !proto.Equal(retry.Msg.CurrentResult.Original, applied.Msg.CurrentResult.Original) {
 				t.Fatal("known exact retry demanded fresh proof", err)
 			}
 			// The qualified fixture's client profile has disjoint subjects. A signed
@@ -3991,7 +3623,7 @@ func TestAuth_OIDCPurposeAuthorizationRealConnect(t *testing.T) {
 			if _, err := f.client.ValidateIssuer(t.Context(), securityWireRequest(clientToken, &pb.ValidateIssuerRequest{Issuer: probe})); connect.CodeOf(err) != connect.CodePermissionDenied {
 				t.Fatal("client reference rights implicitly qualified network probe", err)
 			}
-			if _, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(clientToken, &pb.ApplySecurityChangesRequest{ExpectedRevision: clientPrincipal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{63}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "client_forbidden"}}}}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+			if _, err := f.client.PrepareSecurityChanges(t.Context(), securityWireRequest(clientToken, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: clientPrincipal.Msg.Version.CurrentProfile, ExpectedCut: clientPrincipal.Msg.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "client_forbidden"}}}}}})); connect.CodeOf(err) != connect.CodePermissionDenied {
 				t.Fatal("OAuth client was classified human", err)
 			}
 		})
@@ -3999,13 +3631,14 @@ func TestAuth_OIDCPurposeAuthorizationRealConnect(t *testing.T) {
 }
 
 func TestAuth_OIDCMixedBearerProfileCannotMutateRealConnect(t *testing.T) {
-	f := newOIDCControlWireFixtureConfigured(t, func(config *provider.SecurityConfig) { config.Bootstrap.Issuer.HumanSubjectNamespaceQualified = false })
+	f := newOIDCControlWireFixtureConfigured(t, func(config *oidcFixtureBootstrap) { config.HumanSubjectNamespaceQualified = false })
 	admin := f.token(t, "admin", nil)
 	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {
 		t.Fatal("mixed-profile reference", err)
 	}
-	if _, err := f.client.ApplySecurityChanges(t.Context(), securityWireRequest(admin, &pb.ApplySecurityChangesRequest{ExpectedRevision: principal.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{64}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "unresolved_forbidden"}}}}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+	_, err = f.client.PrepareSecurityChanges(t.Context(), securityWireRequest(admin, &pb.PrepareSecurityChangesRequest{CurrentReview: &pb.CurrentSecurityReview{Profile: principal.Msg.Version.CurrentProfile, ExpectedCut: principal.Msg.Version.CurrentCut, Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "unresolved_forbidden"}}}}}}))
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatal("ambiguous bearer inferred human from enrolled sub/auth_time/client_id", err)
 	}
 	after, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(admin, &pb.GetCurrentPrincipalRequest{}))
@@ -4014,193 +3647,57 @@ func TestAuth_OIDCMixedBearerProfileCannotMutateRealConnect(t *testing.T) {
 	}
 }
 
-func TestAuth_OIDCBrowserLoginAndStepUpPurposesRealConnect(t *testing.T) {
-	for _, evidence := range []string{"missing", "stale"} {
-		t.Run(evidence, func(t *testing.T) {
-			f := newOIDCControlWireFixture(t)
-			callback := func(start *http.Response, evidence string) string {
-				path := f.browserCallbackPath(t, start, "admin", false)
-				parsed, _ := url.Parse(path)
-				f.mu.Lock()
-				code := f.codes[parsed.Query().Get("code")]
-				code.authTime = evidence
-				f.codes[parsed.Query().Get("code")] = code
-				f.mu.Unlock()
-				return path
-			}
-			sessionCookies := func(response *http.Response) []*http.Cookie {
-				var cookies []*http.Cookie
-				for _, cookie := range response.Cookies() {
-					if cookie.Name == "__Host-lantern-session" || cookie.Name == "__Host-lantern-csrf" {
-						cookies = append(cookies, cookie)
-					}
-				}
-				return cookies
-			}
-			clientFor := func(cookies []*http.Cookie, csrf string) graphv1connect.LanternSecurityServiceClient {
-				return graphv1connect.NewLanternSecurityServiceClient(&http.Client{Transport: authWireRoundTripper{next: http.DefaultTransport, cookies: cookies, csrf: csrf}}, f.server.URL+"/browser")
-			}
-			start := f.browserLoginStart(t, nil, false)
-			response := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback(start, evidence), start.Cookies(), ""))
-			if response.StatusCode != http.StatusSeeOther {
-				t.Fatal("ordinary SSO denied", response.StatusCode)
-			}
-			cookies := sessionCookies(response)
-			if len(cookies) != 2 {
-				t.Fatal("ordinary login did not issue opaque session")
-			}
-			csrf := browserCookieValue(cookies, "__Host-lantern-csrf")
-			client := clientFor(cookies, csrf)
-			principal, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
-			if err != nil || principal.Msg.RecentAuthentication {
-				t.Fatal("ordinary session inferred recent authentication", err)
-			}
-			roles, err := client.ListRoles(t.Context(), connect.NewRequest(&pb.ListRolesRequest{}))
-			if err != nil {
-				t.Fatal("ordinary session could not read permitted management state", err)
-			}
-			change := &pb.ApplySecurityChangesRequest{ExpectedRevision: roles.Msg.Version.Revision, ChangeId: bytes.Repeat([]byte{42}, 16), Changes: []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "recent_proof", Rules: []*pb.SecurityRule{{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "users:"}}}}}}}}
-			ordinaryCommit, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(change))
-			if err != nil {
-				t.Fatal("ordinary management required recent authentication", err)
-			}
-			if _, err := clientFor(cookies, "").ApplySecurityChanges(t.Context(), connect.NewRequest(change)); connect.CodeOf(err) != connect.CodePermissionDenied {
-				t.Fatal("ordinary session bypassed CSRF", err)
-			}
-
-			// The callback cannot downgrade the saved step-up purpose. Refusal leaves
-			// the existing ordinary cookie usable, with no new recent-auth evidence.
-			stepUp := f.browserLoginStart(t, cookies, true)
-			stepPath := callback(stepUp, evidence)
-			if rejected := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, stepPath+"&step_up=false", stepUp.Cookies(), "")); rejected.StatusCode != http.StatusBadRequest {
-				t.Fatal("callback purpose override accepted", rejected.StatusCode)
-			}
-			failed := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, stepPath, stepUp.Cookies(), ""))
-			if failed.StatusCode != http.StatusUnauthorized || len(sessionCookies(failed)) != 0 {
-				t.Fatal("step-up accepted missing/old proof", failed.StatusCode)
-			}
-			unchanged, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
-			if err != nil || unchanged.Msg.RecentAuthentication || unchanged.Msg.Version.Revision != ordinaryCommit.Msg.Version.Revision {
-				t.Fatal("failed step-up changed ordinary session", err)
-			}
-
-			// A normal relogin also replaces a cookie; replacement is not step-up.
-			relogin := f.browserLoginStart(t, cookies, false)
-			rotated := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback(relogin, evidence), relogin.Cookies(), ""))
-			if rotated.StatusCode != http.StatusSeeOther {
-				t.Fatal("ordinary replacement required recent authentication", rotated.StatusCode)
-			}
-			newCookies := sessionCookies(rotated)
-			if browserCookieValue(newCookies, "__Host-lantern-session") == browserCookieValue(cookies, "__Host-lantern-session") {
-				t.Fatal("ordinary replacement reused cookie")
-			}
-			if old := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, "/auth/session", cookies, "")); old.StatusCode != http.StatusUnauthorized {
-				t.Fatal("ordinary replacement left old cookie live")
-			}
-			client = clientFor(newCookies, browserCookieValue(newCookies, "__Host-lantern-csrf"))
-			ordinary, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
-			if err != nil || ordinary.Msg.RecentAuthentication {
-				t.Fatal("rotation upgraded unknown/old evidence", err)
-			}
-
-			fresh := f.browserLoginStart(t, newCookies, true)
-			freshResponse := wireBrowserDo(t, f.browserRequest(t, http.MethodGet, callback(fresh, ""), fresh.Cookies(), ""))
-			if freshResponse.StatusCode != http.StatusSeeOther {
-				t.Fatal("fresh step-up refused", freshResponse.StatusCode)
-			}
-			freshCookies := sessionCookies(freshResponse)
-			client = clientFor(freshCookies, browserCookieValue(freshCookies, "__Host-lantern-csrf"))
-			verified, err := client.GetCurrentPrincipal(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
-			if err != nil || !verified.Msg.RecentAuthentication {
-				t.Fatal("actual fresh evidence did not qualify", err)
-			}
-			change.ExpectedRevision = verified.Msg.Version.Revision
-			change.ChangeId = bytes.Repeat([]byte{43}, 16)
-			if _, err := client.ApplySecurityChanges(t.Context(), connect.NewRequest(change)); err != nil {
-				t.Fatal("fresh authorized management change refused", err)
-			}
-		})
-	}
-}
-
-// Production Connect admission/codec/Store prove a local refusal only for this
-// invocation. Unknown status cannot settle a prior attempt with the same ID.
 func TestAuth_OIDCSecurityPrecommitRefusalsRealConnect(t *testing.T) {
-	f := newOIDCControlWireFixtureConfigured(t, func(config *provider.SecurityConfig) {
-		// This case must have one human administrator. With the ordinary two-
-		// administrator fixture, suspending admin legitimately commits.
-		config.Bootstrap.AdminSubjects = []string{"admin"}
-	})
+	f := newOIDCControlWireFixtureConfigured(t, func(config *oidcFixtureBootstrap) { config.AdminSubjects = []string{"admin"} })
 	token := f.token(t, "admin", nil)
 	principal, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial := principal.Msg.Version.Revision
-	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: f.provider.URL, Subject: "admin"}
-	for _, singular := range []bool{false, true} {
-		t.Run(map[bool]string{false: "plural", true: "singular"}[singular], func(t *testing.T) {
-			for i, test := range []struct {
-				name   string
-				change *pb.SecurityChange
-				reason pb.SecurityChangeRejectionReason
-				stale  bool
-			}{
-				{"malformed", &pb.SecurityChange{}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_INVALID_CHANGES, false},
-				{"unknown role", &pb.SecurityChange{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "not_registered"}}}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_UNKNOWN_ROLE, false},
-				{"env assignment", &pb.SecurityChange{Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "security_admin"}}}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_ENVIRONMENT_OWNED, false},
-				{"last human", &pb.SecurityChange{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_SUSPENDED}}}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_LAST_ADMINISTRATOR, false},
-				{"stale revision", &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "ordinary"}}}, pb.SecurityChangeRejectionReason_SECURITY_CHANGE_REJECTION_REASON_REVISION_CONFLICT, true},
-			} {
-				t.Run(test.name, func(t *testing.T) {
-					expected := initial
-					if test.stale {
-						expected++
-					}
-					id := bytes.Repeat([]byte{byte(140 + i)}, 16)
-					if singular {
-						id[0] = 150
-					}
-					var err error
-					if singular {
-						_, err = f.client.ApplySecurityChange(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangeRequest{ExpectedRevision: expected, ChangeId: id, Change: test.change}))
-					} else {
-						_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangesRequest{ExpectedRevision: expected, ChangeId: id, Changes: []*pb.SecurityChange{test.change}}))
-					}
-					var ce *connect.Error
-					if !errors.As(err, &ce) || len(ce.Details()) != 1 {
-						t.Fatal("wire refusal detail missing", err)
-					}
-					value, err := ce.Details()[0].Value()
-					if err != nil {
-						t.Fatal(err)
-					}
-					detail, ok := value.(*pb.SecurityChangePrecommitRejected)
-					if !ok || !bytes.Equal(detail.ChangeId, id) || detail.ExpectedRevision != expected || detail.Reason != test.reason {
-						t.Fatal("wire correlation", value)
-					}
-					current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
-					if err != nil || !proto.Equal(current.Msg.Version, principal.Msg.Version) {
-						t.Fatal("refusal changed signed cut", current, err)
-					}
-				})
+	identity := principal.Msg.Identity
+	for name, change := range map[string]*pb.SecurityChange{
+		"unknown Role":           {Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "missing"}}},
+		"environment membership": {Operation: &pb.SecurityChange_DeleteAssignment{DeleteAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: "security_admin"}}},
+		"last administrator":     {Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_SUSPENDED}}},
+		"invalid change":         {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prepared, err := prepareAuthorityWireReview(t.Context(), f.client, token, principal.Msg.Version, []*pb.SecurityChange{change})
+			if err == nil || prepared != nil {
+				t.Fatal("invalid review was accepted", err)
+			}
+			current, err := f.client.GetCurrentPrincipal(t.Context(), securityWireRequest(token, &pb.GetCurrentPrincipalRequest{}))
+			if err != nil || !proto.Equal(current.Msg.Version.CurrentCut, principal.Msg.Version.CurrentCut) {
+				t.Fatal("review refusal changed the complete cut", err)
 			}
 		})
 	}
-	committedID := bytes.Repeat([]byte{160}, 16)
-	committed, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangeRequest{ExpectedRevision: initial, ChangeId: committedID, Change: &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "corrected_after_refusal"}}}}))
-	if err != nil || !committed.Msg.Applied {
-		t.Fatal("corrected explicit command", committed, err)
+	prepared, err := prepareAuthorityWireReview(t.Context(), f.client, token, principal.Msg.Version, []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "corrected_after_refusal"}}}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, change := range []*pb.SecurityChange{{}, {Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "changed_intent"}}}} {
-		_, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangeRequest{ExpectedRevision: initial, ChangeId: committedID, Change: change}))
-		var ce *connect.Error
-		if !errors.As(err, &ce) || len(ce.Details()) != 0 {
-			t.Fatal("retained ID got correction permission", err)
+	review := prepared.CurrentReview
+	applied, err := f.client.ApplySecurityChange(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangeRequest{CurrentReview: review}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.waitForAppliedAuthority(t, t.Context(), applied.Msg.CurrentResult); err != nil {
+		t.Fatal(err)
+	}
+	for _, singular := range []bool{false, true} {
+		changed := proto.Clone(review).(*pb.CurrentSecurityReview)
+		changed.Changes[0] = &pb.SecurityChange{Operation: &pb.SecurityChange_PutRole{PutRole: &pb.SecurityRole{Id: "changed_intent"}}}
+		if singular {
+			_, err = f.client.ApplySecurityChange(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangeRequest{CurrentReview: changed}))
+		} else {
+			_, err = f.client.ApplySecurityChanges(t.Context(), securityWireRequest(token, &pb.ApplySecurityChangesRequest{CurrentReview: changed}))
+		}
+		if err == nil {
+			t.Fatal("retained ID was corrected to another intent")
 		}
 	}
-	proof, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(token, &pb.GetSecurityChangeStatusRequest{ChangeId: committedID}))
-	if err != nil || !proto.Equal(proof.Msg.Version, committed.Msg.Version) {
-		t.Fatal("retained original proof changed", proof, err)
+	status, err := f.client.GetSecurityChangeStatus(t.Context(), securityWireRequest(token, &pb.GetSecurityChangeStatusRequest{CurrentProfile: review.Profile, CurrentChangeId: review.ChangeId, CurrentIntentDigest: review.IntentDigest}))
+	if err != nil || !proto.Equal(status.Msg.CurrentResult.Original, applied.Msg.CurrentResult.Original) {
+		t.Fatal("retained original proof changed", err)
 	}
 }

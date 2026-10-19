@@ -75,7 +75,6 @@ type peerSecurityFixture struct {
 
 type peerSecurityOptions struct {
 	Generation     [16]byte
-	WriterKey      [32]byte
 	CurrentProfile string
 	Now            func() time.Time
 	TimeBounds     func() (time.Time, time.Time, error)
@@ -144,10 +143,9 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 	f.roots = x509.NewCertPool()
 	f.roots.AddCert(ca)
 	f.manifest = peerOperatorManifest{Version: 1, Domain: peerOperatorDomain{Deployment: [16]byte{1}, NamespaceFormat: "namespaced-v1", AuthMode: "off", TrustDigest: sha256.Sum256(caPEM)}, IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute)}
-	if len(options) != 0 {
+	if len(options) != 0 && options[0].CurrentProfile != "" {
 		f.manifest.Domain.AuthMode = "oidc"
 		f.manifest.Domain.SecurityGeneration = options[0].Generation
-		f.manifest.Domain.WriterPublicKey = options[0].WriterKey
 		f.manifest.Domain.CurrentProfile = options[0].CurrentProfile
 	}
 	for i := range f.servers {
@@ -233,103 +231,6 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 		t.Cleanup(server.Close)
 	}
 	return f
-}
-
-func TestPeerSecurityPolicyLeaseRealConnectFreshCutAndRevocation(t *testing.T) {
-	dir := t.TempDir()
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	publicDER, err := x509.MarshalPKIXPublicKey(public)
-	if err != nil {
-		t.Fatal(err)
-	}
-	privateDER, err := x509.MarshalPKCS8PrivateKey(private)
-	if err != nil {
-		t.Fatal(err)
-	}
-	publicPath := peerSecurityPEM(t, dir, "writer.pub", "PUBLIC KEY", publicDER)
-	privatePath := peerSecurityPEM(t, dir, "writer.key", "PRIVATE KEY", privateDER)
-	var publicBinding [32]byte
-	copy(publicBinding[:], public)
-	var wall atomic.Int64
-	wall.Store(time.Now().UnixNano())
-	clock := func() time.Time { return time.Unix(0, wall.Load()) }
-	var policies [2]*provider.SecurityPeerRuntime
-	f := newPeerSecurityFixture(t, peerSecurityOptions{Generation: [16]byte{8}, WriterKey: publicBinding,
-		Mount: func(f *peerSecurityFixture, i int, data *service.ServingRuntime, mux *http.ServeMux) {
-			config := provider.SecurityConfig{Mode: "oidc", Profile: "legacy-v1", StoreMode: "fresh", StorePath: filepath.Join(dir, "policy-"+string(rune('a'+i))+".wal"),
-				Generation: [16]byte{8}, WriterPublicKeyFile: publicPath, NodeRole: "replica", WriterEndpoint: f.manifest.Members[0].Origin,
-				BrowserOrigin: "https://admin.example", ClockQualified: true, Clock: clock}
-			config.Bootstrap.Revision = 1
-			config.Bootstrap.Issuer.URL = "https://idp.example"
-			config.Bootstrap.Issuer.Enabled = true
-			config.Bootstrap.Issuer.ClientID = "admin"
-			config.Bootstrap.Issuer.APIAudience = "api"
-			callback := sha256.Sum256([]byte(config.Bootstrap.Issuer.URL))
-			config.Bootstrap.Issuer.RedirectURI = config.BrowserOrigin + "/auth/callback/" + hex.EncodeToString(callback[:])
-			config.Bootstrap.Issuer.Algorithms = []string{"EdDSA"}
-			config.Bootstrap.AdminSubjects = []string{"admin"}
-			if i == 0 {
-				config.NodeRole, config.WriterKeyFile = "writer", privatePath
-			}
-			runtime, cleanup, err := provider.NewSecurityRuntime(config, data)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(cleanup)
-			policies[i], err = provider.NewSecurityPeerRuntime(runtime, f.runtimes[i])
-			if err != nil {
-				t.Fatal(err)
-			}
-			mux.Handle(policies[i].PrivateHTTPHandler())
-		}})
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	if policies[0].Ready(ctx) || policies[1].Ready(ctx) {
-		t.Fatal("fresh process skipped authority barrier")
-	}
-	if err := policies[1].Renew(ctx); err == nil {
-		t.Fatal("writer restart hold-down skipped")
-	}
-	wall.Add(int64(35 * time.Second))
-	if err := policies[1].Renew(ctx); err != nil {
-		t.Fatal("signed checkpoint/lease not installed", err)
-	}
-	if !policies[0].Ready(ctx) || !policies[1].Ready(ctx) {
-		t.Fatal("matching leased cut not ready")
-	}
-	if err := policies[1].Renew(ctx); err != nil {
-		t.Fatal("unchanged-cut lease not renewed", err)
-	}
-	privateClient := graphv1connect.NewLanternSecurityPeerServiceClient(f.runtimes[1].HTTPClient(), f.servers[0].URL)
-	for _, receiver := range [][]byte{make([]byte, 15), {9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}} {
-		_, err := privateClient.RenewPolicyLease(ctx, connect.NewRequest(&pb.RenewPolicyLeaseRequest{Receiver: receiver, BootNonce: make([]byte, 16), Challenge: make([]byte, 32)}))
-		if connect.CodeOf(err) != connect.CodeUnavailable {
-			t.Fatal("forged receiver acquired lease", err)
-		}
-	}
-	// Stopping renewals must expire existing authority even with a valid local
-	// signed policy, then a fresh challenge may restore it without reinstalling.
-	wall.Add(int64(29 * time.Second))
-	if policies[1].Ready(ctx) {
-		t.Fatal("transport outage retained expired serving lease")
-	}
-	if err := policies[1].Renew(ctx); err != nil || !policies[1].Ready(ctx) {
-		t.Fatal("fresh renewal failed", err)
-	}
-	f.manifest.Version++
-	f.manifest.Members = f.manifest.Members[:1]
-	if err := os.WriteFile(f.configs[1].ManifestFile, peerSecuritySign(t, f.manifest, f.key), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.runtimes[1].ReloadMembership(); err != nil {
-		t.Fatal(err)
-	}
-	if policies[1].Ready(ctx) || policies[1].Renew(ctx) == nil {
-		t.Fatal("removed replica retained policy serving authority")
-	}
 }
 
 func TestPeerSecurityRealConnectAdmissionRemovalAndRestart(t *testing.T) {
@@ -486,18 +387,12 @@ func TestPeerSecurityIdleSubscribeFlushesHeadersWithoutAnEvent(t *testing.T) {
 }
 
 // Origin authorization is covered by the OIDC Head-managed real-wire cases.
-// Here the same immutable accepted effects cross the operator mTLS peer plane,
+// Here the same immutable accepted effects cross the OFF operator mTLS peer plane,
 // including an actual Subscribe gap repaired by private Snapshot.
 func TestPeerSecurityEdgeOnlyHistorySubscribeSnapshotAndTombstoneRealConnect(t *testing.T) {
 	var graphs [2]*graphcache.GraphCache[string, *pb.Vertex]
 	var snapshots atomic.Int32
-	public, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var writer [32]byte
-	copy(writer[:], public)
-	f := newPeerSecurityFixture(t, peerSecurityOptions{Generation: [16]byte{6}, WriterKey: writer, Mount: func(f *peerSecurityFixture, index int, runtime *service.ServingRuntime, mux *http.ServeMux) {
+	f := newPeerSecurityFixture(t, peerSecurityOptions{Mount: func(f *peerSecurityFixture, index int, runtime *service.ServingRuntime, mux *http.ServeMux) {
 		graphs[index] = runtime.GraphCache()
 		graphs[index].RetainDanglingEdgeHistory()
 		f.primary[index].WithTombstoneTTL(time.Hour)

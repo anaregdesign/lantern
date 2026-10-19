@@ -202,7 +202,9 @@ def run(root, evidence, serving=None):
             receipt["source_config_sha256"] = hashlib.sha256(config).hexdigest()
         for package, binary in (("./server/internal/security", "security.test"), ("./tests/integration", "integration.test")):
             command(["go", "test", "-c", *([] if serving else ["-tags=lantern_test_time"]), "-o", str(build / binary), package], env=env)
-        write_private(build / "Dockerfile", 'FROM scratch\nCOPY security.test /security.test\nCOPY integration.test /integration.test\nENTRYPOINT ["/integration.test"]\n')
+        # Private host umask must not prevent the non-root container user from
+        # executing these public-code programs. Runtime state stays private.
+        write_private(build / "Dockerfile", 'FROM scratch\nCOPY --chmod=0555 security.test /security.test\nCOPY --chmod=0555 integration.test /integration.test\nENTRYPOINT ["/integration.test"]\n')
         label = "lantern.task=1809-native-serving" if serving else "lantern.task=1750-native-login"
         command(["docker", "build", "--pull=false", "--network=none", "--label", label, "-t", name, str(build)])
         image_created = True

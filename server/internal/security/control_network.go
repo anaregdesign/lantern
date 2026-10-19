@@ -32,7 +32,7 @@ type s3aLimits struct {
 }
 
 func (l s3aLimits) valid(c s2cParticipantConfig) bool {
-	if c.Trust == nil || len(c.Trust.members) < 3 || len(c.Trust.members) > 31 || len(c.Trust.members)%2 == 0 || !c.Trust.bounds.valid() ||
+	if c.Trust == nil || len(c.Trust.members) < 1 || len(c.Trust.members) > 31 || !c.Trust.bounds.valid() ||
 		c.OutboxBytes == 0 || c.OutboxBytes > 256<<20 ||
 		l.QueueBytes < c.OutboxBytes+uint64(len(c.Trust.members))*s3aQueueOverhead || l.QueueBytes > 1<<30 ||
 		l.PerPeerQueue < 1 || l.PerPeerQueue > 32 || l.TransitionCount < len(c.Trust.members)+1 || l.TransitionCount > 128 ||

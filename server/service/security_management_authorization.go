@@ -11,16 +11,6 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
-func (r *AuthenticationAdapter) BeginManagementAuthorization(ctx context.Context, a *security.Admission, binding security.ManagementBinding) (security.AuthorizationStart, string, error) {
-	start, err := r.workflow.BeginAuthorization(ctx, a, binding)
-	if err != nil {
-		return security.AuthorizationStart{}, "", err
-	}
-	return start, r.config.BrowserOrigin + "/auth/management-authorization/" + base64.RawURLEncoding.EncodeToString(start.Ticket[:]), nil
-}
-func (r *AuthenticationAdapter) ReadManagementAuthorization(ctx context.Context, a *security.Admission, id [32]byte) (security.AuthorizationStatus, error) {
-	return r.workflow.ReadAuthorization(ctx, a, id)
-}
 func (r *AuthenticationAdapter) BeginCurrentManagementAuthorization(ctx context.Context, a *security.Admission, review security.CurrentReview) (security.AuthorizationStart, string, string, error) {
 	start, err := r.workflow.BeginCurrentAuthorization(ctx, a, review)
 	if err != nil {

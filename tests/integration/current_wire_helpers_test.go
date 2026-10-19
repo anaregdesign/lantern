@@ -38,6 +38,19 @@ func currentWireRevokeActiveExport(t *testing.T, ctx context.Context, transport 
 	// Separate transport owns the export connection; control keeps its
 	// existing connection and the production server's credit/lifecycle hooks.
 	exportHTTP := h2cClient()
+	if strings.HasPrefix(endpoint, "https://") {
+		next := transport.Transport
+		if ingress, ok := next.(authIngressRoundTripper); ok {
+			next = ingress.next
+		}
+		trusted, ok := next.(*http.Transport)
+		if !ok || trusted.TLSClientConfig == nil {
+			t.Fatal("explicit TLS export trust required")
+		}
+		// Clone configuration, including the pinned fixture roots, while owning
+		// a separate connection pool. Never bypass certificate verification.
+		exportHTTP = &http.Client{Transport: trusted.Clone()}
+	}
 	defer exportHTTP.CloseIdleConnections()
 	exporter := graphv1connect.NewLanternServiceClient(&http.Client{Transport: authIngressRoundTripper{exportHTTP.Transport}}, endpoint, connect.WithAcceptCompression("gzip", nil, nil))
 	type exportResult struct {

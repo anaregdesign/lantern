@@ -36,10 +36,11 @@ func TestQueryProfileRetainsTLSAndIsolatesAdmission(t *testing.T) {
 	for _, mode := range []string{"off", "oidc"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "query")
-			f, err := generate(dir, []int{16380}, nil, mode, "")
+			f, err := generate(dir, []int{16380}, nil, "off", "")
 			if err != nil {
 				t.Fatal(err)
 			}
+			f.Nodes[0].Environment["LANTERN_AUTH_MODE"] = mode
 			stop, err := addFixtureQuery(&f, dir)
 			if err != nil {
 				t.Fatal(err)
@@ -49,9 +50,10 @@ func TestQueryProfileRetainsTLSAndIsolatesAdmission(t *testing.T) {
 			if f.Query.Mode != mode || env["LANTERN_TLS_CERT_FILE"] == "" || env["LANTERN_SEARCH_ENABLED"] != "true" || f.Nodes[0].PeerOrigin != "" {
 				t.Fatal("standalone matched transport")
 			}
-			if mode == "oidc" && (env["LANTERN_OIDC_ADMIN_ISSUER"] != f.Query.Issuer || env["LANTERN_OIDC_ROOT_CA_FILE"] != f.CAFile || !strings.Contains(env["LANTERN_SECURITY_BOOTSTRAP_ROLES"], "bench:private:")) {
-				t.Fatal("local production admission inputs")
+			if f.Query.SecurityProfile != "current-v2" {
+				t.Fatal("unsupported query authority contract")
 			}
+
 			pem, err := os.ReadFile(f.CAFile)
 			if err != nil {
 				t.Fatal(err)

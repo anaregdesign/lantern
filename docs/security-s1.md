@@ -302,7 +302,11 @@ serving and #1668 remain outside this component.
 
 S2-C composes the S2-B journal with a separate append-only protocol journal in
 one private owner. The kernel has a fixed, independently supplied membership
-of 3–31 distinct Ed25519 voting keys with an odd member count. Eligible members
+of 1–31 distinct Ed25519 voting keys. Consensus and renewal require the strict
+majority `floor(N/2)+1` of that original fixed voter set. Odd counts provide the
+same unavailable-voter tolerance as the next even count with one fewer voter;
+they are recommended for efficiency. One or two voters tolerate no unavailable
+voter. Eligible members
 may propose; no member is permanently designated as the security writer. A
 serialized in-process scheduler delivers signed messages between independent
 native owners for qualification. There is no socket, service, provider, serving

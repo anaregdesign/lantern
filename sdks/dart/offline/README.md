@@ -354,11 +354,20 @@ reconciliation.
 CI runs the real-wire receipt matrix against a separate authenticated
 receipt-WAL server while retaining the graph-only fixture for older Put tests.
 The receipt endpoint and ephemeral token are required for that CI run; the
-three-replica ambiguity test also requires
-`LANTERN_DART_RECEIPT_HA_TLS_DIR`, a private directory of per-replica
-CA-signed certificates created by `go run ./testbed/bench/receipttls generate`
-from the repository root. It pins that CA for both peer and client/proxy
-HTTPS traffic; missing TLS material or a certificate mismatch fails the test.
+three-replica ambiguity case needs three absolute same-source binary inputs:
+`LANTERN_DART_RECEIPT_HA_BINARY`, `LANTERN_DART_RECEIPT_HA_FIXTURE`, and
+`LANTERN_DART_RECEIPT_HA_PROVISIONER`. Build the provisioner at the repository
+root with `go test -c -buildvcs=true -o <absolute-output> ./server/internal/security`.
+It is supplied through `-authority-provisioner` so the isolated supervisor needs
+no inherited compiler environment. The native fixture independently provisions
+the authority and CA-signed workload identities. Clients/proxies pin that CA;
+missing TLS material, original identity/profile drift or a mismatch fails closed.
+The HA supervisor allocates and retains its listeners; callers provide no
+previously probed ports. C keeps its public URL through an opaque TCP frontend.
+Its restart joins forwarding connections, requires successful normal Server
+shutdown, and resumes the same original member/profile/custody with new owned
+public/data backend sockets. The signed authority listener remains its original
+independently provisioned endpoint.
 The SQLite adapter's separate `--receipt` crash gate proves process-kill recovery
 with a file-backed store.
 

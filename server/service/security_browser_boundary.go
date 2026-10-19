@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -130,39 +129,7 @@ func (r *AuthenticationAdapter) authenticateBrowser(req *http.Request, requireCS
 		}
 		return security.WithAdmission(verified, a.WithBrowserProof(csrf)), browserDigest(value), nil
 	}
-	revision, known := r.store.Current()
-	if !known || r.authorityCheck(ctx, revision) != nil {
-		return ctx, "", connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
-	}
-	digest := browserDigest(value)
-	session, known := revision.Snapshot().Session(digest)
-	_, authTime, active := revision.Snapshot().SessionAccess(digest, r.now())
-	csrfDigest := browserDigest(csrf)
-	if !known || !active || subtle.ConstantTimeCompare([]byte(session.CSRFDigest), []byte(csrfDigest)) != 1 {
-		return ctx, "", connect.NewError(connect.CodeUnauthenticated, errBrowserBoundary)
-	}
-	if requireCSRF && !exactBrowserHeader(req.Header, browserCSRFHeader, csrf) {
-		return ctx, "", connect.NewError(connect.CodePermissionDenied, errBrowserBoundary)
-	}
-	expiry := minSecurityTime(session.ExpiresAt, r.now().Add(28*time.Second))
-	if r.leaseExpiry != nil {
-		if lease, known := r.leaseExpiry(); known {
-			expiry = minSecurityTime(expiry, lease)
-		}
-	}
-	admission, err := security.NewAdmission(session.Identity, authTime, expiry, revision, r.authorityCheck)
-	if err != nil || admission.Check(ctx, r.now()) != nil {
-		return ctx, "", connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
-	}
-	admission = admission.WithAuthentication(security.Authentication{Provenance: security.BrowserCode, Class: security.EndUser, IssuerConfigRevision: session.IssuerConfigRevision, SessionDigest: digest})
-	evidence := requestEvidenceCut(revision, expiry)
-	evidence.kind, evidence.session, evidence.classification = "session", session, security.EndUser
-	evidence.issuerConfigRevision = session.IssuerConfigRevision
-	evidence.origin = requestCredentialCommitment("browser-origin", r.config.BrowserOrigin)
-	evidence.exactOriginChecked = len(req.Header.Values("Origin")) != 0
-	evidence.mutationCSRFChecked = requireCSRF
-	ctx = withRequestAuthenticationEvidence(ctx, evidence)
-	return security.WithAdmission(ctx, admission.WithBrowserProof(csrf)), digest, nil
+	return ctx, "", connect.NewError(connect.CodeUnavailable, security.ErrAuthorityUnavailable)
 }
 
 // BrowserRPCHandler is a distinct same-origin session surface. StripPrefix
@@ -181,11 +148,6 @@ func (r *AuthenticationAdapter) BrowserRPCHandler(path string, handler http.Hand
 		ctx, _, err := r.authenticateBrowser(req, true)
 		if err != nil {
 			WritePublicAdmissionError(w, req, connect.CodeOf(err))
-			return
-		}
-		ctx, err = r.boundSnapshotAdmission(ctx)
-		if err != nil {
-			WritePublicAdmissionError(w, req, connect.CodeUnavailable)
 			return
 		}
 		http.StripPrefix("/browser", handler).ServeHTTP(w, req.WithContext(ctx))

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
 
@@ -284,6 +285,20 @@ func (o *CurrentAuthority) TimeBounds() (time.Time, time.Time, error) {
 		return time.Time{}, time.Time{}, err
 	}
 	return time.Unix(0, int64(now.utc.low)).UTC(), time.Unix(0, int64(now.utc.high)).UTC(), nil
+}
+
+// TimeAcquisitionCounts is bounded local diagnostics, never an authority input
+// or public RPC. Lock ordering matches owner -> producer at startup snapshots.
+func (o *CurrentAuthority) TimeAcquisitionCounts() decisiontrace.AcquisitionCounts {
+	if o == nil || o.origin == nil {
+		return decisiontrace.AcquisitionCounts{}
+	}
+	t := o.origin.network.timeOwner
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.producer.mu.Lock()
+	defer t.producer.mu.Unlock()
+	return decisiontrace.AcquisitionCounts{Attempts: t.producer.attempts, Writes: t.producer.writes, Installations: t.installations, InFlight: t.producer.busy, Failed: t.failed, Denied: t.denied}
 }
 
 // VerificationTime supports the existing verifier/cache clock port. Current

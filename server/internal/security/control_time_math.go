@@ -27,15 +27,19 @@ type authorityTimeRange struct{ low, high uint64 }
 // sufficiency, and honest conservative reporting, are operational premises.
 type authorityTimePremises struct {
 	ratePPB, stampError, sourceAllowance uint64
-	maxRTT, maxAge, maxWidth             uint64
+	maxRTT                               uint64
 	validUTC                             authorityTimeRange
 	maxSourceError                       uint64
 }
 
 func (p authorityTimePremises) valid() bool {
-	return p.ratePPB < 1_000_000_000 && p.stampError <= math.MaxUint64/2 &&
-		p.sourceAllowance > 0 && p.maxSourceError > 0 && p.maxRTT > 0 && p.maxAge > 0 && p.maxWidth > 0 &&
-		p.validUTC.low < p.validUTC.high
+	return p.nativeValid() && p.sourceAllowance > 0 && p.maxSourceError > 0 && p.maxRTT > 0 &&
+		p.validUTC.low < p.validUTC.high && p.validUTC.high <= math.MaxInt64
+}
+
+// Native lease durations do not depend on UTC acquisition or expiry policy.
+func (p authorityTimePremises) nativeValid() bool {
+	return p.ratePPB < 1_000_000_000 && p.stampError <= math.MaxUint64/2
 }
 
 // Outward integer rounding, with checked 128-bit intermediate multiplication.
@@ -55,7 +59,7 @@ func authorityTimeScale(n, denominator uint64, up bool) (uint64, error) {
 }
 
 func (p authorityTimePremises) elapsed(a, b authorityTimeStamp) (authorityTimeRange, error) {
-	if !p.valid() || a.boot == [32]byte{} || a.process == [16]byte{} || a.boot != b.boot || a.process != b.process || b.nanos < a.nanos {
+	if !p.nativeValid() || a.boot == [32]byte{} || a.process == [16]byte{} || a.boot != b.boot || a.process != b.process || b.nanos < a.nanos {
 		return authorityTimeRange{}, errAuthorityTime
 	}
 	d, errorWidth := b.nanos-a.nanos, 2*p.stampError
@@ -152,7 +156,7 @@ func calculateAuthorityTimeObserved(m authorityTimeMeasurement, p authorityTimeP
 
 func (p authorityTimePremises) contains(r authorityTimeRange) bool {
 	return p.valid() && r.low <= r.high && r.low >= p.validUTC.low &&
-		r.high < p.validUTC.high && r.high-r.low < p.maxWidth
+		r.high < p.validUTC.high
 }
 
 func (a authorityTimeEstimate) atSample(now authorityTimeStamp) (authorityTimeRange, error) {
@@ -169,10 +173,6 @@ func (a authorityTimeEstimate) atSampleObserved(now authorityTimeStamp) (authori
 		return authorityTimeRange{}, e, errAuthorityTime
 	}
 	e.AgeUpper = d.high
-	if d.high >= a.premises.maxAge {
-		e.Reason = "age"
-		return authorityTimeRange{}, e, errAuthorityTime
-	}
 	if !a.premises.contains(a.utc) {
 		e.Reason = "anchor_interval"
 		return authorityTimeRange{}, e, errAuthorityTime
@@ -182,12 +182,17 @@ func (a authorityTimeEstimate) atSampleObserved(now authorityTimeStamp) (authori
 		return authorityTimeRange{}, e, errAuthorityTime
 	}
 	r := authorityTimeRange{a.utc.low + d.low, a.utc.high + d.high}
+	// UTC seconds need not progress continuously at a month-end leap. Carry
+	// that uncertainty rather than stopping every month or assuming LI=0
+	// certifies the entire future. This does not alter native lease durations.
+	r, err = authorityUTCLeapBounds(a.utc.low, r)
+	if err != nil {
+		e.Reason = "utc_window"
+		return authorityTimeRange{}, e, err
+	}
 	e.Low, e.High, e.Width = r.low, r.high, r.high-r.low
 	if !a.premises.contains(r) {
 		e.Reason = "utc_window"
-		if r.high-r.low >= a.premises.maxWidth {
-			e.Reason = "width"
-		}
 		return authorityTimeRange{}, e, errAuthorityTime
 	}
 	e.Reason = "ok"

@@ -34,9 +34,11 @@ on:
       - "tests/integration/dart_data_client_test.dart"
       - "testbed/scripts/dart_identity_fixture.sh"
       - "testbed/scripts/native_receipt_fixture.sh"
+      - ".github/scripts/configured_time_input.py"
       - "testbed/scripts/native_head_fixture.sh"
       - "testbed/scripts/dart_receipt_fixture.sh"
       - "tests/integration/auth_test.go"
+      - "tests/integration/auth_authority_helpers_test.go"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
       - "AGENTS.md"
@@ -82,9 +84,11 @@ on:
       - "tests/integration/dart_data_client_test.dart"
       - "testbed/scripts/dart_identity_fixture.sh"
       - "testbed/scripts/native_receipt_fixture.sh"
+      - ".github/scripts/configured_time_input.py"
       - "testbed/scripts/native_head_fixture.sh"
       - "testbed/scripts/dart_receipt_fixture.sh"
       - "tests/integration/auth_test.go"
+      - "tests/integration/auth_authority_helpers_test.go"
       - "docs/decisions/0001-dart-mobile-transport.md"
       - "docs/decisions/0002-dart-offline-repository-contract.md"
       - "AGENTS.md"
@@ -203,10 +207,15 @@ jobs:
           version: 1.71.0
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare declared read-only source input
+        working-directory: .
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_input.py
       - name: Start Lantern real-wire server
         working-directory: .
         run: |
-          go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
           env LANTERN_PORT=6380 LANTERN_METRICS_ADDR=:9090 \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/lantern-dart-enabled.log" 2>&1 &
@@ -450,11 +459,17 @@ jobs:
         with:
           sdk: 3.12.2
 
+      - name: Prepare declared read-only source input
+        working-directory: .
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_input.py
       - name: Start Lantern real-wire server
         working-directory: .
         run: |
-          go build -o "$RUNNER_TEMP/lantern-offline" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern-offline" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-offline-authfixture" ./server/cmd/authfixture
+          go test -c -buildvcs=true -o "$RUNNER_TEMP/lantern-offline-authority-provisioner" ./server/internal/security
           env LANTERN_PORT=6398 LANTERN_METRICS_ADDR=:9098 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern-offline" > "$RUNNER_TEMP/lantern-offline.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/lantern-offline.pid"
@@ -502,11 +517,13 @@ jobs:
           token_file="$RUNNER_TEMP/lantern-offline-receipt/token"
           test -s "$token_file"
           test -x "$RUNNER_TEMP/lantern-offline"
+          test -x "$RUNNER_TEMP/lantern-offline-authority-provisioner"
           receipt_token="$(cat "$token_file")"
           echo "::add-mask::$receipt_token"
           LANTERN_DART_RECEIPT_TOKEN="$receipt_token" \
             LANTERN_DART_RECEIPT_HA_BINARY="$RUNNER_TEMP/lantern-offline" \
             LANTERN_DART_RECEIPT_HA_FIXTURE="$RUNNER_TEMP/lantern-offline-authfixture" \
+            LANTERN_DART_RECEIPT_HA_PROVISIONER="$RUNNER_TEMP/lantern-offline-authority-provisioner" \
             dart test \
               --name '^receipt ambiguity stays status-first across three authenticated replicas$' \
               test/real_wire_test.dart
@@ -645,10 +662,15 @@ jobs:
           flutter-version: 3.44.6
           cache: true
 
+      - name: Prepare declared read-only source input
+        working-directory: .
+        env:
+          LANTERN_CI_DISPOSABLE_SOURCE_INPUT: ${{ runner.environment }}
+        run: python3 -B .github/scripts/configured_time_input.py
       - name: Start Lantern real-wire server
         working-directory: .
         run: |
-          go build -o "$RUNNER_TEMP/lantern-sqlite" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern-sqlite" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-sqlite-authfixture" ./server/cmd/authfixture
           env LANTERN_PORT=6397 LANTERN_METRICS_ADDR=:9097 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern-sqlite" > "$RUNNER_TEMP/lantern-sqlite.log" 2>&1 &
@@ -743,7 +765,30 @@ jobs:
 
       - name: Test app data permissions and offline scoped CDC over authenticated Connect
         working-directory: .
-        run: go test ./tests/integration -run '^TestAuth_(FlutterDataDemo|DartOfflineScopedChanges)RealConnect$' -count=1
+        env:
+          LANTERN_CURRENT_PUBLIC_GATE: "1"
+        run: |
+          set -o pipefail
+          events="$RUNNER_TEMP/lantern-app-current-events.jsonl"
+          go test -json -tags=lantern_test_time ./tests/integration -run '^TestAuth_(FlutterDataDemo|DartOfflineScopedChanges)RealConnect$' -count=1 | tee "$events"
+          python3 - "$events" <<'PYAPP'
+          import json, pathlib, sys
+          required = {name: [] for name in ("TestAuth_FlutterDataDemoRealConnect", "TestAuth_DartOfflineScopedChangesRealConnect")}
+          package_passes = 0
+          for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+              event = json.loads(line)
+              if event.get("Package") != "github.com/anaregdesign/lantern/tests/integration":
+                  continue
+              action, test = event.get("Action"), event.get("Test")
+              if action in ("fail", "skip"):
+                  raise SystemExit("selected app-wire execution failed or skipped")
+              if test in required and action in ("run", "pass"):
+                  required[test].append(action)
+              if action == "pass" and test is None:
+                  package_passes += 1
+          if package_passes != 1 or any(actions != ["run", "pass"] for actions in required.values()):
+              raise SystemExit("selected app-wire execution missing, duplicated or incomplete")
+          PYAPP
 
       - name: Start identity CDC fixtures
         working-directory: .
@@ -800,7 +845,7 @@ jobs:
 
       - name: Start Lantern
         run: |
-          go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
           env LANTERN_METRICS_ADDR=:9092 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/android-server.log" 2>&1 &
@@ -963,7 +1008,7 @@ jobs:
 
       - name: Start Lantern
         run: |
-          go build -o "$RUNNER_TEMP/lantern" ./server/cmd
+          go test -c -tags=lantern_test_time -o "$RUNNER_TEMP/lantern" ./server/cmd
           go build -o "$RUNNER_TEMP/lantern-authfixture" ./server/cmd/authfixture
           env LANTERN_METRICS_ADDR=:9093 LANTERN_LOG_LEVEL=warn \
             "$RUNNER_TEMP/lantern" > "$RUNNER_TEMP/ios-server.log" 2>&1 &

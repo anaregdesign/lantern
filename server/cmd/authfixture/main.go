@@ -30,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
@@ -39,13 +40,23 @@ import (
 )
 
 type fixtureNode struct {
-	Name         string            `json:"name"`
-	PublicOrigin string            `json:"public_origin"`
-	PeerOrigin   string            `json:"peer_origin"`
-	Environment  map[string]string `json:"environment"`
+	// Fixed by independent original provisioning, never by a peer response.
+	originalMember uint32
+	Name           string            `json:"name"`
+	PublicOrigin   string            `json:"public_origin"`
+	PeerOrigin     string            `json:"peer_origin"`
+	Environment    map[string]string `json:"environment"`
 }
 type fixture struct {
+	authorityProfile *pb.CurrentAuthorityProfile
+
+	security       *fixtureAuthorityInput
+	dataMembership peerauth.Manifest
+	dataOperator   ed25519.PrivateKey
+	compose        bool
+
 	launches            []*fixtureLaunch
+	receiptLaunch       *receiptHALaunch
 	queryStop           func()
 	Nodes               []fixtureNode `json:"nodes"`
 	CAFile              string        `json:"ca_file"`
@@ -71,21 +82,15 @@ func main() {
 	serverBinary := flag.String("serve", "", "supervise the production Server binary until shutdown")
 	overridesFile := flag.String("overrides-file", "", "optional per-node JSON configuration overrides")
 	publicMTLS := flag.Bool("public-mtls", false, "require a separate local client certificate on public listeners")
-	receiptHA := flag.Bool("receipt-ha", false, "four-node native receipt HA with a separate policy writer and controlled data relay")
+	receiptHA := flag.Bool("receipt-ha", false, "four-node native receipt HA with a separate control participant and controlled data relay")
 	edgeCreate := flag.Bool("edge-create", false, "qualify standalone existing-endpoint Create under Vertex-derived Head authority")
 	headEdge := flag.Bool("head-edge", false, "qualify standalone Head write-only handling with a separate machine Role")
 	transportProbe := flag.Bool("transport-probe", false, "standalone scoped transport probe with a localhost-only certificate")
-	queryProfile := flag.String("query-security-profile", "legacy-v1", "explicit protected-query legacy-v1 or current-v2 profile")
-	queryExporter := flag.String("current-fixture-exporter", "", "same-source absolute security test binary for original current query provisioning")
+	authorityProvisioner := flag.String("authority-provisioner", "", "optional same-source security test binary for independent original provisioning; otherwise use this checkout")
 	protectedQuery := flag.Bool("protected-query", false, "opt-in standalone OFF/OIDC query preparation with matched verified TLS and a local JWT issuer")
 	receipt := flag.Bool("receipt", false, "enable native receipt WAL for each OIDC node")
 	readyTimeout := flag.Duration("ready-timeout", time.Minute, "bounded verified-TLS production readiness wait")
 	flag.Parse()
-	currentQuery := *protectedQuery && *queryProfile == "current-v2"
-	if (*queryProfile != "legacy-v1" && *queryProfile != "current-v2") || (!*protectedQuery && (*queryProfile != "legacy-v1" || *queryExporter != "")) || (*queryExporter != "" && !currentQuery) {
-		fmt.Fprintln(os.Stderr, "authfixture: query profile/exporter requires explicit protected-query selection")
-		os.Exit(1)
-	}
 	if *privateInput != "" {
 		valid := flag.NArg() == 0
 		flag.Visit(func(value *flag.Flag) {
@@ -125,12 +130,13 @@ func main() {
 	}
 	public, err := ports(*publicPorts)
 	var launches []*fixtureLaunch
+	var receiptLaunch *receiptHALaunch
 	launchCtx, launchCancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer launchCancel()
-	defer func() { closeFixtureLaunches(launches) }()
+	defer func() { closeFixtureLaunches(launches); receiptLaunch.close() }()
 	if *allocatedNodes != 0 {
-		if *allocatedNodes < 1 || *allocatedNodes > 8 || *publicPorts != "" || *peerPorts != "" || *serverBinary == "" || *compose || *renew || *restartNode != "" || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *protectedQuery || flag.NArg() != 0 {
-			err = errors.New("allocated-nodes requires ordinary supervised local fixtures and no explicit ports")
+		if *allocatedNodes < 1 || *allocatedNodes > 8 || *publicPorts != "" || *peerPorts != "" || *serverBinary == "" || *compose || *renew || *restartNode != "" || *edgeCreate || *headEdge || *transportProbe || *protectedQuery || flag.NArg() != 0 {
+			err = errors.New("allocated-nodes requires supervised local fixtures and no explicit ports")
 		} else {
 			public = make([]int, *allocatedNodes)
 		}
@@ -155,11 +161,11 @@ func main() {
 			peer = []int{6381, 6382, 6383}
 		}
 	}
-	if err == nil && len(public) > 1 && len(peer) == 0 && *allocatedNodes == 0 && !currentQuery {
+	if err == nil && len(public) > 1 && len(peer) == 0 && *allocatedNodes == 0 && !*protectedQuery {
 		err = errors.New("multiple nodes require the private workload plane")
 	}
-	if err == nil && *receiptHA && (*compose || *mode != "oidc" || !*receipt || len(public) != 4 || len(peer) != 4 || *serverBinary == "" || *publicMTLS || *overridesFile != "") {
-		err = errors.New("receipt-ha requires four OIDC public/private ports, receipts and production supervision")
+	if err == nil && *receiptHA && (*compose || *mode != "oidc" || !*receipt || *allocatedNodes != 4 || *serverBinary == "" || *publicMTLS || *overridesFile != "") {
+		err = errors.New("receipt-ha requires four allocated OIDC nodes, receipts and production supervision")
 	}
 	if err == nil && *edgeCreate && (*compose || *mode != "oidc" || len(public) != 1 || len(peer) != 0 || *serverBinary == "") {
 		err = errors.New("edge-create requires one supervised standalone OIDC node")
@@ -171,24 +177,40 @@ func main() {
 		err = errors.New("transport probe requires one supervised standalone OIDC node")
 	}
 	queryCount := 1
-	if currentQuery {
+	if *protectedQuery {
 		queryCount = 3
 	}
 	if err == nil && *protectedQuery && (*compose || len(public) != queryCount || len(peer) != 0 || *serverBinary == "" || *publicMTLS || *receipt || *receiptHA || *edgeCreate || *headEdge || *transportProbe || *tokensFile != "" || *overridesFile != "" || flag.NArg() != 0) {
 		err = errors.New("protected query requires its exact supervised OFF/OIDC node count and no other profile or overrides")
 	}
 	var result fixture
+	setupCtx := launchCtx
+	setupCancel := func() {}
+	if *receiptHA {
+		// Leave configuration-frame margin inside the production child's fixed
+		// one-minute preconfiguration lifetime. Never extend its watchdog.
+		setupCtx, setupCancel = context.WithTimeout(launchCtx, min(*readyTimeout, 50*time.Second))
+		defer setupCancel()
+	}
 	if err == nil && *allocatedNodes != 0 {
-		launches, public, peer, err = reserveFixtureCohort(launchCtx, *serverBinary, *directory, *allocatedNodes, *allocatedNodes > 1, *readyTimeout)
+		if *receiptHA {
+			receiptLaunch, public, peer, err = reserveReceiptHALaunch(setupCtx, *serverBinary, *directory, *readyTimeout)
+		} else {
+			launches, public, peer, err = reserveFixtureCohort(launchCtx, *serverBinary, *directory, *allocatedNodes, *allocatedNodes > 1, *readyTimeout)
+		}
 	}
 	if err == nil {
-		if currentQuery {
-			result, err = generateCurrentQueryFixture(launchCtx, *directory, public, *mode, *serverBinary, *queryExporter)
+		if *protectedQuery {
+			result, err = generateQueryFixture(launchCtx, *directory, public, *mode, *serverBinary, *authorityProvisioner)
 		} else {
 			result, err = generateTopologyProfile(*directory, public, peer, *mode, *tokensFile, *compose, *transportProbe)
 		}
 	}
 	result.launches = launches
+	result.receiptLaunch = receiptLaunch
+	if err == nil && receiptLaunch != nil {
+		err = receiptLaunch.bindNodes(&result)
+	}
 	if result.queryStop != nil {
 		defer result.queryStop()
 	}
@@ -206,14 +228,13 @@ func main() {
 	if err == nil && *headEdge {
 		err = addFixtureHeadEdge(&result, *directory)
 	}
-	if err == nil && *protectedQuery && !currentQuery {
-		var stop func()
-		stop, err = addFixtureQuery(&result, *directory)
-		if err == nil {
-			defer stop()
-			result.Query.Server, err = queryBinaryProvenance(*serverBinary)
-		}
+	if err == nil && *mode == "oidc" && !*protectedQuery {
+		err = provisionFixtureAuthority(setupCtx, &result, *directory, *authorityProvisioner)
 	}
+	if err == nil {
+		err = setupCtx.Err()
+	}
+	setupCancel()
 	if err == nil && *compose {
 		err = exportComposeFixture(&result, *directory)
 	}
@@ -239,6 +260,7 @@ func main() {
 		}
 		closeFixtureLaunches(launches)
 		launches = nil
+		receiptLaunch.close()
 		if *serverBinary != "" {
 			writeFixtureFailure(os.Stderr, err)
 		} else {
@@ -386,32 +408,8 @@ func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tok
 	if transportProbe {
 		roles = transportProbeRoles()
 	}
-	var securityEnv map[string]string
-	var writerPublic ed25519.PublicKey
-	var generation [16]byte
 	if mode == "oidc" {
-		var writerPrivate ed25519.PrivateKey
-		writerPublic, writerPrivate, err = ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			return fixture{}, err
-		}
-		privatePath, err := writeKey(dir, "writer.key", writerPrivate, true)
-		if err != nil {
-			return fixture{}, err
-		}
-		publicPath, err := writeKey(dir, "writer.pub", writerPublic, false)
-		if err != nil {
-			return fixture{}, err
-		}
-		generation, err = randomID()
-		if err != nil {
-			return fixture{}, err
-		}
-		roleJSON, err := json.Marshal(roles)
-		if err != nil {
-			return fixture{}, err
-		}
-		securityEnv = map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_PROFILE": "legacy-v1", "LANTERN_SECURITY_STORE_MODE": "fresh", "LANTERN_SECURITY_GENERATION": hex.EncodeToString(generation[:]), "LANTERN_SECURITY_WRITER_KEY_FILE": privatePath, "LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE": publicPath, "LANTERN_SECURITY_BOOTSTRAP_REVISION": "1", "LANTERN_SECURITY_BOOTSTRAP_ROLES": string(roleJSON), "LANTERN_SECURITY_CLOCK_QUALIFIED": "true", "LANTERN_OIDC_ADMIN_ISSUER": issuer, "LANTERN_OIDC_ADMIN_SUBJECTS": `["fixture-admin"]`, "LANTERN_OIDC_CLIENT_ID": "fixture-admin", "LANTERN_OIDC_API_AUDIENCE": "lantern-fixture", "LANTERN_OIDC_ALGORITHMS": `["EdDSA"]`}
+		result.security = &fixtureAuthorityInput{AdminSubjects: []string{"fixture-admin"}, HumanSubjectNamespaceQualified: true, Roles: roles, Issuer: &security.Issuer{URL: issuer, ConfigRevision: 1, Enabled: true, EnvOwned: true, ClientID: "fixture-admin", APIAudience: "lantern-fixture", RedirectURI: "https://localhost:" + strconv.Itoa(publicPorts[0]) + oidc.CallbackPath(issuer), Algorithms: []string{"EdDSA"}, HumanSubjectNamespaceQualified: true}}
 		var tokens []string
 		if tokensFile != "" {
 			raw, err := os.ReadFile(tokensFile)
@@ -444,11 +442,7 @@ func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tok
 			credentials = append(credentials, map[string]any{"token": token, "created_at": now.Add(-time.Minute), "expires_at": now.Add(time.Hour)})
 		}
 		machine["credentials"] = credentials
-		machineFile, err := writeJSON(dir, "machines.json", []map[string]any{machine})
-		if err != nil {
-			return fixture{}, err
-		}
-		securityEnv["LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE"] = machineFile
+		result.security.Machines = []map[string]any{machine}
 		result.TokenFile, err = writeJSON(dir, "tokens.json", tokens)
 		if err != nil {
 			return fixture{}, err
@@ -479,8 +473,7 @@ func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tok
 	if err != nil {
 		return fixture{}, err
 	}
-	domain := peerauth.Domain{Deployment: deployment, NamespaceFormat: keyspace.Version, AuthMode: mode, SecurityGeneration: generation, TrustDigest: sha256.Sum256(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caRaw}))}
-	copy(domain.WriterPublicKey[:], writerPublic)
+	domain := peerauth.Domain{Deployment: deployment, NamespaceFormat: keyspace.Version, AuthMode: "off", TrustDigest: sha256.Sum256(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caRaw}))}
 	membership := peerauth.Manifest{Version: 1, Domain: domain, IssuedAt: now, ExpiresAt: now.Add(peerauth.MaxMembershipLifetime)}
 	for index, port := range publicPorts {
 		name := fmt.Sprintf("node-%d", index)
@@ -506,20 +499,10 @@ func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tok
 		env["LANTERN_NODE_ID"] = hex.EncodeToString(nodeID[:])
 		node := fixtureNode{Name: name, PublicOrigin: publicOrigin, Environment: env}
 		if mode == "oidc" {
-			for key, value := range securityEnv {
-				env[key] = value
-			}
-			env["LANTERN_SECURITY_STORE_PATH"] = filepath.Join(dir, name+"-security.wal")
-			env["LANTERN_SECURITY_NODE_ROLE"] = "writer"
-			env["LANTERN_SECURITY_WRITER_ENDPOINT"] = publicOrigin
-			env["LANTERN_OIDC_BROWSER_ORIGIN"] = publicOrigin
-			env["LANTERN_OIDC_REDIRECT_URI"] = publicOrigin + oidc.CallbackPath(issuer)
-			if index > 0 {
-				env["LANTERN_SECURITY_NODE_ROLE"] = "replica"
-				delete(env, "LANTERN_SECURITY_WRITER_KEY_FILE")
-				delete(env, "LANTERN_SECURITY_MACHINE_BOOTSTRAP_FILE")
-			}
+			env["LANTERN_AUTH_MODE"] = "oidc"
+			env["LANTERN_OIDC_BROWSER_ORIGIN"] = "https://localhost:" + strconv.Itoa(publicPorts[0])
 		}
+
 		if len(peerPorts) > 0 {
 			identity := "spiffe://lantern.fixture/" + name
 			peerCert, peerKey, spki, err := certificate(dir, name+"-peer", identity, ca, caPrivate, serviceName)
@@ -545,12 +528,6 @@ func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tok
 			env["LANTERN_PEER_CERT_FILE"] = peerCert
 			env["LANTERN_PEER_KEY_FILE"] = peerKey
 			env["LANTERN_PEER_TRUST_CA_FILE"] = caFile
-			if mode == "oidc" {
-				env["LANTERN_SECURITY_WRITER_ENDPOINT"] = "https://localhost:" + strconv.Itoa(peerPorts[0])
-				if compose {
-					env["LANTERN_SECURITY_WRITER_ENDPOINT"] = "https://lantern-0:6381"
-				}
-			}
 		}
 		result.Nodes = append(result.Nodes, node)
 	}
@@ -563,6 +540,8 @@ func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tok
 			return fixture{}, err
 		}
 	}
+	result.dataMembership, result.dataOperator, result.compose = membership, operatorPrivate, compose
+
 	return result, nil
 }
 func fixtureRoles() []security.Role {

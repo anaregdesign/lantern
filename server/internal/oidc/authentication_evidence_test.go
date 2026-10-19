@@ -247,28 +247,3 @@ func TestAuthenticationEvidenceGenuineCodeCompletion(t *testing.T) {
 		})
 	}
 }
-
-func TestAuthenticationEvidencePreservesSessionRequestTimeEncoding(t *testing.T) {
-	p := newTestProvider(t)
-	claims := p.accessClaims()
-	claims["aud"] = "admin"
-	claims["nonce"] = "expected"
-	claims["auth_time"] = p.now().Add(-time.Hour).Unix()
-	raw := p.sign(t, claims, "JWT")
-	verified, err := NewVerifierWithClock(NewKeyCacheWithClock(p.fetcher, p.now), p.now).VerifyLogin(t.Context(), raw, p.trust, "expected", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, original, _ := decodeToken(raw)
-	before := security.SessionRequest{ChangeID: [16]byte{1}, Identity: verified.Identity(), IssuerConfigRevision: 1, Digest: strings.Repeat("a", 64), CSRFDigest: strings.Repeat("b", 64), Now: p.now(), AuthTime: original.AuthTime.Time, Lifetime: security.MaxSessionLifetime}
-	after := before
-	after.AuthTime = verified.AuthTime()
-	oldJSON, _ := json.Marshal(before)
-	newJSON, _ := json.Marshal(after)
-	if string(oldJSON) != string(newJSON) {
-		t.Fatal("evidence accessor changed existing session intent bytes")
-	}
-	if !verified.Evidence().AuthTime.Time().Equal(original.AuthTime.Time) {
-		t.Fatal("normalized facts changed signed instant")
-	}
-}
