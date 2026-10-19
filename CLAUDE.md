@@ -30,7 +30,7 @@ python3 -B .github/scripts/local_gate_session.py "$PWD" ../affected-evidence-new
 The complete 77-step plan remains available without `--affected-base`; policy
 adoption must use the previous full contract on its own final source. Eligible
 pure prose retains its explicit path. Omitted families are NOT_SELECTED, never
-passed or carried. Hosted exact-merge F/module coverage/boundary Q remain blocking.
+passed or carried. Hosted exact-merge functional-validation/module coverage/boundary configured-source-integration remain blocking.
 Full Windows Rust compatibility is manual/release, with affected native
 ACL/filesystem/TLS/process tests blocking the existing Build & Test aggregate.
 

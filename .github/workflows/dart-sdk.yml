@@ -120,7 +120,7 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  configured-source:
+  configured-source-integration:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/')
     uses: ./.github/workflows/current-source-release.yml
   changes:
@@ -1318,9 +1318,9 @@ jobs:
 
   release-preflight:
     name: Verify parent release candidate
-    needs: [gate, configured-source]
+    needs: [gate, configured-source-integration]
     if: >-
-      ${{ !cancelled() && needs.gate.result == 'success' && needs.configured-source.result == 'success' &&
+      ${{ !cancelled() && needs.gate.result == 'success' && needs.configured-source-integration.result == 'success' &&
           github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1598,9 +1598,9 @@ jobs:
 
   offline-release-preflight:
     name: Verify offline release candidate
-    needs: [gate, offline-hosted, configured-source]
+    needs: [gate, offline-hosted, configured-source-integration]
     if: >-
-      ${{ !cancelled() && needs.gate.result == 'success' && needs.offline-hosted.result == 'success' && needs.configured-source.result == 'success' &&
+      ${{ !cancelled() && needs.gate.result == 'success' && needs.offline-hosted.result == 'success' && needs.configured-source-integration.result == 'success' &&
           needs.offline-hosted.outputs.qualified == 'true' &&
           github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sdks/dart/offline/v') }}
     runs-on: ubuntu-latest

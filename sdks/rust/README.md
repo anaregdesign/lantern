@@ -450,7 +450,7 @@ local OIDC Server wire cases execute on Linux/macOS; all SDK tests still compile
 on Windows. A Windows SDK can use
 Bearer credentials with a supported remote OIDC Server; its client support does
 not grant a Windows Server authority profile. Hosted CI shares explicit source
-input preparation with Q and does not change the production factory or clocks.
+input preparation with configured-source-integration and does not change the production factory or clocks.
 
 The public scoped-CDC and current-authority cases use separately provisioned
 root Go fixtures. `TestAuth_OIDCRustScopedChangesFacadeRealConnect` runs the

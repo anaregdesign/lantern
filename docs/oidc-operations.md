@@ -74,7 +74,7 @@ to reset journals. Apply the existing coordinated provisioning/generation and
 custody procedure; there is no automatic state conversion or deployment here.
 The [Flutter setup](../sdks/dart/example/README.md#native-google-and-apple-login)
 lists required platform registration. Four real-provider/platform exits and
-package publication remain separate from merged source and F/Q evidence.
+package publication remain separate from merged source and functional-validation/configured-source-integration evidence.
 
 ## Native user registration policy
 

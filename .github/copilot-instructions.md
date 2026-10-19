@@ -97,8 +97,8 @@ they must not conflict.
   `refactor`/`perf`/`test`/`build`/`revert`); a required check rejects others.
 - **Before every push**, satisfy the applicable gate in CONTRIBUTING.md. Only
   affected local closure or explicit pure-prose checks may be selected. Full77
-  remains the fallback and policy bootstrap; it cannot relax itself. Hosted F and
-  boundary Q remain blocking. Windows Rust full compatibility is manual/release;
+  remains the fallback and policy bootstrap; it cannot relax itself. Hosted functional-validation and
+  boundary configured-source-integration remain blocking. Windows Rust full compatibility is manual/release;
   selected native Go/Rust ACL/filesystem/TLS/process checks block Build & Test.
 - **Dart releases are independent.** `sdks/dart/vX.Y.Z` must match
   `sdks/dart/pubspec.yaml` and `CHANGELOG.md`; the tag workflow runs Dart plus

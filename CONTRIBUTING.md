@@ -149,10 +149,10 @@ for eligible explanation-only edits.
 
 The complete 77-step plan below remains available by omitting `--affected-base`.
 Policy-changing PRs must run the **previous full contract on their final source**,
-including F/Q and applicable native coverage; a relaxation cannot qualify itself.
+including functional-validation/configured-source-integration and applicable native coverage; a relaxation cannot qualify itself.
 The explicit #1820 owner-approved time-contract migration below supersedes only
-the retired repeated-external-source full Q campaign; it retains complete F,
-bounded Q and every other applicable mandatory check.
+the retired repeated-external-source full configured-source-integration campaign; it retains complete functional-validation,
+bounded configured-source-integration and every other applicable mandatory check.
 This policy's adoption PR follows that rule once before push. Later changes use
 the merged policy, with normal exact synthetic-merge/main checks still blocking.
 
@@ -470,107 +470,121 @@ time and a current quorum, passes the private fixture inputs, and requires the
 exact Rust test to execute successfully. Standalone-suite success does not
 qualify that native current-authority case.
 
-The [current-authority runner](.github/scripts/current_sdk4_gate.py) records
-separate version 3 contracts (#1820). **F** owns complete mechanism/application
-behavior with controlled synthetic UTC: every retained functional root, all
-four public SDKs, the scoped Rust case and active export revocation. **Q** owns
-configured-source integration with the normal build, one independently
-provisioned three-member cohort reused for SDK4, basic success/refusal, ordinary
-Apply/foreign retained-original status, native 15-second old-cut observation and
-active export revocation. Export remains last and retains the positive
-multi-record control, APPLIED withdrawal, immutable accepted prefix, next-body
-final-Write refusal and handler/stream shutdown. Every required body must run
-once and pass, with no skipped, missing, duplicate or failed body.
+Historical reports used **F** for `functional-validation` and **Q** for
+`configured-source-integration`. Existing logs, receipts and comments retain those
+historical labels; current CLI and receipts accept only the descriptive names, without
+shorthand aliases.
+
+The [current-authority runner](.github/scripts/current_sdk4_gate.py) records separate
+version 3 contracts (#1820). **`functional-validation`** owns complete
+mechanism/application behavior with controlled synthetic UTC: every retained functional
+root, all four public SDKs, the scoped Rust case and active export revocation.
+**`configured-source-integration`** owns integration with the configured time source
+using the normal build and one independently provisioned three-member cohort reused for
+SDK4, basic success/refusal, ordinary Apply/foreign retained-original status, native
+15-second old-cut observation and active export revocation. Export remains last and
+retains the positive multi-record control, APPLIED withdrawal, immutable accepted
+prefix, next-body final-Write refusal and handler/stream shutdown. Every required body
+must run once and pass, with no skipped, missing, duplicate or failed body. Neither kind
+qualifies real identity providers or physical devices.
 
 Unit time math, retry/fault/expiry cases use injected observations/counters and
 deterministic time advancement, without external NTP/DNS or real holdover waits.
-F selects `lantern_test_time` only at compile time. The private serving harness
-is a `go test -c` executable running the real App/listener/certification paths;
-normal and tagged non-test server binaries still cannot mint fixture time.
-The controlled source uses local UDP; loss/recovery advances injected native
-time instead of sleeping through an arbitrary age cutoff. F never qualifies
-real UTC, the configured factory or external source/path reachability.
-Explicit standalone external-source diagnostic tests additionally require the
-`lantern_source_qualification` build tag; ordinary unit invocations cannot enable
-them just by inheriting an environment flag.
+`functional-validation` selects `lantern_test_time` only at compile time. The private
+serving harness is a `go test -c` executable running the real App/listener/certification
+paths; normal and tagged non-test server binaries still cannot mint fixture time. The
+controlled source uses local UDP; loss/recovery advances injected native time instead of
+sleeping through an arbitrary age cutoff. This validation never qualifies real UTC, the
+configured factory or external source/path reachability. Explicit standalone
+external-source diagnostic tests additionally require the `lantern_source_qualification`
+build tag; ordinary unit invocations cannot enable them just by inheriting an
+environment flag.
 
-Q prebuilds SDK dependencies, then uses the fixed source and normal constructor.
-Each owner must acquire its own fresh anchor. Complete process-owned counters
-record attempts, actual UDP writes and installations separately after shutdown;
-the entire three-owner family permits at most 12 attempts and 12 writes. Missing,
-duplicate, zero, inconsistent or in-flight count evidence fails Q. Lossy trace
-records cannot substitute for these counters. No soak or retry-until-green is
-permitted. Startup remains 45 seconds with bounded 3-second flights. Runtime
-refresh aims for 5-second interval width with 5 minutes of lead; this is an
-operational target, never a login/consumption cutoff. Native 15-second quorum,
-whole-interval credential/certificate/membership expiry, revocation and final
-output refusal remain independent. Source failure or incomplete bodies fail Q;
-the runner changes no host settings and installs no tools.
+`configured-source-integration` prebuilds SDK dependencies, then uses the fixed time
+source and normal constructor. Each owner must acquire its own fresh anchor. Complete
+process-owned counters record attempts, actual UDP writes and installations separately
+after shutdown; the entire three-owner family permits at most 12 attempts and 12 writes.
+Missing, duplicate, zero, inconsistent or in-flight count evidence fails
+configured-source-integration. Lossy trace records cannot substitute for these counters.
+No soak or retry-until-green is permitted. Startup remains 45 seconds with bounded
+3-second flights. Runtime refresh aims for 5-second interval width with 5 minutes of
+lead; this is an operational target, never a login/consumption cutoff. Native 15-second
+quorum, whole-interval credential/certificate/membership expiry, revocation and final
+output refusal remain independent. Source failure or incomplete bodies fail
+configured-source-integration; the runner changes no host settings and installs no
+tools.
 
-Receipt schema 2 does not qualify schema 3. The owner explicitly requested this
-scoped migration to remove repeated external queries from functional/unit loops;
-only the old repeated-full-Q obligation is superseded. All functional bodies,
-other mandatory gates and same-run exact-source verification remain required.
-Old failures, interruptions and NOT_RUN results retain their original meaning.
+Receipt schema 2 does not qualify schema 3. The owner explicitly requested this scoped
+migration to remove repeated external queries from functional/unit loops; only the old
+repeated full configured-source obligation is superseded. All functional bodies, other
+mandatory gates and same-run exact-source verification remain required. Old failures,
+interruptions and NOT_RUN results retain their original meaning.
 
-PR/main F and module/coverage jobs run independently of Q. The stable required
-`Build & Test` aggregates their results and verifies distinct F/Q artifacts
-against the exact merge/main source and successful same-run producer digests.
-Q is mandatory for time, native, production composition, dependency/toolchain,
-deployment, fixture bridge and proof/CI boundary changes. The conservative
-[classifier](.github/scripts/current_qualification_scope.py) exempts only regular
-modified application/computational sources and exact profiling handlers in its small allowlist; unknown paths,
-base failures, additions/deletions/renames and mixed changes require Q. Existing
-docs/evidence-only classifications are unchanged. A non-boundary candidate may
-show **F PASS / Q NOT_RUN**, which is code acceptance, not release or environment
-qualification. Any executed Q failure remains FAIL and cannot be hidden as
-NOT_RUN; required Q failure blocks integration.
+PR/main functional-validation and module/coverage jobs run independently of
+configured-source-integration. The stable required `Build & Test` aggregates their
+results and verifies distinct functional-validation/configured-source-integration
+artifacts against the exact merge/main source and successful same-run producer digests.
+configured-source-integration is mandatory for time, native, production composition,
+dependency/toolchain, deployment, fixture bridge and proof/CI boundary changes. The
+conservative [classifier](.github/scripts/current_qualification_scope.py) exempts only
+regular modified application/computational sources and exact profiling handlers in its
+small allowlist; unknown paths, base failures, additions/deletions/renames and mixed
+changes require configured-source-integration. Existing docs/evidence-only
+classifications are unchanged. A non-boundary candidate may show **functional-validation
+PASS / configured-source-integration NOT_RUN**, which is code acceptance, not release or
+environment qualification. Any executed configured-source-integration failure remains
+FAIL and cannot be hidden as NOT_RUN; required configured-source-integration failure
+blocks integration.
 
-Ordinary affected local checks leave the authoritative F/required-Q integration
-to hosted exact-merge CI; they do not repeat external-source acquisition for an
-unrelated diagnostic. Runtime guards and executed Q failures are unchanged.
-The 77-step full local plan conservatively keeps Q and adds separate F execution
-inside `rust-oidc-scoped-wire` using `--with-mechanism`; scoped Rust and every
-other existing component remain mandatory. Each invocation writes fresh F and Q
-receipts, with no receipt import or carry. The #1820 owner-approved time-contract migration uses the complete F and bounded
-Q contracts above; it must not repeat the retired external-source functional
-campaign or reinterpret an old receipt. For separate focused
+Ordinary affected local checks leave authoritative functional validation and required
+configured-source integration to hosted exact-merge CI; they do not repeat
+external-source acquisition for an unrelated diagnostic. Runtime guards and executed
+configured-source-integration failures are unchanged. The 77-step full local plan
+conservatively keeps configured-source-integration and adds separate
+functional-validation execution inside `rust-oidc-scoped-wire` using
+`--with-functional-validation`; scoped Rust and every other existing component remain
+mandatory. Each invocation writes fresh functional-validation and
+configured-source-integration receipts, with no receipt import or carry. The #1820
+owner-approved time-contract migration uses the complete functional-validation and
+bounded configured-source-integration contracts above; it must not repeat the retired
+external-source functional campaign or reinterpret an old receipt. For separate focused
 qualification of a clean frozen candidate with pinned tools and dependencies:
 
 ```sh
-python3 -B .github/scripts/current_sdk4_gate.py run --proof-kind F \
-  --evidence ../current-F-new
-python3 -B .github/scripts/current_sdk4_gate.py run --proof-kind Q \
-  --evidence ../current-Q-new
+python3 -B .github/scripts/current_sdk4_gate.py run --proof-kind functional-validation \
+  --evidence ../current-functional-validation-new
+python3 -B .github/scripts/current_sdk4_gate.py run --proof-kind configured-source-integration \
+  --evidence ../current-configured-source-integration-new
 ```
 
-Exact release candidates require Q before publication. Rust retains its native
-lane; root/Go/MCP use `_verify.yml`, and Node, Dart parent/offline and Admin
-publication depend on `current-source-release.yml`. These preflights qualify
-the exact source in the selected Linux container; existing archive/image
-fingerprint and publication equality gates remain necessary. A source receipt
-alone never qualifies a substituted artifact. Tags exposed by a module proxy
-cannot be withheld by CI; complete release-candidate Q before creating tags.
+Exact release candidates require configured-source-integration before publication. Rust
+retains its native lane; root/Go/MCP use `_verify.yml`, and Node, Dart parent/offline
+and Admin publication depend on `current-source-release.yml`. These preflights qualify
+the exact source in the selected Linux container; existing archive/image fingerprint and
+publication equality gates remain necessary. A source receipt alone never qualifies a
+substituted artifact. Tags exposed by a module proxy cannot be withheld by CI; complete
+release-candidate configured-source-integration before creating tags.
 
-Selected deployment/environment acceptance also requires Q on the exact source
-and actual chosen supported native environment. Requalify after material host,
-kernel/VM, namespace/capability, image, source/configuration or DNS/UDP path
-changes. Preserve source/artifact equality and environment evidence in the
-acceptance ledger. A CI Linux result does not qualify another platform/host.
-Every production startup still obtains a fresh anchor; a Q receipt is neither a
-startup permit nor a time capability. No release/deployment is performed by
-these checks. Release-candidate Q should start when selecting the candidate.
+Selected deployment/environment acceptance also requires configured-source-integration
+on the exact source and actual chosen supported native environment. Requalify after
+material host, kernel/VM, namespace/capability, image, source/configuration or DNS/UDP
+path changes. Preserve source/artifact equality and environment evidence in the
+acceptance ledger. A CI Linux result does not qualify another platform/host. Every
+production startup still obtains a fresh anchor; a configured-source-integration receipt
+is neither a startup permit nor a time capability. No release/deployment is performed by
+these checks. Release-candidate configured-source-integration should start when
+selecting the candidate.
 
-Receipts bind proof/source/build kind, synthetic UTC, HEAD/tree/tracked inputs,
-runner, actual toolchains, native environment, configuration, commands, required
-executions and raw hashes. The verifier refuses F/Q interchange. Qualification
-is conditional on the source/path and native counter premises, never physical
-clock certification. Run a declared finite attempt; preserve any failure and
-record a relevant repair or invalid-evidence reason before another attempt.
-This split reduces real-source coupling on ordinary hosted CI: an unclassified
-integration defect can be detected later, at release qualification. The old
-post-main `228df0aa` failure remains a failure; this contract does not turn its
-unexecuted export/module/coverage bodies into passes.
+Receipts bind proof/source/build kind, synthetic UTC, HEAD/tree/tracked inputs, runner,
+actual toolchains, native environment, configuration, commands, required executions and
+raw hashes. The verifier refuses functional-validation/configured-source-integration
+interchange. Qualification is conditional on the source/path and native counter
+premises, never physical clock certification. Run a declared finite attempt; preserve
+any failure and record a relevant repair or invalid-evidence reason before another
+attempt. This split reduces real-source coupling on ordinary hosted CI: an unclassified
+integration defect can be detected later, at release qualification. The old post-main
+`228df0aa` failure remains a failure; this contract does not turn its unexecuted
+export/module/coverage bodies into passes.
 
 Audit locked runtime and codegen dependencies with
 `(cd sdks/rust && cargo audit --deny warnings --file Cargo.lock)`; an

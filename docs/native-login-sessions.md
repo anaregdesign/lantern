@@ -510,9 +510,9 @@ it; routine implementation/repair can run at the normal implementation effort.
 Place composed wire cases in the existing current-security integration fixture
 and execute them through its runner; plain `go test` skipping qualified bodies
 is not acceptance. Existing deterministic provider fixtures prove source
-contracts only. Use controlled-source **F** and normal configured-source **Q**
+contracts only. Use controlled-source **functional-validation** and normal configured-source **configured-source-integration**
 as separate evidence. This changes a credential/proof/composition boundary,
-so Q is required before and after merge. Keep the current simplified CI and
+so configured-source-integration is required before and after merge. Keep the current simplified CI and
 local 77-step gate from `CONTRIBUTING.md`; do not restore removed OS/toolchain
 matrices, manual transport comparisons, physical sleeps or redundant soaks.
 This design document is outside the narrow README-only prose eligibility;

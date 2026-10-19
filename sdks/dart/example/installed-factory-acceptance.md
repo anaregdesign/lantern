@@ -60,7 +60,7 @@ GOTOOLCHAIN="go$(awk '$1 == "go" {print $2; exit}' go.mod)" \
   --lifetime-seconds 540
 ```
 
-This foreground command is separate from the unchanged default F native gate
+This foreground command is separate from the unchanged default functional-validation native gate
 and its other opt-ins. Serving uses normal builds, a new task-labeled scratch
 container, actual configured NTP over a bridge, the existing `/etc/ntp.conf`
 mounted read-only, and only `127.0.0.1:18443` published to container TLS port
@@ -127,8 +127,8 @@ remain mandatory. Restore device settings after each family.
 The native profile's fixture Principals are registered through public
 Begin/Prepare/Apply against the existing PersonalUserRole before new native
 login credentials are exported. The actual serving mode is a synthetic
-prerequisite, not full configured-source Q, real-provider or physical
-acceptance. The ordinary full local gate retains independent F/Q execution.
+prerequisite, not full configured-source-integration, real-provider or physical
+acceptance. The ordinary full local gate retains independent functional-validation/configured-source-integration execution.
 
 Keep the existing signed-membership maximum unchanged. Serving is bounded to
 15–540 seconds, default/max 540; at export, signed membership must cover the

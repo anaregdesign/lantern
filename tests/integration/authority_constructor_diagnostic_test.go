@@ -9,7 +9,7 @@ import (
 	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
-// This opt-in observation uses the same fresh scoped fixture as the public Q
+// This opt-in observation uses the same fresh scoped fixture as the public configured-source-integration
 // case. Capture is passive: constructor deadlines, source selection, retries,
 // anchor installation and readiness all retain their production behavior.
 func TestCurrentAuthorityConstructorDiagnostic(t *testing.T) {

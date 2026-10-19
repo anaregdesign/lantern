@@ -70,7 +70,7 @@ func (w currentExportBoundaryWriter) Write(payload []byte) (int, error) {
 func (w currentExportBoundaryWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func TestCurrentSecurityPublicNativeGate(t *testing.T) {
-	sourceQualification := os.Getenv("LANTERN_CURRENT_SOURCE_QUALIFICATION") == "1"
+	configuredSourceIntegration := os.Getenv("LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION") == "1"
 	serving, servingErr := nativeFixtureServingFromEnv(os.Getenv)
 	if servingErr != nil {
 		t.Fatal(servingErr)
@@ -369,7 +369,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	var principal *pb.GetCurrentPrincipalResponse
 	var ordinaryReview *pb.CurrentSecurityReview
 	runCase := func(name string, body func(*testing.T)) {
-		if sourceQualification {
+		if configuredSourceIntegration {
 			switch name {
 			case "public protocols and full binding", "ordinary review apply foreign status", "sdk and typed data response", "reader explicit Deny and no write grant", "original stop observation remains separate from Apply":
 			default:
@@ -385,7 +385,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			options []connect.ClientOption
 			http    *http.Client
 		}{{"h2-connect-proto", nil, transport}, {"h2-connect-json", []connect.ClientOption{connect.WithProtoJSON()}, transport}, {"h2-grpc", []connect.ClientOption{connect.WithGRPC()}, transport}, {"h2-grpc-web", []connect.ClientOption{connect.WithGRPCWeb()}, transport}, {"http1-connect-json", []connect.ClientOption{connect.WithProtoJSON()}, &http.Client{Transport: authIngressRoundTripper{http1Transport}}}} {
-			if sourceQualification && mode.name != "h2-connect-proto" {
+			if configuredSourceIntegration && mode.name != "h2-connect-proto" {
 				continue
 			}
 			t.Run(mode.name, func(t *testing.T) {
@@ -689,7 +689,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			currentWireRevokeActiveExport(t, ctx, transport, servers[0].URL, controls[0], token, string(raw), change, &exportBoundary)
 		})
 	}
-	if !sourceQualification {
+	if !configuredSourceIntegration {
 		runActiveExport()
 	}
 
@@ -1029,7 +1029,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 	})
 
-	if sourceQualification {
+	if configuredSourceIntegration {
 		runActiveExport()
 		t.Run("source acquisition budget", func(t *testing.T) {
 			// Stop all owners before recording counters. No lossy trace queue is

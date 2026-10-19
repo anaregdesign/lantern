@@ -25,7 +25,7 @@ jobs:
     outputs:
       evidence_only: ${{ steps.evidence.outputs.evidence_only }}
       docs_only: ${{ steps.docs.outputs.docs_only }}
-      q_required: ${{ steps.qualification.outputs.q_required }}
+      configured_source_integration_required: ${{ steps.qualification.outputs.configured_source_integration_required }}
       windows_required: ${{ steps.native.outputs.windows_required }}
       windows_rust_required: ${{ steps.native.outputs.windows_rust_required }}
     steps:
@@ -41,7 +41,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: python3 -B .github/scripts/ci_docs.py
-      - name: Classify configured-source obligation
+      - name: Classify configured source integration obligation
         id: qualification
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -62,19 +62,19 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 -B .github/scripts/evidence_only_pr.py classify
 
-  mechanism:
+  functional-validation:
     needs: scope
     if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
     uses: ./.github/workflows/current-sdk4.yml
     with:
-      proof_kind: F
+      proof_kind: functional-validation
 
-  current-sdk4:
+  configured-source-integration:
     needs: scope
-    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.q_required != 'false'
+    if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' && needs.scope.outputs.configured_source_integration_required != 'false'
     uses: ./.github/workflows/current-sdk4.yml
     with:
-      proof_kind: Q
+      proof_kind: configured-source-integration
 
   modules:
     name: Modules and coverage
@@ -123,7 +123,7 @@ jobs:
             exit 1
           fi
 
-      # Independent of F/Q: collect every phase/module even after a failure.
+      # Independent of functional-validation/configured-source-integration: collect every phase/module even after a failure.
       # The final required Build & Test aggregates this blocking result.
       - name: Vet, build and test (all modules)
         id: modules
@@ -213,20 +213,20 @@ jobs:
 
   build:
     name: Build & Test
-    needs: [scope, modules, mechanism, current-sdk4, receipt-backup-windows]
+    needs: [scope, modules, functional-validation, configured-source-integration, receipt-backup-windows]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
-      - name: Aggregate mandatory results without hiding Q failure
+      - name: Aggregate mandatory results without hiding configured-source-integration failure
         env:
           SCOPE_RESULT: ${{ needs.scope.result }}
           MODULE_RESULT: ${{ needs.modules.result }}
-          F_RESULT: ${{ needs.mechanism.result }}
-          Q_RESULT: ${{ needs.current-sdk4.result }}
-          Q_REQUIRED: ${{ needs.scope.outputs.q_required }}
+          FUNCTIONAL_VALIDATION_RESULT: ${{ needs.functional-validation.result }}
+          CONFIGURED_SOURCE_INTEGRATION_RESULT: ${{ needs.configured-source-integration.result }}
+          CONFIGURED_SOURCE_INTEGRATION_REQUIRED: ${{ needs.scope.outputs.configured_source_integration_required }}
           WINDOWS_REQUIRED: ${{ needs.scope.outputs.windows_required }}
           WINDOWS_RESULT: ${{ needs.receipt-backup-windows.result }}
           DOCS_ONLY: ${{ needs.scope.outputs.docs_only }}
@@ -235,23 +235,23 @@ jobs:
       - uses: actions/download-artifact@v8
         if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
         with:
-          artifact-ids: ${{ needs.mechanism.outputs.artifact_id }}
-          path: ${{ runner.temp }}/current-sdk4-F
-      - name: Verify same-run F receipt
+          artifact-ids: ${{ needs.functional-validation.outputs.artifact_id }}
+          path: ${{ runner.temp }}/current-sdk4-functional-validation
+      - name: Verify same-run functional-validation receipt
         if: needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true'
         env:
-          F_RECEIPT_SHA256: ${{ needs.mechanism.outputs.receipt_sha256 }}
-        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind F --trusted-receipt-sha256 "$F_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4-F"
+          FUNCTIONAL_VALIDATION_RECEIPT_SHA256: ${{ needs.functional-validation.outputs.receipt_sha256 }}
+        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind functional-validation --trusted-receipt-sha256 "$FUNCTIONAL_VALIDATION_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4-functional-validation"
       - uses: actions/download-artifact@v8
-        if: needs.current-sdk4.result == 'success'
+        if: needs.configured-source-integration.result == 'success'
         with:
-          artifact-ids: ${{ needs.current-sdk4.outputs.artifact_id }}
-          path: ${{ runner.temp }}/current-sdk4-Q
-      - name: Verify same-run Q receipt
-        if: needs.current-sdk4.result == 'success'
+          artifact-ids: ${{ needs.configured-source-integration.outputs.artifact_id }}
+          path: ${{ runner.temp }}/current-sdk4-configured-source-integration
+      - name: Verify same-run configured-source-integration receipt
+        if: needs.configured-source-integration.result == 'success'
         env:
-          SDK4_RECEIPT_SHA256: ${{ needs.current-sdk4.outputs.receipt_sha256 }}
-        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind Q --trusted-receipt-sha256 "$SDK4_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4-Q"
+          CONFIGURED_SOURCE_INTEGRATION_RECEIPT_SHA256: ${{ needs.configured-source-integration.outputs.receipt_sha256 }}
+        run: python3 -B .github/scripts/current_sdk4_gate.py verify --expected-head "$GITHUB_SHA" --proof-kind configured-source-integration --trusted-receipt-sha256 "$CONFIGURED_SOURCE_INTEGRATION_RECEIPT_SHA256" --evidence "$RUNNER_TEMP/current-sdk4-configured-source-integration"
 
   receipt-backup-windows:
     name: Receipt backup (Windows)

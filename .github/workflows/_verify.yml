@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 jobs:
-  configured-source:
+  configured-source-integration:
     uses: ./.github/workflows/current-source-release.yml
   verify:
     name: Verify

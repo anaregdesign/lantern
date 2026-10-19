@@ -1,3 +1,9 @@
+import contextlib
+import io
+import json
+import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -5,7 +11,25 @@ import current_qualification_scope as scope
 
 
 class QualificationScopeTest(unittest.TestCase):
-    def test_only_reviewed_modified_application_sources_can_omit_q(self):
+    def test_classifier_exports_the_descriptive_ci_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            summary = Path(directory) / "summary"
+            for required in (False, True):
+                with self.subTest(required=required), \
+                        patch.dict(os.environ, {"GITHUB_OUTPUT": str(output),
+                                                "GITHUB_STEP_SUMMARY": str(summary)}, clear=True), \
+                        patch.object(scope, "classify", return_value=(required, "fixture")), \
+                        contextlib.redirect_stdout(io.StringIO()) as stdout:
+                    output.write_text("")
+                    scope.main()
+                self.assertEqual(output.read_text(),
+                                 f"configured_source_integration_required={str(required).lower()}\n")
+                self.assertEqual(json.loads(stdout.getvalue()),
+                                 {"configured_source_integration_required": required,
+                                  "reason": "fixture"})
+
+    def test_only_reviewed_modified_application_sources_can_omit_source_integration(self):
         for path in ("admin/app/components/Card.tsx", "sdks/dart/offline/lib/store.dart", "sdks/dart/offline_sqlite/lib/store.dart",
                      "core/collection/map.go", "core/nlp/tokenizer.go", "core/model/model.go", "core/search/index_test.go",
                      "server/provider/pprof.go", "server/provider/runtime_profiling_test.go"):
@@ -13,7 +37,7 @@ class QualificationScopeTest(unittest.TestCase):
             for status in ("A", "D", "R100", "T", "U", ""):
                 self.assertTrue(scope.requires_qualification({path: status}))
 
-    def test_unknown_production_dependency_and_proof_changes_require_q(self):
+    def test_unknown_production_dependency_and_proof_changes_require_source_integration(self):
         for path in ("server/internal/security/control_time_owner.go", "server/provider/security_current_runtime.go",
                      "core/cache/cache.go", "server/provider/public_metrics.go", "server/provider/provider.go",
                      "server/internal/authn/session.go", "core/hlc/clock.go", "core/mutationreceipt/clock_journal.go",
@@ -26,7 +50,7 @@ class QualificationScopeTest(unittest.TestCase):
         self.assertTrue(scope.requires_qualification({}))
         self.assertTrue(scope.requires_qualification({"admin/app/Card.tsx": "M", "go.sum": "M"}))
 
-    def test_missing_base_unsupported_event_and_classifier_errors_require_q(self):
+    def test_missing_base_unsupported_event_and_classifier_errors_require_source_integration(self):
         self.assertTrue(scope.classify({})[0])
         self.assertTrue(scope.classify({"GITHUB_EVENT_NAME": "push", "GITHUB_SHA": "a", "PUSH_BEFORE_SHA": "0" * 40})[0])
         with patch.object(scope.ci_docs, "change_range", side_effect=ValueError("missing base")):

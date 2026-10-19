@@ -137,7 +137,7 @@ elif args[0] == 'run':
                 self.assertEqual(receipt["build_tags"], [])
                 self.assertFalse(receipt["synthetic_utc"])
                 self.assertEqual(receipt["source_config_sha256"], hashlib.sha256(source_config).hexdigest())
-                self.assertIn("full Q/real provider/device acceptance NOT_RUN", receipt["proof"])
+                self.assertIn("configured-source-integration/real provider/device acceptance NOT_RUN", receipt["proof"])
                 self.assertNotIn(options.origin, (destinations[-1] / "receipt.json").read_text())
             else:
                 self.assertNotIn("--mount", run)

@@ -5,7 +5,7 @@ import platform
 import subprocess
 
 
-# These root-provisioned cases have their own mandatory shared F/Q owner.
+# These root-provisioned cases have their own mandatory shared functional-validation/configured-source-integration owner.
 ROOT_FIXTURES = (
     "scoped_changes::tests::real_public_scoped_wire",
     "security::tests::real_public_current_wire",

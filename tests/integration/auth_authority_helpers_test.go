@@ -159,7 +159,7 @@ func newOIDCControlWireFixtureOptions(t *testing.T, configure func(*oidcFixtureB
 func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap), durableReceipts, publicTLS bool, traversalLimits ...service.TraversalLimits) *oidcControlWireFixture {
 	t.Helper()
 	if os.Getenv("LANTERN_CURRENT_PUBLIC_GATE") != "1" {
-		t.Skip("current-authority wire case requires the coordinated F/Q campaign")
+		t.Skip("current-authority wire case requires the coordinated functional-validation/configured-source-integration campaign")
 	}
 	f := newOIDCWireIssuer(t)
 	root, resolveErr := filepath.EvalSymlinks(t.TempDir())

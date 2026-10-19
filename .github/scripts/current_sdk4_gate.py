@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Mandatory native SDK4 execution; receipts are output, never local carry input.
+"""Functional validation and configured source integration for current authority.
+
+Receipts are output, never local carry input.
 
 Artifact verification requires the digest emitted by the successful same-run CI
 job, not a digest supplied inside the artifact. It also checks the exact checkout
@@ -17,6 +19,11 @@ import shutil
 import subprocess
 import time
 import uuid
+
+
+FUNCTIONAL_VALIDATION = "functional-validation"
+CONFIGURED_SOURCE_INTEGRATION = "configured-source-integration"
+PROOF_KINDS = (FUNCTIONAL_VALIDATION, CONFIGURED_SOURCE_INTEGRATION)
 
 
 ROOT_TEST = "TestCurrentSecurityPublicNativeGate"
@@ -49,7 +56,7 @@ RETAINED_ROOT_TESTS = (
     "TestAuth_PublicChangesBenchmarkConsumerRealWire",
 )
 SDK_TESTS = tuple(f"{ROOT_TEST}/{sdk}" for sdk in ("go", "bun", "dart", "cargo"))
-F_CASES = tuple(
+FUNCTIONAL_VALIDATION_CASES = tuple(
     f"{ROOT_TEST}/{name}"
     for name in (
         "public_protocols_and_full_binding",
@@ -67,8 +74,8 @@ F_CASES = tuple(
         "public_authorization_stops_after_quorum_loss",
     )
 )
-F_PROTOCOLS = tuple(
-    f"{F_CASES[0]}/{mode}"
+FUNCTIONAL_VALIDATION_PROTOCOLS = tuple(
+    f"{FUNCTIONAL_VALIDATION_CASES[0]}/{mode}"
     for mode in (
         "h2-connect-proto",
         "h2-connect-json",
@@ -77,7 +84,7 @@ F_PROTOCOLS = tuple(
         "http1-connect-json",
     )
 )
-Q_CASES = tuple(
+CONFIGURED_SOURCE_INTEGRATION_CASES = tuple(
     f"{ROOT_TEST}/{name}"
     for name in (
         "public_protocols_and_full_binding",
@@ -89,17 +96,17 @@ Q_CASES = tuple(
         "source_acquisition_budget",
     )
 )
-Q_ENVIRONMENT = {
+CONFIGURED_SOURCE_INTEGRATION_ENVIRONMENT = {
     "LANTERN_CURRENT_PUBLIC_GATE": "1",
     "LANTERN_CURRENT_PUBLIC_SDK4": "1",
-    "LANTERN_CURRENT_SOURCE_QUALIFICATION": "1",
+    "LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION": "1",
 }
 RECEIPT_SCHEMA = 3
 
-ENVIRONMENT = {
+FUNCTIONAL_VALIDATION_ENVIRONMENT = {
     "LANTERN_CURRENT_PUBLIC_GATE": "1",
     "LANTERN_CURRENT_PUBLIC_SDK4": "1",
-    "LANTERN_CURRENT_SOURCE_QUALIFICATION": "0",
+    "LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION": "0",
 }
 LOG_NAMES = ("events.jsonl", "stderr.log")
 NATIVE_MARKER = "production native constructor: independently provisioned three voters, two origins, observer; no injected clock or H"
@@ -110,15 +117,15 @@ MECHANISM_PACKAGE = "github.com/anaregdesign/lantern/server/internal/security"
 
 
 def proof_contract(kind):
-    if kind not in ("F", "Q"):
+    if kind not in PROOF_KINDS:
         raise ValueError("unknown proof kind")
     return {
         "kind": kind,
-        "source_kind": "controlled-loopback" if kind == "F" else "configured-source",
-        "synthetic_utc": kind == "F",
-        "build_kind": "test-fixture" if kind == "F" else "normal",
-        "build_tags": [FIXTURE_TAG] if kind == "F" else [],
-        "case_contract": "functional-full-v3" if kind == "F" else "source-cohort-v3",
+        "source_kind": "controlled-loopback" if kind == FUNCTIONAL_VALIDATION else "configured-source",
+        "synthetic_utc": kind == FUNCTIONAL_VALIDATION,
+        "build_kind": "test-fixture" if kind == FUNCTIONAL_VALIDATION else "normal",
+        "build_tags": [FIXTURE_TAG] if kind == FUNCTIONAL_VALIDATION else [],
+        "case_contract": "functional-full-v3" if kind == FUNCTIONAL_VALIDATION else "source-cohort-v3",
     }
 
 
@@ -127,21 +134,32 @@ def build_flags(kind):
 
 
 def log_names(kind):
+    proof_contract(kind)
     return (
-        LOG_NAMES + ("mechanism-events.jsonl", "mechanism-stderr.log") if kind == "F" else LOG_NAMES
+        LOG_NAMES + ("mechanism-events.jsonl", "mechanism-stderr.log")
+        if kind == FUNCTIONAL_VALIDATION
+        else LOG_NAMES
     )
 
 
 def execution_environment(kind):
     proof_contract(kind)
-    return ENVIRONMENT if kind == "F" else Q_ENVIRONMENT
+    return (
+        FUNCTIONAL_VALIDATION_ENVIRONMENT
+        if kind == FUNCTIONAL_VALIDATION
+        else CONFIGURED_SOURCE_INTEGRATION_ENVIRONMENT
+    )
 
 
 def required_tests(kind):
+    proof_contract(kind)
     return (
-        (ROOT_TEST, *SDK_TESTS, *F_CASES, *F_PROTOCOLS, *RETAINED_ROOT_TESTS, SCOPED_TEST)
-        if kind == "F"
-        else (ROOT_TEST, *SDK_TESTS, *Q_CASES)
+        (
+            ROOT_TEST, *SDK_TESTS, *FUNCTIONAL_VALIDATION_CASES,
+            *FUNCTIONAL_VALIDATION_PROTOCOLS, *RETAINED_ROOT_TESTS, SCOPED_TEST,
+        )
+        if kind == FUNCTIONAL_VALIDATION
+        else (ROOT_TEST, *SDK_TESTS, *CONFIGURED_SOURCE_INTEGRATION_CASES)
     )
 
 
@@ -154,7 +172,7 @@ def acquisition_counts(path):
         event = json.loads(line)
         if (
             event.get("Package") == PACKAGE
-            and event.get("Test") == Q_CASES[-1]
+            and event.get("Test") == CONFIGURED_SOURCE_INTEGRATION_CASES[-1]
             and event.get("Action") == "output"
         ):
             if match := pattern.search(event.get("Output", "")):
@@ -187,7 +205,7 @@ def observed_execution(evidence):
     for filename, names in (
         (
             "events.jsonl",
-            tuple(dict.fromkeys((*required_tests("F"), *required_tests("Q")))),
+            tuple(dict.fromkeys((*required_tests(FUNCTIONAL_VALIDATION), *required_tests(CONFIGURED_SOURCE_INTEGRATION)))),
         ),
     ):
         actions = {name: [] for name in names}
@@ -232,7 +250,7 @@ def mechanism_command():
         "go",
         "test",
         "-json",
-        *build_flags("F"),
+        *build_flags(FUNCTIONAL_VALIDATION),
         "./server/internal/security",
         "-run",
         "^(" + "|".join(MECHANISM_TESTS) + ")$",
@@ -282,10 +300,10 @@ def snapshot(root):
     }
 
 
-def command(kind="Q"):
-    # Full functional scope always owns the retained Rust case. Q creates
-    # exactly one cohort and never repeats those functional constructors.
-    names = [ROOT_TEST, *RETAINED_ROOT_TESTS, SCOPED_TEST] if kind == "F" else [ROOT_TEST]
+def command(kind=CONFIGURED_SOURCE_INTEGRATION):
+    # Functional validation owns the retained Rust case. Configured-source
+    # integration creates one cohort without repeating functional constructors.
+    names = [ROOT_TEST, *RETAINED_ROOT_TESTS, SCOPED_TEST] if kind == FUNCTIONAL_VALIDATION else [ROOT_TEST]
     return [
         "go",
         "test",
@@ -299,19 +317,19 @@ def command(kind="Q"):
     ]
 
 
-def execution_events(path, kind="Q"):
+def execution_events(path, kind=CONFIGURED_SOURCE_INTEGRATION):
     required = required_tests(kind)
     return required_execution_events(path, required, kind)
 
 
-def required_execution_events(path, required, kind="Q", package=PACKAGE):
+def required_execution_events(path, required, kind=CONFIGURED_SOURCE_INTEGRATION, package=PACKAGE):
     proof_contract(kind)
     state = {name: [] for name in required}
     package_passes = 0
     native_markers = 0
     constructors = []
-    marker = FIXTURE_MARKER if kind == "F" else NATIVE_MARKER
-    wrong_marker = NATIVE_MARKER if kind == "F" else FIXTURE_MARKER
+    marker = FIXTURE_MARKER if kind == FUNCTIONAL_VALIDATION else NATIVE_MARKER
+    wrong_marker = NATIVE_MARKER if kind == FUNCTIONAL_VALIDATION else FIXTURE_MARKER
     with path.open() as stream:
         for line in stream:
             event = json.loads(line)
@@ -339,16 +357,16 @@ def required_execution_events(path, required, kind="Q", package=PACKAGE):
     if package_passes != 1 or (package == PACKAGE and native_markers != 1):
         raise ValueError("native constructor or successful package completion missing")
     expected_constructors = [(str(i), "fresh", "true") for i in (1, 2, 3)]
-    if kind == "F":
-        # Complete F also resumes member2 with its intact custody/state in the
-        # browser session case. Q never restarts a configured-source owner.
+    if kind == FUNCTIONAL_VALIDATION:
+        # Functional validation resumes member2 with intact custody/state in the
+        # browser case. Configured-source integration never restarts an owner.
         expected_constructors.append(("2", "resume", "true"))
     if package == PACKAGE and constructors != expected_constructors:
         raise ValueError("required per-owner constructor acquisition evidence missing or failed")
     return list(required)
 
 
-def environment(root, env, kind="Q"):
+def environment(root, env, kind=CONFIGURED_SOURCE_INTEGRATION):
     proof_contract(kind)
     if platform.system() not in ("Darwin", "Linux") or platform.machine() not in (
         "arm64",
@@ -428,7 +446,7 @@ def environment(root, env, kind="Q"):
         raise ValueError("native qualification cannot cross-compile its test")
     compiler = Path(settings["GOROOT"]) / "bin/go"
     tools["go"]["selected_toolchain_sha256"] = sha(compiler.read_bytes())
-    config = Path("/etc/ntp.conf").read_bytes() if kind == "Q" else b"server fixture.invalid\n"
+    config = Path("/etc/ntp.conf").read_bytes() if kind == CONFIGURED_SOURCE_INTEGRATION else b"server fixture.invalid\n"
     if not 0 < len(config) <= 4096:
         raise ValueError("native source configuration missing/oversize")
     return {
@@ -437,11 +455,11 @@ def environment(root, env, kind="Q"):
         "tools": tools,
         "go_settings": settings,
         "source_config_sha256": sha(config),
-        "source_config_path": "/etc/ntp.conf" if kind == "Q" else "compile-time fixture",
+        "source_config_path": "/etc/ntp.conf" if kind == CONFIGURED_SOURCE_INTEGRATION else "compile-time fixture",
         "environment": execution_environment(kind),
         "proof": proof_contract(kind),
         "native_environment": native_environment(),
-        "native_premises": "Existing conditional native counter profile; Q additionally requires honest configured source/path. F synthetic UTC does not qualify real UTC or external reachability.",
+        "native_premises": "Existing conditional native counter profile; configured-source-integration additionally requires an honest configured time source/path. Functional-validation synthetic UTC does not qualify real UTC or external reachability; neither kind qualifies real identity providers or physical devices.",
     }
 
 
@@ -467,7 +485,7 @@ def native_environment():
     return result
 
 
-def verify(root, evidence, expected_head, trusted_digest, kind="Q"):
+def verify(root, evidence, expected_head, trusted_digest, kind=CONFIGURED_SOURCE_INTEGRATION):
     # Only a trusted same-workflow job output supplies trusted_digest in CI.
     # A standalone artifact's own status/hash is not authority to accept it.
     data = (evidence / "receipt.json").read_bytes()
@@ -515,9 +533,9 @@ def verify(root, evidence, expected_head, trusted_digest, kind="Q"):
         raise ValueError("partial execution result mismatch")
     if "export" in receipt:
         raise ValueError("separate export cohort is not part of the proof contract")
-    if kind == "Q" and receipt.get("acquisition") != acquisition_counts(evidence / "events.jsonl"):
+    if kind == CONFIGURED_SOURCE_INTEGRATION and receipt.get("acquisition") != acquisition_counts(evidence / "events.jsonl"):
         raise ValueError("single-cohort source acquisition evidence mismatch")
-    if kind == "F":
+    if kind == FUNCTIONAL_VALIDATION:
         mechanism = receipt.get("mechanism", {})
         if mechanism.get("command") != mechanism_command() or mechanism.get("exit") != 0:
             raise ValueError("native loopback loss/recovery execution missing")
@@ -528,7 +546,7 @@ def verify(root, evidence, expected_head, trusted_digest, kind="Q"):
     return receipt
 
 
-def run(root, evidence, expected_head=None, kind="Q"):
+def run(root, evidence, expected_head=None, kind=CONFIGURED_SOURCE_INTEGRATION):
     if evidence == root or root in evidence.parents:
         raise ValueError("evidence must be outside the checkout")
     evidence.mkdir(parents=True, exist_ok=False)
@@ -549,7 +567,7 @@ def run(root, evidence, expected_head=None, kind="Q"):
         env.update(execution_environment(kind), GOWORK=str(root / "go.work"))
         runtime = environment(root, env, kind)
         receipt["runtime"] = runtime
-        if kind == "F":
+        if kind == FUNCTIONAL_VALIDATION:
             receipt["stage"] = "native-loopback"
             mechanism = {"command": mechanism_command()}
             receipt["mechanism"] = mechanism
@@ -588,7 +606,7 @@ def run(root, evidence, expected_head=None, kind="Q"):
         if result.returncode:
             raise ValueError(f"native SDK4 command failed: exit {result.returncode}")
         receipt["executed_tests"] = execution_events(evidence / "events.jsonl", kind)
-        if kind == "Q":
+        if kind == CONFIGURED_SOURCE_INTEGRATION:
             receipt["acquisition"] = acquisition_counts(evidence / "events.jsonl")
         if snapshot(root) != source or environment(root, env, kind) != runtime:
             raise ValueError("source/runtime configuration changed during SDK4 qualification")
@@ -626,7 +644,7 @@ def main():
         item = sub.add_parser(name)
         item.add_argument("--root", type=Path, default=Path.cwd())
         item.add_argument("--evidence", type=Path, required=True)
-        item.add_argument("--proof-kind", choices=("F", "Q"), default="Q")
+        item.add_argument("--proof-kind", choices=PROOF_KINDS, default=CONFIGURED_SOURCE_INTEGRATION)
         if name == "run":
             item.add_argument("--expected-head")
             item.add_argument(
@@ -635,9 +653,9 @@ def main():
                 help="retain a new output-only receipt for each local qualification",
             )
             item.add_argument(
-                "--with-mechanism",
+                "--with-functional-validation",
                 action="store_true",
-                help="run separate F evidence before Q; conservative full local gate",
+                help="run separate functional-validation evidence before configured-source-integration; conservative full local gate",
             )
         else:
             item.add_argument("--expected-head", required=True)
@@ -648,16 +666,16 @@ def main():
             evidence = args.evidence.resolve()
             if args.fresh_child:
                 evidence = evidence / str(uuid.uuid4())
-            if args.with_mechanism:
-                if args.proof_kind != "Q":
-                    raise ValueError("--with-mechanism requires Q")
+            if args.with_functional_validation:
+                if args.proof_kind != CONFIGURED_SOURCE_INTEGRATION:
+                    raise ValueError("--with-functional-validation requires configured-source-integration")
                 run(
                     args.root.resolve(),
-                    evidence / "F",
+                    evidence / FUNCTIONAL_VALIDATION,
                     args.expected_head,
-                    "F",
+                    FUNCTIONAL_VALIDATION,
                 )
-                evidence = evidence / "Q"
+                evidence = evidence / CONFIGURED_SOURCE_INTEGRATION
             run(
                 args.root.resolve(),
                 evidence,
@@ -673,7 +691,7 @@ def main():
                 args.proof_kind,
             )
     except Exception as error:
-        parser.exit(1, f"FAIL native SDK4 qualification: {error}\n")
+        parser.exit(1, f"FAIL current authority {args.proof_kind}: {error}\n")
 
 
 if __name__ == "__main__":

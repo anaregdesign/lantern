@@ -3,11 +3,12 @@
 
 By default, provider names resolve only inside a new network-less container. TLS,
 pinned destinations, the production Fetcher and current authority remain intact.
-The compile-time controlled source is mechanism evidence, not configured UTC Q.
+The compile-time controlled source supplies mechanism evidence; configured time-
+source integration remains separate.
 No image pull, host DNS/clock change, credential reuse or privileged container.
 
 --serve is a separate normal-build synthetic-provider prerequisite, not the
-ordinary gate or full Q/provider/device acceptance. It bridges actual NTP using
+ordinary gate or configured-source-integration/provider/device acceptance. It bridges actual NTP using
 the existing read-only /etc/ntp.conf and publishes only one loopback TLS port.
 Its new private/ directory contains ca.pem and fixture.json (schema 1: endpoint,
 prefix, ca_file, serving_until, accounts.{a,b}.{access_token,expires_at}). Wait for
@@ -160,7 +161,7 @@ def run(root, evidence, serving=None):
     if serving is not None:
         receipt.update({"mode": "serving", "build_tags": [], "synthetic_utc": False,
                         "serving_profile": serving.profile,
-                        "proof": "normal-build configured-source " + serving.profile + " fixture serving lifecycle only; ordinary native gate/full Q/real provider/device acceptance NOT_RUN"})
+                        "proof": "normal-build configured-source " + serving.profile + " fixture serving lifecycle only; ordinary native gate/configured-source-integration/real provider/device acceptance NOT_RUN"})
 
     def save():
         write_private(evidence / "receipt.json", json.dumps(receipt, indent=2) + "\n")
