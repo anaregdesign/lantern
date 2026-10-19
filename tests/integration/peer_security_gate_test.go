@@ -89,7 +89,7 @@ func (l peerProbeListener) Accept() (net.Conn, error) {
 	// Bound only this owned socket's send buffer, never the host's settings.
 	if tcp, ok := conn.(*net.TCPConn); ok {
 		if err := tcp.SetWriteBuffer(1024); err != nil {
-			conn.Close()
+			_ = conn.Close()
 			return nil, err
 		}
 	}
@@ -221,7 +221,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			defer cancel()
 			probe := &peerSocketProbe{active: make(map[uint64]peerSocketWrite)}
 			streamStarted := &peerStreamStarted{started: make(chan struct{})}
-			dropped := make(chan time.Time, 1)
+			dropped := make(chan struct{})
 			ended := make(chan peerStreamEnd, 8)
 			applyRelease, snapshotRelease := make(chan struct{}), make(chan struct{})
 			var applyOnce, snapshotOnce, dropOnce sync.Once
@@ -243,7 +243,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 					if i == 0 {
 						options.OnDrop = func(cause string) {
 							if cause == mutationlog.DropCauseBufferFull {
-								dropOnce.Do(func() { dropped <- time.Now() })
+								dropOnce.Do(func() { close(dropped) })
 							}
 						}
 					}
@@ -334,22 +334,19 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 				t.Fatal("subscription overflowed before the blocked socket observation")
 			default:
 			}
-			var dropAt time.Time
 		produce:
 			for i := 0; i < 1024; i++ {
 				select {
-				case dropAt = <-dropped:
+				case <-dropped:
 					break produce
 				default:
 				}
 				write("data:pressure", payload)
 			}
-			if dropAt.IsZero() {
-				select {
-				case dropAt = <-dropped:
-				case <-ctx.Done():
-					t.Fatal("finite private stream did not overflow", ctx.Err())
-				}
+			select {
+			case <-dropped:
+			case <-ctx.Done():
+				t.Fatal("finite private stream did not overflow", ctx.Err())
 			}
 			var end peerStreamEnd
 			select {
