@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -40,22 +41,60 @@ import (
 type peerSocketWrite struct {
 	id         uint64
 	remote     string
+	size       int
 	start, end time.Time
 	failed     bool
 }
 
 type peerSocketProbe struct {
-	mu     sync.Mutex
-	next   uint64
-	active map[uint64]peerSocketWrite
-	writes []peerSocketWrite
+	mu               sync.Mutex
+	next             uint64
+	active           map[uint64]peerSocketWrite
+	writes           []peerSocketWrite
+	boundInitialRead atomic.Bool
+	boundClients     sync.Map
+}
+
+type peerClientSocket struct{ err error }
+
+func (p *peerSocketProbe) clientTrace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
+		if !p.boundInitialRead.Load() {
+			return
+		}
+		var err error
+		if connection, ok := info.Conn.(*tls.Conn); ok {
+			if tcp, ok := connection.NetConn().(*net.TCPConn); ok {
+				err = tcp.SetReadBuffer(1024)
+			} else {
+				err = fmt.Errorf("private client connection is not TCP")
+			}
+		} else {
+			err = fmt.Errorf("private client connection is not TLS")
+		}
+		p.boundClients.Store(info.Conn.LocalAddr().String(), peerClientSocket{err: err})
+	}}
+}
+
+func (p *peerSocketProbe) clientBufferError(remote string) error {
+	value, ok := p.boundClients.Load(remote)
+	if !ok {
+		return fmt.Errorf("private subscriber did not bind its owned receive buffer")
+	}
+	return value.(peerClientSocket).err
 }
 
 // blockedWrite observes real socket backpressure before the test overflows the
 // subscription. No test barrier is inserted in Send or net.Conn.Write.
-func (p *peerSocketProbe) blockedWrite(ctx context.Context) (peerSocketWrite, error) {
+func (p *peerSocketProbe) blockedWrite(ctx context.Context, after time.Time) (peerSocketWrite, error) {
 	stacks := make([]byte, 1<<20)
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	var observedID uint64
+	var observedAt time.Time
 	for ctx.Err() == nil {
+		var candidate peerSocketWrite
+		waiting := false
 		p.mu.Lock()
 		if len(p.active) == 1 {
 			n := runtime.Stack(stacks, true)
@@ -64,14 +103,27 @@ func (p *peerSocketProbe) blockedWrite(ctx context.Context) (peerSocketWrite, er
 					bytes.Contains(stack, []byte("internal/poll.(*FD).Write(")) &&
 					bytes.Contains(stack, []byte("(*peerProbeConn).Write(")) {
 					for _, write := range p.active {
-						p.mu.Unlock()
-						return write, nil
+						if !write.start.Before(after) {
+							candidate, waiting = write, true
+						}
 					}
 				}
 			}
 		}
 		p.mu.Unlock()
-		runtime.Gosched()
+		if waiting {
+			if observedID != candidate.id {
+				observedID, observedAt = candidate.id, time.Now()
+			} else if time.Since(observedAt) >= time.Second {
+				return candidate, nil
+			}
+		} else {
+			observedID = 0
+		}
+		select {
+		case <-tick.C:
+		case <-ctx.Done():
+		}
 	}
 	return peerSocketWrite{}, ctx.Err()
 }
@@ -104,7 +156,7 @@ type peerProbeConn struct {
 func (c *peerProbeConn) Write(data []byte) (int, error) {
 	c.probe.mu.Lock()
 	c.probe.next++
-	write := peerSocketWrite{id: c.probe.next, remote: c.RemoteAddr().String(), start: time.Now()}
+	write := peerSocketWrite{id: c.probe.next, remote: c.RemoteAddr().String(), size: len(data), start: time.Now()}
 	c.probe.active[write.id] = write
 	c.probe.mu.Unlock()
 	n, err := c.Conn.Write(data)
@@ -211,16 +263,21 @@ func (s peerBarrierSnapshotSender) Send(frame *pb.SnapshotResponse) error {
 }
 
 func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testing.T) {
+	const phaseTimeout = 15 * time.Second
 	for _, evict := range []bool{false, true} {
 		name := "retained history"
 		if evict {
 			name = "evicted history"
 		}
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
+			pressureCtx, cancelPressure := context.WithTimeout(ctx, phaseTimeout)
+			defer cancelPressure()
 			probe := &peerSocketProbe{active: make(map[uint64]peerSocketWrite)}
+			probe.boundInitialRead.Store(true)
 			streamStarted := &peerStreamStarted{started: make(chan struct{})}
+			startedRemote := make(chan string, 1)
 			dropped := make(chan struct{})
 			ended := make(chan peerStreamEnd, 8)
 			applyRelease, snapshotRelease := make(chan struct{}), make(chan struct{})
@@ -263,6 +320,10 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 					wrapped := peerBarrierSnapshotHandler{LanternReplicationServiceHandler: base, peer: peer, release: snapshotRelease, calls: &snapshotCalls}
 					_, handler := graphv1connect.NewLanternReplicationServiceHandler(wrapped)
 					mux.Handle("/graph.v1.LanternReplicationService/Subscribe", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						select {
+						case startedRemote <- r.RemoteAddr:
+						default:
+						}
 						handler.ServeHTTP(w, r)
 						select {
 						case ended <- peerStreamEnd{remote: r.RemoteAddr, at: time.Now(), cancelled: r.Context().Err() != nil, proto: r.ProtoMajor}:
@@ -272,9 +333,9 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 					mux.Handle("/graph.v1.LanternReplicationService/Snapshot", handler)
 				},
 			})
-			write := func(key string, value []byte) {
+			write := func(writeCtx context.Context, key string, value []byte) {
 				t.Helper()
-				if _, err := f.primary[0].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key, Value: &pb.Vertex_Bytes{Bytes: value}}}); err != nil {
+				if _, err := f.primary[0].PutVertex(writeCtx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: key, Value: &pb.Vertex_Bytes{Bytes: value}}}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -285,6 +346,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			}
 			pump := replication.NewPump(replication.Config{NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{f.servers[0].URL}, PeerTransport: transport, BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond}, apply, receiveGraph)
 			pumpCtx, stopPump := context.WithCancel(ctx)
+			pumpCtx = httptrace.WithClientTrace(pumpCtx, probe.clientTrace())
 			pumpDone := make(chan error, 1)
 			go func() { pumpDone <- pump.Run(pumpCtx) }()
 			t.Cleanup(func() {
@@ -299,33 +361,43 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			})
 			select {
 			case <-streamStarted.started:
-			case <-ctx.Done():
-				t.Fatal("pump did not open the initially empty live subscription", ctx.Err())
+			case <-pressureCtx.Done():
+				t.Fatal("pump did not open the initially empty live subscription", pressureCtx.Err())
+			}
+			probe.boundInitialRead.Store(false)
+			select {
+			case remote := <-startedRemote:
+				if err := probe.clientBufferError(remote); err != nil {
+					t.Fatal(err)
+				}
+			case <-pressureCtx.Done():
+				t.Fatal("private subscriber did not identify its owned socket", pressureCtx.Err())
 			}
 			// An empty log registers its live subscriber synchronously, so the
 			// pressure below cannot be mistaken for an unbounded replay window.
-			write("data:seed", []byte("seed"))
+			write(pressureCtx, "data:seed", []byte("seed"))
 			select {
 			case <-apply.seed:
-			case <-ctx.Done():
-				t.Fatal("pump did not establish committed seed", ctx.Err())
+			case <-pressureCtx.Done():
+				t.Fatal("pump did not establish committed seed", pressureCtx.Err())
 			}
 			payload := make([]byte, 64<<10)
 			if _, err := rand.Read(payload); err != nil {
 				t.Fatal(err)
 			}
-			write("data:pressure", payload)
+			write(pressureCtx, "data:pressure", payload)
 			select {
 			case <-apply.entered:
-			case <-ctx.Done():
-				t.Fatal("receiver did not hold second application", ctx.Err())
+			case <-pressureCtx.Done():
+				t.Fatal("receiver did not hold second application", pressureCtx.Err())
 			}
+			heldAt := time.Now()
 			// At most 512 new entries fit without overflowing the normal live
 			// buffer. First prove an actual Write is blocked, then cause loss.
 			for range 511 {
-				write("data:pressure", payload)
+				write(pressureCtx, "data:pressure", payload)
 			}
-			blocked, err := probe.blockedWrite(ctx)
+			blocked, err := probe.blockedWrite(pressureCtx, heldAt)
 			if err != nil {
 				t.Fatal("private socket did not enter actual I/O wait before loss", err)
 			}
@@ -341,32 +413,43 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 					break produce
 				default:
 				}
-				write("data:pressure", payload)
+				write(pressureCtx, "data:pressure", payload)
 			}
 			select {
 			case <-dropped:
-			case <-ctx.Done():
-				t.Fatal("finite private stream did not overflow", ctx.Err())
+			case <-pressureCtx.Done():
+				t.Fatal("finite private stream did not overflow", pressureCtx.Err())
 			}
 			var end peerStreamEnd
 			select {
 			case end = <-ended:
-			case <-ctx.Done():
-				t.Fatal("overflow did not interrupt the actual private handler", ctx.Err())
+			case <-pressureCtx.Done():
+				t.Fatal("overflow did not interrupt the actual private handler", pressureCtx.Err())
 			}
-			if end.proto != 1 || !end.cancelled || ctx.Err() != nil {
-				t.Fatalf("private stream end: HTTP%d cancelled=%t parent=%v", end.proto, end.cancelled, ctx.Err())
+			if end.proto != 1 || !end.cancelled || pressureCtx.Err() != nil {
+				t.Fatalf("private stream end: HTTP%d cancelled=%t pressure=%v", end.proto, end.cancelled, pressureCtx.Err())
+			}
+			if err := probe.clientBufferError(end.remote); err != nil {
+				t.Fatal(err)
 			}
 			probe.mu.Lock()
 			interruptedWrite := false
+			var completedObservation peerSocketWrite
+			failedWrites := 0
 			for _, write := range probe.writes {
+				if write.id == blocked.id {
+					completedObservation = write
+				}
+				if write.remote == end.remote && write.failed {
+					failedWrites++
+				}
 				if write.id == blocked.id && write.remote == end.remote && write.failed && !write.end.After(end.at) {
 					interruptedWrite = true
 				}
 			}
 			probe.mu.Unlock()
 			if !interruptedWrite {
-				t.Fatal("the socket Write observed in I/O wait did not fail before handler return")
+				t.Fatalf("observed socket Write did not fail before handler return: observed=%+v completed=%+v failed_writes=%d", blocked, completedObservation, failedWrites)
 			}
 			if f.primary[1].LocalSeq(hlc.NodeID{3}) != 1 {
 				t.Fatal("held receiver advanced its committed cursor")
@@ -374,30 +457,39 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			if first, _ := f.logs[0].FirstSeq(); first != 1 {
 				t.Fatal("retention was lost before the intended branch")
 			}
+			// The interruption proof is complete. Evicting a normal-size ring
+			// is finite fixture preparation, not part of its elapsed deadline.
+			// Cancel completed phases so later work cannot borrow their context.
+			cancelPressure()
 			if evict {
+				// This fixed-count, in-process preparation uses the owning
+				// test budget. A separate short deadline would assert a
+				// fixture throughput floor rather than recovery behavior.
 				for i := 0; i < 10016; i++ {
-					write("data:pressure", []byte("later"))
+					write(ctx, "data:pressure", []byte("later"))
 				}
 				if first, _ := f.logs[0].FirstSeq(); first <= 3 {
 					t.Fatal("finite fixture failed to evict the committed resume cursor")
 				}
 			}
+			recoveryCtx, cancelRecovery := context.WithTimeout(ctx, phaseTimeout)
+			defer cancelRecovery()
 			last := f.primary[0].LocalSeq(hlc.NodeID{3})
 			releaseApply()
 			if evict {
 				select {
 				case <-apply.installStarted:
-				case <-ctx.Done():
-					t.Fatal("missing prefix did not trigger private Snapshot", ctx.Err())
+				case <-recoveryCtx.Done():
+					t.Fatal("missing prefix did not trigger private Snapshot", recoveryCtx.Err())
 				}
-				if _, err := f.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed"}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				if _, err := f.primary[1].GetVertex(recoveryCtx, &pb.GetVertexRequest{Key: "data:seed"}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 					t.Fatalf("incomplete Snapshot exposed public data: %v", err)
 				}
 				releaseSnapshot()
 				select {
 				case <-apply.installFinished:
-				case <-ctx.Done():
-					t.Fatal("verified Snapshot did not reopen publication", ctx.Err())
+				case <-recoveryCtx.Done():
+					t.Fatal("verified Snapshot did not reopen publication", recoveryCtx.Err())
 				}
 				if snapshotCalls.Load() == 0 {
 					t.Fatal("evicted branch skipped Snapshot")
@@ -406,8 +498,8 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 				for f.primary[1].LocalSeq(hlc.NodeID{3}) < last {
 					select {
 					case <-apply.committed:
-					case <-ctx.Done():
-						t.Fatal("retained prefix did not converge", ctx.Err())
+					case <-recoveryCtx.Done():
+						t.Fatal("retained prefix did not converge", recoveryCtx.Err())
 					}
 				}
 				if snapshotCalls.Load() != 0 {
@@ -417,7 +509,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			if f.primary[1].LocalSeq(hlc.NodeID{3}) < last {
 				t.Fatal("recovery did not certify the expected origin frontier")
 			}
-			if _, err := f.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed"}); err != nil {
+			if _, err := f.primary[1].GetVertex(recoveryCtx, &pb.GetVertexRequest{Key: "data:seed"}); err != nil {
 				t.Fatal("verified recovery did not restore public read", err)
 			}
 			stopPump()
