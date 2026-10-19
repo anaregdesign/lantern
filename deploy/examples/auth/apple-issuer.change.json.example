@@ -1,0 +1,27 @@
+{
+  "putIssuer": {
+    "issuer": "https://appleid.apple.com",
+    "enabled": false,
+    "algorithms": [
+      "RS256"
+    ],
+    "nativeClients": [
+      {
+        "id": "replace_apple_android",
+        "kind": "NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB",
+        "clientId": "invalid.replace.apple.web",
+        "serviceOrigin": "https://replace-service-host.invalid",
+        "redirectUri": "https://replace-service-host.invalid/auth/native/apple/callback/replace_apple_android",
+        "androidPackage": "invalid.replace.application",
+        "secretRef": "replace_apple_android"
+      },
+      {
+        "id": "replace_apple_ios",
+        "kind": "NATIVE_CLIENT_KIND_APPLE_NATIVE",
+        "clientId": "invalid.replace.ios",
+        "serviceOrigin": "https://replace-service-host.invalid",
+        "secretRef": "replace_apple_ios"
+      }
+    ]
+  }
+}

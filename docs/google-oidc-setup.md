@@ -9,6 +9,10 @@ certificate expired. Neither fact completes the pending real-provider/human or
 actual combined UI exit. Reuse the existing client for separately approved
 work; this guide does not authorize recreating clients or changing credentials.
 
+Start with the [placeholder configuration files](../deploy/examples/auth/README.md)
+for Server settings, OAuth clients and Android/iOS registration. Keep all actual
+validation-specific values, including normally public client IDs, outside Git.
+
 ## Separate ordinary management from operation reauthentication
 
 Ordinary login uses Authorization Code, PKCE S256, state, nonce and verified
@@ -84,14 +88,15 @@ the qualification flag without verifying the actual API issuance profile.
    /auth/callback/89a8000a68d759c68bfaeab5056d67342e97643511923e63702da58a9aac8f38
    ```
 
-   For example, **only if** the approved local HTTPS Admin gateway actually uses
-   `https://lantern-test.replary.com:17443`, its exact Authorized redirect URI is:
+   Using the reserved placeholder Admin origin, the Authorized redirect URI
+   template is:
 
    ```text
-   https://lantern-test.replary.com:17443/auth/callback/89a8000a68d759c68bfaeab5056d67342e97643511923e63702da58a9aac8f38
+   https://replace-admin-host.invalid/auth/callback/89a8000a68d759c68bfaeab5056d67342e97643511923e63702da58a9aac8f38
    ```
 
-   Replace the origin before saving when using another port or host. Do not
+   Replace the origin privately with the exact approved HTTPS host/port before
+   saving; `.invalid` is not a usable callback host. Do not
    register a generic `/auth/callback`, add a trailing slash, or send Google to
    the private peer listener. Server-owned code flow does not require exposing
    tokens through JavaScript or using Google's implicit flow.

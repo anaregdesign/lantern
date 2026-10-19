@@ -22,3 +22,12 @@ testbed/bench/out/
 
 # Local snapshot-backup dumps from deploy/compose/docker-compose.backup.yml (#770)
 deploy/compose/backups/
+
+# Private developer TLS/OIDC/OAuth copies (#1817); prefer external storage.
+/deploy/examples/auth/private/
+/deploy/examples/auth/*.local.*
+/deploy/examples/auth/client_secret_*.json
+/deploy/examples/auth/AuthKey_*.p8
+/sdks/dart/example/android/app/google-services.json
+/sdks/dart/example/ios/Runner/GoogleService-Info.plist
+/sdks/dart/example/ios/Runner/AuthKey_*.p8

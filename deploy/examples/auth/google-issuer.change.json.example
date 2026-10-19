@@ -1,0 +1,26 @@
+{
+  "putIssuer": {
+    "issuer": "https://accounts.google.com",
+    "enabled": false,
+    "clientId": "REPLACE_GOOGLE_WEB_CLIENT_ID",
+    "apiAudience": "REPLACE_LANTERN_API_AUDIENCE",
+    "redirectUri": "https://replace-admin-host.invalid/auth/callback/89a8000a68d759c68bfaeab5056d67342e97643511923e63702da58a9aac8f38",
+    "algorithms": [
+      "RS256"
+    ],
+    "secretRef": "replace_google_web",
+    "humanSubjectNamespaceQualified": false,
+    "nativeClients": [
+      {
+        "id": "replace_google_mobile",
+        "kind": "NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN",
+        "clientId": "REPLACE_GOOGLE_WEB_CLIENT_ID",
+        "serviceOrigin": "https://replace-service-host.invalid",
+        "presenters": [
+          "REPLACE_GOOGLE_ANDROID_CLIENT_ID",
+          "REPLACE_GOOGLE_IOS_CLIENT_ID"
+        ]
+      }
+    ]
+  }
+}

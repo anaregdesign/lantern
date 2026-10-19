@@ -452,6 +452,11 @@ defines defaults, validation, limits, and recovery requirements. Common entries:
 | `LANTERN_METRICS_ADDR` | `:9090` | Prometheus and HTTP health listener |
 | `LANTERN_STRICT_CONFIG` | `false` | Reject malformed/unknown config when enabled |
 
+For private developer TLS, OIDC providers and Google/Apple OAuth clients, start
+with the [placeholder configuration files](deploy/examples/auth/README.md).
+Keep actual endpoint/client selections, downloaded provider files and keys
+outside Git.
+
 Prometheus metrics, structured JSON logs, gRPC Health and HTTP
 `/healthz` / `/readyz`, optional OpenTelemetry tracing, and gRPC reflection
 are available. See the [observability guide](docs/observability.md) for setup
