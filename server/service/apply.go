@@ -141,17 +141,20 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) (app
 		}
 	}
 	observation.preflightDone()
+	duplicate, pending, err := s.probeCommittedRemoteMutation(m, receiptEnvelope)
+	if err != nil {
+		return err
+	}
+	if duplicate {
+		observation.delivery, observation.outcome = "committed_duplicate", "committed_duplicate"
+		observation.pending = pending
+		return nil
+	}
 	gate := s.lockPublicationGate("remote_apply", false)
 	defer gate.Unlock()
 	observation.acquired, observation.pending = true, s.pendingCount
-	if s.receiptCommitFaulted {
-		return publicationGapError()
-	}
-	if s.snapshotInstallFaulted {
-		return publicationGapError()
-	}
 	observation.beforePublish(s, m)
-	err := s.publishRemoteMutation(ctx, m, receiptEnvelope)
+	err = s.publishRemoteMutation(ctx, m, receiptEnvelope)
 	observation.afterPublish(s, err)
 	return err
 }

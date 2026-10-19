@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +16,321 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 )
+
+func publicationReadWaitBarrier(svc *LanternService, category string) <-chan struct{} {
+	waiting := make(chan struct{})
+	var once sync.Once
+	svc.publicationClock = func() time.Time {
+		if svc.publicationWaiting.count(category) != 0 {
+			once.Do(func() { close(waiting) })
+		}
+		return time.Now()
+	}
+	return waiting
+}
+
+func TestPublicGraphCertificateBusyBeforeCaptureUsesCommittedFallback(t *testing.T) {
+	for _, fault := range []bool{false, true} {
+		t.Run(map[bool]string{false: "published", true: "WAL fault"}[fault], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			log := mutationlog.New(mutationlog.Options{Capacity: 8})
+			defer closeObservationLog(t, log)
+			metrics := &testPublicationObserver{}
+			svc := NewLanternService(cache).WithHotPathMetrics(metrics)
+			waiting := publicationReadWaitBarrier(svc, "read_fallback")
+			svc.replicationCutMu.Lock()
+			var once sync.Once
+			release := func() { once.Do(svc.replicationCutMu.Unlock) }
+			defer release()
+			if err := cache.PutVertex("partial", &pb.Vertex{Key: "partial"}); err != nil {
+				t.Fatal(err)
+			}
+			var captures atomic.Int32
+			var graphCount, logCount uint64
+			done := make(chan error, 1)
+			go func() {
+				done <- svc.withPublicGraphReadRetry(ctx, func() error {
+					captures.Add(1)
+					graphCount = uint64(cache.VertexCount())
+					logCount, _ = log.LastSeq()
+					return nil
+				})
+			}()
+			select {
+			case <-waiting:
+			case err := <-done:
+				t.Fatalf("active writer allowed early read: %v", err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if captures.Load() != 0 {
+				t.Fatal("busy certificate executed an optimistic capture")
+			}
+			if fault {
+				svc.markPublicationFault(&pendingMutation{})
+			} else if _, err := log.Append(&pb.Mutation{}, hlc.Timestamp{}); err != nil {
+				t.Fatal(err)
+			}
+			release()
+			select {
+			case err := <-done:
+				if fault {
+					if connect.CodeOf(err) != connect.CodeFailedPrecondition || captures.Load() != 0 {
+						t.Fatalf("unpublished read: captures=%d err=%v", captures.Load(), err)
+					}
+				} else if err != nil || captures.Load() != 1 || graphCount != 1 || logCount != 1 ||
+					len(metrics.reads) != 1 || metrics.reads[0].attempt != 4 {
+					t.Fatalf("committed fallback: graph=%d log=%d captures=%d err=%v", graphCount, logCount, captures.Load(), err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		})
+	}
+}
+
+func TestPublicGraphCertificateActiveAfterCapturePreservesFaultAndErrorOrder(t *testing.T) {
+	for _, fault := range []bool{false, true} {
+		t.Run(map[bool]string{false: "capture error", true: "fault before capture error"}[fault], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			svc := NewLanternService(newFakeBackend()).WithHotPathMetrics(&testPublicationObserver{})
+			waiting := publicationReadWaitBarrier(svc, "committed_view")
+			active, writerDone, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			finish := func() { once.Do(func() { close(release) }) }
+			defer finish()
+			captureErr := errors.New("original detached capture failed")
+			var captures atomic.Int32
+			done := make(chan error, 1)
+			go func() {
+				done <- svc.withPublicGraphReadRetry(ctx, func() error {
+					captures.Add(1)
+					go func() {
+						svc.replicationCutMu.Lock()
+						if fault {
+							svc.markPublicationFault(&pendingMutation{})
+						}
+						close(active)
+						<-release
+						svc.replicationCutMu.Unlock()
+						close(writerDone)
+					}()
+					<-active
+					return captureErr
+				})
+			}()
+			select {
+			case <-waiting:
+			case err := <-done:
+				t.Fatalf("capture error escaped the still-active publication cut: %v", err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			finish()
+			select {
+			case err := <-done:
+				if captures.Load() != 1 || (fault && connect.CodeOf(err) != connect.CodeFailedPrecondition) ||
+					(!fault && !errors.Is(err, captureErr)) {
+					t.Fatalf("captures=%d fault=%t err=%v", captures.Load(), fault, err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			select {
+			case <-writerDone:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		})
+	}
+}
+
+func TestPublicGraphCertificateFaultRepairAndOneShotRemainDistinct(t *testing.T) {
+	svc := NewLanternService(newFakeBackend())
+	captures := 0
+	err := svc.withPublicGraphReadRetry(t.Context(), func() error {
+		captures++
+		if captures == 1 {
+			pending := &pendingMutation{}
+			svc.replicationCutMu.Lock()
+			svc.markPublicationFault(pending)
+			svc.replicationCutMu.Unlock()
+			svc.replicationCutMu.Lock()
+			svc.clearPublicationFault(pending)
+			svc.replicationCutMu.Unlock()
+		}
+		return nil
+	})
+	if err != nil || captures != 2 {
+		t.Fatalf("fault+repair crossing capture was not invalidated: captures=%d err=%v", captures, err)
+	}
+	captures = 0
+	err = svc.withPublicGraphRead(func() error {
+		captures++
+		svc.replicationCutMu.Lock()
+		active := svc.replicationCutMu.readCertificate.Load()
+		svc.replicationCutMu.Unlock()
+		if active.stable() {
+			t.Fatal("no-effect writer did not publish an active interval")
+		}
+		return nil
+	})
+	if captures != 1 || connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("one-shot Search contract changed: captures=%d err=%v", captures, err)
+	}
+	finish, err := svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish(false)
+	if !svc.replicationCutMu.readCertificate.Load().faulted {
+		t.Fatal("failed Snapshot install produced healthy certificate")
+	}
+	finish, err = svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	if certificate := svc.replicationCutMu.readCertificate.Load(); !certificate.stable() || certificate.faulted {
+		t.Fatal("verified Snapshot did not publish a new healthy certificate")
+	}
+}
+
+func TestPublicGraphCertificateCancellationKeepsBoundedCallbackOwnership(t *testing.T) {
+	for _, phase := range []string{"entry callback", "queued fallback", "acquired fallback"} {
+		t.Run(phase, func(t *testing.T) {
+			guard, stop := context.WithTimeout(t.Context(), 5*time.Second)
+			defer stop()
+			ctx, cancel := context.WithCancel(guard)
+			defer cancel()
+			svc := NewLanternService(newFakeBackend()).WithHotPathMetrics(&testPublicationObserver{})
+			var captures atomic.Int32
+			if phase == "entry callback" {
+				// Keep the existing first-capture error contract: cancellation
+				// already observed by a callback is returned once, without retry.
+				cancel()
+				err := svc.withPublicGraphReadRetry(ctx, func() error {
+					captures.Add(1)
+					return ctxToConnect(ctx.Err())
+				})
+				if connect.CodeOf(err) != connect.CodeCanceled || captures.Load() != 1 {
+					t.Fatalf("entry cancellation: captures=%d err=%v", captures.Load(), err)
+				}
+				return
+			}
+			waiting := make(chan struct{})
+			var samples atomic.Int32
+			svc.publicationClock = func() time.Time {
+				if svc.publicationWaiting.count("read_fallback") != 0 {
+					switch samples.Add(1) {
+					case 1:
+						close(waiting)
+					case 2:
+						if phase == "acquired fallback" {
+							cancel()
+						}
+					}
+				}
+				return time.Now()
+			}
+			svc.replicationCutMu.Lock()
+			var once sync.Once
+			release := func() { once.Do(svc.replicationCutMu.Unlock) }
+			defer release()
+			done := make(chan error, 1)
+			go func() {
+				done <- svc.withPublicGraphReadRetry(ctx, func() error { captures.Add(1); return nil })
+			}()
+			select {
+			case <-waiting:
+			case <-guard.Done():
+				t.Fatal(guard.Err())
+			}
+			if phase == "queued fallback" {
+				cancel()
+			}
+			release()
+			select {
+			case err := <-done:
+				if connect.CodeOf(err) != connect.CodeCanceled || captures.Load() != 0 || samples.Load() != 2 {
+					t.Fatalf("fallback cancellation: samples=%d captures=%d err=%v", samples.Load(), captures.Load(), err)
+				}
+			case <-guard.Done():
+				t.Fatal(guard.Err())
+			}
+		})
+	}
+}
+
+func TestPublicGraphCertificateActiveAfterSuccessfulCaptureDiscardsPartialCut(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+	log := mutationlog.New(mutationlog.Options{Capacity: 8})
+	defer closeObservationLog(t, log)
+	svc := NewLanternService(cache).WithHotPathMetrics(&testPublicationObserver{})
+	waiting := publicationReadWaitBarrier(svc, "read_fallback")
+	active, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	finish := func() { once.Do(func() { close(release) }) }
+	defer finish()
+	writerDone := make(chan error, 1)
+	var captures atomic.Int32
+	var graphCount, logCount uint64
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.withPublicGraphReadRetry(ctx, func() error {
+			attempt := captures.Add(1)
+			graphCount = uint64(cache.VertexCount())
+			logCount, _ = log.LastSeq()
+			if attempt == 1 {
+				go func() {
+					svc.replicationCutMu.Lock()
+					err := cache.PutVertex("committed", &pb.Vertex{Key: "committed"})
+					close(active)
+					<-release
+					if err == nil {
+						_, err = log.Append(&pb.Mutation{}, hlc.Timestamp{})
+					}
+					svc.replicationCutMu.Unlock()
+					writerDone <- err
+				}()
+				<-active
+			}
+			return nil
+		})
+	}()
+	select {
+	case <-waiting:
+	case err := <-done:
+		t.Fatalf("overlapped data escaped before publication: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if captures.Load() != 1 || graphCount != 0 || logCount != 0 {
+		t.Fatal("partial cut was reused or a second capture escaped the active writer")
+	}
+	finish()
+	select {
+	case err := <-done:
+		if err != nil || captures.Load() != 2 || graphCount != 1 || logCount != 1 {
+			t.Fatalf("replacement committed result: captures=%d graph=%d log=%d err=%v", captures.Load(), graphCount, logCount, err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case err := <-writerDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
 
 func TestLanternService_CommittedViewWaitsForLogPublication(t *testing.T) {
 	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)

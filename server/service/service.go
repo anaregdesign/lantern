@@ -142,21 +142,6 @@ type LanternService struct {
 	replicationStatusInfo  ReplicationStatusInfo
 }
 
-// publicationGate counts every completed exclusive publication interval. A
-// long graph read can capture its generation before and after expensive work
-// instead of keeping the service write gate locked for the entire query. The
-// generation changes even when a writer ultimately commits no graph change,
-// making an overlapping read fail closed rather than risking a mixed result.
-type publicationGate struct {
-	sync.RWMutex
-	generation uint64 // read under RLock, changed immediately before Unlock
-}
-
-func (g *publicationGate) Unlock() {
-	g.generation++
-	g.RWMutex.Unlock()
-}
-
 // HotPathMetrics is the narrow observability surface consumed by the
 // hot-path handlers (#220). Implemented by *server/metrics.DomainMetrics in
 // production; tests can install a fake to assert per-RPC instrumentation
@@ -262,7 +247,7 @@ func defaultSearchLimits() SearchLimits {
 
 func NewLanternService(cache Backend) *LanternService {
 	searchLimits := defaultSearchLimits()
-	return &LanternService{
+	s := &LanternService{
 		cache:                   cache,
 		scan:                    defaultScanLimits(),
 		search:                  searchLimits,
@@ -275,6 +260,8 @@ func NewLanternService(cache Backend) *LanternService {
 		traversalWorkBudget:     graphcache.PPRWorkBudget{MaxPushes: 1_000_000, MaxTouchedEdges: 10_000_000},
 		traversalMaxResults:     1024,
 	}
+	s.replicationCutMu.initialize(s)
+	return s
 }
 
 // WithScanLimits returns s with its prefix-RPC limits replaced. Intended

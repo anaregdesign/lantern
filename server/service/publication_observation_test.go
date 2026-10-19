@@ -49,12 +49,12 @@ type publicationUnlockObserver struct {
 }
 
 func (m *publicationUnlockObserver) OnPublicationGate(category string, wait, body, unlock time.Duration) {
-	raw := &m.gate.RWMutex
-	if !raw.TryLock() {
+	if !m.gate.TryRLock() {
 		m.held = true
 	} else {
-		// Inspect only mutex ownership, without advancing service generation.
-		raw.Unlock()
+		// This observer tests an exclusive interval, without entering another
+		// writer interval or advancing the service generation.
+		m.gate.RUnlock()
 	}
 	m.testPublicationObserver.OnPublicationGate(category, wait, body, unlock)
 }
@@ -277,7 +277,7 @@ func TestPublicationObservationSeparatesQueuedDuplicateAndPrefixDrain(t *testing
 		{"pending_duplicate", "rejected", true, 0, 1},
 		{"new_sequence", "committed", true, 1, 1},
 		{"new_sequence", "committed", true, 2, 0},
-		{"committed_duplicate", "committed_duplicate", true, 0, 0},
+		{"committed_duplicate", "committed_duplicate", false, 0, 0},
 	}
 	if len(metrics.applies) != len(want) {
 		t.Fatalf("apply records = %+v", metrics.applies)

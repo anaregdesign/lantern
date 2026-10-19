@@ -38,26 +38,26 @@ func newPublicationMeasurements(reg prometheus.Registerer) *publicationMeasureme
 		}, []string{"category", "phase"}),
 		read: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_publication_read_capture_seconds",
-			Help:    "Actual read captures by bounded attempt and generation result; excludes generation-probe waits. Fallback is the capture after optimistic conflicts.",
+			Help:    "Actual read captures by bounded attempt and publication-cut result; excludes protected probe waits. Fallback follows unavailable/active cuts or optimistic conflicts.",
 			Buckets: buckets,
 		}, []string{"attempt", "outcome"}),
 		preflight: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "lantern_replication_apply_preflight_seconds",
-			Help:    "Remote Apply validation time before service-gate acquisition, including rejected preflight attempts.",
+			Help:    "Initial remote Apply validation before its optional read proof or exclusive acquisition, including rejected initial preflight attempts.",
 			Buckets: buckets,
 		}, []string{"delivery", "outcome"}),
 		apply: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "lantern_replication_apply_attempts_total",
-			Help: "Remote Apply attempts by delivery kind, final outcome and whether the service gate was acquired; not a committed-event counter.",
+			Help: "Remote Apply attempts by delivery, outcome and admission stage; read_only is a validated committed duplicate without exclusive acquisition. Not a committed-event counter.",
 		}, []string{"delivery", "outcome", "stage"}),
 		committed: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "lantern_replication_apply_committed_per_acquisition",
-			Help:    "Contiguous origin events committed during one remote service-gate acquisition, including zero and pending-prefix drains; not Vertex counts.",
+			Help:    "Contiguous origin events committed during one remote exclusive service-gate acquisition, including zero and pending-prefix drains; not Vertex counts.",
 			Buckets: []float64{0, 1, 2, 4, 16, 64, 256, 4096},
 		}),
 		pending: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "lantern_replication_apply_pending_at_release",
-			Help:    "Pending-mutation depth sampled under the service gate at the end of each remote acquisition; not a current-depth gauge.",
+			Help:    "Pending-mutation depth sampled under the exclusive service gate at the end of each remote exclusive acquisition; not a current-depth gauge.",
 			Buckets: []float64{0, 1, 2, 4, 16, 64, 256, 4096},
 		}),
 	}
@@ -126,6 +126,9 @@ func (m *DomainMetrics) OnPublicationApply(delivery, outcome string, preflight t
 	delivery = publicationLabel(delivery, publicationDeliveries)
 	outcome = publicationLabel(outcome, publicationApplyOutcomes)
 	stage := "preflight"
+	if !acquired && delivery == "committed_duplicate" && outcome == "committed_duplicate" {
+		stage = "read_only"
+	}
 	if acquired {
 		stage = "acquired"
 		m.publication.committed.Observe(float64(committed))

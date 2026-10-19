@@ -273,7 +273,7 @@ Publication timing separates queueing from owner work. The histogram
 samples: before acquisition, after acquisition, before Unlock and after
 Unlock. Its phases are `wait`, `body` and `unlock`; aggregate waiter delay from
 mutex profiles is not lock-hold time. The measured categories cover local
-Vertex Put/Delete and Edge Add graph paths, remote Apply, generation probes,
+Vertex Put/Delete and Edge Add graph paths, remote Apply, one-shot generation probes,
 locked read fallback, committed views, private source cuts and Snapshot
 publication boundaries. They do not imply coverage of every receipt-coordinator
 critical section. Snapshot timing excludes its outer admission-latch wait.
@@ -283,14 +283,21 @@ timing with current waiters, including acquisitions still blocked at scrape
 time. It reads service-owned atomics without acquiring a service lock.
 
 `lantern_publication_read_capture_seconds{attempt,outcome}` counts actual
-captures for attempts 1–3 and `fallback`, separating generation conflicts from
-consistent results. Capture duration excludes generation-probe queueing; a
-fault before capture is not a captured attempt. Existing optimistic captures
-remain outside the publication gate, with the existing locked fallback.
+captures for attempts 1–3 and `fallback`, separating publication conflicts from
+consistent results. Retry-capable reads use immutable atomic certificates;
+their probes do not acquire the publication RLock. An active or unavailable
+certificate goes directly to the existing protected fallback without a fake
+capture. One-shot cached Search retains its original protected probes and
+single callback. Capture duration excludes probe queueing; a fault before
+capture is not a captured attempt. Optimistic captures remain outside the
+publication gate, with the existing locked fallback.
 
 `lantern_replication_apply_attempts_total{delivery,outcome,stage}` distinguishes
 preflight rejection, a newly queued sequence, pending duplicates, committed
-duplicates and new commits. Preflight time has its own histogram.
+duplicates and new commits. `stage="read_only"` is a validated committed-prefix
+duplicate proven by one successful TryRLock, with no exclusive acquisition or
+generation change. A miss or uncommitted sequence follows the original writer
+path and revalidates the current cut. Preflight time has its own histogram.
 `lantern_replication_apply_committed_per_acquisition` counts contiguous events
 committed while one remote acquisition was held, including zero and multi-event
 pending drains. `lantern_replication_apply_pending_at_release` records pending

@@ -802,6 +802,9 @@ func TestReceiptVertexPutApplyEnforcesCanonicalAcceptedEffects(t *testing.T) {
 		if err := remote.service.ApplyMutation(context.Background(), wire); err != nil {
 			t.Fatal(err)
 		}
+		if err := applyReadOnlyDuplicate(t, remote.service, wire); err != nil {
+			t.Fatal(err)
+		}
 		local := remote.log.RetainedEntries()[0].Op.(*vertexPutReceiptEnvelope)
 		if len(local.Accepted) != 1 ||
 			local.Accepted[0].Outcome != graphcache.PutOutcomeExpired ||
