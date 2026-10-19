@@ -140,8 +140,8 @@ func Run(ctx context.Context, cfg Config) error {
 		slog.Int("nodes", len(addrs)),
 		slog.String("version", Version),
 	)
-	// LANTERN_TOKEN authenticates against servers running with
-	// LANTERN_AUTH_TOKENS (#850); unset keeps the open-cluster behaviour.
+	// LANTERN_TOKEN forwards an existing Server-accepted upstream Bearer
+	// credential in OIDC mode. OFF requires no upstream credential.
 	var cliOpts []client.Option
 	if tok := os.Getenv("LANTERN_TOKEN"); tok != "" {
 		cliOpts = append(cliOpts, client.WithAuthToken(tok))

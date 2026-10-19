@@ -8,8 +8,19 @@ activity heat, and a blackboard, all built on decaying state.
 Lantern models activity rather than durable knowledge. A stale claim should
 vanish, recent activity should outweigh old activity, and a crashed agent's
 presence should expire. One Lantern cluster per fleet is the shared-context
-unit; pair it with upstream bearer-token auth (`LANTERN_AUTH_TOKENS` on the
-server and `LANTERN_TOKEN` here).
+unit. Choose the upstream Server's public authentication mode separately:
+
+- **OFF:** leave `LANTERN_TOKEN` unset; the Server accepts public data RPCs
+  without authentication.
+- **OIDC:** set `LANTERN_TOKEN` to an existing Role-bound machine credential
+  or eligible signed API access token accepted by that Server, and use a
+  verified HTTPS `LANTERN_ADDR`. The Server still enforces credential
+  validity and expiry, current Principal/Role state, and Deny rules. See
+  [OIDC operations](../docs/oidc-operations.md) and the
+  [API token contract](../docs/oidc-verification.md).
+
+MCP does not acquire or refresh credentials. Its callers share the configured
+backend credential; an announced agent ID does not select a different Principal.
 
 > **Breaking change:** the deprecated `memory` profile and its
 > `remember_*`/`recall_*` tools have been removed. `LANTERN_MCP_PROFILE` has no
@@ -147,7 +158,7 @@ shorter `LANTERN_TOMBSTONE_TTL`.
 | `LANTERN_MCP_TTL_<BUCKET>` | table above | Per-bucket override. |
 | `LANTERN_MCP_MAX_TTL` | unset | Maximum resolved bucket duration. |
 | `LANTERN_MCP_AGENT_ID` | auto | Stable fleet identity for this process. |
-| `LANTERN_TOKEN` | unset | Bearer token for an authenticated upstream. |
+| `LANTERN_TOKEN` | unset | Existing Server-accepted upstream Bearer credential in OIDC; leave unset for OFF. |
 
 Logs are structured JSON on stderr at INFO level.
 
