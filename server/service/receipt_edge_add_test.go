@@ -780,6 +780,9 @@ func TestReceiptEdgeAddFollowerUsesLocalProjectionAndRelaysEvidence(t *testing.T
 	if err := follower.service.ApplyMutation(context.Background(), wire); err != nil {
 		t.Fatal(err)
 	}
+	if err := applyReadOnlyDuplicate(t, follower.service, wire); err != nil {
+		t.Fatal(err)
+	}
 	if _, live := follower.cache.GetWeight("tail", "head"); live {
 		t.Fatal("follower applied Add below its local Delete floor")
 	}

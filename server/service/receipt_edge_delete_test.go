@@ -1107,7 +1107,7 @@ func TestEdgeDeleteReceiptFollowerAppliesAndDeduplicates(t *testing.T) {
 	for _, item := range duplicate.GetOp().GetReplicatedReceiptEdgeDelete().GetItems() {
 		item.CausallyAccepted = !item.GetCausallyAccepted()
 	}
-	if err := f.service.ApplyMutation(context.Background(), duplicate); err != nil {
+	if err := applyReadOnlyDuplicate(t, f.service, duplicate); err != nil {
 		t.Fatalf("committed duplicate with relay-local accepted-bit drift = %v", err)
 	}
 	if f.log.Len() != 1 || applies.Load() != 1 || origins.Load() != 1 {

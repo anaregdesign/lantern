@@ -559,7 +559,7 @@ func TestVertexDeleteReceiptFollowerOutOfOrderAndDuplicate(t *testing.T) {
 		t.Fatalf("drained publication = log %d seq %d, want 2/2",
 			remote.log.Len(), remote.service.LocalSeq(origin.service.clock.NodeID()))
 	}
-	if err := remote.service.ApplyMutation(context.Background(), firstWire); err != nil || remote.log.Len() != 2 {
+	if err := applyReadOnlyDuplicate(t, remote.service, firstWire); err != nil || remote.log.Len() != 2 {
 		t.Fatalf("duplicate replay = %v, log=%d", err, remote.log.Len())
 	}
 	for _, call := range []receiptVertexDeleteCall{first, second} {

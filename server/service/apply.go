@@ -49,11 +49,14 @@ import (
 //
 // Returns ctx.Err() when ctx is cancelled. Nil-or-empty mutations are
 // dropped silently; malformed sequenced entries fail closed.
-func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) error {
+func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) (applyErr error) {
+	observation := s.beginPublicationApply()
+	defer func() { observation.finish(applyErr) }()
 	if err := ctx.Err(); err != nil {
 		return ctxToConnect(err)
 	}
 	if m == nil || (m.GetSeq() == 0 && len(m.GetOrigin()) == 0 && m.GetHlc() == nil && m.GetOp() == nil) {
+		observation.outcome = "ignored"
 		return nil
 	}
 	if m.GetOp().GetEdgeCreateEffect() != nil {
@@ -137,15 +140,23 @@ func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) erro
 			return err
 		}
 	}
-	s.replicationCutMu.Lock()
-	defer s.replicationCutMu.Unlock()
-	if s.receiptCommitFaulted {
-		return publicationGapError()
+	observation.preflightDone()
+	duplicate, pending, err := s.probeCommittedRemoteMutation(m, receiptEnvelope)
+	if err != nil {
+		return err
 	}
-	if s.snapshotInstallFaulted {
-		return publicationGapError()
+	if duplicate {
+		observation.delivery, observation.outcome = "committed_duplicate", "committed_duplicate"
+		observation.pending = pending
+		return nil
 	}
-	return s.publishRemoteMutation(ctx, m, receiptEnvelope)
+	gate := s.lockPublicationGate("remote_apply", false)
+	defer gate.Unlock()
+	observation.acquired, observation.pending = true, s.pendingCount
+	observation.beforePublish(s, m)
+	err = s.publishRemoteMutation(ctx, m, receiptEnvelope)
+	observation.afterPublish(s, err)
+	return err
 }
 
 func validateMutationEdgeSourceWeights(op *pb.MutationOp) error {
