@@ -19,9 +19,14 @@ Its failure never grants permissions or changes the recorded CRUD result.
 
 ## Native Google and Apple login
 
+Use the [private TLS/OIDC/OAuth templates](../../../deploy/examples/auth/README.md)
+for Server trust, platform registration and per-platform Flutter define files.
+Keep actual client IDs and provider downloads outside Git; secrets and Apple
+signing keys never belong in a mobile build.
+
 Current source has an opt-in native login screen using exact app dependencies
 `google_sign_in 7.2.0`, `sign_in_with_apple 8.2.0` and
-`flutter_secure_storage 11.2.0`. Server current-v2 is required. Sign-in uses an
+`flutter_secure_storage 11.2.0`. An independently provisioned OIDC Server is required. Sign-in uses an
 existing exact `(issuer, subject)` Principal and its explicit Roles. The separate
 Register action requests a UID and personal Role only when the operator has
 enabled that exact provider profile in the default-disabled registration policy.

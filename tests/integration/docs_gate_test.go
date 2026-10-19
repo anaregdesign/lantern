@@ -18,6 +18,7 @@ import (
 	"github.com/anaregdesign/lantern/cli/parser"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -113,6 +114,113 @@ func TestTraversalDocumentationGate(t *testing.T) {
 	}
 }
 
+func TestPrivateAuthExampleEnvironmentGate(t *testing.T) {
+	for _, mode := range []string{"off", "oidc"} {
+		t.Run(mode, func(t *testing.T) {
+			for _, setting := range os.Environ() {
+				name, _, _ := strings.Cut(setting, "=")
+				if strings.HasPrefix(name, "LANTERN_AUTH_") || strings.HasPrefix(name, "LANTERN_SECURITY_") || strings.HasPrefix(name, "LANTERN_OIDC_") {
+					t.Setenv(name, "")
+					if err := os.Unsetenv(name); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			file := "server.env.example"
+			if mode == "off" {
+				file = "server-off.env.example"
+			}
+			raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "examples", "auth", file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, line := range strings.Split(string(raw), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				name, value, ok := strings.Cut(line, "=")
+				if !ok {
+					t.Fatal("expected a literal environment assignment")
+				}
+				t.Setenv(name, strings.Trim(value, "'"))
+			}
+			c, err := provider.LoadSecurityConfig()
+			if err != nil || c.Mode != mode {
+				t.Fatal("example does not match the current environment loader", err)
+			}
+			if mode == "off" {
+				if c.ConfigFile != "" || c.StoreMode != "" || len(c.SecretBindings) != 0 {
+					t.Fatal("OFF example must need no authentication provisioning")
+				}
+				if err := os.Unsetenv("LANTERN_AUTH_MODE"); err != nil {
+					t.Fatal(err)
+				}
+				if c, err := provider.LoadSecurityConfig(); err != nil || c.Mode != "off" {
+					t.Fatal("omitted mode must preserve default OFF", err)
+				}
+			} else {
+				if c.StoreMode != "resume" || len(c.SecretBindings) != 3 || !strings.HasPrefix(c.ConfigFile, "/REPLACE_PRIVATE_DIRECTORY/") {
+					t.Fatal("OIDC example changed authentication or custody inputs")
+				}
+				for _, binding := range c.SecretBindings {
+					if !strings.HasPrefix(binding.Path, "/REPLACE_PRIVATE_DIRECTORY/") {
+						t.Fatal("example secret is not a placeholder file reference")
+					}
+				}
+				t.Setenv("LANTERN_SECURITY_CONFIG_FILE", "")
+				if _, err := provider.LoadSecurityConfig(); err == nil {
+					t.Fatal("invalid OIDC must fail without anonymous fallback")
+				}
+				t.Setenv("LANTERN_SECURITY_CONFIG_FILE", c.ConfigFile)
+			}
+			t.Setenv("LANTERN_SECURITY_PROFILE", "")
+			if _, err := provider.LoadSecurityConfig(); err == nil {
+				t.Fatal("retired profile must be rejected even when empty")
+			}
+		})
+	}
+}
+
+func TestPrivateAuthIssuerExamplesGate(t *testing.T) {
+	for name, kinds := range map[string][]pb.NativeClientKind{
+		"google-issuer.change.json.example": {pb.NativeClientKind_NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN},
+		"apple-issuer.change.json.example": {
+			pb.NativeClientKind_NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB,
+			pb.NativeClientKind_NATIVE_CLIENT_KIND_APPLE_NATIVE,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "examples", "auth", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire pb.SecurityChange
+			if err := protojson.Unmarshal(raw, &wire); err != nil {
+				t.Fatal("example is not SecurityChange ProtoJSON", err)
+			}
+			issuer := wire.GetPutIssuer()
+			if issuer == nil {
+				t.Fatal("example must not install Roles or enable registration")
+			}
+			if issuer.Enabled || issuer.HumanSubjectNamespaceQualified || issuer.EnvOwned || issuer.Deleted || issuer.HasSecretBinding || issuer.ConfigRevision != 0 {
+				t.Fatal("example enabled trust or supplied read-only Issuer metadata")
+			}
+			if len(issuer.NativeClients) != len(kinds) {
+				t.Fatal("example lost a required native provider/platform")
+			}
+			for i, client := range issuer.NativeClients {
+				if client == nil || client.Kind != kinds[i] || client.HasSecretBinding {
+					t.Fatal("example has an invalid native profile or read-only metadata")
+				}
+				if i > 0 && issuer.NativeClients[i-1].Id >= client.Id {
+					t.Fatal("native profiles must be ordered by ID")
+				}
+			}
+		})
+	}
+}
+
 // TestAdminOperationsDocumentationGate binds current Ops/release guidance to
 // the existing private peer plane and optional fixed Caddy routes. It does not
 // qualify future S5 topology or a real provider/deployment.
@@ -175,7 +283,7 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 				"Subsequent bounded normal-TLS acceptance completed", "passed 4/4", "reached 8/8 at their recorded source revisions",
 				"Temporary trust, keys and owned fixture processes were cleaned up", "These historical results do not qualify a later final source",
 				"Historical, unexecuted DNS-01 proposal", "no DNS changes, ACME issuance or production setup were performed for it",
-				"https://lantern-test.replary.com:17443", "https://idp-test.replary.com:17444"},
+				"https://replace-admin-host.invalid", "https://replace-idp-host.invalid"},
 		},
 		"docs/decisions/0012-oidc-prefix-rbac.md": {
 			required: []string{"source and response/SDK implementation were merged in", "pull/1661", "issues/1626",

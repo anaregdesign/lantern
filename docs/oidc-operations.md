@@ -16,7 +16,11 @@ complete the separate real-provider/device qualification exits.
 
 ## Native client profiles
 
-Only OIDC/current-v2 can serve native login. Provision the existing certified
+The [private developer templates](../deploy/examples/auth/README.md) separate
+Server environment, reviewed Issuer inputs, mobile builds and OAuth/platform
+registration. Keep actual validation selections and provider files outside Git.
+
+Only OIDC can serve native login. Provision the existing certified
 authority and use its committed Issuer `native_clients` collection. Native-only
 Issuers leave browser `client_id`, `api_audience`, `redirect_uri`, `secret_ref`
 empty and human-subject API qualification false. Enable RS256. Profiles must be
@@ -79,7 +83,7 @@ package publication remain separate from merged source and functional-validation
 ## Native user registration policy
 
 The [registration contract](native-user-registration.md) adds an explicit signup
-operation to current-v2. An absent policy disables signup; startup and ordinary
+operation to the OIDC authority. An absent policy disables signup; startup and ordinary
 login do not assign UIDs or create Roles. Before enabling it, review existing
 `users:` data and broad grants for collisions, choose the exact permitted native
 profiles, and install the reviewed `personal_user` Role. Its seven initial Allow
@@ -290,14 +294,15 @@ not qualify that combined flow.
 
 ### Historical, unexecuted DNS-01 proposal
 
-The older local-only proposal used
-`https://lantern-test.replary.com:17443` and
-`https://idp-test.replary.com:17444`. A DNS-01 certificate and local host
-resolution could serve these without exposing the Server publicly. The proposal
+The older local-only proposal required separately chosen HTTPS Admin/Server and
+IdP origins. Placeholder counterparts are `https://replace-admin-host.invalid`
+and `https://replace-idp-host.invalid`; keep actual selections private. A DNS-01
+certificate and local host resolution could serve operator-owned real names
+without exposing the Server publicly. The proposal
 was not executed: no DNS changes, ACME issuance or production setup were performed
 for it. Any future DNS records, ACME issuance, certificate installation, host
 mapping and runtime restart each need their applicable individual approval;
-these names are a proposal, not an installed setup.
+the proposal is not an installed setup, and `.invalid` names are not certificate targets.
 Preserve existing website/mail records and keep certificate keys private.
 
 If this proposal is adopted, choose renewal before repeated fixture work.

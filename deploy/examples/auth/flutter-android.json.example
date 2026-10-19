@@ -1,0 +1,6 @@
+{
+  "LANTERN_ENDPOINT": "https://replace-service-host.invalid",
+  "LANTERN_NATIVE_LOGIN": true,
+  "LANTERN_GOOGLE_PROFILE": "replace_google_mobile",
+  "LANTERN_APPLE_PROFILE": "replace_apple_android"
+}
