@@ -368,14 +368,18 @@ class AdminReleaseGuidanceTest(unittest.TestCase):
                         'LANTERN_OIDC_REDIRECT_URI', '/auth/callback/<SHA-256>',
                         '/auth/*', '/browser/*', '/graph.v1.*/*',
                         'LANTERN_ADMIN_SERVER_UPSTREAM', 'scheme://hostname:port',
-                        'https://writer.internal.example:6380',
+                        'https://authority.internal.example:6380',
                         'gateway picker never selects that upstream',
                         'Verify the upstream certificate against its hostname',
                         'LANTERN_ADMIN_SERVER_CA_FILE', 'public Host/scheme',
                         'LANTERN_OIDC_TRUSTED_PROXY_IPS',
                         'explicitly trusted exact gateway IP',
-                        'current fixed-writer baseline',
-                        'Future eligible-node routing', '#1608/#1609 S5 work',
+                        'configured eligible authority origin',
+                        'preserve per-attempt login affinity',
+                        'Original quorum provisioning and current native time',
+                        'production eligible-node management topology',
+                        'operational cutover and final qualification',
+                        '#1608/#1609 S5 work',
                         'Missing upstream routes fail closed', '/auth/operations',
                         'operations.read', 'Only GET diagnostics',
                         'Prometheus never receives cookies or Authorization',
@@ -390,6 +394,9 @@ class AdminReleaseGuidanceTest(unittest.TestCase):
                     self.assertIn('## Browser and diagnostics boundary',
                                   (ROOT / 'docs/oidc-operations.md').read_text())
                     for retired in ('does not reverse-proxy', 'LANTERN_PEERS',
+                                    'current fixed-writer baseline',
+                                    'Future eligible-node routing',
+                                    'writer.internal.example',
                                     'tls_insecure_skip_verify', 'fixture-only', '${REPO}'):
                         self.assertNotIn(retired, notes)
 
