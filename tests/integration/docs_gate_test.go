@@ -1469,12 +1469,18 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 						}
 					}
 					command.Env = append(command.Env, "LANTERN_HA_CONFIG_DIR="+dir, "LANTERN_BENCH_PEER_TLS_DIR="+dir, "LANTERN_HA_ADMIN_UPSTREAM=https://lantern-0:6380", "LANTERN_BENCH_RECEIPT_MAX_BYTES=4194304", "LANTERN_BENCH_RECEIPT_MAX_ENTRIES=512", "LANTERN_BENCH_RECEIPT_RETENTION=1h")
+					if bench {
+						// This gate renders config only; use a fixed non-root
+						// publisher identity without depending on the CI host UID.
+						command.Env = append(command.Env, "LANTERN_BENCH_RUNTIME_UID=1001", "LANTERN_BENCH_RUNTIME_GID=1001")
+					}
 					output, err := command.CombinedOutput()
 					if err != nil {
 						t.Fatalf("Compose native config: %v: %s", err, output)
 					}
 					var rendered struct {
 						Services map[string]struct {
+							User        string            `json:"user"`
 							Environment map[string]string `json:"environment"`
 							Ports       []struct {
 								Target int    `json:"target"`
@@ -1493,6 +1499,9 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 						node, ok := rendered.Services[name]
 						if !ok || node.Environment["LANTERN_PEER_LISTEN_ADDR"] != ":6381" || node.Environment["LANTERN_PEER_MEMBERSHIP_FILE"] != "/run/lantern-config/membership.json" {
 							t.Fatal("missing native private plane", name)
+						}
+						if bench && node.User != "1001:1001" {
+							t.Fatal("benchmark publisher/runtime identity changed", name, node.User)
 						}
 						if (node.Environment["LANTERN_AUTH_MODE"] == "oidc") != (mode == "oidc") {
 							t.Fatal("public mode changed", name)
