@@ -5,13 +5,16 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('native helper preserves bounded cleanup failures', () async {
-    final result = await Process.run('python3', [
-      '-B',
-      'tool/ios_smoke_attach_test.py',
-    ]);
-    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
-  });
+  test(
+    'native helper preserves bounded operation and cleanup evidence',
+    () async {
+      final result = await Process.run('python3', [
+        '-B',
+        'tool/ios_smoke_attach_test.py',
+      ]);
+      expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+    },
+  );
 
   late Directory sandbox;
   late File fakeFlutter;
@@ -74,6 +77,14 @@ echo 'All tests passed!'
       expect(logs, contains('<redacted-url>'));
       expect(logs, isNot(contains('private-vm-code')));
       await _expectPhases(sandbox, _allPhases);
+      for (final entry in _operationEvidence.entries) {
+        expect(
+          await File(
+            '${sandbox.path}/diagnostics/initial/phases/${entry.key}',
+          ).readAsString(),
+          entry.value,
+        );
+      }
       final calls = await File('${sandbox.path}/attached-calls').readAsLines();
       final build = calls.indexWhere(
         (line) => line.startsWith('flutter build'),
@@ -104,12 +115,26 @@ echo 'All tests passed!'
   );
 
   test('attached build failure never boots the simulator', () async {
+    final phases = Directory('${sandbox.path}/diagnostics/initial/phases');
+    await phases.create(recursive: true);
+    for (final phase in _metadataPhases) {
+      await File('${phases.path}/$phase').writeAsString('stale\n');
+    }
     await _writeAttachedFakes(sandbox, fakeFlutter, fakeXcrun, buildExit: 1);
     final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
     expect(result.exitCode, isNonZero);
     expect(await _classification(sandbox), 'build_failure');
     final calls = await File('${sandbox.path}/attached-calls').readAsString();
     expect(calls, isNot(contains('simctl boot ')));
+    for (final phase in _metadataPhases.where(
+      (name) => name != 'build_started',
+    )) {
+      expect(
+        File('${phases.path}/$phase').existsSync(),
+        isFalse,
+        reason: phase,
+      );
+    }
   });
 
   for (final stalls in [false, true]) {
@@ -615,7 +640,7 @@ os.write(1, b'MOBILE_SMOKE_PASS vertices=13\nAll tests passed!\n')
   test('clears stale phase flags before reusing an attempt label', () async {
     final phases = Directory('${sandbox.path}/diagnostics/initial/phases');
     await phases.create(recursive: true);
-    for (final phase in _allPhases) {
+    for (final phase in _metadataPhases) {
       await File('${phases.path}/$phase').writeAsString('seen\n');
     }
     await _writeExecutable(fakeFlutter, '''#!/usr/bin/env bash
@@ -627,7 +652,7 @@ exit 1
 
     expect(result.exitCode, isNonZero);
     expect(await _classification(sandbox), 'pre_body_failure');
-    for (final phase in _allPhases) {
+    for (final phase in _metadataPhases) {
       expect(
         File('${phases.path}/$phase').existsSync(),
         isFalse,
@@ -647,8 +672,10 @@ exit 1
         await File(
           '${attempt.path}/classification.txt',
         ).writeAsString('${entry.value}\n');
-        for (final phase in _allPhases) {
-          await File('${attempt.path}/phases/$phase').writeAsString('true\n');
+        for (final phase in _metadataPhases) {
+          await File(
+            '${attempt.path}/phases/$phase',
+          ).writeAsString(_operationEvidence[phase] ?? 'true\n');
         }
         await Directory('${attempt.path}/diagnostics').create();
         for (var index = 0; index < 10; index++) {
@@ -703,12 +730,18 @@ exit 1
           await File('$attempt/flutter.log').readAsString(),
           contains('tail-${entry.key}-0'),
         );
-        for (final phase in _allPhases) {
+        for (final phase in _metadataPhases) {
           expect(
             File('$attempt/phases/$phase').existsSync(),
             isTrue,
             reason: phase,
           );
+          if (_operationEvidence.containsKey(phase)) {
+            expect(
+              await File('$attempt/phases/$phase').readAsString(),
+              _operationEvidence[phase],
+            );
+          }
         }
       }
       expect(File('${diagnostics.path}/partial.raw').existsSync(), isFalse);
@@ -927,6 +960,20 @@ const _allPhases = [
   'body_started',
   'smoke_pass',
   'tests_passed',
+];
+
+const _operationEvidence = {
+  'install_operation': 'started\nreturned exit_code=0 output_limit=0\n',
+  'native_launch_operation': 'started\nreturned exit_code=0\n',
+};
+
+const _metadataPhases = [
+  ..._allPhases,
+  'boot_started',
+  'boot_done',
+  'tests_failed',
+  'install_operation',
+  'native_launch_operation',
 ];
 
 Future<void> _expectPhases(Directory sandbox, List<String> phases) async {

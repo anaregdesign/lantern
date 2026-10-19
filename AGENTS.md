@@ -51,6 +51,7 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
   [preparation inputs](sdks/dart/example/installed-factory-acceptance.md)
   (#1809/#1811/#1766/#1610); neither substitutes for final configured-source Q,
   real-provider or physical-device acceptance.
+- **iOS smoke operation evidence (#1818)**: `launch_stall` alone covers install, native-launch and later pre-body stalls; use retained operation records, not historical ENOENT or migration logs, to distinguish observed stages without claiming a platform cause.
 
 - **Approved management target (#1672/#1608/#1609)**: ordinary end-user management drops the blanket five-minute gate; valid authentication, exact identity, current Roles, credential/session expiry, CSRF/CAS, policy freshness, env-owned locks and administrator invariants remain. Trust changes/effective `security.manage` expansion require per-operation reauthentication; data grants alone do not. Machines may perform authorized reference/status reads, but no management mutation. Legitimate end-user Bearer eligibility remains; trusted classification of the mixed Bearer path is still under review. Google Security bundle/extra-claim app verification is optional outside baseline gates. These are pending implementation/proof requirements, not merged `93d53789` behavior or completed acceptance; see [ADR 0012](docs/decisions/0012-oidc-prefix-rbac.md#management-operation-and-actor-policy).
 

@@ -324,8 +324,13 @@ The primary operation and bounded, redacted cleanup reason are retained in
 `flutter.log` before secondary diagnostics, even if that capture fails.
 Native launch uses `--terminate-running-process` after
 installation so the returned PID identifies the new run, without a separate
-stop request for an application that may not be installed yet. Diagnostic
-capture errors cannot erase the original failure classification. Each attempt
+stop request for an application that may not be installed yet. Operation
+records in `phases/install_operation` and
+`phases/native_launch_operation` retain `started` and the returned/timeout outcome
+independently of log rotation; a returned exit code is not native smoke success.
+Install output uses the existing redaction, disk and shared console caps.
+These records distinguish operation evidence, not the cause of historical stalls.
+Diagnostic capture errors cannot erase the original failure classification. Each attempt
 builds the integration-test app and installs it on its
 own simulator before native launch. The simulator build compiles the native host
 and platform SQLite plugin. Ordinary PR/main runs analyze the production Dart app
