@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -179,7 +178,7 @@ func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("Snapshot install already in progress"))
 	}
 	s.snapshotReadCutMu.Lock()
-	s.replicationCutMu.Lock()
+	gate := s.lockPublicationGate("snapshot", false)
 	if !s.snapshotInstallFaulted {
 		if s.publicationFaultCount == 0 {
 			close(s.publicationFaultCh)
@@ -187,18 +186,18 @@ func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
 		s.publicationFaultCount++
 		s.snapshotInstallFaulted = true
 	}
-	s.replicationCutMu.Unlock()
+	gate.Unlock()
 	s.snapshotReadCutMu.Unlock()
 	return func(verified bool) {
 		if verified {
 			s.snapshotReadCutMu.Lock()
-			s.replicationCutMu.Lock()
+			gate := s.lockPublicationGate("snapshot", false)
 			s.snapshotInstallFaulted = false
 			s.publicationFaultCount--
 			if s.publicationFaultCount == 0 {
 				s.publicationFaultCh = make(chan struct{})
 			}
-			s.replicationCutMu.Unlock()
+			gate.Unlock()
 			s.snapshotReadCutMu.Unlock()
 		}
 		s.snapshotInstallMu.Unlock()
@@ -811,37 +810,11 @@ func (s *LanternService) publishRemoteMutation(
 	m *pb.Mutation,
 	receipt receiptMutationEnvelope,
 ) error {
-	switch m.GetOp().GetOp().(type) {
-	case *pb.MutationOp_DeleteVerticesByPrefix, *pb.MutationOp_DeleteEdgesByPrefix:
-		// A predicate may mutate only part of a graph before an interrupted
-		// scan returns an error. Current origins publish exact victim IDs;
-		// reject obsolete predicate-shaped relay records before queuing or
-		// changing any graph state.
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: predicate-shaped delete replay is unsupported; publish exact victims"))
-	}
-	if len(m.GetOrigin()) != len(hlc.NodeID{}) || m.GetSeq() == 0 || m.GetHlc() == nil || len(m.GetHlc().GetNodeId()) != len(hlc.NodeID{}) {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: mutation requires a 16-byte origin/HLC NodeID and nonzero seq"))
-	}
-	var origin hlc.NodeID
-	copy(origin[:], m.GetOrigin())
-	var zero hlc.NodeID
-	if origin == zero || zeroNodeID(m.GetHlc().GetNodeId()) {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: zero NodeID is forbidden"))
-	}
-	if !bytes.Equal(m.GetHlc().GetNodeId(), m.GetOrigin()) {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("replication: HLC NodeID differs from origin"))
-	}
-	if s.origins == nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("replication: origin state is unavailable"))
-	}
-	if receipt != nil {
-		if err := s.validateReplicatedReceiptEnvelope(receipt); err != nil {
-			return err
-		}
-	} else if err := s.validateDurableRemoteHLC(hlcFromProto(m.GetHlc())); err != nil {
+	cut, err := s.checkRemotePublicationAtCut(m, receipt)
+	if err != nil {
 		return err
 	}
-	committed := s.origins.LocalSeq(origin)
+	origin, committed := cut.origin, cut.committed
 	if m.GetSeq() <= committed {
 		return nil
 	}

@@ -304,7 +304,7 @@ func TestReceiptEdgeContributionDeleteReplicationKeepsOriginalResultAndTombstone
 		expiration, target.ContribID, earlier) {
 		t.Fatal("delayed Add resurrected a deleted contribution")
 	}
-	if err := follower.service.ApplyMutation(context.Background(), wire); err != nil ||
+	if err := applyReadOnlyDuplicate(t, follower.service, wire); err != nil ||
 		follower.log.Len() != 1 {
 		t.Fatalf("duplicate peer mutation = %v, log=%d", err, follower.log.Len())
 	}

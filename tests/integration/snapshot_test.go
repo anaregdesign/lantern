@@ -218,6 +218,129 @@ func TestGraphReadRetriesOverlappingPublicationOnRealWire(t *testing.T) {
 	}
 }
 
+type publicationWireObservation struct {
+	conflict chan struct{}
+	seen     atomic.Bool
+}
+
+func (*publicationWireObservation) OnIlluminate(string, string, string, string, int, int, time.Duration, time.Duration) {
+}
+func (*publicationWireObservation) OnIlluminateResult(string, string, string, string, string, string) {
+}
+func (*publicationWireObservation) OnScan(string, int, time.Duration)           {}
+func (*publicationWireObservation) OnSearchExecution(service.SearchObservation) {}
+func (*publicationWireObservation) OnBatch(string, int)                         {}
+func (*publicationWireObservation) OnGetVertices(int, int)                      {}
+func (*publicationWireObservation) OnGetEdges(int, int)                         {}
+func (*publicationWireObservation) OnEdgeContribDeduped(int)                    {}
+func (*publicationWireObservation) OnPublicationGate(string, time.Duration, time.Duration, time.Duration) {
+}
+func (*publicationWireObservation) OnPublicationApply(string, string, time.Duration, bool, uint64, int) {
+}
+func (m *publicationWireObservation) OnPublicationRead(_ int, outcome string, _ time.Duration) {
+	if outcome == "conflict" && m.seen.CompareAndSwap(false, true) {
+		close(m.conflict)
+	}
+}
+
+func TestGraphReadCertificateRefusesIncompletePublicationOnRealWire(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+	backend := &blockedWireVertexRead{Backend: cache, entered: make(chan struct{}), release: make(chan struct{})}
+	wal := &blockedFailureWAL{entered: make(chan struct{}), release: make(chan struct{})}
+	defer func() {
+		for _, release := range []chan struct{}{backend.release, wal.release} {
+			select {
+			case <-release:
+			default:
+				close(release)
+			}
+		}
+	}()
+	log := mutationlog.New(mutationlog.Options{Capacity: 8, WAL: wal})
+	t.Cleanup(func() { _ = log.Close() })
+	id := hlc.NodeID{0x32}
+	observation := &publicationWireObservation{conflict: make(chan struct{})}
+	svc := service.NewLanternService(backend).WithReplication(log, hlc.New(id, hlc.Options{}), nil).WithHotPathMetrics(observation)
+	srv := newConnectTestServer(t, svc, nil)
+	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+	put := func(value string) error {
+		_, err := raw.PutVertex(ctx, connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{
+			Key: "cut", Value: &pb.Vertex_String_{String_: value},
+		}}))
+		return err
+	}
+	if err := put("before"); err != nil {
+		t.Fatal(err)
+	}
+	beforeSeq, beforeLen := svc.LocalSeq(id), log.Len()
+	type readResult struct {
+		response *connect.Response[pb.GetVerticesResponse]
+		err      error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		resp, err := raw.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"cut"}}))
+		readDone <- readResult{resp, err}
+	}()
+	select {
+	case <-backend.entered:
+	case <-ctx.Done():
+		t.Fatal("wire read never entered its first capture", ctx.Err())
+	}
+	wal.armed.Store(true)
+	writeDone := make(chan error, 1)
+	go func() { writeDone <- put("unpublished") }()
+	select {
+	case <-wal.entered:
+	case <-ctx.Done():
+		t.Fatal("writer did not pause between graph change and publication", ctx.Err())
+	}
+	if vertex, ok := cache.GetVertex("cut"); !ok || vertex.GetString_() != "unpublished" {
+		t.Fatal("fixture did not expose the graph effect before the held WAL publication")
+	}
+	// Append still owns the log mutex while its WAL is deliberately held.
+	// Inspect the advertised log/origin cut only after that append returns.
+	close(backend.release)
+	// Existing observation is an explicit post-capture conflict barrier. The
+	// WAL remains held, so this conflict necessarily observed an active writer.
+	select {
+	case <-observation.conflict:
+	case result := <-readDone:
+		t.Fatalf("wire read escaped incomplete publication: %+v, %v", result.response, result.err)
+	case <-ctx.Done():
+		t.Fatal("read did not discard its actual unpublished capture", ctx.Err())
+	}
+	close(wal.release)
+	select {
+	case err := <-writeDone:
+		if connect.CodeOf(err) != connect.CodeUnavailable {
+			t.Fatalf("injected WAL failure = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case result := <-readDone:
+		if result.response != nil || connect.CodeOf(result.err) != connect.CodeFailedPrecondition || !strings.Contains(result.err.Error(), "gapped") {
+			t.Fatalf("unpublished wire response = %+v, %v", result.response, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if svc.LocalSeq(id) != beforeSeq || log.Len() != beforeLen {
+		t.Fatal("failed publication advanced the advertised cut")
+	}
+	if err := put("repair"); err != nil {
+		t.Fatal(err)
+	}
+	response, err := raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "cut"}))
+	if err != nil || response.Msg.GetVertex().GetString_() != "repair" || svc.LocalSeq(id) != beforeSeq+2 || log.Len() != beforeLen+2 {
+		t.Fatalf("wire read after exact pending repair = %+v, %v", response, err)
+	}
+}
+
 // TestSnapshotFormatNegotiation_RealConnectWire pins both sides of the
 // receipt-continuity boundary. A graph-only responder advertises and serves
 // only its graph format; a receipt-enabled responder cannot let a peer recover

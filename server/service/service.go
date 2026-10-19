@@ -75,6 +75,9 @@ type LanternService struct {
 	replicationSendMaxBytes   int
 	replicationFrameCertified bool
 	metrics                   HotPathMetrics
+	publicationObserver       publicationObserver
+	publicationWaiting        publicationWaitingCounters
+	publicationClock          func() time.Time // optional test clock; observability only
 	traversalTimeout          time.Duration
 	traversalWorkBudget       graphcache.PPRWorkBudget
 	traversalMaxResults       int
@@ -137,21 +140,6 @@ type LanternService struct {
 	// "single-instance, no peers" response.
 	replicationSnapshotter ReplicationSnapshotter
 	replicationStatusInfo  ReplicationStatusInfo
-}
-
-// publicationGate counts every completed exclusive publication interval. A
-// long graph read can capture its generation before and after expensive work
-// instead of keeping the service write gate locked for the entire query. The
-// generation changes even when a writer ultimately commits no graph change,
-// making an overlapping read fail closed rather than risking a mixed result.
-type publicationGate struct {
-	sync.RWMutex
-	generation uint64 // read under RLock, changed immediately before Unlock
-}
-
-func (g *publicationGate) Unlock() {
-	g.generation++
-	g.RWMutex.Unlock()
 }
 
 // HotPathMetrics is the narrow observability surface consumed by the
@@ -259,7 +247,7 @@ func defaultSearchLimits() SearchLimits {
 
 func NewLanternService(cache Backend) *LanternService {
 	searchLimits := defaultSearchLimits()
-	return &LanternService{
+	s := &LanternService{
 		cache:                   cache,
 		scan:                    defaultScanLimits(),
 		search:                  searchLimits,
@@ -272,6 +260,8 @@ func NewLanternService(cache Backend) *LanternService {
 		traversalWorkBudget:     graphcache.PPRWorkBudget{MaxPushes: 1_000_000, MaxTouchedEdges: 10_000_000},
 		traversalMaxResults:     1024,
 	}
+	s.replicationCutMu.initialize(s)
+	return s
 }
 
 // WithScanLimits returns s with its prefix-RPC limits replaced. Intended
@@ -408,7 +398,7 @@ func (s *LanternService) WithReplication(log *mutationlog.Log, clock *hlc.Clock,
 func (s *LanternService) withReplicationSnapshotCut(capture func()) error {
 	s.snapshotReadCutMu.RLock()
 	defer s.snapshotReadCutMu.RUnlock()
-	return s.withCommittedView(func() error {
+	return s.withCommittedViewNamed("source_cut", func() error {
 		capture()
 		return nil
 	})
@@ -419,7 +409,7 @@ func (s *LanternService) withReplicationSnapshotCut(capture func()) error {
 // vector). The fault channel belongs to that cut's generation, so a transient
 // publication failure still gaps the stream even if repair finishes quickly.
 func (s *LanternService) withReplicationSubscribeCut(capture func(<-chan struct{})) error {
-	return s.withCommittedView(func() error {
+	return s.withCommittedViewNamed("source_cut", func() error {
 		capture(s.publicationFaultCh)
 		return nil
 	})
@@ -449,6 +439,10 @@ func (s *LanternService) WithHotPathMetrics(m HotPathMetrics) *LanternService {
 		s.metrics = noopHotPathMetrics{}
 	} else {
 		s.metrics = m
+	}
+	s.publicationObserver, _ = m.(publicationObserver)
+	if sink, ok := m.(interface{ BindPublicationWaiters(func(string) int64) }); ok {
+		sink.BindPublicationWaiters(s.publicationWaiting.count)
 	}
 	return s
 }
@@ -1246,8 +1240,8 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	// like Redis SETNX with async replicas).
 	if request.GetIfAbsent() {
 		if s.clock != nil {
-			s.replicationCutMu.Lock()
-			defer s.replicationCutMu.Unlock()
+			gate := s.lockPublicationGate("local_put", false)
+			defer gate.Unlock()
 			if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
 				return nil, err
 			}
@@ -1279,8 +1273,8 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 			}
 			return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
 		}
-		s.replicationCutMu.Lock()
-		defer s.replicationCutMu.Unlock()
+		gate := s.lockPublicationGate("local_put", false)
+		defer gate.Unlock()
 		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
 			return nil, err
 		}
@@ -1313,8 +1307,8 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 	// inputs are excluded from replication; otherwise HA replicas could retain
 	// an old live value after the origin reports the replacement as expired.
 	if s.clock != nil {
-		s.replicationCutMu.Lock()
-		defer s.replicationCutMu.Unlock()
+		gate := s.lockPublicationGate("local_put", false)
+		defer gate.Unlock()
 		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
 			return nil, err
 		}
@@ -1343,8 +1337,8 @@ func (s *LanternService) PutVertices(ctx context.Context, request *pb.PutVertice
 		}
 		return &pb.PutVerticesResponse{Outcomes: wireOutcomes}, nil
 	} else {
-		s.replicationCutMu.Lock()
-		defer s.replicationCutMu.Unlock()
+		gate := s.lockPublicationGate("local_put", false)
+		defer gate.Unlock()
 		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
 			return nil, err
 		}
@@ -1551,8 +1545,8 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 	}
 	var outcomes []bool
 	if s.clock != nil {
-		s.replicationCutMu.Lock()
-		defer s.replicationCutMu.Unlock()
+		gate := s.lockPublicationGate("local_delete", false)
+		defer gate.Unlock()
 		if err := s.prepareLocalMutationLocked(); err != nil {
 			return nil, err
 		}
@@ -1590,8 +1584,8 @@ func (s *LanternService) DeleteVertices(ctx context.Context, in *pb.DeleteVertic
 		}
 		return &pb.DeleteVerticesResponse{Deleted: deleted, Existed: outcomes}, nil
 	} else {
-		s.replicationCutMu.Lock()
-		defer s.replicationCutMu.Unlock()
+		gate := s.lockPublicationGate("local_delete", false)
+		defer gate.Unlock()
 		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
 			return nil, err
 		}
@@ -1768,8 +1762,8 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 	var deduped int
 	effective := make([]float32, len(in))
 	if s.clock != nil {
-		s.replicationCutMu.Lock()
-		defer s.replicationCutMu.Unlock()
+		gate := s.lockPublicationGate("local_add", false)
+		defer gate.Unlock()
 		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
 			return nil, err
 		}
@@ -1822,8 +1816,8 @@ func (s *LanternService) AddEdges(ctx context.Context, request *pb.AddEdgesReque
 		}
 		s.metrics.OnEdgeContribDeduped(deduped)
 	} else {
-		s.replicationCutMu.Lock()
-		defer s.replicationCutMu.Unlock()
+		gate := s.lockPublicationGate("local_add", false)
+		defer gate.Unlock()
 		if err := s.checkPublicGraphWriteFaultLocked(); err != nil {
 			return nil, err
 		}

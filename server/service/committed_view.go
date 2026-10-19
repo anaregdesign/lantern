@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	coregraph "github.com/anaregdesign/lantern/core/graph"
 	"github.com/anaregdesign/lantern/core/graphcache"
@@ -17,7 +18,30 @@ import (
 // publication-generation samples reject reads overlapping a WAL write
 // without holding the publication lock across a slow traversal or scan.
 func (s *LanternService) withPublicGraphRead(capture func() error) error {
-	return s.withPublicGraphReadAttempts(context.Background(), 1, capture)
+	s.snapshotReadCutMu.RLock()
+	defer s.snapshotReadCutMu.RUnlock()
+	before, err := s.graphReadGeneration()
+	if err != nil {
+		return err
+	}
+	started := s.publicationCaptureStart()
+	captureErr := capture()
+	finished := s.publicationCaptureStart()
+	after, err := s.graphReadGeneration()
+	if err != nil {
+		s.observePublicationRead(1, "fault", started, finished)
+		return err
+	}
+	if captureErr != nil {
+		s.observePublicationRead(1, "capture_error", started, finished)
+		return captureErr
+	}
+	if before == after {
+		s.observePublicationRead(1, "consistent", started, finished)
+		return nil
+	}
+	s.observePublicationRead(1, "conflict", started, finished)
+	return publicationChangedDuringReadError()
 }
 
 // withPublicGraphReadRetry may repeat a read-only capture after an overlapping
@@ -25,47 +49,82 @@ func (s *LanternService) withPublicGraphRead(capture func() error) error {
 // If writes overlap all optimistic attempts, the final capture holds the
 // publication read cut instead of returning an error for healthy contention.
 func (s *LanternService) withPublicGraphReadRetry(ctx context.Context, capture func() error) error {
-	return s.withPublicGraphReadAttempts(ctx, 3, capture)
-}
-
-func (s *LanternService) withPublicGraphReadAttempts(ctx context.Context, attempts int, capture func() error) error {
 	s.snapshotReadCutMu.RLock()
 	defer s.snapshotReadCutMu.RUnlock()
-	for attempt := 0; attempt < attempts; attempt++ {
-		before, err := s.graphReadGeneration()
-		if err != nil {
-			return err
+	for attempt := 1; attempt <= 3; attempt++ {
+		before := s.replicationCutMu.readCertificate.Load()
+		if !before.stable() {
+			return s.capturePublicGraphFallback(ctx, capture)
 		}
+		if before.faulted {
+			return publicationGapError()
+		}
+		started := s.publicationCaptureStart()
 		captureErr := capture()
-		after, err := s.graphReadGeneration()
-		if err != nil {
-			return err
+		finished := s.publicationCaptureStart()
+		after := s.replicationCutMu.readCertificate.Load()
+		if after.stable() && after.faulted {
+			s.observePublicationRead(attempt, "fault", started, finished)
+			return publicationGapError()
 		}
 		if captureErr != nil {
+			if !after.stable() {
+				// Preserve post-capture fault priority, then return the original
+				// error. This callback has already run and must not be replayed.
+				checked := false
+				err := s.withCommittedView(func() error { checked = true; return captureErr })
+				outcome := "fault"
+				if checked {
+					outcome = "capture_error"
+				}
+				s.observePublicationRead(attempt, outcome, started, finished)
+				return err
+			}
+			s.observePublicationRead(attempt, "capture_error", started, finished)
 			return captureErr
 		}
 		if before == after {
+			s.observePublicationRead(attempt, "consistent", started, finished)
 			return nil
+		}
+		s.observePublicationRead(attempt, "conflict", started, finished)
+		if !after.stable() {
+			return s.capturePublicGraphFallback(ctx, capture)
 		}
 		if err := ctx.Err(); err != nil {
 			return ctxToConnect(err)
 		}
 	}
-	if attempts > 1 {
-		return s.withCommittedView(func() error {
-			if err := ctx.Err(); err != nil {
-				return ctxToConnect(err)
-			}
-			return capture()
-		})
+	return s.capturePublicGraphFallback(ctx, capture)
+}
+
+func (s *LanternService) capturePublicGraphFallback(ctx context.Context, capture func() error) error {
+	var started, finished time.Time
+	captured := false
+	err := s.withCommittedViewNamed("read_fallback", func() error {
+		if err := ctx.Err(); err != nil {
+			return ctxToConnect(err)
+		}
+		captured = true
+		started = s.publicationCaptureStart()
+		err := capture()
+		finished = s.publicationCaptureStart()
+		return err
+	})
+	if captured {
+		outcome := "consistent"
+		if err != nil {
+			outcome = "capture_error"
+		}
+		s.observePublicationRead(4, outcome, started, finished)
 	}
-	return publicationChangedDuringReadError()
+	return err
 }
 
 func (s *LanternService) graphReadGeneration() (uint64, error) {
-	s.replicationCutMu.RLock()
-	defer s.replicationCutMu.RUnlock()
-	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
+	gate := s.lockPublicationGate("generation_probe", true)
+	defer gate.Unlock()
+	if s.publicGraphFaultLocked() {
 		return 0, publicationGapError()
 	}
 	return s.replicationCutMu.generation, nil
@@ -104,9 +163,13 @@ func detachTraversalVertices(g *coregraph.Graph[string, *pb.Vertex]) {
 // releases their staged locks after the matching log entry is installed, but
 // these error-free Core reads cannot report an indeterminate WAL outcome.
 func (s *LanternService) withCommittedView(capture func() error) error {
-	s.replicationCutMu.RLock()
-	defer s.replicationCutMu.RUnlock()
-	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
+	return s.withCommittedViewNamed("committed_view", capture)
+}
+
+func (s *LanternService) withCommittedViewNamed(category string, capture func() error) error {
+	gate := s.lockPublicationGate(category, true)
+	defer gate.Unlock()
+	if s.publicGraphFaultLocked() {
 		return publicationGapError()
 	}
 	return capture()
@@ -119,7 +182,7 @@ func (s *LanternService) withCommittedView(capture func() error) error {
 func (s *LanternService) withExclusiveCommittedView(capture func() error) error {
 	s.replicationCutMu.Lock()
 	defer s.replicationCutMu.Unlock()
-	if s.publicationFaultCount != 0 || s.receiptCommitFaulted {
+	if s.publicGraphFaultLocked() {
 		return publicationGapError()
 	}
 	return capture()
