@@ -813,7 +813,7 @@ Before pushing a release tag, repeat the candidate check with the intended
 tag ref explicitly set; an untagged local checkout has no `GITHUB_REF`:
 
 ```bash
-GITHUB_REF=refs/tags/sdks/node/v0.13.0 bun run verify:package
+GITHUB_REF=refs/tags/sdks/node/v0.14.0 bun run verify:package
 ```
 
 The tag workflow supplies `GITHUB_REF` automatically and fails if its version
