@@ -405,6 +405,12 @@ verify_native_workload_settings() {
       [.[] | select(.Type == "bind" and .Destination == "/run/lantern-config" and
         (.RW == false) and (.Source | endswith($source)))] | length == 1
     ' <<<"$mounts" >/dev/null || die "$service has no pinned, read-only native mount"
+    if [[ "$receipt_driver" == "1" ]]; then
+      jq -e --arg source "$PEER_TLS_DIR/$service/ntp.conf" '
+        [.[] | select(.Type == "bind" and .Destination == "/etc/ntp.conf" and
+          (.RW == false) and (.Source | endswith($source)))] | length == 1
+      ' <<<"$mounts" >/dev/null || die "$service has no pinned, read-only declared time source"
+    fi
     env="$(docker inspect --format '{{json .Config.Env}}' "$container")" || die "missing native environment"
     jq -e --arg service "$service" --argjson actual "$env" --arg driver "$receipt_driver" '
       (.nodes[] | select(.name == ("node-" + ($service | split("-")[1]))) | .environment |
