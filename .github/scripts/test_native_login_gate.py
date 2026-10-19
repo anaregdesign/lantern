@@ -56,7 +56,9 @@ with open(os.environ['CALLS'], 'a') as out:
     out.write(json.dumps([name, args]) + '\\n')
 if name == 'go':
     if args != ['env', 'GOFLAGS']:
-        Path(args[args.index('-o') + 1]).write_text('test binary')
+        binary = Path(args[args.index('-o') + 1])
+        binary.write_text('test binary')
+        binary.chmod(0o700)
 elif args[:2] == ['image', 'inspect']:
     print('sha256:fixture')
 elif args[0] == 'run':
@@ -148,6 +150,14 @@ elif args[0] == 'run':
             self.assertEqual(len(receipt["source_sha256"]), 64)
             self.assertTrue(all(len(command["sha256"]) == 64 for command in receipt["commands"]))
             for destination in destinations:
+                self.assertEqual((destination / "build/Dockerfile").read_text().splitlines(), [
+                    "FROM scratch",
+                    "COPY --chmod=0555 security.test /security.test",
+                    "COPY --chmod=0555 integration.test /integration.test",
+                    'ENTRYPOINT ["/integration.test"]',
+                ])
+                for binary in ("security.test", "integration.test"):
+                    self.assertEqual((destination / "build" / binary).stat().st_mode & 0o777, 0o700)
                 for path in (destination, destination / "build", *((destination / "private",) if serving else ())):
                     self.assertEqual(path.stat().st_mode & 0o777, 0o700)
                 for path in (destination / "receipt.json", *destination.glob("*.log")):
@@ -157,6 +167,13 @@ elif args[0] == 'run':
         for mode in ("pass", "missing", "skip", "changed", "failure"):
             with self.subTest(mode=mode):
                 self.execute(mode)
+
+    def test_private_host_programs_are_executable_in_the_nonroot_image(self):
+        previous = os.umask(0o077)
+        try:
+            self.execute("pass")
+        finally:
+            os.umask(previous)
 
     def test_repeated_local_invocations_preserve_distinct_evidence(self):
         self.execute("repeat")
