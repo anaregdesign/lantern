@@ -79,7 +79,7 @@ func securityWorkloadFixture(t *testing.T, now func() time.Time) *PeerIdentityRu
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	store, err := peerauth.CreateStore(peerauth.StoreOptions{Path: filepath.Join(dir, "membership"), Key: public, Domain: manifest.Domain, Now: now}, raw)
+	store, err := peerauth.CreateStore(peerauth.StoreOptions{Path: filepath.Join(dir, "membership"), Key: public, Domain: manifest.Domain, Now: now, SelfCertificates: []peerauth.CertificateWindow{{Start: instant.Add(-time.Hour), End: instant.Add(time.Hour)}}}, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,5 +88,5 @@ func securityWorkloadFixture(t *testing.T, now func() time.Time) *PeerIdentityRu
 	if err := os.WriteFile(input, raw, 0600); err != nil {
 		t.Fatal(err)
 	}
-	return &PeerIdentityRuntime{store: store, config: PeerIdentityConfig{Now: now, SelfIdentity: member.Identity, ManifestFile: input}, selfExpiry: instant.Add(time.Hour)}
+	return &PeerIdentityRuntime{store: store, config: PeerIdentityConfig{Now: now, SelfIdentity: member.Identity, ManifestFile: input}}
 }

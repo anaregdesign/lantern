@@ -366,6 +366,20 @@ export/read Roles. Recent interactive authentication is required for security
 changes, not ordinary machine export.
 
 Every HA member, including OFF, uses the independent signed private peer plane.
+
+On Linux amd64/arm64 and Darwin arm64, private OFF also owns a qualified native
+workload-time clock; OIDC borrows its existing authority clock. Declare the
+read-only `/etc/ntp.conf` input with the existing exact source
+`server time.asia.apple.com`. Missing/invalid input refuses without scalar
+fallback. Existing other-target OFF/native TLS remains supported with its
+strict scalar-rollback guard and limitation. Standalone OFF needs no source.
+This source file does not change the host clock or OS time-service settings.
+Native/source premises, whole-interval membership and certificate validity,
+original non-extendable 30s private RPC budgets and durable floors still apply.
+Ordinary source loss may use sound widening holdover and existing reacquisition;
+DENY, native terminal faults and latched Store faults retain their distinct
+refusal rules. A successful later sample/reload cannot reset a permanent latch.
+
 Retired static bearer and public peer settings fail startup, even when empty.
 Do not roll a mixed OFF/OIDC domain, share peer keys or use a public token for
 private synchronization. The [operations guide](oidc-operations.md) is the

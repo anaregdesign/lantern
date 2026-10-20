@@ -15,7 +15,7 @@ import (
 
 func TestPublicListenerRequiresExactServiceAndExcludesPrivatePlanes(t *testing.T) {
 	data := securityDataFixture(t)
-	runtime, cleanup, err := NewSecurityRuntime(SecurityConfig{Mode: "off"}, data)
+	runtime, cleanup, err := NewSecurityRuntime(t.Context(), SecurityConfig{Mode: "off"}, data)
 	if err != nil {
 		t.Fatal(err)
 	}

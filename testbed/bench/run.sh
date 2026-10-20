@@ -292,8 +292,8 @@ fi
 CHANGEPROBE="$NATIVE_WORK_DIR/changeprobe"
 go -C "$REPO_ROOT" build -o "$CHANGEPROBE" ./testbed/bench/changeprobe || die "cannot build public CDC consumer"
 "$AUTHFIXTURE" "${fixture_args[@]}" > "$NATIVE_WORK_DIR/generated.json" || die "cannot generate native benchmark workload trust"
+write_compose_time_source "$PEER_TLS_DIR" || die "cannot prepare declared read-only time source"
 if [[ "$receipt_driver" == "1" ]]; then
-  write_compose_time_source "$PEER_TLS_DIR" || die "cannot prepare declared read-only time source"
   export LANTERN_BENCH_AUTH_TOKEN="$(jq -er '.[0]' "$PEER_TLS_DIR/tokens.json")"
   [[ "$LANTERN_BENCH_AUTH_TOKEN" =~ ^lnt_m1_[A-Za-z0-9_-]{43}$ ]] || die "invalid native machine Role credential"
 fi
@@ -408,12 +408,10 @@ verify_native_workload_settings() {
       [.[] | select(.Type == "bind" and .Destination == "/run/lantern-config" and
         (.RW == false) and (.Source | endswith($source)))] | length == 1
     ' <<<"$mounts" >/dev/null || die "$service has no pinned, read-only native mount"
-    if [[ "$receipt_driver" == "1" ]]; then
-      jq -e --arg source "$PEER_TLS_DIR/$service/ntp.conf" '
+    jq -e --arg source "$PEER_TLS_DIR/$service/ntp.conf" '
         [.[] | select(.Type == "bind" and .Destination == "/etc/ntp.conf" and
           (.RW == false) and (.Source | endswith($source)))] | length == 1
       ' <<<"$mounts" >/dev/null || die "$service has no pinned, read-only declared time source"
-    fi
     env="$(docker inspect --format '{{json .Config.Env}}' "$container")" || die "missing native environment"
     jq -e --arg service "$service" --argjson actual "$env" --arg driver "$receipt_driver" '
       (.nodes[] | select(.name == ("node-" + ($service | split("-")[1]))) | .environment |

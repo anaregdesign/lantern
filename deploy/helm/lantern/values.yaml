@@ -122,6 +122,11 @@ auth:
 publicTLS:
   existingSecret: ""
 
+# Required for private peers (including OFF) and OIDC on admitted native targets.
+# Contains the public read-only ntp.conf with the existing exact source profile.
+nativeTime:
+  configMap: ""
+
 peerPlane:
   enabled: false
   port: 6381

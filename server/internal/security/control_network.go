@@ -180,6 +180,7 @@ func openS3AOwner(c s3aConfig, fresh bool, floors s3aFloors) (_ *s3aOwner, err e
 	if err != nil {
 		return nil, err
 	}
+	c.Membership.SelfCertificates = []peerauth.CertificateWindow{{Start: identity.starts, End: identity.expires.Add(peerauth.ClockMargin)}}
 	o := &s3aOwner{identity: identity, limits: c.Limits, now: c.Membership.Now, timeOwner: c.timeOwner, hooks: c.hooks, rangeSlot: make(chan struct{}, 1), binding: c.Membership.Profile.Digest(),
 		localSlot: make(chan struct{}, 1), driveSlot: make(chan struct{}, 1), originalSlot: make(chan struct{}, 1),
 		peers: map[uint32]peerauth.ControlVoter{}, byIdentity: map[string]uint32{},
@@ -254,15 +255,8 @@ func (o *s3aOwner) check(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !o.now().Before(o.identity.expires) {
-		return peerauth.ErrMembership
-	}
-	if o.timeOwner != nil {
-		now, err := o.timeOwner.current()
-		if err != nil || time.Unix(0, int64(now.utc.low)).Before(o.identity.starts) || !time.Unix(0, int64(now.utc.high)).Before(o.identity.expires) {
-			return peerauth.ErrMembership
-		}
-	}
+	// The Store checks retained self-chain windows and membership using one observation.
+
 	err := o.membership.Check(ctx)
 	if err != nil && o.membership.FaultReason() != "none" {
 		o.fail()

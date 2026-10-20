@@ -76,3 +76,25 @@ func (o *authorityTimeOwner) startupFailure(anchoring, incoming context.Context)
 	}
 	return &authorityTimeStartupError{cause: errors.Join(anchoring.Err(), cause), snapshot: snapshot}
 }
+
+// Shared by authority and OFF workload composition. Construction cancellation
+// does not own a successfully transferred clock's later drain lifetime.
+func waitAuthorityTimeAnchor(ctx context.Context, clock *authorityTimeOwner) error {
+	anchoring, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := clock.current(); err == nil {
+			return ctx.Err()
+		}
+		select {
+		case <-anchoring.Done():
+			return clock.startupFailure(anchoring, ctx)
+		case <-ticker.C:
+		}
+	}
+}

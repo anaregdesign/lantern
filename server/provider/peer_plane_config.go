@@ -113,18 +113,3 @@ func NewConfiguredPeerIdentity(cfg PeerPlaneConfig) (*PeerIdentityRuntime, func(
 	}
 	return NewPeerIdentityRuntime(cfg.Identity)
 }
-
-func NewCurrentConfiguredPeerIdentity(cfg PeerPlaneConfig, runtime *SecurityRuntime) (*PeerIdentityRuntime, func(), error) {
-	if runtime == nil {
-		return nil, nil, errors.New("missing security runtime")
-	}
-	if runtime.current != nil && cfg.ListenAddress != "" {
-		p := runtime.current.Profile()
-		if cfg.Identity.AuthMode != "oidc" || cfg.Identity.CurrentProfile != p.Binding() || cfg.Identity.SecurityGeneration != p.Generation || cfg.Identity.WriterPublicKey != [32]byte{} {
-			return nil, nil, errors.New("data workload belongs to a different current cohort")
-		}
-		cfg.Identity.Now = runtime.current.VerificationTime
-		cfg.Identity.TimeBounds = runtime.current.TimeBounds
-	}
-	return NewConfiguredPeerIdentity(cfg)
-}

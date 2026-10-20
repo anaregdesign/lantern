@@ -170,7 +170,7 @@ func TestSecurityWorkersReloadDataDespiteControlFailureAndExpiredReadiness(t *te
 	}
 	defer store.Close()
 	input := filepath.Join(dir, "input")
-	peer := &PeerIdentityRuntime{store: store, config: PeerIdentityConfig{Now: clock.Now, SelfIdentity: m.Members[0].Identity, ManifestFile: input}, selfExpiry: clock.Now().Add(time.Hour)}
+	peer := &PeerIdentityRuntime{store: store, config: PeerIdentityConfig{Now: clock.Now, SelfIdentity: m.Members[0].Identity, ManifestFile: input}}
 	clock.advance(2 * time.Minute)
 	if peer.CheckWorkload(t.Context()) == nil {
 		t.Fatal("old membership still live")
@@ -228,7 +228,7 @@ func TestSecurityWorkersLogOnlyFixedPrivateFaultCategory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	peer := &PeerIdentityRuntime{store: store, config: PeerIdentityConfig{Now: clock.Now, SelfIdentity: manifest.Members[0].Identity, ManifestFile: filepath.Join(t.TempDir(), "missing-input")}, selfExpiry: clock.Now().Add(time.Hour)}
+	peer := &PeerIdentityRuntime{store: store, config: PeerIdentityConfig{Now: clock.Now, SelfIdentity: manifest.Members[0].Identity, ManifestFile: filepath.Join(t.TempDir(), "missing-input")}}
 	clock.advance(-time.Second)
 	if peer.CheckWorkload(t.Context()) == nil {
 		t.Fatal("rollback did not fence workload")

@@ -1325,7 +1325,7 @@ func TestAuth_OIDCScopedChangesRealConnect(t *testing.T) {
 }
 
 func TestAuth_ControlOffRealConnect(t *testing.T) {
-	runtime, closeRuntime, err := provider.NewSecurityRuntime(provider.SecurityConfig{Mode: "off"}, nil)
+	runtime, closeRuntime, err := provider.NewSecurityRuntime(t.Context(), provider.SecurityConfig{Mode: "off"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2093,7 +2093,7 @@ func TestAuth_NodeSecurityFacadeRealConnect(t *testing.T) {
 	if err != nil {
 		t.Skip("Bun is required for the Node control-plane wire gate")
 	}
-	runtime, cleanup, err := provider.NewSecurityRuntime(provider.SecurityConfig{Mode: "off"}, nil)
+	runtime, cleanup, err := provider.NewSecurityRuntime(t.Context(), provider.SecurityConfig{Mode: "off"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2234,7 +2234,7 @@ func TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = data.Close() })
-		runtime, cleanup, err := provider.NewSecurityRuntime(provider.SecurityConfig{Mode: "off"}, data)
+		runtime, cleanup, err := provider.NewSecurityRuntime(t.Context(), provider.SecurityConfig{Mode: "off"}, data)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2675,7 +2675,7 @@ func TestAuth_OFFPublicChangeLifecycleRealConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = data.Close() })
-	runtime, cleanup, err := provider.NewSecurityRuntime(provider.SecurityConfig{Mode: "off"}, data)
+	runtime, cleanup, err := provider.NewSecurityRuntime(t.Context(), provider.SecurityConfig{Mode: "off"}, data)
 	if err != nil {
 		t.Fatal(err)
 	}

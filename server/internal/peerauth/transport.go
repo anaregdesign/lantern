@@ -27,6 +27,7 @@ type workloadTransport struct {
 }
 
 func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	started := time.Now()
 	if request == nil || request.URL == nil || request.URL.User != nil || request.URL.Opaque != "" ||
 		request.URL.RawQuery != "" || request.URL.ForceQuery || request.URL.Fragment != "" ||
 		request.Host != "" && request.Host != request.URL.Host || t.roots == nil ||
@@ -37,30 +38,33 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 	if !validOrigin(origin) {
 		return nil, ErrMembership
 	}
-	member, expiry, err := t.store.MemberAtOrigin(origin)
-	if err != nil || member.Identity == t.store.options.Self.Identity {
-		return nil, ErrMembership
+	original, err := t.store.admitOrigin(origin, started)
+	if err != nil {
+		return nil, err
 	}
-	now := t.store.options.Now()
-	remaining := min(expiry.Sub(now), MaxRPCLifetime)
-	if remaining <= 0 {
-		return nil, ErrMembership
+	member := original.member
+	deadline, err := original.deadline(request.Context())
+	if err != nil {
+		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), remaining)
+	ctx, cancel := context.WithDeadline(request.Context(), deadline)
 	stop, stopped := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	var timerMu sync.Mutex
-	var certificateTimer *time.Timer
-	var handshakeAdmission *Admission
+	var admissionMu sync.Mutex
+	var interruptionTimer *time.Timer
+	activeAdmission := original
+	interruptionDeadline := deadline
+	closing := false
 	cleanup := func() {
 		once.Do(func() {
 			close(stop)
 			cancel()
-			timerMu.Lock()
-			if certificateTimer != nil {
-				certificateTimer.Stop()
+			admissionMu.Lock()
+			closing = true
+			if interruptionTimer != nil {
+				interruptionTimer.Stop()
 			}
-			timerMu.Unlock()
+			admissionMu.Unlock()
 			<-stopped
 		})
 	}
@@ -68,11 +72,37 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		current, _, err := t.store.MemberAtOrigin(origin)
-		if err != nil || current != member {
+		admissionMu.Lock()
+		current := activeAdmission
+		admissionMu.Unlock()
+		// Never call Store while holding the admission/timer publication lock.
+		if current.Check(ctx) != nil {
 			return ErrMembership
 		}
 		return nil
+	}
+	// Publish only an immutable intersection. Each later stage may shorten the
+	// local interruption timer, while the watcher checks all native/UTC limits.
+	activate := func(admission *Admission) error {
+		nextDeadline, err := admission.deadline(ctx)
+		if err != nil {
+			return err
+		}
+		admissionMu.Lock()
+		if closing {
+			admissionMu.Unlock()
+			return ErrMembership
+		}
+		activeAdmission = admission
+		if nextDeadline.Before(interruptionDeadline) {
+			interruptionDeadline = nextDeadline
+			if interruptionTimer != nil {
+				interruptionTimer.Stop()
+			}
+			interruptionTimer = time.AfterFunc(time.Until(interruptionDeadline), cancel)
+		}
+		admissionMu.Unlock()
+		return check()
 	}
 	go func() {
 		defer close(stopped)
@@ -101,23 +131,15 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 				if err != nil || admission.member != member {
 					return ErrMembership
 				}
-				// Bound writes and blocked response headers at the certificate
-				// expiry immediately, before sending any authenticated request.
-				timerMu.Lock()
-				handshakeAdmission = admission
-				if certificateTimer != nil {
-					certificateTimer.Stop()
+				if err := admission.restrict(original); err != nil {
+					return err
 				}
-				if ctx.Err() == nil {
-					certificateTimer = time.AfterFunc(admission.ExpiresAt().Sub(t.store.options.Now()), cancel)
-				}
-				timerMu.Unlock()
-				return check()
+				return activate(admission)
 			}}}
 	if t.store.controlBinding != nil {
 		transport.MaxResponseHeaderBytes = 64 << 10
 	}
-	if t.store.timeBounds != nil {
+	if t.store.timeBounds != nil || t.store.options.Time != nil {
 		transport.TLSClientConfig.Time = t.store.options.Now
 	}
 	request = request.Clone(ctx)
@@ -141,24 +163,31 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 		cleanup()
 		return nil, err
 	}
-	timerMu.Lock()
-	admission := handshakeAdmission
-	timerMu.Unlock()
-	if t.store.controlBinding == nil {
-		// Preserve the legacy graph profile's response admission behavior.
-		admission, err = t.store.Admit(response.TLS, origin)
-	}
-	if err != nil || admission == nil || admission.member != member || admission.Check(ctx) != nil || check() != nil {
+	admissionMu.Lock()
+	admission := activeAdmission
+	admissionMu.Unlock()
+	if admission == nil || admission == original {
 		_ = response.Body.Close()
 		cleanup()
 		return nil, ErrMembership
 	}
-	response.Body = &workloadBody{ReadCloser: response.Body, admission: admission, check: func() error {
-		if err := check(); err != nil {
-			return err
+	if t.store.controlBinding == nil {
+		// Revalidate the data profile without renewing the original capability.
+		prior := admission
+		admission, err = t.store.Admit(response.TLS, origin)
+		if err == nil {
+			err = admission.restrict(prior)
 		}
-		return admission.Check(ctx)
-	}, cleanup: cleanup}
+		if err == nil {
+			err = activate(admission)
+		}
+	}
+	if err != nil || admission == nil || admission.member != member || check() != nil {
+		_ = response.Body.Close()
+		cleanup()
+		return nil, ErrMembership
+	}
+	response.Body = &workloadBody{ReadCloser: response.Body, admission: admission, check: check, cleanup: cleanup}
 	return response, nil
 }
 

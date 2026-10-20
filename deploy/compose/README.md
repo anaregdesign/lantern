@@ -26,6 +26,15 @@ homogeneous public mode/domain/namespace. The operator signing private key
 stays outside every Server volume. DNS only resolves those approved origins.
 Never share a peer private key across nodes.
 
+Each Linux HA Server, including public OFF, requires its own declared read-only
+`<node>/ntp.conf`, mounted at `/etc/ntp.conf`. The existing admitted profile uses
+exactly `server time.asia.apple.com`; arbitrary NTP sources are not supported.
+This is application input, not an instruction to alter host time services. The
+Server requires fresh qualification before private membership/listeners and
+refuses missing/invalid input. OFF owns one clock; OIDC borrows its existing
+authority clock. Standalone OFF has no time-source prerequisite.
+
+
 ```sh
 export LANTERN_HA_CONFIG_DIR=/absolute/operator/lantern
 export LANTERN_HA_ADMIN_UPSTREAM=https://lantern-0:6380

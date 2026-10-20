@@ -12,14 +12,14 @@ import (
 	"github.com/anaregdesign/lantern/server/service"
 )
 
-func (r *SecurityRuntime) openAuthority() error {
+func (r *SecurityRuntime) openAuthority(ctx context.Context) error {
 	p, err := security.LoadCurrentProvisioning(r.config.ConfigFile)
 	if err != nil {
 		return err
 	}
 	// This starts the independent private listener before public readiness;
 	// absence of a quorum leaves the actual current owner unavailable, not OFF.
-	r.current, err = security.OpenCurrentAuthority(context.Background(), p, r.config.StoreMode, r.config.BrowserOrigin)
+	r.current, err = security.OpenCurrentAuthority(ctx, p, r.config.StoreMode, r.config.BrowserOrigin)
 	if err != nil {
 		return err
 	}

@@ -267,6 +267,10 @@ spec:
             {{- if or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
             - name: runtime-state
               mountPath: {{ .Values.runtimeState.dir }}
+            - name: workload-time
+              mountPath: /etc/ntp.conf
+              subPath: ntp.conf
+              readOnly: true
             {{- end }}
             {{- if eq .Values.auth.mode "oidc" }}
             - name: workload-files
@@ -289,6 +293,14 @@ spec:
             {{- end }}
           {{- end }}
       volumes:
+        {{- if or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
+        - name: workload-time
+          configMap:
+            name: {{ .Values.nativeTime.configMap | quote }}
+            items:
+              - key: ntp.conf
+                path: ntp.conf
+        {{- end }}
         {{- if or .Values.publicTLS.existingSecret .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
         - name: workload-files
           emptyDir:

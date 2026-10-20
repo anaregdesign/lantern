@@ -138,3 +138,25 @@ func TestAuthorityTimeStartupHistoryFollowsOwnerPublication(t *testing.T) {
 		}
 	})
 }
+
+func TestWaitAuthorityTimeAnchorUsesIncomingCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clock := &authorityTimeOwner{producer: &authorityTimeProducer{}}
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() { done <- waitAuthorityTimeAnchor(ctx, clock) }()
+		synctest.Wait()
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	})
+	synctest.Test(t, func(t *testing.T) {
+		clock := &authorityTimeOwner{producer: &authorityTimeProducer{}}
+		started := time.Now()
+		err := waitAuthorityTimeAnchor(t.Context(), clock)
+		if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) != 45*time.Second {
+			t.Fatal("anchor startup bound changed", err, time.Since(started))
+		}
+	})
+}

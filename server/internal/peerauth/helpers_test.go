@@ -55,3 +55,19 @@ func signFixture(t testing.TB, m Manifest, key ed25519.PrivateKey) []byte {
 	}
 	return raw
 }
+
+// Deterministic observations for consumer tests; no source qualification claim.
+type peerTestObservation struct {
+	owner     *byte
+	low, high time.Time
+	elapsed   time.Duration
+}
+
+func (o peerTestObservation) Bounds() (time.Time, time.Time) { return o.low, o.high }
+func (o peerTestObservation) ElapsedSince(prior TimeObservation) (time.Duration, error) {
+	p, ok := prior.(peerTestObservation)
+	if !ok || o.owner != p.owner || o.elapsed < p.elapsed {
+		return 0, ErrMembership
+	}
+	return o.elapsed - p.elapsed, nil
+}

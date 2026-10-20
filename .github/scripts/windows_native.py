@@ -21,6 +21,7 @@ GO_TESTS = (
     "TestListenerLaunchRejectsUnboundArguments", "TestNativeListenerLaunchLifecycle",
     "TestFixtureReservedEndpointValidation",
     "TestAuthorityTimeUnsupportedNativeProfile",
+    "TestNativeWorkloadTimeTargetPreservesOtherOFFProfiles",
 )
 RUST_TESTS = (
     "transport::tests::real_wire_https_roots_and_invalid_certificates",

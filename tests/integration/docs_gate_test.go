@@ -1352,8 +1352,8 @@ func TestHelmNativeSecurityModeMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer := []string{"peerPlane.enabled=true", "peerPlane.deployment=01000000000000000000000000000000", "peerPlane.workloadIDPrefix=spiffe://lantern.test/nodes", "peerPlane.membershipConfigMap=membership", "peerPlane.operatorKeySecret=operator-public", "peerPlane.identitySecret=workload-identities"}
-	oidc := []string{"auth.mode=oidc", "auth.configMap=oidc-config", "auth.existingSecret=security-files", "auth.files[0]=node.json", "publicTLS.existingSecret=public-certificates"}
+	peer := []string{"nativeTime.configMap=workload-time", "peerPlane.enabled=true", "peerPlane.deployment=01000000000000000000000000000000", "peerPlane.workloadIDPrefix=spiffe://lantern.test/nodes", "peerPlane.membershipConfigMap=membership", "peerPlane.operatorKeySecret=operator-public", "peerPlane.identitySecret=workload-identities"}
+	oidc := []string{"nativeTime.configMap=workload-time", "auth.mode=oidc", "auth.configMap=oidc-config", "auth.existingSecret=security-files", "auth.files[0]=node.json", "publicTLS.existingSecret=public-certificates"}
 	combine := func(groups ...[]string) []string {
 		var result []string
 		for _, group := range groups {
@@ -1367,8 +1367,8 @@ func TestHelmNativeSecurityModeMatrix(t *testing.T) {
 		valid        bool
 		want, reject []string
 	}{
-		{"OFF default", nil, true, []string{"replicas: 1", "127.0.0.1:9090", "exec:"}, []string{"name: LANTERN_AUTH_MODE", "name: LANTERN_PEER_LISTEN_ADDR", "name: metrics"}},
-		{"OFF HA", combine(peer, []string{"replicaCount=3"}), true, []string{"replicas: 3", "name: LANTERN_PEER_LISTEN_ADDR", "membership.state", "/run/lantern-peers/$(POD_NAME).crt"}, []string{"name: LANTERN_AUTH_MODE", "name: LANTERN_PEERS"}},
+		{"OFF default", nil, true, []string{"replicas: 1", "127.0.0.1:9090", "exec:"}, []string{"name: LANTERN_AUTH_MODE", "name: LANTERN_PEER_LISTEN_ADDR", "name: metrics", "/etc/ntp.conf"}},
+		{"OFF HA", combine(peer, []string{"replicaCount=3"}), true, []string{"replicas: 3", "name: LANTERN_PEER_LISTEN_ADDR", "membership.state", "/run/lantern-peers/$(POD_NAME).crt", "/etc/ntp.conf", "name: workload-time"}, []string{"name: LANTERN_AUTH_MODE", "name: LANTERN_PEERS"}},
 		{"OIDC original authority", oidc, true, []string{"name: LANTERN_AUTH_MODE", "value: oidc", "LANTERN_SECURITY_CONFIG_FILE", "/run/lantern-security/node.json", "name: runtime-state"}, []string{"LANTERN_AUTH_TOKENS", "LANTERN_SECURITY_NODE_ROLE", "LANTERN_SECURITY_STORE_PATH"}},
 		{"OIDC data replicas", combine(peer, oidc, []string{"replicaCount=3"}), true, []string{"replicas: 3", "manifest.json", "name: LANTERN_PEER_KEY_FILE"}, []string{"LANTERN_PEER_CA_FILE", "LANTERN_SECURITY_NODE_ROLE"}},
 		{"OFF Admin", []string{"admin.enabled=true"}, true, []string{"name: LANTERN_ADMIN_SERVER_UPSTREAM", "h2c://matrix-lantern:6380", "name: caddy-conf-d"}, nil},
@@ -1378,6 +1378,7 @@ func TestHelmNativeSecurityModeMatrix(t *testing.T) {
 		{"writer key in common files", combine(oidc, []string{"auth.files[0]=writer.key"}), false, nil, nil},
 		{"operator key in Pod", combine(oidc, []string{"auth.writerFiles[0]=operator.key"}), false, nil, nil},
 		{"unsigned replicas", []string{"replicaCount=2"}, false, nil, nil},
+		{"ignored standalone time source", []string{"nativeTime.configMap=unexpected"}, false, nil, nil},
 		{"partial peer material", []string{"peerPlane.enabled=true"}, false, nil, nil},
 		{"ignored peer material", []string{"peerPlane.identitySecret=unexpected"}, false, nil, nil},
 		{"ignored OIDC material", []string{"auth.configMap=unexpected"}, false, nil, nil},
@@ -1561,7 +1562,7 @@ func TestHelmWorkloadSecretProjectionCopy(t *testing.T) {
 	}
 	for _, origin := range []bool{false, true} {
 		t.Run(map[bool]string{false: "voter", true: "voter and origin"}[origin], func(t *testing.T) {
-			args := []string{"template", "matrix", filepath.Join(root, "deploy/helm/lantern"), "--set", "peerPlane.enabled=true", "--set-string", "peerPlane.deployment=01000000000000000000000000000000", "--set-string", "peerPlane.workloadIDPrefix=spiffe://lantern.test/nodes", "--set-string", "peerPlane.membershipConfigMap=membership", "--set-string", "peerPlane.operatorKeySecret=operator-public", "--set-string", "peerPlane.identitySecret=identities", "--set-string", "publicTLS.existingSecret=public", "--set-string", "auth.mode=oidc", "--set-string", "auth.configMap=config", "--set-string", "auth.existingSecret=security"}
+			args := []string{"template", "matrix", filepath.Join(root, "deploy/helm/lantern"), "--set-string", "nativeTime.configMap=workload-time", "--set", "peerPlane.enabled=true", "--set-string", "peerPlane.deployment=01000000000000000000000000000000", "--set-string", "peerPlane.workloadIDPrefix=spiffe://lantern.test/nodes", "--set-string", "peerPlane.membershipConfigMap=membership", "--set-string", "peerPlane.operatorKeySecret=operator-public", "--set-string", "peerPlane.identitySecret=identities", "--set-string", "publicTLS.existingSecret=public", "--set-string", "auth.mode=oidc", "--set-string", "auth.configMap=config", "--set-string", "auth.existingSecret=security"}
 			authFiles := []string{"node.json", "genesis.json", "vote.key", "tls.key", "roots.pem", "cert.pem", "membership.pub", "membership.signed"}
 			if origin {
 				authFiles = append(authFiles, "origin.key")
@@ -1611,13 +1612,23 @@ func TestHelmWorkloadSecretProjectionCopy(t *testing.T) {
 				t.Fatal("missing owned init copy")
 			}
 			for _, c := range set.Spec.Template.Spec.Containers {
+				hasTime := false
 				for _, m := range c.VolumeMounts {
+					if m.Name == "workload-time" {
+						if m.MountPath != "/etc/ntp.conf" || !m.ReadOnly {
+							t.Fatal("unsafe declared time source mount", m)
+						}
+						hasTime = true
+					}
 					if strings.HasPrefix(m.MountPath, "/run/lantern-source") || m.Name == "security-files" || m.Name == "public-tls" || m.Name == "peer-identity" || m.Name == "peer-operator" {
 						t.Fatal("raw Secret exposed to Server", m)
 					}
 					if m.Name == "workload-files" && !m.ReadOnly {
 						t.Fatal("Server can alter provisioned secrets")
 					}
+				}
+				if c.Name == "lantern" && !hasTime {
+					t.Fatal("Server has no declared read-only time source")
 				}
 			}
 			dir := t.TempDir()
@@ -1670,7 +1681,7 @@ test ! -e /run/lantern-private/security/machines.json
 
 			run := func(expectSuccess bool) {
 				t.Helper()
-				cmdArgs := []string{"run", "--rm", "--user", "65532:65532", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--tmpfs", "/run/lantern-private:rw,uid=65532,gid=65532,mode=0770,size=16m", "--env", "POD_NAME=matrix-lantern-0", "--env", "EXPECTED_UID=65532", "--entrypoint", "/bin/sh"}
+				cmdArgs := []string{"run", "--rm", "--network=none", "--user", "65532:65532", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--tmpfs", "/run/lantern-private:rw,uid=65532,gid=65532,mode=0770,size=16m", "--env", "POD_NAME=matrix-lantern-0", "--env", "EXPECTED_UID=65532", "--entrypoint", "/bin/sh"}
 				for name, path := range sources {
 					cmdArgs = append(cmdArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=/run/lantern-source/%s,readonly", path, name))
 				}

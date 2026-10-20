@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
@@ -12,7 +13,7 @@ import (
 	"github.com/google/wire"
 )
 
-func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), error) {
+func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owner) (*App, func(), error) {
 	wire.Build(
 		provider.NewConfig,
 		provider.NewNetConfig,
@@ -35,7 +36,7 @@ func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), err
 		provider.NewReplicationConfig,
 		provider.NewReadinessConfig,
 		provider.NewPeerConfig,
-		provider.NewCurrentConfiguredPeerIdentity,
+		provider.NewWorkloadPeerIdentity,
 		provider.NewWorkloadPeerTransport,
 		provider.NewWorkloadPeerResolver,
 		provider.NewSecurityRuntime,

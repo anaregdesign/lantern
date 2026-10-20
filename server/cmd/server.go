@@ -49,6 +49,7 @@ type App struct {
 	peerServer      *provider.PeerPlaneServer
 	securityWorkers *provider.SecurityWorkers
 	security        securityLifecycle
+	peerIdentity    interface{ Close() error }
 }
 
 type securityLifecycle interface {
@@ -78,6 +79,7 @@ func newApp(
 	peerServer *provider.PeerPlaneServer,
 	securityWorkers *provider.SecurityWorkers,
 	security *provider.SecurityRuntime,
+	peerIdentity *provider.PeerIdentityRuntime,
 	peerPlane provider.PeerPlaneConfig,
 	_ provider.DomainMetricsWired,
 	_ provider.CacheGCHooksWired,
@@ -121,6 +123,7 @@ func newApp(
 		peerServer:      peerServer,
 		securityWorkers: securityWorkers,
 		security:        security,
+		peerIdentity:    peerIdentity,
 	}
 }
 
@@ -253,6 +256,12 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 	defer func() { runErr = errors.Join(runErr, a.runtime.Close()) }()
 	orderly := false
 	defer func() {
+		if a.peerIdentity != nil {
+			if err := a.peerIdentity.Close(); err != nil {
+				runErr = errors.Join(runErr, err)
+				orderly = false
+			}
+		}
 		if a.security != nil {
 			if orderly {
 				runErr = errors.Join(runErr, a.security.Shutdown())
@@ -390,7 +399,9 @@ func drainPhase(parent context.Context, serveDone <-chan struct{}, drainDelay ti
 	}
 }
 
-func initializeApp() (*App, func(), error) { return initializeAppWithListeners(nil) }
+func initializeApp() (*App, func(), error) {
+	return initializeAppWithListeners(context.Background(), nil)
+}
 
 func main() {
 	if err := runMain(); err != nil {
@@ -411,7 +422,7 @@ func runMain() error {
 		return fmt.Errorf("native listener launch: %w", err)
 	}
 	defer launch.Close()
-	app, cleanup, err := initializeAppWithListeners(launch.owner)
+	app, cleanup, err := initializeAppWithListeners(ctx, launch.owner)
 	if err != nil {
 		return fmt.Errorf("initialize app: %w", err)
 	}

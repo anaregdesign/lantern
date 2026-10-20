@@ -44,17 +44,17 @@ func (s *Store) ProtectHandler(next http.Handler, options ...connect.HandlerOpti
 			refuse(w, req)
 			return
 		}
-		remaining := admission.expiresAt.Sub(s.options.Now())
-		if remaining <= 0 {
+		deadline, err := admission.deadline(req.Context())
+		if err != nil {
 			refuse(w, req)
 			return
 		}
 		controller := http.NewResponseController(w)
-		if controller.SetWriteDeadline(time.Now().Add(remaining)) != nil {
+		if controller.SetWriteDeadline(deadline) != nil {
 			refuse(w, req)
 			return
 		}
-		ctx, cancel := context.WithTimeout(WithAdmission(req.Context(), admission), remaining)
+		ctx, cancel := context.WithDeadline(WithAdmission(req.Context(), admission), deadline)
 		// The HTTP owner retains the write-deadline watcher and joins it below.
 		// A stream may withdraw this admission to interrupt an already blocked
 		// Send; it cannot replace or extend the original request's bounds.

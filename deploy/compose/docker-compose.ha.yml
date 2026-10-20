@@ -29,6 +29,7 @@ services:
     env_file: ["${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-0.env"]
     volumes:
       - ${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-0:/run/lantern-config:ro
+      - ${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-0/ntp.conf:/etc/ntp.conf:ro
       - lantern-state-0:/state
   lantern-1:
     <<: *peer
@@ -37,6 +38,7 @@ services:
     env_file: ["${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-1.env"]
     volumes:
       - ${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-1:/run/lantern-config:ro
+      - ${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-1/ntp.conf:/etc/ntp.conf:ro
       - lantern-state-1:/state
   lantern-2:
     <<: *peer
@@ -45,6 +47,7 @@ services:
     env_file: ["${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-2.env"]
     volumes:
       - ${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-2:/run/lantern-config:ro
+      - ${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-2/ntp.conf:/etc/ntp.conf:ro
       - lantern-state-2:/state
   admin:
     # OIDC operators place this private HTTP service behind their HTTPS host.

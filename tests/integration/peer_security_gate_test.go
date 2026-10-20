@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -665,6 +666,8 @@ type peerSecurityOptions struct {
 	CurrentProfile string
 	Now            func() time.Time
 	TimeBounds     func() (time.Time, time.Time, error)
+	Time           func() (provider.PeerTimeObservation, error)
+	IssuedBefore   time.Duration
 	Mount          func(*peerSecurityFixture, int, *service.ServingRuntime, *http.ServeMux)
 	LogOptions     func(int) mutationlog.Options
 	Listener       func(int, net.Listener) net.Listener
@@ -732,6 +735,9 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 	f.roots = x509.NewCertPool()
 	f.roots.AddCert(ca)
 	f.manifest = peerOperatorManifest{Version: 1, Domain: peerOperatorDomain{Deployment: [16]byte{1}, NamespaceFormat: "namespaced-v1", AuthMode: "off", TrustDigest: sha256.Sum256(caPEM)}, IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute)}
+	if len(options) != 0 && options[0].IssuedBefore != 0 {
+		f.manifest.IssuedAt = now.Add(-options[0].IssuedBefore)
+	}
 	if len(options) != 0 && options[0].CurrentProfile != "" {
 		f.manifest.Domain.AuthMode = "oidc"
 		f.manifest.Domain.SecurityGeneration = options[0].Generation
@@ -781,7 +787,7 @@ func newPeerSecurityFixture(t *testing.T, options ...peerSecurityOptions) *peerS
 		f.configs[i].WriterPublicKey = f.manifest.Domain.WriterPublicKey
 		f.configs[i].CurrentProfile = f.manifest.Domain.CurrentProfile
 		if len(options) != 0 {
-			f.configs[i].Now, f.configs[i].TimeBounds = options[0].Now, options[0].TimeBounds
+			f.configs[i].Now, f.configs[i].TimeBounds, f.configs[i].Time = options[0].Now, options[0].TimeBounds, options[0].Time
 		}
 	}
 	raw := peerSecuritySign(t, f.manifest, f.key)
@@ -1122,7 +1128,16 @@ func TestCurrentDataPeerIntervalRecoveryOverPrivateTLS(t *testing.T) {
 		}
 		return high
 	}
-	f := newPeerSecurityFixture(t, peerSecurityOptions{Generation: [16]byte{7}, CurrentProfile: "current-v2:abababababababababababababababababababababababababababababababab", Now: now, TimeBounds: bounds})
+	clockID := new(byte)
+	started := time.Now()
+	observe := func() (provider.PeerTimeObservation, error) {
+		low, high, err := bounds()
+		if err != nil {
+			return nil, err
+		}
+		return peerWireObservation{clockID, low, high, time.Since(started)}, nil
+	}
+	f := newPeerSecurityFixture(t, peerSecurityOptions{Generation: [16]byte{7}, CurrentProfile: "current-v2:abababababababababababababababababababababababababababababababab", Now: now, TimeBounds: bounds, Time: observe})
 	client := graphv1connect.NewLanternReplicationServiceClient(f.runtimes[0].HTTPClient(), f.servers[1].URL)
 	check := func(want bool) {
 		t.Helper()
@@ -1169,5 +1184,108 @@ func TestCurrentDataPeerIntervalRecoveryOverPrivateTLS(t *testing.T) {
 		if err != nil || string(before[i]) != string(after) {
 			t.Fatal("interval recovery changed signed checkpoint", err)
 		}
+	}
+}
+
+// Controlled mechanism input only, never native-source qualification evidence.
+type peerWireObservation struct {
+	owner     *byte
+	low, high time.Time
+	elapsed   time.Duration
+}
+
+func (o peerWireObservation) Bounds() (time.Time, time.Time) { return o.low, o.high }
+func (o peerWireObservation) ElapsedSince(prior provider.PeerTimeObservation) (time.Duration, error) {
+	p, ok := prior.(peerWireObservation)
+	if !ok || o.owner != p.owner || o.elapsed < p.elapsed {
+		return 0, fmt.Errorf("foreign or backward test observation")
+	}
+	return o.elapsed - p.elapsed, nil
+}
+
+func TestOFFQualifiedPrivateRPCOriginalBudgetOverTLS(t *testing.T) {
+	var mu sync.Mutex
+	base := time.Now().UTC().Add(2 * time.Second)
+	low, high := base, base.Add(2*time.Second)
+	elapsed := time.Duration(0)
+	id := new(byte)
+	bounds := func() (time.Time, time.Time, error) { mu.Lock(); defer mu.Unlock(); return low, high, nil }
+	observe := func() (provider.PeerTimeObservation, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return peerWireObservation{id, low, high, elapsed}, nil
+	}
+	now := func() time.Time { _, h, _ := bounds(); return h }
+	entered, joined := make(chan struct{}), make(chan struct{})
+	f := newPeerSecurityFixture(t, peerSecurityOptions{Now: now, TimeBounds: bounds, Time: observe, IssuedBefore: 2 * time.Minute, Mount: func(_ *peerSecurityFixture, i int, _ *service.ServingRuntime, mux *http.ServeMux) {
+		if i != 1 {
+			return
+		}
+		mux.HandleFunc("/budget", func(w http.ResponseWriter, r *http.Request) {
+			defer close(joined)
+			w.WriteHeader(http.StatusOK)
+			if _, err := w.Write([]byte("ready")); err != nil {
+				return
+			}
+			if err := http.NewResponseController(w).Flush(); err != nil {
+				return
+			}
+			close(entered)
+			<-r.Context().Done()
+		})
+	}})
+	response, err := f.runtimes[0].HTTPClient().Get(f.servers[1].URL + "/budget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	<-entered
+	ready := make([]byte, 5)
+	if _, err = io.ReadFull(response.Body, ready); err != nil || string(ready) != "ready" {
+		t.Fatal(err, string(ready))
+	}
+	mu.Lock()
+	high = base
+	elapsed = 30 * time.Second
+	mu.Unlock()
+	if _, err = response.Body.Read(make([]byte, 1)); err == nil {
+		t.Fatal("UTC tightening renewed original private RPC")
+	}
+	select {
+	case <-joined:
+	case <-time.After(2 * time.Second):
+		t.Fatal("native expiry did not interrupt/join handler")
+	}
+	// A fresh RPC receives a fresh budget; no Store fault was latched by narrowing.
+	client := graphv1connect.NewLanternReplicationServiceClient(f.runtimes[0].HTTPClient(), f.servers[1].URL)
+	if _, err = client.PeerStatus(t.Context(), connect.NewRequest(&pb.PeerStatusRequest{NamespaceFormat: "namespaced-v1"})); err != nil {
+		t.Fatal("honest narrowing poisoned future OFF admission", err)
+	}
+	leaf := f.certs[0].Leaf
+	if leaf == nil {
+		leaf, err = x509.ParseCertificate(f.certs[0].Certificate[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	low = leaf.NotBefore.Add(-time.Nanosecond)
+	high = leaf.NotBefore.Add(time.Second)
+	mu.Unlock()
+	if f.runtimes[0].CheckWorkload(t.Context()) == nil {
+		t.Fatal("self NotBefore checked against high only")
+	}
+	mu.Lock()
+	low = leaf.NotBefore
+	mu.Unlock()
+	if err = f.runtimes[0].CheckWorkload(t.Context()); err != nil {
+		t.Fatal("NotBefore equality refused", err)
+	}
+	mu.Lock()
+	low = leaf.NotAfter.Add(-time.Second)
+	high = leaf.NotAfter
+	mu.Unlock()
+	if f.runtimes[0].CheckWorkload(t.Context()) == nil {
+		t.Fatal("self expiry equality admitted")
 	}
 }

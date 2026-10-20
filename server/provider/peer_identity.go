@@ -8,11 +8,13 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
+	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
 // PeerIdentityRuntime is staged trusted composition. It certifies one
@@ -23,7 +25,9 @@ type PeerIdentityRuntime struct {
 	store       *peerauth.Store
 	certificate tls.Certificate
 	roots       *x509.CertPool
-	selfExpiry  time.Time
+	timeLease   *security.WorkloadTime
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 func NewPeerIdentityRuntime(config PeerIdentityConfig) (_ *PeerIdentityRuntime, cleanup func(), err error) {
@@ -89,33 +93,43 @@ func NewPeerIdentityRuntime(config PeerIdentityConfig) (_ *PeerIdentityRuntime, 
 		}
 		intermediates.AddCert(cert)
 	}
-	selfExpiry := leaf.NotAfter
+	low, high := time.Time{}, time.Time{}
+	if config.Time != nil {
+		observation, err := config.Time()
+		if err != nil || observation == nil {
+			return nil, nil, peerauth.ErrMembership
+		}
+		low, high = observation.Bounds()
+	} else if config.TimeBounds != nil {
+		low, high, err = config.TimeBounds()
+		if err != nil {
+			return nil, nil, err
+		}
+	} else {
+		low = config.Now()
+		high = low
+	}
+	if low.IsZero() || high.IsZero() || low.After(high) {
+		return nil, nil, peerauth.ErrMembership
+	}
+	var selfCertificates []peerauth.CertificateWindow
 	for _, usage := range []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth} {
-		chains, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: config.Now(), KeyUsages: []x509.ExtKeyUsage{usage}})
+		chains, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: high, KeyUsages: []x509.ExtKeyUsage{usage}})
 		if err != nil {
 			return nil, nil, peerauth.ErrMembership
 		}
-		latest := time.Time{}
-		for _, chain := range chains {
-			expiry := leaf.NotAfter
-			for _, cert := range chain {
-				if cert.NotAfter.Before(expiry) {
-					expiry = cert.NotAfter
-				}
-			}
-			if expiry.After(latest) {
-				latest = expiry
-			}
+		window, err := peerauth.SelectCertificateWindow(chains, leaf, low, high)
+		if err != nil {
+			return nil, nil, err
 		}
-		if latest.Before(selfExpiry) {
-			selfExpiry = latest
-		}
+		selfCertificates = append(selfCertificates, window)
 	}
+
 	origin, err := url.Parse(self.Origin)
 	if err != nil || leaf.VerifyHostname(origin.Hostname()) != nil {
 		return nil, nil, peerauth.ErrMembership
 	}
-	options := peerauth.StoreOptions{Path: config.StateFile, Key: key, Domain: domain, Self: self, Now: config.Now, TimeBounds: config.TimeBounds}
+	options := peerauth.StoreOptions{Path: config.StateFile, Key: key, Domain: domain, Self: self, Now: config.Now, TimeBounds: config.TimeBounds, Time: config.Time, SelfCertificates: selfCertificates}
 	var store *peerauth.Store
 	if config.StateMode == "fresh" {
 		store, err = peerauth.CreateStore(options, raw)
@@ -134,11 +148,11 @@ func NewPeerIdentityRuntime(config PeerIdentityConfig) (_ *PeerIdentityRuntime, 
 	if _, _, err := store.Member(self.Identity); err != nil {
 		return nil, nil, errors.Join(err, store.Close())
 	}
-	runtime := &PeerIdentityRuntime{config: config, store: store, certificate: certificate, roots: roots, selfExpiry: selfExpiry.Add(-peerauth.ClockMargin)}
+	runtime := &PeerIdentityRuntime{config: config, store: store, certificate: certificate, roots: roots}
 	if runtime.CheckWorkload(context.Background()) != nil {
 		return nil, nil, errors.Join(peerauth.ErrMembership, store.Close())
 	}
-	return runtime, func() { _ = store.Close() }, nil
+	return runtime, func() { _ = runtime.Close() }, nil
 }
 
 func (r *PeerIdentityRuntime) TLSConfig() *tls.Config {
@@ -148,7 +162,7 @@ func (r *PeerIdentityRuntime) TLSConfig() *tls.Config {
 			_, err := r.store.Admit(&state, "")
 			return err
 		}}
-	if r.config.TimeBounds != nil {
+	if r.config.TimeBounds != nil || r.config.Time != nil {
 		config.Time = r.config.Now
 	}
 	return config
@@ -181,9 +195,15 @@ func (r *PeerIdentityRuntime) CheckWorkload(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !r.config.Now().Before(r.selfExpiry) {
-		return peerauth.ErrMembership
-	}
 	_, _, err := r.store.Member(r.config.SelfIdentity)
 	return err
+}
+
+// Close is also App's error-returning cleanup after all peer users have joined.
+func (r *PeerIdentityRuntime) Close() error {
+	if r == nil {
+		return nil
+	}
+	r.closeOnce.Do(func() { r.closeErr = errors.Join(r.store.Close(), r.timeLease.Close()) })
+	return r.closeErr
 }

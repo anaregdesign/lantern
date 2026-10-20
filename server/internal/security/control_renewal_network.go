@@ -3,7 +3,6 @@ package security
 import (
 	"bytes"
 	"context"
-	"math"
 	"net/http"
 	"sort"
 	"sync"
@@ -33,21 +32,10 @@ func bindAuthorityNetworkTime(c *s3aConfig, clock *authorityTimeOwner) error {
 		return errS3AConfig
 	}
 	c.timeOwner = clock
-	bounds := func() (time.Time, time.Time, error) {
-		now, err := clock.current()
-		if err != nil {
-			return time.Time{}, time.Time{}, err
-		}
-		return time.Unix(0, int64(now.utc.low)).UTC(), time.Unix(0, int64(now.utc.high)).UTC(), nil
-	}
-	c.Membership.TimeBounds = bounds
-	c.Membership.Now = func() time.Time {
-		_, high, err := bounds()
-		if err != nil {
-			return time.Unix(0, math.MaxInt64).UTC()
-		}
-		return high
-	}
+	view := &WorkloadTime{clock: clock}
+	c.Membership.Time = view.Observe
+	c.Membership.TimeBounds = view.TimeBounds
+	c.Membership.Now = view.VerificationTime
 	return nil
 }
 
