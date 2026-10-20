@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -202,6 +203,7 @@ type peerHeldApply struct {
 	seed                                           chan struct{}
 	committed                                      chan uint64
 	installStarted, installFinished                chan struct{}
+	installRelease                                 <-chan struct{}
 	seedOnce, enteredOnce, installOnce, finishOnce sync.Once
 	applyStarted, applyFinished                    atomic.Uint64
 	applyCalls, applyNanos, lastApplyNanos         atomic.Uint64
@@ -269,6 +271,15 @@ func (a *peerHeldApply) BeginSnapshotInstallChecked(ctx context.Context, check f
 		return nil, err
 	}
 	a.installOnce.Do(func() { close(a.installStarted) })
+	// Pause after the real publication fence is held. Receiving an unverified
+	// remote Header must no longer enter this phase of a disk-staged install.
+	if a.installRelease != nil {
+		select {
+		case <-a.installRelease:
+		case <-ctx.Done():
+			return nil, errors.Join(ctx.Err(), finish(false))
+		}
+	}
 	return func(verified bool) error {
 		err := finish(verified)
 		verified = verified && err == nil
@@ -286,6 +297,7 @@ type peerBarrierSnapshotHandler struct {
 	graphv1connect.LanternReplicationServiceHandler
 	peer    *service.LanternReplicationService
 	release <-chan struct{}
+	header  chan<- struct{}
 	calls   *atomic.Int32
 }
 
@@ -294,13 +306,14 @@ func (h peerBarrierSnapshotHandler) Snapshot(ctx context.Context, req *connect.R
 	// This Send decorator replaces the Connect adapter's Snapshot method;
 	// preserve that adapter's metadata seam and the original native admission.
 	ctx = service.WithReplicationTailMetadata(ctx, req.Header().Values(service.SnapshotTailHeader), stream.ResponseHeader())
-	return h.peer.Snapshot(ctx, req.Msg, peerBarrierSnapshotSender{ServerStream: stream, ctx: ctx, release: h.release})
+	return h.peer.Snapshot(ctx, req.Msg, peerBarrierSnapshotSender{ServerStream: stream, ctx: ctx, release: h.release, header: h.header})
 }
 
 type peerBarrierSnapshotSender struct {
 	*connect.ServerStream[pb.SnapshotResponse]
 	ctx     context.Context
 	release <-chan struct{}
+	header  chan<- struct{}
 }
 
 func (s peerBarrierSnapshotSender) Send(frame *pb.SnapshotResponse) error {
@@ -308,6 +321,10 @@ func (s peerBarrierSnapshotSender) Send(frame *pb.SnapshotResponse) error {
 		return err
 	}
 	if frame.GetHeader() != nil {
+		select {
+		case s.header <- struct{}{}:
+		default:
+		}
 		select {
 		case <-s.release:
 		case <-s.ctx.Done():
@@ -373,12 +390,15 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			startedRemote := make(chan string, 1)
 			dropped := make(chan struct{})
 			ended := make(chan peerStreamEnd, 8)
-			applyRelease, snapshotRelease := make(chan struct{}), make(chan struct{})
-			var applyOnce, snapshotOnce, dropOnce sync.Once
+			applyRelease, snapshotRelease, installRelease := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			snapshotHeader := make(chan struct{}, 1)
+			var applyOnce, snapshotOnce, installOnce, dropOnce sync.Once
 			releaseApply := func() { applyOnce.Do(func() { close(applyRelease) }) }
 			releaseSnapshot := func() { snapshotOnce.Do(func() { close(snapshotRelease) }) }
+			releaseInstall := func() { installOnce.Do(func() { close(installRelease) }) }
 			defer releaseApply()
 			defer releaseSnapshot()
+			defer releaseInstall()
 			var snapshotCalls atomic.Int32
 			var receiveGraph *graphcache.GraphCache[string, *pb.Vertex]
 			f := newPeerSecurityFixture(t, peerSecurityOptions{
@@ -410,7 +430,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 					}
 					peer.WithMetrics(streamStarted)
 					base := service.NewLanternReplicationServiceConnectHandler(peer)
-					wrapped := peerBarrierSnapshotHandler{LanternReplicationServiceHandler: base, peer: peer, release: snapshotRelease, calls: &snapshotCalls}
+					wrapped := peerBarrierSnapshotHandler{LanternReplicationServiceHandler: base, peer: peer, release: snapshotRelease, header: snapshotHeader, calls: &snapshotCalls}
 					_, handler := graphv1connect.NewLanternReplicationServiceHandler(wrapped)
 					mux.Handle("/graph.v1.LanternReplicationService/Subscribe", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						ledger.add("source_subscribe_begin", "remote", r.RemoteAddr)
@@ -439,7 +459,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 					t.Fatal(err)
 				}
 			}
-			apply := &peerHeldApply{LanternService: f.primary[1], entered: make(chan struct{}), release: applyRelease, seed: make(chan struct{}), committed: make(chan uint64, 2048), installStarted: make(chan struct{}), installFinished: make(chan struct{})}
+			apply := &peerHeldApply{LanternService: f.primary[1], entered: make(chan struct{}), release: applyRelease, seed: make(chan struct{}), committed: make(chan uint64, 2048), installStarted: make(chan struct{}), installFinished: make(chan struct{}), installRelease: installRelease}
 			apply.observe = ledger.add
 			var observedCursor, targetCursor uint64
 			defer func() {
@@ -458,6 +478,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 				stopPump()
 				releaseApply()
 				releaseSnapshot()
+				releaseInstall()
 				select {
 				case <-pumpDone:
 				case <-time.After(5 * time.Second):
@@ -591,21 +612,61 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			releaseApply()
 			if evict {
 				select {
-				case <-apply.installStarted:
+				case <-snapshotHeader:
 				case <-recoveryCtx.Done():
 					t.Fatal("missing prefix did not trigger private Snapshot", recoveryCtx.Err())
+				}
+				select {
+				case <-apply.installStarted:
+					t.Fatal("unverified Snapshot Header began live installation")
+				default:
+				}
+				if f.primary[1].SnapshotInstallActive() {
+					t.Fatal("unverified Snapshot Header fenced the receiver")
+				}
+				if _, err := f.primary[1].GetVertex(recoveryCtx, &pb.GetVertexRequest{Key: "data:seed"}); err != nil {
+					t.Fatal("unverified Snapshot withdrew the committed seed", err)
+				}
+				// Capture has completed before Header. This one update must be
+				// received after the verified image, without another Snapshot.
+				write(recoveryCtx, "data:after-snapshot-cut", []byte("tail"))
+				last = f.primary[0].LocalSeq(hlc.NodeID{3})
+				targetCursor = last
+				releaseSnapshot()
+				select {
+				case <-apply.installStarted:
+				case <-recoveryCtx.Done():
+					t.Fatal("verified private Snapshot did not begin installation", recoveryCtx.Err())
 				}
 				if _, err := f.primary[1].GetVertex(recoveryCtx, &pb.GetVertexRequest{Key: "data:seed"}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 					t.Fatalf("incomplete Snapshot exposed public data: %v", err)
 				}
-				releaseSnapshot()
+				select {
+				case <-apply.installFinished:
+					t.Fatal("paused Snapshot install reported verified completion")
+				default:
+				}
+				releaseInstall()
 				select {
 				case <-apply.installFinished:
 				case <-recoveryCtx.Done():
 					t.Fatal("verified Snapshot did not reopen publication", recoveryCtx.Err())
 				}
-				if snapshotCalls.Load() == 0 {
-					t.Fatal("evicted branch skipped Snapshot")
+				for f.primary[1].LocalSeq(hlc.NodeID{3}) < last {
+					select {
+					case <-apply.committed:
+					case <-recoveryCtx.Done():
+						t.Fatal("post-cut tail did not converge", recoveryCtx.Err())
+					}
+				}
+				for key, want := range map[string][]byte{"data:seed": []byte("seed"), "data:pressure": []byte("later"), "data:after-snapshot-cut": []byte("tail")} {
+					got, err := f.primary[1].GetVertex(recoveryCtx, &pb.GetVertexRequest{Key: key})
+					if err != nil || !bytes.Equal(got.GetVertex().GetBytes(), want) {
+						t.Fatalf("verified image/tail value %q = %v, %v; want %q", key, got, err, want)
+					}
+				}
+				if got := snapshotCalls.Load(); got != 1 {
+					t.Fatalf("evicted branch used %d Snapshots, want exactly one", got)
 				}
 			} else {
 				for {

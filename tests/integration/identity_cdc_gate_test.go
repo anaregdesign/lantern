@@ -1180,7 +1180,8 @@ func TestIdentityCDC_AntiEntropySnapshotAlsoGapsExistingStream(t *testing.T) {
 		t.Fatalf("missing pre-Snapshot checkpoint: %v", feed.Err())
 	}
 	anti := replication.NewAntiEntropy(replication.AntiEntropyConfig{
-		NodeID: follower.nodeID, Peers: []string{source.url}, Interval: 20 * time.Millisecond,
+		SnapshotSpool: graphSnapshotSpoolConfig(t),
+		NodeID:        follower.nodeID, Peers: []string{source.url}, Interval: 20 * time.Millisecond,
 		SubscribeTimeout: time.Second, HTTPClient: h2cClient(),
 	}, follower.svc, follower.svc, follower.cache)
 	antiCtx, stop := context.WithCancel(ctx)

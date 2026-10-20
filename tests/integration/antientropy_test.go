@@ -159,6 +159,7 @@ func TestAntiEntropy_GappedLogRebuildsExactSearchIndex(t *testing.T) {
 	}
 
 	ae := replication.NewAntiEntropy(replication.AntiEntropyConfig{
+		SnapshotSpool:           graphSnapshotSpoolConfig(t),
 		NodeID:                  follower.nodeID,
 		Peers:                   []string{source.url},
 		Interval:                25 * time.Millisecond,
@@ -223,6 +224,7 @@ func TestAntiEntropy_DriverConvergesWithoutPump(t *testing.T) {
 	// HTTPClient is supplied so the driver speaks h2c against the
 	// httptest server (replication.defaultH2CClient is unexported).
 	ae := replication.NewAntiEntropy(replication.AntiEntropyConfig{
+		SnapshotSpool:           graphSnapshotSpoolConfig(t),
 		NodeID:                  c.nodeID,
 		Peers:                   []string{b.url},
 		Interval:                50 * time.Millisecond,
@@ -306,7 +308,8 @@ func TestAntiEntropy_GappedSnapshotRestoresDeleteFloors(t *testing.T) {
 	}
 	wantSeq, _ := source.log.LastSeq()
 	ae := replication.NewAntiEntropy(replication.AntiEntropyConfig{
-		NodeID: follower.nodeID, Peers: []string{source.url},
+		SnapshotSpool: graphSnapshotSpoolConfig(t),
+		NodeID:        follower.nodeID, Peers: []string{source.url},
 		Interval: 20 * time.Millisecond, SubscribeTimeout: time.Second,
 		HTTPClient: h2cClient(), SearchConfigFingerprint: follower.svc.SearchConfigFingerprint(),
 	}, follower.svc, follower.svc, follower.cache)
@@ -348,6 +351,7 @@ func TestAntiEntropy_DynamicPeerSource(t *testing.T) {
 	source.set([]string{b.url}, nil)
 	metrics := newAntiEntropyMetricRecorder()
 	ae := replication.NewAntiEntropy(replication.AntiEntropyConfig{
+		SnapshotSpool:           graphSnapshotSpoolConfig(t),
 		NodeID:                  follower.nodeID,
 		Source:                  source,
 		Interval:                25 * time.Millisecond,
