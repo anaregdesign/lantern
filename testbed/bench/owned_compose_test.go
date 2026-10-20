@@ -62,7 +62,7 @@ func TestOwnedComposeInitializesOnlyFreshMatchingVolumes(t *testing.T) {
 		count int
 	}{{name: "receipt-six", count: 6}, {name: "graph-nine", spool: true, count: 9}} {
 		t.Run(profile.name, func(t *testing.T) {
-			failures := []string{"none", "local-driver-empty-options", "null-driver-options", "root-user", "existing-project", "name-collision", "foreign-config", "external-volume", "unknown-volume", "unknown-mounted-volume", "foreign-driver", "malformed-driver", "bind-driver-options", "nonempty-driver-options", "array-driver-options", "string-driver-options", "bool-driver-options", "foreign-container", "wrong-user", "wrong-image", "running-container", "foreign-volume", "shared-volume", "missing-volume", "readonly-volume", "unexpected-volume", "swapped-target-volumes", "swapped-service-volumes", "nonempty-volume", "failed-final-volume-listing"}
+			failures := []string{"none", "local-driver-empty-options", "null-driver-options", "root-user", "existing-project", "name-collision", "foreign-config", "external-volume", "unknown-volume", "unknown-mounted-volume", "foreign-driver", "malformed-driver", "bind-driver-options", "nonempty-driver-options", "array-driver-options", "string-driver-options", "bool-driver-options", "foreign-container", "wrong-user", "wrong-image", "running-container", "foreign-volume", "shared-volume", "missing-volume", "readonly-volume", "unexpected-volume", "swapped-target-volumes", "swapped-service-volumes", "nonempty-volume", "failed-final-volume-listing", "newline-only-entry"}
 			if profile.spool {
 				failures = append(failures, "partial-spool", "missing-spool", "duplicate-spool", "wrong-spool-target", "spool-bind", "spool-copy-enabled", "external-spool", "shared-spool", "runtime-spool-missing", "runtime-spool-target", "runtime-spool-bind", "runtime-spool-readonly", "runtime-spool-swapped")
 			}
@@ -239,6 +239,9 @@ docker() {
   printf keep > "$TEST_VOLUMES/$last_target/original"
   printf '%s\n' "$TEST_VOLUMES/$last_target/original" > "$TEST_SENTINEL_PATH"
  fi
+ if [[ "$failure" == newline-only-entry ]]; then
+  printf keep > "$TEST_VOLUMES/$((TEST_COUNT-1))/"$'\n'
+ fi
  while [[ "$1" != -c ]]; do shift; done
  shift
  local command="$1"; shift
@@ -289,6 +292,12 @@ fi
 						if failure == "failed-final-volume-listing" {
 							if _, err := os.Stat(lsAttempt); err != nil {
 								t.Fatal("final-volume read failure was not exercised", err)
+							}
+						}
+						if failure == "newline-only-entry" {
+							original := filepath.Join(volumes, fmt.Sprint(profile.count-1), "\n")
+							if raw, err := os.ReadFile(original); err != nil || string(raw) != "keep" {
+								t.Fatal("newline-only original entry was changed or removed", err)
 							}
 						}
 						if failure == "nonempty-volume" {

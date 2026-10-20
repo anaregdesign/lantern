@@ -110,8 +110,10 @@ initialize_owned_compose_volumes() {
       while test "$index" -lt "$2"; do
         directory="/owned/$index"
         test ! -L "$directory" && test -d "$directory" || exit 2
-        contents="$(ls -A "$directory")" || exit 2
-        test -z "$contents" || exit 2
+        # The marker preserves trailing newlines, including a newline-only
+        # filename. An unsuccessful listing must never prove emptiness.
+        contents="$(ls -A "$directory" && printf x)" || exit 2
+        test "$contents" = x || exit 2
         index=$((index + 1))
       done
       index=0
