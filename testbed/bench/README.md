@@ -162,12 +162,18 @@ unsupported image, unsafe/existing exporter workspace or changed image identity.
 The local cohort explicitly runs under the driver's non-root UID/GID so the
 host publisher and serving processes can read the same owner-only authority
 inputs after atomic renewal. Every original authority input remains mode 0600;
-operator signing keys stay outside Server mounts. After proving the named
-project absent, the driver creates its containers and validates all six distinct
-state/backup volumes against their project labels. One network-free initializer
-changes only those empty volume directories to the selected UID/GID and mode
-0700. Unexpected existing contents or identity/label drift refuses setup and
-retains the project for review. The runtime user is checked before/after traffic
+operator signing keys stay outside Server mounts. After proving its fresh named
+project absent, the driver creates its containers and validates every distinct
+state/backup volume against its project labels. Receipt cohorts retain exactly
+six such volumes. Graph-only cohorts additionally select
+[`compose.graph-snapshot.yml`](compose.graph-snapshot.yml), with three new
+per-node named staging volumes at `/var/lib/lantern-snapshot-spool`, for exactly
+nine owned volumes. Their `nocopy: true` prevents the image user's private
+directory from being copied into the host-UID fixture. One network-free
+initializer changes only those new empty volume directories to the selected
+UID/GID and mode 0700. Unexpected existing contents or identity/label drift
+refuses setup and retains the project for review. The runtime user, dedicated
+staging mounts and private directory metadata are checked before/after traffic
 and recorded with image provenance. The released image's non-root default and
 all production file, time, quorum, durability and authorization checks remain.
 
@@ -441,9 +447,11 @@ another producer, so each scenario selects one of the four allow-listed
 receipt family drivers. Each emits the ghz summary shape consumed by the
 existing perf evaluator and report renderer. The harness provisions a fresh
 authenticated durable-WAL cluster with fresh per-replica origin IDs and rejects
-`SKIP_UP=1`. Before startup it removes only the named bench Compose project's
-containers and volumes, so a preceding `KEEP_UP=1` run cannot leak retained
-receipts into the next family; unrelated volumes are untouched. Before warmup
+`SKIP_UP=1`. Before any reset, startup proves the named bench Compose project
+has no existing containers, volumes or network. An existing project, including
+a preceding `KEEP_UP=1` run, is refused without deleting its resources; choose a
+new project for the next family. Cleanup removes only the current invocation's
+owned project. Before warmup
 and after the run, it checks the configured image reference, full embedded
 source commit, immutable image ID, Compose project/service labels, restart
 count, and all three container image IDs; it rejects changes or missing
@@ -462,6 +470,16 @@ Role. Only that workload's files are mounted read-only. The operator private
 key and client token file remain outside all Server containers. DNS names
 locate only the signed fixed origins; they never approve membership.
 
+The graph-only fixture explicitly selects a 128 MiB logical Snapshot staging
+allowance and a 32 MiB frame limit through the three
+`LANTERN_GRAPH_SNAPSHOT_SPOOL_*` settings. These are local fixture choices, not
+server or operator deployment defaults. The allowance includes payload, indexes,
+sort/merge workspace and charged metadata; it does not reserve filesystem space
+or bound decoded-frame/whole-process memory. Quota or disk errors fail closed.
+Receipt fixtures omit those settings and the graph staging overlay, preserving
+their six existing state/backup volumes. No existing state, backup, runtime or
+temporary directory is selected as staging storage.
+
 An owned operator helper renews the same membership every two minutes. Each
 successor preserves the domain/member identities and increments its version;
 expiry, drift, helper death or unknown restarts disqualify the run. The
@@ -469,8 +487,11 @@ expiry, drift, helper death or unknown restarts disqualify the run. The
 Explicit chaos restart changes fresh→resume/restart and gives an ephemeral
 graph a new transport origin. Its exact old/new container IDs are recorded;
 undeclared recreation or a changed image is rejected. `KEEP_UP=1` retains
-private files for operator teardown, but stops the helper, so membership
-expires within ten minutes. Never archive `.peer-tls.*` with public reports.
+private files and the project's staging volumes for operator teardown, but
+stops the helper, so membership expires within ten minutes. Ordinary restart
+retains the staging volume and its stable owner file; the fresh-empty initializer
+is not rerun. Successful named-project `down -v` removes its new staging volumes
+alongside its existing volumes. Never archive `.peer-tls.*` with public reports.
 
 [`compose.receipt-tls.yml`](compose.receipt-tls.yml) disables pprof and removes
 metrics port publication. An owned `diagnostics_bridge.py` binds only host

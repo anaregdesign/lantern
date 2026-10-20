@@ -224,6 +224,66 @@ func TestSnapshotScratchUnsafeArtifactRefusal(t *testing.T) {
 
 const snapshotScratchCrashChildEnv = "LANTERN_TEST_SNAPSHOT_SCRATCH_CRASH_CHILD"
 
+// This opt-in test exercises the actual dedicated container volume, rather
+// than a temporary directory on the host filesystem. The caller provisions
+// and exclusively owns this empty test volume; no ownership is changed here.
+func TestSnapshotScratchConfiguredVolume(t *testing.T) {
+	directory := os.Getenv("LANTERN_TEST_SNAPSHOT_SPOOL_VOLUME")
+	if directory == "" {
+		t.Skip("requires an explicitly provisioned private test-only volume")
+	}
+	config := GraphSnapshotSpoolConfig{Directory: directory, MaxDiskBytes: 128 << 20, MaxFrameBytes: 32 << 20}
+	if err := config.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	scratch := snapshotScratchTestOwner(t, t.Context(), config)
+	if second, err := newSnapshotScratch(t.Context(), config); connect.CodeOf(err) != connect.CodeUnavailable {
+		if second != nil {
+			_ = second.Close()
+		}
+		t.Fatalf("volume lease did not exclude a second owner: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	blocked := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSnapshotScratchCrashChild$", "--", directory)
+	blocked.Env = append(os.Environ(), snapshotScratchCrashChildEnv+"=blocked")
+	if output, err := blocked.CombinedOutput(); err != nil {
+		t.Fatalf("volume lease did not exclude a second process: %v\n%s", err, output)
+	}
+	file, err := scratch.create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("dedicated Docker volume: owned, unlinked and readable")
+	if _, err := file.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	actual := make([]byte, len(payload))
+	if _, err := file.ReadAt(actual, 0); err != nil || string(actual) != string(payload) {
+		t.Fatalf("volume round trip: %q %v", actual, err)
+	}
+	assertSnapshotScratchOnlyOwner(t, directory)
+	if err := scratch.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertSnapshotScratchStats(t, scratch, 0, 0)
+	assertSnapshotScratchOnlyOwner(t, directory)
+
+	// The child exits without Close. Joining it must release the Linux volume
+	// lock and its unlinked payload, permitting a subsequent installation.
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSnapshotScratchCrashChild$", "--", directory)
+	command.Env = append(os.Environ(), snapshotScratchCrashChildEnv+"=1")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("volume crash child: %v\n%s", err, output)
+	}
+	assertSnapshotScratchOnlyOwner(t, directory)
+	reopened := snapshotScratchTestOwner(t, t.Context(), config)
+	if err := reopened.Close(); err != nil {
+		t.Fatal("volume lease retained after child exit", err)
+	}
+	assertSnapshotScratchOnlyOwner(t, directory)
+}
+
 func TestSnapshotScratchAbruptProcessExit(t *testing.T) {
 	config := snapshotScratchTestConfig(t, 64<<10)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -252,11 +312,21 @@ func TestSnapshotScratchAbruptProcessExit(t *testing.T) {
 }
 
 func TestSnapshotScratchCrashChild(t *testing.T) {
-	if os.Getenv(snapshotScratchCrashChildEnv) != "1" {
+	mode := os.Getenv(snapshotScratchCrashChildEnv)
+	if mode != "1" && mode != "blocked" {
 		t.Skip("subprocess-only abrupt exit fixture")
 	}
 	config := GraphSnapshotSpoolConfig{Directory: os.Args[len(os.Args)-1], MaxDiskBytes: 64 << 10, MaxFrameBytes: 4096}
 	scratch, err := newSnapshotScratch(context.Background(), config)
+	if mode == "blocked" {
+		if connect.CodeOf(err) != connect.CodeUnavailable {
+			if scratch != nil {
+				_ = scratch.Close()
+			}
+			t.Fatalf("child acquired an already owned volume: %v", err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

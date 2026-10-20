@@ -62,6 +62,14 @@ COPY --from=builder /out/lantern /app/lantern
 RUN mkdir -p /data /state /var/lib/lantern/runtime \
     && chown -R lantern:lantern /data /state /var/lib/lantern/runtime
 
+# Dedicated graph-only replication staging. Fresh public Compose named volumes
+# copy up this empty leaf's ownership and mode. The benchmark uses nocopy and
+# initializes its separate new volumes for the driver's explicit runtime UID.
+# Capacity remains explicit server configuration; this declares no VOLUME.
+RUN mkdir -p /var/lib/lantern-snapshot-spool \
+    && chown lantern:lantern /var/lib/lantern-snapshot-spool \
+    && chmod 0700 /var/lib/lantern-snapshot-spool
+
 USER lantern
 # Public wire port; diagnostics stay on loopback unless explicitly configured.
 EXPOSE 6380

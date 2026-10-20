@@ -22,60 +22,104 @@ func TestMembershipContainerMounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
-	for i := 0; i < 3; i++ {
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("lantern-%d.env", i)), nil, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	args := []string{"compose"}
-	for _, name := range []string{"docker-compose.yml", "docker-compose.ha.yml", "docker-compose.membership.yml"} {
-		args = append(args, "-f", filepath.Join(root, "deploy/compose", name))
-	}
-	cmd := exec.CommandContext(t.Context(), docker, append(args, "config", "--format", "json")...)
-	for _, v := range os.Environ() {
-		if !strings.HasPrefix(v, "LANTERN_") && !strings.HasPrefix(v, "COMPOSE_") {
-			cmd.Env = append(cmd.Env, v)
-		}
-	}
-	cmd.Env = append(cmd.Env, "LANTERN_HA_CONFIG_DIR="+dir, "LANTERN_MEMBERSHIP_ROOT="+dir, "LANTERN_SERVICE_UID=1001", "LANTERN_SERVICE_GID=1001", "LANTERN_HA_ADMIN_UPSTREAM=https://lantern-0:6380")
-	raw, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("render private mounts: %v: %s", err, raw)
-	}
-	var rendered struct {
-		Services map[string]struct {
-			User     string
-			Restart  string
-			ReadOnly bool `json:"read_only"`
-			Volumes  []struct {
-				Type, Source, Target string
-				ReadOnly             bool `json:"read_only"`
-				Bind                 struct {
-					Create bool `json:"create_host_path"`
+	for _, graph := range []bool{false, true} {
+		t.Run(map[bool]string{false: "membership base", true: "graph Snapshot bind"}[graph], func(t *testing.T) {
+			dir := t.TempDir()
+			var environment []byte
+			if graph {
+				// These explicit operator inputs are retained by the mount-only
+				// overlay. Rendering does not prove the host leaf's real owner,
+				// permissions or the installer's ancestor checks.
+				environment = []byte("LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR=/var/lib/lantern-snapshot-spool\nLANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES=134217728\nLANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES=33554432\n")
+			}
+			for i := 0; i < 3; i++ {
+				if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("lantern-%d.env", i)), environment, 0600); err != nil {
+					t.Fatal(err)
 				}
 			}
-		}
-	}
-	if err = json.Unmarshal(raw, &rendered); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 3; i++ {
-		node := rendered.Services[fmt.Sprintf("lantern-%d", i)]
-		if node.User != "1001:1001" || node.Restart != "no" || !node.ReadOnly || len(node.Volumes) != 3 {
-			t.Fatal("unsafe supervisor/mount defaults", i)
-		}
-		seen := map[string]bool{}
-		for _, mount := range node.Volumes {
-			part := map[string]string{"/run/lantern-config": "static", "/run/lantern-renewal": "renewable", "/state": "state"}[mount.Target]
-			if part == "" || mount.Type != "bind" || mount.Source != filepath.Join(dir, fmt.Sprintf("node-%d", i), part) || mount.Bind.Create || mount.ReadOnly != (part != "state") {
-				t.Fatal("broad, writable-input or auto-created mount", i, mount.Target)
+			files := []string{"docker-compose.yml", "docker-compose.ha.yml", "docker-compose.membership.yml"}
+			if graph {
+				// The final bind overlay is independent of the image-owned
+				// named-volume overlay; the operator provisions this host leaf
+				// for the membership workload's explicit runtime UID.
+				files = append(files, "docker-compose.graph-snapshot.membership.yml")
 			}
-			seen[part] = true
-		}
-		if len(seen) != 3 {
-			t.Fatal("missing private mount")
-		}
+			args := []string{"compose"}
+			for _, name := range files {
+				args = append(args, "-f", filepath.Join(root, "deploy/compose", name))
+			}
+			cmd := exec.CommandContext(t.Context(), docker, append(args, "config", "--format", "json")...)
+			for _, v := range os.Environ() {
+				if !strings.HasPrefix(v, "LANTERN_") && !strings.HasPrefix(v, "COMPOSE_") {
+					cmd.Env = append(cmd.Env, v)
+				}
+			}
+			cmd.Env = append(cmd.Env, "LANTERN_HA_CONFIG_DIR="+dir, "LANTERN_MEMBERSHIP_ROOT="+dir, "LANTERN_SERVICE_UID=1001", "LANTERN_SERVICE_GID=1001", "LANTERN_HA_ADMIN_UPSTREAM=https://lantern-0:6380")
+			raw, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("render private mounts: %v: %s", err, raw)
+			}
+			var rendered struct {
+				Services map[string]struct {
+					User        string
+					Restart     string
+					ReadOnly    bool `json:"read_only"`
+					Environment map[string]string
+					Volumes     []struct {
+						Type, Source, Target string
+						ReadOnly             bool `json:"read_only"`
+						Bind                 struct {
+							Create *bool `json:"create_host_path"`
+						}
+					}
+				}
+			}
+			if err = json.Unmarshal(raw, &rendered); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 3; i++ {
+				node, ok := rendered.Services[fmt.Sprintf("lantern-%d", i)]
+				mounts := 3
+				if graph {
+					mounts++
+				}
+				if !ok || node.User != "1001:1001" || node.Restart != "no" || !node.ReadOnly || len(node.Volumes) != mounts {
+					t.Fatal("unsafe supervisor/mount defaults", i)
+				}
+				seen := map[string]bool{}
+				for _, mount := range node.Volumes {
+					parts := map[string]string{"/run/lantern-config": "static", "/run/lantern-renewal": "renewable", "/state": "state"}
+					if graph {
+						parts["/var/lib/lantern-snapshot-spool"] = "snapshot-spool"
+					}
+					part := parts[mount.Target]
+					if part == "" || mount.Type != "bind" || mount.Source != filepath.Join(dir, fmt.Sprintf("node-%d", i), part) || mount.Bind.Create == nil || *mount.Bind.Create || mount.ReadOnly != (part == "static" || part == "renewable") {
+						t.Fatal("broad, writable-input or auto-created mount", i, mount.Target)
+					}
+					seen[part] = true
+				}
+				if len(seen) != mounts {
+					t.Fatal("missing private mount")
+				}
+				spoolEnvironment := map[string]string{
+					"LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR":             "/var/lib/lantern-snapshot-spool",
+					"LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES":  "134217728",
+					"LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES": "33554432",
+				}
+				settings := 0
+				for key, value := range node.Environment {
+					if strings.HasPrefix(key, "LANTERN_GRAPH_SNAPSHOT_SPOOL_") {
+						settings++
+						if !graph || value == "" || value != spoolEnvironment[key] {
+							t.Fatal("unexpected graph Snapshot spool setting", i, key, value)
+						}
+					}
+				}
+				if graph && settings != len(spoolEnvironment) {
+					t.Fatal("graph Snapshot spool settings missing", i)
+				}
+			}
+		})
 	}
 }
 

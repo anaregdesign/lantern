@@ -1,0 +1,25 @@
+# Graph-only custom-UID staging. Apply LAST, after docker-compose.membership.yml
+# and its !override volume lists, INSTEAD OF docker-compose.graph-snapshot.yml.
+# The operator prepares each new dedicated directory with mode 0700 and the
+# exact LANTERN_SERVICE_UID:LANTERN_SERVICE_GID owner. Never reuse state, backup
+# or runtime paths.
+# No production initializer or automatic host-directory creation is performed.
+services:
+  lantern-0:
+    volumes:
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?private layout required}/node-0/snapshot-spool
+        target: /var/lib/lantern-snapshot-spool
+        bind: {create_host_path: false}
+  lantern-1:
+    volumes:
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?private layout required}/node-1/snapshot-spool
+        target: /var/lib/lantern-snapshot-spool
+        bind: {create_host_path: false}
+  lantern-2:
+    volumes:
+      - type: bind
+        source: ${LANTERN_MEMBERSHIP_ROOT:?private layout required}/node-2/snapshot-spool
+        target: /var/lib/lantern-snapshot-spool
+        bind: {create_host_path: false}

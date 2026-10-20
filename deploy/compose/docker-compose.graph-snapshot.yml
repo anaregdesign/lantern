@@ -1,0 +1,29 @@
+# Graph-only HA staging; apply after docker-compose.yml and .ha.yml.
+# Per-node env files must explicitly configure the spool path and both limits.
+# A matching image prepares this empty target for its default non-root user;
+# fresh named volumes copy up that owner and mode 0700. No existing state or
+# backup volume is reused. Custom-UID membership uses the dedicated bind overlay
+# instead of this file. Receipt-mode deployments omit this overlay.
+services:
+  lantern-0:
+    volumes:
+      - type: volume
+        source: lantern-snapshot-spool-0
+        target: /var/lib/lantern-snapshot-spool
+        volume: {nocopy: false}
+  lantern-1:
+    volumes:
+      - type: volume
+        source: lantern-snapshot-spool-1
+        target: /var/lib/lantern-snapshot-spool
+        volume: {nocopy: false}
+  lantern-2:
+    volumes:
+      - type: volume
+        source: lantern-snapshot-spool-2
+        target: /var/lib/lantern-snapshot-spool
+        volume: {nocopy: false}
+volumes:
+  lantern-snapshot-spool-0: {}
+  lantern-snapshot-spool-1: {}
+  lantern-snapshot-spool-2: {}

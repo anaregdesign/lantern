@@ -636,8 +636,9 @@ The server does not infer `/tmp`, the Receipt WAL directory or a backup/PVC path
 An unconfigured single-node server can start, but Snapshot installation fails
 before receiving source data. Receipt-mode collection is unchanged.
 
-For example, the following expresses a 128 MiB staging budget and a 32 MiB frame
-limit; the path is a placeholder for separately provisioned operator storage:
+The local native fixture explicitly chooses a 128 MiB staging budget and a
+32 MiB frame limit. The following illustrates those fixture values with a
+placeholder path; operator deployments must choose their own explicit capacity:
 
 ```sh
 LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR=/path/to/private-snapshot-spool
@@ -655,8 +656,9 @@ Frame size must be positive and no larger than the disk allowance; the disk
 allowance must fit the signed 64-bit file offset range. Images larger than the
 former 64 MiB limit can be staged when their complete work fits these configured
 bounds; an unlimited graph does not imply unlimited Snapshot capacity. Logical
-quota exhaustion or a filesystem error such as ENOSPC rejects before live
-publication and releases the attempt's owned staging data. Leave filesystem
+quota exhaustion during collection, or a filesystem error during collection or
+detached validation such as ENOSPC, rejects before Begin and releases the
+attempt's owned staging data. Leave filesystem
 headroom beyond the logical quota and allow for decoded frames, their
 contribution rows/per-frame maps, normal graph storage and the independent
 responder tail-reservation budget. These bounds
@@ -666,8 +668,9 @@ configured-source behavior or sustained-load convergence.
 Collection and detached validation leave an existing healthy node serving.
 Live replay then refuses public graph reads and writes while incrementally
 merging the verified image; it does not provide whole-image atomic replacement
-or rollback. A replay, storage or original-admission failure after Begin leaves
-partial effects behind the repair fault until a later verified repair. All
+or rollback. A replay read, staging Close, storage or original-admission failure
+after Begin leaves partial effects behind the repair fault until a later
+verified repair. All
 owned payload/index files and owner descriptors must close before the original
 admission/context is checked again and verified finish can reopen serving.
 
@@ -678,12 +681,32 @@ identity. Unknown or nonempty artifacts are preserved and cause refusal. The
 stable empty `.lantern-snapshot-owner` lease file remains; do not delete it while
 an owner may be active. The directory is exclusive to this staging role.
 
-The local native fixture prepares explicit host-owned spool directories. The
-current graph-only Compose fixture export is not qualified: it refuses export
-until dedicated container-owned writable staging is explicitly prepared. This
-also blocks its existing Compose configuration gate; source-local tests do not
-qualify that operator/benchmark path. No existing state, backup or PVC storage
-is reused automatically.
+The local native fixture prepares explicit host-owned spool directories. For
+graph-only Compose, the [operator staging overlay](../deploy/compose/docker-compose.graph-snapshot.yml)
+adds a new named volume per node at `/var/lib/lantern-snapshot-spool`. A matching
+image prepares that empty leaf for its default non-root user with mode 0700;
+fresh public volumes copy up its owner and mode. The
+[benchmark overlay](../testbed/bench/compose.graph-snapshot.yml) instead uses
+`nocopy: true` and its existing network-free initializer to prepare only the
+fresh project's three new staging volumes for the driver's explicit UID/GID.
+Receipt profiles omit both the graph staging overlay and the graph spool keys.
+
+The custom-UID membership profile uses the separate
+[staging bind overlay](../deploy/compose/docker-compose.graph-snapshot.membership.yml)
+last, after its replacement mount lists, instead of the named-volume overlay.
+Operators prepare new `node-i/snapshot-spool` directories with the exact
+workload UID/GID and mode 0700; missing directories are refused without automatic
+creation or a production initializer. Each profile requires the explicit
+container path and both byte limits in its per-node graph-only configuration.
+See the [Compose instructions](../deploy/compose/README.md#explicit-ha).
+
+Keep the dedicated staging volume through ordinary restart and preserve its
+stable owner file. Fresh benchmark teardown removes only its named project's
+volumes; operator bind directories have their own explicit storage lifecycle.
+No existing runtime, state, backup or PVC storage is reused. Rendered Compose
+checks establish configuration shape; ownership, copy-up and flock on the
+chosen image/volume driver require their separate runtime proof. These local
+checks do not qualify configured-source behavior or sustained-load convergence.
 
 An edge-only working set is valid Snapshot input: endpoint vertices created
 implicitly by `PutEdge*` / `AddEdge*` are carried as concrete nil-valued

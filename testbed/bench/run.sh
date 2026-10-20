@@ -54,6 +54,7 @@ AUTHFIXTURE=""
 CHANGEPROBE=""
 sub_pids=()
 prod_pids=()
+native_spool_provenance=()
 chaos_pid=""
 source "$HERE/owned_processes.sh"
 source "$HERE/owned_compose.sh"
@@ -270,6 +271,8 @@ if [[ "$receipt_wal_enabled" == "true" ]]; then
   export LANTERN_BENCH_RECEIPT_MAX_ENTRIES="$receipt_max_entries"
   export LANTERN_BENCH_RECEIPT_RETENTION="$receipt_retention"
   log "cluster override: fresh durable receipt WAL with bounded capacity"
+else
+  COMPOSE_FILES+=( -f "$HERE/compose.graph-snapshot.yml" )
 fi
 
 # Every fresh bench cohort uses native private workload admission, including OFF.
@@ -329,7 +332,7 @@ pin_receipt_image() {
 
 verify_receipt_image_provenance() {
   local out="$1" actual_image_id service container identity
-  local actual_container_id actual_container_image actual_ref running project actual_service restarts replica index=0 approved_recreation=""
+  local actual_container_id actual_container_image actual_ref running project actual_service restarts replica spool index=0 approved_recreation=""
   local -a replicas=()
   actual_image_id="$(docker image inspect --format '{{.Id}}' "$receipt_image_ref")" ||
     die "receipt image $receipt_image_ref disappeared"
@@ -360,12 +363,16 @@ verify_receipt_image_provenance() {
       [[ "$actual_container_id" == "$approved_recreation" ]] || die "receipt service $service was recreated during the run"
     fi
     receipt_container_ids[$index]="$actual_container_id"
-    index=$((index + 1))
+    spool="${native_spool_provenance[$index]:-null}"
+    [[ "$receipt_driver" != "0" || "$spool" != null ]] || die "missing graph Snapshot spool provenance for $service"
     replica="$(jq -nc --arg service "$service" --arg container_id "$actual_container_id" \
       --arg image_id "$actual_container_image" --arg image_ref "$actual_ref" \
-      '{service:$service, container_id:$container_id, image_id:$image_id, image_ref:$image_ref}')" ||
+      --argjson spool "$spool" \
+      '{service:$service, container_id:$container_id, image_id:$image_id, image_ref:$image_ref} +
+        (if $spool==null then {} else {graph_snapshot_spool:$spool} end)')" ||
       die "cannot record receipt image provenance for $service"
     replicas+=( "$replica" )
+    index=$((index + 1))
   done
   printf '%s\n' "${replicas[@]}" |
     jq -s --arg ref "$receipt_image_ref" --arg id "$receipt_image_id" \
@@ -397,8 +404,14 @@ verify_receipt_peer_tls() {
 # Native provenance applies to OFF cohorts as well; public mode never disables
 # private peer authentication. Compare generated material without publishing it.
 verify_native_workload_settings() {
-  local service container mounts env actual_user
+  local service container mounts env actual_user configuration layout expected_count spool volume label metadata index=0 seen="|"
   kill -0 "$MEMBERSHIP_PID" 2>/dev/null || die "owned membership renewal exited"
+  configuration="$(docker compose "${COMPOSE_FILES[@]}" config --format json)" || die "cannot inspect native volume configuration"
+  layout="$(owned_compose_volume_layout "$COMPOSE_PROJECT_NAME" "$runtime_owner" <<<"$configuration")" ||
+    die "native workload has an incomplete or unknown owned volume set"
+  if [[ "$receipt_driver" == "0" ]]; then expected_count=9; else expected_count=6; fi
+  [[ "$(jq -er '.count' <<<"$layout")" == "$expected_count" ]] || die "native workload has the wrong graph/receipt volume set"
+  native_spool_provenance=()
   for service in lantern-0 lantern-1 lantern-2; do
     container="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")" || die "missing native workload"
     actual_user="$(docker inspect --format '{{.Config.User}}' "$container")" || die "missing native runtime user"
@@ -412,6 +425,28 @@ verify_native_workload_settings() {
         [.[] | select(.Type == "bind" and .Destination == "/etc/ntp.conf" and
           (.RW == false) and (.Source | endswith($source)))] | length == 1
       ' <<<"$mounts" >/dev/null || die "$service has no pinned, read-only declared time source"
+    if [[ "$receipt_driver" == "0" ]]; then
+      spool=/var/lib/lantern-snapshot-spool
+      volume="$(jq -er --arg service "$service" --arg target "$spool" '
+        .services[] | select(.service==$service) | .mounts[] | select(.target==$target) | .volume
+      ' <<<"$layout")" || die "$service has no declared graph Snapshot spool volume"
+      [[ "$volume" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ && "$seen" != *"|$volume|"* ]] || die "$service has a shared graph Snapshot spool"
+      jq -e --arg target "$spool" --arg volume "$volume" '
+        [.[] | select(.Destination==$target)] |
+        length==1 and all(.[]; .Type=="volume" and .Name==$volume and .RW==true)
+      ' <<<"$mounts" >/dev/null || die "$service has a mismatched graph Snapshot spool mount"
+      label="$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$volume")" || die "cannot inspect graph Snapshot spool ownership"
+      [[ "$label" == "$COMPOSE_PROJECT_NAME" ]] || die "$service has a foreign graph Snapshot spool"
+      metadata="$(docker exec "$container" /bin/sh -c 'test ! -L "$1" && test -d "$1" && stat -c "%u:%g:%a" "$1"' fixture "$spool")" ||
+        die "cannot inspect graph Snapshot spool UID/GID/mode for $service"
+      [[ "$metadata" == "$runtime_owner:700" ]] || die "$service has a graph Snapshot spool with the wrong UID/GID/mode"
+      seen+="$volume|"
+      native_spool_provenance[$index]="$(jq -nc --arg volume "$volume" --arg target "$spool" --arg owner "$runtime_owner" \
+        '{volume:$volume,target:$target,runtime_user:$owner,mode:"0700",read_write:true,configured_nocopy:true}')" || die "cannot record graph Snapshot spool provenance"
+    else
+      jq -e '[.[] | select(.Destination=="/var/lib/lantern-snapshot-spool")] | length==0' <<<"$mounts" >/dev/null ||
+        die "$service unexpectedly mounts a graph Snapshot spool in receipt mode"
+    fi
     env="$(docker inspect --format '{{json .Config.Env}}' "$container")" || die "missing native environment"
     jq -e --arg service "$service" --argjson actual "$env" --arg driver "$receipt_driver" '
       (.nodes[] | select(.name == ("node-" + ($service | split("-")[1]))) | .environment |
@@ -423,6 +458,7 @@ verify_native_workload_settings() {
       all($actual[]; startswith("LANTERN_AUTH_TOKENS=") or startswith("LANTERN_PEER_DISCOVERY=") or
         startswith("LANTERN_PEERS=") | not)
     ' "$PEER_TLS_DIR/fixture.json" >/dev/null || die "$service has missing or mismatched native settings"
+    index=$((index + 1))
   done
 }
 
@@ -435,6 +471,11 @@ if [[ "${SKIP_UP:-0}" != "1" ]]; then
   # services with pinned host ports, so `--scale lantern=3` is no longer
   # needed (and would in fact fail — there is no `lantern` service).
   COMPOSE_STARTED=1
+  owned_configuration="$(docker compose "${COMPOSE_FILES[@]}" config --format json)" || die "cannot inspect fresh native volume configuration"
+  owned_layout="$(owned_compose_volume_layout "$COMPOSE_PROJECT_NAME" "$runtime_owner" <<<"$owned_configuration")" ||
+    die "fresh native volume layout is incomplete or unknown"
+  if [[ "$receipt_driver" == "0" ]]; then owned_count=9; else owned_count=6; fi
+  [[ "$(jq -er '.count' <<<"$owned_layout")" == "$owned_count" ]] || die "fresh native graph/receipt volume layout does not match the selected mode"
   if ! initialize_owned_compose_volumes "$COMPOSE_PROJECT_NAME" "$receipt_image_id" "$runtime_owner" "${COMPOSE_FILES[@]}"; then
     KEEP_UP=1
     die "fresh volume initialization refused; named project and private inputs retained for review"

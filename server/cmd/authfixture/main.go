@@ -528,13 +528,16 @@ func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tok
 			env["LANTERN_PEER_CERT_FILE"] = peerCert
 			env["LANTERN_PEER_KEY_FILE"] = peerKey
 			env["LANTERN_PEER_TRUST_CA_FILE"] = caFile
-			spool := filepath.Join(dir, name+"-graph-snapshot-spool")
-			if err := os.Mkdir(spool, 0700); err != nil {
-				return fixture{}, err
-			}
-			spool, err = filepath.EvalSymlinks(spool)
-			if err != nil {
-				return fixture{}, err
+			spool := composeGraphSnapshotSpoolDirectory
+			if !compose {
+				spool = filepath.Join(dir, name+"-graph-snapshot-spool")
+				if err := os.Mkdir(spool, 0700); err != nil {
+					return fixture{}, err
+				}
+				spool, err = filepath.EvalSymlinks(spool)
+				if err != nil {
+					return fixture{}, err
+				}
 			}
 			env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] = spool
 			env["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES"] = "134217728"

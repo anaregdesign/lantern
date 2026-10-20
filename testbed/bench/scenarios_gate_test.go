@@ -648,8 +648,10 @@ func TestReceiptBenchImageProvenanceFailsClosed(t *testing.T) {
 	wrongID := "sha256:" + strings.Repeat("b", 64)
 	commit := strings.Repeat("c", 40)
 	for _, tc := range []struct {
-		name    string
-		wantErr string
+		name         string
+		wantErr      string
+		graph        bool
+		missingSpool bool
 	}{
 		{name: "three matching replicas"},
 		{name: "wrong pinned ID", wantErr: "differs from pinned"},
@@ -661,6 +663,8 @@ func TestReceiptBenchImageProvenanceFailsClosed(t *testing.T) {
 		{name: "wrong Compose project", wantErr: "not a running, restart-free"},
 		{name: "replica restarted", wantErr: "not a running, restart-free"},
 		{name: "replica recreated", wantErr: "was recreated during the run"},
+		{name: "graph three validated spool proofs", graph: true},
+		{name: "graph missing one spool proof", wantErr: "missing graph Snapshot spool provenance", graph: true, missingSpool: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outDir := t.TempDir()
@@ -671,7 +675,18 @@ receipt_image_ref=lantern:local
 receipt_image_id=""
 receipt_image_commit=""
 receipt_container_ids=()
+receipt_driver=1
+native_spool_provenance=()
 runtime_owner=501:20
+if [[ "$GRAPH_PROFILE" == 1 ]]; then
+ receipt_driver=0
+ # These are the previously validated native mount proofs. This verifier
+ # consumes them; native mount/UID validation has its own fixture below.
+ for index in 0 1 2; do
+  native_spool_provenance[$index]="$(jq -nc --arg volume "snapshot-spool-$index" --arg owner "$runtime_owner" '
+   {volume:$volume,target:"/var/lib/lantern-snapshot-spool",runtime_user:$owner,mode:"0700",read_write:true,configured_nocopy:true}')"
+ done
+fi
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 log() { :; }
 docker() {
@@ -727,6 +742,9 @@ docker() {
 ` + receiptImageShellFunctions(t) + `
 pin_receipt_image
 verify_receipt_image_provenance "$OUTDIR/proof_pre.json"
+if [[ "$CASE" == "graph missing one spool proof" ]]; then
+ unset 'native_spool_provenance[1]'
+fi
 verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 `
 			pinnedID := imageID
@@ -737,12 +755,17 @@ verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 			if tc.name == "wrong pinned commit" {
 				pinnedCommit = strings.Repeat("d", 40)
 			}
+			graphProfile := "0"
+			if tc.graph {
+				graphProfile = "1"
+			}
 			cmd := exec.Command("bash", "-c", fixture)
 			cmd.Env = append(os.Environ(),
 				"OUTDIR="+outDir, "CASE="+tc.name,
 				"GOOD_ID="+imageID, "WRONG_ID="+wrongID,
 				"GOOD_COMMIT="+commit, "EXPECTED_LANTERN_IMAGE_ID="+pinnedID,
 				"EXPECTED_LANTERN_COMMIT="+pinnedCommit,
+				"GRAPH_PROFILE="+graphProfile,
 			)
 			output, err := cmd.CombinedOutput()
 			if tc.wantErr != "" {
@@ -753,6 +776,11 @@ verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 				}
 				if _, err := os.Stat(filepath.Join(outDir, "proof_post.json")); !os.IsNotExist(err) {
 					t.Fatalf("invalid post-run provenance was recorded: %v", err)
+				}
+				if tc.missingSpool {
+					if _, err := os.Stat(filepath.Join(outDir, "proof_pre.json")); err != nil {
+						t.Fatal("missing-spool control never recorded its complete pre-run proof", err)
+					}
 				}
 				return
 			}
@@ -767,7 +795,15 @@ verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 				ImageID      string `json:"image_id"`
 				SourceCommit string `json:"source_commit"`
 				Replicas     []struct {
-					ImageID string `json:"image_id"`
+					ImageID            string `json:"image_id"`
+					GraphSnapshotSpool *struct {
+						Volume           string `json:"volume"`
+						Target           string `json:"target"`
+						RuntimeUser      string `json:"runtime_user"`
+						Mode             string `json:"mode"`
+						ReadWrite        bool   `json:"read_write"`
+						ConfiguredNocopy bool   `json:"configured_nocopy"`
+					} `json:"graph_snapshot_spool"`
 				} `json:"replicas"`
 			}
 			if err := json.Unmarshal(data, &proof); err != nil {
@@ -777,9 +813,21 @@ verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 				len(proof.Replicas) != 3 {
 				t.Fatalf("incomplete image proof: %+v", proof)
 			}
-			for _, replica := range proof.Replicas {
+			for index, replica := range proof.Replicas {
 				if replica.ImageID != imageID {
 					t.Fatalf("replica image drift in proof: %+v", proof)
+				}
+				if !tc.graph {
+					if replica.GraphSnapshotSpool != nil {
+						t.Fatal("receipt provenance recorded an unrelated graph spool")
+					}
+					continue
+				}
+				spool := replica.GraphSnapshotSpool
+				if spool == nil || spool.Volume != fmt.Sprintf("snapshot-spool-%d", index) ||
+					spool.Target != "/var/lib/lantern-snapshot-spool" || spool.RuntimeUser != "501:20" ||
+					spool.Mode != "0700" || !spool.ReadWrite || !spool.ConfiguredNocopy {
+					t.Fatalf("missing or altered validated graph spool proof for replica %d: %+v", index, spool)
 				}
 			}
 		})
@@ -810,6 +858,7 @@ func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name, wantErr string
 		postFailure   bool
+		graph         bool
 	}{
 		{name: "verified before and after load"},
 		{name: "missing own mount", wantErr: "no pinned, read-only"},
@@ -823,6 +872,17 @@ func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
 		{name: "retired bearer config", wantErr: "missing or mismatched"},
 		{name: "invalid live TLS identity", wantErr: "TLS identity/provenance verification failed"},
 		{name: "changed live TLS identity", wantErr: "TLS identity/provenance verification failed", postFailure: true},
+		{name: "receipt with unexpected graph spool", wantErr: "unexpectedly mounts a graph Snapshot spool"},
+		{name: "graph spool verified before and after load", graph: true},
+		{name: "graph missing overlay", graph: true, wantErr: "wrong graph/receipt volume set"},
+		{name: "graph missing spool mount", graph: true, wantErr: "mismatched graph Snapshot spool mount"},
+		{name: "graph wrong spool name", graph: true, wantErr: "mismatched graph Snapshot spool mount"},
+		{name: "graph bind spool", graph: true, wantErr: "mismatched graph Snapshot spool mount"},
+		{name: "graph read-only spool", graph: true, wantErr: "mismatched graph Snapshot spool mount"},
+		{name: "graph foreign spool label", graph: true, wantErr: "foreign graph Snapshot spool"},
+		{name: "graph wrong spool owner", graph: true, wantErr: "wrong UID/GID/mode"},
+		{name: "graph wrong spool mode", graph: true, wantErr: "wrong UID/GID/mode"},
+		{name: "graph changed spool mode", graph: true, wantErr: "wrong UID/GID/mode", postFailure: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outDir := t.TempDir()
@@ -830,11 +890,33 @@ func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
 			if err := os.Mkdir(private, 0700); err != nil {
 				t.Fatal(err)
 			}
-			expected := map[string]any{"nodes": []any{
-				map[string]any{"name": "node-0", "environment": map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_PEER_WORKLOAD_ID": "spiffe://fixture/node-0"}},
-				map[string]any{"name": "node-1", "environment": map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_PEER_WORKLOAD_ID": "spiffe://fixture/node-1"}},
-				map[string]any{"name": "node-2", "environment": map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_PEER_WORKLOAD_ID": "spiffe://fixture/node-2"}},
-			}}
+			var nodes []any
+			services, volumes := map[string]any{}, map[string]any{}
+			for index := range 3 {
+				environment := map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_PEER_WORKLOAD_ID": fmt.Sprintf("spiffe://fixture/node-%d", index)}
+				mounts := []any{}
+				for _, directory := range []struct{ name, target string }{{"state", "/state"}, {"backup", "/data"}} {
+					name := fmt.Sprintf("%s-%d", directory.name, index)
+					mounts = append(mounts, map[string]any{"type": "volume", "source": name, "target": directory.target})
+					volumes[name] = map[string]any{"name": name}
+				}
+				if tc.graph {
+					environment["LANTERN_AUTH_MODE"] = "off"
+					environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] = "/var/lib/lantern-snapshot-spool"
+					if tc.name != "graph missing overlay" {
+						name := fmt.Sprintf("snapshot-spool-%d", index)
+						mounts = append(mounts, map[string]any{"type": "volume", "source": name, "target": "/var/lib/lantern-snapshot-spool", "volume": map[string]any{"nocopy": true}})
+						volumes[name] = map[string]any{"name": name}
+					}
+				}
+				nodes = append(nodes, map[string]any{"name": fmt.Sprintf("node-%d", index), "environment": environment})
+				services[fmt.Sprintf("lantern-%d", index)] = map[string]any{"user": "501:20", "volumes": mounts}
+			}
+			expected := map[string]any{"nodes": nodes}
+			configuration, err := json.Marshal(map[string]any{"name": "lantern-bench-fixture", "services": services, "volumes": volumes})
+			if err != nil {
+				t.Fatal(err)
+			}
 			raw, err := json.Marshal(expected)
 			if err != nil {
 				t.Fatal(err)
@@ -844,17 +926,37 @@ func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
 			}
 			fixture := `set -euo pipefail
 COMPOSE_FILES=(-f fixture.yml)
+export COMPOSE_PROJECT_NAME=lantern-bench-fixture
+source owned_compose.sh
 PEER_TLS_DIR="$OUTDIR/private"
 REPO_ROOT="$OUTDIR"
 REPLICA_GRPC_PORTS=(6380 6381 6382)
 MEMBERSHIP_PID=$$
 DIAGNOSTICS_PID=$$
-receipt_driver=1
+receipt_driver="$TEST_DRIVER"
+native_spool_provenance=()
 runtime_owner=501:20
 postflight=0
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 docker() {
- if [[ "$1" == compose ]]; then printf 'container-%s\n' "$6"; return; fi
+ if [[ "$1" == compose ]]; then
+  if [[ "$4" == config ]]; then printf '%s\n' "$TEST_CONFIG"; else printf 'container-%s\n' "$6"; fi
+  return
+ fi
+ if [[ "$1" == volume && "$2" == inspect ]]; then
+  if [[ "$CASE" == "graph foreign spool label" && "${@: -1}" == snapshot-spool-1 ]]; then echo unrelated; else echo "$COMPOSE_PROJECT_NAME"; fi
+  return
+ fi
+ if [[ "$1" == exec ]]; then
+  [[ "$3" == /bin/sh && "${@: -1}" == /var/lib/lantern-snapshot-spool ]] || return 87
+  local metadata="$runtime_owner:700"
+  if [[ "$2" == container-lantern-1 ]]; then
+   if [[ "$CASE" == "graph wrong spool owner" ]]; then metadata=0:0:700; fi
+   if [[ "$CASE" == "graph wrong spool mode" || ( "$CASE" == "graph changed spool mode" && "$postflight" == 1 ) ]]; then metadata="$runtime_owner:750"; fi
+  fi
+  printf '%s\n' "$metadata"
+  return
+ fi
  [[ "$1" == inspect && "$2" == --format ]] || return 88
  local service="${4#container-}" index="${4##*-}"
  case "$3" in
@@ -869,15 +971,28 @@ docker() {
   if [[ "$CASE" == "writable declared time source" && "$index" == 1 ]]; then time_rw=true; fi
   if [[ "$CASE" == "foreign declared time source" && "$index" == 1 ]]; then time_source="$PEER_TLS_DIR/lantern-0/ntp.conf"; fi
   if [[ "$CASE" == "changed declared time source" && "$index" == 1 && "$postflight" == 1 ]]; then time_rw=true; fi
-  jq -nc --arg source "$source" --argjson rw "$rw" --arg time_source "$time_source" --argjson time_rw "$time_rw" '
+  local spool_name="snapshot-spool-$index" spool_type=volume spool_rw=true with_spool="$TEST_GRAPH"
+  if [[ "$CASE" == "receipt with unexpected graph spool" ]]; then with_spool=true; fi
+  if [[ "$index" == 1 ]]; then
+   if [[ "$CASE" == "graph missing spool mount" ]]; then with_spool=false; fi
+   if [[ "$CASE" == "graph wrong spool name" ]]; then spool_name=snapshot-spool-0; fi
+   if [[ "$CASE" == "graph bind spool" ]]; then spool_type=bind; fi
+   if [[ "$CASE" == "graph read-only spool" ]]; then spool_rw=false; fi
+  fi
+  jq -nc --arg source "$source" --argjson rw "$rw" --arg time_source "$time_source" --argjson time_rw "$time_rw" \
+    --arg spool_name "$spool_name" --arg spool_type "$spool_type" --argjson spool_rw "$spool_rw" --argjson with_spool "$with_spool" '
     [{Type:"bind",Destination:"/run/lantern-config",RW:$rw,Source:$source}] +
-    (if $time_source=="" then [] else [{Type:"bind",Destination:"/etc/ntp.conf",RW:$time_rw,Source:$time_source}] end)'
+    (if $time_source=="" then [] else [{Type:"bind",Destination:"/etc/ntp.conf",RW:$time_rw,Source:$time_source}] end) +
+    (if $with_spool then [{Type:$spool_type,Destination:"/var/lib/lantern-snapshot-spool",Name:$spool_name,RW:$spool_rw}] else [] end)'
   ;;
  '{{json .Config.Env}}')
   local identity="spiffe://fixture/node-$index" legacy=""
   if [[ "$CASE" == "wrong workload identity" && "$index" == 1 ]]; then identity="spiffe://unrelated/node-1"; fi
   if [[ "$CASE" == "retired bearer config" && "$index" == 1 ]]; then legacy="LANTERN_AUTH_TOKENS=fixture-only"; fi
-  jq -nc --arg identity "$identity" --arg legacy "$legacy" '["LANTERN_AUTH_MODE=oidc","LANTERN_PEER_WORKLOAD_ID="+$identity] + (if $legacy=="" then [] else [$legacy] end)'
+  jq -nc --arg identity "$identity" --arg legacy "$legacy" --argjson graph "$TEST_GRAPH" '
+    ["LANTERN_AUTH_MODE="+(if $graph then "off" else "oidc" end),"LANTERN_PEER_WORKLOAD_ID="+$identity] +
+    (if $graph then ["LANTERN_METRICS_ADDR=:9090","LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR=/var/lib/lantern-snapshot-spool"] else [] end) +
+    (if $legacy=="" then [] else [$legacy] end)'
   ;;
  *) return 89;;
  esac
@@ -890,12 +1005,24 @@ go() {
  printf '{"ca_sha256":"fixture"}\n' > "$out"
 }
 ` + receiptTLSShellFunction(t) + `
-verify_receipt_peer_tls "$OUTDIR/tls_pre.json"
-postflight=1
-verify_receipt_peer_tls "$OUTDIR/tls_post.json" "$OUTDIR/tls_pre.json"
+if [[ "$receipt_driver" == 0 ]]; then
+ verify_native_workload_settings
+ printf '%s\n' "${native_spool_provenance[@]}" | jq -s . > "$OUTDIR/tls_pre.json"
+ postflight=1
+ verify_native_workload_settings
+ printf '%s\n' "${native_spool_provenance[@]}" | jq -s . > "$OUTDIR/tls_post.json"
+else
+ verify_receipt_peer_tls "$OUTDIR/tls_pre.json"
+ postflight=1
+ verify_receipt_peer_tls "$OUTDIR/tls_post.json" "$OUTDIR/tls_pre.json"
+fi
 `
 			command := exec.Command("bash", "-c", fixture)
-			command.Env = append(os.Environ(), "OUTDIR="+outDir, "CASE="+tc.name)
+			driver := "1"
+			if tc.graph {
+				driver = "0"
+			}
+			command.Env = append(os.Environ(), "OUTDIR="+outDir, "CASE="+tc.name, "TEST_CONFIG="+string(configuration), "TEST_DRIVER="+driver, fmt.Sprintf("TEST_GRAPH=%t", tc.graph))
 			output, err := command.CombinedOutput()
 			if tc.wantErr != "" {
 				if command.ProcessState == nil || command.ProcessState.ExitCode() != 37 || !strings.Contains(string(output), tc.wantErr) {
@@ -909,6 +1036,21 @@ verify_receipt_peer_tls "$OUTDIR/tls_post.json" "$OUTDIR/tls_pre.json"
 				}
 			} else if err != nil {
 				t.Fatalf("valid native TLS proof: %v %s", err, output)
+			} else if tc.graph {
+				raw, err := os.ReadFile(filepath.Join(outDir, "tls_post.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var proof []map[string]any
+				if err := json.Unmarshal(raw, &proof); err != nil || len(proof) != 3 {
+					t.Fatalf("incomplete graph spool provenance: %s (%v)", raw, err)
+				}
+				for index, spool := range proof {
+					if spool["volume"] != fmt.Sprintf("snapshot-spool-%d", index) || spool["target"] != "/var/lib/lantern-snapshot-spool" ||
+						spool["mode"] != "0700" || spool["runtime_user"] != "501:20" || spool["read_write"] != true || spool["configured_nocopy"] != true {
+						t.Fatalf("wrong graph spool provenance: %+v", spool)
+					}
+				}
 			}
 		})
 	}

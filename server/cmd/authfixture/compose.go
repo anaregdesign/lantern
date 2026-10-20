@@ -19,6 +19,8 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
 
+const composeGraphSnapshotSpoolDirectory = "/var/lib/lantern-snapshot-spool"
+
 // exportComposeFixture owns the fixed local benchmark topology. Only one
 // workload's material is mounted into each server; the operator key stays on
 // the host. These fixtures never qualify clocks, providers or deployments.
@@ -29,7 +31,11 @@ func exportComposeFixture(result *fixture, dir string) error {
 	for _, node := range result.Nodes {
 		mode := node.Environment["LANTERN_RECEIPT_WAL_MODE"]
 		if mode == "" || mode == "graph-only" {
-			return errors.New("graph-only Compose fixture is not qualified: dedicated private Snapshot spool storage must be explicitly provisioned for the container workload")
+			for _, key := range []string{"LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"} {
+				if node.Environment[key] == "" {
+					return errors.New("graph-only Compose fixture requires explicit Snapshot spool directory and byte/frame limits")
+				}
+			}
 		}
 	}
 	for i := range result.Nodes {
@@ -58,8 +64,17 @@ func exportComposeFixture(result *fixture, dir string) error {
 			delete(env, "LANTERN_TLS_KEY_FILE")
 			node.PublicOrigin = strings.Replace(node.PublicOrigin, "https://", "http://", 1)
 		}
-		if env["LANTERN_RECEIPT_WAL_MODE"] != "" {
+		if mode := env["LANTERN_RECEIPT_WAL_MODE"]; mode == "" || mode == "graph-only" {
+			// The matching graph overlay owns this container-private directory.
+			// Translate before the generic file-copy loop: scratch storage is
+			// never host configuration material or part of its read-only mount.
+			env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] = composeGraphSnapshotSpoolDirectory
+			delete(env, "LANTERN_RECEIPT_WAL_PATH")
+		} else {
 			env["LANTERN_RECEIPT_WAL_PATH"] = "/state/receipts.wal"
+			delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR")
+			delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES")
+			delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES")
 		}
 		for key, value := range env {
 			if !strings.HasPrefix(value, dir+string(os.PathSeparator)) {
