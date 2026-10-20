@@ -464,18 +464,17 @@ verify_native_workload_settings() {
 
 # ----- compose up ------------------------------------------------------------
 if [[ "${SKIP_UP:-0}" != "1" ]]; then
-  log "compose reset (fresh native trust/state/WAL volumes)"
-  down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}" || die "named project reset or residue verification failed"
+  owned_compose_project_absent "$COMPOSE_PROJECT_NAME" || die "fresh native Compose project is already present or its absence cannot be verified"
   log "compose up (project=$COMPOSE_PROJECT_NAME)"
   # Since #435 the canonical compose declares three explicit lantern-{0,1,2}
   # services with pinned host ports, so `--scale lantern=3` is no longer
   # needed (and would in fact fail — there is no `lantern` service).
-  COMPOSE_STARTED=1
   owned_configuration="$(docker compose "${COMPOSE_FILES[@]}" config --format json)" || die "cannot inspect fresh native volume configuration"
   owned_layout="$(owned_compose_volume_layout "$COMPOSE_PROJECT_NAME" "$runtime_owner" <<<"$owned_configuration")" ||
     die "fresh native volume layout is incomplete or unknown"
   if [[ "$receipt_driver" == "0" ]]; then owned_count=9; else owned_count=6; fi
   [[ "$(jq -er '.count' <<<"$owned_layout")" == "$owned_count" ]] || die "fresh native graph/receipt volume layout does not match the selected mode"
+  COMPOSE_STARTED=1
   if ! initialize_owned_compose_volumes "$COMPOSE_PROJECT_NAME" "$receipt_image_id" "$runtime_owner" "${COMPOSE_FILES[@]}"; then
     KEEP_UP=1
     die "fresh volume initialization refused; named project and private inputs retained for review"

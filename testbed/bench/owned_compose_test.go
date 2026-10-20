@@ -62,7 +62,7 @@ func TestOwnedComposeInitializesOnlyFreshMatchingVolumes(t *testing.T) {
 		count int
 	}{{name: "receipt-six", count: 6}, {name: "graph-nine", spool: true, count: 9}} {
 		t.Run(profile.name, func(t *testing.T) {
-			failures := []string{"none", "root-user", "existing-project", "name-collision", "foreign-config", "external-volume", "unknown-volume", "unknown-mounted-volume", "foreign-container", "wrong-user", "wrong-image", "running-container", "foreign-volume", "shared-volume", "missing-volume", "readonly-volume", "unexpected-volume", "swapped-target-volumes", "swapped-service-volumes", "nonempty-volume"}
+			failures := []string{"none", "local-driver-empty-options", "null-driver-options", "root-user", "existing-project", "name-collision", "foreign-config", "external-volume", "unknown-volume", "unknown-mounted-volume", "foreign-driver", "malformed-driver", "bind-driver-options", "nonempty-driver-options", "array-driver-options", "string-driver-options", "bool-driver-options", "foreign-container", "wrong-user", "wrong-image", "running-container", "foreign-volume", "shared-volume", "missing-volume", "readonly-volume", "unexpected-volume", "swapped-target-volumes", "swapped-service-volumes", "nonempty-volume", "failed-final-volume-listing"}
 			if profile.spool {
 				failures = append(failures, "partial-spool", "missing-spool", "duplicate-spool", "wrong-spool-target", "spool-bind", "spool-copy-enabled", "external-spool", "shared-spool", "runtime-spool-missing", "runtime-spool-target", "runtime-spool-bind", "runtime-spool-readonly", "runtime-spool-swapped")
 			}
@@ -130,6 +130,39 @@ func TestOwnedComposeInitializesOnlyFreshMatchingVolumes(t *testing.T) {
 						delete(declared, "snapshot-spool-2")
 					case "external-spool":
 						declared["snapshot-spool-2"] = map[string]any{"name": "snapshot-spool-2", "external": true}
+					}
+					if failure == "local-driver-empty-options" || failure == "null-driver-options" {
+						for _, item := range declared {
+							volume := item.(map[string]any)
+							if failure == "local-driver-empty-options" {
+								volume["driver"], volume["driver_opts"] = "local", map[string]any{}
+							} else {
+								volume["driver"], volume["driver_opts"] = nil, nil
+							}
+						}
+					}
+					driverVolume := "state-2"
+					if profile.spool {
+						driverVolume = "snapshot-spool-2"
+					}
+					if volume, ok := declared[driverVolume].(map[string]any); ok {
+						switch failure {
+						case "foreign-driver":
+							volume["driver"] = "nfs"
+						case "malformed-driver":
+							volume["driver"] = false
+						case "bind-driver-options":
+							volume["driver"] = "local"
+							volume["driver_opts"] = map[string]any{"type": "none", "o": "bind", "device": "/unowned"}
+						case "nonempty-driver-options":
+							volume["driver_opts"] = map[string]any{"unexpected": "value"}
+						case "array-driver-options":
+							volume["driver_opts"] = []any{}
+						case "string-driver-options":
+							volume["driver_opts"] = ""
+						case "bool-driver-options":
+							volume["driver_opts"] = false
+						}
 					}
 					configuration, err := json.Marshal(map[string]any{"name": project, "services": services, "volumes": declared})
 					if err != nil {
@@ -211,15 +244,24 @@ docker() {
  local command="$1"; shift
  [[ "$#" == 3 && "$2" == 501:20 && "$3" == "$TEST_COUNT" ]] || return 84
  command="${command//\/owned\//$TEST_VOLUMES/}"
+ TEST_LS_FAILURE_TARGET="$TEST_VOLUMES/$((TEST_COUNT-1))"
+ export TEST_LS_FAILURE_TARGET
+ ls() {
+  if [[ "$TEST_CASE" == failed-final-volume-listing && "${@: -1}" == "$TEST_LS_FAILURE_TARGET" ]]; then
+   : > "$TEST_LS_ATTEMPT"
+   return 19
+  fi
+  command ls "$@"
+ }
  chown() { printf 'chown %s\n' "$*" >> "$TEST_CHANGES"; }
  chmod() { printf 'chmod %s\n' "$*" >> "$TEST_CHANGES"; }
- export -f chown chmod
+ export -f ls chown chmod
  bash -c "$command" "$@"
 }
 if initialize_owned_compose_volumes "$COMPOSE_PROJECT_NAME" "$TEST_IMAGE" "$owner" -f fixture.yml; then
- [[ "$failure" == none ]]
+ [[ "$TEST_SUCCESS" == true ]]
 else
- [[ "$failure" != none ]]
+ [[ "$TEST_SUCCESS" == false ]]
 fi
 `
 					command := exec.CommandContext(t.Context(), "bash", "-c", script, "fresh-volumes", helper, failure)
@@ -228,19 +270,26 @@ fi
 					if profile.spool {
 						lastVolume = "snapshot-spool-2"
 					}
-					command.Env = append(os.Environ(), "TEST_IMAGE=sha256:"+strings.Repeat("a", 64), "TEST_VOLUMES="+volumes, "TEST_CHANGES="+changes, "TEST_CREATED="+created, "TEST_CONFIG="+string(configuration), fmt.Sprintf("TEST_SPOOL=%t", profile.spool), fmt.Sprintf("TEST_COUNT=%d", profile.count), "TEST_LAST_VOLUME="+lastVolume, "TEST_SENTINEL_PATH="+sentinelPath)
+					success := failure == "none" || failure == "local-driver-empty-options" || failure == "null-driver-options"
+					lsAttempt := filepath.Join(root, "ls-attempt")
+					command.Env = append(os.Environ(), "TEST_IMAGE=sha256:"+strings.Repeat("a", 64), "TEST_VOLUMES="+volumes, "TEST_CHANGES="+changes, "TEST_CREATED="+created, "TEST_CONFIG="+string(configuration), fmt.Sprintf("TEST_SPOOL=%t", profile.spool), fmt.Sprintf("TEST_COUNT=%d", profile.count), "TEST_LAST_VOLUME="+lastVolume, "TEST_SENTINEL_PATH="+sentinelPath, "TEST_CASE="+failure, fmt.Sprintf("TEST_SUCCESS=%t", success), "TEST_LS_ATTEMPT="+lsAttempt)
 					if output, err := command.CombinedOutput(); err != nil {
 						t.Fatalf("fresh volume preparation: %v\n%s", err, output)
 					}
-					if failure != "none" {
+					if !success {
 						switch failure {
-						case "existing-project", "root-user", "name-collision", "foreign-config", "external-volume", "unknown-volume", "unknown-mounted-volume", "partial-spool", "missing-spool", "duplicate-spool", "wrong-spool-target", "spool-bind", "spool-copy-enabled", "external-spool", "shared-spool":
+						case "existing-project", "root-user", "name-collision", "foreign-config", "external-volume", "unknown-volume", "unknown-mounted-volume", "foreign-driver", "malformed-driver", "bind-driver-options", "nonempty-driver-options", "array-driver-options", "string-driver-options", "bool-driver-options", "partial-spool", "missing-spool", "duplicate-spool", "wrong-spool-target", "spool-bind", "spool-copy-enabled", "external-spool", "shared-spool":
 							if _, err := os.Stat(created); !os.IsNotExist(err) {
 								t.Fatal("unsafe existing project or root identity reached Compose create", err)
 							}
 						}
 						if _, err := os.Stat(changes); !os.IsNotExist(err) {
 							t.Fatal("refused setup changed volume ownership", err)
+						}
+						if failure == "failed-final-volume-listing" {
+							if _, err := os.Stat(lsAttempt); err != nil {
+								t.Fatal("final-volume read failure was not exercised", err)
+							}
 						}
 						if failure == "nonempty-volume" {
 							original, err := os.ReadFile(sentinelPath)

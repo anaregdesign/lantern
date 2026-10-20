@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-# Remove only the explicitly named benchmark project, including optional
-# diagnostic services. A successful Compose exit is insufficient if residue
-# remains or Docker cannot verify ownership-labelled resources.
-down_owned_compose() {
+# Absence must be proven, including stopped workloads. A Docker lookup failure
+# is not evidence that a fresh project or its persistent volumes are unused.
+owned_compose_project_absent() {
   local project="$1"
-  shift
   [[ -n "$project" && "$project" == "${COMPOSE_PROJECT_NAME:-}" ]] || return 1
-  docker compose "$@" --profile off-diagnostics down -v --remove-orphans >/dev/null || return 1
   local resources
   resources="$(docker ps -aq --filter "label=com.docker.compose.project=$project")" || return 1
   [[ -z "$resources" ]] || return 1
@@ -14,6 +11,16 @@ down_owned_compose() {
   [[ -z "$resources" ]] || return 1
   resources="$(docker network ls -q --filter "label=com.docker.compose.project=$project")" || return 1
   [[ -z "$resources" ]]
+}
+
+# Remove only the explicitly named benchmark project, including optional
+# diagnostic services. This is teardown for an owned run, never fresh startup.
+down_owned_compose() {
+  local project="$1"
+  shift
+  [[ -n "$project" && "$project" == "${COMPOSE_PROJECT_NAME:-}" ]] || return 1
+  docker compose "$@" --profile off-diagnostics down -v --remove-orphans >/dev/null || return 1
+  owned_compose_project_absent "$project"
 }
 
 # Normalize the complete owned directory set. Receipt cohorts have six
@@ -32,7 +39,9 @@ owned_compose_volume_layout() {
       select(all($mounts[]; .type=="volume" and .read_only!=true and
         (.target!="/var/lib/lantern-snapshot-spool" or .volume.nocopy==true))) |
       {service:$service, mounts:[$mounts[] | . as $mount |
-        $configuration.volumes[$mount.source] | select(.external!=true and (.name|type)=="string") |
+        $configuration.volumes[$mount.source] |
+        select(.external!=true and (.name|type)=="string" and
+          (.driver==null or .driver=="local") and (.driver_opts==null or .driver_opts=={})) |
         {source:$mount.source,target:$mount.target,volume:.name}]} |
       select((.mounts | map(.target) | sort)==($mounts | map(.target) | sort))] as $services |
     select(($services|length)==3 and
@@ -52,13 +61,7 @@ initialize_owned_compose_volumes() {
   local project="$1" image="$2" owner="$3"
   shift 3
   [[ -n "$project" && "$project" == "${COMPOSE_PROJECT_NAME:-}" && "$image" =~ ^sha256:[0-9a-f]{64}$ && "$owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || return 1
-  local residue
-  residue="$(docker ps -aq --filter "label=com.docker.compose.project=$project")" || return 1
-  [[ -z "$residue" ]] || return 1
-  residue="$(docker volume ls -q --filter "label=com.docker.compose.project=$project")" || return 1
-  [[ -z "$residue" ]] || return 1
-  residue="$(docker network ls -q --filter "label=com.docker.compose.project=$project")" || return 1
-  [[ -z "$residue" ]] || return 1
+  owned_compose_project_absent "$project" || return 1
   local configuration layout expected expected_count existing name
   configuration="$(docker compose "$@" config --format json)" || return 1
   layout="$(owned_compose_volume_layout "$project" "$owner" <<<"$configuration")" || return 1
@@ -106,7 +109,9 @@ initialize_owned_compose_volumes() {
       index=0
       while test "$index" -lt "$2"; do
         directory="/owned/$index"
-        test ! -L "$directory" && test -d "$directory" && test -z "$(ls -A "$directory")" || exit 2
+        test ! -L "$directory" && test -d "$directory" || exit 2
+        contents="$(ls -A "$directory")" || exit 2
+        test -z "$contents" || exit 2
         index=$((index + 1))
       done
       index=0

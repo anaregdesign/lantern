@@ -499,6 +499,7 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		`-renew-every 2m`,
 		`COMPOSE_FILES+=( -f "$HERE/compose.receipt-tls.yml" )`,
 		`receipt driver requires a fresh Compose lifecycle`,
+		`owned_compose_project_absent "$COMPOSE_PROJECT_NAME"`,
 		`down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}"`,
 		`-family "$target_driver"`,
 		`endpoint_urls+="https://${ep}"`,
@@ -528,9 +529,9 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		}
 	}
 	projectScope := strings.Index(string(runScript), `export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-lantern-bench}"`)
-	volumeReset := strings.Index(string(runScript), `down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}"`)
-	if projectScope < 0 || volumeReset < 0 || projectScope >= volumeReset {
-		t.Error("receipt volume reset must use the named bench Compose project")
+	projectAbsence := strings.Index(string(runScript), `owned_compose_project_absent "$COMPOSE_PROJECT_NAME"`)
+	if projectScope < 0 || projectAbsence < 0 || projectScope >= projectAbsence {
+		t.Error("fresh receipt startup must prove absence of its named Compose project")
 	}
 	preflight := strings.Index(string(runScript), `verify_receipt_peer_tls "$OUTDIR/peer_tls_pre.json"`)
 	warmup := strings.Index(string(runScript), `log "warmup:`)
@@ -1132,6 +1133,108 @@ exit %d
 			}
 			if got, want := strings.Contains(string(report), "unqualified"), (tc.dockerStatus != 0 && tc.wantDown) || tc.runStatus != 0; got != want {
 				t.Errorf("report marked unqualified = %v, want %v: %s", got, want, report)
+			}
+		})
+	}
+}
+
+func TestBenchFreshComposeRejectsExistingProjectBeforeLifecycle(t *testing.T) {
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, startup, found := strings.Cut(string(script), "# ----- compose up ------------------------------------------------------------\n")
+	if !found {
+		t.Fatal("missing fresh Compose startup")
+	}
+	startup, _, found = strings.Cut(startup, "# ----- discover actual published ports")
+	if !found {
+		t.Fatal("incomplete fresh Compose startup")
+	}
+	_, cleanup, found := strings.Cut(string(script), "cleanup() {\n")
+	if !found {
+		t.Fatal("missing owned Compose cleanup")
+	}
+	cleanup, _, found = strings.Cut(cleanup, "\n}\ntrap cleanup EXIT")
+	if !found {
+		t.Fatal("incomplete owned Compose cleanup")
+	}
+	for _, tc := range []struct {
+		name     string
+		wantCode int
+		wantOwn  bool
+	}{
+		{name: "absent", wantOwn: true},
+		{name: "container", wantCode: 37},
+		{name: "volume", wantCode: 37},
+		{name: "network", wantCode: 37},
+		{name: "container lookup failure", wantCode: 37},
+		{name: "volume lookup failure", wantCode: 37},
+		{name: "network lookup failure", wantCode: 37},
+		{name: "skip startup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			fixture := `set -euo pipefail
+export COMPOSE_PROJECT_NAME=lantern-bench-fresh-fixture
+COMPOSE_FILES=(-f fixture.yml)
+COMPOSE_STARTED=0
+KEEP_UP=0
+PEER_TLS_DIR=""
+receipt_driver=1
+receipt_image_id=fixture
+runtime_owner=501:20
+prod_pids=()
+sub_pids=()
+SKIP_UP=0
+if [[ "$CASE" == "skip startup" ]]; then SKIP_UP=1; fi
+source owned_compose.sh
+die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
+log() { :; }
+stop_owned_processes() { :; }
+owned_compose_volume_layout() { printf '{"count":6}\n'; }
+initialize_owned_compose_volumes() {
+ [[ "$COMPOSE_STARTED" == 1 ]] || return 88
+ printf 'initialize\n' >> "$OUTDIR/actions"
+}
+docker() {
+ local family
+ case "$1" in
+  ps) family=container;;
+  volume) family=volume;;
+  network) family=network;;
+  compose)
+   case "$4" in
+    config) printf '{}\n';;
+    up) printf 'up\n' >> "$OUTDIR/actions";;
+    --profile) printf 'down\n' >> "$OUTDIR/actions";;
+    *) return 89;;
+   esac
+   return;;
+  *) return 89;;
+ esac
+ [[ "$*" == *"label=com.docker.compose.project=$COMPOSE_PROJECT_NAME"* ]] || return 89
+ if [[ "$CASE" == "$family lookup failure" ]]; then return 19; fi
+ if [[ "$CASE" == "$family" ]]; then printf 'existing-owned-resource\n'; fi
+}
+cleanup() {
+` + cleanup + "\n}\ntrap cleanup EXIT\n" + startup
+			command := exec.Command("bash", "-c", fixture)
+			command.Env = append(os.Environ(), "OUTDIR="+outDir, "CASE="+tc.name)
+			output, err := command.CombinedOutput()
+			if command.ProcessState == nil || command.ProcessState.ExitCode() != tc.wantCode {
+				t.Fatalf("fresh startup exit=%v err=%v output=%s, want %d", command.ProcessState, err, output, tc.wantCode)
+			}
+			if tc.wantCode != 0 && !strings.Contains(string(output), "already present or its absence cannot be verified") {
+				t.Fatalf("existing project was not refused at absence boundary: %s", output)
+			}
+			actions, readErr := os.ReadFile(filepath.Join(outDir, "actions"))
+			if tc.wantOwn {
+				if readErr != nil || string(actions) != "initialize\nup\ndown\n" {
+					t.Fatalf("fresh owned lifecycle=%q err=%v", actions, readErr)
+				}
+			} else if !os.IsNotExist(readErr) {
+				t.Fatalf("refused or skipped startup changed existing resources: %q err=%v", actions, readErr)
 			}
 		})
 	}
