@@ -3090,11 +3090,14 @@ func TestPeerPump_SnapshotTailHandoffDuringInstall(t *testing.T) {
 			if !waitForVertex(t, graphs[1], "data:tail-7", time.Second) {
 				t.Fatalf("reserved native tail did not converge: snapshots=%d receiver=%d, want 16", peer.snapshots.Load(), fixture.primary[1].LocalSeq(sourceID))
 			}
-			if got := fixture.primary[1].LocalSeq(sourceID); got != 16 {
-				t.Fatalf("native receiver origin cursor=%d, want 16", got)
-			}
+			// Direct cache visibility can precede relay-log publication and the
+			// origin commit. A public read fences that publication before we
+			// inspect the committed cursor.
 			if _, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed-0"}); err != nil {
 				t.Fatal("verified native install did not restore public read", err)
+			}
+			if got := fixture.primary[1].LocalSeq(sourceID); got != 16 {
+				t.Fatalf("native receiver origin cursor=%d, want 16", got)
 			}
 			cancel()
 			select {
