@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/provider"
+	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/proto"
@@ -33,10 +37,10 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	origin := newPublicReceiptWireServer(t, hlc.NodeID{0xa1}, 32, token)
-	follower := newPublicReceiptWireServer(t, hlc.NodeID{0xb2}, 32, token)
-	partitioned := newPublicReceiptWireServer(t, hlc.NodeID{0xe5}, 32, token)
-	stopFollower := startPublicReceiptPump(t, ctx, "receipt backup follower", follower, origin, token)
+	origin := newClusterRecoveryPublicReceiptServer(t, clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "origin.wal"), hlc.NodeID{0xa1}), token)
+	follower := newClusterRecoveryPublicReceiptServer(t, clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "follower.wal"), hlc.NodeID{0xb2}), token)
+	partitioned := newClusterRecoveryPublicReceiptServer(t, clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "partitioned.wal"), hlc.NodeID{0xe5}), token)
+	stopFollower := startClusterRecoveryReceiptPump(t, ctx, "receipt backup follower", follower, origin, nil)
 	defer stopFollower()
 
 	oldCapability := publicReceiptCapability(t, origin, token)
@@ -65,11 +69,11 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 	}) {
 		t.Fatalf("receipt PutVertices = (%+v, %v)", put, err)
 	}
-	stopPartitioned := startPublicReceiptPump(t, ctx, "receipt backup partitioned replica", partitioned, origin, token)
+	stopPartitioned := startClusterRecoveryReceiptPump(t, ctx, "receipt backup partitioned replica", partitioned, origin, nil)
 	defer stopPartitioned()
 	aOrigin := hex.EncodeToString(origin.config.NodeID[:])
 	seedCut := map[string]uint64{aOrigin: 1}
-	requireExactReceiptCut(t, "C before partition", waitForPublicReceiptCut(
+	requireExactReceiptCut(t, "C before partition", waitForClusterRecoveryReceiptCut(
 		t, ctx, "C before partition", partitioned, token, seedCut, 5*time.Second,
 	), seedCut)
 	seed, err := partitioned.raw.GetVertex(ctx, receiptRequestWithToken(
@@ -119,13 +123,13 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		t.Fatalf("receipt AddEdges = (%+v, %v), want %v", add, err, addWeights)
 	}
 	addCut := map[string]uint64{aOrigin: 5}
-	requireExactReceiptCut(t, "B confirmed Add", waitForPublicReceiptCut(
+	requireExactReceiptCut(t, "B confirmed Add", waitForClusterRecoveryReceiptCut(
 		t, ctx, "B confirmed Add", follower, token, addCut, 5*time.Second,
 	), addCut)
 	requireReceiptAddResults(t, "B confirmed Add", receiptWireStatuses(
 		t, ctx, follower, token, addContext.GetOperationIds(),
 	), addContext.GetOperationIds(), addWeights)
-	requireExactReceiptCut(t, "C partitioned from Add", waitForPublicReceiptCut(
+	requireExactReceiptCut(t, "C partitioned from Add", waitForClusterRecoveryReceiptCut(
 		t, ctx, "C partitioned from Add", partitioned, token, seedCut, 5*time.Second,
 	), seedCut)
 	for i, status := range receiptWireStatuses(t, ctx, partitioned, token, addContext.GetOperationIds()) {
@@ -149,7 +153,7 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 	}
 
 	originCut := map[string]uint64{aOrigin: 6}
-	requireExactReceiptCut(t, "converged backup follower", waitForPublicReceiptCut(
+	requireExactReceiptCut(t, "converged backup follower", waitForClusterRecoveryReceiptCut(
 		t, ctx, "converged backup follower", follower, token, originCut, 5*time.Second,
 	), originCut)
 	operationIDs := append(append([][]byte{}, putContext.GetOperationIds()...), edgeContext.GetOperationIds()...)
@@ -245,7 +249,7 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		t.Fatalf("loaded receipt backup after total-cluster loss = (%+v, %v)", evidence, err)
 	}
 
-	restoredConfig := durableReceiptWireConfig(filepath.Join(t.TempDir(), "restored.wal"), hlc.NodeID{0xc3})
+	restoredConfig := clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "restored.wal"), hlc.NodeID{0xc3})
 	restoredConfig.Receipt.Epoch = mutationreceipt.Epoch{0x73}
 	restore, err := backup.PrepareFreshReceiptStartupRestore(evidence, restoredConfig.Receipt, restoredConfig.Now)
 	if err != nil {
@@ -272,7 +276,7 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	beforeCut := receiptOriginCut(waitForPublicReceiptCut(
+	beforeCut := receiptOriginCut(waitForClusterRecoveryReceiptCut(
 		t, ctx, "fresh restored origin cut", restored, token, originCut, 5*time.Second,
 	))
 	staleContext := publicReceiptWireContext(t, oldCapability, 0xaf, 1, issued)
@@ -291,7 +295,7 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	afterStatus, err := newReplicationRawClient(t, restored.server.url).PeerStatus(
-		ctx, receiptRequestWithToken(&pb.PeerStatusRequest{}, token),
+		ctx, receiptRequestWithToken(&pb.PeerStatusRequest{NamespaceFormat: "namespaced-v1"}, token),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -320,16 +324,11 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 			length, evicted)
 	}
 
-	joinConfig := durableReceiptWireConfig(filepath.Join(t.TempDir(), "joiner.wal"), hlc.NodeID{0xd4})
+	joinConfig := clusterRecoveryReceiptConfig(filepath.Join(t.TempDir(), "joiner.wal"), hlc.NodeID{0xd4})
 	joinConfig.Receipt.Epoch = restoredConfig.Receipt.Epoch
 	joiner := newClusterRecoveryPublicReceiptServer(t, joinConfig, token)
 	snapshotMetrics := &clusterReceiptSnapshotMetrics{installed: make(chan struct{}, 1)}
-	stopJoiner := startDurableReceiptPumpWithApplier(
-		t, ctx, "recovered receipt snapshot",
-		joinConfig, joiner.runtime, joiner.server,
-		newAuthenticatedReplicationPeer(t, restored.server, token),
-		joiner.server.svc, snapshotMetrics,
-	)
+	stopJoiner := startClusterRecoveryReceiptPump(t, ctx, "recovered receipt snapshot", joiner, restored, snapshotMetrics)
 	defer stopJoiner()
 	select {
 	case <-snapshotMetrics.installed:
@@ -338,7 +337,7 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("joiner did not install a RECEIPT Snapshot; WAL replay cannot prove recovery")
 	}
-	waitForPublicReceiptCut(t, ctx, "new replica recovered", joiner, token, originCut, 5*time.Second)
+	waitForClusterRecoveryReceiptCut(t, ctx, "new replica recovered", joiner, token, originCut, 5*time.Second)
 	requireStatuses("rejoined node (retired epoch)", joiner)
 	requireGraph("rejoined node", joiner)
 
@@ -355,7 +354,7 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		hex.EncodeToString(origin.config.NodeID[:]):   6,
 		hex.EncodeToString(restored.config.NodeID[:]): 1,
 	}
-	joinedStatus := waitForPublicReceiptCut(t, ctx, "new-epoch tail on joiner", joiner, token, joinedCut, 5*time.Second)
+	joinedStatus := waitForClusterRecoveryReceiptCut(t, ctx, "new-epoch tail on joiner", joiner, token, joinedCut, 5*time.Second)
 	requireExactReceiptCut(t, "new-epoch tail on joiner", joinedStatus, joinedCut)
 	for _, node := range []struct {
 		name string
@@ -413,7 +412,7 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 	if err != nil || !bytes.Equal(afterGeneration, beforeGeneration) {
 		t.Fatalf("restarted receipt generation = %x, want %x: %v", afterGeneration, beforeGeneration, err)
 	}
-	restartedStatus := waitForPublicReceiptCut(t, ctx, "restarted snapshot joiner", restarted, token, joinedCut, 5*time.Second)
+	restartedStatus := waitForClusterRecoveryReceiptCut(t, ctx, "restarted snapshot joiner", restarted, token, joinedCut, 5*time.Second)
 	requireExactReceiptCut(t, "restarted snapshot joiner", restartedStatus, joinedCut)
 	for _, row := range restartedStatus.GetOrigins() {
 		key := hex.EncodeToString(row.GetOrigin())
@@ -467,7 +466,7 @@ func TestPublicReceiptClusterLossBackupRestore_RealConnectWire(t *testing.T) {
 		t.Fatalf("post-restart new-epoch graph = (%+v, %v)", live, err)
 	}
 	afterWrite, err := newReplicationRawClient(t, restarted.server.url).PeerStatus(
-		ctx, receiptRequestWithToken(&pb.PeerStatusRequest{}, token),
+		ctx, receiptRequestWithToken(&pb.PeerStatusRequest{NamespaceFormat: "namespaced-v1"}, token),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -577,5 +576,114 @@ func mountClusterRecoveryPublicReceiptServer(
 		server:  server,
 		raw:     graphv1connect.NewLanternServiceClient(h2cClient(), server.url),
 		config:  config,
+	}
+}
+
+// Cluster recovery keeps public receipt authentication independent of native
+// peer admission. All private senders below use signed membership and mTLS;
+// static public tokens never confer Snapshot tail reservation authority.
+func clusterRecoveryReceiptConfig(path string, nodeID hlc.NodeID) service.DurableReceiptWALRuntimeConfig {
+	config := durableReceiptWireConfig(path, nodeID)
+	config.NamespaceFormat = "namespaced-v1"
+	return config
+}
+
+func startClusterRecoveryReceiptPump(
+	t *testing.T,
+	parent context.Context,
+	name string,
+	target, source publicReceiptWireServer,
+	metrics replication.Metrics,
+) func() {
+	t.Helper()
+	if source.config.NamespaceFormat != "namespaced-v1" || target.config.NamespaceFormat != source.config.NamespaceFormat {
+		t.Fatal("native recovery requires matching namespaced receipt runtimes")
+	}
+	qualifiedUTC, clockOwner, started := time.Now().UTC(), new(byte), time.Now()
+	native := newPeerSecurityFixture(t, peerSecurityOptions{
+		Now:        func() time.Time { return qualifiedUTC },
+		TimeBounds: func() (time.Time, time.Time, error) { return qualifiedUTC, qualifiedUTC, nil },
+		Time: func() (provider.PeerTimeObservation, error) {
+			return peerWireObservation{clockOwner, qualifiedUTC, qualifiedUTC, time.Since(started)}, nil
+		},
+		IssuedBefore: time.Minute,
+		Mount: func(_ *peerSecurityFixture, index int, _ *service.ServingRuntime, mux *http.ServeMux) {
+			if index != 0 {
+				return
+			}
+			_, handler := graphv1connect.NewLanternReplicationServiceHandler(service.NewLanternReplicationServiceConnectHandler(source.server.rep))
+			for _, method := range []string{"PeerStatus", "Subscribe", "Snapshot"} {
+				mux.Handle("/graph.v1.LanternReplicationService/"+method, handler)
+			}
+		},
+	})
+	t.Cleanup(source.server.rep.CloseSnapshotTails)
+	transport, err := provider.NewWorkloadPeerTransport(native.runtimes[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(parent)
+	done := make(chan error, 1)
+	pump := replication.NewPump(replication.Config{
+		NodeID: target.config.NodeID, NamespaceFormat: target.config.NamespaceFormat,
+		Peers: []string{native.servers[0].URL}, PeerTransport: transport,
+		BackoffMin: 10 * time.Millisecond, BackoffMax: 50 * time.Millisecond,
+		SnapshotInstaller:       newDurableReceiptSnapshotInstaller(t, target.config, target.server),
+		SearchConfigFingerprint: target.server.svc.SearchConfigFingerprint(), Metrics: metrics,
+	}, target.server.svc, target.runtime.GraphCache())
+	go func() { done <- pump.Run(runCtx) }()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil && !errors.Is(err, context.Canceled) {
+					t.Errorf("%s stop: %v", name, err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Errorf("%s native recovery owner did not join", name)
+			}
+		})
+	}
+}
+
+func waitForClusterRecoveryReceiptCut(
+	t *testing.T,
+	ctx context.Context,
+	name string,
+	node publicReceiptWireServer,
+	token string,
+	want map[string]uint64,
+	timeout time.Duration,
+) *pb.PeerStatusResponse {
+	t.Helper()
+	client := newReplicationRawClient(t, node.server.url)
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	var last *pb.PeerStatusResponse
+	var lastErr error
+	for {
+		probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		response, err := client.PeerStatus(probeCtx, receiptRequestWithToken(&pb.PeerStatusRequest{
+			NamespaceFormat: node.config.NamespaceFormat,
+		}, token))
+		cancel()
+		lastErr = err
+		if err == nil {
+			last = response.Msg
+			if receiptCutReached(receiptOriginCut(last), want) {
+				return last
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("%s namespaced receipt cut canceled: want=%v got=%v rpc=%v: %v", name, want, receiptOriginCut(last), lastErr, ctx.Err())
+		case <-deadline.C:
+			t.Fatalf("%s namespaced receipt cut timeout: want=%v got=%v rpc=%v", name, want, receiptOriginCut(last), lastErr)
+		case <-ticker.C:
+		}
 	}
 }

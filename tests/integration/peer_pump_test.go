@@ -3173,15 +3173,88 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 			t.Fatalf("finite source Add[%d] = (%+v, %v), want derived +Inf on second Add", i, result, err)
 		}
 	}
-	_, backupEdges := drainBackup(t, ctx, source.raw, &pb.BackupSnapshotRequest{})
+	backupVertices, backupEdges := drainBackup(t, ctx, source.raw, &pb.BackupSnapshotRequest{})
 	folded := backupEdges["tail->head"]
 	if folded == nil || !math.IsInf(float64(folded.GetWeight()), 1) ||
 		!folded.GetExpiration().AsTime().Equal(baseExpiration) {
 		t.Fatalf("finite sources did not fold into the graph-only backup: %+v", folded)
 	}
 
-	a := newAuthedPumpNode(t, hlc.NodeID{0xD2}, 2)
-	if _, err := a.svc.RestoreEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{folded}}); err != nil {
+	// Public data requests retain their Bearer fixture. Private replication
+	// uses separately signed workload membership and mutual TLS, because a
+	// public-token TLS client cannot reserve a native Snapshot tail.
+	newNode := func(id hlc.NodeID) *pumpNode {
+		n := newAuthedPumpNode(t, id, 2)
+		n.svc.WithDataNamespace()
+		n.server.rep.WithOriginStates(n.svc)
+		t.Cleanup(n.server.rep.CloseSnapshotTails)
+		return n
+	}
+	nativePeers := make(map[*pumpNode]replicationTestPeer)
+	nativeClients := make(map[*pumpNode]graphv1connect.LanternReplicationServiceClient)
+	nativePeer := func(n *pumpNode) replicationTestPeer {
+		if peer, present := nativePeers[n]; present {
+			return peer
+		}
+		fixture := newPeerSecurityFixture(t, peerSecurityOptions{
+			Mount: func(_ *peerSecurityFixture, index int, _ *service.ServingRuntime, mux *http.ServeMux) {
+				if index != 0 {
+					return
+				}
+				_, handler := graphv1connect.NewLanternReplicationServiceHandler(service.NewLanternReplicationServiceConnectHandler(n.server.rep))
+				for _, procedure := range []string{"PeerStatus", "Snapshot", "Subscribe"} {
+					mux.Handle("/graph.v1.LanternReplicationService/"+procedure, handler)
+				}
+			},
+		})
+		transport, err := provider.NewWorkloadPeerTransport(fixture.runtimes[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		peer := replicationTestPeer{url: fixture.servers[0].URL, transport: transport}
+		nativePeers[n] = peer
+		nativeClients[n] = graphv1connect.NewLanternReplicationServiceClient(fixture.runtimes[1].HTTPClient(), peer.url)
+		return peer
+	}
+	startNativePump := func(n *pumpNode, peer replicationTestPeer, metrics replication.Metrics) {
+		pump := replication.NewPump(replication.Config{
+			NodeID: n.nodeID, NamespaceFormat: n.svc.DataNamespaceFormat(),
+			Peers: []string{peer.url}, PeerTransport: peer.transport, Metrics: metrics,
+			SearchConfigFingerprint: n.svc.SearchConfigFingerprint(),
+			BackoffMin:              20 * time.Millisecond, BackoffMax: 200 * time.Millisecond,
+		}, n.svc, n.cache)
+		pumpCtx, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- pump.Run(pumpCtx) }()
+		t.Cleanup(func() {
+			stop()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Error(err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Error("native aggregate relay Pump did not join")
+			}
+		})
+	}
+	a := newNode(hlc.NodeID{0xD2})
+	var restoredVertices []*pb.Vertex
+	for _, key := range []string{"tail", "head"} {
+		vertex := backupVertices[key]
+		if vertex == nil {
+			t.Fatalf("backup omitted endpoint %q", key)
+		}
+		physical := proto.Clone(vertex).(*pb.Vertex)
+		physical.Key = "data:" + key
+		restoredVertices = append(restoredVertices, physical)
+	}
+	if _, err := a.svc.RestoreVertices(ctx, &pb.PutVerticesRequest{Vertices: restoredVertices}); err != nil {
+		t.Fatalf("startup RestoreVertices: %v", err)
+	}
+	physicalFolded := proto.Clone(folded).(*pb.Edge)
+	physicalFolded.Tail, physicalFolded.Head = "data:tail", "data:head"
+	if _, err := a.svc.RestoreEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{physicalFolded}}); err != nil {
 		t.Fatalf("startup RestoreEdges: %v", err)
 	}
 	restored := a.cache.SnapshotEdges()
@@ -3197,7 +3270,7 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 
 	unauthenticated := newReplicationRawClient(t, a.url)
 	stream, err := unauthenticated.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, NamespaceFormat: a.svc.DataNamespaceFormat(),
 	}))
 	if err == nil {
 		if stream.Receive() {
@@ -3226,11 +3299,11 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 
 	snapshotEdge := func(n *pumpNode) *pb.SnapshotEdge {
 		t.Helper()
+		_ = nativePeer(n)
 		req := connect.NewRequest(&pb.SnapshotRequest{
-			RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+			RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, NamespaceFormat: n.svc.DataNamespaceFormat(),
 		})
-		req.Header().Set("Authorization", "Bearer "+testToken)
-		stream, err := newReplicationRawClient(t, n.url).Snapshot(ctx, req)
+		stream, err := nativeClients[n].Snapshot(ctx, req)
 		if err != nil {
 			t.Fatalf("authenticated Snapshot from %x: %v", n.nodeID[:1], err)
 		}
@@ -3238,7 +3311,7 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 		var edge *pb.SnapshotEdge
 		var footer *pb.SnapshotFooter
 		for stream.Receive() {
-			if item := stream.Msg().GetEdge(); item != nil && item.GetTail() == "tail" && item.GetHead() == "head" {
+			if item := stream.Msg().GetEdge(); item != nil && item.GetTail() == "data:tail" && item.GetHead() == "data:head" {
 				edge = proto.Clone(item).(*pb.SnapshotEdge)
 			}
 			if item := stream.Msg().GetFooter(); item != nil {
@@ -3294,10 +3367,10 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 
 	assertAggregate(a, 1)
 	assertLive(a)
-	b := newAuthedPumpNode(t, hlc.NodeID{0xD3}, 2)
+	b := newNode(hlc.NodeID{0xD3})
 	bMetrics := &observedSearchConfigMetrics{gate: readiness.NewGate(100, true, nil)}
-	peerA := newAuthenticatedReplicationPeer(t, a.server, testToken)
-	b.startPumpWithMetricsAndTransport(ctx, t, []string{peerA.url}, bMetrics, peerA.transport)
+	peerA := nativePeer(a)
+	startNativePump(b, peerA, bMetrics)
 	awaitSnapshot(b, bMetrics, a.nodeID, 5)
 	assertAggregate(b, 1)
 	assertLive(b)
@@ -3307,10 +3380,10 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 			t.Fatalf("relay gap write %d: %v", i, err)
 		}
 	}
-	c := newAuthedPumpNode(t, hlc.NodeID{0xD4}, 2)
+	c := newNode(hlc.NodeID{0xD4})
 	cMetrics := &observedSearchConfigMetrics{gate: readiness.NewGate(100, true, nil)}
-	peerB := newAuthenticatedReplicationPeer(t, b.server, testToken)
-	c.startPumpWithMetricsAndTransport(ctx, t, []string{peerB.url}, cMetrics, peerB.transport)
+	peerB := nativePeer(b)
+	startNativePump(c, peerB, cMetrics)
 	awaitSnapshot(c, cMetrics, b.nodeID, 4)
 	if got := c.svc.LocalSeq(a.nodeID); got != 5 {
 		t.Fatalf("relay Snapshot lost original origin cutoff: %d, want 5", got)
