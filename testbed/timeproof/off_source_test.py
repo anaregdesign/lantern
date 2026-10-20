@@ -183,6 +183,47 @@ class SourceSupervisorTest(unittest.TestCase):
         opener = Mock()
         opener.open.return_value.__enter__ = Mock(return_value=Mock(read=Mock(return_value=b'{"status":"SERVING_STATUS_SERVING"}')))
         opener.open.return_value.__exit__ = Mock(return_value=False)
-        self.assertEqual(off_source.request(opener, "https://fixture.invalid/grpc.health.v1.Health/Check", time.monotonic()+1, {}), {"status": "SERVING_STATUS_SERVING"})
+        self.assertEqual(off_source.request(opener, "https://fixture.invalid/grpc.health.v1.Health/Check", off_source.Window(monotonic=time.monotonic_ns, boottime=time.monotonic_ns).limit(1), {}), {"status": "SERVING_STATUS_SERVING"})
         sent = opener.open.call_args.args[0]
         self.assertNotIn("Authorization", dict(sent.header_items()))
+
+    def test_resume_over_budget_cannot_configure_or_start_wire_work(self):
+        with tempfile.TemporaryDirectory() as temp:
+            parent = Path(temp)
+            root, prepared, output = parent/"root", parent/"prepared", parent/"evidence"
+            root.mkdir(); prepared.mkdir()
+            clock, children, commands = {"boot": 0}, [], []
+            window = off_source.Window(lambda: 0, lambda: clock["boot"])
+
+            class SyntheticChild:
+                def __init__(self, binary, slot, nonce, directory, started):
+                    self.slot, self.nonce = slot, nonce
+                    self.process = Mock(pid=slot, returncode=0)
+                    self.process.poll.return_value = 0
+                    self.reader, self.stderr = Mock(), Mock()
+                    self.records, self.stop_ns, self.launch_ns, self.killed = [], None, 0, False
+                    children.append(self)
+
+                def send(self, phase, deadline, **fields):
+                    deadline.check()
+                    commands.append(phase)
+
+                def receive(self, event, deadline):
+                    deadline.check()
+                    return {"public": f"[::]:{1000+self.slot}", "peer": f"127.0.0.1:{2000+self.slot}"}
+
+                def terminate(self, kill=False):
+                    self.killed = True
+
+            def provision(*args, **kwargs):
+                kwargs["stdout"].write(json.dumps({"nodes": [{"environment": {}} for _ in range(3)]}).encode())
+                clock["boot"] = 130_000_000_000
+
+            manifest = {"source": {"head": "synthetic"}, "digest": "synthetic", "target": ["linux", "arm64"], "child_sha256": "synthetic"}
+            with patch.object(off_source, "environment", return_value={"unit_fixture": True}), patch.object(off_source.platform, "machine", return_value="aarch64"), patch.object(off_source, "Window", return_value=window), patch.object(off_source, "Child", SyntheticChild), patch.object(off_source.subprocess, "run", side_effect=provision), patch.object(off_source, "wire_smoke") as wire:
+                result = off_source.run(root, prepared, output, manifest)
+            self.assertEqual(result["status"], "FAIL")
+            self.assertEqual(result["final_elapsed_ns"], 130_000_000_000)
+            self.assertEqual(commands, ["reserve"]*3)
+            self.assertTrue(all(child.killed for child in children))
+            wire.assert_not_called()

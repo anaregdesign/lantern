@@ -61,9 +61,25 @@ func TestOFFQualifiedAppFinalCounterLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer launch.Close()
+	launches := []*listenerlaunch.Owner{launch}
 	public, peer := launch.Addresses()
 	_, publicPort, _ := net.SplitHostPort(public)
 	_, peerPort, _ := net.SplitHostPort(peer)
+	publicPorts, peerPorts := []string{publicPort}, []string{peerPort}
+	// The manifest has three members so the real private service has its
+	// replication state provider. One App serves; a second supplies the client.
+	for range 2 {
+		reserved, err := listenerlaunch.Reserve(t.Context(), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reserved.Close()
+		launches = append(launches, reserved)
+		public, peer := reserved.Addresses()
+		_, publicPort, _ := net.SplitHostPort(public)
+		_, peerPort, _ := net.SplitHostPort(peer)
+		publicPorts, peerPorts = append(publicPorts, publicPort), append(peerPorts, peerPort)
+	}
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "authfixture")
 	root, err := filepath.Abs("../..")
@@ -76,7 +92,7 @@ func TestOFFQualifiedAppFinalCounterLifecycle(t *testing.T) {
 		t.Fatalf("fixture build: %v\n%s", err, output)
 	}
 	material := filepath.Join(dir, "material")
-	command = exec.CommandContext(t.Context(), binary, "-directory", material, "-mode", "off", "-public-ports", publicPort, "-peer-ports", peerPort)
+	command = exec.CommandContext(t.Context(), binary, "-directory", material, "-mode", "off", "-public-ports", strings.Join(publicPorts, ","), "-peer-ports", strings.Join(peerPorts, ","))
 	raw, err := command.Output()
 	if err != nil {
 		t.Fatalf("ephemeral OFF provisioning: %v", err)
@@ -85,10 +101,11 @@ func TestOFFQualifiedAppFinalCounterLifecycle(t *testing.T) {
 		CAFile string `json:"ca_file"`
 		Nodes  []struct {
 			Public      string            `json:"public_origin"`
+			Peer        string            `json:"peer_origin"`
 			Environment map[string]string `json:"environment"`
 		} `json:"nodes"`
 	}
-	if json.Unmarshal(raw, &fixture) != nil || len(fixture.Nodes) != 1 {
+	if json.Unmarshal(raw, &fixture) != nil || len(fixture.Nodes) != 3 {
 		t.Fatal("invalid ephemeral OFF fixture", err)
 	}
 	for key, value := range fixture.Nodes[0].Environment {
@@ -109,6 +126,18 @@ func TestOFFQualifiedAppFinalCounterLifecycle(t *testing.T) {
 	if before.Attempts == 0 || before.Writes == 0 || before.Installations == 0 || launch.Adopted() != nil {
 		t.Fatal("production OFF App lacks owned controlled evidence", before)
 	}
+	// The client has a distinct real member identity. Self-directed private
+	// calls are intentionally refused by the production workload transport.
+	for key, value := range fixture.Nodes[1].Environment {
+		t.Setenv(key, value)
+	}
+	envconfig.ResetForTesting()
+	probeApp, probeCleanup, err := initializeAppWithListeners(t.Context(), launches[1])
+	if err != nil {
+		t.Fatal("controlled peer client composition", err)
+	}
+	defer probeCleanup()
+	probeIdentity := probeApp.peerIdentity.(*provider.PeerIdentityRuntime)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- app.Run(ctx) }()
@@ -157,6 +186,11 @@ func TestOFFQualifiedAppFinalCounterLifecycle(t *testing.T) {
 	}
 	if !ready {
 		t.Fatal("controlled OFF App never served its verified public listener")
+	}
+	probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer probeCancel()
+	if err := offSourcePeerProbe(probeCtx, probeIdentity, fixture.Nodes[0].Peer); err != nil {
+		t.Fatal("OFF source positive PeerStatus/client guard probe failed on the real private service", err)
 	}
 	cancel()
 	select {

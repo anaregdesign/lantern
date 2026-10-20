@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
 	"runtime"
@@ -19,9 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-	pb "github.com/anaregdesign/lantern/pb/graph/v1"
-	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"github.com/anaregdesign/lantern/server/provider"
@@ -164,27 +160,4 @@ func TestOFFConfiguredSourceChild(t *testing.T) {
 
 func offSourceCounterFields(c decisiontrace.AcquisitionCounts) map[string]any {
 	return map[string]any{"attempts": c.Attempts, "writes": c.Writes, "installations": c.Installations, "in_flight": c.InFlight, "failed": c.Failed, "denied": c.Denied}
-}
-
-func offSourcePrivateProbe(ctx context.Context, identity *provider.PeerIdentityRuntime, self string) bool {
-	origins, err := identity.ApprovedOrigins()
-	_, port, portErr := net.SplitHostPort(self)
-	if err != nil || portErr != nil || len(origins) != 3 {
-		return false
-	}
-	for _, origin := range origins {
-		if strings.HasSuffix(origin, ":"+port) {
-			continue
-		}
-		client := graphv1connect.NewLanternReplicationServiceClient(identity.HTTPClient(), origin)
-		if _, err := client.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{})); err != nil {
-			return false
-		}
-		request := connect.NewRequest(&pb.PeerStatusRequest{})
-		request.Header().Set("Authorization", "Bearer off-source-negative-fixture")
-		if _, err := client.PeerStatus(ctx, request); err == nil {
-			return false
-		}
-	}
-	return true
 }

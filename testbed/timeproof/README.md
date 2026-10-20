@@ -36,6 +36,9 @@ rows with positive installations and no failed/denied/in-flight owner qualify.
 Timeout, kill, missing counters, source drift and failed wire checks remain
 FAIL. Missing startup counters are unavailable, not zero. There is no automatic
 retry, replacement child, environment switch or threshold change.
+Both MONOTONIC and suspend-inclusive BOOTTIME drive execution deadlines and the
+short-period watchdog. A resume beyond the budget proceeds to cancellation and
+termination without continuing normal configuration or wire work.
 
 Preserve the command's receipt digest through a trusted same-run channel. A
 receipt cannot attest its own trust. Verify it against the same clean source:

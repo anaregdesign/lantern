@@ -30,16 +30,18 @@ class Child:
         except Exception:
             self.stderr.close()
             raise
-        os.set_blocking(self.process.stdin.fileno(), False)
-        self.reader = threading.Thread(target=self._read, daemon=True)
         try:
+            os.set_blocking(self.process.stdin.fileno(), False)
+            self.reader = threading.Thread(target=self._read, daemon=True)
             self.reader.start()
-        except Exception:
-            self.process.kill()
-            self.process.wait(timeout=5)
-            self.process.stdin.close()
-            self.process.stdout.close()
-            self.stderr.close()
+        except BaseException:
+            try:
+                self.process.kill()
+                self.process.wait(timeout=5)
+            finally:
+                self.process.stdin.close()
+                self.process.stdout.close()
+                self.stderr.close()
             raise
 
     def _read(self):
@@ -61,8 +63,8 @@ class Child:
             self.error = type(error).__name__
 
     def send(self, phase, deadline, **fields):
-        if not self.send_lock.acquire(timeout=max(.001, deadline - time.monotonic())):
-            raise TimeoutError("child input lock deadline")
+        while not self.send_lock.acquire(timeout=min(.05, deadline.check())):
+            deadline.check()
         try:
             if phase == "stop" and self.stop_ns is not None:
                 return
@@ -77,11 +79,10 @@ class Child:
             raise ValueError("configuration too large")
         view = memoryview(raw)
         while view:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("child input deadline")
+            remaining = deadline.check()
             if not select.select([], [self.process.stdin], [], min(remaining, .1))[1]:
                 continue
+            deadline.check()
             try:
                 view = view[os.write(self.process.stdin.fileno(), view):]
             except BlockingIOError:
@@ -90,17 +91,18 @@ class Child:
             self.stop_ns = time.monotonic_ns() - self.started
 
     def receive(self, event, deadline):
-        while time.monotonic() < deadline:
+        while deadline.check() > 0:
             if self.error:
                 raise ValueError("child transcript failed")
             try:
-                record = self.queue.get(timeout=min(.1, max(.001, deadline - time.monotonic())))
+                record = self.queue.get(timeout=min(.1, deadline.check()))
             except queue.Empty:
                 if self.process.poll() is not None:
-                    self.reader.join(timeout=1)
+                    self.reader.join(timeout=min(.05, deadline.check()))
                     if self.queue.empty():
                         raise ValueError("child exited without required phase")
                 continue
+            deadline.check()
             self.records.append(record)
             if record.get("event") != event:
                 raise ValueError("unexpected child phase")
@@ -113,8 +115,15 @@ class Child:
             self.process.kill() if kill else self.process.terminate()
 
     def wait(self, deadline, binary_sha256):
-        result = self.process.wait(timeout=max(.001, deadline - time.monotonic()))
-        self.reader.join(timeout=max(.001, deadline - time.monotonic()))
+        while self.process.poll() is None:
+            try:
+                self.process.wait(timeout=min(.1, deadline.check()))
+            except subprocess.TimeoutExpired:
+                continue
+        result = self.process.wait(timeout=deadline.check())
+        while self.reader.is_alive():
+            self.reader.join(timeout=min(.1, deadline.check()))
+        deadline.check()
         self.process.stdin.close()
         self.process.stdout.close()
         self.stderr.close()

@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 
 from process import Child
+from deadline import Window, watch_deadlines
 from receipt import SCHEMA, sha, strict_json, verify
 
 
@@ -190,13 +191,13 @@ def load_prepared(root, directory, digest):
 
 
 def request(opener, url, deadline, payload):
-    timeout = min(3, deadline - time.monotonic())
-    if timeout <= 0:
-        raise TimeoutError("wire deadline")
+    timeout = min(3, deadline.check())
     raw = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=raw, headers={"Content-Type": "application/json", "Connect-Protocol-Version": "1"})
     with opener.open(req, timeout=timeout) as response:
+        deadline.check()
         raw = response.read(65537)
+        deadline.check()
         if len(raw) > 65536:
             raise ValueError("wire response too large")
         return {} if not raw else json.loads(raw)
@@ -214,11 +215,9 @@ def wire_smoke(fixture, children, deadline):
                 if health.get("status") == "SERVING_STATUS_SERVING" and caps.get("mode") == "AUTH_MODE_OFF" and caps.get("ready") is True and caps.get("protocolVersion") == 1:
                     break
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-                if time.monotonic() >= deadline:
+                if deadline.remaining() <= 0:
                     raise TimeoutError("OFF readiness deadline")
-            if time.monotonic() >= deadline:
-                raise TimeoutError("OFF certified readiness deadline")
-            time.sleep(.05)
+            deadline.pause(.05)
         request(opener, node["public_origin"] + "/graph.v1.LanternService/GetServerStatus", deadline, {})
     key = "off-source:" + secrets.token_hex(16)
     request(opener, nodes[0]["public_origin"] + "/graph.v1.LanternService/PutVertex", deadline, {"vertex": {"key": key, "string": "proof"}})
@@ -230,9 +229,7 @@ def wire_smoke(fixture, children, deadline):
                     break
             except urllib.error.URLError:
                 pass
-            if time.monotonic() >= deadline:
-                raise TimeoutError("OFF replication deadline")
-            time.sleep(.05)
+            deadline.pause(.05)
     for child in children:
         child.send("probe", deadline)
     for child in children:
@@ -254,8 +251,9 @@ def run(root, directory, output, prepared):
     with (directory / "OFF-ALLOCATION-CONSUMED").open("x") as token:
         token.write(str(output) + "\n")
     children, rows = [], []
-    started, boot = time.monotonic_ns(), time.clock_gettime_ns(time.CLOCK_BOOTTIME)
-    deadline = started / 1e9 + 120
+    window = Window()
+    started = window.started
+    work, deadline = window.limit(89), window.limit(120)
     finished = threading.Event()
     receipt = {"schema": SCHEMA, "status": "FAIL", "source": prepared["source"], "prepared_sha256": prepared["digest"], "before": before, "children": rows, "wire": {}}
 
@@ -263,47 +261,43 @@ def run(root, directory, output, prepared):
         for child in list(children):
             try:
                 if child.stop_ns is None:
-                    child.send("stop", min(deadline, time.monotonic() + .5))
+                    child.send("stop", window.limit(90).cap(.5))
             except (OSError, TimeoutError, ValueError):
                 child.terminate()
 
-    def watchdog():
-        for offset, action in ((89, stop_all), (105, lambda: [c.terminate() for c in list(children)]), (115, lambda: [c.terminate(kill=True) for c in list(children)])):
-            if finished.wait(max(0, started / 1e9 + offset - time.monotonic())):
-                return
-            action()
-
-    watcher = threading.Thread(target=watchdog, daemon=True)
+    actions = ((89, stop_all), (105, lambda: [c.terminate() for c in list(children)]), (115, lambda: [c.terminate(kill=True) for c in list(children)]))
+    watcher = threading.Thread(target=watch_deadlines, args=(finished, window, actions), daemon=True)
     watcher.start()
     try:
         for slot in range(1, 4):
+            work.check()
             child = Child(directory / "off-child.test", slot, secrets.token_hex(32), output, started)
             children.append(child)
-            child.send("reserve", min(deadline, time.monotonic() + 10), private=True)
-        reservations = [child.receive("reserved", min(deadline, time.monotonic() + 10)) for child in children]
+            child.send("reserve", work.cap(10), private=True)
+        reservations = [child.receive("reserved", work.cap(10)) for child in children]
         public = ",".join(r["public"].rsplit(":", 1)[1] for r in reservations)
         peers = ",".join(r["peer"].rsplit(":", 1)[1] for r in reservations)
         material = output / "material"
         with (output / "provision.log").open("xb") as log, (output / "provision.stderr").open("xb") as errors:
-            subprocess.run([str(directory / "authfixture"), "-directory", str(material), "-mode", "off", "-public-ports", public, "-peer-ports", peers], env={k: v for k, v in os.environ.items() if not k.upper().startswith("LANTERN_")}, stdout=log, stderr=errors, check=True, timeout=min(10, deadline - time.monotonic()))
+            subprocess.run([str(directory / "authfixture"), "-directory", str(material), "-mode", "off", "-public-ports", public, "-peer-ports", peers], env={k: v for k, v in os.environ.items() if not k.upper().startswith("LANTERN_")}, stdout=log, stderr=errors, check=True, timeout=min(10, work.check()))
+        work.check()
         fixture = strict_json((output / "provision.log").read_bytes())
         if len(fixture["nodes"]) != 3:
             raise ValueError("fixture topology differs")
         for node, child in zip(fixture["nodes"], children):
             env = node["environment"] | {"LANTERN_AUTH_MODE": "off", "LANTERN_DRAIN_DELAY_SECONDS": "0", "LANTERN_BACKUP_ENABLED": "false", "LANTERN_BACKUP_RESTORE_ON_START": "false"}
-            child.send("configure", min(deadline, time.monotonic() + 5), environment=[k + "=" + v for k, v in sorted(env.items())])
+            child.send("configure", work.cap(5), environment=[k + "=" + v for k, v in sorted(env.items())])
         for child in children:
-            child.receive("adopted", min(deadline, time.monotonic() + 45))
-        receipt["wire"] = wire_smoke(fixture, children, started / 1e9 + 85)
+            child.receive("adopted", work.cap(45))
+        receipt["wire"] = wire_smoke(fixture, children, window.limit(85))
         stop_all()
         for child in children:
             for event in ("stop_requested", "app_returned", "cleanup_returned", "final"):
                 child.receive(event, deadline)
             rows.append(child.wait(deadline, prepared["child_sha256"]))
         receipt["after"] = environment()
-        receipt["elapsed_ns"] = time.monotonic_ns() - started
-        receipt["boottime_elapsed_ns"] = time.clock_gettime_ns(time.CLOCK_BOOTTIME) - boot
-        receipt["final_elapsed_ns"] = receipt["elapsed_ns"]
+        receipt["elapsed_ns"], receipt["boottime_elapsed_ns"] = window.elapsed()
+        receipt["final_elapsed_ns"] = max(window.elapsed())
         receipt["launch_ledger"] = [{"slot": c.slot, "pid": c.process.pid, "nonce": c.nonce, "exit": c.process.returncode, "killed": c.killed, "launch_ns": c.launch_ns, "stop_ns": c.stop_ns, "final_counters_available": True} for c in children]
         receipt["status"] = "PASS"
         receipt["totals"] = verify(receipt, prepared, output)
@@ -316,8 +310,8 @@ def run(root, directory, output, prepared):
         for child in children:
             if child.process.poll() is None:
                 try:
-                    child.process.wait(timeout=max(.001, min(2, deadline - time.monotonic())))
-                except subprocess.TimeoutExpired:
+                    child.process.wait(timeout=min(2, deadline.check()))
+                except (subprocess.TimeoutExpired, TimeoutError):
                     child.terminate(kill=True)
                     child.process.wait(timeout=5)
             child.reader.join(timeout=2)
@@ -326,7 +320,7 @@ def run(root, directory, output, prepared):
             child.stderr.close()
         finished.set()
         watcher.join(timeout=1)
-        receipt["final_elapsed_ns"] = time.monotonic_ns() - started
+        receipt["final_elapsed_ns"] = max(window.elapsed())
         receipt["launch_ledger"] = [{"slot": c.slot, "pid": c.process.pid, "nonce": c.nonce, "exit": c.process.returncode, "killed": c.killed, "launch_ns": c.launch_ns, "stop_ns": c.stop_ns, "final_counters_available": any(r.get("event") == "final" for r in c.records)} for c in children]
         if receipt["final_elapsed_ns"] > 120_000_000_000 or watcher.is_alive():
             receipt["status"] = "FAIL"
