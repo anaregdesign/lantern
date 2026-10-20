@@ -2614,8 +2614,17 @@ type observedSnapshotInstall struct {
 
 type observedSnapshotApplier struct {
 	*service.LanternService
-	ctx   context.Context
-	began chan *observedSnapshotInstall
+	ctx        context.Context
+	began      chan *observedSnapshotInstall
+	afterApply func(*pb.Mutation, error)
+}
+
+func (a *observedSnapshotApplier) ApplyMutation(ctx context.Context, mutation *pb.Mutation) error {
+	err := a.LanternService.ApplyMutation(ctx, mutation)
+	if a.afterApply != nil {
+		a.afterApply(mutation, err)
+	}
+	return err
 }
 
 func (a *observedSnapshotApplier) BeginSnapshotInstall() (func(bool), error) {
@@ -4184,6 +4193,43 @@ func TestPeerPump_SnapshotTailCapacityBeforeFinish(t *testing.T) {
 				t.Fatal(err)
 			}
 			apply := &observedSnapshotApplier{LanternService: fixture.primary[1], ctx: ctx, began: make(chan *observedSnapshotInstall, 1)}
+			replayApplied, successorApplied := make(chan error, 1), make(chan error, 1)
+			replaySeq := fixture.primary[0].LocalSeq(sourceID) + 513
+			successorSeq := replaySeq + 1
+			if ringCapacity == 4 {
+				successorSeq += 513 // Two rejected overflow cycles precede quiet recovery.
+			}
+			// Arm immutable targets before Pump starts. Notify only after the real
+			// ApplyMutation returns, including its relay-log and cursor publication.
+			apply.afterApply = func(mutation *pb.Mutation, err error) {
+				if !bytes.Equal(mutation.GetOrigin(), sourceID[:]) {
+					return
+				}
+				var applied chan error
+				switch mutation.GetSeq() {
+				case replaySeq:
+					applied = replayApplied
+				case successorSeq:
+					applied = successorApplied
+				default:
+					return
+				}
+				select {
+				case applied <- err:
+				default: // Duplicate notification must never backpressure replication.
+				}
+			}
+			waitApplied := func(label string, applied <-chan error) {
+				t.Helper()
+				select {
+				case err := <-applied:
+					if err != nil {
+						t.Fatalf("%s ApplyMutation: %v", label, err)
+					}
+				case <-ctx.Done():
+					t.Fatalf("%s did not apply within original test deadline: %v; receiver=%d source=%d faulted=%t Snapshots=%d", label, ctx.Err(), fixture.primary[1].LocalSeq(sourceID), fixture.primary[0].LocalSeq(sourceID), fixture.primary[1].SnapshotRepairRequired(), peer.snapshots.Load())
+				}
+			}
 			pump := replication.NewPump(replication.Config{
 				NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{fixture.servers[0].URL},
 				PeerTransport: transport, BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
@@ -4268,9 +4314,7 @@ func TestPeerPump_SnapshotTailCapacityBeforeFinish(t *testing.T) {
 				close(stage.resume)
 			}
 			if ringCapacity == 10000 {
-				if !waitForVertex(t, graphs[1], "data:overflow-0-512", time.Second) {
-					t.Fatal("retained replay omitted last overflow update")
-				}
+				waitApplied("retained replay", replayApplied)
 				for i := range 513 {
 					if _, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: fmt.Sprintf("data:overflow-0-%d", i)}); err != nil {
 						t.Fatalf("retained replay lost update %d: %v", i, err)
@@ -4278,8 +4322,9 @@ func TestPeerPump_SnapshotTailCapacityBeforeFinish(t *testing.T) {
 				}
 			}
 			put("data:after-quiet-repair")
-			if !waitForVertex(t, graphs[1], "data:after-quiet-repair", time.Second) {
-				t.Fatal("quiet recovery did not resume tail delivery")
+			waitApplied("successor", successorApplied)
+			if _, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:after-quiet-repair"}); err != nil {
+				t.Fatal("recovered successor public read", err)
 			}
 			if _, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed-0"}); err != nil {
 				t.Fatal("quiet recovery public read", err)
