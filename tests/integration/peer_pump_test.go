@@ -2650,6 +2650,32 @@ func (a *observedSnapshotApplier) BeginSnapshotInstall() (func(bool), error) {
 	}, nil
 }
 
+func (a *observedSnapshotApplier) BeginSnapshotInstallChecked(ctx context.Context, check func() error) (func(bool) error, error) {
+	finish, err := a.LanternService.BeginSnapshotInstallChecked(ctx, check)
+	if err != nil {
+		return nil, err
+	}
+	stage := &observedSnapshotInstall{finished: make(chan bool, 1), resume: make(chan struct{}), started: time.Now()}
+	select {
+	case a.began <- stage:
+	case <-ctx.Done():
+		return nil, errors.Join(ctx.Err(), finish(false))
+	}
+	return func(verified bool) error {
+		err := finish(verified)
+		stage.ended = time.Now()
+		stage.finished <- verified && err == nil
+		if err != nil {
+			return err
+		}
+		select {
+		case <-stage.resume:
+		case <-a.ctx.Done():
+		}
+		return nil
+	}, nil
+}
+
 type observedSnapshotHeader struct {
 	header  *pb.SnapshotHeader
 	release chan error

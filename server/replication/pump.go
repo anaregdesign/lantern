@@ -243,12 +243,15 @@ type snapshotWatermarkApplier interface {
 // this replica's log. The service closes existing CDC streams before replay
 // and admits new ones only after a complete, verified install.
 type snapshotInstallGuard interface {
-	BeginSnapshotInstall() (finish func(verified bool), err error)
+	BeginSnapshotInstallChecked(context.Context, func() error) (finish func(verified bool) error, err error)
 }
 
-func beginSnapshotInstall(applier MutationApplier) (func(bool), error) {
+func beginSnapshotInstall(ctx context.Context, applier MutationApplier) (func(bool) error, error) {
 	if guard, ok := applier.(snapshotInstallGuard); ok {
-		return guard.BeginSnapshotInstall()
+		return guard.BeginSnapshotInstallChecked(ctx, func() error { return checkSnapshotContext(ctx) })
+	}
+	if _, legacy := applier.(interface{ BeginSnapshotInstall() (func(bool), error) }); legacy {
+		return nil, snapshotProtocolError("Snapshot install guard does not support checked publication boundaries")
 	}
 	return nil, nil
 }
@@ -681,10 +684,10 @@ func snapshotEdgeRows(edge *pb.SnapshotEdge) ([]snapshotEdgeRow, error) {
 }
 
 func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream SnapshotStream, publish bool) (SnapshotInstallResult, error) {
-	var finishInstall func(bool)
+	var finishInstall func(bool) error
 	defer func() {
 		if finishInstall != nil {
-			finishInstall(false)
+			_ = finishInstall(false)
 		}
 	}()
 	var recovery searchIndexRecovery
@@ -713,7 +716,7 @@ func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream 
 				return SnapshotInstallResult{}, err
 			}
 			var err error
-			finishInstall, err = beginSnapshotInstall(i.apply)
+			finishInstall, err = beginSnapshotInstall(ctx, i.apply)
 			if err != nil {
 				return SnapshotInstallResult{}, err
 			}
@@ -945,8 +948,11 @@ func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream 
 		return SnapshotInstallResult{}, err
 	}
 	if finishInstall != nil {
-		finishInstall(true)
+		finish := finishInstall
 		finishInstall = nil
+		if err := finish(true); err != nil {
+			return SnapshotInstallResult{}, err
+		}
 	}
 	return SnapshotInstallResult{
 		Header:         proto.Clone(replay.header).(*pb.SnapshotHeader),

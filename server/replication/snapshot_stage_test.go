@@ -152,8 +152,8 @@ type snapshotStageCancelApplier struct {
 	cancel context.CancelFunc
 }
 
-func (a *snapshotStageCancelApplier) BeginSnapshotInstall() (func(bool), error) {
-	finish, err := a.snapshotLifecycleMutationApplier.BeginSnapshotInstall()
+func (a *snapshotStageCancelApplier) BeginSnapshotInstallChecked(ctx context.Context, check func() error) (func(bool) error, error) {
+	finish, err := a.snapshotLifecycleMutationApplier.BeginSnapshotInstallChecked(ctx, check)
 	if err == nil && a.cancel != nil {
 		a.cancel()
 	}

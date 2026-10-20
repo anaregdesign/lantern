@@ -39,8 +39,22 @@ func (g *publicationGate) RUnlock()       { g.mu.RUnlock() }
 func (g *publicationGate) TryRLock() bool { return g.mu.TryRLock() }
 
 func (g *publicationGate) Lock() {
+	_ = g.LockChecked(nil)
+}
+
+// LockChecked validates only after the exclusive gate is owned. Rejection
+// leaves both the stable read certificate and numeric generation unchanged.
+// check must perform validation only and must not re-enter this service.
+func (g *publicationGate) LockChecked(check func() error) error {
 	g.mu.Lock()
+	if check != nil {
+		if err := check(); err != nil {
+			g.mu.Unlock()
+			return err
+		}
+	}
 	g.readCertificate.Store(activePublicationCertificate)
+	return nil
 }
 
 func (g *publicationGate) TryLock() bool {

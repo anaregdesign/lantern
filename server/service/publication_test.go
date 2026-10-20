@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -46,6 +48,299 @@ type countingCapacityBackend struct {
 func (b *countingCapacityBackend) CapacityFootprint() (int, int) {
 	b.probes.Add(1)
 	return b.Backend.CapacityFootprint()
+}
+
+func TestSnapshotInstallCheckedRejectsAuthorityWithdrawnAcrossPublicationWait(t *testing.T) {
+	for _, phase := range []string{"begin", "verified finish"} {
+		for _, boundary := range []string{"public read latch", "publication gate", "acquired observer"} {
+			for _, withdrawal := range []string{"caller canceled", "original admission expired"} {
+				t.Run(phase+"/"+boundary+"/"+withdrawal, func(t *testing.T) {
+					bounded, stop := context.WithTimeout(t.Context(), 5*time.Second)
+					defer stop()
+					ctx, cancel := context.WithCancel(bounded)
+					defer cancel()
+					observer := &testPublicationObserver{}
+					svc := NewLanternService(newFakeBackend()).WithHotPathMetrics(observer)
+					expired := errors.New("original Snapshot admission expired")
+					var revoked, checkpoint atomic.Bool
+					entered := make(chan struct{})
+					check := func() error {
+						if checkpoint.CompareAndSwap(true, false) {
+							// This successful observation is already fixed when the
+							// caller withdraws authority; only a later check may fail.
+							close(entered)
+							return nil
+						}
+						if revoked.Load() {
+							return expired
+						}
+						return nil
+					}
+					var finish func(bool) error
+					if phase == "verified finish" {
+						var err error
+						finish, err = svc.BeginSnapshotInstallChecked(ctx, check)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer func() { _ = finish(false) }()
+					}
+					type installState struct {
+						fault       <-chan struct{}
+						count       int
+						repair      bool
+						generation  uint64
+						certificate *publicationReadCertificate
+					}
+					state := func() installState {
+						svc.replicationCutMu.RLock()
+						defer svc.replicationCutMu.RUnlock()
+						return installState{svc.publicationFaultCh, svc.publicationFaultCount, svc.snapshotInstallFaulted,
+							svc.replicationCutMu.generation, svc.replicationCutMu.readCertificate.Load()}
+					}
+					before := state()
+					var releaseOnce sync.Once
+					var release func()
+					var tryRead func() bool
+					var unlockRead func()
+					requested := make(chan struct{})
+					acquired := make(chan struct{})
+					if boundary == "public read latch" {
+						svc.snapshotReadCutMu.RLock()
+						release = func() { releaseOnce.Do(svc.snapshotReadCutMu.RUnlock) }
+						tryRead, unlockRead = svc.snapshotReadCutMu.TryRLock, svc.snapshotReadCutMu.RUnlock
+					} else if boundary == "publication gate" {
+						svc.replicationCutMu.RLock()
+						release = func() { releaseOnce.Do(svc.replicationCutMu.RUnlock) }
+						tryRead, unlockRead = svc.replicationCutMu.TryRLock, svc.replicationCutMu.RUnlock
+						var requestedOnce sync.Once
+						svc.publicationClock = func() time.Time {
+							if svc.publicationWaiting.count("snapshot") != 0 {
+								requestedOnce.Do(func() { close(requested) })
+							}
+							return time.Now()
+						}
+					} else {
+						resume := make(chan struct{})
+						release = func() { releaseOnce.Do(func() { close(resume) }) }
+						var clockCalls atomic.Int32
+						svc.publicationClock = func() time.Time {
+							if clockCalls.Add(1) == 2 {
+								// Requested is the first observation; acquired is the
+								// second and runs while the raw gate is exclusively owned.
+								close(acquired)
+								<-resume
+							}
+							return time.Now()
+						}
+					}
+					defer release()
+					checkpoint.Store(true)
+					type outcome struct {
+						finish func(bool) error
+						err    error
+					}
+					done := make(chan outcome, 1)
+					go func() {
+						if phase == "begin" {
+							f, err := svc.BeginSnapshotInstallChecked(ctx, check)
+							done <- outcome{f, err}
+							return
+						}
+						done <- outcome{err: finish(true)}
+					}()
+					select {
+					case <-entered:
+					case <-bounded.Done():
+						t.Fatal("checked transition did not pass its successful precheck", bounded.Err())
+					}
+					if boundary == "publication gate" {
+						select {
+						case <-requested:
+						case <-bounded.Done():
+							t.Fatal("checked transition did not request the held publication cut", bounded.Err())
+						}
+					}
+					if boundary == "acquired observer" {
+						select {
+						case <-acquired:
+						case <-bounded.Done():
+							t.Fatal("checked transition did not reach its acquired observation", bounded.Err())
+						}
+						if svc.replicationCutMu.TryRLock() {
+							svc.replicationCutMu.RUnlock()
+							t.Fatal("acquired observation did not hold the raw publication gate")
+						}
+					} else {
+						// The original read lock remains held, so a failed TryRLock
+						// proves this writer is queued rather than already owning the
+						// boundary. Authority is withdrawn only after this checkpoint.
+						for tryRead() {
+							unlockRead()
+							if bounded.Err() != nil {
+								t.Fatal("checked transition did not queue at the held read boundary", bounded.Err())
+							}
+							runtime.Gosched()
+						}
+					}
+					if !svc.SnapshotInstallActive() {
+						t.Fatal("held transition lost its installer ownership")
+					}
+					select {
+					case result := <-done:
+						if result.finish != nil {
+							_ = result.finish(false)
+						}
+						t.Fatalf("transition passed a still-held read boundary: %v", result.err)
+					default:
+					}
+					want := expired
+					if withdrawal == "caller canceled" {
+						want = context.Canceled
+						cancel()
+					} else {
+						revoked.Store(true)
+					}
+					release()
+					select {
+					case result := <-done:
+						if result.finish != nil {
+							_ = result.finish(false)
+							t.Fatal("rejected begin returned an admitted finish handle")
+						}
+						if !errors.Is(result.err, want) {
+							t.Fatalf("withdrawn authority was not preserved: %v, want %v", result.err, want)
+						}
+					case <-bounded.Done():
+						t.Fatal("rejected transition did not release its held cut", bounded.Err())
+					}
+					if svc.SnapshotInstallActive() || state() != before || svc.SnapshotRepairRequired() != (phase == "verified finish") {
+						t.Fatal("rejected transition changed fault, certificate or generation, or retained its install mutex")
+					}
+					select {
+					case <-before.fault:
+						if phase == "begin" {
+							t.Fatal("rejected begin closed the healthy generation")
+						}
+					default:
+						if phase == "verified finish" {
+							t.Fatal("rejected finish replaced the original closed fault generation")
+						}
+					}
+					if phase == "verified finish" {
+						if err := finish(true); connect.CodeOf(err) != connect.CodeFailedPrecondition || state() != before {
+							t.Fatalf("repeated rejected finish was not refused without changing state: %v", err)
+						}
+					}
+					retry, err := svc.BeginSnapshotInstallChecked(bounded, func() error { return nil })
+					if err != nil {
+						t.Fatalf("rejected transition retained a lock: %v", err)
+					}
+					if err := retry(true); err != nil || svc.SnapshotInstallActive() || svc.SnapshotRepairRequired() {
+						t.Fatalf("fresh admitted retry did not complete verified repair: %v", err)
+					}
+					after := state()
+					if after.fault == before.fault || after.count != 0 || after.repair || !after.certificate.stable() || after.certificate.faulted {
+						t.Fatal("successful control did not establish a new healthy generation")
+					}
+					if err := retry(true); connect.CodeOf(err) != connect.CodeFailedPrecondition || state() != after {
+						t.Fatalf("repeated successful finish was not refused without publishing or unlocking twice: %v", err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestSnapshotInstallCheckedRechecksContextAfterBlockedFinalAuthorityCheck(t *testing.T) {
+	for _, phase := range []string{"begin", "verified finish"} {
+		t.Run(phase, func(t *testing.T) {
+			bounded, stop := context.WithTimeout(t.Context(), 5*time.Second)
+			defer stop()
+			ctx, cancel := context.WithCancel(bounded)
+			defer cancel()
+			svc := NewLanternService(newFakeBackend())
+			var armed atomic.Bool
+			var calls atomic.Int32
+			held, release := make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			defer unblock()
+			check := func() error {
+				if armed.Load() && calls.Add(1) == 2 {
+					close(held)
+					<-release
+				}
+				return nil // A delayed authority check may succeed after caller cancellation.
+			}
+			var finish func(bool) error
+			if phase == "verified finish" {
+				var err error
+				finish, err = svc.BeginSnapshotInstallChecked(ctx, check)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = finish(false) }()
+			}
+			fault, count, repair := svc.publicationFaultCh, svc.publicationFaultCount, svc.snapshotInstallFaulted
+			generation, certificate := svc.replicationCutMu.generation, svc.replicationCutMu.readCertificate.Load()
+			armed.Store(true)
+			type outcome struct {
+				finish func(bool) error
+				err    error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				if phase == "begin" {
+					f, err := svc.BeginSnapshotInstallChecked(ctx, check)
+					done <- outcome{f, err}
+					return
+				}
+				done <- outcome{err: finish(true)}
+			}()
+			select {
+			case <-held:
+			case <-bounded.Done():
+				t.Fatal("final authority check did not reach its exclusive publication cut", bounded.Err())
+			}
+			if svc.replicationCutMu.TryRLock() {
+				svc.replicationCutMu.RUnlock()
+				t.Fatal("final authority check did not hold the publication cut")
+			}
+			if svc.replicationCutMu.readCertificate.Load() != certificate {
+				t.Fatal("final authority check published an active certificate before validation finished")
+			}
+			cancel()
+			unblock()
+			select {
+			case result := <-done:
+				if result.finish != nil {
+					_ = result.finish(false)
+					t.Fatal("canceled authority check returned an admitted finish handle")
+				}
+				if !errors.Is(result.err, context.Canceled) {
+					t.Fatalf("successful late authority check hid caller cancellation: %v", result.err)
+				}
+			case <-bounded.Done():
+				t.Fatal("canceled final authority check did not release its cuts", bounded.Err())
+			}
+			if svc.SnapshotInstallActive() || svc.SnapshotRepairRequired() != repair {
+				t.Fatal("canceled final check changed repair authority or retained the install mutex")
+			}
+			svc.replicationCutMu.RLock()
+			unchanged := svc.publicationFaultCh == fault && svc.publicationFaultCount == count &&
+				svc.snapshotInstallFaulted == repair && svc.replicationCutMu.generation == generation &&
+				svc.replicationCutMu.readCertificate.Load() == certificate
+			svc.replicationCutMu.RUnlock()
+			if !unchanged {
+				t.Fatal("canceled final check changed fault, numeric generation or read certificate")
+			}
+			if !svc.snapshotReadCutMu.TryLock() {
+				t.Fatal("canceled final check retained the public read latch")
+			}
+			svc.snapshotReadCutMu.Unlock()
+		})
+	}
 }
 
 func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T) {

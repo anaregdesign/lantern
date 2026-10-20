@@ -27,12 +27,37 @@ import (
 
 type snapshotStageGateApply struct {
 	*service.LanternService
-	begins, marks, mutations atomic.Int32
+	begins, marks, mutations   atomic.Int32
+	finishes, verifiedFinishes atomic.Int32
+	beforeCheckedBegin         func()
+	beforeCheckedFinish        func()
 }
 
 func (a *snapshotStageGateApply) BeginSnapshotInstall() (func(bool), error) {
 	a.begins.Add(1)
 	return a.LanternService.BeginSnapshotInstall()
+}
+
+func (a *snapshotStageGateApply) BeginSnapshotInstallChecked(ctx context.Context, check func() error) (func(bool) error, error) {
+	a.begins.Add(1)
+	if a.beforeCheckedBegin != nil {
+		a.beforeCheckedBegin()
+	}
+	finish, err := a.LanternService.BeginSnapshotInstallChecked(ctx, check)
+	if err != nil {
+		return nil, err
+	}
+	return func(verified bool) error {
+		if verified && a.beforeCheckedFinish != nil {
+			a.beforeCheckedFinish()
+		}
+		err := finish(verified)
+		a.finishes.Add(1)
+		if verified && err == nil {
+			a.verifiedFinishes.Add(1)
+		}
+		return err
+	}, nil
 }
 
 func (a *snapshotStageGateApply) ApplySnapshotWatermarks(cut map[string]uint64, ts hlc.Timestamp) error {
@@ -161,15 +186,20 @@ func (s snapshotStageGateSender) Send(frame *pb.SnapshotResponse) error {
 // are mechanism tests, not configured-source or sustained-load qualification.
 func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		expireEOF  bool
-		priorFault bool
+		name         string
+		expireEOF    bool
+		expireBegin  bool
+		expireFinish bool
+		priorFault   bool
 	}{
 		{name: "original admission expires after complete wire EOF", expireEOF: true},
+		{name: "checked service entry rejects expired original admission", expireBegin: true},
+		{name: "checked service finish refuses expired original admission", expireFinish: true},
 		{name: "cancel while native body is blocked"},
 		{name: "cancel preserves a preexisting repair fault", priorFault: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			expire := tc.expireEOF || tc.expireBegin || tc.expireFinish
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			runCtx, stop := context.WithCancel(ctx)
@@ -205,7 +235,7 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 					t.Cleanup(source.CloseSnapshotTails)
 					peer = &snapshotStageGatePeer{
 						LanternReplicationServiceHandler: service.NewLanternReplicationServiceConnectHandler(source),
-						source:                           source, block: !tc.expireEOF, held: make(chan struct{}, 1), stopped: make(chan error, 1),
+						source:                           source, block: !expire, held: make(chan struct{}, 1), stopped: make(chan error, 1),
 					}
 					_, handler := graphv1connect.NewLanternReplicationServiceHandler(peer)
 					for _, method := range []string{"PeerStatus", "Snapshot", "Subscribe"} {
@@ -250,13 +280,23 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 				SnapshotInstaller: delegate, limits: bounded.SnapshotTransportLimits(), stop: stop,
 				headers: make(chan struct{}, 1), results: make(chan snapshotStageGateResult, 1),
 			}
+			expireOriginal := func() {
+				clockMu.Lock()
+				defer clockMu.Unlock()
+				low, high = low.Add(31*time.Second), high.Add(31*time.Second)
+				elapsed += 31 * time.Second
+			}
 			if tc.expireEOF {
-				installer.afterEOF = func() {
-					clockMu.Lock()
-					defer clockMu.Unlock()
-					low, high = low.Add(31*time.Second), high.Add(31*time.Second)
-					elapsed += 31 * time.Second
-				}
+				installer.afterEOF = expireOriginal
+			}
+			// These hooks preserve the exact checker passed by the native
+			// installer. They test the service bridge, not an actual gate wait;
+			// the blocking-gate interleaving is covered in service unit tests.
+			if tc.expireBegin {
+				apply.beforeCheckedBegin = expireOriginal
+			}
+			if tc.expireFinish {
+				apply.beforeCheckedFinish = expireOriginal
 			}
 			transport, err := provider.NewWorkloadPeerTransport(fixture.runtimes[1])
 			if err != nil {
@@ -283,7 +323,7 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 					}
 				}
 			}()
-			if !tc.expireEOF {
+			if !expire {
 				select {
 				case <-peer.held:
 				case <-ctx.Done():
@@ -305,7 +345,7 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("native staged install did not return", ctx.Err())
 			}
-			if tc.expireEOF {
+			if expire {
 				if !observed.completeEOF || observed.header == nil || observed.header.GetCutoffLocalSeq() != 8 ||
 					observed.footer == nil || observed.footer.GetVertexCount() != 8 || observed.vertices != 8 || observed.contextErr != nil {
 					t.Fatalf("incomplete source or caller cancellation hid original admission check: %+v", observed)
@@ -327,7 +367,7 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 			}
 			select {
 			case err := <-peer.stopped:
-				if tc.expireEOF && err != nil {
+				if expire && err != nil {
 					t.Fatal("source failed before its complete EOF", err)
 				}
 			case <-ctx.Done():
@@ -338,22 +378,52 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 			if err != nil || len(status.Msg.GetOrigins()) != 1 || status.Msg.GetOrigins()[0].GetLastSeq() != 8 {
 				t.Fatalf("fresh native admission after rejected Snapshot = %v, %v", status, err)
 			}
-			if apply.begins.Load() != 0 || apply.marks.Load() != 0 || apply.mutations.Load() != 0 ||
-				graph.indexBegins.Load() != 0 || graph.indexFinishes.Load() != 0 {
-				t.Fatalf("rejected stage changed live owners: begin=%d marks=%d mutations=%d index=%d/%d",
-					apply.begins.Load(), apply.marks.Load(), apply.mutations.Load(), graph.indexBegins.Load(), graph.indexFinishes.Load())
+			var wantBegin, wantReplay int32
+			if tc.expireBegin || tc.expireFinish {
+				wantBegin = 1
 			}
-			if afterSeq, afterHasSeq := fixture.logs[1].LastSeq(); afterSeq != beforeSeq || afterHasSeq != beforeHasSeq ||
-				!reflect.DeepEqual(beforeGraph, graphs[1].SnapshotReplication()) || !reflect.DeepEqual(beforeOrigins, fixture.primary[1].OriginStates()) {
-				t.Fatal("rejected stage changed graph, origin watermarks or publication log")
+			if tc.expireFinish {
+				wantReplay = 1
 			}
-			if fixture.primary[1].SnapshotInstallActive() || fixture.primary[1].SnapshotRepairRequired() != tc.priorFault {
+			if apply.begins.Load() != wantBegin || apply.marks.Load() != wantReplay || apply.mutations.Load() != 0 ||
+				graph.indexBegins.Load() != wantReplay || graph.indexFinishes.Load() != wantReplay ||
+				apply.finishes.Load() != wantReplay || apply.verifiedFinishes.Load() != 0 {
+				t.Fatalf("native guard bridge owners: begin=%d marks=%d mutations=%d index=%d/%d finish=%d verified=%d, want begin=%d replay=%d and no verified finish",
+					apply.begins.Load(), apply.marks.Load(), apply.mutations.Load(), graph.indexBegins.Load(), graph.indexFinishes.Load(),
+					apply.finishes.Load(), apply.verifiedFinishes.Load(), wantBegin, wantReplay)
+			}
+			if afterSeq, afterHasSeq := fixture.logs[1].LastSeq(); afterSeq != beforeSeq || afterHasSeq != beforeHasSeq {
+				t.Fatal("rejected install changed publication log")
+			}
+			if !tc.expireFinish {
+				if !reflect.DeepEqual(beforeGraph, graphs[1].SnapshotReplication()) || !reflect.DeepEqual(beforeOrigins, fixture.primary[1].OriginStates()) {
+					t.Fatal("pre-publication rejection changed graph or origin watermarks")
+				}
+			} else {
+				// The complete body and watermarks were applied while the
+				// original admission was valid. Its later expiry must leave
+				// these effects fenced behind the unresolved repair fault.
+				if len(graphs[1].SnapshotReplication().Graph.Vertices) != 9 || fixture.primary[1].LocalSeq(hlc.NodeID{3}) != 8 || fixture.primary[1].LocalSeq(hlc.NodeID{4}) != 1 {
+					t.Fatal("finish guard case did not reach complete graph/watermark replay")
+				}
+				for sequence := range 8 {
+					key := fmt.Sprintf("data:stage-source-%d", sequence)
+					vertex, live := graphs[1].GetVertex(key)
+					if !live || vertex.GetString_() != "value" {
+						t.Fatalf("finish guard lost staged effect %s", key)
+					}
+				}
+				if resident, live := graphs[1].GetVertex("data:stage-resident"); !live || resident.GetString_() != "value" {
+					t.Fatal("finish guard changed the preexisting resident")
+				}
+			}
+			if fixture.primary[1].SnapshotInstallActive() || fixture.primary[1].SnapshotRepairRequired() != (tc.priorFault || tc.expireFinish) {
 				t.Fatal("rejected stage changed receiver publication health")
 			}
 			resident, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:stage-resident"})
-			if tc.priorFault {
+			if tc.priorFault || tc.expireFinish {
 				if connect.CodeOf(err) != connect.CodeFailedPrecondition {
-					t.Fatalf("preexisting fault reopened public reads: %v", err)
+					t.Fatalf("unverified finish or preexisting fault reopened public reads: %v", err)
 				}
 			} else if err != nil || resident.GetVertex().GetString_() != "value" {
 				t.Fatalf("healthy resident became unavailable: %v, %v", resident, err)

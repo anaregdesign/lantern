@@ -260,6 +260,28 @@ func (a *peerHeldApply) BeginSnapshotInstall() (func(bool), error) {
 	}, nil
 }
 
+func (a *peerHeldApply) BeginSnapshotInstallChecked(ctx context.Context, check func() error) (func(bool) error, error) {
+	if a.observe != nil {
+		a.observe("snapshot_install_begin")
+	}
+	finish, err := a.LanternService.BeginSnapshotInstallChecked(ctx, check)
+	if err != nil {
+		return nil, err
+	}
+	a.installOnce.Do(func() { close(a.installStarted) })
+	return func(verified bool) error {
+		err := finish(verified)
+		verified = verified && err == nil
+		if a.observe != nil {
+			a.observe("snapshot_install_finish", "verified", verified)
+		}
+		if verified {
+			a.finishOnce.Do(func() { close(a.installFinished) })
+		}
+		return err
+	}, nil
+}
+
 type peerBarrierSnapshotHandler struct {
 	graphv1connect.LanternReplicationServiceHandler
 	peer    *service.LanternReplicationService

@@ -1144,12 +1144,20 @@ func (r *recordingApplier) ApplySnapshotEdgeContributionTombstoneHLC(graphcache.
 }
 
 type snapshotLifecycleMutationApplier struct {
-	events       *[]string
-	beginErr     error
-	watermarkErr error
-	finishes     []bool
-	cutoffs      map[string]uint64
-	watermarkHLC hlc.Timestamp
+	events            *[]string
+	beginErr          error
+	watermarkErr      error
+	finishErr         error
+	finishes          []bool
+	finishRequests    []bool
+	checkedBegins     int
+	uncheckedBegins   int
+	boundaryChecks    int
+	releases          int
+	beforeBeginCheck  func()
+	beforeFinishCheck func()
+	cutoffs           map[string]uint64
+	watermarkHLC      hlc.Timestamp
 }
 
 func (*snapshotLifecycleMutationApplier) ApplyMutation(context.Context, *pb.Mutation) error {
@@ -1157,17 +1165,67 @@ func (*snapshotLifecycleMutationApplier) ApplyMutation(context.Context, *pb.Muta
 }
 
 func (a *snapshotLifecycleMutationApplier) BeginSnapshotInstall() (func(bool), error) {
+	a.uncheckedBegins++
+	finish, err := a.BeginSnapshotInstallChecked(context.Background(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return func(verified bool) { _ = finish(verified) }, nil
+}
+
+func (a *snapshotLifecycleMutationApplier) BeginSnapshotInstallChecked(ctx context.Context, check func() error) (func(bool) error, error) {
+	a.checkedBegins++
 	*a.events = append(*a.events, "begin")
+	checkBoundary := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if check != nil {
+			a.boundaryChecks++
+			if err := check(); err != nil {
+				return err
+			}
+		}
+		return ctx.Err()
+	}
+	if a.beforeBeginCheck != nil {
+		a.beforeBeginCheck()
+	}
+	if err := checkBoundary(); err != nil {
+		return nil, err
+	}
 	if a.beginErr != nil {
 		return nil, a.beginErr
 	}
-	return func(verified bool) {
+	released := false
+	return func(verified bool) error {
+		a.finishRequests = append(a.finishRequests, verified)
+		if released {
+			return errors.New("test Snapshot install already finished")
+		}
+		released = true
+		a.releases++
+		if verified {
+			if a.beforeFinishCheck != nil {
+				a.beforeFinishCheck()
+			}
+			finishErr := checkBoundary()
+			if finishErr == nil {
+				finishErr = a.finishErr
+			}
+			if finishErr != nil {
+				a.finishes = append(a.finishes, false)
+				*a.events = append(*a.events, "finish:false")
+				return finishErr
+			}
+		}
 		a.finishes = append(a.finishes, verified)
 		if verified {
 			*a.events = append(*a.events, "finish:true")
-			return
+			return nil
 		}
 		*a.events = append(*a.events, "finish:false")
+		return nil
 	}, nil
 }
 
@@ -1562,6 +1620,81 @@ func TestGraphOnlySnapshotInstallerLifecycle(t *testing.T) {
 			t.Fatalf("finish called without admission: %v", apply.finishes)
 		}
 	})
+}
+
+type uncheckedSnapshotInstallTestApplier struct {
+	acceptingMutationApplier
+	begins int
+}
+
+func (a *uncheckedSnapshotInstallTestApplier) BeginSnapshotInstall() (func(bool), error) {
+	a.begins++
+	return func(bool) {}, nil
+}
+
+func TestBeginSnapshotInstallRequiresCheckedPublicationGuard(t *testing.T) {
+	legacy := &uncheckedSnapshotInstallTestApplier{}
+	if finish, err := beginSnapshotInstall(t.Context(), legacy); err == nil || finish != nil || legacy.begins != 0 {
+		t.Fatalf("unchecked guard was invoked as a publication authority: begins=%d finish=%t err=%v", legacy.begins, finish != nil, err)
+	}
+	// Narrow graph-mechanism fakes without any lifecycle contract keep the
+	// existing no-guard path. A declared, unsafe lifecycle is rejected above.
+	if finish, err := beginSnapshotInstall(t.Context(), acceptingMutationApplier{}); err != nil || finish != nil {
+		t.Fatalf("no-lifecycle fake unexpectedly required a publication guard: finish=%t err=%v", finish != nil, err)
+	}
+}
+
+func TestGraphOnlySnapshotInstallerCheckedPublicationBoundaryFailures(t *testing.T) {
+	for _, boundary := range []string{"checked begin rejection", "checked begin cancellation", "checked finish error", "checked finish cancellation", "checked success"} {
+		t.Run(boundary, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var events []string
+			apply := &snapshotLifecycleMutationApplier{events: &events}
+			graph := &snapshotLifecycleGraph{events: &events}
+			var want error
+			switch boundary {
+			case "checked begin rejection":
+				want = errors.New("controlled checked begin rejection")
+				apply.beginErr = want
+			case "checked begin cancellation":
+				want = context.Canceled
+				apply.beforeBeginCheck = cancel
+			case "checked finish error":
+				want = errors.New("controlled checked finish rejection")
+				apply.finishErr = want
+			case "checked finish cancellation":
+				want = context.Canceled
+				apply.beforeFinishCheck = cancel
+			}
+			result, err := installSnapshot(ctx, newGraphOnlySnapshotInstaller(apply, graph),
+				&snapshotSliceStream{frames: graphInstallerLifecycleFrames()})
+			if !errors.Is(err, want) || apply.checkedBegins != 1 || apply.uncheckedBegins != 0 {
+				t.Fatalf("checked boundary error or dispatch changed: checked=%d unchecked=%d err=%v want=%v", apply.checkedBegins, apply.uncheckedBegins, err, want)
+			}
+			if strings.HasPrefix(boundary, "checked begin") {
+				if strings.Join(events, ",") != "begin" || len(apply.finishRequests) != 0 || len(apply.finishes) != 0 || apply.releases != 0 || apply.cutoffs != nil {
+					t.Fatalf("rejected checked begin changed live state or released an unowned guard: events=%v requests=%v outcomes=%v releases=%d cutoffs=%v", events, apply.finishRequests, apply.finishes, apply.releases, apply.cutoffs)
+				}
+			} else {
+				// Even an error-returning finish owns guard release. A later
+				// deferred finish(false) would be a second call, not cleanup.
+				if len(apply.finishRequests) != 1 || !apply.finishRequests[0] || apply.releases != 1 || len(apply.finishes) != 1 || apply.cutoffs["origin-a"] != 7 {
+					t.Fatalf("checked finish did not release exactly once after watermarks: events=%v requests=%v outcomes=%v releases=%d cutoffs=%v", events, apply.finishRequests, apply.finishes, apply.releases, apply.cutoffs)
+				}
+				if want == nil {
+					if !apply.finishes[0] || apply.boundaryChecks != 2 || result.Graph.Vertices != 1 {
+						t.Fatalf("successful install omitted original boundary checks: checks=%d result=%+v finishes=%v", apply.boundaryChecks, result, apply.finishes)
+					}
+				} else if apply.finishes[0] || strings.Contains(strings.Join(events, ","), "finish:true") {
+					t.Fatalf("failed checked finish verified the candidate: events=%v finishes=%v", events, apply.finishes)
+				}
+			}
+			if want != nil && (result.Header != nil || result.Graph != (SnapshotGraphCounts{})) {
+				t.Fatalf("failed checked boundary returned a successful Snapshot result: %+v", result)
+			}
+		})
+	}
 }
 
 func TestGraphOnlySnapshotInstallerValidatesVertexTimes(t *testing.T) {
