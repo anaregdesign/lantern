@@ -1,6 +1,10 @@
 package provider
 
-import "time"
+import (
+	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/peerauth"
+)
 
 // PeerIdentityConfig is operator-owned, independent of public Bearer/session
 // configuration. Composition supplies its own auth mode, namespace, generation
@@ -21,4 +25,9 @@ type PeerIdentityConfig struct {
 	SelfIdentity       string
 	Now                func() time.Time
 	TimeBounds         func() (low, high time.Time, err error)
+	Time               func() (peerauth.TimeObservation, error)
 }
+
+// PeerTimeObservation is the narrow trusted-composition observation port.
+// Production obtains it only from its owned or borrowed native-time view.
+type PeerTimeObservation = peerauth.TimeObservation

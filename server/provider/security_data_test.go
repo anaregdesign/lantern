@@ -12,7 +12,7 @@ import (
 func TestSecurityDataRequiresSameOwnedRuntime(t *testing.T) {
 	data := securityDataFixture(t)
 	config := SecurityConfig{Mode: "off"}
-	runtime, closeRuntime, err := NewSecurityRuntime(config, data)
+	runtime, closeRuntime, err := NewSecurityRuntime(t.Context(), config, data)
 	if err != nil {
 		t.Fatal(err)
 	}

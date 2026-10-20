@@ -124,6 +124,9 @@ app.kubernetes.io/part-of: {{ include "lantern.name" . }}
 {{- end -}}
 
 {{- define "lantern.validateSecurity" -}}
+{{- if or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") -}}
+{{- if not .Values.nativeTime.configMap -}}{{ fail "private peers and OIDC require nativeTime.configMap with ntp.conf" }}{{- end -}}
+{{- else if .Values.nativeTime.configMap -}}{{ fail "standalone OFF must not ignore nativeTime.configMap" }}{{- end -}}
 {{- if not (has .Values.auth.mode (list "off" "oidc")) -}}{{ fail "auth.mode must be off or oidc" }}{{- end -}}
 {{- if or (hasKey .Values.replication "discovery") (hasKey .Values.replication "peers") (hasKey .Values "peerTLS") -}}{{ fail "legacy peer discovery/TLS values are retired; configure peerPlane" }}{{- end -}}
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.peerPlane.enabled) -}}{{ fail "multiple replicas require signed private peerPlane membership" }}{{- end -}}

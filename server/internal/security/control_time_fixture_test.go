@@ -107,3 +107,46 @@ func TestAuthorityTimeFixtureLossRecovery(t *testing.T) {
 	}
 	t.Log("controlled UDP loss retained sound one-hour holdover; fresh evidence tightened bounds; responder joined")
 }
+
+func TestOFFWorkloadTimeFixtureOwnsAndJoinsOneClock(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	view, err := OpenWorkloadTime(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := view.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	// Constructor cancellation ends at successful ownership transfer; App drain
+	// still requires the original qualified clock to remain available.
+	cancel()
+	if _, err = view.Observe(); err != nil {
+		t.Fatal("startup context killed transferred clock", err)
+	}
+	before := view.TimeAcquisitionCounts()
+	if before.Attempts == 0 || before.Writes == 0 || before.Installations == 0 {
+		t.Fatal("fixture never acquired local controlled source", before)
+	}
+	for range 8 {
+		if _, err = view.Observe(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := view.TimeAcquisitionCounts(); after != before {
+		t.Fatal("local read triggered acquisition", before, after)
+	}
+	if err = view.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-view.clock.done:
+	default:
+		t.Fatal("OFF owner/responder not joined")
+	}
+	if _, err = view.Observe(); err == nil {
+		t.Fatal("closed OFF time retained capability")
+	}
+}

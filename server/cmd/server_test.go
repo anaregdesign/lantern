@@ -72,10 +72,14 @@ func (s *appTestSecurityLifecycle) Shutdown() error {
 type appTestMetricsWorker struct {
 	started chan struct{}
 	failure error
+	stopped chan struct{}
 }
 
 func (w appTestMetricsWorker) Run(ctx context.Context) error {
 	close(w.started)
+	if w.stopped != nil {
+		defer close(w.stopped)
+	}
 	if w.failure != nil {
 		return w.failure
 	}
@@ -84,7 +88,7 @@ func (w appTestMetricsWorker) Run(ctx context.Context) error {
 }
 
 func TestAppRunOnlyCompletedDrainUsesOrderlySecurityShutdown(t *testing.T) {
-	for _, phase := range []string{"normal", "shutdown-error", "worker-failure", "deadline", "pre-canceled"} {
+	for _, phase := range []string{"normal", "shutdown-error", "peer-close-error", "worker-failure", "deadline", "pre-canceled"} {
 		t.Run(phase, func(t *testing.T) {
 			probe, port := reserveRuntimeTestPort(t)
 			if err := probe.Close(); err != nil {
@@ -103,11 +107,28 @@ func TestAppRunOnlyCompletedDrainUsesOrderlySecurityShutdown(t *testing.T) {
 			lifecycle := &appTestSecurityLifecycle{owned: app.security}
 			app.security = lifecycle
 			failure := errors.New("injected lifecycle failure")
-			worker := appTestMetricsWorker{started: make(chan struct{})}
+			worker := appTestMetricsWorker{started: make(chan struct{}), stopped: make(chan struct{})}
 			if phase == "worker-failure" {
 				worker.failure = failure
 			}
 			app.metrics = worker
+			peerLifecycle := &appTestPeerLifecycle{close: func() error {
+				if phase != "pre-canceled" {
+					select {
+					case <-worker.stopped:
+					default:
+						t.Error("peer time closed before worker join")
+					}
+				}
+				if lifecycle.closed != 0 || lifecycle.orderly != 0 {
+					t.Error("authority closed before peer view")
+				}
+				if phase == "peer-close-error" {
+					return failure
+				}
+				return nil
+			}}
+			app.peerIdentity = peerLifecycle
 			if phase == "shutdown-error" {
 				lifecycle.stopErr = failure
 			}
@@ -125,13 +146,16 @@ func TestAppRunOnlyCompletedDrainUsesOrderlySecurityShutdown(t *testing.T) {
 			if phase != "pre-canceled" {
 				<-worker.started
 			}
-			if phase == "normal" || phase == "shutdown-error" {
+			if phase == "normal" || phase == "shutdown-error" || phase == "peer-close-error" {
 				cancel()
 			}
 			select {
 			case err = <-done:
 			case <-time.After(5 * time.Second):
 				t.Fatal("App did not join")
+			}
+			if peerLifecycle.closed != 1 {
+				t.Fatal("App omitted or repeated peer cleanup", peerLifecycle.closed)
 			}
 			orderly := phase == "normal" || phase == "shutdown-error"
 			if orderly && (lifecycle.orderly != 1 || lifecycle.closed != 0) || !orderly && (lifecycle.orderly != 0 || lifecycle.closed != 1) {
@@ -142,7 +166,7 @@ func TestAppRunOnlyCompletedDrainUsesOrderlySecurityShutdown(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-			case "shutdown-error", "worker-failure":
+			case "shutdown-error", "peer-close-error", "worker-failure":
 				if !errors.Is(err, failure) {
 					t.Fatal("App lost lifecycle error", err)
 				}
@@ -256,3 +280,10 @@ func TestDrainPhase_ServerFailureDuringDrainCutsWindow(t *testing.T) {
 		t.Fatalf("drain window must be cut short when a server dies, took %s", elapsed)
 	}
 }
+
+type appTestPeerLifecycle struct {
+	closed int
+	close  func() error
+}
+
+func (p *appTestPeerLifecycle) Close() error { p.closed++; return p.close() }

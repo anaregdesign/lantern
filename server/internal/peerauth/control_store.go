@@ -33,7 +33,9 @@ type ControlStoreOptions struct {
 	// TimeBounds is an optional trusted composition input for the current
 	// authority profile. The producer owns UTC uncertainty and source health;
 	// this store checks both endpoints and never manufactures qualification.
-	TimeBounds func() (low, high time.Time, err error)
+	TimeBounds       func() (low, high time.Time, err error)
+	Time             func() (TimeObservation, error)
+	SelfCertificates []CertificateWindow
 }
 
 // ControlStore shares the existing certificate/HTTP/checkpoint mechanisms but
@@ -74,7 +76,7 @@ func prepareControlStore(o ControlStoreOptions) (_ *ControlStore, err error) {
 		}
 	}()
 	binding := o.Profile.Digest()
-	s := &Store{options: StoreOptions{Path: o.Path, Key: bytes.Clone(o.Key), Self: o.Self, Now: o.Now}, lease: lease, lastWall: o.Now(), controlBinding: &binding}
+	s := &Store{options: StoreOptions{Path: o.Path, Key: bytes.Clone(o.Key), Self: o.Self, Now: o.Now, Time: o.Time, SelfCertificates: append([]CertificateWindow(nil), o.SelfCertificates...)}, lease: lease, lastWall: o.Now(), controlBinding: &binding}
 	s.timeBounds = o.TimeBounds
 	c := &ControlStore{store: s, profile: o.Profile}
 	transferred = true

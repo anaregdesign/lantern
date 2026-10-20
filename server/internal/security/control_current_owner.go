@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
-	"time"
 )
 
 // The production private constructor supplies the actual native time backend;
@@ -44,21 +43,8 @@ func openCurrentAuthorityOwnerWithCustody(ctx context.Context, c s3aConfig, orig
 			clock.close()
 		}
 	}()
-	// Includes one ordinary 32-second loss backoff and a second bounded flight.
-	// A five-second startup could never observe recovery from the first loss.
-	anchoring, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if _, err = clock.current(); err == nil {
-			break
-		}
-		select {
-		case <-anchoring.Done():
-			return nil, clock.startupFailure(anchoring, ctx)
-		case <-ticker.C:
-		}
+	if err = waitAuthorityTimeAnchor(ctx, clock); err != nil {
+		return nil, err
 	}
 	if err = bindAuthorityNetworkTime(&c, clock); err != nil {
 		return nil, err

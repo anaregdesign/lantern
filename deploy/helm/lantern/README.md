@@ -30,6 +30,16 @@ Choose `peerPlane.mode=fresh` only for first enrollment and `resume` afterward.
 Per-pod `runtime-state` PVCs retain anti-rollback enrollment and sys: state.
 Never use an emptyDir or copied state file as proof of continuity.
 
+Private peers (including OFF) and OIDC require `nativeTime.configMap`. Supply its
+public `ntp.conf` key with exactly `server time.asia.apple.com`; the chart mounts
+it read-only at `/etc/ntp.conf`. This declares the existing admitted source, not
+arbitrary NTP support or an OS time-service change. Linux amd64/arm64 and Darwin
+arm64 qualified private OFF each own one clock; OIDC borrows its existing owner.
+Missing/invalid input refuses on those targets. Other existing OFF/native-TLS
+platforms retain the guarded scalar path and its rollback limitation; OIDC's
+platform scope is unchanged. Standalone OFF adds no owner or source dependency.
+
+
 ## OIDC/RBAC
 
 Set `auth.mode=oidc`, a verified public TLS Secret, and `auth.configMap` with

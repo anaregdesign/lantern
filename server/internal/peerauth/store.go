@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -20,7 +21,9 @@ type StoreOptions struct {
 	Now    func() time.Time
 	// Current data membership uses the same qualified interval as current
 	// authority. Now remains only its conservative verifier/deadline adapter.
-	TimeBounds func() (low, high time.Time, err error)
+	TimeBounds       func() (low, high time.Time, err error)
+	Time             func() (TimeObservation, error)
+	SelfCertificates []CertificateWindow
 }
 
 // Store owns one complete signed checkpoint under the existing native path
@@ -37,6 +40,7 @@ type Store struct {
 	// unchanged; no synthetic OFF/OIDC domain represents control membership.
 	controlBinding *[32]byte
 	timeBounds     func() (low, high time.Time, err error)
+	sample         TimeObservation
 	sampleLow      time.Time // Same sample as nowLocked's returned high; owned by mu.
 }
 
@@ -53,6 +57,7 @@ func prepareStore(options StoreOptions) (*Store, error) {
 		return nil, ErrMembership
 	}
 	options.Key = bytes.Clone(options.Key)
+	options.SelfCertificates = slices.Clone(options.SelfCertificates)
 	if options.Now == nil {
 		options.Now = time.Now
 	}
@@ -61,7 +66,7 @@ func prepareStore(options StoreOptions) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{options: options, lease: lease, timeBounds: options.TimeBounds}
-	if s.timeBounds == nil {
+	if s.timeBounds == nil && s.options.Time == nil {
 		s.lastWall = options.Now()
 	}
 	return s, nil
@@ -79,7 +84,7 @@ func CreateStore(options StoreOptions, raw []byte) (*Store, error) {
 		return nil, err
 	}
 	now, valid := s.nowLocked()
-	if !valid || !s.manifestLiveLocked(m, now) {
+	if !valid || !s.manifestLiveLocked(m, now) || !s.selfLiveLocked(now) {
 		return nil, errors.Join(ErrMembership, s.Close())
 	}
 	if err := writeCheckpoint(options.Path, raw, true); err != nil {
@@ -119,6 +124,19 @@ func snapshot(m Manifest, raw []byte) *membershipSnapshot {
 func (s *Store) nowLocked() (time.Time, bool) {
 	if s.controlBinding != nil && s.lease.WithPath(func(string) error { return nil }) != nil {
 		s.faultLocked("checkpoint_ownership")
+	}
+	s.sample = nil
+	if s.options.Time != nil {
+		observation, err := s.options.Time()
+		if err != nil || observation == nil {
+			return time.Time{}, false
+		}
+		low, high := observation.Bounds()
+		if low.IsZero() || high.IsZero() || low.After(high) {
+			return time.Time{}, false
+		}
+		s.sample, s.sampleLow, s.lastWall = observation, low, high
+		return high, !s.faulted
 	}
 	if s.timeBounds != nil {
 		low, high, err := s.timeBounds()
@@ -160,12 +178,21 @@ func (s *Store) FaultReason() string {
 }
 
 func (s *Store) liveLocked(now time.Time) bool {
-	return s.current != nil && s.manifestLiveLocked(s.current.manifest, now) &&
+	return s.current != nil && s.manifestLiveLocked(s.current.manifest, now) && s.selfLiveLocked(now) &&
 		(s.options.Self == (Member{}) || s.current.members[s.options.Self.Identity] == s.options.Self)
 }
 
+func (s *Store) selfLiveLocked(high time.Time) bool {
+	for _, window := range s.options.SelfCertificates {
+		if !window.Valid(s.sampleLow, high) {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Store) manifestLiveLocked(m Manifest, high time.Time) bool {
-	return manifestLive(m, high) && (s.timeBounds == nil || !s.sampleLow.Before(m.IssuedAt))
+	return manifestLive(m, high) && (s.timeBounds == nil && s.options.Time == nil || !s.sampleLow.Before(m.IssuedAt))
 }
 
 func (s *Store) Apply(raw []byte) error {

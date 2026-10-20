@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"sync"
@@ -44,7 +45,10 @@ type SecurityRuntime struct {
 	readinessObservation *readinessdiag.Observer
 }
 
-func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (result *SecurityRuntime, cleanup func(), err error) {
+func NewSecurityRuntime(ctx context.Context, config SecurityConfig, data *service.ServingRuntime) (result *SecurityRuntime, cleanup func(), err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	if err := validateSecurityConfig(config); err != nil {
 		return nil, nil, err
 	}
@@ -67,7 +71,10 @@ func NewSecurityRuntime(config SecurityConfig, data *service.ServingRuntime) (re
 	if data == nil || data.DataNamespaceFormat() != keyspace.Version {
 		return nil, nil, errors.New("OIDC requires the certified data namespace boundary")
 	}
-	if err := runtime.openAuthority(); err != nil {
+	if err := runtime.openAuthority(ctx); err != nil {
+		return nil, nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
 	return runtime, cleanup, nil
@@ -130,7 +137,13 @@ func (r *SecurityRuntime) ControlHandler() *service.SecurityConnectHandler { ret
 
 // TimeAcquisitionCounts is local diagnostic evidence; it does not grant time.
 func (r *SecurityRuntime) TimeAcquisitionCounts() decisiontrace.AcquisitionCounts {
-	if r == nil || r.current == nil {
+	if r == nil {
+		return decisiontrace.AcquisitionCounts{}
+	}
+	if r.current == nil {
+		if r.peer != nil {
+			return r.peer.timeLease.TimeAcquisitionCounts()
+		}
 		return decisiontrace.AcquisitionCounts{}
 	}
 	return r.current.TimeAcquisitionCounts()

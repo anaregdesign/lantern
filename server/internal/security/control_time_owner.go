@@ -266,3 +266,12 @@ func (o *authorityTimeOwner) close() {
 	o.producer.close()
 	<-o.done
 }
+
+// Copied observations only; this never samples or acquires time.
+func (o *authorityTimeOwner) acquisitionCounts() decisiontrace.AcquisitionCounts {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.producer.mu.Lock()
+	defer o.producer.mu.Unlock()
+	return decisiontrace.AcquisitionCounts{Attempts: o.producer.attempts, Writes: o.producer.writes, Installations: o.installations, InFlight: o.producer.busy, Failed: o.failed, Denied: o.denied}
+}

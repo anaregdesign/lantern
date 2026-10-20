@@ -103,7 +103,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_PEER_DISCOVERY_INTERVAL_MS` | int | `10000` | Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected. |
 | `LANTERN_PEER_DNS_NAME` | string | (empty) | Legacy peer setting. HA uses the dedicated workload listener and signed membership; static/DNS origins and legacy credentials are rejected. |
 | `LANTERN_PEER_KEY_FILE` | string | (empty) | Absolute private workload key matching the admitted certificate. |
-| `LANTERN_PEER_LISTEN_ADDR` | string | (empty) | Dedicated private workload host:port. Enables only replication peer APIs, with TLS 1.3 and mutual certificates. |
+| `LANTERN_PEER_LISTEN_ADDR` | string | (empty) | Dedicated private workload host:port. Enables only replication peer APIs, with TLS 1.3 and mutual certificates. Private OFF on Linux amd64/arm64 and Darwin arm64 also requires the declared read-only `/etc/ntp.conf` input (`server time.asia.apple.com`); OIDC borrows authority time. Standalone OFF has no source dependency. |
 | `LANTERN_PEER_MEMBERSHIP_FILE` | string | (empty) | Absolute signed operator membership manifest; reloaded periodically. At most a ten-minute lifetime. |
 | `LANTERN_PEER_MEMBERSHIP_MODE` | string | (empty) | Private durable membership mode: fresh or resume. Retained floors prevent rollback. |
 | `LANTERN_PEER_MEMBERSHIP_STATE_FILE` | string | (empty) | Absolute owned membership floor/recovery path for this workload. |

@@ -7,7 +7,7 @@ import (
 )
 
 func TestSecurityControlMountIncludesDedicatedSurface(t *testing.T) {
-	runtime, closeRuntime, err := NewSecurityRuntime(SecurityConfig{Mode: "off"}, nil)
+	runtime, closeRuntime, err := NewSecurityRuntime(t.Context(), SecurityConfig{Mode: "off"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

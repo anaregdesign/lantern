@@ -6,7 +6,7 @@ import (
 )
 
 func TestSecurityRuntimeOffHasNoOIDCPrerequisites(t *testing.T) {
-	runtime, cleanup, err := NewSecurityRuntime(SecurityConfig{Mode: "off"}, nil)
+	runtime, cleanup, err := NewSecurityRuntime(t.Context(), SecurityConfig{Mode: "off"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,7 +17,7 @@ func TestSecurityRuntimeOffHasNoOIDCPrerequisites(t *testing.T) {
 }
 
 func TestSecurityRuntimeOrderlyAndAbortAreTerminal(t *testing.T) {
-	r, cleanup, err := NewSecurityRuntime(SecurityConfig{Mode: "off"}, nil)
+	r, cleanup, err := NewSecurityRuntime(t.Context(), SecurityConfig{Mode: "off"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

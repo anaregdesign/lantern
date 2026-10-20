@@ -293,12 +293,7 @@ func (o *CurrentAuthority) TimeAcquisitionCounts() decisiontrace.AcquisitionCoun
 	if o == nil || o.origin == nil {
 		return decisiontrace.AcquisitionCounts{}
 	}
-	t := o.origin.network.timeOwner
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.producer.mu.Lock()
-	defer t.producer.mu.Unlock()
-	return decisiontrace.AcquisitionCounts{Attempts: t.producer.attempts, Writes: t.producer.writes, Installations: t.installations, InFlight: t.producer.busy, Failed: t.failed, Denied: t.denied}
+	return o.origin.network.timeOwner.acquisitionCounts()
 }
 
 // VerificationTime supports the existing verifier/cache clock port. Current

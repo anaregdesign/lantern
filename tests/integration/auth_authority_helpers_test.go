@@ -212,7 +212,7 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	t.Cleanup(func() { _ = data.Close() })
 	f.dataRuntime = data
 	f.graph = data.GraphCache()
-	runtime, closeRuntime, err := provider.NewSecurityRuntime(config, data)
+	runtime, closeRuntime, err := provider.NewSecurityRuntime(t.Context(), config, data)
 	if err != nil {
 		reportAuthorityStartupFailure(t, err)
 		t.Fatal(err)

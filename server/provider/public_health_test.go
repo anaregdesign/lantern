@@ -13,7 +13,7 @@ func TestPublicHealthObservationPreservesShortCircuitAndClockSamples(t *testing.
 	clock := &securityTestClock{now: time.Now()}
 	samples := 0
 	peer := securityWorkloadFixture(t, func() time.Time { samples++; return clock.Now() })
-	peer.selfExpiry = clock.Now().Add(-time.Second)
+	clock.advance(2 * time.Minute)
 	r := &SecurityRuntime{mode: "off", peer: peer}
 	hc := NewHealthChecker()
 	hc.SetServingStatus("", grpchealth.StatusNotServing)
@@ -36,18 +36,22 @@ func TestPublicHealthObservationPreservesShortCircuitAndClockSamples(t *testing.
 	if s := r.readinessObservation.Snapshot(); s.HealthBranch != "runtime_rejection" || s.HealthReason != "unavailable" {
 		t.Fatal(s)
 	}
-	peer.selfExpiry = clock.Now().Add(time.Hour)
+	// A different healthy owner proves the ready branch; the expired owner is
+	// never repaired by moving its scalar clock backward.
+	clock = &securityTestClock{now: time.Now()}
+	r.peer = securityWorkloadFixture(t, func() time.Time { samples++; return clock.Now() })
+	before = samples
 	response, err = check.Check(t.Context(), &grpchealth.CheckRequest{})
-	if err != nil || response.Status != grpchealth.StatusServing || samples-before != 3 {
+	if err != nil || response.Status != grpchealth.StatusServing || samples-before != 1 {
 		t.Fatal("ready check changed authority samples")
 	}
 	clock.advance(-time.Nanosecond)
 	_, _ = check.Check(t.Context(), &grpchealth.CheckRequest{})
-	if s := r.readinessObservation.Snapshot(); s.HealthReason != "unavailable" || samples-before != 5 {
+	if s := r.readinessObservation.Snapshot(); s.HealthReason != "unavailable" || samples-before != 2 {
 		t.Fatal(s)
 	}
 	_, _ = check.Check(t.Context(), &grpchealth.CheckRequest{Service: "absent"})
-	if s := r.readinessObservation.Snapshot(); s.HealthBranch != "error" || s.HealthReason != "not_evaluated" || samples-before != 5 {
+	if s := r.readinessObservation.Snapshot(); s.HealthBranch != "error" || s.HealthReason != "not_evaluated" || samples-before != 2 {
 		t.Fatal(s)
 	}
 }

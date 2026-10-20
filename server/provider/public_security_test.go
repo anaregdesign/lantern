@@ -13,7 +13,7 @@ import (
 func TestPublicCertificationRequiresExactInstalledServicesAndTransport(t *testing.T) {
 	data := securityDataFixture(t)
 	cfg := SecurityConfig{Mode: "off"}
-	runtime, closeRuntime, err := NewSecurityRuntime(cfg, data)
+	runtime, closeRuntime, err := NewSecurityRuntime(t.Context(), cfg, data)
 	if err != nil {
 		t.Fatal(err)
 	}

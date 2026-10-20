@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
@@ -14,7 +15,7 @@ import (
 
 // Injectors from wire.go:
 
-func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), error) {
+func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owner) (*App, func(), error) {
 	config, err := provider.NewConfig()
 	if err != nil {
 		return nil, nil, err
@@ -55,7 +56,7 @@ func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), err
 		return nil, nil, err
 	}
 	securityConfig := provider.NewSecurityConfig(config)
-	securityRuntime, cleanup2, err := provider.NewSecurityRuntime(securityConfig, servingRuntime)
+	securityRuntime, cleanup2, err := provider.NewSecurityRuntime(ctx, securityConfig, servingRuntime)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
@@ -67,7 +68,7 @@ func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), err
 		return nil, nil, err
 	}
 	peerPlaneConfig := provider.NewPeerPlaneConfig(config)
-	peerIdentityRuntime, cleanup3, err := provider.NewCurrentConfiguredPeerIdentity(peerPlaneConfig, securityRuntime)
+	peerIdentityRuntime, cleanup3, err := provider.NewWorkloadPeerIdentity(ctx, peerPlaneConfig, securityRuntime)
 	if err != nil {
 		cleanup2()
 		cleanup()
@@ -176,7 +177,7 @@ func initializeAppWithListeners(launch *listenerlaunch.Owner) (*App, func(), err
 	securityWorkers := provider.NewSecurityWorkers(securityRuntime, peerIdentityRuntime, gate, logger)
 	domainMetricsWired := provider.WireDomainMetrics(graphCache, servingRuntime, domainMetrics)
 	cacheGCHooksWired := provider.WireCacheGCHooks(graphCache, domainMetrics, logger)
-	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, peerPlaneServer, securityWorkers, securityRuntime, peerPlaneConfig, domainMetricsWired, cacheGCHooksWired)
+	app := newApp(config, logger, lanternService, lanternServer, metricsServer, tracing, domainMetrics, healthChecker, pump, antiEntropy, gate, shutdownConfig, backupper, backupConfig, peerConfig, replicationConfig, llmEngine, servingRuntime, peerPlaneServer, securityWorkers, securityRuntime, peerIdentityRuntime, peerPlaneConfig, domainMetricsWired, cacheGCHooksWired)
 	return app, func() {
 		cleanup5()
 		cleanup4()

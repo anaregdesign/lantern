@@ -161,7 +161,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if native != nil {
 			native.configure(t, &securityConfig)
 		}
-		runtime, closeRuntime, err := provider.NewSecurityRuntime(securityConfig, data)
+		runtime, closeRuntime, err := provider.NewSecurityRuntime(t.Context(), securityConfig, data)
 		capture.Stop()
 		observations, dropped := capture.Drain()
 		for _, observation := range observations {
@@ -187,7 +187,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			}
 			config.Identity.StateMode = mode
 			var closePeer func()
-			workload, closePeer, err = provider.NewCurrentConfiguredPeerIdentity(config, runtime)
+			workload, closePeer, err = provider.NewWorkloadPeerIdentity(t.Context(), config, runtime)
 			if err != nil {
 				t.Fatal("native data workload", err)
 			}
