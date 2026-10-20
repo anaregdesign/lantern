@@ -50,18 +50,21 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 	ctx, cancel := context.WithDeadline(request.Context(), deadline)
 	stop, stopped := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	var timerMu sync.Mutex
-	var certificateTimer *time.Timer
-	var handshakeAdmission *Admission
+	var admissionMu sync.Mutex
+	var interruptionTimer *time.Timer
+	activeAdmission := original
+	interruptionDeadline := deadline
+	closing := false
 	cleanup := func() {
 		once.Do(func() {
 			close(stop)
 			cancel()
-			timerMu.Lock()
-			if certificateTimer != nil {
-				certificateTimer.Stop()
+			admissionMu.Lock()
+			closing = true
+			if interruptionTimer != nil {
+				interruptionTimer.Stop()
 			}
-			timerMu.Unlock()
+			admissionMu.Unlock()
 			<-stopped
 		})
 	}
@@ -69,10 +72,37 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if original.Check(ctx) != nil {
+		admissionMu.Lock()
+		current := activeAdmission
+		admissionMu.Unlock()
+		// Never call Store while holding the admission/timer publication lock.
+		if current.Check(ctx) != nil {
 			return ErrMembership
 		}
 		return nil
+	}
+	// Publish only an immutable intersection. Each later stage may shorten the
+	// local interruption timer, while the watcher checks all native/UTC limits.
+	activate := func(admission *Admission) error {
+		nextDeadline, err := admission.deadline(ctx)
+		if err != nil {
+			return err
+		}
+		admissionMu.Lock()
+		if closing {
+			admissionMu.Unlock()
+			return ErrMembership
+		}
+		activeAdmission = admission
+		if nextDeadline.Before(interruptionDeadline) {
+			interruptionDeadline = nextDeadline
+			if interruptionTimer != nil {
+				interruptionTimer.Stop()
+			}
+			interruptionTimer = time.AfterFunc(time.Until(interruptionDeadline), cancel)
+		}
+		admissionMu.Unlock()
+		return check()
 	}
 	go func() {
 		defer close(stopped)
@@ -104,22 +134,7 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 				if err := admission.restrict(original); err != nil {
 					return err
 				}
-				deadline, err := admission.deadline(ctx)
-				if err != nil {
-					return err
-				}
-				// Bound writes and blocked response headers at the certificate
-				// expiry immediately, before sending any authenticated request.
-				timerMu.Lock()
-				handshakeAdmission = admission
-				if certificateTimer != nil {
-					certificateTimer.Stop()
-				}
-				if ctx.Err() == nil {
-					certificateTimer = time.AfterFunc(time.Until(deadline), cancel)
-				}
-				timerMu.Unlock()
-				return check()
+				return activate(admission)
 			}}}
 	if t.store.controlBinding != nil {
 		transport.MaxResponseHeaderBytes = 64 << 10
@@ -148,32 +163,31 @@ func (t *workloadTransport) RoundTrip(request *http.Request) (*http.Response, er
 		cleanup()
 		return nil, err
 	}
-	timerMu.Lock()
-	admission := handshakeAdmission
-	timerMu.Unlock()
-	if admission == nil {
+	admissionMu.Lock()
+	admission := activeAdmission
+	admissionMu.Unlock()
+	if admission == nil || admission == original {
 		_ = response.Body.Close()
 		cleanup()
 		return nil, ErrMembership
 	}
 	if t.store.controlBinding == nil {
 		// Revalidate the data profile without renewing the original capability.
+		prior := admission
 		admission, err = t.store.Admit(response.TLS, origin)
 		if err == nil {
-			err = admission.restrict(handshakeAdmission)
+			err = admission.restrict(prior)
+		}
+		if err == nil {
+			err = activate(admission)
 		}
 	}
-	if err != nil || admission == nil || admission.member != member || admission.Check(ctx) != nil || check() != nil {
+	if err != nil || admission == nil || admission.member != member || check() != nil {
 		_ = response.Body.Close()
 		cleanup()
 		return nil, ErrMembership
 	}
-	response.Body = &workloadBody{ReadCloser: response.Body, admission: admission, check: func() error {
-		if err := check(); err != nil {
-			return err
-		}
-		return admission.Check(ctx)
-	}, cleanup: cleanup}
+	response.Body = &workloadBody{ReadCloser: response.Body, admission: admission, check: check, cleanup: cleanup}
 	return response, nil
 }
 
