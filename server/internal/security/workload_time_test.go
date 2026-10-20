@@ -3,6 +3,8 @@ package security
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -119,5 +121,95 @@ func TestNativeWorkloadTimeTargetPreservesOtherOFFProfiles(t *testing.T) {
 		if got := nativeWorkloadTimeTarget(row.os, row.arch); got != row.qualified {
 			t.Fatal(row, got)
 		}
+	}
+}
+
+func TestWorkloadTimeFinalCountersSurviveCloseWithoutSampling(t *testing.T) {
+	clock, _ := fakeAuthorityTimeOwner(t)
+	clock.producer.attempts, clock.producer.writes = 3, 2
+	var samples atomic.Uint64
+	clock.producer.sample = func() (authorityTimeStamp, error) {
+		samples.Add(1)
+		return authorityTimeStamp{}, errAuthorityTimeNative
+	}
+	clock.cancel = func() {}
+	clock.done = make(chan struct{})
+	close(clock.done)
+	view := &WorkloadTime{clock: clock}
+	before := view.TimeAcquisitionCounts()
+	if before.Attempts != 3 || before.Writes != 2 || before.Installations == 0 {
+		t.Fatal("missing nonzero producer evidence", before)
+	}
+	if err := view.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var readers sync.WaitGroup
+	for range 8 {
+		readers.Go(func() {
+			for range 16 {
+				if got := view.TimeAcquisitionCounts(); got != before {
+					t.Error("closed counter snapshot changed", got, before)
+				}
+			}
+		})
+	}
+	readers.Wait()
+	if samples.Load() != 0 {
+		t.Fatal("diagnostics sampled native time")
+	}
+	if _, err := view.Observe(); err == nil || samples.Load() != 0 {
+		t.Fatal("closed diagnostic access revived serving capability", err)
+	}
+	borrower := (&CurrentAuthority{origin: &authorityOriginOwner{network: &s3aOwner{timeOwner: clock}}}).WorkloadTime()
+	if err := borrower.Close(); err != nil || borrower.TimeAcquisitionCounts() != before {
+		t.Fatal("closed borrower lost passive counters", err)
+	}
+	if _, err := borrower.Observe(); err == nil {
+		t.Fatal("closed borrower retained capability")
+	}
+	for _, empty := range []*WorkloadTime{nil, {}, {authority: &CurrentAuthority{}},
+		{authority: &CurrentAuthority{origin: &authorityOriginOwner{}}},
+		{authority: &CurrentAuthority{origin: &authorityOriginOwner{network: &s3aOwner{}}}}} {
+		if got := empty.TimeAcquisitionCounts(); got.Attempts != 0 || got.Writes != 0 || got.Installations != 0 {
+			t.Fatal("unconstructed view invented evidence", got)
+		}
+	}
+}
+
+func TestWorkloadTimeCountersCannotHideAnUnjoinedExchange(t *testing.T) {
+	clock, _ := fakeAuthorityTimeOwner(t)
+	clock.producer.attempts, clock.producer.writes, clock.producer.busy = 2, 1, true
+	clock.producer.workers.Add(1)
+	closing := make(chan struct{})
+	clock.cancel = func() { close(closing) }
+	clock.done = make(chan struct{})
+	view := &WorkloadTime{clock: clock}
+	returned := make(chan struct{})
+	go func() { _ = view.Close(); close(returned) }()
+	<-closing
+	if counts := view.TimeAcquisitionCounts(); !counts.InFlight || counts.Attempts != 2 {
+		t.Error("retiring view hid an active acquisition", counts)
+	}
+	if _, err := view.Observe(); err == nil {
+		t.Error("retiring view still granted time")
+	}
+	select {
+	case <-returned:
+		t.Error("Close returned before the exchange and owner joined")
+	default:
+	}
+	clock.producer.mu.Lock()
+	clock.producer.busy = false
+	clock.producer.mu.Unlock()
+	clock.producer.workers.Done()
+	close(clock.done)
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("owned close did not join")
+	}
+	counts := view.TimeAcquisitionCounts()
+	if counts.InFlight || counts != view.TimeAcquisitionCounts() {
+		t.Fatal("joined diagnostic counters unstable", counts)
 	}
 }

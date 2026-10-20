@@ -91,12 +91,23 @@ func (w *WorkloadTime) VerificationTime() time.Time {
 	return high
 }
 
-func (w *WorkloadTime) TimeAcquisitionCounts() (counts decisiontrace.AcquisitionCounts) {
-	_ = w.withClock(func(clock *authorityTimeOwner) error {
-		counts = clock.acquisitionCounts()
-		return nil
-	})
-	return counts
+// TimeAcquisitionCounts copies passive diagnostics even after the view closes.
+// Callers collect final counts after lifecycle join; this grants no time.
+func (w *WorkloadTime) TimeAcquisitionCounts() decisiontrace.AcquisitionCounts {
+	if w == nil {
+		return decisiontrace.AcquisitionCounts{}
+	}
+	if w.authority != nil {
+		o := w.authority
+		if o.origin == nil || o.origin.network == nil || o.origin.network.timeOwner == nil {
+			return decisiontrace.AcquisitionCounts{}
+		}
+		return o.TimeAcquisitionCounts()
+	}
+	if w.clock == nil {
+		return decisiontrace.AcquisitionCounts{}
+	}
+	return w.clock.acquisitionCounts()
 }
 
 func (w *WorkloadTime) Close() error {
