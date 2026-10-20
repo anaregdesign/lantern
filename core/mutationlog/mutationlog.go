@@ -188,8 +188,12 @@ type subscription struct {
 	// belong to retained replay/catch-up windows and must not be duplicated.
 	startSeq uint64
 	filter   func(Entry) bool
-	gapped   bool // set when a fan-out drop turned into a gap
-	stream   *Subscription
+	// A direct tail owns its projected queue and has no delivery forwarder.
+	// project runs under subsMu before any payload enters that queue.
+	project    func(Entry) (Entry, error)
+	directTail bool
+	gapped     bool // set when a fan-out drop turned into a gap
+	stream     *Subscription
 }
 
 // New constructs a [Log] with the given options. It also starts a
@@ -391,6 +395,9 @@ func (l *Log) dispatcher() {
 	l.subsMu.Lock()
 	defer l.subsMu.Unlock()
 	for sub := range l.subscribers {
+		if sub.directTail {
+			sub.stream.finish(ErrClosed)
+		}
 		close(sub.ch)
 		delete(l.subscribers, sub)
 	}
@@ -424,17 +431,41 @@ func (l *Log) fanout(entry Entry) {
 		if sub.filter != nil && !sub.filter(entry) {
 			continue
 		}
-		select {
-		case sub.ch <- entry:
-		default:
-			sub.gapped = true
-			sub.stream.finish(ErrSubscriptionLost)
-			close(sub.ch)
-			delete(l.subscribers, sub)
-			if l.onDrop != nil {
-				l.onDrop(DropCauseBufferFull)
+		projected := entry
+		if sub.project != nil {
+			// Avoid constructing another owned payload when its queue is
+			// already full. A concurrent reader may make room, but overflow
+			// is deliberately conservative and must never block fan-out.
+			if len(sub.ch) == cap(sub.ch) {
+				l.dropSubscriptionLocked(sub)
+				continue
+			}
+			var err error
+			projected, err = sub.project(entry)
+			if err != nil {
+				sub.stream.finish(err)
+				close(sub.ch)
+				delete(l.subscribers, sub)
+				continue
 			}
 		}
+		select {
+		case sub.ch <- projected:
+		default:
+			l.dropSubscriptionLocked(sub)
+		}
+	}
+}
+
+// dropSubscriptionLocked runs only with subsMu held, including from the
+// dispatcher's projected-tail preflight above.
+func (l *Log) dropSubscriptionLocked(sub *subscription) {
+	sub.gapped = true
+	sub.stream.finish(ErrSubscriptionLost)
+	close(sub.ch)
+	delete(l.subscribers, sub)
+	if l.onDrop != nil {
+		l.onDrop(DropCauseBufferFull)
 	}
 }
 

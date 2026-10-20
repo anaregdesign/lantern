@@ -236,3 +236,34 @@ func TestAdmissionKeepsShortHandshakeBudgetWhenUTCNarrows(t *testing.T) {
 		t.Fatal("original 30s budget erased the shorter frozen handshake budget")
 	}
 }
+
+func TestAdmissionSamePeerBindsStoreAndCompleteMember(t *testing.T) {
+	store := &Store{}
+	member := Member{ID: [16]byte{1}, Identity: "spiffe://lantern.test/node-a", SPKI: [32]byte{2}, Origin: "https://localhost:6381"}
+	original := &Admission{store: store, member: member, expiresAt: time.Unix(100, 0)}
+	fresh := &Admission{store: store, member: member, expiresAt: time.Unix(200, 0)}
+	if !original.SamePeer(fresh) || !fresh.SamePeer(original) {
+		t.Fatal("independent admissions for the exact store/workload did not match")
+	}
+	for _, tc := range []struct {
+		name  string
+		other *Admission
+	}{
+		{"nil admission", nil},
+		{"zero admission", &Admission{}},
+		{"same member in different store", &Admission{store: &Store{}, member: member}},
+		{"different ID", &Admission{store: store, member: Member{ID: [16]byte{3}, Identity: member.Identity, SPKI: member.SPKI, Origin: member.Origin}}},
+		{"different identity", &Admission{store: store, member: Member{ID: member.ID, Identity: "spiffe://lantern.test/node-b", SPKI: member.SPKI, Origin: member.Origin}}},
+		{"different SPKI", &Admission{store: store, member: Member{ID: member.ID, Identity: member.Identity, SPKI: [32]byte{3}, Origin: member.Origin}}},
+		{"different origin", &Admission{store: store, member: Member{ID: member.ID, Identity: member.Identity, SPKI: member.SPKI, Origin: "https://localhost:6382"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if original.SamePeer(tc.other) || tc.other.SamePeer(original) {
+				t.Fatal("different or absent peer matched original admission")
+			}
+		})
+	}
+	if (*Admission)(nil).SamePeer(nil) || (&Admission{}).SamePeer(&Admission{}) {
+		t.Fatal("absent stores matched")
+	}
+}

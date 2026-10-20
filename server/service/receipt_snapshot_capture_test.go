@@ -1252,3 +1252,104 @@ func receiptCaptureSource(t *testing.T, f receiptEdgeDeleteFixture) *ReceiptWhol
 	}
 	return source
 }
+
+func TestReceiptWholeStateCaptureWithTailReservesInsideExactCut(t *testing.T) {
+	f := newReceiptEdgeDeleteFixture(t, nil)
+	source := receiptCaptureSource(t, f)
+	call := receiptDeleteCall(t, f.epoch, graphcache.EdgeKey[string]{Tail: "tail", Head: "head"})
+	if _, err := f.coordinator.Commit(t.Context(), call); err != nil {
+		t.Fatal(err)
+	}
+	nodeID := f.service.clock.NodeID()
+	origin := hex.EncodeToString(nodeID[:])
+	var subscription *mutationlog.Subscription
+	defer func() {
+		if subscription != nil {
+			_ = subscription.Close()
+		}
+	}()
+	called := false
+	capture, err := source.captureWithTail(t.Context(), receiptCapturePolicy(f.epoch), func(local uint64, origins map[string]uint64, fault <-chan struct{}) error {
+		called = true
+		if local != 1 || origins[origin] != 1 || len(origins) != 1 || fault != f.service.publicationFaultCh {
+			t.Fatalf("tail cut = %d, %v, %v", local, origins, fault)
+		}
+		if f.service.replicationCutMu.TryRLock() {
+			f.service.replicationCutMu.RUnlock()
+			t.Fatal("tail opened outside exclusive publication cut")
+		}
+		select {
+		case <-fault:
+			t.Fatal("tail reserved a faulted generation")
+		default:
+		}
+		var err error
+		subscription, err = f.log.SubscribeStream(local+1, nil)
+		// Callback ownership must not let a reservation mutate Snapshot metadata.
+		origins[origin] = 99
+		return err
+	})
+	if err != nil || !called || subscription == nil {
+		t.Fatalf("capture with tail = %+v, %v; callback=%v", capture, err, called)
+	}
+	if header := capture.Graph[0].GetHeader(); header.GetCutoffLocalSeq() != 1 || header.GetCutoffSeqPerOrigin()[origin] != 1 {
+		t.Fatalf("callback changed captured metadata: %+v", header)
+	}
+	call.Group = mutationreceipt.GroupID{0x5a}
+	call.Items[0].ID, err = mutationreceipt.NewID(f.epoch, time.Now().Add(-time.Second), [24]byte{0xfa})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.coordinator.Commit(t.Context(), call); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case entry := <-subscription.Entries():
+		if entry.Seq != 2 {
+			t.Fatalf("reserved tail started at local seq %d, want 2", entry.Seq)
+		}
+		frame, err := subscribeMutationFrame(entry.Op)
+		if err != nil || frame.GetMutation().GetSeq() != 2 || frame.GetMutation().GetOp().GetReplicatedReceiptEdgeDelete() == nil {
+			t.Fatalf("tail lost exact receipt envelope: %+v, %v", frame, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("capture tail missed the next receipt publication")
+	}
+}
+
+func TestReceiptWholeStateCaptureWithTailFailsClosed(t *testing.T) {
+	f := newReceiptEdgeDeleteFixture(t, nil)
+	source := receiptCaptureSource(t, f)
+	policy := receiptCapturePolicy(f.epoch)
+	want := errors.New("tail reservation unavailable")
+	called := false
+	capture, err := source.captureWithTail(t.Context(), policy, func(uint64, map[string]uint64, <-chan struct{}) error {
+		called = true
+		return want
+	})
+	if !called || !errors.Is(err, want) || !reflect.DeepEqual(capture, ReceiptWholeStateCapture{}) {
+		t.Fatalf("failed tail returned image: %+v, %v; callback=%v", capture, err, called)
+	}
+	policy.Epoch = mutationreceipt.Epoch{0x43}
+	called = false
+	capture, err = source.captureWithTail(t.Context(), policy, func(uint64, map[string]uint64, <-chan struct{}) error {
+		called = true
+		return nil
+	})
+	if called || !errors.Is(err, mutationreceipt.ErrInvalidSnapshot) || !reflect.DeepEqual(capture, ReceiptWholeStateCapture{}) {
+		t.Fatalf("invalid epoch reserved tail: %+v, %v; callback=%v", capture, err, called)
+	}
+	finish, err := f.service.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finish(false)
+	called = false
+	capture, err = source.captureWithTail(t.Context(), receiptCapturePolicy(f.epoch), func(uint64, map[string]uint64, <-chan struct{}) error {
+		called = true
+		return nil
+	})
+	if called || connect.CodeOf(err) != connect.CodeFailedPrecondition || !reflect.DeepEqual(capture, ReceiptWholeStateCapture{}) {
+		t.Fatalf("faulted generation reserved tail: %+v, %v; callback=%v", capture, err, called)
+	}
+}

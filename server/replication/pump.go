@@ -1263,7 +1263,7 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 			slog.String("transition", "snapshot_start"),
 			slog.String("reason", "gapped"),
 			slog.Any("err", err))
-		header, sErr := p.snapshot(ctx, addr)
+		header, tailToken, sErr := p.snapshotWithTail(ctx, addr)
 		if sErr != nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "snapshot_failed")
 			log.Warn("replication pump: peer transition",
@@ -1302,7 +1302,7 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 			}
 			skipSelf = own.skip
 		}
-		err = p.subscribe(ctx, cli, addr, resume.origins, resume.local, skipSelf)
+		err = p.subscribeWithTail(ctx, cli, addr, resume.origins, resume.local, skipSelf, tailToken)
 		if err == nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "clean")
 			log.Info("replication pump: peer transition",
@@ -1394,19 +1394,27 @@ func (p *Pump) selfEchoResume(status *pb.PeerStatusResponse, cursor map[string]u
 // recovery passes the later of the header-derived and committed origin cursors
 // so the live tail starts after the latest verified local cut.
 func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string, cursor map[string]uint64, fromLocalSeq uint64, skipSelf bool) error {
+	return p.subscribeWithTail(ctx, cli, addr, cursor, fromLocalSeq, skipSelf, "")
+}
+
+func (p *Pump) subscribeWithTail(ctx context.Context, cli graphv1connect.LanternReplicationServiceClient, addr string, cursor map[string]uint64, fromLocalSeq uint64, skipSelf bool, tailToken string) error {
 	if skipSelf {
 		// The origin cannot advance beyond this cursor; only a proven
 		// locally committed graph-only origin uses the exclusion.
 		cursor = maps.Clone(cursor)
 		cursor[hex.EncodeToString(p.cfg.NodeID[:])] = math.MaxUint64
 	}
-	stream, err := cli.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+	request := connect.NewRequest(&pb.SubscribeRequest{
 		NamespaceFormat:        p.cfg.NamespaceFormat,
 		FromSeqPerOrigin:       cursor,
 		FromLocalSeq:           fromLocalSeq,
 		AcceptGraphMutations:   true,
 		AcceptReceiptEnvelopes: snapshotAcceptsReceiptEnvelopes(p.installer),
-	}))
+	})
+	if tailToken != "" {
+		request.Header().Set(snapshotTailHeader, tailToken)
+	}
+	stream, err := cli.Subscribe(ctx, request)
 	if err != nil {
 		return &peerSubscribeError{err}
 	}
@@ -1427,7 +1435,7 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 					fmt.Errorf("gapped: peer sent uncommitted local-origin seq %d; Snapshot repair required", mu.GetSeq()))
 			}
 			p.cfg.Metrics.OnPumpDropSelfEcho(addr)
-			if !skipSelf && hasLocalSeq &&
+			if tailToken == "" && !skipSelf && hasLocalSeq &&
 				p.installer.RequiredFormat() == pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1 {
 				if safe, ok := p.apply.(selfEchoSkipProvider); ok && safe.CanSkipSelfEcho(p.cfg.NodeID) {
 					return errSelfEchoUpgrade
@@ -1454,26 +1462,40 @@ func (p *Pump) subscribe(ctx context.Context, cli graphv1connect.LanternReplicat
 // watermark cut for the live tail. Replaying those cutoffs before Subscribe
 // prevents both duplicate application and an infinite gapped-snapshot loop.
 func (p *Pump) snapshot(ctx context.Context, addr string) (*pb.SnapshotHeader, error) {
+	header, _, err := p.snapshotCapture(ctx, addr, false)
+	return header, err
+}
+
+func (p *Pump) snapshotWithTail(ctx context.Context, addr string) (*pb.SnapshotHeader, string, error) {
+	return p.snapshotCapture(ctx, addr, p.cfg.PeerTransport != nil)
+}
+
+func (p *Pump) snapshotCapture(ctx context.Context, addr string, reserveTail bool) (*pb.SnapshotHeader, string, error) {
 	baseURL, err := peerURL(addr, p.cfg.PeerTransport)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	cli, err := newSnapshotClient(p.cfg.HTTPClient, baseURL, p.installer)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+	request := connect.NewRequest(&pb.SnapshotRequest{
 		RequiredFormat:  p.installer.RequiredFormat(),
 		NamespaceFormat: p.cfg.NamespaceFormat,
-	}))
+	})
+	if reserveTail {
+		request.Header().Set(snapshotTailHeader, "reserve")
+	}
+	stream, err := cli.Snapshot(ctx, request)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer func() { _ = stream.Close() }()
 	start := time.Now()
-	result, err := installSnapshot(ctx, p.installer, &namespaceSnapshotStream{stream: stream, format: p.cfg.NamespaceFormat})
+	tail := &snapshotTailStream{stream: stream, require: reserveTail}
+	result, err := installSnapshot(ctx, p.installer, &namespaceSnapshotStream{stream: tail, format: p.cfg.NamespaceFormat})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if result.searchIndexErr != nil {
 		p.cfg.Logger.Warn("replication pump: snapshot rebuilt graph but search index remains incomplete",
@@ -1482,7 +1504,7 @@ func (p *Pump) snapshot(ctx context.Context, addr string) (*pb.SnapshotHeader, e
 	p.cfg.Metrics.OnPumpSnapshotReplayed(
 		addr, result.Graph.Vertices, result.Graph.Edges, time.Since(start),
 	)
-	return result.Header, nil
+	return result.Header, tail.token, nil
 }
 
 type snapshotResumeCursor struct {

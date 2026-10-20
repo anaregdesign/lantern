@@ -2605,6 +2605,520 @@ func TestPeerPump_ActiveLocalSnapshotDefersCompetingRepairOnRealWire(t *testing.
 	}
 }
 
+type observedSnapshotInstall struct {
+	finished chan bool
+	resume   chan struct{}
+	started  time.Time
+	ended    time.Time
+}
+
+type observedSnapshotApplier struct {
+	*service.LanternService
+	ctx   context.Context
+	began chan *observedSnapshotInstall
+}
+
+func (a *observedSnapshotApplier) BeginSnapshotInstall() (func(bool), error) {
+	finish, err := a.LanternService.BeginSnapshotInstall()
+	if err != nil {
+		return nil, err
+	}
+	stage := &observedSnapshotInstall{finished: make(chan bool, 1), resume: make(chan struct{}), started: time.Now()}
+	select {
+	case a.began <- stage:
+	case <-a.ctx.Done():
+		finish(false)
+		return nil, a.ctx.Err()
+	}
+	return func(verified bool) {
+		finish(verified)
+		stage.ended = time.Now()
+		stage.finished <- verified
+		select {
+		case <-stage.resume:
+		case <-a.ctx.Done():
+		}
+	}, nil
+}
+
+type observedSnapshotHeader struct {
+	header  *pb.SnapshotHeader
+	release chan error
+}
+
+type observedSnapshotPeer struct {
+	graphv1connect.LanternReplicationServiceHandler
+	source    *service.LanternReplicationService
+	headers   chan observedSnapshotHeader
+	snapshots atomic.Int32
+	gaps      atomic.Int32
+}
+
+func (p *observedSnapshotPeer) Subscribe(ctx context.Context, req *connect.Request[pb.SubscribeRequest], stream *connect.ServerStream[pb.SubscribeResponse]) error {
+	err := p.LanternReplicationServiceHandler.Subscribe(ctx, req, stream)
+	if connect.CodeOf(err) == connect.CodeFailedPrecondition && strings.Contains(err.Error(), "gapped: origin") {
+		p.gaps.Add(1)
+	}
+	return err
+}
+
+func (p *observedSnapshotPeer) Snapshot(ctx context.Context, req *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
+	p.snapshots.Add(1)
+	ctx = service.WithReplicationTailMetadata(ctx, req.Header().Values(service.SnapshotTailHeader), stream.ResponseHeader())
+	return p.source.Snapshot(ctx, req.Msg, observedSnapshotSender{ctx: ctx, stream: stream, headers: p.headers})
+}
+
+type observedSnapshotSender struct {
+	ctx     context.Context
+	stream  *connect.ServerStream[pb.SnapshotResponse]
+	headers chan<- observedSnapshotHeader
+}
+
+func (s observedSnapshotSender) Send(frame *pb.SnapshotResponse) error {
+	if err := s.stream.Send(frame); err != nil {
+		return err
+	}
+	if frame.GetHeader() == nil {
+		return nil
+	}
+	header := observedSnapshotHeader{header: proto.Clone(frame.GetHeader()).(*pb.SnapshotHeader), release: make(chan error, 1)}
+	select {
+	case s.headers <- header:
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+	select {
+	case err := <-header.release:
+		return err
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+}
+
+func TestPeerPump_SnapshotRetentionDuringInstall(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		cycles    int
+		advance   int
+		interrupt bool
+		keepsTail bool
+	}{
+		{name: "retained tail", cycles: 1, advance: 2, keepsTail: true},
+		{name: "evicted tail", cycles: 3, advance: 8},
+		{name: "interrupted stream control", cycles: 2, advance: 2, interrupt: true, keepsTail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+			defer cancel()
+			source := newPumpNodeWithSearch(t, hlc.NodeID{0xC1}, 4, false)
+			receiver := newPumpNode(t, hlc.NodeID{0xC2})
+			put := func(key string) {
+				t.Helper()
+				if _, err := source.sdk.PutVertex(ctx, key, "value", time.Minute); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for index := range 8 {
+				put(fmt.Sprintf("seed-%d", index))
+			}
+			rep := service.NewLanternReplicationService(source.log, source.cache, source.clock).WithOriginStates(source.svc)
+			peer := &observedSnapshotPeer{
+				LanternReplicationServiceHandler: service.NewLanternReplicationServiceConnectHandler(rep),
+				source:                           rep, headers: make(chan observedSnapshotHeader, 1),
+			}
+			mux := http.NewServeMux()
+			mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
+			server := httptest.NewUnstartedServer(mux)
+			protocols := new(http.Protocols)
+			protocols.SetUnencryptedHTTP2(true)
+			server.Config.Protocols = protocols
+			server.Start()
+			t.Cleanup(server.Close)
+			apply := &observedSnapshotApplier{LanternService: receiver.svc, ctx: ctx, began: make(chan *observedSnapshotInstall, 1)}
+			pump := replication.NewPump(replication.Config{
+				NodeID: receiver.nodeID, Peers: []string{server.URL}, HTTPClient: h2cClient(),
+				BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
+			}, apply, receiver.cache)
+			done := make(chan error, 1)
+			go func() { done <- pump.Run(ctx) }()
+			defer func() {
+				cancel()
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Error(err)
+					}
+				case <-time.After(time.Second):
+					t.Error("owned Pump did not join")
+				}
+			}()
+			for cycle := range tc.cycles {
+				var header observedSnapshotHeader
+				var stage *observedSnapshotInstall
+				select {
+				case header = <-peer.headers:
+				case <-ctx.Done():
+					t.Fatal("Snapshot header not observed", ctx.Err())
+				}
+				select {
+				case stage = <-apply.began:
+				case <-ctx.Done():
+					t.Fatal("Snapshot admission not observed", ctx.Err())
+				}
+				t.Logf("snapshot_begin cycle=%d utc=%s faulted=%t", cycle+1, stage.started.UTC().Format(time.RFC3339Nano), receiver.svc.SnapshotRepairRequired())
+				if _, err := receiver.raw.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"seed-0"}})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("read during Snapshot = %v, want fail-closed", err)
+				}
+				if _, err := receiver.raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "must-not-apply"}}})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("write during Snapshot = %v, want fail-closed", err)
+				}
+				if _, live := receiver.cache.GetVertex("must-not-apply"); live || receiver.svc.LocalSeq(receiver.nodeID) != 0 {
+					t.Fatal("rejected local write changed graph or origin")
+				}
+				interrupted := tc.interrupt && cycle == 0
+				if !interrupted {
+					for index := range tc.advance {
+						put(fmt.Sprintf("tail-%d-%d", cycle, index))
+					}
+				}
+				var end error
+				if interrupted {
+					end = connect.NewError(connect.CodeUnavailable, errors.New("controlled Snapshot stream interruption"))
+				}
+				header.release <- end
+				var verified bool
+				select {
+				case verified = <-stage.finished:
+				case <-ctx.Done():
+					t.Fatal("Snapshot completion not observed", ctx.Err())
+				}
+				if verified == interrupted {
+					t.Fatalf("verified=%t after interrupted=%t", verified, interrupted)
+				}
+				_, err := receiver.raw.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"seed-0"}}))
+				if verified && err != nil || !verified && connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("read after verified=%t = %v", verified, err)
+				}
+				publicRead := "OK"
+				if err != nil {
+					publicRead = connect.CodeOf(err).String()
+				}
+				t.Logf("snapshot_end cycle=%d utc=%s span=%s captured=%d source=%d receiver=%d verified=%t public_read=%s retained_gaps=%d", cycle+1,
+					stage.ended.UTC().Format(time.RFC3339Nano), stage.ended.Sub(stage.started), header.header.GetCutoffSeqPerOrigin()[hex.EncodeToString(source.nodeID[:])], source.svc.LocalSeq(source.nodeID), receiver.svc.LocalSeq(source.nodeID), verified, publicRead, peer.gaps.Load())
+				if !tc.keepsTail && cycle == tc.cycles-1 {
+					cancel()
+				}
+				close(stage.resume)
+			}
+			if tc.keepsTail && !waitForVertex(t, receiver.cache, fmt.Sprintf("tail-%d-%d", tc.cycles-1, tc.advance-1), time.Second) {
+				t.Fatal("retained tail did not converge after verified Snapshot")
+			}
+			if got := peer.snapshots.Load(); got != int32(tc.cycles) {
+				t.Fatalf("Snapshot requests=%d, want %d", got, tc.cycles)
+			}
+			if !tc.keepsTail && peer.gaps.Load() < int32(tc.cycles-1) {
+				t.Fatal("repeated Snapshots were not driven by actual retained-origin gaps")
+			}
+		})
+	}
+}
+
+// Identical native wire traffic exposes the retention boundary with and without
+// a reservation. Complete counted Snapshot framing is checked before either
+// Subscribe; the Pump test below additionally proves verified installation.
+func TestPeerPump_SnapshotTailWireContinuity(t *testing.T) {
+	for _, reserve := range []bool{false, true} {
+		name := "unreserved gap"
+		if reserve {
+			name = "reserved continuity"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			var peer *observedSnapshotPeer
+			fixture := newPeerSecurityFixture(t, peerSecurityOptions{
+				LogOptions: func(int) mutationlog.Options { return mutationlog.Options{Capacity: 4} },
+				Mount: func(f *peerSecurityFixture, index int, runtime *service.ServingRuntime, mux *http.ServeMux) {
+					if index != 0 {
+						return
+					}
+					source, err := runtime.NewLanternReplicationService(f.primary[index])
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(source.CloseSnapshotTails)
+					peer = &observedSnapshotPeer{
+						LanternReplicationServiceHandler: service.NewLanternReplicationServiceConnectHandler(source),
+						source:                           source, headers: make(chan observedSnapshotHeader, 1),
+					}
+					_, handler := graphv1connect.NewLanternReplicationServiceHandler(peer)
+					mux.Handle("/graph.v1.LanternReplicationService/Snapshot", handler)
+					mux.Handle("/graph.v1.LanternReplicationService/Subscribe", handler)
+				},
+			})
+			put := func(prefix string) {
+				t.Helper()
+				for index := range 8 {
+					if _, err := fixture.primary[0].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
+						Key: fmt.Sprintf("data:%s-%d", prefix, index), Value: &pb.Vertex_String_{String_: "value"},
+					}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			put("seed")
+			client := graphv1connect.NewLanternReplicationServiceClient(fixture.runtimes[1].HTTPClient(), fixture.servers[0].URL)
+			request := connect.NewRequest(&pb.SnapshotRequest{NamespaceFormat: "namespaced-v1", RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1})
+			if reserve {
+				request.Header().Set(service.SnapshotTailHeader, "reserve")
+			}
+			stream, err := client.Snapshot(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stream.Close() }()
+			if !stream.Receive() || stream.Msg().GetHeader() == nil {
+				t.Fatalf("native Snapshot header = (%v,%v)", stream.Msg(), stream.Err())
+			}
+			header := proto.Clone(stream.Msg().GetHeader()).(*pb.SnapshotHeader)
+			sourceID := hlc.NodeID{3}
+			origin := hex.EncodeToString(sourceID[:])
+			if header.GetCutoffLocalSeq() != 8 || header.GetCutoffSeqPerOrigin()[origin] != 8 {
+				t.Fatalf("unexpected native Snapshot cut: %+v", header)
+			}
+			token := stream.ResponseHeader().Get(service.SnapshotTailHeader)
+			if (token != "") != reserve {
+				t.Fatalf("reservation metadata present=%t, requested=%t", token != "", reserve)
+			}
+			var hold observedSnapshotHeader
+			select {
+			case hold = <-peer.headers:
+			case <-ctx.Done():
+				t.Fatal("native source header barrier not reached", ctx.Err())
+			}
+			put("tail")
+			first, _ := fixture.logs[0].FirstSeq()
+			if first != 13 {
+				t.Fatalf("native retained first=%d, want 13", first)
+			}
+			hold.release <- nil
+			counts := &pb.SnapshotFooter{}
+			seen := make(map[string]bool)
+			var footer *pb.SnapshotFooter
+			for stream.Receive() {
+				if footer != nil {
+					t.Fatal("native Snapshot has a frame after its footer")
+				}
+				switch frame := stream.Msg().GetEntry().(type) {
+				case *pb.SnapshotResponse_Vertex:
+					vertex := frame.Vertex.GetVertex()
+					if !strings.HasPrefix(vertex.GetKey(), "data:seed-") || seen[vertex.GetKey()] || vertex.GetString_() != "value" {
+						t.Fatalf("native Snapshot vertex=%+v, want unique captured seed", vertex)
+					}
+					seen[vertex.GetKey()] = true
+					counts.VertexCount++
+				case *pb.SnapshotResponse_VertexCausalBarrier:
+					counts.VertexCausalBarrierCount++
+				case *pb.SnapshotResponse_Footer:
+					footer = proto.Clone(frame.Footer).(*pb.SnapshotFooter)
+				default:
+					t.Fatalf("unexpected native Snapshot frame %T", frame)
+				}
+			}
+			if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+				t.Fatal("native Snapshot did not complete", err)
+			}
+			if counts.GetVertexCount() != 8 || footer == nil || !proto.Equal(footer, counts) {
+				t.Fatalf("native Snapshot count mismatch: observed=%+v footer=%+v", counts, footer)
+			}
+			_ = stream.Close()
+			subscribe := connect.NewRequest(&pb.SubscribeRequest{NamespaceFormat: "namespaced-v1", FromLocalSeq: 9, FromSeqPerOrigin: map[string]uint64{origin: 9}, AcceptGraphMutations: true})
+			if reserve {
+				subscribe.Header().Set(service.SnapshotTailHeader, token)
+			}
+			feed, err := client.Subscribe(ctx, subscribe)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = feed.Close() }()
+			if !reserve {
+				if feed.Receive() || connect.CodeOf(feed.Err()) != connect.CodeFailedPrecondition || !strings.Contains(feed.Err().Error(), "gapped:") {
+					t.Fatalf("unreserved native Subscribe=(%v,%v), want retained gap", feed.Msg(), feed.Err())
+				}
+				t.Logf("complete Snapshot cut=8 source=16 retained_first=%d; unreserved Subscribe9 rejected", first)
+				return
+			}
+			for want := uint64(9); want <= 16; want++ {
+				if !feed.Receive() {
+					t.Fatalf("reserved native Subscribe missing seq%d: %v", want, feed.Err())
+				}
+				mutation := feed.Msg().GetMutation()
+				if mutation.GetSeq() != want || !bytes.Equal(mutation.GetOrigin(), sourceID[:]) {
+					t.Fatalf("reserved native mutation=%+v, want origin3 seq%d", mutation, want)
+				}
+			}
+			t.Logf("complete Snapshot cut=8 source=16 retained_first=%d; reserved Subscribe delivered9..16", first)
+		})
+	}
+}
+
+// This is the native counterpart to the retained/evicted history control above.
+// Real operator-signed membership and workload TLS admit both RPCs. Only the
+// Snapshot body is held: writes continue normally and evict the captured tail.
+func TestPeerPump_SnapshotTailHandoffDuringInstall(t *testing.T) {
+	for _, interrupted := range []bool{false, true} {
+		name := "evicted tail"
+		if interrupted {
+			name = "interrupted Snapshot then evicted tail"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+			defer cancel()
+			sourceID := hlc.NodeID{3}
+			var graphs [2]*graphcache.GraphCache[string, *pb.Vertex]
+			var peer *observedSnapshotPeer
+			fixture := newPeerSecurityFixture(t, peerSecurityOptions{
+				LogOptions: func(int) mutationlog.Options { return mutationlog.Options{Capacity: 4} },
+				Mount: func(f *peerSecurityFixture, index int, runtime *service.ServingRuntime, mux *http.ServeMux) {
+					graphs[index] = runtime.GraphCache()
+					if index != 0 {
+						return
+					}
+					source, err := runtime.NewLanternReplicationService(f.primary[index])
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(source.CloseSnapshotTails)
+					peer = &observedSnapshotPeer{
+						LanternReplicationServiceHandler: service.NewLanternReplicationServiceConnectHandler(source),
+						source:                           source, headers: make(chan observedSnapshotHeader, 1),
+					}
+					_, handler := graphv1connect.NewLanternReplicationServiceHandler(peer)
+					mux.Handle("/graph.v1.LanternReplicationService/Snapshot", handler)
+					mux.Handle("/graph.v1.LanternReplicationService/Subscribe", handler)
+				},
+			})
+			put := func(key string) {
+				t.Helper()
+				if _, err := fixture.primary[0].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
+					Key: key, Value: &pb.Vertex_String_{String_: "value"}, Expiration: timestamppb.New(time.Now().Add(time.Minute)),
+				}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for index := range 8 {
+				put(fmt.Sprintf("data:seed-%d", index))
+			}
+			transport, err := provider.NewWorkloadPeerTransport(fixture.runtimes[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			apply := &observedSnapshotApplier{LanternService: fixture.primary[1], ctx: ctx, began: make(chan *observedSnapshotInstall, 1)}
+			pump := replication.NewPump(replication.Config{
+				NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{fixture.servers[0].URL},
+				PeerTransport: transport, BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
+			}, apply, graphs[1])
+			done := make(chan error, 1)
+			go func() { done <- pump.Run(ctx) }()
+			joined := false
+			defer func() {
+				cancel()
+				if joined {
+					return
+				}
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Error(err)
+					}
+				case <-time.After(time.Second):
+					t.Error("native Pump did not join")
+				}
+			}()
+			cycles := 1
+			if interrupted {
+				cycles++
+			}
+			for cycle := range cycles {
+				var header observedSnapshotHeader
+				var stage *observedSnapshotInstall
+				select {
+				case header = <-peer.headers:
+				case <-ctx.Done():
+					t.Fatal("native Snapshot header not observed", ctx.Err())
+				}
+				select {
+				case stage = <-apply.began:
+				case <-ctx.Done():
+					t.Fatal("native Snapshot admission not observed", ctx.Err())
+				}
+				if _, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed-0"}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("read during native Snapshot = %v, want fail-closed", err)
+				}
+				if _, err := fixture.primary[1].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "data:must-not-apply"}}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("write during native Snapshot = %v, want fail-closed", err)
+				}
+				if _, live := graphs[1].GetVertex("data:must-not-apply"); live {
+					t.Fatal("refused write changed native receiver graph")
+				}
+				fail := interrupted && cycle == 0
+				if fail {
+					header.release <- connect.NewError(connect.CodeUnavailable, errors.New("controlled native Snapshot interruption"))
+				} else {
+					if got := header.header.GetCutoffSeqPerOrigin()[hex.EncodeToString(sourceID[:])]; got != 8 {
+						t.Fatalf("native Snapshot cutoff = %d, want 8", got)
+					}
+					for index := range 8 {
+						put(fmt.Sprintf("data:tail-%d", index))
+					}
+					if first, _ := fixture.logs[0].FirstSeq(); first <= header.header.GetCutoffLocalSeq()+1 {
+						t.Fatalf("tail was not actually evicted: first=%d cut=%d", first, header.header.GetCutoffLocalSeq())
+					}
+					header.release <- nil
+				}
+				select {
+				case verified := <-stage.finished:
+					if verified == fail {
+						t.Fatalf("native Snapshot verified=%t after interrupted=%t", verified, fail)
+					}
+					t.Logf("native snapshot verified=%t cut=%d source=%d receiver=%d", verified, header.header.GetCutoffLocalSeq(), fixture.primary[0].LocalSeq(sourceID), fixture.primary[1].LocalSeq(sourceID))
+				case <-ctx.Done():
+					t.Fatal("native Snapshot completion not observed", ctx.Err())
+				}
+				close(stage.resume)
+			}
+			if !waitForVertex(t, graphs[1], "data:tail-7", time.Second) {
+				t.Fatalf("reserved native tail did not converge: snapshots=%d receiver=%d, want 16", peer.snapshots.Load(), fixture.primary[1].LocalSeq(sourceID))
+			}
+			// Direct cache visibility can precede relay-log publication and the
+			// origin commit. A public read fences that publication before we
+			// inspect the committed cursor.
+			if _, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed-0"}); err != nil {
+				t.Fatal("verified native install did not restore public read", err)
+			}
+			if got := fixture.primary[1].LocalSeq(sourceID); got != 16 {
+				t.Fatalf("native receiver origin cursor=%d, want 16", got)
+			}
+			cancel()
+			select {
+			case err := <-done:
+				joined = true
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("converged native Pump did not join")
+			}
+			if got := peer.snapshots.Load(); got != int32(cycles) {
+				t.Fatalf("native Snapshot requests=%d, want %d", got, cycles)
+			}
+			if got := peer.gaps.Load(); got != 0 {
+				t.Fatalf("post-Snapshot retained-origin gaps=%d, want none", got)
+			}
+		})
+	}
+}
+
 func TestPeerPump_FailedSnapshotRecoversWithoutNewMutation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
@@ -2662,15 +3176,88 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 			t.Fatalf("finite source Add[%d] = (%+v, %v), want derived +Inf on second Add", i, result, err)
 		}
 	}
-	_, backupEdges := drainBackup(t, ctx, source.raw, &pb.BackupSnapshotRequest{})
+	backupVertices, backupEdges := drainBackup(t, ctx, source.raw, &pb.BackupSnapshotRequest{})
 	folded := backupEdges["tail->head"]
 	if folded == nil || !math.IsInf(float64(folded.GetWeight()), 1) ||
 		!folded.GetExpiration().AsTime().Equal(baseExpiration) {
 		t.Fatalf("finite sources did not fold into the graph-only backup: %+v", folded)
 	}
 
-	a := newAuthedPumpNode(t, hlc.NodeID{0xD2}, 2)
-	if _, err := a.svc.RestoreEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{folded}}); err != nil {
+	// Public data requests retain their Bearer fixture. Private replication
+	// uses separately signed workload membership and mutual TLS, because a
+	// public-token TLS client cannot reserve a native Snapshot tail.
+	newNode := func(id hlc.NodeID) *pumpNode {
+		n := newAuthedPumpNode(t, id, 2)
+		n.svc.WithDataNamespace()
+		n.server.rep.WithOriginStates(n.svc)
+		t.Cleanup(n.server.rep.CloseSnapshotTails)
+		return n
+	}
+	nativePeers := make(map[*pumpNode]replicationTestPeer)
+	nativeClients := make(map[*pumpNode]graphv1connect.LanternReplicationServiceClient)
+	nativePeer := func(n *pumpNode) replicationTestPeer {
+		if peer, present := nativePeers[n]; present {
+			return peer
+		}
+		fixture := newPeerSecurityFixture(t, peerSecurityOptions{
+			Mount: func(_ *peerSecurityFixture, index int, _ *service.ServingRuntime, mux *http.ServeMux) {
+				if index != 0 {
+					return
+				}
+				_, handler := graphv1connect.NewLanternReplicationServiceHandler(service.NewLanternReplicationServiceConnectHandler(n.server.rep))
+				for _, procedure := range []string{"PeerStatus", "Snapshot", "Subscribe"} {
+					mux.Handle("/graph.v1.LanternReplicationService/"+procedure, handler)
+				}
+			},
+		})
+		transport, err := provider.NewWorkloadPeerTransport(fixture.runtimes[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		peer := replicationTestPeer{url: fixture.servers[0].URL, transport: transport}
+		nativePeers[n] = peer
+		nativeClients[n] = graphv1connect.NewLanternReplicationServiceClient(fixture.runtimes[1].HTTPClient(), peer.url)
+		return peer
+	}
+	startNativePump := func(n *pumpNode, peer replicationTestPeer, metrics replication.Metrics) {
+		pump := replication.NewPump(replication.Config{
+			NodeID: n.nodeID, NamespaceFormat: n.svc.DataNamespaceFormat(),
+			Peers: []string{peer.url}, PeerTransport: peer.transport, Metrics: metrics,
+			SearchConfigFingerprint: n.svc.SearchConfigFingerprint(),
+			BackoffMin:              20 * time.Millisecond, BackoffMax: 200 * time.Millisecond,
+		}, n.svc, n.cache)
+		pumpCtx, stop := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- pump.Run(pumpCtx) }()
+		t.Cleanup(func() {
+			stop()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Error(err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Error("native aggregate relay Pump did not join")
+			}
+		})
+	}
+	a := newNode(hlc.NodeID{0xD2})
+	var restoredVertices []*pb.Vertex
+	for _, key := range []string{"tail", "head"} {
+		vertex := backupVertices[key]
+		if vertex == nil {
+			t.Fatalf("backup omitted endpoint %q", key)
+		}
+		physical := proto.Clone(vertex).(*pb.Vertex)
+		physical.Key = "data:" + key
+		restoredVertices = append(restoredVertices, physical)
+	}
+	if _, err := a.svc.RestoreVertices(ctx, &pb.PutVerticesRequest{Vertices: restoredVertices}); err != nil {
+		t.Fatalf("startup RestoreVertices: %v", err)
+	}
+	physicalFolded := proto.Clone(folded).(*pb.Edge)
+	physicalFolded.Tail, physicalFolded.Head = "data:tail", "data:head"
+	if _, err := a.svc.RestoreEdges(ctx, &pb.PutEdgesRequest{Edges: []*pb.Edge{physicalFolded}}); err != nil {
 		t.Fatalf("startup RestoreEdges: %v", err)
 	}
 	restored := a.cache.SnapshotEdges()
@@ -2686,7 +3273,7 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 
 	unauthenticated := newReplicationRawClient(t, a.url)
 	stream, err := unauthenticated.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
-		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, NamespaceFormat: a.svc.DataNamespaceFormat(),
 	}))
 	if err == nil {
 		if stream.Receive() {
@@ -2715,11 +3302,11 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 
 	snapshotEdge := func(n *pumpNode) *pb.SnapshotEdge {
 		t.Helper()
+		_ = nativePeer(n)
 		req := connect.NewRequest(&pb.SnapshotRequest{
-			RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+			RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, NamespaceFormat: n.svc.DataNamespaceFormat(),
 		})
-		req.Header().Set("Authorization", "Bearer "+testToken)
-		stream, err := newReplicationRawClient(t, n.url).Snapshot(ctx, req)
+		stream, err := nativeClients[n].Snapshot(ctx, req)
 		if err != nil {
 			t.Fatalf("authenticated Snapshot from %x: %v", n.nodeID[:1], err)
 		}
@@ -2727,7 +3314,7 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 		var edge *pb.SnapshotEdge
 		var footer *pb.SnapshotFooter
 		for stream.Receive() {
-			if item := stream.Msg().GetEdge(); item != nil && item.GetTail() == "tail" && item.GetHead() == "head" {
+			if item := stream.Msg().GetEdge(); item != nil && item.GetTail() == "data:tail" && item.GetHead() == "data:head" {
 				edge = proto.Clone(item).(*pb.SnapshotEdge)
 			}
 			if item := stream.Msg().GetFooter(); item != nil {
@@ -2783,10 +3370,10 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 
 	assertAggregate(a, 1)
 	assertLive(a)
-	b := newAuthedPumpNode(t, hlc.NodeID{0xD3}, 2)
+	b := newNode(hlc.NodeID{0xD3})
 	bMetrics := &observedSearchConfigMetrics{gate: readiness.NewGate(100, true, nil)}
-	peerA := newAuthenticatedReplicationPeer(t, a.server, testToken)
-	b.startPumpWithMetricsAndTransport(ctx, t, []string{peerA.url}, bMetrics, peerA.transport)
+	peerA := nativePeer(a)
+	startNativePump(b, peerA, bMetrics)
 	awaitSnapshot(b, bMetrics, a.nodeID, 5)
 	assertAggregate(b, 1)
 	assertLive(b)
@@ -2796,10 +3383,10 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 			t.Fatalf("relay gap write %d: %v", i, err)
 		}
 	}
-	c := newAuthedPumpNode(t, hlc.NodeID{0xD4}, 2)
+	c := newNode(hlc.NodeID{0xD4})
 	cMetrics := &observedSearchConfigMetrics{gate: readiness.NewGate(100, true, nil)}
-	peerB := newAuthenticatedReplicationPeer(t, b.server, testToken)
-	c.startPumpWithMetricsAndTransport(ctx, t, []string{peerB.url}, cMetrics, peerB.transport)
+	peerB := nativePeer(b)
+	startNativePump(c, peerB, cMetrics)
 	awaitSnapshot(c, cMetrics, b.nodeID, 4)
 	if got := c.svc.LocalSeq(a.nodeID); got != 5 {
 		t.Fatalf("relay Snapshot lost original origin cutoff: %d, want 5", got)

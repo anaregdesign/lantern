@@ -2,11 +2,13 @@ package replication
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -96,19 +98,23 @@ func (i *scriptedSnapshotInstaller) installCount() int {
 type installerTestPeer struct {
 	graphv1connect.UnimplementedLanternReplicationServiceHandler
 
-	mu                sync.Mutex
-	requiredFormat    pb.SnapshotFormat
-	header            *pb.SnapshotHeader
-	frames            []*pb.SnapshotResponse
-	selfOrigin        hlc.NodeID
-	originSeq         uint64
-	extraOrigins      []*pb.OriginState
-	gapFirstSubscribe bool
-	firstSubscribeErr error
-	resumeFloor       map[string]uint64
-	subscribeMutation *pb.Mutation
-	subscribeRequests []*pb.SubscribeRequest
-	snapshotRequests  []*pb.SnapshotRequest
+	mu                    sync.Mutex
+	requiredFormat        pb.SnapshotFormat
+	header                *pb.SnapshotHeader
+	frames                []*pb.SnapshotResponse
+	selfOrigin            hlc.NodeID
+	originSeq             uint64
+	extraOrigins          []*pb.OriginState
+	gapFirstSubscribe     bool
+	firstSubscribeErr     error
+	resumeFloor           map[string]uint64
+	subscribeMutation     *pb.Mutation
+	subscribeMutations    []*pb.Mutation
+	subscribeRequests     []*pb.SubscribeRequest
+	snapshotRequests      []*pb.SnapshotRequest
+	snapshotTailValues    []string
+	subscribeTailMetadata [][]string
+	snapshotTailMetadata  [][]string
 }
 
 func (p *installerTestPeer) PeerStatus(
@@ -139,6 +145,7 @@ func (p *installerTestPeer) Subscribe(
 	stream *connect.ServerStream[pb.SubscribeResponse],
 ) error {
 	p.mu.Lock()
+	p.subscribeTailMetadata = append(p.subscribeTailMetadata, append([]string(nil), req.Header().Values(snapshotTailHeader)...))
 	p.subscribeRequests = append(
 		p.subscribeRequests,
 		proto.Clone(req.Msg).(*pb.SubscribeRequest),
@@ -163,6 +170,13 @@ func (p *installerTestPeer) Subscribe(
 			return err
 		}
 	}
+	for _, mutation := range p.subscribeMutations {
+		if err := stream.Send(&pb.SubscribeResponse{Event: &pb.SubscribeResponse_Mutation{
+			Mutation: proto.Clone(mutation).(*pb.Mutation),
+		}}); err != nil {
+			return err
+		}
+	}
 	if call == 1 && p.firstSubscribeErr != nil {
 		return p.firstSubscribeErr
 	}
@@ -175,6 +189,10 @@ func (p *installerTestPeer) Snapshot(
 	stream *connect.ServerStream[pb.SnapshotResponse],
 ) error {
 	p.mu.Lock()
+	p.snapshotTailMetadata = append(p.snapshotTailMetadata, append([]string(nil), req.Header().Values(snapshotTailHeader)...))
+	if p.snapshotTailValues != nil {
+		stream.ResponseHeader()[snapshotTailHeader] = append([]string(nil), p.snapshotTailValues...)
+	}
 	p.snapshotRequests = append(
 		p.snapshotRequests,
 		proto.Clone(req.Msg).(*pb.SnapshotRequest),
@@ -252,3 +270,34 @@ func (s *cursorTestState) SubscribeResumeCursor() (map[string]uint64, error) {
 }
 
 func (*cursorTestState) ApplyMutation(context.Context, *pb.Mutation) error { return nil }
+
+// This fixture exercises outbound metadata over HTTP/2 TLS; its synthetic
+// handler is not a native membership or mTLS acceptance fixture.
+func startTailMetadataPeer(t *testing.T, peer *installerTestPeer) (*httptest.Server, *PeerTransport) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
+	server := httptest.NewUnstartedServer(mux)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	transport, err := NewVerifiedPeerTransport(server.Client(), func(origin string) bool { return origin == server.URL })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server, transport
+}
+
+type tailAppliedState struct {
+	origin hlc.NodeID
+	seq    atomic.Uint64
+}
+
+func (s *tailAppliedState) LocalSeq(hlc.NodeID) uint64 { return s.seq.Load() }
+func (s *tailAppliedState) SubscribeResumeCursor() (map[string]uint64, error) {
+	return map[string]uint64{hex.EncodeToString(s.origin[:]): s.seq.Load() + 1}, nil
+}
+func (s *tailAppliedState) ApplyMutation(_ context.Context, m *pb.Mutation) error {
+	s.seq.Store(m.GetSeq())
+	return nil
+}

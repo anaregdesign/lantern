@@ -419,32 +419,62 @@ func (a *AntiEntropy) pumpAdvancing(addr string, localSeq uint64) bool {
 //
 // Returns the number of mutations applied during this call.
 func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1connect.LanternReplicationServiceClient, peerNID hlc.NodeID, fromSeq, target uint64) (uint64, error) {
+	return a.catchUpWithTail(ctx, addr, cli, peerNID, fromSeq, target, nil, "", nil)
+}
+
+func (a *AntiEntropy) catchUpWithTail(ctx context.Context, addr string, cli graphv1connect.LanternReplicationServiceClient, peerNID hlc.NodeID, fromSeq, target uint64, tailCursor *snapshotResumeCursor, tailToken string, tailTargets map[hlc.NodeID]uint64) (uint64, error) {
 	tctx, cancel := context.WithTimeout(ctx, a.cfg.SubscribeTimeout)
 	defer cancel()
+	caughtUp := func() bool {
+		if tailToken == "" {
+			return a.local.LocalSeq(peerNID) >= target
+		}
+		for origin, seq := range tailTargets {
+			if a.local.LocalSeq(origin) < seq {
+				return false
+			}
+		}
+		return true
+	}
 
 	cursor := map[string]uint64{hex.EncodeToString(peerNID[:]): fromSeq}
+	fromLocal := a.snapshotResumeLocal(addr)
+	if tailCursor != nil {
+		fromLocal = tailCursor.local
+		for origin, next := range tailCursor.origins {
+			if next > cursor[origin] {
+				cursor[origin] = next
+			}
+		}
+	}
 	if local, ok := a.local.(subscribeResumeCursorProvider); ok {
 		committed, err := local.SubscribeResumeCursor()
 		if err != nil {
 			return 0, err
 		}
 		for origin, next := range committed {
-			cursor[origin] = next
+			if next > cursor[origin] {
+				cursor[origin] = next
+			}
 		}
 		origin := hex.EncodeToString(peerNID[:])
 		if cursor[origin] < fromSeq {
 			cursor[origin] = fromSeq
 		}
 	}
-	stream, err := cli.Subscribe(tctx, connect.NewRequest(&pb.SubscribeRequest{
+	request := connect.NewRequest(&pb.SubscribeRequest{
 		NamespaceFormat:        a.cfg.NamespaceFormat,
 		FromSeqPerOrigin:       cursor,
-		FromLocalSeq:           a.snapshotResumeLocal(addr),
+		FromLocalSeq:           fromLocal,
 		AcceptGraphMutations:   true,
 		AcceptReceiptEnvelopes: snapshotAcceptsReceiptEnvelopes(a.installer),
-	}))
+	})
+	if tailToken != "" {
+		request.Header().Set(snapshotTailHeader, tailToken)
+	}
+	stream, err := cli.Subscribe(tctx, request)
 	if err != nil {
-		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+		if tailToken == "" && connect.CodeOf(err) == connect.CodeFailedPrecondition {
 			transient, classifyErr := replicationstatus.IsTransientGap(err)
 			if classifyErr != nil {
 				return 0, classifyErr
@@ -457,6 +487,12 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 		return 0, err
 	}
 	defer func() { _ = stream.Close() }()
+	// Opening the native stream claims the reservation even when the latest
+	// target vector is already covered. Close promptly rather than retaining an
+	// unused token until a later anti-entropy tick.
+	if tailToken != "" && caughtUp() {
+		return 0, nil
+	}
 	var applied uint64
 	for stream.Receive() {
 		resp := stream.Msg()
@@ -471,22 +507,24 @@ func (a *AntiEntropy) catchUp(ctx context.Context, addr string, cli graphv1conne
 			return applied, err
 		}
 		applied++
-		// Stop once we've reached the target watermark for the
-		// peer's own origin. We compare via the local provider
-		// rather than mu.Seq because Subscribe streams all of
-		// the peer's appended mutations (which are by definition
-		// peer-origin), but the watermark check stays robust if
-		// the peer ever starts forwarding additional origins on
-		// the same stream in a future revision.
-		if a.local.LocalSeq(peerNID) >= target {
+		// Ordinary catch-up targets the compared peer origin. A reserved
+		// Snapshot tail also covers every relayed origin advertised after
+		// install, so a covered own-origin row cannot discard other deltas.
+		if caughtUp() {
 			return applied, nil
 		}
 	}
 	recvErr := stream.Err()
+	if tailToken != "" && !caughtUp() {
+		if recvErr == nil || errors.Is(recvErr, io.EOF) {
+			return applied, connect.NewError(connect.CodeFailedPrecondition, errors.New("Snapshot tail ended before its target vector"))
+		}
+		return applied, recvErr
+	}
 	if recvErr == nil || errors.Is(recvErr, io.EOF) {
 		return applied, nil
 	}
-	if connect.CodeOf(recvErr) == connect.CodeFailedPrecondition {
+	if tailToken == "" && connect.CodeOf(recvErr) == connect.CodeFailedPrecondition {
 		transient, classifyErr := replicationstatus.IsTransientGap(recvErr)
 		if classifyErr != nil {
 			return applied, classifyErr
@@ -524,15 +562,21 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string) error {
 	if err != nil {
 		return err
 	}
-	stream, err := cli.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{
+	request := connect.NewRequest(&pb.SnapshotRequest{
 		RequiredFormat:  a.installer.RequiredFormat(),
 		NamespaceFormat: a.cfg.NamespaceFormat,
-	}))
+	})
+	reserveTail := a.cfg.PeerTransport != nil
+	if reserveTail {
+		request.Header().Set(snapshotTailHeader, "reserve")
+	}
+	stream, err := cli.Snapshot(ctx, request)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = stream.Close() }()
-	result, err := installSnapshot(ctx, a.installer, &namespaceSnapshotStream{stream: stream, format: a.cfg.NamespaceFormat})
+	tail := &snapshotTailStream{stream: stream, require: reserveTail}
+	result, err := installSnapshot(ctx, a.installer, &namespaceSnapshotStream{stream: tail, format: a.cfg.NamespaceFormat})
 	if err != nil {
 		return err
 	}
@@ -544,6 +588,9 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string) error {
 	a.resumeMu.Lock()
 	a.resumeLocal[addr] = resume.local
 	a.resumeMu.Unlock()
+	if tail.token != "" {
+		return a.catchUpSnapshotTail(ctx, addr, baseURL, resume, tail.token)
+	}
 	return nil
 }
 
@@ -551,4 +598,48 @@ func (a *AntiEntropy) snapshotResumeLocal(addr string) uint64 {
 	a.resumeMu.Lock()
 	defer a.resumeMu.Unlock()
 	return a.resumeLocal[addr]
+}
+
+// catchUpSnapshotTail consumes a native Snapshot reservation in the same tick.
+// The original reservation deadline may be shorter than the tick interval.
+// Capture a fresh finite vector after install, including relayed origins, then
+// consume the exact reserved stream until every advertised target is covered.
+func (a *AntiEntropy) catchUpSnapshotTail(ctx context.Context, addr, baseURL string, resume snapshotResumeCursor, token string) error {
+	cli := graphv1connect.NewLanternReplicationServiceClient(a.cfg.HTTPClient, baseURL)
+	status, err := cli.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{NamespaceFormat: a.cfg.NamespaceFormat}))
+	if err != nil {
+		return err
+	}
+	if err := compatibleDataNamespace(a.cfg.NamespaceFormat, status.Msg.GetNamespaceFormat()); err != nil {
+		return err
+	}
+	if !snapshotInstallerCompatible(a.installer, status.Msg.GetRequiredSnapshotFormat()) {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("Snapshot tail peer format changed"))
+	}
+	var peer hlc.NodeID
+	if len(status.Msg.GetSelfOrigin()) != len(peer) {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("Snapshot tail peer origin is invalid"))
+	}
+	copy(peer[:], status.Msg.GetSelfOrigin())
+	if peer == (hlc.NodeID{}) || peer == a.cfg.NodeID {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("Snapshot tail peer origin is invalid"))
+	}
+	targets := make(map[hlc.NodeID]uint64, len(status.Msg.GetOrigins()))
+	for _, row := range status.Msg.GetOrigins() {
+		var origin hlc.NodeID
+		if len(row.GetOrigin()) != len(origin) || row.GetLastSeq() == 0 {
+			return connect.NewError(connect.CodeFailedPrecondition, errors.New("Snapshot tail target vector is invalid"))
+		}
+		copy(origin[:], row.GetOrigin())
+		if _, duplicate := targets[origin]; origin == (hlc.NodeID{}) || duplicate {
+			return connect.NewError(connect.CodeFailedPrecondition, errors.New("Snapshot tail target vector is invalid"))
+		}
+		targets[origin] = row.GetLastSeq()
+	}
+	from := resume.origins[hex.EncodeToString(peer[:])]
+	if from == 0 {
+		from = 1
+	}
+	_, err = a.catchUpWithTail(ctx, addr, cli, peer, from, targets[peer], &resume, token, targets)
+	return err
 }

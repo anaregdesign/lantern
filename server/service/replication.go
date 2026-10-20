@@ -172,6 +172,7 @@ type LanternReplicationService struct {
 	receiptSnapshotRequired bool
 	receiptSnapshotSource   *ReceiptWholeStateSource
 	receiptSnapshotPolicy   mutationreceipt.Config
+	snapshotTails           *snapshotTailManager
 }
 
 // NewLanternReplicationService constructs the service. log MUST be the same
@@ -182,10 +183,11 @@ type LanternReplicationService struct {
 // when backend is unset, mirroring how Subscribe handles a nil log.
 func NewLanternReplicationService(log *mutationlog.Log, backend Backend, clock *hlc.Clock) *LanternReplicationService {
 	return &LanternReplicationService{
-		log:     log,
-		backend: backend,
-		clock:   clock,
-		metrics: nopSubscribeMetrics{},
+		log:           log,
+		backend:       backend,
+		clock:         clock,
+		metrics:       nopSubscribeMetrics{},
+		snapshotTails: &snapshotTailManager{active: make(map[string]*snapshotTail)},
 	}
 }
 
@@ -296,6 +298,18 @@ func (s *LanternReplicationService) ConfigureReceiptSnapshot(source *ReceiptWhol
 // Send errors terminate the stream and increment
 // dropped{reason="send_failed"}.
 func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.SubscribeRequest, stream Sender[pb.SubscribeResponse]) error {
+	metadata, metadataErr := tailMetadata(ctx)
+	if metadataErr != nil {
+		return metadataErr
+	}
+	token := ""
+	if len(metadata.values) == 1 {
+		token = metadata.values[0]
+		decoded, err := hex.DecodeString(token)
+		if err != nil || len(decoded) != 32 || req.GetProjection() == pb.SubscribeProjection_SUBSCRIBE_PROJECTION_IDENTITY_ONLY || req.GetBootstrap() {
+			return connect.NewError(connect.CodeInvalidArgument, errors.New("invalid Snapshot tail claim"))
+		}
+	}
 	if err := s.requireDataFormat(req.GetNamespaceFormat()); err != nil {
 		return err
 	}
@@ -336,9 +350,18 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 		cancel       func() error
 		openErr      error
 		subscription *mutationlog.Subscription
+		tail         *snapshotTail
 	)
 	register := func(generation <-chan struct{}) {
 		faultCh = generation
+		if token != "" {
+			tail, openErr = s.claimSnapshotTail(ctx, token, req, cursor, generation)
+			if openErr == nil {
+				subscription = tail.subscription
+				ch, cancel = subscription.Entries(), subscription.Close
+			}
+			return
+		}
 		if hasCut && len(cursor) > 0 {
 			frontier := make(map[string]uint64)
 			for _, state := range s.origins.OriginStates() {
@@ -399,6 +422,9 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 		return connect.NewError(connect.CodeUnavailable, fmt.Errorf("subscribe failed: %w", openErr))
 	}
 	defer func() { _ = cancel() }()
+	if tail != nil {
+		defer tail.Close()
+	}
 	delivery := newReplicationDelivery(ctx, stream, subscription, faultCh)
 	defer delivery.Close()
 
@@ -410,7 +436,12 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 		return err
 	}
 
+	heldTailBytes := 0
 	for {
+		if heldTailBytes != 0 {
+			tail.release(heldTailBytes)
+			heldTailBytes = 0
+		}
 		select {
 		case <-ctx.Done():
 			return ctxToConnect(ctx.Err())
@@ -418,6 +449,9 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 			s.metrics.OnSubscribeDropped("gapped")
 			return publicationGapError()
 		case entry, ok := <-ch:
+			if encoded, owned := entry.Op.(snapshotTailFrame); owned {
+				heldTailBytes = len(encoded)
+			}
 			// Append can hand an entry to the log dispatcher before its
 			// enclosing graph/receipt publication gate is released. Wait for
 			// that cut before exposing the frame, without holding the gate
@@ -533,6 +567,34 @@ func (s *LanternReplicationService) loggerOrDefault() *slog.Logger {
 // the O(N+E) memory overhead is acceptable. True streaming is a follow-up
 // once the snapshot path is wired end-to-end.
 func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.SnapshotRequest, stream Sender[pb.SnapshotResponse]) error {
+	reserveTail, metadata, err := s.snapshotTailRequest(ctx)
+	if err != nil {
+		return err
+	}
+	var tail *snapshotTail
+	complete := false
+	defer func() {
+		if tail != nil && !complete {
+			tail.Close()
+		}
+	}()
+	openTail := func(local uint64, origins map[string]uint64, fault <-chan struct{}) error {
+		var openErr error
+		tail, openErr = s.openSnapshotTail(ctx, local, origins, fault)
+		if openErr == nil {
+			metadata.header.Set(SnapshotTailHeader, tail.token)
+		}
+		return openErr
+	}
+	finishTail := func() error {
+		if tail != nil {
+			if err := tail.finish(ctx); err != nil {
+				return err
+			}
+		}
+		complete = true
+		return nil
+	}
 	if err := s.requireDataFormat(req.GetNamespaceFormat()); err != nil {
 		return err
 	}
@@ -550,7 +612,13 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 		if s.receiptSnapshotSource == nil {
 			return connect.NewError(connect.CodeFailedPrecondition, errors.New("receipt-bearing Snapshot producer is not configured"))
 		}
-		capture, err := s.receiptSnapshotSource.Capture(ctx, s.receiptSnapshotPolicy)
+		var capture ReceiptWholeStateCapture
+		var err error
+		if reserveTail {
+			capture, err = s.receiptSnapshotSource.captureWithTail(ctx, s.receiptSnapshotPolicy, openTail)
+		} else {
+			capture, err = s.receiptSnapshotSource.Capture(ctx, s.receiptSnapshotPolicy)
+		}
 		if err != nil {
 			return err
 		}
@@ -566,7 +634,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 				return err
 			}
 		}
-		return nil
+		return finishTail()
 	}
 	switch req.GetRequiredFormat() {
 	case pb.SnapshotFormat_SNAPSHOT_FORMAT_UNSPECIFIED, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1:
@@ -582,6 +650,7 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 	var barriers graphcache.CausalBarrierSnapshot[string]
 	var tombstones graphcache.TombstoneSnapshot[string]
 	var graph graphcache.GraphSnapshot[string, *pb.Vertex]
+	var tailErr error
 	capture := func() {
 		if s.origins != nil {
 			states := s.origins.OriginStates()
@@ -612,6 +681,12 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 			}
 		}
 		detachSnapshotVertices(graph.Vertices)
+		if reserveTail {
+			// A native reservation requires the production publication owner;
+			// its fault generation is sampled under this same cut.
+			owner := s.origins.(*LanternService) // checked before native reservation
+			tailErr = openTail(cutoffLocalSeq, cutoffPerOrigin, owner.publicationFaultCh)
+		}
 	}
 	if gate, ok := s.origins.(snapshotCutProvider); ok {
 		if err := gate.withReplicationSnapshotCut(capture); err != nil {
@@ -620,7 +695,10 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 	} else {
 		capture()
 	}
-	return sendSnapshotFrames(ctx, replicationSnapshotCut{
+	if tailErr != nil {
+		return tailErr
+	}
+	if err := sendSnapshotFrames(ctx, replicationSnapshotCut{
 		namespaceFormat: s.namespaceFormat,
 		cutoffPerOrigin: cutoffPerOrigin,
 		cutoffHLC:       cutoffHLC,
@@ -628,7 +706,10 @@ func (s *LanternReplicationService) Snapshot(ctx context.Context, req *pb.Snapsh
 		barriers:        barriers,
 		tombstones:      tombstones,
 		graph:           graph,
-	}, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, stream)
+	}, pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, stream); err != nil {
+		return err
+	}
+	return finishTail()
 }
 
 // PeerStatus implements pb.LanternReplicationServiceServer.

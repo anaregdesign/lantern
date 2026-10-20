@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -915,6 +916,15 @@ func newDurableReceiptSnapshotInstaller(
 	target *connectTestServer,
 ) *backup.ReceiptSnapshotInstaller {
 	t.Helper()
+	return newDurableReceiptSnapshotInstallerWithTarget(t, config, target.svc)
+}
+
+func newDurableReceiptSnapshotInstallerWithTarget(
+	t *testing.T,
+	config service.DurableReceiptWALRuntimeConfig,
+	target backup.ReceiptSnapshotInstallTarget,
+) *backup.ReceiptSnapshotInstaller {
+	t.Helper()
 	expectedPolicy := config.Receipt
 	expectedPolicy.ClockHighWater = time.Time{}
 	collector, err := backup.NewReceiptSnapshotCollector(backup.ReceiptSnapshotCollectorConfig{
@@ -937,7 +947,7 @@ func newDurableReceiptSnapshotInstaller(
 	if err != nil {
 		t.Fatal(err)
 	}
-	installer, err := backup.NewReceiptSnapshotInstaller(collector, target.svc, nil)
+	installer, err := backup.NewReceiptSnapshotInstaller(collector, target, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6440,4 +6450,330 @@ func TestGraphMutationGoSDKRealConnectAndRestart(t *testing.T) {
 	if weight, live := recovered.GraphCache().GetWeight("mixed:a", "mixed:b"); !live || weight != 2 {
 		t.Fatal(weight, live)
 	}
+}
+
+// This owner holds a fully collected/verified receipt candidate before the
+// durable install. It does not fake an install or weaken collector validation.
+type heldNativeReceiptInstallTarget struct {
+	primary   *service.LanternService
+	validated chan service.ReceiptWholeStateCapture
+	release   chan struct{}
+	finished  chan error
+	installs  atomic.Int32
+}
+
+func (t *heldNativeReceiptInstallTarget) InstallReceiptBaseline(ctx context.Context, capture service.ReceiptWholeStateCapture) error {
+	t.installs.Add(1)
+	select {
+	case t.validated <- capture:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-t.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	err := t.primary.InstallReceiptBaseline(ctx, capture)
+	t.finished <- err
+	return err
+}
+
+type nativeReceiptTailPeer struct {
+	*observedSnapshotPeer
+	claims atomic.Int32
+}
+
+func (p *nativeReceiptTailPeer) Subscribe(ctx context.Context, request *connect.Request[pb.SubscribeRequest], stream *connect.ServerStream[pb.SubscribeResponse]) error {
+	if request.Header().Get(service.SnapshotTailHeader) != "" {
+		p.claims.Add(1)
+	}
+	return p.observedSnapshotPeer.Subscribe(ctx, request, stream)
+}
+
+// TestDurableReceiptSnapshot_NativeTailHandoffAndRestart uses actual private
+// workload TLS and signed membership. The native authority clock is a controlled
+// test observation, never an external UTC/provider qualification.
+func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	qualifiedUTC := time.Now().UTC().Truncate(time.Millisecond)
+	clockOwner, began := new(byte), time.Now()
+	bounds := func() (time.Time, time.Time, error) { return qualifiedUTC, qualifiedUTC, nil }
+	observe := func() (provider.PeerTimeObservation, error) {
+		return peerWireObservation{clockOwner, qualifiedUTC, qualifiedUTC, time.Since(began)}, nil
+	}
+	var configs [2]service.DurableReceiptWALRuntimeConfig
+	var durable [2]*service.ServingRuntime
+	var replicas [2]*service.LanternReplicationService
+	var source *nativeReceiptTailPeer
+	fixture := newPeerSecurityFixture(t, peerSecurityOptions{
+		Now: func() time.Time { return qualifiedUTC }, TimeBounds: bounds, Time: observe, IssuedBefore: time.Minute,
+		Mount: func(f *peerSecurityFixture, index int, _ *service.ServingRuntime, mux *http.ServeMux) {
+			config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "native-receipt.wal"), hlc.NodeID{byte(index + 3)})
+			config.NamespaceFormat = "namespaced-v1"
+			config.Log = mutationlog.Options{Capacity: 4, SubscriberBuffer: 16}
+			config.Now, config.Receipt.ClockHighWater = qualifiedUTC, qualifiedUTC
+			runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = runtime.Close() })
+			primary := runtime.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
+			replica, err := runtime.NewLanternReplicationService(primary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := runtime.CertifyInstallation(primary, replica); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(replica.CloseSnapshotTails)
+			configs[index], durable[index], replicas[index], f.primary[index] = config, runtime, replica, primary
+			handler := service.NewLanternReplicationServiceConnectHandler(replica)
+			if index == 0 {
+				source = &nativeReceiptTailPeer{observedSnapshotPeer: &observedSnapshotPeer{
+					LanternReplicationServiceHandler: handler, source: replica,
+					headers: make(chan observedSnapshotHeader, 1),
+				}}
+				handler = source
+			}
+			_, mounted := graphv1connect.NewLanternReplicationServiceHandler(handler)
+			for _, method := range []string{"PeerStatus", "Snapshot", "Subscribe"} {
+				mux.Handle("/graph.v1.LanternReplicationService/"+method, mounted)
+			}
+		},
+	})
+	for index := range 8 {
+		if _, err := fixture.primary[0].PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
+			Tail: fmt.Sprintf("data:native-tail-%d", index), Head: fmt.Sprintf("data:native-head-%d", index),
+			Weight: float32(index + 1), Expiration: timestamppb.New(qualifiedUTC.Add(time.Hour)),
+		}}); err != nil {
+			t.Fatalf("seed native durable edge %d: %v", index, err)
+		}
+	}
+	sourceOrigin, receiptOrigin := configs[0].NodeID, hlc.NodeID{0x73}
+	sourceHex, receiptHex := hex.EncodeToString(sourceOrigin[:]), hex.EncodeToString(receiptOrigin[:])
+	var lastSeedHLC hlc.Timestamp
+	for _, origin := range fixture.primary[0].OriginStates() {
+		if origin.Origin == sourceOrigin {
+			lastSeedHLC = origin.LastHLC
+		}
+	}
+	if lastSeedHLC.WallNs == 0 {
+		t.Fatal("seed did not publish durable source origin")
+	}
+	install := &heldNativeReceiptInstallTarget{primary: fixture.primary[1], validated: make(chan service.ReceiptWholeStateCapture, 1),
+		release: make(chan struct{}), finished: make(chan error, 1)}
+	installer := newDurableReceiptSnapshotInstallerWithTarget(t, configs[1], install)
+	transport, err := provider.NewWorkloadPeerTransport(fixture.runtimes[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	pump := replication.NewPump(replication.Config{
+		NodeID: configs[1].NodeID, NamespaceFormat: "namespaced-v1", Peers: []string{fixture.servers[0].URL},
+		PeerTransport: transport, SnapshotInstaller: installer,
+		BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
+	}, fixture.primary[1], durable[1].GraphCache())
+	go func() { done <- pump.Run(runCtx) }()
+	joined := false
+	defer func() {
+		stop()
+		if !joined {
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Error(err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Error("native durable receipt Pump did not join")
+			}
+		}
+	}()
+	var snapshotHeader *pb.SnapshotHeader
+	select {
+	case header := <-source.headers:
+		snapshotHeader = header.header
+		header.release <- nil
+	case <-ctx.Done():
+		t.Fatal("native durable Snapshot never reached its header", ctx.Err())
+	}
+	select {
+	case capture := <-install.validated:
+		if len(capture.Receipts.Receipts) != 0 || len(capture.Origins) != 1 || capture.Origins[0].LastSeq != 8 ||
+			snapshotHeader.GetCutoffLocalSeq() != 8 || snapshotHeader.GetCutoffSeqPerOrigin()[sourceHex] != 8 {
+			t.Fatal("receipt collector did not verify the exact seed-8 cut")
+		}
+	case <-ctx.Done():
+		t.Fatal("native receipt candidate was not completely verified", ctx.Err())
+	}
+	if fixture.primary[1].LocalSeq(sourceOrigin) != 0 || durable[1].ReceiptStats().Entries != 0 {
+		t.Fatal("held verified candidate changed serving graph/Store before durable install")
+	}
+	mutations := make([]*pb.Mutation, 0, 8)
+	operationIDs := make([][]byte, 0, 8)
+	for index := range 8 {
+		logicalTail, logicalHead := fmt.Sprintf("native-tail-%d", index), fmt.Sprintf("native-head-%d", index)
+		mutation, id := durableFollowerReceiptMutationAt(t, configs[0].Receipt, receiptOrigin, uint64(index+1), logicalTail, logicalHead,
+			time.Unix(0, lastSeedHLC.WallNs).Add(time.Duration(index+1)*time.Millisecond))
+		mutation.NamespaceFormat = "namespaced-v1"
+		item := mutation.GetOp().GetReplicatedReceiptEdgeDelete().Items[0]
+		item.Key.Tail, item.Key.Head = "data:"+logicalTail, "data:"+logicalHead
+		if err := fixture.primary[0].ApplyMutation(ctx, mutation); err != nil {
+			t.Fatalf("post-cut durable receipt %d: %v", index+1, err)
+		}
+		mutations, operationIDs = append(mutations, mutation), append(operationIDs, id)
+	}
+	if length, capacity, evicted := durable[0].MutationLogStats(); length != 4 || capacity != 4 || evicted != 12 {
+		t.Fatalf("post-cut receipt history did not evict the seed boundary: length=%d capacity=%d evicted=%d", length, capacity, evicted)
+	}
+	// Actual native wire control: a newly opened ordinary subscription cannot
+	// recover foreign-origin 1..4, while the reserved exact stream still owns it.
+	client := graphv1connect.NewLanternReplicationServiceClient(fixture.runtimes[1].HTTPClient(), fixture.servers[0].URL)
+	ordinary, gap := client.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
+		NamespaceFormat: "namespaced-v1", FromLocalSeq: 9,
+		FromSeqPerOrigin: map[string]uint64{sourceHex: 9, receiptHex: 1}, AcceptGraphMutations: true, AcceptReceiptEnvelopes: true,
+	}))
+	if gap == nil {
+		if ordinary.Receive() {
+			t.Fatal("unreserved native Subscribe unexpectedly recovered evicted receipt history")
+		}
+		gap = ordinary.Err()
+		_ = ordinary.Close()
+	}
+	if connect.CodeOf(gap) != connect.CodeFailedPrecondition || !strings.Contains(gap.Error(), "gapped:") {
+		t.Fatalf("unreserved native receipt control = %v, want retained-history gap", gap)
+	}
+	close(install.release)
+	select {
+	case err := <-install.finished:
+		if err != nil {
+			t.Fatal("verified native receipt install failed", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("verified native receipt install did not finish", ctx.Err())
+	}
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for fixture.primary[1].LocalSeq(receiptOrigin) != 8 {
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("native receipt tail did not converge: origin=%d snapshots=%d claims=%d", fixture.primary[1].LocalSeq(receiptOrigin), source.snapshots.Load(), source.claims.Load())
+		}
+	}
+	stop()
+	select {
+	case err := <-done:
+		joined = true
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("converged native receipt Pump did not join")
+	}
+	if source.snapshots.Load() != 1 || install.installs.Load() != 1 || source.claims.Load() != 1 {
+		t.Fatalf("native receipt handoff needed more than one install/claim: snapshots=%d installs=%d claims=%d", source.snapshots.Load(), install.installs.Load(), source.claims.Load())
+	}
+	checkNativeState := func(name, originURL string, runtime *service.ServingRuntime) {
+		t.Helper()
+		wire := graphv1connect.NewLanternReplicationServiceClient(fixture.runtimes[0].HTTPClient(), originURL)
+		status, err := wire.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{NamespaceFormat: "namespaced-v1"}))
+		if err != nil {
+			t.Fatalf("%s native status: %v", name, err)
+		}
+		requireExactReceiptCut(t, name, status.Msg, map[string]uint64{sourceHex: 8, receiptHex: 8})
+		stream, err := wire.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{NamespaceFormat: "namespaced-v1", RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT}))
+		if err != nil {
+			t.Fatalf("%s native Snapshot: %v", name, err)
+		}
+		defer func() { _ = stream.Close() }()
+		found := make(map[string]bool, 8)
+		var footer *pb.SnapshotFooter
+		for stream.Receive() {
+			frame := stream.Msg()
+			if receipt := frame.GetReceipt(); receipt != nil {
+				if receipt.GetKind() != pb.SnapshotReceiptKind_SNAPSHOT_RECEIPT_KIND_DELETE_EDGE || !bytes.Equal(receipt.GetOriginalResult(), []byte{0}) {
+					t.Fatalf("%s changed authoritative receipt result: %+v", name, receipt)
+				}
+				found[hex.EncodeToString(receipt.GetOperationId())] = true
+			}
+			if candidate := frame.GetFooter(); candidate != nil {
+				footer = candidate
+			}
+		}
+		if err := stream.Err(); err != nil {
+			t.Fatalf("%s native Snapshot stream: %v", name, err)
+		}
+		if len(found) != 8 || footer == nil || footer.GetActiveReceiptCount() != 8 || footer.GetEdgeCount() != 0 || footer.GetVertexCount() != 16 || runtime.ReceiptStats().Entries != 8 {
+			t.Fatalf("%s lost graph/receipt cut: receipts=%d footer=%+v Store=%+v", name, len(found), footer, runtime.ReceiptStats())
+		}
+		for index, id := range operationIDs {
+			if !found[hex.EncodeToString(id)] {
+				t.Fatalf("%s omitted receipt %d", name, index+1)
+			}
+			if _, live := runtime.GraphCache().GetWeight(fmt.Sprintf("data:native-tail-%d", index), fmt.Sprintf("data:native-head-%d", index)); live {
+				t.Fatalf("%s lost receipt Delete effect %d", name, index+1)
+			}
+		}
+	}
+	checkNativeState("before restart", fixture.servers[1].URL, durable[1])
+	oldURL := fixture.servers[1].URL
+	fixture.servers[1].Close()
+	replicas[1].CloseSnapshotTails()
+	if err := durable[1].Close(); err != nil {
+		t.Fatal("close follower FileWAL", err)
+	}
+	restartConfig := configs[1]
+	restartConfig.Now = time.Now()
+	restarted, err := service.OpenDurableReceiptWALServingRuntime(restartConfig)
+	if err != nil {
+		t.Fatal("reopen follower FileWAL", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	restartedPrimary := restarted.NewLanternService(nil).WithTombstoneTTL(2 * time.Hour)
+	restartedReplica, err := restarted.NewLanternReplicationService(restartedPrimary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.CertifyInstallation(restartedPrimary, restartedReplica); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restartedReplica.CloseSnapshotTails)
+	_, handler := graphv1connect.NewLanternReplicationServiceHandler(service.NewLanternReplicationServiceConnectHandler(restartedReplica))
+	server := httptest.NewUnstartedServer(fixture.runtimes[1].ProtectPeerHTTPHandler(handler))
+	_ = server.Listener.Close()
+	server.Listener, err = net.Listen("tcp", strings.TrimPrefix(oldURL, "https://"))
+	if err != nil {
+		t.Fatal("rebind exact signed follower origin", err)
+	}
+	server.TLS, server.EnableHTTP2 = fixture.runtimes[1].TLSConfig(), true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	if server.URL != oldURL {
+		t.Fatal("restart changed signed workload origin")
+	}
+	checkNativeState("after FileWAL restart", server.URL, restarted)
+	for _, name := range []string{"epoch", "policy"} {
+		invalid := proto.Clone(mutations[0]).(*pb.Mutation)
+		call := invalid.GetOp().GetReplicatedReceiptEdgeDelete()
+		if name == "epoch" {
+			call.DeploymentEpoch[0] ^= 1
+			for _, item := range call.Items {
+				copy(item.Receipt.OperationId[1:17], call.DeploymentEpoch)
+			}
+		} else {
+			call.PolicyFingerprint[0] ^= 1
+		}
+		if err := restartedPrimary.ApplyMutation(ctx, invalid); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+			t.Fatalf("%s mismatch bypassed restarted duplicate guard: %v", name, err)
+		}
+	}
+	if restartedPrimary.LocalSeq(receiptOrigin) != 8 || restarted.ReceiptStats().Entries != 8 {
+		t.Fatal("rejected duplicate changed restarted frontier or Store")
+	}
+	t.Log("native mTLS RECEIPT Snapshot cut8 + evicted receipt tail9..16 converged with one install/claim; FileWAL restart preserved graph/origins/results; no external time-source calls")
 }

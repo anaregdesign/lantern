@@ -269,6 +269,9 @@ type peerBarrierSnapshotHandler struct {
 
 func (h peerBarrierSnapshotHandler) Snapshot(ctx context.Context, req *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
 	h.calls.Add(1)
+	// This Send decorator replaces the Connect adapter's Snapshot method;
+	// preserve that adapter's metadata seam and the original native admission.
+	ctx = service.WithReplicationTailMetadata(ctx, req.Header().Values(service.SnapshotTailHeader), stream.ResponseHeader())
 	return h.peer.Snapshot(ctx, req.Msg, peerBarrierSnapshotSender{ServerStream: stream, ctx: ctx, release: h.release})
 }
 

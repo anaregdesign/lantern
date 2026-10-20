@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"time"
 
@@ -158,7 +159,7 @@ func (c *ReceiptWholeStateSource) captureReceiptWholeState(
 	ctx context.Context,
 	policy mutationreceipt.Config,
 ) (ReceiptWholeStateCapture, error) {
-	capture, err := c.captureReceiptWholeStateCut(ctx, policy, false)
+	capture, err := c.captureReceiptWholeStateCut(ctx, policy, false, nil)
 	if err != nil {
 		return ReceiptWholeStateCapture{}, err
 	}
@@ -169,13 +170,30 @@ func (c *ReceiptWholeStateSource) captureReceiptWholeStateForBackup(
 	ctx context.Context,
 	policy mutationreceipt.Config,
 ) (ReceiptWholeStateBackupCapture, error) {
-	return c.captureReceiptWholeStateCut(ctx, policy, true)
+	return c.captureReceiptWholeStateCut(ctx, policy, true, nil)
+}
+
+// captureWithTail lets the private replication owner reserve the exact tail
+// before releasing the whole-state publication cut. The callback must not call
+// back into the service or retain mutable state from this cut. The caller owns
+// its reservation and must close it on every subsequent capture/send failure.
+func (c *ReceiptWholeStateSource) captureWithTail(
+	ctx context.Context,
+	policy mutationreceipt.Config,
+	atCut func(uint64, map[string]uint64, <-chan struct{}) error,
+) (ReceiptWholeStateCapture, error) {
+	capture, err := c.captureReceiptWholeStateCut(ctx, policy, false, atCut)
+	if err != nil {
+		return ReceiptWholeStateCapture{}, err
+	}
+	return capture.WholeState, nil
 }
 
 func (c *ReceiptWholeStateSource) captureReceiptWholeStateCut(
 	ctx context.Context,
 	policy mutationreceipt.Config,
 	includeWALTip bool,
+	atCut func(uint64, map[string]uint64, <-chan struct{}) error,
 ) (ReceiptWholeStateBackupCapture, error) {
 	if err := ctx.Err(); err != nil {
 		return ReceiptWholeStateBackupCapture{}, ctxToConnect(err)
@@ -272,6 +290,9 @@ func (c *ReceiptWholeStateSource) captureReceiptWholeStateCut(
 		}
 		if err := ctx.Err(); err != nil {
 			return ctxToConnect(err)
+		}
+		if atCut != nil {
+			return atCut(image.cutoffLocalSeq, maps.Clone(image.cutoffPerOrigin), s.publicationFaultCh)
 		}
 		return nil
 	})
