@@ -82,20 +82,107 @@ type snapshotTail struct {
 	released     chan struct{}
 	closeOnce    sync.Once
 	releaseOnce  sync.Once
+	// Serialize queue retirement, claim setup and teardown. Never hold manager.mu
+	// across a core call: dispatch projection takes that lock under subsMu.
+	transitionMu sync.Mutex
+	updated      chan struct{}
 	// All following state is protected by manager.mu.
 	ready   bool
 	claimed bool
 	closed  bool
 	bytes   int
 	entries int
+	// Fixed categories only. Preserve the first observed terminal cause while
+	// this existing owner lives; cleanup still removes it without a tombstone.
+	terminal             snapshotTailReason
+	ringReplay           bool
+	deliverySubscription *mutationlog.Subscription
 }
 
 type snapshotTailFrame []byte
 
 func (f snapshotTailFrame) replicationFrameSize() (int, error) { return len(f), nil }
 
-func snapshotTailError() error {
-	return connect.NewError(connect.CodeFailedPrecondition, errors.New("Snapshot tail unavailable; obtain a new Snapshot"))
+type snapshotTailReason string
+
+type snapshotTailDiagnostic struct {
+	stage, guard string
+	terminal     snapshotTailReason
+}
+
+func (e *snapshotTailDiagnostic) Error() string {
+	return "Snapshot tail unavailable; obtain a new Snapshot [stage=" + e.stage +
+		" guard=" + e.guard + " terminal=" + string(e.terminal) + "]"
+}
+
+func snapshotTailError(stage, guard string, terminal snapshotTailReason) error {
+	if terminal == "" {
+		terminal = "none"
+	}
+	return connect.NewError(connect.CodeFailedPrecondition, &snapshotTailDiagnostic{stage: stage, guard: guard, terminal: terminal})
+}
+
+// Classify only known sentinels. Neither raw error strings nor retained payload,
+// token, membership, or native time evidence enters diagnostic output.
+func snapshotTailCoreReason(err error) snapshotTailReason {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, mutationlog.ErrTailQueueFull):
+		return "queue_full"
+	case errors.Is(err, mutationlog.ErrSubscriptionLost):
+		return "subscription_lost"
+	case errors.Is(err, mutationlog.ErrClosed):
+		return "log_closed"
+	case errors.Is(err, mutationlog.ErrGapped):
+		return "log_boundary"
+	case errors.Is(err, mutationlog.ErrWALIndeterminate):
+		return "wal_indeterminate"
+	case errors.Is(err, mutationlog.ErrPublicationInterrupted):
+		return "publication_interrupted"
+	case errors.Is(err, context.Canceled):
+		return "subscription_canceled"
+	default:
+		return "subscription_other"
+	}
+}
+
+func (t *snapshotTail) rememberTerminalLocked(reason snapshotTailReason) {
+	if t.terminal == "" {
+		t.terminal = reason
+	}
+}
+
+// Called only after opened closes, so subscription is immutable. The core's
+// first terminal error must be sampled before owner cleanup calls Close.
+func (t *snapshotTail) rememberCoreTerminalLocked() {
+	if t.terminal == "" {
+		subscription := t.subscription
+		if t.ringReplay {
+			subscription = t.deliverySubscription
+		}
+		if subscription != nil {
+			t.rememberTerminalLocked(snapshotTailCoreReason(subscription.Err()))
+		}
+	}
+}
+
+func (t *snapshotTail) diagnosticLocked(stage, guard string, terminal snapshotTailReason) error {
+	t.rememberCoreTerminalLocked()
+	t.rememberTerminalLocked(terminal)
+	return snapshotTailError(stage, guard, t.terminal)
+}
+
+func (t *snapshotTail) diagnostic(stage, guard string, terminal snapshotTailReason) error {
+	t.manager.mu.Lock()
+	defer t.manager.mu.Unlock()
+	return t.diagnosticLocked(stage, guard, terminal)
+}
+
+func (t *snapshotTail) rememberTerminal(reason snapshotTailReason) {
+	t.manager.mu.Lock()
+	t.rememberTerminalLocked(reason)
+	t.manager.mu.Unlock()
 }
 
 func (s *LanternReplicationService) snapshotTailRequest(ctx context.Context) (bool, replicationTailMetadata, error) {
@@ -112,8 +199,17 @@ func (s *LanternReplicationService) snapshotTailRequest(ctx context.Context) (bo
 		return false, metadata, connect.NewError(connect.CodeUnavailable, peerauth.ErrMembership)
 	}
 	owner, ok := s.origins.(*LanternService)
-	if !ok || s.log == nil || owner.log != s.log || s.snapshotTails == nil {
-		return false, metadata, snapshotTailError()
+	if !ok {
+		return false, metadata, snapshotTailError("request", "origin_owner", "")
+	}
+	if s.log == nil {
+		return false, metadata, snapshotTailError("request", "log_missing", "")
+	}
+	if owner.log != s.log {
+		return false, metadata, snapshotTailError("request", "log_owner", "")
+	}
+	if s.snapshotTails == nil {
+		return false, metadata, snapshotTailError("request", "manager_missing", "")
 	}
 	return true, metadata, nil
 }
@@ -125,8 +221,23 @@ func (s *LanternReplicationService) openSnapshotTail(ctx context.Context, local 
 	}
 	admission, ok := peerauth.AdmissionFromContext(ctx)
 	deadline, finite := ctx.Deadline()
-	if !ok || !finite || !time.Now().Before(deadline) || admission.Check(ctx) != nil || fault == nil || local == math.MaxUint64 {
-		return nil, snapshotTailError()
+	if !ok {
+		return nil, snapshotTailError("open", "admission_missing", "")
+	}
+	if !finite {
+		return nil, snapshotTailError("open", "deadline_missing", "")
+	}
+	if !time.Now().Before(deadline) {
+		return nil, snapshotTailError("open", "deadline_expired", "")
+	}
+	if admission.Check(ctx) != nil {
+		return nil, snapshotTailError("open", "admission_rejected", "")
+	}
+	if fault == nil {
+		return nil, snapshotTailError("open", "generation_missing", "")
+	}
+	if local == math.MaxUint64 {
+		return nil, snapshotTailError("open", "sequence_exhausted", "")
 	}
 	select {
 	case <-fault:
@@ -141,6 +252,7 @@ func (s *LanternReplicationService) openSnapshotTail(ctx context.Context, local 
 	tail := &snapshotTail{manager: m, token: hex.EncodeToString(random[:]), admission: admission,
 		deadline: deadline, requestDone: ctx.Done(), local: local, origins: maps.Clone(origins), fault: fault,
 		opened: make(chan struct{}), stop: make(chan struct{}), stopped: make(chan struct{}), released: make(chan struct{})}
+	tail.updated = make(chan struct{}, 1)
 	m.mu.Lock()
 	if m.closed || len(m.active) >= maxSnapshotTails {
 		m.mu.Unlock()
@@ -169,12 +281,26 @@ func (s *LanternReplicationService) openSnapshotTail(ctx context.Context, local 
 func (t *snapshotTail) project(entry mutationlog.Entry) (mutationlog.Entry, error) {
 	charge, err := snapshotTailProjectionBudget(entry.Op)
 	if err != nil {
+		t.rememberTerminal("projection_budget")
 		return mutationlog.Entry{}, err
 	}
 	m := t.manager
 	m.mu.Lock()
-	if t.closed || charge > maxSnapshotTailBytes-t.bytes || charge > maxSnapshotTotalBytes-m.totalBytes ||
-		t.entries >= maxSnapshotTailEntries || m.totalEntries >= maxSnapshotTotalEntries {
+	var reason snapshotTailReason
+	switch {
+	case t.closed:
+		reason = "owner_closed"
+	case charge > maxSnapshotTailBytes-t.bytes:
+		reason = "tail_bytes"
+	case charge > maxSnapshotTotalBytes-m.totalBytes:
+		reason = "total_bytes"
+	case t.entries >= maxSnapshotTailEntries:
+		reason = "tail_entries"
+	case m.totalEntries >= maxSnapshotTotalEntries:
+		reason = "total_entries"
+	}
+	if reason != "" {
+		t.rememberTerminalLocked(reason)
 		m.mu.Unlock()
 		return mutationlog.Entry{}, mutationlog.ErrSubscriptionLost
 	}
@@ -187,10 +313,12 @@ func (t *snapshotTail) project(entry mutationlog.Entry) (mutationlog.Entry, erro
 	// reserve their intrinsic maximum before construction, then refund slack.
 	frame, err := subscribeMutationFrame(entry.Op)
 	if err != nil {
+		t.rememberTerminal("projection_build")
 		return mutationlog.Entry{}, err // terminal owner cleanup refunds the charge
 	}
 	size := proto.Size(frame)
 	if size > charge {
+		t.rememberTerminal("projection_size")
 		return mutationlog.Entry{}, mutationlog.ErrSubscriptionLost
 	}
 	m.mu.Lock()
@@ -200,6 +328,7 @@ func (t *snapshotTail) project(entry mutationlog.Entry) (mutationlog.Entry, erro
 	// Exact byte credits precede allocation of the retained serialized payload.
 	data, err := proto.MarshalOptions{}.MarshalAppend(make([]byte, 0, size), frame)
 	if err != nil {
+		t.rememberTerminal("projection_encode")
 		return mutationlog.Entry{}, err // watcher reclaims all credits on failure
 	}
 	return mutationlog.Entry{Seq: entry.Seq, HLC: entry.HLC, Op: snapshotTailFrame(data)}, nil
@@ -250,62 +379,59 @@ func (t *snapshotTail) release(size int) {
 }
 
 func (t *snapshotTail) finish(ctx context.Context) error {
-	if ctx.Err() != nil || t.admission.Check(ctx) != nil || t.subscription.Err() != nil {
-		return snapshotTailError()
+	if err := ctx.Err(); err != nil {
+		guard := "context_canceled"
+		if errors.Is(err, context.DeadlineExceeded) {
+			guard = "context_deadline"
+		}
+		return t.diagnostic("finish", guard, "request_done")
+	}
+	if t.admission.Check(ctx) != nil {
+		return t.diagnostic("finish", "admission_rejected", "admission_rejected")
+	}
+	if err := t.prepareRingReplay(); err != nil {
+		return t.diagnostic("finish", "subscription_terminal", "")
+	}
+	if t.ringReplayRequired() {
+		if err := t.subscription.ValidateReplay(t.local + 1); err != nil {
+			return t.diagnostic("finish", "replay_unavailable", snapshotTailCoreReason(err))
+		}
+	}
+	// Retirement/replay validation may wait on core locks. Do not publish ready
+	// from the admission/context observation made before that wait.
+	if err := ctx.Err(); err != nil {
+		guard := "context_canceled"
+		if errors.Is(err, context.DeadlineExceeded) {
+			guard = "context_deadline"
+		}
+		return t.diagnostic("finish", guard, "request_done")
+	}
+	if t.admission.Check(ctx) != nil {
+		return t.diagnostic("finish", "admission_rejected", "admission_rejected")
 	}
 	m := t.manager
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	select {
 	case <-t.fault:
-		return snapshotTailError()
+		return t.diagnosticLocked("finish", "generation_closed", "publication_fault")
 	default:
 	}
-	if t.closed || !time.Now().Before(t.deadline) {
-		return snapshotTailError()
+	if t.closed {
+		return t.diagnosticLocked("finish", "owner_closed", "")
+	}
+	if !time.Now().Before(t.deadline) {
+		return t.diagnosticLocked("finish", "deadline_expired", "deadline_expired")
 	}
 	t.ready = true
 	return nil
-}
-
-// claim runs inside the current publication cut, and bypasses only ring replay
-// admission. It never bypasses per-frame validation or receiver ApplyMutation.
-func (s *LanternReplicationService) claimSnapshotTail(ctx context.Context, token string, req *pb.SubscribeRequest, cursor map[string]uint64, fault <-chan struct{}) (*snapshotTail, error) {
-	current, ok := peerauth.AdmissionFromContext(ctx)
-	if !ok || current.Check(ctx) != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, peerauth.ErrMembership)
-	}
-	m := s.snapshotTails
-	m.mu.Lock()
-	tail := m.active[token]
-	m.mu.Unlock()
-	if tail == nil || !tail.admission.SamePeer(current) || tail.admission.Check(ctx) != nil {
-		return nil, snapshotTailError()
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if tail.closed || !tail.ready || tail.claimed || tail.subscription.Err() != nil || tail.fault != fault || !time.Now().Before(tail.deadline) || req.GetFromLocalSeq() != tail.local+1 {
-		return nil, snapshotTailError()
-	}
-	select {
-	case <-tail.fault:
-		return nil, snapshotTailError()
-	default:
-	}
-	for origin, cutoff := range tail.origins {
-		if cutoff == math.MaxUint64 || cursor[origin] < cutoff+1 {
-			return nil, snapshotTailError()
-		}
-	}
-	tail.claimed = true
-	return tail, nil
 }
 
 func (t *snapshotTail) watch() {
 	defer close(t.stopped)
 	<-t.opened
 	if t.subscription == nil {
-		t.closeResources()
+		t.closeResourcesReason("subscription_missing")
 		return
 	}
 	timer := time.NewTimer(time.Until(t.deadline))
@@ -314,21 +440,36 @@ func (t *snapshotTail) watch() {
 	defer ticker.Stop()
 	requestDone := t.requestDone
 	for {
+		t.manager.mu.Lock()
+		watched := t.subscription
+		if t.ringReplay {
+			watched = t.deliverySubscription
+		}
+		var subDone <-chan struct{}
+		if watched != nil {
+			subDone = watched.Done()
+		}
+		t.manager.mu.Unlock()
 		select {
 		case <-t.stop:
 			return
 		case <-t.fault:
-			t.closeResources()
+			t.closeResourcesReason("publication_fault")
 			return
-		case <-t.subscription.Done():
-			t.closeResources()
+		case <-t.updated:
+			continue
+		case <-subDone:
+			if t.observeSubscriptionEnd(watched) {
+				continue
+			}
+			t.closeResourcesReason("subscription_other")
 			return
 		case <-requestDone:
 			t.manager.mu.Lock()
 			ready := t.ready
 			t.manager.mu.Unlock()
 			if !ready {
-				t.closeResources()
+				t.closeResourcesReason("request_done")
 				return
 			}
 			requestDone = nil // successful Snapshot handler cancellation is expected
@@ -337,15 +478,21 @@ func (t *snapshotTail) watch() {
 			claimed := t.claimed
 			t.manager.mu.Unlock()
 			if !claimed {
-				t.closeResources()
-				return
+				if t.closeUnclaimedResources("deadline_expired") {
+					return
+				}
 			}
 		case <-ticker.C:
 			t.manager.mu.Lock()
 			claimed := t.claimed
 			t.manager.mu.Unlock()
 			if !claimed && t.admission.Check(context.Background()) != nil {
-				t.closeResources()
+				if t.closeUnclaimedResources("admission_rejected") {
+					return
+				}
+			}
+			if t.unclaimedReplayLost() {
+				t.closeResourcesReason("replay_unavailable")
 				return
 			}
 		}
@@ -353,16 +500,57 @@ func (t *snapshotTail) watch() {
 }
 
 func (t *snapshotTail) closeResources() {
+	t.closeResourcesReason("owner_close")
+}
+
+func (t *snapshotTail) closeResourcesReason(reason snapshotTailReason) {
+	t.transitionMu.Lock()
+	defer t.transitionMu.Unlock()
+	t.closeResourcesLocked(reason)
+}
+
+// A watcher may have sampled an unclaimed owner immediately before claim
+// completed. Such a stale original-admission decision must not close delivery
+// now owned by the fresh Subscribe admission.
+func (t *snapshotTail) closeUnclaimedResources(reason snapshotTailReason) bool {
+	t.transitionMu.Lock()
+	defer t.transitionMu.Unlock()
+	t.manager.mu.Lock()
+	claimed := t.claimed
+	t.manager.mu.Unlock()
+	if claimed {
+		return false
+	}
+	t.closeResourcesLocked(reason)
+	return true
+}
+
+func (t *snapshotTail) closeResourcesLocked(reason snapshotTailReason) {
 	t.closeOnce.Do(func() {
 		m := t.manager
 		m.mu.Lock()
+		select {
+		case <-t.opened:
+			t.rememberCoreTerminalLocked()
+			t.rememberTerminalLocked(reason)
+		default:
+			// Opening still owns the subscription pointer. Sample it only
+			// after its existing completion barrier below.
+		}
 		t.closed = true
 		claimed := t.claimed
 		close(t.stop)
 		m.mu.Unlock()
 		<-t.opened
+		m.mu.Lock()
+		t.rememberCoreTerminalLocked()
+		t.rememberTerminalLocked(reason)
+		m.mu.Unlock()
 		if t.subscription != nil {
 			_ = t.subscription.Close() // joins project and releases every queued reference
+		}
+		if t.deliverySubscription != nil {
+			_ = t.deliverySubscription.Close()
 		}
 		if !claimed {
 			t.finalize()
@@ -407,7 +595,7 @@ func (s *LanternReplicationService) CloseSnapshotTails() {
 	}
 	m.mu.Unlock()
 	for _, tail := range tails {
-		tail.closeResources()
+		tail.closeResourcesReason("shutdown")
 	}
 	for _, tail := range tails {
 		<-tail.stopped

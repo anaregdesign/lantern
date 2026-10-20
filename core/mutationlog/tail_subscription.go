@@ -8,6 +8,11 @@ import (
 	"sync"
 )
 
+// ErrTailQueueFull identifies queue overflow of an owned live tail. It retains
+// the ordinary reconnect contract through errors.Is(err, ErrSubscriptionLost),
+// while remaining distinct from a projector rejecting its own resource budget.
+var ErrTailQueueFull = fmt.Errorf("%w: owned tail queue full", ErrSubscriptionLost)
+
 // SubscribeTail registers an owned live tail exactly at the next local
 // sequence. It never replays the ring. Callers must capture their state and
 // this registration under their own publication cut so writes cannot enter
@@ -43,6 +48,7 @@ func (l *Log) SubscribeTail(fromSeq uint64, maxEntries int, project func(Entry) 
 		return nil, fmt.Errorf("%w: tail must start immediately after local seq %d", ErrGapped, l.lastSeq)
 	}
 	state := newSubscription()
+	state.replay = &tailReplayBinding{log: l, generation: l.tailGeneration, fromSeq: fromSeq}
 	state.entries = make(chan Entry, min(l.subBuf, maxEntries))
 	// This subscription delivers directly, without a goroutine to join.
 	close(state.stopped)

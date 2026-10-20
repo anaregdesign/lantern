@@ -169,6 +169,9 @@ type Log struct {
 	// path. Append keeps its retry semantics, but a receipt-capable commit
 	// cannot prove a unique durable history after such an error.
 	legacyWALUncertain bool
+	// Each owned tail retains the pointer sampled at its original cut. A
+	// boundary rotates it even after a queue-overflowed tail was unregistered.
+	tailGeneration *byte
 
 	// Dispatcher pipeline (#260). Append hands entries off to a single
 	// background goroutine that performs the per-subscriber fan-out, so
@@ -188,10 +191,11 @@ type subscription struct {
 	// belong to retained replay/catch-up windows and must not be duplicated.
 	startSeq uint64
 	filter   func(Entry) bool
-	// A direct tail owns its projected queue and has no delivery forwarder.
-	// project runs under subsMu before any payload enters that queue.
+	// Owned tails project before any payload enters the live queue. A paused
+	// replay observes invalidation here but does not receive live fan-out yet.
 	project    func(Entry) (Entry, error)
 	directTail bool
+	replaying  bool
 	gapped     bool // set when a fan-out drop turned into a gap
 	stream     *Subscription
 }
@@ -212,11 +216,12 @@ func New(opts Options) *Log {
 		wal = NopWAL{}
 	}
 	l := &Log{
-		capacity:    capacity,
-		subBuf:      subBuf,
-		wal:         wal,
-		ring:        make([]Entry, capacity),
-		subscribers: make(map[*subscription]struct{}),
+		capacity:       capacity,
+		subBuf:         subBuf,
+		wal:            wal,
+		tailGeneration: new(byte),
+		ring:           make([]Entry, capacity),
+		subscribers:    make(map[*subscription]struct{}),
 		// Inbox sized to SubscriberBuffer mirrors the headroom budget
 		// documented on Options.SubscriberBuffer: a dispatcher stall of
 		// that many entries is tolerated before Append blocks waiting
@@ -419,7 +424,7 @@ func (l *Log) fanout(entry Entry) {
 	l.subsMu.Lock()
 	defer l.subsMu.Unlock()
 	for sub := range l.subscribers {
-		if sub.gapped {
+		if sub.gapped || sub.replaying {
 			continue
 		}
 		// Entries below startSeq were already delivered as part of the
@@ -461,7 +466,11 @@ func (l *Log) fanout(entry Entry) {
 // dispatcher's projected-tail preflight above.
 func (l *Log) dropSubscriptionLocked(sub *subscription) {
 	sub.gapped = true
-	sub.stream.finish(ErrSubscriptionLost)
+	cause := ErrSubscriptionLost
+	if sub.directTail {
+		cause = ErrTailQueueFull
+	}
+	sub.stream.finish(cause)
 	close(sub.ch)
 	delete(l.subscribers, sub)
 	if l.onDrop != nil {

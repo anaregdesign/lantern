@@ -151,6 +151,9 @@ func TestSubscribeTailProjectionFailureStopsBeforeLaterEntries(t *testing.T) {
 		if projected != 2 || !errors.Is(tail.Err(), rejected) {
 			t.Fatalf("projection count=%d terminal=%v", projected, tail.Err())
 		}
+		if errors.Is(tail.Err(), ErrTailQueueFull) {
+			t.Fatal("projector failure was mislabeled as queue overflow")
+		}
 		if len(tail.entries) != 1 {
 			t.Fatalf("queued %d entries after projection failure, want 1", len(tail.entries))
 		}
@@ -184,7 +187,7 @@ func TestSubscribeTailOverflowDoesNotConstructExtraPayload(t *testing.T) {
 			}
 		}
 		synctest.Wait()
-		if projected != 2 || !errors.Is(tail.Err(), ErrSubscriptionLost) {
+		if projected != 2 || !errors.Is(tail.Err(), ErrSubscriptionLost) || !errors.Is(tail.Err(), ErrTailQueueFull) {
 			t.Fatalf("projection count=%d terminal=%v", projected, tail.Err())
 		}
 		select {
@@ -193,8 +196,38 @@ func TestSubscribeTailOverflowDoesNotConstructExtraPayload(t *testing.T) {
 			t.Fatal("overflow waited for buffered payloads to drain")
 		}
 		_ = tail.Close()
+		if !errors.Is(tail.Err(), ErrTailQueueFull) {
+			t.Fatal("owner cleanup replaced the first queue-overflow cause")
+		}
 		if len(tail.entries) != 0 {
 			t.Fatal("Close retained overflowed payloads")
+		}
+	})
+}
+
+func TestSubscribeTailProjectorLossRemainsDistinctFromQueueOverflow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		log := New(Options{SubscriberBuffer: 2})
+		defer log.Close()
+		tail, err := log.SubscribeTail(1, 512, func(Entry) (Entry, error) {
+			return Entry{}, ErrSubscriptionLost
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := log.Append("rejected by projector", ts(1)); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		if !errors.Is(tail.Err(), ErrSubscriptionLost) || errors.Is(tail.Err(), ErrTailQueueFull) {
+			t.Fatalf("projector terminal classification = %v", tail.Err())
+		}
+		_ = tail.Close()
+		if !errors.Is(tail.Err(), ErrSubscriptionLost) || errors.Is(tail.Err(), ErrTailQueueFull) {
+			t.Fatal("owner cleanup changed the projector's first terminal cause")
+		}
+		if _, open := <-tail.Entries(); open {
+			t.Fatal("failed projector retained a payload")
 		}
 	})
 }
