@@ -17,6 +17,7 @@ import (
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/provider"
 	"github.com/anaregdesign/lantern/server/service"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // TestBackupSnapshot_E2E drives the BackupSnapshot streaming RPC (#691)
@@ -99,6 +100,61 @@ func TestBackupSnapshot_E2E(t *testing.T) {
 			t.Errorf("prefix backup got %d edges, want 1: %v", len(es), es)
 		}
 	})
+}
+
+func TestBackupSnapshot_ImplicitEndpoints_E2E(t *testing.T) {
+	for _, finite := range []bool{false, true} {
+		name := "Permanent"
+		if finite {
+			name = "Finite"
+		}
+		t.Run(name, func(t *testing.T) {
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			svc := service.NewLanternService(cache).WithDataNamespace()
+			val := provider.NewValidationInterceptor(defaultIntegrationValidationLimits())
+			srv := newConnectTestServer(t, svc, nil, val.ConnectInterceptor())
+			raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
+			sdk := newConnectClientFor(t, srv.url)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, err := sdk.PutVertex(ctx, "implicit:value", "kept", time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			var expiration *timestamppb.Timestamp
+			if finite {
+				expiration = timestamppb.New(time.Now().Add(time.Hour))
+			}
+			if _, err := raw.PutEdges(ctx, connect.NewRequest(&pb.PutEdgesRequest{Edges: []*pb.Edge{
+				{Tail: "implicit:tail", Head: "implicit:head", Weight: 1, Expiration: expiration},
+				{Tail: "implicit:tail", Head: "outside:head", Weight: 2, Expiration: expiration},
+			}})); err != nil {
+				t.Fatalf("OFF PutEdges with absent endpoints: %v", err)
+			}
+			vertices, edges := drainBackup(t, ctx, raw, &pb.BackupSnapshotRequest{VertexPrefix: "implicit:"})
+			if len(vertices) != 3 || len(edges) != 1 {
+				t.Fatalf("prefix backup returned %d vertices/%d edges, want 3/1", len(vertices), len(edges))
+			}
+			for _, key := range []string{"implicit:tail", "implicit:head"} {
+				vertex := vertices[key]
+				if vertex == nil || vertex.GetKey() != key || !vertex.GetNil() {
+					t.Fatalf("implicit endpoint %q lost logical identity or nil value: %v", key, vertex)
+				}
+				if (vertex.GetExpiration() == nil) != (expiration == nil) ||
+					(expiration != nil && !vertex.GetExpiration().AsTime().Equal(expiration.AsTime())) {
+					t.Fatalf("implicit endpoint %q expiration = %v, want %v", key, vertex.GetExpiration(), expiration)
+				}
+			}
+			if vertices["implicit:value"].GetString_() != "kept" {
+				t.Fatal("backup changed the explicit value")
+			}
+			if edge := edges["implicit:tail->implicit:head"]; edge == nil || edge.GetWeight() != 1 {
+				t.Fatalf("backup changed the folded edge: %v", edge)
+			}
+			if vertices["outside:head"] != nil || edges["implicit:tail->outside:head"] != nil {
+				t.Fatal("prefix backup exposed an outside endpoint or crossing edge")
+			}
+		})
+	}
 }
 
 // drainBackup runs BackupSnapshot to completion and returns the streamed

@@ -62,8 +62,17 @@ func (s *LanternService) BackupSnapshot(ctx context.Context, request *pb.BackupS
 		if keep != nil && !keep[v.Key] {
 			continue
 		}
+		vertex := v.Value
+		if vertex == nil {
+			// Edge-created endpoints have no stored protobuf payload. Their
+			// identity and lifetime still belong to this captured graph cut.
+			vertex = &pb.Vertex{Key: v.Key, Value: &pb.Vertex_Nil{Nil: true}}
+			if !v.Expiration.IsZero() {
+				vertex.Expiration = timestamppb.New(v.Expiration)
+			}
+		}
 		if err := stream.Send(&pb.BackupSnapshotResponse{
-			Record: &pb.BackupSnapshotResponse_Vertex{Vertex: v.Value},
+			Record: &pb.BackupSnapshotResponse_Vertex{Vertex: vertex},
 		}); err != nil {
 			return err
 		}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // recordingSender captures the BackupSnapshotResponse frames a handler streams.
@@ -105,6 +106,71 @@ func TestLanternService_BackupSnapshot(t *testing.T) {
 			t.Errorf("edge to non-matching endpoint other:c leaked into prefix backup")
 		}
 	})
+}
+
+func TestLanternService_BackupSnapshotImplicitEndpoints(t *testing.T) {
+	ctx := context.Background()
+	cache := graphcache.NewGraphCacheWithStaging[string, *pb.Vertex](time.Hour)
+	svc := NewLanternService(cache).WithDataNamespace()
+	expiration := time.Now().Add(time.Minute).UTC()
+
+	vertices, _, err := svc.mapDataRequest(&pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+		{Key: "m-value", Value: &pb.Vertex_String_{String_: "kept"}},
+		{Key: "other-value", Value: &pb.Vertex_String_{String_: "outside"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PutVertices(ctx, vertices.(*pb.PutVerticesRequest)); err != nil {
+		t.Fatal(err)
+	}
+	edges, _, err := svc.mapDataRequest(&pb.PutEdgesRequest{Edges: []*pb.Edge{{
+		Tail: "m-tail", Head: "m-head", Weight: 1, Expiration: timestamppb.New(expiration),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PutEdges(ctx, edges.(*pb.PutEdgesRequest)); err != nil {
+		t.Fatal(err)
+	}
+	physicalTail := edges.(*pb.PutEdgesRequest).GetEdges()[0].GetTail()
+	if value, live := cache.GetVertex(physicalTail); !live || value != nil {
+		t.Fatalf("implicit endpoint value = (%v, %v), want live nil payload", value, live)
+	}
+	request, _, err := svc.mapDataRequest(&pb.BackupSnapshotRequest{VertexPrefix: "m-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := &recordingSender{}
+	if err := svc.BackupSnapshot(ctx, request.(*pb.BackupSnapshotRequest), dataBackupSender{ctx: ctx, service: svc, next: sender}); err != nil {
+		t.Fatalf("public BackupSnapshot of implicit endpoints: %v", err)
+	}
+	vs, es := splitBackupSnapshotResponses(sender.records)
+	if len(vs) != 3 || len(es) != 1 {
+		t.Fatalf("prefix snapshot returned %d vertices/%d edges, want 3/1", len(vs), len(es))
+	}
+	for _, key := range []string{"m-tail", "m-head"} {
+		vertex := vs[key]
+		if vertex == nil || !vertex.GetNil() || vertex.GetExpiration() == nil || !vertex.GetExpiration().AsTime().Equal(expiration) {
+			t.Fatalf("implicit endpoint %q lost logical identity, nil value or absolute expiration: %v", key, vertex)
+		}
+	}
+	if vertex := vs["m-value"]; vertex == nil || vertex.GetString_() != "kept" {
+		t.Fatalf("explicit value changed: %v", vertex)
+	}
+	if vs["other-value"] != nil {
+		t.Fatal("out-of-prefix vertex escaped the snapshot")
+	}
+	if edge := es["m-tail->m-head"]; edge == nil || edge.GetWeight() != 1 || !edge.GetExpiration().AsTime().Equal(expiration) {
+		t.Fatalf("folded edge changed: %v", edge)
+	}
+	if value, live := cache.GetVertex(physicalTail); !live || value != nil {
+		t.Fatal("backup rewrote the stored implicit endpoint payload")
+	}
+	physicalValue := vertices.(*pb.PutVerticesRequest).GetVertices()[0].GetKey()
+	if value, _ := cache.GetVertex(physicalValue); value.GetKey() != physicalValue {
+		t.Fatal("public frame conversion rewrote the stored physical identity")
+	}
 }
 
 func TestLanternService_BackupSnapshotFailsClosedUntilVerifiedSnapshot(t *testing.T) {
