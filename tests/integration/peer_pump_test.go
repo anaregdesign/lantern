@@ -2605,6 +2605,223 @@ func TestPeerPump_ActiveLocalSnapshotDefersCompetingRepairOnRealWire(t *testing.
 	}
 }
 
+type observedSnapshotInstall struct {
+	finished chan bool
+	resume   chan struct{}
+	started  time.Time
+	ended    time.Time
+}
+
+type observedSnapshotApplier struct {
+	*service.LanternService
+	ctx   context.Context
+	began chan *observedSnapshotInstall
+}
+
+func (a *observedSnapshotApplier) BeginSnapshotInstall() (func(bool), error) {
+	finish, err := a.LanternService.BeginSnapshotInstall()
+	if err != nil {
+		return nil, err
+	}
+	stage := &observedSnapshotInstall{finished: make(chan bool, 1), resume: make(chan struct{}), started: time.Now()}
+	select {
+	case a.began <- stage:
+	case <-a.ctx.Done():
+		finish(false)
+		return nil, a.ctx.Err()
+	}
+	return func(verified bool) {
+		finish(verified)
+		stage.ended = time.Now()
+		stage.finished <- verified
+		select {
+		case <-stage.resume:
+		case <-a.ctx.Done():
+		}
+	}, nil
+}
+
+type observedSnapshotHeader struct {
+	header  *pb.SnapshotHeader
+	release chan error
+}
+
+type observedSnapshotPeer struct {
+	graphv1connect.LanternReplicationServiceHandler
+	source    *service.LanternReplicationService
+	headers   chan observedSnapshotHeader
+	snapshots atomic.Int32
+	gaps      atomic.Int32
+}
+
+func (p *observedSnapshotPeer) Subscribe(ctx context.Context, req *connect.Request[pb.SubscribeRequest], stream *connect.ServerStream[pb.SubscribeResponse]) error {
+	err := p.LanternReplicationServiceHandler.Subscribe(ctx, req, stream)
+	if connect.CodeOf(err) == connect.CodeFailedPrecondition && strings.Contains(err.Error(), "gapped: origin") {
+		p.gaps.Add(1)
+	}
+	return err
+}
+
+func (p *observedSnapshotPeer) Snapshot(ctx context.Context, req *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
+	p.snapshots.Add(1)
+	return p.source.Snapshot(ctx, req.Msg, observedSnapshotSender{ctx: ctx, stream: stream, headers: p.headers})
+}
+
+type observedSnapshotSender struct {
+	ctx     context.Context
+	stream  *connect.ServerStream[pb.SnapshotResponse]
+	headers chan<- observedSnapshotHeader
+}
+
+func (s observedSnapshotSender) Send(frame *pb.SnapshotResponse) error {
+	if err := s.stream.Send(frame); err != nil {
+		return err
+	}
+	if frame.GetHeader() == nil {
+		return nil
+	}
+	header := observedSnapshotHeader{header: proto.Clone(frame.GetHeader()).(*pb.SnapshotHeader), release: make(chan error, 1)}
+	select {
+	case s.headers <- header:
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+	select {
+	case err := <-header.release:
+		return err
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+}
+
+func TestPeerPump_SnapshotRetentionDuringInstall(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		cycles    int
+		advance   int
+		interrupt bool
+		keepsTail bool
+	}{
+		{name: "retained tail", cycles: 1, advance: 2, keepsTail: true},
+		{name: "evicted tail", cycles: 3, advance: 8},
+		{name: "interrupted stream control", cycles: 2, advance: 2, interrupt: true, keepsTail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+			defer cancel()
+			source := newPumpNodeWithSearch(t, hlc.NodeID{0xC1}, 4, false)
+			receiver := newPumpNode(t, hlc.NodeID{0xC2})
+			put := func(key string) {
+				t.Helper()
+				if _, err := source.sdk.PutVertex(ctx, key, "value", time.Minute); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for index := range 8 {
+				put(fmt.Sprintf("seed-%d", index))
+			}
+			rep := service.NewLanternReplicationService(source.log, source.cache, source.clock).WithOriginStates(source.svc)
+			peer := &observedSnapshotPeer{
+				LanternReplicationServiceHandler: service.NewLanternReplicationServiceConnectHandler(rep),
+				source:                           rep, headers: make(chan observedSnapshotHeader, 1),
+			}
+			mux := http.NewServeMux()
+			mux.Handle(graphv1connect.NewLanternReplicationServiceHandler(peer))
+			server := httptest.NewUnstartedServer(mux)
+			protocols := new(http.Protocols)
+			protocols.SetUnencryptedHTTP2(true)
+			server.Config.Protocols = protocols
+			server.Start()
+			t.Cleanup(server.Close)
+			apply := &observedSnapshotApplier{LanternService: receiver.svc, ctx: ctx, began: make(chan *observedSnapshotInstall, 1)}
+			pump := replication.NewPump(replication.Config{
+				NodeID: receiver.nodeID, Peers: []string{server.URL}, HTTPClient: h2cClient(),
+				BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
+			}, apply, receiver.cache)
+			done := make(chan error, 1)
+			go func() { done <- pump.Run(ctx) }()
+			defer func() {
+				cancel()
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Error(err)
+					}
+				case <-time.After(time.Second):
+					t.Error("owned Pump did not join")
+				}
+			}()
+			for cycle := range tc.cycles {
+				var header observedSnapshotHeader
+				var stage *observedSnapshotInstall
+				select {
+				case header = <-peer.headers:
+				case <-ctx.Done():
+					t.Fatal("Snapshot header not observed", ctx.Err())
+				}
+				select {
+				case stage = <-apply.began:
+				case <-ctx.Done():
+					t.Fatal("Snapshot admission not observed", ctx.Err())
+				}
+				t.Logf("snapshot_begin cycle=%d utc=%s faulted=%t", cycle+1, stage.started.UTC().Format(time.RFC3339Nano), receiver.svc.SnapshotRepairRequired())
+				if _, err := receiver.raw.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"seed-0"}})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("read during Snapshot = %v, want fail-closed", err)
+				}
+				if _, err := receiver.raw.PutVertices(ctx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "must-not-apply"}}})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("write during Snapshot = %v, want fail-closed", err)
+				}
+				if _, live := receiver.cache.GetVertex("must-not-apply"); live || receiver.svc.LocalSeq(receiver.nodeID) != 0 {
+					t.Fatal("rejected local write changed graph or origin")
+				}
+				interrupted := tc.interrupt && cycle == 0
+				if !interrupted {
+					for index := range tc.advance {
+						put(fmt.Sprintf("tail-%d-%d", cycle, index))
+					}
+				}
+				var end error
+				if interrupted {
+					end = connect.NewError(connect.CodeUnavailable, errors.New("controlled Snapshot stream interruption"))
+				}
+				header.release <- end
+				var verified bool
+				select {
+				case verified = <-stage.finished:
+				case <-ctx.Done():
+					t.Fatal("Snapshot completion not observed", ctx.Err())
+				}
+				if verified == interrupted {
+					t.Fatalf("verified=%t after interrupted=%t", verified, interrupted)
+				}
+				_, err := receiver.raw.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"seed-0"}}))
+				if verified && err != nil || !verified && connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("read after verified=%t = %v", verified, err)
+				}
+				publicRead := "OK"
+				if err != nil {
+					publicRead = connect.CodeOf(err).String()
+				}
+				t.Logf("snapshot_end cycle=%d utc=%s span=%s captured=%d source=%d receiver=%d verified=%t public_read=%s retained_gaps=%d", cycle+1,
+					stage.ended.UTC().Format(time.RFC3339Nano), stage.ended.Sub(stage.started), header.header.GetCutoffSeqPerOrigin()[hex.EncodeToString(source.nodeID[:])], source.svc.LocalSeq(source.nodeID), receiver.svc.LocalSeq(source.nodeID), verified, publicRead, peer.gaps.Load())
+				if !tc.keepsTail && cycle == tc.cycles-1 {
+					cancel()
+				}
+				close(stage.resume)
+			}
+			if tc.keepsTail && !waitForVertex(t, receiver.cache, fmt.Sprintf("tail-%d-%d", tc.cycles-1, tc.advance-1), time.Second) {
+				t.Fatal("retained tail did not converge after verified Snapshot")
+			}
+			if got := peer.snapshots.Load(); got != int32(tc.cycles) {
+				t.Fatalf("Snapshot requests=%d, want %d", got, tc.cycles)
+			}
+			if !tc.keepsTail && peer.gaps.Load() < int32(tc.cycles-1) {
+				t.Fatal("repeated Snapshots were not driven by actual retained-origin gaps")
+			}
+		})
+	}
+}
+
 func TestPeerPump_FailedSnapshotRecoversWithoutNewMutation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
