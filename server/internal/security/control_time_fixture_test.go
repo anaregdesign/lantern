@@ -146,6 +146,10 @@ func TestOFFWorkloadTimeFixtureOwnsAndJoinsOneClock(t *testing.T) {
 	default:
 		t.Fatal("OFF owner/responder not joined")
 	}
+	after := view.TimeAcquisitionCounts()
+	if after != before || after.InFlight || after.Failed || after.Denied || view.TimeAcquisitionCounts() != after {
+		t.Fatal("joined OFF diagnostic counters incomplete or unstable", before, after)
+	}
 	if _, err = view.Observe(); err == nil {
 		t.Fatal("closed OFF time retained capability")
 	}
