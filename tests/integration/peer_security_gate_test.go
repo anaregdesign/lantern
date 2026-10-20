@@ -52,6 +52,7 @@ type peerSocketProbe struct {
 	active           map[uint64]peerSocketWrite
 	writes           []peerSocketWrite
 	boundInitialRead atomic.Bool
+	boundInitialSend atomic.Bool
 	boundClients     sync.Map
 }
 
@@ -138,11 +139,14 @@ func (l peerProbeListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Bound only this owned socket's send buffer, never the host's settings.
-	if tcp, ok := conn.(*net.TCPConn); ok {
-		if err := tcp.SetWriteBuffer(1024); err != nil {
-			_ = conn.Close()
-			return nil, err
+	// Apply pressure only to the initial interruption connection. Recovery
+	// must use normal socket defaults, never the artificial transfer bound.
+	if l.probe.boundInitialSend.Load() {
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			if err := tcp.SetWriteBuffer(1024); err != nil {
+				_ = conn.Close()
+				return nil, err
+			}
 		}
 	}
 	return &peerProbeConn{Conn: conn, probe: l.probe}, nil
@@ -276,6 +280,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			defer cancelPressure()
 			probe := &peerSocketProbe{active: make(map[uint64]peerSocketWrite)}
 			probe.boundInitialRead.Store(true)
+			probe.boundInitialSend.Store(true)
 			streamStarted := &peerStreamStarted{started: make(chan struct{})}
 			startedRemote := make(chan string, 1)
 			dropped := make(chan struct{})
@@ -461,6 +466,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			// is finite fixture preparation, not part of its elapsed deadline.
 			// Cancel completed phases so later work cannot borrow their context.
 			cancelPressure()
+			probe.boundInitialSend.Store(false)
 			if evict {
 				// This fixed-count, in-process preparation uses the owning
 				// test budget. A separate short deadline would assert a
@@ -508,6 +514,14 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			}
 			if f.primary[1].LocalSeq(hlc.NodeID{3}) < last {
 				t.Fatal("recovery did not certify the expected origin frontier")
+			}
+			select {
+			case remote := <-startedRemote:
+				if remote == end.remote {
+					t.Fatal("recovery reused the pressure-limited socket")
+				}
+			default:
+				t.Fatal("recovery did not open a normal replacement socket")
 			}
 			if _, err := f.primary[1].GetVertex(recoveryCtx, &pb.GetVertexRequest{Key: "data:seed"}); err != nil {
 				t.Fatal("verified recovery did not restore public read", err)
