@@ -53,6 +53,9 @@ func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T)
 	if svc.SnapshotInstallActive() {
 		t.Fatal("fresh service reports an active Snapshot")
 	}
+	if svc.SnapshotRepairRequired() {
+		t.Fatal("fresh service requires Snapshot repair")
+	}
 	oldGeneration, faulted := svc.publicationStatus()
 	if faulted {
 		t.Fatal("fresh service started with a CDC gap")
@@ -63,6 +66,9 @@ func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T)
 	}
 	if !svc.SnapshotInstallActive() {
 		t.Fatal("active Snapshot is not visible to the pump")
+	}
+	if !svc.SnapshotRepairRequired() {
+		t.Fatal("active Snapshot does not require verified completion")
 	}
 	if _, err := svc.BeginSnapshotInstall(); connect.CodeOf(err) != connect.CodeUnavailable {
 		t.Fatalf("concurrent Snapshot install error = %v", err)
@@ -76,6 +82,9 @@ func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T)
 	if svc.SnapshotInstallActive() {
 		t.Fatal("failed Snapshot still reports an active installer")
 	}
+	if !svc.SnapshotRepairRequired() {
+		t.Fatal("failed Snapshot no longer requires verified repair")
+	}
 	if _, faulted := svc.publicationStatus(); !faulted {
 		t.Fatal("failed Snapshot replay cleared its CDC gap")
 	}
@@ -86,6 +95,9 @@ func TestSnapshotInstall_FailedReplayKeepsCDCGapUntilVerifiedRetry(t *testing.T)
 	retry(true)
 	if svc.SnapshotInstallActive() {
 		t.Fatal("verified Snapshot still reports an active installer")
+	}
+	if svc.SnapshotRepairRequired() {
+		t.Fatal("verified Snapshot still requires repair")
 	}
 	newGeneration, faulted := svc.publicationStatus()
 	if faulted || newGeneration == oldGeneration {

@@ -2605,6 +2605,42 @@ func TestPeerPump_ActiveLocalSnapshotDefersCompetingRepairOnRealWire(t *testing.
 	}
 }
 
+func TestPeerPump_FailedSnapshotRecoversWithoutNewMutation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	source := newPumpNode(t, hlc.NodeID{0xB1})
+	receiver := newPumpNode(t, hlc.NodeID{0xB2})
+	finish, err := receiver.svc.BeginSnapshotInstall()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The header was admitted, but the stream failed before its first body
+	// frame. No new mutation exists for a reconnecting Subscribe to deliver.
+	finish(false)
+	if _, err := receiver.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "absent"})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("failed install public read = %v, want fail-closed", err)
+	}
+	metrics := &observedSearchConfigMetrics{
+		gate: readiness.NewGate(100, true, nil), observations: make(chan bool, 1),
+	}
+	receiver.startPumpWithMetrics(ctx, t, []string{source.url}, metrics)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for metrics.snapshots.Load() == 0 {
+		select {
+		case <-ctx.Done():
+			t.Fatal("failed Snapshot did not repair without a new mutation")
+		case <-ticker.C:
+		}
+	}
+	if _, err := receiver.raw.GetVertex(ctx, connect.NewRequest(&pb.GetVertexRequest{Key: "absent"})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("verified empty Snapshot public read = %v, want NotFound", err)
+	}
+	if got := metrics.snapshots.Load(); got != 1 {
+		t.Fatalf("verified Snapshot repairs = %d, want one", got)
+	}
+}
+
 func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping three-node graph-only restore and relay")

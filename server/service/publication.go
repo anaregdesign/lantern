@@ -215,6 +215,16 @@ func (s *LanternService) SnapshotInstallActive() bool {
 	return false
 }
 
+// SnapshotRepairRequired reports an active or interrupted replay whose graph
+// still needs a complete verified Snapshot. Recovery must consult this before
+// waiting for a new mutation: a healthy peer's idle Subscribe cannot discover
+// this receiver-local fault. Only the existing verified finish clears it.
+func (s *LanternService) SnapshotRepairRequired() bool {
+	s.replicationCutMu.RLock()
+	defer s.replicationCutMu.RUnlock()
+	return s.snapshotInstallFaulted
+}
+
 // CanSkipSelfEcho is true only when this graph-only replica has no unpublished
 // local mutation or repair fault. Receipt-WAL peers keep the full origin stream
 // so receipt evidence and durable recovery cannot be bypassed.

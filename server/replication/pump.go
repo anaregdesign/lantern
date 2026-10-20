@@ -1209,7 +1209,12 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 	if err != nil {
 		return fmt.Errorf("peer origin status: %w", err)
 	}
-	if own.needsSnapshot {
+	if local, ok := p.apply.(interface{ SnapshotRepairRequired() bool }); ok && local.SnapshotRepairRequired() {
+		// A failed local replay may have no missing peer mutation to deliver.
+		// Do not wait forever on an idle Subscribe before noticing its fault.
+		err = connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("gapped: local Snapshot install requires verified repair"))
+	} else if own.needsSnapshot {
 		err = connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("gapped: peer has committed local-origin history beyond this replica's cursor"))
 	} else {
