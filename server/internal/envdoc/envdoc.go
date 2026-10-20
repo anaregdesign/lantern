@@ -153,7 +153,7 @@ var descriptions = map[string]string{
 	"LANTERN_OIDC_TRUSTED_PROXY_IPS":        "JSON array of exact proxy IPs permitted to attest HTTPS with a single matching forwarded host/protocol. Never trust arbitrary forwarded headers.",
 	"LANTERN_SECURITY_CONFIG_FILE":          "OIDC: absolute private canonical node JSON binding independent genesis, M/P/B identities, workload membership, origins, and native time profile.",
 	"LANTERN_SECURITY_STORE_MODE":           "Required durable mode: fresh/resume with independent minimum floors. Recovery never restores volatile serving authority.",
-	"LANTERN_PEER_LISTEN_ADDR":              "Dedicated private workload host:port. Enables only replication peer APIs, with TLS 1.3 and mutual certificates.",
+	"LANTERN_PEER_LISTEN_ADDR":              "Dedicated private workload host:port. Enables only replication peer APIs, with TLS 1.3 and mutual certificates. Private OFF on Linux amd64/arm64 and Darwin arm64 also requires the declared read-only `/etc/ntp.conf` input (`server time.asia.apple.com`); OIDC borrows authority time. Standalone OFF has no source dependency.",
 	"LANTERN_PEER_DEPLOYMENT":               "Nonzero deployment ID, exactly 32 lowercase hexadecimal characters, bound into signed membership.",
 	"LANTERN_PEER_MEMBERSHIP_MODE":          "Private durable membership mode: fresh or resume. Retained floors prevent rollback.",
 	"LANTERN_PEER_MEMBERSHIP_FILE":          "Absolute signed operator membership manifest; reloaded periodically. At most a ten-minute lifetime.",
