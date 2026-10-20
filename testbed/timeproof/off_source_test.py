@@ -33,6 +33,25 @@ class SourceSupervisorTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 off_source.checked_environment()
 
+    def test_build_export_uses_git_objects_and_excludes_ignored_inputs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root, output = Path(temp)/"repo", Path(temp)/"output"
+            output.mkdir()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root/"source.go").write_text("package fixture\n")
+            (root/".gitignore").write_text("ignored.go\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"], cwd=root, check=True)
+            source = off_source.snapshot(root)
+            (root/"source.go").write_text("working mutation")
+            (root/"ignored.go").write_text("untrusted ignored input")
+            with off_source.tracked_build(root, output, source) as build:
+                self.assertEqual((build/"source.go").read_text(), "package fixture\n")
+                self.assertFalse((build/"ignored.go").exists())
+                self.assertEqual((build/"source.go").stat().st_mode & 0o222, 0)
+                self.assertEqual(build.stat().st_mode & 0o222, 0)
+            self.assertFalse(build.exists())
+
     def test_prepare_refuses_dirty_source_before_any_build(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(off_source, "snapshot", side_effect=ValueError("dirty")), patch.object(off_source.subprocess, "run") as execute:
             with self.assertRaises(ValueError):

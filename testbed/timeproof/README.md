@@ -8,7 +8,8 @@ It never changes host settings, time services, privileges or network policy.
 
 Prepare from a clean exact source, using the repository-pinned Go binary. The
 preparation directory must be new and outside the checkout. This builds the
-normal App test child and existing fixture provisioner, then verifies identity
+normal App test child and existing fixture provisioner from a read-only Git
+export (excluding ignored inputs), verifies cached modules, then checks identity
 without constructing a source owner:
 
 ```sh

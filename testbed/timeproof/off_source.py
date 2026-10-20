@@ -2,6 +2,7 @@
 """Prepare, run once, or verify the separate finite OFF configured-source proof."""
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ import re
 import secrets
 import ssl
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -56,26 +58,83 @@ def checked_environment():
             raise ValueError("unsupported execution override: " + key)
 
 
+@contextmanager
+def tracked_build(root, output, source):
+    """Build only immutable Git objects; ignored/working-tree files never enter."""
+    with tempfile.TemporaryDirectory(prefix="tracked-source-", dir=output) as temporary:
+        build = Path(temporary)
+        directories = {build}
+        entries = subprocess.check_output(["git", "ls-tree", "-rz", source["head"]], cwd=root).split(b"\0")
+        blobs = subprocess.Popen(["git", "cat-file", "--batch"], cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            seen = set()
+            for entry in entries:
+                if not entry:
+                    continue
+                metadata, raw_name = entry.split(b"\t", 1)
+                mode, kind, oid = metadata.decode().split()
+                name = raw_name.decode()
+                if kind != "blob" or mode not in ("100644", "100755") or name not in source["inputs"]:
+                    raise ValueError("unexpected Git export input")
+                blobs.stdin.write((oid+"\n").encode())
+                blobs.stdin.flush()
+                header = blobs.stdout.readline(256).decode().split()
+                if len(header) != 3 or header[:2] != [oid, "blob"]:
+                    raise ValueError("invalid Git object export")
+                raw = blobs.stdout.read(int(header[2]))
+                if blobs.stdout.read(1) != b"\n" or sha(raw) != source["inputs"][name]:
+                    raise ValueError("exported source differs")
+                destination = build / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                directories.update(destination.parents)
+                destination.write_bytes(raw)
+                destination.chmod(0o555 if mode == "100755" else 0o444)
+                seen.add(name)
+            if seen != set(source["inputs"]):
+                raise ValueError("incomplete tracked export")
+            for directory in directories:
+                if directory == build or build in directory.parents:
+                    directory.chmod(0o555)
+            yield build
+        finally:
+            blobs.stdin.close()
+            blobs.stdout.close()
+            try:
+                blobs.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                blobs.kill()
+                blobs.wait(timeout=5)
+            blobs.stderr.close()
+            for directory in sorted(directories, key=lambda p: len(p.parts)):
+                if directory == build or build in directory.parents:
+                    directory.chmod(0o700)
+
+
 def prepare(root, output, go):
     checked_environment()
     source = snapshot(root)
     if output == root or root in output.parents:
         raise ValueError("preparation must be outside the checkout")
     output.mkdir(mode=0o700, exist_ok=False)
-    env = os.environ | {"GOTOOLCHAIN": "local", "GOWORK": str(root / "go.work")}
-    settings = strict_json(subprocess.check_output([go, "env", "-json", "GOFLAGS", "GOEXPERIMENT", "GOWORK", "GOTOOLCHAIN", "GOROOT", "GOMODCACHE", "CGO_ENABLED", "GOVERSION"], cwd=root, env=env))
-    if settings["GOFLAGS"] or settings["GOEXPERIMENT"] or settings["GOWORK"] != str(root/"go.work") or settings["GOTOOLCHAIN"] != "local":
+    with tracked_build(root, output, source) as build:
+        return prepare_export(root, output, go, source, build)
+
+
+def prepare_export(root, output, go, source, build):
+    env = os.environ | {"GOTOOLCHAIN": "local", "GOWORK": str(build / "go.work")}
+    settings = strict_json(subprocess.check_output([go, "env", "-json", "GOFLAGS", "GOEXPERIMENT", "GOWORK", "GOTOOLCHAIN", "GOROOT", "GOMODCACHE", "CGO_ENABLED", "GOVERSION"], cwd=build, env=env))
+    if settings["GOFLAGS"] or settings["GOEXPERIMENT"] or settings["GOWORK"] != str(build/"go.work") or settings["GOTOOLCHAIN"] != "local":
         raise ValueError("unsupported effective Go settings")
     with (output / "module-integrity.log").open("xb") as log:
-        subprocess.run([go, "mod", "verify"], cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=120)
+        subprocess.run([go, "mod", "verify"], cwd=build, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=120)
     child, fixture = output / "off-child.test", output / "authfixture"
     command = [go, "test", "-c", "-ldflags=-X github.com/anaregdesign/lantern/server/cmd.offSourceRevision=" + source["head"], "-o", str(child), "./server/cmd"]
     with (output / "build-child.log").open("xb") as log:
-        subprocess.run(command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=300)
+        subprocess.run(command, cwd=build, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=300)
     with (output / "build-fixture.log").open("xb") as log:
-        subprocess.run([go, "build", "-o", str(fixture), "./server/cmd/authfixture"], cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=300)
+        subprocess.run([go, "build", "-o", str(fixture), "./server/cmd/authfixture"], cwd=build, env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=300)
     nonce = secrets.token_hex(32)
-    identity = subprocess.run([str(child), "-test.run=^TestOFFConfiguredSourceChild$", "-test.timeout=10s"], env=env | {"OFF_SOURCE_CHILD_NONCE": nonce, "OFF_SOURCE_CHILD_IDENTITY": "1"}, capture_output=True, check=True, timeout=15)
+    identity = subprocess.run([str(child), "-test.run=^TestOFFConfiguredSourceChild$", "-test.timeout=10s"], cwd=build, env=env | {"OFF_SOURCE_CHILD_NONCE": nonce, "OFF_SOURCE_CHILD_IDENTITY": "1"}, capture_output=True, check=True, timeout=15)
     (output / "identity.stdout").write_bytes(identity.stdout)
     records = [strict_json(line[len(b"off_source "):]) for line in identity.stdout.splitlines() if line.startswith(b"off_source ")]
     if len(records) != 1 or records[0].get("event") != "identity" or records[0].get("revision") != source["head"] or records[0].get("binary_sha256") != sha(child.read_bytes()) or records[0].get("normal_build") is not True:
