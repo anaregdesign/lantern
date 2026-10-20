@@ -129,7 +129,7 @@ type snapshotStageGateStream struct {
 
 func (s *snapshotStageGateStream) Receive() bool {
 	if !s.SnapshotStream.Receive() {
-		s.result.terminal = s.SnapshotStream.Err()
+		s.result.terminal = s.Err()
 		if s.result.terminal == nil || errors.Is(s.result.terminal, io.EOF) {
 			s.result.completeEOF = true
 			if s.afterEOF != nil {
