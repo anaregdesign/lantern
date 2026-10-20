@@ -233,8 +233,9 @@ def wire_smoke(fixture, children, deadline):
     for child in children:
         child.send("probe", deadline)
     for child in children:
-        if child.receive("probe", deadline).get("ok") is not True:
-            raise ValueError("private source smoke failed")
+        probe = child.receive("probe", deadline)
+        if probe.get("ok") is not True:
+            raise ValueError(f"private source smoke failed (slot {child.slot}): " + probe.get("error", "probe detail unavailable"))
     return {"public_off": True, "replication": True, "private": True}
 
 
@@ -305,6 +306,7 @@ def run(root, directory, output, prepared):
             raise ValueError("source changed during proof")
     except Exception as error:
         receipt["status"], receipt["failure"] = "FAIL", type(error).__name__
+        receipt["failure_detail"] = str(error)
     finally:
         stop_all()
         for child in children:
@@ -318,6 +320,11 @@ def run(root, directory, output, prepared):
             child.process.stdin.close()
             child.process.stdout.close()
             child.stderr.close()
+            if receipt["status"] == "FAIL" and not any(row["slot"] == child.slot for row in rows):
+                try:
+                    rows.append(child.failure_row(prepared["child_sha256"]))
+                except Exception as error:
+                    receipt.setdefault("cleanup_failures", []).append({"slot": child.slot, "error": type(error).__name__})
         finished.set()
         watcher.join(timeout=1)
         receipt["final_elapsed_ns"] = max(window.elapsed())

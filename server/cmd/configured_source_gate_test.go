@@ -134,9 +134,13 @@ func TestOFFConfiguredSourceChild(t *testing.T) {
 		switch {
 		case command.Control("probe", nonce):
 			probeCtx, stop := context.WithTimeout(ctx, 5*time.Second)
-			probeOK := offSourcePrivateProbe(probeCtx, identity, app.cfg.PeerPlane.ListenAddress)
+			probeErr := offSourcePrivateProbe(probeCtx, identity)
 			stop()
-			emit("probe", map[string]any{"ok": probeOK})
+			fields := map[string]any{"ok": probeErr == nil}
+			if probeErr != nil {
+				fields["error"] = probeErr.Error()
+			}
+			emit("probe", fields)
 		case command.Control("stop", nonce):
 			stopped = true
 		default:

@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -13,6 +14,78 @@ import off_source
 
 
 class SourceSupervisorTest(unittest.TestCase):
+    def test_private_probe_error_is_preserved_with_slot(self):
+        child = Mock(slot=2)
+        child.receive.return_value = {"ok": False, "error": "approved remote origins: synthetic refusal"}
+        fixture = {"ca_file": "synthetic-unused", "nodes": [{"public_origin": "https://fixture.invalid"} for _ in range(3)]}
+
+        def request(opener, url, deadline, payload):
+            if url.endswith("/Check"):return {"status": "SERVING_STATUS_SERVING"}
+            if url.endswith("/GetAuthCapabilities"):return {"mode": "AUTH_MODE_OFF", "ready": True, "protocolVersion": 1}
+            if url.endswith("/GetVertex"):return {"vertex": {"string": "proof"}}
+            return {}
+
+        deadline = off_source.Window(monotonic=time.monotonic_ns, boottime=time.monotonic_ns).limit(3)
+        with patch.object(off_source.ssl, "create_default_context", return_value=Mock()), patch.object(off_source.urllib.request, "build_opener", return_value=Mock()), patch.object(off_source, "request", side_effect=request):
+            with self.assertRaisesRegex(ValueError, r"private source smoke failed \(slot 2\): approved remote origins: synthetic refusal"):
+                off_source.wire_smoke(fixture, [child], deadline)
+        child.send.assert_called_once()
+        child.receive.assert_called_once()
+
+    def test_failed_private_probe_retains_queued_final_counts_after_join(self):
+        for emit_final in (True, False):
+            with self.subTest(emit_final=emit_final), tempfile.TemporaryDirectory() as temp:
+                parent = Path(temp)
+                root, directory, output = parent/"root", parent/"prepared", parent/"evidence"
+                root.mkdir(); directory.mkdir()
+                binary = directory/"off-child.test"
+                binary.write_text("#!"+sys.executable+"\n"+'''
+import json,os,sys,time
+nonce=os.environ["OFF_SOURCE_CHILD_NONCE"];start=time.monotonic_ns()
+def emit(event,**fields):
+ print("off_source "+json.dumps(dict(event=event,nonce=nonce,pid=os.getpid(),elapsed_ns=time.monotonic_ns()-start,**fields)),flush=True)
+for line in sys.stdin:
+ phase=json.loads(line)["phase"]
+ if phase=="reserve":emit("reserved",public="[::]:1001",peer="127.0.0.1:2001")
+ elif phase=="configure":emit("adopted",mode="off",revision="synthetic",initializers=1)
+ elif phase=="probe":emit("probe",ok=False,error="approved remote origins: synthetic refusal")
+ elif phase=="stop":
+  emit("stop_requested");emit("app_returned",ok=True);emit("cleanup_returned")
+  counts=dict(attempts=1,writes=1,installations=1,in_flight=False,failed=False,denied=False)
+  if EMIT_FINAL:emit("final",mode="off",counters=counts,repeat=counts.copy(),app_ok=True,closed_refused=True)
+  break
+'''.replace("EMIT_FINAL", repr(emit_final)))
+                binary.chmod(0o700)
+                manifest = {"source": {"head": "synthetic"}, "digest": "synthetic", "target": ["linux", "arm64"], "child_sha256": "synthetic"}
+
+                def provision(*args, **kwargs):
+                    kwargs["stdout"].write(json.dumps({"nodes": [{"environment": {}} for _ in range(3)]}).encode())
+
+                def wire(fixture, children, deadline):
+                    for child in children:child.send("probe", deadline)
+                    probe=children[0].receive("probe", deadline)
+                    raise ValueError("private source smoke failed: "+probe["error"])
+
+                with patch.object(off_source, "environment", return_value={"synthetic_unit_fixture": True}), patch.object(off_source.platform, "machine", return_value="aarch64"), patch.object(off_source.subprocess, "run", side_effect=provision), patch.object(off_source, "wire_smoke", side_effect=wire), patch.object(off_source.time, "CLOCK_BOOTTIME", 0, create=True), patch.object(off_source.time, "clock_gettime_ns", side_effect=lambda _: time.monotonic_ns()):
+                    result = off_source.run(root, directory, output, manifest)
+                self.assertEqual(result["status"], "FAIL")
+                self.assertIn("approved remote origins: synthetic refusal", result["failure_detail"])
+                self.assertEqual(len(result["children"]), 3)
+                self.assertNotIn("totals", result)  # Failure is never qualified as PASS.
+                self.assertNotIn("cleanup_failures", result)
+                self.assertTrue(all(row["final_counters_available"] == emit_final for row in result["launch_ledger"]))
+                for row in result["children"]:
+                    self.assertEqual(row["exit"], 0)
+                    self.assertFalse(row["killed"])
+                    self.assertIsNone(row["reader_error"])
+                    self.assertIn("cleanup_returned", [r["event"] for r in row["records"]])
+                    finals=[r for r in row["records"] if r["event"]=="final"]
+                    self.assertEqual(len(finals), int(emit_final))
+                    if finals:
+                        self.assertEqual(finals[0]["counters"], finals[0]["repeat"])
+                        self.assertEqual(finals[0]["counters"]["attempts"], 1)
+                self.assertTrue((directory/"OFF-ALLOCATION-CONSUMED").exists())
+
     def test_snapshot_binds_actual_clean_bytes(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

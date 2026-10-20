@@ -120,7 +120,7 @@ class Child:
                 self.process.wait(timeout=min(.1, deadline.check()))
             except subprocess.TimeoutExpired:
                 continue
-        result = self.process.wait(timeout=deadline.check())
+        self.process.wait(timeout=deadline.check())
         while self.reader.is_alive():
             self.reader.join(timeout=min(.1, deadline.check()))
         deadline.check()
@@ -129,4 +129,18 @@ class Child:
         self.stderr.close()
         if self.reader.is_alive() or self.error or not self.queue.empty():
             raise ValueError("child reader incomplete/extra output")
-        return {"slot": self.slot, "nonce": self.nonce, "pid": self.process.pid, "launch_ns": self.launch_ns, "stop_ns": self.stop_ns, "wait_ns": time.monotonic_ns() - self.started, "exit": result, "killed": self.killed, "binary_sha256": binary_sha256, "records": self.records, "stdout_sha256": sha(self.stdout_path.read_bytes()), "stderr_sha256": sha(self.stderr_path.read_bytes())}
+        return self._row(binary_sha256)
+
+    def failure_row(self, binary_sha256):
+        """Retain already validated queued frames after failure and full join."""
+        if self.process.poll() is None or self.reader.is_alive():
+            raise ValueError("failure transcript owner not joined")
+        while True:
+            try:
+                self.records.append(self.queue.get_nowait())
+            except queue.Empty:
+                break
+        return self._row(binary_sha256) | {"reader_error": self.error}
+
+    def _row(self, binary_sha256):
+        return {"slot": self.slot, "nonce": self.nonce, "pid": self.process.pid, "launch_ns": self.launch_ns, "stop_ns": self.stop_ns, "wait_ns": time.monotonic_ns() - self.started, "exit": self.process.returncode, "killed": self.killed, "binary_sha256": binary_sha256, "records": self.records, "stdout_sha256": sha(self.stdout_path.read_bytes()), "stderr_sha256": sha(self.stderr_path.read_bytes())}
