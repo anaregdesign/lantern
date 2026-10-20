@@ -618,6 +618,25 @@ Snapshot, the pump resumes from the later of the header and locally
 committed origin cutoffs; a tail evicted during the install can still
 require another repair.
 
+Graph-only repair first stages the complete source stream in bounded memory,
+including its EOF and final status, before opening the live install gate. No
+temporary directory or disk spool is needed. A failed stage preserves an
+existing healthy generation and its tokens; an existing repair fault remains
+closed. Only the later live install invalidates the receiver's old generation
+and locally owned tokens. Pump and anti-entropy share one installer, so a
+competing install is rejected before changing serving state. Staging retains
+the original native admission and deadline without extending either.
+
+The graph-only candidate is limited to 64 MiB of retained encoded bytes and
+64 MiB of decompressed transport payload, with a 32 MiB frame cap, at most
+1,048,576 frames and 65,536 origins, and a separate 64 MiB identity budget
+charged by key bytes plus conservative per-entry accounting. A larger image is
+rejected before live publication. The frame index, validation maps and current
+decoded frame are outside the encoded-byte quota. The independent cardinality
+limits and responder tail-reservation budget do not define a whole-process
+heap limit. These bounds alone do not qualify configured-source behavior or
+convergence under sustained load.
+
 An edge-only working set is valid Snapshot input: endpoint vertices created
 implicitly by `PutEdge*` / `AddEdge*` are carried as concrete nil-valued
 Vertex frames. A peer repeatedly logging `snapshot_failed` with

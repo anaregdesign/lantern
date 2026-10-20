@@ -53,22 +53,23 @@ func certifiedSnapshotInstallerRuntime(
 func TestSnapshotInstallerSelectionMatchesRuntimeAndIsShared(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	for _, tc := range []struct {
-		name    string
-		config  func(string) ReceiptWALConfig
-		durable bool
+		name   string
+		config func(string) ReceiptWALConfig
+		format pb.SnapshotFormat
 	}{
 		{
 			name: "graph only",
 			config: func(string) ReceiptWALConfig {
 				return ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
 			},
+			format: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
 		},
 		{
 			name: "durable",
 			config: func(path string) ReceiptWALConfig {
 				return validReceiptWALProviderConfig(path, ReceiptWALModeFresh)
 			},
-			durable: true,
+			format: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -86,13 +87,22 @@ func TestSnapshotInstallerSelectionMatchesRuntimeAndIsShared(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (selection.selected() != nil) != tc.durable {
-				t.Fatalf("selected installer = %T, want durable %t", selection.selected(), tc.durable)
+			selected := selection.selected()
+			if selected == nil {
+				t.Fatal("format selection did not provide an owned installer")
 			}
-			if tc.durable {
-				if got := selection.selected().RequiredFormat(); got != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
-					t.Fatalf("required format = %v", got)
-				}
+			if got := selected.RequiredFormat(); got != tc.format {
+				t.Fatalf("required format = %v, want %v", got, tc.format)
+			}
+			if !selected.CompatibleFormat(tc.format) {
+				t.Fatalf("selected installer rejects its required format %v", tc.format)
+			}
+			otherFormat := pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT
+			if tc.format == otherFormat {
+				otherFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
+			}
+			if selected.CompatibleFormat(otherFormat) {
+				t.Fatalf("selected installer accepts the other runtime format %v", otherFormat)
 			}
 
 			pumpConfig := newReplicationPumpConfig(
@@ -102,8 +112,8 @@ func TestSnapshotInstallerSelectionMatchesRuntimeAndIsShared(t *testing.T) {
 				PeerConfig{}, nil, ReplicationConfig{}, AntiEntropyConfig{}, nil,
 				primary, nil, logger, selection,
 			)
-			if pumpConfig.SnapshotInstaller != selection.selected() ||
-				antiEntropyConfig.SnapshotInstaller != selection.selected() ||
+			if pumpConfig.SnapshotInstaller != selected ||
+				antiEntropyConfig.SnapshotInstaller != selected ||
 				pumpConfig.SnapshotInstaller != antiEntropyConfig.SnapshotInstaller {
 				t.Fatal("Pump and anti-entropy did not receive the exact shared installer")
 			}

@@ -884,18 +884,28 @@ asynchronously replicated cluster. Local append failures and any graph change
 that cannot be published must force existing and new CDC streams into a
 detectable fail-closed recovery state. #1282 closes the remote relay
 boundary, and #1293 closes local Put/Delete graph-first publication. The
-Pump and anti-entropy Snapshot installers also close the current CDC
-generation before replaying graph frames: those changes have no individual
-local-log entries. New streams remain gapped throughout replay, and an
-interrupted or invalid Snapshot keeps that gap until a later verified install
-advances the origin watermarks. A fresh bootstrap then revalidates resident
-identities against the repaired responder. The server identity projection,
-typed SDK facades, and storage-neutral mobile consumer are implemented;
-physical-device release qualification retains its separate #1314 gate.
+Pump and anti-entropy stage a graph-only Snapshot without changing the current
+CDC generation. Only after the complete source stream, final status and original
+native admission are verified does the live installer close that generation
+before replaying graph frames: those changes have no individual local-log
+entries. This still invalidates locally owned tokens from the old generation;
+staging does not preserve them across a later live install. New streams remain
+gapped throughout live replay, and an interrupted live install keeps that gap
+until a later verified install advances the origin watermarks. A fresh bootstrap
+then revalidates resident identities against the repaired responder. The server
+identity projection, typed SDK facades, and storage-neutral mobile consumer are
+implemented; physical-device release qualification retains its separate #1314
+gate.
 
-Graph-only replay applies frames to the serving cache as they arrive. A later
-invalid frame may leave earlier frames in that cache, but public graph-data
-reads (including prefix/dry-run queries, search, traversal, degree ranking,
+Graph-only staging retains a bounded encoded candidate in memory without
+temporary files. Framing/body-validation failures, exceeded staging limits,
+incomplete streams and non-OK source status are rejected before live Snapshot
+admission, preserving an existing healthy generation and its tokens; staging
+does not clear a pre-existing repair fault. Runtime application and watermark
+validation can still fail during live replay and retain the repair fault.
+The subsequent live replay applies the validated frames to the serving cache
+under the existing fail-closed install gate. Public graph-data reads
+(including prefix/dry-run queries, search, traversal, degree ranking,
 and backup) hold a Snapshot-admission read latch across their GraphCache
 access, detach returned Vertex values before releasing it, and return
 `FAILED_PRECONDITION` throughout an active or failed install. Snapshot
@@ -1163,10 +1173,28 @@ Framing contract:
   Connect rejects any frame over the configured decompressed per-message limit
   before protobuf unmarshal, and a request-local codec charges the exact
   decompressed protobuf payload bytes, including duplicate known fields,
-  against a separate stream transport budget. The collector's deterministic
-  length-prefixed spool has its own canonical-byte limit. Its total-frame cap
-  is exactly header + footer + the independent active-row, retired-row, and
-  graph-frame maxima, so no section borrows another section's capacity.
+  against a separate stream transport budget. The receipt collector's
+  deterministic length-prefixed spool has its own canonical-byte limit. Its
+  total-frame cap is exactly header + footer + the independent active-row,
+  retired-row, and graph-frame maxima, so no section borrows another section's
+  capacity.
+- The graph-only installer first stages the complete stream in memory and
+  verifies frame validity, counts, EOF and the source's final status before
+  beginning live replay. It rechecks the original native admission and request
+  deadline at that boundary; staging never grants a fresh deadline or admission.
+  Production limits are 32 MiB per frame, 64 MiB of decompressed transport
+  payload, 64 MiB of retained encoded candidate bytes, 1,048,576 frames, 65,536
+  origins, and a separate 64 MiB identity-metadata budget. Each entry in the
+  duplicate edge/contribution identity maps charges its tail and head key bytes
+  plus 128 bytes of conservative accounting; that charge is not a measurement
+  of Go map heap usage.
+  The origin cap is checked before retaining or cloning the header. Oversized
+  candidates are rejected before live publication. The frame index, validation
+  maps and current decoded frame are outside the encoded-byte quota; the
+  independent frame-count, identity and origin limits constrain those owners
+  without promising a whole-process heap ceiling. The responder's
+  existing 64 MiB aggregate tail-reservation budget is independent of this
+  receiver staging budget. No temporary directory or disk spool is required.
 - Every live vertex frame is self-describing and non-nil. In particular,
   endpoint vertices auto-created by `PutEdge*` / `AddEdge*` are serialized as a
   concrete `Vertex` carrying the endpoint key, expiration, and `nil` value arm;
@@ -1278,17 +1306,21 @@ Implementation notes:
   cut before sampling the cutoff; overflow fails closed. Any malformed capture
   therefore sends no partial image. The ordinary graph-only producer and wire
   behavior are unchanged.
-- Provider selection is runtime-aware. Graph-only mode passes no override and
-  retains the historical in-place `GRAPH_ONLY_V1` installer. Durable
-  receipt-WAL mode creates one bounded collector-backed installer after
-  service/runtime certification and injects that same instance into Pump and
-  anti-entropy, preventing their format policy or install serialization from
+- Provider selection is runtime-aware. Graph-only mode creates one bounded
+  staging `GRAPH_ONLY_V1` installer after service/runtime certification and
+  injects that same instance into Pump and anti-entropy. One single-flight guard
+  covers collection and live replay, rejecting a competing installer before it
+  changes serving state. Durable receipt-WAL mode creates one bounded
+  collector-backed installer and likewise shares the exact instance between
+  both consumers, preventing their format policy or install serialization from
   diverging. Live durable installs serialize sidecar creation through marker
   publication. Success retains only the committed digest; definite
   pre-marker rejection removes its candidate; an indeterminate marker outcome
   or publication panic retains the candidate and fail-stops serving. A
   post-commit cleanup error is logged without turning a committed install into
   an apparent rejection.
+  These staging bounds do not establish configured-source, sustained-load or
+  whole-process memory acceptance for the candidate.
 - A fresh receiver can start with a Store clock ahead of a quiescent source's
   valid `RECEIPT` Snapshot high-water. The private baseline installer may use
   `max(source high-water, receiver high-water)` only after proving the receiver

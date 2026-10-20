@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -949,8 +950,8 @@ func marshalSnapshotTransportFrame(t *testing.T, frame *pb.SnapshotResponse) []b
 func TestSnapshotTransportLimitsAreExplicitAndGraphOnlyPreserving(t *testing.T) {
 	if limits, bounded, err := snapshotTransportLimitsFor(
 		newGraphOnlySnapshotInstaller(nil, nil),
-	); err != nil || bounded || limits != (SnapshotTransportLimits{}) {
-		t.Fatalf("graph-only transport limits = (%+v, %t, %v), want unchanged", limits, bounded, err)
+	); err != nil || !bounded || limits != (SnapshotTransportLimits{MaxFrameBytes: 32 << 20, MaxStreamBytes: 64 << 20}) {
+		t.Fatalf("graph-only transport limits = (%+v, %t, %v), want bounded 32 MiB frame / 64 MiB stream", limits, bounded, err)
 	}
 
 	valid := &scriptedSnapshotInstaller{
@@ -1389,16 +1390,18 @@ func TestGraphOnlySnapshotInstallerRejectsInvalidContributionRemoval(t *testing.
 			frames := tc.change(graphContributionTombstoneFrames())
 			var events []string
 			applier := &snapshotLifecycleMutationApplier{events: &events}
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			before := cache.SnapshotReplication()
 			_, err := installSnapshot(t.Context(),
-				newGraphOnlySnapshotInstaller(applier, graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)),
+				newGraphOnlySnapshotInstaller(applier, cache),
 				&snapshotSliceStream{frames: frames},
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("malformed Snapshot = %v, want %q", err, tc.want)
 			}
-			if len(applier.finishes) != 1 || applier.finishes[0] ||
-				applier.cutoffs != nil {
-				t.Fatalf("invalid Snapshot published a verified watermark: %+v", applier)
+			if len(events) != 0 || len(applier.finishes) != 0 || applier.cutoffs != nil ||
+				applier.watermarkHLC != (hlc.Timestamp{}) || !reflect.DeepEqual(cache.SnapshotReplication(), before) {
+				t.Fatalf("invalid Snapshot changed graph, tombstones or install lifecycle before validation: events=%v applier=%+v", events, applier)
 			}
 		})
 	}
@@ -1522,6 +1525,13 @@ func TestGraphOnlySnapshotInstallerLifecycle(t *testing.T) {
 			if err == nil {
 				t.Fatal("incomplete install succeeded")
 			}
+			if tc.watermarkErr == nil {
+				if len(events) != 0 || len(apply.finishes) != 0 || apply.cutoffs != nil ||
+					apply.watermarkHLC != (hlc.Timestamp{}) || len(graph.putEdges) != 0 || len(graph.addEdges) != 0 || len(graph.derivedEdges) != 0 {
+					t.Fatalf("invalid or truncated input caused install, graph, index or watermark effects: events=%v finishes=%v graph=%+v cutoffs=%v", events, apply.finishes, graph, apply.cutoffs)
+				}
+				return
+			}
 			if len(apply.finishes) != 1 || apply.finishes[0] {
 				t.Fatalf("finish calls = %v, want [false]", apply.finishes)
 			}
@@ -1574,7 +1584,7 @@ func TestGraphOnlySnapshotInstallerValidatesVertexTimes(t *testing.T) {
 				newGraphOnlySnapshotInstaller(&snapshotLifecycleMutationApplier{events: &events}, &snapshotLifecycleGraph{events: &events}),
 				&snapshotSliceStream{frames: frames},
 			)
-			if err == nil || slices.Contains(events, "vertex") {
+			if err == nil || len(events) != 0 {
 				t.Fatalf("invalid snapshot vertex = %v, events = %v", err, events)
 			}
 		})
@@ -1619,10 +1629,10 @@ func TestGraphOnlySnapshotInstallerRejectsNonFiniteEdgeBeforeApply(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "non-finite live edge contribution weight") {
 		t.Fatalf("invalid Snapshot install = %v, want source contribution error", err)
 	}
-	if len(graph.putEdges) != 0 || len(graph.addEdges) != 0 ||
-		len(apply.finishes) != 1 || apply.finishes[0] || apply.cutoffs != nil {
-		t.Fatalf("invalid Snapshot partially installed edge or watermark: puts=%v adds=%v finishes=%v cutoffs=%v",
-			graph.putEdges, graph.addEdges, apply.finishes, apply.cutoffs)
+	if len(events) != 0 || len(graph.putEdges) != 0 || len(graph.addEdges) != 0 ||
+		len(apply.finishes) != 0 || apply.cutoffs != nil || apply.watermarkHLC != (hlc.Timestamp{}) {
+		t.Fatalf("invalid Snapshot caused install, graph, index or watermark effects: events=%v puts=%v adds=%v finishes=%v cutoffs=%v",
+			events, graph.putEdges, graph.addEdges, apply.finishes, apply.cutoffs)
 	}
 }
 
@@ -1678,8 +1688,8 @@ func TestGraphOnlySnapshotInstallerDerivedAggregate(t *testing.T) {
 			&snapshotSliceStream{frames: frames},
 		)
 		if err == nil || !strings.Contains(err.Error(), "non-finite live edge contribution weight") ||
-			len(graph.derivedEdges) != 0 || len(graph.addEdges) != 0 ||
-			len(apply.finishes) != 1 || apply.finishes[0] || apply.cutoffs != nil {
+			len(events) != 0 || len(graph.derivedEdges) != 0 || len(graph.addEdges) != 0 || len(graph.putEdges) != 0 ||
+			len(apply.finishes) != 0 || apply.cutoffs != nil || apply.watermarkHLC != (hlc.Timestamp{}) {
 			t.Fatalf("malformed nested Add installed base or watermark: %v, graph=%+v, finish=%v, cutoffs=%v",
 				err, graph, apply.finishes, apply.cutoffs)
 		}
@@ -1700,8 +1710,8 @@ func TestGraphOnlySnapshotInstallerDerivedAggregate(t *testing.T) {
 			&snapshotSliceStream{frames: frames},
 		)
 		if err == nil || !strings.Contains(err.Error(), "duplicate live edge frame") ||
-			len(graph.derivedEdges) != 1 || len(graph.addEdges) != 1 || len(graph.putEdges) != 0 ||
-			len(apply.finishes) != 1 || apply.finishes[0] || apply.cutoffs != nil {
+			len(events) != 0 || len(graph.derivedEdges) != 0 || len(graph.addEdges) != 0 || len(graph.putEdges) != 0 ||
+			len(apply.finishes) != 0 || apply.cutoffs != nil || apply.watermarkHLC != (hlc.Timestamp{}) {
 			t.Fatalf("duplicate frame changed edge/watermark: %v, graph=%+v, finish=%v, cutoffs=%v",
 				err, graph, apply.finishes, apply.cutoffs)
 		}

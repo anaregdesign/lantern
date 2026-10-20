@@ -521,3 +521,133 @@ func TestSnapshotTailReplayFinishRechecksAdmissionAfterCoreWait(t *testing.T) {
 		})
 	}
 }
+
+// Unlike the tiny-buffer diagnostic test, these controls use the production
+// 512-entry queue and join the real watcher while Snapshot is held at its
+// header. The original core error separates pure ring eviction from an actual
+// boundary commit even though their later finish diagnostics are identical.
+func TestSnapshotTailReplayFinishDiagnosticConflatesEvictionAndCommittedBoundary(t *testing.T) {
+	for _, scenario := range []struct {
+		name        string
+		capacity    int
+		boundary    bool
+		unavailable bool
+		first, last uint64
+	}{
+		{name: "retained replay", capacity: 4 * maxSnapshotTailEntries, first: 1, last: 1033},
+		{name: "pure eviction after queue overflow", capacity: 2 * maxSnapshotTailEntries, unavailable: true, first: 10, last: 1033},
+		{name: "committed boundary with empty queue", capacity: 2 * maxSnapshotTailEntries, boundary: true, unavailable: true, first: 10, last: 9},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			fixture := newSnapshotTailReplayFixture(t, scenario.capacity)
+			auth := newSnapshotTailAdmissionFixture(t, 1)
+			original, cancel := auth.context(t, 0, 10*time.Second)
+			defer cancel()
+			deadline, _ := original.Deadline()
+			responseHeader := make(http.Header)
+			var tail *snapshotTail
+			defer func() {
+				if tail != nil {
+					tail.Close()
+				}
+			}()
+			recorder := &replicationSnapshotRecorder{onSend: func(frame *pb.SnapshotResponse) error {
+				header := frame.GetHeader()
+				if header == nil {
+					return nil
+				}
+				m := fixture.replica.snapshotTails
+				m.mu.Lock()
+				tail = m.active[responseHeader.Get(SnapshotTailHeader)]
+				m.mu.Unlock()
+				if tail == nil || header.GetCutoffLocalSeq() != 8 || cap(tail.subscription.Entries()) != maxSnapshotTailEntries {
+					t.Fatal("Snapshot did not capture cut 8 with the production 512-entry queue")
+				}
+				origins := maps.Clone(tail.origins)
+				admission := tail.admission
+				writes := 0
+				appendBounded := func(count int) {
+					t.Helper()
+					for range count {
+						if _, err := fixture.primary.PutVertices(t.Context(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{
+							Key: "replay-value", Value: &pb.Vertex_String_{String_: fmt.Sprintf("diagnostic-write-%d", writes)},
+						}}}); err != nil {
+							t.Fatal(err)
+						}
+						writes++
+						m.mu.Lock()
+						entries, bytes := tail.entries, tail.bytes
+						totalEntries, totalBytes := m.totalEntries, m.totalBytes
+						m.mu.Unlock()
+						if entries < 0 || entries > maxSnapshotTailEntries || bytes < 0 || bytes > maxSnapshotTailBytes ||
+							totalEntries != entries || totalBytes != bytes || totalEntries > maxSnapshotTotalEntries || totalBytes > maxSnapshotTotalBytes {
+							t.Fatalf("tail exceeded or lost its credits: owner=%d/%d total=%d/%d", entries, bytes, totalEntries, totalBytes)
+						}
+					}
+				}
+				if scenario.boundary {
+					if len(tail.subscription.Entries()) != 0 || tail.subscription.Err() != nil {
+						t.Fatal("boundary control did not start with an empty healthy queue")
+					}
+					// Invoke the genuine core invalidation API; this controlled
+					// marker proves its terminal cause, not receipt-baseline validity.
+					marker, err := fixture.log.CommitBoundaryWithPostRingPublication("diagnostic boundary", fixture.primary.clock.Now(), nil)
+					if err != nil || marker.Seq != 9 || fixture.log.Len() != 0 {
+						t.Fatalf("controlled boundary commit failed: seq=%d retained=%d err=%v", marker.Seq, fixture.log.Len(), err)
+					}
+					if !errors.Is(tail.subscription.Err(), mutationlog.ErrGapped) || errors.Is(tail.subscription.Err(), mutationlog.ErrTailQueueFull) {
+						t.Fatal("empty-queue boundary did not report its distinct ErrGapped cause")
+					}
+				} else {
+					appendBounded(maxSnapshotTailEntries + 1)
+					requireSnapshotTailReplayStandby(t, tail)
+					appendBounded(maxSnapshotTailEntries)
+					if !errors.Is(tail.subscription.Err(), mutationlog.ErrTailQueueFull) || errors.Is(tail.subscription.Err(), mutationlog.ErrGapped) {
+						t.Fatal("ordinary writes changed the original queue-full cause into a boundary")
+					}
+				}
+				first, _ := fixture.log.FirstSeq()
+				last, _ := fixture.log.LastSeq()
+				if first != scenario.first || last != scenario.last || tail.local != 8 || tail.deadline != deadline ||
+					tail.admission != admission || !maps.Equal(tail.origins, origins) {
+					t.Fatalf("controlled history or original owner changed: first=%d last=%d cut=%d", first, last, tail.local)
+				}
+				if scenario.unavailable {
+					// Hold Send until the actual watcher has observed either
+					// eviction or boundary and completed owner cleanup. Only then
+					// does Snapshot send its footer and reach the finish guard.
+					waitSnapshotTailStopped(t, tail)
+					assertSnapshotTailEmpty(t, fixture.replica)
+				} else {
+					requireSnapshotTailReplayStandby(t, tail)
+					if err := tail.subscription.ValidateReplay(9); err != nil {
+						t.Fatalf("retained control lost the original replay cut: %v", err)
+					}
+				}
+				return nil
+			}}
+			err := fixture.replica.Snapshot(WithReplicationTailMetadata(original, []string{"reserve"}, responseHeader),
+				&pb.SnapshotRequest{RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1}, recorder)
+			if len(recorder.frames) == 0 || recorder.frames[len(recorder.frames)-1].GetFooter() == nil {
+				t.Fatal("controlled Snapshot did not send its footer before the finish result")
+			}
+			if scenario.unavailable {
+				assertSnapshotTailDiagnostic(t, err, "finish", "subscription_terminal", "log_boundary")
+				if tail.ready {
+					t.Fatal("invalidated Snapshot became claimable")
+				}
+				assertSnapshotTailEmpty(t, fixture.replica)
+				return
+			}
+			tail.manager.mu.Lock()
+			ready, closed, claimed := tail.ready, tail.closed, tail.claimed
+			tail.manager.mu.Unlock()
+			if err != nil || !ready || closed || claimed || tail.local != 8 || tail.deadline != deadline {
+				t.Fatalf("retained control did not finish with its original owner: err=%v", err)
+			}
+			requireSnapshotTailReplayStandby(t, tail)
+			tail.Close()
+			assertSnapshotTailEmpty(t, fixture.replica)
+		})
+	}
+}

@@ -281,10 +281,9 @@ func startTailMetadataPeer(t *testing.T, peer *installerTestPeer) (*httptest.Ser
 	server.EnableHTTP2 = true
 	server.StartTLS()
 	t.Cleanup(server.Close)
-	transport, err := NewVerifiedPeerTransport(server.Client(), func(origin string) bool { return origin == server.URL })
-	if err != nil {
-		t.Fatal(err)
-	}
+	// This test-owned adapter approves only its TLS endpoint. It does not
+	// classify the synthetic response as certified workload admission.
+	transport := &PeerTransport{client: server.Client(), staticPeers: map[string]struct{}{server.URL: {}}}
 	return server, transport
 }
 

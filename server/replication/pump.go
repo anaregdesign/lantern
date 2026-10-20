@@ -257,16 +257,25 @@ type graphOnlySnapshotInstaller struct {
 	apply MutationApplier
 	snap  SnapshotApplier
 	marks snapshotWatermarkApplier
+
+	stageMu sync.Mutex
+	limits  graphSnapshotStageLimits
 }
 
 func newGraphOnlySnapshotInstaller(apply MutationApplier, snap SnapshotApplier) SnapshotInstaller {
 	installer := &graphOnlySnapshotInstaller{
-		apply: apply, snap: snap,
+		apply: apply, snap: snap, limits: defaultGraphSnapshotStageLimits(),
 	}
 	if marks, ok := apply.(snapshotWatermarkApplier); ok {
 		installer.marks = marks
 	}
 	return installer
+}
+
+// NewGraphOnlySnapshotInstaller returns one bounded receiver strategy. A serving
+// runtime shares this instance between its Pump and anti-entropy workers.
+func NewGraphOnlySnapshotInstaller(apply MutationApplier, snap SnapshotApplier) SnapshotInstaller {
+	return newGraphOnlySnapshotInstaller(apply, snap)
 }
 
 func (*graphOnlySnapshotInstaller) RequiredFormat() pb.SnapshotFormat {
@@ -397,6 +406,11 @@ func installSnapshot(
 ) (SnapshotInstallResult, error) {
 	if installer == nil {
 		return SnapshotInstallResult{}, snapshotProtocolError("no installer configured")
+	}
+	// The bounded graph strategy owns admission before the first decoded frame
+	// and validates/clones its header as part of the complete staged image.
+	if graph, ok := installer.(*graphOnlySnapshotInstaller); ok {
+		return graph.Install(ctx, stream)
 	}
 	if !stream.Receive() {
 		if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
@@ -666,7 +680,7 @@ func snapshotEdgeRows(edge *pb.SnapshotEdge) ([]snapshotEdgeRow, error) {
 	return rows, nil
 }
 
-func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotStream) (SnapshotInstallResult, error) {
+func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream SnapshotStream, publish bool) (SnapshotInstallResult, error) {
 	var finishInstall func(bool)
 	defer func() {
 		if finishInstall != nil {
@@ -678,11 +692,24 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 	var replay snapshotReplayState
 	var seenEdges map[graphcache.EdgeKey[string]]struct{}
 	var seenContributionTombstones map[graphcache.EdgeContributionKey[string]]struct{}
+	var identityBytes uint64
 	for stream.Receive() {
+		if err := checkSnapshotContext(ctx); err != nil {
+			return SnapshotInstallResult{}, err
+		}
 		resp := stream.Msg()
 		switch e := resp.GetEntry().(type) {
 		case *pb.SnapshotResponse_Header:
 			if err := replay.acceptHeader(e.Header); err != nil {
+				return SnapshotInstallResult{}, err
+			}
+			if len(e.Header.GetCutoffSeqPerOrigin()) > i.limits.maxOrigins {
+				return SnapshotInstallResult{}, graphSnapshotLimitError("origin count")
+			}
+			if !publish {
+				continue
+			}
+			if err := checkSnapshotContext(ctx); err != nil {
 				return SnapshotInstallResult{}, err
 			}
 			var err error
@@ -709,7 +736,9 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 			if err != nil || barrier.GetKey() == "" {
 				return SnapshotInstallResult{}, snapshotProtocolError("invalid vertex causal barrier")
 			}
-			i.snap.ApplyVertexCausalBarrierHLC(barrier.GetKey(), ts)
+			if publish {
+				i.snap.ApplyVertexCausalBarrierHLC(barrier.GetKey(), ts)
+			}
 			replay.counts.vertexBarrier++
 		case *pb.SnapshotResponse_EdgeCausalBarrier:
 			if err := replay.acceptBody("edge causal barrier", snapshotPhaseEdgeBarrier); err != nil {
@@ -723,7 +752,9 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 			if err != nil || barrier.GetTail() == "" || barrier.GetHead() == "" {
 				return SnapshotInstallResult{}, snapshotProtocolError("invalid edge causal barrier")
 			}
-			i.snap.ApplyEdgeCausalBarrierHLC(barrier.GetTail(), barrier.GetHead(), ts)
+			if publish {
+				i.snap.ApplyEdgeCausalBarrierHLC(barrier.GetTail(), barrier.GetHead(), ts)
+			}
 			replay.counts.edgeBarrier++
 		case *pb.SnapshotResponse_VertexTombstone:
 			if err := replay.acceptBody("vertex tombstone", snapshotPhaseVertexTombstone); err != nil {
@@ -737,7 +768,9 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 			if err != nil {
 				return SnapshotInstallResult{}, err
 			}
-			i.snap.ApplySnapshotVertexTombstoneHLC(marker.GetKey(), ts, exp)
+			if publish {
+				i.snap.ApplySnapshotVertexTombstoneHLC(marker.GetKey(), ts, exp)
+			}
 			replay.counts.vertexTombstone++
 		case *pb.SnapshotResponse_EdgeTombstone:
 			if err := replay.acceptBody("edge tombstone", snapshotPhaseEdgeTombstone); err != nil {
@@ -751,7 +784,9 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 			if err != nil {
 				return SnapshotInstallResult{}, err
 			}
-			i.snap.ApplySnapshotEdgeTombstoneHLC(marker.GetTail(), marker.GetHead(), ts, exp)
+			if publish {
+				i.snap.ApplySnapshotEdgeTombstoneHLC(marker.GetTail(), marker.GetHead(), ts, exp)
+			}
 			replay.counts.edgeTombstone++
 		case *pb.SnapshotResponse_EdgeContributionTombstone:
 			if err := replay.acceptBody("edge contribution tombstone", snapshotPhaseEdgeContributionTombstone); err != nil {
@@ -788,9 +823,14 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 			if seenContributionTombstones == nil {
 				seenContributionTombstones = make(map[graphcache.EdgeContributionKey[string]]struct{})
 			}
+			if err := i.retainSnapshotIdentity(&identityBytes, key.Tail, key.Head); err != nil {
+				return SnapshotInstallResult{}, err
+			}
 			seenContributionTombstones[key] = struct{}{}
-			if err := i.snap.ApplySnapshotEdgeContributionTombstoneHLC(key, ts, exp); err != nil {
-				return SnapshotInstallResult{}, snapshotProtocolError("apply edge contribution tombstone: %v", err)
+			if publish {
+				if err := i.snap.ApplySnapshotEdgeContributionTombstoneHLC(key, ts, exp); err != nil {
+					return SnapshotInstallResult{}, snapshotProtocolError("apply edge contribution tombstone: %v", err)
+				}
 			}
 			replay.counts.edgeContributionTombstone++
 		case *pb.SnapshotResponse_Vertex:
@@ -810,10 +850,12 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 			if err != nil {
 				return SnapshotInstallResult{}, snapshotProtocolError("invalid live vertex expiration: %v", err)
 			}
-			i.snap.PutVertexWithExpirationHLC(
-				v.GetKey(), v, expiration,
-				snapshotHLC(sv.GetHlc()),
-			)
+			if publish {
+				i.snap.PutVertexWithExpirationHLC(
+					v.GetKey(), v, expiration,
+					snapshotHLC(sv.GetHlc()),
+				)
+			}
 			replay.counts.vertices++
 		case *pb.SnapshotResponse_Edge:
 			if err := replay.acceptBody("edge", snapshotPhaseEdge); err != nil {
@@ -834,6 +876,9 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 			if seenEdges == nil {
 				seenEdges = make(map[graphcache.EdgeKey[string]]struct{})
 			}
+			if err := i.retainSnapshotIdentity(&identityBytes, identity.Tail, identity.Head); err != nil {
+				return SnapshotInstallResult{}, err
+			}
 			seenEdges[identity] = struct{}{}
 			for _, row := range rows {
 				if row.contribID.IsZero() {
@@ -846,7 +891,15 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 					return SnapshotInstallResult{}, snapshotProtocolError("live edge Add and contribution tombstone overlap")
 				}
 			}
+			if se.GetNoEndpointCreation() {
+				if _, ok := i.snap.(snapshotEdgeEffectApplier); !ok {
+					return SnapshotInstallResult{}, snapshotProtocolError("snapshot installer does not support Edge-only effects")
+				}
+			}
 			for _, row := range rows {
+				if !publish {
+					continue
+				}
 				if err := applySnapshotEdgeEffect(i.snap, se, row); err != nil {
 					return SnapshotInstallResult{}, err
 				}
@@ -866,10 +919,19 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 	if err := replay.validateComplete(); err != nil {
 		return SnapshotInstallResult{}, err
 	}
+	if err := checkSnapshotContext(ctx); err != nil {
+		return SnapshotInstallResult{}, err
+	}
+	if !publish {
+		return SnapshotInstallResult{}, nil
+	}
 	if recovery != nil {
 		if err := recovery.CompleteSearchIndexRecovery(); err != nil {
 			searchIndexErr = err
 		}
+	}
+	if err := checkSnapshotContext(ctx); err != nil {
+		return SnapshotInstallResult{}, err
 	}
 	if i.marks != nil {
 		if err := i.marks.ApplySnapshotWatermarks(
@@ -878,6 +940,9 @@ func (i *graphOnlySnapshotInstaller) Install(_ context.Context, stream SnapshotS
 		); err != nil {
 			return SnapshotInstallResult{}, err
 		}
+	}
+	if err := checkSnapshotContext(ctx); err != nil {
+		return SnapshotInstallResult{}, err
 	}
 	if finishInstall != nil {
 		finishInstall(true)
@@ -983,7 +1048,7 @@ type Config struct {
 	// used when nil.
 	Metrics Metrics
 
-	// SnapshotInstaller overrides the graph-only in-place installer. nil keeps
+	// SnapshotInstaller overrides the bounded graph-only staging installer. nil keeps
 	// the existing GRAPH_ONLY_V1 behavior using apply and snap passed to
 	// NewPump. A durable receipt installer requires RECEIPT without
 	// changing the Pump transport or retry driver.
@@ -1475,7 +1540,8 @@ func (p *Pump) snapshotCapture(ctx context.Context, addr string, reserveTail boo
 	if err != nil {
 		return nil, "", err
 	}
-	cli, err := newSnapshotClient(p.cfg.HTTPClient, baseURL, p.installer)
+	ctx, client := snapshotRequestContext(ctx, p.cfg.HTTPClient, p.cfg.PeerTransport != nil && p.cfg.PeerTransport.approvedOrigin != nil)
+	cli, err := newSnapshotClient(client, baseURL, p.installer)
 	if err != nil {
 		return nil, "", err
 	}
