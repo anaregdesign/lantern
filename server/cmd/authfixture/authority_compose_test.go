@@ -30,8 +30,15 @@ func TestComposeFixtureIsolatesWorkloadSecretsAndRenewsSameCohort(t *testing.T) 
 					t.Fatal(err)
 				}
 			}
-			if err := exportComposeFixture(&result, dir); err != nil {
-				t.Fatal(err)
+			exportErr := exportComposeFixture(&result, dir)
+			if mode == "off" {
+				if exportErr == nil || !strings.Contains(exportErr.Error(), "dedicated private Snapshot spool storage") {
+					t.Fatal("graph-only Compose topology did not fail closed before private spool preparation", exportErr)
+				}
+				return
+			}
+			if exportErr != nil {
+				t.Fatal(exportErr)
 			}
 			for i, node := range result.Nodes {
 				service := "lantern-" + string(rune('0'+i))

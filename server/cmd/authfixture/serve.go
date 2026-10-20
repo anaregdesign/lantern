@@ -114,6 +114,9 @@ func addFixtureReceipts(result *fixture, dir string) error {
 		if env["LANTERN_AUTH_MODE"] != "oidc" {
 			return errors.New("public receipt fixtures require OIDC admission")
 		}
+		delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR")
+		delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES")
+		delete(env, "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES")
 		env["LANTERN_RECEIPT_WAL_MODE"] = "fresh"
 		env["LANTERN_RECEIPT_WAL_PATH"] = filepath.Join(dir, result.Nodes[i].Name+"-receipts.wal")
 		env["LANTERN_RECEIPT_EPOCH"] = hex.EncodeToString(epoch[:])

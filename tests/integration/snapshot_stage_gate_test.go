@@ -1,7 +1,9 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -90,6 +92,7 @@ type snapshotStageGateResult struct {
 	header                    *pb.SnapshotHeader
 	footer                    *pb.SnapshotFooter
 	vertices                  int
+	transportBytes            uint64
 	completeEOF               bool
 }
 
@@ -136,6 +139,7 @@ func (s *snapshotStageGateStream) Receive() bool {
 		return false
 	}
 	frame := s.Msg()
+	s.result.transportBytes += uint64(proto.Size(frame))
 	switch {
 	case frame.GetHeader() != nil:
 		s.result.header = proto.Clone(frame.GetHeader()).(*pb.SnapshotHeader)
@@ -150,18 +154,38 @@ func (s *snapshotStageGateStream) Receive() bool {
 
 type snapshotStageGatePeer struct {
 	graphv1connect.LanternReplicationServiceHandler
-	source  *service.LanternReplicationService
-	block   bool
-	held    chan struct{}
-	stopped chan error
+	source             *service.LanternReplicationService
+	block              bool
+	held               chan struct{}
+	stopped            chan error
+	snapshots, dropped atomic.Int32
 }
 
 func (p *snapshotStageGatePeer) Snapshot(ctx context.Context, request *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
+	p.snapshots.Add(1)
 	ctx = service.WithReplicationTailMetadata(ctx, request.Header().Values(service.SnapshotTailHeader), stream.ResponseHeader())
 	err := p.source.Snapshot(ctx, request.Msg, snapshotStageGateSender{ctx: ctx, stream: stream, peer: p})
-	p.stopped <- err
+	select {
+	case p.stopped <- err:
+	default:
+		p.dropped.Add(1)
+	}
 	return err
 }
+
+// This terminal stream proves only that an existing disk owner can be
+// reacquired. It carries no native admission and never supplies a live image.
+type snapshotStageGateTerminalStream struct {
+	err      error
+	receives int
+}
+
+func (s *snapshotStageGateTerminalStream) Receive() bool {
+	s.receives++
+	return false
+}
+func (*snapshotStageGateTerminalStream) Msg() *pb.SnapshotResponse { return nil }
+func (s *snapshotStageGateTerminalStream) Err() error              { return s.err }
 
 type snapshotStageGateSender struct {
 	ctx    context.Context
@@ -174,7 +198,11 @@ func (s snapshotStageGateSender) Send(frame *pb.SnapshotResponse) error {
 		return err
 	}
 	if s.peer.block && frame.GetHeader() != nil {
-		s.peer.held <- struct{}{}
+		select {
+		case s.peer.held <- struct{}{}:
+		default:
+			s.peer.dropped.Add(1)
+		}
 		<-s.ctx.Done()
 		return s.ctx.Err()
 	}
@@ -269,7 +297,8 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 			beforeSeq, beforeHasSeq := fixture.logs[1].LastSeq()
 			apply := &snapshotStageGateApply{LanternService: fixture.primary[1]}
 			graph := &snapshotStageGateGraph{GraphCache: graphs[1]}
-			delegate := replication.NewGraphOnlySnapshotInstaller(apply, graph)
+			spool := graphSnapshotSpoolConfig(t)
+			delegate := replication.NewGraphOnlySnapshotInstaller(apply, graph, spool)
 			bounded, ok := delegate.(interface {
 				SnapshotTransportLimits() replication.SnapshotTransportLimits
 			})
@@ -302,7 +331,7 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			pump := replication.NewPump(replication.Config{
+			pump := replication.NewPump(replication.Config{SnapshotSpool: spool,
 				NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{fixture.servers[0].URL},
 				PeerTransport: transport, SnapshotInstaller: installer,
 				BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
@@ -373,6 +402,9 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("native source handler did not join", ctx.Err())
 			}
+			if peer.snapshots.Load() != 1 || peer.dropped.Load() != 0 {
+				t.Fatalf("native case retried or lost its initial completion: snapshots=%d dropped=%d", peer.snapshots.Load(), peer.dropped.Load())
+			}
 			fresh := graphv1connect.NewLanternReplicationServiceClient(fixture.runtimes[1].HTTPClient(), fixture.servers[0].URL)
 			status, err := fresh.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{NamespaceFormat: "namespaced-v1"}))
 			if err != nil || len(status.Msg.GetOrigins()) != 1 || status.Msg.GetOrigins()[0].GetLastSeq() != 8 {
@@ -428,6 +460,169 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 			} else if err != nil || resident.GetVertex().GetString_() != "value" {
 				t.Fatalf("healthy resident became unavailable: %v, %v", resident, err)
 			}
+			assertGraphSnapshotSpoolReleased(t, spool)
+			// A complete source may legitimately retain its original tail for
+			// this peer. Do not issue another native Snapshot or disturb that
+			// owner. This synthetic terminal input tests receiver disk lease
+			// reacquisition only, using the same strategy and directory.
+			terminalErr := errors.New("controlled local terminal stream for disk owner reuse")
+			terminal := &snapshotStageGateTerminalStream{err: terminalErr}
+			vertices := len(graphs[1].SnapshotReplication().Graph.Vertices)
+			sourceCursor := fixture.primary[1].LocalSeq(hlc.NodeID{3})
+			result, err := delegate.Install(ctx, terminal)
+			if err != terminalErr || terminal.receives != 1 || result.Header != nil || result.Graph != (replication.SnapshotGraphCounts{}) {
+				t.Fatalf("same receiver disk owner was not reacquired for one terminal Receive: receives=%d result=%+v err=%v", terminal.receives, result, err)
+			}
+			if apply.begins.Load() != wantBegin || apply.marks.Load() != wantReplay || apply.mutations.Load() != 0 ||
+				graph.indexBegins.Load() != wantReplay || graph.indexFinishes.Load() != wantReplay || apply.finishes.Load() != wantReplay ||
+				apply.verifiedFinishes.Load() != 0 || len(graphs[1].SnapshotReplication().Graph.Vertices) != vertices ||
+				fixture.primary[1].LocalSeq(hlc.NodeID{3}) != sourceCursor || fixture.primary[1].LocalSeq(hlc.NodeID{4}) != 1 ||
+				fixture.primary[1].SnapshotInstallActive() || fixture.primary[1].SnapshotRepairRequired() != (tc.priorFault || tc.expireFinish) {
+				t.Fatal("synthetic disk-owner check changed native case state")
+			}
+			assertGraphSnapshotSpoolReleased(t, spool)
 		})
 	}
+}
+
+func TestSnapshotStageNativeSpoolBeyondMemoryBoundary(t *testing.T) {
+	qualifiedUTC, began, owner := time.Now().UTC(), time.Now(), new(byte)
+	var graphs [2]*graphcache.GraphCache[string, *pb.Vertex]
+	var peer *snapshotStageGatePeer
+	fixture := newPeerSecurityFixture(t, peerSecurityOptions{
+		Now:        func() time.Time { return qualifiedUTC },
+		TimeBounds: func() (time.Time, time.Time, error) { return qualifiedUTC, qualifiedUTC, nil },
+		Time: func() (provider.PeerTimeObservation, error) {
+			return peerWireObservation{owner, qualifiedUTC, qualifiedUTC, time.Since(began)}, nil
+		},
+		IssuedBefore: time.Minute,
+		LogOptions:   func(int) mutationlog.Options { return mutationlog.Options{Capacity: 4} },
+		Mount: func(f *peerSecurityFixture, index int, runtime *service.ServingRuntime, mux *http.ServeMux) {
+			graphs[index] = runtime.GraphCache()
+			if index != 0 {
+				return
+			}
+			source, err := runtime.NewLanternReplicationService(f.primary[index])
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(source.CloseSnapshotTails)
+			peer = &snapshotStageGatePeer{
+				LanternReplicationServiceHandler: service.NewLanternReplicationServiceConnectHandler(source),
+				source:                           source, stopped: make(chan error, 1),
+			}
+			_, handler := graphv1connect.NewLanternReplicationServiceHandler(peer)
+			for _, method := range []string{"PeerStatus", "Snapshot", "Subscribe"} {
+				mux.Handle("/graph.v1.LanternReplicationService/"+method, handler)
+			}
+		},
+	})
+	// One incompressible payload per message keeps the real native transfer
+	// substantial as well as exceeding the old encoded 64 MiB stage limit.
+	payload := make([]byte, 1<<20)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	seedCtx, seedCancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer seedCancel()
+	for sequence := range 65 {
+		if _, err := fixture.primary[0].PutVertex(seedCtx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
+			Key: fmt.Sprintf("data:spool-large-%02d", sequence), Value: &pb.Vertex_Bytes{Bytes: payload},
+		}}); err != nil {
+			t.Fatal("large native source seed", err)
+		}
+	}
+	if _, err := fixture.primary[1].PutVertex(seedCtx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
+		Key: "data:spool-resident", Value: &pb.Vertex_String_{String_: "resident"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if first, ok := fixture.logs[0].FirstSeq(); !ok || first != 62 {
+		t.Fatalf("large source did not require Snapshot: retained first=%d present=%t", first, ok)
+	}
+	// Source preparation is outside this bounded native transfer. Its
+	// admission is minted by the ordinary transport and is never extended.
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	apply := &snapshotStageGateApply{LanternService: fixture.primary[1]}
+	graph := &snapshotStageGateGraph{GraphCache: graphs[1]}
+	spool := graphSnapshotSpoolConfig(t)
+	delegate := replication.NewGraphOnlySnapshotInstaller(apply, graph, spool)
+	bounded := delegate.(interface {
+		SnapshotTransportLimits() replication.SnapshotTransportLimits
+	})
+	installer := &snapshotStageGateInstaller{
+		SnapshotInstaller: delegate, limits: bounded.SnapshotTransportLimits(), stop: stop,
+		headers: make(chan struct{}, 1), results: make(chan snapshotStageGateResult, 1),
+	}
+	transport, err := provider.NewWorkloadPeerTransport(fixture.runtimes[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	pump := replication.NewPump(replication.Config{
+		SnapshotSpool: spool, NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{fixture.servers[0].URL},
+		PeerTransport: transport, SnapshotInstaller: installer, BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
+	}, apply, graph)
+	done := make(chan error, 1)
+	go func() { done <- pump.Run(runCtx) }()
+	joined := false
+	defer func() {
+		stop()
+		if !joined {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Error("large native spool Pump did not join during cleanup", ctx.Err())
+			}
+		}
+	}()
+	var observed snapshotStageGateResult
+	select {
+	case observed = <-installer.results:
+	case <-ctx.Done():
+		t.Fatal("large native Snapshot did not finish within its original caller budget", ctx.Err())
+	}
+	if observed.err != nil || observed.contextErr != nil || !observed.completeEOF || observed.header.GetCutoffLocalSeq() != 65 ||
+		observed.footer.GetVertexCount() != 65 || observed.vertices != 65 || observed.transportBytes <= 64<<20 {
+		t.Fatalf("large native spool result: %+v", observed)
+	}
+	select {
+	case err := <-done:
+		joined = true
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("large native spool Pump did not join", ctx.Err())
+	}
+	select {
+	case err := <-peer.stopped:
+		if err != nil {
+			t.Fatal("large native source did not finish normally", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("large native source did not join", ctx.Err())
+	}
+	if peer.snapshots.Load() != 1 || peer.dropped.Load() != 0 {
+		t.Fatalf("large native case retried or lost its completion: snapshots=%d dropped=%d", peer.snapshots.Load(), peer.dropped.Load())
+	}
+	if apply.begins.Load() != 1 || apply.marks.Load() != 1 || apply.finishes.Load() != 1 || apply.verifiedFinishes.Load() != 1 ||
+		graph.indexBegins.Load() != 1 || graph.indexFinishes.Load() != 1 || fixture.primary[1].SnapshotRepairRequired() || fixture.primary[1].SnapshotInstallActive() {
+		t.Fatal("large native Snapshot did not have exactly one verified live install")
+	}
+	for sequence := range 65 {
+		key := fmt.Sprintf("data:spool-large-%02d", sequence)
+		response, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: key})
+		if err != nil || !bytes.Equal(response.GetVertex().GetBytes(), payload) {
+			t.Fatalf("large native Snapshot lost exact value %d: %v", sequence, err)
+		}
+	}
+	resident, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:spool-resident"})
+	if err != nil || resident.GetVertex().GetString_() != "resident" || fixture.primary[1].LocalSeq(hlc.NodeID{3}) != 65 || fixture.primary[1].LocalSeq(hlc.NodeID{4}) != 1 {
+		t.Fatalf("large native Snapshot lost resident or origin cursors: %v, %v", resident, err)
+	}
+	assertGraphSnapshotSpoolReleased(t, spool)
+	t.Logf("native Snapshot accepted %d protobuf payload bytes across 65 frames using explicit %d-byte disk quota; verified once, owners joined; no configured-source or load qualification", observed.transportBytes, spool.MaxDiskBytes)
 }

@@ -449,7 +449,7 @@ func TestPeerSecurityOverflowInterruptsRealPrivateSendAndRepairsCursor(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			pump := replication.NewPump(replication.Config{NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{f.servers[0].URL}, PeerTransport: transport, BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond}, apply, receiveGraph)
+			pump := replication.NewPump(replication.Config{SnapshotSpool: graphSnapshotSpoolConfig(t), NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{f.servers[0].URL}, PeerTransport: transport, BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond}, apply, receiveGraph)
 			pumpCtx, stopPump := context.WithCancel(ctx)
 			pumpCtx = httptrace.WithClientTrace(pumpCtx, probe.clientTrace())
 			pumpDone := make(chan error, 1)
@@ -1052,7 +1052,7 @@ func TestPeerSecurityEdgeOnlyHistorySubscribeSnapshotAndTombstoneRealConnect(t *
 	start := func() (context.CancelFunc, <-chan error) {
 		pctx, stop := context.WithCancel(ctx)
 		done := make(chan error, 1)
-		pump := replication.NewPump(replication.Config{NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{f.servers[0].URL}, PeerTransport: transport, BackoffMin: 10 * time.Millisecond, BackoffMax: 20 * time.Millisecond}, f.primary[1], graphs[1])
+		pump := replication.NewPump(replication.Config{SnapshotSpool: graphSnapshotSpoolConfig(t), NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{f.servers[0].URL}, PeerTransport: transport, BackoffMin: 10 * time.Millisecond, BackoffMax: 20 * time.Millisecond}, f.primary[1], graphs[1])
 		go func() { done <- pump.Run(pctx) }()
 		return stop, done
 	}

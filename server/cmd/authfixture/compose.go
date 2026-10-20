@@ -26,6 +26,12 @@ func exportComposeFixture(result *fixture, dir string) error {
 	if len(result.Nodes) != 3 {
 		return errors.New("Compose requires three nodes")
 	}
+	for _, node := range result.Nodes {
+		mode := node.Environment["LANTERN_RECEIPT_WAL_MODE"]
+		if mode == "" || mode == "graph-only" {
+			return errors.New("graph-only Compose fixture is not qualified: dedicated private Snapshot spool storage must be explicitly provisioned for the container workload")
+		}
+	}
 	for i := range result.Nodes {
 		node := &result.Nodes[i]
 		service := fmt.Sprintf("lantern-%d", i)

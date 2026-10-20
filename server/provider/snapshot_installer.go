@@ -28,6 +28,8 @@ type SnapshotInstallerSelection struct {
 
 func NewSnapshotInstallerSelection(
 	config ReceiptWALConfig,
+	graphSpool GraphSnapshotSpoolConfig,
+	peers PeerPlaneConfig,
 	cacheConfig CacheConfig,
 	searchConfig SearchConfig,
 	runtime *service.ServingRuntime,
@@ -40,13 +42,16 @@ func NewSnapshotInstallerSelection(
 		certified.replication == nil {
 		return nil, errors.New("receipt Snapshot installer requires a certified serving runtime")
 	}
+	if err := validateGraphSnapshotSpoolConfig(graphSpool, config.Mode, peers); err != nil {
+		return nil, err
+	}
 	switch config.Mode {
 	case ReceiptWALModeGraphOnly:
 		if runtime.DurableReceiptWAL() {
 			return nil, errors.New("graph-only Snapshot installer selection received a durable runtime")
 		}
 		return &SnapshotInstallerSelection{
-			installer: replication.NewGraphOnlySnapshotInstaller(primary, runtime.GraphCache()),
+			installer: replication.NewGraphOnlySnapshotInstaller(primary, runtime.GraphCache(), graphSpool),
 		}, nil
 	case ReceiptWALModeFresh, ReceiptWALModeRestart:
 		if !runtime.DurableReceiptWAL() {

@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,6 +21,52 @@ import (
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 )
 
+func snapshotScratchTestConfig(t *testing.T, maxBytes uint64) GraphSnapshotSpoolConfig {
+	t.Helper()
+	directory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return GraphSnapshotSpoolConfig{Directory: directory, MaxDiskBytes: maxBytes, MaxFrameBytes: int(min(maxBytes, 32<<20))}
+}
+
+func snapshotScratchTestOwner(t *testing.T, ctx context.Context, config GraphSnapshotSpoolConfig) *snapshotScratch {
+	t.Helper()
+	scratch, err := newSnapshotScratch(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = scratch.Close() // Tests deliberately retain injected sticky errors.
+		assertSnapshotScratchStats(t, scratch, 0, 0)
+	})
+	return scratch
+}
+
+func assertSnapshotScratchStats(t *testing.T, scratch *snapshotScratch, wantBytes uint64, wantFiles int) {
+	t.Helper()
+	if used, files := scratch.stats(); used != wantBytes || files != wantFiles {
+		t.Fatalf("scratch retained bytes=%d files=%d; want bytes=%d files=%d", used, files, wantBytes, wantFiles)
+	}
+}
+
+func assertSnapshotScratchOnlyOwner(t *testing.T, directory string) {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != snapshotScratchOwnerName {
+		t.Fatalf("scratch left named artifacts: %v", entries)
+	}
+}
+
 type scriptedSnapshotInstaller struct {
 	mu             sync.Mutex
 	required       pb.SnapshotFormat
@@ -26,6 +74,23 @@ type scriptedSnapshotInstaller struct {
 	installs       int
 	searchIndexErr error
 	transport      SnapshotTransportLimits
+}
+
+func testGraphSnapshotSpoolConfig(t *testing.T) GraphSnapshotSpoolConfig {
+	t.Helper()
+	directory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return GraphSnapshotSpoolConfig{Directory: directory, MaxDiskBytes: 128 << 20, MaxFrameBytes: 32 << 20}
+}
+
+func testGraphOnlySnapshotInstaller(t *testing.T, apply MutationApplier, snap SnapshotApplier) SnapshotInstaller {
+	t.Helper()
+	return newGraphOnlySnapshotInstaller(apply, snap, testGraphSnapshotSpoolConfig(t))
 }
 
 func (i *scriptedSnapshotInstaller) RequiredFormat() pb.SnapshotFormat {

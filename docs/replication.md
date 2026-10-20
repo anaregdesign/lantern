@@ -1178,23 +1178,50 @@ Framing contract:
   total-frame cap is exactly header + footer + the independent active-row,
   retired-row, and graph-frame maxima, so no section borrows another section's
   capacity.
-- The graph-only installer first stages the complete stream in memory and
+- The graph-only installer first stages the complete stream in a configured
+  private disk spool and
   verifies frame validity, counts, EOF and the source's final status before
   beginning live replay. It rechecks the original native admission and request
   deadline at that boundary; staging never grants a fresh deadline or admission.
-  Production limits are 32 MiB per frame, 64 MiB of decompressed transport
-  payload, 64 MiB of retained encoded candidate bytes, 1,048,576 frames, 65,536
-  origins, and a separate 64 MiB identity-metadata budget. Each entry in the
-  duplicate edge/contribution identity maps charges its tail and head key bytes
-  plus 128 bytes of conservative accounting; that charge is not a measurement
-  of Go map heap usage.
-  The origin cap is checked before retaining or cloning the header. Oversized
-  candidates are rejected before live publication. The frame index, validation
-  maps and current decoded frame are outside the encoded-byte quota; the
-  independent frame-count, identity and origin limits constrain those owners
-  without promising a whole-process heap ceiling. The responder's
-  existing 64 MiB aggregate tail-reservation budget is independent of this
-  receiver staging budget. No temporary directory or disk spool is required.
+  Graph-only HA requires all three `LANTERN_GRAPH_SNAPSHOT_SPOOL_*` settings:
+  `DIR`, `MAX_DISK_BYTES`, and `MAX_FRAME_BYTES`. The directory must already
+  exist, have mode 0700, and belong to the server identity. Its absolute path
+  must be canonical and resolved; symlink components are rejected. A dedicated owner
+  lease prevents concurrent use of that directory during each attempt; Pump and
+  anti-entropy share the same installer and its single staging flight. There is no implicit system
+  temporary directory, Receipt WAL path or backup-volume fallback. An unconfigured
+  single-node server can start, but its installer rejects before receiving data.
+  Receipt-mode installation retains its separate existing collector contract.
+  The operator's positive disk quota covers the frame spool, on-disk identity
+  indexes, sort/merge files, and charged metadata together: logical extents round
+  up to 4096 bytes and each file, including the stable owner, charges another
+  4096 bytes. Frame size is also explicit, positive, and no larger than the disk
+  allowance; the disk allowance itself cannot exceed the signed 64-bit file
+  offset range. Sorting retains at most 1 MiB of run records
+  and uses binary merge with at most 128 staging file slots plus the stable
+  owner lease; keys are referenced on disk
+  instead of accumulating in image-sized identity maps. A candidate may exceed
+  the former 64 MiB encoded-image limit if its complete staging work fits the
+  configured disk and frame bounds. Quota exhaustion, filesystem capacity errors
+  such as ENOSPC, and malformed or interrupted input all fail before live install.
+  The disk quota is logical accounting, not a filesystem reservation or a
+  whole-process heap limit; filesystem overhead, the current decoded frame,
+  its contribution rows/per-frame maps and normal graph storage still need
+  capacity. The responder's existing 64 MiB
+  aggregate tail-reservation budget is independent of receiver staging. Temporary
+  staged data is discarded on exit and never serves as a recovery baseline.
+  Live replay remains an incremental HLC merge, not a whole-image atomic
+  replacement or rollback transaction. Once it begins, a replay/storage/authority
+  failure may leave partial effects behind the repair fault; public graph reads
+  and writes stay closed until a later verified install completes. A healthy
+  node keeps serving during collection and detached validation. All payload,
+  identity, lease and directory descriptors must close before verified finish,
+  followed by another check of the same original admission and caller context.
+  On Linux/Darwin, each data file is unlinked before its first write. Process
+  exit releases those unlinked files and the flock. A later owner recovers only
+  exact reserved empty creation-window slots after validating mode, identity and
+  single-link ownership; unknown, nonempty or unsafe artifacts fail closed and
+  are preserved. The empty stable owner file remains in the dedicated directory.
 - Every live vertex frame is self-describing and non-nil. In particular,
   endpoint vertices auto-created by `PutEdge*` / `AddEdge*` are serialized as a
   concrete `Vertex` carrying the endpoint key, expiration, and `nil` value arm;

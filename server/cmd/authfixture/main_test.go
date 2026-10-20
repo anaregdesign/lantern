@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -42,5 +43,38 @@ func TestFixturePortsRejectAmbiguousOrDuplicateInput(t *testing.T) {
 		if _, err := ports(raw); err == nil {
 			t.Fatal("invalid fixture port accepted", raw)
 		}
+	}
+}
+
+func TestNativeFixtureGraphSnapshotSpoolIsExplicitPrivateAndResolved(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		name := "standalone"
+		var peerPorts []int
+		if native {
+			name, peerPorts = "private peer", []int{17380}
+		}
+		t.Run(name, func(t *testing.T) {
+			directory := filepath.Join(t.TempDir(), "fixture")
+			result, err := generate(directory, []int{16380}, peerPorts, "off", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			env := result.Nodes[0].Environment
+			if !native {
+				if env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] != "" || env["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES"] != "" || env["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"] != "" {
+					t.Fatal("standalone fixture acquired unnecessary Snapshot storage")
+				}
+				return
+			}
+			spool := env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"]
+			resolved, err := filepath.EvalSymlinks(spool)
+			if err != nil || spool != resolved || !filepath.IsAbs(spool) || filepath.Base(spool) != "node-0-graph-snapshot-spool" {
+				t.Fatal("native fixture did not name its dedicated resolved Snapshot directory", err)
+			}
+			info, err := os.Stat(spool)
+			if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 || env["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES"] != "134217728" || env["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"] != "33554432" {
+				t.Fatal("native fixture Snapshot storage lost its private mode or explicit capacity", err)
+			}
+		})
 	}
 }

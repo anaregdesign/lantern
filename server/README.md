@@ -130,7 +130,7 @@ Providers take the **slice of `Config` they actually need**, never the
 aggregate `*Config`, so each provider stays single-purpose. The current
 sub-configs are: `NetConfig`, `TLSConfig`, `RateLimitConfig`,
 `ObservabilityConfig`, `CacheConfig`, `ShutdownConfig`, `ValidationLimits`,
-`ScanConfig`, `MutationLogConfig`, `ReplicationConfig`, `PeerConfig`,
+`ScanConfig`, `MutationLogConfig`, `GraphSnapshotSpoolConfig`, `ReplicationConfig`, `PeerConfig`,
 `AntiEntropyConfig`, `ReadinessConfig`. `App` / `main` may still observe the
 aggregate `*Config` because they need multiple slices at once.
 

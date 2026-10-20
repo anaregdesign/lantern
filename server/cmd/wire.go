@@ -33,6 +33,7 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		provider.NewSearchConfig,
 		provider.NewMutationLogConfig,
 		provider.NewReceiptWALConfig,
+		provider.NewGraphSnapshotSpoolConfig,
 		provider.NewReplicationConfig,
 		provider.NewReadinessConfig,
 		provider.NewPeerConfig,

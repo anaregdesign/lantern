@@ -618,24 +618,72 @@ Snapshot, the pump resumes from the later of the header and locally
 committed origin cutoffs; a tail evicted during the install can still
 require another repair.
 
-Graph-only repair first stages the complete source stream in bounded memory,
-including its EOF and final status, before opening the live install gate. No
-temporary directory or disk spool is needed. A failed stage preserves an
+Graph-only repair first stages the complete source stream in a private disk
+spool, including its EOF and final status, before opening the live install gate.
+A failed stage preserves an
 existing healthy generation and its tokens; an existing repair fault remains
 closed. Only the later live install invalidates the receiver's old generation
 and locally owned tokens. Pump and anti-entropy share one installer, so a
 competing install is rejected before changing serving state. Staging retains
 the original native admission and deadline without extending either.
 
-The graph-only candidate is limited to 64 MiB of retained encoded bytes and
-64 MiB of decompressed transport payload, with a 32 MiB frame cap, at most
-1,048,576 frames and 65,536 origins, and a separate 64 MiB identity budget
-charged by key bytes plus conservative per-entry accounting. A larger image is
-rejected before live publication. The frame index, validation maps and current
-decoded frame are outside the encoded-byte quota. The independent cardinality
-limits and responder tail-reservation budget do not define a whole-process
-heap limit. These bounds alone do not qualify configured-source behavior or
-convergence under sustained load.
+Graph-only HA startup requires an explicit spool directory, total disk budget
+and frame limit. The directory must already exist with mode 0700 and be owned
+by the server identity. Supply its canonical resolved absolute path; symlink
+components are rejected. Each attempt takes its dedicated owner lease. Supply
+separate writable staging capacity when running with a read-only root filesystem.
+The server does not infer `/tmp`, the Receipt WAL directory or a backup/PVC path.
+An unconfigured single-node server can start, but Snapshot installation fails
+before receiving source data. Receipt-mode collection is unchanged.
+
+For example, the following expresses a 128 MiB staging budget and a 32 MiB frame
+limit; the path is a placeholder for separately provisioned operator storage:
+
+```sh
+LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR=/path/to/private-snapshot-spool
+LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES=134217728
+LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES=33554432
+```
+
+Size the disk budget for the complete frame spool, identity indexes, sort/merge
+files and charged metadata, rather than source protobuf bytes alone. Logical
+extents round up to 4096 bytes and every file, including the stable owner, costs
+another 4096 bytes. The quota is shared by that installer and all its staging
+files. Sorting retains at most 1 MiB of run records, uses binary merge and allows
+at most 128 staging file slots plus the stable owner lease.
+Frame size must be positive and no larger than the disk allowance; the disk
+allowance must fit the signed 64-bit file offset range. Images larger than the
+former 64 MiB limit can be staged when their complete work fits these configured
+bounds; an unlimited graph does not imply unlimited Snapshot capacity. Logical
+quota exhaustion or a filesystem error such as ENOSPC rejects before live
+publication and releases the attempt's owned staging data. Leave filesystem
+headroom beyond the logical quota and allow for decoded frames, their
+contribution rows/per-frame maps, normal graph storage and the independent
+responder tail-reservation budget. These bounds
+are not a whole-process heap guarantee and do not by themselves qualify
+configured-source behavior or sustained-load convergence.
+
+Collection and detached validation leave an existing healthy node serving.
+Live replay then refuses public graph reads and writes while incrementally
+merging the verified image; it does not provide whole-image atomic replacement
+or rollback. A replay, storage or original-admission failure after Begin leaves
+partial effects behind the repair fault until a later verified repair. All
+owned payload/index files and owner descriptors must close before the original
+admission/context is checked again and verified finish can reopen serving.
+
+On Linux/Darwin, active data files are unlinked before writing; process exit
+releases their storage and flock. The next owner may reclaim only exact reserved
+empty creation-window slots with matching private ownership/mode/single-link
+identity. Unknown or nonempty artifacts are preserved and cause refusal. The
+stable empty `.lantern-snapshot-owner` lease file remains; do not delete it while
+an owner may be active. The directory is exclusive to this staging role.
+
+The local native fixture prepares explicit host-owned spool directories. The
+current graph-only Compose fixture export is not qualified: it refuses export
+until dedicated container-owned writable staging is explicitly prepared. This
+also blocks its existing Compose configuration gate; source-local tests do not
+qualify that operator/benchmark path. No existing state, backup or PVC storage
+is reused automatically.
 
 An edge-only working set is valid Snapshot input: endpoint vertices created
 implicitly by `PutEdge*` / `AddEdge*` are carried as concrete nil-valued

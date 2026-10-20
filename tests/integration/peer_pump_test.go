@@ -85,7 +85,7 @@ func TestPeerPumpVerifiedTransportUsesOwnedClientAndCurrentEligibility(t *testin
 		t.Fatal(err)
 	}
 	newPump := func() *replication.Pump {
-		return replication.NewPump(replication.Config{NodeID: destination.nodeID, Peers: []string{srv.URL}, PeerTransport: transport, BackoffMin: 10 * time.Millisecond, BackoffMax: 20 * time.Millisecond}, destination.svc, destination.cache)
+		return replication.NewPump(replication.Config{SnapshotSpool: graphSnapshotSpoolConfig(t), NodeID: destination.nodeID, Peers: []string{srv.URL}, PeerTransport: transport, BackoffMin: 10 * time.Millisecond, BackoffMax: 20 * time.Millisecond}, destination.svc, destination.cache)
 	}
 	run := func(pump *replication.Pump) (context.CancelFunc, <-chan error) {
 		pumpCtx, stop := context.WithCancel(ctx)
@@ -795,7 +795,7 @@ func (n *pumpNode) startPumpWithMetrics(ctx context.Context, t *testing.T, peers
 
 func (n *pumpNode) startPumpWithMetricsAndTransport(ctx context.Context, t *testing.T, peers []string, metrics replication.Metrics, transport *replication.PeerTransport) {
 	t.Helper()
-	p := replication.NewPump(replication.Config{
+	p := replication.NewPump(replication.Config{SnapshotSpool: graphSnapshotSpoolConfig(t),
 		NodeID:                  n.nodeID,
 		Peers:                   peers,
 		BackoffMin:              20 * time.Millisecond,
@@ -2258,7 +2258,7 @@ func TestPeerPump_SearchConfigMismatchBlocksReadiness(t *testing.T) {
 // attempts, no error).
 func TestPeerPump_EmptyPeers_NoOp(t *testing.T) {
 	n := newPumpNode(t, hlc.NodeID{0x01})
-	p := replication.NewPump(replication.Config{NodeID: n.nodeID}, n.svc, n.cache)
+	p := replication.NewPump(replication.Config{SnapshotSpool: graphSnapshotSpoolConfig(t), NodeID: n.nodeID}, n.svc, n.cache)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
@@ -2778,7 +2778,7 @@ func TestPeerPump_SnapshotRetentionDuringInstall(t *testing.T) {
 			server.Start()
 			t.Cleanup(server.Close)
 			apply := &observedSnapshotApplier{LanternService: receiver.svc, ctx: ctx, began: make(chan *observedSnapshotInstall, 1)}
-			pump := replication.NewPump(replication.Config{
+			pump := replication.NewPump(replication.Config{SnapshotSpool: graphSnapshotSpoolConfig(t),
 				NodeID: receiver.nodeID, Peers: []string{server.URL}, HTTPClient: h2cClient(),
 				BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
 			}, apply, receiver.cache)
@@ -3075,7 +3075,7 @@ func TestPeerPump_SnapshotTailHandoffDuringInstall(t *testing.T) {
 				t.Fatal(err)
 			}
 			apply := &observedSnapshotApplier{LanternService: fixture.primary[1], ctx: ctx, began: make(chan *observedSnapshotInstall, 1)}
-			pump := replication.NewPump(replication.Config{
+			pump := replication.NewPump(replication.Config{SnapshotSpool: graphSnapshotSpoolConfig(t),
 				NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{fixture.servers[0].URL},
 				PeerTransport: transport, BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
 			}, apply, graphs[1])
@@ -3298,7 +3298,7 @@ func TestPeerPump_GraphOnlyBackupAggregateRelaysAcrossAuthenticatedSnapshots(t *
 		return peer
 	}
 	startNativePump := func(n *pumpNode, peer replicationTestPeer, metrics replication.Metrics) {
-		pump := replication.NewPump(replication.Config{
+		pump := replication.NewPump(replication.Config{SnapshotSpool: graphSnapshotSpoolConfig(t),
 			NodeID: n.nodeID, NamespaceFormat: n.svc.DataNamespaceFormat(),
 			Peers: []string{peer.url}, PeerTransport: peer.transport, Metrics: metrics,
 			SearchConfigFingerprint: n.svc.SearchConfigFingerprint(),
@@ -3727,7 +3727,7 @@ func TestPeerPump_SnapshotTombstoneFraming_E2E(t *testing.T) {
 			metrics := &tombstoneSnapshotMetrics{failed: make(chan struct{}, 1), snapshots: make(chan struct{}, 1)}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			t.Cleanup(cancel)
-			pump := replication.NewPump(replication.Config{NodeID: boot.nodeID, Peers: []string{srv.URL}, HTTPClient: h2cClient(), BackoffMin: time.Second, BackoffMax: time.Second, Metrics: metrics}, boot.svc, boot.cache)
+			pump := replication.NewPump(replication.Config{SnapshotSpool: graphSnapshotSpoolConfig(t), NodeID: boot.nodeID, Peers: []string{srv.URL}, HTTPClient: h2cClient(), BackoffMin: time.Second, BackoffMax: time.Second, Metrics: metrics}, boot.svc, boot.cache)
 			go func() { _ = pump.Run(ctx) }()
 			var event <-chan struct{} = metrics.snapshots
 			if tc.wantFailed {
@@ -3818,7 +3818,7 @@ func TestPeerPump_LateNonFiniteSnapshotEdgeRejectedBeforePublication(t *testing.
 		t.Cleanup(srv.Close)
 		metrics := &tombstoneSnapshotMetrics{failed: make(chan struct{}, 1), snapshots: make(chan struct{}, 1)}
 		pumpCtx, stopPump := context.WithCancel(ctx)
-		pump := replication.NewPump(replication.Config{
+		pump := replication.NewPump(replication.Config{SnapshotSpool: graphSnapshotSpoolConfig(t),
 			NodeID: boot.nodeID, Peers: []string{srv.URL}, HTTPClient: h2cClient(),
 			BackoffMin: time.Second, BackoffMax: time.Second, Metrics: metrics,
 		}, boot.svc, boot.cache)
@@ -4287,7 +4287,7 @@ func TestPeerPump_SnapshotTailCapacityBeforeFinish(t *testing.T) {
 					t.Fatalf("%s did not apply within original test deadline: %v; receiver=%d source=%d faulted=%t Snapshots=%d", label, ctx.Err(), fixture.primary[1].LocalSeq(sourceID), fixture.primary[0].LocalSeq(sourceID), fixture.primary[1].SnapshotRepairRequired(), peer.snapshots.Load())
 				}
 			}
-			pump := replication.NewPump(replication.Config{
+			pump := replication.NewPump(replication.Config{SnapshotSpool: graphSnapshotSpoolConfig(t),
 				NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{fixture.servers[0].URL},
 				PeerTransport: transport, BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
 			}, apply, graphs[1])
@@ -4685,10 +4685,10 @@ func testPeerPumpMutualSnapshotInstall(t *testing.T, asymmetric bool) {
 		footerConsumed[receiver] = make(chan struct{}, 1)
 		failed[receiver], retry[receiver] = make(chan error, 1), make(chan struct{})
 		installer := observedGraphSnapshotInstaller{
-			SnapshotInstaller: replication.NewGraphOnlySnapshotInstaller(applies[receiver], graphs[receiver]), headerConsumed: headerConsumed[receiver],
+			SnapshotInstaller: replication.NewGraphOnlySnapshotInstaller(applies[receiver], graphs[receiver], graphSnapshotSpoolConfig(t)), headerConsumed: headerConsumed[receiver],
 			footerConsumed: footerConsumed[receiver], failed: failed[receiver], retry: retry[receiver],
 		}
-		pump := replication.NewPump(replication.Config{
+		pump := replication.NewPump(replication.Config{SnapshotSpool: graphSnapshotSpoolConfig(t),
 			NodeID: hlc.NodeID{byte(receiver + 3)}, NamespaceFormat: "namespaced-v1", Peers: []string{fixture.servers[1-receiver].URL},
 			PeerTransport: transport, SnapshotInstaller: installer, BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
 		}, applies[receiver], graphs[receiver])

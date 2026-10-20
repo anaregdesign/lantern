@@ -145,7 +145,8 @@ func initializeAppWithListeners(ctx context.Context, launch *listenerlaunch.Owne
 		return nil, nil, err
 	}
 	metrics := provider.NewPumpMetrics(domainMetrics, gate)
-	snapshotInstallerSelection, err := provider.NewSnapshotInstallerSelection(receiptWALConfig, cacheConfig, searchConfig, servingRuntime, lanternService, logger, runtimeCertified)
+	v := provider.NewGraphSnapshotSpoolConfig(config)
+	snapshotInstallerSelection, err := provider.NewSnapshotInstallerSelection(receiptWALConfig, v, peerPlaneConfig, cacheConfig, searchConfig, servingRuntime, lanternService, logger, runtimeCertified)
 	if err != nil {
 		cleanup4()
 		cleanup3()

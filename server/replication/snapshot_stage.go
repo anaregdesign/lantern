@@ -2,8 +2,11 @@ package replication
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 
 	"connectrpc.com/connect"
@@ -11,84 +14,78 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const graphSnapshotMaxBytes = 64 << 20
-
-// These are independent retained-data bounds, not a whole-heap measurement.
-// A runtime owns one shared installer/flight. The frame index, decoded current
-// frame, validation maps and normal graph storage are outside the encoded quota.
-type graphSnapshotStageLimits struct {
-	maxFrameBytes    int
-	maxBytes         uint64
-	maxFrames        int
-	maxIdentityBytes uint64
-	maxOrigins       int
-}
-
-func defaultGraphSnapshotStageLimits() graphSnapshotStageLimits {
-	return graphSnapshotStageLimits{
-		maxFrameBytes: defaultSnapshotMaxFrameBytes, maxBytes: graphSnapshotMaxBytes,
-		maxFrames: 1 << 20, maxIdentityBytes: 64 << 20, maxOrigins: 1 << 16,
-	}
-}
-
 func (i *graphOnlySnapshotInstaller) SnapshotTransportLimits() SnapshotTransportLimits {
-	return SnapshotTransportLimits{MaxFrameBytes: i.limits.maxFrameBytes, MaxStreamBytes: i.limits.maxBytes}
+	return SnapshotTransportLimits{MaxFrameBytes: i.spool.MaxFrameBytes, MaxStreamBytes: i.spool.MaxDiskBytes}
 }
 
 func graphSnapshotLimitError(dimension string) error {
 	return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("Snapshot staging %s limit exceeded", dimension))
 }
 
-// retainSnapshotIdentity bounds both key material and per-map-entry metadata.
-// The fixed charge is deliberately conservative accounting, not Go heap size.
-func (i *graphOnlySnapshotInstaller) retainSnapshotIdentity(used *uint64, tail, head string) error {
-	charge := uint64(len(tail)) + uint64(len(head)) + 128
-	if charge > i.limits.maxIdentityBytes-*used {
-		return graphSnapshotLimitError("identity metadata")
-	}
-	*used += charge
-	return nil
-}
-
-// Install validates the complete remote stream, including its final status,
-// while the serving publication remains intact. Only the immutable staged
-// image can enter the existing fail-closed live replay. No worker or new
-// deadline is created; cancellation/shutdown joins through the caller.
-func (i *graphOnlySnapshotInstaller) Install(ctx context.Context, stream SnapshotStream) (SnapshotInstallResult, error) {
+// Install owns one private disk flight, including its exact identity index and
+// merge workspace. Complete remote EOF/final status, semantic validation and a
+// sealed canonical-spool digest precede any live publication transition. Every
+// pass retains the original native admission and caller deadline.
+func (i *graphOnlySnapshotInstaller) Install(ctx context.Context, stream SnapshotStream) (result SnapshotInstallResult, err error) {
 	if err := ctx.Err(); err != nil {
 		return SnapshotInstallResult{}, err
 	}
+	if i.configurationError != nil {
+		return SnapshotInstallResult{}, connect.NewError(connect.CodeFailedPrecondition, i.configurationError)
+	}
 	if !i.stageMu.TryLock() {
-		return SnapshotInstallResult{}, connect.NewError(connect.CodeUnavailable, fmt.Errorf("Snapshot staging already in progress"))
+		return SnapshotInstallResult{}, connect.NewError(connect.CodeUnavailable, errors.New("Snapshot staging already in progress"))
 	}
 	defer i.stageMu.Unlock()
-	stage := &graphSnapshotStage{ctx: ctx, source: stream, limits: i.limits}
+	scratch, err := i.newScratch(ctx, i.spool)
+	if err != nil {
+		return SnapshotInstallResult{}, err
+	}
+	defer func() {
+		if closeErr := scratch.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close Snapshot staging owner: %w", closeErr))
+		}
+	}()
+	file, err := scratch.create()
+	if err != nil {
+		return SnapshotInstallResult{}, err
+	}
+	stage := &graphSnapshotStage{ctx: ctx, source: stream, maxFrameBytes: i.spool.MaxFrameBytes, file: file, digest: sha256.New(), complete: scratch.Close}
 	defer stage.release()
-	if _, err := i.replaySnapshot(ctx, stage, false); err != nil {
+	identities, err := newSnapshotIdentityIndex(ctx, scratch)
+	if err != nil {
 		return SnapshotInstallResult{}, err
 	}
-	if err := checkSnapshotContext(ctx); err != nil {
+	if _, err := i.replaySnapshot(ctx, stage, false, identities); err != nil {
 		return SnapshotInstallResult{}, err
 	}
-	stage.source, stage.current, stage.failure = nil, nil, nil
-	stage.replaying = true
-	return i.replaySnapshot(ctx, stage, true)
+	if err := identities.Finish(); err != nil {
+		return SnapshotInstallResult{}, err
+	}
+	if err := stage.seal(); err != nil {
+		return SnapshotInstallResult{}, err
+	}
+	return i.replaySnapshot(ctx, stage, true, nil)
 }
 
-// graphSnapshotStage retains canonical encoded frames only. No live graph,
-// receipt state, generation or search index is touched during collection.
-// Both passes run the same semantic validator. Replay drops each consumed
-// encoded frame; release discards all remaining references on every exit.
+// graphSnapshotStage retains no dataset-sized frame slice. Each frame is
+// encoded, length-prefixed and checksummed in the one owned spool. Replay holds
+// one encoded/decoded frame at a time. The configured frame budget bounds that
+// work, not the entire heap: protobuf amplification, per-frame contribution
+// rows, the Header origin vector and the live graph remain separate costs.
 type graphSnapshotStage struct {
-	ctx       context.Context
-	source    SnapshotStream
-	limits    graphSnapshotStageLimits
-	frames    [][]byte
-	bytes     uint64
-	index     int
-	replaying bool
-	current   *pb.SnapshotResponse
-	failure   error
+	ctx           context.Context
+	source        SnapshotStream
+	maxFrameBytes int
+	file          *snapshotScratchFile
+	digest        hash.Hash
+	bytes         uint64
+	frameCount    uint64
+	index         uint64
+	replaying     bool
+	current       *pb.SnapshotResponse
+	failure       error
+	complete      func() error
 }
 
 func (s *graphSnapshotStage) Receive() bool {
@@ -96,9 +93,8 @@ func (s *graphSnapshotStage) Receive() bool {
 	if s.failure != nil {
 		return false
 	}
-	// Before the transport's first Receive, its stored Do error may be the
-	// only result. Preserve that error rather than masking it as absent native
-	// evidence. No source frame is retained until the strict check below.
+	// The transport's stored Do error may be its only result before the first
+	// Receive. Do not replace it with missing native evidence at that boundary.
 	s.failure = s.ctx.Err()
 	if s.failure == nil && s.replaying {
 		s.failure = checkSnapshotContext(s.ctx)
@@ -107,28 +103,14 @@ func (s *graphSnapshotStage) Receive() bool {
 		return false
 	}
 	if s.replaying {
-		if s.index == len(s.frames) {
-			return false
-		}
-		raw := s.frames[s.index]
-		s.frames[s.index] = nil
-		s.index++
-		s.bytes -= uint64(len(raw))
-		frame := new(pb.SnapshotResponse)
-		if s.failure = proto.Unmarshal(raw, frame); s.failure != nil {
-			return false
-		}
-		s.current = frame
-		return true
+		return s.receiveStaged()
 	}
 	if !s.source.Receive() {
 		s.failure = s.source.Err()
 		if err := s.ctx.Err(); err != nil {
 			s.failure = err
 		} else if s.failure == nil || errors.Is(s.failure, io.EOF) {
-			if err := checkSnapshotContext(s.ctx); err != nil {
-				s.failure = err
-			}
+			s.failure = checkSnapshotContext(s.ctx)
 		}
 		return false
 	}
@@ -136,18 +118,8 @@ func (s *graphSnapshotStage) Receive() bool {
 		return false
 	}
 	frame := s.source.Msg()
-	if len(s.frames) >= s.limits.maxFrames {
-		s.failure = graphSnapshotLimitError("frame count")
-		return false
-	}
-	size := proto.Size(frame)
-	if size > s.limits.maxFrameBytes || uint64(size) > s.limits.maxBytes-s.bytes {
-		s.failure = graphSnapshotLimitError("encoded bytes")
-		return false
-	}
-	// Origin cardinality is checked before a Header clone or retained encoding.
-	if len(frame.GetHeader().GetCutoffSeqPerOrigin()) > s.limits.maxOrigins {
-		s.failure = graphSnapshotLimitError("origin count")
+	if proto.Size(frame) > s.maxFrameBytes {
+		s.failure = graphSnapshotLimitError("frame bytes")
 		return false
 	}
 	raw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(frame)
@@ -155,20 +127,147 @@ func (s *graphSnapshotStage) Receive() bool {
 		s.failure = err
 		return false
 	}
-	if len(raw) > s.limits.maxFrameBytes || uint64(len(raw)) > s.limits.maxBytes-s.bytes {
-		s.failure = graphSnapshotLimitError("encoded bytes")
+	if len(raw) > s.maxFrameBytes {
+		s.failure = graphSnapshotLimitError("frame bytes")
 		return false
 	}
-	s.frames = append(s.frames, raw)
-	s.bytes += uint64(len(raw))
+	var size [8]byte
+	binary.BigEndian.PutUint64(size[:], uint64(len(raw)))
+	checksum := sha256.Sum256(raw)
+	for _, chunk := range [][]byte{size[:], raw, checksum[:]} {
+		if s.failure = checkSnapshotContext(s.ctx); s.failure != nil {
+			return false
+		}
+		n, err := s.file.Write(chunk)
+		if err == nil && n != len(chunk) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			s.failure = err
+			return false
+		}
+		_, _ = s.digest.Write(chunk)
+		s.bytes += uint64(n)
+	}
+	s.frameCount++
 	s.current = frame
 	return true
+}
+
+func (s *graphSnapshotStage) receiveStaged() bool {
+	if s.file == nil {
+		return false
+	}
+	if s.index == s.frameCount {
+		// All payload/index files and the owner lease/directory must close
+		// before verified finish. Original admission is checked again after
+		// this potentially blocking cleanup by the live validator.
+		s.failure = s.file.Close()
+		s.file = nil
+		if s.failure == nil && s.complete != nil {
+			s.failure = s.complete()
+		}
+		return false
+	}
+	var size [8]byte
+	if _, s.failure = io.ReadFull(s.file, size[:]); s.failure != nil {
+		return false
+	}
+	length := binary.BigEndian.Uint64(size[:])
+	if length > uint64(s.maxFrameBytes) || length > s.bytes {
+		s.failure = snapshotProtocolError("invalid staged frame length")
+		return false
+	}
+	raw := make([]byte, int(length))
+	if _, s.failure = io.ReadFull(s.file, raw); s.failure != nil {
+		return false
+	}
+	var want [sha256.Size]byte
+	if _, s.failure = io.ReadFull(s.file, want[:]); s.failure != nil {
+		return false
+	}
+	if sha256.Sum256(raw) != want {
+		s.failure = snapshotProtocolError("staged frame digest mismatch")
+		return false
+	}
+	if s.failure = checkSnapshotContext(s.ctx); s.failure != nil {
+		return false
+	}
+	frame := new(pb.SnapshotResponse)
+	if s.failure = proto.Unmarshal(raw, frame); s.failure != nil {
+		return false
+	}
+	s.index++
+	s.current = frame
+	return true
+}
+
+// seal verifies the full canonical spool before the first live Begin. Files
+// have no directory link and their only writer is this owner; the source never
+// receives a handle. Per-frame digests additionally check each replay read.
+func (s *graphSnapshotStage) seal() error {
+	if err := checkSnapshotContext(s.ctx); err != nil {
+		return err
+	}
+	if s.failure != nil || s.file.Size() != s.bytes {
+		return snapshotProtocolError("incomplete canonical spool")
+	}
+	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	verified := sha256.New()
+	var buffer [64 << 10]byte
+	var read uint64
+	for {
+		if err := checkSnapshotContext(s.ctx); err != nil {
+			return err
+		}
+		n, err := s.file.Read(buffer[:])
+		read += uint64(n)
+		_, _ = verified.Write(buffer[:n])
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrNoProgress
+		}
+	}
+	if read != s.bytes || !equalSnapshotDigest(verified.Sum(nil), s.digest.Sum(nil)) {
+		return snapshotProtocolError("canonical spool digest mismatch")
+	}
+	if _, err := s.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if err := checkSnapshotContext(s.ctx); err != nil {
+		return err
+	}
+	s.source, s.current, s.failure, s.digest = nil, nil, nil, nil
+	s.replaying = true
+	return nil
+}
+
+func equalSnapshotDigest(a, b []byte) bool {
+	if len(a) != sha256.Size || len(b) != sha256.Size {
+		return false
+	}
+	var mismatch byte
+	for index := range a {
+		mismatch |= a[index] ^ b[index]
+	}
+	return mismatch == 0
 }
 
 func (s *graphSnapshotStage) Msg() *pb.SnapshotResponse { return s.current }
 func (s *graphSnapshotStage) Err() error                { return s.failure }
 
 func (s *graphSnapshotStage) release() {
-	s.source, s.current, s.frames = nil, nil, nil
-	s.bytes = 0
+	s.source, s.current, s.digest, s.complete = nil, nil, nil, nil
+	if s.file != nil {
+		_ = s.file.Close() // The enclosing scratch owner retries/reports cleanup.
+		s.file = nil
+	}
+	s.bytes, s.frameCount = 0, 0
 }

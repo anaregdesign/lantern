@@ -2,12 +2,18 @@ package replication
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
+	"fmt"
+	"hash"
 	"io"
 	"math"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -17,18 +23,6 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 	"google.golang.org/protobuf/proto"
 )
-
-func snapshotStageTestLimits(frames []*pb.SnapshotResponse) graphSnapshotStageLimits {
-	limits := defaultGraphSnapshotStageLimits()
-	limits.maxFrameBytes, limits.maxBytes = 0, 0
-	limits.maxFrames = len(frames)
-	for _, frame := range frames {
-		size := proto.Size(frame)
-		limits.maxFrameBytes = max(limits.maxFrameBytes, size)
-		limits.maxBytes += uint64(size)
-	}
-	return limits
-}
 
 func snapshotStageTestFramesWithEdge() []*pb.SnapshotResponse {
 	frames := graphInstallerLifecycleFrames()
@@ -40,48 +34,44 @@ func snapshotStageTestFramesWithEdge() []*pb.SnapshotResponse {
 	return append(frames[:len(frames)-1], edge, frames[len(frames)-1])
 }
 
-func TestGraphSnapshotStagingIndependentBudgetsPrecedeLiveAdmission(t *testing.T) {
-	for _, dimension := range []string{"per frame", "total encoded bytes", "frame count", "origins", "identity metadata"} {
+func TestGraphSnapshotStagingExplicitBudgetsPrecedeLiveAdmission(t *testing.T) {
+	for _, dimension := range []string{"per frame", "aggregate scratch disk"} {
 		t.Run(dimension, func(t *testing.T) {
 			frames := graphInstallerLifecycleFrames()
-			if dimension == "origins" {
-				frames[0].GetHeader().CutoffSeqPerOrigin["origin-b"] = 8
+			config := testGraphSnapshotSpoolConfig(t)
+			largestFrame := 0
+			for _, frame := range frames {
+				largestFrame = max(largestFrame, proto.Size(frame))
 			}
-			if dimension == "identity metadata" {
-				frames = snapshotStageTestFramesWithEdge()
-			}
-			exact := snapshotStageTestLimits(frames)
-			exact.maxOrigins = len(frames[0].GetHeader().GetCutoffSeqPerOrigin())
-			if dimension == "identity metadata" {
-				exact.maxIdentityBytes = uint64(len("installed") + len("other") + 128)
-			}
-			limited := exact
 			switch dimension {
 			case "per frame":
-				limited.maxFrameBytes--
-			case "total encoded bytes":
-				limited.maxBytes--
-			case "frame count":
-				limited.maxFrames--
-			case "origins":
-				limited.maxOrigins--
-			case "identity metadata":
-				limited.maxIdentityBytes--
+				config.MaxFrameBytes = largestFrame - 1
+			case "aggregate scratch disk":
+				// The owner, frame spool and empty identity arena already
+				// charge three metadata blocks. No frame extent fits.
+				config.MaxDiskBytes, config.MaxFrameBytes = 12<<10, 1<<10
 			}
 			var events []string
 			apply := &snapshotLifecycleMutationApplier{events: &events}
 			graph := &snapshotLifecycleGraph{events: &events}
-			installer := newGraphOnlySnapshotInstaller(apply, graph).(*graphOnlySnapshotInstaller)
-			installer.limits = limited
+			installer := newGraphOnlySnapshotInstaller(apply, graph, config).(*graphOnlySnapshotInstaller)
+			var owner *snapshotScratch
+			installer.newScratch = func(ctx context.Context, config GraphSnapshotSpoolConfig) (*snapshotScratch, error) {
+				var err error
+				owner, err = newSnapshotScratch(ctx, config)
+				return owner, err
+			}
 			if _, err := installSnapshot(t.Context(), installer, &snapshotSliceStream{frames: frames}); connect.CodeOf(err) != connect.CodeResourceExhausted {
 				t.Fatalf("%s bound did not reject staged input: %v", dimension, err)
 			}
 			if len(events) != 0 || len(apply.finishes) != 0 || len(apply.cutoffs) != 0 {
 				t.Fatalf("%s rejection touched live state: events=%v finishes=%v cutoffs=%v", dimension, events, apply.finishes, apply.cutoffs)
 			}
-			// The exact boundary is accepted and the failed attempt released
-			// its staging flight, so the same installer can safely retry.
-			installer.limits = exact
+			assertSnapshotStageScratchReleased(t, owner, config)
+			// Only the explicitly configured allowance changes for retry.
+			// The exact per-frame boundary accepts the same valid image.
+			installer.spool.MaxFrameBytes = largestFrame
+			installer.spool.MaxDiskBytes = 24 << 10
 			result, err := installSnapshot(t.Context(), installer, &snapshotSliceStream{frames: frames})
 			if err != nil || len(apply.finishes) != 1 || !apply.finishes[0] || result.Graph.Vertices != 1 {
 				t.Fatalf("exact %s boundary or retry failed: result=%+v finishes=%v err=%v", dimension, result.Graph, apply.finishes, err)
@@ -117,7 +107,7 @@ func TestGraphSnapshotStagingRejectsInvalidImageBeforeLiveAdmission(t *testing.T
 			var events []string
 			apply := &snapshotLifecycleMutationApplier{events: &events}
 			graph := &snapshotLifecycleGraph{events: &events}
-			installer := newGraphOnlySnapshotInstaller(apply, graph)
+			installer := testGraphOnlySnapshotInstaller(t, apply, graph)
 			result, err := installSnapshot(t.Context(), installer, &snapshotSliceStream{frames: frames, err: streamErr})
 			if err == nil || result.Header != nil || result.Graph != (SnapshotGraphCounts{}) {
 				t.Fatalf("invalid image returned an installed result: result=%+v err=%v", result, err)
@@ -196,7 +186,7 @@ func TestGraphSnapshotStagingCancellationKeepsLiveAdmissionBoundary(t *testing.T
 			case "after first live write":
 				graph.cancel = cancel
 			}
-			_, err := installSnapshot(ctx, newGraphOnlySnapshotInstaller(apply, graph), stream)
+			_, err := installSnapshot(ctx, testGraphOnlySnapshotInstaller(t, apply, graph), stream)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("%s cancellation was not preserved: events=%v err=%v", phase, events, err)
 			}
@@ -256,7 +246,7 @@ func TestGraphSnapshotStagingSingleFlightRejectsBeforeReceiveAndReleases(t *test
 			var events []string
 			apply := &snapshotLifecycleMutationApplier{events: &events}
 			graph := &snapshotLifecycleGraph{events: &events}
-			installer := newGraphOnlySnapshotInstaller(apply, graph)
+			installer := testGraphOnlySnapshotInstaller(t, apply, graph)
 			release := make(chan struct{})
 			var releaseOnce sync.Once
 			unblock := func() { releaseOnce.Do(func() { close(release) }) }
@@ -365,7 +355,7 @@ func TestGraphSnapshotStagingReplaysOwnedBytesAfterSourceMutationAtEOF(t *testin
 			var events []string
 			apply := &snapshotLifecycleMutationApplier{events: &events}
 			graph := &snapshotStageOwnershipGraph{snapshotLifecycleGraph: &snapshotLifecycleGraph{events: &events}}
-			result, err := installSnapshot(t.Context(), newGraphOnlySnapshotInstaller(apply, graph), stream)
+			result, err := installSnapshot(t.Context(), testGraphOnlySnapshotInstaller(t, apply, graph), stream)
 			if err != nil || !mutated || !proto.Equal(result.Header, originalHeader) || apply.cutoffs["origin-a"] != 7 {
 				t.Fatalf("staged header aliased the released source or rejected clean EOF: mutated=%t header=%v cutoffs=%v err=%v", mutated, result.Header, apply.cutoffs, err)
 			}
@@ -376,7 +366,7 @@ func TestGraphSnapshotStagingReplaysOwnedBytesAfterSourceMutationAtEOF(t *testin
 	}
 }
 
-func TestGraphSnapshotStageReleasesPartialAndFailedRetainedPayloads(t *testing.T) {
+func TestGraphSnapshotStageReleasesPartialAndFailedFileOwnership(t *testing.T) {
 	for _, phase := range []string{"partial collection", "source error", "partial replay", "canceled replay"} {
 		t.Run(phase, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
@@ -387,7 +377,17 @@ func TestGraphSnapshotStageReleasesPartialAndFailedRetainedPayloads(t *testing.T
 			if phase == "source error" {
 				source.err = failure
 			}
-			stage := &graphSnapshotStage{ctx: ctx, source: source, limits: snapshotStageTestLimits(frames)}
+			config := testGraphSnapshotSpoolConfig(t)
+			owner, err := newSnapshotScratch(ctx, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer owner.Close()
+			file, err := owner.create()
+			if err != nil {
+				t.Fatal(err)
+			}
+			stage := &graphSnapshotStage{ctx: ctx, source: source, maxFrameBytes: config.MaxFrameBytes, file: file, digest: sha256.New()}
 			defer stage.release()
 			if phase == "partial collection" {
 				if !stage.Receive() {
@@ -400,18 +400,15 @@ func TestGraphSnapshotStageReleasesPartialAndFailedRetainedPayloads(t *testing.T
 					t.Fatal("collection lost its original failure", stage.Err())
 				}
 			}
-			if stage.bytes == 0 || len(stage.frames) == 0 || stage.source == nil {
+			if stage.bytes == 0 || stage.file == nil || stage.source == nil {
 				t.Fatal("ownership control retained no payload before cleanup")
 			}
 			if phase == "partial replay" || phase == "canceled replay" {
-				if stage.Err() != nil {
-					t.Fatal(stage.Err())
+				if err := stage.seal(); err != nil {
+					t.Fatal(err)
 				}
-				stage.source, stage.current = nil, nil
-				stage.replaying = true
-				before, consumed := stage.bytes, uint64(len(stage.frames[0]))
-				if !stage.Receive() || stage.Msg().GetHeader() == nil || stage.frames[0] != nil || stage.bytes != before-consumed || stage.bytes == 0 {
-					t.Fatalf("replay pinned its consumed encoding or refunded unread bodies: index=%d bytes=%d before=%d consumed=%d err=%v", stage.index, stage.bytes, before, consumed, stage.Err())
+				if !stage.Receive() || stage.Msg().GetHeader() == nil {
+					t.Fatal("partial replay did not decode its owned header", stage.Err())
 				}
 				if phase == "canceled replay" {
 					cancel()
@@ -421,11 +418,301 @@ func TestGraphSnapshotStageReleasesPartialAndFailedRetainedPayloads(t *testing.T
 				}
 			}
 			stage.release()
-			if stage.source != nil || stage.current != nil || stage.frames != nil || stage.bytes != 0 {
-				t.Fatalf("%s cleanup retained source/current/encoded payload: source=%t current=%t frames=%d bytes=%d", phase, stage.source != nil, stage.current != nil, len(stage.frames), stage.bytes)
+			if stage.source != nil || stage.current != nil || stage.file != nil || stage.digest != nil || stage.bytes != 0 || stage.frameCount != 0 {
+				t.Fatalf("%s cleanup retained source/current/file/payload accounting: source=%t current=%t file=%t bytes=%d frames=%d", phase, stage.source != nil, stage.current != nil, stage.file != nil, stage.bytes, stage.frameCount)
+			}
+			if used, files := owner.stats(); files != 0 || used != snapshotScratchMetadataBytes && used != 0 {
+				t.Fatalf("%s release retained a scratch extent: used=%d files=%d", phase, used, files)
+			}
+			if err := owner.Close(); err != nil && !errors.Is(err, context.Canceled) {
+				t.Fatal(err)
+			}
+			assertSnapshotStageScratchReleased(t, owner, config)
+		})
+	}
+}
+
+func assertSnapshotStageScratchReleased(t *testing.T, owner *snapshotScratch, config GraphSnapshotSpoolConfig) {
+	t.Helper()
+	if owner == nil {
+		t.Fatal("Snapshot did not acquire its scratch owner")
+	}
+	if used, files := owner.stats(); used != 0 || files != 0 {
+		t.Fatalf("Snapshot retained disk credit or descriptors: used=%d files=%d", used, files)
+	}
+	// A fresh context must be able to claim exactly the same configured
+	// directory. Counters alone do not prove that the flock lease closed.
+	next, err := newSnapshotScratch(t.Context(), config)
+	if err != nil {
+		t.Fatal("Snapshot retained its directory lease", err)
+	}
+	if err := next.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGraphSnapshotStagingScratchFailuresNeverVerifyAndReleaseOwnership(t *testing.T) {
+	writeFailure := errors.New("controlled late spool write failure")
+	readFailure := errors.New("controlled spool read failure")
+	closeFailure := errors.New("controlled scratch close failure after descriptor close")
+	sourceFailure := errors.New("controlled source final status failure")
+	for _, failure := range []struct {
+		name       string
+		want       error
+		afterBegin bool
+		source     error
+	}{
+		{name: "ENOSPC", want: syscall.ENOSPC},
+		{name: "short write", want: io.ErrShortWrite},
+		{name: "late footer write", want: writeFailure},
+		{name: "digest read", want: readFailure},
+		{name: "live replay read", want: readFailure, afterBegin: true},
+		{name: "canonical close", want: closeFailure, afterBegin: true},
+		{name: "owner close", want: closeFailure, afterBegin: true},
+		{name: "cleanup after source failure", want: closeFailure, source: sourceFailure},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			config := testGraphSnapshotSpoolConfig(t)
+			var events []string
+			apply := &snapshotLifecycleMutationApplier{events: &events}
+			graph := &snapshotLifecycleGraph{events: &events}
+			installer := newGraphOnlySnapshotInstaller(apply, graph, config).(*graphOnlySnapshotInstaller)
+			var owner *snapshotScratch
+			attempts, writes := 0, 0
+			injected := false
+			installer.newScratch = func(ctx context.Context, config GraphSnapshotSpoolConfig) (*snapshotScratch, error) {
+				scratch, err := newSnapshotScratch(ctx, config)
+				attempts++
+				if err != nil || attempts != 1 {
+					return scratch, err
+				}
+				owner = scratch
+				var canonical *os.File
+				writeAt, readAt := scratch.writeAt, scratch.readAt
+				scratch.writeAt = func(file *os.File, data []byte, offset int64) (int, error) {
+					if canonical == nil {
+						canonical = file // The first frame precedes identity writes.
+					}
+					if file == canonical {
+						writes++
+						switch {
+						case failure.name == "ENOSPC" && writes == 1:
+							injected = true
+							return 0, syscall.ENOSPC
+						case failure.name == "short write" && writes == 5:
+							injected = true
+							return len(data) - 1, nil
+						case failure.name == "late footer write" && writes == 9:
+							injected = true
+							return 0, writeFailure
+						}
+					}
+					return writeAt(file, data, offset)
+				}
+				scratch.readAt = func(file *os.File, data []byte, offset int64) (int, error) {
+					if file == canonical && !injected && (failure.name == "digest read" || failure.name == "live replay read" && apply.checkedBegins != 0) {
+						injected = true
+						return 0, readFailure
+					}
+					return readAt(file, data, offset)
+				}
+				scratch.afterClose = func(file *os.File) error {
+					if file == canonical && !injected && (failure.name == "canonical close" || failure.name == "cleanup after source failure") {
+						injected = true
+						return closeFailure
+					}
+					return nil
+				}
+				scratch.afterOwnerClose = func() error {
+					if failure.name == "owner close" && apply.checkedBegins != 0 && !injected {
+						injected = true
+						return closeFailure
+					}
+					return nil
+				}
+				return scratch, nil
+			}
+			result, err := installSnapshot(t.Context(), installer, &snapshotSliceStream{frames: graphInstallerLifecycleFrames(), err: failure.source})
+			if !injected || !errors.Is(err, failure.want) || failure.source != nil && !errors.Is(err, failure.source) {
+				t.Fatalf("scratch fault did not preserve its cause: injected=%t err=%v want=%v source=%v", injected, err, failure.want, failure.source)
+			}
+			if result.Header != nil || result.Graph != (SnapshotGraphCounts{}) || len(apply.cutoffs) != 0 || strings.Contains(strings.Join(events, ","), "finish:true") {
+				t.Fatalf("failed staging advertised a verified install: result=%+v events=%v cutoffs=%v", result, events, apply.cutoffs)
+			}
+			if failure.afterBegin {
+				if apply.checkedBegins != 1 || len(apply.finishes) != 1 || apply.finishes[0] || apply.releases != 1 {
+					t.Fatalf("live replay failure did not release exactly once as unverified: events=%v finishes=%v releases=%d", events, apply.finishes, apply.releases)
+				}
+			} else if len(events) != 0 || len(apply.finishes) != 0 {
+				t.Fatalf("collection/validation failure reached live admission: events=%v finishes=%v", events, apply.finishes)
+			}
+			assertSnapshotStageScratchReleased(t, owner, config)
+			before := len(apply.finishes)
+			if _, err := installSnapshot(t.Context(), installer, &snapshotSliceStream{frames: graphInstallerLifecycleFrames()}); err != nil || len(apply.finishes) != before+1 || !apply.finishes[before] {
+				t.Fatalf("fresh-context retry with the same config failed: finishes=%v err=%v", apply.finishes, err)
 			}
 		})
 	}
+}
+
+func TestGraphSnapshotStagingCancellationDuringDiskPassesReleasesOwnership(t *testing.T) {
+	for _, phase := range []string{"collection", "identity sort output", "canonical digest", "live replay"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			config := testGraphSnapshotSpoolConfig(t)
+			var events []string
+			apply := &snapshotLifecycleMutationApplier{events: &events}
+			graph := &snapshotLifecycleGraph{events: &events}
+			installer := newGraphOnlySnapshotInstaller(apply, graph, config).(*graphOnlySnapshotInstaller)
+			frames := graphInstallerLifecycleFrames()
+			if phase == "identity sort output" {
+				frames = snapshotStageTestFramesWithEdge()
+				second := proto.Clone(frames[2]).(*pb.SnapshotResponse)
+				second.GetEdge().Head = "second-distinct-edge"
+				footer := frames[len(frames)-1]
+				footer.GetFooter().EdgeCount++
+				frames = append(frames[:len(frames)-1], second, footer)
+			}
+			remoteEOF := false
+			stream := &snapshotStageObservedStream{SnapshotStream: &snapshotSliceStream{frames: frames}, after: func(open bool) {
+				remoteEOF = !open
+			}}
+			var owner *snapshotScratch
+			attempts, writes := 0, 0
+			interrupted := false
+			installer.newScratch = func(ctx context.Context, config GraphSnapshotSpoolConfig) (*snapshotScratch, error) {
+				scratch, err := newSnapshotScratch(ctx, config)
+				attempts++
+				if err != nil || attempts != 1 {
+					return scratch, err
+				}
+				owner = scratch
+				var canonical *os.File
+				writeAt, readAt := scratch.writeAt, scratch.readAt
+				scratch.writeAt = func(file *os.File, data []byte, offset int64) (int, error) {
+					if canonical == nil {
+						canonical = file
+					}
+					if file == canonical {
+						writes++
+					}
+					n, err := writeAt(file, data, offset)
+					if !interrupted && (phase == "collection" && writes == 4 || phase == "identity sort output" && remoteEOF && file != canonical) {
+						interrupted = true
+						cancel()
+					}
+					return n, err
+				}
+				scratch.readAt = func(file *os.File, data []byte, offset int64) (int, error) {
+					n, err := readAt(file, data, offset)
+					if file == canonical && !interrupted && (phase == "canonical digest" || phase == "live replay" && apply.checkedBegins != 0) {
+						interrupted = true
+						cancel()
+					}
+					return n, err
+				}
+				return scratch, nil
+			}
+			result, err := installSnapshot(ctx, installer, stream)
+			if !interrupted || !errors.Is(err, context.Canceled) || result.Header != nil || len(apply.cutoffs) != 0 {
+				t.Fatalf("disk-pass cancellation was lost or verified: interrupted=%t result=%+v cutoffs=%v err=%v", interrupted, result, apply.cutoffs, err)
+			}
+			if phase == "live replay" {
+				if apply.checkedBegins != 1 || len(apply.finishes) != 1 || apply.finishes[0] || apply.releases != 1 {
+					t.Fatalf("canceled live replay was not released as unverified: events=%v finishes=%v releases=%d", events, apply.finishes, apply.releases)
+				}
+			} else if len(events) != 0 || len(apply.finishes) != 0 {
+				t.Fatalf("canceled disk validation entered live install: events=%v finishes=%v", events, apply.finishes)
+			}
+			assertSnapshotStageScratchReleased(t, owner, config)
+			before := len(apply.finishes)
+			if _, err := installSnapshot(t.Context(), installer, &snapshotSliceStream{frames: graphInstallerLifecycleFrames()}); err != nil || len(apply.finishes) != before+1 || !apply.finishes[before] {
+				t.Fatalf("cancellation retained the installer flight or directory: finishes=%v err=%v", apply.finishes, err)
+			}
+		})
+	}
+}
+
+// The source deliberately reuses one payload and one current message. Neither
+// it nor the sink keeps a dataset-sized list; distinct frame bytes must survive
+// until the later replay solely through the owned spool.
+type snapshotStageGeneratedStream struct {
+	count, next int
+	payload     []byte
+	current     *pb.SnapshotResponse
+	digest      hash.Hash
+	encoded     uint64
+}
+
+func (s *snapshotStageGeneratedStream) Receive() bool {
+	s.current = nil
+	switch {
+	case s.next == 0:
+		s.current = graphInstallerLifecycleFrames()[0]
+	case s.next <= s.count:
+		binary.BigEndian.PutUint64(s.payload[:8], uint64(s.next))
+		key := fmt.Sprintf("vertex-%03d", s.next)
+		_, _ = s.digest.Write([]byte(key))
+		_, _ = s.digest.Write(s.payload)
+		s.current = &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Vertex{Vertex: &pb.SnapshotVertex{Vertex: &pb.Vertex{Key: key, Value: &pb.Vertex_Bytes{Bytes: s.payload}}}}}
+	case s.next == s.count+1:
+		s.current = &pb.SnapshotResponse{Entry: &pb.SnapshotResponse_Footer{Footer: &pb.SnapshotFooter{VertexCount: uint64(s.count)}}}
+	default:
+		return false
+	}
+	s.next++
+	s.encoded += uint64(proto.Size(s.current))
+	return true
+}
+
+func (s *snapshotStageGeneratedStream) Msg() *pb.SnapshotResponse { return s.current }
+func (s *snapshotStageGeneratedStream) Err() error                { return nil }
+
+type snapshotStageDigestGraph struct {
+	*snapshotLifecycleGraph
+	count  uint64
+	digest hash.Hash
+}
+
+func (g *snapshotStageDigestGraph) PutVertexWithExpirationHLC(key string, vertex *pb.Vertex, _ time.Time, _ hlc.Timestamp) bool {
+	g.count++
+	_, _ = g.digest.Write([]byte(key))
+	_, _ = g.digest.Write(vertex.GetBytes())
+	return true
+}
+
+func TestGraphSnapshotStagingStreamsMoreThan64MiBWithExactDataAndBoundedScratch(t *testing.T) {
+	config := testGraphSnapshotSpoolConfig(t)
+	config.MaxFrameBytes = (1 << 20) + 1024
+	var events []string
+	apply := &snapshotLifecycleMutationApplier{events: &events}
+	graph := &snapshotStageDigestGraph{snapshotLifecycleGraph: &snapshotLifecycleGraph{events: &events}, digest: sha256.New()}
+	installer := newGraphOnlySnapshotInstaller(apply, graph, config).(*graphOnlySnapshotInstaller)
+	var owner *snapshotScratch
+	installer.newScratch = func(ctx context.Context, config GraphSnapshotSpoolConfig) (*snapshotScratch, error) {
+		var err error
+		owner, err = newSnapshotScratch(ctx, config)
+		return owner, err
+	}
+	generated := &snapshotStageGeneratedStream{count: 65, payload: make([]byte, 1<<20), digest: sha256.New()}
+	for index := range generated.payload {
+		generated.payload[index] = byte(index)
+	}
+	var stagedBytes uint64
+	stream := &snapshotStageObservedStream{SnapshotStream: generated, after: func(open bool) {
+		if !open {
+			stagedBytes, _ = owner.stats()
+		}
+	}}
+	result, err := installSnapshot(t.Context(), installer, stream)
+	if err != nil || generated.encoded <= 64<<20 || stagedBytes <= 64<<20 || stagedBytes > config.MaxDiskBytes {
+		t.Fatalf("explicit disk allowance did not stage the large stream: encoded=%d scratch=%d quota=%d err=%v", generated.encoded, stagedBytes, config.MaxDiskBytes, err)
+	}
+	if result.Graph.Vertices != 65 || graph.count != 65 || !equalSnapshotDigest(generated.digest.Sum(nil), graph.digest.Sum(nil)) || len(apply.finishes) != 1 || !apply.finishes[0] {
+		t.Fatalf("large replay changed data or did not verify exactly once: result=%+v applied=%d finishes=%v", result.Graph, graph.count, apply.finishes)
+	}
+	assertSnapshotStageScratchReleased(t, owner, config)
 }
 
 func TestGraphSnapshotStagingPreservesTransportErrorBeforeNativeCapture(t *testing.T) {
@@ -448,7 +735,7 @@ func TestGraphSnapshotStagingPreservesTransportErrorBeforeNativeCapture(t *testi
 			apply := &snapshotLifecycleMutationApplier{events: &events}
 			graph := &snapshotLifecycleGraph{events: &events}
 			stream := &snapshotStageObservedStream{SnapshotStream: &snapshotSliceStream{err: status.source}}
-			_, err := installSnapshot(ctx, newGraphOnlySnapshotInstaller(apply, graph), stream)
+			_, err := installSnapshot(ctx, testGraphOnlySnapshotInstaller(t, apply, graph), stream)
 			if err != status.want || stream.receives != 1 || len(events) != 0 || len(apply.finishes) != 0 {
 				t.Fatalf("native proof handling masked source failure or began replay: receives=%d events=%v finishes=%v err=%v want=%v", stream.receives, events, apply.finishes, err, status.want)
 			}
