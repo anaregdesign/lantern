@@ -717,14 +717,25 @@ Credits are acquired before byte
 allocation and include a frame held by synchronous Send. Rich receipt projection
 first reserves its intrinsic worst-case wire bound and refunds unused space;
 this may reject conservatively before actual encoded storage reaches the cap.
-Overflow rejects the
-tail rather than extending storage. Closing unregisters and joins projection,
+Only an unclaimed owned queue lost to `queue_full` may retire its queued
+bytes and keep the same reservation as a ring-backed cursor. Snapshot finish
+and claim both prove retention from the original local cut; claim does not
+advance that cut or refresh the original admission or deadline. After claim,
+replay projects one retained entry at a time, rechecking continuity and the
+original log generation before each entry, then switches atomically to bounded
+live delivery. It never copies the retained ring or pins original mutation or
+receipt envelopes. Byte/count projection failures, claimed queue loss, missing
+history, changed generation and other terminal causes still fail closed.
+No new owner or additional buffering is admitted for this fallback.
+Closing unregisters and joins projection,
 discards queued references, and joins the owner watcher. A claimed owner keeps
 its credits and peer slot until the HTTP handler acknowledges exit. Capture,
 validation or send failure, cancellation before completion, expiry, membership
 withdrawal, publication fault, log close, and peer-plane shutdown release the
 corresponding owners. These bounds do not guarantee convergence under churn
-that exceeds the queue or the original native admission lifetime.
+that exceeds both the queue and retained ring, or the original native admission
+lifetime. The fallback addresses a retained-history queue overflow mechanism;
+it does not attribute every observed load failure to that mechanism.
 
 Live subscriber loss is signaled independently of queued entries. The sender
 does not wait for the old buffer to drain before withdrawing a blocked private

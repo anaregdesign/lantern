@@ -357,7 +357,7 @@ func (s *LanternReplicationService) Subscribe(ctx context.Context, req *pb.Subsc
 		if token != "" {
 			tail, openErr = s.claimSnapshotTail(ctx, token, req, cursor, generation)
 			if openErr == nil {
-				subscription = tail.subscription
+				subscription = tail.currentSubscription()
 				ch, cancel = subscription.Entries(), subscription.Close
 			}
 			return

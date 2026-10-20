@@ -2652,6 +2652,7 @@ type observedSnapshotPeer struct {
 	headers   chan observedSnapshotHeader
 	snapshots atomic.Int32
 	gaps      atomic.Int32
+	results   chan error
 }
 
 func (p *observedSnapshotPeer) Subscribe(ctx context.Context, req *connect.Request[pb.SubscribeRequest], stream *connect.ServerStream[pb.SubscribeResponse]) error {
@@ -2665,7 +2666,14 @@ func (p *observedSnapshotPeer) Subscribe(ctx context.Context, req *connect.Reque
 func (p *observedSnapshotPeer) Snapshot(ctx context.Context, req *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
 	p.snapshots.Add(1)
 	ctx = service.WithReplicationTailMetadata(ctx, req.Header().Values(service.SnapshotTailHeader), stream.ResponseHeader())
-	return p.source.Snapshot(ctx, req.Msg, observedSnapshotSender{ctx: ctx, stream: stream, headers: p.headers})
+	err := p.source.Snapshot(ctx, req.Msg, observedSnapshotSender{ctx: ctx, stream: stream, headers: p.headers})
+	if p.results != nil {
+		select {
+		case p.results <- err:
+		case <-ctx.Done():
+		}
+	}
+	return err
 }
 
 type observedSnapshotSender struct {
@@ -4106,4 +4114,183 @@ func TestPeerPump_OutcomeAwarePutEdgesGapRecovery(t *testing.T) {
 		}
 	}
 	waitForSearchConvergence(t, ctx, "gap", nil, a.raw, b.raw, c.raw)
+}
+
+// Use the actual default tail bound, not wall-clock throughput: each held
+// Snapshot admits exactly 513 writes before finish. A core drop signal orders
+// overflow before releasing the header; a third, quiet attempt is the control.
+func TestPeerPump_SnapshotTailCapacityBeforeFinish(t *testing.T) {
+	for _, ringCapacity := range []int{4, 10000} {
+		t.Run(fmt.Sprintf("ring_%d", ringCapacity), func(t *testing.T) {
+
+			ctx, cancel := context.WithTimeout(t.Context(), 12*time.Second)
+			defer cancel()
+			sourceID := hlc.NodeID{3}
+			drops := make(chan struct{}, 4)
+			var graphs [2]*graphcache.GraphCache[string, *pb.Vertex]
+			var peer *observedSnapshotPeer
+			fixture := newPeerSecurityFixture(t, peerSecurityOptions{
+				LogOptions: func(index int) mutationlog.Options {
+					opts := mutationlog.Options{Capacity: ringCapacity, SubscriberBuffer: 512}
+					if index == 0 {
+						opts.OnDrop = func(cause string) {
+							if cause == mutationlog.DropCauseBufferFull {
+								select {
+								case drops <- struct{}{}:
+								default:
+								}
+							}
+						}
+					}
+					return opts
+				},
+				Mount: func(f *peerSecurityFixture, index int, runtime *service.ServingRuntime, mux *http.ServeMux) {
+					graphs[index] = runtime.GraphCache()
+					if index != 0 {
+						return
+					}
+					source, err := runtime.NewLanternReplicationService(f.primary[index])
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(source.CloseSnapshotTails)
+					peer = &observedSnapshotPeer{
+						LanternReplicationServiceHandler: service.NewLanternReplicationServiceConnectHandler(source),
+						source:                           source, headers: make(chan observedSnapshotHeader, 1), results: make(chan error, 4),
+					}
+					_, handler := graphv1connect.NewLanternReplicationServiceHandler(peer)
+					mux.Handle("/graph.v1.LanternReplicationService/Snapshot", handler)
+					mux.Handle("/graph.v1.LanternReplicationService/Subscribe", handler)
+				},
+			})
+			put := func(key string) {
+				t.Helper()
+				if _, err := fixture.primary[0].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
+					Key: key, Value: &pb.Vertex_String_{String_: "value"}, Expiration: timestamppb.New(time.Now().Add(time.Minute)),
+				}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := range 8 {
+				put(fmt.Sprintf("data:seed-%d", i))
+			}
+			finish, err := fixture.primary[1].BeginSnapshotInstall()
+			if err != nil {
+				t.Fatal(err)
+			}
+			finish(false) // Force the same repair path even when the source ring retains all history.
+			transport, err := provider.NewWorkloadPeerTransport(fixture.runtimes[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			apply := &observedSnapshotApplier{LanternService: fixture.primary[1], ctx: ctx, began: make(chan *observedSnapshotInstall, 1)}
+			pump := replication.NewPump(replication.Config{
+				NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{fixture.servers[0].URL},
+				PeerTransport: transport, BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
+			}, apply, graphs[1])
+			done := make(chan error, 1)
+			go func() { done <- pump.Run(ctx) }()
+			defer func() {
+				cancel()
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Error(err)
+					}
+				case <-time.After(time.Second):
+					t.Error("capacity control Pump did not join")
+				}
+			}()
+			cycles := 3
+			if ringCapacity == 10000 {
+				cycles = 1
+			}
+			for cycle := range cycles {
+				var header observedSnapshotHeader
+				var stage *observedSnapshotInstall
+				select {
+				case header = <-peer.headers:
+				case <-ctx.Done():
+					t.Fatal("Snapshot header", ctx.Err())
+				}
+				select {
+				case stage = <-apply.began:
+				case <-ctx.Done():
+					t.Fatal("Snapshot install admission", ctx.Err())
+				}
+				if cycle < 2 {
+					for i := range 513 {
+						put(fmt.Sprintf("data:overflow-%d-%d", cycle, i))
+					}
+					select {
+					case <-drops:
+					case <-ctx.Done():
+						t.Fatal("513 writes did not trigger actual queue overflow", ctx.Err())
+					}
+				}
+				first, _ := fixture.logs[0].FirstSeq()
+				if cycle < 2 && (first <= header.header.GetCutoffLocalSeq()+1) != (ringCapacity == 10000) {
+					t.Fatalf("ring control capacity=%d first=%d captured_next=%d", ringCapacity, first, header.header.GetCutoffLocalSeq()+1)
+				}
+				header.release <- nil
+				var serverErr error
+				select {
+				case serverErr = <-peer.results:
+				case <-ctx.Done():
+					t.Fatal("Snapshot source completion", ctx.Err())
+				}
+				var verified bool
+				select {
+				case verified = <-stage.finished:
+				case <-ctx.Done():
+					t.Fatal("Snapshot receiver completion", ctx.Err())
+				}
+				if cycle < 2 && ringCapacity == 4 {
+					if verified || connect.CodeOf(serverErr) != connect.CodeFailedPrecondition || !strings.Contains(serverErr.Error(), "Snapshot tail unavailable") {
+						t.Fatalf("overflow cycle=%d verified=%t source_error=%v", cycle, verified, serverErr)
+					}
+					if !fixture.primary[1].SnapshotRepairRequired() {
+						t.Fatal("failed finish cleared receiver fault")
+					}
+					if _, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed-0"}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+						t.Fatalf("faulted receiver read=%v", err)
+					}
+					if _, err := fixture.primary[1].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "data:refused"}}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+						t.Fatalf("faulted receiver write=%v", err)
+					}
+				} else if !verified || serverErr != nil || fixture.primary[1].SnapshotRepairRequired() {
+					t.Fatalf("quiet recovery verified=%t source_error=%v faulted=%t", verified, serverErr, fixture.primary[1].SnapshotRepairRequired())
+				}
+				if _, err := fixture.primary[0].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed-0"}); err != nil {
+					t.Fatal("healthy source read", err)
+				}
+				t.Logf("cycle=%d cutoff=%d retained_first=%d source=%d verified=%t receiver_faulted=%t source_error=%v", cycle+1, header.header.GetCutoffLocalSeq(), first, fixture.primary[0].LocalSeq(sourceID), verified, fixture.primary[1].SnapshotRepairRequired(), serverErr)
+				close(stage.resume)
+			}
+			if ringCapacity == 10000 {
+				if !waitForVertex(t, graphs[1], "data:overflow-0-512", time.Second) {
+					t.Fatal("retained replay omitted last overflow update")
+				}
+				for i := range 513 {
+					if _, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: fmt.Sprintf("data:overflow-0-%d", i)}); err != nil {
+						t.Fatalf("retained replay lost update %d: %v", i, err)
+					}
+				}
+			}
+			put("data:after-quiet-repair")
+			if !waitForVertex(t, graphs[1], "data:after-quiet-repair", time.Second) {
+				t.Fatal("quiet recovery did not resume tail delivery")
+			}
+			if _, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed-0"}); err != nil {
+				t.Fatal("quiet recovery public read", err)
+			}
+			if got, want := fixture.primary[1].LocalSeq(sourceID), fixture.primary[0].LocalSeq(sourceID); got != want {
+				t.Fatalf("recovered cursor=%d, source=%d", got, want)
+			}
+			if peer.snapshots.Load() != int32(cycles) {
+				t.Fatalf("Snapshot count=%d, want%d", peer.snapshots.Load(), cycles)
+			}
+
+		})
+	}
 }

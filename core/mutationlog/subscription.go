@@ -19,6 +19,8 @@ type Subscription struct {
 	mu         sync.Mutex
 	err        error
 	finishOnce sync.Once
+	// Immutable owned-tail cut, used only by bounded replay after queue loss.
+	replay *tailReplayBinding
 }
 
 func newSubscription() *Subscription {

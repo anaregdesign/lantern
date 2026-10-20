@@ -925,16 +925,26 @@ func newDurableReceiptSnapshotInstallerWithTarget(
 	target backup.ReceiptSnapshotInstallTarget,
 ) *backup.ReceiptSnapshotInstaller {
 	t.Helper()
+	return newDurableReceiptSnapshotInstallerWithTargetLimits(t, config, target, backup.ReceiptSnapshotCollectorLimits{
+		MaxFrameBytes: 8 << 20, MaxFrames: 162,
+		MaxTransportBytes: 16 << 20, MaxCanonicalSpoolBytes: 16 << 20,
+		MaxActiveReceipts: 32, MaxRetiredEpochs: 32, MaxRetiredReceipts: 32,
+		MaxOrigins: 16, MaxGraphFrames: 96,
+	})
+}
+
+func newDurableReceiptSnapshotInstallerWithTargetLimits(
+	t *testing.T,
+	config service.DurableReceiptWALRuntimeConfig,
+	target backup.ReceiptSnapshotInstallTarget,
+	limits backup.ReceiptSnapshotCollectorLimits,
+) *backup.ReceiptSnapshotInstaller {
+	t.Helper()
 	expectedPolicy := config.Receipt
 	expectedPolicy.ClockHighWater = time.Time{}
 	collector, err := backup.NewReceiptSnapshotCollector(backup.ReceiptSnapshotCollectorConfig{
-		TempDir: filepath.Dir(config.Path),
-		Limits: backup.ReceiptSnapshotCollectorLimits{
-			MaxFrameBytes: 8 << 20, MaxFrames: 162,
-			MaxTransportBytes: 16 << 20, MaxCanonicalSpoolBytes: 16 << 20,
-			MaxActiveReceipts: 32, MaxRetiredEpochs: 32, MaxRetiredReceipts: 32,
-			MaxOrigins: 16, MaxGraphFrames: 96,
-		},
+		TempDir:        filepath.Dir(config.Path),
+		Limits:         limits,
 		ExpectedPolicy: expectedPolicy,
 		ExpectedRetiredConfig: mutationreceipt.RetiredCatalogConfig{
 			ActiveEpoch: expectedPolicy.Epoch,
@@ -6481,12 +6491,32 @@ func (t *heldNativeReceiptInstallTarget) InstallReceiptBaseline(ctx context.Cont
 
 type nativeReceiptTailPeer struct {
 	*observedSnapshotPeer
-	claims atomic.Int32
+	claims        atomic.Int32
+	claimRequests chan *pb.SubscribeRequest
+	rpcTimeout    time.Duration
+}
+
+func (p *nativeReceiptTailPeer) Snapshot(ctx context.Context, request *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
+	if p.rpcTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.rpcTimeout)
+		defer cancel()
+	}
+	return p.observedSnapshotPeer.Snapshot(ctx, request, stream)
 }
 
 func (p *nativeReceiptTailPeer) Subscribe(ctx context.Context, request *connect.Request[pb.SubscribeRequest], stream *connect.ServerStream[pb.SubscribeResponse]) error {
+	if p.rpcTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.rpcTimeout)
+		defer cancel()
+	}
 	if request.Header().Get(service.SnapshotTailHeader) != "" {
 		p.claims.Add(1)
+		select {
+		case p.claimRequests <- proto.Clone(request.Msg).(*pb.SubscribeRequest):
+		default:
+		}
 	}
 	return p.observedSnapshotPeer.Subscribe(ctx, request, stream)
 }
@@ -6495,8 +6525,24 @@ func (p *nativeReceiptTailPeer) Subscribe(ctx context.Context, request *connect.
 // workload TLS and signed membership. The native authority clock is a controlled
 // test observation, never an external UTC/provider qualification.
 func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	defer cancel()
+	for _, tc := range []struct {
+		name, proof                                        string
+		capacity, subscriberBuffer, seedWrites, tailWrites int
+		queueFull                                          bool
+	}{
+		{name: "evicted ring uses owned tail", proof: "ring4 seed8 tail8", capacity: 4, subscriberBuffer: 16, seedWrites: 8, tailWrites: 8},
+		{name: "unclaimed queue full replays retained ring", proof: "ring520 seed521 tail513 queue512", capacity: 520, subscriberBuffer: 512, seedWrites: 521, tailWrites: 513, queueFull: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testDurableReceiptNativeTailAndRestart(t, tc.capacity, tc.subscriberBuffer, tc.seedWrites, tc.tailWrites, tc.queueFull)
+			t.Log(tc.proof)
+		})
+	}
+}
+
+func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBuffer, seedWrites, tailWrites int, queueFull bool) {
+	setupCtx, cancelSetup := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancelSetup()
 	qualifiedUTC := time.Now().UTC().Truncate(time.Millisecond)
 	clockOwner, began := new(byte), time.Now()
 	bounds := func() (time.Time, time.Time, error) { return qualifiedUTC, qualifiedUTC, nil }
@@ -6507,12 +6553,26 @@ func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
 	var durable [2]*service.ServingRuntime
 	var replicas [2]*service.LanternReplicationService
 	var source *nativeReceiptTailPeer
+	drops := make(chan string, 1)
 	fixture := newPeerSecurityFixture(t, peerSecurityOptions{
 		Now: func() time.Time { return qualifiedUTC }, TimeBounds: bounds, Time: observe, IssuedBefore: time.Minute,
 		Mount: func(f *peerSecurityFixture, index int, _ *service.ServingRuntime, mux *http.ServeMux) {
 			config := durableReceiptWireConfig(filepath.Join(t.TempDir(), "native-receipt.wal"), hlc.NodeID{byte(index + 3)})
 			config.NamespaceFormat = "namespaced-v1"
-			config.Log = mutationlog.Options{Capacity: 4, SubscriberBuffer: 16}
+			config.Log = mutationlog.Options{Capacity: capacity, SubscriberBuffer: subscriberBuffer}
+			if queueFull {
+				// This is a fixture Store limit, independent of the unchanged
+				// production tail's fixed 512 slots and encoded byte ceilings.
+				config.Receipt.MaxEntries = tailWrites
+				if index == 0 {
+					config.Log.OnDrop = func(cause string) {
+						select {
+						case drops <- cause:
+						default:
+						}
+					}
+				}
+			}
 			config.Now, config.Receipt.ClockHighWater = qualifiedUTC, qualifiedUTC
 			runtime, err := service.CreateDurableReceiptWALServingRuntime(config)
 			if err != nil {
@@ -6531,10 +6591,16 @@ func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
 			configs[index], durable[index], replicas[index], f.primary[index] = config, runtime, replica, primary
 			handler := service.NewLanternReplicationServiceConnectHandler(replica)
 			if index == 0 {
-				source = &nativeReceiptTailPeer{observedSnapshotPeer: &observedSnapshotPeer{
+				source = &nativeReceiptTailPeer{claimRequests: make(chan *pb.SubscribeRequest, 1), observedSnapshotPeer: &observedSnapshotPeer{
 					LanternReplicationServiceHandler: handler, source: replica,
 					headers: make(chan observedSnapshotHeader, 1),
 				}}
+				if queueFull {
+					// Fixture preparation and 513 durable follower commits are
+					// separate work. Each source stream still gets the original
+					// 15-second bound, including the reserved Snapshot deadline.
+					source.rpcTimeout = 15 * time.Second
+				}
 				handler = source
 			}
 			_, mounted := graphv1connect.NewLanternReplicationServiceHandler(handler)
@@ -6543,14 +6609,28 @@ func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
 			}
 		},
 	})
-	for index := range 8 {
-		if _, err := fixture.primary[0].PutEdge(ctx, &pb.PutEdgeRequest{Edge: &pb.Edge{
+	for sequence := range seedWrites {
+		// Re-Put the first eight edges only in the ring520 case: 521
+		// publications force bootstrap, while all 513 later Deletes have
+		// distinct live effects in the verified cut.
+		index := sequence % tailWrites
+		if _, err := fixture.primary[0].PutEdge(setupCtx, &pb.PutEdgeRequest{Edge: &pb.Edge{
 			Tail: fmt.Sprintf("data:native-tail-%d", index), Head: fmt.Sprintf("data:native-head-%d", index),
 			Weight: float32(index + 1), Expiration: timestamppb.New(qualifiedUTC.Add(time.Hour)),
 		}}); err != nil {
 			t.Fatalf("seed native durable edge %d: %v", index, err)
 		}
 	}
+	cancelSetup()
+	flowTimeout, convergenceTimeout := 15*time.Second, 2*time.Second
+	if queueFull {
+		// The source and follower each perform 513 synchronous WAL commits.
+		// This case budgets those sequential stages without extending either native
+		// Snapshot/Subscribe stream beyond the 15-second fixture deadline.
+		flowTimeout, convergenceTimeout = 30*time.Second, 15*time.Second
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), flowTimeout)
+	defer cancel()
 	sourceOrigin, receiptOrigin := configs[0].NodeID, hlc.NodeID{0x73}
 	sourceHex, receiptHex := hex.EncodeToString(sourceOrigin[:]), hex.EncodeToString(receiptOrigin[:])
 	var lastSeedHLC hlc.Timestamp
@@ -6564,7 +6644,19 @@ func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
 	}
 	install := &heldNativeReceiptInstallTarget{primary: fixture.primary[1], validated: make(chan service.ReceiptWholeStateCapture, 1),
 		release: make(chan struct{}), finished: make(chan error, 1)}
-	installer := newDurableReceiptSnapshotInstallerWithTarget(t, configs[1], install)
+	var installer *backup.ReceiptSnapshotInstaller
+	if queueFull {
+		// Only the bounded fixture collector grows with this larger graph;
+		// the service's queue and transport resource limits stay unchanged.
+		installer = newDurableReceiptSnapshotInstallerWithTargetLimits(t, configs[1], install, backup.ReceiptSnapshotCollectorLimits{
+			MaxFrameBytes: 8 << 20, MaxFrames: uint64(2 + tailWrites + 32 + tailWrites*8),
+			MaxTransportBytes: 16 << 20, MaxCanonicalSpoolBytes: 16 << 20,
+			MaxActiveReceipts: uint64(tailWrites), MaxRetiredEpochs: 32, MaxRetiredReceipts: 32,
+			MaxOrigins: 16, MaxGraphFrames: uint64(tailWrites * 8),
+		})
+	} else {
+		installer = newDurableReceiptSnapshotInstallerWithTarget(t, configs[1], install)
+	}
 	transport, err := provider.NewWorkloadPeerTransport(fixture.runtimes[1])
 	if err != nil {
 		t.Fatal(err)
@@ -6601,9 +6693,9 @@ func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
 	}
 	select {
 	case capture := <-install.validated:
-		if len(capture.Receipts.Receipts) != 0 || len(capture.Origins) != 1 || capture.Origins[0].LastSeq != 8 ||
-			snapshotHeader.GetCutoffLocalSeq() != 8 || snapshotHeader.GetCutoffSeqPerOrigin()[sourceHex] != 8 {
-			t.Fatal("receipt collector did not verify the exact seed-8 cut")
+		if len(capture.Receipts.Receipts) != 0 || len(capture.Origins) != 1 || capture.Origins[0].LastSeq != uint64(seedWrites) ||
+			snapshotHeader.GetCutoffLocalSeq() != uint64(seedWrites) || snapshotHeader.GetCutoffSeqPerOrigin()[sourceHex] != uint64(seedWrites) {
+			t.Fatalf("receipt collector did not verify the exact seed-%d cut", seedWrites)
 		}
 	case <-ctx.Done():
 		t.Fatal("native receipt candidate was not completely verified", ctx.Err())
@@ -6611,39 +6703,90 @@ func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
 	if fixture.primary[1].LocalSeq(sourceOrigin) != 0 || durable[1].ReceiptStats().Entries != 0 {
 		t.Fatal("held verified candidate changed serving graph/Store before durable install")
 	}
-	mutations := make([]*pb.Mutation, 0, 8)
-	operationIDs := make([][]byte, 0, 8)
-	for index := range 8 {
+	mutations := make([]*pb.Mutation, 0, tailWrites)
+	operationIDs := make([][]byte, 0, tailWrites)
+	for index := range tailWrites {
 		logicalTail, logicalHead := fmt.Sprintf("native-tail-%d", index), fmt.Sprintf("native-head-%d", index)
 		mutation, id := durableFollowerReceiptMutationAt(t, configs[0].Receipt, receiptOrigin, uint64(index+1), logicalTail, logicalHead,
 			time.Unix(0, lastSeedHLC.WallNs).Add(time.Duration(index+1)*time.Millisecond))
 		mutation.NamespaceFormat = "namespaced-v1"
 		item := mutation.GetOp().GetReplicatedReceiptEdgeDelete().Items[0]
+		if queueFull {
+			// Keep all IDs and logical calls distinct beyond one byte's range.
+			var entropy [24]byte
+			entropy[0] = 0x39
+			binary.BigEndian.PutUint64(entropy[16:], uint64(index+1))
+			issued := time.Unix(0, lastSeedHLC.WallNs).Add(time.Duration(index+1)*time.Millisecond - time.Second)
+			operationID, err := mutationreceipt.NewID(configs[0].Receipt.Epoch, issued, entropy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id = operationID.Bytes()
+			item.Receipt.OperationId = id
+			var group mutationreceipt.GroupID
+			group[0] = 0x4a
+			binary.BigEndian.PutUint64(group[len(group)-8:], uint64(index+1))
+			item.Receipt.LogicalCallId = group[:]
+		}
 		item.Key.Tail, item.Key.Head = "data:"+logicalTail, "data:"+logicalHead
 		if err := fixture.primary[0].ApplyMutation(ctx, mutation); err != nil {
 			t.Fatalf("post-cut durable receipt %d: %v", index+1, err)
 		}
 		mutations, operationIDs = append(mutations, mutation), append(operationIDs, id)
 	}
-	if length, capacity, evicted := durable[0].MutationLogStats(); length != 4 || capacity != 4 || evicted != 12 {
-		t.Fatalf("post-cut receipt history did not evict the seed boundary: length=%d capacity=%d evicted=%d", length, capacity, evicted)
+	if length, retained, evicted := durable[0].MutationLogStats(); length != capacity || retained != capacity || evicted != uint64(seedWrites+tailWrites-capacity) {
+		t.Fatalf("post-cut receipt history boundary: length=%d capacity=%d evicted=%d; want %d/%d/%d", length, retained, evicted, capacity, capacity, seedWrites+tailWrites-capacity)
 	}
-	// Actual native wire control: a newly opened ordinary subscription cannot
-	// recover foreign-origin 1..4, while the reserved exact stream still owns it.
+	if queueFull {
+		// No tail is claimed or read while the verified installer is held.
+		// The sole live source subscription must overflow exactly at write
+		// 513 with the production maximum of 512 slots.
+		select {
+		case cause := <-drops:
+			if cause != mutationlog.DropCauseBufferFull {
+				t.Fatalf("unclaimed native tail terminal cause=%q, want buffer_full", cause)
+			}
+		case <-ctx.Done():
+			t.Fatal("513 receipt writes did not fill the unclaimed 512-slot tail", ctx.Err())
+		}
+	}
+	// Actual native wire control distinguishes evicted history from the
+	// retained range that may replace an unclaimed queue-full tail.
 	client := graphv1connect.NewLanternReplicationServiceClient(fixture.runtimes[1].HTTPClient(), fixture.servers[0].URL)
 	ordinary, gap := client.Subscribe(ctx, connect.NewRequest(&pb.SubscribeRequest{
-		NamespaceFormat: "namespaced-v1", FromLocalSeq: 9,
-		FromSeqPerOrigin: map[string]uint64{sourceHex: 9, receiptHex: 1}, AcceptGraphMutations: true, AcceptReceiptEnvelopes: true,
+		NamespaceFormat: "namespaced-v1", FromLocalSeq: uint64(seedWrites + 1),
+		FromSeqPerOrigin: map[string]uint64{sourceHex: uint64(seedWrites + 1), receiptHex: 1}, AcceptGraphMutations: true, AcceptReceiptEnvelopes: true,
 	}))
-	if gap == nil {
-		if ordinary.Receive() {
-			t.Fatal("unreserved native Subscribe unexpectedly recovered evicted receipt history")
+	if queueFull {
+		if gap != nil {
+			t.Fatal("retained receipt replay control failed", gap)
 		}
-		gap = ordinary.Err()
+		for index := range tailWrites {
+			if !ordinary.Receive() {
+				t.Fatalf("retained receipt replay ended at %d/%d: %v", index, tailWrites, ordinary.Err())
+			}
+			mutation := ordinary.Msg().GetMutation()
+			expected := proto.Clone(mutations[index].GetOp()).(*pb.MutationOp)
+			// Causal acceptance is receiver-local. This source accepted each
+			// fresh Delete while preserving the authoritative false result.
+			expected.GetReplicatedReceiptEdgeDelete().Items[0].CausallyAccepted = true
+			if mutation.GetSeq() != uint64(index+1) || !bytes.Equal(mutation.GetOrigin(), receiptOrigin[:]) ||
+				!proto.Equal(mutation.GetOp(), expected) {
+				t.Fatalf("retained native receipt replay changed effect/result at sequence %d", index+1)
+			}
+		}
 		_ = ordinary.Close()
-	}
-	if connect.CodeOf(gap) != connect.CodeFailedPrecondition || !strings.Contains(gap.Error(), "gapped:") {
-		t.Fatalf("unreserved native receipt control = %v, want retained-history gap", gap)
+	} else {
+		if gap == nil {
+			if ordinary.Receive() {
+				t.Fatal("unreserved native Subscribe unexpectedly recovered evicted receipt history")
+			}
+			gap = ordinary.Err()
+			_ = ordinary.Close()
+		}
+		if connect.CodeOf(gap) != connect.CodeFailedPrecondition || !strings.Contains(gap.Error(), "gapped:") {
+			t.Fatalf("unreserved native receipt control = %v, want retained-history gap", gap)
+		}
 	}
 	close(install.release)
 	select {
@@ -6654,11 +6797,11 @@ func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("verified native receipt install did not finish", ctx.Err())
 	}
-	deadline := time.NewTimer(2 * time.Second)
+	deadline := time.NewTimer(convergenceTimeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
-	for fixture.primary[1].LocalSeq(receiptOrigin) != 8 {
+	for fixture.primary[1].LocalSeq(receiptOrigin) != uint64(tailWrites) {
 		select {
 		case <-ticker.C:
 		case <-deadline.C:
@@ -6678,20 +6821,31 @@ func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
 	if source.snapshots.Load() != 1 || install.installs.Load() != 1 || source.claims.Load() != 1 {
 		t.Fatalf("native receipt handoff needed more than one install/claim: snapshots=%d installs=%d claims=%d", source.snapshots.Load(), install.installs.Load(), source.claims.Load())
 	}
+	select {
+	case claim := <-source.claimRequests:
+		if claim.GetFromLocalSeq() != uint64(seedWrites+1) || claim.GetFromSeqPerOrigin()[sourceHex] != uint64(seedWrites+1) ||
+			claim.GetFromSeqPerOrigin()[receiptHex] > 1 || !claim.GetAcceptReceiptEnvelopes() {
+			t.Fatalf("native receipt claim changed the original Snapshot cursor: %+v", claim)
+		}
+	default:
+		t.Fatal("native receipt claim did not preserve its request")
+	}
 	checkNativeState := func(name, originURL string, runtime *service.ServingRuntime) {
 		t.Helper()
+		proofCtx, cancelProof := context.WithTimeout(ctx, 15*time.Second)
+		defer cancelProof()
 		wire := graphv1connect.NewLanternReplicationServiceClient(fixture.runtimes[0].HTTPClient(), originURL)
-		status, err := wire.PeerStatus(ctx, connect.NewRequest(&pb.PeerStatusRequest{NamespaceFormat: "namespaced-v1"}))
+		status, err := wire.PeerStatus(proofCtx, connect.NewRequest(&pb.PeerStatusRequest{NamespaceFormat: "namespaced-v1"}))
 		if err != nil {
 			t.Fatalf("%s native status: %v", name, err)
 		}
-		requireExactReceiptCut(t, name, status.Msg, map[string]uint64{sourceHex: 8, receiptHex: 8})
-		stream, err := wire.Snapshot(ctx, connect.NewRequest(&pb.SnapshotRequest{NamespaceFormat: "namespaced-v1", RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT}))
+		requireExactReceiptCut(t, name, status.Msg, map[string]uint64{sourceHex: uint64(seedWrites), receiptHex: uint64(tailWrites)})
+		stream, err := wire.Snapshot(proofCtx, connect.NewRequest(&pb.SnapshotRequest{NamespaceFormat: "namespaced-v1", RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT}))
 		if err != nil {
 			t.Fatalf("%s native Snapshot: %v", name, err)
 		}
 		defer func() { _ = stream.Close() }()
-		found := make(map[string]bool, 8)
+		found := make(map[string]bool, tailWrites)
 		var footer *pb.SnapshotFooter
 		for stream.Receive() {
 			frame := stream.Msg()
@@ -6708,7 +6862,7 @@ func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
 		if err := stream.Err(); err != nil {
 			t.Fatalf("%s native Snapshot stream: %v", name, err)
 		}
-		if len(found) != 8 || footer == nil || footer.GetActiveReceiptCount() != 8 || footer.GetEdgeCount() != 0 || footer.GetVertexCount() != 16 || runtime.ReceiptStats().Entries != 8 {
+		if len(found) != tailWrites || footer == nil || footer.GetActiveReceiptCount() != uint64(tailWrites) || footer.GetEdgeCount() != 0 || footer.GetVertexCount() != uint64(tailWrites*2) || runtime.ReceiptStats().Entries != tailWrites {
 			t.Fatalf("%s lost graph/receipt cut: receipts=%d footer=%+v Store=%+v", name, len(found), footer, runtime.ReceiptStats())
 		}
 		for index, id := range operationIDs {
@@ -6772,8 +6926,8 @@ func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
 			t.Fatalf("%s mismatch bypassed restarted duplicate guard: %v", name, err)
 		}
 	}
-	if restartedPrimary.LocalSeq(receiptOrigin) != 8 || restarted.ReceiptStats().Entries != 8 {
+	if restartedPrimary.LocalSeq(receiptOrigin) != uint64(tailWrites) || restarted.ReceiptStats().Entries != tailWrites {
 		t.Fatal("rejected duplicate changed restarted frontier or Store")
 	}
-	t.Log("native mTLS RECEIPT Snapshot cut8 + evicted receipt tail9..16 converged with one install/claim; FileWAL restart preserved graph/origins/results; no external time-source calls")
+	t.Logf("native mTLS RECEIPT Snapshot cut%d + receipt tail%d..%d converged with one install/claim; queue_full=%t; FileWAL restart preserved graph/origins/results; no external time-source calls", seedWrites, seedWrites+1, seedWrites+tailWrites, queueFull)
 }

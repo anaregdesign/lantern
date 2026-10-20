@@ -231,6 +231,7 @@ func (l *Log) commitWithPublication(op MutationOp, ts hlc.Timestamp, publishBefo
 // cannot reach a later subscriber because Subscribe captures startSeq from
 // the advanced frontier. The caller holds l.mu.
 func (l *Log) installBoundaryLocked(seq uint64) {
+	l.tailGeneration = new(byte)
 	clear(l.ring)
 	l.head = 0
 	l.size = 0

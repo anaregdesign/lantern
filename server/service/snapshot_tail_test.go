@@ -3,17 +3,10 @@ package service
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
-	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,170 +21,6 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
-
-// This fixture exercises real signed membership and Admission checks without
-// claiming transport/TLS qualification. Real-wire coverage lives in integration.
-type snapshotTailAdmissionFixture struct {
-	mu       sync.Mutex
-	now      time.Time
-	manifest peerauth.Manifest
-	key      ed25519.PrivateKey
-	store    *peerauth.Store
-	states   []*tls.ConnectionState
-}
-
-func newSnapshotTailAdmissionFixture(t *testing.T, members int) *snapshotTailAdmissionFixture {
-	t.Helper()
-	public, key, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := &snapshotTailAdmissionFixture{now: time.Date(2026, 10, 20, 1, 0, 0, 0, time.UTC), key: key}
-	f.manifest = peerauth.Manifest{Version: 1, Domain: peerauth.Domain{
-		Deployment: [16]byte{1}, NamespaceFormat: "namespaced-v1", AuthMode: "off", TrustDigest: [32]byte{2},
-	}, IssuedAt: f.now.Add(-time.Second), ExpiresAt: f.now.Add(5 * time.Minute)}
-	for i := range members {
-		identity := fmt.Sprintf("spiffe://tail.test/peer-%02d", i)
-		uri, err := url.Parse(identity)
-		if err != nil {
-			t.Fatal(err)
-		}
-		leaf := &x509.Certificate{URIs: []*url.URL{uri}, RawSubjectPublicKeyInfo: []byte(identity),
-			NotBefore: f.now.Add(-time.Hour), NotAfter: f.now.Add(time.Hour)}
-		f.manifest.Members = append(f.manifest.Members, peerauth.Member{ID: [16]byte{byte(i + 1)},
-			Identity: identity, SPKI: sha256.Sum256(leaf.RawSubjectPublicKeyInfo), Origin: fmt.Sprintf("https://localhost:%d", 17000+i)})
-		f.states = append(f.states, &tls.ConnectionState{Version: tls.VersionTLS13,
-			PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: [][]*x509.Certificate{{leaf}}})
-	}
-	raw, err := peerauth.SignManifest(f.manifest, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.store, err = peerauth.CreateStore(peerauth.StoreOptions{Path: filepath.Join(t.TempDir(), "membership"),
-		Key: public, Domain: f.manifest.Domain, Now: func() time.Time {
-			f.mu.Lock()
-			defer f.mu.Unlock()
-			return f.now
-		}}, raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = f.store.Close() })
-	return f
-}
-
-func (f *snapshotTailAdmissionFixture) context(t *testing.T, member int, lifetime time.Duration) (context.Context, context.CancelFunc) {
-	t.Helper()
-	a, err := f.store.Admit(f.states[member], "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(peerauth.WithAdmission(t.Context(), a), lifetime)
-	t.Cleanup(cancel)
-	return ctx, cancel
-}
-
-type snapshotTailServiceFixture struct {
-	primary *LanternService
-	replica *LanternReplicationService
-	log     *mutationlog.Log
-}
-
-func newSnapshotTailServiceFixture(t *testing.T, buffer int) snapshotTailServiceFixture {
-	t.Helper()
-	cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
-	log := mutationlog.New(mutationlog.Options{Capacity: 4, SubscriberBuffer: buffer})
-	clock := hlc.New(hlc.NodeID{0xDA}, hlc.Options{})
-	primary := NewLanternService(cache).WithReplication(log, clock, nil)
-	replica := NewLanternReplicationService(log, cache, clock).WithOriginStates(primary)
-	t.Cleanup(func() { _ = log.Close() })
-	t.Cleanup(replica.CloseSnapshotTails)
-	for i := range 8 {
-		if _, err := primary.PutVertices(t.Context(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{
-			Key: fmt.Sprintf("seed-%d", i), Value: &pb.Vertex_String_{String_: "seed"},
-			Expiration: timestamppb.New(time.Now().Add(time.Hour)),
-		}}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return snapshotTailServiceFixture{primary, replica, log}
-}
-
-func reserveSnapshotTail(t *testing.T, replica *LanternReplicationService, ctx context.Context) (string, *pb.SnapshotHeader, *snapshotTail) {
-	t.Helper()
-	header := make(http.Header)
-	recorder := &replicationSnapshotRecorder{}
-	if err := replica.Snapshot(WithReplicationTailMetadata(ctx, []string{"reserve"}, header),
-		&pb.SnapshotRequest{RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1}, recorder); err != nil {
-		t.Fatal(err)
-	}
-	values := header.Values(SnapshotTailHeader)
-	if len(values) != 1 || len(values[0]) != 64 {
-		t.Fatalf("Snapshot tail token metadata = %q", values)
-	}
-	if _, err := hex.DecodeString(values[0]); err != nil {
-		t.Fatal(err)
-	}
-	if len(recorder.frames) == 0 || recorder.frames[0].GetHeader() == nil {
-		t.Fatal("Snapshot omitted header")
-	}
-	replica.snapshotTails.mu.Lock()
-	tail := replica.snapshotTails.active[values[0]]
-	replica.snapshotTails.mu.Unlock()
-	if tail == nil {
-		t.Fatal("successful Snapshot did not retain its exact tail")
-	}
-	return values[0], recorder.frames[0].GetHeader(), tail
-}
-
-func snapshotTailSubscribeRequest(header *pb.SnapshotHeader) *pb.SubscribeRequest {
-	req := &pb.SubscribeRequest{FromLocalSeq: header.GetCutoffLocalSeq() + 1, FromSeqPerOrigin: make(map[string]uint64),
-		AcceptReceiptEnvelopes: true, AcceptGraphMutations: true}
-	for origin, cutoff := range header.GetCutoffSeqPerOrigin() {
-		req.FromSeqPerOrigin[origin] = cutoff + 1
-	}
-	return req
-}
-
-func assertSnapshotTailEmpty(t *testing.T, replica *LanternReplicationService) {
-	t.Helper()
-	m := replica.snapshotTails
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.active) != 0 || m.totalEntries != 0 || m.totalBytes != 0 {
-		t.Fatalf("tail storage retained owners=%d entries=%d bytes=%d", len(m.active), m.totalEntries, m.totalBytes)
-	}
-}
-
-func waitSnapshotTailStopped(t *testing.T, tail *snapshotTail) {
-	t.Helper()
-	select {
-	case <-tail.stopped:
-	case <-time.After(time.Second):
-		t.Fatal("Snapshot tail owner did not join")
-	}
-}
-
-type snapshotTailClaimSender struct {
-	ctx    context.Context
-	ready  chan struct{}
-	frames chan *pb.SubscribeResponse
-	once   sync.Once
-}
-
-func (s *snapshotTailClaimSender) FlushHeaders() error {
-	s.once.Do(func() { close(s.ready) })
-	return nil
-}
-
-func (s *snapshotTailClaimSender) Send(frame *pb.SubscribeResponse) error {
-	select {
-	case s.frames <- frame:
-		return nil
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	}
-}
 
 func TestSnapshotTailRejectsUnadmittedOrAmbiguousMetadata(t *testing.T) {
 	f := newSnapshotTailServiceFixture(t, 16)
@@ -333,18 +162,23 @@ func TestSnapshotTailReservationAndOwnedStorageBounds(t *testing.T) {
 			name                     string
 			bytes, entries           int
 			totalBytes, totalEntries int
+			reason                   snapshotTailReason
 		}{
-			{"tail bytes", maxSnapshotTailBytes - size + 1, 0, 0, 0},
-			{"global bytes", 0, 0, maxSnapshotTotalBytes - size + 1, 0},
-			{"tail entries", 0, maxSnapshotTailEntries, 0, 0},
-			{"global entries", 0, 0, 0, maxSnapshotTotalEntries},
+			{"tail bytes", maxSnapshotTailBytes - size + 1, 0, 0, 0, "tail_bytes"},
+			{"global bytes", 0, 0, maxSnapshotTotalBytes - size + 1, 0, "total_bytes"},
+			{"tail entries", 0, maxSnapshotTailEntries, 0, 0, "tail_entries"},
+			{"global entries", 0, 0, 0, maxSnapshotTotalEntries, "total_entries"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				tail.bytes, tail.entries = tc.bytes, tc.entries
+				tail.terminal = "" // Each row models a separate fresh owner.
 				m.totalBytes, m.totalEntries = tc.totalBytes, tc.totalEntries
 				entry, err := tail.project(mutationlog.Entry{Seq: 1, Op: mutation})
-				if !errors.Is(err, mutationlog.ErrSubscriptionLost) || entry.Op != nil {
+				if !errors.Is(err, mutationlog.ErrSubscriptionLost) || errors.Is(err, mutationlog.ErrTailQueueFull) || entry.Op != nil {
 					t.Fatalf("over-budget projection = %+v, %v", entry, err)
+				}
+				if tail.terminal != tc.reason {
+					t.Fatalf("projection terminal category = %q, want %q", tail.terminal, tc.reason)
 				}
 				if tail.bytes != tc.bytes || tail.entries != tc.entries || m.totalBytes != tc.totalBytes || m.totalEntries != tc.totalEntries {
 					t.Fatal("rejected projection consumed credits")
@@ -816,4 +650,161 @@ func TestSnapshotTailOriginMetadataBoundRejectsBeforeReservation(t *testing.T) {
 		t.Fatalf("oversized origin metadata retained reservation: tail=%v err=%v", tail != nil, openErr)
 	}
 	assertSnapshotTailEmpty(t, f.replica)
+}
+
+func assertSnapshotTailDiagnostic(t *testing.T, err error, stage, guard string, terminal snapshotTailReason) {
+	t.Helper()
+	var diagnostic *snapshotTailDiagnostic
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition || !errors.As(err, &diagnostic) {
+		t.Fatalf("tail failure lost its FailedPrecondition diagnostic: %v", err)
+	}
+	if diagnostic.stage != stage || diagnostic.guard != guard || diagnostic.terminal != terminal {
+		t.Fatalf("tail diagnostic = %s/%s/%s, want %s/%s/%s", diagnostic.stage, diagnostic.guard, diagnostic.terminal, stage, guard, terminal)
+	}
+}
+
+func TestSnapshotTailDiagnosticDistinguishesOverflowBeforeFinishFromMissingClaim(t *testing.T) {
+	for _, phase := range []string{"before footer", "after successful finish"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newSnapshotTailServiceFixture(t, 2)
+			auth := newSnapshotTailAdmissionFixture(t, 2)
+			original, cancelOriginal := auth.context(t, 0, 5*time.Second)
+			var tail *snapshotTail
+			overflow := func() {
+				t.Helper()
+				for i := range 5 {
+					if _, err := f.primary.PutVertex(t.Context(), &pb.PutVertexRequest{Vertex: &pb.Vertex{
+						Key: fmt.Sprintf("overflow-%d", i), Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+					}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				select {
+				case <-tail.subscription.Done():
+				case <-time.After(time.Second):
+					t.Fatal("controlled five-entry write did not overflow the two-entry tail")
+				}
+				waitSnapshotTailStopped(t, tail)
+				if !errors.Is(tail.subscription.Err(), mutationlog.ErrTailQueueFull) || !errors.Is(tail.subscription.Err(), mutationlog.ErrSubscriptionLost) {
+					t.Fatal("controlled queue overflow lost either terminal contract")
+				}
+				f.replica.snapshotTails.mu.Lock()
+				first := tail.terminal
+				f.replica.snapshotTails.mu.Unlock()
+				if first != "log_boundary" {
+					t.Fatalf("lost replay did not retain boundary category with %q", first)
+				}
+				assertSnapshotTailEmpty(t, f.replica)
+			}
+			if phase == "before footer" {
+				responseHeader := make(http.Header)
+				recorder := &replicationSnapshotRecorder{onSend: func(frame *pb.SnapshotResponse) error {
+					if frame.GetHeader() != nil {
+						m := f.replica.snapshotTails
+						m.mu.Lock()
+						tail = m.active[responseHeader.Get(SnapshotTailHeader)]
+						m.mu.Unlock()
+						if tail == nil {
+							return errors.New("Snapshot header has no reservation owner")
+						}
+						overflow()
+					}
+					return nil
+				}}
+				err := f.replica.Snapshot(WithReplicationTailMetadata(original, []string{"reserve"}, responseHeader), &pb.SnapshotRequest{}, recorder)
+				assertSnapshotTailDiagnostic(t, err, "finish", "subscription_terminal", "log_boundary")
+				if len(recorder.frames) == 0 || recorder.frames[len(recorder.frames)-1].GetFooter() == nil {
+					t.Fatal("fixture did not reach the finish guard after sending its footer")
+				}
+				if tail.ready {
+					t.Fatal("overflowed Snapshot became claimable")
+				}
+				assertSnapshotTailEmpty(t, f.replica)
+				return
+			}
+			token, header, owner := reserveSnapshotTail(t, f.replica, original)
+			tail = owner
+			cancelOriginal() // Successful native handler return cancels this RPC.
+			overflow()
+			if !tail.ready {
+				t.Fatal("fixture did not successfully finish before losing its tail")
+			}
+			current, _ := auth.context(t, 0, 5*time.Second)
+			recorder := &replicationSubscribeRecorder{frames: make(chan *pb.SubscribeResponse, 1)}
+			err := f.replica.Subscribe(WithReplicationTailMetadata(current, []string{token}, nil), snapshotTailSubscribeRequest(header), recorder)
+			assertSnapshotTailDiagnostic(t, err, "claim", "reservation_missing", "unknown")
+			if len(recorder.frames) != 0 || strings.Contains(err.Error(), token) {
+				t.Fatal("failed claim emitted data or included a token in its diagnostic")
+			}
+			assertSnapshotTailEmpty(t, f.replica)
+		})
+	}
+}
+
+func TestSnapshotTailDiagnosticClaimGuardsRemainFailClosed(t *testing.T) {
+	for _, guard := range []string{"peer_mismatch", "local_cursor_mismatch", "origin_cursor_mismatch", "generation_mismatch", "not_ready"} {
+		t.Run(guard, func(t *testing.T) {
+			f := newSnapshotTailServiceFixture(t, 16)
+			auth := newSnapshotTailAdmissionFixture(t, 2)
+			original, _ := auth.context(t, 0, 5*time.Second)
+			token, header, tail := reserveSnapshotTail(t, f.replica, original)
+			current, _ := auth.context(t, 0, 5*time.Second)
+			req := snapshotTailSubscribeRequest(header)
+			fault := tail.fault
+			switch guard {
+			case "peer_mismatch":
+				current, _ = auth.context(t, 1, 5*time.Second)
+			case "local_cursor_mismatch":
+				req.FromLocalSeq++
+			case "origin_cursor_mismatch":
+				req.FromSeqPerOrigin = nil
+			case "generation_mismatch":
+				fault = make(chan struct{})
+			case "not_ready":
+				f.replica.snapshotTails.mu.Lock()
+				tail.ready = false
+				f.replica.snapshotTails.mu.Unlock()
+			}
+			cursor, err := parseOriginCursor(req.GetFromSeqPerOrigin())
+			if err != nil {
+				t.Fatal(err)
+			}
+			claimed, err := f.replica.claimSnapshotTail(current, token, req, cursor, fault)
+			if claimed != nil {
+				claimed.Close()
+				t.Fatal("invalid claim took ownership")
+			}
+			assertSnapshotTailDiagnostic(t, err, "claim", guard, "none")
+			if strings.Contains(err.Error(), token) || strings.Contains(err.Error(), "spiffe:") {
+				t.Fatal("claim diagnostic included private token or workload evidence")
+			}
+			tail.Close()
+			assertSnapshotTailEmpty(t, f.replica)
+		})
+	}
+}
+
+func TestSnapshotTailDiagnosticUsesOnlyKnownTerminalCategories(t *testing.T) {
+	for _, row := range []struct {
+		err    error
+		reason snapshotTailReason
+	}{
+		{mutationlog.ErrTailQueueFull, "queue_full"},
+		{mutationlog.ErrSubscriptionLost, "subscription_lost"},
+		{mutationlog.ErrClosed, "log_closed"},
+		{mutationlog.ErrGapped, "log_boundary"},
+		{mutationlog.ErrWALIndeterminate, "wal_indeterminate"},
+		{mutationlog.ErrPublicationInterrupted, "publication_interrupted"},
+		{context.Canceled, "subscription_canceled"},
+		{errors.New("private-error-detail-must-not-escape"), "subscription_other"},
+	} {
+		if got := snapshotTailCoreReason(row.err); got != row.reason {
+			t.Fatalf("terminal category = %q, want %q", got, row.reason)
+		}
+		err := snapshotTailError("finish", "subscription_terminal", snapshotTailCoreReason(row.err))
+		assertSnapshotTailDiagnostic(t, err, "finish", "subscription_terminal", row.reason)
+		if strings.Contains(err.Error(), "private-error-detail") {
+			t.Fatal("raw core error escaped fixed diagnostic categories")
+		}
+	}
 }
