@@ -14,7 +14,7 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 )
 
-func startPeerPlaneRequest(t *testing.T, handler http.Handler) (context.CancelFunc, <-chan error, <-chan struct{}) {
+func startPeerPlaneRequest(t *testing.T, handler http.Handler, configure ...func(*PeerPlaneServer)) (context.CancelFunc, <-chan error, <-chan struct{}) {
 	t.Helper()
 	seed := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	tlsConfig, client := seed.TLS.Clone(), seed.Client()
@@ -26,6 +26,9 @@ func startPeerPlaneRequest(t *testing.T, handler http.Handler) (context.CancelFu
 	server := &http.Server{TLSConfig: tlsConfig, Handler: handler}
 	t.Cleanup(func() { _ = server.Close() })
 	p := &PeerPlaneServer{server: server, listener: listener}
+	for _, apply := range configure {
+		apply(p)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
@@ -222,5 +225,72 @@ func TestPeerListenerAdoptionRequiresExactRuntime(t *testing.T) {
 				_ = listener.Close()
 			}
 		})
+	}
+}
+
+func TestPeerPlaneRunClosesAndJoinsSnapshotTailsBeforeHTTPShutdown(t *testing.T) {
+	entered, tailClosing, releaseTail := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	httpShutdown := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseTail:
+		default:
+			close(releaseTail)
+		}
+	}()
+	cancel, done, requestDone := startPeerPlaneRequest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(entered)
+		<-r.Context().Done()
+	}), func(p *PeerPlaneServer) {
+		p.closeSnapshotTails = func() {
+			close(tailClosing)
+			<-releaseTail
+		}
+		p.server.RegisterOnShutdown(func() { close(httpShutdown) })
+	})
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("private request did not enter")
+	}
+	cancel()
+	select {
+	case <-tailClosing:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not close detached Snapshot tails")
+	}
+	select {
+	case <-httpShutdown:
+		t.Fatal("HTTP shutdown ran before Snapshot tail owners joined")
+	case err := <-done:
+		t.Fatal("Run returned before Snapshot tail owners joined", err)
+	default:
+	}
+	close(releaseTail)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("private worker did not join after tail close completed")
+	}
+	select {
+	case <-httpShutdown:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP shutdown did not follow Snapshot tail close")
+	}
+	<-requestDone
+}
+
+func TestPeerPlaneDisabledClosesSnapshotTails(t *testing.T) {
+	closed := false
+	server := &PeerPlaneServer{closeSnapshotTails: func() { closed = true }}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := server.Run(ctx); err != nil || !closed {
+		t.Fatalf("disabled private lifecycle did not close tails: closed=%v, err=%v", closed, err)
 	}
 }

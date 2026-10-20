@@ -5,9 +5,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"maps"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -305,5 +310,195 @@ func TestAntiEntropyInjectedSnapshotInstallerRejectsIncompatibleFormats(t *testi
 				t.Fatalf("Snapshot calls = %d, want %d", len(snapshots), tc.wantSnapshots)
 			}
 		})
+	}
+}
+
+func TestAntiEntropySnapshotTailClaimedInSameTick(t *testing.T) {
+	origin := hlc.NodeID{0x65}
+	key := hex.EncodeToString(origin[:])
+	token := strings.Repeat("cd", 32)
+	for _, format := range []pb.SnapshotFormat{pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT} {
+		t.Run(format.String(), func(t *testing.T) {
+			peer := &installerTestPeer{
+				requiredFormat: format, gapFirstSubscribe: true, selfOrigin: origin, originSeq: 8,
+				header:             &pb.SnapshotHeader{Format: format, CutoffSeqPerOrigin: map[string]uint64{key: 7}, CutoffLocalSeq: 20},
+				snapshotTailValues: []string{token},
+				subscribeMutation:  &pb.Mutation{Origin: append([]byte(nil), origin[:]...), Seq: 8},
+			}
+			server, transport := startTailMetadataPeer(t, peer)
+			installer := &scriptedSnapshotInstaller{required: format}
+			state := &tailAppliedState{origin: origin}
+			driver := NewAntiEntropy(AntiEntropyConfig{PeerTransport: transport, SnapshotInstaller: installer, SubscribeTimeout: time.Second}, state, state, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			driver.tickPeer(ctx, server.URL)
+			peer.mu.Lock()
+			defer peer.mu.Unlock()
+			if len(peer.snapshotTailMetadata) != 1 || len(peer.snapshotTailMetadata[0]) != 1 || peer.snapshotTailMetadata[0][0] != "reserve" {
+				t.Fatalf("Snapshot tail request = %v", peer.snapshotTailMetadata)
+			}
+			if len(peer.subscribeTailMetadata) != 2 || len(peer.subscribeTailMetadata[1]) != 1 || peer.subscribeTailMetadata[1][0] != token {
+				t.Fatalf("same-tick Subscribe metadata = %v", peer.subscribeTailMetadata)
+			}
+			resume := peer.subscribeRequests[1]
+			if resume.GetFromLocalSeq() != 21 || resume.GetFromSeqPerOrigin()[key] != 8 || state.seq.Load() != 8 || installer.installCount() != 1 {
+				t.Fatalf("tail resume=%v seq=%d installs=%d", resume, state.seq.Load(), installer.installCount())
+			}
+		})
+	}
+}
+
+type tailVectorState struct {
+	mu      sync.Mutex
+	seqs    map[hlc.NodeID]uint64
+	applied []*pb.Mutation
+}
+
+func (s *tailVectorState) LocalSeq(origin hlc.NodeID) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.seqs[origin]
+}
+
+func (s *tailVectorState) SubscribeResumeCursor() (map[string]uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cursor := make(map[string]uint64, len(s.seqs))
+	for origin, seq := range s.seqs {
+		cursor[hex.EncodeToString(origin[:])] = seq + 1
+	}
+	return cursor, nil
+}
+
+func (s *tailVectorState) ApplyMutation(_ context.Context, mutation *pb.Mutation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var origin hlc.NodeID
+	copy(origin[:], mutation.GetOrigin())
+	if mutation.GetSeq() != s.seqs[origin]+1 {
+		return errors.New("noncontiguous test tail")
+	}
+	s.seqs[origin] = mutation.GetSeq()
+	s.applied = append(s.applied, proto.Clone(mutation).(*pb.Mutation))
+	return nil
+}
+
+func TestAntiEntropySnapshotTailDrainsForeignOriginVector(t *testing.T) {
+	peerOrigin := hlc.NodeID{0x67}
+	first := hlc.NodeID{0x68}
+	second := hlc.NodeID{0x69}
+	peerKey := hex.EncodeToString(peerOrigin[:])
+	firstKey := hex.EncodeToString(first[:])
+	secondKey := hex.EncodeToString(second[:])
+	for _, format := range []pb.SnapshotFormat{pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT} {
+		for _, ownRow := range []bool{false, true} {
+			name := format.String() + "/no_own_writes"
+			if ownRow {
+				name = format.String() + "/own_already_covered"
+			}
+			t.Run(name, func(t *testing.T) {
+				cut := map[string]uint64{firstKey: 7, secondKey: 4}
+				state := &tailVectorState{seqs: map[hlc.NodeID]uint64{first: 7, second: 4}}
+				peer := &installerTestPeer{
+					requiredFormat: format, selfOrigin: peerOrigin,
+					extraOrigins:       []*pb.OriginState{{Origin: first[:], LastSeq: 9}, {Origin: second[:], LastSeq: 6}},
+					snapshotTailValues: []string{strings.Repeat("ef", 32)},
+				}
+				if ownRow {
+					peer.originSeq, cut[peerKey], state.seqs[peerOrigin] = 3, 3, 3
+				}
+				peer.header = &pb.SnapshotHeader{Format: format, CutoffSeqPerOrigin: cut, CutoffLocalSeq: 20}
+				for _, item := range []struct {
+					origin hlc.NodeID
+					seq    uint64
+				}{{first, 8}, {second, 5}, {first, 9}, {second, 6}} {
+					mutation := &pb.Mutation{Origin: append([]byte(nil), item.origin[:]...), Seq: item.seq}
+					if format == pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
+						mutation.Op = &pb.MutationOp{Op: &pb.MutationOp_ReplicatedReceiptVertexPut{
+							ReplicatedReceiptVertexPut: &pb.ReplicatedReceiptVertexPut{DeploymentEpoch: []byte("epoch"), PolicyFingerprint: []byte("policy")},
+						}}
+					} else {
+						mutation.Op = &pb.MutationOp{Op: &pb.MutationOp_PutVertex{PutVertex: &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "foreign"}}}}
+					}
+					peer.subscribeMutations = append(peer.subscribeMutations, mutation)
+				}
+				server, transport := startTailMetadataPeer(t, peer)
+				installer := &scriptedSnapshotInstaller{required: format}
+				driver := NewAntiEntropy(AntiEntropyConfig{PeerTransport: transport, SnapshotInstaller: installer, SubscribeTimeout: time.Second}, state, state, nil)
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				if err := driver.snapshotFrom(ctx, server.URL); err != nil {
+					t.Fatalf("foreign tail catch-up: %v", err)
+				}
+				state.mu.Lock()
+				defer state.mu.Unlock()
+				if len(state.applied) != 4 || state.seqs[first] != 9 || state.seqs[second] != 6 {
+					t.Fatalf("foreign tail discarded: applied=%d frontier=%v", len(state.applied), state.seqs)
+				}
+				for index, expected := range peer.subscribeMutations {
+					if !proto.Equal(state.applied[index], expected) {
+						t.Fatalf("foreign mutation %d changed in transit", index)
+					}
+				}
+				peer.mu.Lock()
+				defer peer.mu.Unlock()
+				if len(peer.subscribeRequests) != 1 || len(peer.subscribeTailMetadata[0]) != 1 || peer.subscribeTailMetadata[0][0] != strings.Repeat("ef", 32) {
+					t.Fatalf("foreign tail claim metadata = %v", peer.subscribeTailMetadata)
+				}
+				request := peer.subscribeRequests[0]
+				if request.GetFromLocalSeq() != 21 || request.GetFromSeqPerOrigin()[firstKey] != 8 || request.GetFromSeqPerOrigin()[secondKey] != 5 {
+					t.Fatalf("foreign tail claim cursor = %v", request)
+				}
+			})
+		}
+	}
+}
+
+func TestAntiEntropySnapshotTailRejectsMalformedTargetVector(t *testing.T) {
+	origin := hlc.NodeID{0x6a}
+	foreign := hlc.NodeID{0x6b}
+	for _, tc := range []struct {
+		name string
+		rows []*pb.OriginState
+	}{
+		{"short", []*pb.OriginState{{Origin: []byte{1}, LastSeq: 1}}},
+		{"zero_origin", []*pb.OriginState{{Origin: make([]byte, 16), LastSeq: 1}}},
+		{"zero_seq", []*pb.OriginState{{Origin: foreign[:], LastSeq: 0}}},
+		{"duplicate", []*pb.OriginState{{Origin: foreign[:], LastSeq: 1}, {Origin: foreign[:], LastSeq: 2}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			peer := &installerTestPeer{selfOrigin: origin, extraOrigins: tc.rows, requiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1}
+			server := startInstallerTestPeer(t, peer)
+			state := &tailVectorState{seqs: make(map[hlc.NodeID]uint64)}
+			driver := NewAntiEntropy(AntiEntropyConfig{HTTPClient: defaultH2CClient()}, state, state, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := driver.catchUpSnapshotTail(ctx, server.URL, server.URL, snapshotResumeCursor{}, strings.Repeat("ab", 32)); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatalf("malformed vector = %v", err)
+			}
+			subscribes, _ := peer.requests()
+			if len(subscribes) != 0 || len(state.applied) != 0 {
+				t.Fatal("malformed target vector opened or applied a tail")
+			}
+		})
+	}
+}
+
+func TestAntiEntropySnapshotTailRequiresCompleteTargetVector(t *testing.T) {
+	peerOrigin := hlc.NodeID{0x6c}
+	foreign := hlc.NodeID{0x6d}
+	peer := &installerTestPeer{
+		selfOrigin: peerOrigin, requiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		extraOrigins:      []*pb.OriginState{{Origin: foreign[:], LastSeq: 9}},
+		subscribeMutation: &pb.Mutation{Origin: foreign[:], Seq: 8},
+	}
+	server := startInstallerTestPeer(t, peer)
+	state := &tailVectorState{seqs: map[hlc.NodeID]uint64{foreign: 7}}
+	driver := NewAntiEntropy(AntiEntropyConfig{HTTPClient: defaultH2CClient()}, state, state, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := driver.catchUpSnapshotTail(ctx, server.URL, server.URL, snapshotResumeCursor{origins: map[string]uint64{hex.EncodeToString(foreign[:]): 8}}, strings.Repeat("ab", 32))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition || state.LocalSeq(foreign) != 8 {
+		t.Fatalf("partial tail = %v frontier=%d", err, state.LocalSeq(foreign))
 	}
 }

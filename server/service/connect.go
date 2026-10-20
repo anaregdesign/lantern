@@ -196,6 +196,7 @@ func (h *lanternReplicationServiceConnect) Subscribe(ctx context.Context, req *c
 		return connect.NewError(connect.CodeInvalidArgument,
 			errors.New("full-mutation Subscribe requires binary protobuf encoding; JSON and unknown codecs are unsupported"))
 	}
+	ctx = WithReplicationTailMetadata(ctx, req.Header().Values(SnapshotTailHeader), nil)
 	return h.svc.Subscribe(ctx, req.Msg, replicationHeaderSender{ServerStream: stream, ctx: ctx})
 }
 
@@ -229,6 +230,7 @@ func (h *lanternReplicationServiceConnect) Snapshot(ctx context.Context, req *co
 	if h.svc == nil {
 		return connect.NewError(connect.CodeUnavailable, errReplicationDisabled)
 	}
+	ctx = WithReplicationTailMetadata(ctx, req.Header().Values(SnapshotTailHeader), stream.ResponseHeader())
 	return h.svc.Snapshot(ctx, req.Msg, stream)
 }
 

@@ -2198,3 +2198,116 @@ func TestApplySnapshotEdgeEffectPreservesPendingSources(t *testing.T) {
 		t.Fatal("unsupported installer silently downgraded effect", err)
 	}
 }
+
+func TestPumpSnapshotTailMetadata(t *testing.T) {
+	origin := hlc.NodeID{0x64}
+	key := hex.EncodeToString(origin[:])
+	token := strings.Repeat("ab", 32)
+	for _, format := range []pb.SnapshotFormat{pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1, pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT} {
+		t.Run(format.String(), func(t *testing.T) {
+			peer := &installerTestPeer{
+				requiredFormat: format, gapFirstSubscribe: true,
+				header:             &pb.SnapshotHeader{Format: format, CutoffSeqPerOrigin: map[string]uint64{key: 7}, CutoffLocalSeq: 20},
+				snapshotTailValues: []string{token},
+			}
+			server, transport := startTailMetadataPeer(t, peer)
+			installer := &scriptedSnapshotInstaller{required: format}
+			pump := NewPump(Config{PeerTransport: transport, SnapshotInstaller: installer}, nil, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := pump.session(ctx, server.URL); err != nil {
+				t.Fatalf("native tail session: %v", err)
+			}
+			peer.mu.Lock()
+			defer peer.mu.Unlock()
+			if len(peer.snapshotTailMetadata) != 1 || len(peer.snapshotTailMetadata[0]) != 1 || peer.snapshotTailMetadata[0][0] != "reserve" {
+				t.Fatalf("Snapshot tail request = %v", peer.snapshotTailMetadata)
+			}
+			if len(peer.subscribeTailMetadata) != 2 || len(peer.subscribeTailMetadata[0]) != 0 || len(peer.subscribeTailMetadata[1]) != 1 || peer.subscribeTailMetadata[1][0] != token {
+				t.Fatalf("Subscribe tail metadata = %v", peer.subscribeTailMetadata)
+			}
+			resume := peer.subscribeRequests[1]
+			if resume.GetFromLocalSeq() != 21 || resume.GetFromSeqPerOrigin()[key] != 8 || installer.installCount() != 1 {
+				t.Fatalf("reserved tail resume=%v installs=%d", resume, installer.installCount())
+			}
+		})
+	}
+}
+
+func TestPumpSnapshotTailMissingBeforeInstall(t *testing.T) {
+	// An older responder ignores the reservation request and still sends a
+	// complete graph image. Exercise the native client configuration over TLS:
+	// absence of its new metadata must fail before graph or cursor effects.
+	peer := &installerTestPeer{
+		requiredFormat:    pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		gapFirstSubscribe: true, frames: graphInstallerLifecycleFrames(),
+	}
+	server, transport := startTailMetadataPeer(t, peer)
+	var events []string
+	before := map[string]uint64{"previously-committed": 12}
+	stamp := hlc.Timestamp{WallNs: 10, NodeID: hlc.NodeID{0x73}}
+	apply := &snapshotLifecycleMutationApplier{events: &events, cutoffs: maps.Clone(before), watermarkHLC: stamp}
+	graph := &snapshotLifecycleGraph{events: &events}
+	pump := NewPump(Config{PeerTransport: transport}, apply, graph)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := pump.session(ctx, server.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("old peer without Snapshot tail support = %v", err)
+	}
+	if len(events) != 0 || len(apply.finishes) != 0 || !maps.Equal(apply.cutoffs, before) || apply.watermarkHLC != stamp {
+		t.Fatalf("unsupported peer caused install or cursor effects: events=%v finishes=%v cutoffs=%v hlc=%v", events, apply.finishes, apply.cutoffs, apply.watermarkHLC)
+	}
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+	if len(peer.subscribeRequests) != 1 || len(peer.snapshotRequests) != 1 {
+		t.Fatalf("unsupported peer retried without reservation: Subscribe=%d Snapshot=%d", len(peer.subscribeRequests), len(peer.snapshotRequests))
+	}
+	if len(peer.snapshotTailMetadata) != 1 || len(peer.snapshotTailMetadata[0]) != 1 || peer.snapshotTailMetadata[0][0] != "reserve" {
+		t.Fatalf("native Snapshot did not require reservation: %v", peer.snapshotTailMetadata)
+	}
+	if peer.subscribeRequests[0].GetFromLocalSeq() != 0 || len(peer.subscribeTailMetadata[0]) != 0 {
+		t.Fatalf("unsupported peer advanced Subscribe state: request=%v metadata=%v", peer.subscribeRequests[0], peer.subscribeTailMetadata)
+	}
+}
+
+func TestPumpSnapshotTailKeepsStreamAfterCommittedSelfEcho(t *testing.T) {
+	own := hlc.NodeID{0x66}
+	state := &coldSelfEchoState{origin: own, allowFilter: true}
+	state.seq.Store(1)
+	peer := &installerTestPeer{
+		requiredFormat:    pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		subscribeMutation: &pb.Mutation{Origin: append([]byte(nil), own[:]...), Seq: 1},
+	}
+	server := startInstallerTestPeer(t, peer)
+	pump := NewPump(Config{NodeID: own, HTTPClient: defaultH2CClient()}, state, nil)
+	cli := graphv1connect.NewLanternReplicationServiceClient(defaultH2CClient(), server.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := pump.subscribeWithTail(ctx, cli, server.URL, map[string]uint64{hex.EncodeToString(own[:]): 2}, 21, false, strings.Repeat("ab", 32)); err != nil {
+		t.Fatalf("owned tail discarded after self echo: %v", err)
+	}
+	if state.applied.Load() != 0 {
+		t.Fatal("committed self echo was applied")
+	}
+	subscribes, _ := peer.requests()
+	if len(subscribes) != 1 {
+		t.Fatalf("tail Subscribe count = %d", len(subscribes))
+	}
+}
+
+func TestPumpSnapshotWrapperDoesNotReserveUnusedTail(t *testing.T) {
+	format := pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
+	peer := &installerTestPeer{requiredFormat: format}
+	server, transport := startTailMetadataPeer(t, peer)
+	pump := NewPump(Config{PeerTransport: transport, SnapshotInstaller: &scriptedSnapshotInstaller{required: format}}, nil, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := pump.snapshot(ctx, server.URL); err != nil {
+		t.Fatalf("standalone Snapshot = %v", err)
+	}
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+	if len(peer.snapshotTailMetadata) != 1 || len(peer.snapshotTailMetadata[0]) != 0 {
+		t.Fatalf("standalone Snapshot reserved an unused tail: %v", peer.snapshotTailMetadata)
+	}
+}

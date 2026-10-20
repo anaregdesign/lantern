@@ -30,6 +30,15 @@ func (e *replicationFrameSizeError) Error() string {
 func subscribeMutationFrame(op mutationlog.MutationOp) (*pb.SubscribeResponse, error) {
 	var mutation *pb.Mutation
 	switch value := op.(type) {
+	case snapshotTailFrame:
+		frame := new(pb.SubscribeResponse)
+		if err := proto.Unmarshal(value, frame); err != nil {
+			return nil, err
+		}
+		if frame.GetMutation() == nil {
+			return nil, errors.New("Snapshot tail has no full mutation")
+		}
+		return frame, nil
 	case interface{ ReplicationMutation() (*pb.Mutation, error) }:
 		var err error
 		mutation, err = value.ReplicationMutation()

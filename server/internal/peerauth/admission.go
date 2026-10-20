@@ -22,6 +22,13 @@ type Admission struct {
 func (a *Admission) Member() Member       { return a.member }
 func (a *Admission) ExpiresAt() time.Time { return a.expiresAt }
 
+// SamePeer binds two admissions to the exact workload and membership store.
+// It grants no authority: callers must still Check both original lifetimes.
+func (a *Admission) SamePeer(other *Admission) bool {
+	return a != nil && other != nil && a.store != nil &&
+		a.store == other.store && a.member == other.member
+}
+
 func (s *Store) Admit(state *tls.ConnectionState, expectedOrigin string) (*Admission, error) {
 	started := time.Now()
 	if s == nil || state == nil || state.Version < tls.VersionTLS13 || len(state.VerifiedChains) == 0 ||

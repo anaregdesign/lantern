@@ -81,8 +81,10 @@ requires the independent security authority described above.
    `from_seq_per_origin` set to the later of each snapshot cutoff plus one
    and the receiver's locally committed next sequence (when available);
    `from_local_seq` remains the responder's snapshot cutoff plus one.
-   The retained-origin proof detects a genuinely evicted tail rather than
-   silently skipping it. See #415
+   Native peers reserve the exact bounded live tail inside this capture cut
+   and claim it with the next Subscribe, so rollover during transfer does not
+   discard that history. Ordinary reconnects still use the retained-origin
+   proof to detect genuinely evicted history. See #415
    (Reading B) and the wire types in §8.2/§8.3.
 4. **Readiness gates traffic.** `/healthz/ready` returns `NOT_SERVING`
    whenever replication lag exceeds `LANTERN_MAX_REPLICATION_LAG` or an
@@ -671,6 +673,58 @@ has caught up, or (c) a local or remote mutation changed the graph but its log
 append failed. A publication fault rejects new Subscribe/Snapshot attempts
 until repair, and closes every stream from the previous generation even if
 repair completes quickly.
+
+**Snapshot tail handoff (#1840).** Native Pump and anti-entropy request
+`Lantern-Snapshot-Tail: reserve` on Snapshot. The responder opens an owned,
+tail-only subscription at `cutoff_local_seq + 1` inside the same graph or
+receipt publication cut, before writers resume. Snapshot returns one opaque
+token in that response header. Only a completely verified install may use it
+in the next full Subscribe's same header; anti-entropy claims during that tick
+and catches up to every origin advertised by its fresh finite status vector.
+This transfers the exact subscription, without reopening the ring or repeating
+its retention proof. The request must use that local cutoff plus one and cover
+every captured origin cutoff plus one; greater already-committed origin cursors
+remain valid. All ordinary namespace, frame, receipt, and receiver application
+checks still apply. Committed self-echo filtering does not reopen this stream.
+
+A token grants no access. Reservation requires native admission and a finite
+original request deadline. Claim checks both the original and fresh current
+native admissions, exact member/store identity, service-owned token, cursor,
+and unchanged publication generation. A token is single-use and cannot be
+claimed before Snapshot successfully finishes. Successful Snapshot handler
+cancellation does not discard the tail; its original deadline and membership
+budget still bound an unclaimed reservation. After claim, Subscribe's current
+admission owns delivery and its ordinary lifetime. Invalid or expired tokens
+fail closed; native clients reject missing or ambiguous reservation metadata.
+
+**Deployment compatibility:** a new native client refuses Snapshot recovery from
+an older responder that does not return the tail reservation metadata, even if
+that responder sends a complete Snapshot. It does not retry recovery without a
+reservation or install that image. Although pre-v1 compatibility is not promised,
+operators must update the replication cohort to mutually supporting versions
+before relying on Snapshot recovery during a rolling deployment. An ordinary
+retained-history Subscribe can still work across these versions; that does not
+prove Snapshot-recovery compatibility.
+
+The additional queue holds only owned protobuf bytes. Fixed limits allow eight
+owners per service, one per peer identity, 512 frames and 16 MiB per owner,
+and 4,096 frames and 64 MiB in aggregate. Channel capacity is also capped by
+the existing configured subscriber size; detached cursor metadata is capped at
+4,096 origins per owner. The 64 MiB limit bounds additional retained encoded
+payload storage, not total process heap or decoded protobuf objects; active
+decoding and transport retain their existing bounded frame owners.
+Credits are acquired before byte
+allocation and include a frame held by synchronous Send. Rich receipt projection
+first reserves its intrinsic worst-case wire bound and refunds unused space;
+this may reject conservatively before actual encoded storage reaches the cap.
+Overflow rejects the
+tail rather than extending storage. Closing unregisters and joins projection,
+discards queued references, and joins the owner watcher. A claimed owner keeps
+its credits and peer slot until the HTTP handler acknowledges exit. Capture,
+validation or send failure, cancellation before completion, expiry, membership
+withdrawal, publication fault, log close, and peer-plane shutdown release the
+corresponding owners. These bounds do not guarantee convergence under churn
+that exceeds the queue or the original native admission lifetime.
 
 Live subscriber loss is signaled independently of queued entries. The sender
 does not wait for the old buffer to drain before withdrawing a blocked private

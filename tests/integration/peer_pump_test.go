@@ -2664,6 +2664,7 @@ func (p *observedSnapshotPeer) Subscribe(ctx context.Context, req *connect.Reque
 
 func (p *observedSnapshotPeer) Snapshot(ctx context.Context, req *connect.Request[pb.SnapshotRequest], stream *connect.ServerStream[pb.SnapshotResponse]) error {
 	p.snapshots.Add(1)
+	ctx = service.WithReplicationTailMetadata(ctx, req.Header().Values(service.SnapshotTailHeader), stream.ResponseHeader())
 	return p.source.Snapshot(ctx, req.Msg, observedSnapshotSender{ctx: ctx, stream: stream, headers: p.headers})
 }
 
@@ -2817,6 +2818,299 @@ func TestPeerPump_SnapshotRetentionDuringInstall(t *testing.T) {
 			}
 			if !tc.keepsTail && peer.gaps.Load() < int32(tc.cycles-1) {
 				t.Fatal("repeated Snapshots were not driven by actual retained-origin gaps")
+			}
+		})
+	}
+}
+
+// Identical native wire traffic exposes the retention boundary with and without
+// a reservation. Complete counted Snapshot framing is checked before either
+// Subscribe; the Pump test below additionally proves verified installation.
+func TestPeerPump_SnapshotTailWireContinuity(t *testing.T) {
+	for _, reserve := range []bool{false, true} {
+		name := "unreserved gap"
+		if reserve {
+			name = "reserved continuity"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			var peer *observedSnapshotPeer
+			fixture := newPeerSecurityFixture(t, peerSecurityOptions{
+				LogOptions: func(int) mutationlog.Options { return mutationlog.Options{Capacity: 4} },
+				Mount: func(f *peerSecurityFixture, index int, runtime *service.ServingRuntime, mux *http.ServeMux) {
+					if index != 0 {
+						return
+					}
+					source, err := runtime.NewLanternReplicationService(f.primary[index])
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(source.CloseSnapshotTails)
+					peer = &observedSnapshotPeer{
+						LanternReplicationServiceHandler: service.NewLanternReplicationServiceConnectHandler(source),
+						source:                           source, headers: make(chan observedSnapshotHeader, 1),
+					}
+					_, handler := graphv1connect.NewLanternReplicationServiceHandler(peer)
+					mux.Handle("/graph.v1.LanternReplicationService/Snapshot", handler)
+					mux.Handle("/graph.v1.LanternReplicationService/Subscribe", handler)
+				},
+			})
+			put := func(prefix string) {
+				t.Helper()
+				for index := range 8 {
+					if _, err := fixture.primary[0].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
+						Key: fmt.Sprintf("data:%s-%d", prefix, index), Value: &pb.Vertex_String_{String_: "value"},
+					}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			put("seed")
+			client := graphv1connect.NewLanternReplicationServiceClient(fixture.runtimes[1].HTTPClient(), fixture.servers[0].URL)
+			request := connect.NewRequest(&pb.SnapshotRequest{NamespaceFormat: "namespaced-v1", RequiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1})
+			if reserve {
+				request.Header().Set(service.SnapshotTailHeader, "reserve")
+			}
+			stream, err := client.Snapshot(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stream.Close() }()
+			if !stream.Receive() || stream.Msg().GetHeader() == nil {
+				t.Fatalf("native Snapshot header = (%v,%v)", stream.Msg(), stream.Err())
+			}
+			header := proto.Clone(stream.Msg().GetHeader()).(*pb.SnapshotHeader)
+			sourceID := hlc.NodeID{3}
+			origin := hex.EncodeToString(sourceID[:])
+			if header.GetCutoffLocalSeq() != 8 || header.GetCutoffSeqPerOrigin()[origin] != 8 {
+				t.Fatalf("unexpected native Snapshot cut: %+v", header)
+			}
+			token := stream.ResponseHeader().Get(service.SnapshotTailHeader)
+			if (token != "") != reserve {
+				t.Fatalf("reservation metadata present=%t, requested=%t", token != "", reserve)
+			}
+			var hold observedSnapshotHeader
+			select {
+			case hold = <-peer.headers:
+			case <-ctx.Done():
+				t.Fatal("native source header barrier not reached", ctx.Err())
+			}
+			put("tail")
+			first, _ := fixture.logs[0].FirstSeq()
+			if first != 13 {
+				t.Fatalf("native retained first=%d, want 13", first)
+			}
+			hold.release <- nil
+			counts := &pb.SnapshotFooter{}
+			seen := make(map[string]bool)
+			var footer *pb.SnapshotFooter
+			for stream.Receive() {
+				if footer != nil {
+					t.Fatal("native Snapshot has a frame after its footer")
+				}
+				switch frame := stream.Msg().GetEntry().(type) {
+				case *pb.SnapshotResponse_Vertex:
+					vertex := frame.Vertex.GetVertex()
+					if !strings.HasPrefix(vertex.GetKey(), "data:seed-") || seen[vertex.GetKey()] || vertex.GetString_() != "value" {
+						t.Fatalf("native Snapshot vertex=%+v, want unique captured seed", vertex)
+					}
+					seen[vertex.GetKey()] = true
+					counts.VertexCount++
+				case *pb.SnapshotResponse_VertexCausalBarrier:
+					counts.VertexCausalBarrierCount++
+				case *pb.SnapshotResponse_Footer:
+					footer = proto.Clone(frame.Footer).(*pb.SnapshotFooter)
+				default:
+					t.Fatalf("unexpected native Snapshot frame %T", frame)
+				}
+			}
+			if err := stream.Err(); err != nil && !errors.Is(err, io.EOF) {
+				t.Fatal("native Snapshot did not complete", err)
+			}
+			if counts.GetVertexCount() != 8 || footer == nil || !proto.Equal(footer, counts) {
+				t.Fatalf("native Snapshot count mismatch: observed=%+v footer=%+v", counts, footer)
+			}
+			_ = stream.Close()
+			subscribe := connect.NewRequest(&pb.SubscribeRequest{NamespaceFormat: "namespaced-v1", FromLocalSeq: 9, FromSeqPerOrigin: map[string]uint64{origin: 9}, AcceptGraphMutations: true})
+			if reserve {
+				subscribe.Header().Set(service.SnapshotTailHeader, token)
+			}
+			feed, err := client.Subscribe(ctx, subscribe)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = feed.Close() }()
+			if !reserve {
+				if feed.Receive() || connect.CodeOf(feed.Err()) != connect.CodeFailedPrecondition || !strings.Contains(feed.Err().Error(), "gapped:") {
+					t.Fatalf("unreserved native Subscribe=(%v,%v), want retained gap", feed.Msg(), feed.Err())
+				}
+				t.Logf("complete Snapshot cut=8 source=16 retained_first=%d; unreserved Subscribe9 rejected", first)
+				return
+			}
+			for want := uint64(9); want <= 16; want++ {
+				if !feed.Receive() {
+					t.Fatalf("reserved native Subscribe missing seq%d: %v", want, feed.Err())
+				}
+				mutation := feed.Msg().GetMutation()
+				if mutation.GetSeq() != want || !bytes.Equal(mutation.GetOrigin(), sourceID[:]) {
+					t.Fatalf("reserved native mutation=%+v, want origin3 seq%d", mutation, want)
+				}
+			}
+			t.Logf("complete Snapshot cut=8 source=16 retained_first=%d; reserved Subscribe delivered9..16", first)
+		})
+	}
+}
+
+// This is the native counterpart to the retained/evicted history control above.
+// Real operator-signed membership and workload TLS admit both RPCs. Only the
+// Snapshot body is held: writes continue normally and evict the captured tail.
+func TestPeerPump_SnapshotTailHandoffDuringInstall(t *testing.T) {
+	for _, interrupted := range []bool{false, true} {
+		name := "evicted tail"
+		if interrupted {
+			name = "interrupted Snapshot then evicted tail"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+			defer cancel()
+			sourceID := hlc.NodeID{3}
+			var graphs [2]*graphcache.GraphCache[string, *pb.Vertex]
+			var peer *observedSnapshotPeer
+			fixture := newPeerSecurityFixture(t, peerSecurityOptions{
+				LogOptions: func(int) mutationlog.Options { return mutationlog.Options{Capacity: 4} },
+				Mount: func(f *peerSecurityFixture, index int, runtime *service.ServingRuntime, mux *http.ServeMux) {
+					graphs[index] = runtime.GraphCache()
+					if index != 0 {
+						return
+					}
+					source, err := runtime.NewLanternReplicationService(f.primary[index])
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(source.CloseSnapshotTails)
+					peer = &observedSnapshotPeer{
+						LanternReplicationServiceHandler: service.NewLanternReplicationServiceConnectHandler(source),
+						source:                           source, headers: make(chan observedSnapshotHeader, 1),
+					}
+					_, handler := graphv1connect.NewLanternReplicationServiceHandler(peer)
+					mux.Handle("/graph.v1.LanternReplicationService/Snapshot", handler)
+					mux.Handle("/graph.v1.LanternReplicationService/Subscribe", handler)
+				},
+			})
+			put := func(key string) {
+				t.Helper()
+				if _, err := fixture.primary[0].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{
+					Key: key, Value: &pb.Vertex_String_{String_: "value"}, Expiration: timestamppb.New(time.Now().Add(time.Minute)),
+				}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for index := range 8 {
+				put(fmt.Sprintf("data:seed-%d", index))
+			}
+			transport, err := provider.NewWorkloadPeerTransport(fixture.runtimes[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			apply := &observedSnapshotApplier{LanternService: fixture.primary[1], ctx: ctx, began: make(chan *observedSnapshotInstall, 1)}
+			pump := replication.NewPump(replication.Config{
+				NodeID: hlc.NodeID{4}, NamespaceFormat: "namespaced-v1", Peers: []string{fixture.servers[0].URL},
+				PeerTransport: transport, BackoffMin: time.Millisecond, BackoffMax: time.Millisecond,
+			}, apply, graphs[1])
+			done := make(chan error, 1)
+			go func() { done <- pump.Run(ctx) }()
+			joined := false
+			defer func() {
+				cancel()
+				if joined {
+					return
+				}
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Error(err)
+					}
+				case <-time.After(time.Second):
+					t.Error("native Pump did not join")
+				}
+			}()
+			cycles := 1
+			if interrupted {
+				cycles++
+			}
+			for cycle := range cycles {
+				var header observedSnapshotHeader
+				var stage *observedSnapshotInstall
+				select {
+				case header = <-peer.headers:
+				case <-ctx.Done():
+					t.Fatal("native Snapshot header not observed", ctx.Err())
+				}
+				select {
+				case stage = <-apply.began:
+				case <-ctx.Done():
+					t.Fatal("native Snapshot admission not observed", ctx.Err())
+				}
+				if _, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed-0"}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("read during native Snapshot = %v, want fail-closed", err)
+				}
+				if _, err := fixture.primary[1].PutVertex(ctx, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "data:must-not-apply"}}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+					t.Fatalf("write during native Snapshot = %v, want fail-closed", err)
+				}
+				if _, live := graphs[1].GetVertex("data:must-not-apply"); live {
+					t.Fatal("refused write changed native receiver graph")
+				}
+				fail := interrupted && cycle == 0
+				if fail {
+					header.release <- connect.NewError(connect.CodeUnavailable, errors.New("controlled native Snapshot interruption"))
+				} else {
+					if got := header.header.GetCutoffSeqPerOrigin()[hex.EncodeToString(sourceID[:])]; got != 8 {
+						t.Fatalf("native Snapshot cutoff = %d, want 8", got)
+					}
+					for index := range 8 {
+						put(fmt.Sprintf("data:tail-%d", index))
+					}
+					if first, _ := fixture.logs[0].FirstSeq(); first <= header.header.GetCutoffLocalSeq()+1 {
+						t.Fatalf("tail was not actually evicted: first=%d cut=%d", first, header.header.GetCutoffLocalSeq())
+					}
+					header.release <- nil
+				}
+				select {
+				case verified := <-stage.finished:
+					if verified == fail {
+						t.Fatalf("native Snapshot verified=%t after interrupted=%t", verified, fail)
+					}
+					t.Logf("native snapshot verified=%t cut=%d source=%d receiver=%d", verified, header.header.GetCutoffLocalSeq(), fixture.primary[0].LocalSeq(sourceID), fixture.primary[1].LocalSeq(sourceID))
+				case <-ctx.Done():
+					t.Fatal("native Snapshot completion not observed", ctx.Err())
+				}
+				close(stage.resume)
+			}
+			if !waitForVertex(t, graphs[1], "data:tail-7", time.Second) {
+				t.Fatalf("reserved native tail did not converge: snapshots=%d receiver=%d, want 16", peer.snapshots.Load(), fixture.primary[1].LocalSeq(sourceID))
+			}
+			if got := fixture.primary[1].LocalSeq(sourceID); got != 16 {
+				t.Fatalf("native receiver origin cursor=%d, want 16", got)
+			}
+			if _, err := fixture.primary[1].GetVertex(ctx, &pb.GetVertexRequest{Key: "data:seed-0"}); err != nil {
+				t.Fatal("verified native install did not restore public read", err)
+			}
+			cancel()
+			select {
+			case err := <-done:
+				joined = true
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("converged native Pump did not join")
+			}
+			if got := peer.snapshots.Load(); got != int32(cycles) {
+				t.Fatalf("native Snapshot requests=%d, want %d", got, cycles)
+			}
+			if got := peer.gaps.Load(); got != 0 {
+				t.Fatalf("post-Snapshot retained-origin gaps=%d, want none", got)
 			}
 		})
 	}
