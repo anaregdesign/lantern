@@ -845,6 +845,27 @@ run_ghz() {
   echo "$jsonout"
 }
 
+prepare_receipt_edge_add() {
+  # Seed both phases before warmup and the natural-GC PRE snapshot. Ordinary
+  # authorized Put/Get preparation is outside the measured Add/lookup pair.
+  [[ "$receipt_driver" == "1" && "$target_driver" == "receipt_edge_add" ]] || return 0
+  (( warmup_rps % 2 == 0 && steady_rps % 2 == 0 )) ||
+    die "receipt EdgeAdd aggregate RPS must divide evenly across its two producers"
+  local endpoint_urls="" ep
+  for ep in "${endpoints[@]}"; do
+    [[ -z "$endpoint_urls" ]] || endpoint_urls+=","
+    endpoint_urls+="https://${ep}"
+  done
+  (
+    cd "$REPO_ROOT"
+    go run ./testbed/bench/receiptprobe prepare-edge-add \
+      -endpoints "$endpoint_urls" -ca-cert "$PEER_TLS_DIR/ca.pem" \
+      -output "$OUTDIR/edge_add_fixture.json" \
+      -warmup-duration "$warmup_duration" -warmup-pair-rps "$((warmup_rps / 2))" \
+      -steady-duration "$steady_duration" -steady-pair-rps "$((steady_rps / 2))"
+  )
+}
+
 run_receipt_probe() {
   # $1 phase, $2 concurrency, $3 aggregate RPS, $4 duration,
   # optional $5/$6 admission and lookup report paths.
@@ -883,6 +904,9 @@ run_receipt_probe() {
     -concurrency "$conc"
     -pair-rps "$pair_rps"
   )
+  if [[ "$target_driver" == "receipt_edge_add" ]]; then
+    args+=( -edge-add-fixture "$OUTDIR/edge_add_fixture.json" )
+  fi
   if [[ -n "$admission_report" ]]; then
     args+=(
       -admission-report "$admission_report"
@@ -916,6 +940,8 @@ snapshot_search_lifecycle() {
       -out "$out"
   )
 }
+
+prepare_receipt_edge_add
 
 # ----- WARMUP ----------------------------------------------------------------
 log "warmup: ${warmup_duration} @ c=${warmup_conc} rps=${warmup_rps}"

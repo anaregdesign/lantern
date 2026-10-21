@@ -6185,7 +6185,7 @@ func mountDurableReceiptWireRuntime(
 func TestReceiptProbeFourFamilies_RealConnectWire(t *testing.T) {
 	wire := newPublicReceiptWireServer(t, hlc.NodeID{0x76}, 128, testToken)
 	peer := newAuthenticatedReplicationPeer(t, wire.server, testToken)
-	runProbe := func(t *testing.T, peer replicationTestPeer, token, family string, reports bool) string {
+	runProbe := func(t *testing.T, peer replicationTestPeer, token, family string, reports bool, edgeFixture ...string) string {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 		defer cancel()
@@ -6194,16 +6194,26 @@ func TestReceiptProbeFourFamilies_RealConnectWire(t *testing.T) {
 		if err := os.WriteFile(caFile, peer.ca, 0o600); err != nil {
 			t.Fatal(err)
 		}
+		phase := "wire-test"
+		if len(edgeFixture) != 0 {
+			if len(edgeFixture) != 2 {
+				t.Fatal("Edge Add probe requires a phase and prepared fixture path")
+			}
+			phase = edgeFixture[0]
+		}
 		args := []string{
 			"run", "./testbed/bench/receiptprobe",
 			"-family", family,
 			"-endpoints", peer.url,
 			"-ca-file", caFile,
-			"-phase", "wire-test",
+			"-phase", phase,
 			"-duration", "1s",
 			"-pair-rps", "12",
 			"-concurrency", "2",
 			"-request-timeout", "2s",
+		}
+		if len(edgeFixture) != 0 {
+			args = append(args, "-edge-add-fixture", edgeFixture[1])
 		}
 		if reports {
 			dir := t.TempDir()
@@ -6253,7 +6263,7 @@ func TestReceiptProbeFourFamilies_RealConnectWire(t *testing.T) {
 	}
 	for _, family := range []string{
 		"receipt_vertex_put", "receipt_vertex_delete",
-		"receipt_edge_delete", "receipt_edge_add",
+		"receipt_edge_delete",
 	} {
 		t.Run(family, func(t *testing.T) {
 			output := runProbe(t, peer, testToken, family, true)
@@ -6262,9 +6272,53 @@ func TestReceiptProbeFourFamilies_RealConnectWire(t *testing.T) {
 			}
 		})
 	}
+	t.Run("receipt_edge_add", func(t *testing.T) {
+		if !strings.HasPrefix(currentSourceMarker, "test-build controlled source:") {
+			t.Skip("protected receipt fixture requires lantern_test_time; no external time-source probe")
+		}
+		var rules []*pb.SecurityRule
+		for i, action := range []pb.SecurityAction{
+			pb.SecurityAction_SECURITY_ACTION_VERTEX_READ,
+			pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE,
+			pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ,
+		} {
+			rules = append(rules, &pb.SecurityRule{
+				Id: fmt.Sprintf("bench-probe-%d", i), Action: action,
+				Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Resource: &pb.SecurityRule_Prefix{Prefix: "bench:"},
+			})
+		}
+		protected := newScopedSDKFixtureTransport(t, true, rules...)
+		token := protected.token(t, "sdk", nil)
+		ca, err := os.ReadFile(protected.publicCA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		protectedPeer := replicationTestPeer{url: protected.server.URL, ca: ca}
+		fixturePath := filepath.Join(t.TempDir(), "edge-add-fixture.json")
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		prepare := exec.CommandContext(ctx, "go", "run", "./testbed/bench/receiptprobe", "prepare-edge-add",
+			"-endpoints", protectedPeer.url, "-ca-cert", protected.publicCA, "-request-timeout", "2s",
+			"-output", fixturePath, "-warmup-duration", "1s", "-warmup-pair-rps", "12",
+			"-steady-duration", "1s", "-steady-pair-rps", "12")
+		prepare.Dir = filepath.Join("..", "..")
+		prepare.Env = append(os.Environ(), "LANTERN_BENCH_AUTH_TOKEN="+token)
+		if output, err := prepare.CombinedOutput(); err != nil {
+			t.Fatalf("prepare protected Edge Add fixture: %v\n%s", err, output)
+		}
+		if got := protected.dataRuntime.ReceiptStats().Entries; got != 0 {
+			t.Fatal("endpoint preparation consumed measured receipt capacity")
+		}
+		for _, phase := range []string{"warmup", "steady"} {
+			output := runProbe(t, protectedPeer, token, "receipt_edge_add", true, phase, fixturePath)
+			if !strings.Contains(output, "admission=") || !strings.Contains(output, "lookup=") {
+				t.Fatalf("protected Edge Add %s omitted its paired summaries: %s", phase, output)
+			}
+		}
+	})
 	t.Run("rejects unauthenticated capability before mutation", func(t *testing.T) {
 		before := wire.runtime.ReceiptStats().Entries
-		output := runProbe(t, peer, "wrong-token", "receipt_edge_add", false)
+		output := runProbe(t, peer, "wrong-token", "receipt_vertex_put", false)
 		if !strings.Contains(strings.ToLower(output), "unauthenticated") {
 			t.Fatalf("wrong token did not fail capability discovery: %s", output)
 		}
@@ -6283,7 +6337,7 @@ func TestReceiptProbeFourFamilies_RealConnectWire(t *testing.T) {
 	t.Run("rejects plaintext endpoint before mutation", func(t *testing.T) {
 		before := wire.runtime.ReceiptStats().Entries
 		output := runProbe(t, replicationTestPeer{url: wire.server.url, ca: peer.ca},
-			testToken, "receipt_edge_add", false)
+			testToken, "receipt_vertex_put", false)
 		if !strings.Contains(output, "explicit https://") {
 			t.Fatalf("plaintext endpoint did not fail closed: %s", output)
 		}
@@ -6291,6 +6345,99 @@ func TestReceiptProbeFourFamilies_RealConnectWire(t *testing.T) {
 			t.Fatalf("plaintext probe changed receipt entries: before=%d after=%d", before, got)
 		}
 	})
+}
+
+func TestReceiptProbeProtectedEdgeAddIntent_RealConnectWire(t *testing.T) {
+	if !strings.HasPrefix(currentSourceMarker, "test-build controlled source:") {
+		t.Skip("protected receipt fixture requires lantern_test_time; no external time-source probe")
+	}
+	f := newScopedSDKFixtureTransport(t, true, &pb.SecurityRule{
+		Id: "probe-receipt", Action: pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ,
+		Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Resource: &pb.SecurityRule_Prefix{Prefix: "orders:"},
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	token := f.token(t, "sdk", nil)
+	capability, err := f.data.GetReceiptCapability(ctx, securityWireRequest(token, &pb.GetReceiptCapabilityRequest{}))
+	if err != nil || !capability.Msg.GetEnabled() {
+		t.Fatalf("protected receipt capability = %v, %v", capability, err)
+	}
+	contribution := bytes.Repeat([]byte{0x6b}, 24)
+	request := &pb.AddEdgeRequest{
+		Edge:      &pb.Edge{Tail: "orders:probe-tail", Head: "orders:probe-head", Weight: 1.25},
+		ContribId: contribution,
+		ReceiptContext: publicReceiptWireContext(t, capability.Msg, 0x6b, 1,
+			time.UnixMilli(int64(capability.Msg.GetServerNowUnixMs())).Add(-time.Second)),
+	}
+	beforeGraph := f.graph.SnapshotReplication()
+	canonicalizeReceiptWireGraph(&beforeGraph)
+	beforeLog, _, _ := f.dataRuntime.MutationLogStats()
+	beforeReceipts := f.dataRuntime.ReceiptStats()
+	if _, err := f.data.AddEdge(ctx, securityWireRequest(token, request)); connect.CodeOf(err) != connect.CodeFailedPrecondition ||
+		!strings.Contains(err.Error(), "edge endpoint not live") {
+		t.Fatalf("protected Add with missing endpoints = %v, want endpoint precondition", err)
+	}
+	afterGraph := f.graph.SnapshotReplication()
+	canonicalizeReceiptWireGraph(&afterGraph)
+	afterLog, _, _ := f.dataRuntime.MutationLogStats()
+	afterReceipts := f.dataRuntime.ReceiptStats()
+	if !reflect.DeepEqual(beforeGraph, afterGraph) || afterLog != beforeLog ||
+		afterReceipts.Entries != beforeReceipts.Entries || afterReceipts.Bytes != beforeReceipts.Bytes {
+		t.Fatal("missing endpoint rejection changed graph, mutation log, or receipt rows")
+	}
+	vertexExpiration := timestamppb.New(time.Now().Add(20 * time.Minute))
+	vertices := []*pb.Vertex{
+		{Key: request.Edge.Tail, Value: &pb.Vertex_String_{String_: "tail"}, Expiration: vertexExpiration},
+		{Key: request.Edge.Head, Value: &pb.Vertex_String_{String_: "head"}, Expiration: vertexExpiration},
+	}
+	if _, err := f.data.PutVertices(ctx, securityWireRequest(token, &pb.PutVerticesRequest{Vertices: vertices})); err != nil {
+		t.Fatalf("prepare protected Add endpoints: %v", err)
+	}
+	if got := f.dataRuntime.ReceiptStats().Entries; got != beforeReceipts.Entries {
+		t.Fatal("ordinary endpoint preparation consumed receipt rows")
+	}
+	added, err := f.data.AddEdge(ctx, securityWireRequest(token, request))
+	if err != nil || added.Msg.GetEffectiveWeight() != request.Edge.Weight {
+		t.Fatalf("protected Add after endpoint preparation = %v, %v", added, err)
+	}
+	status, err := f.data.GetReceiptStatus(ctx, securityWireRequest(token, &pb.GetReceiptStatusRequest{
+		OperationId: request.ReceiptContext.OperationIds[0],
+	}))
+	if err != nil || status.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED ||
+		status.Msg.GetStatus().GetReceipt().GetOriginalResult().GetAddEdgeEffectiveWeight() != request.Edge.Weight {
+		t.Fatalf("protected Add receipt = %v, %v", status, err)
+	}
+	// Independently encode the public logical keys and the exact source bits.
+	canonical := []byte{byte(mutationreceipt.AddEdge)}
+	for _, key := range []string{request.Edge.Tail, request.Edge.Head} {
+		canonical = binary.BigEndian.AppendUint64(canonical, uint64(len(key)))
+		canonical = append(canonical, key...)
+	}
+	canonical = binary.BigEndian.AppendUint32(canonical, math.Float32bits(request.Edge.Weight))
+	canonical = append(canonical, 0) // no Edge expiration
+	canonical = binary.BigEndian.AppendUint64(canonical, uint64(len(contribution)))
+	canonical = append(canonical, contribution...)
+	base := mutationreceipt.IntentDigest(canonical)
+	protected := mutationreceipt.IntentDigest(append([]byte("edge-only-v1\x00"), base[:]...))
+	actual := status.Msg.GetStatus().GetReceipt().GetIntentSha256()
+	if !bytes.Equal(actual, protected[:]) || bytes.Equal(actual, base[:]) {
+		t.Fatalf("protected intent = %x, want %x distinct from legacy %x", actual, protected, base)
+	}
+	read, err := f.data.GetVertices(ctx, securityWireRequest(token, &pb.GetVerticesRequest{Keys: []string{request.Edge.Tail, request.Edge.Head}}))
+	if err != nil || len(read.Msg.GetMissing()) != 0 || len(read.Msg.GetVertices()) != len(vertices) {
+		t.Fatalf("prepared endpoints after Add = %v, %v", read, err)
+	}
+	expectedEndpoints := make(map[string]*pb.Vertex, len(vertices))
+	for _, vertex := range vertices {
+		expectedEndpoints[vertex.GetKey()] = vertex
+	}
+	for _, vertex := range read.Msg.GetVertices() {
+		expected, ok := expectedEndpoints[vertex.GetKey()]
+		if !ok || !proto.Equal(vertex, expected) {
+			t.Fatal("protected Add changed the prepared endpoint value or expiration")
+		}
+		delete(expectedEndpoints, vertex.GetKey())
+	}
 }
 
 // Receipt-less standalone Create shares the staged publication classifier even

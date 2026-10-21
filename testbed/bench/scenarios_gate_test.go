@@ -1344,6 +1344,90 @@ func receiptSnapshotShellFunctions(t *testing.T) string {
 	return "receipt_runtime_scalar() {\n" + body + "\n}\n"
 }
 
+func TestReceiptBenchEdgeAddPreparationBoundary(t *testing.T) {
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(script), "prepare_receipt_edge_add() {\n")
+	if !found {
+		t.Fatal("missing protected EdgeAdd preparation")
+	}
+	body, _, found := strings.Cut(rest, "\n}\n\nrun_receipt_probe() {")
+	if !found {
+		t.Fatal("incomplete protected EdgeAdd preparation")
+	}
+	prepareAt := strings.Index(string(script), "\nprepare_receipt_edge_add\n")
+	warmupAt := strings.Index(string(script), "# ----- WARMUP ")
+	preAt := strings.Index(string(script), `snapshot_runtime "$OUTDIR/runtime_pre.json"`)
+	if prepareAt < 0 || warmupAt <= prepareAt || preAt <= warmupAt {
+		t.Fatal("endpoint preparation must precede warmup and the PRE memory snapshot")
+	}
+	for _, tc := range []struct {
+		name   string
+		driver string
+		exit   int
+	}{
+		{"protected Add", "receipt_edge_add", 0},
+		{"preparation failure", "receipt_edge_add", 23},
+		{"other family", "receipt_vertex_delete", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := t.TempDir()
+			fixture := `set -euo pipefail
+receipt_driver=1
+target_driver="$TEST_DRIVER"
+REPO_ROOT="$PWD"
+PEER_TLS_DIR="$OUTDIR/trust"
+warmup_duration=10s
+warmup_rps=200
+steady_duration=45s
+steady_rps=200
+endpoints=(localhost:6380 localhost:6381 localhost:6382)
+die() { exit 91; }
+go() {
+ [[ "$1 $2 $3" == 'run ./testbed/bench/receiptprobe prepare-edge-add' ]] || return 92
+ shift 3
+ local eps="" ca="" output="" warmdur="" warmrps="" steadydur="" steadyrps=""
+ while (( $# )); do
+  case "$1" in
+   -endpoints) eps="$2";;
+   -ca-cert) ca="$2";;
+   -output) output="$2";;
+   -warmup-duration) warmdur="$2";;
+   -warmup-pair-rps) warmrps="$2";;
+   -steady-duration) steadydur="$2";;
+   -steady-pair-rps) steadyrps="$2";;
+   *) return 93;;
+  esac
+  shift 2
+ done
+ [[ "$eps" == 'https://localhost:6380,https://localhost:6381,https://localhost:6382' &&
+    "$ca" == "$PEER_TLS_DIR/ca.pem" && "$output" == "$OUTDIR/edge_add_fixture.json" &&
+    "$warmdur/$warmrps/$steadydur/$steadyrps" == '10s/100/45s/100' ]] || return 94
+ touch "$OUTDIR/preparation-called"
+ return "$FIXTURE_EXIT"
+}
+prepare_receipt_edge_add() {
+` + body + "\n}\nprepare_receipt_edge_add\ntouch \"$OUTDIR/after-preparation\"\n"
+			command := exec.Command("bash", "-c", fixture)
+			command.Env = append(os.Environ(), "OUTDIR="+out, "TEST_DRIVER="+tc.driver, fmt.Sprintf("FIXTURE_EXIT=%d", tc.exit))
+			output, err := command.CombinedOutput()
+			if command.ProcessState == nil || command.ProcessState.ExitCode() != tc.exit {
+				t.Fatalf("preparation exit=%v err=%v output=%s", command.ProcessState, err, output)
+			}
+			_, callErr := os.Stat(filepath.Join(out, "preparation-called"))
+			if tc.driver == "receipt_edge_add" && callErr != nil || tc.driver != "receipt_edge_add" && !os.IsNotExist(callErr) {
+				t.Fatalf("unexpected preparation side effect: %v", callErr)
+			}
+			_, afterErr := os.Stat(filepath.Join(out, "after-preparation"))
+			if tc.exit == 0 && afterErr != nil || tc.exit != 0 && !os.IsNotExist(afterErr) {
+				t.Fatalf("failed preparation crossed the measurement boundary: %v", afterErr)
+			}
+		})
+	}
+}
+
 func TestReceiptBenchWarmupRetainsPairedSummariesOnFailure(t *testing.T) {
 	script, err := os.ReadFile("run.sh")
 	if err != nil {

@@ -149,6 +149,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "evaluate-leak" {
 		os.Exit(runReceiptLeakEvaluation(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "prepare-edge-add" {
+		os.Exit(runEdgeSetupCommand(os.Args[2:]))
+	}
 	var (
 		endpointsFlag   = flag.String("endpoints", "", "comma-separated Lantern endpoint URLs")
 		familyFlag      = flag.String("family", "", "receipt family (receipt_vertex_put, receipt_vertex_delete, receipt_edge_delete, receipt_edge_add)")
@@ -163,6 +166,7 @@ func main() {
 		metricsURLs     = flag.String("metrics-endpoints", "", "comma-separated replica /metrics URLs during steady load")
 		metricsInterval = flag.Duration("metrics-interval", 0, "steady replica sampling interval")
 		metricsReport   = flag.String("metrics-report", "", "steady replica samples output path")
+		edgeFixture     = flag.String("edge-add-fixture", "", "prepared protected EdgeAdd endpoint plan")
 	)
 	flag.Parse()
 
@@ -196,6 +200,9 @@ func main() {
 	if (*admissionReport == "") != (*lookupReport == "") {
 		fatalf("-admission-report and -lookup-report must be supplied together")
 	}
+	if (family == receiptEdgeAdd) != (*edgeFixture != "") {
+		fatalf("-edge-add-fixture is required only for receipt_edge_add")
+	}
 	var steadyMetrics *steadyMetricsConfig
 	if *metricsURLs != "" || *metricsInterval != 0 || *metricsReport != "" {
 		if *phase != "steady" || *metricsReport == "" || *metricsInterval <= 0 ||
@@ -216,17 +223,12 @@ func main() {
 
 	setupCtx, setupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	endpoints, err := discoverEndpoints(setupCtx, httpClient, endpointAddresses, token, family)
-	setupCancel()
 	if err != nil {
+		setupCancel()
 		fatalf("discover receipt endpoints: %v", err)
 	}
 
 	var nonce [16]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		fatalf("generate run nonce: %v", err)
-	}
-	nonce[0] |= 1
-
 	cfg := probeConfig{
 		family:         family,
 		phase:          *phase,
@@ -237,6 +239,20 @@ func main() {
 		pairRPS:        *pairRPS,
 		steadyMetrics:  steadyMetrics,
 	}
+	if family == receiptEdgeAdd {
+		nonce, _, err = loadEdgeSetupManifest(setupCtx, *edgeFixture, cfg, endpoints)
+		if err != nil {
+			setupCancel()
+			fatalf("load protected EdgeAdd fixture: %v", err)
+		}
+	} else {
+		if _, err := rand.Read(nonce[:]); err != nil {
+			setupCancel()
+			fatalf("generate run nonce: %v", err)
+		}
+		nonce[0] |= 1
+	}
+	setupCancel()
 	runCtx, runCancel := context.WithTimeout(
 		context.Background(),
 		*duration+2**requestTimeout+30*time.Second,
@@ -461,6 +477,14 @@ func runProbe(
 	if _, err := cfg.family.mutationKind(); err != nil {
 		return resultSet{}, nil, err
 	}
+	var maxSequence uint64
+	if cfg.family == receiptEdgeAdd {
+		var err error
+		maxSequence, err = edgeAddPhaseLimit(cfg.duration, cfg.pairRPS)
+		if err != nil {
+			return resultSet{}, nil, err
+		}
+	}
 
 	var admissionSamples, lookupSamples sampleCollector
 	jobs := make(chan uint64, cfg.concurrency)
@@ -516,6 +540,11 @@ schedule:
 		case <-timer.C:
 			break schedule
 		case <-ticker.C:
+			// The preparation plan covers this duration-derived finite set. A
+			// ready ticker cannot enqueue beyond it if the timer is also ready.
+			if maxSequence != 0 && sequence == maxSequence {
+				continue
+			}
 			sequence++
 			select {
 			case jobs <- sequence:
@@ -656,7 +685,7 @@ func newReceiptOperation(
 		operation.addEdgeRequest = &graphv1.AddEdgeRequest{
 			Edge: edge, ContribId: contribID, ReceiptContext: receiptContext,
 		}
-		operation.intentSHA256, err = edgeAddIntentSHA256(edge, contribID)
+		operation.intentSHA256, err = protectedEdgeAddIntentSHA256(edge, contribID)
 		if err != nil {
 			return receiptOperation{}, err
 		}

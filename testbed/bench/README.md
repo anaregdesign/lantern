@@ -470,6 +470,22 @@ Role. Only that workload's files are mounted read-only. The operator private
 key and client token file remain outside all Server containers. DNS names
 locate only the signed fixed origins; they never approve membership.
 
+The protected receipt EdgeAdd scenario prepares its live Vertex endpoints with
+ordinary authorized `PutVertices` before warmup and the PRE memory snapshot.
+Preparation uses one replica and verifies the exact values on every configured
+replica through `GetVertices`; it consumes no receipt rows. Both phases have
+distinct random nonces and a private, bounded endpoint-plan file binding their
+original duration/rate to the discovered endpoint identities and receipt policy.
+At 100 pairs/s this prepares at most 501 warmup tails, 2251 steady tails and one
+shared head. The duration-derived operation limits are 1001 and 4501; a ready
+ticker cannot schedule beyond the prepared set while waiting for its duration
+timer. These limits fit the existing 8000-entry receipt policy. Preparation
+failure stops the run. Each phase rechecks the plan and live endpoint values;
+the server still evaluates current authorization, endpoint liveness and receipt
+deadlines on every operation. Preparation RPCs are outside the measured Add and
+lookup counts. The expected intent includes the protected Edge-only effect;
+the probe does not accept a legacy implicit-endpoint receipt digest as a fallback.
+
 The graph-only fixture explicitly selects a 128 MiB logical Snapshot staging
 allowance and a 32 MiB frame limit through the three
 `LANTERN_GRAPH_SNAPSHOT_SPOOL_*` settings. These are local fixture choices, not
