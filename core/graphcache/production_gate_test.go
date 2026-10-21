@@ -130,53 +130,59 @@ func testLivenessHeavyMix(t *testing.T) {
 // R — Resource Hygiene
 // ---------------------------------------------------------------------------
 
-// testResourceWatchStops asserts Watch returns promptly on context cancel and
-// does not leak its goroutine. Goroutine counts include scheduler noise, so we
-// retry the post-cancel reading briefly to absorb that noise.
+// testResourceWatchStops observes this Watch's first GC tick, then joins its
+// goroutine after cancellation. Process-wide goroutine counts cannot identify
+// this owner while other parallel tests start or finish their own goroutines.
 func testResourceWatchStops(t *testing.T) {
 	c := NewGraphCache[string, int](time.Minute)
-
-	// Settle the runtime before sampling.
-	runtime.GC()
-	runtime.Gosched()
-	time.Sleep(20 * time.Millisecond)
-	baseline := runtime.NumGoroutine()
+	firstTick := make(chan struct{})
+	var tickOnce sync.Once
+	c.SetGCHooks(nil, func(time.Duration) {
+		tickOnce.Do(func() { close(firstTick) })
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go c.Watch(ctx, 5*time.Millisecond)
-
-	// Wait for Watch to actually be scheduled. runtime.NumGoroutine() is
-	// inherently racy against the Go scheduler (especially under -shuffle=on),
-	// so poll with a bounded retry instead of a single instantaneous read.
-	startupDeadline := time.Now().Add(2 * time.Second)
-	started := false
-	for time.Now().Before(startupDeadline) {
-		if runtime.NumGoroutine() > baseline {
-			started = true
-			break
+	done := make(chan struct{})
+	waitStopped := func() bool {
+		select {
+		case <-done:
+			return true
+		case <-time.After(2 * time.Second):
+			return false
 		}
-		runtime.Gosched()
-		time.Sleep(5 * time.Millisecond)
 	}
-	if !started {
-		t.Fatalf("R1 setup: expected Watch goroutine to be running within 2s (baseline=%d, now=%d)", baseline, runtime.NumGoroutine())
+	t.Cleanup(func() {
+		cancel()
+		if !waitStopped() {
+			buf := make([]byte, 1<<20)
+			n := runtime.Stack(buf, true)
+			t.Errorf("R1 cleanup: Watch did not unwind within 2s of cancel\n%s", buf[:n])
+		}
+	})
+	go func() {
+		defer close(done)
+		c.Watch(ctx, 5*time.Millisecond)
+	}()
+
+	select {
+	case <-firstTick:
+	case <-done:
+		t.Fatal("R1 setup: Watch returned before its first GC tick")
+	case <-time.After(2 * time.Second):
+		t.Fatal("R1 setup: Watch did not complete a GC tick within 2s")
+	}
+	select {
+	case <-done:
+		t.Fatal("R1 setup: Watch returned before context cancellation")
+	default:
 	}
 
 	cancel()
-
-	// Watch must return promptly. Tolerate scheduler noise by retrying.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		runtime.Gosched()
-		if runtime.NumGoroutine() <= baseline+1 {
-			return // back to baseline (allow +1 for residual scheduler goroutines)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !waitStopped() {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		t.Fatalf("R1 goroutine leak: Watch did not unwind within 2s of cancel\n%s", buf[:n])
 	}
-	buf := make([]byte, 1<<20)
-	n := runtime.Stack(buf, true)
-	t.Fatalf("R1 goroutine leak: Watch did not unwind within 2s of cancel (baseline=%d, after=%d)\n%s",
-		baseline, runtime.NumGoroutine(), buf[:n])
 }
 
 // testResourceVertexReaped asserts that vertices whose TTL has elapsed are
