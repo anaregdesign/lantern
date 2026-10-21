@@ -6671,6 +6671,10 @@ func (p *nativeReceiptTailPeer) Subscribe(ctx context.Context, request *connect.
 // TestDurableReceiptSnapshot_NativeTailHandoffAndRestart uses actual private
 // workload TLS and signed membership. The native authority clock is a controlled
 // test observation, never an external UTC/provider qualification.
+// The receipt/WAL overflow case uses a configured eight-slot queue; the actual
+// 512-slot maximum is covered by TestPeerPump_SnapshotTailCapacityBeforeFinish.
+// This avoids making 513 synchronous WAL commits a native-deadline prerequisite;
+// it does not retain the combined maximum-queue/durable-receipt stress coverage.
 func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
 	for _, tc := range []struct {
 		name, proof                                        string
@@ -6678,12 +6682,57 @@ func TestDurableReceiptSnapshot_NativeTailHandoffAndRestart(t *testing.T) {
 		queueFull                                          bool
 	}{
 		{name: "evicted ring uses owned tail", proof: "ring4 seed8 tail8", capacity: 4, subscriberBuffer: 16, seedWrites: 8, tailWrites: 8},
-		{name: "unclaimed queue full replays retained ring", proof: "ring520 seed521 tail513 queue512", capacity: 520, subscriberBuffer: 512, seedWrites: 521, tailWrites: 513, queueFull: true},
+		{name: "unclaimed queue full replays retained ring", proof: "ring16 seed17 tail9 queue8", capacity: 16, subscriberBuffer: 8, seedWrites: 17, tailWrites: 9, queueFull: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			testDurableReceiptNativeTailAndRestart(t, tc.capacity, tc.subscriberBuffer, tc.seedWrites, tc.tailWrites, tc.queueFull)
 			t.Log(tc.proof)
 		})
+	}
+}
+
+func nativeReceiptTailMutationAt(t *testing.T, config mutationreceipt.Config, origin hlc.NodeID, seq uint64, acceptedAt time.Time) (*pb.Mutation, []byte) {
+	t.Helper()
+	logicalTail, logicalHead := fmt.Sprintf("native-tail-%d", seq-1), fmt.Sprintf("native-head-%d", seq-1)
+	mutation, _ := durableFollowerReceiptMutationAt(t, config, origin, seq, logicalTail, logicalHead, acceptedAt)
+	// Keep both identities distinct beyond one byte's range, even when all
+	// receipts share an issuance millisecond. Exercise this separately from WAL IO.
+	var entropy [24]byte
+	entropy[0] = 0x39
+	binary.BigEndian.PutUint64(entropy[16:], seq)
+	id, err := mutationreceipt.NewID(config.Epoch, acceptedAt.Add(-time.Second), entropy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var group mutationreceipt.GroupID
+	group[0] = 0x4a
+	binary.BigEndian.PutUint64(group[len(group)-8:], seq)
+	item := mutation.GetOp().GetReplicatedReceiptEdgeDelete().Items[0]
+	item.Receipt.OperationId, item.Receipt.LogicalCallId = id.Bytes(), group[:]
+	item.Key.Tail, item.Key.Head = "data:"+logicalTail, "data:"+logicalHead
+	mutation.NamespaceFormat = "namespaced-v1"
+	return mutation, id.Bytes()
+}
+
+func TestDurableReceiptSnapshot_NativeTailMutationIdentities(t *testing.T) {
+	acceptedAt := time.Unix(1_800_000_000, 0)
+	config := mutationreceipt.Config{Epoch: mutationreceipt.Epoch{0x42}, Retention: time.Hour, MaxEntries: 513, MaxBytes: 1 << 20, ClockHighWater: acceptedAt}
+	ids, groups := make(map[mutationreceipt.ID]bool), make(map[mutationreceipt.GroupID]bool)
+	for seq := uint64(1); seq <= 513; seq++ {
+		mutation, rawID := nativeReceiptTailMutationAt(t, config, hlc.NodeID{0x73}, seq, acceptedAt)
+		item := mutation.GetOp().GetReplicatedReceiptEdgeDelete().Items[0]
+		id, err := mutationreceipt.DecodeID(rawID)
+		if err != nil || !bytes.Equal(rawID, item.GetReceipt().GetOperationId()) || ids[id] {
+			t.Fatalf("receipt %d has invalid or repeated operation ID: %v", seq, err)
+		}
+		group, err := mutationreceipt.DecodeGroupID(item.GetReceipt().GetLogicalCallId())
+		if err != nil || groups[group] {
+			t.Fatalf("receipt %d has invalid or repeated logical-call ID: %v", seq, err)
+		}
+		ids[id], groups[group] = true, true
+	}
+	if len(ids) != 513 || len(groups) != 513 {
+		t.Fatalf("distinct fixture identities: operations=%d groups=%d, want 513 each", len(ids), len(groups))
 	}
 }
 
@@ -6709,7 +6758,7 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 			config.Log = mutationlog.Options{Capacity: capacity, SubscriberBuffer: subscriberBuffer}
 			if queueFull {
 				// This is a fixture Store limit, independent of the unchanged
-				// production tail's fixed 512 slots and encoded byte ceilings.
+				// production tail's unchanged 512-entry maximum and byte ceilings.
 				config.Receipt.MaxEntries = tailWrites
 				if index == 0 {
 					config.Log.OnDrop = func(cause string) {
@@ -6743,7 +6792,7 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 					headers: make(chan observedSnapshotHeader, 1),
 				}}
 				if queueFull {
-					// Fixture preparation and 513 durable follower commits are
+					// Fixture preparation and durable follower commits are
 					// separate work. Each source stream still gets the original
 					// 15-second bound, including the reserved Snapshot deadline.
 					source.rpcTimeout = 15 * time.Second
@@ -6757,8 +6806,8 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 		},
 	})
 	for sequence := range seedWrites {
-		// Re-Put the first eight edges only in the ring520 case: 521
-		// publications force bootstrap, while all 513 later Deletes have
+		// Re-Put edges in the ring16 case: 17 publications force
+		// bootstrap, while all nine later Deletes have
 		// distinct live effects in the verified cut.
 		index := sequence % tailWrites
 		if _, err := fixture.primary[0].PutEdge(setupCtx, &pb.PutEdgeRequest{Edge: &pb.Edge{
@@ -6771,7 +6820,7 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 	cancelSetup()
 	flowTimeout, convergenceTimeout := 15*time.Second, 2*time.Second
 	if queueFull {
-		// The source and follower each perform 513 synchronous WAL commits.
+		// The source and follower each perform synchronous WAL commits.
 		// This case budgets those sequential stages without extending either native
 		// Snapshot/Subscribe stream beyond the 15-second fixture deadline.
 		flowTimeout, convergenceTimeout = 30*time.Second, 15*time.Second
@@ -6789,11 +6838,19 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 	if lastSeedHLC.WallNs == 0 {
 		t.Fatal("seed did not publish durable source origin")
 	}
+	// Build immutable inputs before opening the Snapshot and its original
+	// native deadline. Actual application remains after verified collection.
+	mutations := make([]*pb.Mutation, tailWrites)
+	operationIDs := make([][]byte, tailWrites)
+	for index := range tailWrites {
+		mutations[index], operationIDs[index] = nativeReceiptTailMutationAt(t, configs[0].Receipt, receiptOrigin, uint64(index+1),
+			time.Unix(0, lastSeedHLC.WallNs).Add(time.Duration(index+1)*time.Millisecond))
+	}
 	install := &heldNativeReceiptInstallTarget{primary: fixture.primary[1], validated: make(chan service.ReceiptWholeStateCapture, 1),
 		release: make(chan struct{}), finished: make(chan error, 1)}
 	var installer *backup.ReceiptSnapshotInstaller
 	if queueFull {
-		// Only the bounded fixture collector grows with this larger graph;
+		// Size only the bounded fixture collector to this graph;
 		// the service's queue and transport resource limits stay unchanged.
 		installer = newDurableReceiptSnapshotInstallerWithTargetLimits(t, configs[1], install, backup.ReceiptSnapshotCollectorLimits{
 			MaxFrameBytes: 8 << 20, MaxFrames: uint64(2 + tailWrites + 32 + tailWrites*8),
@@ -6850,51 +6907,25 @@ func testDurableReceiptNativeTailAndRestart(t *testing.T, capacity, subscriberBu
 	if fixture.primary[1].LocalSeq(sourceOrigin) != 0 || durable[1].ReceiptStats().Entries != 0 {
 		t.Fatal("held verified candidate changed serving graph/Store before durable install")
 	}
-	mutations := make([]*pb.Mutation, 0, tailWrites)
-	operationIDs := make([][]byte, 0, tailWrites)
-	for index := range tailWrites {
-		logicalTail, logicalHead := fmt.Sprintf("native-tail-%d", index), fmt.Sprintf("native-head-%d", index)
-		mutation, id := durableFollowerReceiptMutationAt(t, configs[0].Receipt, receiptOrigin, uint64(index+1), logicalTail, logicalHead,
-			time.Unix(0, lastSeedHLC.WallNs).Add(time.Duration(index+1)*time.Millisecond))
-		mutation.NamespaceFormat = "namespaced-v1"
-		item := mutation.GetOp().GetReplicatedReceiptEdgeDelete().Items[0]
-		if queueFull {
-			// Keep all IDs and logical calls distinct beyond one byte's range.
-			var entropy [24]byte
-			entropy[0] = 0x39
-			binary.BigEndian.PutUint64(entropy[16:], uint64(index+1))
-			issued := time.Unix(0, lastSeedHLC.WallNs).Add(time.Duration(index+1)*time.Millisecond - time.Second)
-			operationID, err := mutationreceipt.NewID(configs[0].Receipt.Epoch, issued, entropy)
-			if err != nil {
-				t.Fatal(err)
-			}
-			id = operationID.Bytes()
-			item.Receipt.OperationId = id
-			var group mutationreceipt.GroupID
-			group[0] = 0x4a
-			binary.BigEndian.PutUint64(group[len(group)-8:], uint64(index+1))
-			item.Receipt.LogicalCallId = group[:]
-		}
-		item.Key.Tail, item.Key.Head = "data:"+logicalTail, "data:"+logicalHead
+	for index, mutation := range mutations {
 		if err := fixture.primary[0].ApplyMutation(ctx, mutation); err != nil {
 			t.Fatalf("post-cut durable receipt %d: %v", index+1, err)
 		}
-		mutations, operationIDs = append(mutations, mutation), append(operationIDs, id)
 	}
 	if length, retained, evicted := durable[0].MutationLogStats(); length != capacity || retained != capacity || evicted != uint64(seedWrites+tailWrites-capacity) {
 		t.Fatalf("post-cut receipt history boundary: length=%d capacity=%d evicted=%d; want %d/%d/%d", length, retained, evicted, capacity, capacity, seedWrites+tailWrites-capacity)
 	}
 	if queueFull {
 		// No tail is claimed or read while the verified installer is held.
-		// The sole live source subscription must overflow exactly at write
-		// 513 with the production maximum of 512 slots.
+		// The sole live source subscription must overflow at the first write
+		// beyond the configured eight-slot queue, before the original deadline.
 		select {
 		case cause := <-drops:
 			if cause != mutationlog.DropCauseBufferFull {
 				t.Fatalf("unclaimed native tail terminal cause=%q, want buffer_full", cause)
 			}
 		case <-ctx.Done():
-			t.Fatal("513 receipt writes did not fill the unclaimed 512-slot tail", ctx.Err())
+			t.Fatalf("%d receipt writes did not fill the unclaimed %d-slot tail: %v", tailWrites, subscriberBuffer, ctx.Err())
 		}
 	}
 	// Actual native wire control distinguishes evicted history from the
