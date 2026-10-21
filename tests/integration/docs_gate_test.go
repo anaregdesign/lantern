@@ -1441,26 +1441,44 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 	}
 	for _, mode := range []string{"off", "oidc"} {
 		t.Run(mode, func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), "native")
-			generated := exec.CommandContext(t.Context(), "go", "-C", filepath.Join(root, "server"), "run", "./cmd/authfixture", "-compose", "-directory", dir, "-public-ports", "6380,6381,6382", "-mode", mode)
+			graphDirectory := filepath.Join(t.TempDir(), "native")
+			generated := exec.CommandContext(t.Context(), "go", "-C", filepath.Join(root, "server"), "run", "./cmd/authfixture", "-compose", "-directory", graphDirectory, "-public-ports", "6380,6381,6382", "-mode", mode)
 			if output, err := generated.CombinedOutput(); err != nil {
 				t.Fatalf("native config generation: %v: %s", err, output)
 			}
-			for _, bench := range []bool{false, true} {
-				t.Run(map[bool]string{false: "operator HA", true: "native benchmark"}[bench], func(t *testing.T) {
+			type composeProfile struct {
+				name           string
+				bench, receipt bool
+			}
+			profiles := []composeProfile{{name: "operator HA graph"}, {name: "native benchmark graph", bench: true}}
+			if mode == "oidc" {
+				profiles = append(profiles, composeProfile{name: "native benchmark receipt", bench: true, receipt: true})
+			}
+			for _, profile := range profiles {
+				t.Run(profile.name, func(t *testing.T) {
+					dir := graphDirectory
+					if profile.receipt {
+						dir = filepath.Join(t.TempDir(), "protected")
+						generated := exec.CommandContext(t.Context(), "go", "-C", filepath.Join(root, "server"), "run", "./cmd/authfixture", "-compose", "-directory", dir, "-public-ports", "6380,6381,6382", "-mode", mode, "-receipt")
+						if output, err := generated.CombinedOutput(); err != nil {
+							t.Fatalf("protected fixture generation: %v %s", err, output)
+						}
+					}
 					args := []string{"compose"}
-					if bench {
-						args = append(args, "-f", filepath.Join(root, "testbed/bench/compose.native.yml"), "-f", filepath.Join(root, "testbed/bench/compose.override.yml"))
-						if mode == "oidc" {
-							dir = filepath.Join(t.TempDir(), "protected")
-							generated := exec.CommandContext(t.Context(), "go", "-C", filepath.Join(root, "server"), "run", "./cmd/authfixture", "-compose", "-directory", dir, "-public-ports", "6380,6381,6382", "-mode", mode, "-receipt")
-							if output, err := generated.CombinedOutput(); err != nil {
-								t.Fatalf("protected fixture generation: %v %s", err, output)
-							}
+					if profile.bench {
+						args = append(args, "-f", filepath.Join(root, "testbed/bench/compose.native.yml"))
+						// Profiling is an OFF-only overlay. Protected receipt
+						// composition retains its existing explicit override.
+						if mode == "off" || profile.receipt {
+							args = append(args, "-f", filepath.Join(root, "testbed/bench/compose.override.yml"))
+						}
+						if profile.receipt {
 							args = append(args, "-f", filepath.Join(root, "testbed/bench/compose.receipt-tls.yml"))
+						} else {
+							args = append(args, "-f", filepath.Join(root, "testbed/bench/compose.graph-snapshot.yml"))
 						}
 					} else {
-						args = append(args, "-f", filepath.Join(root, "deploy/compose/docker-compose.yml"), "-f", filepath.Join(root, "deploy/compose/docker-compose.ha.yml"))
+						args = append(args, "-f", filepath.Join(root, "deploy/compose/docker-compose.yml"), "-f", filepath.Join(root, "deploy/compose/docker-compose.ha.yml"), "-f", filepath.Join(root, "deploy/compose/docker-compose.graph-snapshot.yml"))
 					}
 					args = append(args, "config", "--format", "json")
 					command := exec.CommandContext(t.Context(), docker, args...)
@@ -1470,7 +1488,7 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 						}
 					}
 					command.Env = append(command.Env, "LANTERN_HA_CONFIG_DIR="+dir, "LANTERN_BENCH_PEER_TLS_DIR="+dir, "LANTERN_HA_ADMIN_UPSTREAM=https://lantern-0:6380", "LANTERN_BENCH_RECEIPT_MAX_BYTES=4194304", "LANTERN_BENCH_RECEIPT_MAX_ENTRIES=512", "LANTERN_BENCH_RECEIPT_RETENTION=1h")
-					if bench {
+					if profile.bench {
 						// This gate renders config only; use a fixed non-root
 						// publisher identity without depending on the CI host UID.
 						command.Env = append(command.Env, "LANTERN_BENCH_RUNTIME_UID=1001", "LANTERN_BENCH_RUNTIME_GID=1001")
@@ -1488,20 +1506,29 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 								HostIP string `json:"host_ip"`
 							} `json:"ports"`
 							Volumes []struct {
-								Source, Target string
-								ReadOnly       bool `json:"read_only"`
+								Type, Source, Target string
+								ReadOnly             bool `json:"read_only"`
+								Volume               struct {
+									NoCopy bool `json:"nocopy"`
+								}
 							} `json:"volumes"`
 						} `json:"services"`
+						Volumes map[string]struct {
+							Name       string
+							External   bool
+							DriverOpts map[string]string `json:"driver_opts"`
+						} `json:"volumes"`
 					}
 					if err := json.Unmarshal(output, &rendered); err != nil {
 						t.Fatal(err)
 					}
+					spoolOwners := map[string]string{}
 					for _, name := range []string{"lantern-0", "lantern-1", "lantern-2"} {
 						node, ok := rendered.Services[name]
 						if !ok || node.Environment["LANTERN_PEER_LISTEN_ADDR"] != ":6381" || node.Environment["LANTERN_PEER_MEMBERSHIP_FILE"] != "/run/lantern-config/membership.json" {
 							t.Fatal("missing native private plane", name)
 						}
-						if bench && node.User != "1001:1001" {
+						if profile.bench && node.User != "1001:1001" {
 							t.Fatal("benchmark publisher/runtime identity changed", name, node.User)
 						}
 						if (node.Environment["LANTERN_AUTH_MODE"] == "oidc") != (mode == "oidc") {
@@ -1512,7 +1539,26 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 								t.Fatal("retired admission setting", key)
 							}
 						}
+						spoolEnvironment := map[string]string{
+							"LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR":             "/var/lib/lantern-snapshot-spool",
+							"LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES":  "134217728",
+							"LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES": "33554432",
+						}
+						spoolSettings := 0
+						for key, value := range node.Environment {
+							if !strings.HasPrefix(key, "LANTERN_GRAPH_SNAPSHOT_SPOOL_") {
+								continue
+							}
+							spoolSettings++
+							if profile.receipt || spoolEnvironment[key] != value || value == "" {
+								t.Fatal("unexpected graph Snapshot spool setting", name, key, value)
+							}
+						}
+						if !profile.receipt && spoolSettings != len(spoolEnvironment) {
+							t.Fatal("graph Snapshot spool settings missing", name)
+						}
 						ownMount := false
+						spoolMounts := 0
 						for _, mount := range node.Volumes {
 							if mount.Target == "/run/lantern-config" {
 								ownMount = mount.ReadOnly && mount.Source == filepath.Join(dir, name)
@@ -1520,6 +1566,20 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 							if strings.Contains(mount.Source, "operator.key") || mount.Source == dir {
 								t.Fatal("operator key/root directory mounted")
 							}
+							if mount.Target == "/var/lib/lantern-snapshot-spool" {
+								spoolMounts++
+								volume, declared := rendered.Volumes[mount.Source]
+								if profile.receipt || mount.Type != "volume" || mount.ReadOnly || !declared || volume.External || volume.Name == "" || len(volume.DriverOpts) != 0 || mount.Volume.NoCopy != profile.bench {
+									t.Fatal("graph Snapshot spool is not dedicated writable project storage", name, mount.Source)
+								}
+								if previous, shared := spoolOwners[volume.Name]; shared {
+									t.Fatal("graph Snapshot spool shared across workloads", previous, name)
+								}
+								spoolOwners[volume.Name] = name
+							}
+						}
+						if !profile.receipt && spoolMounts != 1 {
+							t.Fatal("graph Snapshot spool mount missing or repeated", name)
 						}
 						if !ownMount {
 							t.Fatal("workload material not isolated", name)
@@ -1533,7 +1593,18 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 							}
 						}
 					}
-					if !bench && len(rendered.Services["admin"].Ports) != 0 {
+					// A second target or service must not expose the same spool
+					// through a state, backup, runtime or auxiliary mount.
+					for name, node := range rendered.Services {
+						for _, mount := range node.Volumes {
+							if mount.Type == "volume" {
+								if owner, shared := spoolOwners[rendered.Volumes[mount.Source].Name]; shared && (owner != name || mount.Target != "/var/lib/lantern-snapshot-spool") {
+									t.Fatal("graph Snapshot spool reused for another role", owner, name, mount.Target)
+								}
+							}
+						}
+					}
+					if !profile.bench && len(rendered.Services["admin"].Ports) != 0 {
 						t.Fatal("protected Admin HTTP unexpectedly exposed")
 					}
 				})

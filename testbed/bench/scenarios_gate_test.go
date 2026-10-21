@@ -499,6 +499,7 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		`-renew-every 2m`,
 		`COMPOSE_FILES+=( -f "$HERE/compose.receipt-tls.yml" )`,
 		`receipt driver requires a fresh Compose lifecycle`,
+		`owned_compose_project_absent "$COMPOSE_PROJECT_NAME"`,
 		`down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}"`,
 		`-family "$target_driver"`,
 		`endpoint_urls+="https://${ep}"`,
@@ -528,9 +529,9 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		}
 	}
 	projectScope := strings.Index(string(runScript), `export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-lantern-bench}"`)
-	volumeReset := strings.Index(string(runScript), `down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}"`)
-	if projectScope < 0 || volumeReset < 0 || projectScope >= volumeReset {
-		t.Error("receipt volume reset must use the named bench Compose project")
+	projectAbsence := strings.Index(string(runScript), `owned_compose_project_absent "$COMPOSE_PROJECT_NAME"`)
+	if projectScope < 0 || projectAbsence < 0 || projectScope >= projectAbsence {
+		t.Error("fresh receipt startup must prove absence of its named Compose project")
 	}
 	preflight := strings.Index(string(runScript), `verify_receipt_peer_tls "$OUTDIR/peer_tls_pre.json"`)
 	warmup := strings.Index(string(runScript), `log "warmup:`)
@@ -648,8 +649,10 @@ func TestReceiptBenchImageProvenanceFailsClosed(t *testing.T) {
 	wrongID := "sha256:" + strings.Repeat("b", 64)
 	commit := strings.Repeat("c", 40)
 	for _, tc := range []struct {
-		name    string
-		wantErr string
+		name         string
+		wantErr      string
+		graph        bool
+		missingSpool bool
 	}{
 		{name: "three matching replicas"},
 		{name: "wrong pinned ID", wantErr: "differs from pinned"},
@@ -661,6 +664,8 @@ func TestReceiptBenchImageProvenanceFailsClosed(t *testing.T) {
 		{name: "wrong Compose project", wantErr: "not a running, restart-free"},
 		{name: "replica restarted", wantErr: "not a running, restart-free"},
 		{name: "replica recreated", wantErr: "was recreated during the run"},
+		{name: "graph three validated spool proofs", graph: true},
+		{name: "graph missing one spool proof", wantErr: "missing graph Snapshot spool provenance", graph: true, missingSpool: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outDir := t.TempDir()
@@ -671,7 +676,18 @@ receipt_image_ref=lantern:local
 receipt_image_id=""
 receipt_image_commit=""
 receipt_container_ids=()
+receipt_driver=1
+native_spool_provenance=()
 runtime_owner=501:20
+if [[ "$GRAPH_PROFILE" == 1 ]]; then
+ receipt_driver=0
+ # These are the previously validated native mount proofs. This verifier
+ # consumes them; native mount/UID validation has its own fixture below.
+ for index in 0 1 2; do
+  native_spool_provenance[$index]="$(jq -nc --arg volume "snapshot-spool-$index" --arg owner "$runtime_owner" '
+   {volume:$volume,target:"/var/lib/lantern-snapshot-spool",runtime_user:$owner,mode:"0700",read_write:true,configured_nocopy:true}')"
+ done
+fi
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 log() { :; }
 docker() {
@@ -727,6 +743,9 @@ docker() {
 ` + receiptImageShellFunctions(t) + `
 pin_receipt_image
 verify_receipt_image_provenance "$OUTDIR/proof_pre.json"
+if [[ "$CASE" == "graph missing one spool proof" ]]; then
+ unset 'native_spool_provenance[1]'
+fi
 verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 `
 			pinnedID := imageID
@@ -737,12 +756,17 @@ verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 			if tc.name == "wrong pinned commit" {
 				pinnedCommit = strings.Repeat("d", 40)
 			}
+			graphProfile := "0"
+			if tc.graph {
+				graphProfile = "1"
+			}
 			cmd := exec.Command("bash", "-c", fixture)
 			cmd.Env = append(os.Environ(),
 				"OUTDIR="+outDir, "CASE="+tc.name,
 				"GOOD_ID="+imageID, "WRONG_ID="+wrongID,
 				"GOOD_COMMIT="+commit, "EXPECTED_LANTERN_IMAGE_ID="+pinnedID,
 				"EXPECTED_LANTERN_COMMIT="+pinnedCommit,
+				"GRAPH_PROFILE="+graphProfile,
 			)
 			output, err := cmd.CombinedOutput()
 			if tc.wantErr != "" {
@@ -753,6 +777,11 @@ verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 				}
 				if _, err := os.Stat(filepath.Join(outDir, "proof_post.json")); !os.IsNotExist(err) {
 					t.Fatalf("invalid post-run provenance was recorded: %v", err)
+				}
+				if tc.missingSpool {
+					if _, err := os.Stat(filepath.Join(outDir, "proof_pre.json")); err != nil {
+						t.Fatal("missing-spool control never recorded its complete pre-run proof", err)
+					}
 				}
 				return
 			}
@@ -767,7 +796,15 @@ verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 				ImageID      string `json:"image_id"`
 				SourceCommit string `json:"source_commit"`
 				Replicas     []struct {
-					ImageID string `json:"image_id"`
+					ImageID            string `json:"image_id"`
+					GraphSnapshotSpool *struct {
+						Volume           string `json:"volume"`
+						Target           string `json:"target"`
+						RuntimeUser      string `json:"runtime_user"`
+						Mode             string `json:"mode"`
+						ReadWrite        bool   `json:"read_write"`
+						ConfiguredNocopy bool   `json:"configured_nocopy"`
+					} `json:"graph_snapshot_spool"`
 				} `json:"replicas"`
 			}
 			if err := json.Unmarshal(data, &proof); err != nil {
@@ -777,9 +814,21 @@ verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 				len(proof.Replicas) != 3 {
 				t.Fatalf("incomplete image proof: %+v", proof)
 			}
-			for _, replica := range proof.Replicas {
+			for index, replica := range proof.Replicas {
 				if replica.ImageID != imageID {
 					t.Fatalf("replica image drift in proof: %+v", proof)
+				}
+				if !tc.graph {
+					if replica.GraphSnapshotSpool != nil {
+						t.Fatal("receipt provenance recorded an unrelated graph spool")
+					}
+					continue
+				}
+				spool := replica.GraphSnapshotSpool
+				if spool == nil || spool.Volume != fmt.Sprintf("snapshot-spool-%d", index) ||
+					spool.Target != "/var/lib/lantern-snapshot-spool" || spool.RuntimeUser != "501:20" ||
+					spool.Mode != "0700" || !spool.ReadWrite || !spool.ConfiguredNocopy {
+					t.Fatalf("missing or altered validated graph spool proof for replica %d: %+v", index, spool)
 				}
 			}
 		})
@@ -810,6 +859,7 @@ func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name, wantErr string
 		postFailure   bool
+		graph         bool
 	}{
 		{name: "verified before and after load"},
 		{name: "missing own mount", wantErr: "no pinned, read-only"},
@@ -823,6 +873,17 @@ func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
 		{name: "retired bearer config", wantErr: "missing or mismatched"},
 		{name: "invalid live TLS identity", wantErr: "TLS identity/provenance verification failed"},
 		{name: "changed live TLS identity", wantErr: "TLS identity/provenance verification failed", postFailure: true},
+		{name: "receipt with unexpected graph spool", wantErr: "unexpectedly mounts a graph Snapshot spool"},
+		{name: "graph spool verified before and after load", graph: true},
+		{name: "graph missing overlay", graph: true, wantErr: "wrong graph/receipt volume set"},
+		{name: "graph missing spool mount", graph: true, wantErr: "mismatched graph Snapshot spool mount"},
+		{name: "graph wrong spool name", graph: true, wantErr: "mismatched graph Snapshot spool mount"},
+		{name: "graph bind spool", graph: true, wantErr: "mismatched graph Snapshot spool mount"},
+		{name: "graph read-only spool", graph: true, wantErr: "mismatched graph Snapshot spool mount"},
+		{name: "graph foreign spool label", graph: true, wantErr: "foreign graph Snapshot spool"},
+		{name: "graph wrong spool owner", graph: true, wantErr: "wrong UID/GID/mode"},
+		{name: "graph wrong spool mode", graph: true, wantErr: "wrong UID/GID/mode"},
+		{name: "graph changed spool mode", graph: true, wantErr: "wrong UID/GID/mode", postFailure: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outDir := t.TempDir()
@@ -830,11 +891,33 @@ func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
 			if err := os.Mkdir(private, 0700); err != nil {
 				t.Fatal(err)
 			}
-			expected := map[string]any{"nodes": []any{
-				map[string]any{"name": "node-0", "environment": map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_PEER_WORKLOAD_ID": "spiffe://fixture/node-0"}},
-				map[string]any{"name": "node-1", "environment": map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_PEER_WORKLOAD_ID": "spiffe://fixture/node-1"}},
-				map[string]any{"name": "node-2", "environment": map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_PEER_WORKLOAD_ID": "spiffe://fixture/node-2"}},
-			}}
+			var nodes []any
+			services, volumes := map[string]any{}, map[string]any{}
+			for index := range 3 {
+				environment := map[string]string{"LANTERN_AUTH_MODE": "oidc", "LANTERN_PEER_WORKLOAD_ID": fmt.Sprintf("spiffe://fixture/node-%d", index)}
+				mounts := []any{}
+				for _, directory := range []struct{ name, target string }{{"state", "/state"}, {"backup", "/data"}} {
+					name := fmt.Sprintf("%s-%d", directory.name, index)
+					mounts = append(mounts, map[string]any{"type": "volume", "source": name, "target": directory.target})
+					volumes[name] = map[string]any{"name": name}
+				}
+				if tc.graph {
+					environment["LANTERN_AUTH_MODE"] = "off"
+					environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] = "/var/lib/lantern-snapshot-spool"
+					if tc.name != "graph missing overlay" {
+						name := fmt.Sprintf("snapshot-spool-%d", index)
+						mounts = append(mounts, map[string]any{"type": "volume", "source": name, "target": "/var/lib/lantern-snapshot-spool", "volume": map[string]any{"nocopy": true}})
+						volumes[name] = map[string]any{"name": name}
+					}
+				}
+				nodes = append(nodes, map[string]any{"name": fmt.Sprintf("node-%d", index), "environment": environment})
+				services[fmt.Sprintf("lantern-%d", index)] = map[string]any{"user": "501:20", "volumes": mounts}
+			}
+			expected := map[string]any{"nodes": nodes}
+			configuration, err := json.Marshal(map[string]any{"name": "lantern-bench-fixture", "services": services, "volumes": volumes})
+			if err != nil {
+				t.Fatal(err)
+			}
 			raw, err := json.Marshal(expected)
 			if err != nil {
 				t.Fatal(err)
@@ -844,17 +927,37 @@ func TestReceiptBenchTLSPeerPreflightFailsClosed(t *testing.T) {
 			}
 			fixture := `set -euo pipefail
 COMPOSE_FILES=(-f fixture.yml)
+export COMPOSE_PROJECT_NAME=lantern-bench-fixture
+source owned_compose.sh
 PEER_TLS_DIR="$OUTDIR/private"
 REPO_ROOT="$OUTDIR"
 REPLICA_GRPC_PORTS=(6380 6381 6382)
 MEMBERSHIP_PID=$$
 DIAGNOSTICS_PID=$$
-receipt_driver=1
+receipt_driver="$TEST_DRIVER"
+native_spool_provenance=()
 runtime_owner=501:20
 postflight=0
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 docker() {
- if [[ "$1" == compose ]]; then printf 'container-%s\n' "$6"; return; fi
+ if [[ "$1" == compose ]]; then
+  if [[ "$4" == config ]]; then printf '%s\n' "$TEST_CONFIG"; else printf 'container-%s\n' "$6"; fi
+  return
+ fi
+ if [[ "$1" == volume && "$2" == inspect ]]; then
+  if [[ "$CASE" == "graph foreign spool label" && "${@: -1}" == snapshot-spool-1 ]]; then echo unrelated; else echo "$COMPOSE_PROJECT_NAME"; fi
+  return
+ fi
+ if [[ "$1" == exec ]]; then
+  [[ "$3" == /bin/sh && "${@: -1}" == /var/lib/lantern-snapshot-spool ]] || return 87
+  local metadata="$runtime_owner:700"
+  if [[ "$2" == container-lantern-1 ]]; then
+   if [[ "$CASE" == "graph wrong spool owner" ]]; then metadata=0:0:700; fi
+   if [[ "$CASE" == "graph wrong spool mode" || ( "$CASE" == "graph changed spool mode" && "$postflight" == 1 ) ]]; then metadata="$runtime_owner:750"; fi
+  fi
+  printf '%s\n' "$metadata"
+  return
+ fi
  [[ "$1" == inspect && "$2" == --format ]] || return 88
  local service="${4#container-}" index="${4##*-}"
  case "$3" in
@@ -869,15 +972,28 @@ docker() {
   if [[ "$CASE" == "writable declared time source" && "$index" == 1 ]]; then time_rw=true; fi
   if [[ "$CASE" == "foreign declared time source" && "$index" == 1 ]]; then time_source="$PEER_TLS_DIR/lantern-0/ntp.conf"; fi
   if [[ "$CASE" == "changed declared time source" && "$index" == 1 && "$postflight" == 1 ]]; then time_rw=true; fi
-  jq -nc --arg source "$source" --argjson rw "$rw" --arg time_source "$time_source" --argjson time_rw "$time_rw" '
+  local spool_name="snapshot-spool-$index" spool_type=volume spool_rw=true with_spool="$TEST_GRAPH"
+  if [[ "$CASE" == "receipt with unexpected graph spool" ]]; then with_spool=true; fi
+  if [[ "$index" == 1 ]]; then
+   if [[ "$CASE" == "graph missing spool mount" ]]; then with_spool=false; fi
+   if [[ "$CASE" == "graph wrong spool name" ]]; then spool_name=snapshot-spool-0; fi
+   if [[ "$CASE" == "graph bind spool" ]]; then spool_type=bind; fi
+   if [[ "$CASE" == "graph read-only spool" ]]; then spool_rw=false; fi
+  fi
+  jq -nc --arg source "$source" --argjson rw "$rw" --arg time_source "$time_source" --argjson time_rw "$time_rw" \
+    --arg spool_name "$spool_name" --arg spool_type "$spool_type" --argjson spool_rw "$spool_rw" --argjson with_spool "$with_spool" '
     [{Type:"bind",Destination:"/run/lantern-config",RW:$rw,Source:$source}] +
-    (if $time_source=="" then [] else [{Type:"bind",Destination:"/etc/ntp.conf",RW:$time_rw,Source:$time_source}] end)'
+    (if $time_source=="" then [] else [{Type:"bind",Destination:"/etc/ntp.conf",RW:$time_rw,Source:$time_source}] end) +
+    (if $with_spool then [{Type:$spool_type,Destination:"/var/lib/lantern-snapshot-spool",Name:$spool_name,RW:$spool_rw}] else [] end)'
   ;;
  '{{json .Config.Env}}')
   local identity="spiffe://fixture/node-$index" legacy=""
   if [[ "$CASE" == "wrong workload identity" && "$index" == 1 ]]; then identity="spiffe://unrelated/node-1"; fi
   if [[ "$CASE" == "retired bearer config" && "$index" == 1 ]]; then legacy="LANTERN_AUTH_TOKENS=fixture-only"; fi
-  jq -nc --arg identity "$identity" --arg legacy "$legacy" '["LANTERN_AUTH_MODE=oidc","LANTERN_PEER_WORKLOAD_ID="+$identity] + (if $legacy=="" then [] else [$legacy] end)'
+  jq -nc --arg identity "$identity" --arg legacy "$legacy" --argjson graph "$TEST_GRAPH" '
+    ["LANTERN_AUTH_MODE="+(if $graph then "off" else "oidc" end),"LANTERN_PEER_WORKLOAD_ID="+$identity] +
+    (if $graph then ["LANTERN_METRICS_ADDR=:9090","LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR=/var/lib/lantern-snapshot-spool"] else [] end) +
+    (if $legacy=="" then [] else [$legacy] end)'
   ;;
  *) return 89;;
  esac
@@ -890,12 +1006,24 @@ go() {
  printf '{"ca_sha256":"fixture"}\n' > "$out"
 }
 ` + receiptTLSShellFunction(t) + `
-verify_receipt_peer_tls "$OUTDIR/tls_pre.json"
-postflight=1
-verify_receipt_peer_tls "$OUTDIR/tls_post.json" "$OUTDIR/tls_pre.json"
+if [[ "$receipt_driver" == 0 ]]; then
+ verify_native_workload_settings
+ printf '%s\n' "${native_spool_provenance[@]}" | jq -s . > "$OUTDIR/tls_pre.json"
+ postflight=1
+ verify_native_workload_settings
+ printf '%s\n' "${native_spool_provenance[@]}" | jq -s . > "$OUTDIR/tls_post.json"
+else
+ verify_receipt_peer_tls "$OUTDIR/tls_pre.json"
+ postflight=1
+ verify_receipt_peer_tls "$OUTDIR/tls_post.json" "$OUTDIR/tls_pre.json"
+fi
 `
 			command := exec.Command("bash", "-c", fixture)
-			command.Env = append(os.Environ(), "OUTDIR="+outDir, "CASE="+tc.name)
+			driver := "1"
+			if tc.graph {
+				driver = "0"
+			}
+			command.Env = append(os.Environ(), "OUTDIR="+outDir, "CASE="+tc.name, "TEST_CONFIG="+string(configuration), "TEST_DRIVER="+driver, fmt.Sprintf("TEST_GRAPH=%t", tc.graph))
 			output, err := command.CombinedOutput()
 			if tc.wantErr != "" {
 				if command.ProcessState == nil || command.ProcessState.ExitCode() != 37 || !strings.Contains(string(output), tc.wantErr) {
@@ -909,6 +1037,21 @@ verify_receipt_peer_tls "$OUTDIR/tls_post.json" "$OUTDIR/tls_pre.json"
 				}
 			} else if err != nil {
 				t.Fatalf("valid native TLS proof: %v %s", err, output)
+			} else if tc.graph {
+				raw, err := os.ReadFile(filepath.Join(outDir, "tls_post.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var proof []map[string]any
+				if err := json.Unmarshal(raw, &proof); err != nil || len(proof) != 3 {
+					t.Fatalf("incomplete graph spool provenance: %s (%v)", raw, err)
+				}
+				for index, spool := range proof {
+					if spool["volume"] != fmt.Sprintf("snapshot-spool-%d", index) || spool["target"] != "/var/lib/lantern-snapshot-spool" ||
+						spool["mode"] != "0700" || spool["runtime_user"] != "501:20" || spool["read_write"] != true || spool["configured_nocopy"] != true {
+						t.Fatalf("wrong graph spool provenance: %+v", spool)
+					}
+				}
 			}
 		})
 	}
@@ -936,14 +1079,43 @@ func TestReceiptBenchCleanupPreservesFailureAndProjectScope(t *testing.T) {
 		keepUp       int
 		wantStatus   int
 		wantDown     bool
+		wantBridge   bool
+		bridgeLink   bool
+		captureError string
 	}{
 		{name: "clean teardown", wantDown: true},
-		{name: "teardown failure disqualifies pass", dockerStatus: 19, wantStatus: 1, wantDown: true},
-		{name: "primary failure preserved", dockerStatus: 19, runStatus: 23, wantStatus: 23, wantDown: true},
+		{name: "teardown failure disqualifies pass", dockerStatus: 19, wantStatus: 1, wantDown: true, wantBridge: true},
+		{name: "primary failure preserved", dockerStatus: 19, runStatus: 23, wantStatus: 23, wantDown: true, wantBridge: true},
 		{name: "explicit keep up", dockerStatus: 19, keepUp: 1},
+		{name: "primary failure with completed teardown", runStatus: 23, wantStatus: 23, wantDown: true, wantBridge: true},
+		{name: "symlink diagnostics excluded", runStatus: 23, wantStatus: 23, wantDown: true, bridgeLink: true},
+		{name: "bridge evidence mktemp failure preserves teardown status", dockerStatus: 19, wantStatus: 1, wantDown: true, captureError: "mktemp"},
+		{name: "bridge evidence chmod failure preserves teardown status", dockerStatus: 19, wantStatus: 1, wantDown: true, captureError: "chmod"},
+		{name: "bridge evidence cat failure preserves teardown status", dockerStatus: 19, wantStatus: 1, wantDown: true, captureError: "cat"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outDir := t.TempDir()
+			workspace := filepath.Join(outDir, "out", ".peer-tls.fixture")
+			trust := filepath.Join(workspace, "trust")
+			failureRoot := filepath.Join(outDir, "failure-evidence")
+			for _, directory := range []string{trust, failureRoot} {
+				if err := os.MkdirAll(directory, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			const bridgeLog = "{\"event\":\"request_finish\",\"reason\":\"timeout\"}\n"
+			const privateToken = "never-copy-native-credential"
+			if err := os.WriteFile(filepath.Join(trust, "tokens.json"), []byte(privateToken), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			bridgePath := filepath.Join(workspace, "diagnostics.log")
+			if tc.bridgeLink {
+				if err := os.Symlink(filepath.Join(trust, "tokens.json"), bridgePath); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(bridgePath, []byte(bridgeLog), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			reportPath := filepath.Join(outDir, "report.md")
 			if err := os.WriteFile(reportPath, []byte("**Perf gate verdict:** `pass`\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -956,6 +1128,11 @@ source owned_compose.sh
 stop_owned_processes() { :; }
 KEEP_UP=%d
 log() { :; }
+case "${CAPTURE_ERROR:-}" in
+  mktemp) mktemp() { return 29; };;
+  chmod) chmod() { return 29; };;
+  cat) cat() { return 29; };;
+esac
 docker() {
   [[ "$COMPOSE_PROJECT_NAME" == "lantern-bench-cleanup-fixture" ]] || return 88
   case "$*" in
@@ -972,7 +1149,8 @@ trap cleanup EXIT
 exit %d
 `, tc.keepUp, tc.dockerStatus, cleanup, tc.runStatus)
 			cmd := exec.Command("bash", "-c", fixture)
-			cmd.Env = append(os.Environ(), "OUTDIR="+outDir)
+			cmd.Env = append(os.Environ(), "OUTDIR="+outDir, "HERE="+outDir,
+				"NATIVE_WORK_DIR="+workspace, "PEER_TLS_DIR="+trust, "TMPDIR="+failureRoot, "CAPTURE_ERROR="+tc.captureError)
 			output, err := cmd.CombinedOutput()
 			if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != tc.wantStatus {
 				t.Fatalf("cleanup exit = %v, err = %v, output = %s; want %d",
@@ -990,6 +1168,160 @@ exit %d
 			}
 			if got, want := strings.Contains(string(report), "unqualified"), (tc.dockerStatus != 0 && tc.wantDown) || tc.runStatus != 0; got != want {
 				t.Errorf("report marked unqualified = %v, want %v: %s", got, want, report)
+			}
+			evidence, err := filepath.Glob(filepath.Join(failureRoot, "lantern-native-failure.*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCount := 0
+			if tc.runStatus != 0 || tc.wantBridge || tc.captureError != "" && tc.captureError != "mktemp" {
+				wantCount = 1
+			}
+			if len(evidence) != wantCount {
+				t.Fatalf("failure evidence = %v, want count=%d", evidence, wantCount)
+			}
+			for _, directory := range evidence {
+				info, err := os.Stat(directory)
+				if err != nil || info.Mode().Perm() != 0o700 {
+					t.Fatalf("private evidence directory mode: %v %v", info, err)
+				}
+				files, err := os.ReadDir(directory)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, file := range files {
+					if file.Name() != "server.log" && file.Name() != "diagnostics.log" {
+						t.Fatalf("native trust input copied to evidence: %s", file.Name())
+					}
+					data, err := os.ReadFile(filepath.Join(directory, file.Name()))
+					if err != nil || strings.Contains(string(data), privateToken) {
+						t.Fatalf("private trust leaked to evidence: %v", err)
+					}
+				}
+				path := filepath.Join(directory, "diagnostics.log")
+				data, err := os.ReadFile(path)
+				if tc.wantBridge {
+					info, statErr := os.Stat(path)
+					if err != nil || string(data) != bridgeLog || statErr != nil || info.Mode().Perm() != 0o600 {
+						t.Fatalf("private bridge log lost or wrong mode: %q %v %v", data, err, statErr)
+					}
+				} else if tc.captureError == "cat" {
+					if err != nil || len(data) != 0 {
+						t.Fatalf("failed capture marked complete: %q %v", data, err)
+					}
+				} else if !os.IsNotExist(err) {
+					t.Fatalf("unexpected bridge evidence: %q %v", data, err)
+				}
+			}
+			_, statErr := os.Stat(workspace)
+			wantRetained := tc.keepUp == 1 || tc.dockerStatus != 0 && tc.wantDown
+			if wantRetained && statErr != nil || !wantRetained && !os.IsNotExist(statErr) {
+				t.Fatalf("native workspace cleanup: retained=%v err=%v", wantRetained, statErr)
+			}
+			if tc.captureError != "" && !strings.Contains(string(output), "failed to") {
+				t.Fatalf("capture failure not reported: %s", output)
+			}
+		})
+	}
+}
+
+func TestBenchFreshComposeRejectsExistingProjectBeforeLifecycle(t *testing.T) {
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, startup, found := strings.Cut(string(script), "# ----- compose up ------------------------------------------------------------\n")
+	if !found {
+		t.Fatal("missing fresh Compose startup")
+	}
+	startup, _, found = strings.Cut(startup, "# ----- discover actual published ports")
+	if !found {
+		t.Fatal("incomplete fresh Compose startup")
+	}
+	_, cleanup, found := strings.Cut(string(script), "cleanup() {\n")
+	if !found {
+		t.Fatal("missing owned Compose cleanup")
+	}
+	cleanup, _, found = strings.Cut(cleanup, "\n}\ntrap cleanup EXIT")
+	if !found {
+		t.Fatal("incomplete owned Compose cleanup")
+	}
+	for _, tc := range []struct {
+		name     string
+		wantCode int
+		wantOwn  bool
+	}{
+		{name: "absent", wantOwn: true},
+		{name: "container", wantCode: 37},
+		{name: "volume", wantCode: 37},
+		{name: "network", wantCode: 37},
+		{name: "container lookup failure", wantCode: 37},
+		{name: "volume lookup failure", wantCode: 37},
+		{name: "network lookup failure", wantCode: 37},
+		{name: "skip startup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outDir := t.TempDir()
+			fixture := `set -euo pipefail
+export COMPOSE_PROJECT_NAME=lantern-bench-fresh-fixture
+COMPOSE_FILES=(-f fixture.yml)
+COMPOSE_STARTED=0
+KEEP_UP=0
+PEER_TLS_DIR=""
+receipt_driver=1
+receipt_image_id=fixture
+runtime_owner=501:20
+prod_pids=()
+sub_pids=()
+SKIP_UP=0
+if [[ "$CASE" == "skip startup" ]]; then SKIP_UP=1; fi
+source owned_compose.sh
+die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
+log() { :; }
+stop_owned_processes() { :; }
+owned_compose_volume_layout() { printf '{"count":6}\n'; }
+initialize_owned_compose_volumes() {
+ [[ "$COMPOSE_STARTED" == 1 ]] || return 88
+ printf 'initialize\n' >> "$OUTDIR/actions"
+}
+docker() {
+ local family
+ case "$1" in
+  ps) family=container;;
+  volume) family=volume;;
+  network) family=network;;
+  compose)
+   case "$4" in
+    config) printf '{}\n';;
+    up) printf 'up\n' >> "$OUTDIR/actions";;
+    --profile) printf 'down\n' >> "$OUTDIR/actions";;
+    *) return 89;;
+   esac
+   return;;
+  *) return 89;;
+ esac
+ [[ "$*" == *"label=com.docker.compose.project=$COMPOSE_PROJECT_NAME"* ]] || return 89
+ if [[ "$CASE" == "$family lookup failure" ]]; then return 19; fi
+ if [[ "$CASE" == "$family" ]]; then printf 'existing-owned-resource\n'; fi
+}
+cleanup() {
+` + cleanup + "\n}\ntrap cleanup EXIT\n" + startup
+			command := exec.Command("bash", "-c", fixture)
+			command.Env = append(os.Environ(), "OUTDIR="+outDir, "CASE="+tc.name)
+			output, err := command.CombinedOutput()
+			if command.ProcessState == nil || command.ProcessState.ExitCode() != tc.wantCode {
+				t.Fatalf("fresh startup exit=%v err=%v output=%s, want %d", command.ProcessState, err, output, tc.wantCode)
+			}
+			if tc.wantCode != 0 && !strings.Contains(string(output), "already present or its absence cannot be verified") {
+				t.Fatalf("existing project was not refused at absence boundary: %s", output)
+			}
+			actions, readErr := os.ReadFile(filepath.Join(outDir, "actions"))
+			if tc.wantOwn {
+				if readErr != nil || string(actions) != "initialize\nup\ndown\n" {
+					t.Fatalf("fresh owned lifecycle=%q err=%v", actions, readErr)
+				}
+			} else if !os.IsNotExist(readErr) {
+				t.Fatalf("refused or skipped startup changed existing resources: %q err=%v", actions, readErr)
 			}
 		})
 	}
@@ -1012,6 +1344,198 @@ func receiptSnapshotShellFunctions(t *testing.T) string {
 	return "receipt_runtime_scalar() {\n" + body + "\n}\n"
 }
 
+func TestReceiptBenchEdgeAddPreparationBoundary(t *testing.T) {
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(script), "prepare_receipt_edge_add() {\n")
+	if !found {
+		t.Fatal("missing protected EdgeAdd preparation")
+	}
+	body, _, found := strings.Cut(rest, "\n}\n\nrun_receipt_probe() {")
+	if !found {
+		t.Fatal("incomplete protected EdgeAdd preparation")
+	}
+	prepareAt := strings.Index(string(script), "\nprepare_receipt_edge_add\n")
+	warmupAt := strings.Index(string(script), "# ----- WARMUP ")
+	preAt := strings.Index(string(script), `snapshot_runtime "$OUTDIR/runtime_pre.json"`)
+	if prepareAt < 0 || warmupAt <= prepareAt || preAt <= warmupAt {
+		t.Fatal("endpoint preparation must precede warmup and the PRE memory snapshot")
+	}
+	for _, tc := range []struct {
+		name   string
+		driver string
+		exit   int
+	}{
+		{"protected Add", "receipt_edge_add", 0},
+		{"preparation failure", "receipt_edge_add", 23},
+		{"other family", "receipt_vertex_delete", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := t.TempDir()
+			fixture := `set -euo pipefail
+receipt_driver=1
+target_driver="$TEST_DRIVER"
+REPO_ROOT="$PWD"
+PEER_TLS_DIR="$OUTDIR/trust"
+warmup_duration=10s
+warmup_rps=200
+steady_duration=45s
+steady_rps=200
+endpoints=(localhost:6380 localhost:6381 localhost:6382)
+die() { exit 91; }
+go() {
+ [[ "$1 $2 $3" == 'run ./testbed/bench/receiptprobe prepare-edge-add' ]] || return 92
+ shift 3
+ local eps="" ca="" output="" warmdur="" warmrps="" steadydur="" steadyrps=""
+ while (( $# )); do
+  case "$1" in
+   -endpoints) eps="$2";;
+   -ca-cert) ca="$2";;
+   -output) output="$2";;
+   -warmup-duration) warmdur="$2";;
+   -warmup-pair-rps) warmrps="$2";;
+   -steady-duration) steadydur="$2";;
+   -steady-pair-rps) steadyrps="$2";;
+   *) return 93;;
+  esac
+  shift 2
+ done
+ [[ "$eps" == 'https://localhost:6380,https://localhost:6381,https://localhost:6382' &&
+    "$ca" == "$PEER_TLS_DIR/ca.pem" && "$output" == "$OUTDIR/edge_add_fixture.json" &&
+    "$warmdur/$warmrps/$steadydur/$steadyrps" == '10s/100/45s/100' ]] || return 94
+ touch "$OUTDIR/preparation-called"
+ return "$FIXTURE_EXIT"
+}
+prepare_receipt_edge_add() {
+` + body + "\n}\nprepare_receipt_edge_add\ntouch \"$OUTDIR/after-preparation\"\n"
+			command := exec.Command("bash", "-c", fixture)
+			command.Env = append(os.Environ(), "OUTDIR="+out, "TEST_DRIVER="+tc.driver, fmt.Sprintf("FIXTURE_EXIT=%d", tc.exit))
+			output, err := command.CombinedOutput()
+			if command.ProcessState == nil || command.ProcessState.ExitCode() != tc.exit {
+				t.Fatalf("preparation exit=%v err=%v output=%s", command.ProcessState, err, output)
+			}
+			_, callErr := os.Stat(filepath.Join(out, "preparation-called"))
+			if tc.driver == "receipt_edge_add" && callErr != nil || tc.driver != "receipt_edge_add" && !os.IsNotExist(callErr) {
+				t.Fatalf("unexpected preparation side effect: %v", callErr)
+			}
+			_, afterErr := os.Stat(filepath.Join(out, "after-preparation"))
+			if tc.exit == 0 && afterErr != nil || tc.exit != 0 && !os.IsNotExist(afterErr) {
+				t.Fatalf("failed preparation crossed the measurement boundary: %v", afterErr)
+			}
+		})
+	}
+}
+
+func TestReceiptBenchWarmupRetainsPairedSummariesOnFailure(t *testing.T) {
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(script), "run_receipt_probe() {\n")
+	if !found {
+		t.Fatal("missing receipt probe wrapper")
+	}
+	body, _, found := strings.Cut(rest, "\n}\n\nsnapshot_search_lifecycle() {")
+	if !found {
+		t.Fatal("incomplete receipt probe wrapper")
+	}
+	_, warmup, found := strings.Cut(string(script), "# ----- WARMUP ----------------------------------------------------------------\n")
+	if !found {
+		t.Fatal("missing warmup block")
+	}
+	warmup, _, found = strings.Cut(warmup, "\n# ----- PRE snapshot")
+	if !found {
+		t.Fatal("incomplete warmup block")
+	}
+	for _, exitCode := range []int{0, 23} {
+		t.Run(fmt.Sprintf("producer_exit_%d", exitCode), func(t *testing.T) {
+			out := t.TempDir()
+			fixture := `set -euo pipefail
+receipt_driver=1
+target_driver=receipt_vertex_delete
+SCENARIO_FILE=fixture.yaml
+REPO_ROOT="$PWD"
+PEER_TLS_DIR="$OUTDIR/trust"
+warmup_conc=12
+warmup_rps=200
+warmup_duration=10s
+endpoints=(localhost:6380 localhost:6381 localhost:6382)
+log() { :; }
+die() { echo "unexpected receipt wrapper failure" >&2; exit 91; }
+yq() {
+ case "$2" in
+  '.target.calls | length') echo 2;;
+  '.target.calls[0].name') echo receipt_admission;;
+  '.target.calls[0].call') echo graph.v1.LanternService/DeleteVertex;;
+  '.target.calls[1].name') echo receipt_lookup;;
+  '.target.calls[1].call') echo graph.v1.LanternService/GetReceiptStatus;;
+  *) return 92;;
+ esac
+}
+go() {
+ [[ "$1 $2" == 'run ./testbed/bench/receiptprobe' ]] || return 93
+ shift 2
+ local admission="" lookup="" phase="" duration="" pair="" concurrency=""
+ while (( $# )); do
+  case "$1" in
+   -admission-report) admission="$2";;
+   -lookup-report) lookup="$2";;
+   -phase) phase="$2";;
+   -duration) duration="$2";;
+   -pair-rps) pair="$2";;
+   -concurrency) concurrency="$2";;
+   -endpoints|-family|-ca-file) :;;
+   *) return 94;;
+  esac
+  shift 2
+ done
+ [[ "$phase/$duration/$pair/$concurrency" == 'warmup/10s/100/12' ]] || return 95
+ [[ "$admission" == "$OUTDIR/ghz_warmup_0_receipt_admission.json" &&
+    "$lookup" == "$OUTDIR/ghz_warmup_1_receipt_lookup.json" ]] || return 96
+ if [[ "$FIXTURE_EXIT" == 0 ]]; then
+  printf '{"count":1000,"statusCodeDistribution":{"OK":1000}}\n' > "$admission"
+  printf '{"count":1000,"statusCodeDistribution":{"OK":1000}}\n' > "$lookup"
+ else
+  printf '{"count":997,"statusCodeDistribution":{"OK":996,"Unavailable":1}}\n' > "$admission"
+  printf '{"count":996,"statusCodeDistribution":{"OK":996}}\n' > "$lookup"
+ fi
+ return "$FIXTURE_EXIT"
+}
+run_receipt_probe() {
+` + body + "\n}\n" + warmup + "\ntouch \"$OUTDIR/after-warmup\"\n"
+			command := exec.Command("bash", "-c", fixture)
+			command.Env = append(os.Environ(), "OUTDIR="+out, fmt.Sprintf("FIXTURE_EXIT=%d", exitCode))
+			output, err := command.CombinedOutput()
+			if command.ProcessState == nil || command.ProcessState.ExitCode() != exitCode {
+				t.Fatalf("warmup exit=%v err=%v output=%s, want %d", command.ProcessState, err, output, exitCode)
+			}
+			wantAdmission, wantLookup := 1000, 1000
+			if exitCode != 0 {
+				wantAdmission, wantLookup = 997, 996
+			}
+			for name, wantCount := range map[string]int{"ghz_warmup_0_receipt_admission.json": wantAdmission, "ghz_warmup_1_receipt_lookup.json": wantLookup} {
+				raw, err := os.ReadFile(filepath.Join(out, name))
+				var report struct {
+					Count  int            `json:"count"`
+					Status map[string]int `json:"statusCodeDistribution"`
+				}
+				if err != nil || json.Unmarshal(raw, &report) != nil || report.Count != wantCount {
+					t.Fatalf("paired summary missing after exit: %s %q %v", name, raw, err)
+				}
+				if wantCount == 997 && report.Status["Unavailable"] != 1 {
+					t.Fatalf("failed admission status lost: %+v", report)
+				}
+			}
+			_, err = os.Stat(filepath.Join(out, "after-warmup"))
+			if exitCode == 0 && err != nil || exitCode != 0 && !os.IsNotExist(err) {
+				t.Fatalf("failure did not stop warmup boundary: %v", err)
+			}
+		})
+	}
+}
+
 func TestProtectedReceiptBenchSnapshotNeverRequestsPprof(t *testing.T) {
 	outDir := t.TempDir()
 	fixture := `set -euo pipefail
@@ -1021,19 +1545,84 @@ die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 prom_scalar() { awk -v name="$1" '$1==name {print $2;exit}' <<<"$2"; }
 curl() {
  [[ "$*" == *"/debug/pprof"* ]] && { echo "protected pprof attempted" >&2; return 22; }
+ printf '%s\n' "$*" >> "$OUTDIR/scrapes"
  printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 50000' 'go_memstats_heap_objects 10' 'lantern_vertex_hlc_entries 0' 'lantern_vertex_hlc_entries_high_water 0'
+ printf '%s\n' "$CONTEXT_METRICS"
 }
 ` + receiptSnapshotShellFunctions(t) + `
 snapshot_runtime "$OUTDIR/runtime.json"
 `
 	command := exec.Command("bash", "-c", fixture)
-	command.Env = append(os.Environ(), "OUTDIR="+outDir)
+	command.Env = append(os.Environ(), "OUTDIR="+outDir, "CONTEXT_METRICS="+receiptRuntimeContextMetrics)
 	output, err := command.CombinedOutput()
 	if err != nil || strings.Contains(string(output), "protected pprof attempted") {
 		t.Fatalf("protected snapshot: %v %s", err, output)
 	}
-	if _, err := os.Stat(filepath.Join(outDir, "runtime.json")); err != nil {
+	raw, err := os.ReadFile(filepath.Join(outDir, "runtime.json"))
+	if err != nil {
 		t.Fatal("missing natural-GC snapshot", err)
+	}
+	var snapshots []struct {
+		Metrics map[string]float64 `json:"metrics"`
+	}
+	if err := json.Unmarshal(raw, &snapshots); err != nil || len(snapshots) != 3 {
+		t.Fatalf("snapshots = %s, err = %v", raw, err)
+	}
+	for _, snapshot := range snapshots {
+		if len(snapshot.Metrics) != 9 || snapshot.Metrics["go_memstats_last_gc_time_seconds"] != 1700000000.25 ||
+			snapshot.Metrics["lantern_mutation_log_fill_ratio"] != 0.5 ||
+			snapshot.Metrics["lantern_receipt_entries"] != 0 {
+			t.Fatalf("GC/receipt/log observations lost: %+v", snapshot.Metrics)
+		}
+	}
+	scrapes, err := os.ReadFile(filepath.Join(outDir, "scrapes"))
+	if err != nil || strings.Count(string(scrapes), "/metrics\n") != 3 {
+		t.Fatalf("want one existing scrape per replica: %q, err=%v", scrapes, err)
+	}
+}
+
+const receiptRuntimeContextMetrics = `go_gc_duration_seconds_count 0
+go_memstats_last_gc_time_seconds 1700000000.25
+go_memstats_next_gc_bytes 1048576
+lantern_receipt_entries 0
+lantern_receipt_bytes 0
+lantern_receipt_oldest_deadline_seconds 1700003600.125
+lantern_mutation_log_capacity 10000
+lantern_mutation_log_fill_ratio 0.5
+lantern_mutation_log_evicted_total 0`
+
+func TestReceiptBenchRuntimeContextRejectsInvalidMetrics(t *testing.T) {
+	functions := receiptSnapshotShellFunctions(t)
+	for _, line := range strings.Split(receiptRuntimeContextMetrics, "\n") {
+		name := strings.Fields(line)[0]
+		for _, kind := range []string{"missing", "duplicate", "malformed"} {
+			t.Run(name+"/"+kind, func(t *testing.T) {
+				metrics := receiptRuntimeContextMetrics
+				switch kind {
+				case "missing":
+					metrics = strings.Replace(metrics, line, "", 1)
+				case "duplicate":
+					metrics += "\n" + line
+				case "malformed":
+					metrics = strings.Replace(metrics, line, line+" extra", 1)
+				}
+				cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+functions+"\nreceipt_runtime_context \"$METRICS\"\n")
+				cmd.Env = append(os.Environ(), "METRICS="+metrics)
+				if output, err := cmd.CombinedOutput(); err == nil {
+					t.Fatalf("invalid observation accepted: %s", output)
+				}
+			})
+		}
+	}
+	for _, value := range []string{"NaN", "+Inf", "-1", "1.01", "1.0000000000000001", "1e-9999"} {
+		t.Run("fill_ratio/"+value, func(t *testing.T) {
+			metrics := strings.Replace(receiptRuntimeContextMetrics, "lantern_mutation_log_fill_ratio 0.5", "lantern_mutation_log_fill_ratio "+value, 1)
+			cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+functions+"\nreceipt_runtime_context \"$METRICS\"\n")
+			cmd.Env = append(os.Environ(), "METRICS="+metrics)
+			if output, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("invalid observation accepted: %s", output)
+			}
+		})
 	}
 }
 

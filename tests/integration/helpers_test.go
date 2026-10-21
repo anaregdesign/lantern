@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -25,6 +26,41 @@ import (
 	"github.com/anaregdesign/lantern/server/replication"
 	"github.com/anaregdesign/lantern/server/service"
 )
+
+func graphSnapshotSpoolConfig(t testing.TB) replication.GraphSnapshotSpoolConfig {
+	t.Helper()
+	directory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	config := replication.GraphSnapshotSpoolConfig{
+		Directory: directory, MaxDiskBytes: 128 << 20, MaxFrameBytes: 32 << 20,
+	}
+	info, err := os.Stat(config.Directory)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
+		t.Fatalf("Snapshot spool directory is not private: %v, %v", info, err)
+	}
+	t.Cleanup(func() { assertGraphSnapshotSpoolReleased(t, config) })
+	return config
+}
+
+func assertGraphSnapshotSpoolReleased(t testing.TB, config replication.GraphSnapshotSpoolConfig) {
+	t.Helper()
+	entries, err := os.ReadDir(config.Directory)
+	if err != nil {
+		t.Error("read private Snapshot spool directory:", err)
+		return
+	}
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil || entry.Name() != ".lantern-snapshot-owner" || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+			t.Errorf("unexpected retained Snapshot spool artifact %q: %v, %v", entry.Name(), info, err)
+		}
+	}
+}
 
 func productionSearchAnalysisLimits() search.SearchAnalysisLimits {
 	return search.SearchAnalysisLimits{

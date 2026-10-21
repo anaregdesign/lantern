@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"connectrpc.com/connect"
@@ -209,63 +210,93 @@ func TestSnapshotTailReservationAndOwnedStorageBounds(t *testing.T) {
 func TestSnapshotTailFailureExpiryAndShutdownReleaseOwners(t *testing.T) {
 	for _, name := range []string{"send failure", "request cancellation", "deadline", "membership removal", "publication fault", "log close", "shutdown", "queue overflow"} {
 		t.Run(name, func(t *testing.T) {
-			f := newSnapshotTailServiceFixture(t, 2)
-			auth := newSnapshotTailAdmissionFixture(t, 2)
-			lifetime := 5 * time.Second
-			if name == "deadline" {
-				lifetime = 50 * time.Millisecond
-			}
-			ctx, cancel := auth.context(t, 0, lifetime)
-			if name == "send failure" || name == "request cancellation" {
-				recorder := &replicationSnapshotRecorder{onSend: func(*pb.SnapshotResponse) error {
-					if name == "request cancellation" {
-						cancel()
-						return ctx.Err()
+			synctest.Test(t, func(t *testing.T) {
+				f := newSnapshotTailServiceFixture(t, 2)
+				auth := newSnapshotTailAdmissionFixture(t, 2)
+				lifetime := 5 * time.Second
+				if name == "deadline" {
+					lifetime = 50 * time.Millisecond
+				}
+				ctx, cancel := auth.context(t, 0, lifetime)
+				if name == "send failure" || name == "request cancellation" {
+					recorder := &replicationSnapshotRecorder{onSend: func(*pb.SnapshotResponse) error {
+						if name == "request cancellation" {
+							cancel()
+							return ctx.Err()
+						}
+						return errors.New("controlled Snapshot send failure")
+					}}
+					err := f.replica.Snapshot(WithReplicationTailMetadata(ctx, []string{"reserve"}, make(http.Header)), &pb.SnapshotRequest{}, recorder)
+					if err == nil {
+						t.Fatal("failed Snapshot returned success")
 					}
-					return errors.New("controlled Snapshot send failure")
-				}}
-				err := f.replica.Snapshot(WithReplicationTailMetadata(ctx, []string{"reserve"}, make(http.Header)), &pb.SnapshotRequest{}, recorder)
-				if err == nil {
-					t.Fatal("failed Snapshot returned success")
+					assertSnapshotTailEmpty(t, f.replica)
+					return
 				}
-				assertSnapshotTailEmpty(t, f.replica)
-				return
-			}
-			_, _, tail := reserveSnapshotTail(t, f.replica, ctx)
-			switch name {
-			case "membership removal":
-				auth.manifest.Version++
-				auth.manifest.Members = auth.manifest.Members[1:]
-				raw, err := peerauth.SignManifest(auth.manifest, auth.key)
-				if err != nil {
+				_, _, tail := reserveSnapshotTail(t, f.replica, ctx)
+				if _, err := f.primary.PutVertices(t.Context(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{
+					Key: "queued-before-terminal", Value: &pb.Vertex_String_{String_: "owned encoded payload"},
+					Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+				}}}); err != nil {
 					t.Fatal(err)
 				}
-				if err := auth.store.Apply(raw); err != nil {
-					t.Fatal(err)
+				// Wait for the real dispatcher without advancing the 50ms expiry.
+				// Every following terminal path must release an actual queued frame.
+				synctest.Wait()
+				m := f.replica.snapshotTails
+				m.mu.Lock()
+				charged := len(m.active) == 1 && m.totalBytes > 0 && m.totalEntries == 1 &&
+					tail.bytes == m.totalBytes && tail.entries == 1
+				m.mu.Unlock()
+				if !charged || len(tail.subscription.Entries()) != 1 {
+					t.Fatal("terminal fixture did not own one queued encoded frame")
 				}
-			case "publication fault":
-				finish, err := f.primary.BeginSnapshotInstall()
-				if err != nil {
-					t.Fatal(err)
-				}
-				finish(true)
-			case "log close":
-				if err := f.log.Close(); err != nil {
-					t.Fatal(err)
-				}
-			case "shutdown":
-				f.replica.CloseSnapshotTails()
-			case "queue overflow":
-				for i := range 8 {
-					if _, err := f.primary.PutVertices(t.Context(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{
-						Key: fmt.Sprintf("tail-%d", i), Expiration: timestamppb.New(time.Now().Add(time.Hour)),
-					}}}); err != nil {
+				switch name {
+				case "membership removal":
+					auth.manifest.Version++
+					auth.manifest.Members = auth.manifest.Members[1:]
+					raw, err := peerauth.SignManifest(auth.manifest, auth.key)
+					if err != nil {
 						t.Fatal(err)
 					}
+					if err := auth.store.Apply(raw); err != nil {
+						t.Fatal(err)
+					}
+				case "publication fault":
+					finish, err := f.primary.BeginSnapshotInstall()
+					if err != nil {
+						t.Fatal(err)
+					}
+					finish(true)
+				case "log close":
+					if err := f.log.Close(); err != nil {
+						t.Fatal(err)
+					}
+				case "shutdown":
+					f.replica.CloseSnapshotTails()
+				case "queue overflow":
+					for i := range 8 {
+						if _, err := f.primary.PutVertices(t.Context(), &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{
+							Key: fmt.Sprintf("tail-%d", i), Expiration: timestamppb.New(time.Now().Add(time.Hour)),
+						}}}); err != nil {
+							t.Fatal(err)
+						}
+					}
 				}
-			}
-			waitSnapshotTailStopped(t, tail)
-			assertSnapshotTailEmpty(t, f.replica)
+				waitSnapshotTailStopped(t, tail)
+				assertSnapshotTailEmpty(t, f.replica)
+				m.mu.Lock()
+				remainingBytes, remainingEntries := tail.bytes, tail.entries
+				m.mu.Unlock()
+				if remainingBytes != 0 || remainingEntries != 0 || len(tail.subscription.Entries()) != 0 {
+					t.Fatal("terminal owner retained credits or queued frame references")
+				}
+				select {
+				case <-tail.released:
+				default:
+					t.Fatal("terminal owner did not acknowledge release")
+				}
+			})
 		})
 	}
 }

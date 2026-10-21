@@ -1,0 +1,28 @@
+# Graph-only benchmark staging; run.sh selects this only for graph mode.
+# Each new project-owned volume is initialized empty to the driver's runtime
+# UID/GID and mode 0700 by the existing bounded ownership initializer. nocopy
+# prevents the image user's private directory from entering that preparation.
+# Receipt cohorts retain only their existing six state/backup volumes.
+services:
+  lantern-0:
+    volumes:
+      - type: volume
+        source: snapshot-spool-0
+        target: /var/lib/lantern-snapshot-spool
+        volume: {nocopy: true}
+  lantern-1:
+    volumes:
+      - type: volume
+        source: snapshot-spool-1
+        target: /var/lib/lantern-snapshot-spool
+        volume: {nocopy: true}
+  lantern-2:
+    volumes:
+      - type: volume
+        source: snapshot-spool-2
+        target: /var/lib/lantern-snapshot-spool
+        volume: {nocopy: true}
+volumes:
+  snapshot-spool-0: {}
+  snapshot-spool-1: {}
+  snapshot-spool-2: {}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -174,11 +175,43 @@ func publicationGapError() error {
 // interrupted install leaves this node gapped until a later verified install
 // advances its watermarks. Only one replay may install at a time.
 func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
+	finish, err := s.BeginSnapshotInstallChecked(context.Background(), func() error { return nil })
+	if err != nil {
+		return nil, err
+	}
+	return func(verified bool) { _ = finish(verified) }, nil
+}
+
+// BeginSnapshotInstallChecked carries the original caller and native authority
+// through both blocking gates. The check must perform validation only: it
+// cannot renew authority or re-enter this service. Normal replication uses
+// this checked boundary; BeginSnapshotInstall is the trusted in-process seam.
+func (s *LanternService) BeginSnapshotInstallChecked(ctx context.Context, check func() error) (func(verified bool) error, error) {
+	if check == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("Snapshot install requires an authority check"))
+	}
+	validate := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := check(); err != nil {
+			return err
+		}
+		return ctx.Err()
+	}
+	if err := validate(); err != nil {
+		return nil, err
+	}
 	if !s.snapshotInstallMu.TryLock() {
 		return nil, connect.NewError(connect.CodeUnavailable, errors.New("Snapshot install already in progress"))
 	}
 	s.snapshotReadCutMu.Lock()
-	gate := s.lockPublicationGate("snapshot", false)
+	gate, err := s.lockPublicationGateChecked("snapshot", false, validate)
+	if err != nil {
+		s.snapshotReadCutMu.Unlock()
+		s.snapshotInstallMu.Unlock()
+		return nil, err
+	}
 	if !s.snapshotInstallFaulted {
 		if s.publicationFaultCount == 0 {
 			close(s.publicationFaultCh)
@@ -188,10 +221,22 @@ func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
 	}
 	gate.Unlock()
 	s.snapshotReadCutMu.Unlock()
-	return func(verified bool) {
+	var finished atomic.Bool
+	return func(verified bool) error {
+		if !finished.CompareAndSwap(false, true) {
+			return connect.NewError(connect.CodeFailedPrecondition, errors.New("Snapshot install already finished"))
+		}
+		defer s.snapshotInstallMu.Unlock()
 		if verified {
+			if err := validate(); err != nil {
+				return err
+			}
 			s.snapshotReadCutMu.Lock()
-			gate := s.lockPublicationGate("snapshot", false)
+			gate, err := s.lockPublicationGateChecked("snapshot", false, validate)
+			if err != nil {
+				s.snapshotReadCutMu.Unlock()
+				return err
+			}
 			s.snapshotInstallFaulted = false
 			s.publicationFaultCount--
 			if s.publicationFaultCount == 0 {
@@ -200,7 +245,7 @@ func (s *LanternService) BeginSnapshotInstall() (func(verified bool), error) {
 			gate.Unlock()
 			s.snapshotReadCutMu.Unlock()
 		}
-		s.snapshotInstallMu.Unlock()
+		return nil
 	}, nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -864,14 +865,14 @@ func TestSnapshotFormatMismatchKeepsSearchIndexReady(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			snap := &recoveryRecordingApplier{}
-			pump := NewPump(Config{HTTPClient: defaultH2CClient()}, nil, snap)
+			pump := NewPump(Config{HTTPClient: defaultH2CClient(), SnapshotSpool: testGraphSnapshotSpoolConfig(t)}, nil, snap)
 			if _, err := pump.snapshot(ctx, srv.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 				t.Fatalf("pump Snapshot mismatch = %v", err)
 			}
 			if snap.begins != 0 {
 				t.Fatalf("pump marked search index incomplete %d times", snap.begins)
 			}
-			anti := NewAntiEntropy(AntiEntropyConfig{HTTPClient: defaultH2CClient()}, nil, nil, snap)
+			anti := NewAntiEntropy(AntiEntropyConfig{HTTPClient: defaultH2CClient(), SnapshotSpool: testGraphSnapshotSpoolConfig(t)}, nil, nil, snap)
 			if err := anti.snapshotFrom(ctx, srv.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {
 				t.Fatalf("anti-entropy Snapshot mismatch = %v", err)
 			}
@@ -946,11 +947,39 @@ func marshalSnapshotTransportFrame(t *testing.T, frame *pb.SnapshotResponse) []b
 	return payload
 }
 
-func TestSnapshotTransportLimitsAreExplicitAndGraphOnlyPreserving(t *testing.T) {
+func TestSnapshotTransportLimitsFollowExplicitSpoolQuota(t *testing.T) {
 	if limits, bounded, err := snapshotTransportLimitsFor(
 		newGraphOnlySnapshotInstaller(nil, nil),
-	); err != nil || bounded || limits != (SnapshotTransportLimits{}) {
-		t.Fatalf("graph-only transport limits = (%+v, %t, %v), want unchanged", limits, bounded, err)
+	); err == nil || bounded {
+		t.Fatalf("unconfigured graph-only transport silently selected limits: (%+v, %t, %v)", limits, bounded, err)
+	}
+	for _, size := range []struct {
+		name  string
+		disk  uint64
+		frame int
+	}{
+		{name: "explicit ordinary quota", disk: 128 << 20, frame: 32 << 20},
+		{name: "disk exceeds old transport ceiling", disk: (512 << 20) + 1, frame: 32 << 20},
+		{name: "frame exceeds old hard ceiling", disk: 1 << 30, frame: (32 << 20) + 1},
+	} {
+		t.Run(size.name, func(t *testing.T) {
+			config := testGraphSnapshotSpoolConfig(t)
+			config.MaxDiskBytes, config.MaxFrameBytes = size.disk, size.frame
+			if err := config.Validate(); err != nil {
+				t.Fatalf("explicit bounded spool configuration rejected without reading payload: %v", err)
+			}
+			installer := newGraphOnlySnapshotInstaller(nil, nil, config)
+			limits, bounded, err := snapshotTransportLimitsFor(installer)
+			want := SnapshotTransportLimits{MaxFrameBytes: size.frame, MaxStreamBytes: size.disk}
+			if err != nil || !bounded || limits != want {
+				t.Fatalf("spool quota and transport limits differ: (%+v, %t, %v), want %+v", limits, bounded, err, want)
+			}
+			// Constructing the Connect client must accept the same explicit
+			// limits. It neither sends a request nor allocates a quota-sized body.
+			if _, err := newSnapshotClient(defaultH2CClient(), "http://snapshot.invalid", installer); err != nil {
+				t.Fatalf("Snapshot client retained an obsolete hard ceiling: %v", err)
+			}
+		})
 	}
 
 	valid := &scriptedSnapshotInstaller{
@@ -967,9 +996,9 @@ func TestSnapshotTransportLimitsAreExplicitAndGraphOnlyPreserving(t *testing.T) 
 
 	for _, limits := range []SnapshotTransportLimits{
 		{MaxFrameBytes: -1, MaxStreamBytes: 1},
+		{MaxFrameBytes: 0, MaxStreamBytes: 1},
 		{MaxFrameBytes: 1, MaxStreamBytes: 0},
-		{MaxFrameBytes: defaultSnapshotMaxFrameBytes + 1, MaxStreamBytes: 1},
-		{MaxFrameBytes: 1, MaxStreamBytes: defaultSnapshotMaxStreamBytes + 1},
+		{MaxFrameBytes: 1, MaxStreamBytes: uint64(math.MaxInt64) + 1},
 	} {
 		installer := &scriptedSnapshotInstaller{
 			required:  pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
@@ -978,6 +1007,24 @@ func TestSnapshotTransportLimitsAreExplicitAndGraphOnlyPreserving(t *testing.T) 
 		if _, bounded, err := snapshotTransportLimitsFor(installer); err == nil || bounded {
 			t.Fatalf("invalid receipt transport limits %+v = bounded %t, err %v", limits, bounded, err)
 		}
+	}
+}
+
+func TestGraphOnlySnapshotWithoutSpoolConfigurationRejectsBeforeReceive(t *testing.T) {
+	for _, supplied := range []bool{false, true} {
+		t.Run(map[bool]string{false: "missing configuration", true: "empty configuration"}[supplied], func(t *testing.T) {
+			var events []string
+			apply := &snapshotLifecycleMutationApplier{events: &events}
+			graph := &snapshotLifecycleGraph{events: &events}
+			installer := newGraphOnlySnapshotInstaller(apply, graph)
+			if supplied {
+				installer = newGraphOnlySnapshotInstaller(apply, graph, GraphSnapshotSpoolConfig{})
+			}
+			stream := &snapshotSliceStream{frames: graphInstallerLifecycleFrames()}
+			if _, err := installSnapshot(t.Context(), installer, stream); err == nil || stream.next != 0 || len(events) != 0 || len(apply.finishes) != 0 {
+				t.Fatalf("unconfigured spool consumed source input or touched live state: receives=%d events=%v finishes=%v err=%v", stream.next, events, apply.finishes, err)
+			}
+		})
 	}
 }
 
@@ -1143,12 +1190,20 @@ func (r *recordingApplier) ApplySnapshotEdgeContributionTombstoneHLC(graphcache.
 }
 
 type snapshotLifecycleMutationApplier struct {
-	events       *[]string
-	beginErr     error
-	watermarkErr error
-	finishes     []bool
-	cutoffs      map[string]uint64
-	watermarkHLC hlc.Timestamp
+	events            *[]string
+	beginErr          error
+	watermarkErr      error
+	finishErr         error
+	finishes          []bool
+	finishRequests    []bool
+	checkedBegins     int
+	uncheckedBegins   int
+	boundaryChecks    int
+	releases          int
+	beforeBeginCheck  func()
+	beforeFinishCheck func()
+	cutoffs           map[string]uint64
+	watermarkHLC      hlc.Timestamp
 }
 
 func (*snapshotLifecycleMutationApplier) ApplyMutation(context.Context, *pb.Mutation) error {
@@ -1156,17 +1211,67 @@ func (*snapshotLifecycleMutationApplier) ApplyMutation(context.Context, *pb.Muta
 }
 
 func (a *snapshotLifecycleMutationApplier) BeginSnapshotInstall() (func(bool), error) {
+	a.uncheckedBegins++
+	finish, err := a.BeginSnapshotInstallChecked(context.Background(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return func(verified bool) { _ = finish(verified) }, nil
+}
+
+func (a *snapshotLifecycleMutationApplier) BeginSnapshotInstallChecked(ctx context.Context, check func() error) (func(bool) error, error) {
+	a.checkedBegins++
 	*a.events = append(*a.events, "begin")
+	checkBoundary := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if check != nil {
+			a.boundaryChecks++
+			if err := check(); err != nil {
+				return err
+			}
+		}
+		return ctx.Err()
+	}
+	if a.beforeBeginCheck != nil {
+		a.beforeBeginCheck()
+	}
+	if err := checkBoundary(); err != nil {
+		return nil, err
+	}
 	if a.beginErr != nil {
 		return nil, a.beginErr
 	}
-	return func(verified bool) {
+	released := false
+	return func(verified bool) error {
+		a.finishRequests = append(a.finishRequests, verified)
+		if released {
+			return errors.New("test Snapshot install already finished")
+		}
+		released = true
+		a.releases++
+		if verified {
+			if a.beforeFinishCheck != nil {
+				a.beforeFinishCheck()
+			}
+			finishErr := checkBoundary()
+			if finishErr == nil {
+				finishErr = a.finishErr
+			}
+			if finishErr != nil {
+				a.finishes = append(a.finishes, false)
+				*a.events = append(*a.events, "finish:false")
+				return finishErr
+			}
+		}
 		a.finishes = append(a.finishes, verified)
 		if verified {
 			*a.events = append(*a.events, "finish:true")
-			return
+			return nil
 		}
 		*a.events = append(*a.events, "finish:false")
+		return nil
 	}, nil
 }
 
@@ -1302,7 +1407,7 @@ func TestGraphOnlySnapshotInstallerPreservesContributionRemoval(t *testing.T) {
 	var events []string
 	applier := &snapshotLifecycleMutationApplier{events: &events}
 	result, err := installSnapshot(t.Context(),
-		newGraphOnlySnapshotInstaller(applier, cache),
+		testGraphOnlySnapshotInstaller(t, applier, cache),
 		&snapshotSliceStream{frames: frames},
 	)
 	if err != nil {
@@ -1389,16 +1494,18 @@ func TestGraphOnlySnapshotInstallerRejectsInvalidContributionRemoval(t *testing.
 			frames := tc.change(graphContributionTombstoneFrames())
 			var events []string
 			applier := &snapshotLifecycleMutationApplier{events: &events}
+			cache := graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)
+			before := cache.SnapshotReplication()
 			_, err := installSnapshot(t.Context(),
-				newGraphOnlySnapshotInstaller(applier, graphcache.NewGraphCache[string, *pb.Vertex](time.Hour)),
+				testGraphOnlySnapshotInstaller(t, applier, cache),
 				&snapshotSliceStream{frames: frames},
 			)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("malformed Snapshot = %v, want %q", err, tc.want)
 			}
-			if len(applier.finishes) != 1 || applier.finishes[0] ||
-				applier.cutoffs != nil {
-				t.Fatalf("invalid Snapshot published a verified watermark: %+v", applier)
+			if len(events) != 0 || len(applier.finishes) != 0 || applier.cutoffs != nil ||
+				applier.watermarkHLC != (hlc.Timestamp{}) || !reflect.DeepEqual(cache.SnapshotReplication(), before) {
+				t.Fatalf("invalid Snapshot changed graph, tombstones or install lifecycle before validation: events=%v applier=%+v", events, applier)
 			}
 		})
 	}
@@ -1406,7 +1513,7 @@ func TestGraphOnlySnapshotInstallerRejectsInvalidContributionRemoval(t *testing.
 	var events []string
 	applier := &snapshotLifecycleMutationApplier{events: &events}
 	snap := &recordingApplier{contributionTombstoneErr: errors.New("injected cache failure")}
-	_, err := installSnapshot(t.Context(), newGraphOnlySnapshotInstaller(applier, snap),
+	_, err := installSnapshot(t.Context(), testGraphOnlySnapshotInstaller(t, applier, snap),
 		&snapshotSliceStream{frames: graphContributionTombstoneFrames()})
 	if err == nil || !strings.Contains(err.Error(), "injected cache failure") ||
 		len(applier.finishes) != 1 || applier.finishes[0] || applier.cutoffs != nil {
@@ -1423,7 +1530,7 @@ func TestGraphOnlySnapshotInstallerLifecycle(t *testing.T) {
 
 		result, err := installSnapshot(
 			context.Background(),
-			newGraphOnlySnapshotInstaller(apply, graph),
+			testGraphOnlySnapshotInstaller(t, apply, graph),
 			&snapshotSliceStream{frames: frames},
 		)
 		if err != nil {
@@ -1458,7 +1565,7 @@ func TestGraphOnlySnapshotInstallerLifecycle(t *testing.T) {
 
 		result, err := installSnapshot(
 			context.Background(),
-			newGraphOnlySnapshotInstaller(apply, graph),
+			testGraphOnlySnapshotInstaller(t, apply, graph),
 			&snapshotSliceStream{frames: graphInstallerLifecycleFrames()},
 		)
 		if err != nil {
@@ -1513,7 +1620,7 @@ func TestGraphOnlySnapshotInstallerLifecycle(t *testing.T) {
 			graph := &snapshotLifecycleGraph{events: &events}
 			_, err := installSnapshot(
 				context.Background(),
-				newGraphOnlySnapshotInstaller(apply, graph),
+				testGraphOnlySnapshotInstaller(t, apply, graph),
 				&snapshotSliceStream{
 					frames: tc.change(graphInstallerLifecycleFrames()),
 					err:    tc.streamErr,
@@ -1521,6 +1628,13 @@ func TestGraphOnlySnapshotInstallerLifecycle(t *testing.T) {
 			)
 			if err == nil {
 				t.Fatal("incomplete install succeeded")
+			}
+			if tc.watermarkErr == nil {
+				if len(events) != 0 || len(apply.finishes) != 0 || apply.cutoffs != nil ||
+					apply.watermarkHLC != (hlc.Timestamp{}) || len(graph.putEdges) != 0 || len(graph.addEdges) != 0 || len(graph.derivedEdges) != 0 {
+					t.Fatalf("invalid or truncated input caused install, graph, index or watermark effects: events=%v finishes=%v graph=%+v cutoffs=%v", events, apply.finishes, graph, apply.cutoffs)
+				}
+				return
 			}
 			if len(apply.finishes) != 1 || apply.finishes[0] {
 				t.Fatalf("finish calls = %v, want [false]", apply.finishes)
@@ -1539,7 +1653,7 @@ func TestGraphOnlySnapshotInstallerLifecycle(t *testing.T) {
 		graph := &snapshotLifecycleGraph{events: &events}
 		_, err := installSnapshot(
 			context.Background(),
-			newGraphOnlySnapshotInstaller(apply, graph),
+			testGraphOnlySnapshotInstaller(t, apply, graph),
 			&snapshotSliceStream{frames: graphInstallerLifecycleFrames()},
 		)
 		if err == nil {
@@ -1552,6 +1666,81 @@ func TestGraphOnlySnapshotInstallerLifecycle(t *testing.T) {
 			t.Fatalf("finish called without admission: %v", apply.finishes)
 		}
 	})
+}
+
+type uncheckedSnapshotInstallTestApplier struct {
+	acceptingMutationApplier
+	begins int
+}
+
+func (a *uncheckedSnapshotInstallTestApplier) BeginSnapshotInstall() (func(bool), error) {
+	a.begins++
+	return func(bool) {}, nil
+}
+
+func TestBeginSnapshotInstallRequiresCheckedPublicationGuard(t *testing.T) {
+	legacy := &uncheckedSnapshotInstallTestApplier{}
+	if finish, err := beginSnapshotInstall(t.Context(), legacy); err == nil || finish != nil || legacy.begins != 0 {
+		t.Fatalf("unchecked guard was invoked as a publication authority: begins=%d finish=%t err=%v", legacy.begins, finish != nil, err)
+	}
+	// Narrow graph-mechanism fakes without any lifecycle contract keep the
+	// existing no-guard path. A declared, unsafe lifecycle is rejected above.
+	if finish, err := beginSnapshotInstall(t.Context(), acceptingMutationApplier{}); err != nil || finish != nil {
+		t.Fatalf("no-lifecycle fake unexpectedly required a publication guard: finish=%t err=%v", finish != nil, err)
+	}
+}
+
+func TestGraphOnlySnapshotInstallerCheckedPublicationBoundaryFailures(t *testing.T) {
+	for _, boundary := range []string{"checked begin rejection", "checked begin cancellation", "checked finish error", "checked finish cancellation", "checked success"} {
+		t.Run(boundary, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var events []string
+			apply := &snapshotLifecycleMutationApplier{events: &events}
+			graph := &snapshotLifecycleGraph{events: &events}
+			var want error
+			switch boundary {
+			case "checked begin rejection":
+				want = errors.New("controlled checked begin rejection")
+				apply.beginErr = want
+			case "checked begin cancellation":
+				want = context.Canceled
+				apply.beforeBeginCheck = cancel
+			case "checked finish error":
+				want = errors.New("controlled checked finish rejection")
+				apply.finishErr = want
+			case "checked finish cancellation":
+				want = context.Canceled
+				apply.beforeFinishCheck = cancel
+			}
+			result, err := installSnapshot(ctx, testGraphOnlySnapshotInstaller(t, apply, graph),
+				&snapshotSliceStream{frames: graphInstallerLifecycleFrames()})
+			if !errors.Is(err, want) || apply.checkedBegins != 1 || apply.uncheckedBegins != 0 {
+				t.Fatalf("checked boundary error or dispatch changed: checked=%d unchecked=%d err=%v want=%v", apply.checkedBegins, apply.uncheckedBegins, err, want)
+			}
+			if strings.HasPrefix(boundary, "checked begin") {
+				if strings.Join(events, ",") != "begin" || len(apply.finishRequests) != 0 || len(apply.finishes) != 0 || apply.releases != 0 || apply.cutoffs != nil {
+					t.Fatalf("rejected checked begin changed live state or released an unowned guard: events=%v requests=%v outcomes=%v releases=%d cutoffs=%v", events, apply.finishRequests, apply.finishes, apply.releases, apply.cutoffs)
+				}
+			} else {
+				// Even an error-returning finish owns guard release. A later
+				// deferred finish(false) would be a second call, not cleanup.
+				if len(apply.finishRequests) != 1 || !apply.finishRequests[0] || apply.releases != 1 || len(apply.finishes) != 1 || apply.cutoffs["origin-a"] != 7 {
+					t.Fatalf("checked finish did not release exactly once after watermarks: events=%v requests=%v outcomes=%v releases=%d cutoffs=%v", events, apply.finishRequests, apply.finishes, apply.releases, apply.cutoffs)
+				}
+				if want == nil {
+					if !apply.finishes[0] || apply.boundaryChecks != 2 || result.Graph.Vertices != 1 {
+						t.Fatalf("successful install omitted original boundary checks: checks=%d result=%+v finishes=%v", apply.boundaryChecks, result, apply.finishes)
+					}
+				} else if apply.finishes[0] || strings.Contains(strings.Join(events, ","), "finish:true") {
+					t.Fatalf("failed checked finish verified the candidate: events=%v finishes=%v", events, apply.finishes)
+				}
+			}
+			if want != nil && (result.Header != nil || result.Graph != (SnapshotGraphCounts{})) {
+				t.Fatalf("failed checked boundary returned a successful Snapshot result: %+v", result)
+			}
+		})
+	}
 }
 
 func TestGraphOnlySnapshotInstallerValidatesVertexTimes(t *testing.T) {
@@ -1571,10 +1760,10 @@ func TestGraphOnlySnapshotInstallerValidatesVertexTimes(t *testing.T) {
 			tc.change(frames[1].GetVertex().GetVertex())
 			_, err := installSnapshot(
 				t.Context(),
-				newGraphOnlySnapshotInstaller(&snapshotLifecycleMutationApplier{events: &events}, &snapshotLifecycleGraph{events: &events}),
+				testGraphOnlySnapshotInstaller(t, &snapshotLifecycleMutationApplier{events: &events}, &snapshotLifecycleGraph{events: &events}),
 				&snapshotSliceStream{frames: frames},
 			)
-			if err == nil || slices.Contains(events, "vertex") {
+			if err == nil || len(events) != 0 {
 				t.Fatalf("invalid snapshot vertex = %v, events = %v", err, events)
 			}
 		})
@@ -1585,7 +1774,7 @@ func TestGraphOnlySnapshotInstallerValidatesVertexTimes(t *testing.T) {
 	var events []string
 	if _, err := installSnapshot(
 		t.Context(),
-		newGraphOnlySnapshotInstaller(&snapshotLifecycleMutationApplier{events: &events}, &snapshotLifecycleGraph{events: &events}),
+		testGraphOnlySnapshotInstaller(t, &snapshotLifecycleMutationApplier{events: &events}, &snapshotLifecycleGraph{events: &events}),
 		&snapshotSliceStream{frames: frames},
 	); err != nil {
 		t.Fatalf("valid pre-epoch value timestamp was rejected: %v", err)
@@ -1613,16 +1802,16 @@ func TestGraphOnlySnapshotInstallerRejectsNonFiniteEdgeBeforeApply(t *testing.T)
 	}, footer)
 	_, err := installSnapshot(
 		context.Background(),
-		newGraphOnlySnapshotInstaller(apply, graph),
+		testGraphOnlySnapshotInstaller(t, apply, graph),
 		&snapshotSliceStream{frames: frames},
 	)
 	if err == nil || !strings.Contains(err.Error(), "non-finite live edge contribution weight") {
 		t.Fatalf("invalid Snapshot install = %v, want source contribution error", err)
 	}
-	if len(graph.putEdges) != 0 || len(graph.addEdges) != 0 ||
-		len(apply.finishes) != 1 || apply.finishes[0] || apply.cutoffs != nil {
-		t.Fatalf("invalid Snapshot partially installed edge or watermark: puts=%v adds=%v finishes=%v cutoffs=%v",
-			graph.putEdges, graph.addEdges, apply.finishes, apply.cutoffs)
+	if len(events) != 0 || len(graph.putEdges) != 0 || len(graph.addEdges) != 0 ||
+		len(apply.finishes) != 0 || apply.cutoffs != nil || apply.watermarkHLC != (hlc.Timestamp{}) {
+		t.Fatalf("invalid Snapshot caused install, graph, index or watermark effects: events=%v puts=%v adds=%v finishes=%v cutoffs=%v",
+			events, graph.putEdges, graph.addEdges, apply.finishes, apply.cutoffs)
 	}
 }
 
@@ -1650,7 +1839,7 @@ func TestGraphOnlySnapshotInstallerDerivedAggregate(t *testing.T) {
 		apply := &snapshotLifecycleMutationApplier{events: &events}
 		graph := &snapshotLifecycleGraph{events: &events}
 		result, err := installSnapshot(
-			context.Background(), newGraphOnlySnapshotInstaller(apply, graph),
+			context.Background(), testGraphOnlySnapshotInstaller(t, apply, graph),
 			&snapshotSliceStream{frames: newFrames()},
 		)
 		if err != nil {
@@ -1674,12 +1863,12 @@ func TestGraphOnlySnapshotInstallerDerivedAggregate(t *testing.T) {
 		frames := newFrames()
 		frames[2].GetEdge().GetDerivedAggregate().Adds[0].Weight = float32(math.NaN())
 		_, err := installSnapshot(
-			context.Background(), newGraphOnlySnapshotInstaller(apply, graph),
+			context.Background(), testGraphOnlySnapshotInstaller(t, apply, graph),
 			&snapshotSliceStream{frames: frames},
 		)
 		if err == nil || !strings.Contains(err.Error(), "non-finite live edge contribution weight") ||
-			len(graph.derivedEdges) != 0 || len(graph.addEdges) != 0 ||
-			len(apply.finishes) != 1 || apply.finishes[0] || apply.cutoffs != nil {
+			len(events) != 0 || len(graph.derivedEdges) != 0 || len(graph.addEdges) != 0 || len(graph.putEdges) != 0 ||
+			len(apply.finishes) != 0 || apply.cutoffs != nil || apply.watermarkHLC != (hlc.Timestamp{}) {
 			t.Fatalf("malformed nested Add installed base or watermark: %v, graph=%+v, finish=%v, cutoffs=%v",
 				err, graph, apply.finishes, apply.cutoffs)
 		}
@@ -1696,12 +1885,12 @@ func TestGraphOnlySnapshotInstallerDerivedAggregate(t *testing.T) {
 		}}}
 		frames = append(frames[:len(frames)-1], duplicate, frames[len(frames)-1])
 		_, err := installSnapshot(
-			context.Background(), newGraphOnlySnapshotInstaller(apply, graph),
+			context.Background(), testGraphOnlySnapshotInstaller(t, apply, graph),
 			&snapshotSliceStream{frames: frames},
 		)
 		if err == nil || !strings.Contains(err.Error(), "duplicate live edge frame") ||
-			len(graph.derivedEdges) != 1 || len(graph.addEdges) != 1 || len(graph.putEdges) != 0 ||
-			len(apply.finishes) != 1 || apply.finishes[0] || apply.cutoffs != nil {
+			len(events) != 0 || len(graph.derivedEdges) != 0 || len(graph.addEdges) != 0 || len(graph.putEdges) != 0 ||
+			len(apply.finishes) != 0 || apply.cutoffs != nil || apply.watermarkHLC != (hlc.Timestamp{}) {
 			t.Fatalf("duplicate frame changed edge/watermark: %v, graph=%+v, finish=%v, cutoffs=%v",
 				err, graph, apply.finishes, apply.cutoffs)
 		}
@@ -2248,7 +2437,7 @@ func TestPumpSnapshotTailMissingBeforeInstall(t *testing.T) {
 	stamp := hlc.Timestamp{WallNs: 10, NodeID: hlc.NodeID{0x73}}
 	apply := &snapshotLifecycleMutationApplier{events: &events, cutoffs: maps.Clone(before), watermarkHLC: stamp}
 	graph := &snapshotLifecycleGraph{events: &events}
-	pump := NewPump(Config{PeerTransport: transport}, apply, graph)
+	pump := NewPump(Config{PeerTransport: transport, SnapshotSpool: testGraphSnapshotSpoolConfig(t)}, apply, graph)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := pump.session(ctx, server.URL); connect.CodeOf(err) != connect.CodeFailedPrecondition {

@@ -65,22 +65,40 @@ type publicationGateObservation struct {
 // The four monotonic samples distinguish acquisition wait, owner body and
 // Unlock/handoff. In particular, Unlock time is not counted as owner work.
 func (s *LanternService) lockPublicationGate(category string, read bool) publicationGateObservation {
+	o, _ := s.lockPublicationGateChecked(category, read, nil)
+	return o
+}
+
+func (s *LanternService) lockPublicationGateChecked(category string, read bool, check func() error) (publicationGateObservation, error) {
 	o := publicationGateObservation{gate: &s.replicationCutMu, observer: s.publicationObserver, category: category, read: read}
 	if o.observer != nil {
 		s.publicationWaiting.counter(category).Add(1)
 		o.now = s.publicationTime
 		o.requested = o.now()
 	}
+	var err error
 	if read {
 		o.gate.RLock()
+		if o.observer != nil {
+			o.acquired = o.now()
+			s.publicationWaiting.counter(category).Add(-1)
+		}
 	} else {
-		o.gate.Lock()
+		err = o.gate.LockChecked(func() error {
+			// Account for acquisition before validating authority. Nothing
+			// that may wait or invoke an observer runs after the final check
+			// and before publishing the active certificate/state transition.
+			if o.observer != nil {
+				o.acquired = o.now()
+				s.publicationWaiting.counter(category).Add(-1)
+			}
+			if check != nil {
+				return check()
+			}
+			return nil
+		})
 	}
-	if o.observer != nil {
-		o.acquired = o.now()
-		s.publicationWaiting.counter(category).Add(-1)
-	}
-	return o
+	return o, err
 }
 
 func (o publicationGateObservation) Unlock() {

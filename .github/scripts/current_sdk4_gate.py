@@ -29,6 +29,12 @@ PROOF_KINDS = (FUNCTIONAL_VALIDATION, CONFIGURED_SOURCE_INTEGRATION)
 ROOT_TEST = "TestCurrentSecurityPublicNativeGate"
 SCOPED_TEST = "TestAuth_OIDCRustScopedChangesFacadeRealConnect"
 PACKAGE = "github.com/anaregdesign/lantern/tests/integration"
+RECEIPT_PROBE_TESTS = (
+    "TestReceiptProbeFourFamilies_RealConnectWire",
+    "TestReceiptProbeProtectedEdgeAddIntent_RealConnectWire",
+)
+# A parent PASS alone does not prove that its protected EdgeAdd body ran.
+RECEIPT_PROBE_EDGE_ADD_TEST = f"{RECEIPT_PROBE_TESTS[0]}/receipt_edge_add"
 RETAINED_ROOT_TESTS = (
     "TestAuth_ChangesBoundedTerminationAndCursorResumeHTTP2",
     "TestAuth_HeadManagedBlindCreateDeleteReceiptAndGoFacadeRealConnect",
@@ -54,6 +60,7 @@ RETAINED_ROOT_TESTS = (
     "TestAuth_OIDCSharedRankingConstrainedQueriesRealConnect",
     "TestAuth_PublicChangeRejectionPreservesRPCProtocol",
     "TestAuth_PublicChangesBenchmarkConsumerRealWire",
+    *RECEIPT_PROBE_TESTS,
 )
 SDK_TESTS = tuple(f"{ROOT_TEST}/{sdk}" for sdk in ("go", "bun", "dart", "cargo"))
 FUNCTIONAL_VALIDATION_CASES = tuple(
@@ -157,6 +164,7 @@ def required_tests(kind):
         (
             ROOT_TEST, *SDK_TESTS, *FUNCTIONAL_VALIDATION_CASES,
             *FUNCTIONAL_VALIDATION_PROTOCOLS, *RETAINED_ROOT_TESTS, SCOPED_TEST,
+            RECEIPT_PROBE_EDGE_ADD_TEST,
         )
         if kind == FUNCTIONAL_VALIDATION
         else (ROOT_TEST, *SDK_TESTS, *CONFIGURED_SOURCE_INTEGRATION_CASES)

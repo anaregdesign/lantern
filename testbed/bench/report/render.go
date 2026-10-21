@@ -402,8 +402,12 @@ func RenderReport(w io.Writer, in Input) error {
 		}
 		bw.printf("\n")
 		if in.LeakGate.SteadySampleInterval != "" {
-			bw.printf("Receipt steady gate: %d complete three-replica `/metrics` rounds at nominal %s intervals, without forced GC. Peaks are compared with the post-warmup baseline; both the steady peaks and post-cooldown live-set deltas must pass.\n\n",
-				in.LeakGate.SteadySampleCount, in.LeakGate.SteadySampleInterval)
+			postDelta := "post-cooldown live-set"
+			if in.LeakGate.SnapshotProtocol == "natural_gc_single" {
+				postDelta = "post-cooldown HeapAlloc"
+			}
+			bw.printf("Receipt steady gate: %d complete three-replica `/metrics` rounds at nominal %s intervals, without forced GC. Peaks are compared with the post-warmup baseline; both the steady peaks and %s deltas must pass.\n\n",
+				in.LeakGate.SteadySampleCount, in.LeakGate.SteadySampleInterval, postDelta)
 			bw.printf("| replica | steady goroutines peak (Δ) | steady heap_alloc peak MiB (Δ) |\n")
 			bw.printf("| --- | --- | --- |\n")
 			for _, r := range in.LeakGate.Replicas {

@@ -143,10 +143,13 @@ type AntiEntropyConfig struct {
 	// Metrics receives per-tick events. nopAntiEntropyMetrics{} when nil.
 	Metrics AntiEntropyMetrics
 
-	// SnapshotInstaller overrides the graph-only in-place installer. nil keeps
-	// the existing GRAPH_ONLY_V1 behavior using apply and snap passed to
-	// NewAntiEntropy.
+	// SnapshotInstaller overrides the graph-only disk staging installer. nil uses
+	// SnapshotSpool and the apply/snap pair passed to NewAntiEntropy.
 	SnapshotInstaller SnapshotInstaller
+
+	// SnapshotSpool explicitly configures graph-only recovery when no custom
+	// installer is provided. No temporary path is inferred.
+	SnapshotSpool GraphSnapshotSpoolConfig
 }
 
 // AntiEntropy is the periodic convergence driver. Construct with
@@ -189,7 +192,7 @@ func NewAntiEntropy(cfg AntiEntropyConfig, local LocalStateProvider, apply Mutat
 	}
 	installer := cfg.SnapshotInstaller
 	if installer == nil {
-		installer = newGraphOnlySnapshotInstaller(apply, snap)
+		installer = newGraphOnlySnapshotInstaller(apply, snap, cfg.SnapshotSpool)
 	}
 	return &AntiEntropy{
 		cfg: cfg, local: local, apply: apply, installer: installer,
@@ -558,7 +561,8 @@ func (a *AntiEntropy) snapshotFrom(ctx context.Context, addr string) error {
 	if err != nil {
 		return err
 	}
-	cli, err := newSnapshotClient(a.cfg.HTTPClient, baseURL, a.installer)
+	ctx, client := snapshotRequestContext(ctx, a.cfg.HTTPClient, a.cfg.PeerTransport != nil && a.cfg.PeerTransport.approvedOrigin != nil)
+	cli, err := newSnapshotClient(client, baseURL, a.installer)
 	if err != nil {
 		return err
 	}

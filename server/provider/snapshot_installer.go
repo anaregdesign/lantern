@@ -20,14 +20,16 @@ const (
 	receiptSnapshotInstallerMaxGraphFrames         = 1 << 20
 )
 
-// SnapshotInstallerSelection owns the one format policy and receipt installer
-// shared by Pump and anti-entropy. A nil installer preserves graph-only mode.
+// SnapshotInstallerSelection owns the one format policy and installer shared
+// by Pump and anti-entropy in both graph-only and durable modes.
 type SnapshotInstallerSelection struct {
 	installer replication.SnapshotInstaller
 }
 
 func NewSnapshotInstallerSelection(
 	config ReceiptWALConfig,
+	graphSpool GraphSnapshotSpoolConfig,
+	peers PeerPlaneConfig,
 	cacheConfig CacheConfig,
 	searchConfig SearchConfig,
 	runtime *service.ServingRuntime,
@@ -40,12 +42,17 @@ func NewSnapshotInstallerSelection(
 		certified.replication == nil {
 		return nil, errors.New("receipt Snapshot installer requires a certified serving runtime")
 	}
+	if err := validateGraphSnapshotSpoolConfig(graphSpool, config.Mode, peers); err != nil {
+		return nil, err
+	}
 	switch config.Mode {
 	case ReceiptWALModeGraphOnly:
 		if runtime.DurableReceiptWAL() {
 			return nil, errors.New("graph-only Snapshot installer selection received a durable runtime")
 		}
-		return &SnapshotInstallerSelection{}, nil
+		return &SnapshotInstallerSelection{
+			installer: replication.NewGraphOnlySnapshotInstaller(primary, runtime.GraphCache(), graphSpool),
+		}, nil
 	case ReceiptWALModeFresh, ReceiptWALModeRestart:
 		if !runtime.DurableReceiptWAL() {
 			return nil, errors.New("receipt Snapshot installer selection received a graph-only runtime")

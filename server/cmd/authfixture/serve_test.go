@@ -55,8 +55,20 @@ func TestFixtureOverrideFileIsExactAndBounded(t *testing.T) {
 }
 func TestFixtureReceiptCohortRetainsOneEpoch(t *testing.T) {
 	f := fixture{Nodes: []fixtureNode{{Name: "one", Environment: map[string]string{"LANTERN_AUTH_MODE": "oidc"}}, {Name: "two", Environment: map[string]string{"LANTERN_AUTH_MODE": "oidc"}}}}
+	for i := range f.Nodes {
+		f.Nodes[i].Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] = "/unused-graph-only-spool"
+		f.Nodes[i].Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES"] = "134217728"
+		f.Nodes[i].Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"] = "33554432"
+	}
 	if err := addFixtureReceipts(&f, t.TempDir()); err != nil {
 		t.Fatal(err)
+	}
+	for _, node := range f.Nodes {
+		for _, key := range []string{"LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"} {
+			if _, present := node.Environment[key]; present {
+				t.Fatal("receipt fixture retained graph-only storage configuration")
+			}
+		}
 	}
 	if f.Nodes[0].Environment["LANTERN_RECEIPT_EPOCH"] != f.Nodes[1].Environment["LANTERN_RECEIPT_EPOCH"] || f.Nodes[0].Environment["LANTERN_RECEIPT_WAL_PATH"] == f.Nodes[1].Environment["LANTERN_RECEIPT_WAL_PATH"] {
 		t.Fatal("receipt domain or ownership drift")

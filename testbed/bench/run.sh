@@ -54,6 +54,7 @@ AUTHFIXTURE=""
 CHANGEPROBE=""
 sub_pids=()
 prod_pids=()
+native_spool_provenance=()
 chaos_pid=""
 source "$HERE/owned_processes.sh"
 source "$HERE/owned_compose.sh"
@@ -92,6 +93,7 @@ log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 cleanup() {
   local status=$?
   local tls_in_use=0
+  local private_failure=""
   trap - EXIT
   # Cancel owned workload/chaos producers before deleting their Server state.
   # Collected children are unregistered immediately so PID reuse is harmless.
@@ -102,7 +104,6 @@ cleanup() {
   if (( status != 0 )) && [[ "${COMPOSE_STARTED:-0}" == "1" ]]; then
     # Raw diagnostics stay outside public artifact globs and trust directories.
     # They may contain sensitive runtime context; publish hashes/verdicts only.
-    local private_failure
     private_failure="$(mktemp -d "${TMPDIR:-/tmp}/lantern-native-failure.XXXXXXXX")"
     chmod 700 "$private_failure"
     docker compose "${COMPOSE_FILES[@]}" logs --no-color --no-log-prefix > "$private_failure/server.log" 2>&1 || true
@@ -119,6 +120,26 @@ cleanup() {
       fi
       if (( status == 0 )); then status=1; fi
       tls_in_use=1
+    fi
+  fi
+  # Keep only the owned bridge log before removing native trust inputs. This
+  # also covers a successful workload whose Compose teardown subsequently fails.
+  if (( status != 0 )) && [[ -n "${NATIVE_WORK_DIR:-}" &&
+      "$NATIVE_WORK_DIR" == "${HERE:-}/out/.peer-tls."* &&
+      ! -L "$NATIVE_WORK_DIR" && -f "$NATIVE_WORK_DIR/diagnostics.log" &&
+      ! -L "$NATIVE_WORK_DIR/diagnostics.log" ]]; then
+    if [[ -z "$private_failure" ]]; then
+      if private_failure="$(mktemp -d "${TMPDIR:-/tmp}/lantern-native-failure.XXXXXXXX")" &&
+          chmod 700 "$private_failure"; then
+        echo "run.sh: private bridge evidence retained at $private_failure" >&2
+      else
+        private_failure=""
+        echo "run.sh: failed to create private bridge evidence; run remains unqualified" >&2
+      fi
+    fi
+    if [[ -n "$private_failure" ]] &&
+        ! (umask 077; cat -- "$NATIVE_WORK_DIR/diagnostics.log" > "$private_failure/diagnostics.log"); then
+      echo "run.sh: failed to retain private bridge evidence; run remains unqualified" >&2
     fi
   fi
   if (( status != 0 )) && [[ -n "${OUTDIR:-}" && -f "$OUTDIR/report.md" ]]; then
@@ -270,6 +291,8 @@ if [[ "$receipt_wal_enabled" == "true" ]]; then
   export LANTERN_BENCH_RECEIPT_MAX_ENTRIES="$receipt_max_entries"
   export LANTERN_BENCH_RECEIPT_RETENTION="$receipt_retention"
   log "cluster override: fresh durable receipt WAL with bounded capacity"
+else
+  COMPOSE_FILES+=( -f "$HERE/compose.graph-snapshot.yml" )
 fi
 
 # Every fresh bench cohort uses native private workload admission, including OFF.
@@ -329,7 +352,7 @@ pin_receipt_image() {
 
 verify_receipt_image_provenance() {
   local out="$1" actual_image_id service container identity
-  local actual_container_id actual_container_image actual_ref running project actual_service restarts replica index=0 approved_recreation=""
+  local actual_container_id actual_container_image actual_ref running project actual_service restarts replica spool index=0 approved_recreation=""
   local -a replicas=()
   actual_image_id="$(docker image inspect --format '{{.Id}}' "$receipt_image_ref")" ||
     die "receipt image $receipt_image_ref disappeared"
@@ -360,12 +383,16 @@ verify_receipt_image_provenance() {
       [[ "$actual_container_id" == "$approved_recreation" ]] || die "receipt service $service was recreated during the run"
     fi
     receipt_container_ids[$index]="$actual_container_id"
-    index=$((index + 1))
+    spool="${native_spool_provenance[$index]:-null}"
+    [[ "$receipt_driver" != "0" || "$spool" != null ]] || die "missing graph Snapshot spool provenance for $service"
     replica="$(jq -nc --arg service "$service" --arg container_id "$actual_container_id" \
       --arg image_id "$actual_container_image" --arg image_ref "$actual_ref" \
-      '{service:$service, container_id:$container_id, image_id:$image_id, image_ref:$image_ref}')" ||
+      --argjson spool "$spool" \
+      '{service:$service, container_id:$container_id, image_id:$image_id, image_ref:$image_ref} +
+        (if $spool==null then {} else {graph_snapshot_spool:$spool} end)')" ||
       die "cannot record receipt image provenance for $service"
     replicas+=( "$replica" )
+    index=$((index + 1))
   done
   printf '%s\n' "${replicas[@]}" |
     jq -s --arg ref "$receipt_image_ref" --arg id "$receipt_image_id" \
@@ -397,8 +424,14 @@ verify_receipt_peer_tls() {
 # Native provenance applies to OFF cohorts as well; public mode never disables
 # private peer authentication. Compare generated material without publishing it.
 verify_native_workload_settings() {
-  local service container mounts env actual_user
+  local service container mounts env actual_user configuration layout expected_count spool volume label metadata index=0 seen="|"
   kill -0 "$MEMBERSHIP_PID" 2>/dev/null || die "owned membership renewal exited"
+  configuration="$(docker compose "${COMPOSE_FILES[@]}" config --format json)" || die "cannot inspect native volume configuration"
+  layout="$(owned_compose_volume_layout "$COMPOSE_PROJECT_NAME" "$runtime_owner" <<<"$configuration")" ||
+    die "native workload has an incomplete or unknown owned volume set"
+  if [[ "$receipt_driver" == "0" ]]; then expected_count=9; else expected_count=6; fi
+  [[ "$(jq -er '.count' <<<"$layout")" == "$expected_count" ]] || die "native workload has the wrong graph/receipt volume set"
+  native_spool_provenance=()
   for service in lantern-0 lantern-1 lantern-2; do
     container="$(docker compose "${COMPOSE_FILES[@]}" ps -q "$service")" || die "missing native workload"
     actual_user="$(docker inspect --format '{{.Config.User}}' "$container")" || die "missing native runtime user"
@@ -412,6 +445,28 @@ verify_native_workload_settings() {
         [.[] | select(.Type == "bind" and .Destination == "/etc/ntp.conf" and
           (.RW == false) and (.Source | endswith($source)))] | length == 1
       ' <<<"$mounts" >/dev/null || die "$service has no pinned, read-only declared time source"
+    if [[ "$receipt_driver" == "0" ]]; then
+      spool=/var/lib/lantern-snapshot-spool
+      volume="$(jq -er --arg service "$service" --arg target "$spool" '
+        .services[] | select(.service==$service) | .mounts[] | select(.target==$target) | .volume
+      ' <<<"$layout")" || die "$service has no declared graph Snapshot spool volume"
+      [[ "$volume" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ && "$seen" != *"|$volume|"* ]] || die "$service has a shared graph Snapshot spool"
+      jq -e --arg target "$spool" --arg volume "$volume" '
+        [.[] | select(.Destination==$target)] |
+        length==1 and all(.[]; .Type=="volume" and .Name==$volume and .RW==true)
+      ' <<<"$mounts" >/dev/null || die "$service has a mismatched graph Snapshot spool mount"
+      label="$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$volume")" || die "cannot inspect graph Snapshot spool ownership"
+      [[ "$label" == "$COMPOSE_PROJECT_NAME" ]] || die "$service has a foreign graph Snapshot spool"
+      metadata="$(docker exec "$container" /bin/sh -c 'test ! -L "$1" && test -d "$1" && stat -c "%u:%g:%a" "$1"' fixture "$spool")" ||
+        die "cannot inspect graph Snapshot spool UID/GID/mode for $service"
+      [[ "$metadata" == "$runtime_owner:700" ]] || die "$service has a graph Snapshot spool with the wrong UID/GID/mode"
+      seen+="$volume|"
+      native_spool_provenance[$index]="$(jq -nc --arg volume "$volume" --arg target "$spool" --arg owner "$runtime_owner" \
+        '{volume:$volume,target:$target,runtime_user:$owner,mode:"0700",read_write:true,configured_nocopy:true}')" || die "cannot record graph Snapshot spool provenance"
+    else
+      jq -e '[.[] | select(.Destination=="/var/lib/lantern-snapshot-spool")] | length==0' <<<"$mounts" >/dev/null ||
+        die "$service unexpectedly mounts a graph Snapshot spool in receipt mode"
+    fi
     env="$(docker inspect --format '{{json .Config.Env}}' "$container")" || die "missing native environment"
     jq -e --arg service "$service" --argjson actual "$env" --arg driver "$receipt_driver" '
       (.nodes[] | select(.name == ("node-" + ($service | split("-")[1]))) | .environment |
@@ -423,17 +478,22 @@ verify_native_workload_settings() {
       all($actual[]; startswith("LANTERN_AUTH_TOKENS=") or startswith("LANTERN_PEER_DISCOVERY=") or
         startswith("LANTERN_PEERS=") | not)
     ' "$PEER_TLS_DIR/fixture.json" >/dev/null || die "$service has missing or mismatched native settings"
+    index=$((index + 1))
   done
 }
 
 # ----- compose up ------------------------------------------------------------
 if [[ "${SKIP_UP:-0}" != "1" ]]; then
-  log "compose reset (fresh native trust/state/WAL volumes)"
-  down_owned_compose "$COMPOSE_PROJECT_NAME" "${COMPOSE_FILES[@]}" || die "named project reset or residue verification failed"
+  owned_compose_project_absent "$COMPOSE_PROJECT_NAME" || die "fresh native Compose project is already present or its absence cannot be verified"
   log "compose up (project=$COMPOSE_PROJECT_NAME)"
   # Since #435 the canonical compose declares three explicit lantern-{0,1,2}
   # services with pinned host ports, so `--scale lantern=3` is no longer
   # needed (and would in fact fail — there is no `lantern` service).
+  owned_configuration="$(docker compose "${COMPOSE_FILES[@]}" config --format json)" || die "cannot inspect fresh native volume configuration"
+  owned_layout="$(owned_compose_volume_layout "$COMPOSE_PROJECT_NAME" "$runtime_owner" <<<"$owned_configuration")" ||
+    die "fresh native volume layout is incomplete or unknown"
+  if [[ "$receipt_driver" == "0" ]]; then owned_count=9; else owned_count=6; fi
+  [[ "$(jq -er '.count' <<<"$owned_layout")" == "$owned_count" ]] || die "fresh native graph/receipt volume layout does not match the selected mode"
   COMPOSE_STARTED=1
   if ! initialize_owned_compose_volumes "$COMPOSE_PROJECT_NAME" "$receipt_image_id" "$runtime_owner" "${COMPOSE_FILES[@]}"; then
     KEEP_UP=1
@@ -633,8 +693,47 @@ receipt_runtime_scalar() {
   printf '%.0f' "$raw" 2>/dev/null
 }
 
+receipt_runtime_context() {
+  # These fixed aggregate observations come from the same scrape as HeapAlloc.
+  # They explain occupancy and GC timing; they do not change the leak verdict.
+  local text="$1" name raw value ratio
+  local -a args=()
+  for name in go_gc_duration_seconds_count go_memstats_last_gc_time_seconds \
+      go_memstats_next_gc_bytes lantern_receipt_entries lantern_receipt_bytes \
+      lantern_receipt_oldest_deadline_seconds lantern_mutation_log_capacity \
+      lantern_mutation_log_fill_ratio lantern_mutation_log_evicted_total; do
+    raw="$(awk -v n="$name" '$1 == n { if (NF != 2) exit 1; print $2 }' <<<"$text")" || return 1
+    case "$name" in
+      go_memstats_last_gc_time_seconds | lantern_receipt_oldest_deadline_seconds | lantern_mutation_log_fill_ratio)
+        [[ "$raw" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$ ]] || return 1
+        value="$(jq -en --arg value "$raw" '$value | tonumber | select(. >= 0 and . < 9007199254740992)')" || return 1
+        # Reject underflow and a ratio just above one even if float parsing
+        # rounds the original decimal to zero or one.
+        ratio=0
+        if [[ "$name" == "lantern_mutation_log_fill_ratio" ]]; then ratio=1; fi
+        awk -v raw="$raw" -v ratio="$ratio" '
+          BEGIN {
+            split(raw, notation, /[eE]/)
+            dot = index(notation[1], ".")
+            scale = (dot ? length(notation[1]) - dot : 0) - (notation[2] + 0)
+            digits = notation[1]
+            gsub(/\./, "", digits)
+            sub(/^0+/, "", digits)
+            if (digits != "" && raw + 0 == 0) exit 1
+            if (ratio && digits != "" && (scale < length(digits) - 1 ||
+                (scale == length(digits) - 1 && digits !~ /^10*$/))) exit 1
+          }
+        ' || return 1
+        ;;
+      *) value="$(receipt_runtime_scalar "$name" "$text")" || return 1 ;;
+    esac
+    args+=( --argjson "$name" "$value" )
+  done
+  jq -nc "${args[@]}" '$ARGS.named'
+}
+
 snapshot_runtime() {
-  # Force a GC on every replica before sampling so heap_alloc_bytes reflects
+  # OFF snapshots force a GC before sampling so heap_alloc_bytes reflects
   # live (post-GC) memory rather than transient allocation between cycles.
   # /debug/pprof/heap?gc=1 calls runtime.GC() before returning the profile —
   # we discard the body and just use the side effect.
@@ -707,6 +806,10 @@ snapshot_runtime() {
       if [[ -z "$vhw"     || "$rvhw" -gt "$vhw"    ]]; then vhw="$rvhw"; fi
     done
     local metric_samples='{}' metric_name metric_value
+    if [[ "$receipt_driver" == "1" ]]; then
+      metric_samples="$(receipt_runtime_context "$text")" ||
+        die "receipt runtime snapshot: invalid GC/receipt/log context for localhost:${port} (round ${round})"
+    fi
     for metric_name in "${RUNTIME_METRIC_NAMES[@]}"; do
       metric_value="$(prom_scalar "$metric_name" "$text")"
       if [[ -z "$metric_value" ]]; then
@@ -740,6 +843,27 @@ run_ghz() {
     "$ep" \
     >/dev/null || return 1
   echo "$jsonout"
+}
+
+prepare_receipt_edge_add() {
+  # Seed both phases before warmup and the natural-GC PRE snapshot. Ordinary
+  # authorized Put/Get preparation is outside the measured Add/lookup pair.
+  [[ "$receipt_driver" == "1" && "$target_driver" == "receipt_edge_add" ]] || return 0
+  (( warmup_rps % 2 == 0 && steady_rps % 2 == 0 )) ||
+    die "receipt EdgeAdd aggregate RPS must divide evenly across its two producers"
+  local endpoint_urls="" ep
+  for ep in "${endpoints[@]}"; do
+    [[ -z "$endpoint_urls" ]] || endpoint_urls+=","
+    endpoint_urls+="https://${ep}"
+  done
+  (
+    cd "$REPO_ROOT"
+    go run ./testbed/bench/receiptprobe prepare-edge-add \
+      -endpoints "$endpoint_urls" -ca-cert "$PEER_TLS_DIR/ca.pem" \
+      -output "$OUTDIR/edge_add_fixture.json" \
+      -warmup-duration "$warmup_duration" -warmup-pair-rps "$((warmup_rps / 2))" \
+      -steady-duration "$steady_duration" -steady-pair-rps "$((steady_rps / 2))"
+  )
 }
 
 run_receipt_probe() {
@@ -780,6 +904,9 @@ run_receipt_probe() {
     -concurrency "$conc"
     -pair-rps "$pair_rps"
   )
+  if [[ "$target_driver" == "receipt_edge_add" ]]; then
+    args+=( -edge-add-fixture "$OUTDIR/edge_add_fixture.json" )
+  fi
   if [[ -n "$admission_report" ]]; then
     args+=(
       -admission-report "$admission_report"
@@ -814,10 +941,14 @@ snapshot_search_lifecycle() {
   )
 }
 
+prepare_receipt_edge_add
+
 # ----- WARMUP ----------------------------------------------------------------
 log "warmup: ${warmup_duration} @ c=${warmup_conc} rps=${warmup_rps}"
 if [[ "$receipt_driver" == "1" ]]; then
-  run_receipt_probe warmup "$warmup_conc" "$warmup_rps" "$warmup_duration" >/dev/null
+  run_receipt_probe warmup "$warmup_conc" "$warmup_rps" "$warmup_duration" \
+    "$OUTDIR/ghz_warmup_0_receipt_admission.json" \
+    "$OUTDIR/ghz_warmup_1_receipt_lookup.json" >/dev/null
 else
   warm_call="$(yq -r '.target.call // .target.calls[0].call' "$SCENARIO_FILE")"
   warm_data="$(yq -r '.target.data_template // .target.calls[0].data_template' "$SCENARIO_FILE")"

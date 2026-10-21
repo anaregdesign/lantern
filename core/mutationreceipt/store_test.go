@@ -1242,3 +1242,115 @@ func TestCreateResultReserveReplaceAndImportFailClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestStoreRetentionOwnershipAcrossCooldownReplayAndAbort(t *testing.T) {
+	const count = 8
+	s := testStore(t, count+1, 8192)
+	items := make([]Intent, count)
+	ids := make([]ID, count)
+	results := make([][]byte, count)
+	for i := range count {
+		seed := byte(i + 1)
+		items[i] = testIntent(t, seed, testStart, GroupID{1}, uint32(i), count)
+		items[i].Kind, items[i].HasContrib, items[i].ContribID = AddEdge, true, ContribID{seed}
+		ids[i] = items[i].ID
+		results[i] = []byte{seed, 0, 0, 1}
+	}
+	commitTestBatch(t, s, testStart, items, results)
+	baseline := s.Stats()
+	deadline := testStart.Add(time.Hour)
+	if baseline.Entries != count || baseline.Bytes == 0 || baseline.OldestDeadlineMillis != deadline.UnixMilli() {
+		t.Fatalf("initial ownership = %+v", baseline)
+	}
+	assertOwners := func(phase string, retained bool) {
+		t.Helper()
+		wantRows, wantGroups, wantBytes, wantDeadline := 0, 0, uint64(0), int64(0)
+		if retained {
+			wantRows, wantGroups, wantBytes, wantDeadline = count, 1, baseline.Bytes, deadline.UnixMilli()
+		}
+		stats := s.Stats()
+		if stats.Entries != wantRows || stats.Bytes != wantBytes || stats.OldestDeadlineMillis != wantDeadline {
+			t.Fatalf("%s: ownership = %+v", phase, stats)
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if len(s.receipts) != wantRows || len(s.groups) != wantGroups || len(s.contributions) != wantRows ||
+			s.deadlines.Len() != wantRows || len(s.deadlines.positions) != wantRows {
+			t.Fatalf("%s: receipts=%d groups=%d bindings=%d deadlines=%d positions=%d", phase,
+				len(s.receipts), len(s.groups), len(s.contributions), s.deadlines.Len(), len(s.deadlines.positions))
+		}
+		t.Logf("%s: entries=%d logical_bytes=%d groups=%d bindings=%d deadlines=%d", phase,
+			stats.Entries, stats.Bytes, len(s.groups), len(s.contributions), s.deadlines.Len())
+	}
+	assertOwners("committed", true)
+
+	// A ten-second cooldown does not expire the original one-hour evidence.
+	cooldown := testStart.Add(10 * time.Second)
+	for range 2 {
+		_, observations, err := s.ObserveMany(ids, cooldown)
+		if err != nil || len(observations) != count {
+			t.Fatalf("cooldown observations = %+v, %v", observations, err)
+		}
+		for i, observation := range observations {
+			if observation.Status != Confirmed || !bytes.Equal(observation.Receipt.Result, results[i]) ||
+				observation.Receipt.DeadlineMillis != deadline.UnixMilli() {
+				t.Fatalf("cooldown observation %d = %+v", i, observation)
+			}
+		}
+		assertOwners("repeated observation", true)
+	}
+
+	// Replaying the same committed envelope must neither add owners nor renew
+	// their original deadlines, even when the receiver's clock has advanced.
+	replay, err := s.Begin(cooldown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replay.Abort()
+	if err := replay.PrepareCommitted(committedTestReceipts(items, results, time.Hour), testStart.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err := replay.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	replay.Commit()
+	assertOwners("committed replay", true)
+
+	staged := testIntent(t, 99, cooldown, GroupID{99}, 0, 1)
+	staged.Kind, staged.HasContrib, staged.ContribID = AddEdge, true, ContribID{99}
+	tx, err := s.Begin(cooldown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Abort()
+	if class, _, err := tx.Classify([]Intent{staged}); err != nil || class != Fresh {
+		t.Fatalf("new stage classification = %v, %v", class, err)
+	}
+	if err := tx.Reserve([][]byte{{9, 0, 0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Stage(); err != nil {
+		t.Fatal(err)
+	}
+	// Model the Store response to a definite external WAL rejection.
+	if len(s.receipts) != count+1 || len(s.groups) != 2 || len(s.contributions) != count+1 ||
+		s.deadlines.Len() != count+1 || len(s.deadlines.positions) != count+1 || s.bytes <= baseline.Bytes {
+		t.Fatal("new stage did not acquire its receipt, group, binding, deadline and byte ownership")
+	}
+	tx.Abort()
+	assertOwners("aborted new stage", true)
+	if status, _, err := s.Lookup(staged.ID, cooldown); err != nil || status != NotYetObserved {
+		t.Fatalf("aborted receipt observation = %v, %v", status, err)
+	}
+
+	_, observations, err := s.ObserveMany(ids, deadline)
+	if err != nil || len(observations) != count {
+		t.Fatalf("original deadline observations = %+v, %v", observations, err)
+	}
+	for i, observation := range observations {
+		if observation.Status != NoLongerProvable {
+			t.Fatalf("receipt %d remains provable at original deadline: %+v", i, observation)
+		}
+	}
+	assertOwners("original deadline", false)
+}

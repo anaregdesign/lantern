@@ -10,7 +10,9 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"strconv"
@@ -31,9 +33,26 @@ type steadyMetricsConfig struct {
 }
 
 type runtimeMetrics struct {
-	Endpoint       string `json:"endpoint"`
-	Goroutines     int64  `json:"goroutines"`
-	HeapAllocBytes int64  `json:"heap_alloc_bytes"`
+	Endpoint       string                     `json:"endpoint"`
+	Goroutines     int64                      `json:"goroutines"`
+	HeapAllocBytes int64                      `json:"heap_alloc_bytes"`
+	Metrics        *runtimeMetricObservations `json:"metrics,omitempty"`
+}
+
+// runtimeMetricObservations preserves a fixed, unlabelled set from the same
+// scrape as HeapAlloc. These observations explain sample context; they do not
+// alter the memory gate or certify a post-GC live heap. Old saved reports may
+// omit this object and retain their original HeapAlloc/goroutine evaluation.
+type runtimeMetricObservations struct {
+	GCCount                 int64   `json:"go_gc_duration_seconds_count"`
+	LastGCTimeSeconds       float64 `json:"go_memstats_last_gc_time_seconds"`
+	NextGCBytes             int64   `json:"go_memstats_next_gc_bytes"`
+	ReceiptEntries          int64   `json:"lantern_receipt_entries"`
+	ReceiptBytes            int64   `json:"lantern_receipt_bytes"`
+	ReceiptOldestDeadline   float64 `json:"lantern_receipt_oldest_deadline_seconds"`
+	MutationLogCapacity     int64   `json:"lantern_mutation_log_capacity"`
+	MutationLogFillRatio    float64 `json:"lantern_mutation_log_fill_ratio"`
+	MutationLogEvictedTotal int64   `json:"lantern_mutation_log_evicted_total"`
 }
 
 type metricsRound struct {
@@ -90,7 +109,16 @@ func sampleSteadyMetrics(
 	for _, endpoint := range cfg.endpoints {
 		report.Endpoints = append(report.Endpoints, endpoint.endpoint)
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
+	baseTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || baseTransport == nil {
+		report.Failure = "metrics requires a configurable HTTP transport"
+		return report
+	}
+	// Own only this sampling flight's pool and unused dials. Request timeout
+	// alone permits a Transport-owned dial to continue for a future request.
+	transport := baseTransport.Clone()
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
 	ticker := time.NewTicker(cfg.interval)
 	defer ticker.Stop()
 	for {
@@ -107,8 +135,8 @@ func sampleSteadyMetrics(
 			ElapsedMS: time.Since(start).Milliseconds(),
 			Replicas:  make([]runtimeMetrics, 0, len(cfg.endpoints)),
 		}
-		for _, endpoint := range cfg.endpoints {
-			value, err := scrapeRuntimeMetrics(ctx, client, endpoint)
+		for i, endpoint := range cfg.endpoints {
+			value, err := scrapeRuntimeMetricsObserved(ctx, client, endpoint, start, i, os.Stderr)
 			if err != nil {
 				report.Failure = err.Error()
 				return report
@@ -128,63 +156,146 @@ func sampleSteadyMetrics(
 }
 
 func scrapeRuntimeMetrics(ctx context.Context, client *http.Client, endpoint metricsEndpoint) (runtimeMetrics, error) {
+	return scrapeRuntimeMetricsObserved(ctx, client, endpoint, time.Now(), -1, os.Stderr)
+}
+
+// runtimeScrapeDiagnostic contains only bounded, content-free fields. The
+// replica index identifies the configured ordering without exposing its URL.
+// These stderr observations do not change the saved steady report or verdict.
+type runtimeScrapeDiagnostic struct {
+	Event        string                      `json:"event"`
+	ReplicaIndex int                         `json:"replica_index"`
+	UTC          string                      `json:"utc"`
+	ElapsedMS    int64                       `json:"elapsed_ms"`
+	DurationMS   *int64                      `json:"duration_ms,omitempty"`
+	Stage        string                      `json:"stage"`
+	Reason       string                      `json:"reason"`
+	ContextState string                      `json:"context_state"`
+	HTTPStatus   int                         `json:"http_status,omitempty"`
+	HTTPTrace    *runtimeHTTPTraceDiagnostic `json:"http_trace,omitempty"`
+}
+
+// scrapeRuntimeMetricsObserved records one start and one finish for the same
+// request. Injecting the diagnostic writer keeps tests independent of stderr;
+// writer failures are deliberately excluded from the existing gate result.
+func scrapeRuntimeMetricsObserved(
+	ctx context.Context,
+	client *http.Client,
+	endpoint metricsEndpoint,
+	steadyStart time.Time,
+	replicaIndex int,
+	diagnostics io.Writer,
+) (runtimeMetrics, error) {
+	if replicaIndex < 0 || replicaIndex >= receiptReplicaCount {
+		replicaIndex = -1
+	}
+	started := time.Now()
+	trace := &runtimeHTTPTrace{started: started}
+	var traceSummary *runtimeHTTPTraceDiagnostic
+	stage, reason, status := "request", "invalid_request", 0
+	write := func(event string, at time.Time, duration *int64) {
+		state := "active"
+		if errors.Is(ctx.Err(), context.Canceled) {
+			state = "canceled"
+		} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			state = "deadline_exceeded"
+		}
+		_ = json.NewEncoder(diagnostics).Encode(runtimeScrapeDiagnostic{
+			Event: event, ReplicaIndex: replicaIndex,
+			UTC: at.UTC().Format(time.RFC3339Nano), ElapsedMS: max(0, at.Sub(steadyStart).Milliseconds()),
+			DurationMS: duration, Stage: stage, Reason: reason, ContextState: state, HTTPStatus: status,
+			HTTPTrace: traceSummary,
+		})
+	}
+	stage, reason = "request", "started"
+	write("request_start", started, nil)
+	reason = "invalid_request"
+	defer func() {
+		traceSummary = trace.finish()
+		finished := time.Now()
+		duration := max(0, finished.Sub(started).Milliseconds())
+		write("request_finish", finished, &duration)
+	}()
+
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.url, nil)
 	if err != nil {
 		return runtimeMetrics{}, err
 	}
+	stage, reason = "http", "transport_error"
+	request = request.WithContext(httptrace.WithClientTrace(request.Context(), trace.callbacks()))
 	response, err := client.Do(request)
 	if err != nil {
+		reason = runtimeScrapeErrorReason(err, reason)
 		return runtimeMetrics{}, fmt.Errorf("scrape %s: %w", endpoint.endpoint, err)
 	}
+	status = response.StatusCode
 	if response.StatusCode != http.StatusOK {
+		stage, reason = "status", "http_status"
 		closeErr := response.Body.Close()
 		if closeErr != nil {
+			reason = "http_status_close_error"
 			return runtimeMetrics{}, fmt.Errorf("scrape %s: HTTP %s; close body: %w", endpoint.endpoint, response.Status, closeErr)
 		}
 		return runtimeMetrics{}, fmt.Errorf("scrape %s: HTTP %s", endpoint.endpoint, response.Status)
 	}
+	stage, reason = "parse", "parse_error"
 	value, parseErr := parseRuntimeMetrics(response.Body)
 	closeErr := response.Body.Close()
 	if parseErr != nil {
+		reason = runtimeScrapeErrorReason(parseErr, reason)
 		return runtimeMetrics{}, fmt.Errorf("scrape %s: %w", endpoint.endpoint, parseErr)
 	}
 	if closeErr != nil {
+		stage, reason = "close", runtimeScrapeErrorReason(closeErr, "close_error")
 		return runtimeMetrics{}, fmt.Errorf("close %s metrics: %w", endpoint.endpoint, closeErr)
 	}
+	stage, reason = "complete", "ok"
 	value.Endpoint = endpoint.endpoint
 	return value, nil
+}
+
+func runtimeScrapeErrorReason(err error, fallback string) string {
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline_exceeded"
+	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return "timeout"
+	}
+	return fallback
 }
 
 func parseRuntimeMetrics(body io.Reader) (runtimeMetrics, error) {
 	limited := &io.LimitedReader{R: body, N: (16 << 20) + 1}
 	scanner := bufio.NewScanner(limited)
 	scanner.Buffer(make([]byte, 4096), 256<<10)
-	var result runtimeMetrics
-	seenGoroutines, seenHeap := false, false
+	result := runtimeMetrics{Metrics: &runtimeMetricObservations{}}
+	seen := make(map[string]bool, 11)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) == 0 {
 			continue
 		}
-		switch fields[0] {
-		case "go_goroutines", "go_memstats_heap_alloc_bytes":
-			if len(fields) != 2 {
-				return runtimeMetrics{}, fmt.Errorf("malformed %s sample", fields[0])
+		name, _, labelled := strings.Cut(fields[0], "{")
+		switch name {
+		case "go_goroutines", "go_memstats_heap_alloc_bytes",
+			"go_gc_duration_seconds_count", "go_memstats_next_gc_bytes",
+			"lantern_receipt_entries", "lantern_receipt_bytes",
+			"lantern_mutation_log_capacity", "lantern_mutation_log_evicted_total",
+			"go_memstats_last_gc_time_seconds", "lantern_receipt_oldest_deadline_seconds",
+			"lantern_mutation_log_fill_ratio":
+			if labelled || len(fields) != 2 {
+				return runtimeMetrics{}, fmt.Errorf("malformed %s sample", name)
 			}
-			value, err := parseMetricValue(fields[1])
-			if err != nil {
-				return runtimeMetrics{}, fmt.Errorf("invalid %s sample: %w", fields[0], err)
+			if seen[name] {
+				return runtimeMetrics{}, fmt.Errorf("duplicate %s sample", name)
 			}
-			if fields[0] == "go_goroutines" {
-				if seenGoroutines {
-					return runtimeMetrics{}, errors.New("duplicate go_goroutines sample")
-				}
-				seenGoroutines, result.Goroutines = true, value
-			} else {
-				if seenHeap {
-					return runtimeMetrics{}, errors.New("duplicate go_memstats_heap_alloc_bytes sample")
-				}
-				seenHeap, result.HeapAllocBytes = true, value
+			seen[name] = true
+			if err := result.setMetricObservation(name, fields[1]); err != nil {
+				return runtimeMetrics{}, fmt.Errorf("invalid %s sample: %w", name, err)
 			}
 		}
 	}
@@ -194,10 +305,88 @@ func parseRuntimeMetrics(body io.Reader) (runtimeMetrics, error) {
 	if limited.N == 0 {
 		return runtimeMetrics{}, errors.New("metrics body exceeds 16 MiB")
 	}
-	if !seenGoroutines || !seenHeap {
-		return runtimeMetrics{}, errors.New("missing go_goroutines or go_memstats_heap_alloc_bytes")
+	if len(seen) != 11 {
+		return runtimeMetrics{}, errors.New("missing required runtime or receipt diagnostic metric")
 	}
 	return result, nil
+}
+
+func (r *runtimeMetrics) setMetricObservation(name, raw string) error {
+	var integer *int64
+	var fraction *float64
+	switch name {
+	case "go_goroutines":
+		value, err := parseMetricValue(raw)
+		r.Goroutines = value
+		return err
+	case "go_memstats_heap_alloc_bytes":
+		value, err := parseMetricValue(raw)
+		r.HeapAllocBytes = value
+		return err
+	case "go_gc_duration_seconds_count":
+		integer = &r.Metrics.GCCount
+	case "go_memstats_next_gc_bytes":
+		integer = &r.Metrics.NextGCBytes
+	case "lantern_receipt_entries":
+		integer = &r.Metrics.ReceiptEntries
+	case "lantern_receipt_bytes":
+		integer = &r.Metrics.ReceiptBytes
+	case "lantern_mutation_log_capacity":
+		integer = &r.Metrics.MutationLogCapacity
+	case "lantern_mutation_log_evicted_total":
+		integer = &r.Metrics.MutationLogEvictedTotal
+	case "go_memstats_last_gc_time_seconds":
+		fraction = &r.Metrics.LastGCTimeSeconds
+	case "lantern_receipt_oldest_deadline_seconds":
+		fraction = &r.Metrics.ReceiptOldestDeadline
+	case "lantern_mutation_log_fill_ratio":
+		fraction = &r.Metrics.MutationLogFillRatio
+	default:
+		return errors.New("unknown runtime metric")
+	}
+	if integer != nil {
+		value, err := parseNonnegativeMetricValue(raw)
+		*integer = value
+		return err
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 ||
+		(value == 0 && !zeroMetricMantissa(raw)) || (name == "lantern_mutation_log_fill_ratio" && value > 1) {
+		return errors.New("expected a finite nonnegative timestamp or a fill ratio in [0,1]")
+	}
+	if name == "lantern_mutation_log_fill_ratio" {
+		exact, ok := new(big.Rat).SetString(raw)
+		if !ok || exact.Sign() < 0 || exact.Cmp(big.NewRat(1, 1)) > 0 {
+			return errors.New("expected a fill ratio in [0,1]")
+		}
+	}
+	*fraction = value
+	return nil
+}
+
+func parseNonnegativeMetricValue(raw string) (int64, error) {
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return 0, errors.New("expected a finite nonnegative integer")
+	}
+	if value == 0 {
+		// Do not send an underflowing exponent to big.Rat. Only an exactly zero
+		// mantissa represents zero; a positive fraction rounded to zero is invalid.
+		if zeroMetricMantissa(raw) {
+			return 0, nil
+		}
+		return 0, errors.New("expected an exact nonnegative integer")
+	}
+	exact, ok := new(big.Rat).SetString(raw)
+	if !ok || !exact.IsInt() || !exact.Num().IsInt64() {
+		return 0, errors.New("expected an exact nonnegative integer")
+	}
+	return exact.Num().Int64(), nil
+}
+
+func zeroMetricMantissa(raw string) bool {
+	mantissa, _, _ := strings.Cut(strings.ToLower(raw), "e")
+	return strings.Trim(mantissa, "+-0.") == ""
 }
 
 func parseMetricValue(raw string) (int64, error) {
@@ -316,7 +505,7 @@ func runReceiptLeakEvaluation(args []string) int {
 	duration := fs.Duration("duration", 0, "offered steady duration")
 	interval := fs.Duration("interval", 0, "steady sampling interval")
 	maxGoroutines := fs.Int("max-goroutines", 0, "maximum per-replica goroutine delta")
-	maxHeapMB := fs.Int("max-heap-mb", 0, "maximum per-replica post-GC heap_alloc delta in MiB")
+	maxHeapMB := fs.Int("max-heap-mb", 0, "maximum per-replica post-cooldown HeapAlloc delta in MiB")
 	maxSteadyHeapMB := fs.Int("max-steady-heap-mb", 0, "maximum per-replica unforced steady heap_alloc peak delta in MiB")
 	out := fs.String("out", "", "leak gate JSON output path")
 	protocol := fs.String("snapshot-protocol", "forced_gc_minimum", "forced_gc_minimum | natural_gc_single")
@@ -423,7 +612,7 @@ func evaluateReceiptLeak(
 			report.Failures = append(report.Failures, fmt.Sprintf("%s goroutine post/steady growth exceeds +%d", p.Endpoint, maxGoroutines))
 		}
 		if replica.HeapAllocDeltaBytes > int64(maxHeapMB)<<20 {
-			report.Failures = append(report.Failures, fmt.Sprintf("%s post-GC heap_alloc growth exceeds +%d MiB", p.Endpoint, maxHeapMB))
+			report.Failures = append(report.Failures, fmt.Sprintf("%s post-cooldown HeapAlloc growth exceeds +%d MiB", p.Endpoint, maxHeapMB))
 		}
 		if replica.HeapAllocPeakDelta > int64(maxSteadyHeapMB)<<20 {
 			report.Failures = append(report.Failures, fmt.Sprintf("%s steady heap_alloc peak growth exceeds +%d MiB", p.Endpoint, maxSteadyHeapMB))

@@ -3,6 +3,7 @@ package provider
 import (
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -53,22 +54,23 @@ func certifiedSnapshotInstallerRuntime(
 func TestSnapshotInstallerSelectionMatchesRuntimeAndIsShared(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	for _, tc := range []struct {
-		name    string
-		config  func(string) ReceiptWALConfig
-		durable bool
+		name   string
+		config func(string) ReceiptWALConfig
+		format pb.SnapshotFormat
 	}{
 		{
 			name: "graph only",
 			config: func(string) ReceiptWALConfig {
 				return ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
 			},
+			format: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
 		},
 		{
 			name: "durable",
 			config: func(path string) ReceiptWALConfig {
 				return validReceiptWALProviderConfig(path, ReceiptWALModeFresh)
 			},
-			durable: true,
+			format: pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -76,6 +78,8 @@ func TestSnapshotInstallerSelectionMatchesRuntimeAndIsShared(t *testing.T) {
 			runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, config)
 			selection, err := NewSnapshotInstallerSelection(
 				config,
+				GraphSnapshotSpoolConfig{},
+				PeerPlaneConfig{},
 				CacheConfig{TTL: time.Hour},
 				SearchConfig{},
 				runtime,
@@ -86,13 +90,22 @@ func TestSnapshotInstallerSelectionMatchesRuntimeAndIsShared(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (selection.selected() != nil) != tc.durable {
-				t.Fatalf("selected installer = %T, want durable %t", selection.selected(), tc.durable)
+			selected := selection.selected()
+			if selected == nil {
+				t.Fatal("format selection did not provide an owned installer")
 			}
-			if tc.durable {
-				if got := selection.selected().RequiredFormat(); got != pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT {
-					t.Fatalf("required format = %v", got)
-				}
+			if got := selected.RequiredFormat(); got != tc.format {
+				t.Fatalf("required format = %v, want %v", got, tc.format)
+			}
+			if !selected.CompatibleFormat(tc.format) {
+				t.Fatalf("selected installer rejects its required format %v", tc.format)
+			}
+			otherFormat := pb.SnapshotFormat_SNAPSHOT_FORMAT_RECEIPT
+			if tc.format == otherFormat {
+				otherFormat = pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1
+			}
+			if selected.CompatibleFormat(otherFormat) {
+				t.Fatalf("selected installer accepts the other runtime format %v", otherFormat)
 			}
 
 			pumpConfig := newReplicationPumpConfig(
@@ -102,8 +115,8 @@ func TestSnapshotInstallerSelectionMatchesRuntimeAndIsShared(t *testing.T) {
 				PeerConfig{}, nil, ReplicationConfig{}, AntiEntropyConfig{}, nil,
 				primary, nil, logger, selection,
 			)
-			if pumpConfig.SnapshotInstaller != selection.selected() ||
-				antiEntropyConfig.SnapshotInstaller != selection.selected() ||
+			if pumpConfig.SnapshotInstaller != selected ||
+				antiEntropyConfig.SnapshotInstaller != selected ||
 				pumpConfig.SnapshotInstaller != antiEntropyConfig.SnapshotInstaller {
 				t.Fatal("Pump and anti-entropy did not receive the exact shared installer")
 			}
@@ -133,6 +146,8 @@ func TestSnapshotInstallerSelectionRejectsRuntimeModeMismatch(t *testing.T) {
 			runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, tc.runtimeConfig)
 			if selection, err := NewSnapshotInstallerSelection(
 				tc.selectionConfig,
+				GraphSnapshotSpoolConfig{},
+				PeerPlaneConfig{},
 				CacheConfig{TTL: time.Hour},
 				SearchConfig{},
 				runtime,
@@ -152,6 +167,8 @@ func TestSnapshotInstallerSelectionRejectsForeignCertifiedIdentity(t *testing.T)
 	foreignPrimary := runtime.NewLanternService(nil).WithTombstoneTTL(time.Hour)
 	if selection, err := NewSnapshotInstallerSelection(
 		config,
+		GraphSnapshotSpoolConfig{},
+		PeerPlaneConfig{},
 		CacheConfig{TTL: time.Hour},
 		SearchConfig{},
 		runtime,
@@ -165,6 +182,8 @@ func TestSnapshotInstallerSelectionRejectsForeignCertifiedIdentity(t *testing.T)
 	foreignRuntime, _, _ := certifiedSnapshotInstallerRuntime(t, config)
 	if selection, err := NewSnapshotInstallerSelection(
 		config,
+		GraphSnapshotSpoolConfig{},
+		PeerPlaneConfig{},
 		CacheConfig{TTL: time.Hour},
 		SearchConfig{},
 		foreignRuntime,
@@ -173,5 +192,28 @@ func TestSnapshotInstallerSelectionRejectsForeignCertifiedIdentity(t *testing.T)
 		certified,
 	); selection != nil || err == nil {
 		t.Fatalf("foreign runtime selection = %v, %v", selection, err)
+	}
+}
+
+func TestSnapshotInstallerSelectionRequiresConfiguredGraphHASpool(t *testing.T) {
+	config := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
+	runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, config)
+	peers := PeerPlaneConfig{ListenAddress: "127.0.0.1:6391"}
+	if selected, err := NewSnapshotInstallerSelection(config, GraphSnapshotSpoolConfig{}, peers,
+		CacheConfig{TTL: time.Hour}, SearchConfig{}, runtime, primary, nil, certified); err == nil || selected != nil {
+		t.Fatal("graph-only HA constructed an installer without explicit spool capacity")
+	}
+	directory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	spool := GraphSnapshotSpoolConfig{Directory: directory, MaxDiskBytes: 128 << 20, MaxFrameBytes: 32 << 20}
+	selected, err := NewSnapshotInstallerSelection(config, spool, peers,
+		CacheConfig{TTL: time.Hour}, SearchConfig{}, runtime, primary, nil, certified)
+	if err != nil || selected == nil || selected.selected() == nil {
+		t.Fatalf("explicit private graph Snapshot spool was not admitted: %v", err)
 	}
 }

@@ -266,29 +266,30 @@ type SearchConfig struct {
 // it (SRP). main / App may keep *Config because they observe several aspects
 // for startup logging.
 type Config struct {
-	Net           NetConfig
-	TLS           TLSConfig
-	RateLimit     RateLimitConfig
-	Observability ObservabilityConfig
-	Cache         CacheConfig
-	Shutdown      ShutdownConfig
-	Validation    ValidationLimits
-	Traversal     TraversalConfig
-	Auth          AuthConfig
-	Security      SecurityConfig
-	Changes       ChangeConfig
-	LLM           LLMConfig
-	Scan          ScanConfig
-	Search        SearchConfig
-	MutationLog   MutationLogConfig
-	ReceiptWAL    ReceiptWALConfig
-	Replication   ReplicationConfig
-	Peer          PeerConfig
-	PeerPlane     PeerPlaneConfig
-	AntiEntropy   AntiEntropyConfig
-	Readiness     ReadinessConfig
-	CORS          CORSConfig
-	Backup        backup.Config
+	Net                NetConfig
+	TLS                TLSConfig
+	RateLimit          RateLimitConfig
+	Observability      ObservabilityConfig
+	Cache              CacheConfig
+	Shutdown           ShutdownConfig
+	Validation         ValidationLimits
+	Traversal          TraversalConfig
+	Auth               AuthConfig
+	Security           SecurityConfig
+	Changes            ChangeConfig
+	LLM                LLMConfig
+	Scan               ScanConfig
+	Search             SearchConfig
+	MutationLog        MutationLogConfig
+	ReceiptWAL         ReceiptWALConfig
+	GraphSnapshotSpool GraphSnapshotSpoolConfig
+	Replication        ReplicationConfig
+	Peer               PeerConfig
+	PeerPlane          PeerPlaneConfig
+	AntiEntropy        AntiEntropyConfig
+	Readiness          ReadinessConfig
+	CORS               CORSConfig
+	Backup             backup.Config
 }
 
 // NewConfig loads every sub-config from the environment, then validates the
@@ -320,14 +321,19 @@ func NewConfig() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	graphSnapshotSpool, err := loadGraphSnapshotSpoolConfig()
+	if err != nil {
+		return nil, err
+	}
 	metricsDefault := ":9090"
 	if securityConfig.Mode == "oidc" {
 		metricsDefault = "127.0.0.1:9090"
 	}
 	cfg := &Config{
-		Security:  securityConfig,
-		PeerPlane: peerPlane,
-		Changes:   changeConfig,
+		Security:           securityConfig,
+		PeerPlane:          peerPlane,
+		Changes:            changeConfig,
+		GraphSnapshotSpool: graphSnapshotSpool,
 		Net: NetConfig{
 			Port:                 envconfig.Int("LANTERN_PORT", 6380),
 			MaxRecvMsgBytes:      envconfig.Int("LANTERN_MAX_RECV_MSG_BYTES", 16*1024*1024),
@@ -455,6 +461,9 @@ func NewConfig() (*Config, error) {
 		return nil, err
 	}
 	if err := validateReceiptWALConfig(cfg.ReceiptWAL, cfg.Backup, cfg.Replication); err != nil {
+		return nil, err
+	}
+	if err := validateGraphSnapshotSpoolConfig(cfg.GraphSnapshotSpool, cfg.ReceiptWAL.Mode, cfg.PeerPlane); err != nil {
 		return nil, err
 	}
 	return cfg, nil

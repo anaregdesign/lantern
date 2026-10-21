@@ -162,12 +162,18 @@ unsupported image, unsafe/existing exporter workspace or changed image identity.
 The local cohort explicitly runs under the driver's non-root UID/GID so the
 host publisher and serving processes can read the same owner-only authority
 inputs after atomic renewal. Every original authority input remains mode 0600;
-operator signing keys stay outside Server mounts. After proving the named
-project absent, the driver creates its containers and validates all six distinct
-state/backup volumes against their project labels. One network-free initializer
-changes only those empty volume directories to the selected UID/GID and mode
-0700. Unexpected existing contents or identity/label drift refuses setup and
-retains the project for review. The runtime user is checked before/after traffic
+operator signing keys stay outside Server mounts. After proving its fresh named
+project absent, the driver creates its containers and validates every distinct
+state/backup volume against its project labels. Receipt cohorts retain exactly
+six such volumes. Graph-only cohorts additionally select
+[`compose.graph-snapshot.yml`](compose.graph-snapshot.yml), with three new
+per-node named staging volumes at `/var/lib/lantern-snapshot-spool`, for exactly
+nine owned volumes. Their `nocopy: true` prevents the image user's private
+directory from being copied into the host-UID fixture. One network-free
+initializer changes only those new empty volume directories to the selected
+UID/GID and mode 0700. Unexpected existing contents or identity/label drift
+refuses setup and retains the project for review. The runtime user, dedicated
+staging mounts and private directory metadata are checked before/after traffic
 and recorded with image provenance. The released image's non-root default and
 all production file, time, quorum, durability and authorization checks remain.
 
@@ -441,9 +447,11 @@ another producer, so each scenario selects one of the four allow-listed
 receipt family drivers. Each emits the ghz summary shape consumed by the
 existing perf evaluator and report renderer. The harness provisions a fresh
 authenticated durable-WAL cluster with fresh per-replica origin IDs and rejects
-`SKIP_UP=1`. Before startup it removes only the named bench Compose project's
-containers and volumes, so a preceding `KEEP_UP=1` run cannot leak retained
-receipts into the next family; unrelated volumes are untouched. Before warmup
+`SKIP_UP=1`. Before any reset, startup proves the named bench Compose project
+has no existing containers, volumes or network. An existing project, including
+a preceding `KEEP_UP=1` run, is refused without deleting its resources; choose a
+new project for the next family. Cleanup removes only the current invocation's
+owned project. Before warmup
 and after the run, it checks the configured image reference, full embedded
 source commit, immutable image ID, Compose project/service labels, restart
 count, and all three container image IDs; it rejects changes or missing
@@ -462,6 +470,32 @@ Role. Only that workload's files are mounted read-only. The operator private
 key and client token file remain outside all Server containers. DNS names
 locate only the signed fixed origins; they never approve membership.
 
+The protected receipt EdgeAdd scenario prepares its live Vertex endpoints with
+ordinary authorized `PutVertices` before warmup and the PRE memory snapshot.
+Preparation uses one replica and verifies the exact values on every configured
+replica through `GetVertices`; it consumes no receipt rows. Both phases have
+distinct random nonces and a private, bounded endpoint-plan file binding their
+original duration/rate to the discovered endpoint identities and receipt policy.
+At 100 pairs/s this prepares at most 501 warmup tails, 2251 steady tails and one
+shared head. The duration-derived operation limits are 1001 and 4501; a ready
+ticker cannot schedule beyond the prepared set while waiting for its duration
+timer. These limits fit the existing 8000-entry receipt policy. Preparation
+failure stops the run. Each phase rechecks the plan and live endpoint values;
+the server still evaluates current authorization, endpoint liveness and receipt
+deadlines on every operation. Preparation RPCs are outside the measured Add and
+lookup counts. The expected intent includes the protected Edge-only effect;
+the probe does not accept a legacy implicit-endpoint receipt digest as a fallback.
+
+The graph-only fixture explicitly selects a 128 MiB logical Snapshot staging
+allowance and a 32 MiB frame limit through the three
+`LANTERN_GRAPH_SNAPSHOT_SPOOL_*` settings. These are local fixture choices, not
+server or operator deployment defaults. The allowance includes payload, indexes,
+sort/merge workspace and charged metadata; it does not reserve filesystem space
+or bound decoded-frame/whole-process memory. Quota or disk errors fail closed.
+Receipt fixtures omit those settings and the graph staging overlay, preserving
+their six existing state/backup volumes. No existing state, backup, runtime or
+temporary directory is selected as staging storage.
+
 An owned operator helper renews the same membership every two minutes. Each
 successor preserves the domain/member identities and increments its version;
 expiry, drift, helper death or unknown restarts disqualify the run. The
@@ -469,8 +503,11 @@ expiry, drift, helper death or unknown restarts disqualify the run. The
 Explicit chaos restart changes fresh→resume/restart and gives an ephemeral
 graph a new transport origin. Its exact old/new container IDs are recorded;
 undeclared recreation or a changed image is rejected. `KEEP_UP=1` retains
-private files for operator teardown, but stops the helper, so membership
-expires within ten minutes. Never archive `.peer-tls.*` with public reports.
+private files and the project's staging volumes for operator teardown, but
+stops the helper, so membership expires within ten minutes. Ordinary restart
+retains the staging volume and its stable owner file; the fresh-empty initializer
+is not rerun. Successful named-project `down -v` removes its new staging volumes
+alongside its existing volumes. Never archive `.peer-tls.*` with public reports.
 
 [`compose.receipt-tls.yml`](compose.receipt-tls.yml) disables pprof and removes
 metrics port publication. An owned `diagnostics_bridge.py` binds only host
@@ -509,6 +546,24 @@ change; a failed natural sample stays failed rather than changing load, GC or
 thresholds. OFF leak snapshots preserve their existing outside-steady GC
 protocol. Peak process/container RSS and CPU comparisons remain separate
 required #1610 evidence.
+
+The same receipt scrapes also retain bounded aggregate context: GC count,
+last-GC time and next-GC target; receipt entries, logical bytes and oldest
+deadline; and mutation-log capacity, fill ratio and evictions. These observations
+do not enter the verdict or measure post-GC live heap. Receipt logical bytes
+exclude Go container overhead, and retained graph/index/history state may grow
+with successful writes. No additional scrape or forced GC is used for this
+context.
+
+The steady metrics sampler owns a separate HTTP transport, closes its idle
+connections and requests cancellation of unused pending dials when sampling ends;
+the per-request timeout remains 2s. At phase completion, stderr retains at most
+the first failed admission and first failed lookup as fixed categories for status,
+source and message class, even if metrics or coverage fails first. It excludes
+raw errors and request/response content. A wire-error category or exact message
+class does not prove a server
+execution branch or whether the mutation committed. These diagnostics do not
+change the paired summaries, verdicts or retries.
 
 Five preliminary **Edge Delete-only** Compose runs on the synthetic-parent stack (Apple M3 Max,
 `darwin/arm64`), recorded in
@@ -578,10 +633,13 @@ target (`call` + `data_template` for ghz, or an allow-listed custom driver),
 optional `subscribe` and `chaos`
 blocks, and the leak-gate thresholds (`goroutine_max_delta`,
 `heap_alloc_max_delta_mb`; receipt scenarios also declare
-`steady_heap_alloc_max_delta_mb`). The post-cooldown gate evaluates against `heap_alloc`
+`steady_heap_alloc_max_delta_mb`). For OFF snapshots, the post-cooldown gate
+evaluates against `heap_alloc`
 (post-GC live bytes), forcing a `runtime.GC()` via
 `/debug/pprof/heap?gc=1` before each snapshot so the reading reflects
-live memory rather than span-level allocator headroom. The legacy field
+live memory rather than span-level allocator headroom. Protected receipt snapshots
+use the `natural_gc_single` protocol described above; their post-cooldown
+`heap_alloc` delta is not post-GC live-set evidence. The legacy field
 name `heap_inuse_max_delta_mb` is still accepted for backward
 compatibility but produced false-positive verdicts under sustained
 churn — see issue #248.

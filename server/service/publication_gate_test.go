@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -133,5 +134,57 @@ func TestPublicationGateFaultsRemainAuthoritativeAndUnboundIsUnavailable(t *test
 	err := unbound.withPublicGraphReadRetry(t.Context(), func() error { t.Fatal("faulted fallback captured"); return nil })
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("unbound authoritative fault = %v", err)
+	}
+}
+
+func TestPublicationGateCheckedRejectionPreservesProofAndReleasesRawMutex(t *testing.T) {
+	for _, faulted := range []bool{false, true} {
+		name := "healthy"
+		if faulted {
+			name = "faulted"
+		}
+		t.Run(name, func(t *testing.T) {
+			svc := NewLanternService(newFakeBackend())
+			gate := &svc.replicationCutMu
+			if faulted {
+				gate.Lock()
+				svc.markPublicationFault(&pendingMutation{})
+				gate.Unlock()
+			}
+			certificate, generation := gate.readCertificate.Load(), gate.generation
+			rejected := errors.New("original admission expired under publication cut")
+			checks := 0
+			rawOwned, proofUnchanged := false, false
+			err := gate.LockChecked(func() error {
+				checks++
+				rawOwned = !gate.TryRLock()
+				if !rawOwned {
+					gate.RUnlock()
+				}
+				proofUnchanged = gate.readCertificate.Load() == certificate && gate.generation == generation
+				return rejected
+			})
+			if !errors.Is(err, rejected) || checks != 1 || !rawOwned || !proofUnchanged {
+				t.Fatalf("checked acquisition did not reject under the raw cut before changing proof: checks=%d rawOwned=%t proofUnchanged=%t err=%v", checks, rawOwned, proofUnchanged, err)
+			}
+			if gate.readCertificate.Load() != certificate || gate.generation != generation {
+				t.Fatal("rejected acquisition changed certificate or numeric generation")
+			}
+			if !gate.TryRLock() {
+				t.Fatal("rejected acquisition retained its raw mutex")
+			}
+			gate.RUnlock()
+			if err := gate.LockChecked(func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if gate.readCertificate.Load() != activePublicationCertificate || gate.generation != generation {
+				gate.Unlock()
+				t.Fatal("accepted acquisition did not enter its exclusive interval")
+			}
+			gate.Unlock()
+			if next := gate.readCertificate.Load(); next == certificate || !next.stable() || next.faulted != faulted || gate.generation != generation+1 {
+				t.Fatal("accepted retry did not certify exactly one subsequent publication interval")
+			}
+		})
 	}
 }
