@@ -57,7 +57,7 @@ func newEdgeSetupFixture(t *testing.T) *edgeSetupFixture {
 				t.Fatal("seed did not use bounded authenticated ordinary plural Put")
 			}
 			deadline, ok := ctx.Deadline()
-			if !ok || deadline.Sub(time.Now()) > 2*time.Second {
+			if !ok || time.Until(deadline) > 2*time.Second {
 				t.Fatal("seed did not preserve the per-RPC deadline")
 			}
 			outcomes := make([]graphv1.PutOutcome, len(request.Msg.GetVertices()))

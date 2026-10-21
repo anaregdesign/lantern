@@ -362,8 +362,7 @@ func openEdgeSetupManifest(path string, expected os.FileInfo) (*os.File, error) 
 	return file, nil
 }
 
-func loadEdgeSetupManifest(ctx context.Context, path string, cfg probeConfig, endpoints []receiptEndpoint) ([16]byte, uint64, error) {
-	var nonce [16]byte
+func loadEdgeSetupManifest(ctx context.Context, path string, cfg probeConfig, endpoints []receiptEndpoint) (nonce [16]byte, maxOps uint64, err error) {
 	if err := ctx.Err(); err != nil {
 		return nonce, 0, err
 	}
@@ -384,7 +383,7 @@ func loadEdgeSetupManifest(ctx context.Context, path string, cfg probeConfig, en
 	if err != nil {
 		return nonce, 0, err
 	}
-	defer file.Close()
+	defer func() { err = errors.Join(err, file.Close()) }()
 	decoder := json.NewDecoder(io.LimitReader(file, edgeSetupMaxBytes+1))
 	decoder.DisallowUnknownFields()
 	var manifest edgeSetupManifest
