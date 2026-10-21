@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"os"
 	"path/filepath"
 	"strings"
@@ -779,6 +780,273 @@ func TestScrapeRuntimeMetricsDiagnosticWriteFailureKeepsResult(t *testing.T) {
 	if err != nil || value.Goroutines != 40 || calls != 1 || output.calls != 2 {
 		t.Fatalf("diagnostic failure changed result: %+v, %v; requests=%d writes=%d", value, err, calls, output.calls)
 	}
+}
+
+type runtimeTraceDiagnosticWriter struct {
+	mu     sync.Mutex
+	output bytes.Buffer
+	writes int
+}
+
+func (w *runtimeTraceDiagnosticWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.writes++
+	return w.output.Write(data)
+}
+
+func (w *runtimeTraceDiagnosticWriter) snapshot() (string, int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.output.String(), w.writes
+}
+
+type runtimeTraceGatedReader struct {
+	io.Reader
+	entered chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (r *runtimeTraceGatedReader) Read(data []byte) (int, error) {
+	r.once.Do(func() { close(r.entered) })
+	<-r.release
+	return r.Reader.Read(data)
+}
+
+func runtimeTraceScrapeRecords(t *testing.T, output string) [2]runtimeScrapeDiagnostic {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("trace added diagnostic writes: got %d lines", len(lines))
+	}
+	var records [2]runtimeScrapeDiagnostic
+	for i, line := range lines {
+		if len(line) > 2048 {
+			t.Fatalf("trace diagnostic exceeds fixed schema budget: %d", len(line))
+		}
+		decoder := json.NewDecoder(strings.NewReader(line))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&records[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if records[0].Event != "request_start" || records[0].HTTPTrace != nil ||
+		records[1].Event != "request_finish" || records[1].HTTPTrace == nil {
+		t.Fatalf("trace must appear only on the final diagnostic: %+v", records)
+	}
+	return records
+}
+
+func TestScrapeRuntimeMetricsHTTPTraceCompositionAndLateCallbacks(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+	defer cancel()
+	var parentGetConn, parentWroteRequest atomic.Int32
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GetConn:      func(string) { parentGetConn.Add(1) },
+		WroteRequest: func(httptrace.WroteRequestInfo) { parentWroteRequest.Add(1) },
+	})
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseBody := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseBody)
+	var output runtimeTraceDiagnosticWriter
+	callbacks := make(chan *httptrace.ClientTrace, 1)
+	var requests atomic.Int32
+	var writesDuringCallbacks atomic.Int32
+	fire := func(trace *httptrace.ClientTrace, reused bool, err error) {
+		var wait sync.WaitGroup
+		for _, callback := range []func(){
+			func() { trace.GetConn("HOST_SECRET:9390") },
+			func() { trace.GotConn(httptrace.GotConnInfo{Reused: reused}) },
+			func() { trace.ConnectStart("NETWORK_SECRET", "ADDRESS_SECRET") },
+			func() { trace.ConnectDone("NETWORK_SECRET", "ADDRESS_SECRET", err) },
+			func() { trace.WroteRequest(httptrace.WroteRequestInfo{Err: err}) },
+			trace.GotFirstResponseByte,
+		} {
+			wait.Go(callback)
+		}
+		wait.Wait()
+	}
+	client := &http.Client{Timeout: 2 * time.Second, Transport: runtimeDiagnosticRoundTripper(func(request *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		trace := httptrace.ContextClientTrace(request.Context())
+		if trace == nil || trace.GetConn == nil || trace.GotConn == nil || trace.ConnectStart == nil ||
+			trace.ConnectDone == nil || trace.WroteRequest == nil || trace.GotFirstResponseByte == nil {
+			return nil, errors.New("missing request trace callbacks")
+		}
+		fire(trace, true, errors.New("CALLBACK_ERROR_SECRET"))
+		_, writes := output.snapshot()
+		writesDuringCallbacks.Store(int32(writes))
+		callbacks <- trace
+		request.Header.Set("Authorization", "Bearer AUTH_SECRET")
+		return &http.Response{StatusCode: http.StatusOK, Request: request,
+			Header: http.Header{"X-Private": {"HEADER_SECRET"}},
+			Body: io.NopCloser(&runtimeTraceGatedReader{
+				Reader:  strings.NewReader("# BODY_SECRET\ngo_goroutines 40\ngo_memstats_heap_alloc_bytes 104857600\n" + testRuntimeObservations),
+				entered: entered, release: release,
+			})}, nil
+	})}
+	type scrapeResult struct {
+		value runtimeMetrics
+		err   error
+	}
+	done := make(chan scrapeResult, 1)
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		value, err := scrapeRuntimeMetricsObserved(ctx, client,
+			metricsEndpoint{url: "http://URL_SECRET@metrics.invalid:9390/metrics?secret=QUERY_SECRET", endpoint: "ENDPOINT_SECRET"},
+			time.Now(), 0, &output)
+		done <- scrapeResult{value, err}
+	}()
+	t.Cleanup(func() {
+		releaseBody()
+		cancel()
+		select {
+		case <-joined:
+		case <-time.After(time.Second):
+			t.Error("controlled scrape did not join after releasing its body")
+		}
+	})
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("scrape did not reach parsing after Do returned", ctx.Err())
+	}
+	trace := <-callbacks
+	// The body barrier proves Do has returned. Standard hooks may still arrive
+	// concurrently while parsing; they update only the request's private state.
+	fire(trace, false, nil)
+	if _, writes := output.snapshot(); writes != 1 || writesDuringCallbacks.Load() != 1 {
+		t.Fatalf("trace callbacks performed diagnostic I/O: writes=%d before Do=%d", writes, writesDuringCallbacks.Load())
+	}
+	releaseBody()
+	var result scrapeResult
+	select {
+	case result = <-done:
+	case <-ctx.Done():
+		t.Fatal("scrape did not join", ctx.Err())
+	}
+	if result.err != nil || result.value.Goroutines != 40 || result.value.HeapAllocBytes != testHeapBaseline || requests.Load() != 1 {
+		t.Fatalf("trace changed the request result: %+v, %v, requests=%d", result.value, result.err, requests.Load())
+	}
+	text, writes := output.snapshot()
+	records := runtimeTraceScrapeRecords(t, text)
+	finish := records[1]
+	if writes != 2 || finish.Stage != "complete" || finish.Reason != "ok" || finish.HTTPStatus != http.StatusOK {
+		t.Fatalf("unexpected trace completion: %+v writes=%d", finish, writes)
+	}
+	observed := finish.HTTPTrace
+	for _, point := range []*runtimeHTTPTracePoint{observed.GetConn, observed.GotConn, observed.ConnectStart,
+		observed.ConnectDone, observed.WroteRequest, observed.FirstResponseByte} {
+		if point == nil || point.Count != 2 || point.FirstMS < 0 || point.LastMS < point.FirstMS {
+			t.Fatalf("concurrent/late hook was lost or reversed: %+v", observed)
+		}
+	}
+	if observed.LastConnReused == nil || *observed.LastConnReused || observed.LastConnectResult != "ok" || observed.LastWriteResult != "ok" ||
+		parentGetConn.Load() != 2 || parentWroteRequest.Load() != 2 {
+		t.Fatalf("trace composition or last result differs: %+v parent=%d/%d", observed, parentGetConn.Load(), parentWroteRequest.Load())
+	}
+	for _, secret := range []string{"SECRET", "metrics.invalid", "http://", "Authorization", "Bearer"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("trace exposed request, response or callback content: %s", text)
+		}
+	}
+	fire(trace, true, errors.New("AFTER_FINISH_SECRET"))
+	if after, count := output.snapshot(); after != text || count != writes {
+		t.Fatal("callbacks after finish changed emitted diagnostics")
+	}
+}
+
+func TestScrapeRuntimeMetricsHTTPTraceOverLocalHTTP(t *testing.T) {
+	const body = "go_goroutines 40\ngo_memstats_heap_alloc_bytes 104857600\n" + testRuntimeObservations
+	t.Run("fresh then reused connection", func(t *testing.T) {
+		var attempts atomic.Int32
+		wrote := make(chan struct{}, 2)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			attempts.Add(1)
+			// Observe the write hook before replying, without assuming an order
+			// between the Transport's writing and response-reading goroutines.
+			select {
+			case <-wrote:
+			case <-request.Context().Done():
+				return
+			}
+			_, _ = io.WriteString(w, body)
+		}))
+		defer server.Close()
+		transport := &http.Transport{Proxy: nil}
+		defer transport.CloseIdleConnections()
+		client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
+		ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+		defer cancel()
+		ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+			WroteRequest: func(httptrace.WroteRequestInfo) { wrote <- struct{}{} },
+		})
+		for attempt := range 2 {
+			var output bytes.Buffer
+			value, err := scrapeRuntimeMetricsObserved(ctx, client,
+				metricsEndpoint{url: server.URL + "/metrics", endpoint: "local replica"}, time.Now(), 0, &output)
+			if err != nil || value.Goroutines != 40 || value.HeapAllocBytes != testHeapBaseline {
+				t.Fatalf("local scrape %d = %+v, %v", attempt, value, err)
+			}
+			records := runtimeTraceScrapeRecords(t, output.String())
+			trace := records[1].HTTPTrace
+			if trace.GetConn == nil || trace.GotConn == nil || trace.WroteRequest == nil || trace.FirstResponseByte == nil ||
+				trace.LastConnReused == nil || *trace.LastConnReused != (attempt == 1) || trace.LastWriteResult != "ok" {
+				t.Fatalf("fresh/reused connection evidence %d: %+v", attempt, trace)
+			}
+			if attempt == 0 && (trace.ConnectStart == nil || trace.ConnectDone == nil || trace.LastConnectResult != "ok") ||
+				attempt == 1 && (trace.ConnectStart != nil || trace.ConnectDone != nil || trace.LastConnectResult != "") {
+				t.Fatalf("dial observations were reused across requests: %+v", trace)
+			}
+			// WroteRequest is not peer-receipt/flush proof; first byte is not
+			// complete headers. These are observations of the standard hooks.
+		}
+		if attempts.Load() != 2 {
+			t.Fatalf("trace added local requests: %d", attempts.Load())
+		}
+	})
+
+	t.Run("two second timeout before response headers", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+		defer cancel()
+		release, joined := make(chan struct{}), make(chan struct{})
+		var attempts atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			attempts.Add(1)
+			defer close(joined)
+			select {
+			case <-request.Context().Done():
+			case <-release:
+			}
+		}))
+		defer func() { close(release); server.Close() }()
+		transport := &http.Transport{Proxy: nil}
+		defer transport.CloseIdleConnections()
+		client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
+		var output bytes.Buffer
+		_, err := scrapeRuntimeMetricsObserved(ctx, client,
+			metricsEndpoint{url: server.URL + "/metrics", endpoint: "held local headers"}, time.Now(), 0, &output)
+		if err == nil || !strings.Contains(err.Error(), "Client.Timeout exceeded while awaiting headers") || ctx.Err() != nil || attempts.Load() != 1 {
+			t.Fatalf("unchanged header timeout/caller = %v, %v, attempts=%d", err, ctx.Err(), attempts.Load())
+		}
+		finish := runtimeTraceScrapeRecords(t, output.String())[1]
+		trace := finish.HTTPTrace
+		if finish.Stage != "http" || finish.Reason != "deadline_exceeded" || finish.ContextState != "active" || finish.HTTPStatus != 0 ||
+			finish.DurationMS == nil || *finish.DurationMS < 1900 || trace.GetConn == nil || trace.GotConn == nil ||
+			trace.ConnectStart == nil || trace.ConnectDone == nil || trace.LastConnectResult != "ok" ||
+			trace.WroteRequest == nil || trace.LastWriteResult != "ok" || trace.FirstResponseByte != nil {
+			t.Fatalf("before-headers timeout observations = %+v trace=%+v", finish, trace)
+		}
+		select {
+		case <-joined:
+		case <-ctx.Done():
+			t.Fatal("timed-out local HTTP handler did not join", ctx.Err())
+		}
+	})
 }
 
 func TestValidateSteadyMetricsExactCoverage(t *testing.T) {

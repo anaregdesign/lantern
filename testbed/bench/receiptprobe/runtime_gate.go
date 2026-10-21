@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"strconv"
@@ -153,15 +154,16 @@ func scrapeRuntimeMetrics(ctx context.Context, client *http.Client, endpoint met
 // replica index identifies the configured ordering without exposing its URL.
 // These stderr observations do not change the saved steady report or verdict.
 type runtimeScrapeDiagnostic struct {
-	Event        string `json:"event"`
-	ReplicaIndex int    `json:"replica_index"`
-	UTC          string `json:"utc"`
-	ElapsedMS    int64  `json:"elapsed_ms"`
-	DurationMS   *int64 `json:"duration_ms,omitempty"`
-	Stage        string `json:"stage"`
-	Reason       string `json:"reason"`
-	ContextState string `json:"context_state"`
-	HTTPStatus   int    `json:"http_status,omitempty"`
+	Event        string                      `json:"event"`
+	ReplicaIndex int                         `json:"replica_index"`
+	UTC          string                      `json:"utc"`
+	ElapsedMS    int64                       `json:"elapsed_ms"`
+	DurationMS   *int64                      `json:"duration_ms,omitempty"`
+	Stage        string                      `json:"stage"`
+	Reason       string                      `json:"reason"`
+	ContextState string                      `json:"context_state"`
+	HTTPStatus   int                         `json:"http_status,omitempty"`
+	HTTPTrace    *runtimeHTTPTraceDiagnostic `json:"http_trace,omitempty"`
 }
 
 // scrapeRuntimeMetricsObserved records one start and one finish for the same
@@ -179,6 +181,8 @@ func scrapeRuntimeMetricsObserved(
 		replicaIndex = -1
 	}
 	started := time.Now()
+	trace := &runtimeHTTPTrace{started: started}
+	var traceSummary *runtimeHTTPTraceDiagnostic
 	stage, reason, status := "request", "invalid_request", 0
 	write := func(event string, at time.Time, duration *int64) {
 		state := "active"
@@ -191,12 +195,14 @@ func scrapeRuntimeMetricsObserved(
 			Event: event, ReplicaIndex: replicaIndex,
 			UTC: at.UTC().Format(time.RFC3339Nano), ElapsedMS: max(0, at.Sub(steadyStart).Milliseconds()),
 			DurationMS: duration, Stage: stage, Reason: reason, ContextState: state, HTTPStatus: status,
+			HTTPTrace: traceSummary,
 		})
 	}
 	stage, reason = "request", "started"
 	write("request_start", started, nil)
 	reason = "invalid_request"
 	defer func() {
+		traceSummary = trace.finish()
 		finished := time.Now()
 		duration := max(0, finished.Sub(started).Milliseconds())
 		write("request_finish", finished, &duration)
@@ -207,6 +213,7 @@ func scrapeRuntimeMetricsObserved(
 		return runtimeMetrics{}, err
 	}
 	stage, reason = "http", "transport_error"
+	request = request.WithContext(httptrace.WithClientTrace(request.Context(), trace.callbacks()))
 	response, err := client.Do(request)
 	if err != nil {
 		reason = runtimeScrapeErrorReason(err, reason)
