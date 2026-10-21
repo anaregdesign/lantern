@@ -1,6 +1,6 @@
 module github.com/anaregdesign/lantern/core
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.29.0

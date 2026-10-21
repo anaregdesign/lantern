@@ -85,7 +85,7 @@ class SDK4ReceiptTest(unittest.TestCase):
         script = self.root / ".github/scripts/current_sdk4_gate.py"
         script.parent.mkdir(parents=True)
         script.write_bytes(Path(gate.__file__).read_bytes())
-        (self.root / "go.work").write_text("go 1.27.2\n")
+        (self.root / "go.work").write_text("go 1.27.3\n")
         self.git("init", "-q")
         synchronous_git_maintenance(self.root)
         self.git("config", "user.name", "Fixture")
@@ -441,7 +441,7 @@ class SDK4ReceiptTest(unittest.TestCase):
                 self.verify()
         self.receipt["source"] = self.source
         self.save()
-        (self.root / "go.work").write_text("go 1.27.3\n")
+        (self.root / "go.work").write_text("go 1.27.4\n")
         with self.assertRaisesRegex(ValueError, "clean"):
             self.verify()
 
