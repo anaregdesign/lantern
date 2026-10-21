@@ -1079,14 +1079,43 @@ func TestReceiptBenchCleanupPreservesFailureAndProjectScope(t *testing.T) {
 		keepUp       int
 		wantStatus   int
 		wantDown     bool
+		wantBridge   bool
+		bridgeLink   bool
+		captureError string
 	}{
 		{name: "clean teardown", wantDown: true},
-		{name: "teardown failure disqualifies pass", dockerStatus: 19, wantStatus: 1, wantDown: true},
-		{name: "primary failure preserved", dockerStatus: 19, runStatus: 23, wantStatus: 23, wantDown: true},
+		{name: "teardown failure disqualifies pass", dockerStatus: 19, wantStatus: 1, wantDown: true, wantBridge: true},
+		{name: "primary failure preserved", dockerStatus: 19, runStatus: 23, wantStatus: 23, wantDown: true, wantBridge: true},
 		{name: "explicit keep up", dockerStatus: 19, keepUp: 1},
+		{name: "primary failure with completed teardown", runStatus: 23, wantStatus: 23, wantDown: true, wantBridge: true},
+		{name: "symlink diagnostics excluded", runStatus: 23, wantStatus: 23, wantDown: true, bridgeLink: true},
+		{name: "bridge evidence mktemp failure preserves teardown status", dockerStatus: 19, wantStatus: 1, wantDown: true, captureError: "mktemp"},
+		{name: "bridge evidence chmod failure preserves teardown status", dockerStatus: 19, wantStatus: 1, wantDown: true, captureError: "chmod"},
+		{name: "bridge evidence cat failure preserves teardown status", dockerStatus: 19, wantStatus: 1, wantDown: true, captureError: "cat"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outDir := t.TempDir()
+			workspace := filepath.Join(outDir, "out", ".peer-tls.fixture")
+			trust := filepath.Join(workspace, "trust")
+			failureRoot := filepath.Join(outDir, "failure-evidence")
+			for _, directory := range []string{trust, failureRoot} {
+				if err := os.MkdirAll(directory, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			const bridgeLog = "{\"event\":\"request_finish\",\"reason\":\"timeout\"}\n"
+			const privateToken = "never-copy-native-credential"
+			if err := os.WriteFile(filepath.Join(trust, "tokens.json"), []byte(privateToken), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			bridgePath := filepath.Join(workspace, "diagnostics.log")
+			if tc.bridgeLink {
+				if err := os.Symlink(filepath.Join(trust, "tokens.json"), bridgePath); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(bridgePath, []byte(bridgeLog), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			reportPath := filepath.Join(outDir, "report.md")
 			if err := os.WriteFile(reportPath, []byte("**Perf gate verdict:** `pass`\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -1099,6 +1128,11 @@ source owned_compose.sh
 stop_owned_processes() { :; }
 KEEP_UP=%d
 log() { :; }
+case "${CAPTURE_ERROR:-}" in
+  mktemp) mktemp() { return 29; };;
+  chmod) chmod() { return 29; };;
+  cat) cat() { return 29; };;
+esac
 docker() {
   [[ "$COMPOSE_PROJECT_NAME" == "lantern-bench-cleanup-fixture" ]] || return 88
   case "$*" in
@@ -1115,7 +1149,8 @@ trap cleanup EXIT
 exit %d
 `, tc.keepUp, tc.dockerStatus, cleanup, tc.runStatus)
 			cmd := exec.Command("bash", "-c", fixture)
-			cmd.Env = append(os.Environ(), "OUTDIR="+outDir)
+			cmd.Env = append(os.Environ(), "OUTDIR="+outDir, "HERE="+outDir,
+				"NATIVE_WORK_DIR="+workspace, "PEER_TLS_DIR="+trust, "TMPDIR="+failureRoot, "CAPTURE_ERROR="+tc.captureError)
 			output, err := cmd.CombinedOutput()
 			if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != tc.wantStatus {
 				t.Fatalf("cleanup exit = %v, err = %v, output = %s; want %d",
@@ -1133,6 +1168,58 @@ exit %d
 			}
 			if got, want := strings.Contains(string(report), "unqualified"), (tc.dockerStatus != 0 && tc.wantDown) || tc.runStatus != 0; got != want {
 				t.Errorf("report marked unqualified = %v, want %v: %s", got, want, report)
+			}
+			evidence, err := filepath.Glob(filepath.Join(failureRoot, "lantern-native-failure.*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCount := 0
+			if tc.runStatus != 0 || tc.wantBridge || tc.captureError != "" && tc.captureError != "mktemp" {
+				wantCount = 1
+			}
+			if len(evidence) != wantCount {
+				t.Fatalf("failure evidence = %v, want count=%d", evidence, wantCount)
+			}
+			for _, directory := range evidence {
+				info, err := os.Stat(directory)
+				if err != nil || info.Mode().Perm() != 0o700 {
+					t.Fatalf("private evidence directory mode: %v %v", info, err)
+				}
+				files, err := os.ReadDir(directory)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, file := range files {
+					if file.Name() != "server.log" && file.Name() != "diagnostics.log" {
+						t.Fatalf("native trust input copied to evidence: %s", file.Name())
+					}
+					data, err := os.ReadFile(filepath.Join(directory, file.Name()))
+					if err != nil || strings.Contains(string(data), privateToken) {
+						t.Fatalf("private trust leaked to evidence: %v", err)
+					}
+				}
+				path := filepath.Join(directory, "diagnostics.log")
+				data, err := os.ReadFile(path)
+				if tc.wantBridge {
+					info, statErr := os.Stat(path)
+					if err != nil || string(data) != bridgeLog || statErr != nil || info.Mode().Perm() != 0o600 {
+						t.Fatalf("private bridge log lost or wrong mode: %q %v %v", data, err, statErr)
+					}
+				} else if tc.captureError == "cat" {
+					if err != nil || len(data) != 0 {
+						t.Fatalf("failed capture marked complete: %q %v", data, err)
+					}
+				} else if !os.IsNotExist(err) {
+					t.Fatalf("unexpected bridge evidence: %q %v", data, err)
+				}
+			}
+			_, statErr := os.Stat(workspace)
+			wantRetained := tc.keepUp == 1 || tc.dockerStatus != 0 && tc.wantDown
+			if wantRetained && statErr != nil || !wantRetained && !os.IsNotExist(statErr) {
+				t.Fatalf("native workspace cleanup: retained=%v err=%v", wantRetained, statErr)
+			}
+			if tc.captureError != "" && !strings.Contains(string(output), "failed to") {
+				t.Fatalf("capture failure not reported: %s", output)
 			}
 		})
 	}

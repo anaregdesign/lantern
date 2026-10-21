@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -124,8 +125,8 @@ func sampleSteadyMetrics(
 			ElapsedMS: time.Since(start).Milliseconds(),
 			Replicas:  make([]runtimeMetrics, 0, len(cfg.endpoints)),
 		}
-		for _, endpoint := range cfg.endpoints {
-			value, err := scrapeRuntimeMetrics(ctx, client, endpoint)
+		for i, endpoint := range cfg.endpoints {
+			value, err := scrapeRuntimeMetricsObserved(ctx, client, endpoint, start, i, os.Stderr)
 			if err != nil {
 				report.Failure = err.Error()
 				return report
@@ -145,31 +146,110 @@ func sampleSteadyMetrics(
 }
 
 func scrapeRuntimeMetrics(ctx context.Context, client *http.Client, endpoint metricsEndpoint) (runtimeMetrics, error) {
+	return scrapeRuntimeMetricsObserved(ctx, client, endpoint, time.Now(), -1, os.Stderr)
+}
+
+// runtimeScrapeDiagnostic contains only bounded, content-free fields. The
+// replica index identifies the configured ordering without exposing its URL.
+// These stderr observations do not change the saved steady report or verdict.
+type runtimeScrapeDiagnostic struct {
+	Event        string `json:"event"`
+	ReplicaIndex int    `json:"replica_index"`
+	UTC          string `json:"utc"`
+	ElapsedMS    int64  `json:"elapsed_ms"`
+	DurationMS   *int64 `json:"duration_ms,omitempty"`
+	Stage        string `json:"stage"`
+	Reason       string `json:"reason"`
+	ContextState string `json:"context_state"`
+	HTTPStatus   int    `json:"http_status,omitempty"`
+}
+
+// scrapeRuntimeMetricsObserved records one start and one finish for the same
+// request. Injecting the diagnostic writer keeps tests independent of stderr;
+// writer failures are deliberately excluded from the existing gate result.
+func scrapeRuntimeMetricsObserved(
+	ctx context.Context,
+	client *http.Client,
+	endpoint metricsEndpoint,
+	steadyStart time.Time,
+	replicaIndex int,
+	diagnostics io.Writer,
+) (runtimeMetrics, error) {
+	if replicaIndex < 0 || replicaIndex >= receiptReplicaCount {
+		replicaIndex = -1
+	}
+	started := time.Now()
+	stage, reason, status := "request", "invalid_request", 0
+	write := func(event string, at time.Time, duration *int64) {
+		state := "active"
+		if errors.Is(ctx.Err(), context.Canceled) {
+			state = "canceled"
+		} else if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			state = "deadline_exceeded"
+		}
+		_ = json.NewEncoder(diagnostics).Encode(runtimeScrapeDiagnostic{
+			Event: event, ReplicaIndex: replicaIndex,
+			UTC: at.UTC().Format(time.RFC3339Nano), ElapsedMS: max(0, at.Sub(steadyStart).Milliseconds()),
+			DurationMS: duration, Stage: stage, Reason: reason, ContextState: state, HTTPStatus: status,
+		})
+	}
+	stage, reason = "request", "started"
+	write("request_start", started, nil)
+	reason = "invalid_request"
+	defer func() {
+		finished := time.Now()
+		duration := max(0, finished.Sub(started).Milliseconds())
+		write("request_finish", finished, &duration)
+	}()
+
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.url, nil)
 	if err != nil {
 		return runtimeMetrics{}, err
 	}
+	stage, reason = "http", "transport_error"
 	response, err := client.Do(request)
 	if err != nil {
+		reason = runtimeScrapeErrorReason(err, reason)
 		return runtimeMetrics{}, fmt.Errorf("scrape %s: %w", endpoint.endpoint, err)
 	}
+	status = response.StatusCode
 	if response.StatusCode != http.StatusOK {
+		stage, reason = "status", "http_status"
 		closeErr := response.Body.Close()
 		if closeErr != nil {
+			reason = "http_status_close_error"
 			return runtimeMetrics{}, fmt.Errorf("scrape %s: HTTP %s; close body: %w", endpoint.endpoint, response.Status, closeErr)
 		}
 		return runtimeMetrics{}, fmt.Errorf("scrape %s: HTTP %s", endpoint.endpoint, response.Status)
 	}
+	stage, reason = "parse", "parse_error"
 	value, parseErr := parseRuntimeMetrics(response.Body)
 	closeErr := response.Body.Close()
 	if parseErr != nil {
+		reason = runtimeScrapeErrorReason(parseErr, reason)
 		return runtimeMetrics{}, fmt.Errorf("scrape %s: %w", endpoint.endpoint, parseErr)
 	}
 	if closeErr != nil {
+		stage, reason = "close", runtimeScrapeErrorReason(closeErr, "close_error")
 		return runtimeMetrics{}, fmt.Errorf("close %s metrics: %w", endpoint.endpoint, closeErr)
 	}
+	stage, reason = "complete", "ok"
 	value.Endpoint = endpoint.endpoint
 	return value, nil
+}
+
+func runtimeScrapeErrorReason(err error, fallback string) string {
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline_exceeded"
+	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return "timeout"
+	}
+	return fallback
 }
 
 func parseRuntimeMetrics(body io.Reader) (runtimeMetrics, error) {

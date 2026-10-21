@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -521,5 +525,199 @@ func TestRunReceiptLeakEvaluationLegacyObservationsKeepFailure(t *testing.T) {
 		report.Failures[0] != "localhost:9390 post-cooldown HeapAlloc growth exceeds +32 MiB" ||
 		report.Replicas[0].HeapAllocDeltaBytes != 34352632 {
 		t.Fatalf("legacy natural-GC resource gate changed: %+v, %v", report, err)
+	}
+}
+
+type runtimeDiagnosticRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f runtimeDiagnosticRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+type runtimeDiagnosticBody struct {
+	io.Reader
+	closeErr error
+}
+
+func (b runtimeDiagnosticBody) Close() error { return b.closeErr }
+
+func TestScrapeRuntimeMetricsDiagnostics(t *testing.T) {
+	t.Parallel()
+	const valid = "# BODY_SECRET\ngo_goroutines 40\ngo_memstats_heap_alloc_bytes 104857600\n" + testRuntimeObservations
+	for _, test := range []struct {
+		name         string
+		url          string
+		status       int
+		body         string
+		transportErr error
+		readErr      error
+		closeErr     error
+		cancel       bool
+		stage        string
+		reason       string
+		contextState string
+		wantCalls    int
+		wantOK       bool
+	}{
+		{name: "success", stage: "complete", reason: "ok", contextState: "active", wantCalls: 1, wantOK: true},
+		{name: "header deadline", transportErr: context.DeadlineExceeded, stage: "http", reason: "deadline_exceeded", contextState: "active", wantCalls: 1},
+		{name: "transport failure", transportErr: errors.New("FULL_ERROR_SECRET"), stage: "http", reason: "transport_error", contextState: "active", wantCalls: 1},
+		{name: "caller cancellation", cancel: true, stage: "http", reason: "canceled", contextState: "canceled", wantCalls: 1},
+		{name: "invalid request", url: "\nURL_SECRET", stage: "request", reason: "invalid_request", contextState: "active"},
+		{name: "HTTP status", status: http.StatusServiceUnavailable, stage: "status", reason: "http_status", contextState: "active", wantCalls: 1},
+		{name: "HTTP status close failure", status: http.StatusServiceUnavailable, closeErr: errors.New("CLOSE_SECRET"), stage: "status", reason: "http_status_close_error", contextState: "active", wantCalls: 1},
+		{name: "malformed metrics", body: "go_goroutines BODY_SECRET\n", stage: "parse", reason: "parse_error", contextState: "active", wantCalls: 1},
+		{name: "body read failure", readErr: errors.New("READ_SECRET"), stage: "parse", reason: "parse_error", contextState: "active", wantCalls: 1},
+		{name: "body close failure", closeErr: errors.New("CLOSE_SECRET"), stage: "close", reason: "close_error", contextState: "active", wantCalls: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			status := test.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			client := &http.Client{Timeout: 2 * time.Second, Transport: runtimeDiagnosticRoundTripper(func(request *http.Request) (*http.Response, error) {
+				calls++
+				request.Header.Set("Authorization", "Bearer AUTH_SECRET")
+				if test.cancel {
+					cancel()
+					return nil, request.Context().Err()
+				}
+				if test.transportErr != nil {
+					return nil, test.transportErr
+				}
+				body := test.body
+				if body == "" {
+					body = valid
+				}
+				var reader io.Reader = strings.NewReader(body)
+				if test.readErr != nil {
+					reader = iotest.ErrReader(test.readErr)
+				}
+				return &http.Response{
+					StatusCode: status, Status: "STATUS_SECRET", Request: request,
+					Header: http.Header{"X-Private": {"HEADER_SECRET"}},
+					Body:   runtimeDiagnosticBody{Reader: reader, closeErr: test.closeErr},
+				}, nil
+			})}
+			address := test.url
+			if address == "" {
+				address = "http://URL_SECRET@private-metrics.invalid:9390/metrics?credential=QUERY_SECRET"
+			}
+			var output bytes.Buffer
+			value, err := scrapeRuntimeMetricsObserved(ctx, client,
+				metricsEndpoint{url: address, endpoint: "ENDPOINT_SECRET"}, time.Now().Add(-40*time.Second), 1, &output)
+			if (err == nil) != test.wantOK || calls != test.wantCalls {
+				t.Fatalf("scrape result/calls = %+v, %v, %d; want success=%v calls=%d", value, err, calls, test.wantOK, test.wantCalls)
+			}
+			if test.wantOK && (value.Goroutines != 40 || value.HeapAllocBytes != testHeapBaseline || value.Endpoint != "ENDPOINT_SECRET") {
+				t.Fatalf("diagnostics changed the successful value: %+v", value)
+			}
+			for _, secret := range []string{"SECRET", "private-metrics", "http://", "Authorization", "Bearer"} {
+				if strings.Contains(output.String(), secret) {
+					t.Fatalf("diagnostics exposed request/response content: %s", output.String())
+				}
+			}
+			lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+			if len(lines) != 2 {
+				t.Fatalf("diagnostic lines = %d, want exactly 2", len(lines))
+			}
+			var records [2]runtimeScrapeDiagnostic
+			for i, line := range lines {
+				if len(line) > 512 {
+					t.Fatalf("unbounded diagnostic line: %d bytes", len(line))
+				}
+				decoder := json.NewDecoder(strings.NewReader(line))
+				decoder.DisallowUnknownFields()
+				if err := decoder.Decode(&records[i]); err != nil {
+					t.Fatal(err)
+				}
+				if records[i].ReplicaIndex != 1 || records[i].ElapsedMS < 40_000 {
+					t.Fatalf("diagnostic identity/start elapsed = %+v", records[i])
+				}
+				if _, err := time.Parse(time.RFC3339Nano, records[i].UTC); err != nil || !strings.HasSuffix(records[i].UTC, "Z") {
+					t.Fatalf("diagnostic UTC = %q, %v", records[i].UTC, err)
+				}
+			}
+			start, finish := records[0], records[1]
+			if start.Event != "request_start" || start.Stage != "request" || start.Reason != "started" || start.DurationMS != nil || start.ContextState != "active" {
+				t.Fatalf("start diagnostic = %+v", start)
+			}
+			if finish.Event != "request_finish" || finish.Stage != test.stage || finish.Reason != test.reason || finish.ContextState != test.contextState ||
+				finish.DurationMS == nil || *finish.DurationMS < 0 || finish.ElapsedMS < start.ElapsedMS {
+				t.Fatalf("finish diagnostic = %+v", finish)
+			}
+			wantStatus := status
+			if calls == 0 || test.cancel || test.transportErr != nil {
+				wantStatus = 0
+			}
+			if finish.HTTPStatus != wantStatus {
+				t.Fatalf("diagnostic status = %d, want %d", finish.HTTPStatus, wantStatus)
+			}
+		})
+	}
+}
+
+type runtimeDiagnosticFailWriter struct{ calls int }
+
+func (w *runtimeDiagnosticFailWriter) Write([]byte) (int, error) {
+	w.calls++
+	return 0, errors.New("diagnostic writer unavailable")
+}
+
+func TestScrapeRuntimeMetricsDiagnosticWriteFailureKeepsResult(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	client := &http.Client{Transport: runtimeDiagnosticRoundTripper(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Request: request,
+			Body: io.NopCloser(strings.NewReader("go_goroutines 40\ngo_memstats_heap_alloc_bytes 104857600\n" + testRuntimeObservations))}, nil
+	})}
+	var output runtimeDiagnosticFailWriter
+	value, err := scrapeRuntimeMetricsObserved(context.Background(), client,
+		metricsEndpoint{url: "http://metrics.invalid:9390/metrics", endpoint: "replica"}, time.Now(), 0, &output)
+	if err != nil || value.Goroutines != 40 || calls != 1 || output.calls != 2 {
+		t.Fatalf("diagnostic failure changed result: %+v, %v; requests=%d writes=%d", value, err, calls, output.calls)
+	}
+}
+
+func TestValidateSteadyMetricsExactCoverage(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		rounds     int
+		durationMS int64
+		failure    string
+		wantOK     bool
+	}{
+		{name: "nine complete rounds", rounds: 9, durationMS: 45_000, wantOK: true},
+		{name: "optional tenth round", rounds: 10, durationMS: 45_000, wantOK: true},
+		{name: "eight recorded rounds", rounds: 8, durationMS: 45_006},
+		{name: "failure despite nine rounds", rounds: 9, durationMS: 45_000, failure: "scrape failed"},
+		{name: "exact final coverage bound", rounds: 9, durationMS: 47_500, wantOK: true},
+		{name: "one ms beyond final coverage bound", rounds: 9, durationMS: 47_501},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := steadyMetricsConfig{interval: 5 * time.Second}
+			report := steadyMetricsReport{IntervalMS: 5_000, DurationMS: test.durationMS, Failure: test.failure}
+			for _, replica := range testRuntimeSnapshots() {
+				cfg.endpoints = append(cfg.endpoints, metricsEndpoint{endpoint: replica.Endpoint})
+				report.Endpoints = append(report.Endpoints, replica.Endpoint)
+			}
+			for i := range test.rounds {
+				round := metricsRound{ElapsedMS: int64(i) * 5_000}
+				for _, replica := range testRuntimeSnapshots() {
+					round.Replicas = append(round.Replicas, runtimeMetrics{
+						Endpoint: replica.Endpoint, Goroutines: *replica.Goroutines, HeapAllocBytes: *replica.HeapAllocBytes,
+					})
+				}
+				report.Samples = append(report.Samples, round)
+			}
+			if err := validateSteadyMetrics(report, cfg, 45*time.Second); (err == nil) != test.wantOK {
+				t.Fatalf("coverage accepted=%v, want=%v: %v", err == nil, test.wantOK, err)
+			}
+		})
 	}
 }

@@ -93,6 +93,7 @@ log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 cleanup() {
   local status=$?
   local tls_in_use=0
+  local private_failure=""
   trap - EXIT
   # Cancel owned workload/chaos producers before deleting their Server state.
   # Collected children are unregistered immediately so PID reuse is harmless.
@@ -103,7 +104,6 @@ cleanup() {
   if (( status != 0 )) && [[ "${COMPOSE_STARTED:-0}" == "1" ]]; then
     # Raw diagnostics stay outside public artifact globs and trust directories.
     # They may contain sensitive runtime context; publish hashes/verdicts only.
-    local private_failure
     private_failure="$(mktemp -d "${TMPDIR:-/tmp}/lantern-native-failure.XXXXXXXX")"
     chmod 700 "$private_failure"
     docker compose "${COMPOSE_FILES[@]}" logs --no-color --no-log-prefix > "$private_failure/server.log" 2>&1 || true
@@ -120,6 +120,26 @@ cleanup() {
       fi
       if (( status == 0 )); then status=1; fi
       tls_in_use=1
+    fi
+  fi
+  # Keep only the owned bridge log before removing native trust inputs. This
+  # also covers a successful workload whose Compose teardown subsequently fails.
+  if (( status != 0 )) && [[ -n "${NATIVE_WORK_DIR:-}" &&
+      "$NATIVE_WORK_DIR" == "${HERE:-}/out/.peer-tls."* &&
+      ! -L "$NATIVE_WORK_DIR" && -f "$NATIVE_WORK_DIR/diagnostics.log" &&
+      ! -L "$NATIVE_WORK_DIR/diagnostics.log" ]]; then
+    if [[ -z "$private_failure" ]]; then
+      if private_failure="$(mktemp -d "${TMPDIR:-/tmp}/lantern-native-failure.XXXXXXXX")" &&
+          chmod 700 "$private_failure"; then
+        echo "run.sh: private bridge evidence retained at $private_failure" >&2
+      else
+        private_failure=""
+        echo "run.sh: failed to create private bridge evidence; run remains unqualified" >&2
+      fi
+    fi
+    if [[ -n "$private_failure" ]] &&
+        ! (umask 077; cat -- "$NATIVE_WORK_DIR/diagnostics.log" > "$private_failure/diagnostics.log"); then
+      echo "run.sh: failed to retain private bridge evidence; run remains unqualified" >&2
     fi
   fi
   if (( status != 0 )) && [[ -n "${OUTDIR:-}" && -f "$OUTDIR/report.md" ]]; then
