@@ -2,8 +2,8 @@ package security
 
 import (
 	"context"
+	"errors"
 	"testing"
-	"time"
 )
 
 func TestS3ADriverRealTLSAndChosenCatchup(t *testing.T) {
@@ -27,7 +27,8 @@ func TestS3ADriverRealTLSAndChosenCatchup(t *testing.T) {
 func TestS3ADriverContiguousCatchupDuplicateAndReorderedQC(t *testing.T) {
 	n := s3aTestCluster(t, func(_ uint32, c *s3aConfig) {
 		c.Limits.RangeSlots = 1
-		c.Limits.RPCTimeout = 200 * time.Millisecond
+		// This tests range cardinality and QC ordering, using the shared
+		// finite RPC profile rather than a separate latency requirement.
 		// Keep background broadcasts partitioned from the laggard even after
 		// its listener starts. Only the explicit real-TLS relay/range below
 		// crosses the partition, so a late queued send cannot repair the gap.
@@ -56,8 +57,8 @@ func TestS3ADriverContiguousCatchupDuplicateAndReorderedQC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n.nodes[2].send(ctx, 3, history[1]) == nil {
-		t.Fatal("noncontiguous reordered QC accepted")
+	if err := n.nodes[2].send(ctx, 3, history[1]); !errors.Is(err, errS3AWire) {
+		t.Fatal("noncontiguous reordered QC was not rejected by the peer", err)
 	}
 	after, err := n.nodes[3].Floors()
 	if err != nil || after != before {
@@ -65,7 +66,7 @@ func TestS3ADriverContiguousCatchupDuplicateAndReorderedQC(t *testing.T) {
 	}
 	for slot := uint64(1); slot <= 2; slot++ {
 		if count, err := n.nodes[3].CatchUp(ctx, 2); err != nil || count != 1 {
-			t.Fatal("bounded contiguous range", count, err)
+			t.Fatal("bounded contiguous range", slot, count, err)
 		}
 		n.waitCut(3, slot)
 	}
