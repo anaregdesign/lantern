@@ -920,7 +920,9 @@ snapshot_search_lifecycle() {
 # ----- WARMUP ----------------------------------------------------------------
 log "warmup: ${warmup_duration} @ c=${warmup_conc} rps=${warmup_rps}"
 if [[ "$receipt_driver" == "1" ]]; then
-  run_receipt_probe warmup "$warmup_conc" "$warmup_rps" "$warmup_duration" >/dev/null
+  run_receipt_probe warmup "$warmup_conc" "$warmup_rps" "$warmup_duration" \
+    "$OUTDIR/ghz_warmup_0_receipt_admission.json" \
+    "$OUTDIR/ghz_warmup_1_receipt_lookup.json" >/dev/null
 else
   warm_call="$(yq -r '.target.call // .target.calls[0].call' "$SCENARIO_FILE")"
   warm_data="$(yq -r '.target.data_template // .target.calls[0].data_template' "$SCENARIO_FILE")"

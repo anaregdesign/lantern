@@ -1344,6 +1344,114 @@ func receiptSnapshotShellFunctions(t *testing.T) string {
 	return "receipt_runtime_scalar() {\n" + body + "\n}\n"
 }
 
+func TestReceiptBenchWarmupRetainsPairedSummariesOnFailure(t *testing.T) {
+	script, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(script), "run_receipt_probe() {\n")
+	if !found {
+		t.Fatal("missing receipt probe wrapper")
+	}
+	body, _, found := strings.Cut(rest, "\n}\n\nsnapshot_search_lifecycle() {")
+	if !found {
+		t.Fatal("incomplete receipt probe wrapper")
+	}
+	_, warmup, found := strings.Cut(string(script), "# ----- WARMUP ----------------------------------------------------------------\n")
+	if !found {
+		t.Fatal("missing warmup block")
+	}
+	warmup, _, found = strings.Cut(warmup, "\n# ----- PRE snapshot")
+	if !found {
+		t.Fatal("incomplete warmup block")
+	}
+	for _, exitCode := range []int{0, 23} {
+		t.Run(fmt.Sprintf("producer_exit_%d", exitCode), func(t *testing.T) {
+			out := t.TempDir()
+			fixture := `set -euo pipefail
+receipt_driver=1
+target_driver=receipt_vertex_delete
+SCENARIO_FILE=fixture.yaml
+REPO_ROOT="$PWD"
+PEER_TLS_DIR="$OUTDIR/trust"
+warmup_conc=12
+warmup_rps=200
+warmup_duration=10s
+endpoints=(localhost:6380 localhost:6381 localhost:6382)
+log() { :; }
+die() { echo "unexpected receipt wrapper failure" >&2; exit 91; }
+yq() {
+ case "$2" in
+  '.target.calls | length') echo 2;;
+  '.target.calls[0].name') echo receipt_admission;;
+  '.target.calls[0].call') echo graph.v1.LanternService/DeleteVertex;;
+  '.target.calls[1].name') echo receipt_lookup;;
+  '.target.calls[1].call') echo graph.v1.LanternService/GetReceiptStatus;;
+  *) return 92;;
+ esac
+}
+go() {
+ [[ "$1 $2" == 'run ./testbed/bench/receiptprobe' ]] || return 93
+ shift 2
+ local admission="" lookup="" phase="" duration="" pair="" concurrency=""
+ while (( $# )); do
+  case "$1" in
+   -admission-report) admission="$2";;
+   -lookup-report) lookup="$2";;
+   -phase) phase="$2";;
+   -duration) duration="$2";;
+   -pair-rps) pair="$2";;
+   -concurrency) concurrency="$2";;
+   -endpoints|-family|-ca-file) :;;
+   *) return 94;;
+  esac
+  shift 2
+ done
+ [[ "$phase/$duration/$pair/$concurrency" == 'warmup/10s/100/12' ]] || return 95
+ [[ "$admission" == "$OUTDIR/ghz_warmup_0_receipt_admission.json" &&
+    "$lookup" == "$OUTDIR/ghz_warmup_1_receipt_lookup.json" ]] || return 96
+ if [[ "$FIXTURE_EXIT" == 0 ]]; then
+  printf '{"count":1000,"statusCodeDistribution":{"OK":1000}}\n' > "$admission"
+  printf '{"count":1000,"statusCodeDistribution":{"OK":1000}}\n' > "$lookup"
+ else
+  printf '{"count":997,"statusCodeDistribution":{"OK":996,"Unavailable":1}}\n' > "$admission"
+  printf '{"count":996,"statusCodeDistribution":{"OK":996}}\n' > "$lookup"
+ fi
+ return "$FIXTURE_EXIT"
+}
+run_receipt_probe() {
+` + body + "\n}\n" + warmup + "\ntouch \"$OUTDIR/after-warmup\"\n"
+			command := exec.Command("bash", "-c", fixture)
+			command.Env = append(os.Environ(), "OUTDIR="+out, fmt.Sprintf("FIXTURE_EXIT=%d", exitCode))
+			output, err := command.CombinedOutput()
+			if command.ProcessState == nil || command.ProcessState.ExitCode() != exitCode {
+				t.Fatalf("warmup exit=%v err=%v output=%s, want %d", command.ProcessState, err, output, exitCode)
+			}
+			wantAdmission, wantLookup := 1000, 1000
+			if exitCode != 0 {
+				wantAdmission, wantLookup = 997, 996
+			}
+			for name, wantCount := range map[string]int{"ghz_warmup_0_receipt_admission.json": wantAdmission, "ghz_warmup_1_receipt_lookup.json": wantLookup} {
+				raw, err := os.ReadFile(filepath.Join(out, name))
+				var report struct {
+					Count  int            `json:"count"`
+					Status map[string]int `json:"statusCodeDistribution"`
+				}
+				if err != nil || json.Unmarshal(raw, &report) != nil || report.Count != wantCount {
+					t.Fatalf("paired summary missing after exit: %s %q %v", name, raw, err)
+				}
+				if wantCount == 997 && report.Status["Unavailable"] != 1 {
+					t.Fatalf("failed admission status lost: %+v", report)
+				}
+			}
+			_, err = os.Stat(filepath.Join(out, "after-warmup"))
+			if exitCode == 0 && err != nil || exitCode != 0 && !os.IsNotExist(err) {
+				t.Fatalf("failure did not stop warmup boundary: %v", err)
+			}
+		})
+	}
+}
+
 func TestProtectedReceiptBenchSnapshotNeverRequestsPprof(t *testing.T) {
 	outDir := t.TempDir()
 	fixture := `set -euo pipefail
