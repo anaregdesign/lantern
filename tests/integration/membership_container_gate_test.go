@@ -11,16 +11,32 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"gopkg.in/yaml.v3"
 )
 
 func TestMembershipContainerMounts(t *testing.T) {
-	docker, err := exec.LookPath("docker")
-	if err != nil || exec.CommandContext(t.Context(), docker, "compose", "version", "--short").Run() != nil {
-		t.Skip("Docker Compose required for rendered deployment contract")
-	}
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Older Compose renderers omit false create_host_path values from JSON.
+	// Require explicit false in our owned source overlays before accepting that
+	// representation; an absent source setting must never become a safe default.
+	for name, mounts := range map[string]int{
+		"docker-compose.membership.yml":                3,
+		"docker-compose.graph-snapshot.membership.yml": 1,
+	} {
+		raw, err := os.ReadFile(filepath.Join(root, "deploy/compose", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := membershipBindSource(raw, mounts); err != nil {
+			t.Fatalf("unsafe source overlay %s: %v", name, err)
+		}
+	}
+	docker, err := exec.LookPath("docker")
+	if err != nil || exec.CommandContext(t.Context(), docker, "compose", "version", "--short").Run() != nil {
+		t.Skip("Docker Compose required for rendered deployment contract; source overlays checked")
 	}
 	for _, graph := range []bool{false, true} {
 		t.Run(map[bool]string{false: "membership base", true: "graph Snapshot bind"}[graph], func(t *testing.T) {
@@ -93,7 +109,7 @@ func TestMembershipContainerMounts(t *testing.T) {
 						parts["/var/lib/lantern-snapshot-spool"] = "snapshot-spool"
 					}
 					part := parts[mount.Target]
-					if part == "" || mount.Type != "bind" || mount.Source != filepath.Join(dir, fmt.Sprintf("node-%d", i), part) || mount.Bind.Create == nil || *mount.Bind.Create || mount.ReadOnly != (part == "static" || part == "renewable") {
+					if part == "" || mount.Type != "bind" || mount.Source != filepath.Join(dir, fmt.Sprintf("node-%d", i), part) || (mount.Bind.Create != nil && *mount.Bind.Create) || mount.ReadOnly != (part == "static" || part == "renewable") {
 						t.Fatal("broad, writable-input or auto-created mount", i, mount.Target)
 					}
 					seen[part] = true
@@ -118,6 +134,60 @@ func TestMembershipContainerMounts(t *testing.T) {
 				if graph && settings != len(spoolEnvironment) {
 					t.Fatal("graph Snapshot spool settings missing", i)
 				}
+			}
+		})
+	}
+}
+
+func membershipBindSource(raw []byte, mounts int) error {
+	var source struct {
+		Services map[string]struct {
+			Volumes []struct {
+				Type string
+				Bind struct {
+					Create *bool `yaml:"create_host_path"`
+				}
+			}
+		}
+	}
+	if err := yaml.Unmarshal(raw, &source); err != nil {
+		return err
+	}
+	for i := 0; i < 3; i++ {
+		name := fmt.Sprintf("lantern-%d", i)
+		node, ok := source.Services[name]
+		if !ok || len(node.Volumes) != mounts {
+			return fmt.Errorf("%s: missing private mount", name)
+		}
+		for _, mount := range node.Volumes {
+			if mount.Type != "bind" || mount.Bind.Create == nil || *mount.Bind.Create {
+				return fmt.Errorf("%s: bind must explicitly disable host-path creation", name)
+			}
+		}
+	}
+	return nil
+}
+
+func TestMembershipBindSource(t *testing.T) {
+	for _, tc := range []struct {
+		name, mount string
+		valid       bool
+	}{
+		{"explicit false", "{type: bind, bind: {create_host_path: false}}", true},
+		{"explicit true", "{type: bind, bind: {create_host_path: true}}", false},
+		{"missing setting", "{type: bind, bind: {}}", false},
+		{"null setting", "{type: bind, bind: {create_host_path: null}}", false},
+		{"missing bind", "{type: bind}", false},
+		{"short syntax", "'/source:/target:ro'", false},
+		{"wrong type", "{type: volume, bind: {create_host_path: false}}", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := "services:\n"
+			for i := 0; i < 3; i++ {
+				raw += fmt.Sprintf("  lantern-%d:\n    volumes: !override\n      - %s\n", i, tc.mount)
+			}
+			if err := membershipBindSource([]byte(raw), 1); (err == nil) != tc.valid {
+				t.Fatalf("valid=%v, error=%v", tc.valid, err)
 			}
 		})
 	}
