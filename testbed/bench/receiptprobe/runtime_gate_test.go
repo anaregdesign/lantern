@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
@@ -280,6 +281,326 @@ func TestSampleSteadyMetricsHTTPDeadlineAndConnections(t *testing.T) {
 			ctx.Err() != nil || len(report.Samples) != 0 || attempts.Load() != 1 || laterAttempts.Load() != 0 {
 			t.Fatalf("headers timeout must fail closed once with active caller: report=%+v caller=%v attempts=%d later=%d",
 				report, ctx.Err(), attempts.Load(), laterAttempts.Load())
+		}
+	})
+}
+
+func TestSteadyMetricsPendingDialOwnership(t *testing.T) {
+	// Deliberately not parallel: the sampler control temporarily replaces the
+	// process default. Restore it before any parallel top-level tests resume.
+	t.Run("request cancellation does not own a reusable pending dial", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+		defer cancel()
+		requestCtx, cancelRequest := context.WithCancel(ctx)
+		defer cancelRequest()
+		var attempts atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			attempts.Add(1)
+			_, _ = io.WriteString(w, "go_goroutines 40\ngo_memstats_heap_alloc_bytes 104857600\n"+testRuntimeObservations)
+		}))
+		base, ok := http.DefaultTransport.(*http.Transport)
+		if !ok || base == nil {
+			t.Fatal("control requires the standard default transport")
+		}
+		transport := base.Clone()
+		transport.Proxy = nil
+		if transport.MaxConnsPerHost != 0 || transport.DialContext == nil {
+			t.Fatal("control changed the standard unlimited active connection policy")
+		}
+		dial := transport.DialContext
+		entered, finished := make(chan context.Context, 1), make(chan struct{})
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		releaseDial := func() { releaseOnce.Do(func() { close(release) }) }
+		var dials atomic.Int32
+		transport.DialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+			if dials.Add(1) == 1 {
+				defer close(finished)
+				entered <- dialCtx
+				select {
+				case <-dialCtx.Done():
+					return nil, dialCtx.Err()
+				case <-release:
+					return nil, errors.New("controlled pending dial teardown")
+				}
+			}
+			return dial(dialCtx, network, address)
+		}
+		defer func() {
+			transport.CloseIdleConnections()
+			releaseDial()
+			server.Close()
+			if dials.Load() != 0 {
+				select {
+				case <-finished:
+				case <-time.After(2 * time.Second):
+					t.Error("controlled pending dial did not join during teardown")
+				}
+			}
+		}()
+		client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
+		endpoint := metricsEndpoint{url: server.URL + "/metrics", endpoint: "local control"}
+		var output bytes.Buffer
+		_, err := scrapeRuntimeMetricsObserved(requestCtx, client, endpoint, time.Now(), 0, &output)
+		if !errors.Is(err, context.DeadlineExceeded) || requestCtx.Err() != nil || attempts.Load() != 0 {
+			t.Fatalf("pending dial changed the original HTTP deadline or reached a server: err=%v caller=%v requests=%d", err, requestCtx.Err(), attempts.Load())
+		}
+		var dialCtx context.Context
+		select {
+		case dialCtx = <-entered:
+		case <-ctx.Done():
+			t.Fatal("controlled dial did not start", ctx.Err())
+		}
+		finish := runtimeTraceScrapeRecords(t, output.String())[1]
+		trace := finish.HTTPTrace
+		if finish.Stage != "http" || finish.Reason != "deadline_exceeded" || finish.ContextState != "active" ||
+			trace.GetConn == nil || trace.GetConn.Count != 1 || trace.GotConn != nil || trace.ConnectStart != nil || trace.ConnectDone != nil || trace.WroteRequest != nil || trace.FirstResponseByte != nil {
+			t.Fatalf("pre-connect wait did not preserve the GetConn-only observation: %+v", finish)
+		}
+		cancelRequest()
+		if dialCtx.Err() != nil {
+			t.Fatal("control did not retain Transport-owned dialing after request cancellation", dialCtx.Err())
+		}
+		// An abandoned dial is not a default MaxConnsPerHost queue limit.
+		// A fresh request can connect while that first dial remains held.
+		value, err := scrapeRuntimeMetricsObserved(ctx, client, endpoint, time.Now(), 0, io.Discard)
+		if err != nil || value.Goroutines != 40 || attempts.Load() != 1 || dials.Load() != 2 || dialCtx.Err() != nil {
+			t.Fatalf("pending dial blocked the next unlimited-connection scrape: value=%+v err=%v requests=%d dials=%d", value, err, attempts.Load(), dials.Load())
+		}
+		transport.CloseIdleConnections()
+		select {
+		case <-finished:
+		case <-ctx.Done():
+			t.Fatal("transport teardown did not cancel its unused pending dial", ctx.Err())
+		}
+		if !errors.Is(dialCtx.Err(), context.Canceled) {
+			t.Fatal("transport teardown did not own dial cancellation", dialCtx.Err())
+		}
+	})
+
+	t.Run("sampler releases its unused dial before returning", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+		defer cancel()
+		original := http.DefaultTransport
+		base, ok := original.(*http.Transport)
+		if !ok || base == nil {
+			t.Fatal("sampler control requires the standard default transport")
+		}
+		transport := base.Clone()
+		transport.Proxy = nil
+		entered, finished := make(chan context.Context, 1), make(chan struct{})
+		release := make(chan struct{})
+		var dials atomic.Int32
+		var finishOnce sync.Once
+		transport.DialContext = func(dialCtx context.Context, _, _ string) (net.Conn, error) {
+			dials.Add(1)
+			select {
+			case entered <- dialCtx:
+			default:
+			}
+			defer finishOnce.Do(func() { close(finished) })
+			select {
+			case <-dialCtx.Done():
+				return nil, dialCtx.Err()
+			case <-release:
+				return nil, errors.New("controlled sampler dial teardown")
+			}
+		}
+		http.DefaultTransport = transport
+		defer func() {
+			http.DefaultTransport = original
+			transport.CloseIdleConnections()
+			close(release)
+			select {
+			case <-finished:
+			case <-time.After(2 * time.Second):
+				t.Error("controlled sampler dial did not join during teardown")
+			}
+		}()
+		report := sampleSteadyMetrics(ctx, steadyMetricsConfig{
+			endpoints: []metricsEndpoint{{url: "http://127.0.0.1:1/metrics", endpoint: "held local control"}},
+			interval:  5 * time.Second,
+		}, time.Now(), make(chan struct{}))
+		if report.Failure == "" || len(report.Samples) != 0 || ctx.Err() != nil || dials.Load() != 1 {
+			t.Fatalf("sampler changed fail-closed timeout semantics: failure=%t samples=%d caller=%v dials=%d", report.Failure != "", len(report.Samples), ctx.Err(), dials.Load())
+		}
+		var dialCtx context.Context
+		select {
+		case dialCtx = <-entered:
+		case <-ctx.Done():
+			t.Fatal("sampler dial did not enter its controlled wait", ctx.Err())
+		}
+		// Teardown requests cancellation before return. The Transport's
+		// goroutine can observe it afterwards, so join it independently.
+		select {
+		case <-finished:
+		case <-ctx.Done():
+			t.Fatal("returned sampler retained an unused pending dial", ctx.Err())
+		}
+		if !errors.Is(dialCtx.Err(), context.Canceled) {
+			t.Fatal("sampler did not close its owned unused dial", dialCtx.Err())
+		}
+	})
+}
+
+type runtimeMetricsCloseObservedConn struct {
+	net.Conn
+	closed chan struct{}
+	once   *sync.Once
+}
+
+func (c runtimeMetricsCloseObservedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() { close(c.closed) })
+	return err
+}
+
+func runtimeMetricsDefaultTransportForTest(t *testing.T) *http.Transport {
+	t.Helper()
+	original := http.DefaultTransport
+	base, ok := original.(*http.Transport)
+	if !ok || base == nil {
+		t.Fatal("control requires the standard default transport")
+	}
+	transport := base.Clone()
+	transport.Proxy = nil
+	http.DefaultTransport = transport
+	t.Cleanup(func() {
+		http.DefaultTransport = original
+		transport.CloseIdleConnections()
+	})
+	return transport
+}
+
+func TestSteadyMetricsTransportLifecycleControls(t *testing.T) {
+	// These controls also own the temporary process default sequentially.
+	t.Run("unsupported default transport fails closed", func(t *testing.T) {
+		var calls atomic.Int32
+		for _, test := range []struct {
+			name      string
+			transport http.RoundTripper
+		}{
+			{name: "custom RoundTripper", transport: runtimeDiagnosticRoundTripper(func(*http.Request) (*http.Response, error) {
+				calls.Add(1)
+				return nil, errors.New("unexpected metrics transport invocation")
+			})},
+			{name: "typed nil standard Transport", transport: (*http.Transport)(nil)},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				original := http.DefaultTransport
+				http.DefaultTransport = test.transport
+				defer func() { http.DefaultTransport = original }()
+				stop := make(chan struct{})
+				close(stop)
+				report := sampleSteadyMetrics(t.Context(), steadyMetricsConfig{interval: time.Second}, time.Now(), stop)
+				if report.Failure != "metrics requires a configurable HTTP transport" || len(report.Samples) != 0 || calls.Load() != 0 {
+					t.Fatalf("unsupported transport did not fail closed before sampling: failure=%t samples=%d calls=%d", report.Failure != "", len(report.Samples), calls.Load())
+				}
+			})
+		}
+	})
+
+	t.Run("normal stop closes its owned idle connection", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+		defer cancel()
+		transport := runtimeMetricsDefaultTransportForTest(t)
+		dial := transport.DialContext
+		closed := make(chan struct{})
+		var closeOnce sync.Once
+		var dials, requests atomic.Int32
+		transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			dials.Add(1)
+			conn, err := dial(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			return runtimeMetricsCloseObservedConn{Conn: conn, closed: closed, once: &closeOnce}, nil
+		}
+		stop := make(chan struct{})
+		var stopOnce sync.Once
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			requests.Add(1)
+			_, _ = io.WriteString(w, "go_goroutines 40\ngo_memstats_heap_alloc_bytes 104857600\n"+testRuntimeObservations)
+			stopOnce.Do(func() { close(stop) })
+		}))
+		defer server.Close()
+		report := sampleSteadyMetrics(ctx, steadyMetricsConfig{
+			endpoints: []metricsEndpoint{{url: server.URL + "/metrics", endpoint: "normal local control"}}, interval: 5 * time.Second,
+		}, time.Now(), stop)
+		if report.Failure != "" || len(report.Samples) != 1 || requests.Load() != 1 || dials.Load() != 1 || ctx.Err() != nil {
+			t.Fatalf("normal completion changed metrics sampling: failure=%t rounds=%d requests=%d dials=%d caller=%v", report.Failure != "", len(report.Samples), requests.Load(), dials.Load(), ctx.Err())
+		}
+		select {
+		case <-closed:
+		case <-ctx.Done():
+			t.Fatal("stopped sampler retained its owned idle connection", ctx.Err())
+		}
+	})
+
+	t.Run("parent cancellation closes the sampler's pending dial", func(t *testing.T) {
+		ownerCtx, cancelOwner := context.WithTimeout(t.Context(), 6*time.Second)
+		defer cancelOwner()
+		ctx, cancel := context.WithCancel(ownerCtx)
+		transport := runtimeMetricsDefaultTransportForTest(t)
+		entered, dialDone, samplerDone := make(chan context.Context, 1), make(chan struct{}), make(chan struct{})
+		release := make(chan struct{})
+		var releaseOnce, doneOnce sync.Once
+		var dials atomic.Int32
+		transport.DialContext = func(dialCtx context.Context, _, _ string) (net.Conn, error) {
+			dials.Add(1)
+			select {
+			case entered <- dialCtx:
+			default:
+			}
+			defer doneOnce.Do(func() { close(dialDone) })
+			select {
+			case <-dialCtx.Done():
+				return nil, dialCtx.Err()
+			case <-release:
+				return nil, errors.New("controlled canceled sampler teardown")
+			}
+		}
+		t.Cleanup(func() {
+			cancel()
+			transport.CloseIdleConnections()
+			releaseOnce.Do(func() { close(release) })
+			for _, done := range []<-chan struct{}{samplerDone, dialDone} {
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Error("controlled canceled sampler did not join during teardown")
+				}
+			}
+		})
+		result := make(chan steadyMetricsReport, 1)
+		go func() {
+			defer close(samplerDone)
+			result <- sampleSteadyMetrics(ctx, steadyMetricsConfig{
+				endpoints: []metricsEndpoint{{url: "http://127.0.0.1:1/metrics", endpoint: "canceled local control"}}, interval: 5 * time.Second,
+			}, time.Now(), make(chan struct{}))
+		}()
+		var dialCtx context.Context
+		select {
+		case dialCtx = <-entered:
+		case <-ownerCtx.Done():
+			t.Fatal("sampler did not enter its pending dial", ownerCtx.Err())
+		}
+		cancel()
+		select {
+		case report := <-result:
+			if report.Failure == "" || len(report.Samples) != 0 || !errors.Is(ctx.Err(), context.Canceled) || dials.Load() != 1 {
+				t.Fatalf("parent cancellation changed fail-closed sampling: failure=%t rounds=%d caller=%v dials=%d", report.Failure != "", len(report.Samples), ctx.Err(), dials.Load())
+			}
+		case <-ownerCtx.Done():
+			t.Fatal("sampler did not return after parent cancellation", ownerCtx.Err())
+		}
+		select {
+		case <-dialDone:
+		case <-ownerCtx.Done():
+			t.Fatal("canceled sampler retained its unused dial", ownerCtx.Err())
+		}
+		if !errors.Is(dialCtx.Err(), context.Canceled) {
+			t.Fatal("sampler's pending dial did not receive transport cancellation", dialCtx.Err())
 		}
 	})
 }

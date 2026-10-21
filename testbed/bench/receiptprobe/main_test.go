@@ -637,101 +637,153 @@ func TestMainWritesWarmupSummariesBeforeFailure(t *testing.T) {
 	}
 	t.Parallel()
 
-	const token = "warmup-summary-TOKEN_SECRET"
-	const unavailableReason = "fixture BODY_REASON_SECRET"
-	endpoint := testReceiptEndpoint()
-	var capabilityCalls, admissionCalls, lookupCalls atomic.Int32
-	mux := http.NewServeMux()
-	mux.Handle(graphv1connect.LanternServiceGetReceiptCapabilityProcedure,
-		connect.NewUnaryHandler(graphv1connect.LanternServiceGetReceiptCapabilityProcedure,
-			func(context.Context, *connect.Request[graphv1.GetReceiptCapabilityRequest]) (*connect.Response[graphv1.GetReceiptCapabilityResponse], error) {
-				capabilityCalls.Add(1)
-				return connect.NewResponse(endpoint.capability), nil
+	for _, test := range []struct {
+		phase   string
+		code    connect.Code
+		verdict string
+	}{
+		{"warmup", connect.CodeUnavailable, "receipt lookup coverage mismatch"},
+		{"steady", connect.CodeInternal, "steady runtime sampling:"},
+	} {
+		t.Run(test.phase, func(t *testing.T) {
+			const token = "warmup-summary-TOKEN_SECRET"
+			const unavailableReason = "fixture BODY_REASON_SECRET"
+			endpoint := testReceiptEndpoint()
+			var capabilityCalls, admissionCalls, lookupCalls atomic.Int32
+			mux := http.NewServeMux()
+			mux.Handle(graphv1connect.LanternServiceGetReceiptCapabilityProcedure,
+				connect.NewUnaryHandler(graphv1connect.LanternServiceGetReceiptCapabilityProcedure,
+					func(context.Context, *connect.Request[graphv1.GetReceiptCapabilityRequest]) (*connect.Response[graphv1.GetReceiptCapabilityResponse], error) {
+						capabilityCalls.Add(1)
+						return connect.NewResponse(endpoint.capability), nil
+					}))
+			mux.Handle(graphv1connect.LanternServiceDeleteVertexProcedure,
+				connect.NewUnaryHandler(graphv1connect.LanternServiceDeleteVertexProcedure,
+					func(context.Context, *connect.Request[graphv1.DeleteVertexRequest]) (*connect.Response[graphv1.DeleteVertexResponse], error) {
+						admissionCalls.Add(1)
+						return nil, connect.NewError(test.code, errors.New(unavailableReason))
+					}))
+			mux.Handle(graphv1connect.LanternServiceGetReceiptStatusProcedure,
+				connect.NewUnaryHandler(graphv1connect.LanternServiceGetReceiptStatusProcedure,
+					func(context.Context, *connect.Request[graphv1.GetReceiptStatusRequest]) (*connect.Response[graphv1.GetReceiptStatusResponse], error) {
+						lookupCalls.Add(1)
+						return nil, connect.NewError(test.code, errors.New(unavailableReason))
+					}))
+			peer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.ProtoMajor != 2 || r.Header.Get("Authorization") != "Bearer "+token {
+					t.Error("receipt fixture requires authenticated HTTP/2")
+					http.Error(w, "fixture protocol or authorization mismatch", http.StatusUnauthorized)
+					return
+				}
+				mux.ServeHTTP(w, r)
 			}))
-	mux.Handle(graphv1connect.LanternServiceDeleteVertexProcedure,
-		connect.NewUnaryHandler(graphv1connect.LanternServiceDeleteVertexProcedure,
-			func(context.Context, *connect.Request[graphv1.DeleteVertexRequest]) (*connect.Response[graphv1.DeleteVertexResponse], error) {
-				admissionCalls.Add(1)
-				return nil, connect.NewError(connect.CodeUnavailable, errors.New(unavailableReason))
-			}))
-	mux.Handle(graphv1connect.LanternServiceGetReceiptStatusProcedure,
-		connect.NewUnaryHandler(graphv1connect.LanternServiceGetReceiptStatusProcedure,
-			func(context.Context, *connect.Request[graphv1.GetReceiptStatusRequest]) (*connect.Response[graphv1.GetReceiptStatusResponse], error) {
-				lookupCalls.Add(1)
-				return nil, connect.NewError(connect.CodeUnavailable, errors.New(unavailableReason))
-			}))
-	peer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ProtoMajor != 2 || r.Header.Get("Authorization") != "Bearer "+token {
-			t.Error("receipt fixture requires authenticated HTTP/2")
-			http.Error(w, "fixture protocol or authorization mismatch", http.StatusUnauthorized)
-			return
-		}
-		mux.ServeHTTP(w, r)
-	}))
-	peer.EnableHTTP2 = true
-	peer.StartTLS()
-	t.Cleanup(peer.Close)
-	dir := t.TempDir()
-	ca := filepath.Join(dir, "ca.pem")
-	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{
-		Type: "CERTIFICATE", Bytes: peer.Certificate().Raw,
-	}), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	admissionPath, lookupPath := filepath.Join(dir, "warmup-admission.json"), filepath.Join(dir, "warmup-lookup.json")
-	args, err := json.Marshal([]string{
-		"-endpoints", peer.URL, "-family", string(receiptVertexDelete), "-ca-file", ca,
-		"-phase", "warmup", "-duration", "250ms", "-pair-rps", "20", "-concurrency", "1",
-		"-admission-report", admissionPath, "-lookup-report", lookupPath,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMainWritesWarmupSummariesBeforeFailure$")
-	command.WaitDelay = time.Second
-	command.Env = append(os.Environ(), childFlag+"=1", childArgs+"="+string(args), "LANTERN_BENCH_AUTH_TOKEN="+token)
-	output, err := command.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("receipt main child exceeded its finite deadline: %v", ctx.Err())
-	}
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(output), "receipt lookup coverage mismatch") {
-		t.Fatalf("real warmup main exit = %v, output: %s", err, output)
-	}
-	var saved [2]summary
-	for i, path := range []string{admissionPath, lookupPath} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("summary %d missing after failed main: %v", i, err)
-		}
-		info, err := os.Stat(path)
-		if err != nil || info.Mode().Perm() != 0o600 {
-			t.Fatalf("summary %d permissions = %v, %v", i, info, err)
-		}
-		if err := json.Unmarshal(data, &saved[i]); err != nil {
-			t.Fatal(err)
-		}
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(data, &fields); err != nil || len(fields) != 8 {
-			t.Fatalf("unexpected summary fields: %s, %v", data, err)
-		}
-		for _, name := range []string{"count", "total", "average", "fastest", "slowest", "rps", "statusCodeDistribution", "latencyDistribution"} {
-			if _, ok := fields[name]; !ok {
-				t.Fatalf("summary %d omitted %s", i, name)
+			peer.EnableHTTP2 = true
+			peer.StartTLS()
+			t.Cleanup(peer.Close)
+			dir := t.TempDir()
+			ca := filepath.Join(dir, "ca.pem")
+			if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{
+				Type: "CERTIFICATE", Bytes: peer.Certificate().Raw,
+			}), 0o600); err != nil {
+				t.Fatal(err)
 			}
-		}
-		for _, secret := range []string{token, peer.URL, unavailableReason, "SECRET", "Authorization", "Bearer"} {
-			if bytes.Contains(data, []byte(secret)) {
-				t.Fatalf("summary %d exposed request/response content: %s", i, data)
+			admissionPath, lookupPath := filepath.Join(dir, "warmup-admission.json"), filepath.Join(dir, "warmup-lookup.json")
+			argsList := []string{
+				"-endpoints", peer.URL, "-family", string(receiptVertexDelete), "-ca-file", ca,
+				"-phase", test.phase, "-duration", "250ms", "-pair-rps", "20", "-concurrency", "1",
+				"-admission-report", admissionPath, "-lookup-report", lookupPath,
 			}
-		}
-	}
-	if capabilityCalls.Load() != 1 || admissionCalls.Load() <= 0 || lookupCalls.Load() != 0 ||
-		saved[0].Count != int64(admissionCalls.Load()) || saved[0].StatusCodeDistribution["Unavailable"] != saved[0].Count ||
-		len(saved[0].StatusCodeDistribution) != 1 || saved[1].Count != 0 || len(saved[1].StatusCodeDistribution) != 0 {
-		t.Fatalf("warmup samples/calls = %+v; capability=%d admission=%d lookup=%d", saved,
-			capabilityCalls.Load(), admissionCalls.Load(), lookupCalls.Load())
+			if test.phase == "steady" {
+				var metricsURLs []string
+				for range receiptReplicaCount {
+					metrics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.WriteHeader(http.StatusServiceUnavailable)
+					}))
+					t.Cleanup(metrics.Close)
+					metricsURLs = append(metricsURLs, metrics.URL+"/metrics")
+				}
+				argsList = append(argsList, "-metrics-endpoints", strings.Join(metricsURLs, ","),
+					"-metrics-interval", "50ms", "-metrics-report", filepath.Join(dir, "metrics.json"))
+			}
+			args, err := json.Marshal(argsList)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMainWritesWarmupSummariesBeforeFailure$")
+			command.WaitDelay = time.Second
+			command.Env = append(os.Environ(), childFlag+"=1", childArgs+"="+string(args), "LANTERN_BENCH_AUTH_TOKEN="+token)
+			output, err := command.CombinedOutput()
+			if ctx.Err() != nil {
+				t.Fatalf("receipt main child exceeded its finite deadline: %v", ctx.Err())
+			}
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(output), test.verdict) {
+				t.Fatalf("real warmup main exit = %v, output: %s", err, output)
+			}
+			var saved [2]summary
+			for i, path := range []string{admissionPath, lookupPath} {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("summary %d missing after failed main: %v", i, err)
+				}
+				info, err := os.Stat(path)
+				if err != nil || info.Mode().Perm() != 0o600 {
+					t.Fatalf("summary %d permissions = %v, %v", i, info, err)
+				}
+				if err := json.Unmarshal(data, &saved[i]); err != nil {
+					t.Fatal(err)
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(data, &fields); err != nil || len(fields) != 8 {
+					t.Fatalf("unexpected summary fields: %s, %v", data, err)
+				}
+				for _, name := range []string{"count", "total", "average", "fastest", "slowest", "rps", "statusCodeDistribution", "latencyDistribution"} {
+					if _, ok := fields[name]; !ok {
+						t.Fatalf("summary %d omitted %s", i, name)
+					}
+				}
+				for _, secret := range []string{token, peer.URL, unavailableReason, "SECRET", "Authorization", "Bearer"} {
+					if bytes.Contains(data, []byte(secret)) {
+						t.Fatalf("summary %d exposed request/response content: %s", i, data)
+					}
+				}
+			}
+			if capabilityCalls.Load() != 1 || admissionCalls.Load() <= 0 || lookupCalls.Load() != 0 ||
+				saved[0].Count != int64(admissionCalls.Load()) || saved[0].StatusCodeDistribution[connectStatusName(test.code)] != saved[0].Count ||
+				len(saved[0].StatusCodeDistribution) != 1 || saved[1].Count != 0 || len(saved[1].StatusCodeDistribution) != 0 {
+				t.Fatalf("warmup samples/calls = %+v; capability=%d admission=%d lookup=%d", saved,
+					capabilityCalls.Load(), admissionCalls.Load(), lookupCalls.Load())
+			}
+			if test.phase == "steady" {
+				data, err := os.ReadFile(filepath.Join(dir, "metrics.json"))
+				if err != nil {
+					t.Fatalf("metrics failure artifact missing: %v", err)
+				}
+				var report steadyMetricsReport
+				if err := json.Unmarshal(data, &report); err != nil || report.Failure == "" || len(report.Samples) != 0 {
+					t.Fatalf("metrics failure artifact changed verdict: %+v, %v", report, err)
+				}
+			}
+			var failureRecords []map[string]string
+			for _, line := range bytes.Split(output, []byte("\n")) {
+				var record map[string]string
+				if json.Unmarshal(line, &record) == nil && record["event"] == "rpc_failure" {
+					failureRecords = append(failureRecords, record)
+				}
+			}
+			if len(failureRecords) != 1 || len(failureRecords[0]) != 6 ||
+				failureRecords[0]["phase"] != test.phase || failureRecords[0]["stage"] != "admission" ||
+				failureRecords[0]["status"] != connectStatusName(test.code) ||
+				failureRecords[0]["source"] != "wire" || failureRecords[0]["class"] != "unclassified" {
+				t.Fatalf("failure classification lost before %s verdict: %s", test.verdict, output)
+			}
+			for _, secret := range []string{token, peer.URL, unavailableReason, "SECRET", "Authorization", "Bearer"} {
+				if bytes.Contains(output, []byte(secret)) {
+					t.Fatal("failure diagnostics exposed request/response content")
+				}
+			}
+		})
 	}
 }

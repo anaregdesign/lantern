@@ -555,6 +555,16 @@ exclude Go container overhead, and retained graph/index/history state may grow
 with successful writes. No additional scrape or forced GC is used for this
 context.
 
+The steady metrics sampler owns a separate HTTP transport, closes its idle
+connections and requests cancellation of unused pending dials when sampling ends;
+the per-request timeout remains 2s. At phase completion, stderr retains at most
+the first failed admission and first failed lookup as fixed categories for status,
+source and message class, even if metrics or coverage fails first. It excludes
+raw errors and request/response content. A wire-error category or exact message
+class does not prove a server
+execution branch or whether the mutation committed. These diagnostics do not
+change the paired summaries, verdicts or retries.
+
 Five preliminary **Edge Delete-only** Compose runs on the synthetic-parent stack (Apple M3 Max,
 `darwin/arm64`), recorded in
 [local scenario evidence](evidence/issue-1399/scenario.txt), sustained

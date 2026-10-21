@@ -94,6 +94,7 @@ type rpcSample struct {
 	latency time.Duration
 	status  string
 	reason  string
+	failure rpcFailureClassification
 }
 
 type sampleCollector struct {
@@ -576,10 +577,14 @@ schedule:
 		steadyReport = &report
 	}
 
+	admissions, lookups := admissionSamples.snapshot(), lookupSamples.snapshot()
 	results := resultSet{
-		admission: summarize(admissionSamples.snapshot(), elapsed),
-		lookup:    summarize(lookupSamples.snapshot(), elapsed),
+		admission: summarize(admissions, elapsed),
+		lookup:    summarize(lookups, elapsed),
 	}
+	// Preserve a content-free failure classification even when an earlier
+	// metrics or coverage guard determines the unchanged failure verdict.
+	writeRPCFailureDiagnostics(os.Stderr, cfg.phase, admissions, lookups)
 	if steadyReport != nil && steadyReport.Failure != "" {
 		return results, steadyReport, fmt.Errorf("steady runtime sampling: %s", steadyReport.Failure)
 	}
@@ -600,9 +605,9 @@ schedule:
 		return results, steadyReport, fmt.Errorf(
 			"receipt probe observed non-OK results: admission=%d (%s) lookup=%d (%s)",
 			nonOKCount(results.admission),
-			firstFailure(admissionSamples.snapshot()),
+			firstFailure(admissions),
 			nonOKCount(results.lookup),
-			firstFailure(lookupSamples.snapshot()),
+			firstFailure(lookups),
 		)
 	}
 	return results, steadyReport, nil
@@ -891,7 +896,11 @@ func sampleFor(latency time.Duration, err error) rpcSample {
 	if err == nil {
 		return rpcSample{latency: latency, status: "OK"}
 	}
-	return rpcSample{latency: latency, status: connectStatusName(connect.CodeOf(err))}
+	return rpcSample{
+		latency: latency,
+		status:  connectStatusName(connect.CodeOf(err)),
+		failure: classifyRPCFailure(err),
+	}
 }
 
 func connectStatusName(code connect.Code) string {

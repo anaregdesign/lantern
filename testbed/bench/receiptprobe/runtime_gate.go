@@ -109,7 +109,16 @@ func sampleSteadyMetrics(
 	for _, endpoint := range cfg.endpoints {
 		report.Endpoints = append(report.Endpoints, endpoint.endpoint)
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
+	baseTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || baseTransport == nil {
+		report.Failure = "metrics requires a configurable HTTP transport"
+		return report
+	}
+	// Own only this sampling flight's pool and unused dials. Request timeout
+	// alone permits a Transport-owned dial to continue for a future request.
+	transport := baseTransport.Clone()
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
 	ticker := time.NewTicker(cfg.interval)
 	defer ticker.Stop()
 	for {
