@@ -332,6 +332,75 @@ class SDK4ReceiptTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "proof kind"):
             self.verify(gate.CONFIGURED_SOURCE_INTEGRATION)
 
+    def test_functional_validation_selects_both_receipt_probe_parents_and_requires_edge_add_body(self):
+        parents = (
+            "TestReceiptProbeFourFamilies_RealConnectWire",
+            "TestReceiptProbeProtectedEdgeAddIntent_RealConnectWire",
+        )
+        child = "TestReceiptProbeFourFamilies_RealConnectWire/receipt_edge_add"
+        self.assertEqual(gate.RECEIPT_PROBE_TESTS, parents)
+        self.assertEqual(gate.RECEIPT_PROBE_EDGE_ADD_TEST, child)
+        command = gate.command(gate.FUNCTIONAL_VALIDATION)
+        selector = command[command.index("-run") + 1]
+        required = gate.required_tests(gate.FUNCTIONAL_VALIDATION)
+        for parent in parents:
+            self.assertEqual(gate.RETAINED_ROOT_TESTS.count(parent), 1)
+            self.assertIsNotNone(re.fullmatch(selector, parent))
+            self.assertEqual(required.count(parent), 1)
+        self.assertEqual(required.count(child), 1)
+        self.assertIn("-tags=lantern_test_time", command)
+        self.configure(gate.FUNCTIONAL_VALIDATION)
+        verified = self.verify()
+        for name in (*parents, child):
+            self.assertIn(name, verified["executed_tests"])
+
+    def test_functional_validation_refuses_missing_skipped_failed_or_incomplete_receipt_edge_add(self):
+        self.configure(gate.FUNCTIONAL_VALIDATION)
+        child = "TestReceiptProbeFourFamilies_RealConnectWire/receipt_edge_add"
+        complete = events(kind=gate.FUNCTIONAL_VALIDATION)
+        run = {"Package": gate.PACKAGE, "Action": "run", "Test": child}
+        passed = {"Package": gate.PACKAGE, "Action": "pass", "Test": child}
+        variants = [
+            ("missing child despite passing parents", [r for r in complete if r.get("Test") != child]),
+            ("run without pass", [r for r in complete if r != passed]),
+            ("pass without run", [r for r in complete if r != run]),
+            ("duplicate run", complete + [run]),
+            ("duplicate pass", complete + [passed]),
+            ("duplicate complete body", complete + [run, passed]),
+        ]
+        for action in ("skip", "fail"):
+            variants.append(
+                (
+                    action,
+                    [{**r, "Action": action} if r == passed else r for r in complete],
+                )
+            )
+        for label, records in variants:
+            with self.subTest(label=label):
+                self.write_events(records)
+                self.save()
+                reason = "failed/skipped" if label in ("skip", "fail") else "absent, duplicated or incomplete"
+                with self.assertRaisesRegex(ValueError, reason):
+                    self.verify()
+
+    def test_configured_source_does_not_select_or_require_receipt_probe_execution(self):
+        parents = (
+            "TestReceiptProbeFourFamilies_RealConnectWire",
+            "TestReceiptProbeProtectedEdgeAddIntent_RealConnectWire",
+        )
+        child = "TestReceiptProbeFourFamilies_RealConnectWire/receipt_edge_add"
+        command = gate.command(gate.CONFIGURED_SOURCE_INTEGRATION)
+        selector = command[command.index("-run") + 1]
+        self.assertEqual(selector, "^(TestCurrentSecurityPublicNativeGate)$")
+        self.assertNotIn("-tags=lantern_test_time", command)
+        required = gate.required_tests(gate.CONFIGURED_SOURCE_INTEGRATION)
+        self.assertEqual(required, (gate.ROOT_TEST, *gate.SDK_TESTS, *gate.CONFIGURED_SOURCE_INTEGRATION_CASES))
+        for name in (*parents, child):
+            self.assertIsNone(re.fullmatch(selector, name))
+            self.assertNotIn(name, required)
+        self.configure(gate.CONFIGURED_SOURCE_INTEGRATION)
+        self.assertEqual(self.verify()["executed_tests"], list(required))
+
     def test_functional_validation_requires_the_intact_resume_and_source_integration_forbids_an_extra_owner(self):
         for kind in (gate.FUNCTIONAL_VALIDATION, gate.CONFIGURED_SOURCE_INTEGRATION):
             self.configure(kind)
