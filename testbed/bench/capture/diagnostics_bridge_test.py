@@ -1,6 +1,7 @@
 import http.client
 import io
 import json
+import socket
 import subprocess
 import threading
 import unittest
@@ -10,6 +11,102 @@ from diagnostics_bridge import DiagnosticsHandler, DiagnosticsServer
 
 
 class DiagnosticsBridgeTest(unittest.TestCase):
+    def test_partial_headers_do_not_block_another_http_request(self):
+        header_read, release_partial = threading.Event(), threading.Event()
+        partial_done, normal_done = threading.Event(), threading.Event()
+        handler_threads, lines = [], []
+        handler_lock = threading.Lock()
+        fetch = mock.Mock(return_value=b"go_goroutines 5\n")
+        partial = socket.socket()
+        partial.bind(("127.0.0.1", 0))
+        partial_port = partial.getsockname()[1]
+        partial.settimeout(2)
+
+        class HeaderReader:
+            def __init__(self, reader):
+                self.reader = reader
+
+            def readline(self, *args):
+                header_read.set()
+                return self.reader.readline(*args)
+
+        class ObservedHandler(DiagnosticsHandler):
+            def setup(self):
+                with handler_lock:
+                    handler_threads.append(threading.current_thread())
+                super().setup()
+
+            def parse_request(self):
+                if self.client_address[1] != partial_port:
+                    return super().parse_request()
+                reader = self.rfile
+                self.rfile = HeaderReader(reader)
+                try:
+                    parsed = super().parse_request()
+                finally:
+                    self.rfile = reader
+                # EOF can complete headers in the stdlib. During teardown,
+                # discard this synthetic partial request before do_GET.
+                return parsed and not release_partial.is_set()
+
+            def finish(self):
+                try:
+                    super().finish()
+                finally:
+                    done = partial_done if self.client_address[1] == partial_port else normal_done
+                    done.set()
+
+        server = DiagnosticsServer(("127.0.0.1", 0), "a" * 64, fetch, log_sink=lines.append)
+        server.RequestHandlerClass = ObservedHandler
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        client = http.client.HTTPConnection(*server.server_address, timeout=2)
+        try:
+            partial.connect(server.server_address)
+            partial.sendall(b"GET /metrics HTTP/1.1\r\nHost: unfinished")
+            self.assertTrue(header_read.wait(2), "partial request did not enter header reading")
+            self.assertFalse(partial_done.is_set())
+            self.assertEqual(lines, [])
+            fetch.assert_not_called()
+
+            client.request("GET", "/metrics")
+            response = client.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.version, 10)
+            self.assertTrue(response.will_close)
+            self.assertEqual(response.read(), b"go_goroutines 5\n")
+            self.assertTrue(normal_done.wait(2), "normal handler did not finish")
+            self.assertFalse(partial_done.is_set())
+            fetch.assert_called_once_with("/metrics")
+            records = self.records(lines)
+            self.assertEqual({record["request_seq"] for record in records}, {1})
+            self.assertEqual([record["event"] for record in records],
+                             ["request_start", "fetch_start", "fetch_end", "request_end"])
+            self.assert_slots_available(server)
+        finally:
+            release_partial.set()
+            client.close()
+            try:
+                partial.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            partial.close()
+            shutdown = threading.Thread(target=server.shutdown, daemon=True)
+            shutdown.start()
+            shutdown.join(2)
+            server.server_close()
+            thread.join(2)
+            with handler_lock:
+                handlers = list(handler_threads)
+            for handler in handlers:
+                handler.join(2)
+            self.assertFalse(shutdown.is_alive(), "server shutdown did not finish")
+            self.assertFalse(thread.is_alive(), "server thread did not finish")
+            self.assertTrue(all(not handler.is_alive() for handler in handlers), "handler did not finish")
+        self.assertTrue(partial_done.is_set())
+        fetch.assert_called_once_with("/metrics")
+        self.assertEqual({record["request_seq"] for record in self.records(lines)}, {1})
+
     def test_http_boundary_and_collection_failure(self):
         requested = []
         records = []

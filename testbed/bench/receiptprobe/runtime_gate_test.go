@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/iotest"
@@ -183,6 +184,103 @@ func TestSampleSteadyMetricsScrapesAllThreeReplicas(t *testing.T) {
 	if _, err := scrapeRuntimeMetrics(ctx, http.DefaultClient, metricsEndpoint{url: failed.URL + "/metrics", endpoint: "failed"}); err == nil {
 		t.Fatal("unavailable replica returned a successful metrics reading")
 	}
+}
+
+func TestSampleSteadyMetricsHTTPDeadlineAndConnections(t *testing.T) {
+	t.Run("per request deadline with fresh and reused connections", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		stop := make(chan struct{})
+		var servers []*httptest.Server
+		var endpoints []metricsEndpoint
+		var mu sync.Mutex
+		var connections [receiptReplicaCount][]string
+		defer func() {
+			cancel()
+			for _, server := range servers {
+				server.Close()
+			}
+		}()
+		for i := range receiptReplicaCount {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				mu.Lock()
+				connections[i] = append(connections[i], request.RemoteAddr)
+				count := len(connections[i])
+				mu.Unlock()
+				if count == 1 {
+					// The first round takes >2s in total, while each request
+					// remains below the unchanged 2s HTTP client timeout.
+					timer := time.NewTimer(750 * time.Millisecond)
+					defer timer.Stop()
+					select {
+					case <-timer.C:
+					case <-request.Context().Done():
+						return
+					}
+				}
+				if i == 0 {
+					// Match the bridge's HTTP/1.0 close-after-response lifecycle.
+					w.Header().Set("Connection", "close")
+				}
+				_, _ = io.WriteString(w, "go_goroutines 40\ngo_memstats_heap_alloc_bytes 104857600\n"+testRuntimeObservations)
+				if i == receiptReplicaCount-1 && count == 2 {
+					close(stop)
+				}
+			}))
+			servers = append(servers, server)
+			address := strings.Replace(server.URL, "127.0.0.1", "localhost", 1)
+			endpoints = append(endpoints, metricsEndpoint{url: address + "/metrics", endpoint: address})
+		}
+		started := time.Now()
+		report := sampleSteadyMetrics(ctx, steadyMetricsConfig{endpoints: endpoints, interval: 10 * time.Millisecond}, started, stop)
+		if report.Failure != "" || len(report.Samples) != 2 || ctx.Err() != nil {
+			t.Fatalf("two complete rounds under per-request deadline = %+v, caller=%v", report, ctx.Err())
+		}
+		if time.Since(started) <= 2*time.Second {
+			t.Fatal("local HTTP control did not span the 2s per-request timeout")
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for i, addresses := range connections {
+			if len(addresses) != 2 || len(report.Samples[0].Replicas) != receiptReplicaCount || len(report.Samples[1].Replicas) != receiptReplicaCount {
+				t.Fatalf("replica %d requests/complete samples = %v, %+v", i, addresses, report.Samples)
+			}
+			if (addresses[0] == addresses[1]) != (i != 0) {
+				t.Fatalf("replica %d connection reuse = %v; want fresh for0, reused for1/2", i, addresses)
+			}
+		}
+	})
+	t.Run("headers timeout keeps caller active and fails incomplete round", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		release := make(chan struct{})
+		var attempts atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			attempts.Add(1)
+			select {
+			case <-request.Context().Done():
+			case <-release:
+			}
+		}))
+		defer func() {
+			cancel()
+			close(release)
+			server.Close()
+		}()
+		var laterAttempts atomic.Int32
+		later := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			laterAttempts.Add(1)
+			_, _ = io.WriteString(w, "go_goroutines 40\ngo_memstats_heap_alloc_bytes 104857600\n"+testRuntimeObservations)
+		}))
+		defer later.Close()
+		report := sampleSteadyMetrics(ctx, steadyMetricsConfig{endpoints: []metricsEndpoint{
+			{url: server.URL + "/metrics", endpoint: "held headers"},
+			{url: later.URL + "/metrics", endpoint: "later replica"},
+		}, interval: 5 * time.Second}, time.Now(), make(chan struct{}))
+		if report.Failure == "" || !strings.Contains(report.Failure, "Client.Timeout exceeded while awaiting headers") ||
+			ctx.Err() != nil || len(report.Samples) != 0 || attempts.Load() != 1 || laterAttempts.Load() != 0 {
+			t.Fatalf("headers timeout must fail closed once with active caller: report=%+v caller=%v attempts=%d later=%d",
+				report, ctx.Err(), attempts.Load(), laterAttempts.Load())
+		}
+	})
 }
 
 func TestEvaluateReceiptLeakGatesTransientAndRetainedGrowth(t *testing.T) {
