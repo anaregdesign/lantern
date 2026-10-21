@@ -50,6 +50,33 @@ func TestAppendAssignsMonotonicSeq(t *testing.T) {
 	}
 }
 
+func TestAppendEvictionReplacesPayloadReferences(t *testing.T) {
+	l := New(Options{Capacity: 2})
+	t.Cleanup(func() { _ = l.Close() })
+	payloads := []*struct{ value int }{{1}, {2}, {3}, {4}}
+	for i, payload := range payloads {
+		if _, err := l.Append(payload, ts(int64(i+1))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Inspect the actual fixed slots, including any slot outside a retained
+	// view. Test-owned references remain intentional; this asserts ring
+	// ownership, not garbage collection or total heap reclamation.
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if len(l.ring) != 2 || l.size != 2 {
+		t.Fatalf("ring grew after eviction: slots=%d entries=%d", len(l.ring), l.size)
+	}
+	for _, entry := range l.ring {
+		if entry.Op == payloads[0] || entry.Op == payloads[1] {
+			t.Fatalf("evicted payload remains in a ring slot: seq=%d", entry.Seq)
+		}
+		if entry.Seq < 3 || entry.Seq > 4 || entry.Op != payloads[entry.Seq-1] {
+			t.Fatalf("slot lost its current payload: %+v", entry)
+		}
+	}
+}
+
 func TestSubscribeReplaysAndStreams(t *testing.T) {
 	l := New(Options{Capacity: 16, SubscriberBuffer: 16})
 	for i := 1; i <= 3; i++ {

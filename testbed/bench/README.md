@@ -531,6 +531,14 @@ thresholds. OFF leak snapshots preserve their existing outside-steady GC
 protocol. Peak process/container RSS and CPU comparisons remain separate
 required #1610 evidence.
 
+The same receipt scrapes also retain bounded aggregate context: GC count,
+last-GC time and next-GC target; receipt entries, logical bytes and oldest
+deadline; and mutation-log capacity, fill ratio and evictions. These observations
+do not enter the verdict or measure post-GC live heap. Receipt logical bytes
+exclude Go container overhead, and retained graph/index/history state may grow
+with successful writes. No additional scrape or forced GC is used for this
+context.
+
 Five preliminary **Edge Delete-only** Compose runs on the synthetic-parent stack (Apple M3 Max,
 `darwin/arm64`), recorded in
 [local scenario evidence](evidence/issue-1399/scenario.txt), sustained

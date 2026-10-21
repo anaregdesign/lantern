@@ -673,8 +673,47 @@ receipt_runtime_scalar() {
   printf '%.0f' "$raw" 2>/dev/null
 }
 
+receipt_runtime_context() {
+  # These fixed aggregate observations come from the same scrape as HeapAlloc.
+  # They explain occupancy and GC timing; they do not change the leak verdict.
+  local text="$1" name raw value ratio
+  local -a args=()
+  for name in go_gc_duration_seconds_count go_memstats_last_gc_time_seconds \
+      go_memstats_next_gc_bytes lantern_receipt_entries lantern_receipt_bytes \
+      lantern_receipt_oldest_deadline_seconds lantern_mutation_log_capacity \
+      lantern_mutation_log_fill_ratio lantern_mutation_log_evicted_total; do
+    raw="$(awk -v n="$name" '$1 == n { if (NF != 2) exit 1; print $2 }' <<<"$text")" || return 1
+    case "$name" in
+      go_memstats_last_gc_time_seconds | lantern_receipt_oldest_deadline_seconds | lantern_mutation_log_fill_ratio)
+        [[ "$raw" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$ ]] || return 1
+        value="$(jq -en --arg value "$raw" '$value | tonumber | select(. >= 0 and . < 9007199254740992)')" || return 1
+        # Reject underflow and a ratio just above one even if float parsing
+        # rounds the original decimal to zero or one.
+        ratio=0
+        if [[ "$name" == "lantern_mutation_log_fill_ratio" ]]; then ratio=1; fi
+        awk -v raw="$raw" -v ratio="$ratio" '
+          BEGIN {
+            split(raw, notation, /[eE]/)
+            dot = index(notation[1], ".")
+            scale = (dot ? length(notation[1]) - dot : 0) - (notation[2] + 0)
+            digits = notation[1]
+            gsub(/\./, "", digits)
+            sub(/^0+/, "", digits)
+            if (digits != "" && raw + 0 == 0) exit 1
+            if (ratio && digits != "" && (scale < length(digits) - 1 ||
+                (scale == length(digits) - 1 && digits !~ /^10*$/))) exit 1
+          }
+        ' || return 1
+        ;;
+      *) value="$(receipt_runtime_scalar "$name" "$text")" || return 1 ;;
+    esac
+    args+=( --argjson "$name" "$value" )
+  done
+  jq -nc "${args[@]}" '$ARGS.named'
+}
+
 snapshot_runtime() {
-  # Force a GC on every replica before sampling so heap_alloc_bytes reflects
+  # OFF snapshots force a GC before sampling so heap_alloc_bytes reflects
   # live (post-GC) memory rather than transient allocation between cycles.
   # /debug/pprof/heap?gc=1 calls runtime.GC() before returning the profile —
   # we discard the body and just use the side effect.
@@ -747,6 +786,10 @@ snapshot_runtime() {
       if [[ -z "$vhw"     || "$rvhw" -gt "$vhw"    ]]; then vhw="$rvhw"; fi
     done
     local metric_samples='{}' metric_name metric_value
+    if [[ "$receipt_driver" == "1" ]]; then
+      metric_samples="$(receipt_runtime_context "$text")" ||
+        die "receipt runtime snapshot: invalid GC/receipt/log context for localhost:${port} (round ${round})"
+    fi
     for metric_name in "${RUNTIME_METRIC_NAMES[@]}"; do
       metric_value="$(prom_scalar "$metric_name" "$text")"
       if [[ -z "$metric_value" ]]; then

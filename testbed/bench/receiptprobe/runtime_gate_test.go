@@ -15,6 +15,16 @@ import (
 
 const testHeapBaseline = int64(100 << 20)
 
+const testRuntimeObservations = "go_gc_duration_seconds_count 7\n" +
+	"go_memstats_last_gc_time_seconds 1720000000.125\n" +
+	"go_memstats_next_gc_bytes 209715200\n" +
+	"lantern_receipt_entries 8\n" +
+	"lantern_receipt_bytes 2048\n" +
+	"lantern_receipt_oldest_deadline_seconds 1720003600.5\n" +
+	"lantern_mutation_log_capacity 10000\n" +
+	"lantern_mutation_log_fill_ratio 0.25\n" +
+	"lantern_mutation_log_evicted_total 0\n"
+
 func TestParseRuntimeMetricsEndpoints(t *testing.T) {
 	t.Parallel()
 	valid := "http://localhost:9390/metrics,http://localhost:9391/metrics,http://localhost:9392/metrics"
@@ -76,7 +86,7 @@ func TestParseRuntimeMetricsRejectsMissingAndInvalidReadings(t *testing.T) {
 		{"extra-field", "go_goroutines 40 1000\ngo_memstats_heap_alloc_bytes 104857600\n", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := parseRuntimeMetrics(strings.NewReader(test.body))
+			got, err := parseRuntimeMetrics(strings.NewReader(test.body + testRuntimeObservations))
 			if test.ok && (err != nil || got.Goroutines != 40 || got.HeapAllocBytes != testHeapBaseline) {
 				t.Fatalf("parseRuntimeMetrics() = %+v, %v", got, err)
 			}
@@ -104,7 +114,7 @@ func TestSampleSteadyMetricsScrapesAllThreeReplicas(t *testing.T) {
 	var finalReplicaScrapes atomic.Int32
 	for i := range receiptReplicaCount {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte("go_goroutines 40\ngo_memstats_heap_alloc_bytes 104857600\n"))
+			_, _ = w.Write([]byte("go_goroutines 40\ngo_memstats_heap_alloc_bytes 104857600\n" + testRuntimeObservations))
 			if i == receiptReplicaCount-1 && finalReplicaScrapes.Add(1) == 2 {
 				close(stop)
 			}
@@ -147,7 +157,20 @@ func TestSampleSteadyMetricsScrapesAllThreeReplicas(t *testing.T) {
 			if value.Endpoint != endpoints[j].endpoint || value.Goroutines != 40 || value.HeapAllocBytes != testHeapBaseline {
 				t.Fatalf("round %d replica %d = %+v", i, j, value)
 			}
+			if value.Metrics == nil || value.Metrics.GCCount != 7 || value.Metrics.LastGCTimeSeconds != 1720000000.125 ||
+				value.Metrics.ReceiptEntries != 8 || value.Metrics.MutationLogFillRatio != 0.25 {
+				t.Fatalf("round %d replica %d observations = %+v", i, j, value.Metrics)
+			}
 		}
+	}
+	raw, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved steadyMetricsReport
+	if err := json.Unmarshal(raw, &saved); err != nil || saved.Samples[0].Replicas[0].Metrics == nil ||
+		saved.Samples[0].Replicas[0].Metrics.ReceiptOldestDeadline != 1720003600.5 {
+		t.Fatalf("saved steady observations = %s, %v", raw, err)
 	}
 	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "failed", http.StatusServiceUnavailable)
@@ -173,9 +196,9 @@ func TestEvaluateReceiptLeakGatesTransientAndRetainedGrowth(t *testing.T) {
 		{"goroutine spike recovers", 16, 0, 0, 0, false, 16},
 		{"heap spike within steady headroom recovers", 0, 33, 0, 0, true, 0},
 		{"heap spike above steady headroom recovers", 0, 41, 0, 0, false, 0},
-		{"post-GC growth at bound", 0, 0, 0, 32, true, 0},
-		{"post-GC heap growth persists", 0, 0, 0, 33, false, 0},
-		{"post-GC goroutine growth persists", 0, 0, 16, 0, false, 0},
+		{"post-cooldown growth at bound", 0, 0, 0, 32, true, 0},
+		{"post-cooldown heap growth persists", 0, 0, 0, 33, false, 0},
+		{"post-cooldown goroutine growth persists", 0, 0, 16, 0, false, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			prePath, postPath, steadyPath, samples := receiptLeakFixture(t)
@@ -198,7 +221,7 @@ func TestEvaluateReceiptLeakGatesTransientAndRetainedGrowth(t *testing.T) {
 				t.Errorf("steady goroutine peak delta = %d, want %d", got.Replicas[1].GoroutinePeakDelta, test.wantDelta)
 			}
 			if got.Replicas[1].GoroutineDelta != test.postG || got.Replicas[2].HeapAllocDeltaBytes != test.postHeapMB<<20 {
-				t.Errorf("post-GC deltas = %+v", got.Replicas)
+				t.Errorf("post-cooldown deltas = %+v", got.Replicas)
 			}
 			if got.Replicas[2].HeapAllocPeakDelta != test.peakHeapMB<<20 {
 				t.Errorf("steady heap peak delta = %d, want %d MiB", got.Replicas[2].HeapAllocPeakDelta, test.peakHeapMB)
@@ -368,5 +391,135 @@ func TestRunReceiptLeakEvaluationSamplingProtocol(t *testing.T) {
 				t.Fatalf("protocol=%q, error=%v", report.SnapshotProtocol, err)
 			}
 		})
+	}
+}
+
+func TestParseRuntimeMetricsObservations(t *testing.T) {
+	t.Parallel()
+	const required = "go_goroutines 40\ngo_memstats_heap_alloc_bytes 104857600\n"
+	for _, line := range strings.Split(strings.TrimSpace(testRuntimeObservations), "\n") {
+		name := strings.Fields(line)[0]
+		t.Run(name, func(t *testing.T) {
+			for _, test := range []struct {
+				name        string
+				replacement string
+			}{
+				{"missing", ""},
+				{"duplicate", line + "\n" + line + "\n"},
+				{"malformed", name + " nope\n"},
+				{"negative", name + " -1\n"},
+				{"nan", name + " NaN\n"},
+				{"infinity", name + " +Inf\n"},
+				{"extra-field", name + " 0 1000\n"},
+				{"labelled", name + "{replica=\"0\"} 0\n"},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					body := required + strings.Replace(testRuntimeObservations, line+"\n", test.replacement, 1)
+					if _, err := parseRuntimeMetrics(strings.NewReader(body)); err == nil {
+						t.Fatal("accepted missing, duplicate or invalid diagnostic observation")
+					}
+				})
+			}
+			zero := required + strings.Replace(testRuntimeObservations, line+"\n", name+" 0\n", 1)
+			if _, err := parseRuntimeMetrics(strings.NewReader(zero)); err != nil {
+				t.Fatalf("valid zero observation: %v", err)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name, value string
+	}{
+		{"go_gc_duration_seconds_count", "0.5"},
+		{"go_memstats_next_gc_bytes", "9007199254740993.1"},
+		{"lantern_receipt_entries", "9223372036854775808"},
+		{"lantern_receipt_bytes", "1e-9999"},
+		{"go_memstats_last_gc_time_seconds", "1e-9999"},
+		{"lantern_mutation_log_fill_ratio", "1.00000000000000001"},
+	} {
+		t.Run(test.name+"/out-of-range", func(t *testing.T) {
+			lines := strings.Split(testRuntimeObservations, "\n")
+			for i, line := range lines {
+				if strings.HasPrefix(line, test.name+" ") {
+					lines[i] = test.name + " " + test.value
+				}
+			}
+			if _, err := parseRuntimeMetrics(strings.NewReader(required + strings.Join(lines, "\n"))); err == nil {
+				t.Fatal("accepted fractional integer, overflow, underflow or fill ratio above one")
+			}
+		})
+	}
+	body := required + strings.Replace(testRuntimeObservations, "lantern_mutation_log_evicted_total 0",
+		"lantern_mutation_log_evicted_total 9007199254740993", 1)
+	parsed, err := parseRuntimeMetrics(strings.NewReader(body))
+	if err != nil || parsed.Metrics.MutationLogEvictedTotal != 9007199254740993 {
+		t.Fatalf("exact diagnostic counter = %+v, %v", parsed.Metrics, err)
+	}
+	raw, err := json.Marshal(parsed)
+	if err != nil || !strings.Contains(string(raw), `"lantern_mutation_log_evicted_total":9007199254740993`) {
+		t.Fatalf("serialized diagnostic counter lost precision: %s, %v", raw, err)
+	}
+}
+
+func TestEvaluateReceiptLeakByteBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		post, peak int64
+		pass       bool
+	}{
+		{"post-exact", 32 << 20, 0, true},
+		{"post-one-byte-over", (32 << 20) + 1, 0, false},
+		{"steady-exact", 0, 40 << 20, true},
+		{"steady-one-byte-over", 0, (40 << 20) + 1, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pre, post, steady, samples := receiptLeakFixture(t)
+			postSamples := testRuntimeSnapshots()
+			*postSamples[0].HeapAllocBytes += test.post
+			samples.Samples[4].Replicas[0].HeapAllocBytes += test.peak
+			mustWriteReceiptArtifact(t, post, postSamples)
+			mustWriteReceiptArtifact(t, steady, samples)
+			got := evaluateReceiptLeak(pre, post, steady, 45*time.Second, 5*time.Second, 15, 32, 40)
+			if (got.Verdict == "pass") != test.pass || got.Replicas[0].HeapAllocDeltaBytes != test.post ||
+				got.Replicas[0].HeapAllocPeakDelta != test.peak {
+				t.Fatalf("byte boundary verdict/deltas = %+v", got)
+			}
+		})
+	}
+}
+
+func TestRunReceiptLeakEvaluationLegacyObservationsKeepFailure(t *testing.T) {
+	t.Parallel()
+	pre, post, steady, samples := receiptLeakFixture(t)
+	postSamples := testRuntimeSnapshots()
+	*postSamples[0].HeapAllocBytes += 34352632
+	samples.Samples[4].Replicas[0].HeapAllocBytes += 30416336
+	mustWriteReceiptArtifact(t, post, postSamples)
+	// Nil observations deliberately serialize the old saved steady schema,
+	// which remains evaluable without inventing zero-valued historical metrics.
+	mustWriteReceiptArtifact(t, steady, samples)
+	raw, err := os.ReadFile(steady)
+	if err != nil || strings.Contains(string(raw), `"metrics"`) {
+		t.Fatalf("legacy fixture unexpectedly contains observations: %s, %v", raw, err)
+	}
+	out := filepath.Join(t.TempDir(), "gate.json")
+	code := runReceiptLeakEvaluation([]string{
+		"-pre", pre, "-post", post, "-steady", steady, "-duration", "45s", "-interval", "5s",
+		"-max-goroutines", "15", "-max-heap-mb", "32", "-max-steady-heap-mb", "40",
+		"-out", out, "-snapshot-protocol", "natural_gc_single",
+	})
+	if code != 1 {
+		t.Fatalf("legacy resource failure exit = %d, want 1", code)
+	}
+	raw, err = os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report receiptLeakReport
+	if err := json.Unmarshal(raw, &report); err != nil || report.SnapshotProtocol != "natural_gc_single" ||
+		report.Verdict != "fail" || len(report.Failures) != 1 ||
+		report.Failures[0] != "localhost:9390 post-cooldown HeapAlloc growth exceeds +32 MiB" ||
+		report.Replicas[0].HeapAllocDeltaBytes != 34352632 {
+		t.Fatalf("legacy natural-GC resource gate changed: %+v, %v", report, err)
 	}
 }

@@ -1266,19 +1266,84 @@ die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 prom_scalar() { awk -v name="$1" '$1==name {print $2;exit}' <<<"$2"; }
 curl() {
  [[ "$*" == *"/debug/pprof"* ]] && { echo "protected pprof attempted" >&2; return 22; }
+ printf '%s\n' "$*" >> "$OUTDIR/scrapes"
  printf '%s\n' 'go_goroutines 12' 'go_memstats_heap_inuse_bytes 100000' 'go_memstats_heap_alloc_bytes 50000' 'go_memstats_heap_objects 10' 'lantern_vertex_hlc_entries 0' 'lantern_vertex_hlc_entries_high_water 0'
+ printf '%s\n' "$CONTEXT_METRICS"
 }
 ` + receiptSnapshotShellFunctions(t) + `
 snapshot_runtime "$OUTDIR/runtime.json"
 `
 	command := exec.Command("bash", "-c", fixture)
-	command.Env = append(os.Environ(), "OUTDIR="+outDir)
+	command.Env = append(os.Environ(), "OUTDIR="+outDir, "CONTEXT_METRICS="+receiptRuntimeContextMetrics)
 	output, err := command.CombinedOutput()
 	if err != nil || strings.Contains(string(output), "protected pprof attempted") {
 		t.Fatalf("protected snapshot: %v %s", err, output)
 	}
-	if _, err := os.Stat(filepath.Join(outDir, "runtime.json")); err != nil {
+	raw, err := os.ReadFile(filepath.Join(outDir, "runtime.json"))
+	if err != nil {
 		t.Fatal("missing natural-GC snapshot", err)
+	}
+	var snapshots []struct {
+		Metrics map[string]float64 `json:"metrics"`
+	}
+	if err := json.Unmarshal(raw, &snapshots); err != nil || len(snapshots) != 3 {
+		t.Fatalf("snapshots = %s, err = %v", raw, err)
+	}
+	for _, snapshot := range snapshots {
+		if len(snapshot.Metrics) != 9 || snapshot.Metrics["go_memstats_last_gc_time_seconds"] != 1700000000.25 ||
+			snapshot.Metrics["lantern_mutation_log_fill_ratio"] != 0.5 ||
+			snapshot.Metrics["lantern_receipt_entries"] != 0 {
+			t.Fatalf("GC/receipt/log observations lost: %+v", snapshot.Metrics)
+		}
+	}
+	scrapes, err := os.ReadFile(filepath.Join(outDir, "scrapes"))
+	if err != nil || strings.Count(string(scrapes), "/metrics\n") != 3 {
+		t.Fatalf("want one existing scrape per replica: %q, err=%v", scrapes, err)
+	}
+}
+
+const receiptRuntimeContextMetrics = `go_gc_duration_seconds_count 0
+go_memstats_last_gc_time_seconds 1700000000.25
+go_memstats_next_gc_bytes 1048576
+lantern_receipt_entries 0
+lantern_receipt_bytes 0
+lantern_receipt_oldest_deadline_seconds 1700003600.125
+lantern_mutation_log_capacity 10000
+lantern_mutation_log_fill_ratio 0.5
+lantern_mutation_log_evicted_total 0`
+
+func TestReceiptBenchRuntimeContextRejectsInvalidMetrics(t *testing.T) {
+	functions := receiptSnapshotShellFunctions(t)
+	for _, line := range strings.Split(receiptRuntimeContextMetrics, "\n") {
+		name := strings.Fields(line)[0]
+		for _, kind := range []string{"missing", "duplicate", "malformed"} {
+			t.Run(name+"/"+kind, func(t *testing.T) {
+				metrics := receiptRuntimeContextMetrics
+				switch kind {
+				case "missing":
+					metrics = strings.Replace(metrics, line, "", 1)
+				case "duplicate":
+					metrics += "\n" + line
+				case "malformed":
+					metrics = strings.Replace(metrics, line, line+" extra", 1)
+				}
+				cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+functions+"\nreceipt_runtime_context \"$METRICS\"\n")
+				cmd.Env = append(os.Environ(), "METRICS="+metrics)
+				if output, err := cmd.CombinedOutput(); err == nil {
+					t.Fatalf("invalid observation accepted: %s", output)
+				}
+			})
+		}
+	}
+	for _, value := range []string{"NaN", "+Inf", "-1", "1.01", "1.0000000000000001", "1e-9999"} {
+		t.Run("fill_ratio/"+value, func(t *testing.T) {
+			metrics := strings.Replace(receiptRuntimeContextMetrics, "lantern_mutation_log_fill_ratio 0.5", "lantern_mutation_log_fill_ratio "+value, 1)
+			cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+functions+"\nreceipt_runtime_context \"$METRICS\"\n")
+			cmd.Env = append(os.Environ(), "METRICS="+metrics)
+			if output, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("invalid observation accepted: %s", output)
+			}
+		})
 	}
 }
 

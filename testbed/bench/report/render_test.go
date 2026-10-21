@@ -190,13 +190,19 @@ func TestRenderReport_ShowsReceiptSteadyPeaks(t *testing.T) {
 
 func TestRenderReport_NativeSamplingDoesNotClaimForcedGC(t *testing.T) {
 	gate := &LeakGate{SnapshotProtocol: "natural_gc_single", Verdict: "pass"}
+	gate.SteadySampleInterval = "5s"
+	gate.SteadySampleCount = 9
 	gate.Thresholds.SteadyHeapAllocMaxDeltaMB = 40
 	gate.Thresholds.HeapAllocMaxDeltaMB = 32
 	var buf bytes.Buffer
 	if err := RenderReport(&buf, Input{LeakGate: gate}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "one fixed natural-GC sample") || strings.Contains(buf.String(), "evaluates `heap_alloc` after forced GC") || strings.Contains(buf.String(), "post-GC live-set threshold") {
+	if !strings.Contains(buf.String(), "one fixed natural-GC sample") ||
+		!strings.Contains(buf.String(), "both the steady peaks and post-cooldown HeapAlloc deltas must pass") ||
+		strings.Contains(buf.String(), "evaluates `heap_alloc` after forced GC") ||
+		strings.Contains(buf.String(), "post-GC live-set threshold") ||
+		strings.Contains(buf.String(), "post-cooldown live-set") {
 		t.Fatalf("incorrect sampling claim: %s", buf.String())
 	}
 }
