@@ -897,8 +897,9 @@ identity projection, typed SDK facades, and storage-neutral mobile consumer are
 implemented; physical-device release qualification retains its separate #1314
 gate.
 
-Graph-only staging retains a bounded encoded candidate in memory without
-temporary files. Framing/body-validation failures, exceeded staging limits,
+Graph-only staging writes the encoded candidate and identity indexes to an
+owned disk spool, using bounded buffers and external-sort work files.
+Framing/body-validation failures, exceeded staging limits,
 incomplete streams and non-OK source status are rejected before live Snapshot
 admission, preserving an existing healthy generation and its tokens; staging
 does not clear a pre-existing repair fault. Runtime application and watermark
