@@ -607,10 +607,13 @@ target (`call` + `data_template` for ghz, or an allow-listed custom driver),
 optional `subscribe` and `chaos`
 blocks, and the leak-gate thresholds (`goroutine_max_delta`,
 `heap_alloc_max_delta_mb`; receipt scenarios also declare
-`steady_heap_alloc_max_delta_mb`). The post-cooldown gate evaluates against `heap_alloc`
+`steady_heap_alloc_max_delta_mb`). For OFF snapshots, the post-cooldown gate
+evaluates against `heap_alloc`
 (post-GC live bytes), forcing a `runtime.GC()` via
 `/debug/pprof/heap?gc=1` before each snapshot so the reading reflects
-live memory rather than span-level allocator headroom. The legacy field
+live memory rather than span-level allocator headroom. Protected receipt snapshots
+use the `natural_gc_single` protocol described above; their post-cooldown
+`heap_alloc` delta is not post-GC live-set evidence. The legacy field
 name `heap_inuse_max_delta_mb` is still accepted for backward
 compatibility but produced false-positive verdicts under sustained
 churn — see issue #248.
