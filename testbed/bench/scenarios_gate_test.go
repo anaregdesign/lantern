@@ -40,6 +40,236 @@ import (
 	_ "github.com/anaregdesign/lantern/pb/graph/v1"
 )
 
+func naturalGCObservationShellFunctions(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, body, ok := strings.Cut(string(raw), "validate_natural_gc_observation() {\n")
+	if !ok {
+		t.Fatal("missing idle observation preflight")
+	}
+	body, _, ok = strings.Cut(body, "\ncleanup() {\n")
+	if !ok {
+		t.Fatal("missing diagnostic cleanup boundary")
+	}
+	return "validate_natural_gc_observation() {\n" + body
+}
+
+func TestNaturalGCObservationUnitTests(t *testing.T) {
+	command := exec.CommandContext(t.Context(), "python3", "-B", "-m", "unittest", "discover", "-s", "capture", "-p", "natural_gc_observation_test.py")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("natural GC observer: %v\n%s", err, output)
+	}
+}
+
+func TestNaturalGCObservationPreservesFormalExitAndCleanup(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		formal, observer int
+		seal             int
+		want             int
+	}{
+		{"formal pass observer complete", 0, 0, 0, 0},
+		{"formal fail observer complete", 1, 0, 0, 1},
+		{"formal pass observer incomplete", 0, 1, 0, 1},
+		{"formal fail observer refused", 1, 2, 0, 1},
+		{"seal failure never starts observer", 0, 0, 1, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fixture := `set -euo pipefail
+OUTDIR="$1"; CAPTURE_DIR="$1"
+LANTERN_BENCH_NATURAL_GC_OBSERVE=1
+LANTERN_BENCH_DIAGNOSTIC_SOURCE_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+COMPOSE_PROJECT_NAME=lantern-observer-test
+NATURAL_GC_ARGS=()
+NATURAL_GC_PID=""
+verdict=pass; metric_verdict=skipped; semantic_verdict=skipped
+perf_verdict=pass; workload_verdict=pass
+formal_status="$2"; observer_status="$3"; seal_status="$4"
+log() { :; }
+python3() {
+  if [[ "$*" == *--create-seal* ]]; then
+    printf 'seal:%s\n' "$formal_status" >> "$OUTDIR/events"
+    printf '%s\n' "$formal_status" > "$OUTDIR/original_formal_exit"
+    return "$seal_status"
+  fi
+  [[ -f "$OUTDIR/original_formal_exit" ]] || return 92
+  printf 'observe:%s\n' "$formal_status" >> "$OUTDIR/events"
+  return "$observer_status"
+}
+cleanup() {
+  local status=$?
+  [[ -z "$NATURAL_GC_PID" ]] || exit 93
+  printf 'cleanup:%s:formal:%s\n' "$status" "$formal_status" >> "$OUTDIR/events"
+}
+trap cleanup EXIT
+` + naturalGCObservationShellFunctions(t) + `
+if finish_with_natural_gc_observation "$formal_status"; then exit 0; else exit 1; fi
+`
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, "bash", "-c", fixture, "observation-test", dir,
+				fmt.Sprint(test.formal), fmt.Sprint(test.observer), fmt.Sprint(test.seal))
+			output, runErr := command.CombinedOutput()
+			if command.ProcessState == nil || command.ProcessState.ExitCode() != test.want {
+				t.Fatalf("exit=%v err=%v output=%s", command.ProcessState, runErr, output)
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, "events"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := fmt.Sprintf("seal:%d\n", test.formal)
+			if test.seal == 0 {
+				want += fmt.Sprintf("observe:%d\n", test.formal)
+			}
+			want += fmt.Sprintf("cleanup:%d:formal:%d\n", test.want, test.formal)
+			if string(raw) != want {
+				t.Fatalf("event order/result changed: got %q want %q", raw, want)
+			}
+		})
+	}
+}
+
+func TestNaturalGCObservationWiringAndPreflight(t *testing.T) {
+	raw, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	check := strings.Index(script, "\nvalidate_natural_gc_observation\n")
+	setup := strings.Index(script, "\n# ----- optional per-scenario cluster env overrides")
+	formal := strings.LastIndex(script, "\nformal_status=1\n")
+	workload := strings.LastIndex(script, " > \"$OUTDIR/workload_gate.json\"")
+	if check < 0 || setup < check || formal < workload || workload < 0 ||
+		!strings.Contains(script, `stop_owned_processes "${NATURAL_GC_PID:-}"`) {
+		t.Fatal("preflight/formal-result/owned cleanup boundaries changed")
+	}
+	for _, test := range []struct {
+		name, enable, scenario, driver, keep, skip, lightweight string
+		wantCheck, wantOK                                       bool
+	}{
+		{"disabled", "0", "anything", "ghz", "1", "1", "0", false, true},
+		{"eligible", "1", "receipt_edge_add_admission_lookup", "receipt_edge_add", "0", "0", "1", true, true},
+		{"invalid opt in", "yes", "receipt_edge_add_admission_lookup", "receipt_edge_add", "0", "0", "1", false, false},
+		{"unrelated scenario", "1", "receipt_vertex_delete_admission_lookup", "receipt_vertex_delete", "0", "0", "1", false, false},
+		{"retained project", "1", "receipt_edge_add_admission_lookup", "receipt_edge_add", "1", "0", "1", false, false},
+		{"existing project", "1", "receipt_edge_add_admission_lookup", "receipt_edge_add", "0", "1", "1", false, false},
+		{"profiling enabled", "1", "receipt_edge_add_admission_lookup", "receipt_edge_add", "0", "0", "0", false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "natural_gc_observation.py"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			fixture := `set -euo pipefail
+CAPTURE_DIR="$1"
+LANTERN_BENCH_NATURAL_GC_OBSERVE="$2"; SCENARIO_NAME="$3"; target_driver="$4"
+KEEP_UP="$5"; SKIP_UP="$6"; LEAK_GATE_ONLY="$7"
+COMPOSE_PROJECT_NAME=lantern-observer-test
+REPLICA_METRICS_PORTS=(9390 9391 9392)
+die() { exit 1; }
+python3() { printf '%s\n' "$*" > "$CAPTURE_DIR/preflight"; }
+` + naturalGCObservationShellFunctions(t) + "\nvalidate_natural_gc_observation\n"
+			command := exec.CommandContext(t.Context(), "bash", "-c", fixture, "observation-test", dir,
+				test.enable, test.scenario, test.driver, test.keep, test.skip, test.lightweight)
+			output, runErr := command.CombinedOutput()
+			if (runErr == nil) != test.wantOK {
+				t.Fatalf("preflight: %v output=%s", runErr, output)
+			}
+			called, readErr := os.ReadFile(filepath.Join(dir, "preflight"))
+			if (readErr == nil) != test.wantCheck {
+				t.Fatalf("helper invocation=%q err=%v", called, readErr)
+			}
+			if test.wantCheck && (!strings.Contains(string(called), "--check-config") ||
+				!strings.Contains(string(called), "http://127.0.0.1:9390/metrics,http://127.0.0.1:9391/metrics,http://127.0.0.1:9392/metrics")) {
+				t.Fatalf("explicit fixed preflight missing: %q", called)
+			}
+		})
+	}
+}
+
+func TestNaturalGCObservationOwnedCancellation(t *testing.T) {
+	raw, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cleanup, ok := strings.Cut(string(raw), "cleanup() {\n")
+	if !ok {
+		t.Fatal("missing cleanup")
+	}
+	cleanup, _, ok = strings.Cut("cleanup() {\n"+cleanup, "\ntrap cleanup EXIT")
+	if !ok {
+		t.Fatal("missing cleanup end")
+	}
+	owned, err := filepath.Abs("owned_processes.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "natural_gc_observation.py"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := `set -euo pipefail
+source "$2"
+OUTDIR="$1"; CAPTURE_DIR="$1"
+LANTERN_BENCH_NATURAL_GC_OBSERVE=1
+LANTERN_BENCH_DIAGNOSTIC_SOURCE_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+COMPOSE_PROJECT_NAME=lantern-observer-test
+SCENARIO_NAME=receipt_edge_add_admission_lookup; target_driver=receipt_edge_add
+KEEP_UP=0; SKIP_UP=0; LEAK_GATE_ONLY=1
+REPLICA_METRICS_PORTS=(9390 9391 9392)
+NATURAL_GC_ARGS=(); NATURAL_GC_PID=""
+COMPOSE_STARTED=0; PEER_TLS_DIR=""; NATIVE_WORK_DIR=""; GHZ_DIAGNOSTICS_DIR=""
+prod_pids=(); sub_pids=(); ghz_capture_pids=()
+verdict=pass; metric_verdict=skipped; semantic_verdict=skipped
+perf_verdict=pass; workload_verdict=pass
+log() { :; }
+python3() {
+  [[ "$*" != *--check-config* ]] || return 0
+  [[ "$*" != *--create-seal* ]] || return 0
+  exec bash -c 'trap "exit 1" TERM; printf "%s\n" "$$" > "$1/observer_pid"; while true; do sleep 0.02; done' observer "$OUTDIR"
+}
+` + naturalGCObservationShellFunctions(t) + cleanup + `
+trap cleanup EXIT
+validate_natural_gc_observation
+finish_with_natural_gc_observation 0
+`
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "bash", "-c", fixture, "observation-test", dir, owned)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// This signal is sent only after the observer registers its own identity.
+	var pid []byte
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		pid, err = os.ReadFile(filepath.Join(dir, "observer_pid"))
+		if err == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal("observer did not start", err)
+	}
+	if err := exec.Command("kill", "-TERM", fmt.Sprint(command.Process.Pid)).Run(); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err == nil || command.ProcessState.ExitCode() != 143 {
+		t.Fatalf("expected cancellation exit143, got %v (%v)", command.ProcessState, err)
+	}
+	if err := exec.Command("bash", "-c", `! kill -0 "$1" 2>/dev/null`, "check-observer", strings.TrimSpace(string(pid))).Run(); err != nil {
+		t.Fatal("owned observer was left alive", err)
+	}
+}
+
 // scenarioCall is one (call, data_template) pair wherever it appears in a
 // scenario document.
 type scenarioCall struct {

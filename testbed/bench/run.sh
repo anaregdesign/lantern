@@ -14,6 +14,10 @@
 #                     the load generator must be pinned separately on Linux
 #   PPROF_CPU=1       also capture a 30s CPU profile per replica post-steady
 #   PROM_URL          override Prometheus URL (default http://localhost:9091)
+#   LANTERN_BENCH_NATURAL_GC_OBSERVE=1  after sealing the receipt Edge Add
+#                     formal result, observe 180s of idle natural GC. Requires
+#                     explicit source identity and UTC/monotonic campaign
+#                     deadlines; retains the original verdict and always cleans up.
 #   LEAK_GATE_ONLY=1  skip the pprof captures + Prometheus range queries and keep
 #                     only the runtime snapshots that feed the leak-gate verdict.
 #                     Those artifacts (24 pprof + 12 prom curls per scenario, up
@@ -50,6 +54,8 @@ PEER_TLS_DIR=""
 NATIVE_WORK_DIR=""
 MEMBERSHIP_PID=""
 DIAGNOSTICS_PID=""
+NATURAL_GC_PID=""
+NATURAL_GC_ARGS=()
 AUTHFIXTURE=""
 CHANGEPROBE=""
 sub_pids=()
@@ -92,6 +98,66 @@ RUNTIME_METRIC_NAMES=(
 die() { echo "run.sh: $*" >&2; exit 1; }
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 
+# This opt-in diagnostic is outside the formal workload and memory gate.
+# Its fixed deadline includes preparation and reserves 120 seconds for cleanup.
+validate_natural_gc_observation() {
+  [[ "${LANTERN_BENCH_NATURAL_GC_OBSERVE:-0}" != "0" ]] || return 0
+  [[ "${LANTERN_BENCH_NATURAL_GC_OBSERVE}" == "1" &&
+     "$SCENARIO_NAME" == "receipt_edge_add_admission_lookup" &&
+     "$target_driver" == "receipt_edge_add" &&
+     "${KEEP_UP:-0}" == "0" && "${SKIP_UP:-0}" == "0" &&
+     "${LEAK_GATE_ONLY:-0}" == "1" ]] ||
+    die "idle GC observation requires the fresh, owned receipt Edge Add diagnostic"
+  [[ -f "$CAPTURE_DIR/natural_gc_observation.py" &&
+     ! -L "$CAPTURE_DIR/natural_gc_observation.py" ]] ||
+    die "idle GC observation helper unavailable"
+  local metrics_urls="" port
+  for port in "${REPLICA_METRICS_PORTS[@]}"; do
+    [[ -z "$metrics_urls" ]] || metrics_urls+=","
+    metrics_urls+="http://127.0.0.1:${port}/metrics"
+  done
+  NATURAL_GC_ARGS=(
+    --source-id "${LANTERN_BENCH_DIAGNOSTIC_SOURCE_ID:-}"
+    --run-id "$COMPOSE_PROJECT_NAME"
+    --deadline-utc "${LANTERN_BENCH_DIAGNOSTIC_DEADLINE_UTC:-}"
+    --deadline-monotonic "${LANTERN_BENCH_DIAGNOSTIC_DEADLINE_MONOTONIC:-}"
+    --endpoints "$metrics_urls"
+  )
+  python3 -B "$CAPTURE_DIR/natural_gc_observation.py" --check-config "${NATURAL_GC_ARGS[@]}" ||
+    die "idle GC observation deadline or configuration rejected"
+  # Interrupting a wait must enter the ordinary owned cleanup path too.
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+}
+
+finish_with_natural_gc_observation() {
+  local formal_status="$1" diagnostic_status=0
+  [[ "${LANTERN_BENCH_NATURAL_GC_OBSERVE:-0}" == "1" ]] || return "$formal_status"
+  # Freeze the formal report separately: ordinary cleanup may append an
+  # unqualified-run note to report.md, but never changes the sealed result.
+  if ! python3 -B "$CAPTURE_DIR/natural_gc_observation.py" \
+      --create-seal "$OUTDIR/formal_result.json" \
+      --source-id "$LANTERN_BENCH_DIAGNOSTIC_SOURCE_ID" --run-id "$COMPOSE_PROJECT_NAME" \
+      --formal-exit-status "$formal_status" \
+      --gate-verdicts "$verdict,$metric_verdict,$semantic_verdict,$perf_verdict,$workload_verdict"; then
+    log "idle GC observation: formal result could not be sealed; observation not started"
+    return 1
+  fi
+  log "idle GC observation: formal result sealed; fixed 180s diagnostic only"
+  python3 -B "$CAPTURE_DIR/natural_gc_observation.py" \
+    --output "$OUTDIR/natural_gc_observation.json" --seal "$OUTDIR/formal_result.json" \
+    "${NATURAL_GC_ARGS[@]}" &
+  NATURAL_GC_PID=$!
+  if wait "$NATURAL_GC_PID"; then diagnostic_status=0; else diagnostic_status=$?; fi
+  NATURAL_GC_PID=""
+  if (( diagnostic_status != 0 )); then
+    log "idle GC observation: incomplete or refused; original formal result retained"
+    return 1
+  fi
+  log "idle GC observation: complete; original formal result retained"
+  return "$formal_status"
+}
+
 cleanup() {
   local status=$?
   local tls_in_use=0
@@ -99,7 +165,7 @@ cleanup() {
   trap - EXIT
   # Cancel owned workload/chaos producers before deleting their Server state.
   # Collected children are unregistered immediately so PID reuse is harmless.
-  if ! stop_owned_processes "${chaos_pid:-}" "${prod_pids[@]}" "${sub_pids[@]}" "${MEMBERSHIP_PID:-}" "${DIAGNOSTICS_PID:-}"; then
+  if ! stop_owned_processes "${NATURAL_GC_PID:-}" "${chaos_pid:-}" "${prod_pids[@]}" "${sub_pids[@]}" "${MEMBERSHIP_PID:-}" "${DIAGNOSTICS_PID:-}"; then
     echo "run.sh: owned child teardown failed; run is unqualified" >&2
     if (( status == 0 )); then status=1; fi
   fi
@@ -227,6 +293,7 @@ case "$target_driver" in
     receipt_driver=1 ;;
   *) die "unknown target.driver $target_driver in $SCENARIO_FILE" ;;
 esac
+validate_natural_gc_observation
 if [[ "$target_driver" == "ghz" ]]; then
   need ghz
 fi
@@ -1428,4 +1495,6 @@ render_report
 printf '\n**Workload gate verdict:** `%s` (producer failure: %s; producer diagnostics failure: %s; failed consumers: %s; chaos failure: %s).\n' \
   "$workload_verdict" "$producer_failed" "$producer_diagnostics_failed" "$consumer_failed" "$chaos_failed" >> "$OUTDIR/report.md"
 
-if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$workload_verdict" == "pass" ]]; then exit 0; else exit 1; fi
+formal_status=1
+if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$workload_verdict" == "pass" ]]; then formal_status=0; fi
+if finish_with_natural_gc_observation "$formal_status"; then exit 0; else exit 1; fi
