@@ -117,6 +117,7 @@ func sampleSteadyMetrics(
 	// Own only this sampling flight's pool and unused dials. Request timeout
 	// alone permits a Transport-owned dial to continue for a future request.
 	transport := baseTransport.Clone()
+	observeRuntimeMetricsDial(transport)
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
 	ticker := time.NewTicker(cfg.interval)
@@ -222,7 +223,8 @@ func scrapeRuntimeMetricsObserved(
 		return runtimeMetrics{}, err
 	}
 	stage, reason = "http", "transport_error"
-	request = request.WithContext(httptrace.WithClientTrace(request.Context(), trace.callbacks()))
+	traceContext := context.WithValue(request.Context(), runtimeHTTPTraceContextKey{}, trace)
+	request = request.WithContext(httptrace.WithClientTrace(traceContext, trace.callbacks()))
 	response, err := client.Do(request)
 	if err != nil {
 		reason = runtimeScrapeErrorReason(err, reason)

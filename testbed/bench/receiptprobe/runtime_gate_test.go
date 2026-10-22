@@ -1163,9 +1163,11 @@ func TestScrapeRuntimeMetricsHTTPTraceCompositionAndLateCallbacks(t *testing.T) 
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
 	defer cancel()
-	var parentGetConn, parentWroteRequest atomic.Int32
+	var parentGetConn, parentDNSStart, parentDNSDone, parentWroteRequest atomic.Int32
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		GetConn:      func(string) { parentGetConn.Add(1) },
+		DNSStart:     func(httptrace.DNSStartInfo) { parentDNSStart.Add(1) },
+		DNSDone:      func(httptrace.DNSDoneInfo) { parentDNSDone.Add(1) },
 		WroteRequest: func(httptrace.WroteRequestInfo) { parentWroteRequest.Add(1) },
 	})
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -1180,6 +1182,8 @@ func TestScrapeRuntimeMetricsHTTPTraceCompositionAndLateCallbacks(t *testing.T) 
 		var wait sync.WaitGroup
 		for _, callback := range []func(){
 			func() { trace.GetConn("HOST_SECRET:9390") },
+			func() { trace.DNSStart(httptrace.DNSStartInfo{Host: "DNS_HOST_SECRET"}) },
+			func() { trace.DNSDone(httptrace.DNSDoneInfo{Err: err, Coalesced: reused}) },
 			func() { trace.GotConn(httptrace.GotConnInfo{Reused: reused}) },
 			func() { trace.ConnectStart("NETWORK_SECRET", "ADDRESS_SECRET") },
 			func() { trace.ConnectDone("NETWORK_SECRET", "ADDRESS_SECRET", err) },
@@ -1193,7 +1197,7 @@ func TestScrapeRuntimeMetricsHTTPTraceCompositionAndLateCallbacks(t *testing.T) 
 	client := &http.Client{Timeout: 2 * time.Second, Transport: runtimeDiagnosticRoundTripper(func(request *http.Request) (*http.Response, error) {
 		requests.Add(1)
 		trace := httptrace.ContextClientTrace(request.Context())
-		if trace == nil || trace.GetConn == nil || trace.GotConn == nil || trace.ConnectStart == nil ||
+		if trace == nil || trace.GetConn == nil || trace.DNSStart == nil || trace.DNSDone == nil || trace.GotConn == nil || trace.ConnectStart == nil ||
 			trace.ConnectDone == nil || trace.WroteRequest == nil || trace.GotFirstResponseByte == nil {
 			return nil, errors.New("missing request trace callbacks")
 		}
@@ -1260,14 +1264,15 @@ func TestScrapeRuntimeMetricsHTTPTraceCompositionAndLateCallbacks(t *testing.T) 
 		t.Fatalf("unexpected trace completion: %+v writes=%d", finish, writes)
 	}
 	observed := finish.HTTPTrace
-	for _, point := range []*runtimeHTTPTracePoint{observed.GetConn, observed.GotConn, observed.ConnectStart,
+	for _, point := range []*runtimeHTTPTracePoint{observed.GetConn, observed.DNSStart, observed.DNSDone, observed.GotConn, observed.ConnectStart,
 		observed.ConnectDone, observed.WroteRequest, observed.FirstResponseByte} {
 		if point == nil || point.Count != 2 || point.FirstMS < 0 || point.LastMS < point.FirstMS {
 			t.Fatalf("concurrent/late hook was lost or reversed: %+v", observed)
 		}
 	}
 	if observed.LastConnReused == nil || *observed.LastConnReused || observed.LastConnectResult != "ok" || observed.LastWriteResult != "ok" ||
-		parentGetConn.Load() != 2 || parentWroteRequest.Load() != 2 {
+		observed.LastDNSCoalesced == nil || *observed.LastDNSCoalesced || observed.LastDNSResult != "ok" ||
+		parentGetConn.Load() != 2 || parentDNSStart.Load() != 2 || parentDNSDone.Load() != 2 || parentWroteRequest.Load() != 2 {
 		t.Fatalf("trace composition or last result differs: %+v parent=%d/%d", observed, parentGetConn.Load(), parentWroteRequest.Load())
 	}
 	for _, secret := range []string{"SECRET", "metrics.invalid", "http://", "Authorization", "Bearer"} {
@@ -1278,6 +1283,89 @@ func TestScrapeRuntimeMetricsHTTPTraceCompositionAndLateCallbacks(t *testing.T) 
 	fire(trace, true, errors.New("AFTER_FINISH_SECRET"))
 	if after, count := output.snapshot(); after != text || count != writes {
 		t.Fatal("callbacks after finish changed emitted diagnostics")
+	}
+}
+
+func TestScrapeRuntimeMetricsDialAndDNSPrefixControls(t *testing.T) {
+	for _, dnsStarted := range []bool{false, true} {
+		name := "existing dial held before DNS"
+		if dnsStarted {
+			name = "synthetic DNS hook held before Connect"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+			defer cancel()
+			entered, joined, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			var dials atomic.Int32
+			transport := &http.Transport{Proxy: nil, DialContext: func(dialCtx context.Context, network, address string) (net.Conn, error) {
+				dials.Add(1)
+				defer close(joined)
+				if network != "tcp" || address != "metrics-control.invalid:9390" {
+					return nil, errors.New("controlled dial arguments differ")
+				}
+				trace := httptrace.ContextClientTrace(dialCtx)
+				// Synthetic hook control, not a real resolver reproduction. All
+				// work stays in this owned fake: no sockets or DNS calls are made.
+				if dnsStarted {
+					trace.DNSStart(httptrace.DNSStartInfo{Host: "DNS_HOST_SECRET"})
+				}
+				close(entered)
+				select {
+				case <-dialCtx.Done():
+				case <-release:
+				}
+				if dnsStarted {
+					trace.DNSDone(httptrace.DNSDoneInfo{Err: dialCtx.Err()})
+				}
+				return nil, errors.New("controlled held dial finished")
+			}}
+			observeRuntimeMetricsDial(transport)
+			t.Cleanup(func() {
+				transport.CloseIdleConnections()
+				releaseOnce.Do(func() { close(release) })
+				select {
+				case <-joined:
+				case <-time.After(time.Second):
+					t.Error("owned held dial did not join during teardown")
+				}
+			})
+			client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
+			var output bytes.Buffer
+			_, err := scrapeRuntimeMetricsObserved(ctx, client,
+				metricsEndpoint{url: "http://metrics-control.invalid:9390/metrics", endpoint: "synthetic local control"},
+				time.Now(), 0, &output)
+			if err == nil || !strings.Contains(err.Error(), "Client.Timeout exceeded while awaiting headers") || ctx.Err() != nil || dials.Load() != 1 {
+				t.Fatalf("held dial changed timeout/caller semantics: err=%v caller=%v dials=%d", err, ctx.Err(), dials.Load())
+			}
+			select {
+			case <-entered:
+			default:
+				t.Fatal("controlled dial did not reach its held phase")
+			}
+			finish := runtimeTraceScrapeRecords(t, output.String())[1]
+			observed := finish.HTTPTrace
+			if finish.Stage != "http" || finish.Reason != "deadline_exceeded" || finish.ContextState != "active" ||
+				finish.DurationMS == nil || *finish.DurationMS < 1900 || observed.GetConn == nil || observed.DialEnter == nil ||
+				observed.DialReturn != nil || observed.LastDialResult != "" || (observed.DNSStart != nil) != dnsStarted ||
+				observed.DNSDone != nil || observed.LastDNSCoalesced != nil || observed.LastDNSResult != "" ||
+				observed.ConnectStart != nil || observed.ConnectDone != nil || observed.GotConn != nil ||
+				observed.WroteRequest != nil || observed.FirstResponseByte != nil {
+				t.Fatalf("held dial prefix does not distinguish phases: %+v trace=%+v", finish, observed)
+			}
+			before := output.String()
+			// The request timeout preserves Transport-owned dial lifetime. The
+			// sampling owner then closes its own pool and joins this exact fake.
+			transport.CloseIdleConnections()
+			select {
+			case <-joined:
+			case <-ctx.Done():
+				t.Fatal("owned held dial did not join after CloseIdleConnections", ctx.Err())
+			}
+			if output.String() != before || strings.Contains(before, "SECRET") || strings.Contains(before, "metrics-control") {
+				t.Fatal("late DNS/dial completion changed or exposed diagnostic content")
+			}
+		})
 	}
 }
 
@@ -1298,7 +1386,9 @@ func TestScrapeRuntimeMetricsHTTPTraceOverLocalHTTP(t *testing.T) {
 			_, _ = io.WriteString(w, body)
 		}))
 		defer server.Close()
-		transport := &http.Transport{Proxy: nil}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = nil
+		observeRuntimeMetricsDial(transport)
 		defer transport.CloseIdleConnections()
 		client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
 		ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
@@ -1323,6 +1413,10 @@ func TestScrapeRuntimeMetricsHTTPTraceOverLocalHTTP(t *testing.T) {
 				attempt == 1 && (trace.ConnectStart != nil || trace.ConnectDone != nil || trace.LastConnectResult != "") {
 				t.Fatalf("dial observations were reused across requests: %+v", trace)
 			}
+			if attempt == 0 && (trace.DialEnter == nil || trace.DialReturn == nil || trace.LastDialResult != "ok") ||
+				attempt == 1 && (trace.DialEnter != nil || trace.DialReturn != nil || trace.LastDialResult != "") {
+				t.Fatalf("originating dial prefix was reused across requests: %+v", trace)
+			}
 			// WroteRequest is not peer-receipt/flush proof; first byte is not
 			// complete headers. These are observations of the standard hooks.
 		}
@@ -1345,7 +1439,9 @@ func TestScrapeRuntimeMetricsHTTPTraceOverLocalHTTP(t *testing.T) {
 			}
 		}))
 		defer func() { close(release); server.Close() }()
-		transport := &http.Transport{Proxy: nil}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = nil
+		observeRuntimeMetricsDial(transport)
 		defer transport.CloseIdleConnections()
 		client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
 		var output bytes.Buffer
@@ -1359,6 +1455,7 @@ func TestScrapeRuntimeMetricsHTTPTraceOverLocalHTTP(t *testing.T) {
 		if finish.Stage != "http" || finish.Reason != "deadline_exceeded" || finish.ContextState != "active" || finish.HTTPStatus != 0 ||
 			finish.DurationMS == nil || *finish.DurationMS < 1900 || trace.GetConn == nil || trace.GotConn == nil ||
 			trace.ConnectStart == nil || trace.ConnectDone == nil || trace.LastConnectResult != "ok" ||
+			trace.DialEnter == nil || trace.DialReturn == nil || trace.LastDialResult != "ok" ||
 			trace.WroteRequest == nil || trace.LastWriteResult != "ok" || trace.FirstResponseByte != nil {
 			t.Fatalf("before-headers timeout observations = %+v trace=%+v", finish, trace)
 		}
