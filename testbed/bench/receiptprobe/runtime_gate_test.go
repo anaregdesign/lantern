@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1163,9 +1165,11 @@ func TestScrapeRuntimeMetricsHTTPTraceCompositionAndLateCallbacks(t *testing.T) 
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
 	defer cancel()
-	var parentGetConn, parentWroteRequest atomic.Int32
+	var parentGetConn, parentDNSStart, parentDNSDone, parentWroteRequest atomic.Int32
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		GetConn:      func(string) { parentGetConn.Add(1) },
+		DNSStart:     func(httptrace.DNSStartInfo) { parentDNSStart.Add(1) },
+		DNSDone:      func(httptrace.DNSDoneInfo) { parentDNSDone.Add(1) },
 		WroteRequest: func(httptrace.WroteRequestInfo) { parentWroteRequest.Add(1) },
 	})
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -1180,6 +1184,8 @@ func TestScrapeRuntimeMetricsHTTPTraceCompositionAndLateCallbacks(t *testing.T) 
 		var wait sync.WaitGroup
 		for _, callback := range []func(){
 			func() { trace.GetConn("HOST_SECRET:9390") },
+			func() { trace.DNSStart(httptrace.DNSStartInfo{Host: "DNS_HOST_SECRET"}) },
+			func() { trace.DNSDone(httptrace.DNSDoneInfo{Err: err, Coalesced: reused}) },
 			func() { trace.GotConn(httptrace.GotConnInfo{Reused: reused}) },
 			func() { trace.ConnectStart("NETWORK_SECRET", "ADDRESS_SECRET") },
 			func() { trace.ConnectDone("NETWORK_SECRET", "ADDRESS_SECRET", err) },
@@ -1193,7 +1199,7 @@ func TestScrapeRuntimeMetricsHTTPTraceCompositionAndLateCallbacks(t *testing.T) 
 	client := &http.Client{Timeout: 2 * time.Second, Transport: runtimeDiagnosticRoundTripper(func(request *http.Request) (*http.Response, error) {
 		requests.Add(1)
 		trace := httptrace.ContextClientTrace(request.Context())
-		if trace == nil || trace.GetConn == nil || trace.GotConn == nil || trace.ConnectStart == nil ||
+		if trace == nil || trace.GetConn == nil || trace.DNSStart == nil || trace.DNSDone == nil || trace.GotConn == nil || trace.ConnectStart == nil ||
 			trace.ConnectDone == nil || trace.WroteRequest == nil || trace.GotFirstResponseByte == nil {
 			return nil, errors.New("missing request trace callbacks")
 		}
@@ -1260,14 +1266,15 @@ func TestScrapeRuntimeMetricsHTTPTraceCompositionAndLateCallbacks(t *testing.T) 
 		t.Fatalf("unexpected trace completion: %+v writes=%d", finish, writes)
 	}
 	observed := finish.HTTPTrace
-	for _, point := range []*runtimeHTTPTracePoint{observed.GetConn, observed.GotConn, observed.ConnectStart,
+	for _, point := range []*runtimeHTTPTracePoint{observed.GetConn, observed.DNSStart, observed.DNSDone, observed.GotConn, observed.ConnectStart,
 		observed.ConnectDone, observed.WroteRequest, observed.FirstResponseByte} {
 		if point == nil || point.Count != 2 || point.FirstMS < 0 || point.LastMS < point.FirstMS {
 			t.Fatalf("concurrent/late hook was lost or reversed: %+v", observed)
 		}
 	}
 	if observed.LastConnReused == nil || *observed.LastConnReused || observed.LastConnectResult != "ok" || observed.LastWriteResult != "ok" ||
-		parentGetConn.Load() != 2 || parentWroteRequest.Load() != 2 {
+		observed.LastDNSCoalesced == nil || *observed.LastDNSCoalesced || observed.LastDNSResult != "ok" ||
+		parentGetConn.Load() != 2 || parentDNSStart.Load() != 2 || parentDNSDone.Load() != 2 || parentWroteRequest.Load() != 2 {
 		t.Fatalf("trace composition or last result differs: %+v parent=%d/%d", observed, parentGetConn.Load(), parentWroteRequest.Load())
 	}
 	for _, secret := range []string{"SECRET", "metrics.invalid", "http://", "Authorization", "Bearer"} {
@@ -1278,6 +1285,89 @@ func TestScrapeRuntimeMetricsHTTPTraceCompositionAndLateCallbacks(t *testing.T) 
 	fire(trace, true, errors.New("AFTER_FINISH_SECRET"))
 	if after, count := output.snapshot(); after != text || count != writes {
 		t.Fatal("callbacks after finish changed emitted diagnostics")
+	}
+}
+
+func TestScrapeRuntimeMetricsDialAndDNSPrefixControls(t *testing.T) {
+	for _, dnsStarted := range []bool{false, true} {
+		name := "existing dial held before DNS"
+		if dnsStarted {
+			name = "synthetic DNS hook held before Connect"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+			defer cancel()
+			entered, joined, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			var dials atomic.Int32
+			transport := &http.Transport{Proxy: nil, DialContext: func(dialCtx context.Context, network, address string) (net.Conn, error) {
+				dials.Add(1)
+				defer close(joined)
+				if network != "tcp" || address != "metrics-control.invalid:9390" {
+					return nil, errors.New("controlled dial arguments differ")
+				}
+				trace := httptrace.ContextClientTrace(dialCtx)
+				// Synthetic hook control, not a real resolver reproduction. All
+				// work stays in this owned fake: no sockets or DNS calls are made.
+				if dnsStarted {
+					trace.DNSStart(httptrace.DNSStartInfo{Host: "DNS_HOST_SECRET"})
+				}
+				close(entered)
+				select {
+				case <-dialCtx.Done():
+				case <-release:
+				}
+				if dnsStarted {
+					trace.DNSDone(httptrace.DNSDoneInfo{Err: dialCtx.Err()})
+				}
+				return nil, errors.New("controlled held dial finished")
+			}}
+			observeRuntimeMetricsDial(transport)
+			t.Cleanup(func() {
+				transport.CloseIdleConnections()
+				releaseOnce.Do(func() { close(release) })
+				select {
+				case <-joined:
+				case <-time.After(time.Second):
+					t.Error("owned held dial did not join during teardown")
+				}
+			})
+			client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
+			var output bytes.Buffer
+			_, err := scrapeRuntimeMetricsObserved(ctx, client,
+				metricsEndpoint{url: "http://metrics-control.invalid:9390/metrics", endpoint: "synthetic local control"},
+				time.Now(), 0, &output)
+			if err == nil || !strings.Contains(err.Error(), "Client.Timeout exceeded while awaiting headers") || ctx.Err() != nil || dials.Load() != 1 {
+				t.Fatalf("held dial changed timeout/caller semantics: err=%v caller=%v dials=%d", err, ctx.Err(), dials.Load())
+			}
+			select {
+			case <-entered:
+			default:
+				t.Fatal("controlled dial did not reach its held phase")
+			}
+			finish := runtimeTraceScrapeRecords(t, output.String())[1]
+			observed := finish.HTTPTrace
+			if finish.Stage != "http" || finish.Reason != "deadline_exceeded" || finish.ContextState != "active" ||
+				finish.DurationMS == nil || *finish.DurationMS < 1900 || observed.GetConn == nil || observed.DialEnter == nil ||
+				observed.DialReturn != nil || observed.LastDialResult != "" || (observed.DNSStart != nil) != dnsStarted ||
+				observed.DNSDone != nil || observed.LastDNSCoalesced != nil || observed.LastDNSResult != "" ||
+				observed.ConnectStart != nil || observed.ConnectDone != nil || observed.GotConn != nil ||
+				observed.WroteRequest != nil || observed.FirstResponseByte != nil {
+				t.Fatalf("held dial prefix does not distinguish phases: %+v trace=%+v", finish, observed)
+			}
+			before := output.String()
+			// The request timeout preserves Transport-owned dial lifetime. The
+			// sampling owner then closes its own pool and joins this exact fake.
+			transport.CloseIdleConnections()
+			select {
+			case <-joined:
+			case <-ctx.Done():
+				t.Fatal("owned held dial did not join after CloseIdleConnections", ctx.Err())
+			}
+			if output.String() != before || strings.Contains(before, "SECRET") || strings.Contains(before, "metrics-control") {
+				t.Fatal("late DNS/dial completion changed or exposed diagnostic content")
+			}
+		})
 	}
 }
 
@@ -1298,7 +1388,9 @@ func TestScrapeRuntimeMetricsHTTPTraceOverLocalHTTP(t *testing.T) {
 			_, _ = io.WriteString(w, body)
 		}))
 		defer server.Close()
-		transport := &http.Transport{Proxy: nil}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = nil
+		observeRuntimeMetricsDial(transport)
 		defer transport.CloseIdleConnections()
 		client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
 		ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
@@ -1323,6 +1415,10 @@ func TestScrapeRuntimeMetricsHTTPTraceOverLocalHTTP(t *testing.T) {
 				attempt == 1 && (trace.ConnectStart != nil || trace.ConnectDone != nil || trace.LastConnectResult != "") {
 				t.Fatalf("dial observations were reused across requests: %+v", trace)
 			}
+			if attempt == 0 && (trace.DialEnter == nil || trace.DialReturn == nil || trace.LastDialResult != "ok") ||
+				attempt == 1 && (trace.DialEnter != nil || trace.DialReturn != nil || trace.LastDialResult != "") {
+				t.Fatalf("originating dial prefix was reused across requests: %+v", trace)
+			}
 			// WroteRequest is not peer-receipt/flush proof; first byte is not
 			// complete headers. These are observations of the standard hooks.
 		}
@@ -1345,7 +1441,9 @@ func TestScrapeRuntimeMetricsHTTPTraceOverLocalHTTP(t *testing.T) {
 			}
 		}))
 		defer func() { close(release); server.Close() }()
-		transport := &http.Transport{Proxy: nil}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = nil
+		observeRuntimeMetricsDial(transport)
 		defer transport.CloseIdleConnections()
 		client := &http.Client{Timeout: 2 * time.Second, Transport: transport}
 		var output bytes.Buffer
@@ -1359,6 +1457,7 @@ func TestScrapeRuntimeMetricsHTTPTraceOverLocalHTTP(t *testing.T) {
 		if finish.Stage != "http" || finish.Reason != "deadline_exceeded" || finish.ContextState != "active" || finish.HTTPStatus != 0 ||
 			finish.DurationMS == nil || *finish.DurationMS < 1900 || trace.GetConn == nil || trace.GotConn == nil ||
 			trace.ConnectStart == nil || trace.ConnectDone == nil || trace.LastConnectResult != "ok" ||
+			trace.DialEnter == nil || trace.DialReturn == nil || trace.LastDialResult != "ok" ||
 			trace.WroteRequest == nil || trace.LastWriteResult != "ok" || trace.FirstResponseByte != nil {
 			t.Fatalf("before-headers timeout observations = %+v trace=%+v", finish, trace)
 		}
@@ -1406,5 +1505,239 @@ func TestValidateSteadyMetricsExactCoverage(t *testing.T) {
 				t.Fatalf("coverage accepted=%v, want=%v: %v", err == nil, test.wantOK, err)
 			}
 		})
+	}
+}
+
+func operatorMetricsEndpointsForTest() []metricsEndpoint {
+	return []metricsEndpoint{
+		{url: "http://localhost:9390/metrics", endpoint: "localhost:9390"},
+		{url: "http://localhost:9391/metrics", endpoint: "localhost:9391"},
+		{url: "http://localhost:9392/metrics", endpoint: "localhost:9392"},
+	}
+}
+
+func TestOperatorMetricsLoopbackRoutes(t *testing.T) {
+	t.Parallel()
+	endpoints := operatorMetricsEndpointsForTest()
+	routes, err := operatorMetricsLoopbackRoutes(endpoints)
+	if err != nil || len(routes) != receiptReplicaCount || routes["localhost:9390"] != "127.0.0.1:9390" || routes["localhost:9392"] != "127.0.0.1:9392" {
+		t.Fatalf("owned routes = %v, %v", routes, err)
+	}
+	for _, test := range []struct {
+		name string
+		url  string
+	}{
+		{"remote name", "http://node.invalid:9390/metrics"},
+		{"hostname case", "http://LOCALHOST:9390/metrics"},
+		{"hostname suffix", "http://localhost.:9390/metrics"},
+		{"IPv4 standalone", "http://127.0.0.1:9390/metrics"},
+		{"IPv6 standalone", "http://[::1]:9390/metrics"},
+		{"TLS standalone", "https://localhost:9390/metrics"},
+		{"zero port", "http://localhost:0/metrics"},
+		{"oversized port", "http://localhost:65536/metrics"},
+		{"noncanonical port", "http://localhost:09390/metrics"},
+		{"missing port", "http://localhost/metrics"},
+		{"wrong path", "http://localhost:9390/readyz"},
+		{"escaped path", "http://localhost:9390/%6detrics"},
+		{"query", "http://localhost:9390/metrics?x=y"},
+		{"empty query", "http://localhost:9390/metrics?"},
+		{"fragment", "http://localhost:9390/metrics#x"},
+		{"userinfo", "http://user@localhost:9390/metrics"},
+		{"opaque URL", "http:localhost:9390/metrics"},
+		{"invalid URL", "http://localhost:bad/metrics"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			endpoints := operatorMetricsEndpointsForTest()
+			endpoints[0].url = test.url
+			if _, err := operatorMetricsLoopbackRoutes(endpoints); err == nil {
+				t.Fatal("accepted a non-owned or noncanonical route")
+			}
+		})
+	}
+	t.Run("report identity mismatch", func(t *testing.T) {
+		endpoints := operatorMetricsEndpointsForTest()
+		endpoints[0].endpoint = "localhost:9391"
+		if _, err := operatorMetricsLoopbackRoutes(endpoints); err == nil {
+			t.Fatal("accepted a different reported node")
+		}
+	})
+	t.Run("duplicate port", func(t *testing.T) {
+		endpoints := operatorMetricsEndpointsForTest()
+		endpoints[1] = endpoints[0]
+		if _, err := operatorMetricsLoopbackRoutes(endpoints); err == nil {
+			t.Fatal("accepted duplicate local destinations")
+		}
+	})
+	for _, count := range []int{0, 1, 2, 4} {
+		t.Run(fmt.Sprintf("replica count %d", count), func(t *testing.T) {
+			endpoints := append(operatorMetricsEndpointsForTest(), metricsEndpoint{})[:count]
+			if _, err := operatorMetricsLoopbackRoutes(endpoints); err == nil {
+				t.Fatal("accepted an incomplete or expanded cohort")
+			}
+		})
+	}
+}
+
+func TestConfigureOperatorMetricsLoopbackPreservesDialOwnership(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	conn, peer := net.Pipe()
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Error(err)
+		}
+		if err := peer.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	wantErr := errors.New("original dial result")
+	var gotCtx context.Context
+	var gotNetwork, gotAddress string
+	var calls int
+	request, err := http.NewRequest(http.MethodGet, "http://localhost:9390/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proxyRequest *http.Request
+	transport := &http.Transport{
+		Proxy: func(r *http.Request) (*url.URL, error) { proxyRequest = r; return nil, nil },
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			calls++
+			gotCtx, gotNetwork, gotAddress = ctx, network, address
+			return conn, wantErr
+		},
+	}
+	endpoints := operatorMetricsEndpointsForTest()
+	if err := configureOperatorMetricsLoopback(transport, endpoints); err != nil {
+		t.Fatal(err)
+	}
+	// The installed routing table does not retain the caller's mutable slice.
+	endpoints[0] = metricsEndpoint{url: "http://elsewhere.invalid:1/metrics", endpoint: "elsewhere.invalid:1"}
+	for _, test := range []struct{ network, address, want string }{
+		{"tcp", "localhost:9390", "127.0.0.1:9390"},
+		{"tcp4", "localhost:9391", "127.0.0.1:9391"},
+		{"tcp", "localhost:9392", "127.0.0.1:9392"},
+		{"tcp6", "localhost:9390", "localhost:9390"},
+		{"udp", "localhost:9390", "localhost:9390"},
+		{"tcp", "localhost:9393", "localhost:9393"},
+		{"tcp", "LOCALHOST:9390", "LOCALHOST:9390"},
+		{"tcp", "proxy.invalid:3128", "proxy.invalid:3128"},
+		{"tcp", "127.0.0.1:9390", "127.0.0.1:9390"},
+		{"tcp", "[::1]:9390", "[::1]:9390"},
+	} {
+		before := calls
+		gotConn, err := transport.DialContext(ctx, test.network, test.address)
+		if calls != before+1 || gotCtx != ctx || gotNetwork != test.network || gotAddress != test.want || gotConn != conn || err != wantErr || ctx.Err() != context.Canceled {
+			t.Fatalf("dial ownership changed for %s/%s: calls=%d ctx=%t network=%s address=%s conn=%t err=%v", test.network, test.address, calls-before, gotCtx == ctx, gotNetwork, gotAddress, gotConn == conn, err)
+		}
+	}
+	if _, err := transport.Proxy(request); err != nil || proxyRequest != request || request.URL.String() != "http://localhost:9390/metrics" || request.Host != "localhost:9390" {
+		t.Fatal("operator route changed proxy callback or logical request identity")
+	}
+	t.Run("missing context dialer is not replaced", func(t *testing.T) {
+		var legacyCalls int
+		legacy := &http.Transport{Dial: func(_, _ string) (net.Conn, error) { legacyCalls++; return conn, wantErr }} //nolint:staticcheck // SA1019: intentional legacy-Dial regression control.
+		if err := configureOperatorMetricsLoopback(legacy, operatorMetricsEndpointsForTest()); err == nil || legacy.DialContext != nil {
+			t.Fatal("installed a new dialer instead of rejecting an unsupported owned route")
+		}
+		gotConn, err := legacy.Dial("tcp", "localhost:9390") //nolint:staticcheck // SA1019: verify the rejected configuration preserves the legacy fallback.
+		if legacyCalls != 1 || gotConn != conn || err != wantErr {
+			t.Fatal("configuration failure mutated the legacy dialer")
+		}
+	})
+}
+
+func TestSampleSteadyMetricsOperatorLoopbackWithoutNameResolution(t *testing.T) {
+	// This sequential control owns the process default. No external resolver is
+	// called: the original dialer rejects names and accepts literal loopback.
+	transport := runtimeMetricsDefaultTransportForTest(t)
+	var mu sync.Mutex
+	var dialAddresses []string
+	var proxyURLs []string
+	var badRequest atomic.Bool
+	transport.Proxy = func(request *http.Request) (*url.URL, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		proxyURLs = append(proxyURLs, request.URL.String())
+		return nil, nil
+	}
+	var dialer net.Dialer
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		mu.Lock()
+		dialAddresses = append(dialAddresses, address)
+		mu.Unlock()
+		host, _, err := net.SplitHostPort(address)
+		if err != nil || host != "127.0.0.1" {
+			return nil, errors.New("controlled name resolution unavailable")
+		}
+		return dialer.DialContext(ctx, network, address)
+	}
+	var endpoints []metricsEndpoint
+	var addresses []string
+	var requests [receiptReplicaCount]atomic.Int32
+	stop := make(chan struct{})
+	for i := range receiptReplicaCount {
+		var logicalHost string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			if request.Method != http.MethodGet || request.URL.Path != "/metrics" || request.Host != logicalHost || request.Header.Get("Authorization") != "" {
+				badRequest.Store(true)
+			}
+			// The owned Python bridge closes every HTTP/1.0 connection, so
+			// exercise the literal route again on each sampling round.
+			w.Header().Set("Connection", "close")
+			_, _ = fmt.Fprintf(w, "go_goroutines %d\ngo_memstats_heap_alloc_bytes %d\n%s", 40+i, testHeapBaseline+int64(i), testRuntimeObservations)
+			if requests[i].Add(1) == 2 && i == receiptReplicaCount-1 {
+				close(stop)
+			}
+		}))
+		t.Cleanup(server.Close)
+		address := strings.TrimPrefix(server.URL, "http://")
+		host, port, err := net.SplitHostPort(address)
+		if err != nil || host != "127.0.0.1" {
+			t.Fatal("control must own an IPv4 loopback listener", err)
+		}
+		logicalHost = net.JoinHostPort("localhost", port)
+		endpoints = append(endpoints, metricsEndpoint{url: "http://" + logicalHost + "/metrics", endpoint: logicalHost})
+		addresses = append(addresses, address)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cfg := steadyMetricsConfig{endpoints: endpoints, interval: 10 * time.Millisecond}
+	negative := sampleSteadyMetrics(ctx, cfg, time.Now(), stop)
+	if negative.Failure == "" || len(negative.Samples) != 0 || requests[0].Load() != 0 || requests[1].Load() != 0 || requests[2].Load() != 0 {
+		t.Fatal("default collector bypassed the controlled unavailable name route")
+	}
+	mu.Lock()
+	if len(dialAddresses) != 1 || dialAddresses[0] != endpoints[0].endpoint {
+		t.Fatalf("default collector changed its resolver destination: %v", dialAddresses)
+	}
+	dialAddresses, proxyURLs = nil, nil
+	mu.Unlock()
+	cfg.operatorLoopback = true
+	report := sampleSteadyMetrics(ctx, cfg, time.Now(), stop)
+	if report.Failure != "" || len(report.Samples) != 2 || badRequest.Load() || ctx.Err() != nil {
+		t.Fatalf("owned loopback control: failure=%t rounds=%d identityChanged=%t caller=%v", report.Failure != "", len(report.Samples), badRequest.Load(), ctx.Err())
+	}
+	for i, endpoint := range endpoints {
+		if report.Endpoints[i] != endpoint.endpoint || negative.Endpoints[i] != endpoint.endpoint || requests[i].Load() != 2 {
+			t.Fatalf("configured node %d identity/count changed", i)
+		}
+		for _, round := range report.Samples {
+			value := round.Replicas[i]
+			if value.Endpoint != endpoint.endpoint || value.Goroutines != int64(40+i) || value.HeapAllocBytes != testHeapBaseline+int64(i) || value.Metrics == nil || value.Metrics.GCCount != 7 {
+				t.Fatalf("configured node %d measurement changed: %+v", i, value)
+			}
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dialAddresses) != 6 || len(proxyURLs) != 6 {
+		t.Fatalf("fresh connections or proxy callbacks changed: dials=%d proxy=%d", len(dialAddresses), len(proxyURLs))
+	}
+	for i := range dialAddresses {
+		if dialAddresses[i] != addresses[i%receiptReplicaCount] || proxyURLs[i] != endpoints[i%receiptReplicaCount].url {
+			t.Fatalf("request %d reached a different node or logical URL", i)
+		}
 	}
 }

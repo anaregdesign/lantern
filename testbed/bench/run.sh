@@ -14,6 +14,10 @@
 #                     the load generator must be pinned separately on Linux
 #   PPROF_CPU=1       also capture a 30s CPU profile per replica post-steady
 #   PROM_URL          override Prometheus URL (default http://localhost:9091)
+#   LANTERN_BENCH_NATURAL_GC_OBSERVE=1  after sealing the receipt Edge Add
+#                     formal result, observe 180s of idle natural GC. Requires
+#                     explicit source identity and UTC/monotonic campaign
+#                     deadlines; retains the original verdict and always cleans up.
 #   LEAK_GATE_ONLY=1  skip the pprof captures + Prometheus range queries and keep
 #                     only the runtime snapshots that feed the leak-gate verdict.
 #                     Those artifacts (24 pprof + 12 prom curls per scenario, up
@@ -50,10 +54,14 @@ PEER_TLS_DIR=""
 NATIVE_WORK_DIR=""
 MEMBERSHIP_PID=""
 DIAGNOSTICS_PID=""
+NATURAL_GC_PID=""
+NATURAL_GC_ARGS=()
 AUTHFIXTURE=""
 CHANGEPROBE=""
 sub_pids=()
 prod_pids=()
+ghz_capture_pids=()
+GHZ_DIAGNOSTICS_DIR=""
 native_spool_provenance=()
 chaos_pid=""
 source "$HERE/owned_processes.sh"
@@ -90,6 +98,66 @@ RUNTIME_METRIC_NAMES=(
 die() { echo "run.sh: $*" >&2; exit 1; }
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 
+# This opt-in diagnostic is outside the formal workload and memory gate.
+# Its fixed deadline includes preparation and reserves 120 seconds for cleanup.
+validate_natural_gc_observation() {
+  [[ "${LANTERN_BENCH_NATURAL_GC_OBSERVE:-0}" != "0" ]] || return 0
+  [[ "${LANTERN_BENCH_NATURAL_GC_OBSERVE}" == "1" &&
+     "$SCENARIO_NAME" == "receipt_edge_add_admission_lookup" &&
+     "$target_driver" == "receipt_edge_add" &&
+     "${KEEP_UP:-0}" == "0" && "${SKIP_UP:-0}" == "0" &&
+     "${LEAK_GATE_ONLY:-0}" == "1" ]] ||
+    die "idle GC observation requires the fresh, owned receipt Edge Add diagnostic"
+  [[ -f "$CAPTURE_DIR/natural_gc_observation.py" &&
+     ! -L "$CAPTURE_DIR/natural_gc_observation.py" ]] ||
+    die "idle GC observation helper unavailable"
+  local metrics_urls="" port
+  for port in "${REPLICA_METRICS_PORTS[@]}"; do
+    [[ -z "$metrics_urls" ]] || metrics_urls+=","
+    metrics_urls+="http://127.0.0.1:${port}/metrics"
+  done
+  NATURAL_GC_ARGS=(
+    --source-id "${LANTERN_BENCH_DIAGNOSTIC_SOURCE_ID:-}"
+    --run-id "$COMPOSE_PROJECT_NAME"
+    --deadline-utc "${LANTERN_BENCH_DIAGNOSTIC_DEADLINE_UTC:-}"
+    --deadline-monotonic "${LANTERN_BENCH_DIAGNOSTIC_DEADLINE_MONOTONIC:-}"
+    --endpoints "$metrics_urls"
+  )
+  python3 -B "$CAPTURE_DIR/natural_gc_observation.py" --check-config "${NATURAL_GC_ARGS[@]}" ||
+    die "idle GC observation deadline or configuration rejected"
+  # Interrupting a wait must enter the ordinary owned cleanup path too.
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+}
+
+finish_with_natural_gc_observation() {
+  local formal_status="$1" diagnostic_status=0
+  [[ "${LANTERN_BENCH_NATURAL_GC_OBSERVE:-0}" == "1" ]] || return "$formal_status"
+  # Freeze the formal report separately: ordinary cleanup may append an
+  # unqualified-run note to report.md, but never changes the sealed result.
+  if ! python3 -B "$CAPTURE_DIR/natural_gc_observation.py" \
+      --create-seal "$OUTDIR/formal_result.json" \
+      --source-id "$LANTERN_BENCH_DIAGNOSTIC_SOURCE_ID" --run-id "$COMPOSE_PROJECT_NAME" \
+      --formal-exit-status "$formal_status" \
+      --gate-verdicts "$verdict,$metric_verdict,$semantic_verdict,$perf_verdict,$workload_verdict"; then
+    log "idle GC observation: formal result could not be sealed; observation not started"
+    return 1
+  fi
+  log "idle GC observation: formal result sealed; fixed 180s diagnostic only"
+  python3 -B "$CAPTURE_DIR/natural_gc_observation.py" \
+    --output "$OUTDIR/natural_gc_observation.json" --seal "$OUTDIR/formal_result.json" \
+    "${NATURAL_GC_ARGS[@]}" &
+  NATURAL_GC_PID=$!
+  if wait "$NATURAL_GC_PID"; then diagnostic_status=0; else diagnostic_status=$?; fi
+  NATURAL_GC_PID=""
+  if (( diagnostic_status != 0 )); then
+    log "idle GC observation: incomplete or refused; original formal result retained"
+    return 1
+  fi
+  log "idle GC observation: complete; original formal result retained"
+  return "$formal_status"
+}
+
 cleanup() {
   local status=$?
   local tls_in_use=0
@@ -97,9 +165,13 @@ cleanup() {
   trap - EXIT
   # Cancel owned workload/chaos producers before deleting their Server state.
   # Collected children are unregistered immediately so PID reuse is harmless.
-  if ! stop_owned_processes "${chaos_pid:-}" "${prod_pids[@]}" "${sub_pids[@]}" "${MEMBERSHIP_PID:-}" "${DIAGNOSTICS_PID:-}"; then
+  if ! stop_owned_processes "${NATURAL_GC_PID:-}" "${chaos_pid:-}" "${prod_pids[@]}" "${sub_pids[@]}" "${MEMBERSHIP_PID:-}" "${DIAGNOSTICS_PID:-}"; then
     echo "run.sh: owned child teardown failed; run is unqualified" >&2
     if (( status == 0 )); then status=1; fi
+  fi
+  if [[ -n "${GHZ_DIAGNOSTICS_DIR:-}" ]] && (( ${#ghz_capture_pids[@]} != 0 )); then
+    join_ghz_diagnostics
+    if (( producer_diagnostics_failed != 0 && status == 0 )); then status=1; fi
   fi
   if (( status != 0 )) && [[ "${COMPOSE_STARTED:-0}" == "1" ]]; then
     # Raw diagnostics stay outside public artifact globs and trust directories.
@@ -154,6 +226,14 @@ cleanup() {
     elif ! rm -r -- "${NATIVE_WORK_DIR:-$PEER_TLS_DIR}"; then
       echo "run.sh: failed to remove ephemeral receipt TLS material" >&2
       if (( status == 0 )); then status=1; fi
+    fi
+  fi
+  if [[ -n "${GHZ_DIAGNOSTICS_DIR:-}" ]]; then
+    if (( status != 0 )); then
+      echo "run.sh: private ghz producer diagnostics retained at $GHZ_DIAGNOSTICS_DIR" >&2
+    elif ! rm -r -- "$GHZ_DIAGNOSTICS_DIR"; then
+      echo "run.sh: failed to remove private ghz diagnostics; run is unqualified" >&2
+      status=1
     fi
   fi
   exit "$status"
@@ -213,6 +293,7 @@ case "$target_driver" in
     receipt_driver=1 ;;
   *) die "unknown target.driver $target_driver in $SCENARIO_FILE" ;;
 esac
+validate_natural_gc_observation
 if [[ "$target_driver" == "ghz" ]]; then
   need ghz
 fi
@@ -845,6 +926,69 @@ run_ghz() {
   echo "$jsonout"
 }
 
+prepare_ghz_diagnostics() {
+  # Check imports and executable prerequisites before any ghz opens its pipe.
+  [[ -f "$CAPTURE_DIR/ghz_stderr.py" && ! -L "$CAPTURE_DIR/ghz_stderr.py" ]] ||
+    die "ghz stderr diagnostic helper missing"
+  python3 -B "$CAPTURE_DIR/ghz_stderr.py" --check >/dev/null 2>&1 ||
+    die "ghz stderr diagnostic helper startup failed"
+  GHZ_BINARY="$(command -v ghz)"
+  [[ -f "$GHZ_BINARY" && -r "$GHZ_BINARY" && -x "$GHZ_BINARY" ]] ||
+    die "ghz stderr diagnostic binary unavailable"
+  GHZ_DIAGNOSTICS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lantern-ghz-producer.XXXXXXXX")"
+  chmod 700 "$GHZ_DIAGNOSTICS_DIR"
+}
+
+save_ghz_exit() {
+  # Numeric metadata only. Never persist the command, endpoint or request data.
+  (umask 077; set -o noclobber
+    printf '{"schema":1,"producer_index":%s,"ghz_pid":%s,"ghz_exit_status":%s}\n' "$1" "$2" "$3" > "$GHZ_DIAGNOSTICS_DIR/producer_$1.exit.json")
+}
+
+join_ghz_diagnostics() {
+  # One shared diagnostic-only 3s wait, after all direct ghz children exited.
+  # This can delay subsequent post-load observations by up to that wait.
+  # The collectors drain beyond their capture cap, so ghz never sees cap SIGPIPE.
+  local round pid job live=0 i
+  for round in {1..30}; do
+    live=0
+    for pid in "${ghz_capture_pids[@]}"; do
+      if ghz_diagnostic_job "$pid" >/dev/null; then live=1; fi
+    done
+    (( live != 0 )) || break
+    sleep 0.1
+  done
+  for i in "${!ghz_capture_pids[@]}"; do
+    pid="${ghz_capture_pids[$i]}"
+    if job="$(ghz_diagnostic_job "$pid")"; then
+      producer_diagnostics_failed=1
+      # Resolve the registered live shell job, never a recycled OS PID.
+      kill -KILL "$job" 2>/dev/null || true
+    fi
+    if ! wait "$pid"; then producer_diagnostics_failed=1; fi
+    unset 'ghz_capture_pids[i]'
+    rm -f -- "$GHZ_DIAGNOSTICS_DIR/producer_${i}.pipe" || producer_diagnostics_failed=1
+  done
+  if (( producer_diagnostics_failed != 0 )); then
+    log "steady producer diagnostics incomplete (fixed classification only)"
+  fi
+}
+
+ghz_diagnostic_job() {
+  # Process substitutions are not jobs. Direct background collectors are;
+  # a finished/reaped collector must not authorize signaling a reused PID.
+  local spec leader state rest listing
+  listing="$(LC_ALL=C jobs -l)"
+  while read -r spec leader state rest; do
+    if [[ "$spec" =~ ^\[([0-9]+)\][+-]?$ && "$leader" == "$1" &&
+        ( "$state" == Running || "$state" == Stopped ) ]]; then
+      printf '%%%s\n' "${BASH_REMATCH[1]}"
+      return 0
+    fi
+  done <<< "$listing"
+  return 1
+}
+
 prepare_receipt_edge_add() {
   # Seed both phases before warmup and the natural-GC PRE snapshot. Ordinary
   # authorized Put/Get preparation is outside the measured Add/lookup pair.
@@ -921,6 +1065,7 @@ run_receipt_probe() {
     done
     args+=(
       -metrics-endpoints "$metrics_urls"
+      -metrics-operator-loopback
       -metrics-interval "$(yq -r '.leak_gate.steady_sample_interval' "$SCENARIO_FILE")"
       -metrics-report "$OUTDIR/runtime_steady.json"
     )
@@ -1056,6 +1201,7 @@ fi
 calls_len="$(yq -r '.target.calls | length // 0' "$SCENARIO_FILE")"
 prod_pids=()
 producer_failed=0
+producer_diagnostics_failed=0
 consumer_failed=0
 chaos_failed=0
 if [[ "$receipt_driver" == "1" ]]; then
@@ -1070,6 +1216,7 @@ if [[ "$receipt_driver" == "1" ]]; then
     log "steady receipt producer exited non-zero"
   fi
 elif [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
+  prepare_ghz_diagnostics
   per_rps=$(( steady_rps / calls_len ))
   for i in $(seq 0 $(( calls_len - 1 ))); do
     call="$(yq -r ".target.calls[$i].call" "$SCENARIO_FILE")"
@@ -1081,9 +1228,13 @@ elif [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
     [[ "$producer_rps" =~ ^[1-9][0-9]*$ ]] || die "target.calls[$i].rps must be a positive integer"
     ep="${endpoints[$(( i % ${#endpoints[@]} ))]}"
     f="$OUTDIR/ghz_steady_${i}_${ep//[:.]/_}.json"
+    ghz_stderr_pipe="$GHZ_DIAGNOSTICS_DIR/producer_${i}.pipe"
+    (umask 077; mkfifo "$ghz_stderr_pipe")
+    python3 -B "$CAPTURE_DIR/ghz_stderr.py" "$GHZ_DIAGNOSTICS_DIR/producer_${i}.stderr.json" "$GHZ_BINARY" < "$ghz_stderr_pipe" &
+    ghz_capture_pids[$i]=$!
     ghz --insecure \
       --call "$call" -c "$steady_conc" --rps "$producer_rps" -z "$steady_duration" \
-      -d "$data" --format json -o "$f" "$ep" >/dev/null 2>&1 &
+      -d "$data" --format json -o "$f" "$ep" >/dev/null 2>"$ghz_stderr_pipe" &
     prod_pids+=( "$!" )
   done
   # `wait pid...` returns only one aggregate status and, under `set -e`, can
@@ -1091,16 +1242,20 @@ elif [[ "$calls_len" != "0" && "$calls_len" != "null" ]]; then
   # diagnostics are captured. Reap every producer independently and carry a
   # sticky failure bit through the normal post-steady evidence path.
   for i in "${!prod_pids[@]}"; do
+    producer_pid="${prod_pids[$i]}"
     if wait "${prod_pids[$i]}"; then
-      unset 'prod_pids[i]'
-      continue
+      producer_status=0
     else
       producer_status=$?
-      unset 'prod_pids[i]'
       producer_failed=1
       log "steady producer[$i] exited non-zero (status=$producer_status)"
     fi
+    unset 'prod_pids[i]'
+    if ! save_ghz_exit "$i" "$producer_pid" "$producer_status"; then
+      producer_diagnostics_failed=1
+    fi
   done
+  join_ghz_diagnostics
 else
   call="$(yq -r '.target.call' "$SCENARIO_FILE")"
   data="$(yq -r '.target.data_template' "$SCENARIO_FILE")"
@@ -1332,12 +1487,15 @@ if [[ "$receipt_driver" == "1" ]]; then
   cp "$PEER_TLS_DIR/renewal.json" "$OUTDIR/membership_renewal.json"
 fi
 workload_verdict="pass"
-if (( producer_failed != 0 || consumer_failed != 0 || chaos_failed != 0 )); then workload_verdict="fail"; fi
+if (( producer_failed != 0 || consumer_failed != 0 || chaos_failed != 0 || producer_diagnostics_failed != 0 )); then workload_verdict="fail"; fi
 jq -n --arg verdict "$workload_verdict" --argjson producer_failed "$producer_failed" \
+  --argjson producer_diagnostics_failed "$producer_diagnostics_failed" \
   --argjson consumer_failed "$consumer_failed" --argjson chaos_failed "$chaos_failed" \
-  '{verdict:$verdict,producer_failed:$producer_failed,failed_consumers:$consumer_failed,chaos_failed:$chaos_failed}' > "$OUTDIR/workload_gate.json"
+  '{verdict:$verdict,producer_failed:$producer_failed,producer_diagnostics_failed:$producer_diagnostics_failed,failed_consumers:$consumer_failed,chaos_failed:$chaos_failed}' > "$OUTDIR/workload_gate.json"
 render_report
-printf '\n**Workload gate verdict:** `%s` (producer failure: %s; failed consumers: %s; chaos failure: %s).\n' \
-  "$workload_verdict" "$producer_failed" "$consumer_failed" "$chaos_failed" >> "$OUTDIR/report.md"
+printf '\n**Workload gate verdict:** `%s` (producer failure: %s; producer diagnostics failure: %s; failed consumers: %s; chaos failure: %s).\n' \
+  "$workload_verdict" "$producer_failed" "$producer_diagnostics_failed" "$consumer_failed" "$chaos_failed" >> "$OUTDIR/report.md"
 
-if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$workload_verdict" == "pass" ]]; then exit 0; else exit 1; fi
+formal_status=1
+if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$workload_verdict" == "pass" ]]; then formal_status=0; fi
+if finish_with_natural_gc_observation "$formal_status"; then exit 0; else exit 1; fi

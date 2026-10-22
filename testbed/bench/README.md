@@ -555,9 +555,36 @@ exclude Go container overhead, and retained graph/index/history state may grow
 with successful writes. No additional scrape or forced GC is used for this
 context.
 
+An opt-in `LANTERN_BENCH_NATURAL_GC_OBSERVE=1` diagnostic is available only for
+a fresh protected Edge Add cohort with `KEEP_UP=0` and `LEAK_GATE_ONLY=1`.
+It requires an explicit harness commit in `LANTERN_BENCH_DIAGNOSTIC_SOURCE_ID`
+and the original campaign's Unix UTC and monotonic deadlines in
+`LANTERN_BENCH_DIAGNOSTIC_DEADLINE_UTC` and
+`LANTERN_BENCH_DIAGNOSTIC_DEADLINE_MONOTONIC`. The driver must enforce a total
+600-second window including preparation and retain 120 seconds for cleanup.
+After the ordinary pre/steady/post samples and gates, `formal_result.json`
+seals their hashes and original exit status, including a frozen
+`formal_report.md` copy; ordinary cleanup may still annotate `report.md`.
+Only a formal PASS or the known post-cooldown 32 MiB heap failure admits the
+diagnostic. It retains all 18 three-node observations at fixed 10-second offsets
+over 180 monotonic seconds, with at most 54 two-second metrics requests, no added workload
+RPCs and no explicit GC. `natural_gc_observation.json` records completion or
+missingness separately. A diagnostic failure cannot change the sealed formal
+verdict; it does make the overall execution incomplete. No later value or
+minimum replaces the formal post sample. Cleanup follows the bounded
+observation even when no GC occurs. This does not qualify one-hour receipt
+expiration, full-capacity memory, or a leak/no-leak claim.
+
 The steady metrics sampler owns a separate HTTP transport, closes its idle
 connections and requests cancellation of unused pending dials when sampling ends;
-the per-request timeout remains 2s. At phase completion, stderr retains at most
+the per-request timeout remains 2s. For the owned IPv4 operator bridge only,
+`-metrics-operator-loopback` pins each configured `localhost:<port>` socket dial
+to `127.0.0.1:<same port>`. The URL, HTTP Host, report identity, proxy selection,
+node ordering and authenticated workload transport remain unchanged. Generic
+standalone collectors do not opt in, preserving their ordinary resolver and
+IPv6 behavior. This removes unnecessary name resolution from this known local
+route; it does not establish the cause of a previous timeout.
+At phase completion, stderr retains at most
 the first failed admission and first failed lookup as fixed categories for status,
 source and message class, even if metrics or coverage fails first. It excludes
 raw errors and request/response content. A wire-error category or exact message

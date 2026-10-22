@@ -15,6 +15,7 @@
 package bench_test
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -38,6 +39,236 @@ import (
 	// protoregistry.GlobalFiles so `call` names resolve.
 	_ "github.com/anaregdesign/lantern/pb/graph/v1"
 )
+
+func naturalGCObservationShellFunctions(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, body, ok := strings.Cut(string(raw), "validate_natural_gc_observation() {\n")
+	if !ok {
+		t.Fatal("missing idle observation preflight")
+	}
+	body, _, ok = strings.Cut(body, "\ncleanup() {\n")
+	if !ok {
+		t.Fatal("missing diagnostic cleanup boundary")
+	}
+	return "validate_natural_gc_observation() {\n" + body
+}
+
+func TestNaturalGCObservationUnitTests(t *testing.T) {
+	command := exec.CommandContext(t.Context(), "python3", "-B", "-m", "unittest", "discover", "-s", "capture", "-p", "natural_gc_observation_test.py")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("natural GC observer: %v\n%s", err, output)
+	}
+}
+
+func TestNaturalGCObservationPreservesFormalExitAndCleanup(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		formal, observer int
+		seal             int
+		want             int
+	}{
+		{"formal pass observer complete", 0, 0, 0, 0},
+		{"formal fail observer complete", 1, 0, 0, 1},
+		{"formal pass observer incomplete", 0, 1, 0, 1},
+		{"formal fail observer refused", 1, 2, 0, 1},
+		{"seal failure never starts observer", 0, 0, 1, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fixture := `set -euo pipefail
+OUTDIR="$1"; CAPTURE_DIR="$1"
+LANTERN_BENCH_NATURAL_GC_OBSERVE=1
+LANTERN_BENCH_DIAGNOSTIC_SOURCE_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+COMPOSE_PROJECT_NAME=lantern-observer-test
+NATURAL_GC_ARGS=()
+NATURAL_GC_PID=""
+verdict=pass; metric_verdict=skipped; semantic_verdict=skipped
+perf_verdict=pass; workload_verdict=pass
+formal_status="$2"; observer_status="$3"; seal_status="$4"
+log() { :; }
+python3() {
+  if [[ "$*" == *--create-seal* ]]; then
+    printf 'seal:%s\n' "$formal_status" >> "$OUTDIR/events"
+    printf '%s\n' "$formal_status" > "$OUTDIR/original_formal_exit"
+    return "$seal_status"
+  fi
+  [[ -f "$OUTDIR/original_formal_exit" ]] || return 92
+  printf 'observe:%s\n' "$formal_status" >> "$OUTDIR/events"
+  return "$observer_status"
+}
+cleanup() {
+  local status=$?
+  [[ -z "$NATURAL_GC_PID" ]] || exit 93
+  printf 'cleanup:%s:formal:%s\n' "$status" "$formal_status" >> "$OUTDIR/events"
+}
+trap cleanup EXIT
+` + naturalGCObservationShellFunctions(t) + `
+if finish_with_natural_gc_observation "$formal_status"; then exit 0; else exit 1; fi
+`
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, "bash", "-c", fixture, "observation-test", dir,
+				fmt.Sprint(test.formal), fmt.Sprint(test.observer), fmt.Sprint(test.seal))
+			output, runErr := command.CombinedOutput()
+			if command.ProcessState == nil || command.ProcessState.ExitCode() != test.want {
+				t.Fatalf("exit=%v err=%v output=%s", command.ProcessState, runErr, output)
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, "events"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := fmt.Sprintf("seal:%d\n", test.formal)
+			if test.seal == 0 {
+				want += fmt.Sprintf("observe:%d\n", test.formal)
+			}
+			want += fmt.Sprintf("cleanup:%d:formal:%d\n", test.want, test.formal)
+			if string(raw) != want {
+				t.Fatalf("event order/result changed: got %q want %q", raw, want)
+			}
+		})
+	}
+}
+
+func TestNaturalGCObservationWiringAndPreflight(t *testing.T) {
+	raw, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	check := strings.Index(script, "\nvalidate_natural_gc_observation\n")
+	setup := strings.Index(script, "\n# ----- optional per-scenario cluster env overrides")
+	formal := strings.LastIndex(script, "\nformal_status=1\n")
+	workload := strings.LastIndex(script, " > \"$OUTDIR/workload_gate.json\"")
+	if check < 0 || setup < check || formal < workload || workload < 0 ||
+		!strings.Contains(script, `stop_owned_processes "${NATURAL_GC_PID:-}"`) {
+		t.Fatal("preflight/formal-result/owned cleanup boundaries changed")
+	}
+	for _, test := range []struct {
+		name, enable, scenario, driver, keep, skip, lightweight string
+		wantCheck, wantOK                                       bool
+	}{
+		{"disabled", "0", "anything", "ghz", "1", "1", "0", false, true},
+		{"eligible", "1", "receipt_edge_add_admission_lookup", "receipt_edge_add", "0", "0", "1", true, true},
+		{"invalid opt in", "yes", "receipt_edge_add_admission_lookup", "receipt_edge_add", "0", "0", "1", false, false},
+		{"unrelated scenario", "1", "receipt_vertex_delete_admission_lookup", "receipt_vertex_delete", "0", "0", "1", false, false},
+		{"retained project", "1", "receipt_edge_add_admission_lookup", "receipt_edge_add", "1", "0", "1", false, false},
+		{"existing project", "1", "receipt_edge_add_admission_lookup", "receipt_edge_add", "0", "1", "1", false, false},
+		{"profiling enabled", "1", "receipt_edge_add_admission_lookup", "receipt_edge_add", "0", "0", "0", false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "natural_gc_observation.py"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			fixture := `set -euo pipefail
+CAPTURE_DIR="$1"
+LANTERN_BENCH_NATURAL_GC_OBSERVE="$2"; SCENARIO_NAME="$3"; target_driver="$4"
+KEEP_UP="$5"; SKIP_UP="$6"; LEAK_GATE_ONLY="$7"
+COMPOSE_PROJECT_NAME=lantern-observer-test
+REPLICA_METRICS_PORTS=(9390 9391 9392)
+die() { exit 1; }
+python3() { printf '%s\n' "$*" > "$CAPTURE_DIR/preflight"; }
+` + naturalGCObservationShellFunctions(t) + "\nvalidate_natural_gc_observation\n"
+			command := exec.CommandContext(t.Context(), "bash", "-c", fixture, "observation-test", dir,
+				test.enable, test.scenario, test.driver, test.keep, test.skip, test.lightweight)
+			output, runErr := command.CombinedOutput()
+			if (runErr == nil) != test.wantOK {
+				t.Fatalf("preflight: %v output=%s", runErr, output)
+			}
+			called, readErr := os.ReadFile(filepath.Join(dir, "preflight"))
+			if (readErr == nil) != test.wantCheck {
+				t.Fatalf("helper invocation=%q err=%v", called, readErr)
+			}
+			if test.wantCheck && (!strings.Contains(string(called), "--check-config") ||
+				!strings.Contains(string(called), "http://127.0.0.1:9390/metrics,http://127.0.0.1:9391/metrics,http://127.0.0.1:9392/metrics")) {
+				t.Fatalf("explicit fixed preflight missing: %q", called)
+			}
+		})
+	}
+}
+
+func TestNaturalGCObservationOwnedCancellation(t *testing.T) {
+	raw, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cleanup, ok := strings.Cut(string(raw), "cleanup() {\n")
+	if !ok {
+		t.Fatal("missing cleanup")
+	}
+	cleanup, _, ok = strings.Cut("cleanup() {\n"+cleanup, "\ntrap cleanup EXIT")
+	if !ok {
+		t.Fatal("missing cleanup end")
+	}
+	owned, err := filepath.Abs("owned_processes.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "natural_gc_observation.py"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	fixture := `set -euo pipefail
+source "$2"
+OUTDIR="$1"; CAPTURE_DIR="$1"
+LANTERN_BENCH_NATURAL_GC_OBSERVE=1
+LANTERN_BENCH_DIAGNOSTIC_SOURCE_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+COMPOSE_PROJECT_NAME=lantern-observer-test
+SCENARIO_NAME=receipt_edge_add_admission_lookup; target_driver=receipt_edge_add
+KEEP_UP=0; SKIP_UP=0; LEAK_GATE_ONLY=1
+REPLICA_METRICS_PORTS=(9390 9391 9392)
+NATURAL_GC_ARGS=(); NATURAL_GC_PID=""
+COMPOSE_STARTED=0; PEER_TLS_DIR=""; NATIVE_WORK_DIR=""; GHZ_DIAGNOSTICS_DIR=""
+prod_pids=(); sub_pids=(); ghz_capture_pids=()
+verdict=pass; metric_verdict=skipped; semantic_verdict=skipped
+perf_verdict=pass; workload_verdict=pass
+log() { :; }
+python3() {
+  [[ "$*" != *--check-config* ]] || return 0
+  [[ "$*" != *--create-seal* ]] || return 0
+  exec bash -c 'trap "exit 1" TERM; printf "%s\n" "$$" > "$1/observer_pid"; while true; do sleep 0.02; done' observer "$OUTDIR"
+}
+` + naturalGCObservationShellFunctions(t) + cleanup + `
+trap cleanup EXIT
+validate_natural_gc_observation
+finish_with_natural_gc_observation 0
+`
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "bash", "-c", fixture, "observation-test", dir, owned)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// This signal is sent only after the observer registers its own identity.
+	var pid []byte
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		pid, err = os.ReadFile(filepath.Join(dir, "observer_pid"))
+		if err == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal("observer did not start", err)
+	}
+	if err := exec.Command("kill", "-TERM", fmt.Sprint(command.Process.Pid)).Run(); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err == nil || command.ProcessState.ExitCode() != 143 {
+		t.Fatalf("expected cancellation exit143, got %v (%v)", command.ProcessState, err)
+	}
+	if err := exec.Command("bash", "-c", `! kill -0 "$1" 2>/dev/null`, "check-observer", strings.TrimSpace(string(pid))).Run(); err != nil {
+		t.Fatal("owned observer was left alive", err)
+	}
+}
 
 // scenarioCall is one (call, data_template) pair wherever it appears in a
 // scenario document.
@@ -1536,6 +1767,99 @@ run_receipt_probe() {
 	}
 }
 
+func TestReceiptBenchOperatorMetricsFlagIsSteadySamplerOnly(t *testing.T) {
+	raw, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(raw), "run_receipt_probe() {\n")
+	if !found {
+		t.Fatal("missing receipt probe wrapper")
+	}
+	body, _, found := strings.Cut(rest, "\n}\n\nsnapshot_search_lifecycle() {")
+	if !found {
+		t.Fatal("incomplete receipt probe wrapper")
+	}
+	for _, family := range []struct{ driver, call string }{
+		{"receipt_vertex_put", "PutVertex"}, {"receipt_vertex_delete", "DeleteVertex"},
+		{"receipt_edge_delete", "DeleteEdge"}, {"receipt_edge_add", "AddEdge"}, {"ghz", "unsupported"},
+	} {
+		for _, phase := range []string{"warmup", "steady"} {
+			t.Run(family.driver+"/"+phase, func(t *testing.T) {
+				out := t.TempDir()
+				fixture := `set -euo pipefail
+target_driver="$TARGET_DRIVER"
+SCENARIO_FILE=fixture.yaml
+REPO_ROOT="$PWD"
+PEER_TLS_DIR="$OUTDIR/trust"
+endpoints=(localhost:6380 localhost:6381 localhost:6382)
+REPLICA_METRICS_PORTS=(19390 19391 19392)
+die() { exit 91; }
+yq() {
+ case "$2" in
+  '.target.calls | length') echo 2;;
+  '.target.calls[0].name') echo receipt_admission;;
+  '.target.calls[0].call') echo "graph.v1.LanternService/$EXPECTED_CALL";;
+  '.target.calls[1].name') echo receipt_lookup;;
+  '.target.calls[1].call') echo graph.v1.LanternService/GetReceiptStatus;;
+  '.leak_gate.steady_sample_interval') echo 5s;;
+  *) return 92;;
+ esac
+}
+go() { printf '%s\n' "$@" > "$OUTDIR/args"; }
+run_receipt_probe() {
+` + body + "\n}\nrun_receipt_probe \"$PHASE\" 12 200 45s \"$OUTDIR/admission.json\" \"$OUTDIR/lookup.json\"\n"
+				command := exec.Command("bash", "-c", fixture)
+				command.Env = append(os.Environ(), "OUTDIR="+out, "TARGET_DRIVER="+family.driver, "EXPECTED_CALL="+family.call, "PHASE="+phase)
+				output, err := command.CombinedOutput()
+				if family.driver == "ghz" {
+					if command.ProcessState == nil || command.ProcessState.ExitCode() != 91 {
+						t.Fatalf("non-receipt entered receipt sampler wrapper: %v, %s", err, output)
+					}
+					if _, err := os.Stat(filepath.Join(out, "args")); !os.IsNotExist(err) {
+						t.Fatalf("unsupported workload started a receipt client: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("receipt wrapper: %v, %s", err, output)
+				}
+				captured, err := os.ReadFile(filepath.Join(out, "args"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				args := strings.Split(strings.TrimSuffix(string(captured), "\n"), "\n")
+				value := func(flag string) string {
+					index := slices.Index(args, flag)
+					if index < 0 || index+1 >= len(args) {
+						return ""
+					}
+					return args[index+1]
+				}
+				if len(args) < 2 || args[0] != "run" || args[1] != "./testbed/bench/receiptprobe" ||
+					value("-endpoints") != "https://localhost:6380,https://localhost:6381,https://localhost:6382" ||
+					value("-ca-file") != out+"/trust/ca.pem" || value("-phase") != phase || value("-pair-rps") != "100" {
+					t.Fatalf("workload transport/configuration changed: %q", args)
+				}
+				flagCount := 0
+				for _, arg := range args {
+					if arg == "-metrics-operator-loopback" {
+						flagCount++
+					}
+				}
+				if phase == "steady" {
+					if flagCount != 1 || value("-metrics-endpoints") != "http://localhost:19390/metrics,http://localhost:19391/metrics,http://localhost:19392/metrics" ||
+						value("-metrics-interval") != "5s" || value("-metrics-report") != out+"/runtime_steady.json" {
+						t.Fatalf("owned bridge sampler arguments changed: %q", args)
+					}
+				} else if flagCount != 0 || value("-metrics-endpoints") != "" || value("-metrics-report") != "" {
+					t.Fatalf("warmup unexpectedly enables the metrics route: %q", args)
+				}
+			})
+		}
+	}
+}
+
 func TestProtectedReceiptBenchSnapshotNeverRequestsPprof(t *testing.T) {
 	outDir := t.TempDir()
 	fixture := `set -euo pipefail
@@ -2672,6 +2996,369 @@ wait(){ if [[ "$1" == 102 ]]; then return %d; elif [[ "$1" == 103 ]]; then retur
 `, tc.consumer, tc.chaos, body, tc.consumer, tc.chaos)
 			if output, err := exec.Command("bash", "-c", fixture).CombinedOutput(); err != nil {
 				t.Fatalf("workload failure classification: %v %s", err, output)
+			}
+		})
+	}
+}
+
+func TestBenchGhzStderrCaptureContract(t *testing.T) {
+	command := exec.CommandContext(t.Context(), "python3", "-B", "-m", "unittest", "discover", "-s", "capture", "-p", "ghz_stderr_test.py")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("fixed ghz stderr capture: %v\n%s", err, output)
+	}
+}
+
+func TestBenchGhzProducerDiagnosticsPreserveExitAndDrain(t *testing.T) {
+	raw, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, functions, ok := strings.Cut(string(raw), "prepare_ghz_diagnostics() {\n")
+	if !ok {
+		t.Fatal("missing ghz diagnostic functions")
+	}
+	functions, _, ok = strings.Cut("prepare_ghz_diagnostics() {\n"+functions, "\nprepare_receipt_edge_add() {")
+	if !ok {
+		t.Fatal("missing ghz diagnostic function boundary")
+	}
+	_, steady, ok := strings.Cut(string(raw), "# Steady producer(s).")
+	if !ok {
+		t.Fatal("missing steady producer block")
+	}
+	_, steady, ok = strings.Cut(steady, "\ncalls_len=")
+	if !ok {
+		t.Fatal("missing steady setup")
+	}
+	steady, _, ok = strings.Cut("calls_len="+steady, "\nif [[ -n \"$lifecycle_reason\" ]]; then")
+	if !ok {
+		t.Fatal("missing steady block boundary")
+	}
+	_, verdict, ok := strings.Cut(string(raw), "\nworkload_verdict=\"pass\"\n")
+	if !ok {
+		t.Fatal("missing workload verdict")
+	}
+	verdict, _, ok = strings.Cut(verdict, "\njq -n --arg verdict")
+	if !ok {
+		t.Fatal("missing workload verdict boundary")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat("/opt/homebrew/bin/bash"); err == nil {
+		bash = "/opt/homebrew/bin/bash"
+	}
+	helper, err := filepath.Abs("capture/ghz_stderr.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"producer_failure", "success", "capture_write_failure", "capture_timeout", "capture_startup_failure"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			bin := filepath.Join(dir, "bin")
+			out := filepath.Join(dir, "out")
+			capture := filepath.Join(dir, "capture")
+			for _, path := range []string{bin, out, capture} {
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			helperData, err := os.ReadFile(helper)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "capture_timeout" {
+				helperData = []byte("import sys, time\nif sys.argv[1:]==['--check']: sys.exit(0)\nwhile sys.stdin.buffer.read(65536): pass\ntime.sleep(60)\n")
+			}
+			if mode == "capture_startup_failure" {
+				helperData = []byte("import sys\nsys.exit(9)\n")
+			}
+			if err := os.WriteFile(filepath.Join(capture, "ghz_stderr.py"), helperData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fake := `#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args=sys.argv[1:]
+index=args[args.index('--call')+1][-1]
+Path(os.environ['OUTDIR'], 'direct-pid-'+index).write_text(str(os.getpid()))
+sys.stdout.write('SECRET-STDOUT https://user:password@private.test/payload\n')
+body=b'metadata reflection service descriptor dial connect code = Unavailable context deadline exceeded\nAuthorization: Bearer SECRET-TOKEN https://user:password@private.test/payload\n'+b'x'*100000+b'\nPOST_CAP_SECRET_MARKER\n'
+sys.stderr.buffer.write(body)
+sys.stderr.buffer.flush()
+Path(os.environ['OUTDIR'], 'drained-'+index).write_text(str(len(body)))
+Path(args[args.index('-o')+1]).write_text(json.dumps({'fixture':True}))
+sys.exit(37 if os.environ['FIXTURE_MODE']=='producer_failure' and index=='0' else 0)
+`
+			if err := os.WriteFile(filepath.Join(bin, "ghz"), []byte(fake), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			// Force O_EXCL output rejection after EOF, without changing ghz or
+			// closing its stderr early. The exact production block still runs.
+			caseSteady := strings.Replace(steady, "  prepare_ghz_diagnostics\n", `  prepare_ghz_diagnostics
+printf '%s' "$GHZ_DIAGNOSTICS_DIR" > "$OUTDIR/private-path"
+if [[ "$FIXTURE_MODE" == capture_write_failure ]]; then
+ (umask 077; printf 'preserve' > "$GHZ_DIAGNOSTICS_DIR/producer_0.stderr.json"; printf 'preserve' > "$GHZ_DIAGNOSTICS_DIR/producer_1.stderr.json")
+fi
+`, 1)
+			fixture := `set -euo pipefail
+prod_pids=()
+ghz_capture_pids=()
+GHZ_DIAGNOSTICS_DIR=""
+sleep 30 & unrelated_pid=$!
+trap 'kill "$unrelated_pid" 2>/dev/null || true; wait "$unrelated_pid" 2>/dev/null || true' EXIT
+receipt_driver=0
+steady_rps=20
+steady_conc=1
+steady_duration=1s
+SCENARIO_FILE=fixture.yaml
+endpoints=(localhost:6380 localhost:6381 localhost:6382)
+log(){ printf '%s\n' "$*"; }
+die(){ printf '%s\n' "$*" >&2; exit 91; }
+` + functions + `
+yq(){ case "$2" in
+ '.target.calls | length // 0') echo 2;;
+ '.target.calls[0].call') echo Call0;;
+ '.target.calls[1].call') echo Call1;;
+ '.target.calls[0].data_template'|'.target.calls[1].data_template') echo SECRET-PAYLOAD;;
+ '.target.calls[0].rps // 0'|'.target.calls[1].rps // 0') echo 0;;
+ *) return 92;; esac; }
+` + caseSteady + `
+workload_verdict="pass"
+` + verdict + `
+printf '%s %s %s %s %s\n' "$producer_failed" "$producer_diagnostics_failed" "$workload_verdict" "${#prod_pids[@]}" "${#ghz_capture_pids[@]}" > "$OUTDIR/result"
+kill -0 "$unrelated_pid"
+`
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, bash, "-c", fixture)
+			command.WaitDelay = time.Second
+			command.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "OUTDIR="+out, "CAPTURE_DIR="+capture, "TMPDIR="+dir, "FIXTURE_MODE="+mode)
+			output, runErr := command.CombinedOutput()
+			for _, secret := range []string{"SECRET-TOKEN", "SECRET-STDOUT", "SECRET-PAYLOAD", "POST_CAP_SECRET_MARKER", "user:password", "private.test"} {
+				if strings.Contains(string(output), secret) {
+					t.Fatalf("secret surfaced: %s", secret)
+				}
+			}
+			if mode == "capture_startup_failure" {
+				if runErr == nil {
+					t.Fatal("invalid helper startup passed")
+				}
+				if _, err := os.Stat(filepath.Join(out, "direct-pid-0")); !os.IsNotExist(err) {
+					t.Fatal("ghz started before helper check")
+				}
+				return
+			}
+			if runErr != nil {
+				t.Fatalf("steady fixture: %v\n%s", runErr, output)
+			}
+			want := "0 0 pass 0 0\n"
+			if mode == "producer_failure" {
+				want = "1 0 fail 0 0\n"
+			}
+			if mode == "capture_write_failure" || mode == "capture_timeout" {
+				want = "0 1 fail 0 0\n"
+			}
+			result, err := os.ReadFile(filepath.Join(out, "result"))
+			if err != nil || string(result) != want {
+				t.Fatalf("status %q, want %q (%v)\n%s", result, want, err, output)
+			}
+			privatePath, err := os.ReadFile(filepath.Join(out, "private-path"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(string(privatePath))
+			if err != nil || info.Mode().Perm() != 0o700 {
+				t.Fatalf("private directory permissions: %v %v", info, err)
+			}
+			for i := 0; i < 2; i++ {
+				raw, err := os.ReadFile(filepath.Join(string(privatePath), fmt.Sprintf("producer_%d.exit.json", i)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var exit struct {
+					Status int `json:"ghz_exit_status"`
+					PID    int `json:"ghz_pid"`
+				}
+				if err := json.Unmarshal(raw, &exit); err != nil {
+					t.Fatal(err)
+				}
+				wantStatus := 0
+				if mode == "producer_failure" && i == 0 {
+					wantStatus = 37
+				}
+				pid, _ := os.ReadFile(filepath.Join(out, fmt.Sprintf("direct-pid-%d", i)))
+				if exit.Status != wantStatus || fmt.Sprint(exit.PID) != string(pid) {
+					t.Fatalf("direct child status lost: %+v pid=%s", exit, pid)
+				}
+				if _, err := os.Stat(filepath.Join(out, fmt.Sprintf("drained-%d", i))); err != nil {
+					t.Fatalf("ghz did not finish post-cap write: %v", err)
+				}
+				if mode != "capture_write_failure" && mode != "capture_timeout" {
+					path := filepath.Join(string(privatePath), fmt.Sprintf("producer_%d.stderr.json", i))
+					raw, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var record struct {
+						Raw       bool `json:"raw_stderr_saved"`
+						Count     int  `json:"observed_stderr_bytes"`
+						Prefix    int  `json:"captured_prefix_bytes"`
+						Truncated bool `json:"truncated"`
+					}
+					if err := json.Unmarshal(raw, &record); err != nil {
+						t.Fatal(err)
+					}
+					count, _ := os.ReadFile(filepath.Join(out, fmt.Sprintf("drained-%d", i)))
+					if record.Raw || !record.Truncated || record.Prefix != 65536 || fmt.Sprint(record.Count) != string(count) {
+						t.Fatalf("cap/EOF observation: %+v", record)
+					}
+					for _, secret := range []string{"SECRET", "private.test", "user:password"} {
+						if strings.Contains(string(raw), secret) {
+							t.Fatalf("secret persisted: %s", secret)
+						}
+					}
+				}
+			}
+			entries, err := os.ReadDir(string(privatePath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantEntries := 4
+			if mode == "capture_timeout" {
+				wantEntries = 2
+			}
+			if len(entries) != wantEntries {
+				t.Fatalf("unexpected private artifacts: %v", entries)
+			}
+			for _, entry := range entries {
+				info, err := entry.Info()
+				if err != nil || info.Mode().Perm() != 0o600 {
+					t.Fatalf("private file permissions: %v %v", info, err)
+				}
+			}
+		})
+	}
+}
+
+func TestBenchGhzDiagnosticsCancellationAndPrivateCleanup(t *testing.T) {
+	raw, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, functions, ok := strings.Cut(string(raw), "prepare_ghz_diagnostics() {\n")
+	if !ok {
+		t.Fatal("missing diagnostic functions")
+	}
+	functions, _, ok = strings.Cut("prepare_ghz_diagnostics() {\n"+functions, "\nprepare_receipt_edge_add() {")
+	if !ok {
+		t.Fatal("missing diagnostic function end")
+	}
+	_, cleanup, ok := strings.Cut(string(raw), "cleanup() {\n")
+	if !ok {
+		t.Fatal("missing cleanup")
+	}
+	cleanup, _, ok = strings.Cut("cleanup() {\n"+cleanup, "\ntrap cleanup EXIT")
+	if !ok {
+		t.Fatal("missing cleanup end")
+	}
+	owned, err := filepath.Abs("owned_processes.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper, err := filepath.Abs("capture/ghz_stderr.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat("/opt/homebrew/bin/bash"); err == nil {
+		bash = "/opt/homebrew/bin/bash"
+	}
+	for _, mode := range []string{"success", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			fake := filepath.Join(dir, "ghz")
+			if err := os.WriteFile(fake, []byte("#!/usr/bin/env python3\nimport os, sys, time\nfrom pathlib import Path\nsys.stderr.buffer.write(b'x'*100000)\nsys.stderr.buffer.flush()\nPath(os.environ['OUTDIR'],'ready').touch()\ntime.sleep(60)\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			fixture := `set -euo pipefail
+prod_pids=()
+sub_pids=()
+ghz_capture_pids=()
+producer_diagnostics_failed=0
+COMPOSE_STARTED=0
+PEER_TLS_DIR=""
+NATIVE_WORK_DIR=""
+GHZ_DIAGNOSTICS_DIR=""
+MEMBERSHIP_PID=""
+DIAGNOSTICS_PID=""
+chaos_pid=""
+source "$OWNED_PROCESSES"
+log(){ printf '%s\n' "$*"; }
+die(){ exit 91; }
+` + functions + cleanup + `
+trap cleanup EXIT
+prepare_ghz_diagnostics
+printf '%s' "$GHZ_DIAGNOSTICS_DIR" > "$OUTDIR/private-path"
+if [[ "$FIXTURE_MODE" == success ]]; then exit 0; fi
+pipe="$GHZ_DIAGNOSTICS_DIR/producer_0.pipe"
+(umask 077; mkfifo "$pipe")
+python3 -B "$CAPTURE_DIR/ghz_stderr.py" "$GHZ_DIAGNOSTICS_DIR/producer_0.stderr.json" "$GHZ_BINARY" < "$pipe" &
+ghz_capture_pids+=("$!")
+ghz >/dev/null 2>"$pipe" &
+prod_pids+=("$!")
+printf '%s %s' "${prod_pids[0]}" "${ghz_capture_pids[0]}" > "$OUTDIR/pids"
+for round in {1..200}; do
+ [[ ! -f "$OUTDIR/ready" ]] || break
+ sleep 0.01
+done
+[[ -f "$OUTDIR/ready" ]]
+exit 23
+`
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, bash, "-c", fixture)
+			command.WaitDelay = time.Second
+			command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "OUTDIR="+dir, "TMPDIR="+dir, "CAPTURE_DIR="+filepath.Dir(helper), "OWNED_PROCESSES="+owned, "FIXTURE_MODE="+mode)
+			output, runErr := command.CombinedOutput()
+			wantExit := 0
+			if mode == "cancel" {
+				wantExit = 23
+			}
+			if command.ProcessState == nil || command.ProcessState.ExitCode() != wantExit {
+				t.Fatalf("cleanup exit=%v err=%v output=%s", command.ProcessState, runErr, output)
+			}
+			private, err := os.ReadFile(filepath.Join(dir, "private-path"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "success" {
+				if _, err := os.Stat(string(private)); !os.IsNotExist(err) {
+					t.Fatalf("successful private directory retained: %v", err)
+				}
+				if strings.Contains(string(output), "diagnostics retained") {
+					t.Fatalf("success announced private failure: %s", output)
+				}
+				return
+			}
+			if !strings.Contains(string(output), "run.sh: private ghz producer diagnostics retained at "+string(private)) {
+				t.Fatalf("cancel evidence marker missing: %s", output)
+			}
+			entries, err := os.ReadDir(string(private))
+			if err != nil || len(entries) != 1 || entries[0].Name() != "producer_0.stderr.json" {
+				t.Fatalf("cancelled collector not drained or FIFO retained: %v %v", entries, err)
+			}
+			pids, err := os.ReadFile(filepath.Join(dir, "pids"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, pid := range strings.Fields(string(pids)) {
+				if err := exec.Command(bash, "-c", `! kill -0 "$1" 2>/dev/null`, "check", pid).Run(); err != nil {
+					t.Fatalf("owned child %s still running", pid)
+				}
 			}
 		})
 	}
