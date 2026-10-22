@@ -1767,6 +1767,99 @@ run_receipt_probe() {
 	}
 }
 
+func TestReceiptBenchOperatorMetricsFlagIsSteadySamplerOnly(t *testing.T) {
+	raw, err := os.ReadFile("run.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(raw), "run_receipt_probe() {\n")
+	if !found {
+		t.Fatal("missing receipt probe wrapper")
+	}
+	body, _, found := strings.Cut(rest, "\n}\n\nsnapshot_search_lifecycle() {")
+	if !found {
+		t.Fatal("incomplete receipt probe wrapper")
+	}
+	for _, family := range []struct{ driver, call string }{
+		{"receipt_vertex_put", "PutVertex"}, {"receipt_vertex_delete", "DeleteVertex"},
+		{"receipt_edge_delete", "DeleteEdge"}, {"receipt_edge_add", "AddEdge"}, {"ghz", "unsupported"},
+	} {
+		for _, phase := range []string{"warmup", "steady"} {
+			t.Run(family.driver+"/"+phase, func(t *testing.T) {
+				out := t.TempDir()
+				fixture := `set -euo pipefail
+target_driver="$TARGET_DRIVER"
+SCENARIO_FILE=fixture.yaml
+REPO_ROOT="$PWD"
+PEER_TLS_DIR="$OUTDIR/trust"
+endpoints=(localhost:6380 localhost:6381 localhost:6382)
+REPLICA_METRICS_PORTS=(19390 19391 19392)
+die() { exit 91; }
+yq() {
+ case "$2" in
+  '.target.calls | length') echo 2;;
+  '.target.calls[0].name') echo receipt_admission;;
+  '.target.calls[0].call') echo "graph.v1.LanternService/$EXPECTED_CALL";;
+  '.target.calls[1].name') echo receipt_lookup;;
+  '.target.calls[1].call') echo graph.v1.LanternService/GetReceiptStatus;;
+  '.leak_gate.steady_sample_interval') echo 5s;;
+  *) return 92;;
+ esac
+}
+go() { printf '%s\n' "$@" > "$OUTDIR/args"; }
+run_receipt_probe() {
+` + body + "\n}\nrun_receipt_probe \"$PHASE\" 12 200 45s \"$OUTDIR/admission.json\" \"$OUTDIR/lookup.json\"\n"
+				command := exec.Command("bash", "-c", fixture)
+				command.Env = append(os.Environ(), "OUTDIR="+out, "TARGET_DRIVER="+family.driver, "EXPECTED_CALL="+family.call, "PHASE="+phase)
+				output, err := command.CombinedOutput()
+				if family.driver == "ghz" {
+					if command.ProcessState == nil || command.ProcessState.ExitCode() != 91 {
+						t.Fatalf("non-receipt entered receipt sampler wrapper: %v, %s", err, output)
+					}
+					if _, err := os.Stat(filepath.Join(out, "args")); !os.IsNotExist(err) {
+						t.Fatalf("unsupported workload started a receipt client: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("receipt wrapper: %v, %s", err, output)
+				}
+				captured, err := os.ReadFile(filepath.Join(out, "args"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				args := strings.Split(strings.TrimSuffix(string(captured), "\n"), "\n")
+				value := func(flag string) string {
+					index := slices.Index(args, flag)
+					if index < 0 || index+1 >= len(args) {
+						return ""
+					}
+					return args[index+1]
+				}
+				if len(args) < 2 || args[0] != "run" || args[1] != "./testbed/bench/receiptprobe" ||
+					value("-endpoints") != "https://localhost:6380,https://localhost:6381,https://localhost:6382" ||
+					value("-ca-file") != out+"/trust/ca.pem" || value("-phase") != phase || value("-pair-rps") != "100" {
+					t.Fatalf("workload transport/configuration changed: %q", args)
+				}
+				flagCount := 0
+				for _, arg := range args {
+					if arg == "-metrics-operator-loopback" {
+						flagCount++
+					}
+				}
+				if phase == "steady" {
+					if flagCount != 1 || value("-metrics-endpoints") != "http://localhost:19390/metrics,http://localhost:19391/metrics,http://localhost:19392/metrics" ||
+						value("-metrics-interval") != "5s" || value("-metrics-report") != out+"/runtime_steady.json" {
+						t.Fatalf("owned bridge sampler arguments changed: %q", args)
+					}
+				} else if flagCount != 0 || value("-metrics-endpoints") != "" || value("-metrics-report") != "" {
+					t.Fatalf("warmup unexpectedly enables the metrics route: %q", args)
+				}
+			})
+		}
+	}
+}
+
 func TestProtectedReceiptBenchSnapshotNeverRequestsPprof(t *testing.T) {
 	outDir := t.TempDir()
 	fixture := `set -euo pipefail

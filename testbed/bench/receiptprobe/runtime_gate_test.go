@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1503,5 +1505,233 @@ func TestValidateSteadyMetricsExactCoverage(t *testing.T) {
 				t.Fatalf("coverage accepted=%v, want=%v: %v", err == nil, test.wantOK, err)
 			}
 		})
+	}
+}
+
+func operatorMetricsEndpointsForTest() []metricsEndpoint {
+	return []metricsEndpoint{
+		{url: "http://localhost:9390/metrics", endpoint: "localhost:9390"},
+		{url: "http://localhost:9391/metrics", endpoint: "localhost:9391"},
+		{url: "http://localhost:9392/metrics", endpoint: "localhost:9392"},
+	}
+}
+
+func TestOperatorMetricsLoopbackRoutes(t *testing.T) {
+	t.Parallel()
+	endpoints := operatorMetricsEndpointsForTest()
+	routes, err := operatorMetricsLoopbackRoutes(endpoints)
+	if err != nil || len(routes) != receiptReplicaCount || routes["localhost:9390"] != "127.0.0.1:9390" || routes["localhost:9392"] != "127.0.0.1:9392" {
+		t.Fatalf("owned routes = %v, %v", routes, err)
+	}
+	for _, test := range []struct {
+		name string
+		url  string
+	}{
+		{"remote name", "http://node.invalid:9390/metrics"},
+		{"hostname case", "http://LOCALHOST:9390/metrics"},
+		{"hostname suffix", "http://localhost.:9390/metrics"},
+		{"IPv4 standalone", "http://127.0.0.1:9390/metrics"},
+		{"IPv6 standalone", "http://[::1]:9390/metrics"},
+		{"TLS standalone", "https://localhost:9390/metrics"},
+		{"zero port", "http://localhost:0/metrics"},
+		{"oversized port", "http://localhost:65536/metrics"},
+		{"noncanonical port", "http://localhost:09390/metrics"},
+		{"missing port", "http://localhost/metrics"},
+		{"wrong path", "http://localhost:9390/readyz"},
+		{"escaped path", "http://localhost:9390/%6detrics"},
+		{"query", "http://localhost:9390/metrics?x=y"},
+		{"empty query", "http://localhost:9390/metrics?"},
+		{"fragment", "http://localhost:9390/metrics#x"},
+		{"userinfo", "http://user@localhost:9390/metrics"},
+		{"opaque URL", "http:localhost:9390/metrics"},
+		{"invalid URL", "http://localhost:bad/metrics"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			endpoints := operatorMetricsEndpointsForTest()
+			endpoints[0].url = test.url
+			if _, err := operatorMetricsLoopbackRoutes(endpoints); err == nil {
+				t.Fatal("accepted a non-owned or noncanonical route")
+			}
+		})
+	}
+	t.Run("report identity mismatch", func(t *testing.T) {
+		endpoints := operatorMetricsEndpointsForTest()
+		endpoints[0].endpoint = "localhost:9391"
+		if _, err := operatorMetricsLoopbackRoutes(endpoints); err == nil {
+			t.Fatal("accepted a different reported node")
+		}
+	})
+	t.Run("duplicate port", func(t *testing.T) {
+		endpoints := operatorMetricsEndpointsForTest()
+		endpoints[1] = endpoints[0]
+		if _, err := operatorMetricsLoopbackRoutes(endpoints); err == nil {
+			t.Fatal("accepted duplicate local destinations")
+		}
+	})
+	for _, count := range []int{0, 1, 2, 4} {
+		t.Run(fmt.Sprintf("replica count %d", count), func(t *testing.T) {
+			endpoints := append(operatorMetricsEndpointsForTest(), metricsEndpoint{})[:count]
+			if _, err := operatorMetricsLoopbackRoutes(endpoints); err == nil {
+				t.Fatal("accepted an incomplete or expanded cohort")
+			}
+		})
+	}
+}
+
+func TestConfigureOperatorMetricsLoopbackPreservesDialOwnership(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
+	wantErr := errors.New("original dial result")
+	var gotCtx context.Context
+	var gotNetwork, gotAddress string
+	var calls int
+	request, err := http.NewRequest(http.MethodGet, "http://localhost:9390/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proxyRequest *http.Request
+	transport := &http.Transport{
+		Proxy: func(r *http.Request) (*url.URL, error) { proxyRequest = r; return nil, nil },
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			calls++
+			gotCtx, gotNetwork, gotAddress = ctx, network, address
+			return conn, wantErr
+		},
+	}
+	endpoints := operatorMetricsEndpointsForTest()
+	if err := configureOperatorMetricsLoopback(transport, endpoints); err != nil {
+		t.Fatal(err)
+	}
+	// The installed routing table does not retain the caller's mutable slice.
+	endpoints[0] = metricsEndpoint{url: "http://elsewhere.invalid:1/metrics", endpoint: "elsewhere.invalid:1"}
+	for _, test := range []struct{ network, address, want string }{
+		{"tcp", "localhost:9390", "127.0.0.1:9390"},
+		{"tcp4", "localhost:9391", "127.0.0.1:9391"},
+		{"tcp", "localhost:9392", "127.0.0.1:9392"},
+		{"tcp6", "localhost:9390", "localhost:9390"},
+		{"udp", "localhost:9390", "localhost:9390"},
+		{"tcp", "localhost:9393", "localhost:9393"},
+		{"tcp", "LOCALHOST:9390", "LOCALHOST:9390"},
+		{"tcp", "proxy.invalid:3128", "proxy.invalid:3128"},
+		{"tcp", "127.0.0.1:9390", "127.0.0.1:9390"},
+		{"tcp", "[::1]:9390", "[::1]:9390"},
+	} {
+		before := calls
+		gotConn, err := transport.DialContext(ctx, test.network, test.address)
+		if calls != before+1 || gotCtx != ctx || gotNetwork != test.network || gotAddress != test.want || gotConn != conn || err != wantErr || ctx.Err() != context.Canceled {
+			t.Fatalf("dial ownership changed for %s/%s: calls=%d ctx=%t network=%s address=%s conn=%t err=%v", test.network, test.address, calls-before, gotCtx == ctx, gotNetwork, gotAddress, gotConn == conn, err)
+		}
+	}
+	if _, err := transport.Proxy(request); err != nil || proxyRequest != request || request.URL.String() != "http://localhost:9390/metrics" || request.Host != "localhost:9390" {
+		t.Fatal("operator route changed proxy callback or logical request identity")
+	}
+	t.Run("missing context dialer is not replaced", func(t *testing.T) {
+		var legacyCalls int
+		legacy := &http.Transport{Dial: func(_, _ string) (net.Conn, error) { legacyCalls++; return conn, wantErr }}
+		if err := configureOperatorMetricsLoopback(legacy, operatorMetricsEndpointsForTest()); err == nil || legacy.DialContext != nil {
+			t.Fatal("installed a new dialer instead of rejecting an unsupported owned route")
+		}
+		gotConn, err := legacy.Dial("tcp", "localhost:9390")
+		if legacyCalls != 1 || gotConn != conn || err != wantErr {
+			t.Fatal("configuration failure mutated the legacy dialer")
+		}
+	})
+}
+
+func TestSampleSteadyMetricsOperatorLoopbackWithoutNameResolution(t *testing.T) {
+	// This sequential control owns the process default. No external resolver is
+	// called: the original dialer rejects names and accepts literal loopback.
+	transport := runtimeMetricsDefaultTransportForTest(t)
+	var mu sync.Mutex
+	var dialAddresses []string
+	var proxyURLs []string
+	var badRequest atomic.Bool
+	transport.Proxy = func(request *http.Request) (*url.URL, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		proxyURLs = append(proxyURLs, request.URL.String())
+		return nil, nil
+	}
+	var dialer net.Dialer
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		mu.Lock()
+		dialAddresses = append(dialAddresses, address)
+		mu.Unlock()
+		host, _, err := net.SplitHostPort(address)
+		if err != nil || host != "127.0.0.1" {
+			return nil, errors.New("controlled name resolution unavailable")
+		}
+		return dialer.DialContext(ctx, network, address)
+	}
+	var endpoints []metricsEndpoint
+	var addresses []string
+	var requests [receiptReplicaCount]atomic.Int32
+	stop := make(chan struct{})
+	for i := range receiptReplicaCount {
+		var logicalHost string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			if request.Method != http.MethodGet || request.URL.Path != "/metrics" || request.Host != logicalHost || request.Header.Get("Authorization") != "" {
+				badRequest.Store(true)
+			}
+			// The owned Python bridge closes every HTTP/1.0 connection, so
+			// exercise the literal route again on each sampling round.
+			w.Header().Set("Connection", "close")
+			_, _ = fmt.Fprintf(w, "go_goroutines %d\ngo_memstats_heap_alloc_bytes %d\n%s", 40+i, testHeapBaseline+int64(i), testRuntimeObservations)
+			if requests[i].Add(1) == 2 && i == receiptReplicaCount-1 {
+				close(stop)
+			}
+		}))
+		t.Cleanup(server.Close)
+		address := strings.TrimPrefix(server.URL, "http://")
+		host, port, err := net.SplitHostPort(address)
+		if err != nil || host != "127.0.0.1" {
+			t.Fatal("control must own an IPv4 loopback listener", err)
+		}
+		logicalHost = net.JoinHostPort("localhost", port)
+		endpoints = append(endpoints, metricsEndpoint{url: "http://" + logicalHost + "/metrics", endpoint: logicalHost})
+		addresses = append(addresses, address)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cfg := steadyMetricsConfig{endpoints: endpoints, interval: 10 * time.Millisecond}
+	negative := sampleSteadyMetrics(ctx, cfg, time.Now(), stop)
+	if negative.Failure == "" || len(negative.Samples) != 0 || requests[0].Load() != 0 || requests[1].Load() != 0 || requests[2].Load() != 0 {
+		t.Fatal("default collector bypassed the controlled unavailable name route")
+	}
+	mu.Lock()
+	if len(dialAddresses) != 1 || dialAddresses[0] != endpoints[0].endpoint {
+		t.Fatalf("default collector changed its resolver destination: %v", dialAddresses)
+	}
+	dialAddresses, proxyURLs = nil, nil
+	mu.Unlock()
+	cfg.operatorLoopback = true
+	report := sampleSteadyMetrics(ctx, cfg, time.Now(), stop)
+	if report.Failure != "" || len(report.Samples) != 2 || badRequest.Load() || ctx.Err() != nil {
+		t.Fatalf("owned loopback control: failure=%t rounds=%d identityChanged=%t caller=%v", report.Failure != "", len(report.Samples), badRequest.Load(), ctx.Err())
+	}
+	for i, endpoint := range endpoints {
+		if report.Endpoints[i] != endpoint.endpoint || negative.Endpoints[i] != endpoint.endpoint || requests[i].Load() != 2 {
+			t.Fatalf("configured node %d identity/count changed", i)
+		}
+		for _, round := range report.Samples {
+			value := round.Replicas[i]
+			if value.Endpoint != endpoint.endpoint || value.Goroutines != int64(40+i) || value.HeapAllocBytes != testHeapBaseline+int64(i) || value.Metrics == nil || value.Metrics.GCCount != 7 {
+				t.Fatalf("configured node %d measurement changed: %+v", i, value)
+			}
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dialAddresses) != 6 || len(proxyURLs) != 6 {
+		t.Fatalf("fresh connections or proxy callbacks changed: dials=%d proxy=%d", len(dialAddresses), len(proxyURLs))
+	}
+	for i := range dialAddresses {
+		if dialAddresses[i] != addresses[i%receiptReplicaCount] || proxyURLs[i] != endpoints[i%receiptReplicaCount].url {
+			t.Fatalf("request %d reached a different node or logical URL", i)
+		}
 	}
 }

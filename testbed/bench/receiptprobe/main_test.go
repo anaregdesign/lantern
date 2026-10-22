@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -631,6 +632,16 @@ func TestMainWritesWarmupSummariesBeforeFailure(t *testing.T) {
 		// The child runs the real CLI entry point rather than a second helper.
 		// Its flag set excludes the test binary's own already-parsed flags.
 		flag.CommandLine = flag.NewFlagSet("receiptprobe", flag.ExitOnError)
+		if spy := os.Getenv("LANTERN_TEST_RECEIPTPROBE_METRICS_DIAL"); spy != "" {
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			transport.DialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+				if err := os.WriteFile(spy, []byte(network+" "+address), 0o600); err != nil {
+					return nil, err
+				}
+				return nil, errors.New("intentional metrics dial failure")
+			}
+			http.DefaultTransport = transport
+		}
 		os.Args = append([]string{os.Args[0]}, args...)
 		main()
 		return
@@ -638,14 +649,19 @@ func TestMainWritesWarmupSummariesBeforeFailure(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
-		phase   string
-		code    connect.Code
-		verdict string
+		name             string
+		phase            string
+		code             connect.Code
+		verdict          string
+		dialSpy          bool
+		operatorLoopback bool
 	}{
-		{"warmup", connect.CodeUnavailable, "receipt lookup coverage mismatch"},
-		{"steady", connect.CodeInternal, "steady runtime sampling:"},
+		{name: "warmup", phase: "warmup", code: connect.CodeUnavailable, verdict: "receipt lookup coverage mismatch"},
+		{name: "steady", phase: "steady", code: connect.CodeInternal, verdict: "steady runtime sampling:"},
+		{name: "steady_operator_loopback", phase: "steady", code: connect.CodeInternal, verdict: "steady runtime sampling:", dialSpy: true, operatorLoopback: true},
+		{name: "steady_default_route", phase: "steady", code: connect.CodeInternal, verdict: "steady runtime sampling:", dialSpy: true},
 	} {
-		t.Run(test.phase, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			const token = "warmup-summary-TOKEN_SECRET"
 			const unavailableReason = "fixture BODY_REASON_SECRET"
 			endpoint := testReceiptEndpoint()
@@ -695,7 +711,11 @@ func TestMainWritesWarmupSummariesBeforeFailure(t *testing.T) {
 			}
 			if test.phase == "steady" {
 				var metricsURLs []string
-				for range receiptReplicaCount {
+				for i := range receiptReplicaCount {
+					if test.dialSpy {
+						metricsURLs = append(metricsURLs, "http://localhost:"+[]string{"9390", "9391", "9392"}[i]+"/metrics")
+						continue
+					}
 					metrics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						w.WriteHeader(http.StatusServiceUnavailable)
 					}))
@@ -704,6 +724,9 @@ func TestMainWritesWarmupSummariesBeforeFailure(t *testing.T) {
 				}
 				argsList = append(argsList, "-metrics-endpoints", strings.Join(metricsURLs, ","),
 					"-metrics-interval", "50ms", "-metrics-report", filepath.Join(dir, "metrics.json"))
+				if test.operatorLoopback {
+					argsList = append(argsList, "-metrics-operator-loopback")
+				}
 			}
 			args, err := json.Marshal(argsList)
 			if err != nil {
@@ -714,6 +737,9 @@ func TestMainWritesWarmupSummariesBeforeFailure(t *testing.T) {
 			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMainWritesWarmupSummariesBeforeFailure$")
 			command.WaitDelay = time.Second
 			command.Env = append(os.Environ(), childFlag+"=1", childArgs+"="+string(args), "LANTERN_BENCH_AUTH_TOKEN="+token)
+			if test.dialSpy {
+				command.Env = append(command.Env, "LANTERN_TEST_RECEIPTPROBE_METRICS_DIAL="+filepath.Join(dir, "metrics-dial"))
+			}
 			output, err := command.CombinedOutput()
 			if ctx.Err() != nil {
 				t.Fatalf("receipt main child exceeded its finite deadline: %v", ctx.Err())
@@ -765,6 +791,20 @@ func TestMainWritesWarmupSummariesBeforeFailure(t *testing.T) {
 				if err := json.Unmarshal(data, &report); err != nil || report.Failure == "" || len(report.Samples) != 0 {
 					t.Fatalf("metrics failure artifact changed verdict: %+v, %v", report, err)
 				}
+				if test.dialSpy {
+					wantDial := "tcp localhost:9390"
+					if test.operatorLoopback {
+						wantDial = "tcp 127.0.0.1:9390"
+					}
+					actual, err := os.ReadFile(filepath.Join(dir, "metrics-dial"))
+					if err != nil || string(actual) != wantDial {
+						t.Fatalf("CLI sampler dial = %q, %v; want %q", actual, err, wantDial)
+					}
+					if strings.Join(report.Endpoints, ",") != "localhost:9390,localhost:9391,localhost:9392" ||
+						!strings.Contains(report.Failure, "http://localhost:9390/metrics") || strings.Contains(report.Failure, "127.0.0.1:9390") {
+						t.Fatalf("CLI rewrote logical metrics URLs/reporting: %+v", report)
+					}
+				}
 			}
 			var failureRecords []map[string]string
 			for _, line := range bytes.Split(output, []byte("\n")) {
@@ -783,6 +823,55 @@ func TestMainWritesWarmupSummariesBeforeFailure(t *testing.T) {
 				if bytes.Contains(output, []byte(secret)) {
 					t.Fatal("failure diagnostics exposed request/response content")
 				}
+			}
+		})
+	}
+}
+
+func TestMainOperatorMetricsLoopbackValidationPrecedesCAAndRPC(t *testing.T) {
+	t.Parallel()
+	const localMetrics = "http://localhost:9390/metrics,http://localhost:9391/metrics,http://localhost:9392/metrics"
+	const remoteMetrics = "http://192.0.2.1:9390/metrics,http://localhost:9391/metrics,http://localhost:9392/metrics"
+	for _, tc := range []struct {
+		name, phase, metrics, want string
+		operator, omitMetrics      bool
+	}{
+		{name: "canonical_opt_in_reaches_CA", phase: "steady", metrics: localMetrics, operator: true, want: "receipt HTTPS transport: read receipt CA:"},
+		{name: "warmup_opt_in_refused", phase: "warmup", metrics: localMetrics, operator: true, want: "steady metrics require -phase steady"},
+		{name: "flag_without_metrics_refused", phase: "steady", operator: true, omitMetrics: true, want: "steady metrics require -phase steady"},
+		{name: "remote_opt_in_refused", phase: "steady", metrics: remoteMetrics, operator: true, want: "steady operator metrics:"},
+		{name: "remote_default_route_still_allowed", phase: "steady", metrics: remoteMetrics, want: "receipt HTTPS transport: read receipt CA:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			args := []string{"-family", "receipt_vertex_delete", "-endpoints", "https://127.0.0.1:1",
+				"-phase", tc.phase, "-duration", "250ms", "-pair-rps", "20", "-concurrency", "1",
+				"-ca-file", filepath.Join(dir, "absent-ca.pem")}
+			if !tc.omitMetrics {
+				args = append(args, "-metrics-endpoints", tc.metrics, "-metrics-interval", "50ms", "-metrics-report", filepath.Join(dir, "metrics.json"))
+			}
+			if tc.operator {
+				args = append(args, "-metrics-operator-loopback")
+			}
+			raw, err := json.Marshal(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMainWritesWarmupSummariesBeforeFailure$")
+			command.WaitDelay = time.Second
+			command.Env = append(os.Environ(), "LANTERN_TEST_RECEIPTPROBE_WARMUP_MAIN=1",
+				"LANTERN_TEST_RECEIPTPROBE_WARMUP_ARGS="+string(raw), "LANTERN_BENCH_AUTH_TOKEN=local-cli-validation-token")
+			output, err := command.CombinedOutput()
+			var exit *exec.ExitError
+			if ctx.Err() != nil || !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(output), tc.want) {
+				t.Fatalf("CLI validation exit=%v context=%v output=%s; want %q", err, ctx.Err(), output, tc.want)
+			}
+			// The deliberately absent CA is a boundary marker. Reaching it or an
+			// earlier validation error proves discovery/receipt RPCs never begin.
+			if _, err := os.Stat(filepath.Join(dir, "metrics.json")); !os.IsNotExist(err) {
+				t.Fatalf("preflight unexpectedly started metrics collection: %v", err)
 			}
 		})
 	}

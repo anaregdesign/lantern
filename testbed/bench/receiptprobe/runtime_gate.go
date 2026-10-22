@@ -28,8 +28,9 @@ type metricsEndpoint struct {
 }
 
 type steadyMetricsConfig struct {
-	endpoints []metricsEndpoint
-	interval  time.Duration
+	endpoints        []metricsEndpoint
+	interval         time.Duration
+	operatorLoopback bool
 }
 
 type runtimeMetrics struct {
@@ -95,6 +96,54 @@ func parseRuntimeMetricsEndpoints(raw string) ([]metricsEndpoint, error) {
 	return endpoints, nil
 }
 
+// Only the owned operator bridge is known to listen on IPv4 loopback. Keep the
+// logical URL/Host and any proxy selection intact; change only the exact socket
+// addresses supplied to this sampler's existing context dialer. Standalone
+// collectors, including IPv6-only localhost listeners, keep their normal route.
+func operatorMetricsLoopbackRoutes(endpoints []metricsEndpoint) (map[string]string, error) {
+	if len(endpoints) != receiptReplicaCount {
+		return nil, errors.New("operator metrics require three localhost endpoints")
+	}
+	routes := make(map[string]string, receiptReplicaCount)
+	for _, endpoint := range endpoints {
+		u, err := url.Parse(endpoint.url)
+		if err != nil {
+			return nil, errors.New("operator metrics require canonical localhost HTTP metrics URLs")
+		}
+		port, err := strconv.Atoi(u.Port())
+		if err != nil || port < 1 || port > 65535 || u.Port() != strconv.Itoa(port) ||
+			u.Scheme != "http" || u.Host != "localhost:"+u.Port() || endpoint.endpoint != u.Host ||
+			u.Path != "/metrics" || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.User != nil || u.Opaque != "" || u.String() != endpoint.url {
+			return nil, errors.New("operator metrics require canonical localhost HTTP metrics URLs")
+		}
+		if _, duplicate := routes[u.Host]; duplicate {
+			return nil, errors.New("operator metrics require distinct local ports")
+		}
+		routes[u.Host] = net.JoinHostPort("127.0.0.1", u.Port())
+	}
+	return routes, nil
+}
+
+func configureOperatorMetricsLoopback(transport *http.Transport, endpoints []metricsEndpoint) error {
+	routes, err := operatorMetricsLoopbackRoutes(endpoints)
+	if err != nil {
+		return err
+	}
+	if transport.DialContext == nil {
+		return errors.New("operator metrics require an existing context dialer")
+	}
+	dial := transport.DialContext
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		if network == "tcp" || network == "tcp4" {
+			if loopback, ok := routes[address]; ok {
+				address = loopback
+			}
+		}
+		return dial(ctx, network, address)
+	}
+	return nil
+}
+
 func sampleSteadyMetrics(
 	ctx context.Context,
 	cfg steadyMetricsConfig,
@@ -117,6 +166,12 @@ func sampleSteadyMetrics(
 	// Own only this sampling flight's pool and unused dials. Request timeout
 	// alone permits a Transport-owned dial to continue for a future request.
 	transport := baseTransport.Clone()
+	if cfg.operatorLoopback {
+		if err := configureOperatorMetricsLoopback(transport, cfg.endpoints); err != nil {
+			report.Failure = err.Error()
+			return report
+		}
+	}
 	observeRuntimeMetricsDial(transport)
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Timeout: 2 * time.Second, Transport: transport}

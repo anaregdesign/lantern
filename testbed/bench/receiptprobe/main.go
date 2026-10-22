@@ -167,6 +167,7 @@ func main() {
 		metricsURLs     = flag.String("metrics-endpoints", "", "comma-separated replica /metrics URLs during steady load")
 		metricsInterval = flag.Duration("metrics-interval", 0, "steady replica sampling interval")
 		metricsReport   = flag.String("metrics-report", "", "steady replica samples output path")
+		metricsLoopback = flag.Bool("metrics-operator-loopback", false, "dial the owned IPv4 operator bridge while preserving localhost URLs and Host")
 		edgeFixture     = flag.String("edge-add-fixture", "", "prepared protected EdgeAdd endpoint plan")
 	)
 	flag.Parse()
@@ -205,7 +206,7 @@ func main() {
 		fatalf("-edge-add-fixture is required only for receipt_edge_add")
 	}
 	var steadyMetrics *steadyMetricsConfig
-	if *metricsURLs != "" || *metricsInterval != 0 || *metricsReport != "" {
+	if *metricsURLs != "" || *metricsInterval != 0 || *metricsReport != "" || *metricsLoopback {
 		if *phase != "steady" || *metricsReport == "" || *metricsInterval <= 0 ||
 			*metricsInterval > *duration {
 			fatalf("steady metrics require -phase steady, -metrics-report, and an interval within the offered duration")
@@ -214,7 +215,12 @@ func main() {
 		if err != nil {
 			fatalf("steady metrics endpoints: %v", err)
 		}
-		steadyMetrics = &steadyMetricsConfig{endpoints: replicas, interval: *metricsInterval}
+		if *metricsLoopback {
+			if _, err := operatorMetricsLoopbackRoutes(replicas); err != nil {
+				fatalf("steady operator metrics: %v", err)
+			}
+		}
+		steadyMetrics = &steadyMetricsConfig{endpoints: replicas, interval: *metricsInterval, operatorLoopback: *metricsLoopback}
 	}
 
 	httpClient, err := newVerifiedReceiptHTTPClient(*caFile)

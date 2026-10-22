@@ -577,7 +577,14 @@ expiration, full-capacity memory, or a leak/no-leak claim.
 
 The steady metrics sampler owns a separate HTTP transport, closes its idle
 connections and requests cancellation of unused pending dials when sampling ends;
-the per-request timeout remains 2s. At phase completion, stderr retains at most
+the per-request timeout remains 2s. For the owned IPv4 operator bridge only,
+`-metrics-operator-loopback` pins each configured `localhost:<port>` socket dial
+to `127.0.0.1:<same port>`. The URL, HTTP Host, report identity, proxy selection,
+node ordering and authenticated workload transport remain unchanged. Generic
+standalone collectors do not opt in, preserving their ordinary resolver and
+IPv6 behavior. This removes unnecessary name resolution from this known local
+route; it does not establish the cause of a previous timeout.
+At phase completion, stderr retains at most
 the first failed admission and first failed lookup as fixed categories for status,
 source and message class, even if metrics or coverage fails first. It excludes
 raw errors and request/response content. A wire-error category or exact message

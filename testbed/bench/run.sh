@@ -1065,6 +1065,7 @@ run_receipt_probe() {
     done
     args+=(
       -metrics-endpoints "$metrics_urls"
+      -metrics-operator-loopback
       -metrics-interval "$(yq -r '.leak_gate.steady_sample_interval' "$SCENARIO_FILE")"
       -metrics-report "$OUTDIR/runtime_steady.json"
     )
