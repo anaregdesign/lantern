@@ -219,7 +219,7 @@ func TestRuntimeHTTPTraceGetConnOnlyDoesNotInventDialOrDNS(t *testing.T) {
 func TestRuntimeMetricsDialObserverPreservesExistingDial(t *testing.T) {
 	t.Run("nil context dial preserves legacy fallback", func(t *testing.T) {
 		var calls int
-		transport := &http.Transport{Dial: func(network, address string) (net.Conn, error) {
+		transport := &http.Transport{Dial: func(network, address string) (net.Conn, error) { //nolint:staticcheck // SA1019: intentional legacy-Dial regression control.
 			calls++
 			if network != "SECRET_network" || address != "SECRET_address" {
 				t.Fatal("legacy dial arguments changed")
@@ -227,10 +227,10 @@ func TestRuntimeMetricsDialObserverPreservesExistingDial(t *testing.T) {
 			return &runtimeTracePrivateConn{}, nil
 		}}
 		observeRuntimeMetricsDial(transport)
-		if transport.DialContext != nil || transport.Dial == nil || calls != 0 {
+		if transport.DialContext != nil || transport.Dial == nil || calls != 0 { //nolint:staticcheck // SA1019: verify the observer preserves the legacy fallback.
 			t.Fatal("observer replaced or invoked nil-context fallback")
 		}
-		if _, err := transport.Dial("SECRET_network", "SECRET_address"); err != nil || calls != 1 {
+		if _, err := transport.Dial("SECRET_network", "SECRET_address"); err != nil || calls != 1 { //nolint:staticcheck // SA1019: verify the original legacy dialer still runs unchanged.
 			t.Fatal("legacy dial no longer works unchanged")
 		}
 	})

@@ -1583,8 +1583,14 @@ func TestConfigureOperatorMetricsLoopbackPreservesDialOwnership(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	conn, peer := net.Pipe()
-	defer conn.Close()
-	defer peer.Close()
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Error(err)
+		}
+		if err := peer.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	wantErr := errors.New("original dial result")
 	var gotCtx context.Context
 	var gotNetwork, gotAddress string
@@ -1631,11 +1637,11 @@ func TestConfigureOperatorMetricsLoopbackPreservesDialOwnership(t *testing.T) {
 	}
 	t.Run("missing context dialer is not replaced", func(t *testing.T) {
 		var legacyCalls int
-		legacy := &http.Transport{Dial: func(_, _ string) (net.Conn, error) { legacyCalls++; return conn, wantErr }}
+		legacy := &http.Transport{Dial: func(_, _ string) (net.Conn, error) { legacyCalls++; return conn, wantErr }} //nolint:staticcheck // SA1019: intentional legacy-Dial regression control.
 		if err := configureOperatorMetricsLoopback(legacy, operatorMetricsEndpointsForTest()); err == nil || legacy.DialContext != nil {
 			t.Fatal("installed a new dialer instead of rejecting an unsupported owned route")
 		}
-		gotConn, err := legacy.Dial("tcp", "localhost:9390")
+		gotConn, err := legacy.Dial("tcp", "localhost:9390") //nolint:staticcheck // SA1019: verify the rejected configuration preserves the legacy fallback.
 		if legacyCalls != 1 || gotConn != conn || err != wantErr {
 			t.Fatal("configuration failure mutated the legacy dialer")
 		}
