@@ -198,6 +198,8 @@ String _failureCode(Object error) {
         'sigkill',
         'normal_exit',
         'verification',
+        'cleanup',
+        'collector',
       }.contains(error.message)) {
     return error.message;
   }
@@ -252,15 +254,22 @@ void _logLifecycle(ProbeLifecycle lifecycle) => stderr.writeln(
   '\ncrash_probe_child_lifecycle:${jsonEncode(lifecycle.snapshot())}',
 );
 
-Future<void> _observeStderr(Process process, ProbeLifecycle lifecycle) async {
+ProbeCollector<Object?> _observeStderr(
+  Process process,
+  ProbeLifecycle lifecycle,
+) {
   final lines = ProbeJsonLines(
     onMessage: lifecycle.observeWorker,
     onInvalid: () {}, // Raw child stderr and build-hook output stay discarded.
   );
-  await for (final chunk in process.stderr) {
-    lines.add(chunk);
-  }
-  lines.finish();
+  return ProbeCollector(
+    process.stderr,
+    onData: lines.add,
+    onDone: () {
+      lines.finish();
+      return null;
+    },
+  );
 }
 
 Future<void> _crash(
@@ -284,7 +293,7 @@ Future<void> _crash(
     proxyEndpoint: proxyEndpoint,
   );
   final ready = Completer<int>();
-  final stderrDrained = _observeStderr(process, lifecycle);
+  final stderrCollector = _observeStderr(process, lifecycle);
   final lines = ProbeJsonLines(
     onMessage: (message) {
       try {
@@ -305,50 +314,66 @@ Future<void> _crash(
       if (!ready.isCompleted) ready.completeError(StateError('marker'));
     },
   );
-  final subscription = process.stdout.listen(
-    lines.add,
+  final stdoutCollector = ProbeCollector<Object?>(
+    process.stdout,
+    onData: lines.add,
     onDone: () {
       lines.finish();
       if (!ready.isCompleted) ready.completeError(StateError('early_exit'));
+      return null;
     },
   );
+  lifecycle.collect(stdout: stdoutCollector, stderr: stderrCollector);
   int? workerPid;
   var killed = false;
   var exited = false;
-  try {
-    final readyPid = await waitForProbe<int>(ready.future, timeout, lifecycle);
-    workerPid = readyPid;
-    lifecycle.record(ProbePhase.ready);
-    lifecycle.record(ProbePhase.sigkill);
-    if (!Process.killPid(readyPid, ProcessSignal.sigkill)) {
-      throw StateError('sigkill');
-    }
-    killed = true;
-    final result = await waitForProbe(process.exitCode, timeout, lifecycle);
-    exited = true;
-    lifecycle.record(ProbePhase.exited);
-    if (result == 0) throw StateError('normal_exit');
-    await stderrDrained;
-  } finally {
-    try {
-      if (!killed && workerPid != null && workerPid != process.pid) {
-        Process.killPid(workerPid, ProcessSignal.sigkill);
-      }
-      await cleanupProbe(
-        exited: exited,
-        kill: () => process.kill(ProcessSignal.sigkill),
-        exitCode: process.exitCode,
-        timeout: timeout,
-        lifecycle: lifecycle,
+  await withProbeCleanup(
+    body: () async {
+      final readyPid = await waitForProbe<int>(
+        ready.future,
+        timeout,
+        lifecycle,
       );
-    } finally {
+      workerPid = readyPid;
+      lifecycle.observeWorkerPid(sameAsDirect: readyPid == process.pid);
+      lifecycle.record(ProbePhase.ready);
+      lifecycle.record(ProbePhase.sigkill);
+      if (!lifecycle.observeKill(
+        ProbeKill.worker,
+        () => Process.killPid(readyPid, ProcessSignal.sigkill),
+      )) {
+        throw StateError('sigkill');
+      }
+      killed = true;
+      final result = await waitForProbe(process.exitCode, timeout, lifecycle);
+      exited = true;
+      lifecycle.observeExit(result);
+      lifecycle.record(ProbePhase.exited);
+      if (result == 0) throw StateError('normal_exit');
+    },
+    cleanup: () async {
       try {
-        await subscription.cancel();
+        try {
+          if (!killed && workerPid != null && workerPid != process.pid) {
+            lifecycle.observeKill(
+              ProbeKill.workerCleanup,
+              () => Process.killPid(workerPid!, ProcessSignal.sigkill),
+            );
+          }
+        } finally {
+          await cleanupProbe(
+            exited: exited,
+            kill: () => process.kill(ProcessSignal.sigkill),
+            exitCode: process.exitCode,
+            timeout: timeout,
+            lifecycle: lifecycle,
+          );
+        }
       } finally {
         _logLifecycle(lifecycle);
       }
-    }
-  }
+    },
+  );
 }
 
 Future<void> _verify(
@@ -372,33 +397,38 @@ Future<void> _verify(
     proxyEndpoint: proxyEndpoint,
   );
   var exited = false;
-  final output = collectProbeMessage(process.stdout);
-  final stderrDrained = _observeStderr(process, lifecycle);
-  try {
-    final result = await waitForProbe(process.exitCode, timeout, lifecycle);
-    exited = true;
-    lifecycle.record(ProbePhase.exited);
-    await stderrDrained;
-    final message = await output;
-    if (message == null) throw StateError('verification');
-    final failure = parseProbeFailure(message);
-    if (failure != null) throw StateError(failure);
-    if (result != 0 || message['event'] != 'verified') {
-      throw StateError('verification');
-    }
-  } finally {
-    try {
-      await cleanupProbe(
-        exited: exited,
-        kill: () => process.kill(ProcessSignal.sigkill),
-        exitCode: process.exitCode,
-        timeout: timeout,
-        lifecycle: lifecycle,
-      );
-    } finally {
-      _logLifecycle(lifecycle);
-    }
-  }
+  final messageBuffer = ProbeMessageBuffer();
+  final stdoutCollector = ProbeCollector(
+    process.stdout,
+    onData: messageBuffer.add,
+    onDone: messageBuffer.finish,
+  );
+  final stderrCollector = _observeStderr(process, lifecycle);
+  lifecycle.collect(stdout: stdoutCollector, stderr: stderrCollector);
+  int? result;
+  await withProbeCleanup(
+    body: () async {
+      final code = await waitForProbe(process.exitCode, timeout, lifecycle);
+      result = code;
+      exited = true;
+      lifecycle.observeExit(code);
+      lifecycle.record(ProbePhase.exited);
+    },
+    cleanup: () async {
+      try {
+        await cleanupProbe(
+          exited: exited,
+          kill: () => process.kill(ProcessSignal.sigkill),
+          exitCode: process.exitCode,
+          timeout: timeout,
+          lifecycle: lifecycle,
+        );
+      } finally {
+        _logLifecycle(lifecycle);
+      }
+    },
+    validate: () => validateProbeVerification(result!, stdoutCollector),
+  );
 }
 
 /// Drops selected responses only after the real server completes each call.

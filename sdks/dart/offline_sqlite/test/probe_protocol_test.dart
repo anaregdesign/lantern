@@ -174,6 +174,16 @@ void main() {
       lifecycle: lifecycle,
     );
     expect(killed, 1);
+    expect(lifecycle.snapshot()['kills'], {
+      'worker': 'not_requested',
+      'workerCleanup': 'not_requested',
+      'directCleanup': 'accepted',
+    });
+    expect(lifecycle.snapshot()['direct_exit'], {
+      'state': 'observed',
+      'code': -9,
+      'category': 'nonzero',
+    });
     expect(_phases(lifecycle), [
       'launch',
       'timeout',
@@ -208,6 +218,408 @@ void main() {
     );
     expect(_phases(stuckCleanup), ['launch', 'cleanupKill', 'timeout']);
     expect(stuckCleanup.snapshot()['worker_entry_observed'], isFalse);
+    expect(
+      (stuckCleanup.snapshot()['kills']! as Map)['directCleanup'],
+      'refused',
+    );
+    expect(stuckCleanup.snapshot()['direct_exit'], {'state': 'incomplete'});
+  });
+
+  test(
+    'failure cleanup collects a late entry without changing timeout FAIL',
+    () async {
+      final lifecycle = _lifecycle();
+      final child = _FakeProbeChild();
+      final message = ProbeMessageBuffer();
+      final stdout = ProbeCollector(
+        child.stdout.stream,
+        onData: message.add,
+        onDone: message.finish,
+      );
+      final lines = ProbeJsonLines(
+        onMessage: lifecycle.observeWorker,
+        onInvalid: () {},
+      );
+      final stderr = ProbeCollector<Object?>(
+        child.stderr.stream,
+        onData: lines.add,
+        onDone: () {
+          lines.finish();
+          return null;
+        },
+      );
+      lifecycle.collect(stdout: stdout, stderr: stderr);
+      await expectLater(
+        withProbeCleanup(
+          body: () =>
+              waitForProbe(Completer<int>().future, Duration.zero, lifecycle),
+          cleanup: () => cleanupProbe(
+            exited: false,
+            kill: () {
+              child.kills++;
+              child.stderr.add(
+                utf8.encode(probePhaseFrame(ProbePhase.entered)),
+              );
+              child.stdout.add(utf8.encode('{"event":"verified"}'));
+              unawaited(child.stdout.close());
+              unawaited(child.stderr.close());
+              child.exitCode.complete(-9);
+              return true;
+            },
+            exitCode: child.exitCode.future,
+            timeout: Duration.zero,
+            lifecycle: lifecycle,
+          ),
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+      expect(child.kills, 1);
+      expect(lifecycle.snapshot()['worker_entry_observed'], isTrue);
+      expect(
+        _phases(lifecycle),
+        containsAllInOrder(['timeout', 'cleanupKill']),
+      );
+      expect(_phases(lifecycle), contains('entered'));
+      expect(_phases(lifecycle), contains('cleanupExit'));
+      expect(stdout.value, {'event': 'verified'});
+      expect(stdout.snapshot(), {
+        'completion': 'complete',
+        'error': 'none',
+        'cancellation': 'not_requested',
+      });
+      expect(stderr.qualified, isTrue);
+      expect(lifecycle.snapshot()['worker_pid_relation'], 'unobserved');
+      expect(lifecycle.snapshot()['direct_exit'], {
+        'state': 'observed',
+        'code': -9,
+        'category': 'nonzero',
+      });
+    },
+  );
+
+  test(
+    'unterminated pipes and cancellation share one exhausted window',
+    () async {
+      final lifecycle = _lifecycle();
+      lifecycle.observeExit(0);
+      final neverCancelled = Completer<void>();
+      final stdoutStream = StreamController<List<int>>(
+        onCancel: () => neverCancelled.future,
+      );
+      final stderrStream = StreamController<List<int>>();
+      final stdout = ProbeCollector<Object?>(
+        stdoutStream.stream,
+        onData: (_) {},
+        onDone: () => null,
+      );
+      final stderr = ProbeCollector<Object?>(
+        stderrStream.stream,
+        onData: (_) {},
+        onDone: () => null,
+      );
+      lifecycle.collect(stdout: stdout, stderr: stderr);
+      var killed = 0;
+      await expectLater(
+        withProbeCleanup(
+          body: () async => 0,
+          cleanup: () => cleanupProbe(
+            exited: true,
+            kill: () {
+              killed++;
+              return true;
+            },
+            exitCode: Completer<int>().future,
+            timeout: Duration.zero,
+            lifecycle: lifecycle,
+          ),
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+      expect(killed, 0);
+      expect(stdout.snapshot(), {
+        'completion': 'incomplete',
+        'error': 'none',
+        'cancellation': 'incomplete',
+      });
+      expect(stderr.snapshot()['completion'], 'incomplete');
+      expect(lifecycle.snapshot()['direct_exit'], {
+        'state': 'observed',
+        'code': 0,
+        'category': 'zero',
+      });
+      // A cancellation error after the deadline is consumed, never unhandled.
+      neverCancelled.completeError(StateError('private cancel token'));
+      await Future<void>.delayed(Duration.zero);
+      expect(stdout.snapshot()['cancellation'], 'error');
+      expect(jsonEncode(lifecycle.snapshot()), isNot(contains('private')));
+      await stdoutStream.close();
+      await stderrStream.close();
+    },
+  );
+
+  test('pipe and consumer errors are fixed, drained and fail closed', () async {
+    final lifecycle = _lifecycle();
+    lifecycle.observeExit(0);
+    final child = _FakeProbeChild();
+    final stdout = ProbeCollector<Object?>(
+      child.stdout.stream,
+      onData: (_) => throw StateError('private value'),
+      onDone: () => null,
+    );
+    final stderr = ProbeCollector<Object?>(
+      child.stderr.stream,
+      onData: (_) {},
+      onDone: () => null,
+    );
+    lifecycle.collect(stdout: stdout, stderr: stderr);
+    child.stdout.add([1]);
+    child.stderr.addError(StateError('private token'));
+    unawaited(child.stdout.close());
+    unawaited(child.stderr.close());
+    await expectLater(
+      cleanupProbe(
+        exited: true,
+        kill: () => throw StateError('must not kill'),
+        exitCode: Completer<int>().future,
+        timeout: Duration.zero,
+        lifecycle: lifecycle,
+      ),
+      throwsA(
+        isA<StateError>().having((error) => error.message, 'code', 'collector'),
+      ),
+    );
+    expect(stdout.snapshot()['completion'], 'complete');
+    expect(stdout.snapshot()['error'], 'consumer');
+    expect(stderr.snapshot()['completion'], 'complete');
+    expect(stderr.snapshot()['error'], 'stream');
+    expect(jsonEncode(lifecycle.snapshot()), isNot(contains('private')));
+  });
+
+  test('primary error and stack survive a separate cleanup failure', () async {
+    final primary = TimeoutException('private primary details');
+    final primaryStack = StackTrace.fromString('private original stack');
+    Object? observed;
+    StackTrace? observedStack;
+    try {
+      await withProbeCleanup(
+        body: () => Future<int>.error(primary, primaryStack),
+        cleanup: () async => throw StateError('private cleanup details'),
+      );
+    } on Object catch (error, stack) {
+      observed = error;
+      observedStack = stack;
+    }
+    expect(observed, same(primary));
+    expect(observedStack.toString(), primaryStack.toString());
+    await expectLater(
+      withProbeCleanup(
+        body: () async => 1,
+        cleanup: () async => throw StateError('cleanup'),
+      ),
+      throwsA(
+        isA<StateError>().having((error) => error.message, 'code', 'cleanup'),
+      ),
+    );
+  });
+
+  test(
+    'collected verification rejections precede secondary cleanup failure',
+    () async {
+      for (final (code, message, expected) in [
+        (
+          1,
+          {'event': 'failed', 'stage': 'prepared', 'code': 'contract'},
+          'worker:prepared:contract',
+        ),
+        (1, {'event': 'verified'}, 'verification'),
+        (0, {'event': 'other'}, 'verification'),
+        (0, {'event': 'verified'}, 'cleanup'),
+      ]) {
+        final lifecycle = _lifecycle();
+        final messageBuffer = ProbeMessageBuffer();
+        final stdout = ProbeCollector(
+          Stream.value(utf8.encode(jsonEncode(message))),
+          onData: messageBuffer.add,
+          onDone: messageBuffer.finish,
+        );
+        final stderr = ProbeCollector<Object?>(
+          const Stream.empty(),
+          onData: (_) {},
+          onDone: () => null,
+        );
+        lifecycle.collect(stdout: stdout, stderr: stderr);
+        var validated = 0;
+        await expectLater(
+          withProbeCleanup(
+            body: () async {
+              lifecycle.observeExit(code);
+              return code;
+            },
+            cleanup: () async {
+              await cleanupProbe(
+                exited: true,
+                kill: () => throw StateError('must not kill'),
+                exitCode: Completer<int>().future,
+                timeout: Duration.zero,
+                lifecycle: lifecycle,
+              );
+              throw StateError('cleanup');
+            },
+            validate: () {
+              validated++;
+              validateProbeVerification(code, stdout);
+            },
+          ),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'code',
+              expected,
+            ),
+          ),
+        );
+        expect(validated, 1);
+        expect(stdout.qualified, isTrue);
+      }
+    },
+  );
+
+  test(
+    'missing or errored stdout cannot replace the cleanup verdict',
+    () async {
+      for (final streamError in [false, true]) {
+        final lifecycle = _lifecycle();
+        final output = StreamController<List<int>>();
+        final messageBuffer = ProbeMessageBuffer();
+        final stdout = ProbeCollector(
+          output.stream,
+          onData: messageBuffer.add,
+          onDone: messageBuffer.finish,
+        );
+        final stderr = ProbeCollector<Object?>(
+          const Stream.empty(),
+          onData: (_) {},
+          onDone: () => null,
+        );
+        lifecycle.collect(stdout: stdout, stderr: stderr);
+        output.add(
+          utf8.encode(
+            '{"event":"failed","stage":"prepared","code":"contract"}',
+          ),
+        );
+        if (streamError) {
+          output.addError(StateError('private stream error'));
+          unawaited(output.close());
+        }
+        await expectLater(
+          withProbeCleanup(
+            body: () async {
+              lifecycle.observeExit(1);
+              return 1;
+            },
+            cleanup: () => cleanupProbe(
+              exited: true,
+              kill: () => throw StateError('must not kill'),
+              exitCode: Completer<int>().future,
+              timeout: Duration.zero,
+              lifecycle: lifecycle,
+            ),
+            validate: () => validateProbeVerification(1, stdout),
+          ),
+          streamError
+              ? throwsA(
+                  isA<StateError>().having(
+                    (error) => error.message,
+                    'code',
+                    'collector',
+                  ),
+                )
+              : throwsA(isA<TimeoutException>()),
+        );
+        expect(stdout.qualified, isFalse);
+        expect(jsonEncode(lifecycle.snapshot()), isNot(contains('private')));
+        if (!streamError) await output.close();
+      }
+    },
+  );
+
+  test('signal outcomes and PID equality use only already observed facts', () {
+    final lifecycle = _lifecycle();
+    expect(lifecycle.snapshot()['worker_pid_relation'], 'unobserved');
+    lifecycle.observeWorkerPid(sameAsDirect: true);
+    expect(lifecycle.snapshot()['worker_pid_relation'], 'same_as_direct');
+    lifecycle.observeWorkerPid(sameAsDirect: false);
+    expect(
+      lifecycle.snapshot()['worker_pid_relation'],
+      'different_from_direct',
+    );
+    var signals = 0;
+    expect(
+      lifecycle.observeKill(ProbeKill.worker, () {
+        signals++;
+        return false;
+      }),
+      isFalse,
+    );
+    expect(
+      lifecycle.observeKill(ProbeKill.workerCleanup, () {
+        signals++;
+        return true;
+      }),
+      isTrue,
+    );
+    expect(
+      () => lifecycle.observeKill(ProbeKill.directCleanup, () {
+        signals++;
+        throw StateError('private error');
+      }),
+      throwsStateError,
+    );
+    expect(signals, 3);
+    expect(lifecycle.snapshot()['kills'], {
+      'worker': 'refused',
+      'workerCleanup': 'accepted',
+      'directCleanup': 'error',
+    });
+    expect(jsonEncode(lifecycle.snapshot()), isNot(contains('private')));
+  });
+
+  test('direct exit errors still drain both pipes within cleanup', () async {
+    final lifecycle = _lifecycle();
+    final child = _FakeProbeChild();
+    final stdout = ProbeCollector<Object?>(
+      child.stdout.stream,
+      onData: (_) {},
+      onDone: () => null,
+    );
+    final stderr = ProbeCollector<Object?>(
+      child.stderr.stream,
+      onData: (_) {},
+      onDone: () => null,
+    );
+    lifecycle.collect(stdout: stdout, stderr: stderr);
+    await expectLater(
+      cleanupProbe(
+        exited: false,
+        kill: () {
+          child.kills++;
+          unawaited(child.stdout.close());
+          unawaited(child.stderr.close());
+          return false;
+        },
+        exitCode: Future.error(StateError('private exit error')),
+        timeout: Duration.zero,
+        lifecycle: lifecycle,
+      ),
+      throwsA(
+        isA<StateError>().having((error) => error.message, 'code', 'cleanup'),
+      ),
+    );
+    expect(child.kills, 1);
+    expect(stdout.qualified, isTrue);
+    expect(stderr.qualified, isTrue);
+    expect(lifecycle.snapshot()['direct_exit'], {'state': 'error'});
+    expect(jsonEncode(lifecycle.snapshot()), isNot(contains('private')));
   });
 
   test('child failure exposes only fixed stage and category', () {
@@ -245,6 +657,19 @@ void main() {
       'code': 'unexpected',
     });
   });
+}
+
+ProbeLifecycle _lifecycle() => ProbeLifecycle(
+  mode: 'verify',
+  scenario: 'cursor-final',
+  boundary: 'before',
+);
+
+final class _FakeProbeChild {
+  final stdout = StreamController<List<int>>();
+  final stderr = StreamController<List<int>>();
+  final exitCode = Completer<int>();
+  var kills = 0;
 }
 
 List<String> _phases(ProbeLifecycle lifecycle) => [
