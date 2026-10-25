@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Raise Tokio's minimum version to 1.53.3 to address RUSTSEC-2026-0386.
-
 ## 0.4.0
+
+- Raise Tokio's minimum version to 1.53.3 to address RUSTSEC-2026-0386.
 
 - Add `current_authority_binding` and `current_user_id` for validated,
   authenticated Principal reads. Bindings partition caches rather
