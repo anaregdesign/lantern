@@ -60,7 +60,8 @@ COPY --from=builder /out/lantern /app/lantern
 # owner (bind mounts on Linux still follow host ownership; Mac/Windows Docker
 # Desktop file sharing makes them writable regardless).
 RUN mkdir -p /data /state /var/lib/lantern/runtime \
-    && chown -R lantern:lantern /data /state /var/lib/lantern/runtime
+    && chown -R lantern:lantern /data /state /var/lib/lantern/runtime \
+    && chmod 0700 /state
 
 # Dedicated graph-only replication staging. Fresh public Compose named volumes
 # copy up this empty leaf's ownership and mode. The benchmark uses nocopy and

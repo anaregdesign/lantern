@@ -16,12 +16,15 @@ var ErrInvalidDocument = errors.New("invalid OIDC document")
 // nesting and trailing JSON before handing a document to a typed decoder.
 // Unknown extension members are allowed; OIDC metadata and JWTs are extensible.
 func decodeJSON(raw []byte, target any) error {
+	return decodeJSONWithBudget(raw, target, 10000)
+}
+
+func decodeJSONWithBudget(raw []byte, target any, budget int) error {
 	if !utf8.Valid(raw) {
 		return ErrInvalidDocument
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	budget := 10000
 	if err := validateJSONValue(decoder, 0, &budget); err != nil {
 		return ErrInvalidDocument
 	}
@@ -83,3 +86,13 @@ func validateJSONValue(decoder *json.Decoder, depth int, budget *int) error {
 
 // ValidateJSON validates bounded operator input without exposing decoded tokens.
 func ValidateJSON(raw []byte) error { return decodeJSON(raw, new(any)) }
+
+// ValidateOperatorJSON permits the larger numeric arrays in original authority
+// provisioning without widening IdP, JWT or management-document token budgets.
+// Its byte bound also limits the number of structural tokens and allocations.
+func ValidateOperatorJSON(raw []byte) error {
+	if len(raw) > 120<<10 {
+		return ErrInvalidDocument
+	}
+	return decodeJSONWithBudget(raw, new(any), len(raw))
+}

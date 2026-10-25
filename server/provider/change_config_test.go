@@ -1,11 +1,48 @@
 package provider
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestChangeConfigEnvironmentJSON(t *testing.T) {
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(strings.ToUpper(name), "LANTERN_CDC_") {
+			t.Setenv(name, "")
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	key := strings.Repeat("01", 32)
+	for _, tc := range []struct {
+		name, input      string
+		enabled, invalid bool
+	}{
+		{name: "omitted"},
+		{name: "disabled", input: `{"enabled":false}`},
+		{name: "enabled", input: `{"enabled":true,"current_version":1,"keys":[{"version":1,"key":"` + key + `"}]}`, enabled: true},
+		{name: "missing keys", input: `{"enabled":true}`, invalid: true},
+		{name: "disabled with keys", input: `{"enabled":false,"current_version":1}`, invalid: true},
+		{name: "unknown", input: `{"enabled":false,"key":"FAKE_SECRET"}`, invalid: true},
+		{name: "duplicate", input: `{"enabled":false,"enabled":true}`, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadJSONChangeConfig(json.RawMessage(tc.input))
+			if (err != nil) != tc.invalid || err == nil && cfg.Enabled != tc.enabled {
+				t.Fatal("unexpected JSON CDC contract", err)
+			}
+		})
+	}
+	t.Setenv("LANTERN_CDC_ENABLED", "")
+	if _, err := loadJSONChangeConfig(nil); err == nil {
+		t.Fatal("JSON silently ignored a second configuration source")
+	}
+}
 
 func TestChangeConfigRequiresDurableSharedKeysForProtectedOrHA(t *testing.T) {
 	t.Setenv("LANTERN_CDC_ENABLED", "true")

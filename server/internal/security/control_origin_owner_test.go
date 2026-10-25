@@ -1,6 +1,7 @@
 package security
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,33 @@ import (
 	"testing"
 	"time"
 )
+
+func TestAuthorityOriginKeyInlineSource(t *testing.T) {
+	n, _, _ := authorityTestComposite(t)
+	c := n.configs[1]
+	path := filepath.Join(filepath.Dir(c.Identity.VotingKey), "origin.key")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := bytes.Clone(raw)
+	c.Identity = s3aIdentityFiles{material: &s3aIdentityMaterial{originKey: raw}}
+	key, err := loadAuthorityOriginKey(c, "")
+	if err != nil || !bytes.Equal(key, before) {
+		t.Fatal("inline source changed original signing identity", err)
+	}
+	clear(key)
+	if !bytes.Equal(raw, before) {
+		t.Fatal("runtime key clearing changed immutable operator input")
+	}
+	if _, err := loadAuthorityOriginKey(c, path); err == nil {
+		t.Fatal("mixed inline/file key source accepted")
+	}
+	raw[0] ^= 1
+	if _, err := loadAuthorityOriginKey(c, ""); err == nil {
+		t.Fatal("inline source bypassed original key validation")
+	}
+}
 
 func TestAuthorityOriginOwnerDurableConsumeAndLateRetry(t *testing.T) {
 	n, owners, _ := authorityTestComposite(t)

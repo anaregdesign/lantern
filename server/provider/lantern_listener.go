@@ -19,6 +19,7 @@ package provider
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -284,7 +285,7 @@ func NewLanternListener(
 		srv.TLSConfig = tlsConf
 		logger.Info("tls enabled",
 			slog.String("cert", tlsCfg.CertFile),
-			slog.Bool("mtls", tlsCfg.ClientCAFile != ""),
+			slog.Bool("mtls", tlsCfg.ClientCAFile != "" || tlsCfg.ClientCAPEM != ""),
 		)
 	}
 
@@ -306,6 +307,24 @@ func NewLanternListener(
 // mTLS-equivalent of the legacy
 // credentials.NewTLS(...).WithClientCAs(...) path.
 func loadTLSConfig(c TLSConfig) (*tls.Config, error) {
+	if c.CertPEM != "" || c.KeyPEM != "" || c.ClientCAPEM != "" {
+		if c.CertFile != "" || c.KeyFile != "" || c.ClientCAFile != "" || c.CertPEM == "" || c.KeyPEM == "" {
+			return nil, errors.New("TLS requires exactly one complete certificate/key source")
+		}
+		cert, err := tls.X509KeyPair([]byte(c.CertPEM), []byte(c.KeyPEM))
+		if err != nil {
+			return nil, errors.New("invalid security JSON TLS certificate/key")
+		}
+		cfg := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, NextProtos: []string{"h2", "http/1.1"}}
+		if c.ClientCAPEM != "" {
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM([]byte(c.ClientCAPEM)) {
+				return nil, errors.New("invalid security JSON TLS client CA")
+			}
+			cfg.ClientCAs, cfg.ClientAuth = pool, tls.RequireAndVerifyClientCert
+		}
+		return cfg, nil
+	}
 	if c.CertFile == "" && c.KeyFile == "" {
 		if c.ClientCAFile != "" {
 			return nil, errors.New("LANTERN_TLS_CLIENT_CA_FILE set but LANTERN_TLS_CERT_FILE/LANTERN_TLS_KEY_FILE are empty")

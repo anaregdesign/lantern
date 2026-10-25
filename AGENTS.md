@@ -38,6 +38,15 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
 
 ## Architecture notes
 
+- **Environment OIDC (#1871)**: the primary standalone input is explicit
+  `LANTERN_AUTH_MODE=oidc` plus one secret-bearing `LANTERN_SECURITY_CONFIG_JSON`.
+  `init-security` explicitly creates new native state; ordinary JSON startup
+  requires intact existing state. Never log/render actual JSON credentials or
+  infer initialization from missing state. Advanced file-backed provisioning
+  remains separate; mixing its settings with JSON fails. Preserve native
+  custody/time/quorum and signed-membership renewal, which static env cannot
+  replace. Local/source checks do not establish provider/device/publication proof.
+
 - **Minimize external dependencies.** Lantern is the database; do not add
   PostgreSQL as a runtime dependency. Prefer native storage/replication/
   persistence. ADR 0012 (#1599/#1615) uses internal `sys:` metadata and

@@ -366,8 +366,10 @@ def required_execution_events(path, required, kind=CONFIGURED_SOURCE_INTEGRATION
         raise ValueError("native constructor or successful package completion missing")
     expected_constructors = [(str(i), "fresh", "true") for i in (1, 2, 3)]
     if kind == FUNCTIONAL_VALIDATION:
-        # Functional validation resumes member2 with intact custody/state in the
-        # browser case. Configured-source integration never restarts an owner.
+        # Member2 explicitly initializes from environment JSON, then ordinary
+        # startup resumes its CLEAN state. The browser case resumes it again.
+        # Configured-source integration retains exactly its original cohort.
+        expected_constructors.insert(2, ("2", "resume", "true"))
         expected_constructors.append(("2", "resume", "true"))
     if package == PACKAGE and constructors != expected_constructors:
         raise ValueError("required per-owner constructor acquisition evidence missing or failed")

@@ -3,6 +3,7 @@ package provider
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
 	domainmetrics "github.com/anaregdesign/lantern/server/metrics"
@@ -18,6 +19,9 @@ type ChangeConfig struct {
 }
 
 func loadChangeConfig(auth SecurityConfig, peer PeerPlaneConfig) (ChangeConfig, error) {
+	if len(auth.AuthorityJSON) != 0 {
+		return loadJSONChangeConfig(auth.CDC)
+	}
 	enabledText := envconfig.String("LANTERN_CDC_ENABLED", "true")
 	file := envconfig.String("LANTERN_CDC_CURSOR_KEY_RING_FILE", "")
 	if enabledText != "true" && enabledText != "false" {
@@ -51,16 +55,23 @@ func loadChangeConfig(auth SecurityConfig, peer PeerPlaneConfig) (ChangeConfig, 
 	if err != nil {
 		return ChangeConfig{}, err
 	}
-	var ring struct {
-		Current uint32 `json:"current_version"`
-		Keys    []struct {
-			Version uint32 `json:"version"`
-			Key     string `json:"key"`
-		} `json:"keys"`
-	}
+	return changeConfigFromKeyRing(raw)
+}
+
+type changeCursorKeyRingInput struct {
+	Current uint32 `json:"current_version"`
+	Keys    []struct {
+		Version uint32 `json:"version"`
+		Key     string `json:"key"`
+	} `json:"keys"`
+}
+
+func changeConfigFromKeyRing(raw []byte) (ChangeConfig, error) {
+	var ring changeCursorKeyRingInput
 	if err := strictSecurityConfigJSON(string(raw), &ring); err != nil || ring.Current == 0 || len(ring.Keys) == 0 || len(ring.Keys) > 4 {
 		return ChangeConfig{}, errors.New("invalid CDC cursor key ring")
 	}
+	cfg := ChangeConfig{Enabled: true}
 	seen := make(map[uint32]bool)
 	for _, source := range ring.Keys {
 		key, err := hex.DecodeString(source.Key)
@@ -80,6 +91,38 @@ func loadChangeConfig(auth SecurityConfig, peer PeerPlaneConfig) (ChangeConfig, 
 	}
 	cfg.Options.CurrentKeyVersion = ring.Current
 	return cfg, nil
+}
+
+// CDC is explicit opt-in for environment JSON. Its keys share the secret
+// injection boundary; no independent file setting or precedence is accepted.
+func loadJSONChangeConfig(raw json.RawMessage) (ChangeConfig, error) {
+	for _, setting := range os.Environ() {
+		name, _, _ := strings.Cut(setting, "=")
+		if strings.HasPrefix(strings.ToUpper(name), "LANTERN_CDC_") {
+			return ChangeConfig{}, errors.New("security JSON cannot be combined with CDC environment settings")
+		}
+	}
+	if len(raw) == 0 {
+		return ChangeConfig{}, nil
+	}
+	var input struct {
+		Enabled bool `json:"enabled"`
+		changeCursorKeyRingInput
+	}
+	if err := strictSecurityConfigJSON(string(raw), &input); err != nil {
+		return ChangeConfig{}, errors.New("invalid security JSON CDC configuration")
+	}
+	if !input.Enabled {
+		if input.Current != 0 || len(input.Keys) != 0 {
+			return ChangeConfig{}, errors.New("disabled CDC cannot ignore cursor keys")
+		}
+		return ChangeConfig{}, nil
+	}
+	ring, err := json.Marshal(input.changeCursorKeyRingInput)
+	if err != nil {
+		return ChangeConfig{}, errors.New("invalid security JSON CDC key ring")
+	}
+	return changeConfigFromKeyRing(ring)
 }
 
 type publicChangeMetrics struct{ metrics *domainmetrics.DomainMetrics }

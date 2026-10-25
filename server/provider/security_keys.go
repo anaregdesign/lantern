@@ -63,11 +63,21 @@ func loadSecurityRoots(path string) (*x509.CertPool, error) {
 	if err != nil {
 		return nil, err
 	}
+	return loadSecurityRootsPEM(string(raw))
+}
+
+func loadSecurityRootsPEM(value string) (*x509.CertPool, error) {
+	if value == "" {
+		return nil, nil
+	}
+	if len(value) > 1<<20 {
+		return nil, errors.New("oversized OIDC operator CA bundle")
+	}
 	roots, err := x509.SystemCertPool()
 	if err != nil {
 		roots = x509.NewCertPool()
 	}
-	if !roots.AppendCertsFromPEM(raw) {
+	if !roots.AppendCertsFromPEM([]byte(value)) {
 		return nil, errors.New("invalid OIDC operator CA bundle")
 	}
 	return roots, nil

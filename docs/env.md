@@ -155,6 +155,7 @@ namespace isolation alone does not prove asynchronous policy freshness. See [ADR
 | `LANTERN_SEARCH_POSITIONS` | bool | `true` | Record positional postings so phrase queries verify adjacency and the proximity boost ranks tight matches higher. Off drops the position store: phrase=true fails closed with FAILED_PRECONDITION / SEARCH_POSITIONS_DISABLED instead of returning unordered matches. |
 | `LANTERN_SEARCH_TIMEOUT_MS` | int | `5000` | Server-side deadline applied to every SearchVertices attempt. |
 | `LANTERN_SECURITY_CONFIG_FILE` | string | (empty) | OIDC: absolute private canonical node JSON binding independent genesis, M/P/B identities, workload membership, origins, and native time profile. |
+| `LANTERN_SECURITY_CONFIG_JSON` | string | (empty) | Single private OIDC startup JSON (at most 120 KiB) with public_origin, Issuers/client secrets, inline original authority/key material and optional TLS/IdP/CDC settings. Use init-security once, then ordinary startup resumes intact state. Cannot be combined with separate OIDC/security, TLS-file or CDC environment settings; never log its value. |
 | `LANTERN_SECURITY_STORE_MODE` | string | (empty) | Required durable mode: fresh/resume with independent minimum floors. Recovery never restores volatile serving authority. |
 | `LANTERN_SHUTDOWN_TIMEOUT_SECONDS` | int | `30` | Graceful-shutdown drain budget for in-flight requests before a hard close. |
 | `LANTERN_SLOW_RPC_THRESHOLD_MS` | int | `500` | RPCs slower than this emit a warn-level "slow rpc" log line (0 disables). |

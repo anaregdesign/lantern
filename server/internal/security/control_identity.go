@@ -23,6 +23,50 @@ import (
 
 type s3aIdentityFiles struct {
 	Roots, Certificate, TLSKey, VotingKey string
+	material                              *s3aIdentityMaterial
+}
+
+// Inline inputs are detached operator material, never decoded protocol input.
+// Readers return owned copies because runtime key owners erase their buffers.
+type s3aIdentityMaterial struct {
+	roots, certificate, tlsKey, votingKey, originKey []byte
+}
+
+func (f s3aIdentityFiles) readMaterial(kind string, limit int64) ([]byte, error) {
+	var path string
+	switch kind {
+	case "roots":
+		path = f.Roots
+	case "certificate":
+		path = f.Certificate
+	case "tls_key":
+		path = f.TLSKey
+	case "voting_key":
+		path = f.VotingKey
+	default:
+		return nil, errS3AConfig
+	}
+	if f.material == nil {
+		return s3aReadProvisioned(path, limit)
+	}
+	if f.Roots != "" || f.Certificate != "" || f.TLSKey != "" || f.VotingKey != "" {
+		return nil, errS3AConfig
+	}
+	var raw []byte
+	switch kind {
+	case "roots":
+		raw = f.material.roots
+	case "certificate":
+		raw = f.material.certificate
+	case "tls_key":
+		raw = f.material.tlsKey
+	case "voting_key":
+		raw = f.material.votingKey
+	}
+	if len(raw) == 0 || int64(len(raw)) > limit {
+		return nil, errS3AConfig
+	}
+	return bytes.Clone(raw), nil
 }
 
 type s3aIdentity struct {
@@ -77,7 +121,7 @@ func s3aLoadIdentity(c s3aConfig) (_ *s3aIdentity, err error) {
 	if self == (peerauth.Member{}) || c.Membership.Self != self {
 		return nil, errS3AConfig
 	}
-	rootsPEM, err := s3aReadProvisioned(c.Identity.Roots, 1<<20)
+	rootsPEM, err := c.Identity.readMaterial("roots", 1<<20)
 	if err != nil || sha256.Sum256(rootsPEM) != p.TrustDigest {
 		return nil, errS3AConfig
 	}
@@ -85,11 +129,11 @@ func s3aLoadIdentity(c s3aConfig) (_ *s3aIdentity, err error) {
 	if !roots.AppendCertsFromPEM(rootsPEM) {
 		return nil, errS3AConfig
 	}
-	certPEM, err := s3aReadProvisioned(c.Identity.Certificate, 64<<10)
+	certPEM, err := c.Identity.readMaterial("certificate", 64<<10)
 	if err != nil {
 		return nil, err
 	}
-	keyPEM, err := s3aReadProvisioned(c.Identity.TLSKey, 64<<10)
+	keyPEM, err := c.Identity.readMaterial("tls_key", 64<<10)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +210,7 @@ func s3aLoadIdentity(c s3aConfig) (_ *s3aIdentity, err error) {
 			expiry = latest
 		}
 	}
-	voting, err := s3aReadProvisioned(c.Identity.VotingKey, ed25519.PrivateKeySize)
+	voting, err := c.Identity.readMaterial("voting_key", ed25519.PrivateKeySize)
 	if err != nil || len(voting) != ed25519.PrivateKeySize {
 		clear(voting)
 		return nil, errS3AConfig

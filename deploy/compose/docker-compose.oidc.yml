@@ -1,0 +1,65 @@
+# Standalone OIDC Server example. Every FAKE_* value is deliberately invalid.
+# Replace all placeholders in a PRIVATE copy before initialization or startup.
+# Empty authority objects stand for complete independently provisioned originals;
+# OAuth Client ID/Secret alone cannot establish the security authority.
+# Read README.md before running. No secret input file is mounted.
+name: lantern-oidc
+
+x-server: &server
+  image: lantern:env-config-local
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+  hostname: lantern-0
+  stop_grace_period: 45s
+  environment:
+    LANTERN_AUTH_MODE: oidc
+    LANTERN_PORT: "6380"
+    LANTERN_METRICS_ADDR: "127.0.0.1:9090"
+    LANTERN_DRAIN_DELAY_SECONDS: "5"
+    # Inject this entire JSON value from the cloud Secret Manager in deployment.
+    # Never commit a copy containing real values or print `compose config` for it.
+    LANTERN_SECURITY_CONFIG_JSON: '${LANTERN_SECURITY_CONFIG_JSON:-{"public_origin":"https://fake-admin.example.invalid:6380","issuers":[{"id":"fake_google_web","issuer":"https://accounts.google.com","client_id":"FAKE_GOOGLE_WEB_CLIENT_ID","api_audience":"FAKE_LANTERN_API_AUDIENCE","algorithms":["RS256"],"token_origin":"https://oauth2.googleapis.com","client_secret":"FAKE_CLIENT_SECRET_DO_NOT_USE"}],"tls":{"certificate_pem":"FAKE_PUBLIC_TLS_CERTIFICATE_PEM","private_key_pem":"FAKE_PUBLIC_TLS_PRIVATE_KEY_PEM"},"authority":{"version":1,"genesis":{},"participant":{},"membership":{"path":"/state/control-membership","manifest_file":"/run/lantern-membership/control.json","public_key":"FAKE_BASE64_OPERATOR_PUBLIC_KEY","profile":{},"self":{}},"identity":{"roots_pem":"FAKE_CONTROL_CA_CERTIFICATE_PEM","certificate_pem":"FAKE_CONTROL_TLS_CERTIFICATE_PEM","tls_key_pem":"FAKE_CONTROL_TLS_PRIVATE_KEY_PEM","voting_key":"FAKE_BASE64_VOTING_PRIVATE_KEY"},"origin_key":"FAKE_BASE64_ORIGIN_PRIVATE_KEY","floors_file":"/state/security-floors.json","listen_address":":6381","limits":{}}}}'
+  volumes:
+    - lantern-security-state:/state
+    # This contains only the renewable signed control manifest, not signing keys.
+    # Mount its directory so atomic replacement by the operator remains visible.
+    - type: bind
+      source: ${LANTERN_MEMBERSHIP_DIRECTORY:-./private/FAKE_MEMBERSHIP_DIRECTORY}
+      target: /run/lantern-membership
+      read_only: true
+      bind:
+        create_host_path: false
+  configs:
+    - source: native-time-source
+      target: /etc/ntp.conf
+      mode: 0444
+  networks:
+    default:
+      aliases: [lantern-0]
+
+services:
+  init-security:
+    <<: *server
+    profiles: [init]
+    command: [init-security]
+    restart: "no"
+
+  lantern-0:
+    <<: *server
+    ports: ["127.0.0.1:6380:6380"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 24
+      start_period: 40s
+
+# An explicit nonsecret deployment input for the admitted native time source.
+# This does not alter the host clock, NTP service or trust store.
+configs:
+  native-time-source:
+    content: "server time.asia.apple.com\n"
+
+volumes:
+  lantern-security-state:

@@ -19,6 +19,7 @@ type SecretBinding struct {
 	ClientID    string `json:"client_id"`
 	TokenOrigin string `json:"token_origin"`
 	Path        string `json:"path"`
+	Value       string `json:"value,omitempty"`
 }
 
 type SecretRegistry struct{ bindings map[string]SecretBinding }
@@ -33,7 +34,9 @@ func NewSecretRegistry(bindings map[string]SecretBinding) (*SecretRegistry, erro
 		issuerURL, issuerErr := endpointURL(binding.Issuer)
 		if !validSecretName(name) || err != nil ||
 			binding.TokenOrigin != endpointOrigin(u) || issuerErr != nil || issuerURL.RawQuery != "" ||
-			binding.ClientID == "" || len(binding.ClientID) > 512 || !filepath.IsAbs(binding.Path) {
+			binding.ClientID == "" || len(binding.ClientID) > 512 ||
+			binding.Path == "" && !validSecretValue(binding.Value) ||
+			binding.Path != "" && (!filepath.IsAbs(binding.Path) || binding.Value != "") {
 			return nil, ErrFetch
 		}
 		r.bindings[name] = binding
@@ -55,6 +58,12 @@ func (r *SecretRegistry) loadClient(issuer, clientID, secretRef, tokenEndpoint s
 		binding.TokenOrigin != endpointOrigin(endpoint) {
 		return "", ErrFetch
 	}
+	if binding.Path == "" {
+		if !validSecretValue(binding.Value) {
+			return "", ErrFetch
+		}
+		return binding.Value, nil
+	}
 	before, err := os.Lstat(binding.Path)
 	if err != nil || !before.Mode().IsRegular() || before.Size() > 4096 {
 		return "", ErrFetch
@@ -69,10 +78,14 @@ func (r *SecretRegistry) loadClient(issuer, clientID, secretRef, tokenEndpoint s
 		return "", ErrFetch
 	}
 	value, err := io.ReadAll(io.LimitReader(file, 4097))
-	if err != nil || len(value) == 0 || len(value) > 4096 || !utf8.Valid(value) || strings.ContainsAny(string(value), "\x00\r\n") {
+	if err != nil || !validSecretValue(string(value)) {
 		return "", ErrFetch
 	}
 	return string(value), nil
+}
+
+func validSecretValue(value string) bool {
+	return len(value) > 0 && len(value) <= 4096 && utf8.ValidString(value) && !strings.ContainsAny(value, "\x00\r\n")
 }
 
 func validSecretName(name string) bool {

@@ -216,7 +216,7 @@ func newLanternService(
 			MaxKeyBytes:        clampU32(vc.MaxKeyLen),
 			ScanDefaultLimit:   sc.ScanDefaultLimit,
 			ScanMaxLimit:       sc.ScanMaxLimit,
-			TLSEnabled:         tc.CertFile != "" && tc.KeyFile != "",
+			TLSEnabled:         tc.CertFile != "" && tc.KeyFile != "" || tc.CertPEM != "" && tc.KeyPEM != "",
 			ReplicationEnabled: true,
 		})
 	// Bind the mutation-log + origin-state samplers so DomainMetrics.Run
@@ -416,6 +416,12 @@ func main() {
 func runMain() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if len(os.Args) > 1 && os.Args[1] == "init-security" {
+		if len(os.Args) != 2 {
+			return errors.New("init-security does not accept arguments")
+		}
+		return initializeSecurity(ctx)
+	}
 
 	launch, err := prepareListenerLaunch(ctx, stop)
 	if err != nil {

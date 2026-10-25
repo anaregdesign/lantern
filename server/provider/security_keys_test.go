@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/pem"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,5 +45,21 @@ func TestSecurityKeysOperatorFileContract(t *testing.T) {
 	}
 	if _, err = readSecurityOperatorFile("relative", false, 16<<10); err == nil {
 		t.Fatal("relative path accepted")
+	}
+}
+
+func TestSecurityRootsInlinePEM(t *testing.T) {
+	server := httptest.NewTLSServer(nil)
+	t.Cleanup(server.Close)
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	roots, err := loadSecurityRootsPEM(string(certificate))
+	if err != nil || roots == nil {
+		t.Fatal("inline trusted roots rejected", err)
+	}
+	if roots, err := loadSecurityRootsPEM(""); err != nil || roots != nil {
+		t.Fatal("absent private CA must retain system defaults", err)
+	}
+	if _, err := loadSecurityRootsPEM("not-a-certificate"); err == nil {
+		t.Fatal("invalid root PEM accepted")
 	}
 }

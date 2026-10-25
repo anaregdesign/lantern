@@ -1,0 +1,38 @@
+# Standalone local OFF example. No IdP, credentials or security initialization.
+# Run from this directory: docker compose -f docker-compose.off.yml up -d --build
+name: lantern-off
+
+services:
+  lantern-0:
+    image: lantern:env-config-local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    stop_grace_period: 45s
+    environment:
+      LANTERN_AUTH_MODE: "off"
+      LANTERN_PORT: "6380"
+      LANTERN_METRICS_ADDR: "127.0.0.1:9090"
+      LANTERN_DRAIN_DELAY_SECONDS: "5"
+      LANTERN_CORS_ALLOWED_ORIGINS: http://localhost:8080
+    ports: ["127.0.0.1:6380:6380"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 10s
+
+  admin:
+    image: ${LANTERN_ADMIN_IMAGE:-ghcr.io/anaregdesign/lantern-admin:latest}
+    ports: ["127.0.0.1:8080:8080"]
+    environment:
+      LANTERN_ADMIN_SERVER_UPSTREAM: h2c://lantern-0:6380
+    depends_on:
+      lantern-0:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6

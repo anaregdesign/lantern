@@ -124,7 +124,7 @@ func currentCustodyPaths(p *CurrentProvisioning) error {
 // custody lease. The preliminary path check only prevents aliasing the lease
 // itself with a provisioned key or family; it does not authorize startup.
 func openCurrentCustody(p *CurrentProvisioning, mode string) (_ *CurrentProvisioning, _ *currentCustody, floors s3aFloors, err error) {
-	if p == nil || p.source == "" || p.binding == [32]byte{} || mode != "fresh" && mode != "resume" {
+	if p == nil || p.source == "" && len(p.jsonSource) == 0 || p.binding == [32]byte{} || mode != "fresh" && mode != "resume" {
 		return nil, nil, floors, errCurrentCustody
 	}
 	if err = currentCustodyPaths(p); err != nil {
@@ -140,7 +140,7 @@ func openCurrentCustody(p *CurrentProvisioning, mode string) (_ *CurrentProvisio
 			err = errors.Join(err, lease.Close())
 		}
 	}()
-	verified, err := LoadCurrentProvisioning(p.source)
+	verified, err := p.reload()
 	if err != nil || verified.binding != p.binding || verified.floors != p.floors {
 		return nil, nil, floors, errors.Join(errCurrentCustody, err)
 	}

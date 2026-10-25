@@ -13,7 +13,7 @@ import (
 )
 
 func (r *SecurityRuntime) openAuthority(ctx context.Context) error {
-	p, err := security.LoadCurrentProvisioning(r.config.ConfigFile)
+	p, err := loadSecurityProvisioning(r.config)
 	if err != nil {
 		return err
 	}
@@ -27,7 +27,10 @@ func (r *SecurityRuntime) openAuthority(ctx context.Context) error {
 	if _, err = rand.Read(r.attemptProcess[:]); err != nil {
 		return err
 	}
-	roots, err := loadSecurityRoots(r.config.RootCAFile)
+	roots, err := loadSecurityRootsPEM(r.config.RootCAPEM)
+	if r.config.RootCAFile != "" {
+		roots, err = loadSecurityRoots(r.config.RootCAFile)
+	}
 	if err != nil {
 		return err
 	}
@@ -62,6 +65,19 @@ func (r *SecurityRuntime) openAuthority(ctx context.Context) error {
 		return r.fetcher.ValidateIssuer(ctx, i, r.secrets)
 	}, CurrentBeginAuthorization: r.authentication.BeginCurrentManagementAuthorization, CurrentReadAuthorization: r.authentication.ReadCurrentManagementAuthorization})
 	return err
+}
+
+// loadSecurityProvisioning resolves the selected startup representation without
+// writing secret material to a temporary file or creating any durable state.
+func loadSecurityProvisioning(config SecurityConfig) (*security.CurrentProvisioning, error) {
+	if len(config.AuthorityJSON) == 0 {
+		return security.LoadCurrentProvisioning(config.ConfigFile)
+	}
+	p, err := security.LoadCurrentProvisioningJSON(config.AuthorityJSON)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 func (r *SecurityRuntime) currentAttemptAffinity(id [32]byte) string {

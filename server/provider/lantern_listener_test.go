@@ -5,13 +5,18 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +32,43 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func TestLoadTLSConfigEnvironmentPEM(t *testing.T) {
+	seed := httptest.NewTLSServer(http.NotFoundHandler())
+	defer seed.Close()
+	certificate := seed.TLS.Certificates[0]
+	privateKey, err := x509.MarshalPKCS8PrivateKey(certificate.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Certificate[0]}))
+	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateKey}))
+	for _, mutual := range []bool{false, true} {
+		input := TLSConfig{CertPEM: certPEM, KeyPEM: keyPEM}
+		if mutual {
+			input.ClientCAPEM = certPEM
+		}
+		config, err := loadTLSConfig(input)
+		if err != nil || config == nil || len(config.Certificates) != 1 || config.MinVersion != tls.VersionTLS12 {
+			t.Fatal("valid inline TLS material rejected", err)
+		}
+		if mutual && (config.ClientAuth != tls.RequireAndVerifyClientCert || config.ClientCAs == nil) {
+			t.Fatal("inline client CA did not enable verified mTLS")
+		}
+	}
+	for _, input := range []TLSConfig{
+		{CertPEM: certPEM}, {KeyPEM: keyPEM}, {ClientCAPEM: certPEM},
+		{CertPEM: certPEM, KeyPEM: keyPEM, CertFile: "/unused/operator.pem"},
+		{CertPEM: certPEM, KeyPEM: "FAKE_PRIVATE_KEY_DO_NOT_LOG"},
+		{CertPEM: certPEM, KeyPEM: keyPEM, ClientCAPEM: "FAKE_CA_DO_NOT_LOG"},
+	} {
+		if config, err := loadTLSConfig(input); err == nil || config != nil {
+			t.Fatal("invalid or ambiguous TLS input accepted")
+		} else if strings.Contains(err.Error(), "FAKE_") {
+			t.Fatal("TLS parser exposed input material")
+		}
+	}
+}
 
 func newMessageLimitedListener(
 	t *testing.T,

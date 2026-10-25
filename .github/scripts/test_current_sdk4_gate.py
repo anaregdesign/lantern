@@ -30,13 +30,16 @@ def events(tests=None, kind=gate.CONFIGURED_SOURCE_INTEGRATION):
             "Output": gate.NATIVE_MARKER if kind == gate.CONFIGURED_SOURCE_INTEGRATION else gate.FIXTURE_MARKER,
         },
     ]
+    constructor_sequence = [(i, "fresh") for i in (1, 2, 3)]
+    if kind == gate.FUNCTIONAL_VALIDATION:
+        constructor_sequence.insert(2, (2, "resume"))
     result += [
         {
             "Action": "output",
             "Test": gate.ROOT_TEST,
-            "Output": f"current_constructor node={i} mode=fresh passed=true",
+            "Output": f"current_constructor node={i} mode={mode} passed=true",
         }
-        for i in (1, 2, 3)
+        for i, mode in constructor_sequence
     ]
     for name in tests:
         result += [{"Action": "run", "Test": name}, {"Action": "pass", "Test": name}]

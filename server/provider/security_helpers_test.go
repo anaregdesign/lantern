@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,20 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 	"github.com/anaregdesign/lantern/server/service"
 )
+
+func clearSecurityEnvironment(t *testing.T) {
+	t.Helper()
+	for _, setting := range os.Environ() {
+		name, _, _ := strings.Cut(setting, "=")
+		upper := strings.ToUpper(name)
+		if strings.HasPrefix(upper, "LANTERN_AUTH_") || strings.HasPrefix(upper, "LANTERN_OIDC_") || strings.HasPrefix(upper, "LANTERN_SECURITY_") {
+			t.Setenv(name, "")
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
 
 type securityTestClock struct {
 	mu  sync.Mutex
