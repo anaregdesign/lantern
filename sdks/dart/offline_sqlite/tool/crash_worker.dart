@@ -22,6 +22,7 @@ final _now = DateTime.utc(2026, 9, 24);
 
 /// Internal subprocess for crash_probe.dart; never prints stored content.
 Future<void> main(List<String> arguments) async {
+  _observe(ProbePhase.entered);
   try {
     if (arguments.length != 4) throw StateError('arguments');
     final [mode, scenario, boundary, path] = arguments;
@@ -59,19 +60,43 @@ Future<void> main(List<String> arguments) async {
     } else {
       await _verify(path, scenario, boundary);
     }
+    _observe(ProbePhase.completed);
     if (mode == 'verify') {
       stdout.writeln(jsonEncode({'event': 'verified'}));
       await stdout.flush();
     }
   } catch (error) {
+    _observe(ProbePhase.workerFailed);
     stdout.writeln(jsonEncode(probeFailureMarker(_stage, error)));
     await stdout.flush();
     exitCode = 1;
   }
 }
 
-Future<void> _crash(String path, String scenario, String boundary) async {
+// Diagnostics observe the original operations; they never satisfy a barrier.
+void _observe(ProbePhase phase) => stderr.write(probePhaseFrame(phase));
+
+Future<SqliteOfflineStore> _openStore({
+  required String path,
+  required DatabaseFactory databaseFactory,
+}) async {
+  _observe(ProbePhase.opening);
   final store = await SqliteOfflineStore.open(
+    path: path,
+    databaseFactory: databaseFactory,
+  );
+  _observe(ProbePhase.opened);
+  return store;
+}
+
+Future<void> _closeStore(SqliteOfflineStore store) async {
+  _observe(ProbePhase.closing);
+  await store.close();
+  _observe(ProbePhase.closed);
+}
+
+Future<void> _crash(String path, String scenario, String boundary) async {
+  final store = await _openStore(
     path: path,
     databaseFactory: scenario == 'schema' && boundary == 'before'
         ? _SchemaBarrierFactory(databaseFactoryFfi)
@@ -106,10 +131,12 @@ Future<void> _verify(String path, String scenario, String boundary) async {
   if (scenario == 'schema') {
     // Inspect before the production open can create a missing schema. A killed
     // onCreate callback must leave neither its tables nor its user_version.
+    _observe(ProbePhase.opening);
     final raw = await databaseFactoryFfi.openDatabase(
       path,
       options: OpenDatabaseOptions(singleInstance: false),
     );
+    _observe(ProbePhase.opened);
     try {
       final tables = await raw.rawQuery(
         "SELECT name FROM sqlite_master WHERE type='table' "
@@ -122,9 +149,12 @@ Future<void> _verify(String path, String scenario, String boundary) async {
             : tables.isNotEmpty && version == 9,
       );
     } finally {
+      _observe(ProbePhase.closing);
       await raw.close();
+      _observe(ProbePhase.closed);
     }
   }
+  _observe(ProbePhase.referenceSeed);
   final reference = InMemoryOfflineStore();
   if (scenario != 'schema') {
     await _seed(reference, scenario);
@@ -134,11 +164,13 @@ Future<void> _verify(String path, String scenario, String boundary) async {
       );
     }
   }
-  final store = await SqliteOfflineStore.open(
+  _observe(ProbePhase.referenceReady);
+  final store = await _openStore(
     path: path,
     databaseFactory: databaseFactoryFfi,
   );
   try {
+    _observe(ProbePhase.comparing);
     _require(await _snapshot(store) == await _snapshot(reference));
     if (scenario == 'cursor-chunk') {
       // Reopening must retain partial chunk progress, although the public
@@ -147,8 +179,9 @@ Future<void> _verify(String path, String scenario, String boundary) async {
       await _finishChunk(reference, committed: boundary == 'after');
       _require(await _snapshot(store) == await _snapshot(reference));
     }
+    _observe(ProbePhase.compared);
   } finally {
-    await store.close();
+    await _closeStore(store);
   }
 }
 
@@ -162,7 +195,7 @@ Future<void> _crashReceipt(String path) async {
     _receiptEndpoint('LANTERN_DART_RECEIPT_PROXY_ENDPOINT'),
     token,
   );
-  final store = await SqliteOfflineStore.open(
+  final store = await _openStore(
     path: path,
     databaseFactory: databaseFactoryFfi,
   );
@@ -359,7 +392,7 @@ Future<void> _crashReceipt(String path) async {
     await _readyAndHold();
   } finally {
     await repository.dispose();
-    await store.close();
+    await _closeStore(store);
     await remote.close();
     await direct.close();
   }
@@ -376,7 +409,7 @@ Future<void> _verifyReceipt(String path) async {
     _receiptEndpoint('LANTERN_DART_RECEIPT_PROXY_ENDPOINT'),
     token,
   );
-  final store = await SqliteOfflineStore.open(
+  final store = await _openStore(
     path: path,
     databaseFactory: databaseFactoryFfi,
   );
@@ -499,7 +532,7 @@ Future<void> _verifyReceipt(String path) async {
     await _requireEdgeMissing(direct, EdgeRef(add.edge.tail, add.edge.head));
   } finally {
     await repository.dispose();
-    await store.close();
+    await _closeStore(store);
     await remote.close();
     await direct.close();
   }
@@ -847,7 +880,7 @@ Future<void> _boundReceipt(String path, {required bool crash}) async {
     _receiptEndpoint('LANTERN_DART_RECEIPT_ENDPOINT'),
     _receiptToken(),
   );
-  final store = await SqliteOfflineStore.open(
+  final store = await _openStore(
     path: path,
     databaseFactory: databaseFactoryFfi,
   );
@@ -1021,6 +1054,6 @@ Future<void> _boundReceipt(String path, {required bool crash}) async {
   } finally {
     await client.close();
     await direct.close();
-    await store.close();
+    await _closeStore(store);
   }
 }
