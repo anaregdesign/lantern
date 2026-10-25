@@ -64,6 +64,15 @@ func (o *CurrentAuthority) MemberID() uint32 {
 	return o.origin.network.kernel.config.Member
 }
 
+// FixedVoterCount reports immutable provisioned topology. Readiness, reachable
+// peers and renewed membership lifetimes never reduce the fixed quorum set.
+func (o *CurrentAuthority) FixedVoterCount() int {
+	if o == nil || o.origin == nil || o.origin.network == nil || o.origin.network.kernel == nil || o.origin.network.kernel.trust == nil {
+		return 0
+	}
+	return len(o.origin.network.kernel.trust.members)
+}
+
 func (o *CurrentAuthority) Profile() CurrentProfile {
 	if o == nil || o.origin == nil {
 		return CurrentProfile{}

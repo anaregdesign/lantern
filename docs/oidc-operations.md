@@ -119,22 +119,50 @@ signup, migrate existing data or qualify real provider/device behavior.
 
 ## Public mode and bootstrap
 
-For standalone environment-based deployment, select `LANTERN_AUTH_MODE=oidc`
-and inject one `LANTERN_SECURITY_CONFIG_JSON` containing the public origin,
-Issuer/client configuration and secrets, original inline authority material,
-and any optional TLS, IdP CA, trusted-proxy or CDC settings. See the
-[private JSON guide](../deploy/examples/auth/README.md#environment-json-startup)
+For generated setup, select `LANTERN_AUTH_MODE=oidc` and inject small setup
+intent into `LANTERN_SECURITY_CONFIG_JSON`: public origin/TLS termination,
+explicit target platform, persistence root, fixed nodes, exact initial
+administrator issuer/subject and provider profiles/secrets. Run
+`lantern provision-security --output ... --operator-directory ...` once. It
+generates and validates immutable trust and independent keys without opening
+native time, state or listeners. See the
+[provisioning guide](../deploy/examples/auth/README.md#environment-json-startup)
 and [OFF/OIDC Compose examples](../deploy/compose/README.md#separate-off-and-oidc-examples).
-Do not mix this JSON with separate OIDC/security, TLS-file or CDC settings.
-Use `init-security` once to create a new native state, then ordinary startup
-reopens intact CLEAN state without a user-selected fresh/resume mode. Neither
-missing state nor a failed reopen triggers initialization. Supplied private
-keys remain node-owned; JSON does not bypass original genesis or trust validation.
-The signed membership manifest is still a renewable nonsecret runtime input.
 
-The file-based inputs described below remain the separate advanced provisioning
-interface for existing HA and validation profiles. They are not additional
-requirements for the standalone JSON input.
+For initialization and every normal start, replace the setup input with only
+`{"provisioned_file":"/absolute/provisioned/nodes/node-1/security.json"}`.
+Run `init-security` once per new actual target node, then start normally to
+resume its intact CLEAN custody and native state. Missing, partial, tampered or
+incompatible files fail closed without initialization, migration or reset.
+Later managed Roles, Issuers, sessions and revocations are never overwritten by
+initial setup on restart. Do not mix this path with separate OIDC/security,
+TLS-file or CDC environment settings.
+
+Standalone uses one fixed voter; clustering selects two to 31 fixed voters at
+provisioning. This is not dynamic membership or live standalone expansion.
+Both control and data memberships need continuous short-lived renewal through
+the separate generated operator configuration, including for a single node.
+Only signed inputs are mounted into Server; operator signing custody stays
+outside serving runtimes. Keep the finite maintenance/certificate horizon in the
+[renewal procedure](live-membership-renewal.md).
+`renew-security` prepares same-identity private workload certificates and the next
+finite operator window without publishing live files or changing the journal.
+Its [maintenance sequence](live-membership-renewal.md#renew-generated-workload-certificates)
+requires reviewed candidates, CLEAN node shutdown, unchanged original file/state
+paths, explicit publisher advance/resume and node restart. Initial administrators
+must have an enabled browser profile for login and operation reauthentication;
+additional API-only/native-only Issuers remain independent.
+
+Browser and external API profiles are independent. Browser-only does not
+require `api_audience`; without an API profile external API JWTs are rejected.
+API-only does not require browser client/redirect setup. A Google browser preset
+pins canonical issuer, RS256 and token origin while preserving callback,
+secret-recipient, token-type/audience and endpoint checks. Native profiles retain
+their separate client/presenter and secret binding rules.
+
+The file-based inputs below remain deliberate external provisioning and
+validation interfaces. They are not required by the generated-reference path,
+and no reader accepts the retired complete inline-authority JSON.
 
 No authentication environment variables means OFF. Configure OIDC explicitly
 with the complete [env contract](env.md). Partial, unknown or mixed auth config
@@ -143,8 +171,8 @@ settings are rejected, including empty values. Nonempty `LANTERN_PEERS` and
 legacy peer discovery/credentials cannot enable HA or accompany signed membership;
 configure the separate private workload plane below.
 
-OIDC requires `LANTERN_SECURITY_CONFIG_FILE`, `LANTERN_SECURITY_STORE_MODE`
-(`fresh` or `resume`) and one exact HTTPS browser origin. Independent genesis
+Externally provisioned file-backed OIDC requires `LANTERN_SECURITY_CONFIG_FILE`,
+`LANTERN_SECURITY_STORE_MODE` (`fresh` or `resume`) and one exact HTTPS browser origin. Independent genesis
 contains the exact administrator Issuer/subjects, Role-only machine credentials,
 issuer client/audience/algorithm policy and environment-owned assignments.
 Runtime environment variables no longer reconcile or recreate administrators.

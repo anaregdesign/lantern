@@ -39,78 +39,102 @@ configure graph persistence; see the default profile above for graph backups.
 
 ### OIDC
 
-[`docker-compose.oidc.yml`](docker-compose.oidc.yml) is a Server-only HTTPS
-example. Its defaults contain **deliberately invalid `FAKE_*` credentials**,
-`.invalid` public hostname and empty original-authority objects. It must refuse
-startup unchanged. The readable counterpart is
-[`security-config.json.example`](../examples/auth/security-config.json.example).
-These are authoring examples, not issued certificates or a configured provider.
+[`docker-compose.oidc.yml`](docker-compose.oidc.yml) runs one fixed OIDC node
+after explicit provisioning. Unmodified defaults point at a nonexistent
+`FAKE_PRIVATE_PROVISIONING_DIRECTORY` and cannot initialize or start. The
+[setup template](../examples/auth/security-config.json.example) contains only
+user intent and deliberately invalid provider/public TLS values; it has no
+hand-authored authority, keys, profile digests or capacity knobs.
 
-Prepare one complete private JSON using the
-[configuration guide](../examples/auth/README.md#environment-json-startup).
-Inject it into `LANTERN_SECURITY_CONFIG_JSON` through the cloud secret integration
-or your approved local credential manager; Compose forwards the supplied value
-to both initialization and normal startup. Do not save real values in this
-checkout, command arguments, an image, logs or shared rendered Compose output.
-`docker compose config` expands the entire secret value: render only the fake
-example when sharing validation evidence.
+Follow the [provisioning guide](../examples/auth/README.md#environment-json-startup)
+to privately select the exact administrator issuer/subject, provider profiles,
+HTTPS public origin and TLS/proxy boundary. For this example use `target_platform`
+`linux`, `persistence_root` `/state`, and one node named `node-1` with control
+origin `https://lantern-0:6381`, data origin `https://lantern-0:6382` and matching
+listen ports. Both private ports remain unpublished. The public certificate
+must cover the actual HTTPS hostname; clients verify its chain normally.
 
-Replace the inline original-authority objects with independently provisioned
-node/genesis/profile/member/material inputs for this exact workload. OAuth
-Client ID and Client Secret alone are insufficient. For the standalone example,
-provision a one-member control authority whose private origin and certificate
-match `lantern-0:6381`; this port is not published. Keep control TLS/voting/origin
-keys distinct from the public TLS identity and from operator signing custody.
-The public certificate must cover the actual HTTPS hostname, and clients must
-trust its chain normally. No insecure TLS override is provided.
+From the repository root, inject the small setup JSON through an approved secret
+manager, choose new private output directories outside the checkout, and run:
 
-The one remaining configuration mount is a directory containing the nonsecret,
-renewable signed control membership as `control.json`. Point
-`LANTERN_MEMBERSHIP_DIRECTORY` at its existing absolute private directory.
-The original operator signing key stays outside every Server container. Renew
-the signed manifest atomically before expiry through the existing membership
-procedure; static environment variables do not replace that runtime protocol.
-The Compose `configs` entry supplies the admitted nonsecret native time-source
-input at `/etc/ntp.conf` without changing host time services. The normal native
-time source/path and current quorum must be available before readiness.
+```sh
+# These are illustrative absolute paths, not files supplied by this repository.
+export LANTERN_PROVISIONING_DIRECTORY=/absolute/private/lantern-provisioned
+export LANTERN_OPERATOR_DIRECTORY=/absolute/private/lantern-operator
+export LANTERN_AUTH_MODE=oidc
+# LANTERN_SECURITY_CONFIG_JSON contains the privately completed setup intent.
+go run ./server/cmd provision-security --output "$LANTERN_PROVISIONING_DIRECTORY" \
+  --operator-directory "$LANTERN_OPERATOR_DIRECTORY"
+```
 
-With the private JSON and renewable membership prepared:
+Generation may run on a Mac while explicitly targeting Linux. It creates no
+listeners, native journals or trusted time. Preserve the generated absolute
+paths: Compose mounts only this node directory at the same target path. Ensure
+the container's dedicated runtime UID owns or can privately read the generated
+files without making them public. Do not mount another node's private keys or
+the separate operator signing directory into Server.
+
+Run the external publisher on the provisioning host, using its generated
+paths, before the short initial manifests expire:
+
+```sh
+go run ./server/cmd/membershippublisher --config "$LANTERN_OPERATOR_DIRECTORY/publisher.json" \
+  --state "$LANTERN_OPERATOR_DIRECTORY/state.json" --mode init
+```
+
+Keep it running for both control and data renewal, including this standalone
+node. After an orderly publisher stop, resume the same journal with `--mode resume`.
+The default operator window is finite (30 days). Before the workload leaf/window
+boundary, `lantern renew-security --operator-directory ... --output ...` prepares
+same-identity certificate and next-window candidates in a new directory. Follow
+the [reviewed stop/install/advance/resume sequence](../../docs/live-membership-renewal.md#renew-generated-workload-certificates)
+with CLEAN node shutdown, unchanged original paths/state and retained publisher
+journal. This command does not publish live files or hot-reload certificates.
+The fixed ten-year root remains a hard capacity boundary. Server receives signed
+renewable inputs and its own workload identity, never operator/CA signing keys.
+
+In another shell with `LANTERN_PROVISIONING_DIRECTORY` set to the same absolute
+path:
 
 ```sh
 cd deploy/compose
-export LANTERN_MEMBERSHIP_DIRECTORY=/absolute/private/lantern-membership
 docker compose -f docker-compose.oidc.yml build
-# Once, for a new security state only:
+# Once, on the actual Linux target with a new state volume:
 docker compose -f docker-compose.oidc.yml --profile init run --rm --no-deps init-security
-# Normal startup always reopens existing state:
+# Every normal startup resumes existing state:
 docker compose -f docker-compose.oidc.yml up -d lantern-0
 docker compose -f docker-compose.oidc.yml ps
 ```
 
-`init-security` refuses retained or interrupted security state. Normal startup
-never initializes missing state or resets existing Roles, revocations or sessions.
-Keep `lantern-security-state` across normal stops and recreations. Stop with
-`docker compose -f docker-compose.oidc.yml down` and check the successful orderly
-shutdown; `down -v` destroys the security volume and is not a restart or recovery
-procedure. Configuration and secret rotation take effect after an orderly stop
-and restart with the updated injected JSON. The application graph remains
-in-memory in this small example; security persistence is not graph persistence.
+Compose supplies only a `provisioned_file` reference to initialization/startup;
+it does not forward setup JSON or regenerate trust. It mounts this node's
+provisioning directory read-only, including the renewable membership directories,
+and retains mutable state in `lantern-security-state`. Atomic replacement by the
+external publisher remains visible. The nonsecret `/etc/ntp.conf` config supplies
+the admitted native source without changing host time services. Native time and
+current quorum remain readiness requirements.
 
-The browser callback is derived from `public_origin` and the exact Issuer.
-Register that exact URL with the IdP; for Google's canonical Issuer the suffix is
-`/auth/callback/89a8000a68d759c68bfaeab5056d67342e97643511923e63702da58a9aac8f38`.
-The original administrator is the verified `(issuer, subject)` Principal with
-explicit management Roles, not an email address or an implicit data grant.
+`init-security` refuses retained/interrupted state. Normal startup never repairs
+missing state or resets Roles, revocations, sessions or later managed Issuers.
+Keep the volume across orderly stops/recreations. `docker compose ... down`
+without volume removal stops this example; confirm successful orderly shutdown.
+Deleting the security volume is data destruction, not restart or recovery.
+The graph stays in-memory in this small example; security persistence is separate.
 
-This example does not publish Admin. To use the SPA with OIDC, provide the
-existing trusted same-origin HTTPS frontend for Admin and the fixed
-`/auth/*`, `/browser/*` and RPC routes, with verified upstream TLS or the exact
-trusted-proxy boundary. Select that same public origin in Admin's Gateway
-picker. The OFF example's separate HTTP Admin is not this protected topology.
-See [OIDC operations](../../docs/oidc-operations.md#browser-and-diagnostics-boundary).
+The browser callback is derived from `public_origin` and canonical Issuer.
+Register the exact URL with the IdP. A browser-only Google profile needs no
+API audience; external API JWTs stay disabled without an explicitly configured
+API profile. Initial administrator identity is the verified issuer/subject pair,
+not email, and grants management rather than implicit data access.
 
-The advanced HA examples below retain their explicit original file-backed
-provisioning interface. They are separate from these environment-JSON examples.
+This example does not publish Admin. A protected SPA needs the existing trusted
+same-origin HTTPS frontend and fixed `/auth/*`, `/browser/*` and RPC routes,
+verified upstream TLS or exact trusted-proxy boundary, and login-attempt affinity.
+The OFF example's separate HTTP Admin is not this topology. See
+[OIDC operations](../../docs/oidc-operations.md#browser-and-diagnostics-boundary).
+
+The advanced HA examples below use deliberate externally provisioned file-backed
+inputs. They are separate from generated setup and its private node reference.
 
 ## Explicit HA
 

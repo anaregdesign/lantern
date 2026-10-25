@@ -20,16 +20,21 @@ import (
 // SecurityConfig is a focused operator-owned startup slice. It never supplies
 // an anonymous fallback for an invalid or unavailable OIDC runtime.
 type SecurityConfig struct {
-	Mode, ConfigFile, StoreMode, BrowserOrigin string
-	AuthorityJSON                              json.RawMessage
-	CDC                                        json.RawMessage
-	InitialIssuers                             []security.Issuer
-	PrivateOrigins                             map[string][]netip.Prefix
-	SecretBindings                             map[string]oidc.SecretBinding
-	RootCAFile                                 string
-	RootCAPEM                                  string
-	TrustedProxyIPs                            []netip.Addr
-	TLS                                        SecurityTLSConfig
+	Mode, ConfigFile, StoreMode, BrowserOrigin      string
+	AuthorityJSON                                   json.RawMessage
+	CDC                                             json.RawMessage
+	InitialIssuers                                  []security.Issuer
+	InitialImage                                    *security.Image
+	PrivateOrigins                                  map[string][]netip.Prefix
+	SecretBindings                                  map[string]oidc.SecretBinding
+	RootCAFile                                      string
+	RootCAPEM                                       string
+	TrustedProxyIPs                                 []netip.Addr
+	TLS                                             SecurityTLSConfig
+	ProvisionedPeer                                 *PeerPlaneConfig
+	ProvisionedSnapshotSpool                        *GraphSnapshotSpoolConfig
+	ProvisionedFile, StateDirectory, TargetPlatform string
+	setup                                           *securitySetupJSON
 }
 
 func LoadSecurityConfig() (SecurityConfig, error)  { return loadSecurityConfig() }
@@ -157,7 +162,12 @@ func validateSecurityConfig(config SecurityConfig) error {
 		}
 		return nil
 	}
-	inline := len(config.AuthorityJSON) > 0
+	if config.ProvisionedFile != "" {
+		if _, err := loadGraphSnapshotSpoolForSecurity(config); err != nil {
+			return err
+		}
+	}
+	inline := len(config.AuthorityJSON) > 0 || config.setup != nil
 	if inline {
 		for _, name := range []string{"LANTERN_TLS_CERT_FILE", "LANTERN_TLS_KEY_FILE", "LANTERN_TLS_CLIENT_CA_FILE"} {
 			if _, present := os.LookupEnv(name); present {

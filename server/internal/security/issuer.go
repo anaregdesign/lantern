@@ -22,12 +22,16 @@ type Issuer struct {
 	HumanSubjectNamespaceQualified bool `json:"human_subject_namespace_qualified,omitempty"`
 }
 
-// BrowserEnabled reports whether the existing browser/API profile is configured.
-// A native-only issuer has none of these fields; partial browser profiles fail
-// validation rather than borrowing a native audience or secret.
+// BrowserEnabled reports whether browser login is configured. API audiences
+// and native clients never enable browser login; partial browser profiles fail
+// validation rather than borrowing another profile's audience or secret.
 func (i Issuer) BrowserEnabled() bool {
-	return i.ClientID != "" || i.APIAudience != "" || i.RedirectURI != "" || i.SecretRef != ""
+	return i.ClientID != "" || i.RedirectURI != "" || i.SecretRef != ""
 }
+
+// APIEnabled reports whether an external access-token audience is configured.
+// A browser or native client audience never substitutes for this profile.
+func (i Issuer) APIEnabled() bool { return i.APIAudience != "" }
 
 func (i Issuer) clone() Issuer {
 	i.Algorithms = slices.Clone(i.Algorithms)
@@ -58,18 +62,22 @@ func ValidateIssuerConfiguration(i Issuer) error {
 
 func validateIssuerConfiguration(i Issuer, preserveNative []string) error {
 	if !validIssuerURL(i.URL) || i.Deleted && i.Enabled || len(i.Algorithms) == 0 || len(i.Algorithms) > 4 ||
-		len(i.NativeClients) > MaxNativeClients || !i.BrowserEnabled() && len(i.NativeClients) == 0 {
+		len(i.NativeClients) > MaxNativeClients || !i.BrowserEnabled() && !i.APIEnabled() && len(i.NativeClients) == 0 {
 		return ErrInvalidImage
 	}
 	if i.BrowserEnabled() {
-		if !boundedText(i.ClientID, 512) || !boundedText(i.APIAudience, 512) ||
+		if !boundedText(i.ClientID, 512) ||
 			len(i.SecretRef) > 64 || i.SecretRef != "" && !validRoleID(i.SecretRef) {
 			return ErrInvalidImage
 		}
 		if _, ok := validHTTPSURL(i.RedirectURI); !ok {
 			return ErrInvalidImage
 		}
-	} else if i.HumanSubjectNamespaceQualified {
+	}
+	if i.APIEnabled() && !boundedText(i.APIAudience, 512) || i.HumanSubjectNamespaceQualified && !i.APIEnabled() {
+		return ErrInvalidImage
+	}
+	if i.URL == GoogleIssuer && !slices.Equal(i.Algorithms, []string{"RS256"}) {
 		return ErrInvalidImage
 	}
 	for n, algorithm := range i.Algorithms {

@@ -3,7 +3,6 @@ package provider
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"net/netip"
 	"slices"
@@ -21,17 +20,20 @@ type SecurityTLSConfig struct {
 	ClientCAPEM string `json:"client_ca_pem"`
 }
 
-// securityJSON is startup input, not a persisted security image. In particular,
-// client secrets never enter the original or replicated Issuer records.
-type securityJSON struct {
-	PublicOrigin    string               `json:"public_origin"`
-	Authority       json.RawMessage      `json:"authority"`
-	CDC             json.RawMessage      `json:"cdc"`
-	Issuers         []securityIssuerJSON `json:"issuers"`
-	RootCAPEM       string               `json:"root_ca_pem"`
-	PrivateOrigins  map[string][]string  `json:"private_origins"`
-	TrustedProxyIPs []string             `json:"trusted_proxy_ips"`
-	TLS             SecurityTLSConfig    `json:"tls"`
+// securitySetupJSON contains operator intent for the explicit provisioning action.
+// Runtime JSON contains only a reference to its private immutable result.
+type securitySetupJSON struct {
+	PublicOrigin    string                   `json:"public_origin"`
+	PersistenceRoot string                   `json:"persistence_root"`
+	TargetPlatform  string                   `json:"target_platform"`
+	TLSTermination  string                   `json:"tls_termination"`
+	InitialAdmin    securityInitialAdminJSON `json:"initial_admin"`
+	Nodes           []securityNodeJSON       `json:"nodes"`
+	Issuers         []securityIssuerJSON     `json:"issuers"`
+	RootCAPEM       string                   `json:"root_ca_pem"`
+	PrivateOrigins  map[string][]string      `json:"private_origins"`
+	TrustedProxyIPs []string                 `json:"trusted_proxy_ips"`
+	TLS             SecurityTLSConfig        `json:"tls"`
 }
 
 type securityIssuerJSON struct {
@@ -58,29 +60,72 @@ type securityNativeClientJSON struct {
 	ClientSecret   string   `json:"client_secret"`
 }
 
+type securityInitialAdminJSON struct {
+	Issuer  string `json:"issuer"`
+	Subject string `json:"subject"`
+}
+
+type securityNodeJSON struct {
+	Name          string `json:"name"`
+	ControlOrigin string `json:"control_origin"`
+	DataOrigin    string `json:"data_origin"`
+	ControlListen string `json:"control_listen"`
+	DataListen    string `json:"data_listen"`
+}
+
 func loadSecurityConfigJSON(raw string) (SecurityConfig, error) {
+	var input struct {
+		ProvisionedFile string `json:"provisioned_file"`
+	}
+	if err := decodeSecurityConfigJSON(raw, &input, oidc.ValidateOperatorJSON); err != nil {
+		return SecurityConfig{}, err
+	}
+	return loadProvisionedSecurity(input.ProvisionedFile)
+}
+
+func securityIssuerPreset(input securityIssuerJSON) (securityIssuerJSON, error) {
+	if input.Issuer == "google" {
+		input.Issuer = security.GoogleIssuer
+	}
+	if input.Issuer == security.GoogleIssuer {
+		if len(input.Algorithms) != 0 && !slices.Equal(input.Algorithms, []string{"RS256"}) || input.TokenOrigin != "" && input.TokenOrigin != "https://oauth2.googleapis.com" {
+			return securityIssuerJSON{}, errors.New("Google configuration requires its pinned algorithm and token origin")
+		}
+		input.Algorithms = []string{"RS256"}
+		if input.ClientSecret != "" && input.TokenOrigin == "" {
+			input.TokenOrigin = "https://oauth2.googleapis.com"
+		}
+	}
+	return input, nil
+}
+
+func loadSecuritySetupJSON(raw string) (SecurityConfig, error) {
 	// Leave room below Linux's per-environment-string bound. A deployment
 	// platform can impose a smaller limit; no input is split into fragments.
 	if len(raw) > 120<<10 {
 		return SecurityConfig{}, errors.New("inline security configuration exceeds 120 KiB")
 	}
-	var input securityJSON
+	var input securitySetupJSON
 	if err := decodeSecurityConfigJSON(raw, &input, oidc.ValidateOperatorJSON); err != nil {
 		return SecurityConfig{}, err
 	}
-	if len(input.Authority) == 0 || string(input.Authority) == "null" || input.Authority[0] != '{' || len(input.Issuers) == 0 || len(input.Issuers) > 64 {
-		return SecurityConfig{}, errors.New("inline security configuration requires authority and Issuers")
+	if len(input.Issuers) == 0 || len(input.Issuers) > 64 {
+		return SecurityConfig{}, errors.New("security setup requires registered Issuer trust")
 	}
 	config := SecurityConfig{
 		Mode: "oidc", StoreMode: "resume", BrowserOrigin: input.PublicOrigin,
-		AuthorityJSON: slices.Clone(input.Authority), CDC: slices.Clone(input.CDC), SecretBindings: map[string]oidc.SecretBinding{},
-		RootCAPEM: input.RootCAPEM, TLS: input.TLS,
+		SecretBindings: map[string]oidc.SecretBinding{}, RootCAPEM: input.RootCAPEM, TLS: input.TLS, setup: &input,
 	}
 	if !canonicalSecurityOrigin(config.BrowserOrigin) {
 		return SecurityConfig{}, errors.New("inline security configuration requires an exact HTTPS public origin")
 	}
 	seen := make(map[string]bool, len(input.Issuers))
 	for _, item := range input.Issuers {
+		var err error
+		item, err = securityIssuerPreset(item)
+		if err != nil {
+			return SecurityConfig{}, err
+		}
 		if seen[item.Issuer] {
 			return SecurityConfig{}, errors.New("duplicate configured Issuer")
 		}
@@ -132,7 +177,7 @@ func compileSecurityIssuer(origin string, input securityIssuerJSON, bindings map
 	if len(issuer.Algorithms) == 0 {
 		issuer.Algorithms = []string{"RS256"}
 	}
-	if input.ClientID != "" || input.APIAudience != "" || input.ClientSecret != "" || input.TokenOrigin != "" {
+	if input.ClientID != "" || input.ClientSecret != "" || input.TokenOrigin != "" {
 		issuer.RedirectURI = origin + oidc.CallbackPath(input.Issuer)
 		if input.ClientSecret != "" {
 			issuer.SecretRef = inlineSecretID(input.ID, input.Issuer, "browser")

@@ -8,21 +8,118 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"strconv"
+	"time"
 
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
 
 const currentJSONProvisioningVersion = 1
 
+// ValidateProvisioningJSON checks bounded operator-document structure before a
+// caller's strict typed decode. It rejects duplicate keys without accepting
+// any document as trusted provisioning or opening its referenced paths.
+func ValidateProvisioningJSON(raw []byte) error {
+	if len(raw) == 0 || len(raw) > MaxImageBytes+(2<<20) || s2JSONPreflight(raw, DefaultPolicyLimits()) != nil {
+		return errS3AConfig
+	}
+	return nil
+}
+
+// ValidateProvisioningAuthorityJSON validates generated trust against its
+// explicit target and complete original seed without reading paths or opening
+// native state. The signed manifest's interval is only certificate validation
+// context here; runtime serving must still acquire its own trusted time.
+func ValidateProvisioningAuthorityJSON(raw, manifest []byte, target string, initial Image) error {
+	description, valid := authorityTimeDescriptionForTarget(target)
+	var document currentJSONProvisioningDocument
+	if !valid || decodeCurrentJSONProvisioning(raw, &document) != nil || document.Version != currentJSONProvisioningVersion {
+		return errS3AConfig
+	}
+	c, _, err := currentJSONConfigForTime(document, manifest, description, false)
+	if err != nil {
+		return errS3AConfig
+	}
+	for _, path := range []string{document.Participant.PPath, document.Participant.BPath, document.Membership.Path, document.Membership.ManifestFile, document.FloorsFile} {
+		if !provisioningPath(path) {
+			return errS3AConfig
+		}
+	}
+	if (&CurrentProvisioning{config: c}).ValidateInitialImage(initial) != nil {
+		return errS3AConfig
+	}
+	signed, err := peerauth.VerifyControlManifest(manifest, c.Membership.Key, c.Membership.Profile.Lineage)
+	if err != nil {
+		return errS3AConfig
+	}
+	c.Membership.TimeBounds = func() (time.Time, time.Time, error) { return signed.IssuedAt, signed.ExpiresAt, nil }
+	identity, err := s3aLoadIdentity(c)
+	if err != nil {
+		return errS3AConfig
+	}
+	defer identity.clear()
+	if !validProvisioningOriginKey(c, document.OriginKey) {
+		return errS3AConfig
+	}
+	return nil
+}
+
+func validProvisioningOriginKey(c s3aConfig, raw []byte) bool {
+	origin := ed25519.PrivateKey(raw)
+	descriptor, found := c.Participant.Trust.origin(c.Participant.OwnedOrigin)
+	if !found || len(origin) != ed25519.PrivateKeySize || !bytes.Equal(ed25519.NewKeyFromSeed(origin[:ed25519.SeedSize]), origin) ||
+		!bytes.Equal(origin.Public().(ed25519.PublicKey), descriptor.PublicKey[:]) {
+		return false
+	}
+	spki := sha256.Sum256(s3aVotingSPKI(descriptor.PublicKey))
+	for _, voter := range c.Membership.Profile.Voters {
+		if voter.Key == descriptor.PublicKey || voter.Workload.SPKI == spki {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidateProvisioningAuthorityPaths binds generated state families to the
+// independently selected setup locations before initialization can create them.
+func ValidateProvisioningAuthorityPaths(raw []byte, stateDir, renewableDir string) error {
+	var d currentJSONProvisioningDocument
+	if !provisioningPath(stateDir) || !provisioningPath(renewableDir) || decodeCurrentJSONProvisioning(raw, &d) != nil ||
+		d.Participant.PPath != filepath.Join(stateDir, "control-protocol.wal") ||
+		d.Participant.BPath != filepath.Join(stateDir, "control-materialized.wal") ||
+		d.Membership.Path != filepath.Join(stateDir, "control-membership") ||
+		d.FloorsFile != filepath.Join(stateDir, "control-floors.json") ||
+		d.Membership.ManifestFile != filepath.Join(renewableDir, "control.json") {
+		return errS3AConfig
+	}
+	return nil
+}
+
+// ProvisioningAuthorityProfile returns the exact independently signed profile
+// without opening state paths on the provisioning host. It asserts no readiness.
+func ProvisioningAuthorityProfile(raw, manifest []byte, target string) (CurrentProfile, error) {
+	description, valid := authorityTimeDescriptionForTarget(target)
+	var document currentJSONProvisioningDocument
+	if !valid || decodeCurrentJSONProvisioning(raw, &document) != nil || document.Version != currentJSONProvisioningVersion {
+		return CurrentProfile{}, errS3AConfig
+	}
+	_, profile, err := currentJSONConfigForTime(document, manifest, description, false)
+	return profile, err
+}
+
 func currentJSONGenesis(g currentGenesisDocument) (*s2cTrust, *S1ApplyState, error) {
+	return currentJSONGenesisForTime(g, authorityTimeProfileDescription)
+}
+
+func currentJSONGenesisForTime(g currentGenesisDocument, description string) (*s2cTrust, *S1ApplyState, error) {
 	if g.Version != CurrentPublicVersion || !g.Execution.valid() || g.Roots.Genesis == [32]byte{} || g.Roots.Retirement != [32]byte{} ||
-		g.TimeProfile != sha256.Sum256([]byte(authorityTimeProfileDescription)) {
+		g.TimeProfile != sha256.Sum256([]byte(description)) {
 		return nil, nil, errS3AConfig
 	}
 	for _, origin := range g.Origins {
-		if origin.Profile != authorityAdmissionProfile() {
+		if origin.Profile != authorityAdmissionProfileForTime(description) {
 			return nil, nil, errS3AConfig
 		}
 	}
@@ -47,7 +144,9 @@ func currentJSONGenesis(g currentGenesisDocument) (*s2cTrust, *S1ApplyState, err
 
 func currentJSONEnrollment(c s3aConfig, listen string, hasOriginKey bool) error {
 	p, trust := c.Participant, c.Participant.Trust
-	if trust == nil {
+	if trust == nil || p.PIdentity == [32]byte{} || p.PEpoch == [16]byte{} || !p.PPolicy.valid() ||
+		p.PendingBytes == 0 || p.PendingBytes > p.PPolicy.Bytes || p.PendingCount == 0 || p.PendingCount > p.PPolicy.Records ||
+		p.OutboxBytes == 0 || p.OutboxBytes > uint64(MaxSystemJournalBytes) {
 		return errS3AConfig
 	}
 	self, found := trust.member(p.Member)
@@ -80,7 +179,13 @@ func currentJSONEnrollment(c s3aConfig, listen string, hasOriginKey bool) error 
 }
 
 func currentJSONConfig(d currentJSONProvisioningDocument, manifestRaw []byte) (s3aConfig, CurrentProfile, error) {
-	trust, state, err := currentJSONGenesis(d.Genesis)
+	return currentJSONConfigForTime(d, manifestRaw, authorityTimeProfileDescription, true)
+}
+
+// The generator shares structural/cryptographic validation without opening
+// paths on the provisioning host. Only runtime loading checks local paths.
+func currentJSONConfigForTime(d currentJSONProvisioningDocument, manifestRaw []byte, description string, localPaths bool) (s3aConfig, CurrentProfile, error) {
+	trust, state, err := currentJSONGenesisForTime(d.Genesis, description)
 	if err != nil || len(d.Membership.PublicKey) != ed25519.PublicKeySize {
 		return s3aConfig{}, CurrentProfile{}, errS3AConfig
 	}
@@ -95,7 +200,10 @@ func currentJSONConfig(d currentJSONProvisioningDocument, manifestRaw []byte) (s
 			tlsKey: []byte(d.Identity.TLSKey), votingKey: bytes.Clone(d.Identity.VotingKey), originKey: bytes.Clone(d.OriginKey)}}}
 	manifest, err := peerauth.VerifyControlManifest(c.Manifest, c.Membership.Key, c.Membership.Profile.Lineage)
 	if err != nil || !c.Membership.Profile.Valid() || manifest.Profile.Digest() != c.Membership.Profile.Digest() || c.Membership.Profile.ProtocolScope != trust.scope ||
-		!c.Limits.valid(c.Participant) || p.BScope.validateGenesis(trust.genesis) != nil || s3aPaths(&c) != nil || currentJSONEnrollment(c, d.ListenAddress, len(d.OriginKey) != 0) != nil {
+		!c.Limits.valid(c.Participant) || p.BScope.validateGenesis(trust.genesis) != nil || currentJSONEnrollment(c, d.ListenAddress, len(d.OriginKey) != 0) != nil {
+		return s3aConfig{}, CurrentProfile{}, errS3AConfig
+	}
+	if localPaths && s3aPaths(&c) != nil {
 		return s3aConfig{}, CurrentProfile{}, errS3AConfig
 	}
 	g := d.Genesis
@@ -206,6 +314,20 @@ func (p *CurrentProvisioning) reload() (*CurrentProvisioning, error) {
 	return LoadCurrentProvisioning(p.source)
 }
 
+// ValidateInitialImage compares the complete configured seed with immutable
+// genesis only. It neither reads nor reapplies later runtime security changes.
+func (p *CurrentProvisioning) ValidateInitialImage(image Image) error {
+	if p == nil || p.config.Participant.Trust == nil {
+		return errS3AConfig
+	}
+	original := p.config.Participant.Trust.genesis.state.projection.snapshot
+	requested, err := CompileImage(image, original.limits)
+	if err != nil || !bytes.Equal(requested.image, original.image) {
+		return errS3AConfig
+	}
+	return nil
+}
+
 // ValidateInitialIssuers compares requested policy with original trust without
 // changing its administrator locks, object ownership or configuration revisions.
 func (p *CurrentProvisioning) ValidateInitialIssuers(issuers []Issuer) error {
@@ -233,7 +355,7 @@ func (p *CurrentProvisioning) ValidateInitialIssuers(issuers []Issuer) error {
 // Whitespace and object order are harmless; decoded shape must exactly match
 // typed JSON. This catches fixed-array truncation, aliases and byte encodings.
 func decodeCurrentJSONProvisioning(raw []byte, target any) error {
-	if len(raw) == 0 || len(raw) > MaxImageBytes+(2<<20) || s2JSONPreflight(raw, DefaultPolicyLimits()) != nil {
+	if ValidateProvisioningJSON(raw) != nil {
 		return errS3AConfig
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))

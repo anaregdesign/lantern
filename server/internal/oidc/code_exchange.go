@@ -22,7 +22,8 @@ func (t CodeTokens) AccessToken() string { return t.accessToken }
 func (t CodeTokens) String() string      { return "[redacted OIDC tokens]" }
 
 func (f *Fetcher) ExchangeCode(ctx context.Context, trust Trust, discovery Discovery, registry *SecretRegistry, code, verifier string) (CodeTokens, error) {
-	if !trust.Issuer.Enabled || discovery.Issuer != trust.Issuer.URL || len(code) == 0 || len(code) > 4096 ||
+	if !trust.Issuer.Enabled || !trust.Issuer.BrowserEnabled() || trust.Issuer.ClientID == "" || trust.Issuer.RedirectURI == "" ||
+		discovery.Issuer != trust.Issuer.URL || len(code) == 0 || len(code) > 4096 ||
 		len(verifier) < 43 || len(verifier) > 128 {
 		return CodeTokens{}, ErrInvalidToken
 	}

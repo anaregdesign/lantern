@@ -130,6 +130,9 @@ func NewPeerIdentityRuntime(config PeerIdentityConfig) (_ *PeerIdentityRuntime, 
 		return nil, nil, peerauth.ErrMembership
 	}
 	options := peerauth.StoreOptions{Path: config.StateFile, Key: key, Domain: domain, Self: self, Now: config.Now, TimeBounds: config.TimeBounds, Time: config.Time, SelfCertificates: selfCertificates}
+	if config.AuthMode == "oidc" {
+		options.FixedMembers = manifest.Members
+	}
 	var store *peerauth.Store
 	if config.StateMode == "fresh" {
 		store, err = peerauth.CreateStore(options, raw)

@@ -416,6 +416,15 @@ func main() {
 func runMain() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if len(os.Args) > 1 && os.Args[1] == "provision-security" {
+		return provisionSecurity(ctx, os.Args[2:], os.Stdout)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "renew-security" {
+		return renewSecurity(ctx, os.Args[2:], os.Stdout)
+	}
+	if len(os.Args) == 2 && (os.Args[1] == "--help" || os.Args[1] == "-h" || os.Args[1] == "help") {
+		return writeServerHelp(os.Stdout)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "init-security" {
 		if len(os.Args) != 2 {
 			return errors.New("init-security does not accept arguments")

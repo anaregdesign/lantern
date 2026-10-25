@@ -19,7 +19,7 @@ import (
 
 // WithEdgeCreateHA is trusted startup composition. It is independent of the
 // local mutation log: standalone nodes also need that log for CDC and receipts.
-// An active private peer plane disables local-only conditional creation.
+// A topology with multiple data replicas disables local-only conditional creation.
 func (s *LanternService) WithEdgeCreateHA() *LanternService { s.edgeCreateHA = true; return s }
 
 // CreateEdges is plural-canonical. The complete batch is validated before

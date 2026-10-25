@@ -100,6 +100,9 @@ func decodeToken(raw string) (tokenHeader, tokenClaims, error) {
 // VerifyAccess accepts only the RFC 9068 signed access-token profile. ID tokens,
 // opaque tokens, group claims and email aliases are never alternative profiles.
 func (v *Verifier) VerifyAccess(ctx context.Context, raw string, trust Trust) (VerifiedIdentity, error) {
+	if !trust.Issuer.APIEnabled() {
+		return VerifiedIdentity{}, ErrInvalidToken
+	}
 	header, claims, err := decodeToken(raw)
 	if err != nil || (header.Type != "at+jwt" && header.Type != "application/at+jwt") ||
 		claims.ClientID == "" || len(claims.ClientID) > 512 || claims.ID == "" || len(claims.ID) > 512 {
@@ -124,6 +127,9 @@ func (v *Verifier) VerifyAccess(ctx context.Context, raw string, trust Trust) (V
 // API profile. Authentication time is optional evidence for ordinary login;
 // only the consumed Server transaction may require recent evidence for step-up.
 func (v *Verifier) VerifyID(ctx context.Context, raw string, trust Trust, nonce string) (VerifiedIdentity, error) {
+	if !trust.Issuer.BrowserEnabled() {
+		return VerifiedIdentity{}, ErrInvalidToken
+	}
 	header, claims, err := decodeToken(raw)
 	if err != nil || (header.Type != "" && header.Type != "JWT") || nonce == "" ||
 		subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(nonce)) != 1 ||

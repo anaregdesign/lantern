@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
-	"net/url"
-	"strconv"
 	"time"
 
 	"github.com/anaregdesign/lantern/server/decisiontrace"
@@ -105,31 +103,10 @@ func LoadCurrentProvisioning(path string) (*CurrentProvisioning, error) {
 	}
 	var genesis currentGenesisDocument
 	raw, err := currentDocument(node.GenesisFile, MaxImageBytes+256<<10, &genesis)
-	if err != nil || node.GenesisSHA256 == [32]byte{} || sha256.Sum256(raw) != node.GenesisSHA256 || genesis.Version != CurrentPublicVersion ||
-		!genesis.Execution.valid() || genesis.Roots.Genesis == [32]byte{} || genesis.Roots.Retirement != [32]byte{} ||
-		genesis.TimeProfile != sha256.Sum256([]byte(authorityTimeProfileDescription)) {
+	if err != nil || node.GenesisSHA256 == [32]byte{} || sha256.Sum256(raw) != node.GenesisSHA256 {
 		return nil, errS3AConfig
 	}
-	// S4 only admits independent initial genesis and intact journal replay. A
-	// later checkpoint/retirement or old writer image is not an import path.
-	for _, origin := range genesis.Origins {
-		if origin.Profile != authorityAdmissionProfile() {
-			return nil, errS3AConfig
-		}
-	}
-	projection, err := NewS1Projection(genesis.Image, genesis.Execution.Policy, genesis.Domain, genesis.Cohort, genesis.Fences, genesis.Generation)
-	if err != nil {
-		return nil, errS3AConfig
-	}
-	membership, err := s2cMemberSetDigest(genesis.Members)
-	if err != nil {
-		return nil, errS3AConfig
-	}
-	state, err := NewS1ApplyState(projection, membership, genesis.Execution.Capacity, S1Retention{})
-	if err != nil {
-		return nil, errS3AConfig
-	}
-	trust, err := newS2CTrust(s2cBootstrap{&s2TrustedGenesis{state, genesis.Roots}, genesis.Members, genesis.Origins, genesis.Bounds})
+	trust, state, err := currentJSONGenesis(genesis)
 	if err != nil {
 		return nil, errS3AConfig
 	}
@@ -153,30 +130,7 @@ func LoadCurrentProvisioning(path string) (*CurrentProvisioning, error) {
 		!c.Limits.valid(c.Participant) || p.BScope.validateGenesis(trust.genesis) != nil || s3aPaths(&c) != nil {
 		return nil, errS3AConfig
 	}
-	self, found := trust.member(p.Member)
-	origin, owned := trust.origin(p.OwnedOrigin)
-	if !found || p.Incarnation == [16]byte{} {
-		return nil, errS3AConfig
-	}
-	if p.OwnedOrigin == 0 {
-		if owned || node.OriginKeyFile != "" {
-			return nil, errS3AConfig
-		}
-	} else if !owned || !self.Proposer || origin.Member != self.ID || origin.Incarnation != p.Incarnation || node.OriginKeyFile == "" {
-		return nil, errS3AConfig
-	}
-	matched := false
-	for _, voter := range c.Membership.Profile.Voters {
-		m, exists := trust.member(voter.Voter)
-		if !exists || m.PublicKey != voter.Key || m.Proposer != voter.Proposer {
-			return nil, errS3AConfig
-		}
-		matched = matched || voter.Voter == self.ID && voter.Workload == c.Membership.Self
-	}
-	u, err := url.Parse(c.Membership.Self.Origin)
-	_, port, listenErr := net.SplitHostPort(node.ListenAddress)
-	n, numberErr := strconv.Atoi(port)
-	if !matched || err != nil || listenErr != nil || numberErr != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port || port != u.Port() {
+	if currentJSONEnrollment(c, node.ListenAddress, node.OriginKeyFile != "") != nil {
 		return nil, errS3AConfig
 	}
 	profile := CurrentProfile{CurrentPublicVersion, genesis.Domain, genesis.Cohort, genesis.Generation, trust.scope, genesis.TimeProfile, c.Membership.Profile.Digest(), state.configuration.Digest()}
@@ -209,6 +163,15 @@ func (p *CurrentProvisioning) Profile() CurrentProfile {
 		return CurrentProfile{}
 	}
 	return p.profile
+}
+
+// FixedVoterCount reports the validated original fixed topology without
+// opening mutable custody or asserting that any participant is ready.
+func (p *CurrentProvisioning) FixedVoterCount() int {
+	if p == nil || p.config.Participant.Trust == nil {
+		return 0
+	}
+	return len(p.config.Participant.Trust.members)
 }
 
 // OpenCurrentAuthority uses only the production native constructor. Its private

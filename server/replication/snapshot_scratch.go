@@ -32,11 +32,22 @@ type GraphSnapshotSpoolConfig struct {
 	MaxFrameBytes int
 }
 
-func (c GraphSnapshotSpoolConfig) Validate() error {
+// ValidateConfiguration checks the persisted byte/path contract without
+// filesystem access. Explicit setup may validate it before creating storage.
+func (c GraphSnapshotSpoolConfig) ValidateConfiguration() error {
 	if c.Directory == "" || !filepath.IsAbs(c.Directory) ||
 		c.MaxDiskBytes < snapshotScratchMetadataBytes || c.MaxDiskBytes > math.MaxInt64 ||
 		c.MaxFrameBytes <= 0 || uint64(c.MaxFrameBytes) > c.MaxDiskBytes {
 		return errors.New("Snapshot spool requires an absolute private directory and finite positive byte/frame limits")
+	}
+	return nil
+}
+
+// Validate additionally verifies that the private storage directory exists.
+// Ordinary runtime startup never creates or repairs this directory.
+func (c GraphSnapshotSpoolConfig) Validate() error {
+	if err := c.ValidateConfiguration(); err != nil {
+		return err
 	}
 	dir, err := openSnapshotScratchDirectory(c.Directory)
 	if err != nil {

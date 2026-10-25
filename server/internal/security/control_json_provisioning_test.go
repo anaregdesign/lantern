@@ -52,6 +52,42 @@ func currentJSONNewStatePaths(t *testing.T, d *currentJSONProvisioningDocument) 
 	d.Membership.Path, d.FloorsFile = filepath.Join(dir, "membership"), filepath.Join(dir, "floors.json")
 }
 
+func TestCurrentProvisioningValidatesCompleteOriginalImage(t *testing.T) {
+	options := provisioningTestOptions(t, 1, "linux")
+	bundle, err := GenerateProvisioning(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := provisioningTestDocument(t, bundle.Nodes[0].AuthorityJSON)
+	description, _ := authorityTimeDescriptionForTarget(options.Target)
+	c, _, err := currentJSONConfigForTime(d, bundle.Operator.ControlManifest, description, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &CurrentProvisioning{config: c}
+	if err := p.ValidateInitialImage(d.Genesis.Image); err != nil {
+		t.Fatal("unchanged configured seed did not match immutable genesis", err)
+	}
+	if err := (*CurrentProvisioning)(nil).ValidateInitialImage(d.Genesis.Image); err == nil {
+		t.Fatal("absent immutable genesis accepted a seed")
+	}
+	for _, change := range []func(*Image){
+		func(image *Image) { image.BootstrapRevision++ },
+		func(image *Image) { image.Principals[0].Identity.Subject += "-changed" },
+		func(image *Image) { image.Issuers[0].APIAudience += "-changed" },
+		func(image *Image) { image.Roles[0].Name += "-changed" },
+	} {
+		image := p.config.Participant.Trust.genesis.state.projection.Image()
+		change(&image)
+		if err := p.ValidateInitialImage(image); err == nil {
+			t.Fatal("changed original seed was silently treated as mutable runtime state")
+		}
+	}
+	if err := p.ValidateInitialImage(d.Genesis.Image); err != nil {
+		t.Fatal("seed comparison mutated immutable genesis", err)
+	}
+}
+
 func TestCurrentJSONProvisioningOwnsSourceWithoutPrivateFiles(t *testing.T) {
 	d, old, _ := currentJSONProvisioningFixture(t)
 	raw := currentJSONEncode(t, d)

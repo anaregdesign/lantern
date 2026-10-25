@@ -32,22 +32,29 @@ func (f *Fetcher) Discover(ctx context.Context, registered security.Issuer) (Dis
 	if document.Issuer != registered.URL {
 		return Discovery{}, ErrInvalidDocument
 	}
-	for _, endpoint := range []string{document.AuthorizationEndpoint, document.TokenEndpoint, document.JWKSURI} {
+	if _, err := endpointURL(document.JWKSURI); err != nil {
+		return Discovery{}, ErrInvalidDocument
+	}
+	for _, endpoint := range []string{document.AuthorizationEndpoint, document.TokenEndpoint} {
+		if endpoint == "" && !registered.BrowserEnabled() && len(registered.NativeClients) == 0 {
+			continue
+		}
 		if _, err := endpointURL(endpoint); err != nil {
 			return Discovery{}, ErrInvalidDocument
 		}
 	}
-	if len(registered.NativeClients) != 0 {
-		if security.ValidateIssuerConfiguration(registered) != nil || validateNativeDiscovery(document) != nil {
+	if len(registered.NativeClients) != 0 || registered.URL == security.GoogleIssuer {
+		if security.ValidateIssuerConfiguration(registered) != nil || validateProviderDiscovery(document) != nil {
 			return Discovery{}, ErrInvalidDocument
 		}
 	}
 	return document, nil
 }
 
-// Native profiles pin provider-owned destinations before any JWKS fetch or
-// secret-bearing exchange. No URL from a login request reaches this boundary.
-func validateNativeDiscovery(d Discovery) error {
+// Known-provider profiles pin provider-owned destinations before any JWKS fetch
+// or secret-bearing exchange. Google pins apply to browser, API and native
+// profiles alike. No URL from a login request reaches this boundary.
+func validateProviderDiscovery(d Discovery) error {
 	switch d.Issuer {
 	case security.GoogleIssuer:
 		if d.AuthorizationEndpoint != "https://accounts.google.com/o/oauth2/v2/auth" || d.TokenEndpoint != "https://oauth2.googleapis.com/token" || d.JWKSURI != "https://www.googleapis.com/oauth2/v3/certs" {

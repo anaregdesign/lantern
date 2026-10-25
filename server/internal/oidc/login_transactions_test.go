@@ -24,6 +24,15 @@ func loginTransactionFixture(t *testing.T) (*LoginTransactions, Trust, Discovery
 	return manager, Trust{Issuer: issuer, Generation: [16]byte{1}, ConfigRevision: 1}, Discovery{Issuer: issuer.URL, AuthorizationEndpoint: "https://idp.example/auth", TokenEndpoint: "https://idp.example/token", JWKSURI: "https://idp.example/keys", ResponseTypes: []string{"code"}, CodeChallengeMethods: []string{"S256"}}
 }
 
+func TestLoginTransactionsRejectAPIOnlyIssuer(t *testing.T) {
+	manager, trust, discovery := loginTransactionFixture(t)
+	trust.Issuer.ClientID, trust.Issuer.RedirectURI, trust.Issuer.SecretRef = "", "", ""
+	trust.Issuer.APIAudience = "api"
+	if _, err := manager.Begin(trust, discovery, "/", "", false); err == nil || len(manager.pending) != 0 {
+		t.Fatal("API-only issuer created browser transaction")
+	}
+}
+
 func TestLoginTransactionsCurrentQualifiedBoundsAndAttemptAffinity(t *testing.T) {
 	_, trust, discovery := loginTransactionFixture(t)
 	low := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)

@@ -209,6 +209,12 @@ and CSRF. Admin holds no OIDC token, browser client secret or bearer credential
 in localStorage. Legacy stored bearer material is removed on mount.
 
 The Security pages manage exact Issuer/subject identities and Role memberships.
+Issuer browser and API profiles are independent: browser sign-in needs a client
+ID and redirect URI; external API tokens need their own explicit audience.
+Leaving the API audience empty rejects those tokens. Native profiles remain
+operator-managed. Remove a browser secret binding explicitly when removing its
+browser profile. Google accepts only its pinned RS256 profile and provider
+endpoints.
 Permissions belong only to Roles. Prefixes are literal logical keys; all-key
 selection is explicit, and matching Deny wins. ExplainAccess is Server-derived.
 Environment-owned Issuers, memberships and Role policies are locked. Mutations

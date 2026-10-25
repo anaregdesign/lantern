@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -17,6 +18,35 @@ type GraphSnapshotSpoolConfig = replication.GraphSnapshotSpoolConfig
 
 func NewGraphSnapshotSpoolConfig(config *Config) GraphSnapshotSpoolConfig {
 	return config.GraphSnapshotSpool
+}
+
+// Provisioning resolves finite graph Snapshot scratch bounds once. Runtime
+// selection consumes the signed persisted value instead of recomputing it.
+func provisionedSnapshotSpool(stateDirectory string) GraphSnapshotSpoolConfig {
+	return GraphSnapshotSpoolConfig{Directory: filepath.Join(stateDirectory, "snapshot-spool"), MaxDiskBytes: 128 << 20, MaxFrameBytes: 32 << 20}
+}
+
+func validateProvisionedSnapshotSpool(config GraphSnapshotSpoolConfig, stateDirectory string) error {
+	if !cleanAbsolutePath(stateDirectory) || config.Directory != filepath.Join(stateDirectory, "snapshot-spool") {
+		return errors.New("provisioned Snapshot spool must belong to its fixed private state directory")
+	}
+	return config.ValidateConfiguration()
+}
+
+func loadGraphSnapshotSpoolForSecurity(securityConfig SecurityConfig) (GraphSnapshotSpoolConfig, error) {
+	if securityConfig.ProvisionedFile == "" {
+		return loadGraphSnapshotSpoolConfig()
+	}
+	for _, setting := range os.Environ() {
+		name, _, _ := strings.Cut(setting, "=")
+		if strings.HasPrefix(strings.ToUpper(name), "LANTERN_GRAPH_SNAPSHOT_SPOOL_") {
+			return GraphSnapshotSpoolConfig{}, errors.New("provisioned security cannot be combined with separate Snapshot spool settings")
+		}
+	}
+	if securityConfig.ProvisionedSnapshotSpool == nil || validateProvisionedSnapshotSpool(*securityConfig.ProvisionedSnapshotSpool, securityConfig.StateDirectory) != nil {
+		return GraphSnapshotSpoolConfig{}, errors.New("provisioned Snapshot spool configuration is missing or invalid")
+	}
+	return *securityConfig.ProvisionedSnapshotSpool, nil
 }
 
 func loadGraphSnapshotSpoolConfig() (GraphSnapshotSpoolConfig, error) {
