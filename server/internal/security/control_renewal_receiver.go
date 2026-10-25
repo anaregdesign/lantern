@@ -14,6 +14,10 @@ type authorityRenewalReceiver struct {
 	pending   *authorityRenewalPending
 	active    *authorityRenewalActive
 	closed    bool
+	// Volatile serving veto until this configured proposer finishes its first
+	// real recovery Drive. Challenges and votes remain independent of this
+	// veto; clearing it never substitutes for an exact current certificate.
+	startupRecoveryPending bool
 }
 
 type authorityRenewalPending struct {
@@ -116,7 +120,7 @@ func (r *authorityRenewalReceiver) matchesLocked(s authorityRenewalStatement) bo
 // The native sample in current is the final event; the remaining comparisons
 // and immutable bookkeeping do not move its logical authorization instant.
 func (r *authorityRenewalReceiver) currentLocked() (authorityCurrentTime, *authorityRenewalActive, error) {
-	if r.closed || !r.kernel.configuredReadyLocked() || r.kernel.readyLocked() != nil || r.active == nil || !r.matchesLocked(r.active.certificate.request.statement) {
+	if r.closed || r.startupRecoveryPending || !r.kernel.configuredReadyLocked() || r.kernel.readyLocked() != nil || r.active == nil || !r.matchesLocked(r.active.certificate.request.statement) {
 		return authorityCurrentTime{}, nil, errAuthorityRenewal
 	}
 	now, err := r.clock.current()

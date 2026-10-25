@@ -138,7 +138,15 @@ func (o *authorityOriginOwner) configuredLoop() {
 			if _, err := n.Drive(attempt, candidate); err == nil {
 				k.gate.Lock()
 				recovery.completedLocked(k)
+				initialRecovery := n.receiver.startupRecoveryPending
+				n.receiver.startupRecoveryPending = false
 				k.gate.Unlock()
+				if initialRecovery {
+					// Initial recovery may have invalidated a lease collected just
+					// before its NOOP. Ask the existing renewal protocol for the
+					// installed prefix; only its exact live certificate can serve.
+					_ = n.renewAuthority(attempt)
+				}
 			}
 		}
 		cancel()

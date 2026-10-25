@@ -234,7 +234,9 @@ func openS3AOwner(c s3aConfig, fresh bool, floors s3aFloors) (_ *s3aOwner, err e
 		for id := range o.peers {
 			o.renewalInbound[id] = make(chan struct{}, 1)
 		}
-		o.receiver = &authorityRenewalReceiver{kernel: o.kernel, clock: o.timeOwner, workloads: o.binding}
+		self, _ := o.kernel.trust.member(o.kernel.config.Member)
+		o.receiver = &authorityRenewalReceiver{kernel: o.kernel, clock: o.timeOwner, workloads: o.binding,
+			startupRecoveryPending: o.kernel.config.configured != nil && self.Proposer}
 	}
 	o.client = o.membership.NewHTTPClient(identity.certificate, identity.roots)
 	o.requests = make(chan s3aTransition, c.Limits.TransitionCount)
