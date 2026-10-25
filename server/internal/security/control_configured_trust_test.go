@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -146,6 +148,66 @@ func TestConfiguredTrustOperationClassAndCanonicalEncoding(t *testing.T) {
 		if _, err := newConfiguredOperation(op.reviewed, invalid); err == nil {
 			t.Fatal("invalid desired capability constructed configured operation")
 		}
+	}
+}
+
+func TestConfiguredTrustBodyFramingAndBounds(t *testing.T) {
+	// The validated complete-frame ceiling must fit int even on a 32-bit Go
+	// target; the encoder checks this ceiling before allocating its capacity.
+	if s2cMaxHistoricalBytes > uint64(1<<31-1) {
+		t.Fatal("historical frame ceiling exceeds the portable allocation bound")
+	}
+	f, keys, desired := configuredTestFixture(t, 1)
+	h, op := configuredTestHeader(t, f, keys, desired)
+	header, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := op.Encode()
+	var expected bytes.Buffer
+	expected.WriteString(configuredTrustMagic)
+	for _, record := range [][]byte{header, operation} {
+		if err := binary.Write(&expected, binary.BigEndian, uint32(len(record))); err != nil {
+			t.Fatal(err)
+		}
+		expected.Write(record)
+	}
+	// Derive the signed limit from the independent wire encoding, rather than
+	// reproducing the encoder's allocation-size calculation.
+	signedBytes := uint64(expected.Len()) + ed25519.SignatureSize
+	for _, tc := range []struct {
+		name                    string
+		headerBytes, historical uint64
+		accept                  bool
+	}{
+		{"exact signed frame", uint64(len(header)), signedBytes, true},
+		{"one byte spare", uint64(len(header)), signedBytes + 1, true},
+		{"signature reserve short by one", uint64(len(header)), signedBytes - 1, false},
+		{"unsigned body only", uint64(len(header)), uint64(expected.Len()), false},
+		{"header short by one", uint64(len(header)) - 1, signedBytes, false},
+		{"invalid historical ceiling", uint64(len(header)), s2cMaxHistoricalBytes + 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bounds := f.trust.bounds
+			bounds.HeaderBytes, bounds.HistoricalBytes = tc.headerBytes, tc.historical
+			body, err := configuredTrustBody(h, operation, bounds)
+			if !tc.accept {
+				if !errors.Is(err, errS2CHistorical) || body != nil {
+					t.Fatal("invalid complete-frame reservation accepted", err)
+				}
+				return
+			}
+			if err != nil || !bytes.Equal(body, expected.Bytes()) || uint64(cap(body)) != signedBytes {
+				t.Fatal("canonical body or signature capacity changed", err)
+			}
+			signed := append(body, ed25519.Sign(keys[1], body)...)
+			if uint64(len(signed)) != signedBytes {
+				t.Fatal("signed frame did not use its exact reservation")
+			}
+			if verified, err := verifyHistoricalH(f.trust, signed); err != nil || verified.digest() != h.Value {
+				t.Fatal("equivalent signed frame lost native proof verification", err)
+			}
+		})
 	}
 }
 

@@ -141,7 +141,7 @@ func configuredTrustBody(h configuredTrustHeader, op []byte, bounds s2cBounds) (
 	if err != nil || !bounds.valid() || len(op) == 0 || len(op) > MaxImageBytes+len(configuredOperationMagic) || uint64(len(header)) > bounds.HeaderBytes {
 		return nil, errS2CHistorical
 	}
-	n := uint64(len(configuredTrustMagic) + 8 + len(header) + len(op) + ed25519.SignatureSize)
+	n := uint64(len(configuredTrustMagic)) + 8 + uint64(len(header)) + uint64(len(op)) + ed25519.SignatureSize
 	if n > bounds.HistoricalBytes {
 		return nil, errS2CHistorical
 	}
