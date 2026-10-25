@@ -84,6 +84,13 @@ func authorityTestCompositeMembers(t *testing.T, count, originCount int, image *
 // explicit deterministic unit fixture, never configured-source qualification.
 func authorityTestCompositeConfiguredMembers(t *testing.T, count, originCount int, image *Image, desired *ConfiguredTrust, nonproposingObserver bool) (*s3aTestNetwork, map[uint32]*authorityOriginOwner, map[uint32]*atomic.Uint64) {
 	t.Helper()
+	return authorityTestCompositeConfiguredMembersWithRenewal(t, count, originCount, image, desired, nonproposingObserver, nil)
+}
+
+// An optional scheduling hook is fixed before owner construction and Start.
+// Existing fixtures retain their blocked automatic renewal lifecycle.
+func authorityTestCompositeConfiguredMembersWithRenewal(t *testing.T, count, originCount int, image *Image, desired *ConfiguredTrust, nonproposingObserver bool, beforeRenewal func(uint32, context.Context)) (*s3aTestNetwork, map[uint32]*authorityOriginOwner, map[uint32]*atomic.Uint64) {
+	t.Helper()
 	n := s3aTestClusterMembers(t, count, nil)
 	f := s2cTestCluster(t, count)
 	if image != nil {
@@ -121,6 +128,9 @@ func authorityTestCompositeConfiguredMembers(t *testing.T, count, originCount in
 			t.Fatal(err)
 		}
 		c.hooks = &s3aHooks{beforeRenewal: func(ctx context.Context) { <-ctx.Done() }}
+		if beforeRenewal != nil {
+			c.hooks.beforeRenewal = func(ctx context.Context) { beforeRenewal(id, ctx) }
+		}
 		var key ed25519.PrivateKey
 		if c.Participant.OwnedOrigin != 0 {
 			keyPath := filepath.Join(filepath.Dir(c.Identity.VotingKey), "origin.key")

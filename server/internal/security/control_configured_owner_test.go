@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -349,7 +350,21 @@ func TestConfiguredOwnerRunningSurvivorRecoversAcceptedTLS(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	desiredA := configuredIntent(t)
-	n, owners, ticks := authorityTestCompositeConfiguredMembers(t, 3, 2, nil, desiredA, true)
+	pauseRenewals, renewalsParked := make(chan struct{}), make(chan struct{})
+	var parkOnce sync.Once
+	beforeRenewal := func(id uint32, ownerCtx context.Context) {
+		if id != 2 {
+			<-ownerCtx.Done()
+			return
+		}
+		select {
+		case <-pauseRenewals:
+			parkOnce.Do(func() { close(renewalsParked) })
+			<-ownerCtx.Done()
+		default:
+		}
+	}
+	n, owners, ticks := authorityTestCompositeConfiguredMembersWithRenewal(t, 3, 2, nil, desiredA, true, beforeRenewal)
 	var hideB atomic.Bool
 	hook := func(source uint32) func(context.Context, uint32, []byte) error {
 		return func(_ context.Context, target uint32, raw []byte) error {
@@ -418,11 +433,25 @@ func TestConfiguredOwnerRunningSurvivorRecoversAcceptedTLS(t *testing.T) {
 				return false
 			}
 		}
-		return true
+		return (&CurrentAuthority{origin: workerOwner}).Ready(ctx)
 	})
-	if err := workerOwner.network.renewAuthority(ctx); err != nil {
-		t.Fatal("matching survivor initial public renewal", err)
+	// The real ordinary renewal loop supplies eventual startup renewal. Park it
+	// only after public readiness, and join its previous cycle before injecting
+	// the later expiry fault. No test-issued renewal competes with startup.
+	close(pauseRenewals)
+	select {
+	case <-renewalsParked:
+	case <-done:
+		t.Fatal("configured worker exited before ordinary renewals parked")
+	case <-ctx.Done():
+		t.Fatal("ordinary renewal cycle did not join before expiry phase", ctx.Err())
 	}
+	wait("parked fault phase requires no pending renewal challenge", func() bool {
+		k := workerOwner.network.kernel
+		k.gate.Lock()
+		defer k.gate.Unlock()
+		return workerOwner.network.receiver.pending == nil
+	})
 	issuerB := n.f.genesis.state.projection.Image().Issuers[0].clone()
 	issuerB.URL = "https://later-configured.example"
 	desiredB := configuredIntent(t, issuerB)
