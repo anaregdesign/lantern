@@ -161,17 +161,33 @@ Server. Select the direct Server address with the **Gateway** button and set
 [`server/README.md`](../server/README.md)).
 
 For **OIDC**, expose Admin over HTTPS and select that exact public origin in the
-Gateway picker. Configure `LANTERN_OIDC_BROWSER_ORIGIN` to the same origin and
-register the exact Issuer-specific `/auth/callback/<SHA-256>` redirect URI.
+Gateway picker. Set the setup intent's `public_origin` to that same origin, for
+example `https://admin.example.com:8443`. With `LANTERN_AUTH_MODE=oidc`, inject the
+private setup intent through `LANTERN_SECURITY_CONFIG_JSON` and follow the
+[generated provisioning guide](../deploy/examples/auth/README.md#environment-json-startup)
+to run `lantern provision-security` once. Read each browser profile's exact
+callback from the generated node document:
+
+```sh
+jq -er '.authority.genesis.Image.issuers[] | select(.redirect_uri != "") | .redirect_uri' /absolute/private/provisioned/nodes/node-1/security.json
+```
+
+This query prints only the public callback URLs. Register each exact URL with
+its provider. Follow the guide's external membership publisher and one-time
+`init-security` steps; normal startup uses that node's `provisioned_file`
+reference and resumes intact state.
+
 The container optionally proxies `/auth/*`, `/browser/*` and `/graph.v1.*/*` to
 an operator-fixed `LANTERN_ADMIN_SERVER_UPSTREAM`; the gateway picker never
 selects that upstream. Use the verified HTTPS upstream, optional private CA,
-exact trusted proxy and preserved public Host/scheme configuration described in
+setup intent's exact `trusted_proxy_ips` and preserved public Host/scheme
+configuration described in
 [Fixed Server and diagnostics proxy](#fixed-server-and-diagnostics-proxy) and the
 [operations guide](../docs/oidc-operations.md#browser-and-diagnostics-boundary).
 Pin these routes to a configured eligible authority origin and preserve
-per-attempt login affinity. Original quorum provisioning and current native time
-remain mandatory; operational cutover and final qualification remain #1608/#1609 S5 work.
+per-attempt login affinity. Generated trust, signed membership renewal and
+current quorum/native time remain mandatory; operational cutover and final
+qualification remain #1608/#1609 S5 work.
 
 The optional same-origin `/api/prom` proxy for Ops Metrics requires the Server
 upstream and checks `/auth/operations` admission before each GET. Prometheus

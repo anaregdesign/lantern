@@ -364,19 +364,23 @@ class AdminReleaseGuidanceTest(unittest.TestCase):
                         'LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080',
                         '### OIDC: HTTPS same-origin routes',
                         'select that exact origin',
-                        'LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example.com:8443',
-                        'LANTERN_OIDC_REDIRECT_URI', '/auth/callback/<SHA-256>',
+                        'public_origin', 'https://admin.example.com:8443',
+                        'LANTERN_AUTH_MODE=oidc', 'LANTERN_SECURITY_CONFIG_JSON',
+                        'lantern provision-security',
+                        '.authority.genesis.Image.issuers[]', 'redirect_uri',
+                        'external membership publisher', 'init-security',
+                        'provisioned_file', 'resumes intact state',
                         '/auth/*', '/browser/*', '/graph.v1.*/*',
                         'LANTERN_ADMIN_SERVER_UPSTREAM', 'scheme://hostname:port',
                         'https://authority.internal.example:6380',
                         'gateway picker never selects that upstream',
                         'Verify the upstream certificate against its hostname',
                         'LANTERN_ADMIN_SERVER_CA_FILE', 'public Host/scheme',
-                        'LANTERN_OIDC_TRUSTED_PROXY_IPS',
+                        'trusted_proxy_ips',
                         'explicitly trusted exact gateway IP',
                         'configured eligible authority origin',
                         'preserve per-attempt login affinity',
-                        'Original quorum provisioning and current native time',
+                        'Generated trust, signed membership renewal and current quorum/native time',
                         'production eligible-node management topology',
                         'operational cutover and final qualification',
                         '#1608/#1609 S5 work',
@@ -386,7 +390,23 @@ class AdminReleaseGuidanceTest(unittest.TestCase):
                         'browser local storage and Vite env',
                     ):
                         self.assertIn(contract, notes)
-                    for path in ('docs/oidc-operations.md#browser-and-diagnostics-boundary',
+                    selector = re.search(r"^jq -er '([^']+)' ", notes, re.MULTILINE).group(1)
+                    private = root / 'private-node.json'
+                    private.write_text(json.dumps({
+                        'setup': {'client_secret': 'FAKE_PRIVATE_SECRET'},
+                        'authority': {'genesis': {'Image': {'issuers': [
+                            {'redirect_uri': 'https://admin.example.invalid/auth/callback/public'},
+                            {'redirect_uri': ''},
+                        ]}}, 'origin_key': 'FAKE_PRIVATE_KEY'},
+                    }))
+                    callbacks = subprocess.run(['jq', '-er', selector, str(private)],
+                                               capture_output=True, text=True)
+                    self.assertEqual(callbacks.returncode, 0, callbacks.stderr)
+                    self.assertEqual(callbacks.stdout,
+                                     'https://admin.example.invalid/auth/callback/public\n')
+                    self.assertIn(selector, (ROOT / 'admin/README.md').read_text())
+                    for path in ('deploy/examples/auth/README.md#environment-json-startup',
+                                 'docs/oidc-operations.md#browser-and-diagnostics-boundary',
                                  'docs/ha-runbook.md', 'server/README.md'):
                         self.assertIn(f'https://github.com/anaregdesign/lantern/blob/{tag}/{path}',
                                       notes)
@@ -394,6 +414,9 @@ class AdminReleaseGuidanceTest(unittest.TestCase):
                     self.assertIn('## Browser and diagnostics boundary',
                                   (ROOT / 'docs/oidc-operations.md').read_text())
                     for retired in ('does not reverse-proxy', 'LANTERN_PEERS',
+                                    'LANTERN_OIDC_REDIRECT_URI',
+                                    'LANTERN_OIDC_BROWSER_ORIGIN',
+                                    'LANTERN_OIDC_TRUSTED_PROXY_IPS',
                                     'current fixed-writer baseline',
                                     'Future eligible-node routing',
                                     'writer.internal.example',
