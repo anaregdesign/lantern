@@ -1,11 +1,61 @@
 package provider
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
 )
+
+func TestGraphSnapshotSpoolConfigUsesOnlyPersistedProvisioning(t *testing.T) {
+	clearSecurityEnvironment(t)
+	state := filepath.Join(t.TempDir(), "node-1")
+	spool := provisionedSnapshotSpool(state)
+	config := SecurityConfig{ProvisionedFile: filepath.Join(t.TempDir(), "security.json"), StateDirectory: state, ProvisionedSnapshotSpool: &spool}
+	loaded, err := loadGraphSnapshotSpoolForSecurity(config)
+	if err != nil || loaded != spool || loaded.MaxDiskBytes != 128<<20 || loaded.MaxFrameBytes != 32<<20 {
+		t.Fatal("generated setup did not preserve its finite Snapshot bounds", err)
+	}
+	if _, err := os.Stat(spool.Directory); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("static configuration loading created the spool", err)
+	}
+	if err := loaded.Validate(); err == nil {
+		t.Fatal("ordinary startup accepted absent private spool storage")
+	}
+	for _, key := range []string{"LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES", "LANTERN_GRAPH_SNAPSHOT_SPOOL_TYPO"} {
+		for _, value := range []string{"", "0", "unrelated"} {
+			t.Run(key+"/"+value, func(t *testing.T) {
+				t.Setenv(key, value)
+				if _, err := loadGraphSnapshotSpoolForSecurity(config); err == nil {
+					t.Fatal("separate Snapshot input was ignored or overrode provisioned bounds")
+				}
+			})
+		}
+	}
+	config.ProvisionedSnapshotSpool = nil
+	if _, err := loadGraphSnapshotSpoolForSecurity(config); err == nil {
+		t.Fatal("missing provisioned spool silently acquired defaults")
+	}
+}
+
+func TestProvisionedSnapshotSpoolRejectsChangedPathsAndInvalidBounds(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "node-1")
+	for _, change := range []func(*GraphSnapshotSpoolConfig){
+		func(c *GraphSnapshotSpoolConfig) { *c = GraphSnapshotSpoolConfig{} },
+		func(c *GraphSnapshotSpoolConfig) { c.Directory = filepath.Join(t.TempDir(), "other") },
+		func(c *GraphSnapshotSpoolConfig) { c.Directory += "/../snapshot-spool" },
+		func(c *GraphSnapshotSpoolConfig) { c.MaxDiskBytes = 0 },
+		func(c *GraphSnapshotSpoolConfig) { c.MaxFrameBytes = 0 },
+		func(c *GraphSnapshotSpoolConfig) { c.MaxFrameBytes = int(c.MaxDiskBytes) + 1 },
+	} {
+		spool := provisionedSnapshotSpool(state)
+		change(&spool)
+		if err := validateProvisionedSnapshotSpool(spool, state); err == nil {
+			t.Fatal("invalid persisted spool path/capacity accepted")
+		}
+	}
+}
 
 func TestGraphSnapshotSpoolConfigRequiresExplicitHAStorage(t *testing.T) {
 	t.Setenv("LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR", "")

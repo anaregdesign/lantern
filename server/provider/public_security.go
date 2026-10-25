@@ -33,13 +33,30 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	if err := runtime.bindWorkload(peer); err != nil {
 		return publicSecurityCertified{}, err
 	}
-	if peer != nil {
-		primary.WithEdgeCreateHA()
+	if err := certifyEdgeCreateTopology(primary, runtime.mode, runtime.current.FixedVoterCount(), peer); err != nil {
+		return publicSecurityCertified{}, err
 	}
 	if err := runtime.protectDataService(primary); err != nil {
 		return publicSecurityCertified{}, err
 	}
 	return publicSecurityCertified{runtime: runtime, primary: primary}, nil
+}
+
+func certifyEdgeCreateTopology(primary *service.LanternService, mode string, voters int, peer *PeerIdentityRuntime) error {
+	if peer == nil {
+		return nil
+	}
+	ha := true
+	if mode == "oidc" {
+		if voters < 1 || voters > 31 || peer.store.FixedMemberCount() != voters {
+			return errors.New("data workload differs from the fixed authority topology")
+		}
+		ha = voters > 1
+	}
+	if ha {
+		primary.WithEdgeCreateHA()
+	}
+	return nil
 }
 func (r *SecurityRuntime) protectedIngress(req *http.Request) bool {
 	if r.mode == "off" || req.TLS != nil {

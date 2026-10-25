@@ -41,6 +41,10 @@ func loadOperatorPublicKey(path string) (ed25519.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseOperatorPublicKeyPEM(raw)
+}
+
+func parseOperatorPublicKeyPEM(raw []byte) (ed25519.PublicKey, error) {
 	block, trailing := pem.Decode(raw)
 	if block == nil || block.Type != "PUBLIC KEY" || len(bytes.TrimSpace(trailing)) != 0 {
 		return nil, errors.New("operator public key requires one Ed25519 SPKI PEM")

@@ -419,21 +419,59 @@ through `ConnContext`/`ConnState`; copying only its Handler into another server
 is not equivalent composition. The private consensus, original-H lookup and
 renewal routes are never mounted on the public mux.
 
-No-env/OFF needs no authentication material. A fresh OIDC cohort uses:
+No-env/OFF needs no authentication material. Generated OIDC setup uses three
+explicit phases:
+
+1. `provision-security` reads small setup intent, generates independent immutable
+   identities/keys and coherent profiles for an explicit Linux/Darwin target,
+   and writes separate serving-node and operator bundles. This phase has no
+   native clock, listener or state owner.
+2. On each actual target, `init-security` selects that node's generated private
+   document, creates fresh native control/data membership and custody state,
+   and completes orderly CLEAN shutdown. It never regenerates trust.
+3. Ordinary startup validates the same immutable trust and resumes intact native
+   state. Missing, partial, malformed or mismatched state never becomes fresh.
+
+Initialization/startup select the node through:
 
 ```text
 LANTERN_AUTH_MODE=oidc
-LANTERN_SECURITY_CONFIG_FILE=/operator/node.json
-LANTERN_SECURITY_STORE_MODE=fresh
-LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example
+LANTERN_SECURITY_CONFIG_JSON={"provisioned_file":"/absolute/provisioned/nodes/node-1/security.json"}
 ```
 
-The existing exact TLS/trusted HTTPS gateway boundary remains required. Optional
-OIDC roots, private-origin allowlists and secret bindings keep their existing
-meanings. OIDC configuration rejects retired profile selectors, writer keys/endpoints and bootstrap settings,
-old Store paths/generations, `CLOCK_QUALIFIED`, and injected clocks, including empty settings. It accepts
-only the already selected native time profile and existing source configuration;
-it does not configure the host or install trust roots.
+The [setup guide](../deploy/examples/auth/README.md#environment-json-startup)
+defines the small user input. Capacity/profile/digest/public-key/path repetition
+is derived once and persisted, never reselected on boot. Original Issuer/admin
+seed input is validated against original trust; it is never applied over later
+runtime management state. There is no compatibility reader or automatic state
+conversion for retired complete inline-authority JSON.
+
+The generator supports one-to-31 fixed voters and emits both renewable control
+and data membership streams. The separate operator bundle keeps signing keys
+outside the serving inputs. The existing
+[finite renewal workflow](live-membership-renewal.md) preserves fixed voters,
+quorum, lineage, workload identity, expiry and durable publication evidence.
+Standalone is one fixed voter, not an alternative protocol or a live-expansion
+promise.
+
+`renew-security` prepares same-root/key workload certificates and a later
+publisher window in a new private candidate directory. Its completed publication
+manifest/hash mapping must be reviewed before a CLEAN stop/install/advance/resume
+maintenance sequence. Native state and its bindings remain unchanged; certificate
+replacement requires restart and never infers fresh state. The fixed root lifetime
+is an explicit capacity bound, not automatic root rotation. See the
+[certificate maintenance contract](live-membership-renewal.md#renew-generated-workload-certificates).
+
+The exact TLS/trusted HTTPS gateway boundary remains required. Optional IdP
+roots, private-origin allowlists and secret bindings retain their meanings.
+The target time profile is explicit at provisioning and must match the actual
+runtime platform; generation on Darwin never chooses Darwin semantics for a
+Linux target. Runtime native-time/source checks remain mandatory and configure
+no host services or trust roots.
+
+The independent file-backed documents below remain available for deliberate
+external provisioning and validation. They are not additional setup knobs or
+required user-authored inputs for generated provisioning.
 
 ### Independent operator documents
 

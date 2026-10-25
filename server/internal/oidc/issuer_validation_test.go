@@ -67,3 +67,30 @@ func TestIssuerValidationOperatorSecretBinding(t *testing.T) {
 		t.Fatal("insecure secret file accepted")
 	}
 }
+
+func TestIssuerValidationIndependentProfiles(t *testing.T) {
+	p := newTestProvider(t)
+	browser := p.trust.Issuer
+	browser.APIAudience = ""
+	if err := p.fetcher.ValidateIssuer(t.Context(), browser, nil); err != nil {
+		t.Fatal("browser validation required API audience", err)
+	}
+	api := p.trust.Issuer
+	api.ClientID, api.RedirectURI, api.SecretRef = "", "", ""
+	p.mu.Lock()
+	p.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			_ = json.NewEncoder(w).Encode(Discovery{Issuer: p.server.URL, JWKSURI: p.server.URL + "/jwks"})
+		} else {
+			_ = json.NewEncoder(w).Encode(p.document)
+		}
+	})
+	p.mu.Unlock()
+	if err := p.fetcher.ValidateIssuer(t.Context(), api, nil); err != nil {
+		t.Fatal("API validation required browser discovery", err)
+	}
+	if err := p.fetcher.ValidateIssuer(t.Context(), browser, nil); err == nil {
+		t.Fatal("browser validation accepted API-only discovery")
+	}
+}

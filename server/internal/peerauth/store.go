@@ -19,6 +19,10 @@ type StoreOptions struct {
 	Domain Domain
 	Self   Member
 	Now    func() time.Time
+	// FixedMembers pins a trusted composition's immutable workload topology.
+	// A renewal may advance its signed interval, never its members or endpoints.
+	// Empty preserves the independent generic membership lifecycle.
+	FixedMembers []Member
 	// Current data membership uses the same qualified interval as current
 	// authority. Now remains only its conservative verifier/deadline adapter.
 	TimeBounds       func() (low, high time.Time, err error)
@@ -57,6 +61,7 @@ func prepareStore(options StoreOptions) (*Store, error) {
 		return nil, ErrMembership
 	}
 	options.Key = bytes.Clone(options.Key)
+	options.FixedMembers = slices.Clone(options.FixedMembers)
 	options.SelfCertificates = slices.Clone(options.SelfCertificates)
 	if options.Now == nil {
 		options.Now = time.Now
@@ -78,6 +83,9 @@ func CreateStore(options StoreOptions, raw []byte) (*Store, error) {
 	m, err := decodeManifest(raw, options.Key, options.Domain)
 	if err != nil {
 		return nil, err
+	}
+	if len(options.FixedMembers) != 0 && !slices.Equal(m.Members, options.FixedMembers) {
+		return nil, ErrMembership
 	}
 	s, err := prepareStore(options)
 	if err != nil {
@@ -106,6 +114,9 @@ func ResumeStore(options StoreOptions) (*Store, error) {
 	m, err := decodeManifest(raw, options.Key, options.Domain)
 	if err != nil {
 		return nil, errors.Join(err, s.Close())
+	}
+	if len(s.options.FixedMembers) != 0 && !slices.Equal(m.Members, s.options.FixedMembers) {
+		return nil, errors.Join(ErrMembership, s.Close())
 	}
 	// Expired signed state retains its version floor while accepting no peers.
 	// A fresh operator-signed higher revision may restore membership serving.
@@ -177,6 +188,17 @@ func (s *Store) FaultReason() string {
 	return s.faultReason
 }
 
+// FixedMemberCount reports original trusted composition, not a currently live
+// peer count. It grants no membership authority and never samples time.
+func (s *Store) FixedMemberCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.options.FixedMembers)
+}
+
 func (s *Store) liveLocked(now time.Time) bool {
 	return s.current != nil && s.manifestLiveLocked(s.current.manifest, now) && s.selfLiveLocked(now) &&
 		(s.options.Self == (Member{}) || s.current.members[s.options.Self.Identity] == s.options.Self)
@@ -205,6 +227,10 @@ func (s *Store) Apply(raw []byte) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(s.options.FixedMembers) != 0 && !slices.Equal(m.Members, s.options.FixedMembers) {
+		s.faultLocked("membership_topology")
+		return ErrMembership
+	}
 	now, valid := s.nowLocked()
 	if !valid || !s.manifestLiveLocked(m, now) {
 		return ErrMembership

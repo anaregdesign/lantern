@@ -18,6 +18,9 @@ func InitializeSecurity(ctx context.Context, config SecurityConfig) (err error) 
 	if err := validateSecurityConfig(config); err != nil {
 		return err
 	}
+	if err := initializeSecurityStorage(config); err != nil {
+		return err
+	}
 	p, err := loadSecurityProvisioning(config)
 	if err != nil {
 		return err
@@ -38,6 +41,9 @@ func InitializeSecurity(ctx context.Context, config SecurityConfig) (err error) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := initializeSecurityPeer(ctx, config, owner); err != nil {
+		return err
+	}
 	// Native construction durably creates all original families. Initialization
 	// does not grant serving authority: waiting for quorum here would prevent
 	// sequential initialization of a fixed-membership deployment. Shutdown
@@ -45,4 +51,20 @@ func InitializeSecurity(ctx context.Context, config SecurityConfig) (err error) 
 	err = owner.Shutdown()
 	orderly = err == nil
 	return err
+}
+
+func initializeSecurityStorage(config SecurityConfig) error {
+	if config.ProvisionedFile == "" {
+		return nil
+	}
+	if !securityTargetMatches(config.TargetPlatform) {
+		return errors.New("security provisioning target does not match this native runtime")
+	}
+	if config.ProvisionedSnapshotSpool == nil || validateProvisionedSnapshotSpool(*config.ProvisionedSnapshotSpool, config.StateDirectory) != nil {
+		return errSecurityProvisioning
+	}
+	if err := prepareSecurityStateDirectory(config.StateDirectory); err != nil {
+		return err
+	}
+	return createPrivateDirectory(config.ProvisionedSnapshotSpool.Directory)
 }

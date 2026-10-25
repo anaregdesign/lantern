@@ -81,6 +81,83 @@ describe("explicit security drafts", () => {
     ).toBe("installed-binding");
     expect(() => buildIssuer({ ...draft, locked: true })).toThrow("operator");
   });
+  test("browser and API profiles can be configured independently", () => {
+    const browser = buildIssuer({
+      ...issuerDraft(),
+      issuer: "https://idp.example",
+      clientId: "browser-client",
+      redirectUri: "https://admin.example/auth/callback",
+    });
+    expect(browser.clientId).toBe("browser-client");
+    expect(browser.apiAudience).toBe("");
+    expect(browser.secretRef).toBeUndefined();
+    const api = buildIssuer({
+      ...issuerDraft(),
+      issuer: "https://idp.example",
+      apiAudience: "lantern-api",
+      humanSubjectNamespaceQualified: true,
+    });
+    expect(api.apiAudience).toBe("lantern-api");
+    expect(api.clientId).toBe("");
+    expect(api.redirectUri).toBe("");
+    expect(api.secretRef).toBeUndefined();
+    expect(api.humanSubjectNamespaceQualified).toBe(true);
+  });
+  test("absent or incomplete profiles do not borrow another profile's settings", () => {
+    const draft = { ...issuerDraft(), issuer: "https://idp.example" };
+    expect(() => buildIssuer(draft)).toThrow("Configure");
+    expect(() => buildIssuer({ ...draft, clientId: "browser" })).toThrow(
+      "redirect URI",
+    );
+    expect(() =>
+      buildIssuer({
+        ...draft,
+        apiAudience: "api",
+        redirectUri: "https://admin.example/auth/callback",
+      }),
+    ).toThrow("Browser client ID");
+    expect(() =>
+      buildIssuer({
+        ...draft,
+        apiAudience: "api",
+        secretMode: "replace",
+        secretRef: "installed-binding",
+      }),
+    ).toThrow("Browser client ID");
+    expect(() =>
+      buildIssuer({
+        ...draft,
+        clientId: "browser",
+        redirectUri: "https://admin.example/auth/callback",
+        humanSubjectNamespaceQualified: true,
+      }),
+    ).toThrow("requires an API audience");
+  });
+  test("removing browser login requires clearing its retained secret binding", () => {
+    const draft = {
+      ...issuerDraft(),
+      issuer: "https://idp.example",
+      apiAudience: "api",
+      hasSecretBinding: true,
+      existing: true,
+    };
+    expect(() => buildIssuer(draft)).toThrow("Browser client ID");
+    const api = buildIssuer({ ...draft, secretMode: "clear" });
+    expect(api.secretRef).toBe("");
+    expect(api.clientId).toBe("");
+    expect(api.apiAudience).toBe("api");
+  });
+  test("Google profiles retain the pinned signing algorithm", () => {
+    const draft = {
+      ...issuerDraft(),
+      issuer: "https://accounts.google.com",
+      apiAudience: "api",
+    };
+    expect(() => buildIssuer(draft)).toThrow("RS256");
+    expect(buildIssuer({ ...draft, algorithms: "RS256" }).algorithms).toEqual([
+      "RS256",
+    ]);
+  });
   test("identical subjects in distinct Issuers remain distinct; assignments contain only Role IDs", () => {
     const first = {
       ...userDraft(),
@@ -139,6 +216,15 @@ describe("explicit security drafts", () => {
       { ...prior.nativeClients[0], hasSecretBinding: false },
     ]);
     expect(changed.nativeClients[0]).not.toHaveProperty("secretRef");
+    const nativeOnly = buildIssuer({
+      ...draft,
+      clientId: "",
+      apiAudience: "",
+      redirectUri: "",
+    });
+    expect(nativeOnly.nativeClients).toEqual(changed.nativeClients);
+    expect(nativeOnly.clientId).toBe("");
+    expect(nativeOnly.apiAudience).toBe("");
     changed.nativeClients[0].presenters.push("detached");
     expect(draft.nativeClients[0].presenters).toEqual([]);
   });
@@ -147,6 +233,7 @@ describe("explicit security drafts", () => {
       ...buildIssuer({
         ...issuerDraft(),
         issuer: "https://accounts.google.com",
+        algorithms: "RS256",
         clientId: "browser-client",
         apiAudience: "lantern",
         redirectUri: "https://admin.example/auth/callback",

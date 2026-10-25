@@ -181,7 +181,7 @@ func (m *LoginTransactions) BeginAuthorization(trust Trust, discovery Discovery,
 	return m.begin(trust, discovery, "/security/roles", "", true, authorizationID)
 }
 func (m *LoginTransactions) begin(trust Trust, discovery Discovery, returnPath, replacesDigest string, stepUp bool, authorizationID [32]byte) (LoginStart, error) {
-	if m == nil || !trust.Issuer.Enabled || trust.Generation == [16]byte{} || trust.ConfigRevision == 0 || discovery.Issuer != trust.Issuer.URL || trust.Issuer.RedirectURI != m.origin+CallbackPath(trust.Issuer.URL) || !m.returns[returnPath] ||
+	if m == nil || !trust.Issuer.Enabled || !trust.Issuer.BrowserEnabled() || trust.Issuer.ClientID == "" || trust.Generation == [16]byte{} || trust.ConfigRevision == 0 || discovery.Issuer != trust.Issuer.URL || trust.Issuer.RedirectURI != m.origin+CallbackPath(trust.Issuer.URL) || !m.returns[returnPath] ||
 		!slices.Contains(discovery.ResponseTypes, "code") || !slices.Contains(discovery.CodeChallengeMethods, "S256") {
 		return LoginStart{}, ErrLoginTransaction
 	}

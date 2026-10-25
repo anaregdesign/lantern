@@ -1,12 +1,10 @@
-# Standalone OIDC Server example. Every FAKE_* value is deliberately invalid.
-# Replace all placeholders in a PRIVATE copy before initialization or startup.
-# Empty authority objects stand for complete independently provisioned originals;
-# OAuth Client ID/Secret alone cannot establish the security authority.
-# Read README.md before running. No secret input file is mounted.
+# One-node fixed-topology OIDC Server, after explicit trust provisioning.
+# Prepare the placeholder setup JSON privately; see README.md. The referenced
+# directory must already exist. It is never generated during ordinary startup.
 name: lantern-oidc
 
 x-server: &server
-  image: lantern:env-config-local
+  image: lantern:security-provisioning-local
   build:
     context: ../..
     dockerfile: Dockerfile
@@ -17,19 +15,20 @@ x-server: &server
     LANTERN_PORT: "6380"
     LANTERN_METRICS_ADDR: "127.0.0.1:9090"
     LANTERN_DRAIN_DELAY_SECONDS: "5"
-    # Inject this entire JSON value from the cloud Secret Manager in deployment.
-    # Never commit a copy containing real values or print `compose config` for it.
-    LANTERN_SECURITY_CONFIG_JSON: '${LANTERN_SECURITY_CONFIG_JSON:-{"public_origin":"https://fake-admin.example.invalid:6380","issuers":[{"id":"fake_google_web","issuer":"https://accounts.google.com","client_id":"FAKE_GOOGLE_WEB_CLIENT_ID","api_audience":"FAKE_LANTERN_API_AUDIENCE","algorithms":["RS256"],"token_origin":"https://oauth2.googleapis.com","client_secret":"FAKE_CLIENT_SECRET_DO_NOT_USE"}],"tls":{"certificate_pem":"FAKE_PUBLIC_TLS_CERTIFICATE_PEM","private_key_pem":"FAKE_PUBLIC_TLS_PRIVATE_KEY_PEM"},"authority":{"version":1,"genesis":{},"participant":{},"membership":{"path":"/state/control-membership","manifest_file":"/run/lantern-membership/control.json","public_key":"FAKE_BASE64_OPERATOR_PUBLIC_KEY","profile":{},"self":{}},"identity":{"roots_pem":"FAKE_CONTROL_CA_CERTIFICATE_PEM","certificate_pem":"FAKE_CONTROL_TLS_CERTIFICATE_PEM","tls_key_pem":"FAKE_CONTROL_TLS_PRIVATE_KEY_PEM","voting_key":"FAKE_BASE64_VOTING_PRIVATE_KEY"},"origin_key":"FAKE_BASE64_ORIGIN_PRIVATE_KEY","floors_file":"/state/security-floors.json","listen_address":":6381","limits":{}}}}'
+    # Generated paths are absolute. The bind target below preserves them.
+    # Only this reference enters the runtime environment, never setup secrets.
+    LANTERN_SECURITY_CONFIG_JSON: '{"provisioned_file":"${LANTERN_PROVISIONING_DIRECTORY:-/FAKE_PRIVATE_PROVISIONING_DIRECTORY}/nodes/node-1/security.json"}'
   volumes:
-    - lantern-security-state:/state
-    # This contains only the renewable signed control manifest, not signing keys.
-    # Mount its directory so atomic replacement by the operator remains visible.
+    # This node alone: immutable trust/credentials and renewable signed inputs.
+    # Directory mounting preserves atomic membership replacement by the operator.
+    # The separate operator directory and signing keys are never mounted here.
     - type: bind
-      source: ${LANTERN_MEMBERSHIP_DIRECTORY:-./private/FAKE_MEMBERSHIP_DIRECTORY}
-      target: /run/lantern-membership
+      source: ${LANTERN_PROVISIONING_DIRECTORY:-/FAKE_PRIVATE_PROVISIONING_DIRECTORY}/nodes/node-1
+      target: ${LANTERN_PROVISIONING_DIRECTORY:-/FAKE_PRIVATE_PROVISIONING_DIRECTORY}/nodes/node-1
       read_only: true
       bind:
         create_host_path: false
+    - lantern-security-state:/state
   configs:
     - source: native-time-source
       target: /etc/ntp.conf
@@ -55,8 +54,7 @@ services:
       retries: 24
       start_period: 40s
 
-# An explicit nonsecret deployment input for the admitted native time source.
-# This does not alter the host clock, NTP service or trust store.
+# Nonsecret admitted native source input; does not alter host time services.
 configs:
   native-time-source:
     content: "server time.asia.apple.com\n"

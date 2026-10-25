@@ -7,13 +7,17 @@ import (
 const authorityAdmissionVersion uint16 = 2
 
 func authorityAdmissionProfile() s2cAdmissionProfile {
+	return authorityAdmissionProfileForTime(authorityTimeProfileDescription)
+}
+
+func authorityAdmissionProfileForTime(description string) s2cAdmissionProfile {
 	return s2cAdmissionProfile{Version: authorityAdmissionVersion, BrowserCode: true, HumanBearer: true,
 		CredentialContract: s2cHash("current-credential-v2", "original token v1/browser cookie or native-login v2/opaque native-end-user v1; native-registration evidence v3 and closed authorization v1; exact issuer client profile; authentic installed S1; PrincipalUIDPrefix v1 immutable nonzero UID, before+UID+after bounds, subject-bound Access/cache/cursor"),
 		ConsumeContract: s2cHash("current-consume-v2", struct {
 			Time     string
 			Lifetime uint64
 			Output   string
-		}{authorityTimeProfileDescription, authorityRenewalLifetime, "A: bounded immutable unit; no physical completion deadline"}),
+		}{description, authorityRenewalLifetime, "A: bounded immutable unit; no physical completion deadline"}),
 		PurposeContract: s2cHash("current-purpose-v2", "full S1 cut, original event, exclusive origin serial consume; native registration/recovery v1 exact original review; registration Applied at exact resulting cut before separate session issuance")}
 }
 

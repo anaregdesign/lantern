@@ -14,6 +14,17 @@ There is no new listener, watcher, clock, admission cache or readiness shortcut.
 
 ## Declare and provision a finite window
 
+For generated setup, `lantern provision-security` writes this configuration as
+`operator-directory/publisher.json`, with independent control/data signing keys,
+a separate private CA signer, complete workload certificate inputs and initial
+signed targets. Use the retained
+`operator-directory/state.json` journal path when starting the publisher. No
+hand-authored stream/profile/digest data is needed. The serving nodes receive only
+their private node directories and signed renewable inputs. See the
+[setup guide](../deploy/examples/auth/README.md#environment-json-startup).
+The configured horizon and certificate capacity remain finite; membership
+renewal does not extend certificate life or authorize a new trust generation.
+
 Build the external operator with `go build -o membershippublisher
 ./server/cmd/membershippublisher`. Keep its keys and persistent journal outside
 the server inputs, repository and public evidence. The serving processes need
@@ -96,6 +107,94 @@ the state. Membership expiry then closes protected operations. The orchestration
 owner stops/joins workers, listeners and native owners, checks the exact CLEAN
 floor hash and completes owned fixture cleanup by `CleanupBy`. Preserve reusable
 certificates/trust only under their existing separate authorization.
+
+## Renew generated workload certificates
+
+Generated trust retains its CA signing key only in the operator directory as
+`ca-signing-key.pem`. The initial root is fixed for ten years; generated workload
+leaf certificates cover the selected operator window plus cleanup and one day.
+The CA signer, control/data signers and journal must stay outside every Server
+mount. Membership signing does not extend certificates.
+
+Before the leaf/window deadline, explicitly prepare a new private candidate:
+
+```sh
+lantern renew-security --operator-directory /absolute/private/operator \
+  --output /absolute/private/renewal-2 --valid-for 720h
+```
+
+`--output` must be a new absolute private directory. This command reads retained
+operator custody and prepares files; it does not stop nodes, acquire serving
+state, overwrite active configuration/certificates, publish memberships, advance
+the publisher journal or start any listener. It reissues only the private
+workload leaf with the same root, TLS key, SPKI, URI and SANs. Domain, cohort,
+generation, voter/origin keys, topology, profile digests and state paths remain
+unchanged. Public ingress TLS and provider credentials have separate lifecycles.
+
+The candidate contains `nodes/<name>/security.json` with only embedded workload
+certificate changes, matching `nodes/<name>/workload.pem` files, per-node
+`COMPLETE` markers, operator `certificates/<name>.pem` copies and a next
+`publisher.json` whose decoded configuration differs only in later
+`End`/`CleanupBy`. Its `publication.json` records `PreviousConfig`, `NextConfig`,
+`PublisherState` and candidate-to-original `Files` entries with `Source`, `Target`
+and `SHA256`. Per-node completion markers and the final top-level `COMPLETE` are
+written last. Missing or inconsistent candidate/marker/hash evidence is incomplete
+preparation and must not be installed; do not promote partial files.
+
+Use this explicit maintenance order:
+
+1. Review the completed candidate and its hashes/mapping against the retained
+   original files. Confirm unchanged root/key identities, topology, paths and
+   custody/profile bindings, plus valid certificate chains for the new window.
+2. Drain and stop every affected serving node while membership is still valid;
+   require each node's successful orderly CLEAN shutdown. Then stop the
+   publisher and wait for it to join and release leases.
+3. Through the existing private deployment mechanism, install only the reviewed
+   certificate and node-document candidates at the original exact paths in
+   `publication.json`, installing each node's `COMPLETE` marker last. Preserve
+   private ownership/mode and durable same-directory atomic replacement. Keep
+   old config/evidence and the unchanged native state, publisher journal and
+   lease sidecars. No node is running during replacement.
+4. Keep the old immutable publisher configuration at its original path. Run
+   `advance-window` from that config to the candidate's new `publisher.json`,
+   using the original retained journal. This validates new certificate capacity
+   and changes only its config binding; it publishes no membership.
+5. Resume the publisher with the candidate config and original journal, then
+   restart nodes with their existing provisioning references and retained state.
+   Confirm fresh membership acceptance and normal readiness. Do not run
+   `init-security`, generate a new trust bundle or move state paths.
+
+For example, after reviewed certificate installation and node/publisher stop:
+
+```sh
+membershippublisher --mode advance-window \
+  --config /absolute/private/operator/publisher.json \
+  --next-config /absolute/private/renewal-2/publisher.json \
+  --state /absolute/private/operator/state.json
+membershippublisher --mode resume \
+  --config /absolute/private/renewal-2/publisher.json \
+  --state /absolute/private/operator/state.json
+```
+
+The first preparation defaults to `operator-directory/publisher.json`. For each
+later preparation, explicitly select the configuration currently used by the
+publisher; keep every prior config immutable and use the same journal:
+
+```sh
+lantern renew-security --operator-directory /absolute/private/operator \
+  --publisher-config /absolute/private/renewal-2/publisher.json \
+  --output /absolute/private/renewal-3 --valid-for 720h
+```
+
+Advance from that same current config to the new candidate config, then resume
+with the new config. Do not copy a successor over an old bound config or infer
+the active config from a filename or timestamp. After uncertainty,
+retain all files and follow the journal-binding inspection below. No partial
+replacement, failed advance, expired window or missing state permits a fresh
+fallback. Candidate preparation and window advancement reject a deadline beyond
+the existing root's certificate capacity. Root expiry requires an independently
+specified trust transition; this command supplies no automatic root rotation or
+state reset.
 
 ## Continue at a planned maintenance boundary
 

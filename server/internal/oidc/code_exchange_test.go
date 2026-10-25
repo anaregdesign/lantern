@@ -64,3 +64,21 @@ func TestCodeExchangeBoundSecretAndPKCE(t *testing.T) {
 		})
 	}
 }
+
+func TestCodeExchangeRejectsUnconfiguredBrowser(t *testing.T) {
+	p := newTestProvider(t)
+	trust := p.trust
+	trust.Issuer.ClientID, trust.Issuer.RedirectURI, trust.Issuer.SecretRef = "", "", ""
+	called := false
+	p.mu.Lock()
+	p.handler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })
+	p.mu.Unlock()
+	if _, err := p.fetcher.ExchangeCode(t.Context(), trust, Discovery{Issuer: trust.Issuer.URL, TokenEndpoint: p.server.URL + "/token"}, nil, "code", strings.Repeat("a", 43)); err == nil {
+		t.Fatal("API-only issuer performed browser code exchange")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if called {
+		t.Fatal("unconfigured browser reached token endpoint")
+	}
+}

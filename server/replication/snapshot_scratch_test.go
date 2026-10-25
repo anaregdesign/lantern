@@ -24,6 +24,14 @@ func TestGraphSnapshotSpoolConfigValidate(t *testing.T) {
 	if entries, err := os.ReadDir(config.Directory); err != nil || len(entries) != 0 {
 		t.Fatalf("Validate wrote to directory: entries=%v err=%v", entries, err)
 	}
+	missing := config
+	missing.Directory = filepath.Join(config.Directory, "not-created")
+	if err := missing.ValidateConfiguration(); err != nil {
+		t.Fatal("pure bound validation required runtime directory", err)
+	}
+	if err := missing.Validate(); err == nil {
+		t.Fatal("runtime validation stopped checking private storage")
+	}
 	for _, test := range []struct {
 		name string
 		edit func(*GraphSnapshotSpoolConfig)
@@ -43,6 +51,9 @@ func TestGraphSnapshotSpoolConfigValidate(t *testing.T) {
 			test.edit(&invalid)
 			if err := invalid.Validate(); err == nil {
 				t.Fatal("invalid spool configuration accepted")
+			}
+			if test.name != "MissingDirectory" && invalid.ValidateConfiguration() == nil {
+				t.Fatal("pure bound validation accepted invalid path/capacity")
 			}
 		})
 	}

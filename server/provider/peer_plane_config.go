@@ -7,11 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
-	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
 // PeerPlaneConfig owns the separate workload listener and durable membership.
@@ -36,19 +36,37 @@ func loadPeerPlaneConfig(auth SecurityConfig, legacy PeerConfig) (PeerPlaneConfi
 	for _, setting := range os.Environ() {
 		name, _, _ := strings.Cut(setting, "=")
 		upper := strings.ToUpper(name)
+		if auth.ProvisionedPeer != nil && (strings.HasPrefix(upper, "LANTERN_PEER_") || upper == "LANTERN_PEERS") {
+			return PeerPlaneConfig{}, errors.New("provisioned peer trust cannot be combined with peer environment settings")
+		}
 		if strings.HasPrefix(upper, "LANTERN_PEER_MEMBERSHIP_") || strings.HasPrefix(upper, "LANTERN_PEER_WORKLOAD_") || strings.HasPrefix(upper, "LANTERN_PEER_OPERATOR_") || strings.HasPrefix(upper, "LANTERN_PEER_TRUST_") {
 			if !known[name] {
 				return PeerPlaneConfig{}, errors.New("unknown private peer setting")
 			}
 		}
 	}
+	if auth.ProvisionedPeer != nil {
+		if configured || legacyPeerConfigured(legacy) {
+			return PeerPlaneConfig{}, errors.New("provisioned peer trust cannot be combined with peer environment settings")
+		}
+		if auth.Mode != "oidc" {
+			return PeerPlaneConfig{}, errors.New("provisioned peer trust requires OIDC authority")
+		}
+		cfg := *auth.ProvisionedPeer
+		cfg.Identity.FixedMembers = slices.Clone(cfg.Identity.FixedMembers)
+		cfg.Identity.AuthMode, cfg.Identity.StateMode = "oidc", "resume"
+		if cfg.ListenAddress == "" || cfg.Identity.Now != nil || cfg.Identity.TimeBounds != nil || cfg.Identity.Time != nil {
+			return PeerPlaneConfig{}, errors.New("invalid provisioned peer trust")
+		}
+		return bindPeerPlaneAuthority(auth, cfg)
+	}
 	if !configured {
-		if len(legacy.Peers) != 0 || legacy.Discovery != "static" || legacy.CAFile != "" || legacy.ClientCertFile != "" || legacy.ClientKeyFile != "" {
+		if legacyPeerConfigured(legacy) {
 			return PeerPlaneConfig{}, errors.New("HA requires the explicit workload peer plane")
 		}
 		return PeerPlaneConfig{}, nil
 	}
-	if len(legacy.Peers) != 0 || legacy.Discovery != "static" || legacy.CAFile != "" || legacy.ClientCertFile != "" || legacy.ClientKeyFile != "" {
+	if legacyPeerConfigured(legacy) {
 		return PeerPlaneConfig{}, errors.New("signed membership cannot be combined with legacy peer origins, discovery or credentials")
 	}
 	for _, name := range names {
@@ -68,12 +86,25 @@ func loadPeerPlaneConfig(auth SecurityConfig, legacy PeerConfig) (PeerPlaneConfi
 		SelfIdentity: values["LANTERN_PEER_WORKLOAD_ID"], CertFile: values["LANTERN_PEER_CERT_FILE"], KeyFile: values["LANTERN_PEER_KEY_FILE"], CAFile: values["LANTERN_PEER_TRUST_CA_FILE"],
 	}}
 	copy(cfg.Identity.Deployment[:], id)
+	return bindPeerPlaneAuthority(auth, cfg)
+}
+
+func legacyPeerConfigured(cfg PeerConfig) bool {
+	return len(cfg.Peers) != 0 || cfg.Discovery != "static" || cfg.DNSName != "" || cfg.CAFile != "" || cfg.ClientCertFile != "" || cfg.ClientKeyFile != ""
+}
+
+func bindPeerPlaneAuthority(auth SecurityConfig, cfg PeerPlaneConfig) (PeerPlaneConfig, error) {
 	if auth.Mode == "oidc" {
-		provisioned, err := security.LoadCurrentProvisioning(auth.ConfigFile)
+		provisioned, err := loadSecurityProvisioning(auth)
 		if err != nil {
 			return PeerPlaneConfig{}, err
 		}
 		profile := provisioned.Profile()
+		if cfg.Identity.CurrentProfile != "" && cfg.Identity.CurrentProfile != profile.Binding() ||
+			cfg.Identity.SecurityGeneration != [16]byte{} && cfg.Identity.SecurityGeneration != profile.Generation ||
+			cfg.Identity.WriterPublicKey != [32]byte{} {
+			return PeerPlaneConfig{}, errors.New("data workload belongs to a different current cohort")
+		}
 		cfg.Identity.CurrentProfile, cfg.Identity.SecurityGeneration = profile.Binding(), profile.Generation
 	}
 	if err := validatePeerPlaneConfig(cfg); err != nil {

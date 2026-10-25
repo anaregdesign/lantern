@@ -39,13 +39,19 @@ export function IssuerEditor({
             onChange={(_, data) => editor.patchIssuer({ issuer: data.value })}
           />
         </Field>
-        <Field label="Client ID" required>
+        <Field
+          label="Browser client ID"
+          hint="Set with a redirect URI to enable browser sign-in."
+        >
           <Input
             value={draft.clientId}
             onChange={(_, data) => editor.patchIssuer({ clientId: data.value })}
           />
         </Field>
-        <Field label="API audience" required>
+        <Field
+          label="API audience"
+          hint="Leave empty to reject external API tokens."
+        >
           <Input
             value={draft.apiAudience}
             onChange={(_, data) =>
@@ -53,7 +59,7 @@ export function IssuerEditor({
             }
           />
         </Field>
-        <Field label="Redirect URI" required>
+        <Field label="Browser redirect URI">
           <Input
             value={draft.redirectUri}
             onChange={(_, data) =>
@@ -72,7 +78,7 @@ export function IssuerEditor({
             }
           />
         </Field>
-        <Field label="Client secret binding">
+        <Field label="Browser client secret binding">
           <Select
             value={draft.secretMode}
             onChange={(_, data) =>
@@ -102,13 +108,13 @@ export function IssuerEditor({
           </Field>
         )}
         <Checkbox
-          label="Enable sign-in through this Issuer"
+          label="Enable this Issuer"
           checked={draft.enabled}
           onChange={(_, data) =>
             editor.patchIssuer({ enabled: data.checked === true })
           }
         />
-        <Field hint="Enable only after verifying that this Issuer prevents OAuth clients from using or impersonating enrolled human subjects. This trust change requires operation reauthentication.">
+        <Field hint="For API access only. Enable after verifying that OAuth clients cannot use or impersonate enrolled human subjects. This trust change requires operation reauthentication.">
           <Checkbox
             label="Human and OAuth client subjects are qualified as separate"
             checked={draft.humanSubjectNamespaceQualified}
