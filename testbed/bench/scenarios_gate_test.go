@@ -1573,9 +1573,10 @@ cleanup() {
 			actions, readErr := os.ReadFile(filepath.Join(outDir, "actions"))
 			if tc.wantOwn {
 				want := "initialize\nsecurity initialize\nup\ndown\n"
-				if tc.name == "absent OFF" {
+				switch tc.name {
+				case "absent OFF":
 					want = "initialize\nup\ndown\n"
-				} else if tc.name == "initialization failure" {
+				case "initialization failure":
 					want = "initialize\nsecurity initialize\n"
 					if !strings.Contains(string(output), "no serving started") {
 						t.Fatalf("initialization failure did not stop before serving: %s", output)
