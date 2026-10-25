@@ -2023,11 +2023,25 @@ func TestComposeDeclarativeOIDCHAExample(t *testing.T) {
 			Target int
 			HostIP string `json:"host_ip"`
 		}
-		Configs []struct{ Target string }
+		Configs []struct {
+			Source, Target string
+			Mode           string
+		}
 	}
-	var rendered struct{ Services map[string]service }
+	var rendered struct {
+		Services map[string]service
+		Configs  map[string]struct{ File, Content string }
+	}
 	if json.Unmarshal(raw, &rendered) != nil {
 		t.Fatal("invalid rendered Compose JSON")
+	}
+	// Compose cannot inject inline config content into a read-only service.
+	// Require the actual nonsecret file, preserving the read-only root/mount.
+	timeFile := filepath.Join(root, "deploy/compose/oidc-ha/ntp.conf")
+	timeConfig, found := rendered.Configs["native-time-source"]
+	timeBytes, readErr := os.ReadFile(timeFile)
+	if !found || timeConfig.File != timeFile || timeConfig.Content != "" || readErr != nil || string(timeBytes) != "server time.asia.apple.com\n" {
+		t.Fatal("read-only HA services require the exact file-backed native time source")
 	}
 	stateOwners := map[string]string{}
 	for index := range 3 {
@@ -2043,7 +2057,7 @@ func TestComposeDeclarativeOIDCHAExample(t *testing.T) {
 		}
 		input, material, state, timeSource := false, false, false, false
 		for _, config := range node.Configs {
-			timeSource = timeSource || config.Target == "/etc/ntp.conf"
+			timeSource = timeSource || config.Source == "native-time-source" && config.Target == "/etc/ntp.conf" && config.Mode == "0444"
 		}
 		for _, volume := range node.Volumes {
 			if volume.Target == "/input" {
@@ -2068,7 +2082,7 @@ func TestComposeDeclarativeOIDCHAExample(t *testing.T) {
 			t.Fatal("OIDC HA node lacks required isolated input/material/state/native source", name)
 		}
 		initial := rendered.Services[fmt.Sprintf("init-node-%d", index)]
-		if !reflect.DeepEqual(initial.Entrypoint, node.Entrypoint) || !reflect.DeepEqual(initial.Command, []string{"init-security"}) || !reflect.DeepEqual(initial.Volumes, node.Volumes) {
+		if !initial.ReadOnly || !reflect.DeepEqual(initial.Entrypoint, node.Entrypoint) || !reflect.DeepEqual(initial.Command, []string{"init-security"}) || !reflect.DeepEqual(initial.Volumes, node.Volumes) || !reflect.DeepEqual(initial.Configs, node.Configs) {
 			t.Fatal("init and normal start no longer receive the same supplied input and original material", name)
 		}
 	}

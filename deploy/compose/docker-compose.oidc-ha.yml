@@ -235,7 +235,7 @@ services:
 
 configs:
   native-time-source:
-    content: "server time.asia.apple.com\n"
+    file: ./oidc-ha/ntp.conf
 networks:
   cluster: {}
   metrics: {internal: true}

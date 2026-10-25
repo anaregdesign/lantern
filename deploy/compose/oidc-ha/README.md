@@ -48,6 +48,12 @@ and `target_platform=linux`. Generating on a Mac must not stamp Darwin semantics
 into a Linux container. The supplied JSON is read afresh from `/input/startup.json`
 at every invocation; retained identity material is never a configuration fallback.
 
+Each Linux node also receives the repository's [ntp.conf](ntp.conf) as a
+read-only `0444` Compose file config at `/etc/ntp.conf`. Its exact admitted source
+is `server time.asia.apple.com`; file-backed delivery keeps the service root
+read-only. This is application input, not a host time-service configuration
+change or evidence of trusted-time qualification.
+
 Replace the Google browser client ID/secret and exact verified initial admin
 subject. Register the callback for the exact public origin using the
 [callback recipe](../../examples/auth/README.md#browser-callbacks). The Google
