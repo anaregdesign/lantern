@@ -48,13 +48,16 @@ WALs and private replication; it is a separate bounded functional campaign.
 Original logs, failed phases and private volumes are retained. No image pulls,
 host clock/trust changes, deployment or shared-resource pruning are performed.
 
-Build provenance determines the evidence kind. A `lantern_test_time` Server
-uses synthetic controlled UTC and supplies **functional validation** only. The
-normal build, declared native source and actual configured-source observations
-are required for **configured-source integration**. This script provides no
-runtime switch between them. The required shared validation workflow is
-[`current-sdk4.yml`](../../.github/workflows/current-sdk4.yml); follow its distinct
-proof kinds and the [current-authority contract](../../docs/security-current-authority.md#functional-validation-and-configured-source-integration).
+This controller supplies **functional/lifecycle evidence only**, regardless of
+binary. Label controlled UTC as synthetic; running a normal binary here does
+not satisfy configured-source qualification. **Configured-source integration**
+belongs only to the approved shared
+[`current-sdk4.yml`](../../.github/workflows/current-sdk4.yml) `source-cohort-v4`
+gate: the same three-member cohort, six sequential constructors
+`init1..3` then `resume1..3`, and aggregate limits of at most 12 acquisition
+attempts and 12 writes. Preserve that contract; per-case or repeated live-source
+cohorts cannot replace it. Follow the distinct proof kinds and the
+[current-authority contract](../../docs/security-current-authority.md#functional-validation-and-configured-source-integration).
 Neither proof establishes real-provider, physical-device, OS reboot or power-loss
 behavior. Avoid repeated live-source probing or fresh cohorts after failure.
 
