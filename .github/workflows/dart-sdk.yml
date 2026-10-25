@@ -1028,9 +1028,19 @@ jobs:
         run: |
           flutter build ios --debug --no-codesign --no-pub
 
+      # A host-loopback point is a fixture precondition, not Simulator or
+      # continuous-health evidence across the attempt's native build interval.
+      - name: Observe iOS backend before initial attempt
+        id: ios_backend_initial_before
+        if: success()
+        timeout-minutes: 1
+        run: >-
+          python3 -B sdks/dart/example/tool/ios_backend_observation.py initial before
+          "$RUNNER_TEMP/ios-server.pid" "$RUNNER_TEMP/ios-backend-observations"
+
       - name: Run attached iOS native smoke
         id: ios_smoke_initial
-        if: success()
+        if: success() && steps.ios_backend_initial_before.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 14
         working-directory: sdks/dart/example
@@ -1045,12 +1055,21 @@ jobs:
           bash tool/ios_smoke_ci.sh run-attached-attempt "$DEVICE_ID" initial
           "$RUNNER_TEMP/ios-smoke-diagnostics"
 
+      - name: Observe iOS backend after initial attempt
+        if: >-
+          always() && contains(fromJSON('["success","failure"]'),
+          steps.ios_smoke_initial.outcome)
+        timeout-minutes: 1
+        run: >-
+          python3 -B sdks/dart/example/tool/ios_backend_observation.py initial after
+          "$RUNNER_TEMP/ios-server.pid" "$RUNNER_TEMP/ios-backend-observations"
+
       # Retry only a native launch or VM attachment stall on a clean device.
       # Assertion, RPC, build, and post-body failures never enter this path.
       - name: Create independently clean retry simulator
         id: ios_fresh_device
         if: >-
-          contains(fromJSON('["launch_stall","attach_stall"]'),
+          !cancelled() && contains(fromJSON('["launch_stall","attach_stall"]'),
           steps.ios_smoke_initial.outputs.classification)
         timeout-minutes: 3
         working-directory: sdks/dart/example
@@ -1064,12 +1083,24 @@ jobs:
           test "$retry_device" != "$DEVICE_ID"
           echo "RETRY_DEVICE_ID=$retry_device" >> "$GITHUB_ENV"
 
+      - name: Observe iOS backend before retry attempt
+        id: ios_backend_retry_before
+        if: >-
+          !cancelled() && contains(fromJSON('["launch_stall","attach_stall"]'),
+          steps.ios_smoke_initial.outputs.classification) &&
+          steps.ios_fresh_device.outcome == 'success'
+        timeout-minutes: 1
+        run: >-
+          python3 -B sdks/dart/example/tool/ios_backend_observation.py retry before
+          "$RUNNER_TEMP/ios-server.pid" "$RUNNER_TEMP/ios-backend-observations"
+
       - name: Retry attached iOS native smoke on fresh simulator
         id: ios_smoke_retry
         if: >-
-          contains(fromJSON('["launch_stall","attach_stall"]'),
+          !cancelled() && contains(fromJSON('["launch_stall","attach_stall"]'),
           steps.ios_smoke_initial.outputs.classification) &&
-          steps.ios_fresh_device.outcome == 'success'
+          steps.ios_fresh_device.outcome == 'success' &&
+          steps.ios_backend_retry_before.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 14
         working-directory: sdks/dart/example
@@ -1081,6 +1112,28 @@ jobs:
         run: >-
           bash tool/ios_smoke_ci.sh run-attached-attempt "$RETRY_DEVICE_ID" retry
           "$RUNNER_TEMP/ios-smoke-diagnostics"
+
+      - name: Observe iOS backend after retry attempt
+        if: >-
+          always() && contains(fromJSON('["success","failure"]'),
+          steps.ios_smoke_retry.outcome)
+        timeout-minutes: 1
+        run: >-
+          python3 -B sdks/dart/example/tool/ios_backend_observation.py retry after
+          "$RUNNER_TEMP/ios-server.pid" "$RUNNER_TEMP/ios-backend-observations"
+
+      - name: Upload bounded iOS backend point observations
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lantern-ios-backend-observations-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ios-backend-observations/initial-before.json
+            ${{ runner.temp }}/ios-backend-observations/initial-after.json
+            ${{ runner.temp }}/ios-backend-observations/retry-before.json
+            ${{ runner.temp }}/ios-backend-observations/retry-after.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Finalize bounded iOS launch diagnostics
         id: ios_diagnostics_finalize
