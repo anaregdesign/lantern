@@ -201,6 +201,7 @@ func (o *CurrentAuthority) VerificationTime() time.Time {
 
 func (o *CurrentAuthority) Ready(ctx context.Context) bool {
 	if o == nil || o.origin == nil || !o.origin.network.enterCall() {
+		traceAuthorityBrowserDecision(nil, "current_ready", "owner")
 		return false
 	}
 	n := o.origin.network
@@ -208,15 +209,39 @@ func (o *CurrentAuthority) Ready(ctx context.Context) bool {
 	n.kernel.gate.Lock()
 	defer n.kernel.gate.Unlock()
 	defer n.kernel.poisonPanic()
-	if ctx.Err() != nil || !o.origin.configuredReadyLocked() || n.kernel.readyLocked() != nil || n.kernel.chosen != nil {
+	switch {
+	case ctx.Err() != nil:
+		traceAuthorityBrowserDecision(n.timeOwner, "current_ready", "context")
+		return false
+	case !o.origin.configuredReadyLocked():
+		traceAuthorityBrowserDecision(n.timeOwner, "current_ready", "configuration")
+		return false
+	case n.kernel.readyLocked() != nil:
+		traceAuthorityBrowserDecision(n.timeOwner, "current_ready", "kernel")
+		return false
+	case n.kernel.chosen != nil:
+		traceAuthorityBrowserDecision(n.timeOwner, "current_ready", "chosen")
 		return false
 	}
 	start, expiry, err := o.origin.eligibilityLocked(ctx)
 	if err != nil {
+		traceAuthorityBrowserDecision(n.timeOwner, "current_ready", "eligibility")
 		return false
 	}
 	now, _, err := n.receiver.currentLocked()
-	return err == nil && !time.Unix(0, int64(now.utc.low)).Before(start) && time.Unix(0, int64(now.utc.high)).Before(expiry)
+	if err != nil {
+		traceAuthorityBrowserDecision(n.timeOwner, "current_ready", "renewal")
+		return false
+	}
+	if time.Unix(0, int64(now.utc.low)).Before(start) {
+		traceAuthorityBrowserDecision(n.timeOwner, "current_ready", "before_start")
+		return false
+	}
+	if !time.Unix(0, int64(now.utc.high)).Before(expiry) {
+		traceAuthorityBrowserDecision(n.timeOwner, "current_ready", "expired")
+		return false
+	}
+	return true
 }
 
 // ExportFloors returns a live minimum-cut observation, never a resume capability

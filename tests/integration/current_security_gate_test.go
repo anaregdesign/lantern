@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -402,7 +403,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				return
 			}
 		}
-		t.Run(name, body)
+		t.Run(name, func(t *testing.T) { currentBrowserDecisionCase(t, name, body) })
 	}
 
 	runCase("public protocols and full binding", func(t *testing.T) {
@@ -1122,6 +1123,69 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		})
 	}
 
+}
+
+func currentBrowserDecisionWindow(name string) *decisiontrace.Capture {
+	switch name {
+	case "operation-bound real Code approval", "browser Code one exchange and CSRF bootstrap":
+		return decisiontrace.Start(512)
+	default:
+		return nil
+	}
+}
+
+func currentBrowserDecisionCase(t *testing.T, name string, body func(*testing.T)) {
+	t.Helper()
+	selected := name == "operation-bound real Code approval" || name == "browser Code one exchange and CSRF bootstrap"
+	capture := currentBrowserDecisionWindow(name)
+	if selected && capture == nil {
+		t.Fatal("browser diagnostic capture already owned")
+	}
+	if capture != nil {
+		defer func() {
+			capture.Stop()
+			events, dropped := capture.Drain()
+			if !t.Failed() {
+				return
+			}
+			t.Logf("current_browser_decisions events=%d dropped=%d complete=%t; missing events do not prove nonexecution", len(events), dropped, dropped == 0)
+			for _, event := range events {
+				raw, err := json.Marshal(event)
+				if err != nil {
+					t.Log("browser diagnostic encoding failed")
+					continue
+				}
+				t.Logf("current_browser_observation=%s", raw)
+			}
+		}()
+	}
+	body(t)
+}
+
+func TestCurrentBrowserDecisionWindowScopeAndRelease(t *testing.T) {
+	if capture := currentBrowserDecisionWindow("ordinary review apply foreign status"); capture != nil {
+		capture.Stop()
+		t.Fatal("unrelated case acquired browser capture")
+	}
+	for _, name := range []string{"operation-bound real Code approval", "browser Code one exchange and CSRF bootstrap"} {
+		currentBrowserDecisionCase(t, name, func(t *testing.T) {
+			if !decisiontrace.Enabled() {
+				t.Fatal("selected case has no capture")
+			}
+		})
+		if decisiontrace.Enabled() {
+			t.Fatal("completed case retained capture")
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		currentBrowserDecisionCase(t, "operation-bound real Code approval", func(*testing.T) { runtime.Goexit() })
+	}()
+	<-done
+	if decisiontrace.Enabled() {
+		t.Fatal("Goexit retained browser capture")
+	}
 }
 
 // Separate SDK seam selection reuses the production constructor without

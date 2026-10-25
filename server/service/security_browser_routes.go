@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/internal/authn"
 	"github.com/anaregdesign/lantern/server/internal/security"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -123,7 +124,27 @@ func workflowCode(err error) connect.Code {
 	}
 }
 func (r *AuthenticationAdapter) browserWriter(req *http.Request) bool {
-	return r != nil && r.current != nil && r.current.OriginEnabled() && r.browserOrigin(req, false) == nil && r.ready(req.Context())
+	reason := ""
+	switch {
+	case r == nil:
+		reason = "adapter"
+	case r.current == nil:
+		reason = "authority"
+	case !r.current.OriginEnabled():
+		reason = "origin_disabled"
+	case r.browserOrigin(req, false) != nil:
+		reason = "origin_boundary"
+	case !r.ready(req.Context()):
+		reason = "not_ready"
+	default:
+		return true
+	}
+	traceBrowserDecision("writer", reason)
+	return false
+}
+
+func traceBrowserDecision(stage, reason string) {
+	decisiontrace.Emit(decisiontrace.Event{Kind: "browser_decision", Stage: stage, Reason: reason})
 }
 func (r *AuthenticationAdapter) browserLogin(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet || !r.browserWriter(req) {

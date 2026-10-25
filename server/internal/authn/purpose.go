@@ -35,6 +35,7 @@ func (w *Workflow) ReadCurrentAuthorization(ctx context.Context, a *security.Adm
 func (w *Workflow) StartAuthorization(ctx context.Context, ticket [32]byte, affinity string) (oidc.LoginStart, error) {
 	notBefore, err := w.current.PurposeNotBefore(ctx, ticket)
 	if err != nil {
+		traceBrowserDecision("purpose_start", "not_before")
 		return oidc.LoginStart{}, ErrUnauthenticated
 	}
 	// Timer merely paces navigation. startPurpose independently requires the
@@ -42,6 +43,7 @@ func (w *Workflow) StartAuthorization(ctx context.Context, ticket [32]byte, affi
 	for {
 		low, _, err := w.current.TimeBounds()
 		if err != nil {
+			traceBrowserDecision("purpose_start", "clock")
 			return oidc.LoginStart{}, ErrUnavailable
 		}
 		if !low.Before(notBefore) {
@@ -56,20 +58,37 @@ func (w *Workflow) StartAuthorization(ctx context.Context, ticket [32]byte, affi
 		}
 	}
 	navigation, err := w.current.StartPurpose(ctx, ticket)
-	if err != nil || affinity != w.AttemptAffinity(navigation.ID) || !navigation.Issuer.BrowserEnabled() {
+	if err != nil {
+		traceBrowserDecision("purpose_start", "navigation")
+		return oidc.LoginStart{}, ErrUnauthenticated
+	}
+	if affinity != w.AttemptAffinity(navigation.ID) {
+		traceBrowserDecision("purpose_start", "affinity")
+		return oidc.LoginStart{}, ErrUnauthenticated
+	}
+	if !navigation.Issuer.BrowserEnabled() {
+		traceBrowserDecision("purpose_start", "issuer_browser_disabled")
 		return oidc.LoginStart{}, ErrUnauthenticated
 	}
 	d, err := w.oidc.Fetcher.Discover(ctx, navigation.Issuer)
-	if err != nil || !w.current.Ready(ctx) {
+	if err != nil {
+		traceBrowserDecision("purpose_start", "discovery")
+		w.current.RejectPurpose(navigation.ID)
+		return oidc.LoginStart{}, ErrUnavailable
+	}
+	if !w.current.Ready(ctx) {
+		traceBrowserDecision("purpose_start", "not_ready_after_discovery")
 		w.current.RejectPurpose(navigation.ID)
 		return oidc.LoginStart{}, ErrUnavailable
 	}
 	start, err := w.oidc.Logins.BeginAuthorization(oidc.Trust{Issuer: navigation.Issuer, Generation: navigation.Generation, ConfigRevision: navigation.Issuer.ConfigRevision}, d, navigation.ID)
 	if err != nil {
+		traceBrowserDecision("purpose_start", "transaction")
 		w.current.RejectPurpose(navigation.ID)
 		return oidc.LoginStart{}, ErrUnauthenticated
 	}
 	if w.current.BindLoginOutput(ctx, navigation.Cut, navigation.Issuer.URL) != nil {
+		traceBrowserDecision("purpose_start", "output")
 		w.current.RejectPurpose(navigation.ID)
 		return oidc.LoginStart{}, ErrUnavailable
 	}

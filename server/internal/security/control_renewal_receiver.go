@@ -120,15 +120,37 @@ func (r *authorityRenewalReceiver) matchesLocked(s authorityRenewalStatement) bo
 // The native sample in current is the final event; the remaining comparisons
 // and immutable bookkeeping do not move its logical authorization instant.
 func (r *authorityRenewalReceiver) currentLocked() (authorityCurrentTime, *authorityRenewalActive, error) {
-	if r.closed || r.startupRecoveryPending || !r.kernel.configuredReadyLocked() || r.kernel.readyLocked() != nil || r.active == nil || !r.matchesLocked(r.active.certificate.request.statement) {
+	reason := ""
+	switch {
+	case r.closed:
+		reason = "closed"
+	case r.startupRecoveryPending:
+		reason = "recovery"
+	case !r.kernel.configuredReadyLocked():
+		reason = "configuration"
+	case r.kernel.readyLocked() != nil:
+		reason = "kernel"
+	case r.active == nil:
+		reason = "no_certificate"
+	case !r.matchesLocked(r.active.certificate.request.statement):
+		reason = "binding"
+	}
+	if reason != "" {
+		traceAuthorityBrowserDecision(r.clock, "renewal_current", reason)
 		return authorityCurrentTime{}, nil, errAuthorityRenewal
 	}
 	now, err := r.clock.current()
 	if err != nil {
+		traceAuthorityBrowserDecision(r.clock, "renewal_current", "clock")
 		return authorityCurrentTime{}, nil, err
 	}
 	elapsed, err := r.clock.elapsed(r.active.started, now)
-	if err != nil || elapsed.high >= r.active.certificate.request.statement.Lifetime {
+	if err != nil {
+		traceAuthorityBrowserDecision(r.clock, "renewal_current", "elapsed")
+		return authorityCurrentTime{}, nil, errAuthorityRenewal
+	}
+	if elapsed.high >= r.active.certificate.request.statement.Lifetime {
+		traceAuthorityBrowserDecision(r.clock, "renewal_current", "expired")
 		return authorityCurrentTime{}, nil, errAuthorityRenewal
 	}
 	return now, r.active, nil

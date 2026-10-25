@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/internal/membershippublisher"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
@@ -1103,4 +1104,90 @@ func currentQueryRoleTestFile(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestCurrentReadyDiagnosticPreservesActualRefusal(t *testing.T) {
+	for _, reason := range []string{"owner", "context", "configuration", "kernel", "chosen", "eligibility", "renewal", "before_start", "expired", ""} {
+		name := reason
+		if name == "" {
+			name = "ready"
+		}
+		t.Run(name, func(t *testing.T) {
+			n := s3aTestCluster(t, nil)
+			for id, c := range n.configs {
+				clock, _ := fakeAuthorityTimeOwnerAt(t, time.Unix(0, n.clock.Load()).UTC())
+				clock.traceID = 71
+				if err := bindAuthorityNetworkTime(&c, clock); err != nil {
+					t.Fatal(err)
+				}
+				owner, err := createS3AOwner(c)
+				if err != nil {
+					t.Fatal(err)
+				}
+				n.nodes[id] = owner
+			}
+			network := n.nodes[1]
+			request, err := network.receiver.challenge()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []uint32{1, 2} {
+				vote, err := n.nodes[id].kernel.signAuthorityRenewal(request, network.receiver.workloads, func() error { return nil })
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := network.receiver.receive(request, vote); err != nil {
+					t.Fatal(err)
+				}
+			}
+			o := &CurrentAuthority{origin: &authorityOriginOwner{network: network}}
+			ctx := t.Context()
+			// No listener or automatic renewal worker is started in this fixture.
+			// Each case selects one existing predicate.
+			switch reason {
+			case "owner":
+				o = nil
+			case "context":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			case "configuration":
+				network.kernel.config.configured = &ConfiguredTrust{}
+			case "kernel":
+				network.kernel.unknown = errS2CUnknown
+			case "chosen":
+				network.kernel.chosen = &s2cMessage{}
+			case "eligibility":
+				o.origin.closed = true
+			case "renewal":
+				network.receiver.active = nil
+			case "before_start":
+				network.identity.starts = time.Unix(0, n.clock.Load()).Add(time.Minute)
+			case "expired":
+				network.identity.expires = time.Unix(0, n.clock.Load()).Add(-time.Minute)
+			}
+			capture := decisiontrace.Start(64)
+			if capture == nil {
+				t.Fatal("capture already owned")
+			}
+			defer capture.Stop()
+			if got := o.Ready(ctx); got != (reason == "") {
+				t.Fatal("diagnostic changed readiness result", got)
+			}
+			capture.Stop()
+			events, dropped := capture.Drain()
+			var actual []decisiontrace.Event
+			for _, event := range events {
+				if event.Kind == "browser_decision" && event.Stage == "current_ready" {
+					actual = append(actual, event)
+				}
+			}
+			if dropped != 0 || (reason == "" && len(actual) != 0) || (reason != "" && (len(actual) != 1 || actual[0].Reason != reason)) {
+				t.Fatal("actual readiness refusal was not retained", actual, dropped)
+			}
+			if reason != "" && reason != "owner" && actual[0].Object != 71 {
+				t.Fatal("readiness refusal lost the existing clock correlation", actual)
+			}
+		})
+	}
 }

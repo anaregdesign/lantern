@@ -686,6 +686,7 @@ def main():
             item.add_argument("--expected-head", required=True)
             item.add_argument("--trusted-receipt-sha256", required=True)
     args = parser.parse_args()
+    active_kind = args.proof_kind
     try:
         if args.action == "run":
             evidence = args.evidence.resolve()
@@ -694,6 +695,7 @@ def main():
             if args.with_functional_validation:
                 if args.proof_kind != CONFIGURED_SOURCE_INTEGRATION:
                     raise ValueError("--with-functional-validation requires configured-source-integration")
+                active_kind = FUNCTIONAL_VALIDATION
                 run(
                     args.root.resolve(),
                     evidence / FUNCTIONAL_VALIDATION,
@@ -701,6 +703,7 @@ def main():
                     FUNCTIONAL_VALIDATION,
                 )
                 evidence = evidence / CONFIGURED_SOURCE_INTEGRATION
+            active_kind = args.proof_kind
             run(
                 args.root.resolve(),
                 evidence,
@@ -716,7 +719,7 @@ def main():
                 args.proof_kind,
             )
     except Exception as error:
-        parser.exit(1, f"FAIL current authority {args.proof_kind}: {error}\n")
+        parser.exit(1, f"FAIL current authority {active_kind}: {error}\n")
 
 
 if __name__ == "__main__":

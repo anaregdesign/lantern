@@ -1,10 +1,13 @@
 package security
 
 import (
+	"crypto/sha256"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
 func TestAuthorityPurposeExclusiveConsume(t *testing.T) {
@@ -80,6 +83,86 @@ func TestAuthorityPurposeExclusiveConsume(t *testing.T) {
 	m.Close()
 	if len(m.pending) != 0 || len(m.tickets) != 0 {
 		t.Fatal("purpose close retained event")
+	}
+}
+
+func TestAuthorityPurposeDiagnosticDoesNotConsumeOrResample(t *testing.T) {
+	t.Run("pending short circuit", func(t *testing.T) {
+		for _, tc := range []struct {
+			closed, known, present bool
+			pending                managementAuthorization
+			reason                 string
+		}{
+			{closed: true, reason: "pool_closed"},
+			{reason: "ticket_unknown"},
+			{known: true, reason: "pending_missing"},
+			{known: true, present: true, pending: managementAuthorization{current: &authorityPendingPurpose{}}, reason: "state"},
+			{known: true, present: true, pending: managementAuthorization{state: AuthorizationPending, current: &authorityPendingPurpose{started: true}}, reason: "started"},
+		} {
+			if got := authorityPurposePendingFailure(tc.closed, tc.known, tc.present, tc.pending, nil); got != tc.reason {
+				t.Fatal("pending refusal dereferenced or changed the later binding predicate", got, tc.reason)
+			}
+		}
+	})
+	n, _ := authorityTestNativeCluster(t, 3)
+	r, _ := authorityTestReceiver(t, n)
+	h, op := authorityTestHeader(t, n.fixture)
+	binding := authorityPurposeBinding{h.ID, op.digest, op.reviewed, op.actor, 1, 1}
+	for _, reason := range []string{"before_not_before", "expired", "started", "cut", "lineage", "issuer_binding"} {
+		t.Run(reason, func(t *testing.T) {
+			m := NewManagementAuthorizations(time.Minute, 1)
+			begin, err := m.beginCurrent(r, binding, h.Credential.Token.ExpiresAt.Time())
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending := m.pending[begin.ID]
+			if reason != "before_not_before" {
+				pending.notBefore = pending.createdAt.Add(-time.Second)
+			}
+			switch reason {
+			case "expired":
+				pending.expiresAt = pending.createdAt.Add(-time.Second)
+			case "started":
+				pending.current.started = true
+			case "cut":
+				pending.current.binding.Reviewed.Sequence++
+			case "lineage":
+				pending.current.binding.Lineage++
+			case "issuer_binding":
+				pending.current.binding.IssuerConfigRevision++
+			}
+			m.pending[begin.ID] = pending
+			calls := 0
+			sample := r.clock.producer.sample
+			r.clock.producer.sample = func() (authorityTimeStamp, error) { calls++; return sample() }
+			defer func() { r.clock.producer.sample = sample }()
+			capture := decisiontrace.Start(16)
+			if capture == nil {
+				t.Fatal("capture already owned")
+			}
+			defer capture.Stop()
+			if _, _, err := m.startCurrent(r, begin.Ticket); err != ErrOperationAuthorization {
+				t.Fatal("diagnostic changed purpose refusal", err)
+			}
+			capture.Stop()
+			events, dropped := capture.Drain()
+			var observed []string
+			for _, event := range events {
+				if event.Kind == "browser_decision" {
+					observed = append(observed, event.Reason)
+				}
+			}
+			wantCalls := 0
+			if reason == "before_not_before" || reason == "expired" {
+				wantCalls = 1
+			}
+			if dropped != 0 || len(observed) != 1 || observed[0] != reason || calls != wantCalls {
+				t.Fatal("diagnostic lost first refusal or added native samples", observed, dropped, calls)
+			}
+			if _, exists := m.tickets[sha256.Sum256(begin.Ticket[:])]; !exists {
+				t.Fatal("diagnostic consumed refused ticket")
+			}
+		})
 	}
 }
 

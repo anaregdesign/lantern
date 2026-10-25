@@ -1,6 +1,7 @@
 """Synthetic gate contracts; these fixtures never qualify native SDK execution."""
 
 import copy
+import io
 import json
 import os
 from pathlib import Path
@@ -232,6 +233,38 @@ class SDK4ReceiptTest(unittest.TestCase):
         )
         self.assertEqual(rejected.returncode, 2)
         self.assertIn("unrecognized arguments", rejected.stderr)
+
+    def test_cli_failure_names_the_active_proof_kind(self):
+        cases = (
+            ("functional-first", ["--with-functional-validation"],
+             [ValueError("fixture failure")], [gate.FUNCTIONAL_VALIDATION]),
+            ("configured-after-functional", ["--with-functional-validation"],
+             [None, ValueError("fixture failure")],
+             [gate.FUNCTIONAL_VALIDATION, gate.CONFIGURED_SOURCE_INTEGRATION]),
+            ("standalone-functional", ["--proof-kind", gate.FUNCTIONAL_VALIDATION],
+             [ValueError("fixture failure")], [gate.FUNCTIONAL_VALIDATION]),
+            ("standalone-configured", [], [ValueError("fixture failure")],
+             [gate.CONFIGURED_SOURCE_INTEGRATION]),
+        )
+        for name, options, outcomes, kinds in cases:
+            args = ["current_sdk4_gate.py", "run", "--root", str(self.root),
+                    "--evidence", str(self.evidence / name), *options]
+            with self.subTest(name=name), patch.object(sys, "argv", args), \
+                    patch.object(gate, "run", side_effect=outcomes) as run, \
+                    patch.object(sys, "stderr", new_callable=io.StringIO) as stderr:
+                with self.assertRaises(SystemExit) as stopped:
+                    gate.main()
+                self.assertEqual(stopped.exception.code, 1)
+                self.assertEqual(stderr.getvalue(), f"FAIL current authority {kinds[-1]}: fixture failure\n")
+                self.assertEqual([call.args[3] for call in run.call_args_list], kinds)
+
+    def test_standalone_functional_cli_stops_after_its_one_complete_run(self):
+        args = ["current_sdk4_gate.py", "run", "--root", str(self.root), "--expected-head", self.source["head"],
+                "--proof-kind", gate.FUNCTIONAL_VALIDATION, "--evidence", str(self.evidence / "functional-only")]
+        with patch.object(sys, "argv", args), patch.object(gate, "run") as run:
+            gate.main()
+        run.assert_called_once_with(self.root.resolve(), (self.evidence / "functional-only").resolve(),
+                                    self.source["head"], gate.FUNCTIONAL_VALIDATION)
 
     def test_missing_skip_fail_duplicate_body_and_constructor_refuse(self):
         for kind in (gate.FUNCTIONAL_VALIDATION, gate.CONFIGURED_SOURCE_INTEGRATION):
