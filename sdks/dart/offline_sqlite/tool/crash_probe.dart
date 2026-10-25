@@ -29,7 +29,7 @@ const _receiptMutations = <String>[
   'DeleteEdgeContributions',
 ];
 
-/// Runs real SIGKILL/reopen boundaries and prints only aggregate case counts.
+/// Runs real SIGKILL/reopen boundaries with bounded content-free observations.
 Future<void> main(List<String> arguments) async {
   if (Platform.isWindows) {
     stderr.writeln('crash_probe_requires_posix_sigkill');
@@ -220,21 +220,48 @@ Future<Process> _start(
   String scenario,
   String boundary,
   String path, {
+  required ProbeLifecycle lifecycle,
   Uri? proxyEndpoint,
-}) => Process.start(
-  Platform.resolvedExecutable,
-  [
-    'run',
-    File.fromUri(Platform.script.resolve('crash_worker.dart')).path,
-    mode,
-    scenario,
-    boundary,
-    path,
-  ],
-  environment: proxyEndpoint == null
-      ? null
-      : {'LANTERN_DART_RECEIPT_PROXY_ENDPOINT': proxyEndpoint.toString()},
+}) async {
+  // Persist the launch observation before awaiting process creation itself.
+  _logLifecycle(lifecycle);
+  try {
+    final process = await Process.start(
+      Platform.resolvedExecutable,
+      [
+        'run',
+        File.fromUri(Platform.script.resolve('crash_worker.dart')).path,
+        mode,
+        scenario,
+        boundary,
+        path,
+      ],
+      environment: proxyEndpoint == null
+          ? null
+          : {'LANTERN_DART_RECEIPT_PROXY_ENDPOINT': proxyEndpoint.toString()},
+    );
+    lifecycle.record(ProbePhase.spawned);
+    return process;
+  } on Object {
+    _logLifecycle(lifecycle);
+    rethrow;
+  }
+}
+
+void _logLifecycle(ProbeLifecycle lifecycle) => stderr.writeln(
+  '\ncrash_probe_child_lifecycle:${jsonEncode(lifecycle.snapshot())}',
 );
+
+Future<void> _observeStderr(Process process, ProbeLifecycle lifecycle) async {
+  final lines = ProbeJsonLines(
+    onMessage: lifecycle.observeWorker,
+    onInvalid: () {}, // Raw child stderr and build-hook output stay discarded.
+  );
+  await for (final chunk in process.stderr) {
+    lines.add(chunk);
+  }
+  lines.finish();
+}
 
 Future<void> _crash(
   String scenario,
@@ -243,61 +270,84 @@ Future<void> _crash(
   Uri? proxyEndpoint,
   Duration timeout = _timeout,
 }) async {
+  final lifecycle = ProbeLifecycle(
+    mode: 'crash',
+    scenario: scenario,
+    boundary: boundary,
+  );
   final process = await _start(
     'crash',
     scenario,
     boundary,
     path,
+    lifecycle: lifecycle,
     proxyEndpoint: proxyEndpoint,
   );
   final ready = Completer<int>();
-  final stderrDrained = process.stderr.drain<void>();
-  final subscription = process.stdout
-      .transform(utf8.decoder)
-      .transform(const LineSplitter())
-      .listen(
-        (line) {
-          try {
-            final message = jsonDecode(line) as Map<String, Object?>;
-            final failure = parseProbeFailure(message);
-            if (failure != null && !ready.isCompleted) {
-              ready.completeError(StateError(failure));
-              return;
-            }
-            if (message['event'] != 'ready' || ready.isCompleted) {
-              throw StateError('marker');
-            }
-            ready.complete(message['pid']! as int);
-          } catch (_) {
-            if (!ready.isCompleted) ready.completeError(StateError('marker'));
-          }
-        },
-        onDone: () {
-          if (!ready.isCompleted) ready.completeError(StateError('early_exit'));
-        },
-      );
+  final stderrDrained = _observeStderr(process, lifecycle);
+  final lines = ProbeJsonLines(
+    onMessage: (message) {
+      try {
+        final failure = parseProbeFailure(message);
+        if (failure != null && !ready.isCompleted) {
+          ready.completeError(StateError(failure));
+          return;
+        }
+        if (message['event'] != 'ready' || ready.isCompleted) {
+          throw StateError('marker');
+        }
+        ready.complete(message['pid']! as int);
+      } catch (_) {
+        if (!ready.isCompleted) ready.completeError(StateError('marker'));
+      }
+    },
+    onInvalid: () {
+      if (!ready.isCompleted) ready.completeError(StateError('marker'));
+    },
+  );
+  final subscription = process.stdout.listen(
+    lines.add,
+    onDone: () {
+      lines.finish();
+      if (!ready.isCompleted) ready.completeError(StateError('early_exit'));
+    },
+  );
   int? workerPid;
   var killed = false;
   var exited = false;
   try {
-    workerPid = await ready.future.timeout(timeout);
-    if (!Process.killPid(workerPid, ProcessSignal.sigkill)) {
+    final readyPid = await waitForProbe<int>(ready.future, timeout, lifecycle);
+    workerPid = readyPid;
+    lifecycle.record(ProbePhase.ready);
+    lifecycle.record(ProbePhase.sigkill);
+    if (!Process.killPid(readyPid, ProcessSignal.sigkill)) {
       throw StateError('sigkill');
     }
     killed = true;
-    final result = await process.exitCode.timeout(timeout);
+    final result = await waitForProbe(process.exitCode, timeout, lifecycle);
     exited = true;
+    lifecycle.record(ProbePhase.exited);
     if (result == 0) throw StateError('normal_exit');
     await stderrDrained;
   } finally {
-    if (!killed && workerPid != null && workerPid != process.pid) {
-      Process.killPid(workerPid, ProcessSignal.sigkill);
+    try {
+      if (!killed && workerPid != null && workerPid != process.pid) {
+        Process.killPid(workerPid, ProcessSignal.sigkill);
+      }
+      await cleanupProbe(
+        exited: exited,
+        kill: () => process.kill(ProcessSignal.sigkill),
+        exitCode: process.exitCode,
+        timeout: timeout,
+        lifecycle: lifecycle,
+      );
+    } finally {
+      try {
+        await subscription.cancel();
+      } finally {
+        _logLifecycle(lifecycle);
+      }
     }
-    if (!exited) {
-      process.kill(ProcessSignal.sigkill);
-      await process.exitCode.timeout(timeout);
-    }
-    await subscription.cancel();
   }
 }
 
@@ -308,30 +358,45 @@ Future<void> _verify(
   Uri? proxyEndpoint,
   Duration timeout = _timeout,
 }) async {
+  final lifecycle = ProbeLifecycle(
+    mode: 'verify',
+    scenario: scenario,
+    boundary: boundary,
+  );
   final process = await _start(
     'verify',
     scenario,
     boundary,
     path,
+    lifecycle: lifecycle,
     proxyEndpoint: proxyEndpoint,
   );
   var exited = false;
-  final output = process.stdout.transform(utf8.decoder).join();
-  final stderrDrained = process.stderr.drain<void>();
+  final output = collectProbeMessage(process.stdout);
+  final stderrDrained = _observeStderr(process, lifecycle);
   try {
-    final result = await process.exitCode.timeout(timeout);
+    final result = await waitForProbe(process.exitCode, timeout, lifecycle);
     exited = true;
+    lifecycle.record(ProbePhase.exited);
     await stderrDrained;
-    final message = jsonDecode(await output) as Map<String, Object?>;
+    final message = await output;
+    if (message == null) throw StateError('verification');
     final failure = parseProbeFailure(message);
     if (failure != null) throw StateError(failure);
     if (result != 0 || message['event'] != 'verified') {
       throw StateError('verification');
     }
   } finally {
-    if (!exited) {
-      process.kill(ProcessSignal.sigkill);
-      await process.exitCode.timeout(timeout);
+    try {
+      await cleanupProbe(
+        exited: exited,
+        kill: () => process.kill(ProcessSignal.sigkill),
+        exitCode: process.exitCode,
+        timeout: timeout,
+        lifecycle: lifecycle,
+      );
+    } finally {
+      _logLifecycle(lifecycle);
     }
   }
 }

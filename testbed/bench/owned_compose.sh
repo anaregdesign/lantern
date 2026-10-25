@@ -100,8 +100,11 @@ initialize_owned_compose_volumes() {
     done
   done
   [[ "$index" == "$expected_count" ]] || return 1
+  # Image copy-up preserves private /state ownership and mode 0700. Permit
+  # read/search for the complete emptiness check before any ownership change;
+  # DAC_READ_SEARCH does not bypass write permissions like DAC_OVERRIDE.
   docker run --rm --pull=never --network=none --read-only --user 0:0 \
-    --cap-drop=ALL --cap-add=CHOWN --pids-limit=64 --memory=64m \
+    --cap-drop=ALL --cap-add=CHOWN --cap-add=DAC_READ_SEARCH --pids-limit=64 --memory=64m \
     --label=lantern.owner=compose-volume-initializer --entrypoint /bin/sh \
     "${mounts[@]}" "$image" -c '
       set -eu

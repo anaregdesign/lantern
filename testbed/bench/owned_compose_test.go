@@ -223,9 +223,13 @@ docker() {
   if [[ "$failure" == foreign-volume && "${@: -1}" == state-2 ]]; then echo foreign; else echo "$COMPOSE_PROJECT_NAME"; fi
   return
  fi
- [[ "$1" == run && "$*" == *"--network=none"* && "$*" == *"--read-only"* && "$*" == *"--cap-drop=ALL"* && "$*" == *"--cap-add=CHOWN"* ]] || return 88
- local argument source target mount_count=0 last_target=
+ [[ "$1" == run && "$*" == *"--network=none"* && "$*" == *"--read-only"* && "$*" == *"--user 0:0"* ]] || return 88
+ local argument source target capabilities= mount_count=0 last_target=
  for argument in "$@"; do
+  case "$argument" in
+   --cap-drop=*|--cap-add=*) capabilities+="$argument ";;
+   --cap-drop|--cap-add|--privileged|--privileged=*) return 87;;
+  esac
   if [[ "$argument" == type=volume,source=*,target=/owned/* ]]; then
    source="${argument#type=volume,source=}"; source="${source%%,*}"
    target="${argument##*target=/owned/}"; target="${target%%,*}"
@@ -234,6 +238,7 @@ docker() {
    mount_count=$((mount_count+1))
   fi
  done
+ [[ "$capabilities" == '--cap-drop=ALL --cap-add=CHOWN --cap-add=DAC_READ_SEARCH ' ]] || return 87
  [[ "$mount_count" == "$TEST_COUNT" && -n "$last_target" ]] || return 85
  if [[ "$failure" == nonempty-volume ]]; then
   printf keep > "$TEST_VOLUMES/$last_target/original"

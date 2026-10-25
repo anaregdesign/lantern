@@ -66,10 +66,16 @@ echo 'All tests passed!'
     () async {
       await _writeAttachedFakes(sandbox, fakeFlutter, fakeXcrun);
 
-      final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
+      final result = await _runAttachedAttempt(
+        sandbox,
+        fakeFlutter,
+        fakeXcrun,
+        extraEnvironment: _completedAttachedFixtureEnvironment,
+      );
+      final context = await _attachedPhaseContext(sandbox, result);
 
-      expect(result.exitCode, 0, reason: '${result.stderr}');
-      expect(await _classification(sandbox), 'success');
+      expect(result.exitCode, 0, reason: context);
+      expect(await _classification(sandbox), 'success', reason: context);
       expect(result.stdout.toString(), contains('All tests passed.'));
       expect(result.stdout.toString(), isNot(contains('private-vm-code')));
       final logs = await _diagnosticText(sandbox);
@@ -247,15 +253,22 @@ echo 'build completed during diagnostics'
   test('attached iOS smoke preserves an assertion failure', () async {
     await _writeAttachedFakes(sandbox, fakeFlutter, fakeXcrun, driverExit: 1);
 
-    final result = await _runAttachedAttempt(sandbox, fakeFlutter, fakeXcrun);
+    final result = await _runAttachedAttempt(
+      sandbox,
+      fakeFlutter,
+      fakeXcrun,
+      extraEnvironment: _completedAttachedFixtureEnvironment,
+    );
+    final context = await _attachedPhaseContext(sandbox, result);
 
-    expect(result.exitCode, isNonZero);
-    expect(await _classification(sandbox), 'test_failure');
+    expect(result.exitCode, isNonZero, reason: context);
+    expect(await _classification(sandbox), 'test_failure', reason: context);
     expect(
       await File(
         '${sandbox.path}/diagnostics/initial/driver.log',
       ).readAsString(),
       contains('Expected: true Actual: false'),
+      reason: context,
     );
   });
 
@@ -975,6 +988,31 @@ const _metadataPhases = [
   'install_operation',
   'native_launch_operation',
 ];
+
+// These completed-path fixtures prove semantics, not subprocess startup speed.
+// Each phase remains inside the common fixture route's finite 12-second total;
+// deliberate stalls continue to use the unchanged short helper defaults.
+const _completedAttachedFixtureEnvironment = {
+  'IOS_SMOKE_TOTAL_TIMEOUT_SECONDS': '12',
+  'IOS_SMOKE_BUILD_TIMEOUT_SECONDS': '12',
+  'IOS_SMOKE_BOOT_TIMEOUT_SECONDS': '12',
+  'IOS_SMOKE_LAUNCH_TIMEOUT_SECONDS': '12',
+  'IOS_SMOKE_ATTACH_TIMEOUT_SECONDS': '12',
+};
+
+Future<String> _attachedPhaseContext(
+  Directory sandbox,
+  ProcessResult result,
+) async {
+  final presence = <String>[];
+  for (final phase in _metadataPhases) {
+    final exists = await File(
+      '${sandbox.path}/diagnostics/initial/phases/$phase',
+    ).exists();
+    presence.add('$phase=$exists');
+  }
+  return 'exit_code=${result.exitCode} ${presence.join(' ')}';
+}
 
 Future<void> _expectPhases(Directory sandbox, List<String> phases) async {
   for (final phase in phases) {

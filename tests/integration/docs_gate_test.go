@@ -264,9 +264,12 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 		"admin/README.md": {
 			required: []string{
 				"OFF mode", "LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080", "For **OIDC**",
-				"select that exact public origin", "LANTERN_OIDC_BROWSER_ORIGIN", "/auth/callback/<SHA-256>",
+				"select that exact public origin", "public_origin", "LANTERN_AUTH_MODE=oidc",
+				"LANTERN_SECURITY_CONFIG_JSON", "lantern provision-security",
+				".authority.genesis.Image.issuers[]", "redirect_uri", "init-security",
+				"provisioned_file", "resumes intact state", "signed membership renewal",
 				"/auth/*", "/browser/*", "/graph.v1.*/*", "LANTERN_ADMIN_SERVER_UPSTREAM",
-				"gateway picker never selects that upstream", "verified HTTPS upstream", "exact trusted proxy",
+				"gateway picker never selects that upstream", "verified HTTPS upstream", "setup intent's exact `trusted_proxy_ips`",
 				"public Host/scheme", "configured eligible authority origin", "#1608/#1609 S5 work",
 				"/auth/operations", "each GET", "Prometheus never receives cookies or Authorization",
 				"#fixed-server-and-diagnostics-proxy", "docs/oidc-operations.md#browser-and-diagnostics-boundary",
@@ -274,7 +277,8 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 				"credential/session expiry and current policy admission", "purpose-bound per-operation reauthentication",
 				"Machine management mutations are prohibited", "original change ID for status-only recovery",
 			},
-			retired: []string{"does **not** reverse-proxy the Lantern gateway", "require a reviewed revision and recent authentication", "current fixed-writer baseline"},
+			retired: []string{"does **not** reverse-proxy the Lantern gateway", "require a reviewed revision and recent authentication", "current fixed-writer baseline",
+				"LANTERN_OIDC_REDIRECT_URI", "LANTERN_OIDC_BROWSER_ORIGIN", "LANTERN_OIDC_TRUSTED_PROXY_IPS"},
 		},
 		"docs/oidc-operations.md": {
 			required: []string{"OFF can serve the static Admin separately", "same configured HTTPS public origin",
