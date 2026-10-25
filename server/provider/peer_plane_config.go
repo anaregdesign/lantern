@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -52,6 +53,7 @@ func loadPeerPlaneConfig(auth SecurityConfig, legacy PeerConfig) (PeerPlaneConfi
 			return PeerPlaneConfig{}, errors.New("provisioned peer trust requires OIDC authority")
 		}
 		cfg := *auth.ProvisionedPeer
+		cfg.Identity.FixedMembers = slices.Clone(cfg.Identity.FixedMembers)
 		cfg.Identity.AuthMode, cfg.Identity.StateMode = "oidc", "resume"
 		if cfg.ListenAddress == "" || cfg.Identity.Now != nil || cfg.Identity.TimeBounds != nil || cfg.Identity.Time != nil {
 			return PeerPlaneConfig{}, errors.New("invalid provisioned peer trust")

@@ -15,17 +15,22 @@ type PeerIdentityConfig struct {
 	SecurityGeneration [16]byte
 	WriterPublicKey    [32]byte
 	CurrentProfile     string
-	CAFile             string
-	OperatorKeyFile    string
-	ManifestFile       string
-	StateFile          string
-	StateMode          string
-	CertFile           string
-	KeyFile            string
-	SelfIdentity       string
-	Now                func() time.Time
-	TimeBounds         func() (low, high time.Time, err error)
-	Time               func() (peerauth.TimeObservation, error)
+	// Generated provisioning pins the original data trust independently of the
+	// renewable manifest and its replaceable verification inputs.
+	ExpectedDomain      peerauth.Domain
+	ExpectedOperatorKey [32]byte
+	FixedMembers        []peerauth.Member
+	CAFile              string
+	OperatorKeyFile     string
+	ManifestFile        string
+	StateFile           string
+	StateMode           string
+	CertFile            string
+	KeyFile             string
+	SelfIdentity        string
+	Now                 func() time.Time
+	TimeBounds          func() (low, high time.Time, err error)
+	Time                func() (peerauth.TimeObservation, error)
 }
 
 // PeerTimeObservation is the narrow trusted-composition observation port.

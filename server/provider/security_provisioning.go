@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -42,7 +43,9 @@ type provisionedSecurityDocument struct {
 }
 
 type provisionedSecurityPeer struct {
-	Deployment                                                              [16]byte `json:"deployment"`
+	Domain                                                                  peerauth.Domain   `json:"domain"`
+	Members                                                                 []peerauth.Member `json:"members"`
+	VerificationKey                                                         []byte            `json:"verification_key"`
 	Listen, Identity, Certificate, Key, Roots, OperatorKey, Manifest, State string
 }
 
@@ -138,6 +141,11 @@ func provisionSecurityWithWriter(ctx context.Context, options SecurityProvisionO
 		{Kind: "data", KeyFile: filepath.Join(operator, "data-signing-key.pem"), RootsFile: filepath.Join(operator, "roots.pem"), Initial: bundle.Operator.DataManifest},
 	}
 	completedNodes := map[string][]byte{}
+	dataMembers := make([]peerauth.Member, 0, len(bundle.Nodes))
+	for _, node := range bundle.Nodes {
+		dataMembers = append(dataMembers, node.DataSelf)
+	}
+	slices.SortFunc(dataMembers, func(a, b peerauth.Member) int { return strings.Compare(a.Identity, b.Identity) })
 	for i, node := range bundle.Nodes {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -149,9 +157,13 @@ func provisionSecurityWithWriter(ctx context.Context, options SecurityProvisionO
 			}
 		}
 		input := config.setup.Nodes[i]
+		dataKey, err := parseOperatorPublicKeyPEM(node.DataOperatorPublicKey)
+		if err != nil {
+			return errSecurityProvisioning
+		}
 		d := provisionedSecurityDocument{Version: 1, Setup: *config.setup, Node: node.Name, Authority: node.AuthorityJSON, CDC: cdc,
 			SnapshotSpool: provisionedSnapshotSpool(filepath.Join(config.setup.PersistenceRoot, node.Name)),
-			Peer: provisionedSecurityPeer{Deployment: node.DataDomain.Deployment, Listen: input.DataListen, Identity: node.Identity, Certificate: filepath.Join(dir, "workload.pem"),
+			Peer: provisionedSecurityPeer{Domain: node.DataDomain, Members: slices.Clone(dataMembers), VerificationKey: slices.Clone(dataKey), Listen: input.DataListen, Identity: node.Identity, Certificate: filepath.Join(dir, "workload.pem"),
 				Key: filepath.Join(dir, "workload-key.pem"), Roots: filepath.Join(dir, "roots.pem"), OperatorKey: filepath.Join(dir, "data-operator.pem"),
 				Manifest: filepath.Join(dir, "membership", "data.json"), State: filepath.Join(config.setup.PersistenceRoot, node.Name, "data-membership")}}
 		raw, err := json.Marshal(d)
@@ -296,9 +308,11 @@ func loadProvisionedSecurity(path string) (SecurityConfig, error) {
 	if err != nil {
 		return SecurityConfig{}, errSecurityProvisioning
 	}
-	config.ProvisionedPeer = &PeerPlaneConfig{ListenAddress: d.Peer.Listen, Identity: PeerIdentityConfig{AuthMode: "oidc", Deployment: d.Peer.Deployment, StateMode: "resume", StateFile: d.Peer.State,
-		CurrentProfile: profile.Binding(), SecurityGeneration: profile.Generation,
-		ManifestFile: d.Peer.Manifest, OperatorKeyFile: d.Peer.OperatorKey, SelfIdentity: d.Peer.Identity, CertFile: d.Peer.Certificate, KeyFile: d.Peer.Key, CAFile: d.Peer.Roots}}
+	identity, err := loadProvisionedPeerIdentity(d.Peer, profile, len(d.Setup.Nodes))
+	if err != nil {
+		return SecurityConfig{}, errSecurityProvisioning
+	}
+	config.ProvisionedPeer = &PeerPlaneConfig{ListenAddress: d.Peer.Listen, Identity: identity}
 	config.setup = nil
 	if err := validateSecurityConfig(config); err != nil {
 		return SecurityConfig{}, errSecurityProvisioning

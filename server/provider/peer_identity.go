@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync"
 	"time"
 
@@ -31,6 +33,12 @@ type PeerIdentityRuntime struct {
 }
 
 func NewPeerIdentityRuntime(config PeerIdentityConfig) (_ *PeerIdentityRuntime, cleanup func(), err error) {
+	explicit := config.ExpectedDomain != (peerauth.Domain{})
+	if explicit && (config.AuthMode != "oidc" || config.ExpectedOperatorKey == [32]byte{} || len(config.FixedMembers) < 1 || len(config.FixedMembers) > 31) ||
+		!explicit && (config.ExpectedOperatorKey != [32]byte{} || len(config.FixedMembers) != 0) {
+		return nil, nil, peerauth.ErrMembership
+	}
+	config.FixedMembers = slices.Clone(config.FixedMembers)
 	if config.SelfIdentity == "" || config.StateMode != "fresh" && config.StateMode != "resume" ||
 		config.CurrentProfile != "" && (config.TimeBounds == nil || config.Now == nil) {
 		return nil, nil, peerauth.ErrMembership
@@ -50,14 +58,23 @@ func NewPeerIdentityRuntime(config PeerIdentityConfig) (_ *PeerIdentityRuntime, 
 	if err != nil {
 		return nil, nil, err
 	}
+	if explicit && !bytes.Equal(key, config.ExpectedOperatorKey[:]) {
+		return nil, nil, peerauth.ErrMembership
+	}
 	raw, err := readSecurityOperatorFile(config.ManifestFile, false, peerauth.MaxManifestBytes)
 	if err != nil {
 		return nil, nil, err
 	}
 	domain := peerauth.Domain{Deployment: config.Deployment, NamespaceFormat: keyspace.Version, AuthMode: config.AuthMode, SecurityGeneration: config.SecurityGeneration, WriterPublicKey: config.WriterPublicKey, TrustDigest: sha256.Sum256(ca), CurrentProfile: config.CurrentProfile}
+	if explicit && domain != config.ExpectedDomain {
+		return nil, nil, peerauth.ErrMembership
+	}
 	manifest, err := peerauth.VerifyManifest(raw, key, domain)
 	if err != nil {
 		return nil, nil, err
+	}
+	if explicit && !slices.Equal(manifest.Members, config.FixedMembers) {
+		return nil, nil, peerauth.ErrMembership
 	}
 	certPEM, err := readSecurityOperatorFile(config.CertFile, false, 64<<10)
 	if err != nil {
@@ -132,6 +149,9 @@ func NewPeerIdentityRuntime(config PeerIdentityConfig) (_ *PeerIdentityRuntime, 
 	options := peerauth.StoreOptions{Path: config.StateFile, Key: key, Domain: domain, Self: self, Now: config.Now, TimeBounds: config.TimeBounds, Time: config.Time, SelfCertificates: selfCertificates}
 	if config.AuthMode == "oidc" {
 		options.FixedMembers = manifest.Members
+		if explicit {
+			options.FixedMembers = config.FixedMembers
+		}
 	}
 	var store *peerauth.Store
 	if config.StateMode == "fresh" {
