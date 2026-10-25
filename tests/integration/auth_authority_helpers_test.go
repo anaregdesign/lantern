@@ -170,6 +170,9 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if configure != nil {
 		configure(&bootstrap)
 	}
+	if bootstrap.Issuer == nil {
+		bootstrap.Issuer = newAuthorityWireSeedIssuer(f.provider.URL, bootstrap.HumanSubjectNamespaceQualified)
+	}
 	raw, encodeErr := json.Marshal(bootstrap)
 	if encodeErr != nil {
 		t.Fatal(encodeErr)
@@ -183,7 +186,10 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if err := createPrivateTestFile(roots, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.provider.Certificate().Raw})); err != nil {
 		t.Fatal(err)
 	}
-	config := loadAuthorityWireSecurityConfig(t, dir, 1, f.provider.URL, roots)
+	configureSecurityInput := func(input map[string]any) {
+		input["issuers"] = []map[string]any{bootstrap.Issuer.currentInput()}
+	}
+	config := loadAuthorityWireSecurityConfig(t, dir, 1, f.provider.URL, roots, configureSecurityInput)
 	configureGraph := func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
 		graph.EnablePrefixIndex(func(key string) string { return key })
 		graph.EnableSearchIndex(func(key string, vertex *pb.Vertex) search.Document {
@@ -215,6 +221,8 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 		reportAuthorityStartupFailure(t, err)
 		t.Fatal("explicit original authority initialization", err)
 	}
+	// Supply the same declared operator intent again for ordinary startup.
+	config = loadAuthorityWireSecurityConfig(t, dir, 1, f.provider.URL, roots, configureSecurityInput)
 	runtime, closeRuntime, err := provider.NewSecurityRuntime(t.Context(), config, data)
 	if err != nil {
 		reportAuthorityStartupFailure(t, err)
@@ -453,10 +461,11 @@ func securityWireRequest[T any](token string, message *T) *connect.Request[T] {
 }
 
 type oidcFixtureBootstrap struct {
-	AdminSubjects                  []string        `json:"admin_subjects"`
-	HumanSubjectNamespaceQualified bool            `json:"human_subject_namespace_qualified"`
-	Roles                          json.RawMessage `json:"roles,omitempty"`
-	Machines                       json.RawMessage `json:"machines,omitempty"`
+	Issuer                         *authorityWireSeedIssuer `json:"issuer,omitempty"`
+	AdminSubjects                  []string                 `json:"admin_subjects"`
+	HumanSubjectNamespaceQualified bool                     `json:"human_subject_namespace_qualified"`
+	Roles                          json.RawMessage          `json:"roles,omitempty"`
+	Machines                       json.RawMessage          `json:"machines,omitempty"`
 }
 
 func exportAuthorityWireFixture(t *testing.T, dir, issuer string, voters int, bootstrap string) {

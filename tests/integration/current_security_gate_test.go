@@ -926,6 +926,19 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 		// A new explicit login replaces only the session present at its start.
 		// The old cookies must not survive the fresh post-Apply publication.
+		// The resumed voter can advance the exact control slot and invalidate
+		// this target's earlier renewal. Keep the original restart deadline and
+		// wait only for its current readiness before issuing the one login.
+		for !runtimes[0].Ready(ctx) {
+			if time.Now().After(deadline) || ctx.Err() != nil {
+				t.Fatal("replacement login target lacks current authority")
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
 		replacementStart := browserLoginStart(t, cookies)
 		replacementPath := f.browserCallbackPath(t, replacementStart, "admin", false)
 		select {

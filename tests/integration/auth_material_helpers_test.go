@@ -30,6 +30,35 @@ type authorityWireMaterialMetadata struct {
 	} `json:"nodes"`
 }
 
+// One explicit test-operator declaration feeds both the independent original
+// bootstrap and every current startup input. It is never read from native state.
+type authorityWireSeedIssuer struct {
+	ConfigRevision                 uint64   `json:"config_revision"`
+	EnvOwned                       bool     `json:"env_owned"`
+	URL                            string   `json:"url"`
+	Enabled                        bool     `json:"enabled"`
+	ClientID                       string   `json:"client_id"`
+	APIAudience                    string   `json:"api_audience"`
+	RedirectURI                    string   `json:"redirect_uri"`
+	Algorithms                     []string `json:"algorithms"`
+	HumanSubjectNamespaceQualified bool     `json:"human_subject_namespace_qualified"`
+}
+
+func newAuthorityWireSeedIssuer(issuer string, humanQualified bool) *authorityWireSeedIssuer {
+	callback := sha256.Sum256([]byte(issuer))
+	return &authorityWireSeedIssuer{ConfigRevision: 1, EnvOwned: true, URL: issuer, Enabled: true,
+		ClientID: "admin", APIAudience: "api", RedirectURI: fmt.Sprintf("https://admin.example/auth/callback/%x", callback),
+		Algorithms: []string{"EdDSA"}, HumanSubjectNamespaceQualified: humanQualified}
+}
+
+func (issuer *authorityWireSeedIssuer) currentInput() map[string]any {
+	// Historical revision/ownership and derived callback paths are not public
+	// setup fields. The production parser derives and validates them normally.
+	return map[string]any{"issuer": issuer.URL, "enabled": issuer.Enabled, "client_id": issuer.ClientID,
+		"api_audience": issuer.APIAudience, "algorithms": append([]string(nil), issuer.Algorithms...),
+		"human_subject_namespace_qualified": issuer.HumanSubjectNamespaceQualified}
+}
+
 type authorityWireMaterialNode struct {
 	Name          string `json:"name"`
 	ControlOrigin string `json:"control_origin"`
