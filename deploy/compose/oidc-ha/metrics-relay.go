@@ -72,7 +72,7 @@ func readMetricsTLSFile(path string, private bool) ([]byte, error) {
 	if err != nil {
 		return nil, errMetricsRelayConfig
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	opened, err := f.Stat()
 	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) || private && opened.Mode().Perm()&0077 != 0 {
 		return nil, errMetricsRelayConfig
@@ -185,7 +185,7 @@ func (h *metricsRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "metrics unavailable", http.StatusBadGateway)
 		return
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK || response.ContentLength > h.maxBytes || response.Header.Get("Content-Encoding") != "" {
 		http.Error(w, "metrics unavailable", http.StatusBadGateway)
 		return

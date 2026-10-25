@@ -200,8 +200,8 @@ func TestMetricsRelayMutualTLSHandshake(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			serverRaw, clientRaw := net.Pipe()
-			defer serverRaw.Close()
-			defer clientRaw.Close()
+			defer func() { _ = serverRaw.Close() }()
+			defer func() { _ = clientRaw.Close() }()
 			server := tls.Server(serverRaw, serverConfig)
 			config := &tls.Config{RootCAs: serverConfig.ClientCAs, ServerName: "synthetic-metrics", MinVersion: tls.VersionTLS12, MaxVersion: test.max}
 			if test.cert != nil {
