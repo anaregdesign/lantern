@@ -25,7 +25,7 @@ func (w *Workflow) BeginLogin(ctx context.Context, request LoginRequest) (oidc.L
 		replaces = request.Previous.Authentication().SessionDigest
 	}
 	i, cut, err := w.current.LoginIssuer(ctx, request.Issuer)
-	if err != nil {
+	if err != nil || !i.BrowserEnabled() {
 		return oidc.LoginStart{}, ErrUnauthenticated
 	}
 	d, err := w.oidc.Fetcher.Discover(ctx, i)

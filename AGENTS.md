@@ -38,14 +38,19 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
 
 ## Architecture notes
 
-- **Environment OIDC (#1871)**: the primary standalone input is explicit
-  `LANTERN_AUTH_MODE=oidc` plus one secret-bearing `LANTERN_SECURITY_CONFIG_JSON`.
-  `init-security` explicitly creates new native state; ordinary JSON startup
-  requires intact existing state. Never log/render actual JSON credentials or
-  infer initialization from missing state. Advanced file-backed provisioning
-  remains separate; mixing its settings with JSON fails. Preserve native
-  custody/time/quorum and signed-membership renewal, which static env cannot
-  replace. Local/source checks do not establish provider/device/publication proof.
+- **Generated OIDC setup (#1876)**: small `LANTERN_SECURITY_CONFIG_JSON` intent
+  belongs only to explicit `provision-security`; initialization/startup instead
+  select `{"provisioned_file":"/absolute/node/security.json"}`. Generate immutable
+  trust once for explicit target/fixed nodes; init native state once per target;
+  ordinary startup resumes intact state and never repairs/reset missing state.
+  Keep operator signing custody outside serving inputs and renew both control
+  and data membership even for standalone. `renew-security` prepares candidates
+  only; reviewed certificate maintenance requires CLEAN stop, unchanged paths,
+  publisher advance/resume and restart, never state reset or hot reload.
+  Browser/API profiles are independent;
+  absent API profile rejects external API JWTs. Deliberate external file-backed
+  provisioning remains separate. Preserve native custody/time/quorum and secret
+  destination/origin/endpoint checks. Source tests do not qualify real providers.
 
 - **Minimize external dependencies.** Lantern is the database; do not add
   PostgreSQL as a runtime dependency. Prefer native storage/replication/

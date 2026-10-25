@@ -8,9 +8,8 @@ import (
 	"github.com/anaregdesign/lantern/server/provider"
 )
 
-// A separate action keeps first creation out of ordinary startup. No process
-// environment mutation selects fresh mode, and an ordinary start always
-// resumes the environment JSON authority's existing CLEAN state.
+// Initialization runs on the actual target after explicit trust provisioning.
+// Normal startup only resumes the selected node's intact CLEAN custody.
 func initializeSecurity(ctx context.Context) error {
 	config, err := provider.LoadSecurityConfig()
 	if err != nil {

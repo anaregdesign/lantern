@@ -92,6 +92,41 @@ func TestVerifierAccessProfile(t *testing.T) {
 	}
 }
 
+func TestVerifierIndependentBrowserAndAPIProfiles(t *testing.T) {
+	p := newTestProvider(t)
+	v := NewVerifierWithClock(NewKeyCacheWithClock(p.fetcher, p.now), p.now)
+	browser, api := p.trust, p.trust
+	browser.Issuer.APIAudience = ""
+	api.Issuer.ClientID, api.Issuer.RedirectURI, api.Issuer.SecretRef = "", "", ""
+	idClaims := p.accessClaims()
+	idClaims["aud"], idClaims["nonce"] = "admin", "nonce"
+	id := p.sign(t, idClaims, "JWT")
+	access := p.sign(t, p.accessClaims(), "at+jwt")
+	if _, err := v.VerifyID(t.Context(), id, browser, "nonce"); err != nil {
+		t.Fatal("browser login required API audience", err)
+	}
+	if _, err := v.VerifyAccess(t.Context(), access, api); err != nil {
+		t.Fatal("API token required browser profile", err)
+	}
+	for name, verify := range map[string]func() error{
+		"browser without API audience": func() error { _, err := v.VerifyAccess(t.Context(), access, browser); return err },
+		"API without browser client":   func() error { _, err := v.VerifyID(t.Context(), id, api, "nonce"); return err },
+		"browser ID as API token":      func() error { _, err := v.VerifyAccess(t.Context(), id, api); return err },
+		"API token as browser ID":      func() error { _, err := v.VerifyID(t.Context(), access, browser, "nonce"); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			v = NewVerifierWithClock(NewKeyCacheWithClock(p.fetcher, p.now), p.now)
+			discovery, jwks := p.discovery.Load(), p.jwks.Load()
+			if err := verify(); err == nil {
+				t.Fatal("unconfigured or wrong token profile accepted")
+			}
+			if p.discovery.Load() != discovery || p.jwks.Load() != jwks {
+				t.Fatal("unconfigured or wrong token profile fetched trust")
+			}
+		})
+	}
+}
+
 func TestVerifierIDProfileAndNonce(t *testing.T) {
 	p := newTestProvider(t)
 	v := NewVerifier(NewKeyCache(p.fetcher))

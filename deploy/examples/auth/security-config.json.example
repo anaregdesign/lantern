@@ -1,42 +1,30 @@
 {
   "public_origin": "https://fake-admin.example.invalid:6380",
+  "persistence_root": "/state",
+  "target_platform": "linux",
+  "tls_termination": "server",
+  "initial_admin": {
+    "issuer": "https://accounts.google.com",
+    "subject": "FAKE_VERIFIED_ADMIN_SUBJECT"
+  },
+  "nodes": [
+    {
+      "name": "node-1",
+      "control_origin": "https://lantern-0:6381",
+      "data_origin": "https://lantern-0:6382",
+      "control_listen": ":6381",
+      "data_listen": ":6382"
+    }
+  ],
   "issuers": [
     {
-      "id": "fake_google_web",
-      "issuer": "https://accounts.google.com",
+      "issuer": "google",
       "client_id": "FAKE_GOOGLE_WEB_CLIENT_ID",
-      "api_audience": "FAKE_LANTERN_API_AUDIENCE",
-      "algorithms": [
-        "RS256"
-      ],
-      "token_origin": "https://oauth2.googleapis.com",
       "client_secret": "FAKE_CLIENT_SECRET_DO_NOT_USE"
     }
   ],
   "tls": {
     "certificate_pem": "FAKE_PUBLIC_TLS_CERTIFICATE_PEM",
     "private_key_pem": "FAKE_PUBLIC_TLS_PRIVATE_KEY_PEM"
-  },
-  "authority": {
-    "version": 1,
-    "genesis": {},
-    "participant": {},
-    "membership": {
-      "path": "/state/control-membership",
-      "manifest_file": "/run/lantern-membership/control.json",
-      "public_key": "FAKE_BASE64_OPERATOR_PUBLIC_KEY",
-      "profile": {},
-      "self": {}
-    },
-    "identity": {
-      "roots_pem": "FAKE_CONTROL_CA_CERTIFICATE_PEM",
-      "certificate_pem": "FAKE_CONTROL_TLS_CERTIFICATE_PEM",
-      "tls_key_pem": "FAKE_CONTROL_TLS_PRIVATE_KEY_PEM",
-      "voting_key": "FAKE_BASE64_VOTING_PRIVATE_KEY"
-    },
-    "origin_key": "FAKE_BASE64_ORIGIN_PRIVATE_KEY",
-    "floors_file": "/state/security-floors.json",
-    "listen_address": ":6381",
-    "limits": {}
   }
 }

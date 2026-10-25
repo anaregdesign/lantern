@@ -47,7 +47,15 @@ type s2cAdmissionProfile struct {
 
 func (p s2cAdmissionProfile) valid() bool {
 	if p.Version == authorityAdmissionVersion {
-		return p == authorityAdmissionProfile()
+		// Pure provisioning may target either supported platform. Runtime entry
+		// points separately require the exact build's time/admission profile.
+		for _, target := range []string{"linux", "darwin"} {
+			description, _ := authorityTimeDescriptionForTarget(target)
+			if p == authorityAdmissionProfileForTime(description) {
+				return true
+			}
+		}
+		return false
 	}
 	return p.Version == s2cVersion && (p.BrowserCode || p.HumanBearer) && p.CredentialContract != [32]byte{} && p.ConsumeContract != [32]byte{} && p.PurposeContract != [32]byte{}
 }

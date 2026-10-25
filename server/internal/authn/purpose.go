@@ -56,7 +56,7 @@ func (w *Workflow) StartAuthorization(ctx context.Context, ticket [32]byte, affi
 		}
 	}
 	navigation, err := w.current.StartPurpose(ctx, ticket)
-	if err != nil || affinity != w.AttemptAffinity(navigation.ID) {
+	if err != nil || affinity != w.AttemptAffinity(navigation.ID) || !navigation.Issuer.BrowserEnabled() {
 		return oidc.LoginStart{}, ErrUnauthenticated
 	}
 	d, err := w.oidc.Fetcher.Discover(ctx, navigation.Issuer)

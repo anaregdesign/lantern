@@ -158,66 +158,21 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if native != nil {
 			native.configure(t, &securityConfig)
 		}
-		// One functional-validation member takes the operator environment path.
-		// The configured-source family retains its original three acquisitions,
-		// and the independent membership/installed/native fixtures stay unchanged.
-		inlineEnvironment := id == 2 && !configuredSourceIntegration && !renewal && serving == nil && native == nil
-		if inlineEnvironment {
-			var additionalIssuers []map[string]any
-			if mode == "resume" {
-				// Provisioning a local future secret neither rewrites original
-				// genesis nor registers that Issuer in the current security state.
-				additionalIssuers = append(additionalIssuers, map[string]any{
-					"id": "future_web", "issuer": futureIssuer, "client_id": "future-client", "api_audience": "future-api",
-					"algorithms": []string{"EdDSA"}, "token_origin": f.provider.URL, "client_secret": "FAKE_FUTURE_CLIENT_SECRET",
-				})
+		// Keep the required fresh -> CLEAN -> resume constructor phase in
+		// functional validation after retiring complete inline-authority input.
+		// The generated reference/CLI lifecycle has its own real-wire suite.
+		// Normal configured-source qualification retains its three acquisitions.
+		if id == 2 && mode == "fresh" && !configuredSourceIntegration && !renewal && serving == nil && native == nil {
+			initialized, closeInitialized, initErr := provider.NewSecurityRuntime(t.Context(), securityConfig, data)
+			t.Logf("current_constructor node=%d mode=fresh passed=%t", id, initErr == nil)
+			if initErr != nil {
+				t.Fatal("explicit functional native initialization", initErr)
 			}
-			securityConfig = inlineAuthorityWireConfig(t, securityConfig, additionalIssuers...)
-			if mode == "fresh" {
-				var original struct {
-					Participant struct{ PPath, BPath string } `json:"participant"`
-					Membership  struct{ Path string }         `json:"membership"`
-					FloorsFile  string                        `json:"floors_file"`
-				}
-				if err := json.Unmarshal(securityConfig.AuthorityJSON, &original); err != nil {
-					t.Fatal(err)
-				}
-				paths := []string{original.Participant.PPath, original.Participant.BPath, original.Membership.Path, original.FloorsFile, original.FloorsFile + ".state"}
-				unexpected, closeUnexpected, err := provider.NewSecurityRuntime(t.Context(), securityConfig, data)
-				if err == nil || unexpected != nil {
-					if closeUnexpected != nil {
-						closeUnexpected()
-					}
-					t.Fatal("ordinary environment startup initialized missing security state")
-				}
-				for _, path := range paths {
-					if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-						t.Fatal("missing-state startup created a security family or custody record", err)
-					}
-				}
-				err = provider.InitializeSecurity(t.Context(), securityConfig)
-				t.Logf("current_constructor node=%d mode=fresh passed=%t", id, err == nil)
-				if err != nil {
-					t.Fatal("explicit environment initialization", err)
-				}
-				before := make(map[string][]byte, len(paths))
-				for _, path := range paths {
-					raw, err := os.ReadFile(path)
-					if err != nil {
-						t.Fatal("initialized security family unavailable", err)
-					}
-					before[path] = raw
-				}
-				if err := provider.InitializeSecurity(t.Context(), securityConfig); err == nil {
-					t.Fatal("explicit initialization overwrote retained security state")
-				}
-				for path, prior := range before {
-					raw, err := os.ReadFile(path)
-					if err != nil || !bytes.Equal(raw, prior) {
-						t.Fatal("refused initialization changed original security state", err)
-					}
-				}
+			t.Cleanup(closeInitialized)
+			if err := initialized.Shutdown(); err != nil {
+				t.Fatal("functional initialization CLEAN checkpoint", err)
 			}
+			securityConfig.StoreMode = "resume"
 		}
 		capture := decisiontrace.Start(64)
 		if capture == nil {
@@ -934,14 +889,14 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		f.server = servers[1]
 		listed, e := controls[1].ListIssuers(ctx, securityWireRequest(token, &pb.ListIssuersRequest{Exact: futureIssuer}))
 		if e != nil || len(listed.Msg.Issuers) != 0 {
-			t.Fatal("local environment secret registered an unapproved Issuer", e)
+			t.Fatal("unregistered Issuer appeared after restart", e)
 		}
 		beforeFutureToken := f.fetches.Load()
 		futureToken := f.token(t, "admin", func(claims map[string]any) {
 			claims["iss"], claims["aud"], claims["client_id"] = futureIssuer, "future-api", "future-client"
 		})
 		if _, e := controls[1].GetCurrentPrincipal(ctx, securityWireRequest(futureToken, &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(e) != connect.CodeUnauthenticated || f.fetches.Load() != beforeFutureToken {
-			t.Fatal("unregistered local Issuer gained authentication or reached metadata discovery", e)
+			t.Fatal("unregistered Issuer gained authentication or reached metadata discovery", e)
 		}
 		beforeRestartCallback := f.fetches.Load()
 		lostAttempt := browserDo(t, f.browserRequest(t, http.MethodGet, oldAttempt, pending.Cookies(), ""))

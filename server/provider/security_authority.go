@@ -77,6 +77,11 @@ func loadSecurityProvisioning(config SecurityConfig) (*security.CurrentProvision
 	if err != nil {
 		return nil, err
 	}
+	if config.InitialImage != nil {
+		if err := p.ValidateInitialImage(*config.InitialImage); err != nil {
+			return nil, err
+		}
+	}
 	return p, nil
 }
 

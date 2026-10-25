@@ -64,10 +64,22 @@ Both ports are configurable via environment variables (see below).
 No authentication settings, or `LANTERN_AUTH_MODE=off`, permit anonymous data
 operations. `LANTERN_AUTH_MODE=oidc` selects the sole quorum authority, with
 independent original provisioning, native time, full-cut public contracts and
-finite output ownership. Use `LANTERN_SECURITY_CONFIG_FILE` and
-`LANTERN_SECURITY_STORE_MODE=fresh|resume`. Retired profile, writer, replica-lease
-and environment-bootstrap settings are rejected, even when empty. See the
-[OIDC composition](../docs/security-current-authority.md#public-oidc-composition).
+finite output ownership. Run `lantern provision-security --help` for explicit
+trust generation from small setup intent. It derives independent keys, profiles
+and original policy for an explicit target and fixed one-to-31-node topology.
+Then select only `{"provisioned_file":"/absolute/node/security.json"}` through
+`LANTERN_SECURITY_CONFIG_JSON`, run `init-security` once on each new actual target,
+and start normally to resume intact state. Missing/partial state never triggers
+initialization or trust regeneration. Keep operator signing keys outside the
+serving runtime and renew both signed membership streams, including standalone.
+Use `lantern renew-security --help` to prepare same-identity workload certificate
+and next-window candidates; reviewed maintenance preserves original trust/state
+and requires CLEAN stop, certificate install, publisher advance/resume and restart.
+Browser/API profiles are independent; absent API configuration rejects external
+API JWTs. Deliberate external file-backed provisioning remains separate; do not
+mix its inputs with the generated reference. See the
+[setup guide](../deploy/examples/auth/README.md#environment-json-startup) and
+[authority contract](../docs/security-current-authority.md#public-oidc-composition).
 
 ## Private authentication evidence
 

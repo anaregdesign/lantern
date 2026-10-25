@@ -114,42 +114,95 @@ Use the canonical Issuer `https://accounts.google.com` and algorithm `RS256`,
 as advertised by [Google Discovery](https://accounts.google.com/.well-known/openid-configuration).
 The exact `sub` from a signature-, nonce-, audience- and Issuer-verified ID
 token identifies the administrator. Email and Workspace domain are not Role
-grants, account-linking rules or substitutes for `sub`.
+grants, account-linking rules or substitutes for `sub`. Subject discovery needs
+an operator-owned verified Code exchange; unverified JWT decoding cannot supply
+first-administrator authority.
 
-Copy only the `web.client_secret` value into a separate absolute regular private
-file with no newline. The native opened-file privacy contract is documented in
-[ADR 0012](decisions/0012-oidc-prefix-rbac.md). On Unix use an operator-owned
-directory with mode `0700` and a new secret file with mode `0600`; on Windows
-use the documented owner/protected-DACL contract. The downloaded JSON is not
-the raw secret file consumed by the Server.
+Complete the [small setup intent](../deploy/examples/auth/README.md#environment-json-startup)
+privately using the [setup template](../deploy/examples/auth/security-config.json.example).
+Its Google-specific fields can be:
 
-These are the provider-specific pieces of the configuration; they are **not**
-a complete production or HA configuration:
-
-```text
-LANTERN_AUTH_MODE=oidc
-LANTERN_SECURITY_CONFIG_FILE=<absolute private node document>
-LANTERN_SECURITY_STORE_MODE=fresh
-LANTERN_OIDC_BROWSER_ORIGIN=<exact HTTPS Admin origin>
-LANTERN_OIDC_SECRET_BINDINGS={"google_web":{"issuer":"https://accounts.google.com","client_id":"<Web client ID>","token_origin":"https://oauth2.googleapis.com","path":"<absolute private raw secret file>"}}
+```json
+{
+  "initial_admin": {
+    "issuer": "https://accounts.google.com",
+    "subject": "REPLACE_VERIFIED_ADMIN_SUBJECT"
+  },
+  "issuers": [
+    {
+      "issuer": "google",
+      "client_id": "REPLACE_GOOGLE_WEB_CLIENT_ID",
+      "client_secret": "REPLACE_RAW_GOOGLE_WEB_CLIENT_SECRET"
+    }
+  ]
+}
 ```
 
-The independent original genesis must contain the exact Google Issuer and
-verified administrator subjects, browser client ID, API audience, callback,
-allowed `RS256` algorithm and `secret_ref=google_web`. The node document binds
-the original voter/origin identities, native time, journal/custody paths and
-membership. See the [operations runbook](oidc-operations.md); old environment
-bootstrap and writer/profile settings are rejected. No provider, credential or
-host settings are changed by these instructions. Subject discovery requires an
-operator-owned verified Code exchange; email or unverified JWT decoding cannot
-supply first-admin authority.
+This fragment belongs in the complete setup intent alongside `public_origin`,
+explicit `target_platform`, `persistence_root`, fixed nodes and the selected
+public TLS/proxy boundary. The `google` preset pins the canonical Google issuer,
+RS256 and token origin `https://oauth2.googleapis.com`; it derives the exact
+callback and secret destination binding. Supply only the raw
+`web.client_secret` value as `client_secret`, through the approved private secret
+injection boundary, not the downloaded Google client JSON. Keep private copies
+and generated output outside the repository; never place secret values in shell
+arguments, logs, client builds or shared rendered configuration.
 
-The required Lantern API audience is a distinct Server configuration. Google
-access tokens issued for Google APIs and Google ID tokens are not Lantern's
-RFC 9068 API Bearer profile. Browser login creates the Server's own HttpOnly
-session; native SDK/automation callers use their independently supported
-credentials and Role assignments. Do not broaden the Bearer verifier to accept
-Google API tokens simply because browser login uses Google.
+The initial administrator's enabled Issuer must include a usable browser
+profile so it can log in and complete operation-purpose reauthentication.
+Browser-only Google login does **not** require `api_audience`. An optional
+external API JWT profile needs its own explicitly qualified audience and
+issuance rules; without that profile external API JWTs are rejected. Google
+access tokens for Google APIs and Google ID tokens are not Lantern's RFC 9068
+API Bearer profile. Browser login creates Lantern's own HttpOnly session;
+native SDK/automation credentials and Role assignments remain separate.
+Additional API-only and native-only Issuers do not require browser setup, but
+they do not replace the initial administrator's browser profile.
+
+Inject the complete intent as `LANTERN_SECURITY_CONFIG_JSON` with
+`LANTERN_AUTH_MODE=oidc`, then use the
+[provision-security command](../server/cmd/security_provisioning.go):
+
+```sh
+lantern provision-security --output /absolute/private/provisioned \
+  --operator-directory /absolute/private/operator
+```
+
+The command generates and validates original genesis, independent keys,
+profiles, memberships and paths once; operators do not author those internal
+structures. It opens no native state, trusted-time owner or listener. The
+selected target platform is explicit even when generating Linux inputs on a
+Mac. Generated identity, voter/member set, profile, key and CA pins remain
+fixed; never regenerate trust or reset retained data to resolve a mismatch.
+
+For initialization on the actual target and every normal start, replace setup
+intent with only that node's private document reference:
+
+```sh
+export LANTERN_AUTH_MODE=oidc
+export LANTERN_SECURITY_CONFIG_JSON='{"provisioned_file":"/absolute/private/provisioned/nodes/node-1/security.json"}'
+lantern init-security
+lantern
+```
+
+Run `init-security` once for a new node. Normal startup resumes intact CLEAN
+custody/native state and never recreates administrators or overwrites later
+managed policy. Missing, partial, altered or incompatible provisioning/state
+fails closed without fresh fallback. These commands retain the existing exact
+public-origin/proxy, private file, native-time and quorum checks.
+
+Keep the generated operator and CA signing keys outside every serving mount.
+Both signed control/data memberships require the separate external publisher,
+even for one fixed node. Use the
+[renewal workflow](live-membership-renewal.md#renew-generated-workload-certificates)
+and [renew-security help](../server/cmd/security_renewal.go) for finite-window
+maintenance: prepare and review same-root/key certificate candidates, drain
+nodes to CLEAN, stop the publisher, install reviewed files at their original
+paths, explicitly advance/resume its retained journal, then restart nodes.
+This does not hot-reload certificates, renew provider credentials or rotate the
+fixed root. Real provider/account configuration and acceptance remain separately
+authorized work; source provisioning tests and these placeholders establish no
+successful Google sign-in.
 
 ## Record actual provider results
 

@@ -185,7 +185,7 @@ func (m *NativeTransactions) BeginRegistration(trust Trust, profile security.Cur
 
 func (m *NativeTransactions) begin(trust Trust, profile security.CurrentProfile, clientID string, discovery Discovery, purpose security.NativeRegistrationPurpose) (NativeStart, error) {
 	if m == nil || !trust.Issuer.Enabled || trust.ConfigRevision == 0 || trust.ConfigRevision != trust.Issuer.ConfigRevision || profile.Binding() == "" || profile.Generation != trust.Generation ||
-		security.ValidateIssuerConfiguration(trust.Issuer) != nil || discovery.Issuer != trust.Issuer.URL || validateNativeDiscovery(discovery) != nil {
+		security.ValidateIssuerConfiguration(trust.Issuer) != nil || discovery.Issuer != trust.Issuer.URL || validateProviderDiscovery(discovery) != nil {
 		return NativeStart{}, ErrLoginTransaction
 	}
 	client, ok := trust.Issuer.NativeClient(clientID)

@@ -43,7 +43,7 @@ func (f *Fetcher) ExchangeApple(ctx context.Context, c NativeCompletion, registr
 		return NativeTokens{}, ErrInvalidToken
 	}
 	t := c.attempt.transaction
-	if t.client.Kind != security.AppleNative && t.client.Kind != security.AppleAndroidWeb || t.trust.Issuer.URL != security.AppleIssuer || validateNativeDiscovery(t.discovery) != nil {
+	if t.client.Kind != security.AppleNative && t.client.Kind != security.AppleAndroidWeb || t.trust.Issuer.URL != security.AppleIssuer || validateProviderDiscovery(t.discovery) != nil {
 		return NativeTokens{}, ErrInvalidToken
 	}
 	if c.exchangeStarted == nil || !c.exchangeStarted.CompareAndSwap(false, true) {

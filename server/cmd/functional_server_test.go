@@ -30,7 +30,7 @@ import (
 // compile-time controlled fixture. Normal binaries cannot select this entry or
 // mint fixture time. go test itself supplies -test.* arguments and runs tests.
 func TestMain(m *testing.M) {
-	if len(os.Args) == 1 || os.Args[1] == listenerlaunch.Argument || os.Args[1] == "init-security" {
+	if len(os.Args) == 1 || os.Args[1] == listenerlaunch.Argument || os.Args[1] == "init-security" || os.Args[1] == "provision-security" || os.Args[1] == "renew-security" || os.Args[1] == "--help" || os.Args[1] == "-h" || os.Args[1] == "help" {
 		if err := runMain(); err != nil {
 			decisiontrace.WriteStartupFailure(os.Stderr, err)
 			slog.Error("functional server exited with error", slog.Any("err", err))

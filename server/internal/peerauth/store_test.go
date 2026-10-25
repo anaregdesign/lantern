@@ -4,10 +4,89 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestStoreFixedTopologyRenewalRejectsLiveExpansionAndRemoval(t *testing.T) {
+	for _, change := range []string{"expand", "replace", "remove"} {
+		t.Run(change, func(t *testing.T) {
+			m, key, options, _ := membershipFixture(t)
+			other := Member{ID: [16]byte{8}, Identity: "spiffe://lantern.test/node-b", SPKI: [32]byte{9}, Origin: "https://localhost:6382"}
+			if change == "remove" {
+				m.Members = append(m.Members, other)
+			}
+			options.FixedMembers = slices.Clone(m.Members)
+			raw := signFixture(t, m, key)
+			store, err := CreateStore(options, raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			if store.FixedMemberCount() != len(m.Members) {
+				t.Fatal("original topology not pinned")
+			}
+			// A correctly signed ordinary renewal still advances the durable floor.
+			m.Version++
+			if err := store.Apply(signFixture(t, m, key)); err != nil {
+				t.Fatal("fixed renewal failed", err)
+			}
+			before, err := os.ReadFile(options.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.Version++
+			switch change {
+			case "expand":
+				m.Members = append(m.Members, other)
+			case "replace":
+				m.Members = []Member{other}
+			case "remove":
+				m.Members = m.Members[:1]
+			}
+			if err := store.Apply(signFixture(t, m, key)); !errors.Is(err, ErrMembership) || store.FaultReason() != "membership_topology" {
+				t.Fatal("changed fixed topology retained peer authority", err)
+			}
+			after, err := os.ReadFile(options.Path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("refused topology changed durable membership", err)
+			}
+			if _, _, err := store.Member(options.FixedMembers[0].Identity); err == nil {
+				t.Fatal("topology fault retained inbound authority")
+			}
+			if _, err := store.Origins(); err == nil {
+				t.Fatal("topology fault retained outbound authority")
+			}
+		})
+	}
+	t.Run("construction and reopen pin original members", func(t *testing.T) {
+		m, key, options, _ := membershipFixture(t)
+		options.FixedMembers = slices.Clone(m.Members)
+		wrong := options
+		wrong.FixedMembers = slices.Clone(m.Members)
+		wrong.FixedMembers[0].Origin = "https://localhost:6382"
+		if _, err := CreateStore(wrong, signFixture(t, m, key)); !errors.Is(err, ErrMembership) {
+			t.Fatal("fresh state accepted foreign fixed topology", err)
+		}
+		store, err := CreateStore(options, signFixture(t, m, key))
+		if err != nil {
+			t.Fatal(err)
+		}
+		options.FixedMembers[0].Origin = "https://localhost:6382"
+		m.Version++
+		if err := store.Apply(signFixture(t, m, key)); err != nil {
+			t.Fatal("caller changed owned immutable topology", err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ResumeStore(options); !errors.Is(err, ErrMembership) {
+			t.Fatal("reopen accepted different fixed topology", err)
+		}
+	})
+}
 
 func TestStorePersistedVersionFloorAndExpiredRecovery(t *testing.T) {
 	m, key, options, now := membershipFixture(t)

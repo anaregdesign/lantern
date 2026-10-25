@@ -46,6 +46,7 @@ export interface IssuerDraft {
   enabled: boolean;
   secretMode: "preserve" | "replace" | "clear";
   secretRef: string;
+  hasSecretBinding: boolean;
   locked: boolean;
   existing: boolean;
   humanSubjectNamespaceQualified: boolean;
@@ -96,6 +97,7 @@ export function issuerDraft(value?: SecurityIssuer): IssuerDraft {
     enabled: value?.enabled ?? false,
     secretMode: "preserve",
     secretRef: "",
+    hasSecretBinding: value?.hasSecretBinding ?? false,
     locked: value?.envOwned ?? false,
     existing: !!value,
     humanSubjectNamespaceQualified:
@@ -225,21 +227,49 @@ export function buildIssuer(draft: IssuerDraft): SecurityIssuer {
     throw new Error(
       "Choose distinct supported signing algorithms: EdDSA, RS256 or ES256.",
     );
+  const issuer = https(draft.issuer, "Issuer");
+  if (
+    issuer === "https://accounts.google.com" &&
+    (algorithms.length !== 1 || algorithms[0] !== "RS256")
+  )
+    throw new Error("Google requires the RS256 signing algorithm.");
+  const secretRef =
+    draft.secretMode === "preserve"
+      ? undefined
+      : draft.secretMode === "clear"
+        ? ""
+        : identifier(draft.secretRef, "Operator secret handle");
+  const browserConfigured = !!(
+    draft.clientId ||
+    draft.redirectUri ||
+    secretRef ||
+    (draft.secretMode === "preserve" && draft.hasSecretBinding)
+  );
+  const apiAudience = draft.apiAudience
+    ? required(draft.apiAudience, "API audience")
+    : "";
+  if (!browserConfigured && !apiAudience && !draft.nativeClients.length)
+    throw new Error(
+      "Configure browser sign-in, an API audience or a native client.",
+    );
+  if (draft.humanSubjectNamespaceQualified && !apiAudience)
+    throw new Error(
+      "Human API subject qualification requires an API audience.",
+    );
   return {
     $typeName: "graph.v1.SecurityIssuer",
-    issuer: https(draft.issuer, "Issuer"),
-    clientId: required(draft.clientId, "Client ID"),
-    apiAudience: required(draft.apiAudience, "API audience"),
-    redirectUri: https(draft.redirectUri, "Redirect URI"),
+    issuer,
+    clientId: browserConfigured
+      ? required(draft.clientId, "Browser client ID")
+      : "",
+    apiAudience,
+    redirectUri: browserConfigured
+      ? https(draft.redirectUri, "Browser redirect URI")
+      : "",
     algorithms,
     enabled: draft.enabled,
     humanSubjectNamespaceQualified: draft.humanSubjectNamespaceQualified,
-    secretRef:
-      draft.secretMode === "preserve"
-        ? undefined
-        : draft.secretMode === "clear"
-          ? ""
-          : required(draft.secretRef, "Operator secret handle"),
+    secretRef,
     configRevision: 0n,
     envOwned: false,
     deleted: false,

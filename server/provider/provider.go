@@ -324,7 +324,7 @@ func NewConfig() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	graphSnapshotSpool, err := loadGraphSnapshotSpoolConfig()
+	graphSnapshotSpool, err := loadGraphSnapshotSpoolForSecurity(securityConfig)
 	if err != nil {
 		return nil, err
 	}

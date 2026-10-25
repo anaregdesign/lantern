@@ -416,6 +416,12 @@ Open **<http://localhost:8080>**. The default starts one OFF Server on loopback
 Prometheus are opt-in local profiles. See the
 [Compose guide](deploy/compose/README.md) for configuration and cleanup.
 
+For OIDC, [provision from small setup intent](deploy/examples/auth/README.md#environment-json-startup),
+initialize each target once, then resume intact state. Internal keys, genesis,
+profiles and paths are generated; membership renewal stays with a separate
+operator whose signing keys are never mounted into Server. Browser-only clients
+need no API audience, and an absent API profile rejects external API JWTs.
+
 ### Kubernetes (HA)
 
 ```sh

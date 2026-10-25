@@ -3,11 +3,27 @@ package security
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestCurrentAuthorityFixedVoterCountDoesNotShrinkWithReadiness(t *testing.T) {
+	for _, count := range []int{1, 3} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			_, origins, _ := authorityTestCompositeMembers(t, count, count, nil)
+			authority := &CurrentAuthority{origin: origins[1]}
+			if got := authority.FixedVoterCount(); got != count {
+				t.Fatal("fixed quorum topology changed before readiness", got)
+			}
+			if got := (&CurrentAuthority{}).FixedVoterCount(); got != 0 {
+				t.Fatal("unowned authority invented a topology", got)
+			}
+		})
+	}
+}
 
 func TestCurrentPublicAdmissionRequiresNativeRenewal(t *testing.T) {
 	_, origins, counters := authorityTestComposite(t)

@@ -541,6 +541,78 @@ test("user membership uses exact identity and environment locks", async ({
     },
   ]);
 });
+for (const profile of ["browser", "API"] as const) {
+  test(`Issuer editor reviews a ${profile}-only profile`, async ({ page }) => {
+    const fixture = await securityUI(page);
+    await page.goto(`${fixture.primary}/security/issuers`);
+    await page
+      .getByRole("textbox", { name: "Issuer URL", exact: true })
+      .fill("https://new-idp.example");
+    await page
+      .getByRole("textbox", { name: "Signing algorithms", exact: true })
+      .fill("EdDSA");
+    if (profile === "browser") {
+      await page
+        .getByRole("textbox", { name: "Browser client ID", exact: true })
+        .fill("browser-client");
+      await page
+        .getByRole("textbox", { name: "Browser redirect URI", exact: true })
+        .fill(`${fixture.primary}/auth/callback`);
+    } else {
+      await page
+        .getByRole("textbox", { name: "API audience", exact: true })
+        .fill("lantern-api");
+    }
+    await page
+      .getByRole("button", { name: "Review Issuer change", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Apply reviewed change", exact: true }),
+    ).toBeEnabled();
+    const prepared = fixture.calls.find(
+      (call) => call.method === "PrepareSecurityChanges",
+    )!;
+    const changes = (prepared.body.currentReview as Record<string, unknown>)
+      .changes as { putIssuer: Record<string, unknown> }[];
+    const issuer = changes[0].putIssuer;
+    expect(issuer.issuer).toBe("https://new-idp.example");
+    if (profile === "browser") {
+      expect(issuer.clientId).toBe("browser-client");
+      expect(issuer.apiAudience ?? "").toBe("");
+    } else {
+      expect(issuer.apiAudience).toBe("lantern-api");
+      expect(issuer.clientId ?? "").toBe("");
+      expect(issuer.redirectUri ?? "").toBe("");
+    }
+  });
+}
+test("Issuer editor rejects a partial browser profile before review", async ({
+  page,
+}) => {
+  const fixture = await securityUI(page);
+  await page.goto(`${fixture.primary}/security/issuers`);
+  await page
+    .getByRole("textbox", { name: "Issuer URL", exact: true })
+    .fill("https://new-idp.example");
+  await page
+    .getByRole("textbox", { name: "API audience", exact: true })
+    .fill("lantern-api");
+  await page
+    .getByRole("textbox", { name: "Browser client ID", exact: true })
+    .fill("partial-browser");
+  await page
+    .getByRole("button", { name: "Review Issuer change", exact: true })
+    .click();
+  await expect(
+    page.getByText(
+      "Browser redirect URI is required and must not have surrounding spaces.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  expect(
+    fixture.calls.filter((call) => call.method === "PrepareSecurityChanges"),
+  ).toHaveLength(0);
+});
 test("env Issuer configuration is locked", async ({ page }) => {
   const fixture = await securityUI(page);
   await page.goto(`${fixture.primary}/security/issuers`);
