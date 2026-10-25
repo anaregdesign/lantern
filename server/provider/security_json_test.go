@@ -83,7 +83,7 @@ func TestSecurityJSONStrictInput(t *testing.T) {
 		"secret newline": strings.Replace(valid, `"private-example"`, `"private-example\n"`, 1),
 		"invalid handle": strings.Replace(valid, `"id":"google_web"`, `"id":"/private/key"`, 1),
 		"bad roots":      strings.Replace(valid, `"nodes":`, `"root_ca_pem":"private-example","nodes":`, 1),
-		"proxy CIDR":     strings.Replace(valid, `"nodes":`, `"trusted_proxy_ips":["127.0.0.0/8"],"nodes":`, 1),
+		"proxy CIDR":     strings.Replace(valid, `"127.0.0.1"`, `"127.0.0.0/8"`, 1),
 		"TLS pair":       strings.Replace(valid, `"nodes":`, `"tls":{"certificate_pem":"private-example"},"nodes":`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {

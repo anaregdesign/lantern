@@ -161,6 +161,8 @@ func TestProvisionSecurityInputBoundaries(t *testing.T) {
 			s.Issuers[0].ID = ""
 			s.Issuers[0].HumanSubjectNamespaceQualified = true
 		},
+		"missing proxy IPs":          func(s *securitySetupJSON) { s.TrustedProxyIPs = nil },
+		"empty proxy IPs":            func(s *securitySetupJSON) { s.TrustedProxyIPs = []string{} },
 		"missing subject":            func(s *securitySetupJSON) { s.InitialAdmin.Subject = "" },
 		"target inferred":            func(s *securitySetupJSON) { s.TargetPlatform = "" },
 		"implicit TLS boundary":      func(s *securitySetupJSON) { s.TLSTermination = "" },

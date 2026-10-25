@@ -9,7 +9,7 @@ import (
 )
 
 func inlineSecurityExample() string {
-	return `{"public_origin":"https://admin.example","persistence_root":"/var/lib/lantern","target_platform":"linux","tls_termination":"proxy","initial_admin":{"issuer":"google","subject":"initial-admin"},"nodes":[{"name":"node-1","control_origin":"https://node-1:6381","data_origin":"https://node-1:6382","control_listen":":6381","data_listen":":6382"}],"issuers":[{"id":"google_web","issuer":"google","client_id":"web-client","client_secret":"private-example"}]}`
+	return `{"public_origin":"https://admin.example","persistence_root":"/var/lib/lantern","target_platform":"linux","tls_termination":"proxy","trusted_proxy_ips":["127.0.0.1"],"initial_admin":{"issuer":"google","subject":"initial-admin"},"nodes":[{"name":"node-1","control_origin":"https://node-1:6381","data_origin":"https://node-1:6382","control_listen":":6381","data_listen":":6382"}],"issuers":[{"id":"google_web","issuer":"google","client_id":"web-client","client_secret":"private-example"}]}`
 }
 
 func runtimeSecurityReference(path string) string {

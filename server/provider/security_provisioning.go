@@ -204,7 +204,7 @@ func validateSecuritySetup(config SecurityConfig) error {
 	s := config.setup
 	if s == nil || s.TargetPlatform != "linux" && s.TargetPlatform != "darwin" || !cleanAbsolutePath(s.PersistenceRoot) || len(s.Nodes) < 1 || len(s.Nodes) > 31 ||
 		s.TLSTermination != "proxy" && s.TLSTermination != "server" || s.TLSTermination == "server" && s.TLS.CertPEM == "" ||
-		s.TLSTermination == "proxy" && (s.TLS.CertPEM != "" || s.TLS.KeyPEM != "" || s.TLS.ClientCAPEM != "") {
+		s.TLSTermination == "proxy" && (len(config.TrustedProxyIPs) == 0 || s.TLS.CertPEM != "" || s.TLS.KeyPEM != "" || s.TLS.ClientCAPEM != "") {
 		return errSecurityProvisioning
 	}
 	seen := map[string]bool{}

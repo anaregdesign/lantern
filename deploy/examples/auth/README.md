@@ -44,7 +44,8 @@ The small setup input contains only operator choices:
   expansion and dynamic membership are not supported.
 - `issuers`: intended browser, external API and/or native client profiles.
 - `tls_termination`: `server` with `tls.certificate_pem`/`private_key_pem`, or
-  `proxy` with the existing exact trusted-proxy/public-origin boundary. Optional
+  `proxy` with at least one exact `trusted_proxy_ips` address and the existing
+  trusted-proxy/public-origin boundary. Optional
   IdP `root_ca_pem`, `private_origins` and `trusted_proxy_ips` retain their strict
   endpoint and address checks.
 
