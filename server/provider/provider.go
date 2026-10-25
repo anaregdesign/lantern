@@ -52,6 +52,9 @@ type TLSConfig struct {
 	CertFile     string
 	KeyFile      string
 	ClientCAFile string
+	CertPEM      string
+	KeyPEM       string
+	ClientCAPEM  string
 }
 
 // RateLimitConfig is the process-wide token bucket policy.
@@ -431,6 +434,11 @@ func NewConfig() (*Config, error) {
 		AntiEntropy: loadAntiEntropyConfig(),
 		CORS:        loadCORSConfig(),
 		Backup:      loadBackupConfig(),
+	}
+	if len(securityConfig.AuthorityJSON) != 0 {
+		cfg.TLS.CertPEM = securityConfig.TLS.CertPEM
+		cfg.TLS.KeyPEM = securityConfig.TLS.KeyPEM
+		cfg.TLS.ClientCAPEM = securityConfig.TLS.ClientCAPEM
 	}
 	// Config validation runs before Wire can construct and install the
 	// process-wide logger. Build the same configured logger here so bootstrap

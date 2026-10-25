@@ -65,18 +65,19 @@ type currentNodeDocument struct {
 	Limits        s3aLimits
 }
 
-// CurrentProvisioning is an opaque, detached validation result. It contains no
-// opened journal, signing key, injected time source or assertion of readiness.
+// CurrentProvisioning owns detached original validation inputs. It contains no
+// opened journal or signer, injected time source or assertion of readiness.
 type CurrentProvisioning struct {
-	config    s3aConfig
-	originKey string
-	floors    string
-	listen    string
-	profile   CurrentProfile
-	source    string
-	binding   [32]byte
-	paths     []string
-	manifest  string
+	config     s3aConfig
+	originKey  string
+	floors     string
+	listen     string
+	profile    CurrentProfile
+	source     string
+	jsonSource []byte
+	binding    [32]byte
+	paths      []string
+	manifest   string
 }
 
 func currentDocument(path string, limit int64, target any) ([]byte, error) {

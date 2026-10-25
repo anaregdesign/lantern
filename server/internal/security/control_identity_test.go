@@ -1,6 +1,7 @@
 package security
 
 import (
+	"bytes"
 	"os"
 	"testing"
 )
@@ -49,5 +50,36 @@ func TestS3AIdentityRejectsBeforeAnyStateCreation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestS3AIdentityInlineMaterialOwnsRuntimeCopies(t *testing.T) {
+	n := s3aTestCluster(t, nil)
+	c := n.configs[1]
+	read := func(path string) []byte {
+		t.Helper()
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	m := &s3aIdentityMaterial{roots: read(c.Identity.Roots), certificate: read(c.Identity.Certificate), tlsKey: read(c.Identity.TLSKey), votingKey: read(c.Identity.VotingKey)}
+	c.Identity = s3aIdentityFiles{material: m}
+	before := bytes.Clone(m.votingKey)
+	i, err := s3aLoadIdentity(c)
+	if err != nil {
+		t.Fatal("inline identity required a secret file", err)
+	}
+	i.clear()
+	if !bytes.Equal(before, m.votingKey) {
+		t.Fatal("runtime erasure destroyed immutable original input")
+	}
+	c.Identity.Roots = "/must-not-read"
+	if _, err := s3aLoadIdentity(c); err == nil {
+		t.Fatal("mixed inline and file source accepted")
 	}
 }

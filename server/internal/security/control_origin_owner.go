@@ -57,9 +57,18 @@ func loadAuthorityOriginKey(c s3aConfig, path string) (ed25519.PrivateKey, error
 	if !known || d.Profile != authorityAdmissionProfile() || d.Member != c.Participant.Member {
 		return nil, errS3AConfig
 	}
-	raw, err := s3aReadProvisioned(path, ed25519.PrivateKeySize)
-	if err != nil {
-		return nil, err
+	var raw []byte
+	if c.Identity.material == nil {
+		var err error
+		raw, err = s3aReadProvisioned(path, ed25519.PrivateKeySize)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if path != "" {
+			return nil, errS3AConfig
+		}
+		raw = bytes.Clone(c.Identity.material.originKey)
 	}
 	key := ed25519.PrivateKey(raw)
 	valid := len(key) == ed25519.PrivateKeySize

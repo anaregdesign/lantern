@@ -3,6 +3,7 @@ package oidc
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,5 +55,46 @@ func TestSecretRegistryDestinationBinding(t *testing.T) {
 	r.bindings["admin"] = SecretBinding{Issuer: issuer.URL, ClientID: issuer.ClientID, TokenOrigin: p.server.URL, Path: link}
 	if _, err := r.load(issuer, p.server.URL+"/token"); err == nil {
 		t.Fatal("symbolic secret path accepted")
+	}
+}
+
+func TestSecretRegistryInlineValue(t *testing.T) {
+	bindings := map[string]SecretBinding{"browser": {
+		Issuer: "https://idp.example", ClientID: "browser-client", TokenOrigin: "https://tokens.example", Value: "in-memory-secret",
+	}}
+	r, err := NewSecretRegistry(bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The registry owns its startup snapshot rather than an application map.
+	bindings["browser"] = SecretBinding{}
+	value, err := r.loadClient("https://idp.example", "browser-client", "browser", "https://tokens.example/oauth/token")
+	if err != nil || value != "in-memory-secret" {
+		t.Fatal("inline value was not available at its exact destination")
+	}
+	for name, args := range map[string][4]string{
+		"Issuer":    {"https://other.example", "browser-client", "browser", "https://tokens.example/oauth/token"},
+		"client":    {"https://idp.example", "other-client", "browser", "https://tokens.example/oauth/token"},
+		"handle":    {"https://idp.example", "browser-client", "unknown", "https://tokens.example/oauth/token"},
+		"origin":    {"https://idp.example", "browser-client", "browser", "https://attacker.example/oauth/token"},
+		"plaintext": {"https://idp.example", "browser-client", "browser", "http://tokens.example/oauth/token"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := r.loadClient(args[0], args[1], args[2], args[3]); err == nil {
+				t.Fatal("inline secret crossed its destination binding")
+			}
+		})
+	}
+	for name, value := range map[string]string{
+		"empty": "", "oversized": strings.Repeat("x", 4097), "NUL": "private\x00value", "newline": "private\nvalue", "carriage return": "private\rvalue", "UTF8": string([]byte{0xff}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewSecretRegistry(map[string]SecretBinding{"browser": {Issuer: "https://idp.example", ClientID: "browser-client", TokenOrigin: "https://tokens.example", Value: value}}); err == nil {
+				t.Fatal("invalid inline secret accepted")
+			}
+		})
+	}
+	if _, err := NewSecretRegistry(map[string]SecretBinding{"browser": {Issuer: "https://idp.example", ClientID: "browser-client", TokenOrigin: "https://tokens.example", Path: filepath.Join(t.TempDir(), "secret"), Value: "ambiguous"}}); err == nil {
+		t.Fatal("inline and file sources were both accepted")
 	}
 }

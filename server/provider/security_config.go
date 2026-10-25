@@ -21,16 +21,22 @@ import (
 // an anonymous fallback for an invalid or unavailable OIDC runtime.
 type SecurityConfig struct {
 	Mode, ConfigFile, StoreMode, BrowserOrigin string
+	AuthorityJSON                              json.RawMessage
+	CDC                                        json.RawMessage
+	InitialIssuers                             []security.Issuer
 	PrivateOrigins                             map[string][]netip.Prefix
 	SecretBindings                             map[string]oidc.SecretBinding
 	RootCAFile                                 string
+	RootCAPEM                                  string
 	TrustedProxyIPs                            []netip.Addr
+	TLS                                        SecurityTLSConfig
 }
 
 func LoadSecurityConfig() (SecurityConfig, error)  { return loadSecurityConfig() }
 func NewSecurityConfig(cfg *Config) SecurityConfig { return cfg.Security }
 
 var securityEnvironmentNames = []string{
+	"LANTERN_SECURITY_CONFIG_JSON",
 	"LANTERN_SECURITY_CONFIG_FILE", "LANTERN_SECURITY_STORE_MODE",
 	"LANTERN_OIDC_BROWSER_ORIGIN", "LANTERN_OIDC_SECRET_BINDINGS", "LANTERN_OIDC_PRIVATE_ORIGINS",
 	"LANTERN_OIDC_ROOT_CA_FILE", "LANTERN_OIDC_TRUSTED_PROXY_IPS",
@@ -64,6 +70,16 @@ func loadSecurityConfig() (SecurityConfig, error) {
 	config := SecurityConfig{Mode: envconfig.String("LANTERN_AUTH_MODE", "off")}
 	if config.Mode == "off" {
 		return config, nil
+	}
+	if _, inline := os.LookupEnv("LANTERN_SECURITY_CONFIG_JSON"); inline {
+		for _, name := range securityEnvironmentNames {
+			if name != "LANTERN_SECURITY_CONFIG_JSON" {
+				if _, exists := os.LookupEnv(name); exists {
+					return SecurityConfig{}, errors.New("inline security configuration cannot be combined with file-based OIDC/security settings")
+				}
+			}
+		}
+		return loadSecurityConfigJSON(envconfig.String("LANTERN_SECURITY_CONFIG_JSON", ""))
 	}
 	config.ConfigFile = envconfig.String("LANTERN_SECURITY_CONFIG_FILE", "")
 	config.StoreMode = envconfig.String("LANTERN_SECURITY_STORE_MODE", "")
@@ -112,11 +128,15 @@ func loadSecurityConfig() (SecurityConfig, error) {
 	return config, nil
 }
 func strictSecurityConfigJSON(raw string, value any) error {
+	return decodeSecurityConfigJSON(raw, value, oidc.ValidateJSON)
+}
+
+func decodeSecurityConfigJSON(raw string, value any, validate func([]byte) error) error {
 	if len(raw) == 0 || len(raw) > security.MaxImageBytes {
 		return errors.New("missing or oversized security JSON setting")
 	}
 	// OIDC's structural scanner also rejects duplicates at every nesting level.
-	if err := oidc.ValidateJSON([]byte(raw)); err != nil {
+	if err := validate([]byte(raw)); err != nil {
 		return errors.New("invalid security JSON setting")
 	}
 	decoder := json.NewDecoder(bytes.NewBufferString(raw))
@@ -137,11 +157,42 @@ func validateSecurityConfig(config SecurityConfig) error {
 		}
 		return nil
 	}
-	if config.Mode != "oidc" || !filepath.IsAbs(config.ConfigFile) || config.StoreMode != "fresh" && config.StoreMode != "resume" || !canonicalSecurityOrigin(config.BrowserOrigin) {
+	inline := len(config.AuthorityJSON) > 0
+	if inline {
+		for _, name := range []string{"LANTERN_TLS_CERT_FILE", "LANTERN_TLS_KEY_FILE", "LANTERN_TLS_CLIENT_CA_FILE"} {
+			if _, present := os.LookupEnv(name); present {
+				return errors.New("security JSON cannot be combined with TLS file settings")
+			}
+		}
+	}
+	validAuthority := inline && config.ConfigFile == "" || !inline && filepath.IsAbs(config.ConfigFile)
+	if config.Mode != "oidc" || !validAuthority || config.StoreMode != "fresh" && config.StoreMode != "resume" || !canonicalSecurityOrigin(config.BrowserOrigin) {
 		return errors.New("OIDC requires independent authority provisioning, fresh/resume mode and exact HTTPS browser origin")
+	}
+	if inline && len(config.InitialIssuers) == 0 {
+		return errors.New("inline security configuration requires registered Issuer trust")
 	}
 	if config.RootCAFile != "" && !filepath.IsAbs(config.RootCAFile) {
 		return errors.New("OIDC root CA must be an absolute operator file")
+	}
+	if config.RootCAFile != "" && config.RootCAPEM != "" {
+		return errors.New("OIDC root CA cannot have multiple sources")
+	}
+	if config.RootCAPEM != "" {
+		if _, err := loadSecurityRootsPEM(config.RootCAPEM); err != nil {
+			return errors.New("invalid OIDC root CA PEM")
+		}
+	}
+	if (config.TLS.CertPEM == "") != (config.TLS.KeyPEM == "") || config.TLS.ClientCAPEM != "" && config.TLS.CertPEM == "" {
+		return errors.New("inline public TLS requires a certificate and matching private key")
+	}
+	if inline {
+		if _, err := loadTLSConfig(TLSConfig{CertPEM: config.TLS.CertPEM, KeyPEM: config.TLS.KeyPEM, ClientCAPEM: config.TLS.ClientCAPEM}); err != nil {
+			return errors.New("invalid inline public TLS configuration")
+		}
+		if _, err := loadJSONChangeConfig(config.CDC); err != nil {
+			return errors.New("invalid inline CDC configuration")
+		}
 	}
 	if _, err := oidc.NewSecretRegistry(config.SecretBindings); err != nil {
 		return errors.New("invalid OIDC secret bindings")

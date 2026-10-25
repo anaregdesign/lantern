@@ -27,7 +27,7 @@ func NewPublicSecurityCertified(runtime *SecurityRuntime, tls TLSConfig, peer *P
 	if runtime == nil || data == nil || primary == nil || !primary.SharesServingRuntime(data) || data.DataNamespaceFormat() != keyspace.Version {
 		return publicSecurityCertified{}, errors.New("public serving requires the certified namespace and security runtime")
 	}
-	if runtime.mode == "oidc" && (runtime.current == nil || runtime.data != data || tls.CertFile == "" && len(runtime.config.TrustedProxyIPs) == 0) {
+	if runtime.mode == "oidc" && (runtime.current == nil || runtime.data != data || tls.CertFile == "" && tls.CertPEM == "" && len(runtime.config.TrustedProxyIPs) == 0) {
 		return publicSecurityCertified{}, errors.New("OIDC requires its owned authority and TLS or an exact trusted HTTPS gateway")
 	}
 	if err := runtime.bindWorkload(peer); err != nil {

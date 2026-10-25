@@ -8,13 +8,72 @@ validation endpoints and certificate paths stay outside Git.
 
 | File | Consumer and boundary |
 | --- | --- |
+| [security-config.json.example](security-config.json.example) | Readable, deliberately invalid placeholder for the single `LANTERN_SECURITY_CONFIG_JSON` value used by the OIDC Compose example. |
 | [server-off.env.example](server-off.env.example) | Explicit unauthenticated public OFF mode, without an IdP or authentication Store. |
-| [server.env.example](server.env.example) | POSIX shell environment for the existing Server TLS and OIDC loaders. References independently provisioned private state; does not create it. |
+| [server.env.example](server.env.example) | Advanced original file-backed Server environment retained for existing provisioned cohorts. Do not mix it with environment JSON. |
 | [google-issuer.change.json.example](google-issuer.change.json.example) | Existing `graph.v1.SecurityChange` ProtoJSON: Google browser and native Issuer trust, initially disabled. |
 | [apple-issuer.change.json.example](apple-issuer.change.json.example) | The same API shape: separate native iOS and web-backed Android profiles, initially disabled. |
 | [flutter-android.json.example](flutter-android.json.example), [flutter-ios.json.example](flutter-ios.json.example) | Flutter `--dart-define-from-file` build settings for the maintained app. No secrets. |
 | [google-ios-url-types.plist.example](google-ios-url-types.plist.example) | An Info.plist dictionary fragment for the registered Google reversed client URL scheme, not a replacement Runner Info.plist. |
 | [oauth-clients.env.example](oauth-clients.env.example) | Operator registration worksheet in shell-assignment format. No Lantern loader reads these names; this is not a new runtime schema or an automatic provisioning tool. |
+
+## Environment JSON startup
+
+The standard environment-JSON interface uses `LANTERN_AUTH_MODE=oidc` plus one
+`LANTERN_SECURITY_CONFIG_JSON` value containing configuration and credential
+material. The [standalone Compose examples](../../compose/README.md#separate-off-and-oidc-examples)
+show OFF and OIDC separately and build a matching Server from the checkout.
+The old file-backed variables below are an advanced independent input path;
+mixing both paths is rejected.
+
+Supply `public_origin` once. Each browser Issuer entry contains the exact
+`issuer`, `client_id`, qualified `api_audience`, explicit algorithms, approved
+`token_origin` and `client_secret`. The Server derives the callback URL from
+the public origin and canonical Issuer, and compiles the exact secret recipient
+binding internally. A management change cannot retarget that secret. Native
+client profiles belong to their Issuer entry; they do not require a separate
+secret-binding environment variable. Optional TLS certificates/private keys,
+IdP root CA and exact trusted proxy/private-origin settings belong to the same
+JSON. Treat the complete value as a secret.
+
+The `authority` object preserves the existing independently provisioned original
+genesis, participant, membership profile, identity and limits. Its inline
+`identity` uses PEM roots/certificate/TLS key and a base64 voting key;
+`membership.public_key` and `origin_key` are base64 original keys. Empty objects
+and `FAKE_*` strings in the template are intentional missing inputs, not valid
+defaults. At initialization, public Issuer/administrator/Role metadata must
+match the original genesis; a list of OAuth clients cannot manufacture authority.
+During normal restart, local credential bindings may also cover a later managed
+Issuer or a not-yet-registered Issuer. They do not register it, grant access or
+replace current trust: ordinary authentication still requires the current
+registered Issuer and exact secret recipient binding. The original
+participant journal paths, membership state and `floors_file` must point into
+the retained workload-owned security volume.
+
+Only `membership.manifest_file` remains a renewable, nonsecret runtime input.
+Keep its signed finite-lifetime manifest current through the existing operator
+procedure, using a read-only directory mount so atomic replacement is visible.
+Never mount the operator signing private key. The independent authority proof
+and native-time rules in the
+[current-authority contract](../../../docs/security-current-authority.md#public-oidc-composition)
+still apply.
+
+Run `init-security` once for a new state, then use normal Server startup for
+every reopen. There is no fresh/resume environment variable on this input path.
+Initialization rejects retained/interrupted state; normal startup requires its
+intact original binding and orderly-shutdown custody. It never overwrites live
+Role or Issuer changes from the initial configuration. Secret changes take
+effect through a normal orderly stop and restart, not a new initialization.
+The Server consumes the JSON directly from its environment without rendering
+secret material into temporary configuration files.
+
+Replace the placeholders privately and inject the completed JSON through your
+cloud's secret integration or approved local credential manager. The readable
+example is not a Server input file, and it does not instruct the Server to read
+one. Keep real JSON out of Git, build contexts, shell arguments, diagnostics and
+shared `docker compose config` output. Never pass these secrets to Admin/Vite,
+Flutter build defines or public metadata. Placeholder rendering, controlled
+real-wire tests and actual provider/device qualification remain separate claims.
 
 ## Keep real inputs private
 

@@ -119,6 +119,23 @@ signup, migrate existing data or qualify real provider/device behavior.
 
 ## Public mode and bootstrap
 
+For standalone environment-based deployment, select `LANTERN_AUTH_MODE=oidc`
+and inject one `LANTERN_SECURITY_CONFIG_JSON` containing the public origin,
+Issuer/client configuration and secrets, original inline authority material,
+and any optional TLS, IdP CA, trusted-proxy or CDC settings. See the
+[private JSON guide](../deploy/examples/auth/README.md#environment-json-startup)
+and [OFF/OIDC Compose examples](../deploy/compose/README.md#separate-off-and-oidc-examples).
+Do not mix this JSON with separate OIDC/security, TLS-file or CDC settings.
+Use `init-security` once to create a new native state, then ordinary startup
+reopens intact CLEAN state without a user-selected fresh/resume mode. Neither
+missing state nor a failed reopen triggers initialization. Supplied private
+keys remain node-owned; JSON does not bypass original genesis or trust validation.
+The signed membership manifest is still a renewable nonsecret runtime input.
+
+The file-based inputs described below remain the separate advanced provisioning
+interface for existing HA and validation profiles. They are not additional
+requirements for the standalone JSON input.
+
 No authentication environment variables means OFF. Configure OIDC explicitly
 with the complete [env contract](env.md). Partial, unknown or mixed auth config
 fails startup; no error falls back to OFF. Retired deployment-wide static bearer

@@ -1,24 +1,6 @@
 package provider
 
-import (
-	"os"
-	"strings"
-	"testing"
-)
-
-func clearSecurityEnvironment(t *testing.T) {
-	t.Helper()
-	for _, setting := range os.Environ() {
-		name, _, _ := strings.Cut(setting, "=")
-		upper := strings.ToUpper(name)
-		if strings.HasPrefix(upper, "LANTERN_AUTH_") || strings.HasPrefix(upper, "LANTERN_OIDC_") || strings.HasPrefix(upper, "LANTERN_SECURITY_") {
-			t.Setenv(name, "")
-			if err := os.Unsetenv(name); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-}
+import "testing"
 
 func authorityConfigEnvironment(t *testing.T) {
 	t.Helper()
