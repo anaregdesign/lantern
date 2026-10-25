@@ -158,6 +158,22 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if native != nil {
 			native.configure(t, &securityConfig)
 		}
+		// Keep the required fresh -> CLEAN -> resume constructor phase in
+		// functional validation after retiring complete inline-authority input.
+		// The generated reference/CLI lifecycle has its own real-wire suite.
+		// Normal configured-source qualification retains its three acquisitions.
+		if id == 2 && mode == "fresh" && !configuredSourceIntegration && !renewal && serving == nil && native == nil {
+			initialized, closeInitialized, initErr := provider.NewSecurityRuntime(t.Context(), securityConfig, data)
+			t.Logf("current_constructor node=%d mode=fresh passed=%t", id, initErr == nil)
+			if initErr != nil {
+				t.Fatal("explicit functional native initialization", initErr)
+			}
+			t.Cleanup(closeInitialized)
+			if err := initialized.Shutdown(); err != nil {
+				t.Fatal("functional initialization CLEAN checkpoint", err)
+			}
+			securityConfig.StoreMode = "resume"
+		}
 		capture := decisiontrace.Start(64)
 		if capture == nil {
 			t.Fatal("startup diagnostic capture already owned")

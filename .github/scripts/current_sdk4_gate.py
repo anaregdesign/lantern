@@ -366,8 +366,9 @@ def required_execution_events(path, required, kind=CONFIGURED_SOURCE_INTEGRATION
         raise ValueError("native constructor or successful package completion missing")
     expected_constructors = [(str(i), "fresh", "true") for i in (1, 2, 3)]
     if kind == FUNCTIONAL_VALIDATION:
-        # Member2 explicitly initializes from environment JSON, then ordinary
-        # startup resumes its CLEAN state. The browser case resumes it again.
+        # Member2 explicitly creates CLEAN native state before serving, then
+        # startup resumes it. The generated reference/CLI lifecycle is separately
+        # covered; the browser case resumes this same owner again.
         # Configured-source integration retains exactly its original cohort.
         expected_constructors.insert(2, ("2", "resume", "true"))
         expected_constructors.append(("2", "resume", "true"))
