@@ -541,9 +541,10 @@ close errors propagate through App. The final floor is a minimum, so an existing
 chosen-but-undrained tail can legitimately advance during the next full replay.
 No new consensus, original discard, or global sys/data transaction is introduced.
 
-Use an explicit `resume` only after successful normal shutdown with the original
-volumes and identity. An example of the required mount separation and stop budget
-is in [the custody Compose runbook](../testbed/current-custody/README.md).
+Normal startup/restart requires the same complete current JSON and resumes the
+original retained state only after successful normal shutdown with matching
+CLEAN custody, original volumes and identity. The required mount separation and
+stop budget are described in [the maintainer custody lifecycle qualification](../testbed/current-custody/README.md).
 Durable sessions are re-evaluated with normal expiry and current policy; process
 callback/purpose/output permits are not restored. Network recovery similarly
 requires new current authority and catch-up; floors never extend an old permit.

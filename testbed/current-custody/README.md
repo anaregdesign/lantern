@@ -1,88 +1,85 @@
 # Orderly current-authority custody
 
-This Compose example documents the #1727/#1609 mount and lifecycle contract. It
-is not a provisioning tool, deployment approval, legacy migration or recovery
-procedure. The [current authority contract](../../docs/security-current-authority.md#orderly-floor-custody-and-process-restart)
-defines the native time, identity, quorum and independent data prerequisites.
-
-Before using the example, provide an approved immutable image and independently
-provisioned current-v2 cohort. Each `operator/node-N` directory contains its
-original canonical `node.json`, the exact genesis bytes, signed membership and
-operator public key, that node's separate workload TLS/voting/origin key material,
-public TLS files, the shared protected-CDC `cursor-keys.json` ring, and the IdP
-trust roots referenced by the configuration. An
-origin-free member has no origin key. Preserve the original member/incarnation,
-scope, identities, file bytes and paths across normal restart. No script here
-issues production secrets or changes DNS, host trust, host time or deployments.
-
-Use fixed absolute paths inside the node document: inputs beneath `/operator`,
-M at `/journal/membership`, P at `/journal/protocol.wal`, B at
-`/journal/materialized.wal`, and `FloorsFile` at `/custody/floors.json`. The private
-listen port and signed workload origins must agree, with actual node names and
-certificates valid for the selected network. Mount each node's own original
-inputs read-only. Pre-create its private journal and custody directories with
-the configured UID/GID and restrictive permissions; do not let Compose silently
-create missing operator directories or key files. Files must be private regular
-files. Symlink/hardlink aliases across custody and other inputs are rejected.
-
-The sample data WAL uses `/journal/business.wal` and independent fixed node IDs,
-receipt epoch and limits. Those sample values must match the independently chosen
-data contract. Sys CLEAN does not certify data persistence, replication or
-enforcement. This example does not configure the separate data workload peer
-plane; use its existing provisioning contract if data HA is required.
-
-For initial startup set `LANTERN_SYS_MODE=fresh` and `LANTERN_DATA_MODE=fresh`, with
-all native family and custody bodies absent. The runtime records RUNNING before
-opening update-capable M/P/B state. A surviving `.state.lease` file alone is
-expected and must not be unlinked. Wait for actual current and data readiness;
-successful process creation or existing floor files are not readiness.
-
-For normal stop, use SIGTERM with enough time for readiness drain, public/private
-handler shutdown, native producer joins, all journal/resource closes, and both
-durable checkpoint writes. The sample allows 90 seconds around a five-second
-drain and thirty-second public HTTP shutdown. This is a budget, not a promise
-that every storage device completes within it. The service manager's overall
-stop deadline must leave room for all these steps. Inspect each process's exit
-status and `server stopped cleanly` log. Each custody pair must show CLEAN with
-the same cycle/binding and SHA-256 of the exact final floor bytes. Do not regard
-`docker stop` returning, or a stopped container, as sufficient evidence.
-
-For an intact restart, retain all original mounts and keys, set
-`LANTERN_SYS_MODE=resume` and `LANTERN_DATA_MODE=restart`, then start the processes.
-Every successful startup consumes CLEAN into a new RUNNING cycle. A new native
-anchor, valid membership/TLS, quorum/current authority and the independent data
-readiness are required before protected operations resume. A lone restarted
-member stays unavailable even with intact CLEAN/floors. Existing durable sessions
-retain their normal expiry/current-policy checks; old callback, purpose and output
-permits are process-local and do not survive.
-
-On refusal, preserve the original files and logs. RUNNING, a missing/mixed pair,
-a mismatched hash/binding, invalid canonical document/permissions, a missing
-journal/tip, or a family behind an independently retained floor requires diagnosis.
-Do not switch to fresh, delete sidecars, rewrite provisioning, or manufacture
-new floors from the suspect local journals. Initialization/worker failure,
-deadline expiry, panic and pre-checkpoint kill do not create CLEAN. A final CLEAN
-publication can report an uncertain rename/directory-sync result even though
-complete CLEAN bytes are visible later; the next startup may use only a fully
-matching pair and still performs all ordinary native validation. The failed
-process itself never resumes service.
-
-Normal OS restart availability additionally depends on the native kernel/storage
-contract and intact persistent state. The focused container gate is evidence of
-whole-process lifecycle, not physical reboot or power-loss flushing. Backup/VM
-rollback/clone return to the same cluster, same-cluster recovery without a normal
-checkpoint, actual legacy cutover and production deployment remain outside this
-example. A separate volume is not an external monotonic witness against rolling
-back the whole bundle.
-
-The bounded native fixture is
+The maintained custody campaign is
 [`current_custody_container.py`](../../.github/scripts/current_custody_container.py).
-It takes already built immutable server/security-test/integration-test binaries,
-their exact source HEAD/tree, a cached immutable runtime image, and the existing
-selected native source configuration. It creates only new labeled task networks
-and private volumes, uses real public/private TLS, restarts three product
-processes twice, checks communication loss/recovery and isolated resume, and
-proves a pre-CLEAN kill is refused. Paired tests cover persistence and cleanup
-faults, malformed/aliased custody and independent native-floor failures. Original
-logs and private fixture volumes are retained; no production secrets, image pulls
-or host configuration changes are part of that campaign.
+It owns the bounded #1727/#1609 lifecycle proof. For deployment inputs, use the
+[single current configuration](../../deploy/examples/auth/README.md#environment-json-startup)
+and [authenticated HA example](../../deploy/compose/oidc-ha/README.md). This
+directory defines no alternate startup configuration or provisioning path.
+
+Provision identity/trust once, run explicit `init-security` on each actual
+target once, then supply the same complete current JSON on every ordinary start
+and restart. Preserve node identity, fixed topology, historical trust, all native
+history/custody, application WALs, stable data node IDs/epoch and operator
+journal. Initial administrator input never resets later policy. Missing or
+partial state, an identity-binding mismatch or inconsistent custody fails closed;
+an existing deployment is never repaired by fresh initialization or trust
+regeneration.
+
+## Bounded campaign
+
+Provide already built, same-source Linux Server, security-test exporter and
+integration-test driver binaries matching the cached runtime image architecture.
+Record their hashes, exact source HEAD/tree and build provenance. Select a new
+private evidence directory and a unique `lantern-1727-` resource name. The script
+requires a cached immutable `sha256:` image ID, and creates only new labeled task
+networks and private volumes. Its arguments are:
+
+```sh
+python3 -B .github/scripts/current_custody_container.py \
+  --server /absolute/private/binaries/server \
+  --exporter /absolute/private/binaries/security.test \
+  --driver /absolute/private/binaries/integration.test \
+  --config /absolute/private/native/ntp.conf \
+  --image "$IMMUTABLE_CACHED_IMAGE_ID" \
+  --name "$NEW_LANTERN_1727_NAME" \
+  --head "$EXACT_SOURCE_HEAD" --tree "$EXACT_SOURCE_TREE" \
+  --evidence /absolute/private/new-custody-evidence
+```
+
+The controller generates isolated synthetic trust from the original exporter,
+supplies each node's required `startup.json` through
+[`security_startup.py`](../../.github/scripts/security_startup.py) for explicit
+initialization and serving, and keeps operator keys outside Server mounts. It
+uses real public/private TLS, orderly restart, partition/reconnect and isolated
+resume, and verifies that a pre-CLEAN kill is refused. Its `--mixed-ha` variant
+requires a new `lantern-1610-` name and additionally exercises independent data
+WALs and private replication; it is a separate bounded functional campaign.
+Original logs, failed phases and private volumes are retained. No image pulls,
+host clock/trust changes, deployment or shared-resource pruning are performed.
+
+Build provenance determines the evidence kind. A `lantern_test_time` Server
+uses synthetic controlled UTC and supplies **functional validation** only. The
+normal build, declared native source and actual configured-source observations
+are required for **configured-source integration**. This script provides no
+runtime switch between them. The required shared validation workflow is
+[`current-sdk4.yml`](../../.github/workflows/current-sdk4.yml); follow its distinct
+proof kinds and the [current-authority contract](../../docs/security-current-authority.md#functional-validation-and-configured-source-integration).
+Neither proof establishes real-provider, physical-device, OS reboot or power-loss
+behavior. Avoid repeated live-source probing or fresh cohorts after failure.
+
+## Custody and restart invariants
+
+Normal SIGTERM shutdown must allow readiness drain, public/private handler
+shutdown, native producer joins, resource closes and final durable checkpoint
+writes. Inspect the exit status, `server stopped cleanly` log and each matching
+CLEAN cycle/binding plus SHA-256 of the exact final floor bytes. A stopped
+container or successful `docker stop` alone does not prove that checkpoint.
+
+Resume consumes CLEAN into a new RUNNING cycle before update-capable M/P/B opens.
+Fresh native time, unexpired membership/TLS, quorum/current authority and
+independent data readiness remain required. A lone member with intact custody
+can remain unavailable. Sys CLEAN does not certify application persistence,
+replication convergence or authorization enforcement. Existing durable sessions
+retain expiry and current-policy checks; process-local attempts/permits do not
+survive restart.
+
+Preserve original files and logs on RUNNING, missing/mixed custody, mismatched
+hash/binding, unsafe permissions/aliases, missing journals/tips or native-floor
+refusal. Keep surviving lease sidecars. Do not switch to fresh, manufacture
+floors, delete retained state or regenerate trust. A final CLEAN publication may
+report uncertain rename/directory-sync failure even when complete bytes later
+appear; the next owner still validates the complete matching pair and every
+ordinary native boundary. Separate custody storage is not an external monotonic
+witness against whole-bundle rollback. See the
+[detailed custody contract](../../docs/security-current-authority.md#orderly-floor-custody-and-process-restart).

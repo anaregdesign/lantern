@@ -2289,14 +2289,15 @@ final class _ReceiptHaCluster {
   Process? _supervisor;
   StreamIterator<String>? _responses;
   late final SecurityContext trustedContext;
-  late final Map<String, dynamic> _originEnvironment;
+  late final List<int> _originCertificate;
+  late final List<int> _originPrivateKey;
   late final Uri a;
   late final Uri b;
   late final Uri c;
   HttpClient trustedHttpClient() => HttpClient(context: trustedContext);
   SecurityContext proxyTlsContext() => SecurityContext()
-    ..useCertificateChain(_originEnvironment['LANTERN_TLS_CERT_FILE'] as String)
-    ..usePrivateKey(_originEnvironment['LANTERN_TLS_KEY_FILE'] as String);
+    ..useCertificateChainBytes(_originCertificate)
+    ..usePrivateKeyBytes(_originPrivateKey);
 
   Future<void> start() async {
     final tokens = File('${_directory.path}/tokens.json');
@@ -2341,9 +2342,23 @@ final class _ReceiptHaCluster {
     c = Uri.parse(
       (nodes[3] as Map<String, dynamic>)['public_origin'] as String,
     ).replace(host: InternetAddress.loopbackIPv4.address);
-    _originEnvironment =
-        (nodes[1] as Map<String, dynamic>)['environment']
+    final originNode = nodes[1] as Map<String, dynamic>;
+    final startup =
+        jsonDecode(
+              await File(originNode['startup_file'] as String).readAsString(),
+            )
             as Map<String, dynamic>;
+    final tls = startup['tls'] as Map<String, dynamic>;
+    final certificate = tls['certificate_pem'];
+    final privateKey = tls['private_key_pem'];
+    if (certificate is! String ||
+        certificate.isEmpty ||
+        privateKey is! String ||
+        privateKey.isEmpty) {
+      throw StateError('current receipt fixture TLS material is required');
+    }
+    _originCertificate = utf8.encode(certificate);
+    _originPrivateKey = utf8.encode(privateKey);
   }
 
   Future<Map<String, dynamic>> _response() async {

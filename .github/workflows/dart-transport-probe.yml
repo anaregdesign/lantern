@@ -109,12 +109,21 @@ jobs:
           bash testbed/scripts/dart_transport_fixture.sh start \
             "$PROBE_APP" "$PROBE_FIXTURE" "$RUNNER_TEMP/transport-native" 6434
           python3 - "$RUNNER_TEMP/transport-native/metadata.json" "$GITHUB_ENV" <<'PY'
-          import json,pathlib,sys
-          m=json.loads(pathlib.Path(sys.argv[1]).read_text())
+          import json,os,pathlib,sys
+          metadata=pathlib.Path(sys.argv[1])
+          m=json.loads(metadata.read_text())
           node=m['nodes'][0]
+          startup=json.loads(pathlib.Path(node['startup_file']).read_text())
+          certificate=startup['tls']['certificate_pem']
+          if not isinstance(certificate,str) or not certificate:
+              raise ValueError('current transport fixture TLS certificate is required')
+          cert_file=metadata.parent/'probe-certificate.pem'
+          fd=os.open(cert_file,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+          with os.fdopen(fd,'w') as cert:
+              cert.write(certificate)
           with open(sys.argv[2], 'a') as out:
               out.write('PROBE_CA='+m['ca_file']+'\n')
-              out.write('PROBE_CERT='+node['environment']['LANTERN_TLS_CERT_FILE']+'\n')
+              out.write('PROBE_CERT='+str(cert_file)+'\n')
           PY
 
           for port in 9143; do

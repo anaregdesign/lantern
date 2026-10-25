@@ -410,7 +410,7 @@ S2–S4 implementation delivery is separate from those exits.
 Orderly current-authority floor custody was merged in
 [#1728](https://github.com/anaregdesign/lantern/pull/1728). Follow the
 [current lifecycle contract](security-current-authority.md#orderly-floor-custody-and-process-restart)
-and [custody Compose runbook](../testbed/current-custody/README.md):
+and [maintainer custody lifecycle qualification](../testbed/current-custody/README.md):
 
 - Keep original provisioning/keys read-only, private durable M/P/B journals,
   and private durable custody in separate mounts. Preserve the original
@@ -420,8 +420,8 @@ and [custody Compose runbook](../testbed/current-custody/README.md):
   publication last. Check process success and `server stopped cleanly`, plus
   the matching CLEAN binding/cycle and exact floor hash; a stopped container
   or surviving volume alone is insufficient.
-- Intact process/container restart uses explicit `LANTERN_SYS_MODE=resume`
-  and `LANTERN_DATA_MODE=restart`. New native time, valid membership/TLS,
+- Intact process/container restart requires the same complete current security
+  JSON and normal resume of retained native and application state. New native time, valid membership/TLS,
   current quorum/catch-up and independent data readiness are still required.
   Durable sessions retain normal expiry/current-policy checks; callback,
   purpose and output permits do not survive the process.
