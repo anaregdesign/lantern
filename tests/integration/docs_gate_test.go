@@ -2014,6 +2014,9 @@ func TestComposeDeclarativeOIDCHAExample(t *testing.T) {
 		}
 	}
 	type service struct {
+		Image               string
+		Build               struct{ Context, Dockerfile string }
+		Healthcheck         struct{ Test []string }
 		User                string
 		Entrypoint, Command []string
 		Environment         map[string]string
@@ -2084,6 +2087,25 @@ func TestComposeDeclarativeOIDCHAExample(t *testing.T) {
 		initial := rendered.Services[fmt.Sprintf("init-node-%d", index)]
 		if !initial.ReadOnly || !reflect.DeepEqual(initial.Entrypoint, node.Entrypoint) || !reflect.DeepEqual(initial.Command, []string{"init-security"}) || !reflect.DeepEqual(initial.Volumes, node.Volumes) || !reflect.DeepEqual(initial.Configs, node.Configs) {
 			t.Fatal("init and normal start no longer receive the same supplied input and original material", name)
+		}
+	}
+	edge := rendered.Services["edge"]
+	if edge.Image != "lantern-edge:oidc-ha-local" || edge.Build.Context != root || edge.Build.Dockerfile != "deploy/compose/oidc-ha/edge.Dockerfile" || !edge.ReadOnly ||
+		!reflect.DeepEqual(edge.Healthcheck.Test, []string{"CMD", "/usr/local/bin/lantern-edge-health"}) {
+		t.Fatal("edge readiness must use its source-built verified-TLS probe")
+	}
+	health, healthErr := os.ReadFile(filepath.Join(root, "deploy/compose/oidc-ha/edge-health.sh"))
+	if healthErr != nil {
+		t.Fatal(healthErr)
+	}
+	for _, required := range []string{"/usr/bin/curl --disable", "--proto '=https'", "--noproxy '*'", "--cacert /edge-tls/ca.pem", "--max-time 2", "--connect-timeout 2", "--max-redirs 0", "--output /dev/null --write-out '%{http_code}'", "https://localhost:8443/healthz", `[ "$status" = 200 ]`} {
+		if !strings.Contains(string(health), required) {
+			t.Fatal("edge probe lost bounded exact HTTPS readiness", required)
+		}
+	}
+	for _, forbidden := range []string{"--insecure", "--location", "http://", " -k "} {
+		if strings.Contains(string(health), forbidden) {
+			t.Fatal("edge readiness permits TLS or redirect bypass")
 		}
 	}
 	publisher := rendered.Services["membershippublisher"]

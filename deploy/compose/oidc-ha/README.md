@@ -93,7 +93,7 @@ dc() { docker compose --project-name lantern-oidc-ha-example \
   --env-file /absolute/private/oidc-ha/compose.env \
   -f docker-compose.oidc-ha.yml "$@"; }
 dc config --quiet
-dc build lantern-0 admin lantern-mcp membershippublisher metrics-0
+dc build lantern-0 admin lantern-mcp membershippublisher metrics-0 edge
 # Once, only for this project's three NEW empty state volumes:
 dc --profile prepare run --rm --no-deps prepare-state
 # Once: creates /material/identity and /operator/custody, both previously absent.
@@ -124,6 +124,11 @@ dc stop -t 45 lantern-0 lantern-1 lantern-2 membershippublisher
 dc up -d --wait --wait-timeout 120
 dc ps
 ```
+
+The edge image adds curl to the pinned Caddy base for its private-CA health
+probe. The probe verifies `https://localhost:8443/healthz` with the supplied CA,
+requires status `200` within two seconds, and follows no redirect or proxy.
+The edge root filesystem stays read-only.
 
 Do not include `initialize-data.yml` again. Normal configuration always requires
 the existing WAL, stable node ID/epoch, original identity and native custody;

@@ -178,7 +178,8 @@ services:
     healthcheck: {test: [CMD, wget, -qO-, "http://127.0.0.1:8080/healthz"], interval: 5s, timeout: 3s, retries: 12}
 
   edge:
-    image: caddy:2.10-alpine
+    image: lantern-edge:oidc-ha-local
+    build: {context: ../.., dockerfile: deploy/compose/oidc-ha/edge.Dockerfile}
     user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
     read_only: true
     ports: ["127.0.0.1:${LANTERN_EDGE_PORT:-8443}:8443"]
@@ -194,7 +195,7 @@ services:
       lantern-1: {condition: service_healthy}
       lantern-2: {condition: service_healthy}
     healthcheck:
-      test: [CMD, wget, -qO-, --ca-certificate=/edge-tls/ca.pem, "https://localhost:8443/healthz"]
+      test: [CMD, /usr/local/bin/lantern-edge-health]
       interval: 5s
       timeout: 3s
       retries: 12
