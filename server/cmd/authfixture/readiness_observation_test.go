@@ -65,9 +65,11 @@ func TestFixturePassiveObservationBoundsAndFreshness(t *testing.T) {
 }
 
 func TestFixtureFailureRetainsPassiveRefusalWithoutAnotherCapabilitiesCall(t *testing.T) {
-	var capabilities atomic.Int32
+	var health, capabilities atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/grpc.health.v1.Health/Check" {
+		if r.URL.Path == "/grpc.health.v1.Health/Check" {
+			health.Add(1)
+		} else {
 			capabilities.Add(1)
 		}
 		_, _ = w.Write([]byte(`{"status":"SERVING_STATUS_NOT_SERVING"}`))
@@ -87,16 +89,22 @@ func TestFixtureFailureRetainsPassiveRefusalWithoutAnotherCapabilitiesCall(t *te
 	observer.WorkerDone("clock_fault")
 	observer.WorkerPublished()
 	observer.Health("static_rejection", "not_evaluated")
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-	defer cancel()
-	err = waitFixtureReady(ctx, fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}, []*fixtureProcess{{done: make(chan struct{}), log: log}})
+	poll, err := newFixtureReadinessPoll(fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}, []*fixtureProcess{{done: make(chan struct{}), log: log}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer poll.close()
+	if ready, err := poll.once(t.Context()); err != nil || ready {
+		t.Fatal("unexpected completed readiness result", ready, err)
+	}
+	err = poll.failure("timeout", context.DeadlineExceeded)
 	_ = log.Close()
 	if removeErr := os.RemoveAll(dir); removeErr != nil {
 		t.Fatal(removeErr)
 	}
 	var output bytes.Buffer
 	writeFixtureFailure(&output, &fixtureFailure{stage: "readiness", cause: err})
-	if err == nil || capabilities.Load() != 0 || output.Len() >= 4096 || strings.Contains(output.String(), dir) {
+	if err == nil || health.Load() != 1 || capabilities.Load() != 0 || poll.healthCount[0] != 1 || poll.capabilityCount[0] != 0 || output.Len() >= 4096 || strings.Contains(output.String(), dir) {
 		t.Fatal("missing failure, extra evaluation, or unbounded/private output")
 	}
 	for _, part := range []string{`"last_health":"not_serving"`, `"last_capability":"not_probed"`, `"capability_probes":0`, `"health_probes":1`, `"worker_reason":"clock_fault"`, `"health_reason":"not_evaluated"`, `"worker_publish":1`} {
