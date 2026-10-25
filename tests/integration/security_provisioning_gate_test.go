@@ -91,7 +91,8 @@ func TestSecurityProvisioningCLI(t *testing.T) {
 // uses bounded loopback UDP synthetic UTC and never probes a live NTP server.
 // Normal-build configured-source qualification remains an independent gate.
 func TestSecurityProvisioningFunctionalWire(t *testing.T) {
-	if !(runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" || runtime.GOOS == "linux" && (runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64")) {
+	supportedTarget := runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" || runtime.GOOS == "linux" && (runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64")
+	if !supportedTarget {
 		t.Skip("native controlled runtime requires a qualified platform")
 	}
 	binary := securityProvisioningBinary(t, true)
