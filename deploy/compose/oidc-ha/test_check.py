@@ -38,7 +38,7 @@ class ExampleHTTP:
         self.fail_put = False
         self.allow_anonymous = False
         self.allow_forbidden = False
-        self.track_error = "track: permission_denied: public RPC admission rejected"
+        self.track_error = "track: lantern: batch stopped after 0 completed entries: permission_denied: public RPC admission rejected"
         self.track_is_error = True
         self.track_content = None
         self.task = None
@@ -180,13 +180,14 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(len([call for call in self.http.calls if call[0].endswith("/PutVertex")]), 2)
 
     def test_mcp_transport_success_does_not_replace_permission_denial(self):
-        self.http.track_error = "track: not_found: resource not found"
+        self.http.track_error = "track: lantern: batch stopped after 0 completed entries: not found\nnot_found: resource not found"
         with self.assertRaisesRegex(driver.CheckFailure, "^mcp-permission-denied$"):
             self.run_check()
         self.assertFalse(json.loads(self.evidence.read_text())["complete"])
 
-    def test_mcp_permission_denial_accepts_canonical_code_with_optional_message(self):
-        for text in ("track: permission_denied", "track: permission_denied: public RPC admission rejected"):
+    def test_mcp_permission_denial_accepts_zero_completed_batch_code_with_optional_message(self):
+        prefix = "track: lantern: batch stopped after 0 completed entries: permission_denied"
+        for text in (prefix, prefix + ": public RPC admission rejected"):
             with self.subTest(text=text):
                 http = ExampleHTTP()
                 http.track_error = text
@@ -194,15 +195,27 @@ class DriverTests(unittest.TestCase):
 
     def test_mcp_permission_denial_rejects_other_codes_and_misleading_messages(self):
         for text in (
+            "track: permission_denied",
+            "track: permission_denied: public RPC admission rejected",
             "track: unauthenticated: permission_denied",
             "track: unavailable: permission_denied",
             "track: not_found: permission_denied",
-            "track: permission_denied_extra: public RPC admission rejected",
+            "track: lantern: batch stopped after 0 completed entries: unauthenticated\nunauthenticated: public RPC admission rejected",
+            "track: lantern: batch stopped after 0 completed entries: unavailable\nunavailable: public RPC admission rejected",
+            "track: lantern: batch stopped after 0 completed entries: not found\nnot_found: public RPC admission rejected",
+            "track: lantern: batch stopped after 0 completed entries: unavailable: permission_denied",
+            "track: lantern: batch stopped after 0 completed entries: permission_denied_extra: rejected",
+            "track: lantern: batch stopped after 1 completed entries: permission_denied: rejected",
+            "track: lantern: batch stopped after -1 completed entries: permission_denied: rejected",
+            "track: lantern: batch stopped after 00 completed entries: permission_denied: rejected",
+            "track: rate limited; back off and retry: lantern: batch stopped after 0 completed entries: permission_denied: rejected",
+            "track: lantern: mutation accepted",
             "track: permission denied",
             "permission denied",
-            "unrelated message: track: permission_denied: rejected",
+            "unrelated message: track: lantern: batch stopped after 0 completed entries: permission_denied: rejected",
             "track: unavailable: permission denied",
-            "track: permission_denied\ntrack: unavailable",
+            "track: lantern: batch stopped after 0 completed entries: permission_denied\ntrack: unavailable",
+            "track: lantern: batch stopped after 0 completed entries: permission_denied: rejected\n",
         ):
             with self.subTest(text=text):
                 http = ExampleHTTP()
@@ -211,7 +224,7 @@ class DriverTests(unittest.TestCase):
                     driver.MCP(http, self.args.mcp_url).check("synthetic permission contract")
 
     def test_mcp_permission_denial_requires_error_and_single_text_content(self):
-        canonical = {"type": "text", "text": "track: permission_denied: rejected"}
+        canonical = {"type": "text", "text": "track: lantern: batch stopped after 0 completed entries: permission_denied: rejected"}
         for is_error, content in (
             (False, [canonical]),
             (True, []),

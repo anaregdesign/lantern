@@ -310,9 +310,11 @@ class MCP:
                 and len(content) == 1 and isinstance(content[0], dict)
                 and content[0].get("type") == "text" and isinstance(content[0].get("text"), str),
                 "mcp-permission-denied")
-        # The SDK preserves Connect's canonical code; MCP wraps its error as
-        # one TextContent. A message mentioning denial is not a denied code.
-        require(re.fullmatch(r"track: permission_denied(?:: [^\r\n]+)?", content[0]["text"]) is not None,
+        # Real SDK AddEdges wraps Connect errors in a BatchError. The one-edge
+        # denied call must report zero completed entries and the canonical code;
+        # an embedded denial message or a partially completed batch cannot pass.
+        require(re.fullmatch(r"track: lantern: batch stopped after 0 completed entries: permission_denied(?:: [^\r\n]+)?",
+                             content[0]["text"]) is not None,
                 "mcp-permission-denied")
 
 
