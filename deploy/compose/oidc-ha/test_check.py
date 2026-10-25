@@ -38,7 +38,9 @@ class ExampleHTTP:
         self.fail_put = False
         self.allow_anonymous = False
         self.allow_forbidden = False
-        self.track_error = "permission denied"
+        self.track_error = "track: permission_denied: public RPC admission rejected"
+        self.track_is_error = True
+        self.track_content = None
         self.task = None
 
     def call(self, url, *, payload=None, token=None, headers=None, rpc_id=None, notification=False):
@@ -79,7 +81,8 @@ class ExampleHTTP:
                 else:
                     assert name == "track"
                     assert payload["params"]["arguments"]["resources"][0].startswith("forbidden.")
-                    result = {"isError": True, "content": [{"type": "text", "text": self.track_error}]}
+                    result = {"isError": self.track_is_error, "content": self.track_content
+                              if self.track_content is not None else [{"type": "text", "text": self.track_error}]}
             return 200, {"Mcp-Session-Id": "opaque-example-session"}, {"jsonrpc": "2.0", "id": rpc_id, "result": result}
         assert url.endswith("/")
         return 200, {"Content-Type": "text/html"}, b"<!doctype html><html><script src='/assets/app.js'></script></html>"
@@ -177,10 +180,49 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(len([call for call in self.http.calls if call[0].endswith("/PutVertex")]), 2)
 
     def test_mcp_transport_success_does_not_replace_permission_denial(self):
-        self.http.track_error = "resource not found"
+        self.http.track_error = "track: not_found: resource not found"
         with self.assertRaisesRegex(driver.CheckFailure, "^mcp-permission-denied$"):
             self.run_check()
         self.assertFalse(json.loads(self.evidence.read_text())["complete"])
+
+    def test_mcp_permission_denial_accepts_canonical_code_with_optional_message(self):
+        for text in ("track: permission_denied", "track: permission_denied: public RPC admission rejected"):
+            with self.subTest(text=text):
+                http = ExampleHTTP()
+                http.track_error = text
+                driver.MCP(http, self.args.mcp_url).check("synthetic permission contract")
+
+    def test_mcp_permission_denial_rejects_other_codes_and_misleading_messages(self):
+        for text in (
+            "track: unauthenticated: permission_denied",
+            "track: unavailable: permission_denied",
+            "track: not_found: permission_denied",
+            "track: permission_denied_extra: public RPC admission rejected",
+            "track: permission denied",
+            "permission denied",
+            "unrelated message: track: permission_denied: rejected",
+            "track: unavailable: permission denied",
+            "track: permission_denied\ntrack: unavailable",
+        ):
+            with self.subTest(text=text):
+                http = ExampleHTTP()
+                http.track_error = text
+                with self.assertRaisesRegex(driver.CheckFailure, "^mcp-permission-denied$"):
+                    driver.MCP(http, self.args.mcp_url).check("synthetic permission contract")
+
+    def test_mcp_permission_denial_requires_error_and_single_text_content(self):
+        canonical = {"type": "text", "text": "track: permission_denied: rejected"}
+        for is_error, content in (
+            (False, [canonical]),
+            (True, []),
+            (True, [canonical, canonical]),
+            (True, [{"type": "image", "text": canonical["text"]}]),
+        ):
+            with self.subTest(is_error=is_error, content=content):
+                http = ExampleHTTP()
+                http.track_is_error, http.track_content = is_error, content
+                with self.assertRaisesRegex(driver.CheckFailure, "^mcp-permission-denied$"):
+                    driver.MCP(http, self.args.mcp_url).check("synthetic permission contract")
 
     def test_symlink_or_public_evidence_is_refused(self):
         self.run_check()

@@ -305,10 +305,15 @@ class MCP:
         finally:
             self.http.deadline = None
         denied = self.call("tools/call", {"name": "track", "arguments": {"resources": ["forbidden." + secrets.token_hex(16)]}})
-        require(isinstance(denied.get("content"), list), "mcp-permission-denied")
-        text = " ".join(item["text"] for item in denied["content"] if isinstance(item, dict)
-                        and isinstance(item.get("text"), str))
-        require(denied.get("isError") is True and "permission denied" in text.lower(), "mcp-permission-denied")
+        content = denied.get("content")
+        require(denied.get("isError") is True and isinstance(content, list)
+                and len(content) == 1 and isinstance(content[0], dict)
+                and content[0].get("type") == "text" and isinstance(content[0].get("text"), str),
+                "mcp-permission-denied")
+        # The SDK preserves Connect's canonical code; MCP wraps its error as
+        # one TextContent. A message mentioning denial is not a denied code.
+        require(re.fullmatch(r"track: permission_denied(?:: [^\r\n]+)?", content[0]["text"]) is not None,
+                "mcp-permission-denied")
 
 
 def evidence_read(path: Path) -> dict:
