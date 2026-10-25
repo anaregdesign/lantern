@@ -174,6 +174,11 @@ export COMPOSE_PROJECT_NAME=lantern-bench-owned-fixture
 failure="$2"
 owner=501:20
 if [[ "$failure" == root-user ]]; then owner=0:0; fi
+run_owned_compose_initializer() {
+ [[ "$1" == "$COMPOSE_PROJECT_NAME" && "$2" == "$TEST_IMAGE" && "$3" == 0:0 && "$4" == compose-volume-initializer && "$5" == volume-init && "$6" == 300 && "$7" == validate_owned_compose_volume_initializer ]] || return 90
+ shift 7
+ docker run --rm --pull=never --user 0:0 "$@"
+}
 docker() {
  if [[ "$1" == volume && "$2" == ls && "$3" == --format ]]; then
   if [[ "$failure" == name-collision ]]; then echo state-1; fi
@@ -266,6 +271,7 @@ docker() {
  export -f ls chown chmod
  bash -c "$command" "$@"
 }
+
 if initialize_owned_compose_volumes "$COMPOSE_PROJECT_NAME" "$TEST_IMAGE" "$owner" -f fixture.yml; then
  [[ "$TEST_SUCCESS" == true ]]
 else
@@ -323,5 +329,192 @@ fi
 				})
 			}
 		})
+	}
+}
+
+func TestOwnedComposeInitializerCustody(t *testing.T) {
+	helper, err := filepath.Abs("owned_compose.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range []string{"security", "volume"} {
+		for _, failure := range []string{"none", "init-failure", "client-disconnect", "INT", "TERM", "wrong-init-image", "wrong-init-user", "wrong-init-env", "wrong-init-mount", "wrong-init-label", "wrong-init-exit", "stop-failure", "remove-failure"} {
+			if profile == "volume" && failure == "wrong-init-env" {
+				continue
+			}
+			t.Run(profile+"/"+failure, func(t *testing.T) {
+				out := t.TempDir()
+				const script = `set -euo pipefail
+source "$1"
+export COMPOSE_PROJECT_NAME=lantern-bench-owned-fixture
+TEST_MAIN_PID=$BASHPID
+TEST_IMAGE="sha256:$(printf 'a%.0s' {1..64})"
+TEST_SECURITY_CONFIG='{"name":"lantern-bench-owned-fixture","services":{},"volumes":{}}'
+for index in 0 1 2; do
+ TEST_SECURITY_CONFIG="$(jq -c --arg service "lantern-$index" --arg image "$TEST_IMAGE" '
+  .services[$service]={image:$image,user:"501:20",environment:{LANTERN_AUTH_MODE:"oidc",LANTERN_SECURITY_CONFIG_JSON:("current-json-"+$service)},
+   volumes:[{type:"volume",source:("state-"+$service),target:"/state"},{type:"volume",source:("backup-"+$service),target:"/data"}]} |
+  .volumes["state-"+$service]={name:("state-"+$service)} | .volumes["backup-"+$service]={name:("backup-"+$service)}' <<<"$TEST_SECURITY_CONFIG")"
+done
+sleep() { command sleep 0.005; }
+docker() {
+ if [[ "$1" == compose ]]; then
+  case "$4" in
+   config) [[ "$LANTERN_IMAGE" == "$TEST_IMAGE" ]] || return 89; printf '%s\n' "$TEST_SECURITY_CONFIG";;
+   ps) local svc="${@: -1}"; printf '%064d\n' "$((${svc##*-}+1))";;
+   *) return 87;;
+  esac
+  return
+ fi
+ if [[ "$1" == create ]]; then
+  local arg next="" name="" nonce_value="" env_file="" src="" user_value="" network_value="" kind_value="" service_value=""
+  for arg in "$@"; do
+   case "$next" in
+    --name) name="$arg";; --user) user_value="$arg";; --network) network_value="$arg";; --env-file) env_file="$arg";; --volumes-from) src="$arg";;
+    --label) case "$arg" in lantern.initializer=*) nonce_value="${arg#*=}";; lantern.owner=*) kind_value="${arg#*=}";; com.docker.compose.service=*) service_value="${arg#*=}";; esac;;
+   esac
+   next="$arg"
+  done
+  local i=0
+  if [[ "$PROFILE" == security ]]; then
+   i="${service_value##*-}"
+   [[ "$name" == "$COMPOSE_PROJECT_NAME-$service_value-security-init" && "$user_value" == 501:20 && "$network_value" == "$COMPOSE_PROJECT_NAME-default" && "$src" == "$(printf '%064d' "$((i+1))")" && "$kind_value" == compose-security-initializer ]] || return 88
+   [[ "$(cat "$env_file")" == $'LANTERN_AUTH_MODE=oidc\nLANTERN_SECURITY_CONFIG_JSON=current-json-'"$service_value" ]] || return 88
+  else
+   [[ "$name" == "$COMPOSE_PROJECT_NAME-volume-init" && "$user_value" == 0:0 && "$kind_value" == compose-volume-initializer ]] || return 88
+  fi
+  [[ "$nonce_value" == lantern-owned-init.* && "${@: -2:1}" == "$TEST_IMAGE" || "$PROFILE" == volume ]] || return 88
+  printf '%s\n' "$nonce_value" > "$OUTDIR/nonce-$i"
+  printf 'created\n' > "$OUTDIR/state-$i"
+  printf 'create %s\n' "$i" >> "$OUTDIR/actions"
+  printf '%064d\n' "$((i+11))"
+  return
+ fi
+ local target="${@: -1}" i=0 initialized=false
+ if [[ "$target" == *-security-init ]]; then i="${target%-security-init}"; i="${i##*-}"; initialized=true
+ elif [[ "$target" == *-volume-init ]]; then initialized=true
+ elif [[ "$target" =~ ^[0-9a-f]{64}$ ]]; then
+  i="$((10#${target: -2}))"
+  if (( i >= 11 )); then i=$((i-11)); initialized=true; else i=$((i-1)); fi
+ else return 86; fi
+ local svc="lantern-$i" fail_index=1
+ if [[ "$PROFILE" == volume ]]; then svc=volume-init; fail_index=0; fi
+ case "$1" in
+  start)
+   [[ "$2" == --attach && "$initialized" == true ]] || return 86
+   printf 'start %s\n' "$i" >> "$OUTDIR/actions"
+   if [[ "$i" == "$fail_index" && ( "$CASE" == client-disconnect || "$CASE" == stop-failure || "$CASE" == INT || "$CASE" == TERM ) ]]; then
+    printf 'running\n' > "$OUTDIR/state-$i"
+    if [[ "$CASE" == INT || "$CASE" == TERM ]]; then kill -"$CASE" "$TEST_MAIN_PID"; while :; do command sleep 1; done; fi
+    return 23
+   fi
+   printf 'exited\n' > "$OUTDIR/state-$i"
+   if [[ "$i" == "$fail_index" && "$CASE" == init-failure ]]; then return 23; fi
+   return;;
+  stop)
+   [[ "$initialized" == true && "$2" == --time && "$3" == 10 ]] || return 86
+   printf 'stop %s\n' "$i" >> "$OUTDIR/actions"
+   [[ "$CASE" != stop-failure ]] || return 19
+   printf 'exited\n' > "$OUTDIR/state-$i"; return;;
+  kill)
+   [[ "$initialized" == true && "$2" == --signal && "$3" == KILL ]] || return 86
+   printf 'kill %s\n' "$i" >> "$OUTDIR/actions"
+   printf 'exited\n' > "$OUTDIR/state-$i"; return;;
+  wait) printf 'wait %s\n' "$i" >> "$OUTDIR/actions"; printf '0\n'; return;;
+  logs) printf 'logs %s\n' "$i" >> "$OUTDIR/actions"; printf 'private retained fixture log\n'; return;;
+  rm)
+   printf 'rm %s\n' "$i" >> "$OUTDIR/actions"
+   [[ "$CASE" != remove-failure || "$i" != "$fail_index" ]] || return 19
+   rm "$OUTDIR/state-$i"; return;;
+  inspect) ;;
+  *) return 86;;
+ esac
+ local state=created nonce_value="" current_image="$TEST_IMAGE" user_value=501:20 exit_value=0
+ if [[ "$initialized" == true ]]; then
+  [[ -f "$OUTDIR/state-$i" ]] || return 1
+  read -r state < "$OUTDIR/state-$i"; read -r nonce_value < "$OUTDIR/nonce-$i"
+ fi
+ if [[ "$PROFILE" == volume ]]; then user_value=0:0; fi
+ jq -nc --arg project "$COMPOSE_PROJECT_NAME" --arg svc "$svc" --arg image "$TEST_IMAGE" --arg case "$CASE" --arg profile "$PROFILE" --arg state "$state" --arg nonce "$nonce_value" --arg user "$user_value" --argjson i "$i" --argjson fail_index "$fail_index" --argjson initialized "$initialized" '
+  {Id:((if $initialized then $i+11 else $i+1 end)|tostring|("0"*(64-length)) + .),
+   Name:("/"+$project+"-"+$svc+(if $profile=="security" then "-security-init" else "" end)),
+   Config:{Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":$svc},Image:$image,User:$user,WorkingDir:"/app",
+    Env:["LANTERN_AUTH_MODE=oidc",("LANTERN_SECURITY_CONFIG_JSON=current-json-"+$svc)],Entrypoint:["/app/lantern"],Cmd:["init-security"]},Image:$image,
+   State:{Status:$state,Running:($state=="running"),ExitCode:0},HostConfig:{NetworkMode:($project+"-default")},
+   Mounts:[{Type:"bind",Source:("/private/"+$svc),Destination:"/run/lantern-config",RW:false},{Type:"bind",Source:("/private/"+$svc+"/ntp.conf"),Destination:"/etc/ntp.conf",RW:false},{Type:"volume",Name:("state-"+$svc),Destination:"/state",RW:true}]} |
+  if $initialized then .Config.Labels += {"lantern.owner":("compose-"+$profile+"-initializer"),"com.docker.compose.oneoff":"True","lantern.initializer":$nonce} else . end |
+  if $profile=="volume" then .Config.Entrypoint=["/bin/sh"] | .Config.Cmd=["-c","fixture-script","fixture","501:20","6"] |
+   .HostConfig={NetworkMode:"none",ReadonlyRootfs:true,CapDrop:["ALL"],CapAdd:["CHOWN","DAC_READ_SEARCH"]} |
+   .Mounts=[range(0;6)|{Name:("owned-"+tostring),Destination:("/owned/"+tostring),RW:true,Type:"volume"}] else . end |
+  if $initialized and $i==$fail_index then
+   if $case=="wrong-init-image" then .Image="wrong"
+   elif $case=="wrong-init-user" then .Config.User="foreign"
+   elif $case=="wrong-init-env" then .Config.Env=[]
+   elif $case=="wrong-init-mount" then .Mounts=[]
+   elif $case=="wrong-init-label" then .Config.Labels["lantern.owner"]="foreign"
+   elif $case=="wrong-init-exit" and $state=="exited" then .State.ExitCode=23 else . end
+  else . end'
+}
+trap 'printf "old INT\n" >> "$OUTDIR/traps"' INT
+trap 'printf "old TERM\n" >> "$OUTDIR/traps"' TERM
+if [[ "$PROFILE" == security ]]; then
+ if initialize_owned_compose_security "$COMPOSE_PROJECT_NAME" "$TEST_IMAGE" 501:20 -f fixture.yml; then result=0; else result=$?; fi
+else
+ expected_count=6; volume_runtime_owner=501:20
+ expected_mounts="$(jq -nc '[range(0;6)|{Name:("owned-"+tostring),Destination:("/owned/"+tostring),RW:true,Type:"volume"}]')"
+ if run_owned_compose_initializer "$COMPOSE_PROJECT_NAME" "$TEST_IMAGE" 0:0 compose-volume-initializer volume-init 300 validate_owned_compose_volume_initializer --network=none --read-only --cap-drop=ALL --cap-add=CHOWN --cap-add=DAC_READ_SEARCH --entrypoint /bin/sh "$TEST_IMAGE" -c fixture-script fixture 501:20 6; then result=0; else result=$?; fi
+fi
+[[ "$(trap -p INT)" == *"old INT"* && "$(trap -p TERM)" == *"old TERM"* ]] || exit 95
+exit "$result"
+`
+				cmd := exec.CommandContext(t.Context(), "bash", "-c", script, "initializer-custody", helper)
+				cmd.Env = append(os.Environ(), "OUTDIR="+out, "CASE="+failure, "PROFILE="+profile, "TMPDIR="+out)
+				output, runErr := cmd.CombinedOutput()
+				if (runErr == nil) != (failure == "none") {
+					t.Fatalf("initializer error=%v output=%s", runErr, output)
+				}
+				actions, _ := os.ReadFile(filepath.Join(out, "actions"))
+				failed := 1
+				if profile == "volume" {
+					failed = 0
+				}
+				if failure == "none" {
+					count := 3
+					if profile == "volume" {
+						count = 1
+					}
+					if strings.Count(string(actions), "start ") != count || strings.Count(string(actions), "rm ") != count {
+						t.Fatalf("successful lifecycle missing exact starts/removals: %s", actions)
+					}
+				} else {
+					if _, err := os.Stat(filepath.Join(out, fmt.Sprintf("state-%d", failed))); err != nil {
+						t.Fatalf("failure container/state was removed: %v, %s", err, actions)
+					}
+					if profile == "security" && strings.Contains(string(actions), "create 2") {
+						t.Fatalf("continued after failed initialization: %s", actions)
+					}
+					if failure == "client-disconnect" || failure == "INT" || failure == "TERM" || failure == "stop-failure" {
+						for _, action := range []string{"stop", "wait", "logs"} {
+							if !strings.Contains(string(actions), fmt.Sprintf("%s %d\n", action, failed)) {
+								t.Fatalf("missing failure custody %s: %s %s", action, actions, output)
+							}
+						}
+						state, _ := os.ReadFile(filepath.Join(out, fmt.Sprintf("state-%d", failed)))
+						if string(state) != "exited\n" {
+							t.Fatalf("daemon initializer still active: %q", state)
+						}
+						if failure == "stop-failure" && !strings.Contains(string(actions), fmt.Sprintf("kill %d\n", failed)) {
+							t.Fatalf("failed stop lacked identity-bound kill fallback: %s", actions)
+						}
+					}
+					if strings.HasPrefix(failure, "wrong-init-") && failure != "wrong-init-exit" && strings.Contains(string(actions), fmt.Sprintf("start %d\n", failed)) {
+						t.Fatalf("unverified clone started: %s", actions)
+					}
+					if !strings.Contains(string(output), "initializer private evidence retained at ") {
+						t.Fatalf("private logs not retained: %s", output)
+					}
+				}
+			})
+		}
 	}
 }

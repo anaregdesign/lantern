@@ -433,7 +433,7 @@ pin_receipt_image() {
 
 verify_receipt_image_provenance() {
   local out="$1" actual_image_id service container identity
-  local actual_container_id actual_container_image actual_ref running project actual_service restarts replica spool index=0 approved_recreation=""
+  local actual_container_id actual_container_image actual_ref running project actual_service restarts actual_runtime_user actual_cpuset replica spool index=0 approved_recreation=""
   local -a replicas=()
   actual_image_id="$(docker image inspect --format '{{.Id}}' "$receipt_image_ref")" ||
     die "receipt image $receipt_image_ref disappeared"
@@ -445,14 +445,16 @@ verify_receipt_image_provenance() {
     [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] ||
       die "receipt service $service has no unique running container"
     identity="$(docker inspect --format \
-      '{{.Id}}|{{.Image}}|{{.Config.Image}}|{{.State.Running}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.RestartCount}}' \
+      '{{.Id}}|{{.Image}}|{{.Config.Image}}|{{.State.Running}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.RestartCount}}|{{.Config.User}}|{{.HostConfig.CpusetCpus}}' \
       "$container")" || die "cannot inspect receipt service $service"
-    IFS='|' read -r actual_container_id actual_container_image actual_ref running project actual_service restarts <<<"$identity"
+    IFS='|' read -r actual_container_id actual_container_image actual_ref running project actual_service restarts actual_runtime_user actual_cpuset <<<"$identity"
     [[ "$actual_container_id" =~ ^[0-9a-f]{64}$ && "$running" == "true" &&
        "$project" == "$COMPOSE_PROJECT_NAME" && "$actual_service" == "$service" &&
        "$actual_container_image" == "$receipt_image_id" && "$actual_ref" == "$receipt_image_ref" &&
        "$restarts" == "0" ]] ||
       die "receipt service $service is not a running, restart-free $receipt_image_id from $receipt_image_ref in $COMPOSE_PROJECT_NAME"
+    [[ "$actual_runtime_user" == "$runtime_owner" && "$actual_cpuset" == "${LANTERN_BENCH_CPUSET:-}" ]] ||
+      die "receipt service $service has mismatched runtime user or CPU placement"
     if [[ -n "${receipt_container_ids[$index]:-}" &&
           "${receipt_container_ids[$index]}" != "$actual_container_id" ]]; then
       approved_recreation=""
@@ -468,8 +470,9 @@ verify_receipt_image_provenance() {
     [[ "$receipt_driver" != "0" || "$spool" != null ]] || die "missing graph Snapshot spool provenance for $service"
     replica="$(jq -nc --arg service "$service" --arg container_id "$actual_container_id" \
       --arg image_id "$actual_container_image" --arg image_ref "$actual_ref" \
+      --arg runtime_user "$actual_runtime_user" --arg cpuset "$actual_cpuset" \
       --argjson spool "$spool" \
-      '{service:$service, container_id:$container_id, image_id:$image_id, image_ref:$image_ref} +
+      '{service:$service, container_id:$container_id, image_id:$image_id, image_ref:$image_ref, runtime_user:$runtime_user, cpuset:$cpuset} +
         (if $spool==null then {} else {graph_snapshot_spool:$spool} end)')" ||
       die "cannot record receipt image provenance for $service"
     replicas+=( "$replica" )
@@ -576,15 +579,21 @@ if [[ "${SKIP_UP:-0}" != "1" ]]; then
   if [[ "$receipt_driver" == "0" ]]; then owned_count=9; else owned_count=6; fi
   [[ "$(jq -er '.count' <<<"$owned_layout")" == "$owned_count" ]] || die "fresh native graph/receipt volume layout does not match the selected mode"
   COMPOSE_STARTED=1
+  receipt_keep_up="${KEEP_UP:-0}"
+  KEEP_UP=1
   if ! initialize_owned_compose_volumes "$COMPOSE_PROJECT_NAME" "$receipt_image_id" "$runtime_owner" "${COMPOSE_FILES[@]}"; then
-    KEEP_UP=1
     die "fresh volume initialization refused; named project and private inputs retained for review"
   fi
   if [[ "$receipt_driver" == "1" ]]; then
+    if ! initialize_owned_compose_security "$COMPOSE_PROJECT_NAME" "$receipt_image_id" "$runtime_owner" "${COMPOSE_FILES[@]}"; then
+      die "explicit security initialization failed; no serving started; named project and private inputs retained for review"
+    fi
+    KEEP_UP="$receipt_keep_up"
     # Start only the protected replicas; metrics stay on their loopback plane.
     docker compose "${COMPOSE_FILES[@]}" up -d --wait \
       lantern-0 lantern-1 lantern-2
   else
+    KEEP_UP="$receipt_keep_up"
     docker compose "${COMPOSE_FILES[@]}" --profile off-diagnostics up -d --wait
   fi
 fi
@@ -752,7 +761,7 @@ prom_scalar() {
 
 receipt_runtime_scalar() {
   local name="$1" text="$2" raw
-  raw="$(awk -v n="$name" '$1 == n { print $2 }' <<<"$text")"
+  raw="$(awk -v n="$name" '$1 == n { if (NF != 2) exit 1; print $2 }' <<<"$text")" || return 1
   [[ "$raw" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$ ]] || return 1
   # Check decimal integrality before float parsing so rounding cannot hide a fraction.
   awk -v raw="$raw" '
@@ -832,7 +841,8 @@ snapshot_runtime() {
   # Protected admission rejects pprof. Use one fixed natural-GC sample;
   # neither an inaccessible profiling route nor a minimum-of-samples fallback.
   if [[ "$receipt_driver" == "1" ]]; then rounds=1; fi
-  [[ "$rounds" -ge 1 ]] 2>/dev/null || rounds=1
+  [[ "$rounds" =~ ^[1-9][0-9]*$ ]] || die "runtime snapshot: invalid round count"
+  [[ ${#REPLICA_METRICS_PORTS[@]} == 3 ]] || die "runtime snapshot: expected three replica metrics ports"
   local -a samples=()
   for port in "${REPLICA_METRICS_PORTS[@]}"; do
     local g="" h_inuse="" h_alloc="" h_objs="" vhe="" vhw=""
@@ -846,7 +856,8 @@ snapshot_runtime() {
         text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics")" ||
           die "receipt runtime snapshot: metrics scrape failed for localhost:${port} (round ${round})"
       else
-        text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics" || true)"
+        text="$(curl -fsS --max-time 5 "http://localhost:${port}/metrics")" ||
+          die "OFF runtime snapshot: metrics scrape failed for localhost:${port} (round ${round})"
       fi
       local rg rhi rha rho rvhe rvhw
       # Prom client formats large gauges in scientific notation (e.g. 1.949696e+07).
@@ -861,10 +872,14 @@ snapshot_runtime() {
         rho="$(receipt_runtime_scalar go_memstats_heap_objects "$text")" ||
           die "receipt runtime snapshot: invalid go_memstats_heap_objects for localhost:${port} (round ${round})"
       else
-        rg="$(printf '%.0f' "$(prom_scalar go_goroutines "$text")" 2>/dev/null)"; rg="${rg:-0}"
-        rhi="$(printf '%.0f' "$(prom_scalar go_memstats_heap_inuse_bytes "$text")" 2>/dev/null)"; rhi="${rhi:-0}"
-        rha="$(printf '%.0f' "$(prom_scalar go_memstats_heap_alloc_bytes "$text")" 2>/dev/null)"; rha="${rha:-0}"
-        rho="$(printf '%.0f'  "$(prom_scalar go_memstats_heap_objects     "$text")" 2>/dev/null)"; rho="${rho:-0}"
+        rg="$(receipt_runtime_scalar go_goroutines "$text")" && [[ "$rg" -gt 0 ]] ||
+          die "OFF runtime snapshot: invalid go_goroutines for localhost:${port} (round ${round})"
+        rhi="$(receipt_runtime_scalar go_memstats_heap_inuse_bytes "$text")" && [[ "$rhi" -gt 0 ]] ||
+          die "OFF runtime snapshot: invalid go_memstats_heap_inuse_bytes for localhost:${port} (round ${round})"
+        rha="$(receipt_runtime_scalar go_memstats_heap_alloc_bytes "$text")" && [[ "$rha" -gt 0 ]] ||
+          die "OFF runtime snapshot: invalid go_memstats_heap_alloc_bytes for localhost:${port} (round ${round})"
+        rho="$(receipt_runtime_scalar go_memstats_heap_objects "$text")" && [[ "$rho" -gt 0 ]] ||
+          die "OFF runtime snapshot: invalid go_memstats_heap_objects for localhost:${port} (round ${round})"
       fi
       # vertexHLC LWW watermark map (#727): the instantaneous entry count
       # (lantern_vertex_hlc_entries — drained low right after a GC sweep) and
@@ -873,8 +888,10 @@ snapshot_runtime() {
       # NOT collide with the "_entries_high_water" line. A low entries floor
       # paired with a large high-water is the born-expired ttl_churn retention
       # fingerprint (Go never shrinks the map's bucket array after delete).
-      rvhe="$(printf '%.0f' "$(prom_scalar lantern_vertex_hlc_entries "$text")" 2>/dev/null)"; rvhe="${rvhe:-0}"
-      rvhw="$(printf '%.0f' "$(prom_scalar lantern_vertex_hlc_entries_high_water "$text")" 2>/dev/null)"; rvhw="${rvhw:-0}"
+      rvhe="$(receipt_runtime_scalar lantern_vertex_hlc_entries "$text")" ||
+        die "runtime snapshot: invalid lantern_vertex_hlc_entries for localhost:${port} (round ${round})"
+      rvhw="$(receipt_runtime_scalar lantern_vertex_hlc_entries_high_water "$text")" ||
+        die "runtime snapshot: invalid lantern_vertex_hlc_entries_high_water for localhost:${port} (round ${round})"
       # Keep the running minimum (live-set floor) across rounds for the runtime
       # gauges and the instantaneous HLC count; take the MAXIMUM for the
       # high-water, which is monotonic and whose peak is the quantity of
