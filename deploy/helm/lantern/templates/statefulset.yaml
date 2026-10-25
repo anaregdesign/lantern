@@ -92,6 +92,9 @@ spec:
             - name: security-files
               mountPath: /run/lantern-source/security
               readOnly: true
+            - name: security-input
+              mountPath: /run/lantern-source/input
+              readOnly: true
             {{- end }}
             {{- if .Values.peerPlane.enabled }}
             - name: peer-identity
@@ -108,6 +111,20 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- if eq .Values.auth.mode "oidc" }}
+          # Re-read the required supplied Pod-input snapshot on every process start.
+          # This never initializes state or recovers configuration from identity files.
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              set -eu
+              input=/run/lantern-input/config.json
+              [ -f "$input" ] && [ -s "$input" ] && [ ! -L "$input" ]
+              [ "$(wc -c < "$input")" -le 122880 ]
+              LANTERN_SECURITY_CONFIG_JSON="$(cat "$input")"
+              export LANTERN_SECURITY_CONFIG_JSON
+              exec /app/lantern
+          {{- end }}
           {{- if .Values.drain.preStop }}
           # Optional k8s-native drain belt (#768): pause before SIGTERM so
           # kubelet/mesh deregistration settles. The server ALSO drains
@@ -128,9 +145,14 @@ spec:
               containerPort: {{ .Values.metrics.port }}
               protocol: TCP
             {{- end }}
-            {{- if .Values.peerPlane.enabled }}
+            {{- if or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
             - name: peer
               containerPort: {{ .Values.peerPlane.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if eq .Values.auth.mode "oidc" }}
+            - name: control
+              containerPort: {{ .Values.auth.controlPort }}
               protocol: TCP
             {{- end }}
           env:
@@ -173,10 +195,6 @@ spec:
             {{- if eq .Values.auth.mode "oidc" }}
             - name: LANTERN_AUTH_MODE
               value: oidc
-            - name: LANTERN_SECURITY_STORE_MODE
-              value: {{ .Values.auth.storeMode | quote }}
-            - name: LANTERN_SECURITY_CONFIG_FILE
-              value: {{ printf "/run/lantern-security/%s" .Values.auth.nodeFile | quote }}
             {{- end }}
             {{- if .Values.peerPlane.enabled }}
             - name: LANTERN_PEER_LISTEN_ADDR
@@ -223,11 +241,6 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- if eq .Values.auth.mode "oidc" }}
-          envFrom:
-            - configMapRef:
-                name: {{ .Values.auth.configMap | quote }}
-          {{- end }}
           startupProbe:
             exec:
               command: ["/usr/bin/wget", "-qO-", {{ printf "http://127.0.0.1:%v/healthz" .Values.metrics.port | quote }}]
@@ -277,6 +290,10 @@ spec:
               mountPath: /run/lantern-security
               subPath: security
               readOnly: true
+            - name: workload-files
+              mountPath: /run/lantern-input
+              subPath: input
+              readOnly: true
             {{- end }}
             {{- if .Values.peerPlane.enabled }}
             - name: workload-files
@@ -321,6 +338,9 @@ spec:
         - name: security-files
           secret:
             secretName: {{ .Values.auth.existingSecret | quote }}
+        - name: security-input
+          secret:
+            secretName: {{ .Values.auth.configSecret | quote }}
         {{- end }}
         {{- if .Values.peerPlane.enabled }}
         - name: peer-identity

@@ -2,8 +2,16 @@ Lantern has been deployed in namespace {{ .Release.Namespace }} as
 StatefulSet {{ include "lantern.fullname" . }} with {{ .Values.replicaCount }} replica(s).
 
 Public auth mode: {{ .Values.auth.mode }}
-Private signed membership: {{ .Values.peerPlane.enabled }}
+Private signed membership: {{ or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
 Operator renewal must complete before the bounded manifest expires.
+{{- if eq .Values.auth.mode "oidc" }}
+OIDC reads its supplied private Pod-input snapshot on every process start.
+Changing auth.configSecret requires deliberate Pod replacement; container-only
+restart does not refresh that snapshot. No native state initialization is implied.
+Private membership copies have finite expiry; automatic Secret-to-private-file
+renewal delivery is not supplied by this chart. Kubernetes acceptance remains
+held in #1636; see the chart README before selecting a deployment profile.
+{{- end }}
 
 Client-facing service (gRPC):
   {{ include "lantern.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}

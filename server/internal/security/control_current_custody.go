@@ -119,12 +119,12 @@ func currentCustodyPaths(p *CurrentProvisioning) error {
 	return nil
 }
 
-// LoadCurrentProvisioning is also used as a detached, read-only profile probe.
+// Inline provisioning is also used as a detached, read-only profile probe.
 // Startup therefore re-loads and validates its exact original inputs under the
 // custody lease. The preliminary path check only prevents aliasing the lease
 // itself with a provisioned key or family; it does not authorize startup.
 func openCurrentCustody(p *CurrentProvisioning, mode string) (_ *CurrentProvisioning, _ *currentCustody, floors s3aFloors, err error) {
-	if p == nil || p.source == "" && len(p.jsonSource) == 0 || p.binding == [32]byte{} || mode != "fresh" && mode != "resume" {
+	if p == nil || len(p.jsonSource) == 0 || p.binding == [32]byte{} || mode != "fresh" && mode != "resume" {
 		return nil, nil, floors, errCurrentCustody
 	}
 	if err = currentCustodyPaths(p); err != nil {
@@ -172,13 +172,14 @@ func openCurrentCustody(p *CurrentProvisioning, mode string) (_ *CurrentProvisio
 }
 
 func currentCustodyDocument(path string, limit int64, target any) ([]byte, error) {
-	raw, err := currentDocument(path, limit, target)
+	raw, err := s3aReadProvisioned(path, limit)
 	if err != nil {
-		return nil, err
-	}
-	canonical, err := json.Marshal(target)
-	if err != nil || !bytes.Equal(bytes.TrimSuffix(raw, []byte{'\n'}), canonical) {
 		return nil, errors.Join(errCurrentCustody, err)
+	}
+	// Native custody documents have one canonical encoding and may end with one
+	// newline. This dedicated state reader cannot select startup configuration.
+	if s2StrictJSON(bytes.TrimSuffix(raw, []byte{'\n'}), target, DefaultPolicyLimits()) != nil {
+		return nil, errCurrentCustody
 	}
 	return raw, nil
 }

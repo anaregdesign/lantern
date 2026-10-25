@@ -160,3 +160,66 @@ func TestWaitAuthorityTimeAnchorUsesIncomingCancellation(t *testing.T) {
 		}
 	})
 }
+
+func TestAuthorityTimeAcquisitionFailureRetainsFinalCopiedCounts(t *testing.T) {
+	cause := &authorityTimeStartupError{cause: net.ErrClosed, snapshot: decisiontrace.StartupSnapshot{Count: 1, PublishedAttempt: 3}}
+	counts := decisiontrace.AcquisitionCounts{Attempts: 4, Writes: 3, Installations: 2, Failed: true}
+	failure := withAuthorityTimeAcquisitionCounts(cause, counts)
+	if failure.Error() != cause.Error() || !errors.Is(failure, net.ErrClosed) {
+		t.Fatal("acquisition diagnostics changed startup cause")
+	}
+	var diagnostic interface {
+		TimeAcquisitionCounts() decisiontrace.AcquisitionCounts
+	}
+	if !errors.As(errors.Join(errors.New("outer"), failure), &diagnostic) || diagnostic.TimeAcquisitionCounts() != counts {
+		t.Fatal("final acquisition counts did not survive error wrapping")
+	}
+	var startup interface {
+		AuthorityTimeStartupSnapshot() decisiontrace.StartupSnapshot
+	}
+	if !errors.As(failure, &startup) || startup.AuthorityTimeStartupSnapshot().PublishedAttempt != 3 {
+		t.Fatal("accepted startup history was hidden by final counters")
+	}
+	counts.Attempts = 99
+	copied := diagnostic.TimeAcquisitionCounts()
+	copied.Writes = 99
+	if diagnostic.TimeAcquisitionCounts().Attempts != 4 || diagnostic.TimeAcquisitionCounts().Writes != 3 {
+		t.Fatal("returned counts alias caller state")
+	}
+	if withAuthorityTimeAcquisitionCounts(nil, counts) != nil {
+		t.Fatal("passive counters invented a startup error")
+	}
+}
+
+func TestAuthorityTimeAcquisitionFailureCountsAfterDrain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		producer := &authorityTimeProducer{}
+		owner := &authorityTimeOwner{producer: producer, runContext: ctx, cancel: cancel, done: make(chan struct{})}
+		go owner.run(ctx, func(ctx context.Context) (authorityTimeMeasurement, error) {
+			producer.mu.Lock()
+			producer.attempts = 1
+			producer.writes = 1
+			producer.busy = true
+			producer.mu.Unlock()
+			<-ctx.Done()
+			producer.mu.Lock()
+			producer.busy = false
+			producer.mu.Unlock()
+			return authorityTimeMeasurement{}, ctx.Err()
+		})
+		synctest.Wait()
+		owner.close()
+		failure := withAuthorityTimeAcquisitionCounts(context.Canceled, owner.acquisitionCounts())
+		var diagnostic interface {
+			TimeAcquisitionCounts() decisiontrace.AcquisitionCounts
+		}
+		if !errors.As(failure, &diagnostic) {
+			t.Fatal("drained owner lost its actual acquisition observations")
+		}
+		counts := diagnostic.TimeAcquisitionCounts()
+		if counts.Attempts != 1 || counts.Writes != 1 || counts.InFlight || !errors.Is(failure, context.Canceled) {
+			t.Fatal("failure snapshot preceded producer drain", counts)
+		}
+	})
+}

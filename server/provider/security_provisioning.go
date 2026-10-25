@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,27 +27,15 @@ var errSecurityProvisioning = errors.New("security provisioning is invalid, inco
 // SecurityProvisionOptions controls the explicit creation ceremony. Operator
 // signing custody must live outside all serving input and state directories.
 type SecurityProvisionOptions struct {
-	OutputDirectory, OperatorDirectory string
-	ValidFor                           time.Duration
-}
-
-// provisionedSecurityDocument is generated private input. The original setup
-// records the seed policy, never a command to overwrite the current projection.
-type provisionedSecurityDocument struct {
-	Version       uint32                   `json:"version"`
-	Setup         securitySetupJSON        `json:"setup"`
-	Node          string                   `json:"node"`
-	Authority     json.RawMessage          `json:"authority"`
-	CDC           json.RawMessage          `json:"cdc"`
-	Peer          provisionedSecurityPeer  `json:"peer"`
-	SnapshotSpool GraphSnapshotSpoolConfig `json:"snapshot_spool"`
+	OperatorDirectory string
+	ValidFor          time.Duration
 }
 
 type provisionedSecurityPeer struct {
-	Domain                                                                  peerauth.Domain   `json:"domain"`
-	Members                                                                 []peerauth.Member `json:"members"`
-	VerificationKey                                                         []byte            `json:"verification_key"`
-	Listen, Identity, Certificate, Key, Roots, OperatorKey, Manifest, State string
+	Domain                                                          peerauth.Domain   `json:"domain"`
+	Members                                                         []peerauth.Member `json:"members"`
+	VerificationKey                                                 []byte            `json:"verification_key"`
+	Identity, Certificate, Key, Roots, OperatorKey, Manifest, State string
 }
 
 // ProvisionSecurity resolves intent once. It never opens native time, a
@@ -59,37 +48,25 @@ func provisionSecurityWithWriter(ctx context.Context, options SecurityProvisionO
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if os.Getenv("LANTERN_AUTH_MODE") != "oidc" {
-		return errSecurityProvisioning
-	}
-	if err := validateAuthMode(); err != nil {
-		return err
-	}
-	for _, setting := range os.Environ() {
-		name, _, _ := strings.Cut(setting, "=")
-		if name == "LANTERN_SECURITY_CONFIG_JSON" {
-			continue
-		}
-		upper := strings.ToUpper(name)
-		if strings.HasPrefix(upper, "LANTERN_SECURITY_") || strings.HasPrefix(upper, "LANTERN_OIDC_") || strings.HasPrefix(upper, "LANTERN_PEER_") || upper == "LANTERN_PEERS" || strings.HasPrefix(upper, "LANTERN_GRAPH_SNAPSHOT_SPOOL_") {
-			return errSecurityProvisioning
-		}
-	}
-	config, err := loadSecuritySetupJSON(os.Getenv("LANTERN_SECURITY_CONFIG_JSON"))
+	mode, raw, err := securityConfigurationEnvironment()
 	if err != nil {
 		return err
 	}
-	if err := validateSecuritySetup(config); err != nil {
+	if mode != "oidc" {
+		return errSecurityProvisioning
+	}
+	config, err := parseSecurityConfigJSON(raw)
+	if err != nil {
 		return err
 	}
 	if options.ValidFor == 0 {
 		options.ValidFor = 30 * 24 * time.Hour
 	}
 	if options.ValidFor < time.Hour || options.ValidFor > 365*24*time.Hour ||
-		!privateNewDirectory(options.OutputDirectory) || !privateNewDirectory(options.OperatorDirectory) ||
-		pathsOverlap(options.OutputDirectory, options.OperatorDirectory) ||
-		pathsOverlap(config.setup.PersistenceRoot, options.OperatorDirectory) ||
-		pathsOverlap(config.setup.PersistenceRoot, options.OutputDirectory) {
+		!privateNewDirectory(config.MaterialRoot) || !privateNewDirectory(options.OperatorDirectory) ||
+		pathsOverlap(config.MaterialRoot, options.OperatorDirectory) ||
+		pathsOverlap(config.input.PersistenceRoot, options.OperatorDirectory) ||
+		pathsOverlap(config.input.PersistenceRoot, config.MaterialRoot) {
 		return errSecurityProvisioning
 	}
 	image, err := initialSecurityImage(config)
@@ -97,10 +74,13 @@ func provisionSecurityWithWriter(ctx context.Context, options SecurityProvisionO
 		return err
 	}
 	now := time.Now().UTC().Truncate(time.Second)
-	intent := security.ProvisioningOptions{Target: config.setup.TargetPlatform, Now: now, End: now.Add(options.ValidFor), CleanupBy: now.Add(options.ValidFor + time.Minute), Image: image}
-	for _, n := range config.setup.Nodes {
-		intent.Nodes = append(intent.Nodes, security.ProvisioningNode{Name: n.Name, ControlOrigin: n.ControlOrigin, DataOrigin: n.DataOrigin, ControlListen: n.ControlListen,
-			StateDir: filepath.Join(config.setup.PersistenceRoot, n.Name), RenewableDir: filepath.Join(options.OutputDirectory, "nodes", n.Name, "membership")})
+	intent := security.ProvisioningOptions{Target: config.input.TargetPlatform, Now: now, End: now.Add(options.ValidFor), CleanupBy: now.Add(options.ValidFor + time.Minute), Image: image}
+	for _, n := range config.input.Nodes {
+		// The historical authority retains a direct advertised-port default.
+		// Current local binding is applied separately on every invocation.
+		controlOrigin, _ := url.Parse(n.ControlOrigin)
+		intent.Nodes = append(intent.Nodes, security.ProvisioningNode{Name: n.Name, ControlOrigin: n.ControlOrigin, DataOrigin: n.DataOrigin, ControlListen: net.JoinHostPort("", controlOrigin.Port()),
+			StateDir: filepath.Join(config.input.PersistenceRoot, n.Name), RenewableDir: filepath.Join(config.MaterialRoot, "nodes", n.Name, "membership")})
 	}
 	bundle, err := security.GenerateProvisioning(intent)
 	if err != nil {
@@ -128,7 +108,7 @@ func provisionSecurityWithWriter(ctx context.Context, options SecurityProvisionO
 	clear(cursor[:])
 	// Both roots are create-only. Failed or interrupted creation is retained;
 	// no subsequent invocation may turn a partial output into fresh trust.
-	if err := createPrivateDirectory(options.OutputDirectory); err != nil {
+	if err := createPrivateDirectory(config.MaterialRoot); err != nil {
 		return err
 	}
 	if err := createPrivateDirectory(options.OperatorDirectory); err != nil {
@@ -146,31 +126,31 @@ func provisionSecurityWithWriter(ctx context.Context, options SecurityProvisionO
 		dataMembers = append(dataMembers, node.DataSelf)
 	}
 	slices.SortFunc(dataMembers, func(a, b peerauth.Member) int { return strings.Compare(a.Identity, b.Identity) })
-	for i, node := range bundle.Nodes {
+	for _, node := range bundle.Nodes {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		dir := filepath.Join(options.OutputDirectory, "nodes", node.Name)
+		dir := filepath.Join(config.MaterialRoot, "nodes", node.Name)
 		for _, d := range []string{filepath.Dir(dir), dir, filepath.Join(dir, "membership"), filepath.Join(operator, "certificates")} {
 			if err := ensurePrivateDirectory(d); err != nil {
 				return err
 			}
 		}
-		input := config.setup.Nodes[i]
 		dataKey, err := parseOperatorPublicKeyPEM(node.DataOperatorPublicKey)
 		if err != nil {
 			return errSecurityProvisioning
 		}
-		d := provisionedSecurityDocument{Version: 1, Setup: *config.setup, Node: node.Name, Authority: node.AuthorityJSON, CDC: cdc,
-			SnapshotSpool: provisionedSnapshotSpool(filepath.Join(config.setup.PersistenceRoot, node.Name)),
-			Peer: provisionedSecurityPeer{Domain: node.DataDomain, Members: slices.Clone(dataMembers), VerificationKey: slices.Clone(dataKey), Listen: input.DataListen, Identity: node.Identity, Certificate: filepath.Join(dir, "workload.pem"),
+		d := securityMaterialDocument{Version: 1, Node: node.Name, TargetPlatform: config.TargetPlatform, Nodes: securityMaterialNodes(config.input.Nodes), InitialAdmin: config.input.InitialAdmin, Authority: node.AuthorityJSON, CDC: cdc,
+			StatePaths:    securityMaterialStatePaths{PersistenceRoot: config.PersistenceRoot, Directory: filepath.Join(config.PersistenceRoot, node.Name), CustodyDirectory: filepath.Join(config.PersistenceRoot, node.Name)},
+			SnapshotSpool: provisionedSnapshotSpool(filepath.Join(config.input.PersistenceRoot, node.Name)),
+			Peer: provisionedSecurityPeer{Domain: node.DataDomain, Members: slices.Clone(dataMembers), VerificationKey: slices.Clone(dataKey), Identity: node.Identity, Certificate: filepath.Join(dir, "workload.pem"),
 				Key: filepath.Join(dir, "workload-key.pem"), Roots: filepath.Join(dir, "roots.pem"), OperatorKey: filepath.Join(dir, "data-operator.pem"),
-				Manifest: filepath.Join(dir, "membership", "data.json"), State: filepath.Join(config.setup.PersistenceRoot, node.Name, "data-membership")}}
+				Manifest: filepath.Join(dir, "membership", "data.json"), State: filepath.Join(config.input.PersistenceRoot, node.Name, "data-membership")}}
 		raw, err := json.Marshal(d)
 		if err != nil {
 			return errSecurityProvisioning
 		}
-		files := map[string][]byte{"security.json": raw, "workload.pem": node.CertificatePEM, "workload-key.pem": node.TLSKeyPEM, "roots.pem": node.RootsPEM, "data-operator.pem": node.DataOperatorPublicKey,
+		files := map[string][]byte{"identity.json": raw, "workload.pem": node.CertificatePEM, "workload-key.pem": node.TLSKeyPEM, "roots.pem": node.RootsPEM, "data-operator.pem": node.DataOperatorPublicKey,
 			"membership/control.json": bundle.Operator.ControlManifest, "membership/data.json": node.DataManifest}
 		for name, value := range files {
 			if err := write(filepath.Join(dir, name), value); err != nil {
@@ -209,40 +189,55 @@ func provisionSecurityWithWriter(ctx context.Context, options SecurityProvisionO
 			return err
 		}
 	}
-	return syncSecurityDirectory(options.OutputDirectory)
+	return syncSecurityDirectory(config.MaterialRoot)
 }
 
-func validateSecuritySetup(config SecurityConfig) error {
-	s := config.setup
-	if s == nil || s.TargetPlatform != "linux" && s.TargetPlatform != "darwin" || !cleanAbsolutePath(s.PersistenceRoot) || len(s.Nodes) < 1 || len(s.Nodes) > 31 ||
+// validateSecurityInput applies every-start structural and local trust-boundary
+// checks. Fresh administrator usability is deliberately checked only at creation.
+func validateSecurityInput(config SecurityConfig) error {
+	s := config.input
+	if s == nil || s.TargetPlatform != "linux" && s.TargetPlatform != "darwin" || !cleanAbsolutePath(s.PersistenceRoot) || !cleanAbsolutePath(s.MaterialRoot) ||
+		pathsOverlap(s.PersistenceRoot, s.MaterialRoot) || len(s.Nodes) < 1 || len(s.Nodes) > 31 ||
+		s.InitialAdmin.Issuer == "" || s.InitialAdmin.Subject == "" || len(s.InitialAdmin.Subject) > 255 ||
 		s.TLSTermination != "proxy" && s.TLSTermination != "server" || s.TLSTermination == "server" && s.TLS.CertPEM == "" ||
 		s.TLSTermination == "proxy" && (len(config.TrustedProxyIPs) == 0 || s.TLS.CertPEM != "" || s.TLS.KeyPEM != "" || s.TLS.ClientCAPEM != "") {
 		return errSecurityProvisioning
 	}
 	seen := map[string]bool{}
+	found := false
 	for _, node := range s.Nodes {
-		if !validSecurityNodeName(node.Name) || seen[node.Name] || !matchingPrivateListener(node.DataOrigin, node.DataListen) || !matchingPrivateListener(node.ControlOrigin, node.ControlListen) {
+		if !validSecurityNodeName(node.Name) || seen[node.Name] || !validSecurityPrivateOrigin(node.DataOrigin) || !validSecurityPrivateOrigin(node.ControlOrigin) || !validSecurityLocalListen(node.DataListen) || !matchingSecurityControlListen(node.ControlOrigin, node.ControlListen) {
 			return errSecurityProvisioning
 		}
 		seen[node.Name] = true
+		found = found || node.Name == s.Node
 	}
-	_, err := initialSecurityImage(config)
-	return err
+	if !found {
+		return errors.New("security configuration must select one explicit fixed node")
+	}
+	for _, setting := range os.Environ() {
+		name, _, _ := strings.Cut(setting, "=")
+		upper := strings.ToUpper(name)
+		if strings.HasPrefix(upper, "LANTERN_PEER_") || upper == "LANTERN_PEERS" || strings.HasPrefix(upper, "LANTERN_GRAPH_SNAPSHOT_SPOOL_") || strings.HasPrefix(upper, "LANTERN_CDC_") {
+			return errors.New("security JSON cannot be combined with separate peer, Snapshot or CDC settings")
+		}
+	}
+	return nil
 }
 
 func initialSecurityImage(config SecurityConfig) (security.Image, error) {
-	admin := config.setup.InitialAdmin
+	admin := config.input.InitialAdmin
 	if admin.Issuer == "google" {
 		admin.Issuer = security.GoogleIssuer
 	}
 	found := false
-	for _, issuer := range config.InitialIssuers {
+	for _, issuer := range config.Issuers {
 		found = found || issuer.URL == admin.Issuer && issuer.Enabled && issuer.BrowserEnabled()
 	}
 	if !found || admin.Subject == "" {
 		return security.Image{}, errSecurityProvisioning
 	}
-	image := security.Image{Version: security.ImageVersion, BootstrapRevision: 1, Issuers: config.InitialIssuers,
+	image := security.Image{Version: security.ImageVersion, BootstrapRevision: 1, Issuers: config.Issuers,
 		Roles: []security.Role{{ID: "security_admin", Name: "Security administrator", Rules: []security.PermissionRule{{ID: "manage", Effect: security.Allow, Action: security.SecurityManage, Resource: security.GlobalResource}}}},
 		Principals: []security.Principal{{Identity: security.Identity{Kind: security.OIDCPrincipal, Issuer: admin.Issuer, Subject: admin.Subject}, State: security.Active, HumanIssuerConfigRevision: 1,
 			Assignments: []security.RoleAssignment{{RoleID: "security_admin", EnvOwned: true}}}}}
@@ -250,74 +245,6 @@ func initialSecurityImage(config SecurityConfig) (security.Image, error) {
 		return security.Image{}, errSecurityProvisioning
 	}
 	return image, nil
-}
-
-func loadProvisionedSecurity(path string) (SecurityConfig, error) {
-	raw, err := readSecurityOperatorFile(path, true, security.MaxImageBytes+(2<<20))
-	if err != nil {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	defer clear(raw)
-	var d provisionedSecurityDocument
-	if err := decodeSecurityConfigJSON(string(raw), &d, func(raw []byte) error { return security.ValidateProvisioningJSON(raw) }); err != nil {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	if d.Version != 1 || len(d.Authority) == 0 {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	setupRaw, err := json.Marshal(d.Setup)
-	if err != nil {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	config, err := loadSecuritySetupJSON(string(setupRaw))
-	if err != nil || validateSecuritySetup(config) != nil {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	found := false
-	for _, node := range d.Setup.Nodes {
-		found = found || node.Name == d.Node && node.DataListen == d.Peer.Listen
-	}
-	if !found {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	dir := filepath.Dir(path)
-	if verifySecurityCompletion(dir, raw, d.Authority) != nil {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	state := filepath.Join(d.Setup.PersistenceRoot, d.Node)
-	if validateProvisionedSnapshotSpool(d.SnapshotSpool, state) != nil {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	if d.Peer.Certificate != filepath.Join(dir, "workload.pem") || d.Peer.Key != filepath.Join(dir, "workload-key.pem") || d.Peer.Roots != filepath.Join(dir, "roots.pem") ||
-		d.Peer.OperatorKey != filepath.Join(dir, "data-operator.pem") || d.Peer.Manifest != filepath.Join(dir, "membership", "data.json") || d.Peer.State != filepath.Join(state, "data-membership") {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	image, err := initialSecurityImage(config)
-	if err != nil {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	manifest, err := readSecurityOperatorFile(filepath.Join(dir, "membership", "control.json"), true, peerauth.MaxManifestBytes)
-	if err != nil || security.ValidateProvisioningAuthorityPaths(d.Authority, state, filepath.Join(dir, "membership")) != nil || security.ValidateProvisioningAuthorityJSON(d.Authority, manifest, d.Setup.TargetPlatform, image) != nil {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	config.AuthorityJSON, config.CDC = append([]byte(nil), d.Authority...), append([]byte(nil), d.CDC...)
-	config.InitialImage = &image
-	config.ProvisionedFile, config.StateDirectory, config.TargetPlatform = path, filepath.Join(d.Setup.PersistenceRoot, d.Node), d.Setup.TargetPlatform
-	config.ProvisionedSnapshotSpool = &d.SnapshotSpool
-	profile, err := security.ProvisioningAuthorityProfile(d.Authority, manifest, d.Setup.TargetPlatform)
-	if err != nil {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	identity, err := loadProvisionedPeerIdentity(d.Peer, profile, len(d.Setup.Nodes))
-	if err != nil {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	config.ProvisionedPeer = &PeerPlaneConfig{ListenAddress: d.Peer.Listen, Identity: identity}
-	config.setup = nil
-	if err := validateSecurityConfig(config); err != nil {
-		return SecurityConfig{}, errSecurityProvisioning
-	}
-	return config, nil
 }
 
 func validSecurityNodeName(s string) bool {
@@ -332,14 +259,32 @@ func validSecurityNodeName(s string) bool {
 	return s[0] != '-' && s[len(s)-1] != '-'
 }
 
-func matchingPrivateListener(origin, listen string) bool {
+func validSecurityPrivateOrigin(origin string) bool {
 	u, err := url.Parse(origin)
-	_, port, e := net.SplitHostPort(listen)
-	return err == nil && e == nil && u.Scheme == "https" && u.Port() != "" && u.Port() == port
+	if err != nil || !canonicalSecurityOrigin(origin) || u.Port() == "" {
+		return false
+	}
+	n, err := strconv.Atoi(u.Port())
+	return err == nil && n >= 1 && n <= 65535 && strconv.Itoa(n) == u.Port()
+}
+
+func validSecurityLocalListen(listen string) bool {
+	host, port, err := net.SplitHostPort(listen)
+	n, numberErr := strconv.Atoi(port)
+	return err == nil && numberErr == nil && n >= 0 && n <= 65535 && strconv.Itoa(n) == port && !strings.ContainsAny(host, " \t\r\n/\\@?#%")
+}
+
+func matchingSecurityControlListen(origin, listen string) bool {
+	if !validSecurityLocalListen(listen) {
+		return false
+	}
+	u, err := url.Parse(origin)
+	_, port, listenErr := net.SplitHostPort(listen)
+	return err == nil && listenErr == nil && port == u.Port()
 }
 
 func cleanAbsolutePath(path string) bool {
-	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != "/"
+	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != "/" && !strings.ContainsAny(path, "\x00\r\n")
 }
 func pathsOverlap(a, b string) bool {
 	return a == b || strings.HasPrefix(a, b+string(filepath.Separator)) || strings.HasPrefix(b, a+string(filepath.Separator))

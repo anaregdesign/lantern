@@ -38,19 +38,20 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
 
 ## Architecture notes
 
-- **Generated OIDC setup (#1876)**: small `LANTERN_SECURITY_CONFIG_JSON` intent
-  belongs only to explicit `provision-security`; initialization/startup instead
-  select `{"provisioned_file":"/absolute/node/security.json"}`. Generate immutable
-  trust once for explicit target/fixed nodes; init native state once per target;
-  ordinary startup resumes intact state and never repairs/reset missing state.
-  Keep operator signing custody outside serving inputs and renew both control
-  and data membership even for standalone. `renew-security` prepares candidates
-  only; reviewed certificate maintenance requires CLEAN stop, unchanged paths,
-  publisher advance/resume and restart, never state reset or hot reload.
-  Browser/API profiles are independent;
-  absent API profile rejects external API JWTs. Deliberate external file-backed
-  provisioning remains separate. Preserve native custody/time/quorum and secret
-  destination/origin/endpoint checks. Source tests do not qualify real providers.
+- **Declarative OIDC configuration (#1883)**: supply the same human-authored
+  `LANTERN_SECURITY_CONFIG_JSON` to provisioning, explicit initialization and
+  every start/restart. `material_root` retains identity keys, fixed historical
+  trust and seed identity; it is never a current configuration fallback. Keep
+  mutable native state under separate `persistence_root`, and operator/CA
+  signing custody outside all serving mounts. Current configured Issuers are
+  reconciled through native certified compare-and-swap before public readiness;
+  mismatched desired Issuer intent leaves that node unavailable. Configuration
+  adds no Principals, Roles or assignments, and restart never resets policy or
+  restores a suspended administrator. Browser/API profiles remain independent.
+  Missing/partial/mismatched configuration, identity material or state fails
+  closed; no legacy readers, fresh fallback or repeated key generation. Preserve
+  quorum, trusted time, custody, renewal, exact secret destinations and origins.
+  OFF accepts no security JSON, even an empty present value.
 
 - **Minimize external dependencies.** Lantern is the database; do not add
   PostgreSQL as a runtime dependency. Prefer native storage/replication/

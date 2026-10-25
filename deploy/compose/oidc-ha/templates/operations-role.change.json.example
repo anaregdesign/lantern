@@ -1,0 +1,14 @@
+{
+  "putRole": {
+    "id": "ha_operations_reader",
+    "name": "HA example operations reader",
+    "rules": [
+      {
+        "id": "operations-read",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_OPERATIONS_READ",
+        "global": true
+      }
+    ]
+  }
+}

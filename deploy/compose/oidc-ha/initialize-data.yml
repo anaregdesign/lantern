@@ -1,0 +1,12 @@
+# EXPLICIT first application startup only, AFTER init-security, with new WALs.
+# It does not change the human security JSON. Normal compose never includes it.
+services:
+  lantern-0:
+    environment:
+      LANTERN_RECEIPT_WAL_MODE: fresh
+  lantern-1:
+    environment:
+      LANTERN_RECEIPT_WAL_MODE: fresh
+  lantern-2:
+    environment:
+      LANTERN_RECEIPT_WAL_MODE: fresh

@@ -196,7 +196,7 @@ func (o *authorityOriginOwner) authorizeOutput(ctx context.Context, c authorityC
 // The caller owns kernel.gate and fixes all non-time inputs before this final
 // native sample. The public admission/output adapters share the same event.
 func (o *authorityOriginOwner) authorizeCurrentCredentialLocked(ctx context.Context, c authorityCredential) (authorityCurrentTime, error) {
-	if ctx.Err() != nil || !c.matches(o.network.kernel.replayState.projection) {
+	if ctx.Err() != nil || !o.configuredReadyLocked() || !c.matches(o.network.kernel.replayState.projection) {
 		return authorityCurrentTime{}, ErrPermissionDenied
 	}
 	start, expiry, err := o.eligibilityLocked(ctx)

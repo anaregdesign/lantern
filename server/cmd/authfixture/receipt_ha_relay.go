@@ -81,7 +81,11 @@ func receiptHARelays(f fixture, control *receiptHAControl, listeners []net.Liste
 			return nil, err
 		}
 		leaf := r.certs[i].Leaf
-		identity := node.Environment["LANTERN_PEER_WORKLOAD_ID"]
+		material, err := fixturePeerMaterial(node)
+		if err != nil {
+			return nil, err
+		}
+		identity := material.SelfIdentity
 		if len(leaf.URIs) != 1 || leaf.URIs[0].String() != identity {
 			return nil, errors.New("relay workload identity mismatch")
 		}
@@ -166,6 +170,13 @@ func (r *receiptHADataRelays) resume(f fixture) error {
 	}
 	for recipient, node := range f.Nodes {
 		address := node.Environment["LANTERN_PEER_LISTEN_ADDR"]
+		if node.StartupFile != "" {
+			var err error
+			address, err = fixtureDataListen(node)
+			if err != nil {
+				return err
+			}
+		}
 		if _, err := fixtureReservedPort(address, true); err != nil {
 			return err
 		}

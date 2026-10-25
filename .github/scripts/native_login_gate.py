@@ -131,7 +131,7 @@ def require_serving(log, profile="native"):
             len(re.findall(marker + r"_fixture_stopped reason=(released|timeout)\b", log)) != 1 or
             f"{other}_fixture_ready" in log or f"/{other}_fixture_serving_export" in log or
             re.findall(r"current_constructor node=(\d+) mode=(\w+) passed=(\w+)", log) !=
-            [(str(i), "fresh", "true") for i in (1, 2, 3)] or
+            [(str(i), mode, "true") for mode in ("fresh", "resume") for i in (1, 2, 3)] or
             any(ROOT_TEST + "/" + case in log for case in CASES)):
         raise RuntimeError("native serving evidence missing, synthetic-time, destructive or failed")
 
@@ -235,7 +235,12 @@ def run(root, evidence, serving=None):
         command(args, timeout=timeout + 20)
         last_log = evidence / receipt["commands"][-1]["log"]
         if serving is not None:
-            require_serving(last_log.read_text(), serving.profile)
+            log = last_log.read_text()
+            require_serving(log, serving.profile)
+            receipt["native_owner_constructors"] = [
+                {"node": int(node), "phase": "initialize" if mode == "fresh" else "serve", "mode": mode}
+                for node, mode, _ in re.findall(r"current_constructor node=(\d+) mode=(\w+) passed=(\w+)", log)
+            ]
         else:
             require_cases(last_log.read_text())
         if source_identity(root) != receipt["source_sha256"] or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip() != receipt["head"]:

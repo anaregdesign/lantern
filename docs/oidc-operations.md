@@ -45,15 +45,15 @@ used: ordinary login requires an existing `(iss, sub)` Principal and explicit
 Role assignments. Explicit self-registration is a separate, default-disabled
 operator policy described below.
 
-Install each Apple handle through the existing `LANTERN_OIDC_SECRET_BINDINGS`
-map with exact `issuer`, `client_id`, `token_origin` (`https://appleid.apple.com`)
-and an operator-private absolute `path`. The file contains Apple's signed ES256
-client-secret JWT, no newline; private-file checks and the 4096-byte bound apply.
-The exchange uses `client_secret_post` at the pinned `/auth/token`, once, with
-no HTTP retry. The operator creates/rotates the signing key/JWT; neither Server
-nor app generates provider credentials. Atomic file replacement is read on the
-next exchange. Invalid/expired secrets fail at Apple; they are not refreshed by
-Lantern. Do not expose that map, file path, JWT or signing key in public metadata.
+Supply each Apple native profile's `client_secret` in the same human
+`LANTERN_SECURITY_CONFIG_JSON`, with its exact issuer/client and approved
+`token_origin` (`https://appleid.apple.com`). It contains Apple's signed ES256
+client-secret JWT, not a `.p8` signing key; the bounded no-newline secret and
+exact destination checks remain. The operator creates/rotates that JWT and
+supplies it again on startup. The exchange uses `client_secret_post` at the
+pinned `/auth/token`, once, with no HTTP retry. Invalid/expired secrets fail at
+Apple; Lantern does not sign or refresh provider credentials. Secret bytes are
+not persisted into identity material or replicated Issuer records.
 
 Management Issuer responses expose `has_secret_binding`, never secret handles
 or file contents. Omit each Apple profile's `secret_ref` to preserve an existing
@@ -119,65 +119,61 @@ signup, migrate existing data or qualify real provider/device behavior.
 
 ## Public mode and bootstrap
 
-For generated setup, select `LANTERN_AUTH_MODE=oidc` and inject small setup
-intent into `LANTERN_SECURITY_CONFIG_JSON`: public origin/TLS termination,
-explicit target platform, persistence root, fixed nodes, exact initial
-administrator issuer/subject and provider profiles/secrets. Run
-`lantern provision-security --output ... --operator-directory ...` once. It
-generates and validates immutable trust and independent keys without opening
-native time, state or listeners. See the
-[provisioning guide](../deploy/examples/auth/README.md#environment-json-startup)
-and [OFF/OIDC Compose examples](../deploy/compose/README.md#separate-off-and-oidc-examples).
+Select `LANTERN_AUTH_MODE=oidc` and supply the same complete human-authored
+`LANTERN_SECURITY_CONFIG_JSON` to `provision-security`, `init-security` and
+every normal start/restart. It contains public origin/TLS termination, explicit
+target platform, `material_root`, separate `persistence_root`, fixed nodes,
+selected `node`, exact initial administrator and current provider profiles and
+secrets. For one node the unique named entry selects it automatically; two or
+more entries require `node`. See the
+[configuration guide](../deploy/examples/auth/README.md#environment-json-startup)
+and [Compose example](../deploy/compose/README.md#oidc).
 
-For initialization and every normal start, replace the setup input with only
-`{"provisioned_file":"/absolute/provisioned/nodes/node-1/security.json"}`.
-Run `init-security` once per new actual target node, then start normally to
-resume its intact CLEAN custody and native state. Missing, partial, tampered or
-incompatible files fail closed without initialization, migration or reset.
-Later managed Roles, Issuers, sessions and revocations are never overwritten by
-initial setup on restart. Do not mix this path with separate OIDC/security,
-TLS-file or CDC environment settings.
+Run `lantern provision-security --operator-directory ...` once. It creates
+independent identity keys and fixed historical trust under `material_root`,
+without opening native state, trusted time or listeners. On each actual target,
+`init-security` creates fresh native state once under `persistence_root` and
+completes orderly CLEAN shutdown. Normal startup resumes that intact state and
+reads current settings from the supplied JSON again. Identity material is not a
+saved configuration; missing JSON, missing/partial material or mismatched state
+never triggers fallback, trust regeneration, migration or reset. OFF accepts no
+security JSON, including an explicitly empty value.
 
-Standalone uses one fixed voter; clustering selects two to 31 fixed voters at
-provisioning. This is not dynamic membership or live standalone expansion.
-Both control and data memberships need continuous short-lived renewal through
-the separate generated operator configuration, including for a single node.
-Only signed inputs are mounted into Server; operator signing custody stays
-outside serving runtimes. Keep the finite maintenance/certificate horizon in the
-[renewal procedure](live-membership-renewal.md).
-`renew-security` prepares same-identity private workload certificates and the next
-finite operator window without publishing live files or changing the journal.
-Its [maintenance sequence](live-membership-renewal.md#renew-generated-workload-certificates)
-requires reviewed candidates, CLEAN node shutdown, unchanged original file/state
-paths, explicit publisher advance/resume and node restart. Initial administrators
-must have an enabled browser profile for login and operation reauthentication;
-additional API-only/native-only Issuers remain independent.
+Current configured Issuers are declarative. Add a later Issuer to `issuers`,
+keep all intended configuration-owned Issuers in the list, and supply the updated
+configuration on restart. Native certified compare-and-swap reconciles that
+intent before public readiness. A node whose supplied desired Issuer set differs
+from the certified set remains publicly unavailable. This does not create
+Principals, Roles or assignments, appropriate management-owned Issuers, restore
+suspended users or regrant withdrawn permissions. Existing authorization and
+last-administrator invariants still apply. Initial administrator identity is a
+fresh-state seed and an exact original-identity assertion on resume, never a
+restart reconciliation instruction. No manual desired revision is needed.
 
-Browser and external API profiles are independent. Browser-only does not
-require `api_audience`; without an API profile external API JWTs are rejected.
-API-only does not require browser client/redirect setup. A Google browser preset
-pins canonical issuer, RS256 and token origin while preserving callback,
-secret-recipient, token-type/audience and endpoint checks. Native profiles retain
-their separate client/presenter and secret binding rules.
+Standalone uses one fixed voter; the topology may contain one to 31 fixed
+voters. This is not dynamic membership or live standalone expansion. Both
+control and data memberships require continuous short-lived renewal through the
+external operator, including for one node. Operator/CA signing keys stay outside
+all serving mounts. `renew-security` prepares same-key certificates and the next
+finite window from operator/identity material; it reads no saved user setup or
+provider secrets. Its [maintenance sequence](live-membership-renewal.md#renew-generated-workload-certificates)
+preserves original paths/state and uses CLEAN stop, reviewed installation,
+explicit publisher advance/resume and node restart.
 
-The file-based inputs below remain deliberate external provisioning and
-validation interfaces. They are not required by the generated-reference path,
-and no reader accepts the retired complete inline-authority JSON.
+Browser and external API profiles are independent. Browser-only needs no
+`api_audience`; absent API configuration rejects external API JWTs. API-only
+needs no browser client/redirect. Fresh provisioning requires the initial
+administrator's enabled Issuer to provide a browser profile for login and operation-purpose reauthentication.
+Google's preset pins canonical issuer, RS256 and token origin. Native profile,
+secret destination, endpoint/SSRF and exact public-origin/proxy checks remain.
+Current provider secrets, public TLS, IdP roots/private origins and proxy settings
+come only from the supplied configuration; none is recovered from identity files.
 
-No authentication environment variables means OFF. Configure OIDC explicitly
-with the complete [env contract](env.md). Partial, unknown or mixed auth config
-fails startup; no error falls back to OFF. Retired deployment-wide static bearer
-settings are rejected, including empty values. Nonempty `LANTERN_PEERS` and
-legacy peer discovery/credentials cannot enable HA or accompany signed membership;
-configure the separate private workload plane below.
+No legacy file-backed OIDC environment recipes or generated runtime-config
+reference are supported. External material uses the same typed configuration and
+identity-material format. Generic OFF private-peer controls retain their
+independent workload plane; no authentication environment means standalone OFF.
 
-Externally provisioned file-backed OIDC requires `LANTERN_SECURITY_CONFIG_FILE`,
-`LANTERN_SECURITY_STORE_MODE` (`fresh` or `resume`) and one exact HTTPS browser origin. Independent genesis
-contains the exact administrator Issuer/subjects, Role-only machine credentials,
-issuer client/audience/algorithm policy and environment-owned assignments.
-Runtime environment variables no longer reconcile or recreate administrators.
-Admin manages mutable registered Issuers, users and assignments through current
-reviewed control APIs.
 Identity is the verified Issuer/subject pair, not email, display name or a client
 header. Machines use dedicated credentials bound only to Roles. The approved
 actor policy allows authorized management reference/status reads, but no
@@ -190,9 +186,9 @@ and approved ordinary management do not require recent `auth_time`. Google
 Security bundle, extra claims and their app publication/verification are
 optional and outside baseline gates.
 
-Provision fresh state only for a new original cohort. Resume uses the exact
-original documents, journals and independent custody/minimum floors. It cannot
-recover serving authority from persisted bytes alone. Prepare returns a server
+Initialize native state only for a new original cohort. Resume uses supplied
+configuration, fixed identity material, intact journals and independent
+custody/minimum floors. It cannot recover serving authority from persisted bytes alone. Prepare returns a server
 ID bound to the full profile, semantic cut, actor and exact intent; retain it for
 Apply and status reconciliation. APPLIED proves the original committed result;
 WAITING and STOPPED separately describe cessation of stale authorization.
@@ -288,7 +284,7 @@ no IdP or browser session is involved.
 For OIDC, serve Admin and its browser/auth/RPC routes under the same configured
 HTTPS public origin. Select that exact HTTPS origin as the Admin gateway; the
 current `http://localhost:6380` connection default does not configure a proxied
-OIDC deployment. Match `LANTERN_OIDC_BROWSER_ORIGIN` and the exact registered
+OIDC deployment. Match the supplied JSON `public_origin` and the exact registered
 Issuer-specific callback to that origin. Pin `/auth/*`,
 `/browser/*` and security/control APIs to a pinned eligible authority origin. Verify TLS to the
 Server; for private CAs mount `LANTERN_ADMIN_SERVER_CA_FILE`. A plaintext
@@ -300,7 +296,7 @@ The optional Admin Caddy proxy uses `LANTERN_ADMIN_SERVER_UPSTREAM`, for example
 `https://server.internal.example:6380`, chosen by the operator. Its certificate
 must match that upstream hostname, and the Server must receive the configured
 public Host/scheme through the trusted proxy boundary. Configure exact proxy
-addresses with `LANTERN_OIDC_TRUSTED_PROXY_IPS` when required. A browser-entered
+addresses with the supplied JSON `trusted_proxy_ips` when required. A browser-entered
 gateway URL never chooses Caddy's upstream. An HTTPS frontend does not certify
 an unverified upstream hop, a wrong callback or an untrusted forwarded header.
 

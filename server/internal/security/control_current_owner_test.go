@@ -22,7 +22,13 @@ func TestCurrentCustodyRunningBarrierNativeGate(t *testing.T) {
 	if os.Getenv("LANTERN_CURRENT_CUSTODY_GATE") != "1" {
 		t.Skip("explicit production native custody container gate")
 	}
-	p, err := LoadCurrentProvisioning(os.Getenv("LANTERN_SECURITY_CONFIG_FILE"))
+	// Historical custody-barrier evidence is a private fixture input. Product
+	// startup still requires the full supplied declarative document separately.
+	raw, err := os.ReadFile(os.Getenv("LANTERN_CURRENT_FIXTURE_AUTHORITY_FILE"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := LoadCurrentProvisioningJSON(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +41,7 @@ func TestCurrentCustodyRunningBarrierNativeGate(t *testing.T) {
 	custody.io.syncDirectory = func(path string) error {
 		return errors.Join(privatefile.SyncDirectory(path), failure)
 	}
-	owner, err := openCurrentAuthorityOwnerWithCustody(t.Context(), p.config, p.originKey, "https://admin.example", true, floors, custody)
+	owner, err := openCurrentAuthorityOwnerWithCustody(t.Context(), p.config, "", "https://admin.example", true, floors, custody)
 	if owner != nil || !errors.Is(err, failure) {
 		if owner != nil {
 			_ = owner.network.Close()

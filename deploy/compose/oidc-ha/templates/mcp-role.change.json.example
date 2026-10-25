@@ -1,0 +1,104 @@
+{
+  "putRole": {
+    "id": "ha_mcp_context",
+    "name": "HA example scoped MCP context",
+    "rules": [
+      {
+        "id": "agents-vertex-read",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_VERTEX_READ",
+        "prefix": "agents."
+      },
+      {
+        "id": "agents-vertex-write",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_VERTEX_WRITE",
+        "prefix": "agents."
+      },
+      {
+        "id": "agents-vertex-delete",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_VERTEX_DELETE",
+        "prefix": "agents."
+      },
+      {
+        "id": "agents-query",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_QUERY",
+        "prefix": "agents."
+      },
+      {
+        "id": "claims-demo-vertex-read",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_VERTEX_READ",
+        "prefix": "claims.demo."
+      },
+      {
+        "id": "claims-demo-vertex-write",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_VERTEX_WRITE",
+        "prefix": "claims.demo."
+      },
+      {
+        "id": "claims-demo-vertex-delete",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_VERTEX_DELETE",
+        "prefix": "claims.demo."
+      },
+      {
+        "id": "claims-demo-query",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_QUERY",
+        "prefix": "claims.demo."
+      },
+      {
+        "id": "notes-vertex-read",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_VERTEX_READ",
+        "prefix": "notes."
+      },
+      {
+        "id": "notes-vertex-write",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_VERTEX_WRITE",
+        "prefix": "notes."
+      },
+      {
+        "id": "notes-vertex-delete",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_VERTEX_DELETE",
+        "prefix": "notes."
+      },
+      {
+        "id": "notes-query",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_QUERY",
+        "prefix": "notes."
+      },
+      {
+        "id": "demo-vertex-read",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_VERTEX_READ",
+        "prefix": "demo."
+      },
+      {
+        "id": "demo-vertex-write",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_VERTEX_WRITE",
+        "prefix": "demo."
+      },
+      {
+        "id": "demo-vertex-delete",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_VERTEX_DELETE",
+        "prefix": "demo."
+      },
+      {
+        "id": "demo-query",
+        "effect": "SECURITY_EFFECT_ALLOW",
+        "action": "SECURITY_ACTION_QUERY",
+        "prefix": "demo."
+      }
+    ]
+  }
+}

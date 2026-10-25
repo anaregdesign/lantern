@@ -123,6 +123,19 @@ func TestCurrentCustodyProcessGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.machine = string(machine)
+	// The isolated probe sees only its own synthetic credential and public
+	// trust. Include these inputs in the original immutable fixture manifest.
+	public, err := os.ReadFile("/provision/public.pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for node := 1; node <= 3; node++ {
+		for name, raw := range map[string][]byte{"machine.token": machine, "public.pem": public} {
+			if err := createPrivateTestFile(filepath.Join("/provision", fmt.Sprintf("node-%d", node), name), raw); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	provisioning := custodyGateProvisioning(t)
 	custodyGateJSON(t, "/control/provision-manifest.json", provisioning)
 	for _, host := range hosts {
@@ -271,8 +284,12 @@ func custodyGatePublicTLS(t *testing.T, hosts []string) tls.Certificate {
 }
 
 func custodyGateTransport(t *testing.T) *http.Transport {
+	return custodyGateTransportForMaterial(t, "/provision")
+}
+
+func custodyGateTransportForMaterial(t *testing.T, directory string) *http.Transport {
 	t.Helper()
-	raw, err := os.ReadFile("/provision/public.pem")
+	raw, err := os.ReadFile(filepath.Join(directory, "public.pem"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,11 +539,15 @@ func TestCurrentCustodyLocalProbe(t *testing.T) {
 		t.Skip("explicit isolated-container custody probe")
 	}
 	endpoint := os.Getenv("LANTERN_CURRENT_CUSTODY_NODE_URL")
-	raw, err := os.ReadFile("/provision/machine.token")
+	directory := os.Getenv("LANTERN_CURRENT_CUSTODY_NODE_MATERIAL")
+	if directory != "/provision/node-1" && directory != "/provision/node-2" && directory != "/provision/node-3" {
+		t.Fatal("isolated probe requires its own explicit node material directory")
+	}
+	raw, err := os.ReadFile(filepath.Join(directory, "machine.token"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	transport := custodyGateTransport(t)
+	transport := custodyGateTransportForMaterial(t, directory)
 	defer transport.CloseIdleConnections()
 	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{Timeout: time.Second}).DialContext(ctx, network, "127.0.0.1:6380")

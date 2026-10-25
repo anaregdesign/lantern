@@ -1,6 +1,7 @@
 """Exercise real git ranges and the checked-in workflow routing contracts."""
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -366,10 +367,13 @@ class AdminReleaseGuidanceTest(unittest.TestCase):
                         'select that exact origin',
                         'public_origin', 'https://admin.example.com:8443',
                         'LANTERN_AUTH_MODE=oidc', 'LANTERN_SECURITY_CONFIG_JSON',
-                        'lantern provision-security',
-                        '.authority.genesis.Image.issuers[]', 'redirect_uri',
+                        'provision-security --operator-directory',
+                        'callback derived from the supplied public origin and canonical Issuer',
                         'external membership publisher', 'init-security',
-                        'provisioned_file', 'resumes intact state',
+                        'material_root', 'every normal start/restart',
+                        'Later Issuer additions belong in that same supplied configuration',
+                        'without granting users, Roles or assignments',
+                        'missing input never falls back',
                         '/auth/*', '/browser/*', '/graph.v1.*/*',
                         'LANTERN_ADMIN_SERVER_UPSTREAM', 'scheme://hostname:port',
                         'https://authority.internal.example:6380',
@@ -390,21 +394,12 @@ class AdminReleaseGuidanceTest(unittest.TestCase):
                         'browser local storage and Vite env',
                     ):
                         self.assertIn(contract, notes)
-                    selector = re.search(r"^jq -er '([^']+)' ", notes, re.MULTILINE).group(1)
-                    private = root / 'private-node.json'
-                    private.write_text(json.dumps({
-                        'setup': {'client_secret': 'FAKE_PRIVATE_SECRET'},
-                        'authority': {'genesis': {'Image': {'issuers': [
-                            {'redirect_uri': 'https://admin.example.invalid/auth/callback/public'},
-                            {'redirect_uri': ''},
-                        ]}}, 'origin_key': 'FAKE_PRIVATE_KEY'},
-                    }))
-                    callbacks = subprocess.run(['jq', '-er', selector, str(private)],
-                                               capture_output=True, text=True)
-                    self.assertEqual(callbacks.returncode, 0, callbacks.stderr)
-                    self.assertEqual(callbacks.stdout,
-                                     'https://admin.example.invalid/auth/callback/public\n')
-                    self.assertIn(selector, (ROOT / 'admin/README.md').read_text())
+                    callback = "/auth/callback/" + hashlib.sha256(b"https://accounts.google.com").hexdigest()
+                    self.assertIn(callback, notes)
+                    self.assertNotIn(".authority.genesis", notes)
+                    self.assertNotIn("provisioned_file", notes)
+                    self.assertNotIn("FAKE_PRIVATE_SECRET", notes)
+                    self.assertNotIn("FAKE_PRIVATE_KEY", notes)
                     for path in ('deploy/examples/auth/README.md#environment-json-startup',
                                  'docs/oidc-operations.md#browser-and-diagnostics-boundary',
                                  'docs/ha-runbook.md', 'server/README.md'):

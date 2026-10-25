@@ -3,37 +3,26 @@ package security
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
 
 func currentJSONProvisioningFixture(t *testing.T) (currentJSONProvisioningDocument, *CurrentProvisioning, *authorityOriginOwner) {
 	t.Helper()
 	p, origin := currentCustodyFixture(t)
-	read := func(path string) []byte {
-		t.Helper()
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return raw
-	}
-	var node currentNodeDocument
-	if err := json.Unmarshal(read(p.source), &node); err != nil {
+	var document currentJSONProvisioningDocument
+	if err := decodeCurrentJSONProvisioning(p.jsonSource, &document); err != nil {
 		t.Fatal(err)
 	}
-	var genesis currentGenesisDocument
-	if err := json.Unmarshal(read(node.GenesisFile), &genesis); err != nil {
-		t.Fatal(err)
-	}
-	d := currentJSONProvisioningDocument{Version: currentJSONProvisioningVersion, Genesis: genesis, Participant: node.Participant,
-		Membership: currentJSONMembershipDocument{node.Membership.Path, node.Membership.ManifestFile, read(node.Membership.KeyFile), node.Membership.Profile, node.Membership.Self},
-		Identity:   currentJSONIdentityDocument{string(read(node.Identity.Roots)), string(read(node.Identity.Certificate)), string(read(node.Identity.TLSKey)), read(node.Identity.VotingKey)},
-		OriginKey:  read(node.OriginKeyFile), FloorsFile: node.FloorsFile, ListenAddress: node.ListenAddress, Limits: node.Limits}
-	return d, p, origin
+	return document, p, origin
 }
 
 func currentJSONEncode(t *testing.T, d currentJSONProvisioningDocument) []byte {
@@ -88,27 +77,25 @@ func TestCurrentProvisioningValidatesCompleteOriginalImage(t *testing.T) {
 	}
 }
 
-func TestCurrentJSONProvisioningOwnsSourceWithoutPrivateFiles(t *testing.T) {
+func TestCurrentJSONProvisioningOwnsCanonicalInlineMaterial(t *testing.T) {
 	d, old, _ := currentJSONProvisioningFixture(t)
 	raw := currentJSONEncode(t, d)
 	p, err := LoadCurrentProvisioningJSON(raw)
-	if err != nil || p.Profile() != old.Profile() || p.binding == old.binding || p.source != "" {
-		t.Fatal("JSON source did not preserve independent profile and distinct custody", err)
-	}
-	var node currentNodeDocument
-	nodeRaw, err := os.ReadFile(old.source)
-	if err != nil || json.Unmarshal(nodeRaw, &node) != nil {
-		t.Fatal("read original test-only input", err)
-	}
-	for _, path := range []string{old.source, node.GenesisFile, node.Membership.KeyFile, node.Identity.Roots, node.Identity.Certificate, node.Identity.TLSKey, node.Identity.VotingKey, node.OriginKeyFile} {
-		if err := os.Remove(path); err != nil {
-			t.Fatal(err)
-		}
+	if err != nil || p.Profile() != old.Profile() || p.binding != old.binding || !bytes.Equal(p.jsonSource, old.jsonSource) || p.config.Identity.material == nil {
+		t.Fatal("inline source did not preserve canonical identity and owned material", err)
 	}
 	clear(raw)
 	reloaded, err := p.reload()
 	if err != nil || reloaded.binding != p.binding || reloaded.Profile() != p.Profile() {
-		t.Fatal("owned JSON depended on caller bytes or deleted secret files", err)
+		t.Fatal("owned inline material depended on caller bytes", err)
+	}
+	formatted, err := json.MarshalIndent(d, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := LoadCurrentProvisioningJSON(formatted)
+	if err != nil || canonical.binding != p.binding || !bytes.Equal(canonical.jsonSource, p.jsonSource) {
+		t.Fatal("equivalent formatting changed canonical inline history", err)
 	}
 	d.Identity.TLSKey += "\n" // Equivalent private PEM representation, same identity.
 	equivalent, err := LoadCurrentProvisioningJSON(currentJSONEncode(t, d))
@@ -127,8 +114,11 @@ func TestCurrentJSONProvisioningOwnsSourceWithoutPrivateFiles(t *testing.T) {
 	if err != nil || relocated.binding != p.binding {
 		t.Fatal("configuration input path entered custody identity", err)
 	}
-	if _, err := LoadCurrentProvisioning(old.source); err == nil {
-		t.Fatal("deleted file source unexpectedly remained readable")
+	votingKey := bytes.Clone(p.config.Identity.material.votingKey)
+	d.Identity.VotingKey[0] ^= 1
+	d.OriginKey[0] ^= 1
+	if !bytes.Equal(votingKey, p.config.Identity.material.votingKey) || !bytes.Equal(p.jsonSource, old.jsonSource) {
+		t.Fatal("decoded caller material aliased owned identity or inline history")
 	}
 }
 
@@ -251,9 +241,9 @@ func TestCurrentJSONProvisioningInitCleanAndResumeWithoutQuorum(t *testing.T) {
 	}
 }
 
-func TestCurrentJSONProvisioningRefusesFileCustodyMigration(t *testing.T) {
-	d, fileSource, origin := currentJSONProvisioningFixture(t)
-	custody := currentCustodyOpenTest(t, fileSource, "fresh")
+func TestCurrentJSONProvisioningEquivalentInlineSourceRetainsCustody(t *testing.T) {
+	d, source, origin := currentJSONProvisioningFixture(t)
+	custody := currentCustodyOpenTest(t, source, "fresh")
 	if err := custody.running(); err != nil {
 		t.Fatal(err)
 	}
@@ -261,24 +251,29 @@ func TestCurrentJSONProvisioningRefusesFileCustodyMigration(t *testing.T) {
 	if err := owner.Shutdown(); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.ReadFile(fileSource.floors + ".state")
+	before, err := os.ReadFile(source.floors + ".state")
 	if err != nil {
 		t.Fatal(err)
 	}
-	jsonSource, err := LoadCurrentProvisioningJSON(currentJSONEncode(t, d))
-	if err != nil || jsonSource.Profile() != fileSource.Profile() || jsonSource.binding == fileSource.binding {
-		t.Fatal("source identity was silently relabeled", err)
+	formatted, err := json.MarshalIndent(d, "", "  ")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, c, _, err := openCurrentCustody(jsonSource, "resume"); err == nil {
-		_ = c.close()
-		t.Fatal("JSON source silently migrated original file custody")
+	equivalent, err := LoadCurrentProvisioningJSON(formatted)
+	if err != nil || equivalent.Profile() != source.Profile() || equivalent.binding != source.binding || !bytes.Equal(equivalent.jsonSource, source.jsonSource) {
+		t.Fatal("equivalent inline input changed retained custody identity", err)
 	}
-	after, err := os.ReadFile(fileSource.floors + ".state")
+	if _, c, _, err := openCurrentCustody(equivalent, "resume"); err != nil {
+		t.Fatal("equivalent canonical input could not resume original custody", err)
+	} else if err := c.close(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(source.floors + ".state")
 	if err != nil || !bytes.Equal(before, after) {
-		t.Fatal("rejected source change altered original CLEAN", err)
+		t.Fatal("read-only equivalent resume changed original CLEAN", err)
 	}
-	if _, c, _, err := openCurrentCustody(fileSource, "resume"); err != nil {
-		t.Fatal("source rejection damaged ordinary original resume", err)
+	if _, c, _, err := openCurrentCustody(source, "resume"); err != nil {
+		t.Fatal("equivalent input damaged ordinary original resume", err)
 	} else if err := c.close(); err != nil {
 		t.Fatal(err)
 	}
@@ -400,33 +395,225 @@ func TestCurrentJSONProvisioningStrictShape(t *testing.T) {
 	}
 }
 
-func TestCurrentJSONProvisioningOriginalIssuerPolicy(t *testing.T) {
-	p, _ := currentCustodyFixture(t)
-	image := p.config.Participant.Trust.genesis.state.projection.Image()
-	if len(image.Issuers) == 0 {
-		t.Fatal("fixture requires original Issuer")
-	}
-	i := image.Issuers[0]
-	i.ConfigRevision++
-	i.EnvOwned = !i.EnvOwned
-	if err := p.ValidateInitialIssuers([]Issuer{i}); err != nil {
-		t.Fatal("input metadata replaced original metadata", err)
-	}
-	for name, edit := range map[string]func(*Issuer){
-		"client":        func(i *Issuer) { i.ClientID += "-changed" },
-		"secret handle": func(i *Issuer) { i.SecretRef += "changed" },
-		"unknown":       func(i *Issuer) { i.URL = "https://unknown.example" },
-		"disabled":      func(i *Issuer) { i.Enabled = !i.Enabled },
-	} {
-		t.Run(name, func(t *testing.T) {
-			copy := i
-			edit(&copy)
-			if p.ValidateInitialIssuers([]Issuer{copy}) == nil {
-				t.Fatal("runtime input changed original Issuer trust")
+func TestCurrentProvisioningConfiguredIntentPurePreflight(t *testing.T) {
+	for _, target := range []string{"linux", "darwin"} {
+		t.Run(target, func(t *testing.T) {
+			options := provisioningTestOptions(t, 3, target)
+			bundle, err := GenerateProvisioning(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			desired, err := NewConfiguredTrust(options.Image.Issuers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, node := range bundle.Nodes {
+				if err = ValidateProvisioningConfiguredTrust(node.AuthorityJSON, bundle.Operator.ControlManifest, target, desired); err != nil {
+					t.Fatal("pure target-specific capability validation", err)
+				}
+				historical, err := ProvisioningInitialImage(node.AuthorityJSON)
+				if err != nil {
+					t.Fatal(err)
+				}
+				snapshot, _ := CompileImage(historical, DefaultPolicyLimits())
+				original, _ := CompileImage(options.Image, DefaultPolicyLimits())
+				if !bytes.Equal(snapshot.image, original.image) {
+					t.Fatal("historical seed changed during configured preflight")
+				}
+				historical.Issuers[0].ClientID = "caller mutation"
+				untouched, err := ProvisioningInitialImage(node.AuthorityJSON)
+				if err != nil || untouched.Issuers[0].ClientID != options.Image.Issuers[0].ClientID {
+					t.Fatal("historical seed data aliased caller", err)
+				}
+				for _, bad := range []*ConfiguredTrust{nil, {}} {
+					if ValidateProvisioningConfiguredTrust(node.AuthorityJSON, bundle.Operator.ControlManifest, target, bad) == nil {
+						t.Fatal("missing current intent passed preflight")
+					}
+				}
+			}
+			if ValidateProvisioningConfiguredTrust(bundle.Nodes[0].AuthorityJSON, bundle.Operator.ControlManifest, "windows", desired) == nil {
+				t.Fatal("unsupported target passed configured preflight")
+			}
+			for _, node := range options.Nodes {
+				for _, path := range []string{node.StateDir, node.RenewableDir} {
+					if _, err = os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+						t.Fatal("pure preflight created state path", path, err)
+					}
+				}
 			}
 		})
 	}
-	if p.ValidateInitialIssuers([]Issuer{i, i}) == nil || (&CurrentProvisioning{}).ValidateInitialIssuers(nil) == nil {
-		t.Fatal("duplicate or unprovisioned issuer input accepted")
+}
+
+func TestCurrentProvisioningInitialConfiguredTrustPreservesHistoricalSeed(t *testing.T) {
+	options := provisioningTestOptions(t, 1, "linux")
+	options.Image.Issuers[0].EnvOwned = false
+	bundle, err := GenerateProvisioning(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, err := NewConfiguredTrust([]Issuer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = ValidateProvisioningInitialConfiguredTrust(bundle.Nodes[0].AuthorityJSON, bundle.Operator.ControlManifest, "linux", empty); err != nil {
+		t.Fatal("fresh desired empty intent did not preserve managed historical administrator", err)
+	}
+	collision, err := NewConfiguredTrust(options.Image.Issuers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = ValidateProvisioningInitialConfiguredTrust(bundle.Nodes[0].AuthorityJSON, bundle.Operator.ControlManifest, "linux", collision); !errors.Is(err, ErrBootstrapLocked) {
+		t.Fatal("fresh configured input appropriated a managed trust object", err)
+	}
+	options.Image.Issuers[0].EnvOwned = true
+	bundle, err = GenerateProvisioning(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = ValidateProvisioningInitialConfiguredTrust(bundle.Nodes[0].AuthorityJSON, bundle.Operator.ControlManifest, "linux", empty); !errors.Is(err, ErrLastAdministrator) {
+		t.Fatal("fresh configured input withdrew the last administrator", err)
+	}
+	for _, node := range options.Nodes {
+		if _, err = os.Stat(node.StateDir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("fresh validation created native paths", err)
+		}
+	}
+}
+
+func TestCurrentProvisioningAuthorityLocationsPureAndBound(t *testing.T) {
+	options := provisioningTestOptions(t, 1, "linux")
+	bundle, err := GenerateProvisioning(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := provisioningTestDocument(t, bundle.Nodes[0].AuthorityJSON)
+	stateDir := options.Nodes[0].StateDir
+	custodyDir := filepath.Join(filepath.Dir(stateDir), "separate-custody")
+	renewableDir := options.Nodes[0].RenewableDir
+	// Genuine external material may retain its own family names and a separate
+	// custody directory. The validator accepts only their already-declared roots.
+	d.Participant.PPath = filepath.Join(stateDir, "retained-p")
+	d.Participant.BPath = filepath.Join(stateDir, "retained-b")
+	d.Membership.Path = filepath.Join(stateDir, "retained-m")
+	d.FloorsFile = filepath.Join(custodyDir, "retained-floors.json")
+	raw := currentJSONEncode(t, d)
+	if err = ValidateProvisioningAuthorityLocations(raw, stateDir, custodyDir, renewableDir); err != nil {
+		t.Fatal("valid immutable external locations", err)
+	}
+	if ValidateProvisioningAuthorityPaths(raw, stateDir, renewableDir) == nil {
+		t.Fatal("generated writer assertion accepted external names")
+	}
+	for name, mutate := range map[string]func(*currentJSONProvisioningDocument){
+		"P outside":      func(d *currentJSONProvisioningDocument) { d.Participant.PPath = filepath.Join(custodyDir, "p") },
+		"B outside":      func(d *currentJSONProvisioningDocument) { d.Participant.BPath = filepath.Join(custodyDir, "b") },
+		"M outside":      func(d *currentJSONProvisioningDocument) { d.Membership.Path = filepath.Join(custodyDir, "m") },
+		"floors outside": func(d *currentJSONProvisioningDocument) { d.FloorsFile = filepath.Join(stateDir, "floors") },
+		"noncanonical P": func(d *currentJSONProvisioningDocument) { d.Participant.PPath = stateDir + "/child/../p" },
+		"relative B":     func(d *currentJSONProvisioningDocument) { d.Participant.BPath = "relative" },
+		"family alias":   func(d *currentJSONProvisioningDocument) { d.Participant.BPath = d.Participant.PPath },
+		"tip alias":      func(d *currentJSONProvisioningDocument) { d.Participant.BPath = d.Participant.PPath + ".tip" },
+		"lease alias":    func(d *currentJSONProvisioningDocument) { d.Membership.Path = d.Participant.PPath + ".lease" },
+		"manifest destination": func(d *currentJSONProvisioningDocument) {
+			d.Membership.ManifestFile = filepath.Join(renewableDir, "other.json")
+		},
+		"version": func(d *currentJSONProvisioningDocument) { d.Version++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := d
+			mutate(&bad)
+			if ValidateProvisioningAuthorityLocations(currentJSONEncode(t, bad), stateDir, custodyDir, renewableDir) == nil {
+				t.Fatal("incompatible immutable location accepted")
+			}
+		})
+	}
+	if ValidateProvisioningAuthorityLocations(raw, "relative", custodyDir, renewableDir) == nil || ValidateProvisioningAuthorityLocations(raw, stateDir, "/", renewableDir) == nil {
+		t.Fatal("invalid declared roots accepted")
+	}
+	if !bytes.Equal(raw, currentJSONEncode(t, d)) {
+		t.Fatal("location validation rebased immutable document")
+	}
+	for _, path := range []string{stateDir, custodyDir, renewableDir} {
+		if _, err = os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("pure location validation created a path", path, err)
+		}
+	}
+}
+
+func TestCurrentProvisioningObserverWithoutOriginKeyPureValidation(t *testing.T) {
+	options := provisioningTestOptions(t, 3, "linux")
+	bundle, err := GenerateProvisioning(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originDocument := provisioningTestDocument(t, bundle.Nodes[0].AuthorityJSON)
+	originDescription, _ := authorityTimeDescriptionForTarget(options.Target)
+	originConfig, _, err := currentJSONConfigForTime(originDocument, bundle.Operator.ControlManifest, originDescription, false)
+	if err != nil || !validProvisioningOriginKey(originConfig, originDocument.OriginKey) || validProvisioningOriginKey(originConfig, nil) || validProvisioningOriginKey(originConfig, originDocument.Identity.VotingKey) {
+		t.Fatal("origin-enabled private key or voter-key separation changed", err)
+	}
+	document := provisioningTestDocument(t, bundle.Nodes[2].AuthorityJSON)
+	unusedOriginKey := bytes.Clone(document.OriginKey)
+	document.Genesis.Origins = document.Genesis.Origins[:2]
+	description, _ := authorityTimeDescriptionForTarget(options.Target)
+	trust, _, err := currentJSONGenesisForTime(document.Genesis, description)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document.Membership.Profile.ProtocolScope = trust.scope
+	document.Participant.OwnedOrigin = 0
+	document.OriginKey = nil
+	block, _ := pem.Decode(bundle.Operator.ControlKeyPEM)
+	if block == nil {
+		t.Fatal("operator key missing from pure construction fixture")
+	}
+	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := parsed.(ed25519.PrivateKey)
+	manifest, err := peerauth.VerifyControlManifest(bundle.Operator.ControlManifest, document.Membership.PublicKey, document.Membership.Profile.Lineage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Profile = document.Membership.Profile
+	signed, err := peerauth.SignControlManifest(manifest, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := currentJSONEncode(t, document)
+	desired, err := NewConfiguredTrust([]Issuer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = ValidateProvisioningAuthorityJSON(raw, signed, "linux", document.Genesis.Image); err != nil {
+		t.Fatal("origin-free fixed voter failed pure authority validation", err)
+	}
+	if err = ValidateProvisioningConfiguredTrust(raw, signed, "linux", desired); err != nil {
+		t.Fatal("origin-free fixed voter lost its configuration endorsement capability", err)
+	}
+	if err = ValidateProvisioningInitialConfiguredTrust(raw, signed, "linux", desired); err != nil {
+		t.Fatal("managed historical policy with empty desired set failed observer initialization", err)
+	}
+	profile, err := ProvisioningAuthorityProfile(raw, signed, "linux")
+	if err != nil || profile.Protocol != trust.scope {
+		t.Fatal("observer profile changed fixed original trust", err)
+	}
+	c, _, err := currentJSONConfigForTime(document, signed, description, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !validProvisioningOriginKey(c, nil) || validProvisioningOriginKey(c, []byte{1}) || validProvisioningOriginKey(c, unusedOriginKey) {
+		t.Fatal("observer origin absence borrowed or accepted replacement key material")
+	}
+	if len(c.Participant.Trust.members) != 3 || len(c.Participant.Trust.origins) != 2 {
+		t.Fatal("observer validation changed fixed voter or consume-origin topology")
+	}
+	for _, node := range options.Nodes {
+		for _, path := range []string{node.StateDir, node.RenewableDir} {
+			if _, err = os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("pure observer validation created native paths", path, err)
+			}
+		}
 	}
 }

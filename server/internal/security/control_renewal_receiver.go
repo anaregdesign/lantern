@@ -32,7 +32,7 @@ func (r *authorityRenewalReceiver) challenge() ([]byte, error) {
 	r.kernel.gate.Lock()
 	defer r.kernel.gate.Unlock()
 	defer r.kernel.poisonPanic()
-	if r.closed || r.kernel.readyLocked() != nil || r.kernel.chosen != nil || r.pending != nil {
+	if r.closed || !r.kernel.configuredReadyLocked() || r.kernel.readyLocked() != nil || r.kernel.chosen != nil || r.pending != nil {
 		return nil, errAuthorityRenewal
 	}
 	s, receipt, err := r.kernel.b.ReadLocalCut()
@@ -67,7 +67,7 @@ func (r *authorityRenewalReceiver) receive(requestRaw, voteRaw []byte) error {
 	r.kernel.gate.Lock()
 	defer r.kernel.gate.Unlock()
 	defer r.kernel.poisonPanic()
-	if r.closed || r.kernel.readyLocked() != nil || r.pending == nil || !bytes.Equal(requestRaw, []byte(r.pending.raw)) {
+	if r.closed || !r.kernel.configuredReadyLocked() || r.kernel.readyLocked() != nil || r.pending == nil || !bytes.Equal(requestRaw, []byte(r.pending.raw)) {
 		return errAuthorityRenewal
 	}
 	p := r.pending
@@ -109,14 +109,14 @@ func (r *authorityRenewalReceiver) receive(requestRaw, voteRaw []byte) error {
 
 func (r *authorityRenewalReceiver) matchesLocked(s authorityRenewalStatement) bool {
 	state, receipt := r.kernel.replayState, r.kernel.replayReceipt
-	return r.kernel.chosen == nil && state.slot == s.Slot && state.prefix == s.Prefix && state.projection.cut == s.Cut && receipt.CapsuleDigest == s.Capsule && receipt.ControlSlot == s.Slot && receipt.ControlPrefix == s.Prefix
+	return r.kernel.configuredReadyLocked() && r.kernel.chosen == nil && state.slot == s.Slot && state.prefix == s.Prefix && state.projection.cut == s.Cut && receipt.CapsuleDigest == s.Capsule && receipt.ControlSlot == s.Slot && receipt.ControlPrefix == s.Prefix
 }
 
 // Caller holds kernel.gate and has frozen every non-time authorization input.
 // The native sample in current is the final event; the remaining comparisons
 // and immutable bookkeeping do not move its logical authorization instant.
 func (r *authorityRenewalReceiver) currentLocked() (authorityCurrentTime, *authorityRenewalActive, error) {
-	if r.closed || r.kernel.readyLocked() != nil || r.active == nil || !r.matchesLocked(r.active.certificate.request.statement) {
+	if r.closed || !r.kernel.configuredReadyLocked() || r.kernel.readyLocked() != nil || r.active == nil || !r.matchesLocked(r.active.certificate.request.statement) {
 		return authorityCurrentTime{}, nil, errAuthorityRenewal
 	}
 	now, err := r.clock.current()

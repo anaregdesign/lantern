@@ -14,7 +14,7 @@ from urllib.parse import urldefrag, urlsplit
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "deploy/examples/auth"
 EXAMPLE_FILES = (
-    "server-off.env.example", "server.env.example", "oauth-clients.env.example",
+    "server-off.env.example", "server.env.example", "security-config.json.example", "oauth-clients.env.example",
     "google-issuer.change.json.example", "apple-issuer.change.json.example",
     "flutter-android.json.example", "flutter-ios.json.example",
     "google-ios-url-types.plist.example",
@@ -34,7 +34,7 @@ def assignments(name):
 class PrivateAuthExamplesTest(unittest.TestCase):
     def test_formats_and_placeholder_values(self):
         constants = {
-            "6380", "off", "oidc", "resume", "RS256", "Editor",
+            "6380", "off", "oidc", "RS256", "Editor", "linux", "server", "node-1", "google", "/state", ":6381", ":6382", "https://lantern-0:6381", "https://lantern-0:6382",
             "https://accounts.google.com", "https://oauth2.googleapis.com",
             "https://appleid.apple.com", "NATIVE_CLIENT_KIND_GOOGLE_ID_TOKEN",
             "NATIVE_CLIENT_KIND_APPLE_NATIVE", "NATIVE_CLIENT_KIND_APPLE_ANDROID_WEB",
@@ -51,12 +51,12 @@ class PrivateAuthExamplesTest(unittest.TestCase):
                 origin = urlsplit(value)
                 self.assertTrue(
                     value in constants
-                    or value.startswith(("REPLACE_", "replace_", "invalid.replace.",
+                    or value.startswith(("FAKE_", "/FAKE_PRIVATE_", "/REPLACE_PRIVATE_", "REPLACE_", "replace_", "invalid.replace.",
                                          "/REPLACE_PRIVATE_DIRECTORY/",
                                          "com.googleusercontent.apps.REPLACE_"))
                     or re.fullmatch(r"replace-[a-z-]+\.invalid", value)
                     or (origin.scheme == "https" and origin.hostname is not None
-                        and re.fullmatch(r"replace-[a-z-]+\.invalid", origin.hostname)),
+                        and re.fullmatch(r"(?:replace-[a-z-]+\.invalid|fake-[a-z-]+\.example\.invalid)", origin.hostname)),
                     "example contains a non-placeholder selection",
                 )
 
@@ -71,19 +71,30 @@ class PrivateAuthExamplesTest(unittest.TestCase):
                 else:
                     self.assertIn(".env.", path.name)
                     value = assignments(path.name)
-                    if "LANTERN_OIDC_SECRET_BINDINGS" in value:
-                        value["LANTERN_OIDC_SECRET_BINDINGS"] = json.loads(
-                            value["LANTERN_OIDC_SECRET_BINDINGS"])
+                    if "LANTERN_SECURITY_CONFIG_JSON" in value:
+                        value["LANTERN_SECURITY_CONFIG_JSON"] = json.loads(value["LANTERN_SECURITY_CONFIG_JSON"])
                 check(value)
 
     def test_runtime_provider_and_platform_alignment(self):
         server = assignments("server.env.example")
         operator = assignments("oauth-clients.env.example")
-        self.assertEqual(set(server), {
-            "LANTERN_PORT", "LANTERN_TLS_CERT_FILE", "LANTERN_TLS_KEY_FILE",
-            "LANTERN_AUTH_MODE", "LANTERN_SECURITY_CONFIG_FILE", "LANTERN_SECURITY_STORE_MODE",
-            "LANTERN_OIDC_BROWSER_ORIGIN", "LANTERN_OIDC_SECRET_BINDINGS",
-        })
+        self.assertEqual(set(server), {"LANTERN_PORT", "LANTERN_AUTH_MODE", "LANTERN_SECURITY_CONFIG_JSON"})
+        current = json.loads(server["LANTERN_SECURITY_CONFIG_JSON"])
+        self.assertEqual(set(current), {"public_origin", "material_root", "persistence_root", "target_platform", "tls_termination", "initial_admin", "nodes", "issuers", "tls"})
+        self.assertEqual(current["target_platform"], "linux")
+        self.assertEqual(current["tls_termination"], "server")
+        self.assertNotEqual(current["material_root"], current["persistence_root"])
+        self.assertEqual(set(current["tls"]), {"certificate_pem", "private_key_pem"})
+        self.assertEqual(current["initial_admin"]["issuer"], "https://accounts.google.com")
+        preset, = current["issuers"]
+        self.assertEqual(preset["issuer"], "google")
+        self.assertNotIn("api_audience", preset)  # Browser-only is intentional.
+        self.assertTrue(preset["client_id"] and preset["client_secret"])
+        self.assertNotIn("provisioned_file", current)
+        self.assertNotIn("authority", current)
+        standalone = json.loads((EXAMPLES / "security-config.json.example").read_text())
+        for key in ("public_origin", "target_platform", "tls_termination", "initial_admin", "nodes", "issuers", "tls"):
+            self.assertEqual(current[key], standalone[key])
         self.assertEqual(assignments("server-off.env.example"), {
             "LANTERN_PORT": "6380", "LANTERN_AUTH_MODE": "off",
         })
@@ -94,7 +105,6 @@ class PrivateAuthExamplesTest(unittest.TestCase):
         for key, value in operator.items():
             if key.endswith("_FILE"):
                 self.assertTrue(value.startswith("/REPLACE_PRIVATE_DIRECTORY/"))
-        bindings = json.loads(server["LANTERN_OIDC_SECRET_BINDINGS"])
         google = json.loads((EXAMPLES / "google-issuer.change.json.example").read_text())
         apple = json.loads((EXAMPLES / "apple-issuer.change.json.example").read_text())
         self.assertEqual(set(google), {"putIssuer"})
@@ -104,14 +114,13 @@ class PrivateAuthExamplesTest(unittest.TestCase):
         self.assertFalse(apple["enabled"])
         self.assertFalse(google["humanSubjectNamespaceQualified"])
         self.assertEqual(server["LANTERN_AUTH_MODE"], "oidc")
-        self.assertEqual(server["LANTERN_SECURITY_STORE_MODE"], "resume")
         self.assertEqual(google["clientId"], operator["GOOGLE_WEB_CLIENT_ID"])
         self.assertEqual(google["apiAudience"], operator["API_AUDIENCE"])
-        self.assertEqual(server["LANTERN_OIDC_BROWSER_ORIGIN"], operator["ADMIN_HTTPS_ORIGIN"])
+        self.assertNotEqual(current["public_origin"], operator["ADMIN_HTTPS_ORIGIN"])  # Separate placeholder worksheets.
         self.assertEqual(google["redirectUri"], operator["GOOGLE_WEB_REDIRECT_URI"])
         callback = hashlib.sha256(google["issuer"].encode()).hexdigest()
         self.assertEqual(google["redirectUri"],
-                         server["LANTERN_OIDC_BROWSER_ORIGIN"] + "/auth/callback/" + callback)
+                         operator["ADMIN_HTTPS_ORIGIN"] + "/auth/callback/" + callback)
         native_google, = google["nativeClients"]
         self.assertEqual(native_google["clientId"], google["clientId"])
         self.assertEqual(native_google["presenters"], sorted([
@@ -127,16 +136,29 @@ class PrivateAuthExamplesTest(unittest.TestCase):
         self.assertNotIn("redirectUri", ios)
         self.assertNotIn("clientId", apple)
 
-        for issuer, profile, secret_file in [
-            (google, google, "GOOGLE_WEB_CLIENT_SECRET_FILE"),
-            (apple, android, "APPLE_ANDROID_CLIENT_SECRET_FILE"),
-            (apple, ios, "APPLE_IOS_CLIENT_SECRET_FILE"),
+        # Disabled management worksheets use current typed secret bindings,
+        # independent of the starter browser-only preset and operator file names.
+        fragments = [json.loads(raw) for raw in re.findall(
+            r"```json\n(.*?)\n```", (EXAMPLES / "README.md").read_text(), re.DOTALL)]
+        binding_examples = [value["secret_bindings"] for value in fragments
+                            if "secret_bindings" in value]
+        self.assertEqual(len(binding_examples), 1)
+        bindings, = binding_examples
+        self.assertEqual(set(bindings), {"replace_google_web", "replace_apple_android", "replace_apple_ios"})
+        for issuer, profile, expected, token_origin in [
+            (google, google, "replace_google_web", "https://oauth2.googleapis.com"),
+            (apple, android, "replace_apple_android", "https://appleid.apple.com"),
+            (apple, ios, "replace_apple_ios", "https://appleid.apple.com"),
         ]:
-            binding = bindings[profile["secretRef"]]
-            self.assertEqual(set(binding), {"issuer", "client_id", "token_origin", "path"})
+            self.assertEqual(profile["secretRef"], expected)
+            binding = bindings[expected]
+            self.assertEqual(set(binding), {"issuer", "client_id", "token_origin", "value"})
             self.assertEqual(binding["issuer"], issuer["issuer"])
             self.assertEqual(binding["client_id"], profile["clientId"])
-            self.assertEqual(binding["path"], operator[secret_file])
+            self.assertEqual(binding["token_origin"], token_origin)
+            self.assertTrue(binding["value"].startswith("REPLACE_"))
+        for name in ("GOOGLE_WEB_CLIENT_SECRET_FILE", "APPLE_ANDROID_CLIENT_SECRET_FILE", "APPLE_IOS_CLIENT_SECRET_FILE"):
+            self.assertTrue(operator[name].startswith("/REPLACE_PRIVATE_DIRECTORY/"))
         for profile in [native_google, android, ios]:
             self.assertEqual(profile["serviceOrigin"], operator["SERVICE_HTTPS_ORIGIN"])
 
@@ -160,7 +182,8 @@ class PrivateAuthExamplesTest(unittest.TestCase):
 
     def test_scoped_private_ignores_preserve_examples_and_fixtures(self):
         ignored = {
-            "deploy/examples/auth/private/node.json",
+            "deploy/examples/auth/private/startup.json",
+            "deploy/examples/auth/private/material/nodes/node-1/identity.json",
             "deploy/examples/auth/private/tls/server.pem",
             "deploy/examples/auth/server.local.env",
             "deploy/examples/auth/flutter-ios.local.json",

@@ -134,9 +134,9 @@ func GenerateProvisioning(options ProvisioningOptions) (*ProvisioningBundle, err
 		member.data = member.control
 		member.data.Origin = input.DataOrigin
 		id := uint32(i + 1)
-		g.Members = append(g.Members, s2cMember{ID: id, PublicKey: [32]byte(member.voting.Public().(ed25519.PublicKey)), Proposer: true})
+		g.Members = append(g.Members, s2cMember{ID: id, PublicKey: [32]byte(member.voting.Public().(ed25519.PublicKey)), Proposer: true, ConfiguredTrust: 1})
 		g.Origins = append(g.Origins, s2cOriginDescriptor{ID: id, Member: id, PublicKey: [32]byte(member.origin.Public().(ed25519.PublicKey)),
-			Incarnation: member.incarnation, Profile: authorityAdmissionProfileForTime(description), Namespace: uint64(id)})
+			Incarnation: member.incarnation, Profile: authorityAdmissionProfileForTime(description), Namespace: uint64(id), ConfiguredTrust: 1})
 	}
 	trust, state, err := currentJSONGenesisForTime(g, description)
 	if err != nil {

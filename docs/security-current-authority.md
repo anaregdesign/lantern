@@ -419,89 +419,78 @@ through `ConnContext`/`ConnState`; copying only its Handler into another server
 is not equivalent composition. The private consensus, original-H lookup and
 renewal routes are never mounted on the public mux.
 
-No-env/OFF needs no authentication material. Generated OIDC setup uses three
-explicit phases:
+No-env/OFF needs no authentication material. OIDC requires the same complete
+human `LANTERN_SECURITY_CONFIG_JSON` for all lifecycle commands:
 
-1. `provision-security` reads small setup intent, generates independent immutable
-   identities/keys and coherent profiles for an explicit Linux/Darwin target,
-   and writes separate serving-node and operator bundles. This phase has no
-   native clock, listener or state owner.
-2. On each actual target, `init-security` selects that node's generated private
-   document, creates fresh native control/data membership and custody state,
-   and completes orderly CLEAN shutdown. It never regenerates trust.
-3. Ordinary startup validates the same immutable trust and resumes intact native
-   state. Missing, partial, malformed or mismatched state never becomes fresh.
+1. `provision-security --operator-directory ...` reads that configuration and
+   creates independent keys, fixed topology, historical trust and seed-identity
+   metadata under its required `material_root`. It creates no native state,
+   runtime clock or listener. Existing/partial output is never overwritten.
+2. On each actual target, `init-security` reads the same configuration and fixed
+   material, creates fresh control/data membership and custody state under
+   separate `persistence_root`, and completes orderly CLEAN shutdown.
+3. Every ordinary start reads current configuration again and resumes intact
+   native state. Missing, partial, malformed or mismatched configuration,
+   material or state fails closed without fresh fallback.
 
-Initialization/startup select the node through:
+The [configuration guide](../deploy/examples/auth/README.md#environment-json-startup)
+defines public origin/TLS/proxy/provider settings, exact initial administrator,
+explicit target platform, fixed named nodes and selected `node`. A single named
+node can be inferred; multiple entries require an explicit selection. There is
+no public format version, desired revision or alternate startup representation.
 
-```text
-LANTERN_AUTH_MODE=oidc
-LANTERN_SECURITY_CONFIG_JSON={"provisioned_file":"/absolute/provisioned/nodes/node-1/security.json"}
-```
+`material_root/nodes/<node>/identity.json` contains independent keys, historical
+trust anchors, fixed topology and initial seed identity. It contains no saved
+setup/current Issuer list, provider secrets, public TLS or proxy configuration.
+Retained native state holds security history and custody, not a replacement
+runtime configuration. Capacity/profile/digest/path repetition is derived from
+validated fixed identity material, never used to recover omitted current input.
+Historical genesis is preserved and never rewritten from a later projection.
 
-The [setup guide](../deploy/examples/auth/README.md#environment-json-startup)
-defines the small user input. Capacity/profile/digest/public-key/path repetition
-is derived once and persisted, never reselected on boot. Original Issuer/admin
-seed input is validated against original trust; it is never applied over later
-runtime management state. There is no compatibility reader or automatic state
-conversion for retired complete inline-authority JSON.
+Configured Issuer intent is supplied on every start. The enrolled native
+configuration origin proposes a certified compare-and-swap against the exact
+prior control prefix; its normal voter/quorum, historical-proof, journal and
+recovery rules apply before public readiness. Every public admission/output
+requires the certified desired Issuer digest to match the local supplied intent.
+A node with different intent cannot serve under another node's configuration.
+No manual revision or persisted config-file fallback is accepted.
 
-The generator supports one-to-31 fixed voters and emits both renewable control
-and data membership streams. The separate operator bundle keeps signing keys
-outside the serving inputs. The existing
-[finite renewal workflow](live-membership-renewal.md) preserves fixed voters,
-quorum, lineage, workload identity, expiry and durable publication evidence.
-Standalone is one fixed voter, not an alternative protocol or a live-expansion
-promise.
+The transition changes configuration-owned Issuer trust only. Adding an Issuer
+grants no Principals, Roles or assignments. It cannot appropriate managed Issuer
+objects, reset policy, undo suspension or restore withdrawn effective grants.
+The initial administrator is installed only on fresh initialization; resume
+asserts the exact original seed identity without reapplying its assignments.
+Sessions/lineage and restrictive changes retain the normal security invariants.
 
-`renew-security` prepares same-root/key workload certificates and a later
-publisher window in a new private candidate directory. Its completed publication
-manifest/hash mapping must be reviewed before a CLEAN stop/install/advance/resume
-maintenance sequence. Native state and its bindings remain unchanged; certificate
-replacement requires restart and never infers fresh state. The fixed root lifetime
-is an explicit capacity bound, not automatic root rotation. See the
-[certificate maintenance contract](live-membership-renewal.md#renew-generated-workload-certificates).
+The topology supports one to 31 fixed voters and both renewable control/data
+membership streams. Operator/CA signing custody remains outside serving mounts;
+standalone has the same finite renewal and quorum/time rules. The
+[certificate maintenance workflow](live-membership-renewal.md#renew-generated-workload-certificates)
+prepares same-root/key candidates from retained identity/operator material,
+without reading saved setup or provider credentials. Reviewed CLEAN
+stop/install/advance/resume maintenance preserves native state and bindings.
 
-The exact TLS/trusted HTTPS gateway boundary remains required. Optional IdP
-roots, private-origin allowlists and secret bindings retain their meanings.
-The target time profile is explicit at provisioning and must match the actual
-runtime platform; generation on Darwin never chooses Darwin semantics for a
-Linux target. Runtime native-time/source checks remain mandatory and configure
-no host services or trust roots.
+Exact public-origin/TLS/trusted-proxy and IdP endpoint/secret-destination checks
+remain mandatory. The explicit target time profile must match the actual runtime;
+Darwin generation for Linux never substitutes the generator host's semantics.
+No lifecycle command configures host time services or installs trust roots.
 
-The independent file-backed documents below remain available for deliberate
-external provisioning and validation. They are not additional setup knobs or
-required user-authored inputs for generated provisioning.
+### Internal historical trust and custody
 
-### Independent operator documents
+The canonical historical trust structures in
+[`control_public_config.go`](../server/internal/security/control_public_config.go)
+and the native provisioning validators define genesis, voters/origins, scopes,
+resource/time profiles and fixed journal/custody identities. They are internal
+material, not an additional public configuration input. Duplicate/unknown fields,
+array truncation/padding and unsafe path aliases are refused. Never reconstruct
+original trust from a replayed projection, peer response or old fixed-writer image.
 
-Both inputs are private regular files with absolute paths. JSON uses the exact
-canonical Go JSON shape in
-[`control_public_config.go`](../server/internal/security/control_public_config.go):
-no duplicate/unknown fields, padded/truncated fixed arrays, aliases, or unknown
-versions. Hash the exact genesis file bytes (including an optional final newline).
-Do not reconstruct genesis from a replayed projection, journal, peer response or
-old fixed-writer image.
-
-| Document | Required original inputs |
-| --- | --- |
-| `currentGenesisDocument`, Version 2 | Domain, Cohort, Generation, Fences, original Image, complete S1 Execution configuration/capacity, original capsule Roots, voter Members, enrolled Origins, finite Bounds and the exact platform TimeProfile digest |
-| `currentNodeDocument`, Version 2 | GenesisFile/SHA256; Participant member/incarnation, P/B paths and their original scope/identity/epoch/policy, OwnedOrigin and pending/outbox reserves; Membership path/operator key/signed manifest/full profile/self; separate workload TLS, voting and origin key paths; actual private ListenAddress and bounded Limits |
-| `FloorsFile` in both modes | Fixed absolute private persistent custody path, separate from provisioning and all M/P/B files; the runtime retains final M/P/B minima here on orderly shutdown |
-
-The membership profile binds the same voter keys, workloads and protocol as the
-independent genesis. An origin-free enrolled member has OwnedOrigin zero and no
-origin private key: it can read, catch up and complete retained originals, but
-cannot mint a new management or login-session operation. Origin signing keys
-remain distinct from voting and workload TLS keys. All configured paths must
-retain exclusive custody; missing/corrupt/mixed families fail before publication.
-
-`fresh` requires absent floor/state bodies and absent M/P/B families. `resume`
-requires the same original provisioning, intact M/P/B, and a matching CLEAN
-custody pair. It never falls back to fresh. Neither a backup snapshot nor an old
-capability establishes current time, quorum, pending approval or output permission
-after reopen. See the orderly lifecycle below; volume survival alone is not a
-completed shutdown.
+Origin signing, voting and workload TLS keys stay separate. Every fixed path
+retains exclusive custody. Fresh native creation requires absent state/floor and
+M/P/B families; ordinary resume requires the same identity material, intact M/P/B
+and matching CLEAN custody. Neither a backup snapshot nor a past capability
+establishes current time, quorum, pending approval or output permission after
+reopen. Volume survival alone does not prove orderly shutdown.
 
 ### Orderly floor custody and process restart
 

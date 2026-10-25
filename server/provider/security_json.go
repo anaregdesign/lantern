@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/netip"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -20,20 +21,23 @@ type SecurityTLSConfig struct {
 	ClientCAPEM string `json:"client_ca_pem"`
 }
 
-// securitySetupJSON contains operator intent for the explicit provisioning action.
-// Runtime JSON contains only a reference to its private immutable result.
-type securitySetupJSON struct {
-	PublicOrigin    string                   `json:"public_origin"`
-	PersistenceRoot string                   `json:"persistence_root"`
-	TargetPlatform  string                   `json:"target_platform"`
-	TLSTermination  string                   `json:"tls_termination"`
-	InitialAdmin    securityInitialAdminJSON `json:"initial_admin"`
-	Nodes           []securityNodeJSON       `json:"nodes"`
-	Issuers         []securityIssuerJSON     `json:"issuers"`
-	RootCAPEM       string                   `json:"root_ca_pem"`
-	PrivateOrigins  map[string][]string      `json:"private_origins"`
-	TrustedProxyIPs []string                 `json:"trusted_proxy_ips"`
-	TLS             SecurityTLSConfig        `json:"tls"`
+// securityConfigJSON is required operator intent for provisioning, initialization
+// and every ordinary start. Only generated identity/trust material is durable.
+type securityConfigJSON struct {
+	PublicOrigin    string                        `json:"public_origin"`
+	MaterialRoot    string                        `json:"material_root"`
+	Node            string                        `json:"node,omitempty"`
+	PersistenceRoot string                        `json:"persistence_root"`
+	TargetPlatform  string                        `json:"target_platform"`
+	TLSTermination  string                        `json:"tls_termination"`
+	InitialAdmin    securityInitialAdminJSON      `json:"initial_admin"`
+	Nodes           []securityNodeJSON            `json:"nodes"`
+	Issuers         []securityIssuerJSON          `json:"issuers"`
+	SecretBindings  map[string]oidc.SecretBinding `json:"secret_bindings,omitempty"`
+	RootCAPEM       string                        `json:"root_ca_pem"`
+	PrivateOrigins  map[string][]string           `json:"private_origins"`
+	TrustedProxyIPs []string                      `json:"trusted_proxy_ips"`
+	TLS             SecurityTLSConfig             `json:"tls"`
 }
 
 type securityIssuerJSON struct {
@@ -74,13 +78,28 @@ type securityNodeJSON struct {
 }
 
 func loadSecurityConfigJSON(raw string) (SecurityConfig, error) {
-	var input struct {
-		ProvisionedFile string `json:"provisioned_file"`
-	}
-	if err := decodeSecurityConfigJSON(raw, &input, oidc.ValidateOperatorJSON); err != nil {
+	config, err := parseSecurityConfigJSON(raw)
+	if err != nil {
 		return SecurityConfig{}, err
 	}
-	return loadProvisionedSecurity(input.ProvisionedFile)
+	return attachSecurityMaterial(config)
+}
+
+// LoadSecurityConfigJSON applies the same required configuration and material
+// validation as the environment loader, without changing process environment.
+func LoadSecurityConfigJSON(raw string) (SecurityConfig, error) {
+	return loadSecurityConfigJSON(raw)
+}
+
+func selectedSecurityNode(config SecurityConfig) (securityNodeJSON, bool) {
+	if config.input != nil {
+		for _, node := range config.input.Nodes {
+			if node.Name == config.Node {
+				return node, true
+			}
+		}
+	}
+	return securityNodeJSON{}, false
 }
 
 func securityIssuerPreset(input securityIssuerJSON) (securityIssuerJSON, error) {
@@ -99,22 +118,28 @@ func securityIssuerPreset(input securityIssuerJSON) (securityIssuerJSON, error) 
 	return input, nil
 }
 
-func loadSecuritySetupJSON(raw string) (SecurityConfig, error) {
+func parseSecurityConfigJSON(raw string) (SecurityConfig, error) {
 	// Leave room below Linux's per-environment-string bound. A deployment
 	// platform can impose a smaller limit; no input is split into fragments.
 	if len(raw) > 120<<10 {
 		return SecurityConfig{}, errors.New("inline security configuration exceeds 120 KiB")
 	}
-	var input securitySetupJSON
+	var input securityConfigJSON
 	if err := decodeSecurityConfigJSON(raw, &input, oidc.ValidateOperatorJSON); err != nil {
 		return SecurityConfig{}, err
 	}
-	if len(input.Issuers) == 0 || len(input.Issuers) > 64 {
-		return SecurityConfig{}, errors.New("security setup requires registered Issuer trust")
+	if input.Issuers == nil || len(input.Issuers) > 64 {
+		return SecurityConfig{}, errors.New("security configuration requires an explicit issuers array")
 	}
 	config := SecurityConfig{
-		Mode: "oidc", StoreMode: "resume", BrowserOrigin: input.PublicOrigin,
-		SecretBindings: map[string]oidc.SecretBinding{}, RootCAPEM: input.RootCAPEM, TLS: input.TLS, setup: &input,
+		Mode: "oidc", BrowserOrigin: input.PublicOrigin,
+		SecretBindings: map[string]oidc.SecretBinding{}, RootCAPEM: input.RootCAPEM, TLS: input.TLS, input: &input, Issuers: []security.Issuer{},
+	}
+	for handle, binding := range input.SecretBindings {
+		config.SecretBindings[handle] = binding
+	}
+	if _, err := oidc.NewSecretRegistry(config.SecretBindings); err != nil {
+		return SecurityConfig{}, errors.New("invalid configured secret binding")
 	}
 	if !canonicalSecurityOrigin(config.BrowserOrigin) {
 		return SecurityConfig{}, errors.New("inline security configuration requires an exact HTTPS public origin")
@@ -134,7 +159,7 @@ func loadSecuritySetupJSON(raw string) (SecurityConfig, error) {
 		if err != nil {
 			return SecurityConfig{}, err
 		}
-		config.InitialIssuers = append(config.InitialIssuers, issuer)
+		config.Issuers = append(config.Issuers, issuer)
 	}
 	if len(input.PrivateOrigins) > 64 {
 		return SecurityConfig{}, errors.New("too many OIDC private origins")
@@ -161,6 +186,21 @@ func loadSecuritySetupJSON(raw string) (SecurityConfig, error) {
 			return SecurityConfig{}, errors.New("trusted proxy must be an exact IP address")
 		}
 		config.TrustedProxyIPs = append(config.TrustedProxyIPs, ip.Unmap())
+	}
+	if input.InitialAdmin.Issuer == "google" {
+		input.InitialAdmin.Issuer = security.GoogleIssuer
+	}
+	if input.Node == "" && len(input.Nodes) == 1 {
+		input.Node = input.Nodes[0].Name
+	}
+	config.MaterialRoot, config.PersistenceRoot, config.Node, config.TargetPlatform = input.MaterialRoot, input.PersistenceRoot, input.Node, input.TargetPlatform
+	config.MaterialFile = securityMaterialPath(input.MaterialRoot, input.Node)
+	config.StateDirectory = filepath.Join(input.PersistenceRoot, input.Node)
+	config.CustodyDirectory = config.StateDirectory
+	desired, err := security.NewConfiguredTrust(config.Issuers)
+	config.configuredTrust = desired
+	if err != nil {
+		return SecurityConfig{}, errors.New("invalid configured Issuer trust")
 	}
 	if err := validateSecurityConfig(config); err != nil {
 		return SecurityConfig{}, err

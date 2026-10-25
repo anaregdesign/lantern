@@ -34,7 +34,7 @@ func validateProvisionedSnapshotSpool(config GraphSnapshotSpoolConfig, stateDire
 }
 
 func loadGraphSnapshotSpoolForSecurity(securityConfig SecurityConfig) (GraphSnapshotSpoolConfig, error) {
-	if securityConfig.ProvisionedFile == "" {
+	if securityConfig.Mode != "oidc" {
 		return loadGraphSnapshotSpoolConfig()
 	}
 	for _, setting := range os.Environ() {
@@ -47,6 +47,23 @@ func loadGraphSnapshotSpoolForSecurity(securityConfig SecurityConfig) (GraphSnap
 		return GraphSnapshotSpoolConfig{}, errors.New("provisioned Snapshot spool configuration is missing or invalid")
 	}
 	return *securityConfig.ProvisionedSnapshotSpool, nil
+}
+
+func selectGraphSnapshotSpoolForSecurity(securityConfig SecurityConfig, mode ReceiptWALMode) (GraphSnapshotSpoolConfig, error) {
+	profile, err := loadGraphSnapshotSpoolForSecurity(securityConfig)
+	if err != nil || securityConfig.Mode != "oidc" {
+		return profile, err
+	}
+	switch mode {
+	case ReceiptWALModeGraphOnly:
+		return profile, nil
+	case ReceiptWALModeFresh, ReceiptWALModeRestart:
+		// Receipt WAL owns its independent durable representation. The signed
+		// graph profile remains validated material, without an active spool.
+		return GraphSnapshotSpoolConfig{}, nil
+	default:
+		return GraphSnapshotSpoolConfig{}, errors.New("unknown serving durability representation")
+	}
 }
 
 func loadGraphSnapshotSpoolConfig() (GraphSnapshotSpoolConfig, error) {

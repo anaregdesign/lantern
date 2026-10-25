@@ -9,7 +9,7 @@ import (
 
 func TestCurrentRuntimeNeverFallsBackFromMissingProvisioning(t *testing.T) {
 	data := securityDataFixture(t)
-	c := SecurityConfig{Mode: "oidc", StoreMode: "fresh", BrowserOrigin: "https://admin.example", ConfigFile: filepath.Join(t.TempDir(), "absent.json")}
+	c := SecurityConfig{Mode: "oidc", BrowserOrigin: "https://admin.example", MaterialFile: filepath.Join(t.TempDir(), "absent.json")}
 	if runtime, cleanup, err := NewSecurityRuntime(t.Context(), c, data); err == nil || runtime != nil || cleanup != nil {
 		t.Fatal("missing independent inputs became public runtime")
 	}

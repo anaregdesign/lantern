@@ -1,5 +1,6 @@
 {
   "public_origin": "https://fake-admin.example.invalid:6380",
+  "material_root": "/FAKE_PRIVATE_MATERIAL_DIRECTORY",
   "persistence_root": "/state",
   "target_platform": "linux",
   "tls_termination": "server",

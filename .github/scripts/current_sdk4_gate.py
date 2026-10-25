@@ -132,7 +132,7 @@ def proof_contract(kind):
         "synthetic_utc": kind == FUNCTIONAL_VALIDATION,
         "build_kind": "test-fixture" if kind == FUNCTIONAL_VALIDATION else "normal",
         "build_tags": [FIXTURE_TAG] if kind == FUNCTIONAL_VALIDATION else [],
-        "case_contract": "functional-full-v3" if kind == FUNCTIONAL_VALIDATION else "source-cohort-v3",
+        "case_contract": "functional-full-v4" if kind == FUNCTIONAL_VALIDATION else "source-cohort-v4",
     }
 
 
@@ -174,29 +174,37 @@ def required_tests(kind):
 def acquisition_counts(path):
     rows = []
     pattern = re.compile(
-        r"source_acquisition node=(\d+) attempts=(\d+) writes=(\d+) installations=(\d+) in_flight=(\w+) failed=(\w+) denied=(\w+)"
+        r"source_acquisition phase=(init|resume) node=(\d+) attempts=(\d+) writes=(\d+) installations=(\d+) in_flight=(true|false) failed=(true|false) denied=(true|false)\s*$"
     )
     for line in path.read_text().splitlines():
         event = json.loads(line)
         if (
             event.get("Package") == PACKAGE
-            and event.get("Test") == CONFIGURED_SOURCE_INTEGRATION_CASES[-1]
             and event.get("Action") == "output"
         ):
-            if match := pattern.search(event.get("Output", "")):
-                node, attempts, writes, installs, flight, failed, denied = match.groups()
-                rows.append(
-                    {
-                        "node": int(node),
-                        "attempts": int(attempts),
-                        "writes": int(writes),
-                        "installations": int(installs),
-                        "in_flight": flight,
-                        "failed": failed,
-                        "denied": denied,
-                    }
-                )
-    if [r["node"] for r in rows] != [1, 2, 3] or any(
+            output = event.get("Output", "")
+            if "source_acquisition " not in output:
+                continue
+            if event.get("Test") != CONFIGURED_SOURCE_INTEGRATION_CASES[-1]:
+                raise ValueError("unexpected source acquisition count context")
+            match = pattern.search(output)
+            if match is None or output.count("source_acquisition") != 1:
+                raise ValueError("invalid source acquisition counts")
+            phase, node, attempts, writes, installs, flight, failed, denied = match.groups()
+            rows.append(
+                {
+                    "phase": phase,
+                    "node": int(node),
+                    "attempts": int(attempts),
+                    "writes": int(writes),
+                    "installations": int(installs),
+                    "in_flight": flight,
+                    "failed": failed,
+                    "denied": denied,
+                }
+            )
+    expected_owners = [(phase, node) for phase in ("init", "resume") for node in (1, 2, 3)]
+    if [(r["phase"], r["node"]) for r in rows] != expected_owners or any(
         not (0 < r["installations"] <= r["writes"] <= r["attempts"])
         or (r["in_flight"], r["failed"], r["denied"]) != ("false", "false", "false")
         for r in rows
@@ -356,21 +364,27 @@ def required_execution_events(path, required, kind=CONFIGURED_SOURCE_INTEGRATION
                     raise ValueError("wrong proof constructor marker")
                 if marker in line:
                     native_markers += 1
-                if match := re.search(
-                    r"current_constructor node=(\d+) mode=(\w+) passed=(\w+)", line
+                match = re.search(
+                    r"current_constructor node=(\d+) mode=(fresh|resume) passed=(true|false)\s*$", line
+                )
+                if "current_constructor" in line and (
+                    match is None or line.count("current_constructor") != 1
                 ):
+                    raise ValueError("invalid per-owner constructor acquisition evidence")
+                if match:
                     constructors.append(match.groups())
     if any(events != ["run", "pass"] for events in state.values()):
         raise ValueError(f"required root/SDK execution absent, duplicated or incomplete: {state}")
     if package_passes != 1 or (package == PACKAGE and native_markers != 1):
         raise ValueError("native constructor or successful package completion missing")
-    expected_constructors = [(str(i), "fresh", "true") for i in (1, 2, 3)]
+    # Every fixed member explicitly initializes and closes CLEAN before any
+    # serving owner resumes. All six acquisitions belong to this one cohort.
+    expected_constructors = [
+        (str(i), mode, "true") for mode in ("fresh", "resume") for i in (1, 2, 3)
+    ]
     if kind == FUNCTIONAL_VALIDATION:
-        # Member2 explicitly creates CLEAN native state before serving, then
-        # startup resumes it. The generated reference/CLI lifecycle is separately
-        # covered; the browser case resumes this same owner again.
-        # Configured-source integration retains exactly its original cohort.
-        expected_constructors.insert(2, ("2", "resume", "true"))
+        # The browser case resumes the same member once more with controlled
+        # fixture time. Configured-source integration has no extra owner.
         expected_constructors.append(("2", "resume", "true"))
     if package == PACKAGE and constructors != expected_constructors:
         raise ValueError("required per-owner constructor acquisition evidence missing or failed")

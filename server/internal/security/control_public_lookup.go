@@ -36,7 +36,7 @@ func (o *s3aOwner) originalResponse(ctx context.Context, raw []byte) ([]byte, er
 		return nil, ErrAuthorityUnavailable
 	}
 	for _, h := range k.origins {
-		if h.handoff.id == q.ID {
+		if h.handoff.id == q.ID && h.handoff.configured == nil {
 			if h.handoff.operation.digest != q.Intent {
 				return nil, ErrChangeConflict
 			}
@@ -83,7 +83,7 @@ func (o *s3aOwner) findOriginal(ctx context.Context, id FullChangeID, intent [32
 			continue
 		}
 		h, err := verifyHistoricalH(o.kernel.trust, response)
-		if err != nil || h.handoff.id != id || h.handoff.operation.digest != intent {
+		if err != nil || h.handoff.configured != nil || h.handoff.id != id || h.handoff.operation.digest != intent {
 			continue
 		}
 		return h, nil

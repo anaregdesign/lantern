@@ -53,12 +53,19 @@ func fixtureEnvironment(node fixtureNode, overrides map[string]string) ([]string
 	for key, value := range node.Environment {
 		native[key] = value
 	}
+	if node.StartupFile != "" {
+		raw, err := os.ReadFile(node.StartupFile)
+		if err != nil || len(raw) == 0 || len(raw) > 120<<10 {
+			return nil, errors.New("required current fixture startup JSON unavailable")
+		}
+		native["LANTERN_SECURITY_CONFIG_JSON"] = string(raw)
+	}
 	for key, value := range overrides {
 		if !strings.HasPrefix(key, "LANTERN_") || strings.ContainsAny(key, "=\x00") || strings.ContainsRune(value, 0) {
 			return nil, errors.New("invalid fixture override")
 		}
 		_, locked := node.Environment[key]
-		if key == "LANTERN_PORT" || strings.HasPrefix(key, "LANTERN_TLS_") || strings.HasPrefix(key, "LANTERN_PEER_") {
+		if key == "LANTERN_PORT" || strings.HasPrefix(key, "LANTERN_TLS_") || strings.HasPrefix(key, "LANTERN_PEER_") || strings.HasPrefix(key, "LANTERN_SECURITY_") || strings.HasPrefix(key, "LANTERN_OIDC_") || strings.HasPrefix(key, "LANTERN_CDC_") {
 			locked = true
 		}
 		if locked && key != "LANTERN_METRICS_ADDR" && key != "LANTERN_LOG_LEVEL" {
@@ -180,7 +187,20 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true}
 	defer transport.CloseIdleConnections()
 	for i, node := range result.Nodes {
-		if node.Environment["LANTERN_TLS_CLIENT_CA_FILE"] != "" {
+		requiresClient := node.Environment["LANTERN_TLS_CLIENT_CA_FILE"] != ""
+		if node.StartupFile != "" {
+			raw, err := os.ReadFile(node.StartupFile)
+			var startup struct {
+				TLS struct {
+					ClientCA string `json:"client_ca_pem"`
+				} `json:"tls"`
+			}
+			if err != nil || json.Unmarshal(raw, &startup) != nil {
+				return fail("client_identity", errors.New("current public TLS input unavailable"))
+			}
+			requiresClient = startup.TLS.ClientCA != ""
+		}
+		if requiresClient {
 			lastNode = i
 			clientCert, err := tls.LoadX509KeyPair(result.ClientCertFile, result.ClientKeyFile)
 			if err != nil {
@@ -286,6 +306,40 @@ func waitFixtureReady(ctx context.Context, result fixture, children []*fixturePr
 	}
 }
 
+func initializeFixtureNodes(ctx context.Context, result *fixture, binary, dir string, overrides []map[string]string) error {
+	// Explicit initialization is a distinct native owner for each original node.
+	// Complete all initializations before opening any serving authority.
+	for i, node := range result.Nodes {
+		if node.StartupFile == "" || node.initialized {
+			continue
+		}
+		env, err := fixtureEnvironment(node, fixtureNodeOverrides(overrides, i))
+		if err != nil {
+			return err
+		}
+		log, err := privatefile.Create(filepath.Join(dir, node.Name+"-init.log"), os.O_WRONLY)
+		if err != nil {
+			return err
+		}
+		command := exec.CommandContext(ctx, binary, "init-security")
+		command.Env, command.Stdout, command.Stderr = env, log, log
+		runErr := command.Run()
+		closeErr := log.Close()
+		if runErr != nil || closeErr != nil {
+			return errors.Join(errors.New("explicit fixture security initialization failed; retain private init log"), runErr, closeErr)
+		}
+		result.Nodes[i].initialized = true
+	}
+	return nil
+}
+
+func fixtureNodeOverrides(overrides []map[string]string, i int) map[string]string {
+	if len(overrides) > i {
+		return overrides[i]
+	}
+	return nil
+}
+
 func fixtureProbeErrorCategory(err error) string {
 	var certificate *tls.CertificateVerificationError
 	var network net.Error
@@ -340,6 +394,16 @@ func serveFixture(ctx context.Context, result fixture, binary, dir, overridesFil
 			children[i].stop()
 		}
 	}()
+	initialization, stopInitialization := context.WithTimeout(ctx, readyTimeout)
+	if len(result.launches) != 0 {
+		stopInitialization()
+		initialization, stopInitialization = context.WithDeadline(ctx, result.launches[0].deadline)
+	}
+	err = initializeFixtureNodes(initialization, &result, binary, dir, overrides)
+	stopInitialization()
+	if err != nil {
+		return err
+	}
 	for i, node := range result.Nodes {
 		env, err := fixtureEnvironment(node, overrides[i])
 		if err != nil {

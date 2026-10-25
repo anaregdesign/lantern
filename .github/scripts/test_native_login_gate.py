@@ -45,7 +45,7 @@ class NativeLoginGateTest(unittest.TestCase):
                 marker = "native" if profile == "native" else "physical"
                 ready = "accounts=2" if profile == "native" else "observer_credentials=2 writer_credentials=1"
                 log = gate.NORMAL_SOURCE_MARKER + "\n"
-                log += "\n".join(f"current_constructor node={i} mode=fresh passed=true" for i in (1, 2, 3))
+                log += "\n".join(f"current_constructor node={i} mode={mode} passed=true" for mode in ("fresh", "resume") for i in (1, 2, 3))
                 log += f"\n{marker}_fixture_ready schema=1 {ready}\n{marker}_fixture_stopped reason=released\n--- PASS: {case} (0.01s)\n--- PASS: {gate.ROOT_TEST} (0.1s)\nPASS\n"
             script = f"#!{sys.executable}\n" + '''\
 import json, os
@@ -137,6 +137,14 @@ elif args[0] == 'run':
                 self.assertEqual(receipt["build_tags"], [])
                 self.assertFalse(receipt["synthetic_utc"])
                 self.assertEqual(receipt["source_config_sha256"], hashlib.sha256(source_config).hexdigest())
+                if outcome in ("pass", "changed"):
+                    self.assertEqual(receipt["native_owner_constructors"], [
+                        {"node": i, "phase": phase, "mode": mode}
+                        for phase, mode in (("initialize", "fresh"), ("serve", "resume"))
+                        for i in (1, 2, 3)
+                    ])
+                else:
+                    self.assertNotIn("native_owner_constructors", receipt)
                 self.assertIn("configured-source-integration/real provider/device acceptance NOT_RUN", receipt["proof"])
                 self.assertNotIn(options.origin, (destinations[-1] / "receipt.json").read_text())
             else:
@@ -214,7 +222,7 @@ elif args[0] == 'run':
 
     def test_serving_refuses_controlled_missing_or_destructive_evidence(self):
         log = gate.NORMAL_SOURCE_MARKER + "\n"
-        log += "\n".join(f"current_constructor node={i} mode=fresh passed=true" for i in (1, 2, 3))
+        log += "\n".join(f"current_constructor node={i} mode={mode} passed=true" for mode in ("fresh", "resume") for i in (1, 2, 3))
         log += f"\nnative_fixture_ready schema=1 accounts=2\nnative_fixture_stopped reason=timeout\n--- PASS: {gate.SERVING_CASE} (0.1s)\n--- PASS: {gate.ROOT_TEST} (0.1s)\n"
         gate.require_serving(log)
         physical = log.replace("native_fixture", "physical_fixture").replace("accounts=2", "observer_credentials=2 writer_credentials=1")
@@ -225,6 +233,11 @@ elif args[0] == 'run':
             gate.require_serving(physical)
         for invalid in (log.replace(gate.NORMAL_SOURCE_MARKER, "test-build controlled source: fixture"),
                         log.replace("node=2", "node=1"), log.replace("reason=timeout", "reason=unknown"),
+                        log.replace("current_constructor node=2 mode=fresh passed=true\n", ""),
+                        log.replace("current_constructor node=3 mode=resume passed=true", "current_constructor node=3 mode=resume passed=false"),
+                        log.replace("current_constructor node=1 mode=resume passed=true", "current_constructor node=1 mode=fresh passed=true"),
+                        log.replace("current_constructor node=1 mode=fresh passed=true", "current_constructor node=1 mode=resume passed=true"),
+                        log.replace("node=1 mode=fresh", "node=swap mode=fresh").replace("node=2 mode=fresh", "node=1 mode=fresh").replace("node=swap mode=fresh", "node=2 mode=fresh"),
                         log + f"--- PASS: {gate.ROOT_TEST}/{gate.CASES[0]} (0.1s)\n",
                         log + "--- SKIP: fixture\n", log + f"--- PASS: {gate.SERVING_CASE} (0.1s)\n"):
             with self.subTest(log=invalid), self.assertRaises(RuntimeError):

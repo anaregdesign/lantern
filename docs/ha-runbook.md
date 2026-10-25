@@ -55,8 +55,9 @@ public export nor a graph-only snapshot restores sys: security continuity.
 
 ### 2.2 HA mode (leaderless data replication)
 
-Configure the complete independent signed private peer plane in either public
-mode. Distinct per-node TLS 1.3/mTLS identities, exact private origins and
+OFF configures the complete independent signed private peer plane explicitly.
+OIDC supplies the same human JSON on provision/init/start and derives its planes
+from fixed material and current intent. Distinct per-node TLS 1.3/mTLS identities, exact private origins and
 homogeneous mode/domain/generation/namespace are mandatory. DNS locates only
 approved peers. Renew the signed manifest before expiry (at most ten minutes);
 a lost renewal stops serving and peer work after bounded admission expires.
@@ -71,6 +72,11 @@ by itself does not prove current authorization. Quorum or qualified-time loss
 stops protected processing under the existing finite bounds even while
 application replication is healthy. Neither data discovery nor a surviving
 minority can shrink the original voter set.
+
+OIDC `material_root` stores fixed identity keys and historical trust, never
+current provider configuration. Every start requires the supplied current JSON;
+configured Issuer trust is reconciled before readiness without granting users or
+resetting policy. Keep `persistence_root` separate and preserve CLEAN custody.
 
 Follow the [authority contract](security-current-authority.md) for per-origin
 custody, immutable operation recovery and intact durable restart. Operational
@@ -102,15 +108,29 @@ obsolete receipt artifacts never certify this mode.
 ### 3.1 Kubernetes
 
 The [Helm chart](../deploy/helm/lantern/README.md) defaults to one OFF Server.
-HA requires explicit `peerPlane` membership/operator/identity material and
-per-pod durable runtime-state PVCs. The private headless Service includes
+OFF HA requires explicit `peerPlane` membership/operator/identity material.
+OIDC supplies current per-pod human JSON and fixed identity material; both modes
+retain per-pod durable runtime-state PVCs. The private headless Service includes
 bootstrapping pods; the public Service remains readiness gated. More than one
 replica without signed membership fails rendering/startup.
 
-OIDC requires each pod's independently provisioned authority files through
-`auth.files` and its node-specific `auth.nodeFile`, plus a separate public TLS
-Secret. Keep each pod's private keys and durable state exclusive to that pod;
-do not copy another voter's or origin's private material into its mount.
+OIDC requires `auth.configSecret` containing each Pod's complete human JSON and
+`auth.existingSecret`/the exact eight-path `auth.files` identity allowlist. Its
+trusted init selects only that Pod's private input/material; the Server never
+mounts raw cohort Secrets. Supplied JSON uses `material_root` `/run/lantern-security`,
+selects the actual Pod name and keeps `persistence_root` at `runtimeState.dir`.
+Current public TLS/proxy/provider settings come from JSON; no competing OFF
+public-TLS/peer environment recipe is used. Keep each Pod's private keys and
+native state exclusive to it.
+
+The input is an immutable per-Pod snapshot, reread on every process start.
+Changing the source Secret requires Pod replacement, not container-only restart.
+Signed membership copies still expire; the chart adds no automatic Secret-to-
+private-file renewal adapter. This known delivery gap and actual Kubernetes
+acceptance remain held **0/1** in [#1636](https://github.com/anaregdesign/lantern/issues/1636).
+Rendering/source tests do not qualify continuous Kubernetes renewal or resume
+held cluster work. See the [chart boundary](../deploy/helm/lantern/README.md#finite-membership-delivery-boundary).
+
 Changing public mode, security generation or
 namespace requires a fenced homogeneous migration. No pod-ordinal election is
 provided. Protected diagnostics remain on loopback, with local exec probes;
@@ -627,18 +647,28 @@ and locally owned tokens. Pump and anti-entropy share one installer, so a
 competing install is rejected before changing serving state. Staging retains
 the original native admission and deadline without extending either.
 
-Graph-only HA startup requires an explicit spool directory, total disk budget
+OFF graph-only HA startup requires an explicit spool directory, total disk budget
 and frame limit. The directory must already exist with mode 0700 and be owned
 by the server identity. Supply its canonical resolved absolute path; symlink
 components are rejected. Each attempt takes its dedicated owner lease. Supply
 separate writable staging capacity when running with a read-only root filesystem.
 The server does not infer `/tmp`, the Receipt WAL directory or a backup/PVC path.
 An unconfigured single-node server can start, but Snapshot installation fails
-before receiving source data. Receipt-mode collection is unchanged.
+before receiving source data.
+
+OIDC graph-only derives `persistence_root/<node>/snapshot-spool` and validates
+its retained finite disk/frame profile from the node identity material. Native
+initialization creates this private leaf within that node's exclusive writable
+state mount; ordinary startup retains it and its owner lease. With
+`persistence_root=/state`, the active path is `/state/<node>/snapshot-spool`,
+not `/var/lib/lantern-snapshot-spool`. Current human JSON remains required, and
+separate `LANTERN_GRAPH_SNAPSHOT_SPOOL_*` variables are rejected by presence.
+OIDC receipt-WAL mode validates the retained metadata but has no active graph
+spool. Receipt-mode collection is unchanged.
 
 The local native fixture explicitly chooses a 128 MiB staging budget and a
 32 MiB frame limit. The following illustrates those fixture values with a
-placeholder path; operator deployments must choose their own explicit capacity:
+placeholder path for OFF; OFF operator deployments choose their explicit capacity:
 
 ```sh
 LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR=/path/to/private-snapshot-spool
@@ -681,17 +711,20 @@ identity. Unknown or nonempty artifacts are preserved and cause refusal. The
 stable empty `.lantern-snapshot-owner` lease file remains; do not delete it while
 an owner may be active. The directory is exclusive to this staging role.
 
-The local native fixture prepares explicit host-owned spool directories. For
-graph-only Compose, the [operator staging overlay](../deploy/compose/docker-compose.graph-snapshot.yml)
+The local OFF native fixture prepares explicit host-owned spool directories. For
+OFF graph-only Compose, the [operator staging overlay](../deploy/compose/docker-compose.graph-snapshot.yml)
 adds a new named volume per node at `/var/lib/lantern-snapshot-spool`. A matching
 image prepares that empty leaf for its default non-root user with mode 0700;
 fresh public volumes copy up its owner and mode. The
 [benchmark overlay](../testbed/bench/compose.graph-snapshot.yml) instead uses
 `nocopy: true` and its existing network-free initializer to prepare only the
 fresh project's three new staging volumes for the driver's explicit UID/GID.
-Receipt profiles omit both the graph staging overlay and the graph spool keys.
+Receipt profiles and every OIDC profile omit these generic staging overlays.
+OIDC graph-only already has its derived private leaf in the node-exclusive state
+mount; adding a `/var/lib` staging mount would not configure or isolate that
+active path.
 
-The custom-UID membership profile uses the separate
+The OFF custom-UID membership profile uses the separate
 [staging bind overlay](../deploy/compose/docker-compose.graph-snapshot.membership.yml)
 last, after its replacement mount lists, instead of the named-volume overlay.
 Operators prepare new `node-i/snapshot-spool` directories with the exact
@@ -703,7 +736,9 @@ See the [Compose instructions](../deploy/compose/README.md#explicit-ha).
 Keep the dedicated staging volume through ordinary restart and preserve its
 stable owner file. Fresh benchmark teardown removes only its named project's
 volumes; operator bind directories have their own explicit storage lifecycle.
-No existing runtime, state, backup or PVC storage is reused. Rendered Compose
+The OFF overlays never reuse existing runtime, state, backup or PVC storage.
+OIDC instead retains the initialized dedicated spool leaf within its own native
+state mount, which no sibling node may write. Rendered Compose
 checks establish configuration shape; ownership, copy-up and flock on the
 chosen image/volume driver require their separate runtime proof. These local
 checks do not qualify configured-source behavior or sustained-load convergence.

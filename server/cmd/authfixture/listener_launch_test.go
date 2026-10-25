@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -12,6 +13,33 @@ import (
 
 	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 )
+
+func TestFixtureLaunchReadsSelectedCurrentStartupListener(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "startup.json")
+	node := fixtureNode{StartupFile: path, Environment: map[string]string{"LANTERN_PORT": "16380"}}
+	launch := &fixtureLaunch{public: 16380, peer: 17380}
+	if err := os.WriteFile(path, []byte(`{"node":"one","nodes":[{"name":"one","data_listen":"127.0.0.1:17380"},{"name":"other","data_listen":"127.0.0.1:17381"}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkFixtureLaunchNode(launch, node); err != nil {
+		t.Fatal("selected current listener rejected", err)
+	}
+	if err := updateFixtureDataListen(node, "127.0.0.1:17381"); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkFixtureLaunchNode(launch, node); err == nil {
+		t.Fatal("unowned current listener accepted")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkFixtureLaunchNode(launch, node); err == nil {
+		t.Fatal("missing current input accepted")
+	}
+	if err := checkFixtureLaunchNode(&fixtureLaunch{public: 16380}, fixtureNode{Environment: map[string]string{"LANTERN_PORT": "16380", "LANTERN_PEER_LISTEN_ADDR": "127.0.0.1:17380"}}); err == nil {
+		t.Fatal("unreserved private listener accepted")
+	}
+}
 
 func TestNativeListenerLaunchLifecycle(t *testing.T) {
 	binary := fixtureServerBinary(t)

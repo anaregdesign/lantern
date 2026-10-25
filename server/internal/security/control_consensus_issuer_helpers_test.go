@@ -46,7 +46,7 @@ func s2cTestSignHistorical(t *testing.T, trust *s2cTrust, key ed25519.PrivateKey
 		h.PurposeBinding = s1PurposeBinding(h.ID, operation)
 	}
 	a := &s1VerifiedAuthorization{h.Authentication, h.Lineage, h.CredentialEvidence, h.PurposeEvidence, h.PurposeBinding, h.Consume, h.CredentialDeadline, h.PurposeDeadline, nil}
-	h.Value = (&S1Handoff{h.ID, operation, h.OriginDigest, h.Serial, a}).digest()
+	h.Value = (&S1Handoff{h.ID, operation, h.OriginDigest, h.Serial, a, nil}).digest()
 	body, err := s2cHistoricalBody(h, operation.Encode(), trust.bounds)
 	if err != nil {
 		t.Fatal(err)

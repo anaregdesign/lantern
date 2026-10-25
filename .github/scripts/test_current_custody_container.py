@@ -12,6 +12,15 @@ SPEC.loader.exec_module(CUSTODY)
 
 
 class CustodyReceiptTest(unittest.TestCase):
+    def test_serving_mount_can_expose_only_its_own_private_material(self):
+        self.assertEqual(CUSTODY.volume_mount("owned", "/provision/node-2", readonly=True, subdirectory="node-2"),
+                         "type=volume,src=owned,dst=/provision/node-2,volume-subpath=private/node-2,readonly")
+        self.assertEqual(CUSTODY.volume_mount("owned-journal", "/journal"),
+                         "type=volume,src=owned-journal,dst=/journal,volume-subpath=private")
+        for subdirectory in ("../node-1", "/node-1", "node-1/child", ".", ".."):
+            with self.subTest(subdirectory=subdirectory), self.assertRaises(ValueError):
+                CUSTODY.volume_mount("owned", "/provision/node-2", subdirectory=subdirectory)
+
     def test_partial_pair_or_previous_cycle_cannot_pass_normal_shutdown(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

@@ -39,7 +39,7 @@ func TestComposeRestartSeparatesWorkloadAndGraphContinuity(t *testing.T) {
 							t.Fatal("receipt fixture retained graph Snapshot storage", key)
 						}
 					}
-				} else if env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] != composeGraphSnapshotSpoolDirectory || env["LANTERN_RECEIPT_WAL_PATH"] != "" {
+				} else if env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] != "" || node.StartupFile == "" || env["LANTERN_RECEIPT_WAL_PATH"] != "" {
 					t.Fatal("graph fixture mixed private scratch with receipt storage")
 				}
 				if _, err := os.Lstat(filepath.Join(dir, node.Name+"-graph-snapshot-spool")); !os.IsNotExist(err) {
@@ -59,7 +59,7 @@ func TestComposeRestartSeparatesWorkloadAndGraphContinuity(t *testing.T) {
 				t.Fatal("invalid restart metadata")
 			}
 			env := current.Nodes[1].Environment
-			if env["LANTERN_PEER_MEMBERSHIP_MODE"] != "resume" || env["LANTERN_SECURITY_STORE_MODE"] != "resume" || env["LANTERN_PEER_WORKLOAD_ID"] != metadata.Nodes[1].Environment["LANTERN_PEER_WORKLOAD_ID"] {
+			if env["LANTERN_PEER_WORKLOAD_ID"] != metadata.Nodes[1].Environment["LANTERN_PEER_WORKLOAD_ID"] {
 				t.Fatal("explicit runtime continuity changed workload authority")
 			}
 			if (env["LANTERN_NODE_ID"] == original) != receipt || receipt && env["LANTERN_RECEIPT_WAL_MODE"] != "restart" {

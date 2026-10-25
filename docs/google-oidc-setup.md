@@ -118,7 +118,7 @@ grants, account-linking rules or substitutes for `sub`. Subject discovery needs
 an operator-owned verified Code exchange; unverified JWT decoding cannot supply
 first-administrator authority.
 
-Complete the [small setup intent](../deploy/examples/auth/README.md#environment-json-startup)
+Complete the [human configuration](../deploy/examples/auth/README.md#environment-json-startup)
 privately using the [setup template](../deploy/examples/auth/security-config.json.example).
 Its Google-specific fields can be:
 
@@ -138,8 +138,9 @@ Its Google-specific fields can be:
 }
 ```
 
-This fragment belongs in the complete setup intent alongside `public_origin`,
-explicit `target_platform`, `persistence_root`, fixed nodes and the selected
+This fragment belongs in the complete human configuration alongside `public_origin`,
+explicit `target_platform`, required `material_root`, separate
+`persistence_root`, fixed named nodes and the selected
 public TLS/proxy boundary. The `google` preset pins the canonical Google issuer,
 RS256 and token origin `https://oauth2.googleapis.com`; it derives the exact
 callback and secret destination binding. Supply only the raw
@@ -148,8 +149,8 @@ injection boundary, not the downloaded Google client JSON. Keep private copies
 and generated output outside the repository; never place secret values in shell
 arguments, logs, client builds or shared rendered configuration.
 
-The initial administrator's enabled Issuer must include a usable browser
-profile so it can log in and complete operation-purpose reauthentication.
+Fresh provisioning requires the initial administrator's enabled Issuer to
+include a usable browser profile for login and operation reauthentication.
 Browser-only Google login does **not** require `api_audience`. An optional
 external API JWT profile needs its own explicitly qualified audience and
 issuance rules; without that profile external API JWTs are rejected. Google
@@ -164,32 +165,36 @@ Inject the complete intent as `LANTERN_SECURITY_CONFIG_JSON` with
 [provision-security command](../server/cmd/security_provisioning.go):
 
 ```sh
-lantern provision-security --output /absolute/private/provisioned \
-  --operator-directory /absolute/private/operator
+lantern provision-security --operator-directory /absolute/private/operator
 ```
 
-The command generates and validates original genesis, independent keys,
-profiles, memberships and paths once; operators do not author those internal
-structures. It opens no native state, trusted-time owner or listener. The
-selected target platform is explicit even when generating Linux inputs on a
-Mac. Generated identity, voter/member set, profile, key and CA pins remain
-fixed; never regenerate trust or reset retained data to resolve a mismatch.
+The command creates independent identity keys, fixed topology and historical
+trust under `material_root`; no saved setup/current Issuers, provider secrets or
+TLS/proxy configuration become a runtime fallback. It opens no native state,
+trusted-time owner or listener. The target remains explicit when generating Linux
+material on a Mac. Preserve keys, CA/member pins and historical genesis.
 
-For initialization on the actual target and every normal start, replace setup
-intent with only that node's private document reference:
+Keep supplying the **same complete human JSON** on the actual target:
 
 ```sh
-export LANTERN_AUTH_MODE=oidc
-export LANTERN_SECURITY_CONFIG_JSON='{"provisioned_file":"/absolute/private/provisioned/nodes/node-1/security.json"}'
 lantern init-security
 lantern
 ```
 
-Run `init-security` once for a new node. Normal startup resumes intact CLEAN
-custody/native state and never recreates administrators or overwrites later
-managed policy. Missing, partial, altered or incompatible provisioning/state
-fails closed without fresh fallback. These commands retain the existing exact
-public-origin/proxy, private file, native-time and quorum checks.
+`init-security` creates native state once; every normal start reads current
+configuration again and resumes intact CLEAN custody. Missing/partial input,
+material or state fails closed without fresh fallback or regenerated trust.
+`initial_admin` is the original fresh seed and a resume identity assertion,
+never a policy reset or restoration of a suspended user's assignments.
+
+Add a later provider by updating `issuers` in that same configuration and
+restarting with the updated value. Native certified compare-and-swap reconciles
+configured trust before public readiness. A node with different desired Issuer
+intent remains unavailable. Adding trust creates no Principals, Roles or
+assignments and cannot appropriate managed trust objects or revive withdrawn
+grants. No public desired revision is needed. Use the
+[callback guide](../deploy/examples/auth/README.md#browser-callbacks) to derive
+current callbacks from supplied origin and canonical Issuer, not persisted genesis.
 
 Keep the generated operator and CA signing keys outside every serving mount.
 Both signed control/data memberships require the separate external publisher,

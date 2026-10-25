@@ -37,7 +37,6 @@ import (
 
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
-	"github.com/anaregdesign/lantern/server/provider"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -426,24 +425,20 @@ func newNativeLoginWireFixture(t *testing.T, dir, roots string) *nativeLoginWire
 	return f
 }
 
-func (f *nativeLoginWireFixture) configure(t *testing.T, c *provider.SecurityConfig) {
+func (f *nativeLoginWireFixture) configureInput(t *testing.T, input map[string]any) {
 	t.Helper()
-	for _, host := range nativeFixtureHosts {
-		c.PrivateOrigins["https://"+host] = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	private, ok := input["private_origins"].(map[string][]string)
+	if !ok {
+		t.Fatal("current JSON private origin configuration required")
 	}
-	// The exported config owns this existing private type. JSON decoding uses
-	// that concrete type without importing a Server-internal package from root.
+	for _, host := range nativeFixtureHosts {
+		private["https://"+host] = []string{"127.0.0.1/32"}
+	}
 	bindings := map[string]any{}
 	for name, client := range map[string]string{"apple_ios": "com.example.native", "apple_web": "com.example.web"} {
 		bindings[name] = map[string]string{"issuer": nativeAppleIssuer, "client_id": client, "token_origin": nativeAppleIssuer, "path": f.secretFile}
 	}
-	raw, err := json.Marshal(bindings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(raw, &c.SecretBindings); err != nil {
-		t.Fatal(err)
-	}
+	input["secret_bindings"] = bindings
 }
 
 func (f *nativeLoginWireFixture) serve(w http.ResponseWriter, r *http.Request) {

@@ -124,45 +124,52 @@ app.kubernetes.io/part-of: {{ include "lantern.name" . }}
 {{- end -}}
 
 {{- define "lantern.validateSecurity" -}}
-{{- if or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") -}}
+{{- $oidc := eq .Values.auth.mode "oidc" -}}
+{{- if not (has .Values.auth.mode (list "off" "oidc")) -}}{{ fail "auth.mode must be off or oidc" }}{{- end -}}
+{{- if or .Values.peerPlane.enabled $oidc -}}
 {{- if not .Values.nativeTime.configMap -}}{{ fail "private peers and OIDC require nativeTime.configMap with ntp.conf" }}{{- end -}}
 {{- else if .Values.nativeTime.configMap -}}{{ fail "standalone OFF must not ignore nativeTime.configMap" }}{{- end -}}
-{{- if not (has .Values.auth.mode (list "off" "oidc")) -}}{{ fail "auth.mode must be off or oidc" }}{{- end -}}
 {{- if or (hasKey .Values.replication "discovery") (hasKey .Values.replication "peers") (hasKey .Values "peerTLS") -}}{{ fail "legacy peer discovery/TLS values are retired; configure peerPlane" }}{{- end -}}
-{{- if and (gt (int .Values.replicaCount) 1) (not .Values.peerPlane.enabled) -}}{{ fail "multiple replicas require signed private peerPlane membership" }}{{- end -}}
-{{- if and .Values.metrics.expose (eq .Values.auth.mode "oidc") -}}{{ fail "OIDC diagnostics must remain loopback; supply an operator-authenticated sidecar" }}{{- end -}}
+{{- if and (gt (int .Values.replicaCount) 1) (not (or .Values.peerPlane.enabled $oidc)) -}}{{ fail "multiple replicas require signed private membership" }}{{- end -}}
+{{- if and .Values.metrics.expose $oidc -}}{{ fail "OIDC diagnostics must remain loopback; supply an operator-authenticated sidecar" }}{{- end -}}
 {{- if and (or .Values.metrics.serviceMonitor.enabled .Values.metrics.podMonitoring.enabled) (not .Values.metrics.expose) -}}{{ fail "scrape resources require explicit metrics.expose in OFF mode" }}{{- end -}}
-{{- if or .Values.publicTLS.existingSecret .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") -}}
+{{- if or .Values.publicTLS.existingSecret .Values.peerPlane.enabled $oidc -}}
 {{- if or (le (int (include "lantern.workloadUID" .)) 0) (le (int .Values.podSecurityContext.fsGroup) 0) (not .Values.podSecurityContext.runAsNonRoot) -}}{{ fail "workload Secret provisioning requires a non-root UID and fsGroup" }}{{- end -}}
 {{- if or .Values.securityContext.allowPrivilegeEscalation .Values.securityContext.privileged -}}{{ fail "workload Secret provisioning requires an unprivileged container" }}{{- end -}}
 {{- end -}}
-{{- if or (hasKey .Values.auth "nodeRole") (hasKey .Values.auth "writerFiles") (hasKey .Values.auth "profile") -}}{{ fail "retired auth writer/profile selectors are unsupported" }}{{- end -}}
-{{- if eq .Values.auth.mode "oidc" -}}
-{{- if not .Values.auth.files -}}{{ fail "OIDC requires an explicit per-workload auth.files allowlist" }}{{- end -}}
-{{- if gt (len .Values.auth.files) 32 -}}{{ fail "auth.files exceeds the bounded per-workload file set" }}{{- end -}}
+{{- range $name := list "nodeRole" "writerFiles" "profile" "storeMode" "nodeFile" "configMap" -}}
+{{- if hasKey $.Values.auth $name -}}{{ fail (printf "retired auth.%s setting is unsupported" $name) }}{{- end -}}
+{{- end -}}
+{{- if $oidc -}}
+{{- if or (lt (int .Values.replicaCount) 1) (gt (int .Values.replicaCount) 31) -}}{{ fail "OIDC requires 1 through 31 fixed replicas" }}{{- end -}}
+{{- if not .Values.auth.configSecret -}}{{ fail "OIDC requires auth.configSecret with per-Pod supplied JSON" }}{{- end -}}
+{{- if not .Values.auth.existingSecret -}}{{ fail "OIDC requires auth.existingSecret for identity material" }}{{- end -}}
+{{- if .Values.publicTLS.existingSecret -}}{{ fail "OIDC public TLS comes from supplied JSON, not publicTLS.existingSecret" }}{{- end -}}
+{{- if or .Values.peerPlane.enabled .Values.peerPlane.deployment .Values.peerPlane.workloadIDPrefix .Values.peerPlane.membershipConfigMap .Values.peerPlane.operatorKeySecret .Values.peerPlane.identitySecret -}}{{ fail "OIDC derives private peers from identity material; generic OFF peer inputs must be absent" }}{{- end -}}
+{{- if ne .Values.peerPlane.mode "resume" -}}{{ fail "OIDC cannot select generic OFF peerPlane.mode" }}{{- end -}}
+{{- $required := list "identity.json" "COMPLETE" "workload.pem" "workload-key.pem" "roots.pem" "data-operator.pem" "membership/control.json" "membership/data.json" -}}
+{{- if ne (len .Values.auth.files) (len $required) -}}{{ fail "auth.files must contain exactly the eight per-workload identity paths" }}{{- end -}}
 {{- $seen := dict -}}
 {{- range $file := .Values.auth.files -}}
-{{- if or (not (regexMatch "^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$" $file)) (eq $file "..") (hasKey $seen $file) -}}{{ fail "auth file names must be unique simple basenames" }}{{- end -}}
-{{- if has $file (list "writer.key" "writer.pub" "machines.json" "operator.key") -}}{{ fail "retired writer/bootstrap and operator signing keys cannot be workload auth files" }}{{- end -}}
+{{- if or (not (has $file $required)) (hasKey $seen $file) -}}{{ fail "auth.files must contain unique known identity paths only" }}{{- end -}}
 {{- $_ := set $seen $file true -}}
 {{- end -}}
-{{- if not (has .Values.auth.nodeFile .Values.auth.files) -}}{{ fail "auth.nodeFile must be explicitly included in auth.files" }}{{- end -}}
-{{- if not (has .Values.auth.storeMode (list "fresh" "resume")) -}}{{ fail "auth.storeMode must be fresh or resume" }}{{- end -}}
-{{- if not .Values.auth.configMap -}}{{ fail "OIDC requires auth.configMap" }}{{- end -}}
-{{- if not .Values.auth.existingSecret -}}{{ fail "OIDC requires auth.existingSecret" }}{{- end -}}
-{{- if not .Values.publicTLS.existingSecret -}}{{ fail "OIDC requires publicTLS.existingSecret" }}{{- end -}}
+{{- if or (lt (int .Values.auth.controlPort) 1) (gt (int .Values.auth.controlPort) 65535) (eq (int .Values.auth.controlPort) (int .Values.service.port)) (eq (int .Values.auth.controlPort) (int .Values.peerPlane.port)) -}}{{ fail "OIDC control port must be valid and distinct from public/data ports" }}{{- end -}}
+{{- range $env := .Values.extraEnv -}}
+{{- if or (regexMatch "^LANTERN_(OIDC_|SECURITY_|PEER_|CDC_|GRAPH_SNAPSHOT_SPOOL_)" $env.name) (has $env.name (list "LANTERN_AUTH_MODE" "LANTERN_PEERS" "LANTERN_TLS_CERT_FILE" "LANTERN_TLS_KEY_FILE" "LANTERN_TLS_CLIENT_CA_FILE")) -}}{{ fail "OIDC extraEnv cannot override its supplied configuration/material inputs" }}{{- end -}}
+{{- end -}}
+{{- else if or .Values.auth.configSecret .Values.auth.existingSecret .Values.auth.files -}}{{ fail "OFF must not ignore OIDC security inputs" }}{{- end -}}
+{{- if or .Values.peerPlane.enabled $oidc -}}
+{{- if or (lt (int .Values.peerPlane.port) 1) (gt (int .Values.peerPlane.port) 65535) (eq (int .Values.peerPlane.port) (int .Values.service.port)) -}}{{ fail "private data peer and public ports must be valid and distinct" }}{{- end -}}
 {{- end -}}
 {{- if .Values.peerPlane.enabled -}}
 {{- range $name := list "deployment" "workloadIDPrefix" "membershipConfigMap" "operatorKeySecret" "identitySecret" -}}
 {{- if not (index $.Values.peerPlane $name) -}}{{ fail (printf "peerPlane.%s is required" $name) }}{{- end -}}
 {{- end -}}
-{{- if eq (int .Values.peerPlane.port) (int .Values.service.port) -}}{{ fail "private peer and public ports must differ" }}{{- end -}}
-{{- end -}}
-{{- if and (eq .Values.auth.mode "off") (or .Values.auth.configMap .Values.auth.existingSecret) -}}{{ fail "OFF must not ignore OIDC security configuration" }}{{- end -}}
-{{- if not .Values.peerPlane.enabled -}}
+{{- else if not $oidc -}}
 {{- if or .Values.peerPlane.deployment .Values.peerPlane.workloadIDPrefix .Values.peerPlane.membershipConfigMap .Values.peerPlane.operatorKeySecret .Values.peerPlane.identitySecret -}}{{ fail "disabled peerPlane must not ignore operator material" }}{{- end -}}
 {{- end -}}
-{{- if and .Values.admin.enabled (eq .Values.auth.mode "oidc") -}}
+{{- if and .Values.admin.enabled $oidc -}}
 {{- if not (hasPrefix "https://" .Values.admin.server.upstream) -}}{{ fail "OIDC Admin requires a pinned HTTPS authority upstream" }}{{- end -}}
 {{- if and .Values.admin.ingress.enabled (not .Values.admin.ingress.tls) -}}{{ fail "OIDC Admin ingress requires TLS" }}{{- end -}}
 {{- end -}}
@@ -190,11 +197,11 @@ set -eu
 umask 077
 [ "$(id -u)" = "$EXPECTED_UID" ] && [ "$EXPECTED_UID" != 0 ]
 case "$POD_NAME" in ''|*[!a-z0-9-]*) exit 1;; esac
-rm -rf /run/lantern-private/public /run/lantern-private/security /run/lantern-private/peers /run/lantern-private/operator
+rm -rf /run/lantern-private/public /run/lantern-private/security /run/lantern-private/peers /run/lantern-private/operator /run/lantern-private/input
 copy_file() {
-  source="$1"; destination="$2"
+  source="$1"; destination="$2"; limit="${3:-4456448}"
   [ -f "$source" ] && [ -s "$source" ]
-  [ "$(wc -c < "$source")" -le 4456448 ]
+  [ "$(wc -c < "$source")" -le "$limit" ]
   rm -f "$destination.tmp"
   cp -L "$source" "$destination.tmp"
   chmod 600 "$destination.tmp"
@@ -207,10 +214,11 @@ copy_file "/run/lantern-source/public/$POD_NAME.crt" "/run/lantern-private/publi
 copy_file "/run/lantern-source/public/$POD_NAME.key" "/run/lantern-private/public/$POD_NAME.key"
 {{- end }}
 {{- if eq .Values.auth.mode "oidc" }}
-mkdir -p /run/lantern-private/security
-chmod 700 /run/lantern-private/security
+mkdir -p /run/lantern-private/input /run/lantern-private/security/nodes/"$POD_NAME"/membership
+chmod 700 /run/lantern-private/input /run/lantern-private/security /run/lantern-private/security/nodes /run/lantern-private/security/nodes/"$POD_NAME" /run/lantern-private/security/nodes/"$POD_NAME"/membership
+copy_file "/run/lantern-source/input/$POD_NAME.json" /run/lantern-private/input/config.json 122880
 {{- range $file := .Values.auth.files }}
-copy_file "/run/lantern-source/security/$POD_NAME.{{ $file }}" {{ printf "/run/lantern-private/security/%s" $file | quote }}
+copy_file "/run/lantern-source/security/$POD_NAME.{{ replace "/" "." $file }}" "/run/lantern-private/security/nodes/$POD_NAME/{{ $file }}"
 {{- end }}
 {{- end }}
 {{- if .Values.peerPlane.enabled }}

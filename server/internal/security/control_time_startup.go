@@ -21,6 +21,26 @@ func (e *authorityTimeStartupError) AuthorityTimeStartupSnapshot() decisiontrace
 	return e.snapshot
 }
 
+// Final copied acquisition counters accompany startup failures after their
+// native owner has drained. They remain diagnostics, never authority or a new
+// time sample. The original cause and detailed startup snapshot still unwrap.
+type authorityTimeAcquisitionError struct {
+	cause  error
+	counts decisiontrace.AcquisitionCounts
+}
+
+func (e *authorityTimeAcquisitionError) Error() string { return e.cause.Error() }
+func (e *authorityTimeAcquisitionError) Unwrap() error { return e.cause }
+func (e *authorityTimeAcquisitionError) TimeAcquisitionCounts() decisiontrace.AcquisitionCounts {
+	return e.counts
+}
+func withAuthorityTimeAcquisitionCounts(cause error, counts decisiontrace.AcquisitionCounts) error {
+	if cause == nil {
+		return nil
+	}
+	return &authorityTimeAcquisitionError{cause: cause, counts: counts}
+}
+
 func authorityTimeContextState(ctx context.Context) decisiontrace.ContextState {
 	if ctx == nil {
 		return decisiontrace.ContextUnobserved

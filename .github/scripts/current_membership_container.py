@@ -18,6 +18,8 @@ import signal
 import subprocess
 import time
 
+from security_startup import startup_command
+
 
 def utc():
     return datetime.datetime.now(datetime.timezone.utc)
@@ -167,29 +169,28 @@ def main():
 
     def start_node(node, mode):
         name = args.name + f"-node-{node}-" + mode
-        values = common(name, "/server") + ["--network", network, "--ip", hosts[node-1]]
+        values = common(name, "sh") + ["--network", network, "--ip", hosts[node-1]]
         values += bind(args.server.resolve(), "/server", True)
         values += bind(provision / f"node-{node}", f"/provision/node-{node}", True)
-        for filename in ("genesis.json", "oidc.pem", "public.pem", "public.key", "cursor-keys.json", "data-operator.pub"):
-            values += bind(provision / filename, "/provision/" + filename, True)
         values += bind(journals[node], "/journal") + bind(custody[node], "/custody")
-        peer = json.loads((provision / f"node-{node}" / "peer.json").read_text())["Identity"]
-        env = {"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_STORE_MODE": mode,
-               "LANTERN_SECURITY_CONFIG_FILE": f"/provision/node-{node}/node.json", "LANTERN_OIDC_BROWSER_ORIGIN": "https://admin.example",
-               "LANTERN_OIDC_ROOT_CA_FILE": "/provision/oidc.pem", "LANTERN_OIDC_PRIVATE_ORIGINS": json.dumps({issuer: [driver_ip+"/32"]}),
-               "LANTERN_TLS_CERT_FILE": "/provision/public.pem", "LANTERN_TLS_KEY_FILE": "/provision/public.key", "LANTERN_CDC_CURSOR_KEY_RING_FILE": "/provision/cursor-keys.json",
+        env = {"LANTERN_AUTH_MODE": "oidc",
                "LANTERN_PORT": "6380", "LANTERN_METRICS_ADDR": "127.0.0.1:9090", "LANTERN_NODE_ID": f"{node:032x}",
-               "LANTERN_RECEIPT_WAL_MODE": "fresh" if mode == "fresh" else "restart", "LANTERN_RECEIPT_WAL_PATH": "/journal/business.wal",
+               "LANTERN_RECEIPT_WAL_MODE": "restart" if mode == "resume" else "fresh", "LANTERN_RECEIPT_WAL_PATH": "/journal/business.wal",
                "LANTERN_RECEIPT_EPOCH": "42424242424242424242424242424242", "LANTERN_RECEIPT_RETENTION": "1h", "LANTERN_RECEIPT_MAX_ENTRIES": "128", "LANTERN_RECEIPT_MAX_BYTES": "1048576",
-               "LANTERN_BACKUP_ENABLED": "false", "LANTERN_BACKUP_RESTORE_ON_START": "false", "LANTERN_DRAIN_DELAY_SECONDS": "1",
-               "LANTERN_PEER_LISTEN_ADDR": "0.0.0.0:17380", "LANTERN_PEER_DEPLOYMENT": bytes(peer["Deployment"]).hex(),
-               "LANTERN_PEER_MEMBERSHIP_MODE": mode, "LANTERN_PEER_MEMBERSHIP_STATE_FILE": "/journal/data-membership",
-               "LANTERN_PEER_MEMBERSHIP_FILE": peer["ManifestFile"], "LANTERN_PEER_OPERATOR_PUBLIC_KEY_FILE": peer["OperatorKeyFile"],
-               "LANTERN_PEER_WORKLOAD_ID": peer["SelfIdentity"], "LANTERN_PEER_CERT_FILE": peer["CertFile"], "LANTERN_PEER_KEY_FILE": peer["KeyFile"], "LANTERN_PEER_TRUST_CA_FILE": peer["CAFile"]}
+               "LANTERN_BACKUP_ENABLED": "false", "LANTERN_BACKUP_RESTORE_ON_START": "false", "LANTERN_DRAIN_DELAY_SECONDS": "1"}
         for key, value in env.items():
             values += ["--env", key+"="+value]
-        docker(*values, args.image)
+        docker(*values, args.image, *startup_command(f"/provision/node-{node}/startup.json", initialize=mode == "initialize"))
         containers.append(name)
+        if mode == "initialize":
+            finish(name)
+            result = docker("logs", name, check=False)
+            (args.evidence / (name+".log")).write_text(result.stdout+result.stderr)
+            receipt["phases"].append({"phase": "explicit-initialize", "node": node, "pass": True})
+            save()
+            docker("rm", name)
+            containers.remove(name)
+            return
         nodes[node] = name
         for path in ("/provision/control-operator.key", "/provision/data-operator.key", "/publisher-state.json", f"/provision/node-{node%3+1}/tls.key"):
             if docker("exec", name, "test", "-e", path, check=False).returncode != 1:
@@ -200,7 +201,7 @@ def main():
             rows = []
             for node in (1, 2, 3):
                 for name in ("membership", "data-membership"):
-                    version, _, sha = manifest(journals[node] / name)
+                    version, _, sha = manifest(journals[node] / f"node-{node}" / name)
                     if version < minimum:
                         return False
                     rows.append({"node": node, "stream": name, "version": version, "sha256": sha})
@@ -213,12 +214,12 @@ def main():
         name = nodes[node]
         docker("kill", "--signal", "TERM", name)
         finish(name)
-        proof = clean_checkpoint(custody[node])
-        floors = json.loads((custody[node] / "floors.json").read_text())
-        version, _, sha = manifest(journals[node] / "membership")
+        proof = clean_checkpoint(custody[node] / f"node-{node}")
+        floors = json.loads((custody[node] / f"node-{node}" / "floors.json").read_text())
+        version, _, sha = manifest(journals[node] / f"node-{node}" / "membership")
         if version < 3 or floors["M"]["Version"] != version or bytes(floors["M"]["Digest"]).hex() != sha:
             raise RuntimeError("CLEAN did not retain latest accepted membership")
-        if proof["cycle"] != (2 if name.endswith("-resume") else 1):
+        if proof["cycle"] != (3 if name.endswith("-resume") else 2):
             raise RuntimeError("unexpected custody cycle")
         proof["control_version"] = version
         result = docker("logs", name, check=False)
@@ -255,6 +256,8 @@ def main():
                 stream[key] = [str(provision / pathlib.PurePosixPath(x).relative_to("/provision")) for x in stream[key]]
         # Preserve the ordinary bootstrap interval through native startup.
         # Only then begin the publisher's short successor intervals.
+        for node in (1, 2, 3):
+            start_node(node, "initialize")
         for node in (1, 2, 3):
             start_node(node, "fresh")
         phase("ready")
@@ -307,7 +310,7 @@ def main():
         phase("crossed-window")
         wait_for(lambda: consumed(pending["Version"]+2), 45)
         stop_node(2)
-        saved_floor = digest(custody[2] / "floors.json")
+        saved_floor = digest(custody[2] / "node-2" / "floors.json")
         start_node(2, "resume")
         phase("resumed")
         receipt["resumed_clean_floor_sha256"] = saved_floor
@@ -316,6 +319,8 @@ def main():
         stop_publisher()
         phase("finish")
         finish(controller)
+        receipt["counts"] = {"explicit_initializations": 3, "initial_native_owner_processes": 6,
+                             "maximum_concurrent_serving_processes": 3, "serving_restarts": 1}
         receipt["status"] = "PASS"
     except Exception as exc:
         receipt["status"] = "FAIL"

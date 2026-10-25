@@ -75,9 +75,13 @@ type S1Handoff struct {
 	origin        [32]byte
 	serial        uint64
 	authorization *s1VerifiedAuthorization
+	configured    *authorityConfiguredAuthorization
 }
 
 func (h *S1Handoff) digest() [32]byte {
+	if h != nil && h.configured != nil {
+		return h.configuredDigest()
+	}
 	if h == nil || h.authorization == nil {
 		return [32]byte{}
 	}
@@ -96,6 +100,9 @@ func (h *S1Handoff) digest() [32]byte {
 }
 
 func (h *S1Handoff) valid(scope SemanticCut) bool {
+	if h != nil && h.configured != nil {
+		return h.validConfigured(scope)
+	}
 	if h == nil || h.authorization == nil || !h.id.valid() || h.id.Domain != scope.Domain || h.id.Cohort != scope.Cohort || h.origin == [32]byte{} || h.serial == 0 || !h.operation.reviewed.valid() || h.operation.reviewed.Domain != scope.Domain || h.operation.reviewed.Cohort != scope.Cohort {
 		return false
 	}
@@ -279,6 +286,9 @@ func evaluateS1Candidate(s *S1ApplyState, h *S1Handoff, commit CommitRef, previo
 	}{s.prefix, commit})
 	if h == nil {
 		return S1ApplyResult{&advanced, nil, S1Noop}, nil
+	}
+	if h.configured != nil {
+		return evaluateConfiguredCandidate(s, &advanced, h, previous)
 	}
 	if original, known := s.ledger[h.id]; known {
 		if original.operation != h.operation {

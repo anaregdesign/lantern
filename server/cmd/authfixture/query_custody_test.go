@@ -21,7 +21,7 @@ func TestQueryCustodyRequiresOriginalFreshCleanHashAndPrivateFiles(t *testing.T)
 				Phase           string
 				Cycle           uint64
 				Binding, Floors [32]byte
-			}{1, "CLEAN", 1, [32]byte{1}, sha256.Sum256(floors)}
+			}{1, "CLEAN", 2, [32]byte{1}, sha256.Sum256(floors)}
 			if kind == "running" {
 				state.Phase = "RUNNING"
 			}
@@ -32,7 +32,7 @@ func TestQueryCustodyRequiresOriginalFreshCleanHashAndPrivateFiles(t *testing.T)
 				state.Floors[0] ^= 1
 			}
 			if kind == "wrong cycle" {
-				state.Cycle = 2
+				state.Cycle = 1
 			}
 			if err := os.WriteFile(path, floors, 0600); err != nil {
 				t.Fatal(err)
@@ -60,7 +60,7 @@ func TestQueryCustodyRequiresOriginalFreshCleanHashAndPrivateFiles(t *testing.T)
 			if (err == nil) != (kind == "valid") {
 				t.Fatal(kind, err)
 			}
-			if err == nil && (len(result.FloorsSHA256) != 64 || len(result.StateSHA256) != 64 || result.Cycle != 1) {
+			if err == nil && (len(result.FloorsSHA256) != 64 || len(result.StateSHA256) != 64 || result.Cycle != 2) {
 				t.Fatal("checkpoint observation incomplete")
 			}
 		})

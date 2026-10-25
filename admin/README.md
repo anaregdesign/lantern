@@ -161,26 +161,28 @@ Server. Select the direct Server address with the **Gateway** button and set
 [`server/README.md`](../server/README.md)).
 
 For **OIDC**, expose Admin over HTTPS and select that exact public origin in the
-Gateway picker. Set the setup intent's `public_origin` to that same origin, for
-example `https://admin.example.com:8443`. With `LANTERN_AUTH_MODE=oidc`, inject the
-private setup intent through `LANTERN_SECURITY_CONFIG_JSON` and follow the
-[generated provisioning guide](../deploy/examples/auth/README.md#environment-json-startup)
-to run `lantern provision-security` once. Read each browser profile's exact
-callback from the generated node document:
+Gateway picker. Set the human configuration's `public_origin` to that origin,
+for example `https://admin.example.com:8443`. Supply `LANTERN_AUTH_MODE=oidc` and
+the same complete private `LANTERN_SECURITY_CONFIG_JSON` to
+`provision-security --operator-directory ...`, the one-time `init-security`,
+and every normal start/restart. See the
+[configuration guide](../deploy/examples/auth/README.md#environment-json-startup).
+`material_root` contains fixed identity keys/trust, not a saved runtime config.
+Missing configuration never falls back to that material or to prior native state.
 
-```sh
-jq -er '.authority.genesis.Image.issuers[] | select(.redirect_uri != "") | .redirect_uri' /absolute/private/provisioned/nodes/node-1/security.json
-```
-
-This query prints only the public callback URLs. Register each exact URL with
-its provider. Follow the guide's external membership publisher and one-time
-`init-security` steps; normal startup uses that node's `provisioned_file`
-reference and resumes intact state.
+Register each browser profile's derived callback using supplied `public_origin`
+and canonical Issuer. Google's callback suffix is
+`/auth/callback/89a8000a68d759c68bfaeab5056d67342e97643511923e63702da58a9aac8f38`.
+Browser-only Google needs no API audience. Later Issuers are added to the supplied
+configuration and certified before public readiness; adding one grants no users,
+Roles or assignments. Nodes with different desired Issuer intent stay unavailable.
+The external membership publisher, current quorum/native time and intact CLEAN
+restart custody remain required.
 
 The container optionally proxies `/auth/*`, `/browser/*` and `/graph.v1.*/*` to
 an operator-fixed `LANTERN_ADMIN_SERVER_UPSTREAM`; the gateway picker never
 selects that upstream. Use the verified HTTPS upstream, optional private CA,
-setup intent's exact `trusted_proxy_ips` and preserved public Host/scheme
+configuration's exact `trusted_proxy_ips` and preserved public Host/scheme
 configuration described in
 [Fixed Server and diagnostics proxy](#fixed-server-and-diagnostics-proxy) and the
 [operations guide](../docs/oidc-operations.md#browser-and-diagnostics-boundary).

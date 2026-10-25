@@ -187,6 +187,9 @@ func (o *CurrentAuthority) resultLocked(id FullChangeID, intent [32]byte) (Curre
 		return r, nil
 	}
 	if k.chosen != nil && k.chosen.h != nil && k.chosen.h.handoff.id == id {
+		if k.chosen.h.handoff.configured != nil {
+			return r, ErrPermissionDenied
+		}
 		if k.chosen.h.handoff.operation.digest != intent {
 			return r, ErrChangeConflict
 		}
@@ -195,6 +198,9 @@ func (o *CurrentAuthority) resultLocked(id FullChangeID, intent [32]byte) (Curre
 	}
 	for _, h := range k.origins {
 		if h.handoff.id == id {
+			if h.handoff.configured != nil {
+				return r, ErrPermissionDenied
+			}
 			if h.handoff.operation.digest != intent {
 				return r, ErrChangeConflict
 			}

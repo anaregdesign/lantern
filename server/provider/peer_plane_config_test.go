@@ -1,14 +1,12 @@
 package provider
 
 import (
+	"encoding/json"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/anaregdesign/lantern/server/internal/security"
 )
 
 func TestPeerPlaneCannotFallbackToPublicOrIgnoreTrust(t *testing.T) {
@@ -75,42 +73,34 @@ func TestProvisionedPeerRequiresOwnedAuthorityAndUninjectedTime(t *testing.T) {
 }
 
 func TestProvisionedPeerBindsJSONAuthorityAndAlwaysResumes(t *testing.T) {
-	dir := t.TempDir()
-	state, renewable := filepath.Join(dir, "state"), filepath.Join(dir, "renewable")
-	for _, path := range []string{state, renewable} {
-		if err := os.Mkdir(path, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	now := time.Date(2026, time.October, 25, 0, 0, 0, 0, time.UTC)
-	issuer := security.Issuer{URL: "https://issuer.example", ConfigRevision: 1, EnvOwned: true, Enabled: true, APIAudience: "lantern-api", Algorithms: []string{"EdDSA"}}
-	image := security.Image{Version: security.ImageVersion, BootstrapRevision: 1, Issuers: []security.Issuer{issuer},
-		Roles:      []security.Role{{ID: "security_admin", Name: "Security administrator", Rules: []security.PermissionRule{{ID: "manage", Effect: security.Allow, Action: security.SecurityManage, Resource: security.GlobalResource}}}},
-		Principals: []security.Principal{{Identity: security.Identity{Kind: security.OIDCPrincipal, Issuer: issuer.URL, Subject: "admin"}, State: security.Active, HumanIssuerConfigRevision: 1, Assignments: []security.RoleAssignment{{RoleID: "security_admin", EnvOwned: true}}}},
-	}
-	bundle, err := security.GenerateProvisioning(security.ProvisioningOptions{Target: runtime.GOOS, Now: now, End: now.Add(time.Hour), CleanupBy: now.Add(2 * time.Hour), Image: image,
-		Nodes: []security.ProvisioningNode{{Name: "one", ControlOrigin: "https://127.0.0.1:17381", DataOrigin: "https://127.0.0.1:17382", ControlListen: "127.0.0.1:17381", StateDir: state, RenewableDir: renewable}},
-	})
-	if err != nil {
-		t.Fatal("generate coherent peer trust", err)
-	}
-	node := bundle.Nodes[0]
-	if err := os.WriteFile(filepath.Join(renewable, "control.json"), bundle.Operator.ControlManifest, 0600); err != nil {
+	options := provisioningTestOptions(t)
+	var input securityConfigJSON
+	if err := json.Unmarshal([]byte(os.Getenv("LANTERN_SECURITY_CONFIG_JSON")), &input); err != nil {
 		t.Fatal(err)
 	}
-	peer := &PeerPlaneConfig{ListenAddress: "127.0.0.1:17382", Identity: PeerIdentityConfig{StateMode: "fresh", Deployment: node.DataDomain.Deployment, SelfIdentity: node.Identity,
-		StateFile: filepath.Join(state, "data-membership"), ManifestFile: filepath.Join(renewable, "data-membership.signed"), OperatorKeyFile: filepath.Join(dir, "operator.pub"),
-		CertFile: filepath.Join(dir, "cert.pem"), KeyFile: filepath.Join(dir, "key.pem"), CAFile: filepath.Join(dir, "roots.pem"),
-	}}
-	config := SecurityConfig{Mode: "oidc", AuthorityJSON: node.AuthorityJSON, ProvisionedPeer: peer}
+	input.TargetPlatform = runtime.GOOS
+	raw, _ := json.Marshal(input)
+	t.Setenv("LANTERN_SECURITY_CONFIG_JSON", string(raw))
+	if err := ProvisionSecurity(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	config, err := loadSecurityConfigJSON(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(config.StateDirectory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	peer := config.ProvisionedPeer
+	original := peer.Identity
 	cfg, err := loadPeerPlaneConfig(config, PeerConfig{Discovery: "static"})
 	if err != nil {
 		t.Fatal("load JSON-backed peer authority", err)
 	}
-	if cfg.Identity.StateMode != "resume" || cfg.Identity.AuthMode != "oidc" || cfg.Identity.CurrentProfile != node.CurrentProfile.Binding() || cfg.Identity.SecurityGeneration != node.CurrentProfile.Generation {
+	if cfg.Identity.StateMode != "resume" || cfg.Identity.AuthMode != "oidc" || cfg.Identity.CurrentProfile != original.CurrentProfile || cfg.Identity.SecurityGeneration != original.SecurityGeneration {
 		t.Fatal("generated peer did not select exact authority or attempted fresh state")
 	}
-	if peer.Identity.StateMode != "fresh" || peer.Identity.CurrentProfile != "" || peer.Identity.SecurityGeneration != [16]byte{} {
+	if peer.Identity.StateMode != original.StateMode || peer.Identity.CurrentProfile != original.CurrentProfile || peer.Identity.SecurityGeneration != original.SecurityGeneration {
 		t.Fatal("load changed immutable provisioning input")
 	}
 	for _, mutate := range []func(*PeerIdentityConfig){

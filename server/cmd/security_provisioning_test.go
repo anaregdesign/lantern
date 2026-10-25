@@ -9,22 +9,22 @@ import (
 )
 
 func TestSecurityProvisioningArguments(t *testing.T) {
-	options, help, err := parseSecurityProvisioning([]string{"--output", "/private/new-trust", "--operator-directory", "/private/new-operator"})
-	if err != nil || help || options.OutputDirectory != "/private/new-trust" || options.OperatorDirectory != "/private/new-operator" || options.ValidFor != 30*24*time.Hour {
+	options, help, err := parseSecurityProvisioning([]string{"--operator-directory", "/private/new-operator"})
+	if err != nil || help || options.OperatorDirectory != "/private/new-operator" || options.ValidFor != 30*24*time.Hour {
 		t.Fatal("provisioning options did not preserve explicit custody choices", err)
 	}
-	options, help, err = parseSecurityProvisioning([]string{"--output=/private/trust", "--operator-directory=/private/operator", "--valid-for=48h"})
+	options, help, err = parseSecurityProvisioning([]string{"--operator-directory=/private/operator", "--valid-for=48h"})
 	if err != nil || help || options.ValidFor != 48*time.Hour {
 		t.Fatal("explicit operator window rejected", err)
 	}
 	for _, args := range [][]string{
 		nil,
 		{"--output", "/private/trust"},
-		{"--operator-directory", "/private/operator"},
-		{"--output", "/private/trust", "--operator-directory", "/private/operator", "unexpected"},
-		{"--output", "/private/trust", "--operator-directory", "/private/operator", "--valid-for=0"},
-		{"--output", "/private/trust", "--operator-directory", "/private/operator", "--valid-for=-1h"},
-		{"--output", "/private/trust", "--operator-directory", "/private/operator", "--valid-for=secret-invalid-duration"},
+		{"--output", "/private/trust", "--operator-directory", "/private/operator"},
+		{"--operator-directory", "/private/operator", "unexpected"},
+		{"--operator-directory", "/private/operator", "--valid-for=0"},
+		{"--operator-directory", "/private/operator", "--valid-for=-1h"},
+		{"--operator-directory", "/private/operator", "--valid-for=secret-invalid-duration"},
 		{"--client-secret=secret-invalid-argument"},
 	} {
 		if _, _, err := parseSecurityProvisioning(args); err == nil {
@@ -53,7 +53,7 @@ func TestSecurityProvisioningHelpHasNoEnvironmentDependency(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	if err := writeServerHelp(&out); err != nil || !strings.Contains(out.String(), "provision-security") || !strings.Contains(out.String(), "renew-security") || !strings.Contains(out.String(), "provisioned_file") {
+	if err := writeServerHelp(&out); err != nil || !strings.Contains(out.String(), "provision-security") || !strings.Contains(out.String(), "renew-security") || !strings.Contains(out.String(), "same") || !strings.Contains(out.String(), "material_root") || strings.Contains(out.String(), "provisioned_file") {
 		t.Fatal("missing startup selection and commands", err)
 	}
 }

@@ -19,8 +19,11 @@ For generated setup, `lantern provision-security` writes this configuration as
 a separate private CA signer, complete workload certificate inputs and initial
 signed targets. Use the retained
 `operator-directory/state.json` journal path when starting the publisher. No
-hand-authored stream/profile/digest data is needed. The serving nodes receive only
-their private node directories and signed renewable inputs. See the
+hand-authored stream/profile/digest data is needed. The human configuration's
+`material_root` owns identity material only; serving nodes still require the same
+complete current JSON on every start. They receive only their own identity keys,
+fixed trust and signed renewable inputs. No saved setup/provider configuration
+is loaded from material or operator custody. See the
 [setup guide](../deploy/examples/auth/README.md#environment-json-startup).
 The configured horizon and certificate capacity remain finite; membership
 renewal does not extend certificate life or authorize a new trust generation.
@@ -127,11 +130,13 @@ lantern renew-security --operator-directory /absolute/private/operator \
 operator custody and prepares files; it does not stop nodes, acquire serving
 state, overwrite active configuration/certificates, publish memberships, advance
 the publisher journal or start any listener. It reissues only the private
-workload leaf with the same root, TLS key, SPKI, URI and SANs. Domain, cohort,
+workload leaf with the same root, TLS key, SPKI, URI and SANs. It reads immutable
+identity/operator material, never a saved setup/current Issuer list or provider
+secret. Domain, cohort,
 generation, voter/origin keys, topology, profile digests and state paths remain
 unchanged. Public ingress TLS and provider credentials have separate lifecycles.
 
-The candidate contains `nodes/<name>/security.json` with only embedded workload
+The candidate contains `nodes/<name>/identity.json` with only embedded workload
 certificate changes, matching `nodes/<name>/workload.pem` files, per-node
 `COMPLETE` markers, operator `certificates/<name>.pem` copies and a next
 `publisher.json` whose decoded configuration differs only in later
@@ -160,7 +165,7 @@ Use this explicit maintenance order:
    using the original retained journal. This validates new certificate capacity
    and changes only its config binding; it publishes no membership.
 5. Resume the publisher with the candidate config and original journal, then
-   restart nodes with their existing provisioning references and retained state.
+   restart nodes with the same supplied human configuration and retained state.
    Confirm fresh membership acceptance and normal readiness. Do not run
    `init-security`, generate a new trust bundle or move state paths.
 

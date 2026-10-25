@@ -46,7 +46,11 @@ func (c *receiptHAControl) caller(state *tls.ConnectionState) (int, bool) {
 	return index, ok && c.fingerprints[identity] == sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
 }
 func receiptHACert(node fixtureNode) (tls.Certificate, error) {
-	cert, err := tls.LoadX509KeyPair(node.Environment["LANTERN_PEER_CERT_FILE"], node.Environment["LANTERN_PEER_KEY_FILE"])
+	identity, err := fixturePeerMaterial(node)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	cert, err := tls.LoadX509KeyPair(identity.CertFile, identity.KeyFile)
 	if err != nil {
 		return cert, err
 	}
@@ -76,6 +80,12 @@ func serveReceiptHAFixture(ctx context.Context, result fixture, binary, director
 		}
 	}
 	if err = h.relays.resume(result); err != nil {
+		return err
+	}
+	initialization, stopInitialization := context.WithDeadline(ctx, h.deadline)
+	err = initializeFixtureNodes(initialization, &result, binary, directory, nil)
+	stopInitialization()
+	if err != nil {
 		return err
 	}
 	if err = h.configure(ctx, result); err != nil {
@@ -194,9 +204,14 @@ func restartReceiptHAC(ctx context.Context, result *fixture, binary, directory s
 	node := result.Nodes[3]
 	node.Environment = maps.Clone(node.Environment)
 	node.Environment["LANTERN_PORT"] = strconv.Itoa(launch.public)
-	node.Environment["LANTERN_PEER_LISTEN_ADDR"] = net.JoinHostPort("127.0.0.1", strconv.Itoa(launch.peer))
-	node.Environment["LANTERN_PEER_MEMBERSHIP_MODE"] = "resume"
-	node.Environment["LANTERN_SECURITY_STORE_MODE"] = "resume"
+	if node.StartupFile != "" {
+		if err := updateFixtureDataListen(node, net.JoinHostPort("127.0.0.1", strconv.Itoa(launch.peer))); err != nil {
+			return err
+		}
+	} else {
+		node.Environment["LANTERN_PEER_LISTEN_ADDR"] = net.JoinHostPort("127.0.0.1", strconv.Itoa(launch.peer))
+		node.Environment["LANTERN_PEER_MEMBERSHIP_MODE"] = "resume"
+	}
 	node.Environment["LANTERN_RECEIPT_WAL_MODE"] = "restart"
 	if err = checkFixtureLaunchNode(launch, node); err != nil {
 		return err

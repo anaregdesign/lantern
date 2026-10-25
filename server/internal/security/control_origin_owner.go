@@ -143,7 +143,7 @@ func (o *authorityOriginOwner) verifyFacts(ctx context.Context, producer Current
 	}
 	k := o.network.kernel
 	k.gate.Lock()
-	if o.closed || k.readyLocked() != nil || k.chosen != nil {
+	if o.closed || !o.configuredReadyLocked() || k.readyLocked() != nil || k.chosen != nil {
 		k.gate.Unlock()
 		return CurrentCredentialView{}, CurrentCredentialFacts{}, ErrAuthorityUnavailable
 	}
@@ -409,7 +409,7 @@ func (o *authorityOriginOwner) consume(ctx context.Context, r *authorityOriginRe
 	}
 	h.CredentialEvidence = authorityCredentialEvidence(h)
 	a := &s1VerifiedAuthorization{h.Authentication, h.Lineage, h.CredentialEvidence, h.PurposeEvidence, h.PurposeBinding, h.ConsumeUpper, h.CredentialDeadline, h.PurposeDeadline, h.Credential.Registration}
-	h.Value = (&S1Handoff{h.ID, r.operation, h.OriginDigest, h.Serial, a}).digest()
+	h.Value = (&S1Handoff{h.ID, r.operation, h.OriginDigest, h.Serial, a, nil}).digest()
 	body, err := authorityHistoricalBody(h, r.operation.Encode(), k.trust.bounds)
 	if err != nil || uint64(len(body)+64) > hBound {
 		k.unknown = errors.Join(errS2CUnknown, err)

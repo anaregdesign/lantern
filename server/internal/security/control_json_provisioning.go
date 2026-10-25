@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
@@ -67,6 +68,15 @@ func ValidateProvisioningAuthorityJSON(raw, manifest []byte, target string, init
 }
 
 func validProvisioningOriginKey(c s3aConfig, raw []byte) bool {
+	if c.Participant.Trust == nil {
+		return false
+	}
+	if c.Participant.OwnedOrigin == 0 {
+		// An enrolled fixed voter may observe, endorse and serve current reads
+		// without owning a consume origin. It must carry no replacement origin key.
+		_, found := c.Participant.Trust.origin(0)
+		return !found && len(raw) == 0
+	}
 	origin := ed25519.PrivateKey(raw)
 	descriptor, found := c.Participant.Trust.origin(c.Participant.OwnedOrigin)
 	if !found || len(origin) != ed25519.PrivateKeySize || !bytes.Equal(ed25519.NewKeyFromSeed(origin[:ed25519.SeedSize]), origin) ||
@@ -93,6 +103,37 @@ func ValidateProvisioningAuthorityPaths(raw []byte, stateDir, renewableDir strin
 		d.FloorsFile != filepath.Join(stateDir, "control-floors.json") ||
 		d.Membership.ManifestFile != filepath.Join(renewableDir, "control.json") {
 		return errS3AConfig
+	}
+	return nil
+}
+
+// ValidateProvisioningAuthorityLocations checks the locations already bound
+// into genuine external immutable authority material. It never rewrites paths
+// or reads an old configuration selector. Native custody additionally checks
+// actual descriptor identities and private files when opening existing paths.
+func ValidateProvisioningAuthorityLocations(raw []byte, stateDir, custodyDir, renewableDir string) error {
+	var d currentJSONProvisioningDocument
+	if !provisioningPath(stateDir) || !provisioningPath(custodyDir) || !provisioningPath(renewableDir) || decodeCurrentJSONProvisioning(raw, &d) != nil || d.Version != currentJSONProvisioningVersion {
+		return errS3AConfig
+	}
+	for _, path := range []string{d.Participant.PPath, d.Participant.BPath, d.Membership.Path} {
+		if !provisioningPath(path) || filepath.Dir(path) != stateDir {
+			return errS3AConfig
+		}
+	}
+	if !provisioningPath(d.FloorsFile) || filepath.Dir(d.FloorsFile) != custodyDir || d.Membership.ManifestFile != filepath.Join(renewableDir, "control.json") {
+		return errS3AConfig
+	}
+	seen := map[string]bool{}
+	paths := []string{d.FloorsFile, d.FloorsFile + ".state", d.FloorsFile + ".state.lease", d.Membership.ManifestFile}
+	for _, family := range []string{d.Participant.PPath, d.Participant.BPath, d.Membership.Path} {
+		paths = append(paths, family, family+".tip", family+".lease")
+	}
+	for _, path := range paths {
+		if seen[path] {
+			return errS3AConfig
+		}
+		seen[path] = true
 	}
 	return nil
 }
@@ -169,10 +210,28 @@ func currentJSONEnrollment(c s3aConfig, listen string, hasOriginKey bool) error 
 		}
 		matched = matched || voter.Voter == self.ID && voter.Workload == c.Membership.Self
 	}
-	u, err := url.Parse(c.Membership.Self.Origin)
-	_, port, listenErr := net.SplitHostPort(listen)
-	n, numberErr := strconv.Atoi(port)
-	if !matched || err != nil || listenErr != nil || numberErr != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port || port != u.Port() {
+	if !matched || !validCurrentLocalListen(listen, c.Membership.Self.Origin) {
+		return errS3AConfig
+	}
+	return nil
+}
+
+func validCurrentLocalListen(address, origin string) bool {
+	if len(address) == 0 || len(address) > 2048 || strings.ContainsAny(address, "\x00\r\n") {
+		return false
+	}
+	u, err := url.Parse(origin)
+	_, port, listenErr := net.SplitHostPort(address)
+	number, numberErr := strconv.Atoi(port)
+	return err == nil && listenErr == nil && numberErr == nil && number >= 1 && number <= 65535 && strconv.Itoa(number) == port && port == u.Port()
+}
+
+// ValidateProvisioningLocalListen checks a supplied local control bind before
+// state creation. Advertised membership origins and the native Start port proof
+// remain fixed; this cannot rebase signed material to another control port.
+func ValidateProvisioningLocalListen(raw []byte, address string) error {
+	var document currentJSONProvisioningDocument
+	if decodeCurrentJSONProvisioning(raw, &document) != nil || document.Version != currentJSONProvisioningVersion || !validCurrentLocalListen(address, document.Membership.Self.Origin) {
 		return errS3AConfig
 	}
 	return nil
@@ -305,13 +364,38 @@ func LoadCurrentProvisioningJSON(raw []byte) (*CurrentProvisioning, error) {
 }
 
 func (p *CurrentProvisioning) reload() (*CurrentProvisioning, error) {
-	if p == nil || p.source != "" && len(p.jsonSource) != 0 {
+	if p == nil || len(p.jsonSource) == 0 {
 		return nil, errS3AConfig
 	}
-	if len(p.jsonSource) != 0 {
-		return LoadCurrentProvisioningJSON(p.jsonSource)
+	verified, err := LoadCurrentProvisioningJSON(p.jsonSource)
+	if err != nil {
+		return nil, err
 	}
-	return LoadCurrentProvisioning(p.source)
+	if p.localListen != "" {
+		verified, err = verified.WithLocalListen(p.localListen)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if p.config.Participant.configured != nil {
+		return verified.WithConfiguredTrust(p.config.Participant.configured)
+	}
+	return verified, nil
+}
+
+// ProvisioningInitialImage returns detached historical seed data. It validates
+// canonical provisioning structure and image invariants without opening state;
+// possession of this image grants no runtime or configuration authority.
+func ProvisioningInitialImage(raw []byte) (Image, error) {
+	var document currentJSONProvisioningDocument
+	if decodeCurrentJSONProvisioning(raw, &document) != nil || document.Version != currentJSONProvisioningVersion {
+		return Image{}, errS3AConfig
+	}
+	snapshot, err := CompileImage(document.Genesis.Image, DefaultPolicyLimits())
+	if err != nil {
+		return Image{}, errS3AConfig
+	}
+	return snapshot.Image(), nil
 }
 
 // ValidateInitialImage compares the complete configured seed with immutable
@@ -324,30 +408,6 @@ func (p *CurrentProvisioning) ValidateInitialImage(image Image) error {
 	requested, err := CompileImage(image, original.limits)
 	if err != nil || !bytes.Equal(requested.image, original.image) {
 		return errS3AConfig
-	}
-	return nil
-}
-
-// ValidateInitialIssuers compares requested policy with original trust without
-// changing its administrator locks, object ownership or configuration revisions.
-func (p *CurrentProvisioning) ValidateInitialIssuers(issuers []Issuer) error {
-	if p == nil || p.config.Participant.Trust == nil || len(issuers) > MaxIssuers {
-		return errS3AConfig
-	}
-	original := p.config.Participant.Trust.genesis.state.projection.snapshot
-	seen := make(map[string]bool, len(issuers))
-	for _, configured := range issuers {
-		trusted, found := original.Issuer(configured.URL)
-		if !found || seen[configured.URL] {
-			return errS3AConfig
-		}
-		seen[configured.URL] = true
-		configured.ConfigRevision, configured.EnvOwned = trusted.ConfigRevision, trusted.EnvOwned
-		a, e1 := json.Marshal(configured)
-		b, e2 := json.Marshal(trusted)
-		if e1 != nil || e2 != nil || !bytes.Equal(a, b) {
-			return errS3AConfig
-		}
 	}
 	return nil
 }
@@ -388,4 +448,51 @@ func decodeCurrentJSONProvisioning(raw []byte, target any) error {
 		return errS3AConfig
 	}
 	return nil
+}
+
+// ValidateProvisioningConfiguredTrust checks startup capability enrollment and
+// supplied public issuer structure before the persistence owner creates paths.
+// The explicit target is construction validation, never runtime clock evidence.
+func ValidateProvisioningConfiguredTrust(raw, manifest []byte, target string, desired *ConfiguredTrust) error {
+	description, valid := authorityTimeDescriptionForTarget(target)
+	var document currentJSONProvisioningDocument
+	if !valid || !desired.valid() || decodeCurrentJSONProvisioning(raw, &document) != nil || document.Version != currentJSONProvisioningVersion {
+		return errS3AConfig
+	}
+	c, _, err := currentJSONConfigForTime(document, manifest, description, false)
+	if err != nil {
+		return errS3AConfig
+	}
+	member, known := c.Participant.Trust.member(c.Participant.Member)
+	if !known || member.ConfiguredTrust != configuredTrustVersion {
+		return errS3AConfig
+	}
+	if c.Participant.OwnedOrigin != 0 {
+		d, known := c.Participant.Trust.origin(c.Participant.OwnedOrigin)
+		if !known || d.Member != c.Participant.Member || d.ConfiguredTrust != configuredTrustVersion || d.Profile != authorityAdmissionProfileForTime(description) {
+			return errS3AConfig
+		}
+	}
+	return nil
+}
+
+// ValidateProvisioningInitialConfiguredTrust validates fresh initialization's
+// historical seed plus today's desired trust before any state path is created.
+// It preserves the exact original policy and principals; initialization never
+// rebuilds default Roles or restores an administrator from current input.
+func ValidateProvisioningInitialConfiguredTrust(raw, manifest []byte, target string, desired *ConfiguredTrust) error {
+	if err := ValidateProvisioningConfiguredTrust(raw, manifest, target, desired); err != nil {
+		return err
+	}
+	description, _ := authorityTimeDescriptionForTarget(target)
+	var document currentJSONProvisioningDocument
+	if decodeCurrentJSONProvisioning(raw, &document) != nil {
+		return errS3AConfig
+	}
+	c, _, err := currentJSONConfigForTime(document, manifest, description, false)
+	if err != nil {
+		return errS3AConfig
+	}
+	_, err = assessConfiguredTrust(c.Participant.Trust.genesis.state.projection, desired)
+	return err
 }
