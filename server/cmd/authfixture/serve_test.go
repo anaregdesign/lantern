@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,38 +93,42 @@ func TestFixtureReadinessRequiresHealthAndCertifiedCapabilities(t *testing.T) {
 	other := proto.Clone(profile).(*pb.CurrentAuthorityProfile)
 	other.TimeProfile[0] ^= 1
 	for _, tc := range []struct {
-		name, health, mode      string
-		ready                   bool
-		version, member, status int
-		expected, advertised    *pb.CurrentAuthorityProfile
-		accept                  bool
-		originalMember          uint32
+		name, health, mode         string
+		ready                      bool
+		version, member, status    int
+		expected, advertised       *pb.CurrentAuthorityProfile
+		accept                     bool
+		originalMember             uint32
+		wantHealth, wantCapability string
 	}{
-		{"oidc original profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, true, 0},
-		{"off", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, nil, nil, true, 0},
-		{"wrong health spelling", "SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false, 0},
-		{"not serving", "SERVING_STATUS_NOT_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false, 0},
-		{"not certified", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", false, 2, 1, 200, profile, profile, false, 0},
-		{"unknown mode", "SERVING_STATUS_SERVING", "AUTH_MODE_UNSPECIFIED", true, 2, 1, 200, profile, profile, false, 0},
-		{"retired authenticated protocol", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 1, 0, 200, profile, nil, false, 0},
-		{"missing member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 0, 200, profile, profile, false, 0},
-		{"missing advertised profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, nil, false, 0},
-		{"foreign advertised profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, other, false, 0},
-		{"missing original expected profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, nil, profile, false, 0},
-		{"oidc cannot downgrade", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, profile, nil, false, 0},
-		{"transport error", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 503, profile, profile, false, 0},
-		{"original fourth member subset", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 4, 200, profile, profile, true, 4},
-		{"subset cannot rebind member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false, 4},
-		{"invalid original member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 32, 200, profile, profile, false, 32},
-		{"subset cannot lose its original profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, nil, nil, false, 4},
+		{"oidc original profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, true, 0, "serving", "ready"},
+		{"off", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, nil, nil, true, 0, "serving", "ready"},
+		{"wrong health spelling", "SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false, 0, "unrecognized", "not_probed"},
+		{"not serving", "SERVING_STATUS_NOT_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false, 0, "not_serving", "not_probed"},
+		{"not certified", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", false, 2, 1, 200, profile, profile, false, 0, "serving", "not_ready"},
+		{"unknown mode", "SERVING_STATUS_SERVING", "AUTH_MODE_UNSPECIFIED", true, 2, 1, 200, profile, profile, false, 0, "serving", "uncertified"},
+		{"retired authenticated protocol", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 1, 0, 200, profile, nil, false, 0, "serving", "uncertified"},
+		{"missing member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 0, 200, profile, profile, false, 0, "serving", "uncertified"},
+		{"missing advertised profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, nil, false, 0, "serving", "uncertified"},
+		{"foreign advertised profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, other, false, 0, "serving", "uncertified"},
+		{"missing original expected profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, nil, profile, false, 0, "serving", "uncertified"},
+		{"oidc cannot downgrade", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, profile, nil, false, 0, "serving", "uncertified"},
+		{"transport error", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 503, profile, profile, false, 0, "http_failure", "not_probed"},
+		{"original fourth member subset", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 4, 200, profile, profile, true, 4, "serving", "ready"},
+		{"subset cannot rebind member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 1, 200, profile, profile, false, 4, "serving", "uncertified"},
+		{"invalid original member", "SERVING_STATUS_SERVING", "AUTH_MODE_OIDC", true, 2, 32, 200, profile, profile, false, 32, "serving", "uncertified"},
+		{"subset cannot lose its original profile", "SERVING_STATUS_SERVING", "AUTH_MODE_OFF", true, 1, 0, 200, nil, nil, false, 4, "serving", "uncertified"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var healthCalls, capabilityCalls atomic.Uint32
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tc.status)
 				if r.URL.Path == "/grpc.health.v1.Health/Check" {
+					healthCalls.Add(1)
 					_ = json.NewEncoder(w).Encode(map[string]any{"status": tc.health})
 				} else {
+					capabilityCalls.Add(1)
 					body := map[string]any{"mode": tc.mode, "ready": tc.ready, "protocolVersion": tc.version, "currentMember": tc.member}
 					if tc.advertised != nil {
 						raw, err := protojson.Marshal(tc.advertised)
@@ -140,18 +146,22 @@ func TestFixtureReadinessRequiresHealthAndCertifiedCapabilities(t *testing.T) {
 			if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			defer cancel()
 			f := fixture{CAFile: ca, authorityProfile: tc.expected, Nodes: []fixtureNode{{PublicOrigin: server.URL, originalMember: tc.originalMember}}}
-			err := waitFixtureReady(ctx, f, []*fixtureProcess{{done: make(chan struct{})}})
-			if (err == nil) != tc.accept {
-				t.Fatalf("accept=%t error=%v", tc.accept, err)
+			poll, err := newFixtureReadinessPoll(f, []*fixtureProcess{{done: make(chan struct{})}})
+			if err != nil {
+				t.Fatal(err)
 			}
-			if !tc.accept {
-				var failure *fixtureReadinessError
-				if !errors.As(err, &failure) || failure.diagnostic.Reason != "timeout" || failure.diagnostic.Port == 0 || failure.diagnostic.ElapsedMillis < 90 || failure.diagnostic.HTTPStatus != tc.status || failure.diagnostic.ChildExited {
-					t.Fatal("missing bounded readiness timeout diagnostic")
-				}
+			defer poll.close()
+			ready, err := poll.once(t.Context())
+			if err != nil || ready != tc.accept {
+				t.Fatalf("accept=%t ready=%t error=%v", tc.accept, ready, err)
+			}
+			wantCapabilities := uint32(1)
+			if tc.wantCapability == "not_probed" {
+				wantCapabilities = 0
+			}
+			if poll.health[0] != tc.wantHealth || poll.capabilities[0] != tc.wantCapability || poll.statuses[0] != tc.status || poll.healthCount[0] != 1 || poll.capabilityCount[0] != wantCapabilities || healthCalls.Load() != 1 || capabilityCalls.Load() != wantCapabilities {
+				t.Fatalf("completed poll lost contract or exact probe counts: health=%s capabilities=%s status=%d health_count=%d capabilities_count=%d HTTP_calls=%d/%d", poll.health[0], poll.capabilities[0], poll.statuses[0], poll.healthCount[0], poll.capabilityCount[0], healthCalls.Load(), capabilityCalls.Load())
 			}
 		})
 	}
@@ -209,7 +219,13 @@ func TestFixtureReadinessRetainsExitedChildBeforeCleanup(t *testing.T) {
 }
 
 func TestFixtureReadinessDiagnosticDoesNotExposeResponse(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var healthCalls, capabilityCalls atomic.Uint32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/grpc.health.v1.Health/Check" {
+			healthCalls.Add(1)
+		} else {
+			capabilityCalls.Add(1)
+		}
 		_, _ = w.Write([]byte(`{"status":"private-token-key-body"}`))
 	}))
 	defer server.Close()
@@ -217,9 +233,17 @@ func TestFixtureReadinessDiagnosticDoesNotExposeResponse(t *testing.T) {
 	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	err := waitFixtureReady(ctx, fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}, []*fixtureProcess{{done: make(chan struct{})}})
+	poll, err := newFixtureReadinessPoll(fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}, []*fixtureProcess{{done: make(chan struct{})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer poll.close()
+	if ready, err := poll.once(t.Context()); err != nil || ready {
+		t.Fatal("unexpected completed readiness result", ready, err)
+	}
+	// Serialize the completed observation through the ordinary failure path;
+	// this does not run a second probe or assert that a deadline elapsed.
+	err = poll.failure("timeout", context.DeadlineExceeded)
 	var output bytes.Buffer
 	writeFixtureFailure(&output, &fixtureFailure{stage: "readiness", cause: err})
 	if !strings.Contains(output.String(), `"probe":"health"`) || strings.Contains(output.String(), "private-token-key-body") {
@@ -228,29 +252,35 @@ func TestFixtureReadinessDiagnosticDoesNotExposeResponse(t *testing.T) {
 	if !strings.Contains(output.String(), `"last_health":"unrecognized"`) || !strings.Contains(output.String(), `"last_capability":"not_probed"`) {
 		t.Fatal("unrecognized response or unobserved capabilities misrepresented")
 	}
+	if poll.healthCount[0] != 1 || poll.capabilityCount[0] != 0 || healthCalls.Load() != 1 || capabilityCalls.Load() != 0 {
+		t.Fatal("failure serialization made another readiness evaluation")
+	}
 }
 
 func TestFixtureReadinessProbeCategories(t *testing.T) {
 	for _, tc := range []struct {
-		name, health, capability, wantHealth, wantCapability string
-		healthStatus, capabilityStatus                       int
+		name, health, capability, wantHealth, wantCapability, wantProbe string
+		healthStatus, capabilityStatus                                  int
 	}{
-		{"missing health", `{}`, `{}`, "missing", "not_probed", 200, 200},
-		{"unknown health", `{"status":"SERVING_STATUS_UNKNOWN"}`, `{}`, "unknown", "not_probed", 200, 200},
-		{"decode health", `{"status":3}`, `{}`, "decode_failure", "not_probed", 200, 200},
-		{"http health", `{}`, `{}`, "http_failure", "not_probed", 503, 200},
-		{"missing capability", `{"status":"SERVING_STATUS_SERVING"}`, `{}`, "serving", "missing", 200, 200},
-		{"decode capability", `{"status":"SERVING_STATUS_SERVING"}`, `{"ready":"bad"}`, "serving", "decode_failure", 200, 200},
-		{"http capability", `{"status":"SERVING_STATUS_SERVING"}`, `{}`, "serving", "http_failure", 200, 503},
-		{"not ready", `{"status":"SERVING_STATUS_SERVING"}`, `{"ready":false}`, "serving", "not_ready", 200, 200},
-		{"uncertified", `{"status":"SERVING_STATUS_SERVING"}`, `{"ready":true,"mode":"AUTH_MODE_OIDC","protocolVersion":2}`, "serving", "uncertified", 200, 200},
+		{"missing health", `{}`, `{}`, "missing", "not_probed", "health", 200, 200},
+		{"unknown health", `{"status":"SERVING_STATUS_UNKNOWN"}`, `{}`, "unknown", "not_probed", "health", 200, 200},
+		{"decode health", `{"status":3}`, `{}`, "decode_failure", "not_probed", "json", 200, 200},
+		{"http health", `{}`, `{}`, "http_failure", "not_probed", "http", 503, 200},
+		{"missing capability", `{"status":"SERVING_STATUS_SERVING"}`, `{}`, "serving", "missing", "capabilities", 200, 200},
+		{"decode capability", `{"status":"SERVING_STATUS_SERVING"}`, `{"ready":"bad"}`, "serving", "decode_failure", "json", 200, 200},
+		{"http capability", `{"status":"SERVING_STATUS_SERVING"}`, `{}`, "serving", "http_failure", "http", 200, 503},
+		{"not ready", `{"status":"SERVING_STATUS_SERVING"}`, `{"ready":false}`, "serving", "not_ready", "capabilities", 200, 200},
+		{"uncertified", `{"status":"SERVING_STATUS_SERVING"}`, `{"ready":true,"mode":"AUTH_MODE_OIDC","protocolVersion":2}`, "serving", "uncertified", "capabilities", 200, 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var healthCalls, capabilityCalls atomic.Uint32
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/grpc.health.v1.Health/Check" {
+					healthCalls.Add(1)
 					w.WriteHeader(tc.healthStatus)
 					_, _ = w.Write([]byte(tc.health))
 				} else {
+					capabilityCalls.Add(1)
 					w.WriteHeader(tc.capabilityStatus)
 					_, _ = w.Write([]byte(tc.capability))
 				}
@@ -260,17 +290,163 @@ func TestFixtureReadinessProbeCategories(t *testing.T) {
 			if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-			defer cancel()
-			err := waitFixtureReady(ctx, fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}, []*fixtureProcess{{done: make(chan struct{})}})
+			poll, err := newFixtureReadinessPoll(fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}, []*fixtureProcess{{done: make(chan struct{})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer poll.close()
+			if ready, err := poll.once(t.Context()); err != nil || ready {
+				t.Fatal("unexpected completed readiness result", ready, err)
+			}
+			err = poll.failure("timeout", context.DeadlineExceeded)
 			var failure *fixtureReadinessError
 			if !errors.As(err, &failure) {
 				t.Fatal("missing typed diagnostic", err)
 			}
 			d := failure.diagnostic
-			if d.LastHealth != tc.wantHealth || d.LastCapability != tc.wantCapability || d.HealthProbes != 1 || (d.CapabilityProbes == 0) != (tc.wantCapability == "not_probed") {
+			wantCapabilities, wantStatus := uint32(1), tc.capabilityStatus
+			if tc.wantCapability == "not_probed" {
+				wantCapabilities, wantStatus = 0, tc.healthStatus
+			}
+			if d.LastHealth != tc.wantHealth || d.LastCapability != tc.wantCapability || d.HealthProbes != 1 || d.CapabilityProbes != wantCapabilities || d.HTTPStatus != wantStatus || d.Probe != tc.wantProbe || d.ChildExited || d.Port == 0 || healthCalls.Load() != 1 || capabilityCalls.Load() != wantCapabilities {
 				t.Fatal(d)
 			}
 		})
+	}
+}
+
+func TestFixtureReadinessOuterDeadline(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	poll, err := newFixtureReadinessPoll(fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}, []*fixtureProcess{{done: make(chan struct{})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer poll.close()
+	// Establish diagnostic elapsed time before starting the external deadline;
+	// scheduling cannot make measurement begin after the timeout has expired.
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	err = poll.wait(ctx)
+	var failure *fixtureReadinessError
+	if !errors.As(err, &failure) || failure.diagnostic.Reason != "timeout" || failure.diagnostic.ElapsedMillis < 90 || failure.diagnostic.ChildExited {
+		t.Fatal("outer readiness deadline did not retain its bounded timeout", err)
+	}
+	// The deadline can precede verified TLS or the response. It establishes no
+	// HTTP-response classification, unlike the completed-poll cases above.
+}
+
+func TestFixtureReadinessPollCancellationStopsHealthRequest(t *testing.T) {
+	var healthCalls, capabilityCalls atomic.Uint32
+	entered, release := make(chan struct{}), make(chan struct{})
+	var enteredOnce sync.Once
+	server := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/grpc.health.v1.Health/Check" {
+			healthCalls.Add(1)
+			enteredOnce.Do(func() { close(entered) })
+		} else {
+			capabilityCalls.Add(1)
+		}
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	poll, err := newFixtureReadinessPoll(fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}, []*fixtureProcess{{done: make(chan struct{})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer poll.close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	type result struct {
+		ready bool
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ready, err := poll.once(ctx)
+		done <- result{ready, err}
+	}()
+	select {
+	case <-entered:
+		cancel()
+	case result := <-done:
+		t.Fatal("poll ended before the Health request entered", result)
+	case <-t.Context().Done():
+		t.Fatal("Health request did not enter", t.Context().Err())
+	}
+	select {
+	case result := <-done:
+		if result.err != nil || result.ready {
+			t.Fatal("canceled Health request acquired readiness", result)
+		}
+	case <-t.Context().Done():
+		t.Fatal("canceled Health poll did not join", t.Context().Err())
+	}
+	var failure *fixtureReadinessError
+	err = poll.failure("timeout", ctx.Err())
+	if !errors.As(err, &failure) || !errors.Is(err, context.Canceled) || failure.diagnostic.HealthProbes != 1 || failure.diagnostic.CapabilityProbes != 0 || failure.diagnostic.LastHealth != "transport_failure" || failure.diagnostic.LastCapability != "not_probed" || healthCalls.Load() != 1 || capabilityCalls.Load() != 0 {
+		t.Fatal("cancellation lost its causal Health-only observation", err)
+	}
+}
+
+func TestFixtureReadinessPollRetainsPriorCapabilityAfterHealthFailure(t *testing.T) {
+	var healthCalls, capabilityCalls atomic.Uint32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/grpc.health.v1.Health/Check" {
+			if healthCalls.Add(1) > 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+			_, _ = w.Write([]byte(`{"status":"SERVING_STATUS_SERVING"}`))
+			return
+		}
+		capabilityCalls.Add(1)
+		_, _ = w.Write([]byte(`{"ready":false,"mode":"AUTH_MODE_OIDC","protocolVersion":2}`))
+	}))
+	defer server.Close()
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	poll, err := newFixtureReadinessPoll(fixture{CAFile: ca, Nodes: []fixtureNode{{PublicOrigin: server.URL}}}, []*fixtureProcess{{done: make(chan struct{})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer poll.close()
+	if ready, err := poll.once(t.Context()); err != nil || ready {
+		t.Fatal("first completed poll did not retain the capability refusal", ready, err)
+	}
+	if poll.health[0] != "serving" || poll.capabilities[0] != "not_ready" || poll.statuses[0] != 200 || poll.healthCount[0] != 1 || poll.capabilityCount[0] != 1 || healthCalls.Load() != 1 || capabilityCalls.Load() != 1 {
+		t.Fatal("first poll lost its complete Health/capability observations")
+	}
+	if ready, err := poll.once(t.Context()); err != nil || ready {
+		t.Fatal("later failed Health acquired readiness", ready, err)
+	}
+	var failure *fixtureReadinessError
+	err = poll.failure("timeout", context.DeadlineExceeded)
+	if !errors.As(err, &failure) {
+		t.Fatal("missing retained two-poll diagnostic", err)
+	}
+	d := failure.diagnostic
+	if d.Probe != "http" || d.HTTPStatus != 503 || d.LastHealth != "http_failure" || d.LastCapability != "not_ready" || d.HealthProbes != 2 || d.CapabilityProbes != 1 || healthCalls.Load() != 2 || capabilityCalls.Load() != 1 {
+		t.Fatal("later Health failure replaced or re-evaluated the prior capability", d)
 	}
 }

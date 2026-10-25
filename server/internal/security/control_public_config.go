@@ -1,10 +1,7 @@
 package security
 
 import (
-	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"net"
@@ -14,10 +11,9 @@ import (
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
 
-// Both documents are independently provisioned private files. Neither a WAL,
-// peer response, current projection nor an old fixed-writer Store supplies them.
-// JSON is canonical (one trailing newline is allowed), preventing fixed-array
-// truncation/padding, duplicate aliases or silent unknown configuration fields.
+// Historical genesis and participant contracts are embedded in independently
+// supplied private authority JSON. Neither peer responses nor mutable runtime
+// state supply them. Current startup intent is provided separately each time.
 type currentGenesisDocument struct {
 	Version        uint32
 	Domain, Cohort [32]byte
@@ -44,118 +40,18 @@ type currentParticipantDocument struct {
 	PendingBytes, PendingCount, OutboxBytes uint64
 }
 
-type currentMembershipDocument struct {
-	Path, KeyFile, ManifestFile string
-	Profile                     peerauth.ControlProfile
-	Self                        peerauth.Member
-}
-
-type currentNodeDocument struct {
-	Version       uint32
-	GenesisFile   string
-	GenesisSHA256 [32]byte
-	Participant   currentParticipantDocument
-	Membership    currentMembershipDocument
-	Identity      s3aIdentityFiles
-	OriginKeyFile string
-	FloorsFile    string
-	ListenAddress string
-	Limits        s3aLimits
-}
-
 // CurrentProvisioning owns detached original validation inputs. It contains no
 // opened journal or signer, injected time source or assertion of readiness.
 type CurrentProvisioning struct {
-	config     s3aConfig
-	originKey  string
-	floors     string
-	listen     string
-	profile    CurrentProfile
-	source     string
-	jsonSource []byte
-	binding    [32]byte
-	paths      []string
-	manifest   string
-}
-
-func currentDocument(path string, limit int64, target any) ([]byte, error) {
-	raw, err := s3aReadProvisioned(path, limit)
-	if err != nil {
-		return nil, errS3AConfig
-	}
-	if err = s2StrictJSON(bytes.TrimSpace(raw), target, DefaultPolicyLimits()); err != nil {
-		return nil, errS3AConfig
-	}
-	return raw, nil
-}
-
-// LoadCurrentProvisioning validates independent files before any state is
-// created. Paths/identities/budgets remain fixed across ordinary intact reopen.
-func LoadCurrentProvisioning(path string) (*CurrentProvisioning, error) {
-	var node currentNodeDocument
-	nodeRaw, err := currentDocument(path, 256<<10, &node)
-	if err != nil || node.Version != CurrentPublicVersion {
-		return nil, errS3AConfig
-	}
-	floorsPath, err := currentCustodyPath(node.FloorsFile)
-	if err != nil {
-		return nil, err
-	}
-	var genesis currentGenesisDocument
-	raw, err := currentDocument(node.GenesisFile, MaxImageBytes+256<<10, &genesis)
-	if err != nil || node.GenesisSHA256 == [32]byte{} || sha256.Sum256(raw) != node.GenesisSHA256 {
-		return nil, errS3AConfig
-	}
-	trust, state, err := currentJSONGenesis(genesis)
-	if err != nil {
-		return nil, errS3AConfig
-	}
-	p := node.Participant
-	c := s3aConfig{Participant: s2cParticipantConfig{
-		Trust: trust, Member: p.Member, Incarnation: p.Incarnation, PPath: p.PPath, BPath: p.BPath,
-		PIdentity: p.PIdentity, PEpoch: p.PEpoch, PPolicy: p.PPolicy, BScope: p.BScope,
-		OwnedOrigin: p.OwnedOrigin, PendingBytes: p.PendingBytes, PendingCount: p.PendingCount, OutboxBytes: p.OutboxBytes,
-	}, Identity: node.Identity, Limits: node.Limits}
-	key, err := s3aReadProvisioned(node.Membership.KeyFile, ed25519.PublicKeySize)
-	if err != nil || len(key) != ed25519.PublicKeySize {
-		return nil, errS3AConfig
-	}
-	c.Membership = peerauth.ControlStoreOptions{Path: node.Membership.Path, Key: ed25519.PublicKey(key), Profile: node.Membership.Profile, Self: node.Membership.Self}
-	c.Manifest, err = s3aReadProvisioned(node.Membership.ManifestFile, 256<<10)
-	if err != nil {
-		return nil, errS3AConfig
-	}
-	manifest, err := peerauth.VerifyControlManifest(c.Manifest, c.Membership.Key, c.Membership.Profile.Lineage)
-	if err != nil || !c.Membership.Profile.Valid() || manifest.Profile.Digest() != c.Membership.Profile.Digest() || c.Membership.Profile.ProtocolScope != trust.scope ||
-		!c.Limits.valid(c.Participant) || p.BScope.validateGenesis(trust.genesis) != nil || s3aPaths(&c) != nil {
-		return nil, errS3AConfig
-	}
-	if currentJSONEnrollment(c, node.ListenAddress, node.OriginKeyFile != "") != nil {
-		return nil, errS3AConfig
-	}
-	profile := CurrentProfile{CurrentPublicVersion, genesis.Domain, genesis.Cohort, genesis.Generation, trust.scope, genesis.TimeProfile, c.Membership.Profile.Digest(), state.configuration.Digest()}
-	paths := []string{path, node.GenesisFile, node.Membership.KeyFile, node.Membership.ManifestFile,
-		node.Identity.Roots, node.Identity.Certificate, node.Identity.TLSKey, node.Identity.VotingKey}
-	if node.OriginKeyFile != "" {
-		paths = append(paths, node.OriginKeyFile)
-	}
-	for _, family := range []string{c.Participant.PPath, c.Participant.BPath, c.Membership.Path} {
-		paths = append(paths, family, family+".tip", family+".lease")
-	}
-	for i := range paths {
-		paths[i], err = currentCustodyPath(paths[i])
-		if err != nil {
-			return nil, err
-		}
-	}
-	binding := s2cHash("current-custody-v1", struct {
-		Node, Genesis [32]byte
-		Paths         []string
-		Floors        string
-	}{sha256.Sum256(nodeRaw), node.GenesisSHA256, paths, floorsPath})
-	return &CurrentProvisioning{config: c, originKey: node.OriginKeyFile, floors: floorsPath,
-		listen: node.ListenAddress, profile: profile, source: path,
-		binding: binding, paths: paths, manifest: paths[3]}, nil
+	config      s3aConfig
+	floors      string
+	listen      string
+	localListen string // Current invocation only; never rewrites historical custody binding.
+	profile     CurrentProfile
+	jsonSource  []byte
+	binding     [32]byte
+	paths       []string
+	manifest    string
 }
 
 func (p *CurrentProvisioning) Profile() CurrentProfile {
@@ -174,12 +70,34 @@ func (p *CurrentProvisioning) FixedVoterCount() int {
 	return len(p.config.Participant.Trust.members)
 }
 
+// WithLocalListen selects this invocation's local control bind address. Its
+// port remains the independently pinned advertised control port; changing a
+// local host never rewrites original material, peer destinations or custody.
+func (p *CurrentProvisioning) WithLocalListen(address string) (*CurrentProvisioning, error) {
+	if p == nil || currentJSONEnrollment(p.config, address, p.config.Participant.OwnedOrigin != 0) != nil {
+		return nil, errS3AConfig
+	}
+	copy := *p
+	copy.listen, copy.localListen = address, address
+	return &copy, nil
+}
+
 // OpenCurrentAuthority uses only the production native constructor. Its private
 // listener starts before public readiness; quorum absence never falls back to
 // OFF or a fixed writer. The owner joins listener/workers/producers on Close.
 func OpenCurrentAuthority(ctx context.Context, p *CurrentProvisioning, mode, browserOrigin string) (_ *CurrentAuthority, err error) {
 	if p == nil || p.config.Participant.Trust == nil || p.profile.Version != CurrentPublicVersion || mode != "fresh" && mode != "resume" {
 		return nil, errS3AConfig
+	}
+	for _, member := range p.config.Participant.Trust.members {
+		if member.ConfiguredTrust != 0 && !p.config.Participant.configured.valid() {
+			return nil, errS3AConfig
+		}
+	}
+	for _, origin := range p.config.Participant.Trust.origins {
+		if origin.ConfiguredTrust != 0 && !p.config.Participant.configured.valid() {
+			return nil, errS3AConfig
+		}
 	}
 	p, custody, floors, err := openCurrentCustody(p, mode)
 	if err != nil {
@@ -191,16 +109,27 @@ func OpenCurrentAuthority(ctx context.Context, p *CurrentProvisioning, mode, bro
 			err = errors.Join(err, custody.close())
 		}
 	}()
-	o, err := openCurrentAuthorityOwnerWithCustody(ctx, p.config, p.originKey, browserOrigin, mode == "fresh", floors, custody)
+	o, err := openCurrentAuthorityOwnerWithCustody(ctx, p.config, "", browserOrigin, mode == "fresh", floors, custody)
 	if err != nil {
 		return nil, err
 	}
+	// Failures after private-owner construction also retain final counters.
+	// Every return below closes that owner before this diagnostic is copied.
+	defer func() {
+		if !transferred && err != nil {
+			err = withAuthorityTimeAcquisitionCounts(err, o.network.timeOwner.acquisitionCounts())
+		}
+	}()
 	listener, err := net.Listen("tcp", p.listen)
 	if err != nil {
 		return nil, errors.Join(err, o.network.Close())
 	}
 	if err = o.network.Start(listener); err != nil {
 		return nil, errors.Join(err, listener.Close(), o.network.Close())
+	}
+	if o.network.kernel.config.configured != nil {
+		o.network.workers.Add(1)
+		go o.configuredLoop()
 	}
 	transferred = true
 	return &CurrentAuthority{origin: o, custody: custody, manifest: p.manifest}, nil
@@ -279,7 +208,7 @@ func (o *CurrentAuthority) Ready(ctx context.Context) bool {
 	n.kernel.gate.Lock()
 	defer n.kernel.gate.Unlock()
 	defer n.kernel.poisonPanic()
-	if ctx.Err() != nil || n.kernel.readyLocked() != nil || n.kernel.chosen != nil {
+	if ctx.Err() != nil || !o.origin.configuredReadyLocked() || n.kernel.readyLocked() != nil || n.kernel.chosen != nil {
 		return false
 	}
 	start, expiry, err := o.origin.eligibilityLocked(ctx)

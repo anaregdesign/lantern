@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,6 +80,10 @@ func provisionFixtureAuthority(ctx context.Context, f *fixture, directory, expor
 	if f == nil || f.security == nil || f.security.Issuer == nil || len(f.Nodes) < 1 || len(f.Nodes) > 31 {
 		return errors.New("complete original authority inputs required")
 	}
+	directory, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		return err
+	}
 	original, err := writeJSON(directory, "authority-original.json", f.security)
 	if err != nil {
 		return err
@@ -96,35 +99,15 @@ func provisionFixtureAuthority(ctx context.Context, f *fixture, directory, expor
 	if err = runOriginalProvisioner(ctx, exporter, dir, f.security.Issuer.URL, original, len(f.Nodes), extra...); err != nil {
 		return err
 	}
-	var profile security.CurrentProfile
-	if f.compose {
-		var metadata struct {
-			Profile security.CurrentProfile `json:"profile"`
-		}
-		if err = readQueryJSON(filepath.Join(dir, "compose-provision.json"), &metadata); err != nil || metadata.Profile.Binding() == "" {
-			return errors.New("complete original Compose profile required")
-		}
-		profile = metadata.Profile
-		for i := range f.Nodes {
-			f.Nodes[i].Environment["LANTERN_SECURITY_CONFIG_FILE"] = "/run/lantern-config/authority-node.json"
-			f.Nodes[i].Environment["LANTERN_SECURITY_STORE_MODE"] = "fresh"
-		}
-	} else {
-		for i := range f.Nodes {
-			path := filepath.Join(dir, fmt.Sprintf("node-%d/node.json", i+1))
-			p, err := security.LoadCurrentProvisioning(path)
-			if err != nil {
-				return err
-			}
-			if i == 0 {
-				profile = p.Profile()
-			} else if p.Profile() != profile {
-				return errors.New("original authority profile drift")
-			}
-			env := f.Nodes[i].Environment
-			f.Nodes[i].originalMember = uint32(i + 1)
-			env["LANTERN_AUTH_MODE"], env["LANTERN_SECURITY_STORE_MODE"], env["LANTERN_SECURITY_CONFIG_FILE"] = "oidc", "fresh", path
-		}
+	var metadata struct {
+		Profile security.CurrentProfile `json:"profile"`
+	}
+	if err := readQueryJSON(filepath.Join(dir, "provision.json"), &metadata); err != nil || metadata.Profile.Binding() == "" {
+		return errors.New("complete original authority profile required")
+	}
+	profile := metadata.Profile
+	if err := attachFixtureSecurity(f, directory); err != nil {
+		return err
 	}
 	f.authorityProfile = service.EncodeCurrentProfile(profile)
 	if len(f.dataMembership.Members) > 0 {

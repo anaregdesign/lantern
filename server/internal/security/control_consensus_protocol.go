@@ -452,6 +452,7 @@ func (o *s2cParticipant) finishDrained(receipt s2LocalReceipt) {
 		}
 	}
 	o.replayState = o.preview.state
+	o.discardStaleConfiguredPendingLocked()
 	o.replayReceipt = receipt
 	o.receipts = append(o.receipts, receipt)
 	o.credit = s2cCredit{}

@@ -1,0 +1,54 @@
+{
+  "public_origin": "https://localhost:8443",
+  "material_root": "/material/identity",
+  "persistence_root": "/state",
+  "target_platform": "linux",
+  "tls_termination": "server",
+  "initial_admin": {
+    "issuer": "https://accounts.google.com",
+    "subject": "REPLACE_VERIFIED_ADMIN_SUBJECT"
+  },
+  "nodes": [
+    {
+      "name": "node-1",
+      "control_origin": "https://lantern-0:16380",
+      "data_origin": "https://lantern-0:6381",
+      "control_listen": ":16380",
+      "data_listen": ":6381"
+    },
+    {
+      "name": "node-2",
+      "control_origin": "https://lantern-1:16380",
+      "data_origin": "https://lantern-1:6381",
+      "control_listen": ":16380",
+      "data_listen": ":6381"
+    },
+    {
+      "name": "node-3",
+      "control_origin": "https://lantern-2:16380",
+      "data_origin": "https://lantern-2:6381",
+      "control_listen": ":16380",
+      "data_listen": ":6381"
+    }
+  ],
+  "issuers": [
+    {
+      "issuer": "google",
+      "client_id": "REPLACE_GOOGLE_WEB_CLIENT_ID",
+      "client_secret": "REPLACE_RAW_GOOGLE_WEB_SECRET"
+    },
+    {
+      "issuer": "https://api-issuer.example.invalid",
+      "api_audience": "REPLACE_LANTERN_API_AUDIENCE",
+      "algorithms": [
+        "RS256"
+      ],
+      "human_subject_namespace_qualified": true
+    }
+  ],
+  "node": "node-2",
+  "tls": {
+    "certificate_pem": "REPLACE_NODE_1_PUBLIC_TLS_CERTIFICATE_PEM",
+    "private_key_pem": "REPLACE_NODE_1_PUBLIC_TLS_PRIVATE_KEY_PEM"
+  }
+}

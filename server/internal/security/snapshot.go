@@ -18,15 +18,16 @@ type principalAccess struct {
 // Snapshot owns a validated image and its compiled indexes. All fields are
 // private so a caller cannot mutate an installed revision after publication.
 type Snapshot struct {
-	image      []byte
-	roleBytes  []byte
-	limits     PolicyLimits
-	accessSets map[string]*Access
-	policy     *CompiledPolicy
-	issuers    map[string]Issuer
-	principals map[Identity]principalAccess
-	sessions   map[string]Session
-	machines   map[string]MachineCredential
+	configuredTrustDigest string
+	image                 []byte
+	roleBytes             []byte
+	limits                PolicyLimits
+	accessSets            map[string]*Access
+	policy                *CompiledPolicy
+	issuers               map[string]Issuer
+	principals            map[Identity]principalAccess
+	sessions              map[string]Session
+	machines              map[string]MachineCredential
 }
 
 func (s *Snapshot) AccessFor(identity Identity) (*Access, bool) {

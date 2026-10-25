@@ -1,0 +1,24 @@
+{
+  "changes": [
+    {
+      "putUser": {
+        "identity": {
+          "kind": "SECURITY_PRINCIPAL_KIND_OIDC",
+          "issuer": "https://api-issuer.example.invalid",
+          "subject": "REPLACE_EXACT_API_SUBJECT"
+        },
+        "state": "SECURITY_PRINCIPAL_STATE_ACTIVE"
+      }
+    },
+    {
+      "putAssignment": {
+        "identity": {
+          "kind": "SECURITY_PRINCIPAL_KIND_OIDC",
+          "issuer": "https://api-issuer.example.invalid",
+          "subject": "REPLACE_EXACT_API_SUBJECT"
+        },
+        "roleId": "ha_mcp_context"
+      }
+    }
+  ]
+}

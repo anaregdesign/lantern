@@ -76,6 +76,20 @@ func authorityTestCompositeImage(t *testing.T, originCount int, image *Image) (*
 }
 
 func authorityTestCompositeMembers(t *testing.T, count, originCount int, image *Image) (*s3aTestNetwork, map[uint32]*authorityOriginOwner, map[uint32]*atomic.Uint64) {
+	return authorityTestCompositeConfiguredMembers(t, count, originCount, image, nil, false)
+}
+
+// The optional startup intent and non-proposing observer are fixed before any
+// native file opens. This still uses real private TLS; its clock is the existing
+// explicit deterministic unit fixture, never configured-source qualification.
+func authorityTestCompositeConfiguredMembers(t *testing.T, count, originCount int, image *Image, desired *ConfiguredTrust, nonproposingObserver bool) (*s3aTestNetwork, map[uint32]*authorityOriginOwner, map[uint32]*atomic.Uint64) {
+	t.Helper()
+	return authorityTestCompositeConfiguredMembersWithRenewal(t, count, originCount, image, desired, nonproposingObserver, nil)
+}
+
+// An optional scheduling hook is fixed before owner construction and Start.
+// Existing fixtures retain their blocked automatic renewal lifecycle.
+func authorityTestCompositeConfiguredMembersWithRenewal(t *testing.T, count, originCount int, image *Image, desired *ConfiguredTrust, nonproposingObserver bool, beforeRenewal func(uint32, context.Context)) (*s3aTestNetwork, map[uint32]*authorityOriginOwner, map[uint32]*atomic.Uint64) {
 	t.Helper()
 	n := s3aTestClusterMembers(t, count, nil)
 	f := s2cTestCluster(t, count)
@@ -84,15 +98,26 @@ func authorityTestCompositeMembers(t *testing.T, count, originCount int, image *
 	}
 	f.origins = f.origins[:originCount]
 	f, originKeys := authorityTestFixtureState(t, f)
+	if desired != nil {
+		if nonproposingObserver {
+			f.members[len(f.members)-1].Proposer = false
+		}
+		configuredTestEnroll(t, f)
+	}
 	n.f = f
 	n.manifest.Profile.ProtocolScope = f.trust.scope
+	for i := range n.manifest.Profile.Voters {
+		member, _ := f.trust.member(n.manifest.Profile.Voters[i].Voter)
+		n.manifest.Profile.Voters[i].Proposer = member.Proposer
+	}
 	raw := n.sign(n.manifest)
 	owners, ticks := make(map[uint32]*authorityOriginOwner), make(map[uint32]*atomic.Uint64)
 	for id, c := range n.configs {
-		if image != nil {
+		if image != nil || desired != nil {
 			c.Participant.BScope = s2cTestConfig(t, f, id, filepath.Dir(c.Identity.VotingKey)).BScope
 		}
 		c.Participant.Trust = f.trust
+		c.Participant.configured = desired
 		if int(id) > originCount {
 			c.Participant.OwnedOrigin = 0
 		}
@@ -103,6 +128,9 @@ func authorityTestCompositeMembers(t *testing.T, count, originCount int, image *
 			t.Fatal(err)
 		}
 		c.hooks = &s3aHooks{beforeRenewal: func(ctx context.Context) { <-ctx.Done() }}
+		if beforeRenewal != nil {
+			c.hooks.beforeRenewal = func(ctx context.Context) { beforeRenewal(id, ctx) }
+		}
 		var key ed25519.PrivateKey
 		if c.Participant.OwnedOrigin != 0 {
 			keyPath := filepath.Join(filepath.Dir(c.Identity.VotingKey), "origin.key")
@@ -262,7 +290,7 @@ func authorityTestSealHeader(t *testing.T, f *s2cTestFixture, key ed25519.Privat
 		h.PurposeBinding = s1PurposeBinding(h.ID, op)
 	}
 	a := &s1VerifiedAuthorization{h.Authentication, h.Lineage, h.CredentialEvidence, h.PurposeEvidence, h.PurposeBinding, h.ConsumeUpper, h.CredentialDeadline, h.PurposeDeadline, h.Credential.Registration}
-	h.Value = (&S1Handoff{h.ID, op, h.OriginDigest, h.Serial, a}).digest()
+	h.Value = (&S1Handoff{h.ID, op, h.OriginDigest, h.Serial, a, nil}).digest()
 	body, err := authorityHistoricalBody(h, op.Encode(), f.trust.bounds)
 	if err != nil {
 		t.Fatal(err)

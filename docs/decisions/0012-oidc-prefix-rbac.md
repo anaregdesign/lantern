@@ -58,14 +58,22 @@ contract before enabling that replacement on a listener.
 | Empty, unknown, partial or conflicting authentication settings | Startup fails; never fall back to OFF |
 | Invalid, stale, recovering or unavailable security authority | Protected operations fail closed; peer repair remains available |
 
-OIDC requires `LANTERN_SECURITY_CONFIG_FILE`, `LANTERN_SECURITY_STORE_MODE`
-(`fresh` or `resume`) and an exact HTTPS browser origin. Original canonical
-node/genesis documents bind exact Issuer/subject administrator assignments,
-Role-only machine credentials, client/audience/algorithm policy, original
-voters/origins, workload identities, resource bounds and native time profile.
+OIDC requires one human `LANTERN_SECURITY_CONFIG_JSON`, supplied to provisioning,
+explicit first initialization and every normal start. It selects the exact HTTPS
+public origin, current Issuers/secrets, private `material_root`, separate durable
+`persistence_root`, target platform, fixed named topology and initial administrator.
+Material retains identity keys/historical trust and seed identity only; it is not
+a current configuration source. No generated-config reference, legacy file-based
+startup recipe or automatic missing-state fallback remains.
+
+Native certified compare-and-swap reconciles supplied configured Issuer intent
+before public readiness. A node with different desired Issuer intent stays
+unavailable. Later Issuer additions create no Principals, Roles or assignments;
+managed policy and historical genesis remain intact. Initial administrator input
+seeds fresh state only and asserts the original identity on resume; it never
+undoes suspension or regrants permissions. No public desired revision is needed.
 Unknown subjects are never inferred from email, display name or IdP groups.
-Runtime environment bootstrap, profile selectors and writer endpoints/keys
-are retired and rejected even when explicitly empty.
+See the [configuration guide](../../deploy/examples/auth/README.md#environment-json-startup).
 
 Environment-owned `security_admin` assignments grant no data rights. The full
 image preserves their locks, referential integrity and the last usable human

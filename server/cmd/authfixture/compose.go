@@ -30,7 +30,7 @@ func exportComposeFixture(result *fixture, dir string) error {
 	}
 	for _, node := range result.Nodes {
 		mode := node.Environment["LANTERN_RECEIPT_WAL_MODE"]
-		if mode == "" || mode == "graph-only" {
+		if (mode == "" || mode == "graph-only") && node.Environment["LANTERN_AUTH_MODE"] != "oidc" {
 			for _, key := range []string{"LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES", "LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"} {
 				if node.Environment[key] == "" {
 					return errors.New("graph-only Compose fixture requires explicit Snapshot spool directory and byte/frame limits")
@@ -52,13 +52,20 @@ func exportComposeFixture(result *fixture, dir string) error {
 		}
 		env := node.Environment
 		env["LANTERN_PORT"] = "6380"
-		env["LANTERN_PEER_LISTEN_ADDR"] = ":6381"
-		env["LANTERN_PEER_MEMBERSHIP_STATE_FILE"] = "/state/membership.state"
+		if env["LANTERN_AUTH_MODE"] != "oidc" {
+			env["LANTERN_PEER_LISTEN_ADDR"] = ":6381"
+			env["LANTERN_PEER_MEMBERSHIP_STATE_FILE"] = "/state/membership.state"
+		}
 		env["LANTERN_METRICS_ADDR"] = "127.0.0.1:9090"
 		if env["LANTERN_AUTH_MODE"] == "oidc" {
 			if err := copyComposeAuthority(dir, mount, i); err != nil {
 				return err
 			}
+			raw, err := os.ReadFile(node.StartupFile)
+			if err != nil {
+				return err
+			}
+			env["LANTERN_SECURITY_CONFIG_JSON"] = string(raw)
 		} else {
 			delete(env, "LANTERN_TLS_CERT_FILE")
 			delete(env, "LANTERN_TLS_KEY_FILE")
@@ -68,7 +75,9 @@ func exportComposeFixture(result *fixture, dir string) error {
 			// The matching graph overlay owns this container-private directory.
 			// Translate before the generic file-copy loop: scratch storage is
 			// never host configuration material or part of its read-only mount.
-			env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] = composeGraphSnapshotSpoolDirectory
+			if env["LANTERN_AUTH_MODE"] != "oidc" {
+				env["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] = composeGraphSnapshotSpoolDirectory
+			}
 			delete(env, "LANTERN_RECEIPT_WAL_PATH")
 		} else {
 			env["LANTERN_RECEIPT_WAL_PATH"] = "/state/receipts.wal"
@@ -102,6 +111,7 @@ func exportComposeFixture(result *fixture, dir string) error {
 		if _, err := writeFile(dir, service+".env", config); err != nil {
 			return err
 		}
+		delete(env, "LANTERN_SECURITY_CONFIG_JSON")
 
 	}
 	_, err := writeJSON(dir, "fixture.json", result)
@@ -119,7 +129,7 @@ func copyMountedFixtureFile(source, destination string) error {
 	}
 	mode := os.FileMode(0644)
 	name := filepath.Base(source)
-	if strings.HasPrefix(name, "authority-") || strings.HasSuffix(name, ".key") || name == "machines.json" || name == "cdc-keys.json" {
+	if name == "startup.json" || strings.HasPrefix(name, "authority-") || strings.HasSuffix(name, ".key") || name == "machines.json" || name == "cdc-keys.json" {
 		mode = 0600
 	}
 	if err := os.WriteFile(destination, raw, mode); err != nil {
@@ -168,8 +178,17 @@ func renewComposeMembership(dir string, now time.Time) error {
 	if err != nil || len(manifest.Members) != 3 || now.Before(manifest.IssuedAt) || !now.Add(peerauth.ClockMargin).Before(manifest.ExpiresAt) {
 		return errors.New("membership is not current")
 	}
+	var targets []string
 	for i := range 3 {
-		current, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("lantern-%d", i), "membership.json"))
+		if manifest.Domain.AuthMode == "oidc" {
+			name := fmt.Sprintf("node-%d", i+1)
+			targets = append(targets, filepath.Join(dir, "identity", "nodes", name, "membership", "data.json"), filepath.Join(dir, fmt.Sprintf("lantern-%d", i), "identity", "nodes", name, "membership", "data.json"))
+		} else {
+			targets = append(targets, filepath.Join(dir, fmt.Sprintf("lantern-%d", i), "membership.json"))
+		}
+	}
+	for _, target := range targets {
+		current, err := os.ReadFile(target)
 		if err != nil || !bytes.Equal(current, raw) {
 			return errors.New("mounted membership drift")
 		}
@@ -186,8 +205,12 @@ func renewComposeMembership(dir string, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	for i := range 3 {
-		if err := replaceFixtureFile(filepath.Join(dir, fmt.Sprintf("lantern-%d", i), "membership.json"), next, 0644); err != nil {
+	for _, target := range targets {
+		mode := os.FileMode(0644)
+		if manifest.Domain.AuthMode == "oidc" {
+			mode = 0600
+		}
+		if err := replaceFixtureFile(target, next, mode); err != nil {
 			return err
 		}
 	}
@@ -287,13 +310,16 @@ func prepareComposeRestart(dir, service string) error {
 	if json.Unmarshal(raw, &metadata) != nil || len(metadata.Nodes) != 3 || metadata.Nodes[index].Name != fmt.Sprintf("node-%d", index) {
 		return errors.New("invalid fixture metadata")
 	}
+	if metadata.Nodes[index].RestartPrepared {
+		return errors.New("workload restart already prepared")
+	}
+	metadata.Nodes[index].RestartPrepared = true
 	env := metadata.Nodes[index].Environment
-	if env["LANTERN_PEER_MEMBERSHIP_MODE"] != "fresh" {
+	if env["LANTERN_AUTH_MODE"] != "oidc" && env["LANTERN_PEER_MEMBERSHIP_MODE"] != "fresh" {
 		return errors.New("workload restart must be prepared only once")
 	}
-	env["LANTERN_PEER_MEMBERSHIP_MODE"] = "resume"
-	if env["LANTERN_AUTH_MODE"] == "oidc" {
-		env["LANTERN_SECURITY_STORE_MODE"] = "resume"
+	if env["LANTERN_AUTH_MODE"] != "oidc" {
+		env["LANTERN_PEER_MEMBERSHIP_MODE"] = "resume"
 	}
 	if env["LANTERN_RECEIPT_WAL_MODE"] == "fresh" {
 		env["LANTERN_RECEIPT_WAL_MODE"] = "restart"
@@ -306,6 +332,13 @@ func prepareComposeRestart(dir, service string) error {
 		}
 		env["LANTERN_NODE_ID"] = hex.EncodeToString(nodeID[:])
 	}
+	if metadata.Nodes[index].StartupFile != "" {
+		raw, err := os.ReadFile(metadata.Nodes[index].StartupFile)
+		if err != nil {
+			return err
+		}
+		env["LANTERN_SECURITY_CONFIG_JSON"] = string(raw)
+	}
 	config, err := composeEnvFile(env)
 	if err != nil {
 		return err
@@ -313,6 +346,7 @@ func prepareComposeRestart(dir, service string) error {
 	if err := replaceFixtureFile(filepath.Join(dir, service+".env"), config, 0600); err != nil {
 		return err
 	}
+	delete(env, "LANTERN_SECURITY_CONFIG_JSON")
 	updated, err := json.Marshal(metadata)
 	if err != nil {
 		return err

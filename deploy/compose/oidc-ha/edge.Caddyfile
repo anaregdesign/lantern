@@ -1,0 +1,49 @@
+{
+    admin off
+    persist_config off
+    auto_https off
+}
+
+:8443 {
+    tls /edge-tls/server.pem /edge-tls/server-key.pem {
+        protocols tls1.3
+    }
+    # Ordinary Bearer data RPCs may use any configured ready member.
+    # Transport/application failures are returned; no request is replayed here.
+    handle /graph.v1.LanternService/* {
+        reverse_proxy https://lantern-0:6380 https://lantern-1:6380 https://lantern-2:6380 {
+            lb_policy round_robin
+            lb_retries 0
+            lb_try_duration 0
+            fail_duration 30s
+            max_fails 1
+            header_up Host {hostport}
+            flush_interval -1
+            transport http {
+                tls_trust_pool file /edge-tls/ca.pem
+            }
+        }
+    }
+    # MCP's authenticated data path starts with the auth-exempt Health probe.
+    handle /grpc.health.v1.Health/Check {
+        reverse_proxy https://lantern-0:6380 https://lantern-1:6380 https://lantern-2:6380 {
+            lb_policy round_robin
+            lb_retries 0
+            lb_try_duration 0
+            header_up Host {hostport}
+            transport http {
+                tls_trust_pool file /edge-tls/ca.pem
+            }
+        }
+    }
+    # Admin's maintained gateway pins auth/browser/native/control to node 0.
+    # Its cookie/state/attempt memory is never moved by transparent failover.
+    handle {
+        reverse_proxy admin:8080 {
+            lb_retries 0
+            lb_try_duration 0
+            header_up Host {hostport}
+            header_up X-Forwarded-Proto https
+        }
+    }
+}

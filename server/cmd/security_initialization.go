@@ -17,7 +17,7 @@ func initializeSecurity(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	if err := provider.InitializeSecurity(ctx, config); err != nil {
+	if _, err := provider.InitializeSecurity(ctx, config); err != nil {
 		return fmt.Errorf("initialize security: %w", err)
 	}
 	return nil

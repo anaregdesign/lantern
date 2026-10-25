@@ -251,7 +251,7 @@ func (r *currentOutputRequest) authorize(ctx context.Context, g currentOutputGra
 	k.gate.Lock()
 	defer k.gate.Unlock()
 	defer k.poisonPanic()
-	if k.readyLocked() != nil || k.chosen != nil {
+	if !o.configuredReadyLocked() || k.readyLocked() != nil || k.chosen != nil {
 		return authorityCurrentTime{}, ErrAuthorityUnavailable
 	}
 	if g.kind == "registration" || g.kind == "registration-session" {

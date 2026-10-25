@@ -33,23 +33,24 @@ func renewalFixture(t *testing.T, count int) (SecurityRenewOptions, membershippu
 	if err := os.Mkdir(state, 0700); err != nil {
 		t.Fatal(err)
 	}
-	var input securitySetupJSON
+	var input map[string]any
 	if err := json.Unmarshal([]byte(inlineSecurityExample()), &input); err != nil {
 		t.Fatal(err)
 	}
-	input.PersistenceRoot, input.TargetPlatform = state, runtime.GOOS
-	input.Nodes = nil
+	provisioned, operator := filepath.Join(root, "material"), filepath.Join(root, "operator")
+	input["persistence_root"], input["target_platform"], input["material_root"], input["node"] = state, runtime.GOOS, provisioned, "node-1"
+	var nodes []securityNodeJSON
 	for i := 1; i <= count; i++ {
-		input.Nodes = append(input.Nodes, securityNodeJSON{Name: fmt.Sprintf("node-%d", i), ControlOrigin: fmt.Sprintf("https://node-%d:6381", i), DataOrigin: fmt.Sprintf("https://node-%d:6382", i), ControlListen: ":6381", DataListen: ":6382"})
+		nodes = append(nodes, securityNodeJSON{Name: fmt.Sprintf("node-%d", i), ControlOrigin: fmt.Sprintf("https://node-%d:6381", i), DataOrigin: fmt.Sprintf("https://node-%d:6382", i), ControlListen: ":6381", DataListen: ":6382"})
 	}
+	input["nodes"] = nodes
 	raw, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LANTERN_AUTH_MODE", "oidc")
 	t.Setenv("LANTERN_SECURITY_CONFIG_JSON", string(raw))
-	provisioned, operator := filepath.Join(root, "provisioned"), filepath.Join(root, "operator")
-	if err := ProvisionSecurity(t.Context(), SecurityProvisionOptions{OutputDirectory: provisioned, OperatorDirectory: operator, ValidFor: time.Hour}); err != nil {
+	if err := ProvisionSecurity(t.Context(), SecurityProvisionOptions{OperatorDirectory: operator, ValidFor: time.Hour}); err != nil {
 		t.Fatal("provision synthetic fixture", err)
 	}
 	var config membershippublisher.Config
@@ -154,7 +155,7 @@ func TestRenewSecurityPreparesSameIdentityAfterOldLeafExpiry(t *testing.T) {
 				if filepath.Base(file.Target) == "COMPLETE" {
 					continue
 				}
-				if filepath.Base(file.Target) != "security.json" && filepath.Base(file.Target) != "workload.pem" && filepath.Dir(file.Target) != filepath.Join(options.OperatorDirectory, "certificates") {
+				if filepath.Base(file.Target) != "identity.json" && filepath.Base(file.Target) != "workload.pem" && filepath.Dir(file.Target) != filepath.Join(options.OperatorDirectory, "certificates") {
 					t.Fatal("plan attempted a trust key, manifest or custody replacement")
 				}
 			}
@@ -170,8 +171,8 @@ func TestRenewSecurityPreparesSameIdentityAfterOldLeafExpiry(t *testing.T) {
 				if !now.After(oldLeaf.NotAfter) {
 					t.Fatal("case did not test expired original leaf")
 				}
-				var oldDoc, newDoc provisionedSecurityDocument
-				if json.Unmarshal(renewalRead(t, filepath.Join(sourceDir, "security.json")), &oldDoc) != nil || json.Unmarshal(renewalRead(t, filepath.Join(candidateDir, "security.json")), &newDoc) != nil {
+				var oldDoc, newDoc securityMaterialDocument
+				if json.Unmarshal(renewalRead(t, filepath.Join(sourceDir, "identity.json")), &oldDoc) != nil || json.Unmarshal(renewalRead(t, filepath.Join(candidateDir, "identity.json")), &newDoc) != nil {
 					t.Fatal("invalid node document")
 				}
 				var oldAuthority, newAuthority map[string]any
@@ -186,10 +187,10 @@ func TestRenewSecurityPreparesSameIdentityAfterOldLeafExpiry(t *testing.T) {
 				}
 				newDoc.Authority = oldDoc.Authority
 				if !reflect.DeepEqual(oldDoc, newDoc) {
-					t.Fatal("renewal changed setup, paths, cursor keys or peer identity")
+					t.Fatal("renewal changed historical trust, paths, cursor keys or peer identity")
 				}
-				candidateRaw := renewalRead(t, filepath.Join(candidateDir, "security.json"))
-				var signedDoc provisionedSecurityDocument
+				candidateRaw := renewalRead(t, filepath.Join(candidateDir, "identity.json"))
+				var signedDoc securityMaterialDocument
 				if json.Unmarshal(candidateRaw, &signedDoc) != nil || verifySecurityCompletion(candidateDir, candidateRaw, signedDoc.Authority) != nil {
 					t.Fatal("candidate node completion is not authenticated")
 				}
@@ -207,6 +208,161 @@ func TestRenewSecurityPreparesSameIdentityAfterOldLeafExpiry(t *testing.T) {
 				t.Fatal("refused replay changed candidate")
 			}
 		})
+	}
+}
+
+func TestRenewSecurityUsesOnlyImmutableMaterialAndOperatorCustody(t *testing.T) {
+	options, previous, material, _ := renewalFixture(t, 1)
+	if err := os.Unsetenv("LANTERN_SECURITY_CONFIG_JSON"); err != nil {
+		t.Fatal(err)
+	}
+	beforeMaterial, beforeOperator := renewalSnapshot(t, material), renewalSnapshot(t, options.OperatorDirectory)
+	if err := renewSecurityAt(t.Context(), options, previous.CleanupBy.Add(48*time.Hour)); err != nil {
+		t.Fatal("offline renewal depended on current provider configuration", err)
+	}
+	if !reflect.DeepEqual(beforeMaterial, renewalSnapshot(t, material)) || !reflect.DeepEqual(beforeOperator, renewalSnapshot(t, options.OperatorDirectory)) {
+		t.Fatal("offline renewal changed retained material or operator custody")
+	}
+	raw := renewalRead(t, filepath.Join(options.OutputDirectory, "nodes", "node-1", "identity.json"))
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"setup", "issuers", "tls", "public_origin", "trusted_proxy_ips", "private_origins", "root_ca_pem"} {
+		if _, found := document[field]; found {
+			t.Fatal("provider configuration entered renewed identity material", field)
+		}
+	}
+	if bytes.Contains(raw, []byte("private-example")) || bytes.Contains(raw, []byte("client_secret")) {
+		t.Fatal("OAuth credentials entered renewal material")
+	}
+}
+
+func TestRenewSecurityPreservesSeparateStateCustodyAndRejectsOverlap(t *testing.T) {
+	for _, name := range []string{"separate custody", "output within state", "output within custody", "operator within state", "operator within custody"} {
+		t.Run(name, func(t *testing.T) {
+			options, previous, material, stateRoot := renewalFixture(t, 1)
+			path := securityMaterialPath(material, "node-1")
+			document, _, err := readSecurityMaterial(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			custody := filepath.Join(filepath.Dir(options.OutputDirectory), "native-custody")
+			if err := os.Mkdir(custody, 0700); err != nil {
+				t.Fatal(err)
+			}
+			paths := document.StatePaths
+			paths.CustodyDirectory = custody
+			switch name {
+			case "output within state":
+				if err := os.Mkdir(paths.Directory, 0700); err != nil {
+					t.Fatal(err)
+				}
+				options.OutputDirectory = filepath.Join(paths.Directory, "renewal")
+			case "output within custody":
+				options.OutputDirectory = filepath.Join(custody, "renewal")
+			case "operator within state":
+				paths.PersistenceRoot, paths.Directory = options.OperatorDirectory, options.OperatorDirectory
+			case "operator within custody":
+				paths.CustodyDirectory = options.OperatorDirectory
+			}
+			renewalSetMaterialStatePaths(t, path, options.OperatorDirectory, paths)
+			// These are genuine, fully signed immutable inputs. Overlap refusal
+			// must happen in renewal before it creates any candidate output.
+			if _, _, err := readSecurityMaterial(path); err != nil {
+				t.Fatal("separate location fixture is invalid", err)
+			}
+			if err := os.WriteFile(filepath.Join(custody, "retained-floor-sentinel"), []byte("synthetic-custody"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			beforeMaterial, beforeOperator := renewalSnapshot(t, material), renewalSnapshot(t, options.OperatorDirectory)
+			beforeState, beforeCustody := renewalSnapshot(t, stateRoot), renewalSnapshot(t, custody)
+			err = renewSecurityAt(t.Context(), options, previous.CleanupBy.Add(48*time.Hour))
+			if name == "separate custody" {
+				if err != nil {
+					t.Fatal("renewal rejected separate immutable custody", err)
+				}
+				var candidate securityMaterialDocument
+				if err := json.Unmarshal(renewalRead(t, securityMaterialPath(options.OutputDirectory, "node-1")), &candidate); err != nil || candidate.StatePaths != paths {
+					t.Fatal("renewal changed the immutable state/custody descriptor", err)
+				}
+				var authority struct {
+					FloorsFile string `json:"floors_file"`
+				}
+				if err := json.Unmarshal(candidate.Authority, &authority); err != nil || filepath.Dir(authority.FloorsFile) != custody {
+					t.Fatal("renewal rebased the immutable custody location", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("overlapping state/custody directory accepted")
+				}
+				if _, err := os.Lstat(options.OutputDirectory); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("overlap refusal created candidate output", err)
+				}
+			}
+			if !reflect.DeepEqual(beforeMaterial, renewalSnapshot(t, material)) || !reflect.DeepEqual(beforeOperator, renewalSnapshot(t, options.OperatorDirectory)) ||
+				!reflect.DeepEqual(beforeState, renewalSnapshot(t, stateRoot)) || !reflect.DeepEqual(beforeCustody, renewalSnapshot(t, custody)) {
+				t.Fatal("renewal changed retained material, operator custody, native state or separate custody")
+			}
+		})
+	}
+}
+
+// Simulate an external provisioner retaining separate journal and custody
+// locations. Only isolated synthetic material is rewritten and re-signed here.
+func renewalSetMaterialStatePaths(t *testing.T, path, operator string, paths securityMaterialStatePaths) {
+	t.Helper()
+	var document securityMaterialDocument
+	if err := json.Unmarshal(renewalRead(t, path), &document); err != nil {
+		t.Fatal(err)
+	}
+	var authority map[string]json.RawMessage
+	if err := json.Unmarshal(document.Authority, &authority); err != nil {
+		t.Fatal(err)
+	}
+	var participant, membership map[string]json.RawMessage
+	if err := json.Unmarshal(authority["participant"], &participant); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(authority["membership"], &membership); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"PPath", "BPath"} {
+		var original string
+		if err := json.Unmarshal(participant[key], &original); err != nil {
+			t.Fatal(err)
+		}
+		participant[key], _ = json.Marshal(filepath.Join(paths.Directory, filepath.Base(original)))
+	}
+	var membershipPath, floorsPath string
+	if json.Unmarshal(membership["path"], &membershipPath) != nil || json.Unmarshal(authority["floors_file"], &floorsPath) != nil {
+		t.Fatal("invalid synthetic authority locations")
+	}
+	membership["path"], _ = json.Marshal(filepath.Join(paths.Directory, filepath.Base(membershipPath)))
+	authority["floors_file"], _ = json.Marshal(filepath.Join(paths.CustodyDirectory, filepath.Base(floorsPath)))
+	authority["participant"], _ = json.Marshal(participant)
+	authority["membership"], _ = json.Marshal(membership)
+	document.Authority, _ = json.Marshal(authority)
+	document.StatePaths = paths
+	document.Peer.State = filepath.Join(paths.Directory, "data-membership")
+	document.SnapshotSpool.Directory = filepath.Join(paths.Directory, "snapshot-spool")
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var completion securityCompletion
+	if err := json.Unmarshal(renewalRead(t, filepath.Join(filepath.Dir(path), "COMPLETE")), &completion); err != nil {
+		t.Fatal(err)
+	}
+	marker, err := securityCompletionBytes(raw, completion.OperatorSHA256, renewalRead(t, filepath.Join(operator, "control-signing-key.pem")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(path), "COMPLETE"), marker, 0600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -285,7 +441,7 @@ func TestRenewSecurityRetainsInterruptedCandidateWithoutCommit(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(options.OutputDirectory, "nodes", "node-1", "COMPLETE")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("interrupted preparation signed completion before complete candidate operator material")
 	}
-	if _, err := os.Lstat(filepath.Join(options.OutputDirectory, "nodes", "node-1", "security.json")); err != nil {
+	if _, err := os.Lstat(filepath.Join(options.OutputDirectory, "nodes", "node-1", "identity.json")); err != nil {
 		t.Fatal("case did not preserve partial candidate", err)
 	}
 	if !reflect.DeepEqual(oldProvisioned, renewalSnapshot(t, provisioned)) || !reflect.DeepEqual(oldOperator, renewalSnapshot(t, options.OperatorDirectory)) {
@@ -410,7 +566,7 @@ func TestRenewSecurityGeneratedPublisherMaintenanceLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			for i := 1; i <= count; i++ {
-				if _, err := loadProvisionedSecurity(filepath.Join(provisioned, "nodes", fmt.Sprintf("node-%d", i), "security.json")); err != nil {
+				if _, _, err := readSecurityMaterial(filepath.Join(provisioned, "nodes", fmt.Sprintf("node-%d", i), "identity.json")); err != nil {
 					t.Fatal("renewed serving document cannot load", err)
 				}
 			}

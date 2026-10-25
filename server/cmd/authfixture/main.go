@@ -41,11 +41,14 @@ import (
 
 type fixtureNode struct {
 	// Fixed by independent original provisioning, never by a peer response.
-	originalMember uint32
-	Name           string            `json:"name"`
-	PublicOrigin   string            `json:"public_origin"`
-	PeerOrigin     string            `json:"peer_origin"`
-	Environment    map[string]string `json:"environment"`
+	originalMember  uint32
+	StartupFile     string `json:"startup_file,omitempty"`
+	initialized     bool
+	RestartPrepared bool              `json:"restart_prepared,omitempty"`
+	Name            string            `json:"name"`
+	PublicOrigin    string            `json:"public_origin"`
+	PeerOrigin      string            `json:"peer_origin"`
+	Environment     map[string]string `json:"environment"`
 }
 type fixture struct {
 	authorityProfile *pb.CurrentAuthorityProfile
@@ -196,7 +199,7 @@ func main() {
 		if *receiptHA {
 			receiptLaunch, public, peer, err = reserveReceiptHALaunch(setupCtx, *serverBinary, *directory, *readyTimeout)
 		} else {
-			launches, public, peer, err = reserveFixtureCohort(launchCtx, *serverBinary, *directory, *allocatedNodes, *allocatedNodes > 1, *readyTimeout)
+			launches, public, peer, err = reserveFixtureCohort(launchCtx, *serverBinary, *directory, *allocatedNodes, *allocatedNodes > 1 || *mode == "oidc", *readyTimeout)
 		}
 	}
 	if err == nil {
@@ -208,6 +211,11 @@ func main() {
 	}
 	result.launches = launches
 	result.receiptLaunch = receiptLaunch
+	if *allocatedNodes == 1 && *mode == "oidc" && len(result.Nodes) == 1 {
+		// One fixed data member still requires its owned workload socket. It
+		// remains standalone for existing-endpoint Create and Head fixtures.
+		result.Nodes[0].PeerOrigin = ""
+	}
 	if err == nil && receiptLaunch != nil {
 		err = receiptLaunch.bindNodes(&result)
 	}
@@ -500,7 +508,6 @@ func generateTopologyProfile(dir string, publicPorts, peerPorts []int, mode, tok
 		node := fixtureNode{Name: name, PublicOrigin: publicOrigin, Environment: env}
 		if mode == "oidc" {
 			env["LANTERN_AUTH_MODE"] = "oidc"
-			env["LANTERN_OIDC_BROWSER_ORIGIN"] = "https://localhost:" + strconv.Itoa(publicPorts[0])
 		}
 
 		if len(peerPorts) > 0 {

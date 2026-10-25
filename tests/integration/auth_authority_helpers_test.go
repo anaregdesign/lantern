@@ -14,7 +14,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -171,6 +170,9 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if configure != nil {
 		configure(&bootstrap)
 	}
+	if bootstrap.Issuer == nil {
+		bootstrap.Issuer = newAuthorityWireSeedIssuer(f.provider.URL, bootstrap.HumanSubjectNamespaceQualified)
+	}
 	raw, encodeErr := json.Marshal(bootstrap)
 	if encodeErr != nil {
 		t.Fatal(encodeErr)
@@ -184,7 +186,10 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	if err := createPrivateTestFile(roots, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.provider.Certificate().Raw})); err != nil {
 		t.Fatal(err)
 	}
-	config := provider.SecurityConfig{Mode: "oidc", ConfigFile: filepath.Join(dir, "node-1", "node.json"), StoreMode: "fresh", BrowserOrigin: "https://admin.example", RootCAFile: roots, PrivateOrigins: map[string][]netip.Prefix{f.provider.URL: {netip.MustParsePrefix("127.0.0.1/32")}}, TrustedProxyIPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}
+	configureSecurityInput := func(input map[string]any) {
+		input["issuers"] = []map[string]any{bootstrap.Issuer.currentInput()}
+	}
+	config := loadAuthorityWireSecurityConfig(t, dir, 1, f.provider.URL, roots, configureSecurityInput)
 	configureGraph := func(graph *graphcache.GraphCache[string, *pb.Vertex]) error {
 		graph.EnablePrefixIndex(func(key string) string { return key })
 		graph.EnableSearchIndex(func(key string, vertex *pb.Vertex) search.Document {
@@ -212,6 +217,12 @@ func newAuthorityWireFixture(t *testing.T, configure func(*oidcFixtureBootstrap)
 	t.Cleanup(func() { _ = data.Close() })
 	f.dataRuntime = data
 	f.graph = data.GraphCache()
+	if _, err := provider.InitializeSecurity(t.Context(), config); err != nil {
+		reportAuthorityStartupFailure(t, err)
+		t.Fatal("explicit original authority initialization", err)
+	}
+	// Supply the same declared operator intent again for ordinary startup.
+	config = loadAuthorityWireSecurityConfig(t, dir, 1, f.provider.URL, roots, configureSecurityInput)
 	runtime, closeRuntime, err := provider.NewSecurityRuntime(t.Context(), config, data)
 	if err != nil {
 		reportAuthorityStartupFailure(t, err)
@@ -450,10 +461,11 @@ func securityWireRequest[T any](token string, message *T) *connect.Request[T] {
 }
 
 type oidcFixtureBootstrap struct {
-	AdminSubjects                  []string        `json:"admin_subjects"`
-	HumanSubjectNamespaceQualified bool            `json:"human_subject_namespace_qualified"`
-	Roles                          json.RawMessage `json:"roles,omitempty"`
-	Machines                       json.RawMessage `json:"machines,omitempty"`
+	Issuer                         *authorityWireSeedIssuer `json:"issuer,omitempty"`
+	AdminSubjects                  []string                 `json:"admin_subjects"`
+	HumanSubjectNamespaceQualified bool                     `json:"human_subject_namespace_qualified"`
+	Roles                          json.RawMessage          `json:"roles,omitempty"`
+	Machines                       json.RawMessage          `json:"machines,omitempty"`
 }
 
 func exportAuthorityWireFixture(t *testing.T, dir, issuer string, voters int, bootstrap string) {
@@ -472,6 +484,7 @@ func exportAuthorityWireFixture(t *testing.T, dir, issuer string, voters int, bo
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("independent original provisioning: %v\n%s", err, output)
 	}
+	prepareAuthorityWireSecurityMaterial(t, dir)
 }
 
 func prepareAuthorityWireReview(ctx context.Context, control graphv1connect.LanternSecurityServiceClient, token string, version *pb.SecurityVersion, changes []*pb.SecurityChange) (*pb.PrepareSecurityChangesResponse, error) {

@@ -23,6 +23,7 @@ var (
 // Every local identity, path and budget is supplied independently and bound by
 // GENESIS. Neither a recovered record nor a peer message supplies bootstrap.
 type s2cParticipantConfig struct {
+	configured                              *ConfiguredTrust
 	Trust                                   *s2cTrust
 	Member                                  uint32
 	Incarnation                             [16]byte

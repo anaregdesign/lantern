@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-func TestGraphSnapshotSpoolConfigUsesOnlyPersistedProvisioning(t *testing.T) {
+func TestGraphSnapshotSpoolConfigUsesOnlyImmutableProfile(t *testing.T) {
 	clearSecurityEnvironment(t)
 	state := filepath.Join(t.TempDir(), "node-1")
 	spool := provisionedSnapshotSpool(state)
-	config := SecurityConfig{ProvisionedFile: filepath.Join(t.TempDir(), "security.json"), StateDirectory: state, ProvisionedSnapshotSpool: &spool}
+	config := SecurityConfig{Mode: "oidc", MaterialFile: filepath.Join(t.TempDir(), "security.json"), StateDirectory: state, ProvisionedSnapshotSpool: &spool}
 	loaded, err := loadGraphSnapshotSpoolForSecurity(config)
 	if err != nil || loaded != spool || loaded.MaxDiskBytes != 128<<20 || loaded.MaxFrameBytes != 32<<20 {
 		t.Fatal("generated setup did not preserve its finite Snapshot bounds", err)
@@ -36,6 +36,33 @@ func TestGraphSnapshotSpoolConfigUsesOnlyPersistedProvisioning(t *testing.T) {
 	config.ProvisionedSnapshotSpool = nil
 	if _, err := loadGraphSnapshotSpoolForSecurity(config); err == nil {
 		t.Fatal("missing provisioned spool silently acquired defaults")
+	}
+}
+
+func TestGraphSnapshotSpoolSelectionPreservesSignedProfileAcrossRepresentations(t *testing.T) {
+	clearSecurityEnvironment(t)
+	state := filepath.Join(t.TempDir(), "node-1")
+	spool := provisionedSnapshotSpool(state)
+	config := SecurityConfig{Mode: "oidc", StateDirectory: state, ProvisionedSnapshotSpool: &spool}
+	for _, mode := range []ReceiptWALMode{ReceiptWALModeGraphOnly, ReceiptWALModeFresh, ReceiptWALModeRestart} {
+		active, err := selectGraphSnapshotSpoolForSecurity(config, mode)
+		if err != nil || mode == ReceiptWALModeGraphOnly && active != spool || mode != ReceiptWALModeGraphOnly && active != (GraphSnapshotSpoolConfig{}) {
+			t.Fatal("incorrect active spool for serving representation", mode, err)
+		}
+		if *config.ProvisionedSnapshotSpool != spool {
+			t.Fatal("runtime representation rewrote signed spool material")
+		}
+		if _, err := os.Stat(spool.Directory); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("pure selection accessed or created missing spool", err)
+		}
+	}
+	bad := spool
+	bad.MaxDiskBytes = 0
+	config.ProvisionedSnapshotSpool = &bad
+	for _, mode := range []ReceiptWALMode{ReceiptWALModeGraphOnly, ReceiptWALModeFresh, ReceiptWALModeRestart} {
+		if _, err := selectGraphSnapshotSpoolForSecurity(config, mode); err == nil {
+			t.Fatal("inactive representation bypassed invalid immutable spool profile", mode)
+		}
 	}
 }
 

@@ -1,13 +1,15 @@
 # Operator-provisioned full-replica cohort, using a distinct private mTLS plane.
 # Env files contain complete mode/domain/workload settings and absolute paths
-# under /run/lantern-config and /state. Never put the operator signing key here.
+# under /run/lantern-config and /state. OFF env files explicitly configure the
+# generic private peer plane/listen address. OIDC env files supply only the same
+# human security JSON used for provision/init/start; its planes are derived.
+# Never put operator/CA signing keys in serving mounts.
 x-peer: &peer
   image: ${LANTERN_IMAGE:-ghcr.io/anaregdesign/lantern:latest}
   stop_grace_period: 45s
   environment:
     LANTERN_PORT: "6380"
     LANTERN_METRICS_ADDR: "127.0.0.1:9090"
-    LANTERN_PEER_LISTEN_ADDR: ":6381"
     LANTERN_DEFAULT_TTL_SECONDS: "3600"
     LANTERN_LOG_FORMAT: "json"
     LANTERN_DRAIN_DELAY_SECONDS: "5"
@@ -25,7 +27,6 @@ services:
   lantern-0:
     environment:
       LANTERN_METRICS_ADDR: "127.0.0.1:9090"
-      LANTERN_PEER_LISTEN_ADDR: ":6381"
     env_file: ["${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-0.env"]
     volumes:
       - ${LANTERN_HA_CONFIG_DIR:?operator peer configuration required}/lantern-0:/run/lantern-config:ro

@@ -121,7 +121,7 @@ func (o *s2cParticipant) signAuthorityRenewal(raw []byte, workloads [32]byte, el
 	o.gate.Lock()
 	defer o.gate.Unlock()
 	defer o.poisonPanic()
-	if o.readyLocked() != nil || o.chosen != nil || eligible == nil {
+	if !o.configuredReadyLocked() || o.readyLocked() != nil || o.chosen != nil || eligible == nil {
 		return nil, errAuthorityRenewal
 	}
 	r, err := parseAuthorityRenewalRequest(raw, o.trust, workloads)

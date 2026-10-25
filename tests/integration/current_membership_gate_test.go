@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -71,6 +72,9 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 		}
 		return envelope.Payload.Version, envelope.Payload.ExpiresAt, sha256.Sum256(raw)
 	}
+	materialMembership := func(node, kind string) string {
+		return filepath.Join(dir, "identity", "nodes", node, "membership", kind+".json")
+	}
 	// Declare the finite operator/runtime budget after native startup and before
 	// creating any publisher state. The configuration is immutable thereafter.
 	configPath := filepath.Join(dir, "publisher.json")
@@ -91,6 +95,7 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 	if e = os.WriteFile(configPath, rawConfig, 0600); e != nil {
 		t.Fatal(e)
 	}
+	var publisherProcess *os.Process
 	startPublisher := func(mode string) func() {
 		t.Helper()
 		binary := os.Getenv("LANTERN_MEMBERSHIP_PUBLISHER")
@@ -104,6 +109,7 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 		if e := cmd.Start(); e != nil {
 			t.Fatal(e)
 		}
+		publisherProcess = cmd.Process
 		done := make(chan error, 1)
 		go func() { done <- cmd.Wait() }()
 		var once sync.Once
@@ -133,7 +139,7 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 	var initialEnd time.Time
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		initialVersion, initialEnd, _ = manifest(filepath.Join(dir, "node-1", "membership.signed"))
+		initialVersion, initialEnd, _ = manifest(materialMembership("node-1", "control"))
 		if initialVersion >= 2 {
 			break
 		}
@@ -210,9 +216,9 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 		}
 	}
 	for i, r := range runtimes {
-		node := filepath.Join(dir, "node-"+string(rune('1'+i)))
-		v, _, digest := manifest(filepath.Join(node, "membership.signed"))
-		dv, _, _ := manifest(filepath.Join(node, "data-input", "data.signed"))
+		node := "node-" + string(rune('1'+i))
+		v, _, digest := manifest(materialMembership(node, "control"))
+		dv, _, _ := manifest(materialMembership(node, "data"))
 		if v < initialVersion+2 || dv < initialVersion+2 {
 			t.Fatal("both streams must have at least two successors", v, dv)
 		}
@@ -250,12 +256,75 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 	// Delay only node 1's data publication. Its checkpoint journals remain
 	// writable; the running publisher retains one candidate while independently
 	// distributing control and the other data targets. Consumers still run.
-	dataInput := filepath.Join(dir, "node-1", "data-input")
-	_, heldEnd, _ := manifest(filepath.Join(dataInput, "data.signed"))
-	if e := os.Chmod(dataInput, 0500); e != nil {
+	dataInput := materialMembership("node-1", "data")
+	_, heldEnd, heldDigest := manifest(dataInput)
+	retainedInput := dataInput + ".retained-for-delivery-test"
+	if e := os.Rename(dataInput, retainedInput); e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dataInput, 0700) })
+	if e := os.Mkdir(dataInput, 0700); e != nil {
+		if restoreErr := os.Rename(retainedInput, dataInput); restoreErr != nil {
+			t.Error("failed obstruction setup also failed retained input restoration", restoreErr)
+		}
+		t.Fatal(e)
+	}
+	obstruction, e := os.Lstat(dataInput)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// Only this test-owned publisher is paused while the retained exact input
+	// is restored. This prevents overwriting a newly delivered candidate in the
+	// remove-directory/rename-file interval, without changing product code.
+	restoredInput := false
+	restoreInput := func() {
+		t.Helper()
+		if restoredInput {
+			return
+		}
+		if e := publisherProcess.Signal(syscall.SIGSTOP); e != nil {
+			t.Fatal("pause owned publisher for exact input restoration", e)
+		}
+		defer func() {
+			if e := publisherProcess.Signal(syscall.SIGCONT); e != nil {
+				t.Error("resume owned publisher after restoration", e)
+			}
+		}()
+		pauseDeadline := time.Now().Add(time.Second)
+		for {
+			var status syscall.WaitStatus
+			pid, e := syscall.Wait4(publisherProcess.Pid, &status, syscall.WNOHANG|syscall.WUNTRACED, nil)
+			if e != nil || pid != 0 && !status.Stopped() {
+				t.Fatal("publisher stop observation is unavailable or terminal", e)
+			}
+			if pid == publisherProcess.Pid && status.Stopped() {
+				break
+			}
+			if time.Now().After(pauseDeadline) {
+				t.Fatal("publisher pause did not become observable")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		info, e := os.Lstat(dataInput)
+		if e != nil || !info.IsDir() || !os.SameFile(obstruction, info) {
+			t.Fatal("task-owned publication obstruction changed", e)
+		}
+		_, _, digest := manifest(retainedInput)
+		if digest != heldDigest {
+			t.Fatal("retained valid data input changed")
+		}
+		if e := os.Remove(dataInput); e != nil {
+			t.Fatal("remove owned publication obstruction", e)
+		}
+		if e := os.Rename(retainedInput, dataInput); e != nil {
+			t.Fatal("restore retained valid data input", e)
+		}
+		_, _, digest = manifest(dataInput)
+		if digest != heldDigest {
+			t.Fatal("exact retained data input was not restored")
+		}
+		restoredInput = true
+	}
+	t.Cleanup(restoreInput)
 	wait(heldEnd.Add(time.Second))
 	if runtimes[0].Ready(ctx) {
 		t.Fatal("one-sided data expiry did not close readiness")
@@ -266,16 +335,14 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 	if _, e := data.GetVertex(ctx, securityWireRequest(token, &pb.GetVertexRequest{Key: "orders:renewal"})); e == nil {
 		t.Fatal("one-sided expiry admitted data")
 	}
-	if e := os.Chmod(dataInput, 0700); e != nil {
-		t.Fatal(e)
-	}
+	restoreInput()
 	waitReady()
 	checkSession()
 	checkData()
 	t.Log("native: one data target lagged through expiry while control/other targets advanced; exact pending delivery recovered it")
 	stopPublisher()
-	_, controlEnd, _ := manifest(filepath.Join(dir, "node-1", "membership.signed"))
-	_, dataEnd, _ := manifest(filepath.Join(dir, "node-1", "data-input", "data.signed"))
+	_, controlEnd, _ := manifest(materialMembership("node-1", "control"))
+	_, dataEnd, _ := manifest(materialMembership("node-1", "data"))
 	if dataEnd.After(controlEnd) {
 		controlEnd = dataEnd
 	}
@@ -312,7 +379,18 @@ func runCurrentMembershipGate(t *testing.T, f *oidcControlWireFixture, dir strin
 	if e = runtimes[1].Shutdown(); e != nil {
 		t.Fatal("updated owner CLEAN shutdown", e)
 	}
-	floorsPath := filepath.Join(dir, "node-2", "floors.json")
+	materialRaw, e := os.ReadFile(filepath.Join(dir, "identity", "nodes", "node-2", "identity.json"))
+	var material provider.SecurityMaterial
+	if e != nil || json.Unmarshal(materialRaw, &material) != nil {
+		t.Fatal("fixed restart material", e)
+	}
+	var authority struct {
+		FloorsFile string `json:"floors_file"`
+	}
+	if json.Unmarshal(material.Authority, &authority) != nil || authority.FloorsFile == "" {
+		t.Fatal("fixed custody floors path missing")
+	}
+	floorsPath := authority.FloorsFile
 	floors, e := os.ReadFile(floorsPath)
 	if e != nil {
 		t.Fatal(e)

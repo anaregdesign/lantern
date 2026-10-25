@@ -17,7 +17,7 @@ enableServiceLinks: false
 nameOverride: ""
 fullnameOverride: ""
 
-# More than one replica requires peerPlane.enabled and operator material.
+# More than one replica requires OFF peerPlane material or fixed OIDC material.
 replicaCount: 1
 
 # StatefulSet update strategy. RollingUpdate is required for the PDB
@@ -108,17 +108,22 @@ metrics:
         sourceLabels: [__name__]
         regex: up|go_goroutines|go_memstats_heap_inuse_bytes|process_resident_memory_bytes|process_cpu_seconds_total|grpc_server_.*|lantern_(anti_entropy_.*|auth_rejected_total|backup_.*|build_info|capacity_limit|causal_metadata_.*|edge_contrib_deduped_total|edges|get_(edge|vertex)_(hits|misses)_total|gc_duration_seconds_.*|mutation_log_.*|mutationlog_subscriber_dropped_total|origin_states_count|peer_connected|rate_limit_rejected_total|replication_.*|restore_.*|search_calls_total|search_config_.*|search_index_.*|search_rejections_total|snapshot_.*|subscribe_.*|subscription_.*|tombstone_clamp_rejected_total|ttl_expirations_total|validation_rejected_total|vertex_hlc_.*|vertices)
 
-# Public mode is OFF or OIDC. Each OIDC pod receives its own independently
-# provisioned node/genesis, keys and membership files; journals use runtimeState.
+# The same complete human OIDC JSON is supplied as <pod-name>.json in
+# configSecret. It is a private immutable Pod-input snapshot, not derived config.
+# Identity files use <pod-name>.<relative-path-with-slashes-replaced-by-dots>.
+# The trusted init copies only this Pod's input/material; state uses runtimeState.
 auth:
   mode: "off"
-  storeMode: resume             # fresh for initial state | resume for intact recovery
-  nodeFile: node.json           # basename included in files below
-  configMap: ""                # browser origin and optional OIDC fetch/secret settings
-  existingSecret: ""           # source keys are <pod-name>.<file>; init copies only this pod
-  files: []                    # explicit per-workload basenames referenced by nodeFile
+  configSecret: ""             # current supplied JSON; changes require Pod replacement
+  controlPort: 16380            # OIDC control listener; must match JSON fixed topology
+  existingSecret: ""           # original identity material only, never operator signing keys
+  # OIDC requires exactly these eight known paths in the allowlist:
+  # identity.json, COMPLETE, workload.pem, workload-key.pem, roots.pem,
+  # data-operator.pem, membership/control.json, membership/data.json
+  files: []
 
-# Distinct public TLS certificates. keys: <pod-name>.crt / <pod-name>.key.
+# OFF public TLS only. OIDC supplies public TLS/proxy settings in its human JSON.
+# Secret keys: <pod-name>.crt / <pod-name>.key.
 publicTLS:
   existingSecret: ""
 
@@ -127,9 +132,10 @@ publicTLS:
 nativeTime:
   configMap: ""
 
+# Generic OFF peer material; OIDC derives identity/admission from its JSON/material.
 peerPlane:
   enabled: false
-  port: 6381
+  port: 6381                  # private data port in both modes; match OIDC JSON
   mode: resume                 # fresh first enrollment only | resume
   deployment: ""              # nonzero 32-character lowercase hex
   workloadIDPrefix: ""        # full URI prefix; append /<pod-name>

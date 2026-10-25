@@ -30,9 +30,7 @@ def events(tests=None, kind=gate.CONFIGURED_SOURCE_INTEGRATION):
             "Output": gate.NATIVE_MARKER if kind == gate.CONFIGURED_SOURCE_INTEGRATION else gate.FIXTURE_MARKER,
         },
     ]
-    constructor_sequence = [(i, "fresh") for i in (1, 2, 3)]
-    if kind == gate.FUNCTIONAL_VALIDATION:
-        constructor_sequence.insert(2, (2, "resume"))
+    constructor_sequence = [(i, mode) for mode in ("fresh", "resume") for i in (1, 2, 3)]
     result += [
         {
             "Action": "output",
@@ -56,9 +54,9 @@ def events(tests=None, kind=gate.CONFIGURED_SOURCE_INTEGRATION):
             {
                 "Action": "output",
                 "Test": gate.CONFIGURED_SOURCE_INTEGRATION_CASES[-1],
-                "Output": f"source_acquisition node={i} attempts=1 writes=1 installations=1 in_flight=false failed=false denied=false",
+                "Output": f"source_acquisition phase={phase} node={i} attempts=1 writes=1 installations=1 in_flight=false failed=false denied=false",
             }
-            for i in (1, 2, 3)
+            for phase in ("init", "resume") for i in (1, 2, 3)
         ]
     result += [{"Action": "pass", "Test": gate.ROOT_TEST}, {"Action": "pass"}]
     return [{"Package": gate.PACKAGE, **record} for record in result]
@@ -158,8 +156,12 @@ class SDK4ReceiptTest(unittest.TestCase):
         )
 
     def test_complete_distinct_contracts_and_old_schema_refusal(self):
-        for kind in (gate.FUNCTIONAL_VALIDATION, gate.CONFIGURED_SOURCE_INTEGRATION):
+        for kind, contract in (
+            (gate.FUNCTIONAL_VALIDATION, "functional-full-v4"),
+            (gate.CONFIGURED_SOURCE_INTEGRATION, "source-cohort-v4"),
+        ):
             self.configure(kind)
+            self.assertEqual(self.receipt["proof"]["case_contract"], contract)
             self.assertEqual(self.verify()["executed_tests"], list(gate.required_tests(kind)))
             self.receipt["schema"] = 2
             self.save()
@@ -167,6 +169,18 @@ class SDK4ReceiptTest(unittest.TestCase):
                 self.verify()
         self.assertNotIn(gate.RETAINED_ROOT_TESTS[0], gate.required_tests(gate.CONFIGURED_SOURCE_INTEGRATION))
         self.assertIn(gate.SCOPED_TEST, gate.required_tests(gate.FUNCTIONAL_VALIDATION))
+
+    def test_old_case_contracts_cannot_qualify_the_explicit_init_resume_lifecycle(self):
+        for kind, retired in (
+            (gate.FUNCTIONAL_VALIDATION, "functional-full-v3"),
+            (gate.CONFIGURED_SOURCE_INTEGRATION, "source-cohort-v3"),
+        ):
+            self.configure(kind)
+            self.receipt["proof"]["case_contract"] = retired
+            self.receipt["runtime"]["proof"]["case_contract"] = retired
+            self.save()
+            with self.assertRaisesRegex(ValueError, "proof kind/build/source mismatch"):
+                self.verify()
 
     def test_descriptive_names_reject_retired_cli_and_receipt_kinds(self):
         self.assertEqual(
@@ -248,14 +262,40 @@ class SDK4ReceiptTest(unittest.TestCase):
     def test_source_integration_counts_are_complete_bounded_and_not_lossy_trace_inferences(self):
         complete = events()
         count = [r for r in complete if "source_acquisition" in r.get("Output", "")]
-        variants = [[r for r in complete if r not in count], complete + [count[0]]]
+        self.assertEqual(
+            [(r["phase"], r["node"]) for r in self.receipt["acquisition"]],
+            [(phase, node) for phase in ("init", "resume") for node in (1, 2, 3)],
+        )
+        variants = [
+            [r for r in complete if r not in count],
+            complete + [count[0]],
+            [r for r in complete if r not in count[:3]],
+            [r for r in complete if r not in count[3:]],
+            complete + [{**count[0], "Output": "source_acquisition malformed"}],
+            complete + [{**count[0], "Output": count[0]["Output"] + " " + count[0]["Output"]}],
+            complete + [{**count[0], "Test": gate.ROOT_TEST}],
+        ]
+        reordered = list(complete)
+        first, second = (reordered.index(row) for row in count[:2])
+        reordered[first], reordered[second] = reordered[second], reordered[first]
+        variants.append(reordered)
+        variants.extend([r for r in complete if r is not missing] for missing in count)
         for old, new in (
             ("attempts=1", "attempts=5"),
+            ("attempts=1", "attempts=0"),
             ("in_flight=false", "in_flight=true"),
             ("failed=false", "failed=true"),
             ("denied=false", "denied=true"),
             ("installations=1", "installations=0"),
+            ("installations=1", "installations=2"),
             ("writes=1", "writes=0"),
+            ("writes=1", "writes=2"),
+            ("phase=init", "phase=resume"),
+            ("phase=init", "phase=unknown"),
+            ("phase=init ", ""),
+            ("node=1", "node=4"),
+            ("attempts=1", "attempts=invalid"),
+            ("denied=false", "denied=invalid"),
         ):
             variants.append(
                 [
@@ -289,6 +329,43 @@ class SDK4ReceiptTest(unittest.TestCase):
                 self.save()
                 with self.assertRaises(ValueError):
                     self.verify()
+
+    def test_source_integration_budget_sums_initialization_and_resume_owners(self):
+        complete = events()
+        bounded = [
+            {**r, "Output": r.get("Output", "").replace("attempts=1", "attempts=2").replace("writes=1", "writes=2")}
+            if "source_acquisition" in r.get("Output", "") else r
+            for r in complete
+        ]
+        self.write_events(bounded)
+        counts = gate.acquisition_counts(self.evidence / "events.jsonl")
+        self.assertEqual(sum(row["attempts"] for row in counts), 12)
+        self.assertEqual(sum(row["writes"] for row in counts), 12)
+        self.receipt["acquisition"] = counts
+        self.save()
+        self.assertEqual(self.verify()["acquisition"], counts)
+        for phase in ("init", "resume"):
+            for field in ("attempts", "writes"):
+                records = copy.deepcopy(bounded)
+                selected = next(r for r in records if f"source_acquisition phase={phase} node=1 " in r.get("Output", ""))
+                selected["Output"] = selected["Output"].replace("attempts=2", "attempts=3")
+                if field == "writes":
+                    selected["Output"] = selected["Output"].replace("writes=2", "writes=3")
+                self.write_events(records)
+                self.save()
+                with self.assertRaisesRegex(ValueError, "source acquisition budget exceeded"):
+                    self.verify()
+
+    def test_source_integration_counts_allow_go_test_subtest_output(self):
+        records = events()
+        budget = gate.CONFIGURED_SOURCE_INTEGRATION_CASES[-1]
+        records.extend(
+            {"Package": gate.PACKAGE, "Action": "output", "Test": budget, "Output": output}
+            for output in (f"=== RUN   {budget}\n", f"--- PASS: {budget} (0.00s)\n")
+        )
+        self.write_events(records)
+        self.save()
+        self.assertEqual(self.verify()["acquisition"], self.receipt["acquisition"])
 
     def test_functional_validation_requires_all_public_bodies_after_sdk4_in_the_same_cohort(self):
         self.configure(gate.FUNCTIONAL_VALIDATION)
@@ -409,6 +486,13 @@ class SDK4ReceiptTest(unittest.TestCase):
             self.configure(kind)
             complete = events(kind=kind)
             constructors = [r for r in complete if "current_constructor" in r.get("Output", "")]
+            self.assertEqual(
+                [r["Output"] for r in constructors],
+                [f"current_constructor node={node} mode={mode} passed=true"
+                 for mode in ("fresh", "resume") for node in (1, 2, 3)]
+                + (["current_constructor node=2 mode=resume passed=true"]
+                   if kind == gate.FUNCTIONAL_VALIDATION else []),
+            )
             for row in constructors:
                 for replacement in (
                     None,
@@ -424,6 +508,21 @@ class SDK4ReceiptTest(unittest.TestCase):
             self.write_events(complete + [constructors[-1]])
             self.save()
             with self.assertRaises(ValueError):
+                self.verify()
+            for output in (
+                "current_constructor node=1 mode=unknown passed=true",
+                "current_constructor node=invalid mode=resume passed=true",
+            ):
+                self.write_events(complete + [{**constructors[0], "Output": output}])
+                self.save()
+                with self.assertRaisesRegex(ValueError, "invalid per-owner constructor"):
+                    self.verify()
+            reordered = list(complete)
+            first, second = (reordered.index(row) for row in constructors[:2])
+            reordered[first], reordered[second] = reordered[second], reordered[first]
+            self.write_events(reordered)
+            self.save()
+            with self.assertRaisesRegex(ValueError, "required per-owner constructor"):
                 self.verify()
 
     def test_receipt_logs_exact_source_and_trusted_digest_are_bound(self):

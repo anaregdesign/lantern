@@ -19,15 +19,29 @@ func TestCurrentProvisioningFixedVoterFixtureExport(t *testing.T) {
 			}
 			TestCurrentProvisioningExportPublicFixture(t)
 			for id := 1; id <= count; id++ {
-				path := filepath.Join(dir, fmt.Sprintf("node-%d/node.json", id))
-				p, err := LoadCurrentProvisioning(path)
-				if err != nil || len(p.config.Participant.Trust.members) != count || !p.config.Limits.valid(p.config.Participant) {
+				path := filepath.Join(dir, fmt.Sprintf("node-%d/authority.json", id))
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal("read exported inline authority", err)
+				}
+				var document currentJSONProvisioningDocument
+				if err := decodeCurrentJSONProvisioning(raw, &document); err != nil {
+					t.Fatal("decode exported inline authority", err)
+				}
+				manifest, err := os.ReadFile(document.Membership.ManifestFile)
+				if err != nil {
+					t.Fatal("read exported signed membership", err)
+				}
+				// Export is pure authoring: final state directories intentionally
+				// do not exist before explicit initialization.
+				c, _, err := currentJSONConfigForTime(document, manifest, authorityTimeProfileDescription, false)
+				if err != nil || len(c.Participant.Trust.members) != count || !c.Limits.valid(c.Participant) {
 					t.Fatal("export changed original voters or lost capacity", id, err)
 				}
-				if p.config.Participant.OwnedOrigin == 0 && id <= min(count, 2) {
+				if c.Participant.OwnedOrigin == 0 && id <= min(count, 2) {
 					t.Fatal("original origin was removed", id)
 				}
-				for _, file := range []string{p.config.Participant.PPath, p.config.Participant.BPath, p.floors, p.config.Membership.Path} {
+				for _, file := range []string{c.Participant.PPath, c.Participant.BPath, document.FloorsFile, c.Membership.Path} {
 					if _, err := os.Lstat(file); !os.IsNotExist(err) {
 						t.Fatal("original-input export manufactured runtime state", file, err)
 					}

@@ -14,6 +14,8 @@ import pathlib
 import subprocess
 import time
 
+from security_startup import startup_command
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -132,41 +134,26 @@ def main():
         name = args.name + f"-node-{node}" + suffix
         network = ["--network", egress] if isolated else ["--network", cluster, "--ip", hosts[node - 1]]
         values = common(name) + network + [
-            "--mount", volume_mount(provision, "/provision", readonly=True),
+            "--mount", volume_mount(provision, f"/provision/node-{node}", readonly=True, subdirectory=f"node-{node}"),
             "--mount", volume_mount(journals[node], "/journal"),
             "--mount", volume_mount(custodies[node], "/custody"),
             "--mount", f"type=bind,src={args.server.resolve()},dst=/server,readonly",
             "--mount", f"type=bind,src={args.driver.resolve()},dst=/probe,readonly"]
         if args.mixed_ha:
-            values += ["--mount", volume_mount(archives[node] if mode == "fresh" else restores[node], "/backup"),
+            values += ["--mount", volume_mount(restores[node] if mode == "resume" else archives[node], "/backup"),
                 "--mount", volume_mount(control, "/control", readonly=True)]
         settings = {
             "LANTERN_AUTH_MODE": "oidc",
-            "LANTERN_SECURITY_CONFIG_FILE": f"/provision/node-{node}/node.json",
-            "LANTERN_SECURITY_STORE_MODE": mode, "LANTERN_OIDC_BROWSER_ORIGIN": "https://admin.example",
-            "LANTERN_OIDC_ROOT_CA_FILE": "/provision/oidc.pem",
-            "LANTERN_OIDC_PRIVATE_ORIGINS": json.dumps({issuer: [driver_ip + "/32"]}, separators=(",", ":")),
-            "LANTERN_TLS_CERT_FILE": "/provision/public.pem", "LANTERN_TLS_KEY_FILE": "/provision/public.key",
-            "LANTERN_CDC_CURSOR_KEY_RING_FILE": "/provision/cursor-keys.json",
             "LANTERN_PORT": "6380", "LANTERN_METRICS_ADDR": "", "LANTERN_NODE_ID": f"{node:032x}",
-            "LANTERN_RECEIPT_WAL_MODE": "fresh" if mode == "fresh" else "restart",
+            "LANTERN_RECEIPT_WAL_MODE": "restart" if mode == "resume" else "fresh",
             "LANTERN_RECEIPT_WAL_PATH": "/journal/business.wal", "LANTERN_RECEIPT_EPOCH": "42424242424242424242424242424242",
             "LANTERN_RECEIPT_RETENTION": "1h", "LANTERN_RECEIPT_MAX_ENTRIES": "128", "LANTERN_RECEIPT_MAX_BYTES": "1048576",
             "LANTERN_BACKUP_ENABLED": "false", "LANTERN_BACKUP_RESTORE_ON_START": "false", "LANTERN_DRAIN_DELAY_SECONDS": "1",
             "LANTERN_CURRENT_CUSTODY_GATE": "1", "LANTERN_CURRENT_CUSTODY_NODE_URL": f"https://{hosts[node-1]}:6380",
+            "LANTERN_CURRENT_CUSTODY_NODE_MATERIAL": f"/provision/node-{node}",
         }
         if args.mixed_ha:
             settings.update({
-                "LANTERN_PEER_LISTEN_ADDR": "0.0.0.0:17380",
-                "LANTERN_PEER_DEPLOYMENT": data_metadata["deployment"],
-                "LANTERN_PEER_MEMBERSHIP_MODE": mode,
-                "LANTERN_PEER_MEMBERSHIP_FILE": "/provision/data-membership.json",
-                "LANTERN_PEER_MEMBERSHIP_STATE_FILE": "/journal/data-membership.state",
-                "LANTERN_PEER_OPERATOR_PUBLIC_KEY_FILE": "/provision/data-operator.pub",
-                "LANTERN_PEER_WORKLOAD_ID": f"spiffe://lantern.fixture/data-{node}",
-                "LANTERN_PEER_CERT_FILE": f"/provision/node-{node}/data.pem",
-                "LANTERN_PEER_KEY_FILE": f"/provision/node-{node}/data.key",
-                "LANTERN_PEER_TRUST_CA_FILE": "/provision/data-ca.pem",
                 "LANTERN_PUMP_BACKOFF_MAX_MS": "1000",
                 "LANTERN_PEER_DISCOVERY_INTERVAL_MS": "500",
                 "LANTERN_ANTI_ENTROPY_INTERVAL_MS": "1000",
@@ -178,17 +165,30 @@ def main():
             })
         for key, value in settings.items():
             values += ["--env", key + "=" + value]
-        docker(*values, args.image, "/server")
+        values += ["--entrypoint", "sh"]
+        docker(*values, args.image, *startup_command(f"/provision/node-{node}/startup.json", initialize=mode == "initialize"))
         containers.append(name)
-        if node == 3 and not isolated:
+        if node == 3 and not isolated and mode != "initialize":
             docker("network", "connect", "--gw-priority", "-1", egress, name)
         return name
 
-    def checkpoint(name, label, cycle):
+    def initialize_nodes():
+        # Initialization owns one native time acquisition and CLEAN cycle per
+        # node. Complete all three before the serving quorum starts.
+        for node in (1, 2, 3):
+            name = start_node(node, "initialize", "-initialize")
+            finish(name)
+            collect(name, f"initialize-node-{node}")
+            receipt["phases"].append({"phase": "explicit-initialize", "node": node, "pass": True})
+            save()
+            docker("rm", name)
+            containers.remove(name)
+
+    def checkpoint(name, label, cycle, node):
         target = args.evidence / label
         target.mkdir()
         for filename in ("floors.json", "floors.json.state"):
-            docker("cp", f"{name}:/custody/{filename}", str(target / filename))
+            docker("cp", f"{name}:/custody/node-{node}/{filename}", str(target / filename))
         checked_checkpoint(target / "floors.json.state", target / "floors.json", cycle)
         log = collect(name, label)
         if "server stopped cleanly" not in log:
@@ -200,7 +200,7 @@ def main():
         name = nodes[node]
         docker("stop", "--timeout", "25", name, timeout=35)
         finish(name)
-        checkpoint(name, label, cycle)
+        checkpoint(name, label, cycle, node)
         docker("rm", name)
         containers.remove(name)
 
@@ -250,7 +250,7 @@ def main():
         docker("cp", controller + ":/control/exporter.log", str(args.evidence / "exporter.log"))
         docker("cp", controller + ":/control/provision-manifest.json", str(args.evidence / "provision-manifest.json"))
         if args.mixed_ha:
-            data_metadata = marker(controller, "/provision/data-metadata.json")
+            initialize_nodes()
             nodes = {node: start_node(node, "fresh") for node in (1, 2, 3)}
             for selected in ("mixed-relay-cdc", "mixed-gap-conflict", "mixed-backup-cut", "mixed-lost-response", "mixed-authorization"):
                 phase(selected)
@@ -262,40 +262,43 @@ def main():
             docker("network", "connect", "--ip", hosts[2], cluster, nodes[3])
             phase("mixed-full-reconnected")
             for node in (1, 2, 3):
-                stop_node(node, 1, f"mixed-first-clean-{node}")
+                stop_node(node, 2, f"mixed-first-clean-{node}")
             phase("mixed-closed-wal")
             nodes = {node: start_node(node, "resume") for node in (1, 2, 3)}
             phase("mixed-restarted")
             for node in (1, 2, 3):
-                stop_node(node, 2, f"mixed-final-clean-{node}")
+                stop_node(node, 3, f"mixed-final-clean-{node}")
             phase("finish")
             finish(controller)
             log = collect(controller, "controller")
             if "--- PASS: TestCurrentCustodyProcessGate" not in log or "--- SKIP:" in log or sequence != 11:
                 raise RuntimeError("mixed HA controller did not execute every selected phase")
             receipt["status"], receipt["skips"] = "PASS", 0
-            receipt["counts"] = {"mixed_phases": sequence, "orderly_checkpoints": 6, "independent_product_processes": 3}
+            receipt["counts"] = {"mixed_phases": sequence, "orderly_checkpoints": 6,
+                                 "explicit_initializations": 3, "initial_native_owner_processes": 6,
+                                 "maximum_concurrent_serving_processes": 3}
         else:
             # Native constructor failure proves RUNNING precedes even M resume/open
             # ownership. Its separate disposable volumes are never repaired/reused.
             barrier = args.name + "-running-barrier"
             barrier_journal, barrier_custody = make_volume("barrier-journal"), make_volume("barrier-custody")
             docker(*(common(barrier) + ["--network", cluster, "--ip", hosts[0],
-                "--mount", volume_mount(provision, "/provision", readonly=True), "--mount", volume_mount(barrier_journal, "/journal"), "--mount", volume_mount(barrier_custody, "/custody"),
+                "--mount", volume_mount(provision, "/provision/node-1", readonly=True, subdirectory="node-1"), "--mount", volume_mount(barrier_journal, "/journal"), "--mount", volume_mount(barrier_custody, "/custody"),
                 "--mount", f"type=bind,src={args.exporter.resolve()},dst=/exporter,readonly",
-                "--env", "LANTERN_CURRENT_CUSTODY_GATE=1", "--env", "LANTERN_SECURITY_CONFIG_FILE=/provision/node-1/node.json"]), args.image, "/exporter", "-test.v", "-test.run=^TestCurrentCustodyRunningBarrierNativeGate$", "-test.timeout=70s")
+                "--env", "LANTERN_CURRENT_CUSTODY_GATE=1", "--env", "LANTERN_CURRENT_FIXTURE_AUTHORITY_FILE=/provision/node-1/authority.json"]), args.image, "/exporter", "-test.v", "-test.run=^TestCurrentCustodyRunningBarrierNativeGate$", "-test.timeout=70s")
             containers.append(barrier)
             finish(barrier, timeout=80)
             if "--- PASS: TestCurrentCustodyRunningBarrierNativeGate" not in collect(barrier, "running-barrier"):
                 raise RuntimeError("native RUNNING barrier test not executed")
             docker("rm", barrier)
             containers.remove(barrier)
+            initialize_nodes()
             nodes = {1: start_node(1, "fresh")}
             phase("single-before-quorum")
             for node in (2, 3):
                 nodes[node] = start_node(node, "fresh")
             phase("fresh")
-            for cycle in (1, 2):
+            for cycle in (2, 3):
                 for node in (1, 2, 3):
                     stop_node(node, cycle, f"cycle-{cycle}-node-{node}")
                 # First resumed node has intact CLEAN/floors but cannot reuse any
@@ -304,7 +307,7 @@ def main():
                 phase("single-before-quorum")
                 for node in (2, 3):
                     nodes[node] = start_node(node, "resume")
-                phase("resume-one" if cycle == 1 else "resume-two")
+                phase("resume-one" if cycle == 2 else "resume-two")
             docker("network", "disconnect", cluster, nodes[3])
             before = time.monotonic_ns()
             time.sleep(18)
@@ -314,18 +317,18 @@ def main():
             docker("network", "connect", "--ip", hosts[2], cluster, nodes[3])
             phase("reconnected")
             docker("network", "disconnect", cluster, nodes[3])
-            stop_node(3, 3, "isolated-orderly-node-3")
+            stop_node(3, 4, "isolated-orderly-node-3")
             nodes[3] = start_node(3, "resume", isolated=True)
             local_probe("isolated-resume-refusal")
-            state = marker(nodes[3], "/custody/floors.json.state")
-            if state["Phase"] != "RUNNING" or state["Cycle"] != 4:
+            state = marker(nodes[3], "/custody/node-3/floors.json.state")
+            if state["Phase"] != "RUNNING" or state["Cycle"] != 5:
                 raise RuntimeError("isolated resume did not consume CLEAN normally")
             docker("network", "connect", "--ip", hosts[2], cluster, nodes[3])
             phase("isolated-restart-reconnected")
             docker("kill", "--signal", "KILL", nodes[3])
             finish(nodes[3], expected=137)
             collect(nodes[3], "pre-clean-kill")
-            docker("cp", nodes[3] + ":/custody/floors.json.state", str(args.evidence / "killed-state.json"))
+            docker("cp", nodes[3] + ":/custody/node-3/floors.json.state", str(args.evidence / "killed-state.json"))
             if json.loads((args.evidence / "killed-state.json").read_text())["Phase"] != "RUNNING":
                 raise RuntimeError("kill did not precede CLEAN")
             docker("rm", nodes[3])
@@ -336,14 +339,17 @@ def main():
             if "custody is not a valid orderly restart checkpoint" not in log or "server stopped cleanly" in log:
                 raise RuntimeError("killed resume failed for an unrelated reason")
             for node in (1, 2):
-                stop_node(node, 3, f"final-normal-node-{node}")
+                stop_node(node, 4, f"final-normal-node-{node}")
             phase("finish")
             finish(controller)
             log = collect(controller, "controller")
             if "--- PASS: TestCurrentCustodyProcessGate" not in log or "--- SKIP:" in log:
                 raise RuntimeError("controller did not complete all required phases")
             receipt["status"], receipt["skips"] = "PASS", 0
-            receipt["counts"] = {"controller_phases": sequence, "orderly_checkpoints": 9, "native_running_barrier": 1, "isolated_tls_probes": 2, "sigkill_exit_137": 1, "running_resume_exit_1": 1}
+            receipt["counts"] = {"controller_phases": sequence, "orderly_checkpoints": 9, "native_running_barrier": 1,
+                                 "explicit_initializations": 3, "initial_native_owner_processes": 6,
+                                 "maximum_concurrent_serving_processes": 3, "isolated_tls_probes": 2,
+                                 "sigkill_exit_137": 1, "running_resume_exit_1": 1}
             if sequence != 10:
                 raise RuntimeError("required controller phase count changed")
     except BaseException as exc:
@@ -370,8 +376,11 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def volume_mount(volume, destination, readonly=False):
-    return f"type=volume,src={volume},dst={destination},volume-subpath=private" + (",readonly" if readonly else "")
+def volume_mount(volume, destination, readonly=False, subdirectory=""):
+    if subdirectory and (pathlib.PurePosixPath(subdirectory).parts != (subdirectory,) or subdirectory in (".", "..")):
+        raise ValueError("one owned fixture subdirectory required")
+    subpath = "private" + ("/" + subdirectory if subdirectory else "")
+    return f"type=volume,src={volume},dst={destination},volume-subpath={subpath}" + (",readonly" if readonly else "")
 
 
 def checked_checkpoint(state_path, floor_path, cycle):

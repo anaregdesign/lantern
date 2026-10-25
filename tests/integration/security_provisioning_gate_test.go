@@ -26,9 +26,10 @@ import (
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
 	"github.com/anaregdesign/lantern/server/provider"
+	"google.golang.org/protobuf/proto"
 )
 
-// Exercise the shipping CLI and runtime reference loader without opening any
+// Exercise the shipping CLI and required current configuration without opening any
 // configured time source or creating mutable native custody.
 func TestSecurityProvisioningCLI(t *testing.T) {
 	binary := securityProvisioningBinary(t, false)
@@ -45,7 +46,7 @@ func TestSecurityProvisioningCLI(t *testing.T) {
 				t.Fatal(err)
 			}
 			env := securityProvisioningEnvironment(string(raw))
-			output, err := securityProvisioningCommand(t, binary, env, "provision-security", "--output", filepath.Join(root, "trust"), "--operator-directory", filepath.Join(root, "operator"))
+			output, err := securityProvisioningCommand(t, binary, env, "provision-security", "--operator-directory", filepath.Join(root, "operator"))
 			if err != nil || bytes.Contains(output, []byte(secret)) {
 				t.Fatal("production provisioning failed or disclosed setup credentials", err)
 			}
@@ -53,21 +54,43 @@ func TestSecurityProvisioningCLI(t *testing.T) {
 				t.Fatal("provisioning created mutable runtime state", err)
 			}
 			before := securityProvisioningSnapshot(t, root)
-			output, err = securityProvisioningCommand(t, binary, env, "provision-security", "--output", filepath.Join(root, "trust"), "--operator-directory", filepath.Join(root, "operator"))
+			output, err = securityProvisioningCommand(t, binary, env, "provision-security", "--operator-directory", filepath.Join(root, "operator"))
 			if err == nil || bytes.Contains(output, []byte(secret)) || !reflect.DeepEqual(before, securityProvisioningSnapshot(t, root)) {
 				t.Fatal("repeated provisioning changed retained trust or disclosed credentials")
 			}
 			for i := 1; i <= voters; i++ {
-				file := filepath.Join(root, "trust", "nodes", fmt.Sprintf("node-%d", i), "security.json")
-				config := securityProvisioningLoad(t, file)
-				if config.TargetPlatform != "linux" || config.StoreMode != "resume" || config.ProvisionedPeer == nil || len(config.InitialIssuers) != 1 || config.InitialIssuers[0].ClientID != "admin" || config.InitialIssuers[0].APIAudience != "api" {
-					t.Fatal("runtime reference lost resolved immutable configuration")
+				file := filepath.Join(root, "trust", "nodes", fmt.Sprintf("node-%d", i), "identity.json")
+				config := securityProvisioningLoad(t, input, fmt.Sprintf("node-%d", i))
+				if config.TargetPlatform != "linux" || config.ProvisionedPeer == nil || len(config.Issuers) != 1 || config.Issuers[0].ClientID != "admin" || config.Issuers[0].APIAudience != "api" {
+					t.Fatal("current invocation lost supplied configuration")
+				}
+				original, err := os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Completion signs exact immutable bytes; the runtime must not
+				// repair tampering or substitute regenerated identity material.
+				corrupt := append(bytes.Clone(original), '\n')
+				if err := os.WriteFile(file, corrupt, 0600); err != nil {
+					t.Fatal(err)
+				}
+				selectedRaw, _ := json.Marshal(securityProvisioningNodeInput(input, fmt.Sprintf("node-%d", i)))
+				if _, err := provider.LoadSecurityConfigJSON(string(selectedRaw)); err == nil {
+					t.Fatal("tampered immutable material accepted")
+				}
+				unchanged, err := os.ReadFile(file)
+				if err != nil || !bytes.Equal(unchanged, corrupt) {
+					t.Fatal("tamper refusal silently rewrote original material", err)
+				}
+				if err := os.WriteFile(file, original, 0600); err != nil {
+					t.Fatal(err)
 				}
 				if _, err := os.Stat(filepath.Join(filepath.Dir(file), "control-signing-key.pem")); !errors.Is(err, os.ErrNotExist) {
 					t.Fatal("operator signing custody entered serving inputs", err)
 				}
 				if runtime.GOOS != "linux" {
-					reference, _ := json.Marshal(map[string]string{"provisioned_file": file})
+					selected := securityProvisioningNodeInput(input, fmt.Sprintf("node-%d", i))
+					reference, _ := json.Marshal(selected)
 					if output, err := securityProvisioningCommand(t, binary, securityProvisioningEnvironment(string(reference)), "init-security"); err == nil || bytes.Contains(output, []byte(secret)) || !bytes.Contains(output, []byte("target does not match")) {
 						t.Fatal("cross-target native initialization was accepted or failed without its target diagnostic", err)
 					}
@@ -123,11 +146,10 @@ func TestSecurityProvisioningFunctionalWire(t *testing.T) {
 				t.Fatal(err)
 			}
 			env := securityProvisioningEnvironment(string(raw))
-			if output, err := securityProvisioningCommand(t, binary, env, "provision-security", "--output", filepath.Join(root, "trust"), "--operator-directory", filepath.Join(root, "operator")); err != nil {
+			if output, err := securityProvisioningCommand(t, binary, env, "provision-security", "--operator-directory", filepath.Join(root, "operator")); err != nil {
 				t.Fatalf("controlled CLI provisioning failed: %v\n%s", err, output)
 			}
-			file := filepath.Join(root, "trust", "nodes", "node-1", "security.json")
-			ref, _ := json.Marshal(map[string]string{"provisioned_file": file})
+			ref, _ := json.Marshal(input)
 			env = securityProvisioningEnvironment(string(ref))
 			public := securityProvisioningAddress(t)
 			_, port, _ := net.SplitHostPort(public)
@@ -207,7 +229,7 @@ func TestSecurityProvisioningFunctionalWire(t *testing.T) {
 				}
 			}
 			stop()
-			config := securityProvisioningLoad(t, file)
+			config := securityProvisioningLoad(t, input, "node-1")
 			var original struct {
 				Participant struct{ PPath string } `json:"participant"`
 				FloorsFile  string                 `json:"floors_file"`
@@ -251,9 +273,167 @@ func TestSecurityProvisioningFunctionalWire(t *testing.T) {
 			}
 		})
 	}
+	t.Run("supplied_configuration_lifecycle", func(t *testing.T) { securityProvisioningSuppliedLifecycle(t, binary) })
 	t.Run("fixed_three_renewal_restart", func(t *testing.T) {
 		securityProvisioningFixedCohort(t, binary)
 	})
+}
+
+// The configured trust is supplied afresh; native history keeps grants and
+// principals, while a current issuer addition does not create either one.
+func securityProvisioningSuppliedLifecycle(t *testing.T, binary string) {
+	t.Helper()
+	adminIssuer, addedIssuer := newOIDCWireIssuer(t), newOIDCWireIssuer(t)
+	root := securityProvisioningDirectory(t)
+	input := securityProvisioningIntent(t, root, adminIssuer.provider.URL, 1, true, true)
+	input["root_ca_pem"] = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: adminIssuer.provider.Certificate().Raw}))
+	input["private_origins"] = map[string][]string{adminIssuer.provider.URL: {"127.0.0.1/32"}}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := securityProvisioningEnvironment(string(raw))
+	if output, err := securityProvisioningCommand(t, binary, env, "provision-security", "--operator-directory", filepath.Join(root, "operator")); err != nil {
+		t.Fatalf("required-config provisioning failed: %v\n%s", err, output)
+	}
+	beforeInit := securityProvisioningSnapshot(t, root)
+	for _, kind := range []string{"missing", "empty", "malformed"} {
+		bad := securityProvisioningInvalidEnvironment(env, kind)
+		if _, err := securityProvisioningCommand(t, binary, bad, "init-security"); err == nil {
+			t.Fatal("initialization accepted invalid current config", kind)
+		}
+		if !reflect.DeepEqual(beforeInit, securityProvisioningSnapshot(t, root)) {
+			t.Fatal("invalid init changed original material", kind)
+		}
+	}
+	if output, err := securityProvisioningCommand(t, binary, env, "init-security"); err != nil {
+		t.Fatalf("same JSON explicit initialization failed: %v\n%s", err, output)
+	}
+	address := securityProvisioningAddress(t)
+	_, port, _ := net.SplitHostPort(address)
+	operational := []string{"LANTERN_PORT=" + port, "LANTERN_METRICS_ADDR=", "LANTERN_BACKUP_ENABLED=false", "LANTERN_BACKUP_RESTORE_ON_START=false", "LANTERN_DRAIN_DELAY_SECONDS=0"}
+	env = append(env, operational...)
+	origin := "http://" + address
+	adminIssuer.server = &httptest.Server{URL: origin}
+	addedIssuer.server = adminIssuer.server
+	client := graphv1connect.NewLanternSecurityServiceClient(&http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}, origin)
+	data := graphv1connect.NewLanternServiceClient(&http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}, origin)
+	stop := securityProvisioningStart(t, binary, env, origin)
+	adminToken := adminIssuer.token(t, "admin", nil)
+	roles, err := client.ListRoles(t.Context(), securityWireRequest(adminToken, &pb.ListRolesRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, err := client.ListUsers(t.Context(), securityWireRequest(adminToken, &pb.ListUsersRequest{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roles.Msg.Roles) != 1 || len(users.Msg.Users) != 1 {
+		t.Fatal("unexpected fresh setup policy")
+	}
+	addedToken := addedIssuer.token(t, "reader", nil)
+	if _, err := client.GetCurrentPrincipal(t.Context(), securityWireRequest(addedToken, &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated || addedIssuer.fetches.Load() != 0 {
+		t.Fatal("unconfigured issuer accepted or contacted", err)
+	}
+	stop()
+	clean := securityProvisioningSnapshot(t, root)
+	for _, kind := range []string{"missing", "empty", "malformed"} {
+		bad := securityProvisioningInvalidEnvironment(env, kind)
+		if _, err := securityProvisioningCommand(t, binary, bad); err == nil {
+			t.Fatal("restart accepted invalid current config", kind)
+		}
+		if !reflect.DeepEqual(clean, securityProvisioningSnapshot(t, root)) {
+			t.Fatal("invalid restart changed retained native state", kind)
+		}
+	}
+	// Exact same JSON resumes the same historical state.
+	stop = securityProvisioningStart(t, binary, env, origin)
+	if _, err := client.GetCurrentPrincipal(t.Context(), securityWireRequest(adminToken, &pb.GetCurrentPrincipalRequest{})); err != nil {
+		t.Fatal("same supplied JSON restart lost administrator", err)
+	}
+	stop()
+	originalIssuers := input["issuers"].([]map[string]any)
+	input["issuers"] = append(append([]map[string]any(nil), originalIssuers...), map[string]any{"issuer": addedIssuer.provider.URL, "api_audience": "api", "algorithms": []string{"EdDSA"}, "human_subject_namespace_qualified": true})
+	input["root_ca_pem"] = input["root_ca_pem"].(string) + string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: addedIssuer.provider.Certificate().Raw}))
+	input["private_origins"].(map[string][]string)[addedIssuer.provider.URL] = []string{"127.0.0.1/32"}
+	addedRaw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop = securityProvisioningStart(t, binary, append(securityProvisioningEnvironment(string(addedRaw)), operational...), origin)
+	configured, err := client.ListIssuers(t.Context(), securityWireRequest(adminToken, &pb.ListIssuersRequest{Exact: addedIssuer.provider.URL}))
+	if err != nil || len(configured.Msg.Issuers) != 1 || !configured.Msg.Issuers[0].Enabled || !configured.Msg.Issuers[0].EnvOwned {
+		t.Fatal("supplied issuer addition did not reach native trust", err)
+	}
+	afterRoles, err := client.ListRoles(t.Context(), securityWireRequest(adminToken, &pb.ListRolesRequest{}))
+	if err != nil || len(afterRoles.Msg.Roles) != 1 || !proto.Equal(roles.Msg.Roles[0], afterRoles.Msg.Roles[0]) {
+		t.Fatal("issuer configuration created or replaced Roles", err)
+	}
+	afterUsers, err := client.ListUsers(t.Context(), securityWireRequest(adminToken, &pb.ListUsersRequest{}))
+	if err != nil || len(afterUsers.Msg.Users) != 1 || !proto.Equal(users.Msg.Users[0], afterUsers.Msg.Users[0]) {
+		t.Fatal("issuer configuration created a Principal or grant", err)
+	}
+	if _, err := client.GetCurrentPrincipal(t.Context(), securityWireRequest(addedToken, &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated || addedIssuer.fetches.Load() == 0 {
+		t.Fatal("configured trust was ignored or automatically enrolled subject", err)
+	}
+	adminIssuer.client = securityProvisioningBrowserControl(t, adminIssuer)
+	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: addedIssuer.provider.URL, Subject: "reader"}
+	role := &pb.SecurityRole{Id: "added_issuer_writer", Rules: []*pb.SecurityRule{
+		{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "added:"}},
+		{Id: "write", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, Resource: &pb.SecurityRule_Prefix{Prefix: "added:"}},
+	}}
+	if _, err := adminIssuer.applyChanges(t, t.Context(), "", []*pb.SecurityChange{
+		{Operation: &pb.SecurityChange_PutRole{PutRole: role}},
+		{Operation: &pb.SecurityChange_PutUser{PutUser: &pb.SecurityUserStateChange{Identity: identity, State: pb.SecurityPrincipalState_SECURITY_PRINCIPAL_STATE_ACTIVE}}},
+		{Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: role.Id}}},
+	}); err != nil {
+		t.Fatal("explicit administrator enrollment failed", err)
+	}
+	if _, err := data.PutVertex(t.Context(), securityWireRequest(addedToken, &pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "added:proof", Value: &pb.Vertex_String_{String_: "configured profile"}}})); err != nil {
+		t.Fatal("new configured API issuer unusable after explicit grant", err)
+	}
+	retainedUser, err := client.GetUser(t.Context(), securityWireRequest(adminToken, &pb.GetUserRequest{Identity: identity}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	// Removing a supplied issuer revokes its trust while preserving its native
+	// Principal and grants. The original setup JSON cannot reset runtime policy.
+	stop = securityProvisioningStart(t, binary, env, origin)
+	if _, err := client.GetCurrentPrincipal(t.Context(), securityWireRequest(addedToken, &pb.GetCurrentPrincipalRequest{})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatal("withdrawn issuer credential remained authenticated", err)
+	}
+	if _, err := data.GetVertex(t.Context(), securityWireRequest(addedToken, &pb.GetVertexRequest{Key: "added:proof"})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatal("withdrawn issuer retained data access", err)
+	}
+	preserved, err := client.GetUser(t.Context(), securityWireRequest(adminToken, &pb.GetUserRequest{Identity: identity}))
+	if err != nil || !proto.Equal(retainedUser.Msg.User, preserved.Msg.User) {
+		t.Fatal("current issuer withdrawal reset native Principal/grants", err)
+	}
+	preservedRoles, err := client.ListRoles(t.Context(), securityWireRequest(adminToken, &pb.ListRolesRequest{}))
+	if err != nil || len(preservedRoles.Msg.Roles) != 2 {
+		t.Fatal("same supplied initial setup reset later runtime Roles", err)
+	}
+	stop()
+}
+
+func securityProvisioningInvalidEnvironment(env []string, kind string) []string {
+	result := make([]string, 0, len(env))
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, "LANTERN_SECURITY_CONFIG_JSON=") {
+			result = append(result, entry)
+		}
+	}
+	switch kind {
+	case "missing":
+	case "empty":
+		result = append(result, "LANTERN_SECURITY_CONFIG_JSON=")
+	case "malformed":
+		result = append(result, `LANTERN_SECURITY_CONFIG_JSON={"issuers":`)
+	default:
+		panic("unknown invalid input case")
+	}
+	return result
 }
 
 func securityProvisioningSingletonCreate(t *testing.T, data graphv1connect.LanternServiceClient, token string) {
@@ -300,7 +480,7 @@ func securityProvisioningFixedCohort(t *testing.T, binary string) {
 		t.Fatal(err)
 	}
 	operator := filepath.Join(root, "operator")
-	if output, err := securityProvisioningCommand(t, binary, securityProvisioningEnvironment(string(raw)), "provision-security", "--output", filepath.Join(root, "trust"), "--operator-directory", operator); err != nil {
+	if output, err := securityProvisioningCommand(t, binary, securityProvisioningEnvironment(string(raw)), "provision-security", "--operator-directory", operator); err != nil {
 		t.Fatalf("fixed cohort provisioning failed: %v\n%s", err, output)
 	}
 	publisherConfig, publisherState := filepath.Join(operator, "publisher.json"), filepath.Join(operator, "state.json")
@@ -308,8 +488,7 @@ func securityProvisioningFixedCohort(t *testing.T, binary string) {
 	var environments [][]string
 	var origins []string
 	for i := 1; i <= 3; i++ {
-		file := filepath.Join(root, "trust", "nodes", fmt.Sprintf("node-%d", i), "security.json")
-		ref, _ := json.Marshal(map[string]string{"provisioned_file": file})
+		ref, _ := json.Marshal(securityProvisioningNodeInput(input, fmt.Sprintf("node-%d", i)))
 		env := securityProvisioningEnvironment(string(ref))
 		address := securityProvisioningAddress(t)
 		_, port, _ := net.SplitHostPort(address)
@@ -557,7 +736,7 @@ func securityProvisioningIntent(t *testing.T, root, issuer string, voters int, b
 		control, data := securityProvisioningAddress(t), securityProvisioningAddress(t)
 		nodes = append(nodes, map[string]string{"name": fmt.Sprintf("node-%d", i), "control_origin": "https://" + control, "control_listen": control, "data_origin": "https://" + data, "data_listen": data})
 	}
-	return map[string]any{"public_origin": "https://admin.example", "persistence_root": filepath.Join(root, "state"), "target_platform": runtime.GOOS, "tls_termination": "proxy", "trusted_proxy_ips": []string{"127.0.0.1"}, "initial_admin": map[string]string{"issuer": issuer, "subject": "admin"}, "nodes": nodes, "issuers": []map[string]any{profile}}
+	return map[string]any{"material_root": filepath.Join(root, "trust"), "node": "node-1", "public_origin": "https://admin.example", "persistence_root": filepath.Join(root, "state"), "target_platform": runtime.GOOS, "tls_termination": "proxy", "trusted_proxy_ips": []string{"127.0.0.1"}, "initial_admin": map[string]string{"issuer": issuer, "subject": "admin"}, "nodes": nodes, "issuers": []map[string]any{profile}}
 }
 
 func securityProvisioningEnvironment(raw string) []string {
@@ -580,23 +759,24 @@ func securityProvisioningCommand(t *testing.T, binary string, env []string, args
 	return command.CombinedOutput()
 }
 
-func securityProvisioningLoad(t *testing.T, file string) provider.SecurityConfig {
-	t.Helper()
-	for _, entry := range os.Environ() {
-		key, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(strings.ToUpper(key), "LANTERN_") {
-			t.Setenv(key, "")
-			if err := os.Unsetenv(key); err != nil {
-				t.Fatal(err)
-			}
-		}
+func securityProvisioningNodeInput(input map[string]any, node string) map[string]any {
+	selected := make(map[string]any, len(input))
+	for key, value := range input {
+		selected[key] = value
 	}
-	raw, _ := json.Marshal(map[string]string{"provisioned_file": file})
-	t.Setenv("LANTERN_AUTH_MODE", "oidc")
-	t.Setenv("LANTERN_SECURITY_CONFIG_JSON", string(raw))
-	config, err := provider.LoadSecurityConfig()
+	selected["node"] = node
+	return selected
+}
+
+func securityProvisioningLoad(t *testing.T, input map[string]any, node string) provider.SecurityConfig {
+	t.Helper()
+	raw, err := json.Marshal(securityProvisioningNodeInput(input, node))
 	if err != nil {
-		t.Fatal("generated runtime reference rejected", err)
+		t.Fatal(err)
+	}
+	config, err := provider.LoadSecurityConfigJSON(string(raw))
+	if err != nil {
+		t.Fatal("current supplied configuration or immutable material rejected", err)
 	}
 	return config
 }

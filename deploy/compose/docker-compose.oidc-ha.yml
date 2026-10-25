@@ -1,0 +1,247 @@
+# Authenticated fixed three-node example; source-built, never a release claim.
+# First prepare private inputs as documented in oidc-ha/README.md.
+name: lantern-oidc-ha
+
+x-node-environment: &node-environment
+  LANTERN_AUTH_MODE: oidc
+  LANTERN_PORT: "6380"
+  # This MUST remain loopback in OIDC. Separate mTLS relays own remote scraping.
+  LANTERN_METRICS_ADDR: "127.0.0.1:9090"
+  LANTERN_DRAIN_DELAY_SECONDS: "5"
+  LANTERN_RECEIPT_WAL_MODE: restart
+  LANTERN_RECEIPT_WAL_PATH: /state/receipts.wal
+  LANTERN_RECEIPT_RETENTION: 1h
+  LANTERN_RECEIPT_MAX_ENTRIES: "32768"
+  LANTERN_RECEIPT_MAX_BYTES: "16777216"
+
+x-node: &node
+  image: lantern:oidc-ha-local
+  build: {context: ../.., dockerfile: Dockerfile}
+  user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
+  entrypoint: [/bin/sh, /example/read-config.sh]
+  stop_grace_period: 45s
+  restart: "no"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=8m"]
+  networks: [cluster, metrics]
+  environment: *node-environment
+  configs:
+    - {source: native-time-source, target: /etc/ntp.conf, mode: 0444}
+  healthcheck:
+    test: [CMD, wget, -qO-, "http://127.0.0.1:9090/readyz"]
+    interval: 5s
+    timeout: 3s
+    retries: 12
+    start_period: 50s
+  depends_on:
+    membershippublisher: {condition: service_started}
+
+x-relay: &relay
+  image: lantern-metrics-relay:oidc-ha-local
+  build: {context: ../.., dockerfile: deploy/compose/oidc-ha/metrics-relay.Dockerfile}
+  user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
+  command: [--certificate, /metrics-tls/server.pem, --key, /metrics-tls/server-key.pem, --client-ca, /metrics-tls/ca.pem]
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  mem_limit: 256m
+  restart: "no"
+
+services:
+  prepare-state:
+    image: alpine:3.24
+    profiles: [prepare]
+    user: "0:0"
+    entrypoint: [/bin/sh, /example/prepare-state.sh]
+    environment:
+      LANTERN_RUN_UID: "${LANTERN_RUN_UID:-65532}"
+      LANTERN_RUN_GID: "${LANTERN_RUN_GID:-65532}"
+    network_mode: none
+    volumes:
+      - ./oidc-ha/prepare-state.sh:/example/prepare-state.sh:ro
+      - {type: volume, source: node-0-state, target: /state-0, volume: {nocopy: true}}
+      - {type: volume, source: node-1-state, target: /state-1, volume: {nocopy: true}}
+      - {type: volume, source: node-2-state, target: /state-2, volume: {nocopy: true}}
+
+  provision-security:
+    image: lantern:oidc-ha-local
+    build: {context: ../.., dockerfile: Dockerfile}
+    profiles: [provision]
+    user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
+    entrypoint: [/bin/sh, /example/read-config.sh]
+    command: [provision-security, --operator-directory, /operator/custody]
+    environment: {LANTERN_AUTH_MODE: oidc}
+    network_mode: none
+    volumes:
+      - ./oidc-ha/read-config.sh:/example/read-config.sh:ro
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/config/lantern-0", target: /input, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/material", target: /material, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/operator", target: /operator, bind: {create_host_path: false}}
+
+  membershippublisher:
+    image: lantern-membershippublisher:oidc-ha-local
+    build: {context: ../.., dockerfile: deploy/compose/oidc-ha/operator.Dockerfile}
+    user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
+    command: [--config, "${LANTERN_PUBLISHER_CONFIG:-/operator/custody/publisher.json}", --state, /operator/custody/state.json, --mode, "${LANTERN_PUBLISHER_MODE:-resume}"]
+    stop_grace_period: 45s
+    restart: "no"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      # This process alone receives operator signing custody and its journal.
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/operator", target: /operator, bind: {create_host_path: false}}
+      # Only renewable directories, never node TLS/voting/origin private keys.
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/material/identity/nodes/node-1/membership", target: /material/identity/nodes/node-1/membership, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/material/identity/nodes/node-2/membership", target: /material/identity/nodes/node-2/membership, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/material/identity/nodes/node-3/membership", target: /material/identity/nodes/node-3/membership, bind: {create_host_path: false}}
+
+  lantern-0: &lantern-0
+    <<: *node
+    hostname: lantern-0
+    env_file: ["${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/config/lantern-0/receipt.env"]
+    volumes:
+      - ./oidc-ha/read-config.sh:/example/read-config.sh:ro
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/config/lantern-0", target: /input, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/material/identity/nodes/node-1", target: /material/identity/nodes/node-1, read_only: true, bind: {create_host_path: false}}
+      - {type: volume, source: node-0-state, target: /state, volume: {nocopy: true}}
+  lantern-1: &lantern-1
+    <<: *node
+    hostname: lantern-1
+    env_file: ["${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/config/lantern-1/receipt.env"]
+    volumes:
+      - ./oidc-ha/read-config.sh:/example/read-config.sh:ro
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/config/lantern-1", target: /input, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/material/identity/nodes/node-2", target: /material/identity/nodes/node-2, read_only: true, bind: {create_host_path: false}}
+      - {type: volume, source: node-1-state, target: /state, volume: {nocopy: true}}
+  lantern-2: &lantern-2
+    <<: *node
+    hostname: lantern-2
+    env_file: ["${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/config/lantern-2/receipt.env"]
+    volumes:
+      - ./oidc-ha/read-config.sh:/example/read-config.sh:ro
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/config/lantern-2", target: /input, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/material/identity/nodes/node-3", target: /material/identity/nodes/node-3, read_only: true, bind: {create_host_path: false}}
+      - {type: volume, source: node-2-state, target: /state, volume: {nocopy: true}}
+
+  init-node-0:
+    <<: *lantern-0
+    profiles: [init]
+    command: [init-security]
+    healthcheck: {disable: true}
+  init-node-1:
+    <<: *lantern-1
+    profiles: [init]
+    command: [init-security]
+    healthcheck: {disable: true}
+  init-node-2:
+    <<: *lantern-2
+    profiles: [init]
+    command: [init-security]
+    healthcheck: {disable: true}
+
+  metrics-0:
+    <<: *relay
+    network_mode: service:lantern-0
+    depends_on: {lantern-0: {condition: service_healthy, restart: true}}
+    volumes: [{type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/tls/metrics/lantern-0", target: /metrics-tls, read_only: true, bind: {create_host_path: false}}]
+  metrics-1:
+    <<: *relay
+    network_mode: service:lantern-1
+    depends_on: {lantern-1: {condition: service_healthy, restart: true}}
+    volumes: [{type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/tls/metrics/lantern-1", target: /metrics-tls, read_only: true, bind: {create_host_path: false}}]
+  metrics-2:
+    <<: *relay
+    network_mode: service:lantern-2
+    depends_on: {lantern-2: {condition: service_healthy, restart: true}}
+    volumes: [{type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/tls/metrics/lantern-2", target: /metrics-tls, read_only: true, bind: {create_host_path: false}}]
+
+  admin:
+    image: lantern-admin:oidc-ha-local
+    build: {context: ../.., dockerfile: admin/Dockerfile}
+    user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
+    read_only: true
+    environment:
+      LANTERN_ADMIN_SERVER_UPSTREAM: https://lantern-0:6380
+      LANTERN_ADMIN_SERVER_CA_FILE: /run/server-trust/ca.pem
+      LANTERN_ADMIN_PROMETHEUS_UPSTREAM: http://prometheus:9090
+    volumes: [{type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/tls/trust", target: /run/server-trust, read_only: true, bind: {create_host_path: false}}]
+    tmpfs:
+      - "/etc/caddy/conf.d:rw,uid=${LANTERN_RUN_UID:-65532},gid=${LANTERN_RUN_GID:-65532},mode=0700,size=1m"
+      - "/data:rw,uid=${LANTERN_RUN_UID:-65532},gid=${LANTERN_RUN_GID:-65532},mode=0700,size=8m"
+      - "/config:rw,uid=${LANTERN_RUN_UID:-65532},gid=${LANTERN_RUN_GID:-65532},mode=0700,size=8m"
+    networks: [cluster, frontend]
+    depends_on: {lantern-0: {condition: service_healthy}}
+    healthcheck: {test: [CMD, wget, -qO-, "http://127.0.0.1:8080/healthz"], interval: 5s, timeout: 3s, retries: 12}
+
+  edge:
+    image: lantern-edge:oidc-ha-local
+    build: {context: ../.., dockerfile: deploy/compose/oidc-ha/edge.Dockerfile}
+    user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
+    read_only: true
+    ports: ["127.0.0.1:${LANTERN_EDGE_PORT:-8443}:8443"]
+    volumes:
+      - ./oidc-ha/edge.Caddyfile:/etc/caddy/Caddyfile:ro
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/tls/edge", target: /edge-tls, read_only: true, bind: {create_host_path: false}}
+    tmpfs:
+      - "/data:rw,uid=${LANTERN_RUN_UID:-65532},gid=${LANTERN_RUN_GID:-65532},mode=0700,size=8m"
+      - "/config:rw,uid=${LANTERN_RUN_UID:-65532},gid=${LANTERN_RUN_GID:-65532},mode=0700,size=8m"
+    networks: [cluster, frontend]
+    depends_on:
+      admin: {condition: service_healthy}
+      lantern-1: {condition: service_healthy}
+      lantern-2: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, /usr/local/bin/lantern-edge-health]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
+    command: [--config.file=/etc/prometheus/prometheus.yml, --storage.tsdb.path=/prometheus, --storage.tsdb.retention.time=1h, --storage.tsdb.retention.size=96MB]
+    read_only: true
+    ports: ["127.0.0.1:${LANTERN_PROMETHEUS_PORT:-9091}:9090"]
+    volumes:
+      - ./oidc-ha/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - {type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/tls/metrics/client", target: /metrics-client, read_only: true, bind: {create_host_path: false}}
+    tmpfs: ["/prometheus:rw,uid=${LANTERN_RUN_UID:-65532},gid=${LANTERN_RUN_GID:-65532},mode=0700,size=128m"]
+    mem_limit: 512m
+    networks: [metrics, frontend]
+    depends_on:
+      metrics-0: {condition: service_started}
+      metrics-1: {condition: service_started}
+      metrics-2: {condition: service_started}
+
+  lantern-mcp:
+    image: lantern-mcp:oidc-ha-local
+    build: {context: ../.., dockerfile: mcp/Dockerfile}
+    user: "${LANTERN_RUN_UID:-65532}:${LANTERN_RUN_GID:-65532}"
+    read_only: true
+    ports: ["127.0.0.1:${LANTERN_MCP_PORT:-6390}:6390"]
+    env_file: ["${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/mcp.env"]
+    environment:
+      LANTERN_ADDR: https://edge:8443
+      LANTERN_MCP_HTTP_ADDR: 0.0.0.0:6390
+      LANTERN_MCP_PING_TIMEOUT: 5s
+      LANTERN_MCP_AGENT_ID: ha-example
+      SSL_CERT_FILE: /run/server-trust/ca.pem
+    volumes: [{type: bind, source: "${LANTERN_HA_PRIVATE_DIRECTORY:-/FAKE_PRIVATE_DIRECTORY}/tls/trust", target: /run/server-trust, read_only: true, bind: {create_host_path: false}}]
+    networks: [frontend]
+    depends_on: {edge: {condition: service_healthy}}
+
+configs:
+  native-time-source:
+    file: ./oidc-ha/ntp.conf
+networks:
+  cluster: {}
+  metrics: {internal: true}
+  frontend: {}
+volumes:
+  node-0-state: {}
+  node-1-state: {}
+  node-2-state: {}

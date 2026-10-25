@@ -1,59 +1,37 @@
 package provider
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func authorityConfigEnvironment(t *testing.T) {
 	t.Helper()
 	clearSecurityEnvironment(t)
-	for name, value := range map[string]string{
-		"LANTERN_AUTH_MODE": "oidc", "LANTERN_SECURITY_CONFIG_FILE": "/operator/node.json",
-		"LANTERN_SECURITY_STORE_MODE": "fresh", "LANTERN_OIDC_BROWSER_ORIGIN": "https://admin.example",
-	} {
-		t.Setenv(name, value)
-	}
+	t.Setenv("LANTERN_AUTH_MODE", "oidc")
+	t.Setenv("LANTERN_SECURITY_CONFIG_JSON", inlineSecurityExample())
 }
 
-func TestSecurityConfigStrictOperatorContract(t *testing.T) {
-	for _, tc := range []struct {
-		name, key, value string
-		wantError        bool
-	}{
-		{name: "complete"},
-		{name: "resume", key: "LANTERN_SECURITY_STORE_MODE", value: "resume"},
-		{name: "empty mode", key: "LANTERN_AUTH_MODE", wantError: true},
-		{name: "unknown mode", key: "LANTERN_AUTH_MODE", value: "OIDC", wantError: true},
-		{name: "missing provisioning", key: "LANTERN_SECURITY_CONFIG_FILE", wantError: true},
-		{name: "relative provisioning", key: "LANTERN_SECURITY_CONFIG_FILE", value: "node.json", wantError: true},
-		{name: "legacy restart", key: "LANTERN_SECURITY_STORE_MODE", value: "restart", wantError: true},
-		{name: "plaintext browser", key: "LANTERN_OIDC_BROWSER_ORIGIN", value: "http://admin.example", wantError: true},
-		{name: "browser path", key: "LANTERN_OIDC_BROWSER_ORIGIN", value: "https://admin.example/path", wantError: true},
-		{name: "relative roots", key: "LANTERN_OIDC_ROOT_CA_FILE", value: "ca.pem", wantError: true},
-		{name: "empty typo", key: "LANTERN_SECURITY_CONFIG_FIEL", wantError: true},
-		{name: "case typo", key: "lantern_security_config_file", value: "/operator/node.json", wantError: true},
-		{name: "wildcard private origin", key: "LANTERN_OIDC_PRIVATE_ORIGINS", value: `{"https://idp.example":["0.0.0.0/0"]}`, wantError: true},
-		{name: "private origin path", key: "LANTERN_OIDC_PRIVATE_ORIGINS", value: `{"https://idp.example/path":["127.0.0.1/32"]}`, wantError: true},
-		{name: "unknown secret field", key: "LANTERN_OIDC_SECRET_BINDINGS", value: `{"binding":{"secret":"placeholder"}}`, wantError: true},
-		{name: "duplicate secret field", key: "LANTERN_OIDC_SECRET_BINDINGS", value: `{"binding":{"issuer":"https://idp.example","issuer":"https://other.example"}}`, wantError: true},
-		{name: "proxy CIDR", key: "LANTERN_OIDC_TRUSTED_PROXY_IPS", value: `["127.0.0.0/8"]`, wantError: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			authorityConfigEnvironment(t)
-			if tc.key != "" {
-				t.Setenv(tc.key, tc.value)
-			}
-			c, err := loadSecurityConfig()
-			if (err != nil) != tc.wantError {
-				t.Fatal("operator contract", err)
-			}
-			if err == nil && (c.Mode != "oidc" || c.ConfigFile != "/operator/node.json") {
-				t.Fatal("OIDC was downgraded or selected another source")
-			}
-		})
+func TestSecurityConfigRequiresCurrentJSONOnEveryInvocation(t *testing.T) {
+	clearSecurityEnvironment(t)
+	t.Setenv("LANTERN_AUTH_MODE", "oidc")
+	for _, raw := range []string{"", "null", `{}`, `{"provisioned_file":"/old/config.json"}`, `{"version":1}`} {
+		t.Setenv("LANTERN_SECURITY_CONFIG_JSON", raw)
+		if _, err := loadSecurityConfig(); err == nil {
+			t.Fatal("missing,malformed or obsolete configuration accepted")
+		}
+	}
+	if err := os.Unsetenv("LANTERN_SECURITY_CONFIG_JSON"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadSecurityConfig(); err == nil {
+		t.Fatal("missing configuration acquired persisted fallback")
 	}
 }
 
 func TestSecurityConfigRetiredSettingsRejectedByPresence(t *testing.T) {
 	retired := []string{
+		"LANTERN_SECURITY_CONFIG_FILE", "LANTERN_SECURITY_STORE_MODE", "LANTERN_OIDC_BROWSER_ORIGIN", "LANTERN_OIDC_SECRET_BINDINGS", "LANTERN_OIDC_PRIVATE_ORIGINS", "LANTERN_OIDC_ROOT_CA_FILE", "LANTERN_OIDC_TRUSTED_PROXY_IPS",
 		"LANTERN_SECURITY_PROFILE", "LANTERN_SECURITY_CURRENT_CONFIG_FILE",
 		"LANTERN_SECURITY_STORE_PATH", "LANTERN_SECURITY_GENERATION", "LANTERN_SECURITY_NODE_ROLE",
 		"LANTERN_SECURITY_WRITER_KEY_FILE", "LANTERN_SECURITY_WRITER_PUBLIC_KEY_FILE", "LANTERN_SECURITY_WRITER_ENDPOINT",
@@ -89,7 +67,7 @@ func TestSecurityConfigDefaultOffHasNoPrerequisites(t *testing.T) {
 			t.Setenv("LANTERN_AUTH_MODE", "off")
 		}
 		c, err := loadSecurityConfig()
-		if err != nil || c.Mode != "off" || c.ConfigFile != "" {
+		if err != nil || c.Mode != "off" || c.MaterialFile != "" {
 			t.Fatal("OFF prerequisites", err)
 		}
 	}
@@ -97,7 +75,7 @@ func TestSecurityConfigDefaultOffHasNoPrerequisites(t *testing.T) {
 	if _, err := loadSecurityConfig(); err == nil {
 		t.Fatal("OFF ignored a present authority setting")
 	}
-	if validateSecurityConfig(SecurityConfig{Mode: "off", ConfigFile: "/operator/ignored"}) == nil {
+	if validateSecurityConfig(SecurityConfig{Mode: "off", MaterialFile: "/operator/ignored"}) == nil {
 		t.Fatal("direct OFF composition ignored authority input")
 	}
 }

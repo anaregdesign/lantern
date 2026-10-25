@@ -184,6 +184,9 @@ func s2cVerifyPurpose(h s2cHistoricalHeader, operation OperationIdentity) bool {
 // Parsing and signature validation never sample current time. Expiry governs
 // the original consume only, so an exact preexpiry H can finish after expiry.
 func verifyHistoricalH(t *s2cTrust, encoded []byte) (*s2cHistoricalH, error) {
+	if bytes.HasPrefix(encoded, []byte(configuredTrustMagic)) {
+		return verifyConfiguredTrustH(t, encoded)
+	}
 	if bytes.HasPrefix(encoded, []byte(authorityHistoricalMagic)) {
 		return verifyAuthorityHistoricalH(t, encoded)
 	}
@@ -236,7 +239,7 @@ func verifyHistoricalH(t *s2cTrust, encoded []byte) (*s2cHistoricalH, error) {
 		return nil, errS2CHistorical
 	}
 	a := &s1VerifiedAuthorization{h.Authentication, h.Lineage, h.CredentialEvidence, h.PurposeEvidence, h.PurposeBinding, h.Consume, h.CredentialDeadline, h.PurposeDeadline, nil}
-	handoff := &S1Handoff{h.ID, operation, h.OriginDigest, h.Serial, a}
+	handoff := &S1Handoff{h.ID, operation, h.OriginDigest, h.Serial, a, nil}
 	if !handoff.valid(t.genesis.state.projection.cut) || handoff.digest() != h.Value {
 		return nil, errS2CHistorical
 	}

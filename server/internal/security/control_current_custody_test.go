@@ -8,7 +8,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -22,38 +21,44 @@ import (
 // M/P/B cut; the whole-process gate separately uses production constructors.
 func currentCustodyFixture(t *testing.T) (*CurrentProvisioning, *authorityOriginOwner) {
 	t.Helper()
-	n, origins, _ := authorityTestComposite(t)
-	c, dir := n.configs[1], t.TempDir()
-	g := n.f.genesis.state
-	genesis := currentGenesisDocument{CurrentPublicVersion, g.projection.cut.Domain, g.projection.cut.Cohort, g.projection.cut.Generation,
-		g.projection.cut.Fences, g.projection.Image(), g.configuration, n.f.genesis.roots, n.f.members, n.f.origins, n.f.trust.bounds, sha256.Sum256([]byte(authorityTimeProfileDescription))}
-	write := func(name string, raw []byte) string {
-		t.Helper()
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, raw, 0600); err != nil {
+	options := provisioningTestOptions(t, 3, runtime.GOOS)
+	bundle, err := GenerateProvisioning(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{options.Nodes[0].StateDir, options.Nodes[0].RenewableDir} {
+		if err := os.MkdirAll(path, 0700); err != nil {
 			t.Fatal(err)
 		}
-		return path
 	}
-	genesisRaw, err := json.Marshal(genesis)
+	document := provisioningTestDocument(t, bundle.Nodes[0].AuthorityJSON)
+	if err := os.WriteFile(document.Membership.ManifestFile, bundle.Operator.ControlManifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	provisioned, err := LoadCurrentProvisioningJSON(bundle.Nodes[0].AuthorityJSON)
 	if err != nil {
 		t.Fatal(err)
 	}
-	genesisPath := write("genesis.json", genesisRaw)
-	p := c.Participant
-	node := currentNodeDocument{Version: CurrentPublicVersion, GenesisFile: genesisPath, GenesisSHA256: sha256.Sum256(genesisRaw),
-		Participant: currentParticipantDocument{p.Member, p.Incarnation, p.PPath, p.BPath, p.PIdentity, p.PEpoch, p.PPolicy, p.BScope, p.OwnedOrigin, p.PendingBytes, p.PendingCount, p.OutboxBytes},
-		Membership:  currentMembershipDocument{c.Membership.Path, write("membership.pub", c.Membership.Key), write("membership.signed", c.Manifest), c.Membership.Profile, c.Membership.Self},
-		Identity:    c.Identity, OriginKeyFile: filepath.Join(filepath.Dir(c.Identity.VotingKey), "origin.key"), FloorsFile: filepath.Join(dir, "floors.json"), ListenAddress: n.listeners[1].Addr().String(), Limits: c.Limits}
-	raw, err := json.Marshal(node)
+	c := provisioned.config
+	c.hooks = &s3aHooks{}
+	clock, _ := fakeAuthorityTimeOwnerAt(t, options.Now)
+	if err := bindAuthorityNetworkTime(&c, clock); err != nil {
+		t.Fatal(err)
+	}
+	network, err := createS3AOwner(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	provisioned, err := LoadCurrentProvisioning(write("node.json", raw))
+	t.Cleanup(func() { _ = network.Close() })
+	key, err := loadAuthorityOriginKey(c, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return provisioned, origins[1]
+	origin, err := attachAuthorityOrigin(network, key, "https://admin.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return provisioned, origin
 }
 
 func currentCustodyOpenTest(t *testing.T, p *CurrentProvisioning, mode string) *currentCustody {
@@ -69,7 +74,7 @@ func currentCustodyOpenTest(t *testing.T, p *CurrentProvisioning, mode string) *
 func currentCustodyReadState(t *testing.T, p *CurrentProvisioning) currentCustodyState {
 	t.Helper()
 	var state currentCustodyState
-	if _, err := currentDocument(p.floors+".state", 4096, &state); err != nil {
+	if _, err := currentCustodyDocument(p.floors+".state", 4096, &state); err != nil {
 		t.Fatal(err)
 	}
 	return state
@@ -77,10 +82,8 @@ func currentCustodyReadState(t *testing.T, p *CurrentProvisioning) currentCustod
 
 func TestCurrentCustodyOrderlyCyclesAndLease(t *testing.T) {
 	p, origin := currentCustodyFixture(t)
-	before, err := os.ReadFile(p.source)
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := bytes.Clone(p.jsonSource)
+	var err error
 	c := currentCustodyOpenTest(t, p, "fresh")
 	if _, err = os.Stat(p.floors + ".state"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("read-only preflight consumed a checkpoint", err)
@@ -156,14 +159,13 @@ func TestCurrentCustodyOrderlyCyclesAndLease(t *testing.T) {
 	if state := currentCustodyReadState(t, p); state.Phase != "CLEAN" || state.Cycle != 2 {
 		t.Fatal("second terminal cycle missing", state)
 	}
-	after, err := os.ReadFile(p.source)
-	if err != nil || !bytes.Equal(before, after) {
-		t.Fatal("runtime rewrote original provisioning", err)
+	if !bytes.Equal(before, p.jsonSource) {
+		t.Fatal("runtime rewrote original inline provisioning")
 	}
 }
 
 func TestCurrentCustodyRejectsPartialMixedAndNoncanonicalPairs(t *testing.T) {
-	for _, damage := range []string{"floor-missing", "state-missing", "running", "hash", "binding", "version", "cycle-zero", "cycle-overflow", "unknown", "duplicate", "state-whitespace", "floor-whitespace", "floor-unknown", "floor-oversize", "state-oversize", "original-node"} {
+	for _, damage := range []string{"floor-missing", "state-missing", "running", "hash", "binding", "version", "cycle-zero", "cycle-overflow", "unknown", "duplicate", "state-whitespace", "floor-whitespace", "floor-unknown", "floor-oversize", "state-oversize", "original-json"} {
 		t.Run(damage, func(t *testing.T) {
 			p, origin := currentCustodyFixture(t)
 			c := currentCustodyOpenTest(t, p, "fresh")
@@ -221,17 +223,16 @@ func TestCurrentCustodyRejectsPartialMixedAndNoncanonicalPairs(t *testing.T) {
 				path, raw = p.floors, bytes.Repeat([]byte{'x'}, (16<<10)+1)
 			case "state-oversize":
 				raw = bytes.Repeat([]byte{'x'}, 4097)
-			case "original-node":
-				// Even a semantically harmless permitted newline changes the
-				// original node bytes and cannot silently adopt old custody.
-				path = p.source
-				raw, err = os.ReadFile(path)
-				raw = append(raw, '\n')
+			case "original-json":
+				// Reload must validate the independently supplied inline source,
+				// rather than falling back to the previously decoded projection.
+				p.jsonSource = bytes.Clone(p.jsonSource)
+				p.jsonSource[0] = '!'
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.HasSuffix(damage, "-missing") {
+			if !strings.HasSuffix(damage, "-missing") && damage != "original-json" {
 				if raw == nil {
 					raw, err = json.Marshal(state)
 				}
@@ -286,21 +287,21 @@ func TestCurrentCustodyResumeRunningFailurePreservesOnlyUnconsumedClean(t *testi
 }
 
 func TestCurrentCustodyRejectsFileAliasesAndUnsafeDescriptors(t *testing.T) {
-	for _, damage := range []string{"floor-P", "state-key", "lease-P-lease", "same-path", "symlink", "directory", "permissions"} {
+	for _, damage := range []string{"floor-P", "state-manifest", "lease-P-lease", "same-path", "symlink", "directory", "permissions"} {
 		t.Run(damage, func(t *testing.T) {
 			p, _ := currentCustodyFixture(t)
 			var err error
 			switch damage {
 			case "floor-P":
 				err = os.Link(p.config.Participant.PPath, p.floors)
-			case "state-key":
-				err = os.Link(p.config.Identity.VotingKey, p.floors+".state")
+			case "state-manifest":
+				err = os.Link(p.manifest, p.floors+".state")
 			case "lease-P-lease":
 				err = os.Link(p.config.Participant.PPath+".lease", p.floors+".state.lease")
 			case "same-path":
 				p.floors = p.config.Participant.BPath + ".tip"
 			case "symlink":
-				err = os.Symlink(p.config.Identity.VotingKey, p.floors)
+				err = os.Symlink(p.manifest, p.floors)
 			case "directory":
 				err = os.Mkdir(p.floors, 0700)
 			case "permissions":

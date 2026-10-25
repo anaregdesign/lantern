@@ -43,6 +43,13 @@ func securityCompletionBytes(nodeRaw []byte, operatorDigest [32]byte, keyPEM []b
 	return raw, nil
 }
 
+// SecurityMaterialCompletion signs a completed externally provisioned material
+// document. The caller retains the operator key outside serving inputs. This
+// signature cannot replace the loader's full original-material validation.
+func SecurityMaterialCompletion(materialJSON []byte, operatorDigest [32]byte, keyPEM []byte) ([]byte, error) {
+	return securityCompletionBytes(materialJSON, operatorDigest, keyPEM)
+}
+
 // Completion is signed only after every serving file and operator custody file
 // is durable. A node never accepts a merely half-written provisioning bundle.
 func writeSecurityCompletion(dir string, nodeRaw []byte, operatorDigest [32]byte, keyPEM []byte) error {

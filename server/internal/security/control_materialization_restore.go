@@ -40,11 +40,16 @@ func resumeS2LocalWithHooks(path string, scope s2LocalScope, genesis *s2TrustedG
 		proof[i].certificate = &c
 		if next.handoff != nil {
 			h := *next.handoff
-			if h.authorization == nil {
-				return nil, errS2Restore
+			if h.configured != nil {
+				a := *h.configured
+				h.configured = &a
+			} else {
+				if h.authorization == nil {
+					return nil, errS2Restore
+				}
+				a := *h.authorization
+				h.authorization = &a
 			}
-			a := *h.authorization
-			h.authorization = &a
 			proof[i].handoff = &h
 		}
 	}

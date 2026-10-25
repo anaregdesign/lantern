@@ -160,6 +160,28 @@ func (o *s3aOwner) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var response []byte
 	switch r.URL.Path {
+	case configuredRecoveryPath:
+		raw, err := s3aReadBody(r.Body, configuredRecoveryRequestLimit)
+		if err != nil || r.ContentLength > configuredRecoveryRequestLimit || check() != nil {
+			fail(http.StatusBadRequest)
+			return
+		}
+		response, err = o.configuredRecoveryResponse(r.Context(), raw, check)
+		if err != nil {
+			fail(http.StatusServiceUnavailable)
+			return
+		}
+	case configuredEndorsementPath:
+		raw, err := s3aReadBody(r.Body, configuredEndorsementLimit)
+		if err != nil || r.ContentLength > configuredEndorsementLimit || check() != nil {
+			fail(http.StatusBadRequest)
+			return
+		}
+		response, err = o.configuredEndorsementResponse(r.Context(), raw, check)
+		if err != nil {
+			fail(http.StatusServiceUnavailable)
+			return
+		}
 	case currentOriginalPath:
 		raw, err := s3aReadBody(r.Body, currentOriginalRequestLimit)
 		if err != nil || r.ContentLength > currentOriginalRequestLimit || check() != nil {

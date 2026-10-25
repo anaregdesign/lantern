@@ -44,7 +44,7 @@ func TestComposeFixtureIsolatesWorkloadSecretsAndRenewsSameCohort(t *testing.T) 
 			for i, node := range result.Nodes {
 				service := "lantern-" + string(rune('0'+i))
 				mount := filepath.Join(dir, service)
-				if node.PeerOrigin != "https://"+service+":6381" || node.Environment["LANTERN_PORT"] != "6380" || node.Environment["LANTERN_PEER_LISTEN_ADDR"] != ":6381" {
+				if node.PeerOrigin != "https://"+service+":6381" || node.Environment["LANTERN_PORT"] != "6380" || mode == "off" && node.Environment["LANTERN_PEER_LISTEN_ADDR"] != ":6381" {
 					t.Fatal("wrong container origins/listeners")
 				}
 				for _, name := range []string{"operator.key", "tokens.json", "fixture.json", "control-operator.key", "authority-control-operator.key"} {
@@ -68,11 +68,34 @@ func TestComposeFixtureIsolatesWorkloadSecretsAndRenewsSameCohort(t *testing.T) 
 					}
 				}
 				if mode == "oidc" {
-					original, err := os.ReadFile(filepath.Join(dir, "authority", fmt.Sprintf("node-%d", i+1), "vote.key"))
+					originalRaw, err := os.ReadFile(filepath.Join(dir, "authority", fmt.Sprintf("node-%d", i+1), "authority.json"))
 					if err != nil {
 						t.Fatal(err)
 					}
-					mounted, err := os.ReadFile(filepath.Join(mount, "authority-vote.key"))
+					var originalAuthority struct {
+						Identity struct {
+							VotingKey []byte `json:"voting_key"`
+						} `json:"identity"`
+					}
+					if json.Unmarshal(originalRaw, &originalAuthority) != nil {
+						t.Fatal("invalid original authority")
+					}
+					original := originalAuthority.Identity.VotingKey
+					materialRaw, err := os.ReadFile(filepath.Join(mount, "identity", "nodes", fmt.Sprintf("node-%d", i+1), "identity.json"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					var material struct {
+						Authority struct {
+							Identity struct {
+								VotingKey []byte `json:"voting_key"`
+							} `json:"identity"`
+						} `json:"authority"`
+					}
+					if json.Unmarshal(materialRaw, &material) != nil {
+						t.Fatal("invalid own material")
+					}
+					mounted := material.Authority.Identity.VotingKey
 					if err != nil || !bytes.Equal(original, mounted) {
 						t.Fatal("authority mount does not contain exactly its own voter key", err)
 					}
@@ -83,7 +106,7 @@ func TestComposeFixtureIsolatesWorkloadSecretsAndRenewsSameCohort(t *testing.T) 
 				}
 				for _, file := range files {
 					info, err := file.Info()
-					if err != nil || !info.Mode().IsRegular() {
+					if err != nil || !info.Mode().IsRegular() && !(file.Name() == "identity" && info.IsDir()) {
 						t.Fatal("workload material must be a regular file", file.Name(), err)
 					}
 					private := strings.HasPrefix(file.Name(), "authority-") || strings.HasSuffix(file.Name(), ".key") || file.Name() == "machines.json" || file.Name() == "cdc-keys.json"
@@ -103,7 +126,7 @@ func TestComposeFixtureIsolatesWorkloadSecretsAndRenewsSameCohort(t *testing.T) 
 					if bytes.Contains(config, []byte("LANTERN_GRAPH_SNAPSHOT_SPOOL_")) || node.Environment["LANTERN_RECEIPT_WAL_PATH"] != "/state/receipts.wal" {
 						t.Fatal("receipt Compose configuration acquired graph-only scratch")
 					}
-				} else if node.Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] != composeGraphSnapshotSpoolDirectory || node.Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES"] != "134217728" || node.Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"] != "33554432" {
+				} else if mode == "off" && (node.Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR"] != composeGraphSnapshotSpoolDirectory || node.Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES"] != "134217728" || node.Environment["LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES"] != "33554432") {
 					t.Fatal("graph Compose configuration lost explicit container scratch")
 				}
 				if mode == "off" && (strings.HasPrefix(node.PublicOrigin, "https:") || node.Environment["LANTERN_AUTH_MODE"] != "") {
@@ -123,7 +146,7 @@ func TestComposeFixtureIsolatesWorkloadSecretsAndRenewsSameCohort(t *testing.T) 
 			}
 			if mode == "oidc" {
 				for i := range 3 {
-					info, err := os.Stat(filepath.Join(dir, fmt.Sprintf("lantern-%d", i), "authority-membership.signed"))
+					info, err := os.Stat(filepath.Join(dir, fmt.Sprintf("lantern-%d", i), "identity", "nodes", fmt.Sprintf("node-%d", i+1), "membership", "control.json"))
 					if err != nil || info.Mode().Perm() != 0600 {
 						t.Fatal("renewal changed private authority input permissions", err)
 					}
@@ -142,7 +165,11 @@ func TestComposeFixtureIsolatesWorkloadSecretsAndRenewsSameCohort(t *testing.T) 
 			if err := renewComposeMembership(dir, time.Now().UTC().Add(time.Hour)); err == nil {
 				t.Fatal("expired operator continuity resumed implicitly")
 			}
-			if err := os.WriteFile(filepath.Join(dir, "lantern-1", "membership.json"), before, 0644); err != nil {
+			rollback := filepath.Join(dir, "lantern-1", "membership.json")
+			if mode == "oidc" {
+				rollback = filepath.Join(dir, "lantern-1", "identity", "nodes", "node-2", "membership", "data.json")
+			}
+			if err := os.WriteFile(rollback, before, 0600); err != nil {
 				t.Fatal(err)
 			}
 			if err := renewComposeMembership(dir, time.Now().UTC().Add(2*time.Minute)); err == nil {

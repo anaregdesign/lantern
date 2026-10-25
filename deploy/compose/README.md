@@ -19,6 +19,12 @@ also requires the fixed Server upstream. See [Admin](../../admin/README.md).
 
 ## Separate OFF and OIDC examples
 
+For fixed three-node OIDC with Admin, Prometheus, MCP, verified HTTPS and a
+separate renewable membership publisher, use the
+[authenticated HA example](oidc-ha/README.md). Its explicit native/application
+initialization and retained restart sequence are separate from the small
+standalone examples below.
+
 The standalone examples build the Server from this checkout. Use a matching
 Server build: older published images do not understand the environment JSON
 or `init-security` command. Run only one example at a time because both publish
@@ -39,111 +45,121 @@ configure graph persistence; see the default profile above for graph backups.
 
 ### OIDC
 
-[`docker-compose.oidc.yml`](docker-compose.oidc.yml) runs one fixed OIDC node
-after explicit provisioning. Unmodified defaults point at a nonexistent
-`FAKE_PRIVATE_PROVISIONING_DIRECTORY` and cannot initialize or start. The
-[setup template](../examples/auth/security-config.json.example) contains only
-user intent and deliberately invalid provider/public TLS values; it has no
-hand-authored authority, keys, profile digests or capacity knobs.
+[`docker-compose.oidc.yml`](docker-compose.oidc.yml) runs one fixed OIDC node.
+The same complete human `LANTERN_SECURITY_CONFIG_JSON` is forwarded to
+initialization and every normal start. No generated configuration replaces it.
+Unmodified defaults lack valid JSON/material and refuse startup.
 
-Follow the [provisioning guide](../examples/auth/README.md#environment-json-startup)
-to privately select the exact administrator issuer/subject, provider profiles,
-HTTPS public origin and TLS/proxy boundary. For this example use `target_platform`
-`linux`, `persistence_root` `/state`, and one node named `node-1` with control
-origin `https://lantern-0:6381`, data origin `https://lantern-0:6382` and matching
-listen ports. Both private ports remain unpublished. The public certificate
-must cover the actual HTTPS hostname; clients verify its chain normally.
+Complete the [one configuration](../examples/auth/README.md#environment-json-startup)
+privately: exact public origin, explicit administrator issuer/subject, current
+provider profiles and secrets, and public TLS/proxy boundary. For this example
+select `target_platform` `linux`, `persistence_root` `/state`, and one named
+`node-1` entry with control origin `https://lantern-0:6381`, data origin
+`https://lantern-0:6382` and matching listen ports. Set `material_root` to a new
+private absolute host directory. Both private ports remain unpublished.
 
-From the repository root, inject the small setup JSON through an approved secret
-manager, choose new private output directories outside the checkout, and run:
+With the same JSON injected by the approved secret manager, provision once from
+the repository root:
 
 ```sh
-# These are illustrative absolute paths, not files supplied by this repository.
-export LANTERN_PROVISIONING_DIRECTORY=/absolute/private/lantern-provisioned
-export LANTERN_OPERATOR_DIRECTORY=/absolute/private/lantern-operator
 export LANTERN_AUTH_MODE=oidc
-# LANTERN_SECURITY_CONFIG_JSON contains the privately completed setup intent.
-go run ./server/cmd provision-security --output "$LANTERN_PROVISIONING_DIRECTORY" \
-  --operator-directory "$LANTERN_OPERATOR_DIRECTORY"
+# This mount selector must equal material_root in the human JSON.
+export LANTERN_MATERIAL_DIRECTORY=/absolute/private/lantern-material
+export LANTERN_OPERATOR_DIRECTORY=/absolute/private/lantern-operator
+go run ./server/cmd provision-security --operator-directory "$LANTERN_OPERATOR_DIRECTORY"
 ```
 
-Generation may run on a Mac while explicitly targeting Linux. It creates no
-listeners, native journals or trusted time. Preserve the generated absolute
-paths: Compose mounts only this node directory at the same target path. Ensure
-the container's dedicated runtime UID owns or can privately read the generated
-files without making them public. Do not mount another node's private keys or
-the separate operator signing directory into Server.
+Generation can run on a Mac while explicitly targeting Linux; it opens no
+listeners, native state or trusted time. It writes independent identity keys and
+fixed historical trust, never a saved setup/current-provider configuration.
+Preserve the generated absolute paths: Compose binds only
+`material_root/nodes/node-1` at that same target read-only. Ensure private
+ownership is valid for the dedicated runtime UID. Operator/CA signing custody
+and other nodes' keys stay outside the serving mount.
 
-Run the external publisher on the provisioning host, using its generated
-paths, before the short initial manifests expire:
+Before short memberships expire, run the separate publisher on the material
+host using its generated paths:
 
 ```sh
 go run ./server/cmd/membershippublisher --config "$LANTERN_OPERATOR_DIRECTORY/publisher.json" \
   --state "$LANTERN_OPERATOR_DIRECTORY/state.json" --mode init
 ```
 
-Keep it running for both control and data renewal, including this standalone
-node. After an orderly publisher stop, resume the same journal with `--mode resume`.
-The default operator window is finite (30 days). Before the workload leaf/window
-boundary, `lantern renew-security --operator-directory ... --output ...` prepares
-same-identity certificate and next-window candidates in a new directory. Follow
-the [reviewed stop/install/advance/resume sequence](../../docs/live-membership-renewal.md#renew-generated-workload-certificates)
-with CLEAN node shutdown, unchanged original paths/state and retained publisher
-journal. This command does not publish live files or hot-reload certificates.
-The fixed ten-year root remains a hard capacity boundary. Server receives signed
-renewable inputs and its own workload identity, never operator/CA signing keys.
+It renews both control and data memberships even for one node. After orderly
+publisher stop use `--mode resume` with the same journal. Certificate/window
+maintenance uses [reviewed same-identity renewal](../../docs/live-membership-renewal.md#renew-generated-workload-certificates),
+CLEAN node stop, original paths and retained state; it does not regenerate trust
+or load saved provider settings.
 
-In another shell with `LANTERN_PROVISIONING_DIRECTORY` set to the same absolute
-path:
+In a shell with the same complete private JSON and mount selector supplied:
 
 ```sh
 cd deploy/compose
 docker compose -f docker-compose.oidc.yml build
-# Once, on the actual Linux target with a new state volume:
+# Once on the actual target, with new native state:
 docker compose -f docker-compose.oidc.yml --profile init run --rm --no-deps init-security
-# Every normal startup resumes existing state:
+# Every normal start uses the same human input and resumes intact state:
 docker compose -f docker-compose.oidc.yml up -d lantern-0
 docker compose -f docker-compose.oidc.yml ps
 ```
 
-Compose supplies only a `provisioned_file` reference to initialization/startup;
-it does not forward setup JSON or regenerate trust. It mounts this node's
-provisioning directory read-only, including the renewable membership directories,
-and retains mutable state in `lantern-security-state`. Atomic replacement by the
-external publisher remains visible. The nonsecret `/etc/ntp.conf` config supplies
-the admitted native source without changing host time services. Native time and
-current quorum remain readiness requirements.
+The state volume contains native history/custody and the read-only material
+mount contains durable keys/trust plus renewable signed inputs. Neither can
+replace omitted current JSON. Missing/partial/altered state or material fails
+closed; ordinary startup never initializes or resets it. `initial_admin` asserts
+the original identity on resume and does not restore grants or undo suspension.
+Keep the state volume across orderly stops/recreations and confirm CLEAN
+shutdown. The small example keeps graph data in memory; security persistence is
+separate. Do not share rendered Compose output containing real JSON secrets.
 
-`init-security` refuses retained/interrupted state. Normal startup never repairs
-missing state or resets Roles, revocations, sessions or later managed Issuers.
-Keep the volume across orderly stops/recreations. `docker compose ... down`
-without volume removal stops this example; confirm successful orderly shutdown.
-Deleting the security volume is data destruction, not restart or recovery.
-The graph stays in-memory in this small example; security persistence is separate.
+To add an Issuer later, update the same human `issuers` list and restart with
+that input. Native certified reconciliation must match the local desired set
+before public readiness; different desired intent leaves a node unavailable.
+Adding trust creates no Principals, Roles or assignments. Browser-only Google
+needs no API audience; absent API configuration rejects external API JWTs.
+Register callbacks from the supplied origin and canonical Issuer using the
+[callback guide](../examples/auth/README.md#browser-callbacks).
 
-The browser callback is derived from `public_origin` and canonical Issuer.
-Register the exact URL with the IdP. A browser-only Google profile needs no
-API audience; external API JWTs stay disabled without an explicitly configured
-API profile. Initial administrator identity is the verified issuer/subject pair,
-not email, and grants management rather than implicit data access.
+The example does not publish Admin. A protected SPA needs trusted same-origin
+HTTPS routes, verified upstream TLS or exact trusted proxy addresses, and
+login-attempt affinity. Native time/quorum and external membership renewal
+remain required. See [OIDC operations](../../docs/oidc-operations.md#browser-and-diagnostics-boundary).
 
-This example does not publish Admin. A protected SPA needs the existing trusted
-same-origin HTTPS frontend and fixed `/auth/*`, `/browser/*` and RPC routes,
-verified upstream TLS or exact trusted-proxy boundary, and login-attempt affinity.
-The OFF example's separate HTTP Admin is not this topology. See
-[OIDC operations](../../docs/oidc-operations.md#browser-and-diagnostics-boundary).
-
-The advanced HA examples below use deliberate externally provisioned file-backed
-inputs. They are separate from generated setup and its private node reference.
 
 ## Explicit HA
 
-Use `docker-compose.ha.yml` with operator-provisioned per-node env files and
-read-only material in `LANTERN_HA_CONFIG_DIR`. All three members need distinct
-workload certificates, exact signed HTTPS private origins on port 6381 and
-homogeneous public mode/domain/namespace. The operator signing private key
-stays outside every Server volume. DNS only resolves those approved origins.
-Never share a peer private key across nodes.
+Use `docker-compose.ha.yml` with private per-node env files under
+`LANTERN_HA_CONFIG_DIR`. OFF files explicitly configure the independent generic
+private peer plane, including `LANTERN_PEER_LISTEN_ADDR`; the overlay does not
+supply a mode-specific listener. OIDC files instead supply the same complete
+human JSON used on provision/init/start, with `node` equal to that workload's
+fixed name. Its private planes are derived, so do not add generic OFF peer
+settings to OIDC JSON startup.
+
+For OIDC the existing mount contract is exact:
+
+- JSON `material_root` is `/run/lantern-config/material`; `persistence_root` is
+  `/state`; the node entry is `lantern-0`, `lantern-1` or `lantern-2`.
+- Generate material inside an isolated Linux container at that exact material
+  path, with a new writable host-backed parent at `/run/lantern-config` and a
+  separate new operator mount. Supply the same human JSON and run
+  `provision-security --operator-directory ...` there. Do not generate at a Mac
+  host path and then silently rebase it into this container path.
+- Install only `material/nodes/lantern-N/` and required private node files into
+  that workload's host root `${LANTERN_HA_CONFIG_DIR}/lantern-N`. The existing
+  read-only mount exposes them at the original container path. Other nodes'
+  private keys are never present in that serving root.
+- The external publisher must see every installed renewable node directory at
+  its original generated `/run/lantern-config/material/nodes/lantern-N` path.
+  Map the installed per-node leaves into its separate private namespace; merely
+  publishing into an abandoned staging copy would not renew running nodes.
+  Operator/CA signers and the journal stay outside all Server mounts.
+
+Generic OFF uses its existing per-node file layout. Both modes retain distinct
+workload certificates, exact signed HTTPS private origins and homogeneous
+mode/domain/namespace. DNS resolves only approved origins; it grants no
+membership. The data and OIDC control origins must use their separately declared
+ports. Preserve every node's state and orderly CLEAN custody across restart.
 
 Each Linux HA Server, including public OFF, requires its own declared read-only
 `<node>/ntp.conf`, mounted at `/etc/ntp.conf`. The existing admitted profile uses
@@ -154,7 +170,7 @@ refuses missing/invalid input. OFF owns one clock; OIDC borrows its existing
 authority clock. Standalone OFF has no time-source prerequisite.
 
 
-For graph-only HA, in either public mode, add the dedicated staging overlay:
+For the generic OFF graph-only HA profile, add the dedicated staging overlay:
 
 ```sh
 export LANTERN_HA_CONFIG_DIR=/absolute/operator/lantern
@@ -165,7 +181,7 @@ docker compose -f docker-compose.yml -f docker-compose.ha.yml \
   -f docker-compose.graph-snapshot.yml up -d
 ```
 
-Each graph-only node's env file must explicitly set
+Each generic OFF graph-only node's env file must explicitly set
 `LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR=/var/lib/lantern-snapshot-spool`,
 `LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_DISK_BYTES` and
 `LANTERN_GRAPH_SNAPSHOT_SPOOL_MAX_FRAME_BYTES`. Choose positive byte limits for
@@ -186,6 +202,16 @@ restart; the stable owner file remains between attempts. `down -v` also removes
 these staging volumes. They are transient working storage and provide no graph
 or receipt continuity.
 
+OIDC graph-only uses its retained finite profile and the derived
+`persistence_root/<node>/snapshot-spool`. With `persistence_root=/state`, that
+directory is inside **that node's exclusive writable `/state` volume**, separate
+from its read-only identity/input mount. Native initialization creates the
+private derived leaf; keep its owner, mode and native state through restart.
+Do not apply either generic OFF graph-snapshot overlay to OIDC: their
+`/var/lib/lantern-snapshot-spool` mount would be unused. Separate
+`LANTERN_GRAPH_SNAPSHOT_SPOOL_*` variables are rejected even when empty. OIDC
+receipt-WAL mode retains validated spool metadata but has no active graph spool.
+
 Receipt-WAL HA omits the graph staging overlay and all three graph spool keys;
 its existing state and collection configuration remains separate. The two-file
 `docker-compose.yml` plus `docker-compose.ha.yml` stack continues to apply to
@@ -198,7 +224,7 @@ Renew the signed membership manifest atomically before its expiry (at most
 ten minutes), including OFF HA. Lost renewal fails closed. Public credentials
 never authorize a private peer. The private port has no host publication.
 
-For the custom-UID, read-only-root membership profile, prepare new dedicated
+For the generic OFF custom-UID, read-only-root membership profile, prepare new dedicated
 `${LANTERN_MEMBERSHIP_ROOT}/node-0/snapshot-spool` through
 `node-2/snapshot-spool` directories, each mode 0700 and owned by the configured
 `LANTERN_SERVICE_UID:LANTERN_SERVICE_GID`. Set the same container spool path and
@@ -215,13 +241,15 @@ Use this bind overlay instead of `docker-compose.graph-snapshot.yml`.
 `create_host_path: false` refuses missing host directories; no privileged
 production initializer changes their owner or contents. The staging bind is
 writable while the workload root and private inputs retain their existing
-protections. Receipt-mode membership omits both graph staging overlays.
+protections. Receipt-mode and all OIDC membership profiles omit both graph
+staging overlays; OIDC graph-only uses the private derived path described above.
 
-OIDC uses independently provisioned fixed-membership quorum authority. Configure
-each node's original `LANTERN_SECURITY_CONFIG_FILE` and explicit fresh/resume
-mode through the [env contract](../../docs/env.md). Original provisioning binds
-Issuer/administrator subjects, machine Roles, the full authority profile,
-per-node custody and native time. Mount only that workload's private material.
+OIDC uses the same human JSON for provisioning, initialization and normal
+startup. Each fixed node selects its own `node` entry, reads the current desired
+Issuers from JSON, and mounts only its retained identity material plus separate
+native state. Material is not a configuration source. See the
+[configuration guide](../examples/auth/README.md#environment-json-startup) for
+fixed quorum, exact seed identity, certified reconciliation and native time.
 Pin `/auth/*`, `/browser/*` and control operations to a configured eligible
 origin and preserve per-attempt login affinity. The HA Admin
 HTTP service is private and requires an operator HTTPS frontend; the Server

@@ -59,16 +59,6 @@ func parseOperatorPublicKeyPEM(raw []byte) (ed25519.PublicKey, error) {
 	}
 	return typed, nil
 }
-func loadSecurityRoots(path string) (*x509.CertPool, error) {
-	if path == "" {
-		return nil, nil
-	}
-	raw, err := readSecurityOperatorFile(path, false, 1<<20)
-	if err != nil {
-		return nil, err
-	}
-	return loadSecurityRootsPEM(string(raw))
-}
 
 func loadSecurityRootsPEM(value string) (*x509.CertPool, error) {
 	if value == "" {

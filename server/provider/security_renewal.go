@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/anaregdesign/lantern/server/internal/membershippublisher"
@@ -141,29 +142,24 @@ func renewSecurityAt(ctx context.Context, options SecurityRenewOptions, now time
 			return errSecurityProvisioning
 		}
 		seen[name] = true
-		originalPath := filepath.Join(dir, "security.json")
-		config, err := loadProvisionedSecurity(originalPath)
-		if err != nil || config.InitialImage == nil || config.ProvisionedPeer == nil || pathsOverlap(options.OutputDirectory, config.StateDirectory) {
-			return errSecurityProvisioning
-		}
-		raw, err := readSecurityOperatorFile(originalPath, true, security.MaxImageBytes+(2<<20))
-		if err != nil {
+		originalPath := filepath.Join(dir, "identity.json")
+		document, raw, err := readSecurityMaterial(originalPath)
+		if err != nil || document.Node != name ||
+			pathsOverlap(options.OutputDirectory, document.StatePaths.Directory) || pathsOverlap(options.OutputDirectory, document.StatePaths.CustodyDirectory) ||
+			pathsOverlap(operator, document.StatePaths.Directory) || pathsOverlap(operator, document.StatePaths.CustodyDirectory) {
 			return errSecurityProvisioning
 		}
 		defer clear(raw)
-		var document provisionedSecurityDocument
-		if decodeSecurityConfigJSON(string(raw), &document, security.ValidateProvisioningJSON) != nil || document.Node != name || verifySecurityCompletion(dir, raw, document.Authority) != nil {
-			return errSecurityProvisioning
-		}
 		trustedDataPublic, err := loadOperatorPublicKey(document.Peer.OperatorKey)
-		if err != nil || !bytes.Equal(trustedDataPublic, dataPublic) || !renewalOriginalSigners(document.Authority, control.Initial, data.Initial, controlPublic, dataPublic, roots, config.ProvisionedPeer.Identity.Deployment, config.ProvisionedPeer.Identity.CurrentProfile, config.ProvisionedPeer.Identity.SecurityGeneration) {
+		if err != nil || !bytes.Equal(trustedDataPublic, dataPublic) || !bytes.Equal(document.Peer.VerificationKey, dataPublic) ||
+			!renewalOriginalSigners(document.Authority, control.Initial, data.Initial, controlPublic, dataPublic, roots, document.Peer.Domain, document.Peer.Members) {
 			return errSecurityProvisioning
 		}
 		workloadRoots, err := readSecurityOperatorFile(document.Peer.Roots, true, 1<<20)
 		if err != nil || !bytes.Equal(workloadRoots, roots) {
 			return errSecurityProvisioning
 		}
-		newAuthority, certificate, err := security.RenewProvisioningIdentity(roots, caKey, document.Authority, now, next.CleanupBy, document.Setup.TargetPlatform)
+		newAuthority, certificate, err := security.RenewProvisioningIdentity(roots, caKey, document.Authority, now, next.CleanupBy, document.TargetPlatform)
 		if err != nil {
 			return errSecurityProvisioning
 		}
@@ -206,7 +202,7 @@ func renewSecurityAt(ctx context.Context, options SecurityRenewOptions, now time
 			name, target string
 			value        []byte
 		}{
-			{"security.json", filepath.Join(node.sourceDirectory, "security.json"), node.document},
+			{"identity.json", filepath.Join(node.sourceDirectory, "identity.json"), node.document},
 			{"workload.pem", filepath.Join(node.sourceDirectory, "workload.pem"), node.certificate},
 		}
 		for _, file := range prepared {
@@ -298,7 +294,7 @@ func renewalPublicKey(raw []byte) (ed25519.PublicKey, error) {
 	return bytes.Clone(key.Public().(ed25519.PublicKey)), nil
 }
 
-func renewalOriginalSigners(authority, controlRaw, dataRaw []byte, controlPublic, dataPublic ed25519.PublicKey, roots []byte, deployment [16]byte, expectedProfile string, expectedGeneration [16]byte) bool {
+func renewalOriginalSigners(authority, controlRaw, dataRaw []byte, controlPublic, dataPublic ed25519.PublicKey, roots []byte, expected peerauth.Domain, members []peerauth.Member) bool {
 	var document struct {
 		Membership struct {
 			PublicKey []byte                  `json:"public_key"`
@@ -313,16 +309,11 @@ func renewalOriginalSigners(authority, controlRaw, dataRaw []byte, controlPublic
 	if err != nil || control.Profile.Digest() != document.Membership.Profile.Digest() {
 		return false
 	}
-	var envelope struct {
-		Payload peerauth.Manifest `json:"payload"`
-	}
-	if json.Unmarshal(dataRaw, &envelope) != nil || envelope.Payload.Domain.Deployment != deployment ||
-		envelope.Payload.Domain.TrustDigest != sha256.Sum256(roots) || envelope.Payload.Domain.AuthMode != "oidc" ||
-		expectedProfile == "" || envelope.Payload.Domain.CurrentProfile != expectedProfile || envelope.Payload.Domain.SecurityGeneration != expectedGeneration {
+	if expected.TrustDigest != sha256.Sum256(roots) || expected.AuthMode != "oidc" || expected.CurrentProfile == "" || expected.SecurityGeneration == [16]byte{} {
 		return false
 	}
-	data, err := peerauth.VerifyManifest(dataRaw, dataPublic, envelope.Payload.Domain)
-	if err != nil || len(data.Members) != len(control.Profile.Voters) {
+	data, err := peerauth.VerifyManifest(dataRaw, dataPublic, expected)
+	if err != nil || len(data.Members) != len(control.Profile.Voters) || !slices.Equal(data.Members, members) {
 		return false
 	}
 	for _, member := range data.Members {

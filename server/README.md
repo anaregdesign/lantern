@@ -63,23 +63,33 @@ Both ports are configurable via environment variables (see below).
 
 No authentication settings, or `LANTERN_AUTH_MODE=off`, permit anonymous data
 operations. `LANTERN_AUTH_MODE=oidc` selects the sole quorum authority, with
-independent original provisioning, native time, full-cut public contracts and
-finite output ownership. Run `lantern provision-security --help` for explicit
-trust generation from small setup intent. It derives independent keys, profiles
-and original policy for an explicit target and fixed one-to-31-node topology.
-Then select only `{"provisioned_file":"/absolute/node/security.json"}` through
-`LANTERN_SECURITY_CONFIG_JSON`, run `init-security` once on each new actual target,
-and start normally to resume intact state. Missing/partial state never triggers
-initialization or trust regeneration. Keep operator signing keys outside the
-serving runtime and renew both signed membership streams, including standalone.
-Use `lantern renew-security --help` to prepare same-identity workload certificate
-and next-window candidates; reviewed maintenance preserves original trust/state
-and requires CLEAN stop, certificate install, publisher advance/resume and restart.
-Browser/API profiles are independent; absent API configuration rejects external
-API JWTs. Deliberate external file-backed provisioning remains separate; do not
-mix its inputs with the generated reference. See the
-[setup guide](../deploy/examples/auth/README.md#environment-json-startup) and
-[authority contract](../docs/security-current-authority.md#public-oidc-composition).
+independent fixed trust, native time, full-cut public contracts and finite output
+ownership. Supply the same complete human `LANTERN_SECURITY_CONFIG_JSON` to
+`provision-security --operator-directory ...`, explicit one-time `init-security`,
+and every normal start/restart. It selects required `material_root`, separate
+`persistence_root`, target/fixed named nodes, initial administrator and current
+Issuers/secrets/public TLS/proxy settings. A single named node can be inferred;
+multiple nodes require `node`. No generated runtime-config reference is used.
+
+Material retains identity keys, historical trust and exact seed identity; it
+contains no saved setup/current provider settings. Native state retains security
+history/custody, not a configuration fallback. Every startup reads supplied
+current JSON and resumes intact state. Configured Issuer additions/changes are
+certified through native compare-and-swap before public readiness; mismatched
+desired intent leaves a node publicly unavailable. This creates no Principals,
+Roles or assignments and never resets policy, regrants a withdrawn assignment or
+undoes suspension. Initial administrator input seeds fresh state only.
+
+Keep operator/CA signing keys outside serving mounts and renew both control/data
+memberships, even for one node. `renew-security` prepares same-identity certificate
+and next-window candidates from identity/operator custody, never a saved setup.
+Reviewed maintenance preserves original trust/state and uses CLEAN stop, install,
+publisher advance/resume and restart. Browser/API profiles remain independent;
+absent API configuration rejects external API JWTs. Missing/partial/malformed
+configuration, material or state never triggers fresh fallback. OFF needs no JSON
+and rejects any present security JSON, including an empty value. See the
+[configuration guide](../deploy/examples/auth/README.md#environment-json-startup)
+and [authority contract](../docs/security-current-authority.md#public-oidc-composition).
 
 ## Private authentication evidence
 

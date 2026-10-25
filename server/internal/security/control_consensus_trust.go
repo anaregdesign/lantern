@@ -32,6 +32,8 @@ type s2cMember struct {
 	ID        uint32
 	PublicKey [32]byte
 	Proposer  bool
+	// ConfiguredTrust enrolls only bounded startup-intent endorsement by this fixed voter.
+	ConfiguredTrust uint16 `json:",omitempty"`
 }
 
 // These independently configured contracts identify what the trusted origin
@@ -71,6 +73,8 @@ type s2cOriginDescriptor struct {
 	// Absent in the historical v1 encoding. Current profiles independently pin
 	// one retry namespace; local requests cannot supply a replacement namespace.
 	Namespace uint64 `json:",omitempty"`
+	// ConfiguredTrust enrolls only the versioned startup issuer reconciliation capability.
+	ConfiguredTrust uint16 `json:",omitempty"`
 }
 
 type s2cBootstrap struct {
@@ -115,7 +119,7 @@ func s2cMemberSetDigest(members []s2cMember) ([32]byte, error) {
 	keys := make(map[[32]byte]bool, len(members))
 	proposers := 0
 	for i, m := range members {
-		if m.ID == 0 || !s2cValidPublicKey(m.PublicKey) || i > 0 && members[i-1].ID >= m.ID || keys[m.PublicKey] {
+		if m.ConfiguredTrust > 1 || m.ID == 0 || !s2cValidPublicKey(m.PublicKey) || i > 0 && members[i-1].ID >= m.ID || keys[m.PublicKey] {
 			return [32]byte{}, errS2CTrust
 		}
 		keys[m.PublicKey] = true
@@ -155,14 +159,22 @@ func newS2CTrust(b s2cBootstrap) (*s2cTrust, error) {
 	t := &s2cTrust{memberSet: membership, genesis: &s2TrustedGenesis{detached, b.Genesis.roots}, members: append([]s2cMember(nil), b.Members...), origins: append([]s2cOriginDescriptor(nil), b.Origins...), bounds: b.Bounds, originDigests: make(map[uint32][32]byte)}
 	c := g.projection.cut
 	basic := s2cBasicScope{c.Domain, c.Cohort, c.Generation, c.Fences}
+	for _, member := range t.members {
+		if member.ConfiguredTrust != 0 && t.origins[0].Profile.Version != authorityAdmissionVersion {
+			return nil, errS2CTrust
+		}
+	}
 	keys := make(map[[32]byte]bool, len(t.origins))
 	namespaces := make(map[uint64]bool, len(t.origins))
 	for i, o := range t.origins {
-		_, member := t.member(o.Member)
+		originMember, member := t.member(o.Member)
 		if o.ID == 0 || !member || !s2cValidPublicKey(o.PublicKey) || o.Incarnation == [16]byte{} || !o.Profile.valid() || keys[o.PublicKey] || i > 0 && t.origins[i-1].ID >= o.ID {
 			return nil, errS2CTrust
 		}
 		if o.Profile.Version != t.origins[0].Profile.Version {
+			return nil, errS2CTrust
+		}
+		if o.ConfiguredTrust > 1 || o.ConfiguredTrust != 0 && (o.Profile.Version != authorityAdmissionVersion || originMember.ConfiguredTrust != configuredTrustVersion) {
 			return nil, errS2CTrust
 		}
 		if o.Profile.Version == authorityAdmissionVersion {

@@ -18,29 +18,21 @@ import (
 // Only one original workload's material is copied to its mount. Operator
 // signing keys and other voters/origins never enter this file set.
 func copyComposeAuthority(directory, mount string, index int) error {
-	node := filepath.Join(directory, "authority", fmt.Sprintf("node-%d", index+1))
-	files := map[string]string{"node.json": "authority-node.json", "roots.pem": "authority-roots.pem", "cert.pem": "authority-cert.pem", "tls.key": "authority-tls.key", "vote.key": "authority-vote.key", "membership.pub": "authority-membership.pub", "membership.signed": "authority-membership.signed"}
-	if _, err := os.Stat(filepath.Join(node, "origin.key")); err == nil {
-		files["origin.key"] = "authority-origin.key"
-	} else if !os.IsNotExist(err) {
+	name := fmt.Sprintf("node-%d", index+1)
+	source := filepath.Join(directory, "identity", "nodes", name)
+	destination := filepath.Join(mount, "identity", "nodes", name)
+	if err := os.MkdirAll(filepath.Join(destination, "membership"), 0700); err != nil {
 		return err
 	}
-	for source, target := range files {
-		destination := filepath.Join(mount, target)
-		if err := copyMountedFixtureFile(filepath.Join(node, source), destination); err != nil {
+	for _, name := range []string{"identity.json", "COMPLETE", "workload.pem", "workload-key.pem", "roots.pem", "data-operator.pem", "membership/control.json", "membership/data.json"} {
+		if err := copyMountedFixtureFile(filepath.Join(source, name), filepath.Join(destination, name)); err != nil {
 			return err
 		}
-		// The production authority reader treats every provisioning input as
-		// private, including its signed manifests and public certificates.
-		if err := os.Chmod(destination, 0600); err != nil {
+		if err := os.Chmod(filepath.Join(destination, name), 0600); err != nil {
 			return err
 		}
 	}
-	genesis := filepath.Join(mount, "authority-genesis.json")
-	if err := copyMountedFixtureFile(filepath.Join(directory, "authority", "genesis.json"), genesis); err != nil {
-		return err
-	}
-	return os.Chmod(genesis, 0600)
+	return copyMountedFixtureFile(filepath.Join(directory, "authority", name, "startup.json"), filepath.Join(mount, "startup.json"))
 }
 
 func renewComposeAuthority(directory string, now time.Time) error {
@@ -79,7 +71,8 @@ func renewComposeAuthority(directory string, now time.Time) error {
 	}
 	var targets []string
 	for i := range 3 {
-		targets = append(targets, filepath.Join(root, fmt.Sprintf("node-%d", i+1), "membership.signed"), filepath.Join(directory, fmt.Sprintf("lantern-%d", i), "authority-membership.signed"))
+		name := fmt.Sprintf("node-%d", i+1)
+		targets = append(targets, filepath.Join(root, name, "membership.signed"), filepath.Join(directory, "identity", "nodes", name, "membership", "control.json"), filepath.Join(directory, fmt.Sprintf("lantern-%d", i), "identity", "nodes", name, "membership", "control.json"))
 	}
 	for _, target := range targets {
 		current, err := os.ReadFile(target)

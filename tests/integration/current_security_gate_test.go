@@ -17,7 +17,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -80,13 +79,9 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		t.Skip("requires configured native time; explicit container gate")
 	}
 	f := newOIDCWireIssuer(t)
-	dir := t.TempDir()
-	if renewal {
-		var err error
-		dir, err = filepath.EvalSymlinks(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal("canonical isolated fixture directory", err)
 	}
 	var command *exec.Cmd
 	if binary := os.Getenv("LANTERN_CURRENT_FIXTURE_EXPORTER"); binary != "" {
@@ -100,6 +95,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("independent provisioning export: %v\n%s", err, out)
 	}
+	prepareAuthorityWireSecurityMaterial(t, dir)
 	if serving != nil {
 		var provision struct {
 			MembershipExpires time.Time `json:"membership_expires_at"`
@@ -124,6 +120,7 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 	publicRoots := x509.NewCertPool()
 	var controls []graphv1connect.LanternSecurityServiceClient
 	var runtimes []*provider.SecurityRuntime
+	var initializationCounts []decisiontrace.AcquisitionCounts
 	var stops []func()
 	var workerStops []func()
 	var exportBoundary atomic.Pointer[currentExportBoundary]
@@ -154,26 +151,11 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = data.Close() })
-		securityConfig := provider.SecurityConfig{Mode: "oidc", ConfigFile: filepath.Join(dir, fmt.Sprintf("node-%d/node.json", id)), StoreMode: mode, BrowserOrigin: "https://admin.example", RootCAFile: roots, PrivateOrigins: map[string][]netip.Prefix{f.provider.URL: {netip.MustParsePrefix("127.0.0.1/32")}}, TrustedProxyIPs: []netip.Addr{netip.MustParseAddr("127.0.0.1")}}
-		if native != nil {
-			native.configure(t, &securityConfig)
-		}
-		// Keep the required fresh -> CLEAN -> resume constructor phase in
-		// functional validation after retiring complete inline-authority input.
-		// The generated reference/CLI lifecycle has its own real-wire suite.
-		// Normal configured-source qualification retains its three acquisitions.
-		if id == 2 && mode == "fresh" && !configuredSourceIntegration && !renewal && serving == nil && native == nil {
-			initialized, closeInitialized, initErr := provider.NewSecurityRuntime(t.Context(), securityConfig, data)
-			t.Logf("current_constructor node=%d mode=fresh passed=%t", id, initErr == nil)
-			if initErr != nil {
-				t.Fatal("explicit functional native initialization", initErr)
+		securityConfig := loadAuthorityWireSecurityConfig(t, dir, id, f.provider.URL, roots, func(input map[string]any) {
+			if native != nil {
+				native.configureInput(t, input)
 			}
-			t.Cleanup(closeInitialized)
-			if err := initialized.Shutdown(); err != nil {
-				t.Fatal("functional initialization CLEAN checkpoint", err)
-			}
-			securityConfig.StoreMode = "resume"
-		}
+		})
 		capture := decisiontrace.Start(64)
 		if capture == nil {
 			t.Fatal("startup diagnostic capture already owned")
@@ -186,9 +168,9 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			if encodeErr != nil {
 				t.Fatal(encodeErr)
 			}
-			t.Logf("current_startup_observation node=%d mode=%s dropped=%d event=%s", id, securityConfig.StoreMode, dropped, raw)
+			t.Logf("current_startup_observation node=%d mode=%s dropped=%d event=%s", id, mode, dropped, raw)
 		}
-		t.Logf("current_constructor node=%d mode=%s passed=%t", id, securityConfig.StoreMode, err == nil)
+		t.Logf("current_constructor node=%d mode=%s passed=%t", id, mode, err == nil)
 		if err != nil {
 			t.Fatal("current constructor", id, err)
 		}
@@ -197,12 +179,11 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		stops = append(stops, closeRuntime)
 		var workload *provider.PeerIdentityRuntime
 		if renewal {
-			var config provider.PeerPlaneConfig
-			raw, e := os.ReadFile(filepath.Join(dir, fmt.Sprintf("node-%d/peer.json", id)))
-			if e != nil || json.Unmarshal(raw, &config) != nil {
-				t.Fatal("data workload input", e)
+			if securityConfig.ProvisionedPeer == nil {
+				t.Fatal("signed data workload input missing")
 			}
-			config.Identity.StateMode = mode
+			config := *securityConfig.ProvisionedPeer
+			config.Identity.StateMode = "resume"
 			var closePeer func()
 			workload, closePeer, err = provider.NewWorkloadPeerIdentity(t.Context(), config, runtime)
 			if err != nil {
@@ -319,8 +300,36 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		servers = append(servers, s)
 		controls = append(controls, graphv1connect.NewLanternSecurityServiceClient(transport, s.URL))
 	}
+	// Every fixed member is initialized explicitly with the same required
+	// operator input before any owner serves. All normal starts hard-resume.
 	for id := 1; id <= 3; id++ {
-		startNode(id, "fresh")
+		config := loadAuthorityWireSecurityConfig(t, dir, id, f.provider.URL, roots, func(input map[string]any) {
+			if native != nil {
+				native.configureInput(t, input)
+			}
+		})
+		capture := decisiontrace.Start(64)
+		if capture == nil {
+			t.Fatal("initialization diagnostic capture already owned")
+		}
+		counts, initErr := provider.InitializeSecurity(t.Context(), config)
+		initializationCounts = append(initializationCounts, counts)
+		capture.Stop()
+		observations, dropped := capture.Drain()
+		for _, observation := range observations {
+			raw, encodeErr := json.Marshal(observation)
+			if encodeErr != nil {
+				t.Fatal(encodeErr)
+			}
+			t.Logf("current_startup_observation node=%d mode=fresh dropped=%d event=%s", id, dropped, raw)
+		}
+		t.Logf("current_constructor node=%d mode=fresh passed=%t", id, initErr == nil)
+		if initErr != nil {
+			t.Fatal("explicit native initialization", id, initErr)
+		}
+	}
+	for id := 1; id <= 3; id++ {
+		startNode(id, "resume")
 	}
 	timeout := 180 * time.Second
 	if serving != nil {
@@ -917,6 +926,19 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 		// A new explicit login replaces only the session present at its start.
 		// The old cookies must not survive the fresh post-Apply publication.
+		// The resumed voter can advance the exact control slot and invalidate
+		// this target's earlier renewal. Keep the original restart deadline and
+		// wait only for its current readiness before issuing the one login.
+		for !runtimes[0].Ready(ctx) {
+			if time.Now().After(deadline) || ctx.Err() != nil {
+				t.Fatal("replacement login target lacks current authority")
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
 		replacementStart := browserLoginStart(t, cookies)
 		replacementPath := f.browserCallbackPath(t, replacementStart, "admin", false)
 		select {
@@ -1066,16 +1088,35 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 				stop()
 			}
 			var attempts, writes uint64
+			var acquisitions []struct {
+				phase  string
+				node   int
+				counts decisiontrace.AcquisitionCounts
+			}
+			for i, counts := range initializationCounts {
+				acquisitions = append(acquisitions, struct {
+					phase  string
+					node   int
+					counts decisiontrace.AcquisitionCounts
+				}{"init", i + 1, counts})
+			}
 			for i, runtime := range runtimes {
-				c := runtime.TimeAcquisitionCounts()
-				t.Logf("source_acquisition node=%d attempts=%d writes=%d installations=%d in_flight=%t failed=%t denied=%t", i+1, c.Attempts, c.Writes, c.Installations, c.InFlight, c.Failed, c.Denied)
+				acquisitions = append(acquisitions, struct {
+					phase  string
+					node   int
+					counts decisiontrace.AcquisitionCounts
+				}{"resume", i + 1, runtime.TimeAcquisitionCounts()})
+			}
+			for _, acquisition := range acquisitions {
+				c := acquisition.counts
+				t.Logf("source_acquisition phase=%s node=%d attempts=%d writes=%d installations=%d in_flight=%t failed=%t denied=%t", acquisition.phase, acquisition.node, c.Attempts, c.Writes, c.Installations, c.InFlight, c.Failed, c.Denied)
 				if c.Attempts == 0 || c.Writes == 0 || c.Installations == 0 || c.Installations > c.Writes || c.Writes > c.Attempts || c.InFlight || c.Failed || c.Denied {
-					t.Fatal("incomplete configured-source acquisition")
+					t.Fatal("incomplete configured-source acquisition", acquisition.phase, acquisition.node)
 				}
 				attempts += c.Attempts
 				writes += c.Writes
 			}
-			if len(runtimes) != 3 || attempts > 12 || writes > 12 {
+			if len(initializationCounts) != 3 || len(runtimes) != 3 || len(acquisitions) != 6 || attempts > 12 || writes > 12 {
 				t.Fatal("configured-source family exceeded frozen acquisition budget", attempts, writes)
 			}
 		})

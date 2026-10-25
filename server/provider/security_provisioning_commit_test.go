@@ -13,9 +13,9 @@ func TestSecurityCompletionCannotBeForgedForDifferentNodeOrOperator(t *testing.T
 	if err := ProvisionSecurity(t.Context(), options); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(options.OutputDirectory, "nodes", "node-1")
-	nodeRaw, _ := os.ReadFile(filepath.Join(dir, "security.json"))
-	var d provisionedSecurityDocument
+	dir := filepath.Join(provisioningTestMaterialRoot(t), "nodes", "node-1")
+	nodeRaw, _ := os.ReadFile(filepath.Join(dir, "identity.json"))
+	var d securityMaterialDocument
 	json.Unmarshal(nodeRaw, &d)
 	if err := verifySecurityCompletion(dir, nodeRaw, d.Authority); err != nil {
 		t.Fatal("valid completion rejected", err)

@@ -93,6 +93,9 @@ func (o *authorityOriginOwner) carryOriginal(ctx context.Context, raw []byte) (a
 	if err != nil {
 		return authorityOriginResult{}, err
 	}
+	if h.handoff.configured != nil {
+		return authorityOriginResult{}, ErrPermissionDenied
+	}
 	if original := k.replayState.ledger[h.handoff.id]; original != nil {
 		if original.operation != h.handoff.operation {
 			return authorityOriginResult{}, ErrChangeConflict

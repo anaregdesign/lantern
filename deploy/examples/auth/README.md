@@ -8,9 +8,9 @@ validation endpoints and certificate paths stay outside Git.
 
 | File | Consumer and boundary |
 | --- | --- |
-| [security-config.json.example](security-config.json.example) | Small, deliberately invalid setup intent for `provision-security`; used before the OIDC Compose example. |
+| [security-config.json.example](security-config.json.example) | One human JSON used unchanged by provision/init/start in the OIDC example; placeholders are deliberately invalid. |
 | [server-off.env.example](server-off.env.example) | Explicit unauthenticated public OFF mode, without an IdP or authentication Store. |
-| [server.env.example](server.env.example) | Advanced original file-backed Server input for externally provisioned cohorts and validation profiles. Do not mix it with environment JSON. |
+| [server.env.example](server.env.example) | Shell wrapper for the same human JSON configuration; no alternate file-backed runtime schema. |
 | [google-issuer.change.json.example](google-issuer.change.json.example) | Existing `graph.v1.SecurityChange` ProtoJSON: Google browser and native Issuer trust, initially disabled. |
 | [apple-issuer.change.json.example](apple-issuer.change.json.example) | The same API shape: separate native iOS and web-backed Android profiles, initially disabled. |
 | [flutter-android.json.example](flutter-android.json.example), [flutter-ios.json.example](flutter-ios.json.example) | Flutter `--dart-define-from-file` build settings for the maintained app. No secrets. |
@@ -19,145 +19,199 @@ validation endpoints and certificate paths stay outside Git.
 
 ## Environment JSON startup
 
-Use `LANTERN_AUTH_MODE=oidc` and `LANTERN_SECURITY_CONFIG_JSON` for explicit
-provisioning, then select the generated node document for initialization and
-normal startup. The [Compose example](../../compose/README.md#oidc) mounts one
-node's private directory and a separate writable state volume. No external
-policy database is needed.
+Supply `LANTERN_AUTH_MODE=oidc` and the same complete human-authored
+`LANTERN_SECURITY_CONFIG_JSON` to provisioning, initialization and every start.
+No command replaces this input with a generated runtime configuration. The
+[Compose example](../../compose/README.md#oidc) forwards it to both init and
+serving while mounting identity material read-only and native state separately.
 
-### 1. Provision trust from setup intent
+### Configuration
 
-Privately replace the values in [security-config.json.example](security-config.json.example).
-The small setup input contains only operator choices:
+Complete [security-config.json.example](security-config.json.example) privately:
 
-- `public_origin`: exact HTTPS browser/API origin; no path, query or fragment.
-- `target_platform`: explicit `linux` or `darwin`. Generating on a Mac for Linux
-  containers still requires `linux`; provisioning does not sample native time.
-- `persistence_root`: absolute target directory for retained node state.
-- `initial_admin`: exact verified `issuer` and `subject`, never an email address.
-  Its enabled Issuer must include a browser profile so the administrator can log
-  in and complete operation-purpose reauthentication. API-only/native-only
-  Issuers can still be configured independently.
-- `nodes`: fixed one-to-31-node topology. Each entry selects `name`, exact HTTPS
-  `control_origin`/`data_origin` with ports and matching
-  `control_listen`/`data_listen` addresses. One entry is standalone. Live topology
-  expansion and dynamic membership are not supported.
-- `issuers`: intended browser, external API and/or native client profiles.
+- `public_origin`: exact HTTPS public origin, without a path/query/fragment.
+- `material_root`: required clean absolute directory for retained identity keys,
+  fixed trust and renewable membership inputs. It must not overlap state or
+  operator custody. It is not a saved user configuration.
+- `persistence_root`: separate absolute target root for retained native state.
+- `target_platform`: explicit `linux` or `darwin`. Provisioning on a Mac for Linux
+  containers still selects `linux` and does not acquire runtime time authority.
+- `nodes`: fixed one-to-31-node topology, each with `name`, exact HTTPS
+  `control_origin`/`data_origin` ports and matching
+  `control_listen`/`data_listen` addresses. `node` selects the local named entry;
+  it can be omitted only when the list has exactly one entry.
+- `initial_admin`: exact verified `issuer` and `subject`. Fresh provisioning
+  requires an enabled browser profile for its login and operation reauthentication.
+  On resume this is only the original identity assertion, never a regrant.
+- `issuers`: current desired configuration-owned provider trust, with browser,
+  external API and/or native profiles and their private client secrets.
 - `tls_termination`: `server` with `tls.certificate_pem`/`private_key_pem`, or
-  `proxy` with at least one exact `trusted_proxy_ips` address and the existing
-  trusted-proxy/public-origin boundary. Optional
-  IdP `root_ca_pem`, `private_origins` and `trusted_proxy_ips` retain their strict
-  endpoint and address checks.
+  `proxy` with exact `trusted_proxy_ips`. Optional IdP `root_ca_pem` and
+  `private_origins` preserve strict TLS and endpoint/SSRF checks.
 
 A browser-only Google entry can use `"issuer":"google"`, `client_id` and
-`client_secret`. This preset pins the canonical Google issuer, RS256 and token
-origin. Lantern derives the callback and exact secret recipient binding. A
-browser profile does not require `api_audience`. Configure `api_audience` only
-for an independently qualified external API JWT profile; without it, external
-API JWTs are rejected. API-only profiles do not require browser client/redirect
-setup. Native profiles stay in `native_clients` and retain their separate client,
-audience/presenter and secret-destination checks. A provider secret cannot be
-retargeted by a management change.
+`client_secret`. The preset pins canonical issuer, RS256 and token origin, and
+derives the callback/secret recipient. It needs no `api_audience`; without a
+separate API profile external API JWTs are rejected. API-only profiles need no
+browser client/redirect. Native profiles retain distinct audiences/presenters and
+secret destinations. Provider credentials, public TLS and proxy settings must be
+supplied again on every start; they are never loaded from identity material.
 
-Register the exact browser callback with the provider. For Google's canonical
-issuer, append
-`/auth/callback/89a8000a68d759c68bfaeab5056d67342e97643511923e63702da58a9aac8f38`
-to `public_origin`. Native callback/presenter registration stays separate.
+### Provision once, initialize once, then resume
 
-Inject this setup JSON through an approved secret manager, then run:
+Inject the completed JSON through an approved secret manager. With that same
+value still supplied, run:
 
 ```sh
-lantern provision-security --output /absolute/private/provisioned \
-  --operator-directory /absolute/private/operator --valid-for 720h
+lantern provision-security --operator-directory /absolute/private/operator --valid-for 720h
 ```
 
-Both output directories must be new, private absolute paths. The command
-creates independent TLS, voting, origin and operator keys once, derives coherent
-capacity/time profiles and shared CDC keys, then writes validated trust.
-It does not initialize native journals, acquire runtime time authority or start
-listeners. It never overwrites retained or interrupted output. Keep failed
-partial output for inspection; rerunning is not a repair procedure.
+`material_root` in the JSON selects the new material directory; there is no
+second output-directory option. Both material and operator directories must be
+new private absolute paths. The command generates independent TLS, voting,
+origin, operator and CA keys plus coherent fixed profiles once. It opens no
+native state, trusted clock or listeners. Existing/partial output is never
+rewritten or repaired by rerunning.
 
-Each `nodes/<name>/security.json` is private immutable serving provisioning.
-The same node directory contains its workload material and renewable signed
-`membership/control.json` and `membership/data.json`. The separate operator
-directory owns control/data signing keys, the private CA signer
-`ca-signing-key.pem`, `publisher.json` and the retained `state.json` journal path. Never mount that operator directory into a serving node.
-Generated absolute paths are final target paths: preserve them when mounting or
-installing these files. Do not edit genesis, identities, profiles or paths to
-make an existing deployment start.
+`material_root/nodes/<node>/identity.json` retains independent keys, historical
+trust anchors, fixed topology and original seed identity. It contains no saved
+setup/current Issuer list, provider secrets, public TLS or proxy configuration.
+Historical genesis may retain original trust records as anchors; those records
+are never a current provider-config source. Durable CDC keys and validated finite
+internal capacities stay bound to that identity. Retained state under
+`persistence_root/<node>` holds native security history and custody. Neither directory can replace missing current input. Preserve paths,
+keys, historical genesis and every existing state/lease family.
 
-### 2. Renew membership and initialize each target
-
-Run the separate operator process with its generated finite-window configuration:
+The separate operator directory contains control/data signing keys, private
+`ca-signing-key.pem`, `publisher.json` and the retained `state.json` journal path.
+Start its external publisher before the short initial manifests expire:
 
 ```sh
 membershippublisher --config /absolute/private/operator/publisher.json \
   --state /absolute/private/operator/state.json --mode init
 ```
 
-After an orderly publisher stop, use `--mode resume` with the same retained
-journal. Both control and data manifests have short lifetimes and require
-renewal even for one node. The publisher signs and durably journals each exact
-candidate before publication; partial publication retains the same candidate.
-Mount the node directory read-only in Server so atomic manifest replacement
-remains visible. The serving process never has the signing keys.
+It renews both control and data memberships, even for one node. After an orderly
+publisher stop use `--mode resume` with the same journal. Mount only the selected
+node's material directory read-only in Server; a directory mount preserves
+atomic renewable input replacement. Never mount operator/CA signing custody.
 
-The default window is 30 days (`720h`); `--valid-for` selects its finite horizon.
-Workload leaf certificates cover the cleanup window plus one day. The separate
-private CA root has a fixed ten-year life. Before the leaf/window boundary,
-prepare candidates:
+On each actual target, keep supplying the same human JSON and run:
+
+```sh
+lantern init-security
+lantern
+```
+
+`init-security` explicitly creates native control/data membership and custody
+state once and publishes CLEAN only after orderly shutdown. It accepts no
+arguments. Ordinary startup always resumes intact state and uses current JSON
+again. Missing JSON, material, partial/altered/copied state or trust/target
+mismatch fails closed; it never falls back to a stored configuration, fresh
+initialization or regenerated trust. Preserve successful CLEAN shutdown on every
+normal stop/restart. Fixed membership is not live standalone-to-cluster expansion.
+
+### Change configured Issuers later
+
+Add a later provider to `issuers` in the same configuration, keep all intended
+configuration-owned Issuers, and supply that updated value on restart. Native
+certified compare-and-swap reconciles configured trust before public readiness.
+Nodes with different desired Issuer intent remain publicly unavailable.
+Unchanged intent does not rewrite policy. No public version or manual desired
+revision is needed.
+
+Adding trust creates no Principals, Roles or assignments. Reconciliation cannot
+appropriate managed Issuers, reset application/security state, undo account
+suspension or revive withdrawn permissions. Existing admin and last-usable-human
+invariants still apply. `initial_admin` remains the exact original seed identity;
+changing or repeating it cannot reset later administrator state. Current
+provider secrets are bound to their exact issuer/client/token destination.
+
+Management-owned Issuer worksheets can reference optional current secret
+bindings supplied in this same JSON. For the example worksheet handles, the
+shape is:
+
+```json
+{
+  "secret_bindings": {
+    "replace_google_web": {
+      "issuer": "https://accounts.google.com",
+      "client_id": "REPLACE_GOOGLE_WEB_CLIENT_ID",
+      "token_origin": "https://oauth2.googleapis.com",
+      "value": "REPLACE_RAW_GOOGLE_WEB_SECRET"
+    },
+    "replace_apple_android": {
+      "issuer": "https://appleid.apple.com",
+      "client_id": "invalid.replace.apple.web",
+      "token_origin": "https://appleid.apple.com",
+      "value": "REPLACE_APPLE_ANDROID_CLIENT_SECRET_JWT"
+    },
+    "replace_apple_ios": {
+      "issuer": "https://appleid.apple.com",
+      "client_id": "invalid.replace.ios",
+      "token_origin": "https://appleid.apple.com",
+      "value": "REPLACE_APPLE_IOS_CLIENT_SECRET_JWT"
+    }
+  }
+}
+```
+
+This is a fragment to merge into current operator input, never a second startup
+document or a trust grant. A handle must match its Issuer/native client's
+`secretRef`; issuer, client ID and token endpoint **origin** must all match the
+verified destination. Do not duplicate a handle generated by a configured
+profile's inline secret. The `*_FILE` worksheet values below are operator-only
+registration/rotation notes; this example supplies raw secret values through
+the protected JSON, never through those retired startup environment recipes.
+
+### Browser callbacks
+
+Register the exact callback derived from supplied `public_origin` and canonical
+Issuer. For Google append
+`/auth/callback/89a8000a68d759c68bfaeab5056d67342e97643511923e63702da58a9aac8f38`.
+This local command prints only browser callback URLs from the supplied JSON:
+
+```sh
+python3 - <<'CALLBACKS'
+import hashlib, json, os
+config = json.loads(os.environ["LANTERN_SECURITY_CONFIG_JSON"])
+for item in config["issuers"]:
+    if item.get("client_id"):
+        issuer = "https://accounts.google.com" if item["issuer"] == "google" else item["issuer"]
+        print(config["public_origin"] + "/auth/callback/" + hashlib.sha256(issuer.encode()).hexdigest())
+CALLBACKS
+```
+
+Do not print the full JSON or inspect persisted genesis to recover current
+provider configuration. Native callback/presenter registrations remain separate.
+
+### Certificate maintenance
+
+The default operator window is 30 days (`720h`). Private workload leaves cover
+the cleanup window plus one day; the private CA root has a fixed ten-year life.
+Before the leaf/window boundary prepare same-identity candidates:
 
 ```sh
 lantern renew-security --operator-directory /absolute/private/operator \
   --output /absolute/private/new-renewal --valid-for 720h
 ```
 
-For later renewals add `--publisher-config` with the actual current immutable
-publisher config. Follow the [explicit maintenance sequence](../../../docs/live-membership-renewal.md#renew-generated-workload-certificates).
-The command writes only a new candidate directory; it never publishes into live
-files or changes the retained journal. Review `publication.json` and require the
-last-written `COMPLETE` marker before applying anything. Certificate renewal
-preserves root, keys, SPKI/URI/SAN, topology and state bindings; it does not renew
-public ingress TLS or provider credentials. Nodes need an orderly CLEAN stop and
-restart, not hot reload or reinitialization. The root expiry is a hard boundary:
-renewal cannot create a new root or reinterpret/reset retained state. Stopped or
-expired membership remains fail-closed; never replace missing journal/lease state
-with a fresh publisher.
+Later renewals add `--publisher-config` with the current immutable publisher
+config. [Reviewed maintenance](../../../docs/live-membership-renewal.md#renew-generated-workload-certificates)
+uses CLEAN node stop, stopped publisher, reviewed certificate/material install
+at original paths, explicit journal advance/resume, then restart with the same
+human configuration. Preparation reads retained identity/operator custody, never
+saved setup or provider credentials. It does not hot-reload, rotate root/keys,
+reset state or renew public ingress/provider credentials. Root expiry remains a
+hard boundary requiring a separately specified trust transition.
 
-On each actual target, select only that node's document:
-
-```sh
-export LANTERN_AUTH_MODE=oidc
-export LANTERN_SECURITY_CONFIG_JSON='{"provisioned_file":"/absolute/private/provisioned/nodes/node-1/security.json"}'
-lantern init-security
-lantern
-```
-
-`init-security` creates new native control and data membership/custody state,
-then publishes CLEAN only after successful orderly shutdown. It accepts no
-arguments and does not regenerate trust. Native trusted-time premises still
-apply on the actual Linux/Darwin target. The fixed quorum is needed for serving;
-per-node initialization can occur before the other fixed members are running.
-
-### 3. Resume intact state
-
-Normal startup accepts only the generated reference, validates the exact target
-profile/trust and reopens intact state. Missing, partial, malformed, copied,
-tampered or incompatible state fails clearly; it never initializes or resets
-state. Keep the retained state across stops/recreations and require successful
-orderly shutdown. Initial administrator/Issuer input is an original seed, never
-restart reconciliation: later current Roles, revocations, sessions and managed
-Issuer changes remain authoritative.
-
-The advanced original file-backed interface below is for deliberate external
-provisioning and validation profiles; it is not a compatibility reader or an
-additional requirement. Do not mix it with the generated-reference input.
-There is no reader or migration for the retired complete inline-authority JSON.
-Keep real setup JSON, generated documents and provider credentials out of Git,
-build contexts, shell arguments, diagnostics, Admin/Vite, Flutter build defines
-and shared rendered Compose output. Source tests and placeholder examples do not
-qualify real providers or physical devices.
+There are no parallel legacy file-backed OIDC environment recipes or generated
+configuration references. Externally provisioned material uses this same typed
+configuration and material format. OFF works without JSON, but any present
+security JSON, including empty, is rejected. Keep real configuration/credentials
+outside Git, build contexts, shell arguments, logs, client builds and shared
+rendered Compose output. Synthetic source evidence is not real-provider/device
+qualification.
 
 ## Keep real inputs private
 
@@ -214,13 +268,10 @@ An optional OIDC root-CA file extends verified IdP trust, not mobile trust.
 When using an HTTPS gateway, retain the exact trusted-proxy and public-origin
 contract; do not trust arbitrary forwarded headers.
 
-The OIDC template selects `resume`, which requires original provisioning and intact
-M/P/B journals plus CLEAN custody. Only a separately authorized **new** generation
-can use `fresh`; never reset existing state to make a template start. No example
-supplies a signed membership, original node/genesis document, time attestation,
-administrator subject, Role or credential. Obtain those independently through
-the [authority provisioning/custody contract](../../../docs/security-current-authority.md#public-oidc-composition).
-The unchanged template cannot establish a serving authority.
+The OIDC template supplies the same current JSON on every invocation. Separate
+identity provisioning and native initialization are explicit first-use actions;
+ordinary startup requires retained identity material and CLEAN native custody.
+Nothing in these placeholders supplies actual provider/account acceptance.
 
 The Issuer JSON files use the existing
 [`SecurityChange.put_issuer` API](../../../proto/graph/v1/security.proto),
@@ -244,17 +295,18 @@ credentials. Human subject namespace qualification stays false. A new
 native-only Google Issuer omits all browser `clientId`, `apiAudience`,
 `redirectUri` and `secretRef` fields.
 
-Secret bindings contain absolute **file references**, never secret bytes.
-The Google Web file contains only the raw client secret, not downloaded JSON.
-Apple's two files contain separately audience-bound, operator-generated ES256
-client-secret JWTs. Each secret file is nonempty, at most 4096 bytes and has no
-newline. Keep Apple's `.p8` signing key operator-private; Lantern consumes the
-signed JWT, not that key. Rotation uses atomic private-file replacement before
-expiry; there is no automatic signing or refresh. Public issuer/token URLs
-are canonical protocol constants, not validation-specific selections.
+The human JSON carries exact destination-bound `client_secret` values through
+the private injection boundary. Google uses the raw client secret, not downloaded
+JSON. Apple's profiles carry separately audience-bound operator-generated ES256
+client-secret JWTs. Secret values are bounded, nonempty and have no newline.
+Keep Apple's `.p8` signing key operator-private; Lantern consumes the signed JWT,
+not that key. Rotation supplies updated current JSON on restart before expiry;
+there is no automatic signing or refresh. Public issuer/token URLs are canonical
+protocol constants, not validation-specific selections.
 
-No example installs a registration policy or grants data/management Roles.
-Signup remains default-disabled; ordinary login still requires an existing
+Fresh configuration seeds only the explicit initial administrator's management
+assignment; it grants no application data access. No template installs a
+registration policy. Signup remains default-disabled; ordinary login requires an existing
 exact verified `(issuer, subject)` Principal and explicit assignments.
 See [OIDC/native operations](../../../docs/oidc-operations.md#native-client-profiles)
 and [Google setup](../../../docs/google-oidc-setup.md).

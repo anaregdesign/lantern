@@ -476,7 +476,9 @@ historical labels; current CLI and receipts accept only the descriptive names, w
 shorthand aliases.
 
 The [current-authority runner](.github/scripts/current_sdk4_gate.py) records separate
-version 3 contracts (#1820). **`functional-validation`** owns complete
+receipt schema 3 with `functional-full-v4` and `source-cohort-v4` case contracts.
+Old v3 case contracts or three-row source receipts cannot qualify this lifecycle.
+**`functional-validation`** owns complete
 mechanism/application behavior with controlled synthetic UTC: every retained functional
 root, all four public SDKs, the scoped Rust case and active export revocation.
 **`configured-source-integration`** owns integration with the configured time source
@@ -503,7 +505,11 @@ environment flag.
 `configured-source-integration` prebuilds SDK dependencies, then uses the fixed time
 source and normal constructor. Each owner must acquire its own fresh anchor. Complete
 process-owned counters record attempts, actual UDP writes and installations separately
-after shutdown; the entire three-owner family permits at most 12 attempts and 12 writes.
+after shutdown. The same three fixed identities use six sequential native owners:
+explicit initialization of members 1, 2 and 3, then ordinary resume of members 1,
+2 and 3. Source rows bind phase (`init`/`resume`) and member; all six rows together
+permit at most 12 attempts and 12 writes. The controlled functional browser case
+additionally resumes member 2 without changing the normal-source budget.
 Missing, duplicate, zero, inconsistent or in-flight count evidence fails
 configured-source-integration. Lossy trace records cannot substitute for these counters.
 No soak or retry-until-green is permitted. Startup remains 45 seconds with bounded
@@ -972,14 +978,18 @@ number rather than force-moving the tag.
 
   **OIDC same-origin example:** expose Admin at `https://admin.example.com:8443`
   and select that exact HTTPS public origin as the gateway. Set
-  `LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example.com:8443` and register
-  the original provisioned Issuer's redirect URI with the same origin plus the exact
-  Issuer-specific `/auth/callback/<SHA-256>` path. Configure, for example,
+  `public_origin` to that origin in the human `LANTERN_SECURITY_CONFIG_JSON`.
+  Supply the same configuration to `provision-security`, `init-security` and
+  every normal start; the retained identity material is not a runtime-config
+  source. Register each configured browser Issuer's derived redirect URI using
+  that origin plus the exact Issuer-specific `/auth/callback/<SHA-256>` path.
+  See the [configuration guide](deploy/examples/auth/README.md#environment-json-startup).
+  Configure, for example,
   `LANTERN_ADMIN_SERVER_UPSTREAM=https://server.internal.example:6380`;
   verify its certificate against that upstream hostname and mount
   `LANTERN_ADMIN_SERVER_CA_FILE` for a private CA. Preserve the public
   Host/scheme through the proxy chain and configure exact
-  `LANTERN_OIDC_TRUSTED_PROXY_IPS` where required. A plaintext Server hop is
+  `trusted_proxy_ips` in that same JSON where required. A plaintext Server hop is
   permitted only behind the explicitly trusted exact gateway IP with validated
   HTTPS/public Host headers. Keep credentials and private keys out of the SPA,
   browser local storage and Vite env.

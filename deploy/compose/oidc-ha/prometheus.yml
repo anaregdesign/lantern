@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+scrape_configs:
+  - job_name: lantern_oidc_ha
+    scheme: https
+    metrics_path: /metrics
+    tls_config:
+      ca_file: /metrics-client/ca.pem
+      cert_file: /metrics-client/client.pem
+      key_file: /metrics-client/client-key.pem
+      min_version: TLS13
+    static_configs:
+      - targets: [lantern-0:9443]
+        labels: {node: lantern-0}
+      - targets: [lantern-1:9443]
+        labels: {node: lantern-1}
+      - targets: [lantern-2:9443]
+        labels: {node: lantern-2}

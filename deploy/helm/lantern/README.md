@@ -2,7 +2,7 @@
 
 The default is one OFF Server with graph backups, an internal public Service,
 and loopback diagnostics. Authentication has no zero-config dependency on an
-IdP or security Store. Multiple replicas require explicit private peer material.
+IdP or security Store. Multiple replicas require OFF peer material or the fixed OIDC identity topology.
 
 ```sh
 helm lint deploy/helm/lantern
@@ -10,8 +10,10 @@ helm template local deploy/helm/lantern
 helm install lantern deploy/helm/lantern --namespace lantern --create-namespace
 ```
 
-Publication of an image/chart does not deploy it. Provision and validate the
-operator material before installation. Generated examples contain no secrets.
+Publication of an image/chart does not deploy it. Real Kubernetes acceptance
+remains **0/1, held** in [#1636](https://github.com/anaregdesign/lantern/issues/1636).
+This source migration does not resume cluster work or qualify renewal delivery.
+Provision and validate inputs separately; examples contain no real secrets.
 
 ## Private peer plane
 
@@ -42,30 +44,89 @@ platform scope is unchanged. Standalone OFF adds no owner or source dependency.
 
 ## OIDC/RBAC
 
-Set `auth.mode=oidc`, a verified public TLS Secret, and `auth.configMap` with
-`LANTERN_OIDC_BROWSER_ORIGIN` plus any required OIDC fetch/secret bindings.
-`auth.existingSecret` holds independent original provisioning inputs. List every
-required basename in `auth.files`, including `auth.nodeFile` (default `node.json`).
-The source Secret key for each file is `<pod-name>.<basename>`: for example,
-`lantern-0.node.json`. The trusted init step copies only that pod's files into
-owner-only regular files under `/run/lantern-security`. Reference those exact
-paths from the node document; persistent journal and custody paths belong under
-`runtimeState.dir`. An originless voter omits its origin signing file.
+Set `auth.mode=oidc`, `auth.configSecret` and `auth.existingSecret`. The former
+contains the same complete human JSON used for provisioning, explicit first
+initialization and every start, under key `<pod-name>.json`. The latter contains
+only fixed per-workload identity material. Current provider credentials, public
+TLS/proxy settings and desired Issuers belong in the supplied JSON, never in a
+saved generated runtime configuration. OIDC rejects `publicTLS.existingSecret`
+and generic OFF `peerPlane.enabled`/credential inputs; its workload identity is
+already bound to the retained material.
 
-The node/genesis documents bind the original voter set, separate origin keys,
-workload identities, resource bounds and native time profile. Provision a fixed
-set of 1 through 31 voters, with majority `floor(N/2)+1`; even counts are valid.
-Odd counts usually provide the same failure tolerance with one fewer voter.
-The chart's data replica count cannot add/remove control voters or provision
-identities. Every authenticated Server must have an original voter identity.
+The trusted non-root init step selects only its Downward-API Pod name. It copies
+that Pod's user JSON to owner-private ephemeral `/run/lantern-input/config.json`
+and identity material to `/run/lantern-security/nodes/<pod-name>/`. The Server
+mounts only those private copies read-only; raw cohort Secret projections are
+visible only to the trusted setup container. Every private directory is `0700`,
+regular file `0600`, with the same effective non-root owner. This input copy is
+an operator-supplied **Pod snapshot**, not a server-derived configuration or
+fallback. Container-only restart rereads that required snapshot. A changed
+`auth.configSecret` requires deliberate **Pod replacement** to supply a new
+snapshot; no live Secret/config reload is promised.
 
-Use `auth.storeMode=fresh` once for an empty state family and `resume` for intact
-recovery with its independent custody/minimum floors. Never initialize over
-retained state, relabel an old fixed-writer journal, or reuse one pod's keys for
-another. Existing `auth.nodeRole`, `auth.writerFiles`, profile selectors and old
-writer/bootstrap environment settings are rejected. No migration is provided.
-OFF remains the default and needs no authentication material; private data
-replication still requires its independent signed membership and mTLS material.
+`auth.files` must explicitly allow exactly these eight relative identity paths:
+
+```yaml
+auth:
+  mode: oidc
+  configSecret: current-human-config
+  existingSecret: fixed-identity-material
+  controlPort: 16380
+  files:
+    - identity.json
+    - COMPLETE
+    - workload.pem
+    - workload-key.pem
+    - roots.pem
+    - data-operator.pem
+    - membership/control.json
+    - membership/data.json
+```
+
+Each identity Secret key is `<pod-name>.<relative-path-with-slashes-replaced-by-dots>`;
+for example `lantern-0.identity.json` and
+`lantern-0.membership.control.json`. Unknown paths, duplicates, traversal and
+operator signing keys are refused. There is no old `auth.storeMode`, `nodeFile`
+or `configMap` input; even empty retired settings are rejected.
+
+The supplied JSON must select its exact Pod name as `node`, declare
+`material_root: /run/lantern-security`, and use `persistence_root` equal to
+`runtimeState.dir`. Preserve those original target paths during provisioning
+and installation. Per-pod PVCs retain native state under the derived node path;
+no init-container action creates or resets native M/P/B/custody state. Perform
+explicit `init-security` on each new target using the same JSON before normal
+serving. The normal entrypoint only reads its required input and executes
+`/app/lantern` to resume intact state. Missing/partial input/material/state fails
+closed without regeneration or a saved-config fallback.
+
+OIDC permits one to 31 fixed replicas without generic `peerPlane.enabled`.
+`peerPlane.port` is the data listener (default `6381`); `auth.controlPort` is the
+control listener (default `16380`). Both must be distinct from the public port
+and each other and match the JSON's fixed origins/listeners. The headless
+Service exposes both private ports for bootstrapping; the client Service stays
+public/readiness gated. Scaling the StatefulSet does not add voters or generate
+new identities. Current configured Issuer intent must be certified before
+public readiness; a differing desired set leaves that node unavailable and
+never grants Principals, Roles or assignments.
+
+### Finite membership delivery boundary
+
+The trusted setup step copies the two signed memberships into private regular
+files. Those copies retain finite expiry. Updating a Secret does not update
+the copied files, and a container restart does not rerun Pod initialization.
+This chart does **not** provide automatic Secret-to-private-file membership
+renewal delivery. Existing source checks preserve isolation and fail-closed
+expiry; they do not establish a continuously renewed Kubernetes deployment.
+The separate external publisher's qualified directory delivery cannot be
+claimed as Kubernetes distribution proof. Keep that delivery/real-cluster
+acceptance gap with held [#1636](https://github.com/anaregdesign/lantern/issues/1636);
+no sidecar, new cluster operation or acceptance claim is added here.
+
+Outside that held platform exit, fixed identity/trust, native time/quorum,
+CLEAN restart custody and the [same-identity certificate maintenance](../../../docs/live-membership-renewal.md#renew-generated-workload-certificates)
+contract remain unchanged. Operator/CA signers and the publisher journal stay
+outside every serving mount. Never remove state, weaken expiry or repeatedly
+reinitialize a Pod to bypass missing renewal delivery.
 
 ## Admin and diagnostics
 

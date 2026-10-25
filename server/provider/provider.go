@@ -324,7 +324,8 @@ func NewConfig() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	graphSnapshotSpool, err := loadGraphSnapshotSpoolForSecurity(securityConfig)
+	receiptWAL := loadReceiptWALConfig()
+	graphSnapshotSpool, err := selectGraphSnapshotSpoolForSecurity(securityConfig, receiptWAL.Mode)
 	if err != nil {
 		return nil, err
 	}
@@ -427,7 +428,7 @@ func NewConfig() (*Config, error) {
 			},
 		},
 		MutationLog: loadMutationLogConfig(),
-		ReceiptWAL:  loadReceiptWALConfig(),
+		ReceiptWAL:  receiptWAL,
 		Replication: loadReplicationConfig(),
 		Readiness:   loadReadinessConfig(),
 		Peer:        peer,

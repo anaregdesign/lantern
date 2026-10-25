@@ -19,7 +19,7 @@ func (r *SecurityRuntime) openAuthority(ctx context.Context) error {
 	}
 	// This starts the independent private listener before public readiness;
 	// absence of a quorum leaves the actual current owner unavailable, not OFF.
-	r.current, err = security.OpenCurrentAuthority(ctx, p, r.config.StoreMode, r.config.BrowserOrigin)
+	r.current, err = security.OpenCurrentAuthority(ctx, p, "resume", r.config.BrowserOrigin)
 	if err != nil {
 		return err
 	}
@@ -28,9 +28,6 @@ func (r *SecurityRuntime) openAuthority(ctx context.Context) error {
 		return err
 	}
 	roots, err := loadSecurityRootsPEM(r.config.RootCAPEM)
-	if r.config.RootCAFile != "" {
-		roots, err = loadSecurityRoots(r.config.RootCAFile)
-	}
 	if err != nil {
 		return err
 	}
@@ -67,22 +64,28 @@ func (r *SecurityRuntime) openAuthority(ctx context.Context) error {
 	return err
 }
 
-// loadSecurityProvisioning resolves the selected startup representation without
-// writing secret material to a temporary file or creating any durable state.
+// loadSecurityProvisioning joins independent historical trust with this
+// invocation's desired Issuers. Native reconciliation owns application/CAS.
 func loadSecurityProvisioning(config SecurityConfig) (*security.CurrentProvisioning, error) {
-	if len(config.AuthorityJSON) == 0 {
-		return security.LoadCurrentProvisioning(config.ConfigFile)
+	if config.input == nil || len(config.AuthorityJSON) == 0 || config.HistoricalImage == nil || config.configuredTrust == nil {
+		return nil, errSecurityProvisioning
 	}
 	p, err := security.LoadCurrentProvisioningJSON(config.AuthorityJSON)
 	if err != nil {
 		return nil, err
 	}
-	if config.InitialImage != nil {
-		if err := p.ValidateInitialImage(*config.InitialImage); err != nil {
-			return nil, err
-		}
+	if err := p.ValidateInitialImage(*config.HistoricalImage); err != nil {
+		return nil, err
 	}
-	return p, nil
+	node, found := selectedSecurityNode(config)
+	if !found {
+		return nil, errSecurityProvisioning
+	}
+	p, err = p.WithLocalListen(node.ControlListen)
+	if err != nil {
+		return nil, err
+	}
+	return p.WithConfiguredTrust(config.configuredTrust)
 }
 
 func (r *SecurityRuntime) currentAttemptAffinity(id [32]byte) string {

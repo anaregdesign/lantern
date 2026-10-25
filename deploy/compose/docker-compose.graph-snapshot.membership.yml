@@ -1,9 +1,11 @@
-# Graph-only custom-UID staging. Apply LAST, after docker-compose.membership.yml
+# OFF graph-only custom-UID staging. Apply LAST, after docker-compose.membership.yml
 # and its !override volume lists, INSTEAD OF docker-compose.graph-snapshot.yml.
 # The operator prepares each new dedicated directory with mode 0700 and the
 # exact LANTERN_SERVICE_UID:LANTERN_SERVICE_GID owner. Never reuse state, backup
 # or runtime paths.
 # No production initializer or automatic host-directory creation is performed.
+# OIDC uses its derived private /state/<node>/snapshot-spool instead; omit this
+# overlay and all separate graph-spool environment inputs for OIDC.
 services:
   lantern-0:
     volumes:

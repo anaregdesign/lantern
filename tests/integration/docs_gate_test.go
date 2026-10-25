@@ -3,9 +3,17 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -119,7 +127,7 @@ func TestPrivateAuthExampleEnvironmentGate(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			for _, setting := range os.Environ() {
 				name, _, _ := strings.Cut(setting, "=")
-				if strings.HasPrefix(name, "LANTERN_AUTH_") || strings.HasPrefix(name, "LANTERN_SECURITY_") || strings.HasPrefix(name, "LANTERN_OIDC_") {
+				if strings.HasPrefix(name, "LANTERN_AUTH_") || strings.HasPrefix(name, "LANTERN_SECURITY_") || strings.HasPrefix(name, "LANTERN_OIDC_") || strings.HasPrefix(name, "LANTERN_TLS_") || strings.HasPrefix(name, "LANTERN_PEER_") || name == "LANTERN_PEERS" || strings.HasPrefix(name, "LANTERN_GRAPH_SNAPSHOT_SPOOL_") || strings.HasPrefix(name, "LANTERN_CDC_") {
 					t.Setenv(name, "")
 					if err := os.Unsetenv(name); err != nil {
 						t.Fatal(err)
@@ -145,12 +153,9 @@ func TestPrivateAuthExampleEnvironmentGate(t *testing.T) {
 				}
 				t.Setenv(name, strings.Trim(value, "'"))
 			}
-			c, err := provider.LoadSecurityConfig()
-			if err != nil || c.Mode != mode {
-				t.Fatal("example does not match the current environment loader", err)
-			}
 			if mode == "off" {
-				if c.ConfigFile != "" || c.StoreMode != "" || len(c.SecretBindings) != 0 {
+				c, err := provider.LoadSecurityConfig()
+				if err != nil || c.Mode != "off" || !reflect.DeepEqual(c, provider.SecurityConfig{Mode: "off"}) {
 					t.Fatal("OFF example must need no authentication provisioning")
 				}
 				if err := os.Unsetenv("LANTERN_AUTH_MODE"); err != nil {
@@ -159,20 +164,86 @@ func TestPrivateAuthExampleEnvironmentGate(t *testing.T) {
 				if c, err := provider.LoadSecurityConfig(); err != nil || c.Mode != "off" {
 					t.Fatal("omitted mode must preserve default OFF", err)
 				}
+				t.Setenv("LANTERN_SECURITY_CONFIG_JSON", "{}")
+				if _, err := provider.LoadSecurityConfig(); err == nil {
+					t.Fatal("OFF silently ignored supplied OIDC configuration")
+				}
+				if err := os.Unsetenv("LANTERN_SECURITY_CONFIG_JSON"); err != nil {
+					t.Fatal(err)
+				}
 			} else {
-				if c.StoreMode != "resume" || len(c.SecretBindings) != 3 || !strings.HasPrefix(c.ConfigFile, "/REPLACE_PRIVATE_DIRECTORY/") {
-					t.Fatal("OIDC example changed authentication or custody inputs")
+				var input map[string]any
+				if err := json.Unmarshal([]byte(os.Getenv("LANTERN_SECURITY_CONFIG_JSON")), &input); err != nil {
+					t.Fatal("OIDC example must supply one complete JSON document", err)
+				}
+				issuers, ok := input["issuers"].([]any)
+				if !ok || len(issuers) != 1 {
+					t.Fatal("OIDC example must declare its current Google browser issuer")
+				}
+				issuer, ok := issuers[0].(map[string]any)
+				tls, tlsOK := input["tls"].(map[string]any)
+				if !ok || issuer["issuer"] != "google" || issuer["client_secret"] != "FAKE_CLIENT_SECRET_DO_NOT_USE" || !tlsOK || tls["certificate_pem"] != "FAKE_PUBLIC_TLS_CERTIFICATE_PEM" || tls["private_key_pem"] != "FAKE_PUBLIC_TLS_PRIVATE_KEY_PEM" || input["tls_termination"] != "server" {
+					t.Fatal("OIDC example must identify disposable Google and public TLS placeholders")
+				}
+				root, err := filepath.EvalSymlinks(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				state := filepath.Join(root, "state")
+				if err := os.Mkdir(state, 0700); err != nil {
+					t.Fatal(err)
+				}
+				input["material_root"], input["persistence_root"] = filepath.Join(root, "material"), state
+				public, private, err := ed25519.GenerateKey(rand.Reader)
+				if err != nil {
+					t.Fatal(err)
+				}
+				origin, err := url.Parse(input["public_origin"].(string))
+				if err != nil {
+					t.Fatal(err)
+				}
+				now := time.Now().UTC()
+				certificate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "disposable documentation example"}, DNSNames: []string{origin.Hostname()}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+				der, err := x509.CreateCertificate(rand.Reader, certificate, certificate, public, private)
+				if err != nil {
+					t.Fatal(err)
+				}
+				key, err := x509.MarshalPKCS8PrivateKey(private)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tls["certificate_pem"], tls["private_key_pem"] = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}))
+				issuer["client_secret"] = "disposable-documentation-client-secret"
+				configured, err := json.Marshal(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("LANTERN_SECURITY_CONFIG_JSON", string(configured))
+				if _, err := provider.LoadSecurityConfig(); err == nil {
+					t.Fatal("ordinary OIDC loading initialized absent identity material")
+				}
+				if err := provider.ProvisionSecurity(t.Context(), provider.SecurityProvisionOptions{OperatorDirectory: filepath.Join(root, "operator"), ValidFor: time.Hour}); err != nil {
+					t.Fatal("documented JSON could not provision disposable private material", err)
+				}
+				c, err := provider.LoadSecurityConfig()
+				if err != nil || c.Mode != "oidc" || c.MaterialRoot != input["material_root"] || c.PersistenceRoot != state || len(c.AuthorityJSON) == 0 || c.HistoricalImage == nil || len(c.Issuers) != 1 || c.Issuers[0].URL != "https://accounts.google.com" || c.TLS.CertPEM == "" || len(c.SecretBindings) != 1 {
+					t.Fatal("same current JSON did not load its separately provisioned identity", err)
+				}
+				if _, err := os.Stat(c.StateDirectory); !os.IsNotExist(err) {
+					t.Fatal("documentation provisioning opened native serving state", err)
 				}
 				for _, binding := range c.SecretBindings {
-					if !strings.HasPrefix(binding.Path, "/REPLACE_PRIVATE_DIRECTORY/") {
-						t.Fatal("example secret is not a placeholder file reference")
+					if binding.Path != "" || binding.Value != issuer["client_secret"] || binding.TokenOrigin != "https://oauth2.googleapis.com" {
+						t.Fatal("documented inline secret lost its exact provider binding")
 					}
 				}
-				t.Setenv("LANTERN_SECURITY_CONFIG_FILE", "")
-				if _, err := provider.LoadSecurityConfig(); err == nil {
-					t.Fatal("invalid OIDC must fail without anonymous fallback")
+				if err := os.Unsetenv("LANTERN_SECURITY_CONFIG_JSON"); err != nil {
+					t.Fatal(err)
 				}
-				t.Setenv("LANTERN_SECURITY_CONFIG_FILE", c.ConfigFile)
+				if _, err := provider.LoadSecurityConfig(); err == nil {
+					t.Fatal("OIDC used persisted material as a missing-config fallback")
+				}
+				t.Setenv("LANTERN_SECURITY_CONFIG_JSON", string(configured))
 			}
 			t.Setenv("LANTERN_SECURITY_PROFILE", "")
 			if _, err := provider.LoadSecurityConfig(); err == nil {
@@ -249,11 +320,12 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 			required: []string{
 				"`sdks/node/v*` release", "optionally proxies", "/auth/*", "/browser/*", "/graph.v1.*/*",
 				"OFF direct-Server example", "LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080",
-				"OIDC same-origin example", "LANTERN_OIDC_BROWSER_ORIGIN=https://admin.example.com:8443",
-				"original provisioned Issuer's redirect URI", "/auth/callback/<SHA-256>",
+				"OIDC same-origin example", "`public_origin`", "human `LANTERN_SECURITY_CONFIG_JSON`",
+				"same configuration to `provision-security`, `init-security` and every normal start",
+				"retained identity material is not a runtime-config source", "configured browser Issuer's derived redirect URI", "/auth/callback/<SHA-256>",
 				"LANTERN_ADMIN_SERVER_UPSTREAM=https://server.internal.example:6380",
 				"gateway picker never selects that upstream", "certificate against that upstream hostname",
-				"LANTERN_ADMIN_SERVER_CA_FILE", "LANTERN_OIDC_TRUSTED_PROXY_IPS", "public Host/scheme",
+				"LANTERN_ADMIN_SERVER_CA_FILE", "`trusted_proxy_ips` in that same JSON", "public Host/scheme",
 				"explicitly trusted exact gateway IP", "configured eligible authority origin", "#1608/#1609 S5 work",
 				"Missing upstream routes fail closed", "/auth/operations", "operations.read", "Only GET diagnostics",
 				"Prometheus never receives cookies or Authorization", "browser local storage and Vite env",
@@ -265,11 +337,12 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 			required: []string{
 				"OFF mode", "LANTERN_CORS_ALLOWED_ORIGINS=http://localhost:8080", "For **OIDC**",
 				"select that exact public origin", "public_origin", "LANTERN_AUTH_MODE=oidc",
-				"LANTERN_SECURITY_CONFIG_JSON", "lantern provision-security",
-				".authority.genesis.Image.issuers[]", "redirect_uri", "init-security",
-				"provisioned_file", "resumes intact state", "signed membership renewal",
+				"LANTERN_SECURITY_CONFIG_JSON", "provision-security --operator-directory", "one-time `init-security`",
+				"every normal start/restart", "`material_root` contains fixed identity keys/trust, not a saved runtime config",
+				"Missing configuration never falls back", "derived callback", "intact CLEAN restart custody", "signed membership renewal",
+				"adding one grants no users, Roles or assignments", "different desired Issuer intent stay unavailable",
 				"/auth/*", "/browser/*", "/graph.v1.*/*", "LANTERN_ADMIN_SERVER_UPSTREAM",
-				"gateway picker never selects that upstream", "verified HTTPS upstream", "setup intent's exact `trusted_proxy_ips`",
+				"gateway picker never selects that upstream", "verified HTTPS upstream", "configuration's exact `trusted_proxy_ips`",
 				"public Host/scheme", "configured eligible authority origin", "#1608/#1609 S5 work",
 				"/auth/operations", "each GET", "Prometheus never receives cookies or Authorization",
 				"#fixed-server-and-diagnostics-proxy", "docs/oidc-operations.md#browser-and-diagnostics-boundary",
@@ -282,7 +355,7 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 		},
 		"docs/oidc-operations.md": {
 			required: []string{"OFF can serve the static Admin separately", "same configured HTTPS public origin",
-				"LANTERN_ADMIN_SERVER_UPSTREAM", "LANTERN_ADMIN_SERVER_CA_FILE", "LANTERN_OIDC_TRUSTED_PROXY_IPS",
+				"LANTERN_ADMIN_SERVER_UPSTREAM", "LANTERN_ADMIN_SERVER_CA_FILE", "supplied JSON `trusted_proxy_ips`",
 				"Issuer-specific callback", "pinned eligible authority origin", "#1609 S5 remains incomplete", "operations.read",
 				"Subsequent bounded normal-TLS acceptance completed", "passed 4/4", "reached 8/8 at their recorded source revisions",
 				"Temporary trust, keys and owned fixture processes were cleaned up", "These historical results do not qualify a later final source",
@@ -297,7 +370,7 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 		},
 		"docs/ha-runbook.md": {
 			required: []string{"Single-instance mode (no HA)", "independent signed private peer plane",
-				"either public mode", "fixed original voter set has 1–31 members", "#1609 S5"},
+				"OFF configures", "OIDC supplies the same human JSON on provision/init/start", "fixed original voter set has 1–31 members", "#1609 S5"},
 			retired: []string{"one fixed security writer", "separately configured replica release"},
 		},
 		"admin/docker-entrypoint.sh": {
@@ -309,9 +382,9 @@ func TestAdminOperationsDocumentationGate(t *testing.T) {
 		},
 		"docs/env.md": {
 			required: []string{"LANTERN_PEER_LISTEN_ADDR", "LANTERN_PEER_MEMBERSHIP_FILE",
-				"LANTERN_PEER_TRUST_CA_FILE", "LANTERN_PEER_OPERATOR_PUBLIC_KEY_FILE", "LANTERN_SECURITY_CONFIG_FILE",
-				"LANTERN_OIDC_BROWSER_ORIGIN", "LANTERN_OIDC_TRUSTED_PROXY_IPS"},
-			retired: []string{"LANTERN_OIDC_REDIRECT_URI", "LANTERN_SECURITY_NODE_ROLE"},
+				"LANTERN_PEER_TRUST_CA_FILE", "LANTERN_PEER_OPERATOR_PUBLIC_KEY_FILE", "LANTERN_SECURITY_CONFIG_JSON",
+				"material_root", "persistence root", "initial administrator", "every start/restart", "never falls back to a saved configuration"},
+			retired: []string{"single provisioned_file reference", "Initialization and normal startup instead require"},
 		},
 	}
 	for path, checks := range files {
@@ -1357,7 +1430,7 @@ func TestHelmNativeSecurityModeMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer := []string{"nativeTime.configMap=workload-time", "peerPlane.enabled=true", "peerPlane.deployment=01000000000000000000000000000000", "peerPlane.workloadIDPrefix=spiffe://lantern.test/nodes", "peerPlane.membershipConfigMap=membership", "peerPlane.operatorKeySecret=operator-public", "peerPlane.identitySecret=workload-identities"}
-	oidc := []string{"nativeTime.configMap=workload-time", "auth.mode=oidc", "auth.configMap=oidc-config", "auth.existingSecret=security-files", "auth.files[0]=node.json", "publicTLS.existingSecret=public-certificates"}
+	oidc := helmOIDCValues()
 	combine := func(groups ...[]string) []string {
 		var result []string
 		for _, group := range groups {
@@ -1365,7 +1438,7 @@ func TestHelmNativeSecurityModeMatrix(t *testing.T) {
 		}
 		return result
 	}
-	for _, test := range []struct {
+	tests := []struct {
 		name         string
 		values       []string
 		valid        bool
@@ -1373,19 +1446,30 @@ func TestHelmNativeSecurityModeMatrix(t *testing.T) {
 	}{
 		{"OFF default", nil, true, []string{"replicas: 1", "127.0.0.1:9090", "exec:"}, []string{"name: LANTERN_AUTH_MODE", "name: LANTERN_PEER_LISTEN_ADDR", "name: metrics", "/etc/ntp.conf"}},
 		{"OFF HA", combine(peer, []string{"replicaCount=3"}), true, []string{"replicas: 3", "name: LANTERN_PEER_LISTEN_ADDR", "membership.state", "/run/lantern-peers/$(POD_NAME).crt", "/etc/ntp.conf", "name: workload-time"}, []string{"name: LANTERN_AUTH_MODE", "name: LANTERN_PEERS"}},
-		{"OIDC original authority", oidc, true, []string{"name: LANTERN_AUTH_MODE", "value: oidc", "LANTERN_SECURITY_CONFIG_FILE", "/run/lantern-security/node.json", "name: runtime-state"}, []string{"LANTERN_AUTH_TOKENS", "LANTERN_SECURITY_NODE_ROLE", "LANTERN_SECURITY_STORE_PATH"}},
-		{"OIDC data replicas", combine(peer, oidc, []string{"replicaCount=3"}), true, []string{"replicas: 3", "manifest.json", "name: LANTERN_PEER_KEY_FILE"}, []string{"LANTERN_PEER_CA_FILE", "LANTERN_SECURITY_NODE_ROLE"}},
+		{"OIDC supplied configuration", oidc, true, []string{"name: LANTERN_AUTH_MODE", "value: oidc", "LANTERN_SECURITY_CONFIG_JSON", "/run/lantern-input/config.json", "exec /app/lantern", "name: runtime-state"}, []string{"LANTERN_AUTH_TOKENS", "LANTERN_SECURITY_CONFIG_FILE", "LANTERN_SECURITY_NODE_ROLE", "LANTERN_SECURITY_STORE_PATH", "init-security"}},
+		{"OIDC data replicas", combine(oidc, []string{"replicaCount=3"}), true, []string{"replicas: 3", "name: control", "port: 16380", "name: peer", "port: 6381"}, []string{"name: LANTERN_PEER_KEY_FILE", "LANTERN_PEER_CA_FILE", "LANTERN_SECURITY_NODE_ROLE"}},
 		{"OFF Admin", []string{"admin.enabled=true"}, true, []string{"name: LANTERN_ADMIN_SERVER_UPSTREAM", "h2c://matrix-lantern:6380", "name: caddy-conf-d"}, nil},
 		{"OIDC Admin", combine(oidc, []string{"admin.enabled=true", "admin.server.upstream=https://writer.example:6380", "admin.server.caSecret=writer-ca", "admin.prometheus.upstream=http://prometheus:9090"}), true, []string{"/run/lantern-admin-trust/ca.pem", "name: LANTERN_ADMIN_PROMETHEUS_UPSTREAM"}, nil},
 		{"unsafe workload UID", combine(oidc, []string{"securityContext.runAsUser=0"}), false, nil, nil},
 		{"unsafe auth basename", combine(oidc, []string{"auth.files[0]=../writer.key"}), false, nil, nil},
 		{"writer key in common files", combine(oidc, []string{"auth.files[0]=writer.key"}), false, nil, nil},
+		{"duplicate identity file", combine(oidc, []string{"auth.files[7]=identity.json"}), false, nil, nil},
+		{"extra identity file", combine(oidc, []string{"auth.files[8]=origin.key"}), false, nil, nil},
+		{"OIDC external TLS override", combine(oidc, []string{"publicTLS.existingSecret=public-certificates"}), false, nil, nil},
+		{"OIDC generic peer override", combine(oidc, peer), false, nil, nil},
+		{"OIDC missing supplied config", combine(oidc, []string{"auth.configSecret="}), false, nil, nil},
+		{"OIDC missing identity secret", combine(oidc, []string{"auth.existingSecret="}), false, nil, nil},
+		{"OIDC missing native time source", combine(oidc, []string{"nativeTime.configMap="}), false, nil, nil},
+		{"OIDC zero fixed replicas", combine(oidc, []string{"replicaCount=0"}), false, nil, nil},
+		{"OIDC excessive fixed replicas", combine(oidc, []string{"replicaCount=32"}), false, nil, nil},
+		{"OIDC public control collision", combine(oidc, []string{"auth.controlPort=6380"}), false, nil, nil},
+		{"OIDC data control collision", combine(oidc, []string{"auth.controlPort=6381"}), false, nil, nil},
 		{"operator key in Pod", combine(oidc, []string{"auth.writerFiles[0]=operator.key"}), false, nil, nil},
 		{"unsigned replicas", []string{"replicaCount=2"}, false, nil, nil},
 		{"ignored standalone time source", []string{"nativeTime.configMap=unexpected"}, false, nil, nil},
 		{"partial peer material", []string{"peerPlane.enabled=true"}, false, nil, nil},
 		{"ignored peer material", []string{"peerPlane.identitySecret=unexpected"}, false, nil, nil},
-		{"ignored OIDC material", []string{"auth.configMap=unexpected"}, false, nil, nil},
+		{"ignored OIDC material", []string{"auth.configSecret=unexpected"}, false, nil, nil},
 		{"partial OIDC", []string{"auth.mode=oidc"}, false, nil, nil},
 		{"retired writer selector", combine(oidc, []string{"auth.nodeRole=writer"}), false, nil, nil},
 		{"retired empty role selector", combine(oidc, []string{"auth.nodeRole="}), false, nil, nil},
@@ -1394,7 +1478,32 @@ func TestHelmNativeSecurityModeMatrix(t *testing.T) {
 		{"legacy discovery", []string{"replication.discovery.mode=dns"}, false, nil, nil},
 		{"public protected diagnostics", combine(oidc, []string{"metrics.expose=true"}), false, nil, nil},
 		{"unsafe protected Admin", combine(oidc, []string{"admin.enabled=true", "admin.server.upstream=http://writer:6380"}), false, nil, nil},
-	} {
+	}
+	for index, file := range helmOIDCMaterialFiles() {
+		tests = append(tests, struct {
+			name         string
+			values       []string
+			valid        bool
+			want, reject []string
+		}{"missing identity file " + file, combine(oidc, []string{fmt.Sprintf("auth.files[%d]=", index)}), false, nil, nil})
+	}
+	for _, retired := range []string{"nodeRole", "writerFiles", "profile", "storeMode", "nodeFile", "configMap"} {
+		tests = append(tests, struct {
+			name         string
+			values       []string
+			valid        bool
+			want, reject []string
+		}{"retired empty auth." + retired, combine(oidc, []string{"auth." + retired + "="}), false, nil, nil})
+	}
+	for _, name := range []string{"LANTERN_SECURITY_CONFIG_JSON", "LANTERN_OIDC_BROWSER_ORIGIN", "LANTERN_PEER_LISTEN_ADDR", "LANTERN_CDC_ENABLED", "LANTERN_GRAPH_SNAPSHOT_SPOOL_DIR", "LANTERN_TLS_CERT_FILE"} {
+		tests = append(tests, struct {
+			name         string
+			values       []string
+			valid        bool
+			want, reject []string
+		}{"forbidden OIDC environment " + name, combine(oidc, []string{"extraEnv[0].name=" + name, "extraEnv[0].value=untrusted"}), false, nil, nil})
+	}
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			args := []string{"template", "matrix", filepath.Join(root, "deploy/helm/lantern")}
 			for _, value := range test.values {
@@ -1425,8 +1534,165 @@ func TestHelmNativeSecurityModeMatrix(t *testing.T) {
 					t.Errorf("render contains retired/exposed setting %q", reject)
 				}
 			}
+			if strings.Contains(string(output), "value: oidc") {
+				assertHelmOIDCWorkloadBoundary(t, output)
+			}
 		})
 	}
+}
+
+func helmOIDCMaterialFiles() []string {
+	return []string{"identity.json", "COMPLETE", "workload.pem", "workload-key.pem", "roots.pem", "data-operator.pem", "membership/control.json", "membership/data.json"}
+}
+
+func helmOIDCValues() []string {
+	values := []string{"nativeTime.configMap=workload-time", "auth.mode=oidc", "auth.configSecret=oidc-config", "auth.existingSecret=security-files"}
+	for index, file := range helmOIDCMaterialFiles() {
+		values = append(values, fmt.Sprintf("auth.files[%d]=%s", index, file))
+	}
+	return values
+}
+
+type helmSecurityMount struct {
+	Name      string `yaml:"name"`
+	MountPath string `yaml:"mountPath"`
+	SubPath   string `yaml:"subPath"`
+	ReadOnly  bool   `yaml:"readOnly"`
+}
+
+type helmSecurityContainer struct {
+	Name         string              `yaml:"name"`
+	Command      []string            `yaml:"command"`
+	Args         []string            `yaml:"args"`
+	VolumeMounts []helmSecurityMount `yaml:"volumeMounts"`
+}
+
+func assertHelmOIDCWorkloadBoundary(t *testing.T, raw []byte) helmSecurityContainer {
+	t.Helper()
+	var init helmSecurityContainer
+	foundSet, foundPublic, foundPrivate := false, false, false
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	for {
+		var resource struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+			Spec struct {
+				ClusterIP string `yaml:"clusterIP"`
+				Ports     []struct {
+					Name string `yaml:"name"`
+					Port int    `yaml:"port"`
+				} `yaml:"ports"`
+				Template struct {
+					Spec struct {
+						InitContainers []helmSecurityContainer `yaml:"initContainers"`
+						Containers     []helmSecurityContainer `yaml:"containers"`
+						Volumes        []struct {
+							Name   string `yaml:"name"`
+							Secret struct {
+								SecretName string `yaml:"secretName"`
+							} `yaml:"secret"`
+						} `yaml:"volumes"`
+					} `yaml:"spec"`
+				} `yaml:"template"`
+			} `yaml:"spec"`
+		}
+		if err := decoder.Decode(&resource); err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatal(err)
+		}
+		if resource.Kind == "Service" {
+			if resource.Spec.ClusterIP == "None" {
+				ports := map[string]int{}
+				for _, port := range resource.Spec.Ports {
+					ports[port.Name] = port.Port
+				}
+				if !reflect.DeepEqual(ports, map[string]int{"peer": 6381, "control": 16380}) {
+					t.Fatal("headless discovery lost distinct private control/data ports")
+				}
+				foundPrivate = true
+			} else if resource.Metadata.Name == "matrix-lantern" {
+				if len(resource.Spec.Ports) != 1 || resource.Spec.Ports[0].Name != "grpc" || resource.Spec.Ports[0].Port != 6380 {
+					t.Fatal("client Service exposed private or protected ports")
+				}
+				foundPublic = true
+			}
+		}
+		if resource.Kind != "StatefulSet" {
+			continue
+		}
+		foundSet = true
+		if len(resource.Spec.Template.Spec.InitContainers) != 1 || len(resource.Spec.Template.Spec.InitContainers[0].Args) != 1 {
+			t.Fatal("missing sole owned workload material copy")
+		}
+		init = resource.Spec.Template.Spec.InitContainers[0]
+		secretInputs := map[string]string{}
+		for _, volume := range resource.Spec.Template.Spec.Volumes {
+			if volume.Secret.SecretName != "" {
+				secretInputs[volume.Name] = volume.Secret.SecretName
+			}
+		}
+		if secretInputs["security-input"] != "oidc-config" || secretInputs["security-files"] != "security-files" {
+			t.Fatal("current configuration and original identity are not separate Secret inputs")
+		}
+		inputSource, securitySource, writableDestination := false, false, false
+		for _, mount := range init.VolumeMounts {
+			inputSource = inputSource || mount.Name == "security-input" && mount.MountPath == "/run/lantern-source/input" && mount.ReadOnly
+			securitySource = securitySource || mount.Name == "security-files" && mount.MountPath == "/run/lantern-source/security" && mount.ReadOnly
+			writableDestination = writableDestination || mount.Name == "workload-files" && mount.MountPath == "/run/lantern-private" && !mount.ReadOnly
+		}
+		if !inputSource || !securitySource || !writableDestination {
+			t.Fatal("trusted copy cannot read separate immutable inputs into its own private destination")
+		}
+		for _, file := range helmOIDCMaterialFiles() {
+			if !strings.Contains(init.Args[0], `copy_file "/run/lantern-source/security/$POD_NAME.`+strings.ReplaceAll(file, "/", ".")+`" "/run/lantern-private/security/nodes/$POD_NAME/`+file+`"`) {
+				t.Fatal("copy omitted exact per-Pod identity path", file)
+			}
+		}
+		if !strings.Contains(init.Args[0], `copy_file "/run/lantern-source/input/$POD_NAME.json" /run/lantern-private/input/config.json 122880`) {
+			t.Fatal("required bounded per-Pod JSON was not copied")
+		}
+		foundServer := false
+		for _, container := range resource.Spec.Template.Spec.Containers {
+			if container.Name != "lantern" {
+				continue
+			}
+			foundServer = true
+			if !reflect.DeepEqual(container.Command, []string{"/bin/sh", "-ec"}) || len(container.Args) != 1 || !strings.Contains(container.Args[0], `LANTERN_SECURITY_CONFIG_JSON="$(cat "$input")"`) || !strings.Contains(container.Args[0], "exec /app/lantern") || strings.Contains(container.Args[0], "init-security") {
+				t.Fatal("ordinary process start did not require and consume supplied JSON")
+			}
+			for _, required := range []string{"set -eu", "input=/run/lantern-input/config.json", `[ -f "$input" ] && [ -s "$input" ] && [ ! -L "$input" ]`, `[ "$(wc -c < "$input")" -le 122880 ]`, "export LANTERN_SECURITY_CONFIG_JSON"} {
+				if !strings.Contains(container.Args[0], required) {
+					t.Fatal("ordinary restart lost mandatory bounded regular input validation", required)
+				}
+			}
+			security, input, timeSource := false, false, false
+			for _, mount := range container.VolumeMounts {
+				if strings.HasPrefix(mount.MountPath, "/run/lantern-source") || mount.MountPath == "/run/lantern-private" || mount.Name == "security-files" || mount.Name == "security-input" || mount.Name == "peer-identity" || mount.Name == "peer-operator" || mount.Name == "public-tls" {
+					t.Fatal("raw Secret material reached the Server", mount.Name)
+				}
+				if mount.Name == "workload-files" && !mount.ReadOnly {
+					t.Fatal("Server can rewrite supplied input or identity material")
+				}
+				security = security || mount.Name == "workload-files" && mount.MountPath == "/run/lantern-security" && mount.SubPath == "security" && mount.ReadOnly
+				input = input || mount.Name == "workload-files" && mount.MountPath == "/run/lantern-input" && mount.SubPath == "input" && mount.ReadOnly
+				timeSource = timeSource || mount.Name == "workload-time" && mount.MountPath == "/etc/ntp.conf" && mount.ReadOnly
+			}
+			if !security || !input || !timeSource {
+				t.Fatal("Server lost read-only identity, current input or declared native time")
+			}
+		}
+		if !foundServer {
+			t.Fatal("StatefulSet omitted the Server process")
+		}
+	}
+	if !foundSet || !foundPublic || !foundPrivate {
+		t.Fatal("render omitted workload or public/private Services")
+	}
+	return init
 }
 
 // Render real Compose input with fresh native material. This checks the
@@ -1478,11 +1744,14 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 						}
 						if profile.receipt {
 							args = append(args, "-f", filepath.Join(root, "testbed/bench/compose.receipt-tls.yml"))
-						} else {
+						} else if mode == "off" {
 							args = append(args, "-f", filepath.Join(root, "testbed/bench/compose.graph-snapshot.yml"))
 						}
 					} else {
-						args = append(args, "-f", filepath.Join(root, "deploy/compose/docker-compose.yml"), "-f", filepath.Join(root, "deploy/compose/docker-compose.ha.yml"), "-f", filepath.Join(root, "deploy/compose/docker-compose.graph-snapshot.yml"))
+						args = append(args, "-f", filepath.Join(root, "deploy/compose/docker-compose.yml"), "-f", filepath.Join(root, "deploy/compose/docker-compose.ha.yml"))
+						if mode == "off" {
+							args = append(args, "-f", filepath.Join(root, "deploy/compose/docker-compose.graph-snapshot.yml"))
+						}
 					}
 					args = append(args, "config", "--format", "json")
 					command := exec.CommandContext(t.Context(), docker, args...)
@@ -1526,11 +1795,64 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 					if err := json.Unmarshal(output, &rendered); err != nil {
 						t.Fatal(err)
 					}
-					spoolOwners := map[string]string{}
-					for _, name := range []string{"lantern-0", "lantern-1", "lantern-2"} {
+					storageOwners := map[string]string{}
+					storageTargets := map[string]string{}
+					for index, name := range []string{"lantern-0", "lantern-1", "lantern-2"} {
 						node, ok := rendered.Services[name]
-						if !ok || node.Environment["LANTERN_PEER_LISTEN_ADDR"] != ":6381" || node.Environment["LANTERN_PEER_MEMBERSHIP_FILE"] != "/run/lantern-config/membership.json" {
+						if !ok {
+							t.Fatal("missing fixed workload", name)
+						}
+						spoolTarget := "/var/lib/lantern-snapshot-spool"
+						if mode == "off" && (node.Environment["LANTERN_PEER_LISTEN_ADDR"] != ":6381" || node.Environment["LANTERN_PEER_MEMBERSHIP_FILE"] != "/run/lantern-config/membership.json") {
 							t.Fatal("missing native private plane", name)
+						}
+						if mode == "oidc" {
+							var current struct {
+								PublicOrigin    string `json:"public_origin"`
+								MaterialRoot    string `json:"material_root"`
+								PersistenceRoot string `json:"persistence_root"`
+								Node            string `json:"node"`
+								Nodes           []struct {
+									Name          string `json:"name"`
+									ControlOrigin string `json:"control_origin"`
+									DataOrigin    string `json:"data_origin"`
+									ControlListen string `json:"control_listen"`
+									DataListen    string `json:"data_listen"`
+								} `json:"nodes"`
+								Issuers []json.RawMessage          `json:"issuers"`
+								TLS     provider.SecurityTLSConfig `json:"tls"`
+							}
+							if json.Unmarshal([]byte(node.Environment["LANTERN_SECURITY_CONFIG_JSON"]), &current) != nil || current.MaterialRoot != "/run/lantern-config/identity" || current.PersistenceRoot != "/state" || current.Node != fmt.Sprintf("node-%d", index+1) || len(current.Nodes) != 3 || len(current.Issuers) == 0 || !strings.HasPrefix(current.PublicOrigin, "https://") {
+								t.Fatal("OIDC workload lost complete supplied current configuration", name)
+							}
+							for i, fixed := range current.Nodes {
+								if fixed.Name != fmt.Sprintf("node-%d", i+1) || fixed.ControlOrigin != fmt.Sprintf("https://lantern-%d:16380", i) || fixed.DataOrigin != fmt.Sprintf("https://lantern-%d:6381", i) || fixed.ControlListen != "0.0.0.0:16380" || fixed.DataListen != "0.0.0.0:6381" {
+									t.Fatal("OIDC supplied topology drifted from the original private plane", name)
+								}
+							}
+							public, err := tls.X509KeyPair([]byte(current.TLS.CertPEM), []byte(current.TLS.KeyPEM))
+							if err != nil || public.Leaf.VerifyHostname(name) != nil {
+								t.Fatal("OIDC supplied TLS no longer binds the workload", name, err)
+							}
+							for key := range node.Environment {
+								if strings.HasPrefix(key, "LANTERN_PEER_") || strings.HasPrefix(key, "LANTERN_OIDC_") || strings.HasPrefix(key, "LANTERN_TLS_") || strings.HasPrefix(key, "LANTERN_CDC_") || strings.HasPrefix(key, "LANTERN_GRAPH_SNAPSHOT_SPOOL_") || strings.HasPrefix(key, "LANTERN_SECURITY_") && key != "LANTERN_SECURITY_CONFIG_JSON" {
+									t.Fatal("OIDC combined current JSON with retired separate configuration", name, key)
+								}
+							}
+							materialPath := filepath.Join(dir, name, "identity", "nodes", current.Node, "identity.json")
+							materialRaw, err := os.ReadFile(materialPath)
+							var material provider.SecurityMaterial
+							if err != nil || json.Unmarshal(materialRaw, &material) != nil || material.Node != current.Node || material.Peer.Manifest != current.MaterialRoot+"/nodes/"+current.Node+"/membership/data.json" || material.SnapshotSpool.MaxDiskBytes != 134217728 || material.SnapshotSpool.MaxFrameBytes != 33554432 {
+								t.Fatal("OIDC original material lost peer or Snapshot storage bindings", name, err)
+							}
+							spoolTarget = material.SnapshotSpool.Directory
+							if material.StatePaths.Directory != filepath.Join(current.PersistenceRoot, current.Node) || spoolTarget != filepath.Join(material.StatePaths.Directory, "snapshot-spool") || !strings.HasPrefix(spoolTarget, "/state/") {
+								t.Fatal("OIDC finite Snapshot storage escaped the supplied per-node state directory", name)
+							}
+						}
+						storageTargets[name] = spoolTarget
+						if mode == "oidc" {
+							storageTargets[name] = "/state"
 						}
 						if profile.bench && node.User != "1001:1001" {
 							t.Fatal("benchmark publisher/runtime identity changed", name, node.User)
@@ -1558,11 +1880,12 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 								t.Fatal("unexpected graph Snapshot spool setting", name, key, value)
 							}
 						}
-						if !profile.receipt && spoolSettings != len(spoolEnvironment) {
+						if mode == "off" && !profile.receipt && spoolSettings != len(spoolEnvironment) {
 							t.Fatal("graph Snapshot spool settings missing", name)
 						}
 						ownMount := false
 						spoolMounts := 0
+						stateMounts := 0
 						for _, mount := range node.Volumes {
 							if mount.Target == "/run/lantern-config" {
 								ownMount = mount.ReadOnly && mount.Source == filepath.Join(dir, name)
@@ -1570,20 +1893,40 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 							if strings.Contains(mount.Source, "operator.key") || mount.Source == dir {
 								t.Fatal("operator key/root directory mounted")
 							}
-							if mount.Target == "/var/lib/lantern-snapshot-spool" {
+							if mode == "oidc" {
+								if mount.Target == "/var/lib/lantern-snapshot-spool" || mount.Target == spoolTarget {
+									t.Fatal("OIDC layered unused or parallel graph Snapshot storage over its material-bound state", name)
+								}
+								if mount.Target == "/state" {
+									stateMounts++
+									volume, declared := rendered.Volumes[mount.Source]
+									// Generic images copy up their empty private /state owner.
+									// The separate receipt HA example has its explicit nocopy initializer.
+									if mount.Type != "volume" || mount.ReadOnly || mount.Volume.NoCopy || !declared || volume.External || volume.Name == "" || len(volume.DriverOpts) != 0 {
+										t.Fatal("OIDC state/Snapshot backing is not private writable project storage with image-owned copy-up", name)
+									}
+									if previous, shared := storageOwners[volume.Name]; shared {
+										t.Fatal("OIDC state and derived Snapshot spool shared across workloads", previous, name)
+									}
+									storageOwners[volume.Name] = name
+								}
+							} else if mount.Target == spoolTarget {
 								spoolMounts++
 								volume, declared := rendered.Volumes[mount.Source]
 								if profile.receipt || mount.Type != "volume" || mount.ReadOnly || !declared || volume.External || volume.Name == "" || len(volume.DriverOpts) != 0 || mount.Volume.NoCopy != profile.bench {
 									t.Fatal("graph Snapshot spool is not dedicated writable project storage", name, mount.Source)
 								}
-								if previous, shared := spoolOwners[volume.Name]; shared {
+								if previous, shared := storageOwners[volume.Name]; shared {
 									t.Fatal("graph Snapshot spool shared across workloads", previous, name)
 								}
-								spoolOwners[volume.Name] = name
+								storageOwners[volume.Name] = name
 							}
 						}
-						if !profile.receipt && spoolMounts != 1 {
+						if mode == "off" && !profile.receipt && spoolMounts != 1 {
 							t.Fatal("graph Snapshot spool mount missing or repeated", name)
+						}
+						if mode == "oidc" && (stateMounts != 1 || spoolMounts != 0 || spoolSettings != 0) {
+							t.Fatal("OIDC must use one isolated state backing and zero separate graph spool inputs/mounts", name)
 						}
 						if !ownMount {
 							t.Fatal("workload material not isolated", name)
@@ -1592,17 +1935,17 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 							t.Fatal("protected diagnostics exposed", name)
 						}
 						for _, port := range node.Ports {
-							if port.Target == 6381 || port.HostIP != "127.0.0.1" || mode == "oidc" && port.Target == 9090 {
+							if port.Target == 6381 || port.Target == 16380 || port.HostIP != "127.0.0.1" || mode == "oidc" && port.Target == 9090 {
 								t.Fatal("private/non-loopback port published", name)
 							}
 						}
 					}
-					// A second target or service must not expose the same spool
-					// through a state, backup, runtime or auxiliary mount.
+					// A second target or service must not expose OFF's dedicated
+					// spool or OIDC's state volume containing its derived spool.
 					for name, node := range rendered.Services {
 						for _, mount := range node.Volumes {
 							if mount.Type == "volume" {
-								if owner, shared := spoolOwners[rendered.Volumes[mount.Source].Name]; shared && (owner != name || mount.Target != "/var/lib/lantern-snapshot-spool") {
+								if owner, shared := storageOwners[rendered.Volumes[mount.Source].Name]; shared && (owner != name || mount.Target != storageTargets[owner]) {
 									t.Fatal("graph Snapshot spool reused for another role", owner, name, mount.Target)
 								}
 							}
@@ -1614,6 +1957,176 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// The standalone OIDC HA example uses per-node receipt storage and supplies
+// current JSON through the same read-only input adapter for init and start.
+// Rendering it opens no listener, trusted time source or container.
+func TestComposeDeclarativeOIDCHAExample(t *testing.T) {
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		t.Skip("Docker Compose is required for the deployment render gate")
+	}
+	if exec.CommandContext(t.Context(), docker, "compose", "version", "--short").Run() != nil {
+		t.Skip("Docker Compose unavailable")
+	}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range 3 {
+		dir := filepath.Join(directory, "config", fmt.Sprintf("lantern-%d", index))
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		environment := fmt.Sprintf("LANTERN_NODE_ID=%032x\nLANTERN_RECEIPT_EPOCH=%032x\n", index+1, 1)
+		if err := os.WriteFile(filepath.Join(dir, "receipt.env"), []byte(environment), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(directory, "mcp.env"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.CommandContext(t.Context(), docker, "compose", "-f", filepath.Join(root, "deploy/compose/docker-compose.oidc-ha.yml"), "--profile", "init", "--profile", "provision", "--profile", "prepare", "config", "--format", "json")
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "LANTERN_") && !strings.HasPrefix(entry, "COMPOSE_") {
+			command.Env = append(command.Env, entry)
+		}
+	}
+	command.Env = append(command.Env, "LANTERN_HA_PRIVATE_DIRECTORY="+directory)
+	raw, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("render standalone OIDC HA: %v: %s", err, raw)
+	}
+	type mount struct {
+		Type, Source, Target string
+		ReadOnly             bool `json:"read_only"`
+		Bind                 struct {
+			CreateHostPath bool `json:"create_host_path"`
+		}
+		Volume struct {
+			NoCopy bool `json:"nocopy"`
+		}
+	}
+	type service struct {
+		Image               string
+		Build               struct{ Context, Dockerfile string }
+		Healthcheck         struct{ Test []string }
+		User                string
+		Entrypoint, Command []string
+		Environment         map[string]string
+		ReadOnly            bool `json:"read_only"`
+		Volumes             []mount
+		Ports               []struct {
+			Target int
+			HostIP string `json:"host_ip"`
+		}
+		Configs []struct {
+			Source, Target string
+			Mode           string
+		}
+	}
+	var rendered struct {
+		Services map[string]service
+		Configs  map[string]struct{ File, Content string }
+	}
+	if json.Unmarshal(raw, &rendered) != nil {
+		t.Fatal("invalid rendered Compose JSON")
+	}
+	// Compose cannot inject inline config content into a read-only service.
+	// Require the actual nonsecret file, preserving the read-only root/mount.
+	timeFile := filepath.Join(root, "deploy/compose/oidc-ha/ntp.conf")
+	timeConfig, found := rendered.Configs["native-time-source"]
+	timeBytes, readErr := os.ReadFile(timeFile)
+	if !found || timeConfig.File != timeFile || timeConfig.Content != "" || readErr != nil || string(timeBytes) != "server time.asia.apple.com\n" {
+		t.Fatal("read-only HA services require the exact file-backed native time source")
+	}
+	stateOwners := map[string]string{}
+	for index := range 3 {
+		name := fmt.Sprintf("lantern-%d", index)
+		node, found := rendered.Services[name]
+		if !found || node.User != "65532:65532" || !node.ReadOnly || !reflect.DeepEqual(node.Entrypoint, []string{"/bin/sh", "/example/read-config.sh"}) || len(node.Command) != 0 || node.Environment["LANTERN_AUTH_MODE"] != "oidc" || node.Environment["LANTERN_RECEIPT_WAL_MODE"] != "restart" || node.Environment["LANTERN_RECEIPT_WAL_PATH"] != "/state/receipts.wal" || node.Environment["LANTERN_METRICS_ADDR"] != "127.0.0.1:9090" || len(node.Ports) != 0 {
+			t.Fatal("OIDC HA ordinary process lost its input/receipt/private diagnostic boundary", name)
+		}
+		for key := range node.Environment {
+			if strings.HasPrefix(key, "LANTERN_SECURITY_") || strings.HasPrefix(key, "LANTERN_OIDC_") || strings.HasPrefix(key, "LANTERN_PEER_") || strings.HasPrefix(key, "LANTERN_TLS_") || strings.HasPrefix(key, "LANTERN_CDC_") || strings.HasPrefix(key, "LANTERN_GRAPH_SNAPSHOT_SPOOL_") {
+				t.Fatal("OIDC HA bypassed required supplied JSON with separate environment", name, key)
+			}
+		}
+		input, material, state, timeSource := false, false, false, false
+		for _, config := range node.Configs {
+			timeSource = timeSource || config.Source == "native-time-source" && config.Target == "/etc/ntp.conf" && config.Mode == "0444"
+		}
+		for _, volume := range node.Volumes {
+			if volume.Target == "/input" {
+				input = volume.Type == "bind" && volume.ReadOnly && !volume.Bind.CreateHostPath && volume.Source == filepath.Join(directory, "config", name)
+			}
+			ownMaterial := fmt.Sprintf("/material/identity/nodes/node-%d", index+1)
+			if volume.Target == ownMaterial {
+				material = volume.Type == "bind" && volume.ReadOnly && !volume.Bind.CreateHostPath && volume.Source == filepath.Join(directory, "material", "identity", "nodes", fmt.Sprintf("node-%d", index+1))
+			}
+			if volume.Target == "/state" {
+				state = volume.Type == "volume" && !volume.ReadOnly && volume.Volume.NoCopy
+				if prior := stateOwners[volume.Source]; prior != "" {
+					t.Fatal("OIDC HA nodes share durable state", prior, name)
+				}
+				stateOwners[volume.Source] = name
+			}
+			if volume.Source == directory || strings.HasPrefix(volume.Source, filepath.Join(directory, "operator")) || strings.Contains(volume.Target, "snapshot-spool") || strings.HasPrefix(volume.Target, "/material") && volume.Target != ownMaterial {
+				t.Fatal("OIDC HA node mounted another trust role or unused graph staging", name)
+			}
+		}
+		if !input || !material || !state || !timeSource {
+			t.Fatal("OIDC HA node lacks required isolated input/material/state/native source", name)
+		}
+		initial := rendered.Services[fmt.Sprintf("init-node-%d", index)]
+		if !initial.ReadOnly || !reflect.DeepEqual(initial.Entrypoint, node.Entrypoint) || !reflect.DeepEqual(initial.Command, []string{"init-security"}) || !reflect.DeepEqual(initial.Volumes, node.Volumes) || !reflect.DeepEqual(initial.Configs, node.Configs) {
+			t.Fatal("init and normal start no longer receive the same supplied input and original material", name)
+		}
+	}
+	edge := rendered.Services["edge"]
+	if edge.Image != "lantern-edge:oidc-ha-local" || edge.Build.Context != root || edge.Build.Dockerfile != "deploy/compose/oidc-ha/edge.Dockerfile" || !edge.ReadOnly ||
+		!reflect.DeepEqual(edge.Healthcheck.Test, []string{"CMD", "/usr/local/bin/lantern-edge-health"}) {
+		t.Fatal("edge readiness must use its source-built verified-TLS probe")
+	}
+	health, healthErr := os.ReadFile(filepath.Join(root, "deploy/compose/oidc-ha/edge-health.sh"))
+	if healthErr != nil {
+		t.Fatal(healthErr)
+	}
+	for _, required := range []string{"/usr/bin/curl --disable", "--proto '=https'", "--noproxy '*'", "--cacert /edge-tls/ca.pem", "--max-time 2", "--connect-timeout 2", "--max-redirs 0", "--output /dev/null --write-out '%{http_code}'", "https://localhost:8443/healthz", `[ "$status" = 200 ]`} {
+		if !strings.Contains(string(health), required) {
+			t.Fatal("edge probe lost bounded exact HTTPS readiness", required)
+		}
+	}
+	for _, forbidden := range []string{"--insecure", "--location", "http://", " -k "} {
+		if strings.Contains(string(health), forbidden) {
+			t.Fatal("edge readiness permits TLS or redirect bypass")
+		}
+	}
+	publisher := rendered.Services["membershippublisher"]
+	for _, volume := range publisher.Volumes {
+		if strings.HasPrefix(volume.Target, "/material/") && !strings.HasSuffix(volume.Target, "/membership") {
+			t.Fatal("publisher received serving workload keys instead of renewable membership only")
+		}
+	}
+	adapter, err := os.ReadFile(filepath.Join(root, "deploy/compose/oidc-ha/read-config.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"input=/input/startup.json", `[ -f "$input" ] && [ -s "$input" ] && [ ! -L "$input" ]`, `[ "$(wc -c < "$input")" -le 122880 ]`, `LANTERN_SECURITY_CONFIG_JSON="$(cat "$input")"`, "export LANTERN_SECURITY_CONFIG_JSON", `exec /app/lantern "$@"`} {
+		if !strings.Contains(string(adapter), required) {
+			t.Fatal("input adapter lost required per-invocation validation", required)
+		}
+	}
+	for _, path := range []string{"material", "operator"} {
+		if _, err := os.Stat(filepath.Join(directory, path)); !os.IsNotExist(err) {
+			t.Fatal("Compose render created runtime or signing state", path, err)
+		}
 	}
 }
 
@@ -1635,75 +2148,67 @@ func TestHelmWorkloadSecretProjectionCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, origin := range []bool{false, true} {
-		t.Run(map[bool]string{false: "voter", true: "voter and origin"}[origin], func(t *testing.T) {
-			args := []string{"template", "matrix", filepath.Join(root, "deploy/helm/lantern"), "--set-string", "nativeTime.configMap=workload-time", "--set", "peerPlane.enabled=true", "--set-string", "peerPlane.deployment=01000000000000000000000000000000", "--set-string", "peerPlane.workloadIDPrefix=spiffe://lantern.test/nodes", "--set-string", "peerPlane.membershipConfigMap=membership", "--set-string", "peerPlane.operatorKeySecret=operator-public", "--set-string", "peerPlane.identitySecret=identities", "--set-string", "publicTLS.existingSecret=public", "--set-string", "auth.mode=oidc", "--set-string", "auth.configMap=config", "--set-string", "auth.existingSecret=security"}
-			authFiles := []string{"node.json", "genesis.json", "vote.key", "tls.key", "roots.pem", "cert.pem", "membership.pub", "membership.signed"}
-			if origin {
-				authFiles = append(authFiles, "origin.key")
+	for _, mode := range []string{"off", "oidc"} {
+		t.Run(mode, func(t *testing.T) {
+			values := helmOIDCValues()
+			if mode == "off" {
+				values = []string{"nativeTime.configMap=workload-time", "peerPlane.enabled=true", "peerPlane.deployment=01000000000000000000000000000000", "peerPlane.workloadIDPrefix=spiffe://lantern.test/nodes", "peerPlane.membershipConfigMap=membership", "peerPlane.operatorKeySecret=operator-public", "peerPlane.identitySecret=identities", "publicTLS.existingSecret=public"}
 			}
-			for index, name := range authFiles {
-				args = append(args, "--set-string", fmt.Sprintf("auth.files[%d]=%s", index, name))
+			args := []string{"template", "matrix", filepath.Join(root, "deploy/helm/lantern")}
+			for _, value := range values {
+				flag := "--set-string"
+				if strings.HasSuffix(value, "=true") {
+					flag = "--set"
+				}
+				args = append(args, flag, value)
 			}
-
 			raw, err := exec.CommandContext(t.Context(), helm, args...).CombinedOutput()
 			if err != nil {
 				t.Fatalf("render: %v: %s", err, raw)
 			}
-			type mount struct {
-				Name      string `yaml:"name"`
-				MountPath string `yaml:"mountPath"`
-				ReadOnly  bool   `yaml:"readOnly"`
-			}
-			type container struct {
-				Name         string   `yaml:"name"`
-				Args         []string `yaml:"args"`
-				VolumeMounts []mount  `yaml:"volumeMounts"`
-			}
-			var set struct {
-				Kind string `yaml:"kind"`
-				Spec struct {
-					Template struct {
+			var init helmSecurityContainer
+			if mode == "oidc" {
+				init = assertHelmOIDCWorkloadBoundary(t, raw)
+			} else {
+				decoder := yaml.NewDecoder(bytes.NewReader(raw))
+				for {
+					var set struct {
+						Kind string `yaml:"kind"`
 						Spec struct {
-							InitContainers []container `yaml:"initContainers"`
-							Containers     []container `yaml:"containers"`
+							Template struct {
+								Spec struct {
+									InitContainers []helmSecurityContainer `yaml:"initContainers"`
+									Containers     []helmSecurityContainer `yaml:"containers"`
+								} `yaml:"spec"`
+							} `yaml:"template"`
 						} `yaml:"spec"`
-					} `yaml:"template"`
-				} `yaml:"spec"`
-			}
-			dec := yaml.NewDecoder(bytes.NewReader(raw))
-			for {
-				if err := dec.Decode(&set); err != nil {
-					if err == io.EOF {
-						t.Fatal("no StatefulSet")
 					}
-					t.Fatal(err)
-				}
-				if set.Kind == "StatefulSet" {
-					break
-				}
-			}
-			if len(set.Spec.Template.Spec.InitContainers) != 1 || len(set.Spec.Template.Spec.InitContainers[0].Args) != 1 {
-				t.Fatal("missing owned init copy")
-			}
-			for _, c := range set.Spec.Template.Spec.Containers {
-				hasTime := false
-				for _, m := range c.VolumeMounts {
-					if m.Name == "workload-time" {
-						if m.MountPath != "/etc/ntp.conf" || !m.ReadOnly {
-							t.Fatal("unsafe declared time source mount", m)
+					if err := decoder.Decode(&set); err != nil {
+						t.Fatal("missing OFF StatefulSet", err)
+					}
+					if set.Kind != "StatefulSet" {
+						continue
+					}
+					if len(set.Spec.Template.Spec.InitContainers) != 1 || len(set.Spec.Template.Spec.InitContainers[0].Args) != 1 {
+						t.Fatal("missing owned OFF init copy")
+					}
+					init = set.Spec.Template.Spec.InitContainers[0]
+					for _, container := range set.Spec.Template.Spec.Containers {
+						timeSource := false
+						for _, mount := range container.VolumeMounts {
+							if strings.HasPrefix(mount.MountPath, "/run/lantern-source") || mount.Name == "public-tls" || mount.Name == "peer-identity" || mount.Name == "peer-operator" {
+								t.Fatal("raw OFF Secret reached Server", mount.Name)
+							}
+							if mount.Name == "workload-files" && !mount.ReadOnly {
+								t.Fatal("Server can change copied OFF workload keys")
+							}
+							timeSource = timeSource || mount.Name == "workload-time" && mount.MountPath == "/etc/ntp.conf" && mount.ReadOnly
 						}
-						hasTime = true
+						if container.Name == "lantern" && !timeSource {
+							t.Fatal("OFF private peers lost declared read-only time source")
+						}
 					}
-					if strings.HasPrefix(m.MountPath, "/run/lantern-source") || m.Name == "security-files" || m.Name == "public-tls" || m.Name == "peer-identity" || m.Name == "peer-operator" {
-						t.Fatal("raw Secret exposed to Server", m)
-					}
-					if m.Name == "workload-files" && !m.ReadOnly {
-						t.Fatal("Server can alter provisioned secrets")
-					}
-				}
-				if c.Name == "lantern" && !hasTime {
-					t.Fatal("Server has no declared read-only time source")
+					break
 				}
 			}
 			dir := t.TempDir()
@@ -1722,55 +2227,89 @@ func TestHelmWorkloadSecretProjectionCopy(t *testing.T) {
 				}
 				return path
 			}
-			securityFiles := []string{"operator.key", "writer.key", "matrix-lantern-0.origin.key", "matrix-lantern-1.vote.key"}
-			for _, name := range authFiles {
-				if name != "origin.key" {
-					securityFiles = append(securityFiles, "matrix-lantern-0."+name)
-				}
-			}
-			sources := map[string]string{
-				"public":   projected("public", []string{"matrix-lantern-0.crt", "matrix-lantern-0.key", "other-pod.key"}),
-				"peers":    projected("peers", []string{"matrix-lantern-0.crt", "matrix-lantern-0.key", "other-pod.key", "ca.pem"}),
-				"security": projected("security", securityFiles),
-				"operator": projected("operator", []string{"operator.pub", "operator.key"}),
-			}
-			script := set.Spec.Template.Spec.InitContainers[0].Args[0]
 			check := `test "$(id -u)" = 65532
 find /run/lantern-private -type l | test "$(cat | wc -l)" = 0
 for f in $(find /run/lantern-private -type f); do test "$(stat -c '%a:%u' "$f")" = 600:65532; done
-test -f /run/lantern-private/peers/matrix-lantern-0.key
-test ! -e /run/lantern-private/peers/other-pod.key
-test ! -e /run/lantern-private/security/operator.key
-test ! -e /run/lantern-private/operator/operator.key
-test ! -e /run/lantern-private/security/machines.json
+for d in $(find /run/lantern-private -mindepth 1 -type d); do test "$(stat -c '%a:%u' "$d")" = 700:65532; done
 `
-			check += "test -f /run/lantern-private/security/node.json\n"
-			check += "test -f /run/lantern-private/security/vote.key\n"
-			check += "test ! -e /run/lantern-private/security/matrix-lantern-1.vote.key\n"
-			check += "test ! -e /run/lantern-private/security/writer.key\n"
-			if origin {
-				check += "test -f /run/lantern-private/security/origin.key\n"
+			sources := map[string]string{}
+			type required struct{ source, file string }
+			var requiredFiles []required
+			if mode == "oidc" {
+				securityFiles := []string{"operator.key", "writer.key", "matrix-lantern-0.origin.key", "matrix-lantern-1.identity.json"}
+				for _, file := range helmOIDCMaterialFiles() {
+					securityFiles = append(securityFiles, "matrix-lantern-0."+strings.ReplaceAll(file, "/", "."))
+				}
+				sources["security"] = projected("security", securityFiles)
+				sources["input"] = projected("input", []string{"matrix-lantern-0.json", "matrix-lantern-1.json"})
+				for _, file := range helmOIDCMaterialFiles() {
+					key := "matrix-lantern-0." + strings.ReplaceAll(file, "/", ".")
+					requiredFiles = append(requiredFiles, required{"security", key})
+					check += "cmp /run/lantern-private/security/nodes/matrix-lantern-0/" + file + " /run/lantern-source/security/" + key + "\n"
+				}
+				requiredFiles = append(requiredFiles, required{"input", "matrix-lantern-0.json"})
+				check += `cmp /run/lantern-private/input/config.json /run/lantern-source/input/matrix-lantern-0.json
+test "$(find /run/lantern-private -type f | wc -l)" -eq 9
+test ! -e /run/lantern-private/security/operator.key
+test ! -e /run/lantern-private/security/writer.key
+test ! -e /run/lantern-private/security/nodes/matrix-lantern-0/origin.key
+test ! -e /run/lantern-private/security/nodes/matrix-lantern-1
+test ! -e /run/lantern-private/input/matrix-lantern-1.json
+`
 			} else {
-				check += "test ! -e /run/lantern-private/security/origin.key\n"
+				sources["public"] = projected("public", []string{"matrix-lantern-0.crt", "matrix-lantern-0.key", "other-pod.key"})
+				sources["peers"] = projected("peers", []string{"matrix-lantern-0.crt", "matrix-lantern-0.key", "other-pod.key", "ca.pem"})
+				sources["operator"] = projected("operator", []string{"operator.pub", "operator.key"})
+				requiredFiles = []required{{"public", "matrix-lantern-0.crt"}, {"public", "matrix-lantern-0.key"}, {"peers", "matrix-lantern-0.crt"}, {"peers", "matrix-lantern-0.key"}, {"peers", "ca.pem"}, {"operator", "operator.pub"}}
+				check += `test "$(find /run/lantern-private -type f | wc -l)" -eq 6
+test -f /run/lantern-private/public/matrix-lantern-0.crt
+test -f /run/lantern-private/public/matrix-lantern-0.key
+test -f /run/lantern-private/peers/matrix-lantern-0.key
+test -f /run/lantern-private/peers/ca.pem
+test -f /run/lantern-private/operator/operator.pub
+test ! -e /run/lantern-private/public/other-pod.key
+test ! -e /run/lantern-private/peers/other-pod.key
+test ! -e /run/lantern-private/operator/operator.key
+`
 			}
-
 			run := func(expectSuccess bool) {
 				t.Helper()
 				cmdArgs := []string{"run", "--rm", "--network=none", "--user", "65532:65532", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--tmpfs", "/run/lantern-private:rw,uid=65532,gid=65532,mode=0770,size=16m", "--env", "POD_NAME=matrix-lantern-0", "--env", "EXPECTED_UID=65532", "--entrypoint", "/bin/sh"}
 				for name, path := range sources {
 					cmdArgs = append(cmdArgs, "--mount", fmt.Sprintf("type=bind,source=%s,target=/run/lantern-source/%s,readonly", path, name))
 				}
-				cmdArgs = append(cmdArgs, image, "-ec", script+"\n"+check)
+				cmdArgs = append(cmdArgs, image, "-ec", init.Args[0]+"\n"+check)
 				output, err := exec.CommandContext(t.Context(), "docker", cmdArgs...).CombinedOutput()
 				if (err == nil) != expectSuccess {
 					t.Fatalf("copy success=%v: %v: %s", expectSuccess, err, output)
 				}
 			}
 			run(true)
-			if err := os.Remove(filepath.Join(sources["peers"], "..version", "matrix-lantern-0.key")); err != nil {
-				t.Fatal(err)
+			for _, required := range requiredFiles {
+				t.Run("missing "+required.source+" "+required.file, func(t *testing.T) {
+					path := filepath.Join(sources[required.source], "..version", required.file)
+					raw, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+					run(false)
+					if err := os.WriteFile(path, raw, 0644); err != nil {
+						t.Fatal(err)
+					}
+				})
 			}
-			run(false)
+			if mode == "oidc" {
+				path := filepath.Join(sources["input"], "..version", "matrix-lantern-0.json")
+				for _, invalid := range [][]byte{{}, bytes.Repeat([]byte{'x'}, 122881)} {
+					if err := os.WriteFile(path, invalid, 0644); err != nil {
+						t.Fatal(err)
+					}
+					run(false)
+				}
+			}
 		})
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -26,84 +27,110 @@ import (
 )
 
 func TestCurrentProvisioningIndependentGenesisAndStrictProfile(t *testing.T) {
-	n, origins, _ := authorityTestComposite(t)
-	c := n.configs[1]
-	g := n.f.genesis.state
-	dir := t.TempDir()
-	genesis := currentGenesisDocument{CurrentPublicVersion, g.projection.cut.Domain, g.projection.cut.Cohort, g.projection.cut.Generation,
-		g.projection.cut.Fences, g.projection.Image(), g.configuration, n.f.genesis.roots, n.f.members, n.f.origins, n.f.trust.bounds, sha256.Sum256([]byte(authorityTimeProfileDescription))}
-	write := func(name string, value any) (string, []byte) {
-		t.Helper()
-		raw, err := json.Marshal(value)
-		if err != nil {
-			t.Fatal(err)
-		}
-		path := filepath.Join(dir, name)
-		if err = os.WriteFile(path, raw, 0600); err != nil {
-			t.Fatal(err)
-		}
-		return path, raw
+	options := provisioningTestOptions(t, 3, runtime.GOOS)
+	bundle, err := GenerateProvisioning(options)
+	if err != nil {
+		t.Fatal(err)
 	}
-	genesisPath, genesisRaw := write("genesis.json", genesis)
-	keyPath, manifestPath := filepath.Join(dir, "membership.pub"), filepath.Join(dir, "membership.signed")
-	for path, raw := range map[string][]byte{keyPath: c.Membership.Key, manifestPath: c.Manifest} {
-		if err := os.WriteFile(path, raw, 0600); err != nil {
+	document := provisioningTestDocument(t, bundle.Nodes[0].AuthorityJSON)
+	for _, dir := range []string{options.Nodes[0].StateDir, options.Nodes[0].RenewableDir} {
+		if err = os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	p := c.Participant
-	node := currentNodeDocument{Version: CurrentPublicVersion, GenesisFile: genesisPath, GenesisSHA256: sha256.Sum256(genesisRaw),
-		Participant: currentParticipantDocument{p.Member, p.Incarnation, p.PPath, p.BPath, p.PIdentity, p.PEpoch, p.PPolicy, p.BScope, p.OwnedOrigin, p.PendingBytes, p.PendingCount, p.OutboxBytes},
-		Membership:  currentMembershipDocument{c.Membership.Path, keyPath, manifestPath, c.Membership.Profile, c.Membership.Self},
-		Identity:    c.Identity, OriginKeyFile: filepath.Join(filepath.Dir(c.Identity.VotingKey), "origin.key"), FloorsFile: filepath.Join(dir, "floors.json"), ListenAddress: n.listeners[1].Addr().String(), Limits: c.Limits}
-	path, raw := write("node.json", node)
-	provisioned, err := LoadCurrentProvisioning(path)
-	if err != nil || provisioned.Profile().Protocol != n.f.trust.scope || provisioned.Profile().Membership != c.Membership.Profile.Digest() {
-		t.Fatal("independent original inputs did not reproduce the installed profile", err)
+	if err = os.WriteFile(document.Membership.ManifestFile, bundle.Operator.ControlManifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	raw := currentJSONEncode(t, document)
+	provisioned, err := LoadCurrentProvisioningJSON(raw)
+	if err != nil || provisioned.Profile() != bundle.Nodes[0].CurrentProfile {
+		t.Fatal("independent original inline inputs did not reproduce the generated profile", err)
 	}
 	if provisioned.config.timeOwner != nil || len(provisioned.config.Participant.Key) != 0 || provisioned.config.Membership.Now != nil {
 		t.Fatal("provisioning manufactured runtime clock or signer")
 	}
-	canonical, err := currentCustodyPath(manifestPath)
+	canonical, err := currentCustodyPath(document.Membership.ManifestFile)
 	if err != nil || provisioned.manifest != canonical {
 		t.Fatal("manifest path was not retained from validated provisioning", err)
 	}
-	for name, edit := range map[string]func(*currentNodeDocument){
-		"legacy version":      func(d *currentNodeDocument) { d.Version = 1 },
-		"wrong genesis":       func(d *currentNodeDocument) { d.GenesisSHA256[0] ^= 1 },
-		"wrong cohort":        func(d *currentNodeDocument) { d.Participant.BScope.Cohort[0] ^= 1 },
-		"wrong member":        func(d *currentNodeDocument) { d.Participant.Member = 99 },
-		"another origin":      func(d *currentNodeDocument) { d.Participant.OwnedOrigin = 2 },
-		"wrong listener":      func(d *currentNodeDocument) { d.ListenAddress = "127.0.0.1:0" },
-		"missing custody":     func(d *currentNodeDocument) { d.FloorsFile = "" },
-		"relative custody":    func(d *currentNodeDocument) { d.FloorsFile = "floors.json" },
-		"borrowed membership": func(d *currentNodeDocument) { d.Membership.Profile.ProtocolScope[0] ^= 1 },
+	for name, edit := range map[string]func(*currentJSONProvisioningDocument){
+		"legacy version":      func(d *currentJSONProvisioningDocument) { d.Version = 0 },
+		"wrong genesis":       func(d *currentJSONProvisioningDocument) { d.Genesis.Domain[0] ^= 1 },
+		"wrong time profile":  func(d *currentJSONProvisioningDocument) { d.Genesis.TimeProfile[0] ^= 1 },
+		"wrong cohort":        func(d *currentJSONProvisioningDocument) { d.Participant.BScope.Cohort[0] ^= 1 },
+		"wrong member":        func(d *currentJSONProvisioningDocument) { d.Participant.Member = 99 },
+		"another origin":      func(d *currentJSONProvisioningDocument) { d.Participant.OwnedOrigin = 2 },
+		"wrong listener":      func(d *currentJSONProvisioningDocument) { d.ListenAddress = "127.0.0.1:0" },
+		"missing custody":     func(d *currentJSONProvisioningDocument) { d.FloorsFile = "" },
+		"relative custody":    func(d *currentJSONProvisioningDocument) { d.FloorsFile = "floors.json" },
+		"borrowed membership": func(d *currentJSONProvisioningDocument) { d.Membership.Profile.ProtocolScope[0] ^= 1 },
+		"missing fixed voter capability": func(d *currentJSONProvisioningDocument) {
+			d.Genesis.Members = append([]s2cMember(nil), d.Genesis.Members...)
+			d.Genesis.Members[0].ConfiguredTrust = 0
+		},
+		"invalid origin capability": func(d *currentJSONProvisioningDocument) {
+			d.Genesis.Origins = append([]s2cOriginDescriptor(nil), d.Genesis.Origins...)
+			d.Genesis.Origins[0].ConfiguredTrust++
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			copy := node
-			edit(&copy)
-			path, _ := write("bad-node.json", copy)
-			if _, err := LoadCurrentProvisioning(path); err == nil {
+			bad := document
+			edit(&bad)
+			if _, err := LoadCurrentProvisioningJSON(currentJSONEncode(t, bad)); err == nil {
 				t.Fatal("incompatible current-profile input accepted")
 			}
 		})
 	}
-	for _, invalid := range [][]byte{append(append([]byte{}, raw[:len(raw)-1]...), []byte(",\"Version\":2}")...), []byte(`{"Version":2,"Ready":true}`)} {
-		if err := os.WriteFile(path, invalid, 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := LoadCurrentProvisioning(path); err == nil {
+	for _, invalid := range [][]byte{append(append([]byte{}, raw[:len(raw)-1]...), []byte(",\"version\":1}")...), []byte(`{"version":1,"Ready":true}`)} {
+		if _, err := LoadCurrentProvisioningJSON(invalid); err == nil {
 			t.Fatal("duplicate/unknown qualification assertion accepted")
 		}
 	}
-	owner := &CurrentAuthority{origin: origins[1]}
-	floors, err := owner.ExportFloors()
+	// Only renewable signed material remains a file input. Its ACL/parser checks
+	// still apply even though original topology and private keys are inline.
+	if err = os.Chmod(document.Membership.ManifestFile, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = LoadCurrentProvisioningJSON(raw); err == nil {
+		t.Fatal("publicly readable renewable manifest accepted")
+	}
+	if err = os.Chmod(document.Membership.ManifestFile, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(document.Membership.ManifestFile, []byte(`{"version":1,"version":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = LoadCurrentProvisioningJSON(raw); err == nil {
+		t.Fatal("malformed renewable manifest accepted")
+	}
+	if err = os.WriteFile(document.Membership.ManifestFile, bundle.Operator.ControlManifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{document.Participant.PPath, document.Participant.BPath, document.Membership.Path, document.FloorsFile} {
+		if _, err = os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatal("profile validation opened mutable native state", path, err)
+		}
+	}
+}
+
+func TestCurrentAuthorityExportsIndependentNativeFloors(t *testing.T) {
+	network, keys, _ := configuredTestNativeCluster(t, 1)
+	origin := configuredTestEndorser(t, network, keys, 1)
+	expectedP, expectedB, err := origin.network.kernel.Floors()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var f s3aFloors
-	if json.Unmarshal(floors, &f) != nil || f.M.Binding != provisioned.Profile().Membership || f.P.Index == 0 || f.B.LocalIndex == 0 {
-		t.Fatal("export lost independently retained minimum cuts")
+	expectedM, err := origin.network.membership.Floor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := (&CurrentAuthority{origin: origin}).ExportFloors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var floors s3aFloors
+	if s2StrictJSON(raw, &floors, DefaultPolicyLimits()) != nil || floors != (s3aFloors{M: expectedM, P: expectedP, B: expectedB}) || floors.P.Index == 0 || floors.B.LocalIndex == 0 {
+		t.Fatal("export lost independent native minimum cuts")
 	}
 }
 
@@ -390,6 +417,16 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 	originCount := min(2, count)
 	f.origins = f.origins[:originCount]
 	f, keys := authorityTestFixtureState(t, f)
+	description := authorityTimeProfileDescription
+	if composeOriginal || len(hosts) != 0 {
+		description, _ = authorityTimeDescriptionForTarget("linux")
+	}
+	for i := range f.origins {
+		f.origins[i].Profile = authorityAdmissionProfileForTime(description)
+	}
+	// Enroll every fixed voter, including the origin-less observer, before
+	// constructing the exported historical genesis. No native state exists.
+	configuredTestEnroll(t, f)
 	n.manifest.Profile.ProtocolScope = f.trust.scope
 	manifest := n.sign(n.manifest)
 	write := func(path string, raw []byte) {
@@ -415,10 +452,12 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 		return raw
 	}
 	g := f.genesis.state
-	genesis := currentGenesisDocument{CurrentPublicVersion, g.projection.cut.Domain, g.projection.cut.Cohort, g.projection.cut.Generation, g.projection.cut.Fences, g.projection.Image(), g.configuration, f.genesis.roots, f.members, f.origins, f.trust.bounds, sha256.Sum256([]byte(authorityTimeProfileDescription))}
-	genesisPath := filepath.Join(dir, "genesis.json")
-	genesisRaw := doc(genesisPath, genesis)
+	genesis := currentGenesisDocument{CurrentPublicVersion, g.projection.cut.Domain, g.projection.cut.Cohort, g.projection.cut.Generation, g.projection.cut.Fences, g.projection.Image(), g.configuration, f.genesis.roots, f.members, f.origins, f.trust.bounds, sha256.Sum256([]byte(description))}
 	var queryNodes []map[string]any
+	stateRoot := filepath.Join(dir, "state")
+	if err := os.Mkdir(stateRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
 	for id := uint32(1); id <= uint32(count); id++ {
 		old := n.configs[id]
 		nodeDir := filepath.Join(dir, fmt.Sprintf("node-%d", id))
@@ -427,8 +466,8 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 		}
 		p := s2cTestConfig(t, f, id, nodeDir)
 		p.OutboxBytes = old.Participant.OutboxBytes
-		identity := s3aIdentityFiles{Roots: filepath.Join(nodeDir, "roots.pem"), Certificate: filepath.Join(nodeDir, "cert.pem"), TLSKey: filepath.Join(nodeDir, "tls.key"), VotingKey: filepath.Join(nodeDir, "vote.key")}
-		for from, to := range map[string]string{old.Identity.Roots: identity.Roots, old.Identity.Certificate: identity.Certificate, old.Identity.TLSKey: identity.TLSKey, old.Identity.VotingKey: identity.VotingKey} {
+		identity := s3aIdentityFiles{Roots: filepath.Join(nodeDir, "roots.pem"), Certificate: filepath.Join(nodeDir, "cert.pem"), TLSKey: filepath.Join(nodeDir, "tls.key")}
+		for from, to := range map[string]string{old.Identity.Roots: identity.Roots, old.Identity.Certificate: identity.Certificate, old.Identity.TLSKey: identity.TLSKey} {
 			raw, e := os.ReadFile(from)
 			if e != nil {
 				t.Fatal(e)
@@ -456,50 +495,74 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 			}
 			write(to, raw)
 		}
-		keyPath, manifestPath := filepath.Join(nodeDir, "membership.pub"), filepath.Join(nodeDir, "membership.signed")
-		write(keyPath, old.Membership.Key)
+		manifestPath := filepath.Join(nodeDir, "membership.signed")
 		write(manifestPath, manifest)
-		originPath := ""
-		if id <= uint32(originCount) {
-			originPath = filepath.Join(nodeDir, "origin.key")
-			write(originPath, keys[id])
-		} else {
+		if id > uint32(originCount) {
 			p.OwnedOrigin = 0
 		}
-		node := currentNodeDocument{Version: CurrentPublicVersion, GenesisFile: genesisPath, GenesisSHA256: sha256.Sum256(genesisRaw), Participant: currentParticipantDocument{p.Member, p.Incarnation, p.PPath, p.BPath, p.PIdentity, p.PEpoch, p.PPolicy, p.BScope, p.OwnedOrigin, p.PendingBytes, p.PendingCount, p.OutboxBytes}, Membership: currentMembershipDocument{filepath.Join(nodeDir, "membership"), keyPath, manifestPath, n.manifest.Profile, old.Membership.Self}, Identity: identity, OriginKeyFile: originPath, FloorsFile: filepath.Join(nodeDir, "floors.json"), ListenAddress: n.listeners[id].Addr().String(), Limits: old.Limits}
+		read := func(path string) []byte {
+			t.Helper()
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return raw
+		}
+		node := currentJSONProvisioningDocument{Version: currentJSONProvisioningVersion, Genesis: genesis,
+			Participant: currentParticipantDocument{p.Member, p.Incarnation, p.PPath, p.BPath, p.PIdentity, p.PEpoch, p.PPolicy, p.BScope, p.OwnedOrigin, p.PendingBytes, p.PendingCount, p.OutboxBytes},
+			Membership:  currentJSONMembershipDocument{filepath.Join(nodeDir, "membership"), manifestPath, old.Membership.Key, n.manifest.Profile, old.Membership.Self},
+			Identity:    currentJSONIdentityDocument{string(read(identity.Roots)), string(read(identity.Certificate)), string(read(identity.TLSKey)), read(old.Identity.VotingKey)},
+			FloorsFile:  filepath.Join(nodeDir, "floors.json"), ListenAddress: n.listeners[id].Addr().String(), Limits: old.Limits}
+		if id <= uint32(originCount) {
+			node.OriginKey = keys[id]
+		}
+		nodeState := filepath.Join(stateRoot, fmt.Sprintf("node-%d", id))
+		node.Participant.PPath, node.Participant.BPath = filepath.Join(nodeState, "control-protocol.wal"), filepath.Join(nodeState, "control-materialized.wal")
+		node.Membership.Path, node.FloorsFile = filepath.Join(nodeState, "control-membership"), filepath.Join(nodeState, "control-floors.json")
 		if len(hosts) != 0 {
-			node.Participant.PPath, node.Participant.BPath = "/journal/protocol.wal", "/journal/materialized.wal"
-			node.Membership.Path, node.FloorsFile, node.ListenAddress = "/journal/membership", "/custody/floors.json", "0.0.0.0:16380"
+			nodeState, custody := fmt.Sprintf("/journal/node-%d", id), fmt.Sprintf("/custody/node-%d", id)
+			node.Participant.PPath, node.Participant.BPath = filepath.Join(nodeState, "protocol.wal"), filepath.Join(nodeState, "materialized.wal")
+			node.Membership.Path, node.FloorsFile, node.ListenAddress = filepath.Join(nodeState, "membership"), filepath.Join(custody, "floors.json"), "0.0.0.0:16380"
 		}
 		if composeOriginal {
-			node.GenesisFile = "/run/lantern-config/authority-genesis.json"
-			node.Participant.PPath, node.Participant.BPath = "/state/control-protocol.wal", "/state/control-materialized.wal"
-			node.Membership.Path, node.FloorsFile, node.ListenAddress = "/state/control-membership", "/state/control-floors.json", "0.0.0.0:16380"
-			node.Membership.KeyFile, node.Membership.ManifestFile = "/run/lantern-config/authority-membership.pub", "/run/lantern-config/authority-membership.signed"
-			node.Identity = s3aIdentityFiles{Roots: "/run/lantern-config/authority-roots.pem", Certificate: "/run/lantern-config/authority-cert.pem", TLSKey: "/run/lantern-config/authority-tls.key", VotingKey: "/run/lantern-config/authority-vote.key"}
-			if node.OriginKeyFile != "" {
-				node.OriginKeyFile = "/run/lantern-config/authority-origin.key"
-			}
+			state := fmt.Sprintf("/state/node-%d", id)
+			node.Participant.PPath, node.Participant.BPath = filepath.Join(state, "control-protocol.wal"), filepath.Join(state, "control-materialized.wal")
+			node.Membership.Path, node.FloorsFile, node.ListenAddress = filepath.Join(state, "control-membership"), filepath.Join(state, "control-floors.json"), "0.0.0.0:16380"
+			node.Membership.ManifestFile = "/run/lantern-config/authority-membership.signed"
 		}
-		path := filepath.Join(nodeDir, "node.json")
+		path := filepath.Join(nodeDir, "authority.json")
 		doc(path, node)
 		if composeOriginal {
 			continue
 		}
-		provisioned, err := LoadCurrentProvisioning(path)
+		provisioned, err := currentExportedProvisioning(t, path)
 		if err != nil {
 			t.Fatal("export invalid", id, err)
 		}
-		queryNodes = append(queryNodes, map[string]any{"node_file": path, "floors_file": provisioned.floors, "custody_binding": provisioned.binding})
+		queryNodes = append(queryNodes, map[string]any{"authority_file": path, "floors_file": provisioned.floors, "custody_binding": provisioned.binding})
 	}
-	if composeOriginal {
-		der, e := x509.MarshalPKCS8PrivateKey(n.operator)
-		if e != nil {
-			t.Fatal(e)
+	der, e := x509.MarshalPKCS8PrivateKey(n.operator)
+	if e != nil {
+		t.Fatal(e)
+	}
+	write(filepath.Join(dir, "control-operator.key"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	profile := CurrentProfile{CurrentPublicVersion, genesis.Domain, genesis.Cohort, genesis.Generation, f.trust.scope, genesis.TimeProfile, n.manifest.Profile.Digest(), g.configuration.Digest()}
+	var initialAdmin map[string]string
+	for _, principal := range genesis.Image.Principals {
+		access, active := g.projection.snapshot.AccessFor(principal.Identity)
+		if active && principal.Identity.Kind == OIDCPrincipal && g.projection.snapshot.HumanIdentity(principal.Identity) && access.AllowsGlobal(SecurityManage) {
+			initialAdmin = map[string]string{"issuer": principal.Identity.Issuer, "subject": principal.Identity.Subject}
+			break
 		}
-		write(filepath.Join(dir, "control-operator.key"), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
-		doc(filepath.Join(dir, "compose-provision.json"), map[string]any{"profile": CurrentProfile{CurrentPublicVersion, genesis.Domain, genesis.Cohort, genesis.Generation, f.trust.scope, genesis.TimeProfile, n.manifest.Profile.Digest(), g.configuration.Digest()}})
 	}
+	if initialAdmin == nil {
+		t.Fatal("original historical administrator missing")
+	}
+	doc(filepath.Join(dir, "provision.json"), map[string]any{"profile": profile, "profile_binding": profile.Binding(), "initial_admin": initialAdmin, "nodes": queryNodes})
+	if composeOriginal {
+		doc(filepath.Join(dir, "compose-provision.json"), map[string]any{"profile": profile})
+	}
+
 	if queryRoles != "" {
 		doc(filepath.Join(dir, "query-provision.json"), map[string]any{"membership_expires_at": n.manifest.ExpiresAt, "nodes": queryNodes})
 	}
@@ -510,12 +573,65 @@ func TestCurrentProvisioningExportPublicFixture(t *testing.T) {
 		exportCurrentRenewalFixture(t, dir, n, manifest, hosts)
 	}
 	if driver := os.Getenv("LANTERN_CURRENT_DATA_HA"); driver != "" {
-		provisioned, err := LoadCurrentProvisioning(filepath.Join(dir, "node-1", "node.json"))
+		provisioned, err := currentExportedProvisioning(t, filepath.Join(dir, "node-1", "authority.json"))
 		if err != nil || len(hosts) != 3 || net.ParseIP(driver) == nil {
 			t.Fatal("data HA requires the current three-container fixture", err)
 		}
 		exportCurrentDataHA(t, dir, hosts, driver, provisioned.Profile())
 	}
+}
+
+type currentExportedAuthorityDescription struct {
+	profile CurrentProfile
+	floors  string
+	binding [32]byte
+}
+
+func (d *currentExportedAuthorityDescription) Profile() CurrentProfile { return d.profile }
+
+// Pure authoring validation: final native state directories deliberately do
+// not exist until explicit initialization. This helper cannot open authority.
+func currentExportedProvisioning(t *testing.T, path string) (*currentExportedAuthorityDescription, error) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var d currentJSONProvisioningDocument
+	if decodeCurrentJSONProvisioning(raw, &d) != nil {
+		return nil, errS3AConfig
+	}
+	manifest, err := os.ReadFile(d.Membership.ManifestFile)
+	if err != nil {
+		return nil, err
+	}
+	description := authorityTimeProfileDescription
+	if strings.HasPrefix(d.Participant.PPath, "/journal/") {
+		description, _ = authorityTimeDescriptionForTarget("linux")
+	}
+	c, profile, err := currentJSONConfigForTime(d, manifest, description, false)
+	if err != nil {
+		return nil, err
+	}
+	binding := s2cHash("current-custody-json-v1", struct {
+		Genesis     currentGenesisDocument
+		Participant currentParticipantDocument
+		Membership  struct {
+			Path    string
+			Key     []byte
+			Profile peerauth.ControlProfile
+			Self    peerauth.Member
+		}
+		Floors string
+		Listen string
+		Limits s3aLimits
+	}{Genesis: d.Genesis, Participant: d.Participant, Membership: struct {
+		Path    string
+		Key     []byte
+		Profile peerauth.ControlProfile
+		Self    peerauth.Member
+	}{c.Membership.Path, d.Membership.PublicKey, d.Membership.Profile, d.Membership.Self}, Floors: d.FloorsFile, Listen: d.ListenAddress, Limits: d.Limits})
+	return &currentExportedAuthorityDescription{profile, d.FloorsFile, binding}, nil
 }
 
 type currentPhysicalCredentialExport struct {
@@ -742,7 +858,7 @@ func TestCurrentNativeFixtureExport(t *testing.T) {
 				t.Fatal("native serving expiry escaped the signed membership maximum")
 			}
 			for id := 1; id <= 3; id++ {
-				p, err := LoadCurrentProvisioning(filepath.Join(dir, fmt.Sprintf("node-%d/node.json", id)))
+				p, err := currentExportedProvisioning(t, filepath.Join(dir, fmt.Sprintf("node-%d/authority.json", id)))
 				if err != nil || p.Profile().Binding() == "" {
 					t.Fatal("invalid native current-v2 provisioning", err)
 				}
@@ -769,7 +885,7 @@ func exportCurrentRenewalFixture(t *testing.T, dir string, n *s3aTestNetwork, co
 		write(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 		return path
 	}
-	p, err := LoadCurrentProvisioning(filepath.Join(dir, "node-1", "node.json"))
+	p, err := currentExportedProvisioning(t, filepath.Join(dir, "node-1", "authority.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -810,7 +926,7 @@ func exportCurrentRenewalFixture(t *testing.T, dir string, n *s3aTestNetwork, co
 		peer := map[string]any{"ListenAddress": fmt.Sprintf("127.0.0.1:%d", 17441+i), "Identity": map[string]any{"AuthMode": "oidc", "Deployment": m.Domain.Deployment, "SecurityGeneration": m.Domain.SecurityGeneration, "CurrentProfile": m.Domain.CurrentProfile, "CAFile": filepath.Join(node, "roots.pem"), "OperatorKeyFile": publicPath, "ManifestFile": path, "StateFile": filepath.Join(node, "data-membership"), "StateMode": "fresh", "CertFile": certificates[i], "KeyFile": filepath.Join(node, "tls.key"), "SelfIdentity": m.Members[i].Identity}}
 		if len(hosts) != 0 {
 			peer["ListenAddress"] = "0.0.0.0:17380"
-			peer["Identity"].(map[string]any)["StateFile"] = "/journal/data-membership"
+			peer["Identity"].(map[string]any)["StateFile"] = fmt.Sprintf("/journal/node-%d/data-membership", i+1)
 		}
 		raw, err := json.Marshal(peer)
 		if err != nil {
@@ -918,15 +1034,20 @@ func TestCurrentQueryFixtureExportRetainsOriginalFiles(t *testing.T) {
 	t.Setenv("LANTERN_CURRENT_FIXTURE_QUERY_ROLES_FILE", path)
 	t.Setenv("LANTERN_CURRENT_FIXTURE_HOSTS", "")
 	TestCurrentProvisioningExportPublicFixture(t)
+	for _, obsolete := range []string{"genesis.json", "node-1/node.json", "node-1/membership.pub", "node-1/vote.key", "node-1/origin.key"} {
+		if _, err := os.Stat(filepath.Join(exportDir, obsolete)); !os.IsNotExist(err) {
+			t.Fatal("obsolete duplicate authority artifact retained", obsolete, err)
+		}
+	}
 	rawManifest, err := os.ReadFile(filepath.Join(exportDir, "query-provision.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var exported struct {
 		Nodes []struct {
-			NodeFile   string   `json:"node_file"`
-			FloorsFile string   `json:"floors_file"`
-			Binding    [32]byte `json:"custody_binding"`
+			AuthorityFile string   `json:"authority_file"`
+			FloorsFile    string   `json:"floors_file"`
+			Binding       [32]byte `json:"custody_binding"`
 		} `json:"nodes"`
 		ExpiresAt time.Time `json:"membership_expires_at"`
 	}
@@ -934,7 +1055,31 @@ func TestCurrentQueryFixtureExportRetainsOriginalFiles(t *testing.T) {
 		t.Fatal("original query export incomplete")
 	}
 	for _, node := range exported.Nodes {
-		p, err := LoadCurrentProvisioning(node.NodeFile)
+		raw, err := os.ReadFile(node.AuthorityFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var d currentJSONProvisioningDocument
+		if decodeCurrentJSONProvisioning(raw, &d) != nil {
+			t.Fatal("invalid exported JSON")
+		}
+		if len(d.Genesis.Origins) != 2 || len(d.Genesis.Members) != 3 {
+			t.Fatal("fixed two-origin observer topology changed")
+		}
+		for _, m := range d.Genesis.Members {
+			if m.ConfiguredTrust != configuredTrustVersion {
+				t.Fatal("fixed voter lacks configured endorsement capability")
+			}
+		}
+		for _, o := range d.Genesis.Origins {
+			if o.ConfiguredTrust != configuredTrustVersion {
+				t.Fatal("existing origin lacks configured mint capability")
+			}
+		}
+		if d.Participant.Member == 3 && d.Participant.OwnedOrigin != 0 {
+			t.Fatal("observer gained fake origin")
+		}
+		p, err := currentExportedProvisioning(t, node.AuthorityFile)
 		if err != nil || p.binding != node.Binding || p.floors != node.FloorsFile || p.Profile().Binding() == "" {
 			t.Fatal("original node binding mismatch", err)
 		}

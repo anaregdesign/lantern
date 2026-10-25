@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -21,7 +22,8 @@ import (
 
 // These are expected original input bindings, not authority or restart grants.
 type queryCurrentNode struct {
-	NodeFile       string   `json:"node_file"`
+	AuthorityFile  string   `json:"authority_file"`
+	StartupFile    string   `json:"startup_file"`
 	FloorsFile     string   `json:"floors_file"`
 	CustodyBinding [32]byte `json:"custody_binding"`
 }
@@ -40,6 +42,10 @@ func generateQueryFixture(ctx context.Context, dir string, ports []int, mode, bi
 	}
 	// Build transport inputs before installing the original OIDC authority.
 	f, err := generateTopologyProfile(dir, ports, nil, "off", "", false, false)
+	if err != nil {
+		return fixture{}, err
+	}
+	dir, err = filepath.EvalSymlinks(dir)
 	if err != nil {
 		return fixture{}, err
 	}
@@ -73,7 +79,7 @@ func generateQueryFixture(ctx context.Context, dir string, ports []int, mode, bi
 		if err != nil {
 			return fixture{}, err
 		}
-		provisionDir := filepath.Join(dir, "current")
+		provisionDir := filepath.Join(dir, "authority")
 		if err := os.Mkdir(provisionDir, 0700); err != nil {
 			return fixture{}, err
 		}
@@ -97,30 +103,45 @@ func generateQueryFixture(ctx context.Context, dir string, ports []int, mode, bi
 		if err := readQueryJSON(filepath.Join(provisionDir, "query-provision.json"), &exported); err != nil || len(exported.Nodes) != 3 || time.Until(exported.MembershipExpiresAt) < time.Minute {
 			return fixture{}, errors.New("complete fresh original current query provisioning required")
 		}
+		if err := attachFixtureSecurity(&f, dir); err != nil {
+			return fixture{}, err
+		}
 		f.Query.CurrentNodes = exported.Nodes
 		if exported.MembershipExpiresAt.Before(f.Query.ExpiresAt) {
 			f.Query.ExpiresAt = exported.MembershipExpiresAt
 		}
 		for i, node := range exported.Nodes {
-			if node.NodeFile != filepath.Join(provisionDir, fmt.Sprintf("node-%d/node.json", i+1)) || !filepath.IsAbs(node.FloorsFile) || node.CustodyBinding == [32]byte{} {
+			if node.AuthorityFile != filepath.Join(provisionDir, fmt.Sprintf("node-%d/authority.json", i+1)) || !filepath.IsAbs(node.FloorsFile) || node.CustodyBinding == [32]byte{} {
 				return fixture{}, errors.New("original current node/custody identity mismatch")
 			}
-			p, err := security.LoadCurrentProvisioning(node.NodeFile)
+			raw, err := os.ReadFile(node.AuthorityFile)
 			if err != nil {
 				return fixture{}, err
 			}
-			profile := service.EncodeCurrentProfile(p.Profile())
+			var authority struct {
+				Membership struct {
+					ManifestFile string `json:"manifest_file"`
+				}
+			}
+			if json.Unmarshal(raw, &authority) != nil {
+				return fixture{}, errors.New("invalid historical authority")
+			}
+			manifest, err := os.ReadFile(authority.Membership.ManifestFile)
+			if err != nil {
+				return fixture{}, err
+			}
+			originalProfile, err := security.ProvisioningAuthorityProfile(raw, manifest, runtime.GOOS)
+			if err != nil {
+				return fixture{}, err
+			}
+			profile := service.EncodeCurrentProfile(originalProfile)
 			if i == 0 {
-				f.Query.CurrentProfile, f.Query.CurrentBinding = profile, p.Profile().Binding()
+				f.Query.CurrentProfile, f.Query.CurrentBinding = profile, originalProfile.Binding()
 			} else if !proto.Equal(profile, f.Query.CurrentProfile) {
 				return fixture{}, errors.New("current query cohort profiles differ")
 			}
-			env := f.Nodes[i].Environment
-			env["LANTERN_SECURITY_STORE_MODE"] = "fresh"
-			env["LANTERN_SECURITY_CONFIG_FILE"] = node.NodeFile
-			env["LANTERN_OIDC_BROWSER_ORIGIN"], env["LANTERN_OIDC_ROOT_CA_FILE"] = "https://admin.example", f.CAFile
-			privateOrigins, _ := json.Marshal(map[string][]string{f.Query.Issuer: {"127.0.0.1/32"}})
-			env["LANTERN_OIDC_PRIVATE_ORIGINS"] = string(privateOrigins)
+
+			f.Query.CurrentNodes[i].StartupFile = f.Nodes[i].StartupFile
 		}
 		token, err := os.ReadFile(filepath.Join(provisionDir, "machine.token"))
 		if err != nil {

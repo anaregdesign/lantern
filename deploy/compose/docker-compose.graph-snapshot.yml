@@ -1,4 +1,6 @@
-# Graph-only HA staging; apply after docker-compose.yml and .ha.yml.
+# OFF graph-only HA staging; apply after docker-compose.yml and .ha.yml.
+# OIDC derives /state/<node>/snapshot-spool in its exclusive state mount and
+# must NOT use this unused /var/lib overlay or separate graph-spool env keys.
 # Per-node env files must explicitly configure the spool path and both limits.
 # A matching image prepares this empty target for its default non-root user;
 # fresh named volumes copy up that owner and mode 0700. No existing state or

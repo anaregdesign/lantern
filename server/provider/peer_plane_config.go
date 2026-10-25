@@ -121,7 +121,11 @@ func validatePeerPlaneConfig(cfg PeerPlaneConfig) error {
 	}
 	_, port, err := net.SplitHostPort(cfg.ListenAddress)
 	n, numberErr := strconv.Atoi(port)
-	if err != nil || numberErr != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port {
+	minimumPort := 1
+	if cfg.Identity.AuthMode == "oidc" {
+		minimumPort = 0
+	}
+	if err != nil || numberErr != nil || n < minimumPort || n > 65535 || strconv.Itoa(n) != port || cfg.Identity.AuthMode == "oidc" && !validSecurityLocalListen(cfg.ListenAddress) {
 		return errors.New("peer listener requires an explicit host:port")
 	}
 	if cfg.Identity.StateMode != "fresh" && cfg.Identity.StateMode != "resume" || cfg.Identity.Deployment == [16]byte{} {

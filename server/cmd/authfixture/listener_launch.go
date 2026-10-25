@@ -182,7 +182,15 @@ func checkFixtureLaunchNode(l *fixtureLaunch, node fixtureNode) error {
 	if l.peer != 0 {
 		wantPeer = net.JoinHostPort("127.0.0.1", strconv.Itoa(l.peer))
 	}
-	if node.Environment["LANTERN_PEER_LISTEN_ADDR"] != wantPeer {
+	actualPeer := node.Environment["LANTERN_PEER_LISTEN_ADDR"]
+	if node.StartupFile != "" {
+		var err error
+		actualPeer, err = fixtureDataListen(node)
+		if err != nil {
+			return listenerlaunch.ErrLaunch
+		}
+	}
+	if actualPeer != wantPeer {
 		return listenerlaunch.ErrLaunch
 	}
 	return nil

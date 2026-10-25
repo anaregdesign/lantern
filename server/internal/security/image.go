@@ -28,16 +28,18 @@ var ErrLastAdministrator = errors.New("security image requires a usable OIDC adm
 // Image is one complete typed sys security revision, not independently merged
 // graph records. No Principal or Session can carry direct permission rules.
 type Image struct {
-	Version            int                 `json:"version"`
-	BootstrapRevision  uint64              `json:"bootstrap_revision"`
-	BootstrapDigest    string              `json:"bootstrap_digest,omitempty"`
-	Issuers            []Issuer            `json:"issuers"`
-	Roles              []Role              `json:"roles"`
-	Principals         []Principal         `json:"principals"`
-	Sessions           []Session           `json:"sessions"`
-	MachineCredentials []MachineCredential `json:"machine_credentials,omitempty"`
-	Audit              []AuditRecord       `json:"audit,omitempty"`
-	RegistrationPolicy *RegistrationPolicy `json:"registration_policy,omitempty"`
+	Version                 int                 `json:"version"`
+	BootstrapRevision       uint64              `json:"bootstrap_revision"`
+	BootstrapDigest         string              `json:"bootstrap_digest,omitempty"`
+	ConfiguredTrustRevision uint64              `json:"configured_trust_revision,omitempty"`
+	ConfiguredTrustDigest   string              `json:"configured_trust_digest,omitempty"`
+	Issuers                 []Issuer            `json:"issuers"`
+	Roles                   []Role              `json:"roles"`
+	Principals              []Principal         `json:"principals"`
+	Sessions                []Session           `json:"sessions"`
+	MachineCredentials      []MachineCredential `json:"machine_credentials,omitempty"`
+	Audit                   []AuditRecord       `json:"audit,omitempty"`
+	RegistrationPolicy      *RegistrationPolicy `json:"registration_policy,omitempty"`
 }
 
 // CompileImage validates the complete image before any durable commit. A
@@ -54,7 +56,7 @@ func compileImage(image Image, limits PolicyLimits, previous *Snapshot) (*Snapsh
 // contract. New writes always require a qualified human administrator. Reading
 // a legacy cut does not enroll its OIDC principals or permit their mutations.
 func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot, requireHuman bool) (*Snapshot, error) {
-	if image.Version != ImageVersion || image.BootstrapDigest != "" && !validHexDigest(image.BootstrapDigest) || len(image.Issuers) > MaxIssuers ||
+	if (image.ConfiguredTrustRevision == 0) != (image.ConfiguredTrustDigest == "") || image.ConfiguredTrustDigest != "" && !validHexDigest(image.ConfiguredTrustDigest) || image.Version != ImageVersion || image.BootstrapDigest != "" && !validHexDigest(image.BootstrapDigest) || len(image.Issuers) > MaxIssuers ||
 		len(image.Principals) > MaxPrincipals || len(image.Sessions) > MaxSessions || len(image.Audit) > retainedChanges || len(image.MachineCredentials) > MaxMachineCredentials {
 		return nil, ErrInvalidImage
 	}
@@ -84,7 +86,7 @@ func compileImageAdmission(image Image, limits PolicyLimits, previous *Snapshot,
 			return nil, err
 		}
 	}
-	snapshot := &Snapshot{policy: policy, issuers: make(map[string]Issuer, len(image.Issuers)),
+	snapshot := &Snapshot{configuredTrustDigest: image.ConfiguredTrustDigest, policy: policy, issuers: make(map[string]Issuer, len(image.Issuers)),
 		principals: make(map[Identity]principalAccess, len(image.Principals)), sessions: make(map[string]Session, len(image.Sessions))}
 	snapshot.accessSets = make(map[string]*Access)
 	snapshot.roleBytes = roleBytes

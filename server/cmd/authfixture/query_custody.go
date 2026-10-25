@@ -42,7 +42,7 @@ func checkQueryCustody(node queryCurrentNode) (queryShutdownNode, error) {
 	if err != nil {
 		return out, err
 	}
-	if json.Unmarshal(raw, &state) != nil || state.Version != 1 || state.Phase != "CLEAN" || state.Cycle != 1 || state.Binding == [32]byte{} || state.Binding != node.CustodyBinding || state.Floors != sha256.Sum256(floors) || !json.Valid(floors) {
+	if json.Unmarshal(raw, &state) != nil || state.Version != 1 || state.Phase != "CLEAN" || state.Cycle != 2 || state.Binding == [32]byte{} || state.Binding != node.CustodyBinding || state.Floors != sha256.Sum256(floors) || !json.Valid(floors) {
 		return out, errors.New("missing or mismatched original CLEAN/floors checkpoint")
 	}
 	out.FloorsSHA256, out.StateSHA256 = queryBindingHex(sha256.Sum256(floors)), queryBindingHex(sha256.Sum256(raw))

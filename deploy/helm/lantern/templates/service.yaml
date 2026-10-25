@@ -14,11 +14,17 @@ spec:
   selector:
     {{- include "lantern.selectorLabels" . | nindent 4 }}
   ports:
-    {{- if .Values.peerPlane.enabled }}
+    {{- if or .Values.peerPlane.enabled (eq .Values.auth.mode "oidc") }}
     - name: peer
       port: {{ .Values.peerPlane.port }}
       targetPort: peer
       protocol: TCP
+    {{- if eq .Values.auth.mode "oidc" }}
+    - name: control
+      port: {{ .Values.auth.controlPort }}
+      targetPort: control
+      protocol: TCP
+    {{- end }}
     {{- else }}
     - name: grpc
       port: {{ .Values.service.port }}

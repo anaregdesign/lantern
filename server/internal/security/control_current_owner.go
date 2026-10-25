@@ -41,6 +41,7 @@ func openCurrentAuthorityOwnerWithCustody(ctx context.Context, c s3aConfig, orig
 	defer func() {
 		if !transferred {
 			clock.close()
+			err = withAuthorityTimeAcquisitionCounts(err, clock.acquisitionCounts())
 		}
 	}()
 	if err = waitAuthorityTimeAnchor(ctx, clock); err != nil {
