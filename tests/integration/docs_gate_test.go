@@ -1900,10 +1900,10 @@ func TestComposeNativeSecurityModeMatrix(t *testing.T) {
 								if mount.Target == "/state" {
 									stateMounts++
 									volume, declared := rendered.Volumes[mount.Source]
-									// Generic images copy up their empty private /state owner.
-									// The separate receipt HA example has its explicit nocopy initializer.
-									if mount.Type != "volume" || mount.ReadOnly || mount.Volume.NoCopy || !declared || volume.External || volume.Name == "" || len(volume.DriverOpts) != 0 {
-										t.Fatal("OIDC state/Snapshot backing is not private writable project storage with image-owned copy-up", name)
+									// The receipt benchmark preserves its explicit initializer's owner;
+									// graph profiles retain image-owned copy-up for their private /state.
+									if mount.Type != "volume" || mount.ReadOnly || mount.Volume.NoCopy != profile.receipt || !declared || volume.External || volume.Name == "" || len(volume.DriverOpts) != 0 {
+										t.Fatal("OIDC state/Snapshot backing is not private writable project storage with its profile's copy-up policy", name)
 									}
 									if previous, shared := storageOwners[volume.Name]; shared {
 										t.Fatal("OIDC state and derived Snapshot spool shared across workloads", previous, name)

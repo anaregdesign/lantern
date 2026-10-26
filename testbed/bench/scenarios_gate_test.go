@@ -791,6 +791,15 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		Services map[string]struct {
 			Environment map[string]string `yaml:"environment"`
 			Ports       struct{}          `yaml:"-"`
+			Volumes     []struct {
+				Type     string `yaml:"type"`
+				Source   string `yaml:"source"`
+				Target   string `yaml:"target"`
+				ReadOnly bool   `yaml:"read_only"`
+				Volume   struct {
+					NoCopy bool `yaml:"nocopy"`
+				} `yaml:"volume"`
+			} `yaml:"volumes"`
 		} `yaml:"services"`
 	}
 	if err := yaml.Unmarshal(protected, &overlay); err != nil {
@@ -799,7 +808,7 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 	if len(overlay.Services) != 3 {
 		t.Fatal("protected overlay must own only three explicit replicas")
 	}
-	for _, service := range []string{"lantern-0", "lantern-1", "lantern-2"} {
+	for index, service := range []string{"lantern-0", "lantern-1", "lantern-2"} {
 		got := overlay.Services[service].Environment
 		if got["LANTERN_METRICS_ADDR"] != "127.0.0.1:9090" || got["LANTERN_PPROF_ENABLED"] != "false" {
 			t.Fatal("protected diagnostics guard weakened", service)
@@ -807,6 +816,21 @@ func TestReceiptAdmissionLookupScenarioContract(t *testing.T) {
 		for _, key := range []string{"LANTERN_AUTH_TOKENS", "LANTERN_PEER_CA_FILE", "LANTERN_PEER_DISCOVERY"} {
 			if _, ok := got[key]; ok {
 				t.Fatal("retired peer admission", key)
+			}
+		}
+		mounts := overlay.Services[service].Volumes
+		if len(mounts) != 2 {
+			t.Fatal("protected overlay must preserve exactly its state and backup volumes", service)
+		}
+		for target, source := range map[string]string{"/state": fmt.Sprintf("state-%d", index), "/data": fmt.Sprintf("backup-%d", index)} {
+			matches := 0
+			for _, mount := range mounts {
+				if mount.Type == "volume" && mount.Source == source && mount.Target == target && !mount.ReadOnly && mount.Volume.NoCopy {
+					matches++
+				}
+			}
+			if matches != 1 {
+				t.Fatalf("%s must keep its owned %s volume writable with image copy-up disabled", service, target)
 			}
 		}
 	}

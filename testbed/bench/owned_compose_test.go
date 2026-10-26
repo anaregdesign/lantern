@@ -703,6 +703,12 @@ func TestOwnedComposeInitializerCustody(t *testing.T) {
 				"wrong-original-binds-object", "wrong-original-binds-string", "wrong-original-binds-nonstring",
 				"wrong-original-binds-empty-string", "wrong-original-binds-cr", "wrong-original-binds-lf", "wrong-original-binds-nul",
 				"wrong-original-structured-mounts", "wrong-original-structured-mounts-object",
+				"wrong-original-config-copy-missing", "wrong-original-config-copy-false", "wrong-original-config-copy-null", "wrong-original-config-copy-string",
+				"wrong-original-volume-request-missing", "wrong-original-volume-request-null", "wrong-original-volume-request-string",
+				"wrong-original-volume-request-extra", "wrong-original-volume-request-duplicate", "wrong-original-volume-request-source", "wrong-original-volume-request-target",
+				"wrong-original-volume-request-copy-missing", "wrong-original-volume-request-copy-false", "wrong-original-volume-request-copy-null", "wrong-original-volume-request-copy-string",
+				"wrong-original-volume-request-driver", "wrong-original-volume-request-subpath", "wrong-original-volume-request-extra-field",
+				"wrong-original-binds-legacy-volume",
 				"wrong-original-volumes-from", "wrong-original-volumes-from-string",
 				"wrong-original-tmpfs", "wrong-original-tmpfs-array", "wrong-original-tmpfs-string", "wrong-original-tmpfs-boolean",
 				"wrong-original-anonymous-volumes", "wrong-original-anonymous-volumes-array",
@@ -711,7 +717,12 @@ func TestOwnedComposeInitializerCustody(t *testing.T) {
 				"wrong-init-mount-volume-source", "wrong-init-mount-driver", "wrong-init-mount-propagation",
 				"wrong-init-mount-extra-field", "wrong-init-mount-missing", "wrong-init-mount-extra", "wrong-init-mount-duplicate-target",
 				"wrong-init-poststart-mount-source", "wrong-init-poststart-mount-mode",
-				"wrong-init-env-empty-unset", "wrong-init-env-explicit-value")
+				"wrong-init-env-empty-unset", "wrong-init-env-explicit-value",
+				"wrong-init-volume-request-missing", "wrong-init-volume-request-extra", "wrong-init-volume-request-duplicate", "wrong-init-volume-request-source", "wrong-init-volume-request-target",
+				"wrong-init-volume-request-copy-missing", "wrong-init-volume-request-copy-false", "wrong-init-volume-request-copy-null", "wrong-init-volume-request-copy-string",
+				"wrong-init-volume-request-driver", "wrong-init-volume-request-subpath", "wrong-init-volume-request-extra-field",
+				"wrong-init-binds-legacy-volume", "wrong-init-volume-request-bind",
+				"wrong-init-poststart-volume-copy", "wrong-init-poststart-volume-source")
 		}
 		if profile == "volume" {
 			for _, capability := range capabilityCases {
@@ -734,7 +745,7 @@ func TestOwnedComposeInitializerCustody(t *testing.T) {
 			}
 			oomInitial, oomCompleted := "", ""
 			refusedBeforeStart := strings.HasPrefix(failure, "wrong-init-") && failure != "wrong-init-exit"
-			postStartRefusal := strings.HasPrefix(failure, "wrong-init-hostconfig-") || strings.HasPrefix(failure, "wrong-init-poststart-mount-")
+			postStartRefusal := strings.HasPrefix(failure, "wrong-init-hostconfig-") || strings.HasPrefix(failure, "wrong-init-poststart-mount-") || strings.HasPrefix(failure, "wrong-init-poststart-volume-")
 			if postStartRefusal {
 				refusedBeforeStart = false
 			}
@@ -757,9 +768,16 @@ TEST_SECURITY_CONFIG='{"name":"lantern-bench-owned-fixture","services":{},"volum
 for index in 0 1 2; do
  TEST_SECURITY_CONFIG="$(jq -c --arg service "lantern-$index" --arg image "$TEST_IMAGE" --arg buffer "$TEST_SUBSCRIBER_BUFFER" '
   .services[$service]={image:$image,user:"501:20",environment:{LANTERN_AUTH_MODE:"oidc",LANTERN_SECURITY_CONFIG_JSON:("current-json-"+$service),LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER:$buffer},
-   volumes:[{type:"volume",source:("state-"+$service),target:"/state"},{type:"volume",source:("backup-"+$service),target:"/data"}]} |
+   volumes:[{type:"volume",source:("state-"+$service),target:"/state",volume:{nocopy:true}},{type:"volume",source:("backup-"+$service),target:"/data",volume:{nocopy:true}}]} |
   .volumes["state-"+$service]={name:("state-"+$service)} | .volumes["backup-"+$service]={name:("backup-"+$service)}' <<<"$TEST_SECURITY_CONFIG")"
 done
+case "$CASE" in
+ wrong-original-config-copy-*)
+  TEST_SECURITY_CONFIG="$(jq -c --arg case "$CASE" '
+   .services["lantern-1"].volumes[0].volume |=
+    (if $case=="wrong-original-config-copy-missing" then {} elif $case=="wrong-original-config-copy-false" then {nocopy:false}
+     elif $case=="wrong-original-config-copy-null" then {nocopy:null} else {nocopy:"true"} end)' <<<"$TEST_SECURITY_CONFIG")";;
+esac
 sleep() { command sleep 0.005; }
 docker() {
  if [[ "$1" == compose ]]; then
@@ -772,9 +790,9 @@ docker() {
  fi
  if [[ "$1" == create ]]; then
   local arg next="" name="" nonce_value="" env_file="" user_value="" network_value="" kind_value="" service_value=""
-  local -a supplied_mounts=()
+  local -a supplied_mounts=() supplied_volumes=()
   for arg in "$@"; do
-   case "$arg" in --volumes-from|--volumes-from=*) return 88;; --volume=*) supplied_mounts+=("${arg#*=}");; esac
+   case "$arg" in --volumes-from|--volumes-from=*) return 88;; --volume=*) supplied_mounts+=("${arg#*=}");; --mount=*) supplied_volumes+=("${arg#*=}");; esac
    case "$next" in
     --name) name="$arg";; --user) user_value="$arg";; --network) network_value="$arg";; --env-file) env_file="$arg";;
     --label) case "$arg" in lantern.initializer=*) nonce_value="${arg#*=}";; lantern.owner=*) kind_value="${arg#*=}";; com.docker.compose.service=*) service_value="${arg#*=}";; esac;;
@@ -785,9 +803,10 @@ docker() {
   if [[ "$PROFILE" == security ]]; then
    i="${service_value##*-}"
    [[ "$name" == "$COMPOSE_PROJECT_NAME-$service_value-security-init" && "$user_value" == 501:20 && "$network_value" == "$COMPOSE_PROJECT_NAME-default" && "$kind_value" == compose-security-initializer ]] || return 88
-   [[ "${#supplied_mounts[@]}" == 4 && "${supplied_mounts[0]}" == "/private/$service_value:/run/lantern-config:ro" &&
-      "${supplied_mounts[1]}" == "/private/$service_value/ntp.conf:/etc/ntp.conf:ro" &&
-      "${supplied_mounts[2]}" == "state-$service_value:/state:rw" && "${supplied_mounts[3]}" == "backup-$service_value:/data:rw" ]] || return 88
+   [[ "${#supplied_mounts[@]}" == 2 && "${supplied_mounts[0]}" == "/private/$service_value:/run/lantern-config:ro" &&
+      "${supplied_mounts[1]}" == "/private/$service_value/ntp.conf:/etc/ntp.conf:ro" && "${#supplied_volumes[@]}" == 2 &&
+      "${supplied_volumes[0]}" == "type=volume,source=state-$service_value,target=/state,volume-nocopy" &&
+      "${supplied_volumes[1]}" == "type=volume,source=backup-$service_value,target=/data,volume-nocopy" ]] || return 88
    [[ "$(cat "$env_file")" == $'LANTERN_AUTH_MODE=oidc\nLANTERN_SECURITY_CONFIG_JSON=current-json-'"$service_value"$'\nLANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER='"$TEST_SUBSCRIBER_BUFFER" ]] || return 88
   else
    [[ "$name" == "$COMPOSE_PROJECT_NAME-volume-init" && "$user_value" == 0:0 && "$kind_value" == compose-volume-initializer ]] || return 88
@@ -854,12 +873,13 @@ docker() {
    Config:{Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":$svc},Image:$image,User:$user,WorkingDir:"/app",
     Env:["LANTERN_AUTH_MODE=oidc",("LANTERN_SECURITY_CONFIG_JSON=current-json-"+$svc),("LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER="+$buffer)],Entrypoint:["/app/lantern"],Cmd:["init-security"],Volumes:null},Image:$image,
    State:{Status:$state,Running:($state=="running"),ExitCode:0},HostConfig:{NetworkMode:($project+"-default"),
-    Binds:[("/private/"+$svc+":/run/lantern-config:ro"),("/private/"+$svc+"/ntp.conf:/etc/ntp.conf:ro"),("state-"+$svc+":/state:rw"),("backup-"+$svc+":/data:rw")],Mounts:null,VolumesFrom:null,Tmpfs:null},
+    Binds:[("/private/"+$svc+":/run/lantern-config:ro"),("/private/"+$svc+"/ntp.conf:/etc/ntp.conf:ro")],
+    Mounts:[{Type:"volume",Source:("state-"+$svc),Target:"/state",VolumeOptions:{NoCopy:true}},{Type:"volume",Source:("backup-"+$svc),Target:"/data",VolumeOptions:{NoCopy:true}}],VolumesFrom:null,Tmpfs:null},
    Mounts:[{Type:"bind",Source:("/private/"+$svc),Destination:"/run/lantern-config",Mode:"ro",RW:false,Propagation:"rprivate"},
     {Type:"bind",Source:("/private/"+$svc+"/ntp.conf"),Destination:"/etc/ntp.conf",Mode:"ro",RW:false,Propagation:"rprivate"},
-    {Type:"volume",Name:("state-"+$svc),Source:("/var/lib/docker/volumes/state-"+$svc+"/_data"),Destination:"/state",Driver:"local",Mode:"rw",RW:true,Propagation:""},
-    {Type:"volume",Name:("backup-"+$svc),Source:("/var/lib/docker/volumes/backup-"+$svc+"/_data"),Destination:"/data",Driver:"local",Mode:"rw",RW:true,Propagation:""}]} |
-  if $case=="empty-mount-mechanisms" and ($initialized|not) then .HostConfig.Mounts=[] | .HostConfig.VolumesFrom=[] | .HostConfig.Tmpfs={} | .Config.Volumes={} else . end |
+    {Type:"volume",Name:("state-"+$svc),Source:("/var/lib/docker/volumes/state-"+$svc+"/_data"),Destination:"/state",Driver:"local",Mode:"z",RW:true,Propagation:""},
+    {Type:"volume",Name:("backup-"+$svc),Source:("/var/lib/docker/volumes/backup-"+$svc+"/_data"),Destination:"/data",Driver:"local",Mode:"z",RW:true,Propagation:""}]} |
+  if $case=="empty-mount-mechanisms" and ($initialized|not) then .HostConfig.VolumesFrom=[] | .HostConfig.Tmpfs={} | .Config.Volumes={} else . end |
   if ($initialized|not) and $i==$fail_index then
    if $case=="wrong-original-binds-missing" then del(.HostConfig.Binds)
    elif $case=="wrong-original-binds-null" then .HostConfig.Binds=null
@@ -873,6 +893,21 @@ docker() {
    elif $case=="wrong-original-binds-nul" then .HostConfig.Binds[0]+="\u0000foreign"
    elif $case=="wrong-original-structured-mounts" then .HostConfig.Mounts=[{Type:"bind",Source:"/foreign",Target:"/foreign"}]
    elif $case=="wrong-original-structured-mounts-object" then .HostConfig.Mounts={}
+   elif $case=="wrong-original-volume-request-missing" then del(.HostConfig.Mounts)
+   elif $case=="wrong-original-volume-request-null" then .HostConfig.Mounts=null
+   elif $case=="wrong-original-volume-request-string" then .HostConfig.Mounts="foreign"
+   elif $case=="wrong-original-volume-request-extra" then .HostConfig.Mounts+=[{Type:"volume",Source:"foreign",Target:"/foreign",VolumeOptions:{NoCopy:true}}]
+   elif $case=="wrong-original-volume-request-duplicate" then .HostConfig.Mounts[1]=.HostConfig.Mounts[0]
+   elif $case=="wrong-original-volume-request-source" then .HostConfig.Mounts[0].Source="foreign"
+   elif $case=="wrong-original-volume-request-target" then .HostConfig.Mounts[0].Target="/foreign"
+   elif $case=="wrong-original-volume-request-copy-missing" then del(.HostConfig.Mounts[0].VolumeOptions.NoCopy)
+   elif $case=="wrong-original-volume-request-copy-false" then .HostConfig.Mounts[0].VolumeOptions.NoCopy=false
+   elif $case=="wrong-original-volume-request-copy-null" then .HostConfig.Mounts[0].VolumeOptions.NoCopy=null
+   elif $case=="wrong-original-volume-request-copy-string" then .HostConfig.Mounts[0].VolumeOptions.NoCopy="true"
+   elif $case=="wrong-original-volume-request-driver" then .HostConfig.Mounts[0].VolumeOptions.DriverConfig={Name:"foreign"}
+   elif $case=="wrong-original-volume-request-subpath" then .HostConfig.Mounts[0].VolumeOptions.Subpath="foreign"
+   elif $case=="wrong-original-volume-request-extra-field" then .HostConfig.Mounts[0].ReadOnly=false
+   elif $case=="wrong-original-binds-legacy-volume" then .HostConfig.Binds+=[("state-"+$svc+":/state:rw")]
    elif $case=="wrong-original-volumes-from" then .HostConfig.VolumesFrom=["foreign"]
    elif $case=="wrong-original-volumes-from-string" then .HostConfig.VolumesFrom="foreign"
    elif $case=="wrong-original-tmpfs" then .HostConfig.Tmpfs={"/foreign":"rw"}
@@ -907,6 +942,20 @@ docker() {
    elif $case=="wrong-init-mount-missing" then del(.Mounts[0])
    elif $case=="wrong-init-mount-extra" then .Mounts+=[.Mounts[0]]
    elif $case=="wrong-init-mount-duplicate-target" then .Mounts[1].Destination=.Mounts[0].Destination
+   elif $case=="wrong-init-volume-request-missing" then del(.HostConfig.Mounts)
+   elif $case=="wrong-init-volume-request-extra" then .HostConfig.Mounts+=[{Type:"volume",Source:"foreign",Target:"/foreign",VolumeOptions:{NoCopy:true}}]
+   elif $case=="wrong-init-volume-request-duplicate" then .HostConfig.Mounts[1]=.HostConfig.Mounts[0]
+   elif $case=="wrong-init-volume-request-source" or ($case=="wrong-init-poststart-volume-source" and $state=="exited") then .HostConfig.Mounts[0].Source="foreign"
+   elif $case=="wrong-init-volume-request-target" then .HostConfig.Mounts[0].Target="/foreign"
+   elif $case=="wrong-init-volume-request-copy-missing" then del(.HostConfig.Mounts[0].VolumeOptions.NoCopy)
+   elif $case=="wrong-init-volume-request-copy-false" or ($case=="wrong-init-poststart-volume-copy" and $state=="exited") then .HostConfig.Mounts[0].VolumeOptions.NoCopy=false
+   elif $case=="wrong-init-volume-request-copy-null" then .HostConfig.Mounts[0].VolumeOptions.NoCopy=null
+   elif $case=="wrong-init-volume-request-copy-string" then .HostConfig.Mounts[0].VolumeOptions.NoCopy="true"
+   elif $case=="wrong-init-volume-request-driver" then .HostConfig.Mounts[0].VolumeOptions.DriverConfig={Name:"foreign"}
+   elif $case=="wrong-init-volume-request-subpath" then .HostConfig.Mounts[0].VolumeOptions.Subpath="foreign"
+   elif $case=="wrong-init-volume-request-extra-field" then .HostConfig.Mounts[0].ReadOnly=false
+   elif $case=="wrong-init-binds-legacy-volume" then .HostConfig.Binds+=[("state-"+$svc+":/state:rw")]
+   elif $case=="wrong-init-volume-request-bind" then .HostConfig.Mounts[0].Type="bind"
    elif $case=="wrong-init-label" then .Config.Labels["lantern.owner"]="foreign"
    elif $case=="wrong-init-exit" and $state=="exited" then .State.ExitCode=23 else . end
   else . end |
@@ -1110,10 +1159,14 @@ original="$(jq -nc --arg project "$project" --arg image "$image" --arg id "$orig
   Config:{User:"501:20",WorkingDir:"/app",Entrypoint:["/app/lantern"],Cmd:null,
    Env:["LANTERN_AUTH_MODE=oidc","LANTERN_SECURITY_CONFIG_JSON=secret-value"],
    Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":"lantern-0"}},
-  State:{Status:"created",Running:false},HostConfig:{NetworkMode:($project+"-default"),Memory:0},
+  State:{Status:"created",Running:false},HostConfig:{NetworkMode:($project+"-default"),Memory:0,
+   Binds:["/declared/private:/run/lantern-config:ro","/declared/private/ntp.conf:/etc/ntp.conf:ro"],
+   Mounts:[{Type:"volume",Source:"state-0",Target:"/state",VolumeOptions:{NoCopy:true}},
+    {Type:"volume",Source:"backup-0",Target:"/data",VolumeOptions:{NoCopy:true}}]},
   Mounts:[{Type:"bind",Source:"/declared/private",Destination:"/run/lantern-config",Mode:"ro",RW:false,Propagation:"rprivate"},
    {Type:"bind",Source:"/declared/private/ntp.conf",Destination:"/etc/ntp.conf",Mode:"ro",RW:false,Propagation:"rprivate"},
-   {Type:"volume",Name:"state-0",Source:"/var/lib/docker/volumes/state-0/_data",Destination:"/state",Driver:"local",Mode:"rw",RW:true,Propagation:""}]}')"
+   {Type:"volume",Name:"state-0",Source:"/var/lib/docker/volumes/state-0/_data",Destination:"/state",Driver:"local",Mode:"z",RW:true,Propagation:""},
+   {Type:"volume",Name:"backup-0",Source:"/var/lib/docker/volumes/backup-0/_data",Destination:"/data",Driver:"local",Mode:"z",RW:true,Propagation:""}]}')"
 initialized="$(jq -c --arg id "$clone_id" --arg case "$CASE" '
  .Id=$id | .Name+="-security-init" | .Config.Cmd=["init-security"] |
  if $case!="exact" then .Mounts[1].Source="/mapped/private/ntp.conf" else . end |

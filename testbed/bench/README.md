@@ -180,7 +180,9 @@ inputs after atomic renewal. Every original authority input remains mode 0600;
 operator signing keys stay outside Server mounts. After proving its fresh named
 project absent, the driver creates its containers and validates every distinct
 state/backup volume against its project labels. Receipt cohorts retain exactly
-six such volumes. Graph-only cohorts additionally select
+six such volumes. Their receipt overlay sets `nocopy: true` on each state/backup
+mount so native clone creation preserves the initializer's selected UID/GID
+instead of copying the image user's directory metadata. Graph-only cohorts additionally select
 [`compose.graph-snapshot.yml`](compose.graph-snapshot.yml), with three new
 per-node named staging volumes at `/var/lib/lantern-snapshot-spool`, for exactly
 nine owned volumes. Their `nocopy: true` prevents the image user's private

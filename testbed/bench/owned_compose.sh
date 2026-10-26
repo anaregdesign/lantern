@@ -322,7 +322,18 @@ validate_owned_compose_volume_initializer() {
 
 validate_owned_compose_security_initializer() {
   printf '%s\n%s\n' "$original" "$initialized" |
-    jq -se '.[0] as $original | .[1] |
+    jq -se '
+      def readonly_binds:
+        type=="array" and length==2 and
+        all(.[]; type=="string" and ((contains("\r") or contains("\n") or contains("\u0000"))|not) and
+          (split(":")|length==3 and (.[0]|startswith("/")))) and
+        (map(split(":")|.[1:])|sort)==[["/etc/ntp.conf","ro"],["/run/lantern-config","ro"]];
+      def nocopy_volumes:
+        type=="array" and length==2 and (map(.Target)|sort)==["/data","/state"] and
+        all(.[]; type=="object" and (keys|sort)==["Source","Target","Type","VolumeOptions"] and
+          .Type=="volume" and (.Source|type)=="string" and (.Source|test("^[A-Za-z0-9][A-Za-z0-9_.-]+$")) and
+          .VolumeOptions=={NoCopy:true});
+      .[0] as $original | .[1] |
       .Config.Entrypoint==["/app/lantern"] and .Config.Cmd==["init-security"] and
       .Config.WorkingDir==$original.Config.WorkingDir and .HostConfig.NetworkMode==$original.HostConfig.NetworkMode and
       .Config.User==$original.Config.User and .Image==$original.Image and
@@ -330,6 +341,9 @@ validate_owned_compose_security_initializer() {
       .Config.Labels["com.docker.compose.service"]==$original.Config.Labels["com.docker.compose.service"] and
       .State.Status=="created" and .State.Running==false and
       $original.State.Status=="created" and $original.State.Running==false and
+      ($original.HostConfig.Binds|readonly_binds) and (.HostConfig.Binds|readonly_binds) and
+      ($original.HostConfig.Mounts|nocopy_volumes) and (.HostConfig.Mounts|nocopy_volumes) and
+      (.HostConfig.Mounts|sort_by(.Target))==($original.HostConfig.Mounts|sort_by(.Target)) and
       (.Config.Env|sort)==($original.Config.Env|sort)' >/dev/null || return 1
   if printf '%s\n%s\n' "$original" "$initialized" |
     jq -se '.[0] as $original | .[1] | (.Mounts|sort_by(.Destination))==($original.Mounts|sort_by(.Destination))' >/dev/null; then
@@ -487,7 +501,8 @@ initialize_owned_compose_security() {
   jq -e --arg image "$image" '
     [.services|to_entries[]|select(.key|test("^lantern-[012]$"))|.value] |
     length==3 and all(.[]; .image==$image and .environment.LANTERN_AUTH_MODE=="oidc" and
-      (.environment.LANTERN_SECURITY_CONFIG_JSON|type)=="string" and (.environment.LANTERN_SECURITY_CONFIG_JSON|length)>0)
+      (.environment.LANTERN_SECURITY_CONFIG_JSON|type)=="string" and (.environment.LANTERN_SECURITY_CONFIG_JSON|length)>0 and
+      all(.volumes[]|select(.type=="volume"); .volume.nocopy==true))
   ' <<<"$configuration" >/dev/null || return 1
   for service in lantern-0 lantern-1 lantern-2; do
     container="$(docker compose "$@" ps -aq "$service")" || return 1
@@ -495,14 +510,22 @@ initialize_owned_compose_security() {
     original="$(docker inspect --format '{{json .}}' "$container")" || return 1
     printf '%s\n%s\n' "$original" "$configuration" |
       jq -se --arg project "$project" --arg service "$service" --arg image "$image" --arg owner "$owner" '
-        .[0] as $original | .[1].services[$service].environment as $settings |
+        .[0] as $original | .[1] as $configuration | $configuration.services[$service].environment as $settings |
+        [$configuration.services[$service].volumes[]|select(.type=="volume")|. as $mount|
+          {Type:"volume",Source:$configuration.volumes[$mount.source].name,Target:$mount.target,VolumeOptions:{NoCopy:true}}] as $requests |
         $original.Config.Labels["com.docker.compose.project"]==$project and $original.Config.Labels["com.docker.compose.service"]==$service and
         $original.Config.User==$owner and $original.Image==$image and $original.State.Status=="created" and
         all($settings|to_entries[]|select(.value!=null); . as $entry | [$original.Config.Env[]|select(.==($entry.key+"="+$entry.value))]|length==1) and
-        ($original.HostConfig.Binds|type)=="array" and ($original.HostConfig.Binds|length)>0 and
+        ($original.HostConfig.Binds|type)=="array" and ($original.HostConfig.Binds|length)==2 and
         all($original.HostConfig.Binds[]; type=="string" and length>0 and
-          ((contains("\r") or contains("\n") or contains("\u0000"))|not)) and
-        ($original.HostConfig.Mounts==null or $original.HostConfig.Mounts==[]) and
+          ((contains("\r") or contains("\n") or contains("\u0000"))|not) and
+          (split(":")|length==3 and (.[0]|startswith("/")))) and
+        ([$original.HostConfig.Binds[]|split(":")|.[1:]]|sort)==[["/etc/ntp.conf","ro"],["/run/lantern-config","ro"]] and
+        all($requests[]; (.Source|type)=="string" and (.Source|test("^[A-Za-z0-9][A-Za-z0-9_.-]+$"))) and
+        ($original.HostConfig.Mounts|type)=="array" and
+        ($original.HostConfig.Mounts|sort_by(.Target))==($requests|sort_by(.Target)) and
+        ([$original.Mounts[]|select(.Type=="volume")|{Name,Target:.Destination,RW}]|sort_by(.Target))==
+          ($requests|map({Name:.Source,Target,RW:true})|sort_by(.Target)) and
         ($original.HostConfig.VolumesFrom==null or $original.HostConfig.VolumesFrom==[]) and
         ($original.HostConfig.Tmpfs==null or $original.HostConfig.Tmpfs=={}) and
         ($original.Config.Volumes==null or $original.Config.Volumes=={})
@@ -512,10 +535,11 @@ initialize_owned_compose_security() {
   for service in lantern-0 lantern-1 lantern-2; do
     original="${originals[$index]}"
     network="$(jq -er '.HostConfig.NetworkMode|select(type=="string" and length>0)' <<<"$original")" || return 1
-    # Replay the requested mounts: --volumes-from can rewrite their inspected
-    # Source and Mode on Docker Desktop. Full mount equality remains mandatory.
+    # Replay the two read-only binds and declared NoCopy volumes separately.
+    # Legacy volume binds can copy image ownership back over fresh empty roots.
     mounts=()
     while IFS= read -r binding; do mounts+=("--volume=$binding"); done < <(jq -r '.HostConfig.Binds[]' <<<"$original")
+    while IFS= read -r binding; do mounts+=("--mount=$binding"); done < <(jq -r '.HostConfig.Mounts[]|"type=volume,source="+.Source+",target="+.Target+",volume-nocopy"' <<<"$original")
     run_owned_compose_initializer "$project" "$image" "$owner" compose-security-initializer "${service}-security-init" 900 validate_owned_compose_security_initializer \
       --network "$network" "${mounts[@]}" --entrypoint /app/lantern "$image" init-security || return "$?"
     index=$((index + 1))

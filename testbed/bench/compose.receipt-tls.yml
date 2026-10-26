@@ -13,12 +13,40 @@ services:
   lantern-0:
     environment:
       <<: *protected-env
+    # Keep the fresh-volume initializer's UID/GID across native clone creation.
+    volumes:
+      - type: volume
+        source: state-0
+        target: /state
+        volume: {nocopy: true}
+      - type: volume
+        source: backup-0
+        target: /data
+        volume: {nocopy: true}
     ports: !override ["127.0.0.1:${LANTERN_BENCH_PUBLIC_PORT_0:-6380}:6380"]
   lantern-1:
     environment:
       <<: *protected-env
+    volumes:
+      - type: volume
+        source: state-1
+        target: /state
+        volume: {nocopy: true}
+      - type: volume
+        source: backup-1
+        target: /data
+        volume: {nocopy: true}
     ports: !override ["127.0.0.1:${LANTERN_BENCH_PUBLIC_PORT_1:-6381}:6380"]
   lantern-2:
     environment:
       <<: *protected-env
+    volumes:
+      - type: volume
+        source: state-2
+        target: /state
+        volume: {nocopy: true}
+      - type: volume
+        source: backup-2
+        target: /data
+        volume: {nocopy: true}
     ports: !override ["127.0.0.1:${LANTERN_BENCH_PUBLIC_PORT_2:-6382}:6380"]
