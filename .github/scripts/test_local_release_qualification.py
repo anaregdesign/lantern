@@ -254,6 +254,20 @@ class ArtifactTest(unittest.TestCase):
 
 
 class EnvironmentAndEvidenceTest(unittest.TestCase):
+    def test_stable_compose_v2_v5_and_desktop_versions_are_supported(self):
+        for version in ("2.24.4", "v2.37.2-desktop.1", "2.40.3-desktop.1",
+                        "5.0.0", "5.1.4", "v5.1.4", "v5.1.4-desktop.1"):
+            with self.subTest(version=version):
+                qualification.require_compose_version(version)
+
+    def test_legacy_future_prerelease_and_malformed_compose_versions_refuse(self):
+        for version in ("1.29.2", "3.9.0", "4.0.0", "6.0.0", "50.1.4", "", "5", "5.1",
+                        "5.01.4", "5.1.04", "5.\u0661.4", "5.1.4-rc.1", "5.1.4+unknown",
+                        "5.1.4-desktop.01", "5.1.4-desktop", "5.1.4suffix", "5.1.4\nother",
+                        "Docker Compose version v5.1.4"):
+            with self.subTest(version=version), self.assertRaises(qualification.Refused):
+                qualification.require_compose_version(version)
+
     def test_clear_override_and_redirection_without_dumping_proxy_secrets(self):
         original = {"PATH": "/bin", "LANTERN_BENCH_MUTATION_LOG_CAPACITY": "1", "SNAPSHOT_ROUNDS": "99",
                     "LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER": "1", "GOFLAGS": "-overlay=secret",
@@ -521,6 +535,22 @@ class CleanupAndOrderTest(unittest.TestCase):
             driver.tool = lambda *_, **__: self.fail("inactive refusal must never issue Docker mutation")
             driver.cleanup()
             self.assertEqual(driver.state["cleanup"]["disposition"], "retained_inactive")
+
+    def test_unsupported_compose_fails_and_seals_without_project_or_workload_access(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            driver = self.make_driver(Path(temporary))
+            driver.project_preflight_passed = False
+            driver.preflight = lambda: qualification.require_compose_version("6.0.0")
+            driver.resources = lambda **_: self.fail("version refusal must not inspect a project")
+            driver.image = lambda: self.fail("version refusal must not build an image")
+            driver.call = lambda *_args, **_kwargs: self.fail("version refusal must not launch workloads")
+            with patch.object(qualification.signal, "signal", return_value=signal.SIG_DFL):
+                self.assertEqual(driver.execute(42), 1)
+            receipt = qualification.read_json(driver.evidence / "progress.json")
+            self.assertEqual(receipt["verdict"], "fail")
+            self.assertEqual(receipt["cleanup"]["disposition"], "not_started")
+            self.assertEqual(receipt["scenario_verdicts"], {})
+            self.assertIn("progress.json", (driver.evidence / "SHA256SUMS").read_text())
 
     def test_stop_only_verified_owned_container_then_preserve_state(self):
         with tempfile.TemporaryDirectory() as temporary:

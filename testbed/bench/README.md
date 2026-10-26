@@ -92,7 +92,7 @@ focused on deterministic tests. Supplying a diagnostic override without
 
 ## Prerequisites
 
-- Docker + `docker compose` v2
+- Docker + stable `docker compose` v2 or v5 (including Docker Desktop `-desktop.N` builds)
 - [`ghz`][ghz] ≥ 0.117 — drives default scenarios over gRPC wire frames. The Lantern
   server is Connect-only (see [#335][i335]), but the Connect-Go handlers
   accept gRPC, gRPC-Web, and Connect on the same h2c socket, and
@@ -105,6 +105,12 @@ focused on deterministic tests. Supplying a diagnostic override without
 - Go (matching `go.mod` toolchain) — used to build the report renderer
   and generate the receipt scenario's ephemeral TLS material (no external
   certificate tool or committed key is needed)
+
+The manual release driver records the actual Compose version and plugin binary
+hash. It rejects legacy or unknown majors, prereleases and unrecognized suffixes
+before image construction or workloads (#1908). Docker documents
+[v5 as retaining the v2 CLI behavior](https://docs.docker.com/compose/intro/history/);
+accepting a version does not establish workload qualification.
 
 [i335]: https://github.com/anaregdesign/lantern/issues/335
 [i383]: https://github.com/anaregdesign/lantern/issues/383
