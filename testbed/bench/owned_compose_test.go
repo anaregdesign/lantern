@@ -642,10 +642,91 @@ func TestOwnedComposeInitializerCustody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	capabilityCases := []struct {
+		name     string
+		value    string
+		accepted bool
+	}{
+		{"capabilities-bare", `["CHOWN","DAC_READ_SEARCH"]`, true},
+		{"capabilities-prefixed", `["CAP_DAC_READ_SEARCH","CAP_CHOWN"]`, true},
+		{"capabilities-mixed", `["CAP_CHOWN","DAC_READ_SEARCH"]`, true},
+		{"capabilities-mixed-reverse", `["CHOWN","CAP_DAC_READ_SEARCH"]`, true},
+		{"wrong-init-caps-missing", `["CAP_CHOWN"]`, false},
+		{"wrong-init-caps-empty", `[]`, false},
+		{"wrong-init-caps-extra", `["CHOWN","DAC_READ_SEARCH","CAP_NET_ADMIN"]`, false},
+		{"wrong-init-caps-unknown", `["CHOWN","CAP_UNKNOWN"]`, false},
+		{"wrong-init-caps-duplicate", `["CHOWN","DAC_READ_SEARCH","CHOWN"]`, false},
+		{"wrong-init-caps-duplicate-alias", `["CHOWN","CAP_CHOWN","CAP_DAC_READ_SEARCH"]`, false},
+		{"wrong-init-caps-nonstring", `["CAP_CHOWN",42]`, false},
+		{"wrong-init-caps-null-element", `["CAP_CHOWN",null]`, false},
+		{"wrong-init-caps-null", `null`, false},
+		{"wrong-init-caps-string", `"CHOWN,DAC_READ_SEARCH"`, false},
+		{"wrong-init-caps-object", `{"CHOWN":true,"DAC_READ_SEARCH":true}`, false},
+		{"wrong-init-caps-object-bare-values", `{"a":"CHOWN","b":"DAC_READ_SEARCH"}`, false},
+		{"wrong-init-caps-object-prefixed-values", `{"a":"CAP_CHOWN","b":"CAP_DAC_READ_SEARCH"}`, false},
+		{"wrong-init-caps-repeated-prefix", `["CAP_CAP_CHOWN","DAC_READ_SEARCH"]`, false},
+		{"wrong-init-caps-lowercase-prefix", `["cap_CHOWN","DAC_READ_SEARCH"]`, false},
+		{"wrong-init-caps-malformed", `["CAP_ CHOWN","DAC_READ_SEARCH"]`, false},
+		{"wrong-init-caps-empty-name", `["CAP_","DAC_READ_SEARCH"]`, false},
+		{"wrong-init-caps-trailing-space", `["CAP_CHOWN ","DAC_READ_SEARCH"]`, false},
+	}
+	oomCases := []struct {
+		name      string
+		initial   string
+		completed string
+		accepted  bool
+		started   bool
+	}{
+		{"oom-false-null", `false`, `null`, true, true},
+		{"oom-null-false", `null`, `false`, true, true},
+		{"oom-absent-false", `absent`, `false`, true, true},
+		{"oom-false-absent", `false`, `absent`, true, true},
+		{"oom-true-stable", `true`, `true`, true, true},
+		{"wrong-init-oom-false-true", `false`, `true`, false, true},
+		{"wrong-init-oom-null-true", `null`, `true`, false, true},
+		{"wrong-init-oom-true-false", `true`, `false`, false, true},
+		{"wrong-init-oom-initial-string", `"false"`, `"false"`, false, false},
+		{"wrong-init-oom-initial-number", `0`, `0`, false, false},
+		{"wrong-init-oom-initial-object", `{}`, `{}`, false, false},
+		{"wrong-init-oom-initial-array", `[]`, `[]`, false, false},
+		{"wrong-init-oom-poststart-string", `false`, `"false"`, false, true},
+		{"wrong-init-oom-poststart-number", `false`, `0`, false, true},
+		{"wrong-init-oom-poststart-object", `false`, `{}`, false, true},
+		{"wrong-init-oom-poststart-array", `false`, `[]`, false, true},
+	}
 	for _, profile := range []string{"security", "volume"} {
-		for _, failure := range []string{"none", "init-failure", "client-disconnect", "INT", "TERM", "launch-INT", "launch-TERM", "wrong-init-image", "wrong-init-user", "wrong-init-env", "wrong-init-mount", "wrong-init-label", "wrong-init-exit", "stop-failure", "remove-failure"} {
+		failures := []string{"none", "init-failure", "client-disconnect", "INT", "TERM", "launch-INT", "launch-TERM", "wrong-init-image", "wrong-init-user", "wrong-init-env", "wrong-init-mount", "wrong-init-label", "wrong-init-exit", "stop-failure", "remove-failure"}
+		if profile == "volume" {
+			for _, capability := range capabilityCases {
+				failures = append(failures, capability.name)
+			}
+		}
+		for _, oom := range oomCases {
+			failures = append(failures, oom.name)
+		}
+		failures = append(failures, "wrong-init-hostconfig-memory", "wrong-init-hostconfig-readonly")
+		for _, failure := range failures {
 			if profile == "volume" && failure == "wrong-init-env" {
 				continue
+			}
+			capabilities, accepted := `["CHOWN","DAC_READ_SEARCH"]`, failure == "none"
+			for _, capability := range capabilityCases {
+				if failure == capability.name {
+					capabilities, accepted = capability.value, capability.accepted
+				}
+			}
+			oomInitial, oomCompleted := "", ""
+			refusedBeforeStart := strings.HasPrefix(failure, "wrong-init-") && failure != "wrong-init-exit"
+			postStartRefusal := strings.HasPrefix(failure, "wrong-init-hostconfig-")
+			if postStartRefusal {
+				refusedBeforeStart = false
+			}
+			for _, oom := range oomCases {
+				if failure == oom.name {
+					oomInitial, oomCompleted, accepted = oom.initial, oom.completed, oom.accepted
+					refusedBeforeStart = !oom.started
+					postStartRefusal = !oom.accepted && oom.started
+				}
 			}
 			t.Run(profile+"/"+failure, func(t *testing.T) {
 				const script = `set -euo pipefail
@@ -743,7 +824,7 @@ docker() {
   read -r state < "$OUTDIR/state-$i"; read -r nonce_value < "$OUTDIR/nonce-$i"
  fi
  if [[ "$PROFILE" == volume ]]; then user_value=0:0; fi
- jq -nc --arg project "$COMPOSE_PROJECT_NAME" --arg svc "$svc" --arg image "$TEST_IMAGE" --arg case "$CASE" --arg profile "$PROFILE" --arg state "$state" --arg nonce "$nonce_value" --arg user "$user_value" --argjson i "$i" --argjson fail_index "$fail_index" --argjson initialized "$initialized" '
+ jq -nc --arg project "$COMPOSE_PROJECT_NAME" --arg svc "$svc" --arg image "$TEST_IMAGE" --arg case "$CASE" --arg profile "$PROFILE" --arg state "$state" --arg nonce "$nonce_value" --arg user "$user_value" --argjson i "$i" --argjson fail_index "$fail_index" --argjson initialized "$initialized" --argjson capabilities "$CAP_ADD_JSON" --arg oom_initial "$OOM_INITIAL_JSON" --arg oom_completed "$OOM_COMPLETED_JSON" '
   {Id:((if $initialized then $i+11 else $i+1 end)|tostring|("0"*(64-length)) + .),
    Name:("/"+$project+"-"+$svc+(if $profile=="security" then "-security-init" else "" end)),
    Config:{Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":$svc},Image:$image,User:$user,WorkingDir:"/app",
@@ -752,7 +833,7 @@ docker() {
    Mounts:[{Type:"bind",Source:("/private/"+$svc),Destination:"/run/lantern-config",RW:false},{Type:"bind",Source:("/private/"+$svc+"/ntp.conf"),Destination:"/etc/ntp.conf",RW:false},{Type:"volume",Name:("state-"+$svc),Destination:"/state",RW:true}]} |
   if $initialized then .Config.Labels += {"lantern.owner":("compose-"+$profile+"-initializer"),"com.docker.compose.oneoff":"True","lantern.initializer":$nonce} else . end |
   if $profile=="volume" then .Config.Entrypoint=["/bin/sh"] | .Config.Cmd=["-c","fixture-script","fixture","501:20","6"] |
-   .HostConfig={NetworkMode:"none",ReadonlyRootfs:true,CapDrop:["ALL"],CapAdd:["CHOWN","DAC_READ_SEARCH"]} |
+   .HostConfig={NetworkMode:"none",ReadonlyRootfs:true,CapDrop:["ALL"],CapAdd:$capabilities} |
    .Mounts=[range(0;6)|{Name:("owned-"+tostring),Destination:("/owned/"+tostring),RW:true,Type:"volume"}] else . end |
   if $initialized and $i==$fail_index then
    if $case=="wrong-init-image" then .Image="wrong"
@@ -761,6 +842,15 @@ docker() {
    elif $case=="wrong-init-mount" then .Mounts=[]
    elif $case=="wrong-init-label" then .Config.Labels["lantern.owner"]="foreign"
    elif $case=="wrong-init-exit" and $state=="exited" then .State.ExitCode=23 else . end
+  else . end |
+  if $initialized and $i==$fail_index and $oom_initial!="" then
+   (if $state=="created" then $oom_initial else $oom_completed end) as $oom |
+   if $oom=="absent" then del(.HostConfig.OomKillDisable) else .HostConfig.OomKillDisable=($oom|fromjson) end
+  else . end |
+  if $initialized and $i==$fail_index and $case=="wrong-init-hostconfig-memory" then
+   .HostConfig.Memory=(if $state=="created" then 0 else 1024 end)
+  elif $initialized and $i==$fail_index and $case=="wrong-init-hostconfig-readonly" then
+   .HostConfig.ReadonlyRootfs=(if $state=="created" then $profile=="volume" else $profile!="volume" end)
   else . end'
 }
 trap 'printf "old INT\n" >> "$OUTDIR/traps"' INT
@@ -801,12 +891,12 @@ fi
 [[ "$(trap -p INT)" == *"old INT"* && "$(trap -p TERM)" == *"old TERM"* ]] || exit 95
 exit "$result"
 `
-				fixture := runOwnedComposeFixture(t, script, []string{helper}, []string{"CASE=" + failure, "PROFILE=" + profile}, 15*time.Second)
+				fixture := runOwnedComposeFixture(t, script, []string{helper}, []string{"CASE=" + failure, "PROFILE=" + profile, "CAP_ADD_JSON=" + capabilities, "OOM_INITIAL_JSON=" + oomInitial, "OOM_COMPLETED_JSON=" + oomCompleted}, 15*time.Second)
 				out, output, runErr := fixture.directory, fixture.output, fixture.commandErr
 				if !fixture.controlQualified() {
 					t.Fatalf("fixture custody failed: complete=%t reaped=%t timeout=%t leftover=%t inactive=%t command=%v control=%v evidence=%s\n%s\n%s", fixture.controlComplete, fixture.reaped, fixture.timedOut, fixture.leftOver, fixture.inactive, runErr, fixture.controlErr, out, output, ownedComposeFixtureDiagnostics(out))
 				}
-				if (runErr == nil) != (failure == "none") {
+				if (runErr == nil) != accepted {
 					t.Fatalf("initializer error=%v output=%s", runErr, output)
 				}
 				if failure == "INT" || failure == "TERM" || strings.HasPrefix(failure, "launch-") {
@@ -833,7 +923,7 @@ exit "$result"
 				if profile == "volume" {
 					failed = 0
 				}
-				if failure == "none" {
+				if accepted {
 					count := 3
 					if profile == "volume" {
 						count = 1
@@ -862,8 +952,44 @@ exit "$result"
 							t.Fatalf("failed stop lacked identity-bound kill fallback: %s", actions)
 						}
 					}
-					if strings.HasPrefix(failure, "wrong-init-") && failure != "wrong-init-exit" && strings.Contains(string(actions), fmt.Sprintf("start %d\n", failed)) {
+					if refusedBeforeStart && strings.Contains(string(actions), fmt.Sprintf("start %d\n", failed)) {
 						t.Fatalf("unverified clone started: %s", actions)
+					}
+					if strings.HasPrefix(failure, "wrong-init-caps-") {
+						for _, action := range []string{"start", "stop", "kill", "rm"} {
+							if strings.Contains(string(actions), action+" ") {
+								t.Fatalf("unverified capability profile permitted %s: %s", action, actions)
+							}
+						}
+						state, err := os.ReadFile(filepath.Join(out, fmt.Sprintf("state-%d", failed)))
+						if err != nil || string(state) != "created\n" {
+							t.Fatalf("refused initializer did not retain inactive created state: %v %q", err, state)
+						}
+						if !strings.Contains(string(output), "initializer identity unverified; container retained without signaling") {
+							t.Fatalf("missing unverified initializer custody refusal: %s", output)
+						}
+					}
+					if oomInitial != "" || strings.HasPrefix(failure, "wrong-init-hostconfig-") {
+						started := strings.Contains(string(actions), fmt.Sprintf("start %d\n", failed))
+						if started != postStartRefusal {
+							t.Fatalf("HostConfig refusal happened at the wrong lifecycle boundary: started=%t postStart=%t %s", started, postStartRefusal, actions)
+						}
+						for _, action := range []string{"stop", "kill", "rm"} {
+							if strings.Contains(string(actions), fmt.Sprintf("%s %d\n", action, failed)) {
+								t.Fatalf("unverified HostConfig drift permitted %s: %s", action, actions)
+							}
+						}
+						state, err := os.ReadFile(filepath.Join(out, fmt.Sprintf("state-%d", failed)))
+						expectedState := "created\n"
+						if postStartRefusal {
+							expectedState = "exited\n"
+						}
+						if err != nil || string(state) != expectedState {
+							t.Fatalf("refused HostConfig did not retain inactive state: %v %q want %q", err, state, expectedState)
+						}
+						if !strings.Contains(string(output), "initializer identity unverified; container retained without signaling") {
+							t.Fatalf("missing unverified HostConfig custody refusal: %s", output)
+						}
 					}
 					if !strings.Contains(string(output), "initializer private evidence retained at ") {
 						t.Fatalf("private logs not retained: %s", output)
