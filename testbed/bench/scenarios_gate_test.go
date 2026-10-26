@@ -2851,7 +2851,7 @@ func TestManualQualificationRetainsFanOutRepairDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(compose), "  LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER:\n") ||
+	if !strings.Contains(string(compose), `  LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER: "${LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER:-}"`) ||
 		!strings.Contains(string(compose), `LANTERN_MUTATION_LOG_CAPACITY: "${LANTERN_BENCH_MUTATION_LOG_CAPACITY:-10000}"`) {
 		t.Error("the canonical sweep must keep the server subscriber-buffer default and 10k mutation log")
 	}

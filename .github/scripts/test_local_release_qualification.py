@@ -78,6 +78,26 @@ def identity(driver, running="true", service="lantern-0"):
             '["/app/lantern"]', 'null']
 
 
+def bind_probe_identity(driver, pairs=1, service="lantern-0"):
+    row = identity(driver, service=service + "-bind-proof")
+    targets = [f"/proof/{side}-{slot}" for slot in range(pairs) for side in ("original", "clone")]
+    profile = {"Cmd": ["stat", "-c", "%d:%i:%F", *targets], "NetworkMode": "none",
+        "ReadonlyRootfs": True, "Privileged": False, "AutoRemove": False,
+        "CapDrop": ["ALL"], "CapAdd": None, "SecurityOpt": ["no-new-privileges:true"],
+        "Memory": 33554432, "NanoCpus": 250000000, "PidsLimit": 16,
+        "VolumesFromCount": 0, "TmpfsCount": 0, "ConfigVolumeCount": 0,
+        "DeviceCount": 0, "DeviceRequestCount": 0, "DeviceCgroupRuleCount": 0,
+        "PidMode": "", "UTSMode": "", "UsernsMode": "", "PublishAllPorts": False,
+        "PortBindingCount": 0, "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0},
+        "BindCount": 0, "Mounts": [{"Type": "bind", "Destination": target,
+            "RW": False, "Mode": "", "Propagation": "rprivate"} for target in targets],
+        "HostMounts": [{"Type": "bind", "Target": target, "ReadOnly": True,
+            "BindOptions": {"Propagation": "rprivate"}, "UnsupportedOptions": False} for target in targets]}
+    row[7:14] = [IMAGE, f"/{driver.args.campaign}-{row[5]}", "compose-bind-identity-probe",
+                 "True", "lantern-owned-init.ABC123", '["/bin/busybox"]', json.dumps(profile)]
+    return row
+
+
 class ArtifactTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -375,6 +395,102 @@ class EnvironmentAndEvidenceTest(unittest.TestCase):
             self.assertTrue(path.exists())
             with qualification.HostLock(path):
                 pass
+
+    def bind_proof(self, root):
+        private = root / "lantern-bind-proof.ABC123"
+        private.mkdir(mode=0o700)
+        proof = private / "proof.json"
+        proof.write_bytes(b"private raw proof")
+        proof.chmod(0o600)
+        log = root / "run.log"
+        log.write_text("read-only bind proof private evidence retained at " + str(private) + "\n")
+        destination = root / "retained"
+        destination.mkdir(mode=0o700)
+        return private, log, destination
+
+    def test_bind_proof_private_bytes_are_copied_once_from_exact_marker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            private, log, destination = self.bind_proof(root)
+            (private / "original-before.json").write_bytes(b'{"Env":["private-value"]}')
+            (private / "original-before.json").chmod(0o600)
+            originals = qualification.capture_private_outputs([log, log], destination, {root.resolve()})
+            self.assertEqual(originals, [str(private)])
+            self.assertEqual({p.name: p.read_bytes() for p in (destination / private.name).iterdir()},
+                             {p.name: p.read_bytes() for p in private.iterdir()})
+            self.assertEqual((destination / private.name).stat().st_mode & 0o777, 0o700)
+            self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in (destination / private.name).iterdir()))
+
+    def test_bind_proof_marker_and_directory_profile_cannot_be_interchanged(self):
+        for marker, name in (("initializer private evidence retained at ", "lantern-bind-proof.ABC123"),
+                             ("read-only bind proof private evidence retained at ", "lantern-owned-init.ABC123")):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                private, log, destination = self.bind_proof(root)
+                if private.name != name:
+                    private.rename(root / name)
+                log.write_text(marker + str(root / name) + "\n")
+                with self.assertRaises(qualification.Refused):
+                    qualification.capture_private_outputs([log], destination, {root.resolve()})
+
+    def test_bind_proof_rejects_nonprivate_foreign_or_aliased_directories(self):
+        for case in ("mode", "owner", "symlink", "outside", "preexisting-target"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                private, log, destination = self.bind_proof(root)
+                if case == "mode":
+                    private.chmod(0o755)
+                elif case == "symlink":
+                    moved = root / "actual"
+                    private.rename(moved)
+                    private.symlink_to(moved, target_is_directory=True)
+                elif case == "preexisting-target":
+                    (destination / private.name).symlink_to(private, target_is_directory=True)
+                with patch.object(qualification.os, "getuid", return_value=os.getuid() + (case == "owner")):
+                    with self.assertRaises((qualification.Refused, FileExistsError)):
+                        qualification.capture_private_outputs([log], destination,
+                            set() if case == "outside" else {root.resolve()})
+
+    def test_bind_proof_rejects_unsafe_files_and_all_three_size_bounds(self):
+        for case in ("mode", "directory", "symlink", "hardlink", "file-size", "file-count", "total-size"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                private, log, destination = self.bind_proof(root)
+                proof = private / "proof.json"
+                if case == "mode":
+                    proof.chmod(0o644)
+                elif case == "directory":
+                    (private / "nested").mkdir(mode=0o700)
+                elif case == "symlink":
+                    (private / "alias").symlink_to(log)
+                elif case == "hardlink":
+                    os.link(proof, private / "alias")
+                elif case == "file-count":
+                    (private / "another").write_bytes(b"x")
+                    (private / "another").chmod(0o600)
+                with patch.object(qualification, "BIND_PROOF_MAX_FILE_BYTES", 1 if case == "file-size" else 128 * 1024), \
+                        patch.object(qualification, "BIND_PROOF_MAX_FILES", 1 if case == "file-count" else 32), \
+                        patch.object(qualification, "BIND_PROOF_MAX_BYTES", 1 if case == "total-size" else 2 * 1024 * 1024):
+                    with self.assertRaises(qualification.Refused):
+                        qualification.capture_private_outputs([log], destination, {root.resolve()})
+
+    def test_bind_proof_detects_file_replacement_between_stat_and_open(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            private, log, destination = self.bind_proof(root)
+            replacement = root / "replacement"
+            replacement.write_bytes(b"replacement private proof")
+            replacement.chmod(0o600)
+            actual_open = os.open
+
+            def replace_then_open(path, *args, **kwargs):
+                if path == "proof.json" and "dir_fd" in kwargs:
+                    replacement.replace(private / "proof.json")
+                return actual_open(path, *args, **kwargs)
+            with patch.object(qualification.os, "open", side_effect=replace_then_open):
+                with self.assertRaises(qualification.Refused):
+                    qualification.capture_private_outputs([log], destination, {root.resolve()})
+            self.assertFalse((destination / private.name / "proof.json").exists())
 
 
 class FakeClock:
@@ -681,6 +797,156 @@ class CleanupAndOrderTest(unittest.TestCase):
                 self.assertFalse(driver.owned_row(changed), field)
             row[13] = "[]"
             self.assertFalse(driver.owned_row(row))
+
+    def test_bind_probe_requires_full_identity_fixed_busybox_command_and_resource_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            driver = self.make_driver(Path(temporary))
+            for service in qualification.SERVICES:
+                for pairs in (1, 2):
+                    with self.subTest(service=service, pairs=pairs):
+                        row = bind_probe_identity(driver, pairs, service)
+                        self.assertTrue(driver.owned_row(row))
+                        profile = json.loads(row[13])
+                        profile["CapAdd"] = []
+                        profile["Mounts"].reverse()
+                        profile["HostMounts"].reverse()
+                        for mount in profile["Mounts"]:
+                            mount["Mode"] = "ro"
+                        for mount in profile["HostMounts"]:
+                            mount["BindOptions"]["CreateMountpoint"] = False
+                        row[13] = json.dumps(profile)
+                        self.assertTrue(driver.owned_row(row))
+            row = bind_probe_identity(driver)
+            for field, value in ((0, "1" * 12), (0, "G" * 64), (1, "foreign"), (2, "0:0"),
+                    (4, "other-project"), (5, "other-bind-proof"), (7, REFERENCE),
+                    (8, "/manual-test-other-bind-proof"), (9, "other-owner"), (10, "False"),
+                    (11, "other-nonce.ABC123"), (12, '["/bin/sh"]'), (13, "null"), (13, "invalid")):
+                with self.subTest(field=field, value=value):
+                    changed = list(row)
+                    changed[field] = value
+                    self.assertFalse(driver.owned_row(changed))
+            for key in json.loads(row[13]):
+                with self.subTest(missing=key):
+                    profile = json.loads(row[13])
+                    del profile[key]
+                    changed = list(row)
+                    changed[13] = json.dumps(profile)
+                    self.assertFalse(driver.owned_row(changed))
+
+    def test_bind_probe_refuses_different_commands_mounts_and_privileges(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            driver = self.make_driver(Path(temporary))
+            row = bind_probe_identity(driver)
+            cases = {"NetworkMode": "bridge", "ReadonlyRootfs": False, "Privileged": True,
+                "AutoRemove": True, "CapDrop": [], "CapAdd": ["SYS_ADMIN"], "SecurityOpt": [],
+                "Memory": 0, "NanoCpus": 0, "PidsLimit": 0,
+                "VolumesFromCount": 1, "TmpfsCount": 1, "ConfigVolumeCount": 1,
+                "DeviceCount": 1, "DeviceRequestCount": 1, "DeviceCgroupRuleCount": 1,
+                "PidMode": "host", "UTSMode": "host", "UsernsMode": "host",
+                "PublishAllPorts": True, "PortBindingCount": 1, "BindCount": 2,
+                "RestartPolicy": {"Name": "always", "MaximumRetryCount": 0}, "unexpected": True}
+            for key, value in cases.items():
+                with self.subTest(profile=key):
+                    profile = json.loads(row[13])
+                    profile[key] = value
+                    changed = list(row)
+                    changed[13] = json.dumps(profile)
+                    self.assertFalse(driver.owned_row(changed))
+            for change in ("writable", "missing", "duplicate", "foreign-target", "type", "create-source", "option", "extra-key"):
+                with self.subTest(host_mount=change):
+                    profile = json.loads(row[13])
+                    mount = profile["HostMounts"][0]
+                    if change == "missing":
+                        profile["HostMounts"].pop()
+                    elif change == "duplicate":
+                        profile["HostMounts"][1] = dict(mount)
+                    elif change == "create-source":
+                        mount["BindOptions"]["CreateMountpoint"] = True
+                    else:
+                        key, value = {"writable": ("ReadOnly", False), "foreign-target": ("Target", "/unapproved"),
+                            "type": ("Type", "volume"), "option": ("UnsupportedOptions", True),
+                            "extra-key": ("Source", "/unapproved")}[change]
+                        mount[key] = value
+                    changed = list(row)
+                    changed[13] = json.dumps(profile)
+                    self.assertFalse(driver.owned_row(changed))
+            commands = [["sh", "-c", "stat"], ["stat", "-c", "%d:%i:%F", "/etc/passwd"],
+                ["stat", "-c", "%d:%i:%F", "/proof/clone-0", "/proof/original-0"],
+                ["stat", "-c", "%d:%i:%F", "/proof/original-2", "/proof/clone-2"],
+                json.loads(row[13])["Cmd"] + ["/proof/original-1"]]
+            for command in commands:
+                with self.subTest(command=command):
+                    profile = json.loads(row[13])
+                    profile["Cmd"] = command
+                    changed = list(row)
+                    changed[13] = json.dumps(profile)
+                    self.assertFalse(driver.owned_row(changed))
+            for change in ("writable", "missing", "duplicate", "foreign-target", "type", "mode", "propagation", "extra-key"):
+                with self.subTest(mount=change):
+                    profile = json.loads(row[13])
+                    mount = profile["Mounts"][0]
+                    if change == "missing":
+                        profile["Mounts"].pop()
+                    elif change == "duplicate":
+                        profile["Mounts"][1] = dict(mount)
+                    else:
+                        key, value = {"writable": ("RW", True), "foreign-target": ("Destination", "/etc/passwd"),
+                            "type": ("Type", "volume"), "mode": ("Mode", "rw"),
+                            "propagation": ("Propagation", "shared"), "extra-key": ("Source", "/unapproved")}[change]
+                        mount[key] = value
+                    changed = list(row)
+                    changed[13] = json.dumps(profile)
+                    self.assertFalse(driver.owned_row(changed))
+
+    def test_cleanup_stops_only_verified_probe_and_retains_inactive_proof_resources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            driver = self.make_driver(Path(temporary))
+            row = bind_probe_identity(driver, pairs=2)
+            driver.resources = lambda **_: {"containers": [row[0]], "volumes": [], "networks": []}
+            driver.identities = lambda *_, **__: [row]
+            calls = []
+
+            def stop(*args, **kwargs):
+                calls.append((args, kwargs))
+                row[3] = "false"
+            driver.tool = stop
+            driver.cleanup()
+            self.assertEqual(calls, [(("docker", "stop", "--time", "45", row[0]), {"timeout": 60, "cleanup": True})])
+            self.assertEqual(driver.state["cleanup"]["disposition"], "retained_inactive")
+
+    def test_unknown_probe_arguments_keep_custody_without_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            driver = self.make_driver(Path(temporary))
+            row = bind_probe_identity(driver)
+            profile = json.loads(row[13])
+            profile["Cmd"].append("/unapproved")
+            row[13] = json.dumps(profile)
+            checks = [0]
+            driver.resources = lambda **_: {"containers": [row[0]] if checks[0] == 0 else [], "volumes": [], "networks": []}
+            driver.identities = lambda ids, **_: [row] if ids else []
+            driver.supervisor.sleep = lambda _: checks.__setitem__(0, checks[0] + 1)
+            driver.tool = lambda *_, **__: self.fail("unrecognized probe must not be stopped")
+            driver.cleanup()
+            self.assertEqual(checks[0], 1)
+            self.assertEqual(driver.state["cleanup"]["disposition"], "absent")
+
+    def test_probe_inspection_uses_existing_call_without_exporting_env_or_host_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            driver = self.make_driver(Path(temporary))
+            row = bind_probe_identity(driver)
+            calls = []
+
+            def inspect(*args, **kwargs):
+                calls.append((args, kwargs))
+                return "|".join(row)
+            driver.tool = inspect
+            self.assertEqual(driver.identities([row[0]], custody=True), [row])
+            self.assertEqual(len(calls), 1)
+            args, kwargs = calls[0]
+            self.assertEqual(args[:3], ("docker", "inspect", "--format"))
+            self.assertNotIn(".Config.Env", args[3])
+            self.assertNotIn(".Source", args[3])
+            self.assertEqual(kwargs, {"timeout": 15, "cleanup": True, "custody": True})
 
     def test_volume_or_network_presence_and_lookup_failure_refuse_next_phase(self):
         with tempfile.TemporaryDirectory() as temporary:
