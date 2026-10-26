@@ -62,14 +62,15 @@ func runOwnedComposeFixture(t *testing.T, script string, arguments, environment 
 		result.controlErr = err
 		return
 	}
-	defer log.Close()
+	// Fallback closes are best effort; the primary seal/close is checked below.
+	defer func() { _ = log.Close() }()
 	gateRead, gateWrite, err := os.Pipe()
 	if err != nil {
 		result.controlErr = err
 		return
 	}
-	defer gateRead.Close()
-	defer gateWrite.Close()
+	defer func() { _ = gateRead.Close() }()
+	defer func() { _ = gateWrite.Close() }()
 	ctx, cancel := context.WithTimeout(t.Context(), budget)
 	defer cancel()
 	// No fixture work starts before the controller durably publishes custody.
@@ -98,7 +99,6 @@ exec 3<&-
 		result.controlErr = err
 		return
 	}
-	gateRead.Close()
 	group := cmd.Process.Pid
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -108,9 +108,13 @@ exec 3<&-
 		// its parent dies. Containment of any longer-lived member is a FAILURE.
 		if !waitOwnedComposeGroup(group, 1500*time.Millisecond) {
 			result.leftOver = true
-			syscall.Kill(-group, syscall.SIGTERM)
+			if err := syscall.Kill(-group, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+				result.controlErr = errors.Join(result.controlErr, err)
+			}
 			if !waitOwnedComposeGroup(group, time.Second) {
-				syscall.Kill(-group, syscall.SIGKILL)
+				if err := syscall.Kill(-group, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+					result.controlErr = errors.Join(result.controlErr, err)
+				}
 			}
 		}
 		if !reaped {
@@ -150,7 +154,7 @@ exec 3<&-
 			result.controlErr = errors.Join(result.controlErr, openErr)
 			return
 		}
-		defer output.Close()
+		defer func() { _ = output.Close() }()
 		result.output, err = io.ReadAll(io.LimitReader(output, 64*1024+1))
 		result.controlErr = errors.Join(result.controlErr, err, output.Close())
 		if len(result.output) > 64*1024 {
@@ -159,6 +163,10 @@ exec 3<&-
 		}
 		result.controlComplete = result.controlErr == nil
 	}()
+	if err := gateRead.Close(); err != nil {
+		result.controlErr = err
+		return
+	}
 	if actualGroup, err := syscall.Getpgid(group); err != nil || actualGroup != group || group == syscall.Getpgrp() {
 		result.controlErr = errors.New("fixture group identity unproven")
 		return
@@ -175,7 +183,10 @@ exec 3<&-
 		result.controlErr = err
 		return
 	}
-	gateWrite.Close()
+	if err := gateWrite.Close(); err != nil {
+		result.controlErr = err
+		return
+	}
 	select {
 	case result.commandErr = <-done:
 		reaped = true
@@ -201,12 +212,12 @@ func waitOwnedComposeGroup(group int, budget time.Duration) bool {
 	}
 }
 
-func writeOwnedComposeFixtureState(directory, name string, value map[string]any) error {
+func writeOwnedComposeFixtureState(directory, name string, value map[string]any) (err error) {
 	file, err := os.OpenFile(filepath.Join(directory, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { err = errors.Join(err, file.Close()) }()
 	if err := json.NewEncoder(file).Encode(value); err != nil {
 		return err
 	}
@@ -222,7 +233,7 @@ func ownedComposeFixtureDiagnostics(directory string) string {
 			continue
 		}
 		raw, err := io.ReadAll(io.LimitReader(file, 1024))
-		file.Close()
+		err = errors.Join(err, file.Close())
 		fmt.Fprintf(&summary, "%s: %q read_error=%t\n", name, raw, err != nil)
 	}
 	return summary.String()
