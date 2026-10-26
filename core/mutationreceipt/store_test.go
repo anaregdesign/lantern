@@ -517,48 +517,64 @@ func TestStorePrepareCommittedRetainsOnlyLiveGroupPositions(t *testing.T) {
 }
 
 func TestStorePrepareCommittedCapacityStallsThenRecovers(t *testing.T) {
-	s := testStore(t, 1, 1000)
-	seedIntent := testIntent(t, 1, testStart, GroupID{1}, 0, 1)
-	seed := committedTestReceipts([]Intent{seedIntent}, [][]byte{[]byte("seed")}, time.Hour)
-	tx, _ := s.Begin(testStart.Add(30 * time.Minute))
-	if err := tx.PrepareCommitted(seed, testStart.UnixMilli()); err != nil {
-		tx.Abort()
-		t.Fatal(err)
-	}
-	if err := tx.Stage(); err != nil {
-		tx.Abort()
-		t.Fatal(err)
-	}
-	tx.Commit()
+	for _, tc := range []struct {
+		name   string
+		issued time.Time
+	}{
+		{name: "whole millisecond", issued: testStart},
+		{name: "submillisecond", issued: testStart.Add(717 * time.Microsecond)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testStore(t, 1, 1000)
+			seedIntent := testIntent(t, 1, tc.issued, GroupID{1}, 0, 1)
+			seed := committedTestReceipts([]Intent{seedIntent}, [][]byte{[]byte("seed")}, time.Hour)
+			deadline := time.UnixMilli(seed[0].DeadlineMillis)
+			if want := tc.issued.Add(time.Hour).Truncate(time.Millisecond); !deadline.Equal(want) {
+				t.Fatalf("seed receipt deadline = %s, want millisecond deadline %s", deadline, want)
+			}
+			tx, _ := s.Begin(tc.issued.Add(30 * time.Minute))
+			if err := tx.PrepareCommitted(seed, tc.issued.UnixMilli()); err != nil {
+				tx.Abort()
+				t.Fatal(err)
+			}
+			if err := tx.Stage(); err != nil {
+				tx.Abort()
+				t.Fatal(err)
+			}
+			tx.Commit()
 
-	delayedIntent := testIntent(t, 2, testStart.Add(20*time.Minute), GroupID{2}, 0, 1)
-	delayed := committedTestReceipts([]Intent{delayedIntent}, [][]byte{[]byte("delayed")}, time.Hour)
-	tx, _ = s.Begin(testStart.Add(40 * time.Minute))
-	err := tx.PrepareCommitted(delayed, testStart.Add(20*time.Minute).UnixMilli())
-	tx.Abort()
-	if !errors.Is(err, ErrCapacity) {
-		t.Fatalf("full Store import = %v, want capacity", err)
-	}
-	if got := s.Stats(); got.Entries != 1 || got.ReplicationCapacityStalls != 1 || got.LocalAdmissionRejects != 0 {
-		t.Fatalf("capacity stall stats = %+v", got)
-	}
+			delayedIntent := testIntent(t, 2, tc.issued.Add(20*time.Minute), GroupID{2}, 0, 1)
+			delayed := committedTestReceipts([]Intent{delayedIntent}, [][]byte{[]byte("delayed")}, time.Hour)
+			for i, now := range []time.Time{tc.issued.Add(40 * time.Minute), deadline.Add(-time.Millisecond)} {
+				tx, _ = s.Begin(now)
+				err := tx.PrepareCommitted(delayed, tc.issued.Add(20*time.Minute).UnixMilli())
+				tx.Abort()
+				if !errors.Is(err, ErrCapacity) {
+					t.Fatalf("full Store import = %v, want capacity", err)
+				}
+				if got := s.Stats(); got.Entries != 1 || got.OldestDeadlineMillis != seed[0].DeadlineMillis || got.HighWaterMillis != now.UnixMilli() || got.ReplicationCapacityStalls != uint64(i+1) || got.LocalAdmissionRejects != 0 {
+					t.Fatalf("capacity stall stats = %+v", got)
+				}
+			}
 
-	tx, _ = s.Begin(testStart.Add(time.Hour))
-	if err := tx.PrepareCommitted(delayed, testStart.Add(20*time.Minute).UnixMilli()); err != nil {
-		tx.Abort()
-		t.Fatalf("delayed retry after capacity freed = %v", err)
-	}
-	if err := tx.Stage(); err != nil {
-		tx.Abort()
-		t.Fatal(err)
-	}
-	tx.Commit()
-	if status, receipt, err := s.Lookup(delayedIntent.ID, testStart.Add(time.Hour)); err != nil ||
-		status != Confirmed || string(receipt.Result) != "delayed" {
-		t.Fatalf("delayed committed row = %v, %+v, %v", status, receipt, err)
-	}
-	if got := s.Stats(); got.Entries != 1 || got.ReplicationCapacityStalls != 1 {
-		t.Fatalf("recovered capacity stats = %+v", got)
+			tx, _ = s.Begin(deadline)
+			if err := tx.PrepareCommitted(delayed, tc.issued.Add(20*time.Minute).UnixMilli()); err != nil {
+				tx.Abort()
+				t.Fatalf("delayed retry after capacity freed = %v", err)
+			}
+			if err := tx.Stage(); err != nil {
+				tx.Abort()
+				t.Fatal(err)
+			}
+			tx.Commit()
+			if status, receipt, err := s.Lookup(delayedIntent.ID, deadline); err != nil ||
+				status != Confirmed || string(receipt.Result) != "delayed" {
+				t.Fatalf("delayed committed row = %v, %+v, %v", status, receipt, err)
+			}
+			if got := s.Stats(); got.Entries != 1 || got.OldestDeadlineMillis != delayed[0].DeadlineMillis || got.HighWaterMillis != seed[0].DeadlineMillis || got.ReplicationCapacityStalls != 2 {
+				t.Fatalf("recovered capacity stats = %+v", got)
+			}
+		})
 	}
 }
 

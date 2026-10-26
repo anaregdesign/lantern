@@ -286,7 +286,13 @@ run_owned_compose_initializer() {
     initialized="$(cat "$private/completed.json")"
     initializer_matches && jq -e '.State.Status=="exited" and .State.Running==false and .State.ExitCode==0' <<<"$initialized" >/dev/null || exit 1
     initializer_command docker wait "$initializer_id" > "$private/wait.log" 2>&1 || exit 1
+    if [[ "$kind" == compose-bind-identity-probe ]]; then
+      retain_owned_compose_bind_probe "$private" || exit 1
+    fi
     initializer_command docker rm "$initializer_id" > "$private/remove.log" 2>&1 || exit 1
+    if [[ "$kind" == compose-bind-identity-probe ]]; then
+      cp "$private/remove.log" "$bind_proof_directory/probe-remove.log" || exit 1
+    fi
     initializer=""
   ) &
   supervisor=$!
@@ -319,8 +325,152 @@ validate_owned_compose_security_initializer() {
     jq -se '.[0] as $original | .[1] |
       .Config.Entrypoint==["/app/lantern"] and .Config.Cmd==["init-security"] and
       .Config.WorkingDir==$original.Config.WorkingDir and .HostConfig.NetworkMode==$original.HostConfig.NetworkMode and
-      (.Config.Env|sort)==($original.Config.Env|sort) and
-      (.Mounts|sort_by(.Destination))==($original.Mounts|sort_by(.Destination))' >/dev/null
+      .Config.User==$original.Config.User and .Image==$original.Image and
+      .Config.Labels["com.docker.compose.project"]==$original.Config.Labels["com.docker.compose.project"] and
+      .Config.Labels["com.docker.compose.service"]==$original.Config.Labels["com.docker.compose.service"] and
+      .State.Status=="created" and .State.Running==false and
+      $original.State.Status=="created" and $original.State.Running==false and
+      (.Config.Env|sort)==($original.Config.Env|sort)' >/dev/null || return 1
+  if printf '%s\n%s\n' "$original" "$initialized" |
+    jq -se '.[0] as $original | .[1] | (.Mounts|sort_by(.Destination))==($original.Mounts|sort_by(.Destination))' >/dev/null; then
+    return 0
+  fi
+  prove_owned_compose_bind_identity
+}
+
+# Only this fixed metadata command may observe a not-yet-proven Source pair.
+# It has no native initialization, credentials, network or writable mount.
+validate_owned_compose_bind_probe() {
+  jq -e --arg image "$image" --argjson plan "$bind_proof_plan" --argjson environment "$bind_probe_environment" --argjson targets "$bind_probe_targets" '
+    .Config.Image==$image and
+    .Config.Entrypoint==["/bin/busybox"] and
+    .Config.Cmd==(["stat","-c","%d:%i:%F"]+$targets) and
+    (.Config.Env|sort)==($environment|sort) and
+    .HostConfig.NetworkMode=="none" and .HostConfig.ReadonlyRootfs==true and
+    .HostConfig.Privileged==false and .HostConfig.AutoRemove==false and
+    .HostConfig.CapDrop==["ALL"] and (.HostConfig.CapAdd==null or .HostConfig.CapAdd==[]) and
+    .HostConfig.SecurityOpt==["no-new-privileges:true"] and
+    .HostConfig.Memory==33554432 and .HostConfig.NanoCpus==250000000 and .HostConfig.PidsLimit==16 and
+    (.HostConfig.Binds==null or .HostConfig.Binds==[]) and
+    (.HostConfig.Mounts|type)=="array" and (.HostConfig.Mounts|length)==(2*($plan|length)) and
+    (.HostConfig.VolumesFrom==null or .HostConfig.VolumesFrom==[]) and
+    (.HostConfig.Tmpfs==null or .HostConfig.Tmpfs=={}) and
+    (.Config.Volumes==null or .Config.Volumes=={}) and
+    (.HostConfig.Devices==null or .HostConfig.Devices==[]) and
+    (.HostConfig.DeviceRequests==null or .HostConfig.DeviceRequests==[]) and
+    (.HostConfig.DeviceCgroupRules==null or .HostConfig.DeviceCgroupRules==[]) and
+    .HostConfig.PidMode=="" and .HostConfig.UTSMode=="" and .HostConfig.UsernsMode=="" and
+    .HostConfig.PublishAllPorts==false and (.HostConfig.PortBindings==null or .HostConfig.PortBindings=={}) and
+    .HostConfig.RestartPolicy=={Name:"no",MaximumRetryCount:0} and
+    (.Mounts|type)=="array" and (.Mounts|length)==(2*($plan|length))
+  ' <<<"$initialized" >/dev/null || return 1
+  # Each actual target remains tied to its requested pair even when Desktop
+  # resolves both requests to the same effective source. No third path is valid.
+  jq -e --argjson plan "$bind_proof_plan" '
+    . as $probe |
+    all(range(0;$plan|length); . as $i | $plan[$i] as $pair |
+      all(["original","clone"][]; . as $side | ("/proof/"+$side+"-"+($i|tostring)) as $target |
+        [$probe.Mounts[]|select(.Destination==$target)] as $mounts |
+        ($mounts|length)==1 and ($mounts[0]|keys|sort)==["Destination","Mode","Propagation","RW","Source","Type"] and
+        $mounts[0].Type=="bind" and $mounts[0].RW==false and ($mounts[0].Mode=="" or $mounts[0].Mode=="ro") and $mounts[0].Propagation=="rprivate" and
+        ($mounts[0].Source==$pair.original_source or $mounts[0].Source==$pair.clone_source) and
+        [$probe.HostConfig.Mounts[]|select(.Target==$target)] as $requests |
+        ($requests|length)==1 and ($requests[0]|keys|sort)==["BindOptions","ReadOnly","Source","Target","Type"] and
+        $requests[0].Type=="bind" and $requests[0].ReadOnly==true and
+        ($requests[0].Source==$pair.original_source or $requests[0].Source==$pair.clone_source) and
+        ($requests[0].BindOptions=={Propagation:"rprivate"} or $requests[0].BindOptions=={Propagation:"rprivate",CreateMountpoint:false})))
+  ' <<<"$initialized" >/dev/null
+}
+
+retain_owned_compose_bind_probe() {
+  local probe_private="$1"
+  [[ -n "$bind_proof_directory" && -d "$bind_proof_directory" ]] || return 1
+  cp "$probe_private/created.json" "$bind_proof_directory/probe-created.json" &&
+    cp "$probe_private/completed.json" "$bind_proof_directory/probe-completed.json" &&
+    cp "$probe_private/start.log" "$bind_proof_directory/probe-output.log" &&
+    cp "$probe_private/wait.log" "$bind_proof_directory/probe-wait.log" || return 1
+  jq -Rse --argjson plan "$bind_proof_plan" '
+    select(length<=4096) | split("\n") as $raw |
+    select($raw[-1]=="" and ($raw|length)==(1+2*($plan|length))) | $raw[0:-1] |
+    map(capture("^(?<device>[1-9][0-9]*):(?<inode>[1-9][0-9]*):(?<type>directory|regular file)$")) as $values |
+    select(($values|length)==(2*($plan|length))) |
+    select(all(range(0;$plan|length); . as $i |
+      $values[2*$i]==$values[2*$i+1] and $values[2*$i].type==$plan[$i].expected_type)) |
+    {schema:1,identity:"same-effective-daemon-mount-object",values:$values}
+  ' "$probe_private/start.log" > "$bind_proof_directory/identity.json"
+}
+
+prove_owned_compose_bind_identity() {
+  local bind_proof_plan bind_proof_directory bind_probe_environment bind_probe_targets original_id clone_id original_service daemon_before daemon_after original_after clone_after
+  local -a proof_mounts=() proof_targets=()
+  original_service="$(jq -er '.Config.Labels["com.docker.compose.service"]|select(type=="string" and test("^lantern-[012]$"))' <<<"$original")" || return 1
+  bind_proof_plan="$(printf '%s\n%s\n%s\n' "$original" "$initialized" "$configuration" |
+    jq -sec --arg service "$original_service" '
+      def source: type=="string" and startswith("/") and length>1 and
+        ((contains(",") or contains("\""))|not) and (explode|all(.>=32 and .!=127));
+      .[0] as $original | .[1] as $clone | .[2].services[$service].volumes as $declared |
+      ($original.Mounts|sort_by(.Destination)) as $left | ($clone.Mounts|sort_by(.Destination)) as $right |
+      if ($left|type)!="array" or ($right|type)!="array" or ($left|length)!=($right|length) or
+        ($left|map(.Destination)|unique|length)!=($left|length) or ($right|map(.Destination)|unique|length)!=($right|length)
+      then error("mount membership differs") else . end |
+      [range(0;$left|length)|. as $i|$left[$i] as $a|$right[$i] as $c|
+        if $a==$c then empty else
+          (if $a.Destination=="/run/lantern-config" then "directory" elif $a.Destination=="/etc/ntp.conf" then "regular file" else error("unsupported proof destination") end) as $type |
+          [$declared[]|select(.type=="bind" and .read_only==true and .target==$a.Destination)] as $intent |
+          if $a.Type!="bind" or $a.RW!=false or ($a|del(.Source))!=($c|del(.Source)) or
+            ($a.Source|source|not) or ($c.Source|source|not) or ($intent|length)!=1 or
+            ($intent[0].source!=$a.Source and $intent[0].source!=$c.Source)
+          then error("unproved bind shape or declared source") else
+            {destination:$a.Destination,declared_source:$intent[0].source,original_source:$a.Source,clone_source:$c.Source,expected_type:$type}
+          end
+        end] | if length>=1 and length<=2 then . else error("unsupported proof pair count") end
+    ')" || return 1
+  umask 077
+  bind_proof_directory="$(mktemp -d "${TMPDIR:-/tmp}/lantern-bind-proof.XXXXXXXX")" || return 1
+  printf '%s\n' "$bind_proof_plan" > "$bind_proof_directory/requested-pairs.json" || return 1
+  echo "read-only bind proof private evidence retained at $bind_proof_directory" >&2 || return 1
+  original_id="$(jq -er '.Id|select(test("^[0-9a-f]{64}$"))' <<<"$original")" || return 1
+  clone_id="$(jq -er '.Id|select(test("^[0-9a-f]{64}$"))' <<<"$initialized")" || return 1
+  [[ "$original_id" != "$clone_id" ]] || return 1
+  initializer_command docker inspect --format '{{json .}}' "$original_id" > "$bind_proof_directory/original-before.json" || return 1
+  initializer_command docker inspect --format '{{json .}}' "$clone_id" > "$bind_proof_directory/clone-before.json" || return 1
+  printf '%s\n%s\n%s\n%s\n' "$original" "$(cat "$bind_proof_directory/original-before.json")" "$initialized" "$(cat "$bind_proof_directory/clone-before.json")" |
+    jq -se 'def fingerprint: {Id,Name,Image,Config,HostConfig,Mounts:(.Mounts|sort_by(.Destination))};
+      (.[0]|fingerprint)==(.[1]|fingerprint) and (.[2]|fingerprint)==(.[3]|fingerprint) and
+      all(.[]; .State.Status=="created" and .State.Running==false)' >/dev/null || return 1
+  initializer_command docker info --format '{{.ID}}' > "$bind_proof_directory/daemon-before" || return 1
+  daemon_before="$(cat "$bind_proof_directory/daemon-before")"; [[ -n "$daemon_before" && "$daemon_before" != *$'\n'* ]] || return 1
+  initializer_command docker image inspect --format '{{json .Config.Env}}' "$image" > "$bind_proof_directory/image-environment.json" || return 1
+  bind_probe_environment="$(cat "$bind_proof_directory/image-environment.json")"
+  jq -e 'type=="array" and all(.[]; type=="string" and test("^(PATH|LANTERN_DEFAULT_TTL_SECONDS|LANTERN_PORT|LANTERN_METRICS_ADDR|LANTERN_LOG_FORMAT|LANTERN_LOG_LEVEL|LANTERN_VERSION|LANTERN_COMMIT)=") and ((contains("\r") or contains("\n") or contains("\u0000"))|not)) and
+    (map(split("=")[0])|unique|length)==length' <<<"$bind_probe_environment" >/dev/null || return 1
+  bind_probe_targets="$(jq -c '[range(0;length)|. as $i|("/proof/original-"+($i|tostring)),("/proof/clone-"+($i|tostring))]' <<<"$bind_proof_plan")" || return 1
+  local pair_index=0 source_pair target
+  while IFS= read -r source_pair; do
+    proof_mounts+=("--mount=type=bind,source=$(jq -er '.original_source' <<<"$source_pair"),target=/proof/original-$pair_index,readonly,bind-propagation=rprivate")
+    proof_mounts+=("--mount=type=bind,source=$(jq -er '.clone_source' <<<"$source_pair"),target=/proof/clone-$pair_index,readonly,bind-propagation=rprivate")
+    pair_index=$((pair_index+1))
+  done < <(jq -c '.[]' <<<"$bind_proof_plan")
+  while IFS= read -r target; do proof_targets+=("$target"); done < <(jq -r '.[]' <<<"$bind_probe_targets")
+  run_owned_compose_initializer "$project" "$image" "$owner" compose-bind-identity-probe "${original_service}-bind-proof" 100 validate_owned_compose_bind_probe \
+    --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --memory 32m --cpus 0.25 --pids-limit 16 \
+    "${proof_mounts[@]}" --entrypoint /bin/busybox "$image" stat -c '%d:%i:%F' "${proof_targets[@]}" || return "$?"
+  initializer_command docker inspect --format '{{json .}}' "$original_id" > "$bind_proof_directory/original-after.json" || return 1
+  initializer_command docker inspect --format '{{json .}}' "$clone_id" > "$bind_proof_directory/clone-after.json" || return 1
+  initializer_command docker info --format '{{.ID}}' > "$bind_proof_directory/daemon-after" || return 1
+  daemon_after="$(cat "$bind_proof_directory/daemon-after")"; [[ "$daemon_before" == "$daemon_after" ]] || return 1
+  original_after="$(cat "$bind_proof_directory/original-after.json")"; clone_after="$(cat "$bind_proof_directory/clone-after.json")"
+  printf '%s\n%s\n%s\n%s\n' "$original" "$original_after" "$initialized" "$clone_after" |
+    jq -se 'def fingerprint: {Id,Name,Image,Config,HostConfig,Mounts:(.Mounts|sort_by(.Destination))};
+      (.[0]|fingerprint)==(.[1]|fingerprint) and (.[2]|fingerprint)==(.[3]|fingerprint) and
+      all(.[]; .State.Status=="created" and .State.Running==false)' >/dev/null || return 1
+  local snapshot
+  for snapshot in original-before clone-before original-after clone-after; do
+    jq -Sc '{Id,Name,Image,Config,HostConfig,Mounts:(.Mounts|sort_by(.Destination))}' "$bind_proof_directory/$snapshot.json" > "$bind_proof_directory/$snapshot.fingerprint.json" || return 1
+  done
+  jq -n --arg original "$original_id" --arg clone "$clone_id" --arg daemon "$daemon_before" --argjson pairs "$bind_proof_plan" --slurpfile identity "$bind_proof_directory/identity.json" \
+    '{schema:1,status:"PASS",identity:"same-effective-daemon-mount-object",original_id:$original,clone_id:$clone,daemon_id:$daemon,pairs:$pairs,physical_identity:$identity[0],
+      fingerprints:["original-before.fingerprint.json","clone-before.fingerprint.json","original-after.fingerprint.json","clone-after.fingerprint.json"]}' > "$bind_proof_directory/proof.json"
 }
 
 # Every service is verified before any native initialization. Each clone uses
@@ -329,8 +479,8 @@ initialize_owned_compose_security() {
   local project="$1" image="$2" owner="$3"
   shift 3
   [[ -n "$project" && "$project" == "${COMPOSE_PROJECT_NAME:-}" && "$image" =~ ^sha256:[0-9a-f]{64}$ && "$owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || return 1
-  local configuration layout service container original network index=0
-  local -a originals=() containers=()
+  local configuration layout service container original network binding index=0
+  local -a originals=() mounts=()
   configuration="$(LANTERN_IMAGE="$image" docker compose "$@" config --format json)" || return 1
   layout="$(owned_compose_volume_layout "$project" "$owner" <<<"$configuration")" || return 1
   [[ "$(jq -er '.count' <<<"$layout")" == 6 ]] || return 1
@@ -348,15 +498,26 @@ initialize_owned_compose_security() {
         .[0] as $original | .[1].services[$service].environment as $settings |
         $original.Config.Labels["com.docker.compose.project"]==$project and $original.Config.Labels["com.docker.compose.service"]==$service and
         $original.Config.User==$owner and $original.Image==$image and $original.State.Status=="created" and
-        all($settings|to_entries[]|select(.value!=null); . as $entry | [$original.Config.Env[]|select(.==($entry.key+"="+$entry.value))]|length==1)
+        all($settings|to_entries[]|select(.value!=null); . as $entry | [$original.Config.Env[]|select(.==($entry.key+"="+$entry.value))]|length==1) and
+        ($original.HostConfig.Binds|type)=="array" and ($original.HostConfig.Binds|length)>0 and
+        all($original.HostConfig.Binds[]; type=="string" and length>0 and
+          ((contains("\r") or contains("\n") or contains("\u0000"))|not)) and
+        ($original.HostConfig.Mounts==null or $original.HostConfig.Mounts==[]) and
+        ($original.HostConfig.VolumesFrom==null or $original.HostConfig.VolumesFrom==[]) and
+        ($original.HostConfig.Tmpfs==null or $original.HostConfig.Tmpfs=={}) and
+        ($original.Config.Volumes==null or $original.Config.Volumes=={})
       ' >/dev/null || return 1
-    originals+=("$original"); containers+=("$container")
+    originals+=("$original")
   done
   for service in lantern-0 lantern-1 lantern-2; do
-    original="${originals[$index]}"; container="${containers[$index]}"
+    original="${originals[$index]}"
     network="$(jq -er '.HostConfig.NetworkMode|select(type=="string" and length>0)' <<<"$original")" || return 1
+    # Replay the requested mounts: --volumes-from can rewrite their inspected
+    # Source and Mode on Docker Desktop. Full mount equality remains mandatory.
+    mounts=()
+    while IFS= read -r binding; do mounts+=("--volume=$binding"); done < <(jq -r '.HostConfig.Binds[]' <<<"$original")
     run_owned_compose_initializer "$project" "$image" "$owner" compose-security-initializer "${service}-security-init" 900 validate_owned_compose_security_initializer \
-      --network "$network" --volumes-from "$container" --entrypoint /app/lantern "$image" init-security || return "$?"
+      --network "$network" "${mounts[@]}" --entrypoint /app/lantern "$image" init-security || return "$?"
     index=$((index + 1))
   done
 }

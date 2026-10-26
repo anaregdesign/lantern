@@ -52,6 +52,8 @@ HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 PRIVATE_MESSAGE = re.compile(
     r"^run\.sh: private (?:startup/runtime|bridge|ghz producer diagnostics) evidence retained at (.+)$")
+BIND_PROOF_MESSAGE = re.compile(r"read-only bind proof private evidence retained at (.+)")
+BIND_PROOF_MAX_FILES, BIND_PROOF_MAX_FILE_BYTES, BIND_PROOF_MAX_BYTES = 32, 128 * 1024, 2 * 1024 * 1024
 
 
 class Refused(RuntimeError):
@@ -509,25 +511,76 @@ def validate_run(directory, document, sha, image_ref, image_id, owner, receipt):
     return verdicts
 
 
+def capture_bind_proof(path, target, expected):
+    """Bound a flat private proof to its opened directory and unchanged files."""
+    def fingerprint(info):
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+                info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(directory)
+        require((opened.st_dev, opened.st_ino) == (expected.st_dev, expected.st_ino) and
+                stat.S_ISDIR(opened.st_mode) and opened.st_uid == os.getuid() and
+                stat.S_IMODE(opened.st_mode) == 0o700, "private proof directory changed")
+        names = os.listdir(directory)
+        require(len(names) <= BIND_PROOF_MAX_FILES, "too many private proof files")
+        target.mkdir(mode=0o700)
+        total = 0
+        for name in names:
+            before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            require(stat.S_ISREG(before.st_mode) and before.st_uid == os.getuid() and
+                    stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1 and
+                    before.st_size <= BIND_PROOF_MAX_FILE_BYTES, "unsafe private proof file")
+            total += before.st_size
+            require(total <= BIND_PROOF_MAX_BYTES, "oversized private proof directory")
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            with os.fdopen(fd, "rb") as src:
+                current = os.fstat(src.fileno())
+                require(fingerprint(current) == fingerprint(before), "private proof file changed before capture")
+                content = src.read(BIND_PROOF_MAX_FILE_BYTES + 1)
+                require(len(content) == before.st_size and fingerprint(os.fstat(src.fileno())) == fingerprint(before)
+                        and fingerprint(os.stat(name, dir_fd=directory, follow_symlinks=False)) == fingerprint(before),
+                        "private proof file changed during capture")
+            fd = os.open(target / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as dst:
+                dst.write(content)
+        require(set(os.listdir(directory)) == set(names), "private proof file membership changed")
+        final = path.lstat()
+        require((final.st_dev, final.st_ino) == (opened.st_dev, opened.st_ino) and
+                stat.S_ISDIR(final.st_mode) and final.st_uid == os.getuid() and
+                stat.S_IMODE(final.st_mode) == 0o700, "private proof directory replaced during capture")
+    finally:
+        os.close(directory)
+
+
 def capture_private_outputs(logs, destination, temp_roots):
     """Copy only exact harness-referenced, current-user private regular files."""
     retained = []
     for log in logs:
         for line in regular(log).read_text(errors="replace").splitlines():
             # ghz's historical message omits the extra word 'evidence'.
-            match = PRIVATE_MESSAGE.fullmatch(line) or re.fullmatch(
+            bind_proof = BIND_PROOF_MESSAGE.fullmatch(line)
+            match = bind_proof or PRIVATE_MESSAGE.fullmatch(line) or re.fullmatch(
                 r"run\.sh: private ghz producer diagnostics retained at (.+)", line) or re.fullmatch(
                 r"(?:owned_compose\.sh: )?initializer private evidence retained at (.+)", line)
             if not match:
                 continue
             path = Path(match[1])
             require(path.is_absolute() and not path.is_symlink() and path.parent.resolve() in temp_roots
-                    and re.fullmatch(r"lantern-(?:native-failure|ghz-producer|owned-init)\.[A-Za-z0-9]+", path.name),
+                    and re.fullmatch(r"lantern-bind-proof\.[A-Za-z0-9]+" if bind_proof else
+                                     r"lantern-(?:native-failure|ghz-producer|owned-init)\.[A-Za-z0-9]+", path.name),
                     "unsafe referenced private output directory")
             info = path.lstat()
             require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and
                     stat.S_IMODE(info.st_mode) == 0o700, "private evidence ownership differs")
             target = destination / path.name
+            if bind_proof:
+                if str(path) in retained:
+                    continue
+                capture_bind_proof(path, target, info)
+                retained.append(str(path))
+                continue
             if target.exists():
                 continue
             target.mkdir(mode=0o700)
@@ -598,6 +651,58 @@ class Qualification:
     def owned_row(self, row):
         if len(row) != 14 or row[4] != self.args.campaign:
             return False
+        if row[9] == "compose-bind-identity-probe":
+            try:
+                profile = json.loads(row[13])
+            except (TypeError, ValueError):
+                return False
+            if not isinstance(profile, dict):
+                return False
+            commands = [["stat", "-c", "%d:%i:%F", "/proof/original-0", "/proof/clone-0"],
+                        ["stat", "-c", "%d:%i:%F", "/proof/original-0", "/proof/clone-0",
+                         "/proof/original-1", "/proof/clone-1"]]
+            command = profile.get("Cmd")
+            if command not in commands:
+                return False
+            fixed = {"NetworkMode": "none", "ReadonlyRootfs": True, "Privileged": False,
+                     "AutoRemove": False, "CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges:true"],
+                     "Memory": 33554432, "NanoCpus": 250000000, "PidsLimit": 16,
+                     "PidMode": "", "UTSMode": "", "UsernsMode": "", "PublishAllPorts": False,
+                     "VolumesFromCount": 0, "TmpfsCount": 0, "ConfigVolumeCount": 0,
+                     "DeviceCount": 0, "DeviceRequestCount": 0, "DeviceCgroupRuleCount": 0, "PortBindingCount": 0,
+                     "BindCount": 0}
+            if (set(profile) != set(fixed) | {"CapAdd", "Cmd", "RestartPolicy", "Mounts", "HostMounts"}
+                    or any(type(profile[key]) is not type(value) or profile[key] != value for key, value in fixed.items())
+                    or profile["CapAdd"] is not None and profile["CapAdd"] != []
+                    or profile["RestartPolicy"] != {"Name": "no", "MaximumRetryCount": 0}
+                    or type(profile["RestartPolicy"].get("MaximumRetryCount")) is not int):
+                return False
+            mounts = profile["Mounts"]
+            targets = command[3:]
+            if (not isinstance(mounts, list) or len(mounts) != len(targets)
+                    or any(not isinstance(mount, dict) or set(mount) != {"Type", "Destination", "RW", "Mode", "Propagation"}
+                           or not isinstance(mount["Destination"], str)
+                           or mount["Type"] != "bind" or mount["RW"] is not False or mount["Mode"] not in ("", "ro")
+                           or mount["Propagation"] != "rprivate" for mount in mounts)
+                    or sorted(mount["Destination"] for mount in mounts) != sorted(targets)):
+                return False
+            # Source/Env and the physical proof stay in private helper evidence;
+            # cleanup inspects only the fixed, non-writing metadata profile.
+            host_mounts = profile["HostMounts"]
+            if (not isinstance(host_mounts, list) or len(host_mounts) != len(targets)
+                    or any(not isinstance(mount, dict) or set(mount) != {"Type", "Target", "ReadOnly", "BindOptions", "UnsupportedOptions"}
+                           or not isinstance(mount["Target"], str)
+                           or mount["Type"] != "bind" or mount["ReadOnly"] is not True or mount["UnsupportedOptions"] is not False
+                           or mount["BindOptions"] not in ({"Propagation": "rprivate"}, {"Propagation": "rprivate", "CreateMountpoint": False})
+                           or "CreateMountpoint" in mount["BindOptions"] and mount["BindOptions"]["CreateMountpoint"] is not False
+                           for mount in host_mounts)
+                    or sorted(mount["Target"] for mount in host_mounts) != sorted(targets)):
+                return False
+            return (HEX64.fullmatch(row[0]) is not None and row[1] == self.image_id and row[2] == self.owner
+                    and row[5] in {service + "-bind-proof" for service in SERVICES} and row[7] == self.image_id
+                    and row[8] == f"/{self.args.campaign}-{row[5]}" and row[10] == "True"
+                    and re.fullmatch(r"lantern-owned-init\.[A-Za-z0-9]+", row[11]) is not None
+                    and row[12] == '["/bin/busybox"]')
         if row[5] == "volume-init" and row[9] == "compose-volume-initializer":
             try:
                 command = json.loads(row[13])
@@ -642,7 +747,29 @@ class Qualification:
                     '{{if eq (index .Config.Labels "lantern.owner") "compose-volume-initializer"}}'
                     '{"argc":{{len .Config.Cmd}},"kind":{{json (index .Config.Cmd 0)}},'
                     '"fixture":{{json (index .Config.Cmd 2)}},"owner":{{json (index .Config.Cmd 3)}},'
-                    '"count":{{json (index .Config.Cmd 4)}}}{{else}}{{json .Config.Cmd}}{{end}}')
+                    '"count":{{json (index .Config.Cmd 4)}}}'
+                    '{{else if eq (index .Config.Labels "lantern.owner") "compose-bind-identity-probe"}}'
+                    '{"Cmd":{{json .Config.Cmd}},"NetworkMode":{{json .HostConfig.NetworkMode}},'
+                    '"ReadonlyRootfs":{{json .HostConfig.ReadonlyRootfs}},"Privileged":{{json .HostConfig.Privileged}},'
+                    '"AutoRemove":{{json .HostConfig.AutoRemove}},"CapDrop":{{json .HostConfig.CapDrop}},'
+                    '"CapAdd":{{json .HostConfig.CapAdd}},"SecurityOpt":{{json .HostConfig.SecurityOpt}},'
+                    '"Memory":{{json .HostConfig.Memory}},"NanoCpus":{{json .HostConfig.NanoCpus}},'
+                    '"PidsLimit":{{json .HostConfig.PidsLimit}},'
+                    '"VolumesFromCount":{{len .HostConfig.VolumesFrom}},"TmpfsCount":{{len .HostConfig.Tmpfs}},'
+                    '"ConfigVolumeCount":{{len .Config.Volumes}},"DeviceCount":{{len .HostConfig.Devices}},'
+                    '"DeviceRequestCount":{{len .HostConfig.DeviceRequests}},'
+                    '"DeviceCgroupRuleCount":{{len .HostConfig.DeviceCgroupRules}},"PidMode":{{json .HostConfig.PidMode}},'
+                    '"UTSMode":{{json .HostConfig.UTSMode}},"UsernsMode":{{json .HostConfig.UsernsMode}},'
+                    '"PublishAllPorts":{{json .HostConfig.PublishAllPorts}},"PortBindingCount":{{len .HostConfig.PortBindings}},'
+                    '"RestartPolicy":{{json .HostConfig.RestartPolicy}},"BindCount":{{len .HostConfig.Binds}},'
+                    '"HostMounts":[{{range $i,$mount := .HostConfig.Mounts}}{{if $i}},{{end}}'
+                    '{"Type":{{json $mount.Type}},"Target":{{json $mount.Target}},"ReadOnly":{{json $mount.ReadOnly}},'
+                    '"BindOptions":{{json $mount.BindOptions}},"UnsupportedOptions":'
+                    '{{if or $mount.Consistency $mount.VolumeOptions $mount.TmpfsOptions $mount.ImageOptions}}true{{else}}false{{end}}}{{end}}],'
+                    '"Mounts":[{{range $i,$mount := .Mounts}}{{if $i}},{{end}}'
+                    '{"Type":{{json $mount.Type}},"Destination":{{json $mount.Destination}},'
+                    '"RW":{{json $mount.RW}},"Mode":{{json $mount.Mode}},"Propagation":{{json $mount.Propagation}}}{{end}}]}'
+                    '{{else}}{{json .Config.Cmd}}{{end}}')
         rows = self.tool("docker", "inspect", "--format", template, *ids,
                          timeout=15, cleanup=True, custody=custody).splitlines()
         values = [row.split("|") for row in rows]

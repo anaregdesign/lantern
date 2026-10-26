@@ -696,6 +696,23 @@ func TestOwnedComposeInitializerCustody(t *testing.T) {
 	}
 	for _, profile := range []string{"security", "volume"} {
 		failures := []string{"none", "init-failure", "client-disconnect", "INT", "TERM", "launch-INT", "launch-TERM", "wrong-init-image", "wrong-init-user", "wrong-init-env", "wrong-init-mount", "wrong-init-label", "wrong-init-exit", "stop-failure", "remove-failure"}
+		if profile == "security" {
+			failures = append(failures,
+				"empty-mount-mechanisms", "subscriber-buffer-explicit",
+				"wrong-original-binds-missing", "wrong-original-binds-null", "wrong-original-binds-empty",
+				"wrong-original-binds-object", "wrong-original-binds-string", "wrong-original-binds-nonstring",
+				"wrong-original-binds-empty-string", "wrong-original-binds-cr", "wrong-original-binds-lf", "wrong-original-binds-nul",
+				"wrong-original-structured-mounts", "wrong-original-structured-mounts-object",
+				"wrong-original-volumes-from", "wrong-original-volumes-from-string",
+				"wrong-original-tmpfs", "wrong-original-tmpfs-array", "wrong-original-tmpfs-string", "wrong-original-tmpfs-boolean",
+				"wrong-original-anonymous-volumes", "wrong-original-anonymous-volumes-array",
+				"wrong-init-mount-source", "wrong-init-mount-mode", "wrong-init-mount-rw",
+				"wrong-init-mount-destination", "wrong-init-mount-type", "wrong-init-mount-volume-name",
+				"wrong-init-mount-volume-source", "wrong-init-mount-driver", "wrong-init-mount-propagation",
+				"wrong-init-mount-extra-field", "wrong-init-mount-missing", "wrong-init-mount-extra", "wrong-init-mount-duplicate-target",
+				"wrong-init-poststart-mount-source", "wrong-init-poststart-mount-mode",
+				"wrong-init-env-empty-unset", "wrong-init-env-explicit-value")
+		}
 		if profile == "volume" {
 			for _, capability := range capabilityCases {
 				failures = append(failures, capability.name)
@@ -709,7 +726,7 @@ func TestOwnedComposeInitializerCustody(t *testing.T) {
 			if profile == "volume" && failure == "wrong-init-env" {
 				continue
 			}
-			capabilities, accepted := `["CHOWN","DAC_READ_SEARCH"]`, failure == "none"
+			capabilities, accepted := `["CHOWN","DAC_READ_SEARCH"]`, failure == "none" || failure == "empty-mount-mechanisms" || failure == "subscriber-buffer-explicit"
 			for _, capability := range capabilityCases {
 				if failure == capability.name {
 					capabilities, accepted = capability.value, capability.accepted
@@ -717,7 +734,7 @@ func TestOwnedComposeInitializerCustody(t *testing.T) {
 			}
 			oomInitial, oomCompleted := "", ""
 			refusedBeforeStart := strings.HasPrefix(failure, "wrong-init-") && failure != "wrong-init-exit"
-			postStartRefusal := strings.HasPrefix(failure, "wrong-init-hostconfig-")
+			postStartRefusal := strings.HasPrefix(failure, "wrong-init-hostconfig-") || strings.HasPrefix(failure, "wrong-init-poststart-mount-")
 			if postStartRefusal {
 				refusedBeforeStart = false
 			}
@@ -734,10 +751,12 @@ source "$1"
 export COMPOSE_PROJECT_NAME=lantern-bench-owned-fixture
 TEST_MAIN_PID=$BASHPID
 TEST_IMAGE="sha256:$(printf 'a%.0s' {1..64})"
+TEST_SUBSCRIBER_BUFFER=''
+if [[ "$CASE" == subscriber-buffer-explicit || "$CASE" == wrong-init-env-explicit-value ]]; then TEST_SUBSCRIBER_BUFFER=8192; fi
 TEST_SECURITY_CONFIG='{"name":"lantern-bench-owned-fixture","services":{},"volumes":{}}'
 for index in 0 1 2; do
- TEST_SECURITY_CONFIG="$(jq -c --arg service "lantern-$index" --arg image "$TEST_IMAGE" '
-  .services[$service]={image:$image,user:"501:20",environment:{LANTERN_AUTH_MODE:"oidc",LANTERN_SECURITY_CONFIG_JSON:("current-json-"+$service)},
+ TEST_SECURITY_CONFIG="$(jq -c --arg service "lantern-$index" --arg image "$TEST_IMAGE" --arg buffer "$TEST_SUBSCRIBER_BUFFER" '
+  .services[$service]={image:$image,user:"501:20",environment:{LANTERN_AUTH_MODE:"oidc",LANTERN_SECURITY_CONFIG_JSON:("current-json-"+$service),LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER:$buffer},
    volumes:[{type:"volume",source:("state-"+$service),target:"/state"},{type:"volume",source:("backup-"+$service),target:"/data"}]} |
   .volumes["state-"+$service]={name:("state-"+$service)} | .volumes["backup-"+$service]={name:("backup-"+$service)}' <<<"$TEST_SECURITY_CONFIG")"
 done
@@ -752,10 +771,12 @@ docker() {
   return
  fi
  if [[ "$1" == create ]]; then
-  local arg next="" name="" nonce_value="" env_file="" src="" user_value="" network_value="" kind_value="" service_value=""
+  local arg next="" name="" nonce_value="" env_file="" user_value="" network_value="" kind_value="" service_value=""
+  local -a supplied_mounts=()
   for arg in "$@"; do
+   case "$arg" in --volumes-from|--volumes-from=*) return 88;; --volume=*) supplied_mounts+=("${arg#*=}");; esac
    case "$next" in
-    --name) name="$arg";; --user) user_value="$arg";; --network) network_value="$arg";; --env-file) env_file="$arg";; --volumes-from) src="$arg";;
+    --name) name="$arg";; --user) user_value="$arg";; --network) network_value="$arg";; --env-file) env_file="$arg";;
     --label) case "$arg" in lantern.initializer=*) nonce_value="${arg#*=}";; lantern.owner=*) kind_value="${arg#*=}";; com.docker.compose.service=*) service_value="${arg#*=}";; esac;;
    esac
    next="$arg"
@@ -763,8 +784,11 @@ docker() {
   local i=0
   if [[ "$PROFILE" == security ]]; then
    i="${service_value##*-}"
-   [[ "$name" == "$COMPOSE_PROJECT_NAME-$service_value-security-init" && "$user_value" == 501:20 && "$network_value" == "$COMPOSE_PROJECT_NAME-default" && "$src" == "$(printf '%064d' "$((i+1))")" && "$kind_value" == compose-security-initializer ]] || return 88
-   [[ "$(cat "$env_file")" == $'LANTERN_AUTH_MODE=oidc\nLANTERN_SECURITY_CONFIG_JSON=current-json-'"$service_value" ]] || return 88
+   [[ "$name" == "$COMPOSE_PROJECT_NAME-$service_value-security-init" && "$user_value" == 501:20 && "$network_value" == "$COMPOSE_PROJECT_NAME-default" && "$kind_value" == compose-security-initializer ]] || return 88
+   [[ "${#supplied_mounts[@]}" == 4 && "${supplied_mounts[0]}" == "/private/$service_value:/run/lantern-config:ro" &&
+      "${supplied_mounts[1]}" == "/private/$service_value/ntp.conf:/etc/ntp.conf:ro" &&
+      "${supplied_mounts[2]}" == "state-$service_value:/state:rw" && "${supplied_mounts[3]}" == "backup-$service_value:/data:rw" ]] || return 88
+   [[ "$(cat "$env_file")" == $'LANTERN_AUTH_MODE=oidc\nLANTERN_SECURITY_CONFIG_JSON=current-json-'"$service_value"$'\nLANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER='"$TEST_SUBSCRIBER_BUFFER" ]] || return 88
   else
    [[ "$name" == "$COMPOSE_PROJECT_NAME-volume-init" && "$user_value" == 0:0 && "$kind_value" == compose-volume-initializer ]] || return 88
   fi
@@ -824,13 +848,41 @@ docker() {
   read -r state < "$OUTDIR/state-$i"; read -r nonce_value < "$OUTDIR/nonce-$i"
  fi
  if [[ "$PROFILE" == volume ]]; then user_value=0:0; fi
- jq -nc --arg project "$COMPOSE_PROJECT_NAME" --arg svc "$svc" --arg image "$TEST_IMAGE" --arg case "$CASE" --arg profile "$PROFILE" --arg state "$state" --arg nonce "$nonce_value" --arg user "$user_value" --argjson i "$i" --argjson fail_index "$fail_index" --argjson initialized "$initialized" --argjson capabilities "$CAP_ADD_JSON" --arg oom_initial "$OOM_INITIAL_JSON" --arg oom_completed "$OOM_COMPLETED_JSON" '
+ jq -nc --arg project "$COMPOSE_PROJECT_NAME" --arg svc "$svc" --arg image "$TEST_IMAGE" --arg case "$CASE" --arg profile "$PROFILE" --arg state "$state" --arg nonce "$nonce_value" --arg user "$user_value" --arg buffer "$TEST_SUBSCRIBER_BUFFER" --argjson i "$i" --argjson fail_index "$fail_index" --argjson initialized "$initialized" --argjson capabilities "$CAP_ADD_JSON" --arg oom_initial "$OOM_INITIAL_JSON" --arg oom_completed "$OOM_COMPLETED_JSON" '
   {Id:((if $initialized then $i+11 else $i+1 end)|tostring|("0"*(64-length)) + .),
    Name:("/"+$project+"-"+$svc+(if $profile=="security" then "-security-init" else "" end)),
    Config:{Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":$svc},Image:$image,User:$user,WorkingDir:"/app",
-    Env:["LANTERN_AUTH_MODE=oidc",("LANTERN_SECURITY_CONFIG_JSON=current-json-"+$svc)],Entrypoint:["/app/lantern"],Cmd:["init-security"]},Image:$image,
-   State:{Status:$state,Running:($state=="running"),ExitCode:0},HostConfig:{NetworkMode:($project+"-default")},
-   Mounts:[{Type:"bind",Source:("/private/"+$svc),Destination:"/run/lantern-config",RW:false},{Type:"bind",Source:("/private/"+$svc+"/ntp.conf"),Destination:"/etc/ntp.conf",RW:false},{Type:"volume",Name:("state-"+$svc),Destination:"/state",RW:true}]} |
+    Env:["LANTERN_AUTH_MODE=oidc",("LANTERN_SECURITY_CONFIG_JSON=current-json-"+$svc),("LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER="+$buffer)],Entrypoint:["/app/lantern"],Cmd:["init-security"],Volumes:null},Image:$image,
+   State:{Status:$state,Running:($state=="running"),ExitCode:0},HostConfig:{NetworkMode:($project+"-default"),
+    Binds:[("/private/"+$svc+":/run/lantern-config:ro"),("/private/"+$svc+"/ntp.conf:/etc/ntp.conf:ro"),("state-"+$svc+":/state:rw"),("backup-"+$svc+":/data:rw")],Mounts:null,VolumesFrom:null,Tmpfs:null},
+   Mounts:[{Type:"bind",Source:("/private/"+$svc),Destination:"/run/lantern-config",Mode:"ro",RW:false,Propagation:"rprivate"},
+    {Type:"bind",Source:("/private/"+$svc+"/ntp.conf"),Destination:"/etc/ntp.conf",Mode:"ro",RW:false,Propagation:"rprivate"},
+    {Type:"volume",Name:("state-"+$svc),Source:("/var/lib/docker/volumes/state-"+$svc+"/_data"),Destination:"/state",Driver:"local",Mode:"rw",RW:true,Propagation:""},
+    {Type:"volume",Name:("backup-"+$svc),Source:("/var/lib/docker/volumes/backup-"+$svc+"/_data"),Destination:"/data",Driver:"local",Mode:"rw",RW:true,Propagation:""}]} |
+  if $case=="empty-mount-mechanisms" and ($initialized|not) then .HostConfig.Mounts=[] | .HostConfig.VolumesFrom=[] | .HostConfig.Tmpfs={} | .Config.Volumes={} else . end |
+  if ($initialized|not) and $i==$fail_index then
+   if $case=="wrong-original-binds-missing" then del(.HostConfig.Binds)
+   elif $case=="wrong-original-binds-null" then .HostConfig.Binds=null
+   elif $case=="wrong-original-binds-empty" then .HostConfig.Binds=[]
+   elif $case=="wrong-original-binds-object" then .HostConfig.Binds={a:.HostConfig.Binds[0]}
+   elif $case=="wrong-original-binds-string" then .HostConfig.Binds=.HostConfig.Binds[0]
+   elif $case=="wrong-original-binds-nonstring" then .HostConfig.Binds[0]=42
+   elif $case=="wrong-original-binds-empty-string" then .HostConfig.Binds[0]=""
+   elif $case=="wrong-original-binds-cr" then .HostConfig.Binds[0]+="\rforeign"
+   elif $case=="wrong-original-binds-lf" then .HostConfig.Binds[0]+="\nforeign"
+   elif $case=="wrong-original-binds-nul" then .HostConfig.Binds[0]+="\u0000foreign"
+   elif $case=="wrong-original-structured-mounts" then .HostConfig.Mounts=[{Type:"bind",Source:"/foreign",Target:"/foreign"}]
+   elif $case=="wrong-original-structured-mounts-object" then .HostConfig.Mounts={}
+   elif $case=="wrong-original-volumes-from" then .HostConfig.VolumesFrom=["foreign"]
+   elif $case=="wrong-original-volumes-from-string" then .HostConfig.VolumesFrom="foreign"
+   elif $case=="wrong-original-tmpfs" then .HostConfig.Tmpfs={"/foreign":"rw"}
+   elif $case=="wrong-original-tmpfs-array" then .HostConfig.Tmpfs=[]
+   elif $case=="wrong-original-tmpfs-string" then .HostConfig.Tmpfs="/foreign:rw"
+   elif $case=="wrong-original-tmpfs-boolean" then .HostConfig.Tmpfs=false
+   elif $case=="wrong-original-anonymous-volumes" then .Config.Volumes={"/anonymous":{}}
+   elif $case=="wrong-original-anonymous-volumes-array" then .Config.Volumes=[]
+   else . end
+  else . end |
   if $initialized then .Config.Labels += {"lantern.owner":("compose-"+$profile+"-initializer"),"com.docker.compose.oneoff":"True","lantern.initializer":$nonce} else . end |
   if $profile=="volume" then .Config.Entrypoint=["/bin/sh"] | .Config.Cmd=["-c","fixture-script","fixture","501:20","6"] |
    .HostConfig={NetworkMode:"none",ReadonlyRootfs:true,CapDrop:["ALL"],CapAdd:$capabilities} |
@@ -839,7 +891,22 @@ docker() {
    if $case=="wrong-init-image" then .Image="wrong"
    elif $case=="wrong-init-user" then .Config.User="foreign"
    elif $case=="wrong-init-env" then .Config.Env=[]
+   elif $case=="wrong-init-env-empty-unset" then .Config.Env|=map(select(startswith("LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER=")|not))
+   elif $case=="wrong-init-env-explicit-value" then .Config.Env[-1]="LANTERN_MUTATION_LOG_SUBSCRIBER_BUFFER=1"
    elif $case=="wrong-init-mount" then .Mounts=[]
+   elif $case=="wrong-init-mount-source" or ($case=="wrong-init-poststart-mount-source" and $state=="exited") then .Mounts[0].Source=("/host_mnt"+.Mounts[0].Source)
+   elif $case=="wrong-init-mount-mode" or ($case=="wrong-init-poststart-mount-mode" and $state=="exited") then .Mounts[0].Mode=""
+   elif $case=="wrong-init-mount-rw" then .Mounts[0].RW=true
+   elif $case=="wrong-init-mount-destination" then .Mounts[0].Destination="/foreign"
+   elif $case=="wrong-init-mount-type" then .Mounts[0].Type="volume"
+   elif $case=="wrong-init-mount-volume-name" then .Mounts[2].Name="foreign"
+   elif $case=="wrong-init-mount-volume-source" then .Mounts[2].Source="/foreign"
+   elif $case=="wrong-init-mount-driver" then .Mounts[2].Driver="foreign"
+   elif $case=="wrong-init-mount-propagation" then .Mounts[0].Propagation="rshared"
+   elif $case=="wrong-init-mount-extra-field" then .Mounts[0].FutureField="foreign"
+   elif $case=="wrong-init-mount-missing" then del(.Mounts[0])
+   elif $case=="wrong-init-mount-extra" then .Mounts+=[.Mounts[0]]
+   elif $case=="wrong-init-mount-duplicate-target" then .Mounts[1].Destination=.Mounts[0].Destination
    elif $case=="wrong-init-label" then .Config.Labels["lantern.owner"]="foreign"
    elif $case=="wrong-init-exit" and $state=="exited" then .State.ExitCode=23 else . end
   else . end |
@@ -919,6 +986,17 @@ exit "$result"
 					}
 				}
 				actions, _ := os.ReadFile(filepath.Join(out, "actions"))
+				if strings.HasPrefix(failure, "wrong-original-") {
+					if len(actions) != 0 {
+						t.Fatalf("unsupported original mount construction reached initializer lifecycle: %s", actions)
+					}
+					for i := range 3 {
+						if _, err := os.Stat(filepath.Join(out, fmt.Sprintf("state-%d", i))); !os.IsNotExist(err) {
+							t.Fatalf("unsupported original created initializer %d: %v", i, err)
+						}
+					}
+					return
+				}
 				failed := 1
 				if profile == "volume" {
 					failed = 0
@@ -969,14 +1047,16 @@ exit "$result"
 							t.Fatalf("missing unverified initializer custody refusal: %s", output)
 						}
 					}
-					if oomInitial != "" || strings.HasPrefix(failure, "wrong-init-hostconfig-") {
+					if oomInitial != "" || strings.HasPrefix(failure, "wrong-init-hostconfig-") ||
+						strings.HasPrefix(failure, "wrong-init-mount") || strings.HasPrefix(failure, "wrong-init-poststart-mount-") ||
+						failure == "wrong-init-env-empty-unset" || failure == "wrong-init-env-explicit-value" {
 						started := strings.Contains(string(actions), fmt.Sprintf("start %d\n", failed))
 						if started != postStartRefusal {
-							t.Fatalf("HostConfig refusal happened at the wrong lifecycle boundary: started=%t postStart=%t %s", started, postStartRefusal, actions)
+							t.Fatalf("configuration refusal happened at the wrong lifecycle boundary: started=%t postStart=%t %s", started, postStartRefusal, actions)
 						}
 						for _, action := range []string{"stop", "kill", "rm"} {
 							if strings.Contains(string(actions), fmt.Sprintf("%s %d\n", action, failed)) {
-								t.Fatalf("unverified HostConfig drift permitted %s: %s", action, actions)
+								t.Fatalf("unverified configuration drift permitted %s: %s", action, actions)
 							}
 						}
 						state, err := os.ReadFile(filepath.Join(out, fmt.Sprintf("state-%d", failed)))
@@ -985,10 +1065,10 @@ exit "$result"
 							expectedState = "exited\n"
 						}
 						if err != nil || string(state) != expectedState {
-							t.Fatalf("refused HostConfig did not retain inactive state: %v %q want %q", err, state, expectedState)
+							t.Fatalf("refused configuration did not retain inactive state: %v %q want %q", err, state, expectedState)
 						}
 						if !strings.Contains(string(output), "initializer identity unverified; container retained without signaling") {
-							t.Fatalf("missing unverified HostConfig custody refusal: %s", output)
+							t.Fatalf("missing unverified configuration custody refusal: %s", output)
 						}
 					}
 					if !strings.Contains(string(output), "initializer private evidence retained at ") {
@@ -997,5 +1077,290 @@ exit "$result"
 				}
 			})
 		}
+	}
+}
+
+func TestOwnedComposeBindIdentityProof(t *testing.T) {
+	helper, err := filepath.Abs("owned_compose.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"exact", "file-pair", "directory-pair", "two-pairs", "collapse-original", "collapse-clone", "reverse-declared", "native-service-shadow",
+		"source-comma", "source-control", "source-quote", "probe-missing-source", "proof-marker-failure",
+		"undeclared-pair", "named-volume", "writable-bind", "changed-mode", "changed-propagation", "changed-extra-field", "missing-mount", "extra-mount", "duplicate-target",
+		"wrong-image-environment", "wrong-probe-image", "wrong-probe-command", "wrong-probe-entrypoint", "wrong-probe-environment",
+		"wrong-probe-network", "wrong-probe-readonly", "wrong-probe-capabilities", "wrong-probe-privileged", "wrong-probe-security-option", "wrong-probe-limit",
+		"wrong-probe-third-source", "wrong-probe-extra-field", "wrong-probe-extra-mount", "wrong-probe-writable-mount",
+		"wrong-probe-auto-create", "wrong-probe-request-flags", "wrong-probe-request-extra-field", "wrong-probe-request-writable", "wrong-probe-binds",
+		"wrong-probe-poststart-source", "wrong-probe-poststart-command", "unequal-identity", "zero-identity", "unsupported-type", "malformed-output", "extra-output", "missing-output",
+		"original-before-drift", "clone-before-drift", "original-after-drift", "clone-after-drift", "daemon-drift", "probe-exit", "probe-disconnect", "probe-timeout", "probe-stop-failure", "probe-remove-failure", "proof-retention-failure", "INT", "TERM",
+	} {
+		t.Run(name, func(t *testing.T) {
+			const script = `set -euo pipefail
+source "$1"
+project=lantern-bench-owned-fixture; service=lantern-0; owner=501:20
+export COMPOSE_PROJECT_NAME="$project"
+image="sha256:$(printf 'a%.0s' {1..64})"
+original_id="$(printf '1%.0s' {1..64})"; clone_id="$(printf '2%.0s' {1..64})"; probe_id="$(printf '3%.0s' {1..64})"
+TEST_MAIN_PID=$BASHPID
+sleep() { command sleep 0.005; }
+original="$(jq -nc --arg project "$project" --arg image "$image" --arg id "$original_id" '
+ {Id:$id,Name:("/"+$project+"-lantern-0-1"),Image:$image,
+  Config:{User:"501:20",WorkingDir:"/app",Entrypoint:["/app/lantern"],Cmd:null,
+   Env:["LANTERN_AUTH_MODE=oidc","LANTERN_SECURITY_CONFIG_JSON=secret-value"],
+   Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":"lantern-0"}},
+  State:{Status:"created",Running:false},HostConfig:{NetworkMode:($project+"-default"),Memory:0},
+  Mounts:[{Type:"bind",Source:"/declared/private",Destination:"/run/lantern-config",Mode:"ro",RW:false,Propagation:"rprivate"},
+   {Type:"bind",Source:"/declared/private/ntp.conf",Destination:"/etc/ntp.conf",Mode:"ro",RW:false,Propagation:"rprivate"},
+   {Type:"volume",Name:"state-0",Source:"/var/lib/docker/volumes/state-0/_data",Destination:"/state",Driver:"local",Mode:"rw",RW:true,Propagation:""}]}')"
+initialized="$(jq -c --arg id "$clone_id" --arg case "$CASE" '
+ .Id=$id | .Name+="-security-init" | .Config.Cmd=["init-security"] |
+ if $case!="exact" then .Mounts[1].Source="/mapped/private/ntp.conf" else . end |
+ if $case=="directory-pair" then .Mounts[1].Source="/declared/private/ntp.conf" | .Mounts[0].Source="/mapped/private"
+ elif $case=="two-pairs" then .Mounts[0].Source="/mapped/private"
+ elif $case=="named-volume" then .Mounts[1].Source="/declared/private/ntp.conf" | .Mounts[2].Source="/foreign-volume"
+ elif $case=="changed-mode" then .Mounts[1].Mode=""
+ elif $case=="changed-propagation" then .Mounts[1].Propagation="rshared"
+ elif $case=="changed-extra-field" then .Mounts[1].FutureField="unknown"
+ elif $case=="source-comma" then .Mounts[1].Source="/mapped/private,other"
+ elif $case=="source-control" then .Mounts[1].Source="/mapped/private\tother"
+ elif $case=="source-quote" then .Mounts[1].Source="/mapped/private\"other"
+ elif $case=="missing-mount" then del(.Mounts[0])
+ elif $case=="extra-mount" then .Mounts+=[.Mounts[0]]
+ elif $case=="duplicate-target" then .Mounts[0].Destination="/etc/ntp.conf"
+ else . end' <<<"$original")"
+if [[ "$CASE" == writable-bind ]]; then
+ original="$(jq -c '.Mounts[1].RW=true' <<<"$original")"
+ initialized="$(jq -c '.Mounts[1].RW=true' <<<"$initialized")"
+fi
+configuration="$(jq -nc --arg case "$CASE" '
+ {services:{"lantern-0":{volumes:[{type:"bind",source:"/declared/private",target:"/run/lantern-config",read_only:true},
+  {type:"bind",source:(if $case=="reverse-declared" then "/mapped/private/ntp.conf" elif $case=="undeclared-pair" then "/third/private/ntp.conf" else "/declared/private/ntp.conf" end),target:"/etc/ntp.conf",read_only:true}]}}}')"
+printf '%s\n' "$original" > "$OUTDIR/original.json"
+printf '%s\n' "$initialized" > "$OUTDIR/clone.json"
+if [[ "$CASE" == native-service-shadow ]]; then service=lantern-0-security-init; fi
+initializer_command() { "$@"; }
+echo() {
+ if [[ "$CASE" == proof-marker-failure && "$1" == read-only\ bind\ proof* ]]; then return 21; fi
+ command echo "$@"
+}
+cp() {
+ if [[ "$CASE" == proof-retention-failure && "$1" == */created.json ]]; then return 21; fi
+ command cp "$@"
+}
+docker() {
+ if [[ "$1" == info ]]; then
+  local n=0; [[ ! -f "$OUTDIR/info-count" ]] || read -r n < "$OUTDIR/info-count"
+  n=$((n+1)); printf '%s\n' "$n" > "$OUTDIR/info-count"
+  if [[ "$CASE" == daemon-drift && "$n" == 2 ]]; then printf 'other-daemon\n'; else printf 'same-daemon\n'; fi
+  return
+ fi
+ if [[ "$1" == image ]]; then
+  if [[ "$CASE" == wrong-image-environment ]]; then printf '["LANTERN_SECURITY_CONFIG_JSON=secret-value"]\n'; else printf '["PATH=/usr/bin:/bin"]\n'; fi
+  return
+ fi
+ if [[ "$1" == create ]]; then
+  printf 'create\n' >> "$OUTDIR/actions"
+  local a previous="" name="" user="" entrypoint="" nonce="" label_service="" label_kind="" args
+  local -a bindings=()
+  args="$(jq -nc --args '$ARGS.positional' -- "$@")"
+  jq -e --arg image "$image" --argjson targets "$bind_probe_targets" '
+   index($image) as $i | .[$i+1:]==(["stat","-c","%d:%i:%F"]+$targets) and
+   (index("--env-file")==null) and all(.[]; (startswith("--volume") or contains("bind-create-src"))|not) and
+   (index("--network") as $n | .[$n+1]=="none") and
+   (index("--read-only")!=null) and (index("--cap-drop") as $n | .[$n+1]=="ALL") and
+   (index("--security-opt") as $n | .[$n+1]=="no-new-privileges:true") and
+   (index("--memory") as $n | .[$n+1]=="32m") and (index("--cpus") as $n | .[$n+1]=="0.25") and
+   (index("--pids-limit") as $n | .[$n+1]=="16")' <<<"$args" >/dev/null || return 88
+  for a in "$@"; do
+   case "$previous" in --name) name="$a";; --user) user="$a";; --entrypoint) entrypoint="$a";; --label)
+    case "$a" in lantern.initializer=*) nonce="${a#*=}";; lantern.owner=*) label_kind="${a#*=}";; com.docker.compose.service=*) label_service="${a#*=}";; esac;; esac
+   case "$a" in --mount=*) bindings+=("${a#*=}");; esac
+   previous="$a"
+  done
+  [[ "$name" == "$project-lantern-0-bind-proof" && "$user" == 501:20 && "$entrypoint" == /bin/busybox && "$label_service" == lantern-0-bind-proof && "$label_kind" == compose-bind-identity-probe && "$nonce" == lantern-owned-init.* ]] || return 88
+  [[ "$(jq -nc --args '$ARGS.positional' -- "${bindings[@]}")" == "$(jq -c '[to_entries[]|.key as $i|.value as $p|
+   ("type=bind,source="+$p.original_source+",target=/proof/original-"+($i|tostring)+",readonly,bind-propagation=rprivate"),
+   ("type=bind,source="+$p.clone_source+",target=/proof/clone-"+($i|tostring)+",readonly,bind-propagation=rprivate")]' <<<"$bind_proof_plan")" ]] || return 88
+  [[ "$CASE" != probe-missing-source ]] || return 83
+  jq -nc --arg project "$project" --arg image "$image" --arg id "$probe_id" --arg nonce "$nonce" --argjson targets "$bind_probe_targets" --argjson bindings "$(jq -nc --args '$ARGS.positional' -- "${bindings[@]}")" '
+   ($bindings|map(split(",")|{Type:"bind",Source:.[1][7:],Target:.[2][7:],ReadOnly:true,BindOptions:{Propagation:"rprivate"}})) as $requests |
+   {Id:$id,Name:("/"+$project+"-lantern-0-bind-proof"),Image:$image,
+    Config:{Image:$image,User:"501:20",Entrypoint:["/bin/busybox"],Cmd:(["stat","-c","%d:%i:%F"]+$targets),Env:["PATH=/usr/bin:/bin"],Volumes:null,
+     Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":"lantern-0-bind-proof","com.docker.compose.oneoff":"True","lantern.owner":"compose-bind-identity-probe","lantern.initializer":$nonce}},
+    HostConfig:{NetworkMode:"none",ReadonlyRootfs:true,Privileged:false,AutoRemove:false,CapDrop:["ALL"],CapAdd:null,SecurityOpt:["no-new-privileges:true"],Memory:33554432,NanoCpus:250000000,PidsLimit:16,
+     Binds:null,Mounts:$requests,VolumesFrom:null,Tmpfs:null,Devices:null,DeviceRequests:null,DeviceCgroupRules:null,PidMode:"",UTSMode:"",UsernsMode:"",PublishAllPorts:false,PortBindings:{},RestartPolicy:{Name:"no",MaximumRetryCount:0}},
+    Mounts:[$requests[]|{Type:"bind",Source:.Source,Destination:.Target,Mode:"",RW:false,Propagation:"rprivate"}]}' > "$OUTDIR/probe.json"
+  printf 'created\n' > "$OUTDIR/probe-state"; printf '%s\n' "$probe_id"; return
+ fi
+ local target="${@: -1}" state=created
+ if [[ "$1" == inspect && ( "$target" == "$original_id" || "$target" == "$clone_id" ) ]]; then
+  local role=original n=0; [[ "$target" != "$clone_id" ]] || role=clone
+  [[ ! -f "$OUTDIR/$role-count" ]] || read -r n < "$OUTDIR/$role-count"
+  n=$((n+1)); printf '%s\n' "$n" > "$OUTDIR/$role-count"
+  jq -c --arg case "$CASE" --arg role "$role" --argjson n "$n" '
+   if ($case==($role+"-before-drift") and $n==1) or ($case==($role+"-after-drift") and $n==2) then .HostConfig.Memory=1024 else . end' "$OUTDIR/$role.json"
+  return
+ fi
+ [[ "$target" == "$probe_id" || "$target" == "$project-lantern-0-bind-proof" ]] || return 86
+ [[ -f "$OUTDIR/probe-state" ]] || return 1
+ read -r state < "$OUTDIR/probe-state"
+ case "$1" in
+  start)
+   printf 'start\n' >> "$OUTDIR/actions"
+   if [[ "$CASE" == probe-disconnect || "$CASE" == probe-timeout || "$CASE" == probe-stop-failure || "$CASE" == INT || "$CASE" == TERM ]]; then
+    printf 'running\n' > "$OUTDIR/probe-state"
+    if [[ "$CASE" == INT || "$CASE" == TERM ]]; then kill -"$CASE" "$TEST_MAIN_PID"; while :; do command sleep 1; done; fi
+    if [[ "$CASE" == probe-timeout ]]; then while :; do command sleep 1; done; fi
+    return 17
+   fi
+   printf 'exited\n' > "$OUTDIR/probe-state"
+   [[ "$CASE" != probe-exit ]] || return 17
+   jq -r --arg case "$CASE" '
+    to_entries[]|.key as $i|.value.expected_type as $type|
+    ("5:"+(($i+100)|tostring)+":"+$type),
+    (if $case=="unequal-identity" then "5:999:"+$type elif $case=="zero-identity" then "0:0:"+$type elif $case=="unsupported-type" then "5:100:symbolic link" elif $case=="malformed-output" then "garbage" else "5:"+(($i+100)|tostring)+":"+$type end)
+   ' <<<"$bind_proof_plan" > "$OUTDIR/stat-output"
+   if [[ "$CASE" == extra-output ]]; then printf 'garbage\n' >> "$OUTDIR/stat-output"; fi
+   if [[ "$CASE" == missing-output ]]; then sed '$d' "$OUTDIR/stat-output"; else cat "$OUTDIR/stat-output"; fi
+   return;;
+  stop) printf 'stop\n' >> "$OUTDIR/actions"; [[ "$CASE" != probe-stop-failure ]] || return 19; printf 'exited\n' > "$OUTDIR/probe-state"; return;;
+  kill) printf 'kill\n' >> "$OUTDIR/actions"; printf 'exited\n' > "$OUTDIR/probe-state"; return;;
+  wait) printf 'wait\n' >> "$OUTDIR/actions"; printf '0\n'; return;;
+  logs) printf 'logs\n' >> "$OUTDIR/actions"; return;;
+  rm) printf 'rm\n' >> "$OUTDIR/actions"; [[ "$CASE" != probe-remove-failure ]] || return 19; rm "$OUTDIR/probe-state"; return;;
+  inspect) ;;
+  *) return 86;;
+ esac
+ jq -c --arg case "$CASE" --arg state "$state" --argjson plan "$bind_proof_plan" '
+  .State={Status:$state,Running:($state=="running"),ExitCode:(if $case=="probe-exit" then 17 else 0 end)} |
+  if $case=="collapse-original" or $case=="collapse-clone" then
+   .Mounts|=map(. as $m|($m.Destination|capture("-(?<i>[01])$").i|tonumber) as $i|
+    .Source=(if $case=="collapse-original" then $plan[$i].original_source else $plan[$i].clone_source end)) |
+   .Mounts as $actual | .HostConfig.Mounts|=map(. as $r|.Source=([$actual[]|select(.Destination==$r.Target)][0].Source)) else . end |
+  if $case=="wrong-probe-image" then .Image="foreign"
+  elif $case=="wrong-probe-command" or ($case=="wrong-probe-poststart-command" and $state=="exited") then .Config.Cmd=["sh"]
+  elif $case=="wrong-probe-entrypoint" then .Config.Entrypoint=["/bin/sh"]
+  elif $case=="wrong-probe-environment" then .Config.Env+=["LANTERN_SECURITY_CONFIG_JSON=secret-value"]
+  elif $case=="wrong-probe-network" then .HostConfig.NetworkMode="host"
+  elif $case=="wrong-probe-readonly" then .HostConfig.ReadonlyRootfs=false
+  elif $case=="wrong-probe-capabilities" then .HostConfig.CapAdd=["SYS_ADMIN"]
+  elif $case=="wrong-probe-privileged" then .HostConfig.Privileged=true
+  elif $case=="wrong-probe-security-option" then .HostConfig.SecurityOpt=[]
+  elif $case=="wrong-probe-limit" then .HostConfig.Memory=0
+  elif $case=="wrong-probe-third-source" or ($case=="wrong-probe-poststart-source" and $state=="exited") then .Mounts[0].Source="/third/path" | .HostConfig.Mounts[0].Source="/third/path"
+  elif $case=="wrong-probe-extra-field" then .Mounts[0].FutureField="unknown"
+  elif $case=="wrong-probe-extra-mount" then .Mounts+=[.Mounts[0]]
+  elif $case=="wrong-probe-writable-mount" then .Mounts[0].RW=true
+  elif $case=="wrong-probe-auto-create" then .HostConfig.Mounts[0].BindOptions.CreateMountpoint=true
+  elif $case=="wrong-probe-request-flags" then .HostConfig.Mounts[0].BindOptions.NonRecursive=true
+  elif $case=="wrong-probe-request-extra-field" then .HostConfig.Mounts[0].FutureField="unknown"
+  elif $case=="wrong-probe-request-writable" then .HostConfig.Mounts[0].ReadOnly=false
+  elif $case=="wrong-probe-binds" then .HostConfig.Binds=["/other:/proof/original-0:ro"]
+  else . end' "$OUTDIR/probe.json"
+}
+trap 'printf "old INT\n" >> "$OUTDIR/traps"' INT
+trap 'printf "old TERM\n" >> "$OUTDIR/traps"' TERM
+if validate_owned_compose_security_initializer; then printf 'native-admitted\n' >> "$OUTDIR/actions"; result=0; else result=$?; fi
+[[ "$(trap -p INT)" == *"old INT"* && "$(trap -p TERM)" == *"old TERM"* ]] || exit 95
+exit "$result"
+`
+			fixture := runOwnedComposeFixture(t, script, []string{helper}, []string{"CASE=" + name}, 15*time.Second)
+			if !fixture.controlQualified() {
+				t.Fatalf("proof fixture custody failed: %v %s\n%s", fixture.controlErr, fixture.output, ownedComposeFixtureDiagnostics(fixture.directory))
+			}
+			accepted := name == "exact" || name == "file-pair" || name == "directory-pair" || name == "two-pairs" || name == "collapse-original" || name == "collapse-clone" || name == "reverse-declared" || name == "native-service-shadow"
+			if (fixture.commandErr == nil) != accepted {
+				t.Fatalf("admission=%v accepted=%t: %s", fixture.commandErr, accepted, fixture.output)
+			}
+			actions, _ := os.ReadFile(filepath.Join(fixture.directory, "actions"))
+			if strings.Contains(string(fixture.output), "secret-value") {
+				t.Fatal("owner credential data appeared in diagnostics")
+			}
+			if strings.Contains(string(actions), "native-admitted") != accepted {
+				t.Fatalf("unproved native admission: %s", actions)
+			}
+			if name == "exact" {
+				if string(actions) != "native-admitted\n" {
+					t.Fatalf("exact fast path invoked a probe: %s", actions)
+				}
+				return
+			}
+			if strings.Count(string(actions), "create\n") > 1 {
+				t.Fatalf("proof retried: %s", actions)
+			}
+			beforeProbe := name == "undeclared-pair" || name == "named-volume" || name == "writable-bind" ||
+				strings.HasPrefix(name, "changed-") || name == "missing-mount" || name == "extra-mount" || name == "duplicate-target" ||
+				strings.HasPrefix(name, "source-") || name == "proof-marker-failure" ||
+				name == "wrong-image-environment" || name == "original-before-drift" || name == "clone-before-drift"
+			if beforeProbe && strings.Contains(string(actions), "create\n") {
+				t.Fatalf("unrelated owner/mount difference reached a probe: %s", actions)
+			}
+			if strings.HasPrefix(name, "wrong-probe-") && !strings.HasPrefix(name, "wrong-probe-poststart-") {
+				state, err := os.ReadFile(filepath.Join(fixture.directory, "probe-state"))
+				if strings.Count(string(actions), "create\n") != 1 || err != nil || string(state) != "created\n" {
+					t.Fatalf("probe admission refusal did not reach the created object: %v %q %s", err, state, actions)
+				}
+				for _, action := range []string{"start", "stop", "kill", "rm"} {
+					if strings.Contains(string(actions), action+"\n") {
+						t.Fatalf("unverified probe permitted %s: %s", action, actions)
+					}
+				}
+			}
+			if name == "probe-missing-source" && strings.Contains(string(actions), "start\n") {
+				t.Fatalf("missing source reached probe start: %s", actions)
+			}
+			if !beforeProbe && !strings.HasPrefix(name, "wrong-probe-") && name != "probe-missing-source" || strings.HasPrefix(name, "wrong-probe-poststart-") {
+				if strings.Count(string(actions), "start\n") != 1 {
+					t.Fatalf("post-start proof contract refused at an earlier boundary: %s", actions)
+				}
+			}
+			if strings.HasPrefix(name, "wrong-probe-poststart-") {
+				for _, action := range []string{"stop", "kill", "rm"} {
+					if strings.Contains(string(actions), action+"\n") {
+						t.Fatalf("unverified probe drift authorized %s: %s", action, actions)
+					}
+				}
+			}
+			if name == "probe-disconnect" || name == "probe-timeout" || name == "probe-stop-failure" || name == "INT" || name == "TERM" {
+				for _, action := range []string{"stop", "wait", "logs"} {
+					if !strings.Contains(string(actions), action+"\n") {
+						t.Fatalf("owned probe lacked failure custody %s: %s", action, actions)
+					}
+				}
+				if name == "probe-stop-failure" && !strings.Contains(string(actions), "kill\n") {
+					t.Fatalf("owned failed stop lacked kill fallback: %s", actions)
+				}
+				state, err := os.ReadFile(filepath.Join(fixture.directory, "probe-state"))
+				if err != nil || string(state) != "exited\n" {
+					t.Fatalf("probe inactivity unproved: %v %q", err, state)
+				}
+			}
+			if name == "INT" || name == "TERM" {
+				expected := 130
+				if name == "TERM" {
+					expected = 143
+				}
+				if fixture.exitCode != expected {
+					t.Fatalf("probe interruption=%d want=%d", fixture.exitCode, expected)
+				}
+			}
+			if accepted {
+				if strings.Count(string(actions), "start\n") != 1 || strings.Count(string(actions), "rm\n") != 1 {
+					t.Fatalf("missing bounded probe lifecycle: %s", actions)
+				}
+				dirs, _ := filepath.Glob(filepath.Join(fixture.directory, "lantern-bind-proof.*"))
+				if len(dirs) != 1 {
+					t.Fatalf("proof evidence not retained: %v", dirs)
+				}
+				for _, file := range []string{"requested-pairs.json", "original-before.json", "clone-before.json", "original-after.json", "clone-after.json", "probe-created.json", "probe-completed.json", "probe-output.log", "identity.json", "proof.json"} {
+					info, err := os.Lstat(filepath.Join(dirs[0], file))
+					if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+						t.Fatalf("missing private proof %s: %v", file, err)
+					}
+				}
+			}
+		})
 	}
 }

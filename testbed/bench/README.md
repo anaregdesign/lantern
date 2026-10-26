@@ -148,6 +148,15 @@ done
 
 ## Local pre-tag qualification
 
+Owned security initialization keeps exact Env and mount checks. If only a
+read-only bind Source differs across Docker's host/VM boundary, a fixed
+network-free BusyBox metadata probe must prove the same effective device,
+inode and expected file type for the declared/original/clone source pair.
+Other differences fail closed; no path-prefix alias is assumed. Owner and
+probe snapshots plus the bounded result remain in private
+`lantern-bind-proof.*` evidence after initialization. This setup proof neither
+starts serving nor qualifies time, providers or workload performance.
+
 Protected receipt preparation builds the same-source original-authority exporter
 for the pinned Linux image's architecture and runs it in a separate, network-free
 provisioning container. This preserves the Linux time-profile binding when the
