@@ -143,12 +143,30 @@ run_owned_compose_initializer() {
   trap 'interrupted=143; [[ -z "$supervisor" ]] || kill -TERM "$supervisor" 2>/dev/null || true' TERM
   (
     local private="" nonce="" initializer="${project}-${service}" initializer_id="" command_pid="" initialized="" baseline="" initializer_message_fd
+    local initializer_launching=0 initializer_pending_signal=0
     local -a environment_args=()
     umask 077
     exec {initializer_message_fd}>&2
+    initializer_interrupted() {
+      # Publish custody before EXIT can inspect command_pid. A signal arriving
+      # in this small launch window is honored immediately after registration.
+      if (( initializer_launching != 0 )); then
+        if (( initializer_pending_signal == 0 )); then initializer_pending_signal="$1"; fi
+      else exit "$1"; fi
+    }
     initializer_command() {
       local round result=0 limit="${initializer_command_rounds:-300}"
-      "$@" & command_pid=$!
+      initializer_launching=1
+      # Close only the extra diagnostic descriptor in the asynchronous child;
+      # preserve the same command/PID and its existing private stdout/stderr.
+      "$@" {initializer_message_fd}>&- &
+      command_pid=$!
+      initializer_launching=0
+      if (( initializer_pending_signal != 0 )); then
+        local pending_status="$initializer_pending_signal"
+        initializer_pending_signal=0
+        exit "$pending_status"
+      fi
       for ((round=0; round<limit; round++)); do
         kill -0 "$command_pid" 2>/dev/null || break
         sleep 0.1
@@ -237,7 +255,7 @@ run_owned_compose_initializer() {
       exit "$exit_status"
     }
     trap finish_initializer EXIT
-    trap 'exit 130' INT; trap 'exit 143' TERM
+    trap 'initializer_interrupted 130' INT; trap 'initializer_interrupted 143' TERM
     [[ "$project" == "${COMPOSE_PROJECT_NAME:-}" && "$image" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
     private="$(mktemp -d "${TMPDIR:-/tmp}/lantern-owned-init.XXXXXXXX")" || exit 1
     nonce="${private##*/}"
@@ -328,7 +346,7 @@ initialize_owned_compose_security() {
     original="${originals[$index]}"; container="${containers[$index]}"
     network="$(jq -er '.HostConfig.NetworkMode|select(type=="string" and length>0)' <<<"$original")" || return 1
     run_owned_compose_initializer "$project" "$image" "$owner" compose-security-initializer "${service}-security-init" 900 validate_owned_compose_security_initializer \
-      --network "$network" --volumes-from "$container" --entrypoint /app/lantern "$image" init-security || return 1
+      --network "$network" --volumes-from "$container" --entrypoint /app/lantern "$image" init-security || return "$?"
     index=$((index + 1))
   done
 }
