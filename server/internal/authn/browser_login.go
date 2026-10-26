@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"time"
 
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 	"github.com/anaregdesign/lantern/server/internal/oidc"
 	"github.com/anaregdesign/lantern/server/internal/security"
 )
@@ -25,25 +26,42 @@ func (w *Workflow) BeginLogin(ctx context.Context, request LoginRequest) (oidc.L
 		replaces = request.Previous.Authentication().SessionDigest
 	}
 	i, cut, err := w.current.LoginIssuer(ctx, request.Issuer)
-	if err != nil || !i.BrowserEnabled() {
+	if err != nil {
+		traceBrowserDecision("login_start", "issuer")
+		return oidc.LoginStart{}, ErrUnauthenticated
+	}
+	if !i.BrowserEnabled() {
+		traceBrowserDecision("login_start", "issuer_browser_disabled")
 		return oidc.LoginStart{}, ErrUnauthenticated
 	}
 	d, err := w.oidc.Fetcher.Discover(ctx, i)
 	if err != nil {
+		traceBrowserDecision("login_start", "discovery")
 		return oidc.LoginStart{}, ErrUnavailable
 	}
 	_, after, err := w.current.LoginIssuer(ctx, i.URL)
-	if err != nil || after != cut {
+	if err != nil {
+		traceBrowserDecision("login_start", "issuer_after_discovery")
+		return oidc.LoginStart{}, ErrUnavailable
+	}
+	if after != cut {
+		traceBrowserDecision("login_start", "cut_after_discovery")
 		return oidc.LoginStart{}, ErrUnavailable
 	}
 	start, err := w.oidc.Logins.Begin(oidc.Trust{Issuer: i, Generation: cut.Generation, ConfigRevision: i.ConfigRevision}, d, request.ReturnPath, replaces, false)
 	if err != nil {
+		traceBrowserDecision("login_start", "transaction")
 		return oidc.LoginStart{}, ErrInvalidInput
 	}
 	if w.current.BindLoginOutput(ctx, cut, i.URL) != nil {
+		traceBrowserDecision("login_start", "output")
 		return oidc.LoginStart{}, ErrUnavailable
 	}
 	return start, nil
+}
+
+func traceBrowserDecision(stage, reason string) {
+	decisiontrace.Emit(decisiontrace.Event{Kind: "browser_decision", Stage: stage, Reason: reason})
 }
 
 // CallbackInput is untrusted, bounded transport input. Only Consume and the

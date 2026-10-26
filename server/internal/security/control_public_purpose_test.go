@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
 func TestCurrentPublicPurposeExactAttemptDoesNotRefreshSessionOrCut(t *testing.T) {
@@ -80,5 +82,38 @@ func TestCurrentPublicPurposeExactAttemptDoesNotRefreshSessionOrCut(t *testing.T
 	}
 	if replay, err := o.Apply(ctx, review, nil, [32]byte{}); err != nil || replay.Original != result.Original {
 		t.Fatal("retained result demanded new reauthentication", err)
+	}
+}
+
+func TestCurrentPublicPurposeDiagnosticPreservesTicketAndContextRefusal(t *testing.T) {
+	_, origins, _ := authorityTestComposite(t)
+	o := &CurrentAuthority{origin: origins[1]}
+	ctx := s3aTestContext(t)
+	if err := o.origin.network.renewAuthority(ctx); err != nil {
+		t.Fatal(err)
+	}
+	capture := decisiontrace.Start(32)
+	if capture == nil {
+		t.Fatal("capture already owned")
+	}
+	defer capture.Stop()
+	if _, err := o.PurposeNotBefore(ctx, [32]byte{99}); err != ErrOperationAuthorization {
+		t.Fatal("diagnostic changed unknown-ticket rejection", err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := o.PurposeNotBefore(canceled, [32]byte{99}); err != context.Canceled {
+		t.Fatal("diagnostic changed context rejection", err)
+	}
+	capture.Stop()
+	events, dropped := capture.Drain()
+	var reasons []string
+	for _, event := range events {
+		if event.Kind == "browser_decision" && event.Stage == "purpose_not_before" {
+			reasons = append(reasons, event.Reason)
+		}
+	}
+	if dropped != 0 || len(reasons) != 2 || reasons[0] != "ticket_unknown" || reasons[1] != "context_canceled" {
+		t.Fatal("collapsed public purpose refusals lost their actual reason", reasons, dropped)
 	}
 }

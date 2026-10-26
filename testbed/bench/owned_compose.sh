@@ -72,7 +72,7 @@ initialize_owned_compose_volumes() {
     [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ && $'\n'"$existing"$'\n' != *$'\n'"$name"$'\n'* ]] || return 1
   done
   docker compose "$@" create lantern-0 lantern-1 lantern-2 >/dev/null || return 1
-  local service container identity volumes volume label wanted seen="|" index=0
+  local service container identity volumes volume label wanted seen="|" index=0 expected_mounts='[]' volume_runtime_owner="$owner"
   local -a mounts=()
   for service in lantern-0 lantern-1 lantern-2; do
     container="$(docker compose "$@" ps -aq "$service")" || return 1
@@ -96,6 +96,7 @@ initialize_owned_compose_volumes() {
       [[ "$label" == "$project" ]] || return 1
       seen+="$volume|"
       mounts+=(--mount "type=volume,source=$volume,target=/owned/$index,volume-nocopy")
+      expected_mounts="$(jq -c --arg volume "$volume" --arg target "/owned/$index" '.+[{Name:$volume,Destination:$target,RW:true,Type:"volume"}]' <<<"$expected_mounts")" || return 1
       index=$((index + 1))
     done
   done
@@ -103,9 +104,10 @@ initialize_owned_compose_volumes() {
   # Image copy-up preserves private /state ownership and mode 0700. Permit
   # read/search for the complete emptiness check before any ownership change;
   # DAC_READ_SEARCH does not bypass write permissions like DAC_OVERRIDE.
-  docker run --rm --pull=never --network=none --read-only --user 0:0 \
+  run_owned_compose_initializer "$project" "$image" 0:0 compose-volume-initializer volume-init 300 validate_owned_compose_volume_initializer \
+    --network=none --read-only \
     --cap-drop=ALL --cap-add=CHOWN --cap-add=DAC_READ_SEARCH --pids-limit=64 --memory=64m \
-    --label=lantern.owner=compose-volume-initializer --entrypoint /bin/sh \
+    --entrypoint /bin/sh \
     "${mounts[@]}" "$image" -c '
       set -eu
       case "$2" in 6|9) ;; *) exit 2 ;; esac
@@ -128,4 +130,223 @@ initialize_owned_compose_volumes() {
         index=$((index + 1))
       done
     ' fixture "$owner" "$expected_count"
+}
+
+# Both preparers below create a stopped, identity-checked daemon object before
+# any write starts. The same bounded supervisor owns normal exit and failure.
+run_owned_compose_initializer() {
+  local project="$1" image="$2" owner="$3" kind="$4" service="$5" start_rounds="$6" validator="$7"
+  shift 7
+  local supervisor="" interrupted=0 status previous_int previous_term
+  previous_int="$(trap -p INT)"; previous_term="$(trap -p TERM)"
+  trap 'interrupted=130; [[ -z "$supervisor" ]] || kill -TERM "$supervisor" 2>/dev/null || true' INT
+  trap 'interrupted=143; [[ -z "$supervisor" ]] || kill -TERM "$supervisor" 2>/dev/null || true' TERM
+  (
+    local private="" nonce="" initializer="${project}-${service}" initializer_id="" command_pid="" initialized="" baseline="" initializer_message_fd
+    local initializer_launching=0 initializer_pending_signal=0
+    local -a environment_args=()
+    umask 077
+    exec {initializer_message_fd}>&2
+    initializer_interrupted() {
+      # Publish custody before EXIT can inspect command_pid. A signal arriving
+      # in this small launch window is honored immediately after registration.
+      if (( initializer_launching != 0 )); then
+        if (( initializer_pending_signal == 0 )); then initializer_pending_signal="$1"; fi
+      else exit "$1"; fi
+    }
+    initializer_command() {
+      local round result=0 limit="${initializer_command_rounds:-300}"
+      initializer_launching=1
+      # Close only the extra diagnostic descriptor in the asynchronous child;
+      # preserve the same command/PID and its existing private stdout/stderr.
+      "$@" {initializer_message_fd}>&- &
+      command_pid=$!
+      initializer_launching=0
+      if (( initializer_pending_signal != 0 )); then
+        local pending_status="$initializer_pending_signal"
+        initializer_pending_signal=0
+        exit "$pending_status"
+      fi
+      for ((round=0; round<limit; round++)); do
+        kill -0 "$command_pid" 2>/dev/null || break
+        sleep 0.1
+      done
+      if kill -0 "$command_pid" 2>/dev/null; then
+        kill -TERM "$command_pid" 2>/dev/null || true
+        for round in {1..20}; do
+          kill -0 "$command_pid" 2>/dev/null || break
+          sleep 0.1
+        done
+        kill -KILL "$command_pid" 2>/dev/null || true
+        result=124
+      fi
+      wait "$command_pid" || result=$?
+      command_pid=""
+      return "$result"
+    }
+    initializer_identity() {
+      jq -e --arg project "$project" --arg service "${service%-security-init}" --arg image "$image" --arg owner "$owner" --arg name "$initializer" --arg kind "$kind" --arg nonce "$nonce" '
+        (.Id|test("^[0-9a-f]{64}$")) and .Name==("/"+$name) and
+        .Config.Labels["com.docker.compose.project"]==$project and
+        .Config.Labels["com.docker.compose.service"]==$service and
+        .Config.Labels["com.docker.compose.oneoff"]=="True" and
+        .Config.Labels["lantern.owner"]==$kind and .Config.Labels["lantern.initializer"]==$nonce and
+        .Config.User==$owner and .Image==$image
+      ' <<<"$initialized" >/dev/null
+    }
+    initializer_fingerprint() {
+      jq -Sc '{Id,Name,Image,Config,HostConfig,Mounts:(.Mounts|sort_by(.Destination))}' <<<"$initialized"
+    }
+    initializer_matches() {
+      initializer_identity && [[ -n "$baseline" && "$(initializer_fingerprint)" == "$baseline" ]]
+    }
+    finish_initializer() {
+      local exit_status=$? target
+      trap - EXIT; trap '' INT TERM
+      if [[ -n "$command_pid" ]]; then
+        kill -TERM "$command_pid" 2>/dev/null || true
+        kill -KILL "$command_pid" 2>/dev/null || true
+        wait "$command_pid" 2>/dev/null || true
+        command_pid=""
+      fi
+      if [[ -n "$private" && -n "$initializer" ]]; then
+        target="${initializer_id:-$initializer}"
+        if initializer_command docker inspect --format '{{json .}}' "$target" > "$private/terminal-inspect.json"; then
+          initialized="$(cat "$private/terminal-inspect.json")"
+          if initializer_matches; then
+            if jq -e '.State.Running==true' <<<"$initialized" >/dev/null; then
+              initializer_command docker stop --time 10 "$initializer_id" > "$private/stop.log" 2>&1 || exit_status=1
+            fi
+            if ! initializer_command docker inspect --format '{{json .}}' "$initializer_id" > "$private/terminal-inspect.json"; then
+              exit_status=1
+            else
+              initialized="$(cat "$private/terminal-inspect.json")"
+              if initializer_matches && jq -e '.State.Running==true' <<<"$initialized" >/dev/null; then
+                initializer_command docker kill --signal KILL "$initializer_id" > "$private/kill.log" 2>&1 || exit_status=1
+                if initializer_command docker inspect --format '{{json .}}' "$initializer_id" > "$private/terminal-inspect.json"; then
+                  initialized="$(cat "$private/terminal-inspect.json")"
+                else
+                  exit_status=1
+                fi
+              fi
+              if ! initializer_matches || ! jq -e '.State.Running==false and (.State.Status=="exited" or .State.Status=="created")' <<<"$initialized" >/dev/null; then
+                echo 'initializer terminal inactivity could not be verified' >&"$initializer_message_fd"
+                exit_status=1
+              elif jq -e '.State.Status=="exited"' <<<"$initialized" >/dev/null; then
+                initializer_command docker wait "$initializer_id" > "$private/wait.log" 2>&1 || exit_status=1
+              fi
+            fi
+            initializer_command docker logs "$initializer_id" > "$private/initializer.log" 2>&1 || exit_status=1
+          else
+            # An unsuccessful create cannot run native code. An identity or
+            # fingerprint mismatch never authorizes stopping a foreign object.
+            echo 'initializer identity unverified; container retained without signaling' >&"$initializer_message_fd"
+            exit_status=1
+          fi
+        elif [[ -n "$initializer_id" ]]; then
+          echo 'initializer terminal state could not be verified' >&"$initializer_message_fd"
+          exit_status=1
+        fi
+      fi
+      if [[ -n "$private" ]]; then
+        if (( exit_status == 0 )); then rm -r -- "$private" || exit_status=1
+        else echo "initializer private evidence retained at $private" >&"$initializer_message_fd"; fi
+      fi
+      exit "$exit_status"
+    }
+    trap finish_initializer EXIT
+    trap 'initializer_interrupted 130' INT; trap 'initializer_interrupted 143' TERM
+    [[ "$project" == "${COMPOSE_PROJECT_NAME:-}" && "$image" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+    private="$(mktemp -d "${TMPDIR:-/tmp}/lantern-owned-init.XXXXXXXX")" || exit 1
+    nonce="${private##*/}"
+    if [[ "$kind" == compose-security-initializer ]]; then
+      jq -er '.Config.Env | if length>0 and all(.[]; type=="string" and ((contains("\r") or contains("\n") or contains("\u0000"))|not)) then .[] else error("invalid initializer environment") end' <<<"$original" > "$private/environment" || exit 1
+      environment_args=(--env-file "$private/environment")
+    fi
+    initializer_command docker create --pull never --name "$initializer" --user "$owner" \
+      --label "com.docker.compose.project=$project" --label "com.docker.compose.service=${service%-security-init}" \
+      --label com.docker.compose.oneoff=True --label "lantern.owner=$kind" --label "lantern.initializer=$nonce" \
+      "${environment_args[@]}" "$@" > "$private/created-id" || exit 1
+    initializer_id="$(cat "$private/created-id")"
+    [[ "$initializer_id" =~ ^[0-9a-f]{64}$ ]] || exit 1
+    initializer_command docker inspect --format '{{json .}}' "$initializer_id" > "$private/created.json" || exit 1
+    initialized="$(cat "$private/created.json")"
+    initializer_identity && "$validator" && jq -e '.State.Status=="created" and .State.Running==false' <<<"$initialized" >/dev/null || exit 1
+    baseline="$(initializer_fingerprint)" || exit 1
+    initializer_command_rounds="$start_rounds" initializer_command docker start --attach "$initializer_id" > "$private/start.log" 2>&1 || exit 1
+    initializer_command docker inspect --format '{{json .}}' "$initializer_id" > "$private/completed.json" || exit 1
+    initialized="$(cat "$private/completed.json")"
+    initializer_matches && jq -e '.State.Status=="exited" and .State.Running==false and .State.ExitCode==0' <<<"$initialized" >/dev/null || exit 1
+    initializer_command docker wait "$initializer_id" > "$private/wait.log" 2>&1 || exit 1
+    initializer_command docker rm "$initializer_id" > "$private/remove.log" 2>&1 || exit 1
+    initializer=""
+  ) &
+  supervisor=$!
+  if (( interrupted != 0 )); then kill -TERM "$supervisor" 2>/dev/null || true; fi
+  while :; do
+    if wait "$supervisor"; then status=0; else status=$?; fi
+    kill -0 "$supervisor" 2>/dev/null || break
+  done
+  trap - INT TERM
+  [[ -z "$previous_int" ]] || eval "$previous_int"
+  [[ -z "$previous_term" ]] || eval "$previous_term"
+  if (( interrupted != 0 )); then return "$interrupted"; fi
+  return "$status"
+}
+
+validate_owned_compose_volume_initializer() {
+  jq -e --argjson expected "$expected_mounts" --arg runtime_owner "$volume_runtime_owner" --arg count "$expected_count" '
+    .Config.Entrypoint==["/bin/sh"] and (.Config.Cmd|length)==5 and .Config.Cmd[0]=="-c" and
+    .Config.Cmd[2]=="fixture" and .Config.Cmd[3]==$runtime_owner and .Config.Cmd[4]==$count and
+    .HostConfig.NetworkMode=="none" and .HostConfig.ReadonlyRootfs==true and
+    (.HostConfig.CapDrop|sort)==["ALL"] and (.HostConfig.CapAdd|sort)==["CHOWN","DAC_READ_SEARCH"] and
+    (.Mounts|map({Name,Destination,RW,Type})|sort_by(.Destination))==($expected|sort_by(.Destination))
+  ' <<<"$initialized" >/dev/null
+}
+
+validate_owned_compose_security_initializer() {
+  printf '%s\n%s\n' "$original" "$initialized" |
+    jq -se '.[0] as $original | .[1] |
+      .Config.Entrypoint==["/app/lantern"] and .Config.Cmd==["init-security"] and
+      .Config.WorkingDir==$original.Config.WorkingDir and .HostConfig.NetworkMode==$original.HostConfig.NetworkMode and
+      (.Config.Env|sort)==($original.Config.Env|sort) and
+      (.Mounts|sort_by(.Destination))==($original.Mounts|sort_by(.Destination))' >/dev/null
+}
+
+# Every service is verified before any native initialization. Each clone uses
+# the same current JSON, nonroot UID, private network and exact read-only mounts.
+initialize_owned_compose_security() {
+  local project="$1" image="$2" owner="$3"
+  shift 3
+  [[ -n "$project" && "$project" == "${COMPOSE_PROJECT_NAME:-}" && "$image" =~ ^sha256:[0-9a-f]{64}$ && "$owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || return 1
+  local configuration layout service container original network index=0
+  local -a originals=() containers=()
+  configuration="$(LANTERN_IMAGE="$image" docker compose "$@" config --format json)" || return 1
+  layout="$(owned_compose_volume_layout "$project" "$owner" <<<"$configuration")" || return 1
+  [[ "$(jq -er '.count' <<<"$layout")" == 6 ]] || return 1
+  jq -e --arg image "$image" '
+    [.services|to_entries[]|select(.key|test("^lantern-[012]$"))|.value] |
+    length==3 and all(.[]; .image==$image and .environment.LANTERN_AUTH_MODE=="oidc" and
+      (.environment.LANTERN_SECURITY_CONFIG_JSON|type)=="string" and (.environment.LANTERN_SECURITY_CONFIG_JSON|length)>0)
+  ' <<<"$configuration" >/dev/null || return 1
+  for service in lantern-0 lantern-1 lantern-2; do
+    container="$(docker compose "$@" ps -aq "$service")" || return 1
+    [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] || return 1
+    original="$(docker inspect --format '{{json .}}' "$container")" || return 1
+    printf '%s\n%s\n' "$original" "$configuration" |
+      jq -se --arg project "$project" --arg service "$service" --arg image "$image" --arg owner "$owner" '
+        .[0] as $original | .[1].services[$service].environment as $settings |
+        $original.Config.Labels["com.docker.compose.project"]==$project and $original.Config.Labels["com.docker.compose.service"]==$service and
+        $original.Config.User==$owner and $original.Image==$image and $original.State.Status=="created" and
+        all($settings|to_entries[]|select(.value!=null); . as $entry | [$original.Config.Env[]|select(.==($entry.key+"="+$entry.value))]|length==1)
+      ' >/dev/null || return 1
+    originals+=("$original"); containers+=("$container")
+  done
+  for service in lantern-0 lantern-1 lantern-2; do
+    original="${originals[$index]}"; container="${containers[$index]}"
+    network="$(jq -er '.HostConfig.NetworkMode|select(type=="string" and length>0)' <<<"$original")" || return 1
+    run_owned_compose_initializer "$project" "$image" "$owner" compose-security-initializer "${service}-security-init" 900 validate_owned_compose_security_initializer \
+      --network "$network" --volumes-from "$container" --entrypoint /app/lantern "$image" init-security || return "$?"
+    index=$((index + 1))
+  done
 }

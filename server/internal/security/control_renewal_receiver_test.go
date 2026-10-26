@@ -1,6 +1,10 @@
 package security
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
+)
 
 func TestAuthorityRenewalReceiver(t *testing.T) {
 	for _, mode := range []string{"majority", "duplicate", "expired", "wrong request", "prefix changed", "restart", "closed"} {
@@ -85,6 +89,66 @@ func TestAuthorityRenewalReceiver(t *testing.T) {
 			n.nodes[1].gate.Unlock()
 			if err == nil {
 				t.Fatal("expired active window used")
+			}
+		})
+	}
+}
+
+func TestAuthorityRenewalDiagnosticDistinguishesActualRefusal(t *testing.T) {
+	for _, reason := range []string{"closed", "recovery", "configuration", "kernel", "no_certificate", "binding", "clock", "elapsed", "expired"} {
+		t.Run(reason, func(t *testing.T) {
+			n, _ := authorityTestNativeCluster(t, 3)
+			r, ticks := authorityTestReceiver(t, n)
+			// This existing diagnostic identity is not an authority input.
+			r.clock.traceID = 71
+			switch reason {
+			case "closed":
+				r.closed = true
+			case "recovery":
+				r.startupRecoveryPending = true
+			case "configuration":
+				r.kernel.config.configured = &ConfiguredTrust{}
+			case "kernel":
+				r.kernel.unknown = errS2CUnknown
+			case "no_certificate":
+				r.active = nil
+			case "binding":
+				r.active.certificate.request.statement.Cut.Sequence++
+			case "clock":
+				r.clock.failed = true
+			case "elapsed":
+				r.active.started.profile[0] ^= 1
+			case "expired":
+				ticks.Add(authorityRenewalLifetime)
+			}
+			calls := 0
+			sample := r.clock.producer.sample
+			r.clock.producer.sample = func() (authorityTimeStamp, error) { calls++; return sample() }
+			capture := decisiontrace.Start(16)
+			if capture == nil {
+				t.Fatal("capture already owned")
+			}
+			defer capture.Stop()
+			r.kernel.gate.Lock()
+			_, _, err := r.currentLocked()
+			r.kernel.gate.Unlock()
+			if err == nil {
+				t.Fatal("diagnostic granted refused renewal")
+			}
+			capture.Stop()
+			events, dropped := capture.Drain()
+			var observed []decisiontrace.Event
+			for _, event := range events {
+				if event.Kind == "browser_decision" {
+					observed = append(observed, event)
+				}
+			}
+			wantCalls := 0
+			if reason == "elapsed" || reason == "expired" {
+				wantCalls = 1
+			}
+			if dropped != 0 || len(observed) != 1 || observed[0].Stage != "renewal_current" || observed[0].Reason != reason || observed[0].Object != r.clock.traceID || calls != wantCalls {
+				t.Fatal("diagnostic changed first refusal/sample count or clock correlation", observed, dropped, calls)
 			}
 		})
 	}

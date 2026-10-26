@@ -895,6 +895,9 @@ func TestReceiptBenchImageProvenanceFailsClosed(t *testing.T) {
 		{name: "wrong Compose project", wantErr: "not a running, restart-free"},
 		{name: "replica restarted", wantErr: "not a running, restart-free"},
 		{name: "replica recreated", wantErr: "was recreated during the run"},
+		{name: "runtime user drift", wantErr: "mismatched runtime user or CPU placement"},
+		{name: "CPU placement drift", wantErr: "mismatched runtime user or CPU placement"},
+		{name: "empty CPU placement"},
 		{name: "graph three validated spool proofs", graph: true},
 		{name: "graph missing one spool proof", wantErr: "missing graph Snapshot spool provenance", graph: true, missingSpool: true},
 	} {
@@ -910,6 +913,8 @@ receipt_container_ids=()
 receipt_driver=1
 native_spool_provenance=()
 runtime_owner=501:20
+export LANTERN_BENCH_CPUSET=0-3
+if [[ "$CASE" == "empty CPU placement" ]]; then LANTERN_BENCH_CPUSET=""; fi
 if [[ "$GRAPH_PROFILE" == 1 ]]; then
  receipt_driver=0
  # These are the previously validated native mount proofs. This verifier
@@ -966,7 +971,12 @@ docker() {
     if [[ "$CASE" == "wrong Compose project" && "$service" == "lantern-0" ]]; then project=unrelated; fi
     local restarts=0
     if [[ "$CASE" == "replica restarted" && "$service" == "lantern-0" ]]; then restarts=1; fi
-    printf '%s|%s|lantern:local|true|%s|%s|%s\n' "$container" "$image" "$project" "$service" "$restarts"
+    local actual_user=501:20 actual_cpuset="$LANTERN_BENCH_CPUSET"
+    if [[ "$service" == lantern-1 && -f "$OUTDIR/proof_pre.json" ]]; then
+      if [[ "$CASE" == "runtime user drift" ]]; then actual_user=0:0; fi
+      if [[ "$CASE" == "CPU placement drift" ]]; then actual_cpuset=4-7; fi
+    fi
+    printf '%s|%s|lantern:local|true|%s|%s|%s|%s|%s\n' "$container" "$image" "$project" "$service" "$restarts" "$actual_user" "$actual_cpuset"
     return
   fi
   return 90
@@ -1028,6 +1038,8 @@ verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 				SourceCommit string `json:"source_commit"`
 				Replicas     []struct {
 					ImageID            string `json:"image_id"`
+					RuntimeUser        string `json:"runtime_user"`
+					CPUSet             string `json:"cpuset"`
 					GraphSnapshotSpool *struct {
 						Volume           string `json:"volume"`
 						Target           string `json:"target"`
@@ -1046,7 +1058,11 @@ verify_receipt_image_provenance "$OUTDIR/proof_post.json"
 				t.Fatalf("incomplete image proof: %+v", proof)
 			}
 			for index, replica := range proof.Replicas {
-				if replica.ImageID != imageID {
+				wantCPUSet := "0-3"
+				if tc.name == "empty CPU placement" {
+					wantCPUSet = ""
+				}
+				if replica.ImageID != imageID || replica.RuntimeUser != "501:20" || replica.CPUSet != wantCPUSet {
 					t.Fatalf("replica image drift in proof: %+v", proof)
 				}
 				if !tc.graph {
@@ -1483,6 +1499,8 @@ func TestBenchFreshComposeRejectsExistingProjectBeforeLifecycle(t *testing.T) {
 		wantOwn  bool
 	}{
 		{name: "absent", wantOwn: true},
+		{name: "absent OFF", wantOwn: true},
+		{name: "initialization failure", wantCode: 37, wantOwn: true},
 		{name: "container", wantCode: 37},
 		{name: "volume", wantCode: 37},
 		{name: "network", wantCode: 37},
@@ -1500,6 +1518,7 @@ COMPOSE_STARTED=0
 KEEP_UP=0
 PEER_TLS_DIR=""
 receipt_driver=1
+if [[ "$CASE" == "absent OFF" ]]; then receipt_driver=0; fi
 receipt_image_id=fixture
 runtime_owner=501:20
 prod_pids=()
@@ -1510,10 +1529,15 @@ source owned_compose.sh
 die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
 log() { :; }
 stop_owned_processes() { :; }
-owned_compose_volume_layout() { printf '{"count":6}\n'; }
+owned_compose_volume_layout() { printf '{"count":%s}\n' "$((receipt_driver == 1 ? 6 : 9))"; }
 initialize_owned_compose_volumes() {
- [[ "$COMPOSE_STARTED" == 1 ]] || return 88
+ [[ "$COMPOSE_STARTED" == 1 && "$KEEP_UP" == 1 ]] || return 88
  printf 'initialize\n' >> "$OUTDIR/actions"
+}
+initialize_owned_compose_security() {
+ [[ "$receipt_driver" == 1 && "$COMPOSE_STARTED" == 1 && "$KEEP_UP" == 1 ]] || return 88
+ printf 'security initialize\n' >> "$OUTDIR/actions"
+ [[ "$CASE" != "initialization failure" ]]
 }
 docker() {
  local family
@@ -1525,7 +1549,7 @@ docker() {
    case "$4" in
     config) printf '{}\n';;
     up) printf 'up\n' >> "$OUTDIR/actions";;
-    --profile) printf 'down\n' >> "$OUTDIR/actions";;
+    --profile) printf '%s\n' "$6" >> "$OUTDIR/actions";;
     *) return 89;;
    esac
    return;;
@@ -1543,12 +1567,22 @@ cleanup() {
 			if command.ProcessState == nil || command.ProcessState.ExitCode() != tc.wantCode {
 				t.Fatalf("fresh startup exit=%v err=%v output=%s, want %d", command.ProcessState, err, output, tc.wantCode)
 			}
-			if tc.wantCode != 0 && !strings.Contains(string(output), "already present or its absence cannot be verified") {
+			if tc.wantCode != 0 && tc.name != "initialization failure" && !strings.Contains(string(output), "already present or its absence cannot be verified") {
 				t.Fatalf("existing project was not refused at absence boundary: %s", output)
 			}
 			actions, readErr := os.ReadFile(filepath.Join(outDir, "actions"))
 			if tc.wantOwn {
-				if readErr != nil || string(actions) != "initialize\nup\ndown\n" {
+				want := "initialize\nsecurity initialize\nup\ndown\n"
+				switch tc.name {
+				case "absent OFF":
+					want = "initialize\nup\ndown\n"
+				case "initialization failure":
+					want = "initialize\nsecurity initialize\n"
+					if !strings.Contains(string(output), "no serving started") {
+						t.Fatalf("initialization failure did not stop before serving: %s", output)
+					}
+				}
+				if readErr != nil || string(actions) != want {
 					t.Fatalf("fresh owned lifecycle=%q err=%v", actions, readErr)
 				}
 			} else if !os.IsNotExist(readErr) {
@@ -2025,6 +2059,128 @@ receipt_runtime_scalar go_memstats_heap_alloc_bytes 'go_memstats_heap_alloc_byte
 	output, err := exec.Command("bash", "-c", fixture).CombinedOutput()
 	if err != nil || string(output) != "19496960" {
 		t.Fatalf("integral scientific metric = %q, err = %v; want 19496960", output, err)
+	}
+}
+
+func offRuntimeSnapshotFixture(t *testing.T) string {
+	t.Helper()
+	return `set -euo pipefail
+receipt_driver=0
+unset SNAPSHOT_ROUNDS
+REPLICA_METRICS_PORTS=(9390 9391 9392)
+RUNTIME_METRIC_NAMES=()
+if [[ "$SNAPSHOT_FAILURE" == missing-replica ]]; then REPLICA_METRICS_PORTS=(9390 9391); fi
+die() { printf 'fatal: %s\n' "$*" >&2; exit 37; }
+prom_scalar() { awk -v name="$1" '$1==name {print $2;exit}' <<<"$2"; }
+curl() {
+ local url="${@: -1}" port round=0
+ if [[ "$*" == *"/debug/pprof/heap?gc=1"* ]]; then
+  printf 'gc\n' >> "$OUTDIR/requests"
+  [[ "$SNAPSHOT_FAILURE" != failed-gc ]] || return 22
+  return
+ fi
+ [[ "$url" == */metrics ]] || return 98
+ port="${url#http://localhost:}"; port="${port%/metrics}"
+ if [[ -f "$OUTDIR/$port" ]]; then read -r round < "$OUTDIR/$port"; fi
+ round=$((round + 1)); printf '%s\n' "$round" > "$OUTDIR/$port"
+ printf 'metrics %s %s\n' "$port" "$round" >> "$OUTDIR/requests"
+ if [[ "$port" == 9391 && "$round" == 2 && "$SNAPSHOT_FAILURE" == failed-scrape ]]; then return 22; fi
+ local value hlc high
+ case "$round" in 1) value=3; hlc=2; high=4;; 2) value=1; hlc=0; high=6;; *) value=2; hlc=1; high=5;; esac
+ local name sample
+ for name in go_goroutines go_memstats_heap_inuse_bytes go_memstats_heap_alloc_bytes go_memstats_heap_objects lantern_vertex_hlc_entries lantern_vertex_hlc_entries_high_water; do
+  case "$name" in
+   go_goroutines) sample="${value}0";;
+   go_memstats_heap_inuse_bytes) sample="${value}e+06";;
+   go_memstats_heap_alloc_bytes) sample="${value}e+04";;
+   go_memstats_heap_objects) sample="${value}00";;
+   lantern_vertex_hlc_entries) sample="$hlc";;
+   lantern_vertex_hlc_entries_high_water) sample="$high";;
+  esac
+  if [[ "$port" == 9391 && "$round" == 2 && "$name" == "$INVALID_METRIC" ]]; then
+   case "$SNAPSHOT_FAILURE" in
+    missing) continue;;
+    duplicate) printf '%s %s\n' "$name" "$sample";;
+    malformed) sample="$sample extra";;
+    *) sample="$REPLACEMENT";;
+   esac
+  fi
+  printf '%s %s\n' "$name" "$sample"
+ done
+}
+` + receiptSnapshotShellFunctions(t) + `
+snapshot_runtime "$OUTDIR/runtime.json"
+`
+}
+
+func TestOFFBenchSnapshotKeepsThreeRoundMinimaAndZeroHLC(t *testing.T) {
+	out := t.TempDir()
+	cmd := exec.CommandContext(t.Context(), "bash", "-c", offRuntimeSnapshotFixture(t))
+	cmd.Env = append(os.Environ(), "OUTDIR="+out, "SNAPSHOT_FAILURE=none", "INVALID_METRIC=", "REPLACEMENT=")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("valid OFF snapshot: %v %s", err, output)
+	}
+	requests, err := os.ReadFile(filepath.Join(out, "requests"))
+	if err != nil || strings.Count(string(requests), "gc\n") != 9 || strings.Count(string(requests), "metrics ") != 9 {
+		t.Fatalf("want one forced GC and scrape in every replica/round: %q %v", requests, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(out, "runtime.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshots []map[string]any
+	if err := json.Unmarshal(raw, &snapshots); err != nil || len(snapshots) != 3 {
+		t.Fatalf("snapshots=%s err=%v", raw, err)
+	}
+	for _, snapshot := range snapshots {
+		for key, expected := range map[string]float64{"goroutines": 10, "heap_inuse_bytes": 1000000, "heap_alloc_bytes": 10000, "heap_objects": 100, "vertex_hlc_entries": 0, "vertex_hlc_high_water": 6} {
+			if snapshot[key] != expected {
+				t.Fatalf("%s=%v, want %v: %s", key, snapshot[key], expected, raw)
+			}
+		}
+	}
+}
+
+func TestOFFBenchSnapshotRejectsInvalidReplicaRound(t *testing.T) {
+	fixture := offRuntimeSnapshotFixture(t)
+	for _, metric := range []string{"go_goroutines", "go_memstats_heap_inuse_bytes", "go_memstats_heap_alloc_bytes", "go_memstats_heap_objects", "lantern_vertex_hlc_entries", "lantern_vertex_hlc_entries_high_water"} {
+		failures := []string{"missing", "duplicate", "malformed", "NaN", "+Inf", "-Inf", "-1", "1.5", "1e-40", "1.0000000000000001", "1e1000"}
+		if strings.HasPrefix(metric, "go_") {
+			failures = append(failures, "0")
+		}
+		for _, failure := range failures {
+			t.Run(metric+"/"+failure, func(t *testing.T) {
+				out := t.TempDir()
+				cmd := exec.CommandContext(t.Context(), "bash", "-c", fixture)
+				cmd.Env = append(os.Environ(), "OUTDIR="+out, "SNAPSHOT_FAILURE="+failure, "INVALID_METRIC="+metric, "REPLACEMENT="+failure)
+				output, err := cmd.CombinedOutput()
+				want := "invalid " + metric + " for localhost:9391 (round 2)"
+				if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 37 || !strings.Contains(string(output), want) {
+					t.Fatalf("invalid metric exit=%v err=%v output=%s, want %s", cmd.ProcessState, err, output, want)
+				}
+				if _, err := os.Stat(filepath.Join(out, "runtime.json")); !os.IsNotExist(err) {
+					t.Fatalf("invalid snapshot artifact exists or stat failed: %v", err)
+				}
+			})
+		}
+	}
+	for _, tc := range []struct{ failure, message string }{
+		{"failed-scrape", "metrics scrape failed for localhost:9391 (round 2)"},
+		{"failed-gc", "forced GC failed for localhost:9390 (round 1)"},
+		{"missing-replica", "expected three replica metrics ports"},
+	} {
+		t.Run(tc.failure, func(t *testing.T) {
+			out := t.TempDir()
+			cmd := exec.CommandContext(t.Context(), "bash", "-c", fixture)
+			cmd.Env = append(os.Environ(), "OUTDIR="+out, "SNAPSHOT_FAILURE="+tc.failure, "INVALID_METRIC=", "REPLACEMENT=")
+			output, err := cmd.CombinedOutput()
+			if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != 37 || !strings.Contains(string(output), tc.message) {
+				t.Fatalf("failed round exit=%v err=%v output=%s", cmd.ProcessState, err, output)
+			}
+			if _, err := os.Stat(filepath.Join(out, "runtime.json")); !os.IsNotExist(err) {
+				t.Fatalf("failed snapshot artifact exists or stat failed: %v", err)
+			}
+		})
 	}
 }
 

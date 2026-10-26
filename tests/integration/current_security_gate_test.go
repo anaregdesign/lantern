@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -740,10 +741,13 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		start := browserDo(t, f.browserRequest(t, http.MethodGet, target.RequestURI(), nil, ""))
-		if start.StatusCode != http.StatusFound {
-			t.Fatal("purpose navigation", start.StatusCode)
-		}
+		var start *http.Response
+		currentBrowserDecisionRequest(t, "purpose navigation", func() {
+			start = browserDo(t, f.browserRequest(t, http.MethodGet, target.RequestURI(), nil, ""))
+			if start.StatusCode != http.StatusFound {
+				t.Fatal("purpose navigation", start.StatusCode)
+			}
+		})
 		path := f.browserCallbackPath(t, start, "admin", false)
 		select {
 		case <-ctx.Done():
@@ -813,7 +817,10 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		}
 	})
 	runCase("browser Code one exchange and CSRF bootstrap", func(t *testing.T) {
-		start := browserLoginStart(t, nil)
+		var start *http.Response
+		currentBrowserDecisionRequest(t, "browser login start", func() {
+			start = browserLoginStart(t, nil)
+		})
 		path := f.browserCallbackPath(t, start, "admin", false)
 		beforeWrongNode := f.fetches.Load()
 		f.server = servers[1]
@@ -1122,6 +1129,105 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		})
 	}
 
+}
+
+func currentBrowserDecisionWindow(name string) *decisiontrace.Capture {
+	switch name {
+	case "purpose navigation", "browser login start":
+		return decisiontrace.Start(512)
+	default:
+		return nil
+	}
+}
+
+func currentBrowserDecisionRequest(t *testing.T, name string, body func()) {
+	t.Helper()
+	selected := name == "purpose navigation" || name == "browser login start"
+	capture := currentBrowserDecisionWindow(name)
+	if selected && capture == nil {
+		t.Fatal("browser diagnostic capture already owned")
+	}
+	returned := false
+	if capture != nil {
+		defer func() {
+			capture.Stop()
+			events, dropped := capture.Drain()
+			if returned && !t.Failed() {
+				return
+			}
+			t.Logf("current_browser_decisions events=%d dropped=%d complete=%t; missing events do not prove nonexecution", len(events), dropped, dropped == 0)
+			for _, event := range events {
+				raw, err := json.Marshal(event)
+				if err != nil {
+					t.Log("browser diagnostic encoding failed")
+					continue
+				}
+				t.Logf("current_browser_observation=%s", raw)
+			}
+		}()
+	}
+	body()
+	returned = true
+}
+
+func TestCurrentBrowserDecisionWindowScopeAndRelease(t *testing.T) {
+	const abortedChild = "current-browser-decision-abort"
+	if os.Args[len(os.Args)-1] == abortedChild {
+		defer func() {
+			capture := decisiontrace.Start(64)
+			if capture == nil {
+				t.Error("aborted request retained startup capture")
+				return
+			}
+			capture.Stop()
+			t.Log("aborted request released startup capture")
+		}()
+		currentBrowserDecisionRequest(t, "purpose navigation", func() {
+			if t.Failed() {
+				t.Fatal("aborted body was already marked failed")
+			}
+			decisiontrace.Emit(decisiontrace.Event{Kind: "browser_decision", Stage: "purpose_start", Reason: "aborted_test_body"})
+			runtime.Goexit()
+		})
+		t.Fatal("aborted request returned")
+	}
+	if capture := currentBrowserDecisionWindow("ordinary review apply foreign status"); capture != nil {
+		capture.Stop()
+		t.Fatal("unrelated case acquired browser capture")
+	}
+	startup := func() {
+		capture := decisiontrace.Start(64)
+		if capture == nil {
+			t.Fatal("request retained startup capture")
+		}
+		capture.Stop()
+	}
+	for range 6 {
+		startup()
+	}
+	for _, name := range []string{"purpose navigation", "browser login start"} {
+		currentBrowserDecisionRequest(t, name, func() {
+			if !decisiontrace.Enabled() {
+				t.Fatal("selected case has no capture")
+			}
+		})
+		if decisiontrace.Enabled() {
+			t.Fatal("completed case retained capture")
+		}
+		startup()
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCurrentBrowserDecisionWindowScopeAndRelease$", "-test.v", "--", abortedChild)
+	output, err := command.CombinedOutput()
+	if err == nil || ctx.Err() != nil {
+		t.Fatal("aborted child did not fail at its body", err, ctx.Err())
+	}
+	for _, marker := range []string{"current_browser_decisions events=1 dropped=0 complete=true", `"reason":"aborted_test_body"`, "aborted request released startup capture"} {
+		if !bytes.Contains(output, []byte(marker)) {
+			t.Fatalf("aborted body lost diagnostic or released ownership: %q", marker)
+		}
+	}
 }
 
 // Separate SDK seam selection reuses the production constructor without

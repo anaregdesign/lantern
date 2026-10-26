@@ -30,7 +30,13 @@ func (r *AuthenticationAdapter) browserManagementAuthorization(w http.ResponseWr
 	affinity := ""
 	if r.current != nil {
 		q, err := browserQuery(req, "affinity")
-		if err != nil || !strings.HasPrefix(q.Get("affinity"), r.attemptPrefix+".") {
+		if err != nil {
+			traceBrowserDecision("purpose_request", "affinity_query")
+			browserHTTPError(w, connect.CodeUnauthenticated)
+			return
+		}
+		if !strings.HasPrefix(q.Get("affinity"), r.attemptPrefix+".") {
+			traceBrowserDecision("purpose_request", "affinity_prefix")
 			browserHTTPError(w, connect.CodeUnauthenticated)
 			return
 		}

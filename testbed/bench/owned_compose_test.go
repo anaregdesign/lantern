@@ -1,16 +1,321 @@
+//go:build unix
+
 package bench_test
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+type ownedComposeFixtureResult struct {
+	directory       string
+	output          []byte
+	commandErr      error
+	controlErr      error
+	exitCode        int
+	timedOut        bool
+	leftOver        bool
+	inactive        bool
+	reaped          bool
+	controlComplete bool
+}
+
+func (result ownedComposeFixtureResult) controlQualified() bool {
+	return result.controlErr == nil && result.controlComplete && result.reaped && result.inactive && !result.timedOut && !result.leftOver
+}
+
+// This entire file exercises Bash/POSIX ownership. Windows native CI selects
+// other packages; this fixture makes no Windows process-custody claim.
+func runOwnedComposeFixture(t *testing.T, script string, arguments, environment []string, budget time.Duration, beforeSeal ...func(string) error) (result ownedComposeFixtureResult) {
+	t.Helper()
+	result.exitCode = -1
+	if len(beforeSeal) > 1 {
+		result.controlErr = errors.New("multiple fixture seal hooks")
+		return
+	}
+	var err error
+	result.directory, err = os.MkdirTemp("", "lantern-owned-compose-fixture-")
+	if err != nil {
+		result.controlErr = err
+		return
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("owned fixture evidence retained at %s", result.directory)
+		} else if err := os.RemoveAll(result.directory); err != nil {
+			t.Errorf("remove completed fixture: %v", err)
+		}
+	})
+	log, err := os.OpenFile(filepath.Join(result.directory, "fixture.log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		result.controlErr = err
+		return
+	}
+	// Fallback closes are best effort; the primary seal/close is checked below.
+	defer func() { _ = log.Close() }()
+	gateRead, gateWrite, err := os.Pipe()
+	if err != nil {
+		result.controlErr = err
+		return
+	}
+	defer func() { _ = gateRead.Close() }()
+	defer func() { _ = gateWrite.Close() }()
+	ctx, cancel := context.WithTimeout(t.Context(), budget)
+	defer cancel()
+	// No fixture work starts before the controller durably publishes custody.
+	preamble := `IFS= read -r owned_fixture_gate <&3 || exit 97
+exec 3<&-
+[[ "$owned_fixture_gate" == go ]] || exit 97
+`
+	args := append([]string{"-c", preamble + script, "owned-compose-fixture"}, arguments...)
+	cmd := exec.CommandContext(ctx, "bash", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.ExtraFiles = []*os.File{gateRead}
+	// Regular files avoid an unbounded pipe-copy wait after the direct child
+	// exits. Only proven group inactivity permits reading/sealing that output.
+	cmd.Stdout, cmd.Stderr = log, log
+	cmd.Env = append(os.Environ(), environment...)
+	cmd.Env = append(cmd.Env, "OUTDIR="+result.directory, "TMPDIR="+result.directory)
+	cmd.WaitDelay = time.Second // fallback only; the group controller owns cleanup
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err == syscall.ESRCH {
+			return os.ErrProcessDone
+		} else {
+			return err
+		}
+	}
+	if err := cmd.Start(); err != nil {
+		result.controlErr = err
+		return
+	}
+	group := cmd.Process.Pid
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	reaped := false
+	defer func() {
+		// The natural-drain allowance covers a finite fake sleep interrupted when
+		// its parent dies. Containment of any longer-lived member is a FAILURE.
+		if !waitOwnedComposeGroup(group, 1500*time.Millisecond) {
+			result.leftOver = true
+			if err := syscall.Kill(-group, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+				result.controlErr = errors.Join(result.controlErr, err)
+			}
+			if !waitOwnedComposeGroup(group, time.Second) {
+				if err := syscall.Kill(-group, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+					result.controlErr = errors.Join(result.controlErr, err)
+				}
+			}
+		}
+		if !reaped {
+			select {
+			case waitErr := <-done:
+				result.commandErr = waitErr
+				reaped = true
+			case <-time.After(2 * time.Second):
+				result.controlErr = errors.Join(result.controlErr, errors.New("fixture direct reap unproven"))
+			}
+		}
+		result.inactive = waitOwnedComposeGroup(group, 2*time.Second)
+		result.reaped = reaped
+		if reaped && cmd.ProcessState != nil {
+			result.exitCode = cmd.ProcessState.ExitCode()
+		}
+		terminal := map[string]any{"pid": group, "pgid": group, "inactive": result.inactive,
+			"direct_reaped": reaped, "timed_out": result.timedOut, "left_over": result.leftOver, "exit_code": result.exitCode}
+		if !result.inactive || !reaped {
+			result.controlErr = errors.Join(result.controlErr, errors.New("fixture process custody incomplete"))
+		}
+		// Test-only injections run after terminal process proof. They never change
+		// child commands, signal custody, waits or the fixture's time allowance.
+		if result.inactive && reaped && len(beforeSeal) == 1 {
+			result.controlErr = errors.Join(result.controlErr, beforeSeal[0](result.directory))
+		}
+		result.controlErr = errors.Join(result.controlErr, writeOwnedComposeFixtureState(result.directory, "terminal.json", terminal))
+		if _, err := fmt.Fprintf(os.Stderr, "owned_compose_fixture_terminal pgid=%d inactive=%t reaped=%t timeout=%t leftover=%t evidence=%s\n", group, result.inactive, reaped, result.timedOut, result.leftOver, result.directory); err != nil {
+			result.controlErr = errors.Join(result.controlErr, err)
+		}
+		if !result.inactive || !reaped {
+			return
+		}
+		result.controlErr = errors.Join(result.controlErr, log.Sync(), log.Close())
+		output, openErr := os.Open(filepath.Join(result.directory, "fixture.log"))
+		if openErr != nil {
+			result.controlErr = errors.Join(result.controlErr, openErr)
+			return
+		}
+		defer func() { _ = output.Close() }()
+		result.output, err = io.ReadAll(io.LimitReader(output, 64*1024+1))
+		result.controlErr = errors.Join(result.controlErr, err, output.Close())
+		if len(result.output) > 64*1024 {
+			result.output = result.output[:64*1024]
+			result.controlErr = errors.Join(result.controlErr, errors.New("fixture output exceeds diagnostic limit"))
+		}
+		result.controlComplete = result.controlErr == nil
+	}()
+	if err := gateRead.Close(); err != nil {
+		result.controlErr = err
+		return
+	}
+	if actualGroup, err := syscall.Getpgid(group); err != nil || actualGroup != group || group == syscall.Getpgrp() {
+		result.controlErr = errors.New("fixture group identity unproven")
+		return
+	}
+	if err := writeOwnedComposeFixtureState(result.directory, "started.json", map[string]any{"pid": group, "pgid": group, "budget_ms": budget.Milliseconds()}); err != nil {
+		result.controlErr = err
+		return
+	}
+	if _, err := fmt.Fprintf(os.Stderr, "owned_compose_fixture_started pgid=%d evidence=%s\n", group, result.directory); err != nil {
+		result.controlErr = err
+		return
+	}
+	if _, err := io.WriteString(gateWrite, "go\n"); err != nil {
+		result.controlErr = err
+		return
+	}
+	if err := gateWrite.Close(); err != nil {
+		result.controlErr = err
+		return
+	}
+	select {
+	case result.commandErr = <-done:
+		reaped = true
+	case <-ctx.Done():
+		result.timedOut = true
+	}
+	if ctx.Err() != nil {
+		result.timedOut = true
+	}
+	return
+}
+
+func waitOwnedComposeGroup(group int, budget time.Duration) bool {
+	deadline := time.Now().Add(budget)
+	for {
+		if err := syscall.Kill(-group, 0); err == syscall.ESRCH {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func writeOwnedComposeFixtureState(directory, name string, value map[string]any) (err error) {
+	file, err := os.OpenFile(filepath.Join(directory, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
+	if err := json.NewEncoder(file).Encode(value); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+func ownedComposeFixtureDiagnostics(directory string) string {
+	var summary strings.Builder
+	for _, name := range []string{"started.json", "terminal.json", "actions", "client-pid", "launch-injected", "launch-deferred", "state-0", "state-1", "state-2"} {
+		file, err := os.Open(filepath.Join(directory, name))
+		if err != nil {
+			fmt.Fprintf(&summary, "%s: missing\n", name)
+			continue
+		}
+		raw, err := io.ReadAll(io.LimitReader(file, 1024))
+		err = errors.Join(err, file.Close())
+		fmt.Fprintf(&summary, "%s: %q read_error=%t\n", name, raw, err != nil)
+	}
+	return summary.String()
+}
+
+func TestOwnedComposeFixtureContainment(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		script   string
+		budget   time.Duration
+		timedOut bool
+		leftOver bool
+	}{
+		{name: "ordinary-exit", script: "printf 'complete\\n'", budget: 5 * time.Second},
+		{name: "deadline", script: `trap '' TERM
+( trap '' TERM; while :; do sleep 30; done ) &
+printf 'deadline worker started\n'
+wait`, budget: 2 * time.Second, timedOut: true, leftOver: true},
+		{name: "leader-exit-live-output-writer", script: `( trap '' TERM; while :; do sleep 30; done ) &
+printf 'leader exiting with inherited writer\n'
+exit 0`, budget: 10 * time.Second, leftOver: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := runOwnedComposeFixture(t, test.script, nil, nil, test.budget)
+			if fixture.controlErr != nil || !fixture.controlComplete || !fixture.reaped || !fixture.inactive {
+				t.Fatalf("containment controller/evidence failed: complete=%t reaped=%t inactive=%t err=%v evidence=%s", fixture.controlComplete, fixture.reaped, fixture.inactive, fixture.controlErr, fixture.directory)
+			}
+			if fixture.timedOut != test.timedOut || fixture.leftOver != test.leftOver {
+				t.Fatalf("containment timeout=%t leftover=%t want=%t/%t evidence=%s", fixture.timedOut, fixture.leftOver, test.timedOut, test.leftOver, fixture.directory)
+			}
+			if test.leftOver && !strings.Contains(string(fixture.output), "started") && !strings.Contains(string(fixture.output), "inherited writer") {
+				t.Fatalf("controlled owned child was not launched: %s", fixture.output)
+			}
+			if fixture.controlQualified() != (!test.timedOut && !test.leftOver) {
+				t.Fatal("fixture qualification did not retain the specific containment failure")
+			}
+			for _, name := range []string{"started.json", "terminal.json"} {
+				raw, err := os.ReadFile(filepath.Join(fixture.directory, name))
+				if err != nil || !json.Valid(raw) {
+					t.Fatalf("missing bounded custody evidence %s: %v", name, err)
+				}
+			}
+			if test.timedOut {
+				var exited *exec.ExitError
+				if !errors.As(fixture.commandErr, &exited) || fixture.exitCode != -1 || exited.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
+					t.Fatalf("deadline fixture lacked its exact forced exit: code=%d err=%v", fixture.exitCode, fixture.commandErr)
+				}
+			} else if fixture.commandErr != nil || fixture.exitCode != 0 {
+				t.Fatalf("fixture direct command failed unexpectedly: %v %s", fixture.commandErr, fixture.output)
+			}
+		})
+	}
+}
+
+func TestOwnedComposeFixtureEvidenceFailureIsNotExpectedRefusal(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		seal func(string) error
+		want error
+	}{
+		{name: "terminal-ledger", seal: func(directory string) error {
+			return os.WriteFile(filepath.Join(directory, "terminal.json"), []byte("occupied"), 0600)
+		}, want: os.ErrExist},
+		{name: "output-read", seal: func(directory string) error {
+			return os.Rename(filepath.Join(directory, "fixture.log"), filepath.Join(directory, "held-output.log"))
+		}, want: os.ErrNotExist},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := runOwnedComposeFixture(t, "exit 23", nil, nil, 5*time.Second, test.seal)
+			var exited *exec.ExitError
+			if !errors.As(fixture.commandErr, &exited) || exited.ExitCode() != 23 || fixture.exitCode != 23 {
+				t.Fatalf("expected rejection was not observed independently: %v", fixture.commandErr)
+			}
+			if !errors.Is(fixture.controlErr, test.want) || fixture.controlComplete || fixture.controlQualified() {
+				t.Fatalf("evidence failure accepted as expected rejection: complete=%t control=%v", fixture.controlComplete, fixture.controlErr)
+			}
+			if !fixture.reaped || !fixture.inactive || fixture.timedOut || fixture.leftOver {
+				t.Fatalf("evidence injection changed process custody: reaped=%t inactive=%t timeout=%t leftover=%t", fixture.reaped, fixture.inactive, fixture.timedOut, fixture.leftOver)
+			}
+		})
+	}
+}
 
 func TestOwnedComposeRejectsResidueAndUnverifiableOwnership(t *testing.T) {
 	helper, err := filepath.Abs("owned_compose.sh")
@@ -174,6 +479,11 @@ export COMPOSE_PROJECT_NAME=lantern-bench-owned-fixture
 failure="$2"
 owner=501:20
 if [[ "$failure" == root-user ]]; then owner=0:0; fi
+run_owned_compose_initializer() {
+ [[ "$1" == "$COMPOSE_PROJECT_NAME" && "$2" == "$TEST_IMAGE" && "$3" == 0:0 && "$4" == compose-volume-initializer && "$5" == volume-init && "$6" == 300 && "$7" == validate_owned_compose_volume_initializer ]] || return 90
+ shift 7
+ docker run --rm --pull=never --user 0:0 "$@"
+}
 docker() {
  if [[ "$1" == volume && "$2" == ls && "$3" == --format ]]; then
   if [[ "$failure" == name-collision ]]; then echo state-1; fi
@@ -266,6 +576,7 @@ docker() {
  export -f ls chown chmod
  bash -c "$command" "$@"
 }
+
 if initialize_owned_compose_volumes "$COMPOSE_PROJECT_NAME" "$TEST_IMAGE" "$owner" -f fixture.yml; then
  [[ "$TEST_SUCCESS" == true ]]
 else
@@ -323,5 +634,242 @@ fi
 				})
 			}
 		})
+	}
+}
+
+func TestOwnedComposeInitializerCustody(t *testing.T) {
+	helper, err := filepath.Abs("owned_compose.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range []string{"security", "volume"} {
+		for _, failure := range []string{"none", "init-failure", "client-disconnect", "INT", "TERM", "launch-INT", "launch-TERM", "wrong-init-image", "wrong-init-user", "wrong-init-env", "wrong-init-mount", "wrong-init-label", "wrong-init-exit", "stop-failure", "remove-failure"} {
+			if profile == "volume" && failure == "wrong-init-env" {
+				continue
+			}
+			t.Run(profile+"/"+failure, func(t *testing.T) {
+				const script = `set -euo pipefail
+source "$1"
+export COMPOSE_PROJECT_NAME=lantern-bench-owned-fixture
+TEST_MAIN_PID=$BASHPID
+TEST_IMAGE="sha256:$(printf 'a%.0s' {1..64})"
+TEST_SECURITY_CONFIG='{"name":"lantern-bench-owned-fixture","services":{},"volumes":{}}'
+for index in 0 1 2; do
+ TEST_SECURITY_CONFIG="$(jq -c --arg service "lantern-$index" --arg image "$TEST_IMAGE" '
+  .services[$service]={image:$image,user:"501:20",environment:{LANTERN_AUTH_MODE:"oidc",LANTERN_SECURITY_CONFIG_JSON:("current-json-"+$service)},
+   volumes:[{type:"volume",source:("state-"+$service),target:"/state"},{type:"volume",source:("backup-"+$service),target:"/data"}]} |
+  .volumes["state-"+$service]={name:("state-"+$service)} | .volumes["backup-"+$service]={name:("backup-"+$service)}' <<<"$TEST_SECURITY_CONFIG")"
+done
+sleep() { command sleep 0.005; }
+docker() {
+ if [[ "$1" == compose ]]; then
+  case "$4" in
+   config) [[ "$LANTERN_IMAGE" == "$TEST_IMAGE" ]] || return 89; printf '%s\n' "$TEST_SECURITY_CONFIG";;
+   ps) local svc="${@: -1}"; printf '%064d\n' "$((${svc##*-}+1))";;
+   *) return 87;;
+  esac
+  return
+ fi
+ if [[ "$1" == create ]]; then
+  local arg next="" name="" nonce_value="" env_file="" src="" user_value="" network_value="" kind_value="" service_value=""
+  for arg in "$@"; do
+   case "$next" in
+    --name) name="$arg";; --user) user_value="$arg";; --network) network_value="$arg";; --env-file) env_file="$arg";; --volumes-from) src="$arg";;
+    --label) case "$arg" in lantern.initializer=*) nonce_value="${arg#*=}";; lantern.owner=*) kind_value="${arg#*=}";; com.docker.compose.service=*) service_value="${arg#*=}";; esac;;
+   esac
+   next="$arg"
+  done
+  local i=0
+  if [[ "$PROFILE" == security ]]; then
+   i="${service_value##*-}"
+   [[ "$name" == "$COMPOSE_PROJECT_NAME-$service_value-security-init" && "$user_value" == 501:20 && "$network_value" == "$COMPOSE_PROJECT_NAME-default" && "$src" == "$(printf '%064d' "$((i+1))")" && "$kind_value" == compose-security-initializer ]] || return 88
+   [[ "$(cat "$env_file")" == $'LANTERN_AUTH_MODE=oidc\nLANTERN_SECURITY_CONFIG_JSON=current-json-'"$service_value" ]] || return 88
+  else
+   [[ "$name" == "$COMPOSE_PROJECT_NAME-volume-init" && "$user_value" == 0:0 && "$kind_value" == compose-volume-initializer ]] || return 88
+  fi
+  [[ "$nonce_value" == lantern-owned-init.* && "${@: -2:1}" == "$TEST_IMAGE" || "$PROFILE" == volume ]] || return 88
+  printf '%s\n' "$nonce_value" > "$OUTDIR/nonce-$i"
+  printf 'created\n' > "$OUTDIR/state-$i"
+  printf 'create %s\n' "$i" >> "$OUTDIR/actions"
+  printf '%064d\n' "$((i+11))"
+  return
+ fi
+ local target="${@: -1}" i=0 initialized=false
+ if [[ "$target" == *-security-init ]]; then i="${target%-security-init}"; i="${i##*-}"; initialized=true
+ elif [[ "$target" == *-volume-init ]]; then initialized=true
+ elif [[ "$target" =~ ^[0-9a-f]{64}$ ]]; then
+  i="$((10#${target: -2}))"
+  if (( i >= 11 )); then i=$((i-11)); initialized=true; else i=$((i-1)); fi
+ else return 86; fi
+ local svc="lantern-$i" fail_index=1
+ if [[ "$PROFILE" == volume ]]; then svc=volume-init; fail_index=0; fi
+ case "$1" in
+  start)
+   [[ "$2" == --attach && "$initialized" == true ]] || return 86
+   printf 'start %s\n' "$i" >> "$OUTDIR/actions"
+   if [[ "$i" == "$fail_index" && ( "$CASE" == client-disconnect || "$CASE" == stop-failure || "$CASE" == INT || "$CASE" == TERM || "$CASE" == launch-INT || "$CASE" == launch-TERM ) ]]; then
+    printf 'running\n' > "$OUTDIR/state-$i"
+    if [[ "$CASE" == INT || "$CASE" == TERM || "$CASE" == launch-* ]]; then
+     printf '%s\n' "$BASHPID" > "$OUTDIR/client-pid"
+     if [[ "$CASE" != launch-* ]]; then kill -"$CASE" "$TEST_MAIN_PID"; fi
+     while :; do command sleep 1; done
+    fi
+    return 23
+   fi
+   printf 'exited\n' > "$OUTDIR/state-$i"
+   if [[ "$i" == "$fail_index" && "$CASE" == init-failure ]]; then return 23; fi
+   return;;
+  stop)
+   [[ "$initialized" == true && "$2" == --time && "$3" == 10 ]] || return 86
+   printf 'stop %s\n' "$i" >> "$OUTDIR/actions"
+   [[ "$CASE" != stop-failure ]] || return 19
+   printf 'exited\n' > "$OUTDIR/state-$i"; return;;
+  kill)
+   [[ "$initialized" == true && "$2" == --signal && "$3" == KILL ]] || return 86
+   printf 'kill %s\n' "$i" >> "$OUTDIR/actions"
+   printf 'exited\n' > "$OUTDIR/state-$i"; return;;
+  wait) printf 'wait %s\n' "$i" >> "$OUTDIR/actions"; printf '0\n'; return;;
+  logs) printf 'logs %s\n' "$i" >> "$OUTDIR/actions"; printf 'private retained fixture log\n'; return;;
+  rm)
+   printf 'rm %s\n' "$i" >> "$OUTDIR/actions"
+   [[ "$CASE" != remove-failure || "$i" != "$fail_index" ]] || return 19
+   rm "$OUTDIR/state-$i"; return;;
+  inspect) ;;
+  *) return 86;;
+ esac
+ local state=created nonce_value="" current_image="$TEST_IMAGE" user_value=501:20 exit_value=0
+ if [[ "$initialized" == true ]]; then
+  [[ -f "$OUTDIR/state-$i" ]] || return 1
+  read -r state < "$OUTDIR/state-$i"; read -r nonce_value < "$OUTDIR/nonce-$i"
+ fi
+ if [[ "$PROFILE" == volume ]]; then user_value=0:0; fi
+ jq -nc --arg project "$COMPOSE_PROJECT_NAME" --arg svc "$svc" --arg image "$TEST_IMAGE" --arg case "$CASE" --arg profile "$PROFILE" --arg state "$state" --arg nonce "$nonce_value" --arg user "$user_value" --argjson i "$i" --argjson fail_index "$fail_index" --argjson initialized "$initialized" '
+  {Id:((if $initialized then $i+11 else $i+1 end)|tostring|("0"*(64-length)) + .),
+   Name:("/"+$project+"-"+$svc+(if $profile=="security" then "-security-init" else "" end)),
+   Config:{Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":$svc},Image:$image,User:$user,WorkingDir:"/app",
+    Env:["LANTERN_AUTH_MODE=oidc",("LANTERN_SECURITY_CONFIG_JSON=current-json-"+$svc)],Entrypoint:["/app/lantern"],Cmd:["init-security"]},Image:$image,
+   State:{Status:$state,Running:($state=="running"),ExitCode:0},HostConfig:{NetworkMode:($project+"-default")},
+   Mounts:[{Type:"bind",Source:("/private/"+$svc),Destination:"/run/lantern-config",RW:false},{Type:"bind",Source:("/private/"+$svc+"/ntp.conf"),Destination:"/etc/ntp.conf",RW:false},{Type:"volume",Name:("state-"+$svc),Destination:"/state",RW:true}]} |
+  if $initialized then .Config.Labels += {"lantern.owner":("compose-"+$profile+"-initializer"),"com.docker.compose.oneoff":"True","lantern.initializer":$nonce} else . end |
+  if $profile=="volume" then .Config.Entrypoint=["/bin/sh"] | .Config.Cmd=["-c","fixture-script","fixture","501:20","6"] |
+   .HostConfig={NetworkMode:"none",ReadonlyRootfs:true,CapDrop:["ALL"],CapAdd:["CHOWN","DAC_READ_SEARCH"]} |
+   .Mounts=[range(0;6)|{Name:("owned-"+tostring),Destination:("/owned/"+tostring),RW:true,Type:"volume"}] else . end |
+  if $initialized and $i==$fail_index then
+   if $case=="wrong-init-image" then .Image="wrong"
+   elif $case=="wrong-init-user" then .Config.User="foreign"
+   elif $case=="wrong-init-env" then .Config.Env=[]
+   elif $case=="wrong-init-mount" then .Mounts=[]
+   elif $case=="wrong-init-label" then .Config.Labels["lantern.owner"]="foreign"
+   elif $case=="wrong-init-exit" and $state=="exited" then .State.ExitCode=23 else . end
+  else . end'
+}
+trap 'printf "old INT\n" >> "$OUTDIR/traps"' INT
+trap 'printf "old TERM\n" >> "$OUTDIR/traps"' TERM
+if [[ "$CASE" == launch-* ]]; then
+ signal_index=12
+ if [[ "$PROFILE" == volume ]]; then signal_index=11; fi
+ TEST_SIGNAL_ID="$(printf '%064d' "$signal_index")"
+ # DEBUG runs before this exact assignment, after the asynchronous command was
+ # launched. Pause here until the parent interruption reaches the supervisor,
+ # so this tests registration custody deterministically, rather than racing it.
+ set -T
+ trap '
+  if [[ "$BASH_COMMAND" == '\''command_pid=$!'\'' && "${1:-}" == docker && "${2:-}" == start && "${@: -1}" == "$TEST_SIGNAL_ID" && ! -e "$OUTDIR/launch-injected" ]]; then
+   : > "$OUTDIR/launch-injected"
+   for ((signal_round=0; signal_round<1000; signal_round++)); do
+    [[ -s "$OUTDIR/client-pid" ]] && break
+    command sleep 0.005
+   done
+   [[ -s "$OUTDIR/client-pid" ]] || exit 96
+   kill -"${CASE#launch-}" "$TEST_MAIN_PID"
+   for ((signal_round=0; signal_round<1000; signal_round++)); do
+    (( ${initializer_pending_signal:-0} != 0 )) && break
+    command sleep 0.005
+   done
+   (( ${initializer_pending_signal:-0} != 0 )) || exit 96
+   : > "$OUTDIR/launch-deferred"
+  fi
+ ' DEBUG
+fi
+if [[ "$PROFILE" == security ]]; then
+ if initialize_owned_compose_security "$COMPOSE_PROJECT_NAME" "$TEST_IMAGE" 501:20 -f fixture.yml; then result=0; else result=$?; fi
+else
+ expected_count=6; volume_runtime_owner=501:20
+ expected_mounts="$(jq -nc '[range(0;6)|{Name:("owned-"+tostring),Destination:("/owned/"+tostring),RW:true,Type:"volume"}]')"
+ if run_owned_compose_initializer "$COMPOSE_PROJECT_NAME" "$TEST_IMAGE" 0:0 compose-volume-initializer volume-init 300 validate_owned_compose_volume_initializer --network=none --read-only --cap-drop=ALL --cap-add=CHOWN --cap-add=DAC_READ_SEARCH --entrypoint /bin/sh "$TEST_IMAGE" -c fixture-script fixture 501:20 6; then result=0; else result=$?; fi
+fi
+[[ "$(trap -p INT)" == *"old INT"* && "$(trap -p TERM)" == *"old TERM"* ]] || exit 95
+exit "$result"
+`
+				fixture := runOwnedComposeFixture(t, script, []string{helper}, []string{"CASE=" + failure, "PROFILE=" + profile}, 15*time.Second)
+				out, output, runErr := fixture.directory, fixture.output, fixture.commandErr
+				if !fixture.controlQualified() {
+					t.Fatalf("fixture custody failed: complete=%t reaped=%t timeout=%t leftover=%t inactive=%t command=%v control=%v evidence=%s\n%s\n%s", fixture.controlComplete, fixture.reaped, fixture.timedOut, fixture.leftOver, fixture.inactive, runErr, fixture.controlErr, out, output, ownedComposeFixtureDiagnostics(out))
+				}
+				if (runErr == nil) != (failure == "none") {
+					t.Fatalf("initializer error=%v output=%s", runErr, output)
+				}
+				if failure == "INT" || failure == "TERM" || strings.HasPrefix(failure, "launch-") {
+					expected := 130
+					if strings.HasSuffix(failure, "TERM") {
+						expected = 143
+					}
+					if fixture.exitCode != expected {
+						t.Fatalf("interruption status=%d want=%d: %v %s", fixture.exitCode, expected, runErr, output)
+					}
+					pidRaw, err := os.ReadFile(filepath.Join(out, "client-pid"))
+					pid, parseErr := strconv.Atoi(strings.TrimSpace(string(pidRaw)))
+					if err != nil || parseErr != nil || pid <= 1 || syscall.Kill(pid, 0) != syscall.ESRCH {
+						t.Fatalf("registered fake attach was not terminated/reaped: %v %v pid=%q", err, parseErr, pidRaw)
+					}
+					if strings.HasPrefix(failure, "launch-") {
+						if _, err := os.Stat(filepath.Join(out, "launch-deferred")); err != nil {
+							t.Fatalf("signal never reached the unregistered launch window: %v", err)
+						}
+					}
+				}
+				actions, _ := os.ReadFile(filepath.Join(out, "actions"))
+				failed := 1
+				if profile == "volume" {
+					failed = 0
+				}
+				if failure == "none" {
+					count := 3
+					if profile == "volume" {
+						count = 1
+					}
+					if strings.Count(string(actions), "start ") != count || strings.Count(string(actions), "rm ") != count {
+						t.Fatalf("successful lifecycle missing exact starts/removals: %s", actions)
+					}
+				} else {
+					if _, err := os.Stat(filepath.Join(out, fmt.Sprintf("state-%d", failed))); err != nil {
+						t.Fatalf("failure container/state was removed: %v, %s", err, actions)
+					}
+					if profile == "security" && strings.Contains(string(actions), "create 2") {
+						t.Fatalf("continued after failed initialization: %s", actions)
+					}
+					if failure == "client-disconnect" || failure == "INT" || failure == "TERM" || strings.HasPrefix(failure, "launch-") || failure == "stop-failure" {
+						for _, action := range []string{"stop", "wait", "logs"} {
+							if !strings.Contains(string(actions), fmt.Sprintf("%s %d\n", action, failed)) {
+								t.Fatalf("missing failure custody %s: %s %s", action, actions, output)
+							}
+						}
+						state, _ := os.ReadFile(filepath.Join(out, fmt.Sprintf("state-%d", failed)))
+						if string(state) != "exited\n" {
+							t.Fatalf("daemon initializer still active: %q", state)
+						}
+						if failure == "stop-failure" && !strings.Contains(string(actions), fmt.Sprintf("kill %d\n", failed)) {
+							t.Fatalf("failed stop lacked identity-bound kill fallback: %s", actions)
+						}
+					}
+					if strings.HasPrefix(failure, "wrong-init-") && failure != "wrong-init-exit" && strings.Contains(string(actions), fmt.Sprintf("start %d\n", failed)) {
+						t.Fatalf("unverified clone started: %s", actions)
+					}
+					if !strings.Contains(string(output), "initializer private evidence retained at ") {
+						t.Fatalf("private logs not retained: %s", output)
+					}
+				}
+			})
+		}
 	}
 }

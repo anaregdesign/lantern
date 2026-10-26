@@ -3,7 +3,10 @@ package security
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
 
 // PurposeNavigation exposes only the exact issuer and attempt identity after
@@ -17,6 +20,7 @@ type PurposeNavigation struct {
 
 func (o *CurrentAuthority) PurposeNotBefore(ctx context.Context, ticket [32]byte) (time.Time, error) {
 	if o == nil || o.origin == nil || !o.origin.network.enterCall() {
+		traceAuthorityBrowserDecision(nil, "purpose_not_before", "owner")
 		return time.Time{}, ErrAuthorityUnavailable
 	}
 	defer o.origin.network.calls.Done()
@@ -25,17 +29,24 @@ func (o *CurrentAuthority) PurposeNotBefore(ctx context.Context, ticket [32]byte
 	defer k.gate.Unlock()
 	defer k.poisonPanic()
 	if _, _, err := o.origin.eligibilityLocked(ctx); err != nil {
+		tracePurposeEligibility(o.origin.network.timeOwner, "purpose_not_before", "eligibility", err)
 		return time.Time{}, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	id, known := m.tickets[sha256.Sum256(ticket[:])]
 	p, exists := m.pending[id]
-	if m.closed || !known || !exists || p.current == nil || p.state != AuthorizationPending || p.current.started || !authorityPurposeBindingLive(p.current.binding, k.replayState.projection) {
+	if reason := authorityPurposePendingFailure(m.closed, known, exists, p, k); reason != "" {
+		traceAuthorityBrowserDecision(o.origin.network.timeOwner, "purpose_not_before", reason)
 		return time.Time{}, ErrOperationAuthorization
 	}
 	now, _, err := o.origin.network.receiver.currentLocked()
-	if err != nil || !time.Unix(0, int64(now.utc.high)).Before(p.expiresAt) {
+	if err != nil {
+		traceAuthorityBrowserDecision(o.origin.network.timeOwner, "purpose_not_before", "renewal")
+		return time.Time{}, ErrOperationAuthorization
+	}
+	if !time.Unix(0, int64(now.utc.high)).Before(p.expiresAt) {
+		traceAuthorityBrowserDecision(o.origin.network.timeOwner, "purpose_not_before", "expired")
 		return time.Time{}, ErrOperationAuthorization
 	}
 	return p.notBefore, nil
@@ -43,24 +54,46 @@ func (o *CurrentAuthority) PurposeNotBefore(ctx context.Context, ticket [32]byte
 
 func (o *CurrentAuthority) StartPurpose(ctx context.Context, ticket [32]byte) (PurposeNavigation, error) {
 	if o == nil || o.origin == nil || !o.origin.network.enterCall() {
+		traceAuthorityBrowserDecision(nil, "purpose_start", "owner")
 		return PurposeNavigation{}, ErrAuthorityUnavailable
 	}
 	defer o.origin.network.calls.Done()
 	id, binding, err := o.origin.startPurpose(ctx, ticket)
 	if err != nil {
+		tracePurposeEligibility(o.origin.network.timeOwner, "purpose_start", "navigation", err)
 		return PurposeNavigation{}, err
 	}
 	k := o.origin.network.kernel
 	k.gate.Lock()
 	defer k.gate.Unlock()
-	if k.readyLocked() != nil || !authorityPurposeBindingLive(binding, k.replayState.projection) {
+	if k.readyLocked() != nil {
+		traceAuthorityBrowserDecision(o.origin.network.timeOwner, "purpose_start", "kernel_after_start")
+		return PurposeNavigation{}, ErrOperationAuthorization
+	}
+	if reason := authorityPurposeBindingFailure(binding, k.replayState.projection); reason != "" {
+		traceAuthorityBrowserDecision(o.origin.network.timeOwner, "purpose_binding", reason)
 		return PurposeNavigation{}, ErrOperationAuthorization
 	}
 	i, ok := k.replayState.projection.snapshot.Issuer(binding.Actor.Issuer)
 	if !ok {
+		traceAuthorityBrowserDecision(o.origin.network.timeOwner, "purpose_start", "issuer_missing")
 		return PurposeNavigation{}, ErrOperationAuthorization
 	}
 	return PurposeNavigation{ID: id, Issuer: i, Generation: binding.Reviewed.Generation, Cut: binding.Reviewed}, nil
+}
+
+func tracePurposeEligibility(clock *authorityTimeOwner, stage, reason string, err error) {
+	switch {
+	case errors.Is(err, context.Canceled):
+		reason = "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		reason = "context_deadline"
+	case errors.Is(err, peerauth.ErrMembership):
+		reason = "membership"
+	case errors.Is(err, errS3AClosed):
+		reason = "owner_closed"
+	}
+	traceAuthorityBrowserDecision(clock, stage, reason)
 }
 
 func (o *CurrentAuthority) CompletePurpose(ctx context.Context, id [32]byte, code CurrentCredentialProducer) (AuthorizationStatus, error) {

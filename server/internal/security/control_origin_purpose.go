@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
 const authorizationConsumed AuthorizationState = 4
@@ -18,12 +20,57 @@ type authorityPendingPurpose struct {
 }
 
 func authorityPurposeBindingLive(b authorityPurposeBinding, p *S1Projection) bool {
-	if p == nil || b.Reviewed != p.cut || !b.ID.valid() || b.ID.Domain != p.cut.Domain || b.ID.Cohort != p.cut.Cohort || b.Operation == [32]byte{} || b.Lineage == 0 || b.Lineage != p.lineage[b.Actor] {
-		return false
+	return authorityPurposeBindingFailure(b, p) == ""
+}
+
+func authorityPurposeBindingFailure(b authorityPurposeBinding, p *S1Projection) string {
+	switch {
+	case p == nil:
+		return "projection"
+	case b.Reviewed != p.cut:
+		return "cut"
+	case !b.ID.valid() || b.ID.Domain != p.cut.Domain || b.ID.Cohort != p.cut.Cohort || b.Operation == [32]byte{}:
+		return "operation_binding"
+	case b.Lineage == 0 || b.Lineage != p.lineage[b.Actor]:
+		return "lineage"
 	}
 	i, known := p.snapshot.Issuer(b.Actor.Issuer)
 	a, active := p.snapshot.AccessFor(b.Actor)
-	return b.Actor.Kind == OIDCPrincipal && known && i.Enabled && !i.Deleted && i.ConfigRevision == b.IssuerConfigRevision && active && a.AllowsGlobal(SecurityManage)
+	switch {
+	case b.Actor.Kind != OIDCPrincipal:
+		return "actor_kind"
+	case !known || !i.Enabled || i.Deleted || i.ConfigRevision != b.IssuerConfigRevision:
+		return "issuer_binding"
+	case !active || !a.AllowsGlobal(SecurityManage):
+		return "actor_access"
+	default:
+		return ""
+	}
+}
+
+func authorityPurposePendingFailure(closed, known, present bool, pending managementAuthorization, kernel *s2cParticipant) string {
+	switch {
+	case closed:
+		return "pool_closed"
+	case !known:
+		return "ticket_unknown"
+	case !present || pending.current == nil:
+		return "pending_missing"
+	case pending.state != AuthorizationPending:
+		return "state"
+	case pending.current.started:
+		return "started"
+	default:
+		return authorityPurposeBindingFailure(pending.current.binding, kernel.replayState.projection)
+	}
+}
+
+func traceAuthorityBrowserDecision(clock *authorityTimeOwner, stage, reason string) {
+	event := decisiontrace.Event{Kind: "browser_decision", Stage: stage, Reason: reason}
+	if clock != nil {
+		event.Object = clock.traceID
+	}
+	decisiontrace.Emit(event)
 }
 
 // Lock order: participant gate -> purpose pool -> native time owner. Callers
@@ -104,15 +151,22 @@ func (m *ManagementAuthorizations) startCurrentLocked(r *authorityRenewalReceive
 	key := sha256.Sum256(ticket[:])
 	id, known := m.tickets[key]
 	o, present := m.pending[id]
-	if m.closed || !known || !present || o.current == nil || o.state != AuthorizationPending || o.current.started || !authorityPurposeBindingLive(o.current.binding, r.kernel.replayState.projection) {
+	if reason := authorityPurposePendingFailure(m.closed, known, present, o, r.kernel); reason != "" {
+		traceAuthorityBrowserDecision(r.clock, "purpose_start", reason)
 		return [32]byte{}, authorityPurposeBinding{}, ErrOperationAuthorization
 	}
 	now, _, err := r.currentLocked()
 	if err != nil {
+		traceAuthorityBrowserDecision(r.clock, "purpose_start", "renewal")
 		return [32]byte{}, authorityPurposeBinding{}, err
 	}
 	low, high := time.Unix(0, int64(now.utc.low)).UTC(), time.Unix(0, int64(now.utc.high)).UTC()
-	if low.Before(o.notBefore) || !high.Before(o.expiresAt) {
+	if low.Before(o.notBefore) {
+		traceAuthorityBrowserDecision(r.clock, "purpose_start", "before_not_before")
+		return [32]byte{}, authorityPurposeBinding{}, ErrOperationAuthorization
+	}
+	if !high.Before(o.expiresAt) {
+		traceAuthorityBrowserDecision(r.clock, "purpose_start", "expired")
 		return [32]byte{}, authorityPurposeBinding{}, ErrOperationAuthorization
 	}
 	delete(m.tickets, key)

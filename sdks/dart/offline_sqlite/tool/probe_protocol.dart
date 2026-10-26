@@ -117,23 +117,112 @@ final class ProbeJsonLines {
 Future<Map<String, Object?>?> collectProbeMessage(
   Stream<List<int>> stream,
 ) async {
-  final bytes = <int>[];
-  var oversized = false;
+  final message = ProbeMessageBuffer();
   await for (final chunk in stream) {
-    if (!oversized && bytes.length + chunk.length <= maxProbeLineBytes) {
-      bytes.addAll(chunk);
+    message.add(chunk);
+  }
+  return message.finish();
+}
+
+/// The same bounded single-Object parser for a supervised stdout collector.
+final class ProbeMessageBuffer {
+  final _bytes = <int>[];
+  var _oversized = false;
+
+  /// Drain every chunk, retaining at most [maxProbeLineBytes].
+  void add(List<int> chunk) {
+    if (!_oversized && _bytes.length + chunk.length <= maxProbeLineBytes) {
+      _bytes.addAll(chunk);
     } else {
-      bytes.clear();
-      oversized = true;
+      _bytes.clear();
+      _oversized = true;
     }
   }
-  if (oversized) return null;
-  try {
-    final message = jsonDecode(utf8.decode(bytes));
-    return message is Map<String, Object?> ? message : null;
-  } on FormatException {
-    return null;
+
+  /// An incomplete or oversized Object never qualifies a verification.
+  Map<String, Object?>? finish() {
+    if (_oversized) return null;
+    try {
+      final message = jsonDecode(utf8.decode(_bytes));
+      return message is Map<String, Object?> ? message : null;
+    } on FormatException {
+      return null;
+    }
   }
+}
+
+/// Fixed names only; snapshots never contain an operating-system PID.
+enum ProbeKill { worker, workerCleanup, directCleanup }
+
+/// A pipe drains from spawn; all errors are consumed without retaining text.
+final class ProbeCollector<T> {
+  ProbeCollector(
+    Stream<List<int>> stream, {
+    required void Function(List<int>) onData,
+    required T Function() onDone,
+  }) {
+    _subscription = stream.listen(
+      (chunk) {
+        if (!_accepting) return;
+        try {
+          onData(chunk);
+        } on Object {
+          _error = 'consumer';
+        }
+      },
+      onError: (Object _) {
+        if (_accepting) _error = 'stream';
+      },
+      onDone: () {
+        if (_accepting) {
+          try {
+            _value = onDone();
+          } on Object {
+            _error = 'consumer';
+          }
+          _completion = 'complete';
+        }
+        if (!_done.isCompleted) _done.complete();
+      },
+    );
+  }
+
+  late final StreamSubscription<List<int>> _subscription;
+  final _done = Completer<void>();
+  var _completion = 'pending';
+  var _error = 'none';
+  var _cancellation = 'not_requested';
+  var _accepting = true;
+  T? _value;
+
+  /// Never throws, even if the pipe fails before its owner begins waiting.
+  Future<void> get done => _done.future;
+
+  T? get value => _value;
+  bool get complete => _completion == 'complete';
+  bool get qualified => complete && _error == 'none';
+
+  /// Stop accepting observations at the shared cleanup deadline.
+  /// Cancellation itself gets no new wait allowance and may remain incomplete.
+  Future<void> cancelIncomplete() async {
+    if (complete) return;
+    _accepting = false;
+    _completion = 'incomplete';
+    _cancellation = 'incomplete';
+    try {
+      await _subscription.cancel();
+      _cancellation = 'complete';
+    } on Object {
+      _cancellation = 'error';
+    }
+  }
+
+  /// No output bytes or exception strings cross the diagnostic boundary.
+  Map<String, Object> snapshot() => {
+    'completion': _completion,
+    'error': _error,
+    'cancellation': _cancellation,
+  };
 }
 
 /// Bounded content-free observations for one supervisor-owned child.
@@ -181,6 +270,48 @@ final class ProbeLifecycle {
   final _records = <Map<String, Object>>[];
   var _entered = false;
   var _truncated = false;
+  var _workerPidRelation = 'unobserved';
+  final _kills = {
+    for (final kind in ProbeKill.values) kind.name: 'not_requested',
+  };
+  Map<String, Object> _directExit = {'state': 'unobserved'};
+  final Map<String, ProbeCollector<Object?>> _collectors = {};
+
+  /// Record only equality with the direct Process PID, never either PID.
+  void observeWorkerPid({required bool sameAsDirect}) {
+    _workerPidRelation = sameAsDirect
+        ? 'same_as_direct'
+        : 'different_from_direct';
+  }
+
+  /// Record the result of the existing signal call without issuing another.
+  bool observeKill(ProbeKill kind, bool Function() kill) {
+    try {
+      final accepted = kill();
+      _kills[kind.name] = accepted ? 'accepted' : 'refused';
+      return accepted;
+    } on Object {
+      _kills[kind.name] = 'error';
+      rethrow;
+    }
+  }
+
+  /// A direct Process exit is not proof of any unobserved descendant's exit.
+  void observeExit(int code) {
+    _directExit = {
+      'state': 'observed',
+      'code': code,
+      'category': code == 0 ? 'zero' : 'nonzero',
+    };
+  }
+
+  /// Attach only the two fixed pipe names to this child's final snapshot.
+  void collect({
+    required ProbeCollector<Object?> stdout,
+    required ProbeCollector<Object?> stderr,
+  }) {
+    _collectors.addAll({'stdout': stdout, 'stderr': stderr});
+  }
 
   /// Record an observation without imposing an execution-phase ordering.
   void record(ProbePhase phase) {
@@ -213,6 +344,13 @@ final class ProbeLifecycle {
     'boundary': boundary,
     'worker_entry_observed': _entered,
     'truncated': _truncated,
+    'worker_pid_relation': _workerPidRelation,
+    'kills': Map<String, String>.of(_kills),
+    'direct_exit': Map<String, Object>.of(_directExit),
+    'collectors': {
+      for (final entry in _collectors.entries)
+        entry.key: entry.value.snapshot(),
+    },
     'records': [for (final record in _records) Map<String, Object>.of(record)],
   };
 }
@@ -231,7 +369,56 @@ Future<T> waitForProbe<T>(
   }
 }
 
-/// Preserve the existing bounded wrapper cleanup and record its actual outcome.
+/// Preserve the primary failure even when cleanup has a separate failure.
+/// Optional validation reads already collected facts without another wait.
+Future<T> withProbeCleanup<T>({
+  required Future<T> Function() body,
+  required Future<void> Function() cleanup,
+  void Function()? validate,
+}) async {
+  late T result;
+  Object? primary;
+  StackTrace? primaryStack;
+  try {
+    result = await body();
+  } on Object catch (error, stack) {
+    primary = error;
+    primaryStack = stack;
+  }
+  Object? cleanupError;
+  StackTrace? cleanupStack;
+  try {
+    await cleanup();
+  } on Object catch (error, stack) {
+    cleanupError = error;
+    cleanupStack = stack;
+  }
+  if (primary != null) Error.throwWithStackTrace(primary, primaryStack!);
+  // An observed worker rejection remains primary over secondary cleanup I/O or
+  // pipe failures. Missing/error output is left to cleanup's fail-closed verdict.
+  validate?.call();
+  if (cleanupError != null) {
+    Error.throwWithStackTrace(cleanupError, cleanupStack!);
+  }
+  return result;
+}
+
+/// Preserve the existing verification parser and fixed worker rejection code.
+void validateProbeVerification(
+  int result,
+  ProbeCollector<Map<String, Object?>?> stdout,
+) {
+  if (!stdout.qualified) return;
+  final message = stdout.value;
+  if (message == null) throw StateError('verification');
+  final failure = parseProbeFailure(message);
+  if (failure != null) throw StateError(failure);
+  if (result != 0 || message['event'] != 'verified') {
+    throw StateError('verification');
+  }
+}
+
+/// Direct exit and both pipes share the existing single cleanup allowance.
 Future<void> cleanupProbe({
   required bool exited,
   required bool Function() kill,
@@ -239,11 +426,63 @@ Future<void> cleanupProbe({
   required Duration timeout,
   required ProbeLifecycle lifecycle,
 }) async {
-  if (exited) return;
-  lifecycle.record(ProbePhase.cleanupKill);
-  kill();
-  await waitForProbe(exitCode, timeout, lifecycle);
-  lifecycle.record(ProbePhase.cleanupExit);
+  final clock = Stopwatch()..start();
+  Duration remaining() {
+    final value = timeout - clock.elapsed;
+    return value.isNegative ? Duration.zero : value;
+  }
+
+  var cleanupError = false;
+  Future<void> stopDirect() async {
+    if (exited) return;
+    lifecycle.record(ProbePhase.cleanupKill);
+    try {
+      lifecycle.observeKill(ProbeKill.directCleanup, kill);
+    } on Object {
+      cleanupError = true;
+    }
+    try {
+      lifecycle.observeExit(await exitCode);
+      lifecycle.record(ProbePhase.cleanupExit);
+    } on Object {
+      lifecycle._directExit = {'state': 'error'};
+      cleanupError = true;
+    }
+  }
+
+  Object? deadlineError;
+  StackTrace? deadlineStack;
+  try {
+    await waitForProbe(
+      Future.wait([
+        stopDirect(),
+        for (final collector in lifecycle._collectors.values) collector.done,
+      ]),
+      remaining(),
+      lifecycle,
+    );
+  } on Object catch (error, stack) {
+    deadlineError = error;
+    deadlineStack = stack;
+    if (lifecycle._directExit['state'] == 'unobserved') {
+      lifecycle._directExit = {'state': 'incomplete'};
+    }
+  } finally {
+    // Each async cancellation consumes its own errors immediately. The shared
+    // deadline is never reset, including when a hostile stream will not cancel.
+    final cancellations = [
+      for (final collector in lifecycle._collectors.values)
+        collector.cancelIncomplete(),
+    ];
+    await Future.wait(cancellations).timeout(remaining(), onTimeout: () => []);
+  }
+  if (deadlineError != null) {
+    Error.throwWithStackTrace(deadlineError, deadlineStack!);
+  }
+  if (cleanupError) throw StateError('cleanup');
+  if (lifecycle._collectors.values.any((collector) => !collector.qualified)) {
+    throw StateError('collector');
+  }
 }
 
 /// Fixed, content-free stages shared by the crash worker and its supervisor.
