@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	connectrpc.com/grpchealth v1.5.0
-	github.com/anaregdesign/lantern/pb v0.15.0
+	github.com/anaregdesign/lantern/pb v0.15.1
 	github.com/anaregdesign/lantern/sdks/go v0.27.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	google.golang.org/protobuf v1.36.12

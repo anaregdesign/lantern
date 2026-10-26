@@ -1,5 +1,6 @@
 import io
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -50,6 +51,7 @@ class GoSDKReleaseTest(unittest.TestCase):
         self.corrupt_download = None
         self.selected_version = self.pb_version
         self.selected_replace = False
+        self.probe_gomod = os.devnull
 
     def git(self, *args, capture=False):
         result = subprocess.run(
@@ -69,6 +71,10 @@ class GoSDKReleaseTest(unittest.TestCase):
         self.calls.append((args, source, env.copy()))
         go_mod = source / "go.mod"
         text = go_mod.read_text() if go_mod.is_file() else ""
+        if args == ("env", "-json", "GOMOD"):
+            self.assertFalse(go_mod.exists())
+            self.assertFalse((source / "go.sum").exists())
+            return json.dumps({"GOMOD": self.probe_gomod}).encode()
         if args == ("mod", "edit", "-json"):
             self.assertEqual((source / "client.go").read_text(), "package client\n")
             requirements = re.findall(
@@ -171,7 +177,7 @@ class GoSDKReleaseTest(unittest.TestCase):
         self.assertEqual(self.sdk_mod.read_bytes(), original)
         self.assertEqual(
             [args[0] for args, _, _ in self.calls],
-            ["mod", "mod", "mod", "mod", "mod", "list", "build", "test"],
+            ["mod", "mod", "mod", "env", "mod", "mod", "list", "build", "test"],
         )
         self.assertEqual(
             [args for args, _, _ in self.calls if args[0] in ("build", "test")],
@@ -246,6 +252,57 @@ class GoSDKReleaseTest(unittest.TestCase):
         with self.assertRaisesRegex(gate.ReleaseError, "must not reuse"):
             gate.download_pb(checksum_dir, gate.isolated_go_env(checksum_dir), self.pb_version)
         self.assertEqual(self.calls, [])
+
+    def test_no_module_proof_precedes_download_with_same_environment(self):
+        self.verify()
+        probe = next(
+            call for call in self.calls if call[0] == ("env", "-json", "GOMOD")
+        )
+        download = next(
+            call for call in self.calls if call[0][:3] == ("mod", "download", "-json")
+        )
+        self.assertLess(self.calls.index(probe), self.calls.index(download))
+        self.assertTrue(probe[1] == download[1], "checksum probe cwd changed")
+        self.assertTrue(probe[2] == download[2], "checksum probe environment changed")
+        self.assertEqual(probe[2]["GOWORK"], "off")
+        self.assertEqual(probe[2]["GOTOOLCHAIN"], "local")
+        self.assertEqual(probe[2]["GOFLAGS"], "")
+
+    def test_checksum_probe_rejects_inherited_ancestor_without_download(self):
+        ancestor = Path(self.temp.name) / "ancestor"
+        checksum_dir = ancestor / "fresh-checksum"
+        checksum_dir.mkdir(parents=True)
+        (ancestor / "go.mod").write_text("module example.invalid/ancestor\ngo 1.27.0\n")
+        (ancestor / "go.sum").write_text(
+            f"{gate.PB_MODULE} {self.pb_version} h1:existing-ancestor-sum\n"
+        )
+        self.probe_gomod = str(ancestor / "go.mod")
+        env = gate.isolated_go_env(ancestor / "verification")
+        with patch.object(gate, "go", side_effect=self.go):
+            with self.assertRaisesRegex(gate.ReleaseError, "outside any module"):
+                gate.download_pb(checksum_dir, env, self.pb_version)
+        self.assertEqual(
+            [args for args, _, _ in self.calls], [("env", "-json", "GOMOD")]
+        )
+        self.assertEqual(self.calls[0][1], checksum_dir)
+        self.assertTrue(self.calls[0][2] == env, "isolated probe environment changed")
+        self.assert_no_build()
+
+    def test_unproven_module_context_never_downloads(self):
+        checksum_dir = Path(self.temp.name) / "checksum"
+        checksum_dir.mkdir()
+        for reported in ("", None, False, str(checksum_dir / "go.mod")):
+            with self.subTest(reported=reported):
+                self.calls.clear()
+                self.probe_gomod = reported
+                with patch.object(gate, "go", side_effect=self.go):
+                    with self.assertRaisesRegex(gate.ReleaseError, "outside any module"):
+                        gate.download_pb(
+                            checksum_dir, gate.isolated_go_env(checksum_dir), self.pb_version
+                        )
+                self.assertEqual(
+                    [args for args, _, _ in self.calls], [("env", "-json", "GOMOD")]
+                )
 
     def test_missing_pb_sums_are_added_only_to_temporary_sdk(self):
         (self.sdk / "go.sum").write_text("")

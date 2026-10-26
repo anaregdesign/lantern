@@ -169,6 +169,13 @@ def isolated_go_env(temp):
 def download_pb(checksum_dir, env, version):
     if any((checksum_dir / name).exists() for name in ("go.mod", "go.sum")):
         raise ReleaseError("pb checksum verification must not reuse a module's go.sum")
+    # An empty cwd can still inherit an ancestor's go.mod/go.sum. Check Go's
+    # effective module with the same isolated environment before public lookup;
+    # existing ancestor sums must never satisfy this fresh sumdb check.
+    module_file = go_json(checksum_dir, env, "env", "-json", "GOMOD").get("GOMOD")
+    if (not isinstance(module_file, str)
+            or os.path.normcase(module_file) != os.path.normcase(os.devnull)):
+        raise ReleaseError("pb checksum verification must run outside any module")
     try:
         module = go_json(checksum_dir, env, "mod", "download", "-json", f"{PB_MODULE}@{version}")
     except ReleaseError as error:
