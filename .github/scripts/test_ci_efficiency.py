@@ -38,7 +38,7 @@ class RepresentativeCoverageTest(unittest.TestCase):
                          [".", "core", "mcp", "pb", "sdks/go", "server"])
         self.assertIn("uses: ./.github/workflows/current-source-release.yml",
                       job(workflow("_verify"), "configured-source-integration"))
-        for caller in ("sdks-go-publish", "docker-publish", "mcp-publish"):
+        for caller in ("docker-publish", "mcp-publish"):
             self.assertIn("uses: ./.github/workflows/_verify.yml", job(workflow(caller), "verify"))
         script = textwrap.dedent(body.split("        run: |\n", 2)[2])
         commands = [["vet", "./..."], ["build", "-v", "./..."],
@@ -87,6 +87,24 @@ sys.exit(23 if f'{module}:{args[0]}' == os.environ['FAILURE'] else 0)
                     other, calls = run("server")
                     self.assertEqual(other.returncode, 0, other.stderr)
                     self.assertEqual(calls, [["server", command] for command in commands])
+
+    def test_go_sdk_release_requires_source_and_one_isolated_quality_path(self):
+        text = workflow("sdks-go-publish")
+        self.assertEqual(re.findall(r"(?m)^  ([\w-]+):$", text.split("jobs:\n", 1)[1]),
+                         ["verify", "standalone", "release"])
+        self.assertIn("uses: ./.github/workflows/current-source-release.yml", job(text, "verify"))
+        self.assertNotIn("uses: ./.github/workflows/_verify.yml", text)
+        standalone = job(text, "standalone")
+        self.assertIn("    needs: verify\n", standalone)
+        self.assertIn("    timeout-minutes: 20\n", standalone)
+        self.assertIn("    runs-on: ubuntu-latest\n", standalone)
+        self.assertIn("      CGO_ENABLED: '1'\n", standalone)
+        self.assertEqual(standalone.count('run: python3 .github/scripts/verify_go_sdk_release.py --tag "$TAG"'), 1)
+        self.assertNotIn("go test ", standalone)
+        self.assertIn("    needs: [verify, standalone]\n", job(text, "release"))
+        for name in ("verify", "standalone", "release"):
+            self.assertNotRegex(job(text, name), r"(?m)^    if:")
+        self.assertNotIn("continue-on-error", text)
 
     def test_receipt_ha_pins_its_exporter_and_retains_environment_isolation(self):
         body = job(workflow("dart-sdk"), "offline-test")

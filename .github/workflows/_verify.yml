@@ -5,7 +5,8 @@
 # Previously docker-publish.yml, mcp-publish.yml, and sdks-go-publish.yml
 # each maintained their own ad-hoc `verify` job; the bodies drifted over
 # time and only mcp-publish actually covered more than one module. This
-# workflow is now the single source of truth for the publish-side gate.
+# workflow is now the full-workspace gate for Root/MCP publishing. The Go SDK
+# keeps its artifact-specific isolated verifier and normal authority proof.
 #
 # Refs #295 (dev-flow improvements backlog).
 #
