@@ -195,7 +195,15 @@ run_owned_compose_initializer() {
       ' <<<"$initialized" >/dev/null
     }
     initializer_fingerprint() {
-      jq -Sc '{Id,Name,Image,Config,HostConfig,Mounts:(.Mounts|sort_by(.Destination))}' <<<"$initialized"
+      # Docker may represent the default-enabled OOM killer as false or null.
+      # Keep true distinct and retain every other fingerprint field unchanged.
+      jq -Sc '
+        .HostConfig.OomKillDisable as $oom |
+        if $oom==null or ($oom|type)=="boolean" then
+          .HostConfig.OomKillDisable=($oom // false)
+        else error("invalid initializer OomKillDisable") end |
+        {Id,Name,Image,Config,HostConfig,Mounts:(.Mounts|sort_by(.Destination))}
+      ' <<<"$initialized"
     }
     initializer_matches() {
       initializer_identity && [[ -n "$baseline" && "$(initializer_fingerprint)" == "$baseline" ]]
@@ -299,7 +307,9 @@ validate_owned_compose_volume_initializer() {
     .Config.Entrypoint==["/bin/sh"] and (.Config.Cmd|length)==5 and .Config.Cmd[0]=="-c" and
     .Config.Cmd[2]=="fixture" and .Config.Cmd[3]==$runtime_owner and .Config.Cmd[4]==$count and
     .HostConfig.NetworkMode=="none" and .HostConfig.ReadonlyRootfs==true and
-    (.HostConfig.CapDrop|sort)==["ALL"] and (.HostConfig.CapAdd|sort)==["CHOWN","DAC_READ_SEARCH"] and
+    (.HostConfig.CapDrop|sort)==["ALL"] and
+    (.HostConfig.CapAdd|type)=="array" and
+    (.HostConfig.CapAdd|map(ltrimstr("CAP_"))|sort)==["CHOWN","DAC_READ_SEARCH"] and
     (.Mounts|map({Name,Destination,RW,Type})|sort_by(.Destination))==($expected|sort_by(.Destination))
   ' <<<"$initialized" >/dev/null
 }
