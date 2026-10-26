@@ -1173,18 +1173,48 @@ func waitForReceiptPumpApplies(
 	}
 }
 
-type receiptMutationErrorObserver struct {
-	target *service.LanternService
-	errors chan error
+type receiptMutationObservation struct {
+	incomingSeq uint64
+	before      uint64
+	after       uint64
+	err         error
+	stats       mutationreceipt.Stats
 }
 
-func (o *receiptMutationErrorObserver) ApplyMutation(ctx context.Context, mutation *pb.Mutation) error {
+type receiptMutationObserver struct {
+	target  *service.LanternService
+	runtime *service.ServingRuntime
+	origin  hlc.NodeID
+	seq     uint64
+	failed  chan receiptMutationObservation
+	applied chan receiptMutationObservation
+}
+
+func (o *receiptMutationObserver) ApplyMutation(ctx context.Context, mutation *pb.Mutation) error {
+	before := o.target.LocalSeq(o.origin)
 	err := o.target.ApplyMutation(ctx, mutation)
-	if err != nil {
-		select {
-		case o.errors <- err:
-		default:
-		}
+	// This fixture has one Pump and no other receipt writers or time-advancing receipt reads.
+	// Sample before returning to that Pump, which can then retry the envelope.
+	observation := receiptMutationObservation{
+		incomingSeq: mutation.GetSeq(), before: before, after: o.target.LocalSeq(o.origin),
+		err: err, stats: o.runtime.ReceiptStats(),
+	}
+	if !bytes.Equal(mutation.GetOrigin(), o.origin[:]) {
+		return err
+	}
+	results := o.applied
+	if observation.before < o.seq && observation.after >= o.seq {
+		// Record the first effective origin cut transition; later duplicates cannot substitute.
+	} else if err != nil {
+		results = o.failed
+	} else {
+		return err
+	}
+	// Keep the first refusal separately so repeated retries cannot hide the
+	// successful application or replace its synchronous Store sample.
+	select {
+	case results <- observation:
+	default:
 	}
 	return err
 }
@@ -1517,11 +1547,11 @@ func TestDurableReceiptWALRuntime_RealConnectWireCapacityStallRecoveryPump(t *te
 	for _, head := range []string{"seed", "pending"} {
 		runtime.GraphCache().AddEdgeWithExpiration(tail, head, 1, time.Now().Add(time.Hour))
 	}
-	firstDeadline := time.Now().Add(2 * time.Second)
-	firstAcceptedAt := firstDeadline.Add(-config.Receipt.Retention).Add(time.Second)
+	firstAcceptedAt := time.Now().Add(2 * time.Second).Add(-config.Receipt.Retention).Add(time.Second)
 	first, _ := durableFollowerReceiptMutationAt(
 		t, config.Receipt, origin, 1, tail, "seed", firstAcceptedAt,
 	)
+	firstDeadlineMS := int64(first.GetOp().GetReplicatedReceiptEdgeDelete().GetItems()[0].GetReceipt().GetDeadlineUnixMs())
 	second, secondOperationID := durableFollowerReceiptMutationAt(
 		t, config.Receipt, origin, 2, tail, "pending", time.Now(),
 	)
@@ -1555,9 +1585,10 @@ func TestDurableReceiptWALRuntime_RealConnectWireCapacityStallRecoveryPump(t *te
 		return streamCtx.Err()
 	}
 
-	observer := &receiptMutationErrorObserver{
-		target: target.svc,
-		errors: make(chan error, 32),
+	observer := &receiptMutationObserver{
+		target: target.svc, runtime: runtime, origin: origin, seq: 2,
+		failed:  make(chan receiptMutationObservation, 1),
+		applied: make(chan receiptMutationObservation, 1),
 	}
 	stop := startDurableReceiptPumpWithApplier(
 		t,
@@ -1596,19 +1627,19 @@ func TestDurableReceiptWALRuntime_RealConnectWireCapacityStallRecoveryPump(t *te
 	close(releaseSecond)
 	stallTimer := time.NewTimer(time.Second)
 	defer stallTimer.Stop()
-	var stallErr error
+	var stalled receiptMutationObservation
 	select {
-	case stallErr = <-observer.errors:
+	case stalled = <-observer.failed:
 	case <-ctx.Done():
 		t.Fatalf("capacity stall observation canceled: %v", ctx.Err())
 	case <-stallTimer.C:
 		t.Fatal("capacity seq2 did not report ResourceExhausted within 1s")
 	}
-	if connect.CodeOf(stallErr) != connect.CodeResourceExhausted {
-		t.Fatalf("capacity seq2 error = %v, want ResourceExhausted", stallErr)
+	if connect.CodeOf(stalled.err) != connect.CodeResourceExhausted || stalled.incomingSeq != 2 || stalled.before != 1 || stalled.after != 1 {
+		t.Fatalf("capacity refusal = %+v, want ResourceExhausted at unchanged origin cut 1", stalled)
 	}
-	if !time.Now().Before(firstDeadline) {
-		t.Fatalf("capacity stall arrived after seed deadline %s", firstDeadline.Format(time.RFC3339Nano))
+	if stalled.stats.HighWaterMillis >= firstDeadlineMS || stalled.stats.Entries != 1 || stalled.stats.OldestDeadlineMillis != firstDeadlineMS {
+		t.Fatalf("capacity stall Store = %+v, want one seed receipt before deadline %d", stalled.stats, firstDeadlineMS)
 	}
 	stalledStatus, err := newReplicationRawClient(t, target.url).PeerStatus(
 		ctx, connect.NewRequest(&pb.PeerStatusRequest{}),
@@ -1624,12 +1655,20 @@ func TestDurableReceiptWALRuntime_RealConnectWireCapacityStallRecoveryPump(t *te
 		t.Fatal("capacity stall published pending seq2 graph effect")
 	}
 
+	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelRecovery()
 	status = waitForDurableReceiptCut(
-		t, ctx, "capacity recovery", target, runtime,
+		t, recoveryCtx, "capacity recovery", target, runtime,
 		map[string]uint64{originKey: 2}, 5*time.Second,
 	)
-	if time.Now().Before(firstDeadline) {
-		t.Fatalf("capacity seq2 committed before seed receipt deadline %s", firstDeadline.Format(time.RFC3339Nano))
+	var recovered receiptMutationObservation
+	select {
+	case recovered = <-observer.applied:
+	case <-recoveryCtx.Done():
+		t.Fatalf("capacity recovery application observation canceled: %v", recoveryCtx.Err())
+	}
+	if recovered.err != nil || recovered.incomingSeq != 2 || recovered.before != 1 || recovered.after != 2 || recovered.stats.HighWaterMillis < firstDeadlineMS || recovered.stats.Entries != 1 {
+		t.Fatalf("capacity recovery = %+v, want cut 1->2 with one recovered receipt at/after seed deadline %d", recovered, firstDeadlineMS)
 	}
 	requireExactReceiptCut(t, "capacity recovery", status, map[string]uint64{originKey: 2})
 	if length, capacity, evicted := runtime.MutationLogStats(); length != 2 || capacity != 16 || evicted != 0 {
