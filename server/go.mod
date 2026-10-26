@@ -9,7 +9,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.3
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.15.0
 	github.com/anaregdesign/lantern/core v0.21.0
-	github.com/anaregdesign/lantern/pb v0.15.0
+	github.com/anaregdesign/lantern/pb v0.15.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/wire v0.7.0
 	github.com/prometheus/client_golang v1.25.0
