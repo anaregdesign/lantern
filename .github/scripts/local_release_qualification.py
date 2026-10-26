@@ -67,6 +67,14 @@ def require(condition, message):
         raise Refused(message)
 
 
+def require_compose_version(value):
+    # Compose v5 retains the v2 CLI; Desktop stable builds add -desktop.N.
+    require(re.fullmatch(
+        r"v?(?:2|5)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+        r"(?:-desktop\.(?:0|[1-9][0-9]*))?", value),
+        "stable Docker Compose v2 or v5 CLI required")
+
+
 def utc():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -726,7 +734,7 @@ class Qualification:
         go_pin = re.search(r"^go (\S+)$", (self.source / "go.mod").read_text(), re.M).group(1)
         require("go" + go_pin + " " in versions["go"], "Go toolchain differs from source pin")
         versions["compose"] = self.tool("docker", "compose", "version", "--short", timeout=30)
-        require(re.fullmatch(r"v?2\.\d+\.\d+.*", versions["compose"]), "Docker Compose v2 required")
+        require_compose_version(versions["compose"])
         self.state["tool_versions"] = versions
         self.tool("docker", "info", "--format", "{{json .ClientInfo.Plugins}}", timeout=30)
         plugins = read_json(self.evidence / self.state["steps"][-1]["log"])
