@@ -261,8 +261,15 @@ def verify_release(repo, tag):
         check_published_pb_source(repo, tag, published)
         add_verified_pb_checksums(source, env, version, pb_sum, pb_mod_sum)
         check_selected_pb(source, env, version)
+        unformatted = command(["gofmt", "-l", "."], cwd=source, env=env, capture=True)
+        if unformatted.strip():
+            raise ReleaseError(
+                "tagged SDK archive is not gofmt'd:\n"
+                + unformatted.decode("utf-8", "replace").strip()
+            )
+        go(source, env, "vet", "-mod=readonly", "./...")
         go(source, env, "build", "-mod=readonly", "./...")
-        go(source, env, "test", "-mod=readonly", "./...")
+        go(source, env, "test", "-mod=readonly", "-race", "-shuffle=on", "-json", "./...")
     print(f"Verified {tag} in isolation against published pb/{version}")
 
 

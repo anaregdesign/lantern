@@ -264,7 +264,7 @@ jobs:
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
         run: |
-          echo "$TAGS" | xargs -I {} cosign sign --yes {}@${DIGEST}
+          echo "$TAGS" | xargs -I {} cosign sign --yes "{}@${DIGEST}"
 
   binaries:
     name: Build CLI + server binaries

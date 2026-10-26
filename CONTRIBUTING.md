@@ -901,14 +901,23 @@ Tag order matters because each downstream module pins its upstream tag:
    **before pushing** with the `sdks/go/go.mod` Go toolchain installed as `go`
    (`GOTOOLCHAIN=local` disallows automatic toolchain selection). Push only
    after it passes. The pushed SDK tag triggers
-   `sdks-go-publish.yml`: a workspace vet/build/test
-   gate followed by a standalone check of the exact tagged `sdks/go` archive.
+   `sdks-go-publish.yml`: normal configured-source-integration followed by one
+   standalone check of the exact tagged `sdks/go` archive; it does not repeat
+   the root/Server workspace gate. Root and MCP releases retain their shared
+   full-module verification lanes.
    That check strips the sole permitted `replace pb => ../../pb` directive
    **only in a temporary copy** and rejects any other replacement,
    resolves the pinned pb tag through the public Go module proxy and checksum
    database from a checksum-free directory and fresh module cache with
    `GOWORK=off`, compares the published pb Go sources and
-   `go.mod` with the SDK-tag pb tree, and builds/tests the isolated SDK. A
+   `go.mod` with the SDK-tag pb tree, and requires clean `gofmt -l .`,
+   `go vet -mod=readonly ./...`, the existing readonly build, and
+   `go test -mod=readonly -race -shuffle=on -json ./...` in that isolated SDK.
+   Use the pinned Go toolchain's supported native race host, with cgo and a C
+   compiler where required. The Ubuntu standalone job sets `CGO_ENABLED=1`;
+   the pinned Go Darwin race path does not require cgo. No race-disable
+   fallback is allowed.
+   Existing command/test timeouts remain unchanged. A
    missing, stale, unresolved, or replaced pb blocks the exact-title GitHub
    Release; green workspace tests alone are not enough. The Go module proxy
    pulls tags directly from VCS, so this workflow cannot prevent an invalid

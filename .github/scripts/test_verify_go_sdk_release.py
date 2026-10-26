@@ -52,6 +52,15 @@ class GoSDKReleaseTest(unittest.TestCase):
         self.selected_version = self.pb_version
         self.selected_replace = False
         self.probe_gomod = os.devnull
+        self.original_command = gate.command
+        self.unformatted = b""
+        self.fail_phase = None
+        self.quality_commands = (
+            ("gofmt", "-l", "."),
+            ("vet", "-mod=readonly", "./..."),
+            ("build", "-mod=readonly", "./..."),
+            ("test", "-mod=readonly", "-race", "-shuffle=on", "-json", "./..."),
+        )
 
     def git(self, *args, capture=False):
         result = subprocess.run(
@@ -66,6 +75,18 @@ class GoSDKReleaseTest(unittest.TestCase):
             "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
             "commit", "-qm", "fixture",
         )
+
+    def command(self, args, *, cwd, env=None, capture=False):
+        if args[0] == "git":
+            return self.original_command(args, cwd=cwd, env=env, capture=capture)
+        self.assertEqual(args, ["gofmt", "-l", "."])
+        self.assertTrue(capture)
+        self.assertEqual((cwd / "client.go").read_text(), "package client\n")
+        self.assertNotIn("replace", (cwd / "go.mod").read_text())
+        self.calls.append((tuple(args), cwd, env.copy()))
+        if self.fail_phase == "gofmt":
+            raise gate.ReleaseError("gofmt fixture failed")
+        return self.unformatted
 
     def go(self, source, env, *args, capture=False):
         self.calls.append((args, source, env.copy()))
@@ -148,20 +169,23 @@ class GoSDKReleaseTest(unittest.TestCase):
             if self.selected_replace:
                 selected["Replace"] = {"Path": "../../pb"}
             return json.dumps(selected).encode()
-        if args in (
-            ("build", "-mod=readonly", "./..."),
-            ("test", "-mod=readonly", "./..."),
-        ):
+        if args in self.quality_commands[1:]:
             self.assertNotIn("replace", text)
+            if self.fail_phase == args[0]:
+                raise gate.ReleaseError(f"{args[0]} fixture failed")
             return b""
         self.fail(f"unexpected Go command: {args}")
 
     def verify(self, tag=None):
-        with patch.object(gate, "go", side_effect=self.go):
+        with patch.object(gate, "go", side_effect=self.go), \
+                patch.object(gate, "command", side_effect=self.command):
             gate.verify_release(self.repo, tag or self.sdk_tag)
 
-    def assert_no_build(self):
-        self.assertFalse(any(args[0] in ("build", "test") for args, _, _ in self.calls))
+    def quality_calls(self):
+        return [args for args, _, _ in self.calls if args[0] in ("gofmt", "vet", "build", "test")]
+
+    def assert_no_quality_commands(self):
+        self.assertEqual(self.quality_calls(), [])
 
     def test_failed_go_download_reports_json_error(self):
         failure = subprocess.CalledProcessError(
@@ -177,12 +201,9 @@ class GoSDKReleaseTest(unittest.TestCase):
         self.assertEqual(self.sdk_mod.read_bytes(), original)
         self.assertEqual(
             [args[0] for args, _, _ in self.calls],
-            ["mod", "mod", "mod", "env", "mod", "mod", "list", "build", "test"],
+            ["mod", "mod", "mod", "env", "mod", "mod", "list", "gofmt", "vet", "build", "test"],
         )
-        self.assertEqual(
-            [args for args, _, _ in self.calls if args[0] in ("build", "test")],
-            [("build", "-mod=readonly", "./..."), ("test", "-mod=readonly", "./...")],
-        )
+        self.assertEqual(self.quality_calls(), list(self.quality_commands))
         for _, source, env in self.calls:
             self.assertNotIn(self.repo, source.parents)
             self.assertEqual(env["GOWORK"], "off")
@@ -192,6 +213,30 @@ class GoSDKReleaseTest(unittest.TestCase):
             self.assertEqual(env["GONOPROXY"], "")
             self.assertEqual(env["GONOSUMDB"], "")
             self.assertIn("lantern-go-sdk-release-", env["GOMODCACHE"])
+
+    def test_unformatted_tagged_archive_stops_before_vet_build_and_test(self):
+        self.unformatted = b"client.go\n"
+        with self.assertRaisesRegex(gate.ReleaseError, "not gofmt'd") as failure:
+            self.verify()
+        self.assertIn("client.go", str(failure.exception))
+        self.assertEqual(self.quality_calls(), [self.quality_commands[0]])
+
+    def test_each_quality_phase_failure_stops_later_phases(self):
+        for index, command in enumerate(self.quality_commands):
+            with self.subTest(phase=command[0]):
+                self.calls.clear()
+                self.fail_phase = command[0]
+                with self.assertRaisesRegex(gate.ReleaseError, command[0] + " fixture failed"):
+                    self.verify()
+                self.assertEqual(self.quality_calls(), list(self.quality_commands[:index + 1]))
+
+    def test_invalid_sdk_tag_stops_before_quality_commands(self):
+        for tag in ("v0.14.0", "sdks/go/v99.99.99"):
+            with self.subTest(tag=tag):
+                self.calls.clear()
+                with self.assertRaises(gate.ReleaseError):
+                    self.verify(tag)
+                self.assert_no_quality_commands()
 
     def test_pb_tag_need_not_be_the_sdk_commit(self):
         (self.pb / "README.md").write_text("Documentation after pb tag.\n")
@@ -215,7 +260,7 @@ class GoSDKReleaseTest(unittest.TestCase):
         self.git("tag", sdk_tag)
         with self.assertRaisesRegex(gate.ReleaseError, "stale|differs"):
             self.verify(sdk_tag)
-        self.assert_no_build()
+        self.assert_no_quality_commands()
 
     def test_missing_pb_tag_blocks_release(self):
         self.sdk_mod.write_text(
@@ -226,7 +271,7 @@ class GoSDKReleaseTest(unittest.TestCase):
         self.git("tag", sdk_tag)
         with self.assertRaisesRegex(gate.ReleaseError, "tag is missing"):
             self.verify(sdk_tag)
-        self.assert_no_build()
+        self.assert_no_quality_commands()
 
     def test_missing_or_pseudo_pb_requirement_blocks_release(self):
         base = {"Module": {"Path": gate.SDK_MODULE}, "Require": []}
@@ -243,7 +288,7 @@ class GoSDKReleaseTest(unittest.TestCase):
         self.fail_download = True
         with self.assertRaisesRegex(gate.ReleaseError, "cannot be resolved.*404"):
             self.verify()
-        self.assert_no_build()
+        self.assert_no_quality_commands()
 
     def test_checksum_probe_rejects_existing_go_sum(self):
         checksum_dir = Path(self.temp.name) / "checksum"
@@ -286,7 +331,7 @@ class GoSDKReleaseTest(unittest.TestCase):
         )
         self.assertEqual(self.calls[0][1], checksum_dir)
         self.assertTrue(self.calls[0][2] == env, "isolated probe environment changed")
-        self.assert_no_build()
+        self.assert_no_quality_commands()
 
     def test_unproven_module_context_never_downloads(self):
         checksum_dir = Path(self.temp.name) / "checksum"
@@ -326,25 +371,25 @@ class GoSDKReleaseTest(unittest.TestCase):
         self.git("tag", sdk_tag)
         with self.assertRaisesRegex(gate.ReleaseError, "conflicts with published pb checksums"):
             self.verify(sdk_tag)
-        self.assert_no_build()
+        self.assert_no_quality_commands()
 
     def test_changed_published_pb_source_blocks_release(self):
         self.corrupt_download = "go"
         with self.assertRaisesRegex(gate.ReleaseError, "differs.*graph.pb.go"):
             self.verify()
-        self.assert_no_build()
+        self.assert_no_quality_commands()
 
     def test_changed_published_pb_manifest_blocks_release(self):
         self.corrupt_download = "mod"
         with self.assertRaisesRegex(gate.ReleaseError, "differs.*pb/go.mod"):
             self.verify()
-        self.assert_no_build()
+        self.assert_no_quality_commands()
 
     def test_leaked_local_replace_blocks_release(self):
         self.keep_replace = True
         with self.assertRaisesRegex(gate.ReleaseError, "go.mod replacement leaked"):
             self.verify()
-        self.assert_no_build()
+        self.assert_no_quality_commands()
 
     def test_non_pb_remote_replace_blocks_release(self):
         self.sdk_mod.write_text(
@@ -356,7 +401,7 @@ class GoSDKReleaseTest(unittest.TestCase):
         self.git("tag", sdk_tag)
         with self.assertRaisesRegex(gate.ReleaseError, "unexpected replace directives"):
             self.verify(sdk_tag)
-        self.assert_no_build()
+        self.assert_no_quality_commands()
 
     def test_noncanonical_pb_local_path_blocks_release(self):
         self.sdk_mod.write_text(
@@ -367,7 +412,7 @@ class GoSDKReleaseTest(unittest.TestCase):
         self.git("tag", sdk_tag)
         with self.assertRaisesRegex(gate.ReleaseError, "unexpected replace directive"):
             self.verify(sdk_tag)
-        self.assert_no_build()
+        self.assert_no_quality_commands()
 
     def test_remote_pb_replace_blocks_release(self):
         self.sdk_mod.write_text(
@@ -381,7 +426,7 @@ class GoSDKReleaseTest(unittest.TestCase):
         self.git("tag", sdk_tag)
         with self.assertRaisesRegex(gate.ReleaseError, "unexpected replace directive"):
             self.verify(sdk_tag)
-        self.assert_no_build()
+        self.assert_no_quality_commands()
 
     def test_selected_version_or_replace_blocks_release(self):
         for version, replaced in (("v0.12.0", False), (self.pb_version, True)):
@@ -391,7 +436,7 @@ class GoSDKReleaseTest(unittest.TestCase):
                 self.selected_replace = replaced
                 with self.assertRaisesRegex(gate.ReleaseError, "selected a different or replaced"):
                     self.verify()
-                self.assert_no_build()
+                self.assert_no_quality_commands()
 
 
 if __name__ == "__main__":

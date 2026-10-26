@@ -5,7 +5,8 @@
 # Previously docker-publish.yml, mcp-publish.yml, and sdks-go-publish.yml
 # each maintained their own ad-hoc `verify` job; the bodies drifted over
 # time and only mcp-publish actually covered more than one module. This
-# workflow is now the single source of truth for the publish-side gate.
+# workflow is now the full-workspace gate for Root/MCP publishing. The Go SDK
+# keeps its artifact-specific isolated verifier and normal authority proof.
 #
 # Refs #295 (dev-flow improvements backlog).
 #
@@ -26,9 +27,17 @@ jobs:
   configured-source-integration:
     uses: ./.github/workflows/current-source-release.yml
   verify:
-    name: Verify
+    name: Verify (${{ matrix.group }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: nonserver
+            modules: '. core mcp pb sdks/go'
+          - group: server
+            modules: 'server'
     steps:
       - uses: actions/checkout@v7
 
@@ -46,14 +55,17 @@ jobs:
             exit 1
           fi
 
-      # Per-module loop. Each module is a separate go.mod; the root
-      # `./...` does NOT recurse into core/, mcp/, pb/, sdks/go/,
-      # server/. Mirrored from go.yml.
-      - name: Vet / build / test (all modules)
+      # Each go.mod needs its own ./...; isolate server from the other
+      # modules without sharing one job's timeout. Stream JSON directly to
+      # the job log so completed events remain visible after a hard timeout.
+      - name: Vet / build / test (selected modules)
+        env:
+          MODULES: ${{ matrix.modules }}
         run: |
           set -e
-          for mod in . core mcp pb sdks/go server; do
+          read -r -a modules <<< "$MODULES"
+          for mod in "${modules[@]}"; do
             echo "::group::$mod"
-            (cd "$mod" && go vet ./... && go build -v ./... && go test -race -shuffle=on ./...)
+            (cd "$mod" && go vet ./... && go build -v ./... && go test -race -shuffle=on -json ./...)
             echo "::endgroup::"
           done

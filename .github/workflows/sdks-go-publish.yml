@@ -20,16 +20,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Shared workspace gate — see _verify.yml and #295. Covers all six Go
-  # modules, but workspace replacements can hide an unpublished/stale pb.
+  # Preserve normal configured-source qualification; the isolated tagged SDK
+  # below owns its format, vet, build and race/shuffle test gates (#1901).
   verify:
-    uses: ./.github/workflows/_verify.yml
+    uses: ./.github/workflows/current-source-release.yml
 
   standalone:
     name: Verify tagged SDK against published pb
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      CGO_ENABLED: '1'
     permissions:
       contents: read
     steps:

@@ -118,6 +118,8 @@ CI: [.github/workflows/go.yml](.github/workflows/go.yml) runs `go build` + `go t
 
 Release workflows publish artifacts only. Project-managed GKE deployment is retired; the generic Kubernetes Helm chart remains available for operator-managed installations.
 
+Root/MCP release verification (#1899) gives Server and the five nonserver Go modules separate blocking 15-minute lanes and streams race/shuffle progress as JSON. [Go SDK release verification](.github/workflows/sdks-go-publish.yml) (#1901) keeps normal configured-source-integration plus one isolated SDK format/vet/build/race/shuffle path against published pb; caller `needs: verify` and release dependencies remain mandatory.
+
 ## Conventions and gotchas
 
 - **File layout & naming (Go)** — within every Go package in this repo:

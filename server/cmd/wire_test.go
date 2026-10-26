@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
+	"github.com/anaregdesign/lantern/server/internal/listenerlaunch"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -490,11 +492,16 @@ func TestInitializeAppDurableProductionWritesRestart(t *testing.T) {
 
 func TestInitializeAppDurableFailureClosesPartialOwners(t *testing.T) {
 	blocker, port := reserveRuntimeTestPort(t)
+	defer func() {
+		if err := blocker.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	path := filepath.Join(t.TempDir(), "receipts.wal")
 	setDurableRuntimeEnv(t, "fresh", path, port)
 
 	app, cleanup, err := initializeApp()
-	if app != nil || cleanup != nil || err == nil {
+	if app != nil || cleanup != nil || !errors.Is(err, syscall.EADDRINUSE) {
 		if cleanup != nil {
 			cleanup()
 		}
@@ -507,20 +514,46 @@ func TestInitializeAppDurableFailureClosesPartialOwners(t *testing.T) {
 	if err := lease.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := blocker.Close(); err != nil {
+	launch, err := listenerlaunch.Reserve(t.Context(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer launch.Close()
+	public, _ := launch.Addresses()
+	address, err := net.ResolveTCPAddr("tcp", public)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	envconfig.ResetForTesting()
 	t.Setenv("LANTERN_RECEIPT_WAL_MODE", "restart")
-	app, cleanup, err = initializeApp()
-	if err != nil {
-		t.Fatalf("restart after partial owner cleanup: %v", err)
-	}
-	if app == nil || cleanup == nil || !app.runtime.DurableReceiptWAL() {
-		t.Fatalf("restart app = %p, cleanup %v", app, cleanup != nil)
-	}
-	cleanup()
+	t.Setenv("LANTERN_PORT", strconv.Itoa(address.Port))
+	envconfig.ResetForTesting()
+	// Keep both reservations held: restart must adopt its existing socket,
+	// rather than close a probe and race to bind the same port again.
+	func() {
+		app, cleanup, err := initializeAppWithListeners(t.Context(), launch)
+		if cleanup != nil {
+			defer cleanup()
+		}
+		if err != nil {
+			t.Fatalf("restart after partial owner cleanup: %v", err)
+		}
+		if app == nil || cleanup == nil || !app.runtime.DurableReceiptWAL() {
+			t.Fatalf("restart app = %p, cleanup %v", app, cleanup != nil)
+		}
+		if err := launch.Adopted(); err != nil {
+			t.Fatalf("restart did not adopt its reserved listener: %v", err)
+		}
+		for _, held := range []string{blocker.Addr().String(), public} {
+			competitor, err := net.Listen("tcp", held)
+			if competitor != nil {
+				_ = competitor.Close()
+			}
+			if !errors.Is(err, syscall.EADDRINUSE) {
+				t.Fatalf("owned listener %s is not held: %v", held, err)
+			}
+		}
+	}()
 	lease, err = mutationlog.AcquireFileWALLease(path)
 	if err != nil {
 		t.Fatalf("injector cleanup leaked durable lease: %v", err)
