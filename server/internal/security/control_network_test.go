@@ -1,11 +1,15 @@
 package security
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -194,10 +198,38 @@ func TestS3AOwnerKnownNativeRollbackWithIndependentFloors(t *testing.T) {
 	}
 }
 
+const s3aResponseBarrierUnwindEnv = "LANTERN_S3A_RESPONSE_BARRIER_UNWIND_MARKER"
+const s3aResponseBarrierUnwindFailure = "intentional failure after admitted response barrier"
+
 func TestS3AOwnerCloseDrainsAdmittedHTTPBeforeReleasingState(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	n := s3aTestCluster(t, func(id uint32, c *s3aConfig) {
+	var once, releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	// Fatal/Goexit must release the test-owned barrier before cluster cleanup
+	// joins the admitted handler. The ordinary assertion still runs blocked.
+	defer unblock()
+	var n *s3aTestNetwork
+	unwindMarker := os.Getenv(s3aResponseBarrierUnwindEnv)
+	if unwindMarker != "" {
+		// Registered before cluster cleanup, so this marker is published only
+		// after every owner has completed its real Close path.
+		t.Cleanup(func() {
+			if n == nil {
+				t.Error("response barrier child did not construct its cluster")
+				return
+			}
+			for _, owner := range n.nodes {
+				if err := owner.Close(); err != nil {
+					t.Error("response barrier child cleanup", err)
+					return
+				}
+			}
+			if err := os.WriteFile(unwindMarker, []byte("all owner cleanup completed\n"), 0600); err != nil {
+				t.Error("response barrier child cleanup marker", err)
+			}
+		})
+	}
+	n = s3aTestCluster(t, func(id uint32, c *s3aConfig) {
 		if id == 2 {
 			c.hooks = &s3aHooks{beforeResponse: func(context.Context) { once.Do(func() { close(entered) }); <-release }}
 		}
@@ -222,7 +254,10 @@ func TestS3AOwnerCloseDrainsAdmittedHTTPBeforeReleasingState(t *testing.T) {
 		t.Fatal("Close escaped active handler")
 	case <-time.After(10 * time.Millisecond):
 	}
-	close(release)
+	if unwindMarker != "" {
+		t.Fatal(s3aResponseBarrierUnwindFailure)
+	}
+	unblock()
 	if err := <-closed; err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +269,34 @@ func TestS3AOwnerCloseDrainsAdmittedHTTPBeforeReleasingState(t *testing.T) {
 		t.Fatal("intact zero-witness resume", err)
 	}
 	_ = resumed.Close()
+}
+
+func TestS3AOwnerCloseDrainsAdmittedHTTPFailureUnwind(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "owners-closed")
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	// Select only the original test: the child cannot fork this regression.
+	// Its own timeout preserves a stack before the parent's kill/reap bound.
+	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestS3AOwnerCloseDrainsAdmittedHTTPBeforeReleasingState$", "-test.v", "-test.timeout=10s")
+	child.Env = append(os.Environ(), s3aResponseBarrierUnwindEnv+"="+marker)
+	child.WaitDelay = 2 * time.Second
+	out, err := child.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("response barrier child exceeded its bound: %v; exit=%v\n%s", ctx.Err(), err, out)
+	}
+	var exited *exec.ExitError
+	// The deliberate Fatal must be the only test diagnostic. In particular,
+	// an additional cleanup Error cannot hide behind the expected exit code.
+	diagnostics := regexp.MustCompile(`(?m)^[ \t]+[^\r\n]+\.go:[0-9]+: (.*)$`).FindAllSubmatch(out, -1)
+	if !errors.As(err, &exited) || exited.ExitCode() != 1 ||
+		len(diagnostics) != 1 || string(diagnostics[0][1]) != s3aResponseBarrierUnwindFailure ||
+		bytes.Contains(out, []byte("DATA RACE")) || bytes.Contains(out, []byte("panic:")) {
+		t.Fatalf("response barrier child did not reach its intended failure: %v\n%s", err, out)
+	}
+	got, err := os.ReadFile(marker)
+	if err != nil || string(got) != "all owner cleanup completed\n" {
+		t.Fatalf("response barrier child did not finish owner cleanup: %v marker=%q\n%s", err, got, out)
+	}
 }
 
 func TestS3AOwnerRejectsUnrepresentableLimitsBeforeState(t *testing.T) {

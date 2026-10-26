@@ -1,6 +1,8 @@
 """Guard the representative coverage and event boundaries of the CI reduction."""
 
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -23,6 +25,69 @@ def job(text, name):
 
 
 class RepresentativeCoverageTest(unittest.TestCase):
+    def test_publish_verification_keeps_all_modules_blocking_and_streams_json(self):
+        body = job(workflow("_verify"), "verify")
+        self.assertIn("    timeout-minutes: 15\n", body)
+        self.assertIn("      fail-fast: false\n", body)
+        self.assertNotIn("continue-on-error", body)
+        lanes = re.findall(r"(?m)^          - group: ([\w-]+)\n            modules: '([^']+)'$", body)
+        self.assertEqual({name for name, _ in lanes}, {"nonserver", "server"})
+        selected = {name: modules.split() for name, modules in lanes}
+        self.assertEqual(selected["server"], ["server"])
+        self.assertEqual([module for _, modules in lanes for module in modules.split()],
+                         [".", "core", "mcp", "pb", "sdks/go", "server"])
+        self.assertIn("uses: ./.github/workflows/current-source-release.yml",
+                      job(workflow("_verify"), "configured-source-integration"))
+        for caller in ("sdks-go-publish", "docker-publish", "mcp-publish"):
+            self.assertIn("uses: ./.github/workflows/_verify.yml", job(workflow(caller), "verify"))
+        script = textwrap.dedent(body.split("        run: |\n", 2)[2])
+        commands = [["vet", "./..."], ["build", "-v", "./..."],
+                    ["test", "-race", "-shuffle=on", "-json", "./..."]]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for module in [".", "core", "mcp", "pb", "sdks/go", "server"]:
+                (root / module).mkdir(parents=True, exist_ok=True)
+            stub = root / "go"
+            stub.write_text(f"#!{sys.executable}\n" + r"""
+import json, os, sys
+from pathlib import Path
+root = Path(os.environ['FIXTURE_ROOT'])
+module = str(Path.cwd().relative_to(root))
+args = sys.argv[1:]
+with (root / 'calls.jsonl').open('a') as output:
+    output.write(json.dumps([module, args]) + '\n')
+if args[0] == 'test':
+    print(json.dumps({'Action': 'output', 'Package': module, 'Output': 'streamed fixture\n'}), flush=True)
+sys.exit(23 if f'{module}:{args[0]}' == os.environ['FAILURE'] else 0)
+""")
+            stub.chmod(0o755)
+            def run(name, failure=""):
+                calls = root / "calls.jsonl"
+                calls.unlink(missing_ok=True)
+                result = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-c", script],
+                                        cwd=root, capture_output=True, text=True, timeout=10,
+                                        env=os.environ | {"PATH": f"{root}:{os.environ['PATH']}",
+                                                          "FIXTURE_ROOT": str(root), "FAILURE": failure,
+                                                          "MODULES": " ".join(selected[name])})
+                return result, [json.loads(line) for line in calls.read_text().splitlines()]
+            for name, modules in selected.items():
+                with self.subTest(group=name, outcome="success"):
+                    result, calls = run(name)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(calls, [[module, command] for module in modules for command in commands])
+                    events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+                    self.assertEqual([event["Package"] for event in events], modules)
+            for index, phase in enumerate(("vet", "build", "test")):
+                with self.subTest(phase=phase):
+                    result, calls = run("nonserver", f".:{phase}")
+                    self.assertEqual(result.returncode, 23, result.stderr)
+                    self.assertEqual(calls, [[".", command] for command in commands[:index + 1]])
+                    if phase == "test":
+                        self.assertIn('"Output": "streamed fixture\\n"', result.stdout)
+                    other, calls = run("server")
+                    self.assertEqual(other.returncode, 0, other.stderr)
+                    self.assertEqual(calls, [["server", command] for command in commands])
+
     def test_receipt_ha_pins_its_exporter_and_retains_environment_isolation(self):
         body = job(workflow("dart-sdk"), "offline-test")
         self.assertIn('go test -c -buildvcs=true -o "$RUNNER_TEMP/lantern-offline-authority-provisioner"', body)
