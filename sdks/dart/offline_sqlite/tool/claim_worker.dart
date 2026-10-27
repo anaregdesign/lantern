@@ -6,6 +6,8 @@ import 'package:lantern_client_offline/lantern_client_offline.dart';
 import 'package:lantern_client_offline_sqlite/lantern_client_offline_sqlite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'claim_protocol.dart';
+
 const _partition = 'claim-probe';
 const _recordId = 'record';
 const _operationId = 'operation';
@@ -15,35 +17,58 @@ final _expiration = _now.add(const Duration(hours: 1));
 /// Child process for claim_probe.dart; protocol output contains no store data.
 Future<void> main(List<String> arguments) async {
   SqliteOfflineStore? store;
+  var stage = ClaimWorkerStage.arguments;
+  void phase(ClaimWorkerStage value) {
+    stage = value;
+    stderr.writeln('\n${jsonEncode(claimWorkerPhase(value))}');
+  }
+
+  void fail(Object error) {
+    final marker = claimWorkerFailure(stage, error);
+    _emit(marker);
+    stderr.writeln('\n${jsonEncode(marker)}');
+    exitCode = 1;
+  }
+
+  phase(stage);
   try {
-    _require(arguments.length == 3);
+    _require(arguments.length == 3, ClaimReason.arguments);
     final [mode, path, owner] = arguments;
-    _require(['seed', 'actor', 'verify'].contains(mode));
-    _require(owner == 'a' || owner == 'b');
+    _require(
+      ['seed', 'actor', 'verify'].contains(mode),
+      ClaimReason.workerMode,
+    );
+    _require(owner == 'a' || owner == 'b', ClaimReason.workerOwner);
     _emit({'event': 'started', 'pid': pid});
+    phase(ClaimWorkerStage.opening);
     sqfliteFfiInit();
     store = await SqliteOfflineStore.open(
       path: path,
       databaseFactory: databaseFactoryFfi,
     );
     if (mode == 'seed') {
+      phase(ClaimWorkerStage.seed);
       await _seed(store);
       _emit({'event': 'seeded'});
       return;
     }
     if (mode == 'verify') {
+      phase(ClaimWorkerStage.verify);
       await _verify(store, owner);
       _emit({'event': 'verified'});
       return;
     }
+    phase(ClaimWorkerStage.ready);
     _emit({'event': 'ready'});
     await for (final command
         in stdin.transform(utf8.decoder).transform(const LineSplitter())) {
       switch (command) {
         case 'claim':
+          phase(ClaimWorkerStage.claim);
           final count = await _claim(store, owner, _now);
           _emit({'event': 'claimed', 'count': count});
         case 'renew':
+          phase(ClaimWorkerStage.renew);
           final renewed = await store.transaction(
             (transaction) => transaction.renewLease(
               _partition,
@@ -56,6 +81,7 @@ Future<void> main(List<String> arguments) async {
           );
           _emit({'event': 'renewed', 'accepted': renewed});
         case 'before-expiry':
+          phase(ClaimWorkerStage.beforeExpiry);
           final count = await _claim(
             store,
             owner,
@@ -63,6 +89,7 @@ Future<void> main(List<String> arguments) async {
           );
           _emit({'event': 'blocked', 'count': count});
         case 'recover':
+          phase(ClaimWorkerStage.recover);
           final count = await _claim(
             store,
             owner,
@@ -70,6 +97,7 @@ Future<void> main(List<String> arguments) async {
           );
           _emit({'event': 'recovered', 'count': count});
         case 'stale-renew':
+          phase(ClaimWorkerStage.staleRenew);
           final renewed = await store.transaction(
             (transaction) => transaction.renewLease(
               _partition,
@@ -82,21 +110,27 @@ Future<void> main(List<String> arguments) async {
           );
           _emit({'event': 'stale-renewed', 'accepted': renewed});
         case 'verify':
+          phase(ClaimWorkerStage.verify);
           await _verify(store, owner);
           _emit({'event': 'verified'});
         case 'stop':
+          phase(ClaimWorkerStage.stop);
           _emit({'event': 'stopped'});
           return;
         default:
-          throw StateError('protocol');
+          throw const ClaimProblem(ClaimReason.command);
       }
     }
-    throw StateError('unexpected_eof');
-  } catch (_) {
-    stderr.writeln('claim_worker_failed');
-    exitCode = 1;
+    throw const ClaimProblem(ClaimReason.unexpectedEof);
+  } on Object catch (error) {
+    fail(error);
   } finally {
-    await store?.close();
+    phase(ClaimWorkerStage.closing);
+    try {
+      await store?.close();
+    } on Object catch (error) {
+      fail(error);
+    }
   }
 }
 
@@ -170,7 +204,7 @@ Future<void> _status(
 Future<void> _verify(SqliteOfflineStore store, String owner) =>
     store.transaction((transaction) async {
       final rows = await transaction.outbox(_partition);
-      _require(rows.length == 1);
+      _require(rows.length == 1, ClaimReason.outboxCount);
       final expected = OfflineOutboxRecord(
         recordId: _recordId,
         operationId: _operationId,
@@ -194,9 +228,10 @@ Future<void> _verify(SqliteOfflineStore store, String owner) =>
       _require(
         OfflineCodec.encodeOutboxRecord(rows.single) ==
             OfflineCodec.encodeOutboxRecord(expected),
+        ClaimReason.outboxRecord,
       );
       final operations = await transaction.operations(_partition);
-      _require(operations.length == 1);
+      _require(operations.length == 1, ClaimReason.operationCount);
       final expectedOperation = OfflineOperationRecord(
         partitionId: _partition,
         generation: 0,
@@ -215,11 +250,14 @@ Future<void> _verify(SqliteOfflineStore store, String owner) =>
       _require(
         OfflineCodec.encodeOperationRecord(operations.single) ==
             OfflineCodec.encodeOperationRecord(expectedOperation),
+        ClaimReason.operationRecord,
       );
     });
 
-void _require(bool condition) {
-  if (!condition) throw StateError('claim_contract');
+void _require(bool condition, ClaimReason reason) {
+  if (!condition) {
+    throw ClaimProblem(reason);
+  }
 }
 
 void _emit(Map<String, Object?> event) => stdout.writeln(jsonEncode(event));
