@@ -354,9 +354,10 @@ func parseOwnedComposeProcesses(raw []byte, group int) ownedComposeProcessObserv
 		_, startErr := time.Parse("Mon Jan 2 15:04:05 2006", row.StartLocal)
 		stateValid := row.State != "" && len(row.State) <= 16
 		for _, character := range row.State {
-			if !(character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || strings.ContainsRune("+<>", character)) {
-				stateValid = false
+			if character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || strings.ContainsRune("+<>", character) {
+				continue
 			}
+			stateValid = false
 		}
 		if pidErr != nil || ppidErr != nil || uidErr != nil || row.PID <= 0 || row.PPID < 0 || row.UID < 0 || !stateValid || startErr != nil {
 			result.MalformedRows++

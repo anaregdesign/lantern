@@ -235,15 +235,16 @@ func TestSnapshotOriginalAdmissionExpiryDiagnosticsAndVerifiedRepair(t *testing.
 			expire := func() { sample.elapsed = peerauth.MaxRPCLifetime }
 			stream := &snapshotStageObservedStream{SnapshotStream: &snapshotSliceStream{frames: graphInstallerLifecycleFrames()}}
 			transportFailure := errors.New("controlled final transport failure after valid native checks")
-			if phase == "source transport failure" {
+			switch phase {
+			case "source transport failure":
 				stream.SnapshotStream.(*snapshotSliceStream).err = transportFailure
-			} else if phase == "before live" {
+			case "before live":
 				stream.after = func(open bool) {
 					if !open {
 						expire()
 					}
 				}
-			} else {
+			default:
 				graph.afterWrite = expire
 			}
 			installer := testGraphOnlySnapshotInstaller(t, apply, graph)
