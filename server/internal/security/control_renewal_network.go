@@ -150,7 +150,7 @@ func (o *s3aOwner) renewAuthority(ctx context.Context) error {
 	workers.Wait()
 	o.kernel.gate.Lock()
 	defer o.kernel.gate.Unlock()
-	_, _, err = o.receiver.currentLocked()
+	_, _, err = o.receiver.currentLockedAt(authorityRenewalNetworkReady)
 	return err
 }
 

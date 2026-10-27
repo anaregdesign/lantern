@@ -1,6 +1,9 @@
 package security
 
 import (
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/anaregdesign/lantern/server/decisiontrace"
@@ -139,7 +142,7 @@ func TestAuthorityRenewalDiagnosticDistinguishesActualRefusal(t *testing.T) {
 			events, dropped := capture.Drain()
 			var observed []decisiontrace.Event
 			for _, event := range events {
-				if event.Kind == "browser_decision" {
+				if event.Kind == "browser_decision" && event.Stage == "renewal_current" {
 					observed = append(observed, event)
 				}
 			}
@@ -188,5 +191,119 @@ func TestAuthorityRenewalReceiverAbandonAndEpoch(t *testing.T) {
 	}
 	if err = r.receive(newRaw, v); err == nil || r.pending != nil {
 		t.Fatal("new process used old challenge")
+	}
+}
+
+func TestAuthorityRenewalBindingFirstMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*authorityRenewalReceiver, *authorityRenewalStatement)
+		want authorityRenewalBindingFailure
+	}{
+		{"match", func(*authorityRenewalReceiver, *authorityRenewalStatement) {}, authorityRenewalBindingNone},
+		{"configuration", func(r *authorityRenewalReceiver, _ *authorityRenewalStatement) {
+			r.kernel.config.configured = &ConfiguredTrust{}
+		}, authorityRenewalBindingConfiguration},
+		{"chosen", func(r *authorityRenewalReceiver, _ *authorityRenewalStatement) { r.kernel.chosen = &s2cMessage{} }, authorityRenewalBindingChosen},
+		{"slot", func(_ *authorityRenewalReceiver, s *authorityRenewalStatement) { s.Slot++ }, authorityRenewalBindingSlot},
+		{"prefix", func(_ *authorityRenewalReceiver, s *authorityRenewalStatement) { s.Prefix[0] ^= 1 }, authorityRenewalBindingPrefix},
+		{"cut", func(_ *authorityRenewalReceiver, s *authorityRenewalStatement) { s.Cut.Sequence++ }, authorityRenewalBindingCut},
+		{"capsule", func(_ *authorityRenewalReceiver, s *authorityRenewalStatement) { s.Capsule[0] ^= 1 }, authorityRenewalBindingCapsule},
+		{"receipt slot", func(r *authorityRenewalReceiver, _ *authorityRenewalStatement) { r.kernel.replayReceipt.ControlSlot++ }, authorityRenewalBindingReceiptSlot},
+		{"receipt prefix", func(r *authorityRenewalReceiver, _ *authorityRenewalStatement) {
+			r.kernel.replayReceipt.ControlPrefix[0] ^= 1
+		}, authorityRenewalBindingReceiptPrefix},
+		{"cut before capsule", func(_ *authorityRenewalReceiver, s *authorityRenewalStatement) { s.Cut.Sequence++; s.Capsule[0] ^= 1 }, authorityRenewalBindingCut},
+		{"capsule before receipt slot", func(r *authorityRenewalReceiver, s *authorityRenewalStatement) {
+			s.Capsule[0] ^= 1
+			r.kernel.replayReceipt.ControlSlot++
+		}, authorityRenewalBindingCapsule},
+		{"receipt slot before prefix", func(r *authorityRenewalReceiver, _ *authorityRenewalStatement) {
+			r.kernel.replayReceipt.ControlSlot++
+			r.kernel.replayReceipt.ControlPrefix[0] ^= 1
+		}, authorityRenewalBindingReceiptSlot},
+		{"configuration before nil projection", func(r *authorityRenewalReceiver, _ *authorityRenewalStatement) {
+			r.kernel.config.configured = &ConfiguredTrust{}
+			r.kernel.chosen = &s2cMessage{}
+			r.kernel.replayState.projection = nil
+		}, authorityRenewalBindingConfiguration},
+		{"chosen before nil projection", func(r *authorityRenewalReceiver, s *authorityRenewalStatement) {
+			r.kernel.chosen = &s2cMessage{}
+			s.Slot++
+			r.kernel.replayState.projection = nil
+		}, authorityRenewalBindingChosen},
+		{"slot before nil projection", func(r *authorityRenewalReceiver, s *authorityRenewalStatement) {
+			s.Slot++
+			s.Prefix[0] ^= 1
+			r.kernel.replayState.projection = nil
+		}, authorityRenewalBindingSlot},
+		{"prefix before nil projection", func(r *authorityRenewalReceiver, s *authorityRenewalStatement) {
+			s.Prefix[0] ^= 1
+			r.kernel.replayState.projection = nil
+		}, authorityRenewalBindingPrefix},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, _ := authorityTestNativeCluster(t, 3)
+			r, _ := authorityTestReceiver(t, n)
+			s := r.active.certificate.request.statement
+			tc.edit(r, &s)
+			r.kernel.gate.Lock()
+			defer r.kernel.gate.Unlock()
+			state, receipt := r.kernel.replayState, r.kernel.replayReceipt
+			legacy := r.kernel.configuredReadyLocked() && r.kernel.chosen == nil && state.slot == s.Slot && state.prefix == s.Prefix && state.projection.cut == s.Cut && receipt.CapsuleDigest == s.Capsule && receipt.ControlSlot == s.Slot && receipt.ControlPrefix == s.Prefix
+			if got := r.bindingFailureLocked(s); got != tc.want || r.matchesLocked(s) != legacy || legacy != (tc.want == authorityRenewalBindingNone) {
+				t.Fatal("binding changed original truth or first short circuit", got, tc.want, legacy)
+			}
+		})
+	}
+}
+
+func TestAuthorityRenewalBindingCallSites(t *testing.T) {
+	for _, tc := range []struct {
+		site  authorityRenewalCallSite
+		stage string
+	}{
+		{authorityRenewalDefault, "renewal_binding"},
+		{authorityRenewalPublicPurposeNotBefore, "renewal_binding_public_purpose_not_before"},
+		{authorityRenewalPublicPurposeRead, "renewal_binding_public_purpose_read"},
+		{authorityRenewalOriginPurposeBegin, "renewal_binding_origin_purpose_begin"},
+		{authorityRenewalOriginPurposeStart, "renewal_binding_origin_purpose_start"},
+		{authorityRenewalOriginPurposeComplete, "renewal_binding_origin_purpose_complete"},
+		{authorityRenewalNetworkReady, "renewal_binding_network_ready"},
+		{authorityRenewalCallSite(255), "renewal_binding"},
+	} {
+		t.Run(tc.stage, func(t *testing.T) {
+			n, _ := authorityTestNativeCluster(t, 3)
+			r, _ := authorityTestReceiver(t, n)
+			r.clock.traceID = 71
+			r.active.certificate.request.statement.Cut.Sequence++
+			r.active.certificate.request.canonical = "private-request-and-token"
+			r.active.certificate.raw = "private-certificate-body"
+			active, pending := r.active, r.pending
+			statement := active.certificate.request.statement
+			calls := 0
+			sample := r.clock.producer.sample
+			r.clock.producer.sample = func() (authorityTimeStamp, error) { calls++; return sample() }
+			capture := decisiontrace.Start(8)
+			if capture == nil {
+				t.Fatal("capture already owned")
+			}
+			defer capture.Stop()
+			r.kernel.gate.Lock()
+			_, _, err := r.currentLockedAt(tc.site)
+			r.kernel.gate.Unlock()
+			capture.Stop()
+			events, dropped := capture.Drain()
+			if err != errAuthorityRenewal || !errors.Is(err, errAuthorityRenewal) || calls != 0 || r.active != active || r.pending != pending || active.certificate.request.statement != statement {
+				t.Fatal("diagnostic changed refusal, sample or receiver state", err, calls)
+			}
+			if dropped != 0 || len(events) != 2 || events[0].Kind != "browser_decision" || events[0].Stage != "renewal_current" || events[0].Reason != "binding" || events[1].Kind != "browser_decision" || events[1].Stage != tc.stage || events[1].Reason != "projection_cut" || events[0].Object != 71 || events[1].Object != 71 {
+				t.Fatal("lost same-pass fixed binding detail", events, dropped)
+			}
+			raw, err := json.Marshal(events)
+			if err != nil || strings.Contains(string(raw), "private-request") || strings.Contains(string(raw), "private-certificate") {
+				t.Fatal("binding trace exposed private input", err)
+			}
+		})
 	}
 }

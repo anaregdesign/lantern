@@ -2,6 +2,7 @@ package security
 
 import (
 	"crypto/sha256"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -197,5 +198,85 @@ func TestAuthorityPurposeRefusesStaleCutAndSharedPoolExhaustion(t *testing.T) {
 	m.Close()
 	if _, err := m.beginCurrent(r, binding, h.Credential.Token.ExpiresAt.Time()); err == nil {
 		t.Fatal("closed purpose pool used")
+	}
+}
+
+func TestAuthorityPurposeRenewalBindingCallSites(t *testing.T) {
+	for _, operation := range []string{"begin", "start", "complete"} {
+		t.Run(operation, func(t *testing.T) {
+			n, _ := authorityTestNativeCluster(t, 3)
+			r, ticks := authorityTestReceiver(t, n)
+			r.clock.traceID = 71
+			h, op := authorityTestHeader(t, n.fixture)
+			binding := authorityPurposeBinding{h.ID, op.digest, op.reviewed, op.actor, 1, 1}
+			m := NewManagementAuthorizations(time.Minute, 1)
+			var begin AuthorizationStart
+			var event TokenAuthenticationEvidence
+			if operation != "begin" {
+				var err error
+				begin, err = m.beginCurrent(r, binding, h.Credential.Token.ExpiresAt.Time())
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if operation == "complete" {
+				ticks.Add(uint64(3 * time.Second))
+				if _, _, err := m.startCurrent(r, begin.Ticket); err != nil {
+					t.Fatal(err)
+				}
+				event = *h.Credential.Token
+				event.Mode, event.Profile, event.Nonce = "code", "oidc-id", [32]byte{10}
+				event.IssuedAt, event.AuthTime = authorityNumericTime(begin.NotBefore), authorityNumericTime(begin.NotBefore)
+				event.Code = CodeAuthenticationEvidence{Flow: "operation", AuthorizationID: begin.ID, Transaction: [32]byte{4}, Exchange: [32]byte{5}, Nonce: event.Nonce, PKCE: [32]byte{6}, CreatedAt: begin.NotBefore, ConsumedAt: begin.NotBefore.Add(time.Millisecond), ExpiresAt: begin.ExpiresAt}
+			}
+			r.active.certificate.request.statement.Cut.Sequence++
+			calls := 0
+			sample := r.clock.producer.sample
+			r.clock.producer.sample = func() (authorityTimeStamp, error) { calls++; return sample() }
+			capture := decisiontrace.Start(16)
+			if capture == nil {
+				t.Fatal("capture already owned")
+			}
+			defer capture.Stop()
+			var err error
+			switch operation {
+			case "begin":
+				_, err = m.beginCurrent(r, binding, h.Credential.Token.ExpiresAt.Time())
+			case "start":
+				_, _, err = m.startCurrent(r, begin.Ticket)
+			case "complete":
+				_, err = m.completeCurrent(r, begin.ID, event)
+			}
+			capture.Stop()
+			events, dropped := capture.Drain()
+			if err != errAuthorityRenewal || !errors.Is(err, errAuthorityRenewal) || calls != 0 || len(m.proofs) != 0 {
+				t.Fatal("binding diagnostic sampled or published proof", err, calls)
+			}
+			if operation == "begin" {
+				if len(m.pending) != 0 || len(m.tickets) != 0 {
+					t.Fatal("failed begin committed generated IDs")
+				}
+			} else {
+				pending := m.pending[begin.ID]
+				if len(m.pending) != 1 || pending.state != AuthorizationPending || pending.proof != [32]byte{} || pending.current.started != (operation == "complete") || pending.current.evidence != [32]byte{} {
+					t.Fatal("binding failure changed retained purpose state")
+				}
+				if _, present := m.tickets[sha256.Sum256(begin.Ticket[:])]; present != (operation == "start") {
+					t.Fatal("binding failure consumed or restored ticket")
+				}
+			}
+			details := 0
+			for _, observed := range events {
+				if observed.Kind == "browser_decision" && observed.Stage == "renewal_binding_origin_purpose_"+operation {
+					details++
+					if observed.Reason != "projection_cut" || observed.Object != 71 {
+						t.Fatal("wrong same-pass purpose detail", observed)
+					}
+				}
+			}
+			if dropped != 0 || details != 1 {
+				t.Fatal("purpose binding call site missing", events, dropped)
+			}
+		})
 	}
 }
