@@ -97,7 +97,24 @@ func TestSnapshotInstallFaultGatesLoglessGraphReadsOnRealWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := service.NewLanternService(cache)
-	srv := newConnectTestServer(t, svc, nil)
+	var observeActive atomic.Bool
+	entered := map[string]chan struct{}{
+		graphv1connect.LanternServiceGetVertexProcedure:   make(chan struct{}),
+		graphv1connect.LanternServiceGetVerticesProcedure: make(chan struct{}),
+	}
+	returned := make(chan error, len(entered))
+	observeWait := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			channel, known := entered[req.Spec().Procedure]
+			if !observeActive.Load() || !known {
+				return next(ctx, req)
+			}
+			response, err := next(&wireSnapshotWaitContext{Context: ctx, entered: channel}, req)
+			returned <- err
+			return response, err
+		}
+	})
+	srv := newConnectTestServer(t, svc, nil, observeWait)
 	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -134,8 +151,43 @@ func TestSnapshotInstallFaultGatesLoglessGraphReadsOnRealWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkReads("installing", true)
+	defer finish(false)
+	observeActive.Store(true)
+	type readResult struct {
+		name  string
+		found bool
+		err   error
+	}
+	results := make(chan readResult, len(reads))
+	for _, read := range reads {
+		go func() {
+			found, err := read.call()
+			results <- readResult{read.name, found, err}
+		}()
+	}
+	for procedure, channel := range entered {
+		select {
+		case <-channel:
+		case err := <-returned:
+			t.Fatalf("read returned before active Snapshot finished: %v", err)
+		case <-ctx.Done():
+			t.Fatalf("%s did not wait for active Snapshot: %v", procedure, ctx.Err())
+		}
+	}
+	observeActive.Store(false)
 	finish(false)
+	for range reads {
+		select {
+		case result := <-results:
+			t.Run("installing/"+result.name, func(t *testing.T) {
+				if result.found || connect.CodeOf(result.err) != connect.CodeFailedPrecondition || !strings.Contains(result.err.Error(), "gapped") {
+					t.Fatalf("read after unverified active Snapshot = (found=%t, err=%v), want gapped refusal", result.found, result.err)
+				}
+			})
+		case <-ctx.Done():
+			t.Fatal("waiting reads did not finish after unverified Snapshot", ctx.Err())
+		}
+	}
 	checkReads("incomplete", true)
 	finish, err = svc.BeginSnapshotInstall()
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -177,6 +178,20 @@ type connectTestServer struct {
 	srv     *httptest.Server
 	handler http.Handler
 	url     string
+}
+
+// Installed by the innermost test interceptor after transport/authentication
+// setup. Ordinary admission checks use Err; Done observes the actual blocking
+// context wait without a production callback or a wall-clock delay.
+type wireSnapshotWaitContext struct {
+	context.Context
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (c *wireSnapshotWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.entered) })
+	return c.Context.Done()
 }
 
 type replicationTestPeer struct {

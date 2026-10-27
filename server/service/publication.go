@@ -170,6 +170,32 @@ func publicationGapError() error {
 		errors.New("gapped: mutation publication or Snapshot install requires repair before reading, subscribing, or taking a snapshot"))
 }
 
+type snapshotInstallCompletion struct {
+	done chan struct{}
+}
+
+// Wait for only the currently admitted attempt, without retaining any service
+// lock. Completion is not proof of repair: the original admission and fault
+// guards still run afterward. A later install may race and must still refuse.
+func (s *LanternService) waitForActiveSnapshotInstall(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return ctxToConnect(err)
+	}
+	completion := s.activeSnapshotInstall.Load()
+	if completion == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctxToConnect(ctx.Err())
+	case <-completion.done:
+	}
+	if err := ctx.Err(); err != nil {
+		return ctxToConnect(err)
+	}
+	return nil
+}
+
 // BeginSnapshotInstall invalidates the current CDC generation before a peer
 // Snapshot can change graph state without individual log entries. An
 // interrupted install leaves this node gapped until a later verified install
@@ -226,6 +252,8 @@ func (s *LanternService) BeginSnapshotInstallChecked(ctx context.Context, check 
 		s.snapshotInstallFaulted = true
 	}
 	faultCountAfter := s.publicationFaultCount
+	completion := &snapshotInstallCompletion{done: make(chan struct{})}
+	s.activeSnapshotInstall.Store(completion)
 	gate.Unlock()
 	s.snapshotReadCutMu.Unlock()
 	logger := s.logger
@@ -248,7 +276,13 @@ func (s *LanternService) BeginSnapshotInstallChecked(ctx context.Context, check 
 		if !finished.CompareAndSwap(false, true) {
 			return connect.NewError(connect.CodeFailedPrecondition, errors.New("Snapshot install already finished"))
 		}
-		defer s.snapshotInstallMu.Unlock()
+		defer func() {
+			// Retire only this attempt, after its state/cut work and before
+			// another installer can acquire custody. Waking never clears a fault.
+			s.activeSnapshotInstall.CompareAndSwap(completion, nil)
+			close(completion.done)
+			s.snapshotInstallMu.Unlock()
+		}()
 		result := "unverified"
 		snapshotFaultRemaining := true
 		finishStateKnown := false

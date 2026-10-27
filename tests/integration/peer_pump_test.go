@@ -897,7 +897,19 @@ func TestHAReadContentionFallsBackToCommittedWireCapture(t *testing.T) {
 	}
 	svc := service.NewLanternService(backend).
 		WithReplication(log, hlc.New(hlc.NodeID{0x75}, hlc.Options{}), nil)
-	srv := newConnectTestServer(t, svc, nil)
+	waitEntered := make(chan struct{})
+	waitReturned := make(chan error, 1)
+	observeWait := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
+		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+			if req.Spec().Procedure != graphv1connect.LanternServiceGetVerticesProcedure {
+				return next(ctx, req)
+			}
+			response, err := next(&wireSnapshotWaitContext{Context: ctx, entered: waitEntered}, req)
+			waitReturned <- err
+			return response, err
+		}
+	})
+	srv := newConnectTestServer(t, svc, nil, observeWait)
 	raw := graphv1connect.NewLanternServiceClient(h2cClient(), srv.url)
 	writes := make(chan error, 1)
 	go func() {
@@ -934,13 +946,158 @@ func TestHAReadContentionFallsBackToCommittedWireCapture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := raw.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{
-		Keys: []string{"contended-read"},
-	})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
-		finish(false)
-		t.Fatalf("h2c read during Snapshot fault = %v, want FailedPrecondition", err)
+	defer finish(false)
+	type readResult struct {
+		response *connect.Response[pb.GetVerticesResponse]
+		err      error
+	}
+	read := make(chan readResult, 1)
+	go func() {
+		response, err := raw.GetVertices(ctx, connect.NewRequest(&pb.GetVerticesRequest{Keys: []string{"contended-read"}}))
+		read <- readResult{response, err}
+	}()
+	select {
+	case <-waitEntered:
+	case err := <-waitReturned:
+		t.Fatalf("h2c read returned before active Snapshot completed: %v", err)
+	case <-ctx.Done():
+		t.Fatal("h2c read did not wait for active Snapshot", ctx.Err())
 	}
 	finish(true)
+	select {
+	case result := <-read:
+		if result.err != nil || result.response == nil || len(result.response.Msg.Vertices) != 1 || result.response.Msg.Vertices[0].GetString_() != "third" {
+			t.Fatalf("h2c read after verified Snapshot = (%v, %v), want third", result.response, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("h2c read did not resume after verified Snapshot", ctx.Err())
+	}
+}
+
+func TestPublicUnaryWaitsForActiveSnapshotInstallOnRealWire(t *testing.T) {
+	for _, name := range []string{"verified install", "unverified install", "canceled caller"} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			log := mutationlog.New(mutationlog.Options{Capacity: 16})
+			t.Cleanup(func() { _ = log.Close() })
+			nodeID := hlc.NodeID{0x76}
+			graph := graphcache.NewGraphCache[string, *pb.Vertex](time.Minute)
+			svc := service.NewLanternService(graph).WithReplication(log, hlc.New(nodeID, hlc.Options{}), nil)
+			entered, returned := make(chan struct{}), make(chan error, 1)
+			var calls atomic.Int32
+			observeWait := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
+				return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+					if req.Spec().Procedure != graphv1connect.LanternServicePutVerticesProcedure {
+						return next(ctx, req)
+					}
+					calls.Add(1)
+					response, err := next(&wireSnapshotWaitContext{Context: ctx, entered: entered}, req)
+					returned <- err
+					return response, err
+				}
+			})
+			server := newConnectTestServer(t, svc, nil, observeWait)
+			raw := graphv1connect.NewLanternServiceClient(h2cClient(), server.url)
+			finish, err := svc.BeginSnapshotInstall()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer finish(false)
+			type putResult struct {
+				response *connect.Response[pb.PutVerticesResponse]
+				err      error
+			}
+			result := make(chan putResult, 1)
+			callCtx, stopCall := context.WithCancel(ctx)
+			defer stopCall()
+			go func() {
+				response, err := raw.PutVertices(callCtx, connect.NewRequest(&pb.PutVerticesRequest{Vertices: []*pb.Vertex{
+					{Key: "wait:first", Value: &pb.Vertex_String_{String_: "first"}},
+					{Key: "wait:second", Value: &pb.Vertex_String_{String_: "second"}},
+				}}))
+				result <- putResult{response, err}
+			}()
+			select {
+			case <-entered:
+			case err := <-returned:
+				t.Fatalf("public write returned before active Snapshot completed: %v", err)
+			case <-ctx.Done():
+				t.Fatal("public write did not enter active Snapshot wait", ctx.Err())
+			}
+			assertNoEffects := func() {
+				t.Helper()
+				for _, key := range []string{"wait:first", "wait:second"} {
+					if _, found := graph.GetVertex(key); found {
+						t.Fatalf("waiting/refused write published %q", key)
+					}
+				}
+				if svc.LocalSeq(nodeID) != 0 || log.Len() != 0 {
+					t.Fatalf("waiting/refused write committed origin/log=%d/%d", svc.LocalSeq(nodeID), log.Len())
+				}
+			}
+			assertNoEffects()
+			if _, err := raw.GetReplicationStatus(ctx, connect.NewRequest(&pb.GetReplicationStatusRequest{})); err != nil {
+				t.Fatal("replication diagnostics blocked by active Snapshot", err)
+			}
+			wantCode := connect.CodeUnknown
+			if name == "canceled caller" {
+				stopCall()
+				select {
+				case err := <-returned:
+					if connect.CodeOf(err) != connect.CodeCanceled {
+						t.Fatalf("canceled server handler = %v, want Canceled", err)
+					}
+				case <-ctx.Done():
+					t.Fatal("canceled server handler did not finish while install remained active", ctx.Err())
+				}
+				if !svc.SnapshotInstallActive() {
+					t.Fatal("caller cancellation finished the Snapshot install")
+				}
+				assertNoEffects()
+				finish(true)
+				wantCode = connect.CodeCanceled
+			} else {
+				verified := name == "verified install"
+				finish(verified)
+				if !verified {
+					wantCode = connect.CodeFailedPrecondition
+				}
+			}
+			select {
+			case got := <-result:
+				if name == "verified install" {
+					if got.err != nil || got.response == nil || len(got.response.Msg.Outcomes) != 2 {
+						t.Fatalf("verified waiting PutVertices = (%v, %v)", got.response, got.err)
+					}
+					for _, outcome := range got.response.Msg.Outcomes {
+						if outcome != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+							t.Fatalf("verified waiting PutVertices outcome = %v", outcome)
+						}
+					}
+					if svc.LocalSeq(nodeID) != 1 || log.Len() != 1 {
+						t.Fatalf("waiting batch replayed or missed publication: origin/log=%d/%d", svc.LocalSeq(nodeID), log.Len())
+					}
+					for key, want := range map[string]string{"wait:first": "first", "wait:second": "second"} {
+						vertex, found := graph.GetVertex(key)
+						if !found || vertex.GetString_() != want {
+							t.Fatalf("verified waiting batch vertex %q = (%v, %t)", key, vertex, found)
+						}
+					}
+				} else {
+					if connect.CodeOf(got.err) != wantCode || got.response != nil {
+						t.Fatalf("refused waiting PutVertices = (%v, %v), want %v", got.response, got.err, wantCode)
+					}
+					assertNoEffects()
+				}
+			case <-ctx.Done():
+				t.Fatal("waiting public write did not finish", ctx.Err())
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("public unary dispatch count=%d, want one", calls.Load())
+			}
+		})
+	}
 }
 
 // TestPeerPump_E2E_ThreeNodeConvergence wires three peers in a full

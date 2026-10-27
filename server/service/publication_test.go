@@ -78,6 +78,140 @@ func snapshotInstallDiagnosticRows(t *testing.T, output *bytes.Buffer) []map[str
 	return rows
 }
 
+func TestSnapshotInstallCompletionOwnsOneAdmittedAttempt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for _, failAt := range []int{1, 2} {
+		t.Run(fmt.Sprintf("rejected begin %d", failAt), func(t *testing.T) {
+			svc := NewLanternService(newFakeBackend())
+			original := errors.New("Snapshot authority unavailable")
+			checks := 0
+			finish, err := svc.BeginSnapshotInstallChecked(ctx, func() error {
+				checks++
+				if checks == failAt {
+					return original
+				}
+				return nil
+			})
+			if finish != nil || err != original || checks != failAt || svc.activeSnapshotInstall.Load() != nil ||
+				svc.SnapshotInstallActive() || svc.SnapshotRepairRequired() {
+				t.Fatal("rejected begin published completion or retained installer custody", err)
+			}
+			if err := svc.waitForActiveSnapshotInstall(ctx); err != nil {
+				t.Fatal("rejected begin introduced a public wait", err)
+			}
+		})
+	}
+
+	svc := NewLanternService(newFakeBackend())
+	finish, err := svc.BeginSnapshotInstallChecked(ctx, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = finish(false) }()
+	first := svc.activeSnapshotInstall.Load()
+	if first == nil {
+		t.Fatal("admitted begin did not publish completion")
+	}
+	select {
+	case <-first.done:
+		t.Fatal("active install was already complete")
+	default:
+	}
+	if second, err := svc.BeginSnapshotInstallChecked(ctx, func() error { return nil }); second != nil || connect.CodeOf(err) != connect.CodeUnavailable || svc.activeSnapshotInstall.Load() != first {
+		t.Fatal("competing begin replaced the active attempt", err)
+	}
+	if err := finish(false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-first.done:
+	default:
+		t.Fatal("unverified finish did not release its waiters")
+	}
+	if svc.activeSnapshotInstall.Load() != nil || svc.SnapshotInstallActive() || !svc.SnapshotRepairRequired() {
+		t.Fatal("completion cleared the repair fault or retained the active attempt")
+	}
+	if err := svc.waitForActiveSnapshotInstall(ctx); err != nil {
+		t.Fatal("persistent fault was confused with an active attempt", err)
+	}
+	if _, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "refused"}}}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatal("completion authorized a write after unverified finish", err)
+	}
+
+	retry, err := svc.BeginSnapshotInstallChecked(ctx, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = retry(false) }()
+	current := svc.activeSnapshotInstall.Load()
+	if current == nil || current == first {
+		t.Fatal("new install reused the old completion")
+	}
+	if err := finish(true); connect.CodeOf(err) != connect.CodeFailedPrecondition || svc.activeSnapshotInstall.Load() != current {
+		t.Fatal("duplicate old finish detached the new attempt", err)
+	}
+	select {
+	case <-current.done:
+		t.Fatal("duplicate old finish completed the new attempt")
+	default:
+	}
+	if err := retry(true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-current.done:
+	default:
+		t.Fatal("verified finish did not complete its own attempt")
+	}
+	if svc.activeSnapshotInstall.Load() != nil || svc.SnapshotInstallActive() || svc.SnapshotRepairRequired() {
+		t.Fatal("verified retry retained active custody or the Snapshot fault")
+	}
+}
+
+func TestSnapshotInstallCompletionPreservesRejectedFinish(t *testing.T) {
+	for _, failAt := range []int{3, 4} {
+		t.Run(fmt.Sprintf("authority check %d", failAt), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			svc := NewLanternService(newFakeBackend())
+			original := connect.NewError(connect.CodePermissionDenied, errors.New("original authority expired"))
+			checks := 0
+			finish, err := svc.BeginSnapshotInstallChecked(ctx, func() error {
+				checks++
+				if checks == failAt {
+					return original
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = finish(false) }()
+			completion := svc.activeSnapshotInstall.Load()
+			if completion == nil {
+				t.Fatal("admitted attempt has no completion")
+			}
+			fault, count := svc.publicationFaultCh, svc.publicationFaultCount
+			if err := finish(true); err != original || checks != failAt {
+				t.Fatal("completion changed original validation/check semantics", err, checks)
+			}
+			select {
+			case <-completion.done:
+			default:
+				t.Fatal("rejected finish retained public waiters")
+			}
+			if svc.activeSnapshotInstall.Load() != nil || svc.SnapshotInstallActive() || !svc.SnapshotRepairRequired() ||
+				svc.publicationFaultCh != fault || svc.publicationFaultCount != count {
+				t.Fatal("rejected finish changed repair authority or retained the attempt")
+			}
+			if _, err := svc.PutVertices(ctx, &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: "refused"}}}); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+				t.Fatal("rejected finish completion authorized a write", err)
+			}
+		})
+	}
+}
+
 func TestSnapshotInstallCheckedRejectsAuthorityWithdrawnAcrossPublicationWait(t *testing.T) {
 	for _, phase := range []string{"begin", "verified finish"} {
 		for _, boundary := range []string{"public read latch", "publication gate", "acquired observer"} {
