@@ -3,7 +3,7 @@ module github.com/anaregdesign/lantern/core
 go 1.27.3
 
 require (
-	github.com/RoaringBitmap/roaring/v2 v2.29.0
+	github.com/RoaringBitmap/roaring/v2 v2.30.0
 	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.43.0
