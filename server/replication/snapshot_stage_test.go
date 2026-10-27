@@ -539,6 +539,29 @@ func TestGraphSnapshotStagingScratchFailuresNeverVerifyAndReleaseOwnership(t *te
 			if result.Header != nil || result.Graph != (SnapshotGraphCounts{}) || len(apply.cutoffs) != 0 || strings.Contains(strings.Join(events, ","), "finish:true") {
 				t.Fatalf("failed staging advertised a verified install: result=%+v events=%v cutoffs=%v", result, events, apply.cutoffs)
 			}
+			var diagnosed *snapshotInstallError
+			if !errors.As(err, &diagnosed) {
+				t.Fatal("failed install lacks local diagnostic envelope", err)
+			}
+			wantPhase := "capture_and_validate"
+			if failure.name == "digest read" {
+				wantPhase = "seal"
+			}
+			if failure.afterBegin {
+				wantPhase = "live_replay"
+			}
+			detail := diagnosed.diagnostic
+			if detail.phase != wantPhase || detail.liveStarted != failure.afterBegin || detail.elapsed < 0 || detail.phaseElapsed < 0 {
+				t.Fatalf("wrong failure boundary: got=%+v wantPhase=%s live=%t", detail, wantPhase, failure.afterBegin)
+			}
+			if failure.afterBegin && (detail.stagedFrames != 3 || detail.stagedBytes == 0 || detail.liveFramesRead == 0) {
+				t.Fatalf("cleanup discarded completed stage/read counts: %+v", detail)
+			}
+			if strings.Contains(failure.name, "close") || failure.name == "cleanup after source failure" {
+				if !detail.cleanupFailed {
+					t.Fatalf("cleanup failure was not retained: %+v", detail)
+				}
+			}
 			if failure.afterBegin {
 				if apply.checkedBegins != 1 || len(apply.finishes) != 1 || apply.finishes[0] || apply.releases != 1 {
 					t.Fatalf("live replay failure did not release exactly once as unverified: events=%v finishes=%v releases=%d", events, apply.finishes, apply.releases)
@@ -736,7 +759,7 @@ func TestGraphSnapshotStagingPreservesTransportErrorBeforeNativeCapture(t *testi
 			graph := &snapshotLifecycleGraph{events: &events}
 			stream := &snapshotStageObservedStream{SnapshotStream: &snapshotSliceStream{err: status.source}}
 			_, err := installSnapshot(ctx, testGraphOnlySnapshotInstaller(t, apply, graph), stream)
-			if err != status.want || stream.receives != 1 || len(events) != 0 || len(apply.finishes) != 0 {
+			if !errors.Is(err, status.want) || err.Error() != status.want.Error() || stream.receives != 1 || len(events) != 0 || len(apply.finishes) != 0 {
 				t.Fatalf("native proof handling masked source failure or began replay: receives=%d events=%v finishes=%v err=%v want=%v", stream.receives, events, apply.finishes, err, status.want)
 			}
 		})

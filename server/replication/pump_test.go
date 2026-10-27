@@ -1639,6 +1639,10 @@ func TestGraphOnlySnapshotInstallerLifecycle(t *testing.T) {
 			if len(apply.finishes) != 1 || apply.finishes[0] {
 				t.Fatalf("finish calls = %v, want [false]", apply.finishes)
 			}
+			var failure *snapshotInstallError
+			if !errors.As(err, &failure) || failure.diagnostic.phase != "watermarks" || !failure.diagnostic.liveStarted {
+				t.Fatalf("watermark failure diagnostic changed boundary: %v", err)
+			}
 			if got := events[len(events)-1]; got != "finish:false" {
 				t.Fatalf("final lifecycle event = %q, want finish:false; all=%v", got, events)
 			}
@@ -1738,6 +1742,16 @@ func TestGraphOnlySnapshotInstallerCheckedPublicationBoundaryFailures(t *testing
 			}
 			if want != nil && (result.Header != nil || result.Graph != (SnapshotGraphCounts{})) {
 				t.Fatalf("failed checked boundary returned a successful Snapshot result: %+v", result)
+			}
+			if want != nil {
+				var failure *snapshotInstallError
+				wantPhase := "verified_finish"
+				if strings.HasPrefix(boundary, "checked begin") {
+					wantPhase = "live_begin"
+				}
+				if !errors.As(err, &failure) || failure.diagnostic.phase != wantPhase || failure.diagnostic.liveStarted != (wantPhase == "verified_finish") {
+					t.Fatalf("checked publication diagnostic changed boundary: err=%v detail=%+v", err, failure)
+				}
 			}
 		})
 	}
@@ -2498,5 +2512,29 @@ func TestPumpSnapshotWrapperDoesNotReserveUnusedTail(t *testing.T) {
 	defer peer.mu.Unlock()
 	if len(peer.snapshotTailMetadata) != 1 || len(peer.snapshotTailMetadata[0]) != 0 {
 		t.Fatalf("standalone Snapshot reserved an unused tail: %v", peer.snapshotTailMetadata)
+	}
+}
+
+func TestPumpSnapshotFailureLogsOneLocalDiagnosticOutcome(t *testing.T) {
+	peer := &installerTestPeer{requiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		frames: graphInstallerLifecycleFrames(), gapFirstSubscribe: true}
+	server := startInstallerTestPeer(t, peer)
+	var events []string
+	cause := connect.NewError(connect.CodeUnavailable, errors.New("controlled live Begin refusal"))
+	apply := &snapshotLifecycleMutationApplier{events: &events, beginErr: cause}
+	graph := &snapshotLifecycleGraph{events: &events}
+	var logs bytes.Buffer
+	pump := NewPump(Config{HTTPClient: defaultH2CClient(),
+		SnapshotInstaller: testGraphOnlySnapshotInstaller(t, apply, graph),
+		Logger:            slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))}, apply, graph)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	err := pump.session(ctx, server.URL)
+	if !errors.Is(err, cause) || connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("diagnostic changed local failure: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], `"transition":"snapshot_finish"`) || !strings.Contains(lines[0], `"snapshot_phase":"live_begin"`) || !strings.Contains(lines[0], `"snapshot_live_started":false`) || !strings.Contains(lines[0], `"snapshot_staged_frames":3`) {
+		t.Fatalf("expected one attributed failure outcome: %s", &logs)
 	}
 }

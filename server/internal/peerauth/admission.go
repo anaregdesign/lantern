@@ -75,27 +75,67 @@ func (s *Store) Admit(state *tls.ConnectionState, expectedOrigin string) (*Admis
 	return &Admission{store: s, member: member, expiresAt: expiry, startsAt: chainStart, budget: budget}, nil
 }
 
+// AdmissionDiagnostics contains only fixed local categories and the effective
+// original RPC budget. It grants no authority and contains no peer identity.
+// RemainingKnown is false when a guard rejects before the budget is evaluated,
+// or when a native elapsed proof is unavailable or invalid.
+type AdmissionDiagnostics struct {
+	Reason                  string
+	OriginalBudgetRemaining time.Duration
+	RemainingKnown          bool
+}
+
 func (a *Admission) Check(ctx context.Context) error {
-	_, err := a.remaining(ctx)
+	_, err := a.CheckWithDiagnostics(ctx)
 	return err
 }
 
-func (a *Admission) remaining(ctx context.Context) (time.Duration, error) {
+// CheckWithDiagnostics performs the same check as Check, returning observations
+// from that one pass. It never resamples time for diagnostics, refreshes an
+// admission, or changes the original errors exposed to callers.
+func (a *Admission) CheckWithDiagnostics(ctx context.Context) (AdmissionDiagnostics, error) {
 	if a == nil || a.store == nil {
-		return 0, ErrMembership
+		return AdmissionDiagnostics{Reason: "admission_missing"}, ErrMembership
 	}
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		reason := "context_done"
+		switch err {
+		case context.Canceled:
+			reason = "context_canceled"
+		case context.DeadlineExceeded:
+			reason = "context_deadline"
+		}
+		return AdmissionDiagnostics{Reason: reason}, err
 	}
 	s := a.store
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now, valid := s.nowLocked()
-	if !valid || s.sampleLow.Before(a.startsAt) || !now.Before(a.expiresAt) || !s.liveLocked(now) ||
-		s.current.members[a.member.Identity] != a.member {
-		return 0, ErrMembership
+	if !valid {
+		reason := "time_unavailable"
+		if s.faulted {
+			reason = "store_faulted"
+		}
+		return AdmissionDiagnostics{Reason: reason}, ErrMembership
 	}
-	return a.budget.remaining(s.sample, now, a.expiresAt)
+	if s.sampleLow.Before(a.startsAt) {
+		return AdmissionDiagnostics{Reason: "certificate_not_started"}, ErrMembership
+	}
+	if !now.Before(a.expiresAt) {
+		return AdmissionDiagnostics{Reason: "admission_expired"}, ErrMembership
+	}
+	if !s.liveLocked(now) {
+		return AdmissionDiagnostics{Reason: "membership_not_live"}, ErrMembership
+	}
+	if s.current.members[a.member.Identity] != a.member {
+		return AdmissionDiagnostics{Reason: "member_changed"}, ErrMembership
+	}
+	return a.budget.remainingWithDiagnostics(s.sample, now, a.expiresAt)
+}
+
+func (a *Admission) remaining(ctx context.Context) (time.Duration, error) {
+	diagnostics, err := a.CheckWithDiagnostics(ctx)
+	return diagnostics.OriginalBudgetRemaining, err
 }
 
 func (a *Admission) deadline(ctx context.Context) (time.Time, error) {

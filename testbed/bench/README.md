@@ -359,6 +359,10 @@ and perf gates (`0` = all pass, `1` = at least one failed). Unless `KEEP_UP=1`,
 teardown of the named Compose project must also succeed; a teardown failure
 disqualifies the run without masking an earlier gate failure. Run artifacts
 are written under `testbed/bench/out/<scenario>/<UTC-timestamp>/`.
+Runs already failing before teardown also retain a private Server log.
+Compose replica prefixes identify the emitting node; keep them when interpreting
+Snapshot or publication failures. Raw logs may contain runtime context and stay
+outside public artifacts. Publish their hashes and bounded findings instead.
 
 ## Host-only GC and periodic-backup stress (#1183)
 

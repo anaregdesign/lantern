@@ -2,12 +2,23 @@ package replication
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/anaregdesign/lantern/core/hlc"
+	pb "github.com/anaregdesign/lantern/pb/graph/v1"
+	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/internal/peerauth"
 )
 
@@ -149,5 +160,143 @@ func TestSnapshotRequestContextCanceledBeforeTransportAndPreservesTransportError
 	}
 	if response, err := client.Do(request); response != nil || err != want {
 		t.Fatalf("Snapshot transport error changed: response=%t err=%v", response != nil, err)
+	}
+}
+
+// This fixture supplies deterministic native elapsed evidence to a real
+// peerauth.Admission; it makes no real-provider or transport qualification.
+type snapshotAdmissionObservation struct {
+	owner   *byte
+	now     time.Time
+	elapsed time.Duration
+}
+
+func (o snapshotAdmissionObservation) Bounds() (time.Time, time.Time) { return o.now, o.now }
+func (o snapshotAdmissionObservation) ElapsedSince(prior peerauth.TimeObservation) (time.Duration, error) {
+	previous, ok := prior.(snapshotAdmissionObservation)
+	if !ok || previous.owner != o.owner || o.elapsed < previous.elapsed {
+		return 0, peerauth.ErrMembership
+	}
+	return o.elapsed - previous.elapsed, nil
+}
+
+type snapshotAdmissionExpiryGraph struct {
+	*snapshotLifecycleGraph
+	afterWrite func()
+}
+
+func (g *snapshotAdmissionExpiryGraph) PutVertexWithExpirationHLC(key string, vertex *pb.Vertex, expiration time.Time, stamp hlc.Timestamp) bool {
+	result := g.snapshotLifecycleGraph.PutVertexWithExpirationHLC(key, vertex, expiration, stamp)
+	if g.afterWrite != nil {
+		g.afterWrite()
+	}
+	return result
+}
+
+func TestSnapshotOriginalAdmissionExpiryDiagnosticsAndVerifiedRepair(t *testing.T) {
+	for _, phase := range []string{"before live", "after first live write", "source transport failure"} {
+		t.Run(phase, func(t *testing.T) {
+			public, private, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
+			sample := snapshotAdmissionObservation{owner: new(byte), now: now}
+			identity, _ := url.Parse("spiffe://lantern.test/snapshot-peer")
+			leaf := &x509.Certificate{URIs: []*url.URL{identity}, RawSubjectPublicKeyInfo: []byte("snapshot test peer"), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour)}
+			member := peerauth.Member{ID: [16]byte{3}, Identity: identity.String(), SPKI: sha256.Sum256(leaf.RawSubjectPublicKeyInfo), Origin: "https://localhost:6381"}
+			domain := peerauth.Domain{Deployment: [16]byte{1}, NamespaceFormat: keyspace.Version, AuthMode: "off", TrustDigest: [32]byte{2}}
+			manifest := peerauth.Manifest{Version: 1, Domain: domain, IssuedAt: now, ExpiresAt: now.Add(5 * time.Minute), Members: []peerauth.Member{member}}
+			signed, err := peerauth.SignManifest(manifest, private)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := peerauth.CreateStore(peerauth.StoreOptions{Path: filepath.Join(t.TempDir(), "membership"), Key: public, Domain: domain,
+				Time: func() (peerauth.TimeObservation, error) { return sample, nil }}, signed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := store.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			state := &tls.ConnectionState{Version: tls.VersionTLS13, PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: [][]*x509.Certificate{{leaf}}}
+			admission, err := store.Admit(state, member.Origin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalExpiry := admission.ExpiresAt()
+			owner := &snapshotResponseAdmission{native: true, admission: admission}
+			ctx := context.WithValue(t.Context(), snapshotAdmissionContextKey{}, owner)
+			var events []string
+			apply := &snapshotLifecycleMutationApplier{events: &events}
+			graph := &snapshotAdmissionExpiryGraph{snapshotLifecycleGraph: &snapshotLifecycleGraph{events: &events}}
+			expire := func() { sample.elapsed = peerauth.MaxRPCLifetime }
+			stream := &snapshotStageObservedStream{SnapshotStream: &snapshotSliceStream{frames: graphInstallerLifecycleFrames()}}
+			transportFailure := errors.New("controlled final transport failure after valid native checks")
+			if phase == "source transport failure" {
+				stream.SnapshotStream.(*snapshotSliceStream).err = transportFailure
+			} else if phase == "before live" {
+				stream.after = func(open bool) {
+					if !open {
+						expire()
+					}
+				}
+			} else {
+				graph.afterWrite = expire
+			}
+			installer := testGraphOnlySnapshotInstaller(t, apply, graph)
+			result, err := installSnapshot(ctx, installer, stream)
+			var failure *snapshotInstallError
+			if phase == "source transport failure" {
+				if !errors.Is(err, transportFailure) || err.Error() != transportFailure.Error() || !errors.As(err, &failure) {
+					t.Fatalf("transport failure after valid native checks was changed: %v", err)
+				}
+				last := failure.diagnostic.admission
+				if last.Reason != "none" || !last.RemainingKnown || last.OriginalBudgetRemaining <= 0 || failure.diagnostic.liveStarted || len(events) != 0 {
+					t.Fatalf("transport failure was mislabeled as native rejection: detail=%+v events=%v", failure.diagnostic, events)
+				}
+				return
+			}
+			if !errors.Is(err, peerauth.ErrMembership) || err.Error() != peerauth.ErrMembership.Error() || !errors.As(err, &failure) || result.Header != nil {
+				t.Fatalf("original native expiry was not preserved: result=%+v err=%v", result, err)
+			}
+			detail := failure.diagnostic
+			if detail.admission.Reason != "native_lifetime_expired" || !detail.admission.RemainingKnown || detail.admission.OriginalBudgetRemaining != 0 || !admission.ExpiresAt().Equal(originalExpiry) {
+				t.Fatalf("missing original-budget failure or extended admission: %+v", detail)
+			}
+			if phase == "before live" {
+				if detail.liveStarted || detail.phase != "capture_and_validate" || len(events) != 0 || len(apply.finishes) != 0 {
+					t.Fatalf("pre-live expiry touched publication: detail=%+v events=%v", detail, events)
+				}
+			} else if !detail.liveStarted || detail.phase != "live_replay" || len(apply.finishes) != 1 || apply.finishes[0] || len(apply.cutoffs) != 0 {
+				t.Fatalf("live expiry was verified or not retained for repair: detail=%+v events=%v finishes=%v", detail, events, apply.finishes)
+			}
+			// A signed renewal still cannot extend this captured admission. A later
+			// independent attempt may obtain fresh authority and verify the same image.
+			manifest.Version++
+			signed, err = peerauth.SignManifest(manifest, private)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Apply(signed); err != nil {
+				t.Fatal(err)
+			}
+			if !errors.Is(admission.Check(t.Context()), peerauth.ErrMembership) {
+				t.Fatal("membership renewal extended original Snapshot")
+			}
+			fresh, err := store.Admit(state, member.Origin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			repairedCtx := context.WithValue(t.Context(), snapshotAdmissionContextKey{}, &snapshotResponseAdmission{native: true, admission: fresh})
+			graph.afterWrite = nil
+			before := len(apply.finishes)
+			result, err = installSnapshot(repairedCtx, installer, &snapshotSliceStream{frames: graphInstallerLifecycleFrames()})
+			if err != nil || result.Header == nil || len(apply.finishes) != before+1 || !apply.finishes[before] {
+				t.Fatalf("fresh-admission verified repair failed: result=%+v finishes=%v err=%v", result, apply.finishes, err)
+			}
+		})
 	}
 }

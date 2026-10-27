@@ -1375,6 +1375,7 @@ func TestReceiptBenchCleanupPreservesFailureAndProjectScope(t *testing.T) {
 				}
 			}
 			const bridgeLog = "{\"event\":\"request_finish\",\"reason\":\"timeout\"}\n"
+			const serverLog = "lantern-0-1 | Snapshot failed phase=live_replay\nlantern-1-1 | Snapshot failed phase=seal\n"
 			const privateToken = "never-copy-native-credential"
 			if err := os.WriteFile(filepath.Join(trust, "tokens.json"), []byte(privateToken), 0o600); err != nil {
 				t.Fatal(err)
@@ -1407,6 +1408,9 @@ esac
 docker() {
   [[ "$COMPOSE_PROJECT_NAME" == "lantern-bench-cleanup-fixture" ]] || return 88
   case "$*" in
+    "compose -f fixture-compose.yml logs --no-color")
+      printf '%%s\n' 'lantern-0-1 | Snapshot failed phase=live_replay' 'lantern-1-1 | Snapshot failed phase=seal'
+      return 0;;
     "compose -f fixture-compose.yml --profile off-diagnostics down -v --remove-orphans")
       echo "docker down invoked" >&2
       return %d;;
@@ -1468,6 +1472,16 @@ exit %d
 					if err != nil || strings.Contains(string(data), privateToken) {
 						t.Fatalf("private trust leaked to evidence: %v", err)
 					}
+				}
+				serverPath := filepath.Join(directory, "server.log")
+				serverData, serverErr := os.ReadFile(serverPath)
+				if tc.runStatus != 0 {
+					serverInfo, statErr := os.Stat(serverPath)
+					if serverErr != nil || string(serverData) != serverLog || statErr != nil || serverInfo.Mode().Perm() != 0o600 {
+						t.Fatalf("replica-prefixed private server log lost or wrong mode: %q %v %v", serverData, serverErr, statErr)
+					}
+				} else if !os.IsNotExist(serverErr) {
+					t.Fatalf("unexpected server evidence: %q %v", serverData, serverErr)
 				}
 				path := filepath.Join(directory, "diagnostics.log")
 				data, err := os.ReadFile(path)
