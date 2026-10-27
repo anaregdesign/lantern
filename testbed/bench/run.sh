@@ -162,6 +162,7 @@ cleanup() {
   local status=$?
   local tls_in_use=0
   local private_failure=""
+  local compose_logs_status=0
   trap - EXIT
   # Cancel owned workload/chaos producers before deleting their Server state.
   # Collected children are unregistered immediately so PID reuse is harmless.
@@ -178,8 +179,16 @@ cleanup() {
     # They may contain sensitive runtime context; publish hashes/verdicts only.
     private_failure="$(mktemp -d "${TMPDIR:-/tmp}/lantern-native-failure.XXXXXXXX")"
     chmod 700 "$private_failure"
-    docker compose "${COMPOSE_FILES[@]}" logs --no-color > "$private_failure/server.log" 2>&1 || true
+    if docker compose "${COMPOSE_FILES[@]}" logs --no-color > "$private_failure/server.log" 2>&1; then
+      compose_logs_status=0
+    else
+      compose_logs_status=$?
+    fi
     chmod 600 "$private_failure/server.log"
+    # This records the command exit only; zero does not prove complete logs.
+    if ! (umask 077; printf '%s\n' "$compose_logs_status" > "$private_failure/server.log.exit-code"); then
+      echo "run.sh: failed to retain Compose log capture exit code; original failure preserved" >&2
+    fi
     echo "run.sh: private startup/runtime evidence retained at $private_failure" >&2
   fi
   if [[ "$COMPOSE_STARTED" == "1" && "${KEEP_UP:-0}" != "1" ]]; then

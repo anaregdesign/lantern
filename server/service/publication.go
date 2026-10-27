@@ -212,6 +212,12 @@ func (s *LanternService) BeginSnapshotInstallChecked(ctx context.Context, check 
 		s.snapshotInstallMu.Unlock()
 		return nil, err
 	}
+	s.snapshotInstallSequence++
+	attemptID := s.snapshotInstallSequence
+	// This names the Snapshot latch, not the first global publication fault.
+	snapshotFirstSet := !s.snapshotInstallFaulted
+	receiptFaultAtBegin := s.receiptCommitFaulted
+	faultCountBefore := s.publicationFaultCount
 	if !s.snapshotInstallFaulted {
 		if s.publicationFaultCount == 0 {
 			close(s.publicationFaultCh)
@@ -219,22 +225,63 @@ func (s *LanternService) BeginSnapshotInstallChecked(ctx context.Context, check 
 		s.publicationFaultCount++
 		s.snapshotInstallFaulted = true
 	}
+	faultCountAfter := s.publicationFaultCount
 	gate.Unlock()
 	s.snapshotReadCutMu.Unlock()
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	// These are boundary samples, not the order in which concurrent log rows
+	// reach the sink. The ID identifies this local live install, not its peer.
+	logger.Warn("publication fault transition",
+		slog.String("event", "snapshot_install_begin"),
+		slog.String("fault_source", "snapshot_install"),
+		slog.Uint64("attempt_id", attemptID),
+		slog.Bool("snapshot_first_set", snapshotFirstSet),
+		slog.Bool("snapshot_fault_after", true),
+		slog.Bool("receipt_fault_at_begin", receiptFaultAtBegin),
+		slog.Int("fault_count_before", faultCountBefore),
+		slog.Int("fault_count_after", faultCountAfter))
 	var finished atomic.Bool
 	return func(verified bool) error {
 		if !finished.CompareAndSwap(false, true) {
 			return connect.NewError(connect.CodeFailedPrecondition, errors.New("Snapshot install already finished"))
 		}
 		defer s.snapshotInstallMu.Unlock()
+		result := "unverified"
+		snapshotFaultRemaining := true
+		finishStateKnown := false
+		var receiptFaultAfter bool
+		var finishFaultCount int
+		defer func() {
+			attrs := []any{
+				slog.String("event", "snapshot_install_finish"),
+				slog.String("fault_source", "snapshot_install"),
+				slog.Uint64("attempt_id", attemptID),
+				slog.Bool("requested_verified", verified),
+				slog.String("result", result),
+				slog.Bool("snapshot_fault_remaining_known", true),
+				slog.Bool("snapshot_fault_remaining", snapshotFaultRemaining),
+			}
+			// Rejected finishes do not sample current shared state. Sole
+			// installer custody proves only that this latch was not cleared.
+			if finishStateKnown {
+				attrs = append(attrs, slog.Bool("receipt_fault_after", receiptFaultAfter),
+					slog.Int("fault_count_after", finishFaultCount))
+			}
+			logger.Warn("publication fault transition", attrs...)
+		}()
 		if verified {
 			if err := validate(); err != nil {
+				result = "validation_rejected"
 				return err
 			}
 			s.snapshotReadCutMu.Lock()
 			gate, err := s.lockPublicationGateChecked("snapshot", false, validate)
 			if err != nil {
 				s.snapshotReadCutMu.Unlock()
+				result = "publication_gate_rejected"
 				return err
 			}
 			s.snapshotInstallFaulted = false
@@ -242,6 +289,11 @@ func (s *LanternService) BeginSnapshotInstallChecked(ctx context.Context, check 
 			if s.publicationFaultCount == 0 {
 				s.publicationFaultCh = make(chan struct{})
 			}
+			result = "verified_clear"
+			snapshotFaultRemaining = false
+			finishStateKnown = true
+			receiptFaultAfter = s.receiptCommitFaulted
+			finishFaultCount = s.publicationFaultCount
 			gate.Unlock()
 			s.snapshotReadCutMu.Unlock()
 		}
