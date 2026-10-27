@@ -2,6 +2,7 @@ package security
 
 import (
 	"bytes"
+	"errors"
 	"math"
 	"testing"
 )
@@ -191,5 +192,50 @@ func TestS2CProtocolObservedRejectedPromiseRaisesDurableBallot(t *testing.T) {
 	before = n.nodes[1].p.floor
 	if out, e = n.nodes[1].Begin([32]byte{}); e == nil || len(out) != 0 || n.nodes[1].p.floor != before {
 		t.Fatal("observed maximum counter wrapped", e)
+	}
+}
+
+func TestS2CProtocolConditionalBeginTarget(t *testing.T) {
+	for _, mode := range []string{"matched", "absent", "present zero", "wrong slot", "wrong prefix", "consumed"} {
+		t.Run(mode, func(t *testing.T) {
+			n := s2cTestNativeCluster(t, 3, nil)
+			k := n.nodes[1]
+			target := &s2cBeginTarget{k.replayState.slot + 1, k.replayState.prefix}
+			switch mode {
+			case "absent":
+				target = nil
+			case "present zero":
+				target = &s2cBeginTarget{}
+			case "wrong slot":
+				target.slot++
+			case "wrong prefix":
+				target.predecessor[0] ^= 1
+			case "consumed":
+				n.selectValue(1, [32]byte{}, 1, 2)
+				n.choose(1, 1, 2)
+			}
+			beforeP, beforeB, counter := k.p.floor, k.b.receipt, k.counter
+			beforePrepare, beforeSelected := k.prepare, k.selected
+			out, err := k.beginAt([32]byte{}, target)
+			if mode == "matched" || mode == "absent" {
+				if err != nil || len(out) != len(k.trust.members) || k.counter != counter+1 {
+					t.Fatal("valid/unbound Begin changed", len(out), err, k.counter, counter)
+				}
+				for _, message := range out {
+					decoded, decodeErr := s2cDecodeMessage(k.trust, message.Bytes)
+					if decodeErr != nil || decoded.kind != s2cPrepare || decoded.slot != beforeB.ControlSlot+1 || decoded.predecessor != beforeB.ControlPrefix {
+						t.Fatal("Begin lost exact next prefix", decodeErr)
+					}
+				}
+				return
+			}
+			if !errors.Is(err, ErrRevisionConflict) || len(out) != 0 || k.p.floor != beforeP || k.b.receipt != beforeB || k.counter != counter || k.prepare != beforePrepare || k.selected != beforeSelected {
+				t.Fatal("stale conditional Begin signed/appended/rebound", mode, err)
+			}
+		})
+	}
+	var missing *s2cParticipant
+	if _, err := missing.beginAt([32]byte{}, &s2cBeginTarget{}); !errors.Is(err, errS2CClosed) {
+		t.Fatal("target displaced original nil guard", err)
 	}
 }

@@ -276,6 +276,15 @@ func (o *s3aOwner) receive(ctx context.Context, sender uint32, raw []byte, check
 }
 
 func (o *s3aOwner) Begin(ctx context.Context, candidate [32]byte) error {
+	return o.beginAt(ctx, candidate, nil)
+}
+
+func (o *s3aOwner) beginAt(ctx context.Context, candidate [32]byte, expected *s2cBeginTarget) error {
+	var target *s2cBeginTarget
+	if expected != nil {
+		value := *expected
+		target = &value
+	}
 	if err := o.enterLocal(ctx); err != nil {
 		return err
 	}
@@ -289,7 +298,7 @@ func (o *s3aOwner) Begin(ctx context.Context, candidate [32]byte) error {
 		if slot == o.ballotSlot && time.Now().Before(o.ballotReady) {
 			return nil, errS3ACredit
 		}
-		out, err := o.kernel.Begin(candidate)
+		out, err := o.kernel.beginAt(candidate, target)
 		if err == nil {
 			o.ballotSlot = slot
 			o.ballotReady = time.Now().Add(o.limits.BallotBackoff)
