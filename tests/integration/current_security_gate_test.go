@@ -349,6 +349,59 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 			}
 		}
 	}
+	// Every proposer has now completed its own startup recovery. A later
+	// proposer's recovery may have advanced an earlier owner's native prefix
+	// after that owner's first Ready result. Observe convergence of the installed
+	// prefix before checking current leases again; a laggard can still be Ready
+	// at its older local prefix. Floors are observation only, never authority or
+	// a replacement custody checkpoint. Public requests are still attempted once.
+	for {
+		var slot uint64
+		var prefix [32]byte
+		converged := true
+		for i, runtime := range runtimes {
+			raw, err := runtime.ExportCurrentAuthorityFloors()
+			if err != nil {
+				t.Fatal("observe native startup prefix", i, err)
+			}
+			var floors struct {
+				B struct {
+					ControlSlot   uint64
+					ControlPrefix []byte
+				}
+			}
+			if json.Unmarshal(raw, &floors) != nil || floors.B.ControlSlot == 0 || len(floors.B.ControlPrefix) != len(prefix) {
+				t.Fatal("invalid native startup prefix observation", i)
+			}
+			observedPrefix := [32]byte(floors.B.ControlPrefix)
+			if observedPrefix == [32]byte{} {
+				t.Fatal("empty native startup prefix observation", i)
+			}
+			if i == 0 {
+				slot, prefix = floors.B.ControlSlot, observedPrefix
+			} else if floors.B.ControlSlot != slot || observedPrefix != prefix {
+				converged = false
+			}
+		}
+		allReady := converged
+		if converged {
+			for _, runtime := range runtimes {
+				if !runtime.Ready(ctx) {
+					allReady = false
+				}
+			}
+		}
+		if allReady {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatal("native cohort readiness after startup recovery", ctx.Err())
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 	if renewal {
 		runCurrentMembershipGate(t, f, dir, servers, runtimes, workerStops, func(id int) (*httptest.Server, *provider.SecurityRuntime, func()) {
 			startNode(id, "resume")
