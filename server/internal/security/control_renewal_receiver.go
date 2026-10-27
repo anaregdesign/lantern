@@ -111,16 +111,92 @@ func (r *authorityRenewalReceiver) receive(requestRaw, voteRaw []byte) error {
 	return nil
 }
 
-func (r *authorityRenewalReceiver) matchesLocked(s authorityRenewalStatement) bool {
+type authorityRenewalBindingFailure string
+
+const (
+	authorityRenewalBindingNone          authorityRenewalBindingFailure = ""
+	authorityRenewalBindingConfiguration authorityRenewalBindingFailure = "configuration"
+	authorityRenewalBindingChosen        authorityRenewalBindingFailure = "chosen"
+	authorityRenewalBindingSlot          authorityRenewalBindingFailure = "state_slot"
+	authorityRenewalBindingPrefix        authorityRenewalBindingFailure = "state_prefix"
+	authorityRenewalBindingCut           authorityRenewalBindingFailure = "projection_cut"
+	authorityRenewalBindingCapsule       authorityRenewalBindingFailure = "capsule_digest"
+	authorityRenewalBindingReceiptSlot   authorityRenewalBindingFailure = "receipt_control_slot"
+	authorityRenewalBindingReceiptPrefix authorityRenewalBindingFailure = "receipt_control_prefix"
+)
+
+type authorityRenewalCallSite uint8
+
+const (
+	authorityRenewalDefault authorityRenewalCallSite = iota
+	authorityRenewalPublicPurposeNotBefore
+	authorityRenewalPublicPurposeRead
+	authorityRenewalOriginPurposeBegin
+	authorityRenewalOriginPurposeStart
+	authorityRenewalOriginPurposeComplete
+	authorityRenewalNetworkReady
+)
+
+func (site authorityRenewalCallSite) bindingStage() string {
+	switch site {
+	case authorityRenewalPublicPurposeNotBefore:
+		return "renewal_binding_public_purpose_not_before"
+	case authorityRenewalPublicPurposeRead:
+		return "renewal_binding_public_purpose_read"
+	case authorityRenewalOriginPurposeBegin:
+		return "renewal_binding_origin_purpose_begin"
+	case authorityRenewalOriginPurposeStart:
+		return "renewal_binding_origin_purpose_start"
+	case authorityRenewalOriginPurposeComplete:
+		return "renewal_binding_origin_purpose_complete"
+	case authorityRenewalNetworkReady:
+		return "renewal_binding_network_ready"
+	default:
+		return "renewal_binding"
+	}
+}
+
+// Keep the original conjunction's read and short-circuit order. This pure
+// result is diagnostic data, never an additional authority or time query.
+func (r *authorityRenewalReceiver) bindingFailureLocked(s authorityRenewalStatement) authorityRenewalBindingFailure {
 	state, receipt := r.kernel.replayState, r.kernel.replayReceipt
-	return r.kernel.configuredReadyLocked() && r.kernel.chosen == nil && state.slot == s.Slot && state.prefix == s.Prefix && state.projection.cut == s.Cut && receipt.CapsuleDigest == s.Capsule && receipt.ControlSlot == s.Slot && receipt.ControlPrefix == s.Prefix
+	switch {
+	case !r.kernel.configuredReadyLocked():
+		return authorityRenewalBindingConfiguration
+	case r.kernel.chosen != nil:
+		return authorityRenewalBindingChosen
+	case state.slot != s.Slot:
+		return authorityRenewalBindingSlot
+	case state.prefix != s.Prefix:
+		return authorityRenewalBindingPrefix
+	case state.projection.cut != s.Cut:
+		return authorityRenewalBindingCut
+	case receipt.CapsuleDigest != s.Capsule:
+		return authorityRenewalBindingCapsule
+	case receipt.ControlSlot != s.Slot:
+		return authorityRenewalBindingReceiptSlot
+	case receipt.ControlPrefix != s.Prefix:
+		return authorityRenewalBindingReceiptPrefix
+	default:
+		return authorityRenewalBindingNone
+	}
+}
+
+func (r *authorityRenewalReceiver) matchesLocked(s authorityRenewalStatement) bool {
+	return r.bindingFailureLocked(s) == authorityRenewalBindingNone
 }
 
 // Caller holds kernel.gate and has frozen every non-time authorization input.
 // The native sample in current is the final event; the remaining comparisons
 // and immutable bookkeeping do not move its logical authorization instant.
 func (r *authorityRenewalReceiver) currentLocked() (authorityCurrentTime, *authorityRenewalActive, error) {
+	return r.currentLockedAt(authorityRenewalDefault)
+}
+
+// Site changes only the fixed diagnostic stage; callers still own kernel.gate.
+func (r *authorityRenewalReceiver) currentLockedAt(site authorityRenewalCallSite) (authorityCurrentTime, *authorityRenewalActive, error) {
 	reason := ""
+	binding := authorityRenewalBindingNone
 	switch {
 	case r.closed:
 		reason = "closed"
@@ -132,11 +208,17 @@ func (r *authorityRenewalReceiver) currentLocked() (authorityCurrentTime, *autho
 		reason = "kernel"
 	case r.active == nil:
 		reason = "no_certificate"
-	case !r.matchesLocked(r.active.certificate.request.statement):
-		reason = "binding"
+	default:
+		binding = r.bindingFailureLocked(r.active.certificate.request.statement)
+		if binding != authorityRenewalBindingNone {
+			reason = "binding"
+		}
 	}
 	if reason != "" {
 		traceAuthorityBrowserDecision(r.clock, "renewal_current", reason)
+		if binding != authorityRenewalBindingNone {
+			traceAuthorityBrowserDecision(r.clock, site.bindingStage(), string(binding))
+		}
 		return authorityCurrentTime{}, nil, errAuthorityRenewal
 	}
 	now, err := r.clock.current()

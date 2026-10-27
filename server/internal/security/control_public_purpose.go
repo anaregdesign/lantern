@@ -40,7 +40,7 @@ func (o *CurrentAuthority) PurposeNotBefore(ctx context.Context, ticket [32]byte
 		traceAuthorityBrowserDecision(o.origin.network.timeOwner, "purpose_not_before", reason)
 		return time.Time{}, ErrOperationAuthorization
 	}
-	now, _, err := o.origin.network.receiver.currentLocked()
+	now, _, err := o.origin.network.receiver.currentLockedAt(authorityRenewalPublicPurposeNotBefore)
 	if err != nil {
 		traceAuthorityBrowserDecision(o.origin.network.timeOwner, "purpose_not_before", "renewal")
 		return time.Time{}, ErrOperationAuthorization
@@ -132,7 +132,7 @@ func (o *CurrentAuthority) ReadPurpose(ctx context.Context, a *Admission, id [32
 	if m.closed || !known || p.current == nil || p.current.binding.Actor != a.Identity() || !authorityPurposeBindingLive(p.current.binding, k.replayState.projection) {
 		return AuthorizationStatus{}, ErrOperationAuthorization
 	}
-	now, _, err := o.origin.network.receiver.currentLocked()
+	now, _, err := o.origin.network.receiver.currentLockedAt(authorityRenewalPublicPurposeRead)
 	if err != nil || !time.Unix(0, int64(now.utc.high)).Before(p.expiresAt) {
 		return AuthorizationStatus{}, ErrOperationAuthorization
 	}

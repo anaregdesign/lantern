@@ -101,7 +101,7 @@ func (m *ManagementAuthorizations) beginCurrentLocked(r *authorityRenewalReceive
 	if m.closed || !authorityPurposeBindingLive(binding, r.kernel.replayState.projection) {
 		return AuthorizationStart{}, ErrOperationAuthorization
 	}
-	now, _, err := r.currentLocked()
+	now, _, err := r.currentLockedAt(authorityRenewalOriginPurposeBegin)
 	if err != nil {
 		return AuthorizationStart{}, err
 	}
@@ -155,7 +155,7 @@ func (m *ManagementAuthorizations) startCurrentLocked(r *authorityRenewalReceive
 		traceAuthorityBrowserDecision(r.clock, "purpose_start", reason)
 		return [32]byte{}, authorityPurposeBinding{}, ErrOperationAuthorization
 	}
-	now, _, err := r.currentLocked()
+	now, _, err := r.currentLockedAt(authorityRenewalOriginPurposeStart)
 	if err != nil {
 		traceAuthorityBrowserDecision(r.clock, "purpose_start", "renewal")
 		return [32]byte{}, authorityPurposeBinding{}, err
@@ -214,7 +214,7 @@ func (m *ManagementAuthorizations) completeCurrentLocked(r *authorityRenewalRece
 		m.pending[id] = o
 		return AuthorizationStatus{}, ErrOperationAuthorization
 	}
-	now, _, err := r.currentLocked()
+	now, _, err := r.currentLockedAt(authorityRenewalOriginPurposeComplete)
 	if err != nil {
 		return AuthorizationStatus{}, err
 	}

@@ -116,4 +116,48 @@ func TestCurrentPublicPurposeDiagnosticPreservesTicketAndContextRefusal(t *testi
 	if dropped != 0 || len(reasons) != 2 || reasons[0] != "ticket_unknown" || reasons[1] != "context_canceled" {
 		t.Fatal("collapsed public purpose refusals lost their actual reason", reasons, dropped)
 	}
+	producer := authorityFakeCredentialProducer{}
+	a, err := o.Admit(ctx, producer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cut, _ := a.CurrentCut()
+	bob := s1Bob()
+	review, _, err := o.Prepare(ctx, a, producer, o.Profile(), cut, s1Changes(Change{Kind: PutAssignment, Identity: &bob, RoleID: "security_admin"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	begin, err := o.BeginPurpose(ctx, review, producer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := o.origin.network.receiver
+	r.kernel.gate.Lock()
+	r.active.certificate.request.statement.Cut.Sequence++
+	r.kernel.gate.Unlock()
+	bindingCapture := decisiontrace.Start(16)
+	if bindingCapture == nil {
+		t.Fatal("capture already owned")
+	}
+	defer bindingCapture.Stop()
+	if _, err := o.PurposeNotBefore(ctx, begin.Ticket); err != ErrOperationAuthorization {
+		t.Fatal("binding detail changed public error", err)
+	}
+	bindingCapture.Stop()
+	bindingEvents, bindingDropped := bindingCapture.Drain()
+	details := 0
+	for _, event := range bindingEvents {
+		if event.Kind == "browser_decision" && event.Stage == "renewal_binding_public_purpose_not_before" {
+			details++
+			if event.Reason != "projection_cut" || event.Object != r.clock.traceID {
+				t.Fatal("wrong public purpose detail", event)
+			}
+		}
+	}
+	if bindingDropped != 0 || details != 1 {
+		t.Fatal("public purpose binding call site missing", bindingEvents, bindingDropped)
+	}
+	if pending := o.origin.purposes.pending[begin.ID]; pending.current.started || pending.state != AuthorizationPending || pending.proof != [32]byte{} {
+		t.Fatal("public diagnostic consumed purpose or exposed proof")
+	}
 }

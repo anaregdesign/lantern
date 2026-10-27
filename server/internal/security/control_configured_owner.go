@@ -96,6 +96,7 @@ func (o *authorityOriginOwner) configuredLoop() {
 		var statement configuredTrustStatement
 		var planErr error
 		observed, previous := k.replayState.projection.cut, k.replayState.prefix
+		target := s2cBeginTarget{k.replayState.slot + 1, k.replayState.prefix}
 		if canPlan && !matchesDesired {
 			_, planErr = assessConfiguredTrust(k.replayState.projection, k.config.configured)
 			statement = configuredTrustStatement{configuredTrustVersion, k.trust.scope, observed, previous, k.config.configured.Digest(), k.replayState.slot, sha256.Sum256([]byte(authorityTimeProfileDescription))}
@@ -117,6 +118,7 @@ func (o *authorityOriginOwner) configuredLoop() {
 			nextHint++
 			if hint != nil {
 				hintSlot, hintPrefix = hint.slot, hint.predecessor
+				target = s2cBeginTarget{hint.slot, hint.predecessor}
 				needsRecovery = self.Proposer
 			}
 		} else {
@@ -128,6 +130,7 @@ func (o *authorityOriginOwner) configuredLoop() {
 				nextHint++
 				if hint != nil {
 					hintSlot, hintPrefix = hint.slot, hint.predecessor
+					target = s2cBeginTarget{hint.slot, hint.predecessor}
 					needsRecovery = true
 				}
 			}
@@ -135,7 +138,13 @@ func (o *authorityOriginOwner) configuredLoop() {
 		// Matching desired content never substitutes for closing an accepted
 		// suffix. Only a genuine phase-one quorum may select that retained value.
 		if self.Proposer && (candidate != [32]byte{} || needsRecovery) {
-			if _, err := n.Drive(attempt, candidate); err == nil {
+			var err error
+			if candidate == [32]byte{} {
+				_, err = n.driveAt(attempt, candidate, &target)
+			} else {
+				_, err = n.Drive(attempt, candidate)
+			}
+			if err == nil {
 				k.gate.Lock()
 				recovery.completedLocked(k)
 				initialRecovery := n.receiver.startupRecoveryPending

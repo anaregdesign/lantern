@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
 func TestAuthorityRenewalNetwork(t *testing.T) {
@@ -75,8 +77,27 @@ func TestAuthorityRenewalNetwork(t *testing.T) {
 	}
 	// Drive proves local installation, not a drained peer majority. Keep
 	// CHOSEN delivery to node 2 behind a barrier to exercise that legal gap.
+	capture := decisiontrace.Start(16)
+	if capture == nil {
+		t.Fatal("capture already owned")
+	}
+	defer capture.Stop()
 	if err = o.renewAuthority(ctx); err == nil {
 		t.Fatal("renewed without a matching drained majority")
+	}
+	capture.Stop()
+	events, dropped := capture.Drain()
+	details := 0
+	for _, event := range events {
+		if event.Kind == "browser_decision" && event.Stage == "renewal_binding_network_ready" {
+			details++
+			if event.Reason != "state_slot" || event.Object != o.receiver.clock.traceID {
+				t.Fatal("wrong post-cycle renewal binding detail", event)
+			}
+		}
+	}
+	if dropped != 0 || details != 1 {
+		t.Fatal("existing failed renewal lost its call site", events, dropped)
 	}
 	close(releaseChosen)
 	peer := n.waitCut(2, receipt.ControlSlot)

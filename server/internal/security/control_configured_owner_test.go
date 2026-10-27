@@ -635,3 +635,70 @@ func TestConfiguredOwnerRunningSurvivorRecoversAcceptedTLS(t *testing.T) {
 	default:
 	}
 }
+
+func TestConfiguredOwnerConditionalRecoveryRetainsAcceptedHandoff(t *testing.T) {
+	n, keys, _ := configuredTestNativeCluster(t, 3)
+	owners := map[uint32]*authorityOriginOwner{}
+	for member := range n.nodes {
+		owners[member] = configuredTestEndorser(t, n, keys, member)
+	}
+	statement := configuredOwnerStatement(n.nodes[1])
+	digest, err := owners[1].sealConfigured(t.Context(), statement, configuredOwnerVotes(t, owners, statement))
+	if err != nil {
+		t.Fatal("seal original configuration handoff", err)
+	}
+	original := n.nodes[1].pending[digest].raw
+	n.selectValue(1, digest, 1, 2)
+	// Only voter 3 retains ACCEPT: no chosen certificate or local application.
+	n.send(s2cAccept, 1, 3)
+	k := n.nodes[3]
+	request := configuredRecoveryRequest{k.trust.scope, k.replayState.slot + 1, k.replayState.prefix}
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeLookup := k.p.floor
+	response, err := owners[3].network.configuredRecoveryResponse(t.Context(), raw, func() error { return owners[3].network.check(t.Context()) })
+	if err != nil || k.p.floor != beforeLookup {
+		t.Fatal("recovery scheduling lookup changed history", err)
+	}
+	hint, err := s2cDecodeMessage(k.trust, response)
+	if err != nil || hint.kind != s2cAccept || s2cVerifyP1(k.trust, hint) != nil || hint.slot != request.Slot || hint.predecessor != request.Prefix {
+		t.Fatal("fixture lost authentic exact-prefix accepted hint", err)
+	}
+	target := s2cBeginTarget{hint.slot, hint.predecessor}
+	out, err := n.nodes[2].beginAt([32]byte{}, &target)
+	if err != nil {
+		t.Fatal("live target prevented genuine recovery phase one", err)
+	}
+	n.enqueue(2, out)
+	for _, member := range []uint32{2, 3} {
+		n.send(s2cPrepare, 2, member)
+	}
+	for _, member := range []uint32{3, 2} {
+		n.send(s2cPromise, member, 2)
+	}
+	selected := n.nodes[2].selected
+	if selected == nil || selected.h == nil || selected.value != digest || selected.h.raw != original {
+		t.Fatal("conditional zero preference replaced accepted original H")
+	}
+	n.choose(2, 2, 3)
+	configuredOwnerConverge(t, n, 2)
+	for member, node := range n.nodes {
+		if uint64(len(node.history)) != target.slot {
+			t.Fatal("missing exact chosen history", member)
+		}
+		chosen := node.history[target.slot-1]
+		if node.replayState.slot != target.slot || !node.configuredReadyLocked() || chosen == nil || chosen.h == nil || chosen.h.raw != original {
+			t.Fatal("actual recovery lost original/certified installed intent", member)
+		}
+	}
+	// The exact authenticated hint is now consumed. It cannot schedule a NOOP
+	// in the following slot, even though the desired semantic content matches.
+	k = n.nodes[2]
+	beforeP, beforeB, counter, cut := k.p.floor, k.b.receipt, k.counter, k.replayState.projection.cut
+	out, err = k.beginAt([32]byte{}, &target)
+	if !errors.Is(err, ErrRevisionConflict) || len(out) != 0 || k.p.floor != beforeP || k.b.receipt != beforeB || k.counter != counter || k.replayState.projection.cut != cut {
+		t.Fatal("consumed configured hint appended fresh recovery history", err)
+	}
+}

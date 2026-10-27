@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
@@ -68,7 +69,9 @@ func TestReceiptHALaunchOwnsCohortThroughCertificationAndCleanup(t *testing.T) {
 						t.Fatal(err)
 					}
 					if err = waitFixtureReady(ctx, f, h.children()); err != nil {
-						t.Fatal(err)
+						var diagnostic bytes.Buffer
+						writeFixtureFailure(&diagnostic, &fixtureFailure{stage: "readiness", cause: err})
+						t.Fatalf("certified readiness: %v; %s", err, diagnostic.String())
 					}
 					checkHeld()
 				} else if err == nil {

@@ -40,10 +40,20 @@ func s2cMessageList(m map[uint32]*s2cMessage) []*s2cMessage {
 	return out
 }
 
+type s2cBeginTarget struct {
+	slot        uint64
+	predecessor [32]byte
+}
+
 // Begin issues a new durable ballot. candidate is an already retained original
 // H digest, or zero for canonical NOOP. Highest accepted P1 evidence overrides
 // this preference without replacing, refreshing or reauthorizing that H.
 func (o *s2cParticipant) Begin(candidate [32]byte) ([]s2cOutbox, error) {
+	return o.beginAt(candidate, nil)
+}
+
+// A present target restricts scheduling; it never supplies consensus evidence.
+func (o *s2cParticipant) beginAt(candidate [32]byte, expected *s2cBeginTarget) ([]s2cOutbox, error) {
 	if o == nil {
 		return nil, errS2CClosed
 	}
@@ -60,6 +70,9 @@ func (o *s2cParticipant) Begin(candidate [32]byte) ([]s2cOutbox, error) {
 	slot, pred, e := o.nextSlot()
 	if e != nil {
 		return nil, e
+	}
+	if expected != nil && (slot != expected.slot || pred != expected.predecessor) {
+		return nil, ErrRevisionConflict
 	}
 	if candidate != [32]byte{} && o.pending[candidate] == nil {
 		return nil, errS2CProtocol

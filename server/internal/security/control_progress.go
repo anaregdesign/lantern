@@ -102,6 +102,16 @@ func (o *s3aOwner) decodeRange(raw []byte, from uint64) ([][]byte, error) {
 // order, and paces escalation. There is no chosen-value oracle or new H issuer.
 // Success proves a local installed slot, not current policy freshness/admission.
 func (o *s3aOwner) Drive(ctx context.Context, candidate [32]byte) (s2LocalReceipt, error) {
+	return o.driveAt(ctx, candidate, nil)
+}
+
+func (o *s3aOwner) driveAt(ctx context.Context, candidate [32]byte, expected *s2cBeginTarget) (s2LocalReceipt, error) {
+	var target *s2cBeginTarget
+	if expected != nil {
+		value := *expected
+		target = &value
+	}
+	began := false
 	if !o.enterCall() {
 		return s2LocalReceipt{}, errS3AClosed
 	}
@@ -133,8 +143,9 @@ func (o *s3aOwner) Drive(ctx context.Context, candidate [32]byte) (s2LocalReceip
 	nextBallot := time.Time{}
 	for round := 0; round < o.limits.Rounds; round++ {
 		if !time.Now().Before(nextBallot) {
-			err = o.Begin(ctx, candidate)
+			err = o.beginAt(ctx, candidate, target)
 			if err == nil {
+				began = true
 				nextBallot = time.Now().Add(o.limits.BallotBackoff)
 			}
 		} else {
@@ -159,6 +170,9 @@ func (o *s3aOwner) Drive(ctx context.Context, candidate [32]byte) (s2LocalReceip
 		if receipt.ControlSlot > initial.ControlSlot {
 			if err := o.check(ctx); err != nil {
 				return s2LocalReceipt{}, err
+			}
+			if target != nil && !began {
+				return s2LocalReceipt{}, ErrRevisionConflict
 			}
 			return receipt, nil
 		}

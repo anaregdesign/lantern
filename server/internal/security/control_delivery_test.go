@@ -810,3 +810,194 @@ func TestS3ADeliveryLowIDPartitionPreservesHealthyAndSelfOpportunity(t *testing.
 	}
 	t.Logf("minimum QueueBytes=%d per-destination bytes=%d PerPeerQueue=%d; native Accept bytes=%d charge=%d; low-ID pending copies=%d plus one active; 6 fair cycles delivered 12 healthy/self Accepts with unchanged proposer P/B, then native quorum materialized slot 1", p.limits.QueueBytes, peerBudget, p.limits.PerPeerQueue, len(retained[0].Bytes), charge, copies)
 }
+
+// The actual Begin closure produced by Drive waits behind an authenticated
+// CHOSEN transition. Its target must be checked at the durable kernel boundary,
+// rather than only against the head observed before entering the FIFO.
+func TestS3ADeliveryConditionalDriveQueuedChosen(t *testing.T) {
+	n := s3aTestCluster(t, nil)
+	voters := &s2cTestNetwork{t: t, fixture: n.f, configs: map[uint32]s2cParticipantConfig{}, nodes: map[uint32]*s2cParticipant{}}
+	for id, config := range n.configs {
+		c := config.Participant
+		c.Key = n.f.keys[id]
+		voters.configs[id] = c
+		if id != 3 {
+			voter, err := createS2CParticipant(c)
+			if err != nil {
+				t.Fatal("create independent quorum participant", id, err)
+			}
+			voters.nodes[id] = voter
+			t.Cleanup(func() { _ = voter.Close() })
+		}
+	}
+	// Use real native phase-one/accepted-majority bytes. No peer materialized
+	// state or synthetic certificate is installed into the receiving owner.
+	voters.selectValue(1, [32]byte{}, 1, 2)
+	voters.choose(1, 1, 2)
+	chosen := voters.take(s2cChosen, 1, 3)
+	message, err := s2cDecodeMessage(n.f.trust, chosen.raw)
+	if err != nil || message.kind != s2cChosen {
+		t.Fatal("missing authenticated CHOSEN", err)
+	}
+	o, err := createS3AOwner(n.configs[3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.nodes[3] = o
+	ctx, cancel := context.WithCancel(s3aTestContext(t))
+	defer cancel()
+	state, _, err := o.kernel.ReadLocalCut()
+	if err != nil || state.slot != 0 {
+		t.Fatal("receiver must precede the queued CHOSEN", err)
+	}
+	target := s2cBeginTarget{slot: state.slot + 1, predecessor: state.prefix}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	first := s3aTransition{ctx: ctx, done: make(chan error, 1), apply: func() ([]s2cOutbox, error) {
+		close(entered)
+		select {
+		case <-release:
+			return nil, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}}
+	o.requests <- first
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	type result struct {
+		receipt s2LocalReceipt
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		receipt, err := o.driveAt(ctx, [32]byte{}, &target)
+		done <- result{receipt, err}
+	}()
+	var begin s3aTransition
+	select {
+	case begin = <-o.requests:
+	case got := <-done:
+		t.Fatal("conditional Drive did not queue Begin", got.receipt, got.err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	// Mutating the caller's tuple after queuing cannot retarget the request.
+	// This fresh tuple would permit slot 2 if an implementation borrowed it.
+	_, sourceCut, err := voters.nodes[1].ReadLocalCut()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target = s2cBeginTarget{slot: sourceCut.ControlSlot + 1, predecessor: sourceCut.ControlPrefix}
+	var installedP s2cJournalFloor
+	var installedB s2LocalReceipt
+	var installedCounter uint64
+	install := s3aTransition{ctx: ctx, done: make(chan error, 1), apply: func() ([]s2cOutbox, error) {
+		out, err := o.kernel.Receive(chosen.raw)
+		if err != nil {
+			return nil, err
+		}
+		installedP, installedB, err = o.kernel.Floors()
+		o.kernel.gate.Lock()
+		installedCounter = o.kernel.counter
+		o.kernel.gate.Unlock()
+		return out, err
+	}}
+	o.requests <- install
+	o.requests <- begin
+	unblock()
+	for _, completion := range []chan error{first.done, install.done} {
+		select {
+		case err := <-completion:
+			if err != nil {
+				t.Fatal("ordered transition", err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, ErrRevisionConflict) || got.receipt != (s2LocalReceipt{}) {
+			t.Fatal("queued target was consumed but Drive claimed success or retargeted", got.receipt, got.err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	afterP, afterB, err := o.kernel.Floors()
+	o.kernel.gate.Lock()
+	counter := o.kernel.counter
+	o.kernel.gate.Unlock()
+	if err != nil || installedB.ControlSlot != message.slot || afterP != installedP || afterB != installedB || counter != installedCounter || o.ballotSlot != 0 || !o.ballotReady.IsZero() {
+		t.Fatal("stale queued Begin appended P/B, changed counter or installed a ballot fence", afterP, installedP, afterB, installedB, err)
+	}
+}
+
+func TestS3ADeliveryConditionalBeginCopiesTargetBeforeQueue(t *testing.T) {
+	n := s3aTestCluster(t, nil)
+	o, err := createS3AOwner(n.configs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.nodes[1] = o
+	ctx, cancel := context.WithCancel(s3aTestContext(t))
+	defer cancel()
+	state, _, err := o.kernel.ReadLocalCut()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := s2cBeginTarget{slot: state.slot + 1, predecessor: state.prefix}
+	original := target
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	first := s3aTransition{ctx: ctx, done: make(chan error, 1), apply: func() ([]s2cOutbox, error) {
+		close(entered)
+		select {
+		case <-release:
+			return nil, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}}
+	o.requests <- first
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	done := make(chan error, 1)
+	go func() { done <- o.beginAt(ctx, [32]byte{}, &target) }()
+	var begin s3aTransition
+	select {
+	case begin = <-o.requests:
+	case err := <-done:
+		t.Fatal("conditional Begin did not queue", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	target = s2cBeginTarget{}
+	o.requests <- begin
+	unblock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal("queued Begin borrowed caller-owned target", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	o.kernel.gate.Lock()
+	prepare := o.kernel.prepare
+	matches := prepare != nil && prepare.slot == original.slot && prepare.predecessor == original.predecessor
+	o.kernel.gate.Unlock()
+	if !matches || o.ballotSlot != original.slot || o.ballotReady.IsZero() {
+		t.Fatal("matched copied target did not retain the ordinary exact ballot")
+	}
+}
