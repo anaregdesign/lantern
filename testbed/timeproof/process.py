@@ -26,7 +26,7 @@ class Child:
         self.stderr = self.stderr_path.open("xb")
         self.launch_ns = time.monotonic_ns() - started
         try:
-            self.process = subprocess.Popen([str(binary), "-test.run=^TestOFFConfiguredSourceChild$", "-test.parallel=1", "-test.timeout=120s"], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, bufsize=0)
+            self.process = subprocess.Popen([str(binary), "-test.run=^TestOFFConfiguredSourceChild$", "-test.parallel=1", "-test.timeout=120s"], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, bufsize=-1)
         except Exception:
             self.stderr.close()
             raise
