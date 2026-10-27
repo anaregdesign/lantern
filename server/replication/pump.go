@@ -692,7 +692,7 @@ func snapshotEdgeRows(edge *pb.SnapshotEdge) ([]snapshotEdgeRow, error) {
 	return rows, nil
 }
 
-func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream SnapshotStream, publish bool, identities *snapshotIdentityIndex) (SnapshotInstallResult, error) {
+func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream SnapshotStream, publish bool, identities *snapshotIdentityIndex, diagnostic *snapshotInstallDiagnostic) (SnapshotInstallResult, error) {
 	var finishInstall func(bool) error
 	defer func() {
 		if finishInstall != nil {
@@ -703,6 +703,9 @@ func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream 
 	var searchIndexErr error
 	var replay snapshotReplayState
 	for stream.Receive() {
+		if diagnostic != nil {
+			diagnostic.liveFramesRead++
+		}
 		if err := checkSnapshotContext(ctx); err != nil {
 			return SnapshotInstallResult{}, err
 		}
@@ -722,6 +725,10 @@ func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream 
 			finishInstall, err = beginSnapshotInstall(ctx, i.apply)
 			if err != nil {
 				return SnapshotInstallResult{}, err
+			}
+			if diagnostic != nil {
+				diagnostic.liveStarted = true
+				diagnostic.enter("live_replay")
 			}
 			// A mismatched or malformed first header must not mark an intact
 			// search index incomplete. Begin recovery only after format and
@@ -917,6 +924,7 @@ func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream 
 	if !publish {
 		return SnapshotInstallResult{}, nil
 	}
+	diagnostic.enter("index_rebuild")
 	if recovery != nil {
 		if err := recovery.CompleteSearchIndexRecovery(); err != nil {
 			searchIndexErr = err
@@ -925,6 +933,7 @@ func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream 
 	if err := checkSnapshotContext(ctx); err != nil {
 		return SnapshotInstallResult{}, err
 	}
+	diagnostic.enter("watermarks")
 	if i.marks != nil {
 		if err := i.marks.ApplySnapshotWatermarks(
 			replay.header.GetCutoffSeqPerOrigin(),
@@ -936,6 +945,7 @@ func (i *graphOnlySnapshotInstaller) replaySnapshot(ctx context.Context, stream 
 	if err := checkSnapshotContext(ctx); err != nil {
 		return SnapshotInstallResult{}, err
 	}
+	diagnostic.enter("verified_finish")
 	if finishInstall != nil {
 		finish := finishInstall
 		finishInstall = nil
@@ -1329,10 +1339,10 @@ func (p *Pump) session(ctx context.Context, addr string) error {
 		header, tailToken, sErr := p.snapshotWithTail(ctx, addr)
 		if sErr != nil {
 			p.cfg.Metrics.OnPumpDisconnect(addr, "snapshot_failed")
-			log.Warn("replication pump: peer transition",
+			log.Warn("replication pump: peer transition", append([]any{
 				slog.String("transition", "snapshot_finish"),
 				slog.String("reason", "snapshot_failed"),
-				slog.Any("err", sErr))
+				slog.Any("err", sErr)}, snapshotFailureAttrs(sErr)...)...)
 			return sErr
 		}
 		log.Info("replication pump: peer transition",

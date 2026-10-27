@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
@@ -27,22 +28,33 @@ func graphSnapshotLimitError(dimension string) error {
 // sealed canonical-spool digest precede any live publication transition. Every
 // pass retains the original native admission and caller deadline.
 func (i *graphOnlySnapshotInstaller) Install(ctx context.Context, stream SnapshotStream) (result SnapshotInstallResult, err error) {
+	diagnostic := newSnapshotInstallDiagnostic(time.Now())
+	// Registered first: final cleanup errors and scalar counts survive all
+	// scratch-release defers before one immutable failure envelope is returned.
+	defer func() {
+		if err != nil {
+			err = diagnostic.failure(err, time.Now(), snapshotAdmissionDiagnostic(ctx))
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return SnapshotInstallResult{}, err
 	}
 	if i.configurationError != nil {
 		return SnapshotInstallResult{}, connect.NewError(connect.CodeFailedPrecondition, i.configurationError)
 	}
+	diagnostic.enter("flight_admission")
 	if !i.stageMu.TryLock() {
 		return SnapshotInstallResult{}, connect.NewError(connect.CodeUnavailable, errors.New("Snapshot staging already in progress"))
 	}
 	defer i.stageMu.Unlock()
+	diagnostic.enter("scratch_setup")
 	scratch, err := i.newScratch(ctx, i.spool)
 	if err != nil {
 		return SnapshotInstallResult{}, err
 	}
 	defer func() {
 		if closeErr := scratch.Close(); closeErr != nil {
+			diagnostic.cleanupFailed = true
 			err = errors.Join(err, fmt.Errorf("close Snapshot staging owner: %w", closeErr))
 		}
 	}()
@@ -50,22 +62,26 @@ func (i *graphOnlySnapshotInstaller) Install(ctx context.Context, stream Snapsho
 	if err != nil {
 		return SnapshotInstallResult{}, err
 	}
-	stage := &graphSnapshotStage{ctx: ctx, source: stream, maxFrameBytes: i.spool.MaxFrameBytes, file: file, digest: sha256.New(), complete: scratch.Close}
+	stage := &graphSnapshotStage{ctx: ctx, source: stream, maxFrameBytes: i.spool.MaxFrameBytes, file: file, digest: sha256.New(), complete: scratch.Close, diagnostic: diagnostic}
 	defer stage.release()
 	identities, err := newSnapshotIdentityIndex(ctx, scratch)
 	if err != nil {
 		return SnapshotInstallResult{}, err
 	}
-	if _, err := i.replaySnapshot(ctx, stage, false, identities); err != nil {
+	diagnostic.enter("capture_and_validate")
+	if _, err := i.replaySnapshot(ctx, stage, false, identities, nil); err != nil {
 		return SnapshotInstallResult{}, err
 	}
+	diagnostic.enter("identity_index")
 	if err := identities.Finish(); err != nil {
 		return SnapshotInstallResult{}, err
 	}
+	diagnostic.enter("seal")
 	if err := stage.seal(); err != nil {
 		return SnapshotInstallResult{}, err
 	}
-	return i.replaySnapshot(ctx, stage, true, nil)
+	diagnostic.enter("live_begin")
+	return i.replaySnapshot(ctx, stage, true, nil, diagnostic)
 }
 
 // graphSnapshotStage retains no dataset-sized frame slice. Each frame is
@@ -86,6 +102,7 @@ type graphSnapshotStage struct {
 	current       *pb.SnapshotResponse
 	failure       error
 	complete      func() error
+	diagnostic    *snapshotInstallDiagnostic
 }
 
 func (s *graphSnapshotStage) Receive() bool {
@@ -150,6 +167,9 @@ func (s *graphSnapshotStage) Receive() bool {
 		s.bytes += uint64(n)
 	}
 	s.frameCount++
+	if s.diagnostic != nil {
+		s.diagnostic.stagedFrames, s.diagnostic.stagedBytes = s.frameCount, s.bytes
+	}
 	s.current = frame
 	return true
 }
@@ -166,6 +186,9 @@ func (s *graphSnapshotStage) receiveStaged() bool {
 		s.file = nil
 		if s.failure == nil && s.complete != nil {
 			s.failure = s.complete()
+		}
+		if s.failure != nil && s.diagnostic != nil {
+			s.diagnostic.cleanupFailed = true
 		}
 		return false
 	}

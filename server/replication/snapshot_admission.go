@@ -16,10 +16,11 @@ type snapshotAdmissionContextKey struct{}
 // finished restricting admission before Do returns; this owner never renews or
 // replaces that immutable evidence while staged response bytes are installed.
 type snapshotResponseAdmission struct {
-	mu        sync.Mutex
-	native    bool
-	started   bool
-	admission *peerauth.Admission
+	mu         sync.Mutex
+	native     bool
+	started    bool
+	admission  *peerauth.Admission
+	diagnostic peerauth.AdmissionDiagnostics
 }
 
 type snapshotAdmissionClient struct {
@@ -82,10 +83,29 @@ func checkSnapshotContext(ctx context.Context) error {
 	admission, native := owner.admission, owner.native
 	owner.mu.Unlock()
 	if admission != nil {
-		return admission.Check(ctx)
+		diagnostic, err := admission.CheckWithDiagnostics(ctx)
+		owner.mu.Lock()
+		owner.diagnostic = diagnostic
+		owner.mu.Unlock()
+		return err
 	}
 	if native {
+		owner.mu.Lock()
+		owner.diagnostic = peerauth.AdmissionDiagnostics{Reason: "admission_missing"}
+		owner.mu.Unlock()
 		return peerauth.ErrMembership
 	}
 	return nil
+}
+
+// Read the last actual check result only. Diagnostics never sample time or
+// revalidate/refresh authority after an install has failed.
+func snapshotAdmissionDiagnostic(ctx context.Context) peerauth.AdmissionDiagnostics {
+	owner, _ := ctx.Value(snapshotAdmissionContextKey{}).(*snapshotResponseAdmission)
+	if owner == nil {
+		return peerauth.AdmissionDiagnostics{}
+	}
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	return owner.diagnostic
 }

@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -265,5 +266,124 @@ func TestAdmissionSamePeerBindsStoreAndCompleteMember(t *testing.T) {
 	}
 	if (*Admission)(nil).SamePeer(nil) || (&Admission{}).SamePeer(&Admission{}) {
 		t.Fatal("absent stores matched")
+	}
+}
+
+func TestAdmissionDiagnosticsPreserveErrorsAndOriginalBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		known        bool
+	}{
+		{"missing admission", "admission_missing", false},
+		{"missing store", "admission_missing", false},
+		{"canceled", "context_canceled", false},
+		{"deadline", "context_deadline", false},
+		{"time unavailable", "time_unavailable", false},
+		{"store faulted", "store_faulted", false},
+		{"certificate not started", "certificate_not_started", false},
+		{"admission expired", "admission_expired", false},
+		{"membership not live", "membership_not_live", false},
+		{"member changed", "member_changed", false},
+		{"native lifetime expired", "native_lifetime_expired", true},
+		{"accepted", "none", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, key, options, now := membershipFixture(t)
+			uri, _ := url.Parse(m.Members[0].Identity)
+			leaf := &x509.Certificate{URIs: []*url.URL{uri}, RawSubjectPublicKeyInfo: []byte("diagnostic peer"), NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour)}
+			m.Members[0].SPKI = sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+			sample := peerTestObservation{new(byte), *now, *now, 0}
+			var sourceErr error
+			samples := 0
+			options.Time = func() (TimeObservation, error) {
+				samples++
+				if sourceErr != nil {
+					return nil, sourceErr
+				}
+				return sample, nil
+			}
+			store, err := CreateStore(options, signFixture(t, m, key))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			a, err := store.Admit(&tls.ConnectionState{Version: tls.VersionTLS13, PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: [][]*x509.Certificate{{leaf}}}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := t.Context()
+			wantErr := ErrMembership
+			wantSamples := 1
+			switch tc.name {
+			case "missing admission":
+				a, wantSamples = nil, 0
+			case "missing store":
+				a, wantSamples = &Admission{}, 0
+			case "canceled":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+				wantErr, wantSamples = context.Canceled, 0
+			case "deadline":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				defer cancel()
+				wantErr, wantSamples = context.DeadlineExceeded, 0
+			case "time unavailable":
+				sourceErr = errors.New("private source failure must not escape")
+			case "store faulted":
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+			case "certificate not started":
+				sample.low = a.startsAt.Add(-time.Nanosecond)
+			case "admission expired":
+				sample.high = a.expiresAt
+			case "membership not live":
+				m.Version++
+				m.ExpiresAt = now.Add(5 * time.Second)
+				if err := store.Apply(signFixture(t, m, key)); err != nil {
+					t.Fatal(err)
+				}
+				sample.low, sample.high = now.Add(6*time.Second), now.Add(6*time.Second)
+			case "member changed":
+				m.Version++
+				m.Members[0] = Member{ID: [16]byte{5}, Identity: "spiffe://lantern.test/replacement", SPKI: [32]byte{6}, Origin: "https://localhost:6382"}
+				if err := store.Apply(signFixture(t, m, key)); err != nil {
+					t.Fatal(err)
+				}
+			case "native lifetime expired":
+				sample.elapsed = MaxRPCLifetime
+			case "accepted":
+				wantErr = nil
+			}
+			var before Admission
+			if a != nil {
+				before = *a
+			}
+			samples = 0
+			diagnostics, err := a.CheckWithDiagnostics(ctx)
+			if err != wantErr || diagnostics.Reason != tc.reason || diagnostics.RemainingKnown != tc.known || samples != wantSamples {
+				t.Fatalf("diagnostic check = (%+v, %v), samples=%d; want reason=%s known=%t error=%v samples=%d", diagnostics, err, samples, tc.reason, tc.known, wantErr, wantSamples)
+			}
+			if wantErr != nil && diagnostics.OriginalBudgetRemaining != 0 {
+				t.Fatal("rejected check reported usable budget", diagnostics)
+			}
+			if wantErr == nil && (diagnostics.OriginalBudgetRemaining <= 0 || diagnostics.OriginalBudgetRemaining > MaxRPCLifetime) {
+				t.Fatal("accepted check lost its bounded original budget", diagnostics)
+			}
+			samples = 0
+			if err := a.Check(ctx); err != wantErr || samples != wantSamples {
+				t.Fatalf("Check error/samples changed: %v %d", err, samples)
+			}
+			samples = 0
+			remaining, err := a.remaining(ctx)
+			if err != wantErr || samples != wantSamples || wantErr != nil && remaining != 0 {
+				t.Fatalf("remaining error/samples changed: %v %d remaining=%v", err, samples, remaining)
+			}
+			if a != nil && !reflect.DeepEqual(*a, before) {
+				t.Fatal("diagnostic check changed the original admission")
+			}
+		})
 	}
 }

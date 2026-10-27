@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'claim_probe.dart';
+import 'claim_protocol.dart';
 import 'probe_protocol.dart';
 
 const _scenarios = [
@@ -179,6 +180,8 @@ Future<void> _runReceiptCrash() async {
 // Only fixture-owned fixed categories cross the public diagnostic boundary.
 // An arbitrary exception message may contain credentials or record contents.
 String _failureCode(Object error) {
+  final claim = claimFailureCode(error);
+  if (claim != null) return claim;
   if (error is TimeoutException) return 'timeout';
   if (error is StateError && isProbeFailureCode(error.message)) {
     return error.message;

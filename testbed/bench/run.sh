@@ -178,7 +178,7 @@ cleanup() {
     # They may contain sensitive runtime context; publish hashes/verdicts only.
     private_failure="$(mktemp -d "${TMPDIR:-/tmp}/lantern-native-failure.XXXXXXXX")"
     chmod 700 "$private_failure"
-    docker compose "${COMPOSE_FILES[@]}" logs --no-color --no-log-prefix > "$private_failure/server.log" 2>&1 || true
+    docker compose "${COMPOSE_FILES[@]}" logs --no-color > "$private_failure/server.log" 2>&1 || true
     chmod 600 "$private_failure/server.log"
     echo "run.sh: private startup/runtime evidence retained at $private_failure" >&2
   fi

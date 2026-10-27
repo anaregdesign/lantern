@@ -1,9 +1,11 @@
 package replication
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"maps"
 	"strings"
 	"sync"
@@ -500,5 +502,27 @@ func TestAntiEntropySnapshotTailRequiresCompleteTargetVector(t *testing.T) {
 	err := driver.catchUpSnapshotTail(ctx, server.URL, server.URL, snapshotResumeCursor{origins: map[string]uint64{hex.EncodeToString(foreign[:]): 8}}, strings.Repeat("ab", 32))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition || state.LocalSeq(foreign) != 8 {
 		t.Fatalf("partial tail = %v frontier=%d", err, state.LocalSeq(foreign))
+	}
+}
+
+func TestAntiEntropySnapshotFailureLogsOneLocalDiagnosticOutcome(t *testing.T) {
+	origin := hlc.NodeID{0x41}
+	peer := &installerTestPeer{requiredFormat: pb.SnapshotFormat_SNAPSHOT_FORMAT_GRAPH_ONLY_V1,
+		frames: graphInstallerLifecycleFrames(), selfOrigin: origin, originSeq: 1, gapFirstSubscribe: true}
+	server := startInstallerTestPeer(t, peer)
+	var events []string
+	cause := connect.NewError(connect.CodeUnavailable, errors.New("controlled live Begin refusal"))
+	apply := &snapshotLifecycleMutationApplier{events: &events, beginErr: cause}
+	graph := &snapshotLifecycleGraph{events: &events}
+	var logs bytes.Buffer
+	driver := NewAntiEntropy(AntiEntropyConfig{HTTPClient: defaultH2CClient(),
+		SubscribeTimeout: time.Second, SnapshotInstaller: testGraphOnlySnapshotInstaller(t, apply, graph),
+		Logger: slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))}, fixedLocalState{}, apply, graph)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	driver.tickPeer(ctx, server.URL)
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], `"msg":"anti-entropy: catch-up failed"`) || !strings.Contains(lines[0], `"snapshot_phase":"live_begin"`) || !strings.Contains(lines[0], `"snapshot_live_started":false`) || !strings.Contains(lines[0], `"snapshot_staged_frames":3`) {
+		t.Fatalf("expected one attributed failure outcome: %s", &logs)
 	}
 }

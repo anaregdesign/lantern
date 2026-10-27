@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -88,8 +89,17 @@ exec 3<&-
 	cmd.Env = append(os.Environ(), environment...)
 	cmd.Env = append(cmd.Env, "OUTDIR="+result.directory, "TMPDIR="+result.directory)
 	cmd.WaitDelay = time.Second // fallback only; the group controller owns cleanup
+	var signalMu sync.Mutex
+	signals := [3]ownedComposeSignalObservation{{Phase: "context_cancel"}, {Phase: "cleanup_term"}, {Phase: "cleanup_kill"}}
+	recordSignal := func(index int, err error) {
+		signalMu.Lock()
+		defer signalMu.Unlock()
+		signals[index].Attempted, signals[index].Result = true, ownedComposeSyscallObservation(err)
+	}
 	cmd.Cancel = func() error {
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err == syscall.ESRCH {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		recordSignal(0, err)
+		if err == syscall.ESRCH {
 			return os.ErrProcessDone
 		} else {
 			return err
@@ -106,13 +116,18 @@ exec 3<&-
 	defer func() {
 		// The natural-drain allowance covers a finite fake sleep interrupted when
 		// its parent dies. Containment of any longer-lived member is a FAILURE.
-		if !waitOwnedComposeGroup(group, 1500*time.Millisecond) {
+		waits := [3]ownedComposeGroupObservation{{Phase: "natural_drain", BudgetMS: 1500}, {Phase: "after_term", BudgetMS: 1000}, {Phase: "final", BudgetMS: 2000}}
+		if !waitOwnedComposeGroup(group, 1500*time.Millisecond, &waits[0]) {
 			result.leftOver = true
-			if err := syscall.Kill(-group, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+			err := syscall.Kill(-group, syscall.SIGTERM)
+			recordSignal(1, err)
+			if err != nil && err != syscall.ESRCH {
 				result.controlErr = errors.Join(result.controlErr, err)
 			}
-			if !waitOwnedComposeGroup(group, time.Second) {
-				if err := syscall.Kill(-group, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			if !waitOwnedComposeGroup(group, time.Second, &waits[1]) {
+				err := syscall.Kill(-group, syscall.SIGKILL)
+				recordSignal(2, err)
+				if err != nil && err != syscall.ESRCH {
 					result.controlErr = errors.Join(result.controlErr, err)
 				}
 			}
@@ -126,15 +141,22 @@ exec 3<&-
 				result.controlErr = errors.Join(result.controlErr, errors.New("fixture direct reap unproven"))
 			}
 		}
-		result.inactive = waitOwnedComposeGroup(group, 2*time.Second)
+		result.inactive = waitOwnedComposeGroup(group, 2*time.Second, &waits[2])
 		result.reaped = reaped
 		if reaped && cmd.ProcessState != nil {
 			result.exitCode = cmd.ProcessState.ExitCode()
 		}
+		signalMu.Lock()
+		signalResults := signals
+		signalMu.Unlock()
 		terminal := map[string]any{"pid": group, "pgid": group, "inactive": result.inactive,
-			"direct_reaped": reaped, "timed_out": result.timedOut, "left_over": result.leftOver, "exit_code": result.exitCode}
+			"direct_reaped": reaped, "timed_out": result.timedOut, "left_over": result.leftOver, "exit_code": result.exitCode,
+			"group_waits": waits, "signals": signalResults}
 		if !result.inactive || !reaped {
 			result.controlErr = errors.Join(result.controlErr, errors.New("fixture process custody incomplete"))
+			// One bounded, metadata-only observation follows the failed proof. It
+			// cannot revise that verdict, even if the group disappears meanwhile.
+			terminal["process_observation"] = observeOwnedComposeProcesses(group)
 		}
 		// Test-only injections run after terminal process proof. They never change
 		// child commands, signal custody, waits or the fixture's time allowance.
@@ -199,17 +221,192 @@ exec 3<&-
 	return
 }
 
-func waitOwnedComposeGroup(group int, budget time.Duration) bool {
-	deadline := time.Now().Add(budget)
+type ownedComposeSyscallResult struct {
+	Outcome    string `json:"outcome"`
+	Errno      int    `json:"errno"`
+	ErrnoKnown bool   `json:"errno_known"`
+}
+
+func ownedComposeSyscallObservation(err error) ownedComposeSyscallResult {
+	if err == nil {
+		return ownedComposeSyscallResult{Outcome: "success", ErrnoKnown: true}
+	}
+	outcome := "error"
+	if err == syscall.ESRCH {
+		outcome = "esrch"
+	}
+	var errno syscall.Errno
+	known := errors.As(err, &errno)
+	return ownedComposeSyscallResult{Outcome: outcome, Errno: int(errno), ErrnoKnown: known}
+}
+
+type ownedComposeSignalObservation struct {
+	Phase     string                    `json:"phase"`
+	Attempted bool                      `json:"attempted"`
+	Result    ownedComposeSyscallResult `json:"result"`
+}
+
+type ownedComposeGroupObservation struct {
+	Attempted bool                      `json:"attempted"`
+	Phase     string                    `json:"phase"`
+	BudgetMS  int64                     `json:"budget_ms"`
+	ElapsedMS int64                     `json:"elapsed_ms"`
+	Polls     int                       `json:"polls"`
+	Inactive  bool                      `json:"inactive"`
+	LastProbe ownedComposeSyscallResult `json:"last_probe"`
+}
+
+func waitOwnedComposeGroup(group int, budget time.Duration, observation *ownedComposeGroupObservation) bool {
+	started := time.Now()
+	deadline := started.Add(budget)
+	observation.Attempted, observation.BudgetMS = true, budget.Milliseconds()
 	for {
-		if err := syscall.Kill(-group, 0); err == syscall.ESRCH {
+		err := syscall.Kill(-group, 0)
+		observation.Polls++
+		observation.LastProbe = ownedComposeSyscallObservation(err)
+		if err == syscall.ESRCH {
+			observation.Inactive, observation.ElapsedMS = true, time.Since(started).Milliseconds()
 			return true
 		}
-		if time.Now().After(deadline) {
+		now := time.Now()
+		if now.After(deadline) {
+			observation.ElapsedMS = now.Sub(started).Milliseconds()
 			return false
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+const (
+	ownedComposeProcessBytes = 64 << 10
+	ownedComposeProcessRows  = 64
+)
+
+type ownedComposeProcessRow struct {
+	PID        int    `json:"pid"`
+	PPID       int    `json:"ppid"`
+	PGID       int    `json:"pgid"`
+	UID        int    `json:"uid"`
+	State      string `json:"state"`
+	StartLocal string `json:"start_local"`
+}
+
+type ownedComposeProcessObservation struct {
+	Status          string                   `json:"status"`
+	StartedUTC      string                   `json:"started_utc"`
+	ElapsedMS       int64                    `json:"elapsed_ms"`
+	OutputTruncated bool                     `json:"output_truncated"`
+	RowLimit        bool                     `json:"row_limit"`
+	MalformedRows   int                      `json:"malformed_rows"`
+	Rows            []ownedComposeProcessRow `json:"rows"`
+}
+
+// Retain at most the byte allowance without blocking ps on an unread pipe or
+// treating truncated output as a complete process observation.
+type ownedComposeProcessOutput struct {
+	data      []byte
+	truncated bool
+}
+
+func (output *ownedComposeProcessOutput) Write(data []byte) (int, error) {
+	n := len(data)
+	retained := min(n, ownedComposeProcessBytes-len(output.data))
+	output.data = append(output.data, data[:retained]...)
+	output.truncated = output.truncated || retained != n
+	return n, nil
+}
+
+// ps uses fixed numeric/state/start columns only. Unrelated groups and raw
+// output are never retained; malformed, empty and truncated observations prove
+// no inactivity. StartLocal is ps's local wall time, not qualified UTC.
+func parseOwnedComposeProcesses(raw []byte, group int) ownedComposeProcessObservation {
+	result := ownedComposeProcessObservation{Status: "empty_unknown"}
+	if group <= 0 {
+		result.Status = "invalid_scope"
+		return result
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) < 3 {
+			result.MalformedRows++
+			continue
+		}
+		pgid, err := strconv.Atoi(fields[2])
+		if err != nil {
+			result.MalformedRows++
+			continue
+		}
+		if pgid != group {
+			continue
+		}
+		if len(fields) != 10 {
+			result.MalformedRows++
+			continue
+		}
+		row := ownedComposeProcessRow{PGID: pgid, State: fields[4], StartLocal: strings.Join(fields[5:], " ")}
+		var pidErr, ppidErr, uidErr error
+		row.PID, pidErr = strconv.Atoi(fields[0])
+		row.PPID, ppidErr = strconv.Atoi(fields[1])
+		row.UID, uidErr = strconv.Atoi(fields[3])
+		_, startErr := time.Parse("Mon Jan 2 15:04:05 2006", row.StartLocal)
+		stateValid := row.State != "" && len(row.State) <= 16
+		for _, character := range row.State {
+			if character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || strings.ContainsRune("+<>", character) {
+				continue
+			}
+			stateValid = false
+		}
+		if pidErr != nil || ppidErr != nil || uidErr != nil || row.PID <= 0 || row.PPID < 0 || row.UID < 0 || !stateValid || startErr != nil {
+			result.MalformedRows++
+			continue
+		}
+		if len(result.Rows) == ownedComposeProcessRows {
+			result.RowLimit = true
+			continue
+		}
+		result.Rows = append(result.Rows, row)
+	}
+	switch {
+	case result.RowLimit:
+		result.Status = "row_limit"
+	case result.MalformedRows != 0:
+		result.Status = "parse_error"
+	case len(result.Rows) != 0:
+		result.Status = "observed"
+	}
+	return result
+}
+
+func observeOwnedComposeProcesses(group int) ownedComposeProcessObservation {
+	started := time.Now()
+	if group <= 0 {
+		return ownedComposeProcessObservation{Status: "invalid_scope"}
+	}
+	// This independent observation allowance never extends fixture execution or
+	// any signal/reap/inactivity wait. ps itself has no shell or descendant work.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/bin/ps", "-axo", "pid=,ppid=,pgid=,uid=,stat=,lstart=")
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	var output ownedComposeProcessOutput
+	cmd.Stdout, cmd.Stderr = &output, io.Discard
+	cmd.WaitDelay = 250 * time.Millisecond
+	err := cmd.Run()
+	result := parseOwnedComposeProcesses(output.data, group)
+	result.StartedUTC, result.ElapsedMS = started.UTC().Format(time.RFC3339Nano), time.Since(started).Milliseconds()
+	result.OutputTruncated = output.truncated
+	switch {
+	case err != nil && ctx.Err() != nil:
+		result.Status = "timeout"
+	case err != nil:
+		result.Status = "command_error"
+	case output.truncated:
+		result.Status = "output_truncated"
+	}
+	return result
 }
 
 func writeOwnedComposeFixtureState(directory, name string, value map[string]any) (err error) {
@@ -237,6 +434,97 @@ func ownedComposeFixtureDiagnostics(directory string) string {
 		fmt.Fprintf(&summary, "%s: %q read_error=%t\n", name, raw, err != nil)
 	}
 	return summary.String()
+}
+
+func TestOwnedComposeFixtureSyscallDiagnosticsKeepESRCHOnlyProof(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want ownedComposeSyscallResult
+	}{
+		{"success", nil, ownedComposeSyscallResult{Outcome: "success", ErrnoKnown: true}},
+		{"absent", syscall.ESRCH, ownedComposeSyscallResult{Outcome: "esrch", Errno: int(syscall.ESRCH), ErrnoKnown: true}},
+		{"permission", syscall.EPERM, ownedComposeSyscallResult{Outcome: "error", Errno: int(syscall.EPERM), ErrnoKnown: true}},
+		{"interrupted", syscall.EINTR, ownedComposeSyscallResult{Outcome: "error", Errno: int(syscall.EINTR), ErrnoKnown: true}},
+		{"wrapped absent is not the original predicate", fmt.Errorf("wrapped: %w", syscall.ESRCH), ownedComposeSyscallResult{Outcome: "error", Errno: int(syscall.ESRCH), ErrnoKnown: true}},
+		{"unknown", errors.New("never-retain-arbitrary-error-text"), ownedComposeSyscallResult{Outcome: "error"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ownedComposeSyscallObservation(tc.err)
+			if got != tc.want || (got.Outcome == "esrch") != (tc.err == syscall.ESRCH) {
+				t.Fatalf("syscall observation changed proof: got=%+v want=%+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOwnedComposeFixtureProcessObservationIsScopedAndNonAuthoritative(t *testing.T) {
+	const group = 42000
+	const start = "Fri Jan 2 03:04:05 2026"
+	const owned = "42001 1 42000 501 Z " + start + "\n"
+	for _, tc := range []struct {
+		name, raw, status string
+		rows, malformed   int
+	}{
+		{"matching Z-state row", owned, "observed", 1, 0},
+		{"unrelated metadata excluded", "43000 1 43000 999 private-other-group never-copy\n" + owned, "observed", 1, 0},
+		{"no rows is unknown", "", "empty_unknown", 0, 0},
+		{"other group only", "43000 1 43000 999 S " + start + "\n", "empty_unknown", 0, 0},
+		{"partial row", "42001 1\n", "parse_error", 0, 1},
+		{"malformed group", "42001 1 unknown 501 S " + start + "\n", "parse_error", 0, 1},
+		{"malformed identity", "42001 1 42000 unknown S " + start + "\n", "parse_error", 0, 1},
+		{"no process command retained", "42001 1 42000 501 S private-command-arguments\n", "parse_error", 0, 1},
+		{"malformed start", "42001 1 42000 501 S Fri Invalid 2 03:04:05 2026\n", "parse_error", 0, 1},
+		{"malformed state", "42001 1 42000 501 S/private " + start + "\n", "parse_error", 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseOwnedComposeProcesses([]byte(tc.raw), group)
+			if got.Status != tc.status || len(got.Rows) != tc.rows || got.MalformedRows != tc.malformed {
+				t.Fatalf("process observation = %+v; want status=%s rows=%d malformed=%d", got, tc.status, tc.rows, tc.malformed)
+			}
+			if len(got.Rows) != 0 && (got.Rows[0].PID != 42001 || got.Rows[0].PGID != group || got.Rows[0].UID != 501 || got.Rows[0].State != "Z" || got.Rows[0].StartLocal != start) {
+				t.Fatal("metadata from another group was retained", got)
+			}
+			raw, err := json.Marshal(got)
+			if err != nil || strings.Contains(string(raw), "private-") || strings.Contains(string(raw), "never-copy") {
+				t.Fatal("observation retained non-metadata fields", err)
+			}
+			// Neither a Z row nor an empty post-failure observation can override
+			// the independently failed process-group inactivity predicate.
+			fixture := ownedComposeFixtureResult{controlComplete: true, reaped: true}
+			if fixture.controlQualified() {
+				t.Fatal("metadata observation qualified failed inactivity")
+			}
+		})
+	}
+	if got := parseOwnedComposeProcesses([]byte(owned), 0); got.Status != "invalid_scope" || len(got.Rows) != 0 {
+		t.Fatal("invalid group scope admitted metadata", got)
+	}
+	var rows strings.Builder
+	for index := range ownedComposeProcessRows + 1 {
+		fmt.Fprintf(&rows, "%d 1 %d 501 S %s\n", 1000+index, group, start)
+	}
+	got := parseOwnedComposeProcesses([]byte(rows.String()), group)
+	if got.Status != "row_limit" || !got.RowLimit || len(got.Rows) != ownedComposeProcessRows {
+		t.Fatal("process metadata row bound was lost", got)
+	}
+}
+
+func TestOwnedComposeFixtureProcessOutputHasFiniteRetention(t *testing.T) {
+	var output ownedComposeProcessOutput
+	first := []byte(strings.Repeat("x", ownedComposeProcessBytes-1))
+	if n, err := output.Write(first); err != nil || n != len(first) || output.truncated {
+		t.Fatal("bounded writer rejected in-budget output", n, err)
+	}
+	if n, err := output.Write([]byte("x")); err != nil || n != 1 || output.truncated {
+		t.Fatal("exact byte limit was treated as truncation", n, err)
+	}
+	if n, err := output.Write([]byte("discarded")); err != nil || n != len("discarded") || !output.truncated {
+		t.Fatal("oversize output was not consumed and marked incomplete", n, err)
+	}
+	if len(output.data) != ownedComposeProcessBytes || string(output.data) != strings.Repeat("x", ownedComposeProcessBytes) {
+		t.Fatal("bounded writer retained extra or changed bytes", len(output.data))
+	}
 }
 
 func TestOwnedComposeFixtureContainment(t *testing.T) {

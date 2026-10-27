@@ -379,8 +379,8 @@ func (a *AntiEntropy) tickPeer(ctx context.Context, addr string) {
 
 	applied, err := a.catchUp(ctx, addr, cli, peerNID, localSeq+1, target)
 	if err != nil {
-		log.Warn("anti-entropy: catch-up failed",
-			slog.Any("err", err), slog.Uint64("applied", applied))
+		log.Warn("anti-entropy: catch-up failed", append([]any{
+			slog.Any("err", err), slog.Uint64("applied", applied)}, snapshotFailureAttrs(err)...)...)
 		a.cfg.Metrics.OnAntiEntropyError(addr, "catchup_failed")
 		return
 	}

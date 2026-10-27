@@ -31,28 +31,43 @@ func newRPCBudget(start time.Time, original TimeObservation, high, expiry time.T
 }
 
 func (b rpcBudget) remaining(current TimeObservation, high, expiry time.Time) (time.Duration, error) {
-	remaining := min(time.Until(b.deadline), expiry.Sub(high))
+	diagnostics, err := b.remainingWithDiagnostics(current, high, expiry)
+	return diagnostics.OriginalBudgetRemaining, err
+}
+
+// Keep diagnostics in the authoritative pass: another elapsed-proof query or
+// scheduling sample could describe a different boundary than the returned error.
+func (b rpcBudget) remainingWithDiagnostics(current TimeObservation, high, expiry time.Time) (AdmissionDiagnostics, error) {
+	deadlineRemaining, expiryRemaining := time.Until(b.deadline), expiry.Sub(high)
+	remaining := min(deadlineRemaining, expiryRemaining)
 	if b.count < 1 || b.count > len(b.limits) {
-		return 0, ErrMembership
+		return AdmissionDiagnostics{Reason: "budget_invalid"}, ErrMembership
 	}
 	for _, limit := range b.limits[:b.count] {
 		if limit.original == nil {
 			continue
 		}
 		if current == nil {
-			return 0, ErrMembership
+			return AdmissionDiagnostics{Reason: "native_sample_missing"}, ErrMembership
 		}
 		elapsed, err := current.ElapsedSince(limit.original)
-		if err != nil || elapsed < 0 || elapsed >= limit.lifetime {
-			return 0, ErrMembership
+		if err != nil || elapsed < 0 {
+			return AdmissionDiagnostics{Reason: "native_elapsed_invalid"}, ErrMembership
+		}
+		if elapsed >= limit.lifetime {
+			return AdmissionDiagnostics{Reason: "native_lifetime_expired", RemainingKnown: true}, ErrMembership
 		}
 		remaining = min(remaining, limit.lifetime-elapsed)
 	}
 
 	if remaining <= 0 {
-		return 0, ErrMembership
+		reason := "absolute_expiry"
+		if deadlineRemaining <= 0 {
+			reason = "local_deadline_expired"
+		}
+		return AdmissionDiagnostics{Reason: reason, RemainingKnown: true}, ErrMembership
 	}
-	return remaining, nil
+	return AdmissionDiagnostics{Reason: "none", OriginalBudgetRemaining: remaining, RemainingKnown: true}, nil
 }
 
 func (b rpcBudget) intersect(prior rpcBudget) (rpcBudget, error) {
