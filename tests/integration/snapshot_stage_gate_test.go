@@ -470,7 +470,11 @@ func TestSnapshotStageNativeAdmissionAndCancellation(t *testing.T) {
 			vertices := len(graphs[1].SnapshotReplication().Graph.Vertices)
 			sourceCursor := fixture.primary[1].LocalSeq(hlc.NodeID{3})
 			result, err := delegate.Install(ctx, terminal)
-			if err != terminalErr || terminal.receives != 1 || result.Header != nil || result.Graph != (replication.SnapshotGraphCounts{}) {
+			// Internal diagnostics wrap this cause without changing its text or
+			// Connect status. The same receiver must still reacquire its disk
+			// owner and consume exactly one terminal Receive without publishing.
+			if !errors.Is(err, terminalErr) || err.Error() != terminalErr.Error() || connect.CodeOf(err) != connect.CodeOf(terminalErr) ||
+				terminal.receives != 1 || result.Header != nil || result.Graph != (replication.SnapshotGraphCounts{}) {
 				t.Fatalf("same receiver disk owner was not reacquired for one terminal Receive: receives=%d result=%+v err=%v", terminal.receives, result, err)
 			}
 			if apply.begins.Load() != wantBegin || apply.marks.Load() != wantReplay || apply.mutations.Load() != 0 ||
