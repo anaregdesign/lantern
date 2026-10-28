@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/anaregdesign/lantern/server/backup"
+	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/service"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -49,6 +50,9 @@ func TestLoadBackupConfig(t *testing.T) {
 		}
 		if !cfg.RestoreOnStart {
 			t.Errorf("RestoreOnStart = false, want true by default")
+		}
+		if cfg.NamespaceFormat != keyspace.Version {
+			t.Errorf("NamespaceFormat = %q, want production format %q", cfg.NamespaceFormat, keyspace.Version)
 		}
 	})
 
@@ -107,6 +111,29 @@ func TestLoadBackupConfig(t *testing.T) {
 }
 
 func TestNewBackupperSelectsCertifiedRuntimeMode(t *testing.T) {
+	t.Run("graph-only namespace mismatch fails before file effects", func(t *testing.T) {
+		for _, mismatch := range []string{"configuration", "service"} {
+			t.Run(mismatch, func(t *testing.T) {
+				receiptConfig := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
+				runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, receiptConfig)
+				dir := filepath.Join(t.TempDir(), "not-created")
+				cfg := backup.Config{Enabled: true, Dir: dir, Interval: time.Hour}
+				if mismatch == "configuration" {
+					cfg.NamespaceFormat = keyspace.Version
+				} else {
+					primary.WithDataNamespace()
+				}
+				got, err := NewBackupper(cfg, receiptConfig, runtime, primary, certified, prometheus.NewRegistry(), nil)
+				if got != nil || err == nil || !strings.Contains(err.Error(), "namespace format differs") {
+					t.Fatalf("mismatched backupper = %v, %v", got, err)
+				}
+				if _, err := os.Stat(dir); !os.IsNotExist(err) {
+					t.Fatalf("namespace rejection created backup directory: %v", err)
+				}
+			})
+		}
+	})
+
 	t.Run("graph-only behavior remains lbk", func(t *testing.T) {
 		receiptConfig := ReceiptWALConfig{Mode: ReceiptWALModeGraphOnly}
 		runtime, primary, certified := certifiedSnapshotInstallerRuntime(t, receiptConfig)
