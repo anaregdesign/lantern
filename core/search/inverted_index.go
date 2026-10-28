@@ -388,6 +388,20 @@ func (idx *InvertedIndex[S, D]) Prepare(doc D) (PreparedDocument, AnalysisStats,
 		}
 		return 0
 	})
+	// Every output term owns a comparatively large field tuple. Count the
+	// already sorted Token groups before constructing them, avoiding repeated
+	// backing-array growth/copies while keeping grouping and admission intact.
+	var distinctTerms [numTokenClasses]int
+	for i := range occurrences {
+		if i == 0 || occurrences[i].token != occurrences[i-1].token {
+			distinctTerms[occurrences[i].token.Class]++
+		}
+	}
+	for class, count := range distinctTerms {
+		if count > 0 {
+			prepared.classes[class].terms = make([]preparedTerm, 0, count)
+		}
+	}
 	for i := 0; i < len(occurrences); {
 		j := i + 1
 		for j < len(occurrences) && occurrences[j].token == occurrences[i].token {
