@@ -260,27 +260,39 @@ func TestAuthorityRenewalBindingFirstMismatch(t *testing.T) {
 
 func TestAuthorityRenewalBindingCallSites(t *testing.T) {
 	for _, tc := range []struct {
-		site  authorityRenewalCallSite
-		stage string
+		site   authorityRenewalCallSite
+		stage  string
+		reason string
 	}{
-		{authorityRenewalDefault, "renewal_binding"},
-		{authorityRenewalPublicPurposeNotBefore, "renewal_binding_public_purpose_not_before"},
-		{authorityRenewalPublicPurposeRead, "renewal_binding_public_purpose_read"},
-		{authorityRenewalOriginPurposeBegin, "renewal_binding_origin_purpose_begin"},
-		{authorityRenewalOriginPurposeStart, "renewal_binding_origin_purpose_start"},
-		{authorityRenewalOriginPurposeComplete, "renewal_binding_origin_purpose_complete"},
-		{authorityRenewalNetworkReady, "renewal_binding_network_ready"},
-		{authorityRenewalCallSite(255), "renewal_binding"},
+		{authorityRenewalDefault, "renewal_binding", "projection_cut"},
+		{authorityRenewalPublicPurposeNotBefore, "renewal_binding_public_purpose_not_before", "projection_cut"},
+		{authorityRenewalPublicPurposeRead, "renewal_binding_public_purpose_read", "projection_cut"},
+		{authorityRenewalOriginPurposeBegin, "renewal_binding_origin_purpose_begin", "projection_cut"},
+		{authorityRenewalOriginPurposeStart, "renewal_binding_origin_purpose_start", "projection_cut"},
+		{authorityRenewalOriginPurposeComplete, "renewal_binding_origin_purpose_complete", "projection_cut"},
+		{authorityRenewalNetworkReady, "renewal_binding_network_ready", "projection_cut"},
+		{authorityRenewalCallSite(255), "renewal_binding", "projection_cut"},
+		{authorityRenewalNetworkReady, "renewal_binding_network_ready", "state_slot"},
 	} {
-		t.Run(tc.stage, func(t *testing.T) {
+		name := tc.stage
+		if tc.reason == "state_slot" {
+			name += "/state_slot"
+		}
+		t.Run(name, func(t *testing.T) {
 			n, _ := authorityTestNativeCluster(t, 3)
 			r, _ := authorityTestReceiver(t, n)
 			r.clock.traceID = 71
-			r.active.certificate.request.statement.Cut.Sequence++
+			r.kernel.gate.Lock()
+			if tc.reason == "state_slot" {
+				r.active.certificate.request.statement.Slot++
+			} else {
+				r.active.certificate.request.statement.Cut.Sequence++
+			}
 			r.active.certificate.request.canonical = "private-request-and-token"
 			r.active.certificate.raw = "private-certificate-body"
 			active, pending := r.active, r.pending
 			statement := active.certificate.request.statement
+			r.kernel.gate.Unlock()
 			calls := 0
 			sample := r.clock.producer.sample
 			r.clock.producer.sample = func() (authorityTimeStamp, error) { calls++; return sample() }
@@ -290,14 +302,15 @@ func TestAuthorityRenewalBindingCallSites(t *testing.T) {
 			}
 			defer capture.Stop()
 			r.kernel.gate.Lock()
-			_, _, err := r.currentLockedAt(tc.site)
+			_, current, err := r.currentLockedAt(tc.site)
+			unchanged := r.active == active && r.pending == pending && active.certificate.request.statement == statement
 			r.kernel.gate.Unlock()
 			capture.Stop()
 			events, dropped := capture.Drain()
-			if err != errAuthorityRenewal || !errors.Is(err, errAuthorityRenewal) || calls != 0 || r.active != active || r.pending != pending || active.certificate.request.statement != statement {
+			if err != errAuthorityRenewal || !errors.Is(err, errAuthorityRenewal) || current != nil || calls != 0 || !unchanged {
 				t.Fatal("diagnostic changed refusal, sample or receiver state", err, calls)
 			}
-			if dropped != 0 || len(events) != 2 || events[0].Kind != "browser_decision" || events[0].Stage != "renewal_current" || events[0].Reason != "binding" || events[1].Kind != "browser_decision" || events[1].Stage != tc.stage || events[1].Reason != "projection_cut" || events[0].Object != 71 || events[1].Object != 71 {
+			if dropped != 0 || len(events) != 2 || events[0].Kind != "browser_decision" || events[0].Stage != "renewal_current" || events[0].Reason != "binding" || events[1].Kind != "browser_decision" || events[1].Stage != tc.stage || events[1].Reason != tc.reason || events[0].Object != 71 || events[1].Object != 71 {
 				t.Fatal("lost same-pass fixed binding detail", events, dropped)
 			}
 			raw, err := json.Marshal(events)
