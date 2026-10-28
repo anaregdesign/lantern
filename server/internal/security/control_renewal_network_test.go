@@ -2,12 +2,11 @@ package security
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/anaregdesign/lantern/server/decisiontrace"
 )
 
 func TestAuthorityRenewalNetwork(t *testing.T) {
@@ -44,15 +43,19 @@ func TestAuthorityRenewalNetwork(t *testing.T) {
 	}
 	o.kernel.gate.Lock()
 	_, active, err := o.receiver.currentLocked()
-	o.kernel.gate.Unlock()
 	if err != nil || active == nil || len(active.certificate.votes) != 2 {
+		o.kernel.gate.Unlock()
 		t.Fatal("native mTLS renewal", err)
 	}
+	activeStatement := active.certificate.request.statement
+	activeRaw, activeStarted := active.certificate.raw, active.started
 	for _, v := range active.certificate.votes {
 		if v.member == 3 {
+			o.kernel.gate.Unlock()
 			t.Fatal("delayed peer fabricated a vote")
 		}
 	}
+	o.kernel.gate.Unlock()
 	// The renewal request's receiver must match the actual mTLS sender.
 	foreign, err := n.nodes[3].receiver.challenge()
 	if err != nil {
@@ -77,27 +80,23 @@ func TestAuthorityRenewalNetwork(t *testing.T) {
 	}
 	// Drive proves local installation, not a drained peer majority. Keep
 	// CHOSEN delivery to node 2 behind a barrier to exercise that legal gap.
-	capture := decisiontrace.Start(16)
-	if capture == nil {
-		t.Fatal("capture already owned")
+	// Exact diagnostic delivery belongs to the isolated binding-call-site
+	// fixture; concurrent network producers use an intentionally lossy trace.
+	if err = o.renewAuthority(ctx); !errors.Is(err, errAuthorityRenewal) || ctx.Err() != nil {
+		t.Fatal("renewal did not refuse the undrained majority within its deadline", err, ctx.Err())
 	}
-	defer capture.Stop()
-	if err = o.renewAuthority(ctx); err == nil {
-		t.Fatal("renewed without a matching drained majority")
-	}
-	capture.Stop()
-	events, dropped := capture.Drain()
-	details := 0
-	for _, event := range events {
-		if event.Kind == "browser_decision" && event.Stage == "renewal_binding_network_ready" {
-			details++
-			if event.Reason != "state_slot" || event.Object != o.receiver.clock.traceID {
-				t.Fatal("wrong post-cycle renewal binding detail", event)
-			}
-		}
-	}
-	if dropped != 0 || details != 1 {
-		t.Fatal("existing failed renewal lost its call site", events, dropped)
+	o.kernel.gate.Lock()
+	retained := o.receiver.active
+	unchanged := retained == active && retained != nil && retained.certificate.request.statement == activeStatement &&
+		retained.certificate.raw == activeRaw && retained.started == activeStarted
+	currentCut := o.kernel.replayState.slot == receipt.ControlSlot && o.kernel.replayState.prefix == receipt.ControlPrefix &&
+		o.kernel.replayReceipt == receipt
+	stale := retained != nil && retained.certificate.request.statement.Slot < receipt.ControlSlot &&
+		!o.receiver.matchesLocked(retained.certificate.request.statement)
+	pending := o.receiver.pending != nil
+	o.kernel.gate.Unlock()
+	if !unchanged || !currentCut || !stale || pending {
+		t.Fatal("refused renewal changed the active certificate, current cut or pending challenge", unchanged, currentCut, stale, pending)
 	}
 	close(releaseChosen)
 	peer := n.waitCut(2, receipt.ControlSlot)
@@ -106,6 +105,15 @@ func TestAuthorityRenewalNetwork(t *testing.T) {
 	}
 	if err = o.renewAuthority(ctx); err != nil {
 		t.Fatal("renew new drained prefix", err)
+	}
+	o.kernel.gate.Lock()
+	renewed := o.receiver.active
+	current := renewed != nil && renewed != active && renewed.certificate.request.statement.Slot == receipt.ControlSlot &&
+		renewed.certificate.request.statement.Prefix == receipt.ControlPrefix && renewed.certificate.request.statement.Capsule == receipt.CapsuleDigest &&
+		o.receiver.matchesLocked(renewed.certificate.request.statement) && o.receiver.pending == nil
+	o.kernel.gate.Unlock()
+	if !current || ctx.Err() != nil {
+		t.Fatal("renewed certificate did not bind the exact drained cut within its deadline", current, ctx.Err())
 	}
 	clocks[1].mu.Lock()
 	clocks[1].anchor = nil
