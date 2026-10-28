@@ -11,6 +11,7 @@ import (
 
 	"github.com/anaregdesign/lantern/server/backup"
 	"github.com/anaregdesign/lantern/server/internal/envconfig"
+	"github.com/anaregdesign/lantern/server/internal/keyspace"
 	"github.com/anaregdesign/lantern/server/service"
 )
 
@@ -65,6 +66,7 @@ func loadBackupConfig() backup.Config {
 		InstanceID:      sanitizeInstanceID(instance),
 		RestoreOnStart:  active && restoreOnStart,
 		RestoreRequired: envconfig.Bool("LANTERN_BACKUP_RESTORE_REQUIRED", false),
+		NamespaceFormat: keyspace.Version,
 	}
 }
 
@@ -106,6 +108,9 @@ func NewBackupper(
 	case ReceiptWALModeGraphOnly:
 		if runtime.DurableReceiptWAL() {
 			return nil, errors.New("backup: graph-only mode received a durable serving runtime")
+		}
+		if cfg.NamespaceFormat != runtime.DataNamespaceFormat() || cfg.NamespaceFormat != svc.DataNamespaceFormat() {
+			return nil, errors.New("backup: graph-only namespace format differs from the certified runtime")
 		}
 		return backup.New(svc, cfg, reg, logger), nil
 	case ReceiptWALModeFresh, ReceiptWALModeRestart:
