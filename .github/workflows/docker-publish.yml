@@ -274,6 +274,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      GOENV: 'off'
+      GOTOOLCHAIN: 'local'
+      GOFLAGS: ''
+      GOWORK: ${{ github.workspace }}/go.work
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -288,7 +293,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
-          version: '~> v2'
+          version: 'v2.19.0'
           args: release --clean
         env:
           # GoReleaser uses this for GitHub API calls; the GitHub Release itself
@@ -302,6 +307,21 @@ jobs:
           # token with contents:write on the tap repo as this secret to enable
           # cask publishing.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+      # Each build's post hook already rejected dirty or mismatched source
+      # before GoReleaser can publish a Homebrew cask. Archive/checksum checks
+      # here additionally block artifact upload and the GitHub Release.
+      - name: Verify release source and binary artifacts
+        run: >-
+          python3 -B .github/scripts/verify_root_release_binaries.py complete
+          --expected-head "$GITHUB_SHA" --expected-tag "$GITHUB_REF_NAME"
+      - name: Upload release integrity evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: root-release-integrity
+          path: dist/release-integrity/
+          if-no-files-found: warn
+          retention-days: 90
       - name: Upload binary artifacts
         uses: actions/upload-artifact@v7
         with:

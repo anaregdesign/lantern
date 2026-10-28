@@ -6,9 +6,10 @@
 # owned by .github/workflows/docker-publish.yml so the container image and binaries
 # land on a single release with consistent notes.
 #
-# Run locally with (a dummy tap token lets the cask templates render under snapshot):
-#   HOMEBREW_TAP_GITHUB_TOKEN=dummy \
-#     go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean
+# Recipe preflight uses a clean checkout at the selected root tag and the
+# GoReleaser version pinned by docker-publish.yml. It must not publish:
+#   GOENV=off GOTOOLCHAIN=local GOFLAGS='' GOWORK="$PWD/go.work" \
+#     HOMEBREW_TAP_GITHUB_TOKEN='' goreleaser release --clean --skip=publish
 
 version: 2
 project_name: lantern
@@ -16,6 +17,9 @@ project_name: lantern
 before:
   hooks:
     - go mod download
+    - >-
+        python3 .github/scripts/verify_root_release_binaries.py source
+        --expected-head "{{ .FullCommit }}" --expected-tag "{{ .Tag }}"
 
 builds:
   - id: lantern-cli
@@ -36,6 +40,13 @@ builds:
     goarch:
       - amd64
       - arm64
+    hooks:
+      post:
+        - cmd: >-
+            python3 .github/scripts/verify_root_release_binaries.py binary
+            --kind lantern-cli --binary "{{ .Path }}"
+            --goos "{{ .Os }}" --goarch "{{ .Arch }}"
+            --expected-head "{{ .FullCommit }}" --expected-tag "{{ .Tag }}"
 
   # Server daemon. Built from ./server/cmd in workspace mode, exactly like the
   # Dockerfile (static, CGO-free). No Windows target — the daemon ships to
@@ -56,6 +67,13 @@ builds:
     goarch:
       - amd64
       - arm64
+    hooks:
+      post:
+        - cmd: >-
+            python3 .github/scripts/verify_root_release_binaries.py binary
+            --kind lantern --binary "{{ .Path }}"
+            --goos "{{ .Os }}" --goarch "{{ .Arch }}"
+            --expected-head "{{ .FullCommit }}" --expected-tag "{{ .Tag }}"
 
 archives:
   - id: lantern-cli

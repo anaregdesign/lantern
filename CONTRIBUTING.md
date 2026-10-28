@@ -947,6 +947,19 @@ Tag order matters because each downstream module pins its upstream tag:
    recorded before tagging. Deterministic PR CI and the short Search gate
    remain blocking.
 
+The checksum closure is committed before tagging. The pinned GoReleaser recipe
+checks live source cleanliness after dependency download and verifies each
+binary's source/target metadata before any cask publisher runs. Hidden Git index
+flags and Go environment overrides are refused. A complete
+ten-target archive/checksum check then blocks Actions artifact upload and the
+GitHub Release; this archive check follows optional cask publication. Its
+separate integrity artifact preserves the receipt without
+adding a public Release asset. CLI version evidence distinguishes the exact
+linker recipe and host-native execution from values not exposed by trimmed
+BuildInfo. OCI images have keyless signatures and provenance; the binary
+archives remain unsigned and are verified through checksums, CI artifacts and
+source binding.
+
 The root release also builds the `lantern` (server) and `lantern-cli` binaries via
 GoReleaser and pushes Homebrew casks to
 [`anaregdesign/homebrew-tap`](https://github.com/anaregdesign/homebrew-tap)

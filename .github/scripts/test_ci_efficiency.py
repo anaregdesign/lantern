@@ -25,6 +25,53 @@ def job(text, name):
 
 
 class RepresentativeCoverageTest(unittest.TestCase):
+    def test_root_release_checks_each_target_before_publish_and_archives_before_upload(self):
+        recipe = (ROOT / ".goreleaser.yaml").read_text()
+        before = recipe.split("before:\n", 1)[1].split("\nbuilds:\n", 1)[0]
+        self.assertLess(before.index("go mod download"),
+                        before.index("verify_root_release_binaries.py source"))
+        builds = recipe.split("\nbuilds:\n", 1)[1].split("\narchives:\n", 1)[0]
+        blocks = re.findall(r"(?ms)^  - id: ([\w-]+)\n(.*?)(?=^  - id:|\Z)", builds)
+        self.assertEqual([name for name, _ in blocks], ["lantern-cli", "lantern"])
+        expected = {"lantern-cli": {"linux", "darwin", "windows"},
+                    "lantern": {"linux", "darwin"}}
+        targets = set()
+        for kind, block in blocks:
+            operating_systems = re.search(r"(?m)^    goos:\n((?:      - [^\n]+\n)+)", block)[1]
+            architectures = re.search(r"(?m)^    goarch:\n((?:      - [^\n]+\n)+)", block)[1]
+            operating_systems = set(re.findall(r"- (\w+)", operating_systems))
+            architectures = set(re.findall(r"- (\w+)", architectures))
+            self.assertEqual(operating_systems, expected[kind])
+            self.assertEqual(architectures, {"amd64", "arm64"})
+            targets.update((kind, os_name, arch) for os_name in operating_systems for arch in architectures)
+            hook = block.split("    hooks:\n", 1)[1]
+            self.assertIn("      post:\n", hook)
+            self.assertEqual(hook.count("verify_root_release_binaries.py binary"), 1)
+            for argument in (f"--kind {kind}", '--binary "{{ .Path }}"',
+                             '--goos "{{ .Os }}"', '--goarch "{{ .Arch }}"',
+                             '--expected-head "{{ .FullCommit }}"', '--expected-tag "{{ .Tag }}"'):
+                self.assertIn(argument, hook)
+        self.assertEqual(len(targets), 10)
+        self.assertEqual(recipe.count("-X github.com/anaregdesign/lantern/cli/cmd.version={{ .Tag }}"), 1)
+        binaries = job(workflow("docker-publish"), "binaries")
+        self.assertIn("needs: [verify, search-qualification]", binaries)
+        self.assertIn("version: 'v2.19.0'", binaries)
+        for fixed_input in ("GOENV: 'off'", "GOTOOLCHAIN: 'local'", "GOFLAGS: ''",
+                            "GOWORK: ${{ github.workspace }}/go.work"):
+            self.assertIn(fixed_input, binaries)
+        self.assertIn("args: release --clean\n", binaries)
+        self.assertNotIn("--skip=publish", binaries)
+        guard = binaries.index("name: Verify release source and binary artifacts")
+        self.assertLess(binaries.index("name: Run GoReleaser"), guard)
+        self.assertLess(guard, binaries.index("name: Upload binary artifacts"))
+        self.assertIn('verify_root_release_binaries.py complete', binaries)
+        self.assertIn('--expected-head "$GITHUB_SHA" --expected-tag "$GITHUB_REF_NAME"', binaries)
+        self.assertIn("name: root-release-integrity", binaries)
+        self.assertIn("path: dist/release-integrity/", binaries)
+        public_payload = binaries.split("name: Upload binary artifacts", 1)[1]
+        self.assertNotIn("release-integrity", public_payload)
+        self.assertIn("needs: [build, binaries]", job(workflow("docker-publish"), "release"))
+
     def test_publish_verification_keeps_all_modules_blocking_and_streams_json(self):
         body = job(workflow("_verify"), "verify")
         self.assertIn("    timeout-minutes: 15\n", body)
