@@ -8,7 +8,7 @@ import (
 )
 
 func TestGraphMutationIdentitySingleFinalBoundary(t *testing.T) {
-	_, _, e := graphMutationCommittedFixture(t)
+	e := graphMutationEnvelopeFixture(t)
 	var frames []*pb.SubscribeResponse
 	if err := projectMutationIdentities(e.Mutation, func(f *pb.SubscribeResponse) error { frames = append(frames, f); return nil }); err != nil {
 		t.Fatal(err)
