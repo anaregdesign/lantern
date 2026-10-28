@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"reflect"
 	"runtime"
 	"slices"
 	"sort"
@@ -1326,4 +1327,146 @@ func TestInvertedIndexDualClass(t *testing.T) {
 			t.Fatalf("Search(ramen) = %+v, want just en", res)
 		}
 	})
+}
+
+// Capacity reservation must preserve the public prepared-document semantics,
+// including class/field grouping, repeated field instances and owned positions.
+func TestPrepareTermGroupingSemantics(t *testing.T) {
+	for _, positions := range []bool{false, true} {
+		t.Run(fmt.Sprintf("Positions%t", positions), func(t *testing.T) {
+			fields := Fields{{ID: FieldDefault, Text: "d"}, {ID: FieldKey, Text: "k"},
+				{ID: FieldValue, Text: "v1"}, {ID: FieldValue, Text: "v2"}}
+			tokens := map[string][]Token{
+				"d":  {{Term: "shared"}, {Term: "shared", Class: ClassGram}},
+				"k":  {{Term: "shared", Class: ClassGram}, {Term: "alpha"}, {Term: "shared", Class: ClassGram}},
+				"v1": {{Term: "beta"}, {Term: "alpha"}, {Term: "shared", Class: ClassGram}, {Term: "beta"}},
+				"v2": {{Term: "beta"}},
+			}
+			originalTokens := make(map[string][]Token, len(tokens))
+			for text, values := range tokens {
+				originalTokens[text] = append([]Token(nil), values...)
+			}
+			analyzer := AnalyzerFunc(func(text string) []Token {
+				if values, ok := tokens[text]; ok {
+					return values
+				}
+				return fakeAnalyzer{}.Analyze(text)
+			})
+			var opts []IndexOption
+			if positions {
+				opts = append(opts, WithPositions())
+			}
+			idx := NewInvertedIndex[string, Document](analyzer, nil, compareStringID, opts...)
+			got, stats, err := idx.Prepare(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := func(values ...uint64) []uint64 {
+				if !positions {
+					return nil
+				}
+				return values
+			}
+			alpha := preparedTerm{term: "alpha", frequency: 2}
+			alpha.fields[FieldKey] = preparedFieldTerm{frequency: 1, positions: at(0)}
+			alpha.fields[FieldValue] = preparedFieldTerm{frequency: 1, positions: at(1)}
+			beta := preparedTerm{term: "beta", frequency: 3}
+			beta.fields[FieldValue] = preparedFieldTerm{frequency: 3, positions: at(0, 2, 1<<32)}
+			wordShared := preparedTerm{term: "shared", frequency: 1}
+			wordShared.fields[FieldDefault] = preparedFieldTerm{frequency: 1, positions: at(0)}
+			shared := preparedTerm{term: "shared", frequency: 4}
+			shared.fields[FieldDefault] = preparedFieldTerm{frequency: 1}
+			shared.fields[FieldKey] = preparedFieldTerm{frequency: 2}
+			shared.fields[FieldValue] = preparedFieldTerm{frequency: 1}
+			want := PreparedDocument{postings: 7}
+			want.classes[ClassWord] = preparedClass{length: 6, fieldLengths: [numDocumentFields]int{1, 1, 4},
+				terms: []preparedTerm{alpha, beta, wordShared}}
+			want.classes[ClassGram] = preparedClass{length: 4, fieldLengths: [numDocumentFields]int{1, 2, 1},
+				terms: []preparedTerm{shared}}
+			if positions {
+				want.positionEntries = 6
+			}
+			wantStats := AnalysisStats{ProjectedBytes: 6, Tokens: 10, UniqueTerms: 4, Postings: 7,
+				PositionEntries: want.positionEntries}
+			if !reflect.DeepEqual(got, want) || stats != wantStats || !reflect.DeepEqual(tokens, originalTokens) {
+				t.Fatalf("grouped terms/stats/input ownership changed: got=%+v stats=%+v want=%+v", got, stats, want)
+			}
+			second, _, err := idx.Prepare(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := idx.IndexPrepared("doc", got); err != nil {
+				t.Fatal(err)
+			}
+			// Prepared output may be discarded or modified after indexing; the
+			// index and another preparation must own their independent state.
+			got.classes[ClassWord].terms[0].term = "changed"
+			if positions {
+				got.classes[ClassWord].terms[0].fields[FieldKey].positions[0] = 99
+				ord, _ := idx.ords.lookup("doc")
+				tid, _ := idx.classes[ClassWord].dict.lookup("alpha")
+				actual := idx.classes[ClassWord].postings[tid].positionsInField(ord, FieldKey)
+				if !slices.Equal(actual, []uint64{0}) {
+					t.Fatalf("index retained caller position storage: %v", actual)
+				}
+			}
+			if !reflect.DeepEqual(second, want) || len(idx.Search("alpha")) != 1 || len(idx.Search("changed")) != 0 {
+				t.Fatal("prepared/index storage ownership changed")
+			}
+			empty, emptyStats, err := idx.Prepare(Fields{})
+			if err != nil || !reflect.DeepEqual(empty, PreparedDocument{}) || emptyStats != (AnalysisStats{}) {
+				t.Fatalf("empty document contract changed: %+v %+v %v", empty, emptyStats, err)
+			}
+			limitedOpts := append([]IndexOption(nil), opts...)
+			limitedOpts = append(limitedOpts, WithAnalysisLimits(SearchAnalysisLimits{MaxDocumentTerms: 3}))
+			limited := NewInvertedIndex[string, Document](analyzer, nil, compareStringID, limitedOpts...)
+			rejected, rejectedStats, err := limited.Prepare(fields)
+			var limit *AnalysisLimitError
+			if !errors.As(err, &limit) || limit.Kind != LimitDocumentTerms || limit.Got != 4 || limit.Limit != 3 ||
+				!reflect.DeepEqual(rejected, PreparedDocument{}) || rejectedStats != wantStats {
+				t.Fatalf("unique-term rejection contract changed: %+v %+v %v", rejected, rejectedStats, err)
+			}
+		})
+	}
+}
+
+// Fixed production-shaped and contrasting input; the same harness is used in
+// isolated baseline/candidate copies for nonqualifying allocation validation.
+func BenchmarkPrepareTermGroups(b *testing.B) {
+	distinct := make([]string, 100)
+	for i := range distinct {
+		distinct[i] = fmt.Sprintf("token%03d", i)
+	}
+	cases := []struct {
+		name string
+		doc  Document
+	}{
+		{"ReceiptFields", Fields{{ID: FieldKey, Text: "bench:receipt:0123456789abcdef:steady:5491"},
+			{ID: FieldValue, Text: "receipt-bench"}}},
+		{"DistinctFields", Fields{{ID: FieldKey, Text: "notes/item"}, {ID: FieldValue, Text: strings.Join(distinct, " ")}}},
+		{"RepeatedText", Text(strings.Repeat("alpha ", 128))},
+		{"UnicodeFields", Fields{{ID: FieldKey, Text: "東京/メモ"}, {ID: FieldValue, Text: "Straße café 東京 ラーメン 👩‍💻"}}},
+	}
+	for _, positions := range []bool{false, true} {
+		for _, test := range cases {
+			b.Run(fmt.Sprintf("Positions%t/%s", positions, test.name), func(b *testing.B) {
+				opts := []IndexOption{WithAnalysisLimits(SearchAnalysisLimits{
+					MaxDocumentBytes: 1 << 20, MaxDocumentTokens: 250_000, MaxDocumentTerms: 100_000,
+				})}
+				if positions {
+					opts = append(opts, WithPositions())
+				}
+				idx := NewInvertedIndex[string, Document](NewScriptAwareAnalyzer(), nil, compareStringID, opts...)
+				b.ReportAllocs()
+				for b.Loop() {
+					prepared, stats, err := idx.Prepare(test.doc)
+					if err != nil {
+						b.Fatal(err)
+					}
+					runtime.KeepAlive(prepared)
+					runtime.KeepAlive(stats)
+				}
+			})
+		}
+	}
 }
