@@ -1346,6 +1346,7 @@ func TestReceiptBenchCleanupPreservesFailureAndProjectScope(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		dockerStatus int
+		logsStatus   int
 		runStatus    int
 		keepUp       int
 		wantStatus   int
@@ -1355,13 +1356,19 @@ func TestReceiptBenchCleanupPreservesFailureAndProjectScope(t *testing.T) {
 		captureError string
 	}{
 		{name: "clean teardown", wantDown: true},
+		{name: "log capture failure preserves pass and teardown", logsStatus: 17, wantDown: true},
+		{name: "log exit sidecar write failure preserves pass and teardown", wantDown: true, captureError: "sidecar"},
+		{name: "log evidence mktemp failure preserves pass and teardown", wantDown: true, captureError: "mktemp"},
+		{name: "log evidence chmod failure preserves pass and teardown", wantDown: true, captureError: "chmod"},
 		{name: "teardown failure disqualifies pass", dockerStatus: 19, wantStatus: 1, wantDown: true, wantBridge: true},
 		{name: "primary failure preserved", dockerStatus: 19, runStatus: 23, wantStatus: 23, wantDown: true, wantBridge: true},
 		{name: "explicit keep up", dockerStatus: 19, keepUp: 1},
 		{name: "primary failure with completed teardown", runStatus: 23, wantStatus: 23, wantDown: true, wantBridge: true},
+		{name: "log capture failure preserves primary and teardown", logsStatus: 17, runStatus: 23, wantStatus: 23, wantDown: true, wantBridge: true},
+		{name: "log exit sidecar write failure preserves primary and teardown", runStatus: 23, wantStatus: 23, wantDown: true, wantBridge: true, captureError: "sidecar"},
 		{name: "symlink diagnostics excluded", runStatus: 23, wantStatus: 23, wantDown: true, bridgeLink: true},
-		{name: "bridge evidence mktemp failure preserves teardown status", dockerStatus: 19, wantStatus: 1, wantDown: true, captureError: "mktemp"},
-		{name: "bridge evidence chmod failure preserves teardown status", dockerStatus: 19, wantStatus: 1, wantDown: true, captureError: "chmod"},
+		{name: "private evidence mktemp failure preserves teardown status", dockerStatus: 19, wantStatus: 1, wantDown: true, captureError: "mktemp"},
+		{name: "private evidence chmod failure preserves teardown status", dockerStatus: 19, wantStatus: 1, wantDown: true, captureError: "chmod"},
 		{name: "bridge evidence cat failure preserves teardown status", dockerStatus: 19, wantStatus: 1, wantDown: true, captureError: "cat"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1397,21 +1404,28 @@ export COMPOSE_PROJECT_NAME=lantern-bench-cleanup-fixture
 COMPOSE_STARTED=1
 COMPOSE_FILES=(-f fixture-compose.yml)
 source owned_compose.sh
-stop_owned_processes() { :; }
+stop_owned_processes() { printf 'stop\n' >> "$OUTDIR/cleanup-order"; }
 KEEP_UP=%d
 log() { :; }
 case "${CAPTURE_ERROR:-}" in
   mktemp) mktemp() { return 29; };;
   chmod) chmod() { return 29; };;
   cat) cat() { return 29; };;
+  sidecar) printf() {
+    if [[ "$#" == 2 && "$1" == '%%s\n' && "$2" =~ ^[0-9]+$ ]]; then return 29; fi
+    builtin printf "$@"
+  };;
 esac
 docker() {
   [[ "$COMPOSE_PROJECT_NAME" == "lantern-bench-cleanup-fixture" ]] || return 88
   case "$*" in
     "compose -f fixture-compose.yml logs --no-color")
+      printf 'capture\n' >> "$OUTDIR/log-capture-calls"
+      printf 'capture\n' >> "$OUTDIR/cleanup-order"
       printf '%%s\n' 'lantern-0-1 | Snapshot failed phase=live_replay' 'lantern-1-1 | Snapshot failed phase=seal'
-      return 0;;
+      return %d;;
     "compose -f fixture-compose.yml --profile off-diagnostics down -v --remove-orphans")
+      printf 'down\n' >> "$OUTDIR/cleanup-order"
       echo "docker down invoked" >&2
       return %d;;
     "ps -aq --filter label=com.docker.compose.project=lantern-bench-cleanup-fixture" | "volume ls -q --filter label=com.docker.compose.project=lantern-bench-cleanup-fixture" | "network ls -q --filter label=com.docker.compose.project=lantern-bench-cleanup-fixture") return 0;;
@@ -1422,7 +1436,7 @@ docker() {
 %s
 trap cleanup EXIT
 exit %d
-`, tc.keepUp, tc.dockerStatus, cleanup, tc.runStatus)
+`, tc.keepUp, tc.logsStatus, tc.dockerStatus, cleanup, tc.runStatus)
 			cmd := exec.Command("bash", "-c", fixture)
 			cmd.Env = append(os.Environ(), "OUTDIR="+outDir, "HERE="+outDir,
 				"NATIVE_WORK_DIR="+workspace, "PEER_TLS_DIR="+trust, "TMPDIR="+failureRoot, "CAPTURE_ERROR="+tc.captureError)
@@ -1433,6 +1447,26 @@ exit %d
 			}
 			if got := strings.Contains(string(output), "docker down invoked"); got != tc.wantDown {
 				t.Errorf("compose down invoked = %v, want %v; output = %s", got, tc.wantDown, output)
+			}
+			captures, captureErr := os.ReadFile(filepath.Join(outDir, "log-capture-calls"))
+			wantCapture := tc.captureError != "mktemp" && tc.captureError != "chmod"
+			if wantCapture {
+				if captureErr != nil || string(captures) != "capture\n" {
+					t.Fatalf("log capture did not run exactly once: %q %v", captures, captureErr)
+				}
+			} else if !os.IsNotExist(captureErr) {
+				t.Fatalf("unexpected log capture: %q %v", captures, captureErr)
+			}
+			order, err := os.ReadFile(filepath.Join(outDir, "cleanup-order"))
+			wantOrder := "stop\n"
+			if wantCapture {
+				wantOrder += "capture\n"
+			}
+			if tc.wantDown {
+				wantOrder += "down\n"
+			}
+			if err != nil || string(order) != wantOrder {
+				t.Fatalf("cleanup capture order = %q, err = %v; want %q", order, err, wantOrder)
 			}
 			if tc.dockerStatus != 0 && tc.wantDown && !strings.Contains(string(output), "run is unqualified") {
 				t.Errorf("teardown failure is not reported: %s", output)
@@ -1448,9 +1482,9 @@ exit %d
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantCount := 0
-			if tc.runStatus != 0 || tc.wantBridge || tc.captureError != "" && tc.captureError != "mktemp" {
-				wantCount = 1
+			wantCount := 1
+			if tc.captureError == "mktemp" {
+				wantCount = 0
 			}
 			if len(evidence) != wantCount {
 				t.Fatalf("failure evidence = %v, want count=%d", evidence, wantCount)
@@ -1465,7 +1499,7 @@ exit %d
 					t.Fatal(err)
 				}
 				for _, file := range files {
-					if file.Name() != "server.log" && file.Name() != "diagnostics.log" {
+					if file.Name() != "server.log" && file.Name() != "server.log.exit-code" && file.Name() != "diagnostics.log" {
 						t.Fatalf("native trust input copied to evidence: %s", file.Name())
 					}
 					data, err := os.ReadFile(filepath.Join(directory, file.Name()))
@@ -1475,13 +1509,30 @@ exit %d
 				}
 				serverPath := filepath.Join(directory, "server.log")
 				serverData, serverErr := os.ReadFile(serverPath)
-				if tc.runStatus != 0 {
+				if wantCapture {
 					serverInfo, statErr := os.Stat(serverPath)
 					if serverErr != nil || string(serverData) != serverLog || statErr != nil || serverInfo.Mode().Perm() != 0o600 {
 						t.Fatalf("replica-prefixed private server log lost or wrong mode: %q %v %v", serverData, serverErr, statErr)
 					}
 				} else if !os.IsNotExist(serverErr) {
 					t.Fatalf("unexpected server evidence: %q %v", serverData, serverErr)
+				}
+				exitPath := filepath.Join(directory, "server.log.exit-code")
+				exitData, exitErr := os.ReadFile(exitPath)
+				if wantCapture {
+					wantExit := fmt.Sprintf("%d\n", tc.logsStatus)
+					if tc.captureError == "sidecar" {
+						wantExit = ""
+						if !strings.Contains(string(output), "failed to retain Compose log capture exit code") {
+							t.Fatalf("sidecar write failure was not reported: %s", output)
+						}
+					}
+					exitInfo, statErr := os.Stat(exitPath)
+					if exitErr != nil || string(exitData) != wantExit || statErr != nil || exitInfo.Mode().Perm() != 0o600 {
+						t.Fatalf("private log exit sidecar = %q, read=%v stat=%v; want %q mode 0600", exitData, exitErr, statErr, wantExit)
+					}
+				} else if !os.IsNotExist(exitErr) {
+					t.Fatalf("unexpected log exit sidecar: %q %v", exitData, exitErr)
 				}
 				path := filepath.Join(directory, "diagnostics.log")
 				data, err := os.ReadFile(path)

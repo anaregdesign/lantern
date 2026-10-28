@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"log/slog"
 
 	"github.com/anaregdesign/lantern/core/hlc"
 	"github.com/anaregdesign/lantern/core/mutationlog"
@@ -77,9 +78,23 @@ func (s *LanternService) markReceiptCommitFaultLocked() {
 	if s.receiptCommitFaulted {
 		return
 	}
+	faultCountBefore := s.publicationFaultCount
 	s.receiptCommitFaulted = true
 	if s.publicationFaultCount == 0 {
 		close(s.publicationFaultCh)
 	}
 	s.publicationFaultCount++
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("publication fault transition",
+		slog.String("event", "receipt_commit_fault_set"),
+		slog.String("fault_source", "receipt_commit"),
+		slog.String("source", "mark_receipt_commit_fault"),
+		slog.Bool("receipt_fault_before", false),
+		slog.Bool("receipt_fault_after", true),
+		slog.Bool("snapshot_fault_at_set", s.snapshotInstallFaulted),
+		slog.Int("fault_count_before", faultCountBefore),
+		slog.Int("fault_count_after", s.publicationFaultCount))
 }

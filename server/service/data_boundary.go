@@ -238,6 +238,14 @@ func dataUnary[Req, Resp any](ctx context.Context, req *connect.Request[Req], sv
 	if err != nil {
 		return nil, err
 	}
+	// Replication status intentionally remains available during graph faults.
+	// Other unary calls may await the one active install before their original
+	// final authority/state checks; neither failed repair nor expiry is bypassed.
+	if _, diagnostic := any(req.Msg).(*pb.GetReplicationStatusRequest); !diagnostic {
+		if err := svc.waitForActiveSnapshotInstall(ctx); err != nil {
+			return nil, err
+		}
+	}
 	ctx, err = svc.dataQueryContext(ctx, any(req.Msg).(proto.Message), admission)
 	if err != nil {
 		return nil, err

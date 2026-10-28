@@ -3,8 +3,10 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"testing"
 	"time"
@@ -83,6 +85,9 @@ func TestStagedPublicationWALSentinelAcrossAdapters(t *testing.T) {
 						return nil
 					})
 					f := newReceiptEdgeDeleteFixtureWithLimits(t, wal, hlc.NodeID{0x52}, 32, 1<<20)
+					var diagnostics bytes.Buffer
+					f.service.WithLogger(slog.New(slog.NewJSONHandler(&diagnostics,
+						&slog.HandlerOptions{Level: slog.LevelWarn})))
 					runtime := bindPublicReceiptFixtureForConcurrencyTest(t, f)
 					invoke, id := stagedPublicationAdapterCall(t, f, runtime, operation)
 					originID := f.service.clock.NodeID()
@@ -171,6 +176,7 @@ func TestStagedPublicationWALSentinelAcrossAdapters(t *testing.T) {
 							}
 						}
 					}
+					assertReceiptCommitFaultDiagnostics(t, &diagnostics, failure.uncertain)
 				})
 			}
 		}
@@ -345,7 +351,11 @@ func TestStagedPublicationHeldWALSentinelRejectsWaitingViews(t *testing.T) {
 }
 
 func TestStagedPublicationUncertaintyThenPanicFaultsOnce(t *testing.T) {
-	f := newReceiptEdgeDeleteFixture(t, receiptEdgeDeleteWALFunc(func(mutationlog.Entry) error { return mutationlog.ErrClosed }))
+	walFailure := fmt.Errorf("private WAL evidence: %w", mutationlog.ErrClosed)
+	f := newReceiptEdgeDeleteFixture(t, receiptEdgeDeleteWALFunc(func(mutationlog.Entry) error { return walFailure }))
+	var diagnostics bytes.Buffer
+	f.service.WithLogger(slog.New(slog.NewJSONHandler(&diagnostics,
+		&slog.HandlerOptions{Level: slog.LevelWarn})))
 	const interruption = "cleanup interrupted after uncertain WAL"
 	var recovered any
 	func() {
@@ -358,7 +368,7 @@ func TestStagedPublicationUncertaintyThenPanicFaultsOnce(t *testing.T) {
 		defer publication.failClosedOnPanic()
 		if err := publication.commit("fault proof", f.service.clock.Now(), nil, func() {
 			t.Error("uncertain WAL reached graph release")
-		}, nil); !errors.Is(err, mutationlog.ErrWALIndeterminate) {
+		}, nil); !errors.Is(err, mutationlog.ErrWALIndeterminate) || !errors.Is(err, walFailure) {
 			t.Fatalf("WAL outcome = %v", err)
 		}
 		panic(interruption)
@@ -371,6 +381,7 @@ func TestStagedPublicationUncertaintyThenPanicFaultsOnce(t *testing.T) {
 	default:
 		t.Fatal("fault generation remained open")
 	}
+	assertReceiptCommitFaultDiagnostics(t, &diagnostics, true, "private WAL evidence", interruption)
 }
 
 // A durable frame may exist even though the service rolled its staged graph
@@ -441,6 +452,9 @@ func TestStagedPublicationReleaseAndPanicBoundaries(t *testing.T) {
 				walWritten = true
 				return nil
 			}))
+			var diagnostics bytes.Buffer
+			f.service.WithLogger(slog.New(slog.NewJSONHandler(&diagnostics,
+				&slog.HandlerOptions{Level: slog.LevelWarn})))
 			f.cache.AddEdge("tail", "head", 3)
 			call := receiptDeleteCall(t, f.epoch, graphcache.EdgeKey[string]{Tail: "tail", Head: "head"})
 			keys, intents, err := prepareEdgeDeleteReceiptCall(call, f.service.namespaceFormat)
@@ -532,6 +546,7 @@ func TestStagedPublicationReleaseAndPanicBoundaries(t *testing.T) {
 			if f.service.receiptCommitFaulted != faulted {
 				t.Fatalf("service faulted = %v, want %v", f.service.receiptCommitFaulted, faulted)
 			}
+			assertReceiptCommitFaultDiagnostics(t, &diagnostics, faulted, panicValue.Error())
 			status, _, lookupErr := f.coordinator.Lookup(call.Items[0].ID, time.Now())
 			if faulted {
 				if connect.CodeOf(lookupErr) != connect.CodeFailedPrecondition {
@@ -556,5 +571,49 @@ func TestStagedPublicationReleaseAndPanicBoundaries(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// assertReceiptCommitFaultDiagnostics checks only this setter's fixed schema;
+// existing error/panic identity and fail-stop assertions remain in each caller.
+func assertReceiptCommitFaultDiagnostics(t *testing.T, diagnostics *bytes.Buffer, want bool, privateValues ...string) {
+	t.Helper()
+	for _, private := range privateValues {
+		if bytes.Contains(diagnostics.Bytes(), []byte(private)) {
+			t.Fatal("receipt fault diagnostic exposed private error or panic text")
+		}
+	}
+	raw := bytes.TrimSpace(diagnostics.Bytes())
+	if !want {
+		if len(raw) != 0 {
+			t.Fatalf("safe staged publication emitted a fault diagnostic: %s", raw)
+		}
+		return
+	}
+	lines := bytes.Split(raw, []byte{'\n'})
+	if len(lines) != 1 {
+		t.Fatalf("first receipt fault emitted %d rows, want one", len(lines))
+	}
+	var row map[string]any
+	if err := json.Unmarshal(lines[0], &row); err != nil {
+		t.Fatal(err)
+	}
+	wantFields := map[string]any{
+		"level": "WARN", "msg": "publication fault transition",
+		"event": "receipt_commit_fault_set", "fault_source": "receipt_commit",
+		"source": "mark_receipt_commit_fault", "receipt_fault_before": false,
+		"receipt_fault_after": true, "snapshot_fault_at_set": false,
+		"fault_count_before": float64(0), "fault_count_after": float64(1),
+	}
+	if len(row) != len(wantFields)+1 { // The JSON handler adds its timestamp.
+		t.Fatalf("receipt fault diagnostic contains unexpected attributes: %v", row)
+	}
+	if timestamp, ok := row["time"].(string); !ok || timestamp == "" {
+		t.Fatal("receipt fault diagnostic has no log timestamp")
+	}
+	for key, value := range wantFields {
+		if row[key] != value {
+			t.Errorf("receipt fault diagnostic %s = %v, want %v", key, row[key], value)
+		}
 	}
 }

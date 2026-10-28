@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -93,6 +94,9 @@ type LanternService struct {
 	// mutation to this replica's log. Serialize installs so a successful one
 	// cannot clear another install's CDC gap while it is still applying.
 	snapshotInstallMu sync.Mutex
+	// Completion belongs to one admitted live install. Public unary callers
+	// may wait for that attempt, then run their original admission checks.
+	activeSnapshotInstall atomic.Pointer[snapshotInstallCompletion]
 	// Readers hold the shared side while accessing GraphCache and detaching
 	// results. Snapshot admission and verified fault-clear take the exclusive
 	// side without blocking unrelated WAL publication for a long graph read.
@@ -110,6 +114,9 @@ type LanternService struct {
 	publicationFaultCh     chan struct{}
 	publicationFaultCount  int
 	snapshotInstallFaulted bool
+	// snapshotInstallSequence correlates local live-install diagnostics only.
+	// It is advanced under replicationCutMu after checked admission succeeds.
+	snapshotInstallSequence uint64
 	// An indeterminate internal receipt WAL commit has no append-only repair
 	// path. Keep admission stopped until a future certified restore.
 	receiptCommitFaulted bool

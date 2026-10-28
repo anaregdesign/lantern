@@ -162,6 +162,7 @@ cleanup() {
   local status=$?
   local tls_in_use=0
   local private_failure=""
+  local compose_logs_status=0
   trap - EXIT
   # Cancel owned workload/chaos producers before deleting their Server state.
   # Collected children are unregistered immediately so PID reuse is harmless.
@@ -173,14 +174,31 @@ cleanup() {
     join_ghz_diagnostics
     if (( producer_diagnostics_failed != 0 && status == 0 )); then status=1; fi
   fi
-  if (( status != 0 )) && [[ "${COMPOSE_STARTED:-0}" == "1" ]]; then
+  if [[ "${COMPOSE_STARTED:-0}" == "1" ]]; then
     # Raw diagnostics stay outside public artifact globs and trust directories.
     # They may contain sensitive runtime context; publish hashes/verdicts only.
-    private_failure="$(mktemp -d "${TMPDIR:-/tmp}/lantern-native-failure.XXXXXXXX")"
-    chmod 700 "$private_failure"
-    docker compose "${COMPOSE_FILES[@]}" logs --no-color > "$private_failure/server.log" 2>&1 || true
-    chmod 600 "$private_failure/server.log"
-    echo "run.sh: private startup/runtime evidence retained at $private_failure" >&2
+    # Capture once after traffic/owned children stop and before teardown, even
+    # on success. Best-effort observation never changes the workload status.
+    if private_failure="$(mktemp -d "${TMPDIR:-/tmp}/lantern-native-failure.XXXXXXXX")" &&
+        chmod 700 "$private_failure"; then
+      if (umask 077; docker compose "${COMPOSE_FILES[@]}" logs --no-color > "$private_failure/server.log" 2>&1); then
+        compose_logs_status=0
+      else
+        compose_logs_status=$?
+        echo "run.sh: failed to capture Compose logs (exit=$compose_logs_status); workload status preserved" >&2
+      fi
+      if ! chmod 600 "$private_failure/server.log"; then
+        echo "run.sh: failed to secure private Compose log capture; workload status preserved" >&2
+      fi
+      # This records the capture exit only; zero does not prove complete logs.
+      if ! (umask 077; printf '%s\n' "$compose_logs_status" > "$private_failure/server.log.exit-code"); then
+        echo "run.sh: failed to retain Compose log capture exit code; workload status preserved" >&2
+      fi
+      echo "run.sh: private startup/runtime evidence retained at $private_failure" >&2
+    else
+      private_failure=""
+      echo "run.sh: failed to create private startup/runtime evidence; workload status preserved" >&2
+    fi
   fi
   if [[ "$COMPOSE_STARTED" == "1" && "${KEEP_UP:-0}" != "1" ]]; then
     log "compose down -v (project=$COMPOSE_PROJECT_NAME)"
@@ -200,7 +218,7 @@ cleanup() {
       "$NATIVE_WORK_DIR" == "${HERE:-}/out/.peer-tls."* &&
       ! -L "$NATIVE_WORK_DIR" && -f "$NATIVE_WORK_DIR/diagnostics.log" &&
       ! -L "$NATIVE_WORK_DIR/diagnostics.log" ]]; then
-    if [[ -z "$private_failure" ]]; then
+    if [[ -z "$private_failure" && "${COMPOSE_STARTED:-0}" != "1" ]]; then
       if private_failure="$(mktemp -d "${TMPDIR:-/tmp}/lantern-native-failure.XXXXXXXX")" &&
           chmod 700 "$private_failure"; then
         echo "run.sh: private bridge evidence retained at $private_failure" >&2

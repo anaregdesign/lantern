@@ -909,7 +909,8 @@ under the existing fail-closed install gate. Public graph-data reads
 (including prefix/dry-run queries, search, traversal, degree ranking,
 and backup) hold a Snapshot-admission read latch across their GraphCache
 access, detach returned Vertex values before releasing it, and return
-`FAILED_PRECONDITION` throughout an active or failed install. Snapshot
+`FAILED_PRECONDITION` at the underlying admission boundary throughout an
+active or failed install. Snapshot
 admission and verified fault-clear take the exclusive side of that same
 latch. Status and replication Snapshot also capture under this latch and
 their committed cut; neither holds the cut while serializing or streaming
@@ -917,6 +918,15 @@ the detached result.
 Public graph writes, including conditional/outcome-bearing Puts, effective
 Adds, exact/prefix Deletes, and receipt commits, reject the same fault before
 reading or changing graph, receipt Store, origin, or log state.
+The public Connect unary adapter first waits for the one live install active
+after initial authorization, subject to the caller's context, before running
+its original final admission checks and operation (#1933). Completion alone
+does not authorize access: an unsuccessful install, persistent fault, expired
+credential or stale policy still fails closed. The adapter never retries a
+mutation or renews authority, and a later competing install may still reject
+the call. Nongraph `GetReplicationStatus` remains available without this wait;
+direct service calls, private replication and streaming APIs retain their
+existing fault behavior.
 Peer mutation admission also rejects an active or failed graph-only Snapshot
 before queueing a new effect, including a duplicate retry. An earlier remote
 effect applied before Snapshot admission but waiting for relay WAL append
