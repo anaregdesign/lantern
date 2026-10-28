@@ -3,11 +3,13 @@ package service
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"sort"
 	"testing"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/anaregdesign/lantern/core/graphcache"
 	"github.com/anaregdesign/lantern/core/hlc"
@@ -339,4 +341,86 @@ func mustReplaceRetiredCatalog(
 		t.Fatal(err)
 	}
 	stage.Commit()
+}
+
+func graphMutationCommittedFixture(t *testing.T) (*ServingRuntime, *LanternService, *graphMutationEnvelope) {
+	t.Helper()
+	runtime, svc, _ := newActivatedReceiptService(t, 16)
+	if _, err := svc.MutateGraph(t.Context(), graphMutationTestRequest(t, runtime, 0x54)); err != nil {
+		t.Fatal(err)
+	}
+	e, ok := runtime.log.RetainedEntries()[0].Op.(*graphMutationEnvelope)
+	if !ok {
+		t.Fatal("wrong envelope")
+	}
+	return runtime, svc, e
+}
+
+// graphMutationEnvelopeFixture supplies accepted wire data, not proof that a
+// live mutation committed. Codec and identity tests must not require completing
+// production admission within its wall-clock budget merely to obtain input.
+func graphMutationEnvelopeFixture(t *testing.T) *graphMutationEnvelope {
+	t.Helper()
+	issued := time.Unix(1700000000, 0).UTC()
+	epoch := mutationreceipt.Epoch{0x42}
+	origin := hlc.NodeID{0x31}
+	policy := [32]byte{0x23}
+	group := mutationreceipt.GroupID{0x54}
+	contrib := mutationreceipt.ContribID{1}
+	original := []*pb.GraphMutationItem{
+		{Operation: &pb.GraphMutationItem_PutVertex{PutVertex: &pb.Vertex{Key: "a", Value: &pb.Vertex_String_{String_: "first"}}}},
+		{Operation: &pb.GraphMutationItem_PutVertex{PutVertex: &pb.Vertex{Key: "b", Value: &pb.Vertex_String_{String_: "second"}}}},
+		{Operation: &pb.GraphMutationItem_AddEdge{AddEdge: &pb.GraphMutationEdgeAdd{Edge: &pb.Edge{Tail: "a", Head: "b", Weight: 2}, ContribId: append([]byte(nil), contrib[:]...)}}},
+	}
+	call := &pb.ReplicatedGraphMutation{
+		Version: 1, DeploymentEpoch: append([]byte(nil), epoch[:]...),
+		PolicyFingerprint: append([]byte(nil), policy[:]...),
+		Items:             make([]*pb.ReplicatedGraphMutationItem, len(original)),
+	}
+	e := &graphMutationEnvelope{Receipts: make([]mutationreceipt.Receipt, len(original))}
+	for i, item := range original {
+		id, err := mutationreceipt.NewID(epoch, issued, [24]byte{0x54, byte(i + 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest, kind, err := graphMutationDigest(item, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resource, err := graphMutationResource(item, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt := mutationreceipt.Receipt{
+			Intent: mutationreceipt.Intent{
+				ID: id, Group: group, Index: uint32(i), Count: uint32(len(original)),
+				Kind: kind, Digest: digest, Resource: resource,
+			},
+			Result:         []byte{byte(pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE)},
+			DeadlineMillis: issued.Add(time.Hour).UnixMilli(),
+		}
+		if kind == mutationreceipt.AddEdge {
+			receipt.HasContrib, receipt.ContribID = true, contrib
+			receipt.Result = binary.BigEndian.AppendUint32(nil, math.Float32bits(2))
+		}
+		status, err := receiptStatusProto(id, mutationreceipt.Observation{Status: mutationreceipt.Confirmed, Receipt: receipt})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.Receipts[i] = receipt
+		call.Items[i] = &pb.ReplicatedGraphMutationItem{Original: item, Receipt: status.GetReceipt(), EdgeAccepted: kind == mutationreceipt.AddEdge}
+	}
+	for i := 0; i < 2; i++ {
+		vertex := proto.Clone(original[i].GetPutVertex()).(*pb.Vertex)
+		call.Projection = append(call.Projection, &pb.GraphMutationProjection{ItemIndex: uint32(i), Effect: &pb.GraphMutationProjection_PutVertex{
+			PutVertex: &pb.ReplicatedPutVertex{Outcome: &pb.ReplicatedPutVertex_Live{Live: vertex}},
+		}})
+	}
+	call.Projection = append(call.Projection, &pb.GraphMutationProjection{ItemIndex: 2, Effect: &pb.GraphMutationProjection_AddEdge{AddEdge: true}})
+	e.Mutation = &pb.Mutation{
+		Origin: append([]byte(nil), origin[:]...), Seq: 1,
+		Hlc: hlcToProto(hlc.Timestamp{WallNs: issued.Add(time.Second).UnixNano(), NodeID: origin}),
+		Op:  &pb.MutationOp{Op: &pb.MutationOp_GraphMutation{GraphMutation: call}},
+	}
+	return e
 }

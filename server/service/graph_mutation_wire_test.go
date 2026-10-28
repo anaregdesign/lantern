@@ -10,21 +10,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func graphMutationCommittedFixture(t *testing.T) (*ServingRuntime, *LanternService, *graphMutationEnvelope) {
-	t.Helper()
-	runtime, svc, _ := newActivatedReceiptService(t, 16)
-	if _, err := svc.MutateGraph(t.Context(), graphMutationTestRequest(t, runtime, 0x54)); err != nil {
-		t.Fatal(err)
-	}
-	e, ok := runtime.log.RetainedEntries()[0].Op.(*graphMutationEnvelope)
-	if !ok {
-		t.Fatal("wrong envelope")
-	}
-	return runtime, svc, e
-}
-
 func TestGraphMutationWireRoundTrip(t *testing.T) {
-	_, _, e := graphMutationCommittedFixture(t)
+	e := graphMutationEnvelopeFixture(t)
 	if _, err := encodeGraphMutationWAL((*graphMutationEnvelope)(nil)); err == nil {
 		t.Fatal("nil envelope accepted")
 	}
@@ -92,7 +79,7 @@ func mustMarshalGraphTest(t *testing.T, m proto.Message) []byte {
 }
 
 func TestGraphMutationWireRejectsOriginProjectionDrift(t *testing.T) {
-	_, _, e := graphMutationCommittedFixture(t)
+	e := graphMutationEnvelopeFixture(t)
 	for _, tc := range []struct {
 		name string
 		edit func(*pb.ReplicatedGraphMutation)
