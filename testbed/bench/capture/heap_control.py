@@ -180,7 +180,7 @@ def mount_stage(root, service):
 def watched(row):
     # Project only watched fields while full Docker Config/Env stays in memory.
     c, h, s = row['Config'], row['HostConfig'], row['State']
-    required_host={'NetworkMode','Binds','Mounts','ReadonlyRootfs','Privileged','AutoRemove','CapAdd','CapDrop','SecurityOpt','PidMode','IpcMode','UTSMode','UsernsMode','RestartPolicy','Tmpfs'}
+    required_host={'NetworkMode','Binds','Mounts','ReadonlyRootfs','Privileged','AutoRemove','CapAdd','CapDrop','SecurityOpt','PidMode','IpcMode','UTSMode','UsernsMode','RestartPolicy'}
     required_state={'Status','Running','Pid','StartedAt','ExitCode','OOMKilled','Restarting','Paused'}
     if not required_host<=set(h) or not required_state<=set(s) or not {'User','Labels','Entrypoint','Cmd','WorkingDir'}<=set(c) or 'RestartCount' not in row:
         raise ValueError('incomplete firsthand inspect')

@@ -361,6 +361,28 @@ class HeapControlTest(unittest.TestCase):
                 row=inspect_row(self.root,0); del row[group][key]
                 with self.assertRaises(ValueError): control.watched(row)
 
+    def test_optional_tmpfs_absence_matches_null_without_mutating_raw_or_hiding_drift(self):
+        row=inspect_row(self.root,0)
+        omitted=copy.deepcopy(row); del omitted['HostConfig']['Tmpfs']
+        before=[control.json_bytes(value) for value in (row,omitted)]
+        self.assertEqual(control.watched(omitted),control.watched(row))
+        self.assertIsNone(control.watched(omitted)['host_config']['tmpfs'])
+        self.assertEqual(before,[control.json_bytes(value) for value in (row,omitted)])
+        self.assertNotIn('Tmpfs',omitted['HostConfig'])
+        nonempty=copy.deepcopy(omitted); nonempty['HostConfig']['Tmpfs']={'/scratch':'rw,size=1m'}
+        projected=control.watched(nonempty)
+        self.assertEqual(projected['host_config']['tmpfs'],{'/scratch':'rw,size=1m'})
+        self.assertNotEqual(control.stable_observation(projected),control.stable_observation(control.watched(omitted)))
+        parent=self.case/'tmpfs-drift'; parent.mkdir(mode=0o700)
+        root=parent/'heap-control-evidence'; control.initialize(root)
+        original=inspect_row(root,0); del original['HostConfig']['Tmpfs']
+        control.binding_command(bind_args(root,0,'bind-original-before'),original)
+        changed=copy.deepcopy(original); changed['HostConfig']['Tmpfs']={'/scratch':'rw,size=1m'}
+        with self.assertRaisesRegex(ValueError,'original/daemon drift'):
+            control.binding_command(bind_args(root,0,'bind-original-after'),changed)
+        self.assertFalse((control.mount_stage(root,'lantern-0')/'original-after.json').exists())
+        self.assertFalse(any(root.rglob('session.json')))
+
     def test_missing_original_proof_refuses_clone_before_any_session(self):
         parent=self.case/'unfinished'; parent.mkdir(mode=0o700)
         root=parent/'heap-control-evidence'; control.initialize(root)
