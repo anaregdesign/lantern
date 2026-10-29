@@ -58,6 +58,8 @@ NATURAL_GC_PID=""
 NATURAL_GC_ARGS=()
 AUTHFIXTURE=""
 CHANGEPROBE=""
+retained_heap="${LANTERN_BENCH_RETAINED_HEAP:-0}"
+[[ "$retained_heap" == "0" || "$retained_heap" == "1" ]] || { echo "invalid retained heap mode" >&2; exit 2; }
 sub_pids=()
 prod_pids=()
 ghz_capture_pids=()
@@ -102,6 +104,7 @@ log() { printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 # Its fixed deadline includes preparation and reserves 120 seconds for cleanup.
 validate_natural_gc_observation() {
   [[ "${LANTERN_BENCH_NATURAL_GC_OBSERVE:-0}" != "0" ]] || return 0
+  die "the historical natural_gc_single diagnostic is not a fresh paired-protocol run"
   [[ "${LANTERN_BENCH_NATURAL_GC_OBSERVE}" == "1" &&
      "$SCENARIO_NAME" == "receipt_edge_add_admission_lookup" &&
      "$target_driver" == "receipt_edge_add" &&
@@ -285,6 +288,7 @@ export LANTERN_BENCH_RUNTIME_GID="${runtime_owner#*:}"
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 OUTDIR="$HERE/out/${SCENARIO_NAME}/${TS}"
+if [[ "$retained_heap" == "1" ]]; then OUTDIR="$HERE/out/retained/${SCENARIO_NAME}/${TS}"; fi
 mkdir -p "$OUTDIR/prom" "$OUTDIR/pprof"
 
 render_report() {
@@ -311,6 +315,12 @@ case "$target_driver" in
     receipt_driver=1 ;;
   *) die "unknown target.driver $target_driver in $SCENARIO_FILE" ;;
 esac
+if [[ "$retained_heap" == "1" ]]; then
+  [[ "$receipt_driver" == "1" && "${KEEP_UP:-0}" == "0" && "${SKIP_UP:-0}" == "0" && "${LEAK_GATE_ONLY:-0}" == "1" ]] || die "retained measurement requires a fresh owned receipt cohort"
+  export LANTERN_BENCH_HEAP_CONTROL_ROOT="$OUTDIR/heap-control-evidence"
+  python3 -B "$CAPTURE_DIR/heap_control.py" init --directory "$LANTERN_BENCH_HEAP_CONTROL_ROOT" || die "cannot create private retained control inputs"
+  COMPOSE_FILES+=(-f "$HERE/compose.retained-heap.yml")
+fi
 validate_natural_gc_observation
 if [[ "$target_driver" == "ghz" ]]; then
   need ghz
@@ -506,6 +516,12 @@ verify_receipt_image_provenance() {
 
 pin_receipt_image
 [[ "$receipt_driver" != "1" || "$authority_image_id" == "$receipt_image_id" ]] || die "workload image changed after original authority provisioning"
+heap_image_protocol="$(docker image inspect --format '{{if .Config.Labels}}{{index .Config.Labels "io.lantern.bench-heap.protocol"}}{{end}}' "$receipt_image_id")" || die "cannot inspect measurement image scope"
+if [[ "$retained_heap" == "1" ]]; then
+  [[ "$heap_image_protocol" == "symmetric_post_gc_2_v1" ]] || die "retained lane requires the distinct measurement image"
+else
+  [[ "$heap_image_protocol" == "" || "$heap_image_protocol" == "<no value>" ]] || die "normal lane cannot use a measurement image"
+fi
 # The release image retains its non-root default. This local fixture uses
 # the publisher's non-root identity, preserving owner-only replacement files.
 image_owner="$(docker run --rm --entrypoint /bin/sh "$receipt_image_id" -c 'printf "%s:%s" "$(id -u)" "$(id -g)"')" || die "cannot determine native image file owner"
@@ -608,8 +624,31 @@ if [[ "${SKIP_UP:-0}" != "1" ]]; then
     fi
     KEEP_UP="$receipt_keep_up"
     # Start only the protected replicas; metrics stay on their loopback plane.
-    docker compose "${COMPOSE_FILES[@]}" up -d --wait \
-      lantern-0 lantern-1 lantern-2
+    if [[ "$retained_heap" == "1" ]]; then
+      [[ "${EXPECTED_LANTERN_TREE:-}" =~ ^[0-9a-f]{40}$ ]] || die "tagged measurement requires the exact expected source tree"
+      docker compose "${COMPOSE_FILES[@]}" create lantern-0 lantern-1 lantern-2 || die "cannot create exact measurement targets"
+      heap_containers=""
+      heap_endpoints=""
+      for index in 0 1 2; do
+        heap_container="$(docker compose "${COMPOSE_FILES[@]}" ps --all -q "lantern-$index")" || die "cannot bind created measurement target"
+        [[ "$heap_container" =~ ^[0-9a-f]{64}$ ]] || die "measurement target is not one exact full container ID"
+        [[ -z "$heap_containers" ]] || { heap_containers+=","; heap_endpoints+=","; }
+        heap_containers+="$heap_container"
+        heap_endpoints+="localhost:${REPLICA_METRICS_PORTS[$index]}"
+      done
+      sed -e "s/localhost:6380/localhost:${REPLICA_GRPC_PORTS[0]}/g" \
+        -e "s/localhost:6381/localhost:${REPLICA_GRPC_PORTS[1]}/g" \
+        -e "s/localhost:6382/localhost:${REPLICA_GRPC_PORTS[2]}/g" "$SCENARIO_FILE" |
+        yq -o=json '.' > "$OUTDIR/scenario.heap-input.json"
+      python3 -B "$CAPTURE_DIR/heap_control.py" prepare \
+        --directory "$LANTERN_BENCH_HEAP_CONTROL_ROOT" --containers "$heap_containers" --endpoints "$heap_endpoints" \
+        --source-commit "$receipt_image_commit" --source-tree "$EXPECTED_LANTERN_TREE" \
+        --image-id "$receipt_image_id" --runtime-user "$runtime_owner" --run-id "$COMPOSE_PROJECT_NAME" \
+        --cpuset "${LANTERN_BENCH_CPUSET:-}" --scenario-json "$OUTDIR/scenario.heap-input.json" || die "measurement target binding failed before start"
+      docker compose "${COMPOSE_FILES[@]}" up -d --no-recreate --wait lantern-0 lantern-1 lantern-2
+    else
+      docker compose "${COMPOSE_FILES[@]}" up -d --wait lantern-0 lantern-1 lantern-2
+    fi
   else
     KEEP_UP="$receipt_keep_up"
     docker compose "${COMPOSE_FILES[@]}" --profile off-diagnostics up -d --wait
@@ -672,6 +711,7 @@ sed \
   -e "s/localhost:6382/localhost:${REPLICA_GRPC_PORTS[2]}/g" \
   "$SCENARIO_FILE" > "$SCENARIO_RESOLVED"
 SCENARIO_FILE="$SCENARIO_RESOLVED"
+yq -o=json '.' "$SCENARIO_FILE" > "$OUTDIR/scenario.resolved.json"
 
 # Re-parse fields that depend on endpoints after substitution.
 endpoints=( $(yq -r '.target.endpoints[]' "$SCENARIO_FILE") )
@@ -1123,6 +1163,21 @@ snapshot_search_lifecycle() {
 
 prepare_receipt_edge_add
 
+capture_retained_heap() {
+  [[ "$retained_heap" == "1" ]] || return 0
+  local phase="$1" admission lookup steady_admission steady_lookup
+  admission="$(jq -er '.count | select(type=="number" and .>0 and .<=8000 and floor==.)' "$OUTDIR/ghz_warmup_0_receipt_admission.json")" || die "missing completed warmup admission count"
+  lookup="$(jq -er '.count | select(type=="number" and .>0 and .<=8000 and floor==.)' "$OUTDIR/ghz_warmup_1_receipt_lookup.json")" || die "missing completed warmup lookup count"
+  if [[ "$phase" == "post" ]]; then
+    steady_admission="$(jq -er '.count | select(type=="number" and .>0 and .<=8000 and floor==.)' "$OUTDIR/ghz_steady_0_receipt_admission.json")" || die "missing completed steady admission count"
+    steady_lookup="$(jq -er '.count | select(type=="number" and .>0 and .<=8000 and floor==.)' "$OUTDIR/ghz_steady_1_receipt_lookup.json")" || die "missing completed steady lookup count"
+    admission=$((admission + steady_admission))
+    lookup=$((lookup + steady_lookup))
+  fi
+  python3 -B "$CAPTURE_DIR/heap_control.py" capture --directory "$LANTERN_BENCH_HEAP_CONTROL_ROOT" \
+    --phase "$phase" --admission "$admission" --lookup "$lookup" || die "retained cut incomplete; owned cleanup remains mandatory"
+}
+
 # ----- WARMUP ----------------------------------------------------------------
 log "warmup: ${warmup_duration} @ c=${warmup_conc} rps=${warmup_rps}"
 if [[ "$receipt_driver" == "1" ]]; then
@@ -1147,6 +1202,7 @@ if [[ "$semantic_kind" == "search" ]]; then
   semantic_verdict="pass"
 fi
 snapshot_runtime "$OUTDIR/runtime_pre.json"
+capture_retained_heap baseline
 if [[ "${LEAK_GATE_ONLY:-0}" != "1" ]]; then
   "$CAPTURE_DIR/pprof.sh" "$OUTDIR/pprof" pre || log "pprof pre snapshot reported warnings"
 fi
@@ -1338,6 +1394,7 @@ if [[ "$semantic_kind" == "search" ]]; then
   fi
 fi
 snapshot_runtime "$OUTDIR/runtime_post.json"
+capture_retained_heap post
 
 # pprof captures + Prometheus range queries are throughput/diagnostic extras the
 # leak-gate verdict never consumes (it reads only runtime_pre/post.json), and
@@ -1386,6 +1443,12 @@ if [[ "$receipt_driver" == "1" ]]; then
   # Receipt sampling runs inside the steady driver, including with
   # LEAK_GATE_ONLY=1. Require all three unforced /metrics series in addition
   # to the fixed post-warmup/post-cooldown natural-GC snapshots.
+  receipt_heap_protocol="natural_reference_v1"
+  retained_eval_args=()
+  if [[ "$retained_heap" == "1" ]]; then
+    receipt_heap_protocol="symmetric_post_gc_2_v1"
+    retained_eval_args=(-retained-pre "$OUTDIR/retained_heap_pre.json" -retained-post "$OUTDIR/retained_heap_post.json")
+  fi
   if ! (
     cd "$REPO_ROOT"
     go run ./testbed/bench/receiptprobe evaluate-leak \
@@ -1397,7 +1460,8 @@ if [[ "$receipt_driver" == "1" ]]; then
       -max-goroutines "$g_thresh" \
       -max-heap-mb "$h_thresh_mb" \
       -max-steady-heap-mb "$steady_h_thresh_mb" \
-      -snapshot-protocol natural_gc_single \
+      -snapshot-protocol "$receipt_heap_protocol" \
+      "${retained_eval_args[@]}" \
       -out "$OUTDIR/leak_gate.json"
   ); then
     log "receipt leak gate reported failure"
@@ -1532,5 +1596,7 @@ printf '\n**Workload gate verdict:** `%s` (producer failure: %s; producer diagno
   "$workload_verdict" "$producer_failed" "$producer_diagnostics_failed" "$consumer_failed" "$chaos_failed" >> "$OUTDIR/report.md"
 
 formal_status=1
+# Tagged load must still meet the existing perf/workload floors so an
+# underloaded retained sample cannot pass. It does not qualify normal perf.
 if [[ "$verdict" == "pass" && "$metric_verdict" != "fail" && "$semantic_verdict" != "fail" && "$perf_verdict" != "fail" && "$workload_verdict" == "pass" ]]; then formal_status=0; fi
 if finish_with_natural_gc_observation "$formal_status"; then exit 0; else exit 1; fi

@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1.7
+# Measurement artifact only. Both inputs are exact images built from the same
+# frozen source by the normal Dockerfile; the release artifact stays distinct.
+ARG NORMAL_BUILDER_IMAGE
+ARG NORMAL_RUNTIME_IMAGE
+FROM ${NORMAL_BUILDER_IMAGE} AS retained-builder
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+RUN --network=none --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    test "${TARGETOS}" = linux && test -n "${TARGETARCH}" && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off \
+    go build -trimpath -tags=lantern_bench_heap -ldflags="-s -w" \
+      -o /out/lantern-retained ./server/cmd
+
+FROM ${NORMAL_RUNTIME_IMAGE}
+LABEL io.lantern.bench-heap.protocol="symmetric_post_gc_2_v1"
+COPY --from=retained-builder /out/lantern-retained /app/lantern

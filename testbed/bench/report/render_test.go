@@ -207,6 +207,32 @@ func TestRenderReport_NativeSamplingDoesNotClaimForcedGC(t *testing.T) {
 	}
 }
 
+func TestRenderReport_PairedMemoryScopesRemainDistinct(t *testing.T) {
+	for _, protocol := range []string{"natural_reference_v1", "symmetric_post_gc_2_v1"} {
+		t.Run(protocol, func(t *testing.T) {
+			gate := &LeakGate{SnapshotProtocol: protocol, Verdict: "pass", PairRequired: true, OverallMemoryVerdict: "requires_pair", NaturalChecksVerdict: "pass", NaturalPostHeapObservationVerdict: "fail", RetainedVerdict: "requires_pair", SteadySampleInterval: "5s", SteadySampleCount: 10}
+			gate.Thresholds.HeapAllocMaxDeltaMB = 32
+			gate.Thresholds.SteadyHeapAllocMaxDeltaMB = 40
+			if protocol == "symmetric_post_gc_2_v1" {
+				gate.RetainedVerdict = "pass"
+				gate.RetainedReplicas = []LeakGateReplica{{Endpoint: "localhost:9390", HeapAllocPreBytes: 10 << 20, HeapAllocPostBytes: 11 << 20, HeapAllocDeltaBytes: 1 << 20}}
+			}
+			var output bytes.Buffer
+			if err := RenderReport(&output, Input{LeakGate: gate}); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"Overall memory verdict: `requires_pair`", "natural POST heap observation (advisory): `fail`", "BOTH baseline and POST", "do not prove global background", "normal-binary heap equality", "natural POST heap delta is advisory"} {
+				if !strings.Contains(output.String(), want) {
+					t.Errorf("missing %q in %s", want, output.String())
+				}
+			}
+			if strings.Contains(output.String(), "both the steady peaks and post-cooldown HeapAlloc deltas must pass") {
+				t.Fatal("old blocking POST rule leaked into new protocol")
+			}
+		})
+	}
+}
+
 func TestRenderReport_ShowsIndependentProducerGates(t *testing.T) {
 	minRPS, maxP99 := 10.0, 250.0
 	pg := &PerfGate{Verdict: "fail"}

@@ -46,8 +46,9 @@ def fixture(directory, receipt=False):
     for phase in ("pre", "post"):
         put(directory / f"runtime_{phase}.json", runtime())
         put(directory / f"image_provenance_{phase}.json", provenance(receipt))
-    put(directory / "leak_gate.json", {"verdict": "pass", "snapshot_protocol": "natural_gc_single",
-        "steady_sample_interval": "5s", "steady_sample_count": 9})
+    put(directory / "leak_gate.json", {"verdict": "pass", "snapshot_protocol": "natural_reference_v1",
+        "natural_checks_verdict": "pass", "retained_verdict": "requires_pair", "pair_required": True,
+        "overall_memory_verdict": "requires_pair", "steady_sample_interval": "5s", "steady_sample_count": 9})
     put(directory / "workload_gate.json", {"verdict": "pass", "producer_failed": 0,
         "producer_diagnostics_failed": 0, "failed_consumers": 0, "chaos_failed": 0})
     put(directory / "perf_gate.json", {"verdict": "pass", "producer_results": [
@@ -112,6 +113,63 @@ class ArtifactTest(unittest.TestCase):
             with self.subTest(receipt=receipt):
                 document = fixture(self.directory, receipt)
                 self.assertEqual(self.validate(document, receipt)["workload_gate"], "pass")
+
+    def test_receipt_lane_does_not_accept_legacy_or_unpaired_memory_claim(self):
+        document = fixture(self.directory, True)
+        path = self.directory / "leak_gate.json"
+        original = json.loads(path.read_text())
+        for field, value in (("snapshot_protocol", "natural_gc_single"),
+                             ("overall_memory_verdict", "pass"), ("pair_required", False),
+                             ("retained_verdict", "pass"), ("natural_checks_verdict", "fail")):
+            with self.subTest(field=field):
+                bad = dict(original)
+                bad[field] = value
+                put(path, bad)
+                with self.assertRaises(qualification.Refused):
+                    self.validate(document, True)
+
+    def test_missing_retained_pair_cannot_qualify(self):
+        source = Path(qualification.__file__).resolve().parents[2]
+        consumer = source / ".github/scripts/retained_heap_pair.py"
+        inventory = {".github/scripts/retained_heap_pair.py": {
+            "sha256": qualification.digest(consumer), "mode": consumer.stat().st_mode & 0o777}}
+        with self.assertRaisesRegex(qualification.Refused, "retained pair incomplete"):
+            qualification.validate_retained_pair(self.directory, self.directory, {}, {}, source, inventory)
+
+    def test_pair_consumer_comes_from_frozen_inventory_not_launcher(self):
+        source = self.directory / "frozen"
+        consumer = source / ".github/scripts/retained_heap_pair.py"
+        consumer.parent.mkdir(parents=True)
+        consumer.write_text("def validate_pair(*args): return {'selected': 'frozen'}\n")
+        inventory = {".github/scripts/retained_heap_pair.py": {
+            "sha256": qualification.digest(consumer), "mode": consumer.stat().st_mode & 0o777}}
+        launcher = self.directory / "launcher/local_release_qualification.py"
+        launcher.parent.mkdir(parents=True)
+        launcher.with_name("retained_heap_pair.py").write_text("raise AssertionError('launcher consumer executed')\n")
+        with patch.object(qualification, "__file__", str(launcher)):
+            result = qualification.validate_retained_pair(self.directory, self.directory, {}, {}, source, inventory)
+        self.assertEqual(result, {"selected": "frozen"})
+        consumer.write_text("raise AssertionError('changed consumer executed')\n")
+        with self.assertRaisesRegex(qualification.Refused, "frozen pair consumer differs"):
+            qualification.validate_retained_pair(self.directory, self.directory, {}, {}, source, inventory)
+
+    def test_frozen_consumer_fifo_replacement_cannot_block_open(self):
+        source = self.directory / "frozen"
+        consumer = source / ".github/scripts/retained_heap_pair.py"
+        consumer.parent.mkdir(parents=True)
+        consumer.write_text("def validate_pair(*args): return {}\n")
+        inventory = {".github/scripts/retained_heap_pair.py": {
+            "sha256": qualification.digest(consumer), "mode": consumer.stat().st_mode & 0o777}}
+        real_open = os.open
+        def replace(path, flags, *args, **kwargs):
+            if path == consumer:
+                self.assertTrue(flags & os.O_NONBLOCK, "source replacement must not block the owner")
+                consumer.unlink()
+                os.mkfifo(consumer, 0o600)
+            return real_open(path, flags, *args, **kwargs)
+        with patch.object(qualification.os, "open", side_effect=replace):
+            with self.assertRaisesRegex(qualification.Refused, "frozen pair consumer changed"):
+                qualification.validate_retained_pair(self.directory, self.directory, {}, {}, source, inventory)
 
     def test_zero_missing_duplicate_and_nonfinite_runtime_refuse(self):
         cases = []
@@ -990,7 +1048,7 @@ class CleanupAndOrderTest(unittest.TestCase):
             self.assertIn("progress.json", (driver.evidence / "SHA256SUMS").read_text())
 
     def test_successful_aggregate_precedes_each_sequential_receipt_and_failure_stops_successors(self):
-        for failure in (None, qualification.RECEIPTS[1]):
+        for failure in (None, qualification.RECEIPTS[1], "retained-" + qualification.RECEIPTS[1]):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 driver = self.make_driver(Path(temporary))
                 calls = []
@@ -1000,7 +1058,15 @@ class CleanupAndOrderTest(unittest.TestCase):
                 driver.cleanup = lambda: driver.state.update(cleanup={"disposition": "absent"})
                 driver.tools = {"bash": "fake-bash"}
                 driver.documents = {}
-                driver.check_runs = lambda names: calls.append(("checked", tuple(names)))
+                def check(names):
+                    calls.append(("checked-retained" if driver.using_retained else "checked", tuple(names)))
+                    if driver.using_retained:
+                        driver.state.setdefault("retained_pairs", {}).update({name: {"verdict": "pass"} for name in names})
+                driver.check_runs = check
+                def retained_image():
+                    calls.append(("retained-image", None))
+                    driver.using_retained = True
+                driver.retained_image = retained_image
 
                 def call(name, args, **_):
                     calls.append((name, None))
@@ -1014,8 +1080,14 @@ class CleanupAndOrderTest(unittest.TestCase):
                     result = driver.execute(42)
                 self.assertEqual(calls[:2], [("canonical-sweep", None), ("checked", qualification.CANONICAL)])
                 launched = [name for name, _ in calls if name in qualification.RECEIPTS]
-                expected = qualification.RECEIPTS if failure is None else qualification.RECEIPTS[:2]
+                expected = qualification.RECEIPTS[:2] if failure == qualification.RECEIPTS[1] else qualification.RECEIPTS
                 self.assertEqual(launched, list(expected))
+                tagged = [name for name, _ in calls if name.startswith("retained-") and name != "retained-image"]
+                expected_tagged = ([] if failure == qualification.RECEIPTS[1] else
+                                   ["retained-" + name for name in (qualification.RECEIPTS[:2] if failure else qualification.RECEIPTS)])
+                self.assertEqual(tagged, expected_tagged)
+                if tagged:
+                    self.assertLess(calls.index((qualification.RECEIPTS[-1], None)), calls.index(("retained-image", None)))
                 self.assertEqual(result, 0 if failure is None else 1)
 
 

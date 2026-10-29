@@ -50,6 +50,8 @@ import (
 // Returns ctx.Err() when ctx is cancelled. Nil-or-empty mutations are
 // dropped silently; malformed sequenced entries fail closed.
 func (s *LanternService) ApplyMutation(ctx context.Context, m *pb.Mutation) (applyErr error) {
+	finishBenchHeapApply := benchHeapApply(s)
+	defer finishBenchHeapApply()
 	observation := s.beginPublicationApply()
 	defer func() { observation.finish(applyErr) }()
 	if err := ctx.Err(); err != nil {

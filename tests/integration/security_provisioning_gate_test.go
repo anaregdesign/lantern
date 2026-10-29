@@ -23,9 +23,12 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/anaregdesign/lantern/core/mutationreceipt"
 	pb "github.com/anaregdesign/lantern/pb/graph/v1"
 	"github.com/anaregdesign/lantern/pb/graph/v1/graphv1connect"
+	"github.com/anaregdesign/lantern/server/benchheap"
 	"github.com/anaregdesign/lantern/server/provider"
+	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -678,7 +681,7 @@ func securityProvisioningBrowserControl(t *testing.T, issuer *oidcControlWireFix
 	return graphv1connect.NewLanternSecurityServiceClient(&http.Client{Transport: authWireRoundTripper{next: http.DefaultTransport, cookies: cookies, csrf: csrf}}, issuer.server.URL+"/browser")
 }
 
-func securityProvisioningBinary(t *testing.T, controlled bool) string {
+func securityProvisioningBinary(t *testing.T, controlled bool, extraTags ...string) string {
 	t.Helper()
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("native provisioning supports Linux and Darwin")
@@ -690,7 +693,8 @@ func securityProvisioningBinary(t *testing.T, controlled bool) string {
 	binary := filepath.Join(t.TempDir(), "lantern")
 	args := []string{"build", "-o", binary, "./server/cmd"}
 	if controlled {
-		args = []string{"test", "-c", "-tags=lantern_test_time", "-o", binary, "./server/cmd"}
+		tags := append([]string{"lantern_test_time"}, extraTags...)
+		args = []string{"test", "-c", "-tags=" + strings.Join(tags, ","), "-o", binary, "./server/cmd"}
 	}
 	command := exec.CommandContext(t.Context(), "go", args...)
 	command.Dir = root
@@ -901,6 +905,11 @@ func securityProvisioningStart(t *testing.T, binary string, env []string, origin
 // Launch the complete fixed cohort before waiting for quorum. Startup is
 // intentionally unavailable while fewer than the original quorum are serving.
 func securityProvisioningLaunch(t *testing.T, binary string, env []string, origin string) (func(), func()) {
+	wait, stop, _ := securityProvisioningLaunchProcess(t, binary, env, origin)
+	return wait, stop
+}
+
+func securityProvisioningLaunchProcess(t *testing.T, binary string, env []string, origin string) (func(), func(), *os.Process) {
 	t.Helper()
 	command := exec.CommandContext(t.Context(), binary)
 	command.Env = env
@@ -960,5 +969,231 @@ func securityProvisioningLaunch(t *testing.T, binary string, env []string, origi
 		stop()
 		t.Fatal("controlled server never became ready")
 	}
-	return wait, stop
+	return wait, stop, command.Process
+}
+
+// The actual App child retains ordinary provisioning, current authorization and
+// the public Connect path. Only its explicit test executable uses controlled
+// loopback UTC and a private heap-control directory; this is not external Q or
+// a memory-budget/performance measurement.
+func TestBenchHeapAppRealWire(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("controlled native App requires Linux or Darwin")
+	}
+	issuer := newOIDCWireIssuer(t)
+	root := securityProvisioningDirectory(t)
+	input := securityProvisioningIntent(t, root, issuer.provider.URL, 1, true, true)
+	input["root_ca_pem"] = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: issuer.provider.Certificate().Raw}))
+	input["private_origins"] = map[string][]string{issuer.provider.URL: {"127.0.0.1/32"}}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normal := securityProvisioningBinary(t, true)
+	tagged := securityProvisioningBinary(t, true, "lantern_bench_heap")
+	env := securityProvisioningEnvironment(string(raw))
+	for _, args := range [][]string{{"provision-security", "--operator-directory", filepath.Join(root, "operator")}, {"init-security"}} {
+		if output, err := securityProvisioningCommand(t, tagged, env, args...); err != nil {
+			t.Fatalf("controlled heap App setup failed: %v\n%s", err, output)
+		}
+	}
+	address := securityProvisioningAddress(t)
+	_, port, _ := net.SplitHostPort(address)
+	origin := "http://" + address
+	env = append(env, "LANTERN_PORT="+port, "LANTERN_METRICS_ADDR=", "LANTERN_BACKUP_ENABLED=false", "LANTERN_BACKUP_RESTORE_ON_START=false", "LANTERN_DRAIN_DELAY_SECONDS=0")
+	// Both executables use the same ordinary durable composition and public
+	// activation guard; only the observer tag changes across this clean restart.
+	env = append(env, "LANTERN_RECEIPT_WAL_MODE=fresh", "LANTERN_RECEIPT_WAL_PATH="+filepath.Join(root, "heap.wal"), "LANTERN_RECEIPT_EPOCH="+strings.Repeat("42", 16), "LANTERN_RECEIPT_RETENTION=1h", "LANTERN_RECEIPT_MAX_ENTRIES=32", "LANTERN_RECEIPT_MAX_BYTES=1048576", "LANTERN_NODE_ID="+strings.Repeat("31", 16), "LANTERN_BACKUP_DIR="+filepath.Join(root, "backups"))
+	issuer.server = &httptest.Server{URL: origin}
+	// A controlled-time executable without the observer tag ignores even a
+	// complete test session; no production runtime setting enables this hook.
+	normalDir, _ := securityProvisioningHeapSession(t, normal)
+	stop := securityProvisioningStart(t, normal, append(append([]string(nil), env...), "LANTERN_TEST_BENCH_HEAP_DIR="+normalDir), origin)
+	if _, err := os.Lstat(filepath.Join(normalDir, benchheap.ReadyFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("observer-free App consumed heap control input", err)
+	}
+	stop()
+
+	for i, entry := range env {
+		if entry == "LANTERN_RECEIPT_WAL_MODE=fresh" {
+			env[i] = "LANTERN_RECEIPT_WAL_MODE=restart"
+		}
+	}
+	directory, session := securityProvisioningHeapSession(t, tagged)
+	wait, stop, process := securityProvisioningLaunchProcess(t, tagged, append(append([]string(nil), env...), "LANTERN_TEST_BENCH_HEAP_DIR="+directory), origin)
+	wait()
+	var ready benchheap.Ready
+	securityProvisioningHeapRead(t, directory, benchheap.ReadyFile, &ready)
+	if ready.Schema != benchheap.Schema || ready.Protocol != benchheap.Protocol || ready.Identity.Session != session || ready.Identity.PID != process.Pid || ready.Identity.StartNonce == session.RunNonce || ready.Identity.Validate() != nil {
+		t.Fatal("heap readiness did not bind the actual App child and executable")
+	}
+	issuer.client = securityProvisioningBrowserControl(t, issuer)
+	identity := &pb.SecurityIdentity{Kind: pb.SecurityPrincipalKind_SECURITY_PRINCIPAL_KIND_OIDC, Issuer: issuer.provider.URL, Subject: "admin"}
+	role := &pb.SecurityRole{Id: "heap_writer", Rules: []*pb.SecurityRule{
+		{Id: "read", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "heap:"}},
+		{Id: "write", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_VERTEX_WRITE, Resource: &pb.SecurityRule_Prefix{Prefix: "heap:"}},
+		{Id: "receipt", Effect: pb.SecurityEffect_SECURITY_EFFECT_ALLOW, Action: pb.SecurityAction_SECURITY_ACTION_RECEIPT_READ, Resource: &pb.SecurityRule_Prefix{Prefix: "heap:"}},
+	}}
+	if _, err := issuer.applyChanges(t, t.Context(), "", []*pb.SecurityChange{{Operation: &pb.SecurityChange_PutRole{PutRole: role}}, {Operation: &pb.SecurityChange_PutAssignment{PutAssignment: &pb.SecurityRoleAssignment{Identity: identity, RoleId: role.Id}}}}); err != nil {
+		t.Fatal("current administrator could not enroll heap wire fixture writer", err)
+	}
+	client := &http.Client{Transport: authIngressRoundTripper{h2cClient().Transport}}
+	data := graphv1connect.NewLanternServiceClient(client, origin)
+	control := graphv1connect.NewLanternSecurityServiceClient(client, origin)
+	token := issuer.token(t, "admin", nil)
+	if _, err := control.GetCurrentPrincipal(t.Context(), securityWireRequest(token, &pb.GetCurrentPrincipalRequest{})); err != nil {
+		t.Fatal("heap App lost guarded current-principal status", err)
+	}
+	if _, err := data.PutVertex(t.Context(), connect.NewRequest(&pb.PutVertexRequest{Vertex: &pb.Vertex{Key: "heap:denied"}})); connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatal("heap observer bypassed ordinary data authentication", err)
+	}
+	capability, err := data.GetReceiptCapability(t.Context(), securityWireRequest(token, &pb.GetReceiptCapabilityRequest{}))
+	if err != nil || !capability.Msg.GetEnabled() {
+		t.Fatal("actual App did not certify public durable receipts", err)
+	}
+	securityProvisioningHeapPutReceipt(t, data, token, capability.Msg, 0x61, "heap:warmup")
+	baseline := securityProvisioningHeapCut(t, directory, ready.Identity, process, "baseline", 1)
+	securityProvisioningHeapPutReceipt(t, data, token, capability.Msg, 0x62, "heap:live")
+	post := securityProvisioningHeapCut(t, directory, ready.Identity, process, "post", 2)
+	if post.Before.Vertices != baseline.Before.Vertices+1 || post.Before.Public.Begun <= baseline.Before.Public.Begun {
+		t.Fatal("App observer was not connected to the serving graph and public lifecycle")
+	}
+	request, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, origin+"/debug/pprof/heap", nil)
+	response, err := client.Do(request)
+	if err == nil {
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusNotFound {
+			t.Fatal("private observer made a public profiling endpoint reachable", response.StatusCode)
+		}
+	} else {
+		// CurrentOutput cannot authorize an unregistered HTTP route, so its
+		// ErrAbortHandler refusal is an HTTP/2 INTERNAL_ERROR stream reset.
+		// Accept that exact refusal, not an arbitrary network failure.
+		var streamError http2.StreamError
+		if !errors.As(err, &streamError) || streamError.Code != http2.ErrCodeInternal {
+			t.Fatal("unexpected public profiling refusal", err)
+		}
+	}
+	if _, err := control.GetCurrentPrincipal(t.Context(), securityWireRequest(token, &pb.GetCurrentPrincipalRequest{})); err != nil {
+		t.Fatal("profiling refusal disrupted the guarded App", err)
+	}
+	stop()
+}
+
+func securityProvisioningHeapPutReceipt(t *testing.T, data graphv1connect.LanternServiceClient, token string, capability *pb.GetReceiptCapabilityResponse, seed byte, key string) {
+	t.Helper()
+	var epoch mutationreceipt.Epoch
+	if len(capability.GetPolicy().GetDeploymentEpoch()) != len(epoch) || capability.GetEndpoint() == nil {
+		t.Fatal("App receipt capability lacks exact epoch/endpoint")
+	}
+	copy(epoch[:], capability.GetPolicy().GetDeploymentEpoch())
+	id, err := mutationreceipt.NewID(epoch, time.UnixMilli(int64(capability.GetServerNowUnixMs())).Add(-time.Second), [24]byte{seed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &pb.PutVerticesRequest{Vertices: []*pb.Vertex{{Key: key, Value: &pb.Vertex_String_{String_: "wire"}}}, ReceiptContext: &pb.MutationReceiptContext{OperationIds: [][]byte{id.Bytes()}, LogicalCallId: bytes.Repeat([]byte{seed}, 16), Endpoint: proto.Clone(capability.GetEndpoint()).(*pb.ReceiptEndpoint)}}
+	result, err := data.PutVertices(t.Context(), securityWireRequest(token, request))
+	if err != nil || len(result.Msg.GetOutcomes()) != 1 || result.Msg.GetOutcomes()[0] != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+		t.Fatal("tagged App did not execute guarded canonical receipt Put", err)
+	}
+	status, err := data.GetReceiptStatus(t.Context(), securityWireRequest(token, &pb.GetReceiptStatusRequest{OperationId: id.Bytes()}))
+	if err != nil || status.Msg.GetStatus().GetState() != pb.MutationReceiptState_MUTATION_RECEIPT_STATE_CONFIRMED || !bytes.Equal(status.Msg.GetStatus().GetOperationId(), id.Bytes()) || status.Msg.GetStatus().GetReceipt().GetOriginalResult().GetPutVertexOutcome() != pb.PutOutcome_PUT_OUTCOME_APPLIED_AND_LIVE {
+		t.Fatal("tagged App receipt status did not confirm its original Put", err)
+	}
+}
+
+func securityProvisioningHeapSession(t *testing.T, binary string) (string, benchheap.Session) {
+	t.Helper()
+	directory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Source/image/CID labels are deliberately synthetic test inputs. This test
+	// proves live hook composition, not image/source qualification by a build owner.
+	session := benchheap.Session{Schema: benchheap.Schema, Protocol: benchheap.Protocol, RunNonce: strings.Repeat("1", 64), SourceCommit: strings.Repeat("2", 40), SourceTree: strings.Repeat("3", 40), ImageID: "sha256:" + strings.Repeat("4", 64), ContainerID: strings.Repeat("5", 64), BinarySHA256: fmt.Sprintf("%x", sha256.Sum256(contents)), UID: os.Geteuid()}
+	securityProvisioningHeapWrite(t, directory, benchheap.SessionFile, session)
+	return directory, session
+}
+
+func securityProvisioningHeapWrite(t *testing.T, directory, name string, value any) {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil || len(raw) > benchheap.MaxInputBytes {
+		t.Fatal("invalid bounded heap test input", err)
+	}
+	file, err := os.OpenFile(filepath.Join(directory, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := file.Write(raw)
+	if err := errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func securityProvisioningHeapRead(t *testing.T, directory, name string, value any) {
+	t.Helper()
+	for deadline := time.Now().Add(benchheap.ControllerBudget); time.Now().Before(deadline); {
+		path := filepath.Join(directory, name)
+		info, err := os.Lstat(path)
+		if err == nil {
+			if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() > benchheap.MaxOutputBytes {
+				t.Fatal("heap App output was not a bounded private regular file", name)
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, readErr := io.ReadAll(io.LimitReader(file, benchheap.MaxOutputBytes+1))
+			if err := errors.Join(readErr, file.Close()); err != nil {
+				t.Fatal(err)
+			}
+			if benchheap.Decode(raw, value, benchheap.MaxOutputBytes) != nil {
+				t.Fatal("invalid bounded heap App output", name)
+			}
+			return
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		time.Sleep(benchheap.PollInterval)
+	}
+	t.Fatal("heap App output did not complete within its controller budget", name)
+}
+
+func securityProvisioningHeapCut(t *testing.T, directory string, identity benchheap.Identity, process *os.Process, phase string, ordinal int) benchheap.Completion {
+	t.Helper()
+	request := benchheap.Request{Schema: benchheap.Schema, Protocol: benchheap.Protocol, Identity: identity, Phase: phase, Ordinal: ordinal, CutNonce: strings.Repeat(fmt.Sprint(ordinal+5), 64), ExpectedReceipts: int64(ordinal)}
+	if err := request.Validate(identity, ordinal); err != nil {
+		t.Fatal(err)
+	}
+	securityProvisioningHeapWrite(t, directory, benchheap.RequestFile(phase), request)
+	signal, err := benchheap.Signal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Signal(signal); err != nil {
+		t.Fatal(err)
+	}
+	var result benchheap.Completion
+	securityProvisioningHeapRead(t, directory, benchheap.CompletionFile(phase), &result)
+	if result.Schema != benchheap.Schema || result.Protocol != benchheap.Protocol || result.Request != request || result.Status != benchheap.StatusComplete || result.Reason != "" || len(result.Collections) != 2 || !benchheap.NativeIdle(result.Before) || !benchheap.NativeEqual(result.Before, result.After) || !benchheap.MemoryCoherent(result.Memory) || result.Collections[1].After.NumForcedGC-result.Collections[0].Before.NumForcedGC != 2 {
+		t.Fatal("heap App cut did not finish exactly two bracketed collections", result.Status, result.Reason)
+	}
+	for _, collection := range result.Collections {
+		if !benchheap.MemoryCoherent(collection.Before) || !benchheap.MemoryCoherent(collection.After) || collection.After.NumGC <= collection.Before.NumGC || collection.After.NumForcedGC-collection.Before.NumForcedGC != 1 || collection.ReturnedNS < collection.StartedNS {
+			t.Fatal("heap App did not retain coherent immediate collection observations")
+		}
+	}
+	if result.Memory != result.Collections[1].After {
+		t.Fatal("heap App memory did not come from the second collection")
+	}
+	return result
 }

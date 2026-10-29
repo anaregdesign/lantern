@@ -320,9 +320,51 @@ validate_owned_compose_volume_initializer() {
   ' <<<"$initialized" >/dev/null
 }
 
+# This is the one additional writable bind admitted by the measurement image.
+# It has no read-only alias/identity-probe fallback: both request and effective
+# Source must remain the literal canonical per-node directory.
+validate_owned_compose_heap_mount() {
+  [[ -n "${heap_source:-}" ]] || return 0
+  jq -e --arg source "$heap_source" '
+    [.HostConfig.Mounts[]|select(.Type=="bind")] as $requests |
+    [.Mounts[]|select(.Destination=="/run/lantern-bench-heap")] as $effective |
+    ($requests[0]|keys|sort) as $keys |
+    ($requests|length)==1 and ($effective|length)==1 and
+    ($keys==["BindOptions","Source","Target","Type"] or $keys==["BindOptions","ReadOnly","Source","Target","Type"]) and
+    $requests[0].Source==$source and $requests[0].Target=="/run/lantern-bench-heap" and
+    (($requests[0]|has("ReadOnly")|not) or $requests[0].ReadOnly==false) and
+    ($requests[0].BindOptions=={Propagation:"rprivate"} or $requests[0].BindOptions=={Propagation:"rprivate",CreateMountpoint:false}) and
+    ($effective[0]|keys|sort)==["Destination","Mode","Propagation","RW","Source","Type"] and
+    $effective[0].Type=="bind" and $effective[0].Source==$source and $effective[0].RW==true and
+    ($effective[0].Mode=="" or $effective[0].Mode=="rw") and $effective[0].Propagation=="rprivate" and
+    (.Mounts|length)==5
+  '
+}
+
+owned_compose_heap_root() {
+  python3 - "${LANTERN_BENCH_HEAP_CONTROL_ROOT:-}" "${OUTDIR:-}" "$owner" <<'PY'
+import os, pathlib, stat, sys
+root, out, owner = sys.argv[1:]
+uid, gid = map(int, owner.split(':'))
+path = pathlib.Path(root)
+if not root or not out or not path.is_absolute() or str(path.resolve()) != root or path != pathlib.Path(out).resolve() / 'heap-control-evidence':
+    raise SystemExit(1)
+if any(ord(c) < 32 or ord(c) == 127 or c in ',"' for c in root):
+    raise SystemExit(1)
+for directory in (path, *(path / ('lantern-' + str(i)) for i in range(3))):
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700 or info.st_uid != uid or info.st_gid != gid or directory.resolve() != directory:
+        raise SystemExit(1)
+if {p.name for p in path.iterdir()} != {'lantern-0', 'lantern-1', 'lantern-2'} or any(any(p.iterdir()) for p in path.iterdir()):
+    raise SystemExit(1)
+print(root)
+PY
+}
+
 validate_owned_compose_security_initializer() {
+  validate_owned_compose_heap_mount <<<"$initialized" >/dev/null || return 1
   printf '%s\n%s\n' "$original" "$initialized" |
-    jq -se '
+    jq -se --arg heap_source "${heap_source:-}" '
       def readonly_binds:
         type=="array" and length==2 and
         all(.[]; type=="string" and ((contains("\r") or contains("\n") or contains("\u0000"))|not) and
@@ -333,6 +375,10 @@ validate_owned_compose_security_initializer() {
         all(.[]; type=="object" and (keys|sort)==["Source","Target","Type","VolumeOptions"] and
           .Type=="volume" and (.Source|type)=="string" and (.Source|test("^[A-Za-z0-9][A-Za-z0-9_.-]+$")) and
           .VolumeOptions=={NoCopy:true});
+      def initializer_mounts:
+        if $heap_source=="" then nocopy_volumes else
+          type=="array" and length==3 and ([.[]|select(.Type=="volume")]|nocopy_volumes) and
+          ([.[]|select(.Type=="bind")]|length)==1 end;
       .[0] as $original | .[1] |
       .Config.Entrypoint==["/app/lantern"] and .Config.Cmd==["init-security"] and
       .Config.WorkingDir==$original.Config.WorkingDir and .HostConfig.NetworkMode==$original.HostConfig.NetworkMode and
@@ -342,9 +388,14 @@ validate_owned_compose_security_initializer() {
       .State.Status=="created" and .State.Running==false and
       $original.State.Status=="created" and $original.State.Running==false and
       ($original.HostConfig.Binds|readonly_binds) and (.HostConfig.Binds|readonly_binds) and
-      ($original.HostConfig.Mounts|nocopy_volumes) and (.HostConfig.Mounts|nocopy_volumes) and
+      ($original.HostConfig.Mounts|initializer_mounts) and (.HostConfig.Mounts|initializer_mounts) and
       (.HostConfig.Mounts|sort_by(.Target))==($original.HostConfig.Mounts|sort_by(.Target)) and
       (.Config.Env|sort)==($original.Config.Env|sort)' >/dev/null || return 1
+  if [[ -n "${heap_source:-}" ]]; then
+    printf '%s\n%s\n' "$original" "$initialized" | jq -se '
+      (.[0].Mounts|map(select(.Destination=="/run/lantern-bench-heap")))==
+      (.[1].Mounts|map(select(.Destination=="/run/lantern-bench-heap")))' >/dev/null || return 1
+  fi
   if printf '%s\n%s\n' "$original" "$initialized" |
     jq -se '.[0] as $original | .[1] | (.Mounts|sort_by(.Destination))==($original.Mounts|sort_by(.Destination))' >/dev/null; then
     return 0
@@ -493,8 +544,15 @@ initialize_owned_compose_security() {
   local project="$1" image="$2" owner="$3"
   shift 3
   [[ -n "$project" && "$project" == "${COMPOSE_PROJECT_NAME:-}" && "$image" =~ ^sha256:[0-9a-f]{64}$ && "$owner" =~ ^[1-9][0-9]*:[0-9]+$ ]] || return 1
-  local configuration layout service container original network binding index=0
+  local configuration layout service container original network binding index=0 heap_root="" heap_source="" heap_label
   local -a originals=() mounts=()
+  if [[ "${LANTERN_BENCH_RETAINED_HEAP:-0}" == "1" ]]; then
+    heap_label="$(docker image inspect --format '{{if .Config.Labels}}{{index .Config.Labels "io.lantern.bench-heap.protocol"}}{{end}}' "$image")" || return 1
+    [[ "$heap_label" == "symmetric_post_gc_2_v1" ]] || return 1
+    heap_root="$(owned_compose_heap_root)" || return 1
+  elif [[ "${LANTERN_BENCH_RETAINED_HEAP:-0}" != "0" ]]; then
+    return 1
+  fi
   configuration="$(LANTERN_IMAGE="$image" docker compose "$@" config --format json)" || return 1
   layout="$(owned_compose_volume_layout "$project" "$owner" <<<"$configuration")" || return 1
   [[ "$(jq -er '.count' <<<"$layout")" == 6 ]] || return 1
@@ -505,14 +563,23 @@ initialize_owned_compose_security() {
       all(.volumes[]|select(.type=="volume"); .volume.nocopy==true))
   ' <<<"$configuration" >/dev/null || return 1
   for service in lantern-0 lantern-1 lantern-2; do
+    heap_source=""; [[ -z "$heap_root" ]] || heap_source="$heap_root/$service"
     container="$(docker compose "$@" ps -aq "$service")" || return 1
     [[ "$container" =~ ^[0-9a-f]{12,64}$ ]] || return 1
     original="$(docker inspect --format '{{json .}}' "$container")" || return 1
+    validate_owned_compose_heap_mount <<<"$original" >/dev/null || return 1
     printf '%s\n%s\n' "$original" "$configuration" |
-      jq -se --arg project "$project" --arg service "$service" --arg image "$image" --arg owner "$owner" '
+      jq -se --arg project "$project" --arg service "$service" --arg image "$image" --arg owner "$owner" --arg heap_source "$heap_source" '
         .[0] as $original | .[1] as $configuration | $configuration.services[$service].environment as $settings |
         [$configuration.services[$service].volumes[]|select(.type=="volume")|. as $mount|
-          {Type:"volume",Source:$configuration.volumes[$mount.source].name,Target:$mount.target,VolumeOptions:{NoCopy:true}}] as $requests |
+          {Type:"volume",Source:$configuration.volumes[$mount.source].name,Target:$mount.target,VolumeOptions:{NoCopy:true}}] as $volumes |
+        (if $heap_source=="" then [] else [$original.HostConfig.Mounts[]|select(.Type=="bind")] end) as $heap |
+        ($volumes+$heap) as $requests |
+        [$configuration.services[$service].volumes[]|select(.type=="bind" and .target=="/run/lantern-bench-heap")] as $declared_heap |
+        (if $heap_source=="" then ($declared_heap|length)==0 else
+          ($declared_heap|length)==1 and $declared_heap[0].source==$heap_source and
+          (($declared_heap[0]|has("read_only")|not) or $declared_heap[0].read_only==false) and
+          $declared_heap[0].bind=={create_host_path:false,propagation:"rprivate"} end) and
         $original.Config.Labels["com.docker.compose.project"]==$project and $original.Config.Labels["com.docker.compose.service"]==$service and
         $original.Config.User==$owner and $original.Image==$image and $original.State.Status=="created" and
         all($settings|to_entries[]|select(.value!=null); . as $entry | [$original.Config.Env[]|select(.==($entry.key+"="+$entry.value))]|length==1) and
@@ -521,11 +588,11 @@ initialize_owned_compose_security() {
           ((contains("\r") or contains("\n") or contains("\u0000"))|not) and
           (split(":")|length==3 and (.[0]|startswith("/")))) and
         ([$original.HostConfig.Binds[]|split(":")|.[1:]]|sort)==[["/etc/ntp.conf","ro"],["/run/lantern-config","ro"]] and
-        all($requests[]; (.Source|type)=="string" and (.Source|test("^[A-Za-z0-9][A-Za-z0-9_.-]+$"))) and
+        all($volumes[]; (.Source|type)=="string" and (.Source|test("^[A-Za-z0-9][A-Za-z0-9_.-]+$"))) and
         ($original.HostConfig.Mounts|type)=="array" and
         ($original.HostConfig.Mounts|sort_by(.Target))==($requests|sort_by(.Target)) and
         ([$original.Mounts[]|select(.Type=="volume")|{Name,Target:.Destination,RW}]|sort_by(.Target))==
-          ($requests|map({Name:.Source,Target,RW:true})|sort_by(.Target)) and
+          ($volumes|map({Name:.Source,Target,RW:true})|sort_by(.Target)) and
         ($original.HostConfig.VolumesFrom==null or $original.HostConfig.VolumesFrom==[]) and
         ($original.HostConfig.Tmpfs==null or $original.HostConfig.Tmpfs=={}) and
         ($original.Config.Volumes==null or $original.Config.Volumes=={})
@@ -533,13 +600,16 @@ initialize_owned_compose_security() {
     originals+=("$original")
   done
   for service in lantern-0 lantern-1 lantern-2; do
+    heap_source=""; [[ -z "$heap_root" ]] || heap_source="$heap_root/$service"
     original="${originals[$index]}"
     network="$(jq -er '.HostConfig.NetworkMode|select(type=="string" and length>0)' <<<"$original")" || return 1
     # Replay the two read-only binds and declared NoCopy volumes separately.
     # Legacy volume binds can copy image ownership back over fresh empty roots.
     mounts=()
     while IFS= read -r binding; do mounts+=("--volume=$binding"); done < <(jq -r '.HostConfig.Binds[]' <<<"$original")
-    while IFS= read -r binding; do mounts+=("--mount=$binding"); done < <(jq -r '.HostConfig.Mounts[]|"type=volume,source="+.Source+",target="+.Target+",volume-nocopy"' <<<"$original")
+    while IFS= read -r binding; do mounts+=("--mount=$binding"); done < <(jq -r '.HostConfig.Mounts[]|
+      if .Type=="volume" then "type=volume,source="+.Source+",target="+.Target+",volume-nocopy"
+      else "type=bind,source="+.Source+",target="+.Target+",bind-propagation=rprivate" end' <<<"$original")
     run_owned_compose_initializer "$project" "$image" "$owner" compose-security-initializer "${service}-security-init" 900 validate_owned_compose_security_initializer \
       --network "$network" "${mounts[@]}" --entrypoint /app/lantern "$image" init-security || return "$?"
     index=$((index + 1))

@@ -130,6 +130,10 @@ jobs:
         if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
         run: python3 -B .github/scripts/go_modules.py
 
+      - name: Verify tagged heap observer and normal binary exclusion
+        if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
+        run: python3 -B .github/scripts/verify_bench_heap.py
+
       - name: Native provider session wire fixture
         if: ${{ !cancelled() && needs.scope.result == 'success' && steps.toolchain.outcome == 'success' && needs.scope.outputs.evidence_only != 'true' && needs.scope.outputs.docs_only != 'true' }}
         run: python3 -B .github/scripts/native_login_gate.py --evidence "$RUNNER_TEMP/native-login"

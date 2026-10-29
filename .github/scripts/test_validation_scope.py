@@ -64,7 +64,7 @@ class ValidationScopeTest(unittest.TestCase):
         self.assertTrue(scope.local_scope(Path("/nonexistent"), "missing")["full"])
         full = steps(Path("/tmp/evidence"))
         self.assertEqual(affected_steps(full, scope.full("unknown")), full)
-        self.assertEqual(len(full), 77)
+        self.assertEqual(len(full), 78)
 
     def test_mixed_paths_union_including_rename_sides(self):
         result = scope.affected({"sdks/rust/src/value.rs": "D", "admin/app/a.tsx": "A"})

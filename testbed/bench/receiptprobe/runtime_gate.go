@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,9 +17,13 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/benchheap"
 )
 
 const receiptReplicaCount = 3
@@ -540,8 +546,16 @@ type receiptLeakReplica struct {
 }
 
 type receiptLeakReport struct {
-	SnapshotProtocol string `json:"snapshot_protocol,omitempty"`
-	Thresholds       struct {
+	SnapshotProtocol                  string                `json:"snapshot_protocol,omitempty"`
+	NaturalChecksVerdict              string                `json:"natural_checks_verdict,omitempty"`
+	NaturalPostHeapObservationVerdict string                `json:"natural_post_heap_observation_verdict,omitempty"`
+	RetainedVerdict                   string                `json:"retained_verdict,omitempty"`
+	OverallMemoryVerdict              string                `json:"overall_memory_verdict,omitempty"`
+	PairRequired                      bool                  `json:"pair_required,omitempty"`
+	RetainedReplicas                  []retainedHeapReplica `json:"retained_replicas,omitempty"`
+	RetainedInputs                    *retainedHeapInputs   `json:"retained_inputs,omitempty"`
+	NaturalCheckFailures              []string              `json:"natural_check_failures,omitempty"`
+	Thresholds                        struct {
 		GoroutineMaxDelta         int `json:"goroutine_max_delta"`
 		HeapAllocMaxDeltaMB       int `json:"heap_alloc_max_delta_mb"`
 		SteadyHeapAllocMaxDeltaMB int `json:"steady_heap_alloc_max_delta_mb"`
@@ -565,7 +579,9 @@ func runReceiptLeakEvaluation(args []string) int {
 	maxHeapMB := fs.Int("max-heap-mb", 0, "maximum per-replica post-cooldown HeapAlloc delta in MiB")
 	maxSteadyHeapMB := fs.Int("max-steady-heap-mb", 0, "maximum per-replica unforced steady heap_alloc peak delta in MiB")
 	out := fs.String("out", "", "leak gate JSON output path")
-	protocol := fs.String("snapshot-protocol", "forced_gc_minimum", "forced_gc_minimum | natural_gc_single")
+	protocol := fs.String("snapshot-protocol", "forced_gc_minimum", "forced_gc_minimum | natural_gc_single | natural_reference_v1 | symmetric_post_gc_2_v1")
+	retainedPre := fs.String("retained-pre", "", "retained_heap_pre.json with target completion receipts")
+	retainedPost := fs.String("retained-post", "", "retained_heap_post.json with target completion receipts")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -573,11 +589,15 @@ func runReceiptLeakEvaluation(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	if *protocol != "forced_gc_minimum" && *protocol != "natural_gc_single" {
+	if *protocol != "forced_gc_minimum" && *protocol != "natural_gc_single" && *protocol != "natural_reference_v1" && *protocol != "symmetric_post_gc_2_v1" {
 		return 2
 	}
-	report := evaluateReceiptLeak(*pre, *post, *steady, *duration, *interval, *maxGoroutines, *maxHeapMB, *maxSteadyHeapMB)
-	report.SnapshotProtocol = *protocol
+	report := evaluateReceiptLeakProtocol(*pre, *post, *steady, *duration, *interval, *maxGoroutines, *maxHeapMB, *maxSteadyHeapMB, *protocol)
+	if *protocol == benchheap.Protocol {
+		evaluateRetainedHeap(&report, filepath.Dir(*pre), *retainedPre, *retainedPost, *maxHeapMB)
+	} else if *retainedPre != "" || *retainedPost != "" {
+		return 2
+	}
 	if err := writeReceiptArtifact(*out, report); err != nil {
 		fmt.Fprintf(os.Stderr, "receipt leak gate: write report: %v\n", err)
 		return 1
@@ -594,11 +614,28 @@ func evaluateReceiptLeak(
 	duration, interval time.Duration,
 	maxGoroutines, maxHeapMB, maxSteadyHeapMB int,
 ) receiptLeakReport {
-	report := receiptLeakReport{Verdict: "fail", SteadySampleInterval: interval.String()}
+	return evaluateReceiptLeakProtocol(prePath, postPath, steadyPath, duration, interval, maxGoroutines, maxHeapMB, maxSteadyHeapMB, "natural_gc_single")
+}
+
+func evaluateReceiptLeakProtocol(
+	prePath, postPath, steadyPath string,
+	duration, interval time.Duration,
+	maxGoroutines, maxHeapMB, maxSteadyHeapMB int,
+	protocol string,
+) receiptLeakReport {
+	report := receiptLeakReport{Verdict: "fail", SnapshotProtocol: protocol, SteadySampleInterval: interval.String()}
+	paired := protocol == "natural_reference_v1" || protocol == "symmetric_post_gc_2_v1"
+	if paired {
+		report.PairRequired = true
+		report.OverallMemoryVerdict = "requires_pair"
+		report.RetainedVerdict = "requires_pair"
+		report.NaturalChecksVerdict = "fail"
+		report.NaturalPostHeapObservationVerdict = "incomplete"
+	}
 	report.Thresholds.GoroutineMaxDelta = maxGoroutines
 	report.Thresholds.HeapAllocMaxDeltaMB = maxHeapMB
 	report.Thresholds.SteadyHeapAllocMaxDeltaMB = maxSteadyHeapMB
-	if maxGoroutines <= 0 || maxHeapMB <= 0 || maxSteadyHeapMB <= 0 ||
+	if (paired && (maxGoroutines != 15 || maxHeapMB != 32 || maxSteadyHeapMB != 40)) || maxGoroutines <= 0 || maxHeapMB <= 0 || maxSteadyHeapMB <= 0 ||
 		int64(maxHeapMB) >= math.MaxInt64/(1<<20) || int64(maxSteadyHeapMB) >= math.MaxInt64/(1<<20) {
 		report.Failures = append(report.Failures, "missing or invalid receipt leak thresholds")
 		return report
@@ -632,6 +669,7 @@ func evaluateReceiptLeak(
 		report.Failures = append(report.Failures, fmt.Sprintf("steady samples: %v", err))
 		return report
 	}
+	postHeapExceeded := false
 	for i := range pre {
 		if pre[i].Endpoint != post[i].Endpoint {
 			report.Failures = append(report.Failures, fmt.Sprintf("post snapshot replica %d differs from baseline", i))
@@ -669,7 +707,10 @@ func evaluateReceiptLeak(
 			report.Failures = append(report.Failures, fmt.Sprintf("%s goroutine post/steady growth exceeds +%d", p.Endpoint, maxGoroutines))
 		}
 		if replica.HeapAllocDeltaBytes > int64(maxHeapMB)<<20 {
-			report.Failures = append(report.Failures, fmt.Sprintf("%s post-cooldown HeapAlloc growth exceeds +%d MiB", p.Endpoint, maxHeapMB))
+			postHeapExceeded = true
+			if !paired {
+				report.Failures = append(report.Failures, fmt.Sprintf("%s post-cooldown HeapAlloc growth exceeds +%d MiB", p.Endpoint, maxHeapMB))
+			}
 		}
 		if replica.HeapAllocPeakDelta > int64(maxSteadyHeapMB)<<20 {
 			report.Failures = append(report.Failures, fmt.Sprintf("%s steady heap_alloc peak growth exceeds +%d MiB", p.Endpoint, maxSteadyHeapMB))
@@ -677,6 +718,13 @@ func evaluateReceiptLeak(
 	}
 	if len(report.Failures) == 0 {
 		report.Verdict = "pass"
+	}
+	if paired {
+		report.NaturalChecksVerdict = report.Verdict
+		report.NaturalPostHeapObservationVerdict = "pass"
+		if postHeapExceeded {
+			report.NaturalPostHeapObservationVerdict = "fail"
+		}
 	}
 	return report
 }
@@ -711,4 +759,313 @@ func writeReceiptArtifact(path string, value any) error {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o600)
+}
+
+// These files are the bounded output of the tag-only controller, not an RPC
+// or proof that every background stream/fanout is idle.
+type retainedHeapReference struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
+type retainedHeapInputs struct {
+	Pre  retainedHeapReference `json:"pre"`
+	Post retainedHeapReference `json:"post"`
+}
+
+type retainedHeapReplica struct {
+	Endpoint            string `json:"endpoint"`
+	HeapAllocPreBytes   int64  `json:"heap_alloc_pre_bytes"`
+	HeapAllocPostBytes  int64  `json:"heap_alloc_post_bytes"`
+	HeapAllocDeltaBytes int64  `json:"heap_alloc_delta_bytes"`
+}
+
+type retainedHeapContext struct {
+	RunID          string `json:"run_id"`
+	SourceCommit   string `json:"source_commit"`
+	SourceTree     string `json:"source_tree"`
+	ImageID        string `json:"image_id"`
+	ScenarioSHA256 string `json:"scenario_sha256"`
+	RuntimeUser    string `json:"runtime_user"`
+	CPUSet         string `json:"cpuset"`
+	Workload       struct {
+		Admission int64 `json:"admission"`
+		Lookup    int64 `json:"lookup"`
+	} `json:"workload"`
+}
+
+type retainedHeapNode struct {
+	Endpoint       string                `json:"endpoint"`
+	Completion     benchheap.Completion  `json:"completion"`
+	SessionFile    retainedHeapReference `json:"session_file"`
+	ReadyFile      retainedHeapReference `json:"ready_file"`
+	RequestFile    retainedHeapReference `json:"request_file"`
+	StartedFile    retainedHeapReference `json:"started_file"`
+	CompletionFile retainedHeapReference `json:"completion_file"`
+}
+
+type retainedHeapCut struct {
+	Schema            int                 `json:"schema"`
+	Protocol          string              `json:"protocol"`
+	Phase             string              `json:"phase"`
+	Status            string              `json:"status"`
+	ControllerStartNS int64               `json:"controller_monotonic_start_ns"`
+	ControllerEndNS   int64               `json:"controller_monotonic_end_ns"`
+	Context           retainedHeapContext `json:"context"`
+	Replicas          []retainedHeapNode  `json:"replicas"`
+}
+
+func retainedHex(value string, size int) bool {
+	if len(value) != size {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && hex.EncodeToString(decoded) == value
+}
+
+// Reject absent fields as well as unknown/duplicate keys. Zero is meaningful
+// for several counters, so a successful struct decode alone is insufficient.
+func decodeRetainedJSON(data []byte, value any) error {
+	return benchheap.Decode(data, value, 256<<10)
+}
+
+func readRetainedFile(path string, limit int64) ([]byte, error) {
+	return readRetainedFileWith(path, limit, openRetainedEvidence)
+}
+
+func readRetainedFileWith(path string, limit int64, open func(string) (*os.File, error)) ([]byte, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() || before.Mode().Perm() != 0o600 || !retainedEvidenceMetadataOK(before) || before.Size() <= 0 || before.Size() > limit {
+		return nil, errors.New("invalid retained evidence file")
+	}
+	file, err := open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || opened.Mode().Perm() != 0o600 || !retainedEvidenceMetadataOK(opened) || !retainedEvidenceMetadataEqual(before, opened) || !os.SameFile(before, opened) || opened.Size() != before.Size() || opened.ModTime() != before.ModTime() {
+		return nil, errors.New("retained file identity changed")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil || int64(len(data)) > limit {
+		return nil, errors.New("retained evidence exceeds limit")
+	}
+	after, err := os.Lstat(path)
+	if err != nil || !os.SameFile(before, after) || !after.Mode().IsRegular() || after.Mode().Perm() != 0o600 || !retainedEvidenceMetadataOK(after) || !retainedEvidenceMetadataEqual(before, after) || int64(len(data)) != before.Size() || after.Size() != before.Size() || before.ModTime() != after.ModTime() {
+		return nil, errors.New("retained evidence changed while reading")
+	}
+	return data, nil
+}
+
+func retainedReference(path string, data []byte) retainedHeapReference {
+	digest := sha256.Sum256(data)
+	return retainedHeapReference{Path: path, SHA256: hex.EncodeToString(digest[:])}
+}
+
+func readRetainedReference(ref retainedHeapReference, expectedPath string, limit int64, value any) error {
+	if ref.Path != expectedPath || !filepath.IsAbs(ref.Path) || filepath.Clean(ref.Path) != ref.Path || !retainedHex(ref.SHA256, 64) {
+		return errors.New("retained raw path/hash differs")
+	}
+	resolved, err := filepath.EvalSymlinks(ref.Path)
+	if err != nil || resolved != ref.Path {
+		return errors.New("retained raw path contains a symlink")
+	}
+	data, err := readRetainedFile(ref.Path, limit)
+	if err != nil {
+		return err
+	}
+	if retainedReference(ref.Path, data).SHA256 != ref.SHA256 {
+		return errors.New("retained raw hash differs")
+	}
+	return decodeRetainedJSON(data, value)
+}
+
+func validateRetainedCompletion(c benchheap.Completion) error {
+	if c.Schema != benchheap.Schema || c.Protocol != benchheap.Protocol || c.Status != benchheap.StatusComplete || c.Reason != "" || c.ElapsedNS <= 0 || c.ElapsedNS > benchheap.TargetBudget.Nanoseconds() || len(c.Collections) != 2 {
+		return errors.New("incomplete target cut")
+	}
+	if !benchheap.NativeIdle(c.Before) || !benchheap.NativeEqual(c.Before, c.After) || len(c.Before.Origins) == 0 || c.Before.LogCapacity <= 0 || c.Before.LogLength <= 0 || c.Before.LogLength > c.Before.LogCapacity || c.Before.ReceiptEntries <= 0 || c.Before.ReceiptHighWaterMS <= 0 || c.Before.ReceiptOldestDeadlineMS <= c.Before.ReceiptHighWaterMS {
+		return errors.New("native drain/bracket differs")
+	}
+	for i, origin := range c.Before.Origins {
+		if !retainedHex(origin.ID, 32) || origin.Sequence == 0 || origin.WallNS <= 0 || (i > 0 && c.Before.Origins[i-1].ID >= origin.ID) {
+			return errors.New("invalid origin frontier")
+		}
+	}
+	for i, gc := range c.Collections {
+		if gc.StartedNS < benchheap.StableWindow.Nanoseconds() || gc.ReturnedNS <= gc.StartedNS || gc.ReturnedNS > c.ElapsedNS || !benchheap.MemoryCoherent(gc.Before) || !benchheap.MemoryCoherent(gc.After) || gc.After.NumGC <= gc.Before.NumGC || gc.After.NumForcedGC <= gc.Before.NumForcedGC || gc.After.NumForcedGC-gc.Before.NumForcedGC != 1 || gc.After.LastGC == 0 {
+			return errors.New("unproven completed collection")
+		}
+		if i > 0 && (gc.StartedNS < c.Collections[i-1].ReturnedNS || gc.Before.NumGC < c.Collections[i-1].After.NumGC || gc.Before.NumForcedGC != c.Collections[i-1].After.NumForcedGC) {
+			return errors.New("collection sequence/counter drift")
+		}
+	}
+	if c.Collections[1].After.NumForcedGC-c.Collections[0].Before.NumForcedGC != 2 || !reflect.DeepEqual(c.Memory, c.Collections[1].After) || !benchheap.MemoryCoherent(c.Memory) || c.Memory.HeapAlloc == 0 || c.Memory.HeapAlloc > math.MaxInt64 || c.Memory.MarkedLive == 0 {
+		return errors.New("immediate memory cut differs")
+	}
+	return nil
+}
+
+func readRetainedCut(path, phase string, endpoints []receiptLeakReplica) (retainedHeapCut, retainedHeapReference, error) {
+	var cut retainedHeapCut
+	data, err := readRetainedFile(path, 256<<10)
+	ref := retainedReference(path, data)
+	if err != nil {
+		return cut, ref, err
+	}
+	if err := decodeRetainedJSON(data, &cut); err != nil {
+		return cut, ref, err
+	}
+	if cut.Schema != 1 || cut.Protocol != benchheap.Protocol || cut.Phase != phase || cut.Status != "complete" || cut.ControllerStartNS <= 0 || cut.ControllerEndNS <= cut.ControllerStartNS || cut.ControllerEndNS-cut.ControllerStartNS > benchheap.ControllerBudget.Nanoseconds() || len(cut.Replicas) != receiptReplicaCount || len(endpoints) != receiptReplicaCount {
+		return cut, ref, errors.New("incomplete controller cut")
+	}
+	ctx := cut.Context
+	owner := strings.Split(ctx.RuntimeUser, ":")
+	if ctx.RunID == "" || !retainedHex(ctx.SourceCommit, 40) || !retainedHex(ctx.SourceTree, 40) || !strings.HasPrefix(ctx.ImageID, "sha256:") || !retainedHex(strings.TrimPrefix(ctx.ImageID, "sha256:"), 64) || !retainedHex(ctx.ScenarioSHA256, 64) || len(owner) != 2 || ctx.Workload.Admission <= 0 || ctx.Workload.Lookup != ctx.Workload.Admission {
+		return cut, ref, errors.New("missing source/runtime/workload context")
+	}
+	uid, err := strconv.Atoi(owner[0])
+	if err != nil || uid <= 0 {
+		return cut, ref, errors.New("invalid runtime UID")
+	}
+	if gid, err := strconv.Atoi(owner[1]); err != nil || gid < 0 {
+		return cut, ref, errors.New("invalid runtime GID")
+	}
+	root, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return cut, ref, err
+	}
+	containers, nonces := map[string]bool{}, map[string]bool{}
+	for i, node := range cut.Replicas {
+		if node.Endpoint != endpoints[i].Endpoint {
+			return cut, ref, errors.New("replica order/endpoint differs")
+		}
+		c := node.Completion
+		if err := validateRetainedCompletion(c); err != nil {
+			return cut, ref, err
+		}
+		r := c.Request
+		s := r.Identity.Session
+		ordinal := 1
+		if phase == "post" {
+			ordinal = 2
+		}
+		if r.Schema != 1 || r.Protocol != benchheap.Protocol || r.Phase != phase || r.Ordinal != ordinal || !retainedHex(r.CutNonce, 64) || nonces[r.CutNonce] || r.Identity.PID != 1 || !retainedHex(r.Identity.StartNonce, 64) || s.Schema != 1 || s.Protocol != benchheap.Protocol || !retainedHex(s.RunNonce, 64) || !retainedHex(s.ContainerID, 64) || containers[s.ContainerID] || !retainedHex(s.BinarySHA256, 64) || s.SourceCommit != ctx.SourceCommit || s.SourceTree != ctx.SourceTree || s.ImageID != ctx.ImageID || s.UID != uid || r.ExpectedReceipts != ctx.Workload.Admission || r.Validate(r.Identity, ordinal) != nil || int64(c.Before.ReceiptEntries) < ctx.Workload.Admission {
+			return cut, ref, errors.New("phase/process/source/work count differs")
+		}
+		containers[s.ContainerID], nonces[r.CutNonce] = true, true
+		if i > 0 && (!reflect.DeepEqual(c.Before.Origins, cut.Replicas[0].Completion.Before.Origins) || s.RunNonce != cut.Replicas[0].Completion.Request.Identity.Session.RunNonce || s.BinarySHA256 != cut.Replicas[0].Completion.Request.Identity.Session.BinarySHA256) {
+			return cut, ref, errors.New("replica frontiers/build/run differ")
+		}
+		dir := filepath.Join(root, "heap-control-evidence", fmt.Sprintf("lantern-%d", i))
+		if _, err := os.Lstat(filepath.Join(dir, benchheap.RefusalFile)); err == nil || !errors.Is(err, os.ErrNotExist) {
+			return cut, ref, errors.New("target refusal exists or absence is unknown")
+		}
+		var session benchheap.Session
+		var ready benchheap.Ready
+		var request benchheap.Request
+		var started benchheap.Started
+		var completion benchheap.Completion
+		for _, raw := range []struct {
+			ref   retainedHeapReference
+			name  string
+			limit int64
+			dst   any
+		}{
+			{node.SessionFile, benchheap.SessionFile, benchheap.MaxInputBytes, &session},
+			{node.ReadyFile, benchheap.ReadyFile, benchheap.MaxOutputBytes, &ready},
+			{node.RequestFile, benchheap.RequestFile(phase), benchheap.MaxInputBytes, &request},
+			{node.StartedFile, benchheap.StartedFile(phase), benchheap.MaxOutputBytes, &started},
+			{node.CompletionFile, benchheap.CompletionFile(phase), benchheap.MaxOutputBytes, &completion},
+		} {
+			if err := readRetainedReference(raw.ref, filepath.Join(dir, raw.name), raw.limit, raw.dst); err != nil {
+				return cut, ref, err
+			}
+		}
+		if !reflect.DeepEqual(session, s) || ready.Schema != 1 || ready.Protocol != benchheap.Protocol || !reflect.DeepEqual(ready.Identity, r.Identity) || !reflect.DeepEqual(request, r) || !reflect.DeepEqual(started.Request, r) || !reflect.DeepEqual(completion, c) {
+			return cut, ref, errors.New("raw completion/session/request differs")
+		}
+	}
+	return cut, ref, nil
+}
+
+func evaluateRetainedHeap(report *receiptLeakReport, caseDirectory, prePath, postPath string, maxHeapMB int) {
+	// Tagged observations do not replace the normal lane's performance/steady
+	// checks. Completeness of its own natural capture still cannot be skipped.
+	naturalComplete := len(report.Replicas) == receiptReplicaCount && report.NaturalPostHeapObservationVerdict != "incomplete"
+	report.RetainedVerdict, report.Verdict = "incomplete", "fail"
+	fail := func(err error) { report.Failures = append(report.Failures, "retained evidence: "+err.Error()) }
+	if !naturalComplete {
+		fail(errors.New("missing natural observations"))
+		return
+	}
+	report.NaturalCheckFailures, report.Failures = report.Failures, nil
+	if maxHeapMB != 32 {
+		fail(errors.New("retained limit must remain32MiB"))
+		return
+	}
+	if prePath != filepath.Join(caseDirectory, "retained_heap_pre.json") || postPath != filepath.Join(caseDirectory, "retained_heap_post.json") {
+		fail(errors.New("retained inputs must be the fixed files of this case"))
+		return
+	}
+	pre, preRef, err := readRetainedCut(prePath, "baseline", report.Replicas)
+	if err != nil {
+		fail(err)
+		return
+	}
+	post, postRef, err := readRetainedCut(postPath, "post", report.Replicas)
+	if err != nil {
+		fail(err)
+		return
+	}
+	report.RetainedInputs = &retainedHeapInputs{Pre: preRef, Post: postRef}
+	a, b := pre.Context, post.Context
+	a.Workload = b.Workload
+	if !reflect.DeepEqual(a, b) || post.Context.Workload.Admission <= pre.Context.Workload.Admission || pre.ControllerEndNS >= post.ControllerStartNS {
+		fail(errors.New("baseline/post context or workload ordering differs"))
+		return
+	}
+	nonces := map[string]bool{}
+	for _, node := range pre.Replicas {
+		nonces[node.Completion.Request.CutNonce] = true
+	}
+	for i := range pre.Replicas {
+		p, q := pre.Replicas[i].Completion, post.Replicas[i].Completion
+		if !reflect.DeepEqual(p.Request.Identity, q.Request.Identity) || nonces[q.Request.CutNonce] {
+			fail(errors.New("restarted target or replayed phase"))
+			return
+		}
+		nonces[q.Request.CutNonce] = true
+		if q.Collections[0].Before.NumGC < p.Memory.NumGC || q.Collections[0].Before.NumForcedGC != p.Memory.NumForcedGC {
+			fail(errors.New("baseline/post collection counters moved backwards or extra forced GC"))
+			return
+		}
+		oldOrigins := map[string]uint64{}
+		for _, origin := range p.Before.Origins {
+			oldOrigins[origin.ID] = origin.Sequence
+		}
+		for _, origin := range q.Before.Origins {
+			if origin.Sequence < oldOrigins[origin.ID] {
+				fail(errors.New("origin frontier moved backwards"))
+				return
+			}
+			delete(oldOrigins, origin.ID)
+		}
+		if len(oldOrigins) != 0 {
+			fail(errors.New("origin disappeared"))
+			return
+		}
+		report.RetainedReplicas = append(report.RetainedReplicas, retainedHeapReplica{Endpoint: pre.Replicas[i].Endpoint, HeapAllocPreBytes: int64(p.Memory.HeapAlloc), HeapAllocPostBytes: int64(q.Memory.HeapAlloc), HeapAllocDeltaBytes: int64(q.Memory.HeapAlloc) - int64(p.Memory.HeapAlloc)})
+	}
+	report.RetainedVerdict, report.Verdict = "pass", "pass"
+	for _, replica := range report.RetainedReplicas {
+		if replica.HeapAllocDeltaBytes > int64(maxHeapMB)<<20 {
+			report.RetainedVerdict, report.Verdict = "fail", "fail"
+			fail(fmt.Errorf("%s post-GC HeapAlloc growth exceeds +%d MiB", replica.Endpoint, maxHeapMB))
+		}
+	}
 }
