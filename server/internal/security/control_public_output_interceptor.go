@@ -13,6 +13,7 @@ type currentOutputInterceptor struct{ output *CurrentOutput }
 
 func (i currentOutputInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		request, protocol := currentOutputProtocolHeaders(ctx, i.output.owner)
 		response, err := next(ctx, req)
 		if err == nil && response != nil {
 			if _, err = freezeCurrentHeaders(response.Header()); err == nil {
@@ -20,7 +21,11 @@ func (i currentOutputInterceptor) WrapUnary(next connect.UnaryFunc) connect.Unar
 			}
 		}
 		if err != nil {
-			return nil, i.output.responseError(ctx, err)
+			result := i.output.responseError(ctx, err)
+			if isCurrentPublicFailure(ctx) {
+				restoreCurrentOutputProtocolHeaders(request, protocol)
+			}
+			return nil, result
 		}
 		return response, nil
 	}
@@ -30,19 +35,7 @@ func (i currentOutputInterceptor) WrapStreamingClient(next connect.StreamingClie
 }
 func (i currentOutputInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		// Connect negotiates these before entering the interceptor. Freeze only
-		// its transport metadata before application code can stage any output.
-		protocol := make(http.Header)
-		request, _ := currentRequest(ctx, i.output.owner)
-		if request != nil {
-			request.writer.mu.Lock()
-			for _, key := range []string{"Content-Type", "Connect-Content-Encoding", "Connect-Accept-Encoding", "Grpc-Encoding", "Grpc-Accept-Encoding"} {
-				if values, ok := request.writer.headers[key]; ok {
-					protocol[key] = append([]string(nil), values...)
-				}
-			}
-			request.writer.mu.Unlock()
-		}
+		request, protocol := currentOutputProtocolHeaders(ctx, i.output.owner)
 		err := next(ctx, currentOutputStream{StreamingHandlerConn: conn})
 		if _, metadataErr := freezeCurrentHeaders(conn.ResponseTrailer()); metadataErr != nil {
 			err = metadataErr
@@ -55,17 +48,39 @@ func (i currentOutputInterceptor) WrapStreamingHandler(next connect.StreamingHan
 			if isCurrentPublicFailure(ctx) {
 				clear(conn.ResponseHeader())
 				clear(conn.ResponseTrailer())
-				if request != nil {
-					request.writer.mu.Lock()
-					for key, values := range protocol {
-						request.writer.headers[key] = values
-					}
-					request.writer.mu.Unlock()
-				}
+				restoreCurrentOutputProtocolHeaders(request, protocol)
 			}
 			return result
 		}
 		return nil
+	}
+}
+
+// Connect negotiates these before entering the interceptor. Freeze only its
+// transport metadata before application code can stage any output.
+func currentOutputProtocolHeaders(ctx context.Context, owner *CurrentAuthority) (*currentOutputRequest, http.Header) {
+	protocol := make(http.Header)
+	request, _ := currentRequest(ctx, owner)
+	if request != nil {
+		request.writer.mu.Lock()
+		for _, key := range []string{"Content-Type", "Connect-Content-Encoding", "Connect-Accept-Encoding", "Grpc-Encoding", "Grpc-Accept-Encoding"} {
+			if values, ok := request.writer.headers[key]; ok {
+				protocol[key] = append([]string(nil), values...)
+			}
+		}
+		request.writer.mu.Unlock()
+	}
+	return request, protocol
+}
+
+// Call only after a fixed public failure has cleared protected metadata.
+func restoreCurrentOutputProtocolHeaders(request *currentOutputRequest, protocol http.Header) {
+	if request != nil {
+		request.writer.mu.Lock()
+		for key, values := range protocol {
+			request.writer.headers[key] = values
+		}
+		request.writer.mu.Unlock()
 	}
 }
 

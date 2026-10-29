@@ -385,10 +385,10 @@ validate_owned_compose_bind_probe() {
     all(range(0;$plan|length); . as $i | $plan[$i] as $pair |
       all(["original","clone"][]; . as $side | ("/proof/"+$side+"-"+($i|tostring)) as $target |
         [$probe.Mounts[]|select(.Destination==$target)] as $mounts |
+        [$probe.HostConfig.Mounts[]|select(.Target==$target)] as $requests |
         ($mounts|length)==1 and ($mounts[0]|keys|sort)==["Destination","Mode","Propagation","RW","Source","Type"] and
         $mounts[0].Type=="bind" and $mounts[0].RW==false and ($mounts[0].Mode=="" or $mounts[0].Mode=="ro") and $mounts[0].Propagation=="rprivate" and
         ($mounts[0].Source==$pair.original_source or $mounts[0].Source==$pair.clone_source) and
-        [$probe.HostConfig.Mounts[]|select(.Target==$target)] as $requests |
         ($requests|length)==1 and ($requests[0]|keys|sort)==["BindOptions","ReadOnly","Source","Target","Type"] and
         $requests[0].Type=="bind" and $requests[0].ReadOnly==true and
         ($requests[0].Source==$pair.original_source or $requests[0].Source==$pair.clone_source) and

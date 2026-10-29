@@ -127,6 +127,107 @@ func TestCurrentPublicOutputTLSProtocolMatrix(t *testing.T) {
 	}
 }
 
+func TestCurrentPublicOutputUnaryRefusalKeepsProtocolOnly(t *testing.T) {
+	o, p, server, _ := currentPublicOutputFixture(t)
+	const path = "/graph.v1.LanternSecurityService/GetCurrentPrincipal"
+	var entered atomic.Uint64
+	server.Config.Handler = p.Wrap(p.Handler(func() http.Handler {
+		return connect.NewUnaryHandler(path, func(ctx context.Context, _ *connect.Request[pb.GetCurrentPrincipalRequest]) (*connect.Response[pb.GetCurrentPrincipalResponse], error) {
+			request, err := currentRequest(ctx, o)
+			if err != nil {
+				return nil, err
+			}
+			entered.Add(1)
+			// Stage application metadata after negotiation. A fixed refusal must
+			// restore the earlier transport type, never this protected replacement.
+			request.writer.Header().Set("Content-Type", "protected-type")
+			request.writer.Header().Set("Set-Cookie", "protected-cookie")
+			request.writer.Header().Set("X-Protected-Header", "protected-header")
+			request.writer.Header().Set(http.TrailerPrefix+"X-Protected-Trailer", "protected-trailer")
+			failure := connect.NewError(connect.CodePermissionDenied, errors.New("protected-message"))
+			failure.Meta().Set("X-Protected-Error", "protected-error")
+			failure.Meta().Set("Set-Cookie", "protected-error-cookie")
+			detail, err := connect.NewErrorDetail(&pb.SecurityIdentity{Subject: "protected-detail"})
+			if err != nil {
+				return nil, err
+			}
+			failure.AddDetail(detail)
+			return nil, failure
+		}, p.Options(connect.WithCompressMinBytes(1))...)
+	}))
+	server.StartTLS()
+	for _, h2 := range []bool{false, true} {
+		transport := server.Client().Transport.(*http.Transport).Clone()
+		if !h2 {
+			transport.ForceAttemptHTTP2 = false
+			transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+			transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
+		}
+		t.Cleanup(transport.CloseIdleConnections)
+		for _, protocol := range []string{"connect-proto", "connect-json", "grpc", "grpc-json", "grpc-web", "grpc-web-json"} {
+			if !h2 && (protocol == "grpc" || protocol == "grpc-json") {
+				continue
+			}
+			name := "http1/" + protocol
+			if h2 {
+				name = "http2/" + protocol
+			}
+			t.Run(name, func(t *testing.T) {
+				options := []connect.ClientOption{connect.WithSendCompression("gzip"), connect.WithCompressMinBytes(1)}
+				contentType := "application/json" // Unary Connect errors use JSON for either request codec.
+				switch protocol {
+				case "connect-json":
+					options = append(options, connect.WithProtoJSON())
+				case "grpc":
+					options = append(options, connect.WithGRPC())
+					contentType = "application/grpc"
+				case "grpc-json":
+					options = append(options, connect.WithGRPC(), connect.WithProtoJSON())
+					contentType = "application/grpc+json"
+				case "grpc-web":
+					options = append(options, connect.WithGRPCWeb())
+					contentType = "application/grpc-web+proto"
+				case "grpc-web-json":
+					options = append(options, connect.WithGRPCWeb(), connect.WithProtoJSON())
+					contentType = "application/grpc-web+json"
+				}
+				var received *http.Response
+				httpClient := &http.Client{Timeout: 10 * time.Second, Transport: currentTestRoundTripper{
+					roundTrip: func(request *http.Request) (*http.Response, error) {
+						response, err := transport.RoundTrip(request)
+						received = response
+						return response, err
+					},
+					closeIdle: transport.CloseIdleConnections,
+				}}
+				client := connect.NewClient[pb.GetCurrentPrincipalRequest, pb.GetCurrentPrincipalResponse](httpClient, server.URL+path, options...)
+				_, err := client.CallUnary(t.Context(), connect.NewRequest(&pb.GetCurrentPrincipalRequest{}))
+				var failure *connect.Error
+				if !errors.As(err, &failure) || failure.Code() != connect.CodePermissionDenied || failure.Message() != "public RPC request rejected" || len(failure.Details()) != 0 {
+					t.Fatal("fixed unary refusal lost its protocol or disclosed protected error")
+				}
+				major := 1
+				if h2 {
+					major = 2
+				}
+				if received == nil || received.ProtoMajor != major || received.Header.Get("Content-Type") != contentType {
+					t.Fatal("fixed unary refusal lost negotiated TLS/HTTP content type")
+				}
+				for _, headers := range []http.Header{received.Header, received.Trailer, failure.Meta()} {
+					for key, values := range headers {
+						if strings.Contains(strings.ToLower(key), "protected") || key == "Set-Cookie" || strings.Contains(strings.Join(values, ""), "protected") {
+							t.Fatal("fixed unary refusal disclosed protected metadata")
+						}
+					}
+				}
+			})
+		}
+	}
+	if entered.Load() != 10 {
+		t.Fatal("unary refusal matrix did not enter every application handler")
+	}
+}
+
 func TestCurrentPublicOutputStreamingRefusalKeepsProtocolOnly(t *testing.T) {
 	_, p, server, _ := currentPublicOutputFixture(t)
 	const path = "/graph.v1.LanternChangeService/WatchChanges"

@@ -67,7 +67,7 @@ func NewPublicLanternListener(lis net.Listener, netCfg NetConfig, tlsCfg TLSConf
 		}
 		mux.Handle(path, handler)
 	}
-	mux.Handle(runtime.publicRPCHandler("/grpc.health.v1.Health/", func(options ...connect.HandlerOption) (string, http.Handler) {
+	mux.Handle(runtime.publicRPCHandler("/grpc.health.v1.Health/", func(_ string, options ...connect.HandlerOption) (string, http.Handler) {
 		return grpchealth.NewHandler(publicHealthChecker{hc.Inner(), runtime}, options...)
 	}, browserOptions...))
 	if obs.EnableReflection {
@@ -76,11 +76,11 @@ func NewPublicLanternListener(lis net.Listener, netCfg NetConfig, tlsCfg TLSConf
 			names = append(names, graphv1connect.LanternChangeServiceName)
 		}
 		reflector := grpcreflect.NewStaticReflector(names...)
-		path, handler := runtime.publicRPCHandler("/grpc.reflection.v1.ServerReflection/", func(options ...connect.HandlerOption) (string, http.Handler) {
+		path, handler := runtime.publicRPCHandler("/grpc.reflection.v1.ServerReflection/", func(_ string, options ...connect.HandlerOption) (string, http.Handler) {
 			return grpcreflect.NewHandlerV1(reflector, options...)
 		}, browserOptions...)
 		mux.Handle(path, runtime.requireGlobalHTTP(security.SchemaRead, handler))
-		path, handler = runtime.publicRPCHandler("/grpc.reflection.v1alpha.ServerReflection/", func(options ...connect.HandlerOption) (string, http.Handler) {
+		path, handler = runtime.publicRPCHandler("/grpc.reflection.v1alpha.ServerReflection/", func(_ string, options ...connect.HandlerOption) (string, http.Handler) {
 			return grpcreflect.NewHandlerV1Alpha(reflector, options...)
 		}, browserOptions...)
 		mux.Handle(path, runtime.requireGlobalHTTP(security.SchemaRead, handler))
