@@ -48,6 +48,9 @@ func TestSecurityProvisioningCLI(t *testing.T) {
 			env := securityProvisioningEnvironment(string(raw))
 			output, err := securityProvisioningCommand(t, binary, env, "provision-security", "--operator-directory", filepath.Join(root, "operator"))
 			if err != nil || bytes.Contains(output, []byte(secret)) {
+				if err != nil {
+					t.Log(securityProvisioningDiagnostic(input))
+				}
 				t.Fatal("production provisioning failed or disclosed setup credentials", err)
 			}
 			if _, err := os.Stat(filepath.Join(root, "state", "node-1")); !errors.Is(err, os.ErrNotExist) {
@@ -147,6 +150,7 @@ func TestSecurityProvisioningFunctionalWire(t *testing.T) {
 			}
 			env := securityProvisioningEnvironment(string(raw))
 			if output, err := securityProvisioningCommand(t, binary, env, "provision-security", "--operator-directory", filepath.Join(root, "operator")); err != nil {
+				t.Log(securityProvisioningDiagnostic(input))
 				t.Fatalf("controlled CLI provisioning failed: %v\n%s", err, output)
 			}
 			ref, _ := json.Marshal(input)
@@ -294,6 +298,7 @@ func securityProvisioningSuppliedLifecycle(t *testing.T, binary string) {
 	}
 	env := securityProvisioningEnvironment(string(raw))
 	if output, err := securityProvisioningCommand(t, binary, env, "provision-security", "--operator-directory", filepath.Join(root, "operator")); err != nil {
+		t.Log(securityProvisioningDiagnostic(input))
 		t.Fatalf("required-config provisioning failed: %v\n%s", err, output)
 	}
 	beforeInit := securityProvisioningSnapshot(t, root)
@@ -481,6 +486,7 @@ func securityProvisioningFixedCohort(t *testing.T, binary string) {
 	}
 	operator := filepath.Join(root, "operator")
 	if output, err := securityProvisioningCommand(t, binary, securityProvisioningEnvironment(string(raw)), "provision-security", "--operator-directory", operator); err != nil {
+		t.Log(securityProvisioningDiagnostic(input))
 		t.Fatalf("fixed cohort provisioning failed: %v\n%s", err, output)
 	}
 	publisherConfig, publisherState := filepath.Join(operator, "publisher.json"), filepath.Join(operator, "state.json")
@@ -724,6 +730,21 @@ func securityProvisioningAddress(t *testing.T) string {
 
 func securityProvisioningIntent(t *testing.T, root, issuer string, voters int, browser, api bool) map[string]any {
 	t.Helper()
+	input, err := securityProvisioningIntentWithAllocator(root, issuer, voters, browser, api, net.Listen)
+	if err != nil {
+		t.Fatal("reserve independent provisioning topology", err)
+	}
+	return input
+}
+
+func securityProvisioningIntentWithAllocator(root, issuer string, voters int, browser, api bool, listen func(string, string) (net.Listener, error)) (input map[string]any, err error) {
+	origins, release, err := reserveSecurityWireOrigins(2*voters, listen)
+	if err != nil {
+		return nil, err
+	}
+	// Hold both endpoint families together until the complete intent exists,
+	// then release them before the CLI or serving process can bind them.
+	defer func() { err = errors.Join(err, release()) }()
 	profile := map[string]any{"issuer": issuer, "algorithms": []string{"EdDSA"}}
 	if browser {
 		profile["client_id"] = "admin"
@@ -733,10 +754,67 @@ func securityProvisioningIntent(t *testing.T, root, issuer string, voters int, b
 	}
 	var nodes []map[string]string
 	for i := 1; i <= voters; i++ {
-		control, data := securityProvisioningAddress(t), securityProvisioningAddress(t)
-		nodes = append(nodes, map[string]string{"name": fmt.Sprintf("node-%d", i), "control_origin": "https://" + control, "control_listen": control, "data_origin": "https://" + data, "data_listen": data})
+		control, data := origins[2*(i-1)], origins[2*(i-1)+1]
+		nodes = append(nodes, map[string]string{"name": fmt.Sprintf("node-%d", i), "control_origin": control, "control_listen": strings.TrimPrefix(control, "https://"), "data_origin": data, "data_listen": strings.TrimPrefix(data, "https://")})
 	}
-	return map[string]any{"material_root": filepath.Join(root, "trust"), "node": "node-1", "public_origin": "https://admin.example", "persistence_root": filepath.Join(root, "state"), "target_platform": runtime.GOOS, "tls_termination": "proxy", "trusted_proxy_ips": []string{"127.0.0.1"}, "initial_admin": map[string]string{"issuer": issuer, "subject": "admin"}, "nodes": nodes, "issuers": []map[string]any{profile}}
+	return map[string]any{"material_root": filepath.Join(root, "trust"), "node": "node-1", "public_origin": "https://admin.example", "persistence_root": filepath.Join(root, "state"), "target_platform": runtime.GOOS, "tls_termination": "proxy", "trusted_proxy_ips": []string{"127.0.0.1"}, "initial_admin": map[string]string{"issuer": issuer, "subject": "admin"}, "nodes": nodes, "issuers": []map[string]any{profile}}, nil
+}
+
+func securityProvisioningDiagnostic(input map[string]any) string {
+	nodes, ok := input["nodes"].([]map[string]string)
+	if !ok {
+		return "phase=provision-security-cli topology=unavailable"
+	}
+	controlOrigins, dataOrigins, origins := make(map[string]struct{}), make(map[string]struct{}), make(map[string]struct{})
+	for _, node := range nodes {
+		controlOrigins[node["control_origin"]] = struct{}{}
+		dataOrigins[node["data_origin"]] = struct{}{}
+		origins[node["control_origin"]], origins[node["data_origin"]] = struct{}{}, struct{}{}
+	}
+	// Only counts leave the helper; malformed origins or unrelated secret-bearing
+	// input fields are never rendered, and cross-family duplicates stay visible.
+	return fmt.Sprintf("phase=provision-security-cli nodes=%d distinct_control_origins=%d distinct_data_origins=%d distinct_origins=%d", len(nodes), len(controlOrigins), len(dataOrigins), len(origins))
+}
+
+func TestSecurityProvisioningIntentTopology(t *testing.T) {
+	allocator := new(securityWirePortAllocator)
+	input, err := securityProvisioningIntentWithAllocator("private-root", "https://idp.example", 3, true, true, allocator.listen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := input["nodes"].([]map[string]string)
+	if len(nodes) != 3 || allocator.calls != 6 || len(allocator.active) != 0 {
+		t.Fatal("whole control/data topology was not allocated and released before returning")
+	}
+	for i, node := range nodes {
+		for j, family := range []string{"control", "data"} {
+			want := fmt.Sprintf("127.0.0.1:%d", 31000+2*i+j)
+			if node[family+"_origin"] != "https://"+want || node[family+"_listen"] != want {
+				t.Fatalf("node %d %s endpoint reused an earlier reservation", i+1, family)
+			}
+		}
+	}
+	for _, listener := range allocator.listeners {
+		if listener.closeCalls != 1 {
+			t.Fatalf("Close called %d times, want once", listener.closeCalls)
+		}
+	}
+}
+
+func TestSecurityProvisioningDiagnostic(t *testing.T) {
+	secretOrigin := "https://secret-user:secret-password@127.0.0.1:31000/secret-path?secret-query#secret-fragment"
+	input := map[string]any{
+		"material_root": "secret-material", "issuers": "secret-credentials",
+		"nodes": []map[string]string{
+			{"name": "secret-node", "control_origin": secretOrigin, "data_origin": "%secret-malformed"},
+			{"control_origin": "%secret-malformed", "data_origin": secretOrigin},
+		},
+	}
+	got := securityProvisioningDiagnostic(input)
+	want := "phase=provision-security-cli nodes=2 distinct_control_origins=2 distinct_data_origins=2 distinct_origins=2"
+	if got != want {
+		t.Fatalf("diagnostic = %q, want %q", got, want)
+	}
 }
 
 func securityProvisioningEnvironment(raw string) []string {
