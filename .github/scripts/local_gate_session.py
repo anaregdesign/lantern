@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
 import hashlib
@@ -47,6 +48,26 @@ BUILD_OUTPUT_DIRS = (".github/scripts/__pycache__/", "sdks/node/node_modules/", 
                     "sdks/dart/offline_sqlite/.dart_tool/", "sdks/dart/offline_sqlite/build/",
                     "testbed/dart-transport-probe/connect/.dart_tool/",
                     "testbed/dart-transport-probe/grpc/.dart_tool/")
+
+# Test/campaign controls read by the current-authority, native-time, provisioning
+# export, serving/output child and OFF source-child fixtures, plus test-binary
+# selectors. Ordinary local steps cannot inherit these controls. Dedicated runners set their
+# own flags after launch; the standalone configured-source route is unchanged.
+QUALIFICATION_ENV_PREFIXES = ("LANTERN_CURRENT_", "LANTERN_NATIVE_FIXTURE_",
+                              "LANTERN_TEST_CURRENT_", "LANTERN_TEST_NATIVE_",
+                              "LANTERN_TIME_CHILD_", "LANTERN_PROTECTED_QUERY_",
+                              "LANTERN_CONTAINER_", "OFF_SOURCE_CHILD_")
+QUALIFICATION_ENV_KEYS = frozenset({"LANTERN_TEST_CONFIGURED_TIME_UPSTREAM", "LANTERN_NATIVE_LOGIN_GATE",
+                                   "LANTERN_AUTH_FIXTURE_COMPOSE", "LANTERN_MEMBERSHIP_PUBLISHER",
+                                   "LANTERN_TEST_LAUNCH_SERVER", "LANTERN_RUST_TEST_SERVER",
+                                   "LANTERN_RUST_TEST_AUTH_FIXTURE", "LANTERN_TEST_FIXTURE_DIAGNOSTIC_CHILD",
+                                   "LANTERN_FIXTURE_STOP_CHILD", "LANTERN_QUERY_CLI_TEST",
+                                   "LANTERN_QUERY_CLI_ARGS"})
+
+
+def ordinary_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    return {key: value for key, value in environment.items()
+            if key not in QUALIFICATION_ENV_KEYS and not key.startswith(QUALIFICATION_ENV_PREFIXES)}
 
 
 def digest(data: bytes) -> str:
@@ -122,7 +143,7 @@ class Session:
         if self.evidence == self.root or self.root in self.evidence.parents:
             raise ValueError("evidence must be outside the checkout")
         self.evidence.mkdir(parents=True, exist_ok=False)
-        self.env = os.environ.copy()
+        self.env = ordinary_environment(os.environ)
         self.env["RUSTDOCFLAGS"] = "-D warnings"
         self.plan = steps(self.evidence)
         self.receipts: dict[str, Receipt] = {}

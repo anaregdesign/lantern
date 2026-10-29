@@ -680,7 +680,7 @@ def main():
             item.add_argument(
                 "--with-functional-validation",
                 action="store_true",
-                help="run separate functional-validation evidence before configured-source-integration; conservative full local gate",
+                help="explicitly run separate functional-validation evidence before configured-source-integration",
             )
         else:
             item.add_argument("--expected-head", required=True)

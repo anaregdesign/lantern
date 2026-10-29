@@ -11,7 +11,13 @@ import (
 // source must be supplied read-only by the deployment; missing configuration
 // refuses. Containers do not inherit a host time service or source implicitly.
 func newNativeAuthorityTimeOwner() (*authorityTimeOwner, error) {
-	producer, err := newNativeAuthorityTimeProducer()
+	return newNativeAuthorityTimeOwnerFrom(newNativeAuthorityTimeProducer)
+}
+
+// Explicit private dependencies let tests exercise refusal without consulting
+// host configuration or sending public traffic. Normal composition is fixed.
+func newNativeAuthorityTimeOwnerFrom(factory func() (*authorityTimeProducer, error)) (*authorityTimeOwner, error) {
+	producer, err := factory()
 	if err != nil {
 		return nil, err
 	}
@@ -23,7 +29,11 @@ func newNativeAuthorityTimeOwner() (*authorityTimeOwner, error) {
 }
 
 func newNativeAuthorityTimeProducer() (*authorityTimeProducer, error) {
-	config, err := readAuthorityTimeFile("/etc/ntp.conf", 4096)
+	return newNativeAuthorityTimeProducerFrom(readAuthorityTimeFile, newNativeAuthorityTimeSampler)
+}
+
+func newNativeAuthorityTimeProducerFrom(read func(string, int64) ([]byte, error), sampler func() (func() (authorityTimeStamp, error), error)) (*authorityTimeProducer, error) {
+	config, err := read("/etc/ntp.conf", 4096)
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +41,7 @@ func newNativeAuthorityTimeProducer() (*authorityTimeProducer, error) {
 	if err != nil {
 		return nil, err
 	}
-	sample, err := newNativeAuthorityTimeSampler()
+	sample, err := sampler()
 	if err != nil {
 		return nil, err
 	}

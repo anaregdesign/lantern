@@ -60,7 +60,7 @@ Tag scheme: `vX.Y.Z` for server+CLI (root module), `sdks/go/vX.Y.Z` for the SDK,
   final exact-source runtime qualification is still pending. Namespace isolation does not prove policy
   freshness. The Dart SDK SQLite route, including `offline_sqlite`, is approved.
 
-- **Time qualification (#1820)**: units use injected time and deterministic advancement; full real-wire functional behavior uses test-only controlled UTC. Normal-build configured-source-integration reuses one three-member cohort with schema 3 source counters (at most 12 attempts/writes), SDK4, Apply/H/native 15s and final export revocation. Old schema 2/repeated-source receipts cannot qualify it. 5s is a refresh target only; no global 60s/4s or monthly stop. Preserve whole-interval expiry, native leases, OFF and existing-state bindings. The owner-approved scoped contract migration replaces only repeated external-source functional qualification; other mandatory gates remain.
+- **Time qualification (#1820/#1946)**: units use injected time and deterministic advancement; full real-wire functional behavior uses test-only controlled UTC. Normal-build configured-source-integration reuses one three-member cohort with schema 3 source counters (at most 12 attempts/writes), SDK4, Apply/H/native 15s and final export revocation. Old schema 2/repeated-source receipts cannot qualify it. 5s is a refresh target only; no global 60s/4s or monthly stop. Preserve whole-interval expiry, native leases, OFF and existing-state bindings. #1820 replaces only repeated external-source functional qualification. The owner-approved #1946 local-only migration makes full local77's current wire step complete controlled-source functional-validation, isolates inherited qualification opt-ins and retires automatic configured-source acquisition from the local plan and its adoption bootstrap. The other 76 steps and required selected CI, exact pre-tag and native-environment configured-source-integration remain mandatory; historical failures retain their meaning.
 - **Native validation fixtures (#1610/#1613/#1635)**: private workload TLS and signed membership apply in OFF and OIDC. Public SDK CDC uses opaque WatchChanges; legacy static-token/public Subscribe fixtures do not qualify current source. Operator diagnostics cannot weaken production guards.
   The opt-in registered native A/B and physical machine/Head profiles are distinct
   [preparation inputs](sdks/dart/example/installed-factory-acceptance.md)
@@ -261,13 +261,18 @@ The load-bearing always-on essentials:
   before and after merge. Every exact release candidate/selected environment requires configured-source-integration.
   functional-validation PASS / configured-source-integration NOT_RUN is not release qualification; executed configured-source-integration failure stays FAIL.
   Whole-interval expiry and native leases remain mandatory. Ordinary affected local
-  checks defer exact integration functional-validation/configured-source-integration to hosted CI; the explicit full local gate
-  retains both. Policy adoption uses the prior contract subject to the scoped
-  #1820 migration above.
+  checks defer exact integration functional-validation/configured-source-integration to hosted CI. Under #1946,
+  the full local77 runs complete functional-validation in `current-functional-wire`,
+  strips inherited fixture/time/native/child activation controls and leaves required
+  configured-source-integration independent. Dedicated runners set their own flags;
+  ordinary tool/dependency/application settings stay intact. Policy adoption uses
+  the prior contract subject to the scoped #1820/#1946 migrations above.
 - **Before every push**, satisfy the affected local or explicit pure-prose gate in
   CONTRIBUTING. Unknown inputs require full. Policy changes use the previous full
-  contract, except the explicit #1820 migration substitutes complete functional-validation and bounded
-  configured-source-integration while retaining every other mandatory check. Hosted exact-merge/main,
+  contract, except the explicit #1820 migration and #1946 local-only adoption use their
+  approved scoped contracts while retaining every other mandatory check. #1946
+  requires the revised local77 without rerunning its retired local external-source bootstrap.
+  Hosted exact-merge/main,
   release/environment configured-source-integration, archives
   and physical evidence remain independent. Full Windows Rust compatibility moves
   to manual/release; affected native ACL/filesystem/TLS/process checks still block.

@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -103,8 +104,14 @@ func TestAuthorityTimeSource(t *testing.T) {
 func TestAuthorityTimeProducer(t *testing.T) {
 	capture := decisiontrace.Start(64)
 	defer capture.Stop()
-	for _, mode := range []string{"success", "bad nonce", "oversize", "cancel", "close", "sample failure", "sample regression", "sample epoch"} {
+	for _, mode := range []string{"success", "offset before", "offset after", "bad nonce", "bad mode", "short", "oversize", "read timeout", "cancel", "close", "sample failure", "sample regression", "sample epoch"} {
 		t.Run(mode, func(t *testing.T) {
+			offsetSeconds := int64(0)
+			if mode == "offset before" {
+				offsetSeconds = -3600
+			} else if mode == "offset after" {
+				offsetSeconds = 3600
+			}
 			server, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 			if err != nil {
 				t.Fatal(err)
@@ -125,11 +132,28 @@ func TestAuthorityTimeProducer(t *testing.T) {
 				if n != 48 || request[0] != 4<<3|3 {
 					return
 				}
+				if mode == "read timeout" {
+					return // The bound socket stays open, but sends no response.
+				}
 				response := fakeAuthorityNTPResponse([8]byte(request[40:48]))
+				if offsetSeconds != 0 {
+					// Fixed synthetic UTC over real loopback UDP; no wall clock
+					// or claim about a configured external source is involved.
+					stamp := uint64(int64(4_000_000_000)+offsetSeconds) << 32
+					binary.BigEndian.PutUint64(response[16:24], stamp-(1<<32))
+					binary.BigEndian.PutUint64(response[32:40], stamp)
+					binary.BigEndian.PutUint64(response[40:48], stamp)
+				}
 				if mode == "bad nonce" {
 					response[24] ^= 1
 				}
+				if mode == "bad mode" {
+					response[0] = 4<<3 | 3
+				}
 				data := response[:]
+				if mode == "short" {
+					data = data[:47]
+				}
 				if mode == "oversize" {
 					data = append(append([]byte(nil), data...), 1)
 				}
@@ -180,9 +204,13 @@ func TestAuthorityTimeProducer(t *testing.T) {
 			}
 			releaseServer()
 			var result outcome
+			joinLimit := 2 * time.Second
+			if mode == "read timeout" {
+				joinLimit = 5 * time.Second // The unchanged production flight is 3s.
+			}
 			select {
 			case result = <-done:
-			case <-time.After(2 * time.Second):
+			case <-time.After(joinLimit):
 				t.Fatal("measurement did not join")
 			}
 			if (mode == "sample failure" || mode == "sample regression" || mode == "sample epoch") && !errors.Is(result.err, errAuthorityTimeNative) {
@@ -192,13 +220,16 @@ func TestAuthorityTimeProducer(t *testing.T) {
 			if probe.Attempt != 1 || probe.EndpointDigest != fmt.Sprintf("%x", sha256.Sum256([]byte(server.LocalAddr().String()))) || probe.Family != "ipv4" || probe.Elapsed <= 0 {
 				t.Fatal("probe diagnostic is not the completed attempt")
 			}
-			if mode == "bad nonce" && probe.Stage != "packet" {
+			if (mode == "bad nonce" || mode == "bad mode" || mode == "short") && probe.Stage != "packet" {
 				t.Fatal("packet refusal classification")
+			}
+			if mode == "read timeout" && (probe.Stage != "read" || probe.Reason != "read_timeout" || p.attempts != 1 || p.writes != 1 || samples.Load() != 1) {
+				t.Fatal("UDP deadline changed acquisition bounds or published a receive sample")
 			}
 			if mode == "sample failure" && probe.Stage != "native_receive" {
 				t.Fatal("sample failure classification")
 			}
-			if mode == "success" {
+			if mode == "success" || offsetSeconds != 0 {
 				if probe.Reason != "ok" || probe.Native != 20_000_000 || samples.Load() != 2 {
 					t.Fatal("diagnostic sampled again or altered success")
 				}
@@ -208,6 +239,33 @@ func TestAuthorityTimeProducer(t *testing.T) {
 				m := result.m
 				if m.source != source || m.endpoint != server.LocalAddr().String() || m.sent.nanos != 10_000_000 || m.received.nanos != 20_000_000 || m.sequence != 1 || [8]byte(m.request[40:48]) != [8]byte(m.response[24:32]) {
 					t.Fatalf("measurement binding: %+v", m)
+				}
+				if offsetSeconds != 0 {
+					premises := fakeAuthorityTimePremises()
+					premises.ratePPB, premises.stampError = 0, 0
+					utc := uint64(int64(4_000_000_000-2_208_988_800)+offsetSeconds) * uint64(time.Second)
+					// Exact inputs: precision rounds outward to 1ns, source
+					// allowance is 999ns, and the native RTT is 10ms.
+					want := authorityTimeRange{utc - 1000, utc + 10_000_000 + 1000}
+					estimate, err := calculateAuthorityTime(m, premises)
+					if err != nil || estimate.utc != want || estimate.at != m.received {
+						t.Fatal("UDP UTC offset or original native receive binding lost", estimate, err)
+					}
+					premises.validUTC.high = want.high
+					if _, err := calculateAuthorityTime(m, premises); err == nil {
+						t.Fatal("whole interval touching exclusive expiry was admitted")
+					}
+					premises.validUTC = authorityTimeRange{utc - uint64(2*time.Second), utc + uint64(2*time.Second)}
+					estimate, err = calculateAuthorityTime(m, premises)
+					if err != nil {
+						t.Fatal("bounded initial interval refused", err)
+					}
+					if _, err := estimate.atSample(fakeAuthorityTimeStamp(m.received.nanos + uint64(time.Second))); err != nil {
+						t.Fatal("valid native holdover refused", err)
+					}
+					if _, observation, err := estimate.atSampleObserved(fakeAuthorityTimeStamp(m.received.nanos + uint64(2*time.Second))); err == nil || observation.Reason != "utc_window" || estimate.at != m.received {
+						t.Fatal("expired native holdover refreshed or escaped its UTC window", err)
+					}
 				}
 			} else if result.err == nil || result.m != (authorityTimeMeasurement{}) {
 				t.Fatalf("failed measurement published facts: %+v", result)

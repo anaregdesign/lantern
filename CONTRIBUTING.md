@@ -155,6 +155,13 @@ the retired repeated-external-source full configured-source-integration campaign
 bounded configured-source-integration and every other applicable mandatory check.
 This policy's adoption PR follows that rule once before push. Later changes use
 the merged policy, with normal exact synthetic-merge/main checks still blocking.
+The owner-approved #1946 migration separately replaces only the full local plan's
+automatic external-source acquisition with complete controlled-source
+functional-validation and isolates inherited qualification opt-ins. Its adoption
+uses that revised local plan; the other 76 steps, selected PR/main
+configured-source-integration, exact pre-tag and chosen native-environment
+qualification remain mandatory. It does not require rerunning the retired local
+external-source coupling as a bootstrap, and preserves its recorded failures.
 
 Complete frozen Bun dependency installation in Node and Admin before Go walks
 the root workspace. Installation can mutate dependency directories containing
@@ -545,15 +552,25 @@ blocks integration.
 Ordinary affected local checks leave authoritative functional validation and required
 configured-source integration to hosted exact-merge CI; they do not repeat
 external-source acquisition for an unrelated diagnostic. Runtime guards and executed
-configured-source-integration failures are unchanged. The 77-step full local plan
-conservatively keeps configured-source-integration and adds separate
-functional-validation execution inside `rust-oidc-scoped-wire` using
-`--with-functional-validation`; scoped Rust and every other existing component remain
-mandatory. Each invocation writes fresh functional-validation and
-configured-source-integration receipts, with no receipt import or carry. The #1820
-owner-approved time-contract migration uses the complete functional-validation and
-bounded configured-source-integration contracts above; it must not repeat the retired
-external-source functional campaign or reinterpret an old receipt. For separate focused
+configured-source-integration failures are unchanged. Under the owner-approved
+#1946 local-only migration, the 77-step full local plan runs complete
+functional-validation in `current-functional-wire` with explicit
+`--proof-kind functional-validation --fresh-child`. This includes the scoped Rust
+case and both native loopback mechanism tests, preserving the other 76 steps.
+Each invocation writes fresh controlled-source evidence without receipt import
+or carry. The local runner removes inherited current/time/native fixture,
+provisioning-export and serving/output-child activation controls; dedicated
+functional/native-provider runners supply their own explicit flags and build
+tags. Tool/dependency settings and ordinary runtime configuration remain intact.
+This local result qualifies code and controlled mechanisms. Required normal-build
+configured-source-integration stays an independent, blocking selected PR/main,
+release-candidate and selected-environment exit, with its six owners, counters,
+source/path binding and all required bodies unchanged. An external-source timeout
+remains FAIL; this separation adds no retry or failure-to-PASS rule.
+Read timeouts identify a failed acquisition stage; the client, host, path or
+provider cause remains unknown until supported by separate evidence.
+The #1820 scoped migration remains in force for the retired repeated external-source
+functional campaign; historical receipts retain their original scope. For separate focused
 qualification of a clean frozen candidate with pinned tools and dependencies:
 
 ```sh
@@ -629,6 +646,11 @@ repeated Go submodule tests and server vet; dependency preparation, root integra
 and Rust/Dart/Flutter gates still run. Time savings depend on those six actual
 runtimes and have not been measured by the synthetic regression tests. Session
 receipts are discarded on exit; there is no persistent validation cache.
+The ordinary runner also isolates inherited qualification activation controls
+before constructing its execution environment; explicit source qualification
+uses the independent entrypoint above. This filter is limited to fixture/time/
+native/child controls declared in `local_gate_session.py` and preserves tool,
+dependency and ordinary application settings.
 Eligible commands execute in a runner-owned read-only Git export containing
 exactly their fingerprinted tracked input closure and its directories. The export
 is populated from the pinned Git objects, verified, and made read-only; developer
