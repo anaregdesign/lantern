@@ -1430,6 +1430,7 @@ func TestOwnedComposeBindIdentityProof(t *testing.T) {
 		"wrong-probe-network", "wrong-probe-readonly", "wrong-probe-capabilities", "wrong-probe-privileged", "wrong-probe-security-option", "wrong-probe-limit",
 		"wrong-probe-third-source", "wrong-probe-extra-field", "wrong-probe-extra-mount", "wrong-probe-writable-mount",
 		"wrong-probe-auto-create", "wrong-probe-request-flags", "wrong-probe-request-extra-field", "wrong-probe-request-writable", "wrong-probe-binds",
+		"wrong-probe-missing-request-target", "wrong-probe-duplicate-request-target",
 		"wrong-probe-poststart-source", "wrong-probe-poststart-command", "unequal-identity", "zero-identity", "unsupported-type", "malformed-output", "extra-output", "missing-output",
 		"original-before-drift", "clone-before-drift", "original-after-drift", "clone-after-drift", "daemon-drift", "probe-exit", "probe-disconnect", "probe-timeout", "probe-stop-failure", "probe-remove-failure", "proof-retention-failure", "INT", "TERM",
 	} {
@@ -1598,6 +1599,8 @@ docker() {
   elif $case=="wrong-probe-request-flags" then .HostConfig.Mounts[0].BindOptions.NonRecursive=true
   elif $case=="wrong-probe-request-extra-field" then .HostConfig.Mounts[0].FutureField="unknown"
   elif $case=="wrong-probe-request-writable" then .HostConfig.Mounts[0].ReadOnly=false
+  elif $case=="wrong-probe-missing-request-target" then .HostConfig.Mounts[1].Target="/proof/unexpected"
+  elif $case=="wrong-probe-duplicate-request-target" then .HostConfig.Mounts[1].Target=.HostConfig.Mounts[0].Target
   elif $case=="wrong-probe-binds" then .HostConfig.Binds=["/other:/proof/original-0:ro"]
   else . end' "$OUTDIR/probe.json"
 }
