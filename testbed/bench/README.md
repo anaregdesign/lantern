@@ -554,19 +554,69 @@ unchanged; the new public projection is not a byte-for-byte comparison with
 historical complete mutation delivery. Native pumps continue full private
 replication independently.
 
-The protected receipt leak gate samples `go_goroutines` and
-`go_memstats_heap_alloc_bytes` on all three replicas every 5s during steady
-load, without forced GC. Complete finite integral samples remain mandatory
-(at least nine rounds over 45s, with no interval gap above 7.5s). Its existing
-+15 goroutine, +40 MiB steady and +32 MiB cooldown delta budgets remain in force.
-Protected pre/post snapshots use **one fixed natural-GC sample**; pprof/forced
-GC and minimum-of-samples selection are unavailable by design. Therefore new
-results are not post-GC live-set evidence and cannot be compared as such with
-historical #1399 measurements. #1635/#1610 track this predeclared measurement
-change; a failed natural sample stays failed rather than changing load, GC or
-thresholds. OFF leak snapshots preserve their existing outside-steady GC
-protocol. Peak process/container RSS and CPU comparisons remain separate
-required #1610 evidence.
+The protected receipt memory contract uses the explicitly paired #1958 matrix.
+One normal immutable image runs the eight canonical and four receipt scenarios.
+A separately identified image from the same source, built with
+`lantern_bench_heap`, runs the four receipt scenarios for retained memory.
+The normal production binary has no measurement control, signal handler or
+forced-GC behavior. OIDC still rejects pprof; its diagnostics bridge still
+forwards only metrics/readiness. Each lane keeps its own immutable image.
+
+Normal receipt runs use `natural_reference_v1`: one natural PRE/POST snapshot
+and unforced steady samples on all three replicas every 5s. Complete finite
+integral samples remain mandatory (at least nine rounds over 45s, with no gap
+above 7.5s). Performance, +15 goroutines and +40 MiB natural steady growth remain
+blocking. The natural POST +32 MiB comparison is recorded as an observation,
+separate from the retained verdict. A normal-only result requires its pair and
+cannot declare overall memory acceptance.
+
+Measurement runs use `symmetric_post_gc_2_v1`. After warmup and after the unchanged
+load/cooldown, each target performs exactly two synchronous completed full GC
+cycles, then immediately reads MemStats and last-marked-live metrics before
+encoding or native bracket-B allocation. The same procedure applies to BOTH
+cuts; there is no minimum selection, post-only collection or forced GC during
+steady load. Two cycles give unused `sync.Pool` primary/victim storage the same
+aging opportunity at each cut. Active pools, legitimate retained state and
+background workers remain; this is neither all-pools-empty nor leak-freedom
+proof. HeapAlloc after GC can include contemporaneous background allocation and
+is distinct from last-marked-live bytes. The retained delta limit stays +32 MiB.
+
+The tagged process accepts only fixed private phase files under
+`/run/lantern-bench-heap`, with a nonce and exact process/source/image bindings;
+SIGUSR1 wakes it but is not completion proof. Each cut has a 25s target budget
+and a 30s controller budget for all three parallel targets. Relevant work must
+drain within 10s and remain observed stable for 250ms, sampled every 50ms.
+The cut checks final submitted work and matching committed origin frontiers,
+coherent public/non-Subscribe/internal Apply activity, direct pending/native
+state, and both GC returns. All locks are released before GC. Maintained native
+Subscribe streams remain alive. These observations bound relevant committed
+work; they do not assert global fanout, transport or background-goroutine idle.
+Drift, missing proof or deadline expiry is INCOMPLETE, with no repeated cut or
+fallback and with existing owned shutdown/custody still required.
+
+Before native security initialization, every measurement original binds its
+canonical private host directory to its actual Docker request/effective paths.
+Literal paths use an identity-bound fast path; differing representations require
+one bounded read-only directory-stat probe per original, with at most two fixed
+pairs, before any `init-security`. No prefix stripping or operator path mapping
+is accepted. Clones may use only that original's frozen same-directory set;
+a new representation fails without another probe. Host device/inode/type,
+UID/GID and mode remain fixed through session writes and both cuts; directory
+mtime and contents are expected to change. Case-local byte-hashed watched
+mount observations and raw stat evidence let the collector, Go evaluator and
+pair consumer independently verify the premise. Serving authentication Env is
+checked in memory and is excluded from these retained mount observations.
+Historical literal-path refusals remain failures under their original contract.
+
+Whole-matrix acceptance requires the normal twelve cases and all four retained
+pairs, with matched source/tree/scenario/workload/TTL/retention/capacity/runtime
+bindings and separate image identities. Tagged performance does not qualify
+normal-image performance, and tagged measurements do not assert binary equality
+or directly measure normal-binary retained heap. Baseline GC also changes pool
+and cache state before the tagged steady phase, so this is a prospective protocol
+change. Historical `natural_gc_single` FAILs retain their original meaning and
+raw evidence. OFF snapshots keep their existing outside-steady GC protocol.
+Peak process/container RSS and CPU comparisons remain separate #1610 evidence.
 
 The same receipt scrapes also retain bounded aggregate context: GC count,
 last-GC time and next-GC target; receipt entries, logical bytes and oldest
@@ -576,7 +626,9 @@ exclude Go container overhead, and retained graph/index/history state may grow
 with successful writes. No additional scrape or forced GC is used for this
 context.
 
-An opt-in `LANTERN_BENCH_NATURAL_GC_OBSERVE=1` diagnostic is available only for
+The legacy `LANTERN_BENCH_NATURAL_GC_OBSERVE=1` diagnostic is scoped only to
+a historical `natural_gc_single` run; the new paired protocol refuses this
+opt-in. Its existing saved-record contract is retained below. It applies only to
 a fresh protected Edge Add cohort with `KEEP_UP=0` and `LEAK_GATE_ONLY=1`.
 It requires an explicit harness commit in `LANTERN_BENCH_DIAGNOSTIC_SOURCE_ID`
 and the original campaign's Unix UTC and monotonic deadlines in
@@ -685,9 +737,10 @@ blocks, and the leak-gate thresholds (`goroutine_max_delta`,
 evaluates against `heap_alloc`
 (post-GC live bytes), forcing a `runtime.GC()` via
 `/debug/pprof/heap?gc=1` before each snapshot so the reading reflects
-live memory rather than span-level allocator headroom. Protected receipt snapshots
-use the `natural_gc_single` protocol described above; their post-cooldown
-`heap_alloc` delta is not post-GC live-set evidence. The legacy field
+allocator memory after GC rather than span-level allocator headroom. Protected
+receipt scenarios use the paired normal-reference and symmetric completed-GC
+protocols described above. Natural POST observations and the +32 MiB retained
+decision remain distinct. The legacy field
 name `heap_inuse_max_delta_mb` is still accepted for backward
 compatibility but produced false-positive verdicts under sustained
 churn — see issue #248.

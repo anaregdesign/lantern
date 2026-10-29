@@ -305,10 +305,28 @@ func (a *App) Run(ctx context.Context) (runErr error) {
 	// only then cancels serveCtx to begin the real graceful shutdown. With
 	// DrainDelay=0 the behaviour matches the historical path bar an
 	// immediate, harmless BeginDrain.
+	heapStop, heapErrors, err := startBenchHeapObservation(ctx, a)
+	if err != nil {
+		return err
+	}
+	if heapStop != nil {
+		defer func() { runErr = errors.Join(runErr, heapStop()) }()
+	}
+
 	serveCtx, cancelServe := context.WithCancel(context.Background())
 	defer cancelServe()
 
 	g, gctx := errgroup.WithContext(serveCtx)
+	if heapErrors != nil {
+		g.Go(func() error {
+			select {
+			case err := <-heapErrors:
+				return err
+			case <-gctx.Done():
+				return nil
+			}
+		})
+	}
 	// Ready-to-serve instant for GetServerStatus.started_at/uptime (#943).
 	// Called AFTER RestoreOnStartup (which can take arbitrarily long) and
 	// right before the Connect listener starts accepting, so uptime reflects

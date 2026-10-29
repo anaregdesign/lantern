@@ -69,3 +69,7 @@ jobs:
             (cd "$mod" && go vet ./... && go build -v ./... && go test -race -shuffle=on -json ./...)
             echo "::endgroup::"
           done
+
+      - name: Verify tagged heap observer and normal binary exclusion
+        if: ${{ !cancelled() && matrix.group == 'server' }}
+        run: python3 -B .github/scripts/verify_bench_heap.py

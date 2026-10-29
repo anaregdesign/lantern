@@ -39,8 +39,15 @@ import (
 // sustained churn, heap_inuse drifts upward as the allocator opens new
 // spans even when live memory is flat, producing false-positive verdicts.
 type LeakGate struct {
-	SnapshotProtocol string `json:"snapshot_protocol"`
-	Thresholds       struct {
+	SnapshotProtocol                  string            `json:"snapshot_protocol"`
+	NaturalChecksVerdict              string            `json:"natural_checks_verdict"`
+	NaturalPostHeapObservationVerdict string            `json:"natural_post_heap_observation_verdict"`
+	RetainedVerdict                   string            `json:"retained_verdict"`
+	OverallMemoryVerdict              string            `json:"overall_memory_verdict"`
+	PairRequired                      bool              `json:"pair_required"`
+	RetainedReplicas                  []LeakGateReplica `json:"retained_replicas"`
+	NaturalCheckFailures              []string          `json:"natural_check_failures"`
+	Thresholds                        struct {
 		GoroutineMaxDelta         int `json:"goroutine_max_delta"`
 		HeapAllocMaxDeltaMB       int `json:"heap_alloc_max_delta_mb"`
 		SteadyHeapAllocMaxDeltaMB int `json:"steady_heap_alloc_max_delta_mb"`
@@ -357,7 +364,12 @@ func RenderReport(w io.Writer, in Input) error {
 	}
 	semanticVerdict := semanticGateVerdict(in.SemanticPre, in.SemanticPost)
 	bw.printf("# Bench report — `%s` @ `%s`\n\n", in.Scenario, in.Timestamp)
-	bw.printf("**Leak gate verdict:** `%s`\n\n", verdict)
+	if in.LeakGate != nil && in.LeakGate.PairRequired {
+		bw.printf("**Memory lane verdict:** `%s`\n\n", verdict)
+		bw.printf("**Overall memory verdict:** `%s`\n\n", in.LeakGate.OverallMemoryVerdict)
+	} else {
+		bw.printf("**Leak gate verdict:** `%s`\n\n", verdict)
+	}
 	bw.printf("**Metric gate verdict:** `%s`\n\n", metricVerdict)
 	bw.printf("**Semantic gate verdict:** `%s`\n\n", semanticVerdict)
 	bw.printf("**Perf gate verdict:** `%s`\n\n", perfVerdict)
@@ -366,6 +378,11 @@ func RenderReport(w io.Writer, in Input) error {
 	if in.LeakGate == nil {
 		bw.printf("_not captured_\n\n")
 	} else {
+		paired := in.LeakGate.SnapshotProtocol == "natural_reference_v1" || in.LeakGate.SnapshotProtocol == "symmetric_post_gc_2_v1"
+		if paired {
+			bw.printf("This is one lane of the source-paired measurement protocol. Overall memory verdict: `%s`; a matching normal-image and tagged-image pair is required.\n\n", in.LeakGate.OverallMemoryVerdict)
+			bw.printf("Natural steady/goroutine checks: `%s`; natural POST heap observation (advisory): `%s`; retained check: `%s`.\n\n", in.LeakGate.NaturalChecksVerdict, in.LeakGate.NaturalPostHeapObservationVerdict, in.LeakGate.RetainedVerdict)
+		}
 		hMB := in.LeakGate.Thresholds.HeapAllocMaxDeltaMB
 		if hMB == 0 {
 			hMB = in.LeakGate.Thresholds.HeapInuseMaxDeltaMB
@@ -373,13 +390,17 @@ func RenderReport(w io.Writer, in Input) error {
 		bw.printf("Thresholds: goroutine_max_delta=%d, heap_alloc_max_delta_mb=%d\n\n",
 			in.LeakGate.Thresholds.GoroutineMaxDelta, hMB)
 		if in.LeakGate.Thresholds.SteadyHeapAllocMaxDeltaMB > 0 {
-			if in.LeakGate.SnapshotProtocol == "natural_gc_single" {
+			if paired {
+				bw.printf("Normal-image unforced steady heap threshold: +%d MiB. Natural POST +%d MiB comparison is observation-only; the distinct tagged-image retained check uses the unchanged +%d MiB limit.\n\n", in.LeakGate.Thresholds.SteadyHeapAllocMaxDeltaMB, hMB, hMB)
+			} else if in.LeakGate.SnapshotProtocol == "natural_gc_single" {
 				bw.printf("Receipt natural-GC steady heap_alloc peak threshold: +%d MiB; post-cooldown delta threshold: +%d MiB.\n\n", in.LeakGate.Thresholds.SteadyHeapAllocMaxDeltaMB, hMB)
 			} else {
 				bw.printf("Receipt unforced steady heap_alloc peak threshold: +%d MiB; post-GC live-set threshold: +%d MiB.\n\n", in.LeakGate.Thresholds.SteadyHeapAllocMaxDeltaMB, hMB)
 			}
 		}
-		if in.LeakGate.SnapshotProtocol == "natural_gc_single" {
+		if paired {
+			bw.printf("Natural PRE/steady/POST observations remain separate. Tagged retained cuts use exactly two completed target-process GC cycles at BOTH baseline and POST; baseline GC changes pool state before that tagged workload. Bounded native/request observations do not prove global background, Subscribe or fanout quiescence, and tagged results do not establish normal-binary heap equality.\n\n")
+		} else if in.LeakGate.SnapshotProtocol == "natural_gc_single" {
 			bw.printf("Pre/post snapshots each use one fixed natural-GC sample; profiling/forced GC and minimum-of-samples selection are disabled. Historic post-forced-GC live-set results are a different protocol. `heap_inuse` and `heap_objects` are context only.\n\n")
 		} else {
 			bw.printf("Post-cooldown gate evaluates `heap_alloc` after forced GC; `heap_inuse` and `heap_objects` are shown for context only.\n\n")
@@ -401,13 +422,23 @@ func RenderReport(w io.Writer, in Input) error {
 			)
 		}
 		bw.printf("\n")
+		if len(in.LeakGate.RetainedReplicas) > 0 {
+			bw.printf("### Tagged retained HeapAlloc\n\n| replica | after two GC cycles MiB (baseline → POST = Δ) |\n| --- | --- |\n")
+			for _, r := range in.LeakGate.RetainedReplicas {
+				bw.printf("| `%s` | %.1f → %.1f = **%+.1f** |\n", r.Endpoint, bytesToMiB(r.HeapAllocPreBytes), bytesToMiB(r.HeapAllocPostBytes), bytesToMiB(r.HeapAllocDeltaBytes))
+			}
+			bw.printf("\n")
+		}
 		if in.LeakGate.SteadySampleInterval != "" {
 			postDelta := "post-cooldown live-set"
 			if in.LeakGate.SnapshotProtocol == "natural_gc_single" {
 				postDelta = "post-cooldown HeapAlloc"
 			}
-			bw.printf("Receipt steady gate: %d complete three-replica `/metrics` rounds at nominal %s intervals, without forced GC. Peaks are compared with the post-warmup baseline; both the steady peaks and %s deltas must pass.\n\n",
-				in.LeakGate.SteadySampleCount, in.LeakGate.SteadySampleInterval, postDelta)
+			if paired {
+				bw.printf("Natural steady observations: %d complete three-replica `/metrics` rounds at nominal %s intervals, without forced GC during steady. Peaks retain the natural post-warmup PRE reference. Normal-image steady/goroutine checks block the pair; the natural POST heap delta is advisory.\n\n", in.LeakGate.SteadySampleCount, in.LeakGate.SteadySampleInterval)
+			} else {
+				bw.printf("Receipt steady gate: %d complete three-replica `/metrics` rounds at nominal %s intervals, without forced GC. Peaks are compared with the post-warmup baseline; both the steady peaks and %s deltas must pass.\n\n", in.LeakGate.SteadySampleCount, in.LeakGate.SteadySampleInterval, postDelta)
+			}
 			bw.printf("| replica | steady goroutines peak (Δ) | steady heap_alloc peak MiB (Δ) |\n")
 			bw.printf("| --- | --- | --- |\n")
 			for _, r := range in.LeakGate.Replicas {
@@ -419,6 +450,9 @@ func RenderReport(w io.Writer, in Input) error {
 		}
 		for _, failure := range in.LeakGate.Failures {
 			bw.printf("- %s\n", failure)
+		}
+		for _, failure := range in.LeakGate.NaturalCheckFailures {
+			bw.printf("- Tagged natural observation: %s\n", failure)
 		}
 		if len(in.LeakGate.Failures) > 0 {
 			bw.printf("\n")

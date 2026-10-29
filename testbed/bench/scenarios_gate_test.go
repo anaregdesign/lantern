@@ -152,7 +152,7 @@ func TestNaturalGCObservationWiringAndPreflight(t *testing.T) {
 		wantCheck, wantOK                                       bool
 	}{
 		{"disabled", "0", "anything", "ghz", "1", "1", "0", false, true},
-		{"eligible", "1", "receipt_edge_add_admission_lookup", "receipt_edge_add", "0", "0", "1", true, true},
+		{"paired protocol refuses retired eligible opt in", "1", "receipt_edge_add_admission_lookup", "receipt_edge_add", "0", "0", "1", false, false},
 		{"invalid opt in", "yes", "receipt_edge_add_admission_lookup", "receipt_edge_add", "0", "0", "1", false, false},
 		{"unrelated scenario", "1", "receipt_vertex_delete_admission_lookup", "receipt_vertex_delete", "0", "0", "1", false, false},
 		{"retained project", "1", "receipt_edge_add_admission_lookup", "receipt_edge_add", "1", "0", "1", false, false},
@@ -234,7 +234,10 @@ python3() {
 }
 ` + naturalGCObservationShellFunctions(t) + cleanup + `
 trap cleanup EXIT
-validate_natural_gc_observation
+# Exercise only the retained legacy helper's cancellation path. Fresh paired
+# runs refuse this opt-in in the separate preflight test above.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 finish_with_natural_gc_observation 0
 `
 	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
@@ -935,6 +938,7 @@ receipt_image_id=""
 receipt_image_commit=""
 receipt_container_ids=()
 receipt_driver=1
+retained_heap=0
 native_spool_provenance=()
 runtime_owner=501:20
 export LANTERN_BENCH_CPUSET=0-3
@@ -1607,6 +1611,7 @@ COMPOSE_STARTED=0
 KEEP_UP=0
 PEER_TLS_DIR=""
 receipt_driver=1
+retained_heap=0
 if [[ "$CASE" == "absent OFF" ]]; then receipt_driver=0; fi
 receipt_image_id=fixture
 runtime_owner=501:20

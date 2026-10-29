@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manual, non-publishing exact-source local 8+4 qualification (#1891).
+"""Manual, non-publishing exact-source paired qualification (#1891/#1958).
 
 Example (after review/merge, from a clean checkout):
   python3 .github/scripts/local_release_qualification.py --source-sha FULL_SHA \
@@ -7,8 +7,10 @@ Example (after review/merge, from a clean checkout):
 
 The default budget is 10800 seconds plus 600 seconds for cleanup. release.sh
 retains its aggregate-eight failure behavior; receipts start only after all
-eight qualify. No retries, workload changes, extra GC, NTP probes, or publication.
-Canonical OFF pre/post GC remains unchanged, outside the steady window.
+eight qualify. The normal image runs12 cases; a separate same-source measurement
+image runs the4 receipt cases with symmetric completed GC. No retries, workload
+changes, GC during steady, NTP probes, or publication. Canonical OFF snapshots
+remain unchanged. Normal receipt POST is an observation, never a retained PASS.
 
 SIGINT/TERM stop owned process groups. The host lock is inherited by children;
 SIGKILL cannot be trapped and daemon containers do not inherit file descriptors.
@@ -27,6 +29,7 @@ import argparse
 import datetime
 import fcntl
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -436,7 +439,7 @@ def validate_lifecycle(directory, document, perf):
                 "lifecycle counter samples invalid")
 
 
-def validate_run(directory, document, sha, image_ref, image_id, owner, receipt):
+def validate_run(directory, document, sha, image_ref, image_id, owner, receipt, retained=False):
     report = regular(directory / "report.md").read_text()
     require("unqualified" not in report.lower(), "report records unqualified execution")
     verdicts = {}
@@ -462,9 +465,13 @@ def validate_run(directory, document, sha, image_ref, image_id, owner, receipt):
                 raw = list(directory.glob(pattern))
                 require(len(raw) == 1 and positive(read_json(raw[0]).get("count")), "raw producer evidence missing")
         if gate == "leak_gate" and receipt:
-            require(value.get("snapshot_protocol") == "natural_gc_single" and
+            protocol = "symmetric_post_gc_2_v1" if retained else "natural_reference_v1"
+            require(value.get("snapshot_protocol") == protocol and
+                    value.get("pair_required") is True and value.get("overall_memory_verdict") == "requires_pair" and
+                    value.get("retained_verdict") == ("pass" if retained else "requires_pair") and
+                    (retained or value.get("natural_checks_verdict") == "pass") and
                     value.get("steady_sample_interval") == "5s" and value.get("steady_sample_count", 0) >= 9,
-                    "receipt natural-GC sampling incomplete")
+                    "receipt lane sampling or pairing scope incomplete")
     for phase in ("pre", "post"):
         validate_runtime(read_json(directory / f"runtime_{phase}.json"))
     before, after = [read_json(directory / f"image_provenance_{phase}.json") for phase in ("pre", "post")]
@@ -509,6 +516,36 @@ def validate_run(directory, document, sha, image_ref, image_id, owner, receipt):
                     and all(s.get("statusCodeDistribution") == {"OK": s["count"]} for s in summaries),
                     "receipt admission/lookup coverage differs or non-OK")
     return verdicts
+
+
+def validate_retained_pair(normal, retained, document, expected, source, inventory):
+    # Lazy loading keeps the reviewed HostLock/Supervisor usable by other local
+    # owners without importing measurement code or changing their behavior.
+    name = ".github/scripts/retained_heap_pair.py"
+    path = source / name
+    pinned = inventory.get(name, {})
+    require(HEX64.fullmatch(pinned.get("sha256", "")) and type(pinned.get("mode")) is int,
+            "frozen pair consumer is not inventory-bound")
+    before = regular(path).stat()
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        require(stat.S_ISREG(opened.st_mode) and os.path.samestat(before, opened) and stat.S_IMODE(opened.st_mode) == pinned["mode"]
+                and opened.st_size <= 256 * 1024, "frozen pair consumer changed before reading")
+        code = stream.read(256 * 1024 + 1)
+        after = os.fstat(stream.fileno())
+        require(opened.st_size == len(code) == after.st_size and opened.st_mtime_ns == after.st_mtime_ns
+                and os.path.samestat(before, path.lstat()) and
+                hashlib.sha256(code).hexdigest() == pinned["sha256"], "frozen pair consumer differs")
+    spec = importlib.util.spec_from_file_location("retained_heap_pair", path)
+    consumer = importlib.util.module_from_spec(spec)
+    # Execute exactly the checked bytes, without consulting a launcher sibling
+    # or a bytecode cache after the inventory check.
+    exec(compile(code, str(path), "exec"), consumer.__dict__)
+    try:
+        return consumer.validate_pair(normal, retained, document, expected)
+    except consumer.Incomplete as error:
+        raise Refused("retained pair incomplete: " + str(error)) from error
 
 
 def capture_bind_proof(path, target, expected):
@@ -612,10 +649,13 @@ class Qualification:
                       "cleanup_budget_seconds": args.cleanup_seconds,
                       "scope": {"canonical": CANONICAL, "receipts": RECEIPTS, "attempts": 1,
                                 "publication": "not performed by this driver", "existing_main_ci_sdk4": "not_repeated",
-                                "gc": "unchanged OFF pre/post; no extra/manual/receipt/steady GC",
-                                "limits": "platform-scoped 8+4 only; separate peak RSS/CPU/provider/device/SLO gates"}}
+                                "retained_receipts": RECEIPTS,
+                                "gc": "normal-image natural references; tagged symmetric2GC per cut; no steady GC",
+                                "limits": "paired normal12/tagged4; no binary equivalence; separate RSS/CPU/provider/device/SLO"}}
         self.tools = {}
         self.image_ref, self.image_id = "", ""
+        self.using_retained = False
+        self.normal_runs = {}
         self.inventory = {}
         self.auxiliary_images = {}
         self.prometheus_ref = None
@@ -901,19 +941,80 @@ class Qualification:
                                "platform": self.tool("docker", "image", "inspect", "--format",
                                                     "{{.Os}}/{{.Architecture}}", self.image_id, timeout=30)}
         self.supervisor.env.update(LANTERN_IMAGE=self.image_ref, EXPECTED_LANTERN_IMAGE_ID=self.image_id,
-                                   EXPECTED_LANTERN_COMMIT=self.args.source_sha, COMMIT=self.args.source_sha)
+                                   EXPECTED_LANTERN_COMMIT=self.args.source_sha, EXPECTED_LANTERN_TREE=self.args.source_tree,
+                                   COMMIT=self.args.source_sha)
+        self.save()
+
+    def retained_image(self):
+        self.absent()
+        normal = self.state["image"]
+        builder = "lantern:local-qualification-builder-" + self.args.campaign
+        self.tool("docker", "build", "--target", "builder", "--build-arg", "VERSION=local-qualification",
+                  "--build-arg", "COMMIT=" + self.args.source_sha, "-t", builder, ".")
+        builder_id = self.tool("docker", "image", "inspect", "--format", "{{.Id}}", builder, timeout=30)
+        require(IMAGE_ID.fullmatch(builder_id), "normal builder identity missing")
+        require(self.tool("docker", "image", "inspect", "--format", "{{.Id}}", normal["reference"], timeout=30)
+                == normal["id"], "normal base image reference changed")
+        reference = "lantern:local-qualification-retained-" + self.args.campaign
+        self.tool("docker", "build", "--pull=false", "-f", "testbed/bench/Dockerfile.retained",
+                  "--build-arg", "NORMAL_BUILDER_IMAGE=" + builder,
+                  "--build-arg", "NORMAL_RUNTIME_IMAGE=" + normal["reference"], "-t", reference, ".")
+        identifier = self.tool("docker", "image", "inspect", "--format", "{{.Id}}", reference, timeout=30)
+        require(IMAGE_ID.fullmatch(identifier) and identifier != normal["id"], "distinct measurement image required")
+        for name, expected in ((builder, builder_id), (normal["reference"], normal["id"])):
+            require(self.tool("docker", "image", "inspect", "--format", "{{.Id}}", name, timeout=30) == expected,
+                    "measurement base image changed during build")
+        # Prove the retained image adds only the tagged binary layer to the
+        # normal runtime and inherits its complete runtime configuration.
+        configurations = []
+        for image in (normal["id"], identifier):
+            self.tool("docker", "image", "inspect", image, timeout=30)
+            rows = read_json(self.evidence / self.state["steps"][-1]["log"])
+            require(isinstance(rows, list) and len(rows) == 1, "image configuration missing")
+            configurations.append(rows[0])
+        base, measured = configurations
+        require(base.get("Os") == measured.get("Os") == "linux" and base.get("Architecture") == measured.get("Architecture"),
+                "normal/measurement platforms differ")
+        layers, changed = base.get("RootFS", {}).get("Layers", []), measured.get("RootFS", {}).get("Layers", [])
+        require(layers and changed[:-1] == layers and len(changed) == len(layers) + 1,
+                "measurement runtime differs beyond the binary layer")
+        base_config, measured_config = dict(base["Config"]), dict(measured["Config"])
+        base_labels, measured_labels = dict(base_config.pop("Labels", None) or {}), dict(measured_config.pop("Labels", None) or {})
+        require("io.lantern.bench-heap.protocol" not in base_labels and
+                measured_labels.pop("io.lantern.bench-heap.protocol", None) == "symmetric_post_gc_2_v1" and
+                measured_labels == base_labels and measured_config == base_config,
+                "measurement runtime configuration changed")
+        self.state["retained_image"] = {"reference": reference, "id": identifier,
+            "platform": measured["Os"] + "/" + measured["Architecture"],
+            "normal_builder_reference": builder, "normal_builder_id": builder_id,
+            "build_tags": ["lantern_bench_heap"], "runtime_difference": "tagged binary layer and measurement label only"}
+        self.image_ref, self.image_id, self.using_retained = reference, identifier, True
+        self.supervisor.env.update(LANTERN_IMAGE=reference, EXPECTED_LANTERN_IMAGE_ID=identifier,
+                                   LANTERN_BENCH_RETAINED_HEAP="1")
         self.save()
 
     def check_runs(self, names):
         for name in names:
-            parent = self.source / "testbed/bench/out" / name
+            root = self.source / "testbed/bench/out"
+            parent = (root / "retained" if self.using_retained else root) / name
             runs = list(parent.iterdir())
             require(len(runs) == 1 and runs[0].is_dir() and not runs[0].is_symlink(), "run count differs: " + name)
             resolved = self.tool("yq", "-o=json", ".", runs[0] / "scenario.resolved.yaml", timeout=30)
             require(json.loads(resolved) == self.documents[name], "resolved workload/configuration changed")
-            self.state["scenario_verdicts"][name] = validate_run(
+            key = "retained:" + name if self.using_retained else name
+            self.state["scenario_verdicts"][key] = validate_run(
                 runs[0], self.documents[name], self.args.source_sha, self.image_ref, self.image_id,
-                self.owner, name in RECEIPTS)
+                self.owner, name in RECEIPTS, self.using_retained)
+            if self.using_retained:
+                proof = validate_retained_pair(self.normal_runs[name], runs[0], self.documents[name], {
+                    "source_commit": self.args.source_sha, "source_tree": self.args.source_tree,
+                    "normal_image_id": self.state["image"]["id"], "retained_image_id": self.image_id,
+                    "runtime_user": self.owner, "cpuset": self.args.cpuset}, self.source, self.inventory)
+                path = self.evidence / ("retained-pair-" + name + ".json")
+                atomic_json(path, proof)
+                self.state.setdefault("retained_pairs", {})[name] = {"path": str(path), "sha256": digest(path), "verdict": "pass"}
+            else:
+                self.normal_runs[name] = runs[0]
             self.save()
         self.absent()
         require(self.tool("docker", "image", "inspect", "--format", "{{.Id}}", self.image_ref, timeout=30) == self.image_id,
@@ -953,6 +1054,12 @@ class Qualification:
                 self.absent()
                 self.call(scenario, [self.tools["bash"], "testbed/bench/run.sh", scenario])
                 self.check_runs((scenario,))
+            self.retained_image()
+            for scenario in RECEIPTS:
+                self.absent()
+                self.call("retained-" + scenario, [self.tools["bash"], "testbed/bench/run.sh", scenario])
+                self.check_runs((scenario,))
+            require(set(self.state.get("retained_pairs", {})) == set(RECEIPTS), "complete retained pairing missing")
             verify_inventory(self.source, self.inventory)
             for value in self.state["tools"].values():
                 require(digest(Path(value["path"])) == value["sha256"], "tool binary changed")

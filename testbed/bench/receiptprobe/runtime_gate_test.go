@@ -20,9 +20,43 @@ import (
 	"testing"
 	"testing/iotest"
 	"time"
+
+	"github.com/anaregdesign/lantern/server/benchheap"
 )
 
 const testHeapBaseline = int64(100 << 20)
+
+func TestNaturalReferenceSeparatesAdvisoryPostFromMandatoryChecks(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		peak       int64
+		goroutines int64
+		pass       bool
+	}{
+		{"post above32 is advisory", 0, 0, true},
+		{"steady above40 still fails", 41, 0, false},
+		{"goroutine growth still fails", 0, 16, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pre, post, steady, samples := receiptLeakFixture(t)
+			values := testRuntimeSnapshots()
+			*values[1].HeapAllocBytes += 33 << 20
+			mustWriteReceiptArtifact(t, post, values)
+			samples.Samples[4].Replicas[2].HeapAllocBytes += test.peak << 20
+			samples.Samples[4].Replicas[2].Goroutines += test.goroutines
+			mustWriteReceiptArtifact(t, steady, samples)
+			got := evaluateReceiptLeakProtocol(pre, post, steady, 45*time.Second, 5*time.Second, 15, 32, 40, "natural_reference_v1")
+			if (got.Verdict == "pass") != test.pass || got.NaturalChecksVerdict != got.Verdict || got.NaturalPostHeapObservationVerdict != "fail" || !got.PairRequired || got.RetainedVerdict != "requires_pair" || got.OverallMemoryVerdict != "requires_pair" {
+				t.Fatalf("paired scope or mandatory checks changed: %+v", got)
+			}
+			old := evaluateReceiptLeak(pre, post, steady, 45*time.Second, 5*time.Second, 15, 32, 40)
+			if old.Verdict != "fail" || old.PairRequired {
+				t.Fatalf("historical natural_gc_single failure changed: %+v", old)
+			}
+		})
+	}
+}
 
 const testRuntimeObservations = "go_gc_duration_seconds_count 7\n" +
 	"go_memstats_last_gc_time_seconds 1720000000.125\n" +
@@ -1739,5 +1773,189 @@ func TestSampleSteadyMetricsOperatorLoopbackWithoutNameResolution(t *testing.T) 
 		if dialAddresses[i] != addresses[i%receiptReplicaCount] || proxyURLs[i] != endpoints[i%receiptReplicaCount].url {
 			t.Fatalf("request %d reached a different node or logical URL", i)
 		}
+	}
+}
+
+func retainedHeapFixture(t *testing.T) (string, string, []receiptLeakReplica) {
+	t.Helper()
+	if !retainedEvidenceSupported {
+		t.Skip("new retained artifact I/O requires Linux or Darwin; unsupported measurement refusal is tested separately")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{filepath.Join(root, "retained_heap_pre.json"), filepath.Join(root, "retained_heap_post.json")}
+	endpoints := []receiptLeakReplica{{Endpoint: "localhost:9390"}, {Endpoint: "localhost:9391"}, {Endpoint: "localhost:9392"}}
+	for phaseIndex, phase := range []string{"baseline", "post"} {
+		count := int64(1000)
+		if phaseIndex == 1 {
+			count = 5500
+		}
+		cut := retainedHeapCut{Schema: 1, Protocol: benchheap.Protocol, Phase: phase, Status: "complete", ControllerStartNS: int64(phaseIndex+1) * 100_000_000_000, ControllerEndNS: int64(phaseIndex+1)*100_000_000_000 + 1_000_000_000}
+		cut.Context = retainedHeapContext{RunID: "owned-case", SourceCommit: strings.Repeat("a", 40), SourceTree: strings.Repeat("b", 40), ImageID: "sha256:" + strings.Repeat("c", 64), ScenarioSHA256: strings.Repeat("d", 64), RuntimeUser: "501:20", CPUSet: "0-3"}
+		cut.Context.Workload.Admission, cut.Context.Workload.Lookup = count, count
+		for i, endpoint := range endpoints {
+			dir := filepath.Join(root, "heap-control-evidence", fmt.Sprintf("lantern-%d", i))
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			session := benchheap.Session{Schema: 1, Protocol: benchheap.Protocol, RunNonce: strings.Repeat("e", 64), SourceCommit: cut.Context.SourceCommit, SourceTree: cut.Context.SourceTree, ImageID: cut.Context.ImageID, ContainerID: fmt.Sprintf("%064x", i+1), BinarySHA256: strings.Repeat("f", 64), UID: 501}
+			identity := benchheap.Identity{Session: session, PID: 1, StartNonce: fmt.Sprintf("%064x", i+10)}
+			request := benchheap.Request{Schema: 1, Protocol: benchheap.Protocol, Identity: identity, Phase: phase, Ordinal: phaseIndex + 1, CutNonce: fmt.Sprintf("%064x", phaseIndex*3+i+100), ExpectedReceipts: count}
+			native := benchheap.Native{Generation: uint64(count), LogSequence: uint64(count), LogLength: int(count), LogCapacity: 10000, ReceiptEntries: int(count), ReceiptBytes: uint64(count * 256), ReceiptHighWaterMS: 1000, ReceiptOldestDeadlineMS: 3_601_000, Public: benchheap.Counter{Begun: uint64(count * 2), Completed: uint64(count * 2)}, PeerSubscribe: benchheap.Counter{Begun: 2, Active: 2}}
+			for origin := 1; origin <= 3; origin++ {
+				native.Origins = append(native.Origins, benchheap.Origin{ID: fmt.Sprintf("%032x", origin), Sequence: uint64(count), WallNS: 1793000000000000000})
+			}
+			memory := func(gc, forced uint32) benchheap.Memory {
+				return benchheap.Memory{HeapAlloc: uint64(100+phaseIndex) * 1 << 20, HeapObjects: 500, HeapInuse: 110 << 20, NumGC: gc, NumForcedGC: forced, LastGC: uint64(gc) * 1_000_000, NextGC: 200 << 20, MarkedLive: 90 << 20, MetricCycles: uint64(gc), MetricForced: uint64(forced), CycleAfter: gc}
+			}
+			gc := uint32(10 + phaseIndex*10)
+			forced := uint32(phaseIndex * 2)
+			completion := benchheap.Completion{Schema: 1, Protocol: benchheap.Protocol, Request: request, Status: "complete", ElapsedNS: 900_000_000, Before: native, After: native,
+				Collections: []benchheap.GC{{StartedNS: 300_000_000, ReturnedNS: 400_000_000, Before: memory(gc, forced), After: memory(gc+1, forced+1)}, {StartedNS: 500_000_000, ReturnedNS: 600_000_000, Before: memory(gc+1, forced+1), After: memory(gc+2, forced+2)}}, Memory: memory(gc+2, forced+2)}
+			node := retainedHeapNode{Endpoint: endpoint.Endpoint, Completion: completion}
+			node.MountBindingFile, node.MountInspectBeforeFile, node.MountInspectAfterFile = retainedMountFixture(t, root, phase, i, cut.Context, session)
+			for _, file := range []struct {
+				name  string
+				value any
+				ref   *retainedHeapReference
+			}{
+				{benchheap.SessionFile, session, &node.SessionFile}, {benchheap.ReadyFile, benchheap.Ready{Schema: 1, Protocol: benchheap.Protocol, Identity: identity}, &node.ReadyFile}, {benchheap.RequestFile(phase), request, &node.RequestFile}, {benchheap.StartedFile(phase), benchheap.Started{Request: request}, &node.StartedFile}, {benchheap.CompletionFile(phase), completion, &node.CompletionFile},
+			} {
+				path := filepath.Join(dir, file.name)
+				mustWriteReceiptArtifact(t, path, file.value)
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				*file.ref = retainedReference(path, raw)
+			}
+			cut.Replicas = append(cut.Replicas, node)
+		}
+		mustWriteReceiptArtifact(t, paths[phaseIndex], cut)
+	}
+	return paths[0], paths[1], endpoints
+}
+
+func TestRetainedHeapRequiresSymmetricCompletedIdentityBoundCuts(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		damage func(*retainedHeapCut)
+		raw    func(*testing.T, string)
+		want   string
+	}{
+		{name: "complete", want: "pass"},
+		{name: "expired controller", damage: func(c *retainedHeapCut) { c.ControllerEndNS = c.ControllerStartNS + 31_000_000_000 }, want: "incomplete"},
+		{name: "partial controller", damage: func(c *retainedHeapCut) { c.Status = "incomplete" }, want: "incomplete"},
+		{name: "missing replica", damage: func(c *retainedHeapCut) { c.Replicas = c.Replicas[:2] }, want: "incomplete"},
+		{name: "wrong phase", damage: func(c *retainedHeapCut) { c.Phase = "baseline" }, want: "incomplete"},
+		{name: "only one collection", damage: func(c *retainedHeapCut) {
+			c.Replicas[0].Completion.Collections = c.Replicas[0].Completion.Collections[:1]
+		}, want: "incomplete"},
+		{name: "GC return missing", damage: func(c *retainedHeapCut) { c.Replicas[0].Completion.Collections[1].ReturnedNS = 0 }, want: "incomplete"},
+		{name: "extra forced collection", damage: func(c *retainedHeapCut) { c.Replicas[0].Completion.Collections[1].Before.NumForcedGC++ }, want: "incomplete"},
+		{name: "cycle drift", damage: func(c *retainedHeapCut) { c.Replicas[0].Completion.Memory.CycleAfter++ }, want: "incomplete"},
+		{name: "native pending", damage: func(c *retainedHeapCut) { c.Replicas[0].Completion.Before.PendingCount = 1 }, want: "incomplete"},
+		{name: "active response", damage: func(c *retainedHeapCut) { c.Replicas[0].Completion.Before.Public.Active = 1 }, want: "incomplete"},
+		{name: "work not replicated", damage: func(c *retainedHeapCut) { c.Replicas[0].Completion.Before.ReceiptEntries = 1 }, want: "incomplete"},
+		{name: "mixed image", damage: func(c *retainedHeapCut) { c.Context.ImageID = "sha256:" + strings.Repeat("a", 64) }, want: "incomplete"},
+		{name: "mixed source", damage: func(c *retainedHeapCut) { c.Context.SourceTree = strings.Repeat("c", 40) }, want: "incomplete"},
+		{name: "restarted target", damage: func(c *retainedHeapCut) {
+			c.Replicas[0].Completion.Request.Identity.StartNonce = strings.Repeat("a", 64)
+		}, want: "incomplete"},
+		{name: "raw evidence changed", raw: func(t *testing.T, root string) {
+			mustWriteReceiptArtifact(t, filepath.Join(root, "heap-control-evidence/lantern-0/post.started.json"), map[string]any{"request": "changed"})
+		}, want: "incomplete"},
+		{name: "refusal after completion", raw: func(t *testing.T, root string) {
+			mustWriteReceiptArtifact(t, filepath.Join(root, "heap-control-evidence/lantern-0/refusal.json"), map[string]any{"reason": "extra_signal"})
+		}, want: "incomplete"},
+		{name: "raw evidence link", raw: func(t *testing.T, root string) {
+			path := filepath.Join(root, "heap-control-evidence/lantern-0/post.started.json")
+			if err := os.Rename(path, path+".held"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(path+".held", path); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "incomplete"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pre, post, endpoints := retainedHeapFixture(t)
+			if test.damage != nil {
+				var cut retainedHeapCut
+				data, err := os.ReadFile(post)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(data, &cut); err != nil {
+					t.Fatal(err)
+				}
+				test.damage(&cut)
+				mustWriteReceiptArtifact(t, post, cut)
+			}
+			if test.raw != nil {
+				test.raw(t, filepath.Dir(post))
+			}
+			report := receiptLeakReport{SnapshotProtocol: benchheap.Protocol, Replicas: endpoints, NaturalChecksVerdict: "pass", NaturalPostHeapObservationVerdict: "pass", PairRequired: true, OverallMemoryVerdict: "requires_pair"}
+			evaluateRetainedHeap(&report, filepath.Dir(pre), pre, post, 32)
+			if report.RetainedVerdict != test.want || report.OverallMemoryVerdict != "requires_pair" || (report.Verdict == "pass") != (test.want == "pass") {
+				t.Fatalf("unexpected retained scope/result: %+v", report)
+			}
+		})
+	}
+}
+
+func TestRetainedHeapUnchanged32MiBBoundary(t *testing.T) {
+	t.Parallel()
+	for _, delta := range []int64{32 << 20, (32 << 20) + 1} {
+		t.Run(fmt.Sprint(delta), func(t *testing.T) {
+			pre, post, endpoints := retainedHeapFixture(t)
+			var cut retainedHeapCut
+			raw, err := os.ReadFile(post)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &cut); err != nil {
+				t.Fatal(err)
+			}
+			node := &cut.Replicas[0]
+			node.Completion.Memory.HeapAlloc = uint64((100 << 20) + delta)
+			node.Completion.Memory.HeapInuse = node.Completion.Memory.HeapAlloc + (10 << 20)
+			node.Completion.Collections[1].After = node.Completion.Memory
+			mustWriteReceiptArtifact(t, node.CompletionFile.Path, node.Completion)
+			raw, err = os.ReadFile(node.CompletionFile.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			node.CompletionFile = retainedReference(node.CompletionFile.Path, raw)
+			mustWriteReceiptArtifact(t, post, cut)
+			report := receiptLeakReport{SnapshotProtocol: benchheap.Protocol, Replicas: endpoints, NaturalChecksVerdict: "pass", NaturalPostHeapObservationVerdict: "pass", PairRequired: true, OverallMemoryVerdict: "requires_pair"}
+			evaluateRetainedHeap(&report, filepath.Dir(pre), pre, post, 32)
+			want := "pass"
+			if delta > 32<<20 {
+				want = "fail"
+			}
+			if report.RetainedVerdict != want || len(report.RetainedReplicas) != 3 || report.RetainedReplicas[0].HeapAllocDeltaBytes != delta {
+				t.Fatalf("retained32 boundary changed: %+v", report)
+			}
+		})
+	}
+}
+
+func TestPairedProtocolRejectsChangedThresholdsAndMissingGCInputs(t *testing.T) {
+	t.Parallel()
+	pre, post, steady, _ := receiptLeakFixture(t)
+	for _, thresholds := range [][3]int{{16, 32, 40}, {15, 33, 40}, {15, 32, 41}} {
+		got := evaluateReceiptLeakProtocol(pre, post, steady, 45*time.Second, 5*time.Second, thresholds[0], thresholds[1], thresholds[2], "natural_reference_v1")
+		if got.Verdict != "fail" {
+			t.Fatalf("changed paired limits accepted: %+v", got)
+		}
+	}
+	out := filepath.Join(t.TempDir(), "missing-retained.json")
+	code := runReceiptLeakEvaluation([]string{"-pre", pre, "-post", post, "-steady", steady, "-duration", "45s", "-interval", "5s", "-max-goroutines", "15", "-max-heap-mb", "32", "-max-steady-heap-mb", "40", "-snapshot-protocol", benchheap.Protocol, "-out", out})
+	if code != 1 {
+		t.Fatalf("missing GC receipts returned%d", code)
 	}
 }

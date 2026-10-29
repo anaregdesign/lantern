@@ -1,0 +1,24 @@
+# Measurement-tag-only control files. No new public port or production env
+# switch; UID/GID/security/limits and private workload trust stay inherited.
+services:
+  lantern-0:
+    volumes:
+      - type: bind
+        source: ${LANTERN_BENCH_HEAP_CONTROL_ROOT:?private heap control root required}/lantern-0
+        target: /run/lantern-bench-heap
+        read_only: false
+        bind: {create_host_path: false, propagation: rprivate}
+  lantern-1:
+    volumes:
+      - type: bind
+        source: ${LANTERN_BENCH_HEAP_CONTROL_ROOT:?private heap control root required}/lantern-1
+        target: /run/lantern-bench-heap
+        read_only: false
+        bind: {create_host_path: false, propagation: rprivate}
+  lantern-2:
+    volumes:
+      - type: bind
+        source: ${LANTERN_BENCH_HEAP_CONTROL_ROOT:?private heap control root required}/lantern-2
+        target: /run/lantern-bench-heap
+        read_only: false
+        bind: {create_host_path: false, propagation: rprivate}

@@ -87,7 +87,10 @@ class RepresentativeCoverageTest(unittest.TestCase):
                       job(workflow("_verify"), "configured-source-integration"))
         for caller in ("docker-publish", "mcp-publish"):
             self.assertIn("uses: ./.github/workflows/_verify.yml", job(workflow(caller), "verify"))
-        script = textwrap.dedent(body.split("        run: |\n", 2)[2])
+        selected_step = body.split("      - name: Vet / build / test (selected modules)\n", 1)[1]
+        script = textwrap.dedent(re.search(
+            r"(?m)^        run: \|\n((?:          [^\n]*\n|\n)+)", selected_step,
+        )[1])
         commands = [["vet", "./..."], ["build", "-v", "./..."],
                     ["test", "-race", "-shuffle=on", "-json", "./..."]]
         with tempfile.TemporaryDirectory() as directory:

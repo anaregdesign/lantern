@@ -1708,3 +1708,178 @@ exit "$result"
 		})
 	}
 }
+
+func TestOwnedComposeMeasurementSecurityMountProfile(t *testing.T) {
+	helper, err := filepath.Abs("owned_compose.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"normal", "retained", "retained-omitted-false", "retained-explicit-false", "normal-extra-bind", "foreign-label", "missing-label", "wrong-source", "readonly-request", "readonly-effective", "aliased-effective", "extra-bind", "unsafe-bind-options", "wrong-declared-source", "directory-mode", "directory-symlink", "directory-not-empty", "wrong-owner", "clone-request-drift", "clone-effective-alias", "clone-readonly", "clone-volume-copy", "desktop-mixed", "desktop-request", "desktop-effective", "desktop-two-paths", "clone-proved-alias", "clone-new-alias", "host-directory-replaced", "original-daemon-drift", "stat-mismatch", "heap-and-ro-drift"} {
+		t.Run(name, func(t *testing.T) {
+			const script = `set -euo pipefail
+umask 077
+source "$1"
+case_name="$2"
+project=lantern-bench-owned-fixture
+export COMPOSE_PROJECT_NAME="$project"
+owner="$(id -u):$(id -g)"
+image="sha256:$(printf 'a%.0s' {1..64})"
+export LANTERN_BENCH_RETAINED_HEAP=1
+[[ "$case_name" != normal && "$case_name" != normal-extra-bind ]] || export LANTERN_BENCH_RETAINED_HEAP=0
+export LANTERN_BENCH_HEAP_CONTROL_ROOT="$(cd "$OUTDIR" && pwd -P)/heap-control-evidence"
+owned_compose_heap_controller init --directory "$LANTERN_BENCH_HEAP_CONTROL_ROOT"
+case "$case_name" in
+ directory-mode) chmod 755 "$LANTERN_BENCH_HEAP_CONTROL_ROOT/lantern-1";;
+ directory-symlink) mv "$LANTERN_BENCH_HEAP_CONTROL_ROOT/lantern-1" "$OUTDIR/held-control"; ln -s "$OUTDIR/held-control" "$LANTERN_BENCH_HEAP_CONTROL_ROOT/lantern-1";;
+ directory-not-empty) printf occupied > "$LANTERN_BENCH_HEAP_CONTROL_ROOT/lantern-1/foreign";;
+ wrong-owner) owner="$(( $(id -u)+1 )):$(id -g)";;
+esac
+fixture_configuration="$(jq -nc --arg project "$project" --arg image "$image" --arg owner "$owner" --arg root "$LANTERN_BENCH_HEAP_CONTROL_ROOT" --arg case "$case_name" '
+ {name:$project,volumes:([range(0;3)|("state-"+tostring),("backup-"+tostring)]|map({key:.,value:{name:.}})|from_entries),
+ services:([range(0;3)|. as $i|("lantern-"+tostring) as $s|{key:$s,value:{image:$image,user:$owner,
+ environment:{LANTERN_AUTH_MODE:"oidc",LANTERN_SECURITY_CONFIG_JSON:"secret-value"},
+ volumes:([{type:"volume",source:("state-"+($i|tostring)),target:"/state",volume:{nocopy:true}},
+ {type:"volume",source:("backup-"+($i|tostring)),target:"/data",volume:{nocopy:true}},
+ {type:"bind",source:"/private/config",target:"/run/lantern-config",read_only:true},
+ {type:"bind",source:"/private/config/ntp.conf",target:"/etc/ntp.conf",read_only:true}]+
+ (if $case=="normal" then [] else [{type:"bind",source:(if $case=="wrong-declared-source" and $i==0 then "/foreign/control" else $root+"/"+$s end),target:"/run/lantern-bench-heap",read_only:false,bind:{create_host_path:false,propagation:"rprivate"}}] end))}}]|from_entries)}')"
+for index in 0 1 2; do
+ jq -nc --arg project "$project" --arg image "$image" --arg owner "$owner" --arg root "$LANTERN_BENCH_HEAP_CONTROL_ROOT" --arg case "$case_name" --argjson i "$index" '
+ ("lantern-"+($i|tostring)) as $service |
+ [{Type:"volume",Source:("state-"+($i|tostring)),Target:"/state",VolumeOptions:{NoCopy:true}},
+ {Type:"volume",Source:("backup-"+($i|tostring)),Target:"/data",VolumeOptions:{NoCopy:true}}] as $volumes |
+ (if $case=="normal" then [] else [{Type:"bind",Source:($root+"/"+$service),Target:"/run/lantern-bench-heap",ReadOnly:false,BindOptions:{Propagation:"rprivate"}}] end) as $heap |
+ {Id:(("0"*63)+(($i+1)|tostring)),Image:$image,Name:("/"+$project+"-"+$service+"-1"),
+ Config:{Image:$image,User:$owner,WorkingDir:"/app",Entrypoint:["/app/lantern"],Cmd:null,Env:["LANTERN_AUTH_MODE=oidc","LANTERN_SECURITY_CONFIG_JSON=secret-value"],Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":$service,"com.docker.compose.oneoff":"False"}},
+ RestartCount:0,State:{Status:"created",Running:false,StartedAt:"0001-01-01T00:00:00Z",Pid:0,ExitCode:0,OOMKilled:false,Restarting:false,Paused:false},HostConfig:{NetworkMode:($project+"-default"),Binds:["/private/config:/run/lantern-config:ro","/private/config/ntp.conf:/etc/ntp.conf:ro"],Mounts:($volumes+$heap),RestartPolicy:{Name:"no",MaximumRetryCount:0},IpcMode:"private",
+ ReadonlyRootfs:false,Privileged:false,AutoRemove:false,CapAdd:null,CapDrop:null,SecurityOpt:null,PidMode:"",UTSMode:"",UsernsMode:"",Tmpfs:null},
+ Mounts:([{Type:"bind",Source:"/private/config",Destination:"/run/lantern-config",Mode:"ro",RW:false,Propagation:"rprivate"},
+ {Type:"bind",Source:"/private/config/ntp.conf",Destination:"/etc/ntp.conf",Mode:"ro",RW:false,Propagation:"rprivate"}]+
+ [$volumes[]|{Type:"volume",Name:.Source,Source:("/var/lib/docker/volumes/"+.Source+"/_data"),Destination:.Target,Driver:"local",Mode:"z",RW:true,Propagation:""}]+
+ [$heap[]|{Type:"bind",Source:.Source,Destination:.Target,Mode:"",RW:true,Propagation:"rprivate"}])} |
+ if $case=="retained-omitted-false" then .HostConfig.Mounts|=map(if .Type=="bind" then del(.ReadOnly) else . end)
+ elif $case=="retained-explicit-false" then .HostConfig.Mounts|=map(if .Type=="bind" then .BindOptions.CreateMountpoint=false else . end)
+ elif $i==0 and $case=="wrong-source" then .HostConfig.Mounts[2].Source=$root+"/lantern-1"
+ elif $i==0 and $case=="readonly-request" then .HostConfig.Mounts[2].ReadOnly=true
+ elif $i==0 and $case=="readonly-effective" then .Mounts[4].RW=false
+ elif $i==0 and $case=="aliased-effective" then .Mounts[4].Source="/mapped/control"
+ elif $i==0 and $case=="extra-bind" then .HostConfig.Mounts+=[.HostConfig.Mounts[2]] | .Mounts+=[.Mounts[4]]
+ elif $i==0 and $case=="unsafe-bind-options" then .HostConfig.Mounts[2].BindOptions.NonRecursive=true
+ elif (($case=="desktop-mixed" and $i<2) or (($case=="clone-proved-alias" or $case=="heap-and-ro-drift") and $i==0)) then
+   .HostConfig.Mounts[2].Source=("/host_mnt"+.HostConfig.Mounts[2].Source) | .Mounts[4].Source=("/host_mnt"+.Mounts[4].Source)
+ elif $case=="desktop-request" and $i==0 then .HostConfig.Mounts[2].Source=("/host_mnt"+.HostConfig.Mounts[2].Source)
+ elif ($case=="desktop-effective" or $case=="stat-mismatch") and $i==0 then .Mounts[4].Source=("/host_mnt"+.Mounts[4].Source)
+ elif $case=="desktop-two-paths" and $i==0 then .HostConfig.Mounts[2].Source=("/observed-a"+.HostConfig.Mounts[2].Source) | .Mounts[4].Source=("/observed-b"+.Mounts[4].Source)
+ else . end
+ ' > "$OUTDIR/original-$index.json"
+done
+printf 'complete\n' > "$OUTDIR/fixture-assembled"
+docker() {
+ if [[ "$1" == info ]]; then
+  count="$(cat "$OUTDIR/daemon-count" 2>/dev/null || printf 0)"; printf '%d\n' "$((count+1))" > "$OUTDIR/daemon-count"
+  if [[ "$case_name" == original-daemon-drift && "$count" != 0 ]]; then printf other-daemon; else printf fixture-daemon; fi
+ elif [[ "$1" == image && "$*" == *'.Config.Env'* ]]; then printf '["PATH=/bin"]\n'
+ elif [[ "$1" == image ]]; then
+  case "$case_name" in foreign-label) printf foreign;; missing-label) :;; *) printf symmetric_post_gc_2_v1;; esac
+ elif [[ "$1" == compose && "$*" == *"config --format json" ]]; then printf '%s\n' "$fixture_configuration"
+ elif [[ "$1" == compose ]]; then local service="${@: -1}"; printf '%064d\n' "$(( ${service##*-}+1 ))"
+ elif [[ "$1" == inspect ]]; then local id="${@: -1}"; cat "$OUTDIR/original-$((10#${id: -1}-1)).json"
+ else return 88; fi
+}
+prove_owned_compose_bind_identity() { printf 'unexpected-proof\n' >> "$OUTDIR/actions"; return 91; }
+run_owned_compose_initializer() {
+ if [[ "$4" == compose-bind-identity-probe ]]; then
+  [[ "$1" == "$project" && "$2" == "$image" && "$3" == "$owner" && "$5" == "$original_service-bind-proof" && "$6" == 100 && "$7" == validate_owned_compose_bind_probe ]] || return 92
+  local probe="$(printf '%064d' "$(( ${original_service##*-}+21 ))")" fake="$OUTDIR/fake-stat-$original_service"
+  mkdir -m 700 "$fake"
+  initialized="$(jq -nc --arg id "$probe" --arg image "$image" --arg owner "$owner" --arg project "$project" --arg service "$original_service-bind-proof" --argjson env "$bind_probe_environment" --argjson plan "$bind_proof_plan" --argjson targets "$bind_probe_targets" '
+   {Id:$id,Name:("/"+$project+"-"+$service),Image:$image,RestartCount:0,
+    Config:{Image:$image,User:$owner,WorkingDir:"/app",Entrypoint:["/bin/busybox"],Cmd:(["stat","-c","%d:%i:%F"]+$targets),Env:$env,
+      Labels:{"com.docker.compose.project":$project,"com.docker.compose.service":$service,"com.docker.compose.oneoff":"True","lantern.owner":"compose-bind-identity-probe","lantern.initializer":"lantern-owned-init.FIXTURE"}},
+    HostConfig:{NetworkMode:"none",ReadonlyRootfs:true,Privileged:false,AutoRemove:false,CapDrop:["ALL"],CapAdd:null,SecurityOpt:["no-new-privileges:true"],Memory:33554432,NanoCpus:250000000,PidsLimit:16,
+      PidMode:"",IpcMode:"private",UTSMode:"",UsernsMode:"",Tmpfs:null,Binds:null,VolumesFrom:null,
+      Devices:null,DeviceRequests:null,DeviceCgroupRules:null,PortBindings:null,PublishAllPorts:false,RestartPolicy:{Name:"no",MaximumRetryCount:0},
+      Mounts:([range(0;$plan|length)|. as $i|$plan[$i] as $p|[{Type:"bind",Source:$p.original_source,Target:("/proof/original-"+($i|tostring)),ReadOnly:true,BindOptions:{Propagation:"rprivate"}},
+       {Type:"bind",Source:$p.clone_source,Target:("/proof/clone-"+($i|tostring)),ReadOnly:true,BindOptions:{Propagation:"rprivate"}}]]|add)},
+    Mounts:([range(0;$plan|length)|. as $i|$plan[$i] as $p|["original","clone"][]|{Type:"bind",Source:$p.clone_source,Destination:("/proof/"+.+"-"+($i|tostring)),Mode:"ro",RW:false,Propagation:"rprivate"}]),
+    State:{Status:"created",Running:false,Pid:0,StartedAt:"0001-01-01T00:00:00Z",ExitCode:0,OOMKilled:false,Restarting:false,Paused:false}}
+  ')" || return 92
+  validate_owned_compose_bind_probe || return 92
+  printf '%s\n' "$initialized" > "$fake/created.json"
+  jq -c '.State.Status="exited" | .State.StartedAt="2026-10-30T00:00:00Z"' <<<"$initialized" > "$fake/completed.json"
+  : > "$fake/start.log"
+  for (( pair=0; pair<$(jq -r length <<<"$bind_proof_plan"); pair++ )); do
+   printf '9:123:directory\n' >> "$fake/start.log"
+   if [[ "$case_name" == wrong-source || "$case_name" == aliased-effective || "$case_name" == stat-mismatch ]]; then printf '9:124:directory\n'; else printf '9:123:directory\n'; fi >> "$fake/start.log"
+  done
+  printf '0\n' > "$fake/wait.log"
+  retain_owned_compose_bind_probe "$fake" || return 92
+  printf '%s\n' "$probe" > "$bind_proof_directory/probe-remove.log"
+  printf 'probe %s\n' "$original_service" >> "$OUTDIR/actions"
+  return 0
+ fi
+ [[ "$1" == "$project" && "$2" == "$image" && "$3" == "$owner" && "$4" == compose-security-initializer && "$6" == 900 && "$7" == validate_owned_compose_security_initializer ]] || return 92
+ local init_service="$5"; shift 7
+ printf 'clone %s\n' "$init_service" >> "$OUTDIR/actions"
+ local argument; local -a replayed=()
+ for argument in "$@"; do [[ "$argument" != --mount=* ]] || replayed+=("${argument#--mount=}"); done
+ [[ "$(jq -nc --args '$ARGS.positional' -- "${replayed[@]}")" == "$(jq -c '[.HostConfig.Mounts[]|if .Type=="volume" then "type=volume,source="+.Source+",target="+.Target+",volume-nocopy" else "type=bind,source="+.Source+",target="+.Target+",bind-propagation=rprivate" end]' <<<"$original")" ]] || return 93
+ initialized="$(jq -c --arg case "$case_name" '.Id=("8"*63+(.Id[-1:])) | .Name|=sub("-1$";"-security-init") | .Config.Cmd=["init-security"] |
+  .Config.Labels["com.docker.compose.oneoff"]="True" | .Config.Labels["lantern.owner"]="compose-security-initializer" | .Config.Labels["lantern.initializer"]="lantern-owned-init.FIXTURE" |
+  if $case=="clone-request-drift" then .HostConfig.Mounts[2].BindOptions.CreateMountpoint=false
+  elif $case=="clone-effective-alias" then .Mounts[4].Source="/mapped/control"
+  elif $case=="clone-readonly" then .Mounts[4].RW=false
+  elif $case=="clone-volume-copy" then .HostConfig.Mounts[0].VolumeOptions.NoCopy=false
+  elif $case=="clone-proved-alias" then .HostConfig.Mounts[2].Source=(.HostConfig.Mounts[2].Source|ltrimstr("/host_mnt")) | .Mounts[4].Source=(.Mounts[4].Source|ltrimstr("/host_mnt"))
+  elif $case=="clone-new-alias" then .Mounts[4].Source="/new/unproved/control"
+  elif $case=="heap-and-ro-drift" then .HostConfig.Mounts[2].Source=(.HostConfig.Mounts[2].Source|ltrimstr("/host_mnt")) | .Mounts[4].Source=(.Mounts[4].Source|ltrimstr("/host_mnt")) | .Mounts[0].Source="/other/config" else . end' <<<"$original")"
+ if [[ "$case_name" == host-directory-replaced && "$init_service" == lantern-0-security-init ]]; then
+  mv "$LANTERN_BENCH_HEAP_CONTROL_ROOT/lantern-0" "$OUTDIR/old-control"
+  mkdir -m 700 "$LANTERN_BENCH_HEAP_CONTROL_ROOT/lantern-0"
+  chgrp "$(id -g)" "$LANTERN_BENCH_HEAP_CONTROL_ROOT/lantern-0"
+ fi
+ validate_owned_compose_security_initializer || return 94
+ if [[ "$LANTERN_BENCH_RETAINED_HEAP" == 1 ]]; then
+  for node in lantern-0 lantern-1 lantern-2; do [[ -f "$OUTDIR/heap-mount-staging/$node/original-after.json" ]] || return 95; done
+ fi
+ printf 'start %s\n' "$init_service" >> "$OUTDIR/actions"
+ if [[ "$LANTERN_BENCH_RETAINED_HEAP" == 1 ]]; then
+  initialized="$(jq -c '.State.Status="exited" | .State.StartedAt="2026-10-30T00:00:00Z"' <<<"$initialized")"
+  printf '%s\n' "$initialized" | owned_compose_heap_controller bind-clone-after --directory "$heap_root" --service "${init_service%-security-init}" || return 96
+ fi
+}
+initialize_owned_compose_security "$project" "$image" "$owner" -f fixture.yml
+`
+			fixture := runOwnedComposeFixture(t, script, []string{helper, name}, nil, 10*time.Second)
+			if !fixture.controlQualified() {
+				t.Fatalf("profile fixture custody failed: %v %s", fixture.controlErr, fixture.output)
+			}
+			if raw, err := os.ReadFile(filepath.Join(fixture.directory, "fixture-assembled")); err != nil || string(raw) != "complete\n" {
+				t.Fatalf("profile fixture never assembled valid configuration: %v %s", err, fixture.output)
+			}
+			accepted := name == "normal" || name == "retained" || name == "retained-omitted-false" || name == "retained-explicit-false" || name == "desktop-mixed" || name == "desktop-request" || name == "desktop-effective" || name == "desktop-two-paths" || name == "clone-proved-alias"
+			if (fixture.commandErr == nil) != accepted {
+				t.Fatalf("profile result=%v want accepted=%t: %s", fixture.commandErr, accepted, fixture.output)
+			}
+			actions, _ := os.ReadFile(filepath.Join(fixture.directory, "actions"))
+			if strings.Contains(string(actions), "unexpected-proof") && name != "heap-and-ro-drift" {
+				t.Fatalf("heap identity bypassed its fixed producer or swallowed a remaining RO discrepancy: %s", actions)
+			}
+			if name == "heap-and-ro-drift" && !strings.Contains(string(actions), "unexpected-proof") {
+				t.Fatalf("remaining config RO drift skipped its existing proof: %s", actions)
+			}
+			if name == "clone-new-alias" && strings.Contains(string(actions), "probe ") {
+				t.Fatalf("new clone alias triggered another heap probe: %s", actions)
+			}
+			if name == "desktop-mixed" && strings.Count(string(actions), "probe ") != 2 {
+				t.Fatalf("mixed representation did not prove exactly two originals: %s", actions)
+			}
+			if accepted && (strings.Count(string(actions), "clone ") != 3 || strings.Count(string(actions), "start ") != 3) {
+				t.Fatalf("three exact node profiles not replayed: %s", actions)
+			}
+			if !accepted && strings.Contains(string(actions), "start ") {
+				t.Fatalf("unsupported profile initialized a node: %s", actions)
+			}
+		})
+	}
+}

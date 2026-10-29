@@ -31,6 +31,7 @@ def steps(evidence: Path) -> tuple[Step, ...]:
     add("gofmt", ".", "gofmt", "-l", ".", empty=True)
     for mod in [".", "core", "mcp", "pb", "sdks/go", "server"]:
         add("go-test-" + mod.replace("/", "-"), mod, "go", "test", "./...")
+    add("server-bench-heap-tests", ".", "python3", "-B", ".github/scripts/verify_bench_heap.py")
     add("server-vet", "server", "go", "vet", "./...")
     add("go-build", ".", "go", "build", "./...")
     add("go-lint", ".", "make", "lint")
@@ -99,7 +100,7 @@ def affected_steps(plan, scope):
                   "example-frozen-preflight", "gofmt", "go-build", "go-lint"}
         names |= {"go-test-" + module.replace("/", "-") for module in modules}
         if "server" in modules:
-            names.add("server-vet")
+            names |= {"server-vet", "server-bench-heap-tests"}
     prefixes = {"node": "node-", "admin": "admin-", "dart": "dart-",
                 "offline": "offline-", "sqlite": "sqlite-", "example": "example-",
                 "rust": "rust-"}

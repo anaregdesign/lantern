@@ -88,6 +88,8 @@ class SessionTest(unittest.TestCase):
             "LANTERN_CONTAINER_MODE": "container", "LANTERN_CONTAINER_HEAD": "untrusted-head",
             "LANTERN_CONTAINER_TREE": "untrusted-tree", "LANTERN_QUERY_CLI_TEST": "1",
             "LANTERN_QUERY_CLI_ARGS": "-mode oidc -serve /untrusted/server",
+            "LANTERN_TEST_BENCH_HEAP_DIR": "/untrusted/heap-control",
+            "LANTERN_BENCH_RETAINED_HEAP": "1",
         }
         retained = {"GOPROXY": "https://proxy.golang.org", "GOSUMDB": "sum.golang.org",
                     "GOCACHE": "/fixture/cache", "LANTERN_DEFAULT_TTL_SECONDS": "42",
@@ -128,6 +130,7 @@ class SessionTest(unittest.TestCase):
             "server/internal/security/control_container_gate_test.go",
             "server/internal/security/control_container_gate_helpers_test.go",
             "server/cmd/configured_source_gate_test.go",
+            "server/cmd/bench_heap_test.go",
             "server/cmd/authfixture/helpers_test.go",
             "server/cmd/authfixture/main_test.go",
             "server/cmd/authfixture/serve_test.go",
@@ -531,12 +534,12 @@ class SessionTest(unittest.TestCase):
             synthetic_prefix.append(step.name)
             log.write_text("Synthetic test prefix; no production qualification\n")
             return 0, True
-        # 74 mock prefix commands followed by real subprocesses for 75–77.
+        # 75 mock prefix commands followed by the three real final subprocesses.
         # The temporary fixture report is only a regression test artifact.
         with patch.object(self.session, "run", side_effect=run):
             result = self.qualify()
-        self.assertEqual(len(synthetic_prefix), 74)
-        self.assertEqual((result["executed"], result["carried"]), (77, 0))
+        self.assertEqual(len(synthetic_prefix), 75)
+        self.assertEqual((result["executed"], result["carried"]), (78, 0))
         self.assertEqual([r["name"] for r in result["steps"][-3:]],
                          ["docs-tests", "final-diff", "final-clean"])
         log = Path(result["steps"][-3]["log"])
@@ -586,7 +589,7 @@ class PlanTest(unittest.TestCase):
             with self.subTest(indexes=indexes), self.assertRaises(ValueError):
                 Step("invalid", ".", ("fixture", "*.py"), glob_args=indexes)
 
-    def test_all_77_executor_calls_preserve_declared_argv_cwd_and_environment(self):
+    def test_all_78_executor_calls_preserve_declared_argv_cwd_and_environment(self):
         with tempfile.TemporaryDirectory(prefix="gate argv with spaces ") as directory:
             root = Path(directory) / "repo with spaces"
             root.mkdir()
@@ -607,7 +610,7 @@ class PlanTest(unittest.TestCase):
                     patch.object(session, "check_go_inputs") as check_inputs:
                 for index, step in enumerate(session.plan):
                     self.assertEqual(session.run(step, session.evidence / f"mock-{index}.log"), (0, True))
-            self.assertEqual(len(captured), 77)
+            self.assertEqual(len(captured), 78)
             self.assertEqual(check_inputs.call_count, 6)
             for step, (command, kwargs) in zip(session.plan, captured):
                 with self.subTest(step=step.name):
@@ -632,8 +635,8 @@ class PlanTest(unittest.TestCase):
 
     def test_complete_plan_keeps_install_order_generation_and_unsupported_qualification(self):
         plan = steps(Path("/tmp/fixture-evidence"))
-        self.assertEqual(len(plan), 77)
-        self.assertEqual(len({s.name for s in plan}), 77)
+        self.assertEqual(len(plan), 78)
+        self.assertEqual(len({s.name for s in plan}), 78)
         self.assertEqual([s.name for s in plan[:5]], ["node-frozen-install", "node-prebuild",
                          "admin-frozen-install", "example-frozen-preflight", "gofmt"])
         names = {s.name for s in plan}

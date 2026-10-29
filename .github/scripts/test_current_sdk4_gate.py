@@ -728,7 +728,7 @@ class SDK4WiringTest(unittest.TestCase):
 
     def test_local_acceptance_runs_sdk4_and_scoped_without_receipt_import(self):
         plan = steps(Path("/tmp/qualification"))
-        self.assertEqual(len(plan), 77)
+        self.assertEqual(len(plan), 78)
         step = next(step for step in plan if step.name == "current-functional-wire")
         self.assertIn(".github/scripts/current_sdk4_gate.py", step.command)
         for flag in ("run", "--proof-kind", "functional-validation", "--fresh-child"):

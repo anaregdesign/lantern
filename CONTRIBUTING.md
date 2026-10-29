@@ -125,6 +125,18 @@ relevant build change, a documented invalid run, or a predeclared stability
 check; never cherry-pick a passing sample, force GC in a measured steady
 window, or weaken load or thresholds.
 
+The owner-approved #1958 retained-memory migration uses one explicitly paired
+matrix: the normal immutable image runs the eight canonical and four receipt
+scenarios; a separately identified, same-source measurement image runs the four
+receipt scenarios with symmetric completed GC. Each lane keeps one image across
+its cases. Normal-image performance, natural steady memory and goroutine checks
+remain blocking. The normal receipt post-cooldown HeapAlloc comparison is
+observation-only under a new protocol; the paired measurement lane supplies the
+unchanged 32 MiB retained comparison. Both lanes and their exact source, scenario,
+configuration and runtime correspondence are required for acceptance. A missing
+pair is incomplete. This does not assert normal/measurement binary equivalence
+or relabel any historical `natural_gc_single` failure.
+
 ## Before every `git push` — local quality gate
 
 Lantern is a pre-production beta. During edits run focused tests, resolve meaningful
@@ -147,7 +159,7 @@ fingerprinting. Its results describe the frozen local checkout, not hosted or
 release qualification. Use the existing explicit [pure-prose path](#local-prose-eligibility)
 for eligible explanation-only edits.
 
-The complete 77-step plan below remains available by omitting `--affected-base`.
+The complete 78-step plan below remains available by omitting `--affected-base`.
 Policy-changing PRs must run the **previous full contract on their final source**,
 including functional-validation/configured-source-integration and applicable native coverage; a relaxation cannot qualify itself.
 The explicit #1820 owner-approved time-contract migration below supersedes only
@@ -162,6 +174,15 @@ uses that revised local plan; the other 76 steps, selected PR/main
 configured-source-integration, exact pre-tag and chosen native-environment
 qualification remain mandatory. It does not require rerunning the retired local
 external-source coupling as a bootstrap, and preserves its recorded failures.
+
+The owner-approved #1958 migration replaces only the receipt memory measurement
+contract with the paired protocol above. Its adoption uses the new symmetric
+measurement procedure; it does not rerun the retired natural post-cooldown gate
+as a bootstrap. The previous failed campaigns remain immutable. Complete local
+checks, functional-validation/configured-source-integration, native security and
+custody, exact-source pre-tag checks and chosen-environment qualification remain
+mandatory. Measurement-only controls are absent from the normal production
+binary; OIDC profiling restrictions are unchanged.
 
 Complete frozen Bun dependency installation in Node and Admin before Go walks
 the root workspace. Installation can mutate dependency directories containing
@@ -553,10 +574,12 @@ Ordinary affected local checks leave authoritative functional validation and req
 configured-source integration to hosted exact-merge CI; they do not repeat
 external-source acquisition for an unrelated diagnostic. Runtime guards and executed
 configured-source-integration failures are unchanged. Under the owner-approved
-#1946 local-only migration, the 77-step full local plan runs complete
+#1946 local-only migration, the full local plan runs complete
 functional-validation in `current-functional-wire` with explicit
 `--proof-kind functional-validation --fresh-child`. This includes the scoped Rust
-case and both native loopback mechanism tests, preserving the other 76 steps.
+case and both native loopback mechanism tests, preserving the other checks.
+The #1958 plan adds a dedicated non-carry step for tagged measurement coverage
+and verifies that the normal Server does not link the measurement package.
 Each invocation writes fresh controlled-source evidence without receipt import
 or carry. The local runner removes inherited current/time/native fixture,
 provisioning-export and serving/output-child activation controls; dedicated
@@ -620,7 +643,7 @@ not authorize publishing during SDK development.
 ## Local validation carry
 
 The optional full-plan [live runner](.github/scripts/local_gate_session.py) owns a reviewed
-[77-step command plan](.github/scripts/local_gate_plan.py). It installs dependencies
+[78-step command plan](.github/scripts/local_gate_plan.py). It installs dependencies
 serially before Go traverses the workspace and executes the complete plan on its
 first candidate. It accepts no manifest, receipt, digest or success JSON as input.
 The external historical full-gate runner is not modified by this mechanism.
@@ -638,7 +661,7 @@ The initial eligible set is deliberately small: `go-test-core`, `go-test-mcp`,
 all Go workspace source/manifests, proto/generated inputs, shared fixtures under
 `tests/`, `testdata/` and `testbed/`, relevant root inputs, gate commands and
 configuration. Cross-module Go changes therefore invalidate these receipts
-conservatively. At most **6 of 77 steps** can carry; the other **71 steps execute
+conservatively. At most **6 of 78 steps** can carry; the other **72 steps execute
 again**. A useful case is a reviewed follow-up changing only `admin/app/` or
 `sdks/node/src/`, with locks, configuration, Go/shared inputs and the execution
 context unchanged while the original runner process remains alive. This saves
