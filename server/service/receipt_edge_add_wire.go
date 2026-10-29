@@ -180,6 +180,60 @@ func receiptEdgeAddMutation(e *graphAddEffectEnvelope) *pb.Mutation {
 	}
 }
 
+// receiptEdgeAddValidationProjection constructs only the synchronous canonical
+// comparison view. The caller has validated the envelope and keeps its payload
+// semantically immutable until Marshal and Size finish. Protobuf may update its
+// internal message-info/size caches during those read operations. Never publish,
+// retain or asynchronously use this borrowed view; receiptEdgeAddMutation owns
+// the detached payload required by WAL, relay and publication.
+func receiptEdgeAddValidationProjection(e *graphAddEffectEnvelope) *pb.Mutation {
+	items := make([]*pb.ReplicatedReceiptEdgeAddItem, len(e.Receipts))
+	accepted := make([]bool, len(e.Receipts))
+	for _, index := range e.AcceptedIndexes {
+		if int(index) < len(accepted) {
+			accepted[index] = true
+		}
+	}
+	for i := range e.Receipts {
+		receipt := &e.Receipts[i]
+		effective := float32(0)
+		if len(receipt.Result) == 4 {
+			effective = math.Float32frombits(binary.BigEndian.Uint32(receipt.Result))
+		}
+		items[i] = &pb.ReplicatedReceiptEdgeAddItem{
+			Original:         e.Original[i],
+			ContribId:        e.ContribIDs[i][:],
+			CausallyAccepted: accepted[i],
+			Receipt: &pb.MutationReceipt{
+				OperationId:    receipt.ID[:],
+				LogicalCallId:  receipt.Group[:],
+				ItemIndex:      receipt.Index,
+				ItemCount:      receipt.Count,
+				IntentSha256:   receipt.Digest[:],
+				DeadlineUnixMs: uint64(receipt.DeadlineMillis),
+				OriginalResult: &pb.ReceiptResult{
+					Result: &pb.ReceiptResult_AddEdgeEffectiveWeight{
+						AddEdgeEffectiveWeight: effective,
+					},
+				},
+			},
+		}
+	}
+	return &pb.Mutation{
+		NamespaceFormat: e.NamespaceFormat,
+		Origin:          e.Origin[:],
+		Seq:             e.OriginSeq,
+		Hlc:             hlcToProto(e.HLC),
+		Op: &pb.MutationOp{NoEndpointCreation: e.NoEndpointCreation, Op: &pb.MutationOp_ReplicatedReceiptEdgeAdd{
+			ReplicatedReceiptEdgeAdd: &pb.ReplicatedReceiptEdgeAdd{
+				DeploymentEpoch:   e.Epoch[:],
+				PolicyFingerprint: e.PolicyFingerprint[:],
+				Items:             items,
+			},
+		}},
+	}
+}
+
 func decodeReceiptEdgeAddMutation(m *pb.Mutation) (*graphAddEffectEnvelope, error) {
 	if m == nil || m.GetOp() == nil {
 		return nil, receiptWALUnionError("invalid receipt Add wire envelope header")
@@ -365,7 +419,7 @@ func validateReceiptEdgeAddEnvelope(e *graphAddEffectEnvelope) (int64, error) {
 		e.Mutation.GetOp().GetReplicatedReceiptEdgeAdd() == nil {
 		return 0, receiptWALUnionError("receipt Add envelope has no wire mutation")
 	}
-	expected := receiptEdgeAddMutation(e)
+	expected := receiptEdgeAddValidationProjection(e)
 	gotRaw, err := (proto.MarshalOptions{Deterministic: true}).Marshal(e.Mutation)
 	if err != nil {
 		return 0, receiptWALUnionError("marshal receipt Add mutation: %v", err)

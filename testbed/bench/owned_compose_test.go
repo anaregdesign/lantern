@@ -537,10 +537,10 @@ func TestOwnedComposeFixtureContainment(t *testing.T) {
 	}{
 		{name: "ordinary-exit", script: "printf 'complete\\n'", budget: 5 * time.Second},
 		{name: "deadline", script: `trap '' TERM
-( trap '' TERM; while :; do sleep 30; done ) &
+( trap '' TERM; exec sleep 30 ) &
 printf 'deadline worker started\n'
 wait`, budget: 2 * time.Second, timedOut: true, leftOver: true},
-		{name: "leader-exit-live-output-writer", script: `( trap '' TERM; while :; do sleep 30; done ) &
+		{name: "leader-exit-live-output-writer", script: `( trap '' TERM; exec sleep 30 ) &
 printf 'leader exiting with inherited writer\n'
 exit 0`, budget: 10 * time.Second, leftOver: true},
 	} {

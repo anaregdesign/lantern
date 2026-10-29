@@ -6477,6 +6477,137 @@ func TestReceiptProbeProtectedEdgeAddIntent_RealConnectWire(t *testing.T) {
 		}
 		delete(expectedEndpoints, vertex.GetKey())
 	}
+
+	t.Run("plural canonical Add evidence and immutable intent", func(t *testing.T) {
+		endpoints := []*pb.Vertex{
+			{Key: "orders:canonical-tail-0", Value: &pb.Vertex_String_{String_: "tail-0"}, Expiration: vertexExpiration},
+			{Key: "orders:canonical-head-0", Value: &pb.Vertex_String_{String_: "head-0"}, Expiration: vertexExpiration},
+			{Key: "orders:canonical-tail-1", Value: &pb.Vertex_String_{String_: "tail-1"}, Expiration: vertexExpiration},
+			{Key: "orders:canonical-head-1", Value: &pb.Vertex_String_{String_: "head-1"}, Expiration: vertexExpiration},
+		}
+		beforePreparation := f.dataRuntime.ReceiptStats()
+		if _, err := f.data.PutVertices(ctx, securityWireRequest(token, &pb.PutVerticesRequest{Vertices: endpoints})); err != nil {
+			t.Fatalf("prepare plural Add endpoints: %v", err)
+		}
+		if got := f.dataRuntime.ReceiptStats(); got.Entries != beforePreparation.Entries || got.Bytes != beforePreparation.Bytes {
+			t.Fatal("ordinary plural endpoint preparation consumed receipt rows")
+		}
+		edgeExpiration := timestamppb.New(time.Unix(int64(capability.Msg.GetServerNowUnixMs()/1000)+300, 123456789))
+		batch := &pb.AddEdgesRequest{
+			Edges: []*pb.Edge{
+				{Tail: endpoints[0].Key, Head: endpoints[1].Key, Weight: 1.25},
+				{Tail: endpoints[2].Key, Head: endpoints[3].Key, Weight: -0.5, Expiration: edgeExpiration},
+			},
+			ContribIds: [][]byte{
+				bytes.Repeat([]byte{0x6c}, len(graphcache.ContribID{})),
+				bytes.Repeat([]byte{0x6d}, len(graphcache.ContribID{})),
+			},
+			ReceiptContext: publicReceiptWireContext(t, capability.Msg, 0x6c, 2,
+				time.UnixMilli(int64(capability.Msg.GetServerNowUnixMs())).Add(-time.Second)),
+		}
+		wantWeights := []float32{1.25, -0.5}
+		requireWeights := func(name string, response *pb.AddEdgesResponse) {
+			t.Helper()
+			if response == nil || response.GetWritten() != 2 || len(response.GetEffectiveWeights()) != len(wantWeights) {
+				t.Fatalf("%s plural Add result = %v", name, response)
+			}
+			for i, weight := range response.GetEffectiveWeights() {
+				if math.Float32bits(weight) != math.Float32bits(wantWeights[i]) {
+					t.Fatalf("%s result[%d] bits = %08x, want %08x", name, i, math.Float32bits(weight), math.Float32bits(wantWeights[i]))
+				}
+			}
+		}
+		requireStatuses := func(name string) []*pb.ReceiptStatus {
+			t.Helper()
+			response, err := f.data.GetReceiptStatuses(ctx, securityWireRequest(token, &pb.GetReceiptStatusesRequest{
+				OperationIds: batch.ReceiptContext.OperationIds,
+			}))
+			if err != nil {
+				t.Fatalf("%s plural Add statuses: %v", name, err)
+			}
+			statuses := response.Msg.GetStatuses()
+			requireReceiptAddResults(t, name, statuses, batch.ReceiptContext.OperationIds, wantWeights)
+			for i, status := range statuses {
+				if !bytes.Equal(status.GetReceipt().GetLogicalCallId(), batch.ReceiptContext.LogicalCallId) {
+					t.Fatalf("%s receipt[%d] logical-call ID changed", name, i)
+				}
+			}
+			return statuses
+		}
+		added, err := f.data.AddEdges(ctx, securityWireRequest(token, batch))
+		if err != nil {
+			t.Fatalf("plural protected Add: %v", err)
+		}
+		requireWeights("initial", added.Msg)
+		originalStatuses := requireStatuses("initial")
+		keys := []*pb.EdgeKey{
+			{Tail: batch.Edges[0].Tail, Head: batch.Edges[0].Head},
+			{Tail: batch.Edges[1].Tail, Head: batch.Edges[1].Head},
+		}
+		edges, err := f.data.GetEdges(ctx, securityWireRequest(token, &pb.GetEdgesRequest{Edges: keys}))
+		if err != nil || len(edges.Msg.GetMissing()) != 0 || len(edges.Msg.GetEdges()) != len(batch.Edges) {
+			t.Fatalf("plural Add edges = %v, %v", edges, err)
+		}
+		wantEdges := make(map[[2]string]*pb.Edge, len(batch.Edges))
+		for _, edge := range batch.Edges {
+			wantEdges[[2]string{edge.Tail, edge.Head}] = edge
+		}
+		for _, edge := range edges.Msg.GetEdges() {
+			key := [2]string{edge.Tail, edge.Head}
+			if expected, ok := wantEdges[key]; !ok || !proto.Equal(edge, expected) {
+				t.Fatal("plural Add changed an Edge value or nil/future expiration")
+			}
+			delete(wantEdges, key)
+		}
+		stableGraph := f.graph.SnapshotReplication()
+		canonicalizeReceiptWireGraph(&stableGraph)
+		stableLog, _, _ := f.dataRuntime.MutationLogStats()
+		stableReceipts := f.dataRuntime.ReceiptStats()
+		requireUnchanged := func(name string) {
+			t.Helper()
+			graph := f.graph.SnapshotReplication()
+			canonicalizeReceiptWireGraph(&graph)
+			log, _, _ := f.dataRuntime.MutationLogStats()
+			receipts := f.dataRuntime.ReceiptStats()
+			if !reflect.DeepEqual(stableGraph, graph) || log != stableLog ||
+				receipts.Entries != stableReceipts.Entries || receipts.Bytes != stableReceipts.Bytes {
+				t.Fatalf("%s changed graph, mutation log, or receipt rows", name)
+			}
+		}
+		replayed, err := f.data.AddEdges(ctx, securityWireRequest(token, proto.Clone(batch).(*pb.AddEdgesRequest)))
+		if err != nil {
+			t.Fatalf("plural Add replay: %v", err)
+		}
+		requireWeights("replay", replayed.Msg)
+		requireUnchanged("same-intent replay")
+		changed := proto.Clone(batch).(*pb.AddEdgesRequest)
+		changed.Edges[1].Weight = 3
+		if _, err := f.data.AddEdges(ctx, securityWireRequest(token, changed)); connect.CodeOf(err) != connect.CodeInvalidArgument {
+			t.Fatalf("changed plural Add intent = %v, want InvalidArgument", err)
+		}
+		requireUnchanged("changed-intent rejection")
+		for i, status := range requireStatuses("after replay and rejection") {
+			if !proto.Equal(status.GetReceipt(), originalStatuses[i].GetReceipt()) {
+				t.Fatalf("replay or rejection changed original receipt[%d]", i)
+			}
+		}
+		endpointKeys := make([]string, len(endpoints))
+		wantEndpoints := make(map[string]*pb.Vertex, len(endpoints))
+		for i, vertex := range endpoints {
+			endpointKeys[i] = vertex.Key
+			wantEndpoints[vertex.Key] = vertex
+		}
+		read, err := f.data.GetVertices(ctx, securityWireRequest(token, &pb.GetVerticesRequest{Keys: endpointKeys}))
+		if err != nil || len(read.Msg.GetMissing()) != 0 || len(read.Msg.GetVertices()) != len(endpoints) {
+			t.Fatalf("plural Add prepared endpoints = %v, %v", read, err)
+		}
+		for _, vertex := range read.Msg.GetVertices() {
+			if expected, ok := wantEndpoints[vertex.Key]; !ok || !proto.Equal(vertex, expected) {
+				t.Fatal("plural Add, replay, or rejection changed endpoint values or expirations")
+			}
+			delete(wantEndpoints, vertex.Key)
+		}
+	})
 }
 
 // Receipt-less standalone Create shares the staged publication classifier even
