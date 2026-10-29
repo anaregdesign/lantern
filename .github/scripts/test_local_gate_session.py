@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -65,6 +66,100 @@ class SessionTest(unittest.TestCase):
 
     def modes(self, result):
         return {r["name"]: r["mode"] for r in result["steps"]}
+
+    def test_inherited_qualification_opt_ins_cannot_activate_ordinary_children(self):
+        activators = {
+            "LANTERN_TEST_CURRENT_NATIVE": "1", "LANTERN_TEST_CURRENT_OUTPUT_PAUSE": "1",
+            "LANTERN_TEST_NATIVE_TIME_PAUSE": "1", "LANTERN_TEST_NATIVE_IDENTITY_UNAVAILABLE": "1",
+            "LANTERN_TEST_CONFIGURED_TIME_UPSTREAM": "1", "LANTERN_CURRENT_PUBLIC_GATE": "1",
+            "LANTERN_CURRENT_PUBLIC_SDK4": "1", "LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION": "1",
+            "LANTERN_CURRENT_MEMBERSHIP_GATE": "1", "LANTERN_CURRENT_MEMBERSHIP_CONTAINER": "1",
+            "LANTERN_CURRENT_DATA_HA": "fixture-driver", "LANTERN_CURRENT_CUSTODY_GATE": "1",
+            "LANTERN_CURRENT_FIXTURE_EXPORTER": "/fixture/exporter", "LANTERN_CURRENT_FIXTURE_DIR": "/fixture/output",
+            "LANTERN_CURRENT_OUTPUT_CHILD": "before-use", "LANTERN_NATIVE_LOGIN_GATE": "1",
+            "LANTERN_NATIVE_FIXTURE_SERVE": "1", "LANTERN_NATIVE_FIXTURE_PROFILE": "physical",
+            "LANTERN_TIME_CHILD_STAGE": "before-send", "LANTERN_TIME_CHILD_ADDRESS": "fixture.invalid:123",
+            "LANTERN_AUTH_FIXTURE_COMPOSE": "1", "LANTERN_MEMBERSHIP_PUBLISHER": "/fixture/publisher",
+            "LANTERN_PROTECTED_QUERY_CURRENT": "1", "OFF_SOURCE_CHILD_NONCE": "fixture-nonce",
+            "LANTERN_TEST_LAUNCH_SERVER": "/untrusted/server", "LANTERN_RUST_TEST_SERVER": "/untrusted/rust-server",
+            "LANTERN_RUST_TEST_AUTH_FIXTURE": "/untrusted/authfixture",
+            "LANTERN_TEST_FIXTURE_DIAGNOSTIC_CHILD": "exit", "LANTERN_FIXTURE_STOP_CHILD": "failure",
+            "LANTERN_CONTAINER_DIR": "/untrusted/container-state", "LANTERN_CONTAINER_PHASE": "peer-loss",
+            "LANTERN_CONTAINER_MODE": "container", "LANTERN_CONTAINER_HEAD": "untrusted-head",
+            "LANTERN_CONTAINER_TREE": "untrusted-tree", "LANTERN_QUERY_CLI_TEST": "1",
+            "LANTERN_QUERY_CLI_ARGS": "-mode oidc -serve /untrusted/server",
+        }
+        retained = {"GOPROXY": "https://proxy.golang.org", "GOSUMDB": "sum.golang.org",
+                    "GOCACHE": "/fixture/cache", "LANTERN_DEFAULT_TTL_SECONDS": "42",
+                    "LANTERN_AUTH_MODE": "off", "LANTERN_MIXED_HA_ISOLATED_REQUEST": "/fixture/request.json"}
+        script = ("import os, sys; "
+                  f"forbidden = {tuple(activators)!r}; "
+                  f"retained = {retained!r}; "
+                  "sys.exit(1 if any(key in os.environ for key in forbidden) or "
+                  "any(os.environ.get(key) != value for key, value in retained.items()) else 0)")
+        command = (sys.executable, "-c", script)
+        with patch.dict(os.environ, {**activators, **retained}):
+            # The same child refuses the inherited controls without isolation.
+            self.assertEqual(subprocess.run(command, check=False).returncode, 1)
+            session = self.new_session("isolated-opt-ins")
+            self.assertEqual(session.run(Step("ordinary-child", ".", command),
+                                         self.base / "isolated-child.log"), (0, True))
+            rust = next(step for step in steps(session.evidence) if step.name == "rust-real-wire")
+            with patch.object(gate.subprocess, "run", return_value=subprocess.CompletedProcess(rust.command, 0)) as run:
+                self.assertEqual(session.run(rust, self.base / "owned-rust-child.log"), (0, True))
+            environment = run.call_args.kwargs["env"]
+            self.assertEqual(environment["LANTERN_RUST_TEST_SERVER"], str(self.root / "sdks/rust/target/lantern-smoke"))
+            self.assertEqual(environment["LANTERN_RUST_TEST_AUTH_FIXTURE"], str(self.root / "sdks/rust/target/lantern-authfixture"))
+            self.assertTrue(all(os.environ[key] == value for key, value in activators.items()))
+        self.assertTrue(all(key not in session.env for key in activators))
+        self.assertEqual({key: session.env[key] for key in retained}, retained)
+
+    def test_source_enumerated_time_and_native_fixture_hooks_are_isolated(self):
+        root = Path(__file__).resolve().parents[2]
+        hooks = (
+            "server/internal/security/control_genuine_producer_gate_test.go",
+            "server/internal/security/control_output_pause_gate_test.go",
+            "server/internal/security/control_time_native_gate_test.go",
+            "server/internal/security/control_time_native_linux_test.go",
+            "server/internal/security/control_time_source_darwin_gate_test.go",
+            "server/internal/security/control_time_source_linux_gate_test.go",
+            "server/internal/security/control_current_owner_test.go",
+            "server/internal/security/control_public_config_test.go",
+            "server/internal/security/control_container_gate_test.go",
+            "server/internal/security/control_container_gate_helpers_test.go",
+            "server/cmd/configured_source_gate_test.go",
+            "server/cmd/authfixture/helpers_test.go",
+            "server/cmd/authfixture/main_test.go",
+            "server/cmd/authfixture/serve_test.go",
+            "server/cmd/authfixture/receipt_ha_launch_test.go",
+            "sdks/rust/src/test_server.rs",
+            "tests/integration/auth_authority_helpers_test.go",
+            "tests/integration/authority_constructor_diagnostic_test.go",
+            "tests/integration/current_security_gate_test.go",
+            "tests/integration/current_membership_gate_test.go",
+            "tests/integration/current_custody_gate_test.go",
+            "tests/integration/native_login_fixture_test.go",
+            "tests/integration/protected_query_gate_test.go",
+        )
+        names = set()
+        for path in hooks:
+            names.update(re.findall(r'\b(?:Getenv|getenv|var_os)\("((?:LANTERN_|OFF_SOURCE_)[A-Z0-9_]+)"',
+                                    (root / path).read_text()))
+        self.assertTrue({"LANTERN_TEST_CURRENT_NATIVE", "LANTERN_CURRENT_PUBLIC_GATE",
+                         "LANTERN_CURRENT_MEMBERSHIP_GATE", "LANTERN_NATIVE_FIXTURE_SERVE",
+                         "OFF_SOURCE_CHILD_NONCE", "LANTERN_TEST_LAUNCH_SERVER",
+                         "LANTERN_RUST_TEST_SERVER", "LANTERN_RUST_TEST_AUTH_FIXTURE",
+                         "LANTERN_TEST_FIXTURE_DIAGNOSTIC_CHILD", "LANTERN_FIXTURE_STOP_CHILD",
+                         "LANTERN_CONTAINER_DIR", "LANTERN_CONTAINER_PHASE", "LANTERN_CONTAINER_MODE",
+                         "LANTERN_QUERY_CLI_TEST", "LANTERN_QUERY_CLI_ARGS"} <= names)
+        # AUTH_MODE is ordinary runtime configuration. The mixed request path
+        # is an optional mutation-refusal payload for an existing local TLS
+        # probe behind CURRENT_CUSTODY_GATE; it opens no authority/time owner.
+        retained = {"LANTERN_AUTH_MODE", "LANTERN_MIXED_HA_ISOLATED_REQUEST"}
+        names.difference_update(retained)
+        self.assertEqual(gate.ordinary_environment(dict.fromkeys(retained, "retained")),
+                         dict.fromkeys(retained, "retained"))
+        self.assertEqual(gate.ordinary_environment(dict.fromkeys(names, "inherited")), {})
 
     def test_affected_checks_are_fresh_and_do_not_import_carry(self):
         self.qualify()
@@ -543,7 +638,7 @@ class PlanTest(unittest.TestCase):
                          "admin-frozen-install", "example-frozen-preflight", "gofmt"])
         names = {s.name for s in plan}
         self.assertTrue(gate.ELIGIBLE <= names)
-        for name in ("generated-drift", "rust-real-wire", "rust-oidc-scoped-wire", "sqlite-performance-probe",
+        for name in ("generated-drift", "rust-real-wire", "current-functional-wire", "sqlite-performance-probe",
                      "admin-playwright", "final-clean", "go-test-."):
             self.assertIn(name, names)
             self.assertNotIn(name, gate.ELIGIBLE)
@@ -553,7 +648,7 @@ class PlanTest(unittest.TestCase):
         tree = {p: "hash" for p in ("core/source.go", "server/source.go", "pb/generated.go", "proto/api.proto",
                                   "tests/fixture.json", "testbed/fixture", "sdks/rust/src/generated.rs",
                                   "sdks/node/src/gen/service.ts", "sdks/dart/lib/src/gen/service.dart")}
-        for name in ("rust-real-wire", "rust-oidc-scoped-wire", "node-test", "dart-test", "go-test-."):
+        for name in ("rust-real-wire", "current-functional-wire", "node-test", "dart-test", "go-test-."):
             self.assertEqual(gate.inputs(Step(name, ".", ("fixture",)), tree), tree)
             self.assertNotIn(name, gate.ELIGIBLE)
 

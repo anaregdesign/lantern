@@ -36,7 +36,7 @@ class ValidationScopeTest(unittest.TestCase):
                 self.assertEqual(set(result["families"]), families)
                 names = self.names(path)
                 self.assertTrue({"final-diff", "final-clean"} <= names)
-                self.assertFalse({"rust-real-wire", "rust-oidc-scoped-wire", "sqlite-performance-probe"} & names)
+                self.assertFalse({"rust-real-wire", "current-functional-wire", "sqlite-performance-probe"} & names)
         self.assertIn("sqlite-crash-probe", self.names("sdks/dart/offline_sqlite/lib/a.dart"))
         self.assertNotIn("go-test-.", self.names("admin/app/a.tsx"))
         self.assertNotIn("node-generate", self.names("sdks/node/src/a.ts"))

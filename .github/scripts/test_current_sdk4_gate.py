@@ -15,6 +15,7 @@ from unittest.mock import patch
 import current_sdk4_gate as gate
 from git_test_fixture import synchronous_git_maintenance
 from local_gate_plan import steps
+from local_gate_session import ordinary_environment
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -586,7 +587,8 @@ class SDK4ReceiptTest(unittest.TestCase):
 
             def execute(cmd, **kwargs):
                 self.assertEqual(cmd, gate.command(gate.CONFIGURED_SOURCE_INTEGRATION))
-                self.assertEqual(kwargs["env"]["LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION"], "1")
+                for key, value in gate.CONFIGURED_SOURCE_INTEGRATION_ENVIRONMENT.items():
+                    self.assertEqual(kwargs["env"][key], value)
                 records = events()
                 if failure:
                     records[-1]["Action"] = "fail"
@@ -595,6 +597,7 @@ class SDK4ReceiptTest(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 1 if failure else 0)
 
             with (
+                patch.dict(os.environ, ordinary_environment(os.environ), clear=True),
                 patch.object(gate, "snapshot", return_value=self.source),
                 patch.object(gate, "environment", return_value=self.runtime),
                 patch.object(gate.subprocess, "run", side_effect=execute) as run,
@@ -620,6 +623,8 @@ class SDK4ReceiptTest(unittest.TestCase):
                 gate.command(gate.FUNCTIONAL_VALIDATION),
             )[len(calls)]
             self.assertEqual(cmd, expected)
+            for key, value in gate.FUNCTIONAL_VALIDATION_ENVIRONMENT.items():
+                self.assertEqual(kwargs["env"][key], value)
             records = (mechanism_events(), events(kind=gate.FUNCTIONAL_VALIDATION))[len(calls)]
             calls.append(cmd)
             for record in records:
@@ -627,6 +632,7 @@ class SDK4ReceiptTest(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0)
 
         with (
+            patch.dict(os.environ, ordinary_environment(os.environ), clear=True),
             patch.object(gate, "snapshot", return_value=self.source),
             patch.object(gate, "environment", return_value=self.runtime),
             patch.object(gate.subprocess, "run", side_effect=execute),
@@ -723,11 +729,19 @@ class SDK4WiringTest(unittest.TestCase):
     def test_local_acceptance_runs_sdk4_and_scoped_without_receipt_import(self):
         plan = steps(Path("/tmp/qualification"))
         self.assertEqual(len(plan), 77)
-        step = next(step for step in plan if step.name == "rust-oidc-scoped-wire")
+        step = next(step for step in plan if step.name == "current-functional-wire")
         self.assertIn(".github/scripts/current_sdk4_gate.py", step.command)
-        for flag in ("run", "--with-functional-validation", "--fresh-child"):
+        for flag in ("run", "--proof-kind", "functional-validation", "--fresh-child"):
             self.assertIn(flag, step.command)
         self.assertNotIn("verify", step.command)
+        self.assertNotIn("--with-functional-validation", step.command)
+        self.assertNotIn("configured-source-integration", step.command)
+        args = [*step.command[2:], "--root", str(ROOT)]
+        with patch.object(sys, "argv", args), patch.object(gate, "run") as run:
+            gate.main()
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ROOT.resolve())
+        self.assertEqual(run.call_args.args[3], gate.FUNCTIONAL_VALIDATION)
 
     def test_required_pr_main_build_checks_same_run_native_receipt(self):
         build = workflow_job("go", "build")

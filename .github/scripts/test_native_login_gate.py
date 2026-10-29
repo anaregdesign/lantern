@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import native_login_gate as gate
 from local_gate_plan import steps
+from local_gate_session import ordinary_environment
 from git_test_fixture import synchronous_git_maintenance
 
 
@@ -78,7 +79,8 @@ elif args[0] == 'run':
                 path = binaries / name
                 path.write_text(script)
                 path.chmod(0o755)
-            with patch.object(Path, "read_bytes", fixture_read_bytes), patch.dict(os.environ, {"PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+            with patch.dict(os.environ, ordinary_environment(os.environ), clear=True), \
+                    patch.object(Path, "read_bytes", fixture_read_bytes), patch.dict(os.environ, {"PATH": str(binaries) + os.pathsep + os.environ["PATH"],
                                          "CALLS": str(base / "calls"), "MODE": mode, "CASE_LOG": log,
                                          "GOFLAGS": ""}):
                 options = gate.ServingOptions("https://installed.example", 16443, 18443, profile=profile) if serving else None
@@ -119,6 +121,11 @@ elif args[0] == 'run':
                 self.assertIn(flag, run)
             self.assertNotIn("--privileged", run)
             self.assertEqual(run[run.index("--user") + 1], f"{os.getuid()}:{os.getgid()}" if serving else "65534:65534")
+            environment = dict(run[i + 1].split("=", 1) for i, arg in enumerate(run) if arg == "--env")
+            self.assertEqual(environment["LANTERN_CURRENT_PUBLIC_GATE"], "1")
+            self.assertEqual(environment["LANTERN_NATIVE_LOGIN_GATE"], "1")
+            self.assertEqual(environment["LANTERN_CURRENT_FIXTURE_EXPORTER"], "/security.test")
+            self.assertNotIn("LANTERN_CURRENT_CONFIGURED_SOURCE_INTEGRATION", environment)
             if serving:
                 self.assertEqual([run[i + 1] for i, arg in enumerate(run) if arg == "--mount"], [
                     "type=bind,source=/etc/ntp.conf,target=/etc/ntp.conf,readonly",
@@ -126,7 +133,6 @@ elif args[0] == 'run':
                 self.assertEqual([run[i + 1] for i, arg in enumerate(run) if arg == "--publish"], ["127.0.0.1:18443:16443/tcp"])
                 self.assertIn("lantern.task=1809-native-serving", run)
                 self.assertIn("/work:rw,nosuid,nodev,size=512m,mode=1777", run)
-                environment = dict(run[i + 1].split("=", 1) for i, arg in enumerate(run) if arg == "--env")
                 self.assertEqual(environment["LANTERN_NATIVE_FIXTURE_ORIGIN"], options.origin)
                 self.assertEqual(environment["LANTERN_NATIVE_FIXTURE_PREFIX"], "orders:")
                 self.assertEqual(environment["LANTERN_NATIVE_FIXTURE_EXPORT_DIR"], "/native-fixture")
