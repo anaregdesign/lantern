@@ -795,13 +795,16 @@ type retainedHeapContext struct {
 }
 
 type retainedHeapNode struct {
-	Endpoint       string                `json:"endpoint"`
-	Completion     benchheap.Completion  `json:"completion"`
-	SessionFile    retainedHeapReference `json:"session_file"`
-	ReadyFile      retainedHeapReference `json:"ready_file"`
-	RequestFile    retainedHeapReference `json:"request_file"`
-	StartedFile    retainedHeapReference `json:"started_file"`
-	CompletionFile retainedHeapReference `json:"completion_file"`
+	MountBindingFile       retainedHeapReference `json:"mount_binding_file"`
+	MountInspectBeforeFile retainedHeapReference `json:"mount_inspect_before_file"`
+	MountInspectAfterFile  retainedHeapReference `json:"mount_inspect_after_file"`
+	Endpoint               string                `json:"endpoint"`
+	Completion             benchheap.Completion  `json:"completion"`
+	SessionFile            retainedHeapReference `json:"session_file"`
+	ReadyFile              retainedHeapReference `json:"ready_file"`
+	RequestFile            retainedHeapReference `json:"request_file"`
+	StartedFile            retainedHeapReference `json:"started_file"`
+	CompletionFile         retainedHeapReference `json:"completion_file"`
 }
 
 type retainedHeapCut struct {
@@ -940,10 +943,21 @@ func readRetainedCut(path, phase string, endpoints []receiptLeakReplica) (retain
 		return cut, ref, err
 	}
 	containers, nonces := map[string]bool{}, map[string]bool{}
+	mountDaemon := ""
+	mountDirectories := map[string]bool{}
 	for i, node := range cut.Replicas {
 		if node.Endpoint != endpoints[i].Endpoint {
 			return cut, ref, errors.New("replica order/endpoint differs")
 		}
+		if err := validateRetainedMount(root, phase, i, node, ctx); err != nil {
+			return cut, ref, err
+		}
+		daemon, hostKey, mountErr := retainedMountFacts(node)
+		if mountErr != nil || (i > 0 && daemon != mountDaemon) || mountDirectories[hostKey] {
+			return cut, ref, errors.New("mount cohort daemon/directory identity differs")
+		}
+		mountDaemon = daemon
+		mountDirectories[hostKey] = true
 		c := node.Completion
 		if err := validateRetainedCompletion(c); err != nil {
 			return cut, ref, err
@@ -1034,6 +1048,15 @@ func evaluateRetainedHeap(report *receiptLeakReport, caseDirectory, prePath, pos
 		nonces[node.Completion.Request.CutNonce] = true
 	}
 	for i := range pre.Replicas {
+		if pre.Replicas[i].MountBindingFile != post.Replicas[i].MountBindingFile {
+			fail(errors.New("mount binding changed between cuts"))
+			return
+		}
+		if err := sameRetainedMountProcess(pre.Replicas[i], post.Replicas[i]); err != nil {
+			fail(err)
+			return
+		}
+
 		p, q := pre.Replicas[i].Completion, post.Replicas[i].Completion
 		if !reflect.DeepEqual(p.Request.Identity, q.Request.Identity) || nonces[q.Request.CutNonce] {
 			fail(errors.New("restarted target or replayed phase"))

@@ -285,6 +285,10 @@ run_owned_compose_initializer() {
     initializer_command docker inspect --format '{{json .}}' "$initializer_id" > "$private/completed.json" || exit 1
     initialized="$(cat "$private/completed.json")"
     initializer_matches && jq -e '.State.Status=="exited" and .State.Running==false and .State.ExitCode==0' <<<"$initialized" >/dev/null || exit 1
+    if [[ "$kind" == compose-security-initializer && -n "${heap_source:-}" ]]; then
+      printf '%s\n' "$initialized" | owned_compose_heap_controller bind-clone-after \
+        --directory "$heap_root" --service "${service%-security-init}" || exit 1
+    fi
     initializer_command docker wait "$initializer_id" > "$private/wait.log" 2>&1 || exit 1
     if [[ "$kind" == compose-bind-identity-probe ]]; then
       retain_owned_compose_bind_probe "$private" || exit 1
@@ -320,9 +324,8 @@ validate_owned_compose_volume_initializer() {
   ' <<<"$initialized" >/dev/null
 }
 
-# This is the one additional writable bind admitted by the measurement image.
-# It has no read-only alias/identity-probe fallback: both request and effective
-# Source must remain the literal canonical per-node directory.
+# Structural admission for the one measurement-only writable bind. A complete
+# original-first directory proof, not this shape check, admits its Source.
 validate_owned_compose_heap_mount() {
   [[ -n "${heap_source:-}" ]] || return 0
   jq -e --arg source "$heap_source" '
@@ -331,11 +334,13 @@ validate_owned_compose_heap_mount() {
     ($requests[0]|keys|sort) as $keys |
     ($requests|length)==1 and ($effective|length)==1 and
     ($keys==["BindOptions","Source","Target","Type"] or $keys==["BindOptions","ReadOnly","Source","Target","Type"]) and
-    $requests[0].Source==$source and $requests[0].Target=="/run/lantern-bench-heap" and
+    ($requests[0].Source|type)=="string" and ($requests[0].Source|startswith("/")) and
+    $requests[0].Target=="/run/lantern-bench-heap" and
     (($requests[0]|has("ReadOnly")|not) or $requests[0].ReadOnly==false) and
     ($requests[0].BindOptions=={Propagation:"rprivate"} or $requests[0].BindOptions=={Propagation:"rprivate",CreateMountpoint:false}) and
     ($effective[0]|keys|sort)==["Destination","Mode","Propagation","RW","Source","Type"] and
-    $effective[0].Type=="bind" and $effective[0].Source==$source and $effective[0].RW==true and
+    $effective[0].Type=="bind" and ($effective[0].Source|type)=="string" and
+    ($effective[0].Source|startswith("/")) and $effective[0].RW==true and
     ($effective[0].Mode=="" or $effective[0].Mode=="rw") and $effective[0].Propagation=="rprivate" and
     (.Mounts|length)==5
   '
@@ -362,7 +367,13 @@ PY
 }
 
 validate_owned_compose_security_initializer() {
+  local heap_identity_validated=false
   validate_owned_compose_heap_mount <<<"$initialized" >/dev/null || return 1
+  if [[ -n "${heap_source:-}" ]]; then
+    printf '%s\n' "$initialized" | owned_compose_heap_controller bind-clone-before \
+      --directory "$heap_root" --service "${service%-security-init}" || return 1
+    heap_identity_validated=true
+  fi
   printf '%s\n%s\n' "$original" "$initialized" |
     jq -se --arg heap_source "${heap_source:-}" '
       def readonly_binds:
@@ -379,6 +390,7 @@ validate_owned_compose_security_initializer() {
         if $heap_source=="" then nocopy_volumes else
           type=="array" and length==3 and ([.[]|select(.Type=="volume")]|nocopy_volumes) and
           ([.[]|select(.Type=="bind")]|length)==1 end;
+      def requests: map(if $heap_source!="" and .Type=="bind" and .Target=="/run/lantern-bench-heap" then del(.Source) else . end)|sort_by(.Target);
       .[0] as $original | .[1] |
       .Config.Entrypoint==["/app/lantern"] and .Config.Cmd==["init-security"] and
       .Config.WorkingDir==$original.Config.WorkingDir and .HostConfig.NetworkMode==$original.HostConfig.NetworkMode and
@@ -389,15 +401,17 @@ validate_owned_compose_security_initializer() {
       $original.State.Status=="created" and $original.State.Running==false and
       ($original.HostConfig.Binds|readonly_binds) and (.HostConfig.Binds|readonly_binds) and
       ($original.HostConfig.Mounts|initializer_mounts) and (.HostConfig.Mounts|initializer_mounts) and
-      (.HostConfig.Mounts|sort_by(.Target))==($original.HostConfig.Mounts|sort_by(.Target)) and
+      (.HostConfig.Mounts|requests)==($original.HostConfig.Mounts|requests) and
       (.Config.Env|sort)==($original.Config.Env|sort)' >/dev/null || return 1
   if [[ -n "${heap_source:-}" ]]; then
     printf '%s\n%s\n' "$original" "$initialized" | jq -se '
-      (.[0].Mounts|map(select(.Destination=="/run/lantern-bench-heap")))==
-      (.[1].Mounts|map(select(.Destination=="/run/lantern-bench-heap")))' >/dev/null || return 1
+      (.[0].Mounts|map(select(.Destination=="/run/lantern-bench-heap")|del(.Source)))==
+      (.[1].Mounts|map(select(.Destination=="/run/lantern-bench-heap")|del(.Source)))' >/dev/null || return 1
   fi
   if printf '%s\n%s\n' "$original" "$initialized" |
-    jq -se '.[0] as $original | .[1] | (.Mounts|sort_by(.Destination))==($original.Mounts|sort_by(.Destination))' >/dev/null; then
+    jq -se --arg heap_source "${heap_source:-}" '
+      def mounts: map(if $heap_source!="" and .Destination=="/run/lantern-bench-heap" then del(.Source) else . end)|sort_by(.Destination);
+      .[0] as $original | .[1] | (.Mounts|mounts)==($original.Mounts|mounts)' >/dev/null; then
     return 0
   fi
   prove_owned_compose_bind_identity
@@ -448,7 +462,10 @@ validate_owned_compose_bind_probe() {
 }
 
 retain_owned_compose_bind_probe() {
-  local probe_private="$1"
+  local probe_private="$1" identity_output="$bind_proof_directory/identity.json"
+  # Heap consumers independently reparse the raw stat bytes; keep this legacy
+  # convenience value only in the probe's temporary scratch, not its binder.
+  if [[ "${heap_directory_proof:-false}" == true ]]; then identity_output="$probe_private/identity.json"; fi
   [[ -n "$bind_proof_directory" && -d "$bind_proof_directory" ]] || return 1
   cp "$probe_private/created.json" "$bind_proof_directory/probe-created.json" &&
     cp "$probe_private/completed.json" "$bind_proof_directory/probe-completed.json" &&
@@ -462,7 +479,57 @@ retain_owned_compose_bind_probe() {
     select(all(range(0;$plan|length); . as $i |
       $values[2*$i]==$values[2*$i+1] and $values[2*$i].type==$plan[$i].expected_type)) |
     {schema:1,identity:"same-effective-daemon-mount-object",values:$values}
-  ' "$probe_private/start.log" > "$bind_proof_directory/identity.json"
+  ' "$probe_private/start.log" > "$identity_output"
+}
+
+# Fixed stat execution shared by the existing RO producer and the original-first
+# measurement directory producer. No new command/profile/source fallback.
+execute_owned_compose_bind_probe() {
+  bind_probe_targets="$(jq -c '[range(0;length)|. as $i|("/proof/original-"+($i|tostring)),("/proof/clone-"+($i|tostring))]' <<<"$bind_proof_plan")" || return 1
+  local pair_index=0 source_pair target
+  while IFS= read -r source_pair; do
+    proof_mounts+=("--mount=type=bind,source=$(jq -er '.original_source' <<<"$source_pair"),target=/proof/original-$pair_index,readonly,bind-propagation=rprivate")
+    proof_mounts+=("--mount=type=bind,source=$(jq -er '.clone_source' <<<"$source_pair"),target=/proof/clone-$pair_index,readonly,bind-propagation=rprivate")
+    pair_index=$((pair_index+1))
+  done < <(jq -c '.[]' <<<"$bind_proof_plan")
+  while IFS= read -r target; do proof_targets+=("$target"); done < <(jq -r '.[]' <<<"$bind_probe_targets")
+  run_owned_compose_initializer "$project" "$image" "$owner" compose-bind-identity-probe "${original_service}-bind-proof" 100 validate_owned_compose_bind_probe \
+    --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --memory 32m --cpus 0.25 --pids-limit 16 \
+    "${proof_mounts[@]}" --entrypoint /bin/busybox "$image" stat -c '%d:%i:%F' "${proof_targets[@]}" || return "$?"
+}
+
+owned_compose_heap_controller() {
+  python3 -B "$(dirname "${BASH_SOURCE[0]}")/capture/heap_control.py" "$@"
+}
+
+# Each original proves its own host/daemon representation before ANY native
+# security initializer. A later clone cannot add a path or request a new probe.
+prove_owned_compose_heap_identity() {
+  local original_service="$service" bind_proof_directory bind_proof_plan bind_probe_environment bind_probe_targets
+  local original_id daemon_before daemon_after fresh heap_directory_proof=true
+  local -a proof_mounts=() proof_targets=()
+  bind_proof_directory="${heap_root%/*}/heap-mount-staging/$service"
+  original_id="$(jq -er '.Id|select(test("^[0-9a-f]{64}$"))' <<<"$original")" || return 1
+  daemon_before="$(docker info --format '{{.ID}}')" || return 1
+  [[ -n "$daemon_before" && "$daemon_before" != *$'\n'* ]] || return 1
+  bind_proof_plan="$(printf '%s\n' "$original" | owned_compose_heap_controller bind-original-before \
+    --directory "$heap_root" --service "$service" --daemon-id "$daemon_before")" || return 1
+  if [[ "$(jq -er 'length' <<<"$bind_proof_plan")" != 0 ]]; then
+    docker image inspect --format '{{json .Config.Env}}' "$image" > "$bind_proof_directory/image-environment.json" || return 1
+    chmod 600 "$bind_proof_directory/image-environment.json" || return 1
+    bind_probe_environment="$(cat "$bind_proof_directory/image-environment.json")"
+    jq -e 'type=="array" and all(.[]; type=="string" and test("^(PATH|LANTERN_DEFAULT_TTL_SECONDS|LANTERN_PORT|LANTERN_METRICS_ADDR|LANTERN_LOG_FORMAT|LANTERN_LOG_LEVEL|LANTERN_VERSION|LANTERN_COMMIT)=") and ((contains("\r") or contains("\n") or contains("\u0000"))|not)) and
+      (map(split("=")[0])|unique|length)==length' <<<"$bind_probe_environment" >/dev/null || return 1
+    execute_owned_compose_bind_probe || return "$?"
+  fi
+  fresh="$(docker inspect --format '{{json .}}' "$original_id")" || return 1
+  printf '%s\n%s\n' "$original" "$fresh" | jq -se '
+    def fingerprint: {Id,Name,Image,Config,HostConfig,Mounts:(.Mounts|sort_by(.Destination))};
+    (.[0]|fingerprint)==(.[1]|fingerprint) and all(.[]; .State.Status=="created" and .State.Running==false)' >/dev/null || return 1
+  daemon_after="$(docker info --format '{{.ID}}')" || return 1
+  [[ "$daemon_before" == "$daemon_after" ]] || return 1
+  printf '%s\n' "$fresh" | owned_compose_heap_controller bind-original-after \
+    --directory "$heap_root" --service "$service" --daemon-id "$daemon_after"
 }
 
 prove_owned_compose_bind_identity() {
@@ -470,7 +537,7 @@ prove_owned_compose_bind_identity() {
   local -a proof_mounts=() proof_targets=()
   original_service="$(jq -er '.Config.Labels["com.docker.compose.service"]|select(type=="string" and test("^lantern-[012]$"))' <<<"$original")" || return 1
   bind_proof_plan="$(printf '%s\n%s\n%s\n' "$original" "$initialized" "$configuration" |
-    jq -sec --arg service "$original_service" '
+    jq -sec --arg service "$original_service" --argjson heap_proved "${heap_identity_validated:-false}" '
       def source: type=="string" and startswith("/") and length>1 and
         ((contains(",") or contains("\""))|not) and (explode|all(.>=32 and .!=127));
       .[0] as $original | .[1] as $clone | .[2].services[$service].volumes as $declared |
@@ -479,7 +546,8 @@ prove_owned_compose_bind_identity() {
         ($left|map(.Destination)|unique|length)!=($left|length) or ($right|map(.Destination)|unique|length)!=($right|length)
       then error("mount membership differs") else . end |
       [range(0;$left|length)|. as $i|$left[$i] as $a|$right[$i] as $c|
-        if $a==$c then empty else
+        if $a==$c then empty elif $heap_proved and $a.Destination=="/run/lantern-bench-heap" and
+          $c.Destination=="/run/lantern-bench-heap" and ($a|del(.Source))==($c|del(.Source)) then empty else
           (if $a.Destination=="/run/lantern-config" then "directory" elif $a.Destination=="/etc/ntp.conf" then "regular file" else error("unsupported proof destination") end) as $type |
           [$declared[]|select(.type=="bind" and .read_only==true and .target==$a.Destination)] as $intent |
           if $a.Type!="bind" or $a.RW!=false or ($a|del(.Source))!=($c|del(.Source)) or
@@ -509,17 +577,7 @@ prove_owned_compose_bind_identity() {
   bind_probe_environment="$(cat "$bind_proof_directory/image-environment.json")"
   jq -e 'type=="array" and all(.[]; type=="string" and test("^(PATH|LANTERN_DEFAULT_TTL_SECONDS|LANTERN_PORT|LANTERN_METRICS_ADDR|LANTERN_LOG_FORMAT|LANTERN_LOG_LEVEL|LANTERN_VERSION|LANTERN_COMMIT)=") and ((contains("\r") or contains("\n") or contains("\u0000"))|not)) and
     (map(split("=")[0])|unique|length)==length' <<<"$bind_probe_environment" >/dev/null || return 1
-  bind_probe_targets="$(jq -c '[range(0;length)|. as $i|("/proof/original-"+($i|tostring)),("/proof/clone-"+($i|tostring))]' <<<"$bind_proof_plan")" || return 1
-  local pair_index=0 source_pair target
-  while IFS= read -r source_pair; do
-    proof_mounts+=("--mount=type=bind,source=$(jq -er '.original_source' <<<"$source_pair"),target=/proof/original-$pair_index,readonly,bind-propagation=rprivate")
-    proof_mounts+=("--mount=type=bind,source=$(jq -er '.clone_source' <<<"$source_pair"),target=/proof/clone-$pair_index,readonly,bind-propagation=rprivate")
-    pair_index=$((pair_index+1))
-  done < <(jq -c '.[]' <<<"$bind_proof_plan")
-  while IFS= read -r target; do proof_targets+=("$target"); done < <(jq -r '.[]' <<<"$bind_probe_targets")
-  run_owned_compose_initializer "$project" "$image" "$owner" compose-bind-identity-probe "${original_service}-bind-proof" 100 validate_owned_compose_bind_probe \
-    --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --memory 32m --cpus 0.25 --pids-limit 16 \
-    "${proof_mounts[@]}" --entrypoint /bin/busybox "$image" stat -c '%d:%i:%F' "${proof_targets[@]}" || return "$?"
+  execute_owned_compose_bind_probe || return "$?"
   initializer_command docker inspect --format '{{json .}}' "$original_id" > "$bind_proof_directory/original-after.json" || return 1
   initializer_command docker inspect --format '{{json .}}' "$clone_id" > "$bind_proof_directory/clone-after.json" || return 1
   initializer_command docker info --format '{{.ID}}' > "$bind_proof_directory/daemon-after" || return 1
@@ -597,6 +655,7 @@ initialize_owned_compose_security() {
         ($original.HostConfig.Tmpfs==null or $original.HostConfig.Tmpfs=={}) and
         ($original.Config.Volumes==null or $original.Config.Volumes=={})
       ' >/dev/null || return 1
+    if [[ -n "$heap_source" ]]; then prove_owned_compose_heap_identity || return "$?"; fi
     originals+=("$original")
   done
   for service in lantern-0 lantern-1 lantern-2; do

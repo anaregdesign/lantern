@@ -1815,6 +1815,7 @@ func retainedHeapFixture(t *testing.T) (string, string, []receiptLeakReplica) {
 			completion := benchheap.Completion{Schema: 1, Protocol: benchheap.Protocol, Request: request, Status: "complete", ElapsedNS: 900_000_000, Before: native, After: native,
 				Collections: []benchheap.GC{{StartedNS: 300_000_000, ReturnedNS: 400_000_000, Before: memory(gc, forced), After: memory(gc+1, forced+1)}, {StartedNS: 500_000_000, ReturnedNS: 600_000_000, Before: memory(gc+1, forced+1), After: memory(gc+2, forced+2)}}, Memory: memory(gc+2, forced+2)}
 			node := retainedHeapNode{Endpoint: endpoint.Endpoint, Completion: completion}
+			node.MountBindingFile, node.MountInspectBeforeFile, node.MountInspectAfterFile = retainedMountFixture(t, root, phase, i, cut.Context, session)
 			for _, file := range []struct {
 				name  string
 				value any

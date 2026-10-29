@@ -594,6 +594,20 @@ work; they do not assert global fanout, transport or background-goroutine idle.
 Drift, missing proof or deadline expiry is INCOMPLETE, with no repeated cut or
 fallback and with existing owned shutdown/custody still required.
 
+Before native security initialization, every measurement original binds its
+canonical private host directory to its actual Docker request/effective paths.
+Literal paths use an identity-bound fast path; differing representations require
+one bounded read-only directory-stat probe per original, with at most two fixed
+pairs, before any `init-security`. No prefix stripping or operator path mapping
+is accepted. Clones may use only that original's frozen same-directory set;
+a new representation fails without another probe. Host device/inode/type,
+UID/GID and mode remain fixed through session writes and both cuts; directory
+mtime and contents are expected to change. Case-local byte-hashed watched
+mount observations and raw stat evidence let the collector, Go evaluator and
+pair consumer independently verify the premise. Serving authentication Env is
+checked in memory and is excluded from these retained mount observations.
+Historical literal-path refusals remain failures under their original contract.
+
 Whole-matrix acceptance requires the normal twelve cases and all four retained
 pairs, with matched source/tree/scenario/workload/TTL/retention/capacity/runtime
 bindings and separate image identities. Tagged performance does not qualify

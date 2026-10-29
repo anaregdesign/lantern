@@ -71,7 +71,7 @@ def directory(path):
         raise
 
 
-def read(root, path, limit=1024 * 1024):
+def read(root, path, limit=1024 * 1024, decode_json=True):
     """Require a stable regular evidence file below the declared case root."""
     root, path = Path(root).absolute(), Path(path)
     if not path.is_absolute():
@@ -99,6 +99,8 @@ def read(root, path, limit=1024 * 1024):
         raise Incomplete("missing or unsafe evidence path") from error
     finally:
         os.close(parent)
+    if not decode_json:
+        return raw, hashlib.sha256(raw).hexdigest()
     try:
         value = json.loads(raw, object_pairs_hook=_object,
                            parse_constant=lambda value: (_ for _ in ()).throw(Incomplete("nonfinite JSON")))
@@ -114,6 +116,312 @@ def reference(root, value, limit=32768):
     actual, digest = read(root, value["path"], limit)
     need(digest == value["sha256"], "raw evidence hash differs")
     return actual
+
+
+def mount_binding(root, replica, phase, context, index):
+    """Recompute one immutable, case-local original-first directory proof."""
+    base = Path(root).absolute() / "heap-mount-evidence" / f"lantern-{index}"
+    seen = {}
+
+    def raw(ref, json_value=True):
+        need(isinstance(ref, dict) and set(ref) == {"path", "sha256"}
+             and isinstance(ref["path"], str) and HEX64.fullmatch(ref.get("sha256", ""))
+             and Path(ref["path"]).parent == base, "mount proof reference escapes node")
+        value, digest = read(root, ref["path"], 128 << 10, decode_json=json_value)
+        need(digest == ref["sha256"], "mount proof raw hash differs")
+        info = Path(ref["path"]).lstat()
+        need(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o600,
+             "mount proof file is not private")
+        seen[ref["path"]] = info.st_size
+        need(len(seen) <= 32 and sum(seen.values()) <= 2 << 20, "mount proof exceeds bounds")
+        return value
+
+    ref = replica.get("mount_binding_file")
+    need(isinstance(ref, dict) and ref.get("path") == str(base / "binding.json"), "mount binder path differs")
+    binding = raw(ref)
+    keys = {"schema", "protocol", "context", "service", "session", "canonical_directory", "daemon_id",
+            "host_precreate_file", "host_before_file", "host_after_file", "original_before_file",
+            "original_after_file", "daemon_before_file", "daemon_after_file", "pairs_file", "probe",
+            "clone_before_file", "clone_after_file"}
+    need(isinstance(binding, dict) and set(binding) == keys and type(binding["schema"]) is int
+         and binding["schema"] == 1 and binding["protocol"] == PROTOCOL, "mount binder schema differs")
+    session = replica["completion"]["request"]["identity"]["session"]
+    expected_context = {k: v for k, v in context.items() if k != "workload"}
+    service = f"lantern-{index}"
+    canonical = str(Path(root).absolute() / "heap-control-evidence" / service)
+    need(binding["context"] == expected_context and binding["session"] == session
+         and binding["service"] == service and binding["canonical_directory"] == canonical
+         and isinstance(binding["daemon_id"], str) and 0 < len(binding["daemon_id"]) <= 128
+         and all(32 < ord(c) < 127 for c in binding["daemon_id"]), "mount binder context differs")
+    uid, gid = map(int, context["runtime_user"].split(":"))
+
+    def host(value):
+        need(isinstance(value, dict) and set(value) == {"device", "inode", "type", "uid", "gid", "mode"}
+             and all(isinstance(value[k], str) and re.fullmatch(r"[1-9][0-9]*", value[k]) for k in ("device", "inode"))
+             and value["type"] == "directory" and type(value["uid"]) is int and value["uid"] == uid
+             and type(value["gid"]) is int and value["gid"] == gid
+             and type(value["mode"]) is int and value["mode"] == 448, "mount host identity differs")
+        return value
+
+    fixed = {"host_precreate_file": "host-precreate.json", "host_before_file": "host-before.json",
+             "host_after_file": "host-after.json", "original_before_file": "original-before.json",
+             "original_after_file": "original-after.json", "daemon_before_file": "daemon-before",
+             "daemon_after_file": "daemon-after", "pairs_file": "requested-pairs.json",
+             "clone_before_file": "clone-before.json", "clone_after_file": "clone-after.json"}
+    need(all(binding[k].get("path") == str(base / name) for k, name in fixed.items()), "mount raw filename differs")
+    identity = host(raw(binding["host_precreate_file"]))
+    need(host(raw(binding["host_before_file"])) == identity and host(raw(binding["host_after_file"])) == identity,
+         "mount host directory replaced")
+    daemon = (binding["daemon_id"] + "\n").encode()
+    need(raw(binding["daemon_before_file"], False) == daemon
+         and raw(binding["daemon_after_file"], False) == daemon, "mount daemon changed")
+
+    def observation(ref):
+        value = raw(ref)
+        keys = {"schema", "kind", "id", "name", "image", "user", "project", "service", "oneoff", "owner", "initializer", "entrypoint", "cmd", "working_dir", "host_config", "mounts", "state", "restart_count"}
+        host_keys = {"network_mode", "binds", "mounts", "readonly_rootfs", "privileged", "auto_remove", "cap_add", "cap_drop", "security_opt", "pid_mode", "ipc_mode", "uts_mode", "userns_mode", "restart_policy", "tmpfs"}
+        state_keys = {"status", "running", "pid", "started_at", "exit_code", "oom_killed", "restarting", "paused"}
+        need(isinstance(value, dict) and set(value) == keys and type(value["schema"]) is int
+             and value["schema"] == 1 and value["kind"] == "heap-mount-observation"
+             and all(isinstance(value[k], str) for k in ("id", "name", "image", "user", "project", "service", "oneoff", "owner", "initializer", "working_dir"))
+             and integer(value["restart_count"]) and isinstance(value["host_config"], dict)
+             and set(value["host_config"]) == host_keys and isinstance(value["state"], dict)
+             and set(value["state"]) == state_keys, "mount watched projection differs")
+        hc, st = value["host_config"], value["state"]
+        need(all(type(hc[k]) is bool for k in ("readonly_rootfs", "privileged", "auto_remove"))
+             and all(isinstance(hc[k], str) for k in ("network_mode", "pid_mode", "ipc_mode", "uts_mode", "userns_mode"))
+             and all(type(st[k]) is bool for k in ("running", "oom_killed", "restarting", "paused"))
+             and integer(st["pid"]) and st["pid"] <= 2147483647 and integer(st["exit_code"]) and st["exit_code"] <= 255 and isinstance(st["status"], str)
+             and isinstance(st["started_at"], str) and st["restarting"] is False and st["paused"] is False,
+             "mount watched scalar types differ")
+        for key in ("entrypoint", "cmd"):
+            need(value[key] is None or (isinstance(value[key], list) and all(isinstance(x, str) for x in value[key])), "mount command type differs")
+        hc_names = {"network_mode": "NetworkMode", "binds": "Binds", "mounts": "Mounts", "readonly_rootfs": "ReadonlyRootfs", "privileged": "Privileged", "auto_remove": "AutoRemove", "cap_add": "CapAdd", "cap_drop": "CapDrop", "security_opt": "SecurityOpt", "pid_mode": "PidMode", "ipc_mode": "IpcMode", "uts_mode": "UTSMode", "userns_mode": "UsernsMode", "restart_policy": "RestartPolicy", "tmpfs": "Tmpfs"}
+        labels = {"com.docker.compose.project": value["project"], "com.docker.compose.service": value["service"], "com.docker.compose.oneoff": value["oneoff"], "lantern.owner": value["owner"], "lantern.initializer": value["initializer"]}
+        return {"Id": value["id"], "Name": value["name"], "Image": value["image"], "Config": {"User": value["user"], "Labels": labels, "Entrypoint": value["entrypoint"], "Cmd": value["cmd"], "WorkingDir": value["working_dir"]}, "HostConfig": {hc_names[k]: v for k, v in hc.items()}, "Mounts": value["mounts"], "RestartCount": value["restart_count"], "State": {"Status": st["status"], "Running": st["running"], "Pid": st["pid"], "StartedAt": st["started_at"], "ExitCode": st["exit_code"], "OOMKilled": st["oom_killed"], "Restarting": st["restarting"], "Paused": st["paused"]}}
+
+    def profile(obj, cid, state):
+        need(isinstance(obj, dict) and obj.get("Id") == cid and obj.get("Image") == context["image_id"]
+             and obj.get("Config", {}).get("User") == context["runtime_user"]
+             and obj.get("Config", {}).get("Labels", {}).get("com.docker.compose.service") == service
+             and obj.get("Config", {}).get("Labels", {}).get("com.docker.compose.project") == context["run_id"]
+             and obj.get("RestartCount") == 0 and type(obj.get("RestartCount")) is int
+             and obj.get("State", {}).get("Status") == state
+             and obj.get("State", {}).get("Running") is (state == "running"), "mount container identity differs")
+        st = obj["State"]
+        if state == "created":
+            need(st.get("StartedAt") in ("", "0001-01-01T00:00:00Z"), "mount original was started")
+        if state == "exited":
+            need(type(st.get("ExitCode")) is int and st["ExitCode"] == 0 and st.get("OOMKilled") is False,
+                 "mount initializer did not exit cleanly")
+        return obj
+
+    def fingerprint(obj):
+        need(all(k in obj for k in ("Id", "Name", "Image", "Config", "HostConfig", "Mounts")), "mount profile missing")
+        return {k: (sorted(obj[k], key=lambda m: m["Destination"]) if k == "Mounts" else obj[k])
+                for k in ("Id", "Name", "Image", "Config", "HostConfig", "Mounts")}
+
+    def probe_fingerprint(obj):
+        # Match only the maintained primitive's default OOM-killer field.
+        # Keep raw objects/hashes intact and reject Python's int==False alias.
+        value = obj.get("HostConfig", {}).get("OomKillDisable")
+        need(value is None or type(value) is bool, "mount probe OomKillDisable type differs")
+        result = fingerprint(obj)
+        result["HostConfig"] = dict(result["HostConfig"], OomKillDisable=False if value is None else value)
+        return result
+
+    def bind_options(value):
+        return (isinstance(value, dict) and value.get("Propagation") == "rprivate"
+                and (set(value) == {"Propagation"} or (set(value) == {"Propagation", "CreateMountpoint"} and value["CreateMountpoint"] is False)))
+
+    def mounts(obj, allowed=None):
+        requested = obj.get("HostConfig", {}).get("Mounts")
+        effective = obj.get("Mounts")
+        need(isinstance(requested, list) and len(requested) == 3 and isinstance(effective, list) and len(effective) == 5,
+             "mount membership differs")
+        volumes = [r for r in requested if r.get("Type") == "volume"]
+        need(len(volumes) == 2 and {r.get("Target") for r in volumes} == {"/data", "/state"}
+             and all(set(r) == {"Source", "Target", "Type", "VolumeOptions"}
+                     and isinstance(r["Source"], str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]+", r["Source"])
+                     and isinstance(r["VolumeOptions"], dict) and set(r["VolumeOptions"]) == {"NoCopy"}
+                     and r["VolumeOptions"]["NoCopy"] is True for r in volumes), "mount volume/NoCopy differs")
+        binds = obj.get("HostConfig", {}).get("Binds")
+        need(isinstance(binds, list) and len(binds) == 2
+             and all(isinstance(v, str) and len(v.split(":")) == 3 and v.startswith("/") for v in binds)
+             and sorted(v.split(":")[1:] for v in binds) == [["/etc/ntp.conf", "ro"], ["/run/lantern-config", "ro"]],
+             "mount read-only auth binds differ")
+        req = [r for r in requested if r.get("Target") == "/run/lantern-bench-heap"]
+        eff = [r for r in effective if r.get("Destination") == "/run/lantern-bench-heap"]
+        need(len(req) == len(eff) == 1, "mount target missing or duplicated")
+        a, b = req[0], eff[0]
+        need(set(a) in ({"Type", "Source", "Target", "BindOptions"}, {"Type", "Source", "Target", "ReadOnly", "BindOptions"})
+             and a["Type"] == "bind" and ("ReadOnly" not in a or a["ReadOnly"] is False)
+             and bind_options(a["BindOptions"])
+             and set(b) == {"Type", "Source", "Destination", "Mode", "RW", "Propagation"}
+             and b["Type"] == "bind" and b["RW"] is True and b["Mode"] in ("", "rw")
+             and b["Propagation"] == "rprivate", "mount non-Source options differ")
+        for value in (a["Source"], b["Source"]):
+            need(isinstance(value, str) and value.startswith("/") and str(Path(value)) == value and ".." not in Path(value).parts
+                 and not any(ord(c) < 32 or ord(c) == 127 or c in ',"' for c in value), "mount source unsafe")
+            if allowed is not None:
+                need(value in allowed, "mount Source outside frozen proof")
+        return a, b
+
+    def same_serving_profile(left, right):
+        need(all(left.get(k) == right.get(k) for k in ("Id", "Name", "Image", "Config")), "mount serving identity changed")
+        lh, rh = left["HostConfig"], right["HostConfig"]
+        need(set(lh) == set(rh) and all(lh[k] == rh[k] for k in lh if k != "Mounts"), "mount serving hardening changed")
+        for lrows, rrows, target_key in ((lh["Mounts"], rh["Mounts"], "Target"), (left["Mounts"], right["Mounts"], "Destination")):
+            need(len(lrows) == len(rrows), "mount serving membership changed")
+            ordered = sorted(lrows, key=lambda r: r[target_key])
+            other = sorted(rrows, key=lambda r: r[target_key])
+            for a, b in zip(ordered, other):
+                need(a[target_key] == b[target_key], "mount serving target changed")
+                if a[target_key] == "/run/lantern-bench-heap":
+                    need({k: v for k, v in a.items() if k != "Source"} == {k: v for k, v in b.items() if k != "Source"}, "mount serving options changed")
+                else:
+                    need(a == b, "mount unrelated row changed")
+
+    cid = session["container_id"]
+    original = profile(observation(binding["original_before_file"]), cid, "created")
+    original_after = profile(observation(binding["original_after_file"]), cid, "created")
+    need(fingerprint(original) == fingerprint(original_after), "mount original fingerprint changed")
+    need(original["Name"] == f"/{context['run_id']}-{service}-1"
+         and original["Config"]["Labels"]["com.docker.compose.oneoff"] == "False"
+         and original["Config"]["Labels"]["lantern.owner"] == original["Config"]["Labels"]["lantern.initializer"] == "", "mount original ownership differs")
+    original_request, original_effective = mounts(original)
+    sources = sorted({original_request["Source"], original_effective["Source"]} - {canonical})
+    allowed = {canonical, original_request["Source"], original_effective["Source"]}
+    pairs = raw(binding["pairs_file"])
+    expected_pairs = [{"destination": "/run/lantern-bench-heap", "declared_source": canonical,
+                       "original_source": canonical, "clone_source": source, "expected_type": "directory"}
+                      for source in sources]
+    need(pairs == expected_pairs and len(pairs) <= 2, "mount pair plan differs")
+    probe = binding["probe"]
+    need((probe is None) == (not pairs), "mount missing or unexpected probe")
+    if pairs:
+        need(isinstance(probe, dict) and set(probe) == {"created_file", "completed_file", "output_file", "wait_file", "remove_file", "environment_file"}, "mount probe references differ")
+        probe_names = {"created_file": "probe-created.json", "completed_file": "probe-completed.json", "output_file": "probe-output.log", "wait_file": "probe-wait.log", "remove_file": "probe-remove.log", "environment_file": "image-environment.json"}
+        need(all(probe[k].get("path") == str(base / name) for k, name in probe_names.items()), "mount probe filename differs")
+        created, completed = raw(probe["created_file"]), raw(probe["completed_file"])
+        pcid = created.get("Id")
+        need(isinstance(pcid, str) and HEX64.fullmatch(pcid) and pcid != cid, "mount probe identity differs")
+        environment = raw(probe["environment_file"])
+        allowed_env = {"PATH", "LANTERN_DEFAULT_TTL_SECONDS", "LANTERN_PORT", "LANTERN_METRICS_ADDR", "LANTERN_LOG_FORMAT", "LANTERN_LOG_LEVEL", "LANTERN_VERSION", "LANTERN_COMMIT"}
+        need(isinstance(environment, list) and all(isinstance(x, str) and "=" in x and x.split("=", 1)[0] in allowed_env
+             and not any(ord(c) < 32 or ord(c) == 127 for c in x) for x in environment)
+             and len({x.split("=", 1)[0] for x in environment}) == len(environment), "mount probe environment differs")
+        targets = [f"/proof/{side}-{i}" for i in range(len(pairs)) for side in ("original", "clone")]
+        for obj, state in ((created, "created"), (completed, "exited")):
+            need(obj.get("Id") == pcid and obj.get("Image") == context["image_id"]
+                 and obj.get("Config", {}).get("User") == context["runtime_user"]
+                 and obj.get("Config", {}).get("Image") == context["image_id"]
+                 and obj.get("Config", {}).get("Entrypoint") == ["/bin/busybox"]
+                 and obj.get("Config", {}).get("Cmd") == ["stat", "-c", "%d:%i:%F", *targets]
+                 and sorted(obj.get("Config", {}).get("Env", [])) == sorted(environment)
+                 and obj.get("State", {}).get("Status") == state and obj["State"].get("Running") is False,
+                 "mount probe execution differs")
+            hc = obj.get("HostConfig", {})
+            need(hc.get("NetworkMode") == "none" and hc.get("ReadonlyRootfs") is True
+                 and hc.get("Privileged") is False and hc.get("AutoRemove") is False
+                 and hc.get("CapDrop") == ["ALL"] and hc.get("CapAdd") in (None, [])
+                 and hc.get("SecurityOpt") == ["no-new-privileges:true"]
+                 and type(hc.get("Memory")) is int and hc["Memory"] == 33554432
+                 and type(hc.get("NanoCpus")) is int and hc["NanoCpus"] == 250000000
+                 and type(hc.get("PidsLimit")) is int and hc["PidsLimit"] == 16
+                 and hc.get("RestartPolicy") == {"Name": "no", "MaximumRetryCount": 0}
+                 and all(hc.get(k) in (None, []) for k in ("Binds", "VolumesFrom", "Devices", "DeviceRequests", "DeviceCgroupRules"))
+                 and hc.get("Tmpfs") in (None, {}) and obj.get("Config", {}).get("Volumes") in (None, {})
+                 and all(hc.get(k) == "" for k in ("PidMode", "UTSMode", "UsernsMode"))
+                 and hc.get("PublishAllPorts") is False and hc.get("PortBindings") in (None, {}), "mount probe isolation differs")
+            reqs, effs = hc.get("Mounts"), obj.get("Mounts")
+            need(isinstance(reqs, list) and isinstance(effs, list) and len(reqs) == len(effs) == 2 * len(pairs), "mount probe membership differs")
+            for i, target in enumerate(targets):
+                req = [r for r in reqs if r.get("Target") == target]
+                eff = [r for r in effs if r.get("Destination") == target]
+                pair = pairs[i // 2]; ss = {pair["original_source"], pair["clone_source"]}
+                need(len(req) == len(eff) == 1 and set(req[0]) == {"Type", "Source", "Target", "ReadOnly", "BindOptions"}
+                     and req[0]["Type"] == "bind" and req[0]["ReadOnly"] is True and req[0]["Source"] in ss
+                     and bind_options(req[0]["BindOptions"])
+                     and set(eff[0]) == {"Type", "Source", "Destination", "Mode", "RW", "Propagation"}
+                     and eff[0]["Type"] == "bind" and eff[0]["Source"] in ss and eff[0]["RW"] is False
+                     and eff[0]["Mode"] in ("", "ro") and eff[0]["Propagation"] == "rprivate", "mount probe row differs")
+        labels = created.get("Config", {}).get("Labels", {})
+        need(created.get("Name") == f"/{context['run_id']}-{service}-bind-proof"
+             and labels.get("com.docker.compose.project") == context["run_id"]
+             and labels.get("com.docker.compose.service") == service + "-bind-proof"
+             and labels.get("com.docker.compose.oneoff") == "True"
+             and labels.get("lantern.owner") == "compose-bind-identity-probe"
+             and isinstance(labels.get("lantern.initializer"), str)
+             and re.fullmatch(r"lantern-owned-init\.[A-Za-z0-9]+", labels["lantern.initializer"])
+             and type(created.get("RestartCount")) is int and created["RestartCount"] == 0
+             and type(completed.get("RestartCount")) is int and completed["RestartCount"] == 0
+             and created["State"].get("StartedAt") in ("", "0001-01-01T00:00:00Z"), "mount probe ownership differs")
+        need(probe_fingerprint(created) == probe_fingerprint(completed) and type(completed["State"].get("ExitCode")) is int and completed["State"].get("ExitCode") == 0
+             and completed["State"].get("OOMKilled") is False and raw(probe["wait_file"], False) == b"0\n"
+             and raw(probe["remove_file"], False) == (pcid + "\n").encode(), "mount probe closure differs")
+        output = raw(probe["output_file"], False)
+        need(len(output) <= 4096, "mount stat output oversized")
+        rows = output.decode().splitlines(keepends=True)
+        need(len(rows) == 2 * len(pairs) and all(re.fullmatch(r"[1-9][0-9]*:[1-9][0-9]*:directory\n", x) for x in rows)
+             and all(rows[i] == rows[i+1] for i in range(0, len(rows), 2)), "mount same-directory stat differs")
+    clone_before, clone_after = observation(binding["clone_before_file"]), observation(binding["clone_after_file"])
+    clone_id = clone_before.get("Id")
+    need(isinstance(clone_id, str) and HEX64.fullmatch(clone_id) and clone_id != cid, "mount clone identity differs")
+    profile(clone_before, clone_id, "created"); profile(clone_after, clone_id, "exited")
+    labels = clone_before["Config"]["Labels"]
+    need(clone_before["Name"] == f"/{context['run_id']}-{service}-security-init"
+         and labels["com.docker.compose.oneoff"] == "True" and labels["lantern.owner"] == "compose-security-initializer"
+         and re.fullmatch(r"lantern-owned-init\.[A-Za-z0-9]+", labels["lantern.initializer"]), "mount clone ownership differs")
+    need(fingerprint(clone_before) == fingerprint(clone_after), "mount clone profile changed")
+    for key in ("User", "WorkingDir"):
+        need(clone_before["Config"].get(key) == original["Config"].get(key), "mount initializer config differs")
+    need(clone_before["Config"].get("Entrypoint") == ["/app/lantern"] and clone_before["Config"].get("Cmd") == ["init-security"]
+         and clone_before["HostConfig"].get("NetworkMode") == original["HostConfig"].get("NetworkMode"), "mount initializer command/network differs")
+    original_hc, clone_hc = original["HostConfig"], clone_before["HostConfig"]
+    need(set(original_hc) == set(clone_hc) and all(original_hc[k] == clone_hc[k] for k in original_hc if k not in ("Binds", "Mounts")), "mount clone hardening changed")
+    for left, right, key in ((original_hc["Mounts"], clone_hc["Mounts"], "Target"), (original["Mounts"], clone_before["Mounts"], "Destination")):
+        need(len(left) == len(right), "mount clone membership changed")
+        for a, b in zip(sorted(left, key=lambda r: r[key]), sorted(right, key=lambda r: r[key])):
+            need(a[key] == b[key], "mount clone target changed")
+            if a[key] in ("/run/lantern-bench-heap", "/run/lantern-config", "/etc/ntp.conf"):
+                need({k: v for k, v in a.items() if k != "Source"} == {k: v for k, v in b.items() if k != "Source"}, "mount clone non-Source row changed")
+            else:
+                need(a == b, "mount clone volume changed")
+    ca, cb = mounts(clone_before, allowed)
+    need({k: v for k, v in ca.items() if k != "Source"} == {k: v for k, v in original_request.items() if k != "Source"}
+         and {k: v for k, v in cb.items() if k != "Source"} == {k: v for k, v in original_effective.items() if k != "Source"}, "mount clone options changed")
+    cut_process = None
+    for position in ("before", "after"):
+        snapshot_ref = replica.get(f"mount_inspect_{position}_file")
+        need(isinstance(snapshot_ref, dict) and snapshot_ref.get("path") == str(base / f"{phase}.{position}.json"), "mount snapshot filename differs")
+        snap = raw(snapshot_ref)
+        need(isinstance(snap, dict) and set(snap) == {"schema", "protocol", "phase", "position", "service", "host_identity", "inspect_file", "daemon_file"}
+             and type(snap["schema"]) is int and snap["schema"] == 1 and snap["protocol"] == PROTOCOL
+             and snap["phase"] == phase and snap["position"] == position and snap["service"] == service
+             and host(snap["host_identity"]) == identity and raw(snap["daemon_file"], False) == daemon,
+             "mount cut snapshot differs")
+        need(snap["inspect_file"].get("path") == str(base / f"{phase}.{position}.inspect.json")
+             and snap["daemon_file"].get("path") == str(base / f"{phase}.{position}.daemon"), "mount snapshot raw filename differs")
+        observed = profile(observation(snap["inspect_file"]), cid, "running")
+        same_serving_profile(original, observed)
+        mounts(observed, allowed)
+        process = (observed["State"]["Pid"], observed["State"]["StartedAt"])
+        need(integer(process[0], 1) and process[1] not in ("", "0001-01-01T00:00:00Z")
+             and (cut_process is None or cut_process == process), "mount process changed within cut")
+        cut_process = process
+    parent = base.lstat()
+    need(stat.S_ISDIR(parent.st_mode) and parent.st_uid == os.getuid() and stat.S_IMODE(parent.st_mode) == 0o700, "mount proof directory is not private")
+    files = list(base.iterdir())
+    need(len(files) <= 32, "mount proof file count exceeded")
+    total = 0
+    for path in files:
+        info = path.lstat()
+        need(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
+             and stat.S_IMODE(info.st_mode) == 0o600 and info.st_size <= 128 << 10, "mount proof member unsafe")
+        total += info.st_size
+    need(total <= 2 << 20, "mount proof total exceeded")
+    return binding, identity
 
 
 def memory(value):
@@ -232,6 +540,9 @@ def cut(root, filename, phase, expected, scenario):
     need(isinstance(replicas, list) and [row.get("endpoint") for row in replicas] == list(ENDPOINTS),
          "three unique ordered targets required")
     results = [completion(root, row, phase, context) for row in replicas]
+    mount_proofs = [mount_binding(root, row, phase, context, index) for index, row in enumerate(replicas)]
+    need(len({b["daemon_id"] for b, _ in mount_proofs}) == 1
+         and len({(h["device"], h["inode"]) for _, h in mount_proofs}) == 3, "mount cohort daemon/directory identity differs")
     for index in range(3):
         fd = directory(Path(root).absolute() / "heap-control-evidence" / f"lantern-{index}")
         try:
@@ -351,6 +662,11 @@ def _validate_pair(normal_root, retained_root, scenario, expected):
     containers = {row["service"]: row["container_id"] for row in tagged_provenance["replicas"]}
     deltas, nonces = [], set()
     for index, (pre, post) in enumerate(zip(before["replicas"], after["replicas"])):
+        need(pre["mount_binding_file"] == post["mount_binding_file"], "mount binding changed between cuts")
+        snapshots = [reference(retained_root, row[key], 128 << 10)
+                     for row in (pre, post) for key in ("mount_inspect_before_file", "mount_inspect_after_file")]
+        processes = [reference(retained_root, x["inspect_file"], 128 << 10)["state"] for x in snapshots]
+        need(len({(x["pid"], x["started_at"]) for x in processes}) == 1, "mount process changed between cuts")
         a, b = pre["completion"], post["completion"]
         need(a["request"]["identity"] == b["request"]["identity"], "target restarted between cuts")
         need(a["request"]["identity"]["session"]["container_id"] == containers[f"lantern-{index}"],
