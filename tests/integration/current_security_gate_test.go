@@ -605,6 +605,31 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		if _, e = c.GetVertices(ctx, securityWireRequest(token, &pb.GetVerticesRequest{Keys: []string{"orders:a", "other:denied"}})); connect.CodeOf(e) != connect.CodePermissionDenied {
 			t.Fatal("whole batch authority", e)
 		}
+		if !configuredSourceIntegration {
+			for _, mode := range []struct {
+				name    string
+				options []connect.ClientOption
+				http    *http.Client
+			}{{"h2-connect-proto", nil, transport}, {"h2-connect-json", []connect.ClientOption{connect.WithProtoJSON()}, transport}, {"h2-grpc", []connect.ClientOption{connect.WithGRPC()}, transport}, {"h2-grpc-web", []connect.ClientOption{connect.WithGRPCWeb()}, transport}, {"http1-connect-json", []connect.ClientOption{connect.WithProtoJSON()}, &http.Client{Transport: authIngressRoundTripper{http1Transport}}}} {
+				t.Run("selected data "+mode.name, func(t *testing.T) {
+					data := graphv1connect.NewLanternServiceClient(mode.http, servers[0].URL, mode.options...)
+					response, err := data.GetVertices(ctx, securityWireRequest(token, &pb.GetVerticesRequest{Keys: []string{"orders:a", "orders:b"}}))
+					if err != nil || len(response.Msg.Vertices) != 2 || len(response.Msg.Missing) != 0 {
+						t.Fatal("selected data batch", response, err)
+					}
+					values := make(map[string]string, len(response.Msg.Vertices))
+					for _, vertex := range response.Msg.Vertices {
+						values[vertex.Key] = vertex.GetString_()
+					}
+					if len(values) != 2 || values["orders:a"] != "visible" || values["orders:b"] != "second" {
+						t.Fatal("selected data response differs", response.Msg)
+					}
+					if _, err := data.GetVertices(ctx, securityWireRequest(token, &pb.GetVerticesRequest{Keys: []string{"orders:a", "other:denied"}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+						t.Fatal("selected data whole-batch refusal", err)
+					}
+				})
+			}
+		}
 	})
 	runCase("reader explicit Deny and no write grant", func(t *testing.T) {
 		reader := f.token(t, "reader", func(c map[string]any) { c["iat"] = time.Now().Add(-time.Minute).Unix(); delete(c, "auth_time") })
@@ -912,6 +937,43 @@ func TestCurrentSecurityPublicNativeGate(t *testing.T) {
 		raw, e := io.ReadAll(session.Body)
 		if e != nil || protojson.Unmarshal(raw, &current) != nil || current.Principal.GetCsrfToken() == "" {
 			t.Fatal("complete session response", e)
+		}
+		dataRequest := func() *http.Request {
+			request := f.browserRequest(t, http.MethodPost, "/browser"+graphv1connect.LanternServiceGetVerticesProcedure, cookies, current.Principal.GetCsrfToken())
+			body, err := protojson.Marshal(&pb.GetVerticesRequest{Keys: []string{"orders:a", "orders:b"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Body = io.NopCloser(bytes.NewReader(body))
+			request.ContentLength = int64(len(body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Connect-Protocol-Version", "1")
+			return request
+		}
+		browserData := browserDo(t, dataRequest())
+		browserBody, browserErr := io.ReadAll(browserData.Body)
+		_ = browserData.Body.Close()
+		var browserVertices pb.GetVerticesResponse
+		if browserErr != nil || browserData.StatusCode != http.StatusOK || protojson.Unmarshal(browserBody, &browserVertices) != nil || len(browserVertices.Vertices) != 2 || len(browserVertices.Missing) != 0 {
+			t.Fatal("browser selected data path", browserData.StatusCode, browserErr)
+		}
+		values := make(map[string]string, len(browserVertices.Vertices))
+		for _, vertex := range browserVertices.Vertices {
+			values[vertex.Key] = vertex.GetString_()
+		}
+		if len(values) != 2 || values["orders:a"] != "visible" || values["orders:b"] != "second" {
+			t.Fatal("browser selected data response differs", &browserVertices)
+		}
+		wrongOrigin := dataRequest()
+		wrongOrigin.Header.Set("Origin", "https://untrusted.example")
+		refusedData := browserDo(t, wrongOrigin)
+		refusedBody, refusedErr := io.ReadAll(refusedData.Body)
+		_ = refusedData.Body.Close()
+		var refusal struct {
+			Code string `json:"code"`
+		}
+		if refusedErr != nil || refusedData.StatusCode != http.StatusForbidden || json.Unmarshal(refusedBody, &refusal) != nil || refusal.Code != "permission_denied" {
+			t.Fatal("browser selected data origin refusal", refusedData.StatusCode, refusedErr)
 		}
 		// An enrolled, caught-up origin-free node accepts the established
 		// session. The request carries the same exact cookie and origin.

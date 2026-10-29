@@ -22,7 +22,7 @@ func (r *SecurityRuntime) PublicChangeHTTPHandler(svc *service.LanternService, c
 		return "", nil, err
 	}
 	options = append(options, service.StrictJSONHandlerOption(), connect.WithReadMaxBytes(16<<10), connect.WithSendMaxBytes(1<<20))
-	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternChangeServiceName+"/", func(options ...connect.HandlerOption) (string, http.Handler) {
+	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternChangeServiceName+"/", func(_ string, options ...connect.HandlerOption) (string, http.Handler) {
 		return graphv1connect.NewLanternChangeServiceHandler(changes, options...)
 	}, options...)
 	return path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -45,7 +45,7 @@ func (r *SecurityRuntime) BrowserChangeHTTPHandler(svc *service.LanternService, 
 		return "", nil, err
 	}
 	options = append(options, service.StrictJSONHandlerOption(), connect.WithReadMaxBytes(16<<10), connect.WithSendMaxBytes(1<<20))
-	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternChangeServiceName+"/", func(options ...connect.HandlerOption) (string, http.Handler) {
+	path, handler := r.publicRPCHandler("/"+graphv1connect.LanternChangeServiceName+"/", func(_ string, options ...connect.HandlerOption) (string, http.Handler) {
 		return graphv1connect.NewLanternChangeServiceHandler(changes, options...)
 	}, options...)
 	bounded := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { r.serveBoundedChanges(w, req, handler) })

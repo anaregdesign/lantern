@@ -12,9 +12,9 @@ import (
 // Only generated codecs/pools are request-owned; the typed service and its
 // immutable schema remain shared. CurrentOutput reserves actual connection and
 // request credit before invoking this factory.
-func (r *SecurityRuntime) publicRPCHandler(path string, create func(...connect.HandlerOption) (string, http.Handler), options ...connect.HandlerOption) (string, http.Handler) {
+func (r *SecurityRuntime) publicRPCHandler(path string, create func(string, ...connect.HandlerOption) (string, http.Handler), options ...connect.HandlerOption) (string, http.Handler) {
 	if r.current == nil {
-		return create(options...)
+		return create("", options...)
 	}
 	return path, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if r.output == nil {
@@ -25,7 +25,7 @@ func (r *SecurityRuntime) publicRPCHandler(path string, create func(...connect.H
 			if path == "/"+graphv1connect.LanternNativeAuthServiceName+"/" {
 				bounded = r.output.OptionsWithRequestValidation(service.ValidateNativeRequest, options...)
 			}
-			_, handler := create(bounded...)
+			_, handler := create(req.URL.Path, bounded...)
 			return handler
 		}).ServeHTTP(w, req)
 	})
