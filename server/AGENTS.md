@@ -11,7 +11,7 @@ architecture.
 read/write/delete has a **singular** and a **plural** form. The plural is the canonical
 implementation; the singular forwards a one-element batch to its plural counterpart
 (e.g. for `GetVertex`/`GetEdge`, `len(Missing)==1` maps to `codes.NotFound`; for
-`DeleteVertex`/`DeleteEdge`, `Existed = resp.GetDeleted() == 1`). When you add write
+`DeleteVertex`/`DeleteEdge`, `Existed = resp.GetExisted()[0]`). When you add write
 surface, **always implement the plural first and the singular as the facade** — never
 duplicate logic.
 

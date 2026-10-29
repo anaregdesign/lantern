@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -78,6 +79,31 @@ type authorityWirePublisherStream struct {
 	Kind, KeyFile, RootsFile string
 	Initial                  []byte
 	Targets, Certificates    []string
+}
+
+func reserveSecurityWireOrigins(count int, listen func(string, string) (net.Listener, error)) ([]string, func() error, error) {
+	var listeners []net.Listener
+	release := func() error {
+		owned := listeners
+		listeners = nil
+		var result error
+		for i, listener := range owned {
+			if err := listener.Close(); err != nil {
+				result = errors.Join(result, fmt.Errorf("close independent security endpoint %d: %w", i+1, err))
+			}
+		}
+		return result
+	}
+	origins := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		listener, err := listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, release, errors.Join(fmt.Errorf("reserve independent security endpoint %d: %w", i+1, err), release())
+		}
+		listeners = append(listeners, listener)
+		origins = append(origins, "https://"+listener.Addr().String())
+	}
+	return origins, release, nil
 }
 
 // This is an independent operator fixture producer. It preserves the complete
@@ -170,6 +196,21 @@ func prepareAuthorityWireSecurityMaterial(t *testing.T, dir string) {
 	}
 	originals := make([]originalAuthority, len(metadata.Nodes))
 	materialNodes := make([]provider.SecurityMaterialNode, len(metadata.Nodes))
+	var dataOrigins []string
+	if publisher == nil {
+		var release func() error
+		dataOrigins, release, err = reserveSecurityWireOrigins(len(metadata.Nodes), net.Listen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Keep the entire independent topology reserved while all node material
+		// is written; sequential close/reallocate can reuse an earlier port.
+		defer func() {
+			if err := release(); err != nil {
+				t.Fatal("release independent security endpoints", err)
+			}
+		}()
+	}
 	for i := range metadata.Nodes {
 		name := fmt.Sprintf("node-%d", i+1)
 		raw, err := os.ReadFile(filepath.Join(dir, name, "authority.json"))
@@ -178,14 +219,7 @@ func prepareAuthorityWireSecurityMaterial(t *testing.T, dir string) {
 		}
 		member := originals[i].Membership.Self
 		if publisher == nil {
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal("reserve independent data endpoint", err)
-			}
-			member.Origin = "https://" + listener.Addr().String()
-			if err := listener.Close(); err != nil {
-				t.Fatal(err)
-			}
+			member.Origin = dataOrigins[i]
 			manifest.Members = append(manifest.Members, member)
 		} else {
 			found := false
@@ -360,7 +394,171 @@ func loadAuthorityWireSecurityConfig(t *testing.T, dir string, node int, provide
 	}
 	config, err := provider.LoadSecurityConfigJSON(string(current))
 	if err != nil {
+		t.Log(authorityWireMaterialDiagnostic(node, document.Nodes))
 		t.Fatal("same-input independent material validation", err)
 	}
 	return config
+}
+
+func authorityWireMaterialDiagnostic(node int, nodes []provider.SecurityMaterialNode) string {
+	controlOrigins, dataOrigins := make(map[string]struct{}), make(map[string]struct{})
+	for _, endpoint := range nodes {
+		controlOrigins[endpoint.ControlOrigin] = struct{}{}
+		dataOrigins[endpoint.DataOrigin] = struct{}{}
+	}
+	// Count original origin identities without rendering URLs. Even malformed
+	// userinfo, paths, queries or fragments cannot enter this diagnostic.
+	return fmt.Sprintf("phase=load-security-config-json node=%d material_nodes=%d distinct_control_origins=%d distinct_data_origins=%d", node, len(nodes), len(controlOrigins), len(dataOrigins))
+}
+
+type securityWirePortAllocator struct {
+	active    map[int]bool
+	listeners []*securityWirePortListener
+	calls     int
+	failAt    int
+	listenErr error
+	closeErr  error
+}
+
+func (allocator *securityWirePortAllocator) listen(network, address string) (net.Listener, error) {
+	if network != "tcp" || address != "127.0.0.1:0" {
+		return nil, errors.New("unexpected independent endpoint allocation")
+	}
+	allocator.calls++
+	if allocator.calls == allocator.failAt {
+		return nil, allocator.listenErr
+	}
+	if allocator.active == nil {
+		allocator.active = make(map[int]bool)
+	}
+	port := 31000
+	for allocator.active[port] {
+		port++
+	}
+	allocator.active[port] = true
+	listener := &securityWirePortListener{allocator: allocator, port: port, closeErr: allocator.closeErr}
+	allocator.listeners = append(allocator.listeners, listener)
+	return listener, nil
+}
+
+type securityWirePortListener struct {
+	allocator  *securityWirePortAllocator
+	port       int
+	closeCalls int
+	closeErr   error
+}
+
+func (listener *securityWirePortListener) Accept() (net.Conn, error) {
+	return nil, net.ErrClosed
+}
+
+func (listener *securityWirePortListener) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: listener.port}
+}
+
+func (listener *securityWirePortListener) Close() error {
+	listener.closeCalls++
+	delete(listener.allocator.active, listener.port)
+	return listener.closeErr
+}
+
+func TestReserveSecurityWireOrigins(t *testing.T) {
+	t.Run("HeldUntilRelease", func(t *testing.T) {
+		allocator := new(securityWirePortAllocator)
+		origins, release, err := reserveSecurityWireOrigins(3, allocator.listen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := release(); err != nil {
+				t.Error(err)
+			}
+		}()
+		for i, origin := range origins {
+			if want := fmt.Sprintf("https://127.0.0.1:%d", 31000+i); origin != want {
+				t.Fatalf("origin %d = %q, want %q", i, origin, want)
+			}
+			if allocator.listeners[i].closeCalls != 0 {
+				t.Fatal("endpoint released before material construction completed")
+			}
+		}
+		if len(origins) != 3 || len(allocator.active) != 3 {
+			t.Fatal("complete independent topology was not held")
+		}
+		if err := release(); err != nil {
+			t.Fatal(err)
+		}
+		if err := release(); err != nil || len(allocator.active) != 0 {
+			t.Fatal("idempotent release", err)
+		}
+		for _, listener := range allocator.listeners {
+			if listener.closeCalls != 1 {
+				t.Fatalf("Close called %d times, want once", listener.closeCalls)
+			}
+		}
+		// This allocator immediately reuses freed ports, making early Close
+		// deterministically produce duplicate origins instead of relying on OS luck.
+		reused, err := allocator.listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reused.Addr().String() != "127.0.0.1:31000" {
+			t.Error("allocator did not reuse the freed endpoint")
+		}
+		if err := reused.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("PartialFailure", func(t *testing.T) {
+		listenErr, closeErr := errors.New("allocation failed"), errors.New("close failed")
+		allocator := &securityWirePortAllocator{failAt: 3, listenErr: listenErr, closeErr: closeErr}
+		origins, release, err := reserveSecurityWireOrigins(3, allocator.listen)
+		if origins != nil || !errors.Is(err, listenErr) || !errors.Is(err, closeErr) {
+			t.Fatalf("allocation and cleanup errors were not preserved: %v", err)
+		}
+		if allocator.calls != 3 || len(allocator.listeners) != 2 {
+			t.Fatal("unexpected partial allocation")
+		}
+		if err := release(); err != nil {
+			t.Fatal("already attempted closes must not repeat", err)
+		}
+		for _, listener := range allocator.listeners {
+			if listener.closeCalls != 1 {
+				t.Fatalf("Close called %d times after allocation failure, want once", listener.closeCalls)
+			}
+		}
+	})
+	t.Run("ReleaseFailure", func(t *testing.T) {
+		closeErr := errors.New("close failed")
+		allocator := &securityWirePortAllocator{closeErr: closeErr}
+		_, release, err := reserveSecurityWireOrigins(3, allocator.listen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := release(); !errors.Is(err, closeErr) {
+			t.Fatalf("cleanup error was not preserved: %v", err)
+		}
+		if err := release(); err != nil {
+			t.Fatal("already attempted closes must not repeat", err)
+		}
+		for _, listener := range allocator.listeners {
+			if listener.closeCalls != 1 {
+				t.Fatalf("Close called %d times, want once", listener.closeCalls)
+			}
+		}
+	})
+}
+
+func TestAuthorityWireMaterialDiagnostic(t *testing.T) {
+	secretOrigin := "https://secret-user:secret-password@127.0.0.1:31000/secret-path?secret-query#secret-fragment"
+	nodes := []provider.SecurityMaterialNode{
+		{Name: "secret-node", ControlOrigin: "https://127.0.0.1:32000", DataOrigin: secretOrigin},
+		{ControlOrigin: "https://127.0.0.1:32001", DataOrigin: secretOrigin},
+		{ControlOrigin: "https://127.0.0.1:32002", DataOrigin: "%secret-malformed"},
+	}
+	got := authorityWireMaterialDiagnostic(2, nodes)
+	want := "phase=load-security-config-json node=2 material_nodes=3 distinct_control_origins=3 distinct_data_origins=2"
+	if got != want {
+		t.Fatalf("diagnostic = %q, want %q", got, want)
+	}
 }
