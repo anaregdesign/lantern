@@ -196,7 +196,7 @@ def watched(row):
                             'security_opt': h.get('SecurityOpt'), 'pid_mode': h.get('PidMode', ''), 'ipc_mode': h.get('IpcMode', ''),
                             'uts_mode': h.get('UTSMode', ''), 'userns_mode': h.get('UsernsMode', ''),
                             'restart_policy': h.get('RestartPolicy'), 'tmpfs': h.get('Tmpfs')},
-            'mounts': row['Mounts'], 'state': {'status': s['Status'], 'running': s['Running'], 'pid': s.get('Pid', 0),
+            'mounts': sorted(row['Mounts'], key=lambda mount: mount['Destination']), 'state': {'status': s['Status'], 'running': s['Running'], 'pid': s.get('Pid', 0),
                                            'started_at': s.get('StartedAt', ''), 'exit_code': s.get('ExitCode', 0),
                                            'oom_killed': s.get('OOMKilled', False), 'restarting': s.get('Restarting', False),
                                            'paused': s.get('Paused', False)}, 'restart_count': row.get('RestartCount', 0)}
@@ -312,6 +312,7 @@ def validate_probe(probe, pairs, case, original):
         # Match the maintained initializer's default-enabled OOM representation.
         # Fold only copies; raw proof bytes and their references remain exact.
         result=decode(json_bytes({key:row[key] for key in ('Id','Name','Image','Config','HostConfig','Mounts')}))
+        result['Mounts']=sorted(result['Mounts'],key=lambda mount:mount['Destination'])
         oom=result['HostConfig'].get('OomKillDisable')
         if oom is None:
             result['HostConfig']['OomKillDisable']=False

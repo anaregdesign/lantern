@@ -476,6 +476,47 @@ class HeapControlTest(unittest.TestCase):
                 self.assertEqual(raw,{name:(stage/name).read_bytes() for name in control.PROBE_FILES.values()})
                 self.assertEqual(probe,{key:{'path':str(stage/filename),'sha256':control.digest(raw[filename])} for key,filename in control.PROBE_FILES.items()})
 
+    def test_stat_effective_mount_order_is_not_identity_but_rows_stay_exact(self):
+        root,rows=self.fresh_chain(True); stage=control.mount_stage(root,'lantern-0')
+        for filename,reverse in (('probe-created.json',True),('probe-completed.json',False)):
+            path=stage/filename; row=control.decode(path.read_bytes())
+            row['Mounts']=sorted(row['Mounts'],key=lambda mount:mount['Destination'],reverse=reverse)
+            path.write_bytes(control.json_bytes(row))
+        raw={name:(stage/name).read_bytes() for name in control.PROBE_FILES.values()}
+        pairs=control.decode((stage/'requested-pairs.json').read_bytes())
+        def references():
+            return {key:{'path':str(stage/name),'sha256':control.digest((stage/name).read_bytes())} for key,name in control.PROBE_FILES.items()}
+        probe=references()
+        control.validate_probe(probe,pairs,root.parent,control.watched(rows[0]))
+        self.assertEqual(raw,{name:(stage/name).read_bytes() for name in control.PROBE_FILES.values()})
+        self.assertEqual(probe,references())
+        completed=control.decode(raw['probe-completed.json'])
+        for kind in ('duplicate','new-source','writable'):
+            with self.subTest(kind=kind):
+                bad=copy.deepcopy(completed)
+                if kind=='duplicate': bad['Mounts'][0]=copy.deepcopy(bad['Mounts'][1])
+                elif kind=='new-source': bad['Mounts'][0]['Source']='/new/unproved'
+                else: bad['Mounts'][0]['RW']=True
+                (stage/'probe-completed.json').write_bytes(control.json_bytes(bad))
+                with self.assertRaises(ValueError):
+                    control.validate_probe(references(),pairs,root.parent,control.watched(rows[0]))
+
+    def test_watched_effective_mount_order_is_stable_without_sorting_raw_requests(self):
+        for clone,status in ((False,'created'),(False,'running'),(True,'created'),(True,'exited')):
+            with self.subTest(clone=clone,status=status):
+                row=inspect_row(self.root,0,clone)
+                row['State'].update(Status=status,Running=status=='running',Pid=100 if status=='running' else 0,
+                                    StartedAt='0001-01-01T00:00:00Z' if status=='created' else '2026-10-30T00:00:00Z')
+                reordered=copy.deepcopy(row); reordered['Mounts'].reverse()
+                raw=[control.json_bytes(value) for value in (row,reordered)]
+                projected=control.watched(reordered)
+                self.assertEqual(projected,control.watched(row))
+                self.assertEqual(projected['host_config']['mounts'],row['HostConfig']['Mounts'])
+                self.assertEqual(raw,[control.json_bytes(value) for value in (row,reordered)])
+        self.runner.inspect_damage=lambda row:row['Mounts'].reverse()
+        self.prepare()
+        self.assertEqual(control.capture(self.cut_args(),self.runner),0)
+
     def test_prepare_refuses_extra_symlink_or_oversized_staging_without_signal(self):
         stage=control.mount_stage(self.root,'lantern-0')
         extra=stage/'unexpected.json'; control.write_private(extra,{'extra':True})
